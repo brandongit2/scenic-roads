@@ -14,8 +14,9 @@
 //   helper (`--reopen`) opens the new one once it has ended, retrying until it runs (the build
 //   service's agent goes on, restarting into the new version by its own update drain). The
 //   launcher launchd started would go on from the old bundle, renamed aside, without the app's
-//   NAS permission (task #389): the app opened again finds it running from outside itself and
-//   restarts it (`followApp`), then deletes the old bundle; each poll checks again.
+//   NAS permission (task #389): the app opened again finds it running from outside itself, asks
+//   it to stop and starts the job once it has ended (`followApp`), then deletes the old bundle;
+//   each poll checks again.
 //
 // Info.plist names what the app manages, so a sandboxed copy (tools/status/sandbox.sh) manages its
 // own and never the live services: ScenicBuildService (the job's label), ScenicServerLabel,
@@ -301,24 +302,37 @@ final class BuildService {
         return (realPath(path) ?? path).hasPrefix(mine + "/") ? nil : path
     }
 
-    /// The launcher restarted from this app when it runs from elsewhere (`launcherElsewhere`): at
-    /// launch and each poll, at most once a minute. `launchctl kickstart -k` ends it (its agent
-    /// stopped by the SIGTERM it passes on) and launchd starts the job's program again from the
-    /// registered bundle, this one at the same path; still elsewhere after that, the job registered
-    /// afresh (unregistered and registered) and started. The copies an update left aside deleted
-    /// once nothing runs from them. True when it restarted it.
-    @discardableResult
-    func followApp() -> Bool {
+    /// The launcher restarted from this app when it runs from elsewhere (`launcherElsewhere`), a
+    /// step at launch and each poll (`followStep`): asked to stop (`launchctl kill SIGTERM`, at most
+    /// once a minute), which it passes on to its agent and waits for; once that launcher has ended,
+    /// the job started (launchd runs it from the registered bundle, this one at the same path);
+    /// still elsewhere after that, the job registered afresh (unregistered and registered) and
+    /// started. Never `kickstart -k`: launchd SIGKILLs a job that hasn't exited ~5 s after its
+    /// SIGTERM, and an agent may take minutes to stop (a loop phase), so the launcher was killed and
+    /// its agent left an orphan (#799). The copies an update left aside deleted once nothing runs
+    /// from them.
+    func followApp() {
         defer { removeOldCopies() }
-        guard blocked == nil, quitting == nil, let path = launcherElsewhere(), Date().timeIntervalSince(lastFollow) > 60 else { return false }
-        lastFollow = Date()
-        NSLog("scenic: the build service's launcher runs from \(path), not this app: restarting it")
-        run("/bin/launchctl", ["kickstart", "-k", "\(domain)/\(buildLabel)"])
-        refresh()
-        if let still = launcherElsewhere() { reregister("the launcher still runs from \(still)") }
-        return true
+        guard blocked == nil, quitting == nil else { return }
+        let ended = asked.map { processStart($0.0) != $0.1 } ?? false
+        switch followStep(elsewhere: launcherElsewhere() != nil, asked: asked != nil, ended: ended,
+                          sinceAsk: Date().timeIntervalSince(lastFollow)) {
+        case .wait: return
+        case .stop:
+            guard case .running(let pid) = state, let start = processStart(Int32(pid)) else { return }
+            lastFollow = Date()
+            asked = (Int32(pid), start)
+            updateLog("the build service's launcher (pid \(pid)) runs from \(launcherElsewhere() ?? "?"), not this app: asking it to stop (SIGTERM), then starting it again")
+            run("/bin/launchctl", ["kill", "SIGTERM", "\(domain)/\(buildLabel)"])
+        case .start:
+            asked = nil
+            kick()
+            if let still = launcherElsewhere() { reregister("the launcher still runs from \(still)") }
+        }
     }
     var lastFollow = Date.distantPast
+    /// The launcher `followApp` asked to stop (pid, start), until it has ended.
+    var asked: (Int32, UInt64)?
 
     /// The app's copies left aside by updates (.<name>.old-<pid> beside it), deleted once no process
     /// runs from them.
@@ -835,6 +849,16 @@ func selfTest(_ dir: String) -> Never {
     let s = sim(exitAfter: 0, worksFrom: 1, stray: true)
     check("a stray copy (which open would activate) ended before the open", s.ok && s.opens == 1 && s.log.contains { $0.contains("attempt 1: ended a stray copy") })
     check("no stray copy of a missing app", endStrayCopy("/nonexistent/Scenic.app") == nil)
+    // Following the app (#799): asked to stop, waited for, never killed while it stops.
+    check("a launcher elsewhere: asked to stop; at most once a minute",
+          followStep(elsewhere: true, asked: false, ended: false, sinceAsk: 3600) == .stop
+          && followStep(elsewhere: true, asked: false, ended: false, sinceAsk: 10) == .wait)
+    check("asked and still stopping: waited for (asked again after a minute, never killed)",
+          followStep(elsewhere: true, asked: true, ended: false, sinceAsk: 10) == .wait
+          && followStep(elsewhere: true, asked: true, ended: false, sinceAsk: 120) == .stop)
+    check("asked and ended: started", followStep(elsewhere: true, asked: true, ended: true, sinceAsk: 10) == .start
+          && followStep(elsewhere: false, asked: true, ended: true, sinceAsk: 10) == .start)
+    check("this app's own launcher: left", followStep(elsewhere: false, asked: false, ended: false, sinceAsk: 3600) == .wait)
     // Stale launchers.
     check("a launcher older than the job's: stale; the job's own and a newer one: not",
           staleLaunchers([(10, 100), (20, 500), (30, 900)], job: (20, 500)) == [10])
@@ -866,6 +890,14 @@ func realPath(_ p: String) -> String? {
     guard let r = realpath(p, nil) else { return nil }
     defer { free(r) }
     return String(cString: r)
+}
+
+/// `followApp`'s step: a launcher asked to stop waited for until it has ended, then started; one
+/// running from elsewhere asked to stop (again after a minute: SIGTERM only, never a kill).
+enum Follow: Equatable { case wait, stop, start }
+func followStep(elsewhere: Bool, asked: Bool, ended: Bool, sinceAsk: TimeInterval) -> Follow {
+    if asked && ended { return .start }
+    return elsewhere && sinceAsk > 60 ? .stop : .wait
 }
 
 /// Of launchers (pid, start), the stale ones beside the job's own: not it, and started before it.

@@ -26,8 +26,11 @@
   each poll, it checks that the build service's launcher runs from its own bundle (macOS's
   network-volume permission is granted to /Applications/Scenic.app, not to the old copy an update
   leaves aside, `.Scenic.app.old-<pid>`); a launcher whose executable can't be read counts as
-  elsewhere. If not, it restarts the job (`launchctl kickstart -k`, at most once a minute;
-  registering it again if that isn't enough): the agent's jobs, in process groups
+  elsewhere. If not, it asks that launcher to stop (`launchctl kill SIGTERM`, again after a minute
+  while it still runs; it passes the signal on and waits for its agent, which may take minutes)
+  and, once it has ended, starts the job (registering it again if it still runs from elsewhere).
+  Never `kickstart -k`: launchd SIGKILLs a job still running ~5 s after its SIGTERM, which killed
+  the launcher and left its agent an orphan at nearly every update (#799). The agent's jobs, in process groups
   of their own, run on through it, and the agent it starts takes them over (docs/building.md §2, Restarts). It
   deletes the old copies
   nothing runs from (the swap itself leaves them). launchd keeps a launch constraint (LWCR) for
