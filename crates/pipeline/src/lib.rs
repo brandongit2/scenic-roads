@@ -66,6 +66,7 @@ pub mod pubtimes;
 pub mod pyenv;
 pub mod pyjson;
 pub mod pynumpy;
+pub mod pyramids;
 pub mod pytext;
 pub mod rail;
 #[cfg(not(target_os = "wasi"))]

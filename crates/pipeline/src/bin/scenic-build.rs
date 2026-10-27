@@ -49,6 +49,9 @@
 //!   polar-terrain <s/4/x/y …>    polar blocks' terrain (z4–9) from the elevation pool (pipeline::polar)
 //!   polar-slope <s/4/x/y …>      polar blocks' shading from their and their neighbours' terrain packs
 //!   polar-root <s …> [--regions dir] [--pass d]  a pole's z0–3 of both, from its blocks; those no longer built dropped
+//!   pyramids-fill <6/x/y …> | --all [--into dir]  the pyramids read tile by tile (GSI's) stored
+//!                                on the NAS (pipeline::pyramids): the tiles those z6 tiles'
+//!                                terrain runs read, each fetched once and packed; the lead's
 //!   raw-pack [--from-tar -] [--cache dir]  AWS's raw tiles packed into the NAS's archives
 //!                                (pipeline::rawpack): a tar of them on stdin (tools/nas/raw-pack.sh),
 //!                                else those waiting in the cache
@@ -541,6 +544,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "roadunits" => roadunits(&mut out)?,
         "terrain-hi" => terrain_step(&mut out, &args)?,
         "terrain-deep" => terrain_deep_step(&mut out, &args)?,
+        "pyramids-fill" => return pyramids_fill(&out, &args),
         "raw-pack" => {
             // raw-pack [--from-tar - [--expect n]] [--cache dir] | --order | --check [--every n]:
             // AWS's raw tiles packed into the NAS's archives (pipeline::rawpack): a tar stream of
@@ -1012,7 +1016,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             } else {
                 let deeper = piece_deeper(&out, (t.x, t.y))?;
                 let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: Some(&deeper) };
-                let pool = base_pool(&out, 6, &[(t.x, t.y)])?;
+                let mut pool = base_pool(&out, 6, &[(t.x, t.y)])?;
+                pyramids_arg(&mut pool, &args);
                 let levels = pipeline::terrain_pack::piece_levels(&cov, (t.x, t.y));
                 let (hi, mid) = pool.with_tiles(&raw, src.water, |tiles| {
                     if whole {
@@ -1041,7 +1046,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             )?;
             let made = pack.as_ref().map(|p| p.content_name()).transpose()?;
             let pl = format!("layers/terrain/{kind}/{}-{}-{}", t.z, t.x, t.y);
-            let mut said = serde_json::json!({ "tile": t.slash(), "tiles": n, "secs": secs, kind: made, format!("{kind}_manifest"): out.get(&pl) });
+            let mut said = serde_json::json!({ "tile": t.slash(), "tiles": n, "secs": secs, "fetched_bytes": pipeline::fetch::fetched_bytes(), kind: made, format!("{kind}_manifest"): out.get(&pl) });
             if let Some(mid) = mid {
                 let ml = pipeline::terrain_pack::mid_logical(t.x, t.y);
                 let mid_path = out.scratch_file(&format!("{ml}.sect"));
@@ -1098,8 +1103,11 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 .collect();
             let deeper: BTreeSet<(u32, u32)> = pieces.iter().flat_map(|&p| td::deeper(&fine.sets, p)).collect();
             let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: Some(&deeper) };
-            let fetch = pipeline::fetch::Fetcher::from_env();
-            let pool = base_pool(&out, 6, &pieces.iter().copied().collect::<Vec<_>>())?;
+            let net = pipeline::fetch::Fetcher::from_env();
+            let mut pool = base_pool(&out, 6, &pieces.iter().copied().collect::<Vec<_>>())?;
+            pyramids_arg(&mut pool, &args);
+            let stored = pool.stored(&net);
+            let fetch: &dyn pipeline::fetch::Fetch = stored.as_ref().map_or(&net, |s| s);
             let mut lines = String::new();
             pool.with_tiles(&raw, src.water, |tiles| -> Result<()> {
                 let bases = pipeline::terrain_pack::Bases::new(tiles, &src, &cov);
@@ -1112,7 +1120,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                         (base_secs, base_tiles) = (b0.elapsed().as_secs_f64(), base.len());
                         Ok(base)
                     };
-                    let (r, pack) = td::make(&out, t, &mut base_of, Some(&water), &fine, &fetch, None)?;
+                    let (r, pack) = td::make(&out, t, &mut base_of, Some(&water), &fine, fetch, None)?;
                     let mut made = None;
                     if let Some(p) = pack {
                         made = Some(p.content_name()?);
@@ -1126,7 +1134,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                     }
                     println!(
                         "{}",
-                        serde_json::json!({ "target": format!("{}/{}/{}", td::PACK_Z, t.0, t.1), "base_tiles": base_tiles, "base_secs": base_secs, "secs": t0.elapsed().as_secs_f64(), "tiles": r.tiles, "with_data": r.with_data, "pack": made, "pack_manifest": out.get(&td::pack_logical(t.0, t.1)) })
+                        serde_json::json!({ "target": format!("{}/{}/{}", td::PACK_Z, t.0, t.1), "base_tiles": base_tiles, "base_secs": base_secs, "secs": t0.elapsed().as_secs_f64(), "tiles": r.tiles, "with_data": r.with_data, "pack": made, "pack_manifest": out.get(&td::pack_logical(t.0, t.1)), "fetched_bytes": pipeline::fetch::fetched_bytes() })
                     );
                 }
                 Ok(())
@@ -2421,6 +2429,82 @@ fn raw_tiles(out: &Out, dir: &Path) -> Result<pipeline::terrain_pack::RawTiles> 
 /// terrain's base tiles there are sampled from it.
 fn base_pool(out: &Out, z: u8, ts: &[(u32, u32)]) -> Result<pipeline::terrain_base::Pool> {
     pipeline::terrain_base::Pool::read(out.root(), &out.manifest, pipeline::terrain_base::tiles_box(z, ts))
+}
+
+/// `--pyramids <dir>`: the stored pyramids (pipeline::pyramids) read from that folder (a scratch
+/// store's), not the root's; `--pyramids none`, not read (every tile fetched, as before them).
+fn pyramids_arg(pool: &mut pipeline::terrain_base::Pool, args: &[String]) {
+    match opt(args, "--pyramids").as_deref() {
+        Some("none") => pool.pyramids = None,
+        Some(d) => pool.pyramids = Some(store::nasfs::NasRoot::from_arg(d).path()),
+        None => {}
+    }
+}
+
+/// pyramids-fill (6/x/y … | --all) [--into <dir>] [--sizes]: the stored pyramids' tiles (pipeline::pyramids)
+/// the terrain-hi runs of those z6 tiles read (`--all`: every z6 tile meeting a pyramid's cover
+/// that makes hi tiles), each the store lacks fetched once and packed onto the NAS; `--into`, a
+/// scratch store instead (its folder is its own root). `--sizes`: only each store's size. The
+/// lead's step (the index is changed under the build's lock).
+fn pyramids_fill(out: &Out, args: &[String]) -> Result<()> {
+    use pipeline::pyramids as py;
+    let (dir, root) = match opt(args, "--into") {
+        Some(d) => {
+            let r = store::nasfs::NasRoot::from_arg(d.as_str());
+            (r.path(), r)
+        }
+        None => (out.root().join(py::DIR), out.root().clone()),
+    };
+    let mut ts: Vec<(u32, u32)> = positional(args)
+        .iter()
+        .map(|t| {
+            TileId::parse(t).filter(|u| u.z == 6).map(|u| (u.x, u.y)).with_context(|| format!("not a z6 tile: {t}"))
+        })
+        .collect::<Result<_>>()?;
+    // (The world's pool: the pyramids declared, and their cover.)
+    let pyr = py::of(&base_pool(out, 0, &[(0, 0)])?.plan);
+    if flag(args, "--sizes") {
+        let templates: Vec<String> = pyr.iter().map(|p| p.0.clone()).collect();
+        for (f, bytes, n) in py::sizes(&dir, &templates)? {
+            println!("{}", serde_json::json!({ "pyramid": f, "bytes": bytes, "archives": n }));
+        }
+        return Ok(());
+    }
+    let cov = coverage_of(out, args)?;
+    if flag(args, "--all") {
+        let covers: Vec<[f64; 4]> =
+            pyr.iter().flat_map(|p| p.2.clone().unwrap_or_else(|| vec![[-180.0, -90.0, 180.0, 90.0]])).collect();
+        for x in 0..64u32 {
+            for y in 0..64u32 {
+                let b = pipeline::stage::tile_box_grown(6, x, y, 0.0);
+                let meets = covers.iter().any(|c| b[0] < c[2] && c[0] < b[2] && b[1] < c[3] && c[1] < b[3]);
+                if meets && pipeline::terrain_pack::makes_hi(&cov, (x, y)) {
+                    ts.push((x, y));
+                }
+            }
+        }
+    }
+    anyhow::ensure!(!ts.is_empty(), "pyramids-fill <6/x/y …> | --all");
+    let water = pipeline::terrain_pack::open_water(out)?;
+    let net = pipeline::fetch::Fetcher::from_env();
+    let cache = out.scratch.join("pyramids");
+    for (k, &t) in ts.iter().enumerate() {
+        pipeline::agent::jobs::report(k as u64, ts.len() as u64, "z6 tiles");
+        let t0 = std::time::Instant::now();
+        let pool = base_pool(out, 6, &[t])?;
+        let levels = pipeline::terrain_pack::piece_levels(&cov, t);
+        let want = py::want(&pool.plan, &water, &levels)?;
+        let before = pipeline::fetch::fetched_bytes();
+        let f = py::fill(&net, &want, &dir, &cache, &root, &|l| eprintln!("{l}"))?;
+        println!(
+            "{}",
+            serde_json::json!({ "tile": format!("6/{}/{}", t.0, t.1), "wanted": want.values().map(|s| s.len()).sum::<usize>(), "had": f.had, "fetched": f.fetched, "none": f.none, "bytes": f.bytes, "net_bytes": pipeline::fetch::fetched_bytes() - before, "failed": f.failed.len(), "secs": t0.elapsed().as_secs_f64() })
+        );
+        for e in f.failed.iter().take(20) {
+            eprintln!("  failed: {e}");
+        }
+    }
+    Ok(())
 }
 
 /// Seconds since the epoch as RFC 3339 UTC (`2026-10-05T03:55:11Z`).
@@ -5169,8 +5253,10 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
         .collect();
     let deeper: BTreeSet<(u32, u32)> = pieces.iter().flat_map(|&p| td::deeper(&fine.sets, p)).collect();
     let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: Some(&deeper) };
-    let fetch = pipeline::fetch::Fetcher::from_env();
+    let net = pipeline::fetch::Fetcher::from_env();
     let pool = base_pool(out, 6, &pieces.iter().copied().collect::<Vec<_>>())?;
+    let stored = pool.stored(&net);
+    let fetch: &dyn pipeline::fetch::Fetch = stored.as_ref().map_or(&net, |s| s);
     let mut names: Vec<String> = ts.iter().map(|t| format!("Making {}'s deep terrain", t.slash())).collect();
     names.push("Packing the new raw tiles onto the NAS".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -5182,7 +5268,7 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
             let c = cost_start(STEP, &t.slash());
             let fetched = pipeline::fetch::fetched_bytes();
             // (Paused mid-sampling: nothing of it put, its base tiles made kept in its resume log.)
-            let r = td::build_target(out, (t.x, t.y), &bases, Some(&water), &fine, &fetch)
+            let r = td::build_target(out, (t.x, t.y), &bases, Some(&water), &fine, fetch)
                 .map_err(|e| pipeline::control::stop_if_paused(STEP, e))?;
             out.save()?;
             eprintln!(

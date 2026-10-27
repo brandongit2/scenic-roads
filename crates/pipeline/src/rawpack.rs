@@ -51,6 +51,8 @@ const GROUP: u64 = 1 << 30;
 /// How far a long step is, for the status: `(what, done, total)` ("tiles", "shards" …).
 pub type Progress<'a> = &'a (dyn Fn(&str, u64, u64) + Sync);
 
+/// The archives' metadata: AWS's raw tiles' (`Packer::new`); a stored pyramid's says its own
+/// (`Packer::with_meta`, crate::pyramids).
 const META: &str = r#"{"kind":"aws-terrarium raw tiles"}"#;
 
 /// The shard a tile is packed in, as the terrain is: its z6 tile's for z9–12, its z3 tile's for
@@ -296,6 +298,8 @@ pub struct Packer {
     /// the lead's own packing, the index changed here.
     handoff: Option<PathBuf>,
     handed: Vec<(String, Pack)>,
+    /// What each archive made says it holds (`META`, else `with_meta`'s).
+    meta: String,
 }
 
 impl Packer {
@@ -303,6 +307,19 @@ impl Packer {
     /// `root`: an error on a Mac that doesn't write its records.
     pub fn new(dir: &Path, store: &store::nasfs::NasPath, root: &store::nasfs::NasRoot) -> Result<Packer> {
         Packer::open(dir, store, root, std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from))
+    }
+
+    /// `new`, the lead's alone (no hand-off: crate::pyramids' store is filled by its own step), its
+    /// archives saying `meta`.
+    pub fn with_meta(
+        dir: &Path,
+        store: &store::nasfs::NasPath,
+        root: &store::nasfs::NasRoot,
+        meta: &str,
+    ) -> Result<Packer> {
+        let mut p = Packer::open(dir, store, root, None)?;
+        p.meta = meta.to_string();
+        Ok(p)
     }
 
     /// `new`, a job's (its hand-off folder `handoff`), or one before the pool began (None).
@@ -343,6 +360,7 @@ impl Packer {
             keep: true,
             handoff,
             handed: Vec::new(),
+            meta: META.to_string(),
         })
     }
 
@@ -513,7 +531,7 @@ impl Packer {
         // (Written held, store::cachefile's scratch file beside its folder: room-making leaves it.)
         let (part, held) = store::cachefile::scratch(&self.dir.join("packs").join(own(shard, "part")))?;
         let r = (|| -> Result<()> {
-            let mut w = ArchiveWriter::create(&part, META)?;
+            let mut w = ArchiveWriter::create(&part, &self.meta)?;
             let mut b = Vec::new();
             for i in 0..n {
                 let k = tile(i, &mut b)?;

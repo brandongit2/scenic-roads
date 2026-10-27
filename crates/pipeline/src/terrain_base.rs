@@ -11,7 +11,8 @@
 //! levels from the finer).
 //!
 //! A Terrarium pyramid's tiles are read through `RawTiles` (this Mac's cache, the NAS's archives,
-//! else AWS: crate::terrain_pack), not fetched by the sampler; every other file as the roads read
+//! else AWS: crate::terrain_pack), not fetched by the sampler; a pyramid read tile by tile (GSI's)
+//! from its store on the NAS first (crate::pyramids, `Pool::stored`); every other file as the roads read
 //! them (the store, `sources/fetched/`, for a stored dataset, a file the job reads half or more of copied
 //! whole to this Mac first where it has room: crate::localread; else the network).
 
@@ -92,6 +93,9 @@ pub struct Pool {
     /// This Mac's whole copies of the stores' files the area's jobs read much of (crate::localread:
     /// crate::dem::generic::COPY_SHARE); None, the NAS's read in place.
     pub local: Option<crate::localread::Local>,
+    /// The stored pyramids' folder (crate::pyramids::DIR under the root): the pyramids read tile by
+    /// tile (`by_tile`) read there before the network. None: fetched.
+    pub pyramids: Option<store::nasfs::NasPath>,
 }
 
 impl Pool {
@@ -111,6 +115,7 @@ impl Pool {
         };
         let mut pool = Pool::of(crate::dem::declared::plan_converted(&a, b, &geoid)?, root.join("sources/fetched"), b);
         pool.local = crate::localread::Local::from_env(root);
+        pool.pyramids = Some(root.join(crate::pyramids::DIR));
         Ok(pool)
     }
 
@@ -120,7 +125,7 @@ impl Pool {
             Source::Tiles { url, encoding, .. } if encoding == "terrarium" => Some(url.clone()),
             _ => None,
         });
-        Pool { plan, terrarium, store, area, local: None }
+        Pool { plan, terrarium, store, area, local: None, pyramids: None }
     }
 
     /// The plan read at zoom `z` over latitude `lat` (`Pool`'s rule). Below `ROW_Z` (the z3 tiles'
@@ -149,6 +154,12 @@ impl Pool {
         p
     }
 
+    /// `inner` with the stored pyramids read first (crate::pyramids::Stored), where the pool has their
+    /// folder.
+    pub fn stored<'a>(&self, inner: &'a dyn Fetch) -> Option<crate::pyramids::Stored<'a>> {
+        self.pyramids.as_ref().map(|d| crate::pyramids::Stored::new(inner, d, &self.plan))
+    }
+
     /// `f` given the pool's tiles (`Tiles`), the Terrarium pyramid's read through `raw`; `water`, the
     /// terrain's (crate::terrain_pack::Sources), spares the open sea the pyramids fetched tile by
     /// tile (`Tiles::over_water`).
@@ -159,7 +170,8 @@ impl Pool {
         f: impl FnOnce(&Tiles) -> R,
     ) -> Result<R> {
         let net = crate::fetch::Fetcher::from_env();
-        let fetch = RawFetch::new(raw, self.terrarium.as_deref(), &net);
+        let stored = self.stored(&net);
+        let fetch = RawFetch::new(raw, self.terrarium.as_deref(), stored.as_ref().map_or(&net as &dyn Fetch, |s| s));
         let o = Opts {
             fetch: &fetch,
             store: Some(self.store.clone()),
@@ -482,7 +494,7 @@ impl<'a> Tiles<'a> {
 /// those around it in its tile (a tile's edges read no neighbour's water), wholly sea in `water`'s tile of the same zoom (all of their
 /// samples, crate::terrain_water::FULL), so a pixel flattened to 0 m whatever it reads, and an
 /// islet or a shore the samples of one pixel missed still read as land. Empty: none.
-fn open_sea(water: &dyn WaterSource, z: u8, ts: &[(u32, u32)]) -> Result<Vec<bool>> {
+pub(crate) fn open_sea(water: &dyn WaterSource, z: u8, ts: &[(u32, u32)]) -> Result<Vec<bool>> {
     let side = 256 * K;
     let per = side * side;
     let mut out: Vec<bool> = Vec::new();

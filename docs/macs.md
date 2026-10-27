@@ -31,6 +31,15 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
     day later, so a reader of the old index stays right. Only the lead changes the index; a job
     puts its archives there unlisted and hands them off. A tile is read by range for a shard's first
     16, then each archive is copied whole once and checked against its name.
+  - **GSI's elevation tiles** (the pyramids read tile by tile, `[data] encoding = gsi-png`) are
+    packed the same way (`pipeline::pyramids`, `sources/pyramids/<host-path>/packs/`, one store a
+    URL template, a z14/z15 tile in its z6 tile's shard), by their own step, the lead's:
+    `scenic-build pyramids-fill <6/x/y …> | --all` fetches each tile a z6 tile's terrain-hi run
+    reads (under its z9–12 pixels that aren't open sea, inside the dataset's cover) that the store
+    lacks, once, and packs it (a 404 kept as an empty entry). Terrain-hi and terrain-deep read the
+    store first, each tile by range from the NAS's archive; a tile it lacks is fetched as before,
+    never written back. It isn't filled by the pool yet: a one-off `pyramids-fill --all` on the
+    lead fills it (restartable).
   - **The Wikidata and Wikipedia answers** the items job and the heritage chain got for a pass
     (`pipeline::answers`) are kept as one archive per pass (`sources/items/<date>/answers.tar.zst`,
     `heritage.tar.zst`), written as the step starts (when the NAS lacks what the Mac has) and as it

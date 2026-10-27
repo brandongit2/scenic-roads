@@ -1267,6 +1267,9 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   threads, one at a time each, about 2 tiles a second where the host answers 15 at once); the
   terrain pool's own Terrarium tiles, read from this Mac's cache or the NAS's archives
   (`terrain_base::RawFetch`), are read only as many at once as the job has threads, as before.
+  The terrain's jobs read a pyramid's tiles from its store on the NAS first
+  (`sources/pyramids/`, crate::pyramids: GSI's, filled by `scenic-build pyramids-fill`, docs/macs.md),
+  fetching only those it lacks.
   Only each point's
   first file (the first whose footprint holds it) is read ahead; a point that file has no data for
   reads the next file's block when it's sampled. The reading ahead goes no further than a quarter
