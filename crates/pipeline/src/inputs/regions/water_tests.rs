@@ -907,3 +907,15 @@ fn land_in_two_regions_with_water_is_an_overlap() {
         .collect();
     assert!((0.7..0.8).contains(&at[0]) && (0.7..0.8).contains(&at[1]), "{}", p.message);
 }
+
+/// A nearest-coast split decides by the nearest coast however far it is: coasts 670 and 780 km off
+/// (past the first reach of 450 km) still split the sea.
+#[test]
+fn a_nearest_coast_split_reaches_past_450_km() {
+    let within = Area::from_rings(&bx(0.0, 0.0, 0.1, 0.1));
+    let east = Area::from_rings(&bx(6.1, 0.0, 6.2, 0.1));
+    let west = Area::from_rings(&bx(-7.1, 0.0, -7.0, 0.1));
+    assert!(geom::nearest_within(&within, &[west.clone()], &[east.clone()], 1000.0, 450_000.0).is_none());
+    assert!(geom::nearest_growing(&within, &[west.clone()], &[east.clone()], 1000.0).is_empty());
+    assert_eq!(geom::nearest_growing(&within, &[east], &[west], 1000.0), within);
+}

@@ -155,8 +155,10 @@ impl Checks for Regions {
         // shapes apart. 6: #648: the cover check's gaps joined across the cells' edges before the
         // fill and the sizes. 7: #649: one coastline: land and sea in no region along the
         // coastline go to the region with water beside them. 8: #468: the coast's land and sea
-        // within COAST_REACH_M go to the nearest region, split at the median line.)
-        8
+        // within COAST_REACH_M go to the nearest region, split at the median line. 9: #468: land
+        // mostly in two regions with water said as an overlap; nearest-coast splits reach past 450
+        // km.)
+        9
     }
 
     fn recursive(&self) -> bool {

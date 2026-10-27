@@ -573,7 +573,7 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
 - **Cell by cell** (crate::inputs::regions::tiles): a region with water is resolved on a grid of 2°
   cells. Each part it names is cut into the cells by clipping its rings to boxes (no polygon
   operation on the whole); each expression is evaluated per cell, a buffer from the cells within
-  its distance, a nearest-coast split against the coasts in the cells within 450 km; the land, water
+  its distance, a nearest-coast split against the coasts in the cells within 450 km, the reach doubled while a point's nearest coast lies past it (so no coast, however far, is passed over); the land, water
   and lakes are kept by cell, stretches (`hand_out`, slivers) joined across the cells' shared
   edges, and the cover check runs per cell, its gaps then joined across the cells' edges. So an operation holds a cell's geometry (a buffer's or
   a split's, its neighbourhood's), never a region's; what's kept is every region's cells (the

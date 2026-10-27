@@ -865,7 +865,27 @@ pub fn area_km2(a: &Area) -> f64 {
 /// land border) goes to the coast with the least fingerprint, whichever side it's on: splits of the
 /// same area among any number of coasts neither overlap nor leave a gap there.
 pub fn nearest(within: &Area, to: &[Area], than: &[Area], step: f64) -> Area {
-    nearest_in(within, to, than, step)
+    nearest_in(within, to, than, step, None).unwrap_or_default()
+}
+
+/// `nearest` of whole coasts, their samples taken from `NEAREST_REACH_M` round the area's box,
+/// doubled until every point's nearest lies within it (no coast decides from past it unseen).
+pub fn nearest_growing(within: &Area, to: &[Area], than: &[Area], step: f64) -> Area {
+    let mut r = NEAREST_REACH_M;
+    while r < 2e7 {
+        if let Some(a) = nearest_within(within, to, than, step, r) {
+            return a;
+        }
+        r *= 2.0;
+    }
+    nearest(within, to, than, step)
+}
+
+/// `nearest` with the coasts given only within `reach_m` of `within`'s box (the rest unknown): None
+/// where a point's nearest coast given is farther than that (a farther coast not given may be
+/// nearer), so the caller gives more.
+pub fn nearest_within(within: &Area, to: &[Area], than: &[Area], step: f64, reach_m: f64) -> Option<Area> {
+    nearest_in(within, to, than, step, Some(reach_m))
 }
 
 /// What decides a point two coasts share: the coast's box, its points' count and their sum.
@@ -876,25 +896,36 @@ fn fingerprint(a: &Area) -> Fp {
     (a.bbox(), pts.clone().count(), pts.fold((0i128, 0i128), |s, p| (s.0 + p[0] as i128, s.1 + p[1] as i128)))
 }
 
-/// How far a nearest-coast split looks for coasts (metres): farther ones don't decide it.
+/// The reach a cell's nearest-coast split first gathers its coasts from (metres); doubled until
+/// every point's nearest coast lies within it (`nearest_within`).
 pub const NEAREST_REACH_M: f64 = 450_000.0;
 
-fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64) -> Area {
-    if within.is_empty() || to.iter().all(Area::is_empty) {
-        return Area::default();
+fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64, reach: Option<f64>) -> Option<Area> {
+    if within.is_empty() {
+        return Some(Area::default());
     }
-    if than.iter().all(Area::is_empty) {
-        return within.clone();
+    if reach.is_none() {
+        if to.iter().all(Area::is_empty) {
+            return Some(Area::default());
+        }
+        if than.iter().all(Area::is_empty) {
+            return Some(within.clone());
+        }
     }
-    let Some(bb) = within.bbox() else { return Area::default() };
-    // Samples near enough to matter: within `NEAREST_REACH_M` of the area's box, in degrees of
-    // latitude, and of longitude at the box's latitude farthest from the equator (all of them
-    // near a pole).
-    let ry = (NEAREST_REACH_M / 111_320.0 * 1e7) as i64;
+    let Some(bb) = within.bbox() else { return Some(Area::default()) };
+    // With a reach, the samples within it of the area's box, in degrees of latitude, and of
+    // longitude at the box's latitude farthest from the equator (all of them near a pole); a point
+    // is decided only by a sample within 99 % of it (the box's degrees are 111.32 km, a meridian's
+    // degree at least 110.57 km).
+    let r_m = reach.unwrap_or(f64::INFINITY);
+    let ry = (r_m.min(2.1e7) / 111_320.0 * 1e7) as i64;
     let polar = ((bb[1] - ry).abs().max((bb[3] + ry).abs()) as f64 * 1e-7).min(90.0);
     let cos = polar.to_radians().dcos();
-    let rx = if cos < 0.01 { TURN } else { ((NEAREST_REACH_M / (111_320.0 * cos)) * 1e7).min(TURN as f64) as i64 };
-    let near = |q: &Pt| q[0] >= bb[0] - rx && q[0] <= bb[2] + rx && q[1] >= bb[1] - ry && q[1] <= bb[3] + ry;
+    let rx = if cos < 0.01 { TURN } else { ((r_m.min(2.1e7) / (111_320.0 * cos)) * 1e7).min(TURN as f64) as i64 };
+    let near = |q: &Pt| {
+        reach.is_none() || (q[0] >= bb[0] - rx && q[0] <= bb[2] + rx && q[1] >= bb[1] - ry && q[1] <= bb[3] + ry)
+    };
+    let decides = r_m * 0.99;
     let mut samples: Vec<(Pt, bool, usize)> = Vec::new();
     let mut fps: Vec<Fp> = Vec::new();
     let mut coasts: Vec<&Area> = Vec::new();
@@ -915,11 +946,16 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64) -> Area {
             }
         }
     }
-    if !samples.iter().any(|s| !s.1) {
-        return within.clone();
+    if samples.is_empty() {
+        return if reach.is_none() { Some(Area::default()) } else { None };
     }
-    if !samples.iter().any(|s| s.1) {
-        return Area::default();
+    if reach.is_none() {
+        if !samples.iter().any(|s| !s.1) {
+            return Some(within.clone());
+        }
+        if !samples.iter().any(|s| s.1) {
+            return Some(Area::default());
+        }
     }
     // A bucket grid of the samples, half-degree cells.
     let cell = 5_000_000i64;
@@ -928,7 +964,7 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64) -> Area {
         grid.entry((q[0].div_euclid(cell), q[1].div_euclid(cell))).or_default().push(k);
     }
     let dist = |a: Pt, b: Pt| -> f64 { length_m(a, b) };
-    let nearest_is_mine = |p: Pt| -> bool {
+    let nearest_is_mine = |p: Pt| -> Option<bool> {
         let (cx, cy) = (p[0].div_euclid(cell), p[1].div_euclid(cell));
         // (Ties to the smaller sample point, so the split and its complement agree.)
         let mut best = (f64::MAX, [i64::MAX, i64::MAX], true, usize::MAX);
@@ -966,7 +1002,7 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64) -> Area {
             let reach = (r + 1) * cell;
             let coslat = cos_at(p[1] - reach).min(cos_at(p[1] + reach));
             if best.0 < (r as f64) * 55_000.0 * coslat * 0.95 || r > 400 {
-                return best.2;
+                return (best.0 <= decides).then_some(best.2);
             }
             r += 1;
         }
@@ -986,7 +1022,7 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64) -> Area {
         let mut run: Option<i64> = None;
         while x < bb[2] {
             let x1 = x + dx;
-            let mine = nearest_is_mine([(x + x1) / 2, mid]);
+            let mine = nearest_is_mine([(x + x1) / 2, mid])?;
             match (mine, run) {
                 (true, None) => run = Some(x),
                 (false, Some(x0)) => {
@@ -1002,7 +1038,7 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64) -> Area {
         }
         y = y1;
     }
-    within.intersect(&union_contours(rects))
+    Some(within.intersect(&union_contours(rects)))
 }
 
 /// A ring's points with none more than `step` metres apart.

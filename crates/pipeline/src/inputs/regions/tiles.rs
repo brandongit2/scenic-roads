@@ -7,7 +7,8 @@
 //!   polygon operation on the whole), then each cell's rings made an area.
 //! - Each expression is evaluated cell by cell: a union, difference or intersection of the parts'
 //!   pieces in the cell; a buffer of the pieces in the cells within its distance; a nearest-coast
-//!   split of the cell's piece against the coasts in the cells within 4° (the grid it decides on is
+//!   split of the cell's piece against the coasts in the cells within 450 km, the reach doubled until
+//!   every point's nearest coast lies within it (the grid it decides on is
 //!   anchored at 0°, 0°, so neighbouring cells' splits meet); a cut by its line.
 //! - A region's land is its outline cut back to the coastline's land (the cell's), less the lakes
 //!   over 100 km²; its water the `water` parts less the coastline's land and every region without
@@ -413,8 +414,20 @@ fn bb_box(c: Cell) -> [i64; 4] {
     cell_box(c)
 }
 
-/// The nearest-coast split's reach: coasts farther than this from a cell don't decide it.
+/// The nearest-coast split's first reach: doubled while a point's nearest coast lies past it.
 const NEAREST_REACH_M: f64 = geom::NEAREST_REACH_M;
+
+/// The columns and rows of cells holding everything within `m` metres of cell `c` (no polar cap:
+/// near a pole, every column).
+fn nearest_reach(c: Cell, m: f64) -> (i64, i64) {
+    let lat_m = CELL as f64 * 1e-7 * 110_574.0;
+    let dy = ((m / lat_m).ceil() as i64).min(90);
+    let edge = ((c.1 + 1 + dy).abs().max((c.1 - dy).abs()) * CELL) as f64 * 1e-7;
+    let cos = edge.min(90.0).to_radians().cos();
+    let dx =
+        if cos < 1e-6 { COLS / 2 } else { ((m / (CELL as f64 * 1e-7 * 111_320.0 * cos)).ceil() as i64).min(COLS / 2) };
+    (dx, dy)
+}
 
 fn eval(p: &Part, c: Cell, env: &Env, r: &Region, path: &str) -> Result<Area, Problem> {
     let bb = geom::box_area(cell_box(c));
@@ -504,12 +517,25 @@ fn eval(p: &Part, c: Cell, env: &Env, r: &Region, path: &str) -> Result<Area, Pr
                 return Ok(a);
             }
             let _t = Timed::new(&NEARESTS);
-            let (dx, dy) = reach(c, NEAREST_REACH_M);
-            let gather = |ps: &[Part]| -> Result<Vec<Area>, Problem> {
-                ps.iter().map(|q| around(q, c, dx, dy, env, r, path)).collect::<Result<Vec<_>, _>>()
-            };
-            let (ta, tb) = (gather(to)?, gather(than)?);
-            geom::nearest(&a, &ta, &tb, *step_m)
+            // (The coasts in the cells within the reach, the reach doubled until each point's
+            // nearest coast lies within it: a coast farther off is never passed over.)
+            let mut m = NEAREST_REACH_M;
+            loop {
+                let (dx, dy) = nearest_reach(c, m);
+                let gather = |ps: &[Part]| -> Result<Vec<Area>, Problem> {
+                    ps.iter().map(|q| around(q, c, dx, dy, env, r, path)).collect::<Result<Vec<_>, _>>()
+                };
+                let (ta, tb) = (gather(to)?, gather(than)?);
+                if dx >= COLS / 2 && dy >= 89 {
+                    // (Every cell gathered: the whole Earth's coasts.)
+                    break geom::nearest(&a, &ta, &tb, *step_m);
+                }
+                // (The cells gathered hold every coast within `m` of the cell.)
+                if let Some(x) = geom::nearest_within(&a, &ta, &tb, *step_m, m) {
+                    break x;
+                }
+                m *= 2.0;
+            }
         }
         Part::Cut { of, line, left } => {
             let a = eval(of, c, env, r, path)?;
