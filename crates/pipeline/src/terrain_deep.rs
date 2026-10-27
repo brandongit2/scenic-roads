@@ -1335,7 +1335,7 @@ fn make_tiles(
         return Ok(rep);
     }
     let bf = BaseFetch::new(fetch);
-    // (A stored file read at a fine level from this Mac's whole copy: crate::localread.)
+    // (A stored file read mostly over the z8 box from this Mac's whole copy: crate::localread.)
     let local = crate::localread::Local::from_env(store.root());
     let o = Opts {
         fetch: &bf,

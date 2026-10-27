@@ -2,7 +2,7 @@
 //! the basemap (`layers/basemap/world-<date>.<hash>.pmtiles`, the depth's, the terrain's, the lakes'
 //! and the water's water), the depth sources' packs (`sources/fetched/<id>/<z6 tile>.<hash>.tar`),
 //! and the stored elevation datasets' GeoTIFFs (`sources/fetched/<id>/<name>.tif`, task #689:
-//! crate::dem::generic::stored) a terrain job reads at a level holding a large share of the file.
+//! crate::dem::generic::stored) a terrain job reads half or more of (crate::dem::generic::COPY_SHARE).
 //! A random 64 KB read of the NAS waits ~40 ms on its disks' seeks, the Mac's own SSD's 0.2 ms: a
 //! file read in thousands of ranges is copied once, whole, in one sequential read, and read here.
 //!

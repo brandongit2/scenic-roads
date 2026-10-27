@@ -50,7 +50,7 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
     (`chm10/`), raw terrain tiles and archive copies (`aws-terrarium/`),
     copies of record files staging reads (`blobs/`: hi packs, roadside buildings' z8 tiles; with the
     basemap and the depth sources' packs the depth's and water's steps read, and the stored GLO-30 tiles
-    and fill masks a terrain job reads finely, task #689: pipeline::localread), pageview month indexes (`items/months/`).
+    and fill masks a terrain job reads half or more of, task #689: pipeline::localread), pageview month indexes (`items/months/`).
   - **Cleared too, on the owner's ask:** the pack cache (`base/`, the base packs' way indexes for
     pack(T) and lo), the
     retired caches, local copies the summits and peaks jobs

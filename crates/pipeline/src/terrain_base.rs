@@ -12,7 +12,7 @@
 //!
 //! A Terrarium pyramid's tiles are read through `RawTiles` (this Mac's cache, the NAS's archives,
 //! else AWS: crate::terrain_pack), not fetched by the sampler; every other file as the roads read
-//! them (the store, `sources/fetched/`, for a stored dataset, a file read at a fine level copied
+//! them (the store, `sources/fetched/`, for a stored dataset, a file the job reads half or more of copied
 //! whole to this Mac first where it has room: crate::localread; else the network).
 
 use crate::dem::declared::{Plan, Source};
@@ -89,7 +89,7 @@ pub struct Pool {
     pub store: store::nasfs::NasPath,
     /// The area (west, south, east, north): its middle latitude sets the detail each level reads.
     pub area: [f64; 4],
-    /// This Mac's whole copies of the stores' files read at a fine level (crate::localread:
+    /// This Mac's whole copies of the stores' files the area's jobs read much of (crate::localread:
     /// crate::dem::generic::COPY_SHARE); None, the NAS's read in place.
     pub local: Option<crate::localread::Local>,
 }
