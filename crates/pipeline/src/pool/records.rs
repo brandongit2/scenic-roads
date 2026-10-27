@@ -720,7 +720,11 @@ mod tests {
         };
         let (manifest, before) = (r.manifest.clone(), r.keys.clone());
         let k = journal::write(&nas, &redo(5)).unwrap();
+        let (ts, marks) = (["6-1-1".to_string()], crate::agent::redo::marks(&r, "unit", &["6-1-1".to_string()]));
         let m = merge(&nas, &mut r, std::slice::from_ref(&k), &check);
+        // (#789: what `scenic redo --run` follows: the redo's lease is the target's mark now.)
+        assert_ne!(crate::agent::redo::marks(&r, "unit", &ts), marks);
+        assert_eq!(r.last["unit"]["6-1-1"], LeaseId { term: 3, n: 5 });
         assert!(m.refused.is_empty() && m.applied == [k], "{:?}", m.refused);
         assert_eq!(r.keys.unit.get("6-1-1"), None);
         assert_eq!(r.keys.unit.get("6-1-2").map(String::as_str), Some("k2"), "the other target's kept");

@@ -1637,7 +1637,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   offers the targets again under the keys it has; what reads their outputs follows by content
   (slope-hi's key names the terrain hi pack's content, the assemblies' keys their z6 tiles'
   mids), and the old files leave the manifest as the new ones replace them, for GC (§7.3, 14
-  days). The command then follows the records until the keys are gone (15 minutes at most). A
+  days). The command then follows the newest records until the redo's merge lands in them (each target's last merged lease, `Records::last`, differs from what it was before the ask; not until the keys are gone: the plan rebuilds the targets as the merge lands, and a rebuilt one has its key again within minutes), 15 minutes at most; a longer wait fails with that said. A
   lead on an app from before `scenic redo` answers the post with an error: the command says so
   and asks nothing. An entry of a redo merged by such a lead (a takeover replaying the journal)
   clears nothing (that app records `<step> <target>` under the lo keys, as an unknown step's): the

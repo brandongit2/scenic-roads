@@ -76,6 +76,44 @@ pub fn clears<'a>(keys: &'a super::build::Keys, step: &str, targets: &'a [String
     targets.iter().map(|t| (t.as_str(), keys.recorded(step, t))).collect()
 }
 
+/// The lease of the last done record merged for each of `step`'s `targets` in `rec` (None: none):
+/// a redo's merge sets it (`Records::apply`, `slots`), and so does a build's, so it changes when the
+/// redo lands and stays changed when the build that follows records the key again.
+pub fn marks(
+    rec: &crate::pool::records::Records,
+    step: &str,
+    targets: &[String],
+) -> Vec<Option<crate::pool::journal::LeaseId>> {
+    targets.iter().map(|t| rec.last.get(step).and_then(|m| m.get(t)).copied()).collect()
+}
+
+/// Waits until `read` gives records whose marks for `step`'s `targets` all differ from `before`
+/// (the redo's merge landed in them), at most `wait`, reading every `every`. An unreadable record
+/// is told to `warn` and read again. Whether it landed. Not by whether the keys are gone: the plan
+/// offers the targets as the merge lands, and a rebuilt one has its key again within minutes.
+pub fn follow(
+    read: &mut dyn FnMut() -> Result<crate::pool::records::Records>,
+    step: &str,
+    targets: &[String],
+    before: &[Option<crate::pool::journal::LeaseId>],
+    wait: std::time::Duration,
+    every: std::time::Duration,
+    warn: &mut dyn FnMut(&anyhow::Error),
+) -> bool {
+    let t = std::time::Instant::now();
+    loop {
+        match read() {
+            Ok(rec) if marks(&rec, step, targets).iter().zip(before).all(|(now, was)| now != was) => return true,
+            Ok(_) => {}
+            Err(e) => warn(&e),
+        }
+        if t.elapsed() >= wait {
+            return false;
+        }
+        std::thread::sleep(every);
+    }
+}
+
 /// The asks in the lead agent's folder `home`, in the order taken; none when there's no file. An
 /// error when it can't be read or parsed (the asks kept, not dropped).
 pub fn pending(home: &Path) -> Result<Vec<Ask>> {
@@ -158,4 +196,70 @@ pub fn said(
     }
     out.push(format!("{n} of {} target{} to clear", targets.len(), if targets.len() == 1 { "" } else { "s" }));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pool::{journal::LeaseId, records::Records};
+    use std::time::Duration;
+
+    /// Task #789: the follow-up of `--run` returns as soon as the redo's merge lands in the records,
+    /// also when the targets were built again, keys recorded, before it read (the owner's first run,
+    /// 26 Oct: the lead merged in 10 s and rebuilt the tiles within minutes, and the command, waiting
+    /// for the keys to be gone, ran out its 15 minutes); and says no when none landed.
+    #[test]
+    fn the_follow_up_sees_the_merge_land_though_the_keys_are_back() {
+        let ts = vec!["6/1/1".to_string(), "6/1/2".to_string()];
+        let lease = |n| LeaseId { term: 3, n };
+        let mut r = Records { term: 3, ..Default::default() };
+        for t in &ts {
+            r.keys.record("terrain-hi", &[(t.clone(), "k".into())]);
+            r.last.entry("terrain-hi".into()).or_default().insert(t.clone(), lease(1));
+        }
+        let before = marks(&r, "terrain-hi", &ts);
+        let (wait, every) = (Duration::from_millis(50), Duration::from_millis(1));
+        let fixed = |r: &Records| {
+            let r = r.clone();
+            move || Ok(r.clone())
+        };
+        assert!(!follow(&mut fixed(&r), "terrain-hi", &ts, &before, wait, every, &mut |_| {}), "nothing merged yet");
+        // The redo merges (keys forgotten), then the plan builds each target again (key back).
+        let mut reads = 0;
+        let mut read = || {
+            reads += 1;
+            let mut x = r.clone();
+            let done: Vec<_> = ts.iter().map(|t| (done_target("terrain-hi", t), String::new())).collect();
+            if reads >= 2 {
+                x.keys.record(STEP, &done);
+                for t in &ts {
+                    x.last.get_mut("terrain-hi").unwrap().insert(t.clone(), lease(5));
+                }
+            }
+            if reads >= 3 {
+                for t in &ts {
+                    x.keys.record("terrain-hi", &[(t.clone(), "k".into())]);
+                    x.last.get_mut("terrain-hi").unwrap().insert(t.clone(), lease(9));
+                }
+            }
+            if reads == 1 {
+                Err(anyhow::anyhow!("not readable now"))
+            } else {
+                Ok(x)
+            }
+        };
+        let mut warned = 0;
+        assert!(follow(&mut read, "terrain-hi", &ts, &before, Duration::from_secs(5), every, &mut |_| warned += 1));
+        assert_eq!((reads, warned), (2, 1), "returned at the first read holding the merge");
+        // Only one of two targets changed: not yet.
+        let mut part = r.clone();
+        part.last.get_mut("terrain-hi").unwrap().insert("6/1/1".into(), lease(5));
+        assert!(!follow(&mut fixed(&part), "terrain-hi", &ts, &before, wait, every, &mut |_| {}));
+        // Rebuilt before the first read: the keys are back, the marks changed.
+        let mut built = r.clone();
+        for t in &ts {
+            built.last.get_mut("terrain-hi").unwrap().insert(t.clone(), lease(9));
+        }
+        assert!(follow(&mut fixed(&built), "terrain-hi", &ts, &before, wait, every, &mut |_| {}));
+    }
 }

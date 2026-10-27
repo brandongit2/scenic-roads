@@ -1324,14 +1324,14 @@ fn job_cancel(target: &str, step: Option<&str>, rerun_after_update: bool, home: 
 }
 
 /// `scenic redo <step> <target>… [--run]` (pipeline::agent::redo): what the newest records hold for
-/// the targets; with --run, an ask of the lead's coordinator (`/work/redo`), followed until the
-/// records no longer hold them.
+/// the targets; with --run, an ask of the lead's coordinator (`/work/redo`), followed until its merge
+/// lands in the records.
 fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> Result<()> {
     use pipeline::agent::redo;
     use pipeline::pool::{records::Records, term};
     let (step, targets) = redo::checked(step, targets)?;
     let r = root(root_, false)?;
-    let records = || -> Result<Records> {
+    let mut records = || -> Result<Records> {
         let cur = term::current(&r).context("the current term")?;
         Records::newest(&r, cur.term, true)?.context("no records")
     };
@@ -1339,14 +1339,11 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
     for l in redo::said(&rec.keys, &rec.manifest, &step, &targets) {
         println!("{l}");
     }
-    let left = |rec: &Records| -> Vec<String> {
-        redo::clears(&rec.keys, &step, &targets)
-            .into_iter()
-            .filter(|(_, k)| k.is_some())
-            .map(|(t, _)| t.to_string())
-            .collect()
-    };
-    let todo = left(&rec);
+    let todo: Vec<String> = redo::clears(&rec.keys, &step, &targets)
+        .into_iter()
+        .filter(|(_, k)| k.is_some())
+        .map(|(t, _)| t.to_string())
+        .collect();
     if todo.is_empty() {
         println!("nothing to clear");
         return Ok(());
@@ -1364,19 +1361,21 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
         "the lead's coordinator answered {code} ({v}): a lead on an app from before `scenic redo` can't take it; nothing asked"
     );
     println!("asked the lead (redo {}); its job clears them, merged within minutes", v["n"]);
-    let t = std::time::Instant::now();
-    while t.elapsed() < std::time::Duration::from_secs(15 * 60) {
-        std::thread::sleep(std::time::Duration::from_secs(15));
-        match records() {
-            Ok(rec) if left(&rec).is_empty() => {
-                println!("cleared: the plan offers the {} target(s) again", todo.len());
-                return Ok(());
-            }
-            Ok(_) => {}
-            Err(e) => eprintln!("the records can't be read now: {e:#}"),
-        }
+    let before = redo::marks(&rec, &step, &todo);
+    let landed = redo::follow(
+        &mut records,
+        &step,
+        &todo,
+        &before,
+        std::time::Duration::from_secs(15 * 60),
+        std::time::Duration::from_secs(15),
+        &mut |e| eprintln!("the records can't be read now: {e:#}"),
+    );
+    if landed {
+        println!("merged: the plan offers the {} target(s) again, as it builds them (`scenic status`)", todo.len());
+        return Ok(());
     }
-    bail!("not merged in 15 minutes: `scenic status` shows its job; a lead that changed meanwhile may have lost the ask (`scenic redo {step} …` says what's still recorded; ask again)")
+    bail!("the redo wasn't merged into the records in 15 minutes: `scenic status` shows its job; a lead that changed meanwhile may have lost the ask (ask again: `scenic redo {step} {} --run`)", todo.join(" "))
 }
 
 fn main() -> Result<()> {
