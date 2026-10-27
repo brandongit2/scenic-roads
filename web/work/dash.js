@@ -395,7 +395,14 @@ function askToCome(m) {
   toCome.asking = true;
   const lead = (last?.macs || []).find((x) => x.host === m.a.host);
   // (A member's agent answers `making`, no `at`: it made no forecast, so the lead is asked.)
-  ctx.call("/work/tocome", {}).catch(() => [0, null]).then(([code, v]) => (code === 200 && v && v.at === m.fc?.at ? v : lead ? remote(lead, toCome.st, {}, "/work/tocome") : null))
+  // (The lead's answer, its `after` as the lead wrote it (`raw`), is given to this Mac's own agent to
+  // renumber into this page's history: its `epoch` and `after` come back.)
+  const fromLead = () => remote(lead, toCome.st, { raw: true }, "/work/tocome").then(async (v) => {
+    if (!v?.after) return v;
+    const [code, r] = await ctx.call("/work/tocome", { renumber: { by: v.by, after: v.after } }).catch(() => [0, null]);
+    return { ...v, epoch: code === 200 ? r?.epoch ?? null : null, after: code === 200 && r?.epoch != null ? r.after : [] };
+  });
+  ctx.call("/work/tocome", {}).catch(() => [0, null]).then(([code, v]) => (code === 200 && v && v.at === m.fc?.at ? v : lead ? fromLead() : null))
     .catch(() => null)
     .then((v) => { toCome = { ...toCome, key, ans: toCome.lead === m.a.host ? v : null, asking: false }; render(); });
 }

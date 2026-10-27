@@ -4217,16 +4217,34 @@ fn route(
             // With the history's `epoch`, the numbering its `after` is in: the page's history's,
             // a pageview's (its `after` renumbered there from this coordinator's, as this
             // member wrote them: crate::agent::pageview) when it serves the page.
+            // `{"raw": true}` (a member's page asking the lead): `after` as this coordinator wrote
+            // it, with `by`, the member name its numbers are under; the page gives them to its own
+            // Mac's pageview as `{"renumber": {"by", "after"}}`, answered `{epoch, after}` in that
+            // pageview's numbering (`epoch` null when it can't).
+            let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
             let (tc, epoch, pv, member) = {
                 let s = shared.lock().unwrap();
                 let pv = s.pageview.clone().filter(|p| p.active());
                 (s.tocome.clone(), format!("coordinator {}", s.lead_name), pv, s.pool_member.clone())
             };
+            if let Some(r) = b.get("renumber") {
+                let by = r["by"].as_str().unwrap_or("");
+                let after: Vec<Vec<u64>> = serde_json::from_value(r["after"].clone()).unwrap_or_default();
+                return Ok(match pv.and_then(|p| p.renumber(by, &after)) {
+                    Some((e, after)) => (200, serde_json::json!({ "epoch": e, "after": after })),
+                    None => (200, serde_json::json!({ "epoch": null })),
+                });
+            }
+            let raw = b["raw"].as_bool() == Some(true);
             Ok(tc.map_or_else(
                 || making("this Mac has made no forecast yet"),
                 |t| {
                     let mut a = t.answer();
                     let (epoch, after) = match &pv {
+                        _ if raw => {
+                            a["by"] = member.into();
+                            (Some(epoch), None)
+                        }
                         None => (Some(epoch), None),
                         Some(p) => match member.as_deref().and_then(|m| p.renumber(m, &t.runs.after)) {
                             Some((e, after)) => (Some(e), Some(after)),
@@ -10291,6 +10309,70 @@ mod tests {
         // The history's epoch its `after` is numbered in, the status's.
         assert!(a["epoch"].as_str().unwrap().starts_with("coordinator "), "{a}");
         assert_eq!(a["after"], serde_json::json!([]));
+    }
+
+    /// A member's page (docs/pool.md §10, To come): the lead answers `raw` with `after` as it wrote
+    /// it and `by`, and the member's own pageview renumbers it in its numbering, with its epoch;
+    /// a number it hasn't taken in is dropped, and with no history read, no epoch.
+    #[test]
+    fn a_members_page_has_the_leads_after_renumbered_by_its_own_pageview() {
+        let (d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let post = |b: serde_json::Value| {
+            let r =
+                raw(&addr, "POST", "/work/tocome", &[("Content-Type", "application/json")], b.to_string().as_bytes());
+            serde_json::from_str::<serde_json::Value>(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+        };
+        // The lead's answer, raw: its numbers and the name they're under.
+        c.set_member(Some("m-lead"));
+        let mut tc = crate::agent::forecast::ToCome::default();
+        tc.runs.after = vec![vec![40], vec![7]];
+        c.set_tocome(Arc::new(tc));
+        let a = post(serde_json::json!({ "raw": true }));
+        assert_eq!(
+            (a["by"].as_str(), a["epoch"].as_str().map(|e| e.starts_with("coordinator "))),
+            (Some("m-lead"), Some(true))
+        );
+        assert_eq!(a["after"], serde_json::json!([[40], [7]]));
+        // This Mac's pageview, before it has read anything: no numbering.
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(&root).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let pv = crate::agent::pageview::PageView::new();
+        pv.set_inputs(crate::agent::pageview::Inputs {
+            root: Some(nas.clone()),
+            term: 7,
+            members: vec!["m-lead".into()],
+            ..Default::default()
+        });
+        pv.touch();
+        c.set_pageview(pv.clone());
+        let ask = || post(serde_json::json!({ "renumber": { "by": "m-lead", "after": [[40], [7], []] } }));
+        assert!(ask()["epoch"].is_null());
+        // After it read the lead's history, where job 40 is numbered anew.
+        let now = unix_now();
+        let day = crate::pool::journal::day(now).unwrap();
+        let put = |p: &str, b: &[u8]| {
+            let p = nas.join(p);
+            p.parent().unwrap().create_dir_all().unwrap();
+            p.write(b).unwrap();
+        };
+        put("state/status.json", br#"{"host":"m4","beat":1,"forecast":null,"helpers":[]}"#);
+        let done = crate::coord::history::Event {
+            seq: 40,
+            t: now - 15,
+            step: Some("unit".into()),
+            targets: vec!["6/1/1".into()],
+            ..crate::coord::history::Event::new("done")
+        };
+        let ev = serde_json::to_string(&done).unwrap() + "\n";
+        put(&format!("state/coord/history/{day}/m-lead.jsonl"), ev.as_bytes());
+        assert!(pv.tick(&crate::agent::pageview::NasFiles(nas.clone()), now));
+        let a = ask();
+        let n = pv.history(0, 10).unwrap()["events"][0]["seq"].as_u64().unwrap();
+        assert_ne!(n, 40);
+        assert_eq!(a["after"], serde_json::json!([[n], [], []]));
+        assert_eq!(a["epoch"], pv.history(0, 10).unwrap()["epoch"]);
     }
 
     /// Tasks brokered by every member (docs/pool.md §8): a page from another member's address takes
