@@ -60,7 +60,7 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   file an accepted inputs' index it names lists: replaced or dropped since) leaves the pending
   unchecked, its file then kept only as any other is (a catalogue of the window,
   the records, an entry not merged, or its age); then every one it reads is hashed on the NAS over
-  SSH (`out::verify`, 200 a call, each call's result saved and a safe point after it, so a run
+  SSH (`out::verify`, 200 a call, each call held to a deadline of 3 minutes and a second per 16 MB it hashes: past it the call is stopped (SIGTERM, SIGKILL 10 s later) and the run ends there, said in GC's warnings, the rest left to the next daily run; each call's result saved and a safe point after it, so a run
   stopped midway keeps what it checked; the bytes hashed count as the job's NAS reads, its weight).
   A match leaves the pending; a file that doesn't match or isn't there stays pending, nothing
   removed, and the job's warnings name it (its target is done under its key, so nothing builds it

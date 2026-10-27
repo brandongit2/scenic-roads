@@ -727,11 +727,74 @@ impl Out {
     }
 }
 
+/// How long one hashing call (`verify`) may take: three minutes (the call's own authentication, and a
+/// NAS busy with others' reads), and a second for each 16 MB it hashes (the NAS's disks and CPU
+/// give far more; this is the rate it would have to fall below to be stopped). Its floor and
+/// grace are short in a test.
+pub fn verify_deadline(bytes: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(if cfg!(test) { 1 } else { 180 } + (bytes >> 24))
+}
+
+/// How long a call past its deadline has to end after SIGTERM before it's killed.
+const VERIFY_GRACE: std::time::Duration =
+    if cfg!(test) { std::time::Duration::from_millis(300) } else { std::time::Duration::from_secs(10) };
+
+/// `store::spawn::output` held to `deadline`: past it the child (and the group it leads) gets
+/// SIGTERM, and SIGKILL when it hasn't ended `grace` later; the error is `TimedOut`. Nothing else is
+/// signalled: its group is its own.
+fn output_within(
+    cmd: &mut std::process::Command,
+    deadline: std::time::Duration,
+    grace: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    use std::process::Stdio;
+    crate::sys::own_group(cmd);
+    let mut child = store::spawn::spawn(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()))?;
+    let pgid = child.id() as i32;
+    let drain = |r: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut b = Vec::new();
+            if let Some(mut r) = r {
+                r.read_to_end(&mut b).ok();
+            }
+            b
+        })
+    };
+    let o = drain(child.stdout.take().map(|r| Box::new(r) as _));
+    let e = drain(child.stderr.take().map(|r| Box::new(r) as _));
+    let t = std::time::Instant::now();
+    let mut stopped = false;
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if !stopped && t.elapsed() > deadline {
+            stopped = true;
+            crate::sys::signal_group(pgid, crate::sys::Signal::Term);
+        } else if stopped && t.elapsed() > deadline + grace {
+            crate::sys::signal_group(pgid, crate::sys::Signal::Kill);
+            child.kill().ok();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let (stdout, stderr) = (o.join().unwrap_or_default(), e.join().unwrap_or_default());
+    if stopped {
+        return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "stopped past its deadline"));
+    }
+    Ok(std::process::Output { status, stdout, stderr })
+}
+
 /// Checks unverified uploads `uploads` (content name → SHA-256) on the NAS itself: SHA-256 computed
 /// there over SSH (`ssh` runs a command on the NAS; `nas_root` is the project folder as the NAS sees
 /// it). The names that match, and those that don't or aren't there; nothing is removed or written
 /// (GC's job takes the matching ones out of the records' pending: crate::agent::gc::verify_pending).
-pub fn verify(ssh: &[&str], nas_root: &str, uploads: &BTreeMap<String, String>) -> Result<(Vec<String>, Vec<String>)> {
+pub fn verify(
+    ssh: &[&str],
+    nas_root: &str,
+    uploads: &BTreeMap<String, String>,
+    bytes: u64,
+) -> Result<(Vec<String>, Vec<String>)> {
     if uploads.is_empty() {
         return Ok(Default::default());
     }
@@ -744,7 +807,17 @@ pub fn verify(ssh: &[&str], nas_root: &str, uploads: &BTreeMap<String, String>) 
     let quoted: Vec<String> = uploads.keys().map(|n| format!("'{}'", n.replace('\'', "'\\''"))).collect();
     // (A file not there: sha256sum says so on stderr and goes on; it's among those that don't match.)
     cmd.arg(format!("cd '{nas_root}' && {{ sha256sum {} 2>/dev/null; true; }}", quoted.join(" ")));
-    let out = store::spawn::output(&mut cmd).context("ssh to the NAS")?;
+    // (The call itself bounded too: its authentication, outside the probe's, may stall on the SSH
+    // agent again, and a `sha256sum` on the NAS may hang; past `verify_deadline` it is stopped.)
+    let deadline = verify_deadline(bytes);
+    let out = output_within(&mut cmd, deadline, VERIFY_GRACE).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            anyhow::Error::new(e)
+                .context(format!("ssh to the NAS hashing {bytes} bytes: over {} s", deadline.as_secs()))
+        } else {
+            anyhow::Error::new(e).context("ssh to the NAS")
+        }
+    })?;
     anyhow::ensure!(out.status.success(), "ssh to the NAS: {}", String::from_utf8_lossy(&out.stderr).trim());
     let text = String::from_utf8_lossy(&out.stdout);
     let got: BTreeMap<&str, &str> = text.lines().filter_map(|l| l.split_once("  ")).map(|(h, n)| (n, h)).collect();

@@ -284,6 +284,9 @@ pub struct Verified {
     pub bad: Vec<String>,
     /// The bytes hashed (a dry run: it would hash), by the records' sizes, else the files'.
     pub bytes: u64,
+    /// Why the run ended before the last batch: a call that stalled past its deadline and was
+    /// stopped (the batches before it are saved; the next daily run takes up the rest).
+    pub stalled: Option<String>,
 }
 
 /// How many uploads one `ssh` hashes (its command line's length, and the safe points between).
@@ -323,10 +326,23 @@ pub fn verify_pending(
     let mut out = crate::out::Out::open(root, scratch, STEP)?;
     for chunk in todo.chunks(VERIFY_CHUNK) {
         let batch: BTreeMap<String, String> = chunk.iter().map(|(c, h)| ((*c).clone(), (*h).clone())).collect();
-        let (ok, bad) = crate::out::verify(ssh, nas_root, &batch)?;
+        let n = bytes(chunk);
+        let (ok, bad) = match crate::out::verify(ssh, nas_root, &batch, n) {
+            Ok(r) => r,
+            // (Stopped past its deadline: what the batches before it checked is saved already; the
+            // rest stays pending for the next run.)
+            Err(e)
+                if e.chain().any(|c| {
+                    c.downcast_ref::<std::io::Error>().is_some_and(|i| i.kind() == std::io::ErrorKind::TimedOut)
+                }) =>
+            {
+                v.stalled = Some(format!("{e:#}"));
+                break;
+            }
+            Err(e) => return Err(e),
+        };
         // (The NAS read them to hash them: its weight counts them as read, crate::budget::nas, so
         // the clean-up waits for a quiet NAS and yields by what it really does.)
-        let n = bytes(chunk);
         store::nasio::add(store::nasio::Count::ReadBytes, n);
         v.bytes += n;
         v.ok += ok.len();
@@ -663,6 +679,11 @@ pub fn run(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool, depth: O
             match verify_pending(root, &scratch, &ssh, &nas_root, dry_run) {
                 Ok(v) => {
                     (rep.pending_verified, rep.pending_verify_bytes, rep.pending_failed) = (v.ok, v.bytes, v.bad.len());
+                    if let Some(why) = &v.stalled {
+                        rep.warnings.push(format!(
+                            "uploads' verification stopped: {why} (the batches before it are saved; the next run takes up the rest)"
+                        ));
+                    }
                     if let Some(first) = v.bad.first() {
                         rep.warnings.push(format!(
                             "{} uploads don't match their SHA-256 on the NAS, or aren't there (left pending; `scenic redo` their targets): {first}{}",
@@ -2074,5 +2095,29 @@ mod tests {
         let m: BTreeMap<String, String> =
             serde_json::from_slice(&fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
         assert_eq!(m.len(), 3, "nothing unnamed");
+    }
+
+    /// A hashing call that hangs is stopped at its deadline (that child alone), said in `stalled`;
+    /// the rest stays pending.
+    #[test]
+    fn verify_pending_stops_a_hung_call_and_keeps_the_rest() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        fs::create_dir_all(root.join("base")).unwrap();
+        let name = "base/6-1-1.1111111111111111.sect";
+        fs::write(root.join("state/build/manifest.json"), serde_json::json!({"base/6-1-1": name}).to_string()).unwrap();
+        let ppath = root.join("state/build/pending.json");
+        let pending = serde_json::json!({name: "00"});
+        fs::write(&ppath, pending.to_string()).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        // (The probe, `true`, answers; the hashing call sleeps: exec, so the PID signalled is the sleeper's.)
+        let hung = ["sh", "-c", "[ \"$1\" = true ] || exec sleep 300", "sh"];
+        let t = std::time::Instant::now();
+        let v = verify_pending(&nas, &d.path().join("s"), &hung, root.to_str().unwrap(), false).unwrap();
+        store::testkit::ended_before(t, Duration::from_secs(300), "the hung call ends at its deadline");
+        assert_eq!(v.ok, 0);
+        assert!(v.stalled.as_deref().is_some_and(|s| s.contains("over 1 s")), "{:?}", v.stalled);
+        assert_eq!(fs::read_to_string(&ppath).unwrap(), pending.to_string(), "still pending");
     }
 }
