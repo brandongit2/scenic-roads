@@ -8816,8 +8816,9 @@ pub(crate) mod tests {
         assert_eq!(w.len(), 25 + 36 + 64 + 100);
     }
 
-    /// A z6 tile under a z14 grid reads every zoom to z14, each zoom's tiles and ring once: ~90k
-    /// tiles, listed without a scan per tile (the plan lists them for every such tile each round).
+    /// A z6 tile under a z14 grid reads z14 alone of the fine zooms (its grid's: z9–13 are the
+    /// means of it, task #804), its tiles and ring once: ~67k tiles, listed without a scan per tile
+    /// (the plan lists them for every such tile each round).
     #[test]
     fn a_depth_tiles_water_to_z14_is_listed_once_each() {
         let mut src = depth_sources().remove(1);
@@ -8826,7 +8827,7 @@ pub(crate) mod tests {
         let t0 = std::time::Instant::now();
         let w = depth_hi_water(&[src], (28, 16));
         eprintln!("depth_hi_water to z14: {} tiles in {:?}", w.len(), t0.elapsed());
-        let ring: usize = (9..=14).map(|z| ((1usize << (z - 6)) + 2).pow(2)).sum();
+        let ring: usize = ((1usize << (14 - 6)) + 2).pow(2);
         assert_eq!(w.len(), 25 + 36 + 64 + ring);
     }
 
