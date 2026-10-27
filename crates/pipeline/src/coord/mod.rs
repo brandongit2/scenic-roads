@@ -4214,15 +4214,28 @@ fn route(
             // the build page's map's queue, asked once a forecast.
             // None made (a member's, or the lead's before its first): 200 with why (`making`), not
             // an error: the page asks the lead, or waits.
-            // With the history's `epoch`, the numbering its `after` is in.
-            let (tc, epoch) = {
+            // With the history's `epoch`, the numbering its `after` is in: the page's history's,
+            // a pageview's (its `after` renumbered there from this coordinator's, as this
+            // member wrote them: crate::agent::pageview) when it serves the page.
+            let (tc, epoch, pv, member) = {
                 let s = shared.lock().unwrap();
-                (s.tocome.clone(), format!("coordinator {}", s.lead_name))
+                let pv = s.pageview.clone().filter(|p| p.active());
+                (s.tocome.clone(), format!("coordinator {}", s.lead_name), pv, s.pool_member.clone())
             };
             Ok(tc.map_or_else(
                 || making("this Mac has made no forecast yet"),
                 |t| {
                     let mut a = t.answer();
+                    let (epoch, after) = match &pv {
+                        None => (Some(epoch), None),
+                        Some(p) => match member.as_deref().and_then(|m| p.renumber(m, &t.runs.after)) {
+                            Some((e, after)) => (Some(e), Some(after)),
+                            None => (None, Some(Vec::new())),
+                        },
+                    };
+                    if let Some(after) = after {
+                        a["after"] = serde_json::json!(after);
+                    }
                     a["epoch"] = epoch.into();
                     (200, a)
                 },

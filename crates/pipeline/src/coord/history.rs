@@ -465,7 +465,7 @@ impl History {
 
 /// Whether `e` is a job's end with targets it finished (a lead's "end", a worker's "done"; one
 /// that failed names those it finished first).
-fn finished(e: &Event) -> bool {
+pub(crate) fn finished(e: &Event) -> bool {
     matches!(e.kind.as_str(), "end" | "done") && !e.targets.is_empty()
 }
 

@@ -1309,7 +1309,8 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   read on the loop, and this Mac's lanes worked out only while a page asks. Every read is done
   before the pageview's state is locked, and the results swapped in after, so a slow NAS never
   holds up an answer. The history is merged by time, writer and number, and numbered by this Mac
-  as it arrives; the answers carry the numbering's `epoch` (new with each process's first read),
+  as it arrives (a start's or lease's `after`, its writer's numbers, renumbered with it: a job not
+  taken in here dropped; task #797 review); the answers carry the numbering's `epoch` (new with each process's first read),
   and the page starts its cursor again when the epoch changes (the Jobs tab's past jobs are asked further back by `since`, at most 5 000 a time) or `seq` falls below its last event
   ("since you last looked" goes by the events' time, so it outlives a restart). Until its first
   read a Mac answers 503 (never its memory's views: another numbering), and the page says it's
@@ -1413,7 +1414,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   map's queue; and the schedule's runs (`forecast::Runs`, task #787): `runs`, each run's targets,
   the runs numbered as the forecast's `lanes` hold them (the lanes by name in byte order, each
   lane's runs in order), and `deps`, [a, b] when an item of run b waits on one of run a (its own
-  deps, a release's, or a set's it waits on whole), each pair once; and `after` (task #797), for each run (in the runs' order) the history's event numbers of the finished jobs its items waited on (per step the last such job over the run's items, sorted, a few numbers a run: the `WaitsBasis` lookup the forecast's thread already makes for the history's waits, `Waits::by_run`; none for an item new since the last forecast), with the `epoch` they're numbered in (the status's: `coordinator <lead>`). Measured on the 26 Oct 20:15
+  deps, a release's, or a set's it waits on whole), each pair once; and `after` (task #797), for each run (in the runs' order) the history's event numbers of the finished jobs its items waited on (per step the last such job over the run's items, sorted, a few numbers a run: the `WaitsBasis` lookup the forecast's thread already makes for the history's waits, `Waits::by_run`; none for an item new since the last forecast), with the `epoch` they're numbered in: the coordinator's (`coordinator <lead>`, the status's) out of the pool; in it, the lead's pageview's (§10), the numbers renumbered there as it took the lead's history file in (`PageView::renumber`; a job it hasn't taken in, dropped). A member's page reads its own Mac's history (another numbering) and the lead's answer: no arrows from finished jobs there (planned). Measured on the 26 Oct 20:15
   record (31,132 items, 850 runs): `macs` 642 KB, `runs` 366 KB, `deps` 117 KB (12,046 pairs);
   ~275 KB gzipped whole, and sent gzipped to a client that sends `Accept-Encoding: gzip` (the agent gzips every answer of 32 bytes or more except images, event streams, raw bytes (octet-stream, tar, zip) and parts of a file). Another Mac's port answers 200 with `{making: why}` (it made no forecast), or a former lead's its last,
   older one: the page takes its own Mac's answer only when its `at` is the status's forecast's,

@@ -174,6 +174,9 @@ struct State {
     /// taken twice. A week's kept, as the history keeps, and no older than its oldest once over
     /// history::KEEP_MAX.
     taken: std::collections::BTreeSet<(String, u64, u64, String)>,
+    /// Each finished job's number here, by its writer's file and its number there: what a lease's
+    /// or start's `after` and `/work/tocome`'s are written in (task #797 review).
+    numbered: BTreeMap<(String, u64), u64>,
     history: Option<History>,
     /// The history's numbering: made with the first snapshot (a new one each process).
     epoch: String,
@@ -392,15 +395,26 @@ impl PageView {
             st.epoch = format!("view {} {}", std::process::id(), now);
         }
         st.taken.retain(|k| k.1 >= week);
-        let fresh: Vec<Event> = new
+        let fresh: Vec<(String, u64, Event)> = new
             .into_iter()
             .filter(|(t, m, seq, e)| st.taken.insert((m.clone(), *t, *seq, e.kind.clone())))
-            .map(|n| n.3)
+            .map(|n| (n.1, n.2, n.3))
             .collect();
+        let st = &mut *st;
         let h = st.history.get_or_insert_with(|| History::load(None));
-        for e in fresh {
+        for (m, seq, mut e) in fresh {
+            // (What it waited on in this numbering: a job not taken in here, dropped.)
+            e.after = e.after.iter().filter_map(|q| st.numbered.get(&(m.clone(), *q)).copied()).collect();
+            let done = history::finished(&e);
             // (Numbered here: the page's cursor, rising as events arrive.)
-            h.add(e);
+            let n = h.add(e);
+            if done {
+                st.numbered.insert((m, seq), n);
+            }
+        }
+        if st.numbered.len() > history::KEEP_MAX {
+            let from = h.seq().saturating_sub(history::KEEP_MAX as u64);
+            st.numbered.retain(|_, n| *n > from);
         }
         // (What's taken in, as many as the history keeps: those it let go of forgotten.)
         if st.taken.len() > history::KEEP_MAX {
@@ -431,6 +445,16 @@ impl PageView {
     pub fn regions(&self) -> Option<Arc<Value>> {
         self.touch();
         self.state.lock().unwrap().regions.as_ref().map(|r| r.1.clone())
+    }
+
+    /// `seqs` (lists of the history's numbers as `member` wrote them: `/work/tocome`'s `after`) in
+    /// this Mac's numbering, those not taken in here dropped; with the numbering's `epoch`. None
+    /// before the first read.
+    pub fn renumber(&self, member: &str, seqs: &[Vec<u64>]) -> Option<(String, Vec<Vec<u64>>)> {
+        let st = self.state.lock().unwrap();
+        st.history.as_ref()?;
+        let of = |q: &u64| st.numbered.get(&(member.to_string(), *q)).copied();
+        Some((st.epoch.clone(), seqs.iter().map(|v| v.iter().filter_map(of).collect()).collect()))
     }
 
     /// `/work/history`'s answer: the events after number `since` (this Mac's numbering, `epoch`),
@@ -914,6 +938,40 @@ mod tests {
         assert!(pv.swarm().is_some() && pv.history(0, 10).is_some());
         drop(go);
         assert!(reader.join().unwrap());
+    }
+
+    /// (Task #797 review) What a lease waited on and `/work/tocome`'s `after`, written in the
+    /// lead's numbering, are given in this Mac's: the page matches them against the ends it holds.
+    #[test]
+    fn what_was_waited_on_is_renumbered_here() {
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        let root = store::nasfs::NasRoot::local_for_test(d.path());
+        fixture(&root, now);
+        let day = crate::pool::journal::day(now).unwrap();
+        let done = Event {
+            seq: 40,
+            t: now - 15,
+            step: Some("unit".into()),
+            targets: vec!["6/1/1".into()],
+            ..Event::new("done")
+        };
+        let lease = Event { seq: 41, t: now - 10, after: vec![40, 7], ..Event::new("lease") };
+        let lines: String = [&done, &lease].iter().map(|e| serde_json::to_string(e).unwrap() + "\n").collect();
+        put(&root, &format!("state/coord/history/{day}/m-b.jsonl"), lines.as_bytes());
+        let pv = PageView::default();
+        pv.set_inputs(inputs(""));
+        pv.touch_at(now);
+        pv.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now);
+        let h = pv.history(0, 10).unwrap();
+        let of = |k: &str| h["events"].as_array().unwrap().iter().find(|e| e["kind"] == k).unwrap().clone();
+        let n = h["events"].as_array().unwrap().iter().find(|e| e["step"] == "unit").unwrap()["seq"].as_u64().unwrap();
+        assert_ne!(n, 40);
+        assert_eq!(of("lease")["after"], serde_json::json!([n]));
+        let (epoch, after) = pv.renumber("m-b", &[vec![40], vec![7], vec![]]).unwrap();
+        assert_eq!((epoch, after), (h["epoch"].as_str().unwrap().to_string(), vec![vec![n], vec![], vec![]]));
+        // (Another writer's numbers are its own.)
+        assert_eq!(pv.renumber("m-a", &[vec![40]]).unwrap().1, vec![Vec::<u64>::new()]);
     }
 
     #[test]
