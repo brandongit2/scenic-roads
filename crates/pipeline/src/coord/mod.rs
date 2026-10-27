@@ -4582,6 +4582,19 @@ mod http {
         crate::net::kept_token(&dir.join("workers-token"))
     }
 
+    /// The answers worth gzipping: tower-http's defaults (not under 32 bytes, images, gRPC, event streams),
+    /// and not raw bytes (octet-stream: packs, the NAS reads), tar, zip or a part of a file (a range).
+    pub(super) fn compressible() -> impl tower_http::compression::predicate::Predicate {
+        use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
+        DefaultPredicate::new()
+            .and(NotForContentType::const_new("application/octet-stream"))
+            .and(NotForContentType::const_new("application/x-tar"))
+            .and(NotForContentType::const_new("application/zip"))
+            .and(|_: StatusCode, _: axum::http::Version, h: &axum::http::HeaderMap, _: &axum::http::Extensions| {
+                !h.contains_key(header::CONTENT_RANGE)
+            })
+    }
+
     /// Listens on `port`, on a runtime of its own; this Mac's addresses for workers.
     pub fn serve(
         listener: std::net::TcpListener,
@@ -4635,6 +4648,14 @@ mod http {
             .layer(axum::middleware::from_fn_with_state(ctx.clone(), stamp))
             .layer(axum::middleware::from_fn_with_state(ctx.clone(), cors))
             .layer(tower_http::catch_panic::CatchPanicLayer::new())
+            // (Gzip for a client that asks, outermost so it sees every header; see `compressible`.)
+            .layer(
+                tower_http::compression::CompressionLayer::new()
+                    .no_br()
+                    .no_deflate()
+                    .no_zstd()
+                    .compress_when(compressible()),
+            )
             .with_state(ctx);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
@@ -5345,6 +5366,67 @@ pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Coordinator, u
 #[cfg(all(test, not(target_os = "wasi")))]
 mod tests {
     use super::*;
+
+    use axum::body::Body;
+    use axum::extract::Request;
+    use axum::http::{header, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use std::io::Read;
+    use tower::ServiceExt;
+
+    fn gzip_app() -> Router {
+        let big = serde_json::to_vec(&(0..4000).map(|i| format!("6/{i}/7")).collect::<Vec<_>>()).unwrap();
+        let bytes = |ctype: &'static str, status: StatusCode| {
+            let b = vec![7u8; 5000];
+            move || async move { (status, [(header::CONTENT_TYPE, ctype)], b) }
+        };
+        Router::new()
+            .route("/json", get(move || async move { ([(header::CONTENT_TYPE, "application/json")], big) }))
+            .route("/tiny", get(|| async { ([(header::CONTENT_TYPE, "application/json")], "{}") }))
+            .route("/pack", get(bytes("application/octet-stream", StatusCode::OK)))
+            .route("/webp", get(bytes("image/webp", StatusCode::OK)))
+            .route("/tar", get(bytes("application/x-tar", StatusCode::OK)))
+            .route(
+                "/part",
+                get(|| async {
+                    (
+                        StatusCode::PARTIAL_CONTENT,
+                        [(header::CONTENT_TYPE, "text/plain"), (header::CONTENT_RANGE, "bytes 0-4999/9000")],
+                        vec![7u8; 5000],
+                    )
+                }),
+            )
+            .layer(tower_http::compression::CompressionLayer::new().compress_when(http::compressible()))
+    }
+
+    async fn gzip_ask(path: &str, accept: Option<&str>) -> (Option<String>, Vec<u8>) {
+        let mut req = Request::get(path);
+        if let Some(a) = accept {
+            req = req.header(header::ACCEPT_ENCODING, a);
+        }
+        let r = gzip_app().oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+        let enc = r.headers().get(header::CONTENT_ENCODING).map(|v| v.to_str().unwrap().to_string());
+        (enc, axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap().to_vec())
+    }
+
+    /// Task #792: a client that asks gets a big JSON answer gzipped, the same body once decoded; one that
+    /// doesn't, plain; raw bytes, images, tars and parts of a file are never touched; a tiny answer isn't.
+    #[tokio::test]
+    async fn gzip_for_big_answers_asked_for() {
+        let (enc, plain) = gzip_ask("/json", None).await;
+        assert_eq!(enc, None);
+        let (enc, zipped) = gzip_ask("/json", Some("gzip, deflate, br")).await;
+        assert_eq!(enc.as_deref(), Some("gzip"));
+        assert!(zipped.len() * 3 < plain.len(), "{} of {}", zipped.len(), plain.len());
+        let mut back = Vec::new();
+        flate2::read::GzDecoder::new(&zipped[..]).read_to_end(&mut back).unwrap();
+        assert_eq!(back, plain);
+        for p in ["/tiny", "/pack", "/webp", "/tar", "/part"] {
+            let (enc, body) = gzip_ask(p, Some("gzip")).await;
+            assert_eq!((enc, body.len() > 5), (None, p != "/tiny"), "{p}");
+        }
+    }
 
     /// Task #423: a lease lapsed for its worker's silence says so in the history, never nothing.
     #[test]
@@ -9258,6 +9340,20 @@ mod tests {
         );
         let icon = get("/work/icons/icon-192.png");
         assert!(icon.starts_with(b"HTTP/1.1 200") && icon.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"));
+        // (Task #792, the server's own layers: the page gzipped for a client that asks, a PNG never.)
+        let get_gz = |path: &str| {
+            let mut s = std::net::TcpStream::connect(&addr).unwrap();
+            s.write_all(
+                format!("GET {path} HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+            let mut b = Vec::new();
+            s.read_to_end(&mut b).unwrap();
+            String::from_utf8_lossy(&b[..b.windows(4).position(|x| x == b"\r\n\r\n").unwrap()]).to_ascii_lowercase()
+        };
+        assert!(get_gz("/work/").contains("content-encoding: gzip"));
+        assert!(!get_gz("/work/icons/icon-192.png").contains("content-encoding"));
         // A connection whose headers don't come is closed by the server once their time is up, not
         // before. (Timed from before it's made: the server's clock can't start before this one,
         // however slowly this test's thread goes on. This end's own wait is a watchdog: a read that
