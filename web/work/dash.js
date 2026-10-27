@@ -796,12 +796,13 @@ const cardBody = (title, pairs, ...more) => {
     : h("div", "ct", o.title);
   const bar = o.bar && h("div", "tc-bar", h("div", "track", h("i", { style: { width: `${Math.round(Math.max(0, Math.min(1, o.bar.frac)) * 100)}%`, background: o.bar.colour || o.colour || "var(--accent)" } })), o.bar.label ? h("div", "cap", o.bar.label) : null);
   const segs = o.segs?.parts?.length && h("div", "tc-bar", h("div", "track segs", o.segs.parts.map((p) => h("i", { class: [p.cls, p.f != null ? "fill" : null].filter(Boolean).join(" ") || null, title: p.title || null, style: { width: `${(p.w * 100).toFixed(2)}%`, ...(p.f != null ? { "--c": p.colour, "--f": `${(p.f * 100).toFixed(1)}%` } : { background: p.colour }) } }))), o.segs.label ? h("div", "cap", o.segs.label) : null);
-  return [head, o.map || null,
+  // (A wide card's map under its head; the map's cards' (`stack`) after the rows, as the minimap.)
+  return [head, o.wide ? o.map || null : null,
     stats?.length ? h("div", "cstats", stats.map(([v, l]) => h("div", "cstat", h("div", "n", v), h("div", "l", l)))) : null,
     bar, segs,
     h("div", "ckv", pairs.filter(([, v]) => v != null && v !== "").flatMap(([k, v]) => [h("span", "k", k), h("span", null, v)])),
     o.chips?.length ? h("div", "tc-chipsbox", o.chipsLabel ? h("div", "tc-kick", o.chipsLabel) : null, h("div", "tc-chips", o.chips.map((c) => h("span", null, c)))) : null,
-    ...more, o.foot ? h("div", { class: "tc-foot", title: o.foot }, o.foot) : null].filter(Boolean);
+    o.wide ? null : o.map || null, ...more, o.foot ? h("div", { class: "tc-foot", title: o.foot }, o.foot) : null].filter(Boolean);
 };
 // (Beside the point, right else left where there's no room; wholly below it, else above where it
 // fits there better: never across the pointer's line. No taller than 50svh (dash.css) or the room
@@ -969,8 +970,8 @@ const runningRuns = (m) => m.macs.flatMap((x) => jobsOf(x.status).map((j) => ({ 
 // stage's swatch, a kicker "<step> · what it is", the code's name as title), a world map of the
 // tiles it names, stat tiles, a bar, key–value rows, chips, its live part, a foot with its names.
 // Twice the map cards' width (the owner's 22 Oct, BUILD-PAGE-OWNER.md 22); the map small until it's
-// pinned. (The schedule's run cards are the map's width and layout, owner 27 Oct, item 52.)
-// The schedule's runs use the map's layout (`stack`: no `wide`, #794): one card, one layout.
+// pinned. The schedule's runs are the map's cards (`stack`: no `wide`, owner 27 Oct, item 52, #794):
+// its width, its row names, the map after the rows at the minimap's size.
 const stack = (o, rows, ...more) => [h("div", "tc-sec", ...cardBody(o, rows, ...more))];
 const jobCard = (o, rows, ...more) => stack({ ...o, wide: true }, rows, ...more);
 // A list of targets as chips: the first 24, then how many more.
@@ -992,11 +993,12 @@ function runCard(m, r, kind, laneName) {
       bar: frac != null ? { frac, label: progressText(p, j, m.now) } : null,
       chips: targets.length > 1 ? targetChips(targets) : [], chipsLabel: targets.length > 1 ? S.counted(r.step, targets.length) : "",
       foot: j.id }, [
-      ["Mac", laneName(r.lane)],
-      ["Running for", `${dur(m.now - j.started)} (since ${clock(j.started)})`],
-      ["Memory", j.mem_mb ? `${(j.mem_mb / 1024).toFixed(1)} GB` : null],
-      ["Threads", j.threads ?? null],
-      ["Part", parts ? `${at + 1} of ${parts}: ${j.parts[at]}` : null],
+      ["stage", S.stage(r.step)],
+      ["on", laneName(r.lane)],
+      ["running for", `${dur(m.now - j.started)} (since ${clock(j.started)})`],
+      ["memory", j.mem_mb ? `${(j.mem_mb / 1024).toFixed(1)} GB` : null],
+      ["threads", j.threads ?? null],
+      ["part", parts ? `${at + 1} of ${parts}: ${j.parts[at]}` : null],
     ], inside(j, m.now, m.fc));
   }
   if (kind === "past") {
@@ -1006,18 +1008,20 @@ function runCard(m, r, kind, laneName) {
       bar: { frac: r.ok ? 1 : 0, label: state },
       chips: several ? [] : targetChips(targets), chipsLabel: !several && targets.length ? S.counted(r.step, targets.length) : "",
       foot: several ? r.step : `${r.step} ${targets.join(" ")}` }, [
-      ["Mac", laneName(r.lane)],
-      ["When", `${clock(r.from)}–${clock(r.until)}`],
+      ["stage", S.stage(r.step)],
+      ["on", laneName(r.lane)],
+      ["when", `${clock(r.from)}–${clock(r.until)}`],
     ]);
   }
   return stack({ kicker: `${r.step} · job to come`, colour, title: r.n ? S.counted(r.step, r.n) : r.step,
     stats: [[clock(r.from), "forecast start"], [clock(r.until), "forecast end"]],
     bar: { frac: 0, label: "not started" }, foot: r.step }, [
-    ["Mac", laneName(r.lane)],
-    ["Takes", `≈ ${dur(r.until - r.from)}`],
-    ["While the lead runs", r.of ? S.said(r.of, r.n) : null],
-    ["Waits on", r.waits != null ? plural(r.waits, "run") : null],
-    ["Then", r.waited != null ? `${plural(r.waited, "run")} wait on it` : null],
+    ["stage", S.stage(r.step)],
+    ["on", laneName(r.lane)],
+    ["takes", `≈ ${dur(r.until - r.from)}`],
+    ["while the lead runs", r.of ? S.said(r.of, r.n) : null],
+    ["waits on", r.waits != null ? plural(r.waits, "run") : null],
+    ["then", r.waited != null ? `${plural(r.waited, "run")} wait on it` : null],
   ]);
 }
 

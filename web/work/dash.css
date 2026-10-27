@@ -305,6 +305,8 @@ html.card-modal, html.card-modal body { overflow: hidden; }
 .card-tip:has(.tc-head.wide) { width: 560px; max-width: calc(100vw - 16px); }
 .card-tip .tc-map { display: block; width: 190px; max-width: 100%; height: auto; aspect-ratio: 1; margin: 0 auto; border-radius: 5px; }
 .card-tip.pinned .tc-map { width: 100%; max-width: 1000px; }
+/* (The map cards' stack, #794: the map as the tile cards' minimap, .wmap-mini.) */
+.card-tip .tc-sec > .tc-head:not(.wide) ~ .tc-map { width: 132px; margin: 5px 0 0; border-radius: 4px; border: 1px solid var(--line); }
 .card-tip.pinned:has(.tc-head.wide) { box-shadow: 0 0 0 2px var(--accent), 0 8px 24px var(--shadow); }
 .card-tip:has(.tc-head.wide):not(.pinned)::after { content: ""; position: sticky; bottom: 0; display: block; flex: none; height: 28px; margin-top: -28px; background: linear-gradient(transparent, var(--tip-glass)); pointer-events: none; }
 /* The map's cards, as the mockup's: a head (swatch, kicker, title) over a rule, a body, a foot; a
