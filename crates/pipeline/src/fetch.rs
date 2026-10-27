@@ -839,7 +839,7 @@ mod net {
         /// This Mac's agent's proxy (`host:port`) that requests go through, when they do
         /// (the job's HTTPS_PROXY, a loopback address: `local_proxy`), for `proxy_back`.
         proxy: Option<String>,
-        /// Whether the job is pausing (`control::draining`, but in tests).
+        /// Whether the job is pausing (`control::draining_lately`, but in tests).
         draining: fn() -> bool,
     }
 
@@ -887,7 +887,7 @@ mod net {
                 down: down_dir(),
                 second: Duration::from_secs(1),
                 proxy: local_proxy(),
-                draining: crate::control::draining,
+                draining: crate::control::draining_lately,
             }
         }
 
@@ -904,40 +904,52 @@ mod net {
             Net { draining, ..self }
         }
 
-        /// After a failed attempt: when this Mac's agent's proxy isn't listening (refused: the
-        /// agent restarting), waits for it, polling its port each retry second, at most
-        /// `PROXY_WAIT_S`; true once it listens again, so the attempt is made again without
-        /// counting against the retries. False at once when it listens (the remote host's
-        /// failure, retried as ever), when there's no proxy, and when it doesn't come back in time
-        /// or the job is pausing (`control::draining`): the retries go on as they would.
+        /// After a failed attempt: when this Mac's agent's proxy refuses connections (the agent
+        /// restarting), waits for it, polling its port each retry second; true once it listens
+        /// again, so the attempt is made again without counting against the retries. `left` is
+        /// the request's whole wait for its proxy (`PROXY_WAIT_S` at the start, `proxy_wait`),
+        /// spent across every such wait: a proxy that keeps going away can't hold a request past
+        /// it. False at once when the proxy listens (the remote host's failure, retried as ever),
+        /// when it doesn't answer or fails otherwise (busy: only a refusal is an agent away),
+        /// when there's no proxy, and when the wait is spent or the job is pausing
+        /// (`control::draining_lately`): the retries go on as they would.
         /// An error when this thread's reader stops (`cancelled`).
-        fn proxy_back(&self, url: &str) -> Result<bool> {
+        fn proxy_back(&self, url: &str, left: &mut Duration) -> Result<bool> {
             let Some(addr) = &self.proxy else { return Ok(false) };
-            let listening = || {
+            // (Refused at every address it names; any other outcome counts as listening.)
+            let refused = || {
                 use std::net::ToSocketAddrs;
-                addr.to_socket_addrs()
-                    .ok()
-                    .into_iter()
-                    .flatten()
-                    .any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_secs(2)).is_ok())
+                let addrs: Vec<_> = addr.to_socket_addrs().map(|a| a.collect()).unwrap_or_default();
+                !addrs.is_empty()
+                    && addrs.iter().all(|a| {
+                        matches!(std::net::TcpStream::connect_timeout(a, Duration::from_secs(2)),
+                            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused)
+                    })
             };
-            if listening() {
+            if left.is_zero() || !refused() {
                 return Ok(false);
             }
             eprintln!("fetch: {url}: this Mac's agent ({addr}) isn't listening; waiting for it");
-            let end = std::time::Instant::now() + self.second * PROXY_WAIT_S as u32;
-            while std::time::Instant::now() < end {
+            let poll = self.second.min(Duration::from_millis(500));
+            while !left.is_zero() {
                 cancelled(url)?;
                 if (self.draining)() {
                     return Ok(false);
                 }
-                std::thread::sleep(self.second.min(Duration::from_millis(500)));
-                if listening() {
+                let nap = poll.min(*left);
+                std::thread::sleep(nap);
+                *left -= nap;
+                if !refused() {
                     eprintln!("fetch: {url}: this Mac's agent is back; asking again");
                     return Ok(true);
                 }
             }
             Ok(false)
+        }
+
+        /// A request's whole wait for its proxy (`proxy_back`).
+        fn proxy_wait(&self) -> Duration {
+            self.second * PROXY_WAIT_S as u32
         }
 
         /// With the notes of hosts that gave no answer in `dir` (super::down_check) in place of
@@ -962,7 +974,7 @@ mod net {
                 down: down_dir(),
                 second: Duration::from_secs(1),
                 proxy: local_proxy(),
-                draining: crate::control::draining,
+                draining: crate::control::draining_lately,
             }
         }
 
@@ -1045,13 +1057,14 @@ mod net {
             down_check(self.down.as_deref(), url)?;
             let mut last = String::new();
             let mut attempt = 0u32;
+            let mut proxy_left = self.proxy_wait();
             while attempt <= 10 {
                 cancelled(url)?;
                 match f()? {
                     Ok(v) => return Ok(v),
                     Err(e) => last = e,
                 }
-                if self.proxy_back(url)? {
+                if self.proxy_back(url, &mut proxy_left)? {
                     continue;
                 }
                 attempt += 1;
@@ -1121,6 +1134,7 @@ mod net {
             let want = (e - s) as usize;
             let mut out: Vec<u8> = Vec::with_capacity(want);
             let (mut idle, mut requests) = (0u32, 0u32);
+            let mut proxy_left = self.proxy_wait();
             // (The first answer's validator and the file's length, which every later one must match.)
             let mut first: Option<(Option<String>, Option<u64>)> = None;
             down_check(self.down.as_deref(), url)?;
@@ -1198,7 +1212,7 @@ mod net {
                 } else if out.len() > before {
                     // (It moved: on from here, after a breath.)
                     idle = 0;
-                } else if self.proxy_back(url)? {
+                } else if self.proxy_back(url, &mut proxy_left)? {
                     // (The agent's proxy back after a restart: asked again, not counted.)
                     requests -= 1;
                 } else {
@@ -1229,6 +1243,7 @@ mod net {
             // out, or a head that never came, is a host giving no answer: noted down.)
             let late = |e: &ureq::Error| matches!(e, ureq::Error::Timeout(ureq::Timeout::RecvBody));
             let mut attempt = 0u64;
+            let mut proxy_left = self.proxy_wait();
             while attempt < 8 {
                 if attempt > 0 {
                     retry_wait(self.down.as_deref(), url, 2 * attempt, self.second)?;
@@ -1268,8 +1283,8 @@ mod net {
                     Err(e) => {
                         all_late &= late(&e);
                         last = e.to_string();
-                        if self.proxy_back(url)? {
-                            // (The agent's proxy back after a restart: asked again at once, not counted.)
+                        if self.proxy_back(url, &mut proxy_left)? {
+                            // (The agent's proxy back after a restart: asked again, not counted.)
                             attempt -= 1;
                             continue;
                         }

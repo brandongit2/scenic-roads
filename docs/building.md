@@ -170,7 +170,7 @@ from the first (`edit_held`).
   its lock, and the new one binds the port as soon as it holds the lock, before it joins the pool,
   so the job's connections are refused only while the agent restarts. A fetch refused by its
   Mac's proxy (`fetch::net`: the job's loopback HTTPS_PROXY not listening) waits for it, polling
-  its port, up to 5 minutes, then asks again without counting the try; one whose proxy listens
+  its port, up to 5 minutes in all per request (a refusal only: a proxy busy or resetting is retried as any other), then asks again without counting the try; one whose proxy listens
   (the remote host's failure) is retried as any other, and a job pausing (its channel "drain")
   doesn't wait. No
   other socket may bind beside the proxy (no `SO_REUSEPORT`). A port that can't be had is tried
