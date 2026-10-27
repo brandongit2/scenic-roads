@@ -14,7 +14,7 @@
 //!   over 100 km²; its water the `water` parts less the coastline's land and every region without
 //!   water, after those its water names whole; its lakes, those in its outline that no other region's
 //!   water names; the three together its area, kept by cell and stored as the cells' rings.
-//! - One coastline: the outlines' coastal edges taken from the coastline (OSM's land polygons).
+//! - One coastline: the outlines' coastal edges taken from the coastline (the pass's land).
 //!   What lies in no region along it, land past an outline's coast or sea short of the water's
 //!   parts, joined across the cells' edges, goes, where all of a stretch is within
 //!   `COAST_REACH_M` of regions, to the nearest of them (split at the median line), if it has water.
@@ -649,7 +649,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     let Some(data) = ctx.data.filter(|d| d.has_land()) else {
         for id in &ids {
             let (p, r) = &folder.regions[id];
-            out.problems.push(problem("rg-data", r, p, format!("{id}: a region with water is cut back to the coastline's land, which isn't read now (the regions-land source: docs/inputs.md §6.1.7)")));
+            out.problems.push(problem("rg-data", r, p, format!("{id}: a region with water is cut back to the coastline's land, which isn't read now (the pass's regions-land: docs/inputs.md §6.1.7)")));
         }
         return;
     };
@@ -1026,8 +1026,10 @@ fn trace(step: &str) {
                 c.2.load(Relaxed)
             )
         };
+        static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
         eprintln!(
-            "regions: {step}, footprint {} MB; buffers {}; wide buffers {}; nearest-coast splits {}",
+            "regions: {step} at {:.0} s, footprint {} MB; buffers {}; wide buffers {}; nearest-coast splits {}",
+            T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f64(),
             crate::sys::footprint().unwrap_or(0) / 1_000_000,
             f(&BUFFERS),
             f(&WIDE_BUFFERS),
@@ -1238,7 +1240,7 @@ fn make_land(
 pub const COAST_REACH_M: f64 = 1_000.0;
 
 /// One coastline for land and water: the outlines' coastal edges taken from the coastline (OSM's
-/// land polygons). What no region takes along the coastline, on either side of it — its land where
+/// land, the pass's). What no region takes along the coastline, on either side of it — its land where
 /// an outline's coast lay inland of it, its sea where the water's parts stopped short of it — is
 /// joined across the cells' edges into stretches; a stretch every point of which (its vertices and
 /// a point inside each piece) lies within `COAST_REACH_M` of a region's land (a piece of land) or
@@ -1265,6 +1267,25 @@ fn coast(
         }
     };
     let ids: Vec<&String> = made.keys().chain(others.keys()).collect();
+    // (Which regions have any of their area in each cell.)
+    let mut at: HashMap<Cell, Vec<usize>> = HashMap::new();
+    for (k, id) in ids.iter().enumerate() {
+        let cs: BTreeSet<Cell> = match made.get(*id) {
+            Some(m) => m.land.cells.keys().chain(m.water.cells.keys()).chain(m.lakes.cells.keys()).copied().collect(),
+            None => others[*id].cells.keys().copied().collect(),
+        };
+        for c in cs {
+            at.entry(c).or_default().push(k);
+        }
+    }
+    // A region's pieces on one side in a cell, by reference.
+    let side_ref = |k: usize, sea: bool, c: Cell| -> Vec<&Area> {
+        match made.get(ids[k]) {
+            Some(m) if sea => [m.water.cells.get(&c), m.lakes.cells.get(&c)].into_iter().flatten().collect(),
+            Some(m) => m.land.cells.get(&c).into_iter().collect(),
+            None => others[ids[k]].cells.get(&c).into_iter().collect(),
+        }
+    };
     struct Piece {
         c: Cell,
         sea: bool,
@@ -1280,40 +1301,45 @@ fn coast(
         if land.is_empty() {
             return Vec::new();
         }
-        let here: Vec<(&String, Area, Area)> = ids
+        let none = Vec::new();
+        let all: Vec<Area> = at
+            .get(&c)
+            .unwrap_or(&none)
             .iter()
-            .map(|id| (*id, side_of(id, false, c), side_of(id, true, c)))
-            .filter(|(_, l, w)| !l.is_empty() || !w.is_empty())
+            .flat_map(|&k| side_ref(k, false, c).into_iter().chain(side_ref(k, true, c)))
+            .cloned()
             .collect();
-        let all: Vec<Area> = here.iter().flat_map(|o| [o.1.clone(), o.2.clone()]).collect();
         let free = geom::box_area(cell_box(c)).minus(&geom::union_all(&all));
         if free.is_empty() {
             return Vec::new();
         }
         let coastline = SegIndex::new(land.polys.iter().flatten().map(|r| (0, r)));
         let bx = cell_box(c);
-        // (Each side's regions in the cell and those round it, shifted as they lie from it.)
-        let mut round: Vec<(usize, Area, Area)> = Vec::new();
-        for x in c.0 - 1..=c.0 + 1 {
-            let (w, shift) = wrap(x);
-            for y in (c.1 - 1).max(-45)..=(c.1 + 1).min(44) {
-                for (k, id) in ids.iter().enumerate() {
-                    let (l, s) = (side_of(id, false, (w, y)), side_of(id, true, (w, y)));
-                    if l.is_empty() && s.is_empty() {
-                        continue;
+        // (Each side's regions' edges in the cell and round it within reach of it, shifted as
+        // they lie from it.)
+        let pad = (2.0 * COAST_REACH_M / 111_320.0 * 1e7
+            / ((c.1 * CELL) as f64 * 1e-7).abs().max(((c.1 + 1) * CELL) as f64 * 1e-7).min(89.0).to_radians().cos())
+            as i64;
+        let near_box = [bx[0] - pad, bx[1] - pad, bx[2] + pad, bx[3] + pad];
+        let index = |sea: bool| {
+            let mut idx = SegIndex::default();
+            for x in c.0 - 1..=c.0 + 1 {
+                let (w, shift) = wrap(x);
+                for y in (c.1 - 1).max(-45)..=(c.1 + 1).min(44) {
+                    for &k in at.get(&(w, y)).unwrap_or(&none) {
+                        for a in side_ref(k, sea, (w, y)) {
+                            for r in a.polys.iter().flatten() {
+                                idx.add(k, r, shift, near_box);
+                            }
+                        }
                     }
-                    let f = |a: Area| if shift == 0 { a } else { a.shifted(shift) };
-                    round.push((k, f(l), f(s)));
                 }
             }
-        }
+            idx
+        };
         let mut out = Vec::new();
         for (sea, side) in [(false, free.intersect(&land)), (true, free.minus(&land))] {
-            let idx = SegIndex::new(
-                round
-                    .iter()
-                    .flat_map(|(k, l, s)| (if sea { s } else { l }).polys.iter().flatten().map(move |r| (*k, r))),
-            );
+            let mut idx: Option<SegIndex> = None;
             for poly in side.polys {
                 // (The land's rings run along the cell's edges too: no coast there.)
                 let on_coast = poly.iter().any(|r| {
@@ -1327,6 +1353,7 @@ fn coast(
                 if !on_coast {
                     continue;
                 }
+                let idx = idx.get_or_insert_with(|| index(sea));
                 let (mut far, mut near) = (0.0f64, BTreeSet::new());
                 for p in poly.iter().flatten().copied().chain([interior(&poly)]) {
                     // (The nearest region within reach, ties to the lesser id.)
@@ -2171,6 +2198,7 @@ fn inside(p: geom::Pt, poly: &[geom::Ring]) -> bool {
 }
 
 /// Rings' segments in a grid of about 2 km, each with its owner's number.
+#[derive(Default)]
 pub(super) struct SegIndex {
     grid: std::collections::HashMap<(i64, i64), Vec<(usize, geom::Pt, geom::Pt)>>,
 }
@@ -2192,6 +2220,22 @@ impl SegIndex {
             }
         }
         SegIndex { grid }
+    }
+
+    /// Ring `r`'s segments, shifted by `shift` in longitude, those meeting box `b`, as owner `k`'s.
+    fn add(&mut self, k: usize, r: &geom::Ring, shift: i64, b: [i64; 4]) {
+        let n = r.len();
+        for i in 0..n {
+            let (a, c) = ([r[i][0] + shift, r[i][1]], [r[(i + 1) % n][0] + shift, r[(i + 1) % n][1]]);
+            if a[0].max(c[0]) < b[0] || a[0].min(c[0]) > b[2] || a[1].max(c[1]) < b[1] || a[1].min(c[1]) > b[3] {
+                continue;
+            }
+            for x in a[0].min(c[0]).div_euclid(SEG_CELL)..=a[0].max(c[0]).div_euclid(SEG_CELL) {
+                for y in a[1].min(c[1]).div_euclid(SEG_CELL)..=a[1].max(c[1]).div_euclid(SEG_CELL) {
+                    self.grid.entry((x, y)).or_default().push((k, a, c));
+                }
+            }
+        }
     }
 
     /// The segments within `d` metres of a point, with their distance in metres.
