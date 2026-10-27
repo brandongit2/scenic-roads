@@ -98,7 +98,6 @@ paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. 
 | | `treeblock` (task) | | a task of `trees` | ⇄ |
 | `depth` | `depth` | pack | a z6 tile | ⇄ |
 | | `depth-lo` | pack | a z3 tile | ⇄ |
-| | `depth-shade` | pack | a z3 tile | ⇄ |
 | `roads` | `unit` | pack | a z6 tile | ⇄ |
 | | `tail` (task) | | a task of `unit` | ⇄ |
 | `tiles` | `pack` | pack | a z6 tile | ⇄ |

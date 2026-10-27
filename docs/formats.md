@@ -448,9 +448,11 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
 ## Depth (`layers/depth/`, `layers/depth-class/`, `layers/depth-shade/`; pipeline::depth)
 
 Three layers of 256-px tiles in packs like the terrain's: `lo/3-x-y` (z3–8) and `hi/6-x-y` (z9–16,
-only where a source is finer than z8). A tile is stored where one of its water pixels is a source's
-own data of its zoom (every water tile up to z8; never finer than the sources under it: steps.md §3); a missing one is its nearest stored ancestor scaled up (bilinear
-for depth and its shading, with the depth ancestor's neighbours' edges; nearest for classes).
+only where a source has grids finer than z8). A tile is stored where one of its water pixels is a
+source's own data of its zoom, or where a finer stored tile lies under it (each pixel then the mean
+of the four beneath it with data); never finer than the sources under it (steps.md §3). A missing
+one is its nearest stored ancestor scaled up (bilinear for depth and its shading, with the depth
+ancestor's neighbours' edges; nearest for classes).
 
 - **`depth`** (encoding `terrarium-webp`: Terrarium RGB as lossless WebP, as the terrain's, but
   rounded as below, not to the terrain's centimetre): metres below the water's surface (the sea's mean level, a
@@ -466,9 +468,8 @@ for depth and its shading, with the depth ancestor's neighbours' edges; nearest 
   and Safari; readers still take the PNGs of packs from before (`terrarium-png`, `class-png`, grey)
   until the depth is rebuilt.
 - **`depth-shade`** (encoding `shade-webp`, as the terrain's shading: Pack above): the floor's
-  steepness and mean direction, a tile for each depth tile (docs/steps.md §3): the hi packs made
-  with the depth's, the lo packs by the `depth-shade` step from the depth's lo packs and the hi
-  packs' z9 tiles.
+  steepness and mean direction, a tile for each depth tile (docs/steps.md §3), made with the
+  depth's packs: the lo packs' z8 from the hi packs' z9 where they cover it.
 - **The catalogue's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "notice"}]}`,
   the accepted depth declarations (the credits' depth line and notices, and the readout).
 

@@ -16,8 +16,11 @@
 //!    meets a gap; a lake with no data of its own stays empty.
 //! 4. A pixel above its chart's low water (an intertidal source's, in the sea) dries at low tide.
 //! 5. A tile is kept when one of its water pixels is a source's data of the tile's zoom (the
-//!    source painted there, not one feathered in under half nor a gap filled from it; at `ALL_UPTO`
-//!    and coarser: any data), so no tile is stored finer than the data under it.
+//!    source painted there, not one feathered in under half nor a gap filled from it), so no tile
+//!    is stored finer than the data under it.
+//!
+//! A block is composed only at a zoom some place in it has as its finest data (`composes_at`: a
+//! grid of that zoom meets it); every coarser level is the mean of the finer (crate::depth::build).
 
 use super::edt::nearest;
 use super::grids::{px, sample, Reader, Source};
@@ -28,8 +31,6 @@ use anyhow::Result;
 pub const PAD: usize = 32;
 /// A block's tiles a side.
 pub const BLOCK: u32 = 8;
-/// At and below this zoom every tile with data in its water is kept.
-pub const ALL_UPTO: u8 = 8;
 /// The land's band of the nearest water's value (pixels).
 pub const BLEED_PX: f32 = 3.0;
 /// Drying heights above this (m) are land.
@@ -105,9 +106,18 @@ pub struct Composed {
     pub water: Vec<bool>,
 }
 
+/// Whether a block at zoom `z` over lon/lat box `bbox` is composed: a grid of zoom `z` meets it, so
+/// some place in it may have its finest data at `z` (a grid's zoom taken within the layer's,
+/// `ZOOMS`: one coarser counts at the coarsest, one finer at the finest). No zoom is special: a
+/// new source's grids of any zoom are composed at theirs, and coarser levels over them are means.
+pub fn composes_at(sources: &[Source], bbox: [f64; 4], z: u8) -> bool {
+    let (lo, hi) = super::ZOOMS;
+    sources.iter().any(|s| s.meeting(bbox).any(|g| g.zoom.clamp(lo, hi) == z))
+}
+
 /// Composes block `b` from `sources` over `water`; `up(zv)` is the stored level `zv` scaled up onto
-/// the block (NODATA: none), `zmin` the layer's coarsest zoom. None when no source has data of the
-/// block's zoom there (at `ALL_UPTO` and coarser: any data) or it has no water.
+/// the block (NODATA: none), `zmin` the layer's coarsest zoom. None when no grid of the block's
+/// zoom meets it (`composes_at`) or it has no water.
 pub fn compose(
     b: Block,
     sources: &[Source],
@@ -120,11 +130,10 @@ pub fn compose(
     let n = w * h;
     let (c0, r0) = b.origin();
     let bbox = super::grids::window_box(b.z, c0, r0, w, h);
-    let need = if b.z > ALL_UPTO { b.z } else { zmin };
-    let here: Vec<(&Source, u8)> = sources.iter().filter_map(|s| s.max_zoom_in(bbox).map(|z| (s, z))).collect();
-    if !here.iter().any(|(_, z)| *z >= need) {
+    if !composes_at(sources, bbox, b.z) {
         return Ok(None);
     }
+    let here: Vec<(&Source, u8)> = sources.iter().filter_map(|s| s.max_zoom_in(bbox).map(|z| (s, z))).collect();
     let inner = |i: usize| {
         let (x, y) = (i % w, i / w);
         (PAD..w - PAD).contains(&x) && (PAD..h - PAD).contains(&y)
@@ -347,7 +356,7 @@ pub fn tiles(b: Block, c: &Composed) -> Vec<(u32, u32, Vec<f32>, Vec<u8>)> {
                     }
                 }
             }
-            if wet && (b.z <= ALL_UPTO || own) {
+            if wet && own {
                 out.push((b.tx0 + i as u32, b.ty0 + j as u32, d, k));
             }
         }

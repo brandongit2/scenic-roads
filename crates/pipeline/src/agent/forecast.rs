@@ -757,7 +757,6 @@ fn chain_deps(step: &str) -> (&'static [&'static str], &'static [&'static str], 
         "bldtiles" => (&[], &["bldprep"], false),
         "bldfield-lo" => (&[], &["bldtiles"], false),
         "depth-lo" => (&[], &["depth"], false),
-        "depth-shade" => (&[], &["depth-lo", "depth"], false),
         _ => (&[], &[], false),
     }
 }
@@ -2916,7 +2915,6 @@ mod tests {
             "slope-lo" => &["slope-hi", "terrain-hi"],
             "trees-lo" => &["trees"],
             "depth-lo" => &["depth"],
-            "depth-shade" => &["depth", "depth-lo"],
             _ => &[],
         }
     }
@@ -2924,7 +2922,7 @@ mod tests {
     #[test]
     fn the_depth_chains_replay_waits_on_earlier_steps_only() {
         // The chain's order, as depth_next takes it: each step waits on earlier ones alone (#611).
-        let order = ["depth", "depth-lo", "depth-shade"];
+        let order = ["depth", "depth-lo"];
         for (i, s) in order.iter().enumerate() {
             let waits: Vec<&str> = z3_reads(s).iter().chain(super::chain_deps(s).1).copied().collect();
             for w in &waits {

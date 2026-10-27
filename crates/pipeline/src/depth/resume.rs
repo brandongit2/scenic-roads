@@ -1,5 +1,5 @@
 //! A depth target's run resumed where it stopped (docs/pool.md §7.2, Resuming; task #643): a z6
-//! tile's (z9–16) or an assembly's (z6–8) composing goes block by block (crate::depth::build's
+//! tile's (z6–16) or an assembly's (z3–8) composing goes block by block (crate::depth::build's
 //! `level`), up to two hours a run; a run stopped starts again at the block after the last it
 //! finished, not at z9. The log is crate::resume_log's (on this Mac's disk, at the top of the step's
 //! scratch folder, moved from another slot's, swept after a day, only with resuming on); what it
@@ -11,8 +11,9 @@
 //!   on the blocks before it (`Tiles::up` reads coarser tiles made earlier: a z6 tile's own coarse
 //!   levels under it among them), which the log restores: the outputs are the same bytes whether a
 //!   run resumed or not. What's made from the composed tiles once all
-//!   are isn't logged either, the same bytes again: the floor's shading (crate::depth::build's
-//!   `shading`) and an assembly's z3–8 from the z9 tiles (`compose_lo`).
+//!   are isn't logged either, the same bytes again: the coarser levels from the finer
+//!   (crate::depth::build's `means`, an assembly's z8 from the z9 tiles too) and the floor's
+//!   shading (`shading`).
 //! - **Gone** once the target's packs are saved (crate::depth::build's `build_hi`, `build_lo`).
 
 use crate::resume_log::{BlockId, Get, Log, Put};

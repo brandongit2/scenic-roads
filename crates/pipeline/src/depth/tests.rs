@@ -450,7 +450,8 @@ fn an_estimated_source_is_classed_so() {
 
 /// Task #398: an assembly's and a piece's run are timed by stage (no hour of "(untimed)"): the
 /// sources' files opened and windows read, the water read, composing and within it feathering
-/// (and the gaps filled, which the fixture has none of), the tiles encoded, the coarse levels and the packs written.
+/// (and the gaps filled, which the fixture has none of), the tiles encoded, the coarser levels
+/// from the finer and the packs written.
 #[test]
 fn the_depth_steps_time_their_stages() {
     // (In a process of its own, this test alone: the run's timings are the process's.)
@@ -478,7 +479,7 @@ fn the_depth_steps_time_their_stages() {
         "composing",
         "tiles encoded",
         "z8 from the z9 tiles",
-        "z3–7 from their children",
+        "the coarser levels from the finer",
         "packs written",
     ] {
         assert!(top.contains(&p), "{p} not in {top:?}");
@@ -769,6 +770,13 @@ fn measure_a_real_assembly() {
         super::build::compose_hi(&out, &srcs, &water, local.clone(), q, upto, false).unwrap()
     };
     let wall = t0.elapsed().as_secs_f64();
+    if let Ok(dir) = std::env::var("SCENIC_DEPTH_DUMP") {
+        std::fs::create_dir_all(&dir).unwrap();
+        for ((z, x, y), (d, c)) in &made {
+            std::fs::write(Path::new(&dir).join(format!("{z}-{x}-{y}.d")), d).unwrap();
+            std::fs::write(Path::new(&dir).join(format!("{z}-{x}-{y}.c")), c).unwrap();
+        }
+    }
     let r = crate::timings::snapshot(true).unwrap();
     println!("{z}/{}/{} to z{upto}, reads {}: {} tiles in {wall:.1} s", q.0, q.1, a[3], made.len());
     let io = grids::io_counts();
@@ -832,9 +840,9 @@ fn the_floors_shading_is_the_depths_pyramid() {
     assert_eq!(code(z7[128 * 256 + 128 + 7]), code(q1[7]));
 }
 
-/// The floor's shading's assembly (`build::build_shade_lo`): a z8 tile's quadrant under a z6 tile's
-/// z9 shading tile (as its hi pack stores it) is that tile's mean, the rest its own depth's; its
-/// coarser levels to z3 from it; the depth lo pack's other tiles their own.
+/// The floor's shading of an assembly (`build::shading_lo`): a z8 tile's quadrant under a z6
+/// tile's z9 shading tile (as its hi pack stores it) is that tile's mean, the rest its own depth's;
+/// its coarser levels to z3 from it; the assembly's other tiles their own.
 #[test]
 fn the_floors_shading_assembly_takes_the_z6_tiles_finer_shading() {
     use roadcore::shade::{code, decode, quadrant, Px};
@@ -844,8 +852,8 @@ fn the_floors_shading_assembly_takes_the_z6_tiles_finer_shading() {
             .unwrap();
     let ramp: Vec<f32> = (0..65536).map(|i| -10.0 - (i % 256) as f32).collect();
     let enc = |v: &[f32]| fall::encode(&Grid::F(v.to_vec())).unwrap();
-    let mut lo = vec![(8u8, 74u32, 91u32, enc(&ramp), 0u32), (8, 80, 91, enc(&ramp), 0)].into_iter();
-    crate::layers::write_pack(&mut out, LAYER, super::ENCODING, false, "lo", (3, 2, 2), &mut lo).unwrap();
+    let made: std::collections::BTreeMap<_, _> =
+        [((8u8, 74u32, 91u32), (enc(&ramp), Vec::new())), ((8, 80, 91), (enc(&ramp), Vec::new()))].into();
     let steep = vec![Px::of_gradient(0.0, 0.5); 65536];
     let mut hi = vec![(9u8, 149u32, 183u32, crate::shade_codec::encode(&steep).unwrap(), 0u32)].into_iter();
     crate::layers::write_pack(
@@ -859,9 +867,8 @@ fn the_floors_shading_assembly_takes_the_z6_tiles_finer_shading() {
     )
     .unwrap();
     out.save().unwrap();
-    let n = super::build::build_shade_lo(&mut out, (2, 2)).unwrap();
-    let s = crate::terrain_pack::ManifestTiles::new(&out, super::SHADE_LAYER);
-    let px = |z: u8, x: u32, y: u32| decode(&s.get(z, x, y).unwrap().unwrap()).unwrap();
+    let s = super::build::shading_lo(&out, &made, (2, 2)).unwrap();
+    let px = |z: u8, x: u32, y: u32| decode(&s[&(z, x, y)]).unwrap();
     let z8 = px(8, 74, 91);
     let want = quadrant(&decode(&crate::shade_codec::encode(&steep).unwrap()).unwrap());
     assert_eq!(code(z8[200 * 256 + 200]), code(want[72 * 128 + 72]), "its south-east quadrant from the z9 tile");
@@ -872,9 +879,9 @@ fn the_floors_shading_assembly_takes_the_z6_tiles_finer_shading() {
         code(decode(&own[&(8, 80, 91)]).unwrap()[20 * 256 + 20]),
         "the rest its own depth's"
     );
-    assert_eq!(s.get(8, 80, 91).unwrap(), Some(own[&(8, 80, 91)].clone()));
-    assert!(s.get(3, 2, 2).unwrap().is_some() && s.get(9, 149, 183).unwrap().is_some());
-    assert_eq!(n, 2 * 5 + 1, "two z8 tiles and their parents to z4 apart, one z3");
+    assert_eq!(s[&(8, 80, 91)], own[&(8, 80, 91)]);
+    assert!(s.contains_key(&(3, 2, 2)) && !s.contains_key(&(9, 149, 183)));
+    assert_eq!(s.len(), 2 * 5 + 1, "two z8 tiles and their parents to z4 apart, one z3");
 }
 
 /// A measure (run by hand, read-only): the floor's shading (`build::shading`) of a real z3 tile's
@@ -1018,5 +1025,233 @@ fn a_resumed_z6_tiles_packs_and_shading_are_the_same_bytes() {
     assert!(fresh.iter().all(|b| !b.is_empty()));
     for stop in [1, 7, 30] {
         assert!(packs(&format!("stop-{stop}"), Some(stop)) == fresh, "stopped after {stop} blocks");
+    }
+}
+
+/// Task #804: a new fine source dropped in the open sea, of any zoom, gets tiles up to its zoom
+/// and none finer, with no change to the code; every coarser level over it is the mean of the
+/// finer (as the terrain's), down through the z6 tile's z9 to the assembly's z8 and z3.
+#[test]
+fn a_fine_source_in_the_open_sea_is_built_to_its_zoom_and_averaged_down() {
+    let mean4 = |t: &[u8], px: usize, py: usize| {
+        let v: Vec<f32> = [(0, 0), (1, 0), (0, 1), (1, 1)]
+            .iter()
+            .map(|&(dx, dy)| depth_at(t, px + dx, py + dy))
+            .filter(|&v| v < NODATA_MIN)
+            .collect();
+        quantise(v.iter().sum::<f32>() / v.len() as f32)
+    };
+    for zoom in [12u8, 14] {
+        let d = tempfile::tempdir().unwrap();
+        let mut srcs = sources(d.path());
+        // (A survey in the open sea, away from the shore and the patch: a slope eastward.)
+        let (c0, r0) = at(zoom, 0.3, 0.6);
+        let (c1, r1) = at(zoom, 0.36, 0.66);
+        let p = d.path().join("9.tif");
+        grid_file(&p, zoom, c0, r0, (c1 - c0) as u32, (r1 - r0) as u32, &|c, _| -30.0 - (c % 64) as f32 * 0.1);
+        let mut s = srcs[1].clone();
+        s.id = "s9".into();
+        s.code = 9;
+        s.pin = "s9".into();
+        s.grids = vec![SGrid {
+            bbox: window_box(zoom, c0, r0, (c1 - c0) as usize, (r1 - r0) as usize),
+            zoom,
+            file: store::nasfs::NasPath::local_for_test(p),
+            low_file: None,
+            packed: None,
+        }];
+        srcs.push(s);
+        let (out, _) = packs(&srcs, &Fixture, &store::nasfs::NasRoot::local_for_test(&d.path().join("o")));
+        let (hi, lo) = ((6, T.0, T.1), (3, T.0 >> 3, T.1 >> 3));
+        let (u, v) = (0.33, 0.63);
+        // Its own zoom stored, its own data; nothing finer.
+        let (x, y, px, py) = where_(zoom, u, v);
+        let own = tile(&out, LAYER, "hi", hi, zoom, x, y).unwrap_or_else(|| panic!("z{zoom}: its own tile"));
+        assert_eq!(class_at(&tile(&out, CLASS_LAYER, "hi", hi, zoom, x, y).unwrap(), px, py), C_NATIVE | (9 << 4));
+        assert!((-36.5..=-29.9).contains(&depth_at(&own, px, py)), "{}", depth_at(&own, px, py));
+        for z in zoom + 1..=16 {
+            let (x, y, _, _) = where_(z, u, v);
+            assert!(tile(&out, LAYER, "hi", hi, z, x, y).is_none(), "z{zoom} source: no z{z} tile");
+        }
+        // Each coarser level the mean of the finer, to z9 in the hi pack, then z8 to z3 in the lo.
+        let get = |z: u8, x: u32, y: u32| {
+            let (scope, root) = if z >= 9 { ("hi", hi) } else { ("lo", lo) };
+            tile(&out, LAYER, scope, root, z, x, y)
+        };
+        // (The tile and pixel at any zoom, z3 too: from z16's.)
+        let (c16, r16) = at(16, u, v);
+        let where_any = |z: u8| {
+            let (c, r) = (c16 >> (16 - z), r16 >> (16 - z));
+            ((c / 256) as u32, (r / 256) as u32, (c % 256) as usize, (r % 256) as usize)
+        };
+        for z in (3..zoom).rev() {
+            let (x, y, px, py) = where_any(z);
+            let t = get(z, x, y).unwrap_or_else(|| panic!("z{zoom} source: a z{z} tile"));
+            let (cx, cy) = (2 * x + px as u32 / 128, 2 * y + py as u32 / 128);
+            let kid = get(z + 1, cx, cy).unwrap();
+            let (ox, oy) = ((px % 128) * 2, (py % 128) * 2);
+            let want = mean4(&kid, ox, oy);
+            assert!((depth_at(&t, px, py) - want).abs() < 0.11, "z{zoom}: z{z} {} vs {want}", depth_at(&t, px, py));
+        }
+        // (At z9, still the survey's, not the coarse source's -50.)
+        let (x, y, px, py) = where_(9, u, v);
+        assert!(depth_at(&get(9, x, y).unwrap(), px, py) > -40.0);
+    }
+}
+
+/// A measure (run by hand): two dumps of a target's tiles (`measure_a_real_assembly`'s
+/// `SCENIC_DEPTH_DUMP`, an earlier build's and this one's) compared as the map is served them
+/// (`fall::served`: a tile one lacks made from its stored ancestor), zoom by zoom over the tiles
+/// either stores: the pixels with data in both, those changed (by 5 cm or more) and by how much,
+/// those with data in one alone; and renders (old | new | change) at some zooms.
+/// SCENIC_DEPTH_COMPARE="<old> <new> <png folder> <z>/<x>/<y> <zooms rendered, a,b,…>"; unset,
+/// nothing.
+#[test]
+fn compare_depth_dumps() {
+    let Ok(m) = std::env::var("SCENIC_DEPTH_COMPARE") else { return };
+    let a: Vec<&str> = m.split_whitespace().collect();
+    type Dump = std::collections::BTreeMap<(u8, u32, u32), Vec<u8>>;
+    let read = |dir: &str| -> Dump {
+        let mut out = Dump::new();
+        for e in std::fs::read_dir(dir).unwrap() {
+            let n = e.unwrap().file_name().into_string().unwrap();
+            let Some(k) = n.strip_suffix(".d") else { continue };
+            let v: Vec<u32> = k.split('-').map(|s| s.parse().unwrap()).collect();
+            out.insert((v[0] as u8, v[1], v[2]), std::fs::read(Path::new(dir).join(&n)).unwrap());
+        }
+        out
+    };
+    let (old, new) = (read(a[0]), read(a[1]));
+    let png_dir = Path::new(a[2]);
+    std::fs::create_dir_all(png_dir).unwrap();
+    let root: Vec<u32> = a[3].split('/').map(|s| s.parse().unwrap()).collect();
+    let (rz, rx, ry) = (root[0] as u8, root[1], root[2]);
+    let rendered: Vec<u8> = a[4].split(',').map(|s| s.parse().unwrap()).collect();
+    type Cache = std::collections::HashMap<(bool, u8, u32, u32), fall::Stored>;
+    let cache = std::cell::RefCell::new(Cache::new());
+    let getter = |d: &Dump, which: bool, z: u8, x: u32, y: u32| -> anyhow::Result<fall::Stored> {
+        if let Some(g) = cache.borrow().get(&(which, z, x, y)) {
+            return Ok(g.clone());
+        }
+        let g = d.get(&(z, x, y)).map(|b| std::sync::Arc::new(fall::decode(Kind::Terrarium, b).unwrap()));
+        let mut c = cache.borrow_mut();
+        if c.len() > 4096 {
+            c.clear();
+        }
+        c.insert((which, z, x, y), g.clone());
+        Ok(g)
+    };
+    let served = |which: bool, z: u8, x: u32, y: u32| -> Option<Vec<f32>> {
+        let d = if which { &new } else { &old };
+        let get = |z: u8, x: u32, y: u32| getter(d, which, z, x, y);
+        match fall::served(&get, Kind::Terrarium, z, x, y).unwrap() {
+            Some((Grid::F(v), _)) => Some(v),
+            _ => None,
+        }
+    };
+    let zooms: std::collections::BTreeSet<u8> = old.keys().chain(new.keys()).map(|k| k.0).collect();
+    println!("{} tiles old, {} new", old.len(), new.len());
+    for &z in &zooms {
+        let keys: std::collections::BTreeSet<(u32, u32)> =
+            old.keys().chain(new.keys()).filter(|k| k.0 == z).map(|k| (k.1, k.2)).collect();
+        let (no, nn) = (old.keys().filter(|k| k.0 == z).count(), new.keys().filter(|k| k.0 == z).count());
+        let (mut both, mut changed, mut only_old, mut only_new) = (0u64, 0u64, 0u64, 0u64);
+        let mut diffs: Vec<f32> = Vec::new();
+        for &(x, y) in &keys {
+            let (o, n) = (served(false, z, x, y), served(true, z, x, y));
+            for i in 0..65536 {
+                let ov = o.as_ref().map_or(NODATA, |v| v[i]);
+                let nv = n.as_ref().map_or(NODATA, |v| v[i]);
+                match (ov < NODATA_MIN, nv < NODATA_MIN) {
+                    (true, true) => {
+                        both += 1;
+                        let dlt = (nv - ov).abs();
+                        if dlt >= 0.05 {
+                            changed += 1;
+                            diffs.push(dlt);
+                        }
+                    }
+                    (true, false) => only_old += 1,
+                    (false, true) => only_new += 1,
+                    _ => {}
+                }
+            }
+        }
+        diffs.sort_by(f32::total_cmp);
+        let q = |f: f64| diffs.get(((diffs.len() as f64 - 1.0) * f) as usize).copied().unwrap_or(0.0);
+        let mean = if diffs.is_empty() { 0.0 } else { diffs.iter().sum::<f32>() / diffs.len() as f32 };
+        println!(
+            "z{z}: tiles stored old {no}, new {nn}; pixels with data in both {both}, changed {changed} ({:.2} %): mean {mean:.2} m, median {:.2}, p99 {:.2}, max {:.2}; data only old {only_old}, only new {only_new}",
+            100.0 * changed as f64 / both.max(1) as f64,
+            q(0.5),
+            q(0.99),
+            q(1.0)
+        );
+    }
+    // Renders: the root tile's area at each zoom asked, at most 1024 px a side.
+    for &z in &rendered {
+        let n = 1u32 << (z - rz);
+        let side = (n * 256).min(1024);
+        let step = (n * 256) / side;
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        let mut planes: [Vec<f32>; 2] = [vec![NODATA; (side * side) as usize], vec![NODATA; (side * side) as usize]];
+        for ty in 0..n {
+            for tx in 0..n {
+                for (w, plane) in planes.iter_mut().enumerate() {
+                    let Some(v) = served(w == 1, z, rx * n + tx, ry * n + ty) else { continue };
+                    for py in (0..256).step_by(step as usize) {
+                        for px in (0..256).step_by(step as usize) {
+                            let (ox, oy) = ((tx * 256 + px) / step, (ty * 256 + py) / step);
+                            let val = v[(py * 256 + px) as usize];
+                            plane[(oy * side + ox) as usize] = val;
+                            if val < NODATA_MIN {
+                                lo = lo.min(val);
+                                hi = hi.max(val.min(0.0));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let depth_rgb = |v: f32| -> [u8; 3] {
+            if v >= NODATA_MIN {
+                return [40, 40, 40];
+            }
+            let t = ((v - lo) / (hi - lo).max(1e-3)).clamp(0.0, 1.0);
+            [(20.0 + 200.0 * t) as u8, (40.0 + 200.0 * t) as u8, (90.0 + 160.0 * t) as u8]
+        };
+        let diff_rgb = |o: f32, n: f32| -> [u8; 3] {
+            match (o < NODATA_MIN, n < NODATA_MIN) {
+                (false, false) => [40, 40, 40],
+                (true, false) => [255, 0, 255],
+                (false, true) => [0, 255, 0],
+                _ => {
+                    let d = ((n - o) / 2.0).clamp(-1.0, 1.0);
+                    if d >= 0.0 {
+                        [255, (255.0 * (1.0 - d)) as u8, (255.0 * (1.0 - d)) as u8]
+                    } else {
+                        [(255.0 * (1.0 + d)) as u8, (255.0 * (1.0 + d)) as u8, 255]
+                    }
+                }
+            }
+        };
+        let w = side * 3;
+        let mut img = vec![0u8; (w * side * 3) as usize];
+        for y in 0..side {
+            for x in 0..side {
+                let i = (y * side + x) as usize;
+                let (o, nv) = (planes[0][i], planes[1][i]);
+                for (k, c) in [depth_rgb(o), depth_rgb(nv), diff_rgb(o, nv)].iter().enumerate() {
+                    let at = ((y * w + k as u32 * side + x) * 3) as usize;
+                    img[at..at + 3].copy_from_slice(c);
+                }
+            }
+        }
+        let p = png_dir.join(format!("z{z}.png"));
+        let f = std::fs::File::create(&p).unwrap();
+        let mut e = png::Encoder::new(std::io::BufWriter::new(f), w, side);
+        e.set_color(png::ColorType::Rgb);
+        e.write_header().unwrap().write_image_data(&img).unwrap();
+        println!("rendered {} (old | new | new - old, ±2 m; magenta: old only, green: new only)", p.display());
     }
 }

@@ -812,25 +812,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         "bldtile-task" => bldtile_task_step(&mut out, &args)?,
         "depth-lo" | "depth" => depth_step(&mut out, &args, step.as_str())?,
-        "depth-shade" => {
-            // depth-shade <Q …>: z3 tiles Q's zoomed-out shading of the sea floor (their
-            // depth-shade lo packs, z3–8: pipeline::depth::build::build_shade_lo).
-            let qs: Vec<TileId> = positional(&args)
-                .iter()
-                .map(|t| TileId::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}")))
-                .collect::<Result<_>>()?;
-            anyhow::ensure!(!qs.is_empty(), "depth-shade <3/x/y …>");
-            for (k, q) in qs.iter().enumerate() {
-                pipeline::control::safe_point("depth-shade");
-                pipeline::agent::jobs::report(k as u64, qs.len() as u64, "z3 tiles");
-                let c = cost_start("depth-shade", &q.slash());
-                let n = pipeline::depth::build::build_shade_lo(&mut out, (q.x, q.y))?;
-                eprintln!("depth-shade {}: {n} tiles", q.slash());
-                pipeline::control::done("depth-shade", &q.slash());
-                note_cost("depth-shade", &q.slash(), c);
-            }
-            pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "z3 tiles");
-        }
         "trees" => {
             // trees <tile …> [--pass d] [--chm dir] [--expect-same T,…]: the tree cover
             // of z6 tiles (z6 tiles: their hi packs and mids; pipeline::treepacks::build_piece), or a
@@ -4741,9 +4722,9 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
     landing.land(out)
 }
 
-/// depth <T …> | depth-lo <Q …>: the depth of z6 tiles T (their hi packs, z9–16) or the
-/// assemblies of z3 tiles Q (their lo packs, z3–8, from their z6 tiles' z9 where there is one), from
-/// the declared depth sources on the latest pass's water (pipeline::depth::build).
+/// depth <T …> | depth-lo <Q …>: the depth and its shading of z6 tiles T (their hi packs, z9–16)
+/// or the assemblies of z3 tiles Q (their lo packs, z3–8, the means of their z6 tiles' where there
+/// are some), from the declared depth sources on the latest pass's water (pipeline::depth::build).
 fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
     let z = if step == "depth-lo" { 3 } else { 6 };
     let ts: Vec<TileId> = positional(args)

@@ -13,12 +13,12 @@
 //!   floor's steepness and direction, which the map's depth shading reads, made with the depth
 //!   tiles (`build`'s `shading`).
 //!
-//! Stored only where a pixel has detail of the tile's zoom (every water tile up to z8): a tile the
-//! layer lacks is made from its nearest stored ancestor (`fall`) by the server, the same way the
-//! build scales a coarser level up (`compose`). Two steps make them (`build`): **depth**, a z6
-//! tile's zooms 9–16 where a source has data finer than z8, then **depth-lo**, a z3 tile's zooms
-//! 3–8 from them (z8 the mean of its z9 tiles, composed from the sources where there's none; z3–7
-//! from their children).
+//! As the terrain's (`build`): each place composed only at the zoom of its finest source's grids,
+//! every coarser level the mean of the finer, nothing stored finer than the data: a tile the layer
+//! lacks is made from its nearest stored ancestor (`fall`) by the server, the same way the build
+//! scales a coarser level up (`compose`). Two steps make them (`build`): **depth**, a z6 tile's
+//! hi packs (z9–16) where a source has grids finer than the lo packs', then **depth-lo**, a z3
+//! tile's lo packs (z3–8), the means of them where they are.
 
 pub mod build;
 pub mod compose;

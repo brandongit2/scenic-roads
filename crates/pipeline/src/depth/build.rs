@@ -1,24 +1,26 @@
-//! The depth steps (docs/steps.md §3): `depth`, a z6 tile's fine levels, then `depth-lo`, a z3
-//! tile's zoomed-out levels from them, each composed block by block (crate::depth::compose) and
-//! written as packs of the two layers (`depth`, `depth-class`), like the terrain's.
+//! The depth steps (docs/steps.md §3): `depth`, a z6 tile's hi packs (z9–16), then `depth-lo`, a
+//! z3 tile's lo packs (z3–8), each written as packs of the three layers (`depth`, `depth-class`,
+//! `depth-shade`). Heights and shading are built as the terrain's (§2, Coarser zooms from the
+//! finer), with no zoom special:
 //!
-//! - **depth** (a z6 tile T): z9–16, a block only where a source has a grid of that zoom or finer
-//!   (`Source::max_zoom_in`), its water the basemap's (z15–16: its z14 tile's polygons, finer). A
-//!   capped pixel takes the level of its zoom scaled up as the map's fallback does, from this job's
-//!   own tiles: at z8 and coarser, z6–8 composed first over T and the ring of tiles around it (across
-//!   the date line too; as
-//!   an assembly composes them, kept only for that), so a capped pixel within a block's margin
-//!   across T's edge has them too. Its neighbours' fine tiles aren't read (they're another job's).
-//! - **depth-lo** (a z3 tile Q, after its z6 tiles' depth): z8 as the terrain's assembly makes its
-//!   coarse levels, from the finer: each pixel the mean of the four beneath it in Q's z6 tiles' z9
-//!   tiles as stored (their class the first of the four that has one), and where no z9 tile with
-//!   data lies under it (the open sea, a coast without fine sources) composed from the sources on
-//!   the basemap's water (z6–8 composed, z6–7 only for z8's capped pixels); z3–7 each from its
-//!   children the same way.
-//! - **depth-shade** (a z3 tile Q, after its depth-lo): the floor's shading's zoomed-out levels
-//!   (`build_shade_lo`: the `depth-shade` lo pack, z3–8), from Q's z6 tiles' z9 shading as stored
-//!   and, where they don't cover it, its own depth's; the z6 tiles' depth makes their own
-//!   (`shading`: the hi packs, z9–16), so the fine sources' detail reaches the low zooms.
+//! - **Composed at the finest data's zoom:** a block of zoom z is composed from the sources
+//!   (crate::depth::compose) only where a grid of zoom z meets it (`compose::composes_at`), a tile
+//!   kept only where a pixel is a source's own data of its zoom: GEBCO's z8, a chart's z16, a new
+//!   source's whatever zoom. No tile is stored finer than the data; finer views scale up.
+//! - **Every coarser level the mean of the finer** (`means`): each pixel the mean of the four
+//!   beneath it that have data, where they do; elsewhere its own level composed (the same rule
+//!   there).
+//! - **The shading** (`shading`): crate::slope_pack's pyramid over those tiles, each place's at its
+//!   finest stored level by Horn's method, each coarser level the mean of the finer.
+//!
+//! Where the two jobs meet is where their packs do (z8 | z9, as the terrain's), not part of the rule:
+//! - **depth** (a z6 tile T, where a source has a grid finer than the lo packs' `LO`): its blocks
+//!   composed z6 to z16, coarse to fine (a capped pixel is the level of its source's zoom scaled up
+//!   as the map's fallback does: z6–8 composed over T and the ring of tiles around it for that
+//!   alone, `coarse_areas`), then z15 down to z9 each the mean of the finer.
+//! - **depth-lo** (a z3 tile Q, after its z6 tiles' depth): its blocks composed z3 to z8, then z8
+//!   the mean of the z9 tiles its z6 tiles' hi packs store, z7 down to z3 each the mean of the
+//!   finer; its shading over them, z8 taking the z9 shading the hi packs store where it covers.
 //!
 //! Deterministic: the same sources, water and z9 tiles make the same packs, byte for byte.
 
@@ -36,24 +38,24 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-/// The depth piece's version: bumped with any change to the bytes `build_hi` writes (6: its
-/// coarse levels its own, task #532; 5: lossless
-/// WebP, task #671; 4: the
+/// The depth piece's version: bumped with any change to the bytes `build_hi` writes (7: composed
+/// only at a grid's own zoom, the coarser levels the mean of the finer, task #804; 6: its
+/// coarse levels its own, task #532; 5: lossless WebP, task #671; 4: the
 /// floor's shading, `shading`, task #632; 3: a grid lined up with no overview sampled from one
 /// askew, `grids::level_for`, task #433). Its key names crate::shade_codec::version too.
-pub const DEPTH_V: u32 = 6;
-/// The depth assembly's (`build_lo`; 7: z3–8 from the z9 tiles, task #532; 6: lossless WebP, task #671; 5: the floor's shading no longer made here, `depth-shade`
-/// makes it; 4: the floor's shading).
-pub const DEPTH_LO_V: u32 = 7;
-/// The floor's shading's assembly's (`build_shade_lo`).
-pub const DEPTH_SHADE_V: u32 = 1;
+pub const DEPTH_V: u32 = 7;
+/// The depth assembly's (`build_lo`; 8: composed only at a grid's own zoom, z3–8 the means of the
+/// finer, its shading made here, task #804; 7: z3–8 from the z9 tiles, task #532; 6: lossless
+/// WebP, task #671).
+pub const DEPTH_LO_V: u32 = 8;
 /// How far from the coverage depth is built (km): 200 nautical miles, a region's EEZ's reach.
 pub const REACH_KM: f64 = 370.4;
-/// The zooms a piece makes.
+/// The zooms a z6 tile's hi packs hold.
 pub const HI: (u8, u8) = (9, 16);
-/// The zooms composed under the z9 tiles (an assembly's z8 where no z9 tile has data, and what
-/// its z8 and a z6 tile's z9 scale capped pixels up from).
-pub const LO_COMPOSED: (u8, u8) = (6, 8);
+/// The zooms a z3 tile's lo packs hold.
+pub const LO: (u8, u8) = (3, 8);
+/// A piece's zoom: the coarse levels it composes for its capped pixels are this to `LO.1`.
+pub const PIECE_Z: u8 = 6;
 /// The deepest zoom the basemap has water at.
 pub const WATER_Z: u8 = 14;
 
@@ -472,7 +474,7 @@ impl Area {
     }
 }
 
-/// The coarse level `z` (of `LO_COMPOSED`) z6 tile `t` composes for its capped pixels
+/// The coarse level `z` (`PIECE_Z` to `LO.1`) z6 tile `t` composes for its capped pixels
 /// (`compose_hi`): its tiles and the ring of one around them, rows within the world's, columns
 /// across the date line too (the map's fallback takes an ancestor's neighbours east–west so:
 /// `Tiles::up`); the wrapped column an area of its own.
@@ -551,9 +553,8 @@ fn block(
         {
             let (c0, r0) = b.origin();
             let bbox = super::grids::window_box(z, c0, r0, b.w(), b.h());
-            let need = if z > super::compose::ALL_UPTO { z } else { zmin };
             let _p = phase("the block's sources found", Class::Compute);
-            let any = sources.iter().any(|s| s.max_zoom_in(bbox).is_some_and(|m| m >= need));
+            let any = super::compose::composes_at(sources, bbox, z);
             drop(_p);
             if !any {
                 return Ok(put);
@@ -583,7 +584,7 @@ fn block(
 /// shading (`shading`), replacing or dropping what the manifest named; how many tiles.
 fn put_packs(
     out: &mut Out,
-    made: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
+    made: &Made,
     shade: Option<&BTreeMap<(u8, u32, u32), Vec<u8>>>,
     scope: &str,
     root: (u8, u32, u32),
@@ -672,21 +673,59 @@ fn from_kids(kids: &[Option<Pair>; 4], base: Option<&Pair>) -> Option<Pair> {
     d.iter().any(|&v| v < NODATA_MIN).then_some((d, c))
 }
 
-/// The tiles of zoom `z` within `area` made from their children in `made` (zoom z + 1), put into it.
-fn from_children(made: &mut BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>, z: u8, area: Area) -> Result<()> {
-    for y in area.y0..area.y0 + area.ny {
-        for x in area.x0..area.x0 + area.nx {
-            let mut kids: [Option<Pair>; 4] = Default::default();
-            for (k, kid) in kids.iter_mut().enumerate() {
-                let key = (z + 1, 2 * x + k as u32 % 2, 2 * y + k as u32 / 2);
-                if let Some((d, c)) = made.get(&key) {
+/// The tiles a job makes, as stored (depth, class), by (z, x, y).
+type Made = BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>;
+
+/// Tiles `means` made: each one's key and what it now is (None: no data).
+type Means = Vec<((u8, u32, u32), Option<(Vec<u8>, Vec<u8>)>)>;
+
+/// Zoom `z`'s tiles from the finer (as the terrain's, §2): each tile with a child of zoom z + 1 in
+/// `kids`, its pixels the mean of the four beneath them that have data (`from_kids`), elsewhere its
+/// own in `own` (zoom z, composed), made on the job's threads.
+fn means(kids: &Made, own: &Made, z: u8) -> Result<Means> {
+    use rayon::prelude::*;
+    let mut parents: Vec<(u32, u32)> =
+        kids.range((z + 1, 0, 0)..(z + 2, 0, 0)).map(|(&(_, x, y), _)| (x / 2, y / 2)).collect();
+    parents.sort_unstable();
+    parents.dedup();
+    parents
+        .into_par_iter()
+        .map(|(x, y)| {
+            let mut ks: [Option<Pair>; 4] = Default::default();
+            for (k, kid) in ks.iter_mut().enumerate() {
+                if let Some((d, c)) = kids.get(&(z + 1, 2 * x + k as u32 % 2, 2 * y + k as u32 / 2)) {
                     *kid = Some(decoded(d, c)?);
                 }
             }
-            if let Some((d, c)) = from_kids(&kids, None) {
-                made.insert((z, x, y), encoded(&d, c)?);
-            }
-        }
+            let base = match own.get(&(z, x, y)) {
+                Some((d, c)) => Some(decoded(d, c)?),
+                None => None,
+            };
+            let t = match from_kids(&ks, base.as_ref()) {
+                Some((d, c)) => Some(encoded(&d, c)?),
+                None => None,
+            };
+            Ok(((z, x, y), t))
+        })
+        .collect()
+}
+
+/// `means`' tiles laid into `made`.
+fn put_means(made: &mut Made, got: Means) {
+    for (k, t) in got {
+        match t {
+            Some(t) => made.insert(k, t),
+            None => made.remove(&k),
+        };
+    }
+}
+
+/// Zooms `top - 1` down to `bottom` of `made`, each the mean of the finer over its own (`means`).
+fn means_down(made: &mut Made, top: u8, bottom: u8) -> Result<()> {
+    let _p = crate::timings::phase("the coarser levels from the finer", crate::timings::Class::Compute);
+    for z in (bottom..top).rev() {
+        let got = means(made, made, z)?;
+        put_means(made, got);
     }
     Ok(())
 }
@@ -697,7 +736,8 @@ fn encoded(depth: &[f32], class: Vec<u8>) -> Result<(Vec<u8>, Vec<u8>)> {
     Ok((fall::encode(&Grid::F(q))?, fall::encode(&Grid::C(class))?))
 }
 
-/// The assembly of z3 tile `q`: its lo packs (z3–8); how many tiles.
+/// The assembly of z3 tile `q`: its lo packs (z3–8: the depth, its classes and the floor's
+/// shading); how many depth tiles.
 /// (`local`: this Mac's whole copies of the sources' packs, crate::localread; None, the NAS's read.)
 pub fn build_lo(
     out: &mut Out,
@@ -706,8 +746,9 @@ pub fn build_lo(
     local: Local,
     q: (u32, u32),
 ) -> Result<usize> {
-    let made = compose_lo(out, sources, water, local, q, LO_COMPOSED.1, crate::resume_log::on())?;
-    let n = put_packs(out, &made, None, "lo", (3, q.0, q.1))?;
+    let made = compose_lo(out, sources, water, local, q, LO.1, crate::resume_log::on())?;
+    let shade = shading_lo(out, &made, q)?;
+    let n = put_packs(out, &made, Some(&shade), "lo", (3, q.0, q.1))?;
     std::fs::remove_file(crate::resume_log::path(&out.scratch, (3, q.0, q.1))).ok();
     Ok(n)
 }
@@ -715,13 +756,26 @@ pub fn build_lo(
 /// The depth tiles in metres the floor's shading keeps decoded (`shading_over`), at most.
 const SHADE_CACHED: usize = 2048;
 
-/// The most memory (MB) the floor's shading's assembly of a z3 tile takes (`build_shade_lo`), from
+/// The most memory (MB) a z3 tile's assembly (`build_lo`) takes: its composing's first guess (2 GB:
+/// a block's arrays and distance fields, the sources' blocks read, its water; let go before its
+/// shading) or its floor's shading's (`shade_lo_peak_mb`), the more.
+pub const fn lo_peak_mb() -> u64 {
+    const COMPOSING_MB: u64 = 2000;
+    let s = shade_lo_peak_mb();
+    if s > COMPOSING_MB {
+        s
+    } else {
+        COMPOSING_MB
+    }
+}
+
+/// The most memory (MB) the floor's shading of a z3 tile's assembly takes (`shading_lo`), from
 /// its bounds: its z6 tiles' z9 quadrants (64 × 64); its depth lo tiles (z3–8) as stored, each
 /// taken at its raw RGBA and a margin for the container's headers (lossless WebP of a 256-px tile
 /// is smaller); its depth
 /// tiles kept decoded (`SHADE_CACHED`, and one more); the shading's tiles made, each at most its raw
 /// codes; the pyramid's working memory (crate::slope_pack::working_bytes, z3 to z8).
-pub const fn shade_lo_peak_mb() -> u64 {
+const fn shade_lo_peak_mb() -> u64 {
     const TS: u64 = 256;
     let px = std::mem::size_of::<roadcore::shade::Px>() as u64;
     let quadrant = 128 * 128 * px;
@@ -729,54 +783,37 @@ pub const fn shade_lo_peak_mb() -> u64 {
     let stored = TS * (TS * 4 + 1) + (TS * TS * 4 / 16_384 + 1) * 5 + 1024;
     let decoded = (SHADE_CACHED as u64 + 1) * TS * TS * 4;
     let made = lo_tiles * TS * TS * 3;
-    let bytes =
-        64 * 64 * quadrant + lo_tiles * stored + decoded + made + crate::slope_pack::working_bytes(3, LO_COMPOSED.1);
+    let bytes = 64 * 64 * quadrant + lo_tiles * stored + decoded + made + crate::slope_pack::working_bytes(LO.0, LO.1);
     bytes >> 20
 }
 
-/// The floor's shading's assembly of z3 tile `q` (the `depth-shade` step, after its z6 tiles'
-/// depth): its `depth-shade` lo pack (z3–8), the pyramid of `shading` over q's depth as its lo pack
-/// stores it, each z8 tile's pixels the mean of the four beneath from its z6 tiles' z9 shading as
-/// their hi packs store it where they cover it (the fine sources' detail), else its own depth's;
-/// how many tiles.
-pub fn build_shade_lo(out: &mut Out, q: (u32, u32)) -> Result<usize> {
-    let p = crate::timings::phase("the depth's lo pack and the z9 shading read", crate::timings::Class::NasRead);
-    let depth = crate::terrain_pack::ManifestTiles::new(out, LAYER);
-    let mut made = BTreeMap::new();
-    for (z, x, y) in depth.tiles_in(&lo_logical(LAYER, q.0, q.1))? {
-        if let Some(b) = depth.get(z, x, y)? {
-            made.insert((z, x, y), (b, Vec::new()));
-        }
-    }
+/// The floor's shading of z3 tile `q`'s assembly (its `depth-shade` lo pack, z3–8): the pyramid of
+/// `shading` over its depth tiles `made`, each z8 pixel under a z6 tile's z9 shading the mean of
+/// those four as the hi packs store them (the fine sources' detail), else its own depth's.
+pub(super) fn shading_lo(out: &Out, made: &Made, q: (u32, u32)) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
+    let p = crate::timings::phase("the z9 shading read", crate::timings::Class::NasRead);
     let shade = crate::terrain_pack::ManifestTiles::new(out, super::SHADE_LAYER);
     let mut below = HashMap::new();
     for k in 0..64u32 {
         let t = (q.0 * 8 + k % 8, q.1 * 8 + k / 8);
-        for (z, x, y) in shade.tiles_in(&hi_logical(super::SHADE_LAYER, t.0, t.1))? {
-            if z != HI.0 {
-                continue;
-            }
-            let b = shade.get(z, x, y)?.with_context(|| format!("{z}/{x}/{y} of its pack"))?;
+        let fine: Vec<(u8, u32, u32)> =
+            shade.tiles_in(&hi_logical(super::SHADE_LAYER, t.0, t.1))?.into_iter().filter(|e| e.0 == HI.0).collect();
+        for (&(z, x, y), b) in fine.iter().zip(shade.get_many(&fine)?) {
+            let b = b.with_context(|| format!("depth-shade {z}/{x}/{y} of its pack"))?;
             let v = roadcore::shade::decode(&b).with_context(|| format!("depth-shade {z}/{x}/{y}"))?;
             below.insert((z, x, y), roadcore::shade::quadrant(&v));
         }
     }
     p.count(0, below.len() as u64);
     drop(p);
-    let tiles = shading_over(&made, 3, below)?;
-    let n = tiles.len();
-    let mut it = tiles.into_iter().map(|((z, x, y), b)| (z, x, y, b, 0u32));
-    put_pack(out, super::SHADE_LAYER, crate::shade_codec::ENCODING, "lo", (3, q.0, q.1), &mut it)?;
-    out.save()?;
-    Ok(n)
+    shading_over(made, LO.0, below)
 }
 
-/// The assembly of z3 tile `q`'s tiles, made, unwritten. Its z6 to `upto` (at most z8) composed;
-/// then, with `upto` z8, each z8 tile from its z9 children as q's z6 tiles' hi packs store them
-/// (`from_kids`: the depth built from the finer sources, where there is one), its composed self
-/// where they have no data, and z3–7 each from its children (`upto` below z8: the composing alone,
-/// a measure). The composed z6–7 serve only z8's capped pixels. With `keep`, its blocks kept as made
-/// and those an earlier run kept taken (`resume_log`).
+/// The assembly of z3 tile `q`'s tiles, made, unwritten: its blocks composed z3 to `upto` (at most
+/// z8; below it, the composing alone, a measure); then, with `upto` z8, z8 from the z9 tiles q's z6
+/// tiles' hi packs store and z7 down to z3 each from the finer (`means`), each over its own level
+/// composed where the finer has no data. With `keep`, its blocks kept as made and those an earlier
+/// run kept taken (`resume_log`).
 pub fn compose_lo(
     out: &Out,
     sources: &[Source],
@@ -785,79 +822,57 @@ pub fn compose_lo(
     q: (u32, u32),
     upto: u8,
     keep: bool,
-) -> Result<BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>> {
+) -> Result<Made> {
     let rd = Reader::default().with_local(local);
     let mut wc = WaterCache::default();
-    let upto = upto.min(LO_COMPOSED.1);
+    let upto = upto.min(LO.1);
     let mut t = Tiles::new(out);
     let mut log = resume_log(keep, &mut t, sources, water, (3, q.0, q.1), upto);
-    let zooms = u64::from(upto.saturating_sub(LO_COMPOSED.0) + 1);
-    for z in LO_COMPOSED.0..=upto {
-        let at = f64::from(z - LO_COMPOSED.0);
+    let zooms = u64::from(upto.saturating_sub(LO.0) + 1);
+    for z in LO.0..=upto {
+        wc.next_level();
+        let at = f64::from(z - LO.0);
         let done = |f: f64| crate::agent::jobs::report_f(at + f, zooms, "zooms");
         let area = Area::under(3, q.0, q.1, z);
-        let k = level(&mut t, sources, &rd, water, &mut wc, z, area, 3, log.as_mut(), &done)?;
-        crate::agent::jobs::report(u64::from(z - LO_COMPOSED.0 + 1), zooms, "zooms");
+        let k = level(&mut t, sources, &rd, water, &mut wc, z, area, LO.0, log.as_mut(), &done)?;
+        crate::agent::jobs::report(u64::from(z - LO.0 + 1), zooms, "zooms");
         eprintln!("depth-lo 3/{}/{}: z{z}, {k} tiles", q.0, q.1);
     }
-    let composed = std::mem::take(&mut t.made);
+    let mut made = std::mem::take(&mut t.made);
     drop(t);
     close(rd, wc);
-    if upto < LO_COMPOSED.1 {
-        return Ok(composed);
+    if upto < LO.1 {
+        return Ok(made);
     }
-    let mut made = from_finer(out, q, &composed)?;
-    let _p = crate::timings::phase("z3–7 from their children", crate::timings::Class::Compute);
-    for z in (3..LO_COMPOSED.1).rev() {
-        from_children(&mut made, z, Area::under(3, q.0, q.1, z))?;
-    }
+    from_hi(out, q, &mut made)?;
+    means_down(&mut made, LO.1, LO.0)?;
     Ok(made)
 }
 
-/// Z3 tile `q`'s z8 tiles (`compose_lo`): each from its z9 children as q's z6 tiles' hi packs
-/// store them, over its composed self in `composed` where they have no data.
-fn from_finer(
-    out: &Out,
-    q: (u32, u32),
-    composed: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
-) -> Result<BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>> {
-    let z8 = LO_COMPOSED.1;
+/// Z3 tile `q`'s z8 tiles in `made` from the z9 tiles its z6 tiles' hi packs store (`means`, a z6
+/// tile at a time: its z9 tiles held only while its z8 is made).
+fn from_hi(out: &Out, q: (u32, u32), made: &mut Made) -> Result<()> {
     let _p = crate::timings::phase("z8 from the z9 tiles", crate::timings::Class::NasRead);
     let depth = crate::terrain_pack::ManifestTiles::new(out, LAYER);
     let class = crate::terrain_pack::ManifestTiles::new(out, CLASS_LAYER);
-    let mut made = BTreeMap::new();
     for k in 0..64u32 {
         let t = (q.0 * 8 + k % 8, q.1 * 8 + k / 8);
         let fine: Vec<(u8, u32, u32)> =
             depth.tiles_in(&hi_logical(LAYER, t.0, t.1))?.into_iter().filter(|e| e.0 == HI.0).collect();
+        if fine.is_empty() {
+            continue;
+        }
         let (ds, cs) = (depth.get_many(&fine)?, class.get_many(&fine)?);
-        let mut kids: HashMap<(u32, u32), [Option<Pair>; 4]> = HashMap::new();
-        for ((&(_, x, y), d), c) in fine.iter().zip(ds).zip(cs) {
-            let d = d.with_context(|| format!("depth {}/{x}/{y} of its pack", HI.0))?;
-            let c = c.with_context(|| format!("depth-class {}/{x}/{y}: the depth's tile has none", HI.0))?;
-            kids.entry((x / 2, y / 2)).or_default()[(y % 2 * 2 + x % 2) as usize] = Some(decoded(&d, &c)?);
+        let mut kids = Made::new();
+        for ((&(z, x, y), d), c) in fine.iter().zip(ds).zip(cs) {
+            let d = d.with_context(|| format!("depth {z}/{x}/{y} of its pack"))?;
+            let c = c.with_context(|| format!("depth-class {z}/{x}/{y}: the depth's tile has none"))?;
+            kids.insert((z, x, y), (d, c));
         }
-        let a = Area::under(6, t.0, t.1, z8);
-        for y in a.y0..a.y0 + a.ny {
-            for x in a.x0..a.x0 + a.nx {
-                let own = composed.get(&(z8, x, y));
-                let Some(kids) = kids.get(&(x, y)) else {
-                    if let Some(p) = own {
-                        made.insert((z8, x, y), p.clone());
-                    }
-                    continue;
-                };
-                let base = match own {
-                    Some((d, c)) => Some(decoded(d, c)?),
-                    None => None,
-                };
-                if let Some((d, c)) = from_kids(kids, base.as_ref()) {
-                    made.insert((z8, x, y), encoded(&d, c)?);
-                }
-            }
-        }
+        let got = means(&kids, made, LO.1)?;
+        put_means(made, got);
     }
-    Ok(made)
+    Ok(())
 }
 
 /// With `keep`, target `t`'s log of blocks kept (crate::depth::resume), its tiles laid into `tl`,
@@ -928,17 +943,14 @@ pub(super) fn build_hi_keeping(
 /// nearest's in the tile (`filled`: no cliff at the shore, which the map draws only in the water)
 /// and a neighbour tile the job didn't make read as the tile's own edge; each coarser level the mean
 /// of the four pixels beneath it where its children cover it, else its own depth's.
-pub fn shading(
-    made: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
-    top: u8,
-) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
+pub fn shading(made: &Made, top: u8) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
     shading_over(made, top, HashMap::new())
 }
 
 /// `shading`, over the quadrants of finer tiles another job made (`below`, by tile: as their packs
 /// store them), which their parents take where they cover them (not made again).
 fn shading_over(
-    made: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
+    made: &Made,
     top: u8,
     below: HashMap<(u8, u32, u32), Vec<roadcore::shade::Px>>,
 ) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
@@ -1049,16 +1061,16 @@ pub fn compose_hi(
     t: (u32, u32),
     upto: u8,
     keep: bool,
-) -> Result<BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>> {
+) -> Result<Made> {
     let rd = Reader::default().with_local(local);
     let upto = upto.min(HI.1);
     let mut tl = Tiles::new(out);
     let mut log = resume_log(keep, &mut tl, sources, water, (6, t.0, t.1), upto);
     let mut wc = WaterCache::default();
-    for z in LO_COMPOSED.0..=LO_COMPOSED.1 {
+    for z in PIECE_Z..=LO.1 {
         wc.next_level();
         for area in coarse_areas(t, z) {
-            level(&mut tl, sources, &rd, water, &mut wc, z, area, 3, log.as_mut(), &|_| {})?;
+            level(&mut tl, sources, &rd, water, &mut wc, z, area, LO.0, log.as_mut(), &|_| {})?;
         }
     }
     let zooms = u64::from(upto.saturating_sub(HI.0) + 1);
@@ -1067,13 +1079,14 @@ pub fn compose_hi(
         let at = f64::from(z - HI.0);
         let done = |f: f64| crate::agent::jobs::report_f(at + f, zooms, "zooms");
         let area = Area::under(6, t.0, t.1, z);
-        let k = level(&mut tl, sources, &rd, water, &mut wc, z, area, 3, log.as_mut(), &done)?;
+        let k = level(&mut tl, sources, &rd, water, &mut wc, z, area, LO.0, log.as_mut(), &done)?;
         crate::agent::jobs::report(u64::from(z - HI.0 + 1), zooms, "zooms");
         eprintln!("depth 6/{}/{}: z{z}, {k} tiles", t.0, t.1);
     }
-    let made = std::mem::take(&mut tl.made).into_iter().filter(|(k, _)| k.0 >= HI.0).collect();
+    let mut made: Made = std::mem::take(&mut tl.made).into_iter().filter(|(k, _)| k.0 >= HI.0).collect();
     drop(tl);
     close(rd, wc);
+    means_down(&mut made, upto, HI.0)?;
     Ok(made)
 }
 

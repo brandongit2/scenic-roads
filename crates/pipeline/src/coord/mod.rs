@@ -155,9 +155,10 @@ pub fn cost_version(step: &str) -> u32 {
         "bld-fetch" => 1,
         "terrain-lo" => 2,
         "trees-lo" | "slope-lo" => 1,
-        // (A grid lined up with no overview sampled from one askew, task #433: the assemblies
-        // that read tens of GB read a hundredth of it.)
-        "depth" | "depth-lo" => 1,
+        // (2: composed only at a grid's own zoom, the coarser levels the means of the finer, and
+        // the floor's shading's assembly made in depth-lo, task #804; 1: a grid lined up with no
+        // overview sampled from one askew, task #433.)
+        "depth" | "depth-lo" => 2,
         _ => 0,
     }
 }

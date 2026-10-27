@@ -122,7 +122,7 @@ pub const STAGES: [Stage; 14] = [
     Stage { id: "terrain", does: "The terrain packs, a tile at a time down to each place's native zoom, assembled zoomed out by z3 tile." },
     Stage { id: "slope", does: "The shading packs (steepness and direction) from the terrain, a tile at a time down to each place's native zoom, assembled zoomed out by z3 tile." },
     Stage { id: "trees", does: "The tree cover, height and leaf type, a tile at a time, assembled zoomed out by z3 tile." },
-    Stage { id: "depth", does: "The depth under the seas and lakes from the depth sources: zoomed out by z3 tile, then a tile at a time where a source has finer detail." },
+    Stage { id: "depth", does: "The depth under the seas and lakes and its shading from the depth sources: a tile at a time where a source has fine detail, then zoomed out by z3 tile as the means of the finer." },
     Stage { id: "roads", does: "Each tile's roads, their elevations and scenery: the base packs the map's details and profiles read." },
     Stage { id: "tiles", does: "The road and rail map tiles drawn from the base packs, by tile and zoomed out by z3 tile." },
     Stage { id: "finish", does: "What publishing adds around the tiles: the road index, rail stops, ferries, the world levels, and a prune." },
@@ -178,7 +178,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 58] = [
+pub const TABLE: [Step; 57] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -492,32 +492,21 @@ pub const TABLE: [Step; 58] = [
             Pack,
             Z6,
             "depth",
-            "Composes a tile's depth where a source has detail finer than the zoomed-out levels.",
+            "Composes a tile's depth and its shading where a source has detail finer than the zoomed-out levels.",
             w_depth,
         )
     },
+    // (A z3 tile's assembly: its composing, ~2 GB, then its floor's shading, from what that holds
+    // (crate::depth::build::lo_peak_mb).)
     Step {
-        mem_mb: 2000,
+        mem_mb: crate::depth::build::lo_peak_mb(),
         ..step(
             "depth",
             Pack,
             Z3,
             "depth-lo",
-            "Assembles a z3 tile's zoomed-out depth from its tiles' finer depth, composed from the depth sources where there's none.",
+            "Assembles a z3 tile's zoomed-out depth and its shading from its tiles' finer ones, composed from the depth sources where there are none.",
             w_depth_lo,
-        )
-    },
-    // (The floor's shading of a z3 tile: its memory from what it holds, its z6 tiles' z9
-    // quadrants, its depth lo tiles and their shading: crate::depth::build::shade_lo_peak_mb.)
-    Step {
-        mem_mb: crate::depth::build::shade_lo_peak_mb(),
-        ..step(
-            "depth",
-            Pack,
-            Z3,
-            "depth-shade",
-            "Assembles a z3 tile's zoomed-out shading of the sea floor from its depth and its tiles' finer shading.",
-            w_depth_shade,
         )
     },
     // (A z6 tile's most its jobs took here, 8.4 GB, 2026-10-05; offered by its extract's size.)
@@ -1089,11 +1078,8 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
             t.z == 6 && DEPTH_LAYERS.iter().any(|ly| l == crate::depth::build::hi_logical(ly, t.x, t.y))
         }),
         "depth-lo" => tile.is_some_and(|t| {
-            t.z == 3 && DEPTH_LO_LAYERS.iter().any(|ly| l == crate::depth::build::lo_logical(ly, t.x, t.y))
+            t.z == 3 && DEPTH_LAYERS.iter().any(|ly| l == crate::depth::build::lo_logical(ly, t.x, t.y))
         }),
-        "depth-shade" => {
-            tile.is_some_and(|t| t.z == 3 && l == crate::depth::build::lo_logical(crate::depth::SHADE_LAYER, t.x, t.y))
-        }
         "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
             l == crate::treepacks::mid_logical(t.x, t.y)
                 || crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))
@@ -1196,7 +1182,7 @@ fn w_none(_: &str, _: bool) -> bool {
 /// The clean-up's: it removes the names removed steps made (crate::agent::gc::RETIRED) and the
 /// depth packs no current target names (crate::agent::gc::DepthKeep), and writes nothing.
 fn w_gc(l: &str, removal: bool) -> bool {
-    removal && (crate::agent::gc::retired(l) || w_depth(l, true) || w_depth_lo(l, true) || w_depth_shade(l, true))
+    removal && (crate::agent::gc::retired(l) || w_depth(l, true) || w_depth_lo(l, true))
 }
 
 /// The pass's sources (`sources/osm/<date>/…`: its filtered planet, sets, outlines, extracts, road
@@ -1304,20 +1290,13 @@ fn w_depth(l: &str, _: bool) -> bool {
     pack_of(l, &|ly| DEPTH_LAYERS.contains(&ly), &["hi"])
 }
 
-/// A z3 tile's depth and class lo packs.
+/// A z3 tile's depth, class and shading lo packs.
 fn w_depth_lo(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| DEPTH_LO_LAYERS.contains(&ly), &["lo"])
-}
-
-/// A z3 tile's shading lo pack.
-fn w_depth_shade(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| ly == crate::depth::SHADE_LAYER, &["lo"])
+    pack_of(l, &|ly| DEPTH_LAYERS.contains(&ly), &["lo"])
 }
 
 /// The depth steps' layers: the depth, its classes and the floor's shading (crate::depth).
 const DEPTH_LAYERS: [&str; 3] = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER];
-/// Those an assembly of the depth writes (the shading's is `depth-shade`'s).
-const DEPTH_LO_LAYERS: [&str; 2] = [crate::depth::LAYER, crate::depth::CLASS_LAYER];
 
 /// The water's index for the terrain's repairs, by the content it's made of.
 fn w_terrain_water(l: &str, _: bool) -> bool {
@@ -1634,7 +1613,7 @@ mod tests {
             ("terrain-lo", 1200),
             ("slope", crate::slope_pack::peak_mb()),
             ("slope-lo", crate::slope_pack::lo_peak_mb()),
-            ("depth-shade", crate::depth::build::shade_lo_peak_mb()),
+            ("depth-lo", crate::depth::build::lo_peak_mb()),
             ("peaks", 2500),
             ("water", 8192),
             ("bldprep", super::super::bldprep_peak(30_300_000)),
@@ -1853,7 +1832,6 @@ mod tests {
                 "trees-lo",
                 "depth",
                 "depth-lo",
-                "depth-shade",
                 "unit",
                 "pack",
                 "lo",

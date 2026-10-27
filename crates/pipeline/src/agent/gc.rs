@@ -111,8 +111,8 @@ pub fn retired(l: &str) -> bool {
 /// The depth's current targets as the agent's last plan found them (`build::depth_kept`: the z3 and
 /// z6 tiles the coverage and the declared sources make targets, and those leased now), written to
 /// the agent's home as the `gc` job is planned (`DEPTH_KEEP_FILE`) and passed by `--depth-keep`. A
-/// depth pack is dropped only when no tile of these names it (`orphan`): an assembly's and the
-/// floor's shading's lo packs by their z3 tile, a z6 tile's hi packs by it. None read (no file, one
+/// depth pack is dropped only when no tile of these names it (`orphan`): an assembly's lo packs by
+/// its z3 tile, a z6 tile's hi packs by it. None read (no file, one
 /// not fresh, one unreadable), no depth name is dropped.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct DepthKeep {
@@ -125,7 +125,7 @@ pub struct DepthKeep {
 }
 
 /// The depth's steps, whose leased targets `DepthKeep` keeps (`with_leased`).
-pub const DEPTH_STEPS: [&str; 3] = ["depth", "depth-lo", "depth-shade"];
+pub const DEPTH_STEPS: [&str; 2] = ["depth", "depth-lo"];
 
 /// The file in the agent's home `DepthKeep` is written to.
 pub const DEPTH_KEEP_FILE: &str = "gc-depth-keep.json";
@@ -159,7 +159,7 @@ impl DepthKeep {
             if let Some(u) = crate::legacy::TileId::parse(t) {
                 match (step.as_str(), u.z) {
                     ("depth", 6) => self.hi.insert((u.x, u.y)),
-                    ("depth-lo" | "depth-shade", 3) => self.lo.insert((u.x, u.y)),
+                    ("depth-lo", 3) => self.lo.insert((u.x, u.y)),
                     _ => false,
                 };
             }
@@ -1988,7 +1988,7 @@ mod tests {
     fn a_running_depth_job_keeps_its_tiles_packs() {
         let leased = [
             ("depth".to_string(), "6/2/33".to_string()),
-            ("depth-shade".to_string(), "3/1/4".to_string()),
+            ("depth-lo".to_string(), "3/1/4".to_string()),
             ("depth-lo".to_string(), "3/5/5".to_string()),
             ("terrain-hi".to_string(), "6/9/9".to_string()),
             ("depth".to_string(), "3/7/7".to_string()),
