@@ -153,6 +153,7 @@ the two deep packs: the pixels changed, the largest and the mean difference.
 | change | before → after | the output |
 |---|---|---|
 | **The geoid's offsets on a lattice** (`dem::geoid::Grids::offsets`): found exactly at the corners of a 7.5″ lattice over a call's points and bilinear between them; a point whose corners lack a value or were served by different sources (a grid's edge, a link's grids meeting) read alone, and points spread wider than twice their count in corners read as before. 7.5″ divides EGM2008's 2.5′ grid and its half-pixel, so inside its cells the result is the grid's own bilinear to rounding. Was: every point read bilinearly from the grids (2.2 G a run). | terrain-deep-same 10/258/345 (HRDEM 1 m; 5,011 deep tiles): `the heights brought to EGM2008` 4 min 48 s → 10.8 s of CPU summed over threads; the run 394 → 258 s | 26 of 328 M pixels changed, each by one quantum (1–2 cm: rounding at a quantum's edge), the mean 0.000 m: invisible. Not byte-identical (content name 8c1e32762eb0b1ab, the manifest's 926a54b38aabbe2c) |
+| **The coverage kept with its grids** (`coverage::kept_bytes`, `RDCOV005`): the cache file each Mac keeps by the regions' accepted version (`<SCENIC_CACHE>/coverage/<hash16>.cov`, written by the first job to read a version) holds every shape's grid as well as its rings, so a job reads it rather than gridding the outlines again (`Shape::new`); `pois` and the z6 tiles' steps read through it too (they passed no cache). Not on the NAS: a local read beats a NAS one, and each Mac makes it once a version. | `the regions and their outlines read`: 18.7 s (CPU 14.4 s) → 1.1 s (CPU 0.7 s) a run once the file is there; the file 1.84 GB for the current version (held whole while read: a run's peak 2.35 → 3.6 GB, which `Coverage::read_peak_mb` counts) | the same shapes (a test: the grids read back equal those made) |
 
 ## 5. Not done, with what the data says (the ranking of what's left)
 
@@ -176,10 +177,7 @@ the two deep packs: the pixels changed, the largest and the mean difference.
    and the decode would say whether the decode (LZW/deflate of 1 m blocks, 533 MB a run) or the
    sampling dominates; a nearest-pixel read where the dataset's cell is finer than the pixel is
    the same height to the quantum but not byte-identical.
-4. **`the regions and their outlines read`, 20 s a run of every step (CPU 14 s: the outlines
-   parsed and gridded, `Shape::new`), about 8 h of the rebuild's 233.** The agent names a cache
-   for the coverage (`SCENIC_CACHE`, crate::coverage); what it keeps still parses. A binary
-   snapshot of the gridded shapes per accepted regions version would make it a read.
+4. *(Done by task #807: §4b.)* `the regions and their outlines read`.
 5. **terrain-lo's GLO-30 reads (65 % of its run, CPU/wall 0.34: the NAS's round trips at the
    overviews).** 4.4 h a build; the whole local copies (task #689) skip a file a coarse level
    reads under half of (`COPY_SHARE`). Reading the overview levels of the files a z3 tile touches

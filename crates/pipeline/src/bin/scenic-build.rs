@@ -2618,7 +2618,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass on the NAS (--pass)")?,
     };
     let setup = phase("the regions and their outlines read", Class::NasRead);
-    let (cov, _) = regions_coverage(out, args, &date, None)?;
+    let (cov, _) = regions_coverage(out, args)?;
     let trailends = out
         .get(&format!("work/trailends/{date}"))
         // (The extract program's input, read where it lies: tests/nas_access.rs.)
@@ -3649,7 +3649,7 @@ fn pass_and_coverage(out: &Out, args: &[String]) -> Result<(String, pipeline::co
         Some(d) => d,
         None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass on the NAS (--pass)")?,
     };
-    let (cov, n) = regions_coverage(out, args, &date, None)?;
+    let (cov, n) = regions_coverage(out, args)?;
     Ok((date, cov, n))
 }
 
@@ -4622,29 +4622,21 @@ fn roadunits(out: &mut Out) -> Result<()> {
 /// else the latest complete pass).
 fn coverage_of(out: &Out, args: &[String]) -> Result<pipeline::coverage::Coverage> {
     let _p = phase("the regions and their outlines read", Class::NasRead);
-    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).unwrap_or_default();
-    // (Kept in this Mac's cache, where the agent names one, while what it's made from is as it was:
-    // pipeline::coverage::Coverage::load, Coverage::accepted.)
-    let cache = std::env::var_os(pipeline::coverage::CACHE_ENV).map(PathBuf::from);
-    Ok(regions_coverage(out, args, &date, cache.as_deref())?.0)
+    Ok(regions_coverage(out, args)?.0)
 }
 
 /// The regions' coverage as a step reads it (pipeline::inputs::regions::read), with the regions'
 /// count: `--regions <dir>`, a scratch folder of region files, through the check's own code in
-/// memory; else the accepted version.
-fn regions_coverage(
-    out: &Out,
-    args: &[String],
-    date: &str,
-    cache: Option<&Path>,
-) -> Result<(pipeline::coverage::Coverage, usize)> {
+/// memory; else the accepted version, kept with its grids in this Mac's cache where the agent names
+/// one (`SCENIC_CACHE`: Coverage::accepted).
+fn regions_coverage(out: &Out, args: &[String]) -> Result<(pipeline::coverage::Coverage, usize)> {
     use pipeline::inputs::regions::read;
     if let Some(dir) = opt(args, "--regions").map(PathBuf::from) {
         return read::coverage_of_folder(out.root(), &out.manifest, &dir);
     }
-    let _ = date;
     let src = read::source(out.root(), &out.manifest)?;
-    let cov = pipeline::coverage::Coverage::accepted(out.root(), &src, cache)?;
+    let cache = std::env::var_os(pipeline::coverage::CACHE_ENV).map(PathBuf::from);
+    let cov = pipeline::coverage::Coverage::accepted(out.root(), &src, cache.as_deref())?;
     let n = cov.by_region().len();
     Ok((cov, n))
 }
