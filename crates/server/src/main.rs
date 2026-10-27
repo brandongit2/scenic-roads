@@ -734,7 +734,16 @@ const OV_LAYERS: [&str; 4] = ["heritage-areas", "indigenous", "special", "whs"];
 fn meta_json(s: &AppState) -> serde_json::Value {
     let cat = s.data.catalogue();
     // An object even before the first catalogue (the app then shows an empty map, not an error).
+    // (The fields the app reads at start that only a built catalogue's meta has: without them it
+    // stopped at setSource, "bounds is not iterable".)
     let mut meta = if cat.meta.is_object() { cat.meta.clone() } else { serde_json::json!({}) };
+    let empty = serde_json::json!({"minzoom": 0, "maxzoom": 0, "bounds": [-180.0, -85.0511, 180.0, 85.0511],
+        "ways": 0, "vertices": 0, "elev_min": 0, "elev_max": 0, "elev_hist_10m_km": [], "built": 0});
+    for (k, v) in empty.as_object().into_iter().flatten() {
+        if meta.get(k).is_none() {
+            meta[k] = v.clone();
+        }
+    }
     let mut versions = serde_json::Map::new();
     // Data served with display names changes with the translations too: their versions carry the
     // translations' version, so a browser's copy cached for good under the old URL isn't used.

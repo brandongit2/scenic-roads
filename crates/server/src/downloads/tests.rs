@@ -1084,3 +1084,61 @@ fn sizes_under_a_megabyte_are_in_kilobytes() {
         ["0 MB", "1 KB", "1 KB", "1 KB", "999 KB", "4 MB", "2.4 GB"]
     );
 }
+
+/// The World's per-tile records (roads' English names by z6 tile, global/roaden/6-x-y) move no
+/// tile: updating the World copies none of a region's files, and a region behind stays behind.
+#[tokio::test(flavor = "multi_thread")]
+async fn updating_the_world_moves_no_region_tile() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (root, two, s) = two_regions(home.path(), nas.path()).await;
+    assert_eq!(call(put_world(State(s.clone()), Json(On { on: true })).await).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+    let mut with = two.clone();
+    put(&store::nasfs::NasRoot::local_for_test(&root), &mut with, "global/roaden/6-33-21", 90);
+    with.global.insert("roaden/6-33-21".into(), "global/roaden/6-33-21".into());
+    let three = next_catalogue(&s, &root, &with, 3, &["layers/roads/hi/6-33-21", "layers/terrain/hi/6-31-21"]);
+    tokio::task::block_in_place(|| settle(&s));
+    let v = get(&s).await;
+    let world = v["world"]["behind"]["bytes"].as_u64().unwrap();
+    assert!(world < 1_000, "the World's update copies its own files alone: {v}");
+
+    assert_eq!(call(post_world_update(State(s.clone()),).await).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+    let pins: BTreeMap<String, Pin> = s.downloads.asked().regions.iter().map(|r| (r.id.clone(), r.pin)).collect();
+    assert_eq!(pins["east"], Pin { cat: 2, to: None }, "East stays behind");
+    assert_eq!(pins["london"], Pin { cat: 2, to: None }, "London stays behind");
+    let m = s.data.mirror.clone().unwrap();
+    assert!(!m.has(three.content("layers/roads/hi/6-33-21").unwrap()), "nothing of East's copied");
+    assert!(!m.has(three.content("layers/terrain/hi/6-31-21").unwrap()), "nothing of London's copied");
+    assert!(tile_cats(&s, &[&two, &three], "6-33-21")
+        .iter()
+        .filter(|(l, _)| l.starts_with("layers/"))
+        .all(|(_, n)| n.contains(&2)));
+}
+
+/// A download whose Update would copy nothing beyond what it keeps already moves on at once, while
+/// the files of a tile another download moved are still being copied: never "out of date" with
+/// nothing to copy.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_download_with_nothing_left_to_copy_moves_on_before_the_copies() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (root, two, s) = two_regions(home.path(), nas.path()).await;
+    let three = next_catalogue(&s, &root, &two, 3, &["layers/terrain/hi/6-31-21"]);
+    // London at 3 (as downloaded again there): East's 31/21 moved, its new terrain not here yet.
+    s.downloads
+        .edit(|a| {
+            *a.pin_mut(&Which::Region("london".into())).unwrap() = Pin { cat: 3, to: None };
+            Ok(())
+        })
+        .unwrap();
+    let m = s.data.mirror.clone().unwrap();
+    assert!(!m.has(three.content("layers/terrain/hi/6-31-21").unwrap()));
+    let v = get(&s).await;
+    assert_eq!(v["regions"]["east"]["behind"]["files"], 0, "{v}");
+    s.downloads.advance(&s.downloads.plan(&s.data), &m);
+    let east = s.downloads.asked().regions.iter().find(|r| r.id == "east").unwrap().pin;
+    assert_eq!(east, Pin { cat: 3, to: None });
+    let v = get(&s).await;
+    assert!(v["regions"]["east"].get("behind").is_none(), "{v}");
+    assert_eq!(v["regions"]["east"]["state"].as_str(), Some("queued"), "{v}");
+}

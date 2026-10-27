@@ -40,7 +40,8 @@
 //! the served one (`Plan::own`). An Update copies, besides its own files, every other download's of
 //! its tiles (`Plan::target`), so a shared tile moves whole. A road from a tile kept behind into a
 //! moved one may lack its info at the crossing until that download is updated too (not found, never
-//! wrong).
+//! wrong). The World moves no tile and is moved by none (`Which::tiled`): its per-tile files index
+//! no base pack.
 //!
 //! - **The World, zoomed out** (`world_part`): the worldwide files, every layer's root and lo
 //!   packs, the landmark points and area details (store::mirror::essentials), and the basemap's
@@ -138,6 +139,15 @@ enum Which {
     World,
     Region(String),
     Detail(String),
+}
+
+impl Which {
+    /// Whether its z6 tiles move whole with other downloads' (module doc, "Whole tiles"): not the
+    /// World's, whose per-tile files (roads' English names, road ids) index no base pack: updating
+    /// it copies none of a region's.
+    fn tiled(&self) -> bool {
+        !matches!(self, Which::World)
+    }
 }
 
 impl Asked {
@@ -302,7 +312,7 @@ impl Plan {
     fn own(&self, w: &Which, pin: Pin) -> Option<Own<'_>> {
         let c = self.eff(pin.cat);
         let old = self.part(w, c)?;
-        if c == self.current {
+        if c == self.current || !w.tiled() {
             return Some(Own { kept: old.items.iter().collect(), taken: Vec::new() });
         }
         let moved = |i: &&Item| tile_of(i).is_some_and(|t| self.moved.contains(&t));
@@ -315,10 +325,13 @@ impl Plan {
     /// files there of the same z6 tiles (a tile moves whole: module doc).
     fn target(&self, w: &Which, n: u64) -> Option<Vec<&Item>> {
         let part = self.part(w, n)?;
+        let mut out: Vec<&Item> = part.items.iter().collect();
+        if !w.tiled() {
+            return Some(out);
+        }
         let tiles: HashSet<(u32, u32)> = part.items.iter().filter_map(tile_of).collect();
         let mut seen: HashSet<&Item> = part.items.iter().collect();
-        let mut out: Vec<&Item> = part.items.iter().collect();
-        for (o, _) in self.asked.pins().iter().filter(|(o, _)| o != w) {
+        for (o, _) in self.asked.pins().iter().filter(|(o, _)| o != w && o.tiled()) {
             for i in self.part(o, n).into_iter().flat_map(|p| p.items.iter()) {
                 if tile_of(i).is_some_and(|t| tiles.contains(&t)) && seen.insert(i) {
                     out.push(i);
@@ -634,11 +647,14 @@ impl Downloads {
                     p = Pin { cat: cur, to: None };
                 }
             }
-            // (Nothing to copy: its catalogue had none of it, or all an Update would copy is here,
-            // through another download or the same files.)
+            // (Nothing to copy: its catalogue had none of it, or each file an Update would copy is
+            // here, through another download, or one it keeps already (the same file, or one of a
+            // tile another download moved, being copied): what the panel says is behind.)
             if p.to.is_none() && p.cat != cur {
                 let none = plan.part(&w, p.cat).is_none();
-                if none || plan.target(&w, cur).is_some_and(|items| complete(items.into_iter(), m)) {
+                let had: HashSet<&Item> = plan.own(&w, p).iter().flat_map(Own::all).collect();
+                let left = |items: Vec<&Item>| items.into_iter().any(|i| !had.contains(i) && !m.is_here(i));
+                if none || plan.target(&w, cur).is_some_and(|items| !left(items)) {
                     p.cat = cur;
                 }
             }
@@ -710,7 +726,7 @@ fn make_plan(generation: u64, version: u64, asked: Asked, current: u64, at: BTre
         .asked
         .pins()
         .iter()
-        .filter(|(_, p)| plan.eff(p.cat) == current)
+        .filter(|(w, p)| w.tiled() && plan.eff(p.cat) == current)
         .filter_map(|(w, _)| plan.part(w, current))
         .flat_map(|p| p.items.iter().filter_map(tile_of))
         .collect();

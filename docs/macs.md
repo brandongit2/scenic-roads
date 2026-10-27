@@ -279,7 +279,9 @@ and codesign.
   road values, basemap piece), so the map never reads one tile from two catalogues. The other
   download keeps its other tiles at its own catalogue, still out of date for those alone (its size
   to copy counts only them). A road crossing from its old tile into a moved one may lack its info at
-  the crossing until it's updated too (a way not found, never a wrong one). A download moves on by
+  the crossing until it's updated too (a way not found, never a wrong one). The World moves no
+  tile: its per-tile files (roads' English names, road ids) index no base pack, so updating it copies
+  none of a region's. A download moves on by
   itself only when that copies nothing (all an update would copy is here: its files are the same in
   the new catalogue, or other downloads brought them; or its catalogue didn't have it yet), or when it has
   nothing whole to keep (not all here when the new catalogue came: the map never mixes a partial
