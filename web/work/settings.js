@@ -146,6 +146,8 @@ export async function putSetting(host, body, what) {
   const key = m ? m.host : ownHost || "";
   const st = kept.get(key) || {};
   kept.set(key, st);
+  // (An older agent's floor is the pool's: set through it, it would set every older Mac's.)
+  if ("battery_floor" in body && !st.said?.battery_floor?.own) { ctx.onError?.(`couldn't set ${what} on ${host}: ${st.said ? "its app is older, its floor the pool's" : "its settings aren't read yet"}`); return false; }
   return set(m, st, body, `${what} on ${host}`);
 }
 
@@ -179,7 +181,8 @@ export function macRows(s) {
     guarded("battery_floor", "Battery floor", () => ({
       now: `${s.battery_floor.pct} %`,
       note: `on battery, ${s.mac || "this Mac"} can't lead below it, and as the lead hands over${s.battery_floor.set ? by(s.battery_floor) : " (the default)"}`,
-      input: { min: 0, max: 100, step: 1, placeholder: "%", offTitle: `Back to the default, ${s.battery_floor.default} %` },
+      // (An older agent's floor is the pool's: shown, not set from here.)
+      input: s.battery_floor.own ? { min: 0, max: 100, step: 1, placeholder: "%", offTitle: `Back to the default, ${s.battery_floor.default} %` } : null,
     })),
   ];
 }

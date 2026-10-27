@@ -54,10 +54,12 @@ pub fn battery_min(home: &Path) -> u8 {
 pub fn set_battery_floor(home: &Path, pct: Option<u8>, by: &str) -> anyhow::Result<Option<BatteryFloor>> {
     anyhow::ensure!(pct.is_none_or(|p| p <= 100), "the battery floor: 0 to 100 %, not {}", pct.unwrap_or(0));
     std::fs::create_dir_all(home)?;
-    // (Set here: the pool's old floor is never taken over it.)
-    store::whole::write(&home.join(MOVED), b"")?;
     let p = home.join(FILE);
+    // (Set here: the pool's old floor is never taken over it. A floor set is written before the
+    // mark, so a failed write leaves moving over to come; off is marked first, so the pool's
+    // floor never comes back in place of the default asked for.)
     let Some(pct) = pct else {
+        store::whole::write(&home.join(MOVED), b"")?;
         match std::fs::remove_file(&p) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => return Ok(None),
@@ -65,6 +67,7 @@ pub fn set_battery_floor(home: &Path, pct: Option<u8>, by: &str) -> anyhow::Resu
     };
     let f = BatteryFloor { pct, by: by.to_string(), at: super::jobs::now_s() };
     store::whole::write(&p, &serde_json::to_vec(&f)?)?;
+    store::whole::write(&home.join(MOVED), b"")?;
     Ok(Some(f))
 }
 

@@ -134,6 +134,9 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
             "pct": floor.as_ref().map_or(cond::DEFAULT_BATTERY_MIN, |f| f.pct),
             "set": floor.is_some(),
             "default": cond::DEFAULT_BATTERY_MIN,
+            // (This Mac's own, task #785: an older agent's answer lacks it, and its floor is
+            // pool-wide, so the page sets none through it.)
+            "own": true,
             "by": floor.as_ref().map(|f| f.by.clone()),
             "at": floor.as_ref().map(|f| f.at),
         },
