@@ -46,18 +46,40 @@ pub struct Opts<'a> {
     /// The stores' folder (`sources/fetched/`): a dataset declared `store` is read from
     /// `<it>/<dataset>/` alone (`stored`).
     pub store: Option<store::nasfs::NasPath>,
-    /// This Mac's whole copies of the stored files (crate::localread, task #689): a stored file read
-    /// at a level holding `COPY_SHARE` of it or more is copied there once and read there.
-    pub local: Option<&'a crate::localread::Local>,
+    /// This Mac's whole copies of the stored files (crate::localread, task #689): a stored file the
+    /// job reads `COPY_SHARE` of or more is copied there once and read there.
+    pub local: Option<Copies<'a>>,
 }
 
-/// The share of a stored file's pixels (its levels' together) the level read must hold for the
-/// file to be copied whole to this Mac (`Opts::local`), not read by ranges on the NAS. A copy runs
-/// at ~100 MB/s; a range read waits ~40 ms on the NAS's seeks, so copying pays from a few percent
-/// read, and this keeps a run over many files at a coarse level (terrain-lo's: 1,648 at its 90th
-/// percentile) to its ranges, its disk unused. GLO-30's levels hold 75, 19, 4.7 and 1.2 % of a
-/// file: the two finest copy. A fill mask, read whole (`Mask::of`), copies.
-pub const COPY_SHARE: f64 = 0.1;
+/// Where stored files are copied (`Opts::local`), and the area (west, south, east, north,
+/// degrees) the job reads, which sets how much of each file it reads.
+#[derive(Clone, Copy)]
+pub struct Copies<'a> {
+    pub local: &'a crate::localread::Local,
+    pub area: [f64; 4],
+}
+
+/// The share of a stored file's pixels (its levels' together) a job must read for the file to be
+/// copied whole to this Mac (`Opts::local`), not read by ranges on the NAS: the read level's share
+/// of the pixels times the share of the file's box inside the job's area (`Copies::area`; a file
+/// whose box isn't in degrees, or isn't known, counts as wholly inside). A copy runs at ~100 MB/s;
+/// a range read waits ~40 ms on the NAS's seeks. At a half, a cold job moves at most twice the
+/// bytes it reads of a file it copies, and the files it reads little of (a coarse level: GLO-30's
+/// levels hold 75, 19, 4.7 and 1.2 % of a file, so all but the finest; terrain-lo's many files;
+/// a file at the area's edge) stay range reads. A fill mask, read whole (`Mask::of`), copies.
+pub const COPY_SHARE: f64 = 0.5;
+
+/// The share of box `b`'s area inside box `area` (both west, south, east, north).
+fn box_share(b: &[f64; 4], area: &[f64; 4]) -> f64 {
+    let wide = (b[2] - b[0]) * (b[3] - b[1]);
+    let w = (b[2].min(area[2]) - b[0].max(area[0])).max(0.0);
+    let h = (b[3].min(area[3]) - b[1].max(area[1])).max(0.0);
+    if wide > 0.0 {
+        w * h / wide
+    } else {
+        1.0
+    }
+}
 
 /// The share of `t`'s pixels image `level` holds.
 fn level_share(t: &Tiff, level: usize) -> f64 {
@@ -441,11 +463,12 @@ fn in_box(b: &[f64; 4], x: f64, y: f64) -> bool {
 
 impl GeoSet<'_> {
     /// A file by URL, from the store where the dataset is kept there, open, with its image read
-    /// (`level`'s answer): a stored file whose level holds `COPY_SHARE` of it or more copied to
-    /// this Mac first (`Opts::local`; the same bytes) and read there.
-    fn source(&self, url: &str, level: impl Fn(&Tiff) -> Result<usize>) -> Result<Option<(Tiff, usize)>> {
+    /// (`pick`'s level) : a stored file of which the job reads `COPY_SHARE` or more (`pick`'s
+    /// share) copied to this Mac first (`Opts::local`; the same bytes) and read there.
+    fn source(&self, url: &str, pick: impl Fn(&Tiff) -> Result<(usize, f64)>) -> Result<Option<(Tiff, usize)>> {
+        let local = self.o.local.map(|c| c.local);
         let (read, nas) = match &self.store {
-            Some(dir) if !url.starts_with('/') => match stored(self.id, dir, url, self.o.local)? {
+            Some(dir) if !url.starts_with('/') => match stored(self.id, dir, url, local)? {
                 Some(s) => (s.read, s.nas),
                 None => return Ok(None),
             },
@@ -455,9 +478,9 @@ impl GeoSet<'_> {
             },
         };
         let t = Tiff::open(read).with_context(|| url.to_string())?;
-        let k = level(&t)?;
-        if let (Some(local), Some((f, len))) = (self.o.local, nas) {
-            if level_share(&t, k) >= COPY_SHARE {
+        let (k, share) = pick(&t)?;
+        if let (Some(local), Some((f, len))) = (local, nas) {
+            if share >= COPY_SHARE {
                 if let store::nasfs::Place::Local(l) = local.path_sized(&f, len) {
                     let t = Tiff::open(Arc::new(PlainFile::open(&l)?)).with_context(|| url.to_string())?;
                     return Ok(Some((t, k)));
@@ -475,7 +498,7 @@ impl GeoSet<'_> {
             .get_or_init(|| {
                 (|| -> Result<Option<Arc<Mask>>> {
                     let (t, _) = self
-                        .source(url, |_| Ok(0))?
+                        .source(url, |_| Ok((0, 1.0)))?
                         .with_context(|| format!("{}: its fill mask {url} isn't on the server", self.id))?;
                     Ok(Some(Arc::new(Mask::of(t).with_context(|| url.clone())?)))
                 })()
@@ -501,7 +524,13 @@ impl GeoSet<'_> {
             return Ok(t.clone());
         }
         let url = &self.files[k].0;
-        let t = match self.source(url, |t| level_for(t, self.crs, self.read_resolution))? {
+        // (The share of file `k` read: its level's, of its box inside the job's area.)
+        let inside = match (self.o.local, self.files[k].1) {
+            (Some(c), Some(b)) if self.crs == 4326 => box_share(&b, &c.area),
+            _ => 1.0,
+        };
+        let pick = |t: &Tiff| level_for(t, self.crs, self.read_resolution).map(|l| (l, level_share(t, l) * inside));
+        let t = match self.source(url, pick)? {
             None => bail!("{}: {url}, which its index lists, isn't on the server (the index is out of date?)", self.id),
             Some((t, level)) => {
                 let id = FILE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

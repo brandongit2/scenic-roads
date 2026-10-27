@@ -16,7 +16,7 @@
 //! whole to this Mac first where it has room: crate::localread; else the network).
 
 use crate::dem::declared::{Plan, Source};
-use crate::dem::generic::{tile_resolution, Opts, Sampler};
+use crate::dem::generic::{tile_resolution, Copies, Opts, Sampler};
 use crate::fetch::Fetch;
 use crate::terrain_pack::{RawSource, RawTiles};
 use crate::terrain_water::WaterSource;
@@ -160,7 +160,11 @@ impl Pool {
     ) -> Result<R> {
         let net = crate::fetch::Fetcher::from_env();
         let fetch = RawFetch::new(raw, self.terrarium.as_deref(), &net);
-        let o = Opts { fetch: &fetch, store: Some(self.store.clone()), local: self.local.as_ref() };
+        let o = Opts {
+            fetch: &fetch,
+            store: Some(self.store.clone()),
+            local: self.local.as_ref().map(|local| Copies { local, area: self.area }),
+        };
         let mid = (self.area[1] + self.area[3]) / 2.0;
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| self.at_zoom(z, mid)).collect();
         let by_row: Vec<OnceLock<Plan>> = (0..BY_ROW).map(|_| OnceLock::new()).collect();

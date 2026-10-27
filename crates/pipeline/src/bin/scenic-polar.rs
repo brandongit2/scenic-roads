@@ -24,7 +24,7 @@ fn main() -> Result<()> {
     // (Over the root's latitudes: z0–3 reach about 80.6° past the cap.)
     let base = pipeline::terrain_base::Pool::read(out.root(), &out.manifest, roadcore::polar::lat_box(pole, 0, 0, 0))?;
     let net = pipeline::fetch::Fetcher::from_env();
-    let o = pipeline::dem::generic::Opts { fetch: &net, store: Some(base.store.clone()), local: base.local.as_ref() };
+    let o = pipeline::dem::generic::Opts { fetch: &net, store: Some(base.store.clone()), local: None };
     let plans = polar::plans(&base.plan, a.max_z);
     let samplers = polar::samplers(&plans, &o)?;
     let dir = a.out.join(pole.letter().to_string());

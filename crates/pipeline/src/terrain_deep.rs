@@ -1337,7 +1337,11 @@ fn make_tiles(
     let bf = BaseFetch::new(fetch);
     // (A stored file read at a fine level from this Mac's whole copy: crate::localread.)
     let local = crate::localread::Local::from_env(store.root());
-    let o = Opts { fetch: &bf, store: Some(store.clone()), local: local.as_ref() };
+    let o = Opts {
+        fetch: &bf,
+        store: Some(store.clone()),
+        local: local.as_ref().map(|local| crate::dem::generic::Copies { local, area: b }),
+    };
     let presence_s = Sampler::new(&presence, &o)?;
     let full_s = Sampler::sharing(&full, &o, &presence_s)?;
     // (The wholly-water pixels' sampler: the plan less its pyramids read tile by tile, where it has

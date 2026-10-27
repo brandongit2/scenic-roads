@@ -1134,9 +1134,10 @@ fn a_mask_answers_as_its_pixels() {
     assert!(!m.masked(9.99, 45.9) && !m.masked(10.71, 45.9) && !m.masked(10.1, 46.01) && !m.masked(10.1, 45.49));
 }
 
-/// Task #689: a stored file read at a level holding `COPY_SHARE` of it or more is copied whole to
-/// this Mac once (crate::localread) and read there, its fill mask too (read whole); one read at a
-/// coarse level stays on the NAS. The heights are those read in place, to the bit; a copy of
+/// Task #689: a stored file the job reads `COPY_SHARE` of or more (its level's share of the pixels
+/// times its box's share inside the job's area) is copied whole to this Mac once
+/// (crate::localread) and read there, its fill mask too (read whole); one read at a coarse level,
+/// or mostly outside the area, stays on the NAS. The heights are those read in place, to the bit; a copy of
 /// another length than the NAS's (a file fetched again) is deleted and copied again.
 #[test]
 fn stored_files_read_finely_are_copied_here_and_read_the_same() {
@@ -1195,7 +1196,9 @@ fn stored_files_read_finely_are_copied_here_and_read_the_same() {
     let root = store::nasfs::NasRoot::local_for_test(&nas);
     let local = crate::localread::Local::new(&root, &cache, 0);
     let bits = |s: &Sampled| (s.elev.iter().map(|e| e.to_bits()).collect::<Vec<_>>(), s.src.clone(), s.blended.clone());
-    let run = |p: &Plan, local: Option<&crate::localread::Local>| {
+    let whole = [9.0, 45.0, 11.0, 47.0];
+    let run = |p: &Plan, area: Option<[f64; 4]>| {
+        let local = area.map(|area| crate::dem::generic::Copies { local: &local, area });
         let o = Opts { fetch: &f, store: Some(root.join("sources/fetched")), local };
         bits(&sample(p, &lon, &lat, &o, &|_| {}).unwrap())
     };
@@ -1210,20 +1213,23 @@ fn stored_files_read_finely_are_copied_here_and_read_the_same() {
     };
     // A coarse level (4.8 %): read in place, the masks alone copied.
     let coarse = plan(Some(400.0));
-    assert_eq!(run(&coarse, Some(&local)), run(&coarse, None));
+    assert_eq!(run(&coarse, Some(whole)), run(&coarse, None));
     assert_eq!(copies(), ["T0_FLM.tif", "T1_FLM.tif"]);
-    // The finest: copied, and read from the copies the same.
+    // The finest over an area holding T0 and a third of T1: T0 copied, T1 (76 % × 1/3) read in place.
     let fine = plan(None);
     let want = run(&fine, None);
     assert!(want.0.iter().any(|&e| f32::from_bits(e).is_finite()));
-    assert_eq!(run(&fine, Some(&local)), want);
+    assert_eq!(run(&fine, Some([9.0, 45.0, 10.0853, 47.0])), want);
+    assert_eq!(copies(), ["T0_DEM.tif", "T0_FLM.tif", "T1_FLM.tif"]);
+    // Over an area holding both: both copied, and read from the copies the same.
+    assert_eq!(run(&fine, Some(whole)), want);
     assert_eq!(copies(), ["T0_DEM.tif", "T0_FLM.tif", "T1_DEM.tif", "T1_FLM.tif"]);
     // A copy of another length: deleted and copied again.
     let copy = cache.join("blobs/sources/fetched/glo/T0_DEM.tif");
     let len = std::fs::metadata(&copy).unwrap().len();
     store::cachefile::release(&copy);
     std::fs::write(&copy, b"short").unwrap();
-    assert_eq!(run(&fine, Some(&local)), want);
+    assert_eq!(run(&fine, Some(whole)), want);
     assert_eq!(std::fs::metadata(&copy).unwrap().len(), len);
     for c in copies() {
         store::cachefile::release(&cache.join("blobs/sources/fetched/glo").join(c));
