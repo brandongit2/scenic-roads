@@ -77,21 +77,7 @@ impl Regions {
         let folder = resolve::Folder::read(v.paths.iter().cloned(), &|p| Ok((v.read)(p)?.to_vec()))?;
         let empty = BTreeMap::new();
         let c = self.ctx.as_ref();
-        let wanted = folder.regions.values().any(|(_, r)| r.needs_data());
-        let data = c.and_then(|c| {
-            c.data.as_ref().or_else(|| {
-                let (root, s) = c.data_from.as_ref().filter(|_| wanted)?;
-                c.data_read
-                    .get_or_init(|| match data::Datasets::read(root, s) {
-                        Ok(d) => d,
-                        Err(e) => {
-                            eprintln!("regions: the datasets can't be read: {e:#}");
-                            None
-                        }
-                    })
-                    .as_ref()
-            })
-        });
+        let data = self.data(&folder);
         let ctx = resolve::Context {
             pass: c.and_then(|c| c.pass.as_deref()),
             outlines: c.and_then(|c| c.outlines.as_ref()),
@@ -103,6 +89,27 @@ impl Regions {
         };
         let out = resolve::resolve(&folder, &ctx);
         Ok((folder, out))
+    }
+}
+
+impl Regions {
+    /// The datasets: given, or read (once) where the accepted sources say, if a region of `folder`
+    /// names them.
+    fn data(&self, folder: &resolve::Folder) -> Option<&data::Datasets> {
+        let c = self.ctx.as_ref()?;
+        let wanted = folder.regions.values().any(|(_, r)| r.needs_data());
+        c.data.as_ref().or_else(|| {
+            let (root, s) = c.data_from.as_ref().filter(|_| wanted)?;
+            c.data_read
+                .get_or_init(|| match data::Datasets::read(root, s) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("regions: the datasets can't be read: {e:#}");
+                        None
+                    }
+                })
+                .as_ref()
+        })
     }
 }
 
@@ -281,6 +288,18 @@ impl Checks for Regions {
             d.facts.insert(path.clone(), (facts, Some(gname.clone())));
             d.store.insert(gname, std::sync::Arc::new(g));
             d.store.insert(dname, std::sync::Arc::new(dr));
+        }
+        // The 12-nautical-mile line, drawn by the region layer: with the pins (the folder's top),
+        // once the datasets are read.
+        if let Some(data) = self.data(&folder).filter(|d| !d.ts12.is_empty()) {
+            if v.paths.contains(resolve::PINS) && !keep.contains(resolve::PINS) {
+                let b = serde_json::to_vec(&serde_json::json!({"fmt": 1, "lines": data.ts12_line()}))?;
+                let name = format!("{}/@drawn/_ts12.{}.json", super::store_dir(UNIT), store::naming::hash16(&b));
+                let mut facts = serde_json::Map::new();
+                facts.insert("ts12".into(), name.clone().into());
+                d.facts.insert(resolve::PINS.to_string(), (facts, None));
+                d.store.insert(name, std::sync::Arc::new(b));
+            }
         }
         Ok(d)
     }

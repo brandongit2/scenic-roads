@@ -509,7 +509,7 @@ without `water` resolves as before, and no new rule changes it: a hand-out gives
 with water (naming one without is `rg-ref`), and one without `water` may not name one with it
 (`rg-ref`). So old and new files sit together, and `cover = "earth"` only holds once every
 file is new. The 12-nautical-mile line is the `regions-territorial-seas` source,
-named only as `ts12:` parts; it divides nothing.
+named as `ts12:` parts; it divides nothing, and the region layer draws it (§6.1.9).
 
 **Examples:**
 ```toml
@@ -691,7 +691,8 @@ as they're read. Their declarations are staged in `producers/sources/`
 credited as their declarations say. `scenic-build regions-check --dir <folder> --declarations
 <folder>` runs the check on a scratch folder in memory with the datasets those declarations name,
 and reports each region's size (a region with water's land and water each read cell by cell and
-summed, never one overlay of the whole: the high seas' would be ~200,000 points).
+summed, never one overlay of the whole: the high seas' would be ~200,000 points), and the
+12-nautical-mile line's size and time (`ts12_line`).
 
 #### 6.1.8 Checks
 
@@ -735,7 +736,13 @@ region file takes it out with the next version.
 - **The region layer** (a switch in Settings → Regions, `/api/regions/layer`): each region's stored
   outline, a light fill coloured by its id's hash, its name as a label; a held region drawn dashed;
   a disabled region drawn too (its feature's `disabled`), since it is checked even though it isn't built.
-  Read from the drawn files, copied to the Mac as the translations are.
+  With it, the 12-nautical-mile line, dotted: Territorial Seas v4's edges more than 2 km from the
+  coastline's land at both ends (their coast side left out), simplified within 100 m
+  (`data::Datasets::ts12_line`), stored by the check once the datasets are read as
+  `sources/inputs/regions/@drawn/_ts12.<hash16>.json` (`{"fmt": 1, "lines": [[[lon, lat], …], …]}`,
+  degrees to 5 decimals, about 270,000 points), named in `_pins.toml`'s `facts.ts12`, one feature
+  (`kind: "ts12"`) of the layer. Read from the drawn files, copied to the Mac as the translations
+  are.
 - **The banner and menu bar** (§4.7).
 
 #### 6.1.10 The switch

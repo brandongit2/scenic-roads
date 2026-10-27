@@ -101,7 +101,8 @@ export type Coverage = GeoJSON.FeatureCollection<GeoJSON.MultiPolygon> & { regio
 /** Every region's accepted outline for drawing, a feature per stored shape (properties: region,
  * name, from, colour, held, disabled). `source` 'catalog': the catalogue's coverage stands in until this Mac
  * has the accepted copy. */
-export type RegionsLayer = GeoJSON.FeatureCollection<GeoJSON.MultiPolygon> & { source?: 'accepted' | 'catalog' };
+/** Every region's outline, and the 12-nautical-mile line (`kind: "ts12"`, lines). */
+export type RegionsLayer = GeoJSON.FeatureCollection<GeoJSON.MultiPolygon | GeoJSON.MultiLineString> & { source?: 'accepted' | 'catalog' };
 export const getRegionsLayer = () => call<RegionsLayer>('/api/regions/layer');
 export const getCoverage = () => call<Coverage>('/api/coverage').then((fc) => ({ ...fc, features: fc.features.map(nested) }));
 
@@ -149,6 +150,7 @@ export function entryLabel(entry: string, area?: Pick<Area, 'name' | 'en' | 'lev
 // The coverage in the app's accent; the area being looked at in a pale white no overlay uses.
 const COVERAGE = '#6fd3a6';
 const PREVIEW = '#dce7f5';
+const TS12 = '#7fb8e6';
 
 /**
  * The regions on the map: the coverage (every region's outline, a thin line and a faint fill), each
@@ -183,12 +185,16 @@ export class RegionLayers {
     map.addSource('regions', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     const colour: ExpressionSpecification = ['coalesce', ['get', 'colour'], COVERAGE];
     const held: ExpressionSpecification = ['to-boolean', ['get', 'held']];
-    map.addLayer({ id: 'regions-fill', type: 'fill', source: 'regions', layout: hidden, paint: { 'fill-color': colour, 'fill-opacity': 0.07 } }, before);
-    map.addLayer({ id: 'regions-line', type: 'line', source: 'regions', filter: ['!', held], layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': colour, 'line-width': width(1), 'line-opacity': 0.75 } }, before);
-    map.addLayer({ id: 'regions-held', type: 'line', source: 'regions', filter: held, layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': colour, 'line-width': width(1), 'line-opacity': 0.75, 'line-dasharray': [3, 2] } }, before);
+    // (The 12-nautical-mile line is a feature of its own, `kind: "ts12"`: no region's.)
+    const region: ExpressionSpecification = ['!', ['has', 'kind']];
+    map.addLayer({ id: 'regions-fill', type: 'fill', source: 'regions', filter: region, layout: hidden, paint: { 'fill-color': colour, 'fill-opacity': 0.07 } }, before);
+    map.addLayer({ id: 'regions-line', type: 'line', source: 'regions', filter: ['all', region, ['!', held]], layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': colour, 'line-width': width(1), 'line-opacity': 0.75 } }, before);
+    map.addLayer({ id: 'regions-held', type: 'line', source: 'regions', filter: ['all', region, held], layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': colour, 'line-width': width(1), 'line-opacity': 0.75, 'line-dasharray': [3, 2] } }, before);
+    // The 12-nautical-mile line (Territorial Seas v4): thin, dotted, the sea's colour.
+    map.addLayer({ id: 'regions-ts12', type: 'line', source: 'regions', filter: ['==', ['get', 'kind'], 'ts12'], layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': TS12, 'line-width': width(0.8), 'line-opacity': 0.7, 'line-dasharray': [1, 2] } }, before);
     // The names on top: a symbol layer isn't draped, so it can't split the draping.
     map.addLayer({
-      id: 'regions-label', type: 'symbol', source: 'regions',
+      id: 'regions-label', type: 'symbol', source: 'regions', filter: region,
       layout: { ...hidden, 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Regular'], 'text-size': 11, 'text-padding': 8 },
       paint: { 'text-color': colour, 'text-halo-color': '#0b0e13', 'text-halo-width': 1.2, 'text-opacity': 0.85 },
     });
@@ -207,7 +213,7 @@ export class RegionLayers {
     const map = this.map;
     const vis = on && features.length ? 'visible' : 'none';
     if (features.length) map.getSource<GeoJSONSource>(src)?.setData({ type: 'FeatureCollection', features });
-    const ids = src === 'regions' ? ['regions-fill', 'regions-line', 'regions-held', 'regions-label'] : [`${src}-fill`, `${src}-line`];
+    const ids = src === 'regions' ? ['regions-fill', 'regions-line', 'regions-held', 'regions-ts12', 'regions-label'] : [`${src}-fill`, `${src}-line`];
     for (const id of ids) if (map.getLayoutProperty(id, 'visibility') !== vis) map.setLayoutProperty(id, 'visibility', vis);
   }
 

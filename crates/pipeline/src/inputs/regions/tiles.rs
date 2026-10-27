@@ -1056,8 +1056,9 @@ fn trace_gaps<'a>(when: &str, data: &super::data::Datasets, areas: impl Fn(Cell)
             "none".to_string()
         } else {
             format!(
-                "{} pieces, median {:.4} km², largest {:.3} km², {:.2} km² in all",
+                "{} pieces ({} over 100 m²), median {:.4} km², largest {:.3} km², {:.2} km² in all",
                 k.len(),
+                k.iter().filter(|x| **x > 1e-4).count(),
                 k[k.len() / 2],
                 k[k.len() - 1],
                 k.iter().sum::<f64>()
@@ -2170,14 +2171,14 @@ fn inside(p: geom::Pt, poly: &[geom::Ring]) -> bool {
 }
 
 /// Rings' segments in a grid of about 2 km, each with its owner's number.
-struct SegIndex {
+pub(super) struct SegIndex {
     grid: std::collections::HashMap<(i64, i64), Vec<(usize, geom::Pt, geom::Pt)>>,
 }
 
 const SEG_CELL: i64 = 20_000;
 
 impl SegIndex {
-    fn new<'a>(rings: impl Iterator<Item = (usize, &'a geom::Ring)>) -> Self {
+    pub(super) fn new<'a>(rings: impl Iterator<Item = (usize, &'a geom::Ring)>) -> Self {
         let mut grid: std::collections::HashMap<(i64, i64), Vec<(usize, geom::Pt, geom::Pt)>> = Default::default();
         for (k, r) in rings {
             let n = r.len();
@@ -2207,7 +2208,7 @@ impl SegIndex {
             .filter(move |(_, m)| *m <= d)
     }
 
-    fn within(&self, p: geom::Pt, d: f64) -> bool {
+    pub(super) fn within(&self, p: geom::Pt, d: f64) -> bool {
         self.near(p, d).next().is_some()
     }
 

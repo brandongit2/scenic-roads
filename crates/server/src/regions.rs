@@ -6,8 +6,9 @@
 //!                                   and the folders' tree (docs/inputs.md §6.1.9); away from the
 //!                                   NAS, the last list read
 //!   GET    /api/regions/layer       every region's accepted outline for drawing (its drawn files,
-//!                                   kept on this Mac), a colour from its id, held or not; the
-//!                                   catalogue's regions until this Mac has the accepted copy
+//!                                   kept on this Mac), a colour from its id, held or not, and the
+//!                                   12-nautical-mile line (`kind: "ts12"`); the catalogue's
+//!                                   regions until this Mac has the accepted copy
 //!   GET    /api/areas/{id}          one outline, simplified (a GeoJSON feature)
 //!   GET    /api/coverage            the coverage the catalogue was built for: its regions' outlines,
 //!                                   simplified (GeoJSON), and the regions
@@ -418,9 +419,12 @@ pub fn sync_accepted(s: &crate::AppState) {
     let read = |p: &str| -> anyhow::Result<Vec<u8>> {
         Ok(crate::views::RemoteFile::new(root.join(p), pool.clone()).read_all()?)
     };
-    if let Err(e) =
-        pipeline::inputs::served::sync_with(&read, pipeline::inputs::regions::UNIT, &accepted_dir(s), &["drawn"])
-    {
+    if let Err(e) = pipeline::inputs::served::sync_with(
+        &read,
+        pipeline::inputs::regions::UNIT,
+        &accepted_dir(s),
+        &["drawn", "ts12"],
+    ) {
         eprintln!("regions: the accepted copy wasn't brought up to date: {e:#}");
     }
 }
@@ -480,6 +484,10 @@ pub async fn layer(State(s): State<S>) -> Response {
         let source = if kept.is_some() {
             let index: Option<pipeline::inputs::served::Kept> = std::fs::read(dir.join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
             for (path, e) in index.map(|k| k.index.files).unwrap_or_default() {
+                // (The 12-nautical-mile line, with the pins: one feature of lines.)
+                if let Some(lines) = e.facts.get("ts12").and_then(Value::as_str).and_then(|n| std::fs::read(dir.join(n)).ok()).and_then(|b| serde_json::from_slice::<Value>(&b).ok()) {
+                    feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiLineString", "coordinates": lines["lines"] }, "properties": { "kind": "ts12" } }));
+                }
                 let Some(drawn) = e.facts.get("drawn").and_then(Value::as_str) else { continue };
                 let disabled = e.facts.get("disabled").and_then(Value::as_bool).unwrap_or(false);
                 let Some(d) = std::fs::read(dir.join(drawn)).ok().and_then(|b| serde_json::from_slice::<pipeline::inputs::regions::stored::Drawn>(&b).ok()) else { continue };
