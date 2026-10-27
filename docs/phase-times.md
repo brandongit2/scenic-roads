@@ -143,6 +143,17 @@ loses a fifth to a third of its time; one over GLO-30 alone changes within the n
 sampling is GLO-30's blocks read and decoded from the NAS, and the blend's distances). Japan's
 runs (§3) are the network's and change by the same CPU amount only.
 
+## 4b. What task #807 did
+
+Measured as §4 was (the M4, release, 3 threads, the NAS read-only, output to scratch, the live
+pool's jobs beside), one binary with the old path switched on by a temporary flag for "before",
+so both ran the same code otherwise. The heights compared tile by tile, every pixel decoded from
+the two deep packs: the pixels changed, the largest and the mean difference.
+
+| change | before → after | the output |
+|---|---|---|
+| **The geoid's offsets on a lattice** (`dem::geoid::Grids::offsets`): found exactly at the corners of a 7.5″ lattice over a call's points and bilinear between them; a point whose corners lack a value or were served by different sources (a grid's edge, a link's grids meeting) read alone, and points spread wider than twice their count in corners read as before. 7.5″ divides EGM2008's 2.5′ grid and its half-pixel, so inside its cells the result is the grid's own bilinear to rounding. Was: every point read bilinearly from the grids (2.2 G a run). | terrain-deep-same 10/258/345 (HRDEM 1 m; 5,011 deep tiles): `the heights brought to EGM2008` 4 min 48 s → 10.8 s of CPU summed over threads; the run 394 → 258 s | 26 of 328 M pixels changed, each by one quantum (1–2 cm: rounding at a quantum's edge), the mean 0.000 m: invisible. Not byte-identical (content name 8c1e32762eb0b1ab, the manifest's 926a54b38aabbe2c) |
+
 ## 5. Not done, with what the data says (the ranking of what's left)
 
 1. **GSI's tiles fetched live, every run (41 % of terrain-hi: 58.6 h in 16 Japan runs; the
@@ -158,13 +169,7 @@ runs (§3) are the network's and change by the same CPU amount only.
    the packing job, room-making), not a fix. The same bytes: a tile is the server's bytes
    whichever copy it's read from. Until then, `TILE_MEMO_BYTES` (512 MB) could hold a run's GSI
    tiles for the blend (a small tile's 2.9 GB wouldn't fit the mini's jobs: the memo is per job).
-2. **The heights brought to EGM2008 (25 % of terrain-deep: 191 s a run summed over threads, CPU).**
-   Every point of every chunk reads the geoid grids bilinearly in f64 (2.2 G points a run). A deep
-   tile's 256 × 256 × 4 points span a few arc-seconds; the geoid's 2.5′ grid is smooth, so the
-   offset over a tile could be found at a tile's corners and interpolated: not byte-identical
-   (the owner allows a measured, invisible difference; EGM2008's gradient is under 1 mm per 10 m
-   nearly everywhere, so a bilinear across a z16 tile's 600 m would differ from the grid's own
-   bilinear by less than the terrain's quantum), to be measured per tile before it's kept.
+2. *(Done by task #807: §4b.)* The heights brought to EGM2008.
 3. **HRDEM at 1 m decoded and bilinearly sampled (48 % of terrain-deep's run summed over
    threads, CPU/wall 2).** The deep tiles sample 2 × 2 points a pixel at the datasets' full
    resolution (K = 2 in crate::terrain_base: 4 bilinear reads a pixel). Profiling `Block::f32_at`

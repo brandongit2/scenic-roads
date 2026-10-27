@@ -432,13 +432,77 @@ impl<'a> Grids<'a> {
     }
 
     /// The offsets (metres) taking heights at the points to `TARGET` by `c`: NaN where a hop has
-    /// no source with a value.
+    /// no source with a value. Found exactly at the corners of a lattice of `LATTICE`° and
+    /// bilinear between them (task #807: the grids' bilinear read per point was a quarter of
+    /// terrain-deep's CPU; a deep chunk's points share a few corners). The lattice divides
+    /// EGM2008's 2.5′ grid and its half, so within its cells the result is its own bilinear,
+    /// to rounding; across a coarser grid's cell edge or a finer grid it differs by the grid's
+    /// curvature over 7.5″ (measured: docs/phase-times.md). A point read exactly where a corner
+    /// has no value or its corners were served by different sources (a grid's edge, a link's
+    /// grids meeting).
     pub fn offsets(&self, c: &Conversion, lon: &[f64], lat: &[f64]) -> Result<Vec<f64>> {
         let n = lon.len();
+        let cell = |v: f64| (v * LATTICE_PER_DEGREE).floor() as i64;
+        // (The lattice's corners over the points' box, when it's small beside them (a chunk, a
+        // tile); points spread wider are read exactly.)
+        let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+        for i in 0..n {
+            if lon[i].is_finite() && lat[i].is_finite() {
+                let (cx, cy) = (cell(lon[i]), cell(lat[i]));
+                (x0, y0, x1, y1) = (x0.min(cx), y0.min(cy), x1.max(cx), y1.max(cy));
+            }
+        }
+        if x0 > x1 || ((x1 - x0 + 2) as u128) * ((y1 - y0 + 2) as u128) > 2 * n as u128 + 64 {
+            return Ok(self.exact(c, lon, lat)?.0);
+        }
+        let w = (x1 - x0 + 2) as usize;
+        let (clon, clat): (Vec<f64>, Vec<f64>) = (0..w * (y1 - y0 + 2) as usize)
+            .map(|j| {
+                (
+                    ((x0 + (j % w) as i64) as f64) / LATTICE_PER_DEGREE,
+                    ((y0 + (j / w) as i64) as f64) / LATTICE_PER_DEGREE,
+                )
+            })
+            .unzip();
+        let mut at = vec![[usize::MAX; 4]; n];
+        for i in 0..n {
+            if lon[i].is_finite() && lat[i].is_finite() {
+                let j = (cell(lat[i]) - y0) as usize * w + (cell(lon[i]) - x0) as usize;
+                at[i] = [j, j + 1, j + w, j + w + 1];
+            }
+        }
+        let (cv, cs) = self.exact(c, &clon, &clat)?;
+        let mut out = vec![f64::NAN; n];
+        let mut alone = Vec::new();
+        for i in 0..n {
+            let k = at[i];
+            if k[0] == usize::MAX || k.iter().any(|&j| !cv[j].is_finite() || cs[j] != cs[k[0]]) {
+                alone.push(i);
+                continue;
+            }
+            let fx = lon[i] * LATTICE_PER_DEGREE - (lon[i] * LATTICE_PER_DEGREE).floor();
+            let fy = lat[i] * LATTICE_PER_DEGREE - (lat[i] * LATTICE_PER_DEGREE).floor();
+            out[i] =
+                (cv[k[0]] * (1.0 - fx) + cv[k[1]] * fx) * (1.0 - fy) + (cv[k[2]] * (1.0 - fx) + cv[k[3]] * fx) * fy;
+        }
+        if !alone.is_empty() {
+            let (lo, la): (Vec<f64>, Vec<f64>) = alone.iter().map(|&i| (lon[i], lat[i])).unzip();
+            for (&i, v) in alone.iter().zip(self.exact(c, &lo, &la)?.0) {
+                out[i] = v;
+            }
+        }
+        Ok(out)
+    }
+
+    /// The offsets read at each point, with which source served each hop there (bit `hop * 8 +
+    /// link`, a hop's links numbered from 0; the same sources, the same smooth surface).
+    pub(crate) fn exact(&self, c: &Conversion, lon: &[f64], lat: &[f64]) -> Result<(Vec<f64>, Vec<u64>)> {
+        let n = lon.len();
         let mut off = vec![0.0f64; n];
-        for hop in &c.hops {
+        let mut by = vec![0u64; n];
+        for (h, hop) in c.hops.iter().enumerate() {
             let mut got = vec![f64::NAN; n];
-            for (link, sign) in &hop.by {
+            for (l, (link, sign)) in hop.by.iter().enumerate() {
                 let todo: Vec<usize> = (0..n).filter(|&i| got[i].is_nan() && off[i].is_finite()).collect();
                 if todo.is_empty() {
                     break;
@@ -453,6 +517,7 @@ impl<'a> Grids<'a> {
                 for (&i, v) in todo.iter().zip(v) {
                     if v.is_finite() {
                         got[i] = *sign as f64 * v;
+                        by[i] |= 1u64.wrapping_shl(((h * 8 + l.min(7)) % 64) as u32);
                     }
                 }
             }
@@ -460,9 +525,12 @@ impl<'a> Grids<'a> {
                 off[i] += got[i];
             }
         }
-        Ok(off)
+        Ok((off, by))
     }
 }
+
+/// The lattice `Grids::offsets` reads exactly, per degree: 7.5″, a twentieth of EGM2008's 2.5′.
+const LATTICE_PER_DEGREE: f64 = 480.0;
 
 #[cfg(test)]
 #[path = "geoid_tests.rs"]

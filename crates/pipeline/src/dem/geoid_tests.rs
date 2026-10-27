@@ -118,3 +118,35 @@ fn offsets_add_grids_bilinearly_the_first_holding_a_point_serving() {
     // Outside every grid of a link: none.
     assert!(off[3].is_nan());
 }
+
+#[test]
+fn offsets_by_the_lattice_are_the_grids_own_where_their_sources_agree() {
+    // (Task #807.) The two grids of one link meeting at 2°, EGM2008's coarser; a chunk's points
+    // dense across the seam: each point's offset as read point by point, to rounding, the seam's
+    // too (their corners served by different grids: read alone).
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("https://e.org/a.tif".to_string(), Some(tiff(-2.0, 2.0, 1.0, |c, r| 10.0 + c as f32 * 0.7 - r as f32)));
+    m.insert("https://e.org/b.tif".to_string(), Some(tiff(2.0, 2.0, 1.0, |c, _| 20.0 + c as f32)));
+    m.insert("https://e.org/egm.tif".to_string(), Some(tiff(-2.0, 2.0, 2.0, |c, r| 5.0 + r as f32 + c as f32 * 0.3)));
+    let s = vec![
+        grid("a", "https://e.org/a.tif", "R", "ell"),
+        grid("b", "https://e.org/b.tif", "R", "ell"),
+        grid("egm", "https://e.org/egm.tif", "EGM2008", "ell"),
+    ];
+    let c = conversion("R", &s).unwrap().unwrap();
+    let f = MapFetch(m);
+    let o = Opts { fetch: &f, store: None, local: None };
+    let g = Grids::new(&o);
+    let (mut lon, mut lat) = (Vec::new(), Vec::new());
+    for j in 0..60 {
+        for i in 0..60 {
+            lon.push(1.97 + i as f64 * 0.001);
+            lat.push(0.2 + j as f64 * 0.0013);
+        }
+    }
+    let fast = g.offsets(&c, &lon, &lat).unwrap();
+    let (exact, _) = g.exact(&c, &lon, &lat).unwrap();
+    for (a, b) in fast.iter().zip(&exact) {
+        assert!((a - b).abs() < 1e-9, "{a} {b}");
+    }
+}
