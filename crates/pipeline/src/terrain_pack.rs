@@ -628,9 +628,14 @@ fn index_stamp(store: &store::nasfs::NasPath) -> Result<Stamp, ()> {
 /// read each, then local, as a terrain job reads thousands). One whose copy failed is read by range
 /// for the rest of the job (`stay`), not copied again for each tile.
 enum Opened {
-    Ranged { archives: Vec<(std::fs::File, Vec<roadcore::archive::Entry>)>, reads: usize, stay: bool },
+    Ranged { archives: RangedArchives, reads: usize, stay: bool },
     Here(std::sync::Arc<[roadcore::archive::Archive]>),
 }
+
+/// A shard's archives read by range: each one's NAS file and its entries. Shared, so a tile is
+/// read from them outside the shard's lock (`archived_by`: a read of the NAS held every other
+/// thread wanting a tile of the shard).
+type RangedArchives = std::sync::Arc<Vec<(std::fs::File, Vec<roadcore::archive::Entry>)>>;
 
 /// The tiles of a shard read straight from the NAS's archives before they're copied here whole.
 const RANGED: usize = 16;
@@ -796,7 +801,7 @@ impl RawTiles {
                 }
             }
             if v.len() == packs.len() {
-                return Some(Opened::Ranged { archives: v, reads: 0, stay: false });
+                return Some(Opened::Ranged { archives: std::sync::Arc::new(v), reads: 0, stay: false });
             }
         }
         None
@@ -834,7 +839,10 @@ impl RawTiles {
 
     /// `archived`, saying in `used` the stamp of the index the shard's archives it looked in were
     /// opened by (taken under the shard's lock: another thread may open them again a moment after),
-    /// so `get` opens them again only when the index has changed since those were opened.
+    /// so `get` opens them again only when the index has changed since those were opened. The
+    /// shard's lock covers opening its archives and choosing which to read; the tile's read (a NAS
+    /// round trip by range) is outside it, so the threads sampling a level read a shard's tiles
+    /// beside each other.
     fn archived_by(&self, z: u8, x: u32, y: u32, used: &mut Option<Stamp>) -> Option<Option<Vec<u8>>> {
         let st = self.store.as_ref()?;
         let shard = crate::rawpack::shard(z, x, y);
@@ -875,25 +883,30 @@ impl RawTiles {
             }
             *used = Some(self.opened_at.lock().unwrap().get(&shard).copied().flatten());
             match c.as_mut()? {
-                Opened::Here(h) => h.clone(),
+                Opened::Here(h) => Ok(h.clone()),
                 Opened::Ranged { archives, reads, .. } => {
                     *reads += 1;
-                    for (f, entries) in archives.iter() {
-                        let Ok(i) = entries.binary_search_by_key(&key, |e| e.key) else { continue };
-                        let mut b = vec![0u8; entries[i].len as usize];
-                        if let Err(e) = store::sys::PosIo::read_exact_at(f, &mut b, entries[i].offset) {
-                            eprintln!("terrain: {z}/{x}/{y} from an archive of {shard}: {e}");
-                            return None;
-                        }
-                        if let Some(t) = whole(&b) {
-                            return Some(t);
-                        }
-                    }
-                    return None;
+                    Err(archives.clone())
                 }
             }
         };
-        here.iter().find_map(|a| a.get(z, x, y).and_then(|b| whole(b)))
+        match here {
+            Ok(here) => here.iter().find_map(|a| a.get(z, x, y).and_then(|b| whole(b))),
+            Err(archives) => {
+                for (f, entries) in archives.iter() {
+                    let Ok(i) = entries.binary_search_by_key(&key, |e| e.key) else { continue };
+                    let mut b = vec![0u8; entries[i].len as usize];
+                    if let Err(e) = store::sys::PosIo::read_exact_at(f, &mut b, entries[i].offset) {
+                        eprintln!("terrain: {z}/{x}/{y} from an archive of {shard}: {e}");
+                        return None;
+                    }
+                    if let Some(t) = whole(&b) {
+                        return Some(t);
+                    }
+                }
+                None
+            }
+        }
     }
 
     /// Whether tile (z, x, y) is in its shard's archives, by its entry alone (no tile read): the
