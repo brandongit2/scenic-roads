@@ -158,9 +158,10 @@ What each step does, in detail. The steps as one table (names, chains, the check
     a pixel of its neighbours, the true ones across a z6 tile's edge too; where the base's finest
     zoom changes with latitude, the neighbour of another zoom read bilinearly at each padding pixel,
     as the server makes a missing tile from its ancestor); the base's water kept by each pixel's
-    share of the base tile's sea and lakes; below zero to 0. Only base tiles whose datasets have data
-    in a 128 × 128 grid of them make any, and only tiles with some of that data are stored, in its
-    deep pack (formats.md, Pack); elsewhere the server makes finer tiles from their ancestors. A
+    share of the base tile's sea and lakes (a pixel wholly water takes the base's height whatever it
+    reads, so its points skip the pyramids read tile by tile, GSI's: task #728); below zero to 0. Only base tiles whose datasets have data
+    in a 128 × 128 grid of them make any, and only tiles with some of that data at a pixel not
+    wholly water are stored, in its deep pack (formats.md, Pack); elsewhere the server makes finer tiles from their ancestors. A
     dataset declared with `regions` (inputs.md §6.8) is fine only in the 1° cells meeting them, as
     the roads read it. A z10 tile with a deep pack (or a retired fine pack) and no target any more
     has it dropped by its run. A target reads its GeoTIFF blocks ahead of their sampling, 48 at

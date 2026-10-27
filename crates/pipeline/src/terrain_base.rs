@@ -171,7 +171,7 @@ impl Pool {
 /// Whether dataset `d` is a tile pyramid read tile by tile over the network at its one zoom: any
 /// but Terrarium's (read through `RawTiles`, at every zoom). GSI's z15 layers: 64 requests a z12
 /// tile each.
-fn by_tile(d: &crate::dem::declared::Dataset) -> bool {
+pub(crate) fn by_tile(d: &crate::dem::declared::Dataset) -> bool {
     matches!(&d.source, Source::Tiles { encoding, .. } if encoding != "terrarium")
 }
 

@@ -24,12 +24,13 @@
 //!   base tiles and the ring of one tile around them, `base_want`, the neighbours' true pixels
 //!   whichever z6 tile holds them), as the map draws the base. The base's water is kept: each pixel
 //!   by its share of the base tile's sea and lakes (crate::terrain_water, at the base's zoom) takes
-//!   the base's flattened height. Below zero to 0, as the base. Stored as every terrain tile is
+//!   the base's flattened height; a pixel wholly water (its share 1) takes it whatever it reads, so
+//!   its points skip the pyramids read tile by tile (GSI's: `Samplers`). Below zero to 0, as the base. Stored as every terrain tile is
 //!   (crate::terrain_codec: lossless WebP), rounded to 1 cm (the native zoom's rounding: every deep
 //!   level is at or past the base's).
 //! - **Only where there's data:** a base tile whose datasets have no data in a 128 × 128 grid of
 //!   it (`PRESENCE`, read as their roads read them) makes none; a deep tile none of whose pixels
-//!   comes from a fine dataset isn't stored (the server makes it from its ancestor, as anywhere
+//!   not wholly water comes from a fine dataset isn't stored (the server makes it from its ancestor, as anywhere
 //!   finer than the data).
 //! - **Read once:** a target reads its datasets' GeoTIFF blocks ahead of their sampling, `FETCHES`
 //!   at once, each once (`read_ahead`, kept in memory by file: `Kept`): first those the presence
@@ -1337,6 +1338,18 @@ fn make_tiles(
     let o = Opts { fetch: &bf, store: Some(store.clone()) };
     let presence_s = Sampler::new(&presence, &o)?;
     let full_s = Sampler::sharing(&full, &o, &presence_s)?;
+    // (The wholly-water pixels' sampler: the plan less its pyramids read tile by tile, where it has
+    // some and the water is given: `deep_tiles`.)
+    let afloat = match water {
+        Some(_) if full.datasets.iter().any(crate::terrain_base::by_tile) => {
+            let mut p = full.clone();
+            p.datasets.retain(|d| !crate::terrain_base::by_tile(d));
+            Some(p)
+        }
+        _ => None,
+    };
+    let afloat_s = afloat.as_ref().map(|p| Sampler::sharing(p, &o, &presence_s)).transpose()?;
+    let samplers = Samplers { ashore: &full_s, afloat: afloat_s.as_ref() };
     // (Its files' reads planned over its base tiles' box, not the z8 tile's.)
     let area = boxes(groups.iter().flatten().map(|g| g.0));
     // Which base tiles their datasets have data in, their blocks read ahead by z10 tile; then the
@@ -1398,7 +1411,7 @@ fn make_tiles(
                 groups[k].par_iter().zip(&with[k]).zip(&todo[k]).filter(|((_, &d), &t)| d && t).for_each_with(
                     tx,
                     |tx, ((&(t, zf), _), _)| {
-                        tx.send((t, deep_tiles(&full_s, water, &decoded, t, zf, &zs))).ok();
+                        tx.send((t, deep_tiles(&samplers, water, &decoded, t, zf, &zs))).ok();
                     },
                 )
             });
@@ -1462,10 +1475,22 @@ fn has_data(presence: &Sampler, b: (u8, u32, u32)) -> Result<bool> {
     Ok(presence.sample(&lon, &lat, &|_| {})?.elev.iter().any(|v| v.is_finite()))
 }
 
-/// Base tile `b`'s deep tiles to zoom `zf`, those of zooms `zs`, with data of a fine dataset (`full`;
-/// `tiles`: the base tiles decoded, its neighbours with it).
+/// The samplers of a target's deep tiles: `ashore`, the fine datasets' plan; `afloat`, it less the
+/// pyramids read tile by tile (crate::terrain_base::by_tile: GSI's), where it has some and the water
+/// is given, for the pixels wholly water.
+struct Samplers<'s, 'a> {
+    ashore: &'s Sampler<'a>,
+    afloat: Option<&'s Sampler<'a>>,
+}
+
+/// Base tile `b`'s deep tiles to zoom `zf`, those of zooms `zs`, with data of a fine dataset at a
+/// pixel not wholly water (`tiles`: the base tiles decoded, its neighbours with it). A pixel wholly
+/// water (its share, as `finish` reads it, 1) takes the base's flattened height whatever it reads,
+/// so it's sampled without the pyramids read tile by tile (`Samplers::afloat`; task #728: over
+/// Japan's seas each of GSI's five layers answers a request a z15 tile with a 404) and counts for
+/// no tile's data.
 fn deep_tiles(
-    full: &Sampler,
+    s: &Samplers,
     water: Option<&dyn crate::terrain_water::WaterSource>,
     tiles: &HashMap<(u8, u32, u32), Vec<f32>>,
     b: (u8, u32, u32),
@@ -1488,15 +1513,47 @@ fn deep_tiles(
         // (A chunk of tiles a call: 1M points at most, ~30 MB a thread.)
         for chunk in ts.chunks(16) {
             let (lon, lat) = points(z, chunk);
-            let s = full.sample(&lon, &lat, &|_| {})?;
+            let afloat: Vec<bool> = match (&share, s.afloat) {
+                (Some(w), Some(_)) => chunk
+                    .iter()
+                    .flat_map(|&(x, y)| {
+                        (0..1usize << 16).map(move |p| up(w, 256, zb, z, x, y, p % 256, p / 256).clamp(0.0, 1.0) == 1.0)
+                    })
+                    .collect(),
+                _ => vec![false; lon.len()],
+            };
+            let sm = match s.afloat.filter(|_| afloat.iter().any(|&a| a)) {
+                Some(af) => {
+                    let pick = |at: bool, v: &[f64]| -> Vec<f64> {
+                        v.iter().zip(&afloat).filter(|p| *p.1 == at).map(|p| *p.0).collect()
+                    };
+                    let a = s.ashore.sample(&pick(false, &lon), &pick(false, &lat), &|_| {})?;
+                    let f = af.sample(&pick(true, &lon), &pick(true, &lat), &|_| {})?;
+                    let (mut ai, mut fi) = (0..a.elev.len(), 0..f.elev.len());
+                    let mut m =
+                        (Vec::with_capacity(lon.len()), Vec::with_capacity(lon.len()), Vec::with_capacity(lon.len()));
+                    for &at in &afloat {
+                        let (r, i) = if at { (&f, fi.next()) } else { (&a, ai.next()) };
+                        let i = i.expect("a height a point");
+                        m.0.push(r.elev[i]);
+                        m.1.push(r.src[i]);
+                        m.2.push(r.blended[i]);
+                    }
+                    m
+                }
+                None => {
+                    let a = s.ashore.sample(&lon, &lat, &|_| {})?;
+                    (a.elev, a.src, a.blended)
+                }
+            };
+            let (elev, src, blended) = sm;
             for (c, &(x, y)) in chunk.iter().enumerate() {
                 let r = c << 16..(c + 1) << 16;
-                if !s.src[r.clone()].iter().any(|&c| c != 0) {
+                if !r.clone().any(|k| src[k] != 0 && !afloat[k]) {
                     continue;
                 }
                 // (Where only the base gives a height, the base read across its edges: `finish`.)
-                let mut e: Vec<f32> =
-                    r.map(|k| if s.src[k] == 0 && !s.blended[k] { f32::NAN } else { s.elev[k] }).collect();
+                let mut e: Vec<f32> = r.map(|k| if src[k] == 0 && !blended[k] { f32::NAN } else { elev[k] }).collect();
                 finish(&mut e, &base, share.as_deref(), zb, z, x, y);
                 out.push((z, x, y, encode(&mut e)?));
             }
@@ -2258,5 +2315,97 @@ mod tests {
         assert_eq!(zs.len(), n, "none twice");
         assert_eq!((rep.tiles, zs.iter().filter(|t| t.0 == 11).count()), (3 + 16, 3), "{zs:?}");
         assert!(!zs.contains(&(11, 597, 261)));
+    }
+
+    /// A fetch counting its requests.
+    struct Asked(crate::fetch::MapFetch, Mutex<Vec<String>>);
+    impl crate::fetch::Fetch for Asked {
+        fn open(&self, url: &str) -> Result<Option<Arc<dyn store::range::RangeRead>>> {
+            self.1.lock().unwrap().push(url.into());
+            self.0.open(url)
+        }
+        fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
+            self.1.lock().unwrap().push(url.into());
+            self.0.get(url)
+        }
+    }
+
+    #[test]
+    fn the_wholly_watery_pixels_read_no_pyramid_tile_and_store_no_tile() {
+        use crate::terrain_water::{tests::*, Kind};
+        // Base tile 12/x/y, its east half sea; a GSI pyramid (z14) with data everywhere, and the base.
+        let (zb, lon, lat) = (12u8, 10.5f64, 45.5f64);
+        let nn = (1u64 << zb) as f64;
+        let x = ((lon + 180.0) / 360.0 * nn) as u32;
+        let y = ((1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
+        let mut rgb = Vec::with_capacity(256 * 256 * 3);
+        for _ in 0..256u32 {
+            for px in 0..256u32 {
+                let v = 100_000 + px;
+                rgb.extend_from_slice(&[(v >> 16) as u8, (v >> 8) as u8, v as u8]);
+            }
+        }
+        let mut gsi = Vec::new();
+        let mut e = png::Encoder::new(&mut gsi, 256, 256);
+        e.set_color(png::ColorType::Rgb);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header().unwrap().write_image_data(&rgb).unwrap();
+        let mut net = crate::fetch::MapFetch::default();
+        for c in -2..6i64 {
+            for r in -2..6i64 {
+                net.0.insert(
+                    format!("https://g.test/14/{}/{}.png", 4 * x as i64 + c, 4 * y as i64 + r),
+                    Some(gsi.clone()),
+                );
+            }
+        }
+        let g = Dataset {
+            id: "g".into(),
+            code: 5,
+            resolution: tile_resolution(14, lat),
+            cover: None,
+            source: Source::Tiles {
+                url: "https://g.test/{z}/{x}/{y}.png".into(),
+                zoom: 14,
+                encoding: "gsi-png".into(),
+            },
+            convert: None,
+            outline: None,
+        };
+        let full = Plan { fmt: 1, version: "t".into(), tag: "t".into(), datasets: vec![g] };
+        let afloat = Plan { datasets: Vec::new(), ..full.clone() };
+        let tiles: HashMap<(u8, u32, u32), Vec<f32>> = [((zb, x, y), vec![20.0f32; 65536])].into_iter().collect();
+        let east: fn(u8, u32, u32) -> Vec<crate::terrain_water::Poly> =
+            |_, _, _| vec![square(Kind::Sea, 1, 128.0, 0.0, 256.0, 256.0)];
+        let water = Fixed(east);
+        let run = |skip: bool| {
+            let f = Asked(crate::fetch::MapFetch(net.0.clone()), Mutex::new(Vec::new()));
+            let o = Opts { fetch: &f, store: None };
+            let a = Sampler::new(&full, &o).unwrap();
+            let b = Sampler::new(&afloat, &o).unwrap();
+            let s = Samplers { ashore: &a, afloat: skip.then_some(&b) };
+            let made = deep_tiles(&s, Some(&water), &tiles, (zb, x, y), 14, &(13..15)).unwrap();
+            let asked =
+                f.1.lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|u| u.contains("/14/"))
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>();
+            (made, asked)
+        };
+        let (before, asked_before) = run(false);
+        let (after, asked_after) = run(true);
+        // Without the skip, every deep tile has data; with it, z14's east column (wholly sea) has none.
+        assert_eq!(before.len(), 4 + 16);
+        let sea = |t: &(u8, u32, u32, Vec<u8>)| t.0 == 14 && t.1 == 4 * x + 3;
+        assert_eq!(before.iter().filter(|t| sea(t)).count(), 4);
+        assert_eq!(after.len(), 4 + 12, "the wholly-sea tiles stored no more");
+        assert!(!after.iter().any(sea));
+        // Every tile stored is the same bytes; the sea's GSI tiles not read.
+        let kept: Vec<_> = before.iter().filter(|t| !sea(t)).collect();
+        assert_eq!(kept, after.iter().collect::<Vec<_>>());
+        assert!(asked_after.len() < asked_before.len(), "{} -> {}", asked_before.len(), asked_after.len());
+        assert!(!asked_after.iter().any(|u| u.contains(&format!("/14/{}/", 4 * x + 5))), "{asked_after:?}");
     }
 }
