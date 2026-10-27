@@ -504,6 +504,9 @@ pub struct Beating {
 /// A round running this long gets its heartbeat written again (by the watchdog, `Watchdog::keep`),
 /// at most this often: a loop that finishes rounds sooner writes its own and no more.
 pub const KEEP_EVERY: u64 = 60;
+/// A round running this long gets its heartbeat kept no more, working or not: a loop spinning
+/// forever (its thread using the CPU) goes out of touch too. Six times `STALL_AFTER` (30 min).
+pub const KEEP_FOR: u64 = 6 * STALL_AFTER.as_secs();
 /// The loop works while it moved within this long (`loop_work`): began a phase, or its thread used
 /// the CPU. A loop that didn't (stuck in a call, or waiting on a lock) gets no beat kept, so its
 /// heartbeat goes out of touch as a stuck loop's should. (The normal beat's interval.)
@@ -591,14 +594,16 @@ impl Watchdog {
     }
 
     /// The loop's heartbeat written again, stamped `now`, when its round has run `KEEP_EVERY` or
-    /// more, it was last written `KEEP_EVERY` ago or more, and the loop worked within `WORKING_S`.
+    /// more but under `KEEP_FOR`, it was last written `KEEP_EVERY` ago or more, and the loop worked
+    /// within `WORKING_S`.
     /// Not while the loop writes its own (its lock held): the next look's.
     fn keep(&mut self, now: u64, round_at: u64) {
         let w = (self.work)();
         if w != self.work_seen {
             (self.work_seen, self.worked_at) = (w, now);
         }
-        if now.saturating_sub(round_at) < KEEP_EVERY || now.saturating_sub(self.worked_at) >= WORKING_S {
+        let ran = now.saturating_sub(round_at);
+        if !(KEEP_EVERY..KEEP_FOR).contains(&ran) || now.saturating_sub(self.worked_at) >= WORKING_S {
             return;
         }
         let mut g = match self.beating.try_lock() {
@@ -901,10 +906,10 @@ pub(crate) mod tests {
         assert_eq!(present_or_missing(Err(io::ErrorKind::PermissionDenied.into())), None);
     }
 
-    /// A round of the loop's that runs 12 minutes on the Virtual clock, the watchdog looking every
+    /// A round of the loop's that runs `mins` minutes on the Virtual clock, the watchdog looking every
     /// 15 s, the loop's work moving (`working`) or not: the heartbeat's times as written (the
     /// loop's at the round's start, the watchdog's after), and the watchdog's folder.
-    fn long_round(working: bool) -> (Vec<u64>, u64, tempfile::TempDir) {
+    fn long_round(working: bool, mins: u64) -> (Vec<u64>, u64, tempfile::TempDir) {
         let clock = store::clock::Virtual::new();
         let secs = |c: &store::clock::Virtual| {
             use store::clock::Clock;
@@ -932,7 +937,7 @@ pub(crate) mod tests {
             beating,
             Box::new(move || w2.load(Ordering::SeqCst)),
         );
-        while secs(&clock) < t0 + 12 * 60 {
+        while secs(&clock) < t0 + mins * 60 {
             clock.advance(Duration::from_secs(15));
             if working {
                 work.fetch_add(7, Ordering::SeqCst);
@@ -941,7 +946,7 @@ pub(crate) mod tests {
             dog.look(now, t0);
             let last = *beats.lock().unwrap().last().unwrap();
             let beat = crate::pool::Beat { beat: last, ..Default::default() };
-            if working {
+            if working && now - t0 < KEEP_FOR {
                 assert!(!beat.out_of_touch(now), "in touch {} s in", now - t0);
             }
         }
@@ -951,7 +956,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_slow_phase_that_works_keeps_the_heartbeat_in_touch() {
-        let (beats, now, _d) = long_round(true);
+        let (beats, now, _d) = long_round(true, 12);
         assert!(beats.len() > 2, "{beats:?}");
         // (At most one more a minute: the loop's own interval is two.)
         assert!(beats.windows(2).all(|w| w[1] - w[0] >= KEEP_EVERY), "{beats:?}");
@@ -959,8 +964,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_loop_working_past_the_cap_goes_out_of_touch() {
+        let (beats, now, _d) = long_round(true, 50);
+        let last = *beats.last().unwrap();
+        assert!(last - beats[0] < KEEP_FOR, "{beats:?}");
+        assert!(last - beats[0] >= KEEP_FOR - KEEP_EVERY - 15, "{beats:?}");
+        assert!(crate::pool::Beat { beat: last, ..Default::default() }.out_of_touch(now));
+    }
+
+    #[test]
     fn a_stuck_loop_goes_out_of_touch_and_is_flagged_a_stall() {
-        let (beats, now, d) = long_round(false);
+        let (beats, now, d) = long_round(false, 12);
         // (Kept no longer than `WORKING_S` past its last work: its start here.)
         let last = *beats.last().unwrap();
         assert!(last - beats[0] < WORKING_S, "{beats:?}");

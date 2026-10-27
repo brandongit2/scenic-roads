@@ -1103,7 +1103,8 @@ the agent's folder) through a long round (task #795: under load a plan took 94â€
 checklist 261 s). Once a round has run a minute, it writes the heartbeat the loop last wrote again,
 its content as it was and only its time new, at most once a minute (`KEEP_EVERY`), and only while
 the loop works: it began a phase or its thread used the CPU within the last two minutes
-(`WORKING_S`). A loop stuck in a call or waiting on a lock does neither, so its heartbeat stops and
+(`WORKING_S`), and for at most 30 minutes of a round (`KEEP_FOR`, six times `STALL_AFTER`): past
+it, a loop that still uses the CPU (spinning) goes out of touch too. A loop stuck in a call or waiting on a lock does neither, so its heartbeat stops and
 goes out of touch as before (the status bar's six minutes, the helpers' ten), and the stall is
 flagged as above. A kept heartbeat's content is as of the loop's last write (its jobs, conditions,
 forecast): only its time says the loop still works. The loop holds the heartbeat while it writes
