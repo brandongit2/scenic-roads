@@ -764,7 +764,9 @@ fn output_within(
     let o = drain(child.stdout.take().map(|r| Box::new(r) as _));
     let e = drain(child.stderr.take().map(|r| Box::new(r) as _));
     let t = std::time::Instant::now();
-    let mut stopped = false;
+    // (Signals only while the child is unreaped: its PID, the group's id, can't be reused till
+    // try_wait reaps it, and the loop ends there. Each signal goes once.)
+    let (mut stopped, mut killed) = (false, false);
     let status = loop {
         if let Some(st) = child.try_wait()? {
             break st;
@@ -772,9 +774,9 @@ fn output_within(
         if !stopped && t.elapsed() > deadline {
             stopped = true;
             crate::sys::signal_group(pgid, crate::sys::Signal::Term);
-        } else if stopped && t.elapsed() > deadline + grace {
+        } else if stopped && !killed && t.elapsed() > deadline + grace {
+            killed = true;
             crate::sys::signal_group(pgid, crate::sys::Signal::Kill);
-            child.kill().ok();
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
