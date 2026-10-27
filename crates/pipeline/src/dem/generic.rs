@@ -1599,12 +1599,18 @@ fn membership(cover: &Cover, lon: &[f64], lat: &[f64]) -> Vec<bool> {
     out.par_chunks_mut(MEMBER_RUN).enumerate().for_each(|(c, o)| {
         let at = c * MEMBER_RUN;
         let (lo, la) = (&lon[at..at + o.len()], &lat[at..at + o.len()]);
-        let b = lo
-            .iter()
-            .zip(la)
-            .fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, (&x, &y)| {
-                [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]
-            });
+        // (A NaN point makes the box NaN, so the run goes point by point: f64::min would skip it,
+        // and `contains` answers a NaN by cell 0,0, not by the box.)
+        let b = lo.iter().zip(la).fold(
+            [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY],
+            |b, (&x, &y)| {
+                if x.is_nan() || y.is_nan() || b[0].is_nan() {
+                    [f64::NAN; 4]
+                } else {
+                    [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]
+                }
+            },
+        );
         match cover.contains_box(b) {
             Some(v) => o.fill(v),
             None => {

@@ -1247,3 +1247,17 @@ fn stored_files_read_finely_are_copied_here_and_read_the_same() {
         store::cachefile::release(&cache.join("blobs/sources/fetched/glo").join(c));
     }
 }
+
+/// A run holding a NaN point is asked point by point (`membership`): the box of the others would
+/// otherwise answer for it, where `contains` answers a NaN by cell 0,0.
+#[test]
+fn membership_asks_a_nan_point_alone() {
+    let cover = Cover::of(Some(&[[10.0, 45.0, 11.0, 46.0]]));
+    let mut lon = vec![10.5; 8];
+    let lat = vec![45.5; 8];
+    lon[3] = f64::NAN;
+    let m = membership(&cover, &lon, &lat);
+    let each: Vec<bool> = lon.iter().zip(&lat).map(|(&x, &y)| cover.contains(x, y)).collect();
+    assert_eq!(m, each);
+    assert!(!m[3] && m[0] && m[7]);
+}
