@@ -14,14 +14,16 @@
 //! absolute error.
 
 use super::fcarchive::Entry;
+use super::forecast::{self, Record};
 use crate::coord::history::Event;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-/// A job done, as the history says it.
+/// A job done, as the history says it: its slot (the history's worker), its Mac.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Actual {
+    pub worker: String,
     pub mac: String,
     pub step: String,
     pub targets: Vec<String>,
@@ -46,8 +48,9 @@ pub fn actuals(events: &[Event]) -> Vec<Actual> {
                 let back = e.t.saturating_sub(e.secs.unwrap_or(0.0).max(0.0) as u64);
                 let start = e.lease.and_then(|l| leased.get(&l).copied()).unwrap_or(back);
                 // (A lead's slot past its first is named `<Mac> #k` in the history, as its lane.)
+                let worker = mac.clone();
                 let mac = mac.split(" #").next().unwrap_or(mac).to_string();
-                out.push(Actual { mac, step: step.clone(), targets: e.targets.clone(), start, end: e.t });
+                out.push(Actual { worker, mac, step: step.clone(), targets: e.targets.clone(), start, end: e.t });
             }
             _ => {}
         }
@@ -135,6 +138,21 @@ impl Errors {
     }
 }
 
+/// How often the jobs ran in the order forecast: over the pairs of jobs a forecast placed that both
+/// started after it was made (and not at the same time, nor forecast to), the share whose starts
+/// came in the forecast's order; overall, and of the pairs both forecast to start within
+/// `NEAR_S` of it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Order {
+    pub pairs: u64,
+    pub in_order: f64,
+    pub near_pairs: u64,
+    pub near_in_order: f64,
+}
+
+/// The span `Order`'s near pairs are forecast to start within.
+pub const NEAR_S: u64 = 4 * 3600;
+
 /// The check's answer.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Report {
@@ -144,9 +162,11 @@ pub struct Report {
     pub forecasts: usize,
     pub jobs_done: usize,
     /// Of those jobs, how many some forecast placed, and the share of the (forecast, job) pairs
-    /// whose forecast had the Mac that ran it.
+    /// whose forecast had the Mac that ran it, and the slot.
     pub jobs_forecast: usize,
     pub same_mac: f64,
+    pub same_slot: f64,
+    pub order: Order,
     /// Targets forecast to end before the history's last event that no job did by then (a forecast
     /// each): work forecast that didn't happen as placed (dropped, failed, or under another target).
     pub not_done: usize,
@@ -155,16 +175,27 @@ pub struct Report {
     pub end: Errors,
 }
 
-/// The samples of `entries` held to `jobs` (`actuals`), and the targets forecast to end by `last`
-/// (unix s) that no job did, and the jobs some forecast placed, and the pairs with the same Mac.
-pub fn samples(entries: &[Entry], jobs: &[Actual], last: u64) -> (Vec<Sample>, BTreeMap<String, usize>, usize, usize) {
+/// `entries` held to `jobs` (`actuals`): the samples, the targets forecast to end by `last` (unix s)
+/// that no job did, by step, the jobs some forecast placed, the samples whose forecast had the Mac
+/// and the slot that ran it, and the order's pairs (all, in order, near, near in order).
+struct Matched {
+    samples: Vec<Sample>,
+    not_done: BTreeMap<String, usize>,
+    placed: usize,
+    same_mac: usize,
+    same_slot: usize,
+    pairs: [u64; 4],
+}
+
+fn matched(entries: &[Entry], jobs: &[Actual], last: u64) -> Matched {
     let mut by_target: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
     for (k, a) in jobs.iter().enumerate() {
         for t in &a.targets {
             by_target.entry((&a.step, t)).or_default().push(k);
         }
     }
-    let (mut out, mut not_done, mut same) = (Vec::new(), BTreeMap::<String, usize>::new(), 0);
+    let mut m =
+        Matched { samples: Vec::new(), not_done: BTreeMap::new(), placed: 0, same_mac: 0, same_slot: 0, pairs: [0; 4] };
     let mut placed = vec![false; jobs.len()];
     for e in entries {
         // Job → (earliest start, latest end, its first target's lane), as this forecast placed it.
@@ -180,15 +211,18 @@ pub fn samples(entries: &[Entry], jobs: &[Actual], last: u64) -> (Vec<Sample>, B
                     g.0 = g.0.min(*from);
                     g.1 = g.1.max(*until);
                 }
-                None if *until < last => *not_done.entry(p.step.clone()).or_default() += 1,
+                None if *until < last => *m.not_done.entry(p.step.clone()).or_default() += 1,
                 None => {}
             }
         }
+        // (The jobs started after it: forecast start, actual start, for the order.)
+        let mut starts: Vec<(u64, u64)> = Vec::new();
         for (k, (from, until, lane)) in got {
             let a = &jobs[k];
             placed[k] = true;
-            let mac = e.lanes.get(lane).map_or("", |l| l.mac.as_str());
-            same += usize::from(mac == a.mac);
+            let l = e.lanes.get(lane);
+            m.same_mac += usize::from(l.is_some_and(|l| l.mac == a.mac));
+            m.same_slot += usize::from(l.is_some_and(|l| l.name == a.worker));
             let s = |end: bool, horizon_s: u64, err_s: f64| Sample {
                 end,
                 step: a.step.clone(),
@@ -197,14 +231,29 @@ pub fn samples(entries: &[Entry], jobs: &[Actual], last: u64) -> (Vec<Sample>, B
                 horizon_s,
                 err_s,
             };
-            out.push(s(true, until.saturating_sub(e.at), until as f64 - a.end as f64));
+            m.samples.push(s(true, until.saturating_sub(e.at), until as f64 - a.end as f64));
             if a.start > e.at {
-                out.push(s(false, from.saturating_sub(e.at), from as f64 - a.start as f64));
+                m.samples.push(s(false, from.saturating_sub(e.at), from as f64 - a.start as f64));
+                starts.push((from, a.start));
+            }
+        }
+        for (i, x) in starts.iter().enumerate() {
+            for y in &starts[i + 1..] {
+                if x.0 == y.0 || x.1 == y.1 {
+                    continue;
+                }
+                let ok = u64::from((x.0 < y.0) == (x.1 < y.1));
+                m.pairs[0] += 1;
+                m.pairs[1] += ok;
+                if x.0.max(y.0) < e.at + NEAR_S {
+                    m.pairs[2] += 1;
+                    m.pairs[3] += ok;
+                }
             }
         }
     }
-    let n = placed.iter().filter(|p| **p).count();
-    (out, not_done, n, same)
+    m.placed = placed.iter().filter(|p| **p).count();
+    m
 }
 
 /// The check of the forecasts `entries` against `events`, over `from`..`to` (unix s): the jobs that
@@ -212,21 +261,180 @@ pub fn samples(entries: &[Entry], jobs: &[Actual], last: u64) -> (Vec<Sample>, B
 pub fn check(entries: &[Entry], events: &[Event], from: u64, to: u64) -> Report {
     let jobs: Vec<Actual> = actuals(events).into_iter().filter(|a| a.end >= from && a.end < to).collect();
     let last = events.iter().map(|e| e.t).max().unwrap_or(0).min(to);
-    let (s, not_done_by_step, jobs_forecast, same) = samples(entries, &jobs, last);
-    let ends: Vec<&Sample> = s.iter().filter(|x| x.end).collect();
-    let starts: Vec<&Sample> = s.iter().filter(|x| !x.end).collect();
+    let m = matched(entries, &jobs, last);
+    let ends: Vec<&Sample> = m.samples.iter().filter(|x| x.end).collect();
+    let starts: Vec<&Sample> = m.samples.iter().filter(|x| !x.end).collect();
+    let share = |n: u64, of: u64| if of == 0 { 0.0 } else { (n as f64 / of as f64 * 100.0).round() / 100.0 };
     Report {
         from,
         to,
         forecasts: entries.len(),
         jobs_done: jobs.len(),
-        jobs_forecast,
-        same_mac: if ends.is_empty() { 0.0 } else { (same as f64 / ends.len() as f64 * 100.0).round() / 100.0 },
-        not_done: not_done_by_step.values().sum(),
-        not_done_by_step,
+        jobs_forecast: m.placed,
+        same_mac: share(m.same_mac as u64, ends.len() as u64),
+        same_slot: share(m.same_slot as u64, ends.len() as u64),
+        order: Order {
+            pairs: m.pairs[0],
+            in_order: share(m.pairs[1], m.pairs[0]),
+            near_pairs: m.pairs[2],
+            near_in_order: share(m.pairs[3], m.pairs[2]),
+        },
+        not_done: m.not_done.values().sum(),
+        not_done_by_step: m.not_done,
         start: Errors::of(&starts),
         end: Errors::of(&ends),
     }
+}
+
+/// The history's events once each: a lead's file and a member's that led before both hold the
+/// terms it led (as `backtest_against_the_history` reads them), in time order.
+pub fn dedup(mut events: Vec<Event>) -> Vec<Event> {
+    let key = |e: &Event| (e.t, e.kind.clone(), e.lease, e.worker.clone(), e.targets.clone());
+    events.sort_by_key(key);
+    events.dedup_by(|a, b| key(a) == key(b));
+    events
+}
+
+/// The terms' forecast inputs (state/build/term/<E>/forecast-input.json, each term's last: docs/pool.md
+/// §10) made from `from` to `to`, in time order. One that doesn't read is skipped, said.
+pub fn records(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Record<'static>> {
+    let mut out: Vec<Record<'static>> = Vec::new();
+    for t in root.join("state/build/term").read_dir().unwrap_or_default() {
+        let p = t.path.join("forecast-input.json");
+        let Ok(b) = p.read() else { continue };
+        match Record::from_bytes(&b) {
+            Ok(r) if (from..to).contains(&r.input.now) => out.push(r),
+            Ok(_) => {}
+            Err(e) => eprintln!("forecast-check: {}: {e}", t.path.file_name().unwrap_or("?")),
+        }
+    }
+    out.sort_by_key(|r| r.input.now);
+    out
+}
+
+/// `records` rerun (in time order) and archived as the lead archives its forecasts (`Entry::of`):
+/// with `new`, as the forecast is now, each step's pace (`forecast::step_pace`) from the history
+/// before it and the costs the records before it (and it) noted, its workers' speeds its lanes'
+/// with their Mac's hold (`Input::held`) taken off, and each lane's job under way held to its
+/// step's longest of late (`forecast::cap_busy`); else as it was (code 1: neither).
+pub fn replay(records: &[Record<'static>], events: &[Event], new: bool) -> Vec<Entry> {
+    let mut noted = forecast::Noted::default();
+    let mut out = Vec::new();
+    for r in records {
+        let mut r = r.clone();
+        let inp = &mut r.input;
+        inp.step_pace.clear();
+        if new {
+            noted.note(inp);
+            let speeds: BTreeMap<String, f64> = inp
+                .machines
+                .iter()
+                .map(|m| {
+                    let mac = m.mac.clone().unwrap_or_else(|| m.name.clone());
+                    let util = inp.held.get(&mac).map_or(1.0, |h| h.util).max(0.01);
+                    (m.name.clone(), m.speed / util)
+                })
+                .collect();
+            let speed = |w: &str| speeds.get(w).copied().unwrap_or(1.0);
+            inp.step_pace = forecast::step_pace(events, inp.now, &noted, &speed);
+            let longest = forecast::longest_jobs(events, inp.now);
+            forecast::cap_busy(inp, &longest);
+        }
+        let f = r.forecast();
+        let mut e = Entry::of(&r, &f, "replay");
+        e.code = if new { forecast::VERSION } else { 1 };
+        out.push(e);
+    }
+    out
+}
+
+/// The backtest's answer: the records before `split` (train) and from it (test), each replayed
+/// old and new and checked against the history's jobs that ended from the record on.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Backtest {
+    pub split: u64,
+    pub train: [Report; 2],
+    pub test: [Report; 2],
+}
+
+/// The backtest of `records` (`replay`, old and new) against `events`, over `from`..`to`.
+pub fn backtest(records: &[Record<'static>], events: &[Event], from: u64, to: u64, split: u64) -> Backtest {
+    let run = |new: bool| replay(records, events, new);
+    let (old, new) = std::thread::scope(|s| {
+        let o = s.spawn(|| run(false));
+        let n = run(true);
+        (o.join().unwrap_or_else(|e| std::panic::resume_unwind(e)), n)
+    });
+    let part =
+        |es: &[Entry], test: bool| -> Vec<Entry> { es.iter().filter(|e| (e.at >= split) == test).cloned().collect() };
+    let rep = |es: &[Entry], test: bool| check(&part(es, test), events, if test { split } else { from }, to);
+    Backtest { split, train: [rep(&old, false), rep(&new, false)], test: [rep(&old, true), rep(&new, true)] }
+}
+
+/// The backtest as text: for the test set, then the train set, the end's and the start's errors
+/// old against new (minutes), and the order.
+pub fn backtest_text(b: &Backtest) -> String {
+    let mut o = String::new();
+    let m = |s: f64| s / 60.0;
+    let _ = writeln!(
+        o,
+        "Backtest: the terms' forecast inputs rerun, old (code 1) against new (code {}).",
+        forecast::VERSION
+    );
+    let _ = writeln!(o, "Error = forecast - actual, minutes; median and p90 of the absolute error.");
+    let d = super::backup::format_day(std::time::UNIX_EPOCH + std::time::Duration::from_secs(b.split));
+    let split = format!("{d} {:02}:{:02} UTC", b.split % 86_400 / 3600, b.split % 3600 / 60);
+    for (name, r) in [(format!("Test (from {split})"), &b.test), ("Train (before it)".to_string(), &b.train)] {
+        let _ = writeln!(
+            o,
+            "\n{name}: {} inputs, {} jobs done, {} forecast.",
+            r[0].forecasts, r[0].jobs_done, r[0].jobs_forecast
+        );
+        let _ = writeln!(
+            o,
+            "  same Mac {:.0} % -> {:.0} %; same slot {:.0} % -> {:.0} %; in order {:.0} % -> {:.0} % ({} pairs), within {} h {:.0} % -> {:.0} %",
+            r[0].same_mac * 100.0,
+            r[1].same_mac * 100.0,
+            r[0].same_slot * 100.0,
+            r[1].same_slot * 100.0,
+            r[0].order.in_order * 100.0,
+            r[1].order.in_order * 100.0,
+            r[0].order.pairs,
+            NEAR_S / 3600,
+            r[0].order.near_in_order * 100.0,
+            r[1].order.near_in_order * 100.0,
+        );
+        for (what, old, new) in [("End", &r[0].end, &r[1].end), ("Start", &r[0].start, &r[1].start)] {
+            let _ = writeln!(
+                o,
+                "  {what:<22} {:>6} {:>8} {:>8} {:>8} | {:>6} {:>8} {:>8} {:>8}",
+                "n", "bias", "median", "p90", "n", "bias", "median", "p90"
+            );
+            let row = |o: &mut String, k: &str, a: &Stats, b: &Stats| {
+                let _ = writeln!(
+                    o,
+                    "    {k:<20} {:>6} {:>+8.1} {:>8.1} {:>8.1} | {:>6} {:>+8.1} {:>8.1} {:>8.1}",
+                    a.n,
+                    m(a.bias_s),
+                    m(a.median_abs_s),
+                    m(a.p90_abs_s),
+                    b.n,
+                    m(b.bias_s),
+                    m(b.median_abs_s),
+                    m(b.p90_abs_s)
+                );
+            };
+            row(&mut o, "all", &old.all, &new.all);
+            for (h, s) in &old.by_horizon {
+                let n = new.by_horizon.iter().find(|x| &x.0 == h).map(|x| x.1.clone()).unwrap_or_default();
+                row(&mut o, h, s, &n);
+            }
+            for (k, s) in &old.by_step {
+                row(&mut o, k, s, &new.by_step.get(k).cloned().unwrap_or_default());
+            }
+        }
+    }
+    o
 }
 
 /// The report as text: a table each for the end and the start, in minutes.
@@ -249,6 +457,16 @@ pub fn text(r: &Report) -> String {
         let by: Vec<String> = r.not_done_by_step.iter().map(|(k, n)| format!("{k} {n}")).collect();
         let _ = writeln!(o, "  (by step: {})", by.join(", "));
     }
+    let _ = writeln!(
+        o,
+        "The slot that ran it {:.0} % of the time. Jobs started in the order forecast: {:.0} % of {} pairs; of those forecast to start within {} h, {:.0} % of {}.",
+        r.same_slot * 100.0,
+        r.order.in_order * 100.0,
+        r.order.pairs,
+        NEAR_S / 3600,
+        r.order.near_in_order * 100.0,
+        r.order.near_pairs
+    );
     let _ = writeln!(
         o,
         "Error = forecast - actual, in minutes (+: the forecast was late; -: early); a sample a forecast and job."
@@ -438,6 +656,86 @@ mod tests {
         assert_eq!(r.start.all.n, 1);
         assert_eq!(r.start.all.bias_s, 0.0);
         assert_eq!(r.end.all.bias_s, 0.0);
+    }
+
+    #[test]
+    fn the_order_and_the_slot_are_held_to_the_history() {
+        // a, b, c forecast to start in that order on m; they started b, a, c, b on m's second slot.
+        let es = vec![
+            ev(1000, "lease", "m", Some(1), "unit", &["a"], None),
+            ev(1500, "done", "m", Some(1), "unit", &["a"], None),
+            ev(900, "lease", "m #2", Some(2), "unit", &["b"], None),
+            ev(1400, "done", "m #2", Some(2), "unit", &["b"], None),
+            ev(2000, "lease", "m", Some(3), "unit", &["c"], None),
+            ev(2500, "done", "m", Some(3), "unit", &["c"], None),
+        ];
+        let e = entry(500, vec![(1, 0, "a", 100, 600), (1, 0, "b", 600, 1100), (1, 0, "c", 20_000, 20_500)]);
+        let r = check(&[e], &es, 0, 30_000);
+        // Pairs: (a, b) out of order; (a, c), (b, c) in order; c past the near span.
+        assert_eq!(r.order, Order { pairs: 3, in_order: 0.67, near_pairs: 1, near_in_order: 0.0 });
+        assert_eq!((r.same_mac, r.same_slot), (1.0, 0.67));
+        assert!(text(&r).contains("in the order forecast: 67 % of 3 pairs"), "{}", text(&r));
+    }
+
+    /// The replay: old runs each target at its cost; new at its step's pace from the jobs done
+    /// since an earlier record noted their costs, and is archived as code `VERSION`.
+    #[test]
+    fn the_replay_runs_old_and_new_on_the_records() {
+        use super::super::forecast::{Cadence, Cost, Input, Machine};
+        let rec = |now: u64, targets: std::ops::Range<u32>| {
+            let c = Cost { secs: 600.0, known: true, peak_mb: 100 };
+            Record {
+                input: Input {
+                    now,
+                    before: Vec::new(),
+                    regions: std::borrow::Cow::Owned(Vec::new()),
+                    costs: Default::default(),
+                    cadence: Cadence::default(),
+                    blind: None,
+                    chains: targets.map(|i| ("depth".to_string(), format!("6/1/{i}"), c)).collect(),
+                    after: Vec::new(),
+                    idle: Vec::new(),
+                    machines: vec![Machine {
+                        name: "m4".into(),
+                        speed: 1.0,
+                        measured: true,
+                        mem_mb: 8000,
+                        ..Default::default()
+                    }],
+                    running: BTreeMap::new(),
+                    macs: BTreeMap::new(),
+                    sched: None,
+                    release: Vec::new(),
+                    held: Default::default(),
+                    pace: None,
+                    step_pace: Default::default(),
+                },
+                each_s: BTreeMap::new(),
+                waiting: BTreeMap::new(),
+            }
+        };
+        // Three depth targets noted at 600 s at 10,000, done by 12,000 in 300 s each; the next
+        // record's left at 20,000.
+        let es: Vec<Event> =
+            (0..3).map(|i| ev(11_000 + i, "end", "m4", None, "depth", &[&format!("6/1/{i}")], Some(300.0))).collect();
+        let records = vec![rec(10_000, 0..3), rec(20_000, 3..5)];
+        let span = |es: &[Entry]| {
+            let p = es[1].placed();
+            (es[1].code, p[0].until - p[0].from)
+        };
+        assert_eq!(span(&replay(&records, &es, false)), (1, 600));
+        assert_eq!(span(&replay(&records, &es, true)), (forecast::VERSION, 300));
+        // The backtest: the second record the test set's.
+        let b = backtest(&records, &es, 0, 30_000, 15_000);
+        assert_eq!((b.train[0].forecasts, b.test[1].forecasts), (1, 1));
+        assert!(backtest_text(&b).contains("Test (from 1970-01-01 04:10 UTC)"), "{}", backtest_text(&b));
+    }
+
+    #[test]
+    fn the_history_read_twice_is_kept_once() {
+        let e = ev(1000, "done", "m", Some(1), "unit", &["a"], None);
+        let d = dedup(vec![e.clone(), ev(900, "lease", "m", Some(1), "unit", &["a"], None), e]);
+        assert_eq!(d.iter().map(|e| e.t).collect::<Vec<_>>(), [900, 1000]);
     }
 
     #[test]

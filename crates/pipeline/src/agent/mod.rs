@@ -1560,6 +1560,9 @@ pub struct Agent {
     /// The forecasts' runs of the last `forecast::PACE_MAX_S`, one each `forecast::CURVE_S` at most
     /// (`Forecast::at`, `Forecast::curve`): what the next is held to (`forecast::pace`).
     curves: std::cell::RefCell<Vec<(u64, Vec<u32>)>>,
+    /// The costs the forecasts gave each target while it was work left (`forecast::Noted`): what
+    /// each step's pace is held to (`forecast::step_pace`).
+    noted: std::cell::RefCell<forecast::Noted>,
     /// The last forecast's record (forecast::Record::bytes), until the lead's pool step writes it
     /// to the NAS (`pool_lead_files`).
     forecast_input: std::cell::RefCell<Option<Vec<u8>>>,
@@ -1978,6 +1981,7 @@ impl Agent {
             forecast: Default::default(),
             departed: Default::default(),
             curves: Default::default(),
+            noted: Default::default(),
             forecast_input: Default::default(),
             fc_entry: Default::default(),
             fc_archiver: Default::default(),
@@ -8483,7 +8487,7 @@ impl Agent {
             .iter()
             .flat_map(|w| w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone(), cost(&w.step, t))))
             .collect();
-        let inp = forecast::Input {
+        let mut inp = forecast::Input {
             now: now_s(),
             before,
             regions: std::borrow::Cow::Owned(regions.to_vec()),
@@ -8500,7 +8504,16 @@ impl Agent {
             release: Vec::new(),
             held,
             pace: forecast::pace(&self.curves.borrow(), &events, now_s()),
+            step_pace: BTreeMap::new(),
         };
+        // (Each step's pace: its jobs of late against what the forecasts before them gave their
+        // targets, at the lead's pace by their worker's speed.)
+        let mut noted = self.noted.borrow_mut();
+        noted.note(&inp);
+        inp.step_pace = forecast::step_pace(&events, inp.now, &noted, &|w| pace(Some(&w.to_string())));
+        drop(noted);
+        // (Each lane's job under way held to its step's longest of late.)
+        forecast::cap_busy(&mut inp, &forecast::longest_jobs(&events, now_s()));
         // (Each step's time a target, for the page to weigh the targets done: the headline.)
         let each_s = steps::TABLE.iter().map(|r| (r.name.to_string(), (per(r.name) * 10.0).round() / 10.0)).collect();
         // (A slot's job waiting on a worker holding its z6 tile's tail: said beside its machine.)

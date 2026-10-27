@@ -1147,8 +1147,8 @@ Every forecast the lead makes is kept, so its times can be held to what happened
   placed (lane, step, target, from and until); and what shaped it: each lane (its Mac, speed,
   time left on its job under way), each Mac's slots, room, conditions (its last ask's memory and
   cores free, limits, in use, on power, battery, NAS) and what held it back over the day, each
-  step's time a target, the NAS budget, `forecast::VERSION` (raised whenever a change moves the
-  run's times) and the app.
+  step's time a target and its pace against its costs (code 2 on, below), the NAS budget,
+  `forecast::VERSION` (raised whenever a change moves the run's times) and the app.
 - **Where:** `state/coord/forecasts/<day>.jsonl.zst`, one file a day (UTC), lines appended in
   batches, each batch one zstd frame. Handed over only by the lead's pool step: the forecast's
   own thread makes the entry, the lead's pool step hands it to the archive's thread (a bounded
@@ -1177,17 +1177,114 @@ Every forecast the lead makes is kept, so its times can be held to what happened
   that ended after the forecast was made. A lane's `name` is the history's `worker` (the lead's
   slots past its first `<Mac> #k`), its `mac` the Mac. No key was missing on either side.
 
-**`scenic forecast-check [--from T] [--to T] [--json] [--root DIR]`** (`agent::fccheck`, reads
-only) holds the forecasts made in the span (default the last 7 days; T unix seconds,
-`YYYY-MM-DD[THH:MM]` UTC, or back from now: `12h`, `3d`) to the history's jobs that ended in it. A
-job's targets in one forecast are taken together (its forecast start the earliest of theirs, its
-end the latest), so each (forecast, job) is a sample: its end's error where the job ended after the
-forecast, its start's where it started after it, the error forecast less actual (+ the forecast was
-late). It reports, for the end and the start, n, bias (the mean), and the median and 90th
-percentile of the absolute error, overall and by horizon (the forecast's time until it: under
-15 min, to 1 h, 4 h, 12 h, more), by step, by the Mac that ran it and by code version; how many
-jobs some forecast placed, how often it had the right Mac, and the targets forecast to be done by
-the history's end that weren't, by step. As text, a table in minutes; `--json`, the same in seconds.
+**`scenic forecast-check [--from T] [--to T] [--replay [--split T]] [--json] [--root DIR]`**
+(`agent::fccheck`, reads only) holds the forecasts made in the span (default the last 7 days; T unix
+seconds, `YYYY-MM-DD[THH:MM]` UTC, or back from now: `12h`, `3d`) to the history's jobs that ended
+in it (the history's events once each: a member that led before keeps the same events in its own
+file, `fccheck::dedup`). A job's targets in one forecast are taken together (its forecast start the
+earliest of theirs, its end the latest), so each (forecast, job) is a sample: its end's error where
+the job ended after the forecast, its start's where it started after it, the error forecast less
+actual (+ the forecast was late). It reports, for the end and the start, n, bias (the mean), and
+the median and 90th percentile of the absolute error, overall and by horizon (the forecast's time
+until it: under 15 min, to 1 h, 4 h, 12 h, more), by step, by the Mac that ran it and by code
+version; how many jobs some forecast placed, how often it had the right Mac and the right slot
+(its lane's name the history's worker); the **order**: of each forecast's pairs of jobs that both
+started after it (neither at the same time, nor forecast to), the share that started in the
+forecast's order, overall and of the pairs both forecast to start within 4 h (`fccheck::NEAR_S`);
+and the targets forecast to be done by the history's end that weren't, by step. As text, a table in
+minutes; `--json`, the same in seconds.
+
+**The backtest** (`--replay`, `fccheck::backtest`): each term's forecast input made in the span
+(`state/build/term/<E>/forecast-input.json`, its last forecast's whole input: §10) is rerun twice,
+as the forecast was (code 1) and as it is, each archived as the lead archives its forecasts
+(`Entry::of`) and checked as above. Old: the input as recorded (no step's pace, no cap). New: the
+costs noted from the inputs before it and its own (`forecast::Noted`), each step's pace from the
+history before it (its workers' speeds its lanes', their Mac's hold taken off), each lane's job
+under way capped (below). The inputs from `--split` (default a day before the last) are the test
+set, scored apart from those before it (train): what the model was chosen on is never what it's
+scored on. A term records only its last forecast's input, so the replay has one input a term (81
+over 24-27 Oct), not one a minute. A run takes ~12 min on the M4 (each input's three runs, twice,
+each to `forecast::BUDGET`). Run it on a copy of `state/coord` and `state/build/term`
+(`--root`), or on the NAS (reads only).
+
+**What the archive showed** (24 Oct 00:00 to 27 Oct 18:40 UTC: 1,175 forecasts, all code 1, held
+to 2,082 jobs; 303,000 (forecast, job) samples). Changes to the run since #621 (25 Oct: its budget; 26 Oct:
+task #688's cores in the scheduler it asks) left `VERSION` at 1, so the archive can't tell them
+apart. End error, median / p90 of the absolute error (min): all 917 / 7,825;
+under 15 min 496 / 1,816 (bias −696: jobs forecast to start now started hours later); 15 min-1 h
+110; 1-4 h 163; 4-12 h 324; 12 h + 2,610 / 12,204 (bias +4,331: the jobs the pool did in a day or
+two were placed days out). The right Mac 50 % of the time, the right slot 14 %; jobs in the
+forecast's order 66 % of pairs. Its largest sources:
+
+- **The work placed isn't the work done.** 2.5 million targets forecast to be done by the history's
+  end weren't: terrain-deep 1.65 M, terrain-fine 0.31 M. In its first 6 h a forecast ran ~65 lane-hours
+  of work; the pool ran ~19.5 (3.25 jobs at once, no job at all 19 % of the minutes, from 25 Oct
+  12:00): terrain-deep on the MacBook Pro 15.4 lane-hours against 0.5. Work the pool
+  did soon (terrain-hi on the MacBook Pro, pack) waited behind it in the forecast: the 12 h +
+  lateness. The pool was paused from 24 Oct 08:09 to 25 Oct 07:39; the forecasts made then placed
+  75-119 lane-hours a day of terrain-fine that never ran.
+- **Running jobs' time left.** A lane's `busy_s` is its job's targets left at its slot's pace (an
+  unmeasured slot's 0.21 a guess, its Mac's hold on top) or the job's own estimate, the longer: of
+  1,022 lanes said busy 4 h or more, those whose job the history shows were free after a quarter of
+  that or less (median), those said busy a day or more after 0.2 %; nearly all the MacBook Pro's.
+  Its lanes sat blocked in the run meanwhile.
+- **Steps' costs.** A target's cost is its last measure (an earlier build's, at its worker's pace)
+  or its step's mean; jobs started within 30 min of a forecast took, of the time the forecast gave
+  them (geometric means): terrain-hi 0.47, terrain-deep 0.38, unit 0.41, bldtiles 0.16; pack 2.5,
+  pois 2.4, terrain-lo 1.9 (what a job takes whatever its targets: few targets each). It drifts
+  by the half day (terrain-deep 0.13 to 1.21).
+- **Starts forecast now.** Of the starts forecast within 15 min, two thirds (the median forecast's)
+  began over an hour later; pack's forecast on the MacBook Pro, 95 % of the time. Each Mac ran no job
+  25-76 % of each day.
+
+**What changed (code 2).** Two things, each in the record (`Input::step_pace`, a lane's capped
+`busy_s`) so a member's page reruns the same, and archived (`Entry::step_pace`):
+
+- **Each step's pace** (`forecast::step_pace`, `Noted`): the lead notes the cost each target had
+  while it was work left (a target leaves the work left once built, so the measure its own job leaves
+  never replaces it; kept 12 h after it was last seen; ~2 ms a forecast for 27,000 costs); each
+  forecast, over the jobs done well in the last 12 h whose every target was noted, a step's time at
+  the lead's pace (the job's seconds times its worker's speed) over its targets' noted costs, three
+  jobs at least, is the step's pace, and the run takes each of its targets at its cost times it.
+  Only a step faster than its costs (at most fourfold): one slower is so by what each job takes
+  whatever its targets, which a target's pace lays on the run's jobs of many targets; with it, a backtest of the 80
+  inputs of a few hours before had its test end error at 2,054 / 25,682 against the old 995 / 10,645,
+  pack's own p90 9,163 to 23,049. A lead that has just started notes for a while before it says a pace.
+- **A lane's job under way held to its step's longest job of the last 12 h** (`cap_busy`,
+  `longest_jobs`; three jobs at least).
+
+Tried and left out: a Mac's lanes past those it ran at once (`Held::lanes`) kept for their job alone,
+taking nothing after: the near horizons gained (under 15 min median 17 to 12, the order within 4 h
+76 to 79 %), 12 h + lost (median 6,187 to 6,775) and so did the whole.
+
+**The backtest, old against new** (81 inputs, test from 26 Oct 18:37 UTC: 28 inputs, 634 jobs, 4,654
+end samples; train: 53 inputs, 2,082 jobs, 13,028). Minutes, median / p90 of the absolute error:
+
+| | test old | test new | train old | train new |
+|---|---|---|---|---|
+| end, all | 592 / 10,045 | 580 / 10,001 | 3,619 / 28,375 | 2,567 / 20,762 |
+| end bias | +3,334 | +3,158 | +12,598 | +11,518 |
+| start, all | 568 / 9,923 | 551 / 9,907 | 3,549 / 28,328 | 2,551 / 20,763 |
+| end < 15 min | 11 / 331 | 12 / 276 | 1,123 / 1,947 | 1,078 / 1,887 |
+| end 15 min-1 h | 68 / 379 | 78 / 455 | 208 / 1,666 | 256 / 1,809 |
+| end 1-4 h | 157 / 612 | 248 / 612 | 212 / 1,395 | 216 / 1,395 |
+| end 4-12 h | 221 / 401 | 195 / 429 | 344 / 1,316 | 282 / 1,812 |
+| end 12 h + | 5,986 / 12,569 | 6,051 / 12,197 | 7,087 / 38,670 | 5,682 / 38,266 |
+| end, pack | 4,038 / 8,795 | 3,999 / 7,986 | 1,829 / 23,702 | 1,801 / 17,990 |
+| end, terrain-hi | 4,427 / 8,370 | 4,341 / 8,337 | 8,514 / 38,646 | 7,121 / 38,222 |
+| end, terrain-deep | 186 / 509 | 158 / 443 | 467 / 2,602 | 428 / 2,608 |
+| end, unit | 3,273 / 9,176 | 3,156 / 8,204 | 3,568 / 37,252 | 3,493 / 36,883 |
+| end, depth | 11,230 / 17,627 | 10,534 / 15,859 | 850 / 8,441 | 417 / 8,364 |
+| end, slope-hi | 11,483 / 15,959 | 10,914 / 14,715 | 9,185 / 35,024 | 8,626 / 32,236 |
+| end, terrain-lo | 221 / 3,427 | 226 / 3,430 | 8,239 / 69,828 | 7,403 / 69,828 |
+| in order (all / within 4 h) | 65 / 76 % | 64 / 77 % | 59 / 58 % | 58 / 56 % |
+| same Mac / slot | 56 / 19 % | 55 / 18 % | 52 / 24 % | 51 / 24 % |
+
+Better overall and for every step of note but terrain-lo (70 test samples, its median 5 min worse),
+and worse from 15 min to 4 h ahead (more of those samples: work brought forward). The largest
+source, the work placed against the work done, is untouched: its order, the NAS budget's and the
+plan's holds the run doesn't see, a paused pool's forecasts. The time left on a running job is
+capped, not measured.
 
 ## 8. Tasks, and the pages as workers
 

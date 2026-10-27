@@ -1596,7 +1596,9 @@ fn main() -> Result<()> {
         Some(Cmd::Timings(a)) => timings(&a),
         Some(Cmd::Steps { json }) => steps(json),
         Some(Cmd::Inputs(a)) => inputs(&a),
-        Some(Cmd::ForecastCheck { from, to, json, root: r }) => forecast_check(from, to, json, &r.root),
+        Some(Cmd::ForecastCheck { from, to, replay, split, json, root: r }) => {
+            forecast_check(from, to, replay.then_some(split), json, &r.root)
+        }
         Some(Cmd::Catalogues { after, root: r }) => {
             use pipeline::agent::cataloguesview::{CataloguesView, NasCatalogues};
             let v = CataloguesView::new(std::sync::Arc::new(NasCatalogues(
@@ -1842,8 +1844,15 @@ mod tests {
 }
 
 /// `scenic forecast-check`: the archived forecasts made from `from` to `to` held to the history's
-/// jobs that ended then (agent::fccheck).
-fn forecast_check(from: Option<String>, to: Option<String>, json: bool, r: &Option<PathBuf>) -> Result<()> {
+/// jobs that ended then (agent::fccheck); with `replay` (its test set's start, if said), the
+/// backtest of the terms' forecast inputs made then.
+fn forecast_check(
+    from: Option<String>,
+    to: Option<String>,
+    replay: Option<Option<String>>,
+    json: bool,
+    r: &Option<PathBuf>,
+) -> Result<()> {
     use pipeline::agent::{fcarchive, fccheck};
     let now = now_s();
     let at = |s: &Option<String>, or: u64| -> Result<u64> {
@@ -1856,9 +1865,23 @@ fn forecast_check(from: Option<String>, to: Option<String>, json: bool, r: &Opti
     let (from, to) = (at(&from, now.saturating_sub(7 * 86_400))?, at(&to, now)?);
     anyhow::ensure!(from < to, "--from is not before --to");
     let root = root(r, false)?;
+    // (A day before `from` too: what each step's pace reads.)
+    let days = now.saturating_sub(from) / 86_400 + 2;
+    let events = fccheck::dedup(pipeline::pubtimes::load_history(Some(&root), None, days));
+    if let Some(split) = replay {
+        let records = fccheck::records(&root, from, to);
+        anyhow::ensure!(!records.is_empty(), "no forecast input recorded in the span");
+        let last = records.iter().map(|r| r.input.now).max().unwrap_or(to);
+        let split = at(&split, last.saturating_sub(86_400))?;
+        let b = fccheck::backtest(&records, &events, from, to, split);
+        if json {
+            println!("{}", serde_json::to_string_pretty(&b)?);
+        } else {
+            print!("{}", fccheck::backtest_text(&b));
+        }
+        return Ok(());
+    }
     let entries = fcarchive::read(&root, from, to);
-    let days = now.saturating_sub(from) / 86_400 + 1;
-    let events = pipeline::pubtimes::load_history(Some(&root), None, days);
     let rep = fccheck::check(&entries, &events, from, to);
     if json {
         println!("{}", serde_json::to_string_pretty(&rep)?);

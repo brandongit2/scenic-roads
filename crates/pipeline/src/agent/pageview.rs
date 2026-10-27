@@ -646,6 +646,7 @@ mod tests {
                 release: Vec::new(),
                 held: Default::default(),
                 pace: None,
+                step_pace: Default::default(),
             },
             each_s: BTreeMap::new(),
             waiting: BTreeMap::new(),

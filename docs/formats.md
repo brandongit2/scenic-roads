@@ -700,6 +700,7 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
  macs: {<Mac>: {slots, room?: {mem_mb, cores}, held?: {lanes, util},
         cond?: {limit_mb, build_mb, mem_mb, cores, cores_free, kept_cores, disk_mb, in_use, ac, battery, nas}}},
  each_s: {<step>: s},
+ step_pace?: {<step>: x},
  nas?: {bytes_s, creates_s, listed_s, stats_s, deletes_s, downloads, held},
  steps: [<step>, …]}
 ```
@@ -713,8 +714,10 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   `running` (that job's step and targets, when no placed target is it). `macs`: by Mac, its
   lanes, its room when it had no ask, what held it back over the last day
   (`forecast::Held`), and its last ask's capacity's fields (crate::coord::Capacity). `each_s`: each
-  step's time a target at the lead's pace. `nas`: the NAS budget the scheduler held to
-  (crate::budget::nas::Limits).
+  step's time a target at the lead's pace. `step_pace`: each step's pace against its costs the run
+  took (`forecast::step_pace`, docs/pool.md §7.9; code 2 on). `nas`: the NAS budget the scheduler
+  held to (crate::budget::nas::Limits). From code 2 a lane's `busy_s` is held to its step's longest
+  job of late (`forecast::cap_busy`).
 - A lane's `jobs`: every target the expected run placed on it, in time order: its step (an index
   into `steps`), the target, its gap (s: its start less the end of the one before it on the lane,
   `at` for the first; may be negative) and its time (s: its end less its start). Back-to-back work

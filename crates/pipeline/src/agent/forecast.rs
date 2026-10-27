@@ -140,6 +140,12 @@ pub struct Input<'a> {
     /// said beside the finish. None: no earlier forecast to hold to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pace: Option<Pace>,
+    /// Each step's pace against its costs (`step_pace`): what its jobs of the last
+    /// `STEP_PACE_S` took, at the lead's pace, over what the forecasts before them gave their
+    /// targets, a step that ran faster than them alone. Every item of the step is run at its cost
+    /// times this; a step not in it, at its cost.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub step_pace: BTreeMap<String, f64>,
 }
 
 /// What held a Mac back over the last `HELD_S` (task #563; `held_back`): the jobs it ran at once
@@ -215,6 +221,117 @@ pub fn hold_back(machines: Vec<Machine>, held: &BTreeMap<String, Held>) -> Vec<M
             Some(m)
         })
         .collect()
+}
+
+/// The span of the history `step_pace` reads, and how long `Noted` keeps a target's cost after it
+/// last saw it.
+pub const STEP_PACE_S: u64 = 12 * 3600;
+/// The jobs of a step `step_pace` needs before it says the step's pace.
+const STEP_PACE_JOBS: usize = 3;
+/// `step_pace`'s floor: a step's few jobs never make it more than fourfold faster.
+const STEP_PACE_MIN: f64 = 0.25;
+
+/// The cost each target was last forecast at while it was work left (`Input::costs`, and the
+/// shared steps' targets of `chains`, `after` and `idle`), with when: what `step_pace` holds the
+/// jobs done to. A target leaves the work left once built, so its cost stays the one the forecasts
+/// before its job gave it, not the measure its job left. Kept `STEP_PACE_S` after it was last seen.
+#[derive(Clone, Debug, Default)]
+pub struct Noted {
+    costs: std::collections::HashMap<(String, String), (f64, u64)>,
+}
+
+impl Noted {
+    /// `inp`'s costs noted (at `inp.now`), those not seen for `STEP_PACE_S` dropped.
+    pub fn note(&mut self, inp: &Input) {
+        let now = inp.now;
+        for (step, ts) in &inp.costs {
+            for (t, c) in ts {
+                self.costs.insert((step.clone(), t.clone()), (c.secs, now));
+            }
+        }
+        for (step, t, c) in inp.chains.iter().chain(&inp.after).chain(&inp.idle) {
+            if SHARED.contains(&step.as_str()) {
+                self.costs.insert((step.clone(), t.clone()), (c.secs, now));
+            }
+        }
+        self.costs.retain(|_, (_, at)| now.saturating_sub(*at) <= STEP_PACE_S);
+    }
+
+    /// The cost noted for `step`'s `target`, if any.
+    pub fn cost(&self, step: &str, target: &str) -> Option<f64> {
+        self.costs.get(&(step.to_string(), target.to_string())).map(|c| c.0)
+    }
+}
+
+/// Each step's pace against its costs (`Input::step_pace`): over the jobs done well in the
+/// `STEP_PACE_S` before `now` whose every target has a cost `noted`, the time they took at the
+/// lead's pace (their seconds times their worker's `speed`) over the sum of their targets' costs;
+/// a step with `STEP_PACE_JOBS` such jobs at least, `STEP_PACE_MIN` at least. A cost is its
+/// target's last measure (an earlier build's) or its step's mean, and a step's code, its Mac's load
+/// and its jobs' size change what a target takes now. Only a step whose jobs ran faster than their
+/// costs is said: one slower (pack, pois, depth, terrain-lo on 24-27 Oct, 2-4 times) is so by what
+/// each job takes whatever its targets (opening its packs, its inputs), which a target's pace would
+/// lay on the run's jobs, many targets each: in the backtest that made the forecast worse, pack's
+/// own the most (docs/pool.md §7.9).
+pub fn step_pace(
+    events: &[crate::coord::history::Event],
+    now: u64,
+    noted: &Noted,
+    speed: &dyn Fn(&str) -> f64,
+) -> BTreeMap<String, f64> {
+    let from = now.saturating_sub(STEP_PACE_S);
+    let mut sums: BTreeMap<&str, (f64, f64, usize)> = BTreeMap::new();
+    for e in events.iter().filter(|e| e.t > from && e.t <= now && e.ok == Some(true)) {
+        if !matches!(e.kind.as_str(), "done" | "end") || e.targets.is_empty() {
+            continue;
+        }
+        let (Some(step), Some(w), Some(secs)) = (e.step.as_deref(), e.worker.as_deref(), e.secs) else { continue };
+        let Some(cost) = e.targets.iter().map(|t| noted.cost(step, t)).sum::<Option<f64>>() else { continue };
+        if cost <= 0.0 || secs <= 0.0 {
+            continue;
+        }
+        let s = sums.entry(step).or_default();
+        (s.0, s.1, s.2) = (s.0 + secs * speed(w), s.1 + cost, s.2 + 1);
+    }
+    sums.into_iter()
+        .filter(|(_, s)| s.2 >= STEP_PACE_JOBS)
+        .map(|(step, (took, cost, _))| (step.to_string(), ((took / cost * 100.0).round() / 100.0).max(STEP_PACE_MIN)))
+        .filter(|(_, p)| *p < 1.0)
+        .collect()
+}
+
+/// Each step's longest job (wall seconds) of those done well in the `STEP_PACE_S` before `now`,
+/// a step with `STEP_PACE_JOBS` at least: what `cap_busy` holds a lane's job under way to.
+pub fn longest_jobs(events: &[crate::coord::history::Event], now: u64) -> BTreeMap<String, f64> {
+    let from = now.saturating_sub(STEP_PACE_S);
+    let mut per: BTreeMap<&str, (f64, usize)> = BTreeMap::new();
+    for e in events.iter().filter(|e| e.t > from && e.t <= now && e.ok == Some(true)) {
+        if !matches!(e.kind.as_str(), "done" | "end") {
+            continue;
+        }
+        let (Some(step), Some(secs)) = (e.step.as_deref(), e.secs) else { continue };
+        let p = per.entry(step).or_default();
+        (p.0, p.1) = (p.0.max(secs), p.1 + 1);
+    }
+    per.into_iter().filter(|(_, p)| p.1 >= STEP_PACE_JOBS).map(|(s, p)| (s.to_string(), p.0)).collect()
+}
+
+/// Each lane's time left on its job under way (`Machine::busy_s`) held to its step's longest job
+/// of late (`longest_jobs`), a minute at least: a job's time left is its targets left at its slot's
+/// pace (an unmeasured slot's a guess, its Mac's hold on top) or its own estimate, whichever is
+/// longer, and on 24-27 Oct a lane said busy 4-24 h was free after about a quarter of that (the
+/// median), one said busy a day or more after 0.2 %, its lane blocked meanwhile (docs/pool.md §7.9). Its step: its `running`'s, else that of the targets `running` puts on it.
+pub fn cap_busy(inp: &mut Input, longest: &BTreeMap<String, f64>) {
+    for (k, m) in inp.machines.iter_mut().enumerate() {
+        let step = m
+            .running
+            .as_ref()
+            .map(|r| r.0.as_str())
+            .or_else(|| inp.running.iter().find(|(_, &on)| on == k).map(|((s, _), _)| s.as_str()));
+        if let Some(&most) = step.and_then(|s| longest.get(s)) {
+            m.busy_s = m.busy_s.min(most.max(60.0));
+        }
+    }
 }
 
 /// The lead's steps on its own clock, not the plan's dependencies: the catalogues and low zooms
@@ -658,7 +775,7 @@ impl ToCome {
 /// The forecast's code version, archived with each forecast (crate::agent::fcarchive): raised
 /// whenever a change to the run (its order, its costs, its scheduler) would move its times, so the
 /// accuracy work (`scenic forecast-check`) can tell one model's error from another's.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 impl Forecast {
     /// Whether the build is done: nothing left to build or publish, no machine busy.
@@ -1245,7 +1362,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
     let (cpu0, wall0) = (thread_cpu(), Instant::now());
     let Items { mut items, region_items, groups } = its;
     for it in &mut items {
-        it.cost.secs = scale(&it.cost).max(1.0);
+        it.cost.secs = (scale(&it.cost) * inp.step_pace.get(&it.step).copied().unwrap_or(1.0)).max(1.0);
     }
     let mut pool = Pool::new(inp, &items);
     let n = inp.machines.len();
@@ -2134,6 +2251,7 @@ mod tests {
             release: Vec::new(),
             held: BTreeMap::new(),
             pace: None,
+            step_pace: Default::default(),
         }
     }
 
@@ -3279,6 +3397,7 @@ mod tests {
                 release: Vec::new(),
                 held: held.clone(),
                 pace: None,
+                step_pace: Default::default(),
             };
             // Each job's dependencies, as the plan has them (`items`): a map tile its "planned" event's
             // z6 tiles; a z3 tile's assembly its z6 tiles; a z6 tile's slope and a z6 tile the
@@ -3533,6 +3652,95 @@ mod tests {
         assert!(pace(&[(now - 600, vec![0, 4])], &events, now).is_none(), "too young");
     }
 
+    /// A step's jobs that took half their noted costs at the lead's pace run its items at half;
+    /// a step with too few jobs, a job with a target never noted, or one done before the span,
+    /// aren't counted; the costs noted are those the targets had while left, not after.
+    #[test]
+    fn a_steps_pace_from_its_jobs_against_their_noted_costs() {
+        use crate::coord::history::Event;
+        let now = 200_000;
+        let job = |w: &str, t: u64, step: &str, targets: &[&str], secs: f64| Event {
+            t,
+            kind: "done".into(),
+            worker: Some(w.into()),
+            step: Some(step.into()),
+            secs: Some(secs),
+            ok: Some(true),
+            targets: targets.iter().map(|t| t.to_string()).collect(),
+            ..Default::default()
+        };
+        let regions = [region("r", &["6/1/1", "6/1/2", "6/1/3", "6/1/4"], &["6/9/9"], &[])];
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        inp.now = now - 3600;
+        let mut noted = Noted::default();
+        noted.note(&inp);
+        assert_eq!(noted.cost("terrain-hi", "6/1/1"), Some(600.0));
+        // (Later the targets are built: no longer work left, their noted costs stay.)
+        let later = input(&[], vec![mac("m4", 1.0, false)], &cost);
+        noted.note(&Input { now, ..later });
+        // terrain-hi: three jobs at the lead's pace 300 s a 600 s target (m1 at half the pace in
+        // 600 s); one too old; one with a target never noted. unit: one job, too few.
+        let events = vec![
+            job("m4", now - 100, "terrain-hi", &["6/1/1"], 300.0),
+            job("m1", now - 200, "terrain-hi", &["6/1/2"], 600.0),
+            job("m4 #2", now - 300, "terrain-hi", &["6/1/3", "6/1/4"], 600.0),
+            job("m4", now - STEP_PACE_S - 10, "terrain-hi", &["6/1/1"], 6000.0),
+            job("m4", now - 50, "terrain-hi", &["6/7/7"], 6000.0),
+            job("m4", now - 50, "unit", &["6/9/9"], 30.0),
+        ];
+        let speed = |w: &str| if w == "m1" { 0.5 } else { 1.0 };
+        let p = step_pace(&events, now, &noted, &speed);
+        assert_eq!(p, [("terrain-hi".to_string(), 0.5)].into());
+        // The run takes it: the terrain at 300 s a target.
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        inp.step_pace = p;
+        let f = forecast_by(&inp, far());
+        let t = f.placed.iter().find(|p| p.step == "terrain-hi").unwrap();
+        assert_eq!(t.until - t.from, 300);
+        // A step slower than its costs isn't said; a fast one never more than fourfold.
+        let slow: Vec<Event> = (0..3).map(|k| job("m4", now - k, "unit", &["6/9/9"], 30_000.0)).collect();
+        assert!(step_pace(&slow, now, &noted, &speed).is_empty());
+        let fast: Vec<Event> = (0..3).map(|k| job("m4", now - k, "unit", &["6/9/9"], 1.0)).collect();
+        assert_eq!(step_pace(&fast, now, &noted, &speed)["unit"], STEP_PACE_MIN);
+        // (A cost not seen for the span is dropped.)
+        noted.note(&Input { now: now + STEP_PACE_S + 1, ..input(&[], vec![], &cost) });
+        assert_eq!(noted.cost("terrain-hi", "6/1/1"), None);
+    }
+
+    /// A lane's job under way is held to its step's longest job of late (three at least): its
+    /// `running`'s step, else its running targets'; a step not timed, as said.
+    #[test]
+    fn a_lanes_time_left_is_held_to_its_steps_longest_job() {
+        use crate::coord::history::Event;
+        let now = 100_000;
+        let done = |step: &str, secs: f64| Event {
+            t: now - 60,
+            kind: "end".into(),
+            worker: Some("m4".into()),
+            step: Some(step.into()),
+            secs: Some(secs),
+            ok: Some(true),
+            ..Default::default()
+        };
+        let events = vec![done("slope", 600.0), done("slope", 900.0), done("slope", 300.0), done("unit", 50.0)];
+        let longest = longest_jobs(&events, now);
+        assert_eq!(longest, [("slope".to_string(), 900.0)].into());
+        let regions = [region("r", &["6/1/1"], &[], &[])];
+        let lane = |busy_s: f64, running: Option<(&str, usize)>| Machine {
+            busy_s,
+            running: running.map(|(s, n)| (s.to_string(), n)),
+            ..mac("m", 1.0, false)
+        };
+        let mut inp = input(
+            &regions,
+            vec![lane(340_000.0, Some(("slope", 28))), lane(5000.0, None), lane(5000.0, Some(("unit", 1)))],
+            &cost,
+        );
+        inp.running.insert(("slope".into(), "6/1/1".into()), 1);
+        cap_busy(&mut inp, &longest);
+        assert_eq!(inp.machines.iter().map(|m| m.busy_s).collect::<Vec<_>>(), [900.0, 900.0, 5000.0]);
+    }
+
     #[test]
     fn a_departure_is_two_jobs_and_half_the_forecasts_apart() {
         assert!(!departed(3, 4) && !departed(10, 13) && departed(0, 2) && departed(4, 1) && departed(3, 6));
@@ -3697,6 +3905,7 @@ mod tests {
             release: Vec::new(),
             held: BTreeMap::new(),
             pace: None,
+            step_pace: Default::default(),
         }
     }
 
