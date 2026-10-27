@@ -132,8 +132,8 @@ pub struct Input<'a> {
     /// their dependencies); the backtest's, each once what it waits on is done.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub release: Vec<Release>,
-    /// What held each Mac back over the last day (`held_back`), by Mac: its lanes are cut and
-    /// slowed to it (`hold_back`) before the run; said here for the forecast's readers.
+    /// What held each Mac back over the last day (`held_back`), by Mac: its lanes are cut to it
+    /// (`hold_back`) before the run; said here for the forecast's readers.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub held: BTreeMap<String, Held>,
     /// How an earlier forecast's run fared against the work done since (`pace`): the live error,
@@ -146,30 +146,36 @@ pub struct Input<'a> {
     /// times this; a step not in it, at its cost.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub step_pace: BTreeMap<String, f64>,
+    /// The build is paused (crate::control::Pause; code 3 on): nothing new starts until it's
+    /// resumed, when no one can say, so the forecast places nothing (`PAUSED`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
+    /// The lanes' time each Mac gave each step over the last day, hours (`took`; code 3 on): the
+    /// run offers a Mac none of the steps it gave little of while others took them (`skips`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub took: BTreeMap<String, BTreeMap<String, f64>>,
 }
 
 /// What held a Mac back over the last `HELD_S` (task #563; `held_back`): the jobs it ran at once
-/// while it ran any (`lanes`, the mean, rounded; one at least), and the share of those lanes'
-/// time it kept busy while the pool ran planned work (`util`, `UTIL_MIN`–1). The lead's ramp, its slot
-/// cap, the NAS budget, a member's memory and the plan feeding work gradually all show in them;
-/// the forecast's run, which releases work by the plan's dependencies alone, sees none of that
-/// otherwise (the backtest, on the history's job set and order: 65 % early without, 35 % with).
+/// while it ran any (`lanes`, the mean, rounded; one at least). The lead's ramp, its slot cap, the
+/// NAS budget, a member's memory and the plan feeding work gradually all show in it; the forecast's
+/// run, which releases work by the plan's dependencies alone, sees none of that otherwise.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Held {
     pub lanes: usize,
+    /// Code 2 and before: the share of its lanes' time it kept busy, which the run slowed its
+    /// lanes to (a record's speeds hold it; the backtest takes it off). 0 from code 3 on: slowed,
+    /// the run placed later still the work the pool did soon (docs/pool.md §7.9).
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub util: f64,
 }
 
-/// The span `held_back` reads.
-pub const HELD_S: u64 = 86_400;
+fn is_zero(x: &f64) -> bool {
+    *x == 0.0
+}
 
-/// `util`'s floor: a quiet day never slows a Mac more than fourfold.
-/// Every idle minute while the pool worked counts: a Mac idle for a day is the same Mac with
-/// room, and most idle time while the pool worked was work held back, so the floor is low.
-/// (The backtest, finish error median: 35 % at 0.25, 34 % at 0.1 (live error said 52 % against
-/// 38 %), 42 % at 0.4. Leaving out the minutes more than 2 h from a job of the Mac: finish
-/// unchanged, Mac-mini-led 6 h progress error 32 % against 8 %.)
-const UTIL_MIN: f64 = 0.25;
+/// The span `held_back` and `took` read.
+pub const HELD_S: u64 = 86_400;
 
 /// Each Mac's `Held` from the history (`events`: the jobs done, ended and failed, a slot's worker
 /// counted for its Mac) over the `HELD_S` before `now`. A Mac that ran none is left out.
@@ -178,47 +184,106 @@ pub fn held_back(events: &[crate::coord::history::Event], now: u64) -> BTreeMap<
     let n = (HELD_S / 60) as usize;
     // (A slot's worker counted for its Mac, an old second slot's name too.)
     let mac = |w: &str| w.split(" #").next().unwrap_or(w).trim_end_matches(" (second job)").to_string();
-    // (Each Mac's jobs running each minute, and the planned work's anywhere.)
+    // (Each Mac's jobs running each minute.)
     let mut per: BTreeMap<String, Vec<u16>> = BTreeMap::new();
-    let mut pool = vec![false; n];
     for e in events.iter().filter(|e| e.t > from && matches!(e.kind.as_str(), "done" | "end" | "fail")) {
-        let (Some(w), Some(secs), Some(step)) = (e.worker.as_deref(), e.secs, e.step.as_deref()) else { continue };
+        let (Some(w), Some(secs)) = (e.worker.as_deref(), e.secs) else { continue };
         let a = (e.t.saturating_sub(secs as u64).max(from) - from) as usize / 60;
         let b = ((e.t.min(now) - from) as usize).div_ceil(60).min(n);
         let mine = per.entry(mac(w)).or_insert_with(|| vec![0; n]);
         for m in a..b {
             mine[m] += 1;
-            pool[m] |= !CLOCKED.contains(&step);
         }
     }
-    let worked = pool.iter().filter(|&&p| p).count().max(1) as f64;
     per.into_iter()
         .filter_map(|(m, c)| {
             let busy = c.iter().filter(|&&c| c > 0).count();
             let sum: f64 = c.iter().map(|&c| c as f64).sum();
-            (busy > 0).then(|| {
-                let lanes = ((sum / busy as f64).round() as usize).max(1);
-                (m, Held { lanes, util: (sum / worked / lanes as f64).clamp(UTIL_MIN, 1.0) })
-            })
+            (busy > 0).then(|| (m, Held { lanes: ((sum / busy as f64).round() as usize).max(1), util: 0.0 }))
+        })
+        .collect()
+}
+
+/// Whether the build was paused at `now` by the history (`events`): its last "pause" or "resume"
+/// by then a pause.
+pub fn paused(events: &[crate::coord::history::Event], now: u64) -> bool {
+    events
+        .iter()
+        .filter(|e| e.t <= now && matches!(e.kind.as_str(), "pause" | "resume"))
+        .max_by_key(|e| (e.t, e.seq))
+        .is_some_and(|e| e.kind == "pause")
+}
+
+/// The forecast's `why` while the build is paused (`Input::paused`).
+pub const PAUSED: &str = "the build is paused: nothing new starts until it's resumed";
+
+/// A Mac's share of a step's lane time over the last day (`Input::took`) under which the run
+/// offers it none of the step (`skips`), unless it gave the step `SKIP_KEEP_H` or more.
+pub const SKIP_SHARE: f64 = 0.1;
+pub const SKIP_KEEP_H: f64 = 1.0;
+
+/// The lanes' time each of `macs` gave each step (hours, to the hundredth), over the `HELD_S`
+/// before `now` (`Input::took`): its jobs done well, of each planned step (not `CLOCKED`) `macs`
+/// did `STEP_PACE_JOBS` jobs of at least; a Mac that did none of such a step has it at 0.
+pub fn took(
+    events: &[crate::coord::history::Event],
+    now: u64,
+    macs: &[String],
+) -> BTreeMap<String, BTreeMap<String, f64>> {
+    let from = now.saturating_sub(HELD_S);
+    let mac = |w: &str| w.split(" #").next().unwrap_or(w).to_string();
+    // (Each step's jobs, and its seconds by Mac.)
+    let mut per: BTreeMap<&str, (usize, BTreeMap<String, f64>)> = BTreeMap::new();
+    for e in events.iter().filter(|e| e.t > from && e.t <= now && e.ok == Some(true)) {
+        let (Some(step), Some(w), Some(secs)) = (e.step.as_deref(), e.worker.as_deref(), e.secs) else { continue };
+        if !matches!(e.kind.as_str(), "done" | "end") || CLOCKED.contains(&step) || !macs.contains(&mac(w)) {
+            continue;
+        }
+        let p = per.entry(step).or_default();
+        p.0 += 1;
+        *p.1.entry(mac(w)).or_default() += secs.max(0.0);
+    }
+    let mut out: BTreeMap<String, BTreeMap<String, f64>> = BTreeMap::new();
+    for (step, (_, by)) in per.into_iter().filter(|p| p.1 .0 >= STEP_PACE_JOBS) {
+        for m in macs {
+            let h = by.get(m).copied().unwrap_or(0.0) / 3600.0;
+            out.entry(m.clone()).or_default().insert(step.to_string(), (h * 100.0).round() / 100.0);
+        }
+    }
+    out
+}
+
+/// Each Mac's steps the run offers it none of (`Input::took`): those it gave under `SKIP_SHARE` of
+/// their lane time over the last day and under `SKIP_KEEP_H` (a Mac asleep or away gave none). What
+/// the scheduler gives each Mac live (its memory and cores against each step's, the NAS budget, a
+/// member's steps in its ask, which Mac asks first) shows in it; the run's scheduler, whose Macs all
+/// ask at once with their room free, gives any step to any Mac (docs/pool.md §7.9).
+fn skips(took: &BTreeMap<String, BTreeMap<String, f64>>) -> BTreeMap<String, Vec<String>> {
+    let mut all: BTreeMap<&str, f64> = BTreeMap::new();
+    for by in took.values() {
+        for (s, h) in by {
+            *all.entry(s).or_default() += h;
+        }
+    }
+    took.iter()
+        .map(|(m, by)| {
+            let skip = by.iter().filter(|&(s, &h)| h < SKIP_SHARE * all[s.as_str()] && h < SKIP_KEEP_H);
+            (m.clone(), skip.map(|(s, _)| s.clone()).collect())
         })
         .collect()
 }
 
 /// `machines` held to `held` (`held_back`): each Mac's lanes past its `lanes` dropped, but one
-/// running a job, and every lane of it at its `util` of its pace.
+/// running a job.
 pub fn hold_back(machines: Vec<Machine>, held: &BTreeMap<String, Held>) -> Vec<Machine> {
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     machines
         .into_iter()
-        .filter_map(|mut m| {
-            let Some(h) = held.get(&mac_of(&m)) else { return Some(m) };
-            let k = seen.entry(mac_of(&m)).or_default();
+        .filter(|m| {
+            let Some(h) = held.get(&mac_of(m)) else { return true };
+            let k = seen.entry(mac_of(m)).or_default();
             *k += 1;
-            if *k > h.lanes && m.busy_s <= 0.0 && m.running.is_none() {
-                return None;
-            }
-            m.speed *= h.util;
-            Some(m)
+            *k <= h.lanes || m.busy_s > 0.0 || m.running.is_some()
         })
         .collect()
 }
@@ -508,6 +573,18 @@ pub fn cost_table(regions: &[RegionLeft], cost: &dyn Fn(&str, &str) -> Cost) -> 
 }
 
 impl Input<'_> {
+    /// Its lanes' Macs, each once, in order.
+    pub fn macs_named(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for m in &self.machines {
+            let g = mac_of(m);
+            if !out.contains(&g) {
+                out.push(g);
+            }
+        }
+        out
+    }
+
     /// What a region's target takes (`costs`). One not in it is a bug (`cost_table` lists them
     /// all): logged once a process, taken as nothing.
     pub fn cost(&self, step: &str, target: &str) -> Cost {
@@ -775,7 +852,7 @@ impl ToCome {
 /// The forecast's code version, archived with each forecast (crate::agent::fcarchive): raised
 /// whenever a change to the run (its order, its costs, its scheduler) would move its times, so the
 /// accuracy work (`scenic forecast-check`) can tell one model's error from another's.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 impl Forecast {
     /// Whether the build is done: nothing left to build or publish, no machine busy.
@@ -1365,6 +1442,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
         it.cost.secs = (scale(&it.cost) * inp.step_pace.get(&it.step).copied().unwrap_or(1.0)).max(1.0);
     }
     let mut pool = Pool::new(inp, &items);
+    let skip = skips(&inp.took);
     let n = inp.machines.len();
     let mut free: Vec<f64> = inp.machines.iter().map(|m| m.busy_s.max(m.from_s).max(0.0)).collect();
     // What's being built now: done when its machine is free.
@@ -1626,7 +1704,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
                 Vec::new()
             } else {
                 let ask = &pool.asks[&g];
-                let offers = offers(&items, &order, ask);
+                let offers = offers(&items, &order, ask, skip.get(&g).map_or(&[][..], |s| &s[..]));
                 // (Every member asking, as the live ones do each loop: placement draws among those
                 // asking lately, which aged out as the run's seconds passed.)
                 let idle = |g: &str| {
@@ -1709,8 +1787,9 @@ const GRANTS_S: f64 = 3600.0;
 /// The work ready, a step's together in `order`, as the coordinator offers it to `ask`'s Mac
 /// (crate::agent's `offer_plan`): a step offered to every member one offer, its targets in order
 /// (`OFFER_MAX` at most), where its work first comes; the lead's own steps' each a planned job of
-/// its own (`Offer::job`); only the steps the Mac does (`Ask::can`, all when it says none).
-fn offers(items: &[Item], order: &[Vec<usize>], ask: &Ask) -> Vec<Offer> {
+/// its own (`Offer::job`); only the steps the Mac does (`Ask::can`, all when it says none), none it
+/// skips (`skips`).
+fn offers(items: &[Item], order: &[Vec<usize>], ask: &Ask, skip: &[String]) -> Vec<Offer> {
     let mut out: Vec<Offer> = Vec::new();
     let mut of_step: BTreeMap<&str, usize> = BTreeMap::new();
     // (Whether the last step seen is offered to every member: a group is one step's.)
@@ -1718,7 +1797,7 @@ fn offers(items: &[Item], order: &[Vec<usize>], ask: &Ask) -> Vec<Offer> {
     for group in order {
         for &i in group {
             let it = &items[i];
-            if !ask.can.is_empty() && !ask.can.contains(&it.step) {
+            if (!ask.can.is_empty() && !ask.can.contains(&it.step)) || skip.contains(&it.step) {
                 break;
             }
             // (Its size as offered: a z6 tile's or candidates' extract bytes, sizing their first
@@ -1821,6 +1900,16 @@ pub fn forecast(inp: &Input) -> Forecast {
 
 /// The forecast for `inp`, each run cut once it has computed `budget`.
 pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
+    if inp.paused {
+        return Forecast {
+            at: inp.now,
+            why: Some(PAUSED.into()),
+            measured: 1.0,
+            pace: inp.pace.clone(),
+            held: inp.held.clone(),
+            ..Default::default()
+        };
+    }
     let now = inp.now as f64;
     // (The three runs side by side, each on a thread of its own.)
     let (expected, soon, late) = std::thread::scope(|s| {
@@ -2252,6 +2341,8 @@ mod tests {
             held: BTreeMap::new(),
             pace: None,
             step_pace: Default::default(),
+            paused: false,
+            took: Default::default(),
         }
     }
 
@@ -3398,6 +3489,8 @@ mod tests {
                 held: held.clone(),
                 pace: None,
                 step_pace: Default::default(),
+                paused: false,
+                took: Default::default(),
             };
             // Each job's dependencies, as the plan has them (`items`): a map tile its "planned" event's
             // z6 tiles; a z3 tile's assembly its z6 tiles; a z6 tile's slope and a z6 tile the
@@ -3623,9 +3716,7 @@ mod tests {
             targets: vec!["x".into(); n],
             ..Default::default()
         };
-        // (m4: two slots at once for 2 h, its second by its old name; m1: one job, the first of
-        // those hours: 60 of 120 minutes; ipad: 10 minutes of the pool's 2 h of work: its
-        // floor, not a twelfth.)
+        // (m4: two slots at once for 2 h, its second by its old name; m1: one job at a time.)
         let events = vec![
             job("m4", now - 3600, 7200.0, 1),
             job("m4 (second job)", now - 3600, 7200.0, 1),
@@ -3633,10 +3724,8 @@ mod tests {
             job("ipad", now - 9000, 600.0, 1),
         ];
         let h = held_back(&events, now);
-        assert_eq!(h["m4"], Held { lanes: 2, util: 1.0 });
-        assert_eq!(h["m1"].lanes, 1);
-        assert!((h["m1"].util - 0.5).abs() < 0.02, "{:?}", h["m1"]);
-        assert_eq!(h["ipad"].util, UTIL_MIN);
+        assert_eq!(h["m4"], Held { lanes: 2, util: 0.0 });
+        assert_eq!((h["m1"].lanes, h["ipad"].lanes), (1, 1));
         let lane = |host: &str, k: usize, busy: f64| Machine {
             busy_s: busy,
             mac: Some(host.into()),
@@ -3645,11 +3734,48 @@ mod tests {
         let ms = vec![lane("m1", 0, 0.0), lane("m1", 1, 0.0), lane("m1", 2, 50.0), lane("mini", 0, 0.0)];
         let kept = hold_back(ms, &h);
         assert_eq!(kept.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["m1", "m1 #3", "mini"]);
-        assert!((kept[0].speed - h["m1"].util).abs() < 1e-9 && kept[2].speed == 1.0);
+        assert!(kept.iter().all(|m| m.speed == 1.0), "cut, not slowed");
         // (A run that had done 4 targets 600 s in; the history 2 in the 7200 s since: 300 s.)
         let p = pace(&[(now - 7200, vec![0, 4, 8])], &events, now).unwrap();
         assert_eq!((p.real_n, p.run_s, p.real_s), (2, 300, 7200));
         assert!(pace(&[(now - 600, vec![0, 4])], &events, now).is_none(), "too young");
+    }
+
+    /// Each Mac's time by step over the last day; the run offers a Mac none of a step it gave
+    /// under a tenth of its time and under an hour (a Mac asleep, none), and the rest as before.
+    #[test]
+    fn a_mac_that_took_little_of_a_step_is_offered_none_of_it() {
+        use crate::coord::history::Event;
+        let now = 100_000;
+        let job = |w: &str, step: &str, secs: f64| Event {
+            t: now - 100,
+            kind: "done".into(),
+            worker: Some(w.into()),
+            step: Some(step.into()),
+            secs: Some(secs),
+            ok: Some(true),
+            targets: vec!["x".into()],
+            ..Default::default()
+        };
+        // (unit: m4 20 h, mini 1.5 h, m1 none; pois: mini alone, 2 jobs: too few to say.)
+        let mut events: Vec<Event> = (0..4).map(|_| job("m4 #2", "unit", 18_000.0)).collect();
+        events.push(job("mini", "unit", 5400.0));
+        events.extend((0..2).map(|_| job("mini", "pois", 600.0)));
+        let macs = ["m4".to_string(), "mini".to_string(), "m1".to_string()];
+        let t = took(&events, now, &macs);
+        assert_eq!(t["m4"]["unit"], 20.0);
+        assert_eq!(t["m1"]["unit"], 0.0);
+        assert!(!t["mini"].contains_key("pois"));
+        let s = skips(&t);
+        assert_eq!((s["m4"].len(), s["mini"].len()), (0, 0), "mini's 1.5 h keeps it");
+        assert_eq!(s["m1"], ["unit"]);
+        // The run: m1 (the first, idle) takes none of the units; m4 does them all.
+        let regions = [region("r", &[], &["6/1/1", "6/1/2"], &[])];
+        let mut inp = input(&regions, vec![member("m1"), member("m4")], &cost);
+        inp.took = t;
+        let f = forecast(&inp);
+        let m1 = inp.machines.iter().position(|m| m.name == "m1");
+        assert!(!f.placed.is_empty() && f.placed.iter().all(|p| Some(p.lane) != m1), "{:?}", f.placed);
     }
 
     /// A step's jobs that took half their noted costs at the lead's pace run its items at half;
@@ -3906,6 +4032,8 @@ mod tests {
             held: BTreeMap::new(),
             pace: None,
             step_pace: Default::default(),
+            paused: false,
+            took: Default::default(),
         }
     }
 

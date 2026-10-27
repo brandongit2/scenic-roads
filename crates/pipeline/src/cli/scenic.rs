@@ -230,7 +230,7 @@ pub enum Cmd {
     /// and end against the history's, by step, Mac, horizon and code version (bias, median and
     /// 90th percentile of the absolute error), how often jobs ran in the order and on the Mac and
     /// slot forecast. With --replay, the backtest: the terms' recorded forecast inputs rerun with
-    /// the forecast as it was (code 1) and as it is, both held to the history. Reads only
+    /// the forecast as the code before made it and as it is, both held to the history. Reads only
     ForecastCheck {
         /// From (UTC): unix seconds, YYYY-MM-DD, YYYY-MM-DDTHH:MM, or back from now (12h, 3d);
         /// default 7d

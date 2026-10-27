@@ -153,6 +153,9 @@ pub struct Order {
 /// The span `Order`'s near pairs are forecast to start within.
 pub const NEAR_S: u64 = 4 * 3600;
 
+/// The span `Report::work` holds the work placed to the work done over.
+pub const WORK_S: u64 = 6 * 3600;
+
 /// The check's answer.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Report {
@@ -171,6 +174,10 @@ pub struct Report {
     /// each): work forecast that didn't happen as placed (dropped, failed, or under another target).
     pub not_done: usize,
     pub not_done_by_step: BTreeMap<String, usize>,
+    /// The work placed against the work done (`WORK_S`): over the forecasts made `WORK_S` or more
+    /// before the history's last event, the targets each forecast to end within `WORK_S` of it,
+    /// and the targets the jobs that ended then did, by step (summed over the forecasts).
+    pub work: BTreeMap<String, [u64; 2]>,
     pub start: Errors,
     pub end: Errors,
 }
@@ -185,6 +192,7 @@ struct Matched {
     same_mac: usize,
     same_slot: usize,
     pairs: [u64; 4],
+    work: BTreeMap<String, [u64; 2]>,
 }
 
 fn matched(entries: &[Entry], jobs: &[Actual], last: u64) -> Matched {
@@ -194,10 +202,27 @@ fn matched(entries: &[Entry], jobs: &[Actual], last: u64) -> Matched {
             by_target.entry((&a.step, t)).or_default().push(k);
         }
     }
-    let mut m =
-        Matched { samples: Vec::new(), not_done: BTreeMap::new(), placed: 0, same_mac: 0, same_slot: 0, pairs: [0; 4] };
+    let mut m = Matched {
+        samples: Vec::new(),
+        not_done: BTreeMap::new(),
+        placed: 0,
+        same_mac: 0,
+        same_slot: 0,
+        pairs: [0; 4],
+        work: BTreeMap::new(),
+    };
     let mut placed = vec![false; jobs.len()];
     for e in entries {
+        // (The work placed in its first `WORK_S` against the work done then.)
+        let till = e.at + WORK_S;
+        if till <= last {
+            for p in e.placed().iter().filter(|p| p.until <= till) {
+                m.work.entry(p.step.clone()).or_default()[0] += 1;
+            }
+            for a in jobs.iter().filter(|a| a.end > e.at && a.end <= till) {
+                m.work.entry(a.step.clone()).or_default()[1] += a.targets.len() as u64;
+            }
+        }
         // Job → (earliest start, latest end, its first target's lane), as this forecast placed it.
         let mut got: BTreeMap<usize, (u64, u64, usize)> = BTreeMap::new();
         for p in e.placed() {
@@ -281,6 +306,7 @@ pub fn check(entries: &[Entry], events: &[Event], from: u64, to: u64) -> Report 
         },
         not_done: m.not_done.values().sum(),
         not_done_by_step: m.not_done,
+        work: m.work,
         start: Errors::of(&starts),
         end: Errors::of(&ends),
     }
@@ -312,38 +338,44 @@ pub fn records(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Record<'
     out
 }
 
-/// `records` rerun (in time order) and archived as the lead archives its forecasts (`Entry::of`):
-/// with `new`, as the forecast is now, each step's pace (`forecast::step_pace`) from the history
-/// before it and the costs the records before it (and it) noted, its workers' speeds its lanes'
-/// with their Mac's hold (`Input::held`) taken off, and each lane's job under way held to its
-/// step's longest of late (`forecast::cap_busy`); else as it was (code 1: neither; a record of
-/// code 2 on holds its lanes' `busy_s` capped already, which the old run keeps).
-pub fn replay(records: &[Record<'static>], events: &[Event], new: bool) -> Vec<Entry> {
+/// `records` rerun (in time order) and archived as the lead archives its forecasts (`Entry::of`),
+/// as forecast code `code` made them (2 or 3, the code now): each step's pace
+/// (`forecast::step_pace`) from the history before it and the costs the records before it (and
+/// it) noted, its workers' speeds its lanes' with their Mac's hold (`Held::util`, code 2's) taken
+/// off, and each lane's job under way held to its step's longest of late (`forecast::cap_busy`; a
+/// record holds its lanes' `busy_s` capped already). Code 2 runs each lane at its recorded speed
+/// (a code 2 record's slowed by its Mac's hold); code 3 at its speed with the hold taken off, the
+/// build's pause (`forecast::paused`) and each Mac's time by step (`forecast::took`) read from the
+/// history. Both keep the record's lanes.
+pub fn replay(records: &[Record<'static>], events: &[Event], code: u32) -> Vec<Entry> {
     let mut noted = forecast::Noted::default();
     let mut out = Vec::new();
     for r in records {
         let mut r = r.clone();
         let inp = &mut r.input;
         inp.step_pace.clear();
-        if new {
-            noted.note(inp);
-            let speeds: BTreeMap<String, f64> = inp
-                .machines
-                .iter()
-                .map(|m| {
-                    let mac = m.mac.clone().unwrap_or_else(|| m.name.clone());
-                    let util = inp.held.get(&mac).map_or(1.0, |h| h.util).max(0.01);
-                    (m.name.clone(), m.speed / util)
-                })
-                .collect();
-            let speed = |w: &str| speeds.get(w).copied().unwrap_or(1.0);
-            inp.step_pace = forecast::step_pace(events, inp.now, &noted, &speed);
-            let longest = forecast::longest_jobs(events, inp.now);
-            forecast::cap_busy(inp, &longest);
+        noted.note(inp);
+        // (Each lane's speed with its Mac's hold taken off: code 2's, 0 from code 3.)
+        let util = |m: &forecast::Machine| {
+            let mac = m.mac.clone().unwrap_or_else(|| m.name.clone());
+            inp.held.get(&mac).map(|h| h.util).filter(|&u| u > 0.0).unwrap_or(1.0)
+        };
+        let speeds: BTreeMap<String, f64> = inp.machines.iter().map(|m| (m.name.clone(), m.speed / util(m))).collect();
+        if code >= 3 {
+            for m in &mut inp.machines {
+                m.speed = speeds[&m.name];
+            }
+            inp.held = forecast::held_back(events, inp.now);
+            inp.paused = forecast::paused(events, inp.now);
+            inp.took = forecast::took(events, inp.now, &inp.macs_named());
         }
+        let speed = |w: &str| speeds.get(w).copied().unwrap_or(1.0);
+        inp.step_pace = forecast::step_pace(events, inp.now, &noted, &speed);
+        let longest = forecast::longest_jobs(events, inp.now);
+        forecast::cap_busy(inp, &longest);
         let f = r.forecast();
         let mut e = Entry::of(&r, &f, "replay");
-        e.code = if new { forecast::VERSION } else { 1 };
+        e.code = code;
         out.push(e);
     }
     out
@@ -360,10 +392,10 @@ pub struct Backtest {
 
 /// The backtest of `records` (`replay`, old and new) against `events`, over `from`..`to`.
 pub fn backtest(records: &[Record<'static>], events: &[Event], from: u64, to: u64, split: u64) -> Backtest {
-    let run = |new: bool| replay(records, events, new);
+    let run = |code: u32| replay(records, events, code);
     let (old, new) = std::thread::scope(|s| {
-        let o = s.spawn(|| run(false));
-        let n = run(true);
+        let o = s.spawn(|| run(forecast::VERSION - 1));
+        let n = run(forecast::VERSION);
         (o.join().unwrap_or_else(|e| std::panic::resume_unwind(e)), n)
     });
     let part =
@@ -379,7 +411,8 @@ pub fn backtest_text(b: &Backtest) -> String {
     let m = |s: f64| s / 60.0;
     let _ = writeln!(
         o,
-        "Backtest: the terms' forecast inputs rerun, old (code 1) against new (code {}).",
+        "Backtest: the terms' forecast inputs rerun, old (code {}) against new (code {}).",
+        forecast::VERSION - 1,
         forecast::VERSION
     );
     let _ = writeln!(o, "Error = forecast - actual, minutes; median and p90 of the absolute error.");
@@ -391,6 +424,25 @@ pub fn backtest_text(b: &Backtest) -> String {
             "\n{name}: {} inputs, {} jobs done, {} forecast.",
             r[0].forecasts, r[0].jobs_done, r[0].jobs_forecast
         );
+        let _ = writeln!(
+            o,
+            "  targets forecast done by the history's end that weren't: {} -> {}",
+            r[0].not_done, r[1].not_done
+        );
+        let work = |r: &Report| r.work.values().fold([0, 0], |a, w| [a[0] + w[0], a[1] + w[1]]);
+        let (a, n) = (work(&r[0]), work(&r[1]));
+        let _ = writeln!(
+            o,
+            "  targets placed in a forecast's first {} h: {} -> {}; done then {}",
+            WORK_S / 3600,
+            a[0],
+            n[0],
+            a[1]
+        );
+        for (k, w) in &r[0].work {
+            let p = r[1].work.get(k).map_or(0, |w| w[0]);
+            let _ = writeln!(o, "    {k:<20} placed {:>9} -> {:>9}; done {:>9}", w[0], p, w[1]);
+        }
         let _ = writeln!(
             o,
             "  same Mac {:.0} % -> {:.0} %; same slot {:.0} % -> {:.0} %; in order {:.0} % -> {:.0} % ({} pairs), within {} h {:.0} % -> {:.0} %",
@@ -468,6 +520,15 @@ pub fn text(r: &Report) -> String {
         r.order.near_in_order * 100.0,
         r.order.near_pairs
     );
+    if !r.work.is_empty() {
+        let by: Vec<String> = r.work.iter().map(|(k, w)| format!("{k} {}/{}", w[0], w[1])).collect();
+        let _ = writeln!(
+            o,
+            "Targets placed in a forecast's first {} h / done then (summed over the forecasts): {}",
+            WORK_S / 3600,
+            by.join(", ")
+        );
+    }
     let _ = writeln!(
         o,
         "Error = forecast - actual, in minutes (+: the forecast was late; -: early); a sample a forecast and job."
@@ -710,6 +771,8 @@ mod tests {
                     held: Default::default(),
                     pace: None,
                     step_pace: Default::default(),
+                    paused: false,
+                    took: Default::default(),
                 },
                 each_s: BTreeMap::new(),
                 waiting: BTreeMap::new(),
@@ -724,8 +787,15 @@ mod tests {
             let p = es[1].placed();
             (es[1].code, p[0].until - p[0].from)
         };
-        assert_eq!(span(&replay(&records, &es, false)), (1, 600));
-        assert_eq!(span(&replay(&records, &es, true)), (forecast::VERSION, 300));
+        assert_eq!(span(&replay(&records, &es, 2)), (2, 300));
+        assert_eq!(span(&replay(&records, &es, 3)), (3, 300));
+        // Paused by then: code 3 places nothing, code 2 as before.
+        let mut paused = es.clone();
+        paused.push(Event { t: 15_000, kind: "pause".into(), ..Default::default() });
+        assert_eq!(span(&replay(&records, &paused, 2)), (2, 300));
+        let new = replay(&records, &paused, 3);
+        assert!(new[1].placed().is_empty() && new[1].why.as_deref() == Some(forecast::PAUSED));
+        assert_eq!(new[0].placed().len(), 3);
         // The backtest: the second record the test set's.
         let b = backtest(&records, &es, 0, 30_000, 15_000);
         assert_eq!((b.train[0].forecasts, b.test[1].forecasts), (1, 1));

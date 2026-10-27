@@ -8505,7 +8505,11 @@ impl Agent {
             held,
             pace: forecast::pace(&self.curves.borrow(), &events, now_s()),
             step_pace: BTreeMap::new(),
+            paused: self.pause.is_some(),
+            took: BTreeMap::new(),
         };
+        // (The time each Mac gave each step over the last day: what its lanes take, and first.)
+        inp.took = forecast::took(&events, inp.now, &inp.macs_named());
         // (Each step's pace: its jobs of late against what the forecasts before them gave their
         // targets, at the lead's pace by their worker's speed.)
         let mut noted = self.noted.borrow_mut();

@@ -596,13 +596,9 @@ run releases work by the plan's dependencies alone, and alone it finished a medi
 work reached the Macs slower than that (the lead's ramp and slot cap, the NAS budget, the plan
 feeding work gradually: the lead idle half the time on 18 Oct). So before each run every Mac is
 held to what the history shows of it over the last day: its lanes to the jobs it ran at once
-while it ran any (the mean, rounded; a lane running a job kept), each at the share of those
-lanes' time it kept busy while the pool ran planned work (0.25–1, so a Mac idle most of the day
-isn't slowed more than fourfold). Every idle minute counts: a Mac idle for a day is the same Mac
-with room, and most idle time while the pool worked was work held back, so the floor is low.
-Backtest finish medians: 35 % at 0.25, 34 % at 0.1 (the live error said 52 % against 38 %), 42 %
-at 0.4. Leaving out the minutes more than 2 h from a job of the Mac: finish unchanged, the
-Mac-mini-led days' 6 h progress error 32 % against 8 % (median). Placement's slack (`placement::slack`, the steps' ends
+while it ran any (the mean, rounded; a lane running a job kept). Until code 3 each lane was also
+slowed to the share of its lanes' time the Mac kept busy (`Held::util`); code 3 dropped that, and
+each Mac takes only the steps it gave its time to (§7.9, task #808). Placement's slack (`placement::slack`, the steps' ends
 against the finish) comes from this held-back forecast. The forecast says these
 (`Forecast::held`) and the **live error** (`forecast::pace`, `Forecast::pace`): the oldest
 forecast of the last 1–6 h (the lead keeps their runs' progress, `Forecast::curve`, a point each
@@ -1191,17 +1187,22 @@ version; how many jobs some forecast placed, how often it had the right Mac and 
 (its lane's name the history's worker); the **order**: of each forecast's pairs of jobs that both
 started after it (neither at the same time, nor forecast to), the share that started in the
 forecast's order, overall and of the pairs both forecast to start within 4 h (`fccheck::NEAR_S`);
-and the targets forecast to be done by the history's end that weren't, by step. As text, a table in
+the targets forecast to be done by the history's end that weren't, by step; and the **work**
+(`Report::work`): over the forecasts made 6 h or more before the history's end (`fccheck::WORK_S`),
+the targets each placed to end in its first 6 h against the targets the jobs that ended then did,
+by step, summed. As text, a table in
 minutes; `--json`, the same in seconds.
 
 **The backtest** (`--replay`, `fccheck::backtest`): each term's forecast input made in the span
 (`state/build/term/<E>/forecast-input.json`, its last forecast's whole input: §10) is rerun twice,
-as the forecast was (code 1) and as it is, each archived as the lead archives its forecasts
-(`Entry::of`) and checked as above. Old: the input as recorded (no step's pace, no cap; an
-input recorded by code 2 on holds its lanes' `busy_s` already capped, so its old run is code 1 but for the cap). New: the
-costs noted from the inputs before it and its own (`forecast::Noted`), each step's pace from the
-history before it (its workers' speeds its lanes', their Mac's hold taken off), each lane's job
-under way capped (below). The inputs from `--split` (default a day before the last) are the test
+as the code before made it (old) and as the code is (new), each archived as the lead archives its
+forecasts (`Entry::of`) and checked as above (`fccheck::replay`). Both: the costs noted from the
+inputs before it and its own (`forecast::Noted`), each step's pace from the history before it
+(its workers' speeds its lanes', their Mac's code 2 hold taken off), each lane's job under way
+capped (below; a record of code 2 on holds its `busy_s` capped already), the record's lanes. Code
+2 (old): each lane at its recorded speed (a code 2 record's slowed by its Mac's hold). Code 3
+(new): its speed with the hold taken off, and the build's pause and each Mac's time by step read
+from the history (below). The inputs from `--split` (default a day before the last) are the test
 set, scored apart from those before it (train): what the model was chosen on is never what it's
 scored on. A term records only its last forecast's input, so the replay has one input a term (81
 over 24-27 Oct), not one a minute. A run takes ~12 min on the M4 (each input's three runs, twice,
@@ -1258,34 +1259,88 @@ Tried and left out: a Mac's lanes past those it ran at once (`Held::lanes`) kept
 taking nothing after: the near horizons gained (under 15 min median 17 to 12, the order within 4 h
 76 to 79 %), 12 h + lost (median 6,187 to 6,775) and so did the whole.
 
-**The backtest, old against new** (81 inputs, test from 26 Oct 18:37 UTC: 28 inputs, 634 jobs, 4,654
-end samples; train: 53 inputs, 2,082 jobs, 13,028). Minutes, median / p90 of the absolute error:
+With code 2, #805's backtest (code 1 against 2, same inputs and split) had the test end error at
+580 / 10,001 against 592 / 10,045, train 2,567 / 20,762 against 3,619 / 28,375.
+
+**What code 2 still got wrong** (task #808: the code 2 replay of the 81 inputs, its forecasts'
+first 6 h against the jobs done then). The largest error was where the work went, not how long it
+took:
+
+- **Each Mac's steps.** The pool's two working Macs did different work: on 26-27 Oct the MacBook
+  Pro's lanes gave their time to terrain-hi (42 lane-hours of a day), terrain-deep and units, the
+  Mac mini's to pack, pois, units and terrain-deep (26 h); the MacBook Pro ran 8 pack targets in a
+  day against the mini's 298, terrain-hi none on the mini. The run's scheduler, its Macs all asking
+  at once with their room free, gave any step to any Mac: in the test set it placed 1,431 pack and
+  657 unit targets on the MacBook Pro in forecasts' first 6 h against 3 and 3 it did, while
+  terrain-hi, which it did (1,842), waited 65 h (median) behind them. The right Mac 54 % of the
+  time.
+- **Slowed lanes.** Each lane ran at its Mac's share of busy time (`Held::util`, 0.25-1), but jobs
+  took less than their costs (§ above) and the work the pool did soon was already forecast late
+  (test end bias +3,455 min): slowing the lanes placed it later still. Without it, the test set's
+  first 6 h placed 10,354 targets against 10,523 done (6,503 with it).
+- **A paused build.** Its forecasts placed work as if it ran (24 Oct 08:09 to 25 Oct 07:39:
+  75-119 lane-hours a day of terrain-fine that never ran).
+- **A Mac asleep or away** (the MacBook-Pro-de-Brandon, the M1): with no job in the day it had no
+  hold, so its lanes took work at full room. In the inputs of 24-27 Oct it has no lanes (out of
+  the pool), so the backtest doesn't measure this; the step rule below gives it none of a step
+  the others did.
+
+**What changed (code 3).** Each in the record (`Input::paused`, `Input::took`, a lane's speed) so a
+member's page reruns the same:
+
+- **The build paused, nothing placed** (`Input::paused`, the lead's pause): the forecast says
+  `forecast::PAUSED` and places nothing (no finish, no lanes); the replay reads the pause from
+  the history's pause and resume (`forecast::paused`).
+- **Each Mac takes the steps it took** (`Input::took`, `forecast::took`): the lanes' hours each Mac
+  gave each planned step (not `CLOCKED`) over the last day, of the steps the pool's Macs did 3
+  jobs of at least; the run offers a Mac none of a step it gave under a tenth of the step's time
+  and under an hour (`SKIP_SHARE`, `SKIP_KEEP_H`; a step no Mac did lately, any Mac). Under a
+  tenth alone, the MacBook Pro's 1.6 lane-hours of terrain-deep (6 %) a day before it did 1,126
+  targets of it in the test's first 6 h were skipped, terrain-deep's test median 198 to 242 min;
+  with the hour kept, 202. At a fiftieth instead the gain shrank (test median 614 to 614).
+- **Lanes cut, not slowed** (`hold_back`): `Held::util` is no longer applied (0 in code 3's
+  records; the replay takes a code 2 record's off).
+
+Tried and left out: offering each Mac's steps in the order of its time on them (terrain-hi's test
+median 4,580 to 210 min, but pack's 4,228 to 10,066 and terrain-lo's 184 to 2,872: the order of
+the plan's work matters more than a Mac's habit); the busy share over all unpaused minutes rather
+than the pool's working ones (slower still: the whole and its main steps worse).
+
+**The backtest, code 2 against 3** (81 inputs, test from 26 Oct 18:37 UTC: 28 inputs, 634 jobs,
+4,654 end samples; train: 53 inputs, 6,012 jobs). Minutes, median / p90 of the absolute error:
 
 | | test old | test new | train old | train new |
 |---|---|---|---|---|
-| end, all | 592 / 10,045 | 580 / 10,001 | 3,619 / 28,375 | 2,567 / 20,762 |
-| end bias | +3,334 | +3,158 | +12,598 | +11,518 |
-| start, all | 568 / 9,923 | 551 / 9,907 | 3,549 / 28,328 | 2,551 / 20,763 |
-| end < 15 min | 11 / 331 | 12 / 276 | 1,123 / 1,947 | 1,078 / 1,887 |
-| end 15 min-1 h | 68 / 379 | 78 / 455 | 208 / 1,666 | 256 / 1,809 |
-| end 1-4 h | 157 / 612 | 248 / 612 | 212 / 1,395 | 216 / 1,395 |
-| end 4-12 h | 221 / 401 | 195 / 429 | 344 / 1,316 | 282 / 1,812 |
-| end 12 h + | 5,986 / 12,569 | 6,051 / 12,197 | 7,087 / 38,670 | 5,682 / 38,266 |
-| end, pack | 4,038 / 8,795 | 3,999 / 7,986 | 1,829 / 23,702 | 1,801 / 17,990 |
-| end, terrain-hi | 4,427 / 8,370 | 4,341 / 8,337 | 8,514 / 38,646 | 7,121 / 38,222 |
-| end, terrain-deep | 186 / 509 | 158 / 443 | 467 / 2,602 | 428 / 2,608 |
-| end, unit | 3,273 / 9,176 | 3,156 / 8,204 | 3,568 / 37,252 | 3,493 / 36,883 |
-| end, depth | 11,230 / 17,627 | 10,534 / 15,859 | 850 / 8,441 | 417 / 8,364 |
-| end, slope-hi | 11,483 / 15,959 | 10,914 / 14,715 | 9,185 / 35,024 | 8,626 / 32,236 |
-| end, terrain-lo | 221 / 3,427 | 226 / 3,430 | 8,239 / 69,828 | 7,403 / 69,828 |
-| in order (all / within 4 h) | 65 / 76 % | 64 / 77 % | 59 / 58 % | 58 / 56 % |
-| same Mac / slot | 56 / 19 % | 55 / 18 % | 52 / 24 % | 51 / 24 % |
+| end, all | 614 / 10,394 | 566 / 8,091 | 2,491 / 21,734 | 937 / 8,626 |
+| end bias | +3,455 | +2,569 | +11,585 | +4,264 |
+| start, all | 589 / 10,367 | 519 / 8,054 | 2,458 / 21,706 | 919 / 8,590 |
+| end < 15 min | 9 / 198 | 9 / 155 | 1,133 / 1,909 | 274 / 2,618 |
+| end 15 min-1 h | 33 / 330 | 49 / 323 | 163 / 1,860 | 90 / 1,292 |
+| end 1-4 h | 159 / 612 | 199 / 668 | 211 / 1,139 | 116 / 477 |
+| end 4-12 h | 192 / 423 | 206 / 404 | 271 / 1,372 | 256 / 1,000 |
+| end 12 h + | 5,840 / 12,286 | 4,751 / 10,651 | 5,192 / 37,917 | 2,517 / 12,912 |
+| end, pack | 4,228 / 8,192 | 2,959 / 6,236 | 1,726 / 18,284 | 1,527 / 5,288 |
+| end, terrain-hi | 4,580 / 8,186 | 3,504 / 6,432 | 6,485 / 37,898 | 808 / 8,654 |
+| end, terrain-deep | 198 / 588 | 202 / 528 | 486 / 2,614 | 454 / 4,011 |
+| end, unit | 3,664 / 8,408 | 2,274 / 5,343 | 3,446 / 36,946 | 1,635 / 9,264 |
+| end, depth | 14,206 / 18,234 | 8,838 / 13,963 | 3,117 / 35,814 | 3,552 / 78,914 |
+| end, slope-hi | 10,827 / 14,512 | 9,912 / 12,282 | 8,574 / 32,372 | 7,505 / 13,409 |
+| end, terrain-lo | 184 / 3,666 | 195 / 2,919 | 6,901 / 69,828 | 598 / 23,660 |
+| end, trees | 11,702 / 15,959 | 10,651 / 12,856 | 7,480 / 25,519 | 6,658 / 12,720 |
+| end, pois | 9,927 / 14,880 | 5,813 / 10,324 | 1,513 / 166,612 | 1,513 / 47,912 |
+| placed in 6 h / done | 6,503 / 10,523 | 9,142 / 10,523 | 31,650 / 24,940 | 10,061 / 24,940 |
+| not done by the end | 22,111 | 29,369 | 171,799 | 138,326 |
+| same Mac / slot | 54 / 18 % | 67 / 29 % | 43 / 20 % | 74 / 45 % |
+| in order (all / within 4 h) | 65 / 77 % | 65 / 81 % | 58 / 51 % | 64 / 59 % |
 
-Better overall and for every step of note but terrain-lo (70 test samples, its median 5 min worse),
-and worse from 15 min to 4 h ahead (more of those samples: work brought forward). The largest
-source, the work placed against the work done, is untouched: its order, the NAS budget's and the
-plan's holds the run doesn't see, a paused pool's forecasts. The time left on a running job is
-capped, not measured.
+Better overall on both sets, and for every step of note on the test set but terrain-deep (median 4
+min worse, p90 60 better) and terrain-lo (70 samples, median 11 min worse, p90 750 better). Worse
+from 15 min to 12 h ahead (median 16-40 min): work brought forward from days out now crowds the
+near term. The test's targets forecast done that weren't rose (22,111 to 29,369): it now places as
+much in its first 6 h as the pool did, but not all of the same targets. What's left: the order of
+the plan's work (pois, slope-hi, trees and depth done the next day, forecast days out); the steps
+on the lead's own clock (catalog, redo, inputs: a tenth of the targets done) placed nowhere; a
+running job's time left capped, not measured.
 
 ## 8. Tasks, and the pages as workers
 

@@ -697,7 +697,7 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
 ```
 {v: 1, code, app, at, done_at?, range?: [soon, late], why?, partial?, measured,
  lanes: [{name, mac, speed, measured, busy_s, from_s?, running?: [step, n], jobs?: [[step, target, gap, secs], …]}, …],
- macs: {<Mac>: {slots, room?: {mem_mb, cores}, held?: {lanes, util},
+ macs: {<Mac>: {slots, room?: {mem_mb, cores}, held?: {lanes, util?},
         cond?: {limit_mb, build_mb, mem_mb, cores, cores_free, kept_cores, disk_mb, in_use, ac, battery, nas}}},
  each_s: {<step>: s},
  step_pace?: {<step>: x},
@@ -713,7 +713,7 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   measured, `busy_s` (s until its job under way ends), `from_s` (s until its slot opens),
   `running` (that job's step and targets, when no placed target is it). `macs`: by Mac, its
   lanes, its room when it had no ask, what held it back over the last day
-  (`forecast::Held`), and its last ask's capacity's fields (crate::coord::Capacity). `each_s`: each
+  (`forecast::Held`; its `util` code 2's and before's alone), and its last ask's capacity's fields (crate::coord::Capacity). `each_s`: each
   step's time a target at the lead's pace. `step_pace`: each step's pace against its costs the run
   took (`forecast::step_pace`, docs/pool.md §7.9; code 2 on). `nas`: the NAS budget the scheduler
   held to (crate::budget::nas::Limits). From code 2 a lane's `busy_s` is held to its step's longest
