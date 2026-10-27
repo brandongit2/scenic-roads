@@ -688,3 +688,107 @@ fn a_regions_change_cuts_the_datasets_again_and_no_change_nothing() {
     let again = decide_with(&checks("place:3.5,49.5,20", "r2", MapFetch::default()), &files, Some(&moved), &copies);
     assert!(!again.changed && again.index == moved.index && again.store.is_empty());
 }
+
+/// Elevation's checks over regions fixture `r` (its index `index`), with a geoid grid over `grid`
+/// for heights in NAVD88.
+fn regional_checks(dir: &Path, place: &str, index: &str, grid: [f64; 4]) -> Elevation {
+    let mut fetch = fetch();
+    let (w, h) = (((grid[2] - grid[0]) * 10.0) as u32, ((grid[3] - grid[1]) * 10.0) as u32);
+    let g = crate::geotiff::write_f32(
+        w,
+        h,
+        &vec![-30.0f32; (w * h) as usize],
+        16,
+        [grid[0], 0.1, 0.0, grid[3], 0.0, -0.1],
+        4326,
+        None,
+    )
+    .unwrap();
+    fetch.0.insert("https://g.org/w.tif".into(), Some(g));
+    let r = crate::agent::recipes::Recipe { id: "a".into(), name: "a".into(), outline: vec![place.into()] };
+    Elevation {
+        regions: Some(crate::coverage::Coverage::fixture(&[r], None, dir).unwrap()),
+        regions_index: Some(index.into()),
+        region_geometry: BTreeMap::from([(
+            "a".to_string(),
+            format!("sources/inputs/regions/@geometry/a.{index}.rgeo"),
+        )]),
+        geoid: Some(vec![geoid_grid("g", "NAVD88", "https://g.org/w.tif")]),
+        ..Elevation::new(Arc::new(fetch), None)
+    }
+}
+
+/// A regions change while a dataset is held as accepted (its geoid grid stops reaching it): it
+/// keeps its old cut, and the index keeps naming the old regions, so the check that lets it go
+/// cuts it by the new ones.
+#[test]
+fn a_dataset_held_through_a_regions_change_is_cut_again_once_let_go() {
+    let dir = tempfile::tempdir().unwrap();
+    let d =
+        String::from_utf8(decl("regions = [\"a\"]", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"")).unwrap();
+    let files = BTreeMap::from([("single.toml".to_string(), d.replace("EGM2008", "NAVD88").into_bytes())]);
+    let cover = |d: &crate::inputs::gate::Decision| {
+        serde_json::from_value::<Measured>(d.index.files["single.toml"].facts["measured"].clone()).unwrap().cover
+    };
+    let copies = Default::default();
+    let all = [0.0, 40.0, 10.0, 50.0];
+    let first = decide_with(&regional_checks(dir.path(), "place:2.5,48.5,20", "r1", all), &files, None, &copies);
+    assert!(first.report.is_none(), "{:?}", first.report);
+    // The regions move and the grid stops reaching all of the new cut: held, as accepted.
+    let part = [1.0, 47.0, 3.5, 51.0];
+    let held =
+        decide_with(&regional_checks(dir.path(), "place:3.5,49.5,20", "r2", part), &files, Some(&first), &copies);
+    assert_eq!(held.report.as_ref().expect("held").held, ["single.toml"]);
+    assert!(!held.changed && held.index == first.index);
+    // The grid reaches it again: let go, and cut by the regions now accepted.
+    let freed = decide_with(&regional_checks(dir.path(), "place:3.5,49.5,20", "r2", all), &files, Some(&held), &copies);
+    assert!(freed.report.is_none(), "{:?}", freed.report);
+    assert!(freed.changed && freed.index.derived_from.as_deref() == Some("regions r2"));
+    assert_eq!(cover(&freed), Some(vec![[3.0, 49.0, 4.0, 50.0]]));
+}
+
+/// Outlines of territory AA over `b` (w, s, e, n), assembled in `d`.
+fn outlines(d: &Path, b: [f64; 4]) -> crate::outlines::Outlines {
+    let [w, s, e, n] = b;
+    let geo = d.join("o.geojsonseq");
+    std::fs::write(&geo, format!("\u{1e}{{\"type\":\"Feature\",\"geometry\":{{\"type\":\"Polygon\",\"coordinates\":[[[{w},{s}],[{e},{s}],[{e},{n}],[{w},{n}],[{w},{s}]]]}},\"properties\":{{\"@type\":\"relation\",\"@id\":1,\"boundary\":\"administrative\",\"admin_level\":\"2\",\"name\":\"AA\",\"ISO3166-1\":\"AA\"}}}}\n")).unwrap();
+    crate::outlines::assemble_geojsonseq(&geo, &d.join("o.sect")).unwrap();
+    crate::outlines::Outlines::open(&d.join("o.sect")).unwrap()
+}
+
+/// A tile pyramid's coverage is its territory's outlines': taken as accepted while the pass's
+/// outlines are the ones it was measured from, measured again from new ones.
+#[test]
+fn new_outlines_measure_a_territorys_pyramid_again() {
+    let (d1, d2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let files = BTreeMap::from([(
+        "p.toml".to_string(),
+        decl(
+            "territory = [\"AA\"]",
+            "format = \"tiles\"\nurl = \"https://e.org/p/{z}/{x}/{y}.png\"\nzoom = 0\nencoding = \"terrarium\"",
+        ),
+    )]);
+    let checks = |o: crate::outlines::Outlines, name: &str, served: bool| {
+        let mut f = MapFetch::default();
+        if served {
+            f.0.insert("https://e.org/p/0/0/0.png".into(), Some(png(256, 256)));
+        }
+        Elevation { outlines_name: Some(name.into()), ..Elevation::new(Arc::new(f), Some(o)) }
+    };
+    let cover = |d: &crate::inputs::gate::Decision| {
+        serde_json::from_value::<Measured>(d.index.files["p.toml"].facts["measured"].clone()).unwrap().cover
+    };
+    let copies = Default::default();
+    let first = decide_with(&checks(outlines(d1.path(), [0.2, 0.2, 1.8, 0.8]), "o1", true), &files, None, &copies);
+    assert!(first.report.is_none(), "{:?}", first.report);
+    assert_eq!(cover(&first), Some(vec![[0.0, 0.0, 2.0, 1.0]]));
+    // The same outlines, nothing served: taken as accepted.
+    let same =
+        decide_with(&checks(outlines(d1.path(), [0.2, 0.2, 1.8, 0.8]), "o1", false), &files, Some(&first), &copies);
+    assert!(same.report.is_none() && !same.changed, "{:?}", same.report);
+    // New outlines: measured again, and the index names them.
+    let new = decide_with(&checks(outlines(d2.path(), [0.2, 0.2, 0.8, 0.8]), "o2", true), &files, Some(&same), &copies);
+    assert!(new.report.is_none() && new.changed, "{:?}", new.report);
+    assert_eq!(cover(&new), Some(vec![[0.0, 0.0, 1.0, 1.0]]));
+    assert_eq!(new.index.derived_from.as_deref(), Some("outlines o2"));
+}

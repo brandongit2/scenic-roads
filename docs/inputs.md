@@ -129,8 +129,10 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
      What's derived from the version whole is made again, files unchanged, when the accepted
      index's `checks` isn't this app's (`unit` and the unit's `Checks::version`), or its
      `derived_from` isn't what the unit's checks read beyond the files now (`Checks::derived_from`:
-     the elevation datasets' accepted regions, §6.8): a bump of a unit's version rolls its derived
-     files out by itself, and so does a change of what they're derived from.
+     the elevation datasets' accepted regions and the pass's outlines, §6.8): a bump of a unit's
+     version rolls its derived files out by itself, and so does a change of what they're derived
+     from. While a file is kept as accepted (held), the index keeps the `derived_from` it had, so
+     the check that lets the file go derives it again too.
   6. Stores each file content-named under `sources/inputs/<unit>/` (uploaded and read back, docs/storage.md).
   7. Hands off the records: `sources/inputs/<unit>/@index` (when it differs; the replaced index is
      touched so GC keeps it, §4.9), `@listed`, and `@held` (the held report, or none). `@` starts
@@ -1146,7 +1148,7 @@ the same declarations.
 | `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the catalogue's `dem_labels` (formats.md, Catalogue), as a credit edit does (§4.8) |
 | `regions` | region ids (§6.1) | optional: the map regions the dataset is used in at all, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Its coverage (`facts.measured.cover`) is cut at check time to the 1° cells meeting one of them (`declared::scope_cover`; the check's key names the accepted regions and the index records them, `derived_from`, so a regions change, no file changed, cuts every dataset again and writes a new index: from what was measured, `facts.measured.uncut`, no data read again); an id no accepted region has is an `el-data` error. Then it's cut to the regions' outlines inside those cells (`declared::scope_outline`, `facts.measured.outline`): their shapes, land and any water a region declares, with their buffer, as the coverage holds a point (§6.1). A cell they hold whole together is used whole; every other is an edge cell, where each point is tested against the outlines as the terrain's base samples (`declared::Cover::contains`, the regions' stored geometry read by the plan, `OutlineCut`); outside them the next dataset serves. The roads take their heights from the finished terrain, so they have the same cut. Not in its `keyed` digest (`Declaration::keyed_part`): a key names the cut only where it changed what the key's box reads (`cut_note`: the cells it cut there, and in each edge cell it meets only the outlines inside the key's box, grown by a 256th of it each way: a box the outlines hold whole there keeps its key, one wholly outside them counts the cell as cut, else the outlines there are named; the keys read the regions' stored geometry as the plans do), so the z6 tiles whose cells the outlines wholly hold keep their keys and those whose datasets change are built again |
 | `exclude` | boxes `[w, s, e, n]` in whole degrees | optional: 1° cells the dataset isn't used in, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Cut from its coverage (and from its outline's edge cells) after its `regions`, at check time; not in its `keyed` digest, so as with `regions` only the keys whose box reads a cut cell change (`cut_note`). e.g. `[[153, 24, 155, 25]]`, Minamitorishima, for GSI's datasets (JGD2011): GSIGEO2011, their geoid grid, stops near 150° E |
-| `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world |
+| `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes, in the newest pass's outlines: the index records which, `derived_from`, so a new pass measures such a pyramid again); `"world"` makes any dataset's coverage the world |
 | `[data] format` | `geotiff` or `tiles` | |
 | `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL, a tile index (GeoJSON footprints with each file's `url` or `file`, and optionally its fill mask's URL, `mask`; made by `producers/elevation/indexes.py`), or files added by glob |
 | `[data] store` | bool | the files (and fill masks) read from `sources/fetched/<dataset>/` alone, by their URLs' last part (after a `#`, the member's name); never fetched by a build: a file the store lacks is an error naming it, one noted `<name>.none` has no data. Filled once by `scenic-build store-fetch <id> --index <its index>` (crate::dem::store_fetch: every file of the index and its mask the store lacks, as published, by the build's fetcher: its User-Agent, 429 and 5xx answers waited out; each checked a whole GeoTIFF under a temporary name, then renamed; restartable) |
@@ -1191,7 +1193,9 @@ index it names. The checks run whole on every check, files changed or not (`hold
 a finding on an unchanged dataset (an `el-geoid` the accepted sources or this check's version
 newly raise) holds it as accepted and shows it held. A dataset whose declaration and data are as
 accepted (its `keyed` with its data's) isn't measured again: its accepted `facts.measured`, before
-the cut, is taken (`Checks::seed`) and cut again. Planned: files not meeting the declared territory.
+the cut, is taken (`Checks::seed`) and cut again; a territory's tile pyramid is, when the pass's
+outlines aren't those the index names. The checks themselves (`el-geoid` among them) still run on
+every check, on what's taken. Planned: files not meeting the declared territory.
 
 **Projections** (crate::dem::proj, as PROJ 9.8 computes them, tested against pyproj): WGS 84 to
 NAD83(CSRS) by EPSG:1946's Helmert, then Canada Atlas Lambert (EPSG:3979: HRDEM) or a NAD83 /

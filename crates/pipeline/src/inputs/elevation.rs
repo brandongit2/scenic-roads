@@ -47,6 +47,9 @@ const GEOID: &str = "el-geoid";
 pub struct Elevation {
     pub fetch: Option<Arc<dyn Fetch>>,
     pub outlines: Option<Outlines>,
+    /// The content name `outlines` was read from: a tile pyramid's coverage is derived from it
+    /// (`Checks::derived_from`, `seed`).
+    pub outlines_name: Option<String>,
     /// What was measured, by what it was measured from (`memo_key`: a dataset's id and the `keyed`
     /// its accepted entry has): a version checked whole twice reads the data once, and a dataset
     /// as accepted is taken from its accepted entry (`seed`), not read again.
@@ -674,17 +677,35 @@ impl Checks for Elevation {
         Ok(d)
     }
 
+    /// The pass's outlines (a tile pyramid's coverage is its territory's) and the accepted regions
+    /// (they cut the datasets).
     fn derived_from(&self) -> Option<String> {
-        self.regions_index.as_ref().map(|r| format!("regions {r}"))
+        let parts: Vec<String> = [("outlines", &self.outlines_name), ("regions", &self.regions_index)]
+            .into_iter()
+            .filter_map(|(k, v)| Some(format!("{k} {}", v.as_ref()?)))
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(" "))
     }
 
     /// Each accepted dataset's measurement, as measured (before its `regions` and `exclude` cut it),
     /// under the key its accepted entry names: one whose declaration and data are as accepted
-    /// isn't read again, only cut again.
+    /// isn't read again, only cut again. A tile pyramid's of a territory, measured from other
+    /// outlines than these (or from ones the index doesn't name), is measured again.
     fn seed(&self, accepted: &super::Index) {
+        let same_outlines = accepted.derived_from.as_deref().and_then(|d| {
+            let t: Vec<&str> = d.split(' ').collect();
+            t.chunks(2).find(|c| c[0] == "outlines").and_then(|c| c.get(1).copied())
+        }) == self.outlines_name.as_deref()
+            && self.outlines_name.is_some();
         let mut memo = self.memo.lock().unwrap();
         for (p, e) in &accepted.files {
             let Kind::Declaration(id) = kind(p) else { continue };
+            let territory = e.facts.get("declaration").and_then(|d| d.get("data")).and_then(|d| d.get("format"))
+                == Some(&serde_json::json!("tiles"))
+                && e.facts.get("description").and_then(|d| d.get("territory")) != Some(&serde_json::json!(["world"]));
+            if territory && !same_outlines {
+                continue;
+            }
             let Some(Ok(mut m)) = e.facts.get("measured").map(|v| serde_json::from_value::<Measured>(v.clone())) else {
                 continue;
             };
@@ -715,15 +736,16 @@ impl Checks for Elevation {
         root: &store::nasfs::NasRoot,
         manifest: &BTreeMap<String, String>,
     ) -> Result<Option<Box<dyn Checks>>> {
-        let outlines = match outlines_of(manifest) {
+        // (Named only when read: a tile pyramid's coverage is derived from them.)
+        let (outlines, outlines_name) = match outlines_of(manifest) {
             Some(o) => match Outlines::open(&root.join(o)) {
-                Ok(x) => Some(x),
+                Ok(x) => (Some(x), Some(o.clone())),
                 Err(e) => {
                     eprintln!("inputs: {UNIT}: the pass's outlines, {o}, can't be read ({e:#})");
-                    None
+                    (None, None)
                 }
             },
-            None => None,
+            None => (None, None),
         };
         // (The accepted regions: a dataset's `regions` cut its coverage.)
         // (Its index named only when read: what the cut is derived from.)
@@ -761,6 +783,7 @@ impl Checks for Elevation {
                 store: Some(root.join("sources/fetched")),
                 regions,
                 regions_index,
+                outlines_name,
                 geoid: Some(geoid),
                 region_geometry,
                 ..Elevation::new(fetch, outlines)
@@ -770,6 +793,7 @@ impl Checks for Elevation {
             store: Some(root.join("sources/fetched")),
             regions,
             regions_index,
+            outlines_name,
             geoid: Some(geoid),
             region_geometry,
             ..Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines)

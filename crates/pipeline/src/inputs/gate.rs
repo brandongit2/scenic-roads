@@ -88,7 +88,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
     // A version of the checks the accepted one wasn't made by, or what's derived read from beyond
     // the files changed (the accepted regions, for the elevation datasets' cut): what's derived is
     // made again.
-    let derived_from = g.checks.derived_from();
+    let mut derived_from = g.checks.derived_from();
     let rederive = prev.checks != empty.checks || prev.derived_from != derived_from;
     g.checks.seed(prev);
     let mut read = Vec::new();
@@ -314,6 +314,11 @@ pub fn decide(g: &Given) -> Result<Decision> {
     jobs::stage(4, STAGES, "inputs check (what's derived from the version)");
     if files != prev.files || rederive || (g.checks.holds_unchanged() && !changes.is_empty()) {
         let keep: BTreeSet<String> = held.iter().chain(&stuck).cloned().collect();
+        // (A file kept as accepted keeps what was derived from the old: the index names that until
+        // it too is derived again, so a check once it's let go derives it.)
+        if keep.iter().any(|p| files.contains_key(p)) {
+            derived_from = prev.derived_from.clone();
+        }
         let next: BTreeMap<String, Option<Arc<Vec<u8>>>> = files
             .keys()
             .map(|p| (p.clone(), candidate.get(p).cloned().flatten().filter(|_| !held.contains(p))))
@@ -353,7 +358,10 @@ pub fn decide(g: &Given) -> Result<Decision> {
             }
         }
     }
-    let changed = files != prev.files || accepted != prev.accepted || rederive;
+    let changed = files != prev.files
+        || accepted != prev.accepted
+        || prev.checks != empty.checks
+        || prev.derived_from != derived_from;
     let index = if changed {
         Index { fmt: 1, unit: unit.into(), checks: empty.checks.clone(), files, accepted, derived_from }
     } else {
