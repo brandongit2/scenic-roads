@@ -256,16 +256,19 @@ mod tests {
             ids.push(c.hold("unit", &[(format!("6/2/{i}"), "k".into())]).unwrap());
             std::thread::sleep(Duration::from_millis(5));
         }
-        let took = t0.elapsed();
         until("every grant on the NAS", || {
             state(&store::nasfs::NasRoot::local_for_test(&root), 3)
                 .is_some_and(|s| ids.iter().all(|id| s.leases.to_string().contains(&id.to_string())))
         });
+        // (Counted once `stop` has returned: it waits for a write under way, and the file is on the
+        // NAS before its write is counted. Writes stay `GAP` apart by the writer's own clock, so the
+        // span to here bounds them whatever the load.)
+        c.stop();
+        let took = t0.elapsed();
         let n = k.writes() - 1;
         let most = (took.as_millis() / QUICK.gap.as_millis()) as u64 + 2;
         eprintln!("200 grants in {took:?}: {n} writes (at most {most})");
         assert!(n >= 1 && n <= most, "{n} writes for 200 grants in {took:?}");
-        c.stop();
         c.hold("unit", &[("6/3/1".into(), "k".into())]).unwrap();
         std::thread::sleep(QUICK.gap * 2);
         assert_eq!(k.writes(), n + 1, "stopped: no more");
