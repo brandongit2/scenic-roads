@@ -311,7 +311,7 @@ function overview(m, md) {
   const { fc, now, lines } = m;
   const work = (fc?.steps || []).reduce((t, x) => t + (x.work_s || 0), 0);
   const left = h("div", "big", !fc ? "–" : work ? `≈ ${dur(work)}` : "Nothing",
-    h("small", null, !fc ? "no forecast yet" : `${work ? "of work in the queue" : "left in the queue"}${fc.done_at ? ` · done ≈ ${clock(fc.done_at)}` : fc.why ? ` · ${fc.why}` : ""}`));
+    h("small", null, !fc ? fcLoading() : `${work ? "of work in the queue" : "left in the queue"}${fc.done_at ? ` · done ≈ ${clock(fc.done_at)}` : fc.why ? ` · ${fc.why}` : ""}`));
   // (A stage's work left, its steps' in the forecast.)
   const byStage = new Map();
   for (const x of fc?.steps || []) if (x.work_s > 0) byStage.set(S.stage(x.step), (byStage.get(S.stage(x.step)) || 0) + x.work_s);
@@ -918,6 +918,11 @@ function shortNames(m) {
   return short;
 }
 
+// While the lead has made no forecast yet (its agent just started: until its first plan, a minute
+// or two), where the forecast's words go: three dots pulsing in turn, a line's height, said in its
+// title (owner, #787). A forecast that can't be made says why instead (`fc.why`).
+const fcLoading = () => h("span", { class: "fcload", role: "status", title: "Waiting for the lead's first forecast (it comes with its first plan)", "aria-label": "waiting for the lead's first forecast" }, h("i"), h("i"), h("i"));
+
 // ---- Jobs: the schedule ------------------------------------------------------------------------------
 // The history the schedule holds (task #787): the page view's seven days (coord::history::DAYS);
 // older days are in the archive (agent::histarchive), not read here.
@@ -1202,7 +1207,7 @@ function schedule(m) {
   // (A forecast cut at its time budget (forecast::BUDGET): the lanes end where its run stopped.)
   const cut = fc?.partial && h("div", "why", "Partial: the forecast was cut at its time budget; each lane ends where its run stopped, the work after it not placed");
   const reaching = past.asking && past.first && past.first.t > lo ? h("span", "small dim", "reading the week's history…") : null;
-  const top = h("div", "schedtop", reaching, h("span", "small dim", fc?.done_at ? `done ≈ ${clock(fc.done_at)}` : fc ? "" : "no forecast yet (it comes with the lead's next plan)"));
+  const top = h("div", "schedtop", reaching, h("span", "small dim", fc?.done_at ? `done ≈ ${clock(fc.done_at)}` : fc?.why ? fc.why : fc ? "" : fcLoading()));
   if (!groups.length && !helps.length) { schedBody.replaceChildren(top, h("div", "small dim", "Nothing ran or is planned in the week.")); return; }
   schedBody.replaceChildren(top, cut || "", tl.el, legend);
   tl.placed(lanes, span);

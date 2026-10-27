@@ -460,3 +460,8 @@ button[disabled] { opacity: .5; }
 }
 /* The NAS tab (nas.js): the Machines tab's live rows, alone in their card (no rule above them). */
 .d-nas .mc .live { border-top: 0; margin-top: 0; padding-top: 0; }
+/* The forecast awaited (#787): three dots pulsing in turn, the text's line height, no layout shift. */
+.fcload { display: inline-flex; gap: 3px; align-items: center; height: 1em; vertical-align: -0.1em; }
+.fcload i { width: 4px; height: 4px; border-radius: 50%; background: var(--dim); opacity: .3; animation: fcload 1.2s ease-in-out infinite; }
+.fcload i:nth-child(2) { animation-delay: .2s; } .fcload i:nth-child(3) { animation-delay: .4s; }
+@keyframes fcload { 30% { opacity: 1; } 60%, 100% { opacity: .3; } }

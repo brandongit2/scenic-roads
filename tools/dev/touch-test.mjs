@@ -16,7 +16,8 @@
 //                     forecast.rs recorded_timing's SCENIC_FORECAST_OUT), its times moved so it was
 //                     made when this server started; with --tocome FILE (SCENIC_TOCOME_OUT, the same
 //                     run's) /work/tocome is FILE's whole, its runs and dependencies the schedule's
-//                     arrows (#787), its `at` the forecast's
+//                     arrows (#787), its `at` the forecast's; `none`: no forecast (the lead's
+//                     first not made yet: the page's loading dots)
 //   --built FILE      /work/built answered from FILE ({at, steps: {step: [z/x/y…]}}, agent::builtview:
 //                     an agent before #674 hasn't the call)
 //   --live FILE       /work/live's `net.hosts` given FILE's hosts ({host: {in, out, requests, conns,
@@ -65,7 +66,7 @@ const TOCOME = arg("--tocome", null);
 const BUILT = arg("--built", null);
 const FORECAST = arg("--forecast", null);
 // (FILE's forecast moved to this server's start: every unix time in it by the same amount.)
-const shifted = FORECAST && (() => {
+const shifted = FORECAST && FORECAST !== "none" && (() => {
   const f = JSON.parse(readFileSync(FORECAST, "utf8")), d = Math.floor(Date.now() / 1000) - f.at;
   const mv = (t) => (t == null ? t : t + d);
   return { ...f, at: mv(f.at), done_at: mv(f.done_at), range: f.range?.map(mv),
@@ -162,7 +163,7 @@ function serve() {
           if (call !== "swarm" || r.statusCode !== 200) { res.writeHead(r.statusCode, r.headers); return r.pipe(res); }
           let b = "";
           r.on("data", (c) => (b += c));
-          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
+          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (FORECAST === "none" && o.agent) delete o.agent.forecast; res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
         });
         fw.on("error", (e) => { console.error(`touch-test server: ${url.pathname}: ${e.message}`); res.writeHead(502); res.end("{}"); });
         fw.end(out);
