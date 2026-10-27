@@ -85,8 +85,12 @@ pub fn decide(g: &Given) -> Result<Decision> {
     let empty =
         Index { fmt: 1, unit: unit.into(), checks: format!("{unit} {}", g.checks.version()), ..Default::default() };
     let prev = g.prev.unwrap_or(&empty);
-    // A version of the checks the accepted one wasn't made by: what's derived is made again.
-    let rederive = prev.checks != empty.checks;
+    // A version of the checks the accepted one wasn't made by, or what's derived read from beyond
+    // the files changed (the accepted regions, for the elevation datasets' cut): what's derived is
+    // made again.
+    let derived_from = g.checks.derived_from();
+    let rederive = prev.checks != empty.checks || prev.derived_from != derived_from;
+    g.checks.seed(prev);
     let mut read = Vec::new();
     let mut changes: BTreeMap<String, Change> = BTreeMap::new();
     let mut findings: Vec<Finding> = Vec::new();
@@ -351,7 +355,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
     }
     let changed = files != prev.files || accepted != prev.accepted || rederive;
     let index = if changed {
-        Index { fmt: 1, unit: unit.into(), checks: empty.checks.clone(), files, accepted }
+        Index { fmt: 1, unit: unit.into(), checks: empty.checks.clone(), files, accepted, derived_from }
     } else {
         prev.clone()
     };

@@ -47,8 +47,9 @@ const GEOID: &str = "el-geoid";
 pub struct Elevation {
     pub fetch: Option<Arc<dyn Fetch>>,
     pub outlines: Option<Outlines>,
-    /// What was measured, by what it was measured from (a declaration's `keyed` and its index's
-    /// hash): a version checked whole twice reads the data once.
+    /// What was measured, by what it was measured from (`memo_key`: a dataset's id and the `keyed`
+    /// its accepted entry has): a version checked whole twice reads the data once, and a dataset
+    /// as accepted is taken from its accepted entry (`seed`), not read again.
     memo: Mutex<HashMap<String, std::result::Result<Measured, String>>>,
     /// The app the switch records; None: this program's (`agent::app_version`).
     pub app: Option<String>,
@@ -58,6 +59,9 @@ pub struct Elevation {
     /// The accepted regions' coverage, which a dataset's `regions` cut its coverage to (`scoped`);
     /// None: none accepted, or none read here.
     pub regions: Option<crate::coverage::Coverage>,
+    /// The accepted regions' index (content name) `regions` was read from: what the cut is
+    /// derived from (`Checks::derived_from`).
+    pub regions_index: Option<String>,
     /// The accepted geoid sources (crate::dem::geoid), which bring each dataset's heights to
     /// EGM2008 (`geoid_findings`); None: not read here (the shapes alone).
     pub geoid: Option<Vec<crate::inputs::sources::Source>>,
@@ -444,8 +448,9 @@ impl Elevation {
         }
     }
 
+    /// What dataset `id` is measured from: its `keyed` with its data's, as its accepted entry has it.
     fn memo_key(v: &Version, id: &str, dk: &str, d: &Declaration) -> String {
-        format!("{id} {} {}", keyed(dk, d), data_digest(v, id, d))
+        format!("{id} {}", keyed_with_data(&keyed(dk, d), &data_digest(v, id, d)))
     }
 }
 
@@ -669,6 +674,28 @@ impl Checks for Elevation {
         Ok(d)
     }
 
+    fn derived_from(&self) -> Option<String> {
+        self.regions_index.as_ref().map(|r| format!("regions {r}"))
+    }
+
+    /// Each accepted dataset's measurement, as measured (before its `regions` and `exclude` cut it),
+    /// under the key its accepted entry names: one whose declaration and data are as accepted
+    /// isn't read again, only cut again.
+    fn seed(&self, accepted: &super::Index) {
+        let mut memo = self.memo.lock().unwrap();
+        for (p, e) in &accepted.files {
+            let Kind::Declaration(id) = kind(p) else { continue };
+            let Some(Ok(mut m)) = e.facts.get("measured").map(|v| serde_json::from_value::<Measured>(v.clone())) else {
+                continue;
+            };
+            if let Some(u) = m.uncut.take() {
+                m.cover = (u != [declared::WORLD]).then_some(u);
+            }
+            m.outline = None;
+            memo.entry(format!("{id} {}", e.keyed)).or_insert(Ok(m));
+        }
+    }
+
     fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
         // (The newest pass's outlines: a tile pyramid's coverage is its territory's. The accepted
         // regions: a dataset's `regions` cut its coverage. The accepted sources: their geoid grids
@@ -699,26 +726,29 @@ impl Checks for Elevation {
             None => None,
         };
         // (The accepted regions: a dataset's `regions` cut its coverage.)
-        let (regions, region_geometry) = match crate::inputs::open(root, manifest, crate::inputs::regions::UNIT) {
-            Ok(Some(a)) => {
-                let cache = std::env::var_os(crate::coverage::CACHE_ENV).map(std::path::PathBuf::from);
-                let read = crate::coverage::Coverage::accepted(root, &a, cache.as_deref()).and_then(|c| {
-                    let named = crate::inputs::regions::read::enabled(&a)?
-                        .into_iter()
-                        .filter_map(|l| Some((l.recipe.id, l.stored?.geometry)))
-                        .collect();
-                    Ok((c, named))
-                });
-                match read {
-                    Ok((c, named)) => (Some(c), named),
-                    Err(e) => {
-                        eprintln!("inputs: {UNIT}: the accepted regions can't be read ({e:#})");
-                        (None, BTreeMap::new())
+        // (Its index named only when read: what the cut is derived from.)
+        let (regions, region_geometry, regions_index) =
+            match crate::inputs::open(root, manifest, crate::inputs::regions::UNIT) {
+                Ok(Some(a)) => {
+                    let index = manifest.get(&crate::inputs::logical(crate::inputs::regions::UNIT)).cloned();
+                    let cache = std::env::var_os(crate::coverage::CACHE_ENV).map(std::path::PathBuf::from);
+                    let read = crate::coverage::Coverage::accepted(root, &a, cache.as_deref()).and_then(|c| {
+                        let named = crate::inputs::regions::read::enabled(&a)?
+                            .into_iter()
+                            .filter_map(|l| Some((l.recipe.id, l.stored?.geometry)))
+                            .collect();
+                        Ok((c, named))
+                    });
+                    match read {
+                        Ok((c, named)) => (Some(c), named, index),
+                        Err(e) => {
+                            eprintln!("inputs: {UNIT}: the accepted regions can't be read ({e:#})");
+                            (None, BTreeMap::new(), None)
+                        }
                     }
                 }
-            }
-            _ => (None, BTreeMap::new()),
-        };
+                _ => (None, BTreeMap::new(), None),
+            };
         // (The accepted geoid sources: none accepted, none.)
         let geoid = match manifest.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) {
             Some(_) => crate::inputs::sources::read(root, manifest)?.many(crate::inputs::sources::GEOID).to_vec(),
@@ -730,6 +760,7 @@ impl Checks for Elevation {
                 app: Some(app),
                 store: Some(root.join("sources/fetched")),
                 regions,
+                regions_index,
                 geoid: Some(geoid),
                 region_geometry,
                 ..Elevation::new(fetch, outlines)
@@ -738,6 +769,7 @@ impl Checks for Elevation {
         Ok(Some(Box::new(Elevation {
             store: Some(root.join("sources/fetched")),
             regions,
+            regions_index,
             geoid: Some(geoid),
             region_geometry,
             ..Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines)
@@ -931,8 +963,14 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
         "glo30.geojson".into(),
         super::FileEntry { file: ifile, size: index.len() as u64, keyed: "i".into(), facts: Default::default() },
     );
-    let index =
-        super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
+    let index = super::Index {
+        fmt: 1,
+        unit: UNIT.into(),
+        checks: format!("{UNIT} 1"),
+        files,
+        accepted: BTreeMap::new(),
+        derived_from: None,
+    };
     let body = serde_json::to_vec(&index).unwrap();
     let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&body));
     root.join(super::store_dir(UNIT)).create_dir_all().unwrap();

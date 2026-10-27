@@ -762,8 +762,14 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
             FileEntry { file, size: 1, keyed: format!("k {p}"), facts: facts.as_object().cloned().unwrap_or_default() },
         );
     }
-    let index =
-        super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
+    let index = super::Index {
+        fmt: 1,
+        unit: UNIT.into(),
+        checks: format!("{UNIT} 1"),
+        files,
+        accepted: BTreeMap::new(),
+        derived_from: None,
+    };
     let body = serde_json::to_vec(&index).unwrap();
     let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&body));
     root.join(super::store_dir(UNIT)).create_dir_all().unwrap();

@@ -237,6 +237,7 @@ fn good_declarations_are_measured_from_their_data() {
         checks: "elevation 2".into(),
         files,
         accepted: BTreeMap::new(),
+        derived_from: None,
     };
     let name = "sources/inputs/elevation/@index.0000000000000000.json";
     std::fs::write(d2.path().join(name), serde_json::to_vec(&ix).unwrap()).unwrap();
@@ -603,4 +604,87 @@ fn an_unchanged_dataset_whose_grids_stop_reaching_it_is_held_as_accepted() {
     assert_eq!(r.held, vec!["single.toml".to_string()]);
     assert!(r.findings.iter().any(|f| f.check() == GEOID && f.level == Level::Warning), "{:?}", r.findings);
     assert!(!again.changed && again.index.files == first.index.files);
+}
+
+/// The gate over `files`, checked by `c` against the accepted version `prev` (each file listed as
+/// the last check listed it), the copies stored so far in `copies`: the decision.
+fn decide_with(
+    c: &Elevation,
+    files: &BTreeMap<String, Vec<u8>>,
+    prev: Option<&crate::inputs::gate::Decision>,
+    copies: &std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
+) -> crate::inputs::gate::Decision {
+    let listing = crate::inputs::Listing {
+        files: files.iter().map(|(p, b)| (p.clone(), (b.len() as u64, 1))).collect(),
+        ..Default::default()
+    };
+    let read_new = |p: &str| files.get(p).cloned().ok_or_else(|| anyhow::anyhow!("{p}: none"));
+    let read_old = |e: &crate::inputs::FileEntry| {
+        copies.lock().unwrap().get(&e.file).cloned().ok_or_else(|| anyhow::anyhow!("no copy"))
+    };
+    let none = BTreeMap::new();
+    let d = crate::inputs::gate::decide(&crate::inputs::gate::Given {
+        checks: c,
+        prev: prev.map(|d| &d.index),
+        prev_listed: prev.map_or(&none, |d| &d.listed),
+        listing: &listing,
+        unsettled: &BTreeSet::new(),
+        accepted: &BTreeSet::new(),
+        full: false,
+        read_new: &read_new,
+        read_old: &read_old,
+    })
+    .unwrap();
+    copies.lock().unwrap().extend(d.store.iter().map(|(n, b)| (n.clone(), b.to_vec())));
+    d
+}
+
+/// A change of the accepted regions, no file changed, cuts a regional dataset again (its coverage
+/// and outline), from what was measured (no data read again), writing a new index; its `keyed`
+/// stays (the keys name the cut by `cut_note`), and a dataset without `regions` is as it was. The
+/// same regions again derive nothing.
+#[test]
+fn a_regions_change_cuts_the_datasets_again_and_no_change_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let checks = |place: &str, index: &str, fetch: MapFetch| {
+        let r = crate::agent::recipes::Recipe { id: "a".into(), name: "a".into(), outline: vec![place.into()] };
+        Elevation {
+            regions: Some(crate::coverage::Coverage::fixture(&[r], None, dir.path()).unwrap()),
+            regions_index: Some(index.into()),
+            region_geometry: BTreeMap::from([(
+                "a".to_string(),
+                format!("sources/inputs/regions/@geometry/a.{index}.rgeo"),
+            )]),
+            ..Elevation::new(Arc::new(fetch), None)
+        }
+    };
+    let files: BTreeMap<String, Vec<u8>> = BTreeMap::from([
+        ("regional.toml".to_string(), decl("regions = [\"a\"]", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"")),
+        ("whole.toml".to_string(), decl("rank = 1", "format = \"geotiff\"\nurl = \"https://e.org/t/N48E002.tif\"")),
+    ]);
+    let measured = |d: &crate::inputs::gate::Decision, p: &str| -> Measured {
+        serde_json::from_value(d.index.files[p].facts["measured"].clone()).unwrap()
+    };
+    let copies = Default::default();
+    let first = decide_with(&checks("place:2.5,48.5,20", "r1", fetch()), &files, None, &copies);
+    assert!(first.report.is_none(), "{:?}", first.report);
+    let m1 = measured(&first, "regional.toml");
+    assert_eq!(m1.cover, Some(vec![[2.0, 48.0, 3.0, 49.0]]));
+    assert_eq!(first.index.derived_from.as_deref(), Some("regions r1"));
+    // The region moved, nothing in the folder changed; no data served now: nothing is measured again.
+    let moved = decide_with(&checks("place:3.5,49.5,20", "r2", MapFetch::default()), &files, Some(&first), &copies);
+    assert!(moved.report.is_none(), "{:?}", moved.report);
+    assert!(moved.changed && moved.read.is_empty());
+    assert_eq!(moved.index.derived_from.as_deref(), Some("regions r2"));
+    let m2 = measured(&moved, "regional.toml");
+    assert_eq!(m2.cover, Some(vec![[3.0, 49.0, 4.0, 50.0]]));
+    assert_eq!(m2.uncut, m1.uncut);
+    let o = m2.outline.unwrap();
+    assert_eq!(o.geometry, ["sources/inputs/regions/@geometry/a.r2.rgeo"]);
+    assert_eq!(o.edges.iter().collect::<Vec<_>>(), ["3,49"]);
+    assert_eq!(moved.index.files["regional.toml"].keyed, first.index.files["regional.toml"].keyed);
+    assert_eq!(moved.index.files["whole.toml"], first.index.files["whole.toml"]);
+    // The same regions again: nothing derived, the index as it was.
+    let again = decide_with(&checks("place:3.5,49.5,20", "r2", MapFetch::default()), &files, Some(&moved), &copies);
+    assert!(!again.changed && again.index == moved.index && again.store.is_empty());
 }

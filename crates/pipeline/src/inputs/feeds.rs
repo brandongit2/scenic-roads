@@ -676,6 +676,7 @@ url = "https://files.mobilitydatabase.org/feeds_v2.csv"
                 checks: format!("{UNIT} 1"),
                 files: [("sg-lta-train.toml".to_string(), e)].into(),
                 accepted: BTreeMap::new(),
+                derived_from: None,
             }
         };
         let d = declared_of(&index(LTA));

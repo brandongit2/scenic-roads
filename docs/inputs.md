@@ -127,8 +127,10 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
      current version, every changed file of the unit is held and the version stays; the banner says
      they were held together and why.
      What's derived from the version whole is made again, files unchanged, when the accepted
-     index's `checks` isn't this app's (`unit` and the unit's `Checks::version`): a bump of a
-     unit's version rolls its derived files out by itself.
+     index's `checks` isn't this app's (`unit` and the unit's `Checks::version`), or its
+     `derived_from` isn't what the unit's checks read beyond the files now (`Checks::derived_from`:
+     the elevation datasets' accepted regions, §6.8): a bump of a unit's version rolls its derived
+     files out by itself, and so does a change of what they're derived from.
   6. Stores each file content-named under `sources/inputs/<unit>/` (uploaded and read back, docs/storage.md).
   7. Hands off the records: `sources/inputs/<unit>/@index` (when it differs; the replaced index is
      touched so GC keeps it, §4.9), `@listed`, and `@held` (the held report, or none). `@` starts
@@ -205,6 +207,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
    "accepted": {"h-loss.9e41…c2": ["fr-merimee.geojson"]}}
   ```
   `keyed` digests only what affects builds (a description's credit doesn't: §5.1, §4.8);
+  `derived_from` (absent for most units) names what was derived from beyond the files (step 5);
   `accepted` maps the warnings the version was taken with to their files, kept while those files
   are unchanged. No file time is in it, so the same contents have the same version.
 - **The records:** the manifest's `sources/inputs/<unit>/@index` names the index, which roots its
@@ -1141,7 +1144,7 @@ the same declarations.
 | `rank` | integer, default 0 | overrides the order by resolution (lower first), where datasets of one resolution differ in quality |
 | `code` | 1–9 | the source byte (at most `roadcore::NDEM` − 1, where the server counts a way's sources) in the z6 tiles' outputs (`src.u8`), named on the map by `label` |
 | `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the catalogue's `dem_labels` (formats.md, Catalogue), as a credit edit does (§4.8) |
-| `regions` | region ids (§6.1) | optional: the map regions the dataset is used in at all, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Its coverage (`facts.measured.cover`) is cut at check time to the 1° cells meeting one of them (`declared::scope_cover`; the check's key names the accepted regions, so a regions change measures again); an id no accepted region has is an `el-data` error. Then it's cut to the regions' outlines inside those cells (`declared::scope_outline`, `facts.measured.outline`): their shapes, land and any water a region declares, with their buffer, as the coverage holds a point (§6.1). A cell they hold whole together is used whole; every other is an edge cell, where each point is tested against the outlines as the terrain's base samples (`declared::Cover::contains`, the regions' stored geometry read by the plan, `OutlineCut`); outside them the next dataset serves. The roads take their heights from the finished terrain, so they have the same cut. Not in its `keyed` digest (`Declaration::keyed_part`): a key names the cut only where it changed what the key's box reads (`cut_note`: the cells it cut there, and in each edge cell it meets only the outlines inside the key's box, grown by a 256th of it each way: a box the outlines hold whole there keeps its key, one wholly outside them counts the cell as cut, else the outlines there are named; the keys read the regions' stored geometry as the plans do), so the z6 tiles whose cells the outlines wholly hold keep their keys and those whose datasets change are built again |
+| `regions` | region ids (§6.1) | optional: the map regions the dataset is used in at all, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Its coverage (`facts.measured.cover`) is cut at check time to the 1° cells meeting one of them (`declared::scope_cover`; the check's key names the accepted regions and the index records them, `derived_from`, so a regions change, no file changed, cuts every dataset again and writes a new index: from what was measured, `facts.measured.uncut`, no data read again); an id no accepted region has is an `el-data` error. Then it's cut to the regions' outlines inside those cells (`declared::scope_outline`, `facts.measured.outline`): their shapes, land and any water a region declares, with their buffer, as the coverage holds a point (§6.1). A cell they hold whole together is used whole; every other is an edge cell, where each point is tested against the outlines as the terrain's base samples (`declared::Cover::contains`, the regions' stored geometry read by the plan, `OutlineCut`); outside them the next dataset serves. The roads take their heights from the finished terrain, so they have the same cut. Not in its `keyed` digest (`Declaration::keyed_part`): a key names the cut only where it changed what the key's box reads (`cut_note`: the cells it cut there, and in each edge cell it meets only the outlines inside the key's box, grown by a 256th of it each way: a box the outlines hold whole there keeps its key, one wholly outside them counts the cell as cut, else the outlines there are named; the keys read the regions' stored geometry as the plans do), so the z6 tiles whose cells the outlines wholly hold keep their keys and those whose datasets change are built again |
 | `exclude` | boxes `[w, s, e, n]` in whole degrees | optional: 1° cells the dataset isn't used in, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Cut from its coverage (and from its outline's edge cells) after its `regions`, at check time; not in its `keyed` digest, so as with `regions` only the keys whose box reads a cut cell change (`cut_note`). e.g. `[[153, 24, 155, 25]]`, Minamitorishima, for GSI's datasets (JGD2011): GSIGEO2011, their geoid grid, stops near 150° E |
 | `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world |
 | `[data] format` | `geotiff` or `tiles` | |
@@ -1186,7 +1189,9 @@ area left out in km², reckoned at 0.05°; a grid's own voids inside its box are
 datasets of one rank, resolution and surface meeting (`el-tie`). A declaration is held with the
 index it names. The checks run whole on every check, files changed or not (`holds_unchanged`), so
 a finding on an unchanged dataset (an `el-geoid` the accepted sources or this check's version
-newly raise) holds it as accepted and shows it held. Planned: files not meeting the declared territory.
+newly raise) holds it as accepted and shows it held. A dataset whose declaration and data are as
+accepted (its `keyed` with its data's) isn't measured again: its accepted `facts.measured`, before
+the cut, is taken (`Checks::seed`) and cut again. Planned: files not meeting the declared territory.
 
 **Projections** (crate::dem::proj, as PROJ 9.8 computes them, tested against pyproj): WGS 84 to
 NAD83(CSRS) by EPSG:1946's Helmert, then Canada Atlas Lambert (EPSG:3979: HRDEM) or a NAD83 /

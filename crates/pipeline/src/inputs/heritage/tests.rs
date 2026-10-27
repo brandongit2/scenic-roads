@@ -227,6 +227,7 @@ fn the_accepted_registers() {
             checks: "heritage 1".into(),
             files,
             accepted: BTreeMap::new(),
+            derived_from: None,
         },
     };
     let r = registers(&a);

@@ -370,6 +370,15 @@ pub trait Checks: Sync {
     fn derive(&self, _v: &Version, _keep: &BTreeSet<String>) -> Result<Derived> {
         Ok(Derived::default())
     }
+    /// What `derive` reads beyond the files (the elevation datasets': the accepted regions, which
+    /// cut their coverage), recorded in the index (`Index::derived_from`): when it differs from the
+    /// accepted version's, what's derived is made again, no file changed. None: nothing.
+    fn derived_from(&self) -> Option<String> {
+        None
+    }
+    /// Told the accepted version before a check: what its checks read from files still as they
+    /// were may be taken from it rather than read again (the elevation datasets' measurements).
+    fn seed(&self, _accepted: &Index) {}
     /// Why the check can't run now (the regions' while the current pass has no outline set yet):
     /// the job then changes nothing, and runs again when its key does. None: ready.
     fn not_ready(&self) -> Option<String> {
@@ -458,6 +467,9 @@ pub struct Index {
     /// files are in the version unchanged (an acceptance of none of them is stale).
     #[serde(default)]
     pub accepted: BTreeMap<String, Vec<String>>,
+    /// What was derived from beyond its files (`Checks::derived_from`); None: nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_from: Option<String>,
 }
 
 /// The check's own state (`sources/inputs/<unit>/@listed.<hash16>.json`, `listed_logical`): the
