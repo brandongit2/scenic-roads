@@ -480,13 +480,17 @@ regions::tiles; §6.1.4). First its land: its outline exact (no coast tolerance)
 outline are its water, unless another region's water names them. Then its water: the `water` parts,
 less the coastline's land and every region without `water` (the land dominates the sea), in an
 order where a region comes after those its water names whole (`region:`, `group:`). Then one
-coastline, with or without `cover`: what lies in no region along the coastline, on either side of
-it — land where an outline's coast lay inland of the coastline's, sea where the water's parts
-stopped short of it — is the coast's (the coastline: the land's edge, the big lakes' shores
-included, never a cell's edge). Each side's pieces touching the coastline in their cell, joined
-across the cells' edges, up to `sliver_km2` go to the region sharing the longest edge with them (a piece of
-land by its land, a piece of sea by its water and lakes), if it has `water`; so a region's land and
-water meet on the coastline's coast (a `land:` part names the land before this). A region's
+coastline, with or without `cover`: the outlines' coastal edges are taken from the coastline. What
+lies in no region along the coastline, on either side of it — land where an outline's coast lay
+inland of the coastline's, sea where the water's parts stopped short of it (the coastline: the
+land's edge, the big lakes' shores included, never a cell's edge) — is joined across the cells'
+edges into stretches; a stretch whose every point (its vertices and a point inside each piece) is
+within `COAST_REACH_M` (1 km) of a region's land (a stretch of land) or water and lakes (a stretch
+of sea) goes to the nearest such region, split at the median line where several are nearest, each
+part to its region if that has `water` (a region without `water` keeps its outline: its part stays
+out). So a region's land and water meet on the coastline's coast (a `land:` part names the land
+before this); a stretch reaching past 1 km (an island no outline has, a long inlet the zones stop
+short of) stays out, for the cover check. A region's
 `hand_out` folder then takes each stretch (a connected piece) of its water that one of its regions
 alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge. With
 `cover = "earth"` in `_rules.toml`, then: a region's piece of water under `sliver_km2` touching
@@ -577,7 +581,10 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   water: as many at once as the check is allowed threads, §4.3). A region's parts naming other regions (`region:`, `land:`,
   `group:`) are read cell by cell where those are kept, never copied. With
   `SCENIC_REGIONS_TRACE` set, the check prints each step's and each region's water's footprint
-  and its buffers' and nearest-coast splits' count, time and footprint; `SCENIC_REGIONS_THREADS`
+  and its buffers' and nearest-coast splits' count, time and footprint, and the coast's stretches
+  over 1 km² left out of reach; `SCENIC_REGIONS_GAPS` (cells' south-west corners in degrees,
+  `-130,54;-64,44`) prints each such cell's land in no region (pieces, median, largest, total)
+  before the coast step and at the end; `SCENIC_REGIONS_THREADS`
   sets how wide the pools are (the cores, 8 at most). A buffer of a cell reads its neighbours' pieces each buffered
   once, within 16 columns each way (25 in the north, enough for 200 nmi at 86°N) and not from the cells south of 80°S (Antarctica's inland ice) or
   north of 86°N (where no land is); a buffer of

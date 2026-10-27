@@ -421,16 +421,35 @@ fn the_coast_is_the_coastlines_land() {
     g.shapes.retain(|s| !s.water);
     let land = area_of(&g);
     assert!(land.contains([e7(0.6), e7(1.001)]) && !land.contains([e7(0.6), e7(1.003)]));
-    // Its sea: water parts stopping short of the coast (a notch of about 24 km² at the land's
-    // east edge) reach it; a notch off the coast stays out.
+    // Its sea: water parts stopping short of the coast (a notch 0.008°, about 840 m, wide at the
+    // land's east edge) reach it; one 0.02° wide (2.1 km: past `COAST_REACH_M`) doesn't, nor does
+    // a notch off the coast.
     let s = "id = \"s\"\nname = \"S\"\noutline = [\"osm:4\"]\n\
-             water = [{ minus = [\"box:19.0,19.0,22.0,22.0\", \"box:21.0,20.4,21.02,20.5\", \"box:21.5,20.4,21.52,20.5\"] }]\n";
+             water = [{ minus = [\"box:19.0,19.0,22.0,22.0\", \"box:21.0,20.4,21.008,20.5\", \"box:21.0,20.6,21.02,20.7\", \"box:21.5,20.4,21.508,20.5\"] }]\n";
     let out = run(&w, &[PINS, ("s.toml", s)]);
     assert!(out.problems.is_empty(), "{:?}", out.problems);
     let mut g = out.resolved["s"].geometry.clone();
     g.shapes.retain(|s| s.water);
     let water = area_of(&g);
-    assert!(water.contains([e7(21.01), e7(20.45)]) && !water.contains([e7(21.51), e7(20.45)]));
+    assert!(water.contains([e7(21.004), e7(20.45)]), "a notch within reach");
+    assert!(!water.contains([e7(21.01), e7(20.65)]), "a notch past reach");
+    assert!(!water.contains([e7(21.504), e7(20.45)]), "a notch off the coast");
+}
+
+/// One coastline where two regions meet on it: the land past both outlines' coasts is split at the
+/// median line between them, each taking what lies nearer it.
+#[test]
+fn coastal_land_two_regions_border_is_split_between_them() {
+    // Land to 21.0°N; two outlines side by side stopping 0.005° (about 520 m) short of it.
+    let w = world_more(1.002, vec![bx(30.0, 20.0, 32.0, 21.0)]);
+    let l = "id = \"l\"\nname = \"L\"\noutline = [\"box:30.0,20.0,31.0,20.995\"]\nwater = []\n";
+    let r = "id = \"r\"\nname = \"R\"\noutline = [\"box:31.0,20.0,32.0,20.995\"]\nwater = []\n";
+    let out = run(&w, &[PINS, ("l.toml", l), ("r.toml", r)]);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let at = |id: &str, x: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(20.998)]);
+    assert!(at("l", 30.5) && !at("r", 30.5));
+    assert!(at("r", 31.5) && !at("l", 31.5));
+    assert!(at("l", 30.99) && at("r", 31.01), "split near the border");
 }
 
 /// The coast is the coastline's, not a cell's edge (#649 review): land in no region inland, at a
