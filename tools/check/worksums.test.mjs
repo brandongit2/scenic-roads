@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, runLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileCovers, tileOf } from '../../web/work/sums.js';
+import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, runLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf } from '../../web/work/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -179,6 +179,24 @@ test("past jobs: a worker's leased jobs too (done, fail), each on its Mac's firs
   ];
   const r = pastRuns(ev, 0, ['m4']);
   assert.deepEqual(r.map((x) => [x.lane, x.from, x.ok]), [['m4', 100, true], ['m4 #2', 150, false], ['m4', 250, true]]);
+});
+
+test('past jobs: what each waited on, as its start or lease names it (none before #791)', () => {
+  const ev = [
+    { kind: 'lease', seq: 11, t: 90, lease: 4, step: 'terrain-hi', worker: 'm1', targets: ['6/1/1'] },
+    { kind: 'done', seq: 12, t: 100, secs: 10, lease: 4, step: 'terrain-hi', worker: 'm1', targets: ['6/1/1'] },
+    { kind: 'start', seq: 13, t: 110, step: 'unit', worker: 'm4', targets: ['6/1/1'], after: [12] },
+    { kind: 'start', seq: 14, t: 111, step: 'depth', worker: 'm4 #2' },
+    { kind: 'end', seq: 15, t: 200, secs: 90, step: 'unit', worker: 'm4', targets: ['6/1/1'] },
+    { kind: 'end', seq: 16, t: 210, secs: 99, step: 'depth', worker: 'm4 #2', targets: ['6/1/1'] },
+  ];
+  // (Given out of order: the page's past ends before its live events.)
+  const r = pastRuns([...ev].reverse(), 0, ['m1', 'm4']);
+  assert.deepEqual(r.map((x) => [x.seq, x.after]), [[12, []], [15, [12]], [16, []]]);
+  // A running job's: the lead's own by its start, a member's by its Mac's lease of the step.
+  assert.deepEqual(startOf({ step: 'unit', id: 'unit 6/1/1', started: 112 }, ev)?.after, [12]);
+  assert.equal(startOf({ step: 'terrain-hi', id: 'x', started: 95, mac: 'm1' }, ev)?.seq, 11);
+  assert.equal(startOf({ step: 'terrain-hi', id: 'x', started: 95 }, ev), null);
 });
 
 test("a Mac's lanes one group whatever names it went by", () => {

@@ -20,7 +20,7 @@
 // activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { AREAS, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, stepTotals, targetsOf, macSlot, tileCovers, tileOf } from "./sums.js";
+import { AREAS, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, tileCovers, tileOf } from "./sums.js";
 import { fmt } from "./chartmath.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
@@ -935,10 +935,11 @@ const HISTORY_S = 7 * 86400;
 // The jobs' ends from the history further back than the page's own events (`/work/history`, a
 // chunk at a time back to HISTORY_S ago: sums.js pastFrom), in the numbering they were read in.
 const past = { ends: [], epoch: undefined, first: null, asking: false };
-// Every job's end held (a lead's job's "end", a worker's "done" or "fail"): those read back, then
-// the page's own events.
-const isEnd = (e) => e.kind === "end" || e.kind === "done" || e.kind === "fail";
-const endsHeld = () => past.ends.concat(events.filter(isEnd));
+// Every job's end held (a lead's job's "end", a worker's "done" or "fail"), and each start or
+// lease naming what it waited on (sums.js pastRuns' `after`): those read back, then the page's own
+// events.
+const isHeld = (e) => e.kind === "end" || e.kind === "done" || e.kind === "fail" || e.after?.length > 0;
+const endsHeld = () => past.ends.concat(events.filter(isHeld));
 // The oldest event the page holds (its past window's or the live poll's), null: none.
 const heldFrom = () => { let t = events[0]?.t ?? null; for (const e of past.ends) if (t == null || e.t < t) t = e.t; return t; };
 async function loadPast(sw) {
@@ -953,7 +954,7 @@ async function loadPast(sw) {
       if (code !== 200 || !hist?.events?.length || hist.epoch !== past.epoch) break;
       const got = hist.events.filter((e) => e.seq < first.seq);
       if (!got.length) break;
-      past.ends = got.filter(isEnd).concat(past.ends);
+      past.ends = got.filter(isHeld).concat(past.ends);
       first = past.first = { seq: got[0].seq, t: got[0].t };
       render();
     }
@@ -963,8 +964,11 @@ async function loadPast(sw) {
 }
 
 // What a job running now is, as a schedule's run: on its slot's lane, from its start to now, its
-// targets as the history names them (sums.js targetsOf).
-const runningRuns = (m) => m.macs.flatMap((x) => jobsOf(x.status).map((j) => ({ lane: slotName(x.name, j.slot), step: stepOf(j.id), from: j.started, until: m.now, n: j.live?.targets || (jobTarget(j) ? 1 : 0), targets: targetsOf({ step: stepOf(j.id), id: j.id, started: j.started }, events), job: j, mac: x.name })));
+// targets and what it waited on (`after`) as the history names them (sums.js targetsOf, startOf).
+const runningRuns = (m) => m.macs.flatMap((x) => jobsOf(x.status).map((j) => {
+  const run = { step: stepOf(j.id), id: j.id, started: j.started, mac: x.name !== m.a.host ? x.name : null };
+  return { lane: slotName(x.name, j.slot), step: run.step, from: j.started, until: m.now, n: j.live?.targets || (jobTarget(j) ? 1 : 0), targets: targetsOf(run, events), after: startOf(run, events)?.after || [], job: j, mac: x.name };
+}));
 
 // The Jobs tab's cards (#659), as the mockup's (look/finalmock: dash.js showTip): a head (the
 // stage's swatch, a kicker "<step> · what it is", the code's name as title), a world map of the
@@ -1084,7 +1088,9 @@ function segTiles(s, m) {
 // What a key points at in the schedule (timeline.js `relations`): a segment's run's own segments,
 // those of the runs it waits on and of those waiting on it, and its arrows (from a run's end, its
 // last segment, to a run's start, its first); a legend item's (`lg stage <id>`, `lg kind <kind>`)
-// segments. Their tiles for the map: the segment's own, the legend item's all.
+// segments. A job that ran or one running links by the history instead (`after`: the ends it
+// waited on, sums.js pastRuns, startOf), to the jobs that ran and those running. Their tiles for the
+// map: the segment's own, the legend item's all.
 function schedRelations(key) {
   const m = lastSchedM;
   if (!m) return null;
@@ -1101,6 +1107,18 @@ function schedRelations(key) {
   const on = [...self], arrows = [];
   for (const a of s.run != null ? links.on.get(s.run) || [] : []) { const x = of(a); on.push(...x); if (x.length) arrows.push([tail(x), head(self)]); }
   for (const b of s.run != null ? links.then.get(s.run) || [] : []) { const x = of(b); on.push(...x); if (x.length) arrows.push([tail(self), head(x)]); }
+  // (Jobs that ran, and those running, by what the history says each waited on: `after`, the ends'
+  // seqs of the jobs it waited on. A segment packs several runs: its parts'.)
+  const parts = (x) => (x.kind === "past" ? x.r.parts || [x.r] : x.kind === "running" ? [x.r] : []);
+  const seqs = new Set(parts(s).map((p) => p.seq).filter((q) => q != null));
+  const waited = new Set(parts(s).flatMap((p) => p.after || []));
+  if (seqs.size || waited.size) {
+    for (const x of segs.values()) {
+      if (x === s) continue;
+      if (parts(x).some((p) => waited.has(p.seq))) { on.push(x); arrows.push([x, head(self)]); }
+      if (parts(x).some((p) => p.after?.some((q) => seqs.has(q)))) { on.push(x); arrows.push([tail(self), x]); }
+    }
+  }
   return { on, arrows, tiles: segTiles(s, m) };
 }
 let lastSchedM = null;
@@ -1210,7 +1228,7 @@ function schedule(m) {
   const legend = h("div", "legend", stages.map((g) => lg(`lg stage ${g}`, h("i", { style: { background: stageColour(g) } }), g)),
     h("span", "keys", KEYS.filter(([k]) => kinds.has(k)).map(([k, cls, text]) => lg(`lg kind ${k}`, h("i", cls), text))),
     Object.keys(outs).length ? h("span", null, h("i", { class: "rmark" }), "a region all on the map") : null,
-    h("span", "hint", tc ? "a job to come or running, hovered: red arrows from what it waits on and to what waits on it" : null),
+    h("span", "hint", "a job hovered: red arrows from what it waits on and to what waits on it"),
     h("span", "hint", "drag to move · pinch or ⌥ scroll to zoom"));
   legend.addEventListener("pointerover", (e) => { if (e.pointerType !== "touch") tl.hover(e.target.closest?.("[data-lg]")?.dataset.lg || null); });
   legend.addEventListener("pointerleave", () => tl.hover(null));

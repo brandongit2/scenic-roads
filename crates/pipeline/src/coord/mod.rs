@@ -2255,6 +2255,12 @@ impl Coordinator {
         self.shared.lock().unwrap().tocome = Some(t);
     }
 
+    /// The forecast's dependencies, what the history's starts and leases name as waited on
+    /// (history::Event::after).
+    pub fn set_waits(&self, g: history::Graph) {
+        self.shared.lock().unwrap().history.set_waits(g);
+    }
+
     /// The app the newer readers' switch was recorded on (`Shared::min_app`; None: none recorded).
     pub fn set_min_app(&self, app: Option<String>) {
         self.shared.lock().unwrap().min_app = app;

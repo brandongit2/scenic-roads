@@ -28,6 +28,10 @@
 //                     them); the Regions tab's stage bars then checked saying what's left by them
 //   --member NAME     the map's "Show only for" set to NAME: its queued tiles counted, a card of
 //                     one found, screenshots (chrome-member*), then set back
+//   --history FILE    /work/history answered from FILE (the coordinator's history.jsonl, an event a
+//                     line), its times moved so its last event is now, `since` and `max` honoured;
+//                     /work/swarm's `seq` and `epoch` then FILE's (the schedule's past jobs and the
+//                     arrows between them by what each waited on, #791)
 //   --width W         the Chrome run at W px wide (default 390, a phone; 768 or more: a desktop, DPR 2)
 //   --scheme S        dark or light (prefers-color-scheme; default the system's)
 //   --agent H:P       the agent read (default 127.0.0.1:8090; the lead's to see the NAS tab filled)
@@ -77,6 +81,12 @@ const shifted = FORECAST && FORECAST !== "none" && (() => {
     publishes: (f.publishes || []).map((x) => ({ ...x, at: mv(x.at) })),
     grants: (f.grants || []).map((x) => ({ ...x, at: mv(x.at) })) };
 })();
+// (FILE's history moved so its last event is now.)
+const HISTORY = arg("--history", null) && (() => {
+  const evs = readFileSync(arg("--history"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const d = Math.floor(Date.now() / 1000) - Math.max(0, ...evs.map((e) => e.t));
+  return evs.map((e) => ({ ...e, t: e.t + d })).sort((p, q) => p.seq - q.seq);
+})();
 const LIVE = arg("--live", null);
 const STEPS = arg("--steps", null);
 const MEMBER = arg("--member", null);
@@ -110,6 +120,11 @@ function serve() {
           a.catalogs = a.catalogs.filter((c) => v.after == null || c.n > v.after);
           res.writeHead(200, { "Content-Type": "application/json" });
           return res.end(JSON.stringify(a));
+        }
+        if (call === "history" && HISTORY) {
+          const after = HISTORY.filter((e) => e.seq > (v.since ?? 0));
+          res.writeHead(200, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ events: v.since == null ? HISTORY.slice(-(v.max || 1000)) : after.slice(0, v.max || 1000), seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }));
         }
         if (call === "built" && BUILT) {
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -163,7 +178,7 @@ function serve() {
           if (call !== "swarm" || r.statusCode !== 200) { res.writeHead(r.statusCode, r.headers); return r.pipe(res); }
           let b = "";
           r.on("data", (c) => (b += c));
-          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (FORECAST === "none" && o.agent) delete o.agent.forecast; res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
+          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (FORECAST === "none" && o.agent) delete o.agent.forecast; if (HISTORY) Object.assign(o, { seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
         });
         fw.on("error", (e) => { console.error(`touch-test server: ${url.pathname}: ${e.message}`); res.writeHead(502); res.end("{}"); });
         fw.end(out);

@@ -563,6 +563,10 @@ pub struct Forecast {
     /// (`/work/tocome`, with `placed`'s tiles: `ToCome::runs`). Not in the status.
     #[serde(skip)]
     pub runs: Runs,
+    /// The items' dependencies, what each job started from now on waited on is read from
+    /// (crate::coord::history::Waits: the history's starts and leases name it). Not in the status.
+    #[serde(skip)]
+    pub graph: crate::coord::history::Graph,
 }
 
 /// The schedule's runs (`Forecast::lanes`) numbered in turn: the lanes by name, each lane's runs in
@@ -1883,7 +1887,19 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
         f.lanes.insert(mac.name.clone(), lane);
     }
     f.runs = runs_of(&f.lanes, &inp.machines, &expected, &run_of);
+    f.graph = graph_of(&expected);
     f
+}
+
+/// The run's items and what each waits on (`Forecast::graph`).
+fn graph_of(sim: &Sim) -> crate::coord::history::Graph {
+    let ids = |v: &[usize]| v.iter().map(|&i| i as u32).collect();
+    crate::coord::history::Graph {
+        keys: sim.items.iter().map(|it| (it.step.clone(), it.target.clone())).collect(),
+        deps: sim.items.iter().map(|it| ids(&it.deps)).collect(),
+        sets: sim.items.iter().map(|it| ids(&it.groups)).collect(),
+        groups: sim.groups.iter().map(|g| ids(g)).collect(),
+    }
 }
 
 /// The schedule's runs (`Runs`): `run_of` each item's (machine, its run in its lane), the

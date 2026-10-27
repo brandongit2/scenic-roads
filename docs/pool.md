@@ -937,6 +937,13 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   lead's next loop step before (20 s, minutes while the loop was busy).
 - Workers are a member id and an agent instance; a new lead drops only instances that no longer
   exist.
+- **What a job waited on** (task #791): the lead's coordinator writes on each "start" and "lease"
+  event `after`, the numbers of the "end"/"done" events of the jobs it waited on: for each step
+  its targets wait on in the forecast's dependencies (`forecast::Forecast::graph`, handed to the
+  history after each forecast, `history::Waits`; what an earlier forecast's waited on and finished
+  since is kept), the one of that step that finished last. A few numbers an event (one per step
+  waited on, ~10 bytes each); events before it have none, and readers take none as nothing
+  known. The build page's schedule draws its arrows from it.
 - **The history** is one file per writer, `state/coord/history/<day>/<member>.jsonl`, for the last
   `history::DAYS` (7) days, the days the page view reads (`pageview` takes the same constant). A
   day before them is packed as one tar, `state/coord/history-archive/<day>.tar` (members

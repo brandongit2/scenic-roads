@@ -7,7 +7,7 @@
 //! `/work/history` (the events after a number) and summed by the hour for the page (`rates`).
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -64,6 +64,12 @@ pub struct Event {
     /// crate::pubtimes::CatalogueStats, a "planned"'s units reaching each map tile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
+    /// What a job waited on (a "start" or "lease", set by `History::add` from the forecast's
+    /// dependencies: `Waits`): for each step its targets wait on, the job of that step that finished
+    /// last among those they wait on, by its "end" or "done" event's number; sorted. Events before
+    /// task #791 have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<u64>,
 }
 
 impl Event {
@@ -80,6 +86,73 @@ pub struct History {
     seq: u64,
     /// Lines in the file: rewritten with what's kept once it holds twice as many.
     lines: usize,
+    /// Each target's last finishing job kept (step, target) → its "end" or "done" event's number.
+    built: HashMap<(String, String), u64>,
+    waits: Waits,
+}
+
+/// The forecast's dependencies (crate::agent::forecast's items): each item (step, target), the
+/// items it waits on (`deps`, indices into `keys`) and the sets it waits on whole (`sets`, into
+/// `groups`, each a list of items).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Graph {
+    pub keys: Vec<(String, String)>,
+    pub deps: Vec<Vec<u32>>,
+    pub sets: Vec<Vec<u32>>,
+    pub groups: Vec<Vec<u32>>,
+}
+
+/// What the targets not yet started wait on: the last forecast's `Graph`, and for each of its items
+/// what it waited on that finished before that forecast was made (an earlier forecast's
+/// dependencies, done since: gone from the last one's), step → the last job's event number.
+#[derive(Debug, Default)]
+struct Waits {
+    graph: Graph,
+    index: HashMap<(String, String), u32>,
+    resolved: HashMap<(String, String), BTreeMap<String, u64>>,
+}
+
+/// Into `out`, for each step, the last finishing job (`built`) of the items `of` names in `g`.
+fn last_per_step(
+    g: &Graph,
+    of: impl Iterator<Item = u32>,
+    built: &HashMap<(String, String), u64>,
+    out: &mut BTreeMap<String, u64>,
+) {
+    for d in of {
+        let Some(k) = g.keys.get(d as usize) else { continue };
+        if let Some(&seq) = built.get(k) {
+            let e = out.entry(k.0.clone()).or_default();
+            *e = (*e).max(seq);
+        }
+    }
+}
+
+impl Waits {
+    /// What item `i` of the graph waits on that's finished, step → the last job's number.
+    fn of(
+        &self,
+        i: u32,
+        built: &HashMap<(String, String), u64>,
+        sets: &mut HashMap<u32, BTreeMap<String, u64>>,
+    ) -> BTreeMap<String, u64> {
+        let g = &self.graph;
+        let mut out = self.resolved.get(&g.keys[i as usize]).cloned().unwrap_or_default();
+        last_per_step(g, g.deps[i as usize].iter().copied(), built, &mut out);
+        for &s in &g.sets[i as usize] {
+            // (A set is shared by many items: worked out once.)
+            let r = sets.entry(s).or_insert_with(|| {
+                let mut r = BTreeMap::new();
+                last_per_step(g, g.groups.get(s as usize).into_iter().flatten().copied(), built, &mut r);
+                r
+            });
+            for (k, &v) in r.iter() {
+                let e = out.entry(k.clone()).or_default();
+                *e = (*e).max(v);
+            }
+        }
+        out
+    }
 }
 
 /// The events summed by the hour, for the page's activity: what each worker finished (its targets,
@@ -108,7 +181,14 @@ fn now_s() -> u64 {
 impl History {
     /// What's kept at `path` (None: in memory alone), the last week's.
     pub fn load(path: Option<&Path>) -> History {
-        let mut h = History { path: path.map(Path::to_path_buf), events: VecDeque::new(), seq: 0, lines: 0 };
+        let mut h = History {
+            path: path.map(Path::to_path_buf),
+            events: VecDeque::new(),
+            seq: 0,
+            lines: 0,
+            built: HashMap::new(),
+            waits: Waits::default(),
+        };
         let Some(text) = path.and_then(|p| std::fs::read_to_string(p).ok()) else { return h };
         let from = now_s().saturating_sub(KEEP_S);
         for l in text.lines() {
@@ -123,7 +203,38 @@ impl History {
         while h.events.len() > KEEP_MAX {
             h.events.pop_front();
         }
+        let ends: Vec<Event> = h.events.iter().filter(|e| finished(e)).cloned().collect();
+        for e in &ends {
+            h.note_built(e);
+        }
         h
+    }
+
+    /// The forecast's dependencies (its items' last: `Graph`), what each start and lease from now
+    /// on waited on is read from; what the last ones waited on that's finished since is kept.
+    pub fn set_waits(&mut self, graph: Graph) {
+        let old = std::mem::take(&mut self.waits);
+        let mut sets = HashMap::new();
+        let mut resolved = HashMap::new();
+        for (k, &i) in &old.index {
+            let r = old.of(i, &self.built, &mut sets);
+            if !r.is_empty() {
+                resolved.insert(k.clone(), r);
+            }
+        }
+        let index: HashMap<(String, String), u32> =
+            graph.keys.iter().enumerate().map(|(i, k)| (k.clone(), i as u32)).collect();
+        resolved.retain(|k, _| index.contains_key(k));
+        self.waits = Waits { graph, index, resolved };
+    }
+
+    /// A finished job's targets, each its last job (`built`); those of jobs out of the week's
+    /// history let go.
+    fn note_built(&mut self, e: &Event) {
+        let step = e.step.clone().unwrap_or_default();
+        for t in &e.targets {
+            self.built.insert((step.clone(), t.clone()), e.seq);
+        }
     }
 
     /// The oldest event's time.
@@ -143,6 +254,12 @@ impl History {
         if e.t == 0 {
             e.t = now_s();
         }
+        if matches!(e.kind.as_str(), "start" | "lease") && e.after.is_empty() {
+            e.after = self.after(e.step.as_deref().unwrap_or(""), &e.targets);
+        }
+        if finished(&e) {
+            self.note_built(&e);
+        }
         if let Some(p) = &self.path {
             let line = serde_json::to_string(&e).unwrap_or_default();
             let r = std::fs::OpenOptions::new()
@@ -161,9 +278,24 @@ impl History {
             self.events.pop_front();
         }
         if self.lines > 2 * self.events.len() + 1000 {
+            let first = self.events.front().map_or(0, |e| e.seq);
+            self.built.retain(|_, &mut s| s >= first);
             self.rewrite();
         }
         self.seq
+    }
+
+    /// What a job of `step` on `targets` waits on, as `Event::after` says.
+    fn after(&self, step: &str, targets: &[String]) -> Vec<u64> {
+        let mut sets = HashMap::new();
+        let mut out: Vec<u64> = targets
+            .iter()
+            .filter_map(|t| self.waits.index.get(&(step.to_string(), t.clone())))
+            .flat_map(|&i| self.waits.of(i, &self.built, &mut sets).into_values())
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// The file rewritten with the events kept (whole: a crash leaves the old one).
@@ -276,6 +408,12 @@ impl History {
     }
 }
 
+/// Whether `e` is a job's end with targets it finished (a lead's "end", a worker's "done"; one
+/// that failed names those it finished first).
+fn finished(e: &Event) -> bool {
+    matches!(e.kind.as_str(), "end" | "done") && !e.targets.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +477,56 @@ mod tests {
         assert_eq!((r.rows[1].done["ipad"]["tail"], r.rows[1].busy_s["ipad"]), (1, 60));
         // Paused from 5000 s into the second hour, to now.
         assert_eq!(r.rows[1].paused_s, 400);
+    }
+
+    #[test]
+    fn a_start_names_what_it_waited_on() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("history.jsonl");
+        let mut h = History::load(Some(&p));
+        let k = |s: &str, t: &str| (s.to_string(), t.to_string());
+        let done = |h: &mut History, step: &str, targets: &[&str]| {
+            h.add(Event {
+                step: Some(step.into()),
+                targets: targets.iter().map(|t| t.to_string()).collect(),
+                ..ev("done", 0, "m1")
+            })
+        };
+        // A z6 tile waits on its slope-deep (its own) and on its region's terrain (a set).
+        h.set_waits(Graph {
+            keys: vec![
+                k("terrain-hi", "6/1/1"),
+                k("terrain-hi", "6/1/2"),
+                k("slope-deep", "10/1/1"),
+                k("unit", "6/1/1"),
+            ],
+            deps: vec![vec![], vec![], vec![], vec![2]],
+            sets: vec![vec![], vec![], vec![], vec![0]],
+            groups: vec![vec![0, 1]],
+        });
+        let t1 = done(&mut h, "terrain-hi", &["6/1/1"]);
+        let t2 = done(&mut h, "terrain-hi", &["6/1/2"]);
+        // A later forecast: the terrain done is in none of its sets, still waited on.
+        h.set_waits(Graph {
+            keys: vec![k("slope-deep", "10/1/1"), k("unit", "6/1/1")],
+            deps: vec![vec![], vec![0]],
+            sets: vec![vec![], vec![]],
+            groups: vec![],
+        });
+        let s = done(&mut h, "slope-deep", &["10/1/1"]);
+        // (The terrain step's last alone is named.)
+        assert!(t1 < t2 && t2 < s);
+        let start = h.add(Event { step: Some("unit".into()), targets: vec!["6/1/1".into()], ..ev("start", 0, "m4") });
+        let e = h.since(start - 1, 1).remove(0);
+        assert_eq!(e.after, [t2, s]);
+        // Kept on disk, read back; a lease of a target nothing waits for names none.
+        let h2 = History::load(Some(&p));
+        assert_eq!(h2.since(start - 1, 1)[0].after, [t2, s]);
+        let lease = h.add(Event { step: Some("trees".into()), targets: vec!["6/1/1".into()], ..ev("lease", 0, "m1") });
+        assert!(h.since(lease - 1, 1)[0].after.is_empty());
+        // An event of before #791 (no field) reads back with none, and none written.
+        let old: Event = serde_json::from_str(r#"{"seq":1,"t":5,"kind":"start","step":"unit"}"#).unwrap();
+        assert!(old.after.is_empty());
+        assert!(!serde_json::to_string(&old).unwrap().contains("after"));
     }
 }

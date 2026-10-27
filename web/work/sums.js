@@ -50,14 +50,21 @@ export function macSlot(name, hosts = []) {
 // n, ok, targets, seq}, by start: a lead's job's end (kind "end": its worker the slot) and a
 // worker's leased job's ("done", "fail": its worker the Mac, no slot; put on the first of its Mac's
 // lanes free by then). `t` is the end, `secs` how long it ran. Lanes are named by `hosts` (macSlot).
-// An event without its time or step is passed over; one given twice (by its seq), once.
+// An event without its time or step is passed over; one given twice (by its seq), once. Each run's
+// `after`: the seqs of the ends of the jobs it waited on, as its start (a lead's job: its worker's
+// last "start" of its step) or its lease names them (crate::coord::history::Event::after; none
+// before task #791).
 export function pastRuns(events, from, hosts = []) {
   const seen = new Set(), out = [], leased = [];
-  for (const e of events || []) {
+  const started = new Map(), leases = new Map();
+  for (const e of [...(events || [])].sort((p, q) => p.seq - q.seq)) {
+    if (e.kind === "start") started.set(`${e.worker} ${e.step}`, e.after);
+    if (e.kind === "lease") leases.set(e.lease, e.after);
     if (!["end", "done", "fail"].includes(e.kind) || !e.step || e.secs == null || !e.worker || e.t < from || seen.has(e.seq)) continue;
     seen.add(e.seq);
     const { host, slot } = macSlot(e.worker, hosts);
-    const r = { lane: slotName(host, slot - 1), step: e.step, from: e.t - e.secs, until: e.t, n: (e.targets || []).length, ok: e.ok !== false, targets: e.targets || [], seq: e.seq };
+    const after = (e.kind === "end" ? started.get(`${e.worker} ${e.step}`) : leases.get(e.lease)) || [];
+    const r = { lane: slotName(host, slot - 1), step: e.step, from: e.t - e.secs, until: e.t, n: (e.targets || []).length, ok: e.ok !== false, targets: e.targets || [], seq: e.seq, after };
     (e.kind === "end" ? out : leased).push(r);
     if (e.kind !== "end") r.host = host;
   }
@@ -197,9 +204,15 @@ const tileWords = (s) => String(s || "").split(/\s+/).filter((w) => tileOf(w));
 // names them (its step's, within 10 s of its start: its id names the first alone), a leased one
 // (`{lease, what}`) as its "lease" event does; else the tiles its id or words name.
 export function targetsOf(run, events) {
+  return startOf(run, events)?.targets || tileWords(run.lease != null ? run.what : String(run.id || "").split(" ").slice(1).join(" "));
+}
+// A running job's "start" or "lease" event (as `targetsOf` finds it), null: none held. A job on a
+// member (`mac`, its lease not known to the page): its Mac's last lease of its step by its start.
+export function startOf(run, events) {
   const last = (ok) => { for (let i = (events || []).length - 1; i >= 0; i--) if (events[i].targets?.length && ok(events[i])) return events[i]; return null; };
-  if (run.lease != null) return last((v) => v.kind === "lease" && v.lease === run.lease)?.targets || tileWords(run.what);
-  return last((v) => v.kind === "start" && v.step === run.step && Math.abs(v.t - run.started) <= 10)?.targets || tileWords(String(run.id || "").split(" ").slice(1).join(" "));
+  if (run.lease != null) return last((v) => v.kind === "lease" && v.lease === run.lease);
+  return last((v) => v.kind === "start" && v.step === run.step && Math.abs(v.t - run.started) <= 10)
+    || (run.mac ? last((v) => v.kind === "lease" && v.worker === run.mac && v.step === run.step && v.t <= run.started + 10) : null);
 }
 
 // Each running job's tiles, by key ("<step> z/x/y"): {step, frac (0–1 of the tile done), current (the
