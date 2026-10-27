@@ -570,8 +570,7 @@ async function run() {
       const shown = Object.values(names).reduce((k, v) => k + v.length, 0);
       check("no display names: every stage, step and job label is the code's name", shown > 0 && !bad.length, `${shown} labels; not a code name: ${bad.slice(0, 5).join(" | ") || "none"}`);
       // The Jobs tab's cards: a step's (hovered by a mouse on a desktop, pinned by a tap on a phone),
-      // then a job's: head (swatch, kicker, title), stat tiles, rows, a foot, twice the map cards'
-      // width; a world map of its tiles, small until pinned; ≤ 50svh, off the pointer's line (#627).
+      // then a job's in the schedule: the map cards' layout and width (#794: head, stat tiles, rows, a foot; a world map of its tiles); ≤ 50svh, off the pointer's line (#627).
       await show("jobs");
       const card = async (sel, where = "", point = null) => {
         const p = point || (sel && (await at(sel, where)));
@@ -603,9 +602,9 @@ async function run() {
       }
       const ended = jc ? 0 : await js(`(async () => { const tail = await fetch("/work/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()); const h = await fetch("/work/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ since: Math.max(0, (tail.seq || 0) - 5000), max: 5000 }) }).then((r) => r.json()); const from = Date.now() / 1000 - 6 * 3600; return (h.events || []).filter((e) => ["end", "done"].includes(e.kind) && e.ok !== false && e.t >= from && ${JSON.stringify(tiled)}.includes(e.step)).length; })()`);
       if (!jc && !ended) console.log("INFO jobs card: no finished or running job of a tiled step in the last 6 h (the live build's state), its map not checked");
-      else if (!jc) check("jobs card: a job's named as the code names it, a world map of its tiles", false, `the history has ${ended} finished jobs of tiled steps in 6 h, none shown in 20 s`);
-      else if (jc.none) check("jobs card: a job's named as the code names it, a world map of its tiles", false, "no card shown on a job's box");
-      else check("jobs card: a job's named as the code names it, a world map of its tiles", jc.wide && steps.has(String(jc.title).split(/[ :]/)[0]) && jc.map > 0 && (PHONE || jc.map <= 200), `${jc.kick} / ${jc.title}, map ${jc.map} px`);
+      else if (!jc) check("jobs card: a job's named as the code names it, a world map of its tiles, the map cards' layout (#794)", false, `the history has ${ended} finished jobs of tiled steps in 6 h, none shown in 20 s`);
+      else if (jc.none) check("jobs card: a job's named as the code names it, a world map of its tiles, the map cards' layout (#794)", false, "no card shown on a job's box");
+      else check("jobs card: a job's named as the code names it, a world map of its tiles, the map cards' layout (#794)", !jc.wide && jc.w <= 282 && steps.has(String(jc.title).split(/[ :]/)[0]) && jc.map > 0 && jc.map <= 280, `${jc.kick} / ${jc.title}, map ${jc.map} px`);
       if (!PHONE) await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2 });
       check("#659: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }

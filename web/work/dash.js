@@ -969,8 +969,10 @@ const runningRuns = (m) => m.macs.flatMap((x) => jobsOf(x.status).map((j) => ({ 
 // stage's swatch, a kicker "<step> · what it is", the code's name as title), a world map of the
 // tiles it names, stat tiles, a bar, key–value rows, chips, its live part, a foot with its names.
 // Twice the map cards' width (the owner's 22 Oct, BUILD-PAGE-OWNER.md 22); the map small until it's
-// pinned.
-const jobCard = (o, rows, ...more) => [h("div", "tc-sec", ...cardBody({ ...o, wide: true }, rows, ...more))];
+// pinned. (The schedule's run cards are the map's width and layout, owner 27 Oct, item 52.)
+// The schedule's runs use the map's layout (`stack`: no `wide`, #794): one card, one layout.
+const stack = (o, rows, ...more) => [h("div", "tc-sec", ...cardBody(o, rows, ...more))];
+const jobCard = (o, rows, ...more) => stack({ ...o, wide: true }, rows, ...more);
 // A list of targets as chips: the first 24, then how many more.
 const targetChips = (t) => (t.length > 24 ? [...t.slice(0, 24), `and ${n(t.length - 24)} more`] : t);
 
@@ -985,7 +987,7 @@ function runCard(m, r, kind, laneName) {
     const j = r.job, p = j.progress;
     const frac = p?.total ? Math.min(1, p.done / p.total) : null;
     const parts = j.parts?.length || 0, at = Math.min(j.part ?? 0, Math.max(0, parts - 1));
-    return jobCard({ kicker: `${r.step} · job under way${j.paused ? ", frozen" : ""}`, colour, title: j.id, map,
+    return stack({ kicker: `${r.step} · job under way${j.paused ? ", frozen" : ""}`, colour, title: j.id, map,
       stats: [[frac != null ? `${Math.floor(frac * 100)}%` : "–", "of the job"], [p?.eta_s != null ? dur(p.eta_s) : "–", "left"]],
       bar: frac != null ? { frac, label: progressText(p, j, m.now) } : null,
       chips: targets.length > 1 ? targetChips(targets) : [], chipsLabel: targets.length > 1 ? S.counted(r.step, targets.length) : "",
@@ -999,7 +1001,7 @@ function runCard(m, r, kind, laneName) {
   }
   if (kind === "past") {
     const state = r.ok ? "finished" : several ? "finished, some failed" : "failed";
-    return jobCard({ kicker: `${r.step} · job ${state}`, colour: r.ok ? colour : "var(--bad)", title: several ? `${S.said(r.step, r.n)} (${r.parts.length} jobs)` : S.job(r.step, targets), map,
+    return stack({ kicker: `${r.step} · job ${state}`, colour: r.ok ? colour : "var(--bad)", title: several ? `${S.said(r.step, r.n)} (${r.parts.length} jobs)` : S.job(r.step, targets), map,
       stats: [[dur(r.until - r.from), "took"], [ago(m.now, r.until), "ended"]],
       bar: { frac: r.ok ? 1 : 0, label: state },
       chips: several ? [] : targetChips(targets), chipsLabel: !several && targets.length ? S.counted(r.step, targets.length) : "",
@@ -1008,7 +1010,7 @@ function runCard(m, r, kind, laneName) {
       ["When", `${clock(r.from)}–${clock(r.until)}`],
     ]);
   }
-  return jobCard({ kicker: `${r.step} · job to come`, colour, title: r.n ? S.counted(r.step, r.n) : r.step,
+  return stack({ kicker: `${r.step} · job to come`, colour, title: r.n ? S.counted(r.step, r.n) : r.step,
     stats: [[clock(r.from), "forecast start"], [clock(r.until), "forecast end"]],
     bar: { frac: 0, label: "not started" }, foot: r.step }, [
     ["Mac", laneName(r.lane)],

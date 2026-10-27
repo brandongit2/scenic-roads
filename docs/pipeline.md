@@ -308,12 +308,14 @@ The Jobs tab's stages are the one exception.
   and the code's name as its title; a world map of a job's tiles, 190 px until pinned, then the
   card's width up to 1000 px; stat tiles; a bar; key–value rows; chips; a foot with its names;
   560 px wide, twice the map's cards): a job's (where, when, how long, how it went, its part,
-  what's inside it; its targets as chips), a step's (its targets done, what it makes, kind, where
+  what's inside it; its targets as chips; the schedule's job cards are the map's width and layout, 280 px, #794), a step's (its targets done, what it makes, kind, where
   it runs, memory, its forecast and jobs; its time by phase as chips), a stage's (steps done, its
   counts, what it makes, work left, done ≈, now or next, its note; its steps as chips), shown on hover with a mouse or trackpad
   and pinned on a click or tap, refreshed with each render. A following card never catches the
   pointer (pointer-events none; placed beside the point, never over it) and goes as the pointer
-  leaves what it's about (into anything else, off the map, out of the window). A pinned card is
+  leaves what it's about (into anything else, off the map, out of the window). Every tooltip on the page
+  (these cards, the catalogue timeline's) has a slightly transparent background with a 6 px backdrop blur
+  (`--tip-glass`, `-webkit-backdrop-filter` for Safari). A pinned card is
   modal (#627): a clear veil under it, not dimmed, takes every click and scroll behind it (the
   page doesn't scroll), a click on it only closing the card; the card itself scrolls and stays
   live. Escape or × close it too. A running job's card says what's inside it (the status's `jobs[].live`, docs/pool.md §10,
