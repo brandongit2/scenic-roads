@@ -1104,8 +1104,12 @@ checklist 261 s). Once a round has run a minute, it writes the heartbeat the loo
 its content as it was and only its time new, at most once a minute (`KEEP_EVERY`), and only while
 the loop works: it began a phase or its thread used the CPU within the last two minutes
 (`WORKING_S`). A loop stuck in a call or waiting on a lock does neither, so its heartbeat stops and
-goes out of touch as before, and the stall is flagged as above. The loop holds the heartbeat while
-it writes its own, so a kept one never overwrites a newer one. (The pool's heartbeat,
+goes out of touch as before (the status bar's six minutes, the helpers' ten), and the stall is
+flagged as above. A kept heartbeat's content is as of the loop's last write (its jobs, conditions,
+forecast): only its time says the loop still works. The loop holds the heartbeat while it writes
+its own (the local copy and the NAS's), so a kept one never overwrites a newer one; none is kept
+after the loop's own write failed, or once this Mac's part changed (§7.6) until the new part writes
+its own, so a former lead never rewrites `state/status.json` over the new lead's. (The pool's heartbeat,
 `state/pool/members/<id>.json`, is kept by the pool's own thread, §6.7.)
 
 Still under no deadline (planned): the NAS's mount and probe (`root`); the build's keys

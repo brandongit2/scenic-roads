@@ -4761,6 +4761,9 @@ impl Agent {
         } else {
             ("status.json".to_string(), "state/status.json".to_string())
         };
+        // (Held from the local copy's write on: the watchdog's kept beat, an older content, never
+        // lands after this one, here or on the NAS.)
+        let mut kept = nasread::BEATING.lock().unwrap_or_else(|e| e.into_inner());
         write_replace(&self.o.home.join(&local), &body).ok();
         // (Not a dry run's, in a home of its own: the NAS's is the real agent's.)
         if let (Some(root), false) = (&root, self.o.dry_run) {
@@ -4777,8 +4780,6 @@ impl Agent {
             let due =
                 self.last_beat.as_ref().is_none_or(|(b, t)| *b != same || t.elapsed() >= Duration::from_secs(120));
             if due {
-                // (Held while it's written: the watchdog's kept beat never crosses it.)
-                let mut kept = nasread::BEATING.lock().unwrap_or_else(|e| e.into_inner());
                 // (On the writers, under a deadline: a share that hangs fails it, nasread::write.)
                 let (p, own) = (root.join(&shared), self.o.home.join(&local));
                 match write_beat(&p, body.clone()) {
@@ -4797,9 +4798,13 @@ impl Agent {
                             }),
                         });
                     }
-                    // (A timeout logged once by nasread.)
-                    Err(e) if nasread::timed_out(&e) => {}
-                    Err(e) => eprintln!("agent: heartbeat: {e:#}"),
+                    // (A timeout logged once by nasread.) Nothing kept from here: its content is
+                    // older than this one's, which didn't reach the NAS.
+                    Err(e) if nasread::timed_out(&e) => *kept = None,
+                    Err(e) => {
+                        eprintln!("agent: heartbeat: {e:#}");
+                        *kept = None;
+                    }
                 }
             }
         }
@@ -10361,6 +10366,11 @@ impl Agent {
     /// HTTP. A coordinator that can't start leaves the part to a restart, as before.
     fn change_part(&mut self, root: &store::nasfs::NasRoot, out: &crate::pool::driver::Out) {
         let Some(role) = self.pooled().map(|r| r.role) else { return };
+        if matches!((role, out.leads), (pool::Role::Member, Some(_)) | (pool::Role::Lead, None)) {
+            // (Its part's heartbeat no longer: the watchdog keeps none, a lead's `state/status.json`
+            // over the new lead's, till this part writes its own.)
+            *nasread::BEATING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
         match (role, out.leads) {
             (pool::Role::Member, Some(term)) => {
                 self.stop_viewer();
@@ -11545,12 +11555,13 @@ fn write_replace(p: &Path, bytes: &[u8]) -> Result<()> {
     store::whole::write(p, bytes)
 }
 
-/// `write_replace` on the NAS (its folder made once a process: store::nasfs).
 /// The heartbeat `b` written to `p` on the NAS, on the writers under a deadline (nasread::write).
 fn write_beat(p: &NasPath, b: Vec<u8>) -> Result<()> {
     let p2 = p.clone();
     nasread::write(p, move || write_replace_nas(&p2, &b))
 }
+
+/// `write_replace` on the NAS (its folder made once a process: store::nasfs).
 
 fn write_replace_nas(p: &NasPath, bytes: &[u8]) -> Result<()> {
     if let Some(d) = p.parent() {
