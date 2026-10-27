@@ -1,6 +1,6 @@
 //! The regions' datasets (docs/inputs.md §6.1.3 "Land and water", §6.1.7): what `eez:`, `ts12:`
-//! and `ne-lake:` parts name, and the coastline's land a region with `water` is cut back to. Each is
-//! a declared source (§6.9, the `regions-*` roles) kept in `sources/fetched/<id>/`:
+//! and `ne-lake:` parts name, and the coastline's land a region with `water` is cut back to. Each
+//! but the land is a declared source (§6.9, the `regions-*` roles) kept in `sources/fetched/<id>/`:
 //!
 //! | role | source | read |
 //! |---|---|---|
@@ -8,11 +8,12 @@
 //! | `regions-internal-waters` | Marine Regions' Internal Waters v4 (a GeoJSON) | each by `mrgid_eez`, added to its zone |
 //! | `regions-territorial-seas` | Marine Regions' Territorial Seas v4 (a GeoJSON) | each by `mrgid` |
 //! | `regions-lakes` | Natural Earth's 1:10m lakes (a shapefile zip) | each by `ne_id`; those over 100 km² are water |
-//! | `regions-land` | OSM's land polygons, split, in degrees (a shapefile zip) | the land side of the coastline |
 //!
-//! Read whole (`Datasets::read`), and only once a region in the folder names them (the check reads
-//! them lazily: `Prepared::data_from`); a region naming them waits, held (`rg-data`), while they
-//! can't be read. Features of one id are unioned (`merge`).
+//! The coastline's land is no source but the pass's own (crate::inputs::regions::land): kept on
+//! disk by 2° cell, read where asked (`land_in`). The rest is read whole (`Datasets::read`), and
+//! only once a region in the folder names them (the check reads them lazily:
+//! `Prepared::data_from`); a region naming them waits, held (`rg-data`), while they can't be read.
+//! Features of one id are unioned (`merge`).
 
 use super::geom::{self, Area, Ring};
 use anyhow::{Context, Result};
@@ -25,7 +26,6 @@ pub const SEA: &str = "regions-sea";
 pub const INTERNAL: &str = "regions-internal-waters";
 pub const TERRITORIAL: &str = "regions-territorial-seas";
 pub const LAKES: &str = "regions-lakes";
-pub const LAND: &str = "regions-land";
 
 /// The 12-nautical-mile line drawn: the territorial seas' edges this far (m) from the coastline's
 /// land, at both ends; and how finely (m).
@@ -46,11 +46,10 @@ pub struct Datasets {
     pub ts12: HashMap<u64, Vec<Ring>>,
     /// Lakes by `ne_id`: rings and size (km²).
     pub lakes: HashMap<u64, (Vec<Ring>, f64)>,
-    /// The coastline's land, in pieces with their boxes.
-    /// (Kept as E7 `i32`, half an `i64` ring's size: it's most of the datasets.)
-    pub land: Vec<([i64; 4], Vec<Vec<[i32; 2]>>)>,
-    /// A bucket grid (1°) of `land`'s pieces, and of the big lakes.
-    land_grid: HashMap<(i64, i64), Vec<usize>>,
+    /// The coastline's land by 2° cell, the pass's (crate::inputs::regions::land): read where
+    /// asked.
+    pub land: Option<super::land::Land>,
+    /// A bucket grid (1°) of the big lakes.
     lake_grid: HashMap<(i64, i64), Vec<u64>>,
     /// What they were read from (for the check's key): each source's id and version.
     pub names: String,
@@ -83,21 +82,12 @@ impl Datasets {
             (k, (r, a))
         });
         let mut d = Datasets { eez, internal, ts12, lakes: lakes.collect(), names: names.into(), ..Default::default() };
-        d.land = land
-            .into_iter()
-            .filter_map(|r| bbox(&r).map(|b| (b, r.iter().map(|x| super::shapes::to_i32(x)).collect())))
-            .collect();
+        d.land = Some(super::land::Land::of_rings(&land.concat()));
         d.index();
         d
     }
 
     fn index(&mut self) {
-        self.land_grid.clear();
-        for (k, (b, _)) in self.land.iter().enumerate() {
-            for c in cells(*b) {
-                self.land_grid.entry(c).or_default().push(k);
-            }
-        }
         self.lake_grid.clear();
         let mut ids: Vec<&u64> = self.lakes.keys().collect();
         ids.sort();
@@ -114,33 +104,26 @@ impl Datasets {
         }
     }
 
-    /// The coastline's land in the box `b` (plain frame), clipped to it.
+    /// The coastline's land in the box `b` (plain frame), clipped to it: from the 2° cells it
+    /// meets.
     pub fn land_in(&self, b: [i64; 4]) -> Area {
-        let mut ks: Vec<usize> = cells(b).filter_map(|c| self.land_grid.get(&c)).flatten().copied().collect();
-        ks.sort();
-        ks.dedup();
-        let areas: Vec<Area> = ks
-            .into_iter()
-            .filter(|&k| {
-                let p = self.land[k].0;
-                p[0] <= b[2] && p[2] >= b[0] && p[1] <= b[3] && p[3] >= b[1]
-            })
-            .map(|k| {
-                // (Each ring clipped to the box first: a piece of the polar land may span the
-                // Earth's width.)
-                Area::from_rings(
-                    &self.land[k]
-                        .1
-                        .iter()
-                        .filter_map(|r| {
-                            let r: Ring = r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect();
-                            super::tiles::clip(&r, b)
-                        })
-                        .collect::<Vec<Ring>>(),
-                )
-            })
-            .collect();
-        geom::union_all(&areas)
+        use super::tiles::CELL as TCELL;
+        let Some(land) = &self.land else { return Area::default() };
+        let bb = geom::box_area(b);
+        let mut v = Vec::new();
+        for x in b[0].div_euclid(TCELL)..=(b[2] - 1).div_euclid(TCELL) {
+            let w = (x + 90).rem_euclid(180) - 90;
+            let shift = (x - w) * TCELL;
+            for y in b[1].div_euclid(TCELL).max(-45)..=(b[3] - 1).div_euclid(TCELL).min(44) {
+                let a = land.cell((w, y));
+                if a.is_empty() {
+                    continue;
+                }
+                let a = if shift == 0 { (*a).clone() } else { a.shifted(shift) };
+                v.push(a.intersect(&bb));
+            }
+        }
+        geom::union_all(&v)
     }
 
     /// The lakes over `BIG_LAKE_KM2` in the box `b` (plain frame), clipped to it.
@@ -179,19 +162,8 @@ impl Datasets {
             crate::inputs::pace::par_map(by_cell.into_iter().collect(), |(c, edges)| {
                 let b = cell_box(c);
                 let bx = [b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad];
-                let mut ks: Vec<usize> = cells(bx).filter_map(|c| self.land_grid.get(&c)).flatten().copied().collect();
-                ks.sort();
-                ks.dedup();
-                let land: Vec<Ring> = ks
-                    .into_iter()
-                    .flat_map(|k| self.land[k].1.iter())
-                    .map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect::<Ring>())
-                    .filter(|r| {
-                        geom::bbox_of(r.iter())
-                            .is_some_and(|rb| rb[0] <= bx[2] && rb[2] >= bx[0] && rb[1] <= bx[3] && rb[3] >= bx[1])
-                    })
-                    .collect();
-                let idx = super::tiles::SegIndex::new(land.iter().map(|r| (0, r)));
+                let land = self.land_in(bx);
+                let idx = super::tiles::SegIndex::new(land.polys.iter().flatten().map(|r| (0, r)));
                 edges
                     .into_iter()
                     .filter(|&(k, i)| {
@@ -240,12 +212,17 @@ impl Datasets {
 
     /// Whether it has the coastline's land (a region with `water` needs it).
     pub fn has_land(&self) -> bool {
-        !self.land.is_empty()
+        self.land.as_ref().is_some_and(|l| !l.is_empty())
     }
 
     /// The datasets the accepted sources `s` declare, read from `root`'s `sources/fetched/<id>/`
-    /// (each declaration's `params.path`). None when no `regions-sea` is declared.
-    pub fn read(root: &store::nasfs::NasRoot, s: &crate::inputs::sources::Sources) -> Result<Option<Datasets>> {
+    /// (each declaration's `params.path`), with the pass's land (its content name, open) when
+    /// it's made. None when no `regions-sea` is declared.
+    pub fn read(
+        root: &store::nasfs::NasRoot,
+        s: &crate::inputs::sources::Sources,
+        land: Option<(String, super::land::Land)>,
+    ) -> Result<Option<Datasets>> {
         let Ok(sea) = s.role(SEA) else { return Ok(None) };
         let mut names = Vec::new();
         let mut path = |src: &crate::inputs::sources::Source| -> Result<std::path::PathBuf> {
@@ -278,15 +255,9 @@ impl Datasets {
                 d.lakes.insert(id, (rings, a));
             }
         }
-        if let Ok(l) = s.role(LAND) {
-            let p = path(l)?;
-            let land = &mut d.land;
-            each_shape(&p, l.param_str("layer")?, None, &mut |_, rings| {
-                if let Some(b) = bbox(&rings) {
-                    land.push((b, rings.iter().map(|x| super::shapes::to_i32(x)).collect()));
-                }
-            })?;
-            anyhow::ensure!(!d.land.is_empty(), "{}: no land polygons", p.display());
+        if let Some((name, l)) = land {
+            names.push(format!("land {name}"));
+            d.land = Some(l);
         }
         d.names = names.join(", ");
         d.index();

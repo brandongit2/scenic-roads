@@ -19,6 +19,7 @@ pub mod data;
 pub mod extract;
 pub mod file;
 pub mod geom;
+pub mod land;
 pub mod read;
 pub mod resolve;
 pub mod shapes;
@@ -57,7 +58,9 @@ pub struct Prepared {
     /// them (`Region::needs_data`), so declaring them costs a check that needs none nothing.
     pub data_from: Option<(store::nasfs::NasRoot, crate::inputs::sources::Sources)>,
     pub data_read: std::sync::OnceLock<Option<data::Datasets>>,
-    /// The outline set's and the extract's content names.
+    /// The pass's land's content name (crate::inputs::regions::land), once made.
+    pub land: Option<String>,
+    /// The outline set's, the extract's and the land's content names.
     pub names: String,
     /// Why the check can't run now: no pass yet, or the current pass's outline set not made yet
     /// (its outlines step pending).
@@ -92,6 +95,15 @@ impl Regions {
     }
 }
 
+impl Prepared {
+    /// The pass's land, open (its head read), when the records name it.
+    fn land_open(&self, root: &store::nasfs::NasRoot) -> Result<Option<(String, land::Land)>> {
+        let Some(n) = &self.land else { return Ok(None) };
+        let f = root.join(n).open().with_context(|| format!("open {n}"))?.into_file();
+        Ok(Some((n.clone(), land::Land::open(f).with_context(|| format!("read {n}"))?)))
+    }
+}
+
 impl Regions {
     /// The datasets: given, or read (once) where the accepted sources say, if a region of `folder`
     /// names them.
@@ -101,7 +113,7 @@ impl Regions {
         c.data.as_ref().or_else(|| {
             let (root, s) = c.data_from.as_ref().filter(|_| wanted)?;
             c.data_read
-                .get_or_init(|| match data::Datasets::read(root, s) {
+                .get_or_init(|| match c.land_open(root).and_then(|l| data::Datasets::read(root, s, l)) {
                     Ok(d) => d,
                     Err(e) => {
                         eprintln!("regions: the datasets can't be read: {e:#}");
@@ -164,8 +176,9 @@ impl Checks for Regions {
         // coastline go to the region with water beside them. 8: #468: the coast's land and sea
         // within COAST_REACH_M go to the nearest region, split at the median line. 9: #468: land
         // mostly in two regions with water said as an overlap; nearest-coast splits reach past 450
-        // km.)
-        9
+        // km. 10: #468: the 12-nautical-mile line stored with the pins; the coastline's land the
+        // pass's own, by cell.)
+        10
     }
 
     fn recursive(&self) -> bool {
@@ -310,6 +323,10 @@ impl Checks for Regions {
             format!("regions pass {}", date.as_deref().unwrap_or("-")),
             format!("regions outlines {}", o.map(String::as_str).unwrap_or("-")),
             format!("regions extract {}", e.map(String::as_str).unwrap_or("-")),
+            format!(
+                "regions land {}",
+                date.as_ref().and_then(|d| manifest.get(&land::logical(d))).map(String::as_str).unwrap_or("-")
+            ),
         ]
     }
 
@@ -345,7 +362,13 @@ pub fn prepare(
                 }
             }
         }
-        let names = format!("{} {}", o.map(String::as_str).unwrap_or("-"), e.map(String::as_str).unwrap_or("-"));
+        let land = date.as_ref().and_then(|d| manifest.get(&land::logical(d))).cloned();
+        let names = format!(
+            "{} {} {}",
+            o.map(String::as_str).unwrap_or("-"),
+            e.map(String::as_str).unwrap_or("-"),
+            land.as_deref().unwrap_or("-")
+        );
         let not_ready = match (&date, &outlines) {
             (None, _) => Some("no OSM pass yet".to_string()),
             (Some(d), None) => Some(format!("the pass {d}'s outline set isn't made yet (its outlines step)")),
@@ -369,6 +392,7 @@ pub fn prepare(
             data,
             data_from,
             data_read: Default::default(),
+            land,
             names,
             not_ready,
         })

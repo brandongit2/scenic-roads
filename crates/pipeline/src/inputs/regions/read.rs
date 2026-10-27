@@ -392,6 +392,7 @@ pub fn check_folder(
     manifest: &BTreeMap<String, String>,
     dir: &Path,
     declarations: Option<&Path>,
+    land: Option<&Path>,
 ) -> Result<serde_json::Value> {
     let mut paths = Vec::new();
     let mut stack = vec![(dir.to_path_buf(), String::new())];
@@ -412,8 +413,24 @@ pub fn check_folder(
     }
     paths.sort();
     let t = std::time::Instant::now();
+    // (With declarations, the land: the file given, else the records' for the current pass.)
     let data = match declarations {
-        Some(d) => Some(super::data::Datasets::read(root, &crate::inputs::sources::Sources::of_folder(d)?)?),
+        Some(d) => {
+            let land = match land {
+                Some(p) => Some((
+                    p.display().to_string(),
+                    super::land::Land::open(std::fs::File::open(p).with_context(|| format!("open {}", p.display()))?)?,
+                )),
+                None => {
+                    let pass = crate::osmpass::latest_pass_in(manifest);
+                    match pass.and_then(|d| manifest.get(&super::land::logical(&d)).cloned()) {
+                        Some(n) => Some((n.clone(), super::land::Land::open(root.join(&n).open()?.into_file())?)),
+                        None => None,
+                    }
+                }
+            };
+            Some(super::data::Datasets::read(root, &crate::inputs::sources::Sources::of_folder(d)?, land)?)
+        }
         None => None,
     };
     eprintln!(

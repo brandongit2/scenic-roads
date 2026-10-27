@@ -815,7 +815,7 @@ pub(super) fn resolve_one(
     let (leaves, drawn_osm, pass, mut ps) = gather(r, path, folder, ctx, done, lands, water, needs)?;
     let pass = pass.as_str();
     if r.has_water() && ctx.data.is_none_or(|d| !d.has_land()) {
-        ps.push(problem("rg-data", r, path, vec!["land".into()], format!("{}: a region with water is cut back to the coastline's land, which isn't read now (the regions-land source: docs/inputs.md §6.1.7)", r.id)));
+        ps.push(problem("rg-data", r, path, vec!["land".into()], format!("{}: a region with water is cut back to the coastline's land, which isn't read now (the pass's regions-land: docs/inputs.md §6.1.7)", r.id)));
     }
     if !ps.is_empty() {
         return Err(ps);

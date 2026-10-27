@@ -812,6 +812,9 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **The OSM pass** (`sources/osm/<date>/`): `planet.osm.pbf`; `filtered`; `pieces/<u>` (the z6 tile extracts), `pieces.json`; `sets/<name>[-v<n>]`; `roads/<u>.bin` (32 B a way: u64 way id, its road values);
   `outlines` (sectioned, meta `fmt` "outlines-1" and the `repaired`, `stale`, `unassembled`
   relations; `recs` (64 B `OutlineRec`), `rings`, `points`, `srings`, `spoints`, `strings`);
+  `regions-land` (the coastline's land by 2° cell: magic `RLAND001`, u32 head length, a JSON head
+  `{fmt, pass, stats, cells: [[col, row, offset, length], …]}`, then each cell's rings as zigzag
+  varint deltas of E7 points, docs/inputs.md §6.1.7);
   `reach.json.zst` (`{fmt, date, units: {"6/x/y" (`units`: the stored key): {owned: [w, s, e, n] | null, long: [{owned,
   ferry, verts}], cells: [[x, y]]}}}`, E7: the box of a z6 tile's ways within it + 20 km, every
   way reaching further, whole, and the 1° cells (west, south corners, degrees) its ways other than

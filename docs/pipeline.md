@@ -80,6 +80,7 @@ paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. 
 | | `water` | pack | the world | lead |
 | | `spoken` | derive | the world | lead |
 | | `regions-extract` | derive | the world | lead |
+| | `regions-land` | derive | the world | lead |
 | `sites` | `heritage-sites` | derive | the world | lead |
 | `terrain` | `terrain-water` | derive | the world | lead |
 | | `terrain-hi` | pack | a z6 tile | ⇄ |

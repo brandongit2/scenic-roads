@@ -38,7 +38,7 @@ const ORPHAN: &str = "src-orphan";
 
 /// The roles a source is read in, each with the formats it may be in and the placeholders its URL
 /// template may hold: the app's slots, each read by one step's generic code.
-pub const ROLES: [(&str, &[&str], &[&str]); 17] = [
+pub const ROLES: [(&str, &[&str], &[&str]); 16] = [
     // (Land cover on the analysis grid: crate::landcover. 3° tiles by their south-west corner.)
     (LAND_COVER, &["geotiff"], &["{tile}"]),
     // (Canopy height and cover: crate::trees, scenic-metrics' canopy step. By an index of 10° squares.)
@@ -73,7 +73,6 @@ pub const ROLES: [(&str, &[&str], &[&str]); 17] = [
     (super::regions::data::INTERNAL, &["geojson"], &[]),
     (super::regions::data::TERRITORIAL, &["geojson"], &[]),
     (super::regions::data::LAKES, &["zip-shapefile"], &[]),
-    (super::regions::data::LAND, &["zip-shapefile"], &[]),
 ];
 
 /// The roles any number of sources take (each read with the others, by its own `params.code`).
@@ -823,7 +822,7 @@ pub fn accepted(manifest: &BTreeMap<String, String>) -> bool {
 
 /// The staged declarations (producers/sources/), as the inputs folder takes them: path and bytes.
 #[cfg(test)]
-pub const STAGED: [(&str, &[u8]); 17] = [
+pub const STAGED: [(&str, &[u8]); 16] = [
     ("overture-buildings.toml", include_bytes!("../../../../producers/sources/overture-buildings.toml")),
     ("ghsl-built-h.toml", include_bytes!("../../../../producers/sources/ghsl-built-h.toml")),
     ("ghsl-tiles.geojson", include_bytes!("../../../../producers/sources/ghsl-tiles.geojson")),
@@ -846,7 +845,6 @@ pub const STAGED: [(&str, &[u8]); 17] = [
         include_bytes!("../../../../producers/sources/marineregions-territorial-seas.toml"),
     ),
     ("ne-lakes.toml", include_bytes!("../../../../producers/sources/ne-lakes.toml")),
-    ("osm-land-polygons.toml", include_bytes!("../../../../producers/sources/osm-land-polygons.toml")),
 ];
 
 /// An accepted version of the staged declarations (`STAGED`), its index named in records `m`: the

@@ -57,6 +57,8 @@ pub const SETS: &[(&str, u32, &[&str])] = &[
     ("areas", 1, &["wr/boundary=national_park,protected_area,aboriginal_lands", "wr/leisure=nature_reserve"]),
     ("places", 1, &["n/place"]),
     ("outlines", 1, &["r/boundary=administrative", "r/ISO3166-1", "r/ISO3166-2"]),
+    // The coastline, for the regions' land (crate::inputs::regions::land).
+    ("coastline", 1, &["w/natural=coastline"]),
     // The labels by importance (pipeline::labels): places, seas, bays and straits, water and parks.
     (
         "labels",

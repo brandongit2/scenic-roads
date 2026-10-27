@@ -476,7 +476,7 @@ cross itself.
 
 **Land and water.** A region with a `water` key is resolved in two steps, cell by cell (crate::inputs::
 regions::tiles; §6.1.4). First its land: its outline exact (no coast tolerance), cut back to the coastline's land
-(the `regions-land` source) less the lakes over 100 km² (`regions-lakes`); those lakes inside its
+(the pass's, §6.1.7) less the lakes over 100 km² (`regions-lakes`); those lakes inside its
 outline are its water, unless another region's water names them. Then its water: the `water` parts,
 less the coastline's land and every region without `water` (the land dominates the sea), in an
 order where a region comes after those its water names whole (`region:`, `group:`). Then one
@@ -577,7 +577,8 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   and lakes are kept by cell, stretches (`hand_out`, slivers) joined across the cells' shared
   edges, and the cover check runs per cell, its gaps then joined across the cells' edges. So an operation holds a cell's geometry (a buffer's or
   a split's, its neighbourhood's), never a region's; what's kept is every region's cells (the
-  outcome itself) and the datasets, read only once a region in the folder names them (about 1 GB).
+  outcome itself) and the datasets, read only once a region in the folder names them (the
+  coastline's land by cell where asked, §6.1.7).
   A zone's internal waters are unioned with it. The datasets' rings are simplified within 20 m as
   read, the points two rings of the zones share kept (neighbours' borders the same on both sides). The regions with water resolve one at a time, their cells several at once (regions without
   water: as many at once as the check is allowed threads, §4.3). A region's parts naming other regions (`region:`, `land:`,
@@ -679,17 +680,30 @@ lacks.
 (crate::inputs::regions::data): declared sources (§6.9) of the roles `regions-sea` (Marine Regions'
 EEZ v12, GeoJSON, by `mrgid`), `regions-internal-waters` (Internal Waters v4, by `mrgid_eez`, added
 to its zone), `regions-territorial-seas` (Territorial Seas v4), `regions-lakes` (Natural Earth 1:10m
-lakes 5.0.0, a shapefile zip, by `ne_id`) and `regions-land` (OSM's land polygons, split, in
-degrees), each a file in `sources/fetched/<id>/` named by its `params.path`. Their rings are simplified within
+lakes 5.0.0, a shapefile zip, by `ne_id`), each a file in `sources/fetched/<id>/` named by its
+`params.path`; and the coastline's land, the pinned pass's own. Their rings are simplified within
 20 m as they're read (`data::SIMPLIFY_M`); the zones' (sea, internal waters, territorial seas) keep
-every point two of their rings share, so a border two zones share stays the same on both sides. The check reads them
-whole, and only once a region in the folder names them (or has `water`), when the accepted sources
-declare `regions-sea`; until then such a region is held (`rg-data`). Features of one id are unioned
-as they're read. Their declarations are staged in `producers/sources/`
+every point two of their rings share, so a border two zones share stays the same on both sides. The
+check reads the sources whole, and only once a region in the folder names them (or has `water`),
+when the accepted sources declare `regions-sea`; until then such a region is held (`rg-data`).
+Features of one id are unioned as they're read. Their declarations are staged in `producers/sources/`
 (`marineregions-eez.toml`, `marineregions-internal-waters.toml`, `marineregions-territorial-seas.toml`,
-`ne-lakes.toml`, `osm-land-polygons.toml`); Marine Regions' three are CC BY 4.0 and
-credited as their declarations say. `scenic-build regions-check --dir <folder> --declarations
-<folder>` runs the check on a scratch folder in memory with the datasets those declarations name,
+`ne-lakes.toml`); Marine Regions' three are CC BY 4.0 and credited as their declarations say.
+
+**The coastline's land** (crate::inputs::regions::land) is the pass's: the `regions-land` step
+(lead, once per pass, alone, 8 GB) reads the pass's `coastline` set (`w/natural=coastline`, made by
+pass-sets), joins the ways end to start into rings (land on their left, as OSM draws them; a chain
+that doesn't close joined to the nearest open chain's start within 1 km, else left out; a ring
+round a pole, Antarctica's, closed along the pole's latitude), simplifies them within 20 m, and
+keeps the land on disk by 2° cell: `sources/osm/<date>/regions-land.<hash16>.bin` (magic
+`RLAND001`, a JSON head with its counts and each cell's offset and length, then each cell's rings
+as zigzag varint deltas), keyed by the set and `land::LAND_V`. The check reads its head, then each
+cell where it's asked for, by its offset (`Land::cell`; the last 256 cells kept decoded), never the
+whole; its content name is in the check's context (`regions land`), so a new land re-checks the
+regions. Without it a region with water is held (`rg-data`). `scenic-build regions-land --set <pbf>
+--to <file>` makes it from a local coastline set into a local file.
+
+`scenic-build regions-check --dir <folder> --declarations <folder> [--land <file>]` runs the check on a scratch folder in memory with the datasets those declarations name,
 and reports each region's size (a region with water's land and water each read cell by cell and
 summed, never one overlay of the whole: the high seas' would be ~200,000 points), and the
 12-nautical-mile line's size and time (`ts12_line`).
@@ -1450,7 +1464,7 @@ URL one the code asked for; the leaf sources, boxes and zip member the same),
 | Wikidata, Wikipedia's API | built: `wikidata-qlever.toml`, `wikipedia-api.toml`, the `wikidata` and `wikipedia` roles | endpoints (`sparql`, `mediawiki-api`, `refresh = "live"`) |
 | Wikipedia pageviews | built: `wikipedia-pageviews.toml`, the `pageviews` role | URL template (`{y}`, `{m}`); the months stay the items job's rule |
 | Geoid grids | staged, not yet added: `producers/geoid/declarations/` (the `geoid` role, any number; the grids by `producers/geoid/fetch.sh`), read by the elevation step (§6.8, step 3) | `geoid-grid` (a URL, its two references, `store`) and `helmert` (its parameters), pinned |
-| The regions' datasets (Marine Regions EEZ v12, Internal Waters v4, Territorial Seas v4; Natural Earth lakes; OSM land polygons) | staged, not yet added: `producers/sources/` (§6.1.7); the files fetched into `sources/fetched/marineregions-eez-v12/`, `marineregions-internal-waters-v4/`, `marineregions-territorial-seas-v4/`, `natural-earth-lakes-10m/`, `osm-land-polygons/` on 2026-10-18 | `geojson` and `zip-shapefile`, their file (`params.path`), id field and layer |
+| The regions' datasets (Marine Regions EEZ v12, Internal Waters v4, Territorial Seas v4; Natural Earth lakes) | staged, not yet added: `producers/sources/` (§6.1.7); the files fetched into `sources/fetched/marineregions-eez-v12/`, `marineregions-internal-waters-v4/`, `marineregions-territorial-seas-v4/`, `natural-earth-lakes-10m/` on 2026-10-18 (the coastline's land is the pass's own: §6.1.7) | `geojson` and `zip-shapefile`, their file (`params.path`), id field and layer |
 | Canada's lake fill (CanVec) | built: `canvec-lakes.toml`, the `lake-fill` role; its zips kept by hand in `sources/fetched/canvec-lakes/` | `zip-shapefile`: where they come from, its layer, field, values kept, the intermittent ones and the confirming share (`params`) |
 
 Also kept: fonts (`scripts/fonts.sh`, the app's own assets). The depth's sources are §6.10's, NCEI's

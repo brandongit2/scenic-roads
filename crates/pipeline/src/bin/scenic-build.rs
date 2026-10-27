@@ -322,8 +322,11 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             pipeline::sys::footprint_guard("regions-check", max);
         }
         let decl = opt(&args, "--declarations").map(PathBuf::from);
+        // (`--land <file>`: the coastline's land from a local file (a `regions-land` step's output,
+        // made by hand), with --declarations; else the records' for the current pass.)
+        let land = opt(&args, "--land").map(PathBuf::from);
         let m = pipeline::out::read_manifest(&root)?;
-        let rep = pipeline::inputs::regions::read::check_folder(&root, &m, &dir, decl.as_deref())?;
+        let rep = pipeline::inputs::regions::read::check_folder(&root, &m, &dir, decl.as_deref(), land.as_deref())?;
         let n = rep["findings"].as_array().map_or(0, Vec::len);
         println!(
             "regions-check: {} files, {} regions, {} resolved, {:.0} km² of the Earth's {:.0}; {n} findings",
@@ -336,6 +339,34 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         if let Some(p) = opt(&args, "--report") {
             std::fs::write(&p, serde_json::to_vec_pretty(&rep)?)?;
         }
+        return Ok(());
+    }
+    if step == "regions-land" && opt(&args, "--set").is_some() {
+        // regions-land --set <coastline.osm.pbf> --to <file> [--pass <date>]: the coastline's land
+        // made from a local coastline set into a local file, for a scratch regions-check's --land.
+        // Writes only that file.
+        use pipeline::inputs::regions::land;
+        let set = PathBuf::from(opt(&args, "--set").unwrap());
+        let to = PathBuf::from(opt(&args, "--to").context("--to <file>")?);
+        let t = std::time::Instant::now();
+        let mut stats = land::Stats::default();
+        let rings = land::assemble(land::read_ways(&set, &mut stats)?, &mut stats);
+        eprintln!(
+            "regions-land: assembled in {:.0} s, peak resident {} MB",
+            t.elapsed().as_secs_f64(),
+            pipeline::sys::peak_rss() / 1_000_000
+        );
+        let cells = pipeline::inputs::regions::tiles::TArea::from_rings(&rings);
+        drop(rings);
+        let bytes = land::encode(opt(&args, "--pass").as_deref().unwrap_or("-"), &stats, &cells);
+        std::fs::write(&to, &bytes)?;
+        eprintln!(
+            "regions-land: {} cells, {} MB in {:.0} s, peak resident {} MB; {stats:?}",
+            cells.cells.len(),
+            bytes.len() / 1_000_000,
+            t.elapsed().as_secs_f64(),
+            pipeline::sys::peak_rss() / 1_000_000
+        );
         return Ok(());
     }
     if step == "regions-fixture" {
@@ -729,6 +760,46 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             out.save()?;
             std::fs::remove_file(&local).ok();
             eprintln!("trailends: {} ends", ends.len());
+        }
+        "regions-land" => {
+            // regions-land [--pass <date>]: the coastline's land by 2° cell, from the pass's
+            // coastline set (pipeline::inputs::regions::land).
+            use pipeline::inputs::regions::land;
+            let date = opt(&args, "--pass")
+                .or_else(|| pipeline::osmpass::latest_pass(out.root()))
+                .context("no complete OSM pass")?;
+            let set = out.path(
+                out.get(&pipeline::osmpass::set_name(&date, "coastline"))
+                    .context("the pass has no coastline set (pass-sets makes it)")?,
+            );
+            std::fs::create_dir_all(&scratch)?;
+            let local = scratch.join("set-coastline.osm.pbf");
+            let parts = Parts(&["Copying the coastline", "Assembling the land", "Cutting it by cell", "Uploading"]);
+            parts.start(0);
+            let p = phase("the coastline set copied here", Class::NasRead);
+            p.count(set.copy_data_to_local(&local).with_context(|| format!("copy {}", set.display()))?, 1);
+            drop(p);
+            parts.start(1);
+            let p = phase("the land assembled", Class::Compute);
+            let mut stats = land::Stats::default();
+            let rings = land::assemble(land::read_ways(&local, &mut stats)?, &mut stats);
+            drop(p);
+            parts.start(2);
+            let p = phase("the land cut by cell", Class::Compute);
+            let cells = pipeline::inputs::regions::tiles::TArea::from_rings(&rings);
+            drop(rings);
+            let bytes = land::encode(&date, &stats, &cells);
+            drop(p);
+            parts.start(3);
+            let file = scratch.join("regions-land.bin");
+            std::fs::write(&file, &bytes)?;
+            let p = phase("uploaded", Class::NasWrite);
+            out.put_file(&land::logical(&date), "bin", &file)?;
+            drop(p);
+            out.save()?;
+            std::fs::remove_file(&local).ok();
+            std::fs::remove_file(&file).ok();
+            eprintln!("regions-land: {} cells, {} MB; {stats:?}", cells.cells.len(), bytes.len() / 1_000_000);
         }
         "reach" => reach_step(&mut out, &args, &scratch)?,
         "buildings" => {

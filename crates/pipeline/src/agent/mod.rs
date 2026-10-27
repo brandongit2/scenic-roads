@@ -7406,6 +7406,10 @@ impl Agent {
             if let Some(w) = build::trailends_work(date, &manifest, &keys) {
                 jobs.push(job(format!("trailends {date}"), "trailends", p.clone(), Some(w)));
             }
+            // The coastline's land, which the regions' check cuts a region with water back to.
+            if let Some(w) = build::regions_land_work(date, &manifest, &keys) {
+                jobs.push(job(format!("regions-land {date}"), "regions-land", p.clone(), Some(w)));
+            }
             let reach_job = |w: build::Work| job(format!("reach {date}"), "reach", p.clone(), Some(w));
             if let Some(w) = build::reach_work(date, &manifest, &keys) {
                 jobs.push(reach_job(w));
@@ -11667,6 +11671,9 @@ fn first_secs(step: &str) -> f64 {
         "pass-sets" => 5000.0,
         "outlines" => 330.0,
         "trailends" => 15.0,
+        // (The coastline set read twice, its rings assembled and cut by cell: measured by hand on
+        // the M4, 2026-10-27.)
+        "regions-land" => 600.0,
         "reach" => 1800.0,
         "buildings" | "items" => 3600.0,
         "summits" => 30.0,

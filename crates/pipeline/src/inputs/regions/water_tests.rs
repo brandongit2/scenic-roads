@@ -946,3 +946,53 @@ fn the_12_nmi_line_is_the_territorial_seas_edge_off_land() {
         "{l:?}"
     );
 }
+
+// ---- The coastline's land (crate::inputs::regions::land) ----
+
+fn lp(x: f64, y: f64) -> geom::Pt {
+    [(x * 1e7) as i64, (y * 1e7) as i64]
+}
+
+/// A way of nodes `ids` at `pts`.
+fn way(ids: &[i64], pts: &[geom::Pt]) -> Vec<(i64, geom::Pt)> {
+    ids.iter().copied().zip(pts.iter().copied()).collect()
+}
+
+#[test]
+fn coastline_ways_join_into_rings_gaps_close_and_the_pole_is_closed_along() {
+    let mut stats = land::Stats::default();
+    // An island in two ways (land on their left: counter-clockwise).
+    let a = way(&[1, 2, 3], &[lp(0.0, 0.0), lp(1.0, 0.0), lp(1.0, 1.0)]);
+    let b = way(&[3, 4, 1], &[lp(1.0, 1.0), lp(0.0, 1.0), lp(0.0, 0.0)]);
+    // Another, its ring broken at two gaps of about 110 m: closed.
+    let c = way(&[10, 11, 12, 13], &[lp(5.0, 0.0), lp(6.0, 0.0), lp(6.0, 1.0), lp(5.0, 1.0)]);
+    let d = way(&[14, 15], &[lp(5.0, 0.999), lp(5.0, 0.001)]);
+    // A chain ending 50 km from anything: left out.
+    let e = way(&[20, 21, 22], &[lp(10.0, 0.0), lp(11.0, 0.0), lp(11.0, 1.0)]);
+    // A coast round the south pole, running west across ±180°.
+    let f = way(&[30, 31, 32, 33], &[lp(170.0, -70.0), lp(60.0, -68.0), lp(-60.0, -72.0), lp(-170.0, -70.0)]);
+    let g = way(&[33, 30], &[lp(-170.0, -70.0), lp(170.0, -70.0)]);
+    let rings = land::assemble(vec![a, b, c, d, e, f, g], &mut stats);
+    assert_eq!((stats.rings, stats.gaps_closed, stats.chains_dropped, stats.polar), (3, 2, 1, 1), "{stats:?}");
+    let t = tiles::TArea::from_rings(&rings);
+    let at = |x: f64, y: f64| {
+        let q = lp(x, y);
+        t.get((q[0].div_euclid(tiles::CELL), q[1].div_euclid(tiles::CELL))).contains(q)
+    };
+    assert!(at(0.5, 0.5) && at(5.5, 0.5) && !at(10.5, 0.5) && !at(2.0, 0.5));
+    assert!(at(0.0, -80.0) && at(179.5, -75.0) && at(-179.5, -75.0) && !at(0.0, -60.0), "Antarctica");
+}
+
+#[test]
+fn the_land_file_reads_back_by_cell() {
+    let rings = vec![vec![lp(0.5, 0.5), lp(3.5, 0.5), lp(3.5, 1.5), lp(0.5, 1.5)]];
+    let t = tiles::TArea::from_rings(&rings);
+    let b = land::encode("2026-09-28", &land::Stats::default(), &t);
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("l.bin"), &b).unwrap();
+    let l = land::Land::open(std::fs::File::open(d.path().join("l.bin")).unwrap()).unwrap();
+    for (c, a) in &t.cells {
+        assert_eq!(*l.cell(*c), *a);
+    }
+    assert!(l.cell((40, 40)).is_empty() && !l.is_empty());
+}

@@ -291,6 +291,7 @@ impl Keys {
                 "inputs"
                     | "outlines"
                     | "regions-extract"
+                    | "regions-land"
                     | "labels"
                     | "spoken"
                     | "names-todo"
@@ -415,6 +416,16 @@ pub const OUTLINES_HOLDS: u32 = 3;
 /// no outlines (`made`), or until the job has failed `OUTLINES_HOLDS` times in a row.
 pub fn outlines_hold(made: bool, failures: u32) -> bool {
     !made || failures < OUTLINES_HOLDS
+}
+
+/// The coastline's land, once per pass (crate::inputs::regions::land): from the pass's
+/// `coastline` set, made again when the set or `land::LAND_V` changes or it's missing.
+pub fn regions_land_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+    use crate::inputs::regions::land;
+    let set = m.get(&crate::osmpass::set_name(date, "coastline"))?;
+    let k = h(&[&format!("regions-land {}", land::LAND_V), date, set]);
+    (!m.contains_key(&land::logical(date)) || done.lo.get("regions-land").map(String::as_str) != Some(k.as_str()))
+        .then(|| Work { step: "regions-land".into(), targets: vec![("regions-land".into(), k)] })
 }
 
 /// Every hiking route's ends, worldwide, once per pass (crate::trailends): what the z6 tiles' extract

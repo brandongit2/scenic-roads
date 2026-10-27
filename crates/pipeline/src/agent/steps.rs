@@ -178,7 +178,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 57] = [
+pub const TABLE: [Step; 58] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -303,6 +303,20 @@ pub const TABLE: [Step; 57] = [
             "regions-extract",
             "Extracts the regions' OSM relations and ways.",
             w_regions_extract,
+        )
+    },
+    // The coastline's land (crate::inputs::regions::land): the pass's coastline set assembled and
+    // cut by 2° cell, every node and ring held at once.
+    Step {
+        mem_mb: 8192,
+        alone: true,
+        ..step(
+            "pass",
+            Derive,
+            World,
+            "regions-land",
+            "Assembles the coastline's land from the pass's coastline.",
+            w_regions_land,
         )
     },
     Step {
@@ -1258,6 +1272,10 @@ fn w_inputs(l: &str, _: bool) -> bool {
     crate::inputs::record_of(l).is_some()
 }
 
+fn w_regions_land(l: &str, _: bool) -> bool {
+    matches!(parts(l).as_slice(), ["sources", "osm", d, "regions-land"] if crate::osmpass::is_date(d))
+}
+
 fn w_regions_extract(l: &str, _: bool) -> bool {
     matches!(parts(l).as_slice(), ["sources", "osm", d, "regions-extract"] if crate::osmpass::is_date(d))
 }
@@ -1819,6 +1837,7 @@ mod tests {
                 "water",
                 "spoken",
                 "regions-extract",
+                "regions-land",
                 "heritage-sites",
                 "terrain-water",
                 "terrain-hi",
@@ -1887,7 +1906,7 @@ mod tests {
 
     #[test]
     fn entries_within_their_write_sets() {
-        let ok: [(&str, &[(&str, bool)]); 28] = [
+        let ok: [(&str, &[(&str, bool)]); 29] = [
             ("lakefill", &[("work/lakefill/2026-09-28", false), ("work/lakefill/2026-03-01", true)]),
             (
                 "inputs",
@@ -1924,6 +1943,7 @@ mod tests {
             ("labels", &[("layers/labels/hi/6-1-2", false), ("layers/labels/root/0-0-0", true)]),
             ("spoken", &[("global/spoken", false)]),
             ("regions-extract", &[("sources/osm/2026-09-28/regions-extract", false)]),
+            ("regions-land", &[("sources/osm/2026-09-28/regions-land", false)]),
             (
                 "heritage-sites",
                 &[
