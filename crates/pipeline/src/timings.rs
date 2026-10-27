@@ -1615,8 +1615,8 @@ mod tests {
             ..Default::default()
         };
         let runs = [
-            run("depth-lo", 100.0, 30.0, ("z3–5 from their children", END)),
-            run("depth-lo", 100.0, 10.0, ("z3–5 from their children", END)),
+            run("depth-lo", 100.0, 30.0, ("z3–7 from their children", END)),
+            run("depth-lo", 100.0, 10.0, ("z3–7 from their children", END)),
             run("depth-lo", 100.0, 5.0, (START, "work")),
             run("terrain", 100.0, 1.0, ("work", END)),
         ];
@@ -1627,7 +1627,7 @@ mod tests {
         assert_eq!((d.gaps[0].wall_s, d.gaps[0].n), (40.0, 2));
         assert_eq!(d.gaps[1].before, "work");
         let t = summary_text(&sums);
-        assert!(t.contains("after z3–5 from their children"), "{t}");
+        assert!(t.contains("after z3–7 from their children"), "{t}");
         assert!(t.contains("before work"), "{t}");
         assert!(t.contains("! 15% in no phase"), "{t}");
         assert!(t.contains("Over 5% of their time in no phase: depth-lo 15%"), "{t}");

@@ -275,11 +275,12 @@ The server builds missing deeper terrain and shading tiles from their ancestors.
 
 Depth under the seas and lakes (`pipeline::depth`; its sources docs/inputs.md §6.10; its files
 docs/formats.md, Depth), split by tile like the terrain, so downloads and the mirror take it as it is.
-- **Targets:** every z3 tile within 200 nautical miles (`REACH_KM`, a region's EEZ's reach) of the
-  coverage that a source meets (`depth-lo`, any Mac), every z6 tile within it that a source
-  finer than z8 meets (`depth`, any Mac), and the floor's shading's assembly of each of those z3
-  tiles once its z6 tiles are done (`depth-shade`, any Mac). They read only the NAS (the sources'
-  grids, the basemap, the lo packs, the shading's hi packs) and write their packs there. The 15″ grid covers the rest of a z3 tile's water.
+- **Targets:** every z6 tile within 200 nautical miles (`REACH_KM`, a region's EEZ's reach) of the
+  coverage that a source finer than z8 meets (`depth`, any Mac), every z3 tile within it that a
+  source meets (`depth-lo`, any Mac, once its z6 tiles are done), and the floor's shading's
+  assembly of each of those z3 tiles once its depth-lo is (`depth-shade`, any Mac). They read only
+  the NAS (the sources' grids, the basemap, the depth's hi and lo packs, the shading's hi packs) and
+  write their packs there. The 15″ grid covers the rest of a z3 tile's water.
 - **Reading the sources:** a source's grids are packed by z6 tile (docs/inputs.md §6.10, Packs:
   a tar of whole GeoTIFFs, each read in place by its byte range), so a job opens a pack once and
   reads its grids from it, not a file a grid; a pack is kept open by the job's reader like a grid
@@ -308,8 +309,8 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   again after 2, 5, 15 and 30 s; a file that isn't a GeoTIFF is not.
 - **Timings and progress:** a job's phases: the sources' declarations read, the basemap's water
   opened and read, `composing` (its sub-phases: the source files opened, the sources' windows read,
-  the stored levels scaled up, feathering, gaps filled), tiles encoded, the coarse levels from
-  their children (depth-lo) and the packs written. Its progress moves within a zoom, by its blocks
+  the stored levels scaled up, feathering, gaps filled), tiles encoded, z8 from the z9 tiles and
+  z3–7 from their children (depth-lo) and the packs written. Its progress moves within a zoom, by its blocks
   done and the grids of the block under way sampled, said every 5 s.
 - **The water's reads:** a level's blocks share the water tiles their margins overlap
   (`depth::build::WaterCache`), and a z14 tile's polygons, the basemap's deepest, are read and
@@ -320,7 +321,20 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   64 KB of each other read in one range of at most 4 MB, 8 ranges at once; a clustered archive keeps neighbours
   together, so a block is a few reads, not a hundred round trips), then decoded and rasterised on
   the job's threads (task #492). The same polygons and water as one by one.
-- **depth-lo (a z3 tile):** z6–8 composed (below), z3–5 each its children's mean.
+- **depth (a z6 tile):** z9–16, a block only where a source has a grid of that zoom or finer, a
+  tile kept only where a water pixel is a source's own data of the tile's zoom (that source painted
+  there: not one feathered in under half, nor a gap filled from one), so no tile is finer than the
+  data under it and a finer view scales up the nearest stored tile; its capped pixels scaled up
+  from this job's coarser tiles. At z8 and coarser those are its own: before z9 it composes z6–8
+  over the tile and the ring of tiles around it, as an assembly composes them (below), which serve
+  only that and aren't stored, so a block's 32-pixel margin across the tile's edge has them too
+  (its neighbours' fine tiles are another job's and aren't read).
+- **depth-lo (a z3 tile, after its z6 tiles' depth):** its coarse levels from the finer, as the
+  terrain's (§2): each z8 pixel the mean of the four beneath it that have data in its z6 tiles'
+  z9 tiles as their hi packs store them (its class the first of them with one), and where no z9
+  tile has data under it (the open sea, a coast or lake without a source finer than z8) composed
+  from the sources (below; z6–7 composed too, for z8's capped pixels alone); z3–7 each its
+  children's mean. So a zoomed-out view shows the mean of the depth a finer view shows.
 - **The floor's shading** (the `depth-shade` layer: `depth::build::shading`): the terrain's
   shading pyramid (§2, Slope; the same codes and codec) over the depth: at
   each place's finest stored level each pixel's steepness and direction by Horn's method on the
@@ -328,16 +342,9 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   draws only in the water) and a neighbour tile the job didn't make read as the tile's own edge;
   each coarser level the mean of the four beneath it where its children cover it, else its own
   depth's. A z6 tile's run (`depth`) makes its z9–16 with its depth; the zoomed-out levels are the
-  **depth-shade** step's (a z3 tile, after its z6 tiles' depth, which read the depth's lo packs:
+  **depth-shade** step's (a z3 tile, after its depth-lo and its z6 tiles' depth:
   `build_shade_lo`): its z3–8 over its depth lo pack's tiles, each z8 pixel under a z6 tile's z9
   shading the mean of those four as the hi pack stores them, so the fine sources' detail reaches z3.
-- **depth (a z6 tile):** z9–16, a block only where a source has a grid of that zoom or finer, a
-  tile kept only where a water pixel is a source's own data of the tile's zoom (that source painted
-  there: not one feathered in under half, nor a gap filled from one), so no tile is finer than the
-  data under it and a finer view scales up the nearest stored tile; its
-  capped pixels scaled up from this job's coarser tiles and, at z8 and coarser, from the lo packs
-  of its z3 tile and its neighbours (its neighbours' fine tiles are another job's: within a block's
-  32-pixel margin across the tile's edge, their lo levels stand in).
 - **The water** (`depth::build`, `terrain_water`'s `depth_polys`): the basemap's z6–14 (its z14
   scaled at z15–16), the terrain's sea and lakes and also its rivers (class `river`). A pixel is
   water when they cover half of it or more, or when it's narrow water (some of it water and none of
@@ -690,17 +697,18 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **bld-fetch** (network): its version, the release and the coverage.
 - **bldprep (per z6 tile):** `BLDPREP_V`, the release, and each downloaded file's row groups and GHSL
   tile meeting it (`crate::bld::sources`).
-- **depth-lo (a z3 tile):** `DEPTH_V`, `DEPTH_LO_V` and the shading's codec (`shade_codec::version`),
-  the tile, the depth sources meeting it (id and
+- **depth (a z6 tile):** `DEPTH_V`, `DEPTH_LO_V` and the shading's codec (`shade_codec::version`),
+  the tile, the sources its blocks read (meeting the tile and the ring of z6 tiles around it with
+  z6's 32-px margin: its coarse levels', the widest), and the digest of its water, rivers included
+  ("depth 6/x/y"): at z6–8 its tiles and two rings around them (its coarse levels are composed over
+  it and a ring, each block reading a ring past it), and its tiles and the ring around them at each
+  zoom from z9 to z14 its blocks compose (a source of that zoom or finer meets the tile with the
+  blocks' 32-px margin; z15–16 are drawn from z14's polygons), so a change the basemap shows only at
+  z13–14 remakes the z6 tiles whose sources reach it, and one finer than a tile's sources none.
+- **depth-lo (a z3 tile):** the same versions, the tile, the depth sources meeting it (id and
   digest of declaration and index), the digest of its z6–8 water as the depth reads it, rivers
-  included ("depth 3/x/y", worked out by the terrain-water job).
-- **depth (a z6 tile):** the same versions, the tile, the sources its blocks read (meeting
-  it with the blocks' 32-px margin at the coarsest zoom it composes), the content
-  names of the depth lo packs of its z3 tile and its neighbours, and the digest of its water,
-  rivers included ("depth 6/x/y"): its tiles and the ring around them at each zoom from z9 to z14
-  its blocks compose (a source of that zoom or finer meets the tile with the blocks' 32-px margin;
-  z15–16 are drawn from z14's polygons), so a change the basemap shows only at z13–14 remakes the
-  z6 tiles whose sources reach it, and one finer than a tile's sources none.
+  included ("depth 3/x/y", worked out by the terrain-water job), and the content names of its z6
+  tiles' `depth` and `depth-class` hi packs (its z8 is made from their z9).
 - **depth-shade (a z3 tile):** the same versions and `DEPTH_SHADE_V`, the tile, the content names of
   its depth lo pack and of its z6 tiles' `depth-shade` hi packs.
 - **bldtiles (per z6 tile):** `BUILDINGS_V`, the normalized files of the tile and its 8 neighbours,

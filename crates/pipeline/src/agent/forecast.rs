@@ -748,7 +748,7 @@ fn chain_deps(step: &str) -> (&'static [&'static str], &'static [&'static str], 
         "rail" => (&[], &["rail-feeds"], false),
         "bldtiles" => (&[], &["bldprep"], false),
         "bldfield-lo" => (&[], &["bldtiles"], false),
-        "depth" => (&[], &["depth-lo"], false),
+        "depth-lo" => (&[], &["depth"], false),
         "depth-shade" => (&[], &["depth-lo", "depth"], false),
         _ => (&[], &[], false),
     }
@@ -2901,13 +2901,13 @@ mod tests {
     /// the term the log last named), the members' not (the switch, state/pool/nas-budget, was off).
     /// A start whose window holds a pause is skipped.
     /// A z3 step's replayed dependencies (`backtest_against_the_history`): the steps whose targets
-    /// in its z3 tile it waits for. (depth-lo reads the depth source, not the depth chain's z6 tiles:
-    /// depth waits for it, `chain_deps`.)
+    /// in its z3 tile it waits for.
     fn z3_reads(step: &str) -> &'static [&'static str] {
         match step {
             "terrain-lo" => &["terrain-hi"],
             "slope-lo" => &["slope-hi", "terrain-hi"],
             "trees-lo" => &["trees"],
+            "depth-lo" => &["depth"],
             "depth-shade" => &["depth", "depth-lo"],
             _ => &[],
         }
@@ -2916,7 +2916,7 @@ mod tests {
     #[test]
     fn the_depth_chains_replay_waits_on_earlier_steps_only() {
         // The chain's order, as depth_next takes it: each step waits on earlier ones alone (#611).
-        let order = ["depth-lo", "depth", "depth-shade"];
+        let order = ["depth", "depth-lo", "depth-shade"];
         for (i, s) in order.iter().enumerate() {
             let waits: Vec<&str> = z3_reads(s).iter().chain(super::chain_deps(s).1).copied().collect();
             for w in &waits {

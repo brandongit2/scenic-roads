@@ -15,9 +15,10 @@
 //!
 //! Stored only where a pixel has detail of the tile's zoom (every water tile up to z8): a tile the
 //! layer lacks is made from its nearest stored ancestor (`fall`) by the server, the same way the
-//! build scales a coarser level up (`compose`). Two steps make them (`build`): **depth-lo**, a z3
-//! tile's zooms 3–8 (z6–8 composed, z3–5 from their children), then **depth**, a z6 tile's zooms
-//! 9–16 where a source has data finer than z8.
+//! build scales a coarser level up (`compose`). Two steps make them (`build`): **depth**, a z6
+//! tile's zooms 9–16 where a source has data finer than z8, then **depth-lo**, a z3 tile's zooms
+//! 3–8 from them (z8 the mean of its z9 tiles, composed from the sources where there's none; z3–7
+//! from their children).
 
 pub mod build;
 pub mod compose;

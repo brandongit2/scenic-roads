@@ -710,7 +710,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   (`<z>_<x>_<y>.resume`, one append a block, each record with its length and BLAKE3, read a
   record at a time; a slot's moved to the slot running it), taken only for the same inputs (its
   step's versions and encodings, the target, the sources' and water's pins, and what else it
-  reads: the depth lo packs, the terrain's tiles made here, the fine datasets' lines), so its
+  reads: the terrain's tiles made here, the fine datasets' lines), so its
   outputs are the same bytes. Counted in the job's disk as its sampler counts its scratch's top.
   Deleted when its packs are written, on a cancel, with a given-back job's scratch by
   room-making, and, untouched for 24 hours, as the step's next run on that Mac starts.

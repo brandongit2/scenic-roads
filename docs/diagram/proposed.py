@@ -192,22 +192,22 @@ def build(check=False):
     d.lane('TERRAIN · SLOPE', y0, y1)
     l4_bottom = y1
 
-    # ---- 4b. water depth: per z3 tile, then per z6 tile where a source is finer ---------------------
+    # ---- 4b. water depth: per z6 tile where a source is finer, then per z3 tile ---------------------
     y0 = y1 + GAP
     cy = y0 + 24
     c_dg = d.cur('terr', cy, 'Depth grids', ['15 staged: GEBCO, BlueTopo,', 'NONNA, EMODnet, SHOM, GtTM,', 'surveyed lakes, estimates'],
                  'producers/depth/, run by hand on the M4; declared', 'part')
     s_dw = d.src('base', c_dg.b + 8, 'The basemap’s water', ['z6–14 and its rivers; the', 'terrain’s sea and lakes'])
-    n_dlo = d.card('terr', 'd1', cy, 'depth, zoomed out', 'Rust', ['z3 tiles within 200 nmi of', 'the coverage a source meets:', 'z6–8 composed, z3–5 means'],
-                   [(['layers/depth/ lo'], 'packs')], scope='z3', shared=True, fig='median 66 s, p90 22 min; 2.1 GB p90')
-    n_dep = d.card('terr', 'd2', cy, 'depth', 'Rust', ['z9–16 where a source finer', 'than z8 has grids; reads', 'the lo packs round it'],
+    n_dep = d.card('terr', 'd1', cy, 'depth', 'Rust', ['z9–16 where a source finer', 'than z8 has grids; its own', 'z6–8 for capped pixels'],
                    [(['layers/depth/ hi'], 'packs')], scope='z6', shared=True, fig='median 45 s, p90 15 min; 2.7 GB p90')
+    n_dlo = d.card('terr', 'd2', cy, 'depth, zoomed out', 'Rust', ['z3 tiles within 200 nmi of', 'the coverage a source meets:', 'z8 from z9, else composed;', 'z3–7 means'],
+                   [(['layers/depth/ lo'], 'packs')], scope='z3', shared=True, fig='median 66 s, p90 22 min; 2.1 GB p90')
     p_d = d.pill('terr', cy + 30, ['/tiles/depth', '/tiles/terrain?floor=1'], note=['the floor: terrain', 'less the depth'])
     b_d = d.layer('terr', 0, 'Depth · contours', ['nautical blues on the floor’s', 'shading; sources named'], cy=p_d.my)
-    d.arrow('terr', (c_dg.r, n_dlo.y + 18), (n_dlo.l, n_dlo.y + 18))
-    d.arrow('base', (s_dw.r, s_dw.y + 18), (n_dlo.l - 12, s_dw.y + 18), (n_dlo.l - 12, n_dlo.y + 46), (n_dlo.l, n_dlo.y + 46))
-    d.arrow('terr', (n_dlo.r, n_dep.y + 18), (n_dep.l, n_dep.y + 18))
-    d.arrow('terr', (n_dep.r, p_d.my), (p_d.l, p_d.my))
+    d.arrow('terr', (c_dg.r, n_dep.y + 18), (n_dep.l, n_dep.y + 18))
+    d.arrow('base', (s_dw.r, s_dw.y + 18), (n_dep.l - 12, s_dw.y + 18), (n_dep.l - 12, n_dep.y + 46), (n_dep.l, n_dep.y + 46))
+    d.arrow('terr', (n_dep.r, n_dlo.y + 18), (n_dlo.l, n_dlo.y + 18))
+    d.arrow('terr', (n_dlo.r, p_d.my), (p_d.l, p_d.my))
     d.to_layer('terr', p_d, b_d)
     y1 = max(n_dep.b, n_dlo.b, s_dw.b, b_d.b, p_d.b) + PAD
     d.lane('WATER DEPTH', y0, y1)

@@ -54,6 +54,11 @@ fn at(z: u8, u: f64, v: f64) -> (i64, i64) {
 }
 
 fn sources(dir: &Path) -> Vec<Source> {
+    sources_deep(dir, -50.0)
+}
+
+/// `sources`, the coarse source's depth `deep`.
+fn sources_deep(dir: &Path, deep: f32) -> Vec<Source> {
     let mk = |code: u8, lake: bool, zoom: u8, u0: f64, v0: f64, u1: f64, v1: f64, f: &dyn Fn(i64, i64) -> f32| {
         let (c0, r0) = at(zoom, u0, v0);
         let (c1, r1) = at(zoom, u1, v1);
@@ -84,7 +89,7 @@ fn sources(dir: &Path) -> Vec<Source> {
     };
     vec![
         // The whole tile, deep (z8).
-        mk(1, false, 8, 0.0, 0.0, 1.0, 1.0, &|_, _| -50.0),
+        mk(1, false, 8, 0.0, 0.0, 1.0, 1.0, &|_, _| deep),
         // A patch of the sea, shallower (z10), inside one block of z10's.
         mk(2, false, 10, 0.1, 0.3, 0.25, 0.45, &|_, _| -10.0),
         // The lake's survey (z11), deeper to the east.
@@ -123,14 +128,14 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
         Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
             .unwrap();
     let q = (T.0 >> 3, T.1 >> 3);
+    let n_hi = build_hi(&mut out, &srcs, &Fixture, None, T).unwrap();
+    assert!(n_hi > 0 && out.get(&hi_logical(LAYER, T.0, T.1)).is_some());
     let n_lo = build_lo(&mut out, &srcs, &Fixture, None, q).unwrap();
     assert!(
         n_lo > 0
             && out.get(&lo_logical(LAYER, q.0, q.1)).is_some()
             && out.get(&lo_logical(CLASS_LAYER, q.0, q.1)).is_some()
     );
-    let n_hi = build_hi(&mut out, &srcs, &Fixture, None, T).unwrap();
-    assert!(n_hi > 0 && out.get(&hi_logical(LAYER, T.0, T.1)).is_some());
     let lo = (3, q.0, q.1);
     let hi = (6, T.0, T.1);
 
@@ -198,7 +203,7 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
     let Grid::F(v) = g else { panic!() };
     assert!((v[py * 256 + px] + 50.0).abs() < 0.6, "{}", v[py * 256 + px]);
 
-    // The same again, byte for byte: the piece made again from the same lo packs keeps its
+    // The same again, byte for byte: the piece made again from the same sources keeps its
     // content names.
     let names: Vec<Option<String>> = [hi_logical(LAYER, T.0, T.1), hi_logical(CLASS_LAYER, T.0, T.1)]
         .iter()
@@ -210,6 +215,50 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
         .map(|l| out.get(l).map(str::to_string))
         .collect();
     assert_eq!(names, again);
+}
+
+/// An assembly's z8 is made from its z6 tiles' z9 as stored where one lies under it (here the
+/// sources' depth before the coarse source deepened), and composed from the sources where none
+/// does; its z7 the mean of its z8.
+#[test]
+fn the_zoomed_out_depth_is_made_from_the_finer() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("a")).unwrap();
+    std::fs::create_dir_all(d.path().join("b")).unwrap();
+    let mut out =
+        Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+            .unwrap();
+    let q = (T.0 >> 3, T.1 >> 3);
+    build_hi(&mut out, &sources(&d.path().join("a")), &Fixture, None, T).unwrap();
+    build_lo(&mut out, &sources_deep(&d.path().join("b"), -60.0), &Fixture, None, q).unwrap();
+    let lo = (3, q.0, q.1);
+    // (The patch's z9 tile, north of the patch: the coarse source's depth as the z6 tile made it.)
+    let (x9, y9, _, _) = where_(9, 0.2, 0.27);
+    assert!(tile(&out, LAYER, "hi", (6, T.0, T.1), 9, x9, y9).is_some(), "the patch's z9 tile");
+    let (x, y, px, py) = where_(8, 0.2, 0.27);
+    let t8 = tile(&out, LAYER, "lo", lo, 8, x, y).unwrap();
+    assert!((depth_at(&t8, px, py) + 50.0).abs() < 0.6, "{}", depth_at(&t8, px, py));
+    // Inside the patch, its depth.
+    let (x, y, px, py) = where_(8, 0.17, 0.37);
+    let t8 = tile(&out, LAYER, "lo", lo, 8, x, y).unwrap();
+    assert!((depth_at(&t8, px, py) + 10.0).abs() < 0.6, "{}", depth_at(&t8, px, py));
+    // The open sea, no z9 tile under it: the sources as they are.
+    let (x, y, px, py) = where_(8, 0.45, 0.6);
+    let t8 = tile(&out, LAYER, "lo", lo, 8, x, y).unwrap();
+    assert!((depth_at(&t8, px, py) + 60.0).abs() < 0.6, "{}", depth_at(&t8, px, py));
+    // Z7: each pixel the mean of the four beneath it.
+    let (x, y, px, py) = where_(7, 0.3, 0.3);
+    let t7 = tile(&out, LAYER, "lo", lo, 7, x, y).unwrap();
+    let (cx, cy) = (2 * x + px as u32 / 128, 2 * y + py as u32 / 128);
+    let t8 = tile(&out, LAYER, "lo", lo, 8, cx, cy).unwrap();
+    let (ox, oy) = ((px % 128) * 2, (py % 128) * 2);
+    let four: Vec<f32> = [(0, 0), (1, 0), (0, 1), (1, 1)]
+        .iter()
+        .map(|&(dx, dy)| depth_at(&t8, ox + dx, oy + dy))
+        .filter(|&v| v < NODATA_MIN)
+        .collect();
+    let mean = four.iter().sum::<f32>() / four.len() as f32;
+    assert!((depth_at(&t7, px, py) - quantise(mean)).abs() < 0.11, "{} {mean}", depth_at(&t7, px, py));
 }
 
 /// `Fixture`'s water, with (when asked) a river running east from the sea across the land, and a
@@ -256,8 +305,8 @@ fn packs(srcs: &[Source], water: &dyn WaterSource, root: &store::nasfs::NasRoot)
     )
     .unwrap();
     let q = (T.0 >> 3, T.1 >> 3);
-    build_lo(&mut out, srcs, water, None, q).unwrap();
     build_hi(&mut out, srcs, water, None, T).unwrap();
+    build_lo(&mut out, srcs, water, None, q).unwrap();
     let names = [
         lo_logical(LAYER, q.0, q.1),
         lo_logical(CLASS_LAYER, q.0, q.1),
@@ -425,7 +474,14 @@ fn the_depth_steps_time_their_stages() {
     packs(&srcs, &Fixture, &store::nasfs::NasRoot::local_for_test(d.path()));
     let r = crate::timings::snapshot(true).unwrap();
     let top: Vec<&str> = r.phases.iter().map(|p| p.name.as_str()).collect();
-    for p in ["the basemap's water read", "composing", "tiles encoded", "z3–5 from their children", "packs written"] {
+    for p in [
+        "the basemap's water read",
+        "composing",
+        "tiles encoded",
+        "z8 from the z9 tiles",
+        "z3–7 from their children",
+        "packs written",
+    ] {
         assert!(top.contains(&p), "{p} not in {top:?}");
     }
     let composing = r.phases.iter().find(|p| p.name == "composing").unwrap();
@@ -889,8 +945,8 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
         Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
             .unwrap();
     let q = (T.0 >> 3, T.1 >> 3);
-    // (The assembly stored first: the z6 tile reads its lo packs.)
-    build_lo(&mut out, &srcs, &Fixture, None, q).unwrap();
+    // (The z6 tile stored first: the assembly reads its z9.)
+    build_hi(&mut out, &srcs, &Fixture, None, T).unwrap();
     let fresh_lo = compose_lo(&out, &srcs, &Fixture, None, q, 8, false).unwrap();
     let fresh_hi = compose_hi(&out, &srcs, &Fixture, None, T, 12, false).unwrap();
     assert!(!crate::resume_log::path(&out.scratch, (6, T.0, T.1)).exists(), "nothing kept without resuming on");
@@ -908,9 +964,9 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
         assert!(compose_lo(&out, &srcs, &Fixture, None, q, 8, true).is_err());
         assert!(compose_lo(&out, &srcs, &Fixture, None, q, 8, true).unwrap() == fresh_lo);
     }
-    // A run again with every block kept composes none: the log alone, the sources' grids gone;
-    // though lo packs it never reads were saved since (a far z3 tile's depth, its own z3 tile's
-    // shading and class: the rebuild goes on beside it).
+    // A run again with every block kept composes none (its coarse levels' neither): the log alone,
+    // the sources' grids gone; though lo packs were saved since (its own z3 tile's depth, shading
+    // and class: the rebuild goes on beside it), which it never reads.
     let scratch = d.path().join("scratch-5");
     let lo_pack = |out: &mut Out, layer: &str, enc: &str, at: (u32, u32), v: f32| {
         let b = fall::encode(&Grid::F(vec![v; 65536])).unwrap();
@@ -919,17 +975,13 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
         out.save().unwrap();
     };
     let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &scratch).unwrap();
-    lo_pack(&mut out, LAYER, ENCODING, (6, 6), -5.0);
+    lo_pack(&mut out, LAYER, ENCODING, q, -5.0);
     lo_pack(&mut out, SHADE_LAYER, crate::shade_codec::ENCODING, q, -5.0);
     lo_pack(&mut out, CLASS_LAYER, CLASS_ENCODING, q, -5.0);
     for c in 1..=3 {
         std::fs::remove_file(d.path().join(format!("{c}.tif"))).unwrap();
     }
     assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).unwrap() == fresh_hi);
-    // A neighbour's depth lo pack, which it may read, changed: its log not taken.
-    lo_pack(&mut out, LAYER, ENCODING, (q.0 + 1, q.1), -5.0);
-    let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &scratch).unwrap();
-    assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).is_err(), "afresh, it reads the sources");
     let fresh =
         Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch-none"))
             .unwrap();
@@ -945,14 +997,12 @@ fn a_resumed_z6_tiles_packs_and_shading_are_the_same_bytes() {
     use crate::resume_log::STOP_AFTER;
     let d = tempfile::tempdir().unwrap();
     let srcs = sources(d.path());
-    let q = (T.0 >> 3, T.1 >> 3);
     let packs = |name: &str, stop: Option<usize>| {
         let mut out = Out::unbound(
             &store::nasfs::NasRoot::local_for_test(&d.path().join(name)),
             &d.path().join(format!("{name}-scratch")),
         )
         .unwrap();
-        build_lo(&mut out, &srcs, &Fixture, None, q).unwrap();
         if let Some(n) = stop {
             STOP_AFTER.set(Some(n));
             assert!(build_hi_keeping(&mut out, &srcs, &Fixture, None, T, true).is_err());

@@ -125,7 +125,7 @@ pub struct DepthKeep {
 }
 
 /// The depth's steps, whose leased targets `DepthKeep` keeps (`with_leased`).
-pub const DEPTH_STEPS: [&str; 3] = ["depth-lo", "depth", "depth-shade"];
+pub const DEPTH_STEPS: [&str; 3] = ["depth", "depth-lo", "depth-shade"];
 
 /// The file in the agent's home `DepthKeep` is written to.
 pub const DEPTH_KEEP_FILE: &str = "gc-depth-keep.json";

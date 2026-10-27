@@ -4688,9 +4688,9 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
     landing.land(out)
 }
 
-/// depth-lo <Q …> | depth <T …>: the depth's assemblies of z3 tiles Q (their lo packs, z3–8) or
-/// z6 tiles of z6 tiles T (their hi packs, z9–16), from the declared depth sources on the latest
-/// pass's water (pipeline::depth::build).
+/// depth <T …> | depth-lo <Q …>: the depth of z6 tiles T (their hi packs, z9–16) or the
+/// assemblies of z3 tiles Q (their lo packs, z3–8, from their z6 tiles' z9 where there is one), from
+/// the declared depth sources on the latest pass's water (pipeline::depth::build).
 fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
     let z = if step == "depth-lo" { 3 } else { 6 };
     let ts: Vec<TileId> = positional(args)

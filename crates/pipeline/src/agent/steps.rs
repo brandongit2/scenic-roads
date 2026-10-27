@@ -471,17 +471,6 @@ pub const TABLE: [Step; 57] = [
     // most; the tiles made, kept as PNG; the water of a level's tiles, 0.13 GB at most. Until a
     // target's own run says.)
     Step {
-        mem_mb: 2000,
-        ..step(
-            "depth",
-            Pack,
-            Z3,
-            "depth-lo",
-            "Composes a z3 tile's zoomed-out depth from the depth sources on the basemap's water.",
-            w_depth_lo,
-        )
-    },
-    Step {
         mem_mb: 2500,
         shared: Some(10),
         ..step(
@@ -491,6 +480,17 @@ pub const TABLE: [Step; 57] = [
             "depth",
             "Composes a tile's depth where a source has detail finer than the zoomed-out levels.",
             w_depth,
+        )
+    },
+    Step {
+        mem_mb: 2000,
+        ..step(
+            "depth",
+            Pack,
+            Z3,
+            "depth-lo",
+            "Assembles a z3 tile's zoomed-out depth from its tiles' finer depth, composed from the depth sources where there's none.",
+            w_depth_lo,
         )
     },
     // (The floor's shading of a z3 tile: its memory from what it holds, its z6 tiles' z9
@@ -1832,8 +1832,8 @@ mod tests {
                 "polar-root",
                 "trees",
                 "trees-lo",
-                "depth-lo",
                 "depth",
+                "depth-lo",
                 "depth-shade",
                 "unit",
                 "pack",

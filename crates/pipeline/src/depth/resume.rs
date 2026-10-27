@@ -6,13 +6,13 @@
 //! keeps of a block is its tiles, each with its depth's and class's encodings.
 //!
 //! - **Taken only when it's what a fresh run would make:** the identity is a digest of everything
-//!   the run reads: the depth's versions and encodings, the target, each source's pin, the water's
-//!   pin and the depth lo packs it may read (by content name: the z3 tile over the target's and its
-//!   neighbours': crate::depth::build's `resume_log`). A block's tiles depend only on those and on
-//!   the blocks before it (`Tiles::up` reads coarser tiles made earlier), which the log restores:
-//!   the outputs are the same bytes whether a run resumed or not. The floor's shading
-//!   (`depth-shade`) isn't logged: it's made from the tiles once all are (crate::depth::build's
-//!   `shading`), the same bytes again.
+//!   the run composes from: the depth's versions and encodings, the target, each source's pin and
+//!   the water's pin (crate::depth::build's `resume_log`). A block's tiles depend only on those and
+//!   on the blocks before it (`Tiles::up` reads coarser tiles made earlier: a z6 tile's own coarse
+//!   levels under it among them), which the log restores: the outputs are the same bytes whether a
+//!   run resumed or not. What's made from the composed tiles once all
+//!   are isn't logged either, the same bytes again: the floor's shading (crate::depth::build's
+//!   `shading`) and an assembly's z3–8 from the z9 tiles (`compose_lo`).
 //! - **Gone** once the target's packs are saved (crate::depth::build's `build_hi`, `build_lo`).
 
 use crate::resume_log::{BlockId, Get, Log, Put};
