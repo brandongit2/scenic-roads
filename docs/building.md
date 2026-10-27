@@ -168,7 +168,11 @@ from the first (`edit_held`).
   Mac's build is paused (the pool's or its own), the memory guard watches it, the pool doesn't hand its folder off as left (`take_left`), the budgets' proxy listens again on
   the port the job was told (task #588): the old agent stops its proxy before it lets go of
   its lock, and the new one binds the port as soon as it holds the lock, before it joins the pool,
-  so the job's connections are refused for moments at most, which its fetches' retries cover. No
+  so the job's connections are refused only while the agent restarts. A fetch refused by its
+  Mac's proxy (`fetch::net`: the job's loopback HTTPS_PROXY not listening) waits for it, polling
+  its port, up to 5 minutes, then asks again without counting the try; one whose proxy listens
+  (the remote host's failure) is retried as any other, and a job pausing (its channel "drain")
+  doesn't wait. No
   other socket may bind beside the proxy (no `SO_REUSEPORT`). A port that can't be had is tried
   again by the agent's loop, and if it still can't be, the jobs taken over are stopped as
   interrupted, their targets given back; and the map server's updater keeps its app's folder

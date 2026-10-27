@@ -836,6 +836,23 @@ mod net {
         down: Option<PathBuf>,
         /// A second of the retries' waits: a real one but in tests (`with_second`).
         second: Duration,
+        /// This Mac's agent's proxy (`host:port`) that requests go through, when they do
+        /// (the job's HTTPS_PROXY, a loopback address: `local_proxy`), for `proxy_back`.
+        proxy: Option<String>,
+        /// Whether the job is pausing (`control::draining`, but in tests).
+        draining: fn() -> bool,
+    }
+
+    /// How long a request waits for its Mac's agent's proxy to listen again (the agent restarting
+    /// into a new app after a publish) before failing as any other: in the retries' seconds.
+    pub(super) const PROXY_WAIT_S: u64 = 5 * 60;
+
+    /// The proxy ureq takes from the environment (as `Self::config` does), when it's this Mac's
+    /// own (a loopback address: the agent's), as `host:port`.
+    fn local_proxy() -> Option<String> {
+        let p = ureq::Proxy::try_from_env()?;
+        let host = p.host().trim_start_matches('[').trim_end_matches(']');
+        matches!(host, "127.0.0.1" | "localhost" | "::1").then(|| format!("{}:{}", p.host(), p.port()))
     }
 
     /// An answer that's worth asking again: too many requests, a server's error, or no answer.
@@ -865,7 +882,62 @@ mod net {
 
     impl Net {
         pub fn new() -> Net {
-            Net { agent: Self::config().build().into(), down: down_dir(), second: Duration::from_secs(1) }
+            Net {
+                agent: Self::config().build().into(),
+                down: down_dir(),
+                second: Duration::from_secs(1),
+                proxy: local_proxy(),
+                draining: crate::control::draining,
+            }
+        }
+
+        /// Through the proxy at `url` (`http://127.0.0.1:<port>`) in place of the environment's.
+        #[cfg(test)]
+        pub fn through(self, url: &str) -> Net {
+            let agent = Self::config().proxy(Some(ureq::Proxy::new(url).unwrap())).build().into();
+            Net { agent, proxy: crate::osmpass::proxy_addr(url), ..self }
+        }
+
+        /// With `draining` in place of `control::draining`.
+        #[cfg(test)]
+        pub fn with_draining(self, draining: fn() -> bool) -> Net {
+            Net { draining, ..self }
+        }
+
+        /// After a failed attempt: when this Mac's agent's proxy isn't listening (refused: the
+        /// agent restarting), waits for it, polling its port each retry second, at most
+        /// `PROXY_WAIT_S`; true once it listens again, so the attempt is made again without
+        /// counting against the retries. False at once when it listens (the remote host's
+        /// failure, retried as ever), when there's no proxy, and when it doesn't come back in time
+        /// or the job is pausing (`control::draining`): the retries go on as they would.
+        /// An error when this thread's reader stops (`cancelled`).
+        fn proxy_back(&self, url: &str) -> Result<bool> {
+            let Some(addr) = &self.proxy else { return Ok(false) };
+            let listening = || {
+                use std::net::ToSocketAddrs;
+                addr.to_socket_addrs()
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_secs(2)).is_ok())
+            };
+            if listening() {
+                return Ok(false);
+            }
+            eprintln!("fetch: {url}: this Mac's agent ({addr}) isn't listening; waiting for it");
+            let end = std::time::Instant::now() + self.second * PROXY_WAIT_S as u32;
+            while std::time::Instant::now() < end {
+                cancelled(url)?;
+                if (self.draining)() {
+                    return Ok(false);
+                }
+                std::thread::sleep(self.second.min(Duration::from_millis(500)));
+                if listening() {
+                    eprintln!("fetch: {url}: this Mac's agent is back; asking again");
+                    return Ok(true);
+                }
+            }
+            Ok(false)
         }
 
         /// With the notes of hosts that gave no answer in `dir` (super::down_check) in place of
@@ -889,6 +961,8 @@ mod net {
                 agent: Self::config().https_only(true).max_redirects(0).build().into(),
                 down: down_dir(),
                 second: Duration::from_secs(1),
+                proxy: local_proxy(),
+                draining: crate::control::draining,
             }
         }
 
@@ -970,14 +1044,19 @@ mod net {
         fn retrying<T>(&self, url: &str, mut f: impl FnMut() -> Result<std::result::Result<T, String>>) -> Result<T> {
             down_check(self.down.as_deref(), url)?;
             let mut last = String::new();
-            for attempt in 0..=10u32 {
-                if attempt > 0 {
-                    retry_wait(self.down.as_deref(), url, (2u64 << (attempt - 1)).min(60), self.second)?;
-                }
+            let mut attempt = 0u32;
+            while attempt <= 10 {
                 cancelled(url)?;
                 match f()? {
                     Ok(v) => return Ok(v),
                     Err(e) => last = e,
+                }
+                if self.proxy_back(url)? {
+                    continue;
+                }
+                attempt += 1;
+                if attempt <= 10 {
+                    retry_wait(self.down.as_deref(), url, (2u64 << (attempt - 1)).min(60), self.second)?;
                 }
             }
             note_down(self.down.as_deref(), url, &last);
@@ -1119,6 +1198,9 @@ mod net {
                 } else if out.len() > before {
                     // (It moved: on from here, after a breath.)
                     idle = 0;
+                } else if self.proxy_back(url)? {
+                    // (The agent's proxy back after a restart: asked again, not counted.)
+                    requests -= 1;
                 } else {
                     idle += 1;
                 }
@@ -1146,10 +1228,12 @@ mod net {
             // (Late: an answer that began, its body slow. A connection or a name that timed
             // out, or a head that never came, is a host giving no answer: noted down.)
             let late = |e: &ureq::Error| matches!(e, ureq::Error::Timeout(ureq::Timeout::RecvBody));
-            for attempt in 0..8u64 {
+            let mut attempt = 0u64;
+            while attempt < 8 {
                 if attempt > 0 {
                     retry_wait(self.down.as_deref(), url, 2 * attempt, self.second)?;
                 }
+                attempt += 1;
                 cancelled(url)?;
                 crate::fetch::online(url)?;
                 let req = self.agent.get(url);
@@ -1184,6 +1268,11 @@ mod net {
                     Err(e) => {
                         all_late &= late(&e);
                         last = e.to_string();
+                        if self.proxy_back(url)? {
+                            // (The agent's proxy back after a restart: asked again at once, not counted.)
+                            attempt -= 1;
+                            continue;
+                        }
                     }
                 }
             }
@@ -1554,6 +1643,152 @@ mod tests {
         });
         let got = net::Net::new().range(&url, 1000, 251_000).unwrap();
         assert_eq!(got, shorter[1000..251_000]);
+    }
+
+    /// A stand-in for this Mac's agent's proxy on 127.0.0.1:`port` (0: any), answering every
+    /// request (absolute-form, or after a CONNECT) `status` with "tile", counting them, until
+    /// `stop` is set: then it stops listening (its port refuses, as an agent restarting).
+    fn standin_proxy(
+        port: u16,
+        status: u16,
+        asked: Arc<std::sync::atomic::AtomicUsize>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    ) -> u16 {
+        use std::io::{BufRead, Write};
+        use std::sync::atomic::Ordering;
+        let l = store::spawn::listen(("127.0.0.1", port)).unwrap();
+        l.set_nonblocking(true).unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                let Ok((s, _)) = store::spawn::accept(&l) else {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                };
+                s.set_nonblocking(false).ok();
+                let asked = asked.clone();
+                std::thread::spawn(move || {
+                    let mut r = std::io::BufReader::new(s.try_clone().unwrap());
+                    let mut s = s;
+                    let head = |r: &mut std::io::BufReader<std::net::TcpStream>| -> Option<String> {
+                        let mut first = String::new();
+                        r.read_line(&mut first).ok().filter(|n| *n > 0)?;
+                        loop {
+                            let mut l = String::new();
+                            if r.read_line(&mut l).ok()? == 0 || l == "\r\n" {
+                                return Some(first);
+                            }
+                        }
+                    };
+                    let Some(mut first) = head(&mut r) else { return };
+                    if first.starts_with("CONNECT") {
+                        s.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").ok();
+                        let Some(f) = head(&mut r) else { return };
+                        first = f;
+                    }
+                    if first.starts_with("GET") {
+                        asked.fetch_add(1, Ordering::SeqCst);
+                        let a = format!("HTTP/1.1 {status} X\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntile");
+                        s.write_all(a.as_bytes()).ok();
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    /// (The target on localhost, which tests may ask (`online`); only the proxy answers.
+    /// Its retries' seconds 20 ms: the proxy's wait `PROXY_WAIT_S` is 6 s, the 8 tries' waits
+    /// 1.12 s.)
+    fn through(port: u16) -> net::Net {
+        net::Net::new()
+            .with_second(std::time::Duration::from_millis(20))
+            .with_draining(|| false)
+            .through(&format!("http://127.0.0.1:{port}"))
+    }
+
+    #[test]
+    fn a_request_waits_for_its_agents_proxy_to_come_back() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let asked = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(true));
+        // (A free port, its listener gone: refused.)
+        let port = standin_proxy(0, 200, asked.clone(), stop.clone());
+        store::testkit::eventually("the stand-in proxy gone", || {
+            std::net::TcpStream::connect(("127.0.0.1", port)).is_err()
+        });
+        // Back after 3 s: longer than all the tries' waits, within the proxy's wait.
+        let (a, s2) = (asked.clone(), Arc::new(AtomicBool::new(false)));
+        let back = s2.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(3000)); // (sleep ok: the agent's restart, away that long)
+            standin_proxy(port, 200, a, back);
+        });
+        let d = tempfile::tempdir().unwrap();
+        let rec = d.path().join("rec");
+        let url = "http://localhost:9/xyz/dem1a_png/15/29247/12276.png";
+        let t = std::time::Instant::now();
+        let got = through(port).get_recorded(url, Some(&rec), None).unwrap();
+        assert_eq!(got.as_deref(), Some(&b"tile"[..]));
+        assert!(t.elapsed() >= std::time::Duration::from_millis(2900), "{:?}", t.elapsed());
+        // Asked once (nothing reached it before), and recorded.
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert!(rec.exists());
+        // A range read and a file's head wait as well (the proxy away again, back after 3 s).
+        stop.store(true, Ordering::SeqCst);
+        s2.store(true, Ordering::SeqCst);
+        store::testkit::eventually("the stand-in proxy gone", || {
+            std::net::TcpStream::connect(("127.0.0.1", port)).is_err()
+        });
+        let (a, s3) = (asked.clone(), Arc::new(AtomicBool::new(false)));
+        let back = s3.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(3000)); // (sleep ok: the agent's restart, away that long)
+            standin_proxy(port, 200, a, back);
+        });
+        let e = through(port).range(url, 0, 4);
+        s3.store(true, Ordering::SeqCst);
+        // (The stand-in answers 200 to a range: not a range answer, an error, but one asked of it.)
+        let e = e.err().unwrap();
+        assert!(!format!("{e:#}").contains("refused"), "{e:#}");
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_proxy_that_never_comes_back_fails_as_before() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let asked = Arc::new(AtomicUsize::new(0));
+        let port = standin_proxy(0, 200, asked.clone(), Arc::new(AtomicBool::new(true)));
+        store::testkit::eventually("the stand-in proxy gone", || {
+            std::net::TcpStream::connect(("127.0.0.1", port)).is_err()
+        });
+        let url = "http://localhost:9/a.png";
+        let t = std::time::Instant::now();
+        let e = through(port).get_recorded(url, None, None).err().unwrap();
+        assert!(is_unreachable(&e), "{e:#}");
+        // (Waited out once, 6 s, then the tries as before.)
+        assert!(t.elapsed() >= std::time::Duration::from_secs(6), "{:?}", t.elapsed());
+        assert!(t.elapsed() < std::time::Duration::from_secs(60), "{:?}", t.elapsed()); // (bound ok: not a second wait per try)
+                                                                                        // Pausing: no wait at all.
+        let t = std::time::Instant::now();
+        let e = through(port).with_draining(|| true).get_recorded(url, None, None).err().unwrap();
+        assert!(is_unreachable(&e), "{e:#}");
+        store::testkit::ended_before(t, std::time::Duration::from_secs(6), "no wait for the proxy");
+        assert_eq!(asked.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_remote_hosts_failure_through_a_listening_proxy_is_retried_as_before() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let asked = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let port = standin_proxy(0, 502, asked.clone(), stop.clone());
+        let t = std::time::Instant::now();
+        let e = through(port).get_recorded("http://localhost:9/b.png", None, None).err().unwrap();
+        stop.store(true, Ordering::SeqCst);
+        assert!(is_unreachable(&e) && format!("{e:#}").contains("status 502"), "{e:#}");
+        assert_eq!(asked.load(Ordering::SeqCst), 8);
+        store::testkit::ended_before(t, std::time::Duration::from_secs(6), "no wait for the proxy");
     }
 
     #[test]
