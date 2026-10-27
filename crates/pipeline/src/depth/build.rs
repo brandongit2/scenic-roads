@@ -5,7 +5,8 @@
 //! - **depth** (a z6 tile T): z9–16, a block only where a source has a grid of that zoom or finer
 //!   (`Source::max_zoom_in`), its water the basemap's (z15–16: its z14 tile's polygons, finer). A
 //!   capped pixel takes the level of its zoom scaled up as the map's fallback does, from this job's
-//!   own tiles: at z8 and coarser, z6–8 composed first over T and the ring of tiles around it (as
+//!   own tiles: at z8 and coarser, z6–8 composed first over T and the ring of tiles around it (across
+//!   the date line too; as
 //!   an assembly composes them, kept only for that), so a capped pixel within a block's margin
 //!   across T's edge has them too. Its neighbours' fine tiles aren't read (they're another job's).
 //! - **depth-lo** (a z3 tile Q, after its z6 tiles' depth): z8 as the terrain's assembly makes its
@@ -455,12 +456,12 @@ fn level(
 }
 
 /// A level's tiles a job composes: columns `x0..x0 + nx`, rows `y0..y0 + ny`.
-#[derive(Clone, Copy, Debug)]
-struct Area {
-    x0: u32,
-    y0: u32,
-    nx: u32,
-    ny: u32,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Area {
+    pub x0: u32,
+    pub y0: u32,
+    pub nx: u32,
+    pub ny: u32,
 }
 
 impl Area {
@@ -469,13 +470,25 @@ impl Area {
         let n = 1u32 << (at - z);
         Area { x0: x * n, y0: y * n, nx: n, ny: n }
     }
+}
 
-    /// With the ring of one tile around it, within the world's rows and columns at zoom `z`.
-    fn ringed(self, z: u8) -> Area {
-        let n = 1u32 << z;
-        let (x0, y0) = (self.x0.saturating_sub(1), self.y0.saturating_sub(1));
-        Area { x0, y0, nx: (self.x0 + self.nx + 1).min(n) - x0, ny: (self.y0 + self.ny + 1).min(n) - y0 }
+/// The coarse level `z` (of `LO_COMPOSED`) z6 tile `t` composes for its capped pixels
+/// (`compose_hi`): its tiles and the ring of one around them, rows within the world's, columns
+/// across the date line too (the map's fallback takes an ancestor's neighbours east–west so:
+/// `Tiles::up`); the wrapped column an area of its own.
+pub fn coarse_areas(t: (u32, u32), z: u8) -> Vec<Area> {
+    let a = Area::under(6, t.0, t.1, z);
+    let n = 1u32 << z;
+    let (y0, y1) = (a.y0.saturating_sub(1), (a.y0 + a.ny + 1).min(n));
+    let (x0, x1) = (a.x0.saturating_sub(1), (a.x0 + a.nx + 1).min(n));
+    let mut v = vec![Area { x0, y0, nx: x1 - x0, ny: y1 - y0 }];
+    if a.x0 == 0 {
+        v.push(Area { x0: n - 1, y0, nx: 1, ny: y1 - y0 });
     }
+    if a.x0 + a.nx == n {
+        v.push(Area { x0: 0, y0, nx: 1, ny: y1 - y0 });
+    }
+    v
 }
 
 /// `level`'s blocks, in turn, counting those done in `blocks`; with `log`, those it holds skipped
@@ -1025,7 +1038,7 @@ fn filled(mut v: Vec<f32>) -> Option<Vec<f32>> {
 
 /// The piece of z6 tile `t`'s tiles, made, unwritten: z9 to `upto` (at most z16) composed (`upto`
 /// below z16: a measure of part of it). Its capped pixels are scaled up from its own coarser
-/// tiles: z6–8 composed first over t and the ring of tiles around it (`LO_COMPOSED`, as an
+/// tiles: z6–8 composed first over t and the ring of tiles around it (`coarse_areas`, as an
 /// assembly composes them), which serve only that and aren't stored. With `keep`, its blocks (the
 /// coarse levels' too) kept as made and those an earlier run kept taken (`resume_log`).
 pub fn compose_hi(
@@ -1044,8 +1057,9 @@ pub fn compose_hi(
     let mut wc = WaterCache::default();
     for z in LO_COMPOSED.0..=LO_COMPOSED.1 {
         wc.next_level();
-        let area = Area::under(6, t.0, t.1, z).ringed(z);
-        level(&mut tl, sources, &rd, water, &mut wc, z, area, 3, log.as_mut(), &|_| {})?;
+        for area in coarse_areas(t, z) {
+            level(&mut tl, sources, &rd, water, &mut wc, z, area, 3, log.as_mut(), &|_| {})?;
+        }
     }
     let zooms = u64::from(upto.saturating_sub(HI.0) + 1);
     for z in HI.0..=upto {

@@ -4258,19 +4258,24 @@ fn depth_hi_box(t: (u32, u32), z: u8) -> [f64; 4] {
     )
 }
 
-/// Z6 tile `t` and the ring of z6 tiles around it, grown by the blocks' margin at z6, as a lon/lat
-/// box: the widest a z6 tile's depth reads the sources over (its coarse levels'; each finer zoom's
-/// blocks lie within it), so the sources meeting it are those it reads.
-fn depth_hi_box_read(t: (u32, u32)) -> [f64; 4] {
+/// What z6 tile `t`'s depth reads the sources over, as lon/lat boxes: its coarse levels' z6 areas
+/// (the tile and its ring, the column across the date line apart: `coarse_areas`) grown by the
+/// blocks' margin, the widest it composes (each finer zoom's blocks lie within them), so the
+/// sources meeting one are those it reads.
+fn depth_hi_box_read(t: (u32, u32)) -> Vec<[f64; 4]> {
     use crate::depth::compose::PAD;
-    let side = 3 * 256 + 2 * PAD;
-    crate::depth::grids::window_box(
-        6,
-        (i64::from(t.0) - 1) * 256 - PAD as i64,
-        (i64::from(t.1) - 1) * 256 - PAD as i64,
-        side,
-        side,
-    )
+    crate::depth::build::coarse_areas(t, 6)
+        .into_iter()
+        .map(|a| {
+            crate::depth::grids::window_box(
+                6,
+                i64::from(a.x0) * 256 - PAD as i64,
+                i64::from(a.y0) * 256 - PAD as i64,
+                a.nx as usize * 256 + 2 * PAD,
+                a.ny as usize * 256 + 2 * PAD,
+            )
+        })
+        .collect()
 }
 
 /// The zooms z6 tile `t`'s depth composes (`HI`): those where a source of that zoom or finer meets
@@ -4291,18 +4296,26 @@ fn depth_hi_zooms(sources: &[crate::depth::grids::Source], t: (u32, u32)) -> Vec
 /// zoom past z14 composed has z14 composed too, its box being inside z14's), its tiles and the ring
 /// of one around them. A change at a zoom from z9 it never composes isn't among them.
 fn depth_hi_water(sources: &[crate::depth::grids::Source], t: (u32, u32)) -> Vec<(u8, u32, u32)> {
-    let (lo0, lo1) = crate::depth::build::LO_COMPOSED;
-    (lo0..=lo1)
-        .map(|z| (z, 2))
-        .chain(depth_hi_zooms(sources, t).into_iter().filter(|&z| z <= crate::depth::build::WATER_Z).map(|z| (z, 1)))
-        .flat_map(|(z, r)| {
-            let (s, n) = (1i64 << (z - 6), 1i64 << z);
-            let (x0, y0) = (i64::from(t.0) * s, i64::from(t.1) * s);
-            (y0 - r..y0 + s + r).filter(move |ty| (0..n).contains(ty)).flat_map(move |ty| {
-                (x0 - r..x0 + s + r).filter(move |tx| (0..n).contains(tx)).map(move |tx| (z, tx as u32, ty as u32))
-            })
-        })
-        .collect()
+    use crate::depth::build::{coarse_areas, Area, LO_COMPOSED};
+    let (lo0, lo1) = LO_COMPOSED;
+    let fine = depth_hi_zooms(sources, t).into_iter().filter(|&z| z <= crate::depth::build::WATER_Z).map(|z| {
+        let s = 1u32 << (z - 6);
+        (z, Area { x0: t.0 * s, y0: t.1 * s, nx: s, ny: s })
+    });
+    let mut out: Vec<(u8, u32, u32)> = Vec::new();
+    for (z, a) in (lo0..=lo1).flat_map(|z| coarse_areas(t, z).into_iter().map(move |a| (z, a))).chain(fine) {
+        let n = 1i64 << z;
+        let (x0, y0) = (i64::from(a.x0), i64::from(a.y0));
+        for ty in (y0 - 1..=y0 + i64::from(a.ny)).filter(|ty| (0..n).contains(ty)) {
+            for tx in (x0 - 1..=x0 + i64::from(a.nx)).filter(|tx| (0..n).contains(tx)) {
+                let k = (z, tx as u32, ty as u32);
+                if !out.contains(&k) {
+                    out.push(k);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The depth's targets with their keys; None while its sources can't be read or there's no water
@@ -4310,17 +4323,33 @@ fn depth_hi_water(sources: &[crate::depth::grids::Source], t: (u32, u32)) -> Vec
 ///
 /// - a z6 tile's key: the versions, the z6 tile, the sources it reads (`depth_hi_box_read`), its
 ///   water ("depth 6/x/y", `depth_hi_water`);
-/// - an assembly's: the versions, the z3 tile, the sources meeting it (their ids and digests), the
+/// - an assembly's: the versions, the z3 tile, the sources meeting it with its z6 blocks' margin
+///   (their ids and digests), the
 ///   water it reads ("depth 3/x/y", `DEPTH_LO_WATER_FROM`) and its z6 tiles' depth hi packs (both
 ///   layers, by content: its z8 is made from their z9).
 pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Option<DepthTargets> {
     let sources = tiles.depth(m)?;
     let pin = crate::terrain_pack::water_source_pin(m)?;
     let idx = tiles.water_idx(m, &pin);
-    let deg =
-        |b: [i32; 4]| [f64::from(b[0]) * 1e-7, f64::from(b[1]) * 1e-7, f64::from(b[2]) * 1e-7, f64::from(b[3]) * 1e-7];
-    let pins = |b: [f64; 4]| -> String {
-        sources.iter().filter(|s| s.meeting(b).next().is_some()).map(|s| s.pin.as_str()).collect::<Vec<_>>().join(",")
+    let pins = |bs: &[[f64; 4]]| -> String {
+        sources
+            .iter()
+            .filter(|s| bs.iter().any(|&b| s.meeting(b).next().is_some()))
+            .map(|s| s.pin.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    // (An assembly composes its z6 blocks with their margin past its z3 tile.)
+    let lo_box = |q: (u32, u32)| {
+        use crate::depth::compose::PAD;
+        let side = 8 * 256 + 2 * PAD;
+        crate::depth::grids::window_box(
+            6,
+            i64::from(q.0) * 8 * 256 - PAD as i64,
+            i64::from(q.1) * 8 * 256 - PAD as i64,
+            side,
+            side,
+        )
     };
     let (lo, hi) = depth_tiles(cov, &sources);
     let mut out = DepthTargets::default();
@@ -4339,8 +4368,7 @@ pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &Terra
                 })
                 .collect()
         };
-        let mut ins =
-            vec![depth_versions("depth-lo"), t.clone(), pins(deg(crate::hipack::tile_bounds(3, q.0, q.1))), w];
+        let mut ins = vec![depth_versions("depth-lo"), t.clone(), pins(&[lo_box(q)]), w];
         ins.extend(his(crate::depth::LAYER));
         ins.extend(his(crate::depth::CLASS_LAYER));
         let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
@@ -4364,7 +4392,7 @@ pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &Terra
             out.unknown += 1;
             continue;
         };
-        out.hi.push((t.clone(), h(&[&depth_versions("depth"), &t, &pins(depth_hi_box_read((x, y))), &w])));
+        out.hi.push((t.clone(), h(&[&depth_versions("depth"), &t, &pins(&depth_hi_box_read((x, y))), &w])));
     }
     Some(out)
 }
@@ -8820,6 +8848,20 @@ pub(crate) mod tests {
         assert_eq!(w.len(), 25 + 36 + 64 + 100);
     }
 
+    /// A z6 tile at the date line composes its coarse levels' ring across it (the map's fallback
+    /// takes an ancestor's neighbours east–west): its water and sources keys reach the far column.
+    #[test]
+    fn a_depth_tile_at_the_date_line_reads_across_it() {
+        let w = depth_hi_water(&[], (0, 20));
+        for (z, far) in [(6u8, 63u32), (7, 127), (8, 255)] {
+            assert!(w.iter().any(|t| t.0 == z && t.1 == far), "z{z}'s far column");
+        }
+        let boxes = depth_hi_box_read((0, 20));
+        assert_eq!(boxes.len(), 2);
+        assert!(boxes[1][0] < 180.0 && boxes[1][2] > 179.9, "{:?}", boxes[1]);
+        assert_eq!(depth_hi_box_read((28, 16)).len(), 1);
+    }
+
     /// A z6 tile's key names the sources its blocks read: its coarse levels' reach the ring of z6
     /// tiles around it and z6's 32-px margin (0.70°), so a grid 0.6° past the ring east of tile
     /// 28/16 re-keys it when it changes; one 0.8° past it doesn't.
@@ -8830,7 +8872,9 @@ pub(crate) mod tests {
         fine.grids[0].zoom = 9;
         let mut far = fine.clone();
         far.grids[0].bbox = [-10.45, 65.0, -10.0, 65.5];
-        let read = |s: &crate::depth::grids::Source| s.meeting(depth_hi_box_read((28, 16))).next().is_some();
+        let read = |s: &crate::depth::grids::Source| {
+            depth_hi_box_read((28, 16)).iter().any(|&b| s.meeting(b).next().is_some())
+        };
         assert!(read(&fine));
         assert!(!read(&far));
     }
