@@ -91,6 +91,9 @@ impl Regions {
             data,
         };
         let out = resolve::resolve(&folder, &ctx);
+        if let Some(d) = data {
+            d.land_failed()?;
+        }
         Ok((folder, out))
     }
 }
@@ -306,7 +309,9 @@ impl Checks for Regions {
         // once the datasets are read.
         if let Some(data) = self.data(&folder).filter(|d| !d.ts12.is_empty()) {
             if v.paths.contains(resolve::PINS) && !keep.contains(resolve::PINS) {
-                let b = serde_json::to_vec(&serde_json::json!({"fmt": 1, "lines": data.ts12_line()}))?;
+                let lines = data.ts12_line();
+                data.land_failed()?;
+                let b = serde_json::to_vec(&serde_json::json!({"fmt": 1, "lines": lines}))?;
                 let name = format!("{}/@drawn/_ts12.{}.json", super::store_dir(UNIT), store::naming::hash16(&b));
                 let mut facts = serde_json::Map::new();
                 facts.insert("ts12".into(), name.clone().into());

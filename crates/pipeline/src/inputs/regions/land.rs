@@ -3,7 +3,8 @@
 //! (`sources/osm/<date>/regions-land`), each cell read where it's asked for.
 //!
 //! - **Assembly** (`assemble`): the `natural=coastline` ways joined end to start into rings (land on
-//!   their left, as OSM draws them); chains that don't close linked end to start (by node, else
+//!   their left, as OSM draws them); a chain drawn the wrong way (two chains start at its start,
+//!   two end at its end) turned round; chains that don't close linked end to start (by node, else
 //!   the nearest start within `GAP_M`); what never comes round is left out (counted). A ring that goes round a pole (Antarctica's, its
 //!   longitudes unwrapped a whole turn apart at its ends) is closed along the pole's latitude. Each
 //!   ring simplified within `SIMPLIFY_M`, as the zones are. OSM closes Antarctica along 85.0511°S,
@@ -12,7 +13,8 @@
 //!   [[col, row, offset, length], …]}`), then each cell's rings (even–odd, E7, the cell's
 //!   canonical area) as zigzag varint deltas, a ring's point count first.
 //! - **Reading** (`Land`): the head once; a cell's rings by its offset, decoded into an area, the
-//!   last `CACHED` cells kept.
+//!   last `CACHED` cells kept. A cell that can't be read is no land and fails the land
+//!   (`Land::failed`), which fails the check that read it.
 
 use super::geom::{self, Area, Pt, Ring};
 use super::tiles::{Cell, TArea};
@@ -48,6 +50,10 @@ pub fn logical(date: &str) -> String {
 pub struct Stats {
     pub ways: u64,
     pub rings: u64,
+    /// Chains drawn the wrong way (a way reversed in OSM: its start another chain's start, its end
+    /// another's end), turned round before they're linked.
+    #[serde(default)]
+    pub reversed: u64,
     /// Gaps between chains closed (each under `GAP_M`).
     pub gaps_closed: u64,
     /// Chains left out: open, with no chain's start within `GAP_M` of their end.
@@ -57,6 +63,9 @@ pub struct Stats {
     pub nodes_missing: u64,
     /// Rings round a pole.
     pub polar: u64,
+    /// The widest gaps closed (at most 20): their length (m), and where (degrees).
+    #[serde(default)]
+    pub gaps: Vec<(f64, [f64; 2])>,
     /// The largest chains left out (at most 20): their points, first and last point (degrees).
     #[serde(default)]
     pub dropped: Vec<(u64, [f64; 2], [f64; 2])>,
@@ -169,6 +178,30 @@ pub fn assemble(ways: Vec<Vec<(i64, Pt)>>, stats: &mut Stats) -> Vec<Ring> {
     // chain's end linked to the chain starting at its last node, else to the nearest chain start
     // within GAP_M (the nearest pairs first; each start taken once). Linked chains that come round
     // are rings; the rest, lines that never close, are left out.
+    // (A way drawn the wrong way leaves two chains starting at its start and two ending at its
+    // end; turned round, it links by its nodes, where the nearest start would bridge past it: the
+    // 2026-09-28 pass's Outer Banks had four.)
+    let mut n_start: HashMap<i64, usize> = HashMap::new();
+    let mut n_end: HashMap<i64, usize> = HashMap::new();
+    for c in &open {
+        *n_start.entry(c[0].0).or_default() += 1;
+        *n_end.entry(c[c.len() - 1].0).or_default() += 1;
+    }
+    // (The shortest first: where a few ways are tangled, the wrong way is the short fix.)
+    let mut order: Vec<usize> = (0..open.len()).collect();
+    order.sort_by_key(|&k| (open[k].len(), open[k][0].0));
+    for k in order {
+        let c = &mut open[k];
+        let (a, z) = (c[0].0, c[c.len() - 1].0);
+        if n_start[&a] > 1 && n_end[&z] > 1 && !n_start.contains_key(&z) && !n_end.contains_key(&a) {
+            *n_start.get_mut(&a).unwrap() -= 1;
+            *n_end.get_mut(&z).unwrap() -= 1;
+            *n_start.entry(z).or_default() += 1;
+            *n_end.entry(a).or_default() += 1;
+            c.reverse();
+            stats.reversed += 1;
+        }
+    }
     let n = open.len();
     let mut next: Vec<Option<usize>> = vec![None; n];
     let mut prev: Vec<Option<usize>> = vec![None; n];
@@ -192,15 +225,18 @@ pub fn assemble(ways: Vec<Vec<(i64, Pt)>>, stats: &mut Stats) -> Vec<Ring> {
         }
     }
     pairs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-    for (_, i, j) in pairs {
+    let deg = |p: Pt| [p[0] as f64 / 1e7, p[1] as f64 / 1e7];
+    for (d, i, j) in pairs {
         if next[i].is_none() && prev[j].is_none() {
             next[i] = Some(j);
             prev[j] = Some(i);
             stats.gaps_closed += 1;
+            stats.gaps.push((d.round(), deg(open[i][open[i].len() - 1].1)));
         }
     }
+    stats.gaps.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1[0].total_cmp(&b.1[0])));
+    stats.gaps.truncate(20);
     let mut seen = vec![false; n];
-    let deg = |p: Pt| [p[0] as f64 / 1e7, p[1] as f64 / 1e7];
     // (Lines first: from each chain nothing links to.)
     for s0 in (0..n).filter(|&j| prev[j].is_none()) {
         let (mut k, mut pts, mut at) = (Some(s0), 0usize, s0);
@@ -304,6 +340,16 @@ pub fn cells(rings: &[Ring]) -> TArea {
     t
 }
 
+/// The land file's bytes made from a coastline set (`pbf`), its cell count and what the assembly
+/// met: the step's whole work, here or on the lead.
+pub fn make(pbf: &Path, pass: &str) -> Result<(Vec<u8>, usize, Stats)> {
+    let mut stats = Stats::default();
+    let rings = assemble(read_ways(pbf, &mut stats)?, &mut stats);
+    let land = cells(&rings);
+    drop(rings);
+    Ok((encode(pass, &stats, &land), land.cells.len(), stats))
+}
+
 fn varint(out: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
         out.push((v as u8) | 0x80);
@@ -380,6 +426,8 @@ pub enum Land {
         f: Mutex<std::fs::File>,
         index: HashMap<Cell, (u64, u64)>,
         cache: Mutex<(HashMap<Cell, Arc<Area>>, Vec<Cell>)>,
+        /// The first cell that couldn't be read, and why: sticky; `failed` says it.
+        failed: Mutex<Option<String>>,
         stats: Stats,
     },
 }
@@ -403,7 +451,13 @@ impl Land {
         ensure!(head.fmt == 1, "land format {}", head.fmt);
         let base = 12 + n as u64;
         let index = head.cells.iter().map(|&(x, y, o, l)| ((x, y), (base + o, l))).collect();
-        Ok(Land::File { f: Mutex::new(f), index, cache: Default::default(), stats: head.stats })
+        Ok(Land::File {
+            f: Mutex::new(f),
+            index,
+            cache: Default::default(),
+            failed: Default::default(),
+            stats: head.stats,
+        })
     }
 
     /// Whether it has any land.
@@ -414,11 +468,23 @@ impl Land {
         }
     }
 
-    /// The cell's land (wrapped column), empty where it has none.
+    /// An error if a cell couldn't be read: what was made from the land since is wrong (that
+    /// cell read as no land), so the check that read it must fail, not report it.
+    pub fn failed(&self) -> Result<()> {
+        if let Land::File { failed, .. } = self {
+            if let Some(e) = failed.lock().unwrap().as_ref() {
+                bail!("{e}");
+            }
+        }
+        Ok(())
+    }
+
+    /// The cell's land (wrapped column), empty where it has none. A cell that can't be read is
+    /// empty too, not kept, and recorded for `failed`.
     pub fn cell(&self, c: Cell) -> Arc<Area> {
         match self {
             Land::Memory(m) => Arc::new(m.get(&c).cloned().unwrap_or_default()),
-            Land::File { f, index, cache, .. } => {
+            Land::File { f, index, cache, failed, .. } => {
                 let Some(&(off, len)) = index.get(&c) else { return Arc::new(Area::default()) };
                 if let Some(a) = cache.lock().unwrap().0.get(&c) {
                     return a.clone();
@@ -429,13 +495,20 @@ impl Land {
                     let f = f.lock().unwrap();
                     f.read_exact_at(&mut b, off)
                 };
-                // (A read that fails is no land: said, and the check's land then wrong where it
-                // failed; a land file is content-named, so a short read is the share's.)
                 let a = match read.map_err(anyhow::Error::from).and_then(|_| decode_cell(&b)) {
                     Ok(a) => Arc::new(a),
-                    Err(e) => panic!("the regions' land, the cell from {}°, {}°: {e:#}", c.0 * 2, c.1 * 2),
+                    Err(e) => {
+                        failed.lock().unwrap().get_or_insert_with(|| {
+                            format!("the regions' land, the cell from {}°, {}°: {e:#}", c.0 * 2, c.1 * 2)
+                        });
+                        return Arc::new(Area::default());
+                    }
                 };
                 let mut k = cache.lock().unwrap();
+                // (Another thread may have read it meanwhile.)
+                if let Some(a) = k.0.get(&c) {
+                    return a.clone();
+                }
                 if k.1.len() >= CACHED {
                     let old = k.1.remove(0);
                     k.0.remove(&old);

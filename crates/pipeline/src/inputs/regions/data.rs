@@ -104,6 +104,11 @@ impl Datasets {
         }
     }
 
+    /// An error if a cell of the land couldn't be read (`land::Land::failed`).
+    pub fn land_failed(&self) -> Result<()> {
+        self.land.as_ref().map_or(Ok(()), |l| l.failed())
+    }
+
     /// The coastline's land in the box `b` (plain frame), clipped to it: from the 2° cells it
     /// meets.
     pub fn land_in(&self, b: [i64; 4]) -> Area {

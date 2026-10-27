@@ -694,16 +694,19 @@ Features of one id are unioned as they're read. Their declarations are staged in
 **The coastline's land** (crate::inputs::regions::land) is the pass's: the `regions-land` step
 (lead, once per pass, alone, 8 GB) reads the pass's `coastline` set (`w/natural=coastline`, made by
 pass-sets), joins the ways end to start into rings (land on their left, as OSM draws them),
-links the chains that don't close end to start, each to the chain starting at its last node, else
-to the nearest chain start within 10 km (the nearest pairs first; the 2026-09-28 coastline was broken
-by 5.5 km at the Outer Banks, cutting the Americas' ring, and by 1.1 km in Scotland), leaves out
+turns round a chain drawn the wrong way (two chains start at its start and two end at its end; the
+shortest first: the 2026-09-28 coastline had four at the Outer Banks), links the chains that don't
+close end to start, each to the chain starting at its last node, else to the nearest chain start
+within 10 km (the nearest pairs first; the 2026-09-28 coastline was broken by 8.0 and 5.5 km at the
+Outer Banks, cutting the Americas' ring, and by 1.1 km in Scotland; the widest 20 gaps are in the
+file's head), leaves out
 what never comes round (counted, the largest named in the file's head), closes a ring round a pole
 along its latitude, simplifies the rings within 20 m, adds the Earth south of 85°S (OSM closes
 Antarctica along 85.0511°S) and keeps the land on disk by 2° cell: `sources/osm/<date>/regions-land.<hash16>.bin` (magic
 `RLAND001`, a JSON head with its counts and each cell's offset and length, then each cell's rings
 as zigzag varint deltas), keyed by the set and `land::LAND_V`. The check reads its head, then each
 cell where it's asked for, by its offset (`Land::cell`; the last 256 cells kept decoded), never the
-whole; its content name is in the check's context (`regions land`), so a new land re-checks the
+whole; a cell it can't read fails the check (an error, not findings, never a panic); its content name is in the check's context (`regions land`), so a new land re-checks the
 regions. Without it a region with water is held (`rg-data`). `scenic-build regions-land --set <pbf>
 --to <file>` makes it from a local coastline set into a local file.
 

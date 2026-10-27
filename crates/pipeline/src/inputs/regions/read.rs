@@ -485,6 +485,9 @@ pub fn check_folder(
         let lines = d.ts12_line();
         serde_json::json!({"lines": lines.len(), "points": lines.iter().map(Vec::len).sum::<usize>(), "s": t.elapsed().as_secs_f64()})
     });
+    if let Some(d) = checks.ctx.as_ref().and_then(|c| c.data.as_ref()) {
+        d.land_failed()?;
+    }
     Ok(serde_json::json!({
         "ts12_line": ts12,
         "files": v.paths.len(),

@@ -349,20 +349,10 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         let set = PathBuf::from(opt(&args, "--set").unwrap());
         let to = PathBuf::from(opt(&args, "--to").context("--to <file>")?);
         let t = std::time::Instant::now();
-        let mut stats = land::Stats::default();
-        let rings = land::assemble(land::read_ways(&set, &mut stats)?, &mut stats);
-        eprintln!(
-            "regions-land: assembled in {:.0} s, peak resident {} MB",
-            t.elapsed().as_secs_f64(),
-            pipeline::sys::peak_rss() / 1_000_000
-        );
-        let cells = land::cells(&rings);
-        drop(rings);
-        let bytes = land::encode(opt(&args, "--pass").as_deref().unwrap_or("-"), &stats, &cells);
+        let (bytes, n, stats) = land::make(&set, opt(&args, "--pass").as_deref().unwrap_or("-"))?;
         std::fs::write(&to, &bytes)?;
         eprintln!(
-            "regions-land: {} cells, {} MB in {:.0} s, peak resident {} MB; {stats:?}",
-            cells.cells.len(),
+            "regions-land: {n} cells, {} MB in {:.0} s, peak resident {} MB; {stats:?}",
             bytes.len() / 1_000_000,
             t.elapsed().as_secs_f64(),
             pipeline::sys::peak_rss() / 1_000_000
@@ -774,23 +764,16 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             );
             std::fs::create_dir_all(&scratch)?;
             let local = scratch.join("set-coastline.osm.pbf");
-            let parts = Parts(&["Copying the coastline", "Assembling the land", "Cutting it by cell", "Uploading"]);
+            let parts = Parts(&["Copying the coastline", "Assembling the land", "Uploading"]);
             parts.start(0);
             let p = phase("the coastline set copied here", Class::NasRead);
             p.count(set.copy_data_to_local(&local).with_context(|| format!("copy {}", set.display()))?, 1);
             drop(p);
             parts.start(1);
-            let p = phase("the land assembled", Class::Compute);
-            let mut stats = land::Stats::default();
-            let rings = land::assemble(land::read_ways(&local, &mut stats)?, &mut stats);
+            let p = phase("the land assembled and cut by cell", Class::Compute);
+            let (bytes, n, stats) = land::make(&local, &date)?;
             drop(p);
             parts.start(2);
-            let p = phase("the land cut by cell", Class::Compute);
-            let cells = land::cells(&rings);
-            drop(rings);
-            let bytes = land::encode(&date, &stats, &cells);
-            drop(p);
-            parts.start(3);
             let file = scratch.join("regions-land.bin");
             std::fs::write(&file, &bytes)?;
             let p = phase("uploaded", Class::NasWrite);
@@ -799,7 +782,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             out.save()?;
             std::fs::remove_file(&local).ok();
             std::fs::remove_file(&file).ok();
-            eprintln!("regions-land: {} cells, {} MB; {stats:?}", cells.cells.len(), bytes.len() / 1_000_000);
+            eprintln!("regions-land: {n} cells, {} MB; {stats:?}", bytes.len() / 1_000_000);
         }
         "reach" => reach_step(&mut out, &args, &scratch)?,
         "buildings" => {

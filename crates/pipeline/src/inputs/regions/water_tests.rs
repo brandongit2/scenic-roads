@@ -984,6 +984,18 @@ fn coastline_ways_join_into_rings_gaps_close_and_the_pole_is_closed_along() {
 }
 
 #[test]
+fn a_coastline_way_drawn_the_wrong_way_is_turned_round() {
+    let mut stats = land::Stats::default();
+    // An island in three ways, the middle one (2 → 3) drawn 3 → 2: one ring, no gap bridged.
+    let a = way(&[1, 2], &[lp(0.0, 0.0), lp(1.0, 0.0)]);
+    let b = way(&[3, 2], &[lp(1.0, 1.0), lp(1.0, 0.0)]);
+    let c = way(&[3, 4, 1], &[lp(1.0, 1.0), lp(0.0, 1.0), lp(0.0, 0.0)]);
+    let rings = land::assemble(vec![a, b, c], &mut stats);
+    assert_eq!((stats.rings, stats.reversed, stats.gaps_closed, stats.chains_dropped), (1, 1, 0, 0), "{stats:?}");
+    assert_eq!(rings[0].len(), 4);
+}
+
+#[test]
 fn the_land_file_reads_back_by_cell() {
     let rings = vec![vec![lp(0.5, 0.5), lp(3.5, 0.5), lp(3.5, 1.5), lp(0.5, 1.5)]];
     let t = tiles::TArea::from_rings(&rings);
@@ -995,4 +1007,11 @@ fn the_land_file_reads_back_by_cell() {
         assert_eq!(*l.cell(*c), *a);
     }
     assert!(l.cell((40, 40)).is_empty() && !l.is_empty());
+    assert!(l.failed().is_ok());
+    // A file cut short: its last cell reads as no land and fails the land, no panic.
+    std::fs::write(d.path().join("s.bin"), &b[..b.len() - 3]).unwrap();
+    let s = land::Land::open(std::fs::File::open(d.path().join("s.bin")).unwrap()).unwrap();
+    let last = *t.cells.keys().last().unwrap();
+    assert!(s.cell(last).is_empty());
+    assert!(s.failed().unwrap_err().to_string().contains("the regions' land"));
 }
