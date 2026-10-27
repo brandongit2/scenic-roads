@@ -69,6 +69,10 @@ pub struct Copies<'a> {
 /// a file at the area's edge) stay range reads. A fill mask, read whole (`Mask::of`), copies.
 pub const COPY_SHARE: f64 = 0.5;
 
+/// The most bytes of an overview read whole from the NAS (`Tiff::read_level_whole`): GLO-30's
+/// coarser levels are a few MB a file.
+const LEVEL_WHOLE_MAX: u64 = 32 << 20;
+
 /// The share of box `b`'s area inside box `area` (both west, south, east, north).
 fn box_share(b: &[f64; 4], area: &[f64; 4]) -> f64 {
     let wide = (b[2] - b[0]) * (b[3] - b[1]);
@@ -479,6 +483,7 @@ impl GeoSet<'_> {
         };
         let t = Tiff::open(read).with_context(|| url.to_string())?;
         let (k, share) = pick(&t)?;
+        let in_place = nas.is_some();
         if let (Some(local), Some((f, len))) = (local, nas) {
             if share >= COPY_SHARE {
                 if let store::nasfs::Place::Local(l) = local.path_sized(&f, len) {
@@ -486,6 +491,11 @@ impl GeoSet<'_> {
                     return Ok(Some((t, k)));
                 }
             }
+        }
+        // (A stored file read in place on the NAS at an overview (terrain-lo's GLO-30): the level
+        // read in one range, not a round trip a block, task #807.)
+        if in_place && k > 0 {
+            return Ok(Some((t.read_level_whole(k, LEVEL_WHOLE_MAX)?, k)));
         }
         Ok(Some((t, k)))
     }

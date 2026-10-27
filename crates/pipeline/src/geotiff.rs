@@ -387,6 +387,29 @@ impl RangeRead for Windowed {
     }
 }
 
+/// A source with one span of it in memory (`Tiff::read_level_whole`): reads inside it served
+/// from there, the rest from the source.
+struct Spanned {
+    inner: Arc<dyn RangeRead>,
+    start: u64,
+    bytes: Vec<u8>,
+}
+
+impl RangeRead for Spanned {
+    fn len(&self) -> Result<u64, store::IoError> {
+        self.inner.len()
+    }
+
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
+        match off.checked_sub(self.start) {
+            Some(at) if at as usize + len <= self.bytes.len() => {
+                Ok(self.bytes[at as usize..at as usize + len].to_vec())
+            }
+            _ => self.inner.read_at(off, len),
+        }
+    }
+}
+
 /// An open (Geo)TIFF.
 pub struct Tiff {
     src: Arc<dyn RangeRead>,
@@ -853,6 +876,28 @@ impl Tiff {
         let b = decode()?;
         c.lock().unwrap().put(k, b.clone());
         Ok(b)
+    }
+
+    /// Image `level`'s blocks read in one range and served from memory from now on (task #807:
+    /// over the NAS each block read alone waits a round trip; a COG keeps a level's blocks
+    /// together). Only where the level's blocks are at least half the bytes they span and the span
+    /// is at most `cap`: otherwise as it was. The same bytes.
+    pub fn read_level_whole(mut self, level: usize, cap: u64) -> Result<Tiff> {
+        let img = self.level(level)?;
+        let n = img.blocks_across() as u64 * img.height.div_ceil(img.block_h) as u64;
+        let (mut lo, mut hi, mut sum) = (u64::MAX, 0u64, 0u64);
+        for index in 0..n {
+            let (off, len) = (self.strile(&img.offsets, index)?, self.strile(&img.counts, index)?);
+            if off != 0 && len != 0 {
+                (lo, hi, sum) = (lo.min(off), hi.max(off + len), sum + len);
+            }
+        }
+        if lo >= hi || hi - lo > cap || sum * 2 < hi - lo {
+            return Ok(self);
+        }
+        let bytes = self.src.read_at(lo, (hi - lo) as usize)?;
+        self.src = Arc::new(Spanned { inner: self.src.clone(), start: lo, bytes });
+        Ok(self)
     }
 
     /// Where block (`bx`, `by`) of image `level` lies in the file: its offset and length; None for
@@ -1950,6 +1995,34 @@ mod tests {
         assert!(at_open <= 2, "{at_open} reads to open a file larger than a window");
         assert_eq!(t.block(0, 1, 1).unwrap().f32_at(0, 0), data[256 * 1024 + 256]);
         assert_eq!(reads(&src), at_open + 1, "a block: one read");
+    }
+
+    /// Task #807: a level read whole is one read, its blocks then read from memory, the same pixels;
+    /// one spanning more than the cap is left as it was.
+    #[test]
+    fn a_level_read_whole_is_one_read_and_the_same_pixels() {
+        struct Count(Vec<u8>, std::sync::atomic::AtomicUsize);
+        impl RangeRead for Count {
+            fn len(&self) -> Result<u64, store::IoError> {
+                Ok(self.0.len() as u64)
+            }
+            fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
+                self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(self.0[off as usize..off as usize + len].to_vec())
+            }
+        }
+        let data: Vec<f32> = (0..512 * 512).map(|i| ((i as u64 * 2_654_435_761) % 1_000_003) as f32).collect();
+        let bytes = write_f32(512, 512, &data, 128, [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], 4326, None).unwrap();
+        let src = Arc::new(Count(bytes, Default::default()));
+        let n = || src.1.load(std::sync::atomic::Ordering::SeqCst);
+        let t = Tiff::open(src.clone()).unwrap().read_level_whole(0, 1 << 30).unwrap();
+        let after = n();
+        assert_eq!(t.read_window(0, 0, 0, 512, 512).unwrap(), data);
+        assert_eq!(n(), after, "every block from memory");
+        let t = Tiff::open(src.clone()).unwrap().read_level_whole(0, 1000).unwrap();
+        let after = n();
+        assert_eq!(t.read_window(0, 0, 0, 512, 512).unwrap(), data);
+        assert_eq!(n(), after + 16, "past the cap: a read a block");
     }
 
     /// Task #492: a header's reads come from windows: a read within one costs nothing, one past
