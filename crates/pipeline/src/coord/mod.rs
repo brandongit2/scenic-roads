@@ -9352,7 +9352,8 @@ mod tests {
             s.read_to_end(&mut b).unwrap();
             String::from_utf8_lossy(&b[..b.windows(4).position(|x| x == b"\r\n\r\n").unwrap()]).to_ascii_lowercase()
         };
-        assert!(get_gz("/work/").contains("content-encoding: gzip"));
+        let page = get_gz("/work/");
+        assert!(page.contains("content-encoding: gzip") && page.contains("vary: accept-encoding"), "{page}");
         assert!(!get_gz("/work/icons/icon-192.png").contains("content-encoding"));
         // A connection whose headers don't come is closed by the server once their time is up, not
         // before. (Timed from before it's made: the server's clock can't start before this one,
