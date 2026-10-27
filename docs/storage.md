@@ -137,7 +137,8 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
   rules no longer make (a z6 tile no source finer than z8 meets). Their files then go by the rule
   above (`layers/` is swept). `scenic gc --dry-run` counts them, writing nothing.
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/`, inputs,
-  state, app and nas.
+  state, app and nas. The packed tile stores (`sources/aws-terrarium/`, `sources/pyramids/`), whose
+  archives no manifest names, are kept by their own indexes (macs.md, Downloads), never by GC.
 
 **Backups.** Daily, the agent copies `inputs/` and the input check's acceptances
 (`state/inputs/accepted/`) into a content-addressed store under `state/backups/`, with a dated list

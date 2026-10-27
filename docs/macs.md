@@ -33,16 +33,20 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
     16, then each archive is copied whole once and checked against its name.
   - **GSI's elevation tiles** (the pyramids read tile by tile, `[data] encoding = gsi-png`) are
     packed the same way (`pipeline::pyramids`, `sources/pyramids/<host-path>/packs/`, one store a
-    URL template, a z14/z15 tile in its z6 tile's shard), by their own step, the lead's:
-    `scenic-build pyramids-fill <6/x/y …> | --all` fetches each tile a z6 tile's terrain-hi run
-    reads (under its z9–12 pixels that aren't open sea, and the whole of its terrain-deep targets'
-    base tiles, whose presence grids read the sea too; inside the dataset's cover) that the store
-    lacks, once, and packs it (a 404 kept as an empty entry; any other failure left out, fetched
-    again next time). It goes a z6 tile at a time, each only while the NAS has more room past the
-    owner's reserve (`scenic nas-room`) than the most one z6 tile has put there (6/56/23: 1.8 GB). Terrain-hi and terrain-deep read the
-    store first, each tile by range from the NAS's archive; a tile it lacks is fetched as before,
-    never written back. It isn't filled by the pool yet: a one-off `pyramids-fill --all` on the
-    lead fills it (restartable).
+    URL template, a z14/z15 tile in its z6 tile's shard), by their own step, the lead's
+    (`pyramids-fill`, a job per z6 tile a declared pyramid meets, task #810): it fetches each tile
+    a z6 tile's terrain-hi run reads (under its z9–12 pixels that aren't open sea, and the whole of
+    its terrain-deep targets' base tiles, whose presence grids read the sea too; inside the
+    dataset's cover) that the store lacks, once, and packs it (a 404 kept as an empty entry; any
+    other failure left out, fetched by the terrain's jobs). As every job's, its archives go onto
+    the NAS unlisted and into its hand-off as its store's (`<host-path>/<shard>`), and the lead
+    names them in that store's index. Each z6 tile starts only while the NAS has more room past
+    the owner's reserve (`scenic nas-room`) than the most one z6 tile has put there (6/56/23:
+    1.8 GB); a pause stops it between chunks, what's fetched handed off. It's filled again when
+    its key changes (docs/steps.md §12). Terrain-hi and terrain-deep read the store first, each
+    tile by range from the NAS's archive; a tile it lacks is fetched as before, never written
+    back. `scenic-build pyramids-fill <6/x/y …> --into <dir>` fills a scratch store by hand
+    (`terrain-same --pyramids <dir>` reads one); `--sizes` says each store's size.
   - **The Wikidata and Wikipedia answers** the items job and the heritage chain got for a pass
     (`pipeline::answers`) are kept as one archive per pass (`sources/items/<date>/answers.tar.zst`,
     `heritage.tar.zst`), written as the step starts (when the NAS lacks what the Mac has) and as it

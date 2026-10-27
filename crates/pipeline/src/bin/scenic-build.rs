@@ -49,9 +49,10 @@
 //!   polar-terrain <s/4/x/y …>    polar blocks' terrain (z4–9) from the elevation pool (pipeline::polar)
 //!   polar-slope <s/4/x/y …>      polar blocks' shading from their and their neighbours' terrain packs
 //!   polar-root <s …> [--regions dir] [--pass d]  a pole's z0–3 of both, from its blocks; those no longer built dropped
-//!   pyramids-fill <6/x/y …> | --all [--into dir]  the pyramids read tile by tile (GSI's) stored
+//!   pyramids-fill <6/x/y …> [--into dir] [--sizes]  the pyramids read tile by tile (GSI's) stored
 //!                                on the NAS (pipeline::pyramids): the tiles those z6 tiles'
 //!                                terrain runs read, each fetched once and packed; the lead's
+//!                                step (--into: a scratch store, by hand)
 //!   raw-pack [--from-tar -] [--cache dir]  AWS's raw tiles packed into the NAS's archives
 //!                                (pipeline::rawpack): a tar of them on stdin (tools/nas/raw-pack.sh),
 //!                                else those waiting in the cache
@@ -544,7 +545,12 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "roadunits" => roadunits(&mut out)?,
         "terrain-hi" => terrain_step(&mut out, &args)?,
         "terrain-deep" => terrain_deep_step(&mut out, &args)?,
-        "pyramids-fill" => return pyramids_fill(&out, &args),
+        "pyramids-fill" => {
+            // (By hand into a scratch store, or its sizes: nothing of the records saved.)
+            if pyramids_fill(&out, &args)? {
+                return Ok(());
+            }
+        }
         "raw-pack" => {
             // raw-pack [--from-tar - [--expect n]] [--cache dir] | --order | --check [--every n]:
             // AWS's raw tiles packed into the NAS's archives (pipeline::rawpack): a tar stream of
@@ -2441,98 +2447,79 @@ fn pyramids_arg(pool: &mut pipeline::terrain_base::Pool, args: &[String]) {
     }
 }
 
-/// pyramids-fill (6/x/y … | --all) [--into <dir>] [--sizes]: the stored pyramids' tiles (pipeline::pyramids)
-/// the terrain-hi runs of those z6 tiles read (`--all`: every z6 tile meeting a pyramid's cover
-/// that makes hi tiles), each the store lacks fetched once and packed onto the NAS; `--into`, a
-/// scratch store instead (its folder is its own root). `--sizes`: only each store's size. The
-/// lead's step (the index is changed under the build's lock).
-fn pyramids_fill(out: &Out, args: &[String]) -> Result<()> {
+/// pyramids-fill <6/x/y …> [--into <dir>] [--sizes]: the stored pyramids' tiles (pipeline::pyramids)
+/// the terrain runs of those z6 tiles read, each the store lacks fetched once and packed onto the
+/// NAS: the pool's step (the lead's; its archives handed off, `SCENIC_HANDOFF`, for the lead to name
+/// in their stores' indexes), a z6 tile at a time, each noted done once its archives are handed
+/// off. `--into`, a scratch store instead (its folder its own root, its index changed here: run by
+/// hand). `--sizes`: only each store's size. Whether it was run by hand into a scratch store (its
+/// records not saved then).
+fn pyramids_fill(out: &Out, args: &[String]) -> Result<bool> {
     use pipeline::pyramids as py;
-    let (dir, root) = match opt(args, "--into") {
+    let (dir, root, scratch) = match opt(args, "--into") {
         Some(d) => {
             let r = store::nasfs::NasRoot::from_arg(d.as_str());
-            (r.path(), r)
+            (r.path(), r, true)
         }
-        None => (out.root().join(py::DIR), out.root().clone()),
+        None => (out.root().join(py::DIR), out.root().clone(), false),
     };
-    let mut ts: Vec<(u32, u32)> = positional(args)
-        .iter()
-        .map(|t| {
-            TileId::parse(t).filter(|u| u.z == 6).map(|u| (u.x, u.y)).with_context(|| format!("not a z6 tile: {t}"))
-        })
-        .collect::<Result<_>>()?;
-    // (The world's pool: the pyramids declared, and their cover.)
-    let pyr = py::of(&base_pool(out, 0, &[(0, 0)])?.plan);
     if flag(args, "--sizes") {
+        // (The world's pool: the pyramids declared.)
+        let pyr = py::of(&base_pool(out, 0, &[(0, 0)])?.plan);
         let templates: Vec<String> = pyr.iter().map(|p| p.0.clone()).collect();
         for (f, bytes, n) in py::sizes(&dir, &templates)? {
             println!("{}", serde_json::json!({ "pyramid": f, "bytes": bytes, "archives": n }));
         }
-        return Ok(());
+        return Ok(true);
     }
+    let ts = z6_tiles(args, "pyramids-fill")?;
     let cov = coverage_of(out, args)?;
-    if flag(args, "--all") {
-        let covers: Vec<[f64; 4]> =
-            pyr.iter().flat_map(|p| p.2.clone().unwrap_or_else(|| vec![[-180.0, -90.0, 180.0, 90.0]])).collect();
-        for x in 0..64u32 {
-            for y in 0..64u32 {
-                let b = pipeline::stage::tile_box_grown(6, x, y, 0.0);
-                let meets = covers.iter().any(|c| b[0] < c[2] && c[0] < b[2] && b[1] < c[3] && c[1] < b[3]);
-                if meets && pipeline::terrain_pack::makes_hi(&cov, (x, y)) {
-                    ts.push((x, y));
-                }
-            }
-        }
-    }
-    anyhow::ensure!(!ts.is_empty(), "pyramids-fill <6/x/y …> | --all");
     let water = pipeline::terrain_pack::open_water(out)?;
     let fine = pipeline::terrain_deep::Fine::read(out.root(), &out.manifest)?;
     let net = pipeline::fetch::Fetcher::from_env();
     let cache = out.scratch.join("pyramids");
+    // (A job's archives handed off for the lead to name; a scratch store's index changed here.)
+    let handoff = std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from).filter(|_| !scratch);
+    let names: Vec<String> =
+        ts.iter().map(|t| format!("Fetching and packing {}'s elevation tiles", t.slash())).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
     // (The most one z6 tile's fill has put on the NAS: the room the next must find past the owner's
     // NAS reserve, `scenic nas-room`.)
     let mut most = 0u64;
-    for (k, &t) in ts.iter().enumerate() {
-        if pipeline::control::draining() {
-            break;
-        }
+    for (k, u) in ts.iter().enumerate() {
+        pipeline::control::safe_point("pyramids-fill");
+        pipeline::agent::jobs::part(k, &names);
         let room = pipeline::agent::room::nas_room(out.root())?;
         anyhow::ensure!(
             room > most,
-            "the NAS has {room} bytes free past its reserve, under the {most} a z6 tile's fill has put there: stopped before 6/{}/{}",
-            t.0,
-            t.1
+            "the NAS has {room} bytes free past its reserve, under the {most} a z6 tile's fill has put there: stopped before {}",
+            u.slash()
         );
-        pipeline::agent::jobs::report(k as u64, ts.len() as u64, "z6 tiles");
-        let t0 = std::time::Instant::now();
+        let c = cost_start("pyramids-fill", &u.slash());
+        let t = (u.x, u.y);
         let pool = base_pool(out, 6, &[t])?;
         let levels = pipeline::terrain_pack::piece_levels(&cov, t);
-        // (Its terrain-deep targets' base tiles, under each target: their presence grids read all
-        // of each, pipeline::pyramids::want.)
-        let deep: Vec<(u8, u32, u32)> = fine.as_ref().map_or(Vec::new(), |f| {
-            use pipeline::terrain_deep as td;
-            td::targets_in(&f.sets, &cov, t)
-                .into_iter()
-                .flat_map(|g| {
-                    td::base_want(g).into_iter().filter(move |&(z, x, y)| {
-                        z >= td::PACK_Z && (x >> (z - td::PACK_Z), y >> (z - td::PACK_Z)) == g
-                    })
-                })
-                .collect()
-        });
+        let deep = fine.as_ref().map_or(Vec::new(), |f| py::deep_bases(&f.sets, &cov, t));
         let want = py::want(&pool.plan, &water, &levels, &deep)?;
         let before = pipeline::fetch::fetched_bytes();
-        let f = py::fill(&net, &want, &dir, &cache, &root, &|l| eprintln!("{l}"))?;
+        let f = py::fill(&net, &want, &dir, &cache, &root, handoff.as_deref(), &|l| eprintln!("{l}"))?;
         most = most.max(f.bytes);
         println!(
             "{}",
-            serde_json::json!({ "tile": format!("6/{}/{}", t.0, t.1), "wanted": want.values().map(|s| s.len()).sum::<usize>(), "had": f.had, "fetched": f.fetched, "none": f.none, "bytes": f.bytes, "net_bytes": pipeline::fetch::fetched_bytes() - before, "failed": f.failed.len(), "secs": t0.elapsed().as_secs_f64() })
+            serde_json::json!({ "tile": u.slash(), "wanted": want.values().map(|s| s.len()).sum::<usize>(), "had": f.had, "fetched": f.fetched, "none": f.none, "bytes": f.bytes, "net_bytes": pipeline::fetch::fetched_bytes() - before, "failed": f.failed.len(), "cut": f.cut })
         );
         for e in f.failed.iter().take(20) {
             eprintln!("  failed: {e}");
         }
+        // (Paused between its chunks: what it fetched is handed off, the z6 tile not done.)
+        if f.cut {
+            pipeline::control::safe_point("pyramids-fill");
+            break;
+        }
+        pipeline::control::done("pyramids-fill", &u.slash());
+        note_cost("pyramids-fill", &u.slash(), c);
     }
-    Ok(())
+    Ok(scratch)
 }
 
 /// Seconds since the epoch as RFC 3339 UTC (`2026-10-05T03:55:11Z`).

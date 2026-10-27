@@ -6,14 +6,16 @@
 //! Each pyramid's tiles are packed as AWS's raw tiles are (crate::rawpack: content-named archives by
 //! shard, a z15 tile's its z6 tile's, an index read once and each tile read by byte range; an empty
 //! entry for a tile the server hasn't), in `sources/pyramids/<folder>/` (`folder`: the URL template's
-//! host and path, so a layer moved to another URL is stored afresh). Filled by its own step, the
-//! lead's alone (`fill`, `scenic-build pyramids-fill`): a z6 tile's tiles (`want`, those its
-//! terrain-hi run reads: the native tiles under the pixels of its z9–12 tiles that aren't open sea;
-//! and its terrain-deep targets', all under their base tiles), fetched once each with the build's
-//! fetcher (its User-Agent, its per-host limit), then packed; a z6 tile at a time, so a fill cut
-//! short loses at most the one it was on, and each starts only while the NAS has more room past
-//! the owner's reserve than the most one has put there.
-//! Jobs only read it (`Stored`): a tile it lacks is fetched as before, never written back.
+//! host and path, so a layer moved to another URL is stored afresh). Filled by the pool's
+//! `pyramids-fill` step, the lead's (task #810), by z6 tile (`fill`): a z6 tile's tiles (`want`,
+//! those its terrain-hi run reads: the native tiles under the pixels of its z9–12 tiles that aren't
+//! open sea; and its terrain-deep targets', all under their base tiles, `deep_bases`), fetched once
+//! each with the build's fetcher (its User-Agent, its per-host limit), then packed and their
+//! archives handed off as the store's (crate::rawpack::handed_place), the lead naming them in the
+//! store's index as it names AWS's; each z6 tile starts only while the NAS has more room past the
+//! owner's reserve than the most one has put there. Its key (crate::agent::build::pyramids_key)
+//! follows what `want` reads, so a z6 tile is filled again when that changes (`V` with its code).
+//! Jobs only read the store (`Stored`): a tile it lacks is fetched as before, never written back.
 
 use crate::dem::declared::{Plan, Source};
 use crate::fetch::{Fetch, Within};
@@ -29,7 +31,11 @@ use store::sys::PosIo;
 /// The stored pyramids' folder, under the build's root.
 pub const DIR: &str = "sources/pyramids";
 
-/// The archives' metadata (crate::rawpack::Packer::with_meta).
+/// The fill's version, in its key (crate::agent::build::pyramids_key): bumped with any change to
+/// which tiles a z6 tile wants (`want`, `deep_bases`) or how they're stored.
+pub const V: u32 = 1;
+
+/// The archives' metadata (crate::rawpack::Packer::for_pyramid).
 const META: &str = r#"{"kind":"elevation pyramid tiles"}"#;
 
 /// Tiles fetched at once by `fill` (the fetcher holds a host to crate::fetch's HOST_REQUESTS).
@@ -271,6 +277,24 @@ pub fn want(
     Ok(out)
 }
 
+/// Z6 tile `t`'s terrain-deep targets' base tiles (crate::terrain_deep::targets_in, base_want), each
+/// under its own target: what `want` takes as `deep`.
+pub fn deep_bases(
+    sets: &[crate::terrain_deep::FineSet],
+    cov: &crate::coverage::Coverage,
+    t: (u32, u32),
+) -> Vec<(u8, u32, u32)> {
+    use crate::terrain_deep as td;
+    td::targets_in(sets, cov, t)
+        .into_iter()
+        .flat_map(|g| {
+            td::base_want(g)
+                .into_iter()
+                .filter(move |&(z, x, y)| z >= td::PACK_Z && (x >> (z - td::PACK_Z), y >> (z - td::PACK_Z)) == g)
+        })
+        .collect()
+}
+
 /// What `fill` did, by its tiles.
 #[derive(Debug, Default)]
 pub struct Filled {
@@ -281,20 +305,24 @@ pub struct Filled {
     pub none: u64,
     /// Their bytes as fetched.
     pub bytes: u64,
-    /// Tiles that couldn't be fetched (left out: fetched by a job, or the next fill), with why.
+    /// Tiles that couldn't be fetched (left out: fetched by a job, or the z6 tile's next fill), with why.
     pub failed: Vec<String>,
+    /// Cut short by the build pausing (crate::control::draining): what was fetched is packed.
+    pub cut: bool,
 }
 
 /// Each of `want`'s tiles (by template) that its store under `dir` lacks fetched by `fetch`
-/// (`FETCHES` at once) and packed there (crate::rawpack::Packer, its local work in `work`, the
-/// index changed under `root`'s build lock: the lead's step alone). Restartable: a tile packed
-/// stays; one cut short is fetched again.
+/// (`FETCHES` at once) and packed there (crate::rawpack::Packer::for_pyramid, its local work in
+/// `work`): a job's archives handed off to `handoff` (`SCENIC_HANDOFF`) for the lead to name, else
+/// the index changed here, under `root`'s build lock. Restartable: a tile packed stays; one cut short is
+/// fetched again.
 pub fn fill(
     fetch: &dyn Fetch,
     want: &BTreeMap<String, BTreeSet<(u8, u32, u32)>>,
     dir: &NasPath,
     work: &std::path::Path,
     root: &store::nasfs::NasRoot,
+    handoff: Option<&std::path::Path>,
     say: &(dyn Fn(&str) + Sync),
 ) -> Result<Filled> {
     use rayon::prelude::*;
@@ -322,7 +350,8 @@ pub fn fill(
         if todo.is_empty() {
             continue;
         }
-        let mut p = crate::rawpack::Packer::with_meta(&work.join(folder(template)), &store, root, META)?;
+        let f = folder(template);
+        let mut p = crate::rawpack::Packer::for_pyramid(&work.join(&f), &store, root, META, &f, handoff)?;
         p.keep = false;
         let n = todo.len();
         for (k, chunk) in todo.chunks(4096).enumerate() {
@@ -367,10 +396,14 @@ pub fn fill(
             ));
             // (The build pausing: what's fetched is packed, the rest left for the next fill.)
             if crate::control::draining() {
+                done.cut = true;
                 break;
             }
         }
         p.finish().with_context(|| format!("pack {}", store.display()))?;
+        if done.cut {
+            break;
+        }
     }
     Ok(done)
 }
@@ -475,7 +508,7 @@ mod tests {
         net.0.insert(url(1), Some(png()));
         net.0.insert(url(2), None);
         let want = BTreeMap::from([(T.to_string(), BTreeSet::from([(15, 1, 9), (15, 2, 9)]))]);
-        let f = fill(&net, &want, &dir, &d.path().join("cache"), &root, &|_| {}).unwrap();
+        let f = fill(&net, &want, &dir, &d.path().join("cache"), &root, None, &|_| {}).unwrap();
         assert_eq!((f.had, f.fetched, f.none, f.failed.len()), (0, 1, 1, 0));
         let empty = crate::fetch::MapFetch::default();
         let s = Stored::new(&empty, &dir, &plan());
@@ -483,8 +516,38 @@ mod tests {
         assert_eq!(s.get(&url(2)).unwrap(), None);
         assert!(s.get(&url(3)).is_err(), "not stored: asked of the network");
         assert_eq!((s.hits.load(Ordering::Relaxed), s.misses.load(Ordering::Relaxed)), (2, 1));
-        let again = fill(&empty, &want, &dir, &d.path().join("cache"), &root, &|_| {}).unwrap();
+        let again = fill(&empty, &want, &dir, &d.path().join("cache"), &root, None, &|_| {}).unwrap();
         assert_eq!((again.had, again.fetched), (2, 0));
         assert_eq!(sizes(&dir, &[T.to_string()]).unwrap()[0].2, 1);
+    }
+
+    /// Task #810: a job's fill (the pool's step) changes no index: its archives go onto the NAS and
+    /// into its hand-off as its store's (`<folder>/<shard>`), which the lead's merge checks as any
+    /// raw tiles' archive and names in that store's index, not AWS's; the store then serves them.
+    #[test]
+    fn a_jobs_fill_is_handed_off_and_named_in_its_stores_index() {
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::from_arg(d.path().join("root").to_str().unwrap());
+        let dir = root.join(DIR);
+        let outbox = d.path().join("outbox");
+        let url = T.replace("{z}", "15").replace("{x}", "1").replace("{y}", "9");
+        let mut net = crate::fetch::MapFetch::default();
+        net.0.insert(url.clone(), Some(png()));
+        let want = BTreeMap::from([(T.to_string(), BTreeSet::from([(15, 1, 9)]))]);
+        let f = fill(&net, &want, &dir, &d.path().join("cache"), &root, Some(&outbox), &|_| {}).unwrap();
+        assert_eq!((f.fetched, f.cut), (1, false));
+        let empty = crate::fetch::MapFetch::default();
+        assert!(Stored::new(&empty, &dir, &plan()).get(&url).is_err(), "unnamed: not served yet");
+        let raw: Vec<(String, crate::rawpack::Pack)> =
+            crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
+        let place = format!("{}/6-0-0", folder(T));
+        assert_eq!(raw.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), [place.as_str()]);
+        assert!(crate::rawpack::is_shard(&raw[0].0) && crate::rawpack::named_for(&raw[0].1.name, &raw[0].0));
+        assert!(!crate::rawpack::is_shard("../x/6-0-0") && !crate::rawpack::is_shard("a/b/6-0-0"));
+        let lock = crate::out::BuildLock::take(&root).unwrap();
+        let (settled, new) = crate::rawpack::name_handed_places(&root, &raw, &lock);
+        assert_eq!((settled, new), (vec![raw[0].1.name.clone()], 1));
+        assert!(crate::rawpack::Index::load(&root.join("sources/aws-terrarium")).unwrap().shards.is_empty());
+        assert_eq!(Stored::new(&empty, &dir, &plan()).get(&url).unwrap(), Some(png()));
     }
 }

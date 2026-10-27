@@ -8034,11 +8034,12 @@ impl Agent {
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
                 s => first_peak(s),
             };
+            // (And the elevation pyramids' fill, the lead's, its z6 tiles at its measured time each.)
             let mut before = before;
             before.extend(
                 plan.iter()
-                    .filter(|w| w.step == "heritage-sites")
-                    .map(|w| job(format!("heritage-sites {date}"), "heritage-sites", Vec::new(), Some(w.clone()))),
+                    .filter(|w| matches!(w.step.as_str(), "heritage-sites" | "pyramids-fill"))
+                    .map(|w| job(format!("{} {date}", w.step), &w.step, Vec::new(), Some(w.clone()))),
             );
             let mut chains =
                 build::chains_left(cov, date, &manifest, &done, &inputs, &self.terrain_tiles(root, &manifest));
@@ -10505,8 +10506,8 @@ impl Agent {
 
     /// What the lead keeps written besides its records (docs/pool.md §12): today's files while a
     /// member's app still reads them (`pool::Run::keep_today`; `saved`: this step's records are on
-    /// the NAS), the raw tiles' archives its records hold named in the raw store's
-    /// index, its term named to the coordinator's state's writer (crate::coord::keep), its history's
+    /// the NAS), the raw tiles' and pyramids' archives its records hold named in their stores'
+    /// indexes, its term named to the coordinator's state's writer (crate::coord::keep), its history's
     /// new events.
     fn pool_lead_files(&mut self, root: &store::nasfs::NasRoot, saved: bool) {
         let Some(mut guard) = self.pooled() else { return };
@@ -10517,23 +10518,13 @@ impl Agent {
                 rec.raw.iter().filter(|(_, p)| !run.named_raw.contains(&p.name)).cloned().collect();
             if !new.is_empty() {
                 if let Ok(Some(lock)) = crate::out::BuildLock::try_take(root) {
-                    match crate::rawpack::name_handed(&root.join("sources/aws-terrarium"), &new, &lock) {
-                        Ok(n) => {
-                            let again: BTreeSet<&str> = n.again.iter().map(|(_, p)| p.name.as_str()).collect();
-                            run.named_raw.extend(
-                                new.iter()
-                                    .filter(|(_, p)| !again.contains(p.name.as_str()))
-                                    .map(|(_, p)| p.name.clone()),
-                            );
-                            if n.new > 0 {
-                                eprintln!(
-                                    "agent: named {} raw tiles' archive{} in the raw store's index",
-                                    n.new,
-                                    if n.new == 1 { "" } else { "s" }
-                                );
-                            }
-                        }
-                        Err(e) => eprintln!("agent: naming the raw tiles' archives: {e:#}"),
+                    let (settled, n) = crate::rawpack::name_handed_places(root, &new, &lock);
+                    run.named_raw.extend(settled);
+                    if n > 0 {
+                        eprintln!(
+                            "agent: named {n} tiles' archive{} in their stores' indexes",
+                            if n == 1 { "" } else { "s" }
+                        );
                     }
                 }
             }
@@ -11701,6 +11692,8 @@ fn first_secs(step: &str) -> f64 {
         "heritage-sites" => 240.0,
         // (Reading the latest basemap's water under every z6 tile near the coverage.)
         "terrain-water" => 900.0,
+        // (A z6 tile of GSI's: PYRAMIDS_MEASURE.)
+        "pyramids-fill" => 1800.0,
         "heritage" => 5400.0,
         // (Terrain's and slope's z6 tiles a z6 tile, their assemblies a z3 tile's zoomed-out levels:
         // the z3 tiles' last runs, 9,707 s and ~4,100 s over ~400 z6 tiles, 2026-10.)

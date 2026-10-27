@@ -21,8 +21,9 @@
 //! The records' unverified uploads: those the build doesn't read (`read_by`: the manifest's names
 //! and its inputs' indexes' files) leave the pending unchecked (`drop_names`), those it reads are
 //! checked on the NAS over SSH, last (`verify_pending`).
-//! The newest pass, a planet waiting for its pass, the rest of `sources/`, the user's folders (the
-//! inputs folders), state and the app are never touched. With no readable catalogue nothing is deleted.
+//! The newest pass, a planet waiting for its pass, the rest of `sources/` (the packed tile stores,
+//! `aws-terrarium/` and `pyramids/`, among them: kept by their own indexes, crate::rawpack), the
+//! user's folders (the inputs folders), state and the app are never touched. With no readable catalogue nothing is deleted.
 
 use anyhow::{Context, Result};
 use serde::Serialize;

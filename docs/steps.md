@@ -657,6 +657,13 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   tiles that have both), so only a change the terrain could see changes it. A terrain target's
   from ends ` +flow` since the terrain levels rivers, so digests made before were made again. Until a
   target's digest exists its key is unknown and its z3 tile waits.
+- **pyramids-fill (a z6 tile a pyramid read tile by tile meets, the lead's):** `pyramids::V` (bumped
+  with any change to which tiles it wants), the tile, and what `pyramids::want` reads for it: the
+  coverage within 20 km (its terrain-hi levels), the declared pyramids meeting it (their lines as
+  the terrain's keys name them), its water's digest (the open sea it spares) and its terrain-deep
+  targets (whose base tiles it takes whole); until the water or the fine datasets are read its key
+  is unknown and it waits (`agent::build::pyramids_key`). Nothing waits for it: a terrain job
+  fetches what the store lacks.
 - **terrain-hi (a z6 tile):** `TERRAIN_V` and the codec (`terrain_codec::version`: the encoding,
   libwebp's version and level, the rounding), the coverage within 20 km of its tile, the elevation
   pool's datasets meeting the tile (`TerrainTiles::terrain_datasets`: their lines as the roads' keys

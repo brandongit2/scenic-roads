@@ -52,7 +52,7 @@ const GROUP: u64 = 1 << 30;
 pub type Progress<'a> = &'a (dyn Fn(&str, u64, u64) + Sync);
 
 /// The archives' metadata: AWS's raw tiles' (`Packer::new`); a stored pyramid's says its own
-/// (`Packer::with_meta`, crate::pyramids).
+/// (`Packer::for_pyramid`, crate::pyramids).
 const META: &str = r#"{"kind":"aws-terrarium raw tiles"}"#;
 
 /// The shard a tile is packed in, as the terrain is: its z6 tile's for z9–12, its z3 tile's for
@@ -298,8 +298,11 @@ pub struct Packer {
     /// the lead's own packing, the index changed here.
     handoff: Option<PathBuf>,
     handed: Vec<(String, Pack)>,
-    /// What each archive made says it holds (`META`, else `with_meta`'s).
+    /// What each archive made says it holds (`META`, else `for_pyramid`'s).
     meta: String,
+    /// A stored pyramid's folder (`for_pyramid`): its archives handed off as `<folder>/<shard>`
+    /// (`handed_place`).
+    place: Option<String>,
 }
 
 impl Packer {
@@ -309,16 +312,20 @@ impl Packer {
         Packer::open(dir, store, root, std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from))
     }
 
-    /// `new`, the lead's alone (no hand-off: crate::pyramids' store is filled by its own step), its
-    /// archives saying `meta`.
-    pub fn with_meta(
+    /// `new`, for a stored pyramid's store (crate::pyramids, its `folder`): its archives saying
+    /// `meta`, handed off to `handoff` (a job's, `SCENIC_HANDOFF`) as that store's
+    /// (`handed_place`); None, the index changed here.
+    pub fn for_pyramid(
         dir: &Path,
         store: &store::nasfs::NasPath,
         root: &store::nasfs::NasRoot,
         meta: &str,
+        folder: &str,
+        handoff: Option<&Path>,
     ) -> Result<Packer> {
-        let mut p = Packer::open(dir, store, root, None)?;
+        let mut p = Packer::open(dir, store, root, handoff.map(Path::to_path_buf))?;
         p.meta = meta.to_string();
+        p.place = Some(folder.to_string());
         Ok(p)
     }
 
@@ -361,6 +368,7 @@ impl Packer {
             handoff,
             handed: Vec::new(),
             meta: META.to_string(),
+            place: None,
         })
     }
 
@@ -576,7 +584,11 @@ impl Packer {
                 if !self.keep {
                     drop_copy(&self.dir.join("packs").join(&p.name));
                 }
-                self.handed.push((shard, p));
+                let at = match &self.place {
+                    Some(f) => format!("{f}/{shard}"),
+                    None => shard,
+                };
+                self.handed.push((at, p));
             }
             return Ok(());
         }
@@ -824,14 +836,70 @@ pub struct Named {
     pub again: Vec<(String, Pack)>,
 }
 
+/// `name_handed` for each store a hand-off's archives are of (`handed_place`: AWS's raw tiles', a
+/// stored pyramid's), each in its own index under `root`: the archives settled (named, or passed
+/// over for good: all but each store's `Named::again` and those of a store whose index can't be
+/// changed now, named later), and how many were new to their indexes.
+pub fn name_handed_places(
+    root: &store::nasfs::NasRoot,
+    handed: &[(String, Pack)],
+    held: &crate::out::BuildLock,
+) -> (Vec<String>, usize) {
+    let mut by: BTreeMap<String, (store::nasfs::NasPath, Vec<(String, Pack)>)> = BTreeMap::new();
+    for (a, p) in handed {
+        let (store, shard) = handed_place(root, a);
+        let folder = a.rsplit_once('/').map_or("", |(f, _)| f).to_string();
+        by.entry(folder).or_insert_with(|| (store, Vec::new())).1.push((shard, p.clone()));
+    }
+    let (mut settled, mut new) = (Vec::new(), 0);
+    for (store, list) in by.into_values() {
+        match name_handed(&store, &list, held) {
+            Ok(n) => {
+                let again: BTreeSet<&str> = n.again.iter().map(|(_, p)| p.name.as_str()).collect();
+                settled
+                    .extend(list.iter().filter(|(_, p)| !again.contains(p.name.as_str())).map(|(_, p)| p.name.clone()));
+                new += n.new;
+            }
+            Err(e) => eprintln!("rawpack: naming the archives handed off for {}: {e:#}", store.display()),
+        }
+    }
+    (settled, new)
+}
+
 /// The shard of the tile an archive's key is (roadcore::archive::tile_key).
 fn shard_of_key(key: u64) -> String {
     let m = (1u64 << 29) - 1;
     shard((key >> 58) as u8, ((key >> 29) & m) as u32, (key & m) as u32)
 }
 
-/// Whether `a` is a shard as `shard` names one: `root`, or a z3 or z6 tile's `z-x-y`.
+/// A hand-off's archive's place (crate::handoff::Handoff::raw): `<shard>`, AWS's raw tiles' store
+/// (`sources/aws-terrarium`); `<folder>/<shard>`, a stored pyramid's (crate::pyramids::DIR under
+/// the root, its `folder`). The store under `root` and the shard.
+pub fn handed_place(root: &store::nasfs::NasRoot, a: &str) -> (store::nasfs::NasPath, String) {
+    match a.split_once('/') {
+        Some((f, s)) => (root.join(crate::pyramids::DIR).join(f), s.to_string()),
+        None => (root.join("sources/aws-terrarium"), a.to_string()),
+    }
+}
+
+/// `a`'s shard past its pyramid's folder (`handed_place`), when that folder is one
+/// crate::pyramids::folder could name.
+fn bare_shard(a: &str) -> Option<&str> {
+    match a.split_once('/') {
+        None => Some(a),
+        Some((f, s)) => {
+            let ok = !f.starts_with('.')
+                && !f.is_empty()
+                && f.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+            ok.then_some(s)
+        }
+    }
+}
+
+/// Whether `a` is a shard as `shard` names one (`root`, or a z3 or z6 tile's `z-x-y`), or a
+/// pyramid's store's (`<folder>/<shard>`: `handed_place`).
 pub fn is_shard(a: &str) -> bool {
+    let Some(a) = bare_shard(a) else { return false };
     if a == "root" {
         return true;
     }
@@ -843,8 +911,10 @@ pub fn is_shard(a: &str) -> bool {
     }
 }
 
-/// Whether `name` is an archive of `shard` as packing names one: `<shard>.<16 hex>.tiles`.
+/// Whether `name` is an archive of `shard` (a pyramid's past its folder: `handed_place`) as packing
+/// names one: `<shard>.<16 hex>.tiles`.
 pub fn named_for(name: &str, shard: &str) -> bool {
+    let Some(shard) = bare_shard(shard) else { return false };
     name.strip_prefix(shard)
         .and_then(|r| r.strip_prefix('.'))
         .and_then(|r| r.strip_suffix(".tiles"))

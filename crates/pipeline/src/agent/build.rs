@@ -111,6 +111,10 @@ pub struct Keys {
     pub depth: BTreeMap<String, String>,
     #[serde(default)]
     pub depth_lo: BTreeMap<String, String>,
+    /// The elevation pyramids' tiles stored on the NAS (crate::pyramids), per z6 tile ("6/x/y":
+    /// `terrain_slope_targets`' `pyramids`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pyramids_fill: BTreeMap<String, String>,
     /// The polar caps' blocks ("s/4/x/y": crate::polar::target) and roots ("s"): `polar_targets`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub polar_terrain: BTreeMap<String, String>,
@@ -202,6 +206,7 @@ impl Keys {
             "bldfield-lo" => &mut self.bldfield_lo,
             "depth" => &mut self.depth,
             "depth-lo" => &mut self.depth_lo,
+            "pyramids-fill" => &mut self.pyramids_fill,
             "polar-terrain" => &mut self.polar_terrain,
             "polar-slope" => &mut self.polar_slope,
             "polar-root" => &mut self.polar_root,
@@ -230,6 +235,7 @@ impl Keys {
             "bldfield-lo" => &self.bldfield_lo,
             "depth" => &self.depth,
             "depth-lo" => &self.depth_lo,
+            "pyramids-fill" => &self.pyramids_fill,
             "polar-terrain" => &self.polar_terrain,
             "polar-slope" => &self.polar_slope,
             "polar-root" => &self.polar_root,
@@ -1729,6 +1735,75 @@ pub fn terrain_water_work(
         .then(|| Work { step: "terrain-water".into(), targets: vec![("terrain-water".into(), k)] })
 }
 
+/// The pyramids-fill step's z6 tiles (crate::pyramids): each near the coverage (`coverage_tiles`)
+/// that a declared pyramid read tile by tile meets (its accepted cover), with its key
+/// (`pyramids_key`); `UNKNOWN` while the water or the fine datasets it reads aren't worked out.
+/// None while the declared elevation datasets can't be read now; none without them.
+pub fn pyramids_targets(
+    cov: &Coverage,
+    m: &BTreeMap<String, String>,
+    tiles: &TerrainTiles,
+) -> Option<Vec<(String, String)>> {
+    use crate::dem::declared::Data;
+    let Some(e) = tiles.elevation(m).ok()? else { return Some(Vec::new()) };
+    let pyr: Vec<_> = e
+        .iter()
+        .filter(|(a, _)| matches!(&a.declaration.data, Data::Tiles { encoding, .. } if encoding != "terrarium"))
+        .cloned()
+        .collect();
+    if pyr.is_empty() {
+        return Some(Vec::new());
+    }
+    let pin = crate::terrain_pack::water_source_pin(m);
+    let idx = pin.as_deref().and_then(|p| tiles.water_idx(m, p));
+    let fine = tiles.fine(m);
+    let mut out = Vec::new();
+    for &(x, y) in coverage_tiles(cov).values().flatten() {
+        let b = crate::stage::tile_box_grown(6, x, y, 0.0);
+        let lines = crate::dem::declared::meeting(&pyr, b);
+        if lines.is_empty() {
+            continue;
+        }
+        let t = format!("6/{x}/{y}");
+        let fp = cov.fingerprint(grown_e7(6, x, y, 20.0));
+        let water = water_key(pin.as_deref(), idx, &t, &piece_water_from(&fp));
+        let deep = fine.as_deref().map(|f| crate::terrain_deep::targets_in(f, cov, (x, y)));
+        let k = match (water, deep) {
+            (Some(w), Some(d)) => pyramids_key((x, y), &fp, &lines.join(","), &w, &d),
+            _ => UNKNOWN.to_string(),
+        };
+        out.push((t, k));
+    }
+    Some(out)
+}
+
+/// Pyramids-fill z6 tile `t`'s key: the fill's version (crate::pyramids::V), the tile, and what
+/// crate::pyramids::want reads for it: the coverage within 20 km (`fp`: its terrain-hi levels), the
+/// declared pyramids meeting it (`pyramids`: their lines as the terrain's keys name them, their
+/// templates and covers in them), the water its open sea is read from (`water_key`) and its
+/// terrain-deep targets (`deep`: whose base tiles it takes whole).
+pub fn pyramids_key(t: (u32, u32), fp: &str, pyramids: &str, water: &str, deep: &[(u32, u32)]) -> String {
+    let deep: Vec<String> = deep.iter().map(|(x, y)| format!("{}/{x}/{y}", crate::terrain_deep::PACK_Z)).collect();
+    h(&[
+        &format!("pyramids-fill {}", crate::pyramids::V),
+        &format!("6/{}/{}", t.0, t.1),
+        fp,
+        pyramids,
+        water,
+        &format!("deep {}", deep.join(" ")),
+    ])
+}
+
+/// The pyramids-fill job (the lead's): its z6 tiles whose recorded key isn't their key now (one
+/// `UNKNOWN` waits).
+pub fn pyramids_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Option<Work> {
+    let targets: Vec<(String, String)> = pyramids_targets(cov, m, tiles)?
+        .into_iter()
+        .filter(|(t, k)| k != UNKNOWN && done.pyramids_fill.get(t) != Some(k))
+        .collect();
+    (!targets.is_empty()).then(|| Work { step: "pyramids-fill".into(), targets })
+}
+
 /// Terrain's assembly of z3 tile `q`'s key: `mids`, its z6 tiles' as "6/x/y=<content name | ->", in
 /// column then row order; `water`, the water it reads (`water_key`).
 pub fn terrain_lo_key(q: (u32, u32), water: &str, sources: &str, mids: &[String]) -> String {
@@ -2588,6 +2663,9 @@ pub fn plan(
     // What the terrain's targets read of the water, as digests (one job, minutes, once a basemap
     // and again as the coverage grows): the terrain whose keys need them waits for it.
     work.extend(terrain_water_work(cov, m, done, tiles));
+    // The elevation pyramids' tiles the terrain reads, stored on the NAS (the lead's, by z6 tile):
+    // nothing waits for them, a terrain job fetching what the store lacks.
+    work.extend(pyramids_work(cov, m, done, tiles));
 
     // Terrain and slope (z6 tiles per z6 tile, then each z3 tile's assembly; slope's once the terrain
     // it reads is built) and the tree cover layers (likewise), what a region needs before it's
@@ -6953,6 +7031,62 @@ pub(crate) mod tests {
         assert_eq!(none.terrain_datasets(&m, [0.0, 0.0, 1.0, 1.0]), None);
     }
 
+    /// Task #810: the pyramids' fill is planned for the z6 tiles near the coverage that a pyramid
+    /// read tile by tile meets (Terrarium's isn't one), each once for its key, and again when what
+    /// it reads changes: the pyramid's declaration, the coverage near it; none while the declared
+    /// datasets can't be read.
+    #[test]
+    fn the_pyramids_fill_follows_its_pyramids_and_the_coverage() {
+        let c = cov();
+        let mut m = BTreeMap::new();
+        elevation_inputs(&mut m);
+        let index = m[&crate::inputs::logical(crate::inputs::elevation::UNIT)].clone();
+        let gsi = |keyed: &str| {
+            let (mut a, cover) = dataset("gsi", keyed, Some(vec![[-22.0, 64.0, -21.0, 65.0]]));
+            a.declaration.data = crate::dem::declared::Data::Tiles {
+                url: "https://g.org/{z}/{x}/{y}.png".into(),
+                zoom: 15,
+                encoding: "gsi-png".into(),
+            };
+            (a, cover)
+        };
+        let at = |e: Vec<_>| {
+            let mut t = TerrainTiles::new(None);
+            t.hold_elevation(&index, e);
+            t
+        };
+        let none = at(vec![dataset("world", "w1", None)]);
+        assert_eq!(pyramids_targets(&c, &m, &none), Some(Vec::new()), "Terrarium's: read through its own store");
+        let a = at(vec![gsi("g1"), dataset("world", "w1", None)]);
+        let ts = pyramids_targets(&c, &m, &a).unwrap();
+        assert!(ts.iter().any(|t| t.0 == "6/28/17"), "{ts:?}");
+        assert!(ts.iter().all(|t| t.1 != UNKNOWN && TileId::parse(&t.0).is_some_and(|u| u.z == 6)));
+        let mut done = Keys::default();
+        let w = pyramids_work(&c, &m, &done, &a).unwrap();
+        assert_eq!((w.step.as_str(), w.targets.clone()), ("pyramids-fill", ts.clone()));
+        done.record("pyramids-fill", &w.targets);
+        assert_eq!(
+            done.recorded("pyramids-fill", "6/28/17"),
+            Some(ts.iter().find(|t| t.0 == "6/28/17").unwrap().1.as_str())
+        );
+        assert!(pyramids_work(&c, &m, &done, &a).is_none(), "filled for its key");
+        let b = at(vec![gsi("g2"), dataset("world", "w1", None)]);
+        assert_eq!(pyramids_work(&c, &m, &done, &b).map(|w| w.targets.len()), Some(ts.len()), "its declaration edited");
+        assert_ne!(
+            pyramids_key((28, 17), "fp", "gsi g1", "-", &[]),
+            pyramids_key((28, 17), "fp", "gsi g1", "-", &[(455, 260)]),
+            "its deep targets"
+        );
+        let mut unread = TerrainTiles::new(None);
+        unread.hold_elevation("another", Vec::new());
+        let mut switched = m.clone();
+        switched.insert(
+            crate::inputs::switched_logical(crate::inputs::elevation::UNIT),
+            "sources/inputs/elevation/@switched.2222222222222222.json".into(),
+        );
+        assert!(pyramids_work(&c, &switched, &Keys::default(), &unread).is_none(), "can't be told: waits");
+    }
+
     /// A declared elevation dataset for the keys: its id, `keyed` digest and cover.
     pub(crate) fn dataset(
         id: &str,
@@ -7344,7 +7478,7 @@ pub(crate) mod tests {
         // Every line names every step of its stage, its items in the table's order.
         assert_eq!(
             line(&l, "terrain").steps,
-            ["terrain-water", "terrain-hi", "terrain-deep", "terrain-lo", "polar-terrain"]
+            ["terrain-water", "pyramids-fill", "terrain-hi", "terrain-deep", "terrain-lo", "polar-terrain"]
         );
         assert_eq!(
             line(&l, "terrain").items.iter().map(|i| i.step.as_str()).collect::<Vec<_>>(),

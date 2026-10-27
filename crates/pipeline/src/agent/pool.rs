@@ -1270,7 +1270,7 @@ pub struct Run {
     /// Whether the jobs an earlier process left were taken (`take_left`: once a process).
     left_taken: bool,
     /// The records (term, seq) last written to today's files; the raw tiles' archives named in the
-    /// raw store's index and not yet off the records (`Give::named_raw`).
+    /// stores' indexes and not yet off the records (`Give::named_raw`).
     pub today: Option<(u64, u64)>,
     pub named_raw: BTreeSet<String>,
     /// The outbox's jobs drained (once a process: `Run::drain_outbox`), and the hand-off folders'

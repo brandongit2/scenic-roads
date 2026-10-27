@@ -178,7 +178,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 57] = [
+pub const TABLE: [Step; 58] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -341,6 +341,19 @@ pub const TABLE: [Step; 57] = [
             "terrain-water",
             "Reads the water the terrain flattens, for the terrain's keys.",
             w_terrain_water,
+        )
+    },
+    // (The lead's: its archives go under `sources/pyramids/`, outside the records, handed off for
+    // the lead to name in their stores' indexes, as AWS's raw tiles' are: crate::pyramids. A z6
+    // tile's fetch at most 4,096 tiles in memory at once, its wanted set a few MB.)
+    Step {
+        ..step(
+            "terrain",
+            Fetch,
+            Z6,
+            "pyramids-fill",
+            "Fetches a tile's elevation tiles from the pyramids read tile by tile (GSI's) once, onto the NAS, for the terrain to read there.",
+            w_none,
         )
     },
     // (Its memory offered by target, the agent's terrain_peak: a z6 tile's levels' bound,
@@ -1781,7 +1794,7 @@ mod tests {
         for s in ["terrain-hi", "terrain-deep", "slope-deep", "slope-hi", "unit", "pack", "lo", "bldprep"] {
             assert_eq!(place(s), Place::Any, "{s}");
         }
-        for s in ["catalog", "osm-pass", "items", "marks", "rail", "terrain-root", "gc", "inputs"] {
+        for s in ["catalog", "osm-pass", "items", "marks", "rail", "terrain-root", "gc", "inputs", "pyramids-fill"] {
             assert_eq!(place(s), Place::Lead, "{s}");
         }
         // The view: a row per step then per task, serializable, the task's step named.
@@ -1819,6 +1832,7 @@ mod tests {
                 "regions-land",
                 "heritage-sites",
                 "terrain-water",
+                "pyramids-fill",
                 "terrain-hi",
                 "terrain-deep",
                 "terrain-lo",
