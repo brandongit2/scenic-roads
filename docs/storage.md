@@ -56,11 +56,15 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
 - **Unverified uploads** (`pending.json`: content name → SHA-256): a file a job copied to the NAS
   (one reused isn't) is read back past the client's cache as it lands, and stays pending until
   checked on the NAS itself. GC counts pending files as referenced. GC's daily job drains them
-  (`agent::gc`): first every pending upload the manifest doesn't name (replaced or dropped since,
-  read by nothing) leaves the pending unchecked, then every one it names is hashed on the NAS over
-  SSH (`out::verify`, 200 a call, a safe point between). A match leaves the pending; a file that
-  doesn't match or isn't there stays pending, nothing removed, and the job's warnings name it (a
-  rebuild of its target replaces it). Both are the `gc` job's change through `Out`: in the pool its
+  (`agent::gc`): first every pending upload the build doesn't read (neither a manifest name nor a
+  file an accepted inputs' index it names lists: replaced or dropped since) leaves the pending
+  unchecked, its file then kept only as any other is (a catalogue of the window,
+  the records, an entry not merged, or its age); then every one it reads is hashed on the NAS over
+  SSH (`out::verify`, 200 a call, each call's result saved and a safe point after it, so a run
+  stopped midway keeps what it checked; the bytes hashed count as the job's NAS reads, its weight).
+  A match leaves the pending; a file that doesn't match or isn't there stays pending, nothing
+  removed, and the job's warnings name it (its target is done under its key, so nothing builds it
+  again but `scenic redo` of it). Both are the `gc` job's change through `Out`: in the pool its
   hand-off's `checked`, which the lead takes out of its records' pending. A root not on the NAS's
   share (a test's) is never hashed. `scenic gc --dry-run` counts both, and the bytes it would
   hash, writing nothing.
