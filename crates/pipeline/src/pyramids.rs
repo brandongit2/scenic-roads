@@ -274,14 +274,14 @@ pub struct Filled {
 }
 
 /// Each of `want`'s tiles (by template) that its store under `dir` lacks fetched by `fetch`
-/// (`FETCHES` at once) and packed there (crate::rawpack::Packer, its local work in `cache`, the
+/// (`FETCHES` at once) and packed there (crate::rawpack::Packer, its local work in `work`, the
 /// index changed under `root`'s build lock: the lead's step alone). Restartable: a tile packed
 /// stays; one cut short is fetched again.
 pub fn fill(
     fetch: &dyn Fetch,
     want: &BTreeMap<String, BTreeSet<(u8, u32, u32)>>,
     dir: &NasPath,
-    cache: &std::path::Path,
+    work: &std::path::Path,
     root: &store::nasfs::NasRoot,
     say: &(dyn Fn(&str) + Sync),
 ) -> Result<Filled> {
@@ -310,7 +310,7 @@ pub fn fill(
         if todo.is_empty() {
             continue;
         }
-        let mut p = crate::rawpack::Packer::with_meta(&cache.join(folder(template)), &store, root, META)?;
+        let mut p = crate::rawpack::Packer::with_meta(&work.join(folder(template)), &store, root, META)?;
         p.keep = false;
         let n = todo.len();
         for (k, chunk) in todo.chunks(4096).enumerate() {
