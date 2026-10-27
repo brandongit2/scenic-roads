@@ -816,21 +816,24 @@ impl Coverage {
     /// Equal fingerprints mean the same points of the box are covered, so a job keyed on the box it
     /// reads reruns only when the coverage changes there.
     pub fn fingerprint(&self, b: [i32; 4]) -> String {
-        // (A region's water marked: which of the covered points are targets is the key's too.)
-        let mut v: Vec<String> = self
-            .shapes
-            .iter()
-            .filter_map(|s| s.fingerprint(b).map(|f| if s.water { format!("w{f}") } else { f }))
-            .collect();
-        v.sort();
-        v.dedup();
-        v.join(",")
+        fingerprint_of(&self.shapes, b)
     }
 
     /// Whether a way (its vertices) touches the coverage.
     pub fn touches(&self, verts: &[[i32; 2]]) -> bool {
         verts.iter().any(|&p| self.contains(p))
     }
+}
+
+/// Shapes `shapes` as they are inside the box w, s, e, n (E7), as `Coverage::fingerprint` reads a
+/// coverage's: empty where none has anything in the box.
+pub fn fingerprint_of(shapes: &[Shape], b: [i32; 4]) -> String {
+    // (A region's water marked: which of the covered points are targets is the key's too.)
+    let mut v: Vec<String> =
+        shapes.iter().filter_map(|s| s.fingerprint(b).map(|f| if s.water { format!("w{f}") } else { f })).collect();
+    v.sort();
+    v.dedup();
+    v.join(",")
 }
 
 // ---- the coverage a catalogue records ------------------------------------------------------------

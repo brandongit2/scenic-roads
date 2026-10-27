@@ -200,7 +200,7 @@ impl Elevation {
             m.uncut.get_or_insert(had);
             // (An excluded cell is no edge cell either.)
             if let Some(o) = &mut m.outline {
-                o.edges.retain(|c, _| {
+                o.edges.retain(|c| {
                     c.split_once(',')
                         .and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))
                         .is_none_or(|c| !out.contains(&c))

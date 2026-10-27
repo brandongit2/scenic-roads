@@ -139,20 +139,29 @@ pub fn base_resolution(ds: &[Accepted]) -> f64 {
 }
 
 /// The datasets `ds` (their conversions set: declared::convert) finer than the terrain's base (`FINER`
-/// of `base_resolution`), in their order.
-pub fn sets(ds: &[Accepted]) -> Vec<FineSet> {
+/// of `base_resolution`), in their order, their regions' outlines read (`read`: a content name's
+/// bytes; declared::OutlineCut) for the keys' `cut_note`.
+pub fn sets(ds: &[Accepted], read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<Vec<FineSet>> {
     let base = base_resolution(ds);
     ds.iter()
         .filter(|d| full_resolution(d) < base * FINER)
-        .map(|d| FineSet {
-            id: d.id.clone(),
-            line: declared::line(d),
-            cover: Cover::of(d.measured.cover.as_deref()),
-            detail: match &d.declaration.data {
-                Data::Tiles { zoom, .. } => Detail::Pyramid((*zoom).min(MAX_Z as u32) as u8),
-                Data::Geotiff { .. } => Detail::Raster((full_resolution(d) * 1000.0).round() as u64),
-            },
-            cut: d.measured.uncut.is_some().then(|| d.measured.clone()),
+        .map(|d| -> Result<FineSet> {
+            let outline = match &d.measured.outline {
+                Some(o) => Some(std::sync::Arc::new(
+                    declared::OutlineCut::read(o, read).with_context(|| format!("{}: its regions' outlines", d.id))?,
+                )),
+                None => None,
+            };
+            Ok(FineSet {
+                id: d.id.clone(),
+                line: declared::line(d),
+                cover: Cover { outline, ..Cover::of(d.measured.cover.as_deref()) },
+                detail: match &d.declaration.data {
+                    Data::Tiles { zoom, .. } => Detail::Pyramid((*zoom).min(MAX_Z as u32) as u8),
+                    Data::Geotiff { .. } => Detail::Raster((full_resolution(d) * 1000.0).round() as u64),
+                },
+                cut: d.measured.uncut.is_some().then(|| d.measured.clone()),
+            })
         })
         .collect()
 }
@@ -271,7 +280,7 @@ impl Fine {
         let mut ds = declared::accepted(&a)?;
         // (Said by the roads' own plans: crate::dem::declared::plan_converted.)
         let _ = declared::convert(&mut ds, &geoid);
-        let sets = sets(&ds);
+        let sets = sets(&ds, &|n| Ok(a.root().join(n).read()?))?;
         Ok(Fine { elevation: a, geoid, sets })
     }
 
@@ -1564,11 +1573,14 @@ mod tests {
                 .unwrap()
                 .unwrap();
         let mut ds = declared::accepted(&a).unwrap();
-        assert!(sets(&ds).is_empty(), "the fixture's datasets are no finer than the terrain's base");
+        assert!(
+            sets(&ds, &|_| unreachable!()).unwrap().is_empty(),
+            "the fixture's datasets are no finer than the terrain's base"
+        );
         assert!(Fine::of(a.clone(), Vec::new()).unwrap().sets.is_empty());
         // (A resolution finer than the base's makes it fine.)
         ds[0].measured.resolution = 2.0;
-        let s = sets(&ds);
+        let s = sets(&ds, &|_| unreachable!()).unwrap();
         assert_eq!(s.len(), 1);
         let Data::Tiles { zoom, .. } = &ds[0].declaration.data else { panic!("the fixture's is a pyramid") };
         assert_eq!(s[0].detail, Detail::Pyramid(*zoom as u8));

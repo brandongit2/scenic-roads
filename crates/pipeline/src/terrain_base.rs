@@ -949,6 +949,7 @@ mod tests {
                     masks: vec![None],
                 },
                 convert: None,
+                outline: None,
             }],
         };
         let pool = Pool::of(plan, store::nasfs::NasPath::local_for_test(store), [10.0, 45.0, 11.0, 46.0]);

@@ -309,13 +309,13 @@ pub struct Measured {
 
 /// A dataset's coverage cut to its regions' outlines inside its cells (docs/inputs.md §6.8,
 /// `regions`): the regions' stored geometry it was cut by (content names, `.rgeo`), and the cells
-/// of its coverage the outlines don't wholly hold (`"x,y"`, west, south corners), each with the
-/// digest of the outlines there (crate::coverage::Coverage::fingerprint), which keys name
-/// (`cut_note`). Its other cells are wholly inside: no point there is tested.
+/// of its coverage the outlines don't wholly hold (`"x,y"`, west, south corners), where a point is
+/// tested and a key names the outlines inside its box (`cut_note`). Its other cells are wholly
+/// inside: no point there is tested.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Outline {
     pub geometry: Vec<String>,
-    pub edges: BTreeMap<String, String>,
+    pub edges: BTreeSet<String>,
 }
 
 /// An `Outline` as a sampler reads it: its edge cells, and the regions' shapes (land and water),
@@ -348,7 +348,7 @@ impl OutlineCut {
         static SHAPES: std::sync::Mutex<Shapes> = std::sync::Mutex::new(BTreeMap::new());
         let edges = o
             .edges
-            .keys()
+            .iter()
             .map(|k| {
                 let (x, y) = k.split_once(',').context("an outline's cell")?;
                 Ok((x.parse()?, y.parse()?))
@@ -361,7 +361,10 @@ impl OutlineCut {
         for n in &o.geometry {
             let g = crate::inputs::regions::stored::Geometry::decode(&read(n)?).with_context(|| n.clone())?;
             shapes.extend(g.shapes.iter().map(|s| {
-                crate::coverage::Shape::new(format!("{}: {}", g.id, s.from), s.rings.clone(), s.tolerance_m as f64)
+                let mut shape =
+                    crate::coverage::Shape::new(format!("{}: {}", g.id, s.from), s.rings.clone(), s.tolerance_m as f64);
+                shape.water = s.water;
+                shape
             }));
         }
         let shapes = std::sync::Arc::new(shapes);
@@ -871,30 +874,46 @@ fn wholly_held(shapes: &[crate::coverage::Shape], r: [i32; 4]) -> bool {
     !open && shapes.iter().any(|s| s.contains(mid))
 }
 
+/// How shapes `shapes` (a dataset's regions' outlines) hold box `r` (w, s, e, n, E7).
+#[derive(Debug, PartialEq)]
+pub enum Within {
+    /// Every point of it (`wholly_held`).
+    Held,
+    /// None of it, their buffer included: they have nothing in it.
+    Outside,
+    /// In part: the outlines there (crate::coverage::fingerprint_of), digested.
+    Edge(String),
+}
+
+/// How shapes `shapes` hold box `r` (w, s, e, n, E7).
+pub fn within(shapes: &[crate::coverage::Shape], r: [i32; 4]) -> Within {
+    if wholly_held(shapes, r) {
+        return Within::Held;
+    }
+    match crate::coverage::fingerprint_of(shapes, r) {
+        f if f.is_empty() => Within::Outside,
+        f => Within::Edge(store::naming::hash16(f.as_bytes())),
+    }
+}
+
 /// Coverage `cover` (as `scope_cover` cut it) cut to the outlines of map regions `regions` in
 /// coverage `cov` inside its cells: their shapes, land and water, as the coverage holds a point
 /// (crate::coverage::Shape::contains), whose stored geometry is `geometry`. A cell they wholly
-/// hold together (`wholly_held`, their buffer aside) is whole; any other is an edge, named with
-/// the outlines' fingerprint there.
+/// hold together (`wholly_held`, their buffer aside) is whole; any other is an edge cell.
 pub fn scope_outline(
     cover: &[[f64; 4]],
     regions: &[String],
     cov: &crate::coverage::Coverage,
     geometry: Vec<String>,
 ) -> Outline {
-    let shapes = crate::coverage::Coverage {
-        shapes: cov.shapes.iter().filter(|s| regions.iter().any(|g| g == region_of(s))).cloned().collect(),
-        depth_only: Vec::new(),
-    };
+    let shapes: Vec<crate::coverage::Shape> =
+        cov.shapes.iter().filter(|s| regions.iter().any(|g| g == region_of(s))).cloned().collect();
     let e7 = |v: i32| (v as i64 * 10_000_000).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
     let cells: BTreeSet<(i32, i32)> = Cover::of(Some(cover)).cells.into_iter().collect();
     let edges = cells
         .into_iter()
-        .filter_map(|(x, y)| {
-            let r = [e7(x), e7(y), e7(x + 1), e7(y + 1)];
-            (!wholly_held(&shapes.shapes, r))
-                .then(|| (format!("{x},{y}"), store::naming::hash16(shapes.fingerprint(r).as_bytes())))
-        })
+        .filter(|&(x, y)| !wholly_held(&shapes, [e7(x), e7(y), e7(x + 1), e7(y + 1)]))
+        .map(|(x, y)| format!("{x},{y}"))
         .collect();
     Outline { geometry, edges }
 }
@@ -914,10 +933,13 @@ pub fn meeting(ds: &[(Accepted, Cover)], b: [f64; 4]) -> Vec<String> {
         .collect()
 }
 
-/// Where a dataset's `regions` cut its coverage (`measured`, `cover` its cells) inside box `b`
-/// (grown by a cell, as `Cover::meets` reads it), what a key adds to its line: the cells it keeps
-/// there, each its outlines don't wholly hold with their fingerprint (`Outline::edges`); None
-/// where nothing was cut there, so a key there is as before its regions.
+/// Where a dataset's `regions` cut its coverage (`measured`, `cover` its cells and its outlines,
+/// `Cover::of_dataset`) inside box `b` (grown by a cell, as `Cover::meets` reads it), what a key
+/// adds to its line: the cells it keeps there; None where nothing was cut there, so a key there is
+/// as before its regions. In an edge cell (`Outline::edges`) only the outlines inside the box
+/// count (`within` of the box, grown by a 256th of it each way, a sample's reach, cut to the cell):
+/// held whole, the cell is as any kept one; outside them, as a cell cut; else it's named with the
+/// outlines there. A key box inside the outlines in an edge cell keeps its key.
 pub fn cut_note(measured: &Measured, cover: &Cover, b: [f64; 4]) -> Option<String> {
     let uncut = measured.uncut.as_deref()?;
     // (A cell of `Cover::of(uncut)`, tested against the boxes: a set of them is the whole world's
@@ -931,6 +953,8 @@ pub fn cut_note(measured: &Measured, cover: &Cover, b: [f64; 4]) -> Option<Strin
     // (The cells `Cover::meets` reads for `b`: those the closed box touches.)
     let (x0, x1, y0, y1) = (b[0].ceil() as i32 - 1, b[2].floor() as i32, b[1].ceil() as i32 - 1, b[3].floor() as i32);
     let edges = measured.outline.as_ref().map(|o| &o.edges);
+    let (gx, gy) = ((b[2] - b[0]) / 256.0, (b[3] - b[1]) / 256.0);
+    let e7 = |v: f64| (v * 1e7).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
     let mut kept = Vec::new();
     let mut cut = false;
     for x in x0..=x1 {
@@ -938,12 +962,30 @@ pub fn cut_note(measured: &Measured, cover: &Cover, b: [f64; 4]) -> Option<Strin
             match (in_uncut(x, y), cover.cells.contains(&(x, y))) {
                 (_, true) => {
                     let c = format!("{x},{y}");
-                    match edges.and_then(|e| e.get(&c)) {
-                        Some(f) => {
+                    if !edges.is_some_and(|e| e.contains(&c)) {
+                        kept.push(c);
+                        continue;
+                    }
+                    // (The box, grown by a sample's reach, cut to the cell.)
+                    let (x, y) = (x as f64, y as f64);
+                    let r = [
+                        e7((b[0] - gx).max(x)),
+                        e7((b[1] - gy).max(y)),
+                        e7((b[2] + gx).min(x + 1.0)),
+                        e7((b[3] + gy).min(y + 1.0)),
+                    ];
+                    match cover.outline.as_ref().map(|o| within(&o.shapes, r)) {
+                        Some(Within::Held) => kept.push(c),
+                        Some(Within::Outside) => cut = true,
+                        Some(Within::Edge(f)) => {
                             cut = true;
                             kept.push(format!("{c} outline {f}"));
                         }
-                        None => kept.push(c),
+                        // (Its outlines not read: named by their files, so any change to them shows.)
+                        None => {
+                            cut = true;
+                            kept.push(format!("{c} outline {}", measured.outline.as_ref().unwrap().geometry.join(" ")));
+                        }
                     }
                 }
                 (true, false) => cut = true,
@@ -1176,12 +1218,15 @@ mod tests {
         let regions: Vec<String> = regions.iter().map(|r| r.to_string()).collect();
         let (cut, missing) = scope_cover(Some(had), &regions, &cov);
         assert!(missing.is_empty());
-        let names: Vec<String> = regions.iter().map(|r| format!("{r}.rgeo")).collect();
+        // (Named by content, as stored: the shapes are kept per process by their names.)
+        let name = |g: &crate::inputs::regions::stored::Geometry| {
+            format!("{}.{}.rgeo", g.id, store::naming::hash16(&g.encode()))
+        };
+        let names: Vec<String> = regions.iter().map(|r| name(geoms.iter().find(|g| g.id == *r).unwrap())).collect();
         let outline = scope_outline(&cut, &regions, &cov, names);
         let m = Measured { cover: Some(cut), uncut: Some(had.to_vec()), outline: Some(outline), ..Default::default() };
-        let read = |n: &str| -> Result<Vec<u8>> {
-            Ok(geoms.iter().find(|g| format!("{}.rgeo", g.id) == n).context("no such file")?.encode())
-        };
+        let read =
+            |n: &str| -> Result<Vec<u8>> { Ok(geoms.iter().find(|g| name(g) == n).context("no such file")?.encode()) };
         let cut = OutlineCut::read(m.outline.as_ref().unwrap(), &read).unwrap();
         let d = Dataset {
             id: "d".into(),
@@ -1205,21 +1250,32 @@ mod tests {
         let (m, c) = outlined(&had, &["jp"], &[land.clone()]);
         assert_eq!(m.cover, Some(vec![[9.0, 45.0, 11.0, 46.0]]), "the cells meeting the region");
         let o = m.outline.as_ref().unwrap();
-        assert_eq!(o.edges.keys().collect::<Vec<_>>(), ["10,45"], "9,45 is wholly inside");
+        assert_eq!(o.edges.iter().collect::<Vec<_>>(), ["10,45"], "9,45 is wholly inside");
         assert!(c.contains(9.5, 45.5) && c.contains(10.2, 45.5) && c.contains(10.5, 45.5));
         assert!(!c.contains(10.6, 45.5) && !c.contains(10.99, 45.1), "the sea of the coast's cell");
         assert!(!c.contains(11.5, 45.5), "a cell cut whole");
         // (On the edge between a whole cell and the coast's: the whole cell holds it.)
         assert!(c.contains(10.0, 45.5));
-        // Keys: a box meeting only whole cells keeps its line; one meeting the coast's cell names
-        // its outlines, so a change to the coast there changes it, and nothing else does.
-        assert_eq!(cut_note(&m, &Cover::of(m.cover.as_deref()), [9.2, 45.2, 9.3, 45.3]), None);
-        let at = |m: &Measured| cut_note(m, &Cover::of(m.cover.as_deref()), [10.2, 45.2, 10.3, 45.3]);
+        // Keys: a box meeting only whole cells keeps its line; in the coast's cell, a box the land
+        // holds keeps it too (task #708's review: no rebuild where nothing changed), one across
+        // the coast names the outlines there, and one wholly at sea is cut.
+        let at = |m: &Measured, c: &Cover, b: [f64; 4]| cut_note(m, c, b);
         let before = Measured { outline: None, ..m.clone() };
-        assert!(at(&m).is_some() && at(&m) != at(&before));
-        let (moved, _) = outlined(&had, &["jp"], &[geometry("jp", [8.5, 44.5, 10.6, 46.5])]);
-        assert_ne!(at(&m), at(&moved), "the coast moved inside the box's cells");
-        assert_eq!(cut_note(&moved, &Cover::of(moved.cover.as_deref()), [9.2, 45.2, 9.3, 45.3]), None);
+        let plain = Cover::of(m.cover.as_deref());
+        assert_eq!(at(&m, &c, [9.2, 45.2, 9.3, 45.3]), None);
+        let inland = [10.1, 45.2, 10.2, 45.3];
+        assert_eq!(at(&m, &c, inland), None);
+        assert_eq!(at(&m, &c, inland), at(&before, &plain, inland), "inside the outline: the old key");
+        let coast = [10.4, 45.2, 10.55, 45.3];
+        assert!(at(&m, &c, coast).is_some() && at(&m, &c, coast) != at(&before, &plain, coast));
+        let sea = [10.7, 45.2, 10.8, 45.3];
+        assert!(at(&m, &c, sea).is_some() && at(&m, &c, sea) != at(&m, &c, coast));
+        let (moved, mc) = outlined(&had, &["jp"], &[geometry("jp", [8.5, 44.5, 10.52, 46.5])]);
+        assert_ne!(at(&m, &c, coast), at(&moved, &mc, coast), "the coast moved inside the box");
+        assert_eq!(at(&m, &c, inland), at(&moved, &mc, inland), "the coast moved outside the box");
+        assert_eq!(at(&moved, &mc, [9.2, 45.2, 9.3, 45.3]), None);
+        // (Its outlines not read: named by their files, never as held.)
+        assert!(at(&m, &plain, inland).is_some());
     }
 
     /// A border: two regions share cell 20,45 (the border at 20.4°E); a dataset scoped to the
@@ -1230,13 +1286,13 @@ mod tests {
         let east = geometry("east", [20.4, 43.5, 22.5, 47.5]);
         let (m, c) = outlined(&[[18.0, 44.0, 23.0, 47.0]], &["west"], &[west.clone(), east.clone()]);
         assert_eq!(m.cover, Some(vec![[18.0, 44.0, 21.0, 47.0]]));
-        assert_eq!(m.outline.as_ref().unwrap().edges.keys().collect::<Vec<_>>(), ["20,44", "20,45", "20,46"]);
+        assert_eq!(m.outline.as_ref().unwrap().edges.iter().collect::<Vec<_>>(), ["20,44", "20,45", "20,46"]);
         assert!(c.contains(20.3, 45.5) && !c.contains(20.5, 45.5));
         let (both, c2) = outlined(&[[18.0, 44.0, 23.0, 47.0]], &["west", "east"], &[west, east]);
         assert!(c2.contains(20.3, 45.5) && c2.contains(20.5, 45.5) && c2.contains(21.5, 45.5));
         // (Two regions meeting inside a cell hold it whole together: their shared edge is none. The
         // east one ends inside cells 22,*.)
-        assert_eq!(both.outline.unwrap().edges.keys().collect::<Vec<_>>(), ["22,44", "22,45", "22,46"]);
+        assert_eq!(both.outline.unwrap().edges.iter().collect::<Vec<_>>(), ["22,44", "22,45", "22,46"]);
     }
 
     /// `cut_note` as it was before task #700 (a set of the uncut boxes' cells), against it for

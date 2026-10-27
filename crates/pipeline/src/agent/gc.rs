@@ -220,7 +220,10 @@ fn read_by(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) ->
     for (l, c) in manifest {
         if crate::inputs::record_of(l).is_some_and(|(_, r)| r == "@index") {
             named.extend(
-                crate::inputs::read_index(root, c)?.files.values().flat_map(|f| f.stored().map(str::to_string)),
+                crate::inputs::read_index(root, c)?
+                    .files
+                    .values()
+                    .flat_map(|f| f.stored().into_iter().map(str::to_string)),
             );
         }
     }

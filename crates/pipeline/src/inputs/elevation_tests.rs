@@ -176,7 +176,7 @@ fn regions_cut_a_coverage_to_their_outlines() {
     let o = got.outline.unwrap();
     assert_eq!(o.geometry, ["sources/inputs/regions/@geometry/a.0.rgeo"]);
     // (A circle of 20 km in its cell: the cell is an edge.)
-    assert_eq!(o.edges.keys().collect::<Vec<_>>(), ["10,45"]);
+    assert_eq!(o.edges.iter().collect::<Vec<_>>(), ["10,45"]);
     let unnamed = Elevation { region_geometry: BTreeMap::new(), ..e };
     assert!(unnamed.scoped(&d2, m).unwrap_err().contains("stored geometry"));
 }
