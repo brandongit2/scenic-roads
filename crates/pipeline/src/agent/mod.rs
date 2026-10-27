@@ -3622,6 +3622,8 @@ impl Agent {
                 self.orphans.extend(orphan.left);
             }
         }
+        // (Its thread's CPU time is the watchdog's sign the loop works, nasread::loop_thread.)
+        nasread::loop_thread();
         loop {
             let quick = self.step()?;
             nasread::phase("between rounds");
@@ -4775,11 +4777,26 @@ impl Agent {
             let due =
                 self.last_beat.as_ref().is_none_or(|(b, t)| *b != same || t.elapsed() >= Duration::from_secs(120));
             if due {
+                // (Held while it's written: the watchdog's kept beat never crosses it.)
+                let mut kept = nasread::BEATING.lock().unwrap_or_else(|e| e.into_inner());
                 // (On the writers, under a deadline: a share that hangs fails it, nasread::write.)
-                let (p, b) = (root.join(&shared), body.clone());
-                let p2 = p.clone();
-                match nasread::write(&p, move || write_replace_nas(&p2, &b)) {
-                    Ok(()) => self.last_beat = Some((same, Instant::now())),
+                let (p, own) = (root.join(&shared), self.o.home.join(&local));
+                match write_beat(&p, body.clone()) {
+                    Ok(()) => {
+                        self.last_beat = Some((same, Instant::now()));
+                        // The same written again (here and on the NAS), stamped later, while a
+                        // round runs long and the loop works (nasread::Watchdog::keep): its time,
+                        // not its content.
+                        *kept = Some(nasread::Beating {
+                            at: status.beat,
+                            again: Box::new(move |t| {
+                                status.beat = t;
+                                let b = serde_json::to_vec_pretty(&status)?;
+                                write_replace(&own, &b).ok();
+                                write_beat(&p, b)
+                            }),
+                        });
+                    }
                     // (A timeout logged once by nasread.)
                     Err(e) if nasread::timed_out(&e) => {}
                     Err(e) => eprintln!("agent: heartbeat: {e:#}"),
@@ -11529,6 +11546,12 @@ fn write_replace(p: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// `write_replace` on the NAS (its folder made once a process: store::nasfs).
+/// The heartbeat `b` written to `p` on the NAS, on the writers under a deadline (nasread::write).
+fn write_beat(p: &NasPath, b: Vec<u8>) -> Result<()> {
+    let p2 = p.clone();
+    nasread::write(p, move || write_replace_nas(&p2, &b))
+}
+
 fn write_replace_nas(p: &NasPath, bytes: &[u8]) -> Result<()> {
     if let Some(d) = p.parent() {
         d.create_dir_all()?;

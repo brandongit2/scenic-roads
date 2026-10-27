@@ -1098,6 +1098,16 @@ and since when) in the agent's folder (this Mac's disk), which `scenic status` s
 agent loop is stalled"; it's removed when the loop goes on, and the round's real length is logged.
 These lines carry the time of day (UTC).
 
+The same thread keeps the loop's heartbeat (`state/status.json`, or a helper's file, and its copy in
+the agent's folder) through a long round (task #795: under load a plan took 94–212 s and the
+checklist 261 s). Once a round has run a minute, it writes the heartbeat the loop last wrote again,
+its content as it was and only its time new, at most once a minute (`KEEP_EVERY`), and only while
+the loop works: it began a phase or its thread used the CPU within the last two minutes
+(`WORKING_S`). A loop stuck in a call or waiting on a lock does neither, so its heartbeat stops and
+goes out of touch as before, and the stall is flagged as above. The loop holds the heartbeat while
+it writes its own, so a kept one never overwrites a newer one. (The pool's heartbeat,
+`state/pool/members/<id>.json`, is kept by the pool's own thread, §6.7.)
+
 Still under no deadline (planned): the NAS's mount and probe (`root`); the build's keys
 (`build::Keys::load`, `load_with`); the manifest read through `out::read_record`; the regions'
 held report (`inputs::read_report`); the helpers' listing (`state/helpers`); the coordinator's
