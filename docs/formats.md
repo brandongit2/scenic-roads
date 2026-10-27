@@ -560,7 +560,7 @@ number is used once, whole or as a delta:
 - Readers (`store::catalogue`: `latest`, `latest_nas_from`, `read_n`) take the highest number that
   reads whole: a delta applied to catalogue `of` (itself read the same way), checked against both
   digests; one that doesn't fit is passed over as damaged.
-- A delta lists each file's size as the records have it (`state/build/sizes.json`, from its job's
+- A delta lists each file's size as the records have it (their sizes, from its job's
   hand-off) or the last catalogue does, looking at the NAS only for a file neither has (one written
   before sizes were recorded: once). A whole catalogue looks at every file, and stops on one missing
   or of another size than recorded.

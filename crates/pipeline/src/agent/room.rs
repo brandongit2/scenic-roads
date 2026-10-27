@@ -227,10 +227,9 @@ const COPY_GRACE: std::time::Duration = std::time::Duration::from_secs(86400);
 /// kind ("retired", "copies").
 pub fn retire(cache: &Path, root: Option<&store::nasfs::NasRoot>) -> BTreeMap<String, u64> {
     let mut freed: BTreeMap<String, u64> = BTreeMap::new();
-    // (Read as Out reads it, whole across the NAS's renames; an empty one is taken as unreadable.)
+    // (Read as Out reads it, the records now; an empty one is taken as unreadable.)
     let named: Option<HashSet<String>> = root.and_then(|r| {
-        let m: BTreeMap<String, String> =
-            serde_json::from_slice(&r.join("state/build/manifest.json").read_replaced().ok()?).ok()?;
+        let m = crate::out::read_manifest(r).ok()?;
         (!m.is_empty()).then(|| m.keys().map(|l| l.replace('/', "-")).collect())
     });
     let unread = |n: &str| named.as_ref().is_some_and(|named| !named.contains(n));

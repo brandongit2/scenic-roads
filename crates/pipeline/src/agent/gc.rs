@@ -196,22 +196,6 @@ fn dropped(l: &str, depth: Option<&DepthKeep>) -> bool {
     retired(l) || depth.is_some_and(|k| k.orphan(l))
 }
 
-/// The records' unverified uploads (content name → SHA-256) and manifest, as one reading: with the
-/// pool its newest records (today's files may lag them), else (none yet) today's files, the pending read
-/// before the manifest (a save writes the manifest first: every upload the pending read holds is
-/// one the manifest read after has named, unless replaced since).
-pub fn records_now(root: &store::nasfs::NasRoot) -> Result<(BTreeMap<String, String>, BTreeMap<String, String>)> {
-    use crate::pool::{journal, records::Records, term};
-    if root.join(journal::DIR).exists() {
-        let cur = term::current(root).context("the current term")?;
-        if let Some(r) = Records::newest(root, cur.term, true).context("the newest records")? {
-            return Ok((r.pending, r.manifest));
-        }
-    }
-    let pending = crate::out::read_record(&root.join("state/build/pending.json")).context("the pending uploads")?;
-    Ok((pending, crate::out::read_manifest(root)?))
-}
-
 /// The content names the build reads by `manifest`: its own, and the files each accepted inputs'
 /// index it names lists (crate::inputs: a unit's checked copies, uploaded by its check, named by no
 /// manifest entry of their own). An error when such an index can't be read now.
@@ -252,7 +236,7 @@ pub fn drop_names(
     depth: Option<&DepthKeep>,
     dry_run: bool,
 ) -> Result<Dropped> {
-    let (pending, manifest) = records_now(root)?;
+    let crate::pool::records::Records { pending, manifest, .. } = crate::out::records_now(root)?;
     let names: Vec<&String> = manifest.keys().filter(|l| dropped(l, depth)).collect();
     let kept: BTreeMap<String, String> =
         manifest.iter().filter(|(l, _)| !dropped(l, depth)).map(|(l, c)| (l.clone(), c.clone())).collect();
@@ -303,11 +287,10 @@ pub fn verify_pending(
     nas_root: &str,
     dry_run: bool,
 ) -> Result<Verified> {
-    let (pending, manifest) = records_now(root)?;
+    let crate::pool::records::Records { pending, manifest, sizes, .. } = crate::out::records_now(root)?;
     let named = read_by(root, &manifest)?;
     let todo: Vec<(&String, &String)> = pending.iter().filter(|(c, _)| named.contains(*c)).collect();
     let mut v = Verified::default();
-    let sizes: BTreeMap<String, u64> = crate::out::read_record(&root.join(crate::out::SIZES))?;
     // (Their sizes by the records', else looked at: the records hold none for a file named before
     // they kept sizes, 9,474 of the named pending on 26 Oct; one not there counts 0.)
     let bytes = |cs: &[(&String, &String)]| {

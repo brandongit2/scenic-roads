@@ -378,7 +378,7 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
      or `off`:
      - `delta-catalog`: the catalogue job (`scenic-build catalog --delta`) writes what changed over the
        last (docs/formats.md, Delta catalogues), each file's size from the records
-       (`state/build/sizes.json`, which the files' jobs hand off) or the last catalogue: it looks up no
+       (their sizes, which the files' jobs hand off) or the last catalogue: it looks up no
        file's size on the NAS but a file written before sizes were recorded. The same job writes a whole
        catalogue instead, which looks at every file, when the deltas since the last whole one add up
        to it or their run is half `MAX_CHAIN` (`store::catalogue::whole_due`, weighed by each catalogue

@@ -214,13 +214,17 @@ impl Records {
         term_one(nas, today).map(Some)
     }
 
-    /// The build's records as today's three files hold them (term 1's, as the pool begins).
+    /// The build's records as today's three files hold them (term 1's, as the pool begins). The
+    /// pending read before the manifest (a save writes the manifest first: every upload the pending
+    /// read holds is one the manifest read after has named, unless replaced since; GC's drop of the
+    /// uploads no name reads counts on it).
     pub fn today(nas: &dyn Nas) -> Result<Records> {
+        let pending = read_or_default(nas, TODAY[2])?;
         Ok(Records {
             term: 1,
             manifest: read_or_default(nas, TODAY[0])?,
             keys: read_or_default(nas, TODAY[1])?,
-            pending: read_or_default(nas, TODAY[2])?,
+            pending,
             sizes: read_or_default(nas, crate::out::SIZES)?,
             ..Default::default()
         })
