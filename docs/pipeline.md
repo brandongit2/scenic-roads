@@ -290,15 +290,13 @@ The Jobs tab's stages are the one exception.
   drag sideways (an up or down one scrolls the panel), a mouse's drag, one finger sideways on a
   touch screen; zoomed by a trackpad's pinch (ctrl+wheel in Chrome, gesture events in Safari),
   Opt+wheel on a mouse, two fingers' pinch on a touch screen, about the pointer; 10 min at the
-  narrowest. Each track's segments are placed once over the whole domain; the view is each track's
-  width and transform, so a pan lays nothing out (measured 26 Oct in Chrome at 120 Hz with ~4,200
-  segments: 10–11 ms a frame median, while a sideways wheel pans; the 10-second poll's render a
-  ~100 ms frame). At its far left end an archive sign: older history is in the archive
+  narrowest. Each track is a canvas: its segments are data, those in view drawn on it once a frame
+  as the view moves, so a pan or zoom lays nothing out (measured 26 Oct in Chrome, windowed at 120 Hz, a week with ~4,200 segments: a frame 8.3 ms median, 10 ms at the 95th percentile while a sideways wheel pans or a pinch zooms, under 1 ms of script; before, as each segment an element, 17–18 ms at the 95th). At its far left end an archive sign: older history is in the archive
   (`state/coord/history-archive`), not reachable from the page. A job hovered (or its card pinned,
   a tap's): red square-cornered arrows from each forecast run it waits on and to each waiting on
   it (the forecast's runs and dependencies, `/work/tocome`'s `runs` and `deps`: a running job is
   its lane's first run of its step; a job that ran has none kept), everything else dimmed, its
-  tiles lit on the map; a legend item hovered (a stage, ran, failed, running, to come): its jobs
+  tiles lit on the map (only the map's lit tiles drawn again, once a frame); a legend item hovered (a stage, ran, failed, running, to come): its jobs
   at full strength and all their tiles lit on the map.
 - **Jobs tab, the stages:** done and left of all the enabled regions' work (the one place the
   page counts a whole, task #685), in each step's noun (map tiles, z3 tiles, runs), no past runs or

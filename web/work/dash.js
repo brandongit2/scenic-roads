@@ -280,6 +280,8 @@ function verdictText(m) {
   // (The queue's finish, never a share done: a build has no definite start, task #685.)
   if (fc?.done_at) parts.push(parts.length ? " · " : "", "done ≈ ", h("b", null, clock(fc.done_at)));
   else if (fc?.why) parts.push(parts.length ? " · " : "", fc.why);
+  // (No forecast yet, the lead's agent just started: dots where its words go, statement 51.)
+  else if (!fc) parts.push(parts.length ? " · " : "", fcLoading());
   return parts;
 }
 
@@ -456,6 +458,7 @@ function mapData(m) {
 // What the map draws now (sums.js mapTiles): the view's tiles; a solo's published tiles painted
 // by when a catalogue last published each (the age controls' range, catalogues.js); a catalogue's
 // tiles lit; with each tile's card and the stack's.
+let ageLit = null; // the age controls' lit tiles in the last view (a catalogue's hovered)
 function mapView(md) {
   const f = mapFilters(), m = md.m, age = ages.view();
   const t = mapTiles(md.running, md.queued, md.done, f, { pubAt: md.pubAt, macOf: md.macOf, solo: soloSteps(hoverSolo || f.solo, md.groups) });
@@ -464,6 +467,7 @@ function mapView(md) {
   const painted = agePaint(when, age.from, age.to, age.hide).paint;
   tileCards(m, t, painted, age);
   const regionKind = (st) => (st === "done" ? "on" : st);
+  ageLit = age.lit;
   return { countries, regions: md.regs.filter((r) => f.regions?.[regionKind(r.state)] !== false), running: t.running, finished: t.finished, queued: t.queued, paint: painted, lit: schedLit || age.lit, litColour: HIGHLIGHT, colour: S.colour };
 }
 // The map drawn again from the last render's data: a solo hovered or the age controls changed.
@@ -1035,7 +1039,8 @@ function laneChips(x) {
 // history's seven days back to the forecast's end (task #787). One element kept across renders
 // (the timeline's view and gestures with it), its lanes made again each render.
 let tl = null, schedRoot = null, schedBody = null;
-// This render's segments by card key ({el, kind, step, r, run}: `run` a forecast run's number,
+// This render's segments by card key (timeline.js's: {key, from, until, colour, kind, failed}, with
+// its step, run `r` and `run`: `run` a forecast run's number,
 // sums.js runNumbers; a running job's is the run it goes on in), the runs' links (sums.js
 // runLinks), each run's segments' keys.
 let segs = new Map(), links = runLinks([]), runKeys = new Map();
@@ -1045,8 +1050,10 @@ function scheduleSection(m) {
   if (!schedRoot) {
     tl = createTimeline({
       relations: schedRelations,
-      onLit: (tiles) => { schedLit = tiles ? new Set(tiles) : null; paintMap(); },
-      onRepack: () => render(),
+      // (Only the map's lit tiles drawn again: the rest of its view is the last render's.)
+      onLit: (tiles) => { schedLit = tiles ? new Set(tiles) : null; worldMap?.light(schedLit || ageLit); },
+      // (Packed again at the new zoom: the schedule alone, not the whole page.)
+      onRepack: () => lastSchedM && schedule(lastSchedM),
     });
     schedBody = h("div", "sched");
     schedRoot = section("d-sched", "Schedule", "each Mac's jobs: those that ran, running, to come",
@@ -1078,17 +1085,17 @@ function schedRelations(key) {
   if (key.startsWith("lg ")) {
     const [, by, v] = key.split(" ");
     const on = [...segs.values()].filter((s) => (by === "stage" ? S.stage(s.step) === v : by === "failed" ? s.kind === "past" && !s.r.ok : by === "past" ? s.kind === "past" && s.r.ok : s.kind === v));
-    return { on: on.map((s) => s.el), arrows: [], tiles: [...new Set(on.flatMap((s) => segTiles(s, m)))] };
+    return { on, arrows: [], tiles: [...new Set(on.flatMap((s) => segTiles(s, m)))] };
   }
   const s = segs.get(key);
   if (!s) return null;
   const of = (run) => (runKeys.get(run) || []).map((k) => segs.get(k)).filter(Boolean);
   const self = s.run != null ? of(s.run) : [s];
-  const head = (ss) => ss[0]?.el, tail = (ss) => ss[ss.length - 1]?.el;
+  const head = (ss) => ss[0], tail = (ss) => ss[ss.length - 1];
   const on = [...self], arrows = [];
   for (const a of s.run != null ? links.on.get(s.run) || [] : []) { const x = of(a); on.push(...x); if (x.length) arrows.push([tail(x), head(self)]); }
   for (const b of s.run != null ? links.then.get(s.run) || [] : []) { const x = of(b); on.push(...x); if (x.length) arrows.push([tail(self), head(x)]); }
-  return { on: on.map((x) => x.el), arrows, tiles: segTiles(s, m) };
+  return { on, arrows, tiles: segTiles(s, m) };
 }
 let lastSchedM = null;
 
@@ -1098,10 +1105,7 @@ function schedule(m) {
   const fcLanes = fc?.lanes || {};
   const lo = now - HISTORY_S;
   const hi = Math.max(fc?.done_at || 0, ...Object.values(fcLanes).flat().map((l) => l.until), now + SPAN0 / 2);
-  const full = hi - lo;
   const { span } = tl.range(now, lo, hi);
-  // (A segment's place in its track: a share of the whole domain; the view is the timeline's.)
-  const pct = (t) => `${(((Math.max(lo, Math.min(hi, t)) - lo) / full) * 100).toFixed(5)}%`;
   const width = Math.max(240, tl.axis.offsetWidth || ctx.tabsEl.clientWidth - 120);
   const gap = span / width;
   const pastAll = pastRuns(endsHeld(), lo, m.macs.map((mm) => mm.name));
@@ -1131,21 +1135,20 @@ function schedule(m) {
   const stagesSeen = new Set();
   const kinds = new Set();
   const lanes = h("div", "lanes");
+  const tracks = [];
   const segment = (track, r, kind, key, run = null) => {
-    const seg = withCard(h("i", { class: `${kind}${kind === "past" && !r.ok ? " failed" : ""}` }), key, () => runCard(m, r, kind, laneName));
-    Object.assign(seg.style, { left: pct(r.from), width: `max(2px, calc(${pct(r.until)} - ${pct(r.from)}))`, background: S.colour(r.step) });
-    track.append(seg);
-    segs.set(key, { el: seg, kind, step: r.step, r, run });
+    cards.set(key, () => runCard(m, r, kind, laneName));
+    segs.set(key, track.add({ key, from: r.from, until: r.until, colour: S.colour(r.step), kind, failed: kind === "past" && !r.ok, step: r.step, r, run }));
     if (run != null) (runKeys.get(run) || runKeys.set(run, []).get(run)).push(key);
     if (S.stage(r.step)) stagesSeen.add(S.stage(r.step));
     kinds.add(kind === "past" && !r.ok ? "failed" : kind);
   };
-  const trackOf = () => { const tv = h("div", "tv"); return [h("div", "track", tv), tv]; };
+  const trackOf = () => { const t = tl.track(); tracks.push(t); return t; };
   for (const g of groups) {
     const mac = m.macs.find((mm) => mm.name === g.host);
     lanes.append(h("div", { class: "gh", title: g.host }, mac ? short[g.host] : g.host, mac ? null : h("span", "dim", " (gone)")), h("div", "ghr", ...(chipsOf.get(g.host) || [])));
     for (const nm of g.lanes) {
-      const [track, tv] = trackOf();
+      const tv = trackOf();
       for (const r of packRuns(pastAll.filter((r) => r.lane === nm), gap)) segment(tv, r, "past", `p ${nm} ${r.seq}`);
       const ls = fcLanes[nm] || [];
       // (A job running now goes on as its lane's first run of its step in the forecast: one job.)
@@ -1158,7 +1161,7 @@ function schedule(m) {
         const run = nums.first[nm] + k;
         segment(tv, { ...l, from: Math.max(l.from, now), lane: nm, waits: tc ? links.on.get(run)?.length || 0 : null, waited: tc ? links.then.get(run)?.length || 0 : null }, "next", `f ${nm} ${l.from} ${l.step}`, run);
       });
-      lanes.append(h("div", { class: "ln", title: nm }, `${slotNo(nm, g.host) ?? nm}`), track);
+      lanes.append(h("div", { class: "ln", title: nm }, `${slotNo(nm, g.host) ?? nm}`), tv.el);
     }
   }
   // The pages: a job's tasks (crate::agent::steps::TASKS) as the lead runs the job, when a page is
@@ -1169,20 +1172,21 @@ function schedule(m) {
   const helps = Object.values(table.steps).filter((t) => t.of && fast(t.id) && own.some((l) => l.step === t.of && l.until > now));
   if (helps.length) {
     const who = m.pages.length > 1 ? `Pages (${m.pages.length})` : m.pages[0].label;
-    const [track, tv] = trackOf();
+    const tv = trackOf();
     for (const t of helps) for (const l of own.filter((l) => l.step === t.of && l.until > now)) segment(tv, { ...l, from: Math.max(l.from, now), step: t.id, lane: who, of: t.of }, "next", `g ${t.id} ${l.from}`);
-    lanes.append(h("div", "gh", "Pages"), h("div", "ghr"), h("div", { class: "ln", title: m.pages.map((p) => p.label).join(", ") }, who), track);
+    lanes.append(h("div", "gh", "Pages"), h("div", "ghr"), h("div", { class: "ln", title: m.pages.map((p) => p.label).join(", ") }, who), tv.el);
   }
   // Each region all on the map as it's built now: a mark at its `map_at` (several at one time, one).
   const outs = {};
   for (const r of fc?.regions || []) if (r.map_at && r.map_at >= now && r.map_at <= hi) (outs[r.map_at] ||= []).push(m.regionName[r.id] || r.id);
   if (Object.keys(outs).length) {
-    const [track, tv] = trackOf();
-    track.classList.add("outs");
+    const tv = trackOf();
+    tv.el.classList.add("outs");
     for (const [at, nms] of Object.entries(outs)) {
-      tv.append(withCard(h("b", { style: { left: pct(+at) } }), `o ${at}`, () => cardBody(`All on the map ≈ ${clock(+at)}`, [["regions", `${nms.slice(0, 12).join(", ")}${nms.length > 12 ? ` and ${nms.length - 12} more` : ""}`]])));
+      cards.set(`o ${at}`, () => cardBody(`All on the map ≈ ${clock(+at)}`, [["regions", `${nms.slice(0, 12).join(", ")}${nms.length > 12 ? ` and ${nms.length - 12} more` : ""}`]]));
+      tv.add({ key: `o ${at}`, from: +at, until: +at, colour: "var(--mark)", kind: "mark" });
     }
-    lanes.append(h("div", "ln", "On the map"), track);
+    lanes.append(h("div", "ln", "On the map"), tv.el);
   }
   lanes.append(h("div"), tl.axis);
   withCard(tl.archive, "sched-archive", () => cardBody("Older history: in the archive", [
@@ -1210,7 +1214,7 @@ function schedule(m) {
   const top = h("div", "schedtop", reaching, h("span", "small dim", fc?.done_at ? `done ≈ ${clock(fc.done_at)}` : fc?.why ? fc.why : fc ? "" : fcLoading()));
   if (!groups.length && !helps.length) { schedBody.replaceChildren(top, h("div", "small dim", "Nothing ran or is planned in the week.")); return; }
   schedBody.replaceChildren(top, cut || "", tl.el, legend);
-  tl.placed(lanes, span);
+  tl.placed(lanes, tracks, span);
 }
 
 // ---- Jobs: the stages ---------------------------------------------------------------------------------

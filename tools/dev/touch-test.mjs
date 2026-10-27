@@ -573,8 +573,8 @@ async function run() {
       // then a job's: head (swatch, kicker, title), stat tiles, rows, a foot, twice the map cards'
       // width; a world map of its tiles, small until pinned; ≤ 50svh, off the pointer's line (#627).
       await show("jobs");
-      const card = async (sel, where = "") => {
-        const p = await at(sel, where);
+      const card = async (sel, where = "", point = null) => {
+        const p = point || (sel && (await at(sel, where)));
         if (!p) return null;
         if (PHONE) await tap(p[0], p[1]);
         else await mouse(p[0], p[1]);
@@ -591,12 +591,13 @@ async function run() {
       // drawn. The past jobs come with the history read further back: waited for, up to 20 s. None
       // then: an INFO only when the last 6 h of the history has no such job's end either (the live
       // build's state), else a FAIL.)
-      const jobSel = ".sched .tv > i.running, .sched .tv > i.past", jobs = `[...document.querySelectorAll(".panel:not([hidden]) .sched .tv > i.running, .panel:not([hidden]) .sched .tv > i.past")].filter(((x) => { const r = x.getBoundingClientRect(), t = x.closest(".track")?.getBoundingClientRect(); return !t || Math.abs((r.left + r.right) / 2 - (t.left + t.right) / 2) < t.width / 2 - 2; })).reverse()`;
+      // (Drawn on the tracks' canvases: found by the timeline's own spots, timeline.js.)
+      const jobs = `(document.querySelector(".panel:not([hidden]) .sched .lanewrap")?.spots?.(["running", "past"]) || []).reverse()`;
       await until(`${jobs}.length > 0`, 20000);
       let jc = null;
       const nJobs = await js(`${jobs}.length`);
       for (let k = 0; k < Math.min(nJobs, 15); k++) {
-        const c = await card(jobSel, ` && ${jobs}.indexOf(e) === ${k}`);
+        const c = await card(null, "", await js(`(() => { document.querySelector(".panel:not([hidden]) .sched .lanewrap").scrollIntoView({ block: "center" }); const s = ${jobs}[${k}]; return s ? [s.x, s.y] : null; })()`));
         if (!PHONE) await mouse(2, 2);
         if (c && !c.none && c.map > 0) { jc = c; break; }
       }
@@ -777,7 +778,7 @@ async function run() {
     const lw = await at(".sched .lanewrap");
     if (!lw) check("jobs: the schedule's timeline", false, "not shown");
     else {
-      const tf = `document.querySelector(".sched .tv")?.style.transform || ""`;
+      const tf = `[...document.querySelectorAll(".sched .axis > span")].map((s) => s.style.left).join(" ")`;
       const y0 = await js("scrollY"), t0 = await js(tf);
       await drag(lw[0], lw[1], 120, 0);
       const t1 = await js(tf);

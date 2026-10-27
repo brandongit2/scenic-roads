@@ -61,7 +61,7 @@ export function createMap({ pick = () => {} } = {}) {
   let held = null; // a region the page points at (the Regions tab's list under the pointer)
   const appeared = new Map(); // finished tile → when it began fading in (performance.now())
   let firstFinished = true;
-  let raf = 0;
+  let raf = 0, litRaf = 0;
 
   // ---- Colours: the page's tokens (index.html), read at each draw (light or dark as it is now) --
   const tokens = {};
@@ -131,8 +131,33 @@ export function createMap({ pick = () => {} } = {}) {
   const touchAction = () => { canvas.style.touchAction = zoomed() ? "none" : "pan-y"; };
 
   // ---- Drawing -----------------------------------------------------------------------------------
+  // The lit tiles (a catalogue's, its timeline mark hovered or held; a schedule job's or legend
+  // item's), over everything: z6 filled, z3 outlined. `c` in the map's units, `px` a pixel in them.
+  function litTiles(c, px) {
+    for (const key of data.lit || []) {
+      const tl = tileOf(key);
+      if (!tl) continue;
+      const [bx, by, s] = tileBox(tl);
+      c.fillStyle = c.strokeStyle = data.litColour;
+      if (tl.z === 6) c.fillRect(bx, by, s, s);
+      c.lineWidth = px * 1.6;
+      c.strokeRect(bx, by, s, s);
+    }
+  }
+  // (The map's scene but its lit tiles, kept: a change of lit tiles alone (`light`) copies it and
+  // draws them over it, not the thousands of tiles under them again.)
+  const base = document.createElement("canvas");
+  function withBase() {
+    const c = canvas.getContext("2d"), dpr = window.devicePixelRatio || 1;
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.drawImage(base, 0, 0);
+    const k = view.k;
+    c.setTransform(k * dpr, 0, 0, k * dpr, (size.w / 2 - view.cx * k) * dpr, (size.h / 2 - view.cy * k) * dpr);
+    litTiles(c, 1 / k);
+    c.setTransform(1, 0, 0, 1, 0, 0);
+  }
   // The scene into `c` (css pixels w × h, ratio `dpr`) at view `v`; `lw` a line's width in pixels.
-  function scene(c, v, w, hgt, dpr, focus) {
+  function scene(c, v, w, hgt, dpr, focus, withLit = true) {
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
     c.fillStyle = tokens.bg;
     c.fillRect(0, 0, w, hgt);
@@ -266,16 +291,7 @@ export function createMap({ pick = () => {} } = {}) {
     }
     c.setLineDash([]);
     c.globalAlpha = 1;
-    // A catalogue's tiles (its timeline mark hovered or held), over everything: z6 filled, z3 outlined.
-    for (const key of data.lit || []) {
-      const tl = tileOf(key);
-      if (!tl) continue;
-      const [bx, by, s] = tileBox(tl);
-      c.fillStyle = c.strokeStyle = data.litColour;
-      if (tl.z === 6) c.fillRect(bx, by, s, s);
-      c.lineWidth = px * 1.6;
-      c.strokeRect(bx, by, s, s);
-    }
+    if (withLit) litTiles(c, px);
     // What's pointed at: each region by its outline, each tile's whole square (counted: the
     // scene's answer, the canvas's `data-outlined` for the touch test).
     let outlined = 0;
@@ -310,8 +326,9 @@ export function createMap({ pick = () => {} } = {}) {
     if (!size.w || !canvas.offsetParent) return;
     readTokens();
     const dpr = window.devicePixelRatio || 1;
-    const c = canvas.getContext("2d");
-    canvas.dataset.outlined = scene(c, view, size.w, size.h, dpr, held ? [...hover, held] : hover);
+    if (base.width !== canvas.width || base.height !== canvas.height) { base.width = canvas.width; base.height = canvas.height; }
+    canvas.dataset.outlined = scene(base.getContext("2d"), view, size.w, size.h, dpr, held ? [...hover, held] : hover, false);
+    withBase();
     // (For the touch test: the tiles painted by age, the region the page lights, whether any tile still fades in.)
     canvas.dataset.painted = data.paint?.size || 0;
     canvas.dataset.held = held || "";
@@ -549,14 +566,25 @@ export function createMap({ pick = () => {} } = {}) {
     draw();
   }
 
-  return { el, update, minimap, highlight, emphasize };
+  // Only the lit tiles changed (the schedule's job or legend item hovered, task #787): drawn
+  // again without working the rest out again as `update` does.
+  function light(lit) {
+    if (lit === data.lit) return;
+    data = { ...data, lit };
+    lastSig = "";
+    // (Once a frame, however fast the pointer crosses jobs.)
+    cancelAnimationFrame(litRaf);
+    litRaf = requestAnimationFrame(() => { if (size.w && canvas.offsetParent && base.width) withBase(); });
+  }
+
+  return { el, update, light, minimap, highlight, emphasize };
 }
 
 // A world map for a Jobs card (#659, as the mockup's): the whole world square, the countries
 // (`countries`, rings in the map's 0–1000) faintly, the tiles a job names lit in its colour
 // (`colour`, var() allowed), each at least 5 px; no grid, no regions. Small until its card is
 // pinned (dash.css .tc-map).
-const countryPaths = new WeakMap();
+const countryLayers = new WeakMap();
 export function tilesMap(countries, tiles, colour) {
   const size = 520, dpr = window.devicePixelRatio || 1;
   const cv = document.createElement("canvas");
@@ -567,28 +595,34 @@ export function tilesMap(countries, tiles, colour) {
   g.scale(dpr, dpr);
   const cs = getComputedStyle(document.documentElement);
   const v = (k) => cs.getPropertyValue(k).trim() || "#888";
-  g.fillStyle = v("--bg");
-  g.fillRect(0, 0, size, size);
-  let p = Array.isArray(countries) && countryPaths.get(countries);
-  if (!p && Array.isArray(countries)) {
-    p = new Path2D();
-    for (const r of countries) {
-      if (r.length < 4) continue;
-      p.moveTo(r[0], r[1]);
-      for (let k = 2; k + 1 < r.length; k += 2) p.lineTo(r[k], r[k + 1]);
-      p.closePath();
+  // (The countries drawn once a theme and pixel ratio, kept: a card a hover, each its copy.)
+  const sig = `${dpr} ${v("--bg")} ${v("--dim")}`;
+  let under = Array.isArray(countries) && countryLayers.get(countries);
+  if (!under || under.sig !== sig) {
+    const c = document.createElement("canvas");
+    c.width = c.height = size * dpr;
+    const u = c.getContext("2d");
+    u.scale(dpr, dpr);
+    u.fillStyle = v("--bg");
+    u.fillRect(0, 0, size, size);
+    if (Array.isArray(countries)) {
+      const p = new Path2D();
+      for (const r of countries) {
+        if (r.length < 4) continue;
+        p.moveTo(r[0], r[1]);
+        for (let k = 2; k + 1 < r.length; k += 2) p.lineTo(r[k], r[k + 1]);
+        p.closePath();
+      }
+      u.scale(size / 1000, size / 1000);
+      u.globalAlpha = 0.55;
+      u.strokeStyle = v("--dim");
+      u.lineWidth = 0.6 * (1000 / size);
+      u.stroke(p);
     }
-    countryPaths.set(countries, p);
+    under = { sig, c };
+    if (Array.isArray(countries)) countryLayers.set(countries, under);
   }
-  if (p) {
-    g.save();
-    g.scale(size / 1000, size / 1000);
-    g.globalAlpha = 0.55;
-    g.strokeStyle = v("--dim");
-    g.lineWidth = 0.6 * (1000 / size);
-    g.stroke(p);
-    g.restore();
-  }
+  g.drawImage(under.c, 0, 0, size, size);
   const el = document.createElement("i");
   el.style.color = colour || "var(--accent)";
   document.body.append(el);
