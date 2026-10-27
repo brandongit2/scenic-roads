@@ -35,8 +35,11 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
     packed the same way (`pipeline::pyramids`, `sources/pyramids/<host-path>/packs/`, one store a
     URL template, a z14/z15 tile in its z6 tile's shard), by their own step, the lead's:
     `scenic-build pyramids-fill <6/x/y …> | --all` fetches each tile a z6 tile's terrain-hi run
-    reads (under its z9–12 pixels that aren't open sea, inside the dataset's cover) that the store
-    lacks, once, and packs it (a 404 kept as an empty entry). Terrain-hi and terrain-deep read the
+    reads (under its z9–12 pixels that aren't open sea, and the whole of its terrain-deep targets'
+    base tiles, whose presence grids read the sea too; inside the dataset's cover) that the store
+    lacks, once, and packs it (a 404 kept as an empty entry; any other failure left out, fetched
+    again next time). It goes a z6 tile at a time, each only while the NAS has more room past the
+    owner's reserve (`scenic nas-room`) than the most one z6 tile has put there (6/56/23: 1.8 GB). Terrain-hi and terrain-deep read the
     store first, each tile by range from the NAS's archive; a tile it lacks is fetched as before,
     never written back. It isn't filled by the pool yet: a one-off `pyramids-fill --all` on the
     lead fills it (restartable).

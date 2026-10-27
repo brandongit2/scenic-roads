@@ -7,9 +7,12 @@
 //! shard, a z15 tile's its z6 tile's, an index read once and each tile read by byte range; an empty
 //! entry for a tile the server hasn't), in `sources/pyramids/<folder>/` (`folder`: the URL template's
 //! host and path, so a layer moved to another URL is stored afresh). Filled by its own step, the
-//! lead's alone (`fill`, `scenic-build pyramids-fill`): a target's tiles (`want`, those its
-//! terrain-hi run reads: the native tiles under the pixels of its z9–12 tiles that aren't open sea),
-//! fetched once each with the build's fetcher (its User-Agent, its per-host limit), then packed.
+//! lead's alone (`fill`, `scenic-build pyramids-fill`): a z6 tile's tiles (`want`, those its
+//! terrain-hi run reads: the native tiles under the pixels of its z9–12 tiles that aren't open sea;
+//! and its terrain-deep targets', all under their base tiles), fetched once each with the build's
+//! fetcher (its User-Agent, its per-host limit), then packed; a z6 tile at a time, so a fill cut
+//! short loses at most the one it was on, and each starts only while the NAS has more room past
+//! the owner's reserve than the most one has put there.
 //! Jobs only read it (`Stored`): a tile it lacks is fetched as before, never written back.
 
 use crate::dem::declared::{Plan, Source};
@@ -202,15 +205,18 @@ impl Fetch for Stored<'_> {
     }
 }
 
-/// The tiles of plan `plan`'s pyramids (by template) a terrain-hi run reads making `levels`
-/// (crate::terrain_pack::piece_levels: z9–12, the zooms the pool reads them at,
-/// crate::terrain_base::ROW_Z): the native tile under each pixel that isn't open sea in `water`
-/// (crate::terrain_base::open_sea, which spares those pixels the pyramids), inside the dataset's
-/// cover. Its terrain-deep targets read within those (their land).
+/// The tiles of plan `plan`'s pyramids (by template) a z6 tile's terrain runs read, inside each
+/// dataset's cover: terrain-hi's making `levels` (crate::terrain_pack::piece_levels: z9–12, the
+/// zooms the pool reads them at, crate::terrain_base::ROW_Z), the native tile under each pixel that
+/// isn't open sea in `water` (crate::terrain_base::open_sea, which spares those pixels the
+/// pyramids); and terrain-deep's, every native tile under its base tiles `deep`
+/// (crate::terrain_deep::base_want under each target): its presence grids read the whole of each,
+/// the sea too (the 404s over the sea most of what a deep run asked for that the store lacked).
 pub fn want(
     plan: &Plan,
     water: &dyn crate::terrain_water::WaterSource,
     levels: &[(u8, Vec<(u32, u32)>)],
+    deep: &[(u8, u32, u32)],
 ) -> Result<BTreeMap<String, BTreeSet<(u8, u32, u32)>>> {
     use crate::terrain_base::K;
     let pyr = of(plan);
@@ -219,33 +225,39 @@ pub fn want(
         return Ok(out);
     }
     let side = 256 * K;
+    // (Tile z/x/y's pixels' native tiles, those `sea` (open_sea's mask, empty: none) spares left out:
+    // the one holding each pixel, or those under it.)
+    let mut add = |z: u8, x: u32, y: u32, sea: &[bool]| {
+        for (t, zn, _) in &pyr {
+            let zn = *zn as u8;
+            let set = out.entry(t.clone()).or_default();
+            let (down, up) = ((z + 8).saturating_sub(zn), zn.saturating_sub(z + 8));
+            for r in 0..256u32 {
+                for c in 0..256u32 {
+                    if !sea.is_empty() && sea[(r as usize * K) * side + c as usize * K] {
+                        continue;
+                    }
+                    let (nx, ny) = ((((x << 8) + c) >> down) << up, (((y << 8) + r) >> down) << up);
+                    for dy in 0..(1u32 << up) {
+                        for dx in 0..(1u32 << up) {
+                            set.insert((zn, nx + dx, ny + dy));
+                        }
+                    }
+                }
+            }
+        }
+    };
     for (z, ts) in levels {
         let z = *z;
         if z < crate::terrain_base::ROW_Z {
             continue;
         }
         for &(x, y) in ts {
-            let sea = crate::terrain_base::open_sea(water, z, &[(x, y)])?;
-            for (t, zn, _) in &pyr {
-                let zn = *zn as u8;
-                let set = out.entry(t.clone()).or_default();
-                // (Pixel (c, r)'s native tiles: the one holding it, or those under it.)
-                let (down, up) = ((z + 8).saturating_sub(zn), zn.saturating_sub(z + 8));
-                for r in 0..256u32 {
-                    for c in 0..256u32 {
-                        if !sea.is_empty() && sea[(r as usize * K) * side + c as usize * K] {
-                            continue;
-                        }
-                        let (nx, ny) = ((((x << 8) + c) >> down) << up, (((y << 8) + r) >> down) << up);
-                        for dy in 0..(1u32 << up) {
-                            for dx in 0..(1u32 << up) {
-                                set.insert((zn, nx + dx, ny + dy));
-                            }
-                        }
-                    }
-                }
-            }
+            add(z, x, y, &crate::terrain_base::open_sea(water, z, &[(x, y)])?);
         }
+    }
+    for &(z, x, y) in deep {
+        add(z, x, y, &[]);
     }
     for (t, _, cover) in &pyr {
         if let (Some(cover), Some(set)) = (cover, out.get_mut(t)) {
@@ -353,7 +365,8 @@ pub fn fill(
                 ((k + 1) * 4096).min(n),
                 done.bytes as f64 / 1e9
             ));
-            if crate::agent::stopping() {
+            // (The build pausing: what's fetched is packed, the rest left for the next fill.)
+            if crate::control::draining() {
                 break;
             }
         }
@@ -422,16 +435,32 @@ mod tests {
         }
     }
 
+    /// Sea over every tile (more than the tile, so its neighbours' edges are sea too).
+    struct Sea;
+    impl crate::terrain_water::WaterSource for Sea {
+        fn polys(&self, _: u8, _: u32, _: u32) -> Result<Vec<crate::terrain_water::Poly>> {
+            let r = vec![[-64.0, -64.0], [320.0, -64.0], [320.0, 320.0], [-64.0, 320.0]];
+            Ok(vec![crate::terrain_water::Poly { kind: crate::terrain_water::Kind::Sea, id: 0, rings: vec![r] }])
+        }
+        fn pin(&self) -> String {
+            String::new()
+        }
+    }
+
     /// With no sea, a z12 tile reads the 8 × 8 z15 tiles under it, a z9 tile the 64 × 64; below
-    /// ROW_Z none.
+    /// ROW_Z none. A deep target's base tile reads the whole of it, sea or not; terrain-hi's spares the
+    /// open sea.
     #[test]
     fn a_level_wants_the_native_tiles_under_its_pixels() {
-        let w = want(&plan(), &Dry, &[(12, vec![(3640, 1610)])]).unwrap();
+        let w = want(&plan(), &Dry, &[(12, vec![(3640, 1610)])], &[]).unwrap();
         let s = &w[T];
         assert_eq!(s.len(), 64);
         assert!(s.contains(&(15, 3640 * 8, 1610 * 8)) && s.contains(&(15, 3640 * 8 + 7, 1610 * 8 + 7)));
-        assert_eq!(want(&plan(), &Dry, &[(9, vec![(455, 201)])]).unwrap()[T].len(), 64 * 64);
-        assert!(want(&plan(), &Dry, &[(8, vec![(227, 100)])]).unwrap().is_empty());
+        assert_eq!(want(&plan(), &Dry, &[(9, vec![(455, 201)])], &[]).unwrap()[T].len(), 64 * 64);
+        assert!(want(&plan(), &Dry, &[(8, vec![(227, 100)])], &[]).unwrap().is_empty());
+        // A deep target's base tile: the 8 × 8 under it, whatever the water.
+        assert_eq!(want(&plan(), &Sea, &[], &[(12, 3640, 1610)]).unwrap()[T].len(), 64);
+        assert!(want(&plan(), &Sea, &[(12, vec![(3640, 1610)])], &[]).unwrap().is_empty(), "open sea spared");
     }
 
     /// Filled once: every tile packed, the server's 404 as none; read back the same bytes without

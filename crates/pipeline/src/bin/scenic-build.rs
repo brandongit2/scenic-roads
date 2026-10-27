@@ -2486,16 +2486,44 @@ fn pyramids_fill(out: &Out, args: &[String]) -> Result<()> {
     }
     anyhow::ensure!(!ts.is_empty(), "pyramids-fill <6/x/y …> | --all");
     let water = pipeline::terrain_pack::open_water(out)?;
+    let fine = pipeline::terrain_deep::Fine::read(out.root(), &out.manifest)?;
     let net = pipeline::fetch::Fetcher::from_env();
     let cache = out.scratch.join("pyramids");
+    // (The most one z6 tile's fill has put on the NAS: the room the next must find past the owner's
+    // NAS reserve, `scenic nas-room`.)
+    let mut most = 0u64;
     for (k, &t) in ts.iter().enumerate() {
+        if pipeline::control::draining() {
+            break;
+        }
+        let room = pipeline::agent::room::nas_room(out.root())?;
+        anyhow::ensure!(
+            room > most,
+            "the NAS has {room} bytes free past its reserve, under the {most} a z6 tile's fill has put there: stopped before 6/{}/{}",
+            t.0,
+            t.1
+        );
         pipeline::agent::jobs::report(k as u64, ts.len() as u64, "z6 tiles");
         let t0 = std::time::Instant::now();
         let pool = base_pool(out, 6, &[t])?;
         let levels = pipeline::terrain_pack::piece_levels(&cov, t);
-        let want = py::want(&pool.plan, &water, &levels)?;
+        // (Its terrain-deep targets' base tiles, under each target: their presence grids read all
+        // of each, pipeline::pyramids::want.)
+        let deep: Vec<(u8, u32, u32)> = fine.as_ref().map_or(Vec::new(), |f| {
+            use pipeline::terrain_deep as td;
+            td::targets_in(&f.sets, &cov, t)
+                .into_iter()
+                .flat_map(|g| {
+                    td::base_want(g).into_iter().filter(move |&(z, x, y)| {
+                        z >= td::PACK_Z && (x >> (z - td::PACK_Z), y >> (z - td::PACK_Z)) == g
+                    })
+                })
+                .collect()
+        });
+        let want = py::want(&pool.plan, &water, &levels, &deep)?;
         let before = pipeline::fetch::fetched_bytes();
         let f = py::fill(&net, &want, &dir, &cache, &root, &|l| eprintln!("{l}"))?;
+        most = most.max(f.bytes);
         println!(
             "{}",
             serde_json::json!({ "tile": format!("6/{}/{}", t.0, t.1), "wanted": want.values().map(|s| s.len()).sum::<usize>(), "had": f.had, "fetched": f.fetched, "none": f.none, "bytes": f.bytes, "net_bytes": pipeline::fetch::fetched_bytes() - before, "failed": f.failed.len(), "secs": t0.elapsed().as_secs_f64() })
