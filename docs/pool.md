@@ -1388,7 +1388,9 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   136 s on 26 Oct). regions.json is about 0.96 MB. Written by
   the lead's pool step as `state/build/term/<E>/regions.json` (again in each new term), read by
   each Mac's page data when its time changes. Every Mac's port answers `POST /work/regions` with
-  no key: in the pool from that read, out of it from this Mac's agent's; 503 until there is one.
+  no key: in the pool from that read, out of it from this Mac's agent's. Until there is one it answers 200 with `{making: why}` (task #798: never an error
+  while the agent is busy; the lead's loop can take minutes after a restart before it makes them), and
+  the Regions tab says why in place of its rows.
   Steps (task #636): `POST /work/regions` with `{"steps": true}` answers each region's targets
   built of all by step, `{at, regions: {id: {step: [built, all]}}}` (`build::region_steps`: the
   plan's targets of each step that builds regions, counted whole: "unit" its z6 tiles,
@@ -1401,8 +1403,8 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   part ~40 ms: the coverage and reaches it holds, a copy of the terrain packs' indexes), only while
   a page asked within two minutes (`coord::REGION_STEPS_ASKING`; the page asks only while its
   Regions tab shows): again after a job ends or each minute; held in memory (a few numbers a
-  region), nothing written to the NAS. A member's port answers 503: the page then
-  asks the lead's addresses.
+  region), nothing written to the NAS. Not counted yet (a member's port, or the lead's before its first count): 200
+  with `{making: why}`; the page then asks the lead's addresses.
   To come (tasks #622, #685): the lead's port answers `POST /work/tocome` (`{}`; no key) with every
   Mac's tiles in its last forecast (`forecast::ToCome`, made of `Forecast::placed` on the
   forecast's thread before `placed` is dropped): `{at, macs: {mac: {step: [[z/x/y, s from at]…]}}}`,
@@ -1412,7 +1414,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   lane's runs in order), and `deps`, [a, b] when an item of run b waits on one of run a (its own
   deps, a release's, or a set's it waits on whole), each pair once. Measured on the 26 Oct 20:15
   record (31,132 items, 850 runs): `macs` 642 KB, `runs` 366 KB, `deps` 117 KB (12,046 pairs);
-  ~275 KB gzipped whole, and sent gzipped to a client that sends `Accept-Encoding: gzip` (the agent gzips every answer of 32 bytes or more except images, event streams, raw bytes (octet-stream, tar, zip) and parts of a file). Another Mac's port answers 503 (it made no forecast), or a former lead's its last,
+  ~275 KB gzipped whole, and sent gzipped to a client that sends `Accept-Encoding: gzip` (the agent gzips every answer of 32 bytes or more except images, event streams, raw bytes (octet-stream, tar, zip) and parts of a file). Another Mac's port answers 200 with `{making: why}` (it made no forecast), or a former lead's its last,
   older one: the page takes its own Mac's answer only when its `at` is the status's forecast's,
   else asks the lead's addresses; a lead change drops the old answer at once and asks the new
   lead. Asked once a forecast; never in the 10-second poll. Measured on the 24 Oct forecast

@@ -636,7 +636,7 @@ function mapLegend(md) {
     onclick: () => setMapFilter("solo", soloKey(x) === soloKey(mapFilters().solo) ? null : x) }, swatch, text);
   const sw = (g) => h("i", { style: { background: stageColour(g), borderColor: "transparent" } });
   return [h("div", "wmap-legend small dim",
-    regs.length ? [byState("regions", "on", "rg on", `${plural(count("on"), "region")} on the map`), byState("regions", "building", "rg building", `${plural(count("building"), "region")} building`), byState("regions", "queued", "rg queued", `${plural(count("queued"), "region")} to come`)] : h("span", null, "No regions' outlines from this Mac yet"),
+    regs.length ? [byState("regions", "on", "rg on", `${plural(count("on"), "region")} on the map`), byState("regions", "building", "rg building", `${plural(count("building"), "region")} building`), byState("regions", "queued", "rg queued", `${plural(count("queued"), "region")} to come`)] : h("span", null, drawn.making ? `Waiting: ${drawn.making}…` : "No regions' outlines from this Mac yet"),
     TILE_STATES.map((st) => byState("tiles", st, `tl ${st}`, `${plural(counts.tile[st], "tile")} ${TILE_WORDS[st]}`)),
     world.length ? h("span", null, `whole world: ${world.map((r) => `${r.step} (${r.mac})`).join(", ")}`) : null,
     h("span", "hint", "drag to move · pinch, double-click or +/− to zoom")),
@@ -1527,7 +1527,7 @@ function relist() {
   rp.rowsEl.style.height = `${rp.shown.length * ROW_H}px`;
   rp.count.textContent = ui.filter.trim() ? `${n(rp.shown.length)} of ${n(rp.rows.length)}` : "";
   for (const b of rp.seg.children) b.classList.toggle("on", b.dataset.order === ui.order);
-  if (!rp.shown.length) rp.rowsEl.replaceChildren(h("div", "small dim rnone", rp.rows.length ? "None found." : "No regions yet."));
+  if (!rp.shown.length) rp.rowsEl.replaceChildren(h("div", "small dim rnone", rp.rows.length ? "None found." : drawn.making ? `Waiting: ${drawn.making}…` : "No regions yet."));
   else paintRows(true);
 }
 
@@ -1755,7 +1755,7 @@ let last = null;
 let shownMacs = [];
 // The regions' outlines, folders and sizes (`/work/regions`: crate::agent::regionsview), by id; the
 // catalogue they were sized by, and when they were asked.
-const drawn = { byId: {}, catalogue: undefined, version: undefined, at: 0, asking: false };
+const drawn = { byId: {}, catalogue: undefined, version: undefined, at: 0, asking: false, making: undefined };
 const REGIONS_EVERY_MS = 600000;
 // Each region's targets built of all by step (`/work/regions` with `steps`: the lead counts them
 // while asked, crate::agent::build::region_steps), asked each `STEPS_EVERY_MS` while the Regions tab
@@ -1954,13 +1954,14 @@ async function loadTable() {
 
 // The regions as `/work/regions` has them: again when the lead's last catalogue changes, else every
 // ten minutes (a region's folder or outline changes with the regions' accepted version); not yet
-// made (503): asked again next poll.
+// made (`making`: why, shown while there are none): asked again next poll.
 async function loadRegions(sw) {
   const n = sw.agent?.catalog?.n ?? null;
   if (drawn.asking || (drawn.at && drawn.catalogue === n && Date.now() - drawn.at < REGIONS_EVERY_MS)) return;
   drawn.asking = true;
   try {
     const [code, v] = await ctx.call("/work/regions", {});
+    drawn.making = code === 200 && !v?.regions ? v?.making : undefined;
     if (code !== 200 || !v?.regions) return;
     // (The same answer as the last, asked again while the lead's catalogue is ahead of it: nothing
     // to show again. Of the same regions' version, the outlines the map has drawn are kept.)

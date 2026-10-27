@@ -3247,6 +3247,12 @@ fn not_ready() -> (u16, serde_json::Value) {
     (503, serde_json::json!({ "error": "this Mac hasn't read the build's state yet; ask again in a few seconds" }))
 }
 
+/// A page view this Mac's agent hasn't made yet (its loop busy, or just started): 200, not 503, so a
+/// page's console shows no error while the agent is merely busy; `making` says why, for the page.
+fn making(why: &str) -> (u16, serde_json::Value) {
+    (200, serde_json::json!({ "making": why }))
+}
+
 /// What the page takes from a coordinator's memory (`Coordinator::view`): the pause, each lease and
 /// worker, the tasks by state and `task_mb`, its times as unix seconds (`unix_of`).
 fn view_of(s: &Shared) -> serde_json::Value {
@@ -4206,8 +4212,10 @@ fn route(
         "/work/tocome" => {
             // Every Mac's tiles to come in the lead's last forecast (crate::agent::forecast::ToCome):
             // the build page's map's queue, asked once a forecast.
+            // None made (a member's, or the lead's before its first): 200 with why (`making`), not
+            // an error: the page asks the lead, or waits.
             let tc = shared.lock().unwrap().tocome.clone();
-            Ok(tc.map_or_else(not_ready, |t| (200, t.answer())))
+            Ok(tc.map_or_else(|| making("this Mac has made no forecast yet"), |t| (200, t.answer())))
         }
         "/work/regions" => {
             // With `steps`: each region's targets built of all by step, as this Mac's agent last
@@ -4216,7 +4224,10 @@ fn route(
             if b["steps"].as_bool() == Some(true) {
                 let mut sh = shared.lock().unwrap();
                 sh.region_steps_asked = Some(Instant::now());
-                return Ok(sh.region_steps.clone().map_or_else(not_ready, |v| (200, (*v).clone())));
+                return Ok(sh.region_steps.clone().map_or_else(
+                    || making("this Mac's agent is counting the regions' steps"),
+                    |v| (200, (*v).clone()),
+                ));
             }
             // The build page's regions (crate::agent::regionsview): in the pool, the lead's as this
             // Mac read them; out of it, this Mac's agent's.
@@ -4225,7 +4236,7 @@ fn route(
                 Some(p) => p.regions(),
                 None => shared.lock().unwrap().regions.clone(),
             };
-            Ok(v.map_or_else(not_ready, |v| (200, (*v).clone())))
+            Ok(v.map_or_else(|| making("this Mac's agent is reading the regions"), |v| (200, (*v).clone())))
         }
         "/work/steps" => {
             // The steps table (crate::agent::steps, docs/pipeline.md): every step's and task's row
@@ -10200,24 +10211,30 @@ mod tests {
         assert_eq!(status(&post(Some("https://evil.example"))), 403);
     }
 
-    /// `/work/regions` (docs/pool.md §10, Regions) out of the pool, with no key: 503 until this
-    /// Mac's agent made them, then theirs.
+    /// `/work/regions` (docs/pool.md §10, Regions) out of the pool, with no key: 200 with `making`
+    /// (never an error) until this Mac's agent made them, then theirs.
     #[test]
     fn the_regions_answer_the_page_once_the_agent_made_them() {
         let (_d, c, w) = start();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let post = || raw(&addr, "POST", "/work/regions", &[("Content-Type", "application/json")], b"{}");
-        assert_eq!(status(&post()), 503);
+        let making = |r: &str| -> Option<String> {
+            assert_eq!(status(r), 200, "{r}");
+            let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            a["making"].as_str().map(str::to_string)
+        };
+        assert_eq!(making(&post()).as_deref(), Some("this Mac's agent is reading the regions"));
         c.set_regions(Arc::new(serde_json::json!({ "catalog": 4, "regions": [{ "id": "a" }] })));
         let r = post();
         assert_eq!(status(&r), 200, "{r}");
         let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!((a["catalog"].as_u64(), a["regions"][0]["id"].as_str()), (Some(4), Some("a")));
-        // The steps: asked (so counted from now), 503 until counted, then theirs alone.
+        assert_eq!(making(&r), None);
+        // The steps: asked (so counted from now), `making` until counted, then theirs alone.
         let steps =
             || raw(&addr, "POST", "/work/regions", &[("Content-Type", "application/json")], br#"{"steps":true}"#);
         assert!(!c.region_steps_asked());
-        assert_eq!(status(&steps()), 503);
+        assert_eq!(making(&steps()).as_deref(), Some("this Mac's agent is counting the regions' steps"));
         assert!(c.region_steps_asked());
         c.set_region_steps(Arc::new(serde_json::json!({ "at": 5, "regions": { "a": { "unit": [1, 3] } } })));
         let r = steps();
@@ -10225,14 +10242,16 @@ mod tests {
         assert_eq!(a["regions"]["a"]["unit"], serde_json::json!([1, 3]));
     }
 
-    /// `/work/tocome` (docs/pool.md §10, To come), with no key: 503 until this Mac's forecast made
-    /// them, then every Mac's tiles by step.
+    /// `/work/tocome` (docs/pool.md §10, To come), with no key: 200 with `making` until this Mac's
+    /// forecast made them, then every Mac's tiles by step.
     #[test]
     fn the_tiles_to_come_answer_the_page_once_a_forecast_made_them() {
         let (_d, c, w) = start();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let post = || raw(&addr, "POST", "/work/tocome", &[("Content-Type", "application/json")], b"{}");
-        assert_eq!(status(&post()), 503);
+        let r = post();
+        assert_eq!(status(&r), 200, "{r}");
+        assert!(r.contains(r#""making":"this Mac has made no forecast yet""#), "{r}");
         let placed = [crate::agent::forecast::Placed {
             lane: 0,
             step: "terrain-hi".into(),
