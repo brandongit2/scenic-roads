@@ -4419,6 +4419,8 @@ mod http {
         ("activity.js", "text/javascript", include_bytes!("../../../../web/work/activity.js")),
         ("chart.js", "text/javascript", include_bytes!("../../../../web/work/chart.js")),
         ("chartmath.js", "text/javascript", include_bytes!("../../../../web/work/chartmath.js")),
+        // The Jobs tab's schedule: its view, gestures and arrows (task #787).
+        ("timeline.js", "text/javascript", include_bytes!("../../../../web/work/timeline.js")),
         ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/work/dash.css")),
         // The overview's world map, and the world's countries' outlines it draws (Natural Earth
         // 1:50m, public domain): rings in Web Mercator, the world 0–1000 each way.

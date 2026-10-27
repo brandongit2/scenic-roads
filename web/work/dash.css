@@ -216,34 +216,51 @@ body.dragging-ref { cursor: ns-resize; user-select: none; -webkit-user-select: n
 .sched { position: relative; --lw: 96px; }
 .schedtop { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; }
 .schedtop span:last-child { margin-left: auto; }
-select.past { margin-left: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; font-size: var(--fs-s); padding: 1px 4px; }
 .sched .lanes { display: grid; grid-template-columns: var(--lw) minmax(0, 1fr); gap: 2px 8px; align-items: center; }
 @container tabs (max-width: 719px) { .sched { --lw: 56px; } }
 .sched .gh { font-size: var(--fs-s); font-weight: 600; padding-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sched .ghr { border-bottom: 1px solid var(--row-line); align-self: end; display: flex; gap: 4px; padding-bottom: 2px; min-height: 1px; }
 .sched .ln { font-size: var(--fs-s); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+/* (Task #787: a track's segments sit in its `.tv`, the whole domain wide, shifted by its
+   transform: the view moves by those alone, timeline.js.) */
 .sched .track { position: relative; height: 13px; background: var(--bg); border-radius: 2px; overflow: hidden; }
-.sched .track > i { position: absolute; top: 1px; bottom: 1px; min-width: 2px; cursor: pointer; }
-.sched .track > i.past { opacity: .8; }
-.sched .track > i.failed { box-shadow: inset 0 0 0 1px var(--bad); }
-.sched .track > i.running { top: 0; bottom: 0; box-shadow: inset 0 0 0 1px var(--mark); }
-.sched .track > i.next { opacity: .4; }
-.sched .track > i:hover { opacity: 1; filter: brightness(1.15); }
-/* The now line: red, through every lane down to the axis, capped by a dot with "now" to its right. */
-.sched .lanewrap { position: relative; padding-top: 14px; }
-.sched .nowcap { position: absolute; top: 3px; bottom: 18px; z-index: 1; left: calc(var(--lw) + 8px + (100% - var(--lw) - 8px) * var(--f)); pointer-events: none; }
+.sched .tv { position: absolute; top: 0; bottom: 0; left: 0; width: 100%; transform-origin: 0 0; will-change: transform; }
+.sched .tv > i { position: absolute; top: 1px; bottom: 1px; min-width: 2px; cursor: pointer; }
+.sched .tv > i.past { opacity: .8; }
+.sched .tv > i.failed { box-shadow: inset 0 0 0 1px var(--bad); }
+.sched .tv > i.running { top: 0; bottom: 0; box-shadow: inset 0 0 0 1px var(--mark); }
+.sched .tv > i.next { opacity: .4; }
+.sched .tv > i:hover { opacity: 1; filter: brightness(1.15); }
+/* (Moved by a drag, a trackpad's sideways scroll or a finger sideways; up and down stays the page's.) */
+.sched .lanewrap { position: relative; padding-top: 14px; touch-action: pan-y; overscroll-behavior-x: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: grab; }
+.sched .lanewrap.panning { cursor: grabbing; }
+.sched .lanewrap.panning .tv > i { cursor: grabbing; }
+/* (A job hovered: it and the jobs its arrows touch at full strength, the rest faint.) */
+.sched .lanewrap.dimming .tv > * { opacity: .14; transition: opacity .12s; }
+.sched .lanewrap.dimming .tv > .rel { opacity: 1; }
+.sched .arrows { position: absolute; top: 0; height: 100%; overflow: hidden; pointer-events: none; z-index: 2; }
+.sched .arrows path { fill: none; stroke: var(--arrow); stroke-width: 1.25; marker-end: url(#sched-ah); }
+.sched .arrows marker path { fill: var(--arrow); stroke: none; }
+.sched .archived { position: absolute; top: 15px; z-index: 2; display: flex; align-items: center; padding: 1px 3px; color: var(--dim); background: var(--panel); border: 1px solid var(--line); border-radius: 3px; cursor: help; }
+.sched .archived:hover { color: var(--text); }
+.sched .archived[hidden], .sched .nowcap[hidden] { display: none; }
+.sched .nowcap { position: absolute; top: 3px; bottom: 18px; z-index: 1; pointer-events: none; }
 .sched .nowcap::before { content: ""; position: absolute; left: -3.5px; top: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--bad); }
 .sched .nowcap > span { position: absolute; left: 7px; top: -4px; font-size: var(--fs-s); color: var(--bad); white-space: nowrap; }
 .sched .nowcap::after { content: ""; position: absolute; left: -0.5px; top: 6px; bottom: 0; width: 1px; background: var(--bad); }
-.sched .track.outs { background: none; overflow: visible; }
-.sched .track.outs > b { position: absolute; top: 1px; bottom: 1px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--mark); opacity: .75; cursor: pointer; }
-.sched .track.outs > b:hover { opacity: 1; }
+.sched .track.outs { background: none; }
+.sched .track.outs .tv > b { position: absolute; top: 1px; bottom: 1px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--mark); opacity: .75; cursor: pointer; }
+.sched .track.outs .tv > b:hover { opacity: 1; }
 .legend i.rmark { width: 2px; height: 11px; background: var(--mark); opacity: .75; border-radius: 1px; }
 .sched .axis { position: relative; height: 18px; font-size: var(--fs-s); color: var(--dim); border-top: 1px solid var(--line); }
 .sched .axis > b { position: absolute; top: 0; width: 1px; height: 3px; background: var(--rule); }
 .sched .axis > span { position: absolute; top: 3px; transform: translateX(-50%); white-space: nowrap; }
 .sched .axis > span::before { content: ""; position: absolute; left: 50%; top: -3px; width: 1px; height: 5px; background: var(--dim); }
 .sched .axis > span.day { color: var(--text); font-weight: 600; }
+.sched .legend .lgi { cursor: default; }
+.sched .legend .lgi:hover { color: var(--text); }
+.sched .legend .hint { margin-left: auto; }
+.sched .legend .hint + .hint { margin-left: 0; }
 .legend .keys { display: inline-flex; gap: 4px; align-items: center; }
 .legend .keys i { width: 14px; height: 8px; margin: 0 0 0 6px; background: var(--dim); }
 .legend .keys i:first-child { margin-left: 0; }

@@ -8472,11 +8472,13 @@ impl Agent {
             let took = std::time::Instant::now();
             let mut f = record.forecast();
             let entry = fcarchive::Entry::of(&record, &f, &app);
-            // (Each Mac's tiles to come, for the page's map (`/work/tocome`); the rest of `placed`
-            // the archive's alone: not kept with the forecast the agent holds.)
+            // (Each Mac's tiles to come, for the page's map (`/work/tocome`), and the schedule's runs
+            // (their targets and dependencies); the rest of `placed` the archive's alone: neither
+            // kept with the forecast the agent holds.)
             let macs: Vec<String> =
                 record.input.machines.iter().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())).collect();
-            let tocome = forecast::ToCome::of(&f.placed, &macs, f.at);
+            let mut tocome = forecast::ToCome::of(&f.placed, &macs, f.at);
+            tocome.runs = std::mem::take(&mut f.runs);
             f.placed = Vec::new();
             Forecasted { forecast: f, bytes: record.bytes(), entry, tocome, took: took.elapsed() }
         });

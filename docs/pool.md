@@ -1381,7 +1381,12 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   Mac's tiles in its last forecast (`forecast::ToCome`, made of `Forecast::placed` on the
   forecast's thread before `placed` is dropped): `{at, macs: {mac: {step: [[z/x/y, s from at]…]}}}`,
   each tile once a Mac and step at its first start, targets naming no tile left out: the page's
-  map's queue. Another Mac's port answers 503 (it made no forecast), or a former lead's its last,
+  map's queue; and the schedule's runs (`forecast::Runs`, task #787): `runs`, each run's targets,
+  the runs numbered as the forecast's `lanes` hold them (the lanes by name in byte order, each
+  lane's runs in order), and `deps`, [a, b] when an item of run b waits on one of run a (its own
+  deps, a release's, or a set's it waits on whole), each pair once. Measured on the 26 Oct 20:15
+  record (31,132 items, 850 runs): `macs` 642 KB, `runs` 366 KB, `deps` 117 KB (12,046 pairs);
+  ~275 KB gzipped whole. Another Mac's port answers 503 (it made no forecast), or a former lead's its last,
   older one: the page takes its own Mac's answer only when its `at` is the status's forecast's,
   else asks the lead's addresses; a lead change drops the old answer at once and asks the new
   lead. Asked once a forecast; never in the 10-second poll. Measured on the 24 Oct forecast

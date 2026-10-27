@@ -20,10 +20,11 @@
 // activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { AREAS, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, stepTotals, targetsOf, macSlot, tileCovers, tileOf } from "./sums.js";
-import { fmt, timeTicks } from "./chartmath.js";
+import { AREAS, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, stepTotals, targetsOf, macSlot, tileCovers, tileOf } from "./sums.js";
+import { fmt } from "./chartmath.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
+import { SPAN0, createTimeline } from "./timeline.js";
 import { HIGHLIGHT, createAges, paint as agePaint, whenText } from "./catalogs.js"; // the route keeps its old spelling (task #547); the file is catalogues.js
 import { loadSettings, settingsSection } from "./settings.js";
 import { nasSection } from "./nas.js";
@@ -412,12 +413,15 @@ function askBuilt() {
 // Overview's; `counts`: the member chosen's, the legend's); the regions' cards. Drawn as the view
 // says by `mapView`, again without a render as a solo or the age controls change (`paintMap`).
 let lastMd = null;
+// (The history's job ends the map takes a finished tile from, beside the keys' (`/work/built`): the
+// last 6 h's.)
+const MAP_ENDS_S = 6 * 3600;
 function mapData(m) {
   loadCountries();
   askBuilt();
   askToCome(m);
   const f = mapFilters();
-  const from = m.now - (ui.past || 6 * 3600);
+  const from = m.now - MAP_ENDS_S;
   const runs = mapRuns(m);
   // (Jobs with no tile to show, a worldwide step's: named under the map, as the mockup does.)
   // (A job and its lease are one run: named once.)
@@ -460,7 +464,7 @@ function mapView(md) {
   const painted = agePaint(when, age.from, age.to, age.hide).paint;
   tileCards(m, t, painted, age);
   const regionKind = (st) => (st === "done" ? "on" : st);
-  return { countries, regions: md.regs.filter((r) => f.regions?.[regionKind(r.state)] !== false), running: t.running, finished: t.finished, queued: t.queued, paint: painted, lit: age.lit, litColour: HIGHLIGHT, colour: S.colour };
+  return { countries, regions: md.regs.filter((r) => f.regions?.[regionKind(r.state)] !== false), running: t.running, finished: t.finished, queued: t.queued, paint: painted, lit: schedLit || age.lit, litColour: HIGHLIGHT, colour: S.colour };
 }
 // The map drawn again from the last render's data: a solo hovered or the age controls changed.
 function paintMap() {
@@ -827,6 +831,7 @@ function pinCard(key, x, y, also = "") {
   pin.x = x;
   pin.y = y;
   pin.el = h("div", { class: "card-tip pinned", role: "dialog", "aria-modal": "true" }, close, h("div", "cb", cards.get(key)(also)));
+  tl?.pin(key);
   // (The veil: a click on it lets the card go and nothing else; a wheel or a touch's drag there
   // moves nothing. The page under it can't scroll while the card is up.)
   pin.veil = h("div", { class: "card-veil" });
@@ -849,6 +854,7 @@ function unpin() {
   // (A card opened from a button (the header's asks): the focus back on it, if it's still there.)
   if (pin.back?.isConnected && !pin.back.disabled) pin.back.focus();
   pin.key = pin.el = pin.veil = pin.back = null;
+  tl?.pin(null);
 }
 // (After a render: the pinned card's words again, from what's shown now; kept as they were, said
 // to be over, when it's gone.)
@@ -913,10 +919,11 @@ function shortNames(m) {
 }
 
 // ---- Jobs: the schedule ------------------------------------------------------------------------------
-// The past jobs the schedule may show: how far back (this browser's own, kept).
-const PAST = [[0, "None"], [3600, "Past hour"], [2 * 3600, "Past 2 hours"], [6 * 3600, "Past 6 hours"], [86400, "Past 24 hours"], [2 * 86400, "Past 48 hours"], [3 * 86400, "Past 72 hours"], [7 * 86400, "Past 7 days"]];
+// The history the schedule holds (task #787): the page view's seven days (coord::history::DAYS);
+// older days are in the archive (agent::histarchive), not read here.
+const HISTORY_S = 7 * 86400;
 // The jobs' ends from the history further back than the page's own events (`/work/history`, a
-// chunk at a time back to the past chosen: sums.js pastFrom), in the numbering they were read in.
+// chunk at a time back to HISTORY_S ago: sums.js pastFrom), in the numbering they were read in.
 const past = { ends: [], epoch: undefined, first: null, asking: false };
 // Every job's end held (a lead's job's "end", a worker's "done" or "fail"): those read back, then
 // the page's own events.
@@ -926,10 +933,10 @@ const endsHeld = () => past.ends.concat(events.filter(isEnd));
 const heldFrom = () => { let t = events[0]?.t ?? null; for (const e of past.ends) if (t == null || e.t < t) t = e.t; return t; };
 async function loadPast(sw) {
   if (past.epoch !== sw.epoch) Object.assign(past, { ends: [], epoch: sw.epoch, first: null });
-  if (!ui.past || past.asking || !events.length) return;
+  if (past.asking || !events.length) return;
   past.asking = true;
   try {
-    const from = sw.now - ui.past;
+    const from = sw.now - HISTORY_S;
     let first = past.first || { seq: events[0].seq, t: events[0].t };
     for (let since = pastFrom(first, from); since != null; since = pastFrom(first, from)) {
       const [code, hist] = await ctx.call("/work/history", { since, max: 5000 });
@@ -998,6 +1005,8 @@ function runCard(m, r, kind, laneName) {
     ["Mac", laneName(r.lane)],
     ["Takes", `≈ ${dur(r.until - r.from)}`],
     ["While the lead runs", r.of ? S.said(r.of, r.n) : null],
+    ["Waits on", r.waits != null ? plural(r.waits, "run") : null],
+    ["Then", r.waited != null ? `${plural(r.waited, "run")} wait on it` : null],
   ]);
 }
 
@@ -1014,23 +1023,87 @@ function laneChips(x) {
 }
 
 // Each Mac's lanes, grouped by Mac (its short name over its slots' lanes, the lead first): the jobs
-// it ran (the history's ends, as far back as the past chosen), those running now (to the now line)
-// and the forecast's to come, each a segment in its stage's colour, packed where a pixel holds
-// several (sums.js packRuns); a now line; each region's mark where it's all on the map; a dense
-// time axis.
+// it ran (the history's ends, as far back as it's read: seven days), those running now (to the now
+// line) and the forecast's to come, each a segment in its stage's colour, packed where a pixel holds
+// several at the view's zoom (sums.js packRuns); a now line; each region's mark where it's all on
+// the map; a dense time axis. Moved and zoomed as timeline.js says, over the whole domain: the
+// history's seven days back to the forecast's end (task #787). One element kept across renders
+// (the timeline's view and gestures with it), its lanes made again each render.
+let tl = null, schedRoot = null, schedBody = null;
+// This render's segments by card key ({el, kind, step, r, run}: `run` a forecast run's number,
+// sums.js runNumbers; a running job's is the run it goes on in), the runs' links (sums.js
+// runLinks), each run's segments' keys.
+let segs = new Map(), links = runLinks([]), runKeys = new Map();
+// The tiles the schedule lights on the map (a job's or a legend item's), null: none.
+let schedLit = null;
+function scheduleSection(m) {
+  if (!schedRoot) {
+    tl = createTimeline({
+      relations: schedRelations,
+      onLit: (tiles) => { schedLit = tiles ? new Set(tiles) : null; paintMap(); },
+      onRepack: () => render(),
+    });
+    schedBody = h("div", "sched");
+    schedRoot = section("d-sched", "Schedule", "each Mac's jobs: those that ran, running, to come",
+      h("div", "box", schedBody,
+        // (What the coordinator's own scheduler decides, run ahead: docs/pool.md §7.2. What it can't see, said.)
+        h("p", "note", "To come as the coordinator grants: by each Mac's room, cores and the NAS budget. Times and NAS weights are measured estimates, and no load from outside the build is assumed (optimistic while a Mac is in use); a pause, a repack, a Mac handing over on battery or a slow NAS moves the finish.")));
+  }
+  schedule(m);
+  return schedRoot;
+}
+
+// A segment's tiles on the map ("z/x/y"): a run that ran, its jobs' targets; one running, its
+// targets; one to come, its forecast run's (`/work/tocome`'s `runs`, when it's this forecast's).
+function segTiles(s, m) {
+  const r = s.r;
+  let targets = [];
+  if (s.kind === "past") targets = (r.parts || [r]).flatMap((p) => p.targets || []);
+  else if (s.kind === "running") targets = r.targets || [];
+  else if (s.run != null && toCome.ans?.at === m.fc?.at) targets = toCome.ans.runs?.[s.run] || [];
+  return areaTargets(s.step, targets).filter((t) => tileOf(t)).map((t) => t.slice(t.lastIndexOf(" ") + 1));
+}
+// What a key points at in the schedule (timeline.js `relations`): a segment's run's own segments,
+// those of the runs it waits on and of those waiting on it, and its arrows (from a run's end, its
+// last segment, to a run's start, its first); a legend item's (`lg stage <id>`, `lg kind <kind>`)
+// segments. Their tiles for the map: the segment's own, the legend item's all.
+function schedRelations(key) {
+  const m = lastSchedM;
+  if (!m) return null;
+  if (key.startsWith("lg ")) {
+    const [, by, v] = key.split(" ");
+    const on = [...segs.values()].filter((s) => (by === "stage" ? S.stage(s.step) === v : by === "failed" ? s.kind === "past" && !s.r.ok : by === "past" ? s.kind === "past" && s.r.ok : s.kind === v));
+    return { on: on.map((s) => s.el), arrows: [], tiles: [...new Set(on.flatMap((s) => segTiles(s, m)))] };
+  }
+  const s = segs.get(key);
+  if (!s) return null;
+  const of = (run) => (runKeys.get(run) || []).map((k) => segs.get(k)).filter(Boolean);
+  const self = s.run != null ? of(s.run) : [s];
+  const head = (ss) => ss[0]?.el, tail = (ss) => ss[ss.length - 1]?.el;
+  const on = [...self], arrows = [];
+  for (const a of s.run != null ? links.on.get(s.run) || [] : []) { const x = of(a); on.push(...x); if (x.length) arrows.push([tail(x), head(self)]); }
+  for (const b of s.run != null ? links.then.get(s.run) || [] : []) { const x = of(b); on.push(...x); if (x.length) arrows.push([tail(self), head(x)]); }
+  return { on: on.map((x) => x.el), arrows, tiles: segTiles(s, m) };
+}
+let lastSchedM = null;
+
 function schedule(m) {
+  lastSchedM = m;
   const fc = m.fc, now = m.now;
   const fcLanes = fc?.lanes || {};
-  const t0 = now - ui.past;
-  const t1 = Math.max(fc?.done_at || 0, ...Object.values(fcLanes).flat().map((l) => l.until), now + 3600);
-  const span = t1 - t0;
-  const x = (t) => `${(((Math.max(t0, Math.min(t1, t)) - t0) / span) * 100).toFixed(3)}%`;
-  const gap = span / 1200;
-  const pastAll = ui.past ? pastRuns(endsHeld(), t0, m.macs.map((mm) => mm.name)) : [];
+  const lo = now - HISTORY_S;
+  const hi = Math.max(fc?.done_at || 0, ...Object.values(fcLanes).flat().map((l) => l.until), now + SPAN0 / 2);
+  const full = hi - lo;
+  const { span } = tl.range(now, lo, hi);
+  // (A segment's place in its track: a share of the whole domain; the view is the timeline's.)
+  const pct = (t) => `${(((Math.max(lo, Math.min(hi, t)) - lo) / full) * 100).toFixed(5)}%`;
+  const width = Math.max(240, tl.axis.offsetWidth || ctx.tabsEl.clientWidth - 120);
+  const gap = span / width;
+  const pastAll = pastRuns(endsHeld(), lo, m.macs.map((mm) => mm.name));
   const running = runningRuns(m);
   const short = shortNames(m);
   const hosts = m.macs.map((mm) => mm.name);
-  const names = [...new Set([...busyLanes(Object.keys(fcLanes), fcLanes, now, t1), ...pastAll.map((r) => r.lane), ...running.map((r) => r.lane)])];
+  const names = [...new Set([...busyLanes(Object.keys(fcLanes), fcLanes, now, hi), ...pastAll.map((r) => r.lane), ...running.map((r) => r.lane)])];
   // (A Mac with no lanes in view still gets its row when something keeps it from the work: a Mac
   // paused alone has no forecast lanes, and no past ones once its last job is out of the past.)
   const chipsOf = new Map(m.macs.map((mm) => [mm.name, laneChips(mm)]));
@@ -1043,22 +1116,43 @@ function schedule(m) {
     const host = hosts.find((hh) => isSlotOf(nm, hh));
     return host ? `${short[host]} · slot ${slotNo(nm, host)}` : nm;
   };
+  // The forecast's runs (numbered as `/work/tocome` numbers them) and what each waits on, when
+  // its answer is this forecast's.
+  const nums = runNumbers(fcLanes);
+  const tc = toCome.ans?.at === fc?.at && toCome.ans?.runs?.length === nums.total ? toCome.ans : null;
+  links = runLinks(tc?.deps);
+  segs = new Map();
+  runKeys = new Map();
   const stagesSeen = new Set();
+  const kinds = new Set();
   const lanes = h("div", "lanes");
-  const segment = (track, r, kind, key) => {
+  const segment = (track, r, kind, key, run = null) => {
     const seg = withCard(h("i", { class: `${kind}${kind === "past" && !r.ok ? " failed" : ""}` }), key, () => runCard(m, r, kind, laneName));
-    Object.assign(seg.style, { left: x(r.from), width: `max(2px, calc(${x(r.until)} - ${x(r.from)}))`, background: S.colour(r.step) });
+    Object.assign(seg.style, { left: pct(r.from), width: `max(2px, calc(${pct(r.until)} - ${pct(r.from)}))`, background: S.colour(r.step) });
     track.append(seg);
+    segs.set(key, { el: seg, kind, step: r.step, r, run });
+    if (run != null) (runKeys.get(run) || runKeys.set(run, []).get(run)).push(key);
     if (S.stage(r.step)) stagesSeen.add(S.stage(r.step));
+    kinds.add(kind === "past" && !r.ok ? "failed" : kind);
   };
+  const trackOf = () => { const tv = h("div", "tv"); return [h("div", "track", tv), tv]; };
   for (const g of groups) {
     const mac = m.macs.find((mm) => mm.name === g.host);
     lanes.append(h("div", { class: "gh", title: g.host }, mac ? short[g.host] : g.host, mac ? null : h("span", "dim", " (gone)")), h("div", "ghr", ...(chipsOf.get(g.host) || [])));
     for (const nm of g.lanes) {
-      const track = h("div", "track");
-      for (const r of packRuns(pastAll.filter((r) => r.lane === nm), gap)) segment(track, r, "past", `p ${nm} ${r.seq}`);
-      for (const r of running.filter((r) => r.lane === nm)) segment(track, r, "running", `r ${nm} ${r.job.id}`);
-      for (const l of fcLanes[nm] || []) if (l.until > now && l.from < t1) segment(track, { ...l, from: Math.max(l.from, now), lane: nm }, "next", `f ${nm} ${l.from} ${l.step}`);
+      const [track, tv] = trackOf();
+      for (const r of packRuns(pastAll.filter((r) => r.lane === nm), gap)) segment(tv, r, "past", `p ${nm} ${r.seq}`);
+      const ls = fcLanes[nm] || [];
+      // (A job running now goes on as its lane's first run of its step in the forecast: one job.)
+      for (const r of running.filter((r) => r.lane === nm)) {
+        const k = ls.findIndex((l) => l.step === r.step && l.from <= fc.at + 1);
+        segment(tv, r, "running", `r ${nm} ${r.job.id}`, k >= 0 ? nums.first[nm] + k : null);
+      }
+      ls.forEach((l, k) => {
+        if (l.until <= now) return;
+        const run = nums.first[nm] + k;
+        segment(tv, { ...l, from: Math.max(l.from, now), lane: nm, waits: tc ? links.on.get(run)?.length || 0 : null, waited: tc ? links.then.get(run)?.length || 0 : null }, "next", `f ${nm} ${l.from} ${l.step}`, run);
+      });
       lanes.append(h("div", { class: "ln", title: nm }, `${slotNo(nm, g.host) ?? nm}`), track);
     }
   }
@@ -1070,53 +1164,48 @@ function schedule(m) {
   const helps = Object.values(table.steps).filter((t) => t.of && fast(t.id) && own.some((l) => l.step === t.of && l.until > now));
   if (helps.length) {
     const who = m.pages.length > 1 ? `Pages (${m.pages.length})` : m.pages[0].label;
-    const track = h("div", "track");
-    for (const t of helps) for (const l of own.filter((l) => l.step === t.of && l.until > now)) segment(track, { ...l, from: Math.max(l.from, now), step: t.id, lane: who, of: t.of }, "next", `g ${t.id} ${l.from}`);
+    const [track, tv] = trackOf();
+    for (const t of helps) for (const l of own.filter((l) => l.step === t.of && l.until > now)) segment(tv, { ...l, from: Math.max(l.from, now), step: t.id, lane: who, of: t.of }, "next", `g ${t.id} ${l.from}`);
     lanes.append(h("div", "gh", "Pages"), h("div", "ghr"), h("div", { class: "ln", title: m.pages.map((p) => p.label).join(", ") }, who), track);
   }
   // Each region all on the map as it's built now: a mark at its `map_at` (several at one time, one).
   const outs = {};
-  for (const r of fc?.regions || []) if (r.map_at && r.map_at >= now && r.map_at <= t1) (outs[r.map_at] ||= []).push(m.regionName[r.id] || r.id);
+  for (const r of fc?.regions || []) if (r.map_at && r.map_at >= now && r.map_at <= hi) (outs[r.map_at] ||= []).push(m.regionName[r.id] || r.id);
   if (Object.keys(outs).length) {
-    const track = h("div", "track outs");
+    const [track, tv] = trackOf();
+    track.classList.add("outs");
     for (const [at, nms] of Object.entries(outs)) {
-      track.append(withCard(h("b", { style: { left: x(+at) } }), `o ${at}`, () => cardBody(`All on the map ≈ ${clock(+at)}`, [["regions", `${nms.slice(0, 12).join(", ")}${nms.length > 12 ? ` and ${nms.length - 12} more` : ""}`]])));
+      tv.append(withCard(h("b", { style: { left: pct(+at) } }), `o ${at}`, () => cardBody(`All on the map ≈ ${clock(+at)}`, [["regions", `${nms.slice(0, 12).join(", ")}${nms.length > 12 ? ` and ${nms.length - 12} more` : ""}`]])));
     }
     lanes.append(h("div", "ln", "On the map"), track);
   }
-  lanes.append(h("div"), timeAxis(t0, t1, now, x));
+  lanes.append(h("div"), tl.axis);
+  withCard(tl.archive, "sched-archive", () => cardBody("Older history: in the archive", [
+    ["here", "the last 7 days (the history's days)"],
+    ["older", "on the NAS, a tar a day (state/coord/history-archive)"],
+    ["from this page", "not reachable"],
+  ]));
   // The legend: the stages seen, in the build's order, each by its id; what a segment's look says;
-  // the regions' mark.
+  // the regions' mark. Each item hovered: its jobs' tiles lit on the map, the rest of the schedule
+  // dimmed.
   const order = table.stages.map((g) => g.id);
   const stages = [...stagesSeen].sort((p, q) => order.indexOf(p) - order.indexOf(q));
-  const legend = h("div", "legend", stages.map((g) => h("span", null, h("i", { style: { background: stageColour(g) } }), g)),
-    h("span", "keys", h("i", "k-past"), "ran", h("i", "k-failed"), "failed", h("i", "k-run"), "running", h("i", "k-next"), "to come"),
-    Object.keys(outs).length ? h("span", null, h("i", { class: "rmark" }), "a region all on the map") : null);
+  const lg = (key, ...kids) => h("span", { class: "lgi", "data-lg": key }, ...kids);
+  const KEYS = [["past", "k-past", "ran"], ["failed", "k-failed", "failed"], ["running", "k-run", "running"], ["next", "k-next", "to come"]];
+  const legend = h("div", "legend", stages.map((g) => lg(`lg stage ${g}`, h("i", { style: { background: stageColour(g) } }), g)),
+    h("span", "keys", KEYS.filter(([k]) => kinds.has(k)).map(([k, cls, text]) => lg(`lg kind ${k}`, h("i", cls), text))),
+    Object.keys(outs).length ? h("span", null, h("i", { class: "rmark" }), "a region all on the map") : null,
+    h("span", "hint", tc ? "a job to come or running, hovered: red arrows from what it waits on and to what waits on it" : null),
+    h("span", "hint", "drag to move · pinch or ⌥ scroll to zoom"));
+  legend.addEventListener("pointerover", (e) => { if (e.pointerType !== "touch") tl.hover(e.target.closest?.("[data-lg]")?.dataset.lg || null); });
+  legend.addEventListener("pointerleave", () => tl.hover(null));
   // (A forecast cut at its time budget (forecast::BUDGET): the lanes end where its run stopped.)
   const cut = fc?.partial && h("div", "why", "Partial: the forecast was cut at its time budget; each lane ends where its run stopped, the work after it not placed");
-  const reaching = ui.past && past.first && past.first.t > t0 && past.asking ? h("span", "dim", " · reading further back…") : null;
-  const pick = h("select", { class: "past", title: "How far back the schedule shows the jobs that ran (the history keeps 7 days)", onchange: (e) => { e.target.blur(); ui.past = +e.target.value; ctx.store.set("past", ui.past); render(); loadPast(last); } },
-    PAST.map(([s, t]) => h("option", { value: s, selected: s === ui.past }, t)));
-  const top = h("div", "schedtop", h("label", "small dim", "Show past tasks ", pick), reaching, h("span", "small dim", fc?.done_at ? `done ≈ ${clock(fc.done_at)}` : fc ? "" : "no forecast yet (it comes with the lead's next plan)"));
-  if (!groups.length && !helps.length) return h("div", "sched", top, h("div", "small dim", "Nothing ran or is planned in this window."));
-  const cap = h("div", "nowcap", h("span", null, "now"));
-  cap.style.setProperty("--f", ((Math.max(t0, Math.min(t1, now)) - t0) / span).toFixed(5));
-  return h("div", "sched", top, cut || null, h("div", "lanewrap", lanes, cap), legend);
-}
-
-// A dense time axis under the lanes: a tick at each round time (chartmath.js timeTicks, by local
-// time, midnight a day's name), smaller ones between, none crowding the now line (its cap says "now").
-function timeAxis(t0, t1, now, x) {
-  const most = Math.max(4, Math.round((Math.min(ctx.tabsEl.clientWidth || window.innerWidth, 1400) - 160) / 70));
-  const major = timeTicks(t0, t1, most);
-  const axis = h("div", "axis");
-  for (const t of timeTicks(t0, t1, most * 4)) axis.append(h("b", { style: { left: x(t.t) } }));
-  for (const t of major) {
-    const d = new Date(t.t * 1000);
-    const label = t.label === "00:00" ? DAYS[d.getDay()] : t.label;
-    if (Math.abs(t.t - now) > (t1 - t0) / most / 2) axis.append(h("span", { class: label === t.label ? "" : "day", style: { left: x(t.t) } }, label));
-  }
-  return axis;
+  const reaching = past.asking && past.first && past.first.t > lo ? h("span", "small dim", "reading the week's history…") : null;
+  const top = h("div", "schedtop", reaching, h("span", "small dim", fc?.done_at ? `done ≈ ${clock(fc.done_at)}` : fc ? "" : "no forecast yet (it comes with the lead's next plan)"));
+  if (!groups.length && !helps.length) { schedBody.replaceChildren(top, h("div", "small dim", "Nothing ran or is planned in the week.")); return; }
+  schedBody.replaceChildren(top, cut || "", tl.el, legend);
+  tl.placed(lanes, span);
 }
 
 // ---- Jobs: the stages ---------------------------------------------------------------------------------
@@ -1193,7 +1282,7 @@ function stepCard(m, it) {
 // when it's done and on the map, its tiles left and a bar of its stages (built, under way, to come,
 // each with its targets left on hover); under the pointer, its region lit on the left panel's map
 // (task #685) and its card. Kept across the page's renders (its scroll and search with it).
-const ui = { order: "map", filter: "", feed: "all", past: 6 * 3600 };
+const ui = { order: "map", filter: "", feed: "all" };
 // (Taller where the tabs' panel is under 720 px wide, a phone's or one dragged narrow: a name and
 // the line under it wrap there, dash.css; 112 px holds the longest at 375 px.)
 let ROW_H = 40;
@@ -1669,10 +1758,7 @@ function tabs(m, md) {
       part("d-overview", () => section("d-overview", null, null, overview(m, md))),
     ],
     jobs: [
-      part("d-sched", () => section("d-sched", "Schedule", "each Mac's jobs: those that ran, running, to come",
-        h("div", "box", schedule(m),
-          // (What the coordinator's own scheduler decides, run ahead: docs/pool.md §7.2. What it can't see, said.)
-          h("p", "note", "To come as the coordinator grants: by each Mac's room, cores and the NAS budget. Times and NAS weights are measured estimates, and no load from outside the build is assumed (optimistic while a Mac is in use); a pause, a repack, a Mac handing over on battery or a slow NAS moves the finish.")))),
+      part("d-sched", () => scheduleSection(m)),
       part("d-stages", () => section("d-stages", "Stages", m.lines.length ? `${fin} of ${m.lines.length} done · ⇄ any Mac may take it` : "", h("div", "box", stagesList(m)))),
     ],
     machines: [
@@ -1826,7 +1912,6 @@ async function pollOnce() {
  * pauses the build ("drain", "freeze") or lets it go on ("resume"); `store` keeps this browser's own (what it last showed). */
 export function dashboard(opts) {
   ctx = opts;
-  ui.past = PAST.some(([s]) => s === ctx.store.get("past", ui.past)) ? ctx.store.get("past", ui.past) : ui.past;
   wireCards();
   new ResizeObserver(() => rowHeight(ctx.tabsEl.clientWidth)).observe(ctx.tabsEl);
   let watching = false;

@@ -275,17 +275,31 @@ The Jobs tab's stages are the one exception.
   only), out of touch, on battery), each segment in its stage's colour (a `--st-<stage>` token in
   index.html, a hue each in either theme): the jobs that ran (the history's job ends: a lead's
   `end` on its slot's lane, a worker's leased `done` or `fail`, which names no slot, on its Mac's
-  first lane free by then; back as far as the Show past tasks choice: none, the past 1, 2, 6, 24,
-  48 or 72 hours or 7 days, this browser's own; read back from `/work/history` 5 000 events at a time, about 3.4 MB
+  first lane free by then; the history's whole seven days, read back from `/work/history` 5 000 events at a time, about 3.4 MB
   of JSON in four asks for a week's ~18 000 events, measured 23 Oct; runs of one step closer than
-  a pixel packed into one segment: `sums.js` pastRuns, packRuns, laneGroups, pastFrom, tested by
+  a pixel at the view's zoom packed into one segment: `sums.js` pastRuns, packRuns, laneGroups, pastFrom, tested by
   tools/check/worksums.test.mjs). A Mac's lanes are one group whatever names its slots had: an
   older agent's "(second job)" is slot 2, and a name that starts a Mac's current one up to a "-"
   is that Mac (`sums.js` macSlot: macOS renamed "Mac-mini" to "Mac-mini-de-Brandon"; the history
   names no Mac otherwise). Failed ones outlined red, those running now (to the now line)
   and the forecast's to come, faint; a red now line capped by a dot labelled "now"; each region's mark where it's all on the map; a
   dense time axis (`chartmath.js` timeTicks, midnight a day's name); the pages' lane when a page
-  helps.
+  helps. A timeline one moves (task #787, `timeline.js`; the view math in `sums.js` viewRange,
+  viewZoom, viewPan): it opens 12 h either side of now, now in the middle, and moves with now; its
+  domain is the history's seven days back to the forecast's end. Moved by a trackpad's two-finger
+  drag sideways (an up or down one scrolls the panel), a mouse's drag, one finger sideways on a
+  touch screen; zoomed by a trackpad's pinch (ctrl+wheel in Chrome, gesture events in Safari),
+  Opt+wheel on a mouse, two fingers' pinch on a touch screen, about the pointer; 10 min at the
+  narrowest. Each track's segments are placed once over the whole domain; the view is each track's
+  width and transform, so a pan lays nothing out (measured 26 Oct in Chrome at 120 Hz with ~4,200
+  segments: 10–11 ms a frame median, while a sideways wheel pans; the 10-second poll's render a
+  ~100 ms frame). At its far left end an archive sign: older history is in the archive
+  (`state/coord/history-archive`), not reachable from the page. A job hovered (or its card pinned,
+  a tap's): red square-cornered arrows from each forecast run it waits on and to each waiting on
+  it (the forecast's runs and dependencies, `/work/tocome`'s `runs` and `deps`: a running job is
+  its lane's first run of its step; a job that ran has none kept), everything else dimmed, its
+  tiles lit on the map; a legend item hovered (a stage, ran, failed, running, to come): its jobs
+  at full strength and all their tiles lit on the map.
 - **Jobs tab, the stages:** done and left of all the enabled regions' work (the one place the
   page counts a whole, task #685), in each step's noun (map tiles, z3 tiles, runs), no past runs or
   time: a stage's line (mark, id, counts, bar), then a row per step (mark, id, ⇄ when any Mac may

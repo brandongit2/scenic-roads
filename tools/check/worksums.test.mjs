@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileCovers, tileOf } from '../../web/work/sums.js';
+import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, runLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileCovers, tileOf } from '../../web/work/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -269,4 +269,31 @@ test('settings: an answer lacking a setting shows "not set" for it alone, the ot
   const pool = poolRows({ nas_room: { bytes: 3 * 2 ** 30, free: null } });
   assert.deepEqual(pool.map((r) => [r.key, r.now, !!r.input]), [['nas_room', '3.0 GB', true]]);
   assert.deepEqual(poolRows({ nas_room: { bytes: null } }).map((r) => r.now), ['off']);
+});
+
+test("schedule's view: 12 h each side of now at first, held in the domain, zoomed about the pointer (#787)", () => {
+  const now = 1000000, lo = now - 7 * 86400, hi = now + 2 * 86400;
+  const v = { c: 0, span: 86400 };
+  assert.deepEqual(viewRange(v, now, lo, hi), { t0: now - 43200, t1: now + 43200, span: 86400 });
+  // Zoomed in twice about a quarter of the way: the time there stays there.
+  const z = viewZoom(v, 2, 0.25, now, lo, hi), r = viewRange(z, now, lo, hi);
+  assert.equal(r.span, 43200);
+  assert.equal(r.t0 + 0.25 * r.span, now - 43200 + 0.25 * 86400);
+  // Never narrower than the least span, never wider than the domain.
+  assert.equal(viewRange(viewZoom(v, 1e9, 0.5, now, lo, hi), now, lo, hi).span, SCHED_MIN_SPAN);
+  assert.equal(viewRange(viewZoom(v, 1e-9, 0.5, now, lo, hi), now, lo, hi).span, hi - lo);
+  // Panned past either end: held at it.
+  assert.equal(viewRange(viewPan(v, -30 * 86400, now, lo, hi), now, lo, hi).t0, lo);
+  assert.equal(viewRange(viewPan(v, 30 * 86400, now, lo, hi), now, lo, hi).t1, hi);
+  // The view moves with now: the same view a minute later is a minute later.
+  assert.equal(viewRange(v, now + 60, lo + 60, hi).t0, now + 60 - 43200);
+});
+
+test("forecast runs: numbered by lane name in byte order, linked both ways (#787)", () => {
+  const lanes = { m4: [{}, {}], "Mac-mini": [{}], "m4 #2": [{}] };
+  assert.deepEqual(runNumbers(lanes), { first: { "Mac-mini": 0, m4: 1, "m4 #2": 3 }, total: 4 });
+  const l = runLinks([[0, 2], [1, 2], [2, 3]]);
+  assert.deepEqual(l.on.get(2), [0, 1]);
+  assert.deepEqual(l.then.get(2), [3]);
+  assert.equal(l.on.get(0), undefined);
 });

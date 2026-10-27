@@ -106,6 +106,63 @@ export function laneGroups(names, hosts) {
   return out;
 }
 
+// The schedule's view (task #787): its middle as seconds from now (`c`: it moves with now) and its
+// width in seconds (`span`), held in the timeline's domain [lo, hi] (unix s: the history's seven
+// days back to the forecast's end) and no narrower than SCHED_MIN_SPAN. `viewRange` is the times
+// it shows, {t0, t1, span}; `viewZoom` zooms by `k` (over 1: in) about the point at `f` (0–1) of its
+// width, that time kept under it; `viewPan` moves it `dt` seconds later. Each answers a view held
+// in the domain.
+export const SCHED_MIN_SPAN = 600;
+export function viewRange(v, now, lo, hi) {
+  const span = Math.min(Math.max(SCHED_MIN_SPAN, hi - lo), Math.max(SCHED_MIN_SPAN, v.span));
+  const t0 = Math.max(lo, Math.min(hi - span, now + v.c - span / 2));
+  return { t0, t1: t0 + span, span };
+}
+const viewOf = (t0, span, now, lo, hi) => {
+  const r = viewRange({ c: t0 + span / 2 - now, span }, now, lo, hi);
+  return { c: r.t0 + r.span / 2 - now, span: r.span };
+};
+export function viewZoom(v, k, f, now, lo, hi) {
+  const r = viewRange(v, now, lo, hi), at = r.t0 + f * r.span;
+  const span = Math.min(Math.max(SCHED_MIN_SPAN, hi - lo), Math.max(SCHED_MIN_SPAN, r.span / k));
+  return viewOf(at - f * span, span, now, lo, hi);
+}
+export function viewPan(v, dt, now, lo, hi) {
+  const r = viewRange(v, now, lo, hi);
+  return viewOf(r.t0 + dt, r.span, now, lo, hi);
+}
+
+// The forecast's runs numbered as `/work/tocome` numbers them (forecast::Runs): the lanes by name
+// in byte order (Rust's BTreeMap of strings: UTF-8 bytes), each lane's runs in order. {first: {lane:
+// its first run's number}, total}.
+const utf8 = new TextEncoder();
+const byBytes = (p, q) => {
+  const a = utf8.encode(p), b = utf8.encode(q);
+  for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return a.length - b.length;
+};
+export function runNumbers(lanes) {
+  const first = {};
+  let total = 0;
+  for (const nm of Object.keys(lanes || {}).sort(byBytes)) {
+    first[nm] = total;
+    total += lanes[nm].length;
+  }
+  return { first, total };
+}
+// The runs' dependencies (`/work/tocome`'s `deps`, [a, b]: b waits on a) both ways: `on` each
+// run's runs it waits on, `then` those waiting on it.
+export function runLinks(deps) {
+  const on = new Map(), then = new Map();
+  for (const [a, b] of deps || []) {
+    if (!on.has(b)) on.set(b, []);
+    if (!then.has(a)) then.set(a, []);
+    on.get(b).push(a);
+    then.get(a).push(b);
+  }
+  return { on, then };
+}
+
 // Where to ask `/work/history` from (its `since`) to reach back to time `from`, given the oldest
 // event held (`first`, {seq, t}): up to `chunk` events before it; null once it's reached (`first.t`
 // at or before `from`, or the first event) or with nothing held.

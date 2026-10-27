@@ -559,6 +559,21 @@ pub struct Forecast {
     /// (crate::agent::fcarchive).
     #[serde(skip)]
     pub placed: Vec<Placed>,
+    /// The schedule's runs (`lanes`), their targets and what each waits on: the build page's
+    /// (`/work/tocome`, with `placed`'s tiles: `ToCome::runs`). Not in the status.
+    #[serde(skip)]
+    pub runs: Runs,
+}
+
+/// The schedule's runs (`Forecast::lanes`) numbered in turn: the lanes by name, each lane's runs in
+/// order (run k is the k-th of that list). Each run's targets (its items', in order; a job under way
+/// that no item is, none), and the runs each waits on: [a, b] when an item of run b waits on one of
+/// run a (its own deps, a time-ordered release's, or a set's it waits on whole: `Items::groups`),
+/// each pair once, sorted; a run never on itself.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Runs {
+    pub targets: Vec<Vec<String>>,
+    pub deps: Vec<[u32; 2]>,
 }
 
 /// A target placed by the forecast's run (`Forecast::placed`).
@@ -580,6 +595,9 @@ pub struct Placed {
 pub struct ToCome {
     pub at: u64,
     pub macs: BTreeMap<String, BTreeMap<String, Vec<(String, u32)>>>,
+    /// The forecast's runs (`Forecast::runs`): the schedule's dependency arrows and each run's
+    /// tiles on the map (task #787).
+    pub runs: Runs,
 }
 
 /// Whether `t` names a tile ("z/x/y", z under 32, x and y in its grid), as the page's `tileOf`.
@@ -600,7 +618,7 @@ impl ToCome {
             let e = first.entry((mac.as_str(), p.step.as_str(), p.target.as_str())).or_insert(p.from);
             *e = (*e).min(p.from);
         }
-        let mut out = ToCome { at, macs: BTreeMap::new() };
+        let mut out = ToCome { at, macs: BTreeMap::new(), runs: Runs::default() };
         for ((mac, step, tile), from) in first {
             let off = u32::try_from(from.saturating_sub(at)).unwrap_or(u32::MAX);
             out.macs
@@ -618,9 +636,10 @@ impl ToCome {
         out
     }
 
-    /// `/work/tocome`'s answer: {at, macs: {mac: {step: [[tile, s from at]…]}}}, every Mac's.
+    /// `/work/tocome`'s answer: {at, macs: {mac: {step: [[tile, s from at]…]}}, runs: [[target…]…],
+    /// deps: [[a, b]…]}, every Mac's; runs numbered as `Runs` says.
     pub fn answer(&self) -> serde_json::Value {
-        serde_json::json!({ "at": self.at, "macs": self.macs })
+        serde_json::json!({ "at": self.at, "macs": self.macs, "runs": self.runs.targets, "deps": self.runs.deps })
     }
 }
 
@@ -761,6 +780,8 @@ struct Sim {
     grants: Vec<Grant>,
     /// Cut at its time budget before every item was placed (`forecast_by`).
     cut: bool,
+    /// The sets items wait on whole (`Items::groups`): what the schedule's runs wait on (`Runs`).
+    groups: Vec<Vec<usize>>,
 }
 
 /// A job the scheduler granted in the forecast's run (`Forecast::grants`): to which Mac, its step
@@ -1284,7 +1305,6 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
             group_waiting[g].push(i);
         }
     }
-    drop(groups);
     // (Those not ready before a time (`Input::release`): counted as waiting until then, the
     // latest first.)
     let mut timed: Vec<(f64, usize)> = inp
@@ -1551,7 +1571,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
         free[m] = start;
     }
     let done = items.iter().all(|i| i.by.is_some());
-    Sim { items, region_items, done, grants, cut }
+    Sim { items, region_items, done, grants, cut, groups }
 }
 
 /// How far into the run its grants are kept (`Forecast::grants`, s): what the lead's real grants are
@@ -1809,6 +1829,7 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
     .collect();
     // Each machine's next jobs: its items in time order (not those it's building now), a step's run
     // together (at most three).
+    let mut run_of: Vec<Option<(usize, usize)>> = vec![None; expected.items.len()];
     for (m, mac) in inp.machines.iter().enumerate() {
         let mut mine: Vec<&Item> = expected.items.iter().filter(|i| i.by == Some(m) && !i.running).collect();
         mine.sort_by(|a, b| a.from.total_cmp(&b.from));
@@ -1832,16 +1853,22 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
         f.next.insert(mac.name.clone(), next);
         // Its schedule: the job its slot runs now that no item is (its time left), then its runs
         // of a step.
-        let mut runs: Vec<(String, f64, f64, usize)> =
-            expected.items.iter().filter(|i| i.by == Some(m)).map(|i| (i.step.clone(), i.from, i.end, 1)).collect();
+        // (Each run's items, for `Runs`.)
+        let mut runs: Vec<(String, f64, f64, usize, Option<usize>)> = expected
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.by == Some(m))
+            .map(|(k, i)| (i.step.clone(), i.from, i.end, 1, Some(k)))
+            .collect();
         if let Some((step, n)) =
             mac.running.as_ref().filter(|_| !expected.items.iter().any(|i| i.running && i.by == Some(m)))
         {
-            runs.push((step.clone(), 0.0, mac.busy_s.max(0.0), *n));
+            runs.push((step.clone(), 0.0, mac.busy_s.max(0.0), *n, None));
         }
         runs.sort_by(|a, b| a.1.total_cmp(&b.1));
         let mut lane: Vec<Lane> = Vec::new();
-        for (step, from, until, n) in runs {
+        for (step, from, until, n, item) in runs {
             match lane.last_mut() {
                 Some(l) if l.step == step && from <= l.until as f64 - now + 120.0 => {
                     l.until = at(until);
@@ -1849,10 +1876,61 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
                 }
                 _ => lane.push(Lane { step, from: at(from), until: at(until), n }),
             }
+            if let Some(k) = item {
+                run_of[k] = Some((m, lane.len() - 1));
+            }
         }
         f.lanes.insert(mac.name.clone(), lane);
     }
+    f.runs = runs_of(&f.lanes, &inp.machines, &expected, &run_of);
     f
+}
+
+/// The schedule's runs (`Runs`): `run_of` each item's (machine, its run in its lane), the
+/// machines' lanes in `lanes` by their names.
+fn runs_of(
+    lanes: &BTreeMap<String, Vec<Lane>>,
+    machines: &[Machine],
+    sim: &Sim,
+    run_of: &[Option<(usize, usize)>],
+) -> Runs {
+    // (Each lane's first run's number: the lanes by name, as `lanes` holds them.)
+    let mut first: BTreeMap<&str, u32> = BTreeMap::new();
+    let mut total = 0u32;
+    for (name, l) in lanes {
+        first.insert(name, total);
+        total += l.len() as u32;
+    }
+    let id = |k: usize| -> Option<u32> {
+        let (m, r) = run_of.get(k).copied().flatten()?;
+        Some(first.get(machines.get(m)?.name.as_str())? + r as u32)
+    };
+    let mut targets: Vec<Vec<String>> = vec![Vec::new(); total as usize];
+    let ids: Vec<Option<u32>> = (0..sim.items.len()).map(id).collect();
+    for (k, it) in sim.items.iter().enumerate() {
+        if let Some(r) = ids[k] {
+            targets[r as usize].push(it.target.clone());
+        }
+    }
+    // (A set's runs, worked out once: the sets are shared by many items.)
+    let group_runs: Vec<Vec<u32>> = sim
+        .groups
+        .iter()
+        .map(|g| {
+            let mut v: Vec<u32> = g.iter().filter_map(|&d| ids.get(d).copied().flatten()).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        })
+        .collect();
+    let mut deps: std::collections::BTreeSet<[u32; 2]> = std::collections::BTreeSet::new();
+    for (k, it) in sim.items.iter().enumerate() {
+        let Some(b) = ids[k] else { continue };
+        let on = it.deps.iter().filter_map(|&d| ids.get(d).copied().flatten());
+        let on_sets = it.groups.iter().filter_map(|&g| group_runs.get(g)).flatten().copied();
+        deps.extend(on.chain(on_sets).filter(|&a| a != b).map(|a| [a, b]));
+    }
+    Runs { targets, deps: deps.into_iter().collect() }
 }
 
 /// Where the lead's real grants departed from forecast `f`'s next steps: each Mac and step granted
@@ -2363,6 +2441,32 @@ mod tests {
         inp.running.insert(("terrain-hi".into(), "3/1/1".into()), 1);
         let f = forecast(&inp);
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 900 + 300));
+    }
+
+    #[test]
+    fn the_runs_say_their_targets_and_what_each_waits_on() {
+        // (Task #787.) One Mac, one region: its terrain, then its two z6 tiles (they wait on the
+        // region's terrain, a set: `Items::groups`), after the reach they wait on too (its own dep).
+        let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &[])];
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        inp.before = vec![("reach".into(), "reach".into(), Cost { secs: 600.0, known: true, peak_mb: 0 })];
+        let f = forecast(&inp);
+        let steps: Vec<&str> = f.lanes["m4"].iter().map(|l| l.step.as_str()).collect();
+        let at = |s: &str| steps.iter().position(|&x| x == s).unwrap() as u32;
+        assert_eq!(f.runs.targets.len(), steps.len(), "{steps:?}");
+        assert_eq!(f.runs.targets[at("unit") as usize], ["6/8/8", "6/8/9"]);
+        assert!(f.runs.deps.contains(&[at("terrain-hi"), at("unit")]), "{:?} {steps:?}", f.runs.deps);
+        assert!(f.runs.deps.contains(&[at("reach"), at("unit")]), "{:?} {steps:?}", f.runs.deps);
+        assert!(f.runs.deps.iter().all(|[a, b]| a != b), "never a run on itself");
+        // Two Macs: the runs numbered by lane name, so a run on "m1" comes before "m4"'s.
+        let mut two = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 1.0, true)], &cost);
+        two.before = inp.before.clone();
+        let f = forecast(&two);
+        let n1 = f.lanes["m1"].len();
+        assert_eq!(f.runs.targets.len(), n1 + f.lanes["m4"].len());
+        let tc = ToCome { runs: f.runs.clone(), ..ToCome::default() }.answer();
+        assert_eq!(tc["runs"].as_array().unwrap().len(), f.runs.targets.len());
+        assert_eq!(tc["deps"].as_array().unwrap().len(), f.runs.deps.len());
     }
 
     #[test]
@@ -3661,7 +3765,8 @@ mod tests {
         assert!(thread_cpu() - cpu0 < Duration::from_millis(50), "a wait is no CPU time");
     }
 
-    /// A recorded forecast (SCENIC_FORECAST_RECORD: a forecast-input.json) timed. For profiling at live scale (unset: nothing).
+    /// A recorded forecast (SCENIC_FORECAST_RECORD: a forecast-input.json) timed. For profiling at live scale (unset: nothing);
+    /// SCENIC_FORECAST_OUT and SCENIC_TOCOME_OUT write its forecast and its `/work/tocome` answer.
     #[test]
     fn recorded_timing() {
         let Ok(p) = std::env::var("SCENIC_FORECAST_RECORD") else { return };
@@ -3703,6 +3808,14 @@ mod tests {
         );
         if let Ok(out) = std::env::var("SCENIC_FORECAST_OUT") {
             std::fs::write(out, serde_json::to_vec_pretty(&f).unwrap()).unwrap();
+        }
+        // (`/work/tocome`'s answer as the lead would make it: for the page's tests, touch-test.mjs --tocome.)
+        if let Ok(out) = std::env::var("SCENIC_TOCOME_OUT") {
+            let macs: Vec<String> =
+                r.input.machines.iter().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())).collect();
+            let mut tc = ToCome::of(&f.placed, &macs, f.at);
+            tc.runs = f.runs.clone();
+            std::fs::write(out, serde_json::to_vec(&tc.answer()).unwrap()).unwrap();
         }
     }
 }

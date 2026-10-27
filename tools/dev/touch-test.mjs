@@ -3,7 +3,7 @@
 // (DPR 3, mobile, 5 touch points, an iPhone user agent), real touches (Input.dispatchTouchEvent),
 // every tab walked: no sideways scroll, no console errors, screenshots; then the touch checks
 // (cards pin and unpin, the world map pans and pinches, the map's solo and age controls, the
-// panels' split drags, the schedule's dropdown, settings fields focus without a jump). One PASS/FAIL line per check; exit 1 on a FAIL.
+// panels' split drags, the schedule's timeline pans and pinches, settings fields focus without a jump). One PASS/FAIL line per check; exit 1 on a FAIL.
 //
 //   node tools/dev/touch-test.mjs [--out DIR] [--port N]   the Chrome run
 //   node tools/dev/touch-test.mjs --serve [--port N]       only the server (for Mobile Safari)
@@ -12,6 +12,11 @@
 //   --tocome FILE     /work/tocome answered from FILE ({at, macs: {mac: {step: [[tile, s]…]}}}, the
 //                     lead's forecast::ToCome, the map's queue); without it an agent before #685,
 //                     which answers one Mac at a time, is asked for each and the answers put together
+//   --forecast FILE   the lead's forecast in /work/swarm replaced by FILE's (a Forecast as JSON:
+//                     forecast.rs recorded_timing's SCENIC_FORECAST_OUT), its times moved so it was
+//                     made when this server started; with --tocome FILE (SCENIC_TOCOME_OUT, the same
+//                     run's) /work/tocome is FILE's whole, its runs and dependencies the schedule's
+//                     arrows (#787), its `at` the forecast's
 //   --built FILE      /work/built answered from FILE ({at, steps: {step: [z/x/y…]}}, agent::builtview:
 //                     an agent before #674 hasn't the call)
 //   --live FILE       /work/live's `net.hosts` given FILE's hosts ({host: {in, out, requests, conns,
@@ -58,6 +63,19 @@ const READS = { pause: ["pause"], swarm: [], steps: [], regions: ["steps"], sett
 const CATS = arg("--catalogs", null);
 const TOCOME = arg("--tocome", null);
 const BUILT = arg("--built", null);
+const FORECAST = arg("--forecast", null);
+// (FILE's forecast moved to this server's start: every unix time in it by the same amount.)
+const shifted = FORECAST && (() => {
+  const f = JSON.parse(readFileSync(FORECAST, "utf8")), d = Math.floor(Date.now() / 1000) - f.at;
+  const mv = (t) => (t == null ? t : t + d);
+  return { ...f, at: mv(f.at), done_at: mv(f.done_at), range: f.range?.map(mv),
+    lanes: Object.fromEntries(Object.entries(f.lanes || {}).map(([k, ls]) => [k, ls.map((l) => ({ ...l, from: mv(l.from), until: mv(l.until) }))])),
+    next: Object.fromEntries(Object.entries(f.next || {}).map(([k, ls]) => [k, ls.map((l) => ({ ...l, from: mv(l.from), until: mv(l.until) }))])),
+    regions: (f.regions || []).map((r) => ({ ...r, ready_at: mv(r.ready_at), map_at: mv(r.map_at) })),
+    steps: (f.steps || []).map((x) => ({ ...x, done_at: mv(x.done_at) })),
+    publishes: (f.publishes || []).map((x) => ({ ...x, at: mv(x.at) })),
+    grants: (f.grants || []).map((x) => ({ ...x, at: mv(x.at) })) };
+})();
 const LIVE = arg("--live", null);
 const STEPS = arg("--steps", null);
 const MEMBER = arg("--member", null);
@@ -107,7 +125,8 @@ function serve() {
           const ask = (body) => fetch(`http://${AGENT.host}:${AGENT.port}/work/tocome`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))));
           let a;
           try {
-            if (TOCOME) {
+            if (TOCOME && shifted) a = { ...JSON.parse(readFileSync(TOCOME, "utf8")), at: shifted.at };
+            else if (TOCOME) {
               const f = JSON.parse(readFileSync(TOCOME, "utf8"));
               const at = await fetch(`http://${AGENT.host}:${AGENT.port}/work/swarm`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((w) => w.agent?.forecast?.at ?? f.at, () => f.at);
               a = { at, macs: Object.fromEntries(Object.entries(f.macs).map(([mac, steps]) => [mac, Object.fromEntries(Object.entries(steps).map(([k, ts]) => [k, ts.map(([t, s]) => [t, Math.max(0, s + f.at - at)])]))])) };
@@ -143,7 +162,7 @@ function serve() {
           if (call !== "swarm" || r.statusCode !== 200) { res.writeHead(r.statusCode, r.headers); return r.pipe(res); }
           let b = "";
           r.on("data", (c) => (b += c));
-          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
+          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
         });
         fw.on("error", (e) => { console.error(`touch-test server: ${url.pathname}: ${e.message}`); res.writeHead(502); res.end("{}"); });
         fw.end(out);
@@ -483,7 +502,8 @@ async function run() {
 
     // Cards pin on a tap, unpin on a tap elsewhere (the Jobs tab's).
     await show("jobs");
-    const c = await at("[data-card]", ` && e.tagName !== "CANVAS"`);
+    // (A schedule segment only with its middle in view: the rest of its week is out of its track.)
+    const c = await at("[data-card]", ` && e.tagName !== "CANVAS" && ((x) => { const r = x.getBoundingClientRect(), t = x.closest(".track")?.getBoundingClientRect(); return !t || Math.abs((r.left + r.right) / 2 - (t.left + t.right) / 2) < t.width / 2 - 2; })(e)`);
     if (!c) check("jobs: a card pins on a tap", false, "nothing with a card shown");
     else {
       await tap(c[0], c[1]);
@@ -533,7 +553,7 @@ async function run() {
       // the Jobs tab's stage and step rows, the schedule's legend, each running job on the Machines tab.)
       const names = await js(`({ legend: [...document.querySelectorAll("#mappane .wmap-legend .lg[data-name]")].map((b) => b.dataset.name), legendText: [...document.querySelectorAll(".wmap-steps .lg.step")].map((b) => b.textContent.split(" ")[0]), strip: [...document.querySelectorAll(".strip > i[data-card]")].map((e) => e.dataset.card.slice(2)) })`);
       await show("jobs");
-      Object.assign(names, await js(`(() => { const txt = (e) => e.textContent.replace(" ⇄", "").trim(); return { stageRows: [...document.querySelectorAll(".stages > .sh .title")].map(txt), stepRows: [...document.querySelectorAll(".stages > .st .title")].map(txt), schedule: [...document.querySelectorAll(".sched .legend > span:not(.keys)")].map(txt).filter((x) => x !== "a region all on the map") }; })()`));
+      Object.assign(names, await js(`(() => { const txt = (e) => e.textContent.replace(" ⇄", "").trim(); return { stageRows: [...document.querySelectorAll(".stages > .sh .title")].map(txt), stepRows: [...document.querySelectorAll(".stages > .st .title")].map(txt), schedule: [...document.querySelectorAll(".sched .legend > .lgi")].map(txt) }; })()`));
       await show("machines");
       names.jobs = await js(`[...document.querySelectorAll(".mc .job .what")].map((e) => [...e.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim()).filter((x) => x && !/^(Waiting|Nothing|Paused|This Mac)/.test(x))`);
       const area = new Set(["root", "lo", "hi", "deep"]);
@@ -570,7 +590,7 @@ async function run() {
       // drawn. The past jobs come with the history read further back: waited for, up to 20 s. None
       // then: an INFO only when the last 6 h of the history has no such job's end either (the live
       // build's state), else a FAIL.)
-      const jobSel = ".sched .track > i.running, .sched .track > i.past", jobs = `[...document.querySelectorAll(".panel:not([hidden]) .sched .track > i.running, .panel:not([hidden]) .sched .track > i.past")]`;
+      const jobSel = ".sched .tv > i.running, .sched .tv > i.past", jobs = `[...document.querySelectorAll(".panel:not([hidden]) .sched .tv > i.running, .panel:not([hidden]) .sched .tv > i.past")].filter(((x) => { const r = x.getBoundingClientRect(), t = x.closest(".track")?.getBoundingClientRect(); return !t || Math.abs((r.left + r.right) / 2 - (t.left + t.right) / 2) < t.width / 2 - 2; })).reverse()`;
       await until(`${jobs}.length > 0`, 20000);
       let jc = null;
       const nJobs = await js(`${jobs}.length`);
@@ -749,15 +769,23 @@ async function run() {
     await page.send("Emulation.setDeviceMetricsOverride", PHONE ? { width: WIDTH, height: 844, deviceScaleFactor: 3, mobile: true } : { width: WIDTH, height: 900, deviceScaleFactor: 2, mobile: false });
     await until(`document.documentElement.clientWidth === ${WIDTH}`, 3000);
 
-    // The Jobs schedule's dropdown: a tap focuses it; a choice re-renders the schedule.
+    // The Jobs schedule's timeline (#787): one finger sideways moves it, two fingers' pinch zooms
+    // it, the page staying put; no "Show past tasks" dropdown.
     await show("jobs");
-    const sel = await at("select.past");
-    if (!sel) check("jobs: the schedule's dropdown", false, "not shown");
+    check("jobs: no schedule dropdown", !(await js(`!!document.querySelector(".sched select")`)));
+    const lw = await at(".sched .lanewrap");
+    if (!lw) check("jobs: the schedule's timeline", false, "not shown");
     else {
-      await tap(sel[0], sel[1]);
-      const focused = await js(`document.activeElement?.matches("select.past")`);
-      const changed = await js(`(async () => { const el = document.querySelector("select.past"); const was = el.value; const next = [...el.options].find((o) => o.value !== was).value; el.value = next; el.dispatchEvent(new Event("change", { bubbles: true })); await new Promise((r) => setTimeout(r, 600)); const now = document.querySelector("select.past").value; el.ownerDocument.querySelector("select.past").value = was; document.querySelector("select.past").dispatchEvent(new Event("change", { bubbles: true })); return now === next; })()`);
-      check("jobs: the schedule's dropdown focuses on a tap and takes a choice", focused && changed, `focused ${focused}, choice kept ${changed}`);
+      const tf = `document.querySelector(".sched .tv")?.style.transform || ""`;
+      const y0 = await js("scrollY"), t0 = await js(tf);
+      await drag(lw[0], lw[1], 120, 0);
+      const t1 = await js(tf);
+      check("jobs: the schedule pans with one finger sideways", t1 !== t0 && (await js("scrollY")) === y0, `${t0} → ${t1}`);
+      const span = `document.querySelector(".sched .axis").textContent`;
+      const a0 = await js(span);
+      await pinch(lw[0], lw[1], 20, 80);
+      await sleep(400);
+      check("jobs: the schedule zooms with a pinch", (await js(span)) !== a0 && (await js("scrollY")) === y0, `axis ${a0} → ${await js(span)}`);
     }
 
     // Settings fields (Machines): a tap focuses each without the page jumping. Never pressed Set.
