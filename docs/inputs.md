@@ -500,8 +500,10 @@ region (its cells' pieces joined across the cells' edges, as the stretches are) 
 up to `sliver_km2` joins the region with water it shares the longest edge with, as does one
 touching none (a hole in the zones' water off any coast, where their source has a rock OSM hasn't);
 one over `sliver_km2` touching none stays. Land in no region
-over `sliver_km2` is an error (`rg-cover`), found at a point inside its largest part of land and
-naming the regions that had any of it both (taken from both). The region whose water is
+over `sliver_km2` (a stretch joined across the cells' edges) is an error (`rg-cover`), found at a
+point inside its largest part of land and naming the regions with water that had any of it both
+(taken from both); where most of such a stretch is land two regions with water both had, the error
+is that land in two regions (`overlap`), at a point inside it, naming them. The region whose water is
 `rest` takes what's left; without one, water left is an error, as is water in two regions. A region
 without `water` resolves as before, and no new rule changes it: a hand-out gives only to regions
 with water (naming one without is `rg-ref`), and one without `water` may not name one with it
@@ -719,7 +721,7 @@ All errors; ids `rg-<check>.<hash16>`.
 | `rg-hand-out` | a `hand_out_all` region left with land or water no region of its folder could take |
 | `rg-rest` | `rest` in more than one region's water |
 | `rg-rules` | a `_rules.toml` that doesn't parse or has an unknown field or value |
-| `rg-cover` | with `cover = "earth"`: water in two regions, or in none without a `rest` region; land in no region over `sliver_km2` |
+| `rg-cover` | with `cover = "earth"`: water in two regions, or in none without a `rest` region; land in no region, or mostly in two regions with water, over `sliver_km2` |
 
 A held region keeps its last geometry; a new held region isn't in the coverage yet. Deleting a
 region file takes it out with the next version.

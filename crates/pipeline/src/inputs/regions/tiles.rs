@@ -24,7 +24,8 @@
 //!   them with water; then what no region covers, joined across the cells' edges: each piece within
 //!   100 m of land, up to `sliver_km2`, joins the region with water sharing the longest edge with
 //!   it, as does one touching none (a hole in the zones' water off any coast); one over it touching
-//!   none stays; land in no region over `sliver_km2` is `rg-cover`, as is
+//!   none stays; land in no region over `sliver_km2` is `rg-cover` (an overlap where most of it
+//!   was in two regions with water), as is
 //!   water in two regions in a cell, or in none without a `rest` region. The `rest` region takes
 //!   what's left. Regions without water are never changed.
 
@@ -1666,6 +1667,8 @@ struct GapLand {
     twice_km2: f64,
     twice: BTreeSet<String>,
     spot: Option<(f64, Pt)>,
+    /// A point inside its largest piece of land two regions had.
+    twice_spot: Option<(f64, Pt)>,
 }
 
 /// Land taken from two regions in a cell: the pair and the land.
@@ -1680,13 +1683,20 @@ fn gap_land(g: &Area, land: &Area, twice: &Twice) -> GapLand {
         .map(|p| (geom::area_km2(&Area { polys: vec![p.clone()] }), p))
         .max_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(k, p)| (k, interior(p)));
-    let mut out = GapLand { km2: geom::area_km2(&on), twice_km2: 0.0, twice: BTreeSet::new(), spot };
+    let mut out = GapLand { km2: geom::area_km2(&on), twice_km2: 0.0, twice: BTreeSet::new(), spot, twice_spot: None };
     for (a, b, t) in twice {
-        let k = geom::area_km2(&on.intersect(t));
+        let o = on.intersect(t);
+        let k = geom::area_km2(&o);
         if k > 0.0 {
             out.twice_km2 += k;
             out.twice.insert(a.clone());
             out.twice.insert(b.clone());
+            for p in &o.polys {
+                let pk = geom::area_km2(&Area { polys: vec![p.clone()] });
+                if out.twice_spot.is_none_or(|s| pk > s.0) {
+                    out.twice_spot = Some((pk, interior(p)));
+                }
+            }
         }
     }
     out
@@ -1928,30 +1938,49 @@ fn cells_pass(
         if km2 <= fill_km2 {
             continue;
         }
-        let Some(v) = ls.iter().filter_map(|l| l.spot).max_by(|a, b| a.0.total_cmp(&b.0)).map(|s| s.1) else {
+        let twice_km2: f64 = ls.iter().map(|l| l.twice_km2).sum();
+        let ids: Vec<&String> = ls.iter().flat_map(|l| l.twice.iter()).collect::<BTreeSet<_>>().into_iter().collect();
+        // (Mostly land two regions with water both had: an overlap, said as one, at a point of it;
+        // else a gap, at a point of its land, saying what of it two regions had.)
+        let both = twice_km2 * 2.0 >= km2;
+        let spot = |f: fn(&GapLand) -> Option<(f64, Pt)>| {
+            ls.iter().filter_map(|l| f(l)).max_by(|a, b| a.0.total_cmp(&b.0)).map(|s| s.1)
+        };
+        let Some(v) = (if both { spot(|l| l.twice_spot) } else { spot(|l| l.spot) }) else {
             continue;
         };
-        let twice_km2: f64 = ls.iter().map(|l| l.twice_km2).sum();
-        let ids: BTreeSet<&String> = ls.iter().flat_map(|l| l.twice.iter()).collect();
-        let two = if twice_km2 > 0.1 {
-            format!(
-                " ({twice_km2:.1} km² of it was in two of {}, taken from both)",
-                ids.into_iter().map(String::as_str).collect::<Vec<_>>().join(", ")
+        let names = ids.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
+        let (found, message) = if both {
+            (
+                "overlap",
+                format!(
+                    "{twice_km2:.1} km² of land by {:.4}°, {:.4}° is in two regions with water ({names}): land is in one region",
+                    v[0] as f64 / 1e7,
+                    v[1] as f64 / 1e7
+                ),
             )
         } else {
-            String::new()
+            let two = if twice_km2 > 0.1 {
+                format!(" ({twice_km2:.1} km² of it in two regions with water, {names}: taken from both)")
+            } else {
+                String::new()
+            };
+            (
+                "gap",
+                format!(
+                    "{km2:.1} km² of land by {:.4}°, {:.4}° is in no region{two}, over sliver_km2 ({fill_km2}) for the fill to give it to a neighbour",
+                    v[0] as f64 / 1e7,
+                    v[1] as f64 / 1e7
+                ),
+            )
         };
-        problems.push(Problem {
-            check: "rg-cover",
-            about: vec![format!("{},{}", v[0].div_euclid(CELL) * 2, v[1].div_euclid(CELL) * 2)],
-            found: vec!["gap".into()],
-            files: vec![super::resolve::RULES.into()],
-            message: format!(
-                "{km2:.1} km² of land by {:.4}°, {:.4}° is in no region{two}, over sliver_km2 ({fill_km2}) for the fill to give it to a neighbour",
-                v[0] as f64 / 1e7,
-                v[1] as f64 / 1e7
-            ),
-        });
+        let mut about = vec![format!("{},{}", v[0].div_euclid(CELL) * 2, v[1].div_euclid(CELL) * 2)];
+        let mut files = vec![super::resolve::RULES.to_string()];
+        if both {
+            about = ids.iter().map(|s| s.to_string()).collect();
+            files = ids.iter().filter_map(|x| folder.regions.get(*x).map(|r| r.0.clone())).collect();
+        }
+        problems.push(Problem { check: "rg-cover", about, found: vec![found.into()], files, message });
     }
     // Applied cell by cell: each region's fill, and the rest's.
     let mut fill: BTreeMap<(String, Cell), Vec<Area>> = BTreeMap::new();

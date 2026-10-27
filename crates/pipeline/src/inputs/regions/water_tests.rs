@@ -880,3 +880,30 @@ fn disabled_regions_still_cover_the_earth_once() {
     let sum: f64 = off.resolved.values().map(|r| geom::area_km2(&area_of(&r.geometry))).sum();
     assert!((sum - geom::area_km2(&geom::earth())).abs() < 5.0, "{sum}");
 }
+
+/// Land two regions with water both have is said as land in two regions, at a point inside it,
+/// naming both: not as land "in no region" (it's taken from both before the gaps are read).
+#[test]
+fn land_in_two_regions_with_water_is_an_overlap() {
+    let w = world();
+    let dup = "id = \"dup\"\nname = \"Dup\"\noutline = [\"box:0.7,0.7,0.8,0.8\"]\nwater = []\n";
+    let mut files = all();
+    files.push(("w/dup.toml", dup));
+    let out = run(&w, &files);
+    let cover: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover").collect();
+    assert_eq!(cover.len(), 1, "{:?}", out.problems);
+    let p = cover[0];
+    assert_eq!(p.found, vec!["overlap"]);
+    assert_eq!(p.about, vec!["a", "dup"]);
+    assert!(p.message.contains("in two regions") && !p.message.contains("no region"), "{}", p.message);
+    let at: Vec<f64> = p
+        .message
+        .split(" by ")
+        .nth(1)
+        .unwrap()
+        .split('°')
+        .take(2)
+        .map(|s| s.trim_start_matches(", ").parse().unwrap())
+        .collect();
+    assert!((0.7..0.8).contains(&at[0]) && (0.7..0.8).contains(&at[1]), "{}", p.message);
+}
