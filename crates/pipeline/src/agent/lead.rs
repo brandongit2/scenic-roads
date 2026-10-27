@@ -1630,7 +1630,7 @@ mod tests {
                 m[1].run.side.driver().records().is_some_and(|r| r.term == 2 && r.seq > 0)
             });
             let root = b.root.clone();
-            let mf = root.join("state/build/manifest.json");
+            let mf = root.join("state/build/manifest.json").unchecked_path();
             let read = |b: &Mac| crate::out::records_now(&b.root).unwrap();
             let rec = b.run.side.driver().records().unwrap().clone();
             assert_eq!((read(&b).term, read(&b).seq), (rec.term, rec.seq), "this app's readers: the term's snapshot");
@@ -1642,7 +1642,7 @@ mod tests {
             b.run.keep_today(true);
             assert!(!mf.exists(), "every member reads the snapshot: not written");
             // A's heartbeat not there (lost, or A never beat): counted as an older app's.
-            let hb = root.join(crate::pool::beat::path(&a.id()));
+            let hb = root.join(crate::pool::beat::path(&a.id())).unchecked_path();
             let kept = std::fs::read(&hb).unwrap();
             std::fs::remove_file(&hb).unwrap();
             b.pass(PROBE_S);
@@ -1657,7 +1657,8 @@ mod tests {
             b.go();
             assert!(!b.run.side.readers_ready, "A's app reads today's files");
             b.run.keep_today(true);
-            let m: BTreeMap<String, String> = crate::out::read_record(&mf).unwrap();
+            let m: BTreeMap<String, String> =
+                crate::out::read_record(&store::nasfs::NasPath::local_for_test(&mf)).unwrap();
             assert_eq!(m, b.run.side.driver().records().unwrap().manifest, "written for A's readers");
             assert_eq!(b.run.today.map(|t| t.0), Some(2));
             // A back on this app: written no more.

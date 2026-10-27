@@ -208,9 +208,9 @@ pub(crate) fn want(slots: usize, running: usize) -> usize {
 
 /// The build's records' manifest and keys as a reader has them now (crate::out::brief_now), read
 /// within `nasread::DEADLINE`: none (empty ones) when they can't be read now, for showing.
-fn records_deadlined(root: &Path) -> crate::pool::records::Brief {
-    let r = root.to_path_buf();
-    nasread::with(root, move || crate::out::brief_now(&r).map_err(std::io::Error::other)).unwrap_or_default()
+fn records_deadlined(root: &store::nasfs::NasRoot) -> crate::pool::records::Brief {
+    let r = root.clone();
+    nasread::with(&root.path(), move || crate::out::brief_now(&r).map_err(std::io::Error::other)).unwrap_or_default()
 }
 
 /// `SCENIC_TEST_WORKER` when set: the name the agent works and reports under in place of its Mac's
@@ -2025,7 +2025,7 @@ impl Agent {
     }
 
     /// The records' manifest and the planning keys (`planning_keys`), from one read of the records.
-    fn planning_records(&self, root: &Path) -> Result<(BTreeMap<String, String>, build::Keys)> {
+    fn planning_records(&self, root: &store::nasfs::NasRoot) -> Result<(BTreeMap<String, String>, build::Keys)> {
         let r = crate::out::brief_now(root)?;
         Ok((r.manifest, r.keys.with_waiting(&self.handoff_bases(root))?))
     }
@@ -7006,7 +7006,7 @@ impl Agent {
         // today's files before the pool.)
         let term = self.pool_seen.as_ref().map_or(0, |p| p.gates.term);
         if term > 0 {
-            stat(&mut h, &root.join(crate::pool::records::path(term)));
+            stat(&mut h, (&root.join(crate::pool::records::path(term))).into());
         }
         for f in ["state/build/manifest.json", "state/build/jobs.json"] {
             stat(&mut h, (&root.join(f)).into());
