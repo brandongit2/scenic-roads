@@ -713,14 +713,16 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
 
 /// Task #445: a GeoTIFF dataset in the points' own CRS reads their `lon` and `lat` as given, no
 /// copy of them per dataset (16 bytes a point each: a dense unit's 85 M points, 1.4 GB a dataset).
+/// Task #803: the datasets of one projected CRS share one projection of the points (held by any
+/// of them), made once a batch (`Sampler::projections`).
 #[test]
 fn a_geotiff_dataset_in_degrees_keeps_no_copy_of_the_points() {
     use super::super::declared::{Dataset, Source};
     let f = crate::fetch::MapFetch::default();
     let o = Opts { fetch: &f, store: None, local: None };
-    let ds = |crs: u16| Dataset {
+    let ds = |crs: u16, id: &str| Dataset {
         convert: None,
-        id: "d".into(),
+        id: id.into(),
         code: 1,
         resolution: 30.0,
         cover: None,
@@ -728,25 +730,35 @@ fn a_geotiff_dataset_in_degrees_keeps_no_copy_of_the_points() {
         outline: None,
     };
     let (lon, lat) = (vec![-80.0, -79.5], vec![43.0, 44.0]);
-    let cache = Arc::new(Mutex::new(BlockCache::new(1 << 20)));
-    let memo = Arc::new(TileMemo::new(1 << 20));
-    let cover = Cover::of(None);
-    for crs in [4326, 4269] {
-        let d = ds(crs);
-        let s = Set::new(&d, &o, &cache, &memo).unwrap();
-        assert!(matches!(s.reader(&lon, &lat, &cover), Reader::Geo(_, None)), "EPSG:{crs}");
+    let plan = Plan {
+        fmt: 1,
+        version: "t".into(),
+        tag: "1".into(),
+        datasets: vec![ds(4326, "a"), ds(4269, "b"), ds(3979, "c"), ds(3979, "d")],
+    };
+    let s = Sampler::new(&plan, &o).unwrap();
+    // (Only the last dataset holds the second point: the projection is of the points any of its
+    // CRS's datasets hold.)
+    let xy = s.projections(&lon, &lat, &|m, i| i == 0 || m == 3);
+    assert_eq!(xy.keys().copied().collect::<Vec<_>>(), [3979], "one projection a projected CRS");
+    for k in 0..2 {
+        assert!(matches!(s.sets[k].reader(&xy), Reader::Geo(_, None)), "EPSG:{}", [4326, 4269][k]);
     }
-    // (One in another CRS: its points projected, into its own two columns.)
-    let d = ds(3979);
-    let s = Set::new(&d, &o, &cache, &memo).unwrap();
-    let r = s.reader(&lon, &lat, &cover);
-    let Reader::Geo(_, Some((x, y))) = &r else { panic!("projected") };
+    let r = s.sets[2].reader(&xy);
+    let Reader::Geo(_, Some(own)) = &r else { panic!("projected") };
+    let (x, y) = (&own.0, &own.1);
     assert_eq!((x.len(), y.len()), (2, 2));
     assert!(x.iter().chain(y).all(|v| v.is_finite() && v.abs() > 1000.0), "{x:?} {y:?}");
-    let own = Some((x.clone(), y.clone()));
-    let (nx, ny) = native(&own, &lon, &lat);
+    let Reader::Geo(_, Some(other)) = s.sets[3].reader(&xy) else { panic!("projected") };
+    assert!(Arc::ptr_eq(own, &other), "the two datasets of EPSG:3979 share the one projection");
+    let held = Some(own.clone());
+    let (nx, ny) = native(&held, &lon, &lat);
     assert_eq!((nx, ny), (&x[..], &y[..]));
     assert_eq!(native(&None, &lon, &lat), (&lon[..], &lat[..]));
+    // (A point no dataset of the CRS holds isn't projected.)
+    let xy = s.projections(&lon, &lat, &|_, i| i == 0);
+    let p = &xy[&3979];
+    assert!(p.0[0].is_finite() && p.0[1].is_nan() && p.1[1].is_nan());
 }
 
 /// Task #397 follow-up: the reading ahead goes no further than a quarter of the cache holds, so

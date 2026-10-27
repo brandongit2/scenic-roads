@@ -442,6 +442,65 @@ impl Cover {
         Cover { outline: d.outline.clone(), ..Cover::of(d.cover.as_deref()) }
     }
 
+    /// `contains` of every point of the box `b` (w, s, e, n, degrees) at once: Some(true) where it
+    /// holds every point of the box, Some(false) where none, None where the points must each be
+    /// asked (the box crosses a cell's edge or an outline, or is wider than a few cells). What
+    /// `contains` answers for each point, by the cells any point of the box may lie in (a point
+    /// on a cell's edge is in both cells beside it) and, where those are all edge cells, by the
+    /// outlines' exact box tests (crate::coverage::Shape::covers_rect, `meets_rect`). A sampling's
+    /// run of neighbouring points (a terrain tile's row) is one answer, not a test a point.
+    pub fn contains_box(&self, b: [f64; 4]) -> Option<bool> {
+        if self.world {
+            return Some(true);
+        }
+        let [w, s, e, n] = b;
+        if !(w <= e && s <= n && w.is_finite() && e.is_finite() && s.is_finite() && n.is_finite()) {
+            return None;
+        }
+        let (x0, x1) = (w.floor() as i32 - (w == w.floor()) as i32, e.floor() as i32);
+        let (y0, y1) = (s.floor() as i32 - (s == s.floor()) as i32, n.floor() as i32);
+        if (x1 - x0 + 1) as i64 * (y1 - y0 + 1) as i64 > 16 {
+            return None;
+        }
+        let (mut any_held, mut all_held, mut any_edge, mut all_edge) = (false, true, false, true);
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                let held = self.cells.contains(&(x, y));
+                any_held |= held;
+                all_held &= held;
+                if held {
+                    let edge = self.outline.as_ref().is_some_and(|o| o.edges.contains(&(x, y)));
+                    any_edge |= edge;
+                    all_edge &= edge;
+                }
+            }
+        }
+        if !any_held {
+            return Some(false);
+        }
+        if !all_held {
+            return None;
+        }
+        let Some(o) = &self.outline else { return Some(true) };
+        if !any_edge {
+            return Some(true);
+        }
+        if !all_edge {
+            return None;
+        }
+        // (Every point is in an edge cell alone: the outlines decide. Their E7 rounding is
+        // monotonic, so the box's rounded corners span every point's rounded place.)
+        let e7 = |v: f64| (v * 1e7).round() as i32;
+        let r = [e7(w), e7(s), e7(e), e7(n)];
+        if o.shapes.iter().any(|s| s.covers_rect(r)) {
+            Some(true)
+        } else if !o.shapes.iter().any(|s| s.meets_rect(r)) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
     /// Whether point `lon`, `lat` (degrees) is in a cell of it (a point on a cell's edge in both
     /// cells beside it) and, in a cell its outlines don't wholly hold, inside them.
     pub fn contains(&self, lon: f64, lat: f64) -> bool {
@@ -1276,6 +1335,53 @@ mod tests {
         assert_eq!(at(&moved, &mc, [9.2, 45.2, 9.3, 45.3]), None);
         // (Its outlines not read: named by their files, never as held.)
         assert!(at(&m, &plain, inland).is_some());
+    }
+
+    /// A box's answer (`contains_box`) is every point's (`contains`): boxes inside a whole cell,
+    /// across cells, at the coast's cell inside the land, at sea, across the coast and on cells'
+    /// edges, with and without the outline; a definite answer agrees with each point in the box,
+    /// and a box inside a whole cell or wholly on one side of the coast is answered at once.
+    #[test]
+    fn a_box_is_held_as_its_points_are() {
+        let land = geometry("jp", [8.5, 44.5, 10.5, 46.5]);
+        let (m, c) = outlined(&[[9.0, 45.0, 12.0, 46.0]], &["jp"], &[land]);
+        let plain = Cover::of(m.cover.as_deref());
+        let mut seed = 7u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut sure = 0;
+        for _ in 0..3000 {
+            let (w, s) = (8.5 + next() * 4.0, 44.5 + next() * 2.0);
+            let (w, s) = if next() < 0.1 { (w.round(), s.round()) } else { (w, s) };
+            let side = next() * if next() < 0.5 { 0.02 } else { 1.5 };
+            let b = [w, s, w + side, s + side * 0.3];
+            for cover in [&c, &plain] {
+                let pts: Vec<(f64, f64)> = (0..40)
+                    .map(|_| (b[0] + (b[2] - b[0]) * next(), b[1] + (b[3] - b[1]) * next()))
+                    .chain([(b[0], b[1]), (b[2], b[3]), (b[0], b[3]), (b[2], b[1])])
+                    .collect();
+                match cover.contains_box(b) {
+                    Some(v) => {
+                        sure += 1;
+                        for (x, y) in pts {
+                            assert_eq!(cover.contains(x, y), v, "{b:?} said {v}, yet ({x}, {y})");
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+        assert!(sure > 1000, "{sure} boxes answered at once");
+        assert_eq!(c.contains_box([9.2, 45.2, 9.3, 45.3]), Some(true), "inside a whole cell");
+        assert_eq!(c.contains_box([10.1, 45.2, 10.2, 45.3]), Some(true), "the coast's cell, on land");
+        assert_eq!(c.contains_box([10.7, 45.2, 10.8, 45.3]), Some(false), "the coast's cell, at sea");
+        assert_eq!(c.contains_box([10.4, 45.2, 10.55, 45.3]), None, "across the coast");
+        assert_eq!(c.contains_box([11.5, 45.2, 11.6, 45.3]), Some(false), "a cell cut whole");
+        assert_eq!(c.contains_box([9.9, 45.2, 10.1, 45.3]), None, "a whole cell and the coast's");
+        assert_eq!(plain.contains_box([10.7, 45.2, 10.8, 45.3]), Some(true), "no outline: the cell holds it");
+        assert_eq!(c.contains_box([9.0, 45.2, 9.1, 45.3]), None, "on the edge of a cell not held");
     }
 
     /// A border: two regions share cell 20,45 (the border at 20.4°E); a dataset scoped to the

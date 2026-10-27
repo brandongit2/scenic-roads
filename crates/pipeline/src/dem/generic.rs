@@ -575,9 +575,10 @@ impl GeoSet<'_> {
             // (A file whose fill mask has voids: no block of it is known to hold data in every pixel.)
             let has_mask = masks && self.has_voids(k)?;
             let clean = (!has_mask).then(|| &self.clean[k]);
+            let mask = if has_mask { self.mask(k)? } else { None };
             let v = sample_raster_noting(&t, level, &xs, &ys, clean).with_context(|| self.files[k].0.clone())?;
             for (n, (&j, v)) in mine.iter().zip(v).enumerate() {
-                if v.is_finite() && !(has_mask && self.masked(k, xs[n], ys[n])?) {
+                if v.is_finite() && !mask.as_ref().is_some_and(|m| m.masked(xs[n], ys[n])) {
                     out[j] = (v, k as u32);
                 } else {
                     let i = sel[j] as usize;
@@ -723,13 +724,15 @@ impl GeoSet<'_> {
         };
         let iw = (ice - ics + 1).max(0) as usize;
         let nodata = t.nodata();
+        // (The file's fill mask found once, not a pixel: `mask` clones its handle.)
+        let mask = self.mask(k)?;
         let mut ok = vec![false; mw * mh];
         for r in y0..=y1 {
             for c in x0..=x1 {
                 ok[(r - y0) as usize * mw + (c - x0) as usize] = if c >= ics && c <= ice && r >= irs && r <= ire {
                     valid(inside.as_ref().unwrap()[(r - irs) as usize * iw + (c - ics) as usize], nodata) && {
                         let (wx, wy) = (gt[0] + (c as f64 + 0.5) * gt[1], gt[3] + (r as f64 + 0.5) * gt[5]);
-                        !self.masked(k, wx, wy)?
+                        !mask.as_ref().is_some_and(|m| m.masked(wx, wy))
                     }
                 } else {
                     let (wx, wy) = (gt[0] + (c as f64 + 0.5) * gt[1], gt[3] + (r as f64 + 0.5) * gt[5]);
@@ -1395,21 +1398,21 @@ impl<'a> Set<'a> {
     }
 
     /// The set reading points `lon`, `lat` (one batch's): a GeoTIFF dataset in a CRS but the
-    /// points' own with their native coordinates where `cover` holds them (NaN elsewhere), made
-    /// straight into their two columns (no list of pairs beside them).
-    fn reader<'s>(&'s self, lon: &[f64], lat: &[f64], cover: &Cover) -> Reader<'s, 'a> {
+    /// points' own with their native coordinates (`xy`, the batch's points projected to that CRS:
+    /// `Sampler::projections`, shared by the datasets of one CRS).
+    fn reader<'s>(&'s self, xy: &HashMap<u16, Arc<(Vec<f64>, Vec<f64>)>>) -> Reader<'s, 'a> {
         match self {
             Set::Tiles(t) => Reader::Tiles(t),
-            Set::Geo(g) if projected(g.crs) => {
-                let atlas = Projection::of(g.crs).expect("a projected CRS");
-                let xy = lon
-                    .par_iter()
-                    .zip(lat.par_iter())
-                    .map(|(&lo, &la)| if cover.contains(lo, la) { atlas.project(lo, la) } else { (f64::NAN, f64::NAN) })
-                    .unzip();
-                Reader::Geo(g, Some(xy))
-            }
+            Set::Geo(g) if projected(g.crs) => Reader::Geo(g, Some(xy[&g.crs].clone())),
             Set::Geo(g) => Reader::Geo(g, None),
+        }
+    }
+
+    /// Its CRS where it projects the points (`projected`).
+    fn projected_crs(&self) -> Option<u16> {
+        match self {
+            Set::Geo(g) if projected(g.crs) => Some(g.crs),
+            _ => None,
         }
     }
 }
@@ -1442,7 +1445,7 @@ enum Reader<'s, 'a> {
     /// A GeoTIFF dataset, with its points' native coordinates where its CRS isn't the points'
     /// own (EPSG:4326 and 4269 read `lon` and `lat` as given: no copy of them, 16 bytes a point, for
     /// each such dataset).
-    Geo(&'s GeoSet<'a>, Option<(Vec<f64>, Vec<f64>)>),
+    Geo(&'s GeoSet<'a>, Option<Arc<(Vec<f64>, Vec<f64>)>>),
     Tiles(&'s TileSet<'a>),
 }
 
@@ -1534,9 +1537,9 @@ impl Reader<'_, '_> {
 }
 
 /// A GeoTIFF dataset's points in its CRS: its own columns, else the points' `lon` and `lat`.
-fn native<'b>(xy: &'b Option<(Vec<f64>, Vec<f64>)>, lon: &'b [f64], lat: &'b [f64]) -> (&'b [f64], &'b [f64]) {
+fn native<'b>(xy: &'b Option<Arc<(Vec<f64>, Vec<f64>)>>, lon: &'b [f64], lat: &'b [f64]) -> (&'b [f64], &'b [f64]) {
     match xy {
-        Some((x, y)) => (x, y),
+        Some(xy) => (&xy.0, &xy.1),
         None => (lon, lat),
     }
 }
@@ -1579,6 +1582,39 @@ impl Mono<'_> {
             (self.to)(f);
         }
     }
+}
+
+/// Points sampled together whose box `Cover::contains_box` answers at once.
+const MEMBER_RUN: usize = 1024;
+
+/// Whether `cover` holds each of points `lon`, `lat` (`Cover::contains`, by point): runs of
+/// `MEMBER_RUN` neighbours answered by their box where it can be (a terrain tile's rows, inside a
+/// cell and away from an outline: one test a run, not a point), the rest point by point.
+fn membership(cover: &Cover, lon: &[f64], lat: &[f64]) -> Vec<bool> {
+    let mut out = vec![false; lon.len()];
+    if cover.world {
+        out.fill(true);
+        return out;
+    }
+    out.par_chunks_mut(MEMBER_RUN).enumerate().for_each(|(c, o)| {
+        let at = c * MEMBER_RUN;
+        let (lo, la) = (&lon[at..at + o.len()], &lat[at..at + o.len()]);
+        let b = lo
+            .iter()
+            .zip(la)
+            .fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, (&x, &y)| {
+                [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]
+            });
+        match cover.contains_box(b) {
+            Some(v) => o.fill(v),
+            None => {
+                for (i, m) in o.iter_mut().enumerate() {
+                    *m = cover.contains(lo[i], la[i]);
+                }
+            }
+        }
+    });
+    out
 }
 
 /// Points `lon`, `lat` (degrees) sampled from `plan` (`Sampler::sample`, in one batch).
@@ -1631,21 +1667,52 @@ impl<'a> Sampler<'a> {
         })
     }
 
+    /// The batch's points projected to each CRS its GeoTIFF datasets read in (`projected`), by
+    /// EPSG code: a point held by any dataset of that CRS (`held`: by dataset and point) is
+    /// projected once, NaN where none holds it.
+    fn projections(
+        &self,
+        lon: &[f64],
+        lat: &[f64],
+        held: &(dyn Fn(usize, usize) -> bool + Sync),
+    ) -> HashMap<u16, Arc<(Vec<f64>, Vec<f64>)>> {
+        let mut out: HashMap<u16, Arc<(Vec<f64>, Vec<f64>)>> = HashMap::new();
+        for set in &self.sets {
+            let Some(crs) = set.projected_crs() else { continue };
+            if out.contains_key(&crs) {
+                continue;
+            }
+            let ks: Vec<usize> = (0..self.sets.len()).filter(|&m| self.sets[m].projected_crs() == Some(crs)).collect();
+            let member = |i: usize| ks.iter().any(|&m| held(m, i));
+            let p = Projection::of(crs).expect("a projected CRS");
+            let xy = (0..lon.len())
+                .into_par_iter()
+                .map(|i| if member(i) { p.project(lon[i], lat[i]) } else { (f64::NAN, f64::NAN) })
+                .unzip();
+            out.insert(crs, Arc::new(xy));
+        }
+        out
+    }
+
     /// Points `lon`, `lat` (degrees) sampled. `said`: how far it is, 0 to 1, never backwards,
     /// ending at 1: once per chunk of a dataset's points and per blend step (the blends' weight is
     /// their points to measure against the points to sample), not per point. The blend stage hands
     /// `step` (the share of its call done, 0 to 1) to a distance measure that reports.
     pub fn sample(&self, lon: &[f64], lat: &[f64], said: Said) -> Result<Sampled> {
         use crate::timings::{phase, Class};
-        let (plan, covers) = (self.plan, &self.covers);
+        let plan = self.plan;
         let n = lon.len();
         let mono = Mono { last: Mutex::new(0.0), to: said };
+        // (Which datasets cover each point, worked out once: the counts, each dataset's points
+        // and the blends' read it, not the covers again.)
+        let covers: Vec<Vec<bool>> = self.covers.iter().map(|c| membership(c, lon, lat)).collect();
+        let xy = self.projections(lon, lat, &|m, i| covers[m][i]);
         // (The work to say by: points to sample (those some dataset covers), and points to measure (the
         // first dataset covering one is followed by another).)
         let (to_sample, to_blend) = (0..n)
             .into_par_iter()
             .map(|i| {
-                let mut c = (0..covers.len()).filter(|&k| covers[k].contains(lon[i], lat[i]));
+                let mut c = (0..covers.len()).filter(|&k| covers[k][i]);
                 match (c.next(), c.next()) {
                     (None, _) => (0usize, 0usize),
                     (Some(_), None) => (1, 0),
@@ -1665,10 +1732,9 @@ impl<'a> Sampler<'a> {
         for (k, ds) in plan.datasets.iter().enumerate() {
             let p = phase(&format!("{} sampled", ds.id), Class::Net);
             let since = crate::fetch::fetched_bytes();
-            let r = self.sets[k].reader(lon, lat, &covers[k]);
-            let sel: Vec<u32> = (0..n as u32)
-                .filter(|&i| first[i as usize] == u16::MAX && covers[k].contains(lon[i as usize], lat[i as usize]))
-                .collect();
+            let r = self.sets[k].reader(&xy);
+            let sel: Vec<u32> =
+                (0..n as u32).filter(|&i| first[i as usize] == u16::MAX && covers[k][i as usize]).collect();
             // (By tile or file, so a chunk reads each tile once, not once per chunk.)
             let sel = r.in_reading_order(sel, lon, lat);
             if !sel.is_empty() {
@@ -1718,10 +1784,8 @@ impl<'a> Sampler<'a> {
                 if first[i] as usize != k {
                     continue;
                 }
-                let coarsest = (k + 1..plan.datasets.len())
-                    .filter(|&m| covers[m].contains(lon[i], lat[i]))
-                    .map(|m| res[m])
-                    .fold(0.0f64, f64::max);
+                let coarsest =
+                    (k + 1..plan.datasets.len()).filter(|&m| covers[m][i]).map(|m| res[m]).fold(0.0f64, f64::max);
                 if coarsest > 0.0 {
                     sel.push(i as u32);
                     radius.push(4.0 * coarsest.max(res[k]));
@@ -1750,7 +1814,7 @@ impl<'a> Sampler<'a> {
                     dist[i as usize].is_finite()
                         && second[i as usize] == u16::MAX
                         && (first[i as usize] as usize) < k
-                        && covers[k].contains(lon[i as usize], lat[i as usize])
+                        && covers[k][i as usize]
                 })
                 .collect();
             if sel.is_empty() {
@@ -1857,13 +1921,13 @@ impl Sampler<'_> {
         let mut filled = 0;
         for (k, ds) in plan.datasets.iter().enumerate() {
             let Set::Geo(_) = &self.sets[k] else { continue };
-            let sel: Vec<u32> = (0..lon.len() as u32)
-                .filter(|&i| got.elev[i as usize].is_nan() && self.covers[k].contains(lon[i as usize], lat[i as usize]))
-                .collect();
+            let member = membership(&self.covers[k], lon, lat);
+            let sel: Vec<u32> =
+                (0..lon.len() as u32).filter(|&i| got.elev[i as usize].is_nan() && member[i as usize]).collect();
             if sel.is_empty() {
                 continue;
             }
-            let r = self.sets[k].reader(lon, lat, &self.covers[k]);
+            let r = self.sets[k].reader(&self.projections(lon, lat, &|m, i| m == k && member[i]));
             let Reader::Geo(g, xy) = &r else { continue };
             let (x, y) = native(xy, lon, lat);
             let sel = r.in_reading_order(sel, lon, lat);
