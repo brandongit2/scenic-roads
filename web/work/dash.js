@@ -394,7 +394,7 @@ function askToCome(m) {
   if (!m.fc || toCome.key === key || toCome.asking) return;
   toCome.asking = true;
   const lead = (last?.macs || []).find((x) => x.host === m.a.host);
-  // (A member's agent answers 503: it made no forecast.)
+  // (A member's agent answers `making`, no `at`: it made no forecast, so the lead is asked.)
   ctx.call("/work/tocome", {}).catch(() => [0, null]).then(([code, v]) => (code === 200 && v && v.at === m.fc?.at ? v : lead ? remote(lead, toCome.st, {}, "/work/tocome") : null))
     .catch(() => null)
     .then((v) => { toCome = { ...toCome, key, ans: toCome.lead === m.a.host ? v : null, asking: false }; render(); });

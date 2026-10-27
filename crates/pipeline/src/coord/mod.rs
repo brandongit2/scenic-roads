@@ -360,7 +360,7 @@ pub struct Shared {
     /// given one (503).
     pub built: Option<Arc<crate::agent::builtview::BuiltView>>,
     /// The build page's regions as this Mac's agent last made them (crate::agent::regionsview):
-    /// `/work/regions` out of the pool. None: not made yet (503).
+    /// `/work/regions` out of the pool. None: not made yet (`making`).
     pub regions: Option<Arc<serde_json::Value>>,
     /// Each region's targets built of all by step (crate::agent::build::region_steps), as this
     /// Mac's agent last counted them (`{at, regions: {id: {step: [built, all]}}}`), and when a page
