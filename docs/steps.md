@@ -119,7 +119,8 @@ What each step does, in detail. The steps as one table (names, chains, the check
     station's pixels are a cross-section). A station's height is the median of its whole river
     pixels; the course's profile is the closest monotone fit to those (weighted isotonic
     regression), falling along the course or against it, whichever fits closer (no flow direction
-    is trusted; a tie keeps OSM's, drawn downstream). Each river pixel takes its station's level,
+    is trusted; a tie keeps OSM's, drawn downstream), then averaged over 8 stations each side (still
+    monotone), so its flats meet in ramps rather than steps across the river. Each river pixel takes its station's level,
     blended with its own height by its river share as lakes' are (the banks). A course whose whole
     pixels already lie within 1 m of its profile (all but a tenth: 3DEP's hydro-flattening) keeps
     its pixels, as do river pixels no course reaches and rivers drawn only as lines. Each tile's

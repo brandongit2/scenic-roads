@@ -612,8 +612,9 @@ const OFF_SHARE: f64 = 0.1;
 /// pixels: isotonic regression) falling one way or the other, whichever fits closer (OSM draws a
 /// waterway downstream; a tie keeps that way), a station without whole pixels taking its
 /// neighbour's on the course. A course whose whole pixels already lie within FLAT_M of its profile
-/// (all but OFF_SHARE) keeps its pixels: its source levelled it. River pixels no course reaches
-/// keep theirs.
+/// (all but OFF_SHARE) keeps its pixels: its source levelled it; any other's profile is then
+/// averaged along it (`smooth`, SMOOTH stations each side: still monotone), so the fit's flats meet
+/// in ramps, not steps across the river. River pixels no course reaches keep theirs.
 pub fn rivers(e: &[f32], wt: &WaterTile) -> Option<Vec<f32>> {
     if wt.river.is_empty() || wt.flow.is_empty() {
         return None;
@@ -692,6 +693,7 @@ pub fn rivers(e: &[f32], wt: &WaterTile) -> Option<Vec<f32>> {
                 .sum::<usize>();
             let total = ws.iter().sum::<f64>();
             if off as f64 > OFF_SHARE * total {
+                let f = smooth(&f, SMOOTH);
                 for i in from..to {
                     fit[i] = f[i - from] as f32;
                 }
@@ -739,6 +741,21 @@ fn profile(h: &[f64], w: &[f64]) -> Option<Vec<f64>> {
         *v = first;
     }
     Some(out)
+}
+
+/// How many stations each side a course's fitted profile is averaged over (`smooth`): a step
+/// between two of the fit's flats becomes a ramp, about this many pixels each side of it.
+const SMOOTH: usize = 8;
+
+/// Profile `f` averaged over `r` stations each side, its ends' heights repeated past them: still
+/// monotone (each term of the average is), its flats' steps ramps.
+fn smooth(f: &[f64], r: usize) -> Vec<f64> {
+    let n = f.len() as isize;
+    (0..n)
+        .map(|i| {
+            (-(r as isize)..=r as isize).map(|k| f[(i + k).clamp(0, n - 1) as usize]).sum::<f64>() / (2 * r + 1) as f64
+        })
+        .collect()
 }
 
 /// The weighted least-squares non-decreasing fit of `y` (pool adjacent violators).
@@ -1210,6 +1227,12 @@ pub mod tests {
         // Falling, a station without a height taking its neighbour's.
         assert_eq!(profile(&[5.0, f64::NAN, 6.0, 1.0], &[1.0, 0.0, 1.0, 1.0]).unwrap(), [5.5, 5.5, 5.5, 1.0]);
         assert!(profile(&[f64::NAN], &[0.0]).is_none());
+        // A step between two flats becomes a ramp, still falling, its ends kept.
+        let f = [5.0, 5.0, 5.0, 5.0, 1.0, 1.0, 1.0, 1.0];
+        let s = smooth(&f, 2);
+        assert_eq!((s[0], s[7]), (5.0, 1.0));
+        assert!(s.windows(2).all(|w| w[1] <= w[0]), "{s:?}");
+        assert_eq!(&s[2..6], [4.2, 3.4, 2.6, 1.8]);
     }
 
     /// The key own_key had until task #464's fix (gap 11).
