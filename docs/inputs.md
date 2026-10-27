@@ -486,8 +486,9 @@ inland of the coastline's, sea where the water's parts stopped short of it (the 
 land's edge, the big lakes' shores included, never a cell's edge) — is joined across the cells'
 edges into stretches; a stretch whose every point (its vertices and a point inside each piece) is
 within `COAST_REACH_M` (1 km) of a region's land (a stretch of land) or water and lakes (a stretch
-of sea) goes to the nearest such region, split at the median line where several are nearest, each
-part to its region if that has `water` (a region without `water` keeps its outline: its part stays
+of sea) goes to the nearest such region, split at the median line where several are nearest (a
+piece under 0.01 km², `SPECK_KM2`, whole to the region nearest a point inside it), each part to its
+region if that has `water` (a region without `water` keeps its outline: its part stays
 out). So a region's land and water meet on the coastline's coast (a `land:` part names the land
 before this); a stretch reaching past 1 km (an island no outline has, a long inlet the zones stop
 short of) stays out, for the cover check. A region's

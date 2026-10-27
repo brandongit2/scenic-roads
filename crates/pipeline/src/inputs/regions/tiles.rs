@@ -1239,6 +1239,10 @@ fn make_land(
 /// of a region's land, sea within this of its water.
 pub const COAST_REACH_M: f64 = 1_000.0;
 
+/// A coast piece several regions are nearest, under this (km²), goes whole to the one nearest the
+/// point inside it; a larger one is split at the median line.
+pub const SPECK_KM2: f64 = 0.01;
+
 /// One coastline for land and water: the outlines' coastal edges taken from the coastline (OSM's
 /// land, the pass's). What no region takes along the coastline, on either side of it — its land where
 /// an outline's coast lay inland of it, its sea where the water's parts stopped short of it — is
@@ -1259,13 +1263,6 @@ fn coast(
         .collect();
     let takes = |id: &str| made.contains_key(id) && folder.regions.get(id).is_some_and(|(_, r)| r.has_water());
     // A region's side (land, or water and lakes) in a cell.
-    let side_of = |id: &str, sea: bool, c: Cell| -> Area {
-        match made.get(id) {
-            Some(m) if sea => m.water.get(c).union(&m.lakes.get(c)),
-            Some(m) => m.land.get(c),
-            None => others.get(id).map(|t| t.get(c)).unwrap_or_default(),
-        }
-    };
     let ids: Vec<&String> = made.keys().chain(others.keys()).collect();
     // (Which regions have any of their area in each cell.)
     let mut at: HashMap<Cell, Vec<usize>> = HashMap::new();
@@ -1286,14 +1283,40 @@ fn coast(
             None => others[ids[k]].cells.get(&c).into_iter().collect(),
         }
     };
+    // (Each side's regions' edges in cell `c` and round it within 4 km of it, shifted as they lie
+    // from it.)
+    let index = |c: Cell, sea: bool| {
+        let none = Vec::new();
+        let bx = cell_box(c);
+        let lat = ((c.1 * CELL) as f64 * 1e-7).abs().max(((c.1 + 1) * CELL) as f64 * 1e-7).min(89.0);
+        let pad = (4.0 * COAST_REACH_M / 111_320.0 * 1e7 / lat.to_radians().cos()) as i64;
+        let near_box = [bx[0] - pad, bx[1] - pad, bx[2] + pad, bx[3] + pad];
+        let mut idx = SegIndex::default();
+        for x in c.0 - 1..=c.0 + 1 {
+            let (w, shift) = wrap(x);
+            for y in (c.1 - 1).max(-45)..=(c.1 + 1).min(44) {
+                for &k in at.get(&(w, y)).unwrap_or(&none) {
+                    for a in side_ref(k, sea, (w, y)) {
+                        for r in a.polys.iter().flatten() {
+                            idx.add(k, r, shift, near_box);
+                        }
+                    }
+                }
+            }
+        }
+        idx
+    };
     struct Piece {
         c: Cell,
         sea: bool,
         sides: Sides,
         area: Area,
-        /// The farthest of its points from the nearest region (m), and the regions nearest them.
+        km2: f64,
+        /// The farthest of its points from the nearest region (m), the regions nearest them, and
+        /// the one nearest the point inside it.
         far: f64,
         near: BTreeSet<String>,
+        inner: Option<String>,
     }
     let pieces: Vec<Piece> = pace::par_map(cells.into_iter().collect(), |c| {
         geom::set_label(format!("the coast, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
@@ -1315,28 +1338,6 @@ fn coast(
         }
         let coastline = SegIndex::new(land.polys.iter().flatten().map(|r| (0, r)));
         let bx = cell_box(c);
-        // (Each side's regions' edges in the cell and round it within reach of it, shifted as
-        // they lie from it.)
-        let pad = (2.0 * COAST_REACH_M / 111_320.0 * 1e7
-            / ((c.1 * CELL) as f64 * 1e-7).abs().max(((c.1 + 1) * CELL) as f64 * 1e-7).min(89.0).to_radians().cos())
-            as i64;
-        let near_box = [bx[0] - pad, bx[1] - pad, bx[2] + pad, bx[3] + pad];
-        let index = |sea: bool| {
-            let mut idx = SegIndex::default();
-            for x in c.0 - 1..=c.0 + 1 {
-                let (w, shift) = wrap(x);
-                for y in (c.1 - 1).max(-45)..=(c.1 + 1).min(44) {
-                    for &k in at.get(&(w, y)).unwrap_or(&none) {
-                        for a in side_ref(k, sea, (w, y)) {
-                            for r in a.polys.iter().flatten() {
-                                idx.add(k, r, shift, near_box);
-                            }
-                        }
-                    }
-                }
-            }
-            idx
-        };
         let mut out = Vec::new();
         for (sea, side) in [(false, free.intersect(&land)), (true, free.minus(&land))] {
             let mut idx: Option<SegIndex> = None;
@@ -1353,9 +1354,10 @@ fn coast(
                 if !on_coast {
                     continue;
                 }
-                let idx = idx.get_or_insert_with(|| index(sea));
-                let (mut far, mut near) = (0.0f64, BTreeSet::new());
-                for p in poly.iter().flatten().copied().chain([interior(&poly)]) {
+                let idx = idx.get_or_insert_with(|| index(c, sea));
+                let (mut far, mut near, mut inner) = (0.0f64, BTreeSet::new(), None);
+                // (A point inside first, then the vertices.)
+                for p in [interior(&poly)].into_iter().chain(poly.iter().flatten().copied()) {
                     // (The nearest region within reach, ties to the lesser id: looked for within 10 m,
                     // then 100 m, then the reach; whatever lies nearer than the first found is
                     // within the radius that found it.)
@@ -1366,6 +1368,7 @@ fn coast(
                         Some((k, d)) => {
                             far = far.max(d);
                             near.insert(ids[k].clone());
+                            inner.get_or_insert(k);
                         }
                         None => far = f64::INFINITY,
                     }
@@ -1374,7 +1377,9 @@ fn coast(
                     }
                 }
                 let sides = sides(&poly, c);
-                out.push(Piece { c, sea, sides, area: Area { polys: vec![poly] }, far, near });
+                let area = Area { polys: vec![poly] };
+                let km2 = geom::area_km2(&area);
+                out.push(Piece { c, sea, sides, area, km2, far, near, inner: inner.map(|k| ids[k].clone()) });
             }
         }
         out
@@ -1382,6 +1387,7 @@ fn coast(
     .into_iter()
     .flatten()
     .collect();
+    trace(&format!("the coast: {} pieces found", pieces.len()));
     // Each stretch within reach, to its nearest regions.
     let mut whole: Vec<(String, usize)> = Vec::new();
     let mut split: Vec<(Vec<String>, usize)> = Vec::new();
@@ -1413,51 +1419,69 @@ fn coast(
                     whole.extend(idx.into_iter().map(|i| (id.clone(), i)));
                 }
             } else {
+                // (A speck under `SPECK_KM2` whole to the region nearest the point inside it; a
+                // larger piece split.)
                 let v: Vec<String> = near.into_iter().collect();
-                split.extend(idx.into_iter().map(|i| (v.clone(), i)));
+                for i in idx {
+                    match &pieces[i].inner {
+                        Some(id) if pieces[i].km2 < SPECK_KM2 => {
+                            if takes(id) {
+                                whole.push((id.clone(), i));
+                            }
+                        }
+                        _ => split.push((v.clone(), i)),
+                    }
+                }
             }
         }
     }
     // (A piece several regions are nearest: cut at the median line, each region's part the points
-    // nearer it, read from those regions' sides round the piece.)
-    let cut: Vec<Vec<(String, usize, Area)>> = pace::par_map(split, |(near, i)| {
-        let p = &pieces[i];
-        let Some(b) = p.area.bbox() else { return Vec::new() };
-        let pad =
-            (3.0 * COAST_REACH_M / 111_320.0 * 1e7 / ((b[1] + b[3]) as f64 / 2e7).to_radians().cos().max(0.05)) as i64;
-        let window = geom::box_area([b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad]);
-        let around = |id: &str| -> Area {
-            let mut v = Vec::new();
-            for x in p.c.0 - 1..=p.c.0 + 1 {
-                let (w, shift) = wrap(x);
-                for y in (p.c.1 - 1).max(-45)..=(p.c.1 + 1).min(44) {
-                    let a = side_of(id, p.sea, (w, y));
-                    let a = if shift == 0 { a } else { a.shifted(shift) };
-                    let a = a.intersect(&window);
-                    if !a.is_empty() {
-                        v.push(a);
+    // nearer it, decided by those regions' edges round the piece (each edge a coast's samples, as
+    // geom::nearest reads them; no overlay), read from the cell's index, made once a cell and side.)
+    trace(&format!("the coast: {} pieces to split", split.len()));
+    let kid: HashMap<&String, usize> = ids.iter().enumerate().map(|(k, id)| (*id, k)).collect();
+    let mut by_cell: BTreeMap<(Cell, bool), Vec<(Vec<String>, usize)>> = BTreeMap::new();
+    for (near, i) in split {
+        by_cell.entry((pieces[i].c, pieces[i].sea)).or_default().push((near, i));
+    }
+    let cut: Vec<(String, usize, Area)> = pace::par_map(by_cell.into_iter().collect(), |((c, sea), v)| {
+        let idx = index(c, sea);
+        let mut out = Vec::new();
+        for (near, i) in v {
+            let p = &pieces[i];
+            let Some(b) = p.area.bbox() else { continue };
+            let lat = (b[1].abs().max(b[3].abs()) as f64 * 1e-7).min(89.0);
+            let pad = (1.5 * COAST_REACH_M / 111_320.0 * 1e7 / lat.to_radians().cos()) as i64;
+            let window = [b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad];
+            let mut edges: Vec<Vec<Ring>> = vec![Vec::new(); near.len()];
+            for (k, a, z) in idx.segments_in(window) {
+                if let Some(j) = near.iter().position(|id| kid[id] == k) {
+                    // (Clipped to the window: a cell's edge is 2° long.)
+                    if let Some(e) = clip_segment(a, z, window) {
+                        edges[j].push(e);
                     }
                 }
             }
-            geom::union_all(&v)
-        };
-        let sides: Vec<Area> = near.iter().map(|id| around(id)).collect();
-        let diag = geom::length_m([b[0], b[1]], [b[2], b[3]]);
-        let step = (diag / 300.0).max(10.0);
-        near.iter()
-            .enumerate()
-            .filter(|(_, id)| takes(id))
-            .map(|(k, id)| {
+            let sides: Vec<Area> = edges.into_iter().map(|e| Area { polys: vec![e] }).collect();
+            let diag = geom::length_m([b[0], b[1]], [b[2], b[3]]);
+            // (A staircase of about 50 steps across the piece, 10 m to 100 m: the step is the
+            // edges' samples' spacing too; few pieces are split, specks going whole.)
+            let step = (diag / 50.0).clamp(10.0, 100.0);
+            for (k, id) in near.iter().enumerate().filter(|(_, id)| takes(id)) {
                 let than: Vec<Area> =
                     sides.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, a)| a.clone()).collect();
-                (id.clone(), i, geom::nearest(&p.area, &sides[k..=k], &than, step))
-            })
-            .collect()
-    });
+                out.push((id.clone(), i, geom::nearest(&p.area, &sides[k..=k], &than, step)));
+            }
+        }
+        out
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    trace("the coast: pieces split");
     let mut fill: BTreeMap<(String, bool, Cell), Vec<Area>> = BTreeMap::new();
     let mut said = [(0usize, 0.0f64), (0, 0.0)];
-    for (id, i, a) in whole.into_iter().map(|(id, i)| (id, i, pieces[i].area.clone())).chain(cut.into_iter().flatten())
-    {
+    for (id, i, a) in whole.into_iter().map(|(id, i)| (id, i, pieces[i].area.clone())).chain(cut) {
         let p = &pieces[i];
         let s = &mut said[usize::from(p.sea)];
         s.0 += 1;
@@ -2174,6 +2198,33 @@ fn store(r: &Region, res: &mut Resolved, t: &TArea, data: &super::data::Datasets
     res.lakes = Area::default();
 }
 
+/// The part of segment a–z inside box `b` (Liang–Barsky), as two points; None outside.
+fn clip_segment(a: Pt, z: Pt, b: [i64; 4]) -> Option<Ring> {
+    let (dx, dy) = ((z[0] - a[0]) as f64, (z[1] - a[1]) as f64);
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for (p, q) in [
+        (-dx, (a[0] - b[0]) as f64),
+        (dx, (b[2] - a[0]) as f64),
+        (-dy, (a[1] - b[1]) as f64),
+        (dy, (b[3] - a[1]) as f64),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let r = q / p;
+            if p < 0.0 {
+                t0 = t0.max(r);
+            } else {
+                t1 = t1.min(r);
+            }
+        }
+    }
+    let at = |t: f64| [a[0] + (dx * t).round() as i64, a[1] + (dy * t).round() as i64];
+    (t0 <= t1).then(|| vec![at(t0), at(t1)])
+}
+
 /// Metres along a segment (a local equirectangular measure: segments here are short).
 fn seg_m(a: geom::Pt, b: geom::Pt) -> f64 {
     let lat = ((a[1] + b[1]) as f64 / 2e7).to_radians();
@@ -2239,6 +2290,15 @@ impl SegIndex {
                 }
             }
         }
+    }
+
+    /// The segments in grid squares meeting box `b` (some twice, as many squares as they cross).
+    fn segments_in(&self, b: [i64; 4]) -> impl Iterator<Item = (usize, geom::Pt, geom::Pt)> + '_ {
+        (b[0].div_euclid(SEG_CELL)..=b[2].div_euclid(SEG_CELL))
+            .flat_map(move |x| (b[1].div_euclid(SEG_CELL)..=b[3].div_euclid(SEG_CELL)).map(move |y| (x, y)))
+            .filter_map(move |c| self.grid.get(&c))
+            .flatten()
+            .copied()
     }
 
     /// The segments within `d` metres of a point, with their distance in metres.
