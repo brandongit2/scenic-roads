@@ -193,7 +193,8 @@ Common rules:
   phase shares: the lead's status's `phase_shares`, docs/pool.md §10); This device. It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
   `/work/history` incrementally (and further back, a chunk at a time, for the schedule's past jobs); `/work/regions` (each region's folders, download size and
-  outline: docs/pool.md §10, Regions) when the last catalogue changes, else every ten minutes;
+  outline: docs/pool.md §10, Regions) when the last catalogue changes, else every ten minutes (an answer
+  the same as the last, its catalogue and version, isn't shown again);
   each Mac's measures over time (its vitals as docs/mockups/build-live.html draws them, each core's share now among them; on the lead also the NAS's disks and the pool's NAS traffic), and its internet's counts by host and last transfers, from its own port's `/work/live` (docs/pool.md §10, Live; the Machines and NAS tabs ask each Mac's every 1.5 s while shown);
   each running job's phase, target and NAS and internet bytes in the status (`jobs[].live`, and a
   member's on its lease, from its beat: the same section). The

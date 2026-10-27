@@ -171,6 +171,14 @@ first, and the page scrolls; what's in the tabs' panel lays out by the panel's w
 the mockup's order, chosen by the address's `#hash` (`#overview`, `#jobs`, `#machines`, `#nas`,
 `#regions`, `#inputs`, `#activity`, `#details`, `#device`; none or another: Overview), so a
 link or a reload opens the same tab; an alert links to the tab that says more (a held change: Inputs).
+Each answer of the build's (`/work/swarm`, every 10 s) renders the header, the map and the tab
+shown; another tab is made as it's opened (task #793). What's worked out from the answers is kept
+while its inputs are the same: the map's queued and finished tiles, their counts and cards (made
+again when the queue, the history's ends, the keys' built tiles, the last catalogue, the Macs or
+the running tiles' keys change, or the 6 h window passes an end), the map's legend (while what it
+says is the same), the schedule's week of past jobs and their packing (while the history and the
+zoom are); the running tiles are worked out each time, and the map is drawn again only when what
+it shows changes. A tile's card says its times as of the last render.
 
 Progress is the work left in the queue, never a share of a whole (no percentage, no "x of y" for
 the build): a build has no definite start, its keys invalidate and catalogues publish as it goes.

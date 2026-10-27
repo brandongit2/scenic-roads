@@ -481,14 +481,18 @@ export function createMap({ pick = () => {} } = {}) {
     draw();
   });
 
-  // (What the map shows, as a string: a refresh that changes none of it draws nothing.)
-  let lastSig = "";
+  // (What the map shows, as a string: a refresh that changes none of it draws nothing. The
+  // thousands of finished, queued and painted tiles' parts kept by their Map: dash.js keeps those
+  // Maps while they're the same.)
+  let lastSig = "", lastRunKeys = null;
+  const parts = new WeakMap();
+  const part = (m, make) => { if (!m) return ""; let p = parts.get(m); if (p == null) parts.set(m, (p = make(m))); return p; };
   const signature = (d) => [
     d.regions.map((r) => `${r.id}:${r.state}`).join(","),
     [...d.running].map(([k, r]) => `${k}:${r.step}:${r.frac.toFixed(3)}:${r.current ? 1 : 0}`).join(","),
-    [...d.finished].map(([k, f]) => `${k}:${f.state}`).join(","),
-    [...d.queued.keys()].join(","),
-    d.paint ? [...d.paint].join(",") : "",
+    part(d.finished, (m) => [...m].map(([k, f]) => `${k}:${f.state}`).join(",")),
+    part(d.queued, (m) => [...m.keys()].join(",")),
+    part(d.paint, (m) => [...m].join(",")),
     d.lit ? [...d.lit].join(",") : "",
   ].join("|");
 
@@ -510,19 +514,24 @@ export function createMap({ pick = () => {} } = {}) {
       }
     }
     // (Tiles new to the map fade in: at once as they come, staggered by their finish on the first
-    // look, the window's history played back in a second.)
+    // look, the window's history played back in a second; none new while they're the same Map.)
     const t = performance.now();
-    const fresh = [...next.finished].filter(([k]) => !appeared.has(k)).sort((a, b) => a[1].t - b[1].t);
+    const fresh = next.finished === data.finished ? [] : [...next.finished].filter(([k]) => !appeared.has(k)).sort((a, b) => a[1].t - b[1].t);
     fresh.forEach(([k], i) => appeared.set(k, firstFinished ? t + (i / Math.max(1, fresh.length)) * 1200 : t));
     if (fresh.length || next.finished.size) firstFinished = false;
-    for (const k of appeared.keys()) if (!next.finished.has(k)) appeared.delete(k);
+    if (next.finished !== data.finished) for (const k of appeared.keys()) if (!next.finished.has(k)) appeared.delete(k);
     // (Tiles keyed by step and tile, "<step> z/x/y": two steps' at one spot are each their own,
-    // drawn as diagonal stripes across the square in turn (`stripe`: [i, n]), each its own card.)
-    atTile = new Map(); stripe = new Map();
-    const keys = [...next.running.keys(), ...next.finished.keys(), ...next.queued.keys(), ...(next.paint?.keys() || [])];
-    for (const k of keys) { const t = k.slice(k.lastIndexOf(" ") + 1); (atTile.get(t) || atTile.set(t, []).get(t)).push(k); }
-    for (const ks of atTile.values()) { ks.sort(); ks.forEach((k, i) => stripe.set(k, [i, ks.length])); }
-    zooms = [...new Set(keys.map((k) => tileOf(k)?.z).filter((z) => z != null))].sort((a, b) => b - a);
+    // drawn as diagonal stripes across the square in turn (`stripe`: [i, n]), each its own card.
+    // Worked out again only when the tiles drawn are others.)
+    const runKeys = [...next.running.keys()].join("\n");
+    if (next.finished !== data.finished || next.queued !== data.queued || next.paint !== data.paint || runKeys !== lastRunKeys) {
+      lastRunKeys = runKeys;
+      atTile = new Map(); stripe = new Map();
+      const keys = [...next.running.keys(), ...next.finished.keys(), ...next.queued.keys(), ...(next.paint?.keys() || [])];
+      for (const k of keys) { const t = k.slice(k.lastIndexOf(" ") + 1); (atTile.get(t) || atTile.set(t, []).get(t)).push(k); }
+      for (const ks of atTile.values()) { ks.sort(); ks.forEach((k, i) => stripe.set(k, [i, ks.length])); }
+      zooms = [...new Set(keys.map((k) => tileOf(k)?.z).filter((z) => z != null))].sort((a, b) => b - a);
+    }
     const sig = signature(next);
     const same = sig === lastSig && !fresh.length && !outlines;
     lastSig = sig;

@@ -434,42 +434,101 @@ function mapData(m) {
   const catAt = lastCatalogue(m)?.at ?? null;
   const catJob = catAt == null ? null : (m.a.recent || []).find((d) => /^catalog/.test(stepOf(d.id)) && d.ok && Math.abs(d.ended - catAt) <= 5);
   const pubAt = catJob?.secs != null ? catAt - catJob.secs : catAt;
+  const hostsKey = hosts.join("\n");
   const macOf = (w) => macSlot(w, hosts).host;
-  const running = runningTiles(runs, m.fc?.each_s, m.now), queued = queuedTiles(toCome.ans), done = finishedTiles(endsHeld(), from, built.steps, heldFrom());
-  // (A step counts its tiles to build or publish; every state and area its own.)
-  const count = (t) => {
-    const c = { tile: Object.fromEntries(TILE_STATES.map((st) => [st, 0])), step: {}, area: {} };
-    for (const [k, v] of [...t.running, ...t.queued, ...t.finished]) {
+  // (The queue and the finished tiles, thousands, kept while their inputs are; the running tiles,
+  // a few, made each time and kept as the last ones while they say the same.)
+  const running = steadyRunning(runningTiles(runs, m.fc?.each_s, m.now));
+  const queued = keepQueued([toCome.ans], () => queuedTiles(toCome.ans));
+  const ends = endsHeld(), held = heldFrom();
+  const done = keepDone(ends, from, [built.steps, held], () => finishedTiles(ends, from, built.steps, held));
+  const runKeys = [...running.keys()].join("\n");
+  // (A step counts its tiles to build or publish; every state and area its own. The queued and
+  // finished tiles' counts kept while those and the running tiles' keys are.)
+  const count = (maps, c = { tile: Object.fromEntries(TILE_STATES.map((st) => [st, 0])), step: {}, area: {} }) => {
+    for (const t of maps) for (const [k, v] of t) {
       c.tile[v.state]++;
       c.area[areaOf(k)] = (c.area[areaOf(k)] || 0) + 1;
       if (v.state !== "published") c.step[v.step] = (c.step[v.step] || 0) + 1;
     }
     return c;
   };
-  const whole = count(mapTiles(running, queued, done, {}, { pubAt, macOf }));
-  const counts = f.member ? count(mapTiles(running, queued, done, { member: f.member }, { pubAt, macOf })) : whole;
+  const counted = (fl, keep) => {
+    const rest = keep([runKeys, queued, done, pubAt, hostsKey, fl.member], () => { const t = mapTiles(running, queued, done, fl, { pubAt, macOf }); return count([t.queued, t.finished]); });
+    return count([mapTiles(running, NONE, NONE, fl, { pubAt, macOf }).running], structuredClone(rest));
+  };
+  const whole = counted({}, keepWhole);
+  const counts = f.member ? counted({ member: f.member }, keepCounts) : whole;
   const fcRegs = Object.fromEntries((m.fc?.regions || []).map((r) => [r.id, r]));
-  const regs = Object.values(drawn.byId).map((r) => ({ ...r, state: regionState(fcRegs[r.id]) }));
+  const states = Object.keys(drawn.byId).map((id) => regionState(fcRegs[id])).join(",");
+  const regs = keepRegs([drawn.byId, states], () => Object.values(drawn.byId).map((r) => ({ ...r, state: regionState(fcRegs[r.id]) })));
   const rows = regionRows(m);
   regionCards(rows);
-  return (lastMd = { m, regs, rows, world, running, queued, done, pubAt, macOf, whole, counts, groups: mapSteps(counts.step) });
+  return (lastMd = { m, regs, rows, world, running, runKeys, queued, done, pubAt, macOf, hostsKey, whole, counts, groups: mapSteps(counts.step) });
+}
+// (No tiles.)
+const NONE = new Map();
+// The last value made from the same inputs (each ===), made again when one differs (task #793: a
+// poll that changes none of a derivation's inputs takes the last one).
+function keeper() {
+  let ins = null, out;
+  return (args, make) => {
+    if (!ins || args.length !== ins.length || args.some((a, i) => a !== ins[i])) { out = make(); ins = args; }
+    return out;
+  };
+}
+// The same for a value made from `ends` (events, each at `t`) of those at or after `from`, the
+// rest of its inputs `args`: kept too while `from` moves on past no end.
+function windowKeeper() {
+  let ins = null, lo = 0, hi = -Infinity, out;
+  return (ends, from, args, make) => {
+    if (!ins || ins[0] !== ends || args.some((a, i) => a !== ins[i + 1]) || from < lo || from > hi) {
+      out = make();
+      ins = [ends, ...args];
+      lo = from;
+      hi = Infinity;
+      for (const e of ends) if (e.t >= from && e.t < hi) hi = e.t;
+    }
+    return out;
+  };
+}
+const keepQueued = keeper(), keepDone = windowKeeper(), keepWhole = keeper(), keepCounts = keeper(), keepRegs = keeper();
+// The running tiles: the last ones while these say all the same (their cards' words too).
+let runningLast = new Map(), runningSig = "";
+function steadyRunning(next) {
+  const sig = [...next].map(([k, r]) => [k, r.frac, r.current ? 1 : 0, r.run.mac, r.run.id ?? r.run.lease, r.run.live?.phase ?? "", r.run.targets.join(" ")].join("\t")).join("\n");
+  if (sig !== runningSig) { runningLast = next; runningSig = sig; }
+  return runningLast;
 }
 
 // What the map draws now (sums.js mapTiles): the view's tiles; a solo's published tiles painted
 // by when a catalogue last published each (the age controls' range, catalogues.js); a catalogue's
 // tiles lit; with each tile's card and the stack's.
 let ageLit = null; // the age controls' lit tiles in the last view (a catalogue's hovered)
+// (The queued, finished and published tiles and their cards kept while their inputs and the
+// running tiles' keys are; the running tiles' made each time.)
+const keepView = keeper(), keepPaint = keeper(), keepRestCards = keeper();
 function mapView(md) {
-  const f = mapFilters(), m = md.m, age = ages.view();
-  const t = mapTiles(md.running, md.queued, md.done, f, { pubAt: md.pubAt, macOf: md.macOf, solo: soloSteps(hoverSolo || f.solo, md.groups) });
-  const when = new Map();
-  for (const [k, v] of t.published) when.set(k, { t: age.at(tileOf(k))?.t ?? -Infinity, v });
-  const painted = agePaint(when, age.from, age.to, age.hide).paint;
-  tileCards(m, t, painted, age);
+  const f = mapFilters(), age = ages.view();
+  const solo = soloSteps(hoverSolo || f.solo, md.groups);
+  const fl = { tiles: f.tiles, member: f.member, offAreas: f.offAreas };
+  const opts = { pubAt: md.pubAt, macOf: md.macOf, solo };
+  const rest = keepView([md.runKeys, md.queued, md.done, md.pubAt, md.hostsKey, JSON.stringify([fl, solo])], () => mapTiles(md.running, md.queued, md.done, fl, opts));
+  const running = mapTiles(md.running, NONE, NONE, fl, opts).running;
+  // (A solo's published tiles painted by when: none without one.)
+  const painted = !rest.published.size ? NONE : keepPaint([rest.published, age.from, age.to, age.hide, age.at], () => {
+    const when = new Map();
+    for (const [k, v] of rest.published) when.set(k, { t: age.at(tileOf(k))?.t ?? -Infinity, v });
+    return agePaint(when, age.from, age.to, age.hide).paint;
+  });
+  restCards = keepRestCards([rest, painted], () => tileCards(rest, painted, age, ["queued", "finished", "published"]));
+  runCards = tileCards({ running }, painted, age, ["running"]);
   const regionKind = (st) => (st === "done" ? "on" : st);
   ageLit = age.lit;
-  return { countries, regions: md.regs.filter((r) => f.regions?.[regionKind(r.state)] !== false), running: t.running, finished: t.finished, queued: t.queued, paint: painted, lit: schedLit || age.lit, litColour: HIGHLIGHT, colour: S.colour };
+  const regions = keepShownRegs([md.regs, JSON.stringify(f.regions)], () => md.regs.filter((r) => f.regions?.[regionKind(r.state)] !== false));
+  return { countries, regions, running, finished: rest.finished, queued: rest.queued, paint: painted, lit: schedLit || age.lit, litColour: HIGHLIGHT, colour: S.colour };
 }
+const keepShownRegs = keeper();
 // The map drawn again from the last render's data: a solo hovered or the age controls changed.
 function paintMap() {
   if (!worldMap || !lastMd || !ages) return;
@@ -480,11 +539,15 @@ function paintMap() {
   legendHost?.classList.toggle("soloing", !!x);
 }
 
-// Each tile's card, as the map shows it, and the stack's: everything under a point, one card after
-// another.
-function tileCards(m, t, painted, age) {
+// Each tile's card of the kinds of `t` given (running, finished, queued, published), as the map
+// shows it, a Map by key; with the running ones, the stack's: everything under a point, one card
+// after another. (Kept across polls: the times they say are as of the last render's.)
+let restCards = new Map(), runCards = new Map();
+const cardNow = () => lastMd.m.now;
+function tileCards(t, painted, age, kinds) {
+  const cards = new Map();
   const head = (key, step, state) => ({ kicker: `${step} · ${state}`, colour: S.colour(step), title: key.slice(key.lastIndexOf(" ") + 1) });
-  for (const [key, r] of t.running) {
+  for (const [key, r] of kinds.includes("running") ? t.running : []) {
     const tl = tileOf(key), pct = `${Math.round(r.frac * 100)}%`;
     const state = r.frac >= 1 ? "completed, its job running" : r.current || r.frac > 0 ? "in progress" : "queued in its running job";
     cards.set(`mt ${key}`, () => cardBody({ ...head(key, r.step, state),
@@ -497,10 +560,10 @@ function tileCards(m, t, painted, age) {
       ["covers", tileCovers(tl)],
     ], worldMap.minimap(key)));
   }
-  for (const [key, d] of t.finished) {
+  for (const [key, d] of kinds.includes("finished") ? t.finished : []) {
     const out = d.state === "published";
     cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, out ? "published" : "completed, not yet published"),
-      stats: [[d.t == null ? "earlier" : ago(m.now, d.t), "finished"], [out ? "yes" : "next catalogue", "in the app"]],
+      stats: [[d.t == null ? "earlier" : ago(cardNow(), d.t), "finished"], [out ? "yes" : "next catalogue", "in the app"]],
       bar: { frac: 1, label: d.t == null ? "done, before the history held" : `done ${clock(d.t)}` },
       foot: `${d.worker || "?"} · ${key}` }, [
       ["stage", S.stage(d.step)],
@@ -508,7 +571,7 @@ function tileCards(m, t, painted, age) {
       ["covers", tileCovers(tileOf(key))],
     ], worldMap.minimap(key)));
   }
-  for (const [key, d] of t.queued) {
+  for (const [key, d] of kinds.includes("queued") ? t.queued : []) {
     cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "queued"),
       stats: [[`≈ ${clock(d.at)}`, "to begin"], [d.mac, "on"]],
       bar: { frac: 0, label: `to come at ≈ ${clock(d.at)} on ${d.mac}` },
@@ -518,11 +581,11 @@ function tileCards(m, t, painted, age) {
       ["covers", tileCovers(tileOf(key))],
     ], worldMap.minimap(key)));
   }
-  for (const [key, d] of t.published) {
+  for (const [key, d] of kinds.includes("published") ? t.published : []) {
     if (!painted.has(key)) continue;
     const p = age.at(tileOf(key));
     cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "published"),
-      stats: [[p ? ago(m.now, p.t) : "–", "last published"], [p ? `${p.n}` : "–", "catalogue"]],
+      stats: [[p ? ago(cardNow(), p.t) : "–", "last published"], [p ? `${p.n}` : "–", "catalogue"]],
       bar: { frac: 1, colour: painted.get(key), label: p ? `catalogue ${p.n}, ${whenText(p.t)}${p.first ? " (the oldest kept: or before)" : ""}` : "in no catalogue kept" },
       foot: `${d.worker || "?"} · ${key}` }, [
       ["stage", S.stage(d.step)],
@@ -531,12 +594,13 @@ function tileCards(m, t, painted, age) {
     ], worldMap.minimap(key)));
   }
   // (The stack: `also` its keys, "|" between, the deepest tile first; each card under a line.)
-  cards.set("mstack", (also) => {
-    const keys = (also || "").split("|").filter((k) => cards.has(k));
+  if (kinds.includes("running")) cards.set("mstack", (also) => {
+    const keys = (also || "").split("|").filter((k) => cardOf(k));
     const most = 8;
-    return [...keys.slice(0, most).map((k) => h("div", "tc-sec", cards.get(k)())),
+    return [...keys.slice(0, most).map((k) => h("div", "tc-sec", cardOf(k)())),
       keys.length > most ? h("div", "tc-more dim small", `and ${n(keys.length - most)} more here`) : null].filter(Boolean);
   });
+  return cards;
 }
 // A map's click or tap: its stack pinned (nothing there: the pinned card let go).
 const mapPick = (keys, x, y) => (keys.length ? pinCard("mstack", x, y, keys.join("|")) : unpin());
@@ -598,7 +662,7 @@ function mapFilterBar(m) {
 }
 // The left panel (#685): the map, its legend (made again each render), the age controls
 // (catalogues.js); one element, kept across renders.
-let mapRoot = null, legendHost = null;
+let mapRoot = null, legendHost = null, legendSaid = "";
 function mapSection(md) {
   if (!mapRoot) {
     worldMap = createMap({ pick: mapPick });
@@ -614,7 +678,9 @@ function mapSection(md) {
     legendHost.addEventListener("pointerleave", () => { if (hoverSolo) { hoverSolo = null; paintMap(); } });
     mapRoot = h("section", { class: "d-map", "aria-label": "World map" }, worldMap.el, legendHost, ages.el);
   }
-  legendHost.replaceChildren(...mapLegend(md));
+  // (Made again only when what it says is another.)
+  const said = JSON.stringify([md.counts, md.regs.map((r) => r.state), md.world.map((r) => `${r.step} (${r.mac})`), md.groups, mapFilters(), md.m.macs.map((x) => x.name)]);
+  if (said !== legendSaid) { legendSaid = said; legendHost.replaceChildren(...mapLegend(md)); }
   paintMap();
   return mapRoot;
 }
@@ -774,6 +840,8 @@ function pagesCard(m) {
 const cards = new Map();
 const pin = { key: null, el: null, also: "", veil: null, x: 0, y: 0, back: null };
 let hoverCard = null;
+// A key's card: the page's (made again each render) or the map's tiles' (tileCards).
+const cardOf = (key) => cards.get(key) || runCards.get(key) || restCards.get(key);
 // `el`'s card: `build(also)` its rows (made when shown; `also`: what else is under the point, the
 // element's `data-also`, as the world map says it), `key` naming it across renders.
 function withCard(el, key, build) {
@@ -819,7 +887,7 @@ function placeCard(el, x, y) {
   el.style.top = `${down ? y + 14 : y - 10 - h}px`;
 }
 function showHover(key, x, y, also = "") {
-  const build = cards.get(key);
+  const build = cardOf(key);
   if (!build || (pin.key === key && pin.also === also)) return hideHover();
   if (!hoverCard) { hoverCard = h("div", "card-tip"); document.body.append(hoverCard); }
   if (hoverCard.dataset.key !== `${key}|${also}`) { hoverCard.replaceChildren(...build(also)); hoverCard.dataset.key = `${key}|${also}`; }
@@ -835,7 +903,7 @@ function pinCard(key, x, y, also = "") {
   pin.also = also;
   pin.x = x;
   pin.y = y;
-  pin.el = h("div", { class: "card-tip pinned", role: "dialog", "aria-modal": "true" }, close, h("div", "cb", cards.get(key)(also)));
+  pin.el = h("div", { class: "card-tip pinned", role: "dialog", "aria-modal": "true" }, close, h("div", "cb", cardOf(key)(also)));
   tl?.pin(key);
   // (The veil: a click on it lets the card go and nothing else; a wheel or a touch's drag there
   // moves nothing. The page under it can't scroll while the card is up.)
@@ -866,7 +934,7 @@ function unpin() {
 function refreshPin() {
   // (The confirmation of a press: words that don't change, and made again it'd lose its focus.)
   if (!pin.el || pin.key === "ask") return;
-  const build = cards.get(pin.key);
+  const build = cardOf(pin.key);
   const body = pin.el.querySelector(".cb");
   if (build) body.replaceChildren(...build(pin.also));
   else if (!pin.el.classList.contains("gone")) { pin.el.classList.add("gone"); body.append(h("div", "dim small", "No longer shown (the schedule moved on).")); }
@@ -890,7 +958,7 @@ function wireCards() {
   const act = (e) => {
     if (pin.el?.contains(e.target) || pin.veil?.contains(e.target)) return;
     const d = at(e.target), key = d.card;
-    if (key && cards.has(key)) pinCard(key, e.clientX, e.clientY, d.also);
+    if (key && cardOf(key)) pinCard(key, e.clientX, e.clientY, d.also);
     else unpin();
   };
   // (A tap is taken at its lift: Mobile Safari sends no click for a tap on what has no handler of
@@ -939,9 +1007,11 @@ const past = { ends: [], epoch: undefined, first: null, asking: false };
 // is matched to its own: sums.js pastRuns) and each lease naming what it waited on (pastRuns'
 // `after`): those read back, then the page's own events.
 const isHeld = (e) => e.kind === "end" || e.kind === "done" || e.kind === "fail" || e.kind === "start" || e.after?.length > 0;
-const endsHeld = () => past.ends.concat(events.filter(isHeld));
+// (Kept while neither is read again.)
+const keepEnds = keeper(), keepHeldFrom = keeper();
+const endsHeld = () => keepEnds([past.ends, events], () => past.ends.concat(events.filter(isHeld)));
 // The oldest event the page holds (its past window's or the live poll's), null: none.
-const heldFrom = () => { let t = events[0]?.t ?? null; for (const e of past.ends) if (t == null || e.t < t) t = e.t; return t; };
+const heldFrom = () => keepHeldFrom([past.ends, events], () => { let t = events[0]?.t ?? null; for (const e of past.ends) if (t == null || e.t < t) t = e.t; return t; });
 async function loadPast(sw) {
   if (past.epoch !== sw.epoch) Object.assign(past, { ends: [], epoch: sw.epoch, first: null });
   if (past.asking || !events.length) return;
@@ -1127,6 +1197,7 @@ function schedRelations(key) {
   return { on, arrows, tiles: segTiles(s, m) };
 }
 let lastSchedM = null;
+const keepPast = windowKeeper(), keepPacked = keeper();
 
 function schedule(m) {
   lastSchedM = m;
@@ -1137,10 +1208,13 @@ function schedule(m) {
   const { span } = tl.range(now, lo, hi);
   const width = Math.max(240, tl.axis.offsetWidth || ctx.tabsEl.clientWidth - 120);
   const gap = span / width;
-  const pastAll = pastRuns(endsHeld(), lo, m.macs.map((mm) => mm.name));
+  const hosts = m.macs.map((mm) => mm.name), ends = endsHeld();
+  // (The week's runs, and each lane's packed at this zoom, kept while what they're made of is.)
+  const pastAll = keepPast(ends, lo, [hosts.join("\n")], () => pastRuns(ends, lo, hosts));
+  const packed = keepPacked([pastAll, gap], () => new Map());
+  const packedOf = (nm) => packed.get(nm) || packed.set(nm, packRuns(pastAll.filter((r) => r.lane === nm), gap)).get(nm);
   const running = runningRuns(m);
   const short = shortNames(m);
-  const hosts = m.macs.map((mm) => mm.name);
   const names = [...new Set([...busyLanes(Object.keys(fcLanes), fcLanes, now, hi), ...pastAll.map((r) => r.lane), ...running.map((r) => r.lane)])];
   // (A Mac with no lanes in view still gets its row when something keeps it from the work: a Mac
   // paused alone has no forecast lanes, and no past ones once its last job is out of the past.)
@@ -1178,7 +1252,7 @@ function schedule(m) {
     lanes.append(h("div", { class: "gh", title: g.host }, mac ? short[g.host] : g.host, mac ? null : h("span", "dim", " (gone)")), h("div", "ghr", ...(chipsOf.get(g.host) || [])));
     for (const nm of g.lanes) {
       const tv = trackOf();
-      for (const r of packRuns(pastAll.filter((r) => r.lane === nm), gap)) segment(tv, r, "past", `p ${nm} ${r.seq}`);
+      for (const r of packedOf(nm)) segment(tv, r, "past", `p ${nm} ${r.seq}`);
       const ls = fcLanes[nm] || [];
       // (A job running now goes on as its lane's first run of its step in the forecast: one job.)
       for (const r of running.filter((r) => r.lane === nm)) {
@@ -1681,7 +1755,7 @@ let last = null;
 let shownMacs = [];
 // The regions' outlines, folders and sizes (`/work/regions`: crate::agent::regionsview), by id; the
 // catalogue they were sized by, and when they were asked.
-const drawn = { byId: {}, catalogue: undefined, at: 0, asking: false };
+const drawn = { byId: {}, catalogue: undefined, version: undefined, at: 0, asking: false };
 const REGIONS_EVERY_MS = 600000;
 // Each region's targets built of all by step (`/work/regions` with `steps`: the lead counts them
 // while asked, crate::agent::build::region_steps), asked each `STEPS_EVERY_MS` while the Regions tab
@@ -1787,32 +1861,33 @@ function part(cls, build) {
   }
 }
 
-// Each tab's sections, in order (index.html's panels, by the tab's name); `md` the map's data.
+// Each tab's sections, in order (index.html's panels, by the tab's name), made when asked; `md`
+// the map's data.
 function tabs(m, md) {
   const fin = m.lines.filter(finished).length;
   return {
-    overview: [
+    overview: () => [
       part("d-alerts", () => alertList(m)),
       part("d-overview", () => section("d-overview", null, null, overview(m, md))),
     ],
-    jobs: [
+    jobs: () => [
       part("d-sched", () => scheduleSection(m)),
       part("d-stages", () => section("d-stages", "Stages", m.lines.length ? `${fin} of ${m.lines.length} done · ⇄ any Mac may take it` : "", h("div", "box", stagesList(m)))),
     ],
-    machines: [
+    machines: () => [
       part("d-machines", () => section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
         h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m)))),
       part("d-pool", () => poolSection(last.agent, m.now, (body) => ctx.call("/work/lead", body).then(poll, (e) => ctx.onError?.(`couldn't ask about the lead: ${e.message}`))) || section("d-pool")),
       part("d-settings", () => settingsSection(ctx.call, last?.macs || [], render, ctx.onError)),
     ],
-    regions: [part("d-regions", () => regionsPane(m, md))],
-    nas: [part("d-nas", () => nasSection(last.agent))],
-    inputs: [part("d-inputs", () => inputsTab(m))],
-    activity: [part("d-activity", () => section("d-activity", "Activity", "the last day",
+    regions: () => [part("d-regions", () => regionsPane(m, md))],
+    nas: () => [part("d-nas", () => nasSection(last.agent))],
+    inputs: () => [part("d-inputs", () => inputsTab(m))],
+    activity: () => [part("d-activity", () => section("d-activity", "Activity", "the last day",
       h("div", "box", hours(m),
         h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Publishing"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
         sinceLine(m, events, seenAt), feed(m, events, seenAt)))), part("d-xfer", () => transfersPart())],
-    details: [part("d-details", () => section("d-details", null, null, details(m)))],
+    details: () => [part("d-details", () => section("d-details", null, null, details(m)))],
   };
 }
 
@@ -1846,7 +1921,8 @@ function render() {
   let md = null;
   try { md = mapData(m); } catch (e) { part("map data", () => { throw e; }); }
   put(ctx.mapPane, [part("d-map", () => mapSection(md))]);
-  for (const [name, next] of Object.entries(tabs(m, md))) if (ctx.panels[name]) put(ctx.panels[name], next.filter(Boolean));
+  // (The tab shown alone: the others are made as they're opened, task #793.)
+  for (const [name, make] of Object.entries(tabs(m, md))) if (ctx.panels[name] && !ctx.panels[name].hidden) put(ctx.panels[name], make().filter(Boolean));
   const feedEl = document.querySelector(".feed");
   if (feedEl) feedEl.scrollTop = feedTop;
   window.scrollTo(0, scrollY);
@@ -1886,10 +1962,17 @@ async function loadRegions(sw) {
   try {
     const [code, v] = await ctx.call("/work/regions", {});
     if (code !== 200 || !v?.regions) return;
-    drawn.byId = Object.fromEntries(v.regions.map((r) => [r.id, r]));
-    drawn.catalogue = v.catalog ?? null; // the catalogue it was made from: asked again until it catches up
+    // (The same answer as the last, asked again while the lead's catalogue is ahead of it: nothing
+    // to show again. Of the same regions' version, the outlines the map has drawn are kept.)
+    const same = v.catalog === drawn.catalogue && v.version === drawn.version;
+    if (!same) {
+      const had = v.version === drawn.version ? drawn.byId : {};
+      drawn.byId = Object.fromEntries(v.regions.map((r) => [r.id, had[r.id] ? { ...r, fill: had[r.id].fill, edge: had[r.id].edge } : r]));
+      drawn.catalogue = v.catalog ?? null; // the catalogue it was made from: asked again until it catches up
+      drawn.version = v.version;
+    }
     drawn.at = Date.now();
-    render();
+    if (!same) render();
   } catch { /* (Asked again with the next poll.) */ } finally {
     drawn.asking = false;
   }
@@ -1996,8 +2079,9 @@ export function dashboard(opts) {
   setInterval(() => document.visibilityState === "visible" && poll(), POLL_MS);
   // (The Machines tab's settings asked as it opens, not at the next poll.)
   window.addEventListener("hashchange", () => last && location.hash === "#machines" && loadSettings(ctx.call, last.macs || [], render));
-  // (The Regions tab's stage counts asked as it opens: asked only while it shows, askSteps.)
-  window.addEventListener("hashchange", () => last && location.hash === "#regions" && render());
+  // (A tab opened: made now, after index.html shows it; the Regions tab's stage counts asked then,
+  // as only while it shows, askSteps.)
+  window.addEventListener("hashchange", () => queueMicrotask(render));
   poll();
   startLive({ call: ctx.call, store: ctx.store, macs: () => last?.macs || [], active: () => location.hash === "#machines" || location.hash === "#nas", only: () => (location.hash === "#nas" ? last?.agent?.host || null : null) });
   startActivity({ call: ctx.call, macs: () => last?.macs || [], machines: () => shownMacs, active: () => location.hash === "#activity" });
