@@ -13,7 +13,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// The height references the app knows (docs/inputs.md §6.8). A roads' dataset's heights are
 /// brought to EGM2008 by the declared geoid sources (crate::dem::geoid); one the app doesn't know
@@ -326,6 +326,10 @@ pub struct OutlineCut {
     pub geometry: Vec<String>,
     pub edges: HashSet<(i32, i32)>,
     pub shapes: std::sync::Arc<Vec<crate::coverage::Shape>>,
+    /// `within` of the shapes for each box asked about, kept while the cut is (the agent holds its
+    /// fine sets across plans, `TerrainTiles::fine`): a plan's terrain targets ask the same boxes
+    /// each time, and worked out afresh they were ~100 s of a plan (27 Oct, lead).
+    held: std::sync::Arc<std::sync::Mutex<HashMap<[i32; 4], Within>>>,
 }
 
 impl PartialEq for OutlineCut {
@@ -355,7 +359,7 @@ impl OutlineCut {
             })
             .collect::<Result<_>>()?;
         if let Some(l) = SHAPES.lock().unwrap().get(&o.geometry) {
-            return Ok(OutlineCut { geometry: o.geometry.clone(), edges, shapes: l.clone() });
+            return Ok(OutlineCut { geometry: o.geometry.clone(), edges, shapes: l.clone(), held: Default::default() });
         }
         let mut shapes = Vec::new();
         for n in &o.geometry {
@@ -369,7 +373,17 @@ impl OutlineCut {
         }
         let shapes = std::sync::Arc::new(shapes);
         SHAPES.lock().unwrap().insert(o.geometry.clone(), shapes.clone());
-        Ok(OutlineCut { geometry: o.geometry.clone(), edges, shapes })
+        Ok(OutlineCut { geometry: o.geometry.clone(), edges, shapes, held: Default::default() })
+    }
+
+    /// `within` of its shapes for box `r`, kept (`held`).
+    pub fn within(&self, r: [i32; 4]) -> Within {
+        if let Some(w) = self.held.lock().unwrap_or_else(|e| e.into_inner()).get(&r) {
+            return w.clone();
+        }
+        let w = within(&self.shapes, r);
+        self.held.lock().unwrap_or_else(|e| e.into_inner()).insert(r, w.clone());
+        w
     }
 }
 
@@ -934,7 +948,7 @@ fn wholly_held(shapes: &[crate::coverage::Shape], r: [i32; 4]) -> bool {
 }
 
 /// How shapes `shapes` (a dataset's regions' outlines) hold box `r` (w, s, e, n, E7).
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Within {
     /// Every point of it (`wholly_held`).
     Held,
@@ -945,7 +959,7 @@ pub enum Within {
 }
 
 /// How shapes `shapes` hold box `r` (w, s, e, n, E7).
-pub fn within(shapes: &[crate::coverage::Shape], r: [i32; 4]) -> Within {
+fn within(shapes: &[crate::coverage::Shape], r: [i32; 4]) -> Within {
     if wholly_held(shapes, r) {
         return Within::Held;
     }
@@ -1033,7 +1047,7 @@ pub fn cut_note(measured: &Measured, cover: &Cover, b: [f64; 4]) -> Option<Strin
                         e7((b[2] + gx).min(x + 1.0)),
                         e7((b[3] + gy).min(y + 1.0)),
                     ];
-                    match cover.outline.as_ref().map(|o| within(&o.shapes, r)) {
+                    match cover.outline.as_ref().map(|o| o.within(r)) {
                         Some(Within::Held) => kept.push(c),
                         Some(Within::Outside) => cut = true,
                         Some(Within::Edge(f)) => {
@@ -1333,6 +1347,13 @@ mod tests {
         assert_ne!(at(&m, &c, coast), at(&moved, &mc, coast), "the coast moved inside the box");
         assert_eq!(at(&m, &c, inland), at(&moved, &mc, inland), "the coast moved outside the box");
         assert_eq!(at(&moved, &mc, [9.2, 45.2, 9.3, 45.3]), None);
+        // The outlines' answers are kept with the cut, each the shapes' own (a plan asks again).
+        let o = c.outline.as_ref().unwrap();
+        let held = o.held.lock().unwrap().clone();
+        assert!(held.len() >= 2, "the coast's and the sea's boxes");
+        assert!(held.iter().all(|(r, w)| within(&o.shapes, *r) == *w));
+        assert_eq!(at(&m, &c, coast), at(&m, &c, coast));
+        assert_eq!(o.held.lock().unwrap().len(), held.len(), "asked again: none worked out afresh");
         // (Its outlines not read: named by their files, never as held.)
         assert!(at(&m, &plain, inland).is_some());
     }
