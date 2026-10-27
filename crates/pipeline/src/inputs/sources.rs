@@ -1042,13 +1042,12 @@ mod tests {
 
     #[test]
     fn the_depth_declarations_pass_the_check() {
-        let staged: [(&str, &[u8]); 15] = [
+        let staged: [(&str, &[u8]); 14] = [
             ("bluetopo.toml", include_bytes!("../../../../producers/depth/declarations/bluetopo.toml")),
             ("emodnet-dtm.toml", include_bytes!("../../../../producers/depth/declarations/emodnet-dtm.toml")),
             ("gblq.toml", include_bytes!("../../../../producers/depth/declarations/gblq.toml")),
             ("gebco-2026.toml", include_bytes!("../../../../producers/depth/declarations/gebco-2026.toml")),
             ("globathy.toml", include_bytes!("../../../../producers/depth/declarations/globathy.toml")),
-            ("gttm.toml", include_bytes!("../../../../producers/depth/declarations/gttm.toml")),
             (
                 "masswildlife-ponds.toml",
                 include_bytes!("../../../../producers/depth/declarations/masswildlife-ponds.toml"),

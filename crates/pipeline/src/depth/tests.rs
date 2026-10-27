@@ -698,7 +698,7 @@ fn measure_the_waters_reads() {
 /// 6/x/y <upto> <reads>"`: z6 tile x/y's piece; an assembly reads the NAS's z9 tiles) with `reads` windows read
 /// at once (1: in turn, the grids too), and prints its phases, the depth files opened and read, and
 /// the digest of the tiles made. `SCENIC_DEPTH_PACKED="<id>=<index>=<folder> …"` (task #452) reads
-/// source `id`'s grids by a packed index (producers/depth/repack.py's) from its packs in `folder`
+/// source `id`'s grids by a packed index (producers/depth/packs.py's) from its packs in `folder`
 /// instead: the same digest is the same output. With `SCENIC_CACHE` (and `SCENIC_ROOM_TARGET_MB`)
 /// set, the basemap and the packs are read from whole local copies there, as a job's are
 /// (crate::localread, task #551; the copies' time is the phase "whole local copies made").

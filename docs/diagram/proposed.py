@@ -195,7 +195,7 @@ def build(check=False):
     # ---- 4b. water depth: per z6 tile where a source is finer, then per z3 tile ---------------------
     y0 = y1 + GAP
     cy = y0 + 24
-    c_dg = d.cur('terr', cy, 'Depth grids', ['15 staged: GEBCO, BlueTopo,', 'NONNA, EMODnet, SHOM, GtTM,', 'surveyed lakes, estimates'],
+    c_dg = d.cur('terr', cy, 'Depth grids', ['14 staged: GEBCO, BlueTopo,', 'NONNA, EMODnet, SHOM,', 'surveyed lakes, estimates'],
                  'producers/depth/, run by hand on the M4; declared', 'part')
     s_dw = d.src('base', c_dg.b + 8, 'The basemap’s water', ['z6–14 and its rivers; the', 'terrain’s sea and lakes'])
     n_dep = d.card('terr', 'd1', cy, 'depth', 'Rust', ['z9–16 where a source finer', 'than z8 has grids; its own', 'z6–8 for capped pixels'],

@@ -1492,29 +1492,7 @@ its grids' depth files by `hash` alone, packed or loose: a low-water file change
 depth file unchanged changes no key (the loose index never named their contents, so naming the
 packed hashes would rebuild every depth target at adoption). A producer that changes them changes
 the depth file's `hash` too, or a new key is forced by the declaration's `version`. A feature without `pack`
-is a loose file, read as before. The producers pack as they write the index (`grid.Writer`); a
-source's loose grids already on the NAS are packed once by `producers/depth/repack.py` (its
-docstring: by tar over SSH, resumable, each depth file checked against its `hash` and every
-member's hash recorded, the inputs folder's index replaced only once every pack is on the NAS at its
-size). Its `--sweep` deletes the loose files only while both the inputs folder and the build's current
-accepted version hold the packed index, the lead's status is fresh (10 min), the accepted versions
-have named the same copy of the index for 24 h (a rollback or a new pack starts the wait again; a
-new acceptance for other files doesn't), and no depth or depth-lo job is running on any Mac,
-waiting, or held to resume in a member's progress file. Every other Mac's jobs are read from its own helper
-file (`state/helpers/<host>.json`) however stale its beat, since the lead's status leaves out a
-helper not heard from in 10 min whose job may still run (a Mac asleep or off the NAS carries on when
-it's back); the lead's own helper file, left from before it led, is passed over. Nothing removes a
-helper file, so a Mac retired, renamed or crashed mid-job leaves its last jobs there and the sweep
-refuses until the owner removes the file: the refusal names the file and its beat's age, and past
-10 min says to remove it if that Mac's agent isn't running the job (a running agent writes it again
-at its next beat). A helper file that doesn't read refuses, naming it. The coordinator's leases
-can't stand in: a member's job outlives its lapsed lease and holds it again when its Mac is back. A job reads the records when it starts, so
-jobs planned but not yet started read the index current then; a running one refuses whatever its
-start: the accepted copies are content-named, so a rollback and a return to the same packed copy
-between two sweeps leave no trace, and a job started on the loose index in between can't be told
-from one started after the switch. The packs are checked on the NAS, and the build on the packed index,
-once more just before. The sweep is the point of no return: after it the loose index can't be rolled back to;
-until it, putting the loose index back in the inputs folder is a full rollback.
+is a loose file, read as before. The producers pack as they write the index (`grid.Writer`).
 
 **`[data.params]`:** `code` (1–15, the source byte the class tiles carry, one a source), `water`
 (`sea` or `lake`: where it's drawn: a sea source stays off the lakes, a lake source in them),
@@ -1540,7 +1518,6 @@ range in `at` for each file it names (`src-index`); two of one `code` (`src-role
 | `nonna-100`, `nonna-10` | CHS's 100 m and 10 m grids (licence accepted; never redistributed; its notice names the owner as the maker) | 3, 4 | sea | `nonna.py`, the keyless coverage service (NONNA-10 a chunk of blocks at a time, where NONNA-100 has water: `chunked.py nonna10`); chart datum → mean water level by CHS's stations (`stations.py chs`) | z10, z13 |
 | `emodnet-dtm` | EMODnet's DTM 2024, MSL version | 5 | sea | `emodnet.py`: its MSL ASCII tiles one at a time (a WGS 84 `.prj` given each), `raster.py`'s produce | gaps only (`datum_exact = false`) |
 | `shom-homonim-100`, `shom-homonim-20` | SHOM's façade and coastal DEMs, MSL versions | 6, 7 | sea | `raster.py`, the low water SHOM's own separation (`--low-raster`) | z10, z13 |
-| `gttm` | NIED's 2″ grid of Japan | 8 | sea | `raster.py` over windows of it | z11; coarse meshes as z9 grids of their own |
 | `masswildlife-ponds`, `mn-dnr-lakes`, `gblq` | surveyed lakes (Massachusetts, Minnesota, Québec) | 9–11 | lake | `raster.py` (feet or metres, sign as each says) | z16, z15, z16 |
 | `ncei-crm` | NCEI's Coastal Relief Models, 1″ (the owner's download, `sources/ncei-crm/`; volume 6 absent) | 12 | sea | `ncei.py crm`; volumes 1–5, 7, 8 (EGM2008) → MSL by a datum surface a volume from `ncei.py egm2008`'s table (CO-OPS' stations' MSL − NAVD88, `stations.py noaa`, plus NAVD88 → EGM2008 by the declared geoid grids through `scenic-build geoid-offsets`; a station more than 2 km from the volume's sea left out), land cut by MSL; 9 and 10 on local MSL as they come | z12 |
 | `ncei-greatlakes` | NCEI's Great Lakes bathymetry, 3″ (the owner's download, `sources/ncei-greatlakes/`) | 13 | lake | `ncei.py greatlakes`: from each lake's low water datum (CO-OPS' station datums) to its long-term mean level (GLERL's coordinated lake-wide monthly means, 1918 on), both fetched as it runs | z10 |
@@ -1551,7 +1528,7 @@ range in `at` for each file it names (`src-index`); two of one `code` (`src-role
 follow the St. Lawrence up to Montréal: NONNA-100 has values there), `bluetopo` (local mean sea
 level by VDatum, which covers only the tidal reaches) and the SHOM grids (mean sea level, in the
 estuaries' tidal reaches). The others' depths inland are heights on a fixed level (GEBCO, CRM,
-EMODnet, GtTM) or a lake's own, so they stay out of rivers.
+EMODnet) or a lake's own, so they stay out of rivers.
 
 A chunked run (`chunked.py`) fetches a chunk, produces it, packs it, tars its packs over SSH into the NAS's
 `sources/fetched/<id>/`, compares each file's size there and deletes the chunk here; each chunk's

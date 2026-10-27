@@ -399,8 +399,7 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
      targets).
   2. The producers make the grids on the M4 (`producers/depth/`, `uv run --project producers`) into a
      local folder, packed by z6 tile, each source's packs then copied to `sources/fetched/<id>/`
-     with `tar` over SSH (the NAS's small-file limits; docs/storage.md). Grids already there loose are
-     packed once by `producers/depth/repack.py`.
+     with `tar` over SSH (the NAS's small-file limits; docs/storage.md).
   3. The declarations (`producers/depth/declarations/`) and the indexes are added to
      `inputs/sources/`. Once accepted, the terrain-water job works out the depth targets' water
      digests (once a basemap), then the assemblies run, then the z6 tiles.

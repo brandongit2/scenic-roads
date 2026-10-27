@@ -90,7 +90,7 @@ impl Grid {
 }
 
 /// The index properties naming where a grid is packed (`pack`, `at`): not what it is, so left out
-/// of the source's pin (a repack builds nothing again).
+/// of the source's pin (packing builds nothing again).
 pub const PACK_PROPS: [&str; 2] = ["pack", "at"];
 
 /// Index properties the build doesn't read, left out of the pin too: an index still naming them
@@ -196,7 +196,7 @@ impl Source {
 }
 
 /// Declaration `s`'s digest with its grids' packing (`PACK_PROPS`) and unread properties
-/// (`UNREAD_PROPS`) left out: the same packed or loose, so a repack keeps every key.
+/// (`UNREAD_PROPS`) left out: the same packed or loose, so packing keeps every key.
 pub fn unpacked_digest(s: &crate::inputs::sources::Source) -> String {
     let mut s = s.clone();
     for f in &mut s.index {
@@ -1419,7 +1419,7 @@ pub(crate) mod tests {
     }
 
     /// Task #452: a packed index's grids name their pack and ranges, and the source's pin is the
-    /// same as loose (a repack builds nothing again).
+    /// same as loose (packing builds nothing again).
     #[test]
     fn a_packed_index_is_read_and_keeps_its_pin() {
         let decl = "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"depth\"\nkind = \"data\"\n\
