@@ -1465,17 +1465,15 @@ grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) among them.
 **The standard: depth grids** (`format = "depth-grid"`). A source is a set of GeoTIFFs, each on the
 global Web Mercator pixel grid of one zoom (EPSG:3857; its pixels 40,075,016.686 / 256 / 2^zoom m,
 their edges on that grid, its own edges on its zoom's tile edges where its data allows), so the build
-reads them by pixel arithmetic, never reprojecting:
+reads them by pixel arithmetic, never reprojecting; every cell shows at its grid's zoom:
 - `file`: float32 depth below the water's surface in metres, negative (the sea's mean level; a lake's
   mean surface), drying heights positive, NaN where there's none; tiled, Deflate with the
   floating-point predictor, overviews by averaging;
-- `zoom_file` (optional): uint8, the zoom each cell's data supports: its own where measured, coarser
-  where the source's flags say interpolated or predicted; overviews nearest;
 - `low_file` (optional): float32, the chart's low water (MLLW, LAT, chart datum) below MSL, m ≥ 0, for
   the "dries at low tide" flag.
 
 Its index (`<name>.geojson`, a feature per grid): its footprint, `url` (where the data came from),
-`file`, `zoom`, `zoom_file`, `low_file`, `hash`, and where it's packed: `pack` and `at`. The files
+`file`, `zoom`, `low_file`, `hash`, and where it's packed: `pack` and `at`. The files
 are kept in `sources/fetched/<id>/` (the producer writes them; they're copied there by tar over SSH).
 
 **Packs** (task #452; producers/depth/packs.py): a source's grids are kept in packs, not a file a
@@ -1485,11 +1483,12 @@ bytes) of whole GeoTIFFs, holding a source's grids of one z6 tile (the tile of e
 centre; a tile can have several packs, one per producer run or chunk), named
 `<6-x-y>.<hash16>.tar` (SHA-256 of its bytes). A packed grid's feature names its `pack` and its
 files' byte ranges in it and their hashes as packed, `at`: `{"file": [offset, length, hash16],
-"zoom_file": […], "low_file": […]}` (SHA-256's first 16 digits; a range alone is read too). The
+"low_file": […]}` (SHA-256's first 16 digits; a range alone is read too). The
 build opens a pack once a job and reads each GeoTIFF in place by its range (crate::depth::grids), so
 its reading and output are a loose file's; `pack` and `at` are left out of the source's digest in the
-depth's keys (`grids::unpacked_digest`), so packing builds nothing again. So a source's pin names
-its grids' depth files by `hash` alone, packed or loose: a zoom or low-water file changed with its
+depth's keys (`grids::unpacked_digest`), so packing builds nothing again; so is `zoom_file`, a
+property the build doesn't read (`grids::UNREAD_PROPS`). So a source's pin names
+its grids' depth files by `hash` alone, packed or loose: a low-water file changed with its
 depth file unchanged changes no key (the loose index never named their contents, so naming the
 packed hashes would rebuild every depth target at adoption). A producer that changes them changes
 the depth file's `hash` too, or a new key is forced by the declaration's `version`. A feature without `pack`
@@ -1536,12 +1535,12 @@ range in `at` for each file it names (`src-index`); two of one `code` (`src-role
 
 | id | what | code | water | producer | detail |
 |---|---|---|---|---|---|
-| `gebco-2026` | the yearly global 15″ grid and its type identifiers | 1 | sea | `gebco.py`, from the owner's two zips in `sources/gebco/2026/` | z8; cells the TID calls interpolated or estimated (40–48, 71, 72) at z7 |
-| `bluetopo` | NOAA's US coastal grids, 4–16 m | 2 | sea | `bluetopo.py`'s steps, from the public bucket by its tile scheme (checksums checked), a chunk of tiles at a time (`chunked.py bluetopo`); NAVD88 → MSL and MLLW by NOAA VDatum (`vdatum.py`, a point per 0.25° cell; `stations.py noaa` gives the same table from the tide stations) | z15 (4 m) to z13 (16 m); interpolated contributors at z12 |
+| `gebco-2026` | the yearly global 15″ grid and its type identifiers | 1 | sea | `gebco.py`, from the owner's two zips in `sources/gebco/2026/` | z8 |
+| `bluetopo` | NOAA's US coastal grids, 4–16 m | 2 | sea | `bluetopo.py`'s steps, from the public bucket by its tile scheme (checksums checked), a chunk of tiles at a time (`chunked.py bluetopo`); NAVD88 → MSL and MLLW by NOAA VDatum (`vdatum.py`, a point per 0.25° cell; `stations.py noaa` gives the same table from the tide stations) | z15 (4 m) to z13 (16 m) |
 | `nonna-100`, `nonna-10` | CHS's 100 m and 10 m grids (licence accepted; never redistributed; its notice names the owner as the maker) | 3, 4 | sea | `nonna.py`, the keyless coverage service (NONNA-10 a chunk of blocks at a time, where NONNA-100 has water: `chunked.py nonna10`); chart datum → mean water level by CHS's stations (`stations.py chs`) | z10, z13 |
-| `emodnet-dtm` | EMODnet's DTM 2024, MSL version | 5 | sea | `emodnet.py`: its MSL ASCII tiles one at a time (a WGS 84 `.prj` given each), `raster.py`'s produce; its interpolation flag not applied (task #466) | gaps only (`datum_exact = false`) |
+| `emodnet-dtm` | EMODnet's DTM 2024, MSL version | 5 | sea | `emodnet.py`: its MSL ASCII tiles one at a time (a WGS 84 `.prj` given each), `raster.py`'s produce | gaps only (`datum_exact = false`) |
 | `shom-homonim-100`, `shom-homonim-20` | SHOM's façade and coastal DEMs, MSL versions | 6, 7 | sea | `raster.py`, the low water SHOM's own separation (`--low-raster`) | z10, z13 |
-| `gttm` | NIED's 2″ grid of Japan | 8 | sea | `raster.py` over windows of it | z11; coarse meshes at z9 |
+| `gttm` | NIED's 2″ grid of Japan | 8 | sea | `raster.py` over windows of it | z11; coarse meshes as z9 grids of their own |
 | `masswildlife-ponds`, `mn-dnr-lakes`, `gblq` | surveyed lakes (Massachusetts, Minnesota, Québec) | 9–11 | lake | `raster.py` (feet or metres, sign as each says) | z16, z15, z16 |
 | `ncei-crm` | NCEI's Coastal Relief Models, 1″ (the owner's download, `sources/ncei-crm/`; volume 6 absent) | 12 | sea | `ncei.py crm`; volumes 1–5, 7, 8 (EGM2008) → MSL by a datum surface a volume from `ncei.py egm2008`'s table (CO-OPS' stations' MSL − NAVD88, `stations.py noaa`, plus NAVD88 → EGM2008 by the declared geoid grids through `scenic-build geoid-offsets`; a station more than 2 km from the volume's sea left out), land cut by MSL; 9 and 10 on local MSL as they come | z12 |
 | `ncei-greatlakes` | NCEI's Great Lakes bathymetry, 3″ (the owner's download, `sources/ncei-greatlakes/`) | 13 | lake | `ncei.py greatlakes`: from each lake's low water datum (CO-OPS' station datums) to its long-term mean level (GLERL's coordinated lake-wide monthly means, 1918 on), both fetched as it runs | z10 |

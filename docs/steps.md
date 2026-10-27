@@ -299,8 +299,8 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   (most of BlueTopo's), from the coarsest at least four cells to a pixel's side, each cell counted
   to the pixel its centre is in (`grids::level_for`, `ASKEW_FINER`: the cells counted to a pixel
   are the pixel's moved by at most half a cell, an eighth of a pixel; the sources' overviews
-  average their cells and the zoom files' take the nearest, producers/depth/grid.py). A grid's
-  zoom and low-water files are read at the overview its grid is.
+  average their cells, producers/depth/grid.py). A grid's low-water file is read at the overview
+  its grid is.
   3/1/3's z6 block: 1,359 s read in turn, 456 s so, 1.6 GB (19 Oct, the M1, release). Each window's
   prefetch is held to its share of the block cache (an eighth: the grids read at once). A file's
   open and header read run on a thread of their own, waited 120 s at most: past it the job fails

@@ -19,7 +19,7 @@ pub const TILE: usize = 256;
 pub enum Kind {
     /// Depth in metres, Terrarium-encoded RGB.
     Terrarium,
-    /// A class per pixel (measured, interpolated, estimated …), 8-bit grey.
+    /// A class per pixel (its own detail, scaled up, estimated …), 8-bit grey.
     Class,
 }
 

@@ -107,7 +107,7 @@ def bluetopo_items(gpkg: Path):
 
 
 def nonna10_items(n100: Path):
-    src = sorted(p for p in n100.glob("*.tif") if not p.name.endswith((".low.tif", ".zoom.tif")))
+    src = sorted(p for p in n100.glob("*.tif") if not p.name.endswith(".low.tif"))
     if not src:
         raise SystemExit(f"{n100}: no NONNA-100 .tif")
     water, w, n, r = water_of(src, 0.05)
@@ -120,30 +120,28 @@ def nonna10_items(n100: Path):
 def bluetopo_chunk(chunk, table: str, cache: Path, w: Writer) -> list[Path]:
     import rasterio
 
-    from bluetopo import INTERPOLATED_ZOOM, interpolated_values, sha256
+    from bluetopo import sha256
     from raster import Spec, produce
 
     have = []
     for t in chunk:
         name = t["tif"].rsplit("/", 1)[1]
-        tif, aux = cache / name, cache / (name + ".aux.xml")
+        tif = cache / name
         fresh = not tif.exists()
         fetch_retry(t["tif"], tif, 0.2)
-        fetch_retry(t["rat"], aux, 0.2)
         if fresh and t["sha"] and sha256(tif) != t["sha"].lower():
             tif.unlink()
             raise SystemExit(f"{name}: its checksum isn't the scheme's")
         with rasterio.open(tif) as d:
             navd = "navd88" in d.crs.to_wkt().lower()
-        have.append((t, tif, aux, name, navd))
-    nt = [h[1] for h in have if h[4]]
+        have.append((t, tif, name, navd))
+    nt = [h[1] for h in have if h[3]]
     offset = from_table((table, "msl_minus_navd88_m", frozenset(), "id"), nt) if nt else None
     low = from_table((table, "msl_minus_mllw_m", frozenset(), "id"), [h[1] for h in have])
-    for t, tif, aux, name, navd in have:
-        interp = np.asarray(interpolated_values(aux.read_bytes()) if aux.exists() else [], "float32")
-        spec = Spec(band=1, flags=[(None, 3, lambda c, v=interp: np.isin(c, v), INTERPOLATED_ZOOM)], offset=offset if navd else None, low=low)
+    for t, tif, name, navd in have:
+        spec = Spec(band=1, offset=offset if navd else None, low=low)
         produce(tif, spec, w, t["tif"], name.removesuffix(".tiff"))
-    return [p for h in have for p in (h[1], h[2])]
+    return [h[1] for h in have]
 
 
 
@@ -312,7 +310,7 @@ def size_mismatches(local: dict[str, int], listing: str) -> list[str]:
 
 def estimate(cache: Path, which: str, size: int) -> str:
     """A chunk's fetched bytes, from the files already in `cache` (none there: unknown)."""
-    pats = ("*.tiff", "*.tiff.aux.xml") if which == "bluetopo" else ("nonna10_*.tif",)
+    pats = ("*.tiff",) if which == "bluetopo" else ("nonna10_*.tif",)
     sizes = [[p.stat().st_size for p in cache.glob(g) if p.is_file() and "_q" not in p.name] for g in pats] if cache.is_dir() else []
     if not sizes or not sizes[0]:
         return "a chunk's bytes unknown (nothing fetched yet to measure)"

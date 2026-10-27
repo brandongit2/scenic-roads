@@ -148,8 +148,8 @@ mod tests {
         let mut e = vec![120.0, 120.0, 135.0, 140.0];
         let d = vec![-8.0, pipeline::depth::NODATA, 0.5, -3.0];
         let c = vec![
-            pipeline::depth::C_MEASURED | (9 << 4),
-            pipeline::depth::C_MEASURED,
+            pipeline::depth::C_NATIVE | (9 << 4),
+            pipeline::depth::C_NATIVE,
             pipeline::depth::C_NONE,
             pipeline::depth::C_NONE,
         ];

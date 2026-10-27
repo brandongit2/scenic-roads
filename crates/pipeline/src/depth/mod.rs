@@ -6,8 +6,8 @@
 //!   quantised to 0.1 m in the first 100 m and 1 m deeper (`quantise`). It lies on the terrain's own
 //!   water (crate::terrain_water), so the terrain minus the depth is the floor: the server serves it
 //!   so (`?floor=1` on the terrain's tiles) with no second terrain stored.
-//! - **`depth-class`** (lossless WebP, the byte in all three channels): a byte a pixel: the class (bits 0–2: `C_NONE`, measured,
-//!   interpolated, estimated, filled to the shore), dries at low tide (bit 3), the source's code
+//! - **`depth-class`** (lossless WebP, the byte in all three channels): a byte a pixel: the class (bits 0–2: `C_NONE`, a grid at
+//!   the tile's zoom or finer, a coarser one scaled up, estimated, filled to the shore), dries at low tide (bit 3), the source's code
 //!   (bits 4–7, its declaration's `code`).
 //! - **`depth-shade`** (crate::shade_codec, as the terrain's shading: crate::slope_pack): the
 //!   floor's steepness and direction, which the map's depth shading reads, made with the depth
@@ -44,10 +44,11 @@ pub const NODATA: f32 = 12000.0;
 /// Values at or above this are "no data".
 pub const NODATA_MIN: f32 = 9000.0;
 
-/// The classes (bits 0–2 of a class byte).
+/// The classes (bits 0–2 of a class byte): none; a source's grid at the tile's zoom or finer; a
+/// coarser grid's, the stored tiles of its zoom scaled up; an estimate; filled to the shore.
 pub const C_NONE: u8 = 0;
-pub const C_MEASURED: u8 = 1;
-pub const C_INTERP: u8 = 2;
+pub const C_NATIVE: u8 = 1;
+pub const C_SCALED: u8 = 2;
 pub const C_ESTIMATED: u8 = 3;
 pub const C_FILLED: u8 = 4;
 /// Dries at the chart's low water (bit 3).

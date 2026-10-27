@@ -80,7 +80,6 @@ fn sources_deep(dir: &Path, deep: f32) -> Vec<Source> {
                 bbox: window_box(zoom, c0, r0, (c1 - c0) as usize, (r1 - r0) as usize),
                 zoom,
                 file: store::nasfs::NasPath::local_for_test(p),
-                zoom_file: None,
                 low_file: None,
                 packed: None,
             }],
@@ -144,7 +143,7 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
     let t8 = tile(&out, LAYER, "lo", lo, 8, x, y).expect("a z8 sea tile");
     assert!((depth_at(&t8, px, py) + 50.0).abs() < 0.6, "{}", depth_at(&t8, px, py));
     let c8 = tile(&out, CLASS_LAYER, "lo", lo, 8, x, y).unwrap();
-    assert_eq!(class_at(&c8, px, py), C_MEASURED | (1 << 4));
+    assert_eq!(class_at(&c8, px, py), C_NATIVE | (1 << 4));
     let (x, y, px, py) = where_(8, 0.9, 0.9);
     let land = tile(&out, LAYER, "lo", lo, 8, x, y);
     assert!(land.is_none_or(|t| depth_at(&t, px, py) >= NODATA_MIN), "the land has no depth");
@@ -171,7 +170,7 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
         assert!(tile(&out, LAYER, "hi", hi, z, x, y).is_none(), "z{z}");
     }
 
-    // Every stored fine tile holds a source's own data of its zoom (measured, of a grid that fine):
+    // Every stored fine tile holds a source's own data of its zoom (`C_NATIVE`, of a grid that fine):
     // none is kept for a finer source feathered in or a gap filled from one.
     let grid_zoom = |code: u8| srcs.iter().find(|s| s.code == code).map_or(0, |s| s.grids[0].zoom);
     let c = out.get(&hi_logical(CLASS_LAYER, T.0, T.1)).unwrap();
@@ -184,7 +183,7 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
             for x in T.0 * n..(T.0 + 1) * n {
                 let Some((_, t)) = idx.get(&b, z, x, y).unwrap() else { continue };
                 let Grid::C(k) = fall::decode(Kind::Class, &t).unwrap() else { panic!() };
-                assert!(k.iter().any(|&v| v & 7 == C_MEASURED && grid_zoom(v >> 4) >= z), "{z}/{x}/{y}");
+                assert!(k.iter().any(|&v| v & 7 == C_NATIVE && grid_zoom(v >> 4) >= z), "{z}/{x}/{y}");
                 seen += 1;
             }
         }
@@ -417,7 +416,7 @@ fn a_river_takes_the_sources_drawn_in_rivers() {
     let (x, y, px, py) = where_(8, 0.6, 0.61);
     let t8 = tile(&out, LAYER, "lo", q, 8, x, y).expect("the river's z8 tile");
     assert!((depth_at(&t8, px, py) + 50.0).abs() < 0.6, "{}", depth_at(&t8, px, py));
-    assert_eq!(class_at(&tile(&out, CLASS_LAYER, "lo", q, 8, x, y).unwrap(), px, py), C_MEASURED | (1 << 4));
+    assert_eq!(class_at(&tile(&out, CLASS_LAYER, "lo", q, 8, x, y).unwrap(), px, py), C_NATIVE | (1 << 4));
     // The land beside it has none.
     let (x, y, px, py) = where_(8, 0.6, 0.7);
     assert!(tile(&out, LAYER, "lo", q, 8, x, y).is_none_or(|t| depth_at(&t, px, py) >= NODATA_MIN));

@@ -278,7 +278,7 @@ fn depth_params(d: &Data) -> Vec<String> {
 
 /// What's wrong with a depth source's index features: each grid's `file` (its name in
 /// `sources/fetched/<id>/`) and `zoom` (the Web Mercator zoom whose pixels it's on), its
-/// optional `zoom_file` and `low_file` (crate::depth::grid), and where packed its `pack` and `at`.
+/// optional `low_file` (crate::depth::grid), and where packed its `pack` and `at`.
 pub fn depth_index_problems(f: &[Feature]) -> Vec<String> {
     let mut why = Vec::new();
     for (i, x) in f.iter().enumerate() {
@@ -291,10 +291,8 @@ pub fn depth_index_problems(f: &[Feature]) -> Vec<String> {
         if !name_ok("file") {
             why.push(format!("feature {} names no `file` (a .tif in the source's folder)", i + 1));
         }
-        for k in ["zoom_file", "low_file"] {
-            if x.props.contains_key(k) && !name_ok(k) {
-                why.push(format!("feature {}: `{k}` isn't a .tif in the source's folder", i + 1));
-            }
+        if x.props.contains_key("low_file") && !name_ok("low_file") {
+            why.push(format!("feature {}: `low_file` isn't a .tif in the source's folder", i + 1));
         }
         // (Packed, task #452: `pack`, a tar in the source's folder, and `at`, each file's byte range
         // in it, [offset, length].)
@@ -305,7 +303,7 @@ pub fn depth_index_problems(f: &[Feature]) -> Vec<String> {
             {
                 why.push(format!("feature {}: `pack` isn't a .tar in the source's folder", i + 1));
             }
-            for k in ["file", "zoom_file", "low_file"] {
+            for k in ["file", "low_file"] {
                 let r = x.props.get("at").and_then(|a| a.get(k));
                 // ([offset, length], or with the member's hash as packed: [offset, length, hash16].)
                 let ok = r.and_then(|r| r.as_array()).is_some_and(|a| {
@@ -1085,9 +1083,10 @@ mod tests {
         assert!(packed(r#""pack":"6-1-2.0123456789abcdef.tar","at":{"file":[512,100]}"#).is_empty());
         assert!(packed(r#""pack":"p.tar","at":{"file":[512,100,"0123456789abcdef"]}"#).is_empty());
         assert_eq!(packed(r#""pack":"p.tar","at":{"file":[512,100,7]}"#).len(), 1);
-        assert!(packed(r#""zoom_file":"a.zoom.tif","pack":"p.tar","at":{"file":[512,100],"zoom_file":[1024,9]}"#)
-            .is_empty());
-        assert_eq!(packed(r#""zoom_file":"a.zoom.tif","pack":"p.tar","at":{"file":[512,100]}"#).len(), 1);
+        assert!(
+            packed(r#""low_file":"a.low.tif","pack":"p.tar","at":{"file":[512,100],"low_file":[1024,9]}"#).is_empty()
+        );
+        assert_eq!(packed(r#""low_file":"a.low.tif","pack":"p.tar","at":{"file":[512,100]}"#).len(), 1);
         assert_eq!(packed(r#""pack":"p.tar","at":{"file":[512,100],"low_file":[0,1]}"#).len(), 1);
         assert_eq!(packed(r#""pack":"../p.tar","at":{"file":[512,0]}"#).len(), 2);
         assert_eq!(packed(r#""at":{"file":[512,100]}"#).len(), 1);

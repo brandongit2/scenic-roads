@@ -8711,7 +8711,6 @@ pub(crate) mod tests {
             bbox,
             zoom,
             file: store::nasfs::NasPath::local_for_test("/r/g.tif"),
-            zoom_file: None,
             low_file: None,
             packed: None,
         };

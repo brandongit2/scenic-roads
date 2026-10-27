@@ -4,10 +4,8 @@
 how each cell was got), from the two zips the owner downloads by hand, read where they lie on the NAS.
 
 Each zip's netCDF is copied out once to `--tmp` (GDAL can't read netCDF-4 inside a zip on macOS);
-then each z3 tile with sea is warped onto the zoom-8 Web Mercator grid (averaged), with a zoom per
-cell: 8 where the TID says measured (10–17 direct, 70 a pre-made regional grid), 7 where it says
-interpolated (41–43, 71) or estimated (40, 44–48, 72). Land (TID 0) has none. The grids are cut by
-z3 tile; the index lists them.
+then each z3 tile with sea is warped onto the zoom-8 Web Mercator grid (averaged). Land (TID 0)
+has none. The grids are cut by z3 tile; the index lists them.
 
 usage: gebco.py --grid <GEBCO zip> --tid <TID zip> --tmp <dir> --out <dir> --index <file>
                 [--box w,s,e,n] [--keep-tmp]
@@ -24,9 +22,6 @@ import numpy as np
 from grid import Window, Writer, log, tiles_of
 
 ZOOM = 8
-FLAGGED_ZOOM = 7
-# TID codes (GEBCO's documentation): measured; everything else under the sea is capped.
-MEASURED = set(range(10, 18)) | {70}
 SOURCE_URL = "https://www.gebco.net/data-products/gridded-bathymetry-data"
 CELLS = 240  # a degree's cells
 
@@ -99,10 +94,7 @@ def main():
             tr = from_origin(west, north, 1 / CELLS, 1 / CELLS)
             hv = np.where(sea, h, np.nan).astype("float32")
             depth = warp_onto((hv, tr, "EPSG:4326"), 1, win, "average", src_nodata=np.nan)
-            measured = np.isin(tid, list(MEASURED)).astype("float32")
-            frac = warp_onto((np.where(sea, measured, np.nan).astype("float32"), tr, "EPSG:4326"), 1, win, "average", src_nodata=np.nan)
-            zoom = np.where(frac >= 0.5, ZOOM, FLAGGED_ZOOM).astype("uint8")
-            if w.put(f"3-{tx}-{ty}", SOURCE_URL, win, depth, zoom):
+            if w.put(f"3-{tx}-{ty}", SOURCE_URL, win, depth):
                 log(f"z3 tile {tx}/{ty}: {np.isfinite(depth).mean() * 100:.0f} % sea")
     w.write_index(a.index)
     if not a.keep_tmp:

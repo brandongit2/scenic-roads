@@ -5,7 +5,7 @@ licence = "Licence Ouverte 2.0"
 licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
 source = "https://www.data.gouv.fr/datasets/mnt-bathymetrique-de-facade-atlantique-projet-homonim-1"
 territory = ["FR"]
-notes = "The NM archives' .asc taken out of their 7z (by hand today), raster.py; the low water is SHOM's own separation (the PBMA version minus the NM); EMODnet's interpolation flag caps interpolated cells at z9. Not for navigation."
+notes = "The NM archives' .asc taken out of their 7z (by hand today), raster.py; the low water is SHOM's own separation (the PBMA version minus the NM). Not for navigation."
 
 [data]
 role = "depth"

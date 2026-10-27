@@ -8,13 +8,10 @@ A depth source is a set of GeoTIFFs listed by an index (GeoJSON) beside its decl
 - `file`: float32, depth below the water's surface in metres, negative below it (the sea's mean
   level, or a lake's mean surface), drying heights positive; NaN where there's none; tiled 256,
   Deflate with the floating-point predictor, overviews by averaging;
-- `zoom_file` (optional): uint8, the zoom each cell's data supports (its own where measured, coarser
-  where the source's flags say interpolated or predicted), 0 where there's none; overviews nearest;
-  without it every cell supports the grid's zoom;
 - `low_file` (optional): float32, how far the chart's low water (its datum: MLLW, LAT, chart datum)
   lies below the mean sea level, metres ≥ 0, for the "dries at low tide" flag;
 - the index feature: its footprint (lon/lat), `url` (where the data came from), `file`,
-  `zoom_file`, `low_file`, `zoom`, and `hash` (BLAKE3-free: SHA-256's first 16 hex digits of the
+  `low_file`, `zoom`, and `hash` (BLAKE3-free: SHA-256's first 16 hex digits of the
   depth file, so a changed grid changes the index and the keys reading it), and where it's packed
   (`pack`, `at`: packs.py).
 
@@ -175,8 +172,8 @@ class Writer:
         self.out.mkdir(parents=True, exist_ok=True)
         self.features: list[dict] = []
 
-    def put(self, name: str, url: str, win: Window, depth: np.ndarray, zoom: np.ndarray | None = None, low: np.ndarray | None = None, crop=True) -> bool:
-        """One grid: `depth` (h × w on `win`), optional per-cell `zoom` and `low`. Cropped to its
+    def put(self, name: str, url: str, win: Window, depth: np.ndarray, low: np.ndarray | None = None, crop=True) -> bool:
+        """One grid: `depth` (h × w on `win`), optional per-cell `low`. Cropped to its
         data; nothing written when it has none."""
         ok = np.isfinite(depth)
         if not ok.any():
@@ -192,15 +189,10 @@ class Writer:
             c1 = min(win.w, snap(cols[-1] + TILE, win.c0))
             sub = Window(win.z, win.c0 + c0, win.r0 + r0, c1 - c0, r1 - r0)
             depth = depth[r0:r1, c0:c1]
-            zoom = None if zoom is None else zoom[r0:r1, c0:c1]
             low = None if low is None else low[r0:r1, c0:c1]
             win = sub
         props = {"url": url, "zoom": int(win.z), "file": f"{name}.tif"}
         _write(self.out / props["file"], np.where(np.isfinite(depth), depth, np.nan), win, "float32", float("nan"), "average")
-        if zoom is not None:
-            z = np.where(np.isfinite(depth), np.clip(zoom, 0, 255), 0).astype("uint8")
-            props["zoom_file"] = f"{name}.zoom.tif"
-            _write(self.out / props["zoom_file"], z, win, "uint8", 0, "nearest")
         if low is not None:
             props["low_file"] = f"{name}.low.tif"
             _write(self.out / props["low_file"], np.where(np.isfinite(depth), low, np.nan), win, "float32", float("nan"), "average")

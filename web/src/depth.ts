@@ -47,7 +47,7 @@ export interface DepthSource {
   notice?: string | null;
 }
 
-const CLASSES = ['', 'measured', 'interpolated', 'estimated', 'filled to the shore'];
+const CLASSES = ['', 'full detail', 'coarser, scaled up', 'estimated', 'filled to the shore'];
 /** The water's surface over the floor (setFloor): see-through, the floor's colours showing. */
 const SURFACE_OPACITY = 0.5;
 /** What's drawn at the surface stands this high over it (m), clear of the floor where the two meet

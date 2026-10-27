@@ -459,7 +459,8 @@ for depth and its shading, with the depth ancestor's neighbours' edges; nearest 
   (`terrain_water`: half a pixel or more of sea or lake) is where it lies, and the land keeps a band
   of 3 pixels of the nearest water's value (≥ 0) so a finer shoreline never meets a gap.
 - **`depth-class`** (encoding `class-webp`: lossless WebP, the byte in R, G and B alike): bits 0–2 the class (0 none or land, 1
-  measured, 2 interpolated, 3 estimated, 4 filled to the shore), bit 3 dries at low tide, bits 4–7 the
+  a source's grid at the tile's zoom or finer, 2 a coarser grid's, scaled up, 3 estimated, 4 filled
+  to the shore), bit 3 dries at low tide, bits 4–7 the
   source's `code` (docs/inputs.md §6.10).
 - Both are libwebp 1.6.0's `-lossless -z 6 -exact` (pipeline::depth::fall), decoded exact by Chrome
   and Safari; readers still take the PNGs of packs from before (`terrarium-png`, `class-png`, grey)

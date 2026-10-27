@@ -7,7 +7,7 @@ time, owner and mode fixed, so the same grids give the same bytes) of whole GeoT
 per z6 tile (the tile of each grid's footprint's centre; a z6 tile may have several packs, one per
 producer run or chunk), named `<z6 tile>.<hash16>.tar` (SHA-256 of its bytes): a depth job reads its
 z6 tile's grids from one file. The index names each grid's pack (`pack`) and its files' byte ranges
-in it and their hashes (`at`: {"file": [offset, length, hash16], "zoom_file": …, "low_file": …}: every
+in it and their hashes (`at`: {"file": [offset, length, hash16], "low_file": …}: every
 member's bytes recorded as packed, SHA-256's first 16 digits); the build opens a pack once
 and reads each GeoTIFF in place by its range (crate::depth::grids), as it would the loose file.
 """
@@ -20,7 +20,7 @@ import os
 import tarfile
 from pathlib import Path
 
-FILE_KEYS = ("file", "zoom_file", "low_file")
+FILE_KEYS = ("file", "low_file")
 
 
 def tile(feature: dict) -> str:

@@ -6,7 +6,7 @@ Run on the M4, from producers/depth. For each source, a z6 tile at a time (the o
 lists them in):
 
 1. Its grids are read on the NAS by one `tar` over SSH (one sequential stream, no SMB opens), each
-   depth file checked against its index's `hash` (the zoom and low-water files have none there),
+   depth file checked against its index's `hash` (the low-water files have none there),
    and written into the z6 tile's pack here (`<work>/<id>/out/`), every member's hash recorded in the
    packed index (`at`) and checked again from the pack written.
 2. Every `--batch-gb` of packs, they're tarred over SSH into the source's folder on the NAS

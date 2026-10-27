@@ -8,12 +8,10 @@ larger than 1.5 × its cells at its middle latitude, or `--zoom`), averaged; its
 below the water surface (× `--scale`: −1 for depths positive down, 0.3048 for feet), then brought to
 mean sea level by a datum surface solved from tide stations (`--offset`: the value of MSL above the
 raster's datum, subtracted), a chart's low water below MSL kept beside it for the "dries" flag
-(`--low`), and cells a flag raster marks capped at a coarser zoom (`--flag`). Cut by z6 tile when
-`--piece-zoom` says so.
+(`--low`). Cut by z6 tile when `--piece-zoom` says so.
 
 usage: raster.py --src <raster> [--src …] --out <dir> --index <file> --url <origin>
                  [--band 1] [--scale 1] [--valid lo,hi] [--zoom z] [--piece-zoom 6]
-                 [--flag <raster>:<band>:<v1,v2,…>:<zoom>] [--flag-nonzero <raster>:<band>:<zoom>]
                  [--offset <stations.csv>:<column>[:<skip ids>[:<id column>]]] [--low …, the same]
                  [--low-raster <raster>] [--name <prefix>]
 """
@@ -56,10 +54,8 @@ def mid_lat(ds) -> float:
 class Spec:
     """How one source's rasters become depth grids."""
 
-    def __init__(self, band=1, scale=1.0, valid=None, zoom=None, piece_zoom=None, flags=(), offset=None, low=None, nodata=None, resampling=None, low_raster=None, top=None):
+    def __init__(self, band=1, scale=1.0, valid=None, zoom=None, piece_zoom=None, offset=None, low=None, nodata=None, resampling=None, low_raster=None, top=None):
         self.band, self.scale, self.valid, self.zoom, self.piece_zoom = band, scale, valid, zoom, piece_zoom
-        # Each flag: (raster or None for the source itself, band, a function of its values → bool, zoom).
-        self.flags = list(flags)
         # Datum surfaces (datums.Surface): MSL above the raster's datum; a chart's low water below MSL.
         self.offset, self.low, self.nodata, self.resampling = offset, low, nodata, resampling
         # Values above `top` once brought to MSL left out (`valid` is on the raster's own datum).
@@ -102,14 +98,8 @@ def produce(src: Path, spec: Spec, writer: Writer, url: str, name: str) -> int:
                     low = None
                 elif gap.any():
                     low = low[tuple(distance_transform_edt(gap, return_distances=False, return_indices=True))]
-            zoom = None
-            for fpath, fband, flagged, fz in spec.flags:
-                f = warp_onto(ds if fpath is None else fpath, fband, win, "nearest")
-                if zoom is None:
-                    zoom = np.full(v.shape, z, "uint8")
-                zoom[flagged(f) & np.isfinite(v)] = fz
             piece = name if tx is None else f"{name}-{spec.piece_zoom}-{tx}-{ty}"
-            if writer.put(piece, url, win, v, zoom, low):
+            if writer.put(piece, url, win, v, low):
                 n += 1
                 log(f"{piece}: z{z}, {np.isfinite(v).sum():,} cells, {np.nanmin(v):.1f} to {np.nanmax(v):.1f} m")
         return n
@@ -133,23 +123,13 @@ def main():
     ap.add_argument("--valid")
     ap.add_argument("--zoom", type=int)
     ap.add_argument("--piece-zoom", type=int)
-    ap.add_argument("--flag", action="append", default=[])
-    ap.add_argument("--flag-nonzero", action="append", default=[])
     ap.add_argument("--offset")
     ap.add_argument("--low")
     ap.add_argument("--low-raster", type=Path)
     ap.add_argument("--name")
     a = ap.parse_args()
-    flags = []
-    for f in a.flag:
-        p, b, vals, z = f.rsplit(":", 3)
-        vs = np.asarray([float(x) for x in vals.split(",")], "float32")
-        flags.append((p, int(b), lambda arr, vs=vs: np.isin(arr, vs), int(z)))
-    for f in a.flag_nonzero:
-        p, b, z = f.rsplit(":", 2)
-        flags.append((p, int(b), lambda arr: np.isfinite(arr) & (arr != 0), int(z)))
     spec = Spec(band=a.band, scale=a.scale, valid=[float(x) for x in a.valid.split(",")] if a.valid else None, zoom=a.zoom, piece_zoom=a.piece_zoom,
-                flags=flags, offset=from_table(parse_table(a.offset), a.src), low=from_table(parse_table(a.low), a.src), low_raster=a.low_raster)
+                offset=from_table(parse_table(a.offset), a.src), low=from_table(parse_table(a.low), a.src), low_raster=a.low_raster)
     w = Writer(a.out)
     for s in a.src:
         produce(s, spec, w, a.url, a.name or s.stem)

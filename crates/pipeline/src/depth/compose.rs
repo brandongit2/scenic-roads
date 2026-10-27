@@ -2,11 +2,11 @@
 //! tiles of one zoom with a margin of `PAD` pixels, on the basemap's own water as the terrain
 //! flattens it (crate::terrain_water).
 //!
-//! 1. Each source is sampled onto the block (crate::depth::grids): depth, the zoom each pixel's data
-//!    supports, its chart low water. Sea sources stay off the lakes, lake sources in them.
+//! 1. Each source is sampled onto the block (crate::depth::grids): depth, the zoom of the grid each
+//!    pixel is from, its chart low water. Sea sources stay off the lakes, lake sources in them.
 //! 2. Sources are painted coarse to fine. A pixel past its source's zoom shows the stored tiles of
 //!    that zoom scaled up, as the map's fallback makes them (crate::depth::fall); inside a source,
-//!    detail fades in over three of the capped zoom's pixels where measured cells meet capped ones;
+//!    detail fades in over three of the capped zoom's pixels where its finer grids meet capped ones;
 //!    where a source ends in the water it's feathered into what lies beneath over its band (never
 //!    across a source whose datum isn't corrected to the others', which only fills gaps).
 //! 3. The water decides the shore: positive values stay as drying heights only where an intertidal
@@ -21,7 +21,7 @@
 
 use super::edt::nearest;
 use super::grids::{px, sample, Reader, Source};
-use super::{C_ESTIMATED, C_FILLED, C_INTERP, C_NONE, DRIES, NODATA, NODATA_MIN};
+use super::{C_ESTIMATED, C_FILLED, C_NATIVE, C_NONE, C_SCALED, DRIES, NODATA, NODATA_MIN};
 use anyhow::Result;
 
 /// The block's margin (pixels).
@@ -180,7 +180,7 @@ pub fn compose(
                 }
             }
         }
-        // (Detail fades in where measured cells meet capped ones.)
+        // (Detail fades in where pixels of the tile's zoom meet capped ones.)
         if let Some(zc) = median.filter(|_| native.iter().any(|&x| x) && b.z > zmin) {
             get_up(b.z - 1, &mut ups)?;
             let _p = crate::timings::sub("feathering", crate::timings::Class::Compute);
@@ -225,9 +225,9 @@ pub fn compose(
                 k[i] = if s.estimated {
                     C_ESTIMATED
                 } else if native[i] {
-                    smp.class[i]
+                    C_NATIVE
                 } else {
-                    C_INTERP
+                    C_SCALED
                 };
                 src[i] = i16::from(s.code);
                 inter[i] = s.intertidal;

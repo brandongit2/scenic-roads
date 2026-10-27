@@ -5,7 +5,7 @@ licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://emodnet.ec.europa.eu/en/bathymetry"
 territory = "world"
-notes = "Whole tiles from the downloads host: its MSL ASCII grids (producers/depth/emodnet.py, a WGS 84 .prj given each; raster.py). Its interpolation flag is not applied. Its MSL sits a median 0.46 m off SHOM's at Saint-Malo, so it fills gaps only (datum_exact = false). Not for navigation."
+notes = "Whole tiles from the downloads host: its MSL ASCII grids (producers/depth/emodnet.py, a WGS 84 .prj given each; raster.py). Its MSL sits a median 0.46 m off SHOM's at Saint-Malo, so it fills gaps only (datum_exact = false). Not for navigation."
 
 [data]
 role = "depth"

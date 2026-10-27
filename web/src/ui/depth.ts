@@ -69,7 +69,7 @@ export class DepthSection {
     const dryCol = new ColourPick({ label: 'Drying', get: () => S().dryColour, set: (dryColour) => D({ dryColour }), reset: DEPTH_DEFAULTS.dryColour, title: 'The colour of water that dries at low tide' });
     this.legend = h('div', { class: 'tint-bar' });
     this.ticks = h('div', { class: 'tint-ticks depth-ticks' });
-    this.note = h('div', { class: 'faint note' }, 'Below the water\'s surface: mean sea level at sea, the lake\'s surface on lakes. Each source at its own detail where it measured, coarser where it interpolated or estimated. Not for navigation.');
+    this.note = h('div', { class: 'faint note' }, 'Below the water\'s surface: mean sea level at sea, the lake\'s surface on lakes. Each source at the detail of its grids. Not for navigation.');
     // Contours.
     this.contours = h('input', { type: 'checkbox' });
     this.contours.addEventListener('change', () => D({ contours: this.contours.checked }));

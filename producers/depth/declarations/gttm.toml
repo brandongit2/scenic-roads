@@ -5,7 +5,7 @@ licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://kiyuu.bosai.go.jp/GtTM/"
 territory = ["JP"]
-notes = "Windows of its HDF5 grid (raster.py: depths positive down; T.P. to MSL by JMA's stations); kept only where the Cabinet Office's fine meshes went in, the coarse meshes capped at z9. Not for navigation."
+notes = "Windows of its HDF5 grid (raster.py: depths positive down; T.P. to MSL by JMA's stations); kept only where the Cabinet Office's fine meshes went in, the coarse meshes as z9 grids of their own. Not for navigation."
 
 [data]
 role = "depth"

@@ -5,8 +5,8 @@
 //! A window of the zoom-z pixel grid is sampled from a grid of zoom zs: finer grids (zs ≥ z) by the
 //! mean of the cells each pixel covers, from the overview whose cells line up with it; coarser ones
 //! by bilinear interpolation of the cells' centres (no data where the nearest of the four has none,
-//! as the map's fallback does). A grid's per-cell zoom (`zoom_file`) is the most any covered cell
-//! supports, or the nearest cell's; its chart low water (`low_file`) is averaged like the depth.
+//! as the map's fallback does). Every cell shows at its grid's zoom; its chart low water
+//! (`low_file`) is averaged like the depth.
 
 use crate::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, ensure, Context, Result};
@@ -48,10 +48,9 @@ pub struct Grid {
     pub bbox: [f64; 4],
     pub zoom: u8,
     pub file: NasPath,
-    pub zoom_file: Option<NasPath>,
     pub low_file: Option<NasPath>,
     /// Where its files are packed (task #452): the pack in the source's folder, and each file's
-    /// bytes in it (`file`, `zoom_file`, `low_file`); None: loose files, as before.
+    /// bytes in it (`file`, `low_file`); None: loose files, as before.
     pub packed: Option<Packed>,
 }
 
@@ -60,7 +59,7 @@ pub struct Grid {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Packed {
     pub pack: Arc<NasPath>,
-    pub at: [Option<(u64, u64)>; 3],
+    pub at: [Option<(u64, u64)>; 2],
 }
 
 /// Where one of a grid's files is read: its own name (its identity) and, packed, its pack and
@@ -78,12 +77,12 @@ impl<'a> Loc<'a> {
 }
 
 impl Grid {
-    /// Its file `k` (0 depth, 1 zoom, 2 low water), if it has it.
+    /// Its file `k` (0 depth, 1 low water), if it has it.
     pub fn loc(&self, k: usize) -> Option<Loc<'_>> {
         let path = match k {
             0 => &self.file,
-            1 => self.zoom_file.as_ref()?,
-            _ => self.low_file.as_ref()?,
+            1 => self.low_file.as_ref()?,
+            _ => return None,
         };
         let pack = self.packed.as_ref().and_then(|p| p.at[k].map(|(o, n)| (&*p.pack, o, n)));
         Some(Loc { path, pack })
@@ -93,6 +92,10 @@ impl Grid {
 /// The index properties naming where a grid is packed (`pack`, `at`): not what it is, so left out
 /// of the source's pin (a repack builds nothing again).
 pub const PACK_PROPS: [&str; 2] = ["pack", "at"];
+
+/// Index properties the build doesn't read, left out of the pin too: an index still naming them
+/// keys as one without them.
+pub const UNREAD_PROPS: [&str; 1] = ["zoom_file"];
 
 /// A depth source, as its declaration and index say.
 #[derive(Clone, Debug, PartialEq)]
@@ -140,7 +143,7 @@ impl Source {
                         let a = f.props.get("at")?.get(k)?.as_array()?;
                         Some((a.first()?.as_u64()?, a.get(1)?.as_u64()?))
                     };
-                    let at = [at("file"), at("zoom_file"), at("low_file")];
+                    let at = [at("file"), at("low_file")];
                     ensure!(at[0].is_some(), "the depth source {}: a packed grid without its file's range", s.id);
                     Some(Packed { pack, at })
                 }
@@ -155,7 +158,6 @@ impl Source {
                     .with_context(|| format!("the depth source {}: a grid without a zoom", s.id))?
                     as u8,
                 file: name("file").with_context(|| format!("the depth source {}: a grid without a file", s.id))?,
-                zoom_file: name("zoom_file"),
                 low_file: name("low_file"),
                 packed,
             });
@@ -193,13 +195,13 @@ impl Source {
     }
 }
 
-/// Declaration `s`'s digest with its grids' packing left out (`PACK_PROPS`): the same packed or
-/// loose, so a repack keeps every key.
+/// Declaration `s`'s digest with its grids' packing (`PACK_PROPS`) and unread properties
+/// (`UNREAD_PROPS`) left out: the same packed or loose, so a repack keeps every key.
 pub fn unpacked_digest(s: &crate::inputs::sources::Source) -> String {
     let mut s = s.clone();
     for f in &mut s.index {
-        for k in PACK_PROPS {
-            f.props.remove(k);
+        for k in PACK_PROPS.iter().chain(&UNREAD_PROPS) {
+            f.props.remove(*k);
         }
     }
     s.digest()
@@ -612,14 +614,12 @@ pub fn sampled_reset() {
     }
 }
 
-/// A source sampled onto a window: depth (NaN: none), the zoom each pixel's data supports (0:
-/// none), its class (measured where its grid's own zoom, else interpolated), and the chart's low
-/// water below MSL (NaN: none).
+/// A source sampled onto a window: depth (NaN: none), the zoom of the grid each pixel's data is
+/// from (0: none), and the chart's low water below MSL (NaN: none).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sample {
     pub v: Vec<f32>,
     pub zoom: Vec<u8>,
-    pub class: Vec<u8>,
     pub low: Vec<f32>,
 }
 
@@ -641,8 +641,7 @@ fn origin(t: &Tiff, zoom: u8) -> Result<(i64, i64)> {
 /// them (`level_for`): its cells 2^`ASKEW_FINER` to a pixel's side. A cell is counted to the pixel
 /// its centre is in, so the cells counted to a pixel are the pixel's moved by at most half a cell:
 /// an eighth of a pixel at four cells to a side. (The sources' overviews average their cells and
-/// the zoom files' take the nearest, producers/depth/grid.py: a coarse cell is a mean of the
-/// grid's, as a lined-up one is.)
+/// producers/depth/grid.py: a coarse cell is a mean of the grid's, as a lined-up one is.)
 pub const ASKEW_FINER: u32 = 2;
 
 /// The image of `t` whose cells are 2^l of image 0's (l ≤ `most`), the largest such: one that
@@ -712,7 +711,7 @@ pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: u
     let together = GRIDS_TOGETHER.load(std::sync::atomic::Ordering::Relaxed);
     if together {
         let _p = sub("depth source files opened", Class::NasRead);
-        let paths: Vec<Loc<'_>> = grids.iter().flat_map(|g| (0..3).filter_map(|k| g.loc(k))).collect();
+        let paths: Vec<Loc<'_>> = grids.iter().flat_map(|g| (0..2).filter_map(|k| g.loc(k))).collect();
         rd.open_all(&paths).with_context(|| format!("the depth source {}", src.id))?;
     }
     let _p = sub("depth sources' windows read", Class::NasRead);
@@ -739,7 +738,6 @@ pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: u
             let o = out.get_or_insert_with(|| Sample {
                 v: vec![f32::NAN; w * h],
                 zoom: vec![0; w * h],
-                class: vec![0; w * h],
                 low: vec![f32::NAN; w * h],
             });
             for j in 0..p.h {
@@ -748,7 +746,6 @@ pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: u
                     if p.s.v[a].is_finite() {
                         o.v[b] = p.s.v[a];
                         o.zoom[b] = p.s.zoom[a];
-                        o.class[b] = p.s.class[a];
                         o.low[b] = p.s.low[a];
                     }
                 }
@@ -817,35 +814,32 @@ fn sample_grid_on(
     w: usize,
     h: usize,
 ) -> Result<Option<Sample>> {
-    let zt = g.loc(1).map(|l| rd.tiff_at(l)).transpose()?;
-    let lt = g.loc(2).map(|l| rd.tiff_at(l)).transpose()?;
-    for x in zt.iter().chain(lt.iter()) {
+    let lt = g.loc(1).map(|l| rd.tiff_at(l)).transpose()?;
+    if let Some(x) = &lt {
         ensure!(
             origin(x, g.zoom)? == (gc, gr)
                 && x.images()[0].width == t.images()[0].width
                 && x.images()[0].height == t.images()[0].height,
-            "its zoom or low-water file isn't on its own grid"
+            "its low-water file isn't on its own grid"
         );
     }
-    // (A zoom or low-water file is read at the level its grid is read at, its cells the same:
-    // at another level the band's coordinates would mean other cells.)
-    let same_level = |x: &Tiff, what: &str, lv: usize| -> Result<usize> {
+    // (A low-water file is read at the level its grid is read at, its cells the same: at another
+    // level the band's coordinates would mean other cells.)
+    let same_level = |x: &Tiff, lv: usize| -> Result<usize> {
         let im = &t.images()[lv];
         match x.images().get(lv) {
             Some(xi) if xi.width == im.width && xi.height == im.height => Ok(lv),
-            _ => bail!("its {what} file lacks its grid's overview {} ({} × {} cells)", lv, im.width, im.height),
+            _ => bail!("its low-water file lacks its grid's overview {} ({} × {} cells)", lv, im.width, im.height),
         }
     };
-    let mut s =
-        Sample { v: vec![f32::NAN; w * h], zoom: vec![0; w * h], class: vec![0; w * h], low: vec![f32::NAN; w * h] };
+    let mut s = Sample { v: vec![f32::NAN; w * h], zoom: vec![0; w * h], low: vec![f32::NAN; w * h] };
     if g.zoom >= z {
         let k = u32::from(g.zoom - z);
         if k > 24 {
             bail!("zoom {} sampled at {z}", g.zoom);
         }
         let (lv, l) = level_for(&t, k, gc, gr);
-        let zlv = zt.as_ref().map(|x| same_level(x, "zoom", lv)).transpose()?;
-        let llv = lt.as_ref().map(|x| same_level(x, "low-water", lv)).transpose()?;
+        let llv = lt.as_ref().map(|x| same_level(x, lv)).transpose()?;
         // (The level's cells covering the window, in its own pixels: the first at or before the
         // window's first cell, the last at or after its last, so a level askew of the pixels,
         // `level_for`, still covers them whole.)
@@ -875,10 +869,6 @@ fn sample_grid_on(
             ys = ye;
             let Some((v, a0, b0, rw)) = read(t, lv, x0, band.0, x1, band.1)? else { continue };
             any = true;
-            let zv = match (&zt, zlv) {
-                (Some(zt), Some(zlv)) => read(zt, zlv, x0, band.0, x1, band.1)?.map(|r| r.0),
-                _ => None,
-            };
             let lw = match (&lt, llv) {
                 (Some(lt), Some(llv)) => read(lt, llv, x0, band.0, x1, band.1)?.map(|r| r.0),
                 _ => None,
@@ -901,8 +891,6 @@ fn sample_grid_on(
                     let o = oy as usize * w + ox as usize;
                     sum[o] += f64::from(x);
                     n[o] += 1;
-                    let cz = zv.as_ref().map_or(g.zoom, |zv| zv[j * rw + i].clamp(0.0, 30.0) as u8).min(g.zoom);
-                    s.zoom[o] = s.zoom[o].max(cz);
                     if let Some(lw) = &lw {
                         let y = lw[j * rw + i];
                         if y.is_finite() {
@@ -919,11 +907,10 @@ fn sample_grid_on(
         for o in 0..w * h {
             if n[o] > 0 {
                 s.v[o] = (sum[o] / f64::from(n[o])) as f32;
+                s.zoom[o] = g.zoom;
                 if ln[o] > 0 {
                     s.low[o] = (lsum[o] / f64::from(ln[o])) as f32;
                 }
-            } else {
-                s.zoom[o] = 0;
             }
         }
     } else {
@@ -934,10 +921,6 @@ fn sample_grid_on(
         let (fx0, fy0) = (at(c0, gc).floor() as i64, at(r0, gr).floor() as i64);
         let (fx1, fy1) = (at(c0 + w as i64, gc).floor() as i64 + 2, at(r0 + h as i64, gr).floor() as i64 + 2);
         let Some((v, a0, b0, rw)) = read(&t, 0, fx0, fy0, fx1, fy1)? else { return Ok(None) };
-        let zv = match &zt {
-            Some(zt) => read(zt, 0, fx0, fy0, fx1, fy1)?.map(|r| r.0),
-            None => None,
-        };
         let lw = match &lt {
             Some(lt) => read(lt, 0, fx0, fy0, fx1, fy1)?.map(|r| r.0),
             None => None,
@@ -976,16 +959,11 @@ fn sample_grid_on(
                 let o = oy * w + ox;
                 s.v[o] = sum / ws;
                 let (nx, ny) = (xi + (near & 1) as i64, yi + (near >> 1) as i64);
-                s.zoom[o] = zv.as_ref().map_or(g.zoom, |zv| get(zv, nx, ny).clamp(0.0, 30.0) as u8).min(g.zoom);
+                s.zoom[o] = g.zoom;
                 if let Some(lw) = &lw {
                     s.low[o] = get(lw, nx, ny);
                 }
             }
-        }
-    }
-    for o in 0..w * h {
-        if s.v[o].is_finite() {
-            s.class[o] = if s.zoom[o] >= g.zoom { super::C_MEASURED } else { super::C_INTERP };
         }
     }
     Ok(s.v.iter().any(|v| v.is_finite()).then_some(s))
@@ -1175,7 +1153,6 @@ pub(crate) mod tests {
             bbox: bbox(zoom, c, r, 1024, 512),
             zoom,
             file: store::nasfs::NasPath::local_for_test(p.clone()),
-            zoom_file: None,
             low_file: None,
             packed: None,
         }]);
@@ -1245,7 +1222,6 @@ pub(crate) mod tests {
             bbox: bbox(zoom, c + 3, r + 1, 1024, 512),
             zoom,
             file: store::nasfs::NasPath::local_for_test(askew.clone()),
-            zoom_file: None,
             low_file: None,
             packed: None,
         }]);
@@ -1285,54 +1261,25 @@ pub(crate) mod tests {
         );
     }
 
-    /// Task #433 review: a zoom file is read at the overview its grid is read at (their cells the
-    /// same), an askew grid's too: where its zoom is below the grid's every pixel is interpolated.
+    /// Task #433 review: a low-water file is read at the overview its grid is read at (their cells
+    /// the same): one with fewer overviews than its grid fails the window that reads the grid's
+    /// 4-cell overview, saying so (one reading the full image is fine).
     #[test]
-    fn a_zoom_file_is_read_at_its_grids_overview() {
+    fn a_low_water_file_is_read_at_its_grids_overview() {
         let d = tempfile::tempdir().unwrap();
         let (zoom, c, r) = (12u8, 1200 * 256i64, 1500 * 256i64);
         let p = d.path().join("g.tif");
         grid_file(&p, zoom, c + 3, r + 1, 256, 128, &|x, y| -((x - c) as f32) * 0.1 - (y - r) as f32 * 0.1 - 5.0);
-        let zp = d.path().join("g.zoom.tif");
-        grid_file(&zp, zoom, c + 3, r + 1, 256, 128, &|x, _| if x < c + 131 { 11.0 } else { 12.0 });
+        let lp = d.path().join("g.short.low.tif");
+        grid_file_levels(&lp, zoom, c + 3, r + 1, 256, 128, 2, &|_, _| 1.0);
         let s = source(vec![Grid {
             bbox: bbox(zoom, c + 3, r + 1, 256, 128),
             zoom,
             file: store::nasfs::NasPath::local_for_test(p),
-            zoom_file: Some(store::nasfs::NasPath::local_for_test(zp)),
-            low_file: None,
+            low_file: Some(store::nasfs::NasPath::local_for_test(lp)),
             packed: None,
         }]);
         let rd = Reader::default();
-        let got = sample(&rd, &s, 8, c >> 4, r >> 4, 18, 10).unwrap().unwrap();
-        let (mut lo, mut hi) = (0, 0);
-        for (o, v) in got.v.iter().enumerate() {
-            if v.is_nan() {
-                continue;
-            }
-            let px = (c >> 4) + (o % 18) as i64;
-            // (Pixels wholly west of cell c+131 by a cell or more have zoom 11, east 12.)
-            if (px + 1) * 16 + 4 <= c + 131 {
-                assert_eq!((got.zoom[o], got.class[o]), (11, super::super::C_INTERP), "{o}");
-                lo += 1;
-            } else if px * 16 >= c + 131 + 4 {
-                assert_eq!((got.zoom[o], got.class[o]), (12, super::super::C_MEASURED), "{o}");
-                hi += 1;
-            }
-        }
-        assert!(lo > 0 && hi > 0, "{lo} {hi}");
-        // A zoom file with fewer overviews than its grid: the window that reads the grid's 4-cell
-        // overview fails, saying so (one reading the full image is fine).
-        let zp = d.path().join("g.short.zoom.tif");
-        grid_file_levels(&zp, zoom, c + 3, r + 1, 256, 128, 2, &|_, _| 12.0);
-        let s = source(vec![Grid {
-            bbox: bbox(zoom, c + 3, r + 1, 256, 128),
-            zoom,
-            file: store::nasfs::NasPath::local_for_test(d.path().join("g.tif")),
-            zoom_file: Some(store::nasfs::NasPath::local_for_test(zp)),
-            low_file: None,
-            packed: None,
-        }]);
         let e = sample(&rd, &s, 8, c >> 4, r >> 4, 18, 10).unwrap_err();
         assert!(format!("{e:#}").contains("lacks its grid's overview"), "{e:#}");
         assert!(sample(&rd, &s, 12, c, r, 40, 40).unwrap().is_some(), "the full image: fine");
@@ -1357,7 +1304,6 @@ pub(crate) mod tests {
                     bbox: bbox(zoom, gc, gr, 64, 64),
                     zoom,
                     file: store::nasfs::NasPath::local_for_test(p),
-                    zoom_file: None,
                     low_file: None,
                     packed: None,
                 }
@@ -1404,15 +1350,14 @@ pub(crate) mod tests {
                 bbox: bbox(zoom, gc, gr, 64, 64),
                 zoom,
                 file: store::nasfs::NasPath::local_for_test(p.clone()),
-                zoom_file: None,
                 low_file: Some(store::nasfs::NasPath::local_for_test(l.clone())),
                 packed: None,
             };
             loose.push(g.clone());
             // (The first four in one pack, the rest in another, each after some other bytes.)
             let k = usize::from(i >= 4);
-            let mut at = [None; 3];
-            for (j, f) in [(0, &p), (2, &l)] {
+            let mut at = [None; 2];
+            for (j, f) in [(0, &p), (1, &l)] {
                 let b = std::fs::read(f).unwrap();
                 at[j] = Some((packs[k].len() as u64, b.len() as u64));
                 packs[k].extend_from_slice(&b);
@@ -1442,7 +1387,7 @@ pub(crate) mod tests {
                 let bits = |v: &[f32]| v.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
                 assert_eq!(bits(&sa.v), bits(&sb.v));
                 assert_eq!(bits(&sa.low), bits(&sb.low));
-                assert_eq!((sa.zoom, sa.class), (sb.zoom, sb.class));
+                assert_eq!(sa.zoom, sb.zoom);
                 assert!(rb.open.lock().unwrap().packs.len() <= keep.min(2));
             }
             if keep == 100 {
@@ -1461,7 +1406,7 @@ pub(crate) mod tests {
             sa.v.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
             sl.v.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
         );
-        assert_eq!((sa.zoom, sa.class), (sl.zoom, sl.class));
+        assert_eq!(sa.zoom, sl.zoom);
         for k in 0..2 {
             assert_eq!(std::fs::read(cache.path().join(format!("blobs/pack{k}.tar"))).unwrap(), packs[k]);
             store::cachefile::release(&cache.path().join(format!("blobs/pack{k}.tar")));
@@ -1493,19 +1438,20 @@ pub(crate) mod tests {
         let loose = src("");
         let packed = src(r#","pack":"6-1-2.00ff.tar","at":{"file":[512,100],"low_file":[1024,50]}"#);
         assert_eq!(loose.pin, packed.pin);
+        assert_eq!(loose.pin, src(r#","zoom_file":"a.zoom.tif""#).pin, "an unread property keys as without");
         assert_eq!(src(r#","hash":"9999""#).pin == loose.pin, false, "the grid's own change changes the pin");
         let g = &packed.grids[0];
         assert_eq!(g.file, store::nasfs::NasPath::local_for_test(Path::new("/r/sources/fetched/s/a.tif")));
         let p = g.packed.as_ref().unwrap();
         assert_eq!(p.pack.unchecked_path(), Path::new("/r/sources/fetched/s/6-1-2.00ff.tar"));
-        assert_eq!(p.at, [Some((512, 100)), None, Some((1024, 50))]);
+        assert_eq!(p.at, [Some((512, 100)), Some((1024, 50))]);
         assert!(loose.grids[0].packed.is_none());
-        let l = g.loc(2).unwrap();
+        let l = g.loc(1).unwrap();
         assert_eq!(
             (l.path.unchecked_path(), l.pack.map(|(p, o, n)| (p.unchecked_path(), o, n))),
             (PathBuf::from("/r/sources/fetched/s/a.low.tif"), Some((p.pack.unchecked_path(), 1024, 50)))
         );
-        assert!(g.loc(1).is_none());
+        assert!(g.loc(2).is_none());
     }
 
     /// Task #438: a grid sampled on the part of a window it reaches gives the window what sampling
@@ -1527,7 +1473,6 @@ pub(crate) mod tests {
             bbox: bbox(zoom, c, r, 40, 24),
             zoom,
             file: store::nasfs::NasPath::local_for_test(p),
-            zoom_file: None,
             low_file: None,
             packed: None,
         }]);
@@ -1544,8 +1489,8 @@ pub(crate) mod tests {
             let whole = sample_grid_on(&rd, g, &t, origin(&t, g.zoom).unwrap(), z, wc, wr, w, h).unwrap().unwrap();
             for o in 0..w * h {
                 assert_eq!(
-                    (big.v[o].to_bits(), big.zoom[o], big.class[o], big.low[o].to_bits()),
-                    (whole.v[o].to_bits(), whole.zoom[o], whole.class[o], whole.low[o].to_bits()),
+                    (big.v[o].to_bits(), big.zoom[o], big.low[o].to_bits()),
+                    (whole.v[o].to_bits(), whole.zoom[o], whole.low[o].to_bits()),
                     "z{z} ({}, {})",
                     o % w,
                     o / w
@@ -1574,7 +1519,6 @@ pub(crate) mod tests {
             bbox: bbox(zoom, c + 3, r + 1, 300, 200),
             zoom,
             file: store::nasfs::NasPath::local_for_test(p),
-            zoom_file: None,
             low_file: None,
             packed: None,
         }]);
@@ -1618,7 +1562,6 @@ pub(crate) mod tests {
                     bbox: bbox(zoom, gc, gr, 320, 256),
                     zoom,
                     file: store::nasfs::NasPath::local_for_test(p),
-                    zoom_file: None,
                     low_file: None,
                     packed: None,
                 }
@@ -1626,11 +1569,7 @@ pub(crate) mod tests {
             .collect();
         let s = source(grids);
         let bits = |x: &Sample| -> Vec<u32> {
-            x.v.iter()
-                .chain(&x.low)
-                .map(|v| v.to_bits())
-                .chain(x.zoom.iter().chain(&x.class).map(|&b| u32::from(b)))
-                .collect()
+            x.v.iter().chain(&x.low).map(|v| v.to_bits()).chain(x.zoom.iter().map(|&b| u32::from(b))).collect()
         };
         let mut got = Vec::new();
         for (together, reads) in [(false, 1), (true, 8)] {
