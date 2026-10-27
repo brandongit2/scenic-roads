@@ -4214,8 +4214,19 @@ fn route(
             // the build page's map's queue, asked once a forecast.
             // None made (a member's, or the lead's before its first): 200 with why (`making`), not
             // an error: the page asks the lead, or waits.
-            let tc = shared.lock().unwrap().tocome.clone();
-            Ok(tc.map_or_else(|| making("this Mac has made no forecast yet"), |t| (200, t.answer())))
+            // With the history's `epoch`, the numbering its `after` is in.
+            let (tc, epoch) = {
+                let s = shared.lock().unwrap();
+                (s.tocome.clone(), format!("coordinator {}", s.lead_name))
+            };
+            Ok(tc.map_or_else(
+                || making("this Mac has made no forecast yet"),
+                |t| {
+                    let mut a = t.answer();
+                    a["epoch"] = epoch.into();
+                    (200, a)
+                },
+            ))
         }
         "/work/regions" => {
             // With `steps`: each region's targets built of all by step, as this Mac's agent last
@@ -10264,6 +10275,9 @@ mod tests {
         assert_eq!(status(&r), 200, "{r}");
         let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(a["macs"]["m4"]["terrain-hi"], serde_json::json!([["6/33/20", 60]]));
+        // The history's epoch its `after` is numbered in, the status's.
+        assert!(a["epoch"].as_str().unwrap().starts_with("coordinator "), "{a}");
+        assert_eq!(a["after"], serde_json::json!([]));
     }
 
     /// Tasks brokered by every member (docs/pool.md §8): a page from another member's address takes

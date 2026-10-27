@@ -164,6 +164,29 @@ fn last_per_step(
 }
 
 impl Waits {
+    /// For each of `runs` runs, the finished jobs its items waited on (the numbers `resolved` holds
+    /// for them), per step the last, sorted: `item_run` each item's run (`forecast::Runs`).
+    pub fn by_run(&self, item_run: &[Option<u32>], runs: usize) -> Vec<Vec<u64>> {
+        let mut out: Vec<BTreeMap<&str, u64>> = vec![BTreeMap::new(); runs];
+        for (key, r) in &self.resolved {
+            let Some(run) = self.index.get(key).and_then(|&i| item_run.get(i as usize).copied().flatten()) else {
+                continue;
+            };
+            let Some(m) = out.get_mut(run as usize) else { continue };
+            for (step, &seq) in r {
+                let e = m.entry(step.as_str()).or_default();
+                *e = (*e).max(seq);
+            }
+        }
+        out.into_iter()
+            .map(|m| {
+                let mut v: Vec<u64> = m.into_values().collect();
+                v.sort_unstable();
+                v
+            })
+            .collect()
+    }
+
     /// What item `i` of the graph waits on that's finished, step → the last job's number.
     fn of(
         &self,
@@ -571,6 +594,30 @@ mod tests {
         let old: Event = serde_json::from_str(r#"{"seq":1,"t":5,"kind":"start","step":"unit"}"#).unwrap();
         assert!(old.after.is_empty());
         assert!(!serde_json::to_string(&old).unwrap().contains("after"));
+    }
+
+    /// A forecast's run names the finished jobs its items waited on (task #797), per step the last.
+    #[test]
+    fn a_run_names_the_finished_jobs_its_items_waited_on() {
+        let mut h = History::load(None);
+        let k = |s: &str, t: &str| (s.to_string(), t.to_string());
+        let g = || Graph {
+            keys: vec![k("slope-deep", "10/1/1"), k("unit", "6/1/1"), k("unit", "6/1/2")],
+            deps: vec![vec![], vec![0], vec![0]],
+            sets: vec![vec![], vec![], vec![]],
+            groups: vec![],
+        };
+        set(&mut h, g());
+        let s = h.add(Event { step: Some("slope-deep".into()), targets: vec!["10/1/1".into()], ..ev("done", 0, "m1") });
+        // The next forecast has the units alone (runs 0 and 1; the third item's none): both name it.
+        let g2 = Graph {
+            keys: vec![k("unit", "6/1/1"), k("unit", "6/1/2"), k("unit", "6/1/3")],
+            deps: vec![vec![]; 3],
+            sets: vec![vec![]; 3],
+            groups: vec![],
+        };
+        let w = h.waits_basis().next(g2);
+        assert_eq!(w.by_run(&[Some(0), Some(0), None], 2), vec![vec![s], vec![]]);
     }
 
     #[test]

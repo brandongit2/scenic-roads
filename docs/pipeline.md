@@ -306,7 +306,9 @@ The Jobs tab's stages are the one exception.
   its lane's first run of its step), and for a job that ran or one running, from each job that
   ran it waited on and to each that ran or runs waiting on it (its start's or lease's `after` in
   the history, task #791: per step its targets waited on in the forecast's dependencies, the job
-  of that step that finished last; none on events before #791), everything else dimmed, its
+  of that step that finished last; none on events before #791), and for a run to come from each
+  finished job it waits on (`/work/tocome`'s `after`, drawn only when its `epoch` is the history's),
+  everything else dimmed, its
   tiles lit on the map (only the map's lit tiles drawn again, once a frame); a legend item hovered (a stage, ran, failed, running, to come): its jobs
   at full strength and all their tiles lit on the map.
 - **Jobs tab, the stages:** done and left of all the enabled regions' work (the one place the

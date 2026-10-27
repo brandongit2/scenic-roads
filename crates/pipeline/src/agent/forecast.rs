@@ -578,6 +578,12 @@ pub struct Forecast {
 pub struct Runs {
     pub targets: Vec<Vec<String>>,
     pub deps: Vec<[u32; 2]>,
+    /// Each item's run (`Forecast::graph`'s order): for the agent's forecast thread alone, taken
+    /// out before the answer's kept.
+    pub item_run: Vec<Option<u32>>,
+    /// Each run's finished dependencies, the history's event numbers (`Waits::by_run`; empty
+    /// until the forecast thread works them out).
+    pub after: Vec<Vec<u64>>,
 }
 
 /// A target placed by the forecast's run (`Forecast::placed`).
@@ -641,9 +647,11 @@ impl ToCome {
     }
 
     /// `/work/tocome`'s answer: {at, macs: {mac: {step: [[tile, s from at]…]}}, runs: [[target…]…],
-    /// deps: [[a, b]…]}, every Mac's; runs numbered as `Runs` says.
+    /// deps: [[a, b]…], after: [[seq…]…]}, every Mac's; runs numbered as `Runs` says, `after` each
+    /// run's finished dependencies (the history's event numbers; the coordinator adds the `epoch`
+    /// they're numbered in).
     pub fn answer(&self) -> serde_json::Value {
-        serde_json::json!({ "at": self.at, "macs": self.macs, "runs": self.runs.targets, "deps": self.runs.deps })
+        serde_json::json!({ "at": self.at, "macs": self.macs, "runs": self.runs.targets, "deps": self.runs.deps, "after": self.runs.after })
     }
 }
 
@@ -1946,7 +1954,7 @@ fn runs_of(
         let on_sets = it.groups.iter().filter_map(|&g| group_runs.get(g)).flatten().copied();
         deps.extend(on.chain(on_sets).filter(|&a| a != b).map(|a| [a, b]));
     }
-    Runs { targets, deps: deps.into_iter().collect() }
+    Runs { targets, deps: deps.into_iter().collect(), item_run: ids, after: Vec::new() }
 }
 
 /// Where the lead's real grants departed from forecast `f`'s next steps: each Mac and step granted

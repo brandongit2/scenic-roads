@@ -8506,9 +8506,14 @@ impl Agent {
             let macs: Vec<String> =
                 record.input.machines.iter().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())).collect();
             let mut tocome = forecast::ToCome::of(&f.placed, &macs, f.at);
+            let item_run = std::mem::take(&mut f.runs.item_run);
             tocome.runs = std::mem::take(&mut f.runs);
-            // (What its items wait on as the history's, worked out here: off the loop.)
+            // (What its items wait on as the history's, worked out here: off the loop; each run's
+            // finished dependencies from it, for the page's arrows.)
             let waits = coord.map(|c| c.waits_of(std::mem::take(&mut f.graph)));
+            if let Some(w) = &waits {
+                tocome.runs.after = w.by_run(&item_run, tocome.runs.targets.len());
+            }
             f.placed = Vec::new();
             Forecasted { forecast: f, bytes: record.bytes(), entry, tocome, waits, took: took.elapsed() }
         });

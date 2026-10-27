@@ -1164,7 +1164,8 @@ function segTiles(s, m) {
 // those of the runs it waits on and of those waiting on it, and its arrows (from a run's end, its
 // last segment, to a run's start, its first); a legend item's (`lg stage <id>`, `lg kind <kind>`)
 // segments. A job that ran or one running links by the history instead (`after`: the ends it
-// waited on, sums.js pastRuns, startOf), to the jobs that ran and those running. Their tiles for the
+// waited on, sums.js pastRuns, startOf), to the jobs that ran and those running; a run to come
+// by `/work/tocome`'s `after` (its finished dependencies), when its `epoch` is the history's. Their tiles for the
 // map: the segment's own, the legend item's all.
 function schedRelations(key) {
   const m = lastSchedM;
@@ -1184,7 +1185,7 @@ function schedRelations(key) {
   for (const b of s.run != null ? links.then.get(s.run) || [] : []) { const x = of(b); on.push(...x); if (x.length) arrows.push([tail(self), head(x)]); }
   // (Jobs that ran, and those running, by what the history says each waited on: `after`, the ends'
   // seqs of the jobs it waited on. A segment packs several runs: its parts'.)
-  const parts = (x) => (x.kind === "past" ? x.r.parts || [x.r] : x.kind === "running" ? [x.r] : []);
+  const parts = (x) => (x.kind === "past" ? x.r.parts || [x.r] : x.kind === "running" || x.kind === "next" ? [x.r] : []);
   const seqs = new Set(parts(s).map((p) => p.seq).filter((q) => q != null));
   const waited = new Set(parts(s).flatMap((p) => p.after || []));
   if (seqs.size || waited.size) {
@@ -1262,7 +1263,7 @@ function schedule(m) {
       ls.forEach((l, k) => {
         if (l.until <= now) return;
         const run = nums.first[nm] + k;
-        segment(tv, { ...l, from: Math.max(l.from, now), lane: nm, waits: tc ? links.on.get(run)?.length || 0 : null, waited: tc ? links.then.get(run)?.length || 0 : null }, "next", `f ${nm} ${l.from} ${l.step}`, run);
+        segment(tv, { ...l, from: Math.max(l.from, now), lane: nm, after: tc?.epoch != null && tc.epoch === past.epoch ? tc.after?.[run] || [] : [], waits: tc ? links.on.get(run)?.length || 0 : null, waited: tc ? links.then.get(run)?.length || 0 : null }, "next", `f ${nm} ${l.from} ${l.step}`, run);
       });
       lanes.append(h("div", { class: "ln", title: nm }, `${slotNo(nm, g.host) ?? nm}`), tv.el);
     }

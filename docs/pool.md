@@ -1413,7 +1413,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   map's queue; and the schedule's runs (`forecast::Runs`, task #787): `runs`, each run's targets,
   the runs numbered as the forecast's `lanes` hold them (the lanes by name in byte order, each
   lane's runs in order), and `deps`, [a, b] when an item of run b waits on one of run a (its own
-  deps, a release's, or a set's it waits on whole), each pair once. Measured on the 26 Oct 20:15
+  deps, a release's, or a set's it waits on whole), each pair once; and `after` (task #797), for each run (in the runs' order) the history's event numbers of the finished jobs its items waited on (per step the last such job over the run's items, sorted, a few numbers a run: the `WaitsBasis` lookup the forecast's thread already makes for the history's waits, `Waits::by_run`; none for an item new since the last forecast), with the `epoch` they're numbered in (the status's: `coordinator <lead>`). Measured on the 26 Oct 20:15
   record (31,132 items, 850 runs): `macs` 642 KB, `runs` 366 KB, `deps` 117 KB (12,046 pairs);
   ~275 KB gzipped whole, and sent gzipped to a client that sends `Accept-Encoding: gzip` (the agent gzips every answer of 32 bytes or more except images, event streams, raw bytes (octet-stream, tar, zip) and parts of a file). Another Mac's port answers 200 with `{making: why}` (it made no forecast), or a former lead's its last,
   older one: the page takes its own Mac's answer only when its `at` is the status's forecast's,
