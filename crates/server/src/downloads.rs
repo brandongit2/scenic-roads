@@ -28,7 +28,9 @@
 //! it lacks. An Update copies the catalogue served's files for it alongside the old ones; once all
 //! are here, the download moves to that catalogue and the files only the old one named go. A
 //! download moves on by itself only when that copies nothing: the catalogue's files for it are the
-//! same, or its own catalogue had none of it (downloaded before it was built). Catalogues a download
+//! same, or its own catalogue had none of it (downloaded before it was built); or when it has
+//! nothing whole to keep: not all here at its own catalogue (still copying when the new one came),
+//! whose older files the map never reads (they'd mix with the NAS's, `older`). Catalogues a download
 //! is at or updating to are kept on this Mac (store::mirror::Mirror::keep_catalogues).
 //!
 //! - **The World, zoomed out** (`world_part`): the worldwide files, every layer's root and lo
@@ -431,7 +433,8 @@ impl Downloads {
         };
         let mut plan = make_plan(generation, version, asked, cur.n, at);
         // (A change moves the generation on: the plan is for the one it leaves.)
-        if data.set_older(older(&plan)) {
+        let older = data.mirror.as_ref().map(|m| older(&plan, m)).unwrap_or_default();
+        if data.set_older(older) {
             plan.generation = data.generation.load(Ordering::SeqCst);
         }
         let plan = Arc::new(plan);
@@ -451,8 +454,11 @@ fn at_of(cat: Arc<Catalogue>, owners: &Owners) -> At {
 
 /// The older files the downloads behind the catalogue served keep, by logical name, for the map to
 /// read (Data::content): those of each download's own catalogue that the served one replaced,
-/// unless a download at the served catalogue has its file (a file shared by both: the newer).
-fn older(plan: &Plan) -> HashMap<String, String> {
+/// unless a download at the served catalogue has its file (a file shared by both: the newer). Only
+/// a download all here at its catalogue counts: one partly here would mix its catalogue's files
+/// with the served one's (a list's ways index their owner's base pack), and what it reads would
+/// change as each file came, under the same URLs (`advance` moves it on).
+fn older(plan: &Plan, m: &Mirror) -> HashMap<String, String> {
     let names = |p: &Part| -> Vec<String> { p.items.iter().map(store::mirror::copy_name).collect() };
     let current: HashSet<String> = plan
         .asked
@@ -468,7 +474,10 @@ fn older(plan: &Plan) -> HashMap<String, String> {
         if plan.eff(p.cat) == plan.current {
             continue;
         }
-        for i in plan.part(&w, p.cat).into_iter().flat_map(|p| p.items.iter()) {
+        let Some(part) = plan.part(&w, p.cat).filter(|part| part.items.iter().all(|i| m.is_here(i))) else {
+            continue;
+        };
+        for i in &part.items {
             let name = match i {
                 Item::File { name, .. } => name,
                 Item::Piece { archive, .. } => archive,
@@ -537,8 +546,8 @@ impl Downloads {
 
     /// Moves each download's pin on where the plan says (`Plan::eff`, module doc): pinned at last
     /// (none yet, or its catalogue lost: the one served); an Update all here: to its catalogue; behind,
-    /// with nothing to copy: to the one served. Tells the mirror which catalogues to keep. Whether
-    /// anything moved.
+    /// with nothing to copy, or with nothing whole to keep (not all here at its own catalogue): to
+    /// the one served. Tells the mirror which catalogues to keep. Whether anything moved.
     fn advance(&self, plan: &Plan, m: &Mirror) -> bool {
         let cur = plan.current;
         let mut next = plan.asked.clone();
@@ -551,6 +560,12 @@ impl Downloads {
                     p.to = None;
                 } else if plan.part(&w, t).is_none_or(|part| part.complete(m)) {
                     p = Pin { cat: t, to: None };
+                }
+            }
+            if p.cat != cur {
+                let whole = plan.part(&w, p.cat).is_some_and(|part| part.items.iter().all(|i| m.is_here(i)));
+                if !whole {
+                    p = Pin { cat: cur, to: None };
                 }
             }
             if p.to.is_none() && p.cat != cur {

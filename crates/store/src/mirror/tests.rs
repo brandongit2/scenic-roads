@@ -603,9 +603,14 @@ fn saved_catalogues() {
     let home = tempfile::tempdir().unwrap();
     let m = big(home.path());
     assert!(m.saved_catalogue().unwrap().is_none());
-    for n in 1..=5 {
+    // (Until the downloads say which they're at, none goes: one adopted at start keeps them.)
+    for n in 1..=4 {
         m.save_catalogue(&two_areas(&nas, n, n as u8, 1)).unwrap();
     }
+    assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [4, 3, 2, 1]);
+    m.keep_catalogues(Default::default()).unwrap();
+    assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [4, 3, 2]);
+    m.save_catalogue(&two_areas(&nas, 5, 5, 1)).unwrap();
     assert_eq!(m.saved_catalogue().unwrap().unwrap().n, 5);
     assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [5, 4, 3]);
     // One a download is at stays however old; let go, it goes.

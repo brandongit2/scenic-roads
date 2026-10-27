@@ -274,7 +274,9 @@ and codesign.
   NAS for what it lacks. An update copies the catalogue served's files beside the old ones (so the
   region keeps working offline throughout), then moves the download to that catalogue, and the
   files only the old one named go. A download moves on by itself only when that copies nothing (its
-  files are the same in the new catalogue, or its catalogue didn't have it yet). The catalogues
+  files are the same in the new catalogue, or its catalogue didn't have it yet), or when it has
+  nothing whole to keep (not all here when the new catalogue came: the map never mixes a partial
+  download's older files with the NAS's newer ones). The catalogues
   downloads are at stay in `catalog/` however old. Removing a download deletes what no other
   download names. Nothing else goes, ever.
 - **Copies:** one file or piece at a time, the World first, then small worldwide files, root and lo

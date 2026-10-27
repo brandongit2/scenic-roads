@@ -541,6 +541,37 @@ async fn a_download_with_nothing_to_copy_moves_on_by_itself() {
     assert_eq!(v["regions"]["kanto"]["state"].as_str(), Some("done"), "{v}");
 }
 
+/// A download not all here when a new catalogue comes has nothing whole to keep: it moves on to
+/// the new one, and the map reads none of its older files meanwhile (they'd mix with the NAS's).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_download_partly_here_moves_on_and_mixes_nothing() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = store::nasfs::NasRoot::local_for_test(nas.path());
+    let cat = catalogue(&root);
+    let s = crate::test_state_with(home.path(), &root, true);
+    let m = s.data.mirror.clone().unwrap();
+    // One of London's files missing on the NAS: the rest copied.
+    let missing = cat.files[&cat.layers["terrain"].hi["6/31/21"]].file.clone();
+    std::fs::rename(nas.path().join(&missing), nas.path().join("aside")).unwrap();
+    assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+    let roads = "layers/roads/hi/6-31-21";
+    let old_roads = cat.files[roads].file.clone();
+    assert!(m.has(&old_roads) && !m.has(&missing));
+    // Catalogue 2, London's roads made again: London moves on to it, read from the NAS's.
+    let mut two = cat.clone();
+    two.n = 2;
+    put(&root, &mut two, roads, 25_000);
+    two.validate().unwrap();
+    store::catalogue::write(&nas.path().join("catalog"), &two).unwrap();
+    assert!(tokio::task::block_in_place(|| s.data.refresh_catalogue()));
+    assert_eq!(s.data.content(roads), Some(two.files[roads].file.clone()), "nothing older read");
+    tokio::task::block_in_place(|| settle(&s));
+    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 2, to: None });
+    assert_eq!(s.data.content(roads), Some(two.files[roads].file.clone()));
+    assert_eq!(s.data.older_token(), "");
+}
+
 /// A deep terrain pack (pipeline::terrain_deep) of one z13 tile `h` metres high, under z10 tile
 /// (x, y), put on the "NAS" and named in `cat`'s terrain.
 fn put_deep(root: &store::nasfs::NasRoot, cat: &mut Catalogue, x: u32, y: u32, h: f32) {

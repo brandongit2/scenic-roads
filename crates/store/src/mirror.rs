@@ -206,8 +206,10 @@ struct State {
     copying: Option<Copying>,
     /// What the last sync did, and when.
     last: Option<(SyncStats, SystemTime)>,
-    /// The catalogues kept in `catalog/` besides the last few (`keep_catalogues`).
-    kept: std::collections::BTreeSet<u64>,
+    /// The catalogues kept in `catalog/` besides the last few (`keep_catalogues`); None until the
+    /// caller first says: none is pruned before then (a catalogue adopted at start mustn't take
+    /// one a download is at).
+    kept: Option<std::collections::BTreeSet<u64>>,
 }
 
 /// The local copy of what this Mac has downloaded.
@@ -295,7 +297,7 @@ impl Mirror {
             root,
             reserve: std::sync::atomic::AtomicU64::new(reserve_bytes),
             floor: std::sync::OnceLock::new(),
-            state: Mutex::new(State { files, pieces, sizes, copying: None, last: None, kept: Default::default() }),
+            state: Mutex::new(State { files, pieces, sizes, copying: None, last: None, kept: None }),
             free_space: Box::new(disk_free),
             on_remove: Mutex::new(None),
         })
@@ -494,20 +496,21 @@ impl Mirror {
     pub fn save_catalogue(&self, cat: &Catalogue) -> Result<()> {
         let dir = self.root.join(crate::catalogue::NAME);
         catalogue::write_copy(&dir, cat)?;
-        let kept = self.state().kept.clone();
-        catalogue::prune(&dir, KEEP_CATALOGUES, &kept)?;
+        if let Some(kept) = self.state().kept.clone() {
+            catalogue::prune(&dir, KEEP_CATALOGUES, &kept)?;
+        }
         Ok(())
     }
 
     /// Keeps these catalogues in `catalog/` however old (those a download is at or updating to: their
     /// files are read by them), from now on; others past the last few go now.
     pub fn keep_catalogues(&self, ns: std::collections::BTreeSet<u64>) -> Result<()> {
-        if self.state().kept == ns {
+        if self.state().kept.as_ref() == Some(&ns) {
             return Ok(());
         }
         let dir = self.root.join(crate::catalogue::NAME);
         catalogue::prune(&dir, KEEP_CATALOGUES, &ns)?;
-        self.state().kept = ns;
+        self.state().kept = Some(ns);
         Ok(())
     }
 
@@ -732,7 +735,8 @@ impl Mirror {
         Ok(stats)
     }
 
-    fn is_here(&self, item: &Item) -> bool {
+    /// Whether all of `item` is here.
+    pub fn is_here(&self, item: &Item) -> bool {
         match item {
             Item::File { name, .. } => self.has(name),
             Item::Piece { archive, piece } => self.has_piece(archive, *piece),
