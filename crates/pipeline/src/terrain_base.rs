@@ -920,7 +920,7 @@ mod tests {
     }
 
     /// A drain asked while a level's chunks are sampled (task #705): the chunk under way finishes
-    /// and no other begins, the sampling ending with crate::control::Paused; what it sampled is
+    /// whole and no other begins (which chunk is up to the threads), the sampling ending with crate::control::Paused; what it sampled is
     /// what a run never paused samples.
     #[test]
     fn a_drain_mid_sampling_stops_within_a_chunk() {
@@ -966,16 +966,23 @@ mod tests {
         let y0 = ((1.0 - 45.5f64.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
         let ts: Vec<(u32, u32)> = (x0 - 4..x0 + 4).flat_map(|x| (y0 - 2..y0 + 3).map(move |y| (x, y))).collect();
         assert!(ts.len() > 2 * CHUNK);
-        // The drain asked as the first chunk begins: every later chunk finds it.
+        // The drain asked as the first sampling begins: every later one finds it.
         let asked = std::sync::atomic::AtomicUsize::new(0);
         let draining = || asked.fetch_add(1, Ordering::Relaxed) >= 1;
         let paused = Tiles { draining: &draining, ..Tiles::new(&plans, &o) };
         let done = AtomicU64::new(0);
         let e = paused.prefetch_counted(z, &ts, 1, &done).unwrap_err();
         assert!(crate::control::is_paused(&e), "{e:#}");
-        assert_eq!(done.load(Ordering::Relaxed), CHUNK as u64, "the one chunk under way, no other");
+        // Exactly one chunk sampled, whole: whichever worker asked first (under load the last,
+        // shorter chunk's can), so its size is any chunk's, never part of one or two.
         let held: HashMap<(u8, u32, u32), Option<Vec<u8>>> = paused.held.lock().unwrap().clone();
-        assert_eq!(held.len(), CHUNK);
+        let one = ts.chunks(CHUNK).find(|c| held.contains_key(&(z, c[0].0, c[0].1))).expect("a chunk sampled");
+        let mut keys: Vec<_> = held.keys().copied().collect();
+        keys.sort();
+        let mut want: Vec<_> = one.iter().map(|&(x, y)| (z, x, y)).collect();
+        want.sort();
+        assert_eq!(keys, want, "the one chunk under way, whole, no other");
+        assert_eq!(done.load(Ordering::Relaxed), one.len() as u64);
         // Never paused: the same bytes.
         let whole = Tiles::new(&plans, &o);
         whole.prefetch_counted(z, &ts, 1, &AtomicU64::new(0)).unwrap();
