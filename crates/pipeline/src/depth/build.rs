@@ -681,7 +681,8 @@ type Means = Vec<((u8, u32, u32), Option<(Vec<u8>, Vec<u8>)>)>;
 
 /// Zoom `z`'s tiles from the finer (as the terrain's, §2): each tile with a child of zoom z + 1 in
 /// `kids`, its pixels the mean of the four beneath them that have data (`from_kids`), elsewhere its
-/// own in `own` (zoom z, composed), made on the job's threads.
+/// own in `own` (zoom z, composed) or, where its zoom wasn't composed, the nearest coarser level
+/// `own` holds scaled up (`scaled_up`: what the map would show there), made on the job's threads.
 fn means(kids: &Made, own: &Made, z: u8) -> Result<Means> {
     use rayon::prelude::*;
     let mut parents: Vec<(u32, u32)> =
@@ -699,7 +700,7 @@ fn means(kids: &Made, own: &Made, z: u8) -> Result<Means> {
             }
             let base = match own.get(&(z, x, y)) {
                 Some((d, c)) => Some(decoded(d, c)?),
-                None => None,
+                None => scaled_up(own, z, x, y)?,
             };
             let t = match from_kids(&ks, base.as_ref()) {
                 Some((d, c)) => Some(encoded(&d, c)?),
@@ -708,6 +709,38 @@ fn means(kids: &Made, own: &Made, z: u8) -> Result<Means> {
             Ok(((z, x, y), t))
         })
         .collect()
+}
+
+/// Tile (z, x, y) as the map's fallback makes it from the nearest coarser tile in `made` (with that
+/// tile's neighbours' edges: crate::depth::fall::upsample), its classes those of a coarser grid
+/// scaled up (`C_NATIVE` taken as `C_SCALED`); None with none.
+fn scaled_up(made: &Made, z: u8, x: u32, y: u32) -> Result<Option<Pair>> {
+    for a in (0..z).rev() {
+        let k = z - a;
+        let (ax, ay) = (x >> k, y >> k);
+        let Some((d, c)) = made.get(&(a, ax, ay)) else { continue };
+        let (anc, cls) = (fall::decode(Kind::Terrarium, d)?, fall::decode(Kind::Class, c)?);
+        let na = 1i64 << a;
+        let mut nbs: Vec<Option<Grid>> = Vec::with_capacity(8);
+        for (dx, dy) in [(-1i64, -1i64), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+            let (nx, ny) = ((i64::from(ax) + dx).rem_euclid(na), i64::from(ay) + dy);
+            let t = if (0..na).contains(&ny) { made.get(&(a, nx as u32, ny as u32)) } else { None };
+            nbs.push(match t {
+                Some((d, _)) => Some(fall::decode(Kind::Terrarium, d)?),
+                None => None,
+            });
+        }
+        let nb: [Option<&Grid>; 8] = std::array::from_fn(|i| nbs[i].as_ref());
+        let Grid::F(dv) = fall::upsample(k, x, y, &anc, nb) else { unreachable!() };
+        let Grid::C(mut cv) = fall::upsample(k, x, y, &cls, [None; 8]) else { unreachable!() };
+        for v in &mut cv {
+            if *v & 7 == super::C_NATIVE {
+                *v = (*v & !7) | super::C_SCALED;
+            }
+        }
+        return Ok(Some((dv, cv)));
+    }
+    Ok(None)
 }
 
 /// `means`' tiles laid into `made`.
@@ -1083,11 +1116,13 @@ pub fn compose_hi(
         crate::agent::jobs::report(u64::from(z - HI.0 + 1), zooms, "zooms");
         eprintln!("depth 6/{}/{}: z{z}, {k} tiles", t.0, t.1);
     }
-    let mut made: Made = std::mem::take(&mut tl.made).into_iter().filter(|(k, _)| k.0 >= HI.0).collect();
+    // (Its coarse levels kept through the means: a level not composed takes them scaled up where
+    // the finer has no data.)
+    let mut made: Made = std::mem::take(&mut tl.made);
     drop(tl);
     close(rd, wc);
     means_down(&mut made, upto, HI.0)?;
-    Ok(made)
+    Ok(made.into_iter().filter(|(k, _)| k.0 >= HI.0).collect())
 }
 
 /// The sea and lakes `polys` of a test: squares in a tile's pixels.
