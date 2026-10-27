@@ -281,7 +281,7 @@ pub struct Ask {
 
 /// This Mac's size, the charts' scales (`mac` in an answer): its cores, its efficiency cores, its
 /// memory (GB), its NAS call threads and the owner's idleness counted away (s). Read once. (The
-/// battery floor, the owner's setting, is added by `answer`.)
+/// battery floor, this Mac's own setting, is added by `answer`.)
 fn mac() -> &'static serde_json::Value {
     static MAC: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     MAC.get_or_init(|| {

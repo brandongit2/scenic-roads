@@ -258,13 +258,13 @@ test('regions: a virtual list\'s window', () => {
 
 test('settings: an answer lacking a setting shows "not set" for it alone, the others as said', async () => {
   const { macRows, poolRows } = await import('../../web/work/settings.js');
-  const live = { mac: 'm1', in_use: { cores: 2, of: 10, set: false, default: 2 }, memory: { mb: 10240, total_mb: 16384, set: true, by: 'x' }, room: { bytes: null, free: null, disk: null } };
-  assert.deepEqual(macRows(live).map((r) => r.now), ['2 of 10 cores', '10.0 GB', 'off']);
+  const live = { mac: 'm1', in_use: { cores: 2, of: 10, set: false, default: 2 }, memory: { mb: 10240, total_mb: 16384, set: true, by: 'x' }, room: { bytes: null, free: null, disk: null }, battery_floor: { pct: 20, set: true, default: 30, by: 'x' } };
+  assert.deepEqual(macRows(live).map((r) => r.now), ['2 of 10 cores', '10.0 GB', 'off', '20 %']);
   assert.ok(macRows(live).every((r) => r.input));
   const rows = macRows({ mac: 'm1', memory: live.memory });
-  assert.deepEqual(rows.map((r) => [r.key, r.now, !!r.input]), [['in_use', 'not set', false], ['memory', '10.0 GB', true], ['room', 'not set', false]]);
-  assert.deepEqual(macRows({}).map((r) => r.now), ['not set', 'not set', 'not set']);
-  const pool = poolRows({ nas_room: { bytes: 3 * 2 ** 30, free: null }, battery_floor: { pct: 20, set: true, default: 30, by: 'x' } });
-  assert.deepEqual(pool.map((r) => [r.key, r.now, !!r.input]), [['nas_room', '3.0 GB', true], ['battery_floor', '20 %', true]]);
-  assert.deepEqual(poolRows({ nas_room: { bytes: null } }).map((r) => r.now), ['off', 'not set'], 'an app before the floor');
+  assert.deepEqual(rows.map((r) => [r.key, r.now, !!r.input]), [['in_use', 'not set', false], ['memory', '10.0 GB', true], ['room', 'not set', false], ['battery_floor', 'not set', false]]);
+  assert.deepEqual(macRows({}).map((r) => r.now), ['not set', 'not set', 'not set', 'not set']);
+  const pool = poolRows({ nas_room: { bytes: 3 * 2 ** 30, free: null } });
+  assert.deepEqual(pool.map((r) => [r.key, r.now, !!r.input]), [['nas_room', '3.0 GB', true]]);
+  assert.deepEqual(poolRows({ nas_room: { bytes: null } }).map((r) => r.now), ['off']);
 });

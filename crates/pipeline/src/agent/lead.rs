@@ -1313,6 +1313,34 @@ mod tests {
     }
 
     #[test]
+    fn two_macs_at_one_charge_go_by_their_own_floors() {
+        // (Task #785) each Mac's floor in its own agent's folder, as its agent reads it: at 25 % on
+        // battery, the Mac set to 20 % leads on and may be handed the lead; the one at the default
+        // (30 %) hands over and can't take it.
+        use crate::agent::cond;
+        let (m1, m4) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        cond::set_battery_floor(m1.path(), Some(20), "t").unwrap();
+        let conds = |home: &std::path::Path| {
+            let floor = cond::FloorCache::new(home).get(None);
+            Conds { ac: false, battery: Some(25), battery_min: Some(floor), ..HOME }
+        };
+        let (c1, c4) = (conds(m1.path()), conds(m4.path()));
+        assert_eq!((c1.floor(), c4.floor()), (20, cond::DEFAULT_BATTERY_MIN));
+        assert!(!c1.low_battery() && c4.low_battery());
+        let v = |lead: Conds, other: Conds| View {
+            leading: true,
+            members: vec![
+                Member { me: true, leads: true, ..member("lead", lead, false) },
+                member("other", other, true),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(low_battery(&v(c1, HOME), &mut Kept::default(), 1_000_000, false), None);
+        assert_eq!(low_battery(&v(c4, HOME), &mut Kept::default(), 1_000_000, false), Some("m-other".into()));
+        assert!(c4.why_unable().contains("below 30%"), "{}", c4.why_unable());
+    }
+
+    #[test]
     fn the_lead_hands_over_only_below_the_battery_threshold() {
         let lead = |c: Conds| Member { me: true, leads: true, ..member("mini", c, false) };
         let v = |c: Conds| View {

@@ -1,6 +1,6 @@
 // The owner's settings on the build page (the Machines tab; docs/workers.md §7): this page's Mac's
-// in-use share, build memory and disk room target, a block per Mac, each set on that Mac, and the
-// pool's NAS reserve and battery floor. Read and set through
+// in-use share, build memory, disk room target and battery floor, a block per Mac, each set on that
+// Mac, and the pool's NAS reserve. Read and set through
 // `/work/settings`, which sets each through the same function as its `scenic` command
 // (`scenic in-use`, `memory`, `room`, `nas-room`, `battery-floor`). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
 
@@ -77,7 +77,7 @@ export function loadSettings(call, macs, done) {
 }
 
 /** The settings' section: a block per Mac (this page's first), each control setting that Mac's
- * own, and the pool's NAS reserve and battery floor once; `call`, `macs` and `done` as loadSettings's;
+ * own, and the pool's NAS reserve once; `call`, `macs` and `done` as loadSettings's;
  * `onError(text)` a refused ask. */
 export function settingsSection(call, macs, done, onError) {
   ctx = { call, macs, done, onError };
@@ -110,8 +110,8 @@ export function settingsSection(call, macs, done, onError) {
       const [m, st] = nas, put = (body, what) => set(m, st, body, what);
       return h("div", "box settings pool", h("h3", null, "The pool"), poolRows(st.said).map((r) => row(put, r)));
     })()
-    : h("div", "box settings pool", h("h3", null, "The pool"), h("div", "setting dim small", "NAS reserve and battery floor: no Mac shown here reaches the NAS now"));
-  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve and battery floor, pool-wide")), blocks, pool);
+    : h("div", "box settings pool", h("h3", null, "The pool"), h("div", "setting dim small", "NAS reserve: no Mac shown here reaches the NAS now"));
+  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve, pool-wide")), blocks, pool);
 }
 
 // Sets `body` on Mac `m` (null: this page's) with its kept state `st`; a refusal said through
@@ -131,11 +131,11 @@ async function set(m, st, body, what) {
 const poolMac = (list) => list.map(([m, host]) => [m, kept.get(host) || {}]).find(([, st]) => st.said?.nas_room);
 
 /** Sets `body` (one setting, as /work/settings takes it) from a chart's limit (live.js): on Mac
- * `host` (this page's own through its calls), or, for the pool's battery floor and NAS reserve,
- * through the Mac the Settings' pool box uses. `what` names it in a refusal. Whether it was set. */
+ * `host` (this page's own through its calls), or, for the pool's NAS reserve, through the Mac the
+ * Settings' pool box uses. `what` names it in a refusal. Whether it was set. */
 export async function putSetting(host, body, what) {
   if (!ctx) return false;
-  if ("battery_floor" in body || "nas_room" in body) {
+  if ("nas_room" in body) {
     const p = poolMac([[null, ownHost || ""], ...ctx.macs.filter((m) => m.host !== ownHost).map((m) => [m, m.host])]);
     if (!p) { ctx.onError?.(`couldn't set ${what}: no Mac shown here reaches the NAS now`); return false; }
     return set(p[0], p[1], body, what);
@@ -176,22 +176,22 @@ export function macRows(s) {
       note: `free space kept on ${s.mac || "this Mac"}'s disk${s.room.free != null ? `, ${gb(s.room.free)} free now` : ""}${by(s.room)}`,
       input: { min: 1, max: s.room.disk ? Math.floor(s.room.disk / GiB) - 1 : null, step: 1, placeholder: "GB", offTitle: "No target" },
     })),
+    guarded("battery_floor", "Battery floor", () => ({
+      now: `${s.battery_floor.pct} %`,
+      note: `on battery, ${s.mac || "this Mac"} can't lead below it, and as the lead hands over${s.battery_floor.set ? by(s.battery_floor) : " (the default)"}`,
+      input: { min: 0, max: 100, step: 1, placeholder: "%", offTitle: `Back to the default, ${s.battery_floor.default} %` },
+    })),
   ];
 }
 
-/** The pool's rows from an answer `s` that reaches the NAS: its `nas_room` and `battery_floor`. */
+/** The pool's rows from an answer `s` that reaches the NAS: its `nas_room`. */
 export function poolRows(s) {
-  const n = s.nas_room, f = s.battery_floor;
+  const n = s.nas_room;
   return [
     guarded("nas_room", "NAS reserve", () => ({
       now: n.bytes ? gb(n.bytes) : "off",
       note: `kept free on the NAS past what the build writes there${n.free != null ? `, ${gb(n.free)} free now` : ""}${by(n)}`,
       input: { min: 1, step: 1, placeholder: "GB", offTitle: "No reserve" },
-    })),
-    guarded("battery_floor", "Battery floor", () => ({
-      now: `${f.pct} %`,
-      note: `on battery, a Mac below it can't lead and a lead below it hands over${f.set ? by(f) : " (the default)"}`,
-      input: { min: 0, max: 100, step: 1, placeholder: "%", offTitle: `Back to the default, ${f.default} %` },
     })),
   ];
 }

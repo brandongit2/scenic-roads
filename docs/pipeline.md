@@ -325,7 +325,7 @@ The Jobs tab's stages are the one exception.
   macOS's level, 50 % and 80 % dashed; the memory compressed said; what the memory guard last did,
   its status's `memory.last`, marked and said while in the range), the swap (GB), the disk's free space (against the room
   target; the disk's size and the jobs' reservations said), its writes, the battery (shaded while on mains, against
-  the battery floor, the owner's pool-wide setting), the NAS's answer time with the calls in flight and missed, the
+  that Mac's battery floor, the owner's setting), the NAS's answer time with the calls in flight and missed, the
   heat (macOS's thermal state, nominal to critical), and
   whether the owner is using the Mac (shaded while so; how long since a touch). What the agent's
   loop reads (power, idleness, the limits) is said while under 15 min old. Each chart (chart.js):
@@ -337,16 +337,15 @@ The Jobs tab's stages are the one exception.
   agent/settings.rs takes (cores 1 to the Mac's, memory 1 GB to the Mac's, room 1 GB to under its
   disk, the floor 0 to 100 %), and sets it on release through POST /work/settings, as the Settings
   rows do (Escape cancels); its ✎ opens a small editor on the chart (a number, Set, Off, Cancel).
-  Each Mac's lines set that Mac's; the battery floor's tag says it's pool-wide, set through the Mac
-  the Settings' pool box uses. Set, a line holds the new value till the agent's loop reports it (15
+  Each Mac's lines set that Mac's, the battery floor too. Set, a line holds the new value till the agent's loop reports it (15
   min at most). The Settings rows stay, for the keyboard. Gaps where the Mac was silent shaded faintly, and a footer with the range, the resolution and how long
   it was silent. What the lead offered a member is one line (its steps and the pieces it can
   take), the steps on a click. Pages one card.
 - **The pool:** `pool.js`, under the machines (the Machines tab).
 - **Settings:** `settings.js`, under the pool (the Machines tab): a row per setting (its name, its
-  value, who set it and when, a field with Set and Off) for the in-use share, build memory and disk
-  room target, a block per Mac named by its host (this page's own first; each other Mac's asked at
-  its broker's address, as live.js asks `/work/live`), and the pool's NAS reserve and battery floor once,
+  value, who set it and when, a field with Set and Off) for the in-use share, build memory, disk
+  room target and battery floor, a block per Mac named by its host (this page's own first; each other Mac's asked at
+  its broker's address, as live.js asks `/work/live`), and the pool's NAS reserve once,
   through the first Mac that reaches the NAS (`/work/settings`, workers.md §7); read every 30 s while the
   Machines tab is shown, and after each Set or Off. Every control on the page (Pause, Freeze,
   Resume, the lead's, Accept, Cancel, Try again, the settings) works from any device.

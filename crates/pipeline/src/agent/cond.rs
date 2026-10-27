@@ -1,9 +1,10 @@
 //! A Mac's conditions (docs/building.md §2, Interruptions): the NAS (and whether it answers by its LAN
 //! name: at home), the user at the keyboard, sleep; and its power, which no job waits on, for the
-//! status and for whether it may lead (crate::agent::lead: a lead below the battery floor,
-//! `FloorCache`, hands over).
+//! status and for whether it may lead (crate::agent::lead: a lead below its own Mac's battery
+//! floor, `FloorCache`, hands over).
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -14,12 +15,18 @@ pub const AWAY_S: u64 = 300;
 /// The battery floor while the owner sets none (%; `FloorCache`).
 pub const DEFAULT_BATTERY_MIN: u8 = 30;
 
-/// The owner's battery floor, pool-wide (`scenic battery-floor`, docs/workers.md §7): on battery, a
-/// Mac below this charge (%) isn't able to lead (crate::agent::pool's `able`: a handover to it, a
-/// takeover by itself), and a lead below it hands the lead over by itself (crate::agent::lead's
-/// `low_battery`). No job waits on the charge. One file on the NAS, written by whichever Mac sets
-/// it; none: `DEFAULT_BATTERY_MIN`.
-pub const BATTERY_FLOOR: &str = "state/pool/battery-floor.json";
+/// This Mac's battery floor, the owner's (`scenic battery-floor`, docs/workers.md §7), in its
+/// agent's folder: on battery, the Mac below this charge (%) isn't able to lead (crate::agent::pool's
+/// `able`: a handover to it, a takeover by itself), and as the lead below it hands the lead over by
+/// itself (crate::agent::lead's `low_battery`). No job waits on the charge. None: `DEFAULT_BATTERY_MIN`.
+pub const FILE: &str = "battery-floor.json";
+
+/// Beside `FILE`: this Mac has moved over from the pool-wide floor (`move_over`), or was set since.
+const MOVED: &str = "battery-floor.moved";
+
+/// The pool-wide floor before task #785, on the NAS under the project folder: read once by
+/// `move_over`, never written.
+const OLD_POOL_FLOOR: &str = "state/pool/battery-floor.json";
 
 /// The battery floor as set, who set it and when (unix s).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,96 +36,112 @@ pub struct BatteryFloor {
     pub at: u64,
 }
 
-/// The battery floor as set under the project folder `root`: None when none is (one that doesn't
-/// parse, or past 100, is none); an error when the NAS didn't answer (crate::agent::nasread's
-/// deadline).
-pub fn read_battery_floor(root: &store::nasfs::NasRoot) -> std::io::Result<Option<BatteryFloor>> {
-    match super::nasread::read(&root.join(BATTERY_FLOOR)) {
-        Ok(b) => Ok(serde_json::from_slice::<BatteryFloor>(&b).ok().filter(|f| f.pct <= 100)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
+/// This Mac's battery floor as set in its agent's folder `home`: None when none is (one that
+/// doesn't parse, or past 100, is none).
+pub fn read_battery_floor(home: &Path) -> Option<BatteryFloor> {
+    std::fs::read(home.join(FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<BatteryFloor>(&b).ok())
+        .filter(|f| f.pct <= 100)
+}
+
+/// This Mac's battery floor in force (%): the one set in `home`, else `DEFAULT_BATTERY_MIN`.
+pub fn battery_min(home: &Path) -> u8 {
+    read_battery_floor(home).map_or(DEFAULT_BATTERY_MIN, |f| f.pct)
+}
+
+/// Sets this Mac's battery floor in `home` to `pct` (0 to 100), or clears it (None: the default).
+pub fn set_battery_floor(home: &Path, pct: Option<u8>, by: &str) -> anyhow::Result<Option<BatteryFloor>> {
+    anyhow::ensure!(pct.is_none_or(|p| p <= 100), "the battery floor: 0 to 100 %, not {}", pct.unwrap_or(0));
+    std::fs::create_dir_all(home)?;
+    // (Set here: the pool's old floor is never taken over it.)
+    store::whole::write(&home.join(MOVED), b"")?;
+    let p = home.join(FILE);
+    let Some(pct) = pct else {
+        match std::fs::remove_file(&p) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => return Ok(None),
+        }
+    };
+    let f = BatteryFloor { pct, by: by.to_string(), at: super::jobs::now_s() };
+    store::whole::write(&p, &serde_json::to_vec(&f)?)?;
+    Ok(Some(f))
+}
+
+/// Moving over from the pool-wide floor (task #785), once a Mac: unless `home` has moved already,
+/// the old floor on the NAS under `root`, when there is one, becomes this Mac's own (none: the
+/// default), and `home` notes it moved. An error when the NAS didn't answer (crate::agent::nasread's
+/// deadline): tried again later. The old file is only read.
+pub fn move_over(home: &Path, root: &store::nasfs::NasRoot) -> anyhow::Result<()> {
+    if home.join(MOVED).exists() {
+        return Ok(());
     }
+    let old = match super::nasread::read(&root.join(OLD_POOL_FLOOR)) {
+        Ok(b) => serde_json::from_slice::<BatteryFloor>(&b).ok().filter(|f| f.pct <= 100),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into()),
+    };
+    std::fs::create_dir_all(home)?;
+    if let (Some(f), None) = (old, read_battery_floor(home)) {
+        let f = BatteryFloor { by: format!("{}, the pool's before each Mac had its own", f.by), ..f };
+        store::whole::write(&home.join(FILE), &serde_json::to_vec(&f)?)?;
+    }
+    store::whole::write(&home.join(MOVED), b"")?;
+    Ok(())
 }
 
-/// The battery floor as set under `root`, when one is and the NAS answers.
-pub fn battery_floor(root: &store::nasfs::NasRoot) -> Option<BatteryFloor> {
-    read_battery_floor(root).ok().flatten()
-}
-
-/// How often the agent reads the battery floor again (`FloorCache`).
-pub const FLOOR_EVERY: Duration = Duration::from_secs(60);
+/// How often the agent reads its battery floor again (`FloorCache`).
+pub const FLOOR_EVERY: Duration = Duration::from_secs(5);
 
 /// How long the agent's first step waits on its first read of the battery floor (`FloorCache`).
 pub const FIRST_WAIT: Duration = Duration::from_secs(2);
 
-/// The battery floor in force (%) as the agent's loop goes by it: never read on the loop (the NAS
-/// can stall, #605), but at most once a `FLOOR_EVERY` on a thread of its own, one read at a time,
-/// within crate::agent::nasread's deadline; the NAS slow or away, the last floor read stands (the
-/// default, `DEFAULT_BATTERY_MIN`, until a first read lands).
+/// This Mac's battery floor in force (%) as the agent's loop goes by it: never read on the loop
+/// (moving over reads the NAS, which can stall, #605), but at most once a `FLOOR_EVERY` on a thread
+/// of its own, one read at a time: `move_over` while it hasn't (under a root), then the floor in the
+/// agent's folder. The default, `DEFAULT_BATTERY_MIN`, until a first read lands.
 #[derive(Debug)]
 pub struct FloorCache {
+    home: std::path::PathBuf,
     pct: Arc<AtomicU8>,
     asked: Mutex<Option<Instant>>,
     reading: Arc<AtomicBool>,
 }
 
-impl Default for FloorCache {
-    fn default() -> FloorCache {
+impl FloorCache {
+    /// The floor of the agent whose folder is `home`.
+    pub fn new(home: &Path) -> FloorCache {
         FloorCache {
+            home: home.to_owned(),
             pct: Arc::new(AtomicU8::new(DEFAULT_BATTERY_MIN)),
             asked: Mutex::new(None),
             reading: Arc::new(AtomicBool::new(false)),
         }
     }
-}
 
-impl FloorCache {
-    /// The floor last read (%), and under `root`, a read begun when one is due.
+    /// The floor last read (%), and a read begun when one is due (moving over first under `root`).
     pub fn get(&self, root: Option<&store::nasfs::NasRoot>) -> u8 {
-        if let Some(r) = root {
-            let mut asked = self.asked.lock().unwrap_or_else(|e| e.into_inner());
-            let first = asked.is_none();
-            if asked.is_none_or(|t| t.elapsed() >= FLOOR_EVERY) && !self.reading.swap(true, Ordering::AcqRel) {
-                *asked = Some(Instant::now());
-                let (r, pct, reading) = (r.clone(), self.pct.clone(), self.reading.clone());
-                std::thread::spawn(move || {
-                    if let Ok(f) = read_battery_floor(&r) {
-                        pct.store(f.map_or(DEFAULT_BATTERY_MIN, |f| f.pct), Ordering::Relaxed);
-                    }
-                    reading.store(false, Ordering::Release);
-                });
-                // (The first read waited on a moment, `FIRST_WAIT`, so a Mac just started doesn't
-                // go by the default for a step: a lead between the two floors would hand over.)
-                let t = Instant::now();
-                while first && self.reading.load(Ordering::Acquire) && t.elapsed() < FIRST_WAIT {
-                    std::thread::sleep(Duration::from_millis(5));
+        let mut asked = self.asked.lock().unwrap_or_else(|e| e.into_inner());
+        let first = asked.is_none();
+        if asked.is_none_or(|t| t.elapsed() >= FLOOR_EVERY) && !self.reading.swap(true, Ordering::AcqRel) {
+            *asked = Some(Instant::now());
+            let (home, root, pct, reading) = (self.home.clone(), root.cloned(), self.pct.clone(), self.reading.clone());
+            std::thread::spawn(move || {
+                if let Some(r) = &root {
+                    move_over(&home, r).ok();
                 }
+                pct.store(battery_min(&home), Ordering::Relaxed);
+                reading.store(false, Ordering::Release);
+            });
+            // (The first read waited on a moment, `FIRST_WAIT`, so a Mac just started doesn't
+            // go by the default for a step: a lead between the two floors would hand over.)
+            let t = Instant::now();
+            while first && self.reading.load(Ordering::Acquire) && t.elapsed() < FIRST_WAIT {
+                std::thread::sleep(Duration::from_millis(5));
             }
         }
         self.pct.load(Ordering::Relaxed)
     }
-}
-
-/// Sets the battery floor under `root` to `pct` (0 to 100), or clears it (None: the default).
-pub fn set_battery_floor(
-    root: &store::nasfs::NasRoot,
-    pct: Option<u8>,
-    by: &str,
-) -> anyhow::Result<Option<BatteryFloor>> {
-    let p = root.join(BATTERY_FLOOR);
-    let Some(pct) = pct else {
-        match p.remove_file() {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-            _ => return Ok(None),
-        }
-    };
-    anyhow::ensure!(pct <= 100, "the battery floor: 0 to 100 %, not {pct}");
-    if let Some(d) = p.parent() {
-        d.create_dir_all()?;
-    }
-    let f = BatteryFloor { pct, by: by.to_string(), at: super::jobs::now_s() };
-    p.write_whole(serde_json::to_vec(&f)?)?;
-    Ok(Some(f))
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -442,35 +465,76 @@ pub fn chip_short(brand: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_battery_floor_is_read_off_the_loop_and_the_last_read_stands() {
+    fn each_mac_sets_and_reads_its_own_battery_floor_by_default_30() {
         use super::*;
-        let d = tempfile::tempdir().unwrap();
+        let (m1, m4) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        assert_eq!((read_battery_floor(m1.path()), battery_min(m1.path())), (None, DEFAULT_BATTERY_MIN));
+        assert_eq!(set_battery_floor(m1.path(), Some(15), "t").unwrap().unwrap().pct, 15);
+        assert_eq!(set_battery_floor(m4.path(), Some(60), "t").unwrap().unwrap().pct, 60);
+        assert_eq!((battery_min(m1.path()), battery_min(m4.path())), (15, 60), "each its own");
+        assert!(set_battery_floor(m1.path(), Some(101), "t").is_err());
+        assert!(set_battery_floor(m1.path(), None, "t").unwrap().is_none());
+        assert_eq!((battery_min(m1.path()), battery_min(m4.path())), (DEFAULT_BATTERY_MIN, 60), "off: the default");
+    }
+
+    #[test]
+    fn a_mac_moves_over_from_the_pools_floor_once() {
+        use super::*;
+        let nas = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(nas.path());
+        // (No pool floor: the default, moved.)
+        let a = tempfile::tempdir().unwrap();
+        move_over(a.path(), &root).unwrap();
+        assert!(a.path().join(MOVED).exists() && read_battery_floor(a.path()).is_none());
+        // (The pool's: taken, once; the file on the NAS only read.)
+        std::fs::create_dir_all(nas.path().join("state/pool")).unwrap();
+        let old = BatteryFloor { pct: 22, by: "scenic battery-floor on m1".into(), at: 7 };
+        std::fs::write(nas.path().join(OLD_POOL_FLOOR), serde_json::to_vec(&old).unwrap()).unwrap();
+        move_over(a.path(), &root).unwrap();
+        assert_eq!(battery_min(a.path()), DEFAULT_BATTERY_MIN, "moved already");
+        let b = tempfile::tempdir().unwrap();
+        move_over(b.path(), &root).unwrap();
+        assert_eq!(read_battery_floor(b.path()).map(|f| (f.pct, f.at)), Some((22, 7)));
+        assert!(nas.path().join(OLD_POOL_FLOOR).exists());
+        // (Set off since: the pool's never comes back.)
+        set_battery_floor(b.path(), None, "t").unwrap();
+        move_over(b.path(), &root).unwrap();
+        assert_eq!(battery_min(b.path()), DEFAULT_BATTERY_MIN);
+        // (Set before moving over: kept.)
+        let c = tempfile::tempdir().unwrap();
+        set_battery_floor(c.path(), Some(40), "t").unwrap();
+        move_over(c.path(), &root).unwrap();
+        assert_eq!(battery_min(c.path()), 40);
+    }
+
+    #[test]
+    fn the_battery_floor_is_read_off_the_loop() {
+        use super::*;
+        let nas = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(nas.path());
+        let home = tempfile::tempdir().unwrap();
         let wait = |c: &FloorCache, want: u8| {
             store::testkit::eventually(&format!("the floor read, {want}"), || {
                 !c.reading.load(Ordering::Acquire) && c.pct.load(Ordering::Relaxed) == want
             })
         };
-        let c = FloorCache::default();
-        assert_eq!(c.get(None), DEFAULT_BATTERY_MIN, "no NAS: the default, no read");
-        assert!(c.asked.lock().unwrap().is_none());
-        set_battery_floor(&store::nasfs::NasRoot::local_for_test(d.path()), Some(12), "t").unwrap();
-        c.get(Some(&store::nasfs::NasRoot::local_for_test(d.path())));
-        wait(&c, 12);
-        // (Not due again within a minute: a change waits for the next read.)
-        set_battery_floor(&store::nasfs::NasRoot::local_for_test(d.path()), Some(0), "t").unwrap();
-        assert_eq!(c.get(Some(&store::nasfs::NasRoot::local_for_test(d.path()))), 12);
-        // (A read that fails, here a folder where the file goes: the last floor stands.)
-        set_battery_floor(&store::nasfs::NasRoot::local_for_test(d.path()), None, "t").unwrap();
-        std::fs::create_dir(d.path().join(BATTERY_FLOOR)).unwrap();
-        *c.asked.lock().unwrap() = None;
-        c.get(Some(&store::nasfs::NasRoot::local_for_test(d.path())));
-        wait(&c, 12);
-        assert_eq!(c.get(Some(&store::nasfs::NasRoot::local_for_test(d.path()))), 12);
-        // (None set: the default.)
-        std::fs::remove_dir(d.path().join(BATTERY_FLOOR)).unwrap();
-        *c.asked.lock().unwrap() = None;
-        c.get(Some(&store::nasfs::NasRoot::local_for_test(d.path())));
+        std::fs::create_dir_all(nas.path().join("state/pool")).unwrap();
+        let old = BatteryFloor { pct: 12, by: "t".into(), at: 1 };
+        std::fs::write(nas.path().join(OLD_POOL_FLOOR), serde_json::to_vec(&old).unwrap()).unwrap();
+        let c = FloorCache::new(home.path());
+        // (The NAS away: this Mac's own, the default, and no moving over.)
+        c.get(None);
         wait(&c, DEFAULT_BATTERY_MIN);
+        assert!(!home.path().join(MOVED).exists());
+        *c.asked.lock().unwrap() = None;
+        c.get(Some(&root));
+        wait(&c, 12);
+        // (Not due again within FLOOR_EVERY: a change waits for the next read.)
+        set_battery_floor(home.path(), Some(0), "t").unwrap();
+        assert_eq!(c.get(Some(&root)), 12);
+        *c.asked.lock().unwrap() = None;
+        c.get(Some(&root));
+        wait(&c, 0);
     }
 
     #[test]

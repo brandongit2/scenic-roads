@@ -228,9 +228,9 @@ function paint(host) {
   const loop = (k) => latest(s[k], now, LOOP_FRESH_S);
   // (Every chart says the time under it, as the mockup's.)
   // (A settable limit (#612): its line dragged, or its ✎'s editor, sets it on this Mac through
-  // /work/settings as Settings' rows do, the battery floor on the pool's; set, the line holds the
+  // /work/settings as Settings' rows do; set, the line holds the
   // new value till the agent's loop reads it (LOOP_FRESH_S at most).)
-  const id = (key) => `${key === "battery_floor" ? "" : host}|${key}`;
+  const id = (key) => `${host}|${key}`;
   // (Dropped once the loop says it, or says otherwise twice since: set elsewhere since, or refused.)
   const held = (key, v, points) => {
     const p = pending.get(id(key));
@@ -338,7 +338,7 @@ function paint(host) {
 
   // Battery: its charge, shaded while on mains, against the lead's floor on battery.
   const bat = loop("battery_pct"), ac = loop("ac"), floor = held("battery_floor", mac.battery_min);
-  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor != null ? [{ v: floor, label: `pool-wide: can't lead below ${floor} % on battery`, edit: edit("battery_floor", { title: "Battery floor", note: "Pool-wide, every Mac's: on battery, a Mac below it can't lead and a lead below it hands over. Off: the default.", unit: "%", min: 0, max: 100, step: 5, label: (v) => `pool-wide: can't lead below ${fmt(v)} % on battery` }) }] : [],
+  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor != null ? [{ v: floor, label: `can't lead below ${floor} % on battery`, edit: edit("battery_floor", { title: "Battery floor", note: `${host}'s own: on battery, it can't lead below it, and as the lead hands over. Off: the default.`, unit: "%", min: 0, max: 100, step: 5, label: (v) => `can't lead below ${fmt(v)} % on battery` }) }] : [],
     series: [{ points: s.battery_pct, colour: ac === 0 && floor && bat < floor ? bad : ok, label: "battery", unit: "%" }] });
   words(b.power.v, bat == null ? [ac === 1 ? "on mains, no battery" : "not measured"] : [fmt(bat, "%"), ac === 0 ? "on battery" : "on mains"], ac === 0 && floor && bat < floor ? "warn" : "");
 

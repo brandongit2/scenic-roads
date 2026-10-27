@@ -3655,8 +3655,8 @@ fn route(
         }
         "/work/settings" => {
             // The owner's settings from the build page (docs/workers.md §7): `{}` reads them;
-            // `{"in_use": <cores> | "off"}`, `{"memory": <GB> | "off"}`, `{"room": <GB> | "off"}` set
-            // this Mac's, `{"nas_room": <GB> | "off"}` and `{"battery_floor": <%> | "off"}` the pool's, each through the same function as
+            // `{"in_use": <cores> | "off"}`, `{"memory": <GB> | "off"}`, `{"room": <GB> | "off"}`,
+            // `{"battery_floor": <%> | "off"}` set this Mac's, `{"nas_room": <GB> | "off"}` the pool's, each through the same function as
             // its `scenic` command (crate::agent::settings). Answered with them as they stand.
             use crate::agent::settings;
             let b: serde_json::Value = serde_json::from_slice(body)?;
@@ -3694,10 +3694,7 @@ fn route(
                 settings::set_nas_room(root, &v, &by)?;
             }
             if let Some(v) = said("battery_floor")? {
-                let root = root
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("the NAS is away: the battery floor can't be set now"))?;
-                settings::set_battery_floor(root, &v, &by)?;
+                settings::set_battery_floor(&home, &v, &by)?;
             }
             let mut v = settings::view(&home, root.as_ref());
             v["mac"] = store::sys::host().into();
@@ -9382,7 +9379,7 @@ mod tests {
     #[test]
     fn the_build_pages_settings_go_through_the_commands_own_functions() {
         // (Task #521) `/work/settings` from any device: read, set and cleared in this Mac's agent's
-        // folder and on the NAS, as `scenic in-use|memory|room|nas-room` would; a bad ask changes
+        // folder and on the NAS, as `scenic in-use|memory|room|battery-floor|nas-room` would; a bad ask changes
         // nothing.
         let (_d, c, w) = start();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
@@ -9406,10 +9403,7 @@ mod tests {
             3 << 30
         );
         assert_eq!(v["nas_room"]["bytes"], 3u64 << 30);
-        assert_eq!(
-            crate::agent::cond::battery_floor(&store::nasfs::NasRoot::local_for_test(nas.path())).unwrap().pct,
-            20
-        );
+        assert_eq!(crate::agent::cond::battery_min(home.path()), 20, "this Mac's own");
         assert_eq!(v["battery_floor"]["pct"], 20);
         assert_eq!(post(serde_json::json!({ "memory": "0.1" })).0, 400);
         assert_eq!(post(serde_json::json!({ "in_use": [1] })).0, 400);
@@ -9425,10 +9419,10 @@ mod tests {
             crate::agent::room::target(home.path()).is_none()
                 && crate::agent::room::nas_reserve(&store::nasfs::NasRoot::local_for_test(nas.path())).is_none()
         );
+        assert!(crate::agent::cond::read_battery_floor(home.path()).is_none());
         c.set_settings(home.path(), None);
-        assert!(crate::agent::cond::battery_floor(&store::nasfs::NasRoot::local_for_test(nas.path())).is_none());
         assert_eq!(post(serde_json::json!({ "nas_room": "3" })).0, 400, "the NAS away");
-        assert_eq!(post(serde_json::json!({ "battery_floor": "20" })).0, 400, "the NAS away");
+        assert_eq!(post(serde_json::json!({ "battery_floor": "20" })).0, 200, "the NAS away: this Mac's still");
     }
 
     #[test]

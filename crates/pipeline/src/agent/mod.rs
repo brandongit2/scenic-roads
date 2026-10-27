@@ -1609,7 +1609,7 @@ pub struct Agent {
     /// loop's pool steps passed over in a row for it, and since when it's taken for hung
     /// (`pool_skipped`).
     ticking: Option<pool::Ticking>,
-    /// The owner's battery floor, read off the loop (`pool_step_in`).
+    /// This Mac's battery floor, the owner's, read off the loop (`pool_step_in`).
     battery_floor: cond::FloorCache,
     /// The coordinator's contact's publications, counted (an unpublish begun before the last one
     /// doesn't take it off), and the unpublish on a thread of its own still under way, if one is.
@@ -1933,6 +1933,7 @@ impl Agent {
             edits: Default::default(),
             edited_at: Default::default(),
             _lock: lock,
+            battery_floor: cond::FloorCache::new(&o.home),
             o,
             me,
             piece_sizes: Default::default(),
@@ -1989,7 +1990,6 @@ impl Agent {
             planned_tiles: Default::default(),
             member_id: run.as_ref().map(|r| r.side.member().id.clone()),
             ticking: run.as_ref().map(|r| r.ticking.clone()),
-            battery_floor: cond::FloorCache::default(),
             publish_gen: Default::default(),
             unpublishing: None,
             pool_skips: 0,
@@ -10182,8 +10182,8 @@ impl Agent {
                 run.settled = serde_json::to_value(co.pool_state()).ok();
             }
         }
-        // (The owner's battery floor, pool-wide on the NAS: read off this loop, at most once a
-        // minute, the last read standing while the NAS is slow, cond::FloorCache.)
+        // (This Mac's battery floor, the owner's: read off this loop, moving over from the pool's
+        // old floor on the NAS first, cond::FloorCache.)
         let battery_min = self.battery_floor.get(Some(r));
         if let Some(l) = &self.live {
             l.set_battery_min(battery_min);

@@ -1,6 +1,6 @@
 //! The owner's settings (docs/workers.md §7): this Mac's in-use share (crate::agent::share), build
-//! memory (crate::agent::buildmem) and disk room target (crate::agent::room::Target), and the pool's
-//! NAS reserve (crate::agent::room::NAS_RESERVE) and battery floor (crate::agent::cond::BATTERY_FLOOR).
+//! memory (crate::agent::buildmem), disk room target (crate::agent::room::Target) and battery floor
+//! (crate::agent::cond::FILE), and the pool's NAS reserve (crate::agent::room::NAS_RESERVE).
 //! Each is set through one function here, whoever asks: `scenic in-use`, `scenic memory`, `scenic
 //! room`, `scenic nas-room`, `scenic battery-floor`, and the build page's
 //! POST /work/settings (crate::coord), which reads them back with `view`. The map server's mirror
@@ -84,11 +84,11 @@ pub fn set_nas_room(root: &store::nasfs::NasRoot, what: &str, by: &str) -> Resul
     room::set_nas_reserve(root, Some(bytes), by)
 }
 
-/// Sets the pool's battery floor under the project folder `root`: `what` in % ("25", "25 %"), 0 to
-/// 100, or "off": the default (`cond::DEFAULT_BATTERY_MIN`).
-pub fn set_battery_floor(root: &store::nasfs::NasRoot, what: &str, by: &str) -> Result<Option<cond::BatteryFloor>> {
+/// Sets this Mac's battery floor in `home`: `what` in % ("25", "25 %"), 0 to 100, or "off": the
+/// default (`cond::DEFAULT_BATTERY_MIN`).
+pub fn set_battery_floor(home: &Path, what: &str, by: &str) -> Result<Option<cond::BatteryFloor>> {
     if what == "off" {
-        return cond::set_battery_floor(root, None, by);
+        return cond::set_battery_floor(home, None, by);
     }
     let pct = what
         .trim()
@@ -98,18 +98,19 @@ pub fn set_battery_floor(root: &store::nasfs::NasRoot, what: &str, by: &str) -> 
         .ok()
         .filter(|p| *p <= 100)
         .with_context(|| format!("the battery floor: <percent> (0 to 100) or off, not {what}"))?;
-    cond::set_battery_floor(root, Some(pct), by)
+    anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
+    cond::set_battery_floor(home, Some(pct), by)
 }
 
 /// The settings as they stand, for the build page: this Mac's (in its agent's folder `home`) and
-/// the pool's NAS reserve and battery floor (under `root`; null while the NAS is away, the floor
-/// too while it doesn't answer in time). Sizes in bytes, memory in MB.
+/// the pool's NAS reserve (under `root`; null while the NAS is away). Sizes in bytes, memory in MB.
 pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Value {
     let total_mb = crate::sys::memsize().map_or(0, |b| b >> 20);
     let limit = super::memguard::limit_mb(total_mb);
     let mem = buildmem::read(home);
     let sh = share::read(home);
     let cores = cores();
+    let floor = cond::read_battery_floor(home);
     serde_json::json!({
         "in_use": {
             "cores": share::cores(sh.as_ref(), cores),
@@ -129,16 +130,13 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
         },
         "room": target_view(room::target(home), room::disk_free(home).ok(), store::sys::disk_size(home).ok()),
         "nas_room": root.map(|r| target_view(room::nas_reserve(r), room::nas_free(r).ok(), None)),
-        // (A NAS that doesn't answer in time: null, as when it's away.)
-        "battery_floor": root.and_then(|r| cond::read_battery_floor(r).ok()).map(|f| {
-            serde_json::json!({
-                "pct": f.as_ref().map_or(cond::DEFAULT_BATTERY_MIN, |f| f.pct),
-                "set": f.is_some(),
-                "default": cond::DEFAULT_BATTERY_MIN,
-                "by": f.as_ref().map(|f| f.by.clone()),
-                "at": f.as_ref().map(|f| f.at),
-            })
-        }),
+        "battery_floor": {
+            "pct": floor.as_ref().map_or(cond::DEFAULT_BATTERY_MIN, |f| f.pct),
+            "set": floor.is_some(),
+            "default": cond::DEFAULT_BATTERY_MIN,
+            "by": floor.as_ref().map(|f| f.by.clone()),
+            "at": floor.as_ref().map(|f| f.at),
+        },
     })
 }
 
@@ -211,24 +209,14 @@ mod tests {
             assert!(set_nas_room(&store::nasfs::NasRoot::local_for_test(h), bad, "t").is_err(), "{bad}");
         }
         for bad in ["101", "x", "-3", "2.5", ""] {
-            assert!(set_battery_floor(&store::nasfs::NasRoot::local_for_test(h), bad, "t").is_err(), "{bad}");
+            assert!(set_battery_floor(h, bad, "t").is_err(), "{bad}");
         }
-        assert_eq!(
-            view(h, Some(&store::nasfs::NasRoot::local_for_test(h)))["battery_floor"]["pct"],
-            cond::DEFAULT_BATTERY_MIN
-        );
-        assert_eq!(set_battery_floor(&store::nasfs::NasRoot::local_for_test(h), "20 %", "t").unwrap().unwrap().pct, 20);
-        assert_eq!(
-            cond::battery_floor(&store::nasfs::NasRoot::local_for_test(h)).map_or(cond::DEFAULT_BATTERY_MIN, |f| f.pct),
-            20
-        );
-        assert_eq!(view(h, Some(&store::nasfs::NasRoot::local_for_test(h)))["battery_floor"]["set"], true);
-        assert!(set_battery_floor(&store::nasfs::NasRoot::local_for_test(h), "off", "t").unwrap().is_none());
-        assert_eq!(
-            cond::battery_floor(&store::nasfs::NasRoot::local_for_test(h)).map_or(cond::DEFAULT_BATTERY_MIN, |f| f.pct),
-            cond::DEFAULT_BATTERY_MIN
-        );
-        assert!(view(h, None)["battery_floor"].is_null());
+        assert_eq!(view(h, None)["battery_floor"]["pct"], cond::DEFAULT_BATTERY_MIN);
+        assert_eq!(set_battery_floor(h, "20 %", "t").unwrap().unwrap().pct, 20);
+        assert_eq!(cond::battery_min(h), 20);
+        assert_eq!(view(h, None)["battery_floor"]["set"], true, "this Mac's, the NAS away or not");
+        assert!(set_battery_floor(h, "off", "t").unwrap().is_none());
+        assert_eq!(cond::battery_min(h), cond::DEFAULT_BATTERY_MIN);
         assert!(set_memory(h, "1000000", "t").is_err(), "more than this Mac has");
         assert!(set_room(h, "1000000000", "t").is_err(), "more than the disk holds");
         assert_eq!(set_memory(h, "2 GB", "t").unwrap().unwrap().mb, 2048);
@@ -247,5 +235,6 @@ mod tests {
         assert!(view(h, None)["nas_room"].is_null());
         let gone = h.join("nope");
         assert!(set_room(&gone, "2", "t").is_err() && set_memory(&gone, "2", "t").is_err());
+        assert!(set_battery_floor(&gone, "20", "t").is_err());
     }
 }

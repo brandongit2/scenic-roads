@@ -16,7 +16,7 @@
 #   smalllakes-grids.geojson, copied beside the grids.
 # - Memory: ~0.7 GB a worker (measured on a Massachusetts box) and the server's, under ~4 GB for 3–4.
 # - caffeinate holds the Mac awake while it runs; a box starts only on mains power or with the
-#   battery at the pool's battery floor or more (as `scenic battery-floor` says it, its default too),
+#   battery at this Mac's battery floor or more (as `scenic battery-floor` says it, its default too),
 #   else it waits.
 set -euo pipefail
 WORKERS=${1:-3}
@@ -65,10 +65,10 @@ for l in open(sys.argv[1]):
 ' $WORK/z6.txt) > $WORK/boxes.txt
 echo "$(wc -l < $WORK/boxes.txt | tr -d ' ') boxes, $WORKERS workers"
 
-# The pool's battery floor (%), as `scenic battery-floor` says it (the default with none set),
+# This Mac's battery floor (%), as `scenic battery-floor` says it (the default with none set),
 # asked again each wait so a change holds.
 floor() {
-  $REPO/target/release/scenic battery-floor --root $NASROOT | sed -n 's/^Battery floor: \([0-9]*\) %.*/\1/p'
+  $REPO/target/release/scenic battery-floor | sed -n 's/^Battery floor: \([0-9]*\) %.*/\1/p'
 }
 
 power_ok() {
@@ -77,7 +77,7 @@ power_ok() {
   [[ $b == *"AC Power"* ]] && return 0
   local pct=${${b#*$'\t'}%%%*} min
   min=$(floor)
-  # (No answer from `scenic`, the NAS away: wait.)
+  # (No answer from `scenic`: wait.)
   [[ -n $min ]] && (( pct >= min ))
 }
 

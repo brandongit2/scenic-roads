@@ -814,7 +814,7 @@ function stub() {
 
 // The limits on the Machines tab's charts (#612): the own Mac's memory line long-pressed and dragged
 // sets it (recorded by stub(), not sent), Escape gives a drag up, the ✎'s editor sets and cancels, the
-// battery floor's tag says it's the pool's; a mouse drags the line itself (desktop width).
+// battery floor's tag is settable as this Mac's; a mouse drags the line itself (desktop width).
 async function limitChecks({ js, at, touch, tap, page, check, shot, PHONE }) {
   const own = `[...document.querySelectorAll('.panel[data-tab="machines"] .live')].find((b) => b.querySelector(".reftag.set"))`;
   const tagSel = (word) => `[...${own}.querySelectorAll(".reftag.set")].find((t) => t.title.includes(${JSON.stringify(word)}))`;
@@ -879,7 +879,7 @@ async function limitChecks({ js, at, touch, tap, page, check, shot, PHONE }) {
   const sent = await js("window.__posted.at(-1)");
   const key = /disk room/.test(pen[2]) ? "room" : "memory";
   check("machines: the editor's Set sends the number typed", (await posted()) === n1 + 1 && sent?.body?.[key] === 7, JSON.stringify(sent?.body));
-  check("machines: the battery floor's tag says it's pool-wide", await js(`[...${own}.querySelectorAll(".reftag.set")].some((t) => t.title.includes("battery floor") && /pool-wide/.test(t.textContent))`) || !(await js(`[...${own}.querySelectorAll(".reftag")].some((t) => /battery/.test(t.textContent))`)), "");
+  check("machines: the battery floor's tag is settable, not pool-wide", await js(`[...${own}.querySelectorAll(".reftag.set")].some((t) => t.title.includes("battery floor") && !/pool-wide/.test(t.textContent))`) || !(await js(`[...${own}.querySelectorAll(".reftag")].some((t) => /battery/.test(t.textContent))`)), "");
   // A limit at the chart's very top (every core) is still drawn, settable, its tag under the line.
   const top = await js(`(async () => {
     const { draw } = await import("/work/chart.js");

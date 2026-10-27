@@ -1111,17 +1111,16 @@ fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// `scenic battery-floor [<percent> | off]`: the pool's battery floor (agent::cond::BATTERY_FLOOR),
-/// set in the project folder on the NAS, which every agent reads; off: the default; with none, how it
-/// stands.
-fn battery_floor(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
+/// `scenic battery-floor [<percent> | off]`: this Mac's battery floor (agent::cond::FILE), set in
+/// its agent's folder, which its agent reads; off: the default; with none, how it stands.
+fn battery_floor(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
     use agent::cond::{read_battery_floor, DEFAULT_BATTERY_MIN};
-    let r = root(root_, true)?;
+    let home = home_or_default(home);
     let by = format!("scenic battery-floor on {}", store::sys::host_name());
     if let Some(what) = what {
-        agent::settings::set_battery_floor(&r, what, &by)?;
+        agent::settings::set_battery_floor(&home, what, &by)?;
     }
-    match read_battery_floor(&r).context("the battery floor on the NAS")? {
+    match read_battery_floor(&home) {
         Some(f) => println!("Battery floor: {} % (set {} by {})", f.pct, ago(f.at), f.by),
         None => {
             println!("Battery floor: {DEFAULT_BATTERY_MIN} %, the default (`scenic battery-floor <percent>` sets one)")
@@ -1570,7 +1569,7 @@ fn main() -> Result<()> {
         Some(Cmd::InUse { cores, off, places }) => in_use(cores, off.is_some(), &places.home),
         Some(Cmd::NasTarget { what, root }) => nas_target(what.as_deref(), &root.root),
         Some(Cmd::NasRoom { what, root }) => nas_room(what.as_deref(), &root.root),
-        Some(Cmd::BatteryFloor { what, root }) => battery_floor(what.as_deref(), &root.root),
+        Some(Cmd::BatteryFloor { what, home }) => battery_floor(what.as_deref(), &home.home),
         Some(Cmd::Memory { what, places }) => memory(what.as_deref(), &places.home),
         Some(Cmd::Gc { dry_run, days, depth_keep, root: r }) => {
             // (The depth's targets not read: said, and no depth name dropped this run.)

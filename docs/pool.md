@@ -194,7 +194,7 @@ ask their own Mac's agent (`lead-request.json`, `crate::control::LeadRequest`); 
 checks the ask as the driver would (`Driver::hand_to`, `Driver::takeover`) and either hands over (on
 the lead) or mails it to the lead (`Msg::HandTo`, §9). Asks naming a Mac that isn't a live member,
 is on too old an app, is unreachable (§6.8), or whose conditions say it can't lead (away, on
-battery under the battery floor, short of disk: `Conds::able`) are refused with why. An ask's state is kept in
+battery under its own battery floor, short of disk: `Conds::able`) are refused with why. An ask's state is kept in
 `agent/pool/lead.json` and shown by every control.
 
 ### 6.4 Handing over (the lead is there): a state machine
@@ -220,8 +220,8 @@ offer of its own. The owner hands the lead over by hand (§6.3) when about to le
 by itself only on these four triggers, each to a member that can lead (home, on power or charged
 past the battery floor, not paused, room past its disk target, an app the rule allows, reachable):
 
-1. **Its battery below the battery floor** (`cond::FloorCache`: the owner's, pool-wide, `scenic
-   battery-floor`, docs/workers.md §7; 30 % while none is set; the floor its heartbeat says it
+1. **Its battery below its battery floor** (`cond::FloorCache`: the owner's, each Mac its own,
+   `scenic battery-floor`, docs/workers.md §7; 30 % while none is set; the floor its heartbeat says it
    went by, `Conds::battery_min`): the lead, on battery under it by its own
    heartbeat's conditions, asks to hand over to the first member that can lead, by host
    (`agent::lead::low_battery`), through the stages above; asked again every `BATTERY_AGAIN_S`
