@@ -153,6 +153,11 @@ summits, every terrain lo pack and the terrain hi packs within U + 30 km, not th
 5,000 km. So the summits and peaks wait until terrain-hi and terrain-lo have no work left
 (`Plan::terrain_built`).
 
+Every step whose stale targets are held for another step's says so in the status's `waiting` list
+(`Plan::held`, in the summits' form: "wait for …"), shown on the build page and in `scenic status`:
+terrain-lo, slope-deep, slope-hi and slope-lo (for the terrain, z3 tile by z3 tile), trees-lo, peaks,
+items, heritage, marks and overlays, and the summits.
+
 **Network jobs:** a tile or answer that can't be fetched fails the job (retried), never counts as
 "none".
 

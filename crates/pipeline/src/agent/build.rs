@@ -976,6 +976,21 @@ pub fn summits_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Op
 /// The status's line for the summits and peaks held for the terrain packs (`Plan::terrain_built`).
 pub const PEAKS_TERRAIN_WAIT: &str = "wait for the terrain packs they read (terrain-hi, terrain-lo)";
 
+/// The waiting notes of the steps a plan holds for other steps' targets (`Plan::held`, the status's
+/// `waiting` list, the checklist's notes), each in the summits' form: what the step waits for.
+const TERRAIN_LO_WAIT: &str = "wait for the terrain-hi tiles of their z3 tile";
+const SLOPE_DEEP_WAIT: &str =
+    "wait for the terrain of their z3 tile and its neighbours' (terrain-hi, terrain-lo, terrain-deep)";
+const SLOPE_HI_WAIT: &str = "wait for the terrain of their z3 tile and its neighbours' (terrain-hi, terrain-lo, terrain-deep), and for their z10 tiles' slope-deep";
+const SLOPE_LO_WAIT: &str = "wait for the terrain-lo of their z3 tile and the slope-hi tiles in it";
+const TREES_LO_WAIT: &str = "wait for the trees tiles of their z3 tile";
+const PEAKS_WAIT: &str =
+    "wait for the candidates (pois), the pass's summits and the terrain packs they read (terrain-hi, terrain-lo)";
+const ITEMS_WAIT: &str = "wait for the candidates (pois)";
+const HERITAGE_WAIT: &str = "wait for the heritage sites (heritage-sites)";
+const MARKS_WAIT: &str =
+    "wait for the candidates, their peaks, the items and the heritage chain (pois, peaks, items, heritage)";
+
 /// The peaks' version (crate::peaks::unit). (2: heights from the terrain packs alone, task #670.)
 pub const PEAKS_V: u32 = 2;
 
@@ -1922,6 +1937,9 @@ pub struct TerrainWork {
     pub slope_pieces_left: BTreeSet<String>,
     pub slope_lo_left: BTreeSet<String>,
     pub slope_left: BTreeSet<String>,
+    /// The steps with stale targets held for other steps' targets, each with what it waits for
+    /// (`Plan::held`).
+    pub held: Vec<(&'static str, &'static str)>,
 }
 
 /// Terrain's and slope's work (`TerrainWork`) for their targets `tt`, the manifest `m` and what was
@@ -1979,6 +1997,12 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
         })
         .cloned()
         .collect();
+    if w.terrain_lo_left.iter().any(|q| {
+        !w.terrain_lo.iter().any(|(t, _)| t == q)
+            && w.terrain_pieces_left.iter().any(|t| z3_of(t).as_deref() == Some(q))
+    }) {
+        w.held.push(("terrain-lo", TERRAIN_LO_WAIT));
+    }
     // (A "none" assembly reads nothing: it runs whenever, its z3 tile left until it has.)
     w.terrain_lo.extend(lo_none);
     // The deep levels: from the start (their base is made from the pool), each z3 tile with one left
@@ -2050,11 +2074,19 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
                 .all(|(x, y)| !w.terrain_left.contains(&format!("3/{}/{}", x >> 3, y >> 3)))
         })
     };
+    let mut sd_held = false;
     for (t, k) in &tt.slope_deep {
         let Some(k) = k else { continue };
-        if !sdcurrent(t, &Some(k.clone())) && built(t) {
-            w.slope_deep.push((t.clone(), k.clone()));
+        if !sdcurrent(t, &Some(k.clone())) {
+            if built(t) {
+                w.slope_deep.push((t.clone(), k.clone()));
+            } else {
+                sd_held = true;
+            }
         }
+    }
+    if sd_held {
+        w.held.push(("slope-deep", SLOPE_DEEP_WAIT));
     }
     w.slope_deep.extend(sdnone);
     // (A z6 tile waits for its z10 tiles' slope-deep runs: it takes their parts in.)
@@ -2065,15 +2097,25 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
         })
     };
     let mut idle = Vec::new();
+    let (mut s_terrain, mut s_deep) = (false, false);
     for (t, k) in &tt.slope {
         let Some(k) = k else { continue };
         if !scurrent(t, &Some(k.clone())) {
             if built(t) && deep_done(t) {
                 w.slope.push((t.clone(), k.clone()));
+            } else if built(t) {
+                s_deep = true;
+            } else {
+                s_terrain = true;
             }
         } else if !has_mid(&smid, t) {
             idle.push((t.clone(), k.clone()));
         }
+    }
+    if s_terrain {
+        w.held.push(("slope-hi", SLOPE_HI_WAIT));
+    } else if s_deep {
+        w.held.push(("slope-hi", "wait for their z10 tiles' slope-deep"));
     }
     // (A "none" z6 tile reads no terrain: it runs whenever.)
     w.slope.extend(snone);
@@ -2087,6 +2129,9 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
         })
         .cloned()
         .collect();
+    if tt.slope_lo.iter().any(|(q, _)| w.slope_lo_left.contains(q) && !w.slope_lo.iter().any(|(t, _)| t == q)) {
+        w.held.push(("slope-lo", SLOPE_LO_WAIT));
+    }
     w.slope_lo.extend(slo_none);
     if !idle.is_empty() {
         w.backfill.push(Work { step: "slope-hi".into(), targets: idle });
@@ -2112,6 +2157,8 @@ pub struct TreeWork {
     /// What a region lacks before it's published: the stale z6 tiles and assemblies, runnable or not.
     pub stale_pieces: BTreeSet<String>,
     pub stale_lo: BTreeSet<String>,
+    /// A stale assembly that can't run yet: it waits for its z6 tiles' mids (`TREES_LO_WAIT`).
+    pub lo_held: bool,
 }
 
 /// Tree cover's work (`TreeWork`) for its targets `tt`, the manifest `m` and what was done (with
@@ -2145,6 +2192,7 @@ pub fn tree_work(tt: &crate::treepacks::Targets, m: &BTreeMap<String, String>, d
         })
         .map(|(q, k, _)| (q.clone(), k.clone()))
         .collect();
+    w.lo_held = tt.lo.iter().any(|(q, _, _)| stale_lo.contains(q) && !w.lo.iter().any(|(t, _)| t == q));
     w.stale_pieces = stale_pieces;
     w.stale_lo = stale_lo;
     w
@@ -2406,6 +2454,9 @@ pub struct Plan {
     pub idle: bool,
     /// No terrain-hi or terrain-lo work left: the summits and peaks, which read their packs, may run.
     pub terrain_built: bool,
+    /// The steps with work left that is held for other steps' targets, each with what it waits for
+    /// (a note in the summits' form): terrain, slope and tree cover's, and the landmarks'.
+    pub held: Vec<(String, String)>,
 }
 
 /// A region's work left (`Plan::regions`), as targets.
@@ -2528,7 +2579,13 @@ pub fn plan(
         backfill: tree_backfill,
         stale_pieces: trees_left,
         stale_lo: trees_lo_left,
+        lo_held: trees_lo_held,
     } = tree_work(&tt, m, done);
+    let mut held_steps: Vec<(String, String)> = tw.held.iter().map(|(s, w)| (s.to_string(), w.to_string())).collect();
+    if trees_lo_held {
+        held_steps.push(("trees-lo".into(), TREES_LO_WAIT.into()));
+    }
+    held_steps.extend(landmarks_held(cov, date, m, done, inputs, terrain_built));
     let mut backfill: Vec<Work> = Vec::new();
     if !tree_backfill.is_empty() {
         backfill.push(Work { step: "trees".into(), targets: tree_backfill });
@@ -2574,7 +2631,7 @@ pub fn plan(
             None => "the regions' z6 tiles wait for the pass's heritage sites, reaches or roadside buildings".into(),
         };
         let publishing = PublishLine { why, ..Default::default() };
-        return Plan { work, backfill, publishing, terrain_built, ..Default::default() };
+        return Plan { work, backfill, publishing, terrain_built, held: held_steps, ..Default::default() };
     };
 
     // base(U): the z6 tiles the coverage builds. Each region's: those it builds itself (a road of theirs
@@ -3076,6 +3133,7 @@ pub fn plan(
         publishing,
         idle: last_now,
         terrain_built,
+        held: held_steps,
     }
 }
 
@@ -3732,6 +3790,48 @@ fn landmarks_work(
                 && done.lo.get("overlays") != Some(k)
         }) {
             out.push(Work { step: "overlays".into(), targets: vec![("overlays".into(), k)] });
+        }
+    }
+    out
+}
+
+/// The landmarks' steps with work left that `landmarks_work` holds for the steps before them, each
+/// with what it waits for (`Plan::held`).
+fn landmarks_held(
+    cov: &Coverage,
+    date: &str,
+    m: &BTreeMap<String, String>,
+    done: &Keys,
+    inputs: &BTreeMap<String, String>,
+    terrain_built: bool,
+) -> Vec<(String, String)> {
+    let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut hold = |step: &str, why: &str| out.push((step.into(), why.into()));
+    let Some(units) = pois_keys(cov, date, m, inputs) else { return out };
+    let ends = m.contains_key(&format!("work/trailends/{date}")) && trailends_work(date, m, done).is_none();
+    let pois_built = ends && units.iter().all(|(u, k)| !stale(&done.pois, &u.slash(), k));
+    let summits_made = m.contains_key(&format!("work/summits/{date}")) && summits_work(date, m, done).is_none();
+    if !(pois_built && terrain_built && summits_made)
+        && peaks_keys(cov, date, m).iter().any(|(u, k)| stale(&done.peaks, &u.slash(), k))
+    {
+        hold("peaks", PEAKS_WAIT);
+    }
+    if ends && !pois_built {
+        hold("items", ITEMS_WAIT);
+    }
+    let sites_due =
+        heritage_sites_key(cov, date, m, inputs).is_none() || heritage_sites_work(cov, date, m, done, inputs).is_some();
+    if sites_due && heritage_key(cov, date, m).is_some_and(|k| done.lo.get("heritage") != Some(&k)) {
+        hold("heritage", HERITAGE_WAIT);
+    }
+    if !marks_ready(cov, date, m, done, inputs) {
+        let k = marks_key(date, m, &units.iter().map(|(u, _)| *u).collect::<Vec<_>>());
+        if done.lo.get("marks").map(String::as_str) != Some(k.as_str()) {
+            hold("marks", MARKS_WAIT);
+        }
+        if overlays_key(date, m).is_some_and(|k| done.lo.get("overlays") != Some(&k)) {
+            hold("overlays", MARKS_WAIT);
         }
     }
     out
@@ -5334,6 +5434,30 @@ pub(crate) mod tests {
         // (Its z6–8 tiles are each covered whole by their children: worked out from them, their
         // terrain unread. Its other edges' neighbours have no tile: read as none.)
         assert!(!reads.contains(&Some((6, 28, 16, 6))) && reads.contains(&None), "{reads:?}");
+    }
+
+    /// A step whose stale targets wait for another step's (slope for the terrain of its z3 tile and its
+    /// neighbours', the terrain assemblies for their z6 tiles) reports a waiting note saying so
+    /// (`TerrainWork::held`, `Plan::held`); once the terrain is built the slope's note is gone.
+    #[test]
+    fn steps_held_for_other_steps_targets_report_a_note() {
+        let c = cov();
+        let m: BTreeMap<String, String> = BTreeMap::new();
+        let tt = terrain_slope_targets(&c, &m, &tiles_for(&m));
+        let tw = terrain_work(&tt, &m, &Keys::default());
+        assert!(tw.slope.is_empty() && !tw.terrain.is_empty(), "slope offered none, terrain some: {tw:?}");
+        let held = |tw: &TerrainWork, s: &str| tw.held.iter().find(|(h, _)| *h == s).map(|(_, w)| *w);
+        assert_eq!(held(&tw, "slope-hi"), Some(SLOPE_HI_WAIT));
+        assert_eq!(held(&tw, "terrain-lo"), Some(TERRAIN_LO_WAIT));
+        assert!(held(&tw, "slope-lo").is_some());
+        // The terrain all built: slope's hi tiles are offered, and say nothing.
+        let mut done = Keys::default();
+        done.record("terrain-hi", &tt.terrain);
+        done.record("terrain-lo", &tt.terrain_lo);
+        let tw = terrain_work(&tt, &m, &done);
+        assert!(!tw.slope.is_empty(), "{tw:?}");
+        assert_eq!(held(&tw, "slope-hi"), None);
+        assert_eq!(held(&tw, "terrain-lo"), None);
     }
 
     /// The terrain and slope hi packs and mids of z6 tiles the coverage has left are "none" z6 tiles,

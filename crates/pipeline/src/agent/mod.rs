@@ -7687,6 +7687,11 @@ impl Agent {
         };
         nasread::phase("the plan: its jobs");
         self.catalogues.borrow_mut().idle = planned.idle;
+        // The steps held for other steps' targets: said, never a silent stall (the summits' own note,
+        // below, is the same).
+        for (step, why) in std::mem::take(&mut planned.held) {
+            waiting.push(Waiting { what: step.clone(), why, step: Some(step) });
+        }
         // The z6 tiles held until the heritage registers are first accepted: said, not a silent stall.
         if let Some(why) = build::heritage_awaits_acceptance(cov, date, &manifest, &inputs) {
             waiting.push(Waiting {
