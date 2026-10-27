@@ -1109,8 +1109,8 @@ five minutes it logs the stall with the round's phase in progress (the loop name
 enters it, and logs one that took 10 s or more as it ends, but the wait between rounds), has
 `/usr/bin/sample` sample the agent for 5 s into `loop-stall-sample-<UTC date>-<time>Z.txt` in the
 agent's folder (once per stall; the newest five kept; the path logged; never two at once; sampling
-runs off the watchdog's thread, and a sampler still running at 300 s is killed, keeping any output it
-had written), and keeps `loop-stall.json` (the round's start, the phase
+runs off the watchdog's thread, and a sampler still running at 300 s is killed: `sample` writes only once
+done, so that stall has no sample), and keeps `loop-stall.json` (the round's start, the phase
 and since when) in the agent's folder (this Mac's disk), which `scenic status` shows as "this Mac's
 agent loop is stalled"; it's removed when the loop goes on, and the round's real length is logged.
 These lines carry the time of day (UTC).

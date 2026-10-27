@@ -662,8 +662,8 @@ fn prune_samples(home: &Path, keep: usize) {
 /// This process sampled by `sampler` for `SAMPLE_SECS` into a new file in `home` (`sample_name` of
 /// `now`), off the watchdog's thread (waited for there, so it leaves no zombie). Never two at once:
 /// while one runs (or hangs, until it's killed at `SAMPLE_LIMIT`), another stall's isn't started.
-/// A sampler killed at the limit leaves what it wrote, if anything. Its outcome and the file's path
-/// are logged.
+/// `sample` writes its file only once done, so a sampler killed at the limit leaves nothing (an
+/// empty or missing file is removed). Its outcome and the file's path are logged.
 fn sample_self(sampler: &Path, home: &Path, now: u64) {
     static SAMPLING: AtomicBool = AtomicBool::new(false);
     if SAMPLING.swap(true, Ordering::SeqCst) {
