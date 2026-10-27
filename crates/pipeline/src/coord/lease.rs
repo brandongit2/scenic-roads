@@ -306,6 +306,11 @@ impl Leases {
     }
 
     /// A lease of `work` to `worker`; its id. (The caller makes sure no one else holds it.)
+    /// The id the next grant takes: every lease granted so far has a smaller one.
+    pub fn next(&self) -> u64 {
+        self.next
+    }
+
     pub fn grant(&mut self, worker: &str, work: Work, now: Instant) -> u64 {
         let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         self.grant_at(worker, work, now, unix)

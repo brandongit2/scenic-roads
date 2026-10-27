@@ -87,15 +87,18 @@ pub fn marks(
     targets.iter().map(|t| rec.last.get(step).and_then(|m| m.get(t)).copied()).collect()
 }
 
-/// Waits until `read` gives records whose marks for `step`'s `targets` all differ from `before`
-/// (the redo's merge landed in them), at most `wait`, reading every `every`. An unreadable record
-/// is told to `warn` and read again. Whether it landed. Not by whether the keys are gone: the plan
-/// offers the targets as the merge lands, and a rebuilt one has its key again within minutes.
+/// Waits until `read` gives records whose marks for `step`'s `targets` are all later than `floor`'s
+/// (the redo's merge landed in them), at most `wait`, reading every `every`. `floor` is the last
+/// lease granted before the ask (the coordinator's answer), so a job leased before it that merges
+/// meanwhile isn't taken for the redo; a lead's answer without it leaves each target's mark before
+/// the ask (`marks`). An unreadable record is told to `warn` and read again. Whether it landed. Not
+/// by whether the keys are gone: the plan offers the targets as the merge lands, and a rebuilt one
+/// has its key again within minutes.
 pub fn follow(
     read: &mut dyn FnMut() -> Result<crate::pool::records::Records>,
     step: &str,
     targets: &[String],
-    before: &[Option<crate::pool::journal::LeaseId>],
+    floor: &[Option<crate::pool::journal::LeaseId>],
     wait: std::time::Duration,
     every: std::time::Duration,
     warn: &mut dyn FnMut(&anyhow::Error),
@@ -103,7 +106,7 @@ pub fn follow(
     let t = std::time::Instant::now();
     loop {
         match read() {
-            Ok(rec) if marks(&rec, step, targets).iter().zip(before).all(|(now, was)| now != was) => return true,
+            Ok(rec) if marks(&rec, step, targets).iter().zip(floor).all(|(now, was)| now > was) => return true,
             Ok(_) => {}
             Err(e) => warn(&e),
         }
@@ -261,5 +264,34 @@ mod tests {
             built.last.get_mut("terrain-hi").unwrap().insert(t.clone(), lease(9));
         }
         assert!(follow(&mut fixed(&built), "terrain-hi", &ts, &before, wait, every, &mut |_| {}));
+        // (Review: a build leased before the ask (lease 3; the coordinator answered `after` 4) that
+        // merges during the wait isn't the redo's merge; the redo's own lease (5) is.)
+        let floor = vec![Some(lease(4)); ts.len()];
+        let mut early = r.clone();
+        for t in &ts {
+            early.last.get_mut("terrain-hi").unwrap().insert(t.clone(), lease(3));
+        }
+        assert!(
+            !follow(&mut fixed(&early), "terrain-hi", &ts, &floor, wait, every, &mut |_| {}),
+            "an earlier job's merge"
+        );
+        assert!(!follow(&mut fixed(&part), "terrain-hi", &ts, &floor, wait, every, &mut |_| {}), "one of two");
+        let mut later_term = early.clone();
+        for t in &ts {
+            later_term.last.get_mut("terrain-hi").unwrap().insert(t.clone(), LeaseId { term: 4, n: 1 });
+        }
+        assert!(follow(&mut fixed(&later_term), "terrain-hi", &ts, &floor, wait, every, &mut |_| {}), "a later term's");
+        // A target with no lease recorded before: any merge for it is later than None.
+        let none = vec![None; ts.len()];
+        assert!(!follow(
+            &mut fixed(&Records { term: 3, ..Default::default() }),
+            "terrain-hi",
+            &ts,
+            &none,
+            wait,
+            every,
+            &mut |_| {}
+        ));
+        assert!(follow(&mut fixed(&built), "terrain-hi", &ts, &none, wait, every, &mut |_| {}));
     }
 }

@@ -4225,7 +4225,9 @@ fn route(
         "/work/redo" => {
             // The owner's ask to build `step`'s finished `targets` again (`scenic redo`, with the
             // build's key; crate::agent::redo): kept by this Mac's agent, which runs it as a job of
-            // its own. Its number answered. (Never a page's: the gate lets only the key through.)
+            // its own. Its number answered, and the last lease granted before it (`after`: its job's
+            // lease is later, so `scenic redo --run` knows its merge from an earlier job's). (Never a
+            // page's: the gate lets only the key through.)
             if caller.page {
                 return not_mine();
             }
@@ -4240,7 +4242,8 @@ fn route(
             // (Its number unique in this coordinator: ms, one more than the last.)
             let n = (unix_now() * 1000).max(s.redo_asks.iter().map(|a| a.n + 1).max().unwrap_or(0));
             s.redo_asks.push(crate::agent::redo::Ask { n, step, targets, by });
-            Ok((200, serde_json::json!({ "n": n })))
+            let after = crate::pool::journal::LeaseId { term: s.leases.term, n: s.leases.next() - 1 };
+            Ok((200, serde_json::json!({ "n": n, "after": { "term": after.term, "n": after.n } })))
         }
         "/work/floors" => {
             // The targets' floors (crate::agent::memguard), cleared (`{"clear": true}`, of a `step`,
@@ -6350,6 +6353,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(code, 200, "{v}");
+        assert!(v["after"]["term"].is_u64() && v["after"]["n"].is_u64(), "{v}");
         let asks = c.take_redo_asks();
         assert_eq!(asks.len(), 1);
         assert_eq!(

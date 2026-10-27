@@ -1361,12 +1361,16 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
         "the lead's coordinator answered {code} ({v}): a lead on an app from before `scenic redo` can't take it; nothing asked"
     );
     println!("asked the lead (redo {}); its job clears them, merged within minutes", v["n"]);
-    let before = redo::marks(&rec, &step, &todo);
+    // The redo's job is leased after `after`; an older lead's answer lacks it: each target's mark.
+    let floor = match serde_json::from_value::<(u64, u64)>(serde_json::json!([v["after"]["term"], v["after"]["n"]])) {
+        Ok((term, n)) => vec![Some(pipeline::pool::journal::LeaseId { term, n }); todo.len()],
+        Err(_) => redo::marks(&rec, &step, &todo),
+    };
     let landed = redo::follow(
         &mut records,
         &step,
         &todo,
-        &before,
+        &floor,
         std::time::Duration::from_secs(15 * 60),
         std::time::Duration::from_secs(15),
         &mut |e| eprintln!("the records can't be read now: {e:#}"),
