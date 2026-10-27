@@ -27,7 +27,8 @@ lists them in):
    from when a sweep first saw it (`done.json`'s `taken_in_seen`, with the copy seen: another copy
    seen, as after a rollback or a new pack of the source, starts the wait again; a new acceptance
    of the unit for other files doesn't); and no depth or depth-lo job running on any Mac (the
-   lead's and each helper's jobs in status.json, the old fields `job`, `beside`, `more` too),
+   lead's in status.json, each helper's in its own file `state/helpers/<host>.json` however stale
+   its beat, a file that doesn't read refusing; the old fields `job`, `beside`, `more` too),
    none its waiting list names, and none held to resume in the members' progress files
    (`state/pool/progress/<member>.json`). A job reads the records once, when it starts
    (`Out::open`), and its grids by the paths they gave it all through its run; a running one
@@ -308,20 +309,37 @@ def taken_in(a, sid: str, packed: Path) -> bool:
 DEPTH_STEPS = ("depth", "depth-lo")
 
 
+class Unsure(Exception):
+    """What the sweep can't tell (why it refuses)."""
+
+
 def depth_jobs(a) -> list[str]:
-    """The depth and depth-lo jobs running on any Mac as the lead's status says (its jobs, and an
-    older agent's `job`, `beside` and `more`, the lead's and each helper's), whenever they started
-    (see the module's docstring, step 4), the depth steps it says wait, and the depth jobs held to
-    resume in the members' progress files (state/pool/progress/<member>.json,
-    crate::agent::resume)."""
+    """The depth and depth-lo jobs running on any Mac (their jobs, and an older agent's `job`,
+    `beside` and `more`): the lead's as its status says, and each helper's as its own file
+    (state/helpers/<host>.json) says, whatever its beat's age (the lead's status leaves out a
+    helper beaten over ten minutes ago, crate::agent::helpers, whose job may still run), whenever
+    they started (see the module's docstring, step 4); the depth steps the lead's status says
+    wait; and the depth jobs held to resume in the members' progress files
+    (state/pool/progress/<member>.json, crate::agent::resume). A helper file that doesn't read
+    raises Unsure."""
     status = json.loads((a.root / "state/status.json").read_text())
     found = []
+    helpers = list(status.get("helpers") or [])
+    hdir = a.root / "state/helpers"
+    for p in sorted(hdir.glob("*.json")) if hdir.is_dir() else []:
+        try:
+            h = json.loads(p.read_text())
+            if not isinstance(h, dict):
+                raise ValueError("not an object")
+        except (OSError, ValueError) as e:
+            raise Unsure(f"helper file {p.name} doesn't read ({e}): its depth jobs unknown")
+        helpers.append(h)
 
     def job(v):
         if isinstance(v, dict) and isinstance(v.get("id"), str) and v["id"].split(" ", 1)[0] in DEPTH_STEPS:
             found.append(v["id"])
 
-    for who in [status, *(status.get("helpers") or [])]:
+    for who in [status, *helpers]:
         for j in [*(who.get("jobs") or []), who.get("job"), who.get("beside"), *(who.get("more") or [])]:
             job(j)
     for w in status.get("waiting") or []:
@@ -367,7 +385,10 @@ def safe_to_sweep(a, sid: str, packed: Path, done_path: Path) -> str | None:
         write_json(done_path, saved)
     if now - seen["at"] < a.min_age_h * 3600:
         return f"the packed index taken in only {(now - seen['at']) / 3600:.1f} h ago (wait {a.min_age_h:g} h, a margin to roll back in)"
-    jobs = depth_jobs(a)
+    try:
+        jobs = depth_jobs(a)
+    except Unsure as e:
+        return str(e)
     if jobs:
         return f"depth jobs running, waiting or held ({', '.join(jobs[:5])}): any may read the loose index"
     return None

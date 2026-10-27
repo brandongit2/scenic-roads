@@ -1492,7 +1492,9 @@ size). Its `--sweep` deletes the loose files only while both the inputs folder a
 accepted version hold the packed index, the lead's status is fresh (10 min), the accepted versions
 have named the same copy of the index for 24 h (a rollback or a new pack starts the wait again; a
 new acceptance for other files doesn't), and no depth or depth-lo job is running on any Mac,
-waiting, or held to resume in a member's progress file. A job reads the records when it starts, so
+waiting, or held to resume in a member's progress file. A helper's jobs are read from its own file
+(`state/helpers/<host>.json`) however stale its beat, since the lead's status leaves out a helper
+not heard from in 10 min whose job may still run; a helper file that doesn't read refuses. A job reads the records when it starts, so
 jobs planned but not yet started read the index current then; a running one refuses whatever its
 start: the accepted copies are content-named, so a rollback and a return to the same packed copy
 between two sweeps leave no trace, and a job started on the loose index in between can't be told

@@ -210,6 +210,16 @@ class Repack(unittest.TestCase):
             ]:
                 accept(root, before, "packed", **kw)
                 self.refused(args, why)
+            # A helper's own file with a depth job, its beat stale (the lead's status leaves it
+            # out), refuses; so does a helper file that doesn't read.
+            accept(root, before, "packed")
+            (root / "state/helpers").mkdir()
+            hf = root / "state/helpers/m-3.json"
+            hf.write_text(json.dumps({"host": "m-3", "beat": time.time() - 3 * 3600, "jobs": [{"id": "depth 6/7/8"}]}))
+            self.refused(args, "depth 6/7/8")
+            hf.write_text("{not json")
+            self.refused(args, "helper file m-3.json doesn't read")
+            hf.write_text(json.dumps({"host": "m-3", "beat": time.time(), "jobs": [{"id": "roads 6/7/8"}]}))
             # A changed index (the source packed anew, as ncei-crm by #677): the wait starts again.
             accept(root, before, "repacked")
             self.refused(args, "only 0.0 h ago")
