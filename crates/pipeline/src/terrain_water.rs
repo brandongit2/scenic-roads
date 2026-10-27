@@ -7,10 +7,11 @@
 //!
 //! - A terrain tile's water is the basemap's tile at the same zoom (z6–14: below z6 the basemap
 //!   draws Natural Earth's; the terrain there is made from finer tiles), rasterized at 4 × 4 samples
-//!   a pixel: each pixel's share of sea and of lake, and the lake that covers most of it. Rivers
-//!   (class `river`: they slope), intermittent water, pools and water in tunnels are left as they are.
-//!   The depth reads the rivers too (`WaterSource::depth_polys`, `Kind::River`, `WaterTile::river`),
-//!   never the terrain.
+//!   a pixel: each pixel's share of sea and of lake, and the lake that covers most of it.
+//!   Intermittent water, pools and water in tunnels are left as they are. Rivers (class `river`)
+//!   slope: where a tile has both river polygons and rivers' courses (`terrain_polys`), each is
+//!   levelled along its course (`rivers`); the depth reads the river polygons in every tile
+//!   (`WaterSource::depth_polys`, `Kind::River`, `WaterTile::river`).
 //! - The sea goes to 0 m. A lake goes to its level: the 10th percentile of the land pixels along its
 //!   shore (those wholly dry, beside a pixel at least half that lake's). The shore's lowest pixels
 //!   are where the water meets the land, the outlet's level; the very lowest are AWS's pits, voids
@@ -46,6 +47,8 @@ pub struct WaterTile {
     pub lake: Vec<u8>,
     /// The share of river (class `river`), the sea and lakes not counted in it; empty when none.
     pub river: Vec<u8>,
+    /// The rivers' courses (`Kind::Flow`, the terrain's: `WaterSource::terrain_polys`), in tile pixels.
+    pub flow: Vec<Vec<[f64; 2]>>,
     pub lake_of: Vec<u16>,
     /// The lakes' keys: their OSM ids, or (none) one of this tile's own (bit 63 set).
     pub ids: Vec<u64>,
@@ -67,9 +70,12 @@ impl WaterTile {
 pub enum Kind {
     Sea,
     Lake,
-    /// Class `river`: never the terrain's (it slopes: `WaterSource::polys` leaves it out), only the
-    /// depth's (`WaterSource::depth_polys`).
+    /// Class `river`: the depth's (`WaterSource::depth_polys`), and the terrain's where a river's
+    /// course meets it (`WaterSource::terrain_polys`, `rivers`); never `polys`.
     River,
+    /// A river's course (the basemap's `waterway` layer, class `river`): one line, its points in
+    /// `rings[0]` as the tile has them. Only `terrain_polys`, beside river polygons.
+    Flow,
 }
 
 /// One water polygon: its kind, its key (lakes) and its rings in tile pixels (0–256, y down).
@@ -93,6 +99,12 @@ pub trait WaterSource: Sync {
     /// polygons as one by one.
     fn depth_polys_many(&self, tiles: &[(u8, u32, u32)]) -> Result<Vec<Vec<Poly>>> {
         tiles.iter().map(|&(z, x, y)| self.depth_polys(z, x, y)).collect()
+    }
+    /// The terrain's water: `polys`, and where the tile has both river polygons and rivers'
+    /// courses, those (`Kind::River`, `Kind::Flow`) too, so its rivers are levelled (`rivers`). A
+    /// tile without either: `polys` exactly. A source without rivers: `polys`.
+    fn terrain_polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
+        self.polys(z, x, y)
     }
     /// What pins it (the terrain's key): the basemap's content name.
     fn pin(&self) -> String;
@@ -129,6 +141,13 @@ impl WaterSource for BasemapWater {
         }
         let Some(raw) = self.pm.get(z, x, y)? else { return Ok(Vec::new()) };
         polys_of_mvt_with(&names::mvt::gunzip_if_gzip(&raw)?, z, x, y, true)
+    }
+    fn terrain_polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
+        if !(6..=14).contains(&z) {
+            return Ok(Vec::new());
+        }
+        let Some(raw) = self.pm.get(z, x, y)? else { return Ok(Vec::new()) };
+        terrain_polys_of_mvt(&names::mvt::gunzip_if_gzip(&raw)?, z, x, y)
     }
     /// The tiles read in runs (`PmTiles::get_many`), then each decoded as `depth_polys` does, on
     /// the job's threads.
@@ -204,6 +223,58 @@ pub fn polys_of_mvt_with(mvt: &[u8], z: u8, x: u32, y: u32, rivers: bool) -> Res
             .map(|r| r.into_iter().map(|(px, py)| [px * s, py * s]).collect())
             .collect();
         out.push(Poly { kind, id, rings });
+    }
+    Ok(out)
+}
+
+/// The terrain's water of an MVT tile (`WaterSource::terrain_polys`): `polys_of_mvt`'s, and when
+/// the tile has both river polygons and rivers' courses (the `waterway` layer's class `river`, not
+/// intermittent, not in tunnels), the river polygons in their place and the courses after all.
+pub fn terrain_polys_of_mvt(mvt: &[u8], z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
+    let mut out = polys_of_mvt_with(mvt, z, x, y, true)?;
+    let flow = if out.iter().any(|p| p.kind == Kind::River) { flow_of_mvt(mvt)? } else { Vec::new() };
+    if flow.is_empty() {
+        out.retain(|p| p.kind != Kind::River);
+    }
+    out.extend(flow);
+    Ok(out)
+}
+
+/// The rivers' courses of an MVT tile's `waterway` layer (class `river`, not intermittent, not in
+/// tunnels), each line a `Kind::Flow` (key 0), in terrain pixels.
+fn flow_of_mvt(mvt: &[u8]) -> Result<Vec<Poly>> {
+    let tile = names::mvt::Tile::decode(mvt)?;
+    let Some(l) = tile.layers.iter().find(|l| l.name == "waterway") else { return Ok(Vec::new()) };
+    let s = 256.0 / f64::from(l.extent);
+    let mut out = Vec::new();
+    for f in &l.features {
+        if f.geom_type != Some(2) {
+            continue;
+        }
+        let prop = |name: &str| {
+            f.tags
+                .chunks_exact(2)
+                .find(|kv| l.keys.get(kv[0] as usize).is_some_and(|k| k == name))
+                .and_then(|kv| l.values.get(kv[1] as usize))
+        };
+        if prop("class").and_then(|v| v.as_str()) != Some("river")
+            || prop("brunnel").and_then(|v| v.as_str()) == Some("tunnel")
+            || matches!(
+                prop("intermittent"),
+                Some(names::mvt::Value::Int(1) | names::mvt::Value::Uint(1) | names::mvt::Value::Sint(1))
+            )
+        {
+            continue;
+        }
+        for line in decode_rings(&f.geometry) {
+            if line.len() >= 2 {
+                out.push(Poly {
+                    kind: Kind::Flow,
+                    id: 0,
+                    rings: vec![line.into_iter().map(|(px, py)| [px * s, py * s]).collect()],
+                });
+            }
+        }
     }
     Ok(out)
 }
@@ -330,12 +401,17 @@ pub fn water_tile(polys: &[Poly]) -> WaterTile {
         sea: vec![0; 65536],
         lake: vec![0; 65536],
         river: Vec::new(),
+        flow: Vec::new(),
         lake_of: vec![NONE; 65536],
         ids: Vec::new(),
     };
     let mut best = vec![0u8; 65536];
     let mut index: HashMap<u64, u16> = HashMap::new();
     for p in polys {
+        if p.kind == Kind::Flow {
+            wt.flow.extend(p.rings.iter().cloned());
+            continue;
+        }
         let cells = raster(&p.rings);
         if cells.is_empty() {
             continue;
@@ -347,6 +423,7 @@ pub fn water_tile(polys: &[Poly]) -> WaterTile {
                     wt.sea[i] = (wt.sea[i] + c).min(FULL);
                 }
             }
+            Kind::Flow => unreachable!(),
             Kind::River => {
                 if wt.river.is_empty() {
                     wt.river = vec![0; 65536];
@@ -492,11 +569,14 @@ pub fn add_levels(known: &mut HashMap<u64, f32>, all: &HashMap<u64, LakeSamples>
 }
 
 /// Flattens tile `e`'s water: the sea to 0, each lake to its level (`levels`; a lake without one
-/// keeps its pixels), a pixel partly water blended by its shares. Returns the pixels changed.
+/// keeps its pixels), each river to its course's levels (`rivers`, of `e` as given), a pixel partly
+/// water blended by its shares. Returns the pixels changed.
 pub fn flatten(e: &mut [f32], wt: &WaterTile, levels: &HashMap<u64, f32>) -> usize {
+    let rv = rivers(e, wt);
     let mut n = 0;
     for p in 0..e.len() {
-        if wt.sea[p] == 0 && wt.lake[p] == 0 {
+        let r = rv.as_ref().map_or(f32::NAN, |v| v[p]);
+        if wt.sea[p] == 0 && wt.lake[p] == 0 && r.is_nan() {
             continue;
         }
         let (s, mut l) = (wt.sea[p] as f32 / FULL as f32, wt.lake[p] as f32 / FULL as f32);
@@ -507,7 +587,8 @@ pub fn flatten(e: &mut [f32], wt: &WaterTile, levels: &HashMap<u64, f32>) -> usi
         if lv.is_none() {
             l = 0.0;
         }
-        let v = l * lv.unwrap_or(0.0) + (1.0 - s - l) * e[p];
+        let w = if r.is_nan() { 0.0 } else { wt.river_at(p) as f32 / FULL as f32 };
+        let v = l * lv.unwrap_or(0.0) + w * if r.is_nan() { 0.0 } else { r } + (1.0 - s - l - w) * e[p];
         if v != e[p] {
             e[p] = v;
             n += 1;
@@ -516,12 +597,181 @@ pub fn flatten(e: &mut [f32], wt: &WaterTile, levels: &HashMap<u64, f32>) -> usi
     n
 }
 
+/// A river's course is sampled every this much of a pixel.
+const STEP: f64 = 0.5;
+/// A river is already level (its source flattened it, as 3DEP's hydro-flattening does) when at
+/// most this share of its whole pixels lie over FLAT_M from its profile.
+const OFF_SHARE: f64 = 0.1;
+
+/// Each river pixel's level (NaN: none) in tile `e`, from the tile's rivers' courses (`flow`), or
+/// None where it has no river and no course. Each course is cut into stations, the river pixels
+/// (any share) it crosses in its order; every river pixel goes to the station nearest through the
+/// river (4-neighbour steps from all stations at once, the courses' order breaking ties), so a
+/// station's pixels are a cross-section of the river. A station's height is the median of its
+/// whole river pixels; the course's profile is the closest monotone fit to those (weighted by
+/// pixels: isotonic regression) falling one way or the other, whichever fits closer (OSM draws a
+/// waterway downstream; a tie keeps that way), a station without whole pixels taking its
+/// neighbour's on the course. A course whose whole pixels already lie within FLAT_M of its profile
+/// (all but OFF_SHARE) keeps its pixels: its source levelled it. River pixels no course reaches
+/// keep theirs.
+pub fn rivers(e: &[f32], wt: &WaterTile) -> Option<Vec<f32>> {
+    if wt.river.is_empty() || wt.flow.is_empty() {
+        return None;
+    }
+    // Stations: (course, pixel), each course's in its order.
+    let mut owner = vec![u32::MAX; 65536];
+    let mut st: Vec<(usize, u32)> = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+    for (c, line) in wt.flow.iter().enumerate() {
+        let mut last = u32::MAX;
+        for w in line.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let n = (((b[0] - a[0]).hypot(b[1] - a[1]) / STEP).ceil() as usize).max(1);
+            for k in 0..=n {
+                let t = k as f64 / n as f64;
+                let (x, y) = (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]));
+                if !(0.0..256.0).contains(&x) || !(0.0..256.0).contains(&y) {
+                    continue;
+                }
+                let p = y as u32 * 256 + x as u32;
+                if p == last || wt.river[p as usize] == 0 {
+                    continue;
+                }
+                last = p;
+                if owner[p as usize] == u32::MAX {
+                    owner[p as usize] = st.len() as u32;
+                    queue.push_back(p);
+                }
+                st.push((c, p));
+            }
+        }
+    }
+    if st.is_empty() {
+        return None;
+    }
+    while let Some(p) = queue.pop_front() {
+        let (x, y) = (p % 256, p / 256);
+        let o = owner[p as usize];
+        for (dx, dy) in [(0i32, -1i32), (-1, 0), (1, 0), (0, 1)] {
+            let (a, b) = (x as i32 + dx, y as i32 + dy);
+            if !(0..256).contains(&a) || !(0..256).contains(&b) {
+                continue;
+            }
+            let q = (b * 256 + a) as usize;
+            if wt.river[q] > 0 && owner[q] == u32::MAX {
+                owner[q] = o;
+                queue.push_back(q as u32);
+            }
+        }
+    }
+    // Each station's whole pixels' heights.
+    let mut px: Vec<Vec<f32>> = vec![Vec::new(); st.len()];
+    for p in 0..65536 {
+        if owner[p] != u32::MAX && wt.river[p] == FULL && e[p].is_finite() {
+            px[owner[p] as usize].push(e[p]);
+        }
+    }
+    let mut fit = vec![f32::NAN; st.len()];
+    let mut from = 0;
+    while from < st.len() {
+        let c = st[from].0;
+        let to = from + st[from..].iter().take_while(|s| s.0 == c).count();
+        let (pts, ws): (Vec<f64>, Vec<f64>) = (from..to)
+            .map(|i| {
+                let v = &mut px[i];
+                if v.is_empty() {
+                    return (f64::NAN, 0.0);
+                }
+                v.sort_by(f32::total_cmp);
+                (f64::from(v[v.len() / 2]), v.len() as f64)
+            })
+            .unzip();
+        if let Some(f) = profile(&pts, &ws) {
+            let off = (from..to)
+                .map(|i| px[i].iter().filter(|&&h| (f64::from(h) - f[i - from]).abs() > f64::from(FLAT_M)).count())
+                .sum::<usize>();
+            let total = ws.iter().sum::<f64>();
+            if off as f64 > OFF_SHARE * total {
+                for i in from..to {
+                    fit[i] = f[i - from] as f32;
+                }
+            }
+        }
+        from = to;
+    }
+    let mut out = vec![f32::NAN; 65536];
+    for p in 0..65536 {
+        if owner[p] != u32::MAX {
+            out[p] = fit[owner[p] as usize];
+        }
+    }
+    Some(out)
+}
+
+/// A course's profile: its stations' heights `h` (NaN: none) fitted monotone (`isotonic`) falling
+/// along it or rising, whichever is closer (a tie: falling), each station without a height taking
+/// its nearest one's before it, else after. None without heights.
+fn profile(h: &[f64], w: &[f64]) -> Option<Vec<f64>> {
+    let idx: Vec<usize> = (0..h.len()).filter(|&i| !h[i].is_nan()).collect();
+    if idx.is_empty() {
+        return None;
+    }
+    let (ys, ws): (Vec<f64>, Vec<f64>) = idx.iter().map(|&i| (h[i], w[i])).unzip();
+    let neg: Vec<f64> = ys.iter().map(|v| -v).collect();
+    let down: Vec<f64> = isotonic(&neg, &ws).into_iter().map(|v| -v).collect();
+    let up = isotonic(&ys, &ws);
+    let sse = |f: &[f64]| f.iter().zip(&ys).zip(&ws).map(|((a, b), w)| w * (a - b) * (a - b)).sum::<f64>();
+    let f = if sse(&up) < sse(&down) { up } else { down };
+    let mut out = vec![f64::NAN; h.len()];
+    for (k, &i) in idx.iter().enumerate() {
+        out[i] = f[k];
+    }
+    let mut prev = f64::NAN;
+    for v in out.iter_mut() {
+        if v.is_nan() {
+            *v = prev;
+        } else {
+            prev = *v;
+        }
+    }
+    let first = f[0];
+    for v in out.iter_mut().take_while(|v| v.is_nan()) {
+        *v = first;
+    }
+    Some(out)
+}
+
+/// The weighted least-squares non-decreasing fit of `y` (pool adjacent violators).
+fn isotonic(y: &[f64], w: &[f64]) -> Vec<f64> {
+    // Blocks: (mean, weight, count).
+    let mut b: Vec<(f64, f64, usize)> = Vec::with_capacity(y.len());
+    for (&v, &wt) in y.iter().zip(w) {
+        b.push((v, wt, 1));
+        while b.len() > 1 && b[b.len() - 2].0 > b[b.len() - 1].0 {
+            let (m2, w2, n2) = b.pop().unwrap();
+            let (m1, w1, n1) = b.pop().unwrap();
+            let ww = w1 + w2;
+            b.push(((m1 * w1 + m2 * w2) / ww, ww, n1 + n2));
+        }
+    }
+    b.into_iter().flat_map(|(m, _, n)| std::iter::repeat_n(m, n)).collect()
+}
+
 /// Bit 63 of a lake's key: one of its tile's own (no OSM id: `polys_of_mvt`).
 const OWN: u64 = 1 << 63;
 #[cfg(test)]
 pub const OWN_FOR_TESTS: u64 = OWN;
 
-/// A tile's water as the terrain reads it (`WaterSource::polys`), as a digest: its polygons in
+/// What a from ending so says: its target reads the depth's water (`WaterSource::depth_polys`,
+/// the rivers too), so its digest is of that; any other is the terrain's (`terrain_polys`).
+pub const RIVERS_FROM: &str = " +rivers";
+
+/// What a terrain target's from ends with since the terrain levels rivers (task #678): a digest
+/// made before, of `polys` alone, has another from, so it's made again (the same where the tile's
+/// rivers aren't levelled).
+pub const FLOW_FROM: &str = " +flow";
+
+/// A tile's water as the terrain reads it (`WaterSource::terrain_polys`), as a digest: its polygons in
 /// order (their kind, their key, their rings' points), what `water_tile` makes of them; 0 for none.
 /// A lake's key of its tile's own counts as such, not by its value (its feature's place in the
 /// tile, which other water moves): it's never shared, so its value changes no pixel.
@@ -535,6 +785,7 @@ pub fn polys_digest(polys: &[Poly]) -> u64 {
             Kind::Sea => 1u8,
             Kind::Lake => 2,
             Kind::River => 3,
+            Kind::Flow => 4,
         }]);
         h.update(&if p.kind != Kind::Sea && p.id & OWN != 0 { OWN } else { p.id }.to_le_bytes());
         h.update(&(p.rings.len() as u64).to_le_bytes());
@@ -549,23 +800,18 @@ pub fn polys_digest(polys: &[Poly]) -> u64 {
     h.digest() | 1
 }
 
-/// The digest of the water `src` has in the tiles `tiles` (each read as the terrain reads it, in
-/// parallel): over each tile with water, its zoom, column, row and `polys_digest`; "-" when none
-/// has any. What keys a terrain z6 tile or assembly on the water it reads (agent::build).
-pub fn tiles_digest(src: &dyn WaterSource, tiles: &[(u8, u32, u32)]) -> Result<String> {
-    tiles_digest_with(src, tiles, false)
-}
-
-/// What a from ending so says: its target reads the depth's water (`WaterSource::depth_polys`,
-/// the rivers too), so its digest is of that.
-pub const RIVERS_FROM: &str = " +rivers";
-
-/// `tiles_digest`, of the depth's water (`depth_polys`) when `rivers`.
-pub fn tiles_digest_with(src: &dyn WaterSource, tiles: &[(u8, u32, u32)], rivers: bool) -> Result<String> {
+/// The digest of the water `src` has in the tiles `tiles` (each read in parallel as the terrain
+/// reads it, `terrain_polys`, or with `rivers` as the depth does, `depth_polys`): over each tile
+/// with water, its zoom, column, row and `polys_digest`; "-" when none has any. What keys a
+/// terrain or depth target on the water it reads (agent::build). A tile whose rivers the terrain
+/// doesn't level (no river polygon or no course) digests as before they were read.
+pub fn tiles_digest(src: &dyn WaterSource, tiles: &[(u8, u32, u32)], rivers: bool) -> Result<String> {
     use rayon::prelude::*;
     let got: Vec<Result<u64>> = tiles
         .par_iter()
-        .map(|&(z, x, y)| if rivers { src.depth_polys(z, x, y) } else { src.polys(z, x, y) }.map(|p| polys_digest(&p)))
+        .map(|&(z, x, y)| {
+            if rivers { src.depth_polys(z, x, y) } else { src.terrain_polys(z, x, y) }.map(|p| polys_digest(&p))
+        })
         .collect();
     let mut lines = String::new();
     for (&(z, x, y), d) in tiles.iter().zip(got) {
@@ -617,7 +863,7 @@ impl WaterIdx {
 }
 
 /// An assembly's water reads' from (`WaterIdx`).
-pub const AREA_FROM: &str = "z6-8";
+pub const AREA_FROM: &str = "z6-8 +flow";
 
 /// The water tiles z3 tile `q`'s assembly reads: z6–8, the whole of it (none coarser: `polys`).
 pub fn z3_tiles(q: (u32, u32)) -> Vec<(u8, u32, u32)> {
@@ -648,7 +894,7 @@ pub fn make_idx(
     let n = want.len() as u64;
     for (k, (t, from, tiles)) in want.iter().enumerate() {
         if out.get(t, from).is_none() {
-            let d = tiles_digest_with(src, tiles, from.ends_with(RIVERS_FROM))?;
+            let d = tiles_digest(src, tiles, from.ends_with(RIVERS_FROM))?;
             out.digests.insert(t.clone(), (from.clone(), d));
         }
         progress(k as u64 + 1, n);
@@ -656,9 +902,10 @@ pub fn make_idx(
     Ok(out)
 }
 
-/// A tile's water, if its source has some there (an empty tile: None).
-pub fn tile_water(src: &dyn WaterSource, z: u8, x: u32, y: u32) -> Result<Option<Arc<WaterTile>>> {
-    let polys = src.polys(z, x, y)?;
+/// A tile's water, if its source has some there (an empty tile: None): its sea and lakes
+/// (`polys`), or as the terrain flattens it, its levelled rivers too (`terrain`: `terrain_polys`).
+pub fn tile_water(src: &dyn WaterSource, z: u8, x: u32, y: u32, terrain: bool) -> Result<Option<Arc<WaterTile>>> {
+    let polys = if terrain { src.terrain_polys(z, x, y)? } else { src.polys(z, x, y)? };
     if polys.is_empty() {
         return Ok(None);
     }
@@ -839,6 +1086,36 @@ pub mod tests {
         assert_eq!((&dw.sea, &dw.lake, &dw.lake_of), (&wt.sea, &wt.lake, &wt.lake_of));
         assert_eq!((dw.river_at(5 * 256 + 205), dw.river_at(5 * 256 + 5)), (16, 0));
         assert_ne!(polys_digest(&dp), polys_digest(&polys), "a river changes the depth's digest");
+        // The terrain's: without a course, `polys` exactly.
+        assert_eq!(polys_digest(&terrain_polys_of_mvt(&t.encode(), 12, 1, 1).unwrap()), polys_digest(&polys));
+        // With one (a river line; an intermittent one left), the river and its course too.
+        let mut t2 = t.clone();
+        t2.layers.push(Layer {
+            name: "waterway".into(),
+            version: 2,
+            extent: 4096,
+            keys: vec!["class".into(), "intermittent".into()],
+            values: vec![Value::String("river".into()), Value::Int(1)],
+            features: vec![
+                Feature {
+                    tags: vec![0, 0],
+                    geom_type: Some(2),
+                    geometry: vec![9, 6400, 160, 10, 320, 0],
+                    ..Default::default()
+                },
+                Feature {
+                    tags: vec![0, 0, 1, 1],
+                    geom_type: Some(2),
+                    geometry: vec![9, 0, 0, 10, 320, 0],
+                    ..Default::default()
+                },
+            ],
+            unknown: vec![],
+        });
+        let tp = terrain_polys_of_mvt(&t2.encode(), 12, 1, 1).unwrap();
+        assert_eq!(tp.iter().map(|p| p.kind).collect::<Vec<_>>(), [Kind::Sea, Kind::Lake, Kind::River, Kind::Flow]);
+        assert_eq!(tp[3].rings, [vec![[200.0, 5.0], [210.0, 5.0]]]);
+        assert_eq!(water_tile(&tp).flow.len(), 1);
     }
 
     #[test]
@@ -851,6 +1128,88 @@ pub mod tests {
         assert_eq!((wt.river_at(10 * 256 + 10), wt.river_at(10 * 256 + 60), wt.river_at(10 * 256 + 90)), (0, 0, 16));
         assert!(!wt.is_empty());
         assert!(!water_tile(&[square(Kind::River, OWN, 0.0, 0.0, 10.0, 10.0)]).is_empty());
+    }
+
+    /// A river from x 20 to 236 (y 100 to 120), its course along y 110 from x 10 to 246.
+    fn a_river(flow: bool) -> WaterTile {
+        let mut v = vec![square(Kind::River, OWN, 20.0, 100.0, 236.0, 120.0)];
+        if flow {
+            v.push(Poly { kind: Kind::Flow, id: 0, rings: vec![vec![[10.0, 110.0], [128.0, 110.0], [246.0, 110.0]]] });
+        }
+        water_tile(&v)
+    }
+
+    #[test]
+    fn a_noisy_river_falls_along_its_course_and_its_banks_blend() {
+        // Land at 300 m; the river's surface falling east 0.2 m a pixel from 200 m, ±4 m of noise.
+        let wt = a_river(true);
+        let noise = |x: usize, y: usize| (((x * 37 + y * 101) % 17) as f32 - 8.0) * 0.5;
+        let mut e = vec![300f32; 65536];
+        for y in 100..120 {
+            for x in 20..236 {
+                e[y * 256 + x] = 200.0 - 0.2 * x as f32 + noise(x, y);
+            }
+        }
+        let raw = e.clone();
+        let mut drawn = e.clone();
+        let n = flatten(&mut drawn, &wt, &HashMap::new());
+        assert!(n > 4000, "{n}");
+        // Across the river one level; along it never rising downstream (east), near the surface.
+        for x in 20..236 {
+            let col: Vec<f32> = (100..120).map(|y| drawn[y * 256 + x]).collect();
+            assert!(col.iter().all(|&v| v == col[0]), "x {x}: {col:?}");
+            assert!((col[0] - (200.0 - 0.2 * x as f32)).abs() < 3.0, "x {x}: {}", col[0]);
+            if x > 20 {
+                assert!(col[0] <= drawn[110 * 256 + x - 1], "x {x}");
+            }
+        }
+        // A course drawn the other way gives the same.
+        let mut back = a_river(true);
+        back.flow[0].reverse();
+        let mut e2 = raw.clone();
+        flatten(&mut e2, &back, &HashMap::new());
+        assert_eq!(e2, drawn);
+        // The land as it was.
+        assert_eq!(drawn[50 * 256 + 50], 300.0);
+        // Without its course, or without its polygon, the tile is as before.
+        let mut e3 = raw.clone();
+        assert_eq!(flatten(&mut e3, &a_river(false), &HashMap::new()), 0);
+        assert_eq!(e3, raw);
+        assert!(rivers(&raw, &water_tile(&[])).is_none());
+        // A bank pixel half river: half its own, half the river's.
+        let half = water_tile(&[
+            square(Kind::River, OWN, 20.0, 100.5, 236.0, 120.0),
+            Poly { kind: Kind::Flow, id: 0, rings: vec![vec![[10.0, 110.0], [246.0, 110.0]]] },
+        ]);
+        let lv = rivers(&raw, &half).unwrap();
+        let mut e4 = raw.clone();
+        flatten(&mut e4, &half, &HashMap::new());
+        let p = 100 * 256 + 128;
+        assert_eq!(e4[p], 0.5 * lv[p] + 0.5 * raw[p]);
+    }
+
+    #[test]
+    fn a_river_its_source_levelled_keeps_its_pixels() {
+        // 3DEP's hydro-flattening: one level across, falling in steps downstream.
+        let wt = a_river(true);
+        let mut e = vec![300f32; 65536];
+        for y in 100..120 {
+            for x in 20..236 {
+                e[y * 256 + x] = 200.0 - (x / 40) as f32 * 0.5;
+            }
+        }
+        let was = e.clone();
+        assert_eq!(flatten(&mut e, &wt, &HashMap::new()), 0);
+        assert_eq!(e, was);
+    }
+
+    #[test]
+    fn isotonic_fits() {
+        assert_eq!(isotonic(&[1.0, 3.0, 2.0, 4.0], &[1.0; 4]), [1.0, 2.5, 2.5, 4.0]);
+        assert_eq!(isotonic(&[3.0, 1.0], &[1.0, 3.0]), [1.5, 1.5]);
+        // Falling, a station without a height taking its neighbour's.
+        assert_eq!(profile(&[5.0, f64::NAN, 6.0, 1.0], &[1.0, 0.0, 1.0, 1.0]).unwrap(), [5.5, 5.5, 5.5, 1.0]);
+        assert!(profile(&[f64::NAN], &[0.0]).is_none());
     }
 
     /// The key own_key had until task #464's fix (gap 11).

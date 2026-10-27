@@ -748,7 +748,7 @@ mod tests {
                     // (And what its deep levels read: crate::terrain_deep.)
                     let deep = crate::terrain_deep::piece_key_lines(&tf.fine(&mf).unwrap(), &c, (u.x, u.y));
                     let ds = format!("{ds}\n{deep}");
-                    build::terrain_piece_key((u.x, u.y), &fp, &ds, &key(t, &fp))
+                    build::terrain_piece_key((u.x, u.y), &fp, &ds, &key(t, &build::piece_water_from(&fp)))
                 } else {
                     let mids: Vec<String> =
                         build::coverage_tiles(&c)[&(u.x, u.y)].iter().map(|(x, y)| format!("6/{x}/{y}=-")).collect();

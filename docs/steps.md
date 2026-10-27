@@ -109,9 +109,22 @@ What each step does, in detail. The steps as one table (names, chains, the check
     finer tile lies under it (outside the coverage's 20 km).
   - **Water flattened** (crate::terrain_water): from the basemap's `water` layer at the tile's zoom,
     4 × 4 samples a pixel. The sea goes to 0; each lake, pond, reservoir or dock to its level (the
-    10th percentile of its shore's dry pixels, or its source's own lower level); rivers,
-    intermittent water and pools are left. One level per lake by OSM id across the tiles made
+    10th percentile of its shore's dry pixels, or its source's own lower level); intermittent
+    water and pools are left. One level per lake by OSM id across the tiles made
     together; a lake without one is its tile's alone (`own_key`: never another tile's or feature's). Partly-water pixels are blended.
+  - **Rivers levelled** (`terrain_water::rivers`, task #678): in a tile with both river polygons
+    (the `water` layer's class `river`) and rivers' courses (the `waterway` layer's class `river`,
+    not intermittent, not in tunnels), each course is cut into stations, the river pixels it
+    crosses in order; every river pixel goes to its nearest station through the river (so a
+    station's pixels are a cross-section). A station's height is the median of its whole river
+    pixels; the course's profile is the closest monotone fit to those (weighted isotonic
+    regression), falling along the course or against it, whichever fits closer (no flow direction
+    is trusted; a tie keeps OSM's, drawn downstream). Each river pixel takes its station's level,
+    blended with its own height by its river share as lakes' are (the banks). A course whose whole
+    pixels already lie within 1 m of its profile (all but a tenth: 3DEP's hydro-flattening) keeps
+    its pixels, as do river pixels no course reaches and rivers drawn only as lines. Each tile's
+    rivers are levelled from that tile alone, so a river crossing tiles may step a little at their
+    edge. Tiles without both are as before, byte for byte.
   - **Below zero** is clamped to 0 after the water. Planned: polders keeping their depth.
   - **Native zoom and the deep levels** (crate::terrain_deep): a place's native zoom is the finest
     its data supports. Where a dataset of the pool is finer than the worldwide datasets (those
@@ -341,10 +354,9 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   its own stays empty), the land a 3-pixel band; dries where above the chart's low water.
 - **The floor:** the depth lies on the terrain's own water, flattened to its surface, so the terrain
   less the depth is the floor; the server serves it (`/tiles/terrain/…?floor=1`), no second terrain
-  stored. Rivers aren't flattened (they slope): there the terrain is what its sources draw, and the
-  floor is that less the depth. 3DEP draws rivers hydro-flattened at their surface; where AWS's
-  tiles come from SRTM-derived data a river's surface is noisy and not flattened, so the floor
-  there is as rough. A
+  stored. Rivers are levelled along their courses (§2, Rivers levelled), or left as their source
+  levelled them (3DEP's hydro-flattening), so under a river the floor is the depth below a smooth,
+  falling surface; a river without a course in its tile is what its sources draw there. A
   pixel of narrow water is the terrain's blend of water and shore (§2, Terrain), so its floor is
   rough. The map's toggle (Layers → Depth, "3D sea and lake floor"; web/src/depth.ts): the 3D
   terrain from the floor, the terrain itself its surface (our MapLibre's `Map#setTerrainSurface`);
@@ -611,7 +623,9 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **terrain-water (one):** the water source's pin (the latest basemap, and the lake fill) and what
   each terrain target reads of it; it fills the digests file (`work/water-idx/<hash16 of the pin>`)
   when a target's digest is missing. The digest (`terrain_water::tiles_digest`) is over the
-  polygons as the terrain reads them, so only a change the terrain could see changes it. Until a
+  polygons as the terrain reads them (`terrain_polys`: with the rivers and their courses only in
+  tiles that have both), so only a change the terrain could see changes it. A terrain target's
+  from ends ` +flow` since the terrain levels rivers, so digests made before were made again. Until a
   target's digest exists its key is unknown and its z3 tile waits.
 - **terrain-hi (a z6 tile):** `TERRAIN_V` and the codec (`terrain_codec::version`: the encoding,
   libwebp's version and level, the rounding), the coverage within 20 km of its tile, the elevation

@@ -10,7 +10,7 @@
 //!
 //! A task's one file (`u/in.sect`; docs/formats.md) holds everything its group reads, cut by the
 //! job from what it reads itself: the raw tiles (`r-<z>-<x>-<y>`, as the job's sampled them; one
-//! no dataset has data in, absent), the water's polygons as the basemap gives them (`w-…`), its meta
+//! no dataset has data in, absent), the water's polygons as the terrain reads them (`w-…`: `WaterSource::terrain_polys`), its meta
 //! the z6 tile, the group's levels and whether the job's run has the water. A worker reads nothing else: no
 //! NAS, no network. Its run (the program `terrainsub`) writes the group's tiles (`u/hi.sect`) and
 //! its mid's part (`u/mid.sect`, crate::terrain_pack::write_mid's), which the job takes into the
@@ -144,7 +144,7 @@ fn name(prefix: &str, z: u8, x: u32, y: u32) -> String {
     format!("{prefix}-{z}-{x}-{y}")
 }
 
-/// Polygons as a task holds them: each its kind (1 sea, 2 lake, 3 river), key, rings, each ring's points
+/// Polygons as a task holds them: each its kind (1 sea, 2 lake, 3 river, 4 a river's course), key, rings, each ring's points
 /// (x, y f64), little-endian, counts u32.
 pub fn polys_bytes(polys: &[Poly]) -> Vec<u8> {
     let mut b = Vec::new();
@@ -154,6 +154,7 @@ pub fn polys_bytes(polys: &[Poly]) -> Vec<u8> {
             Kind::Sea => 1,
             Kind::Lake => 2,
             Kind::River => 3,
+            Kind::Flow => 4,
         });
         b.extend(p.id.to_le_bytes());
         b.extend((p.rings.len() as u32).to_le_bytes());
@@ -184,6 +185,7 @@ pub fn polys_from(b: &[u8]) -> Result<Vec<Poly>> {
             1 => Kind::Sea,
             2 => Kind::Lake,
             3 => Kind::River,
+            4 => Kind::Flow,
             k => bail!("a water polygon of kind {k}"),
         };
         let id = u64::from_le_bytes(take(8)?.try_into().unwrap());
@@ -249,7 +251,7 @@ pub fn cut(
     let got: Vec<Result<Option<Vec<u8>>>> = reads.par_iter().map(|&(z, x, y)| raw.get(z, x, y).map(|r| r.0)).collect();
     let tiles: Vec<(u8, u32, u32)> = levels.iter().flat_map(|(z, t)| t.iter().map(move |&(x, y)| (*z, x, y))).collect();
     let water: Vec<Result<Vec<Poly>>> = match src.water {
-        Some(w) => tiles.par_iter().map(|&(z, x, y)| w.polys(z, x, y)).collect(),
+        Some(w) => tiles.par_iter().map(|&(z, x, y)| w.terrain_polys(z, x, y)).collect(),
         None => Vec::new(),
     };
     let meta = Meta {
@@ -351,7 +353,14 @@ impl RawSource for Inputs {
 }
 
 impl WaterSource for Inputs {
+    /// The terrain's water less its rivers.
     fn polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
+        let mut p = self.terrain_polys(z, x, y)?;
+        p.retain(|p| matches!(p.kind, Kind::Sea | Kind::Lake));
+        Ok(p)
+    }
+    /// The job's `terrain_polys`, as cut.
+    fn terrain_polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
         let n = name("w", z, x, y);
         match self.r.section(&n) {
             Some(_) => polys_from(&self.r.read(&n)?),
@@ -1210,7 +1219,7 @@ mod tests {
                 let ids: Vec<Vec<u64>> = tiles
                     .par_iter()
                     .map(|&(x, y)| {
-                        tile_water(&water as &dyn WaterSource, z, x, y)
+                        tile_water(&water as &dyn WaterSource, z, x, y, false)
                             .unwrap()
                             .map(|w| w.ids.iter().copied().filter(|i| i >> 63 == 1).collect())
                             .unwrap_or_default()

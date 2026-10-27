@@ -218,9 +218,8 @@ pub fn prepare(
         }
     }
     let water = match src.water {
-        Some(w) => {
-            crate::terrain_water::tile_water(w, z, x, y).map_err(|e| e.context(format!("the water of {z}/{x}/{y}")))?
-        }
+        Some(w) => crate::terrain_water::tile_water(w, z, x, y, true)
+            .map_err(|e| e.context(format!("the water of {z}/{x}/{y}")))?,
         None => None,
     };
     Ok(Prepared { e, before, water, decoded: true, z, quantum })

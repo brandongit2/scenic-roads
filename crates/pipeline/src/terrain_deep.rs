@@ -1508,7 +1508,7 @@ fn deep_tiles(
 /// Base tile `b`'s share of water at each pixel (0–1: sea and lakes), where it has any.
 fn water_share(water: Option<&dyn crate::terrain_water::WaterSource>, b: (u8, u32, u32)) -> Result<Option<Vec<f32>>> {
     let Some(w) = water else { return Ok(None) };
-    let Some(wt) = crate::terrain_water::tile_water(w, b.0, b.1, b.2)? else { return Ok(None) };
+    let Some(wt) = crate::terrain_water::tile_water(w, b.0, b.1, b.2, false)? else { return Ok(None) };
     let whole = crate::terrain_water::FULL as f32;
     Ok(Some(wt.sea.iter().zip(&wt.lake).map(|(&s, &l)| (s as f32 + l as f32) / whole).collect()))
 }

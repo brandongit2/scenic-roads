@@ -1434,7 +1434,7 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
             let hi = crate::terrain_pack::makes_hi(cov, (x, y));
             out.terrain.push((
                 t.clone(),
-                water(&t, &fp)
+                water(&t, &piece_water_from(&fp))
                     .zip(piece_datasets(x, y))
                     .map_or_else(|| UNKNOWN.to_string(), |(w, s)| piece_key_made((x, y), &fp, &s, &w, hi)),
             ));
@@ -1498,7 +1498,7 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
                         let fp = cov.fingerprint(grown_e7(6, x, y, 20.0));
                         // (As its terrain-hi key names them, the z10 tiles it rounds as coarser than
                         // native among them, crate::terrain_pack::Sources::deeper: the base is made so.)
-                        Some(format!("{p} {fp} {} {}", piece_datasets(x, y)?, water(&p, &fp)?))
+                        Some(format!("{p} {fp} {} {}", piece_datasets(x, y)?, water(&p, &piece_water_from(&fp))?))
                     })
                     .collect();
                 let key = reads.map_or_else(
@@ -1643,17 +1643,22 @@ pub fn terrain_piece_key(t: (u32, u32), fp: &str, sources: &str, water: &str) ->
 }
 
 /// What the terrain's targets read of the water, as the `terrain-water` job works their digests
-/// out (crate::terrain_water::WaterIdx): each z6 tile ("6/x/y") with the coverage's fingerprint that
-/// decides its tiles, each assembly ("3/x/y") with AREA_FROM.
+/// out (crate::terrain_water::WaterIdx): each z6 tile ("6/x/y") with `piece_water_from`, each assembly ("3/x/y") with AREA_FROM.
 pub fn water_wants(cov: &Coverage) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (q, ts) in &coverage_tiles(cov) {
         for &(x, y) in ts {
-            out.push((format!("6/{x}/{y}"), cov.fingerprint(grown_e7(6, x, y, 20.0))));
+            out.push((format!("6/{x}/{y}"), piece_water_from(&cov.fingerprint(grown_e7(6, x, y, 20.0)))));
         }
         out.push((format!("3/{}/{}", q.0, q.1), crate::terrain_water::AREA_FROM.to_string()));
     }
     out
+}
+
+/// A z6 tile's water reads' from (`WaterIdx`): the coverage's fingerprint `fp` that decides its
+/// tiles, as the terrain reads them since it levels rivers (crate::terrain_water::FLOW_FROM).
+pub fn piece_water_from(fp: &str) -> String {
+    format!("{fp}{}", crate::terrain_water::FLOW_FROM)
 }
 
 /// `water_wants` with the tiles each reads: a z6 tile's z9–12 (crate::terrain_pack::piece_levels),
