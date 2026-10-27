@@ -1492,9 +1492,15 @@ size). Its `--sweep` deletes the loose files only while both the inputs folder a
 accepted version hold the packed index, the lead's status is fresh (10 min), the accepted versions
 have named the same copy of the index for 24 h (a rollback or a new pack starts the wait again; a
 new acceptance for other files doesn't), and no depth or depth-lo job is running on any Mac,
-waiting, or held to resume in a member's progress file. A helper's jobs are read from its own file
-(`state/helpers/<host>.json`) however stale its beat, since the lead's status leaves out a helper
-not heard from in 10 min whose job may still run; a helper file that doesn't read refuses. A job reads the records when it starts, so
+waiting, or held to resume in a member's progress file. Every other Mac's jobs are read from its own helper
+file (`state/helpers/<host>.json`) however stale its beat, since the lead's status leaves out a
+helper not heard from in 10 min whose job may still run (a Mac asleep or off the NAS carries on when
+it's back); the lead's own helper file, left from before it led, is passed over. Nothing removes a
+helper file, so a Mac retired, renamed or crashed mid-job leaves its last jobs there and the sweep
+refuses until the owner removes the file: the refusal names the file and its beat's age, and past
+10 min says to remove it if that Mac's agent isn't running the job (a running agent writes it again
+at its next beat). A helper file that doesn't read refuses, naming it. The coordinator's leases
+can't stand in: a member's job outlives its lapsed lease and holds it again when its Mac is back. A job reads the records when it starts, so
 jobs planned but not yet started read the index current then; a running one refuses whatever its
 start: the accepted copies are content-named, so a rollback and a return to the same packed copy
 between two sweeps leave no trace, and a job started on the loose index in between can't be told

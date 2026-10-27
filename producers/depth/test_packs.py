@@ -83,6 +83,7 @@ def accept(root: Path, data: bytes, tag: str, beat_ago: float = 0, jobs=(), help
     run = (lambda j: {"id": j}) if started is None else (lambda j: {"id": j, "started": started})
     (root / "state").mkdir(exist_ok=True)
     (root / "state/status.json").write_text(json.dumps({
+        "host": "lead",
         "beat": time.time() - beat_ago,
         "jobs": [run(j) for j in jobs],
         "waiting": [{"what": f"{w} 6/1/2", "why": "waiting 3 min", "step": w} for w in waiting],
@@ -216,9 +217,14 @@ class Repack(unittest.TestCase):
             (root / "state/helpers").mkdir()
             hf = root / "state/helpers/m-3.json"
             hf.write_text(json.dumps({"host": "m-3", "beat": time.time() - 3 * 3600, "jobs": [{"id": "depth 6/7/8"}]}))
-            self.refused(args, "depth 6/7/8")
+            self.refused(args, "depth 6/7/8 (state/helpers/m-3.json, beat 3.0 h ago; if that Mac's agent isn't running it")
+            hf.write_text(json.dumps({"host": "m-3", "beat": time.time() - 60, "jobs": [{"id": "depth 6/7/8"}]}))
+            self.refused(args, "depth 6/7/8 (state/helpers/m-3.json, beat 0.0 h ago))")
             hf.write_text("{not json")
-            self.refused(args, "helper file m-3.json doesn't read")
+            self.refused(args, "helper file state/helpers/m-3.json doesn't read")
+            # The lead's own helper file, left from before it led, is passed over: its status says
+            # its Mac's jobs.
+            (root / "state/helpers/lead.json").write_text(json.dumps({"host": "lead", "beat": 1, "jobs": [{"id": "depth 6/7/9"}]}))
             hf.write_text(json.dumps({"host": "m-3", "beat": time.time(), "jobs": [{"id": "roads 6/7/8"}]}))
             # A changed index (the source packed anew, as ncei-crm by #677): the wait starts again.
             accept(root, before, "repacked")

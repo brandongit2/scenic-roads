@@ -27,8 +27,9 @@ lists them in):
    from when a sweep first saw it (`done.json`'s `taken_in_seen`, with the copy seen: another copy
    seen, as after a rollback or a new pack of the source, starts the wait again; a new acceptance
    of the unit for other files doesn't); and no depth or depth-lo job running on any Mac (the
-   lead's in status.json, each helper's in its own file `state/helpers/<host>.json` however stale
-   its beat, a file that doesn't read refusing; the old fields `job`, `beside`, `more` too),
+   lead's in status.json, each other Mac's in its own helper file `state/helpers/<host>.json`
+   however stale its beat (the lead's own left from before it led passed over; a stale one's job
+   named with how to clear it), a file that doesn't read refusing; the old fields `job`, `beside`, `more` too),
    none its waiting list names, and none held to resume in the members' progress files
    (`state/pool/progress/<member>.json`). A job reads the records once, when it starts
    (`Out::open`), and its grids by the paths they gave it all through its run; a running one
@@ -307,6 +308,8 @@ def taken_in(a, sid: str, packed: Path) -> bool:
 
 
 DEPTH_STEPS = ("depth", "depth-lo")
+# A helper file beaten longer ago than this (the lead's status leaves the helper out, agent::helpers).
+STALE_HELPER_S = 600
 
 
 class Unsure(Exception):
@@ -315,33 +318,48 @@ class Unsure(Exception):
 
 def depth_jobs(a) -> list[str]:
     """The depth and depth-lo jobs running on any Mac (their jobs, and an older agent's `job`,
-    `beside` and `more`): the lead's as its status says, and each helper's as its own file
-    (state/helpers/<host>.json) says, whatever its beat's age (the lead's status leaves out a
-    helper beaten over ten minutes ago, crate::agent::helpers, whose job may still run), whenever
-    they started (see the module's docstring, step 4); the depth steps the lead's status says
-    wait; and the depth jobs held to resume in the members' progress files
-    (state/pool/progress/<member>.json, crate::agent::resume). A helper file that doesn't read
-    raises Unsure."""
+    `beside` and `more`): the lead's as its status says, and each other Mac's as its own helper
+    file (state/helpers/<host>.json) says, whatever its beat's age (the lead's status leaves out a
+    helper beaten over ten minutes ago, crate::agent::helpers, whose job may still run: a Mac
+    asleep or off the NAS carries on when it's back), whenever they started (see the module's
+    docstring, step 4); the depth steps the lead's status says wait; and the depth jobs held to
+    resume in the members' progress files (state/pool/progress/<member>.json,
+    crate::agent::resume). The lead's own helper file, left from before it led, is passed over: its
+    status says its Mac's jobs. A job from a helper file names the file and its beat's age, and one
+    beaten over STALE_HELPER_S ago says how to clear it (nothing removes a helper file: a Mac gone
+    for good leaves its last jobs there). A helper file that doesn't read raises Unsure."""
     status = json.loads((a.root / "state/status.json").read_text())
     found = []
-    helpers = list(status.get("helpers") or [])
+    now = time.time()
+
+    def job(v, src=""):
+        if isinstance(v, dict) and isinstance(v.get("id"), str) and v["id"].split(" ", 1)[0] in DEPTH_STEPS:
+            found.append(v["id"] + src)
+
+    def jobs_of(who, src=""):
+        for j in [*(who.get("jobs") or []), who.get("job"), who.get("beside"), *(who.get("more") or [])]:
+            job(j, src)
+
+    for who in [status, *(status.get("helpers") or [])]:
+        jobs_of(who)
     hdir = a.root / "state/helpers"
     for p in sorted(hdir.glob("*.json")) if hdir.is_dir() else []:
+        if p.stem == status.get("host"):
+            continue
+        rel = f"state/helpers/{p.name}"
         try:
             h = json.loads(p.read_text())
             if not isinstance(h, dict):
                 raise ValueError("not an object")
         except (OSError, ValueError) as e:
-            raise Unsure(f"helper file {p.name} doesn't read ({e}): its depth jobs unknown")
-        helpers.append(h)
-
-    def job(v):
-        if isinstance(v, dict) and isinstance(v.get("id"), str) and v["id"].split(" ", 1)[0] in DEPTH_STEPS:
-            found.append(v["id"])
-
-    for who in [status, *helpers]:
-        for j in [*(who.get("jobs") or []), who.get("job"), who.get("beside"), *(who.get("more") or [])]:
-            job(j)
+            raise Unsure(f"helper file {rel} doesn't read ({e}): its depth jobs unknown; if its Mac's agent "
+                         "no longer runs (retired, renamed), remove the file, else wait for its next beat")
+        beat = h.get("beat")
+        age = now - beat if isinstance(beat, (int, float)) else None
+        said = "no beat" if age is None else f"beat {age / 3600:.1f} h ago"
+        hint = ("" if age is not None and age <= STALE_HELPER_S else
+                "; if that Mac's agent isn't running it (gone for good, or the job ended), remove the file")
+        jobs_of(h, f" ({rel}, {said}{hint})")
     for w in status.get("waiting") or []:
         if isinstance(w, dict) and w.get("step") in DEPTH_STEPS:
             found.append(f"waiting: {w.get('what')}")
