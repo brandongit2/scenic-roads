@@ -1197,7 +1197,8 @@ minutes; `--json`, the same in seconds.
 **The backtest** (`--replay`, `fccheck::backtest`): each term's forecast input made in the span
 (`state/build/term/<E>/forecast-input.json`, its last forecast's whole input: §10) is rerun twice,
 as the forecast was (code 1) and as it is, each archived as the lead archives its forecasts
-(`Entry::of`) and checked as above. Old: the input as recorded (no step's pace, no cap). New: the
+(`Entry::of`) and checked as above. Old: the input as recorded (no step's pace, no cap; an
+input recorded by code 2 on holds its lanes' `busy_s` already capped, so its old run is code 1 but for the cap). New: the
 costs noted from the inputs before it and its own (`forecast::Noted`), each step's pace from the
 history before it (its workers' speeds its lanes', their Mac's hold taken off), each lane's job
 under way capped (below). The inputs from `--split` (default a day before the last) are the test

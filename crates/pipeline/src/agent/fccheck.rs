@@ -316,7 +316,8 @@ pub fn records(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Record<'
 /// with `new`, as the forecast is now, each step's pace (`forecast::step_pace`) from the history
 /// before it and the costs the records before it (and it) noted, its workers' speeds its lanes'
 /// with their Mac's hold (`Input::held`) taken off, and each lane's job under way held to its
-/// step's longest of late (`forecast::cap_busy`); else as it was (code 1: neither).
+/// step's longest of late (`forecast::cap_busy`); else as it was (code 1: neither; a record of
+/// code 2 on holds its lanes' `busy_s` capped already, which the old run keeps).
 pub fn replay(records: &[Record<'static>], events: &[Event], new: bool) -> Vec<Entry> {
     let mut noted = forecast::Noted::default();
     let mut out = Vec::new();
