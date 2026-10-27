@@ -193,9 +193,14 @@ test('past jobs: what each waited on, as its start or lease names it (none befor
   // (Given out of order: the page's past ends before its live events.)
   const r = pastRuns([...ev].reverse(), 0, ['m1', 'm4']);
   assert.deepEqual(r.map((x) => [x.seq, x.after]), [[12, []], [15, [12]], [16, []]]);
-  // A running job's: the lead's own by its start, a member's by its Mac's lease of the step.
+  // An end whose start isn't held names none, not an earlier start's of its slot and step.
+  const again = [...ev, { kind: 'end', seq: 17, t: 300, secs: 50, step: 'unit', worker: 'm4', targets: ['6/1/2'] }];
+  assert.deepEqual(pastRuns(again, 0, ['m1', 'm4']).find((x) => x.seq === 17).after, []);
+  // A running job's: the lead's own by its start (its slot's first), a member's by its lease.
   assert.deepEqual(startOf({ step: 'unit', id: 'unit 6/1/1', started: 112 }, ev)?.after, [12]);
-  assert.equal(startOf({ step: 'terrain-hi', id: 'x', started: 95, mac: 'm1' }, ev)?.seq, 11);
+  const two = [...ev, { kind: 'start', seq: 18, t: 112, step: 'unit', worker: 'm4 #2', targets: ['6/2/2'] }];
+  assert.deepEqual(startOf({ step: 'unit', id: 'unit 6/1/1', started: 112, worker: 'm4' }, two)?.after, [12]);
+  assert.equal(startOf({ lease: 4 }, ev)?.seq, 11);
   assert.equal(startOf({ step: 'terrain-hi', id: 'x', started: 95 }, ev), null);
 });
 

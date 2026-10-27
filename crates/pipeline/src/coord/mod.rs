@@ -2255,10 +2255,17 @@ impl Coordinator {
         self.shared.lock().unwrap().tocome = Some(t);
     }
 
-    /// The forecast's dependencies, what the history's starts and leases name as waited on
+    /// The forecast's dependencies as the history's waits (history::WaitsBasis::next), worked out
+    /// off the lock (a forecast's tens of thousands of items: tens of ms).
+    pub fn waits_of(&self, g: history::Graph) -> history::Waits {
+        let basis = self.shared.lock().unwrap().history.waits_basis();
+        basis.next(g)
+    }
+
+    /// The waits (`waits_of`) the history's starts and leases name as waited on from now on
     /// (history::Event::after).
-    pub fn set_waits(&self, g: history::Graph) {
-        self.shared.lock().unwrap().history.set_waits(g);
+    pub fn set_waits(&self, w: history::Waits) {
+        self.shared.lock().unwrap().history.set_waits(w);
     }
 
     /// The app the newer readers' switch was recorded on (`Shared::min_app`; None: none recorded).

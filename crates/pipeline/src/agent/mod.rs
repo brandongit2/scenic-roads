@@ -8472,6 +8472,7 @@ impl Agent {
     /// made there too (as data, for the NAS: written by the lead's pool step, `pool_lead_files`).
     fn start_forecast(&self, record: forecast::Record<'static>) {
         let app = self.app.clone();
+        let coord = self.coord.clone();
         let run = std::thread::Builder::new().name("forecast".into()).spawn(move || {
             forecast::low_priority();
             let took = std::time::Instant::now();
@@ -8484,9 +8485,10 @@ impl Agent {
                 record.input.machines.iter().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())).collect();
             let mut tocome = forecast::ToCome::of(&f.placed, &macs, f.at);
             tocome.runs = std::mem::take(&mut f.runs);
-            let graph = std::mem::take(&mut f.graph);
+            // (What its items wait on as the history's, worked out here: off the loop.)
+            let waits = coord.map(|c| c.waits_of(std::mem::take(&mut f.graph)));
             f.placed = Vec::new();
-            Forecasted { forecast: f, bytes: record.bytes(), entry, tocome, graph, took: took.elapsed() }
+            Forecasted { forecast: f, bytes: record.bytes(), entry, tocome, waits, took: took.elapsed() }
         });
         match run {
             Ok(h) => *self.forecasting.borrow_mut() = Some(h),
@@ -8517,7 +8519,9 @@ impl Agent {
                 *self.fc_entry.borrow_mut() = Some(done.entry);
                 if let Some(c) = &self.coord {
                     c.set_tocome(std::sync::Arc::new(done.tocome));
-                    c.set_waits(done.graph);
+                    if let Some(w) = done.waits {
+                        c.set_waits(w);
+                    }
                 }
                 let f = &done.forecast;
                 let mut curves = self.curves.borrow_mut();
@@ -11721,7 +11725,7 @@ struct Forecasted {
     bytes: anyhow::Result<Vec<u8>>,
     entry: fcarchive::Entry,
     tocome: forecast::ToCome,
-    graph: crate::coord::history::Graph,
+    waits: Option<crate::coord::history::Waits>,
     took: std::time::Duration,
 }
 

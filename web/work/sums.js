@@ -63,7 +63,10 @@ export function pastRuns(events, from, hosts = []) {
     if (!["end", "done", "fail"].includes(e.kind) || !e.step || e.secs == null || !e.worker || e.t < from || seen.has(e.seq)) continue;
     seen.add(e.seq);
     const { host, slot } = macSlot(e.worker, hosts);
-    const after = (e.kind === "end" ? started.get(`${e.worker} ${e.step}`) : leases.get(e.lease)) || [];
+    // (A start is its slot's next end's alone: taken, so a later end whose start isn't held names none.)
+    const key = e.kind === "end" ? `${e.worker} ${e.step}` : null;
+    const after = (key ? started.get(key) : leases.get(e.lease)) || [];
+    if (key) started.delete(key);
     const r = { lane: slotName(host, slot - 1), step: e.step, from: e.t - e.secs, until: e.t, n: (e.targets || []).length, ok: e.ok !== false, targets: e.targets || [], seq: e.seq, after };
     (e.kind === "end" ? out : leased).push(r);
     if (e.kind !== "end") r.host = host;
@@ -206,13 +209,13 @@ const tileWords = (s) => String(s || "").split(/\s+/).filter((w) => tileOf(w));
 export function targetsOf(run, events) {
   return startOf(run, events)?.targets || tileWords(run.lease != null ? run.what : String(run.id || "").split(" ").slice(1).join(" "));
 }
-// A running job's "start" or "lease" event (as `targetsOf` finds it), null: none held. A job on a
-// member (`mac`, its lease not known to the page): its Mac's last lease of its step by its start.
+// A running job's "start" or "lease" event (as `targetsOf` finds it), null: none held. A start of
+// its step within 10 s of it: its slot's own (`worker`) if one is, else the last.
 export function startOf(run, events) {
   const last = (ok) => { for (let i = (events || []).length - 1; i >= 0; i--) if (events[i].targets?.length && ok(events[i])) return events[i]; return null; };
   if (run.lease != null) return last((v) => v.kind === "lease" && v.lease === run.lease);
-  return last((v) => v.kind === "start" && v.step === run.step && Math.abs(v.t - run.started) <= 10)
-    || (run.mac ? last((v) => v.kind === "lease" && v.worker === run.mac && v.step === run.step && v.t <= run.started + 10) : null);
+  const near = (v) => v.kind === "start" && v.step === run.step && Math.abs(v.t - run.started) <= 10;
+  return (run.worker != null && last((v) => near(v) && v.worker === run.worker)) || last(near);
 }
 
 // Each running job's tiles, by key ("<step> z/x/y"): {step, frac (0–1 of the tile done), current (the

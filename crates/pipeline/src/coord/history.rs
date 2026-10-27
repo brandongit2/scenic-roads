@@ -88,7 +88,10 @@ pub struct History {
     lines: usize,
     /// Each target's last finishing job kept (step, target) → its "end" or "done" event's number.
     built: HashMap<(String, String), u64>,
-    waits: Waits,
+    waits: std::sync::Arc<Waits>,
+    /// The event number when the last `Graph` came (or the history was loaded): the next graph's
+    /// items were made after it, so a job of theirs that finished by it is an older one (`Waits::from`).
+    set_at: u64,
 }
 
 /// The forecast's dependencies (crate::agent::forecast's items): each item (step, target), the
@@ -106,22 +109,54 @@ pub struct Graph {
 /// what it waited on that finished before that forecast was made (an earlier forecast's
 /// dependencies, done since: gone from the last one's), step → the last job's event number.
 #[derive(Debug, Default)]
-struct Waits {
+pub struct Waits {
     graph: Graph,
+    /// Finishes this number or older aren't what the graph's items wait on: an item still to run
+    /// when it was made finished after (one finished before an earlier lead's, a restart, or a
+    /// `scenic redo` is passed over, none named rather than a wrong one).
+    from: u64,
     index: HashMap<(String, String), u32>,
     resolved: HashMap<(String, String), BTreeMap<String, u64>>,
 }
 
-/// Into `out`, for each step, the last finishing job (`built`) of the items `of` names in `g`.
+/// The waits in place and the targets' last finishes (`History::waits_basis`).
+pub struct WaitsBasis {
+    old: std::sync::Arc<Waits>,
+    built: HashMap<(String, String), u64>,
+}
+
+impl WaitsBasis {
+    /// The waits of `graph` (the forecast's items' last), with what the items of the last one
+    /// still in it waited on that's finished since kept (gone from `graph`: done before it was made).
+    pub fn next(self, graph: Graph) -> Waits {
+        let index: HashMap<(String, String), u32> =
+            graph.keys.iter().enumerate().map(|(i, k)| (k.clone(), i as u32)).collect();
+        let mut sets = HashMap::new();
+        let mut resolved = HashMap::new();
+        for (k, &i) in &self.old.index {
+            if !index.contains_key(k) {
+                continue;
+            }
+            let r = self.old.of(i, &self.built, &mut sets);
+            if !r.is_empty() {
+                resolved.insert(k.clone(), r);
+            }
+        }
+        Waits { graph, from: 0, index, resolved }
+    }
+}
+
+/// Into `out`, for each step, the last finishing job (`built`, after `from`) of the items `of` names in `g`.
 fn last_per_step(
     g: &Graph,
     of: impl Iterator<Item = u32>,
     built: &HashMap<(String, String), u64>,
+    from: u64,
     out: &mut BTreeMap<String, u64>,
 ) {
     for d in of {
         let Some(k) = g.keys.get(d as usize) else { continue };
-        if let Some(&seq) = built.get(k) {
+        if let Some(&seq) = built.get(k).filter(|&&s| s > from) {
             let e = out.entry(k.0.clone()).or_default();
             *e = (*e).max(seq);
         }
@@ -138,12 +173,12 @@ impl Waits {
     ) -> BTreeMap<String, u64> {
         let g = &self.graph;
         let mut out = self.resolved.get(&g.keys[i as usize]).cloned().unwrap_or_default();
-        last_per_step(g, g.deps[i as usize].iter().copied(), built, &mut out);
+        last_per_step(g, g.deps[i as usize].iter().copied(), built, self.from, &mut out);
         for &s in &g.sets[i as usize] {
             // (A set is shared by many items: worked out once.)
             let r = sets.entry(s).or_insert_with(|| {
                 let mut r = BTreeMap::new();
-                last_per_step(g, g.groups.get(s as usize).into_iter().flatten().copied(), built, &mut r);
+                last_per_step(g, g.groups.get(s as usize).into_iter().flatten().copied(), built, self.from, &mut r);
                 r
             });
             for (k, &v) in r.iter() {
@@ -187,7 +222,8 @@ impl History {
             seq: 0,
             lines: 0,
             built: HashMap::new(),
-            waits: Waits::default(),
+            waits: Default::default(),
+            set_at: 0,
         };
         let Some(text) = path.and_then(|p| std::fs::read_to_string(p).ok()) else { return h };
         let from = now_s().saturating_sub(KEEP_S);
@@ -207,25 +243,21 @@ impl History {
         for e in &ends {
             h.note_built(e);
         }
+        h.set_at = h.seq;
         h
     }
 
-    /// The forecast's dependencies (its items' last: `Graph`), what each start and lease from now
-    /// on waited on is read from; what the last ones waited on that's finished since is kept.
-    pub fn set_waits(&mut self, graph: Graph) {
-        let old = std::mem::take(&mut self.waits);
-        let mut sets = HashMap::new();
-        let mut resolved = HashMap::new();
-        for (k, &i) in &old.index {
-            let r = old.of(i, &self.built, &mut sets);
-            if !r.is_empty() {
-                resolved.insert(k.clone(), r);
-            }
-        }
-        let index: HashMap<(String, String), u32> =
-            graph.keys.iter().enumerate().map(|(i, k)| (k.clone(), i as u32)).collect();
-        resolved.retain(|k, _| index.contains_key(k));
-        self.waits = Waits { graph, index, resolved };
+    /// What `next_waits` works from (taken under the coordinator's lock, worked out off it).
+    pub fn waits_basis(&self) -> WaitsBasis {
+        WaitsBasis { old: self.waits.clone(), built: self.built.clone() }
+    }
+
+    /// The forecast's dependencies (`WaitsBasis::next`), what each start and lease from now on
+    /// waited on is read from.
+    pub fn set_waits(&mut self, mut w: Waits) {
+        w.from = self.set_at;
+        self.waits = std::sync::Arc::new(w);
+        self.set_at = self.seq;
     }
 
     /// A finished job's targets, each its last job (`built`); those of jobs out of the week's
@@ -479,6 +511,11 @@ mod tests {
         assert_eq!(r.rows[1].paused_s, 400);
     }
 
+    fn set(h: &mut History, g: Graph) {
+        let w = h.waits_basis().next(g);
+        h.set_waits(w);
+    }
+
     #[test]
     fn a_start_names_what_it_waited_on() {
         let d = tempfile::tempdir().unwrap();
@@ -493,26 +530,32 @@ mod tests {
             })
         };
         // A z6 tile waits on its slope-deep (its own) and on its region's terrain (a set).
-        h.set_waits(Graph {
-            keys: vec![
-                k("terrain-hi", "6/1/1"),
-                k("terrain-hi", "6/1/2"),
-                k("slope-deep", "10/1/1"),
-                k("unit", "6/1/1"),
-            ],
-            deps: vec![vec![], vec![], vec![], vec![2]],
-            sets: vec![vec![], vec![], vec![], vec![0]],
-            groups: vec![vec![0, 1]],
-        });
+        set(
+            &mut h,
+            Graph {
+                keys: vec![
+                    k("terrain-hi", "6/1/1"),
+                    k("terrain-hi", "6/1/2"),
+                    k("slope-deep", "10/1/1"),
+                    k("unit", "6/1/1"),
+                ],
+                deps: vec![vec![], vec![], vec![], vec![2]],
+                sets: vec![vec![], vec![], vec![], vec![0]],
+                groups: vec![vec![0, 1]],
+            },
+        );
         let t1 = done(&mut h, "terrain-hi", &["6/1/1"]);
         let t2 = done(&mut h, "terrain-hi", &["6/1/2"]);
         // A later forecast: the terrain done is in none of its sets, still waited on.
-        h.set_waits(Graph {
-            keys: vec![k("slope-deep", "10/1/1"), k("unit", "6/1/1")],
-            deps: vec![vec![], vec![0]],
-            sets: vec![vec![], vec![]],
-            groups: vec![],
-        });
+        set(
+            &mut h,
+            Graph {
+                keys: vec![k("slope-deep", "10/1/1"), k("unit", "6/1/1")],
+                deps: vec![vec![], vec![0]],
+                sets: vec![vec![], vec![]],
+                groups: vec![],
+            },
+        );
         let s = done(&mut h, "slope-deep", &["10/1/1"]);
         // (The terrain step's last alone is named.)
         assert!(t1 < t2 && t2 < s);
@@ -528,5 +571,36 @@ mod tests {
         let old: Event = serde_json::from_str(r#"{"seq":1,"t":5,"kind":"start","step":"unit"}"#).unwrap();
         assert!(old.after.is_empty());
         assert!(!serde_json::to_string(&old).unwrap().contains("after"));
+    }
+
+    #[test]
+    fn a_finish_from_before_the_graph_is_not_named() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("history.jsonl");
+        let k = |s: &str, t: &str| (s.to_string(), t.to_string());
+        let ev_of = |kind: &str, step: &str, t: &str| Event {
+            step: Some(step.into()),
+            targets: vec![t.into()],
+            ..ev(kind, 0, "m4")
+        };
+        let graph = || Graph {
+            keys: vec![k("slope-deep", "10/1/1"), k("unit", "6/1/1")],
+            deps: vec![vec![], vec![0]],
+            sets: vec![vec![], vec![]],
+            groups: vec![],
+        };
+        // The slope's job of before the history was loaded (an earlier lead's: one since may have
+        // been another's) is not what the unit waits on, through a later graph too.
+        History::load(Some(&p)).add(ev_of("end", "slope-deep", "10/1/1"));
+        let mut h = History::load(Some(&p));
+        set(&mut h, graph());
+        set(&mut h, graph());
+        let s = h.add(ev_of("start", "unit", "6/1/1"));
+        assert!(h.since(s - 1, 1)[0].after.is_empty());
+        // Its job since is, through a later graph too.
+        let d = h.add(ev_of("end", "slope-deep", "10/1/1"));
+        set(&mut h, graph());
+        let s = h.add(ev_of("start", "unit", "6/1/1"));
+        assert_eq!(h.since(s - 1, 1)[0].after, [d]);
     }
 }

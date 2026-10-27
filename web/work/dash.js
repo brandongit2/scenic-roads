@@ -935,10 +935,10 @@ const HISTORY_S = 7 * 86400;
 // The jobs' ends from the history further back than the page's own events (`/work/history`, a
 // chunk at a time back to HISTORY_S ago: sums.js pastFrom), in the numbering they were read in.
 const past = { ends: [], epoch: undefined, first: null, asking: false };
-// Every job's end held (a lead's job's "end", a worker's "done" or "fail"), and each start or
-// lease naming what it waited on (sums.js pastRuns' `after`): those read back, then the page's own
-// events.
-const isHeld = (e) => e.kind === "end" || e.kind === "done" || e.kind === "fail" || e.after?.length > 0;
+// Every job's end held (a lead's job's "end", a worker's "done" or "fail"), every start (so an end
+// is matched to its own: sums.js pastRuns) and each lease naming what it waited on (pastRuns'
+// `after`): those read back, then the page's own events.
+const isHeld = (e) => e.kind === "end" || e.kind === "done" || e.kind === "fail" || e.kind === "start" || e.after?.length > 0;
 const endsHeld = () => past.ends.concat(events.filter(isHeld));
 // The oldest event the page holds (its past window's or the live poll's), null: none.
 const heldFrom = () => { let t = events[0]?.t ?? null; for (const e of past.ends) if (t == null || e.t < t) t = e.t; return t; };
@@ -966,8 +966,13 @@ async function loadPast(sw) {
 // What a job running now is, as a schedule's run: on its slot's lane, from its start to now, its
 // targets and what it waited on (`after`) as the history names them (sums.js targetsOf, startOf).
 const runningRuns = (m) => m.macs.flatMap((x) => jobsOf(x.status).map((j) => {
-  const run = { step: stepOf(j.id), id: j.id, started: j.started, mac: x.name !== m.a.host ? x.name : null };
-  return { lane: slotName(x.name, j.slot), step: run.step, from: j.started, until: m.now, n: j.live?.targets || (jobTarget(j) ? 1 : 0), targets: targetsOf(run, events), after: startOf(run, events)?.after || [], job: j, mac: x.name };
+  // (A helper's job is its lease, the one it holds of the step if one alone; its starts aren't the
+  // history's, so none is matched by time.)
+  const step = stepOf(j.id), lead = x.name === m.a.host;
+  const held = lead ? [] : (m.sw.leases || []).filter((l) => l.worker === x.name && l.step === step);
+  const run = held.length === 1 ? { step, lease: held[0].id, what: held[0].what } : { step, id: j.id, started: j.started, worker: slotName(x.name, j.slot) };
+  const st = lead || held.length === 1 ? startOf(run, events) : null;
+  return { lane: slotName(x.name, j.slot), step, from: j.started, until: m.now, n: j.live?.targets || (jobTarget(j) ? 1 : 0), targets: st?.targets || targetsOf(run, events), after: st?.after || [], job: j, mac: x.name };
 }));
 
 // The Jobs tab's cards (#659), as the mockup's (look/finalmock: dash.js showTip): a head (the

@@ -940,10 +940,14 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
 - **What a job waited on** (task #791): the lead's coordinator writes on each "start" and "lease"
   event `after`, the numbers of the "end"/"done" events of the jobs it waited on: for each step
   its targets wait on in the forecast's dependencies (`forecast::Forecast::graph`, handed to the
-  history after each forecast, `history::Waits`; what an earlier forecast's waited on and finished
-  since is kept), the one of that step that finished last. A few numbers an event (one per step
-  waited on, ~10 bytes each); events before it have none, and readers take none as nothing
-  known. The build page's schedule draws its arrows from it.
+  history after each forecast, `history::Waits`, worked out on the forecast's thread; what an
+  earlier forecast's waited on and finished since is kept), the one of that step that finished
+  last. Only jobs that finished after the forecast before the one naming the item are named
+  (after the history's load for the first): a job from before a restart, a lead change or a
+  `scenic redo` is never named, so a start then names fewer rather than an older job. A few
+  numbers an event (one per step waited on, ~10 bytes each: some 2 to 6 % on the lead's
+  history.jsonl, ~8,600 starts and leases in its 5.2 MB on 27 Oct); events before it have none,
+  and readers take none as nothing known. The build page's schedule draws its arrows from it.
 - **The history** is one file per writer, `state/coord/history/<day>/<member>.jsonl`, for the last
   `history::DAYS` (7) days, the days the page view reads (`pageview` takes the same constant). A
   day before them is packed as one tar, `state/coord/history-archive/<day>.tar` (members
