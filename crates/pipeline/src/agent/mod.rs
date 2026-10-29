@@ -2051,6 +2051,20 @@ impl Agent {
         root: &store::nasfs::NasRoot,
         waiting: &mut Vec<Waiting>,
     ) -> Option<&crate::coord::client::Client> {
+        // (A coordinator that last answered as another member than the term's lead: the lead
+        // before a handover, kept on as its Mac's broker, which answers every ask with nothing
+        // and never fails a request, so the contact was never read again. Task #815: the M4,
+        // paused through a handover, got no job for hours. Its contact read again.)
+        let lead = self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()).and_then(|v| v.lead.as_ref());
+        if let (Some(c), Some(l)) = (&self.client, lead) {
+            if let Some(m) = c.answered().and_then(|a| a.member).filter(|m| *m != l.member) {
+                eprintln!(
+                    "agent: the coordinator it asked answers as {m}, not term {}'s lead {}: reading the lead's contact again",
+                    l.term, l.host
+                );
+                self.client = None;
+            }
+        }
         if self.client.is_none() {
             match crate::coord::client::Client::from_nas(root, &self.host) {
                 Ok(Some(c)) => {
@@ -19020,6 +19034,81 @@ mod pool_tests {
         assert!(!fail_why(Outcome::Done, "", false).is_empty());
         assert!(!fail_why(Outcome::Failed, " ", true).trim().is_empty());
         assert_eq!(fail_why(Outcome::Failed, "boom", true), "boom");
+    }
+
+    /// Task #815: a member paused (or away) through a handover kept its way to the old lead's
+    /// coordinator, kept on there as a broker, which answers its asks with nothing and never fails
+    /// a request: resumed, it got no job until the lead came back to that Mac. The answer's member
+    /// isn't the term's lead: the contact is read again, and the new lead grants it work.
+    #[test]
+    fn a_member_asking_the_old_lead_after_a_handover_asks_the_new_one() {
+        let d = tempfile::tempdir().unwrap();
+        let nas = d.path().join("nas");
+        let root = store::nasfs::NasRoot::local_for_test(&nas);
+        std::fs::create_dir_all(nas.join("state")).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: true,
+        })
+        .unwrap();
+        let offer = |c: &crate::coord::Coordinator| {
+            c.offer(
+                "2026-10-28",
+                vec![crate::coord::Offer {
+                    step: "unit".into(),
+                    targets: vec![("6/12/25".into(), "k".into(), 100)],
+                    job: None,
+                }],
+            )
+        };
+        // Term 538's lead (the mini), which this member asked before it was paused.
+        let (old, old_port) = crate::coord::start_for_test(&d.path().join("old"), "mini", "");
+        (old.set_term(538), old.set_member(Some("m-mini")));
+        offer(&old);
+        a.client = Some(crate::coord::client::Client::at(
+            vec![format!("http://127.0.0.1:{old_port}")],
+            old.contact.token.clone(),
+            &a.host,
+        ));
+        let ask =
+            crate::coord::Ask { kind: "native".into(), can: vec!["unit".into()], mem_mb: 64_000, ..Default::default() };
+        // The handover, this member held meanwhile: the old lead a broker, term 539's lead (the M1)
+        // publishing its contact.
+        old.become_broker();
+        let (new, new_port) = crate::coord::start_for_test(&d.path().join("new"), "m1", "");
+        (new.set_term(539), new.set_member(Some("m-m1")));
+        new.publish(&root).unwrap();
+        offer(&new);
+        a.pool_seen = Some(PoolView {
+            member: "m-m4".into(),
+            role: pool::Role::Member,
+            gates: pool::Gates { term: 539, ..Default::default() },
+            members: Vec::new(),
+            heard: 3,
+            unacked: 0,
+            restart: None,
+            lead: Some(lead::View {
+                term: 539,
+                lead: Some(lead::LeadOf { term: 539, member: "m-m1".into(), host: "m1".into(), ..Default::default() }),
+                ..Default::default()
+            }),
+        });
+        // Resumed: the old lead's broker answers with nothing (what the M4 saw for hours).
+        let mut w = Vec::new();
+        assert!(a.client(&root, &mut w).unwrap().ask(&ask).unwrap().is_none(), "the broker grants nothing");
+        // Its answer named the mini: the contact read again, the M1 asked and granting.
+        let c = a.client(&root, &mut w).expect("the new lead's contact");
+        assert!(c.urls().iter().any(|u| u.ends_with(&format!(":{new_port}"))), "{:?}", c.urls());
+        let g = c.ask(&ask).unwrap().expect("granted by term 539's lead");
+        assert!(matches!(g.work, crate::coord::Granted::Job { ref step, .. } if step == "unit"));
+        assert!(new.held("unit").contains("6/12/25"));
+        // Kept while the lead answers as itself.
+        let urls = a.client(&root, &mut w).unwrap().urls();
+        assert_eq!(a.client(&root, &mut w).unwrap().urls(), urls);
     }
 
     #[test]

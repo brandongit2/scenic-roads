@@ -979,7 +979,9 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   note. Every call goes through `nasread`'s deadlines. `pubtimes::load_history` (`scenic
   status`, a lead's planned notes) reads a day's tar alongside its folder.
 - **The contact** `state/coordinator.json`: a stopping lead removes it only if it still names its
-  own addresses.
+  own addresses. A member reads it again when a request to the coordinator it has fails, and when
+  that coordinator last answered as another member than the current term's lead (`x-pool-member`):
+  an old lead's coordinator kept on as its broker answers every ask with nothing (task #815).
 - **Its port is free for the next:** children are started (`store::spawn`) only while no listener
   or connection is being made or closed, under one lock, so no child inherits the socket. clippy.toml's
   disallowed-methods, checked by publish.sh, keeps every start, listen and accept going through it.
