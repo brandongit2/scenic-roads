@@ -19114,7 +19114,10 @@ mod pool_tests {
         assert_eq!(a.client(&root, &mut w).unwrap().urls(), urls);
         // A view lagging the term (still naming term 538's lead): the newer lead's kept.
         if let Some(v) = a.pool_seen.as_mut().and_then(|p| p.lead.as_mut()) {
-            (v.term, v.lead) = (538, Some(lead::LeadOf { term: 538, member: "m-mini".into(), host: "mini".into(), ..Default::default() }));
+            (v.term, v.lead) = (
+                538,
+                Some(lead::LeadOf { term: 538, member: "m-mini".into(), host: "mini".into(), ..Default::default() }),
+            );
         }
         let c = a.client(&root, &mut w).unwrap();
         c.ask(&ask).unwrap();
