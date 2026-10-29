@@ -168,10 +168,14 @@ async function main() {
     history.replaceState(null, '', location.pathname + location.search + (rest ? `#${rest}` : ''));
   }
   const saved = fromSaved(prefs.load('state', null));
-  // Widths edited before they were a setting (kept in their own save): into the saved settings, once.
-  const oldWidths = prefs.load<number[][] | null>('roadWidths', null);
+  // Widths edited before they were a setting (this browser's own save, applied under every link):
+  // into the saved settings, written at once (nothing else may save before the save is dropped).
+  const oldWidths = BENCH ? null : prefs.load<number[][] | null>('roadWidths', null);
   if (oldWidths) {
-    if (!(prefs.load<Record<string, unknown> | null>('state', null)?.roadLook)) saved.roadLook = cleanRoadLook({ ...saved.roadLook, widths: oldWidths });
+    if (!(prefs.load<Record<string, unknown> | null>('state', null)?.roadLook)) {
+      saved.roadLook = cleanRoadLook({ ...saved.roadLook, widths: oldWidths });
+      prefs.save('state', { ...saved, selected: null });
+    }
     prefs.save('roadWidths', null);
   }
   // The profile in use: the link's (one it names that's gone: the default, said), else the last
@@ -186,6 +190,8 @@ async function main() {
   const linkBase = hasLink && !linkPid ? defaults : fromProfile(listing.profiles.find((p) => p.id === activePid)?.settings ?? {});
   // (The self-benchmark, `#bench` (selfbench.ts): its view, as a `#map=` link.)
   const linked = BENCH ? fromHash(benchHash(), hasBuildings) : hasLink ? { ...fromHash(location.hash, hasBuildings, linkBase), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
+  // (A link without widths of its own, opened the session the widths moved in: they apply, as before.)
+  if (oldWidths && hasLink && !/(^#|&)wd=/.test(location.hash)) linked.roadLook = cleanRoadLook({ ...linked.roadLook, widths: oldWidths });
   // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.
   const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings)) : CMP ? cmpState(fromHash(location.hash, hasBuildings)) : linked);
   const profiles = new Profiles(store, listing, activePid, () => hasBuildings);
