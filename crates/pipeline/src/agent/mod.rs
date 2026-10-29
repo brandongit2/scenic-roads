@@ -14391,12 +14391,11 @@ mod tests {
         put(&c.join("chm10/a.tif"), &crate::whole::testfiles::tiff(false));
         put(&copy, &[1; 1000]);
         let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, false);
-        // Work left: the caches can't be cleared now, and say why.
+        // Work left: nothing stops a clear (task #814), and nothing is freed unasked.
         *a.forecast.borrow_mut() = Some(forecast_now(false));
-        assert!(a
-            .tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)))
-            .is_some_and(|w| w.starts_with("the build has work left")));
-        // The build done, with or without a job having run here since: nothing is freed, none
+        assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
+        assert!(a.caches_task.is_none() && copy.exists());
+        // Nothing left, with or without a job having run here since: nothing is freed, none
         // started (no room target: nothing to free toward), whatever is free.
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         a.worked("unit 6/1/1");
