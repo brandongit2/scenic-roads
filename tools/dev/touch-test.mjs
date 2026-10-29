@@ -36,6 +36,7 @@
 //   --scheme S        dark or light (prefers-color-scheme; default the system's)
 //   --agent H:P       the agent read (default 127.0.0.1:8090; the lead's to see the NAS tab filled)
 //   --only-map        only the map's checks (its solo, its age controls) and screenshots
+//   --solo STEP       the step the map's checks solo (default: the one with the most tiles built)
 //
 // The page comes from a read-only server on its own port (8097): web/work as /work/, and only the
 // reading calls forwarded to this Mac's agent (127.0.0.1:8090); everything else is refused, so the
@@ -276,8 +277,11 @@ async function run() {
       await show("overview");
       const drawn = await until(`!!${MAP}?.width && !!document.querySelector("#mappane .wmap-steps .lg.step")`, 20000);
       check("map: in its own panel beside the tabs, no tabs over it, no fade setting", drawn >= 0 && !(await js(`!!document.querySelector(".maptabs") || /Fade completed/.test(document.getElementById("mappane").textContent) || !!document.querySelector('.panel [data-tab] canvas.wmap, .panel canvas.wmap')`)));
-      const pub = await js(`[...document.querySelectorAll("#mappane .wmap-legend button.lg")].find((b) => b.querySelector("i.tl.published"))?.getAttribute("aria-pressed")`);
-      check("map: published tiles not shown at first", pub === "false", `published's toggle pressed: ${pub}`);
+      // (#833: published tiles drawn only for a solo: the legend counts them, no toggle.)
+      const pub = await js(`[!![...document.querySelectorAll("#mappane .wmap-legend button.lg")].find((b) => b.querySelector("i.tl.published")), +${MAP}.dataset.painted]`);
+      check("map: published tiles not drawn without a solo", !pub[0] && pub[1] === 0, `published toggle: ${pub[0]}, painted ${pub[1]}`);
+      await js(`document.getElementById("mappane").scrollTo(0, 0); window.scrollTo(0, 0)`);
+      await shot("chrome-nosolo");
       // (The catalogues read: the age controls' marks.)
       // (Read oldest first: waited for until a mark is in the range or the reading's done, 3 min at most.)
       await until(`document.querySelectorAll("#mappane .cat-tl g.mk").length > 0 || /catalogues? kept/.test(document.querySelector(".cat-status")?.textContent || "") && !/reading/.test(document.querySelector(".cat-status").textContent)`, 180000);
@@ -286,7 +290,8 @@ async function run() {
       // (The step with the most tiles built that the legend names: its published tiles painted.)
       const built = await js(`fetch("/work/built", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((v) => Object.entries(v.steps || {}).sort((p, q) => q[1].length - p[1].length).map(([k, t]) => [k, t.length]), () => [])`);
       const named = await js(`[...document.querySelectorAll("#mappane .wmap-steps .lg.step")].map((b) => b.dataset.name)`);
-      const [step, nBuilt] = built.find(([k]) => named.includes(k)) || [named[0], 0];
+      const want = arg("--solo", null);
+      const [step, nBuilt] = (want && named.includes(want) ? built.find(([k]) => k === want) || [want, 0] : null) || built.find(([k]) => named.includes(k)) || [named[0], 0];
       const btn = (q = "") => js(`(() => { const b = [...document.querySelectorAll("#mappane .wmap-steps .lg.step")].find((e) => e.dataset.name === ${JSON.stringify(step)}); if (!b) return null; ${q} b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
       const soloed = `(document.querySelector("#mappane .wmap-lgs")?.classList.contains("soloing") && [...document.querySelectorAll("#mappane .wmap-steps .lg.step.soloed")].map((b) => b.dataset.name).join() === ${JSON.stringify(step)})`;
       const painted = () => js(`+${MAP}.dataset.painted`);
@@ -309,7 +314,7 @@ async function run() {
       await hold();
       const held = await until(`${soloed} && [...document.querySelectorAll("#mappane .wmap-steps .lg.step")].find((e) => e.dataset.name === ${JSON.stringify(step)})?.getAttribute("aria-pressed") === "true"`, 3000);
       await still();
-      check("map: a click or tap holds a step's solo", held >= 0 && (nBuilt === 0 || (await painted()) > 0), `${step}: ${await painted()} painted`);
+      check("map: a click or tap holds a step's solo", held >= 0 && (nBuilt === 0 || (await painted()) > 0), `${step}: ${await painted()} painted, of them ${await js(`+${MAP}.dataset.queuedWas`)} queued tiles published before`);
       await js(`document.getElementById("mappane").scrollTo(0, 0); window.scrollTo(0, 0)`);
       await shot("chrome-solo");
       { const { data } = await page.send("Page.captureScreenshot", { format: "png" }); writeFileSync(join(OUT, "chrome-solo-view.png"), Buffer.from(data, "base64")); }

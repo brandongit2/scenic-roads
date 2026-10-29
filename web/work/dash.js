@@ -371,11 +371,11 @@ function mapRuns(m) {
   return runs;
 }
 // The map's view (#615, #627, #685), this browser's own (ctx.store "mapView"): the tiles and the
-// regions by state (`tiles`, `regions`: those toggled off in the legend, false; published tiles off
-// at first), one pool member's, the tile areas toggled off in the legend (`offAreas`: sums.js
+// regions by state (`tiles`, `regions`: those toggled off in the legend, false; published tiles
+// aren't one: drawn only for a solo, #833), one pool member's, the tile areas toggled off in the legend (`offAreas`: sums.js
 // AREAS' names), and the step or stage a click holds soloed (`solo`: {step} or {stage}); the one
 // the pointer is on solos it meanwhile (`hoverSolo`).
-const MAP_F = { tiles: { published: false }, regions: {}, member: "", offAreas: [], solo: null };
+const MAP_F = { tiles: {}, regions: {}, member: "", offAreas: [], solo: null };
 let mapF = null, hoverSolo = null;
 const mapFilters = () => mapF || (mapF = { ...MAP_F, ...(ctx.store.get("mapView", {}) || {}) });
 function setMapFilter(k, v) { mapFilters()[k] = v; ctx.store.set("mapView", mapF); render(); }
@@ -462,7 +462,7 @@ function mapData(m) {
     return c;
   };
   const counted = (fl, keep) => {
-    const rest = keep([runKeys, queued, done, pubAt, hostsKey, fl.member], () => { const t = mapTiles(running, queued, done, fl, { pubAt, macOf }); return count([t.queued, t.finished]); });
+    const rest = keep([runKeys, queued, done, pubAt, hostsKey, fl.member], () => { const t = mapTiles(running, queued, done, fl, { pubAt, macOf }); return count([t.queued, t.finished, t.published]); });
     return count([mapTiles(running, NONE, NONE, fl, { pubAt, macOf }).running], structuredClone(rest));
   };
   const whole = counted({}, keepWhole);
@@ -509,9 +509,10 @@ function steadyRunning(next) {
   return runningLast;
 }
 
-// What the map draws now (sums.js mapTiles): the view's tiles; a solo's published tiles painted
-// by when a catalogue last published each (the age controls' range, catalogues.js); a catalogue's
-// tiles lit; with each tile's card and the stack's.
+// What the map draws now (sums.js mapTiles): the view's tiles, the published ones only for a solo
+// (#833); a solo's published tiles, and its queued ones built before (`built`) that a catalogue
+// kept names (published before), painted by when a catalogue last published each (the age controls' range, catalogues.js); a catalogue's tiles lit;
+// with each tile's card and the stack's.
 let ageLit = null; // the age controls' lit tiles in the last view (a catalogue's hovered)
 // (The queued, finished and published tiles and their cards kept while their inputs and the
 // running tiles' keys are; the running tiles' made each time.)
@@ -523,13 +524,14 @@ function mapView(md) {
   const opts = { pubAt: md.pubAt, macOf: md.macOf, solo };
   const rest = keepView([md.runKeys, md.queued, md.done, md.pubAt, md.hostsKey, JSON.stringify([fl, solo])], () => mapTiles(md.running, md.queued, md.done, fl, opts));
   const running = mapTiles(md.running, NONE, NONE, fl, opts).running;
-  // (A solo's published tiles painted by when: none without one.)
-  const painted = !rest.published.size ? NONE : keepPaint([rest.published, age.from, age.to, age.hide, age.at], () => {
+  // (A solo's published tiles and queued ones published before painted by when: none without one.)
+  const painted = !solo ? NONE : keepPaint([rest.published, rest.queued, age.from, age.to, age.hide, age.at], () => {
     const when = new Map();
     for (const [k, v] of rest.published) when.set(k, { t: age.at(tileOf(k))?.t ?? -Infinity, v });
+    for (const [k, v] of rest.queued) { const p = v.built && age.at(tileOf(k)); if (p) when.set(k, { t: p.t, v }); }
     return agePaint(when, age.from, age.to, age.hide).paint;
   });
-  restCards = keepRestCards([rest, painted], () => tileCards(rest, painted, age, ["queued", "finished", "published"]));
+  restCards = keepRestCards([rest, painted], () => tileCards(rest, painted, age, solo ? ["queued", "finished", "published"] : ["queued", "finished"]));
   runCards = tileCards({ running }, painted, age, ["running"]);
   const regionKind = (st) => (st === "done" ? "on" : st);
   ageLit = age.lit;
@@ -580,8 +582,9 @@ function tileCards(t, painted, age, kinds) {
     ], worldMap.minimap(key)));
   }
   for (const [key, d] of kinds.includes("queued") ? t.queued : []) {
-    cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "queued"),
-      stats: [[`≈ ${clock(d.at)}`, "to begin"], [d.mac, "on"]],
+    const p = d.built ? age.at(tileOf(key)) : null;
+    cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, p ? "queued, published before" : "queued"),
+      stats: [[`≈ ${clock(d.at)}`, "to begin"], [d.mac, "on"], ...(p ? [[ago(cardNow(), p.t), `last published (catalogue ${p.n})`]] : [])],
       bar: { frac: 0, label: `to come at ≈ ${clock(d.at)} on ${d.mac}` },
       foot: `the forecast's · ${key}` }, [
       ["stage", S.stage(d.step)],
@@ -645,7 +648,9 @@ function mapLegend(md) {
   const sw = (g) => h("i", { style: { background: stageColour(g), borderColor: "transparent" } });
   return [h("div", "wmap-legend small dim",
     regs.length ? [byState("regions", "on", "rg on", `${plural(count("on"), "region")} on the map`), byState("regions", "building", "rg building", `${plural(count("building"), "region")} building`), byState("regions", "queued", "rg queued", `${plural(count("queued"), "region")} to come`)] : h("span", null, drawn.making ? `Waiting: ${drawn.making}…` : "No regions' outlines from this Mac yet"),
-    TILE_STATES.map((st) => byState("tiles", st, `tl ${st}`, `${plural(counts.tile[st], "tile")} ${TILE_WORDS[st]}`)),
+    TILE_STATES.map((st) => st === "published"
+      ? h("span", { class: "lg", title: "Drawn only with a step or stage soloed, by when" }, h("i", `tl ${st}`), `${plural(counts.tile[st], "tile")} ${TILE_WORDS[st]}`)
+      : byState("tiles", st, `tl ${st}`, `${plural(counts.tile[st], "tile")} ${TILE_WORDS[st]}`)),
     world.length ? h("span", null, `whole world: ${world.map((r) => `${r.step} (${r.mac})`).join(", ")}`) : null,
     h("span", "hint", "drag to move · pinch, double-click or +/− to zoom")),
   h("div", { class: "wmap-legend wmap-areas small dim", role: "group", "aria-label": "Tile areas" }, h("span", "lgh", "tile areas"),
@@ -655,7 +660,7 @@ function mapLegend(md) {
     groups.map(({ stage, steps }) => h("span", { class: "lgg", "data-stage": stage },
       solo({ stage }, sw(stage), h("b", null, stage || "–"), `${stage}'s steps alone on the map, their published tiles by when (a click holds it)`, "stage", stage),
       steps.map((id) => solo({ step: id }, sw(stage), `${id} ${n(counts.step[id] || 0)}`, `${id} alone on the map, its published tiles by when (a click holds it)`, "step", id))))),
-  h("div", "wmap-legend small dim", h("span", null, `counts are tiles (a step's: to build or publish) · queued: faint, dotted · running: outlined, filled as far as done · completed, not yet published: dashed · published: solid · a step soloed: its published tiles by when, below · steps at one spot: stripes · outline weight: the tile area`)),
+  h("div", "wmap-legend small dim", h("span", null, `counts are tiles (a step's: to build or publish) · queued: faint, dotted · running: outlined, filled as far as done · completed, not yet published: dashed · published: drawn only for a step soloed, by when (below); its queued tiles published before: the same, fainter, dotted · steps at one spot: stripes · outline weight: the tile area`)),
   mapFilterBar(md.m)];
 }
 // The member filter under the map: a member's tiles alone (those it ran, the history's ends; runs

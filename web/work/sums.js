@@ -307,11 +307,11 @@ export const finishedState = (d, pubAt) => {
 // The world map's tiles (#615, #627, #685): `running`, `queued` and `done` (runningTiles',
 // queuedTiles', finishedTiles') as the map's view keeps them, each given its `state`; a tile in
 // more than one is the running one, else the queued one (built before, to be built again: its
-// published tile not drawn). Kept: the states shown (`f.tiles[state] === false`: hidden), the pool
-// member `f.member` (the Mac that ran, runs or will run it: `macOf(worker)` its host), the tile
-// areas not toggled off (`f.offAreas`: AREAS' names), and with `solo` (step ids) those steps'
-// alone, their published tiles apart in `published` whatever `f.tiles` says. Returns {running,
-// queued, finished, published}, new Maps.
+// finished tile not drawn, the queued one `built: true`: built before, #833). Kept: the states shown (`f.tiles[state] === false`: hidden), the pool member
+// `f.member` (the Mac that ran, runs or will run it: `macOf(worker)` its host), the tile areas not
+// toggled off (`f.offAreas`: AREAS' names), and with `solo` (step ids) those steps' alone. The
+// published tiles are apart in `published` (drawn only for a solo, #833), whatever `f.tiles` says.
+// Returns {running, queued, finished, published}, new Maps.
 export function mapTiles(running, queued, done, f, { pubAt = null, macOf = (w) => w, solo = null } = {}) {
   const shown = (st) => f.tiles?.[st] !== false;
   const keep = (key, step, who) => (!solo || solo.includes(step)) && !f.offAreas?.includes(areaOf(key)) && (!f.member || (who != null && macOf(who) === f.member));
@@ -320,11 +320,14 @@ export function mapTiles(running, queued, done, f, { pubAt = null, macOf = (w) =
     const state = runningState(r);
     if (shown(state) && keep(k, r.step, r.run?.mac)) out.running.set(k, { ...r, state });
   }
-  for (const [k, q] of queued) if (!running.has(k) && shown("queued") && keep(k, q.step, q.mac)) out.queued.set(k, { ...q, state: "queued" });
+  for (const [k, q] of queued) {
+    if (running.has(k) || !shown("queued") || !keep(k, q.step, q.mac)) continue;
+    out.queued.set(k, done.has(k) ? { ...q, state: "queued", built: true } : { ...q, state: "queued" });
+  }
   for (const [k, t] of done) {
     const state = finishedState(t, pubAt);
     if (running.has(k) || queued.has(k) || !keep(k, t.step, t.worker)) continue;
-    if (solo && state === "published") out.published.set(k, { ...t, state });
+    if (state === "published") out.published.set(k, { ...t, state });
     else if (shown(state)) out.finished.set(k, { ...t, state });
   }
   return out;

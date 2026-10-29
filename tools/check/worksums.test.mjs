@@ -60,7 +60,8 @@ test('map: every tile the keys record stays finished, whatever the window and ev
   // catalogue's time, else it can't be told and isn't claimed.)
   const held = finishedTiles(ends, 5000, built, 900);
   assert.equal(held.get('terrain-deep 10/100/100').before, 900);
-  const fin = mapTiles(new Map(), new Map(), held, {}, { pubAt: 8000 }).finished;
+  const both = (v) => new Map([...v.finished, ...v.published]);
+  const fin = both(mapTiles(new Map(), new Map(), held, {}, { pubAt: 8000 }));
   assert.deepEqual([...fin].map(([k, v]) => [k.split(' ')[1], v.state]).sort(), [['10/100/100', 'published'], ['10/257/342', 'published'], ['10/257/343', 'published'], ['10/264/360', 'completed']]);
   assert.equal(mapTiles(new Map(), new Map(), finishedTiles(ends, 5000, built, 8500), {}, { pubAt: 8000 }).finished.get('terrain-deep 10/100/100').state, 'completed', 'held from after the catalogue');
   assert.equal(mapTiles(new Map(), new Map(), f, {}, { pubAt: 8000 }).finished.get('terrain-deep 10/100/100').state, 'completed', 'nothing held');
@@ -84,19 +85,20 @@ test('map: the view keeps tiles by state, member, tile area and solo (#615, #627
   const states = (v) => [...v.running, ...v.queued, ...v.finished, ...v.published].map(([k, x]) => `${k}:${x.state}`).sort();
   // (Running first, then the queue (built before, to be built again: its finished tile not drawn), then finished.)
   assert.deepEqual(states(mapTiles(running, queued, done, {}, { pubAt: 200 })), ['pack 3/0/0:published', 'slope 6/1/3:completed', 'unit 6/1/1:queued', 'unit 6/1/2:progress', 'unit 6/2/2:queued', 'unit 6/3/3:queued', 'unit 6/4/4:published']);
-  // (Published off, as the page starts; queued off.)
-  assert.deepEqual(keys(mapTiles(running, queued, done, { tiles: { published: false } }, { pubAt: 200 })).finished, []);
-  assert.deepEqual(keys(mapTiles(running, queued, done, { tiles: { queued: false } }, { pubAt: 200 })), { running: ['slope 6/1/3', 'unit 6/1/2'], queued: [], finished: ['pack 3/0/0', 'unit 6/4/4'], published: [] });
+  // (Published tiles always apart, drawn only for a solo (#833); queued off.)
+  assert.deepEqual(keys(mapTiles(running, queued, done, { tiles: { queued: false } }, { pubAt: 200 })), { running: ['slope 6/1/3', 'unit 6/1/2'], queued: [], finished: [], published: ['pack 3/0/0', 'unit 6/4/4'] });
+  // (A queued tile built before, whenever, published or not: `built` (#833, the page then asks the catalogues when it was last published); one never built, not.)
+  for (const pubAt of [400, 200, null]) assert.deepEqual([...mapTiles(running, queued, done, {}, { pubAt }).queued].map(([k, v]) => `${k}:${!!v.built}`).sort(), ['unit 6/2/2:true', 'unit 6/3/3:false']);
   // (No catalogue yet: nothing published, every finish completed.)
   assert.deepEqual(states(mapTiles(new Map(), new Map(), done, {})), ['pack 3/0/0:completed', 'unit 6/1/2:completed', 'unit 6/2/2:completed', 'unit 6/4/4:completed']);
   const macOf = (w) => w.split(' #')[0];
-  assert.deepEqual(keys(mapTiles(running, queued, done, { member: 'B' }, { macOf, pubAt: 200 })), { running: ['slope 6/1/3'], queued: ['unit 6/3/3'], finished: ['pack 3/0/0'], published: [] });
+  assert.deepEqual(keys(mapTiles(running, queued, done, { member: 'B' }, { macOf, pubAt: 200 })), { running: ['slope 6/1/3'], queued: ['unit 6/3/3'], finished: [], published: ['pack 3/0/0'] });
   // (A solo: its steps alone, its published tiles apart whatever the states shown.)
   const solo = mapTiles(running, queued, done, { tiles: { published: false } }, { pubAt: 200, solo: ['unit'] });
   assert.deepEqual(keys(solo), { running: ['unit 6/1/1', 'unit 6/1/2'], queued: ['unit 6/2/2', 'unit 6/3/3'], finished: [], published: ['unit 6/4/4'] });
   assert.deepEqual(keys(mapTiles(running, queued, done, {}, { pubAt: 200, solo: ['pack'] })), { running: [], queued: [], finished: [], published: ['pack 3/0/0'] });
   // (Tile areas, by the packs' zooms: hi off hides every z6 tile, lo off every z3.)
-  assert.deepEqual(keys(mapTiles(running, queued, done, { offAreas: ['hi'] }, { pubAt: 200 })), { running: [], queued: [], finished: ['pack 3/0/0'], published: [] });
+  assert.deepEqual(keys(mapTiles(running, queued, done, { offAreas: ['hi'] }, { pubAt: 200 })), { running: [], queued: [], finished: [], published: ['pack 3/0/0'] });
   assert.deepEqual(['0/0/0', '3/1/1', '6/1/1', '10/1/1', 'terrain-deep 10/5/5', '8/1/1'].map(areaOf), ['root', 'lo', 'hi', 'deep', 'deep', 'z8']);
   // (A root step's worldwide target is the root tile; others' as they are.)
   assert.deepEqual([areaTargets('terrain-root', ['terrain-root']), areaTargets('slope-root', []), areaTargets('unit', ['6/1/1'])], [['0/0/0'], ['0/0/0'], ['6/1/1']]);

@@ -4,7 +4,8 @@
 // how far they are, the queue (task #685: every tile to build, faint under a dotted outline), each
 // running job's target tiles in its stage's colour, filled as far as they're done, and the
 // finished tiles (each fading in as it comes; completed but not in a catalogue yet pale under a
-// dashed outline, published solid); a soloed step's published tiles painted by age (`paint`), and
+// dashed outline); a soloed step's published tiles painted by age (`paint`; none drawn without a
+// solo, #833), its queued ones published before the same but fainter under their dotted outline, and
 // a catalogue's tiles lit (`lit`). Steps at one spot share its square as diagonal stripes, each
 // step's colour in turn.
 // Kept across the page's renders, drawn again when its data changes, as it's moved or zoomed, and
@@ -34,7 +35,7 @@ const regionPaths = new WeakMap();
  * `update(data)` with {countries (rings), lakes (rings), regions [{id, fill, edge, state}], running (Map key →
  * {step, frac, current, state}), finished (Map key → {t, step, state}), queued (Map key → {step,
  * at, mac, state "queued"}: sums.js mapTiles), colour(step) (a CSS colour, var() allowed),
- * paint (Map key → colour: a soloed step's published tiles by age), lit ("z/x/y"
+ * paint (Map key → colour: a soloed step's published tiles, and its queued ones published before, by age), lit ("z/x/y"
  * keys in litColour: a catalogue's, its z6 tiles filled)}, `minimap(key)` a canvas of a tile and
  * around it; `pick(keys, x, y)` called on a click or tap (keys: the stack there, none off
  * everything). Every key but lit's "<step> z/x/y". */
@@ -238,6 +239,7 @@ export function createMap({ pick = () => {} } = {}) {
     // edges over them, to tell where a tile is.
     if (data.paint?.size) {
       for (const [key, col] of data.paint) {
+        if (data.queued.has(key)) continue; // (drawn with the queue, fainter)
         const [bx, by, s] = tileBox(tileOf(key));
         if (bx > x1 || by > y1 || bx + s < x0 || by + s < y0) continue;
         const [i, n] = stripe.get(key) || [0, 1];
@@ -269,8 +271,12 @@ export function createMap({ pick = () => {} } = {}) {
       stripes(bx, by, s, i, n);
       c.fillStyle = col;
       if (later) {
-        // Queued: barely filled under a dotted outline, behind what's running or done.
-        c.globalAlpha = 0.07 * f * low;
+        // Queued: barely filled under a dotted outline, behind what's running or done; one
+        // published before (a solo's: `paint` has it), its age's colour, fainter than a published
+        // tile's, under the same outline (#833).
+        const aged = data.paint?.get(key);
+        if (aged) c.fillStyle = aged;
+        c.globalAlpha = (aged ? 0.4 : 0.07) * f * low;
         c.fillRect(bx, by, s, s);
         outlines.push([bx, by, s, col, 0.5 * f * low, px * 0.9 * aw, [1.5 * px, 2 * px]]);
       } else if (run) {
@@ -338,8 +344,9 @@ export function createMap({ pick = () => {} } = {}) {
     if (base.width !== canvas.width || base.height !== canvas.height) { base.width = canvas.width; base.height = canvas.height; }
     canvas.dataset.outlined = scene(base.getContext("2d"), view, size.w, size.h, dpr, held ? [...hover, held] : hover, false);
     withBase();
-    // (For the touch test: the tiles painted by age, the region the page lights, whether any tile still fades in.)
+    // (For the touch test: the tiles painted by age, the queued ones published before, the region the page lights, whether any tile still fades in.)
     canvas.dataset.painted = data.paint?.size || 0;
+    canvas.dataset.queuedWas = data.paint?.size ? [...data.queued.keys()].filter((k) => data.paint.has(k)).length : 0;
     canvas.dataset.held = held || "";
     // (Still fading in: drawn again next frame.)
     const t = performance.now();
