@@ -4683,10 +4683,9 @@ impl Agent {
         }
         let built = self.built.clone();
         let mut checklist = self.progress.as_ref().map(|(_, c)| c.clone()).unwrap_or_default();
-        // (Read each loop: a helper's status changes between plans. Not this Mac's own, from
-        // while it was a member: it leads now, and that file goes stale by itself.)
+        // (Read each loop: a helper's status changes between plans.)
         let helpers: Vec<Status> = match (&root, self.o.helper) {
-            (Some(r), false) => helpers(r).into_iter().filter(|h| h.host != self.host).collect(),
+            (Some(r), false) => helpers(r, &self.host),
             _ => Vec::new(),
         };
         self.note_helpers_caches(&helpers);
@@ -8220,7 +8219,7 @@ impl Agent {
         // Each worker's speed against the lead's, from the history (half until it's measured):
         // every one that measured a cost or did shared work, asleep or not (its costs are put at the
         // lead's pace by it); the members heard from lately are the machines.
-        let helpers: Vec<Status> = helpers(root);
+        let helpers: Vec<Status> = helpers(root, &self.host);
         let mut names: BTreeSet<String> = helpers.iter().map(|h| h.host.clone()).collect();
         names.extend(costs.values().filter_map(|c| c.worker.clone()));
         names.extend(
@@ -11591,14 +11590,17 @@ fn expect_same(w: &build::Work, done: &build::Keys) -> Vec<String> {
         .collect()
 }
 
-/// The helpers building now: `state/helpers/<host>.json` beaten within ten minutes.
-fn helpers(root: &store::nasfs::NasRoot) -> Vec<Status> {
+/// The helpers building now: `state/helpers/<host>.json` beaten within ten minutes, but `lead`'s
+/// own. That one is from while it was a member and goes stale by itself for up to ten minutes after
+/// it takes the lead (task #816: the forecast listed its slots twice, as the lead's and as a
+/// member's, and `forecast::runs_of` numbered past the lanes).
+fn helpers(root: &store::nasfs::NasRoot, lead: &str) -> Vec<Status> {
     let Ok(rd) = root.join("state/helpers").read_dir() else { return Vec::new() };
     let mut out: Vec<Status> = rd
         .into_iter()
         .filter(|e| e.path.extension() == Some("json"))
         .filter_map(|e| e.path.read().ok().and_then(|b| serde_json::from_slice::<Status>(&b).ok()))
-        .filter(|h| now_s().saturating_sub(h.beat) < 600)
+        .filter(|h| h.host != lead && now_s().saturating_sub(h.beat) < 600)
         .map(|h| Status { regions: Vec::new(), checklist: Vec::new(), built: BTreeMap::new(), recent: Vec::new(), ..h })
         .collect();
     out.sort_by(|a, b| a.host.cmp(&b.host));
@@ -18527,6 +18529,43 @@ mod pool_tests {
         let back = forecast::Record::from_bytes(&b).unwrap();
         assert!(!back.input.machines.is_empty());
         assert_eq!(back.forecast(), fc);
+    }
+
+    #[test]
+    fn a_new_lead_s_own_member_status_gives_it_no_second_lanes() {
+        // (Task #816: just after a handover the lead's own state/helpers file, from while it was a
+        // member, still beats fresh; read as a member's, its slots were listed twice under the
+        // same names, the lanes kept one set, and forecast::runs_of numbered runs past them: the
+        // forecast thread panicked "index out of bounds".)
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let mut a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
+        a.mem.ramp.slots = 3;
+        std::fs::create_dir_all(r.join("state/helpers")).unwrap();
+        for host in [a.host.clone(), "busy-mac".to_string()] {
+            let st = Status { host: host.clone(), beat: now_s(), ..Default::default() };
+            std::fs::write(r.join(format!("state/helpers/{host}.json")), serde_json::to_vec(&st).unwrap()).unwrap();
+        }
+        let work: Vec<build::Work> = (0..200)
+            .map(|i| build::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
+            .collect();
+        let rec = a.forecast_record(
+            &store::nasfs::NasRoot::local_for_test(&r),
+            &[],
+            &[],
+            &work,
+            Default::default(),
+            None,
+            &|_, _| 0,
+        );
+        let names: Vec<&str> = rec.input.machines.iter().map(|m| m.name.as_str()).collect();
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "each lane once: {names:?}");
+        assert!(rec.input.machines.iter().filter(|m| m.name == a.host).all(|m| m.lead_steps));
+        let fc = rec.forecast();
+        assert_eq!(fc.runs.targets.len(), fc.lanes.values().map(Vec::len).sum::<usize>());
     }
 
     #[test]
