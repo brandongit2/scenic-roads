@@ -222,6 +222,14 @@ pub struct Listed {
     /// shows it greyed, with no Download button).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+    /// Its land and water (km²) and its country, from its accepted geometry (`Sized`); none until
+    /// this Mac has worked them out, or for a region the accepted version doesn't have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub land_km2: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub water_km2: Option<f64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub country: String,
 }
 
 impl Listed {
@@ -234,6 +242,9 @@ impl Listed {
             state: String::new(),
             held: Vec::new(),
             disabled: r.disabled,
+            land_km2: None,
+            water_km2: None,
+            country: String::new(),
         }
     }
 }
@@ -292,6 +303,7 @@ pub fn spawn_syncer(s: S) {
         .name("regions".into())
         .spawn(move || loop {
             sync_accepted(&s);
+            size_regions(&s);
             std::thread::sleep(std::time::Duration::from_secs(60));
         })
         .ok();
@@ -313,6 +325,7 @@ pub async fn list(State(s): State<S>) -> Response {
                     }
                 };
                 states(&s2, &pool, &mut ok);
+                sizes_into(&s2, &mut ok);
                 if let Ok(b) = serde_json::to_vec(&ok) {
                     let tmp = cache.with_extension("json.tmp");
                     if std::fs::write(&tmp, b).is_ok() {
@@ -324,8 +337,9 @@ pub async fn list(State(s): State<S>) -> Response {
             }
             None => {
                 // Away: the last list read.
-                let last: Vec<Listed> =
+                let mut last: Vec<Listed> =
                     std::fs::read(&cache).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+                sizes_into(&s2, &mut last);
                 let t = tree(&s2, &last);
                 Json(json!({ "regions": last, "bad": [], "offline": true, "tree": t })).into_response()
             }
@@ -333,6 +347,118 @@ pub async fn list(State(s): State<S>) -> Response {
     })
     .await
     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+// ---- each region's land and water ---------------------------------------------------------------
+
+/// A region's land and water (km², on the authalic sphere: `geom::area_km2`) and its country (its
+/// first land shape's ISO 3166-1 code, else its first shape's; "" when none is known), from its
+/// stored geometry (pipeline::inputs::regions::stored: water shapes are those marked `water`, the
+/// rest land).
+#[derive(serde::Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Sized {
+    pub land: f64,
+    pub water: f64,
+    #[serde(default)]
+    pub country: String,
+}
+
+pub fn sized(g: &pipeline::inputs::regions::stored::Geometry) -> Sized {
+    use pipeline::inputs::regions::geom::{area_km2, Area};
+    let (mut land, mut water) = (0.0, 0.0);
+    for sh in &g.shapes {
+        let rings: Vec<Vec<[i64; 2]>> =
+            sh.rings.iter().map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect()).collect();
+        let a = area_km2(&Area::from_rings(&rings)).abs();
+        if sh.water {
+            water += a;
+        } else {
+            land += a;
+        }
+    }
+    let country = g
+        .shapes
+        .iter()
+        .filter(|s| !s.water)
+        .chain(g.shapes.iter())
+        .map(|s| s.country.clone())
+        .find(|c| !c.is_empty())
+        .unwrap_or_default();
+    Sized { land: land.round(), water: water.round(), country }
+}
+
+/// Where this Mac keeps the regions' sizes, by geometry content name (a name is its content: a
+/// size never goes stale, only unused).
+fn sizes_path(s: &crate::AppState) -> std::path::PathBuf {
+    s.data.home.join("region-areas.json")
+}
+
+fn read_sizes(s: &crate::AppState) -> std::collections::BTreeMap<String, Sized> {
+    std::fs::read(sizes_path(s)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// The accepted version kept on this Mac: each region file's path and its geometry's content name.
+fn geometry_names(s: &crate::AppState) -> std::collections::BTreeMap<String, String> {
+    let kept: Option<pipeline::inputs::served::Kept> =
+        std::fs::read(accepted_dir(s).join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    kept.map(|k| k.index.files)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(p, e)| Some((p, e.facts.get("geometry")?.as_str()?.to_string())))
+        .collect()
+}
+
+/// The listed regions' sizes, where this Mac has worked them out.
+fn sizes_into(s: &crate::AppState, list: &mut [Listed]) {
+    let (names, sizes) = (geometry_names(s), read_sizes(s));
+    for r in list.iter_mut() {
+        if let Some(z) = names.get(&r.path).and_then(|g| sizes.get(g)) {
+            r.land_km2 = Some(z.land);
+            r.water_km2 = Some(z.water);
+            r.country = z.country.clone();
+        }
+    }
+}
+
+/// The sizes of the accepted regions this Mac hasn't sized yet, each geometry read once from the NAS
+/// through the pool (the regions thread, after the accepted copy is brought up to date); those no
+/// region names any more dropped. Written out every 50, so a restart keeps what was done.
+fn size_regions(s: &crate::AppState) {
+    let (Some(root), Some(pool)) = (s.data.nas_root(), s.data.pool()) else { return };
+    let names = geometry_names(s);
+    let mut sizes = read_sizes(s);
+    let used: std::collections::BTreeSet<&String> = names.values().collect();
+    let before = sizes.len();
+    sizes.retain(|g, _| used.contains(g));
+    let mut dirty = sizes.len() != before;
+    let write = |sizes: &std::collections::BTreeMap<String, Sized>| {
+        let p = sizes_path(s);
+        let tmp = p.with_extension("json.tmp");
+        if serde_json::to_vec(sizes).is_ok_and(|b| std::fs::write(&tmp, b).is_ok()) {
+            std::fs::rename(&tmp, &p).ok();
+        }
+    };
+    let mut n = 0;
+    for g in used {
+        if sizes.contains_key(g) || !pool.is_online() {
+            continue;
+        }
+        let read = crate::views::RemoteFile::new(root.join(g), pool.clone()).read_all();
+        match read.map_err(anyhow::Error::from).and_then(|b| pipeline::inputs::regions::stored::Geometry::decode(&b)) {
+            Ok(geo) => {
+                sizes.insert(g.clone(), sized(&geo));
+                dirty = true;
+                n += 1;
+                if n % 50 == 0 {
+                    write(&sizes);
+                }
+            }
+            Err(e) => eprintln!("regions: {g} not sized: {e:#}"),
+        }
+    }
+    if dirty {
+        write(&sizes);
+    }
 }
 
 // ---- the input check's view of the regions ------------------------------------------------------
@@ -796,6 +922,35 @@ mod tests {
         for old in [json!({"regions": []}), Value::Null, json!({"regions": ["northumberland"]})] {
             assert!(recorded(&catalogue(old.clone())).is_empty() && recorded_list(&catalogue(old)).is_empty());
         }
+    }
+
+    #[test]
+    fn a_regions_land_and_water() {
+        use pipeline::inputs::regions::stored::{Geometry, Shape};
+        // A 1° square at the equator (~12,364 km²) with a 0.5° hole, as land; a 1° square as water.
+        let sq = |x: i32, y: i32, d: i32| vec![[x, y], [x + d, y], [x + d, y + d], [x, y + d]];
+        let e = 10_000_000;
+        let shape = |rings, water, country: &str| Shape {
+            from: "x".into(),
+            country: country.into(),
+            tolerance_m: 0,
+            rings,
+            water,
+        };
+        let g = Geometry {
+            id: "r".into(),
+            osm: String::new(),
+            shapes: vec![
+                shape(vec![sq(0, 0, e), sq(e / 4, e / 4, e / 2)], false, "PT"),
+                shape(vec![sq(2 * e, 0, e)], true, ""),
+            ],
+            relations: vec![],
+            ways: vec![],
+        };
+        let z = sized(&g);
+        assert!((z.land - 12_364.0 * 0.75).abs() < 60.0, "{z:?}");
+        assert!((z.water - 12_364.0).abs() < 60.0, "{z:?}");
+        assert_eq!(z.country, "PT");
     }
 
     #[test]

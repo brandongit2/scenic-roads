@@ -689,8 +689,32 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 .rg-state.held { color: #f3c77a; max-width: 50%; }
 .rg-state.off { color: var(--faint, #8b919a); }
 #layers .rg.off .rg-name, #layers .rg.off .rg2 { color: var(--faint, #8b919a); opacity: 0.7; }
-#layers .rg-dir > summary { font-size: 10.5px; padding: 5px 0 1px; cursor: pointer; color: #a9b6c8; }
-#layers .rg-dir .rg-dir { padding-left: 10px; }
+/* The Regions list (ui/regions.ts): the search and the downloaded-only filter stick under the
+   section's header (--rg-sec-h), each open folder's heading under them and the folders it's in
+   (--rg-bar-h, a heading's fixed height each); a folder's entries indented along a line from the
+   point of its triangle. Every entry: a triangle's slot (a region's empty), a fixed-width flag, the name. */
+#layers .rg-top { position: sticky; top: calc(var(--top-h, 0px) + var(--rg-sec-h, 0px)); z-index: 1; display: grid; gap: 2px; padding: 2px 0 4px; background: var(--card-solid); }
+#layers .rg-q { width: 100%; height: 24px; }
+#layers .rg-q::placeholder { color: var(--faint); }
+#layers .rg-dir { --rg-dir-h: 36px; }
+#layers .rg-dir > summary { list-style: none; position: sticky; top: calc(var(--top-h, 0px) + var(--rg-sec-h, 0px) + var(--rg-bar-h, 0px) + var(--rg-depth, 0) * var(--rg-dir-h)); z-index: 1;
+  box-sizing: border-box; height: var(--rg-dir-h); overflow: hidden; cursor: pointer; background: var(--card-solid); }
+#layers .rg-dir > summary:hover { background: color-mix(in srgb, #fff 4%, var(--card-solid)); }
+#layers .rg-dir > summary::-webkit-details-marker { display: none; }
+#layers .rg-dir > summary .rg-name { font-weight: 500; }
+#layers .rg-tri { flex: none; width: 8px; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid var(--faint); box-sizing: border-box; transform: rotate(-90deg); transition: transform 0.15s ease; }
+#layers .rg-tri.none { border-top-color: transparent; }
+#layers .rg-dir[open] > summary .rg-tri { transform: none; }
+#layers .rg-dir > summary:hover .rg-tri { border-top-color: var(--muted); }
+#layers .rg-in2 { padding-left: 38px; }
+#layers .rg-kids { margin-left: 4px; padding-left: 6px; border-left: 1px solid var(--line-strong); }
+#layers .rg-kids > .rg, #layers .rg-kids > .rg-dir > summary { margin-left: 0; }
+#layers .rg-flag { flex: none; display: grid; place-items: center; width: 18px; height: 13.5px; border-radius: 2px; overflow: hidden; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12); }
+#layers .rg-flag img { width: 100%; height: 100%; object-fit: cover; }
+#layers .rg-flag.none { box-sizing: border-box; box-shadow: none; border: 1px solid var(--line-strong); color: var(--faint); font-size: 8.5px; line-height: 1; }
+#layers .rg-dl.cx { color: #f3c77a; border-color: color-mix(in srgb, #f3c77a 45%, transparent); }
+#layers .kp-bar.busy { position: relative; }
+#layers .kp-bar.busy i { position: absolute; width: 35%; animation: status-sweep 1.1s linear infinite; }
 
 
 /* Phones and tablets (docs/macs.md, Devices) ------------------------------------------------ */

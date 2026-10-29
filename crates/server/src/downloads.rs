@@ -3,8 +3,7 @@
 //! downloaded goes until the owner removes it (store::mirror).
 //!
 //!   GET    /api/downloads                 this Mac's room, the World download, every region the
-//!                                         catalogue has (a region still building with its `tiles`
-//!                                         built of total) with its size, how much of it is here,
+//!                                         catalogue has with its size, how much of it is here,
 //!                                         whether it's downloaded and whether it's behind the
 //!                                         catalogue (what changed, the bytes an update copies),
 //!                                         the copy under way
@@ -1043,10 +1042,6 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
         }
         let r = listed.get(id);
         v["name"] = json!(r.and_then(|r| r["name"].as_str()).or(a.map(|a| a.name.as_str())).unwrap_or_default());
-        // (Still building: its tiles built of total.)
-        if let Some(t) = r.and_then(|r| r.get("tiles")) {
-            v["tiles"] = t.clone();
-        }
         regions.insert(id.to_string(), v);
     }
     // Downloaded regions no catalogue here has (not built yet, or removed since).

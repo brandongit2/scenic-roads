@@ -9,7 +9,7 @@
 #   guards    tools/app/guards.sh
 #   wasm      tools/app/wasm.sh, when a crate the wasm build compiles changed (det, roadcore,
 #             pipeline, store, names)
-#   web       web/test/rings.test.ts, wheelkind.test.ts, links.test.ts, chartmath.test.mjs, catalogues.test.mjs and tools/check/worksums.test.mjs under node, pnpm typecheck and vite build (to a scratch folder), when web/ changed
+#   web       web/test/rings.test.ts, wheelkind.test.ts, regionlist.test.ts, links.test.ts, chartmath.test.mjs, catalogues.test.mjs and tools/check/worksums.test.mjs under node, pnpm typecheck and vite build (to a scratch folder), when web/ changed
 #   taskboard node --test tools/taskboard/test/*.test.mjs, when tools/taskboard changed
 #   shell     tools/app/test/shell.zsh (publish.sh's shell steps, tools/app/lib.zsh), when tools/app changed
 #   testguard tools/dev/test/test-guard.zsh (the test guard's worktree lookup), when it changed
@@ -52,7 +52,7 @@ part guards tools/app/guards.sh
 if has 'crates/(det|roadcore|pipeline|store|names)/*' || has Cargo.lock; then part wasm tools/app/wasm.sh
 else skip wasm "no wasm crate changed"; fi
 if has 'web/*' || has 'tools/check/worksums.test.mjs'; then
-  part web zsh -c "cd web && node test/rings.test.ts && node test/wheelkind.test.ts && node --experimental-transform-types --no-warnings test/links.test.ts && node test/chartmath.test.mjs && node test/catalogues.test.mjs && node --test ../tools/check/worksums.test.mjs && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir"
+  part web zsh -c "cd web && node test/rings.test.ts && node test/wheelkind.test.ts && node test/regionlist.test.ts && node --experimental-transform-types --no-warnings test/links.test.ts && node test/chartmath.test.mjs && node test/catalogues.test.mjs && node --test ../tools/check/worksums.test.mjs && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir"
 else skip web "web/ unchanged"; fi
 if has 'tools/taskboard/*'; then part taskboard zsh -c "cd tools/taskboard && node --test test/*.test.mjs"
 else skip taskboard "tools/taskboard unchanged"; fi

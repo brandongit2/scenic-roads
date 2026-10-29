@@ -425,8 +425,7 @@ async fn a_new_catalogue_copies_nothing_until_the_download_is_updated() {
     assert_eq!(s.data.catalogue().n, 1);
     let m = s.data.mirror.clone().unwrap();
 
-    // Downloaded while building: listed with its tiles, catalogue 1's files copied.
-    assert_eq!(get(&s).await["regions"]["se"]["tiles"], json!({"built": 1, "total": 2}));
+    // Downloaded while building: catalogue 1's files copied.
     assert_eq!(region(&s, "se", true).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
     let one = area_part(&first, std::slice::from_ref(&se), &BTreeSet::new());
@@ -500,7 +499,6 @@ async fn a_new_catalogue_copies_nothing_until_the_download_is_updated() {
     assert_eq!((r["state"].as_str(), r["cat"].as_u64()), (Some("done"), Some(2)), "{v}");
     assert!(r.get("behind").is_none() && r.get("update").is_none(), "{v}");
     assert_eq!(r["here"], r["bytes"]);
-    assert_eq!(r["tiles"], json!({"built": 2, "total": 2}));
     // Not behind: refused.
     let (code, v) = call(post_region_update(State(s.clone()), Path("se".into())).await).await;
     assert_eq!(code, StatusCode::BAD_REQUEST, "{v}");

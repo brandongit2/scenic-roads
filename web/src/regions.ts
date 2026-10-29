@@ -3,7 +3,6 @@
 // map's catalogue was built for, drawn on the map (/api/coverage). The panel is ui/regions.ts.
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
 import { nested } from './rings';
-import { fmt } from './ui/dom';
 
 /** An administrative or ISO 3166 area from the OSM pass's outlines. */
 export interface Area {
@@ -41,20 +40,12 @@ export interface Region {
   /** `disabled = true` in its file: checked like any region (others may name it), never built or
    * downloaded. */
   disabled?: boolean;
-  /** In the catalogue's coverage, a region still building: its units (z6 tiles) built of those it
-   * builds when the catalogue was made. Its tiles are on the map, and downloadable, as they come. */
-  tiles?: Tiles;
+  /** Its land and water (km²) and its country's ISO 3166-1 code, from its accepted geometry
+   * (crates/server/src/regions.rs, `sized`): absent until this Mac's server has worked them out. */
+  land_km2?: number;
+  water_km2?: number;
+  country?: string;
 }
-
-/** A region's tiles built of its total. */
-export interface Tiles {
-  built: number;
-  total: number;
-}
-
-/** A region still building, in words. */
-export const tilesText = (t: Tiles) =>
-  t.built >= t.total ? `finishing: ${t.built} of ${t.total} tiles, the last map tiles and layers being made` : `${t.built} of ${t.total} tiles, on the map as they come`;
 
 const NAS_AWAY = 'The NAS isn’t reachable: try again at home';
 
@@ -117,35 +108,6 @@ export function areaOutline(id: number): Promise<GeoJSON.Feature<GeoJSON.MultiPo
   }
   return p;
 }
-
-const LEVELS: Record<number, string> = { 2: 'country', 3: 'region', 4: 'state/province', 5: 'region', 6: 'county', 7: 'district', 8: 'municipality' };
-/** What kind of area it is, by its admin level (its name varies by country: a level 6 is a county
- * in England, a département in France). */
-export const levelName = (a: Pick<Area, 'level' | 'country' | 'iso'>): string =>
-  a.country ? 'country' : LEVELS[a.level] ?? ((a.iso ?? '').includes('-') ? 'subdivision' : 'area');
-
-/** An area's name to show: English when it has one. */
-export const areaName = (a: Pick<Area, 'name' | 'en'>): string => a.en || a.name;
-
-/** An outline entry in words: "Northumberland (county)", "Kanto (Geofabrik)", "40 km around …".
- * `area`: an osm: entry's area, when known (the coverage's features have none when the server
- * can't read the pass's outlines: away from the NAS, not on this Mac). */
-export function entryLabel(entry: string, area?: Pick<Area, 'name' | 'en' | 'level' | 'country' | 'iso'>): string {
-  const [kind, v = ''] = entry.split(/:(.*)/s);
-  if (kind === 'osm') return area && typeof area.level === 'number' ? `${areaName(area)} (${levelName(area)})` : `OSM relation ${v}`;
-  if (kind === 'geofabrik') {
-    const last = v.split('/').pop() ?? v;
-    return `${last.split('-').map(cap).join(' ')} (Geofabrik)`;
-  }
-  if (kind === 'shape') return `${v.replace(/\.geojson$/i, '')} (drawn)`;
-  if (kind === 'poly') return `${v} (drawn)`;
-  if (kind === 'place') {
-    const [lon, lat, km] = v.split(',').map(Number);
-    return `${fmt.km(km)} around ${fmt.coord(lat, lon).replace(/(\d+\.\d{2})\d+/g, '$1')}`;
-  }
-  return entry;
-}
-
 
 // The coverage in the app's accent; the area being looked at in a pale white no overlay uses.
 const COVERAGE = '#6fd3a6';

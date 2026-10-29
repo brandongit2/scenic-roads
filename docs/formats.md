@@ -603,6 +603,9 @@ names/spoken-<content>.bin   languages spoken where, for a catalogue without `gl
                         version, then per region its ISO code, a tab, its languages), u32 run
                         count, 23,041 u32 row starts, runs of (u32 first column, u16 region))
 regions.json            the last regions read
+region-areas.json       each accepted region's land and water (km²) and country, by its geometry's
+                        content name: {"<name>": {land, water, country}} (crates/server/src/regions.rs,
+                        `sized`; worked out once per geometry, unused names dropped)
 reserve.json            the mirror's reserve {gb} (crates/server/src/reserve.rs); default 30 GB
 downloads.json          {fmt: 4, world: {at, cat, to?} | null, regions: [{id, name, at, cat, to?,
                         detail: {cat, to?} | null}]} (crates/server/src/downloads.rs; `at` unix

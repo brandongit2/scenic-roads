@@ -84,24 +84,34 @@
 - The server mounts the NAS itself when it's missing, at home.
 
 **The Regions panel** (Settings → Regions):
-- The regions, read only, grouped by their folders, each with its input-check state (accepted,
-  checking, held), and on the map the published coverage and each region's accepted outline.
+- The regions, read only, and on the map the published coverage and each region's accepted outline.
   Regions change only as files in `inputs/regions/` (docs/inputs.md §6.1); the app writes none.
+  - **The list**: folders (named by their `_group.toml`) sorted by name among the regions, collapsed
+    until opened (remembered); an open folder's entries indented along a line from its triangle, its
+    heading sticking under the section's header while they scroll. Each entry: a flag (flag-icons'
+    SVGs, MIT, bundled: a country's or territory's own, a subdivision's where the set has one, else its
+    country's; a folder's, that of the country its own regions' land is most in; a bordered "?" with
+    none), the name, the input check's state while it's checking, held or disabled, and its land and
+    water in km² (from its accepted geometry: the server works each out once, `region-areas.json`).
+    No build state.
+  - **Search** and **Show only downloaded regions**, sticking atop the section: a region shows when
+    its name or id holds the query, a folder whose name holds it keeps all its contents, and a folder
+    with a match inside opens while the search is on.
 - **Downloads on this Mac** (docs/macs.md, Mirror): nothing is copied to a Mac unless downloaded there.
   - **World, zoomed out**: its own row, Download or Remove, downloaded on its own (a region doesn't
     bring it; it can go while regions stay). Without it the map needs the NAS; while a region is
     downloaded and the World isn't, the row is marked and warns that away from the NAS, zoomed out,
     the map shows nothing.
-  - **Each region**: its size, Download or Remove, and its state (downloaded, copying N %, next,
-    waiting for room, away, updating N %), with a progress bar under it while it's downloading or
-    updating. Behind the catalogue served, it says "↻ out of date", what changed (new files, of
+  - **Each region**: its size, Download, Cancel or Remove, and its state (downloaded, copying N %,
+    next, waiting for room, away, updating N %), with a progress bar under it while it's downloading or
+    updating. Download turns into Cancel at the click, the bar moving before the server answers;
+    Cancel takes the download off at once (the mirror stops the copy at its next check, what was
+    copied goes). Behind the catalogue served, it says "↻ out of date", what changed (new files, of
     which kinds) and the size to copy (under 1 MB in KB), with an **Update** button; the World and terrain detail
-    rows the same. A region still building says "x of y tiles, on the map as they come"
-    (every z6 tile built but not yet recorded built: "finishing: x of x tiles, the last map tiles and
-    layers being made")
-    (its catalogue's `tiles`; the menu bar and `scenic status` say the same, from the agent's
-    status) and can be downloaded: its download has the tiles built then; an Update brings those
-    built since, what's here never fetched again.
+    rows the same. A region still building can be downloaded: its download has the tiles built then;
+    an Update brings those built since, what's here never fetched again.
+  - **Each folder**: its regions' size (and how many are downloaded), one button for all of them:
+    Download (those not yet), Cancel (those coming), Remove (all, once all are here).
   - **Terrain detail (z13+)** (a region's second line, only where it has any): the share of the
     region the terrain past z12 covers, its size, Download or Remove, its state. An add-on: its Download
     is disabled ("needs the region") until the region is downloaded, and the server refuses it

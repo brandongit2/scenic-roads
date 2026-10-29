@@ -45,8 +45,6 @@ export interface RegionDl extends Dl {
   /** Its terrain detail (z13 and finer, where the terrain goes past z12), an add-on to it: the
    * share of the region it covers (per cent). Absent where it has none. */
   detail?: DetailDl;
-  /** Still building: its tiles built of total; its files grow with each catalogue. */
-  tiles?: { built: number; total: number };
 }
 
 export interface DetailDl extends Dl {

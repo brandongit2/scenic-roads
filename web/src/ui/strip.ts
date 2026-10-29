@@ -368,6 +368,7 @@ const APP_CREDITS: Credit[] = [
     terms: 'ColorBrewer: Apache 2.0; Crameri, cmocean: MIT; colorcet: CC BY 4.0',
   },
   { what: 'Stops & sights icons', source: 'Maki (Mapbox)', terms: 'CC0 1.0' },
+  { what: 'Flags (the Regions list)', source: 'flag-icons (Panayiotis Lipiridis), 7.6.0', terms: 'MIT' },
 ];
 
 /** Data sources and licences in a modal dialog: the catalogue's credits (`set`), then the app's. */

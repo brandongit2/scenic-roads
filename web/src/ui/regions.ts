@@ -1,16 +1,20 @@
 // The Regions panel (Layers → Regions; docs/surface.md): the regions the map is built for, read
 // only. Regions are files in their inputs folder, inputs/regions/ (docs/inputs.md §6.1), changed there
-// alone and checked before they're used: the list shows them grouped by their folders, each with
-// its check's state (and the findings holding it), and the coverage they add up to on the map.
-// The coverage drawn is the one the map's catalogue was built for; a region it doesn't have (added
-// or redrawn since) is listed as pending.
+// alone and checked before they're used: the list shows their folders (by their _group.toml names)
+// sorted among them, collapsed until opened, each entry with a flag, its land and water, and its
+// check's state (and the findings holding it); a search and a "downloaded only" filter atop the
+// section (regionlist.ts). The coverage they add up to is drawn on the map: the one the map's
+// catalogue was built for.
 // Downloads (docs/macs.md, "Mirror, per Mac"): nothing is copied to this Mac unless it's
-// downloaded here: the World, zoomed out, each region, and a downloaded region's terrain detail, each
-// with its size, its state and a Download or Remove button; this Mac's room (downloads.ts).
+// downloaded here: the World, zoomed out, each region (a folder's button: all of its regions), and a
+// downloaded region's terrain detail, each with its size, its state and a Download, Cancel or
+// Remove button; this Mac's room (downloads.ts).
 import { behindText, dlDetail, dlRegion, dlStatus, dlUpdate, dlWorld, pct, setReserve, size, sizeOf, stateClass, stateText, type Dl, type DlStatus, type DetailDl, type RegionDl } from '../downloads';
+import { FLAGS } from '../flags';
 import * as prefs from '../prefs';
+import { allIds, areaText, entries, filter, flagCode, folderFlag, type Shown } from '../regionlist';
 import {
-  RegionLayers, RegionsError, areaOutline, entryLabel, getCoverage, getRegionsLayer, listRegions, tilesText,
+  RegionLayers, RegionsError, areaOutline, getCoverage, getRegionsLayer, listRegions,
   type Area, type Coverage, type Folder, type Region, type RegionsLayer,
 } from '../regions';
 import { fmt, h } from './dom';
@@ -82,13 +86,25 @@ export class RegionsPanel {
   private dlTimer = 0;
   /** What each region row shows of its download, updated in place as the state comes (a row isn't
    * drawn again: a hover or a rename in it stays). */
-  private dlEls = new Map<string, { row: HTMLElement; slot: HTMLElement; btn: HTMLButtonElement | null; on: boolean; size: HTMLElement; prog: HTMLElement; detail: HTMLElement; detailSize: HTMLElement; detailBtn: HTMLButtonElement | null; detailOn: boolean; detailProg: HTMLElement }>();
+  private dlEls = new Map<string, { row: HTMLElement; slot: HTMLElement; btn: HTMLButtonElement | null; mode: Mode | null; size: HTMLElement; prog: HTMLElement; detail: HTMLElement; detailSize: HTMLElement; detailBtn: HTMLButtonElement | null; detailOn: boolean; detailProg: HTMLElement }>();
+  /** The same for each folder shown (by path): its regions' download as one. */
+  private dirEls = new Map<string, { f: Folder; row: HTMLElement; slot: HTMLElement; btn: HTMLButtonElement | null; mode: Mode | null; size: HTMLElement; prog: HTMLElement }>();
+  /** Downloads asked for or cancelled here and not yet in the state the server last told (a region's
+   * id: downloaded or not): its button and loading state change at the click, not the answer. */
+  private want = new Map<string, boolean>();
+  /** The search atop the section, and the downloaded-only filter. */
+  private q = h('input', { class: 'rg-in rg-q', type: 'search', placeholder: 'Search regions', 'aria-label': 'Search regions', autocomplete: 'off', spellcheck: 'false' }) as HTMLInputElement;
+  private onlyBox = h('input', { type: 'checkbox' }) as HTMLInputElement;
+  private bar = h('div', { class: 'rg-top' });
+  /** The downloaded regions the list was last filtered by (downloaded-only). */
+  private onKey = '';
   /** Under the World's row: its progress, and its Update while it's behind. */
   private worldProg = h('div', { class: 'rg-prog', hidden: true });
   /** The downloads whose Update was asked and not answered yet ("world", a region's id, "<id>/detail"). */
   private updating = new Set<string>();
 
   private regions: Region[] = [];
+  private byId = new Map<string, Region>();
   /** The folders the list is grouped by (null: a server from before folders). */
   private tree: Folder | null = null;
   private bad: [string, string][] = [];
@@ -131,7 +147,25 @@ export class RegionsPanel {
       }
     });
     this.resBtn.addEventListener('click', () => void this.saveReserve());
+    this.onlyBox.checked = prefs.load('regions.downloadedOnly', false);
+    this.onlyBox.addEventListener('change', () => {
+      prefs.save('regions.downloadedOnly', this.onlyBox.checked);
+      this.renderList();
+    });
+    let typed = 0;
+    this.q.addEventListener('input', () => {
+      clearTimeout(typed);
+      typed = window.setTimeout(() => this.renderList(), 120);
+    });
+    this.q.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.q.value) {
+        this.q.value = '';
+        this.renderList();
+      }
+    });
+    this.bar.append(this.q, h('label', { class: 'tog', title: 'Only the regions downloaded to this Mac (and those being downloaded)' }, this.onlyBox, h('span', {}, 'Show only downloaded regions')));
     this.nodes = [
+      this.bar,
       h('label', { class: 'tog', title: 'Every region’s outline on the map: the map is built within them' }, this.covBox, h('span', {}, 'Coverage on the map'), this.covCount),
       h('label', { class: 'tog', title: 'Each region’s accepted outline in its own colour, with its name: overlaps and gaps show; dashed while a finding holds it' }, this.regBox, h('span', {}, 'Regions on the map'), this.regNote),
       h('div', { class: 'subhd', title: 'What’s downloaded to this Mac, for when it’s away from the NAS: nothing else is copied here' }, 'Downloads on this Mac'),
@@ -140,7 +174,7 @@ export class RegionsPanel {
       this.worldRow,
       this.dlNow,
       this.dlMsg,
-      h('div', { class: 'subhd', title: 'Each region’s size, and Download or Remove' }, 'Regions'),
+      h('div', { class: 'subhd', title: 'Each region’s land and water and its download’s size, and Download, Cancel or Remove; a folder’s button does all of its regions' }, 'Regions'),
       this.list,
       this.note,
     ];
@@ -166,6 +200,7 @@ export class RegionsPanel {
   setOpen(open: boolean) {
     this.open = open;
     if (open) {
+      this.measure();
       if (performance.now() - this.loadedAt > FRESH_MS) void this.refresh();
       void this.pollDl();
     } else {
@@ -231,7 +266,7 @@ export class RegionsPanel {
   }
 
   /** The pending regions' outlines, from their osm: entries' areas (other entries have none to
-   * show until built), for naming their entries and showing them on the map; then the list again. */
+   * show until built), for their flags and showing them on the map; then the list again. */
   private loadPending(tok: number) {
     const pending = this.regions.filter((r) => this.isPending(r));
     void Promise.all(pending.map(async (r) => {
@@ -245,6 +280,25 @@ export class RegionsPanel {
     });
   }
 
+  /** The heights the sticky search bar and folder headings sit under: the section's header (under
+   * the panel's top, --top-h) and the bar itself. */
+  private measured = false;
+  private measure() {
+    if (this.measured) return;
+    const grp = this.bar.parentElement, sec = this.bar.closest('.section')?.querySelector<HTMLElement>(':scope > .sec');
+    if (!grp || !sec) return;
+    this.measured = true;
+    new ResizeObserver(() => {
+      grp.style.setProperty('--rg-sec-h', `${sec.offsetHeight}px`);
+      grp.style.setProperty('--rg-bar-h', `${this.bar.offsetHeight}px`);
+    }).observe(this.bar);
+  }
+
+  /** The region downloaded here, or being: as asked here last, else as the server says. */
+  private isOn(id: string): boolean {
+    return this.want.get(id) ?? !!this.dl?.regions[id]?.on;
+  }
+
   private renderList() {
     // (A hovered row goes without a mouseleave.)
     if (this.hoverRegion) {
@@ -252,84 +306,116 @@ export class RegionsPanel {
       this.layers.setHover(null);
     }
     this.dlEls.clear();
+    this.dirEls.clear();
     const n = this.regions.length;
     this.covCount.textContent = n ? `${n} region${n === 1 ? '' : 's'}` : '';
-    // Grouped by the folder their files are in under inputs/regions/: the top level first, then the
-    // folders in order.
-    const byId = new Map(this.regions.map((r) => [r.id, r]));
-    const placed = new Set<string>();
-    const rows = (ids: string[]) => ids.flatMap((id) => {
-      const r = byId.get(id);
-      if (!r) return [];
-      placed.add(id);
-      return [this.regionRow(r)];
+    const byId = (this.byId = new Map(this.regions.map((r) => [r.id, r])));
+    // The tree; regions it doesn't hold (not in the accepted version yet) at the top level.
+    const tree = this.tree ?? { path: '', name: '', regions: [], folders: [] };
+    const placed = new Set(allIds(tree));
+    const root: Folder = { ...tree, regions: [...tree.regions, ...this.regions.filter((r) => !placed.has(r.id)).map((r) => r.id)] };
+    const only = this.onlyBox.checked;
+    if (only) this.onKey = this.downloadedKey();
+    const shown = filter(root, byId, this.q.value, (id) => !only || this.isOn(id));
+    const searching = !!this.q.value.trim();
+    const list = (f: Folder, depth: number): HTMLElement[] => entries(f, byId).flatMap((e) => {
+      if (e.kind === 'region') return shown.regions.has(e.r.id) ? [this.regionRow(e.r)] : [];
+      return shown.folders.has(e.f.path) ? [this.folderBox(e.f, depth, shown, searching, list)] : [];
     });
-    const count = (f: Folder): number => f.regions.filter((id) => byId.has(id)).length + f.folders.reduce((n, g) => n + count(g), 0);
-    const group = (f: Folder): HTMLElement => {
-      const key = `regions.folder.${f.path}`;
-      const box = h('details', { class: 'rg-dir', open: prefs.load(key, true) }) as HTMLDetailsElement;
-      box.addEventListener('toggle', () => prefs.save(key, box.open));
-      box.append(h('summary', { title: `inputs/regions/${f.path}/` }, f.name, h('span', { class: 'faint' }, ` ${count(f)}`)), ...rows(f.regions), ...f.folders.map(group));
-      return box;
-    };
-    const tree = this.tree;
-    const nested = tree ? [...rows(tree.regions), ...tree.folders.map(group)] : [];
-    // Regions the tree doesn't hold (not in the accepted version yet) at the top level.
     this.list.replaceChildren(
-      ...this.regions.filter((r) => !placed.has(r.id)).map((r) => this.regionRow(r)),
-      ...nested,
+      ...list(root, 0),
       ...this.bad.map(([file, e]) => h('div', { class: 'rg-bad', title: e }, h('b', {}, file), ` doesn’t parse: ${e}`)),
     );
     if (!n && !this.bad.length && this.loadedAt > -Infinity) this.list.append(h('div', { class: 'faint rg-empty' }, 'No regions yet'));
+    else if (n && !shown.regions.size) this.list.append(h('div', { class: 'faint rg-empty' }, only && !searching ? 'No regions downloaded on this Mac' : 'No region matches'));
+    this.renderDirs();
   }
 
-  /** A region's state in words: pending while the map's catalogue doesn't have it, its tiles built of
-   * total while it's building, built when the catalogue says so. */
+  /** The downloaded regions, as a key (the downloaded-only list is drawn again when it changes). */
+  private downloadedKey(): string {
+    return this.regions.filter((r) => this.isOn(r.id)).map((r) => r.id).join(',');
+  }
+
+  /** A folder: its heading (sticky under the bar and the folders it's in, `depth` of them) like a
+   * region's row, with its flag, its regions' land and water and size, and its button; then its
+   * entries, indented along a line under its triangle. Collapsed until opened (remembered), but
+   * open while a search finds something inside it. */
+  private folderBox(f: Folder, depth: number, shown: Shown, searching: boolean, list: (f: Folder, depth: number) => HTMLElement[]): HTMLElement {
+    const key = `regions.folder.${f.path}`;
+    const forced = searching && shown.open.has(f.path);
+    const box = h('details', { class: 'rg-dir', open: forced || prefs.load(key, false) }) as HTMLDetailsElement;
+    box.addEventListener('toggle', () => {
+      if (!forced) prefs.save(key, box.open);
+    });
+    const regs = allIds(f).flatMap((id) => this.byId.get(id) ?? []);
+    const sum = (k: 'land_km2' | 'water_km2') => (regs.some((r) => r[k] !== undefined) ? regs.reduce((t, r) => t + (r[k] ?? 0), 0) : undefined);
+    const name = h('span', { class: 'rg-name', title: `${f.name}: show it` }, f.name);
+    name.addEventListener('click', (e) => {
+      e.preventDefault();
+      const b = bboxOf(regs.flatMap((r) => this.outlinesOf(r)));
+      if (b) this.onFit(b);
+    });
+    const slot = h('span', { class: 'rg-dlslot' });
+    const sz = h('span', { class: 'rg-size' });
+    const prog = h('div', { class: 'rg-prog', hidden: true });
+    const code = folderFlag(f, (id) => this.flagOf(this.byId.get(id)), (id) => this.byId.get(id)?.land_km2 ?? 0);
+    const head = h('summary', { class: 'rg', title: `inputs/regions/${f.path}/` },
+      h('div', { class: 'rg1' }, h('i', { class: 'rg-tri' }), flag(code), name, slot),
+      // (Some of its regions not sized yet: so far, "…" after it.)
+      h('div', { class: 'rg2 rg-in2' }, h('span', { class: 'rg2s', title: 'Its regions’ land and water' }, `${areaText(sum('land_km2'), sum('water_km2'))}${regs.some((r) => r.land_km2 === undefined) && regs.some((r) => r.land_km2 !== undefined) ? ' …' : ''}`), sz),
+      prog);
+    head.style.setProperty('--rg-depth', String(depth));
+    this.dirEls.set(f.path, { f, row: head, slot, btn: null, mode: null, size: sz, prog });
+    box.append(head, h('div', { class: 'rg-kids' }, ...list(f, depth + 1)));
+    return box;
+  }
+
+  /** A region's state in the input check: being checked, held by findings, or disabled. */
   private stateOf(r: Region): { text: string; cls: string; title?: string } | null {
-    // The check comes first: a region not accepted yet isn't what's built.
     if (r.state === 'checking') return { text: 'checking…', cls: 'wait', title: 'Its file changed: being checked before it’s used' };
     if (r.state === 'held') {
       const fs = r.held ?? [];
       return { text: `held: ${fs[0]?.message ?? 'a finding holds it'}${fs.length > 1 ? ` (+${fs.length - 1})` : ''}`, cls: 'held', title: `Its last accepted outline stays in use until these are fixed:\n${fs.map((f) => `${f.id}: ${f.message}`).join('\n')}` };
     }
     if (r.disabled) return { text: 'disabled', cls: 'off', title: 'Disabled in its file (disabled = true): checked like every region, and other regions may name it, but nothing is built for it, so it isn’t on the map and can’t be downloaded. Its file enables it.' };
-    if (this.isPending(r)) return { text: 'pending', cls: 'wait', title: 'Not on the map yet: it’s added when the lead next publishes the map data' };
-    const building = this.coverage?.regions?.find((b) => b.id === r.id)?.tiles;
-    if (building) return { text: tilesText(building), cls: 'wait', title: 'Still building: its tiles are on the map as each catalogue brings them; a download of it gets those built since when it’s updated' };
-    if (this.coverage?.regions) return { text: 'built', cls: 'ok' };
     return null;
+  }
+
+  /** A region's flag (a flag file's code), from its first osm: part's area, else its geometry's
+   * country (regionlist.flagCode). */
+  private flagOf(r: Region | undefined): string | null {
+    if (!r) return null;
+    const first = r.outline.find((e) => e.startsWith('osm:'));
+    const a = first ? (this.outlinesOf(r).find((f) => f.properties?.entry === first)?.properties as Partial<Area> | undefined) : undefined;
+    return flagCode({ iso: a?.iso, country: a?.country, in: a?.in, geo: r.country }, (c) => FLAGS.has(c));
   }
 
   private regionRow(r: Region): HTMLElement {
     const fs = this.outlinesOf(r);
-    const summary = r.outline.map((e) => entryLabel(e, fs.find((f) => f.properties?.entry === e)?.properties as Area | undefined)).join(' + ');
     const row = h('div', { class: r.disabled ? 'rg off' : 'rg' });
-    const show = () => {
-      const state = this.stateOf(r);
-      const name = h('span', { class: 'rg-name', title: `${r.name}: show it` }, r.name);
-      name.addEventListener('click', () => {
-        const b = bboxOf(fs);
-        if (b) this.onFit(b);
-      });
-      const slot = h('span', { class: 'rg-dlslot' });
-      const sz = h('span', { class: 'rg-size' });
-      const detailSize = h('span', { class: 'rg-size rg-fsize' });
-      const detail = h('div', { class: 'rg2', hidden: true }, h('span', { class: 'rg2s rg-fine', title: 'The terrain past z12 (z13–z16), where its data has the detail: an add-on to the region, which gives the rest of it and every zoom to z12' }, 'Terrain detail (z13+)'), detailSize);
-      const prog = h('div', { class: 'rg-prog', hidden: true });
-      const detailProg = h('div', { class: 'rg-prog', hidden: true });
-      this.dlEls.set(r.id, { row, slot, btn: null, on: false, size: sz, prog, detail, detailSize, detailBtn: null, detailOn: false, detailProg });
-      row.replaceChildren(
-        h('div', { class: 'rg1' }, name, h('span', { class: 'rg-id faint', title: `Its file: inputs/regions/${r.path ?? `${r.id}.toml`}` }, r.id),
-          ...(state ? [h('span', { class: `rg-state ${state.cls}`, title: state.title }, state.text)] : []),
-          slot),
-        h('div', { class: 'rg2' }, h('span', { class: 'rg2s', title: summary }, summary), sz),
-        prog,
-        detail,
-        detailProg,
-      );
-      this.showDl(r.id);
-    };
-    show();
+    const state = this.stateOf(r);
+    const name = h('span', { class: 'rg-name', title: `${r.name}: show it` }, r.name);
+    name.addEventListener('click', () => {
+      const b = bboxOf(fs);
+      if (b) this.onFit(b);
+    });
+    const slot = h('span', { class: 'rg-dlslot' });
+    const sz = h('span', { class: 'rg-size' });
+    const detailSize = h('span', { class: 'rg-size rg-fsize' });
+    const detail = h('div', { class: 'rg2 rg-in2', hidden: true }, h('span', { class: 'rg2s rg-fine', title: 'The terrain past z12 (z13–z16), where its data has the detail: an add-on to the region, which gives the rest of it and every zoom to z12' }, 'Terrain detail (z13+)'), detailSize);
+    const prog = h('div', { class: 'rg-prog', hidden: true });
+    const detailProg = h('div', { class: 'rg-prog', hidden: true });
+    this.dlEls.set(r.id, { row, slot, btn: null, mode: null, size: sz, prog, detail, detailSize, detailBtn: null, detailOn: false, detailProg });
+    row.replaceChildren(
+      h('div', { class: 'rg1' }, h('i', { class: 'rg-tri none' }), flag(this.flagOf(r)), name, h('span', { class: 'rg-id faint', title: `Its file: inputs/regions/${r.path ?? `${r.id}.toml`}` }, r.id),
+        ...(state ? [h('span', { class: `rg-state ${state.cls}`, title: state.title }, state.text)] : []),
+        slot),
+      h('div', { class: 'rg2 rg-in2' }, h('span', { class: 'rg2s', title: 'Its land and its water (the sea and the lakes over 100 km² it holds)' }, areaText(r.land_km2, r.water_km2)), sz),
+      prog,
+      detail,
+      detailProg,
+    );
+    this.showDl(r.id);
     row.addEventListener('mouseenter', () => {
       this.hoverRegion = r.id;
       this.layers.setHover(fs);
@@ -395,13 +481,16 @@ export class RegionsPanel {
     return b;
   }
 
-  /** A region's size, and how much of it is here or its state when downloaded; its button. */
+  /** A region's size, and how much of it is here or its state when downloaded; its button:
+   * Download, Cancel while it's coming (from the click on), Remove once it's here. */
   private showDl(id: string) {
     const els = this.dlEls.get(id);
     if (!els) return;
     const k = this.dl;
     const rk: RegionDl | undefined = k?.regions[id];
     const r = this.regions.find((x) => x.id === id);
+    // (Asked here and now so on the server: the server's state from here on.)
+    if (rk && this.want.get(id) === rk.on) this.want.delete(id);
     // (A disabled region is never built: no size, no Download.)
     if (r?.disabled) {
       els.size.textContent = '';
@@ -409,34 +498,114 @@ export class RegionsPanel {
       els.btn = null;
       return;
     }
-    this.showDetail(id, k?.mirror ? rk?.detail : undefined, r?.name ?? rk?.name ?? id, !!rk?.on);
+    const on = this.isOn(id);
+    this.showDetail(id, k?.mirror && on ? rk?.detail : undefined, r?.name ?? rk?.name ?? id, on);
     let text = '', cls = 'rg-size';
-    if (!k || !k.mirror) text = '';
-    else if (!rk) text = 'not built yet';
-    else if (rk.on) {
-      text = rk.state === 'missing' ? stateText(rk) : `${sizeOf(rk)} · ${stateText(rk)}`;
-      cls += ` ${stateClass(rk.state)}`;
-    } else {
-      text = sizeOf(rk);
+    if (k?.mirror && rk) {
+      if (on && rk.on) {
+        text = rk.state === 'missing' ? stateText(rk) : `${sizeOf(rk)} · ${stateText(rk)}`;
+        cls += ` ${stateClass(rk.state)}`;
+      } else text = on ? `${sizeOf(rk)} · starting` : sizeOf(rk);
     }
     els.size.className = cls;
     els.size.textContent = text;
-    els.size.title = (rk ? `Its packs and the basemap’s zooms 11–14 over it: ${size(rk.bytes)}, of which ${size(rk.here)} on this Mac` : '');
-    // (Still building: so far; a download of it stays as it is until it's updated.)
-    if (rk?.tiles) els.size.title += `\nSo far: ${tilesText(rk.tiles)}. Downloaded, it keeps the tiles it has: Update brings those built since`;
+    els.size.title = rk ? `Its packs and the basemap’s zooms 11–14 over it: ${size(rk.bytes)}, of which ${size(rk.here)} on this Mac` : '';
     const name = r?.name ?? rk?.name ?? id;
-    this.showProg(els.prog, k?.mirror ? rk : undefined, id, `“${name}”`, () => dlUpdate(id), (t, w) => this.sayRow(els.row, t, w));
-    const on = !!rk?.on;
-    if (els.on !== on || !els.btn) {
-      const btn = this.dlButton(on, `“${name}”`, () => (this.dl?.regions[id]?.bytes ?? 0) + (this.dl?.regions[id]?.detail?.on ? this.dl.regions[id].detail!.bytes : 0), (o) => dlRegion(id, o), (o) =>
-        o ? `Downloading “${name}” to this Mac.` : `“${name}” is removed from this Mac.`, (t, w) => this.sayRow(els.row, t, w));
-      btn.hidden = !k?.mirror;
-      if (els.btn) els.btn.replaceWith(btn);
-      else els.slot.append(btn);
-      els.btn = btn;
-      els.on = on;
+    const say = (t: string, w?: boolean) => this.sayRow(els.row, t, w);
+    this.showProg(els.prog, k?.mirror && on ? rk : undefined, id, `“${name}”`, () => dlUpdate(id), say, on && !rk?.on);
+    const mode: Mode | null = !k?.mirror || !rk ? null : modeOf(on, rk);
+    if (els.mode !== mode || !els.btn) {
+      els.btn?.remove();
+      els.btn = mode ? this.dlControl(mode, `“${name}”`, () => (this.dl?.regions[id]?.bytes ?? 0) + (this.dl?.regions[id]?.detail?.on ? this.dl.regions[id].detail!.bytes : 0), [id], say) : null;
+      if (els.btn) els.slot.append(els.btn);
+      els.mode = mode;
     }
-    els.btn.hidden = !k?.mirror;
+  }
+
+  /** Each folder's heading: its regions' size, a bar while some are coming, and its button for all
+   * of them. */
+  private renderDirs() {
+    const k = this.dl;
+    for (const els of this.dirEls.values()) {
+      const ids = allIds(els.f).filter((id) => k?.regions[id] && !this.regions.find((r) => r.id === id)?.disabled);
+      const rks = ids.map((id) => k!.regions[id]);
+      const ons = ids.filter((id) => this.isOn(id));
+      els.size.textContent = k?.mirror && ids.length ? (ons.length ? `${ons.length} of ${ids.length} · ` : '') + size(rks.reduce((t, r) => t + r.bytes, 0)) : '';
+      els.size.title = ons.length ? `${ons.length} of its ${ids.length} regions downloaded or coming` : '';
+      const coming = ons.filter((id) => modeOf(true, k!.regions[id]) === 'cancel');
+      const mode: Mode | null = !k?.mirror || !ids.length ? null : coming.length ? 'cancel' : ons.length === ids.length ? 'remove' : 'download';
+      // (A bar while some are coming: of those the server has started.)
+      const t = coming.map((id) => k!.regions[id]).filter((r) => r.on).reduce((a, r) => ({ bytes: a.bytes + r.bytes, here: a.here + r.here }), { bytes: 0, here: 0 });
+      const bar = coming.length ? progBar(t.bytes ? t.here / t.bytes : null, t.bytes ? `${size(t.here)} of ${size(t.bytes)} here` : 'Starting') : null;
+      els.prog.replaceChildren(...(bar ? [bar] : []));
+      els.prog.hidden = !bar;
+      if (els.mode !== mode || !els.btn) {
+        els.btn?.remove();
+        const what = `the ${ids.length} regions of “${els.f.name}”`;
+        // (Download: those not yet; Cancel: those coming; Remove: all.)
+        const which = () => {
+          const m = els.mode;
+          return allIds(els.f).filter((id) => this.dl?.regions[id] && (m === 'download' ? !this.isOn(id) : m === 'cancel' ? this.isOn(id) && modeOf(true, this.dl.regions[id]) === 'cancel' : this.isOn(id)));
+        };
+        els.btn = mode ? this.dlControl(mode, what, () => which().reduce((t, id) => t + (this.dl?.regions[id]?.bytes ?? 0), 0), which, (t, w) => this.sayRow(els.row, t, w)) : null;
+        if (els.btn) {
+          els.btn.addEventListener('click', (e) => e.preventDefault());
+          els.slot.append(els.btn);
+        }
+        els.mode = mode;
+      }
+    }
+  }
+
+  /** A download's button: Download and Cancel act at the click (the rows show it before the server
+   * answers); Remove asks again, saying how much goes. `ids`: the regions it acts on (a folder's: all
+   * those its mode reaches, worked out at the click), asked one after another. */
+  private dlControl(mode: Mode, what: string, bytes: () => number, ids: string[] | (() => string[]), say: (text: string, warn?: boolean) => void): HTMLButtonElement {
+    const label = { download: 'Download', cancel: 'Cancel', remove: 'Remove' }[mode];
+    const title = { download: `Download ${what} to this Mac, for when it’s away from the NAS`, cancel: `Stop downloading ${what}: what was copied of it goes`, remove: `Remove ${what} from this Mac` }[mode];
+    const b = h('button', { class: `rg-dl ${mode === 'download' ? '' : mode === 'cancel' ? 'cx' : 'rm'}`, type: 'button', title }, label) as HTMLButtonElement;
+    let armed = 0;
+    b.addEventListener('click', () => {
+      if (mode === 'remove' && !armed) {
+        b.textContent = `Remove ${size(bytes())}?`;
+        b.classList.add('arm');
+        armed = window.setTimeout(() => {
+          armed = 0;
+          b.textContent = 'Remove';
+          b.classList.remove('arm');
+        }, 4000);
+        return;
+      }
+      clearTimeout(armed);
+      const on = mode === 'download';
+      const list = typeof ids === 'function' ? ids() : ids;
+      for (const id of list) this.want.set(id, on);
+      // At once: every row it touches in its new state, the list again if it filters by it.
+      this.redrawDl();
+      say(mode === 'cancel' ? `Stopped downloading ${what}.` : '');
+      void (async () => {
+        for (const id of list) {
+          try {
+            await dlRegion(id, on);
+          } catch (e) {
+            for (const x of list.slice(list.indexOf(id))) this.want.delete(x);
+            this.redrawDl();
+            say(says(e), true);
+            break;
+          }
+        }
+        if (mode === 'remove') say(`${what.charAt(0).toUpperCase()}${what.slice(1)} ${list.length > 1 ? 'are' : 'is'} removed from this Mac.`);
+        void this.pollDl();
+      })();
+    });
+    return b;
+  }
+
+  /** The rows' downloads drawn again from what's known (and what was just asked here). */
+  private redrawDl() {
+    if (this.onlyBox.checked && this.downloadedKey() !== this.onKey) return this.renderList();
+    for (const id of this.dlEls.keys()) this.showDl(id);
+    this.renderDirs();
   }
 
   /** A region's terrain detail, where it has any: the share of it covered, its size and state, its
@@ -470,7 +639,7 @@ export class RegionsPanel {
   /** The block: this Mac's room; the World row; what's being copied and why it's slow or waits. */
   private renderDl() {
     const k = this.dl;
-    for (const id of this.dlEls.keys()) this.showDl(id);
+    this.redrawDl();
     if (!k) {
       this.dlSum.replaceChildren(this.dlErr ? h('div', { class: 'kp-line warn' }, this.dlErr) : h('div', { class: 'kp-line faint' }, h('span', { class: 'spin' }), ' Asking the map server…'));
       this.worldRow.hidden = true;
@@ -558,13 +727,12 @@ export class RegionsPanel {
   /** Under a download's row: a progress bar while it's copied (downloading, or updating: then of
    * the update's files), and while it's behind the catalogue, what changed, the size to copy and an
    * Update button. Hidden when there's none of that. */
-  private showProg(box: HTMLElement, d: Dl | undefined, key: string, what: string, act: () => Promise<unknown>, say: (text: string, warn?: boolean) => void) {
+  private showProg(box: HTMLElement, d: Dl | undefined, key: string, what: string, act: () => Promise<unknown>, say: (text: string, warn?: boolean) => void, starting = false) {
     const kids: HTMLElement[] = [];
-    if (d?.on && d.state && d.state !== 'done' && d.state !== 'missing') {
+    if (starting) kids.push(progBar(null, 'Starting'));
+    else if (d?.on && d.state && d.state !== 'done' && d.state !== 'missing') {
       const t = d.update ?? d;
-      const bar = h('div', { class: 'kp-bar rg-bar', title: `${d.update ? 'Updating' : 'Downloading'}: ${size(t.here)} of ${size(t.bytes)} here (${pct(t)} %)` }, h('i', {}));
-      (bar.firstChild as HTMLElement).style.width = `${(100 * t.here) / Math.max(1, t.bytes)}%`;
-      kids.push(bar);
+      kids.push(progBar(t.here / Math.max(1, t.bytes), `${d.update ? 'Updating' : 'Downloading'}: ${size(t.here)} of ${size(t.bytes)} here (${pct(t)} %)`));
     }
     const b = d?.on ? d.behind : undefined;
     if (b && !d!.update) {
@@ -590,12 +758,15 @@ export class RegionsPanel {
     box.hidden = kids.length === 0;
   }
 
-  /** A line under a region's row: what its Download or Remove did, or why it didn't (gone a little
-   * later unless it's a refusal). */
+  /** A line under a region's row: what its Download, Cancel or Remove did, or why it didn't (gone a
+   * little later unless it's a refusal; '' takes it off). A folder's goes under its heading. */
   private sayRow(row: HTMLElement, text: string, warn = false) {
-    row.querySelector('.rg-rowmsg')?.remove();
+    const dir = row.tagName === 'SUMMARY';
+    (dir ? row.parentElement?.querySelector(':scope > .rg-rowmsg') : row.querySelector('.rg-rowmsg'))?.remove();
+    if (!text) return;
     const m = h('div', { class: `rg-rowmsg${warn ? ' warn' : ''}` }, text);
-    row.append(m);
+    if (dir) row.after(m);
+    else row.append(m);
     if (!warn) window.setTimeout(() => m.remove(), 8000);
   }
 
@@ -670,3 +841,26 @@ export class RegionsPanel {
     this.dlMsg.classList.toggle('warn', warn);
   }
 }
+
+/** A download's button: Download; Cancel while it's coming (asked, copying, waiting); Remove once
+ * it's here (or being updated: it's whole meanwhile). */
+type Mode = 'download' | 'cancel' | 'remove';
+function modeOf(on: boolean, rk: RegionDl): Mode {
+  if (!on) return 'download';
+  return rk.on && (rk.state === 'done' || rk.state === 'updating') ? 'remove' : 'cancel';
+}
+
+/** A thin bar: `share` done (null: under way, not sized yet). */
+function progBar(share: number | null, title: string): HTMLElement {
+  const bar = h('div', { class: `kp-bar rg-bar${share === null ? ' busy' : ''}`, title }, h('i', {}));
+  if (share !== null) (bar.firstChild as HTMLElement).style.width = `${100 * Math.min(1, share)}%`;
+  return bar;
+}
+
+/** A flag of fixed width (flag-icons' 4:3, flags.ts), or a bordered "?" where there's none. */
+function flag(code: string | null): HTMLElement {
+  const url = code ? FLAGS.get(code) : undefined;
+  if (!url) return h('span', { class: 'rg-flag none', title: 'No flag' }, '?');
+  return h('span', { class: 'rg-flag' }, h('img', { src: url, alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' }));
+}
+
