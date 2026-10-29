@@ -106,7 +106,8 @@
     next, waiting for room, away, updating N %), with a progress bar under it while it's downloading or
     updating. Download turns into Cancel at the click, the bar moving before the server answers;
     Cancel takes the download off at once (the mirror stops the copy at its next check, what was
-    copied goes). Behind the catalogue served, it says "↻ out of date", what changed (new files, of
+    copied goes; one that finished since the panel last asked stays: a whole download goes only by
+    Remove, which asks first). Behind the catalogue served, it says "↻ out of date", what changed (new files, of
     which kinds) and the size to copy (under 1 MB in KB), with an **Update** button; the World and terrain detail
     rows the same. A region still building can be downloaded: its download has the tiles built then;
     an Update brings those built since, what's here never fetched again.

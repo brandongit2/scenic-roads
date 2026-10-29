@@ -379,7 +379,7 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
      or map tiles only), the map tiles being drawn by Mac (pack's targets leased), and the catalogue
      each Mac's map server last adopted (`pubtimes`' servers' log). The worker page's Publishing
      card and `scenic status` say these in the same words, with the cadenced publishes next (the
-     forecast's `publishes`); the Regions panel, `scenic status` and the menu bar say a region
+     forecast's `publishes`); `scenic status` and the menu bar say a region
      still building as "x of y tiles, on the map as they come", and when all of it is.
    - **The low zooms' cadence** (`build::low_gate`): the low zooms (roads' and rails' lo packs,
      terrain's and slope's roots, and with `near-slope` the slope and tree cover assemblies) are

@@ -1235,7 +1235,7 @@ pub async fn put_world(State(s): State<S>, Json(q): Json<On>) -> Response {
 
 /// Downloads a region, at the catalogue served, or removes it (with its terrain detail). A region the
 /// catalogue doesn't have yet can be downloaded: its files come once a catalogue has it (its download
-/// moves on to it: it has nothing to keep). One still building (its `tiles`) has the files of the
+/// moves on to it: it has nothing to keep). One still building has the files of the
 /// catalogue served; an Update brings those of the tiles built since.
 pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Json<On>) -> Response {
     blocking(s, move |s| {

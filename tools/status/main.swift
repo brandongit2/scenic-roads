@@ -934,7 +934,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         let done = built.values.filter { $0.total > 0 && $0.built >= $0.total }.count
         out.append(Line(text: "", style: .separator))
         out.append(Line(text: "Regions built: \(done) of \(built.count)", style: .small))
-        // Those still building, as the Regions panel says them: on the map as their tiles come, and
+        // Those still building: on the map as their tiles come, and
         // when all of it is (the forecast's).
         // Every z6 tile built but not yet recorded built (publishing's held regions): finishing.
         let held = Set((s.publishing?.regions ?? []).filter { r in r.kinds.contains { k in k != "new region" && k != "rebuilt" } }.map(\.id))

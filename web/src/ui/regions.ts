@@ -578,12 +578,30 @@ export class RegionsPanel {
       }
       clearTimeout(armed);
       const on = mode === 'download';
-      const list = typeof ids === 'function' ? ids() : ids;
+      const list = [...(typeof ids === 'function' ? ids() : ids)];
       for (const id of list) this.want.set(id, on);
       // At once: every row it touches in its new state, the list again if it filters by it.
       this.redrawDl();
       say(mode === 'cancel' ? `Stopped downloading ${what}.` : '');
       void (async () => {
+        // (Cancel: a region that finished since the last poll stays: a whole download goes only by
+        // Remove, which asks first. The window left is this one call's.)
+        let kept: string[] = [];
+        if (mode === 'cancel') {
+          const st = await dlStatus().catch(() => null);
+          if (st) {
+            kept = list.filter((id) => st.regions[id] && modeOf(true, st.regions[id]) === 'remove');
+            for (const id of kept) {
+              this.want.delete(id);
+              list.splice(list.indexOf(id), 1);
+            }
+            if (kept.length) {
+              this.dl = st;
+              this.redrawDl();
+              say(`${kept.length > 1 ? `${kept.length} of them` : `“${st.regions[kept[0]].name || kept[0]}”`} finished before the cancel: kept (Remove takes it off).`);
+            }
+          }
+        }
         for (const id of list) {
           try {
             await dlRegion(id, on);

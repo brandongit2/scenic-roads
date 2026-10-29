@@ -795,8 +795,8 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   catalogue it's at; `behind` (behind the one served): `{cat, files, gone, what, bytes, unknown,
   state?}`, the catalogue an update takes it to, the files new to it and those it lets go, the
   kinds of what changed (a layer's name, basemap, road data, lists…), the bytes still to copy;
-  `update` (updating): the tally of those new files; `tiles`: a region still building, as the
-  served catalogue has it. `PUT /api/downloads/world {on}` (each on its own: a region doesn't
+  `update` (updating): the tally of those new files.
+  `PUT /api/downloads/world {on}` (each on its own: a region doesn't
   bring the World, and the World goes while regions stay); `PUT /api/downloads/regions/{id} {on}`
   (off removes its terrain detail too); `PUT /api/downloads/regions/{id}/detail {on}` (its terrain
   detail, the deep packs near it; on refused unless the region is downloaded); a new download is at

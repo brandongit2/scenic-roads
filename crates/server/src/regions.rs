@@ -297,13 +297,22 @@ fn load_all(pool: &IoPool, dir: &store::nasfs::NasPath) -> Result<ListedAll> {
     Ok((ok, bad))
 }
 
-/// Every minute: the regions' accepted copy (for the layer) brought up to date.
+/// Every minute: the regions' accepted copy (for the layer) brought up to date; and in a thread of
+/// its own (a fresh home's first pass reads every geometry, ~20 min on the M1, which would hold the
+/// copy back that long), the land and water of the regions not sized yet.
 pub fn spawn_syncer(s: S) {
+    let s2 = s.clone();
     std::thread::Builder::new()
         .name("regions".into())
         .spawn(move || loop {
             sync_accepted(&s);
-            size_regions(&s);
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        })
+        .ok();
+    std::thread::Builder::new()
+        .name("region-areas".into())
+        .spawn(move || loop {
+            size_regions(&s2);
             std::thread::sleep(std::time::Duration::from_secs(60));
         })
         .ok();
@@ -421,7 +430,7 @@ fn sizes_into(s: &crate::AppState, list: &mut [Listed]) {
 }
 
 /// The sizes of the accepted regions this Mac hasn't sized yet, each geometry read once from the NAS
-/// through the pool (the regions thread, after the accepted copy is brought up to date); those no
+/// through the pool (the region-areas thread); those no
 /// region names any more dropped. Written out every 50, so a restart keeps what was done.
 fn size_regions(s: &crate::AppState) {
     let (Some(root), Some(pool)) = (s.data.nas_root(), s.data.pool()) else { return };
@@ -664,8 +673,7 @@ pub fn recorded(cat: &store::catalogue::Catalogue) -> Vec<DrawnRegion> {
     cat.coverage.get("regions").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
 }
 
-/// The regions a catalogue records, without their outlines (id, name and outline entries, and a region
-/// still building's `tiles`: built of total), read straight from its coverage: /api/catalog asks
+/// The regions a catalogue records, without their outlines (id, name and outline entries), read straight from its coverage: /api/catalog asks
 /// for them every minute.
 pub fn recorded_list(cat: &store::catalogue::Catalogue) -> Vec<Value> {
     let regions = cat.coverage.get("regions").and_then(Value::as_array);
@@ -673,13 +681,7 @@ pub fn recorded_list(cat: &store::catalogue::Catalogue) -> Vec<Value> {
         .map(|rs| {
             rs.iter()
                 .filter(|r| r.is_object())
-                .map(|r| {
-                    let mut v = json!({ "id": r["id"], "name": r["name"], "outline": r["outline"] });
-                    if r.get("tiles").is_some_and(Value::is_object) {
-                        v["tiles"] = r["tiles"].clone();
-                    }
-                    v
-                })
+                .map(|r| json!({ "id": r["id"], "name": r["name"], "outline": r["outline"] }))
                 .collect()
         })
         .unwrap_or_default()
