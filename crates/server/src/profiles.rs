@@ -223,26 +223,25 @@ impl Profiles {
         Ok(())
     }
 
-    /// The NAS's list: Ok(None) when there is no file yet (or it doesn't read: logged), Err(Away)
-    /// while the NAS can't be reached. None of the NAS at all (no root): Ok(None) too, `nas` false.
-    fn read_nas(data: &crate::data::Data) -> Result<Option<List>, Away> {
+    /// The NAS's list: Ok(None) when there is no file yet (or no NAS at all: no root), Err(Away)
+    /// while the NAS can't be reached, Err(Unreadable) when the file is there but doesn't read or
+    /// doesn't hold together (busy, a hand edit): never taken as none, which a change would then
+    /// write over every profile.
+    fn read_nas(data: &crate::data::Data) -> Result<Option<List>, NasErr> {
         let (Some(root), Some(pool)) = (data.nas_root(), data.pool()) else { return Ok(None) };
         if !pool.is_online() {
-            return Err(Away);
+            return Err(NasErr::Away);
         }
-        match crate::views::RemoteFile::new(root.join(NAS_FILE), pool).read_all() {
-            Ok(b) => {
-                let l = List::parse(&b);
-                if l.is_none() {
-                    eprintln!("profiles: {NAS_FILE} on the NAS doesn't read: taken as none");
-                }
-                Ok(l)
-            }
-            Err(e) if e.is_unreachable() => Err(Away),
-            Err(_) => Ok(None),
+        match pool.read_all(&root.join(NAS_FILE)) {
+            Ok(b) => List::parse(&b).map(Some).ok_or_else(|| NasErr::Unreadable("not a list".into())),
+            Err(e) if e.is_unreachable() => Err(NasErr::Away),
+            Err(store::iopool::IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(NasErr::Unreadable(format!("{e:?}"))),
         }
     }
 
+    /// Writes the NAS's file whole: a temporary file (named by host and pid: store::whole), synced,
+    /// renamed over it (busy waited out), so a reader finds the old list or the new, never a torn one.
     fn write_nas(data: &crate::data::Data, l: &List) -> Result<()> {
         let (Some(root), Some(pool)) = (data.nas_root(), data.pool()) else { return Ok(()) };
         let path = root.join(NAS_FILE);
@@ -252,12 +251,16 @@ impl Profiles {
         pool.write(&tmp, serde_json::to_vec_pretty(l)?)
             .map_err(|e| anyhow::anyhow!("{e:?}"))
             .context("write the profiles on the NAS")?;
-        pool.rename(&tmp, &path).map_err(|e| anyhow::anyhow!("{e:?}")).context("rename the profiles on the NAS")?;
+        let (from, to) = (tmp.clone(), path.clone());
+        if let Err(e) = pool.call(move || from.rename_over(&to)) {
+            pool.call(move || tmp.remove_file()).ok();
+            return Err(anyhow::anyhow!("{e:?}")).context("rename the profiles on the NAS");
+        }
         Ok(())
     }
 
-    /// The list (the NAS's, kept here too; while it's away, the copy here) and whether it can be
-    /// changed now.
+    /// The list (the NAS's, kept here too; while it's away or its file doesn't read, the copy
+    /// here) and whether it can be changed now.
     pub fn list(&self, data: &crate::data::Data) -> (List, bool) {
         match Self::read_nas(data) {
             Ok(nas) => {
@@ -270,24 +273,41 @@ impl Profiles {
                 }
                 (l, true)
             }
-            Err(Away) => (self.read_local().unwrap_or_default(), false),
+            Err(e) => {
+                if let NasErr::Unreadable(why) = &e {
+                    eprintln!("profiles: {NAS_FILE} on the NAS: {why}: the copy here served");
+                }
+                (self.read_local().unwrap_or_default(), false)
+            }
         }
     }
 
-    /// Applies `op` to the list where it is kept: the new list and the profile's id.
+    /// Applies `op` to the list where it is kept: the new list and the profile's id. The NAS's file
+    /// is read again just before, under this server's lock; two Macs' servers changing it within
+    /// the same read-and-write (well under a second), the later write wins.
     pub fn change(&self, data: &crate::data::Data, op: Op) -> Result<(List, String)> {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let cur = match Self::read_nas(data) {
             Ok(Some(l)) => l,
             Ok(None) if data.nas_root().is_some() => List::default(),
             Ok(None) => self.read_local().unwrap_or_default(),
-            Err(a) => return Err(a.into()),
+            Err(NasErr::Away) => return Err(Away.into()),
+            Err(NasErr::Unreadable(why)) => {
+                return Err(anyhow::Error::from(Away)
+                    .context(format!("{NAS_FILE} on the NAS doesn't read ({why}): nothing changed")))
+            }
         };
         let (next, id) = cur.apply(op)?;
         Self::write_nas(data, &next)?;
         self.write_local(&next)?;
         Ok((next, id))
     }
+}
+
+/// Why the NAS's list can't be had.
+enum NasErr {
+    Away,
+    Unreadable(String),
 }
 
 fn answer(l: &List, writable: bool, id: Option<&str>) -> Value {
@@ -442,6 +462,23 @@ mod tests {
             (names(&v2), v2["default"].as_str()),
             (vec!["Night".to_string(), "Default".into()], Some(id.as_str()))
         );
+    }
+
+    #[tokio::test]
+    async fn a_nas_file_that_doesnt_read_is_never_written_over() {
+        let nas = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
+        let (_, v) = call(&s, "POST", "/api/profiles", Some(json!({"name": "Night", "settings": {}}))).await;
+        assert_eq!(names(&v), ["Default", "Night"]);
+        std::fs::write(nas.path().join(NAS_FILE), b"{\"v\":1,").unwrap();
+        // The copy here is served, read-only; a change is refused and the file left as it is.
+        let (_, v) = call(&s, "GET", "/api/profiles", None).await;
+        assert_eq!((names(&v), v["writable"].as_bool()), (vec!["Default".to_string(), "Night".into()], Some(false)));
+        let (st, _) = call(&s, "POST", "/api/profiles", Some(json!({"name": "Day", "settings": {}}))).await;
+        assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(std::fs::read(nas.path().join(NAS_FILE)).unwrap(), b"{\"v\":1,");
+        assert!(std::fs::read_dir(nas.path().join("settings")).unwrap().count() == 1, "no temporary file left");
     }
 
     #[test]
