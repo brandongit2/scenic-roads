@@ -10433,6 +10433,47 @@ mod tests {
         assert_eq!(a["epoch"], pv.history(0, 10).unwrap()["epoch"]);
     }
 
+    /// (Task #836 review) In the pool, `/work/tocome` is this Mac's pageview's, of the run the
+    /// swarm's answer carries: asked with that `at`, that run's tiles, in the pageview's epoch (not
+    /// the coordinator's own forecast, set here too); `raw` (an older page asking the lead) still
+    /// the coordinator's.
+    #[test]
+    fn in_the_pool_the_tiles_to_come_are_the_pageviews_run() {
+        let (d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let post = |b: serde_json::Value| {
+            let r =
+                raw(&addr, "POST", "/work/tocome", &[("Content-Type", "application/json")], b.to_string().as_bytes());
+            serde_json::from_str::<serde_json::Value>(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+        };
+        c.set_tocome(Arc::new(crate::agent::forecast::ToCome { at: 5, ..Default::default() }));
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(&root).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let now = unix_now();
+        crate::agent::pageview::tests::fixture(&nas, now);
+        let pv = crate::agent::pageview::PageView::new();
+        pv.set_inputs(crate::agent::pageview::Inputs {
+            root: Some(nas.clone()),
+            term: 7,
+            members: vec!["m-a".into(), "m-b".into()],
+            ..Default::default()
+        });
+        pv.touch();
+        c.set_pageview(pv.clone());
+        // (Before the pageview's first run: the coordinator's.)
+        assert_eq!(post(serde_json::json!({ "at": now }))["at"], 5);
+        assert!(pv.tick(&crate::agent::pageview::NasFiles(nas.clone()), now));
+        crate::agent::pageview::tests::settle(&pv);
+        let sw = pv.swarm().unwrap();
+        let at = sw["agent"]["forecast"]["at"].as_u64().unwrap();
+        let a = post(serde_json::json!({ "at": at }));
+        assert_eq!(a["at"].as_u64(), Some(at), "{a}");
+        assert_eq!(a["epoch"], sw["epoch"]);
+        assert!(a["macs"].as_object().is_some_and(|m| !m.is_empty()), "{a}");
+        assert_eq!(post(serde_json::json!({ "raw": true }))["at"], 5);
+    }
+
     /// Tasks brokered by every member (docs/pool.md §8): a page from another member's address takes
     /// a task this Mac's job offered, straight from this Mac's coordinator (its broker), with CORS:
     /// the preflight answered for `Authorization`, `X-Worker`, `Range` and `PUT` (and a private

@@ -145,24 +145,27 @@ struct Snap {
 /// history: `history::Waits`) and this history's number when they were made.
 #[derive(Default)]
 struct Runs {
-    done: Option<Done>,
+    done: Option<Forecast>,
+    tocome: Option<Done>,
     prev: Option<Done>,
     running: Option<std::thread::JoinHandle<Ran>>,
     of: Option<(SystemTime, Instant)>,
     waits: (Arc<history::Waits>, u64),
 }
 
-/// A forecast run here and its tiles to come (`/work/tocome`, task #836: made of the same run, so
-/// its `at` is the swarm's forecast's), its runs' `after` in this history's numbering (`epoch`;
-/// none before the history's first read).
+/// A forecast run here's tiles to come (`/work/tocome`, task #836: made of the same run, so its
+/// `at` is the swarm's forecast's), its runs' `after` in this history's numbering (`epoch`; none
+/// before the history's first read). The one before the last kept without its forecast (#836
+/// review: only its tiles are asked for).
 struct Done {
-    forecast: Forecast,
     tocome: ToCome,
     epoch: Option<String>,
 }
 
-/// What a run's thread gives back: it, and the waits it made (with the history's number then).
+/// What a run's thread gives back: it, its tiles to come, and the waits it made (with the
+/// history's number then).
 struct Ran {
+    forecast: Forecast,
     done: Done,
     waits: Option<(history::Waits, u64)>,
 }
@@ -173,7 +176,8 @@ impl Runs {
         if self.running.as_ref().is_some_and(|h| wait || h.is_finished()) {
             match self.running.take().map(std::thread::JoinHandle::join) {
                 Some(Ok(r)) => {
-                    self.prev = self.done.replace(r.done);
+                    self.done = Some(r.forecast);
+                    self.prev = self.tocome.replace(r.done);
                     if let Some((w, at)) = r.waits {
                         self.waits = (Arc::new(w), at);
                     }
@@ -462,7 +466,7 @@ impl PageView {
         let forecast = {
             let mut r = self.forecast.lock().unwrap();
             r.take(false);
-            r.done.as_ref().map(|d| d.forecast.clone())
+            r.done.clone()
         };
         let st = self.state.lock().unwrap();
         let s = st.snap.as_ref()?;
@@ -477,7 +481,7 @@ impl PageView {
         self.touch();
         let mut r = self.forecast.lock().unwrap();
         r.take(false);
-        let d = [&r.done, &r.prev].into_iter().flatten().find(|d| Some(d.forecast.at) == at).or(r.done.as_ref())?;
+        let d = [&r.tocome, &r.prev].into_iter().flatten().find(|d| Some(d.tocome.at) == at).or(r.tocome.as_ref())?;
         let mut a = d.tocome.answer();
         a["epoch"] = d.epoch.clone().into();
         Some(a)
@@ -559,7 +563,7 @@ impl PageView {
         r.take(false);
         // (No record: the last one dropped; one running kept until it's done, never two at once.)
         let Some((t, rec)) = record else {
-            (r.done, r.prev, r.of) = (None, None, None);
+            (r.done, r.tocome, r.prev, r.of) = (None, None, None, None);
             return;
         };
         let due = r.of.is_none_or(|(at, started)| at != *t || started.elapsed() >= super::forecast::EVERY);
@@ -585,7 +589,7 @@ impl PageView {
                 }
                 None => (None, None),
             };
-            Ran { done: Done { forecast, tocome, epoch }, waits }
+            Ran { forecast, done: Done { tocome, epoch }, waits }
         }) {
             Ok(h) => (r.running, r.of) = (Some(h), Some((*t, Instant::now()))),
             Err(e) => eprintln!("pageview: the forecast's thread: {e}"),
@@ -646,7 +650,7 @@ fn local(root: &store::nasfs::NasRoot, p: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::forecast::{self, Cadence, Cost, Input, Machine};
     use super::*;
     use std::borrow::Cow;
@@ -716,7 +720,8 @@ mod tests {
 
     /// The lead's files for term 7: its status, its view, its forecast's input, two members' history
     /// of a day, a member's status.
-    fn fixture(root: &store::nasfs::NasRoot, now: u64) {
+    /// (Also coord's tests': `/work/tocome` from a pageview.)
+    pub(crate) fn fixture(root: &store::nasfs::NasRoot, now: u64) {
         put(root, "state/status.json", br#"{"host":"m4","beat":1,"forecast":null,"helpers":[]}"#);
         let view = serde_json::json!({ "at": now, "view": {
             "pause": null,
@@ -745,7 +750,7 @@ mod tests {
     }
 
     /// The forecast run off the reads (`Runs`), waited for.
-    fn settle(pv: &PageView) {
+    pub(crate) fn settle(pv: &PageView) {
         pv.forecast.lock().unwrap().take(true);
     }
 
