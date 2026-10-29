@@ -1553,14 +1553,8 @@ async function main() {
       const f = feats.point ?? feats.areas[0];
       if (f) return showFeat(f, feats.areas);
       // Nothing else here: water, if the depth has it (else the strip goes idle).
-      const tok = waterTok;
-      const ll = cursorLL ?? map.unproject([pt.x, pt.y]);
-      void depth.water(ll).then((w) => {
-        if (tok !== waterTok) return;
-        if (!w) return strip.show(null, null);
-        const n = waterNameAt(map, pt, w.water);
-        strip.showWater(w, n.name, n.kind);
-      });
+      waterAt = { tok: waterTok, pt, ll: cursorLL ?? map.unproject([pt.x, pt.y]) };
+      if (!waterBusy) void askWater();
       return;
     }
     hoverBuilding(null);
@@ -1576,6 +1570,28 @@ async function main() {
   let hoverAreas: FeatureSummary[] = [];
   /** The pick a water answer (depth.water) is for: one newer, or the cursor gone, drops it. */
   let waterTok = 0;
+  /** The newest water pick still to ask about, and whether a probe is out: one at a time, the
+   * newest pick next, so fast moves don't queue probes in the depth workers. */
+  let waterAt: { tok: number; pt: { x: number; y: number }; ll: maplibregl.LngLat } | null = null;
+  let waterBusy = false;
+  const askWater = async () => {
+    waterBusy = true;
+    try {
+      while (waterAt) {
+        const q = waterAt;
+        waterAt = null;
+        const w = await depth.water(q.ll);
+        if (q.tok !== waterTok) continue;
+        if (!w) strip.show(null, null);
+        else {
+          const n = waterNameAt(map, q.pt, w.water);
+          strip.showWater(w, n.name, n.kind);
+        }
+      }
+    } finally {
+      waterBusy = false;
+    }
+  };
   /** The hovered building highlighted (null: none), when it changed. */
   let hoveredBuilding: unknown = null;
   const hoverBuilding = (f: maplibregl.MapGeoJSONFeature | null) => {

@@ -1,18 +1,23 @@
 // The water's name and kind under the cursor, for the footer's water info (ui/strip.ts showWater),
 // from what the map draws there: a river's or canal's line under the cursor (the basemap's
-// `waterway` and its names), else the nearest water label in the view within a short reach (a sea's,
+// `waterway` and its names), else the nearest water label in the view within a short reach whose class fits the depth source's water (a sea's,
 // bay's or lake's name, basemap.ts `water-name`), else the depth source's kind of water alone.
 import type { Map as MLMap, PointLike } from 'maplibre-gl';
 import { displayOf } from './names';
 
 /** How far (px) a water label may stand from the cursor and still name the water there. */
-const LABEL_REACH = 160;
+const LABEL_REACH = 120;
 /** Words for the basemap's water classes (OpenMapTiles' water_name and waterway classes). */
 const KINDS: Record<string, string> = {
   ocean: 'ocean', sea: 'sea', bay: 'bay', strait: 'strait', lagoon: 'lagoon', lake: 'lake', reservoir: 'reservoir',
   pond: 'pond', river: 'river', canal: 'canal', stream: 'stream', ditch: 'ditch', drain: 'drain', dock: 'dock',
 };
 const kindOf = (p: Record<string, unknown>) => KINDS[String(p.class ?? p.c ?? '')] ?? '';
+/** Label classes that can't name water of the depth source's kind (a lake's name never a sea's water, a sea's never a lake's; bays stand in both). */
+const NOT_FOR: Record<'sea' | 'lake', Set<string>> = {
+  sea: new Set(['lake', 'reservoir', 'pond']),
+  lake: new Set(['ocean', 'sea']),
+};
 const nameOf = (p: Record<string, unknown>) => displayOf(p) || displayOf(p, 'n');
 
 export function waterNameAt(map: MLMap, pt: { x: number; y: number }, water: 'sea' | 'lake' | null): { name: string; kind: string } {
@@ -29,7 +34,7 @@ export function waterNameAt(map: MLMap, pt: { x: number; y: number }, water: 'se
   for (const f of map.queryRenderedFeatures(box(LABEL_REACH), { layers: has(['water-name']) })) {
     const p = f.properties ?? {};
     const name = nameOf(p);
-    if (!name) continue;
+    if (!name || (water && NOT_FOR[water].has(kindOf(p)))) continue;
     const g = f.geometry;
     const pts = g.type === 'Point' ? [g.coordinates] : g.type === 'LineString' || g.type === 'MultiPoint' ? g.coordinates : g.type === 'MultiLineString' ? g.coordinates.flat() : [];
     for (const c of pts) {
