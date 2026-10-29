@@ -8599,6 +8599,33 @@ mod tests {
         assert_eq!(g.more.len(), 1, "a measured job beside it");
     }
 
+    /// Task #838: a redo (its jobs only change build records, `steps::records_only`) is never a
+    /// cold start held for the lead's jobs: a cold one goes beside a long cold job holding the
+    /// whole Mac, at one thread.
+    #[test]
+    fn a_cold_redo_goes_beside_a_long_lead_job() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        ran_before(&c, "terrain-hi");
+        let own = |step: &str, t: &str| Offer {
+            step: step.into(),
+            targets: vec![(t.into(), format!("k {t}"), 0)],
+            job: Some(format!("{step} {t}")),
+        };
+        let a = Ask {
+            want: 2,
+            can: vec!["terrain-hi".into(), "redo".into()],
+            ..every_ask("m4", "terrain-hi", 64_000, 100_000)
+        };
+        c.offer("p", vec![own("terrain-hi", "3/1/1")]);
+        let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
+        assert!(matches!(&g.work, Granted::Job { step, .. } if step == "terrain-hi"), "{:?}", g.work);
+        assert_eq!(g.threads, 8, "a cold terrain job: the whole Mac");
+        c.offer("p", vec![own("redo", "redo 1")]);
+        let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
+        assert!(matches!(&g.work, Granted::Job { step, .. } if step == "redo"), "{:?}", g.work);
+        assert_eq!(g.threads, 1);
+    }
+
     /// Task #499: the room left is never more than what its Mac's jobs hold now leaves (its memory
     /// guard's last sample, `Capacity::held_mb`): a cold start holding past its provisional need is
     /// counted at what it holds, so nothing goes beside an overrun (held past the whole room

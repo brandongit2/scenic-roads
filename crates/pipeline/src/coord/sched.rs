@@ -619,6 +619,13 @@ impl Sched {
     /// What a job of `step` over `targets` is packed as (task #499): its measure (`job_need`), else,
     /// a cold start (`Need::cold`), its provisional need (`provisional`).
     pub(super) fn pack_need(&self, step: &str, targets: &[String]) -> Need {
+        // (A step whose jobs only change build records (task #838): never cold, one thread counted for no
+        // cores (it waits on the NAS), its declared memory, no disk: it goes beside any jobs, a long one's included.)
+        if crate::agent::steps::records_only(step) {
+            let m = Measured { mem_mb: crate::agent::steps::mem_mb(step), disk_mb: 0, own: false };
+            let cores = Some(crate::needs::Cores { grant: 1, busy_tenths: Some(0) });
+            return Need { m, cores, cold: false, waits: false, idle: false };
+        }
         match self.job_need(step, targets) {
             Some((m, cores)) => Need { m, cores, cold: false, waits: false, idle: false },
             None => Need { m: self.provisional(step, targets), cores: None, cold: true, waits: false, idle: false },
@@ -635,7 +642,9 @@ impl Sched {
     /// threads as the Mac has would swamp the jobs beside it). One only waiting on a worker, or
     /// leaving its cores idle, counts for none.
     pub(super) fn need_cores(&self, step: &str, targets: &[String], n: &Need, share: u32, total: u32) -> (u32, u32) {
-        let (threads, busy) = if n.cold && !THREADS_HONOURED.contains(&step) {
+        let (threads, busy) = if crate::agent::steps::records_only(step) {
+            (1, 0)
+        } else if n.cold && !THREADS_HONOURED.contains(&step) {
             (total, total * 10)
         } else {
             match n.cores {
@@ -890,7 +899,9 @@ impl Sched {
                     }
                     continue;
                 }
-                if beside && need_threads > by_threads && !over_ok {
+                // (One counted for no cores (a records-only step's, task #838) adds no load to wait
+                // for.)
+                if beside && need > 0 && need_threads > by_threads && !over_ok {
                     if ramp_why.is_none() {
                         ramp_why = Some(format!(
                             "cores: {} counted at their threads; a job of {} past them waits for the load to show the last ({}s)",
@@ -1075,6 +1086,7 @@ impl Sched {
     pub(super) fn own_cold_waits(&self, o: &Offer, a: &Ask, left: u64, cold_held: bool, now: Instant) -> bool {
         let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
         o.job.is_some()
+            && !crate::agent::steps::records_only(&o.step)
             && self.job_need(&o.step, &ts).is_none()
             && (self.provisional(&o.step, &ts).mem_mb > left
                 || cold_held

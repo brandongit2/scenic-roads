@@ -160,6 +160,9 @@ pub struct Step {
     /// Its write-set: whether a job of it may write `logical` (`removal`: removes it), for some
     /// target of its own.
     pub writes: fn(&str, bool) -> bool,
+    /// Its jobs only change build records (no file made, read or removed): never a cold start,
+    /// packed beside any jobs at one thread and little memory (task #838, crate::coord::sched).
+    pub records_only: bool,
 }
 
 /// A row with what most steps have: 1.5 GB until measured, none of the sets.
@@ -171,7 +174,19 @@ const fn step(
     does: &'static str,
     writes: fn(&str, bool) -> bool,
 ) -> Step {
-    Step { name, does, kind, scope, stage, mem_mb: 1500, shared: None, alone: false, answered: false, writes }
+    Step {
+        name,
+        does,
+        kind,
+        scope,
+        stage,
+        mem_mb: 1500,
+        shared: None,
+        alone: false,
+        answered: false,
+        writes,
+        records_only: false,
+    }
 }
 
 use Kind::{Derive, Fetch, Keep, Pack, Publish};
@@ -771,6 +786,8 @@ pub const TABLE: [Step; 59] = [
     },
     Step {
         alone: true,
+        records_only: true,
+        mem_mb: 256,
         ..step(
             "upkeep",
             Keep,
@@ -935,6 +952,11 @@ pub fn table() -> Vec<Info> {
 /// step the table doesn't know).
 pub fn mem_mb(step: &str) -> u64 {
     row(step).map_or(1500, |s| s.mem_mb)
+}
+
+/// Whether `step`'s jobs only change build records (`Step::records_only`).
+pub fn records_only(step: &str) -> bool {
+    row(step).is_some_and(|s| s.records_only)
 }
 
 /// Whether `step` is a run of the whole build's, the lead's alone.

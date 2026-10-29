@@ -1101,7 +1101,11 @@ runs in the pool at a time (`pick_every`, the lead's `cold_under_way`), so the s
 before it fans out. Its Mac's room left is never more than what its jobs hold now leaves (§7.2,
 `Capacity::held_mb`), so one holding past its provisional need is counted at what it holds as soon
 as the guard samples it; one that grows past the Mac's limit is the memory guard's (§7.2), which
-learns its floor. After one run, the step's other targets are offered by its model (above). A floor never stalls the build: the first slot starts once
+learns its floor. After one run, the step's other targets are offered by its model (above).
+**A records-only step** (the steps table's `records_only`: `redo`, whose jobs only change build
+records; task #838) is never a cold start: its job is packed at its declared memory, no disk, one
+thread counted for no cores, so it goes beside any jobs (a long one holding the whole Mac
+included) and never holds the lead's asks. A floor never stalls the build: the first slot starts once
 room-making has done what it can, the disk guard as backstop.
 
 Planned: `cost_version` derived from the step's key version (`crate::agent::build`'s `*_V`) rather
