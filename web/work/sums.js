@@ -344,20 +344,26 @@ export function inRings(rings, x, y) {
   return wind !== 0;
 }
 
-// The area inside rings (flat, as inRings): their signed areas summed, so a hole (wound the other
-// way) takes its own off.
+// The area a region's fill rings cover (flat, as inRings): each ring's own, summed. A region's
+// fill holds its shapes' outer rings only (agent::regionsview outline), wound as each source
+// wound them, so each ring counts whole whatever its winding (a signed sum let shapes wound
+// opposite ways cancel out).
 export function ringsArea(rings) {
-  let a = 0;
-  for (const r of rings || []) for (let i = 0; i + 3 < r.length; i += 2) a += r[i] * r[i + 3] - r[i + 2] * r[i + 1];
-  return Math.abs(a / 2);
+  let sum = 0;
+  for (const r of rings || []) {
+    let a = 0;
+    for (let i = 0; i + 3 < r.length; i += 2) a += r[i] * r[i + 3] - r[i + 2] * r[i + 1];
+    sum += Math.abs(a / 2);
+  }
+  return sum;
 }
 
-// The one region a point picks among those whose rings hold it (inRings: a hole isn't hit; #831):
-// the innermost, the smallest, an island over the waters drawn round it, an enclave over the
-// country round it. [{id, rings}] → its id, or null.
+// The one region a point picks among those whose rings hold it (#831): the innermost, the
+// smallest, an island over the waters drawn round it, an enclave over the country round it.
+// [{id, area}] (area: ringsArea, kept per region) → its id, or null.
 export function topRegion(hits) {
   let best = null, bestA = Infinity;
-  for (const h of hits) { const a = ringsArea(h.rings); if (a < bestA) { best = h.id; bestA = a; } }
+  for (const h of hits) if (h.area < bestA) { best = h.id; bestA = h.area; }
   return best;
 }
 

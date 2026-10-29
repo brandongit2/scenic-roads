@@ -19,7 +19,7 @@
 // click or a tap the map takes itself, at the point lifted, and hands the stack to `pick` (a
 // tap's click isn't left to the page: Mobile Safari, #615). It draws a tile's minimap for its card
 // (`minimap`).
-import { areaOf, inRings, tileBox, tileOf, topRegion } from "./sums.js";
+import { areaOf, inRings, ringsArea, tileBox, tileOf, topRegion } from "./sums.js";
 
 const FADE_MS = 900;
 const MAX_K = 48; // pixels a world unit, most zoomed in (a z6 tile ≈ 750 px)
@@ -387,7 +387,7 @@ export function createMap({ pick = () => {} } = {}) {
     const hits = [];
     for (const r of data.regions) {
       const p = paths.regions.get(r.id);
-      if (p && wx >= p.bbox[0] && wx <= p.bbox[2] && wy >= p.bbox[1] && wy <= p.bbox[3] && inRings(p.rings, wx, wy)) hits.push({ id: r.id, rings: p.rings });
+      if (p && wx >= p.bbox[0] && wx <= p.bbox[2] && wy >= p.bbox[1] && wy <= p.bbox[3] && inRings(p.rings, wx, wy)) hits.push({ id: r.id, area: p.area });
     }
     const top = topRegion(hits);
     if (top) out.push(`mr ${top}`);
@@ -521,7 +521,7 @@ export function createMap({ pick = () => {} } = {}) {
         if (had.get(r.id)?.rings !== r.fill) outlines = true;
         let p = r.fill && regionPaths.get(r.fill);
         if (!p) {
-          p = { rings: r.fill, fill: ringsPath(r.fill, true), edge: ringsPath(r.edge, false), bbox: bboxOf(r.fill) };
+          p = { rings: r.fill, fill: ringsPath(r.fill, true), edge: ringsPath(r.edge, false), bbox: bboxOf(r.fill), area: ringsArea(r.fill) };
           if (r.fill) regionPaths.set(r.fill, p);
         }
         paths.regions.set(r.id, p);

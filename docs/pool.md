@@ -1635,7 +1635,8 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   JSON from the NAS (read only). 503 until the agent has made it.
   The page's own files carry the world's countries' outlines for the same map (`countries.json`,
   Natural Earth 1:50m, the same projection) and the large lakes drawn as the sea (`lakes.json`, Natural
-  Earth 1:10m lakes of scalerank ≤ 3, simplified, #831).
+  Earth 1:10m lakes of scalerank ≤ 3, simplified, #831; made by `tools/worldmap/lakes.py` from the NAS's
+  `sources/fetched/natural-earth-lakes-10m`, read only).
 - **Live** (`agent::live`, task #514): each Mac's own measures over time, in rings on its own
   disk (the agent's folder's `live.bin`, never the NAS; written every 5 minutes and as the agent
   stops, read back as it starts): a point a second for an hour, every 10 s for a day, a minute

@@ -230,7 +230,7 @@ The Jobs tab's stages are the one exception.
   Its cards (the Jobs tab's, drawn as docs/mockups/build-live.html's) show the whole stack under
   the point, one after another under a line: every tile there at every zoom (the deepest first),
   then the one region there: the innermost (an island, not the waters round it; an enclave, not the
-  country round it; a hole not hit, #831). A tile's card: its stage and state, its share done and phase, step, job, Mac,
+  country round it: the smallest of those under the point, #831). A tile's card: its stage and state, its share done and phase, step, job, Mac,
   the degrees it covers, a minimap of it and half a tile around; a queued one's start and Mac
   ("to come at ≈ HH:MM on <Mac>"); a finished one's when and whether it's in the app; a soloed
   published one's catalogue and when. A region's: its folders, its download and tiles left (stat
