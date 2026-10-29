@@ -83,6 +83,17 @@ assert.equal(inh.get('uk-waters'), 'gb', 'a subdivision counts as its country fo
 assert.equal(folderCountry(dk, gof), null);
 assert.equal(folderCountry(gl, gof), 'gl');
 assert.equal(folderCountry(f('x', 'X', ['q']), gof), null);
+// A country's folder holding territories with flags of their own (the United States: Puerto Rico,
+// Guam; a subfolder of islands with their own) is still that country's: the majority of its own.
+const uflags: Record<string, string> = { texas: 'us', ohio: 'us', utah: 'us', pr: 'pr', gu: 'gu', wake: 'um', midway: 'um' };
+const uof = (id: string) => uflags[id] ?? null;
+const usmi = f('us/umi', 'U.S. Minor Outlying Islands', ['wake', 'midway']);
+const usa = f('us', 'United States', ['texas', 'ohio', 'utah', 'pr', 'gu', 'us-waters'], [usmi]);
+assert.equal(folderCountry(usa, uof), 'us');
+assert.equal(withInherited(f('', '', [], [usa]), uof).get('us-waters'), 'us');
+assert.equal(withInherited(f('', '', [], [usa]), uof).get('pr'), 'pr', 'a territory keeps its own');
+// No majority: two of two different, or a tie.
+assert.equal(folderCountry(f('k', 'K', ['texas', 'pr']), uof), null);
 
 // Areas in words, compact (metric).
 assert.equal(km2(0.4), '<1 km²');

@@ -93,12 +93,19 @@ export function folderFlag(f: Folder, flagOf: (id: string) => string | null, lan
   return best;
 }
 
-/** The flag a folder stands for: the country code all its flagged regions (at any depth) share, or
- * null when they have none or are of several countries (the Danish Realm: dk, fo, gl). A subdivision's
- * ("gb-sct") counts as its country's. */
+/** The country a folder stands for: the code more than half of its own flagged regions share (all
+ * its regions' at any depth when it has none of its own), or null when none has a majority (the
+ * Danish Realm: dk, fo; the Kingdom of the Netherlands). A subdivision's ("gb-sct") counts as its
+ * country's. A majority, not all: the United States folder holds Puerto Rico and Guam, Australia's
+ * Christmas and Norfolk Islands, China's Hong Kong and Macau, each with a flag of its own. */
 export function folderCountry(f: Folder, flagOf: (id: string) => string | null): string | null {
-  const codes = new Set(allIds(f).flatMap((id) => flagOf(id)?.split('-')[0] ?? []));
-  return codes.size === 1 ? [...codes][0] : null;
+  const flagged = (ids: string[]) => ids.flatMap((id) => flagOf(id)?.split('-')[0] ?? []);
+  const own = flagged(f.regions);
+  const codes = own.length ? own : flagged(allIds(f));
+  const n = new Map<string, number>();
+  for (const c of codes) n.set(c, (n.get(c) ?? 0) + 1);
+  for (const [c, k] of n) if (k * 2 > codes.length) return c;
+  return null;
 }
 
 /** A region with a flag of its own keeps it; one without (national waters, "land outside its
