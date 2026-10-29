@@ -6580,7 +6580,11 @@ impl Agent {
         let sizes = self.cache_size.lock().unwrap().1.clone();
         room::Caches {
             clearable: sizes.as_ref().map(|s| s.clearable(room::Level::Caches)),
-            clearable_deep: sizes.as_ref().map(|s| s.clearable(room::Level::Deep)),
+            // (Not the answers while a job keeping them runs here: a deep clear keeps them then.)
+            clearable_deep: sizes.as_ref().map(|s| {
+                let held = if self.answering() { s.clear.get("answers").copied().unwrap_or(0) } else { 0 };
+                s.clearable(room::Level::Deep) - held
+            }),
             each: sizes.map(|s| room::gone(&s.clear, if home { 60.0 } else { 12.0 })).unwrap_or_default(),
             why_not: why,
             cleared: self.mem.cleared.clone(),

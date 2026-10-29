@@ -611,9 +611,11 @@ fn answer_sets(cache: &Path, root: &store::nasfs::NasRoot) -> Vec<AnswerSet> {
         let Some(date) = n.strip_prefix("kept-").and_then(|r| r.strip_suffix(".json")) else { continue };
         let files = crate::answers::items_files(&items, date);
         let k = crate::answers::items(root, &items, date);
-        let mut paths: Vec<PathBuf> = files.iter().map(|f| items.join(f)).collect();
-        // (The mark last: a clear stopped midway leaves it, and the next sync sees what's gone.)
-        paths.push(k.mark.clone());
+        // (The mark first: with it gone, the next sync takes the NAS's set back, whatever a clear
+        // stopped midway left. Left with files gone, that sync would send the NAS's archive without
+        // them: answers::Kept::sync, a file deleted here stays deleted.)
+        let mut paths = vec![k.mark.clone()];
+        paths.extend(files.iter().map(|f| items.join(f)));
         let bytes = paths.iter().filter_map(|p| std::fs::symlink_metadata(p).ok()).map(|m| m.len()).sum();
         out.push(AnswerSet { on_nas: k.on_nas(&files), files: paths, whole: None, bytes });
     }
@@ -671,9 +673,12 @@ fn clear_answers(cache: &Path, root: &store::nasfs::NasRoot, answering: bool) ->
             freed += store::cachefile::remove_tree(&aside).freed;
             continue;
         }
-        for p in &s.files {
-            if let store::cachefile::Removed::Freed(n) = store::cachefile::try_remove(p) {
-                freed += n;
+        // (The mark first: kept, a job holding it, the set stays whole.)
+        for (i, p) in s.files.iter().enumerate() {
+            match store::cachefile::try_remove(p) {
+                store::cachefile::Removed::Freed(n) => freed += n,
+                store::cachefile::Removed::InUse if i == 0 => break,
+                _ => {}
             }
         }
     }
@@ -1879,6 +1884,9 @@ mod tests {
         );
         let sources = store::nasfs::NasPath::local_for_test(nas);
         assert_eq!(sizes(c, false, Some(&root)).clear.get("answers"), Some(&(items_n + epoch_n)));
+        // (The items' mark goes first: a clear stopped midway leaves no mark over missing files,
+        // which the next sync would send the NAS without them.)
+        assert_eq!(answer_sets(c, &root)[0].files[0], k.mark);
         // A job keeping them runs here, or one holds them: none goes.
         let f = clear(c, &sources, Level::Deep, true).unwrap();
         assert_eq!((f.bytes(), f.stayed[0].cache.as_str(), f.stayed[0].bytes), (0, "answers", items_n + epoch_n));
