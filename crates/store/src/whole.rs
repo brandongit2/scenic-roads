@@ -444,6 +444,16 @@ mod tests {
         });
         let got = std::fs::read(&p).unwrap();
         assert!(got.len() == 4096 && got.iter().all(|b| *b == got[0]));
+        // No temporary file left, and the sweep still knows one by its name (the call's number
+        // after the pid), never the file itself.
+        let names: Vec<String> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["x.json"]);
+        let t = tmp_name(&p).with_extension("7.tmp");
+        let t = t.file_name().unwrap().to_string_lossy();
+        assert!(left_by_write(&t) && !left_by_write("x.json") && !left_by_write("x.json.aside.tmp"), "{t}");
     }
 
     /// A rename over a file held busy for good (as the NAS holds one another session left open)
