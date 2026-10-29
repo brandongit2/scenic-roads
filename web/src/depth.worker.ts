@@ -3,8 +3,8 @@
 // A map tile z/x/y (512 px) is built from the server's depth and class tiles of zoom z + 1 (four
 // 256-px tiles, lossless WebP, decoded exact: the stored ones, or past a place's sources' zoom the
 // server's from their nearest stored ancestor, crates/server/src/depth.rs; above the layer's least
-// zoom, z3, which the build stores none of, each pixel the mean of the least zoom's tiles under it
-// with data, #822) and the basemap's own water (its vector tile of zoom min(z, 14), as the map draws it),
+// zoom the catalogue names, z3 until depth-root has built the root packs (z0–2), each pixel the
+// mean of the least zoom's tiles under it with data, #822) and the basemap's own water (its vector tile of zoom min(z, 14), as the map draws it),
 // painted at 512 px. From that one composite come:
 //   relief   depth, reaching REACH px past its data (?mask=1: on land too, the map drawing it
 //            only in its water tiles' water; else in the basemap's water); elsewhere +12,000 m,

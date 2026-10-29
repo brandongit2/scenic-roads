@@ -1837,7 +1837,7 @@ fn bundled(
         x.lo.clear();
         x.hi.clear();
         x.add_bundle(logical, &keys);
-        if let Some(zs) = layer_zooms(layer) {
+        if let Some(zs) = layer_zooms(layer, x.root.is_some()) {
             (x.minzoom, x.maxzoom) = zs;
         }
     }
@@ -1882,8 +1882,8 @@ fn layer_encoding(layer: &str) -> &'static str {
     }
 }
 
-/// A layer's zoom range as its builders make it.
-fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
+/// A layer's zoom range as its builders make it (`root`: whether the layer's root pack is built).
+fn layer_zooms(layer: &str, root: bool) -> Option<(u8, u8)> {
     Some(match layer {
         "roads" | "rails" => (4, 14),
         "terrain" | "labels" => (0, 12),
@@ -1903,10 +1903,11 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         "buildings" => (pipeline::bld::ZOOM, pipeline::bld::ZOOM),
         // Their field: levels 9–14 in the hi packs, 4–8 in the lo (pipeline::bld::field).
         "buildings-field" => (pipeline::bld::field::LEVEL_MIN, pipeline::bld::field::LEVEL_MAX),
-        // Depth: z0–2 in the root, z3–8 in the lo packs, z9–16 in the hi where a source has that
+        // Depth: z0–2 in the root once depth-root has made it (until then z3 up: the app composes
+        // the coarser from z3), z3–8 in the lo packs, z9–16 in the hi where a source has that
         // detail; the server makes the others from their ancestors (pipeline::depth).
         pipeline::depth::LAYER | pipeline::depth::CLASS_LAYER | pipeline::depth::SHADE_LAYER => {
-            (pipeline::depth::build::ROOT.0, pipeline::depth::ZOOMS.1)
+            (if root { pipeline::depth::build::ROOT.0 } else { pipeline::depth::ZOOMS.0 }, pipeline::depth::ZOOMS.1)
         }
         // The polar caps: z0–3 in the root, z4–9 in the blocks (pipeline::polar).
         l if l.starts_with("polar-") => (0, pipeline::polar::MAX_Z),
@@ -2039,7 +2040,7 @@ fn catalogue(
     }
     // Zoom ranges as each layer is defined (whichever packs exist yet), else the packs' scopes.
     for (l, x) in layers.iter_mut() {
-        if let Some(zs) = layer_zooms(l) {
+        if let Some(zs) = layer_zooms(l, x.root.is_some()) {
             (x.minzoom, x.maxzoom) = zs;
         }
     }

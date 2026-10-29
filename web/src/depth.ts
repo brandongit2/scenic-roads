@@ -58,7 +58,7 @@ export class Depth {
   /** The catalogue has depth (its layers) and its sources. */
   private has = false;
   private sources: DepthSource[] = [];
-  /** The depth layers' least zoom stored (the catalogue's: the build makes z3 up). */
+  /** The depth layers' least zoom stored (the catalogue's: 0 once depth-root has built the root packs, else 3). */
   private minzoom = 0;
   private workers: Worker[] = [];
   private seq = 0;

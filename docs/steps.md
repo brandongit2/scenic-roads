@@ -358,7 +358,8 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   mean of the finer from the lo packs' z3 tiles (`depth::build::build_root`; no grid is coarser than
   the lo packs', so nothing is composed there), and their floor's shading, z2 the mean of the z3
   shading where it covers; the root packs (`root/0-0-0`) of the three layers, as the terrain's root.
-  It waits while a depth z6 tile or assembly is stale or waits to be merged.- **The floor's shading** (the `depth-shade` layer: `depth::build::shading`): the terrain's
+  It waits while a depth z6 tile or assembly is stale or waits to be merged.
+- **The floor's shading** (the `depth-shade` layer: `depth::build::shading`): the terrain's
   shading pyramid (§2, Slope; the same codes and codec) over the depth: at
   each place's finest stored level each pixel's steepness and direction by Horn's method on the
   depth, a pixel without data taking its nearest's in the tile (no cliff at the shore, which the map
