@@ -6,7 +6,8 @@
 //!
 //! - a member some other member in touch reports it can't reach isn't handed the lead
 //!   (`Driver::hand_to`): its coordinator would grant nobody else work;
-//! - a lead reported so for `AWAY_S` or more hands the lead to a member that another member
+//! - a lead reported so for `AWAY_S` or more, by enough of the members that vote (home, not paused
+//!   alone: crate::agent::lead's `voters`), hands the lead to a member that another member
 //!   reached lately and none reports unreachable (crate::agent::lead's `away`), no sooner than
 //!   `crate::agent::lead::CALM_S` after the last change of lead or the last such ask;
 //! - the views say who can't reach whom, and why, with what the owner can do.

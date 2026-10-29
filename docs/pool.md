@@ -349,8 +349,11 @@ grants them nothing. `crate::pool::reachable`, `Run::tend_reach`, `crate::agent:
 - One failed request makes the rest of that loop's requests to the lead fail at once
   (`Client::new_round`); a job's end not taken is retried until its lease lapses (`OWED_S`).
 - A member another reports unreachable can't be handed the lead.
-- A lead reported unreachable by at least half the other members for `AWAY_S` (10 min) hands the
-  lead to a reachable member that can lead, at most once per `CALM_S` (30 min).
+- A lead reported unreachable by at least half the other members that vote, and by more of them
+  than reached it lately, for `AWAY_S` (10 min) hands the lead to a reachable member that can lead,
+  at most once per `CALM_S` (30 min) (`lead::voters`, `away`). A member away from home (its network
+  or the NAS gone) or paused alone doesn't vote; so of two members, one failing while the other
+  reaches the lead moves nothing, while a firewall-blocked lead, reached by none, is still left.
 - Every view says who can't reach whom and what to do (`View::unreached`): wake the Mac, or allow
   `scenic` in System Settings › Network › Firewall. `scenic` is signed ad hoc at a new path per
   version, so that allow lasts until the next update; a lasting one needs a code-signing identity

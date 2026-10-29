@@ -472,14 +472,17 @@ pub fn after(
     // Leading while members can't reach this Mac: the lead to one they reach (§6.8).
     if let Some(v) = run.controls.view.as_ref().filter(|v| v.leading) {
         let ids: Vec<String> = v.members.iter().map(|m| m.member.clone()).collect();
-        let beats: Vec<crate::pool::Beat> =
-            ids.iter().filter_map(|id| run.side.heartbeat(id)).filter(|h| !h.shadow).map(|h| h.pool).collect();
+        let hbs: Vec<super::pool::Heartbeat> =
+            ids.iter().filter_map(|id| run.side.heartbeat(id)).filter(|h| !h.shadow).collect();
+        let beats: Vec<crate::pool::Beat> = hbs.iter().map(|h| h.pool.clone()).collect();
+        let voters = voters(&hbs);
         let going = run.controls.kept.asked.as_ref().is_some_and(|a| matches!(a.state, State::Going | State::Passed))
             || v.handing.is_some();
         let unreached = Unreached {
-            for_s: reachable::unreachable_for(&beats, &me, now),
-            by: reachable::unreached(&beats, &me, now).len(),
-            of: beats.iter().filter(|b| b.member != me && b.beat > 0 && !b.out_of_touch(now)).count(),
+            for_s: reachable::unreachable_for(&voters, &me, now),
+            by: reachable::unreached(&voters, &me, now).len(),
+            reach: voters.iter().filter(|b| reachable::reached(std::slice::from_ref(*b), &me, now)).count(),
+            of: voters.iter().filter(|b| b.member != me && b.beat > 0 && !b.out_of_touch(now)).count(),
         };
         let last_change = v.lead.as_ref().map_or(0, |l| l.since);
         if let Some(to) = away(v, unreached, &mut run.controls.kept, now, last_change, going, &|id| {
@@ -847,17 +850,28 @@ pub fn alert(v: &mut View, kept: &mut Kept, now: u64) {
     ));
 }
 
-/// How the members in touch report this Mac's coordinator: the longest any has failed to reach it
-/// (s, by its clock), how many fail to, and of how many (the members in touch but this Mac).
+/// How the members in touch that vote report this Mac's coordinator (home, not paused alone): the
+/// longest any has failed to reach it (s, by its clock), how many fail to, how many reached it
+/// lately, and of how many (the voters in touch but this Mac).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Unreached {
     pub for_s: Option<u64>,
     pub by: usize,
+    pub reach: usize,
     pub of: usize,
 }
 
-/// The lead hands itself away (docs/pool.md §6.8) when at least half the members in touch, one at
-/// least, report they can't reach its coordinator, one of them for `reachable::AWAY_S` or more;
+/// The heartbeats whose reports of the lead's coordinator count (`away`): not a member's away
+/// from home (its own network or the NAS gone: it may be on another network altogether), nor one
+/// paused alone (it asks for nothing); one whose heartbeat says no conditions (an older app's)
+/// counts. Task #815: the M4, away and paused, moved the lead off the mini that the M1 reached.
+pub fn voters(hbs: &[super::pool::Heartbeat]) -> Vec<crate::pool::Beat> {
+    hbs.iter().filter(|h| h.conds.is_none_or(|c| c.home && !c.held)).map(|h| h.pool.clone()).collect()
+}
+
+/// The lead hands itself away (docs/pool.md §6.8) when at least half the voting members in touch
+/// (`Unreached`), one at least and more than those that reached it lately, report they can't
+/// reach its coordinator, one of them for `reachable::AWAY_S` or more;
 /// nothing under way (`busy`: a handover, an ask); its term `AWAY_S` old or more (`last_change`)
 /// and its last such ask `CALM_S` ago or more (`kept.away_at`). To the member that can lead
 /// (`Member::can_lead`: which no member reports unreachable), that another member reached lately
@@ -872,7 +886,7 @@ pub fn away(
     reached: &dyn Fn(&str) -> bool,
 ) -> Option<String> {
     let long = u.for_s.is_some_and(|s| s >= reachable::AWAY_S);
-    let enough = u.by >= 1 && u.by * 2 >= u.of;
+    let enough = u.by >= 1 && u.by * 2 >= u.of && u.by > u.reach;
     let calm = now.saturating_sub(last_change) >= reachable::AWAY_S && now.saturating_sub(kept.away_at) >= CALM_S;
     if !v.leading || !long || !enough || busy || !calm {
         return None;
@@ -1388,6 +1402,29 @@ mod tests {
         assert_eq!(low_battery(&none, &mut Kept::default(), t0, false), None);
     }
 
+    /// Task #815: a member away from home or paused alone doesn't vote on the lead's reach; one
+    /// home (or an older app's, saying no conditions) does.
+    #[test]
+    fn only_members_home_and_not_paused_vote_on_the_leads_reach() {
+        let home = Conds { home: true, ac: true, able: true, ..Default::default() };
+        let hb = |id: &str, conds: Option<Conds>| super::super::pool::Heartbeat {
+            pool: Beat { member: id.into(), ..Default::default() },
+            members: Vec::new(),
+            shadow: false,
+            conds,
+            broker: None,
+            mail_http: true,
+        };
+        let hbs = [
+            hb("m-home", Some(home)),
+            hb("m-away", Some(Conds { home: false, ..home })),
+            hb("m-held", Some(Conds { held: true, ..home })),
+            hb("m-old", None),
+        ];
+        let ids: Vec<String> = voters(&hbs).into_iter().map(|b| b.member).collect();
+        assert_eq!(ids, ["m-home", "m-old"]);
+    }
+
     #[test]
     fn a_lead_hands_itself_away_only_reported_long_by_half_calm_and_to_a_member_reached() {
         use crate::pool::reachable::AWAY_S;
@@ -1415,7 +1452,7 @@ mod tests {
             ..Default::default()
         };
         let t0 = 1_000_000;
-        let u = |for_s, by, of| Unreached { for_s: Some(for_s), by, of };
+        let u = |for_s, by, of| Unreached { for_s: Some(for_s), by, reach: 0, of };
         let all = |_: &str| true;
         let mut k = Kept::default();
         // Reported too briefly, by too few, the term too young, something under way: nothing.
@@ -1430,6 +1467,14 @@ mod tests {
         assert_eq!(away(&v, u(AWAY_S, 1, 2), &mut k, t0, 0, false, &all), Some("m-mini".into()));
         assert_eq!(away(&v, u(AWAY_S, 1, 2), &mut k, t0 + CALM_S - 1, 0, false, &all), None);
         assert_eq!(away(&v, u(AWAY_S, 1, 2), &mut k, t0 + CALM_S, 0, false, &|id| id == "m-air"), Some("m-air".into()));
+        // Task #815: one of two reports it while the other reaches it: nothing (that one's own
+        // network, not the lead's firewall); both, or one with the other silent, as before.
+        let mut k = Kept::default();
+        let r = |by, reach, of| Unreached { for_s: Some(AWAY_S), by, reach, of };
+        assert_eq!(away(&v, r(1, 1, 2), &mut k, t0, 0, false, &all), None);
+        assert_eq!(away(&v, r(2, 1, 3), &mut k, t0, 0, false, &all), Some("m-mini".into()));
+        let mut k = Kept::default();
+        assert_eq!(away(&v, r(1, 0, 2), &mut k, t0, 0, false, &all), Some("m-mini".into()));
         // Not leading: never.
         let mut k = Kept::default();
         assert_eq!(away(&View { leading: false, ..v.clone() }, u(AWAY_S, 1, 1), &mut k, t0, 0, false, &all), None);
