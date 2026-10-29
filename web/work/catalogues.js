@@ -158,11 +158,14 @@ export function timelineSpan(from, to) {
 
 /** Which marks (their x, sorted) get their label of width `w` (px; one width, or each label's)
  * without two overlapping (`gap` px between): the `pin` indexes first (the latest first), then
- * the rest the latest first. The indexes labelled, in order. */
-export function labelled(xs, w, gap = 6, pin = []) {
+ * the rest the latest first; with `width`, none past [0, width] (#836 review: passed over before the
+ * choice, so the next mark in takes its place; filtered after, marks bunched at an edge, as while
+ * the catalogues are read oldest first, had left none labelled). The indexes labelled, in order. */
+export function labelled(xs, w, gap = 6, pin = [], width = null) {
   const wd = (i) => (Array.isArray(w) ? w[i] : w) / 2;
   const pinned = new Set(pin);
-  const order = [...[...pinned].sort((a, b) => b - a), ...xs.map((_, i) => i).reverse().filter((i) => !pinned.has(i))];
+  const fits = (i) => width == null || (xs[i] - wd(i) >= 0 && xs[i] + wd(i) <= width);
+  const order = [...[...pinned].sort((a, b) => b - a), ...xs.map((_, i) => i).reverse().filter((i) => !pinned.has(i))].filter(fits);
   const out = [];
   for (const i of order) if (out.every((k) => xs[i] + wd(i) + gap <= xs[k] - wd(k) || xs[k] + wd(k) + gap <= xs[i] - wd(i))) out.push(i);
   return out.sort((a, b) => a - b);
@@ -299,13 +302,13 @@ export function createAges({ call, store, onChange }) {
     const shownCats = cats.filter((c) => c.t >= a && c.t <= b);
     const xs = shownCats.map((c) => x(c.t));
     // (A label is "386 · 22:17"; the first labelled of a day has its date too, "23 Oct": the
-    // marks thinned on the plain widths, those day-firsts then widened and kept, the rest around them; none past the timeline's edge.)
+    // marks thinned on the plain widths, those day-firsts then widened and kept, the rest around them; none past the timeline's edge, the next in labelled instead.)
     const day = (c) => new Date(c.t * 1000).toDateString();
     const plain = shownCats.map((c) => `${c.n} · ${hhmm(c.t)}`);
-    const base = labelled(xs, plain.map((t) => t.length * 6.4));
+    const base = labelled(xs, plain.map((t) => t.length * 6.4), 6, [], W);
     const dated = new Set(base.filter((v, n) => n === 0 || day(shownCats[base[n - 1]]) !== day(shownCats[v])));
     const text = plain.map((t, i) => (dated.has(i) ? `${shownCats[i].n} · ${new Date(shownCats[i].t * 1000).getDate()} ${MON[new Date(shownCats[i].t * 1000).getMonth()]} ${hhmm(shownCats[i].t)}` : t));
-    const lab = new Set(labelled(base.map((i) => xs[i]), base.map((i) => text[i].length * 6.4), 6, [...dated].map((i) => base.indexOf(i))).map((n) => base[n]).filter((i) => xs[i] - text[i].length * 3.2 >= 0 && xs[i] + text[i].length * 3.2 <= W));
+    const lab = new Set(labelled(base.map((i) => xs[i]), base.map((i) => text[i].length * 6.4), 6, [...dated].map((i) => base.indexOf(i)), W).map((n) => base[n]));
     // (Empty catalogues' marks go under the rest, so their hit boxes never cover a real one's.)
     const empties = [], under = kids.length;
     shownCats.forEach((c, i) => {

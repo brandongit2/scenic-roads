@@ -108,6 +108,9 @@ assert.deepEqual(labelled([0, 10, 20, 100], 30), [2, 3]);
 assert.deepEqual(labelled([0, 50, 100], 30), [0, 1, 2]);
 assert.deepEqual(labelled([0, 40, 80], [30, 80, 30]), [0, 2]);
 assert.deepEqual(labelled([0, 40, 80], 50, 6, [0]), [0, 2]);
+// (#836 review) Marks bunched at the left edge: the one whose label would be cut passed over, the next in labelled.
+assert.deepEqual(labelled([5, 50, 140], 50, 6, [0], 400), [1, 2]);
+assert.deepEqual(labelled([300, 345, 395], 50, 6, [], 400), [1]);
 // The axis: times of day up to two days, days past them.
 assert.ok(axisTicks(NOW - 6 * H, NOW).every((t) => /^\d\d:\d\d$/.test(t.label)));
 const days = axisTicks(NOW - 10 * D, NOW, 6);
