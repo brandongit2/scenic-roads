@@ -93,21 +93,57 @@ export function folderFlag(f: Folder, flagOf: (id: string) => string | null, lan
   return best;
 }
 
+/** The flag a folder stands for: the country code all its flagged regions (at any depth) share, or
+ * null when they have none or are of several countries (the Danish Realm: dk, fo, gl). A subdivision's
+ * ("gb-sct") counts as its country's. */
+export function folderCountry(f: Folder, flagOf: (id: string) => string | null): string | null {
+  const codes = new Set(allIds(f).flatMap((id) => flagOf(id)?.split('-')[0] ?? []));
+  return codes.size === 1 ? [...codes][0] : null;
+}
+
+/** A region with a flag of its own keeps it; one without (national waters, "land outside its
+ * regions", a park with no country of its own in its geometry) takes the flag of the country of the
+ * nearest folder around it that is of one country. A region in the top level, or in folders of
+ * several countries, stays without. Returns the flags of the regions that have one, by id. */
+export function withInherited(root: Folder, flagOf: (id: string) => string | null): Map<string, string> {
+  const out = new Map<string, string>();
+  const visit = (f: Folder) => {
+    // (A folder of several countries gives none to the regions in it, not its parent's either.)
+    const inherit = f.path === '' ? null : folderCountry(f, flagOf);
+    for (const id of f.regions) {
+      const c = flagOf(id) ?? inherit;
+      if (c) out.set(id, c);
+    }
+    for (const g of f.folders) visit(g);
+  };
+  visit(root);
+  return out;
+}
+
 /** Every region id in a folder, at any depth. */
 export function allIds(f: Folder): string[] {
   return [...f.regions, ...f.folders.flatMap(allIds)];
 }
 
 const nf = new Intl.NumberFormat('en-CA', { maximumFractionDigits: 0 });
-const nf2 = new Intl.NumberFormat('en-CA', { maximumFractionDigits: 2 });
 
-/** An area in km², whole, past a million in millions: "92,212 km²", "17.1 M km²", "<1 km²". */
-export function km2(v: number): string {
-  if (v > 0 && v < 1) return '<1 km²';
-  return v < 1e6 ? `${nf.format(v)} km²` : `${nf2.format(Math.round(v / 1e4) / 100)} M km²`;
+/** A number to three significant digits, no trailing zeros: 668, 92.2, 1.23. */
+function sig3(v: number): string {
+  const d = v >= 100 ? 0 : v >= 10 ? 1 : 2;
+  return String(Number(v.toFixed(d)));
 }
 
-/** A region's (or folder's) land and water in words: "92,212 km² land · 953,512 km² water"; the one
+/** An area in km², compact: whole below 10,000 ("9,212 km²", "<1 km²"), then three significant
+ * digits with k or M ("92.2k km²", "668k km²", "10.1M km²"). */
+export function km2(v: number): string {
+  if (v > 0 && v < 1) return '<1 km²';
+  if (v < 1e4) return `${nf.format(v)} km²`;
+  const [x, u] = v < 1e6 ? [v / 1e3, 'k'] : [v / 1e6, 'M'];
+  // (999.6k rounds to 1000k: as 1M.)
+  return x >= 999.5 && u === 'k' ? '1M km²' : `${sig3(x)}${u} km²`;
+}
+
+/** A region's (or folder's) land and water in words: "92.2k km² land · 954k km² water"; the one
  * it has when it has only land or only water; '' when not known. */
 export function areaText(land: number | undefined, water: number | undefined): string {
   if (land === undefined && water === undefined) return '';

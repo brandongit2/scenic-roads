@@ -1,7 +1,7 @@
 // node web/test/regionlist.test.ts (tools/dev/check.sh's web part): src/regionlist.ts, the Regions
 // list's sorting, filters, flags and areas.
 import assert from 'node:assert/strict';
-import { areaText, entries, filter, flagCode, folderFlag, km2, norm } from '../src/regionlist.ts';
+import { areaText, entries, filter, flagCode, folderFlag, km2, norm, withInherited, folderCountry } from '../src/regionlist.ts';
 
 const reg = (id: string, name: string) => ({ id, name, outline: [] });
 const regions = [reg('azores', 'Azores'), reg('madeira', 'Madeira'), reg('alabama', 'Alabama'), reg('alaska', 'Alaska'), reg('nuble', 'Ñuble'), reg('bermuda', 'Bermuda'), reg('baker-island', 'Baker Island')];
@@ -60,11 +60,41 @@ assert.equal(folderFlag(realm, (id) => flags[id] ?? null, (id) => land[id] ?? 0)
 assert.equal(folderFlag(realm.folders[0], (id) => flags[id] ?? null, () => 0), 'gl');
 assert.equal(folderFlag(f('x', 'X', ['q']), () => null, () => 1), null);
 
-// Areas in words.
-assert.equal(km2(92211.6), '92,212 km²');
-assert.equal(km2(17_098_246), '17.1 M km²');
+// A region without a flag of its own takes its folder's country; a folder of several, or the top
+// level, gives none.
+const gflags: Record<string, string> = { algeria: 'dz', oran: 'dz', denmark: 'dk', 'faroe-islands': 'fo', kujalleq: 'gl', uk: 'gb', scotland: 'gb-sct' };
+const gof = (id: string) => gflags[id] ?? null;
+const dz = f('algeria', 'Algeria', ['oran', 'algerian-waters', 'algeria-outside']);
+const gl = f('dk/gl', 'Greenland', ['kujalleq', 'greenlandic-waters', 'ne-greenland-np']);
+const dk = f('dk', 'Danish Realm', ['denmark', 'faroe-islands', 'realm-waters'], [gl]);
+const gb = f('gb', 'United Kingdom', ['uk', 'scotland', 'uk-waters']);
+const top = f('', '', ['high-seas', 'lake-constance'], [dz, dk, gb]);
+const inh = withInherited(top, gof);
+assert.equal(inh.get('algerian-waters'), 'dz');
+assert.equal(inh.get('algeria-outside'), 'dz');
+assert.equal(inh.get('oran'), 'dz', 'its own kept');
+assert.equal(inh.get('greenlandic-waters'), 'gl');
+assert.equal(inh.get('ne-greenland-np'), 'gl', 'a park in a one-country subfolder of a several-country folder');
+assert.equal(inh.get('realm-waters'), undefined, 'a folder of several countries');
+assert.equal(inh.get('high-seas'), undefined, 'top level');
+assert.equal(inh.get('lake-constance'), undefined);
+assert.equal(inh.get('scotland'), 'gb-sct', 'a subdivision keeps its own');
+assert.equal(inh.get('uk-waters'), 'gb', 'a subdivision counts as its country for the folder');
+assert.equal(folderCountry(dk, gof), null);
+assert.equal(folderCountry(gl, gof), 'gl');
+assert.equal(folderCountry(f('x', 'X', ['q']), gof), null);
+
+// Areas in words, compact (metric).
 assert.equal(km2(0.4), '<1 km²');
-assert.equal(areaText(92212, 953512), '92,212 km² land · 953,512 km² water');
+assert.equal(km2(5), '5 km²');
+assert.equal(km2(9212), '9,212 km²');
+assert.equal(km2(92211.6), '92.2k km²');
+assert.equal(km2(667_676), '668k km²');
+assert.equal(km2(999_700), '1M km²');
+assert.equal(km2(1_234_000), '1.23M km²');
+assert.equal(km2(10_130_000), '10.1M km²');
+assert.equal(km2(17_098_246), '17.1M km²');
+assert.equal(areaText(667_676, 10_130_000), '668k km² land · 10.1M km² water');
 assert.equal(areaText(5, 0), '5 km² land');
 assert.equal(areaText(0, 12), '12 km² water');
 assert.equal(areaText(undefined, undefined), '');

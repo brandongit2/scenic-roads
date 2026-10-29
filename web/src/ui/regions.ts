@@ -12,7 +12,7 @@
 import { behindText, dlDetail, dlRegion, dlStatus, dlUpdate, dlWorld, pct, setReserve, size, sizeOf, stateClass, stateText, type Dl, type DlStatus, type DetailDl, type RegionDl } from '../downloads';
 import { FLAGS } from '../flags';
 import * as prefs from '../prefs';
-import { allIds, areaText, entries, filter, flagCode, folderFlag, type Shown } from '../regionlist';
+import { allIds, areaText, entries, filter, flagCode, folderFlag, withInherited, type Shown } from '../regionlist';
 import {
   RegionLayers, RegionsError, areaOutline, getCoverage, getRegionsLayer, listRegions,
   type Area, type Coverage, type Folder, type Region, type RegionsLayer,
@@ -47,6 +47,10 @@ function bboxOf(fs: Outline[]): Bbox | null {
   }
   return w <= e ? [w, s, e, n] : null;
 }
+
+/** The list's sizes are looked for again every 3 s while some are missing, for 2 minutes without news. */
+const SIZE_POLL_MS = 3000;
+const SIZE_STALL = 40;
 
 export class RegionsPanel {
   /** The section's content. */
@@ -84,6 +88,9 @@ export class RegionsPanel {
   private dlErr = '';
   private dlTok = 0;
   private dlTimer = 0;
+  private sizeTimer = 0;
+  /** Every region's flag, a region without one of its own taking its folder's country (withInherited). */
+  private flagsById = new Map<string, string>();
   /** What each region row shows of its download, updated in place as the state comes (a row isn't
    * drawn again: a hover or a rename in it stays). */
   private dlEls = new Map<string, { row: HTMLElement; slot: HTMLElement; btn: HTMLButtonElement | null; mode: Mode | null; size: HTMLElement; prog: HTMLElement; detail: HTMLElement; detailSize: HTMLElement; detailBtn: HTMLButtonElement | null; detailOn: boolean; detailProg: HTMLElement }>();
@@ -203,9 +210,11 @@ export class RegionsPanel {
       this.measure();
       if (performance.now() - this.loadedAt > FRESH_MS) void this.refresh();
       void this.pollDl();
+      this.watchSizes(0);
     } else {
       this.layers.setHover(null);
       clearTimeout(this.dlTimer);
+      clearTimeout(this.sizeTimer);
       this.dlTok++;
     }
   }
@@ -247,6 +256,31 @@ export class RegionsPanel {
     }
     this.renderList();
     this.loadPending(tok);
+    this.watchSizes(0);
+  }
+
+  /** While the panel is open and a region has no land or water yet (the server sizes them in the
+   * background), the list again every few seconds (just the list: cheap), until all are sized. Gives
+   * up after `STALL` rounds with no new size (a region that can't be sized). */
+  private watchSizes(stalled: number) {
+    clearTimeout(this.sizeTimer);
+    const unsized = (rs: Region[]) => rs.filter((r) => r.land_km2 === undefined && r.water_km2 === undefined).length;
+    const before = unsized(this.regions);
+    if (!this.open || !before || stalled >= SIZE_STALL) return;
+    const tok = this.loadTok;
+    this.sizeTimer = window.setTimeout(() => {
+      void listRegions().then((l) => {
+        if (tok !== this.loadTok || !this.open) return;
+        const now = unsized(l.regions);
+        if (now < before) {
+          this.regions = l.regions;
+          this.tree = l.tree ?? this.tree;
+          this.renderList();
+          this.loadPending(tok);
+        }
+        this.watchSizes(now < before ? 0 : stalled + 1);
+      }, () => this.watchSizes(stalled + 1));
+    }, SIZE_POLL_MS);
   }
 
   /** Not on the map yet: the catalogue has no region by its id with its outline (added or redrawn
@@ -314,6 +348,7 @@ export class RegionsPanel {
     const tree = this.tree ?? { path: '', name: '', regions: [], folders: [] };
     const placed = new Set(allIds(tree));
     const root: Folder = { ...tree, regions: [...tree.regions, ...this.regions.filter((r) => !placed.has(r.id)).map((r) => r.id)] };
+    this.flagsById = withInherited(root, (id) => this.flagOf(byId.get(id)));
     const only = this.onlyBox.checked;
     if (only) this.onKey = this.downloadedKey();
     const shown = filter(root, byId, this.q.value, (id) => !only || this.isOn(id));
@@ -407,7 +442,7 @@ export class RegionsPanel {
     const detailProg = h('div', { class: 'rg-prog', hidden: true });
     this.dlEls.set(r.id, { row, slot, btn: null, mode: null, size: sz, prog, detail, detailSize, detailBtn: null, detailOn: false, detailProg });
     row.replaceChildren(
-      h('div', { class: 'rg1' }, h('i', { class: 'rg-tri none' }), flag(this.flagOf(r)), name, h('span', { class: 'rg-id faint', title: `Its file: inputs/regions/${r.path ?? `${r.id}.toml`}` }, r.id),
+      h('div', { class: 'rg1' }, h('i', { class: 'rg-tri none' }), flag(this.flagsById.get(r.id) ?? null), name, h('span', { class: 'rg-id faint', title: `Its file: inputs/regions/${r.path ?? `${r.id}.toml`}` }, r.id),
         ...(state ? [h('span', { class: `rg-state ${state.cls}`, title: state.title }, state.text)] : []),
         slot),
       h('div', { class: 'rg2 rg-in2' }, h('span', { class: 'rg2s', title: 'Its land and its water (the sea and the lakes over 100 km² it holds)' }, areaText(r.land_km2, r.water_km2)), sz),
