@@ -53,6 +53,7 @@ type Tr = {
   fov: number;
   tileSize?: number;
   isGlobeRendering?: boolean;
+  applyConstrain?: (center: LngLat, zoom: number) => { center: LngLat; zoom: number };
 };
 const transform = (map: MLMap) => (map as unknown as { _camera?: { transform?: Tr } })._camera?.transform;
 
@@ -149,12 +150,12 @@ function globeMove(map: MLMap, tr: Tr, a: Anchor, px: number, py: number, C: V3,
   if (!clear(C)) return false;
   let pl = placeGlobe(tr, C, pitch, bearing);
   if (!pl) return null; // no globe camera has this orientation here: caller falls back
-  if (!inZoomRange(map, pl.zoom)) return false;
+  if (!inZoomRange(map, pl.zoom, pl.center)) return false;
   const before = { center: map.getCenter(), zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing(), elevation: map.getCenterElevation() };
   const A = ecef(a.ll, a.elev);
   let err = Infinity;
   for (let i = 0; i < 4; i++) {
-    if (!pl || !inZoomRange(map, pl.zoom)) break;
+    if (!pl || !inZoomRange(map, pl.zoom, pl.center)) break;
     map.jumpTo({ center: pl.center, zoom: pl.zoom, pitch, bearing, elevation: 0 });
     const q = map.project(a.ll);
     err = Math.hypot(q.x - px, q.y - py);
@@ -229,7 +230,22 @@ function seaLevelAt(map: MLMap, tr: Tr, px: number, py: number): LngLat | undefi
   return ll && Number.isFinite(ll.lng) ? ll : undefined;
 }
 
-const inZoomRange = (map: MLMap, z: number) => z <= map.getMaxZoom() + 1e-6 && z >= map.getMinZoom() - 1e-6;
+/**
+ * The zoom range the camera may take with its centre at `center` (the map's own by default). The
+ * globe holds the planet's size, not the zoom number, to its minimum: its least zoom falls by
+ * log2(cos lat) toward a pole (MapLibre's defaultConstrain), −4 at 88°; raw getMinZoom there kept
+ * every gesture from zooming out past 1.2, or in from below it (#822).
+ */
+export function zoomRange(map: MLMap, center: LngLat = map.getCenter()): [number, number] {
+  const c = transform(map)?.applyConstrain;
+  if (!c) return [map.getMinZoom(), map.getMaxZoom()];
+  return [c(center, -100).zoom, c(center, 100).zoom];
+}
+
+const inZoomRange = (map: MLMap, z: number, center?: LngLat) => {
+  const [lo, hi] = zoomRange(map, center);
+  return z <= hi + 1e-6 && z >= lo - 1e-6;
+};
 
 /**
  * Beyond this camera → anchor distance the planet fills a large part of the view and each move

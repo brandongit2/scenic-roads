@@ -1,5 +1,5 @@
 import type { Map as MLMap } from 'maplibre-gl';
-import { anchorAt, centrePoint, dolly, ownPan, orbit, panTo, setLocationAt, type Anchor } from './camera3d';
+import { anchorAt, centrePoint, dolly, ownPan, orbit, panTo, setLocationAt, type Anchor, zoomRange } from './camera3d';
 import { WheelClassifier } from './wheelkind';
 import { TwoFingers, type Pt } from './twofinger';
 
@@ -99,7 +99,8 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     // 3D dolly toward the anchor; at a limit it stops rather than switching anchoring mid-gesture.
     if (a) return dolly(map, a, dz, px, py);
     // No anchor (cursor off the planet): zoom about the view centre.
-    const z = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), map.getZoom() + dz));
+    const [lo, hi] = zoomRange(map);
+    const z = Math.max(lo, Math.min(hi, map.getZoom() + dz));
     if (z === map.getZoom()) return false;
     map.zoomTo(z, { duration: 0 });
     return true;

@@ -1996,7 +1996,21 @@ async function main() {
     if (key === projectionKey) return;
     projectionKey = key;
     map.setProjection({ type: type as 'globe' });
+    reopen();
   };
+  // The opening view again, until it holds: the map opens flat, with no polar caps, so MapLibre
+  // first holds the link's centre to ±85.05° and its zoom to the flat map's limits (a globe view
+  // at 88° S, z −0.2, opened at 46° S, z 1.2). Set again once the globe and then the caps are on;
+  // given up at the first gesture (#822).
+  let opening = v;
+  const reopen = () => {
+    if (!opening) return;
+    const o = opening, c = map.getCenter();
+    if (Math.abs(c.lat - o.lat) > 1e-4 || Math.abs(map.getZoom() - o.zoom) > 1e-3) map.jumpTo({ center: [o.lng, o.lat], zoom: o.zoom, bearing: o.bearing, pitch: o.pitch });
+    const now = map.getCenter();
+    if (Math.abs(now.lat - o.lat) < 1e-4 && Math.abs(map.getZoom() - o.zoom) < 1e-3) opening = null;
+  };
+  for (const ev of ['pointerdown', 'wheel', 'keydown', 'touchstart']) map.getContainer().addEventListener(ev, () => (opening = null), { capture: true, passive: true });
   map.on('move', () => {
     if (styleReady) applyProjection();
   });
@@ -2400,7 +2414,10 @@ async function main() {
     w.on(() => setBuildingsCredit(w.status?.credits));
     // The polar caps, while the catalogue has their layers (under the contours and everything after).
     const polar = new PolarCaps(map, { land: () => store.s.land, water: () => (store.s.layers.water ? store.s.water.colour : null) }, contours.id);
-    w.on(() => polar.setCatalogue(w.status?.layers));
+    w.on(() => {
+      polar.setCatalogue(w.status?.layers);
+      reopen();
+    });
     // The depth's layers and sources, and the notices their licences ask for in the credits.
     w.on(() => {
       if (!w.status) return;
