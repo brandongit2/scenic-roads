@@ -864,14 +864,32 @@ impl ToCome {
 pub const VERSION: u32 = 3;
 
 /// A run of a machine's work of one step: from and until when (unix seconds), and how many
-/// targets.
+/// targets. Within `JOBS_S` of the forecast a run is one job as the scheduler granted it in the
+/// forecast's run (task #834: its targets `Runs::targets`); past it, a lane's jobs of a step one
+/// after another are one run, `jobs` of them (1, left out, for one).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Lane {
     pub step: String,
     pub from: u64,
     pub until: u64,
     pub n: usize,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub jobs: usize,
 }
+
+fn one() -> usize {
+    1
+}
+
+fn is_one(n: &usize) -> bool {
+    *n == 1
+}
+
+/// How far from the forecast its lanes' runs are each one job (s, `Lane`): the next hours as the
+/// pool will run them; past them a step's jobs one after another merged, which keeps the status
+/// (written each loop, read by every page) small. On 29 Oct's record (2.5 days, 5,003 jobs): 706
+/// runs merged by step (44 KB of lanes), 1,016 with 3 h of jobs (67 KB), 1,273 with 6 h (84 KB).
+pub const JOBS_S: f64 = 3.0 * 3600.0;
 
 /// A step's work left.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -975,6 +993,9 @@ struct Item {
     by: Option<usize>,
     from: f64,
     end: f64,
+    /// The job it was granted in (`run`'s numbering, from 1; 0: none yet): the lane's runs
+    /// (`Lane`) are its jobs.
+    job: u32,
 }
 
 /// One run through the work (`run`): each item's machine and times.
@@ -1060,6 +1081,7 @@ fn items(inp: &Input) -> Items {
             by: None,
             from: 0.0,
             end: 0.0,
+            job: 0,
         });
         let i = out.len() - 1;
         by.of.insert((step.to_string(), target.to_string()), i);
@@ -1457,9 +1479,11 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
             items[i].deps.extend(more);
         }
     }
+    // (The jobs granted, numbered from 1: a lane's targets under way its one job.)
+    let mut jobs = n as u32;
     for &(i, m) in &running {
-        (items[i].by, items[i].from, items[i].end, items[i].running) =
-            (Some(m), 0.0, free.get(m).copied().unwrap_or(0.0), true);
+        (items[i].by, items[i].from, items[i].end, items[i].running, items[i].job) =
+            (Some(m), 0.0, free.get(m).copied().unwrap_or(0.0), true, m as u32 + 1);
     }
     // The leases out at the start: each ends with the lane running its targets, else with its Mac's
     // first lane busy with a job no item is (its step's), else now.
@@ -1685,7 +1709,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
         // What it takes: a job the scheduler grants its Mac (its targets one after another), or
         // for the pages' lane the far end of the first shared step it can do (terrain-hi's near end:
         // the lead's next z6 tiles wait on it, as crate::coord picks).
-        let took: Vec<usize> = if mac.helper {
+        let took: Vec<(usize, u32)> = if mac.helper {
             SHARED
                 .iter()
                 .find_map(|s| {
@@ -1698,6 +1722,10 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
                     }
                 })
                 .into_iter()
+                .map(|i| {
+                    jobs += 1;
+                    (i, jobs)
+                })
                 .collect()
         } else {
             let key = key.unwrap_or_default();
@@ -1726,6 +1754,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
             }
             let mut took = Vec::new();
             for p in picks {
+                jobs += 1;
                 let mut end = t;
                 let ids: Vec<usize> =
                     p.targets.iter().filter_map(|x| at.get(&(p.step.clone(), x.0.clone())).copied()).collect();
@@ -1742,7 +1771,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
                         at: t,
                     });
                 }
-                took.extend(ids);
+                took.extend(ids.iter().map(|&i| (i, jobs)));
             }
             took
         };
@@ -1754,10 +1783,10 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
         }
         // Taken: one after another at the machine's pace; the counts kept.
         let mut start = t;
-        for i in took {
+        for (i, job) in took {
             let extra = if items[i].step == "unit" { mac.unit_extra_s } else { 0.0 };
             let end = start + items[i].cost.secs / mac.speed.max(0.01) + extra;
-            (items[i].by, items[i].from, items[i].end) = (Some(m), start, end);
+            (items[i].by, items[i].from, items[i].end, items[i].job) = (Some(m), start, end, job);
             start = end;
             inflight.push(i);
             unassigned -= 1;
@@ -2081,40 +2110,77 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
             }
         }
         f.next.insert(mac.name.clone(), next);
-        // Its schedule: the job its slot runs now that no item is (its time left), then its runs
-        // of a step.
+        // Its schedule: the job its slot runs now that no item is (its time left), then its runs:
+        // its jobs (`Lane`).
         // (Each run's items, for `Runs`.)
-        let mut runs: Vec<(String, f64, f64, usize, Option<usize>)> = expected
-            .items
+        let mine: Vec<(usize, &Item)> = expected.items.iter().enumerate().filter(|(_, i)| i.by == Some(m)).collect();
+        let under_way = mac.running.as_ref().filter(|_| !mine.iter().any(|(_, i)| i.running));
+        let runs = mine
             .iter()
-            .enumerate()
-            .filter(|(_, i)| i.by == Some(m))
-            .map(|(k, i)| (i.step.clone(), i.from, i.end, 1, Some(k)))
-            .collect();
-        if let Some((step, n)) =
-            mac.running.as_ref().filter(|_| !expected.items.iter().any(|i| i.running && i.by == Some(m)))
-        {
-            runs.push((step.clone(), 0.0, mac.busy_s.max(0.0), *n, None));
-        }
-        runs.sort_by(|a, b| a.1.total_cmp(&b.1));
-        let mut lane: Vec<Lane> = Vec::new();
-        for (step, from, until, n, item) in runs {
-            match lane.last_mut() {
-                Some(l) if l.step == step && from <= l.until as f64 - now + 120.0 => {
-                    l.until = at(until);
-                    l.n += n;
-                }
-                _ => lane.push(Lane { step, from: at(from), until: at(until), n }),
+            .map(|&(k, i)| Placing { step: &i.step, from: i.from, until: i.end, n: 1, job: i.job, item: Some(k) })
+            .chain(under_way.map(|(step, n)| Placing {
+                step,
+                from: 0.0,
+                until: mac.busy_s.max(0.0),
+                n: *n,
+                job: 0,
+                item: None,
+            }));
+        for (k, r) in lane_runs(runs.collect(), now).into_iter().enumerate() {
+            for i in r.1 {
+                run_of[i] = Some((m, k));
             }
-            if let Some(k) = item {
-                run_of[k] = Some((m, lane.len() - 1));
-            }
+            f.lanes.entry(mac.name.clone()).or_default().push(r.0);
         }
-        f.lanes.insert(mac.name.clone(), lane);
+        f.lanes.entry(mac.name.clone()).or_default();
     }
     f.runs = runs_of(&f.lanes, &inp.machines, &expected, &run_of);
     f.graph = graph_of(&expected);
     f
+}
+
+/// A target placed on a lane, or its job under way that no item is (`item` None): its step, from
+/// and until when (s from now), how many targets, its job (`Item::job`; 0, the job under way).
+struct Placing<'a> {
+    step: &'a str,
+    from: f64,
+    until: f64,
+    n: usize,
+    job: u32,
+    item: Option<usize>,
+}
+
+/// A lane's runs (`Lane`) from its placings, `now` the forecast's time (unix s): each its items.
+/// A run is one job; from `JOBS_S` on, a step's jobs one after another (two minutes apart at most)
+/// are one run.
+fn lane_runs(mut placed: Vec<Placing>, now: f64) -> Vec<(Lane, Vec<usize>)> {
+    // (The job under way first.)
+    placed.sort_by(|a, b| a.from.total_cmp(&b.from).then(a.item.is_some().cmp(&b.item.is_some())));
+    let at = |s: f64| (now + s).round() as u64;
+    let mut out: Vec<(Lane, Vec<usize>, u32)> = Vec::new();
+    for p in placed {
+        match out.last_mut() {
+            Some((l, items, job))
+                if l.step == p.step
+                    && p.from <= l.until as f64 - now + 120.0
+                    && (*job == p.job || p.from >= JOBS_S) =>
+            {
+                l.until = at(p.until);
+                l.n += p.n;
+                if *job != p.job {
+                    l.jobs += 1;
+                    *job = p.job;
+                }
+                items.extend(p.item);
+            }
+            _ => out.push((
+                Lane { step: p.step.to_string(), from: at(p.from), until: at(p.until), n: p.n, jobs: 1 },
+                p.item.into_iter().collect(),
+                p.job,
+            )),
+        }
+    }
+    out.into_iter().map(|(l, items, _)| (l, items)).collect()
 }
 
 /// The run's items and what each waits on (`Forecast::graph`).
@@ -2264,6 +2330,78 @@ mod tests {
         let fc = forecast(&inp);
         assert_eq!(fc, forecast(&two_macs(&regions, &c)));
         assert_eq!(fc.runs.targets.len(), fc.lanes.values().map(Vec::len).sum::<usize>());
+    }
+
+    #[test]
+    fn each_run_soon_is_one_job_the_scheduler_granted() {
+        // (Task #834) every job granted in the run's first hour is one lane run, its targets the
+        // grant's, in its order; the lanes' runs together the jobs (a run's targets never two).
+        let regions = many(40);
+        let c = mixed(false);
+        let inp = two_macs(&regions, &c);
+        let f = forecast(&inp);
+        assert!(!f.grants.is_empty());
+        let mut runs: Vec<(&str, &Lane)> = Vec::new();
+        for l in f.lanes.values() {
+            runs.extend(l.iter().map(|r| (r.step.as_str(), r)));
+        }
+        assert_eq!(runs.len(), f.runs.targets.len());
+        for g in &f.grants {
+            let k = (0..runs.len()).find(|&k| runs[k].0 == g.step && f.runs.targets[k] == g.targets);
+            let k = k.unwrap_or_else(|| panic!("{} {:?}: no run of its own", g.step, g.targets));
+            assert_eq!(runs[k].1.jobs, 1);
+            assert_eq!(runs[k].1.n, g.targets.len());
+        }
+    }
+
+    #[test]
+    fn lane_runs_are_jobs_soon_and_merged_later() {
+        let p = |job, from: f64, item| Placing {
+            step: "terrain-deep",
+            from,
+            until: from + 600.0,
+            n: 1,
+            job,
+            item: Some(item),
+        };
+        let now = 1_000_000.0;
+        let late = JOBS_S + 100.0;
+        let placed = vec![
+            p(2, 0.0, 0),
+            p(2, 600.0, 1),
+            p(3, 1200.0, 2),
+            // (Another step between: a run of its own.)
+            Placing { step: "pois", from: 1800.0, until: 1810.0, n: 1, job: 4, item: Some(3) },
+            p(5, 1810.0, 4),
+            p(6, late, 5),
+            p(7, late + 600.0, 6),
+            p(7, late + 1200.0, 7),
+            // (Past a gap: a run again.)
+            p(8, late + 9000.0, 8),
+            Placing { step: "terrain-deep", from: 0.0, until: 0.0, n: 3, job: 0, item: None },
+        ];
+        let runs = lane_runs(placed, now);
+        let got: Vec<(u64, usize, usize, Vec<usize>)> =
+            runs.into_iter().map(|(l, i)| (l.from - now as u64, l.n, l.jobs, i)).collect();
+        assert_eq!(
+            got,
+            [
+                (0, 3, 1, vec![]),
+                (0, 2, 1, vec![0, 1]),
+                (1200, 1, 1, vec![2]),
+                (1800, 1, 1, vec![3]),
+                (1810, 1, 1, vec![4]),
+                (late as u64, 3, 2, vec![5, 6, 7]),
+                (late as u64 + 9000, 1, 1, vec![8]),
+            ]
+        );
+        // (One job's runs, `jobs` 1, say no `jobs` in the status.)
+        let l = Lane { step: "x".into(), from: 1, until: 2, n: 1, jobs: 1 };
+        assert_eq!(serde_json::to_value(&l).unwrap(), serde_json::json!({"step": "x", "from": 1, "until": 2, "n": 1}));
+        assert_eq!(
+            serde_json::from_value::<Lane>(serde_json::json!({"step": "x", "from": 1, "until": 2, "n": 1})).unwrap(),
+            l
+        );
     }
 
     #[test]
@@ -2713,7 +2851,9 @@ mod tests {
         let steps: Vec<&str> = f.lanes["m4"].iter().map(|l| l.step.as_str()).collect();
         let at = |s: &str| steps.iter().position(|&x| x == s).unwrap() as u32;
         assert_eq!(f.runs.targets.len(), steps.len(), "{steps:?}");
-        assert_eq!(f.runs.targets[at("unit") as usize], ["6/8/8", "6/8/9"]);
+        // (Each z6 tile a job of its own, as the scheduler grants it: task #834.)
+        assert_eq!(f.runs.targets[at("unit") as usize], ["6/8/8"]);
+        assert_eq!(f.runs.targets[at("unit") as usize + 1], ["6/8/9"]);
         assert!(f.runs.deps.contains(&[at("terrain-hi"), at("unit")]), "{:?} {steps:?}", f.runs.deps);
         assert!(f.runs.deps.contains(&[at("reach"), at("unit")]), "{:?} {steps:?}", f.runs.deps);
         assert!(f.runs.deps.iter().all(|[a, b]| a != b), "never a run on itself");
@@ -3040,9 +3180,9 @@ mod tests {
         (inp.chains, inp.after) = (chains(), Vec::new());
         let f = forecast(&inp);
         // While the lead builds the terrain the z6 tiles wait for, the member makes the candidates
-        // (from the far end), 200 s each at its pace.
-        let m1 = &f.lanes["m1"];
-        assert_eq!((m1[0].step.as_str(), m1[0].from, m1[0].until, m1[0].n), ("pois", 1_000_000, 1_000_400, 2));
+        // (from the far end), 200 s each at its pace, each a task of its own (task #834: a run a job).
+        let m1: Vec<_> = f.lanes["m1"].iter().map(|l| (l.step.as_str(), l.from, l.until, l.n)).take(2).collect();
+        assert_eq!(m1, [("pois", 1_000_000, 1_000_200, 1), ("pois", 1_000_200, 1_000_400, 1)]);
     }
 
     /// The guard of task #535: the forecast, fed the coordinator's state as recorded

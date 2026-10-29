@@ -621,6 +621,24 @@ async function run() {
       else if (!jc) check("jobs card: a job's named as the code names it, a world map of its tiles, the map cards' layout (#794)", false, `the history has ${ended} finished jobs of tiled steps in 6 h, none shown in 20 s`);
       else if (jc.none) check("jobs card: a job's named as the code names it, a world map of its tiles, the map cards' layout (#794)", false, "no card shown on a job's box");
       else check("jobs card: a job's named as the code names it, a world map of its tiles, the map cards' layout (#794)", !jc.wide && jc.w <= 282 && steps.has(String(jc.title).split(/[ :]/)[0]) && jc.map > 0 && jc.map <= 280, `${jc.kick} / ${jc.title}, map ${jc.map} px`);
+      // (#834) A job to come of a tiled step, as a job that ran: its targets named and listed, a
+      // world map of them (the forecast's run of the scheduler's grants: one job a run, the next
+      // hours; `/work/tocome`'s runs). Its card shot as it shows (chrome-job-to-come.png).
+      const next = `(document.querySelector(".panel:not([hidden]) .sched .lanewrap")?.spots?.(["next"]) || [])`;
+      let nc = null;
+      const nNext = await js(`${next}.length`);
+      for (let k = 0; k < Math.min(nNext, 40) && !nc; k++) {
+        const c = await card(null, "", await js(`(() => { document.querySelector(".panel:not([hidden]) .sched .lanewrap").scrollIntoView({ block: "center" }); const s = ${next}[${k}]; return s ? [s.x, s.y] : null; })()`));
+        if (c && !c.none && c.map > 0 && /job to come/.test(c.kick || "")) {
+          nc = { ...c, chips: await js(`[...document.querySelectorAll(".card-tip")].find((e) => e.getClientRects().length && !e.hidden)?.querySelectorAll(".chips > *, .tc-chips > *").length || 0`) };
+          const b = await js(`(() => { const t = [...document.querySelectorAll(".card-tip")].find((e) => e.getClientRects().length && !e.hidden); const r = t.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()`);
+          const { data } = await page.send("Page.captureScreenshot", { format: "png", clip: { x: b[0], y: b[1], width: b[2], height: b[3], scale: 1 } });
+          writeFileSync(join(OUT, "chrome-job-to-come.png"), Buffer.from(data, "base64"));
+        }
+        if (!PHONE) await mouse(2, 2);
+      }
+      if (!nNext) console.log("INFO jobs card: no job to come in the forecast (the live build's state)");
+      else check("jobs card: a job to come names its targets, a world map of them (#834)", !!nc && steps.has(String(nc.title).split(/[ :]/)[0]) && nc.title.includes("/"), nc ? `${nc.kick} / ${nc.title}, map ${nc.map} px` : `none of ${Math.min(nNext, 40)} jobs to come shows a map of its tiles`);
       if (!PHONE) await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2 });
       check("#659: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }

@@ -1008,6 +1008,8 @@ const fcLoading = () => h("span", { class: "fcload", role: "status", title: "Wai
 // The history the schedule holds (task #787): the page view's seven days (coord::history::DAYS);
 // older days are in the archive (agent::histarchive), not read here.
 const HISTORY_S = 7 * 86400;
+// How far from the forecast its runs are each one job (forecast::JOBS_S).
+const JOBS_S = 3 * 3600;
 // The jobs' ends from the history further back than the page's own events (`/work/history`, a
 // chunk at a time back to HISTORY_S ago: sums.js pastFrom), in the numbering they were read in.
 const past = { ends: [], epoch: undefined, first: null, asking: false };
@@ -1100,12 +1102,18 @@ function runCard(m, r, kind, laneName) {
       ["when", `${clock(r.from)}–${clock(r.until)}`],
     ]);
   }
-  return stack({ kicker: `${r.step} · job to come`, colour, title: r.n ? S.counted(r.step, r.n) : r.step,
+  // (One job as the forecast's run of the scheduler grants it, its targets `/work/tocome`'s once
+  // asked; past the forecast's next hours (forecast::JOBS_S) a step's jobs one after another, merged.)
+  const jobs = r.jobs || 1, one = jobs === 1 && targets.length;
+  return stack({ kicker: `${r.step} · ${jobs > 1 ? `${jobs} jobs` : "job"} to come`, colour, title: one ? S.job(r.step, targets) : r.n ? S.counted(r.step, r.n) : r.step, map,
     stats: [[clock(r.from), "forecast start"], [clock(r.until), "forecast end"]],
-    bar: { frac: 0, label: "not started" }, foot: r.step }, [
+    bar: { frac: 0, label: "not started" },
+    chips: targetChips(targets), chipsLabel: targets.length ? S.counted(r.step, targets.length) : "",
+    foot: targets.length && one ? `${r.step} ${targets.join(" ")}` : r.step }, [
     ["stage", S.stage(r.step)],
     ["on", laneName(r.lane)],
     ["takes", `≈ ${dur(r.until - r.from)}`],
+    ["jobs", jobs > 1 ? `${jobs}, one after another (merged past the next ${dur(JOBS_S)})` : null],
     ["while the lead runs", r.of ? S.said(r.of, r.n) : null],
     ["waits on", r.waits != null ? plural(r.waits, "run") : null],
     ["then", r.waited != null ? `${plural(r.waited, "run")} wait on it` : null],
@@ -1271,7 +1279,7 @@ function schedule(m) {
       ls.forEach((l, k) => {
         if (l.until <= now) return;
         const run = nums.first[nm] + k;
-        segment(tv, { ...l, from: Math.max(l.from, now), lane: nm, after: tc?.epoch != null && tc.epoch === past.epoch ? tc.after?.[run] || [] : [], waits: tc ? links.on.get(run)?.length || 0 : null, waited: tc ? links.then.get(run)?.length || 0 : null }, "next", `f ${nm} ${l.from} ${l.step}`, run);
+        segment(tv, { ...l, from: Math.max(l.from, now), lane: nm, targets: tc?.runs?.[run] || [], after: tc?.epoch != null && tc.epoch === past.epoch ? tc.after?.[run] || [] : [], waits: tc ? links.on.get(run)?.length || 0 : null, waited: tc ? links.then.get(run)?.length || 0 : null }, "next", `f ${nm} ${l.from} ${l.step}`, run);
       });
       lanes.append(h("div", { class: "ln", title: nm }, `${slotNo(nm, g.host) ?? nm}`), tv.el);
     }

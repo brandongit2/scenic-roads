@@ -1560,6 +1560,11 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   each clean stretch, opening then). Each lane's next job is the coordinator's scheduler's grant to
   its Mac (§7.2, One scheduler), the Mac's room shared by its lanes as the scheduler packs it (a Mac
   whose ask isn't recorded: `forecast::MacRoom`); each
+  lane's runs (`forecast::Lane`) are those jobs as granted (task #834: their targets
+  `/work/tocome`'s `runs`), for the forecast's next 3 h (`forecast::JOBS_S`); past them a lane's
+  jobs of a step one after another are one run, `jobs` of them, to keep the status small (29 Oct's
+  record, 5,003 jobs over 2.5 days: 706 runs and 44 KB of lanes merged by step as before, 1,016
+  runs and 67 KB so: the status ~210 KB to ~233 KB); each
   lane starts with its slot's running job and its time left (a member's without progress said:
   its step's measured time). The page names a lane by its Mac's chip and slot ("M4 Pro 2";
   `cond::Resources::chip`). Each lane runs at its slot's measured speed (else the lead's other
