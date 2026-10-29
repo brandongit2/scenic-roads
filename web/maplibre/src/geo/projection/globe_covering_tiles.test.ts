@@ -223,3 +223,28 @@ describe('bounding volumes and the terrain\'s elevations (Scenic Roads)', () => 
         expect(coveringTiles(fresh, options).map(key)).toEqual(withGround);
     });
 });
+
+describe('a tile\'s zoom by its latitude (Scenic Roads, #822)', () => {
+    const cover = (lat: number, zoom: number) => {
+        const transform = new GlobeTransform();
+        transform.resize(1100, 900);
+        transform.setCenter(new LngLat(-111, lat));
+        transform.setZoom(zoom);
+        return coveringTiles(transform, {tileSize: 512}).map((t) => t.canonical);
+    };
+    const latitude = (c: {y: number; z: number}) => Math.atan(Math.sinh(Math.PI * (1 - 2 * c.y / 2 ** c.z))) * 180 / Math.PI;
+
+    test('zoomed out near a pole, the lower latitudes get the zoom of their size on the globe', () => {
+        // z1.69 at 82° N is the planet at about z4.5 at the equator: a tile at 60° wants about z3.5,
+        // one at 82° about z1.7 (upstream: z1 for all of them).
+        const tiles = cover(82, 1.69);
+        const low = Math.max(...tiles.filter((c) => latitude(c) < 70).map((c) => c.z));
+        const high = Math.max(...tiles.filter((c) => latitude({y: c.y + 1, z: c.z}) > 80).map((c) => c.z));
+        expect(low).toBeGreaterThanOrEqual(3);
+        expect(high).toBeLessThan(low);
+    });
+
+    test('a view at the equator keeps upstream\'s single zoom', () => {
+        expect([...new Set(cover(0, 2.5).map((c) => c.z))]).toEqual([2]);
+    });
+});

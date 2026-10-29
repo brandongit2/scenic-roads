@@ -106,6 +106,25 @@ export class GlobeCoveringTilesDetailsProvider implements CoveringTilesDetailsPr
         return coveringZoomLevel(transform, options) > 4;
     }
 
+    /**
+     * Scenic Roads: on the globe a Mercator tile's side is the planet's circumference ÷ 2^z × cos of
+     * its latitude, and the camera's zoom is the one for its centre's latitude: away from the centre,
+     * toward the equator, a tile of the camera's zoom is cos(tile) ÷ cos(centre) times larger than
+     * the centre's. Zoomed out near a pole (no variable zoom below z4, so every tile took the
+     * centre's zoom) the lower latitudes were two or three zooms too coarse (#822). The tile's
+     * latitude nearest the equator (a parent's is never farther than its children's, so the cover's
+     * descent stops no earlier than theirs). Never negative: tiles nearer the pole than the centre
+     * keep the camera's zoom, as upstream gives them.
+     */
+    tileZoomOffset(transform: IReadonlyTransform, tileID: {x: number; y: number; z: number}): number {
+        const n = 2 ** tileID.z;
+        const yN = tileID.y / n, yS = (tileID.y + 1) / n;
+        const y = yN <= 0.5 && yS >= 0.5 ? 0.5 : yS < 0.5 ? yS : yN;
+        const tileCos = 1 / Math.cosh(Math.PI * (1 - 2 * y)); // cos(lat) of Mercator y
+        const centreCos = Math.max(1e-6, Math.cos(transform.center.lat * Math.PI / 180));
+        return Math.max(0, Math.log2(tileCos / centreCos));
+    }
+
     allowWorldCopies(): boolean {
         return false;
     }

@@ -529,6 +529,8 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
                 }
             }
         }
+        // Scenic Roads: the projection's own change of a tile's scale across the view (the globe's latitude).
+        thisTileDesiredZ += detailsProvider.tileZoomOffset?.(transform, tileID) ?? 0;
         thisTileDesiredZ = (options.roundZoom ? Math.round : Math.floor)(thisTileDesiredZ);
         thisTileDesiredZ = Math.max(0, thisTileDesiredZ);
         const z = parityStop ? Math.min(thisTileDesiredZ, tileMaxZoom, it.zoom) : Math.min(thisTileDesiredZ, tileMaxZoom);

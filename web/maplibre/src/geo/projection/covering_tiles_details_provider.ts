@@ -33,6 +33,13 @@ export interface CoveringTilesDetailsProvider {
     allowVariableZoom: (transform: IReadonlyTransform, options: CoveringTilesOptionsInternal) => boolean;
 
     /**
+     * Scenic Roads: zoom levels to add to a tile's zoom (from the camera's zoom and its distance),
+     * for a projection where a tile's size on screen at a given zoom depends on where it lies (the
+     * globe: on the latitude). None when absent.
+     */
+    tileZoomOffset?: (transform: IReadonlyTransform, tileID: {x: number; y: number; z: number}) => number;
+
+    /**
      * Whether to allow world copies to be rendered.
      */
     allowWorldCopies: () => boolean;
