@@ -1008,8 +1008,6 @@ const fcLoading = () => h("span", { class: "fcload", role: "status", title: "Wai
 // The history the schedule holds (task #787): the page view's seven days (coord::history::DAYS);
 // older days are in the archive (agent::histarchive), not read here.
 const HISTORY_S = 7 * 86400;
-// How far from the forecast its runs are each one job (forecast::JOBS_S).
-const JOBS_S = 3 * 3600;
 // The jobs' ends from the history further back than the page's own events (`/work/history`, a
 // chunk at a time back to HISTORY_S ago: sums.js pastFrom), in the numbering they were read in.
 const past = { ends: [], epoch: undefined, first: null, asking: false };
@@ -1102,10 +1100,10 @@ function runCard(m, r, kind, laneName) {
       ["when", `${clock(r.from)}–${clock(r.until)}`],
     ]);
   }
-  // (One job as the forecast's run of the scheduler grants it, its targets `/work/tocome`'s once
-  // asked; past the forecast's next hours (forecast::JOBS_S) a step's jobs one after another, merged.)
-  const jobs = r.jobs || 1, one = jobs === 1 && targets.length;
-  return stack({ kicker: `${r.step} · ${jobs > 1 ? `${jobs} jobs` : "job"} to come`, colour, title: one ? S.job(r.step, targets) : r.n ? S.counted(r.step, r.n) : r.step, map,
+  // (One job as the forecast's run of the scheduler grants it (`runJobs`), its targets
+  // `/work/tocome`'s once asked.)
+  const one = targets.length > 0;
+  return stack({ kicker: `${r.step} · job to come`, colour, title: one ? S.job(r.step, targets) : r.n ? S.counted(r.step, r.n) : r.step, map,
     stats: [[clock(r.from), "forecast start"], [clock(r.until), "forecast end"]],
     bar: { frac: 0, label: "not started" },
     chips: targetChips(targets), chipsLabel: targets.length ? S.counted(r.step, targets.length) : "",
@@ -1113,7 +1111,6 @@ function runCard(m, r, kind, laneName) {
     ["stage", S.stage(r.step)],
     ["on", laneName(r.lane)],
     ["takes", `≈ ${dur(r.until - r.from)}`],
-    ["jobs", jobs > 1 ? `${jobs}, one after another (merged past the next ${dur(JOBS_S)})` : null],
     ["while the lead runs", r.of ? S.said(r.of, r.n) : null],
     ["waits on", r.waits != null ? plural(r.waits, "run") : null],
     ["then", r.waited != null ? `${plural(r.waited, "run")} wait on it` : null],
@@ -1166,6 +1163,19 @@ function scheduleSection(m) {
   return schedRoot;
 }
 
+// A forecast run's jobs (forecast::Lane): each its from and until (unix s), its count and its
+// targets (`targets`, the run's from `/work/tocome`, in time order; none before it's asked). `cuts`,
+// each job's after the first: [its start, s from the run's; the run's named targets before it]; a
+// job ends where the next starts. The first job's count holds a job under way's unnamed targets.
+function runJobs(l, targets = []) {
+  const at = [[0, 0], ...(l.cuts || [])];
+  return at.map(([off, k], i) => {
+    const next = at[i + 1];
+    const t = targets.slice(k, next ? next[1] : targets.length);
+    const n = !targets.length ? (at.length === 1 ? l.n : 0) : i === 0 ? l.n - targets.length + t.length : t.length;
+    return { from: l.from + off, until: next ? l.from + next[0] : l.until, n, targets: t };
+  });
+}
 // A segment's tiles on the map ("z/x/y"): a run that ran, its jobs' targets; one running, its
 // targets; one to come, its forecast run's (`/work/tocome`'s `runs`, when it's this forecast's).
 function segTiles(s, m) {
@@ -1173,7 +1183,7 @@ function segTiles(s, m) {
   let targets = [];
   if (s.kind === "past") targets = (r.parts || [r]).flatMap((p) => p.targets || []);
   else if (s.kind === "running") targets = r.targets || [];
-  else if (s.run != null && toCome.ans?.at === m.fc?.at) targets = toCome.ans.runs?.[s.run] || [];
+  else targets = r.targets || [];
   return areaTargets(s.step, targets).filter((t) => tileOf(t)).map((t) => t.slice(t.lastIndexOf(" ") + 1));
 }
 // What a key points at in the schedule (timeline.js `relations`): a segment's run's own segments,
@@ -1279,7 +1289,11 @@ function schedule(m) {
       ls.forEach((l, k) => {
         if (l.until <= now) return;
         const run = nums.first[nm] + k;
-        segment(tv, { ...l, from: Math.max(l.from, now), lane: nm, targets: tc?.runs?.[run] || [], after: tc?.epoch != null && tc.epoch === past.epoch ? tc.after?.[run] || [] : [], waits: tc ? links.on.get(run)?.length || 0 : null, waited: tc ? links.then.get(run)?.length || 0 : null }, "next", `f ${nm} ${l.from} ${l.step}`, run);
+        // (A block a job: the run's jobs as the scheduler grants them, `runJobs`.)
+        for (const j of runJobs(l, tc?.runs?.[run])) {
+          if (j.until <= now) continue;
+          segment(tv, { ...l, ...j, from: Math.max(j.from, now), lane: nm, after: tc?.epoch != null && tc.epoch === past.epoch ? tc.after?.[run] || [] : [], waits: tc ? links.on.get(run)?.length || 0 : null, waited: tc ? links.then.get(run)?.length || 0 : null }, "next", `f ${nm} ${j.from} ${l.step}`, run);
+        }
       });
       lanes.append(h("div", { class: "ln", title: nm }, `${slotNo(nm, g.host) ?? nm}`), tv.el);
     }

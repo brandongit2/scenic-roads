@@ -864,32 +864,23 @@ impl ToCome {
 pub const VERSION: u32 = 3;
 
 /// A run of a machine's work of one step: from and until when (unix seconds), and how many
-/// targets. Within `JOBS_S` of the forecast a run is one job as the scheduler granted it in the
-/// forecast's run (task #834: its targets `Runs::targets`); past it, a lane's jobs of a step one
-/// after another are one run, `jobs` of them (1, left out, for one).
+/// targets. A run is one or more jobs as the scheduler grants them in the forecast's run, one after
+/// another on the lane (two minutes apart at most; task #834): its targets (`Runs::targets`, in
+/// time order) its jobs' in turn. `cuts`, each job's after the first: [when it starts, s from
+/// `from`; how many of the run's named targets come before it (a job under way that no item is
+/// names none)]; a job ends where the next starts (its gap
+/// to it, under two minutes, drawn as its own). Left out for a run of one job. Every job to come is
+/// so on the page, its targets named, at ~10 bytes a job past the first of a run (29 Oct's record,
+/// 5,397 jobs over 2.5 days in 571 runs: the lanes 35 KB without the cuts, 91 KB with them).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Lane {
     pub step: String,
     pub from: u64,
     pub until: u64,
     pub n: usize,
-    #[serde(default = "one", skip_serializing_if = "is_one")]
-    pub jobs: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cuts: Vec<[u32; 2]>,
 }
-
-fn one() -> usize {
-    1
-}
-
-fn is_one(n: &usize) -> bool {
-    *n == 1
-}
-
-/// How far from the forecast its lanes' runs are each one job (s, `Lane`): the next hours as the
-/// pool will run them; past them a step's jobs one after another merged, which keeps the status
-/// (written each loop, read by every page) small. On 29 Oct's record (2.5 days, 5,003 jobs): 706
-/// runs merged by step (44 KB of lanes), 1,016 with 3 h of jobs (67 KB), 1,273 with 6 h (84 KB).
-pub const JOBS_S: f64 = 3.0 * 3600.0;
 
 /// A step's work left.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -2150,9 +2141,9 @@ struct Placing<'a> {
     item: Option<usize>,
 }
 
-/// A lane's runs (`Lane`) from its placings, `now` the forecast's time (unix s): each its items.
-/// A run is one job; from `JOBS_S` on, a step's jobs one after another (two minutes apart at most)
-/// are one run.
+/// A lane's runs (`Lane`) from its placings, `now` the forecast's time (unix s): each its items in
+/// time order. A step's jobs one after another (two minutes apart at most) are one run, each job
+/// after the first a cut.
 fn lane_runs(mut placed: Vec<Placing>, now: f64) -> Vec<(Lane, Vec<usize>)> {
     // (The job under way first.)
     placed.sort_by(|a, b| a.from.total_cmp(&b.from).then(a.item.is_some().cmp(&b.item.is_some())));
@@ -2160,21 +2151,18 @@ fn lane_runs(mut placed: Vec<Placing>, now: f64) -> Vec<(Lane, Vec<usize>)> {
     let mut out: Vec<(Lane, Vec<usize>, u32)> = Vec::new();
     for p in placed {
         match out.last_mut() {
-            Some((l, items, job))
-                if l.step == p.step
-                    && p.from <= l.until as f64 - now + 120.0
-                    && (*job == p.job || p.from >= JOBS_S) =>
-            {
-                l.until = at(p.until);
-                l.n += p.n;
+            Some((l, items, job)) if l.step == p.step && p.from <= l.until as f64 - now + 120.0 => {
                 if *job != p.job {
-                    l.jobs += 1;
+                    let off = (at(p.from).max(l.from) - l.from) as u32;
+                    l.cuts.push([off, items.len() as u32]);
                     *job = p.job;
                 }
+                l.until = l.until.max(at(p.until));
+                l.n += p.n;
                 items.extend(p.item);
             }
             _ => out.push((
-                Lane { step: p.step.to_string(), from: at(p.from), until: at(p.until), n: p.n, jobs: 1 },
+                Lane { step: p.step.to_string(), from: at(p.from), until: at(p.until), n: p.n, cuts: Vec::new() },
                 p.item.into_iter().collect(),
                 p.job,
             )),
@@ -2213,13 +2201,21 @@ fn runs_of(
         let (m, r) = run_of.get(k).copied().flatten()?;
         Some(first.get(machines.get(m)?.name.as_str())? + r as u32)
     };
-    let mut targets: Vec<Vec<String>> = vec![Vec::new(); total as usize];
     let ids: Vec<Option<u32>> = (0..sim.items.len()).map(id).collect();
-    for (k, it) in sim.items.iter().enumerate() {
-        if let Some(r) = ids[k] {
-            targets[r as usize].push(it.target.clone());
+    // (Each run's targets in time order, as its jobs' cuts count them: `lane_runs`.)
+    let mut by_run: Vec<Vec<usize>> = vec![Vec::new(); total as usize];
+    for (k, r) in ids.iter().enumerate() {
+        if let Some(r) = r {
+            by_run[*r as usize].push(k);
         }
     }
+    let targets: Vec<Vec<String>> = by_run
+        .into_iter()
+        .map(|mut v| {
+            v.sort_by(|&a, &b| sim.items[a].from.total_cmp(&sim.items[b].from));
+            v.into_iter().map(|k| sim.items[k].target.clone()).collect()
+        })
+        .collect();
     // (A set's runs, worked out once: the sets are shared by many items.)
     let group_runs: Vec<Vec<u32>> = sim
         .groups
@@ -2332,30 +2328,44 @@ mod tests {
         assert_eq!(fc.runs.targets.len(), fc.lanes.values().map(Vec::len).sum::<usize>());
     }
 
+    /// A run's jobs (`Lane::cuts`): each one's start (unix s) and targets.
+    fn jobs_of<'a>(l: &Lane, targets: &'a [String]) -> Vec<(u64, &'a [String])> {
+        let mut at: Vec<(u64, usize)> = vec![(l.from, 0)];
+        at.extend(l.cuts.iter().map(|c| (l.from + c[0] as u64, c[1] as usize)));
+        (0..at.len()).map(|k| (at[k].0, &targets[at[k].1..at.get(k + 1).map_or(targets.len(), |a| a.1)])).collect()
+    }
+
     #[test]
-    fn each_run_soon_is_one_job_the_scheduler_granted() {
-        // (Task #834) every job granted in the run's first hour is one lane run, its targets the
-        // grant's, in its order; the lanes' runs together the jobs (a run's targets never two).
+    fn each_job_to_come_is_one_the_scheduler_granted() {
+        // (Task #834) every job granted in the run's first hour is one job of a lane's run, its
+        // targets the grant's in its order.
         let regions = many(40);
         let c = mixed(false);
         let inp = two_macs(&regions, &c);
         let f = forecast(&inp);
         assert!(!f.grants.is_empty());
-        let mut runs: Vec<(&str, &Lane)> = Vec::new();
-        for l in f.lanes.values() {
-            runs.extend(l.iter().map(|r| (r.step.as_str(), r)));
-        }
+        let runs: Vec<&Lane> = f.lanes.values().flatten().collect();
         assert_eq!(runs.len(), f.runs.targets.len());
+        let jobs: Vec<(&str, u64, &[String])> = runs
+            .iter()
+            .zip(&f.runs.targets)
+            .flat_map(|(l, t)| jobs_of(l, t).into_iter().map(|(at, t)| (l.step.as_str(), at, t)))
+            .collect();
+        assert!(jobs.len() > runs.len(), "some run holds several jobs");
         for g in &f.grants {
-            let k = (0..runs.len()).find(|&k| runs[k].0 == g.step && f.runs.targets[k] == g.targets);
-            let k = k.unwrap_or_else(|| panic!("{} {:?}: no run of its own", g.step, g.targets));
-            assert_eq!(runs[k].1.jobs, 1);
-            assert_eq!(runs[k].1.n, g.targets.len());
+            let k = jobs.iter().filter(|j| j.0 == g.step && j.2 == g.targets.as_slice()).count();
+            assert_eq!(k, 1, "{} {:?}: one job of its own", g.step, g.targets);
         }
+        // (The status: ~10 bytes a job past a run's first.)
+        let n: usize = runs.iter().map(|l| l.cuts.len()).sum();
+        let with = serde_json::to_vec(&f.lanes).unwrap().len();
+        let mut bare = f.lanes.clone();
+        bare.values_mut().flatten().for_each(|l| l.cuts.clear());
+        assert!(with - serde_json::to_vec(&bare).unwrap().len() <= 14 * n + 10 * runs.len());
     }
 
     #[test]
-    fn lane_runs_are_jobs_soon_and_merged_later() {
+    fn lane_runs_cut_a_steps_jobs_one_after_another() {
         let p = |job, from: f64, item| Placing {
             step: "terrain-deep",
             from,
@@ -2365,7 +2375,7 @@ mod tests {
             item: Some(item),
         };
         let now = 1_000_000.0;
-        let late = JOBS_S + 100.0;
+        let late = 20_000.0;
         let placed = vec![
             p(2, 0.0, 0),
             p(2, 600.0, 1),
@@ -2374,29 +2384,30 @@ mod tests {
             Placing { step: "pois", from: 1800.0, until: 1810.0, n: 1, job: 4, item: Some(3) },
             p(5, 1810.0, 4),
             p(6, late, 5),
-            p(7, late + 600.0, 6),
-            p(7, late + 1200.0, 7),
+            // (Up to two minutes later: the run's next job.)
+            p(7, late + 700.0, 6),
+            p(7, late + 1300.0, 7),
             // (Past a gap: a run again.)
             p(8, late + 9000.0, 8),
+            // (The job under way that no item is: names no target.)
             Placing { step: "terrain-deep", from: 0.0, until: 0.0, n: 3, job: 0, item: None },
         ];
         let runs = lane_runs(placed, now);
-        let got: Vec<(u64, usize, usize, Vec<usize>)> =
-            runs.into_iter().map(|(l, i)| (l.from - now as u64, l.n, l.jobs, i)).collect();
+        let got: Vec<(u64, usize, Vec<[u32; 2]>, Vec<usize>)> =
+            runs.into_iter().map(|(l, i)| (l.from - now as u64, l.n, l.cuts, i)).collect();
+        let l = late as u64;
         assert_eq!(
             got,
             [
-                (0, 3, 1, vec![]),
-                (0, 2, 1, vec![0, 1]),
-                (1200, 1, 1, vec![2]),
-                (1800, 1, 1, vec![3]),
-                (1810, 1, 1, vec![4]),
-                (late as u64, 3, 2, vec![5, 6, 7]),
-                (late as u64 + 9000, 1, 1, vec![8]),
+                (0, 6, vec![[0, 0], [1200, 2]], vec![0, 1, 2]),
+                (1800, 1, vec![], vec![3]),
+                (1810, 1, vec![], vec![4]),
+                (l, 3, vec![[700, 1]], vec![5, 6, 7]),
+                (l + 9000, 1, vec![], vec![8]),
             ]
         );
-        // (One job's runs, `jobs` 1, say no `jobs` in the status.)
-        let l = Lane { step: "x".into(), from: 1, until: 2, n: 1, jobs: 1 };
+        // (A run of one job: no `cuts` in the status.)
+        let l = Lane { step: "x".into(), from: 1, until: 2, n: 1, cuts: Vec::new() };
         assert_eq!(serde_json::to_value(&l).unwrap(), serde_json::json!({"step": "x", "from": 1, "until": 2, "n": 1}));
         assert_eq!(
             serde_json::from_value::<Lane>(serde_json::json!({"step": "x", "from": 1, "until": 2, "n": 1})).unwrap(),
@@ -2852,8 +2863,8 @@ mod tests {
         let at = |s: &str| steps.iter().position(|&x| x == s).unwrap() as u32;
         assert_eq!(f.runs.targets.len(), steps.len(), "{steps:?}");
         // (Each z6 tile a job of its own, as the scheduler grants it: task #834.)
-        assert_eq!(f.runs.targets[at("unit") as usize], ["6/8/8"]);
-        assert_eq!(f.runs.targets[at("unit") as usize + 1], ["6/8/9"]);
+        assert_eq!(f.runs.targets[at("unit") as usize], ["6/8/8", "6/8/9"]);
+        assert_eq!(f.lanes["m4"][at("unit") as usize].cuts.len(), 1);
         assert!(f.runs.deps.contains(&[at("terrain-hi"), at("unit")]), "{:?} {steps:?}", f.runs.deps);
         assert!(f.runs.deps.contains(&[at("reach"), at("unit")]), "{:?} {steps:?}", f.runs.deps);
         assert!(f.runs.deps.iter().all(|[a, b]| a != b), "never a run on itself");
@@ -3180,9 +3191,10 @@ mod tests {
         (inp.chains, inp.after) = (chains(), Vec::new());
         let f = forecast(&inp);
         // While the lead builds the terrain the z6 tiles wait for, the member makes the candidates
-        // (from the far end), 200 s each at its pace, each a task of its own (task #834: a run a job).
-        let m1: Vec<_> = f.lanes["m1"].iter().map(|l| (l.step.as_str(), l.from, l.until, l.n)).take(2).collect();
-        assert_eq!(m1, [("pois", 1_000_000, 1_000_200, 1), ("pois", 1_000_200, 1_000_400, 1)]);
+        // (from the far end), 200 s each at its pace, each a job of its own (task #834).
+        let m1 = &f.lanes["m1"][0];
+        assert_eq!((m1.step.as_str(), m1.from, m1.until, m1.n), ("pois", 1_000_000, 1_000_400, 2));
+        assert_eq!(m1.cuts, [[200, 1]]);
     }
 
     /// The guard of task #535: the forecast, fed the coordinator's state as recorded
