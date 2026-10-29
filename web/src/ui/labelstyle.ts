@@ -4,7 +4,7 @@ import { LABEL_FONTS, LABEL_TYPES, type LabelLook, type TextCase } from '../labe
 import type { Store } from '../state';
 import * as prefs from '../prefs';
 import { h } from './dom';
-import { pct } from './controls';
+import { Slider, pct } from './controls';
 import { onDouble } from './touch';
 
 const CASES: [TextCase, string][] = [['none', 'As written'], ['uppercase', 'UPPER CASE'], ['lowercase', 'lower case']];
@@ -98,17 +98,16 @@ export class LabelStyleSection {
     return this.row(label, title, h('span', { class: 'lk-colour' }, c, r), out);
   }
   private slider(label: string, key: 'haloWidth' | 'haloBlur' | 'size' | 'growth' | 'spacing', min: number, max: number, step: number, fmt: (v: number) => string, title: string) {
-    const r = h('input', { type: 'range', min, max, step, title: `${title} (double-click: default)` });
-    r.addEventListener('input', () => this.patch({ [key]: Number(r.value) }));
-    onDouble(r, () => this.patch({ [key]: this.defaults[this.type]?.[key] }));
-    const out = h('output');
-    this.syncs.push(() => {
-      const l = this.look();
-      if (!l) return;
-      r.value = String(l[key]);
-      out.value = fmt(l[key]);
+    const sl = new Slider({
+      label, min, max, step, fmt, title,
+      get: () => this.look()?.[key] ?? 0,
+      set: (v) => this.patch({ [key]: v }),
     });
-    return this.row(label, title, r, out);
+    // Double-click: this type's default (it changes with the type picked, so not Slider's fixed reset).
+    onDouble(sl.input, () => this.patch({ [key]: this.defaults[this.type]?.[key] }));
+    sl.input.title += ' (double-click: default)';
+    this.syncs.push(() => sl.sync());
+    return sl.el;
   }
   private select<K extends 'font' | 'case'>(label: string, key: K, opts: [string, string][], title: string) {
     const s = h('select', { title }, ...opts.map(([v, t]) => h('option', { value: v }, t)));
