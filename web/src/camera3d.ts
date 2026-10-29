@@ -810,7 +810,7 @@ function applyCamera(map: MLMap, m: MercatorCoordinate, bearing: number, pitch: 
   const dM = d * mu;
   const H = map.getCanvas().clientHeight;
   const zoom = Math.log2(H / 2 / Math.tan((tr.fov * deg) / 2) / dM / 512);
-  if (!Number.isFinite(zoom) || zoom > map.getMaxZoom() + 1e-6 || zoom < map.getMinZoom() - 1e-6) return false;
+  if (!Number.isFinite(zoom) || !inZoomRange(map, zoom, centre.toLngLat())) return false;
   map.jumpTo({ center: centre.toLngLat(), zoom, pitch, bearing, elevation: E });
   return true;
 }

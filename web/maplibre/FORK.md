@@ -176,7 +176,8 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   globe's): a tile nearer the equator than the view's centre gains log2(cos its latitude ÷ cos the
   centre's), its size on the globe at the camera's zoom; never coarser than upstream's. Zoomed out
   near a pole the lower latitudes took the pole's zoom, two or three too coarse
-  (`globe_covering_tiles.test.ts`).
+  (`globe_covering_tiles.test.ts`). A reparsed (vector) tile is laid out no deeper than without
+  the offset (upstream's `coveringTiles` globe "zoom < 0" test).
 - **The drapes' tiles by elevation and depth** (`TerrainTileManager.terrainAwareZoom`, default
   true): the terrain's render-to-texture tiles take both zooms above. Two rules keep it from wasting
   memory (`footprintSizing`, default true): a tile stops splitting once its on-screen footprint

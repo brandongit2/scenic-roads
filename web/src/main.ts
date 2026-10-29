@@ -2001,7 +2001,8 @@ async function main() {
   // The opening view again, until it holds: the map opens flat, with no polar caps, so MapLibre
   // first holds the link's centre to ±85.05° and its zoom to the flat map's limits (a globe view
   // at 88° S, z −0.2, opened at 46° S, z 1.2). Set again once the globe and then the caps are on;
-  // given up at the first gesture (#822).
+  // given up at the first gesture or click anywhere on the page (a search result's flight, a
+  // panel's button: not the map's own), and taken again from a pasted link (#822).
   let opening = v;
   const reopen = () => {
     if (!opening) return;
@@ -2010,7 +2011,7 @@ async function main() {
     const now = map.getCenter();
     if (Math.abs(now.lat - o.lat) < 1e-4 && Math.abs(map.getZoom() - o.zoom) < 1e-3) opening = null;
   };
-  for (const ev of ['pointerdown', 'wheel', 'keydown', 'touchstart']) map.getContainer().addEventListener(ev, () => (opening = null), { capture: true, passive: true });
+  for (const ev of ['pointerdown', 'wheel', 'keydown', 'touchstart']) window.addEventListener(ev, () => (opening = null), { capture: true, passive: true });
   map.on('move', () => {
     if (styleReady) applyProjection();
   });
@@ -2265,6 +2266,7 @@ async function main() {
     const { view, buildings, ...rest } = next;
     store.set(hasBuildings ? { ...rest, buildings } : rest);
     if (view) map.jumpTo({ center: [view.lng, view.lat], zoom: view.zoom, bearing: view.bearing, pitch: view.pitch });
+    opening = view ?? null;
   });
   onSettled(() => {
     if (driving) return;

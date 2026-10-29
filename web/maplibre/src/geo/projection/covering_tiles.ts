@@ -529,8 +529,12 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
                 }
             }
         }
-        // Scenic Roads: the projection's own change of a tile's scale across the view (the globe's latitude).
-        thisTileDesiredZ += detailsProvider.tileZoomOffset?.(transform, tileID) ?? 0;
+        // Scenic Roads: the projection's own change of a tile's scale across the view (the globe's
+        // latitude). It picks finer tiles but doesn't lay a reparsed (vector) tile out deeper than
+        // upstream would (the zoom it had without the offset).
+        const offsetZ = detailsProvider.tileZoomOffset?.(transform, tileID) ?? 0;
+        if (offsetZ > 0) layoutZCap = Math.min(layoutZCap, Math.max(0, (options.roundZoom ? Math.round : Math.floor)(thisTileDesiredZ)));
+        thisTileDesiredZ += offsetZ;
         thisTileDesiredZ = (options.roundZoom ? Math.round : Math.floor)(thisTileDesiredZ);
         thisTileDesiredZ = Math.max(0, thisTileDesiredZ);
         const z = parityStop ? Math.min(thisTileDesiredZ, tileMaxZoom, it.zoom) : Math.min(thisTileDesiredZ, tileMaxZoom);
