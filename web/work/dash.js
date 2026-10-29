@@ -385,9 +385,9 @@ const soloOf = (key) => (!key ? null : key.startsWith("step ") ? { step: key.sli
 const soloSteps = (x, groups) => (!x ? null : x.step != null ? [x.step] : groups.find((g) => g.stage === x.stage)?.steps || []);
 
 // The queue (#622, #685): every tile the lead's last forecast places, on any Mac (`/work/tocome`:
-// forecast::ToCome), asked once a forecast (the status's `fc.at`). This Mac's agent answers when it
-// made the forecast the status shows (the lead's: a Mac that led before keeps its last, older one);
-// else the lead's own, at its addresses. A lead change drops the old lead's answer at once.
+// forecast::ToCome), asked once a forecast (the status's `fc.at`, sent as `at`). This Mac's agent
+// answers from the forecast its pageview runs for the status (#836: the same `at`, on the lead and
+// every member); else (no pageview forecast yet) the lead's own, at its addresses. A lead change drops the old lead's answer at once.
 // An answer with no tiles (the lead's agent just started: no forecast made yet, or no answer)
 // isn't kept as this forecast's: asked again after `TOCOME_AGAIN_MS`, the last one drawn meanwhile
 // (#833 review: it had been kept, the queue empty until the next forecast). The lead's answer may
@@ -412,7 +412,7 @@ function askToCome(m) {
   // status's forecast by one, seen 29 Oct; or a Mac that led before): the lead asked, this one kept
   // when the lead can't be read (an HTTP page whose origin another Mac's port refuses: #833 review,
   // the lead's own page had drawn only the running jobs' 8 tiles as queued).)
-  ctx.call("/work/tocome", {}).catch(() => [0, null])
+  ctx.call("/work/tocome", { at: m.fc?.at }).catch(() => [0, null])
     .then(([code, v]) => { const own = code === 200 && v?.macs ? v : null; return own && own.at === m.fc?.at ? own : lead ? fromLead().then((l) => (l?.macs ? l : own), () => own) : own; })
     .catch(() => null)
     .then((v) => {

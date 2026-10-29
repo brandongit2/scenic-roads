@@ -21,7 +21,7 @@
 //! forecast runs on a thread of its own (`Runs`, task #544), again when the input changed or
 //! `forecast::EVERY` passed: the snapshot carries the last one done, never waiting on it.
 
-use super::forecast::{Forecast, Record, SlotJob};
+use super::forecast::{Forecast, Record, SlotJob, ToCome};
 use crate::coord::history::{self, Event, History, DAYS};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -138,13 +138,33 @@ struct Snap {
     macs: Vec<Value>,
 }
 
-/// The forecast run here off the reads (`PageView::forecast_run`): the last one done; the one
-/// running; the input's time and when the last was started.
+/// The forecast run here off the reads (`PageView::forecast_run`): the last one done and the one
+/// before it (a page that read the swarm's just before a run ended still gets its tiles to come:
+/// `PageView::tocome`); the one running; the input's time and when the last was started; the waits
+/// the last one left (its items' dependencies, as the lead's agent keeps them for its coordinator's
+/// history: `history::Waits`) and this history's number when they were made.
 #[derive(Default)]
 struct Runs {
-    done: Option<Forecast>,
-    running: Option<std::thread::JoinHandle<Forecast>>,
+    done: Option<Done>,
+    prev: Option<Done>,
+    running: Option<std::thread::JoinHandle<Ran>>,
     of: Option<(SystemTime, Instant)>,
+    waits: (Arc<history::Waits>, u64),
+}
+
+/// A forecast run here and its tiles to come (`/work/tocome`, task #836: made of the same run, so
+/// its `at` is the swarm's forecast's), its runs' `after` in this history's numbering (`epoch`;
+/// none before the history's first read).
+struct Done {
+    forecast: Forecast,
+    tocome: ToCome,
+    epoch: Option<String>,
+}
+
+/// What a run's thread gives back: it, and the waits it made (with the history's number then).
+struct Ran {
+    done: Done,
+    waits: Option<(history::Waits, u64)>,
 }
 
 impl Runs {
@@ -152,7 +172,12 @@ impl Runs {
     fn take(&mut self, wait: bool) {
         if self.running.as_ref().is_some_and(|h| wait || h.is_finished()) {
             match self.running.take().map(std::thread::JoinHandle::join) {
-                Some(Ok(f)) => self.done = Some(f),
+                Some(Ok(r)) => {
+                    self.prev = self.done.replace(r.done);
+                    if let Some((w, at)) = r.waits {
+                        self.waits = (Arc::new(w), at);
+                    }
+                }
                 Some(Err(_)) => eprintln!("pageview: the forecast failed"),
                 None => {}
             }
@@ -313,7 +338,6 @@ impl PageView {
             Some(_) => had,
             None => None,
         };
-        self.forecast_run(record.as_ref(), now, &inp.own);
         // The regions, again only when their file changed.
         let rpath = super::pool::regions_path(inp.term);
         let regions = match src.mtime(&rpath) {
@@ -382,47 +406,52 @@ impl PageView {
         // (The newest KEEP_MAX alone: the most the history keeps.)
         new.drain(..new.len().saturating_sub(history::KEEP_MAX));
         // Swapped in.
-        let mut st = self.state.lock().unwrap();
-        // (Days gone from the last DAYS: their offsets forgotten.)
-        st.offsets = read_to;
-        if skipped > 0 {
-            st.skipped += skipped;
-            eprintln!("pageview: {} history chunks passed over without a line's end", st.skipped);
-        }
-        st.record = record;
-        st.regions = regions;
-        if st.history.is_none() {
-            st.epoch = format!("view {} {}", std::process::id(), now);
-        }
-        st.taken.retain(|k| k.1 >= week);
-        let fresh: Vec<(String, u64, Event)> = new
-            .into_iter()
-            .filter(|(t, m, seq, e)| st.taken.insert((m.clone(), *t, *seq, e.kind.clone())))
-            .map(|n| (n.1, n.2, n.3))
-            .collect();
-        let st = &mut *st;
-        let h = st.history.get_or_insert_with(|| History::load(None));
-        for (m, seq, mut e) in fresh {
-            // (What it waited on in this numbering: a job not taken in here, dropped.)
-            e.after = e.after.iter().filter_map(|q| st.numbered.get(&(m.clone(), *q)).copied()).collect();
-            let done = history::finished(&e);
-            // (Numbered here: the page's cursor, rising as events arrive.)
-            let n = h.add(e);
-            if done {
-                st.numbered.insert((m, seq), n);
+        let ran = record.clone();
+        {
+            let mut st = self.state.lock().unwrap();
+            // (Days gone from the last DAYS: their offsets forgotten.)
+            st.offsets = read_to;
+            if skipped > 0 {
+                st.skipped += skipped;
+                eprintln!("pageview: {} history chunks passed over without a line's end", st.skipped);
             }
+            st.record = record;
+            st.regions = regions;
+            if st.history.is_none() {
+                st.epoch = format!("view {} {}", std::process::id(), now);
+            }
+            st.taken.retain(|k| k.1 >= week);
+            let fresh: Vec<(String, u64, Event)> = new
+                .into_iter()
+                .filter(|(t, m, seq, e)| st.taken.insert((m.clone(), *t, *seq, e.kind.clone())))
+                .map(|n| (n.1, n.2, n.3))
+                .collect();
+            let st = &mut *st;
+            let h = st.history.get_or_insert_with(|| History::load(None));
+            for (m, seq, mut e) in fresh {
+                // (What it waited on in this numbering: a job not taken in here, dropped.)
+                e.after = e.after.iter().filter_map(|q| st.numbered.get(&(m.clone(), *q)).copied()).collect();
+                let done = history::finished(&e);
+                // (Numbered here: the page's cursor, rising as events arrive.)
+                let n = h.add(e);
+                if done {
+                    st.numbered.insert((m, seq), n);
+                }
+            }
+            if st.numbered.len() > history::KEEP_MAX {
+                let from = h.seq().saturating_sub(history::KEEP_MAX as u64);
+                st.numbered.retain(|_, n| *n > from);
+            }
+            // (What's taken in, as many as the history keeps: those it let go of forgotten.)
+            if st.taken.len() > history::KEEP_MAX {
+                let oldest = st.history.as_ref().and_then(History::oldest).unwrap_or(week);
+                st.taken.retain(|k| k.1 >= oldest);
+            }
+            st.snap = Some(Snap { status, view, pause, helpers, macs });
+            st.last = Some(Instant::now());
         }
-        if st.numbered.len() > history::KEEP_MAX {
-            let from = h.seq().saturating_sub(history::KEEP_MAX as u64);
-            st.numbered.retain(|_, n| *n > from);
-        }
-        // (What's taken in, as many as the history keeps: those it let go of forgotten.)
-        if st.taken.len() > history::KEEP_MAX {
-            let oldest = st.history.as_ref().and_then(History::oldest).unwrap_or(week);
-            st.taken.retain(|k| k.1 >= oldest);
-        }
-        st.snap = Some(Snap { status, view, pause, helpers, macs });
-        st.last = Some(Instant::now());
+        // (The forecast run once the history is taken in: its runs' `after` in its numbering.)
+        self.forecast_run(ran.as_ref(), now, &inp.own);
     }
 
     /// `/work/swarm`'s answer (the page's shape: crate::coord's handler), from the snapshot; None
@@ -433,11 +462,25 @@ impl PageView {
         let forecast = {
             let mut r = self.forecast.lock().unwrap();
             r.take(false);
-            r.done.clone()
+            r.done.as_ref().map(|d| d.forecast.clone())
         };
         let st = self.state.lock().unwrap();
         let s = st.snap.as_ref()?;
         Some(answer(s, forecast.as_ref(), st.history.as_ref(), &st.epoch, &app, now_s()))
+    }
+
+    /// `/work/tocome`'s answer (task #836) from the forecast run here: the one at `at` (the swarm's
+    /// forecast's `at` the page read: the last or the one before), else the last; with the `epoch`
+    /// its `after` is numbered in (null before the history's first read: no `after`). None before
+    /// the first run. A page asked.
+    pub fn tocome(&self, at: Option<u64>) -> Option<Value> {
+        self.touch();
+        let mut r = self.forecast.lock().unwrap();
+        r.take(false);
+        let d = [&r.done, &r.prev].into_iter().flatten().find(|d| Some(d.forecast.at) == at).or(r.done.as_ref())?;
+        let mut a = d.tocome.answer();
+        a["epoch"] = d.epoch.clone().into();
+        Some(a)
     }
 
     /// `/work/regions`' answer (crate::agent::regionsview): the lead's as last read; None before
@@ -516,7 +559,7 @@ impl PageView {
         r.take(false);
         // (No record: the last one dropped; one running kept until it's done, never two at once.)
         let Some((t, rec)) = record else {
-            (r.done, r.of) = (None, None);
+            (r.done, r.prev, r.of) = (None, None, None);
             return;
         };
         let due = r.of.is_none_or(|(at, started)| at != *t || started.elapsed() >= super::forecast::EVERY);
@@ -524,9 +567,25 @@ impl PageView {
             return;
         }
         let (rec, own) = (rec.clone(), own.to_vec());
+        // (What its items wait on, worked out from the history as read so far, off its lock.)
+        let basis = {
+            let st = self.state.lock().unwrap();
+            st.history.as_ref().map(|h| (h.waits_basis_from(r.waits.0.clone(), r.waits.1), st.epoch.clone()))
+        };
         match std::thread::Builder::new().name("pageview-forecast".into()).spawn(move || {
             super::forecast::low_priority();
-            local_forecast(&rec, now, &own)
+            let mut forecast = local_forecast(&rec, now, &own);
+            let (mut tocome, item_run) = ToCome::take(&mut forecast, &rec.input.machines);
+            let graph = std::mem::take(&mut forecast.graph);
+            let (waits, epoch) = match basis {
+                Some(((b, at), epoch)) => {
+                    let w = b.next(graph);
+                    tocome.runs.after = w.by_run(&item_run, tocome.runs.targets.len());
+                    (Some((w, at)), Some(epoch))
+                }
+                None => (None, None),
+            };
+            Ran { done: Done { forecast, tocome, epoch }, waits }
         }) {
             Ok(h) => (r.running, r.of) = (Some(h), Some((*t, Instant::now()))),
             Err(e) => eprintln!("pageview: the forecast's thread: {e}"),
@@ -692,6 +751,40 @@ mod tests {
 
     fn inputs(app: &str) -> Inputs {
         Inputs { root: None, term: 7, members: vec!["m-a".into(), "m-b".into()], app: app.into(), own: Vec::new() }
+    }
+
+    /// (Task #836) `/work/tocome` is the forecast's the swarm's answer carries (the same `at`, its
+    /// `after` in this Mac's numbering): the lead's agent's own had lagged a pageview's by a
+    /// forecast, so every page dropped its own Mac's answer. The page asks with the `at` it read;
+    /// a run done since leaves that one answered, the newest without one.
+    #[test]
+    fn the_tiles_to_come_are_the_swarms_forecasts() {
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
+        let pv = PageView::default();
+        pv.set_inputs(inputs(""));
+        assert!(pv.tocome(None).is_none());
+        pv.touch_at(now);
+        let src = Dir(d.path().into(), AtomicUsize::new(0));
+        pv.tick(&src, now);
+        settle(&pv);
+        let a = pv.swarm().unwrap();
+        let at = a["agent"]["forecast"]["at"].as_u64().unwrap();
+        let tc = pv.tocome(Some(at)).unwrap();
+        assert_eq!(tc["at"].as_u64(), Some(at));
+        assert_eq!(tc["epoch"], a["epoch"]);
+        assert!(tc["macs"].as_object().is_some_and(|m| !m.is_empty()), "{tc}");
+        // (Another run 30 s on: the swarm's is the new one; the one read before still answered.)
+        pv.forecast.lock().unwrap().of = None;
+        pv.state.lock().unwrap().last = None;
+        pv.tick(&src, now + 30);
+        settle(&pv);
+        let at2 = pv.swarm().unwrap()["agent"]["forecast"]["at"].as_u64().unwrap();
+        assert_eq!(at2, now + 30);
+        assert_eq!(pv.tocome(Some(at)).unwrap()["at"].as_u64(), Some(at));
+        assert_eq!(pv.tocome(Some(at2)).unwrap()["at"].as_u64(), Some(at2));
+        assert_eq!(pv.tocome(None).unwrap()["at"].as_u64(), Some(at2));
     }
 
     #[test]

@@ -4237,6 +4237,12 @@ fn route(
                 });
             }
             let raw = b["raw"].as_bool() == Some(true);
+            // (In the pool, this Mac's pageview's, of the forecast it runs for the swarm's answer
+            // (task #836): its `at` the page's status's (`{"at"}`, the one the page read), on the
+            // lead and every member alike, so no page needs another Mac's port.)
+            if let Some(a) = pv.as_ref().filter(|_| !raw).and_then(|p| p.tocome(b["at"].as_u64())) {
+                return Ok((200, a));
+            }
             Ok(tc.map_or_else(
                 || making("this Mac has made no forecast yet"),
                 |t| {

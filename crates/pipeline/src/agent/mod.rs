@@ -8554,18 +8554,13 @@ impl Agent {
             // (Each Mac's tiles to come, for the page's map (`/work/tocome`), and the schedule's runs
             // (their targets and dependencies); the rest of `placed` the archive's alone: neither
             // kept with the forecast the agent holds.)
-            let macs: Vec<String> =
-                record.input.machines.iter().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())).collect();
-            let mut tocome = forecast::ToCome::of(&f.placed, &macs, f.at);
-            let item_run = std::mem::take(&mut f.runs.item_run);
-            tocome.runs = std::mem::take(&mut f.runs);
+            let (mut tocome, item_run) = forecast::ToCome::take(&mut f, &record.input.machines);
             // (What its items wait on as the history's, worked out here: off the loop; each run's
             // finished dependencies from it, for the page's arrows.)
             let waits = coord.map(|c| c.waits_of(std::mem::take(&mut f.graph)));
             if let Some(w) = &waits {
                 tocome.runs.after = w.by_run(&item_run, tocome.runs.targets.len());
             }
-            f.placed = Vec::new();
             Forecasted { forecast: f, bytes: record.bytes(), entry, tocome, waits, took: took.elapsed() }
         });
         match run {

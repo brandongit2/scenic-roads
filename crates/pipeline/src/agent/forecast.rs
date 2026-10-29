@@ -856,6 +856,19 @@ impl ToCome {
     pub fn answer(&self) -> serde_json::Value {
         serde_json::json!({ "at": self.at, "macs": self.macs, "runs": self.runs.targets, "deps": self.runs.deps, "after": self.runs.after })
     }
+
+    /// `f`'s tiles to come and runs (at `f.at`: the forecast's own, task #836), taken out of it:
+    /// its `placed` dropped, its runs' `item_run` handed back for the waits (`Waits::by_run`);
+    /// `machines` the lanes it was run on (each lane's Mac, else its name). The lead's agent's and
+    /// a pageview's alike.
+    pub fn take(f: &mut Forecast, machines: &[Machine]) -> (ToCome, Vec<Option<u32>>) {
+        let macs: Vec<String> = machines.iter().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())).collect();
+        let mut tc = ToCome::of(&f.placed, &macs, f.at);
+        let item_run = std::mem::take(&mut f.runs.item_run);
+        tc.runs = std::mem::take(&mut f.runs);
+        f.placed = Vec::new();
+        (tc, item_run)
+    }
 }
 
 /// The forecast's code version, archived with each forecast (crate::agent::fcarchive): raised
@@ -4355,10 +4368,7 @@ mod tests {
         }
         // (`/work/tocome`'s answer as the lead would make it: for the page's tests, touch-test.mjs --tocome.)
         if let Ok(out) = std::env::var("SCENIC_TOCOME_OUT") {
-            let macs: Vec<String> =
-                r.input.machines.iter().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())).collect();
-            let mut tc = ToCome::of(&f.placed, &macs, f.at);
-            tc.runs = f.runs.clone();
+            let (tc, _) = ToCome::take(&mut f.clone(), &r.input.machines);
             std::fs::write(out, serde_json::to_vec(&tc.answer()).unwrap()).unwrap();
         }
     }

@@ -123,6 +123,9 @@ pub struct Waits {
 pub struct WaitsBasis {
     old: std::sync::Arc<Waits>,
     built: HashMap<(String, String), u64>,
+    /// The new waits' `from`, when they're kept apart from a history (`History::waits_basis_from`;
+    /// else `History::set_waits` sets it).
+    from: Option<u64>,
 }
 
 impl WaitsBasis {
@@ -142,7 +145,7 @@ impl WaitsBasis {
                 resolved.insert(k.clone(), r);
             }
         }
-        Waits { graph, from: 0, index, resolved }
+        Waits { graph, from: self.from.unwrap_or(0), index, resolved }
     }
 }
 
@@ -272,7 +275,14 @@ impl History {
 
     /// What `next_waits` works from (taken under the coordinator's lock, worked out off it).
     pub fn waits_basis(&self) -> WaitsBasis {
-        WaitsBasis { old: self.waits.clone(), built: self.built.clone() }
+        WaitsBasis { old: self.waits.clone(), built: self.built.clone(), from: None }
+    }
+
+    /// `waits_basis` from waits kept apart from the history's own (`old`, made when its event
+    /// number was `set_at`; a pageview's, crate::agent::pageview, whose events' `after` are the
+    /// lead's renumbered, never filled from them), and this history's number now: the next set's.
+    pub fn waits_basis_from(&self, old: std::sync::Arc<Waits>, set_at: u64) -> (WaitsBasis, u64) {
+        (WaitsBasis { old, built: self.built.clone(), from: Some(set_at) }, self.seq)
     }
 
     /// The forecast's dependencies (`WaitsBasis::next`), what each start and lease from now on
