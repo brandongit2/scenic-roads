@@ -1059,7 +1059,24 @@ counts its runs in that time (its time prior, its fits, `secs_p90`, the forecast
 weighted by that work: a run that did none, or doesn't say, counts for nothing there (five z6 tiles
 already stored, 17–37 s each, had made the step's time 30 s against a fetching one's 4,950 s),
 while its own target keeps its own time; nor is the lead's own pace of its jobs (`step_secs`)
-read for it. Else the caller's first guess (the steps table's, or the size
+read for it. **Drops** (task #837): a target offered under its step's "none" key
+(`agent::build::is_none_key`: a terrain-hi, slope-hi, terrain-lo, slope-lo, terrain-deep or
+slope-deep target whose tile no target is any more, its packs still named) only drops its packs
+from the manifest and reads nothing, a second or two where a build takes minutes and gigabytes
+(on 29 Oct 4,275 terrain-deep drops in Alaska were sized at the step's 76.5 s and 7 GB: about 91
+lane-hours). Every step's drops run through one helper (`scenic-build`'s `run_drop`), whose cost
+line carries a `drops` measure (`needs::DROPS`, the packs dropped); such a run counts for nothing
+in its step's model (its priors, fits, time weight, the lead's `step_secs`), and a drop not yet
+measured itself is sized by its step's drops (`Book::drop_need`: their mean time, the 90th
+percentile of their memory), before any of its step's ran by every step's drops (a drop of any
+step reads the manifest alone), and before any drop at all by its step's model, as a build: one
+job, after which it is measured (no figure is typed in for it). The scheduler marks them as
+offered (`Sched::drops`); the plan puts every step's drops first of the terrain and slope work
+(`Plan::drops`), the forecast lists them first as runs of their own (`Lane::drop`, never merged
+with a build's run), shown "drop to come" on the build page. A drop never runs under a job that
+reads what it drops: what reads its tile waits for it as before (the z3 tiles with a none target
+left are terrain or slope left), it has one key per target so it is never leased beside a build of
+the same target, and its tiles are no build target's input. Else the caller's first guess (the steps table's, or the size
 the plan offered): a cold start. A fit is judged on runs held out of it
 (5 folds) and not used when it predicts under on more than 5% of them, is off by more than 50% on
 the median one, or has fewer than 10 runs. The models are kept until a cost, floor or disk floor

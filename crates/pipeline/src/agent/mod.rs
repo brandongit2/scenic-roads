@@ -8203,7 +8203,7 @@ impl Agent {
         root: &store::nasfs::NasRoot,
         before: &[JobSpec],
         regions: &[build::RegionLeft],
-        drops: &[String],
+        drops: &[(String, String)],
         backfill: &[build::Work],
         chains: [Vec<build::Work>; 5],
         blind: Option<String>,
@@ -8286,10 +8286,9 @@ impl Agent {
                 None => Cost { secs: per(step), known: false, peak_mb: need_mb(step, t) },
             }
         };
-        // (A drop, terrain-deep's: its own run's measure, else its step's drops', else as a target of
-        // its step until one has run: crate::needs::DROPS.)
-        let drop_cost = |t: &str| -> Cost {
-            let step = "terrain-deep";
+        // (A drop: its own run's measure, else its step's drops', else any step's drops', else as a
+        // target of its step until a drop has run: crate::needs::DROPS, Book::drop_need.)
+        let drop_cost = |step: &str, t: &str| -> Cost {
             match costs.get(&crate::coord::cost_key(step, t)).filter(|c| crate::needs::is_drop(c)) {
                 Some(c) => Cost { secs: c.secs as f64, known: true, peak_mb: c.peak_mb },
                 None => match book.drop_need(step) {
@@ -8299,7 +8298,7 @@ impl Agent {
             }
         };
         let drops: Vec<forecast::Job> =
-            drops.iter().map(|t| ("terrain-deep".to_string(), t.clone(), drop_cost(t))).collect();
+            drops.iter().map(|(step, t)| (step.clone(), t.clone(), drop_cost(step, t))).collect();
         // The lead's own steps: what a target took here lately (measured), else a first guess.
         // (A PER_WORK step's, its costs' weighed time, as its jobs' times here mix in those that
         // found nothing to do.)

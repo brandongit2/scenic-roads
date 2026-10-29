@@ -1131,9 +1131,9 @@ function runCard(m, r, kind, laneName) {
   // (One job as the forecast's run of the scheduler grants it (`runJobs`), its targets
   // `/work/tocome`'s once asked.)
   const one = targets.length > 0;
-  // (A drop (forecast::Lane::drop): z10 tiles no deep target any more, their packs dropped, nothing built.)
+  // (A drop (forecast::Lane::drop): tiles no target any more, their packs dropped, nothing built.)
   const what = r.drop ? "drop" : "job";
-  return stack({ kicker: `${r.step} · ${what} to come`, colour, title: `${r.drop ? "drop: " : ""}${one ? S.job(r.step, targets) : r.n ? S.counted(r.step, r.n) : r.step}`, map,
+  return stack({ kicker: `${r.step} · ${what} to come`, colour, title: one ? S.job(r.step, targets) : r.n ? S.counted(r.step, r.n) : r.step, map,
     stats: [[clock(r.from), "forecast start"], [clock(r.until), "forecast end"]],
     bar: { frac: 0, label: "not started" },
     chips: targetChips(targets), chipsLabel: targets.length ? S.counted(r.step, targets.length) : "",
@@ -1141,7 +1141,7 @@ function runCard(m, r, kind, laneName) {
     ["stage", S.stage(r.step)],
     ["on", laneName(r.lane)],
     ["takes", `≈ ${dur(r.until - r.from)}`],
-    ["does", r.drop ? "drops the packs of z10 tiles no deep target any more; reads and builds nothing" : null],
+    ["does", r.drop ? "drops the packs of tiles no target any more; reads and builds nothing" : null],
     ["while the lead runs", r.of ? S.said(r.of, r.n) : null],
     ["waits on", r.waits != null ? plural(r.waits, "run") : null],
     ["then", r.waited != null ? `${plural(r.waited, "run")} wait on it` : null],

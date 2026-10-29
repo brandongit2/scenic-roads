@@ -2575,9 +2575,10 @@ pub struct Plan {
     /// Every region's work left, in the order they're built (those with none last), whether or not
     /// it can start now: what the forecast schedules (crate::agent::forecast).
     pub regions: Vec<RegionLeft>,
-    /// The terrain-deep drops (z10 tiles no target any more, their packs still named:
-    /// `is_none_key`), first in the plan: the forecast's first items, shown as drops.
-    pub drops: Vec<String>,
+    /// The drops left, (step, target), of every step with "none" targets (`is_none_key`: terrain-hi,
+    /// slope-hi, terrain-lo, slope-lo, terrain-deep, slope-deep), runnable now, first of the
+    /// terrain and slope work: the forecast's first items, shown as drops.
+    pub drops: Vec<(String, String)>,
     /// The catalogue planned goes out with the low zooms made (`low_gate`: they were due, and
     /// nothing's left of the publishing chain, or no lo pack is stale), noted so once made
     /// (`LastCatalogue::low_at`). Without a catalogue planned: the low zooms are made now.
@@ -2719,6 +2720,23 @@ pub fn plan(
     let TerrainWork {
         terrain, terrain_lo, terrain_deep, slope, slope_lo, slope_deep, terrain_left, slope_left, ..
     } = tw.clone();
+    // The drops, every step's targets offered under its "none" key (`is_none_key`: packs of tiles no
+    // target any more, dropped, nothing read): first of all the terrain and slope work, each a
+    // second or two where a build takes minutes, waiting on nothing (`terrain_work` lists them
+    // runnable); what reads their tiles waits on them as before.
+    let mut drops: Vec<(String, String)> = Vec::new();
+    let mut split = |step: &'static str, list: Vec<(String, String)>| -> Vec<(String, String)> {
+        let (d, rest): (Vec<_>, Vec<_>) = list.into_iter().partition(|(t, k)| is_none_key(step, t, k));
+        drops.extend(d.iter().map(|(t, _)| (step.to_string(), t.clone())));
+        push(&mut work, step, d);
+        rest
+    };
+    let terrain = split("terrain-hi", terrain);
+    let terrain_deep = split("terrain-deep", terrain_deep);
+    let terrain_lo = split("terrain-lo", terrain_lo);
+    let slope_deep = split("slope-deep", slope_deep);
+    let slope = split("slope-hi", slope);
+    let slope_lo = split("slope-lo", slope_lo);
     // (The summits and peaks read the terrain packs' z8 and z12: they wait till none is to be made.)
     let terrain_built = tw.terrain_pieces_left.is_empty() && tw.terrain_lo_left.is_empty();
     let tt = crate::treepacks::targets_with(cov, m, tiles.keyed(m).and_then(|k| k.trees.as_deref()));
@@ -2779,7 +2797,7 @@ pub fn plan(
             None => "the regions' z6 tiles wait for the pass's heritage sites, reaches or roadside buildings".into(),
         };
         let publishing = PublishLine { why, ..Default::default() };
-        return Plan { work, backfill, publishing, terrain_built, held: held_steps, ..Default::default() };
+        return Plan { work, backfill, publishing, terrain_built, held: held_steps, drops, ..Default::default() };
     };
 
     // base(U): the z6 tiles the coverage builds. Each region's: those it builds itself (a road of theirs
@@ -2949,14 +2967,6 @@ pub fn plan(
     let mut taken = vec![false; units.len()];
     let mut listed: BTreeSet<String> = BTreeSet::new();
     let mut by_region: Vec<Work> = Vec::new();
-    // (The deep levels' drops, z10 tiles no target any more (`is_none_key`), first: each a second
-    // or two, reading nothing, never behind the regions' builds.)
-    let drops: Vec<(String, String)> = terrain_deep
-        .iter()
-        .filter(|t| is_none_key("terrain-deep", &t.0, &t.1) && listed.insert(t.0.clone()))
-        .cloned()
-        .collect();
-    push(&mut by_region, "terrain-deep", drops);
     for r in &order {
         let t: Vec<(String, String)> =
             terrain.iter().filter(|t| r.terrain.contains(&z3(t)) && listed.insert(t.0.clone())).cloned().collect();
@@ -2981,13 +2991,10 @@ pub fn plan(
     // first region in this order that builds it) and terrain likewise, its slope and tree cover.
     let mut claimed = vec![false; units.len()];
     let mut claimed_terrain: BTreeSet<String> = BTreeSet::new();
-    // (The deep levels' drops are no region's own: the forecast's first, `Plan::drops`.)
-    let deep_drops: Vec<String> = tw
-        .terrain_deep
-        .iter()
-        .filter(|t| is_none_key("terrain-deep", &t.0, &t.1) && claimed_terrain.insert(t.0.clone()))
-        .map(|t| t.0.clone())
-        .collect();
+    // (The drops are no region's own: the forecast's first, `Plan::drops`.)
+    for (step, t) in &drops {
+        claimed_terrain.insert(if step == "terrain-lo" { format!("lo {t}") } else { t.clone() });
+    }
     let mut lefts: Vec<RegionLeft> = Vec::new();
     for r in order.iter().copied().chain(regions.iter().filter(|r| r.stale.is_empty() && r.terrain.is_empty())) {
         let mut all = r.stale.clone();
@@ -3089,8 +3096,7 @@ pub fn plan(
     let (mut slope, mut slope_lo, mut slope_deep, mut trees, mut trees_lo) =
         (slope, slope_lo, slope_deep, trees, trees_lo);
     slope.sort_by_key(rank);
-    // (Its drops first, as terrain-deep's.)
-    slope_deep.sort_by_key(|t| (!is_none_key("slope-deep", &t.0, &t.1), rank(t)));
+    slope_deep.sort_by_key(rank);
     slope_lo.sort_by_key(rank);
     trees.sort_by_key(tree_rank);
     trees_lo.sort_by_key(tree_rank);
@@ -3291,7 +3297,7 @@ pub fn plan(
         ready,
         building,
         regions: lefts,
-        drops: deep_drops,
+        drops,
         low: plan_low,
         catalogue_held,
         catalogue_due,
@@ -6185,9 +6191,18 @@ pub(crate) mod tests {
         let n = mixed.iter().filter(|t| is_drop(t)).count();
         assert!(n > 0 && n < mixed.len(), "{n} of {}", mixed.len());
         assert!(mixed[..n].iter().all(is_drop), "the drops first: {mixed:?}");
-        assert_eq!(p.drops, mixed[..n].iter().map(|t| t.0.clone()).collect::<Vec<_>>());
-        assert!(p.regions.iter().all(|r| r.own_terrain_deep.iter().all(|t| !p.drops.contains(t))));
-        assert!(p.regions.iter().any(|r| r.terrain_deep.iter().any(|t| p.drops.contains(t))), "a region waits on them");
+        let dropped = |step: &str| p.drops.iter().filter(|d| d.0 == step).map(|d| d.1.clone()).collect::<Vec<_>>();
+        assert_eq!(dropped("terrain-deep"), mixed[..n].iter().map(|t| t.0.clone()).collect::<Vec<_>>());
+        // (Slope-deep's alike, through the same split: every step's none targets are drops.)
+        let sd = of(&p, "slope-deep");
+        let m_sd = sd.iter().filter(|(t, k)| is_none_key("slope-deep", t, k)).count();
+        assert!(m_sd > 0 && sd[..m_sd].iter().all(|(t, k)| is_none_key("slope-deep", t, k)), "{sd:?}");
+        assert_eq!(dropped("slope-deep").len(), m_sd);
+        assert!(p.regions.iter().all(|r| r.own_terrain_deep.iter().all(|t| !dropped("terrain-deep").contains(t))));
+        assert!(
+            p.regions.iter().any(|r| r.terrain_deep.iter().any(|t| dropped("terrain-deep").contains(t))),
+            "a region waits on them"
+        );
         // No dataset fine any more: the deep packs and deep mids go with "none" targets.
         let p = plan(&m, &done, &[]);
         let gone = of(&p, "terrain-deep");

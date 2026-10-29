@@ -2389,6 +2389,20 @@ fn note_started(key: &str) {
     }
 }
 
+/// Target `target` of `step` run as a drop (its "none" key, pipeline::agent::build::is_none_key):
+/// `drop` drops its packs, reading nothing, and says how many it dropped; then it's noted done, its
+/// cost noted as a drop's (pipeline::needs::DROPS), which its step's builds' model leaves out and
+/// the step's next drops are sized by. Every step's drops run through here.
+fn run_drop(step: &str, target: &str, drop: impl FnOnce() -> Result<usize>) -> Result<usize> {
+    pipeline::control::safe_point(step);
+    let c = cost_start(step, target);
+    let n = drop()?;
+    pipeline::costin::set(pipeline::needs::DROPS, n.max(1) as u64);
+    pipeline::control::done(step, target);
+    note_cost(step, target, c);
+    Ok(n)
+}
+
 /// What a job of `step` took for `target` (since its `cost_start`): the most memory the job's
 /// processes held together meanwhile (sampled: a pool's workers summed, an earlier target's peak
 /// not counted) and its time, noted for the coordinator (`SCENIC_COSTS`), which gives a helper only
@@ -5140,14 +5154,14 @@ fn none_assemblies(
 ) -> Result<Vec<(TileId, Vec<(u32, u32)>)>> {
     let (gone, rest): (Vec<_>, Vec<_>) = qs.into_iter().partition(|(_, ts)| ts.is_empty());
     for (q, _) in &gone {
-        pipeline::control::safe_point(step);
-        let n = if step == "terrain-lo" {
-            pipeline::terrain_pack::drop_lo(out, (q.x, q.y))?
-        } else {
-            pipeline::slope_pack::drop_lo(out, (q.x, q.y))?
-        };
+        let n = run_drop(step, &q.slash(), || {
+            if step == "terrain-lo" {
+                pipeline::terrain_pack::drop_lo(out, (q.x, q.y))
+            } else {
+                pipeline::slope_pack::drop_lo(out, (q.x, q.y))
+            }
+        })?;
         eprintln!("{step} {}: the coverage has left it; {n} files dropped", q.slash());
-        pipeline::control::done(step, &q.slash());
     }
     Ok(rest)
 }
@@ -5163,14 +5177,12 @@ fn terrain_pieces(
     same: &BTreeSet<String>,
 ) -> Result<()> {
     // ("None" z6 tiles, z6 tiles the coverage has left, first: their hi packs and mids dropped, nothing
-    // read, no cost noted; a job of them alone opens no sources and packs nothing.)
+    // read, their cost a drop's (`run_drop`); a job of them alone opens no sources and packs nothing.)
     let (ts, gone): (Vec<TileId>, Vec<TileId>) =
         ts.iter().partition(|t| pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y, 20.0));
     for t in &gone {
-        pipeline::control::safe_point("terrain-hi");
-        let n = pipeline::terrain_pack::drop_piece(out, (t.x, t.y))?;
+        let n = run_drop("terrain-hi", &t.slash(), || pipeline::terrain_pack::drop_piece(out, (t.x, t.y)))?;
         eprintln!("terrain-hi {}: the coverage has left it; {n} files dropped", t.slash());
-        pipeline::control::done("terrain-hi", &t.slash());
     }
     if ts.is_empty() {
         return Ok(());
@@ -5302,19 +5314,16 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     let p = phase("the fine datasets' declarations read", Class::NasRead);
     let fine = td::Fine::read(out.root(), &out.manifest)?;
     drop(p);
-    // (Those no target now first: their packs dropped, nothing read. Each noted as a drop
-    // (`drops`, pipeline::needs::DROPS): its time and memory a drop's, not the step's builds'.)
+    // (Those no target now first: their packs dropped, nothing read, each a drop (`run_drop`).)
     let (ts, gone): (Vec<TileId>, Vec<TileId>) =
         ts.into_iter().partition(|t| fine.as_ref().is_some_and(|f| td::is_target(&f.sets, &cov, (t.x, t.y))));
     for t in &gone {
-        pipeline::control::safe_point(STEP);
-        let c = cost_start(STEP, &t.slash());
-        let n = td::drop_target(out, (t.x, t.y));
-        out.save()?;
+        let n = run_drop(STEP, &t.slash(), || {
+            let n = td::drop_target(out, (t.x, t.y));
+            out.save()?;
+            Ok(n)
+        })?;
         eprintln!("{STEP} {}: no deep level there; {n} packs dropped", t.slash());
-        pipeline::costin::set(pipeline::needs::DROPS, n.max(1) as u64);
-        pipeline::control::done(STEP, &t.slash());
-        note_cost(STEP, &t.slash(), c);
     }
     let Some(fine) = fine.filter(|_| !ts.is_empty()) else { return Ok(()) };
     let raw_dir = PathBuf::from(
@@ -5483,12 +5492,11 @@ fn slope_pieces(
     for (k, t) in ts.iter().enumerate() {
         landing.safe_point(out, "slope-hi")?;
         pipeline::agent::jobs::part(k, &names);
-        // (A "none" z6 tile first: nothing read, neither a `started` nor a cost line.)
+        // (A "none" z6 tile first: nothing read, its cost a drop's, `run_drop`.)
         if !pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y, 20.0) {
             landing.land(out)?;
-            let n = pipeline::slope_pack::drop_piece(out, (t.x, t.y))?;
+            let n = run_drop("slope-hi", &t.slash(), || pipeline::slope_pack::drop_piece(out, (t.x, t.y)))?;
             eprintln!("slope-hi {}: the coverage has left it; {n} files dropped", t.slash());
-            pipeline::control::done("slope-hi", &t.slash());
             continue;
         }
         let c = cost_start("slope-hi", &t.slash());
@@ -5721,10 +5729,12 @@ fn slope_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::control::safe_point(STEP);
         pipeline::agent::jobs::part(k, &names);
         if !fine.as_ref().is_some_and(|f| td::is_target(&f.sets, &cov, (t.x, t.y))) {
-            let n = pipeline::slope_pack::drop_deep(out, (t.x, t.y));
-            out.save()?;
+            let n = run_drop(STEP, &t.slash(), || {
+                let n = pipeline::slope_pack::drop_deep(out, (t.x, t.y));
+                out.save()?;
+                Ok(n)
+            })?;
             eprintln!("{STEP} {}: no deep level there; {n} files dropped", t.slash());
-            pipeline::control::done(STEP, &t.slash());
             continue;
         }
         let c = cost_start(STEP, &t.slash());

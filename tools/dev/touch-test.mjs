@@ -662,11 +662,20 @@ async function run() {
       // world map of them (the forecast's run of the scheduler's grants: one job a run, the next
       // hours; `/work/tocome`'s runs). Its card shot as it shows (chrome-job-to-come.png).
       const next = `(document.querySelector(".panel:not([hidden]) .sched .lanewrap")?.spots?.(["next"]) || [])`;
-      let nc = null;
+      let nc = null, dc = null;
       const nNext = await js(`${next}.length`);
-      for (let k = 0; k < Math.min(nNext, 40) && !nc; k++) {
+      // (A drop looked for further: its run may sit behind a lane of many jobs.)
+      for (let k = 0; k < Math.min(nNext, 200) && ((!nc && k < 40) || !dc); k++) {
         const c = await card(null, "", await js(`(() => { document.querySelector(".panel:not([hidden]) .sched .lanewrap").scrollIntoView({ block: "center" }); const s = ${next}[${k}]; return s ? [s.x, s.y] : null; })()`));
-        if (c && !c.none && c.map > 0 && /job to come/.test(c.kick || "")) {
+        // (#837) A drop to come (forecast::Lane::drop: a run of drops, packs dropped, nothing
+        // built): its own kicker and a "does" row, shot as it shows (chrome-drop-to-come.png).
+        if (!dc && c && !c.none && /drop to come/.test(c.kick || "")) {
+          dc = { ...c, does: await js(`[...document.querySelectorAll(".card-tip")].find((e) => e.getClientRects().length && !e.hidden)?.textContent.includes("reads and builds nothing") || false`) };
+          const b = await js(`(() => { const t = [...document.querySelectorAll(".card-tip")].find((e) => e.getClientRects().length && !e.hidden); const r = t.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()`);
+          const { data } = await page.send("Page.captureScreenshot", { format: "png", clip: { x: b[0], y: b[1], width: b[2], height: b[3], scale: 1 } });
+          writeFileSync(join(OUT, "chrome-drop-to-come.png"), Buffer.from(data, "base64"));
+        }
+        if (!nc && k < 40 && c && !c.none && c.map > 0 && /job to come/.test(c.kick || "")) {
           nc = { ...c, chips: await js(`[...document.querySelectorAll(".card-tip")].find((e) => e.getClientRects().length && !e.hidden)?.querySelectorAll(".chips > *, .tc-chips > *").length || 0`) };
           const b = await js(`(() => { const t = [...document.querySelectorAll(".card-tip")].find((e) => e.getClientRects().length && !e.hidden); const r = t.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()`);
           const { data } = await page.send("Page.captureScreenshot", { format: "png", clip: { x: b[0], y: b[1], width: b[2], height: b[3], scale: 1 } });
@@ -676,6 +685,8 @@ async function run() {
       }
       if (!nNext) console.log("INFO jobs card: no job to come in the forecast (the live build's state)");
       else check("jobs card: a job to come names its targets, a world map of them (#834)", !!nc && steps.has(String(nc.title).split(/[ :]/)[0]) && nc.title.includes("/"), nc ? `${nc.kick} / ${nc.title}, map ${nc.map} px` : `none of ${Math.min(nNext, 40)} jobs to come shows a map of its tiles`);
+      if (dc) check("jobs card: a drop to come says it's a drop, its step as the code names it (#837)", dc.does && steps.has(String(dc.kick).split(" ")[0]), `${dc.kick} / ${dc.title}`);
+      else console.log("INFO jobs card: no drop to come in the forecast (the live build's state)");
       if (!PHONE) await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2 });
       check("#659: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }

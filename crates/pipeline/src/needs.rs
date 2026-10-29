@@ -633,15 +633,26 @@ impl<'a> Book<'a> {
     }
 
     /// What a drop of `step` (`DROPS`) takes, by its step's drops run the way it runs now: their
-    /// mean time (s, rounded up) and the 90th percentile of their memory (MB); None while none ran.
+    /// mean time (s, rounded up) and the 90th percentile of their memory (MB). Before any of its
+    /// step's has run, every step's drops' alike: a drop of any step reads the manifest alone and
+    /// deletes names from it (crate::terrain_deep::drop_target, crate::terrain_pack::drop_piece,
+    /// crate::slope_pack::drop_lo …), so one step's measure is the next's best first guess, never a
+    /// build's minutes and gigabytes. None while no drop of any step ran.
     pub fn drop_need(&self, step: &str) -> Option<(u64, u64)> {
-        let v = cost_version(step);
-        let runs: Vec<&Cost> = self
-            .costs
-            .iter()
-            .filter(|(k, c)| step_of_key(k) == step && c.v >= v && is_drop(c))
-            .map(|(_, c)| c)
-            .collect();
+        let of = |only: Option<&str>| -> Vec<&Cost> {
+            self.costs
+                .iter()
+                .filter(|(k, c)| {
+                    let s = step_of_key(k);
+                    only.is_none_or(|o| s == o) && c.v >= cost_version(s) && is_drop(c)
+                })
+                .map(|(_, c)| c)
+                .collect()
+        };
+        let mut runs = of(Some(step));
+        if runs.is_empty() {
+            runs = of(None);
+        }
         let secs = weighted_mean(&runs.iter().map(|c| (c.secs, 1.0)).collect::<Vec<_>>())?;
         Some((secs, p90(runs.iter().map(|c| c.peak_mb).collect()).unwrap_or(0)))
     }
@@ -1197,6 +1208,13 @@ mod tests {
         assert_eq!(b.prior("terrain-deep", Measure::Mem), prior_mb, "the builds' memory alone");
         assert_eq!(b.secs("terrain-deep", "10/300/300", 0), prior_s);
         assert_eq!(b.drop_need("terrain-deep"), Some((2, 150)));
+        // (Another step's first drop: every step's drops' measure, a drop being a drop whatever its
+        // step; its own once one ran.)
+        assert_eq!(b.drop_need("slope-hi"), Some((2, 150)));
+        let sv = cost_version("slope-hi");
+        let mut more = costs.clone();
+        more.insert("slope-hi 6/10/20".into(), Cost { v: sv, ..cost(90, 5, &[(DROPS, 2)]) });
+        assert_eq!(Book::new(&more).drop_need("slope-hi"), Some((5, 90)));
         // (A drop's own measure is its own.)
         assert_eq!(b.secs("terrain-deep", "10/100/252", 0), Some(2));
         assert!(

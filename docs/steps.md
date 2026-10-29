@@ -692,6 +692,10 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   pool's datasets meeting it and its water's digest (`agent::build::terrain_deep_key`). Never a
   built tile: no target of it waits for another. A z10 tile no target any more is keyed on the
   version and the tile (`none_deep_key`).
+- **Drops:** a target under any of these "none" keys (`agent::build::is_none_key`) drops its packs
+  and reads nothing; its run notes a `drops` measure (`needs::DROPS`, docs/pool.md §7.7) so it is
+  sized as a drop, never as its step's build, and the plan runs every step's drops first of the
+  terrain and slope work (`Plan::drops`), the forecast and build page showing them as drops.
 - **terrain-lo (an assembly):** its z6 tiles' mids by content ("-" for a z6 tile without one) and the
   digest of its z6–8 water; `TERRAIN_LO_V` and the codec. "none" likewise (`none_lo_key`).
 - **slope-hi (a z6 tile):** `SLOPE_V` and the codec (`shade_codec::version`: the encoding, libwebp's
