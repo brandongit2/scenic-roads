@@ -25,6 +25,8 @@ cache/         what z6 tiles keep for later runs, shared by both Macs: scenic-un
 catalog/       <n>.json.zst (or deltas): every file the map reads, by content name
 catalog-held/  a catalogue kept back for review (while inputs/hold-catalog exists)
 app/           published app versions; current.json, previous.json
+settings/      profiles.json: the map's settings profiles, shared by every user (crates/server/src/profiles.rs;
+               the one file the map's server writes on the NAS)
 state/         status.json (the lead's heartbeat), build/ (manifest, job keys, pending, terms),
                journal/, coord/, pool/ (switches), helpers/, backups/, logs/
 nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by publish.sh)
@@ -98,7 +100,7 @@ folder's, so `std::fs::copy` or plain `cp` fail with "Permission denied".
 
 **Writers.** Every job uploads its files (content-named) and hands its record changes to the journal
 on the NAS, which the lead merges; no step writes the records directly once a term exists
-(`crate::out::check_writer`). Other writers: the owner's inputs folders, `tools/app/publish.sh`, and the
+(`crate::out::check_writer`). Other writers: the map's server (`settings/profiles.json` alone), the owner's inputs folders, `tools/app/publish.sh`, and the
 NAS's own planet fetch.
 
 **GC** runs daily, in the agent, when the NAS is quiet: only beside leased jobs that leave its

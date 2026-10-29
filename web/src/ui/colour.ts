@@ -20,6 +20,8 @@ const BASE: [Mode, string][] = [
 const SCENIC = MODES.filter(isScenic);
 
 export class ColourCard {
+  /** The panel's sticky top: the heading (and the profiles' dropdown, added by main.ts). */
+  readonly top: HTMLDivElement;
   /** How the roads are coloured (the settings panel's Roads section). */
   readonly el: HTMLDivElement;
   /** Live preview of a palette while hovering the ramp list (null: back to the chosen one). */
@@ -97,7 +99,9 @@ export class ColourCard {
         'Negative weights penalise. Views, vistas and water already account for trees (canopy heights block sight lines). Double-click (on a touch screen, double-tap) a slider to zero it.'),
     );
 
-    root.append(h('div', { class: 'title' }, h('h1', {}, 'Scenic roads'), h('p', { class: 'sub', html: subtitle })));
+    // The heading, and below it the settings profiles (main.ts): kept at the panel's top.
+    this.top = h('div', { class: 'top' }, h('div', { class: 'title' }, h('h1', {}, 'Scenic roads'), h('p', { class: 'sub', html: subtitle })));
+    root.append(this.top);
     this.el = h('div', { class: 'colour-body' },
       seg,
       this.scenicSel,

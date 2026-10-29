@@ -37,7 +37,7 @@ import { addBuildings, applyBuildings, rgb01, buildingAt, heightColourFn, herita
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
-import { ROAD_WEIGHT, Store, classMask, defaults, labelShown, modeGroup, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Selection, type Stretch } from './state';
+import { ROAD_WEIGHT, Store, classMask, defaults, labelShown, modeGroup, fromHash, fromProfile, fromSaved, profileIdOf, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Selection, type Stretch } from './state';
 import { applyLabelLooks, defaultLooks, labelLayerShown, labelSizeOf } from './labellook';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, setTerrainAreas, switchContours, TINT_VARS, tintColourAt, tintCss } from './terrain';
@@ -55,6 +55,7 @@ import { slicedGlyphs } from './glyphs';
 import { installTrackpad } from './trackpad';
 import { MapStatus } from './ui/mapstatus';
 import { ColourCard } from './ui/colour';
+import { Profiles, fetchProfiles } from './ui/settingprofiles';
 import { cap, fmt, h, toast } from './ui/dom';
 import { loadBar } from './ui/loadbar';
 import { DrivesPane } from './ui/drives';
@@ -92,6 +93,8 @@ async function main() {
     return (await r.json()) as Meta;
   });
   metaReady.catch(() => undefined); // (handled below)
+  // The settings profiles (ui/settingprofiles.ts): a link's settings are read over the one it names.
+  const profilesReady = fetchProfiles();
   maplibregl.setWorkerUrl(mlWorkerUrl);
   // MapLibre parses every tile and overlay file on a single worker by default (outside Safari):
   // the basemap and terrain tiles then wait behind a 50 MB overlay file. Several, leaving cores for
@@ -165,11 +168,23 @@ async function main() {
     history.replaceState(null, '', location.pathname + location.search + (rest ? `#${rest}` : ''));
   }
   const saved = fromSaved(prefs.load('state', null));
+  // The profile in use: the link's (one it names that's gone: the default, said), else the last
+  // session's. A link naming none (older links) carries its settings over the app's defaults.
+  const listing = await profilesReady;
+  const known = (id: string | null): id is string => !!id && listing.profiles.some((p) => p.id === id);
+  const hasLink = !BENCH && location.hash.length > 1;
+  const linkPid = hasLink ? profileIdOf(location.hash) : null;
+  if (linkPid && !known(linkPid)) toast('The link\u2019s profile is gone: its changes are shown over the default profile\u2019s');
+  const lastPid = prefs.load<string | null>('profile', null);
+  const activePid = hasLink ? (known(linkPid) ? linkPid : listing.default) : known(lastPid) ? lastPid : listing.default;
+  const linkBase = hasLink && !linkPid ? defaults : fromProfile(listing.profiles.find((p) => p.id === activePid)?.settings ?? {});
   // (The self-benchmark, `#bench` (selfbench.ts): its view, as a `#map=` link.)
-  const linked = BENCH ? fromHash(benchHash(), hasBuildings) : location.hash.length > 1 ? { ...fromHash(location.hash, hasBuildings), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
+  const linked = BENCH ? fromHash(benchHash(), hasBuildings) : hasLink ? { ...fromHash(location.hash, hasBuildings, linkBase), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
   // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.
   const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings)) : CMP ? cmpState(fromHash(location.hash, hasBuildings)) : linked);
-  history.replaceState(null, '', toHash(store.s, hasBuildings)); // the address bar holds the restored state
+  const profiles = new Profiles(store, listing, activePid, () => hasBuildings);
+  profiles.use(activePid);
+  history.replaceState(null, '', toHash(store.s, hasBuildings, profiles.base())); // the address bar holds the restored state
   // (The water's tiles carry its colours: the user's from the start, so they're fetched once.)
   setLandColour(store.s.land);
   setWaterColours(store.s.water.colour, lakeColour(store.s.water.colour));
@@ -689,6 +704,10 @@ async function main() {
   const layersRoot = document.createElement('div');
   layersRoot.id = 'layers';
   document.getElementById('colour')!.append(layersRoot);
+  colour.top.append(profiles.el);
+  // (The section headers stick below the panel's top: its height.)
+  new ResizeObserver(() => document.getElementById('colour')!.style.setProperty('--top-h', `${colour.top.offsetHeight}px`)).observe(colour.top);
+  profiles.onChange = () => writeHash();
   const layers = new LayersCard(layersRoot, store, { roads: colour.el, rail: railCard.el, ferry: ferryCard.el, stops: stopsCard.el });
   layers.showBuildings(hasBuildings);
   wireTintPreview();
@@ -1982,7 +2001,9 @@ async function main() {
   let hashTimer = 0;
   const writeHash = () => {
     clearTimeout(hashTimer);
-    hashTimer = window.setTimeout(() => history.replaceState(null, '', toHash(store.s, hasBuildings)), 150);
+    // (Not while a profile is previewed: the user's settings stay theirs.)
+    if (profiles.previewing) return;
+    hashTimer = window.setTimeout(() => history.replaceState(null, '', toHash(store.s, hasBuildings, profiles.base())), 150);
     prefs.saveSoon('state', () => ({ ...store.s, selected: null }));
   };
   let styleReady = false;
@@ -2197,15 +2218,18 @@ async function main() {
   // the old back), and the page loaded again for the panels' own preferences.
   layers.onReset = () => {
     prefs.clearAll();
+    profiles.reset();
     store.set({ ...structuredClone(defaults), view: store.s.view });
-    history.replaceState(null, '', toHash(store.s, hasBuildings));
+    history.replaceState(null, '', toHash(store.s, hasBuildings, profiles.base()));
     prefs.save('state', { ...store.s, selected: null });
     location.reload();
   };
 
   // Pasted / edited links: apply the new state without a reload.
   window.addEventListener('hashchange', () => {
-    const next = fromHash(location.hash, hasBuildings);
+    const pid = profileIdOf(location.hash);
+    if (profiles.has(pid)) profiles.use(pid);
+    const next = fromHash(location.hash, hasBuildings, pid ? profiles.base().s : defaults);
     const { view, buildings, ...rest } = next;
     store.set(hasBuildings ? { ...rest, buildings } : rest);
     if (view) map.jumpTo({ center: [view.lng, view.lat], zoom: view.zoom, bearing: view.bearing, pitch: view.pitch });
