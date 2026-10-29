@@ -183,7 +183,9 @@ body.resizing-v, body.resizing-v * { cursor: ns-resize !important; user-select: 
 .pf-acts { position: absolute; left: 100%; top: -1px; bottom: -1px; display: none; align-items: center; gap: 1px; padding: 0 3px 0 4px; margin-left: 4px; background: var(--card-solid);
   border: 1px solid var(--line-strong); border-left: 0; border-radius: 0 6px 6px 0; box-shadow: 6px 6px 18px rgba(0, 0, 0, 0.4); }
 .pf-acts::before { content: ''; position: absolute; right: 100%; top: 0; bottom: 0; width: 7px; }
-.pf-item:hover > .pf-acts { display: flex; }
+.pf-item:hover > .pf-acts, .pf-item:focus-within > .pf-acts { display: flex; }
+/* (No room past the menu's edge, a phone's drawer: the buttons over the item's right end.) */
+.pf-menu.acts-in .pf-acts { left: auto; right: 0; margin-left: 0; border-left: 1px solid var(--line-strong); border-radius: 6px; }
 .pf-act { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--muted); cursor: pointer; }
 .pf-act svg { width: 13px; height: 13px; }
 .pf-act:hover:not(:disabled) { background: var(--hover); color: #eef1f5; }

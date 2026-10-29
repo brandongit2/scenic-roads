@@ -273,6 +273,8 @@ export class Profiles {
     if (this.menu.hidden) return;
     const r = this.btn.getBoundingClientRect();
     Object.assign(this.menu.style, { left: `${r.left}px`, top: `${r.bottom + 3}px`, width: `${r.width}px` });
+    // (The buttons off the right edge need ~110 px: over the items' ends when the window is narrower.)
+    this.menu.classList.toggle('acts-in', r.right + 110 > window.innerWidth);
   }
 
   /** The button's name and "modified" (and the menu's, for the profile in use). */
@@ -404,7 +406,11 @@ export class Profiles {
           });
           return h('div', { class: 'pf-item pf-new' }, b);
         })();
+    // (The focus kept on its profile's row when the list is drawn again: the server's answer.)
+    const had = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('.pf-item');
+    const focusId = had && this.menu.contains(had) ? had.dataset.id : undefined;
     this.menu.replaceChildren(...rows, add);
+    if (focusId) this.menu.querySelector<HTMLElement>(`.pf-item[data-id="${focusId}"] .pf-main`)?.focus();
     this.place();
   }
 }
