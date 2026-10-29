@@ -405,7 +405,7 @@ impl<'a> Tally<'a> {
     /// `n` more tiles are done.
     fn add(&mut self, n: u64) {
         self.done = (self.done + n).min(self.total);
-        if self.done - self.said >= SAY_EVERY || self.done == self.total {
+        if self.done - self.said >= SAY_EVERY || (self.done == self.total && self.said < self.total) {
             self.said = self.done;
             (self.say)(self.done, self.total);
         }
@@ -508,7 +508,7 @@ pub fn slope_block(
         tally.add(1);
     }
     drop(hs);
-    let mut z = max_z;
+    let (mut z, mut n) = (max_z, own.len());
     loop {
         let mut keys: Vec<&(u32, u32)> = kids.keys().collect();
         keys.sort();
@@ -516,11 +516,14 @@ pub fn slope_block(
             put(z, x, y, crate::shade_codec::encode(&kids[&(x, y)])?)?;
             tally.add(1);
         }
+        // (The level's tiles with no shading, their terrain missing, count as done too.)
+        tally.add((n - kids.len()) as u64);
         if z == BLOCK_Z {
             return Ok(());
         }
         z -= 1;
         let ts = level(z);
+        n = ts.len();
         // (Only the tiles some of whose children aren't there need their own terrain.)
         let lacking: Vec<(u32, u32)> =
             ts.iter().copied().filter(|&t| !all_kids(t, &|c| kids.contains_key(&c))).collect();
@@ -933,6 +936,26 @@ mod tests {
         assert!(said.windows(2).all(|w| w[0].0 < w[1].0), "{said:?}");
         assert_eq!(said.last(), Some(&(total, total)));
         assert!(said[0].0 < total);
+        let full = puts;
+        // Some of the block's terrain missing: tiles go unshaded, and the count still ends whole.
+        let holes = |_: u8, x: u32, _: u32| -> Result<Option<Arc<Vec<f32>>>> {
+            Ok((x % 3 != 0).then(|| Arc::new(vec![100.0; TS * TS])))
+        };
+        let (mut said, mut puts) = (Vec::new(), 0u64);
+        slope_block(
+            pole,
+            b,
+            max_z,
+            &holes,
+            &mut |_, _, _, _| {
+                puts += 1;
+                Ok(())
+            },
+            &mut |d, n| said.push((d, n)),
+        )
+        .unwrap();
+        assert!(puts < full, "{puts} of {full}: some tiles unshaded");
+        assert_eq!(said.last(), Some(&(total, total)), "{said:?}");
     }
 
     /// A pixel's mean leaves out no-data samples, and a 0 beside data (an overview's file edge).
