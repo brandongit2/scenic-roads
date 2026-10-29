@@ -157,7 +157,10 @@ fn aside_with(
 /// must never read as missing read it through `read_replaced`. The folder's day-old asides and
 /// writes' leftover temporary files are swept once it is written (`sweep_hourly`).
 pub fn write(path: &Path, b: &[u8]) -> Result<()> {
-    let tmp = tmp_name(path);
+    // (Unique to the call: two threads of one process writing the same file, as two concurrent
+    // syncs of a copy do, must not share a temporary file. `left_by_write` still knows it.)
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = tmp_name(path).with_extension(format!("{}.tmp", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let r = (|| -> Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(b)?;
@@ -420,6 +423,28 @@ pub fn copy(src: &Path, dst: &Path) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Threads of one process writing the same file at once each use their own temporary file:
+    /// all succeed and the file is one of the writes, whole.
+    #[test]
+    fn concurrent_writes_of_one_file_all_succeed() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("x.json");
+        let bar = std::sync::Barrier::new(8);
+        std::thread::scope(|s| {
+            for i in 0..8u8 {
+                let (p, bar) = (&p, &bar);
+                s.spawn(move || {
+                    for _ in 0..50 {
+                        bar.wait();
+                        write(p, &[i; 4096]).unwrap();
+                    }
+                });
+            }
+        });
+        let got = std::fs::read(&p).unwrap();
+        assert!(got.len() == 4096 && got.iter().all(|b| *b == got[0]));
+    }
 
     /// A rename over a file held busy for good (as the NAS holds one another session left open)
     /// renames the held file aside and puts the new one in its place; the aside is removed, once
