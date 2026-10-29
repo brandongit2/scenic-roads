@@ -112,6 +112,7 @@ const TOOLS: &[(&str, &str)] = &[
     ("tools/taskboard/launchd/backup.sh", "the task board's nightly backup to the NAS"),
     ("tools/status/service.swift", "the status app: the share's mount"),
     ("tools/check/", "the two-Mac tests: a scratch folder of the NAS"),
+    ("tools/worldmap/", "the build page map's outlines (countries.json, lakes.json), made by hand from the NAS's Natural Earth copies, read only"),
     ("producers/", "the producers' scripts, run by hand: their sources' paths (D4: listed, not migrated)"),
 ];
 
