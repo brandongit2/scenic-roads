@@ -1736,7 +1736,8 @@ pub fn terrain_water_work(
 }
 
 /// The pyramids-fill step's z6 tiles (crate::pyramids): each near the coverage (`coverage_tiles`)
-/// that a declared pyramid read tile by tile meets (its accepted cover), with its key
+/// that a declared pyramid read tile by tile meets (its accepted cover) and that makes hi tiles or has
+/// terrain-deep targets, with its key
 /// (`pyramids_key`); `UNKNOWN` while the water or the fine datasets it reads aren't worked out.
 /// None while the declared elevation datasets can't be read now; none without them.
 pub fn pyramids_targets(
@@ -1768,6 +1769,10 @@ pub fn pyramids_targets(
         let fp = cov.fingerprint(grown_e7(6, x, y, 20.0));
         let water = water_key(pin.as_deref(), idx, &t, &piece_water_from(&fp));
         let deep = fine.as_deref().map(|f| crate::terrain_deep::targets_in(f, cov, (x, y)));
+        // (One making no hi tile and no deep target wants nothing: no job.)
+        if !crate::terrain_pack::makes_hi(cov, (x, y)) && deep.as_ref().is_some_and(|d| d.is_empty()) {
+            continue;
+        }
         let k = match (water, deep) {
             (Some(w), Some(d)) => pyramids_key((x, y), &fp, &lines.join(","), &w, &d),
             _ => UNKNOWN.to_string(),
