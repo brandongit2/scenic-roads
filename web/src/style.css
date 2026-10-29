@@ -151,6 +151,51 @@ body.resizing-v, body.resizing-v * { cursor: ns-resize !important; user-select: 
 #layers .section.closed .sec-t i { transform: rotate(-90deg); }
 #layers .section.closed > .grp { display: none; }
 #layers .grp.off { opacity: 0.45; }
+/* The panel's top (the heading and the profiles' dropdown) stays put; each section's header sticks
+   below it while its section scrolls (--top-h: the top's height, main.ts). */
+#colour > .top { position: sticky; top: 0; z-index: 4; background: var(--card-solid); padding-bottom: 8px; border-bottom: 1px solid var(--line-strong); }
+#layers .sec { position: sticky; top: var(--top-h, 0px); z-index: 2; background: var(--card-solid); }
+#layers .section:first-child { border-top: 0; }
+/* Settings profiles (ui/settingprofiles.ts): the dropdown, its menu (fixed, so its buttons can reach
+   past the panel's edge), the snackbar. */
+.pf { padding: 0 12px; }
+.pf-btn { display: flex; align-items: center; gap: 6px; width: 100%; height: 26px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: rgba(255, 255, 255, 0.03); color: var(--text); font-size: 12px; text-align: left; cursor: pointer; }
+.pf-btn:hover, .pf-btn.open { border-color: rgba(255, 255, 255, 0.22); background: var(--hover); }
+.pf-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: #eef1f5; }
+.pf-mod { font-style: italic; color: var(--muted); font-size: 10.5px; flex: none; }
+.pf-mod[hidden] { display: none; }
+.pf-caret { margin-left: auto; flex: none; width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid var(--faint); transition: transform 0.15s ease; }
+.pf-btn.open .pf-caret { transform: rotate(180deg); }
+.pf-menu { position: fixed; z-index: 20; padding: 3px; background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 7px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5); font-size: 12px; }
+.pf-menu[hidden] { display: none; }
+.pf-item { position: relative; display: flex; align-items: center; border-radius: 5px; }
+.pf-item:hover, .pf-item.pv { background: var(--hover); }
+.pf-main { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; height: 25px; padding: 0 6px 0 2px; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.pf-main:disabled { opacity: 0.45; cursor: default; }
+.pf-check { flex: none; width: 14px; text-align: center; color: var(--accent); }
+.pf-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-item.on .pf-label { color: #eef1f5; font-weight: 500; }
+.pf-def { margin-left: auto; flex: none; color: var(--faint); font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; }
+.pf-new { margin-top: 3px; padding-top: 3px; border-top: 1px solid var(--line); border-radius: 0 0 5px 5px; }
+.pf-addbtn { color: var(--muted); }
+.pf-addbtn .pf-check { color: var(--muted); }
+/* A profile's buttons: off the menu's right edge, the item reaching outward while hovered. */
+.pf-acts { position: absolute; left: 100%; top: -1px; bottom: -1px; display: none; align-items: center; gap: 1px; padding: 0 3px 0 4px; margin-left: 4px; background: var(--card-solid);
+  border: 1px solid var(--line-strong); border-left: 0; border-radius: 0 6px 6px 0; box-shadow: 6px 6px 18px rgba(0, 0, 0, 0.4); }
+.pf-acts::before { content: ''; position: absolute; right: 100%; top: 0; bottom: 0; width: 7px; }
+.pf-item:hover > .pf-acts { display: flex; }
+.pf-act { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--muted); cursor: pointer; }
+.pf-act svg { width: 13px; height: 13px; }
+.pf-act:hover:not(:disabled) { background: var(--hover); color: #eef1f5; }
+.pf-act:disabled { opacity: 0.32; cursor: default; }
+.pf-edit { display: flex; gap: 4px; flex: 1; padding: 2px; }
+.pf-input { flex: 1; min-width: 0; height: 22px; padding: 0 6px; border: 1px solid var(--accent); border-radius: 4px; background: #0b0e13; color: var(--text); font: inherit; outline: none; }
+.pf-save { flex: none; height: 22px; padding: 0 8px; border: 0; border-radius: 4px; background: var(--accent); color: #0b0e13; font: inherit; font-weight: 600; cursor: pointer; }
+.pf-snack { position: absolute; left: calc(var(--left-w) + 12px); bottom: calc(var(--strip-h) + 12px); z-index: 7; display: flex; align-items: center; gap: 14px; max-width: 420px; padding: 7px 8px 7px 12px;
+  background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); font-size: 12px; color: var(--text); }
+.pf-snack[hidden] { display: none; }
+.pf-undo { flex: none; height: 22px; padding: 0 8px; border: 0; border-radius: 4px; background: none; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; }
+.pf-undo:hover { background: var(--hover); }
 #layers .subhd { margin: 10px 0 4px; color: var(--faint); font-size: 9.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; }
 #layers .cols-hd { display: flex; justify-content: space-between; font-size: 10px; padding: 0 0 2px 22px; }
 /* A layer's switch (its section header). */
@@ -158,8 +203,6 @@ input.switch { appearance: none; -webkit-appearance: none; position: relative; f
 input.switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: #c8cfd9; transition: transform 0.15s ease, background 0.15s ease; }
 input.switch:checked { background: var(--accent); }
 input.switch:checked::after { transform: translateX(11px); background: #0b0e13; }
-input.switch:indeterminate { background: rgba(111, 211, 166, 0.45); }
-input.switch:indeterminate::after { transform: translateX(5.5px); }
 /* Slider rows line up across the panel: the label in a 100 px column (its indent included: .sub,
    a setting of the checkbox above it), then the slider and its value. The colour scales' rows
    (.fade, .wgrid, .pal-row) keep to the same columns. */
@@ -670,6 +713,7 @@ body.panel-off #viewshed { --vs-left: calc(60px + env(safe-area-inset-left)); }
    again folds it to its tabs), the bar under it, the controls clear of the notch and the home
    indicator, and the camera's steps left to two fingers (the compass and the tilt still reset). */
 @media (max-width: 700px), (max-height: 500px) {
+  .pf-snack { left: 12px; right: 12px; max-width: none; }
   #nav button.step { display: none; }
   #nav .grp { padding-top: 2px; }
   :root { --strip-h: calc(64px + env(safe-area-inset-bottom)); --lists-h: 32vh; }
@@ -738,7 +782,6 @@ body.panel-off #viewshed { --vs-left: calc(60px + env(safe-area-inset-left)); }
   input.switch { width: 42px; height: 26px; }
   input.switch::after { width: 22px; height: 22px; }
   input.switch:checked::after { transform: translateX(16px); }
-  input.switch:indeterminate::after { transform: translateX(8px); }
   select, .scenic-sel, .ramp-btn { min-height: 34px; }
   #layers .sec { padding: 12px 0 8px; }
   #layers .sec-t { font-size: 13px; }

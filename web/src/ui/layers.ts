@@ -42,7 +42,7 @@ function loadCollapsed(): Record<string, boolean> {
 
 /** A section's switch dims its body while off (synced on change and by the panel's sync). */
 function wrapSwitch(toggle: HTMLInputElement, body: HTMLElement) {
-  const apply = () => body.classList.toggle('off', !toggle.checked && !toggle.indeterminate);
+  const apply = () => body.classList.toggle('off', !toggle.checked);
   toggle.addEventListener('change', apply);
   (toggle as HTMLInputElement & { syncOff?: () => void }).syncOff = apply;
 }
@@ -1025,7 +1025,6 @@ export class LayersCard {
     for (const [k] of OVERLAYS) if (this.ov[k]) this.ov[k]!.checked = s.overlays[k];
     const nOn = OVERLAYS.filter(([k]) => s.overlays[k]).length;
     this.stopsAll.checked = nOn > 0;
-    this.stopsAll.indeterminate = nOn > 0 && nOn < OVERLAYS.length;
     for (const t of this.hTiers) {
       t.c.checked = !s.heritageOff.includes(t.key);
       t.c.disabled = !s.overlays.heritage;
