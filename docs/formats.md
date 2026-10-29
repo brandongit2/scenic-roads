@@ -932,7 +932,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     map of the target's input measures, absent from lines before it: `bytes` and `threads` (the threads it was given) always, `local` (of `bytes`, those read from this Mac's own disk: a mapped or local file's, its whole local copies', task #551) where any were, `cpu_ms` (its process's CPU time over the target, its programs' as each is waited for; a z6 tile's with its tail's steps run here after its other measures were taken) where it can be read, `paused_ms` (the time its process was stopped over the target (SIGSTOP), its tail's too) where it was
     (bytes: what the store's readers read for the target, plus a step's own inputs: a z6 tile's extract,
     pack's and lo's base packs, pois' extract); `km2` (the tile's size in km²) and `tiffs` (GeoTIFFs opened)
-    for every tile target; a z6 tile's `ways` and `vertices` kept, `piece_ways`, `dem_tiles`. A z6 tile's
+    for every tile target; a pyramids-fill z6 tile's `fetched` (the tiles it asked of GSI: what
+    weighs its time, `needs::PER_WORK`); a z6 tile's `ways` and `vertices` kept, `piece_ways`, `dem_tiles`. A z6 tile's
     bytes, local and tiffs include its programs' own (each run with `SCENIC_NAS_COUNTS` naming a
     folder of its own it counts in, store::nasio, added to its runner's as it ends), its tail's steps run here
     after its other measures were taken among them; a tail a worker ran (settled remotely) adds

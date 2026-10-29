@@ -10,7 +10,8 @@
 //! `paused_ms` (the time its process was stopped over it, where it was: `stopped_ms`), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
 //! the base packs met), `nas_read` and `nas_secs` (pack, lo: the bytes the job read of the base packs
 //! from the NAS and the seconds that took, the same on each of its targets), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
-//! (the target's area: terrain, slope, trees and their assemblies, the z6 tiles' elevations), and,
+//! (the target's area: terrain, slope, trees and their assemblies, the z6 tiles' elevations), `fetched`
+//! (pyramids-fill: the tiles it asked of the network, what weighs its time, crate::needs::PER_WORK), and,
 //! where the job wrote to the NAS through its `Out` (crate::out), `wrote` (the bytes of the files
 //! it made there) and `creates` (how many), and its NAS metadata work (`meta`: `listed`, `stats`,
 //! `deletes`, task #451): with `bytes`, the target's NAS weight

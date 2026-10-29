@@ -1053,7 +1053,13 @@ set every other's; else the step's prior: memory and disk, the 90th percentile o
 measures (memory: their floors among them), a heavy target held by its own floor; time, the mean
 of its targets' runs, the expected time a job's targets are counted to the quarter hour by and the
 forecast sums (an update's drain alone waits by their 90th percentile, `Book::secs_p90`, so a long
-tail's long jobs aren't cut short); else the caller's first guess (the steps table's, or the size
+tail's long jobs aren't cut short). A step whose time is the work its target finds, not the target
+(`needs::PER_WORK`: `pyramids-fill`, by `fetched`, the tiles a z6 tile asked of GSI; task #830),
+counts its runs in that time (its time prior, its fits, `secs_p90`, the forecast's per-target time)
+weighted by that work: a run that did none, or doesn't say, counts for nothing there (five z6 tiles
+already stored, 17–37 s each, had made the step's time 30 s against a fetching one's 4,950 s),
+while its own target keeps its own time; nor is the lead's own pace of its jobs (`step_secs`)
+read for it. Else the caller's first guess (the steps table's, or the size
 the plan offered): a cold start. A fit is judged on runs held out of it
 (5 folds) and not used when it predicts under on more than 5% of them, is off by more than 50% on
 the median one, or has fewer than 10 runs. The models are kept until a cost, floor or disk floor

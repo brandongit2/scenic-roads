@@ -4923,7 +4923,8 @@ impl Agent {
             self.note_end(k, &step, &done, secs, ok, &how);
             // (What a target of its step takes here, for the forecast: the first slot's job's, whose
             // pace the jobs beside it change least.)
-            if ok && of > 0 && !step.is_empty() && k == 0 {
+            // (Not a PER_WORK step's: its targets' times differ by the work each found, crate::needs.)
+            if ok && of > 0 && !step.is_empty() && k == 0 && !is_per_work(&step) {
                 let each = secs as f64 / of as f64;
                 let e = self.mem.step_secs.entry(secs_key(&step)).or_insert(each);
                 *e = 0.7 * *e + 0.3 * each;
@@ -8243,22 +8244,21 @@ impl Agent {
         // else what its jobs here took a target; else a first guess.
         // (Each measured the way its step runs now: crate::coord::cost_version. A z3 tile's tree
         // cover isn't a z6 tile's.)
-        let mut sums: BTreeMap<String, (f64, usize)> = BTreeMap::new();
+        // (A step whose time is the work its target finds, crate::needs::PER_WORK, weighed by it: a
+        // pyramids-fill z6 tile with nothing to fetch says nothing of one fetching for hours, task #830.)
+        let mut sums: BTreeMap<String, (f64, f64)> = BTreeMap::new();
         for (k, c) in &costs {
             let step = k.split_once(' ').map_or("unit", |(s, _)| s);
             if c.v < crate::coord::cost_version(step) {
                 continue;
             }
+            let Some(w) = crate::needs::time_weight(step, c) else { continue };
             let e = sums.entry(step.to_string()).or_default();
-            (e.0, e.1) = (e.0 + c.secs as f64 * pace(c.worker.as_ref()), e.1 + 1);
+            (e.0, e.1) = (e.0 + c.secs as f64 * pace(c.worker.as_ref()) * w, e.1 + w);
         }
-        let per = |step: &str| -> f64 {
-            match (sums.get(step).filter(|s| s.1 > 0), self.mem.step_secs.get(&secs_key(step))) {
-                (Some(s), _) => s.0 / s.1 as f64,
-                (None, Some(&t)) => t,
-                (None, None) => first_secs(step),
-            }
-        };
+        let own_secs = |step: &str| self.step_secs_here(step).unwrap_or_else(|| first_secs(step));
+        let per =
+            |step: &str| -> f64 { sums.get(step).filter(|s| s.1 > 0.0).map_or_else(|| own_secs(step), |s| s.0 / s.1) };
         // (Its memory by its step's model, crate::needs: its own measure the way the step runs now,
         // else its step's fit or largest, else `peak`'s first guess.)
         let book = crate::needs::Book::new(&costs);
@@ -8272,9 +8272,13 @@ impl Agent {
             }
         };
         // The lead's own steps: what a target took here lately (measured), else a first guess.
+        // (A PER_WORK step's, its costs' weighed time, as its jobs' times here mix in those that
+        // found nothing to do.)
         let mine = |step: &str, n: usize| -> Cost {
-            let (each, known) =
-                self.mem.step_secs.get(&secs_key(step)).map_or((first_secs(step), false), |&t| (t, true));
+            let (each, known) = match sums.get(step).filter(|s| s.1 > 0.0 && is_per_work(step)) {
+                Some(s) => (s.0 / s.1, true),
+                None => self.step_secs_here(step).map_or((first_secs(step), false), |t| (t, true)),
+            };
             Cost { secs: each * n.max(1) as f64, known, peak_mb: 0 }
         };
         let step_of = |id: &str| id.split(' ').next().unwrap_or("").to_string();
@@ -8614,6 +8618,12 @@ impl Agent {
         }
     }
 
+    /// What a target of `step` took here lately (`Memory::step_secs`); None for a PER_WORK step
+    /// (crate::needs: its jobs' times mix in targets that found nothing to do, task #830).
+    fn step_secs_here(&self, step: &str) -> Option<f64> {
+        (!is_per_work(step)).then(|| self.mem.step_secs.get(&secs_key(step)).copied()).flatten()
+    }
+
     /// Slot `k`'s job under way, as its lane's time left is worked out (forecast::SlotJob): its
     /// targets and which are done, or with none listed (the pass's, a worldwide one) its step's
     /// time here (`step_secs`, else a first guess); how long it has run; its own estimate.
@@ -8625,10 +8635,7 @@ impl Agent {
                 let done = crate::control::read_done(&self.done_path(k), &w.step);
                 (w.targets.iter().map(|(t, _)| (t.clone(), done.contains(t))).collect(), None)
             }
-            None => (
-                Vec::new(),
-                Some(self.mem.step_secs.get(&secs_key(&step)).copied().unwrap_or_else(|| first_secs(&step))),
-            ),
+            None => (Vec::new(), Some(self.step_secs_here(&step).unwrap_or_else(|| first_secs(&step)))),
         };
         let step = r.spec.record.as_ref().map_or(step, |w| w.step.clone());
         Some(forecast::SlotJob {
@@ -10975,7 +10982,7 @@ impl Agent {
         } else {
             let costs = self.coord.as_ref().map(|c| c.for_forecast().0).unwrap_or_default();
             let book = crate::needs::Book::new(&costs);
-            let own = |step: &str| self.mem.step_secs.get(&secs_key(step)).copied();
+            let own = |step: &str| self.step_secs_here(step);
             let secs =
                 |step: &str, t: &str| book.secs_p90(step, t, r.threads as u32).map(|s| s as f64).or_else(|| own(step));
             let expected = match r.spec.record.as_ref() {
@@ -11663,6 +11670,11 @@ fn secs_key(step: &str) -> String {
         0 => step.to_string(),
         v => format!("{step} v{v}"),
     }
+}
+
+/// Whether `step`'s time is the work its target finds (crate::needs::PER_WORK).
+fn is_per_work(step: &str) -> bool {
+    crate::needs::PER_WORK.iter().any(|p| p.0 == step)
 }
 
 /// About how long a target of `step` takes on the lead (seconds) until it's been timed there:

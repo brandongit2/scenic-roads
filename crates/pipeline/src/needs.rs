@@ -60,6 +60,29 @@ pub const GUESS_FIRST: [&str; 2] = ["unit", "pois"];
 /// (`nas_read` over `nas_secs`, the job's reads and their time, on each of its targets) and what it writes (`wrote`, `creates`).
 pub const HALO_STEPS: [&str; 2] = ["pack", "lo"];
 
+/// The steps whose time is the work a target finds to do, not the target itself (task #830), with
+/// the measure (crate::costin) that counts it: a pyramids-fill z6 tile whose tiles were all stored
+/// already took 17–37 s, one fetching 170,000 of them 4,950 s, and five such no-op runs made the
+/// step's time 30 s a z6 tile (a fill running 3 h shown as "of ≈ 28 s"). Its runs count in its step's
+/// time weighted by that work (`time_weight`); a run that did none, or doesn't say, counts for
+/// nothing there (its own target keeps its own time).
+pub const PER_WORK: [(&str, &str); 1] = [("pyramids-fill", "fetched")];
+
+/// What run `c` of `step` weighs in its step's time (its prior, its fits, `secs_p90`, the agent's
+/// per-target mean): 1, or a `PER_WORK` step's work done (None: none done, or not said).
+pub fn time_weight(step: &str, c: &Cost) -> Option<f64> {
+    match PER_WORK.iter().find(|p| p.0 == step) {
+        None => Some(1.0),
+        Some((_, k)) => c.sizes.get(*k).filter(|&&n| n > 0).map(|&n| n as f64),
+    }
+}
+
+/// The mean of times weighed (`time_weight`), rounded up; None with none.
+pub fn weighted_mean(v: &[(u64, f64)]) -> Option<u64> {
+    let w: f64 = v.iter().map(|p| p.1).sum();
+    (w > 0.0).then(|| (v.iter().map(|&(s, w)| s as f64 * w).sum::<f64>() / w).ceil() as u64)
+}
+
 /// The disk (MB) a job of `step` takes over targets each measured to take `each`: a `HALO_STEPS`
 /// step's the most of them (one cache, shared), another's their sum (each its own).
 pub fn batch_disk(step: &str, each: impl IntoIterator<Item = u64>) -> u64 {
@@ -429,6 +452,7 @@ impl<'a> Book<'a> {
         for (k, c) in self.costs.iter().filter(|(k, c)| step_of_key(k) == step && c.v >= v) {
             let y = match m {
                 Measure::Mem => c.peak_mb,
+                Measure::Secs if time_weight(step, c).is_none() => continue,
                 Measure::Secs => c.secs,
                 Measure::Disk => match self.disks.and_then(|d| d.get(k)) {
                     Some(&d) => d,
@@ -500,8 +524,10 @@ impl<'a> Book<'a> {
                 by.into_values().collect()
             }
             Measure::Secs => {
-                let secs: Vec<u64> =
-                    self.costs.iter().filter(|(k, c)| of(k) && c.v >= v).map(|(_, c)| c.secs).collect();
+                // (Each weighed: a PER_WORK step's by the work it did, task #830.)
+                let weighed = |c: &Cost| time_weight(step, c).map(|w| (c.secs, w));
+                let secs: Vec<(u64, f64)> =
+                    self.costs.iter().filter(|(k, c)| of(k) && c.v >= v).filter_map(|(_, c)| weighed(c)).collect();
                 // (While its runs the way it runs now are few, they are the quick ones: the first to
                 // end. Its latest earlier way's mean stands in when larger, so its first jobs aren't sized by
                 // them: depth's first 8 runs at version 1 took 14–34 s but one, and jobs of 64 tiles
@@ -509,14 +535,18 @@ impl<'a> Book<'a> {
                 if secs.len() < PRIOR_RUNS {
                     // (The latest earlier way's runs alone.)
                     let last = self.costs.iter().filter(|(k, c)| of(k) && c.v < v).map(|(_, c)| c.v).max();
-                    let old: Vec<u64> =
-                        self.costs.iter().filter(|(k, c)| of(k) && Some(c.v) == last).map(|(_, c)| c.secs).collect();
-                    return match (mean(&secs), mean(&old)) {
+                    let old: Vec<(u64, f64)> = self
+                        .costs
+                        .iter()
+                        .filter(|(k, c)| of(k) && Some(c.v) == last)
+                        .filter_map(|(_, c)| weighed(c))
+                        .collect();
+                    return match (weighted_mean(&secs), weighted_mean(&old)) {
                         (Some(a), Some(b)) => Some(a.max(b)),
                         (a, b) => a.or(b),
                     };
                 }
-                return mean(&secs);
+                return weighted_mean(&secs);
             }
             Measure::Disk => self.disks.into_iter().flatten().filter(|(k, _)| of(k)).map(|(_, d)| *d).collect(),
         };
@@ -597,7 +627,12 @@ impl<'a> Book<'a> {
         }
         let md = self.model(step, Measure::Secs);
         self.fitted(&md, &key, threads).or_else(|| {
-            p90(self.costs.iter().filter(|(k, c)| step_of_key(k) == step && c.v >= v).map(|(_, c)| c.secs).collect())
+            p90(self
+                .costs
+                .iter()
+                .filter(|(k, c)| step_of_key(k) == step && c.v >= v && time_weight(step, c).is_some())
+                .map(|(_, c)| c.secs)
+                .collect())
         })
     }
 
@@ -1074,6 +1109,39 @@ mod tests {
         slow.insert("depth 6/1/1".to_string(), Cost { v: v - 1, ..cost(500, 10, &[]) });
         slow.insert("depth 6/1/2".to_string(), Cost { v, ..cost(500, 300, &[]) });
         assert_eq!(Book::new(&slow).prior("depth", Measure::Secs), Some(300));
+    }
+
+    /// Task #830: the lead's five pyramids-fill z6 tiles with nothing to fetch (17–37 s, as its
+    /// costs held on 29 Oct) made the step's time 30 s a z6 tile, and a fill running 3 h read "of ≈
+    /// 28 s". A PER_WORK step's time counts its runs by the work each did: those that did none (or
+    /// don't say: before the measure) count for nothing, so with only them it has no time of its
+    /// own (the first guess stands); its fetching runs weighed by the tiles fetched; a no-op target
+    /// keeps its own time.
+    #[test]
+    fn a_fill_with_nothing_to_fetch_doesnt_set_the_steps_time() {
+        let mut costs = BTreeMap::new();
+        for (t, s) in [("6/53/27", 37), ("6/54/25", 31), ("6/54/26", 17), ("6/54/27", 35), ("6/55/23", 29)] {
+            costs.insert(format!("pyramids-fill {t}"), cost(2900, s, &[("km2", 300_000)]));
+        }
+        let b = Book::new(&costs);
+        assert_eq!(b.prior("pyramids-fill", Measure::Secs), None, "not said: before the measure");
+        assert_eq!(b.secs("pyramids-fill", "6/55/25", 2), None);
+        assert_eq!(b.secs_p90("pyramids-fill", "6/55/25", 2), None);
+        assert_eq!(b.secs("pyramids-fill", "6/54/26", 2), Some(17), "its own");
+        for i in 1..=10u64 {
+            costs.insert(format!("pyramids-fill 6/{i}/1"), cost(2900, 20, &[("fetched", 0), ("km2", 300_000)]));
+        }
+        assert_eq!(Book::new(&costs).prior("pyramids-fill", Measure::Secs), None, "nothing fetched");
+        costs.insert("pyramids-fill 6/56/23".into(), cost(2900, 4950, &[("fetched", 170_612)]));
+        costs.insert("pyramids-fill 6/57/23".into(), cost(2900, 60, &[("fetched", 1_000)]));
+        let b = Book::new(&costs);
+        // ((4950 × 170,612 + 60 × 1,000) / 171,612, rounded up.)
+        assert_eq!(b.prior("pyramids-fill", Measure::Secs), Some(4922));
+        assert_eq!(b.secs("pyramids-fill", "6/55/25", 2), Some(4922));
+        assert_eq!(b.secs_p90("pyramids-fill", "6/55/25", 2), Some(4950));
+        // (Every other step's runs count alike.)
+        assert_eq!(time_weight("peaks", &cost(1, 1, &[])), Some(1.0));
+        assert_eq!(weighted_mean(&[]), None);
     }
 
     /// A poor fit takes the step's prior (its 90th percentile, not one outlier); one never measured

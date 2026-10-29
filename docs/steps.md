@@ -672,7 +672,8 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   the terrain's keys name them), its water's digest (the open sea it spares) and its terrain-deep
   targets (whose base tiles it takes whole); until the water or the fine datasets are read its key
   is unknown and it waits (`agent::build::pyramids_key`). Nothing waits for it: a terrain job
-  fetches what the store lacks.
+  fetches what the store lacks. Its time is weighed by the tiles it fetched (`needs::PER_WORK`):
+  a z6 tile whose tiles were stored already says nothing of the next one's.
 - **terrain-hi (a z6 tile):** `TERRAIN_V` and the codec (`terrain_codec::version`: the encoding,
   libwebp's version and level, the rounding), the coverage within 20 km of its tile, the elevation
   pool's datasets meeting the tile (`TerrainTiles::terrain_datasets`: their lines as the roads' keys

@@ -2510,8 +2510,14 @@ fn pyramids_fill(out: &Out, args: &[String]) -> Result<bool> {
         let deep = fine.as_ref().map_or(Vec::new(), |f| py::deep_bases(&f.sets, &cov, t));
         let want = py::want(&pool.plan, &water, &levels, &deep)?;
         let before = pipeline::fetch::fetched_bytes();
-        let f = py::fill(&net, &want, &dir, &cache, &root, handoff.as_deref(), &|l| eprintln!("{l}"))?;
+        // (How far the z6 tile's fill is, in its part: the tiles asked of GSI of those to fetch.)
+        let f = py::fill(&net, &want, &dir, &cache, &root, handoff.as_deref(), &|l| eprintln!("{l}"), &|d, t| {
+            pipeline::agent::jobs::report(d, t, "elevation tiles")
+        })?;
         most = most.max(f.bytes);
+        // (The tiles it asked of the network, the work its time is weighed by: a z6 tile whose
+        // tiles were all stored took seconds, not the hours of one fetching them, crate::needs::per_work.)
+        pipeline::costin::set("fetched", f.fetched + f.none + f.failed.len() as u64);
         println!(
             "{}",
             serde_json::json!({ "tile": u.slash(), "wanted": want.values().map(|s| s.len()).sum::<usize>(), "had": f.had, "fetched": f.fetched, "none": f.none, "bytes": f.bytes, "net_bytes": pipeline::fetch::fetched_bytes() - before, "failed": f.failed.len(), "cut": f.cut })

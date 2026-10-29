@@ -295,6 +295,9 @@ pub fn deep_bases(
         .collect()
 }
 
+/// The tiles a fill fetches at once (held in memory) before packing them: a progress line each.
+pub const CHUNK: usize = 4096;
+
 /// What `fill` did, by its tiles.
 #[derive(Debug, Default)]
 pub struct Filled {
@@ -315,7 +318,10 @@ pub struct Filled {
 /// (`FETCHES` at once) and packed there (crate::rawpack::Packer::for_pyramid, its local work in
 /// `work`): a job's archives handed off to `handoff` (`SCENIC_HANDOFF`) for the lead to name, else
 /// the index changed here, under `root`'s build lock. Restartable: a tile packed stays; one cut short is
-/// fetched again.
+/// fetched again. `progress` is told the tiles asked of the network so far of all those the layers'
+/// stores lack (at the start, then after each `CHUNK`: a z6 tile's hours-long fill says how far it
+/// is every minute or two, nothing written a tile).
+#[allow(clippy::too_many_arguments)]
 pub fn fill(
     fetch: &dyn Fetch,
     want: &BTreeMap<String, BTreeSet<(u8, u32, u32)>>,
@@ -324,15 +330,17 @@ pub fn fill(
     root: &store::nasfs::NasRoot,
     handoff: Option<&std::path::Path>,
     say: &(dyn Fn(&str) + Sync),
+    progress: &(dyn Fn(u64, u64) + Sync),
 ) -> Result<Filled> {
     use rayon::prelude::*;
     let mut done = Filled::default();
     let threads = rayon::ThreadPoolBuilder::new().num_threads(FETCHES).build()?;
+    // (Each layer's tiles its store lacks, worked out first: the whole fill's count for `progress`.)
+    let mut todos: Vec<(&String, Vec<(u8, u32, u32)>)> = Vec::new();
     for (template, tiles) in want {
-        let store = dir.join(folder(template));
         let layer = Layer {
             template: template.clone(),
-            store: store.clone(),
+            store: dir.join(folder(template)),
             index: OnceLock::new(),
             shards: Default::default(),
         };
@@ -347,14 +355,21 @@ pub fn fill(
         }
         todo.sort_by_key(|&(z, x, y)| (crate::rawpack::shard(z, x, y), tile_key(z, x, y)));
         say(&format!("pyramids: {}: {} tiles, {} to fetch", folder(template), tiles.len(), todo.len()));
+        todos.push((template, todo));
+    }
+    let total: u64 = todos.iter().map(|t| t.1.len() as u64).sum();
+    let mut asked = 0u64;
+    progress(0, total);
+    for (template, todo) in todos {
         if todo.is_empty() {
             continue;
         }
+        let store = dir.join(folder(template));
         let f = folder(template);
         let mut p = crate::rawpack::Packer::for_pyramid(&work.join(&f), &store, root, META, &f, handoff)?;
         p.keep = false;
         let n = todo.len();
-        for (k, chunk) in todo.chunks(4096).enumerate() {
+        for (k, chunk) in todo.chunks(CHUNK).enumerate() {
             let got: Vec<Result<Option<Vec<u8>>>> = threads.install(|| {
                 chunk
                     .par_iter()
@@ -391,9 +406,11 @@ pub fn fill(
             say(&format!(
                 "pyramids: {}: {} of {n} ({:.1} GB fetched so far)",
                 folder(template),
-                ((k + 1) * 4096).min(n),
+                ((k + 1) * CHUNK).min(n),
                 done.bytes as f64 / 1e9
             ));
+            asked += chunk.len() as u64;
+            progress(asked, total);
             // (The build pausing: what's fetched is packed, the rest left for the next fill.)
             if crate::control::draining() {
                 done.cut = true;
@@ -508,16 +525,27 @@ mod tests {
         net.0.insert(url(1), Some(png()));
         net.0.insert(url(2), None);
         let want = BTreeMap::from([(T.to_string(), BTreeSet::from([(15, 1, 9), (15, 2, 9)]))]);
-        let f = fill(&net, &want, &dir, &d.path().join("cache"), &root, None, &|_| {}).unwrap();
+        // (Task #830: told how far it is, of the tiles the store lacks: at the start and by chunk.)
+        let said = std::sync::Mutex::new(Vec::new());
+        let f = fill(&net, &want, &dir, &d.path().join("cache"), &root, None, &|_| {}, &|d, t| {
+            said.lock().unwrap().push((d, t))
+        })
+        .unwrap();
         assert_eq!((f.had, f.fetched, f.none, f.failed.len()), (0, 1, 1, 0));
+        assert_eq!(*said.lock().unwrap(), [(0, 2), (2, 2)]);
         let empty = crate::fetch::MapFetch::default();
         let s = Stored::new(&empty, &dir, &plan());
         assert_eq!(s.get(&url(1)).unwrap(), Some(png()));
         assert_eq!(s.get(&url(2)).unwrap(), None);
         assert!(s.get(&url(3)).is_err(), "not stored: asked of the network");
         assert_eq!((s.hits.load(Ordering::Relaxed), s.misses.load(Ordering::Relaxed)), (2, 1));
-        let again = fill(&empty, &want, &dir, &d.path().join("cache"), &root, None, &|_| {}).unwrap();
+        said.lock().unwrap().clear();
+        let again = fill(&empty, &want, &dir, &d.path().join("cache"), &root, None, &|_| {}, &|d, t| {
+            said.lock().unwrap().push((d, t))
+        })
+        .unwrap();
         assert_eq!((again.had, again.fetched), (2, 0));
+        assert_eq!(*said.lock().unwrap(), [(0, 0)], "nothing to fetch");
         assert_eq!(sizes(&dir, &[T.to_string()]).unwrap()[0].2, 1);
     }
 
@@ -534,7 +562,7 @@ mod tests {
         let mut net = crate::fetch::MapFetch::default();
         net.0.insert(url.clone(), Some(png()));
         let want = BTreeMap::from([(T.to_string(), BTreeSet::from([(15, 1, 9)]))]);
-        let f = fill(&net, &want, &dir, &d.path().join("cache"), &root, Some(&outbox), &|_| {}).unwrap();
+        let f = fill(&net, &want, &dir, &d.path().join("cache"), &root, Some(&outbox), &|_| {}, &|_, _| {}).unwrap();
         assert_eq!((f.fetched, f.cut), (1, false));
         let empty = crate::fetch::MapFetch::default();
         assert!(Stored::new(&empty, &dir, &plan()).get(&url).is_err(), "unnamed: not served yet");

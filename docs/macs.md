@@ -43,7 +43,10 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
     the NAS unlisted and into its hand-off as its store's (`<host-path>/<shard>`), and the lead
     names them in that store's index. Each z6 tile starts only while the NAS has more room past
     the owner's reserve (`scenic nas-room`) than the most one z6 tile has put there (6/56/23:
-    1.97 GB of 170,612 tiles, 148,038 of them 404s, in 83 min on the M4); a pause stops it between chunks, what's fetched handed off. It's filled again when
+    1.97 GB of 170,612 tiles, 148,038 of them 404s, in 83 min on the M4); a pause stops it between chunks, what's fetched handed off. It says how far it is
+    (`progress: <asked>/<to fetch> elevation tiles`, of all its layers' tiles the store lacks,
+    each chunk of `pyramids::CHUNK`, 4,096 tiles: the page's of-the-job and time left, task #830),
+    and notes the tiles it asked of GSI (`fetched`), which weigh its time (docs/pool.md). It's filled again when
     its key changes (docs/steps.md §12). Terrain-hi and terrain-deep read the store first, each
     tile by range from the NAS's archive; a tile it lacks is fetched as before, never written
     back. `scenic-build pyramids-fill <6/x/y …> --into <dir>` fills a scratch store by hand
