@@ -8,6 +8,7 @@ import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './t
 import { DEPTH_DEFAULTS, DEPTH_PALETTES, type DepthState } from './depthlook';
 import type { BuildingColour, BuildingState } from './buildings';
 import { LAND_COLOUR, PLAIN } from './basecolours';
+import { cleanLooks, type LabelLooks } from './labellook';
 import { BUILTIN, DEFAULT_PRESET, DEFAULT_WEIGHTS, RAIL_DEFAULT_PRESET, RAIL_DEFAULT_WEIGHTS, presets, railPresets, sameWeights } from './presets';
 import { MODES, migrateWeights, modeDef, type Mode } from './scenic';
 import {
@@ -540,6 +541,8 @@ export interface AppState {
   labelOpacity: number;
   /** Size of all map labels (× their own). */
   labelSize: number;
+  /** Each label type's look, as changed from the style's (Layers → Labels → Style: labellook.ts). */
+  labelLooks: LabelLooks;
   /** Water colour and the shading along coasts (Layers → Map → Water). */
   water: WaterLook;
   /** The land's colour (Layers → Map → Land colour): the background, and the land the water's tiles mix over. */
@@ -672,6 +675,7 @@ export const defaults: AppState = {
   lowSpan: 0.6,
   labelOpacity: 0.5,
   labelSize: 1,
+  labelLooks: {},
   land: LAND_COLOUR,
   water: {
     colour: '#0c1622', shade: true, width: 28, strength: 0.22, falloff: 1.8, shadeColour: '#4f7fa8',
@@ -1376,6 +1380,7 @@ export function fromSaved(o: unknown): AppState {
   const rs = rest.rail as { weights?: unknown } | undefined;
   if (rs && Array.isArray(rs.weights) && rs.weights.length === RNCOMP - 1) rs.weights = [...rs.weights, FREQ_WEIGHT_ADDED];
   merge(s as unknown as Record<string, unknown>, rest);
+  s.labelLooks = cleanLooks(rest.labelLooks);
   // Each metric's auto-fit unit (merge() only keeps keys the defaults have); saved before the unit
   // per metric, the layer's (fitUnit) for each of its metrics.
   s.fitUnits = unitsOfSaved(src, ROAD_FIT_KEYS);

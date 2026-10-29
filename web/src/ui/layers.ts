@@ -7,6 +7,7 @@ import { STOP_FILTERS, axisPos, filtersOf, type StopFilter } from '../stopfilter
 import { DEFAULT_DENSITY, DENSITY_KINDS, FOG_RANGE, LABEL_KINDS, LINE_KINDS, OVERLAYS, PERSP_RANGE, SPACING_RANGE, STOP_SIZE_RANGE, TIES_RANGE, WEIGHT_RANGE, defaults, type AppState, type RailState, type ContourLook, type FogLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
 import { TINT_PALETTES, TINT_VARS, contourInterval } from '../terrain';
 import * as prefs from '../prefs';
+import type { LabelLook } from '../labellook';
 import { fmt, h } from './dom';
 import { WidthGrid } from './widthgrid';
 import { ScaleControls } from './scale';
@@ -15,6 +16,7 @@ import { TreeSection } from './trees';
 import { DepthSection } from './depth';
 import { BuildingSection } from './buildings';
 import { toggleAllStops } from './stops';
+import { LabelStyleSection } from './labelstyle';
 import { presets, railPresets } from '../presets';
 
 const SW = [2.6, 2, 1.4, 1, 1.4];
@@ -55,6 +57,8 @@ export class LayersCard {
   private unnamedBoxes: HTMLInputElement[] = [];
   private unnamedKm: HTMLSpanElement[] = [];
   private roadLen: RangeFilter;
+  /** Labels → Style. */
+  private readonly labelStyle: LabelStyleSection;
   /** Tree cover layer controls. */
   readonly trees: TreeSection;
   /** 3D buildings controls. */
@@ -691,6 +695,7 @@ export class LayersCard {
       this.boundaryBoxes.push(c);
       return tog(c, label, '', 'tog sub', help);
     });
+    this.labelStyle = new LabelStyleSection(store);
     const labelKinds = LABEL_KINDS.map(([k, label, help]) => {
       const c = cb((v) => this.store.set({ labelKinds: { ...this.store.s.labelKinds, [k]: v } }));
       this.labelBoxes.push(c);
@@ -778,6 +783,8 @@ export class LayersCard {
         ...labelKinds,
         labelOpRow,
         labelSizeRow,
+        sub('Style'),
+        ...this.labelStyle.nodes,
         sub('Density'),
         spacingRow,
         ...densityRows,
@@ -790,6 +797,11 @@ export class LayersCard {
     this.showBuildings(false);
     this.showDepth(false);
     this.sync(store.s);
+  }
+
+  /** The label types' looks as the style sets them (Labels → Style's defaults). */
+  setLabelDefaults(d: Record<string, LabelLook>) {
+    this.labelStyle.setDefaults(d);
   }
 
   /** The Depth section shown, or not: only once the catalogue has the layers. */
@@ -925,6 +937,7 @@ export class LayersCard {
   }
 
   sync(s: AppState) {
+    this.labelStyle.sync();
     this.trees.sync();
     this.depth.sync();
     this.buildings.sync();

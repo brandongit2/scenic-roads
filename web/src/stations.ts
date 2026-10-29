@@ -15,6 +15,7 @@ import { STATION_LAYER } from './basemap';
 import { RAIL_GROUP_COLOURS } from './rail';
 import { STOP_R, STOP_REF_M, stopBounds, stopSlope } from './raildraw';
 import { kindSpacing, labelShown, lineWeight, type AppState } from './state';
+import { labelLayerShown } from './labellook';
 
 /** A rail line's colour and opacity as drawn at a point. */
 export interface Look {
@@ -63,7 +64,7 @@ export class Stations {
     this.railMask = r.groups.reduce((m, on, i) => (on ? m | (1 << i) : m), 0);
     const on = r.on && !this.held;
     map.setLayoutProperty(DOTS, 'visibility', on ? 'visible' : 'none');
-    map.setLayoutProperty(LABELS, 'visibility', on && labelShown(s, 'stations') ? 'visible' : 'none');
+    map.setLayoutProperty(LABELS, 'visibility', on && labelShown(s, 'stations') && labelLayerShown(s.labelLooks, LABELS) ? 'visible' : 'none');
     // Any of the groups calling there shown (m: a bit per group).
     const groups: ExpressionSpecification = ['any', ...r.groups.flatMap((on, i) => (on ? [['==', ['%', ['floor', ['/', ['get', 'm'], 2 ** i]], 2], 1] as ExpressionSpecification] : [])), false];
     map.setFilter(DOTS, ['all', groups, spaced(STOP_PX)]);

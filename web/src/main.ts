@@ -37,6 +37,7 @@ import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats 
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
 import { ROAD_WEIGHT, Store, classMask, defaults, labelShown, modeGroup, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Selection, type Stretch } from './state';
+import { applyLabelLooks, defaultLooks, labelLayerShown, labelSizeOf } from './labellook';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, setTerrainAreas, switchContours, TINT_VARS, tintColourAt, tintCss } from './terrain';
 import { applyWater, switchCoast, updateCoastRamp } from './coast';
@@ -1361,7 +1362,7 @@ async function main() {
     const run = () => {
       labelSizeTimer = 0;
       labelSizeAt = performance.now();
-      applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize);
+      applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize, (id) => labelSizeOf(store.s.labelLooks, id));
     };
     if (labelSizeTimer) return;
     const wait = Math.max(0, 150 - (performance.now() - labelSizeAt));
@@ -1933,6 +1934,7 @@ async function main() {
   map.on('move', () => {
     if (styleReady) applyProjection();
   });
+  let labelShownKey = '[]';
   const applyLayers = () => {
     const vis = (id: string, show: boolean) => {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none');
@@ -1943,8 +1945,8 @@ async function main() {
     }
     vis('boundary-country-disputed', store.s.layers.boundaries && store.s.boundaryLevels[0]);
     // Place and water labels (overlay and ferry labels follow their layers: overlays.ts, ferries.ts).
-    for (const k of ['city', 'town', 'village', 'minor', 'state'] as const) for (const id of LABEL_LAYERS[k]) vis(id, labelShown(store.s, k));
-    for (const id of LABEL_LAYERS.water) vis(id, store.s.layers.water && labelShown(store.s, 'water'));
+    for (const k of ['city', 'town', 'village', 'minor', 'state'] as const) for (const id of LABEL_LAYERS[k]) vis(id, labelShown(store.s, k) && labelLayerShown(store.s.labelLooks, id));
+    for (const id of LABEL_LAYERS.water) vis(id, store.s.layers.water && labelShown(store.s, 'water') && labelLayerShown(store.s.labelLooks, id));
   };
   let hashTimer = 0;
   const writeHash = () => {
@@ -2049,9 +2051,14 @@ async function main() {
       map.triggerRepaint();
     }
     const outline = ch.has('pointOutline') || ch.has('pointOutlineOpacity');
-    if ((ch.has('layers') || ch.has('labelKinds') || ch.has('labelDensity') || outline) && styleReady) overlays.apply(s);
-    if ((ch.has('rail') || ch.has('layers') || ch.has('lineWeights') || ch.has('labelKinds') || ch.has('labelDensity') || outline) && styleReady) stations.apply(s);
-    if ((ch.has('ferry') || ch.has('layers') || ch.has('lineWeights') || ch.has('labelKinds') || outline) && styleReady) {
+    // A label type shown or hidden (Labels → Style): the layers' visibility again.
+    const shownKey = ch.has('labelLooks') ? JSON.stringify(Object.entries(s.labelLooks).filter(([, o]) => o.shown === false).map(([k]) => k)) : labelShownKey;
+    const shown = shownKey !== labelShownKey;
+    labelShownKey = shownKey;
+    const kinds = ch.has('labelKinds') || shown;
+    if ((ch.has('layers') || kinds || ch.has('labelDensity') || outline) && styleReady) overlays.apply(s);
+    if ((ch.has('rail') || ch.has('layers') || ch.has('lineWeights') || kinds || ch.has('labelDensity') || outline) && styleReady) stations.apply(s);
+    if ((ch.has('ferry') || ch.has('layers') || ch.has('lineWeights') || kinds || outline) && styleReady) {
       ferries.apply(s);
       updateFerries();
     }
@@ -2071,7 +2078,7 @@ async function main() {
     if (ch.has('groups') || ch.has('unnamed') || ch.has('roadLen') || ch.has('roadLenOn') || ch.has('surface') || ch.has('toll') || ch.has('layers') || ch.has('mode') || ch.has('weights')) markDirty();
     if (ch.has('equalize') || ch.has('mode')) cdfKey = '';
     if (styleReady) {
-      if (ch.has('layers') || ch.has('boundaryLevels') || ch.has('labelKinds')) applyLayers();
+      if (ch.has('layers') || ch.has('boundaryLevels') || kinds) applyLayers();
       if (ch.has('terrain')) {
         // Terrain on/off or re-exaggerated: re-pivot for the new ground (camera stays put).
         if ((s.terrain.on ? s.terrain.exaggeration : 0) !== lastExaggeration) {
@@ -2084,7 +2091,8 @@ async function main() {
         applyLabelOpacity(map, s.labelOpacity, overlayLabelScale(s.poiOpacity));
       }
       // Label sizes lay the labels out again: at most every 150 ms while a slider is dragged.
-      if (ch.has('labelSize') || ch.has('terrain')) labelSizeSoon();
+      if (ch.has('labelSize') || ch.has('terrain') || ch.has('labelLooks')) labelSizeSoon();
+      if (ch.has('labelLooks')) applyLabelLooks(map, s.labelLooks);
       if (ch.has('land')) applyLand(s.land);
       if (ch.has('water') || ch.has('layers') || ch.has('land')) applyWater(map, s.water, coastInput, s.layers.water);
       // (after the terrain: contour lines are added when first shown)
@@ -2284,7 +2292,9 @@ async function main() {
     if (store.s.terrain.on) riseTerrain();
     // (MapLibre's 'load' came with the empty style, and the opening view's moves before this.)
     cam3d.tuneDepth(map);
-    applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize);
+    applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize, (id) => labelSizeOf(store.s.labelLooks, id));
+    layers.setLabelDefaults(defaultLooks(map));
+    applyLabelLooks(map, store.s.labelLooks);
     applyLand(store.s.land);
     applyWater(map, store.s.water, coastInput, store.s.layers.water);
     applyLineWidths(map, store.s.lineWeights);

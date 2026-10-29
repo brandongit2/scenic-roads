@@ -143,18 +143,48 @@ export function applyTint(map: MLMap, t: Terrain, sc: ScaleFields, range: [numbe
 }
 
 const baseTextSize = new Map<string, unknown>();
-/** Size of every label layer × `k` (the profile / marker labels as they are; contour labels × their
- * own size on top). A layout property: MapLibre lays the labels out again. */
-export function applyLabelSize(map: MLMap, k: number, contourK: number) {
+/** Size of every label layer × `k` and × its label type's size, growing with zoom as its type says
+ * (labellook.ts labelSizeOf; the profile / marker labels as they are; contour labels × their own
+ * size on top). A layout property: MapLibre lays the labels out again. */
+export function applyLabelSize(map: MLMap, k: number, contourK: number, typeSize: (id: string) => [number, number]) {
   for (const l of map.getStyle().layers) {
     if (l.type !== 'symbol' || l.id === 'marks-label') continue;
     if (!baseTextSize.has(l.id)) baseTextSize.set(l.id, map.getLayoutProperty(l.id, 'text-size') ?? 16);
-    const f = k * (l.id === 'contour-label' ? contourK : 1);
+    const [ts, growth] = typeSize(l.id);
+    const f = k * ts * (l.id === 'contour-label' ? contourK : 1);
     const v = baseTextSize.get(l.id);
     const cur = JSON.stringify(map.getLayoutProperty(l.id, 'text-size'));
-    const want = f === 1 ? v : scaleSize(v, f);
+    const want = growth ? grown(v, f, growth) : f === 1 ? v : scaleSize(v, f);
     if (JSON.stringify(want) !== cur) map.setLayoutProperty(l.id, 'text-size', want as never);
   }
+}
+const isZoomCurve = (v: unknown): v is unknown[] =>
+  Array.isArray(v) && (v[0] === 'interpolate' || v[0] === 'step') && JSON.stringify(v[v[0] === 'step' ? 1 : 2]) === '["zoom"]';
+/** A text size at zoom z: a zoom curve's output there (linearly between its stops), else as is. */
+function atZoom(v: unknown, z: number): unknown {
+  if (!isZoomCurve(v)) return v;
+  if (v[0] === 'step') {
+    let out = v[2];
+    for (let i = 3; i + 1 < v.length; i += 2) if (z >= (v[i] as number)) out = v[i + 1];
+    return out;
+  }
+  const st = v.slice(3);
+  if (z <= (st[0] as number)) return st[1];
+  for (let i = 0; i + 3 < st.length; i += 2) {
+    const za = st[i] as number, zb = st[i + 2] as number;
+    if (z > zb) continue;
+    const t = (z - za) / (zb - za), a = st[i + 1], b = st[i + 3];
+    if (typeof a === 'number' && typeof b === 'number') return a + (b - a) * t;
+    return ['+', ['*', 1 - t, a], ['*', t, b]];
+  }
+  return st[st.length - 1];
+}
+/** A text size × f, × 2^(growth · (z − 10) / 6) at zoom z: a curve over its own stops and every
+ * third zoom. */
+function grown(v: unknown, f: number, growth: number): unknown {
+  const zs = new Set([2, 5, 8, 11, 14, 17, 20]);
+  if (isZoomCurve(v)) for (let i = 3; i < v.length; i += 2) zs.add(v[i] as number);
+  return ['interpolate', ['linear'], ['zoom'], ...[...zs].sort((a, b) => a - b).flatMap((z) => [z, scaleSize(atZoom(v, z), f * 2 ** ((growth * (z - 10)) / 6))])];
 }
 /** A text size × f: a number, each output of a zoom curve, else the expression × f. */
 function scaleSize(v: unknown, f: number): unknown {

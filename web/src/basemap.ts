@@ -149,8 +149,6 @@ export const HALO = '#0b0e13';
 export const SHADE_SHIFT = 32768.5;
 /** Steepness (percent) at a shading tile's R channel's top (roadcore::shade::SLOPE_MAX). */
 export const SLOPE_MAX = 400;
-/** All labels slightly transparent. */
-const TEXT_OPACITY = 0.8;
 /** Names appear once a place's interest isolation spans this many pixels (pipeline::interest's mz: the zoom
  * where it spans one), the best-known winning collisions: the default label spacing (state.ts
  * LabelDensity). */
@@ -426,7 +424,7 @@ export function poiLabelLayer(key: string): LayerSpecification {
       'text-max-width': 8,
       'text-optional': true,
     },
-    paint: { 'text-color': POI_STYLE[key][1], 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': nameOpacityPaint(TEXT_OPACITY) },
+    paint: { 'text-color': POI_STYLE[key][1], 'text-halo-color': HALO, 'text-halo-width': 1.3 },
   };
 }
 const LANDMARK_LABEL_IDS = new Set(Object.values(LANDMARK_LABELS));
@@ -800,14 +798,14 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           'text-size': 11,
           'text-letter-spacing': 0.05,
         },
-        paint: { 'text-color': '#48627e', 'text-halo-color': HALO, 'text-halo-width': 1.2, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': '#93b3d3', 'text-halo-color': HALO, 'text-halo-width': 1.4, 'text-halo-blur': 0.4 },
       },
       lt('water-name', {
         id: 'water-name',
         type: 'symbol',
         source: 'base',
         'source-layer': 'water_name',
-        paint: { 'text-color': '#4b6582', 'text-halo-color': HALO, 'text-halo-width': 1.2, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': '#9dbcdc', 'text-halo-color': HALO, 'text-halo-width': 1.5, 'text-halo-blur': 0.4 },
       }, {
         'symbol-height-anchor': ON_SURFACE,
         'text-field': twoLine(nm),
@@ -823,7 +821,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         'source-layer': 'park',
         minzoom: 8,
         filter: ['==', ['geometry-type'], 'Point'],
-        paint: { 'text-color': '#6fb58a', 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': '#6fb58a', 'text-halo-color': HALO, 'text-halo-width': 1.3 },
       }, {
         visibility: 'none',
         'text-field': twoLine(nm),
@@ -845,7 +843,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           'text-max-width': 9,
           'symbol-placement': 'point',
         },
-        paint: { 'text-color': '#d99a5e', 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': '#d99a5e', 'text-halo-color': HALO, 'text-halo-width': 1.3 },
       },
       {
         id: 'special-label',
@@ -863,7 +861,6 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           'text-color': ['match', ['get', 'kind'], 'dark_sky', '#a9b3ff', 'geopark', '#f0b56a', '#6fe0cc'],
           'text-halo-color': HALO,
           'text-halo-width': 1.3,
-          'text-opacity': TEXT_OPACITY,
         },
       },
       // The components of a World Heritage Site shown as one dot (pipeline::heritage_layers: pt, cn), small
@@ -920,7 +917,6 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           'text-color': HERITAGE_COLOUR,
           'text-halo-color': HALO,
           'text-halo-width': 1.3,
-          'text-opacity': nameOpacityPaint(TEXT_OPACITY),
         },
       },
       {
@@ -956,7 +952,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           'text-max-angle': 30,
           'text-offset': [0, -0.7],
         },
-        paint: { 'text-color': '#9cc9ff', 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': '#9cc9ff', 'text-halo-color': HALO, 'text-halo-width': 1.3 },
       },
       {
         id: 'ferry-terminal-label',
@@ -974,7 +970,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           'text-max-width': 8,
           'text-optional': true,
         },
-        paint: { 'text-color': '#9cc9ff', 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': '#9cc9ff', 'text-halo-color': HALO, 'text-halo-width': 1.3 },
       },
       // Rail stops (stations.ts sets their filter, size and colour).
       {
@@ -1000,7 +996,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           'text-max-width': 8,
           'text-optional': true,
         },
-        paint: { 'text-color': '#c9d2de', 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': '#c9d2de', 'text-halo-color': HALO, 'text-halo-width': 1.3 },
       },
       lt('place-minor', {
         id: 'place-minor',
@@ -1009,7 +1005,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         'source-layer': 'place',
         minzoom: 11.5,
         filter: ['in', ['get', 'class'], ['literal', ['hamlet', 'suburb', 'quarter', 'neighbourhood', 'locality', 'isolated_dwelling']]],
-        paint: { 'text-color': '#7f8999', 'text-halo-color': HALO, 'text-halo-width': 1.4, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': '#7f8999', 'text-halo-color': HALO, 'text-halo-width': 1.4 },
       }, { 'text-field': twoLine(nm), 'text-font': ['Noto Sans Regular'], 'text-size': 10.5, 'text-max-width': 8 }) as LayerSpecification,
       lt('place-village', {
         id: 'place-village',
@@ -1018,7 +1014,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         'source-layer': 'place',
         minzoom: 9,
         filter: ['==', ['get', 'class'], 'village'],
-        paint: { 'text-color': '#a2abb9', 'text-halo-color': HALO, 'text-halo-width': 1.4, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': '#a2abb9', 'text-halo-color': HALO, 'text-halo-width': 1.4 },
       }, {
         'text-field': twoLine(nm),
         'text-font': ['Noto Sans Regular'],
@@ -1033,7 +1029,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         'source-layer': 'place',
         minzoom: 6.5,
         filter: ['==', ['get', 'class'], 'town'],
-        paint: { 'text-color': '#c3cad6', 'text-halo-color': HALO, 'text-halo-width': 1.5, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': '#c3cad6', 'text-halo-color': HALO, 'text-halo-width': 1.5 },
       }, {
         'text-field': twoLine(nm),
         'text-font': ['Noto Sans Medium'],
@@ -1050,9 +1046,10 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         'source-layer': 'place',
         maxzoom: 8,
         filter: ['in', ['get', 'class'], ['literal', ['state', 'province']]],
-        paint: { 'text-color': '#667080', 'text-halo-color': HALO, 'text-halo-width': 1.2, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': '#b4bcc8', 'text-halo-color': HALO, 'text-halo-width': 1.5, 'text-halo-blur': 0.4 },
       }, {
-        'text-field': twoLine(['upcase', nm], ['upcase', SUB]),
+        'text-field': twoLine(nm),
+        'text-transform': 'uppercase',
         'text-font': ['Noto Sans Medium'],
         'text-size': ['interpolate', ['linear'], ['zoom'], 4, 10, 7, 13],
         'text-letter-spacing': 0.2,
@@ -1065,7 +1062,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         'source-layer': 'place',
         minzoom: 4,
         filter: ['==', ['get', 'class'], 'city'],
-        paint: { 'text-color': '#e4e8ef', 'text-halo-color': HALO, 'text-halo-width': 1.6, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': '#e4e8ef', 'text-halo-color': HALO, 'text-halo-width': 1.6 },
       }, {
         'text-field': twoLine(nm),
         'text-font': ['Noto Sans Medium'],

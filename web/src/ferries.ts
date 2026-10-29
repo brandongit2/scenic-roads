@@ -17,6 +17,7 @@ import type { FeatureSummary } from './overlays';
 import { distFromSamples, type Dist } from './roads/stats';
 import { passes } from './ui/scale';
 import { labelShown, lineWeight, type AppState, type FerryState } from './state';
+import { labelLayerShown } from './labellook';
 import { cap, fmt, h } from './ui/dom';
 
 const LINE = 'ferry-line';
@@ -247,7 +248,7 @@ export class Ferries {
     const vis = (id: string, on: boolean) => map.getLayer(id) && map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
     vis(LINE, f.on);
     vis(TERMINALS, f.on);
-    for (const id of LABELS) vis(id, f.on && labelShown(s, 'ferries'));
+    for (const id of LABELS) vis(id, f.on && labelShown(s, 'ferries') && labelLayerShown(s.labelLooks, id));
     const groups: ExpressionSpecification = ['any', ...f.groups.flatMap((on, i) => (on ? [['in', String(i), ['get', 'gs']] as ExpressionSpecification] : [])), false];
     // Sailings-a-day filter (f < 0: no daily count known).
     const known: ExpressionSpecification = ['all', ['>=', ['get', 'f'], 0], ...(f.freqMin > 0 ? [['>=', ['get', 'f'], f.freqMin] as ExpressionSpecification] : []),

@@ -6,6 +6,7 @@ import { Dist } from './roads/stats';
 import type { ExpressionSpecification, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
 import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, OV_LAYER, OV_SOURCES, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, pointTiles, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, POI_SOURCE, poiTilesUrl, type NameScale } from './basemap';
 import { OVERLAYS, kindSpacing, labelShown, type AppState, type LabelKind, type OverlayKey } from './state';
+import { labelLayerShown } from './labellook';
 import { keepable, onVersions, ver } from './api';
 import { hostFor } from './hosts';
 import { displayName } from './names';
@@ -357,7 +358,7 @@ export class Overlays {
         // (The areas' tiles wait for the roads in view: release().)
         const src = map.getLayer(id)?.source;
         const held = this.held && !!src && src in OV_SOURCES;
-        const show = on && (!lk || labelShown(s, lk)) && !held;
+        const show = on && (!lk || (labelShown(s, lk) && labelLayerShown(s.labelLooks, id))) && !held;
         if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none');
       }
       // Stops & sights filters, with each layer's own filter.
