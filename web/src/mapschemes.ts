@@ -164,16 +164,18 @@ export interface RoadMapLook {
   cats: Record<CatKind, string[]>;
 }
 
-/** The look a preset sets: its kind, fills and casings, every class cased (as street maps are);
+/** Classes a preset cases: every road class (as street maps are), not ferries (as before the Map look). */
+const PRESET_CASED = Array.from({ length: 10 }, (_, c) => c !== 9);
+/** The look a preset sets: its kind, fills and casings, the road classes cased (PRESET_CASED);
  * an attribute preset its categories' colours, the others' kept from `from`. */
 export function presetLook(m: MapScheme, from?: RoadMapLook): RoadMapLook {
   const cats = Object.fromEntries(CAT_KINDS.map((k) => [k, k === m.kind ? m.cats!.map(([c]) => c) : [...(from?.cats[k] ?? presetOf(k).cats!.map(([c]) => c))]])) as Record<CatKind, string[]>;
-  return { kind: m.kind, fill: [...m.fill], casing: [...m.casing], cased: new Array(10).fill(true), cats };
+  return { kind: m.kind, fill: [...m.fill], casing: [...m.casing], cased: PRESET_CASED.slice(), cats };
 }
 
 /** The preset a look is (what it sets, unchanged), if any. */
 export function presetOfLook(l: RoadMapLook): MapScheme | null {
-  return MAP_SCHEMES.find((m) => m.kind === l.kind && same(m.fill, l.fill) && same(m.casing, l.casing) && l.cased.every(Boolean)
+  return MAP_SCHEMES.find((m) => m.kind === l.kind && same(m.fill, l.fill) && same(m.casing, l.casing) && same(l.cased.map(String), PRESET_CASED.map(String))
     && (m.cats ? same(m.cats.map(([c]) => c), l.cats[m.kind as CatKind]) : true)) ?? null;
 }
 const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x.toLowerCase() === b[i].toLowerCase());

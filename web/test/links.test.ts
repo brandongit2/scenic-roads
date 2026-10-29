@@ -156,6 +156,9 @@ for (const b of [base.s, defaults]) {
   }
   const old = fromHash('#map=5/46/-71&ms=os');
   assert.equal(presetOfLook(old.roadMap)?.key, 'os');
+  // A preset cases the road classes, not ferries (as the Map styles did before #820: 0x1ff).
+  const { lookUniforms } = await import('../src/mapschemes.ts');
+  for (const m of MAP_SCHEMES) assert.equal(lookUniforms(presetLook(m)).casedMask, 0x1ff, m.key);
   // An unknown preset or a malformed look leaves the defaults'.
   assert.deepEqual(fromHash('#ms=nope&rm=class,zz,zz,1,a,b,c,d').roadMap.fill, defaults.roadMap.fill);
   assert.deepEqual(fromHash('#rx=1.2,3&wd=1,2').roadLook, defaults.roadLook);
