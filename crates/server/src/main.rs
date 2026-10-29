@@ -23,6 +23,7 @@ mod names_live;
 mod ovdata;
 mod pages;
 mod places;
+mod profiles;
 mod query;
 mod regions;
 mod remote;
@@ -76,6 +77,8 @@ pub struct AppState {
     pub downloads: Arc<downloads::Downloads>,
     /// The mirror's reserve, the owner's setting (reserve.rs).
     pub reserve: reserve::Setting,
+    /// The settings profiles, shared by every user (profiles.rs).
+    pub profiles: profiles::Profiles,
     /// The current version tokens of the app's URLs, per (catalogue generation, translations version).
     tokens: Mutex<Option<((u64, u64), Arc<std::collections::HashSet<String>>)>>,
 }
@@ -331,6 +334,7 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
         places: Default::default(),
         downloads: downloads::Downloads::load(home),
         reserve: reserve::Setting::load(home),
+        profiles: profiles::Profiles::new(home),
         tokens: Mutex::new(None),
     })
 }
@@ -472,6 +476,7 @@ async fn main() -> Result<()> {
         places: Default::default(),
         downloads: downloads::Downloads::load(&home),
         reserve: reserve::Setting::load(&home),
+        profiles: profiles::Profiles::new(&home),
         tokens: Mutex::new(None),
     });
 
@@ -555,6 +560,9 @@ async fn main() -> Result<()> {
         .route("/api/downloads/regions/{id}/update", axum::routing::post(downloads::post_region_update))
         .route("/api/downloads/regions/{id}/detail/update", axum::routing::post(downloads::post_detail_update))
         .route("/api/downloads/reserve", axum::routing::put(downloads::put_reserve))
+        .route("/api/profiles", get(profiles::get_list).post(profiles::post))
+        .route("/api/profiles/{id}", axum::routing::put(profiles::put).delete(profiles::delete))
+        .route("/api/profiles/{id}/default", axum::routing::post(profiles::set_default))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
         .route("/api/build", get(build_h))
         .route("/api/bench", axum::routing::post(bench_h))
