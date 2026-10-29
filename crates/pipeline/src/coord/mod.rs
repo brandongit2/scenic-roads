@@ -4499,6 +4499,9 @@ mod http {
         // the served name keeps its old spelling (task #547: a page from an older lead asks for it)
         ("catalogs.js", "text/javascript", include_bytes!("../../../../web/work/catalogues.js")),
         ("countries.json", "application/json", include_bytes!("../../../../web/work/countries.json")),
+        // The large lakes it draws as the sea (Natural Earth 1:10m lakes, scalerank ≤ 3, simplified,
+        // the same rings; the NAS's sources/fetched/natural-earth-lakes-10m, task #831).
+        ("lakes.json", "application/json", include_bytes!("../../../../web/work/lakes.json")),
         ("sw.js", "text/javascript", include_bytes!("../../../../web/work/sw.js")),
         (
             "manifest.webmanifest",

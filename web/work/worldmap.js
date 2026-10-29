@@ -1,5 +1,5 @@
 // The build page's world map, in its left panel (docs/pipeline.md §5): one canvas in Web
-// Mercator (the world 0–1000 each way, y down: countries.json's and /work/regions' outlines), with
+// Mercator (the world 0–1000 each way, y down: countries.json's, lakes.json's and /work/regions' outlines), with
 // the z3 grid (and z6's when zoomed in enough to see it), the countries, the regions coloured by
 // how far they are, the queue (task #685: every tile to build, faint under a dotted outline), each
 // running job's target tiles in its stage's colour, filled as far as they're done, and the
@@ -14,12 +14,12 @@
 // Chrome, gesture events in Safari; two fingers on a touch screen), a double click, the +/−
 // buttons or the keyboard (+, −, arrows, 0); a two-finger scroll moves it once zoomed in, else
 // scrolls the page. Opens on the whole world. What's under the pointer is said by the page's cards,
-// the whole stack there (every tile at every zoom, then every region): under a mouse the map names
+// the whole stack there (every tile at every zoom, then the innermost region): under a mouse the map names
 // it in its `data-card` ("mstack") and `data-also` (the keys, "|" between: dash.js wireCards); a
 // click or a tap the map takes itself, at the point lifted, and hands the stack to `pick` (a
 // tap's click isn't left to the page: Mobile Safari, #615). It draws a tile's minimap for its card
 // (`minimap`).
-import { areaOf, inRings, tileBox, tileOf } from "./sums.js";
+import { areaOf, inRings, tileBox, tileOf, topRegion } from "./sums.js";
 
 const FADE_MS = 900;
 const MAX_K = 48; // pixels a world unit, most zoomed in (a z6 tile ≈ 750 px)
@@ -31,7 +31,7 @@ const AREA_W = { root: 2.4, lo: 1.7, hi: 1, deep: 0.6 };
 const regionPaths = new WeakMap();
 
 /** A map: `el` to place, `highlight(id)` to light a region, `emphasize(e)` a legend item's kind,
- * `update(data)` with {countries (rings), regions [{id, fill, edge, state}], running (Map key →
+ * `update(data)` with {countries (rings), lakes (rings), regions [{id, fill, edge, state}], running (Map key →
  * {step, frac, current, state}), finished (Map key → {t, step, state}), queued (Map key → {step,
  * at, mac, state "queued"}: sums.js mapTiles), colour(step) (a CSS colour, var() allowed),
  * paint (Map key → colour: a soloed step's published tiles by age), lit ("z/x/y"
@@ -52,8 +52,8 @@ export function createMap({ pick = () => {} } = {}) {
   el.className = "wmap-wrap";
   el.append(canvas, ctl);
 
-  let data = { countries: [], regions: [], running: new Map(), finished: new Map(), queued: new Map(), colour: () => "#888" };
-  let paths = { countries: null, regions: new Map() };
+  let data = { countries: [], lakes: [], regions: [], running: new Map(), finished: new Map(), queued: new Map(), colour: () => "#888" };
+  let paths = { countries: null, lakes: null, regions: new Map() };
   const view = { cx: 500, cy: 420, k: 0, fitted: false };
   let size = { w: 0, h: 0 };
   let hover = []; // the stack under the mouse, every key outlined
@@ -174,6 +174,15 @@ export function createMap({ pick = () => {} } = {}) {
       c.strokeStyle = tokens.line;
       c.lineWidth = px;
       c.stroke(paths.countries);
+    }
+    // The large lakes, as the sea (drawn only: a point's stack is tiles and regions, a lake that is a
+    // region hit as one).
+    if (paths.lakes) {
+      c.fillStyle = tokens.bg;
+      c.fill(paths.lakes);
+      c.strokeStyle = tokens.line;
+      c.lineWidth = px;
+      c.stroke(paths.lakes);
     }
     // The grid: z3, and z6 once its cells are 24 px or more (zoomed in from the whole world).
     const grid = (n, colour, alpha) => {
@@ -364,7 +373,8 @@ export function createMap({ pick = () => {} } = {}) {
 
   // ---- What's at a point -----------------------------------------------------------------------
   // The stack there, as the cards' keys: every tile shown at every zoom (the deepest first), then
-  // every region (regions overlap); none outside the canvas.
+  // the one region there (sums.js topRegion: the innermost, an island over the waters round it);
+  // none outside the canvas.
   let zooms = [], atTile = new Map(), stripe = new Map();
   function stackAt(px, py) {
     if (px < 0 || py < 0 || px > size.w || py > size.h) return [];
@@ -374,10 +384,13 @@ export function createMap({ pick = () => {} } = {}) {
       const n = 2 ** z, key = `${z}/${Math.floor((wx / 1000) * n)}/${Math.floor((wy / 1000) * n)}`;
       for (const k of atTile.get(key) || []) out.push(`mt ${k}`);
     }
+    const hits = [];
     for (const r of data.regions) {
       const p = paths.regions.get(r.id);
-      if (p && wx >= p.bbox[0] && wx <= p.bbox[2] && wy >= p.bbox[1] && wy <= p.bbox[3] && inRings(p.rings, wx, wy)) out.push(`mr ${r.id}`);
+      if (p && wx >= p.bbox[0] && wx <= p.bbox[2] && wy >= p.bbox[1] && wy <= p.bbox[3] && inRings(p.rings, wx, wy)) hits.push({ id: r.id, rings: p.rings });
     }
+    const top = topRegion(hits);
+    if (top) out.push(`mr ${top}`);
     return out;
   }
   const local = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
@@ -500,6 +513,7 @@ export function createMap({ pick = () => {} } = {}) {
   function update(next) {
     let outlines = next.countries !== data.countries;
     if (outlines) paths.countries = ringsPath(next.countries, true);
+    if (next.lakes !== data.lakes) { outlines = true; paths.lakes = ringsPath(next.lakes, true); }
     if (next.regions !== data.regions) {
       const had = paths.regions;
       paths.regions = new Map();

@@ -198,7 +198,7 @@ Common rules:
   each Mac's measures over time (its vitals as docs/mockups/build-live.html draws them, each core's share now among them; on the lead also the NAS's disks and the pool's NAS traffic), and its internet's counts by host and last transfers, from its own port's `/work/live` (docs/pool.md §10, Live; the Machines and NAS tabs ask each Mac's every 1.5 s while shown);
   each running job's phase, target and NAS and internet bytes in the status (`jobs[].live`, and a
   member's on its lease, from its beat: the same section). The
-  world map draws the regions' outlines and the countries' (`countries.json`, one of the page's
+  world map draws the regions' outlines, the countries' and the large lakes' (`countries.json`, `lakes.json`, the page's
   files). A 503 (the Mac hasn't read the build's state yet) says so quietly and asks
   again every 2 s, what's shown said to be stale if it had an answer before, an error only after a
   minute of them; a new `epoch` (the

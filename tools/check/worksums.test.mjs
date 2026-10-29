@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, runLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf } from '../../web/work/sums.js';
+import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, runLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion } from '../../web/work/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -117,6 +117,28 @@ test('map: a point in rings, nonzero', () => {
   const sq = [0, 0, 10, 0, 10, 10, 0, 10, 0, 0];
   assert.equal(inRings([sq], 5, 5), true);
   assert.equal(inRings([sq], 15, 5), false);
+});
+
+test('map: the one region a point picks (#831): holes not hit, the innermost of nested ones', () => {
+  const sq = (x, y, d, cw = false) => (cw ? [x, y, x, y + d, x + d, y + d, x + d, y, x, y] : [x, y, x + d, y, x + d, y + d, x, y + d, x, y]);
+  const at = (regions, x, y) => topRegion(regions.filter((r) => inRings(r.rings, x, y)));
+  const island = { id: 'newfoundland', rings: [sq(40, 40, 20)] };
+  // Waters with the island as a hole (wound the other way): the island alone is hit there.
+  const holed = { id: 'canada-waters', rings: [sq(0, 0, 100), sq(40, 40, 20, true)] };
+  assert.equal(inRings(holed.rings, 50, 50), false);
+  assert.equal(at([holed, island], 50, 50), 'newfoundland');
+  assert.equal(at([holed, island], 10, 10), 'canada-waters');
+  // Waters drawn under it, no hole: the smaller wins, in either order.
+  const plain = { id: 'canada-waters', rings: [sq(0, 0, 100)] };
+  assert.equal(at([plain, island], 50, 50), 'newfoundland');
+  assert.equal(at([island, plain], 50, 50), 'newfoundland');
+  // An enclave (Lesotho in South Africa, holed), the Vatican in Italy.
+  const za = { id: 'za', rings: [sq(0, 0, 100), sq(30, 30, 10, true)] }, ls = { id: 'ls', rings: [sq(30, 30, 10)] };
+  assert.equal(at([za, ls], 35, 35), 'ls');
+  const it = { id: 'it', rings: [sq(0, 0, 100)] }, va = { id: 'va', rings: [sq(50, 50, 0.1)] };
+  assert.equal(at([it, va], 50.05, 50.05), 'va');
+  assert.equal(at([it, va], 20, 20), 'it');
+  assert.equal(at([za, ls], 200, 200), null);
 });
 
 test('lanes: only those with a bar in the window, in their order', () => {

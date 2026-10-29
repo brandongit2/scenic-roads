@@ -205,7 +205,7 @@ The Jobs tab's stages are the one exception.
 - **World map** (`worldmap.js`, the left panel; a canvas in Web Mercator, the world 0–1000 each
   way, as tall as the panel leaves it): the z3 grid (z6's too once its cells are 24 px), opening on
   the whole world (about 82° N to 66° S) and zoomed out at most to that whole world fitting the box
-  both ways (bands beside it in a wide box), a crosshair over it, the countries (`countries.json`),
+  both ways (bands beside it in a wide box), a crosshair over it, the countries (`countries.json`) and large lakes as the sea (`lakes.json`),
   the regions' outlines (`/work/regions`) coloured by state (on the map or done, building, to
   come). The tiles (`sums.js` mapTiles), each keyed by its step and tile ("<step> z/x/y"), in its
   stage's colour, a state each (`sums.js` runningState, finishedState):
@@ -229,7 +229,8 @@ The Jobs tab's stages are the one exception.
   diagonal stripes in each step's colour in turn, and each its own card in the stack.
   Its cards (the Jobs tab's, drawn as docs/mockups/build-live.html's) show the whole stack under
   the point, one after another under a line: every tile there at every zoom (the deepest first),
-  then every region. A tile's card: its stage and state, its share done and phase, step, job, Mac,
+  then the one region there: the innermost (an island, not the waters round it; an enclave, not the
+  country round it; a hole not hit, #831). A tile's card: its stage and state, its share done and phase, step, job, Mac,
   the degrees it covers, a minimap of it and half a tile around; a queued one's start and Mac
   ("to come at ≈ HH:MM on <Mac>"); a finished one's when and whether it's in the app; a soloed
   published one's catalogue and when. A region's: its folders, its download and tiles left (stat

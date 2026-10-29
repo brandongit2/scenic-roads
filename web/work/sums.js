@@ -344,6 +344,23 @@ export function inRings(rings, x, y) {
   return wind !== 0;
 }
 
+// The area inside rings (flat, as inRings): their signed areas summed, so a hole (wound the other
+// way) takes its own off.
+export function ringsArea(rings) {
+  let a = 0;
+  for (const r of rings || []) for (let i = 0; i + 3 < r.length; i += 2) a += r[i] * r[i + 3] - r[i + 2] * r[i + 1];
+  return Math.abs(a / 2);
+}
+
+// The one region a point picks among those whose rings hold it (inRings: a hole isn't hit; #831):
+// the innermost, the smallest, an island over the waters drawn round it, an enclave over the
+// country round it. [{id, rings}] → its id, or null.
+export function topRegion(hits) {
+  let best = null, bestA = Infinity;
+  for (const h of hits) { const a = ringsArea(h.rings); if (a < bestA) { best = h.id; bestA = a; } }
+  return best;
+}
+
 // ---- The Regions tab ------------------------------------------------------------------------------
 // A region's work left, from the forecast's `left` (its targets left by step: agent::build::RegionLeft
 // as the lead counts its forecast input): a step at a time in `order` (the steps table's; others

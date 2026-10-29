@@ -341,14 +341,15 @@ function overview(m, md) {
 }
 
 // ---- The world map (worldmap.js), the left panel ---------------------------------------------------
-// The countries' outlines (countries.json, one of the page's files), fetched once (again on a
-// render after a failure).
-let countries = [];
+// The countries' outlines and the large lakes' (countries.json, lakes.json: the page's files),
+// fetched once (again on a render after a failure).
+let countries = [], lakes = [];
 let countriesAsked = false;
 function loadCountries() {
   if (countriesAsked) return;
   countriesAsked = true;
-  fetch("countries.json").then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status))))).then((c) => { countries = c; render(); }, () => { countriesAsked = false; });
+  const get = (f) => fetch(f).then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))));
+  Promise.all([get("countries.json"), get("lakes.json")]).then(([c, l]) => { countries = c; lakes = l; render(); }, () => { countriesAsked = false; });
 }
 let worldMap = null, ages = null;
 // A region's state on the map, as the Regions tab says it: on the map (nothing left), done (on
@@ -533,7 +534,7 @@ function mapView(md) {
   const regionKind = (st) => (st === "done" ? "on" : st);
   ageLit = age.lit;
   const regions = keepShownRegs([md.regs, JSON.stringify(f.regions)], () => md.regs.filter((r) => f.regions?.[regionKind(r.state)] !== false));
-  return { countries, regions, running, finished: rest.finished, queued: rest.queued, paint: painted, lit: schedLit || age.lit, litColour: HIGHLIGHT, colour: S.colour };
+  return { countries, lakes, regions, running, finished: rest.finished, queued: rest.queued, paint: painted, lit: schedLit || age.lit, litColour: HIGHLIGHT, colour: S.colour };
 }
 const keepShownRegs = keeper();
 // The map drawn again from the last render's data: a solo hovered or the age controls changed.
