@@ -1054,6 +1054,8 @@ export interface LayerOptions {
 }
 
 export class RoadLayer implements CustomLayerInterface {
+  /** u_minz's values (one array, filled each draw). */
+  private minZ = new Float32Array(NCLASS);
   readonly id: string;
   readonly type = 'custom' as const;
   readonly renderingMode = '3d' as const;
@@ -2141,7 +2143,8 @@ export class RoadLayer implements CustomLayerInterface {
       gl.uniform1fv(u.u_fv, FADES.flat());
       gl.uniform1i(u.u_casingMask, s.casingMask);
       gl.uniform1i(u.u_bridgeCase, s.bridgeCasing ? 1 : 0);
-      gl.uniform1fv(u.u_minz, Array.from({ length: NCLASS }, (_, c) => s.minZoom[c] ?? 0));
+      for (let c = 0; c < NCLASS; c++) this.minZ[c] = s.minZoom[c] ?? 0;
+      gl.uniform1fv(u.u_minz, this.minZ);
       gl.uniform1f(u.u_tunnelFade, s.tunnelFade);
       gl.uniform1i(u.u_dashUnpaved, s.dashUnpaved ? 1 : 0);
       gl.uniform1i(u.u_classMask, s.classMask);
