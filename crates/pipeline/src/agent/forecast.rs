@@ -1903,6 +1903,16 @@ pub fn forecast(inp: &Input) -> Forecast {
 
 /// The forecast for `inp`, each run cut once it has computed `budget`.
 pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
+    // (Two machines under one name would share its lanes while `run_of` numbers both: task #816's
+    // panic in `runs_of`. A bug upstream; keep each name's first, say so, and go on.)
+    let mut seen = std::collections::BTreeSet::new();
+    if !inp.machines.iter().all(|m| seen.insert(m.name.as_str())) {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut once = inp.clone();
+        once.machines.retain(|m| seen.insert(m.name.clone()));
+        eprintln!("forecast: machines listed twice under one name, kept the first of each (a bug)");
+        return forecast_by(&once, budget);
+    }
     if inp.paused {
         return Forecast {
             at: inp.now,
@@ -2242,6 +2252,20 @@ pub fn speeds(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_machine_listed_twice_does_not_panic() {
+        // (Task #816 review: two machines under one name shared its lanes while run_of numbered
+        // both; runs_of indexed past them and the forecast thread panicked.)
+        let regions = many(40);
+        let c = mixed(false);
+        let mut inp = two_macs(&regions, &c);
+        let dup: Vec<Machine> = inp.machines[..4].to_vec();
+        inp.machines.extend(dup);
+        let fc = forecast(&inp);
+        assert_eq!(fc, forecast(&two_macs(&regions, &c)));
+        assert_eq!(fc.runs.targets.len(), fc.lanes.values().map(Vec::len).sum::<usize>());
+    }
+
     #[test]
     fn to_come_by_mac_and_step_each_tile_once_at_its_first_start() {
         let p = |lane, step: &str, target: &str, from| Placed {
