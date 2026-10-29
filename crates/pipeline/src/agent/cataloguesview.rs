@@ -4,9 +4,13 @@
 //!
 //! A catalogue publishes a tile when a file it names for that tile is new or other than the last
 //! catalogue's: a z6 tile by its base pack, road values, hi data, landmark points, its layers' hi
-//! packs and the terrain's deep packs under it (z10 keys, their z6 tile's); a z3 tile by its layers' lo
-//! packs and area overlays' details. Its entry: its number, time (`created`), whether it was written
-//! whole, and the z3 and z6 tiles it published (`y * 2^z + x`), and those it dropped. The oldest
+//! packs and the terrain's deep packs under it (z10 keys, their z6 tile's); a z10 tile by its deep
+//! packs alone; a z3 tile by its layers' lo packs and area overlays' details. A tile section names a
+//! file by its stable name ("layers/terrain/deep/10-259-349"), the same when it's built again; the
+//! file itself is the `files` entry under that name (its content-hashed `file`): a tile is published
+//! again when either changes (#833 review: a pack built again had kept the tile's older catalogue).
+//! Its entry: its number, time (`created`), whether it was written whole, and the z3, z6 and z10
+//! tiles it published (`y * 2^z + x`), and those it dropped. The oldest
 //! catalogue kept (GC keeps 14 days') publishes every tile it names: `first`, what was there before it
 //! isn't known.
 //!
@@ -45,23 +49,32 @@ pub struct Entry {
     pub z3_gone: Vec<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub z6_gone: Vec<u32>,
+    /// The deep (z10) tiles it published and dropped (left out when none).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub z10: Vec<u32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub z10_gone: Vec<u32>,
 }
 
-/// A tile as kept: its zoom (3 or 6) and index.
+/// A tile as kept: its zoom (3, 6 or 10) and index.
 type Tile = (u8, u32);
 
-/// The tile a file key ("z/x/y") belongs to: z3 and z6 as they are, a deeper key its z6 tile's;
-/// none for another zoom.
-fn tile_of(key: &str) -> Option<Tile> {
+/// The tiles a file key ("z/x/y") belongs to: z3 and z6 as they are; a deeper key its z6 tile's,
+/// a z10 key its own too; none for another zoom.
+fn tiles_of(key: &str) -> Vec<Tile> {
     let mut it = key.split('/').map(|s| s.parse::<u32>().ok());
-    let (z, x, y) = (it.next()??, it.next()??, it.next()??);
+    let (Some(Some(z)), Some(Some(x)), Some(Some(y))) = (it.next(), it.next(), it.next()) else { return vec![] };
     match z {
-        3 | 6 if x < 1 << z && y < 1 << z => Some((z as u8, (y << z) + x)),
-        7..=24 => {
-            let (x, y) = (x >> (z - 6), y >> (z - 6));
-            (x < 64 && y < 64).then_some((6, (y << 6) + x))
+        3 | 6 if x < 1 << z && y < 1 << z => vec![(z as u8, (y << z) + x)],
+        7..=24 if x < 1 << z && y < 1 << z => {
+            let six = (6, ((y >> (z - 6)) << 6) + (x >> (z - 6)));
+            if z == 10 {
+                vec![six, (10, (y << 10) + x)]
+            } else {
+                vec![six]
+            }
         }
-        _ => None,
+        _ => vec![],
     }
 }
 
@@ -97,6 +110,15 @@ struct Slim {
     ovdata: BTreeMap<String, String>,
     #[serde(default)]
     layers: BTreeMap<String, SlimLayer>,
+    /// Each stable name's file (`files`: {name: {file, size, fmt}}), its `file` alone read.
+    #[serde(default)]
+    files: BTreeMap<String, SlimFile>,
+}
+
+#[derive(Default, Deserialize)]
+struct SlimFile {
+    #[serde(default)]
+    file: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -134,14 +156,22 @@ struct SlimSections {
     markdata: Option<Value>,
     ovdata: Option<Value>,
     layers: Option<Value>,
+    files: Option<Value>,
 }
 
 /// Every tile file the last catalogue read names: by section ("base", "<layer>.hi"), its key → its
-/// tile and its name hashed; and how many files each tile has.
+/// tiles, its stable name hashed, and that with its file's hashed (`with_file`); how many files each
+/// tile has; and each stable name's file (`files`), both hashed.
 #[derive(Default)]
 struct Files {
-    by: HashMap<String, HashMap<String, (Tile, u64)>>,
+    by: HashMap<String, HashMap<String, (Vec<Tile>, u64, u64)>>,
     count: HashMap<Tile, u32>,
+    file: HashMap<u64, u64>,
+}
+
+/// A stable name's hash with its file's.
+fn with_file(name: u64, file: Option<&u64>) -> u64 {
+    name.rotate_left(17) ^ file.copied().unwrap_or(0)
 }
 
 /// What one catalogue changed, as it's applied.
@@ -153,28 +183,111 @@ struct Change {
 
 impl Files {
     fn put(&mut self, sec: &str, key: &str, name: &str, ch: &mut Change) {
-        let Some(t) = tile_of(key) else { return };
-        let h = hash(name);
+        let ts = tiles_of(key);
+        if ts.is_empty() {
+            return;
+        }
+        let nh = hash(name);
+        let h = with_file(nh, self.file.get(&nh));
         let m = self.by.entry(sec.to_string()).or_default();
-        match m.insert(key.to_string(), (t, h)) {
-            Some((_, old)) if old == h => {}
-            Some(_) => {
-                ch.set.insert(t);
-            }
+        match m.insert(key.to_string(), (ts.clone(), nh, h)) {
+            Some((_, _, old)) if old == h => {}
+            Some(_) => ch.set.extend(ts),
             None => {
-                *self.count.entry(t).or_default() += 1;
-                ch.set.insert(t);
+                for t in &ts {
+                    *self.count.entry(*t).or_default() += 1;
+                }
+                ch.set.extend(ts);
             }
         }
     }
 
     fn drop_key(&mut self, sec: &str, key: &str, ch: &mut Change) {
-        let Some((t, _)) = self.by.get_mut(sec).and_then(|m| m.remove(key)) else { return };
-        let c = self.count.entry(t).or_default();
-        *c = c.saturating_sub(1);
-        if *c == 0 {
-            self.count.remove(&t);
-            ch.dropped.insert(t);
+        let Some((ts, _, _)) = self.by.get_mut(sec).and_then(|m| m.remove(key)) else { return };
+        for t in ts {
+            let c = self.count.entry(t).or_default();
+            *c = c.saturating_sub(1);
+            if *c == 0 {
+                self.count.remove(&t);
+                ch.dropped.insert(t);
+            }
+        }
+    }
+
+    /// A stable name's file set (None: gone); its name hashed when that changed it.
+    fn set_file(&mut self, name: &str, file: Option<&str>) -> Option<u64> {
+        let nh = hash(name);
+        let was = match file {
+            Some(f) => self.file.insert(nh, hash(f)),
+            None => self.file.remove(&nh),
+        };
+        (was != self.file.get(&nh).copied()).then_some(nh)
+    }
+
+    /// `files` as a whole catalogue names it; the names whose file changed.
+    fn files_whole<'a>(&mut self, all: impl Iterator<Item = (&'a str, &'a str)>) -> BTreeSet<u64> {
+        let mut changed = BTreeSet::new();
+        let mut keep = BTreeSet::new();
+        for (name, f) in all {
+            keep.insert(hash(name));
+            changed.extend(self.set_file(name, Some(f)));
+        }
+        let gone: Vec<u64> = self.file.keys().filter(|k| !keep.contains(*k)).copied().collect();
+        for k in gone {
+            self.file.remove(&k);
+            changed.insert(k);
+        }
+        changed
+    }
+
+    /// A delta's `files` patch applied; the names whose file changed.
+    fn files_patch(&mut self, p: &Value) -> anyhow::Result<BTreeSet<u64>> {
+        let file_of = |v: &Value| v.get("file").and_then(Value::as_str).map(str::to_string);
+        match op(p)? {
+            ("=", Value::Object(m)) => {
+                let all: Vec<(String, String)> = m.iter().filter_map(|(k, v)| Some((k.clone(), file_of(v)?))).collect();
+                Ok(self.files_whole(all.iter().map(|(k, v)| (k.as_str(), v.as_str()))))
+            }
+            ("o", Value::Object(m)) => {
+                let mut changed = BTreeSet::new();
+                for (k, v) in m {
+                    let f = if v.is_null() {
+                        None
+                    } else {
+                        match op(v)? {
+                            ("=", e) => file_of(e),
+                            // (An entry patched field by field: its `file` when that's among them.)
+                            ("o", e) => match e.get("file").map(op).transpose()? {
+                                Some(("=", Value::String(f))) => Some(f.clone()),
+                                _ => continue,
+                            },
+                            _ => anyhow::bail!("files.{k}: not a patch"),
+                        }
+                    };
+                    changed.extend(self.set_file(k, f.as_deref()));
+                }
+                Ok(changed)
+            }
+            _ => anyhow::bail!("files: not a patch of a map"),
+        }
+    }
+
+    /// The tiles naming a name in `changed` published again when their file is another now.
+    fn refile(&mut self, changed: &BTreeSet<u64>, ch: &mut Change) {
+        if changed.is_empty() {
+            return;
+        }
+        for m in self.by.values_mut() {
+            for (ts, nh, h) in m.values_mut() {
+                if !changed.contains(nh) {
+                    continue;
+                }
+                let now = with_file(*nh, self.file.get(nh));
+                if now != *h {
+                    *h = now;
+                    ch.set.extend(ts.iter().copied());
+                }
+            }
         }
     }
 
@@ -206,6 +319,7 @@ impl Files {
     }
 
     fn whole(&mut self, c: &Slim, ch: &mut Change) {
+        let changed = self.files_whole(c.files.iter().map(|(k, f)| (k.as_str(), f.file.as_str())));
         for (sec, m) in [
             ("base", &c.base),
             ("roads", &c.roads),
@@ -225,6 +339,7 @@ impl Files {
         for (name, l) in &c.layers {
             self.whole_layer(name, l, ch);
         }
+        self.refile(&changed, ch);
     }
 
     fn whole_layer(&mut self, name: &str, l: &SlimLayer, ch: &mut Change) {
@@ -240,6 +355,10 @@ impl Files {
             return Ok(Some(c.created.clone()));
         }
         let Some(o) = &p.o else { anyhow::bail!("not a patch") };
+        let changed = match &o.files {
+            Some(f) => self.files_patch(f)?,
+            None => BTreeSet::new(),
+        };
         for (k, sub) in [
             ("base", &o.base),
             ("roads", &o.roads),
@@ -254,6 +373,7 @@ impl Files {
         if let Some(l) = &o.layers {
             self.layers_patch(l, ch)?;
         }
+        self.refile(&changed, ch);
         Ok(o.created.as_ref().and_then(|c| op(c).ok()).and_then(|(_, v)| v.as_str().map(str::to_string)))
     }
 
@@ -520,6 +640,8 @@ fn entry(n: u64, t: u64, whole: bool, first: bool, ch: Change) -> Entry {
         z6: at(&ch.set, 6),
         z3_gone: at(&dropped, 3),
         z6_gone: at(&dropped, 6),
+        z10: at(&ch.set, 10),
+        z10_gone: at(&dropped, 10),
     }
 }
 
@@ -546,11 +668,13 @@ mod tests {
 
     #[test]
     fn tiles_and_times() {
-        assert_eq!(tile_of("6/30/50"), Some((6, 50 * 64 + 30)));
-        assert_eq!(tile_of("3/1/2"), Some((3, 17)));
-        assert_eq!(tile_of("10/337/16"), Some((6, 64 + 21)));
-        assert_eq!(tile_of("4/1/1"), None);
-        assert_eq!(tile_of("6/64/0"), None);
+        assert_eq!(tiles_of("6/30/50"), [(6, 50 * 64 + 30)]);
+        assert_eq!(tiles_of("3/1/2"), [(3, 17)]);
+        assert_eq!(tiles_of("10/337/16"), [(6, 64 + 21), (10, 16 * 1024 + 337)]);
+        assert_eq!(tiles_of("12/1348/64"), [(6, 64 + 21)]);
+        assert!(tiles_of("4/1/1").is_empty());
+        assert!(tiles_of("6/64/0").is_empty());
+        assert!(tiles_of("10/1024/0").is_empty());
         assert_eq!(unix_of("2026-10-23T11:07:54Z"), Some(1_792_753_674));
     }
 
@@ -632,5 +756,55 @@ mod tests {
         let ns: Vec<u64> = a["catalogs"].as_array().unwrap().iter().map(|e| e["n"].as_u64().unwrap()).collect();
         assert_eq!(ns, [5, 7]);
         assert_eq!(a["catalogs"][1]["z6"], serde_json::json!([0]));
+    }
+
+    /// A pack built again keeps its stable name in its tile section; only its `files` entry (its
+    /// hashed file) changes: the tile is published again by that catalogue, as the NAS's are (#833
+    /// review: Ontario's deep packs rebuilt on 27–29 Oct had kept catalogue 514's time).
+    #[test]
+    fn a_pack_built_again_is_published_again() {
+        let mem = Arc::new(Mem::default());
+        let deep = "layers/terrain/deep/10-259-349";
+        let c1 = serde_json::json!({"n": 1, "created": "2026-10-23T00:00:00Z",
+            "base": {"6/16/21": "base/6-16-21"},
+            "layers": {"terrain": {"deep": {"10/259/349": deep, "10/271/349": "layers/terrain/deep/10-271-349"}}},
+            "files": {deep: {"file": format!("{deep}.aaaa.pack"), "size": 1, "fmt": 1},
+                      "layers/terrain/deep/10-271-349": {"file": "layers/terrain/deep/10-271-349.bbbb.pack", "size": 1, "fmt": 1},
+                      "base/6-16-21": {"file": "base/6-16-21.cccc.sect", "size": 1, "fmt": 1}}});
+        // 2: 10/259/349 built again, its entry written whole (as the catalogue's deltas do).
+        let p2 = serde_json::json!({"o": {"created": {"=": "2026-10-23T01:00:00Z"},
+            "files": {"o": {deep: {"=": {"file": format!("{deep}.dddd.pack"), "size": 2, "fmt": 1}}}}}});
+        // 3: its entry patched field by field; a size alone changing (no new file) publishes nothing.
+        let p3 = serde_json::json!({"o": {"created": {"=": "2026-10-23T02:00:00Z"},
+            "files": {"o": {deep: {"o": {"file": {"=": format!("{deep}.eeee.pack")}}},
+                            "base/6-16-21": {"o": {"size": {"=": 9}}}}}}});
+        // 4: whole again with the same files: nothing; 10/271/349's file other: it alone.
+        let mut c4 = c1.clone();
+        c4["n"] = 4.into();
+        c4["created"] = "2026-10-23T03:00:00Z".into();
+        c4["files"][deep]["file"] = format!("{deep}.eeee.pack").into();
+        c4["files"]["layers/terrain/deep/10-271-349"]["file"] = "layers/terrain/deep/10-271-349.ffff.pack".into();
+        {
+            let mut m = mem.0.lock().unwrap();
+            m.insert("1.json.zst".into(), zst(&c1));
+            for (n, p) in [(2, p2), (3, p3)] {
+                m.insert(format!("{n}.delta.json.zst"), zst(&serde_json::json!({"n": n, "of": n - 1, "patch": p})));
+            }
+            m.insert("4.json.zst".into(), zst(&c4));
+        }
+        let v = CataloguesView::new(mem);
+        v.refresh();
+        let a = v.answer(None);
+        let cs = a["catalogs"].as_array().unwrap();
+        assert_eq!(cs.len(), 4, "{a}");
+        let (t259, t271, z6) = (349 * 1024 + 259, 349 * 1024 + 271, 21 * 64 + 16);
+        assert_eq!(cs[0]["z10"], serde_json::json!([t259, t271]));
+        assert_eq!(cs[0]["z6"], serde_json::json!([z6]));
+        for c in &cs[1..3] {
+            assert_eq!(c["z10"], serde_json::json!([t259]), "{c}");
+            assert_eq!(c["z6"], serde_json::json!([z6]), "{c}");
+        }
+        assert_eq!(cs[3]["z10"], serde_json::json!([t271]));
+        assert!(cs[3].get("z10_gone").is_none());
     }
 }

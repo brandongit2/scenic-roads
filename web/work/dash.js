@@ -20,7 +20,7 @@
 // activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { AREAS, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, tileCovers, tileOf } from "./sums.js";
+import { AREAS, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf } from "./sums.js";
 import { fmt } from "./chartmath.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
@@ -388,11 +388,16 @@ const soloSteps = (x, groups) => (!x ? null : x.step != null ? [x.step] : groups
 // forecast::ToCome), asked once a forecast (the status's `fc.at`). This Mac's agent answers when it
 // made the forecast the status shows (the lead's: a Mac that led before keeps its last, older one);
 // else the lead's own, at its addresses. A lead change drops the old lead's answer at once.
-let toCome = { key: "", lead: "", ans: null, asking: false, st: {} };
+// An answer with no tiles (the lead's agent just started: no forecast made yet, or no answer)
+// isn't kept as this forecast's: asked again after `TOCOME_AGAIN_MS`, the last one drawn meanwhile
+// (#833 review: it had been kept, the queue empty until the next forecast). The lead's answer may
+// be an earlier forecast's than the status's (seen 29 Oct: 106 s apart); that one is drawn.
+let toCome = { key: "", lead: "", ans: null, asking: false, st: {}, again: 0 };
+const TOCOME_AGAIN_MS = 10000;
 function askToCome(m) {
   const key = `${m.a.host}@${m.fc?.at ?? ""}`;
   if (toCome.lead !== m.a.host) toCome = { ...toCome, lead: m.a.host, ans: null, st: {} };
-  if (!m.fc || toCome.key === key || toCome.asking) return;
+  if (!m.fc || toCome.key === key || toCome.asking || Date.now() < toCome.again) return;
   toCome.asking = true;
   const lead = (last?.macs || []).find((x) => x.host === m.a.host);
   // (A member's agent answers `making`, no `at`: it made no forecast, so the lead is asked.)
@@ -403,19 +408,37 @@ function askToCome(m) {
     const [code, r] = await ctx.call("/work/tocome", { renumber: { by: v.by, after: v.after } }).catch(() => [0, null]);
     return { ...v, epoch: code === 200 ? r?.epoch ?? null : null, after: code === 200 && r?.epoch != null ? r.after : [] };
   });
-  ctx.call("/work/tocome", {}).catch(() => [0, null]).then(([code, v]) => (code === 200 && v && v.at === m.fc?.at ? v : lead ? fromLead() : null))
+  // (This Mac's own answer for another forecast than the status's (the lead's tiles lag its
+  // status's forecast by one, seen 29 Oct; or a Mac that led before): the lead asked, this one kept
+  // when the lead can't be read (an HTTP page whose origin another Mac's port refuses: #833 review,
+  // the lead's own page had drawn only the running jobs' 8 tiles as queued).)
+  ctx.call("/work/tocome", {}).catch(() => [0, null])
+    .then(([code, v]) => { const own = code === 200 && v?.macs ? v : null; return own && own.at === m.fc?.at ? own : lead ? fromLead().then((l) => (l?.macs ? l : own), () => own) : own; })
     .catch(() => null)
-    .then((v) => { toCome = { ...toCome, key, ans: toCome.lead === m.a.host ? v : null, asking: false }; render(); });
+    .then((v) => {
+      const mine = toCome.lead === m.a.host;
+      if (mine && !v?.macs) { toCome = { ...toCome, asking: false, again: Date.now() + TOCOME_AGAIN_MS, ans: v?.macs ? v : toCome.ans }; setTimeout(render, TOCOME_AGAIN_MS); return; }
+      toCome = { ...toCome, key, ans: mine ? v : null, asking: false, again: 0 };
+      render();
+    });
 }
 // Every tile the build's keys record as built, by step (`/work/built`: crate::agent::builtview,
-// each Mac's agent reading the NAS's), asked each `BUILT_EVERY_MS` while the map is drawn.
-const built = { steps: {}, at: 0, asked: 0, asking: false };
-const BUILT_EVERY_MS = 60000;
+// each Mac's agent reading the NAS's), asked each `BUILT_EVERY_MS` while the map is drawn; again
+// after `BUILT_SOON_MS` while the agent hasn't read them yet (its first answer after a start, `at`
+// 0, empty: its read begins with that ask), so the map isn't a minute without them (#833 review: a
+// first view drew every queued tile as never built).
+const built = { steps: {}, at: 0, asked: 0, asking: false, soon: false };
+const BUILT_EVERY_MS = 60000, BUILT_SOON_MS = 3000;
 function askBuilt() {
-  if (built.asking || Date.now() - built.asked < BUILT_EVERY_MS) return;
+  if (built.asking || Date.now() - built.asked < (built.soon ? BUILT_SOON_MS : BUILT_EVERY_MS)) return;
   Object.assign(built, { asking: true, asked: Date.now() });
   ctx.call("/work/built", {}).catch(() => [0, null])
-    .then(([code, v]) => { built.asking = false; if (code === 200 && v?.steps && v.at !== built.at) { Object.assign(built, { steps: v.steps, at: v.at }); render(); } });
+    .then(([code, v]) => {
+      built.asking = false;
+      built.soon = !(code === 200 && v?.at);
+      if (built.soon) setTimeout(render, BUILT_SOON_MS);
+      if (code === 200 && v?.steps && v.at && v.at !== built.at) { Object.assign(built, { steps: v.steps, at: v.at }); render(); }
+    });
 }
 
 // The world map's data for this render: the running jobs' tiles, the queue, the finished tiles
@@ -528,7 +551,7 @@ function mapView(md) {
   const painted = !solo ? NONE : keepPaint([rest.published, rest.queued, age.from, age.to, age.hide, age.at], () => {
     const when = new Map();
     for (const [k, v] of rest.published) when.set(k, { t: age.at(tileOf(k))?.t ?? -Infinity, v });
-    for (const [k, v] of rest.queued) { const p = v.built && age.at(tileOf(k)); if (p) when.set(k, { t: p.t, v }); }
+    for (const [k, v] of rest.queued) { const p = publishedBefore(k, v, age.at); if (p) when.set(k, { t: p.t, v }); }
     return agePaint(when, age.from, age.to, age.hide).paint;
   });
   restCards = keepRestCards([rest, painted], () => tileCards(rest, painted, age, solo ? ["queued", "finished", "published"] : ["queued", "finished"]));
@@ -582,7 +605,7 @@ function tileCards(t, painted, age, kinds) {
     ], worldMap.minimap(key)));
   }
   for (const [key, d] of kinds.includes("queued") ? t.queued : []) {
-    const p = d.built ? age.at(tileOf(key)) : null;
+    const p = publishedBefore(key, d, age.at);
     cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, p ? "queued, published before" : "queued"),
       stats: [[`≈ ${clock(d.at)}`, "to begin"], [d.mac, "on"], ...(p ? [[ago(cardNow(), p.t), `last published (catalogue ${p.n})`]] : [])],
       bar: { frac: 0, label: `to come at ≈ ${clock(d.at)} on ${d.mac}` },

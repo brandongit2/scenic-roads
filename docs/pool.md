@@ -1632,16 +1632,19 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   map is drawn.
   Every Mac's port also answers `POST /work/catalogs` (`{"after": n}` optional; no key) for the
   map's age controls (task #629, `agent::cataloguesview`; the page asks the lead's): every
-  catalogue on the NAS as `{n, t, whole, first?, z3, z6, z3_gone?, z6_gone?}`, the tiles as
-  `y * 2^z + x`, with `latest`, `reading` and `error`. A catalogue publishes a z6 tile when a file it
-  names for it (base pack, road values, hi data, landmark points, a layer's hi pack, the fine
-  terrain under it) is new or another than the last catalogue's, a z3 tile by its layers' lo packs
-  and area overlays; `first` marks the oldest kept (it names everything). Read only while asked:
+  catalogue on the NAS as `{n, t, whole, first?, z3, z6, z3_gone?, z6_gone?, z10?, z10_gone?}`, the
+  tiles as `y * 2^z + x`, with `latest`, `reading` and `error`. A catalogue publishes a z6 tile when
+  a file it names for it (base pack, road values, hi data, landmark points, a layer's hi pack, the
+  deep terrain under it) is new or another than the last catalogue's, a z10 tile by its deep packs
+  alone, a z3 tile by its layers' lo packs and area overlays; `first` marks the oldest kept (it
+  names everything). A file is told by its tile section's stable name and that name's `files` entry
+  (the content-hashed `file`), as a pack built again keeps its name and gets a new file (#833
+  review: until then a rebuilt tile kept the catalogue that first named it). Read only while asked:
   an ask starts the agent's reader thread when the folder wasn't listed in the last 20 s; it reads
   the catalogues after the last it read, oldest first (a delta when it changes the last read, else
   the whole file, streamed from zstd into only the tile sections), through nasread, and the answer
-  is what's read so far. Kept: the entries and each tile file's name hash by its key (about 18 000),
-  never a catalogue. Measured 24 Oct on the M4 (372 catalogues, 15–386, 14 whole): the first read
+  is what's read so far. Kept: the entries, each tile file's name hash by its key (about 18 000)
+  and each stable name's file hash (about 23 000), never a catalogue. Measured 24 Oct on the M4 (372 catalogues, 15–386, 14 whole): the first read
   35 s (debug build, mostly the NAS) at 34 MB peak; the whole answer 67 KB of JSON (17 KB
   gzipped), a new catalogue's a few hundred bytes. `scenic catalogs [--after N]` prints the same
   JSON from the NAS (read only). 503 until the agent has made it.

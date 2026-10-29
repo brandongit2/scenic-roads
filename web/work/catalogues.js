@@ -94,8 +94,8 @@ export function mergeCatalogues(have, add) {
 /** A tile's key ("z/x/y") from its index (`y * 2^z + x`). */
 export const keyOf = (z, i) => `${z}/${i % 2 ** z}/${Math.floor(i / 2 ** z)}`;
 
-/** The published tiles at zoom `z` (3 or 6): key → {t, n} of the catalogue that last published
- * it, those a later catalogue dropped left out. */
+/** The published tiles at zoom `z` (3, 6 or 10: a deep tile's, its own packs'): key → {t, n} of the
+ * catalogue that last published it, those a later catalogue dropped left out. */
 export function tileTimes(cats, z) {
   const out = new Map();
   for (const c of cats) {
@@ -105,11 +105,14 @@ export function tileTimes(cats, z) {
   return out;
 }
 
-/** When a tile ({z, x, y}) was last published, from the z3 and z6 tiles' times (`tileTimes`): its
- * own at z3 or z6; a deeper tile's, its z6 tile's; a shallower one's (the root), the latest of the
- * z3 tiles under it. {t, n, first} or null (no catalogue kept names it). */
-export function publishedAt(t3, t6, { z, x, y }) {
+/** When a tile ({z, x, y}) was last published, from the z3, z6 and z10 tiles' times (`tileTimes`):
+ * its own at z3 or z6; a deep one's (z10 and past) its z10 tile's own (the catalogue that last named
+ * a new file of its packs: #833 review), its z6 tile's when the agent sends no z10 tiles (one before
+ * them); z7–9, its z6 tile's; a shallower one's (the root), the latest of the z3 tiles under it.
+ * {t, n, first} or null (no catalogue kept names it). */
+export function publishedAt(t3, t6, { z, x, y }, t10 = null) {
   if (z === 3) return t3.get(`3/${x}/${y}`) || null;
+  if (z >= 10 && t10?.size) return t10.get(`10/${x >> (z - 10)}/${y >> (z - 10)}`) || null;
   if (z >= 6) return t6.get(`6/${x >> (z - 6)}/${y >> (z - 6)}`) || null;
   let best = null;
   for (const [k, v] of t3) {
@@ -211,7 +214,7 @@ export function createAges({ call, store, onChange }) {
   const now = () => Math.floor(Date.now() / 1000);
   const kept = store.get("catalogues", {}) || {};
   const st = { hide: !!kept.hide, pair: pairAt(kept, now()), keepRight: kept.right ? kept.right : null };
-  let cats = [], t3 = new Map(), t6 = new Map(), latest = null, reading = false, error = "", timer = 0, hovered = null, pinnedN = null;
+  let cats = [], t3 = new Map(), t6 = new Map(), t10 = new Map(), latest = null, reading = false, error = "", timer = 0, hovered = null, pinnedN = null;
   const save = () => store.set("catalogues", { hide: st.hide, left: st.pair.left, right: st.keepRight });
 
   const input = (side) => {
@@ -257,8 +260,8 @@ export function createAges({ call, store, onChange }) {
     const [from, to] = range();
     const lit = new Set();
     const hc = cats.find((c) => c.n === (hovered ?? pinnedN));
-    if (hc) for (const z of [3, 6]) for (const i of hc[`z${z}`] || []) lit.add(keyOf(z, i));
-    return { from, to, hide: st.hide, lit, at: (tile) => publishedAt(t3, t6, tile) };
+    if (hc) for (const z of [3, 6, 10]) for (const i of hc[`z${z}`] || []) lit.add(keyOf(z, i));
+    return { from, to, hide: st.hide, lit, at: (tile) => publishedAt(t3, t6, tile, t10) };
   }
 
   function draw() {
@@ -351,7 +354,7 @@ export function createAges({ call, store, onChange }) {
       if (code === 200 && a) {
         const had = cats.length;
         cats = mergeCatalogues(cats, a.catalogs);
-        if (cats.length !== had) { t3 = tileTimes(cats, 3); t6 = tileTimes(cats, 6); }
+        if (cats.length !== had) { t3 = tileTimes(cats, 3); t6 = tileTimes(cats, 6); t10 = tileTimes(cats, 10); }
         latest = cats.length ? cats[cats.length - 1].n : null;
         reading = !!a.reading;
         error = a.error || "";

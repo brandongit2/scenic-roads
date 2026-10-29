@@ -348,6 +348,7 @@ export function createMap({ pick = () => {} } = {}) {
     canvas.dataset.painted = data.paint?.size || 0;
     canvas.dataset.queuedWas = data.paint?.size ? [...data.queued.keys()].filter((k) => data.paint.has(k)).length : 0;
     canvas.dataset.held = held || "";
+    canvas.dataset.view = `${view.cx},${view.cy},${view.k}`; // (its centre, world units, and scale: the touch test's --zoom-on)
     // (Still fading in: drawn again next frame.)
     const t = performance.now();
     let fading = false;

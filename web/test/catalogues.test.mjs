@@ -75,6 +75,15 @@ assert.equal(publishedAt(t3, t6, { z: 3, x: 0, y: 0 }).n, 1);
 assert.equal(publishedAt(t3, t6, { z: 0, x: 0, y: 0 }).n, 3);
 assert.equal(publishedAt(t3, t6, { z: 2, x: 0, y: 0 }).n, 1);
 assert.equal(publishedAt(t3, t6, { z: 6, x: 9, y: 9 }), null);
+// (A deep tile by its own packs' catalogue when the agent sends z10 tiles (#833 review): not its
+// z6 tile's newer one for a neighbour's pack; none named, null, whatever its z6 tile says.)
+const t10 = tileTimes([{ n: 1, t: 100, first: true, z3: [], z6: [], z10: [31 * 1024 + 16, 31 * 1024 + 17] }, { n: 2, t: 200, z3: [], z6: [], z10: [31 * 1024 + 17] }], 10);
+assert.deepEqual([...t10.keys()].sort(), ["10/16/31", "10/17/31"]);
+assert.equal(publishedAt(t3, t6, { z: 10, x: 16, y: 31 }, t10).n, 1);
+assert.equal(publishedAt(t3, t6, { z: 10, x: 17, y: 31 }, t10).n, 2);
+assert.equal(publishedAt(t3, t6, { z: 12, x: 64, y: 124 }, t10).n, 1);
+assert.equal(publishedAt(t3, t6, { z: 10, x: 18, y: 31 }, t10), null);
+assert.equal(publishedAt(t3, t6, { z: 10, x: 18, y: 31 }, new Map()).n, 2, "no z10 tiles sent: its z6 tile's");
 
 // The colour map: its ends, clamped beyond; hidden outside with the box ticked.
 assert.equal(rampColour(0, 0, 10), "rgb(63,79,168)");

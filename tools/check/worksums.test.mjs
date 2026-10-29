@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, runLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion, ringsArea } from '../../web/work/sums.js';
+import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, publishedBefore, pastFrom, pastRuns, runLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion, ringsArea } from '../../web/work/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -89,6 +89,14 @@ test('map: the view keeps tiles by state, member, tile area and solo (#615, #627
   assert.deepEqual(keys(mapTiles(running, queued, done, { tiles: { queued: false } }, { pubAt: 200 })), { running: ['slope 6/1/3', 'unit 6/1/2'], queued: [], finished: [], published: ['pack 3/0/0', 'unit 6/4/4'] });
   // (A queued tile built before, whenever, published or not: `built` (#833, the page then asks the catalogues when it was last published); one never built, not.)
   for (const pubAt of [400, 200, null]) assert.deepEqual([...mapTiles(running, queued, done, {}, { pubAt }).queued].map(([k, v]) => `${k}:${!!v.built}`).sort(), ['unit 6/2/2:true', 'unit 6/3/3:false']);
+  // (Published before (#833 review): a deep tile when a catalogue kept published its own packs,
+  // record or not; a shallower one only when built too (its z6 tile's catalogue is any step's).)
+  const at = (t) => (t.z === 10 && t.x === 259 ? { t: 7, n: 734 } : t.z === 6 ? { t: 5, n: 514 } : null);
+  assert.deepEqual(publishedBefore('terrain-deep 10/259/349', {}, at), { t: 7, n: 734 });
+  assert.equal(publishedBefore('terrain-deep 10/271/349', { built: true }, at), null);
+  assert.deepEqual(publishedBefore('unit 6/2/2', { built: true }, at), { t: 5, n: 514 });
+  assert.equal(publishedBefore('unit 6/3/3', {}, at), null);
+  assert.equal(publishedBefore('worldwide', { built: true }, at), null);
   // (No catalogue yet: nothing published, every finish completed.)
   assert.deepEqual(states(mapTiles(new Map(), new Map(), done, {})), ['pack 3/0/0:completed', 'unit 6/1/2:completed', 'unit 6/2/2:completed', 'unit 6/4/4:completed']);
   const macOf = (w) => w.split(' #')[0];

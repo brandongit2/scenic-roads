@@ -225,12 +225,15 @@ The Jobs tab's stages are the one exception.
     completed pale under a dashed outline, each fading in as it comes. Published tiles are drawn
     only while a step or stage is soloed, by when a catalogue last published each (#833).
   A tile in two of them is the running one, else the queued one: built before and to be built
-  again, its finished tile isn't drawn; when it was built before (its step's key records it, current
-  or not, or an end held names it) and a catalogue kept names its tile (catalogues.js publishedAt:
-  a deep tile's z6 tile), a solo draws the queued tile in that catalogue's age colour, fainter than
-  a published one, under its dotted queued outline, and its card says when it was last published.
-  Nothing new is in the status for it: `/work/built` and `/work/catalogs` already hold both. (A
-  target `scenic redo` forgot has no record left: drawn as never published.) Steps at one spot
+  again, its finished tile isn't drawn. It was published before (sums.js publishedBefore) when a
+  catalogue kept published its output: a deep (z10) tile's, the last catalogue naming a new file of
+  its own packs (`/work/catalogs`' `z10`), record or not; a shallower one's, its z3 or z6 tile's
+  last catalogue (any step's files there), counted only when its step's key records it built
+  (current or not, or an end held names it). A solo then draws the queued tile in that catalogue's
+  age colour, fainter than a published one, under its dotted queued outline, and its card says when
+  it was last published. Nothing new is in the status for it: `/work/built` and `/work/catalogs`
+  hold both (the page asks `/work/built` again within seconds while the agent's first read is
+  under way). Steps at one spot
   (slope and roads on 6/57/16) are entries of their own, drawn across the whole square as
   diagonal stripes in each step's colour in turn, and each its own card in the stack.
   Its cards (the Jobs tab's, drawn as docs/mockups/build-live.html's) show the whole stack under

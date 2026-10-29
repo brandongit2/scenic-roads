@@ -333,6 +333,18 @@ export function mapTiles(running, queued, done, f, { pubAt = null, macOf = (w) =
   return out;
 }
 
+// When a queued tile was published before (#833): the last catalogue kept that published its
+// output, `at(tile)` (catalogues.js publishedAt: {t, n, first}), or null (never, as far as the
+// catalogues kept tell). A deep tile (z10) by its own packs' catalogue: a catalogue names a new
+// file of them only once its job wrote it, so that's its output published, record or not. A
+// shallower one's catalogue is its z3 or z6 tile's (any step's files there): counted only when the
+// keys record it built (`q.built`), never for a tile not built yet.
+export function publishedBefore(key, q, at) {
+  const tile = tileOf(key);
+  if (!tile || (tile.z < 10 && !q.built)) return null;
+  return at(tile) || null;
+}
+
 // Whether point (x, y) is inside rings (flat [x0, y0, x1, y1, …] each, closed), nonzero, as the
 // map fills them.
 export function inRings(rings, x, y) {

@@ -37,6 +37,8 @@
 //   --agent H:P       the agent read (default 127.0.0.1:8090; the lead's to see the NAS tab filled)
 //   --only-map        only the map's checks (its solo, its age controls) and screenshots
 //   --solo STEP       the step the map's checks solo (default: the one with the most tiles built)
+//   --zoom-on X,Y     the map then zoomed in on world point X,Y (Web Mercator 0–1000; Ontario and
+//                     Québec: 275,330), a solo held and let go: chrome-solo-zoom, chrome-nosolo-zoom
 //
 // The page comes from a read-only server on its own port (8097): web/work as /work/, and only the
 // reading calls forwarded to this Mac's agent (127.0.0.1:8090); everything else is refused, so the
@@ -98,6 +100,7 @@ const SCHEME = arg("--scheme", null);
 const PAUSE_LAG = +arg("--pause-lag", 3000);
 const fake = { pause: null, posts: 0 }; // (the page's Pause as this server keeps it)
 const ONLY_MAP = process.argv.includes("--only-map");
+const ZOOM_ON = arg("--zoom-on", null)?.split(",").map(Number) ?? null;
 // Served names whose file on disk is named otherwise, as the coordinator's list has them
 // (crate::coord's page files): the route keeps its old spelling (task #547).
 const ON_DISK = { "catalogs.js": "catalogues.js" };
@@ -338,8 +341,37 @@ async function run() {
         writeFileSync(join(OUT, "chrome-catalogues-hover.png"), Buffer.from(data, "base64"));
         await mouse(2, 2);
       }
+      // (--zoom-on X,Y: the map zoomed in on world point X,Y (Web Mercator, 0–1000 each way), the solo
+      // held, then let go: chrome-solo-zoom and chrome-nosolo-zoom, the viewport's.)
+      const zoomShot = async (name) => {
+        const [wx, wy] = ZOOM_ON;
+        for (let i = 0; i < 40; i++) {
+          const r = await js(`(() => { const c = ${MAP}; c.scrollIntoView({ block: "center" }); const b = c.getBoundingClientRect(); const [cx, cy, k] = c.dataset.view.split(",").map(Number); return [b.left, b.top, b.width, b.height, cx, cy, k]; })()`);
+          const [l, t, w, h, cx, cy, k] = r;
+          if (k * 1000 / 64 >= w / 3) break; // (a z6 tile a third of the map wide)
+          const px = Math.max(l + 4, Math.min(l + w - 4, l + w / 2 + (wx - cx) * k)), py = Math.max(t + 4, Math.min(t + h - 4, t + h / 2 + (wy - cy) * k));
+          await page.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: px, y: py, deltaX: 0, deltaY: -100, modifiers: 2, pointerType: "mouse" });
+          await sleep(60);
+        }
+        // (Then panned so the point is at the centre: dragged there.)
+        const [l, t, w, h, cx, cy, k] = await js(`(() => { const c = ${MAP}; const b = c.getBoundingClientRect(); const [cx, cy, k] = c.dataset.view.split(",").map(Number); return [b.left, b.top, b.width, b.height, cx, cy, k]; })()`);
+        const sx = l + w / 2 + (wx - cx) * k, sy = t + h / 2 + (wy - cy) * k;
+        if (Math.abs(sx - (l + w / 2)) + Math.abs(sy - (t + h / 2)) > 4) {
+          await mouse(Math.max(l + 2, Math.min(l + w - 2, sx)), Math.max(t + 2, Math.min(t + h - 2, sy)));
+          await mouse(Math.max(l + 2, Math.min(l + w - 2, sx)), Math.max(t + 2, Math.min(t + h - 2, sy)), "mousePressed");
+          for (let i = 1; i <= 8; i++) await mouse(sx + ((l + w / 2 - sx) * i) / 8, sy + ((t + h / 2 - sy) * i) / 8);
+          await mouse(l + w / 2, t + h / 2, "mouseReleased");
+        }
+        await mouse(2, 2);
+        await still();
+        const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+        writeFileSync(join(OUT, `${name}.png`), Buffer.from(data, "base64"));
+        console.log(`${name}: ${await painted()} painted, ${await js(`+${MAP}.dataset.queuedWas`)} queued published before`);
+      };
+      if (ZOOM_ON) await zoomShot("chrome-solo-zoom");
       await hold();
       check("map: a click or tap again lets the solo go", (await until(`!document.querySelector("#mappane .wmap-lgs")?.classList.contains("soloing")`, 3000)) >= 0);
+      if (ZOOM_ON) await zoomShot("chrome-nosolo-zoom");
       // The range's inputs (typed as a user would, committed by Enter).
       const typeIn = async (i, text) => {
         await js(`(() => { const e = document.querySelectorAll("#mappane input.cat-when")[${i}]; e.focus(); e.select(); })()`);
