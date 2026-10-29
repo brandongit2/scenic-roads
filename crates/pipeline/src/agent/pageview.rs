@@ -695,6 +695,7 @@ pub(crate) mod tests {
             input: Input {
                 now,
                 before: Vec::new(),
+                drops: Vec::new(),
                 regions: Cow::Owned(Vec::new()),
                 costs: Default::default(),
                 cadence: Cadence::default(),

@@ -5302,15 +5302,19 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     let p = phase("the fine datasets' declarations read", Class::NasRead);
     let fine = td::Fine::read(out.root(), &out.manifest)?;
     drop(p);
-    // (Those no target now first: their packs dropped, nothing read.)
+    // (Those no target now first: their packs dropped, nothing read. Each noted as a drop
+    // (`drops`, pipeline::needs::DROPS): its time and memory a drop's, not the step's builds'.)
     let (ts, gone): (Vec<TileId>, Vec<TileId>) =
         ts.into_iter().partition(|t| fine.as_ref().is_some_and(|f| td::is_target(&f.sets, &cov, (t.x, t.y))));
     for t in &gone {
         pipeline::control::safe_point(STEP);
+        let c = cost_start(STEP, &t.slash());
         let n = td::drop_target(out, (t.x, t.y));
         out.save()?;
         eprintln!("{STEP} {}: no deep level there; {n} packs dropped", t.slash());
+        pipeline::costin::set(pipeline::needs::DROPS, n.max(1) as u64);
         pipeline::control::done(STEP, &t.slash());
+        note_cost(STEP, &t.slash(), c);
     }
     let Some(fine) = fine.filter(|_| !ts.is_empty()) else { return Ok(()) };
     let raw_dir = PathBuf::from(

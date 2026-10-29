@@ -68,9 +68,24 @@ pub const HALO_STEPS: [&str; 2] = ["pack", "lo"];
 /// nothing there (its own target keeps its own time).
 pub const PER_WORK: [(&str, &str); 1] = [("pyramids-fill", "fetched")];
 
+/// The measure (crate::costin) a "none" target's run notes, the packs it dropped (crate::agent::build's
+/// none keys: a z10 tile no deep target any more, its packs still named): such a run reads nothing
+/// and takes a second or two where its step's builds take minutes and gigabytes. It counts for
+/// nothing in its step's model (`runs`, `prior`, `time_weight`); its step's drops are modelled
+/// apart (`Book::drop_need`): what a drop not yet run takes (crate::coord::sched, the forecast).
+pub const DROPS: &str = "drops";
+
+/// Whether run `c` was a drop (`DROPS`).
+pub fn is_drop(c: &Cost) -> bool {
+    c.sizes.contains_key(DROPS)
+}
+
 /// What run `c` of `step` weighs in its step's time (its prior, its fits, `secs_p90`, the agent's
 /// per-target mean): 1, or a `PER_WORK` step's work done (None: none done, or not said).
 pub fn time_weight(step: &str, c: &Cost) -> Option<f64> {
+    if is_drop(c) {
+        return None;
+    }
     match PER_WORK.iter().find(|p| p.0 == step) {
         None => Some(1.0),
         Some((_, k)) => c.sizes.get(*k).filter(|&&n| n > 0).map(|&n| n as f64),
@@ -449,7 +464,7 @@ impl<'a> Book<'a> {
     fn runs(&self, step: &str, m: Measure) -> Vec<Run> {
         let v = cost_version(step);
         let mut out = Vec::new();
-        for (k, c) in self.costs.iter().filter(|(k, c)| step_of_key(k) == step && c.v >= v) {
+        for (k, c) in self.costs.iter().filter(|(k, c)| step_of_key(k) == step && c.v >= v && !is_drop(c)) {
             let y = match m {
                 Measure::Mem => c.peak_mb,
                 Measure::Secs if time_weight(step, c).is_none() => continue,
@@ -511,7 +526,8 @@ impl<'a> Book<'a> {
 
     fn prior_of(&self, step: &str, m: Measure) -> Option<u64> {
         let v = cost_version(step);
-        let of = |k: &String| step_of_key(k) == step;
+        // (A drop's measures say nothing of its step's builds: `DROPS`.)
+        let of = |k: &String| step_of_key(k) == step && !self.costs.get(k).is_some_and(is_drop);
         let vals: Vec<u64> = match m {
             Measure::Mem => {
                 // (A target's own: its measure and floor, the larger.)
@@ -614,6 +630,20 @@ impl<'a> Book<'a> {
         }
         let md = self.model(step, Measure::Secs);
         self.fitted(&md, &key, threads).or(md.prior)
+    }
+
+    /// What a drop of `step` (`DROPS`) takes, by its step's drops run the way it runs now: their
+    /// mean time (s, rounded up) and the 90th percentile of their memory (MB); None while none ran.
+    pub fn drop_need(&self, step: &str) -> Option<(u64, u64)> {
+        let v = cost_version(step);
+        let runs: Vec<&Cost> = self
+            .costs
+            .iter()
+            .filter(|(k, c)| step_of_key(k) == step && c.v >= v && is_drop(c))
+            .map(|(_, c)| c)
+            .collect();
+        let secs = weighted_mean(&runs.iter().map(|c| (c.secs, 1.0)).collect::<Vec<_>>())?;
+        Some((secs, p90(runs.iter().map(|c| c.peak_mb).collect()).unwrap_or(0)))
     }
 
     /// `secs` with its step's prior the 90th percentile of its runs the way it runs now instead of
@@ -1142,6 +1172,37 @@ mod tests {
         // (Every other step's runs count alike.)
         assert_eq!(time_weight("peaks", &cost(1, 1, &[])), Some(1.0));
         assert_eq!(weighted_mean(&[]), None);
+    }
+
+    /// The lead's queue on 29 Oct: 4,275 terrain-deep targets in Alaska, z10 tiles with a retired
+    /// pack and no fine dataset, each a drop (its packs dropped, nothing read), forecast at the
+    /// step's 76 s and 7 GB a build. A drop's run (`DROPS`) counts for nothing in its step's model;
+    /// its step's drops are modelled apart (`Book::drop_need`).
+    #[test]
+    fn a_drop_is_no_build_of_its_step() {
+        let v = cost_version("terrain-deep");
+        let at = |c: Cost| Cost { v, ..c };
+        let mut costs = BTreeMap::new();
+        for (t, s) in [("10/256/352", 236), ("10/256/353", 200), ("10/257/352", 260)] {
+            costs.insert(format!("terrain-deep {t}"), at(cost(7000, s, &[("km2", 900)])));
+        }
+        let b = Book::new(&costs);
+        let (prior_s, prior_mb) = (b.prior("terrain-deep", Measure::Secs), b.prior("terrain-deep", Measure::Mem));
+        assert_eq!(b.drop_need("terrain-deep"), None, "no drop ran yet");
+        for (t, s) in [("10/100/252", 2), ("10/100/253", 1), ("10/101/228", 3)] {
+            costs.insert(format!("terrain-deep {t}"), at(cost(150, s, &[("km2", 900), (DROPS, 1)])));
+        }
+        let b = Book::new(&costs);
+        assert_eq!(b.prior("terrain-deep", Measure::Secs), prior_s, "the builds' time alone");
+        assert_eq!(b.prior("terrain-deep", Measure::Mem), prior_mb, "the builds' memory alone");
+        assert_eq!(b.secs("terrain-deep", "10/300/300", 0), prior_s);
+        assert_eq!(b.drop_need("terrain-deep"), Some((2, 150)));
+        // (A drop's own measure is its own.)
+        assert_eq!(b.secs("terrain-deep", "10/100/252", 0), Some(2));
+        assert!(
+            is_drop(&costs["terrain-deep 10/100/252"])
+                && time_weight("terrain-deep", &costs["terrain-deep 10/100/252"]).is_none()
+        );
     }
 
     /// A poor fit takes the step's prior (its 90th percentile, not one outlier); one never measured

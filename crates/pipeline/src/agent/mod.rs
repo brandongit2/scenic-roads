@@ -4861,6 +4861,12 @@ impl Agent {
             let vanished = r.vanished;
             let of = r.spec.record.as_ref().map_or(0, |w| w.targets.len());
             let step = r.spec.record.as_ref().map(|w| w.step.clone()).unwrap_or_default();
+            // (A job with a drop among its targets says nothing of its step's pace: crate::needs::DROPS.)
+            let drops = r
+                .spec
+                .record
+                .as_ref()
+                .is_some_and(|w| w.targets.iter().any(|(t, key)| build::is_none_key(&w.step, t, key)));
             // The targets it finished: every one when it succeeded, else those it noted done as
             // each was saved (crate::control::done), whatever stopped it, so they aren't built
             // again: handed off with the job's lease (the journal has their saves).
@@ -4925,7 +4931,7 @@ impl Agent {
             // (What a target of its step takes here, for the forecast: the first slot's job's, whose
             // pace the jobs beside it change least.)
             // (Not a PER_WORK step's: its targets' times differ by the work each found, crate::needs.)
-            if ok && of > 0 && !step.is_empty() && k == 0 && !is_per_work(&step) {
+            if ok && of > 0 && !step.is_empty() && k == 0 && !is_per_work(&step) && !drops {
                 let each = secs as f64 / of as f64;
                 let e = self.mem.step_secs.entry(secs_key(&step)).or_insert(each);
                 *e = 0.7 * *e + 0.3 * each;
@@ -8053,7 +8059,16 @@ impl Agent {
             let mut chains =
                 build::chains_left(cov, date, &manifest, &done, &inputs, &self.terrain_tiles(root, &manifest));
             chains[1].splice(0..0, summits_held);
-            let record = self.forecast_record(root, &before, &planned.regions, &planned.backfill, chains, blind, &peak);
+            let record = self.forecast_record(
+                root,
+                &before,
+                &planned.regions,
+                &planned.drops,
+                &planned.backfill,
+                chains,
+                blind,
+                &peak,
+            );
             self.start_forecast(record);
         }
         plan.retain(|w| !w.targets.is_empty());
@@ -8188,6 +8203,7 @@ impl Agent {
         root: &store::nasfs::NasRoot,
         before: &[JobSpec],
         regions: &[build::RegionLeft],
+        drops: &[String],
         backfill: &[build::Work],
         chains: [Vec<build::Work>; 5],
         blind: Option<String>,
@@ -8270,6 +8286,20 @@ impl Agent {
                 None => Cost { secs: per(step), known: false, peak_mb: need_mb(step, t) },
             }
         };
+        // (A drop, terrain-deep's: its own run's measure, else its step's drops', else as a target of
+        // its step until one has run: crate::needs::DROPS.)
+        let drop_cost = |t: &str| -> Cost {
+            let step = "terrain-deep";
+            match costs.get(&crate::coord::cost_key(step, t)).filter(|c| crate::needs::is_drop(c)) {
+                Some(c) => Cost { secs: c.secs as f64, known: true, peak_mb: c.peak_mb },
+                None => match book.drop_need(step) {
+                    Some((secs, mb)) => Cost { secs: secs as f64, known: true, peak_mb: mb },
+                    None => cost(step, t),
+                },
+            }
+        };
+        let drops: Vec<forecast::Job> =
+            drops.iter().map(|t| ("terrain-deep".to_string(), t.clone(), drop_cost(t))).collect();
         // The lead's own steps: what a target took here lately (measured), else a first guess.
         // (A PER_WORK step's, its costs' weighed time, as its jobs' times here mix in those that
         // found nothing to do.)
@@ -8504,6 +8534,7 @@ impl Agent {
         let mut inp = forecast::Input {
             now: now_s(),
             before,
+            drops,
             regions: std::borrow::Cow::Owned(regions.to_vec()),
             costs: forecast::cost_table(regions, &cost),
             cadence,
@@ -18542,6 +18573,7 @@ mod pool_tests {
             &store::nasfs::NasRoot::local_for_test(&r),
             &[],
             &[],
+            &[],
             &work,
             Default::default(),
             None,
@@ -18585,6 +18617,7 @@ mod pool_tests {
             &store::nasfs::NasRoot::local_for_test(&r),
             &[],
             &[],
+            &[],
             &work,
             Default::default(),
             None,
@@ -18615,6 +18648,7 @@ mod pool_tests {
             .collect();
         let rec = a.forecast_record(
             &store::nasfs::NasRoot::local_for_test(&r),
+            &[],
             &[],
             &[],
             &work,

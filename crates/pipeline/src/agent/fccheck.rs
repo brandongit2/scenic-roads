@@ -750,6 +750,7 @@ mod tests {
                 input: Input {
                     now,
                     before: Vec::new(),
+                    drops: Vec::new(),
                     regions: std::borrow::Cow::Owned(Vec::new()),
                     costs: Default::default(),
                     cadence: Cadence::default(),

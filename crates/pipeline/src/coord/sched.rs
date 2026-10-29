@@ -58,6 +58,10 @@ pub struct Sched {
     /// Each step's offered targets, the size each was first offered with (`offers` indexed: the
     /// placement looks up every target it weighs, and a worldwide pass offers tens of thousands).
     pub offered: std::collections::HashMap<String, std::collections::HashMap<String, u64>>,
+    /// The offered targets that are drops (offered under their step's "none" key,
+    /// crate::agent::build::is_none_key): sized by their step's drops (crate::needs::Book::drop_need)
+    /// until their own run says, never by its builds.
+    pub drops: std::collections::HashSet<(String, String)>,
     /// Work done (journaled, or recorded by this Mac's job), (step, target) → key, under a key the
     /// plan hasn't shown yet: not offered again meanwhile.
     pub done: BTreeMap<(String, String), String>,
@@ -128,6 +132,8 @@ pub struct Sched {
     /// Each target's `measured` (step → target → it), as the measures stood (`rev`) and as offered
     /// (`set_offers` clears it): a placement weighs each target it may grant for every ask.
     pub measured_of: Mutex<(u64, Measures)>,
+    /// Each step's drops' need (crate::needs::Book::drop_need) as the measures stood (`rev`).
+    pub drop_needs: Mutex<(u64, BTreeMap<String, Option<(u64, u64)>>)>,
 }
 
 /// `Sched::measured_of`'s targets' measures: step → target → `Sched::measures`.
@@ -344,11 +350,15 @@ impl Sched {
     pub(super) fn set_offers(&mut self, offers: Vec<Offer>) {
         self.offers = offers;
         self.offered.clear();
+        self.drops.clear();
         self.measured_of.lock().unwrap_or_else(|e| e.into_inner()).1.clear();
         for o in &self.offers {
             let of = self.offered.entry(o.step.clone()).or_default();
             for t in &o.targets {
                 of.entry(t.0.clone()).or_insert(t.2);
+                if crate::agent::build::is_none_key(&o.step, &t.0, &t.1) {
+                    self.drops.insert((o.step.clone(), t.0.clone()));
+                }
             }
         }
     }
@@ -373,6 +383,12 @@ impl Sched {
             return m;
         }
         let b = self.book();
+        // (A drop not run yet: its step's drops', `drop_of`.)
+        if let Some((_, mem_mb)) = self.drop_of(&b, step, target) {
+            let m = Measured { mem_mb, disk_mb: 0, own: false };
+            g.1.entry(step.to_string()).or_default().insert(target.to_string(), (mem_mb, Some(m)));
+            return (mem_mb, Some(m));
+        }
         let (mem_mb, from) = b.mem(step, target, 0, self.offered_guess(step, target));
         let m = (from != crate::needs::From::Table).then(|| Measured {
             mem_mb,
@@ -387,7 +403,29 @@ impl Sched {
     /// its step's model's (crate::needs: its fit, else the mean of its step's runs); None when
     /// none of its step's has run the way it runs now.
     pub(super) fn secs_of(&self, step: &str, target: &str, worker: &str) -> Option<u64> {
-        job_secs(&self.costs, step, target, worker).or_else(|| self.book().secs(step, target, 0))
+        job_secs(&self.costs, step, target, worker).or_else(|| {
+            let b = self.book();
+            self.drop_of(&b, step, target).map(|d| d.0).or_else(|| b.secs(step, target, 0))
+        })
+    }
+
+    /// What target `target` of `step` takes as a drop (`drops`) its own run hasn't measured: its
+    /// step's drops' time and memory (crate::needs::Book::drop_need); None: no drop, or measured
+    /// itself, or none of its step's drops ran yet (its step's model stands).
+    fn drop_of(&self, b: &crate::needs::Book, step: &str, target: &str) -> Option<(u64, u64)> {
+        if !self.drops.contains(&(step.to_string(), target.to_string())) {
+            return None;
+        }
+        let own = self.costs.get(&cost_key(step, target)).is_some_and(|c| c.v >= crate::coord::cost_version(step));
+        if own {
+            return None;
+        }
+        let rev = self.rev();
+        let mut g = self.drop_needs.lock().unwrap_or_else(|e| e.into_inner());
+        if g.0 != rev {
+            *g = (rev, BTreeMap::new());
+        }
+        *g.1.entry(step.to_string()).or_insert_with(|| b.drop_need(step))
     }
 
     /// `worker`'s live jobs' leases.
@@ -1592,6 +1630,7 @@ impl Sched {
             leases,
             offers: Vec::new(),
             offered: Default::default(),
+            drops: Default::default(),
             done: s.done.iter().map(|(st, t, k)| ((st.clone(), t.clone()), k.clone())).collect(),
             failed: s.failed.iter().map(|(w, k, a, n)| ((w.clone(), k.clone()), (ago(now, *a), *n))).collect(),
             workers,
@@ -1618,6 +1657,7 @@ impl Sched {
             last: s.last.iter().map(|(w, st, t)| ((w.clone(), st.clone()), t.clone())).collect(),
             measured_steps: Default::default(),
             measured_of: Default::default(),
+            drop_needs: Default::default(),
         };
         sched.set_offers(s.offers.clone());
         sched

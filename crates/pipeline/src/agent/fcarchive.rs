@@ -697,6 +697,7 @@ mod tests {
         let inp = forecast::Input {
             now: NOW,
             before: vec![],
+            drops: vec![],
             regions: Default::default(),
             costs: Default::default(),
             cadence: Default::default(),

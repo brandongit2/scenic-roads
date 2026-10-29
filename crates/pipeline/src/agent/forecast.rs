@@ -98,6 +98,11 @@ pub struct Input<'a> {
     pub before: Vec<Job>,
     /// The regions' work left, in the order they're built (build::Plan::regions).
     pub regions: Cow<'a, [RegionLeft]>,
+    /// The drops (build::Plan::drops: z10 tiles no deep target any more, their packs dropped),
+    /// each at its drop's cost: first of the regions' work, waiting on nothing, shown as drops
+    /// (`Lane::drop`). A region whose terrain they're in waits on them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drops: Vec<Job>,
     /// What each region's target takes, by step and target (`cost_table`: every target of
     /// `regions` the forecast lists).
     pub costs: CostTable,
@@ -893,6 +898,9 @@ pub struct Lane {
     pub n: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cuts: Vec<[u32; 2]>,
+    /// Its jobs are drops (`Input::drops`): packs dropped, nothing built.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub drop: bool,
 }
 
 /// A step's work left.
@@ -1000,6 +1008,8 @@ struct Item {
     /// The job it was granted in (`run`'s numbering, from 1; 0: none yet): the lane's runs
     /// (`Lane`) are its jobs.
     job: u32,
+    /// A drop (`Input::drops`).
+    drop: bool,
 }
 
 /// One run through the work (`run`): each item's machine and times.
@@ -1086,6 +1096,7 @@ fn items(inp: &Input) -> Items {
             from: 0.0,
             end: 0.0,
             job: 0,
+            drop: false,
         });
         let i = out.len() - 1;
         by.of.insert((step.to_string(), target.to_string()), i);
@@ -1122,6 +1133,11 @@ fn items(inp: &Input) -> Items {
         groups.push(v);
         groups.len() - 1
     };
+    // (The drops first, waiting on nothing: a region's terrain listing them waits on them.)
+    for (step, target, cost) in &inp.drops {
+        let i = add(&mut out, &mut by_target, step, target, *cost, Phase::Region, (Vec::new(), Vec::new()));
+        out[i].drop = true;
+    }
     for r in inp.regions.iter() {
         for t in &r.own_terrain {
             add(
@@ -2121,7 +2137,15 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
         let under_way = mac.running.as_ref().filter(|_| !mine.iter().any(|(_, i)| i.running));
         let runs = mine
             .iter()
-            .map(|&(k, i)| Placing { step: &i.step, from: i.from, until: i.end, n: 1, job: i.job, item: Some(k) })
+            .map(|&(k, i)| Placing {
+                step: &i.step,
+                from: i.from,
+                until: i.end,
+                n: 1,
+                job: i.job,
+                item: Some(k),
+                drop: i.drop,
+            })
             .chain(under_way.map(|(step, n)| Placing {
                 step,
                 from: 0.0,
@@ -2129,6 +2153,7 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
                 n: *n,
                 job: 0,
                 item: None,
+                drop: false,
             }));
         for (k, r) in lane_runs(runs.collect(), now).into_iter().enumerate() {
             for i in r.1 {
@@ -2152,6 +2177,7 @@ struct Placing<'a> {
     n: usize,
     job: u32,
     item: Option<usize>,
+    drop: bool,
 }
 
 /// A lane's runs (`Lane`) from its placings, `now` the forecast's time (unix s): each its items in
@@ -2164,7 +2190,7 @@ fn lane_runs(mut placed: Vec<Placing>, now: f64) -> Vec<(Lane, Vec<usize>)> {
     let mut out: Vec<(Lane, Vec<usize>, u32)> = Vec::new();
     for p in placed {
         match out.last_mut() {
-            Some((l, items, job)) if l.step == p.step && p.from <= l.until as f64 - now + 120.0 => {
+            Some((l, items, job)) if l.step == p.step && l.drop == p.drop && p.from <= l.until as f64 - now + 120.0 => {
                 if *job != p.job {
                     let off = (at(p.from).max(l.from) - l.from) as u32;
                     l.cuts.push([off, items.len() as u32]);
@@ -2175,7 +2201,14 @@ fn lane_runs(mut placed: Vec<Placing>, now: f64) -> Vec<(Lane, Vec<usize>)> {
                 items.extend(p.item);
             }
             _ => out.push((
-                Lane { step: p.step.to_string(), from: at(p.from), until: at(p.until), n: p.n, cuts: Vec::new() },
+                Lane {
+                    step: p.step.to_string(),
+                    from: at(p.from),
+                    until: at(p.until),
+                    n: p.n,
+                    cuts: Vec::new(),
+                    drop: p.drop,
+                },
                 p.item.into_iter().collect(),
                 p.job,
             )),
@@ -2386,6 +2419,7 @@ mod tests {
             n: 1,
             job,
             item: Some(item),
+            drop: false,
         };
         let now = 1_000_000.0;
         let late = 20_000.0;
@@ -2394,7 +2428,7 @@ mod tests {
             p(2, 600.0, 1),
             p(3, 1200.0, 2),
             // (Another step between: a run of its own.)
-            Placing { step: "pois", from: 1800.0, until: 1810.0, n: 1, job: 4, item: Some(3) },
+            Placing { step: "pois", from: 1800.0, until: 1810.0, n: 1, job: 4, item: Some(3), drop: false },
             p(5, 1810.0, 4),
             p(6, late, 5),
             // (Up to two minutes later: the run's next job.)
@@ -2403,7 +2437,7 @@ mod tests {
             // (Past a gap: a run again.)
             p(8, late + 9000.0, 8),
             // (The job under way that no item is: names no target.)
-            Placing { step: "terrain-deep", from: 0.0, until: 0.0, n: 3, job: 0, item: None },
+            Placing { step: "terrain-deep", from: 0.0, until: 0.0, n: 3, job: 0, item: None, drop: false },
         ];
         let runs = lane_runs(placed, now);
         let got: Vec<(u64, usize, Vec<[u32; 2]>, Vec<usize>)> =
@@ -2420,7 +2454,7 @@ mod tests {
             ]
         );
         // (A run of one job: no `cuts` in the status.)
-        let l = Lane { step: "x".into(), from: 1, until: 2, n: 1, cuts: Vec::new() };
+        let l = Lane { step: "x".into(), from: 1, until: 2, n: 1, cuts: Vec::new(), drop: false };
         assert_eq!(serde_json::to_value(&l).unwrap(), serde_json::json!({"step": "x", "from": 1, "until": 2, "n": 1}));
         assert_eq!(
             serde_json::from_value::<Lane>(serde_json::json!({"step": "x", "from": 1, "until": 2, "n": 1})).unwrap(),
@@ -2477,6 +2511,29 @@ mod tests {
         }
     }
 
+    /// The drops (`Input::drops`, build::Plan::drops) go first at their own cost, a run of their
+    /// own shown as drops (`Lane::drop`), never merged with the step's builds: 29 Oct's 4,275 Alaska
+    /// drops were the yukon's, last, at a build's 76 s each.
+    #[test]
+    fn drops_go_first_as_drops() {
+        let mut r = region("yukon", &[], &[], &[]);
+        r.own_terrain_deep = vec!["10/256/352".into(), "10/256/353".into()];
+        r.terrain_deep = vec!["10/256/352".into(), "10/256/353".into(), "10/100/252".into()];
+        let regions = vec![r];
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        let drop = Cost { secs: 2.0, known: true, peak_mb: 150 };
+        inp.drops = vec![
+            ("terrain-deep".into(), "10/100/252".into(), drop),
+            ("terrain-deep".into(), "10/100/253".into(), drop),
+        ];
+        let f = forecast(&inp);
+        let lanes: Vec<&Lane> = f.lanes.values().flatten().filter(|l| l.step == "terrain-deep").collect();
+        assert_eq!(lanes.len(), 2, "{lanes:?}");
+        assert!(lanes[0].drop && lanes[0].n == 2 && lanes[0].until - lanes[0].from <= 5, "{lanes:?}");
+        assert!(!lanes[1].drop && lanes[1].n == 2 && lanes[1].from >= lanes[0].until, "{lanes:?}");
+        assert!(serde_json::to_value(lanes[1]).unwrap().get("drop").is_none(), "said only of a drop");
+    }
+
     /// A map tile and the z6 tiles that draw it.
     fn tile(t: &str, units: &[&str]) -> (String, Vec<String>) {
         (t.into(), units.iter().map(|u| u.to_string()).collect())
@@ -2515,6 +2572,7 @@ mod tests {
         Input {
             now: 1_000_000,
             before: Vec::new(),
+            drops: Vec::new(),
             regions: Cow::Borrowed(regions),
             costs: cost_table(regions, c),
             cadence: Cadence::default(),
@@ -3666,6 +3724,7 @@ mod tests {
             let mut inp = Input {
                 now: t0,
                 before: items,
+                drops: Vec::new(),
                 regions: Cow::Owned(Vec::new()),
                 costs: CostTable::new(),
                 cadence: Cadence::default(),
@@ -4215,6 +4274,7 @@ mod tests {
         Input {
             now: 1_792_605_430,
             before: Vec::new(),
+            drops: Vec::new(),
             costs: cost_table(&regions, &cost),
             regions: Cow::Owned(regions.clone()),
             cadence: Cadence::default(),

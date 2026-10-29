@@ -1301,6 +1301,7 @@ impl Coordinator {
                 leases,
                 offers: Vec::new(),
                 offered: Default::default(),
+                drops: Default::default(),
                 done: BTreeMap::new(),
                 failed: BTreeMap::new(),
                 workers: BTreeMap::new(),
@@ -1322,6 +1323,7 @@ impl Coordinator {
                 last: BTreeMap::new(),
                 measured_steps: Default::default(),
                 measured_of: Default::default(),
+                drop_needs: Default::default(),
             },
             pass: String::new(),
             resume: None,
@@ -6176,6 +6178,44 @@ mod tests {
                 && !app_ok(Some("é"), "20261005-1508-84142d3")
                 && !app_ok(Some(""), "x")
         );
+    }
+
+    /// A target offered under its step's "none" key (crate::agent::build::is_none_key) is a drop:
+    /// sized by its step's drops (crate::needs::Book::drop_need), never by its builds; until a drop
+    /// has run, by its step's model as before.
+    #[test]
+    fn a_drop_is_sized_by_its_steps_drops() {
+        let (_d, c, _w) = start();
+        let none = crate::agent::build::none_deep_key("terrain-deep", "10/100/252");
+        c.offer(
+            "p",
+            vec![Offer {
+                step: "terrain-deep".into(),
+                targets: vec![("10/100/252".into(), none, 7000), ("10/256/400".into(), "k".into(), 7000)],
+                job: None,
+            }],
+        );
+        let v = cost_version("terrain-deep");
+        let put = |t: &str, mb: u64, secs: u64, drop: bool| {
+            let sizes = if drop { [(crate::needs::DROPS.to_string(), 1)].into() } else { BTreeMap::new() };
+            c.shared
+                .lock()
+                .unwrap()
+                .costs
+                .insert(format!("terrain-deep {t}"), Cost { peak_mb: mb, secs, v, sizes, ..Default::default() });
+        };
+        for (i, t) in ["10/256/352", "10/256/353", "10/257/352"].iter().enumerate() {
+            put(t, 7000 + i as u64, 236, false);
+        }
+        let build = c.measured("terrain-deep", "10/256/400").unwrap().mem_mb;
+        assert!(build >= 7000);
+        assert_eq!(c.measured("terrain-deep", "10/100/252").unwrap().mem_mb, build, "no drop ran yet: as a build");
+        put("10/100/250", 150, 2, true);
+        assert_eq!(c.measured("terrain-deep", "10/100/252").unwrap().mem_mb, 150, "its step's drops'");
+        assert_eq!(c.measured("terrain-deep", "10/256/400").unwrap().mem_mb, build, "a build as before");
+        let s = c.shared.lock().unwrap();
+        assert_eq!(s.secs_of("terrain-deep", "10/100/252", "m1"), Some(2));
+        assert_eq!(s.secs_of("terrain-deep", "10/256/400", "m1"), Some(236));
     }
 
     #[test]
