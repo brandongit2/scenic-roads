@@ -23,19 +23,23 @@ const wrap = (x: number) => ((((x + 180) % 360) + 360) % 360) - 180;
 
 /** The area inside `outline`; without a usable outline (under 3 points), `bounds`. */
 export function viewArea(outline: [number, number][], bounds: Box): ViewArea {
-  if (outline.length < 3) {
+  const byBounds = (): ViewArea => {
     const [w, s, e, n] = bounds;
     const all = e - w >= 360;
     const box: Box = all ? [-180, s, 180, n] : [wrap(w), s, wrap(e), n];
     return { test: (x, y) => inBox(box, x, y), box, pole: null };
-  }
-  // The centre: the mean of the outline's points as unit vectors.
+  };
+  if (outline.length < 3) return byBounds();
+  // The centre: the mean of the outline's points as unit vectors. An outline with no centre (its
+  // points cancel out: spread round a great circle) or under 3 points on the plane: the bounds.
   let cx = 0, cy = 0, cz = 0;
   for (const [x, y] of outline) {
     const c = Math.cos(y * D);
     cx += c * Math.cos(x * D); cy += c * Math.sin(x * D); cz += Math.sin(y * D);
   }
-  const l0 = Math.atan2(cy, cx), s0 = cz / Math.hypot(cx, cy, cz), c0 = Math.sqrt(Math.max(0, 1 - s0 * s0));
+  const len = Math.hypot(cx, cy, cz);
+  if (!(len > 1e-6 * outline.length)) return byBounds();
+  const l0 = Math.atan2(cy, cx), s0 = cz / len, c0 = Math.sqrt(Math.max(0, 1 - s0 * s0));
   const plane = (lng: number, lat: number): [number, number] | null => {
     const dl = lng * D - l0, s = Math.sin(lat * D), c = Math.cos(lat * D), cd = Math.cos(dl);
     const q = 1 + s0 * s + c0 * c * cd;
@@ -44,6 +48,7 @@ export function viewArea(outline: [number, number][], bounds: Box): ViewArea {
     return [k * c * Math.sin(dl), k * (c0 * s - s0 * c * cd)];
   };
   const pts = outline.map(([x, y]) => plane(x, y)).filter((p): p is [number, number] => !!p);
+  if (pts.length < 3) return byBounds();
   let pw = Infinity, pe = -Infinity, ps = Infinity, pn = -Infinity;
   for (const [x, y] of pts) {
     pw = Math.min(pw, x); pe = Math.max(pe, x); ps = Math.min(ps, y); pn = Math.max(pn, y);

@@ -2,6 +2,7 @@
 // the "in view" lists, landmarks and ferries test it (#826): an ordinary view, a view round each
 // pole and one across the antimeridian, and the bounds without an outline.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { boxKm, boxesMeet, inBox, viewArea } from '../src/inview.ts';
 
 const D = Math.PI / 180;
@@ -61,5 +62,13 @@ const none: [number, number, number, number] = [0, 0, 0, 0];
   assert.deepEqual(a.box, [170, -10, -170, 10]);
   assert.ok(a.test(175, 0) && a.test(-175, 0) && !a.test(0, 0));
   assert.deepEqual(viewArea([], [-200, -10, 200, 10]).box, [-180, -10, 180, 10]);
+}
+// The fixtures crates/server/src/inview.rs's tests read too: both copies give the same answers.
+type Fixture = { name: string; outline: [number, number][]; bounds: [number, number, number, number]; box: number[]; pole: 'n' | 's' | null; points: [number, number, number][] };
+for (const f of JSON.parse(readFileSync(new URL('./inview-fixtures.json', import.meta.url), 'utf8')) as Fixture[]) {
+  const a = viewArea(f.outline, f.bounds);
+  a.box.forEach((v, i) => assert.ok(Math.abs(v - f.box[i]) < 1e-4, `${f.name}: box ${a.box}`));
+  assert.equal(a.pole, f.pole, f.name);
+  for (const [x, y, inside] of f.points) assert.equal(a.test(x, y), inside === 1, `${f.name}: (${x}, ${y})`);
 }
 console.log('inview: ok');

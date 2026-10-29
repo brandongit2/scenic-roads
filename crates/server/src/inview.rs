@@ -39,10 +39,13 @@ impl Region {
     /// `poly`: the outline (degrees), used with at least 3 points; else `bounds` (west, south,
     /// east, north).
     pub fn new(poly: Vec<[f64; 2]>, bounds: [f64; 4]) -> Region {
-        if poly.len() < 3 {
+        let by_bounds = || {
             let [w, s, e, n] = bounds;
             let b = if e - w >= 360.0 { [-180.0, s, 180.0, n] } else { [wrap(w), s, wrap(e), n] };
-            return Region { pts: Vec::new(), centre: (0.0, 0.0, 1.0), pbox: [0.0; 4], boxes: split(b) };
+            Region { pts: Vec::new(), centre: (0.0, 0.0, 1.0), pbox: [0.0; 4], boxes: split(b) }
+        };
+        if poly.len() < 3 {
+            return by_bounds();
         }
         let (mut cx, mut cy, mut cz) = (0.0, 0.0, 0.0);
         for &[x, y] in &poly {
@@ -51,7 +54,13 @@ impl Region {
             cy += y.cos() * x.sin();
             cz += y.sin();
         }
-        let s0 = cz / (cx * cx + cy * cy + cz * cz).sqrt();
+        // An outline with no centre (its points cancel out: spread round a great circle) or under
+        // 3 points on the plane: the bounds.
+        let len = (cx * cx + cy * cy + cz * cz).sqrt();
+        if !(len > 1e-6 * poly.len() as f64) {
+            return by_bounds();
+        }
+        let s0 = cz / len;
         let mut r = Region {
             pts: Vec::new(),
             centre: (cy.atan2(cx), s0, (1.0 - s0 * s0).max(0.0).sqrt()),
@@ -59,6 +68,9 @@ impl Region {
             boxes: Vec::new(),
         };
         r.pts = poly.iter().filter_map(|&[x, y]| r.plane(x, y)).collect();
+        if r.pts.len() < 3 {
+            return by_bounds();
+        }
         for &[x, y] in &r.pts {
             r.pbox = [r.pbox[0].min(x), r.pbox[1].min(y), r.pbox[2].max(x), r.pbox[3].max(y)];
         }
@@ -206,5 +218,31 @@ mod tests {
         assert_eq!(r.boxes().len(), 2);
         assert!(Region::parse("1,2,3,4", None).is_some_and(|r| r.test(2.0, 3.0)));
         assert!(Region::parse("x", None).is_none());
+    }
+
+    /// web/test/inview-fixtures.json, which web/test/inview.test.ts checks too: the two copies
+    /// give the same answers (boxes, points in and out).
+    #[test]
+    fn the_shared_fixtures() {
+        let all: serde_json::Value =
+            serde_json::from_str(include_str!("../../../web/test/inview-fixtures.json")).unwrap();
+        let num = |v: &serde_json::Value| v.as_f64().unwrap();
+        for f in all.as_array().unwrap() {
+            let name = f["name"].as_str().unwrap();
+            let pair = |v: &serde_json::Value| [num(&v[0]), num(&v[1])];
+            let outline = f["outline"].as_array().unwrap().iter().map(pair).collect();
+            let b: Vec<f64> = f["bounds"].as_array().unwrap().iter().map(num).collect();
+            let r = Region::new(outline, [b[0], b[1], b[2], b[3]]);
+            let b: Vec<f64> = f["box"].as_array().unwrap().iter().map(num).collect();
+            let want = split([b[0], b[1], b[2], b[3]]);
+            assert_eq!(r.boxes().len(), want.len(), "{name}");
+            for (got, want) in r.boxes().iter().zip(&want) {
+                assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-4), "{name}: {got:?} vs {want:?}");
+            }
+            for p in f["points"].as_array().unwrap() {
+                let (x, y) = (num(&p[0]), num(&p[1]));
+                assert_eq!(r.test(x, y), num(&p[2]) == 1.0, "{name}: ({x}, {y})");
+            }
+        }
     }
 }

@@ -334,13 +334,18 @@ export class Ferries {
     if (!same && this.style?.colour === 'freq') this.paint();
   }
 
+  /** The ground in view (inview.ts): its outline, or the bounds without one. */
+  private area() {
+    const b = this.map.getBounds();
+    return viewArea(this.viewOutline?.() ?? [], [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+  }
+
   /** The metric over the ferry lines in view (shown by the filters), weighted by length. */
   metricDist(): Dist | null {
     const st = this.style;
     if (!this.fc || !st) return null;
     const d = ferryMetricDef(st.metric);
-    const b = this.map.getBounds();
-    const box = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] as const;
+    const { box } = this.area();
     const pass = (v: number) => !st.freqOn || (v < 0 ? st.freqUnknown : (!(st.freqMin > 0) || v >= st.freqMin) && (!(st.freqMax > 0) || v <= st.freqMax));
     const vs: number[] = [], ws: number[] = [];
     const fs = this.fc.features as Feature[];
@@ -359,30 +364,34 @@ export class Ferries {
   }
 
   /** Km of a line (feature index) within the bounds (west, south, east, north): its segments
-   * clipped to them, so that the auto-fit's screen widths measure what the view shows (a long
+   * clipped to them (west > east: across the antimeridian; inview.ts's box, every longitude round a
+   * pole), so that the auto-fit's screen widths measure what the view shows (a long
    * crossing reaching into the view counted whole before). */
-  private kmInView(fi: number, [w, s, e, n]: readonly [number, number, number, number]): number {
-    const bx = this.boxes!;
-    if (bx[fi * 4] > e || bx[fi * 4 + 2] < w || bx[fi * 4 + 1] > n || bx[fi * 4 + 3] < s) return 0;
+  private kmInView(fi: number, box: Box): number {
+    if (!boxesMeet(box, Array.from(this.boxes!.subarray(fi * 4, fi * 4 + 4)) as Box)) return 0;
     const c = ((this.fc!.features as Feature[])[fi].geometry as GeoJSON.LineString).coordinates;
     let km = 0;
-    for (let i = 1; i < c.length; i++) {
-      const [x0, y0] = c[i - 1], [x1, y1] = c[i];
-      const dx = x1 - x0, dy = y1 - y0;
-      // Liang–Barsky: the share of the segment inside the box.
-      let t0 = 0, t1 = 1, out = false;
-      for (const [pp, q] of [[-dx, x0 - w], [dx, e - x0], [-dy, y0 - s], [dy, n - y0]]) {
-        if (pp === 0) {
-          if (q < 0) out = true;
-          continue;
+    // A box across the antimeridian: its two sides, each clipped to.
+    const [bw, s, be, n] = box;
+    for (const [w, e] of bw <= be ? [[bw, be]] : [[bw, 180], [-180, be]]) {
+      for (let i = 1; i < c.length; i++) {
+        const [x0, y0] = c[i - 1], [x1, y1] = c[i];
+        const dx = x1 - x0, dy = y1 - y0;
+        // Liang–Barsky: the share of the segment inside the box.
+        let t0 = 0, t1 = 1, out = false;
+        for (const [pp, q] of [[-dx, x0 - w], [dx, e - x0], [-dy, y0 - s], [dy, n - y0]]) {
+          if (pp === 0) {
+            if (q < 0) out = true;
+            continue;
+          }
+          const r = q / pp;
+          if (pp < 0) t0 = Math.max(t0, r);
+          else t1 = Math.min(t1, r);
         }
-        const r = q / pp;
-        if (pp < 0) t0 = Math.max(t0, r);
-        else t1 = Math.min(t1, r);
+        if (out || t1 <= t0) continue;
+        const my = y0 + (dy * (t0 + t1)) / 2;
+        km += (t1 - t0) * Math.hypot(dx * 111.32 * Math.cos((my * Math.PI) / 180), dy * 110.57);
       }
-      if (out || t1 <= t0) continue;
-      const my = y0 + (dy * (t0 + t1)) / 2;
-      km += (t1 - t0) * Math.hypot(dx * 111.32 * Math.cos((my * Math.PI) / 180), dy * 110.57);
     }
     return km;
   }
@@ -392,8 +401,7 @@ export class Ferries {
   freqDist(): Dist | null {
     const st = this.style;
     if (!this.fc || !st) return null;
-    const b = this.map.getBounds();
-    const box = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] as const;
+    const { box } = this.area();
     const vs: number[] = [], ws: number[] = [];
     const fs = this.fc.features as Feature[];
     this.boxes ??= lineBoxes(fs);
@@ -415,15 +423,14 @@ export class Ferries {
     const km = new Array(NFERRY).fill(0);
     const cov = { lines: 0, known: 0 };
     if (!this.fc) return { km, cov };
-    const b = this.map.getBounds();
-    const [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    const { test } = this.area();
     const seen = new Set<string>();
     const st = this.style;
     const pass = (v: number) => !st?.freqOn || (v < 0 ? st.freqUnknown : (!(st.freqMin > 0) || v >= st.freqMin) && (!(st.freqMax > 0) || v <= st.freqMax));
     for (const f of this.fc.features as Feature[]) {
       if (f.geometry.type !== 'LineString' || !pass(Number(f.properties.f))) continue;
       const c = (f.geometry as GeoJSON.LineString).coordinates;
-      if (!c.some(([x, y]) => x >= w && x <= e && y >= s && y <= n)) continue;
+      if (!c.some(([x, y]) => test(x, y))) continue;
       km[f.properties.g] += f.properties.km;
       for (const id of String(f.properties.lines).split(',')) {
         if (seen.has(id)) continue;
@@ -446,8 +453,7 @@ export class Ferries {
   viewSummary(): { routes: number; seasonal: number; busiest: { name: string; perDay: number; lngLat: [number, number] } | null } {
     const out = { routes: 0, seasonal: 0, busiest: null as { name: string; perDay: number; lngLat: [number, number] } | null };
     if (!this.fc) return out;
-    const b = this.map.getBounds();
-    const { test, box } = viewArea(this.viewOutline?.() ?? [], [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+    const { test, box } = this.area();
     const fs = this.fc.features as Feature[];
     this.boxes ??= lineBoxes(fs);
     const bx = this.boxes;
