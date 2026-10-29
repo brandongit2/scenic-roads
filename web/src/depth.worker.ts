@@ -2,7 +2,9 @@
 //
 // A map tile z/x/y (512 px) is built from the server's depth and class tiles of zoom z + 1 (four
 // 256-px tiles, lossless WebP, decoded exact: the stored ones, or past a place's sources' zoom the
-// server's from their nearest stored ancestor, crates/server/src/depth.rs) and the basemap's own water (its vector tile of zoom min(z, 14), as the map draws it),
+// server's from their nearest stored ancestor, crates/server/src/depth.rs; above the layer's least
+// zoom, z3, which the build stores none of, each pixel the mean of the least zoom's tiles under it
+// with data, #822) and the basemap's own water (its vector tile of zoom min(z, 14), as the map draws it),
 // painted at 512 px. From that one composite come:
 //   relief   depth, reaching REACH px past its data (?mask=1: on land too, the map drawing it
 //            only in its water tiles' water; else in the basemap's water); elsewhere +12,000 m,
@@ -19,7 +21,7 @@ import { HBINS, hbin } from './depthlook';
 import { encodeLines, readPolygons } from './mvt';
 
 export type DepthMsg =
-  | { type: 'init'; base: string; depth: string; cls: string }
+  | { type: 'init'; base: string; depth: string; cls: string; minzoom: number }
   | { type: 'tile'; id: number; kind: 'relief' | 'contour'; z: number; x: number; y: number; q: Record<string, string> }
   | { type: 'probe'; id: number; z: number; x: number; y: number; px: number; py: number }
   | { type: 'hist'; id: number; tiles: [number, number, number][] }
@@ -49,13 +51,15 @@ const VMAX = 14;
 let base = '';
 let depthUrl = '';
 let clsUrl = '';
+/** The layer's least zoom stored (the catalogue's). */
+let minzoom = 0;
 const cancelled = new Set<number>();
 
 self.onmessage = (ev: MessageEvent<DepthMsg>) => {
   const m = ev.data;
   if (m.type === 'init') {
     // (A new catalogue: its URLs, and nothing kept from the old one.)
-    if (m.depth !== depthUrl || m.base !== base) {
+    if (m.depth !== depthUrl || m.base !== base || m.minzoom !== minzoom) {
       fetched.clear();
       composites.clear();
       waterCache.clear();
@@ -63,6 +67,7 @@ self.onmessage = (ev: MessageEvent<DepthMsg>) => {
     base = m.base;
     depthUrl = m.depth;
     clsUrl = m.cls;
+    minzoom = m.minzoom;
     return;
   }
   if (m.type === 'cancel') {
@@ -124,7 +129,7 @@ function serverTile(z: number, x: number, y: number): Promise<Grid> {
   const key = `${z}/${x}/${y}`;
   const hit = fetched.get(key);
   if (hit) return hit;
-  const p = (async () => {
+  const p = z < minzoom ? coarser(z, x, y) : (async () => {
     const [dp, kp] = await Promise.all([pixels(fill(depthUrl, z, x, y)), pixels(fill(clsUrl, z, x, y))]);
     if (!dp) return null;
     const d = new Float32Array(256 * 256), k = new Uint8Array(256 * 256);
@@ -137,6 +142,39 @@ function serverTile(z: number, x: number, y: number): Promise<Grid> {
   remember(fetched, key, p, 600);
   p.catch(() => fetched.get(key) === p && fetched.delete(key));
   return p;
+}
+
+/**
+ * A tile above the least zoom stored: the f × f tiles of that zoom under it (f = 2^(minzoom − z)),
+ * each pixel the mean depth of their f × f pixels under it that have data, its class that of the
+ * first of them (null where none has a tile).
+ */
+async function coarser(z: number, x: number, y: number): Promise<Grid> {
+  const dz = minzoom - z, f = 2 ** dz, s = 256 / f;
+  const parts = await Promise.all(Array.from({ length: f * f }, (_, i) => serverTile(minzoom, (x << dz) + (i % f), (y << dz) + Math.floor(i / f))));
+  if (parts.every((g) => !g)) return null;
+  const d = new Float32Array(256 * 256).fill(SENTINEL), k = new Uint8Array(256 * 256);
+  parts.forEach((g, i) => {
+    if (!g) return;
+    const ox = (i % f) * s, oy = Math.floor(i / f) * s;
+    for (let r = 0; r < s; r++)
+      for (let c = 0; c < s; c++) {
+        let sum = 0, n = 0, cls = -1;
+        for (let v = 0; v < f; v++)
+          for (let u = 0; u < f; u++) {
+            const j = (r * f + v) * 256 + c * f + u, dv = g.d[j];
+            if (!(dv < NODATA_MIN)) continue;
+            sum += dv;
+            n++;
+            if (cls < 0) cls = g.k[j];
+          }
+        if (!n) continue;
+        const o = (oy + r) * 256 + ox + c;
+        d[o] = sum / n;
+        k[o] = cls;
+      }
+  });
+  return { d, k };
 }
 
 const waterCache = new Map<string, Promise<number[][][]>>();

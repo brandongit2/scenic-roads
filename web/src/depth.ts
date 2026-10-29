@@ -58,6 +58,8 @@ export class Depth {
   /** The catalogue has depth (its layers) and its sources. */
   private has = false;
   private sources: DepthSource[] = [];
+  /** The depth layers' least zoom stored (the catalogue's: the build makes z3 up). */
+  private minzoom = 0;
   private workers: Worker[] = [];
   private seq = 0;
   private waiting = new Map<number, { resolve: (r: DepthReply) => void; reject: (e: Error) => void }>();
@@ -79,6 +81,11 @@ export class Depth {
   setCatalogue(layers: Record<string, unknown> | undefined, depth: { sources?: DepthSource[] } | null | undefined) {
     const has = !!layers && 'depth' in layers && 'depth-class' in layers;
     this.sources = depth?.sources ?? [];
+    const mz = has ? Math.max(...(['depth', 'depth-class'] as const).map((k) => (layers[k] as { minzoom?: number }).minzoom ?? 0)) : 0;
+    if (mz !== this.minzoom) {
+      this.minzoom = mz;
+      if (this.workers.length) this.initWorkers();
+    }
     if (has !== this.has) {
       this.has = has;
       this.apply(this.s);
@@ -108,6 +115,7 @@ export class Depth {
       base: (this.map.getSource('base') as maplibregl.VectorTileSource | undefined)?.tiles?.[0] ?? `${hostFor('base')}/tiles/base/{z}/{x}/{y}`,
       depth: `${hostFor('layers')}/tiles/depth/{z}/{x}/{y}${ver('depth.tiles')}`,
       cls: `${hostFor('layers')}/tiles/depth-class/{z}/{x}/{y}${ver('depth-class.tiles')}`,
+      minzoom: this.minzoom,
     };
     for (const w of this.workers) w.postMessage(msg);
     (this.map.getSource('depth-shade') as maplibregl.RasterDEMTileSource | undefined)?.setTiles([this.shadeUrl()]);
