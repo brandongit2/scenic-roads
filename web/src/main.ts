@@ -44,7 +44,7 @@ import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrai
 import { applyWater, switchCoast, updateCoastRamp } from './coast';
 import { CatalogueWatch } from './catalogue';
 import { PolarCaps } from './polarcaps';
-import { globeProjection } from './polarglobe';
+import { capGround, globeProjection } from './polarglobe';
 import { TileRetry } from './retry';
 import { RegionLayers } from './regions';
 import { ContourLayer, type ContourDraw } from './contours';
@@ -660,7 +660,7 @@ async function main() {
     terrainDirty = false;
     if (!t.tint || !styleReady) return;
     const slope = t.tintVar === 'slope';
-    const d = terrainDist(map, slope ? 'slope' : 'dem-tint', TINT_VARS[t.tintVar].domain, groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]), slope ? { max: SLOPE_MAX } : null);
+    const d = terrainDist(map, slope ? 'slope' : 'dem-tint', TINT_VARS[t.tintVar].domain, groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]), slope ? { max: SLOPE_MAX } : null, capGround(map));
     if (d) terrainD = d;
   };
   const updateTintCdf = () => {

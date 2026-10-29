@@ -124,7 +124,9 @@ custom layer on the globe.
   terrain texture times the terrain's exaggeration (flat with 3D terrain off). It shades from the
   shading texture with the map's hillshade layer's own method and paint, read each frame (every
   method, the accent, the anchor), and draws the elevation and slope tints from those layers' own
-  ramps, over the land or water colour. Tiles are culled by the frustum and the horizon.
+  ramps, over the land or water colour. Tiles are culled by the frustum and the horizon. The
+  elevation tint's fit to the view counts the caps' loaded heights with the Mercator tiles'
+  (`capGround`, `terrainstats.ts`).
 - **`web/src/polarcaps.ts`**: adds a pole's cap while the catalogue lists both its layers, its URLs
   at the packs' versions (`api.ts` `packUrl`, `packs.ts` `packToken` read `polar`); a tile no pack
   holds (a block not built) isn't asked for (`PolarTilesOptions.stored`), its ancestor drawn.
@@ -238,8 +240,13 @@ Memory: 0.3–0.9 GB a terrain job as measured (its `mem_mb`, 4,096, is the firs
 5. **The north cap (recommended: wait for the depth):** it is all sea level.
 6. **Zoom near the pole (open):** the globe scales its zoom by latitude, so near the pole a small
    zoom number already puts the camera close (zoom 8 at 89.5° S is at the ground; zoom 4.6 is
-   1.8 km above it). The app's zoom-dependent choices (the globe's hand-off, tile levels) read odd
-   there; whether to cap that compensation near the poles is for the owner.
+   1.8 km above it), and its least zoom falls likewise (MapLibre's constrain: the minimum less
+   log2(1 ÷ cos lat), −4 at 88°). The app's gestures take the same limits (`camera3d.ts`
+   `zoomRange`), a link opens at its own zoom there (set again once the globe and the caps are on),
+   and a Mercator tile's zoom gains log2(cos its latitude ÷ cos the centre's) where that is finer
+   (FORK.md), so the lower latitudes of a polar view aren't drawn at the pole's zoom (#822). The
+   globe's hand-off still reads the zoom number; whether to cap the compensation near the poles is
+   for the owner.
 
 ## 10. Roads, labels and landmarks past 85° (not built)
 

@@ -310,7 +310,14 @@ const drawn = new Map<MlMap, Map<Pole, PolarTiles>>();
 function sync(m: MlMap) {
   const caps = drawn.get(m);
   m.setPoleCaps({ north: !caps?.has('n'), south: !caps?.has('s') });
-  m.setPoleGround(caps?.size ? (lng, lat) => caps.get(lat > 0 ? 'n' : 's')?.height(lng, lat) ?? null : null);
+  m.setPoleGround(capGround(m));
+}
+
+/** The ground's height (m) past 85° from the caps drawn on `m` (their loaded tiles; null where none
+ * holds the point), or null when no cap is drawn. */
+export function capGround(m: MlMap): ((lng: number, lat: number) => number | null) | null {
+  const caps = drawn.get(m);
+  return caps?.size ? (lng, lat) => caps.get(lat > 0 ? 'n' : 's')?.height(lng, lat) ?? null : null;
 }
 
 /** The layer drawing pole `o.pole`'s cap on the globe (id `polar-<pole>`). */
