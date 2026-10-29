@@ -1881,6 +1881,20 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   and asks nothing. An entry of a redo merged by such a lead (a takeover replaying the journal)
   clears nothing (that app records `<step> <target>` under the lo keys, as an unknown step's): the
   targets keep their keys, and `scenic redo`'s next dry run says so.
+- **Restoring targets whose key moved but whose output wouldn't** (`crate::agent::restore`, task
+  #832): `scenic-build terrain-restore-check --old <term>[,…] [--ask <prefix>]` reads the records
+  now and those terms' briefs' manifests (the inputs then) and, for each terrain-hi and
+  terrain-deep target whose record is the key it had under one of those terms' inputs, compares
+  what its run samples then and now by the sampling code itself: the tiles it makes, its water's
+  digest, the datasets meeting it in order and, where a dataset's coverage differs, every sample
+  point inside it (`restore::first_apart`). It prints how many would be restored and why the rest
+  stay queued, and changes nothing; `--ask` writes the restores, each target with the key it's
+  recorded under (`from`) and its key now (`to`). `scenic redo <step> --restore <file> [--run]`
+  asks the lead's coordinator (`/work/redo`, with `restore`), 2,000 at a time; the lead's job of
+  the `redo` step hands off a done record of `<step> <target> <from>` under `to`, and
+  `Keys::record` records `to` only while the target's record is still `from`: one built since
+  (or mid-run, merged first) keeps its own. A lead on an app from before it answers with an error,
+  and nothing is asked.
 - **Pausing one Mac** (`crate::control::Hold`, task #224): `scenic pause --here` / `scenic resume
   --here`, `scenic pause <member>` / `scenic resume <member>` (host name or member id) from another
   Mac, or the menu bar's "Pause This Mac" / "Resume This Mac". The ask goes to this Mac's agent (a

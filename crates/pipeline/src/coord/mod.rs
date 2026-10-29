@@ -4303,12 +4303,22 @@ fn route(
                 .as_array()
                 .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
                 .unwrap_or_default();
-            let (step, targets) = crate::agent::redo::checked(b["step"].as_str().unwrap_or(""), &targets)?;
+            // (A restore's (`scenic redo --restore`, crate::agent::restore): each target with the key
+            // recorded and the one to record in its place.)
+            let restore: Vec<crate::agent::redo::Restore> =
+                serde_json::from_value(b["restore"].clone()).unwrap_or_default();
+            let (step, targets, restore) = if restore.is_empty() {
+                let (s, t) = crate::agent::redo::checked(b["step"].as_str().unwrap_or(""), &targets)?;
+                (s, t, restore)
+            } else {
+                let (s, r) = crate::agent::redo::checked_restore(b["step"].as_str().unwrap_or(""), &restore)?;
+                (s, r.iter().map(|x| x.target.clone()).collect(), r)
+            };
             let by = b["by"].as_str().unwrap_or("").chars().take(100).collect();
             let mut s = shared.lock().unwrap();
             // (Its number unique in this coordinator: ms, one more than the last.)
             let n = (unix_now() * 1000).max(s.redo_asks.iter().map(|a| a.n + 1).max().unwrap_or(0));
-            s.redo_asks.push(crate::agent::redo::Ask { n, step, targets, by });
+            s.redo_asks.push(crate::agent::redo::Ask { n, step, targets, by, restore });
             let after = crate::pool::journal::LeaseId { term: s.leases.term, n: s.leases.next() - 1 };
             Ok((200, serde_json::json!({ "n": n, "after": { "term": after.term, "n": after.n } })))
         }
@@ -6531,6 +6541,17 @@ mod tests {
         .0;
         assert_eq!(page, 403, "not a page's");
         assert!(c.take_redo_asks().is_empty());
+        // Task #832: a restore (`scenic redo --restore`), its targets those it names.
+        let k = |c: char| c.to_string().repeat(16);
+        let restore = serde_json::json!([{ "target": "6/18/22", "from": k('a'), "to": k('b') }]);
+        let (code, v) =
+            w.post_json("/work/redo", &serde_json::json!({ "step": "terrain-hi", "restore": restore })).unwrap();
+        assert_eq!(code, 200, "{v}");
+        let asks = c.take_redo_asks();
+        assert_eq!((asks[0].targets.clone(), asks[0].restore[0].to.clone()), (vec!["6/18/22".to_string()], k('b')));
+        let bad =
+            serde_json::json!({ "step": "terrain-hi", "restore": [{ "target": "6/1/1", "from": "x", "to": "y" }] });
+        assert_ne!(w.post_json("/work/redo", &bad).map(|r| r.0).unwrap_or(500), 200);
     }
 
     #[test]

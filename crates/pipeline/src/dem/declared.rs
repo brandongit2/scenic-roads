@@ -376,6 +376,17 @@ impl OutlineCut {
         Ok(OutlineCut { geometry: o.geometry.clone(), edges, shapes, held: Default::default() })
     }
 
+    /// Of shapes `shapes` in edge cells `edges`, named `geometry` (the tests').
+    #[cfg(test)]
+    pub fn of_shapes(geometry: &str, edges: HashSet<(i32, i32)>, shapes: Vec<crate::coverage::Shape>) -> OutlineCut {
+        OutlineCut {
+            geometry: vec![geometry.into()],
+            edges,
+            shapes: std::sync::Arc::new(shapes),
+            held: Default::default(),
+        }
+    }
+
     /// `within` of its shapes for box `r`, kept (`held`).
     pub fn within(&self, r: [i32; 4]) -> Within {
         if let Some(w) = self.held.lock().unwrap_or_else(|e| e.into_inner()).get(&r) {

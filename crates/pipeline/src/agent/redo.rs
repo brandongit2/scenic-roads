@@ -34,6 +34,47 @@ pub struct Ask {
     /// Who asked ("scenic redo on <host>").
     #[serde(default)]
     pub by: String,
+    /// A restore (task #832, crate::agent::restore): each target recorded again under `to`, but
+    /// only while its record is still `from` (one built, or redone, since keeps its own); its
+    /// targets are these. Empty: a redo, forgetting the targets' keys.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restore: Vec<Restore>,
+}
+
+/// A target to record again under the key it has now (`to`), its run sampling the same as the
+/// one recorded (`from`): crate::agent::restore.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restore {
+    pub target: String,
+    pub from: String,
+    pub to: String,
+}
+
+/// A restore job's done target for `step`'s `target` recorded under `from`; its key is the one
+/// recorded in its place (`build::Keys::record`).
+pub fn restore_target(step: &str, target: &str, from: &str) -> String {
+    format!("{step} {target} {from}")
+}
+
+/// `step`'s restores `r` checked as an ask's (`checked`, each target once, keys of 16 hex digits).
+pub fn checked_restore(step: &str, r: &[Restore]) -> Result<(String, Vec<Restore>)> {
+    let targets: Vec<String> = r.iter().map(|x| x.target.clone()).collect();
+    let (step, once) = checked(step, &targets)?;
+    anyhow::ensure!(once.len() == r.len(), "a target named twice");
+    let hex = |k: &str| k.len() == 16 && k.chars().all(|c| c.is_ascii_hexdigit());
+    if let Some(x) = r.iter().find(|x| !hex(&x.from) || !hex(&x.to)) {
+        bail!("{}: keys are 16 hex digits ({:?}, {:?})", x.target, x.from, x.to);
+    }
+    Ok((step, r.to_vec()))
+}
+
+/// The done record of ask `a`'s job: a redo's targets with no key, a restore's each with its key.
+pub fn done_of(a: &Ask) -> Vec<(String, String)> {
+    if a.restore.is_empty() {
+        a.targets.iter().map(|t| (done_target(&a.step, t), String::new())).collect()
+    } else {
+        a.restore.iter().map(|r| (restore_target(&a.step, &r.target, &r.from), r.to.clone())).collect()
+    }
 }
 
 /// Whether `step`'s targets can be redone: a step whose records keep a key per target.

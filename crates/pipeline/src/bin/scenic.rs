@@ -1394,6 +1394,45 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
     bail!("the redo wasn't merged into the records in 15 minutes: `scenic status` shows its job; a lead that changed meanwhile may have lost the ask (ask again: `scenic redo {step} {} --run`)", todo.join(" "))
 }
 
+/// `scenic redo <step> --restore <file> [--run]` (task #832, pipeline::agent::restore): the
+/// restores `file` lists (`scenic-build terrain-restore-check --ask`), those whose record in the
+/// newest records is still the one checked; with --run, asked of the lead's coordinator
+/// (`/work/redo`), `redo::MAX_TARGETS` at a time: its jobs record each under its key now while its
+/// record is still that one (`build::Keys::record`), so a target built since keeps its own.
+fn restore(step: &str, file: &Path, run: bool, root_: &Option<PathBuf>) -> Result<()> {
+    use pipeline::agent::redo;
+    use pipeline::pool::term;
+    let all: Vec<redo::Restore> =
+        serde_json::from_slice(&std::fs::read(file).with_context(|| format!("read {}", file.display()))?)
+            .with_context(|| format!("parse {}", file.display()))?;
+    let r = root(root_, false)?;
+    let cur = term::current(&r).context("the current term")?;
+    let rec = pipeline::pool::records::Records::newest(&r, cur.term, true)?.context("no records")?;
+    let step = pipeline::agent::steps::current(step).to_string();
+    let (todo, moved): (Vec<redo::Restore>, Vec<redo::Restore>) =
+        all.into_iter().partition(|x| rec.keys.recorded(&step, &x.target) == Some(x.from.as_str()));
+    println!(
+        "{} {step} target(s) to restore; {} recorded otherwise since the check (left as they are)",
+        todo.len(),
+        moved.len()
+    );
+    if todo.is_empty() || !run {
+        if !todo.is_empty() {
+            println!("a dry run: `scenic redo {step} --restore {} --run` asks the lead", file.display());
+        }
+        return Ok(());
+    }
+    let c = pipeline::coord::client::Client::from_nas(&r, &store::sys::host_name())?
+        .context("no lead's coordinator to ask")?;
+    let by = format!("scenic redo --restore on {}", store::sys::host_name());
+    for part in todo.chunks(redo::MAX_TARGETS) {
+        let (code, v) = c.post_json("/work/redo", &serde_json::json!({ "step": step, "restore": part, "by": by }))?;
+        anyhow::ensure!(code == 200, "the lead's coordinator answered {code} ({v}): nothing more asked");
+        println!("asked the lead (redo {}): {} target(s), recorded as its job merges", v["n"], part.len());
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     // (Its command line checked first: `--help` or a flag it doesn't know runs nothing.)
     let cli = cli::Cli::parse();
@@ -1598,7 +1637,8 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        Some(Cmd::Redo { step, targets, run, root: r }) => redo(&step, &targets, run, &r.root),
+        Some(Cmd::Redo { step, run, restore: Some(f), root: r, .. }) => restore(&step, &f, run, &r.root),
+        Some(Cmd::Redo { step, targets, run, root: r, .. }) => redo(&step, &targets, run, &r.root),
         Some(Cmd::Backup { local, root: r }) => {
             let today = backup::format_day(std::time::SystemTime::now());
             let r =

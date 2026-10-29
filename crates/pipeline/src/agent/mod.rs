@@ -49,6 +49,7 @@ pub mod recipes;
 pub mod redo;
 pub mod regionsview;
 pub mod rekey;
+pub mod restore;
 pub mod resume;
 pub mod room;
 pub mod settings;
@@ -7244,7 +7245,8 @@ impl Agent {
                 JobSpec {
                     id: redo::job_id(a.n),
                     what: format!(
-                        "Forgetting {} {} target{}' records",
+                        "{} {} {} target{}' records",
+                        if a.restore.is_empty() { "Forgetting" } else { "Restoring" },
                         a.targets.len(),
                         a.step,
                         if a.targets.len() == 1 { "" } else { "s" }
@@ -7252,10 +7254,7 @@ impl Agent {
                     cmd,
                     needs: Needs { nas: true },
                     restart_after_sleep: true,
-                    record: Some(build::Work {
-                        step: redo::STEP.into(),
-                        targets: a.targets.iter().map(|t| (redo::done_target(&a.step, t), String::new())).collect(),
-                    }),
+                    record: Some(build::Work { step: redo::STEP.into(), targets: redo::done_of(&a) }),
                 }
             })
             .collect()
@@ -12229,6 +12228,7 @@ mod tests {
             step: "terrain-hi".into(),
             targets: vec!["6/18/22".into(), "6/18/23".into()],
             by: "t".into(),
+            ..Default::default()
         };
         co.shared.lock().unwrap().redo_asks.push(ask.clone());
         a.tend_redo();
@@ -12263,6 +12263,30 @@ mod tests {
         a.finished(&j.id, &j.what, true, 5, String::new());
         assert!(redo::pending(&home).unwrap().is_empty() && !home.join(redo::ASKS).exists());
         assert!(a.redo_jobs(&root).is_empty());
+        // Task #832: a restore's ask, its job's done record each target with its key, merged as a
+        // record only over the key checked (`build::Keys::record`).
+        let r = |t: &str, f: &str, to: &str| redo::Restore { target: t.into(), from: f.into(), to: to.into() };
+        let restore = vec![
+            r("6/18/22", "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"),
+            r("6/18/23", "cccccccccccccccc", "dddddddddddddddd"),
+        ];
+        let (step, restore) = redo::checked_restore("terrain-hi", &restore).unwrap();
+        assert!(redo::checked_restore("terrain-hi", &[r("6/1/1", "x", "y")]).is_err(), "keys are hex");
+        let ask =
+            redo::Ask { n: 8, step, targets: vec!["6/18/22".into(), "6/18/23".into()], restore, ..Default::default() };
+        co.shared.lock().unwrap().redo_asks.push(ask.clone());
+        a.tend_redo();
+        let jobs = a.redo_jobs(&root);
+        let mut done = build::Keys::default();
+        done.record(
+            "terrain-hi",
+            &[("6/18/22".into(), "aaaaaaaaaaaaaaaa".into()), ("6/18/23".into(), "eeeeeeeeeeeeeeee".into())],
+        );
+        let w = jobs[0].record.clone().unwrap();
+        assert!(jobs[0].what.starts_with("Restoring 2 terrain-hi"), "{}", jobs[0].what);
+        done.record(&w.step, &w.targets);
+        assert_eq!(done.recorded("terrain-hi", "6/18/22"), Some("bbbbbbbbbbbbbbbb"));
+        assert_eq!(done.recorded("terrain-hi", "6/18/23"), Some("eeeeeeeeeeeeeeee"), "built since: its own");
     }
 
     /// Task #679: only the agent that runs the jobs writes GC's depth targets; a planning-only

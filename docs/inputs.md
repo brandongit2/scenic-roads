@@ -133,6 +133,15 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
      version rolls its derived files out by itself, and so does a change of what they're derived
      from. While a file is kept as accepted (held), the index keeps the `derived_from` it had, so
      the check that lets the file go derives it again too.
+     The regions keep a region's stored geometry while what it's resolved from is as it was
+     (task #832): each region's `facts.resolved_from` is `inputs::regions::RESOLUTION` (their
+     checks' version) and the digest of everything its resolution reads (its file, the pins, the
+     shapes and regions it names, the pass, the datasets; a region with water: every file of the
+     folder but the group files, `resolve::Outcome::keys`). A change that touches none of it (a
+     `_group.toml`'s name, another region's file) derives it from nothing: its geometry, and the
+     terrain keyed by it, stay. So `RESOLUTION` is bumped in the same commit as any change to the
+     resolution's code that changes what an unchanged region resolves to; that, and only that,
+     resolves every region again.
   6. Stores each file content-named under `sources/inputs/<unit>/` (uploaded and read back, docs/storage.md).
   7. Hands off the records: `sources/inputs/<unit>/@index` (when it differs; the replaced index is
      touched so GC keeps it, §4.9), `@listed`, and `@held` (the held report, or none). `@` starts

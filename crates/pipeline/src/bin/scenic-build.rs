@@ -413,6 +413,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         anyhow::ensure!(done.failed.is_empty(), "{} files failed: run it again", done.failed.len());
         return Ok(());
     }
+    if step == "terrain-restore-check" {
+        return terrain_restore_check(&root, &args);
+    }
     if step == "p5-check" {
         return p5_check(&root, &args);
     }
@@ -2583,6 +2586,48 @@ fn epoch_of(t: &str) -> Option<i64> {
 /// z6 tiles; then the work the plan has (agent::build::tree_work), and its time by the z3 tiles' last
 /// runs (`--costs`: the coordinator's costs.json; at this Mac's pace, another Mac's time
 /// halved) and the packs made again (their size now).
+/// terrain-restore-check --old <term>[,<term>…] [--sample n]: the terrain targets recorded under
+/// those terms' inputs (their briefs' manifests) whose runs would sample the same under the
+/// records' inputs now (pipeline::agent::restore), counted, with a sample of each and why. Reads only.
+fn terrain_restore_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
+    use pipeline::agent::restore;
+    let now = pipeline::out::brief_now(root)?;
+    let sample: usize = opt(args, "--sample").and_then(|s| s.parse().ok()).unwrap_or(10);
+    let t0 = std::time::Instant::now();
+    let mut old = Vec::new();
+    for t in opt(args, "--old").context("--old <term>[,<term>…]")?.split(',') {
+        let b = root
+            .join(&format!("state/build/term/{t}/brief.json"))
+            .read()
+            .with_context(|| format!("term {t}'s brief"))?;
+        let b: pipeline::pool::records::Brief = serde_json::from_slice(&b)?;
+        eprintln!("terrain-restore-check: term {t}'s inputs ({:.0} s)", t0.elapsed().as_secs_f64());
+        old.push(restore::Gen::read(root, &format!("term {t}"), b.manifest)?);
+    }
+    eprintln!("terrain-restore-check: the inputs now, term {} ({:.0} s)", now.term, t0.elapsed().as_secs_f64());
+    let cur = restore::Gen::read(root, "now", now.manifest)?;
+    eprintln!("terrain-restore-check: comparing ({:.0} s)", t0.elapsed().as_secs_f64());
+    let v = restore::check(root, &now.keys, &old, &cur);
+    for l in restore::report(&v, sample) {
+        println!("{l}");
+    }
+    // (`--ask <prefix>`: each step's restores, for `scenic redo <step> --restore <prefix>.<step>.json`.)
+    if let Some(p) = opt(args, "--ask") {
+        for step in ["terrain-hi", "terrain-deep"] {
+            let r = restore::restores(&v, &now.keys, step);
+            let f = format!("{p}.{step}.json");
+            std::fs::write(&f, serde_json::to_vec_pretty(&r)?)?;
+            eprintln!("terrain-restore-check: {} {step} restores in {f}", r.len());
+        }
+    }
+    eprintln!(
+        "terrain-restore-check: {:.0} s, {} MB",
+        t0.elapsed().as_secs_f64(),
+        pipeline::sys::footprint().unwrap_or(0) / 1_000_000
+    );
+    Ok(())
+}
+
 fn p5_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
     use pipeline::agent::{build, rekey, tiles::TerrainTiles};
     match positional(args).first().map(String::as_str) {

@@ -142,6 +142,14 @@ impl TerrainTiles {
         n
     }
 
+    /// `load` without the packs: the water digests, the elevation datasets and the fine datasets
+    /// alone, what the terrain's keys read (agent::restore).
+    pub fn load_inputs(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
+        self.load_water(root, m);
+        self.load_elevation(root, m);
+        self.load_fine(root, m);
+    }
+
     /// Holds the declared elevation datasets of the accepted version `m` names, once the build reads
     /// them (one that can't be read now: the z6 tiles' keys wait, tried again with the next load).
     fn load_elevation(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {

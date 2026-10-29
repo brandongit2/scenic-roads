@@ -525,7 +525,7 @@ pub(crate) fn open_sea(water: &dyn WaterSource, z: u8, ts: &[(u32, u32)]) -> Res
 
 /// The sample points of tiles `ts` of zoom `z`: K × K a pixel, by tile, row (of samples) and
 /// column.
-fn points(z: u8, ts: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
+pub fn points(z: u8, ts: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
     let n = (1u64 << z) as f64;
     let side = 256 * K;
     let (mut lon, mut lat) = (Vec::with_capacity(ts.len() * side * side), Vec::with_capacity(ts.len() * side * side));

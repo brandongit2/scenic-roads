@@ -1019,7 +1019,7 @@ pub struct Deep<'a> {
 
 /// Whether z8 tile `t`'s base ends before `FIRST_Z - 1` somewhere (north of 67°): its deep levels
 /// coarser than `FIRST_Z` go in its z6 tile's hi pack (`hi_levels`).
-fn short(t: (u32, u32)) -> bool {
+pub fn short(t: (u32, u32)) -> bool {
     let rows = 1u32 << (12 - SUB_Z);
     [t.1 * rows, (t.1 + 1) * rows - 1]
         .iter()
@@ -1099,7 +1099,7 @@ pub fn targets_in(sets: &[FineSet], cov: &crate::coverage::Coverage, t: (u32, u3
 
 /// The base tiles under z10 tile `t` (each place's finest base zoom) a fine dataset meeting its z8
 /// tile is finer than, with the zoom it reaches there (`make`'s).
-fn zooms(sets: &[FineSet], t: (u32, u32)) -> Vec<((u8, u32, u32), u8)> {
+pub fn zooms(sets: &[FineSet], t: (u32, u32)) -> Vec<((u8, u32, u32), u8)> {
     let s = (t.0 >> (PACK_Z - SUB_Z), t.1 >> (PACK_Z - SUB_Z));
     let b = crate::stage::tile_box_grown(SUB_Z, s.0, s.1, 0.0);
     let here = meeting(sets, b, poleward(b));
@@ -1449,7 +1449,7 @@ fn boxes(ts: impl Iterator<Item = (u8, u32, u32)>) -> [f64; 4] {
 }
 
 /// A base tile's samples: the points of `tiles` (each 256 × 256 pixel centres) of zoom `z`.
-fn points(z: u8, tiles: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
+pub fn points(z: u8, tiles: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
     let (mut lon, mut lat) = (Vec::with_capacity(tiles.len() << 16), Vec::with_capacity(tiles.len() << 16));
     for &(x, y) in tiles {
         for j in 0..256 {
@@ -1466,6 +1466,12 @@ fn points(z: u8, tiles: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
 /// Whether base tile `b`'s datasets have data in it at all: a grid of it (`PRESENCE`), as they're
 /// read for the roads (`presence`).
 fn has_data(presence: &Sampler, b: (u8, u32, u32)) -> Result<bool> {
+    let (lon, lat) = presence_points(b);
+    Ok(presence.sample(&lon, &lat, &|_| {})?.elev.iter().any(|v| v.is_finite()))
+}
+
+/// The points `has_data` samples of base tile `b`: a `PRESENCE` × `PRESENCE` grid of it.
+pub fn presence_points(b: (u8, u32, u32)) -> (Vec<f64>, Vec<f64>) {
     let (zb, bx, by) = b;
     let n = PRESENCE as f64;
     let nn = (1u64 << zb) as f64;
@@ -1478,7 +1484,7 @@ fn has_data(presence: &Sampler, b: (u8, u32, u32)) -> Result<bool> {
             lat.push((std::f64::consts::PI * (1.0 - 2.0 * fy)).dsinh().datan().to_degrees());
         }
     }
-    Ok(presence.sample(&lon, &lat, &|_| {})?.elev.iter().any(|v| v.is_finite()))
+    (lon, lat)
 }
 
 /// The samplers of a target's deep tiles: `ashore`, the fine datasets' plan; `afloat`, it less the

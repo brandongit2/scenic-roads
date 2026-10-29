@@ -210,11 +210,15 @@ pub enum Cmd {
         /// The step ("terrain-hi")
         step: String,
         /// Its targets ("6/18/22")
-        #[arg(required = true)]
+        #[arg(required_unless_present = "restore")]
         targets: Vec<String>,
         /// Ask the lead to clear them (without: says what it would clear, changing nothing)
         #[arg(long)]
         run: bool,
+        /// Restore instead (task #832): the file `scenic-build terrain-restore-check --ask` wrote,
+        /// each target recorded under its key now while its record is still the one checked
+        #[arg(long, value_name = "FILE", conflicts_with = "targets")]
+        restore: Option<PathBuf>,
         #[command(flatten)]
         root: Root,
     },

@@ -108,6 +108,7 @@ const STEPS: &[Step] = &[
     s("store-fetch", "<id> --index <file.geojson>", "every file and fill mask of a dataset's tile index its store (sources/fetched/<id>/) lacks, as published; restartable", &[], &["--index"], 1),
     s("pyenv", "[--dem dir]", "the Python environment of dem/'s lock file (beside the app's versions, shared by those with the same lock), made if it's missing; its folder printed", &[], &["--dem"], 0),
     s("geoid-offsets", "--sources <dir> --from <reference> --at <lon,lat>[;…] [--store <dir>]", "the offsets the elevation step adds to heights in a reference to bring them to EGM2008, by the geoid declarations in a folder. Reads only", &[], &["--sources", "--from", "--at", "--store"], 0),
+    s("terrain-restore-check", "--old <term>[,<term>…] [--sample n] [--ask prefix]", "the terrain-hi and terrain-deep targets recorded under an older term's inputs whose runs would sample the same now (agent::restore): how many could be restored, and why the rest stay queued. Reads only (--ask: the restores written to <prefix>.<step>.json, for scenic redo --restore)", &[], &["--old", "--sample", "--ask"], 0),
     s("p5-check", "trees [--pass d] [--costs f]", "what switching tree cover to z6 tiles and assemblies does now. Reads only", &[], &["--pass", "--costs"], 1),
 ];
 

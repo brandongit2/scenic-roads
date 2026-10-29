@@ -326,9 +326,20 @@ impl Keys {
             return;
         }
         if step == super::redo::STEP {
-            for (t, _) in done {
-                if let Some((m, at)) = t.split_once(' ').and_then(|(s, at)| Some((self.per_target(s)?, at))) {
-                    m.remove(at);
+            // ("<step> <target>": a redo, its key forgotten; "<step> <target> <from>" with a key: a
+            // restore, crate::agent::restore, recorded under it while its record is still `from`.)
+            for (t, k) in done {
+                let mut w = t.split(' ');
+                let (Some(s), Some(at), from) = (w.next(), w.next(), w.next()) else { continue };
+                let Some(m) = self.per_target(s) else { continue };
+                match from {
+                    None => {
+                        m.remove(at);
+                    }
+                    Some(f) if !k.is_empty() && m.get(at).map(String::as_str) == Some(f) => {
+                        m.insert(at.to_string(), k.clone());
+                    }
+                    Some(_) => {}
                 }
             }
             return;
@@ -367,7 +378,7 @@ pub(crate) fn coverage_all(cov: &Coverage) -> String {
     v.join(",")
 }
 
-pub(crate) fn grown_e7(z: u8, x: u32, y: u32, km: f64) -> [i32; 4] {
+pub fn grown_e7(z: u8, x: u32, y: u32, km: f64) -> [i32; 4] {
     let b = crate::stage::tile_box_grown(z, x, y, km);
     let e7 = |v: f64| (v * 1e7).round() as i32;
     [e7(b[0]), e7(b[1]), e7(b[2]), e7(b[3])]
@@ -1429,7 +1440,11 @@ pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles
 }
 
 /// `terrain_slope_targets`, worked out.
-fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> TerrainTargets {
+pub fn terrain_slope_targets_made(
+    cov: &Coverage,
+    m: &BTreeMap<String, String>,
+    tiles: &TerrainTiles,
+) -> TerrainTargets {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     // (The water's source: the latest pass's basemap, its digests' file.)
     let pin = crate::terrain_pack::water_source_pin(m);
@@ -6155,6 +6170,23 @@ pub(crate) mod tests {
         assert_eq!(serde_json::from_value::<Keys>(saved).unwrap(), k);
         assert_eq!(crate::agent::steps::current("slope"), "slope-hi");
         assert!(crate::agent::steps::row("terrain").is_some_and(|r| r.name == "terrain-hi"));
+    }
+
+    /// Task #832: a restore's done record ("<step> <target> <from>" with its key) records the target
+    /// under the key while its record is still `from`; one built since keeps its own.
+    #[test]
+    fn a_restore_records_its_key_only_over_the_one_checked() {
+        let mut done = Keys::default();
+        done.record("terrain-hi", &[("6/1/1".into(), "aaaa".into()), ("6/1/2".into(), "bbbb".into())]);
+        let r =
+            |t: &str, from: &str, to: &str| (crate::agent::redo::restore_target("terrain-hi", t, from), to.to_string());
+        done.record(
+            crate::agent::redo::STEP,
+            &[r("6/1/1", "aaaa", "cccc"), r("6/1/2", "xxxx", "dddd"), r("6/1/3", "aaaa", "eeee")],
+        );
+        assert_eq!(done.recorded("terrain-hi", "6/1/1"), Some("cccc"));
+        assert_eq!(done.recorded("terrain-hi", "6/1/2"), Some("bbbb"), "recorded otherwise since: kept");
+        assert_eq!(done.recorded("terrain-hi", "6/1/3"), None, "no record: none made");
     }
 
     /// Task #780: a redo (`scenic redo`, crate::agent::redo) forgets one target's key, so the plan
