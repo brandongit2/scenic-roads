@@ -1,10 +1,10 @@
-import { GROUPS, RAIL0, RAIL_GROUPS } from '../config';
+import { CLASS_LABELS, GROUPS, RAIL0, RAIL_GROUPS } from '../config';
 import { RAIL_GROUP_COLOURS } from '../rail';
 import { FERRY_GROUPS, FERRY_GROUP_COLOURS } from '../ferry';
 import { HERITAGE_GROUPS, HERITAGE_TIERS, POI_STYLE } from '../basemap';
 import { Dist, type ViewStats } from '../roads/stats';
 import { STOP_FILTERS, axisPos, filtersOf, type StopFilter } from '../stopfilters';
-import { DEFAULT_DENSITY, DENSITY_KINDS, FOG_RANGE, LABEL_KINDS, LINE_KINDS, OVERLAYS, PERSP_RANGE, SPACING_RANGE, STOP_SIZE_RANGE, TIES_RANGE, WEIGHT_RANGE, defaults, type AppState, type RailState, type ContourLook, type FogLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
+import { DEFAULT_DENSITY, DENSITY_KINDS, FOG_RANGE, LABEL_KINDS, LINE_KINDS, OVERLAYS, PERSP_RANGE, ROAD_LOOK_RANGE, SPACING_RANGE, STOP_SIZE_RANGE, TIES_RANGE, WEIGHT_RANGE, defaults, type AppState, type RailState, type RoadLook, type ContourLook, type FogLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
 import { TINT_PALETTES, TINT_VARS, contourInterval } from '../terrain';
 import * as prefs from '../prefs';
 import type { LabelLook } from '../labellook';
@@ -100,6 +100,9 @@ export class LayersCard {
   private glow: HTMLInputElement;
   private boundaryBoxes: HTMLInputElement[] = [];
   private occlude: HTMLInputElement;
+  private widthGrid: WidthGrid;
+  private bridgeCasing: HTMLInputElement;
+  private dashUnpaved: HTMLInputElement;
   private t: {
     on: HTMLInputElement; hs: HTMLInputElement; method: HTMLSelectElement;
     tint: HTMLInputElement; contours: HTMLInputElement; sky: HTMLInputElement;
@@ -489,8 +492,39 @@ export class LayersCard {
         get: () => S().roadPersp.fade, set: (fade) => P({ fade }), fmt: pct,
       }),
     ];
-    // The width table, editable (store.set({}): the listeners redraw the map with it).
-    const widthGrid = new WidthGrid(() => this.store.set({}));
+    // How the roads are drawn under every colour option (AppState.roadLook): the width table, the
+    // zoom each class shows from, casings, tunnels, bridges, unpaved dashes.
+    const RL = () => S().roadLook;
+    const setRL = (patch: Partial<RoadLook>) => this.store.set({ roadLook: { ...RL(), ...patch } });
+    this.widthGrid = new WidthGrid(() => RL().widths, (widths) => setRL({ widths }));
+    const LR = ROAD_LOOK_RANGE, dl = defaults.roadLook;
+    const casingRows = [
+      sl({
+        label: 'Casing from', min: LR.casingFrom[0], max: LR.casingFrom[1], step: 0.25, reset: dl.casingFrom,
+        title: 'The zoom roads get their casing (the dark edge around them; under Map, its colour and the classes cased are the Map settings’)',
+        get: () => RL().casingFrom, set: (casingFrom) => setRL({ casingFrom }), fmt: (z) => `z${+z.toFixed(2)}`,
+      }),
+      sl({
+        label: 'Casing width', min: LR.casingWidth[0], max: LR.casingWidth[1], step: 0.05, reset: dl.casingWidth, cls: 'sub',
+        title: 'Width of the casing, × the style’s (0: none)', get: () => RL().casingWidth, set: (casingWidth) => setRL({ casingWidth }),
+        fmt: (v) => (v ? `${v.toFixed(2)}×` : 'none'),
+      }),
+      sl({
+        label: 'Tunnels', min: LR.tunnel[0], max: LR.tunnel[1], step: 0.05, reset: dl.tunnel,
+        title: 'Colour strength of roads in tunnels (lower: fainter, toward the background)', get: () => RL().tunnel, set: (tunnel) => setRL({ tunnel }), fmt: pct,
+      }),
+    ];
+    this.bridgeCasing = cb((bridgeCasing) => setRL({ bridgeCasing }));
+    this.dashUnpaved = cb((dashUnpaved) => setRL({ dashUnpaved }));
+    // The zoom each class shows from (0: every zoom), in a fold of its own.
+    const minZoomBox = h('details', { class: 'wtab-box' }, h('summary', { title: 'The zoom each road class shows from, zooming in (whatever its colour); below it, hidden' }, 'Shown from zoom'));
+    for (const c of [8, 7, 6, 5, 4, 3, 2, 1, 0, 9]) {
+      minZoomBox.append(sl({
+        label: CLASS_LABELS[c], min: LR.minZoom[0], max: LR.minZoom[1], step: 0.5, reset: 0, cls: 'sub',
+        title: `${CLASS_LABELS[c]}: shown from this zoom`, get: () => RL().minZoom[c],
+        set: (z) => setRL({ minZoom: RL().minZoom.map((x, i) => (i === c ? z : x)) }), fmt: (z) => (z ? `z${z}` : 'all'),
+      }));
+    }
     // The outline of every dot and icon: rail stops, ferry terminals, stops & sights, heritage sites.
     this.pointOutline = h('input', { type: 'color', title: 'Colour of the outline of the rail stops, ferry terminals, stops & sights and heritage sites' });
     this.pointOutline.addEventListener('input', () => this.store.set({ pointOutline: this.pointOutline.value }));
@@ -721,7 +755,11 @@ export class LayersCard {
         roadOpRow,
         lwOf.roads,
         ...perspRows,
-        widthGrid.el,
+        this.widthGrid.el,
+        minZoomBox,
+        ...casingRows,
+        tog(this.bridgeCasing, 'Case bridges', '', 'tog', 'Bridges get a casing whatever their class (zoomed in, from Casing from)'),
+        tog(this.dashUnpaved, 'Dash unpaved roads', '', 'tog', 'Unpaved roads drawn dashed (off: solid, as paved ones)'),
         tog(this.glow, h('span', { class: 'lbl' }, h('span', { class: 'dot', style: 'background:#f5bd4d' }), 'Scenic-route glow'), '', 'tog', 'Gold halo on designated scenic byways and routes touristiques'),
         tog(this.occlude, 'Hide roads behind terrain', '', 'tog',
           'With 3D terrain. Off: roads behind hills are drawn faint, as if seen through them. On: they are hidden.'),
@@ -959,6 +997,9 @@ export class LayersCard {
     this.tollBox.free.disabled = this.tollBox.toll.disabled = !s.layers.roads;
     this.roadLen.sync();
     for (const x of this.sliders) x.sync();
+    this.widthGrid.sync();
+    this.bridgeCasing.checked = s.roadLook.bridgeCasing;
+    this.dashUnpaved.checked = s.roadLook.dashUnpaved;
     this.ferryDashed.checked = s.ferry.dashed;
     this.ferryDashed.disabled = !s.ferry.on;
     this.glow.checked = s.routeGlow;

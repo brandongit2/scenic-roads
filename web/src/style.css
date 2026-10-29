@@ -536,6 +536,19 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #colour .scheme-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin-top: 6px; font-size: 10.5px; color: var(--muted); }
 #colour .scheme-legend .lg { display: flex; align-items: center; gap: 5px; min-width: 0; }
 #colour .scheme-legend .lg i { flex: none; width: 14px; height: 4px; border-radius: 2px; }
+/* The Map look's settings (ui/roadmap.ts): colour by, category colours, per class fill, opacity, casing. */
+#colour .roadmap { display: grid; gap: 4px; }
+#colour .roadmap select { background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 5px; padding: 1px 4px; font-size: 11px; color: var(--text); min-width: 0; }
+#colour .roadmap input[type='color'] { width: 100%; height: 16px; min-width: 0; border: 1px solid var(--line-strong); border-radius: 4px; background: none; padding: 0; cursor: pointer; }
+#colour .roadmap input[type='range'] { width: 100%; min-width: 0; margin: 0; }
+#colour .rm-tab { display: grid; grid-template-columns: minmax(0, 1fr) 30px minmax(0, 1.1fr) 22px 30px 14px; gap: 2px 5px; align-items: center; font-size: 10.5px; margin-top: 2px; }
+#colour .rm-tab label { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#colour .rm-tab output { color: var(--faint); font: 9.5px ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; }
+#colour .rm-tab input[type='checkbox'] { margin: 0; }
+#colour .rm-h { color: var(--faint); font-size: 9.5px; }
+#colour .rm-cats { display: grid; gap: 2px; }
+#colour .rm-cat { display: grid; grid-template-columns: 30px minmax(0, 1fr) 70px; gap: 6px; align-items: center; font-size: 10.5px; }
+#colour .rm-cat span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Passenger rail (top-left panel). */
 #colour .rail-card { display: grid; gap: 6px; }

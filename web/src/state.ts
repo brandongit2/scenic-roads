@@ -1,6 +1,6 @@
-import { GROUPS, NGROUP, NRAIL } from './config';
+import { CASING_Z, DEFAULT_WIDTHS, GROUPS, NCLASS, NGROUP, NRAIL, NROAD, WIDTH_RANGE, WIDTH_Z } from './config';
 import { RAIL_METRICS, RNCOMP, railMetricDef, type RailColour, type RailMetric } from './rail';
-import { MAP_SCHEMES } from './mapschemes';
+import { CAT_KINDS, MAP_KINDS, MAP_SCHEMES, presetLook, type RoadMapLook } from './mapschemes';
 import { FERRY_METRICS, NFERRY, ferryMetricDef, type FerryColour, type FerryMetric } from './ferry';
 import { baseKey } from './palettes';
 import { STOP_FILTERS, filtersFromHash, filtersToHash, type StopFilter } from './stopfilters';
@@ -423,7 +423,7 @@ const RAIL_COLOURS: RailColour[] = ['line', 'group', 'metric', 'single'];
 /** The ties' and stop dots' settings' ranges (the rail card's sliders). */
 export const TIES_RANGE: [number, number] = [1, 5];
 export const STOP_SIZE_RANGE: [number, number] = [0.25, 4];
-const clampTo = (v: number, [lo, hi]: [number, number]) => Math.min(hi, Math.max(lo, v));
+const clampTo = (v: number, [lo, hi]: readonly [number, number]) => Math.min(hi, Math.max(lo, v));
 function clampRailLook(r: RailState): RailState {
   return {
     ...r, ties: clampTo(r.ties, TIES_RANGE), stopSize: clampTo(r.stopSize, STOP_SIZE_RANGE), stopContrast: clampTo(r.stopContrast, [0, 1]),
@@ -507,8 +507,10 @@ export interface AppState {
   roadLen: [number, number];
   /** The road-length filter applies (off: the limits are kept but ignored). */
   roadLenOn: boolean;
-  /** Street-map colouring (mapschemes.ts), for the "Map" display type. */
-  mapScheme: string;
+  /** How the roads look under the Map colour option (mapschemes.ts; its presets set it). */
+  roadMap: RoadMapLook;
+  /** How the roads are drawn under every colour option (Layers → Roads → Style). */
+  roadLook: RoadLook;
   rail: RailState;
   ferry: FerryState;
   /** Tree cover layer (Layers → Trees). */
@@ -614,6 +616,48 @@ export const DEFAULT_PERSP: RoadPersp = { strength: 1, cap: 3, fade: 0.3 };
 export const PERSP_RANGE = { strength: [0, 1], cap: [1, 8], fade: [0, 1] } as const;
 const clampPersp = (p: RoadPersp): RoadPersp => Object.fromEntries((['strength', 'cap', 'fade'] as const)
   .map((k) => [k, Math.min(PERSP_RANGE[k][1], Math.max(PERSP_RANGE[k][0], p[k]))])) as RoadPersp;
+/** How roads are drawn whatever colours them (AppState.roadLook; roads/layer.ts), besides opacity,
+ * line weight and perspective: per road class (service … motorway, ferry) the zoom it shows from
+ * (0: every zoom); the zoom casings start at and their width (× the style's); tunnels' colour
+ * strength; bridges always cased; unpaved roads dashed; the width table (config.ts WIDTHS: CSS px
+ * at weight 1 at the zooms WIDTH_Z, per class, rail lines' too). */
+export interface RoadLook {
+  minZoom: number[];
+  casingFrom: number;
+  casingWidth: number;
+  tunnel: number;
+  bridgeCasing: boolean;
+  dashUnpaved: boolean;
+  widths: number[][];
+}
+export const ROAD_LOOK_RANGE = { minZoom: [0, 16], casingFrom: [4, 18], casingWidth: [0, 4], tunnel: [0.05, 1] } as const;
+/** A road look with every value in range (a malformed width table: the default one). */
+export function cleanRoadLook(l: RoadLook): RoadLook {
+  const R = ROAD_LOOK_RANGE;
+  const okW = Array.isArray(l.widths) && l.widths.length === NCLASS && l.widths.every((r) => Array.isArray(r) && r.length === WIDTH_Z.length && r.every((v) => typeof v === 'number' && Number.isFinite(v)));
+  return {
+    minZoom: l.minZoom.map((z) => clampTo(z, R.minZoom)),
+    casingFrom: clampTo(l.casingFrom, R.casingFrom),
+    casingWidth: clampTo(l.casingWidth, R.casingWidth),
+    tunnel: clampTo(l.tunnel, R.tunnel),
+    bridgeCasing: l.bridgeCasing,
+    dashUnpaved: l.dashUnpaved,
+    widths: okW ? l.widths.map((r) => r.map((v) => clampTo(v, WIDTH_RANGE))) : DEFAULT_WIDTHS.map((r) => [...r]),
+  };
+}
+const HEX8 = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i;
+/** A Map look with every colour valid (else the default look's there). */
+function cleanMapLook(l: RoadMapLook): RoadMapLook {
+  const d = defaults.roadMap;
+  const col = (v: string[], dv: string[], re: RegExp) => dv.map((x, i) => (typeof v[i] === 'string' && re.test(v[i]) ? v[i].toLowerCase() : x));
+  return {
+    kind: MAP_KINDS.some(([k]) => k === l.kind) ? l.kind : d.kind,
+    fill: col(l.fill, d.fill, HEX8),
+    casing: col(l.casing, d.casing, HEX),
+    cased: d.cased.map((x, i) => (typeof l.cased[i] === 'boolean' ? l.cased[i] : x)),
+    cats: Object.fromEntries(CAT_KINDS.map((k) => [k, col(l.cats?.[k] ?? [], d.cats[k], HEX8)])) as RoadMapLook['cats'],
+  };
+}
 /** Road widths at weight 1 (roads/layer.ts WIDTHS × this). */
 export const ROAD_WEIGHT = 0.5;
 
@@ -639,7 +683,11 @@ export const defaults: AppState = {
   unnamed: GROUPS.map((g) => g.key !== 'service'),
   roadLen: [0.5, 0],
   roadLenOn: true,
-  mapScheme: 'blueprint',
+  roadMap: presetLook(MAP_SCHEMES.find((m) => m.key === 'blueprint')!),
+  roadLook: {
+    minZoom: new Array(NROAD).fill(0), casingFrom: CASING_Z[0], casingWidth: 1, tunnel: 0.45, bridgeCasing: true, dashUnpaved: true,
+    widths: DEFAULT_WIDTHS.map((r) => [...r]),
+  },
   rail: {
     on: true, groups: new Array(NRAIL).fill(true), colour: 'metric', metric: 'rscore', looks: {},
     ...scaleOfLook({ ...freshLook([0, 100], 0.6), palette: 'rocket', fit: [70, 99.8] }),
@@ -898,7 +946,12 @@ export function linkFields(s: AppState, buildings: boolean): Map<string, string>
   p.set('un', s.unnamed.map((g) => (g ? 1 : 0)).join(''));
   p.set('rl', s.roadLen.map((v) => (v ? +v.toFixed(3) : '')).join(','));
   p.set('rlo', s.roadLenOn ? '1' : '0');
-  p.set('ms', s.mapScheme);
+  const hx = (v: string[]) => v.map((c) => c.slice(1)).join('.');
+  const rm = (l: RoadMapLook) => [l.kind, hx(l.fill), hx(l.casing), l.cased.map((x) => (x ? 1 : 0)).join(''), ...CAT_KINDS.map((k) => hx(l.cats[k]))].join(',');
+  p.set('rm', rm(s.roadMap));
+  const rx = (l: RoadLook) => [l.minZoom.map((z) => +z.toFixed(1)).join('_'), +l.casingFrom.toFixed(2), +l.casingWidth.toFixed(2), +l.tunnel.toFixed(2), l.bridgeCasing ? 1 : 0, l.dashUnpaved ? 1 : 0].join(',');
+  p.set('rx', rx(s.roadLook));
+  p.set('wd', s.roadLook.widths.map((r) => r.map((v) => +v.toFixed(3)).join('_')).join(','));
   const r = s.rail;
   // (Fields 8–10, empty: line weight, ties and casing in older links.)
   const rs = [
@@ -1088,8 +1141,26 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
   const rl = p.get('rl')?.split(',').map((v) => Math.max(0, Number(v) || 0));
   if (rl && rl.length === 2) s.roadLen = [rl[0], rl[1]];
   if (p.has('rlo')) s.roadLenOn = p.get('rlo') !== '0';
-  const ms = p.get('ms');
-  if (ms && MAP_SCHEMES.some((m) => m.key === ms)) s.mapScheme = ms;
+  // The Map look (older links: the preset it was, in ms=).
+  const ms = MAP_SCHEMES.find((m) => m.key === p.get('ms'));
+  if (ms && !p.has('rm')) s.roadMap = presetLook(ms, s.roadMap);
+  const rmv = p.get('rm')?.split(',');
+  if (rmv && rmv.length === 4 + CAT_KINDS.length) {
+    const cols = (v: string) => v.split('.').map((c) => `#${c}`);
+    s.roadMap = cleanMapLook({
+      kind: rmv[0] as RoadMapLook['kind'], fill: cols(rmv[1]), casing: cols(rmv[2]), cased: [...rmv[3]].map((c) => c === '1'),
+      cats: Object.fromEntries(CAT_KINDS.map((k, i) => [k, cols(rmv[4 + i])])) as RoadMapLook['cats'],
+    });
+  }
+  const rxv = p.get('rx')?.split(',');
+  if (rxv && rxv.length === 6) {
+    const mz = rxv[0].split('_').map(Number), n = rxv.slice(1, 4).map(Number);
+    if (mz.length === NROAD && mz.every(Number.isFinite) && n.every(Number.isFinite)) {
+      s.roadLook = cleanRoadLook({ ...s.roadLook, minZoom: mz, casingFrom: n[0], casingWidth: n[1], tunnel: n[2], bridgeCasing: rxv[4] === '1', dashUnpaved: rxv[5] === '1' });
+    }
+  }
+  const wd = p.get('wd')?.split(',').map((r) => r.split('_').map(Number));
+  if (wd && wd.length === NCLASS && wd.every((r) => r.length === WIDTH_Z.length && r.every(Number.isFinite))) s.roadLook = cleanRoadLook({ ...s.roadLook, widths: wd });
   const rsv = p.get('rs')?.split(',');
   if (rsv && rsv.length >= 13) {
     const rs = rsv;
@@ -1492,7 +1563,11 @@ export function fromSaved(o: unknown): AppState {
     const shared = isScenic(s.mode) ? s.fit : s.looks.scenic?.fit ?? defaults.fit;
     s.scenicFits = perMetric(others, () => shared, defaults.fit);
   }
-  if (!MAP_SCHEMES.some((m) => m.key === s.mapScheme)) s.mapScheme = defaults.mapScheme;
+  // Saved before the Map look: the preset it was.
+  const oldMs = MAP_SCHEMES.find((m) => m.key === src.mapScheme);
+  if (oldMs && !src.roadMap) s.roadMap = presetLook(oldMs, s.roadMap);
+  s.roadMap = cleanMapLook(s.roadMap);
+  s.roadLook = cleanRoadLook(s.roadLook);
   const lt = s.landmarks.top as unknown;
   s.landmarks.top = Array.isArray(lt) && lt.length === 2 && lt.every((x) => Number.isFinite(x)) ? topRanks(lt[0], lt[1]) : defaults.landmarks.top;
   if (!RAIL_COLOURS.includes(s.rail.colour)) s.rail.colour = defaults.rail.colour;

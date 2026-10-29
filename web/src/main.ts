@@ -15,8 +15,8 @@ import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, setRegisterCredits, s
 import { loadDetail, osmPath, peekDetail, refKey } from './details';
 import { paletteRgb } from './palettes';
 import { RoadLayer, type HoverInfo, type RoadStyle, type SchemeUniforms } from './roads/layer';
-import { BG, CASING_CLASSES_MASK, DIM_GREY, FADES, FADE_Z, RAIL0, RAIL_GROUPS, interp } from './config';
-import { mapScheme, rgb, schemeUniforms } from './mapschemes';
+import { BG, CASING_CLASSES_MASK, DIM_GREY, FADES, FADE_Z, RAIL0, RAIL_GROUPS, interp, setWidths } from './config';
+import { MAP_SCHEMES, lookUniforms, presetLook, rgb, type RoadMapLook } from './mapschemes';
 import { RAIL_GROUP_COLOURS, railMetricDef, railMetricOf } from './rail';
 import type { FeatureSummary } from './overlays';
 import { RailCard } from './ui/rail';
@@ -37,7 +37,7 @@ import { addBuildings, applyBuildings, rgb01, buildingAt, heightColourFn, herita
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
-import { ROAD_WEIGHT, Store, classMask, defaults, labelShown, modeGroup, fromHash, fromProfile, fromSaved, profileIdOf, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Selection, type Stretch } from './state';
+import { ROAD_WEIGHT, Store, cleanRoadLook, classMask, defaults, labelShown, modeGroup, fromHash, fromProfile, fromSaved, profileIdOf, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Selection, type Stretch } from './state';
 import { applyLabelLooks, defaultLooks, labelLayerShown, labelSizeOf } from './labellook';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, setTerrainAreas, switchContours, TINT_VARS, tintColourAt, tintCss } from './terrain';
@@ -168,6 +168,12 @@ async function main() {
     history.replaceState(null, '', location.pathname + location.search + (rest ? `#${rest}` : ''));
   }
   const saved = fromSaved(prefs.load('state', null));
+  // Widths edited before they were a setting (kept in their own save): into the saved settings, once.
+  const oldWidths = prefs.load<number[][] | null>('roadWidths', null);
+  if (oldWidths) {
+    if (!(prefs.load<Record<string, unknown> | null>('state', null)?.roadLook)) saved.roadLook = cleanRoadLook({ ...saved.roadLook, widths: oldWidths });
+    prefs.save('roadWidths', null);
+  }
   // The profile in use: the link's (one it names that's gone: the default, said), else the last
   // session's. A link naming none (older links) carries its settings over the app's defaults.
   const listing = await profilesReady;
@@ -318,6 +324,7 @@ async function main() {
 
   // ---- road layer & range animation ----------------------------------------------
   const s0 = store.s;
+  setWidths(s0.roadLook.widths);
   const roads = new RoadLayer({
     freqFilter: { on: false, min: 0, max: 0, unknown: true },
     mode: s0.mode,
@@ -349,32 +356,33 @@ async function main() {
     railMask: 0,
     railWeights: [],
     casingMask: CASING_CLASSES_MASK,
+    ...roadLookStyle(s0),
     persp: { ...s0.roadPersp },
   });
   // The tiles' version in their URLs (cached for good): the catalogue's for the layer, else none. (Not
   // the build time in meta: it stayed when the tiles' way column changed from indices to OSM ids,
   // and a browser holding the older tiles under the same URLs would have kept them.)
   roads.setSource(version('roads.tiles'), meta.bounds);
-  // Street-map colours (Map display type), rebuilt when the scheme changes.
-  let schemeKey = '';
-  let schemeU: SchemeUniforms | null = null;
+  // Street-map colours (Map display type): the Map look's, rebuilt when it changes; its classes
+  // cased (the other display types: tertiary and up).
+  let lookOf: RoadMapLook | null = null;
+  let lookU: ReturnType<typeof lookUniforms> | null = null;
   const applyMapMode = (s: AppState) => {
     const st = roads.style;
     const on = s.mode === 'map';
-    if (on && schemeKey !== s.mapScheme) {
-      schemeKey = s.mapScheme;
-      schemeU = schemeUniforms(mapScheme(s.mapScheme));
+    if (on && lookOf !== s.roadMap) {
+      lookOf = s.roadMap;
+      lookU = lookUniforms(s.roadMap);
     }
     st.direct = on ? 1 : 0;
-    st.scheme = on ? schemeU : null;
-    // Street maps case every road when zoomed in.
-    st.casingMask = on ? 0x1ff : CASING_CLASSES_MASK;
+    st.scheme = on ? lookU : null;
+    st.casingMask = on && lookU ? lookU.casedMask : CASING_CLASSES_MASK;
   };
   applyMapMode(s0);
 
   // ---- passenger rail -------------------------------------------------------------
   const railScheme: SchemeUniforms = (() => {
-    const u = schemeUniforms(mapScheme('mono'));
+    const u = lookUniforms(presetLook(MAP_SCHEMES.find((m) => m.key === 'mono')!));
     RAIL_GROUP_COLOURS.forEach((c, k) => {
       u.classCol.set([...rgb(c), 1], (RAIL0 + k) * 4);
       u.classCas.set(rgb('#07090c'), (RAIL0 + k) * 3);
@@ -383,7 +391,7 @@ async function main() {
   })();
   const rails = new RoadLayer(
     // Drawn as railways (a thin line with cross-ties: the layer's rail pattern), cased when zoomed in.
-    { ...roads.style, classMask: 0x7c00, casingMask: 0x7c00, surfaceMask: 3, tollMask: 3, unnamedHide: 0, threshold: { on: false, dir: 'above', value: 0 }, routeGlow: false, lenMin: 0, lenMax: Infinity, equalize: false, opacity: 1 },
+    { ...roads.style, ...roadLookStyle(defaults), minZoom: [], classMask: 0x7c00, casingMask: 0x7c00, surfaceMask: 3, tollMask: 3, unnamedHide: 0, threshold: { on: false, dir: 'above', value: 0 }, routeGlow: false, lenMin: 0, lenMax: Infinity, equalize: false, opacity: 1 },
     {
       id: 'rails',
       rail: true,
@@ -2092,6 +2100,8 @@ async function main() {
     st.lowSpan = s.lowSpan;
     st.occlude = s.occlude;
     st.opacity = s.roadOpacity;
+    Object.assign(st, roadLookStyle(s));
+    setWidths(s.roadLook.widths);
     [st.lenMin, st.lenMax] = roadLenM(s);
     dots.setTerrain({ on: s.terrain.on, exaggeration: s.terrain.exaggeration, occlude: s.occlude });
     contours.set(contourStyle(s));
@@ -2443,6 +2453,13 @@ async function main() {
  * (easeTo, flyTo, fitBounds) even with centerClampedToGround off. The camera never follows the
  * terrain here: keep only the bookkeeping part (minimum elevation for clipping).
  */
+/** The road layer's share of the settings' road look (AppState.roadLook; the width table aside:
+ * config.ts setWidths). Rail keeps the defaults'. */
+function roadLookStyle(s: AppState): Pick<RoadStyle, 'minZoom' | 'casingFrom' | 'casingWidth' | 'tunnelFade' | 'bridgeCasing' | 'dashUnpaved'> {
+  const l = s.roadLook;
+  return { minZoom: [...l.minZoom], casingFrom: l.casingFrom, casingWidth: l.casingWidth, tunnelFade: l.tunnel, bridgeCasing: l.bridgeCasing, dashUnpaved: l.dashUnpaved };
+}
+
 function unlinkCameraFromTerrain(map: maplibregl.Map) {
   type Cam = { terrain?: { getMinTileElevationForLngLatZoom: (c: unknown, z: number) => number }; _updateElevation?: (k: number, tr: any) => void };
   const cam = (map as unknown as { _camera?: Cam })._camera;

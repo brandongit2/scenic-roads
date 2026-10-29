@@ -30,7 +30,7 @@ The map runs on each Mac at http://localhost:7311, installed by `tools/app/insta
 | Unblocked views | Share of directions not walled in within 300 m. |
 | Roadside trees, Forest cover, Open land, Built-up | Tree height and cover, fields, built-up land nearby. |
 | Roadside buildings | Share of frontage lined with buildings within 30–80 m. |
-| Map | Street-map schemes, signed route networks, or an attribute (speed, lanes, surface, toll). |
+| Map | A street map's look, set by presets (classic atlases, dark-map palettes, signed route networks, an attribute: speed, lanes, surface, toll) and then edited: colour by, per road class fill colour and opacity, casing colour, cased. |
 
 ## How the scenic metrics are computed
 

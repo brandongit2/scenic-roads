@@ -213,6 +213,10 @@ uniform vec3 u_cz, u_cv;    // casing width (px) at zoom stops (none below the f
 uniform vec4 u_gz, u_gv;    // halo width (px) at zoom stops
 uniform int u_casingPass;
 uniform int u_casingMask;
+uniform int u_bridgeCase;   // 1: bridges cased whatever their class
+uniform float u_minz[${NCLASS}];  // per class: the view zoom it shows from
+uniform float u_tunnelFade; // tunnels' colour strength
+uniform int u_dashUnpaved;  // 1: unpaved roads dashed
 uniform int u_classMask;
 uniform int u_surfaceMask;
 uniform int u_tollMask;     // roads: bit 0 toll-free shown, bit 1 toll
@@ -442,7 +446,7 @@ void main() {
   int toll = (a_gs0.z & 4u) != 0u ? 2 : 1;
   uint fl = uint(a_sb0.w * 255.0 + 0.5);
   bool route = u_glow > 0.0 && (fl & 1u) != 0u;
-  bool cased = u_casing > 0.0 && (((u_casingMask >> cls) & 1) == 1 || (style & 32u) != 0u);
+  bool cased = u_casing > 0.0 && (((u_casingMask >> cls) & 1) == 1 || (u_bridgeCase == 1 && (style & 32u) != 0u));
   bool unnamed = (a_gs0.z & 1u) != 0u;
   int li = int(a_line);
   uint ls = u_lsOn == 1 ? uint(texelFetch(u_ls, ivec2(li % 1024, li / 1024), 0).r * 255.0 + 0.5) : 0u;
@@ -450,7 +454,7 @@ void main() {
   float fqCode = u_rail == 1 ? floor(texelFetch(u_la, ivec2((li * 2) % 1024, (li * 2) / 1024), 0).z * 255.0 + 0.5) : 0.0;
   g_fq = fqCode > 0.5 ? pow(10.0, (fqCode - 1.0) / 254.0 * 4.0 - 1.0) : -1.0;
   bool fqOff = u_rail == 1 && u_fqOn == 1 && (fqCode < 0.5 ? u_fqUnk == 0 : (fqCode < u_fqLo || fqCode > u_fqHi));
-  if (railOff || fqOff || (ls & 2u) != 0u || (style & 128u) != 0u || ((u_classMask >> cls) & 1) == 0 || (u_surfaceMask & surf) == 0
+  if (railOff || fqOff || (ls & 2u) != 0u || (style & 128u) != 0u || ((u_classMask >> cls) & 1) == 0 || u_zoom < u_minz[cls] || (u_surfaceMask & surf) == 0
       || (u_rail == 0 && (u_tollMask & toll) == 0)
       || (unnamed && ((u_unnamedHide >> cls) & 1) == 1) || (casing && !route && !cased)) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
@@ -578,10 +582,10 @@ void main() {
   }
   if (u_rail == 1 && u_mode == 32 && g_fq < 0.0) rgb = vec4(0.36, 0.40, 0.45, 2.0);
   float fade = fadeAt(cls, ze);
-  if ((style & 64u) != 0u) fade *= 0.45; // tunnels
+  if ((style & 64u) != 0u) fade *= u_tunnelFade;
   float phase = dot ? 0.0 : a_d0 * u_tile.x * k;
 #ifdef SPRITE
-  float pattern = casing ? 0.0 : u_pattern == 1 ? 3.0 : cls == 9 ? 2.0 : (style & 16u) != 0u ? 1.0 : 0.0;
+  float pattern = casing ? 0.0 : u_pattern == 1 ? 3.0 : cls == 9 ? 2.0 : (style & 16u) != 0u && u_dashUnpaved == 1 ? 1.0 : 0.0;
   v_geom = vec4(halfw, dot ? cellH : len, phase, pattern + (thin ? 4.0 : 0.0) + (dot ? 8.0 : 0.0) + (pattern > 2.5 && tieH == 0.0 ? 16.0 : 0.0));
   v_lin = dot ? area / max(4.0 * cellH * cellH, 1e-6) : lin;
   // (Coverage is the fragment shader's, from v_lin.)
@@ -598,7 +602,7 @@ void main() {
 #else
   v_cov = dot ? clamp(area / (w * w), 0.0, 1.0) : cov;
 #endif
-  v_style = style | (u_rail == 1 && tieH == 0.0 ? 256u : 0u); // 256: a railway without ties
+  v_style = (u_dashUnpaved == 1 ? style : style & ~16u) | (u_rail == 1 && tieH == 0.0 ? 256u : 0u); // 256: a railway without ties; 16 (unpaved): dashed
   v_hover = hov ? 1.0 : 0.0;
   v_route = route ? 1.0 : 0.0;
 #endif
@@ -950,7 +954,7 @@ export interface RoadStyle {
   /** Direct colours instead of the palette: 0 off · 1 street-map scheme · 2 rail line colour
    * (else by group) · 3 by class / group · 4 single colour. */
   direct: number;
-  /** Colours for direct modes (mapschemes.ts schemeUniforms; rail: group colours in the rail classes). */
+  /** Colours for direct modes (mapschemes.ts lookUniforms; rail: group colours in the rail classes). */
   scheme: SchemeUniforms | null;
   single: [number, number, number];
   /** Shader mode id override (rail metrics), else from `mode`. */
@@ -962,10 +966,29 @@ export interface RoadStyle {
   freqFilter: { on: boolean; min: number; max: number; unknown: boolean };
   /** Classes (bits) that get a casing when zoomed in. */
   casingMask: number;
+  /** Bridges cased whatever their class. */
+  bridgeCasing: boolean;
+  /** Per class: the view zoom it shows from (0: every zoom; rail classes beyond the list: every zoom). */
+  minZoom: number[];
+  /** Casings: the zoom they start at (config.ts CASING_Z, shifted) and their width (× CASING_W). */
+  casingFrom: number;
+  casingWidth: number;
+  /** Tunnels' colour strength (mixed toward the background). */
+  tunnelFade: number;
+  /** Unpaved roads dashed. */
+  dashUnpaved: boolean;
   /** Widths with distance in tilted views (state.ts RoadPersp); absent: the style curve's alone. */
   persp?: { strength: number; cap: number; fade: number };
 }
 
+
+/** The casing's zoom stops (CASING_Z moved to start at the style's casingFrom). */
+const casingZ = (s: RoadStyle) => CASING_Z.map((z) => z + s.casingFrom - CASING_Z[0]);
+/** The casing's width at zoom z (CSS px, the shader's casingAt): none below its first stop. */
+function casingPx(s: RoadStyle, z: number): number {
+  const zs = casingZ(s);
+  return z < zs[0] ? 0 : interp(zs, CASING_W, z) * s.casingWidth;
+}
 
 export interface SchemeUniforms {
   classCol: Float32Array;
@@ -1135,7 +1158,7 @@ export class RoadLayer implements CustomLayerInterface {
       const draw = (sprite: boolean, accum = false) => {
         const def = (sprite ? '#define SPRITE\n' : '') + (accum ? '#define ACCUM\n' : '');
         return linkLater(map, gl, head + def + VS_BODY, `#version 300 es\n${accum ? '#define ACCUM\n' : ''}${sprite ? FS_SPRITE : FS_BODY}`, uniforms([
-          'u_extScale', 'u_viewport', 'u_tile', 'u_cell', 'u_zoom', 'u_persp', 'u_wz', 'u_wv', 'u_fz', 'u_fv', 'u_cz', 'u_cv', 'u_gz', 'u_gv', 'u_casing', 'u_glow', 'u_casingPass', 'u_casingMask',
+          'u_extScale', 'u_viewport', 'u_tile', 'u_cell', 'u_zoom', 'u_persp', 'u_wz', 'u_wv', 'u_fz', 'u_fv', 'u_cz', 'u_cv', 'u_gz', 'u_gv', 'u_casing', 'u_glow', 'u_casingPass', 'u_casingMask', 'u_bridgeCase', 'u_minz', 'u_tunnelFade', 'u_dashUnpaved',
           'u_classMask', 'u_surfaceMask', 'u_tollMask', 'u_unnamedHide', 'u_lsOn', 'u_hlOn', 'u_hovSel', 'u_thinSel', 'u_ls', 'u_dpr', 'u_mode', 'u_w', 'u_wsum', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol', 'u_ztolB',
           'u_lut', 'u_cdf', 'u_eq', 'u_palRow', 'u_range', 'u_bg', 'u_dim', 'u_thr', 'u_lowFade', 'u_lowSpan',
           'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane',
@@ -1868,7 +1891,7 @@ export class RoadLayer implements CustomLayerInterface {
     // largest over the zooms from the far edge to the near (sampled, 1/8 zoom apart).
     let edge = 0;
     for (let z = Math.min(farZoom, nearZoom); z <= nearZoom + 1e-9; z += 0.125) {
-      const cw = z < CASING_Z[0] ? 0 : interp(CASING_Z, CASING_W, z) * dpr, gw = s.routeGlow ? interp(GLOW_Z, GLOW_W, z) * glowK : 0;
+      const cw = casingPx(s, z) * dpr, gw = s.routeGlow ? interp(GLOW_Z, GLOW_W, z) * glowK : 0;
       if (!cw && !gw) continue;
       let g = 1;
       for (let c = 0; c < NCLASS; c++) g = Math.max(g, this.drawnWidth(c, zoom, z) / interp(WIDTH_Z, WIDTHS[c], z));
@@ -1975,7 +1998,7 @@ export class RoadLayer implements CustomLayerInterface {
     const s = this.style;
     const zoom = this.map.getZoom();
     const dpr = window.devicePixelRatio || 1;
-    const casingW = zoom < CASING_Z[0] ? 0 : interp(CASING_Z, CASING_W, zoom) * dpr;
+    const casingW = casingPx(s, zoom) * dpr;
     const glowK = dpr * Math.max(0.6, s.weight * 1.4);
     const glowW = s.routeGlow ? interp(GLOW_Z, GLOW_W, zoom) * glowK : 0;
     // Where perspective draws roads widest: the view's near edge (half a zoom of margin).
@@ -2117,6 +2140,10 @@ export class RoadLayer implements CustomLayerInterface {
       gl.uniform1fv(u.u_fz, FADE_Z);
       gl.uniform1fv(u.u_fv, FADES.flat());
       gl.uniform1i(u.u_casingMask, s.casingMask);
+      gl.uniform1i(u.u_bridgeCase, s.bridgeCasing ? 1 : 0);
+      gl.uniform1fv(u.u_minz, Array.from({ length: NCLASS }, (_, c) => s.minZoom[c] ?? 0));
+      gl.uniform1f(u.u_tunnelFade, s.tunnelFade);
+      gl.uniform1i(u.u_dashUnpaved, s.dashUnpaved ? 1 : 0);
       gl.uniform1i(u.u_classMask, s.classMask);
       gl.uniform1i(u.u_surfaceMask, s.surfaceMask);
       gl.uniform1i(u.u_tollMask, this.rail ? 3 : s.tollMask);
@@ -2172,8 +2199,8 @@ export class RoadLayer implements CustomLayerInterface {
       gl.uniform1i(u.u_passVis, 0);
       gl.uniform1f(u.u_casing, casingW);
       gl.uniform1f(u.u_glow, glowW);
-      gl.uniform3fv(u.u_cz, CASING_Z);
-      gl.uniform3fv(u.u_cv, CASING_W.map((v) => v * dpr));
+      gl.uniform3fv(u.u_cz, casingZ(s));
+      gl.uniform3fv(u.u_cv, CASING_W.map((v) => v * s.casingWidth * dpr));
       gl.uniform4fv(u.u_gz, GLOW_Z);
       gl.uniform4fv(u.u_gv, GLOW_W.map((v) => v * glowK));
       // The distance fog (fogAt), as the terrain takes it.
@@ -2980,7 +3007,7 @@ export class RoadLayer implements CustomLayerInterface {
     const hiddenUnnamed = (fl & LF_UNNAMED) !== 0 && ((s.unnamedHide >> (st & 15)) & 1) === 1;
     const railOff = this.rail && ((fl >> LF_RAIL_SHIFT) & s.railMask) === 0;
     const tollOff = !this.rail && ((s.tollMask >> (fl & LF_TOLL ? 1 : 0)) & 1) === 0;
-    return ((s.classMask >> (st & 15)) & 1) === 1 && ((s.surfaceMask >> (st & 16 ? 1 : 0)) & 1) === 1 && !hiddenUnnamed && !tollOff
+    return ((s.classMask >> (st & 15)) & 1) === 1 && !(this.map.getZoom() < (s.minZoom[st & 15] ?? 0)) && ((s.surfaceMask >> (st & 16 ? 1 : 0)) & 1) === 1 && !hiddenUnnamed && !tollOff
       && !railOff && !(lenOn && this.lengthHidden(d, u32[seg * S4 + 4])) && !this.freqHidden(d, u32[seg * S4 + 4]);
   }
 

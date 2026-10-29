@@ -1,6 +1,7 @@
-// Street-map colourings for the "Map" display type: fixed colours by road class (classic atlases
-// and palettes made for the dark basemap), by signed route network, or by a road attribute.
-// Network codes must match roadcore::network.
+// Street-map colourings for the "Map" display type: the presets (classic atlases and palettes made
+// for the dark basemap, by road class; by signed route network; by a road attribute). A preset only
+// sets the Map look (RoadMapLook, AppState.roadMap: Layers → Roads → Colour → Map), which is then
+// edited freely; the map draws the look. Network codes must match roadcore::network.
 
 export type MapKind = 'class' | 'network' | 'speed' | 'lanes' | 'surface' | 'oneway';
 
@@ -14,8 +15,7 @@ export interface MapScheme {
   casing: string[];
   /** Categories for attribute kinds (index 0 = unknown), with legend labels. */
   cats?: [string, string][];
-  /** Network code → colour, with legend entries. */
-  net?: Record<number, string>;
+  /** Network kind: legend entries (the colours of NET by group). */
   legend?: [string, string][];
   help: string;
 }
@@ -34,6 +34,20 @@ const DIM = ['#ffffff1a', '#ffffff1f', '#ffffff29', '#ffffff30', '#ffffff42', '#
 const STREETS = ['#ffffff24', '#ffffff29', '#ffffff3d', '#ffffff4a'];
 /** Dark casings for the minor classes. */
 const CAS_MINOR = ['#07090c', '#07090c', '#07090c', '#07090c'];
+
+/** Network code → colour (the Signed routes preset's; not editable: dozens of country-specific
+ * codes, shown as the legend's groups). */
+const NET: Record<number, string> = {
+  1: '#3f7fe4', 2: '#e8eaedd9', 3: '#8fb8ff', 4: '#e3b21a',
+  5: '#3d7ddc', 6: '#e4e6e9d9', 7: '#b9bec6cc',
+  10: '#3b73c9', 11: '#dc4038', 12: '#e6c01e', 13: '#00a5b5',
+  20: '#3b7ad0', 21: '#2c9e5a', 22: '#e8eaedd9', 23: '#e0a44a',
+  24: '#3b7ad0', 25: '#2c9e5a', 26: '#5fb07a', 27: '#e8eaedd9',
+  30: '#3b73c9', 31: '#dc4038', 32: '#35a860', 33: '#e6c01e',
+  40: '#3b73c9', 41: '#dc4038', 42: '#e07b28', 43: '#e6c01e', 44: '#cfd2d6cc',
+  50: '#2e9b4a', 60: '#dc4038', 61: '#e6c01e', 70: '#2c9e5a',
+  51: '#2c9e5a', 52: '#4a8ee6', 53: '#8fb8ff', 54: '#2c9e5a', 55: '#4a8ee6', 56: '#e4e6e9d9', 57: '#2c9e5a',
+};
 
 export const MAP_SCHEMES: MapScheme[] = [
   {
@@ -87,17 +101,6 @@ export const MAP_SCHEMES: MapScheme[] = [
   {
     key: 'network', label: 'Signed routes', group: 'Route networks', kind: 'network',
     fill: DIM, casing: mono('#06080b'),
-    net: {
-      1: '#3f7fe4', 2: '#e8eaedd9', 3: '#8fb8ff', 4: '#e3b21a',
-      5: '#3d7ddc', 6: '#e4e6e9d9', 7: '#b9bec6cc',
-      10: '#3b73c9', 11: '#dc4038', 12: '#e6c01e', 13: '#00a5b5',
-      20: '#3b7ad0', 21: '#2c9e5a', 22: '#e8eaedd9', 23: '#e0a44a',
-      24: '#3b7ad0', 25: '#2c9e5a', 26: '#5fb07a', 27: '#e8eaedd9',
-      30: '#3b73c9', 31: '#dc4038', 32: '#35a860', 33: '#e6c01e',
-      40: '#3b73c9', 41: '#dc4038', 42: '#e07b28', 43: '#e6c01e', 44: '#cfd2d6cc',
-      50: '#2e9b4a', 60: '#dc4038', 61: '#e6c01e', 70: '#2c9e5a',
-      51: '#2c9e5a', 52: '#4a8ee6', 53: '#8fb8ff', 54: '#2c9e5a', 55: '#4a8ee6', 56: '#e4e6e9d9', 57: '#2c9e5a',
-    },
     legend: [
       ['#3f7fe4', 'Motorways: Interstates · autoroutes · M · A/AP (blue signs)'],
       ['#2c9e5a', 'Green signs: UK primary A · Irish N · E-roads · HK routes · Japanese expressways · Taiwanese freeways · Singapore expressways'],
@@ -138,8 +141,49 @@ export const MAP_SCHEMES: MapScheme[] = [
   },
 ];
 
-export const mapScheme = (k: string) => MAP_SCHEMES.find((m) => m.key === k) ?? MAP_SCHEMES[0];
 export const MAP_KIND_ID: Record<MapKind, number> = { class: 0, network: 1, speed: 2, lanes: 3, surface: 4, oneway: 5 };
+export const MAP_KINDS: [MapKind, string][] = [
+  ['class', 'Road class'], ['network', 'Signed route'], ['speed', 'Speed limit'], ['lanes', 'Lanes'], ['surface', 'Surface'], ['oneway', 'One-way & toll'],
+];
+/** The road attributes a Map look can colour by, each with its categories. */
+export type CatKind = Exclude<MapKind, 'class' | 'network'>;
+export const CAT_KINDS: CatKind[] = ['speed', 'lanes', 'surface', 'oneway'];
+const presetOf = (k: MapKind) => MAP_SCHEMES.find((m) => m.kind === k)!;
+/** Each attribute's category labels (index 0: unknown), from its preset. */
+export const CAT_LABELS = Object.fromEntries(CAT_KINDS.map((k) => [k, presetOf(k).cats!.map(([, l]) => l)])) as Record<CatKind, string[]>;
+
+/** How the roads look under the Map colour option (AppState.roadMap): what colours them; per road
+ * class (service … motorway, ferry) the fill (#rrggbbaa: colour and opacity), the casing colour
+ * (#rrggbb) and whether it is cased when zoomed in; each attribute's category colours. A preset
+ * (MAP_SCHEMES) sets them. */
+export interface RoadMapLook {
+  kind: MapKind;
+  fill: string[];
+  casing: string[];
+  cased: boolean[];
+  cats: Record<CatKind, string[]>;
+}
+
+/** The look a preset sets: its kind, fills and casings, every class cased (as street maps are);
+ * an attribute preset its categories' colours, the others' kept from `from`. */
+export function presetLook(m: MapScheme, from?: RoadMapLook): RoadMapLook {
+  const cats = Object.fromEntries(CAT_KINDS.map((k) => [k, k === m.kind ? m.cats!.map(([c]) => c) : [...(from?.cats[k] ?? presetOf(k).cats!.map(([c]) => c))]])) as Record<CatKind, string[]>;
+  return { kind: m.kind, fill: [...m.fill], casing: [...m.casing], cased: new Array(10).fill(true), cats };
+}
+
+/** The preset a look is (what it sets, unchanged), if any. */
+export function presetOfLook(l: RoadMapLook): MapScheme | null {
+  return MAP_SCHEMES.find((m) => m.kind === l.kind && same(m.fill, l.fill) && same(m.casing, l.casing) && l.cased.every(Boolean)
+    && (m.cats ? same(m.cats.map(([c]) => c), l.cats[m.kind as CatKind]) : true)) ?? null;
+}
+const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x.toLowerCase() === b[i].toLowerCase());
+
+/** Legend entries of a look (by class: none, the class rows are the legend). */
+export function lookLegend(l: RoadMapLook): [string, string][] {
+  if (l.kind === 'network') return presetOf('network').legend ?? [];
+  if (l.kind === 'class') return [];
+  return l.cats[l.kind].map((c, i) => [c, CAT_LABELS[l.kind as CatKind][i]]);
+}
 
 export function rgb(hex: string): [number, number, number] {
   const n = parseInt(hex.slice(1, 7), 16);
@@ -152,16 +196,18 @@ export function rgba(hex: string): [number, number, number, number] {
 }
 
 /** Uniform arrays for the shader: 15 class fills (RGBA) and casings (rail classes unused), 72
- * network colours (RGBA), 8 category colours (RGBA). */
-export function schemeUniforms(s: MapScheme) {
+ * network colours (RGBA), 8 category colours (RGBA), the classes cased (bits). */
+export function lookUniforms(l: RoadMapLook) {
   const classCol = new Float32Array(15 * 4), classCas = new Float32Array(15 * 3);
+  let casedMask = 0;
   for (let c = 0; c < 10; c++) {
-    classCol.set(rgba(s.fill[c]), c * 4);
-    classCas.set(rgb(s.casing[c]), c * 3);
+    classCol.set(rgba(l.fill[c]), c * 4);
+    classCas.set(rgb(l.casing[c]), c * 3);
+    if (l.cased[c]) casedMask |= 1 << c;
   }
   const netCol = new Float32Array(72 * 4);
-  for (const [k, v] of Object.entries(s.net ?? {})) netCol.set(rgba(v), Number(k) * 4);
+  for (const [k, v] of Object.entries(NET)) netCol.set(rgba(v), Number(k) * 4);
   const catCol = new Float32Array(8 * 4);
-  (s.cats ?? []).forEach(([c], i) => catCol.set(rgba(c), i * 4));
-  return { classCol, classCas, netCol, catCol, kind: MAP_KIND_ID[s.kind] };
+  if (l.kind !== 'class' && l.kind !== 'network') l.cats[l.kind].forEach((c, i) => catCol.set(rgba(c), i * 4));
+  return { classCol, classCas, netCol, catCol, kind: MAP_KIND_ID[l.kind], casedMask };
 }

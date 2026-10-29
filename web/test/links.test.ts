@@ -23,6 +23,8 @@ registerHooks({
 });
 
 const st = await import('../src/state.ts');
+const { MAP_SCHEMES, presetLook, presetOfLook } = await import('../src/mapschemes.ts');
+const preset = (k: string) => MAP_SCHEMES.find((m) => m.key === k)!;
 const { defaults, fromHash, toHash, linkFields, fromProfile, profileSettings } = st;
 type AppState = typeof defaults;
 
@@ -104,6 +106,14 @@ const changes: [string, (s: AppState) => void][] = [
   ['occlude', (s) => (s.occlude = !s.occlude)],
   ['label looks', (s) => (s.labelLooks = Object.keys(s.labelLooks).length ? {} : { state: { case: 'uppercase' } })],
   ['label kinds', (s) => (s.labelKinds = { ...s.labelKinds, town: !s.labelKinds.town })],
+  // Task #820: the Map look (a preset, then edited) and the road look every colour option shares.
+  ['map preset', (s) => (s.roadMap = presetLook(preset(s.roadMap.kind === 'class' && presetOfLook(s.roadMap)?.key === 'carto' ? 'neon' : 'carto'), s.roadMap))],
+  ['map look', (s) => (s.roadMap = {
+    ...s.roadMap, kind: 'surface', fill: s.roadMap.fill.map((c, i) => (i === 8 ? '#ff000080' : c)), casing: s.roadMap.casing.map((c, i) => (i === 2 ? '#123456' : c)),
+    cased: s.roadMap.cased.map((x, i) => (i < 3 ? !x : x)), cats: { ...s.roadMap.cats, surface: s.roadMap.cats.surface.map((c, i) => (i === 1 ? '#00ff0040' : c)) },
+  })],
+  ['road look', (s) => (s.roadLook = { ...s.roadLook, minZoom: s.roadLook.minZoom.map((z, i) => (i < 2 ? 11.5 : z)), casingFrom: 11, casingWidth: 1.75, tunnel: 0.7, bridgeCasing: !s.roadLook.bridgeCasing, dashUnpaved: !s.roadLook.dashUnpaved })],
+  ['road widths', (s) => (s.roadLook = { ...s.roadLook, widths: s.roadLook.widths.map((r, c) => (c === 8 ? r.map((v) => v * 1.5) : r)) })],
 ];
 for (const b of [base.s, defaults]) {
   for (const [what, f] of changes) {
@@ -129,6 +139,33 @@ for (const b of [base.s, defaults]) {
   // With no profile named, the link stays relative to the defaults (and its palette in pa=).
   assert.equal(params(toHash(s, true)).get('pa'), 'magma');
   assert.equal(params(toHash(s, true)).get('p'), null);
+}
+
+// The Map look and road look exactly back from a link (each colour, opacity, zoom), over a profile
+// and over the defaults; older links' Map preset (ms=) sets the preset's look.
+{
+  const s = structuredClone(base.s);
+  s.roadMap = { ...presetLook(preset('michelin')), kind: 'speed' };
+  s.roadMap.fill[0] = '#abcdef12';
+  s.roadMap.cats.speed[3] = '#fedcba';
+  s.roadLook = { ...s.roadLook, minZoom: s.roadLook.minZoom.map((_, i) => i / 2), widths: s.roadLook.widths.map((r) => r.map((v) => v + 0.125)) };
+  for (const b of [base.s, defaults]) {
+    const back = fromHash(toHash(s, true, { id: 'k3f9', name: 'x', s: b }), true, b);
+    assert.deepEqual(back.roadMap, s.roadMap);
+    assert.deepEqual(back.roadLook, s.roadLook);
+  }
+  const old = fromHash('#map=5/46/-71&ms=os');
+  assert.equal(presetOfLook(old.roadMap)?.key, 'os');
+  // An unknown preset or a malformed look leaves the defaults'.
+  assert.deepEqual(fromHash('#ms=nope&rm=class,zz,zz,1,a,b,c,d').roadMap.fill, defaults.roadMap.fill);
+  assert.deepEqual(fromHash('#rx=1.2,3&wd=1,2').roadLook, defaults.roadLook);
+  // Out-of-range values clamped.
+  assert.equal(fromHash(`#rx=${new Array(10).fill(40).join('_')},99,-1,0,1,1`).roadLook.casingFrom, st.ROAD_LOOK_RANGE.casingFrom[1]);
+  // Saved before the Map look: its preset (mapScheme); and in a profile, the look itself.
+  assert.equal(presetOfLook(st.fromSaved({ mapScheme: 'neon' }).roadMap)?.key, 'neon');
+  const kept = fromProfile(JSON.parse(JSON.stringify(profileSettings(s))));
+  assert.deepEqual(kept.roadMap, s.roadMap);
+  assert.deepEqual(kept.roadLook, s.roadLook);
 }
 
 // A profile's settings (what the server keeps): the state without the camera or the selection;

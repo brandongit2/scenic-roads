@@ -1,15 +1,14 @@
 // How the roads are coloured (the settings panel's Roads section, ui/layers.ts): mode, legend
 // histogram with draggable range handles, palette, equalisation, threshold highlight and (for the
-// scenic score) the component weights; the panel's title above it all.
+// scenic score) the component weights; under Map, the Map look (ui/roadmap.ts); the panel's title above it all.
 import type { Dist } from '../roads/stats';
 import { COMPONENTS, MODES, isScenic, modeDef, type Mode } from '../scenic';
-import { CLASS_LABELS } from '../config';
-import { MAP_SCHEMES, mapScheme, type MapScheme } from '../mapschemes';
 import { FIT_LEN_DEFAULT, pairOf, unitOf, withPair, withUnit } from '../autofit';
 import { modeGroup, type Store } from '../state';
 import { h } from './dom';
 import { WeightGrid } from './controls';
 import { PresetBar } from './presets';
+import { RoadMapEditor } from './roadmap';
 import { ScaleControls } from './scale';
 
 const BASE: [Mode, string][] = [
@@ -33,9 +32,7 @@ export class ColourCard {
   private scenicSel: HTMLSelectElement;
   private mapBtn: HTMLButtonElement;
   private metricBox: HTMLDivElement;
-  private mapBox: HTMLDivElement;
-  private schemeBtns: HTMLButtonElement[] = [];
-  private schemeLegend: HTMLDivElement;
+  private mapLook: RoadMapEditor;
   private weightsBox: HTMLDivElement;
   private presetBar: PresetBar;
   private weights: WeightGrid;
@@ -72,19 +69,8 @@ export class ColourCard {
     this.mapBtn = h('button', { title: 'Street-map colours', onclick: () => store.setMode('map') }, 'Map');
     seg.append(this.mapBtn);
 
-    // Street-map schemes, grouped, each with a preview of its colours.
-    this.schemeLegend = h('div', { class: 'scheme-legend' });
-    this.mapBox = h('div', { class: 'schemes' });
-    for (const group of [...new Set(MAP_SCHEMES.map((m) => m.group))]) {
-      const row = h('div', { class: 'scheme-row' });
-      for (const m of MAP_SCHEMES.filter((x) => x.group === group)) {
-        const b = h('button', { class: 'scheme', title: m.help, onclick: () => store.set({ mapScheme: m.key }) }, preview(m), h('span', {}, m.label));
-        this.schemeBtns.push(b);
-        row.append(b);
-      }
-      this.mapBox.append(h('div', { class: 'scheme-group muted' }, group), row);
-    }
-    this.mapBox.append(this.schemeLegend);
+    // The Map look: its presets and settings (ui/roadmap.ts).
+    this.mapLook = new RoadMapEditor(store);
     this.scenicSel = h('select', { class: 'scenic-sel' });
     for (const m of SCENIC) this.scenicSel.append(h('option', { value: m.key }, m.label));
     this.scenicSel.addEventListener('change', () => store.setMode(this.scenicSel.value as Mode));
@@ -106,7 +92,7 @@ export class ColourCard {
       seg,
       this.scenicSel,
       this.help,
-      this.mapBox,
+      this.mapLook.el,
       (this.metricBox = h('div', {},
         this.scale.legend,
         this.scale.palRow,
@@ -130,11 +116,9 @@ export class ColourCard {
     this.scenicBtn.classList.toggle('on', scenic);
     this.mapBtn.classList.toggle('on', map);
     this.scenicSel.hidden = !scenic;
-    this.mapBox.hidden = !map;
+    this.mapLook.el.hidden = !map;
+    if (map) this.mapLook.sync();
     this.metricBox.hidden = map;
-    const sch = mapScheme(s.mapScheme);
-    this.schemeBtns.forEach((b, i) => b.classList.toggle('on', MAP_SCHEMES[i].key === sch.key));
-    this.schemeLegend.replaceChildren(...legendOf(sch).map(([c, label]) => h('span', { class: 'lg' }, h('i', { style: `background:${c}` }), label)));
     this.scenicSel.value = this.lastScenic;
     this.help.textContent = d.help;
     this.weightsBox.hidden = s.mode !== 'score';
@@ -146,21 +130,4 @@ export class ColourCard {
   update(dist: Dist | null, range: [number, number], cdf: Uint8Array | null) {
     this.scale.update(dist, range, cdf);
   }
-}
-
-/** A small stack of a scheme's colours for its button. */
-function preview(m: MapScheme): HTMLElement {
-  const cols = m.kind === 'class' ? [8, 7, 6, 5, 4, 2].map((c) => m.fill[c])
-    : m.kind === 'network' ? ['#2e6fd8', '#1f8a4c', '#d8342c', '#f2c500', '#f2f2f2']
-    : (m.cats ?? []).slice(1).map(([c]) => c);
-  const el = h('span', { class: 'sw' });
-  for (const c of cols) el.append(h('i', { style: `background:${c}` }));
-  return el;
-}
-
-/** Legend entries of a scheme. */
-function legendOf(m: MapScheme): [string, string][] {
-  if (m.kind === 'class') return [8, 7, 6, 5, 4, 2, 0, 9].map((c) => [m.fill[c], CLASS_LABELS[c]]);
-  if (m.kind === 'network') return m.legend ?? [];
-  return m.cats ?? [];
 }
