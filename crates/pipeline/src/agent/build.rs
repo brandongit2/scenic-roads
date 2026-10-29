@@ -1799,14 +1799,25 @@ pub fn pyramids_key(t: (u32, u32), fp: &str, pyramids: &str, water: &str, deep: 
     ])
 }
 
-/// The pyramids-fill job (the lead's): its z6 tiles whose recorded key isn't their key now (one
-/// `UNKNOWN` waits).
+/// The pyramids-fill work (the lead's): its z6 tiles whose recorded key isn't their key now (one
+/// `UNKNOWN` waits), all of them for the forecast; its job takes the first alone (`job_of`).
 pub fn pyramids_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Option<Work> {
     let targets: Vec<(String, String)> = pyramids_targets(cov, m, tiles)?
         .into_iter()
         .filter(|(t, k)| k != UNKNOWN && done.pyramids_fill.get(t) != Some(k))
         .collect();
     (!targets.is_empty()).then(|| Work { step: "pyramids-fill".into(), targets })
+}
+
+/// The job made of planned work `w`: a pyramids-fill job is its first z6 tile alone (task #823: one
+/// job of twenty, 5,000 s each, held the lead's fetch for a day, its progress and its recovery a
+/// whole job's), the next planned once that one's recorded, so one fill runs at a time and holds
+/// GSI to one fetcher's limit (crate::fetch); the rest whole.
+pub fn job_of(mut w: Work) -> Work {
+    if w.step == "pyramids-fill" {
+        w.targets.truncate(1);
+    }
+    w
 }
 
 /// Terrain's assembly of z3 tile `q`'s key: `mids`, its z6 tiles' as "6/x/y=<content name | ->", in
@@ -7069,6 +7080,11 @@ pub(crate) mod tests {
         let mut done = Keys::default();
         let w = pyramids_work(&c, &m, &done, &a).unwrap();
         assert_eq!((w.step.as_str(), w.targets.clone()), ("pyramids-fill", ts.clone()));
+        // Its job a z6 tile alone (task #823), the others' whole.
+        assert!(ts.len() > 1, "{ts:?}");
+        assert_eq!(job_of(w.clone()).targets, ts[..1]);
+        let many = Work { step: "terrain-hi".into(), targets: ts.clone() };
+        assert_eq!(job_of(many).targets, ts);
         done.record("pyramids-fill", &w.targets);
         assert_eq!(
             done.recorded("pyramids-fill", "6/28/17"),

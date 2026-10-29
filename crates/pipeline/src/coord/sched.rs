@@ -174,8 +174,10 @@ pub(crate) struct Need {
 /// on the rayon pool the agent sizes (`RAYON_NUM_THREADS`, crate::agent::jobs); `terrain-deep`: its
 /// base and deep tiles made on that pool, its reads ahead waiting on the network
 /// (crate::terrain_deep); `bld-fetch`: its downloads bounded by its `--jobs` (3 by default, at most
-/// 4), waiting on the network.
-pub(super) const THREADS_HONOURED: &[&str] = &["slope-hi", "slope-deep", "terrain-deep", "bld-fetch"];
+/// 4), waiting on the network; `pyramids-fill`: its fetches bounded by crate::pyramids::FETCHES,
+/// waiting on the network, its own work (whole-PNG checks, packing) a fraction of a core (task #823:
+/// counted as the whole Mac, its first job held 6 of the mini's 12 cores).
+pub(super) const THREADS_HONOURED: &[&str] = &["slope-hi", "slope-deep", "terrain-deep", "bld-fetch", "pyramids-fill"];
 
 /// A cold start's provisional memory (MB) from the most its step declares or it was offered with,
 /// `mb`: times 3/2 (task #499; `Shared::provisional`, the forecast's packing too).

@@ -8502,6 +8502,33 @@ mod tests {
         assert!(all_granted(&w, &a).is_empty(), "no core left beside it");
     }
 
+    /// Task #823: the lead's own cold pyramids-fill job (a fetch waiting on GSI, its fetches its own
+    /// threads) is granted the packed share, not the whole Mac (the mini's first held 6 of 12
+    /// cores), so a measured job goes beside it.
+    #[test]
+    fn a_cold_pyramids_fill_takes_the_packed_share() {
+        assert!(sched::THREADS_HONOURED.contains(&"pyramids-fill"));
+        let (_d, c, _w, _clock) = every((0, 0));
+        ran_before(&c, "pyramids-fill");
+        packable(&c, "trees", 1, Some(2));
+        let mut offers = vec![Offer {
+            step: "pyramids-fill".into(),
+            targets: vec![("6/55/23".into(), "k 6/55/23".into(), 0)],
+            job: Some("pyramids-fill 6/55/23".into()),
+        }];
+        offers.extend(c.shared.lock().unwrap().offers.clone());
+        c.offer("p", offers);
+        let a = Ask {
+            want: 2,
+            can: vec!["pyramids-fill".into(), "trees".into()],
+            ..every_ask("m4", "pyramids-fill", 64_000, 100_000)
+        };
+        let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
+        assert!(matches!(&g.work, Granted::Job { step, .. } if step == "pyramids-fill"), "{:?}", g.work);
+        assert_eq!(g.threads, packed_share(8));
+        assert_eq!(g.more.len(), 1, "a measured job beside it");
+    }
+
     /// Task #499: the room left is never more than what its Mac's jobs hold now leaves (its memory
     /// guard's last sample, `Capacity::held_mb`): a cold start holding past its provisional need is
     /// counted at what it holds, so nothing goes beside an overrun (held past the whole room

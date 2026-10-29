@@ -8058,8 +8058,9 @@ impl Agent {
         }
         plan.retain(|w| !w.targets.is_empty());
         // (A job a step's work in the plan: an offered step's is its place in the plan's order, its
-        // targets granted as many as fit a quarter of an hour, `offer_plan`.)
-        for w in plan {
+        // targets granted as many as fit a quarter of an hour, `offer_plan`; the pyramids' fill a z6
+        // tile, `build::job_of`.)
+        for w in plan.into_iter().map(build::job_of) {
             // Held for review: the catalogue goes to catalog-held/ (no server reads it), once.
             if w.step == "catalog" && held {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();

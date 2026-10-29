@@ -1066,7 +1066,8 @@ the most its step declares (the steps table's `mem_mb`) or it was offered with, 
 (`coord::sched::provisional_mb`), its disk its step's measures' (else none); its cores the packed share
 when its step is known to honour the threads it's granted (`coord::THREADS_HONOURED`: `slope-hi`,
 `slope-deep` and `terrain-deep`, on the rayon pool the agent sizes, the last's reads waiting on the
-network; `bld-fetch`, its downloads bounded by `--jobs`), else the whole
+network; `bld-fetch`, its downloads bounded by `--jobs`; `pyramids-fill`, its fetches bounded by
+`pyramids::FETCHES`), else the whole
 Mac. It goes beside other jobs when that fits the room left, and other jobs go beside it by the
 same figures; one bigger than a Mac's whole room goes only to a Mac holding no job. At most one
 cold start runs on a Mac (two unknown needs never meet), and a step never measured in any way (no
