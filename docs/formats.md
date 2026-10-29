@@ -622,7 +622,7 @@ state.json, job.json, agent.lock, logs/
 publishing.json         the lead's record of its catalogues {at, low_at, held_at}: when the last
                         went out, the last with the low zooms made, and when a catalogue due was
                         first held back since (none: none is) (agent::build::LastCatalogue)
-clear-request.json      the owner's ask to clear build caches ({by, at}, agent::room::ClearRequest;
+clear-request.json      the owner's ask to clear build caches ({by, at, level: caches | deep}, agent::room::ClearRequest;
                         renamed .taken when taken up)
 room-target.json        the owner's free-disk target {bytes, by, at} (agent::room::Target; none: off)
 member                  this Mac's pool member id `m-<16 hex>`, then its hardware UUID
@@ -1012,7 +1012,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   forecast (`regions` with `map_at`; `publishes`: `{what: low | marks | overlays, at}`), the checklist (a line per stage: `id`, `what`, `steps`, `done`/`total`/`left`,
   `unit`, `items` (per step: `step`, `noun`, `done`, `total`, `left`), `next`, `note`,
   `shared`: docs/pipeline.md §4), `caches`
-  (agent::room::Caches: `clearable`, `each`, `why_not`, `cleared`, `declined`, `room`),
+  (agent::room::Caches: `clearable`, `clearable_deep`, `each`, `why_not`, `cleared`, `cleared_deep`, `declined`, `room`),
   `pool`, `lead` (crate::agent::lead::View), `inputs`
   (pipeline::inputs::view::InputView: per unit `version`, `state` ok | checking | held, `checked`,
   `held`, `findings`, `accepted`, `stale`). `state/build/{manifest,jobs,pending,summaries,pause}.json`

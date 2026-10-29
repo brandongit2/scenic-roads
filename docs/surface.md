@@ -118,5 +118,5 @@ accepted, with nothing rebuilt. After each build the agent lists what still lack
 description in each folder's `todo/`, with the briefs.
 
 **Everything else is automatic:** building whenever a Mac of the pool is awake and reaches the NAS
-(at any charge; away from home through Tailscale, slowly), copying downloads (updated only when the owner asks), emptying build caches once the build is done, installing a newly published app when the
+(at any charge; away from home through Tailscale, slowly), copying downloads (updated only when the owner asks), freeing build caches as the disk needs (and on the owner's ask, at any moment), installing a newly published app when the
 map is idle, backups. Publishing the app is a command (`tools/app/publish.sh`, docs/building.md §2, App publishing).

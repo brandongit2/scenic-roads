@@ -8,8 +8,9 @@
 // (`/api/build`), which answers with this Mac's own agent's status when the agent runs here and
 // with the heartbeat the agent copies to the NAS otherwise. This Mac's own agent's status, read
 // from its file, says what its build caches hold, whether they can be cleared now,
-// and the last clear (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
-// that agent to clear them. Disk Room shows the disk's free space and the owner's room target, and
+// and the last clears (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
+// that agent to clear what later jobs copy back cheaply from the NAS, Clear Caches Deeply that
+// and what's costly to make again, at any moment. Disk Room shows the disk's free space and the owner's room target, and
 // sets it (a few presets, or Off): the free space that agent keeps, freeing its caches to it; its
 // title says the free space, what's left of it for jobs and what keeps the rest. Memory shows and
 // sets the memory the build's jobs get here together (crates/pipeline/src/agent/buildmem.rs: a few
@@ -363,16 +364,21 @@ func poolLines(_ v: PoolView, now: Int) -> [Line] {
     return out
 }
 
-/// This Mac's build caches (crates/pipeline/src/agent/room.rs Caches): what a clear would free
-/// (bytes, and cache by cache with how each comes back), why they can't be cleared now (none: they
-/// can), and the last clear done and the last ask declined.
+/// This Mac's build caches (crates/pipeline/src/agent/room.rs Caches): what a clear and a deep
+/// clear would free (bytes, and cache by cache with how each comes back), why they can't be cleared
+/// now (none: they can), and the last clear of each level and the last ask declined.
 struct Caches: Decodable {
     let clearable: Int?
+    let clearable_deep: Int?
     let each: [Gone]?
     let why_not: String?
     let cleared: Freed?
+    let cleared_deep: Freed?
     let declined: Freed?
     let room: RoomView?
+
+    /// What a clear of that level would free.
+    func clearable(deep: Bool) -> Int? { deep ? clearable_deep : clearable }
 }
 
 /// The owner's disk room target as the agent keeps it (room.rs RoomView): the target, the disk's
@@ -398,20 +404,30 @@ struct RoomTarget: Decodable {
     var size: Int { Int(min(max(bytes, 0), Double(1 << 50))) }
 }
 
-/// A cache a clear would empty (room.rs Gone): its name in words, its bytes, how it comes back.
+/// A cache a clear would empty (room.rs Gone): its name in words, its bytes, how it comes back,
+/// and whether only a deep clear empties it.
 struct Gone: Decodable {
     let what: String
     let bytes: Int
     let back: String
+    let deep: Bool?
 }
 
-/// What a clear did (room.rs Freed): when, the bytes freed by cache, what stays, and for
+/// What a clear kept of what its level empties (room.rs Stayed): which cache, its bytes, why.
+struct Stayed: Decodable {
+    let cache: String
+    let bytes: Int
+    let why: String
+}
+
+/// What a clear did (room.rs Freed): when, the bytes freed by cache, what stays and why, and for
 /// a clear asked for when it couldn't be, why not.
 struct Freed: Decodable {
     let at: Int
     let by: String?
     let freed: [String: Int]?
     let left: Int?
+    let stayed: [Stayed]?
     let why_not: String?
 
     var bytes: Int { (freed ?? [:]).values.reduce(0, +) }
@@ -937,7 +953,9 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
 /// This Mac's build caches in a line: what a clear would free, and the last clear.
 func cachesLine(_ c: Caches) -> String {
     var t = "Build caches here: \(c.clearable.map(gb) ?? "not counted yet")"
+    if let d = c.clearable_deep { t += " (\(gb(d)) deeply)" }
     if let f = c.cleared, f.why_not == nil { t += " · cleared \(clock(f.at)), \(gb(f.bytes)) freed" }
+    if let f = c.cleared_deep, f.why_not == nil { t += " · cleared deeply \(clock(f.at)), \(gb(f.bytes)) freed" }
     return t
 }
 
@@ -1527,24 +1545,45 @@ func gb(_ b: Int) -> String {
 /// What a clear freed, by cache, the most first: "canopy squares 45.0 GB, raw terrain
 /// tiles 24.1 GB", and what stays.
 func freedText(_ f: Freed) -> String {
-    let words = ["canopy": "canopy squares", "terrain": "raw terrain tiles", "blobs": "copies of the records' files", "base": "base packs", "dem": "the DEM seed", "copies": "copies of the NAS's files", "heritage": "the heritage jobs' planet clip"]
+    let words = ["canopy": "canopy squares", "terrain": "raw terrain tiles", "blobs": "copies of the records' files", "months": "pageview months", "base": "base packs", "retired": "caches no code reads any more", "copies": "copies of the NAS's files", "heritage": "the heritage jobs' planet clip", "answers": "the Wikidata and Wikipedia answers"]
     var t = (f.freed ?? [:]).filter { $0.value > 0 }.sorted { $0.value > $1.value }.map { "\(words[$0.key] ?? $0.key) \(gb($0.value))" }.joined(separator: ", ")
     if t.isEmpty { t = "nothing" }
-    if let l = f.left, l > 0 { t += "; \(gb(l)) kept (the NAS hasn't it yet)" }
+    if let l = f.left, l > 0 { t += "; \(gb(l)) kept (a job uses it, or the NAS hasn't it yet)" }
+    for s in f.stayed ?? [] { t += "; \(words[s.cache] ?? s.cache) \(gb(s.bytes)) kept: \(s.why)" }
     return t
 }
 
-/// The menu's item for this Mac's build caches (none without an agent here): Clear the Build's
-/// Caches with what it would free, enabled once the build is done (why not, in
-/// its tooltip); while an ask waits, that it's clearing.
-func cachesItem(_ own: Own?, now: Int, asked: Bool) -> (title: String, enabled: Bool, tip: String)? {
-    guard let own = own, let c = own.caches else { return nil }
-    if asked { return ("Clearing the Build's Caches… (asked; this Mac's agent does it now, jobs running keeping what they use)", false, "") }
-    let title = "Clear the Build's Caches" + (c.clearable.map { " (\(gb($0)))" } ?? "")
-    if now - own.beat > outOfTouch { return (title, false, "This Mac's agent hasn't written its status since \(clock(own.beat)): is it running?") }
-    if let why = c.why_not { return (title, false, "Not now: \(why)") }
-    if let n = c.clearable, n < 50 << 20 { return (title, false, "They hold nothing now") }
-    return (title, true, "Deletes this Mac's copies of what the NAS keeps (canopy squares, raw terrain tiles, base packs, the DEM seed …): later jobs copy back from the NAS, or make again, what they need. The map's offline copy stays.")
+/// What a clear of that level keeps, in words (room.rs kept_words, the same).
+func keptWords(deep: Bool) -> String {
+    deep
+        ? "Kept: the heritage clip while it can't be made again, answers the NAS hasn't all of (all of them while a job keeping them runs), what exists only here (files the NAS lacks, the z6 tiles' results not on the NAS yet), files a running job holds, and the map's offline copy."
+        : "Kept: what's costly to make again (the heritage clip, the Wikidata and Wikipedia answers: a deep clear takes those too), what exists only here (files the NAS lacks, the z6 tiles' results not on the NAS yet), files a running job holds, and the map's offline copy."
+}
+
+/// The menu's items for this Mac's build caches (none without an agent here): Clear the Build's
+/// Caches and Clear Caches Deeply, each with what it would free now, enabled at any moment (why
+/// not, in its tooltip: an earlier agent's job running, no NAS, its agent out of touch); while an
+/// ask waits, that it's clearing.
+func cachesItems(_ own: Own?, now: Int, asked: Bool) -> [(title: String, enabled: Bool, tip: String, deep: Bool)] {
+    guard let own = own, let c = own.caches else { return [] }
+    if asked { return [("Clearing the Build's Caches… (asked; this Mac's agent does it now, jobs running keeping what they use)", false, "", false)] }
+    return [false, true].map { deep in
+        let title = (deep ? "Clear Caches Deeply" : "Clear the Build's Caches") + (c.clearable(deep: deep).map { " (\(gb($0)))" } ?? "")
+        if now - own.beat > outOfTouch { return (title, false, "This Mac's agent hasn't written its status since \(clock(own.beat)): is it running?", deep) }
+        if let why = c.why_not { return (title, false, "Not now: \(why)", deep) }
+        if let n = c.clearable(deep: deep), n < 50 << 20 { return (title, false, "They hold nothing now", deep) }
+        let what = deep
+            ? "Deletes what Clear the Build's Caches does, and what's costly to make again: the heritage jobs' planet clip (an hour of osmium) and the Wikidata and Wikipedia answers the NAS has (copied back as the items and heritage jobs start)."
+            : "Deletes this Mac's copies of what the NAS keeps (canopy squares, raw terrain tiles, base packs, copies of the NAS's files …), what queued jobs will read included: later jobs copy back from the NAS what they need."
+        return (title, true, "\(what) Jobs running keep what they use. The map's offline copy stays.", deep)
+    }
+}
+
+/// The ask's file as the menu bar writes it (crates/pipeline/src/agent/room.rs request_clear,
+/// ClearRequest). Pinned on both sides by tools/status/test/clear-request-*.json (selfTest,
+/// room.rs's tests).
+func clearRequestJSON(by: String, at: Int, deep: Bool) -> Data {
+    (try? JSONSerialization.data(withJSONObject: ["by": by, "at": at, "level": deep ? "deep" : "caches"] as [String: Any], options: [.sortedKeys])) ?? Data()
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -1554,7 +1593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// This Mac's agent's own status (its caches), read with each answer, and its last clear's
     /// and declined ask's times as last told.
     var own: Own?
-    var seenCaches: (cleared: Int, declined: Int)?
+    var seenCaches: (cleared: Int, deep: Int, declined: Int)?
     var polling = false
     /// The app's build service, the map server, and the window (service.swift).
     let build = BuildService()
@@ -1993,11 +2032,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             for li in leadItems(v, me: p.member) { m.addItem(leadMenuItem(li)) }
         }
         // This Mac's build caches, cleared on an ask to its agent (crates/pipeline/src/agent/
-        // room.rs), which does it once the build is done, and says what it freed.
-        if let c = cachesItem(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
+        // room.rs), which does it at once, to the item's level, and says what it freed and kept.
+        for c in cachesItems(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
             let it = NSMenuItem(title: c.title, action: c.enabled ? #selector(clearCaches) : nil, keyEquivalent: "")
             it.target = self
             it.isEnabled = c.enabled
+            it.tag = c.deep ? 1 : 0
             if !c.tip.isEmpty { it.toolTip = c.tip }
             m.addItem(it)
         }
@@ -2282,15 +2322,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         poll()
     }
 
-    /// Asks this Mac's agent to clear its build caches, once its owner says so (what goes, and how
-    /// each comes back): its ask file (room.rs ClearRequest), written whole, which the agent takes
-    /// up within seconds; signed with the name the agent goes by (its Mac's local host name).
+    /// Asks this Mac's agent to clear its build caches to the item's level (its tag: 1 deeply),
+    /// once its owner says so (what goes, how each comes back, and what stays): its ask file
+    /// (room.rs ClearRequest), written whole, which the agent takes up within seconds; signed with
+    /// the name the agent goes by (its Mac's local host name).
     @objc func clearCaches(_ sender: NSMenuItem) {
         guard let c = own?.caches else { return }
+        let deep = sender.tag == 1
         let alert = NSAlert()
-        alert.messageText = "Clear this Mac's build caches (\(gb(c.clearable ?? 0)))?"
-        let each = (c.each ?? []).map { "• \($0.what) \(gb($0.bytes)): \($0.back)" }.joined(separator: "\n")
-        alert.informativeText = "\(each)\n\nKept: the Wikidata and Wikipedia answers (the NAS has them too; they free little), a pageview month the NAS lacks, and the map's offline copy."
+        alert.messageText = "Clear this Mac's build caches\(deep ? " deeply" : "") (\(gb(c.clearable(deep: deep) ?? 0)))?"
+        let each = (c.each ?? []).filter { deep || $0.deep != true }.map { "• \($0.what) \(gb($0.bytes)): \($0.back)" }.joined(separator: "\n")
+        alert.informativeText = "\(each)\n\n\(keptWords(deep: deep))"
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Clear")
         alert.addButton(withTitle: "Cancel")
@@ -2300,7 +2342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let dir = home.appendingPathComponent("agent")
         let (tmp, dst) = (dir.appendingPathComponent("\(clearFile).menu.tmp"), dir.appendingPathComponent(clearFile))
         do {
-            try JSONSerialization.data(withJSONObject: ["by": "the menu bar on \(name)", "at": Int(Date().timeIntervalSince1970)] as [String: Any]).write(to: tmp)
+            try clearRequestJSON(by: "the menu bar on \(name)", at: Int(Date().timeIntervalSince1970), deep: deep).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
             post("Couldn't ask to clear the build's caches", "\(error.localizedDescription)")
@@ -2452,11 +2494,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// (the first look at its agent's status only sets where they're told from).
     func tellCaches() {
         guard let c = own?.caches else { return }
-        let now = (cleared: c.cleared?.at ?? 0, declined: c.declined?.at ?? 0)
+        let now = (cleared: c.cleared?.at ?? 0, deep: c.cleared_deep?.at ?? 0, declined: c.declined?.at ?? 0)
         defer { seenCaches = now }
         guard let was = seenCaches else { return }
         if let f = c.cleared, f.at != was.cleared {
             post("Freed \(gb(f.bytes))", "This Mac's build caches: \(freedText(f)). Later jobs copy back from the NAS what they need.")
+        }
+        if let f = c.cleared_deep, f.at != was.deep {
+            post("Freed \(gb(f.bytes)), deeply", "This Mac's build caches: \(freedText(f)). Later jobs copy back from the NAS, or make again, what they need.")
         }
         if let f = c.declined, f.at != was.declined {
             post("Build caches not cleared", f.why_not ?? "")
@@ -2584,7 +2629,7 @@ if let i = args.firstIndex(of: "--reopen") {
         print(l.style == .separator ? "────" : (l.style == .title ? "" : "  ") + bar + l.text)
     }
     for h in holdItems(r) { print("item: \(h.title)\(h.held == nil ? " (disabled)" : "")") }
-    if let c = cachesItem(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
+    for c in cachesItems(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
         print("item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
     }
     if let r = roomItem(own, target: roomTarget(), free: diskFree(), disk: diskSize()) {
@@ -2650,10 +2695,10 @@ if let i = args.firstIndex(of: "--reopen") {
         d.own = beside?.own
         print("\(f): \(state(d.reply, own: d.own).1)\(heldInputs(d.reply).isEmpty ? "" : " (badged)")")
         for v in heldInputs(d.reply) { print("  item: \(inputLine(v))") }
-        if let c = cachesItem(d.own, now: d.reply?.now ?? Int(Date().timeIntervalSince1970), asked: beside?.clear_asked ?? false) {
+        for c in cachesItems(d.own, now: d.reply?.now ?? Int(Date().timeIntervalSince1970), asked: beside?.clear_asked ?? false) {
             print("  item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
             // (What its confirmation lists.)
-            for g in (c.enabled ? d.own?.caches?.each : nil) ?? [] { print("    \(g.what) \(gb(g.bytes)): \(g.back)") }
+            for g in ((c.enabled ? d.own?.caches?.each : nil) ?? []).filter({ c.deep || $0.deep != true }) { print("    \(g.what) \(gb(g.bytes)): \(g.back)") }
         }
         // (The target and free space as the agent's status says them.)
         if let r = roomItem(d.own, target: d.own?.caches?.room?.target?.size, free: d.own?.caches?.room?.free, disk: nil) {

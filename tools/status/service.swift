@@ -819,6 +819,12 @@ func selfTest(_ dir: String) -> Never {
         let got = (try? JSONSerialization.jsonObject(with: holdRequestJSON(held, by: "the menu bar on m1", at: 1700000000))) as? NSDictionary
         check("the hold ask's file as scenic writes it (\(f))", want != nil && want == got)
     }
+    // The clear ask's file, as room.rs's request_clear writes it (its tests read the same files).
+    for (deep, f) in [(false, "clear-request-caches.json"), (true, "clear-request-deep.json")] {
+        let want = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent(f))).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? NSDictionary
+        let got = (try? JSONSerialization.jsonObject(with: clearRequestJSON(by: "the menu bar on m1", at: 1700000000, deep: deep))) as? NSDictionary
+        check("the clear ask's file as scenic writes it (\(f))", want != nil && want == got)
+    }
     // The reopen helper. A fake system: the old process ends after `exitAfter` polls; each open
     // succeeds from attempt `worksFrom` on (earlier ones go to the old process, as procNotFound did,
     // or to a stray copy until it's ended, `stray`); the app runs from the check after a

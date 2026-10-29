@@ -122,14 +122,29 @@ from the first (`edit_held`).
   - The order of freeing: canopy squares and copies idle an hour, least recently used first; then
     raw tiles a folder at a time and the squares read since. A file goes once the NAS has it at the
     same size; what the NAS lacks is put there first (raw tiles packed as an archive), or kept.
-  - **After the build** nothing is emptied: a Mac keeps its caches while it has room, and frees them
+  - **Otherwise** nothing is emptied: a Mac keeps its caches while it has room, and frees them
     only when the disk is short of a job's room or of the owner's room target (`room::toward`), as
     far as that needs, least recently used first.
-  - **On the owner's ask** (`room::clear`): Clear the Build's Caches in the menu bar, or `scenic
-    clean`, after a confirmation naming each cache and how it comes back, writes `clear-request.json`;
-    once the build is done the agent empties every cache a later job refills from the NAS
-    (`caches.cleared`), else says why not (`caches.declined`). The menu shows what it would free
-    (`caches.clearable`, `caches.each`).
+  - **On the owner's ask** (`room::clear`, `room::Level`), at any moment, jobs running (the build
+    never ends: regions are added and updated): the menu bar's Clear the Build's Caches or `scenic
+    clean` (level `caches`), Clear Caches Deeply or `scenic clean --deep` (level `deep`), after a
+    confirmation naming each cache, how it comes back and what stays, writes `clear-request.json`
+    (`{by, at, level}`; one without `level` is `caches`).
+    - `caches`: everything a later job copies back cheaply from the NAS: canopy squares, raw terrain
+      tiles and pack copies, records' file copies, pageview months, base packs, copies of NAS files,
+      retired caches, those the queued jobs will read included.
+    - `deep`: those and what's costly to make again: the heritage clip (an hour of osmium; only while
+      the NAS's manifest names its filtered planet and it's there, else kept, saying why), and the
+      Wikidata and Wikipedia answers (`crate::answers`: copied back from the NAS's archives at the
+      steps' next start, hours of asking should those be lost): a pass's set only when the NAS has
+      all of it, a heritage working copy (`heritage-<date>/`) whole or not at all, none while an
+      items or heritage job runs here or holds them.
+    - Either keeps what a running job holds, what exists only on this Mac (files the NAS lacks once
+      it can't take them, `scenic-units/` not on the NAS yet), and does nothing while a job an
+      earlier agent left runs or without the NAS (`caches.declined`, why said).
+    - The status says what each level would free (`caches.clearable`, `caches.clearable_deep`,
+      `caches.each` with `deep` on the deep-only caches) and what the last of each freed and kept,
+      and why (`caches.cleared`, `caches.cleared_deep`: `freed`, `left`, `stayed`).
   - **The owner's room target** (`room::Target`, `room::toward`): `scenic room <GB>` / `scenic room
     off` or the menu's Disk Room, per Mac (`room-target.json`). A job starts only with the target free
     past its own room; one that can't waits, saying so in `waiting`. Whenever the disk is short of
@@ -437,7 +452,7 @@ available. Until work is done, the map serves the last catalogue.
 
 **Status.**
 - `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions),
-  `scenic steps` (the steps table: docs/pipeline.md), `scenic clean`, `scenic room` (Room on the
+  `scenic steps` (the steps table: docs/pipeline.md), `scenic clean [--deep]`, `scenic room` (Room on the
   disk, above), `scenic nas-room` (the NAS reserve, above), `scenic battery-floor` (this Mac's battery floor for
   leading: docs/workers.md §7), `scenic memory` (the build's memory: docs/pool.md §7.1).
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
@@ -451,7 +466,7 @@ available. Until work is done, the map serves the last catalogue.
     (the swarm answer's `app`), the footer says so. From it, as from any page on this Mac, a job
     can be cancelled and a failed target tried again (docs/pool.md §11).
   - **Its menu** (right-click, or "⋯"): the state, downloads and caches; Pause/Resume Building; the
-    lead items (docs/pool.md §11); Clear the Build's Caches; Disk Room ▸; Memory ▸; Open the Build Log; Open
+    lead items (docs/pool.md §11); Clear the Build's Caches; Clear Caches Deeply; Disk Room ▸; Memory ▸; Open the Build Log; Open
     the Map; Copy the Map's Address; Open/Copy the Build Page.
   - Its timers run in the run loop's common modes, so it updates while a menu is open
     (`scenic-status --menu-proof`).
