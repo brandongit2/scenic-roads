@@ -32,6 +32,7 @@ import { ferryMetricDef } from './ferry';
 import { cdfOf, fadeAlpha, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
 import { Depth } from './depth';
+import { waterNameAt } from './watername';
 import { addBuildings, applyBuildings, rgb01, buildingAt, heightColourFn, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
@@ -1504,6 +1505,7 @@ async function main() {
     // hover readout mid-gesture is of no use.
     if (!pt || driving || moving || hudOff()) return;
     featKey = '';
+    waterTok++; // (a water answer still to come is for an older pick)
     // Markers first (small targets), then the nearest road or rail line, then the highlighted
     // areas under the cursor.
     const feats = overlays.hoverAt(pt);
@@ -1549,7 +1551,17 @@ async function main() {
         return strip.showFeature(buildingSummary(bf), feats.areas);
       }
       const f = feats.point ?? feats.areas[0];
-      return f ? showFeat(f, feats.areas) : strip.show(null, null);
+      if (f) return showFeat(f, feats.areas);
+      // Nothing else here: water, if the depth has it (else the strip goes idle).
+      const tok = waterTok;
+      const ll = cursorLL ?? map.unproject([pt.x, pt.y]);
+      void depth.water(ll).then((w) => {
+        if (tok !== waterTok) return;
+        if (!w) return strip.show(null, null);
+        const n = waterNameAt(map, pt, w.water);
+        strip.showWater(w, n.name, n.kind);
+      });
+      return;
     }
     hoverBuilding(null);
     const hv = hovered;
@@ -1562,6 +1574,8 @@ async function main() {
     }
   };
   let hoverAreas: FeatureSummary[] = [];
+  /** The pick a water answer (depth.water) is for: one newer, or the cursor gone, drops it. */
+  let waterTok = 0;
   /** The hovered building highlighted (null: none), when it changed. */
   let hoveredBuilding: unknown = null;
   const hoverBuilding = (f: maplibregl.MapGeoJSONFeature | null) => {
@@ -1589,6 +1603,7 @@ async function main() {
   /** No hover: the cursor left the map, or the HUD went off. */
   const unhover = () => {
     pickAt = null;
+    waterTok++;
     hovered = null;
     roads.setHover(null);
     rails.setHover(null);

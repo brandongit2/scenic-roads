@@ -471,7 +471,7 @@ ancestor's neighbours' edges; nearest for classes).
   steepness and mean direction, a tile for each depth tile (docs/steps.md §3), made with the
   depth's packs: the lo packs' z8 from the hi packs' z9 where they cover it.
 - **The catalogue's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "notice"}]}`,
-  the accepted depth declarations (the credits' depth line and notices, and the readout).
+  the accepted depth declarations (the credits' depth line and notices, and the footer's water info on hover).
 
 ## Catalogue (`catalog/<n>.json.zst`)
 

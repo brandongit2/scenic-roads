@@ -1,7 +1,8 @@
 // Bottom strip. Row 1: the hovered road — its name, then the scenic score and each measured score
 // factor as a bar (full = the factor at its cap), then roadside tree height. A rail
 // line shows its services and the ride factors in the same slots; a marker or highlighted area
-// (with no road under the cursor) gets one descriptive line.
+// (with no road under the cursor) gets one descriptive line, and water (nothing else under the
+// cursor, a depth layer on) its depth with the ramp's colour, its name and kind (showWater).
 // Row 2: yes/no flags as chips, road tags and elevation sources on the left; loading status,
 // cursor position, zoom, scale, the server and NAS connection and reload prompt (mapstatus.ts), links and the credits
 // dialog on the right. Every slot has a fixed width and its elements persist, so nothing moves as
@@ -14,6 +15,7 @@ import { legibleCss } from '../linecolour';
 import { displayName } from '../names';
 import { RAIL_COMPONENTS, fmtTrains, railComponents, railScore, type RailSample } from '../rail';
 import type { HoverInfo } from '../roads/layer';
+import type { WaterDepth } from '../depth';
 import type { WayInfo } from '../api';
 import { COMPONENTS, FLAG_LABELS, components, scoreOf } from '../scenic';
 import { cap, fmt, h } from './dom';
@@ -91,6 +93,7 @@ export class Strip {
   private creditsKey = '';
   private last: { hov: HoverInfo; info: WayInfo | null | 'loading'; areas: FeatureSummary[] } | null = null;
   private featLine: HTMLSpanElement;
+  private waterLine: HTMLSpanElement;
   /** Which factors the bars currently show. */
   private barsFor: 'road' | 'rail' = 'road';
   /** Rail: the ride factors shown in the bar slots (tunnels go to row 2). */
@@ -111,8 +114,9 @@ export class Strip {
     this.score = new Bar('Scenic', '', 'Scenic score with the current weights (0–100)', 'score');
     this.bars = COMPONENTS.flatMap((c, i) => (c.bar ? [{ i, bar: new Bar(c.bar.short, c.bar.unit, `${c.label}: ${c.help}`) }] : []));
     this.featLine = h('span', { class: 'featline' });
+    this.waterLine = h('span', { class: 'waterline' });
     this.r1 = h('div', { class: 'r1 idle' },
-      idle, this.featLine, this.road, this.score.el, ...this.bars.map((b) => b.bar.el), t.el);
+      idle, this.featLine, this.waterLine, this.road, this.score.el, ...this.bars.map((b) => b.bar.el), t.el);
     this.r1.style.setProperty('--bars', String(this.bars.length)); // a column each (style.css)
 
     this.info = h('span', { class: 'info' });
@@ -188,7 +192,7 @@ export class Strip {
   /** A marker or highlighted area (no road under the cursor), with the other areas it lies in. */
   showFeature(f: FeatureSummary, areas: FeatureSummary[]) {
     this.last = null;
-    this.r1.classList.remove('idle');
+    this.r1.classList.remove('idle', 'water');
     this.r1.classList.add('feat');
     const dot = h('i', { class: f.area ? 'fa' : 'fp' });
     dot.style.background = f.colour;
@@ -232,8 +236,30 @@ export class Strip {
     this.score.label('Scenic', '', to === 'road' ? 'Scenic score with the current weights (0–100)' : 'Ride score with the rail weights (0–100)');
   }
 
+  /** Water under the cursor (nothing else there): its depth, swatched in the depth layer's colour,
+   * then its name and kind where the map has them; the depth's class, source, resolution and datum
+   * in row 2. */
+  showWater(w: WaterDepth, name: string, kind: string) {
+    this.last = null;
+    this.r1.classList.remove('idle', 'feat');
+    this.r1.classList.add('water');
+    const sw = h('i', { class: 'sw' });
+    sw.style.background = w.colour;
+    const m = Math.abs(w.depth);
+    const num = m < 10 ? m.toFixed(1) : Math.round(m).toLocaleString('en-GB');
+    const what = w.depth < 0 ? 'above the surface, dries' : w.dries ? 'deep, dries at low tide' : 'deep';
+    this.waterLine.replaceChildren(sw,
+      h('span', { class: 'dv' }, num, h('span', { class: 'u' }, ' m')), h('span', { class: 'dq' }, what),
+      ...(name ? [h('b', {}, cap(name))] : []), ...(kind ? [h('span', { class: 'kind' }, kind)] : []));
+    this.waterLine.title = [`${num} m ${what}`, name, kind].filter(Boolean).join(' · ');
+    const datum = w.datum.replace(/\s*\(.*\)$/, ''); // (how it was reached, in the title)
+    const facts = [w.source, w.resolution && `${w.resolution} grid`, datum && `below ${datum}`].filter(Boolean);
+    this.info.replaceChildren(...(w.cls ? [h('span', { class: 'chip depth' }, w.cls)] : []),
+      h('span', { class: 'tags', title: [w.source, w.resolution, w.datum && `below ${w.datum}`].filter(Boolean).join(' · ') }, facts.join(' · ')), h('span', { class: 'src' }, 'not for navigation'));
+  }
+
   show(hov: HoverInfo | null, info: WayInfo | null | 'loading', areas: FeatureSummary[] = []) {
-    this.r1.classList.remove('feat');
+    this.r1.classList.remove('feat', 'water');
     if (!hov) {
       this.last = null;
       this.r1.classList.add('idle');

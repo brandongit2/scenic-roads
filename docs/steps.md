@@ -410,7 +410,7 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   takes its neighbour's depth, and water with no depth near shows the water's own colour. Without
   the water tiles, the colour masked by the basemap's water at the display's resolution, and no
   floor shading (its tiles reach onto the shore). Over the water fill
-  and under the coast shading, draped on the 3D terrain. The cursor's readout says the depth, its class and source; the map names the sources in
+  and under the coast shading, draped on the 3D terrain. Hovering water (no road, line or place under the cursor) shows in the footer its depth with the ramp's colour, the water's name and kind where the map labels it, the depth's class, source, resolution and datum; the map names the sources in
   view, "not for navigation", and the notices their licences ask for (CHS's, naming the owner as the
   maker), which the credits carry too.
 - **The rollout:**

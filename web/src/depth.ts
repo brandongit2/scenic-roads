@@ -24,7 +24,7 @@
 //    the surface, and the water's and ferries' names stand on it (basemap.ts: the anchor `surface`,
 //    the terrain itself without a floor). Roads and bridges keep their own heights (roads/). Depth is below the local water
 // surface: mean sea level at sea, the lake's surface on lakes; estimated depths look as measured
-// ones do (the readout says which they are). The depth's sources and the notices their licences ask
+// ones do (the footer says which they are, on hover: ui/strip.ts showWater). The depth's sources and the notices their licences ask
 // for are in the credits (ui/strip.ts), not on the map.
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
@@ -32,7 +32,6 @@ import { onVersions, ver } from './api';
 import { SHADE_SHIFT, floorTiles, waterTilesOn } from './basemap';
 import { hostFor } from './hosts';
 import { depthColour, hdepth, hexRgb, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
-import { h } from './ui/dom';
 import type { DepthMsg, DepthReply, Probe } from './depth.worker';
 
 type RGB = [number, number, number];
@@ -68,25 +67,11 @@ export class Depth {
   /** The fitted domain (m) of the "fit to view" scale. */
   private fit: [number, number] = [1, 100];
   private viewTimer = 0;
-  private hoverAt: maplibregl.LngLat | null = null;
-  private hoverBusy = false;
-  /** The cursor's readout while a depth layer is on. */
-  readonly readout: HTMLElement;
   /** Told when the fitted domain changes (the panel's legend). */
   onFit: () => void = () => {};
 
   constructor(private map: MLMap) {
-    this.readout = h('div', { class: 'depth-readout', hidden: true });
-    map.getContainer().append(this.readout);
     map.on('moveend', () => this.scheduleView());
-    map.on('mousemove', (e) => {
-      this.hoverAt = e.lngLat;
-      if (!this.hoverBusy) void this.hover();
-    });
-    map.getCanvas().addEventListener('mouseleave', () => {
-      this.hoverAt = null;
-      this.readout.hidden = true;
-    });
     onVersions((f) => f.startsWith('depth'), () => this.initWorkers());
   }
 
@@ -393,7 +378,7 @@ export class Depth {
     this.onFit();
   }
 
-  // ---- the cursor readout -----------------------------------------------------------------------
+  // ---- the depth under the cursor (the footer) --------------------------------------------------
 
   private tileAt(ll: maplibregl.LngLat): { z: number; x: number; y: number; px: number; py: number } {
     const z = Math.max(0, Math.min(16, Math.floor(this.map.getZoom())));
@@ -406,36 +391,56 @@ export class Depth {
   }
 
   /** Depth, class and source at a point (null: no depth there, or no depth layer on). */
-  async at(ll: maplibregl.LngLat): Promise<Probe | null> {
+  private async at(ll: maplibregl.LngLat): Promise<Probe | null> {
     if (!this.workers.length || !this.has || !(this.s.on || this.s.contours)) return null;
     const t = this.tileAt(ll);
     const r = await this.ask({ type: 'probe', id: 0, ...t }, undefined, this.workerFor(t.z, t.x, t.y));
     return r.probe ?? null;
   }
 
-  private async hover() {
-    this.hoverBusy = true;
-    try {
-      while (this.hoverAt) {
-        const ll = this.hoverAt;
-        this.hoverAt = null;
-        const p = await this.at(ll);
-        const text = p ? this.describe(p) : '';
-        this.readout.textContent = text;
-        this.readout.hidden = !text;
-      }
-    } catch {
-      // (a tile still loading)
-    } finally {
-      this.hoverBusy = false;
-    }
+  /** What the depth says of a point, for the footer (ui/strip.ts showWater): null where there's no
+   * water with depth, no depth layer on, or its tile still loading. */
+  async water(ll: maplibregl.LngLat): Promise<WaterDepth | null> {
+    const p = await this.at(ll).catch(() => null);
+    if (!p || !p.water || p.d === null) return null;
+    const src = this.source(p.src);
+    // A label's tail after its last comma is the source's resolution where it names one ("BlueTopo, 4–16 m").
+    const m = src?.label.match(/^(.*),\s*([^,]*\d[^,]*)$/);
+    return {
+      depth: -p.d,
+      dries: p.d > 0 || p.dries,
+      colour: this.colourOf(p.d, p.dries),
+      cls: CLASSES[p.cls] ?? '',
+      source: m ? m[1] : src?.label ?? '',
+      resolution: m ? m[2] : '',
+      datum: src?.datum ?? '',
+      water: src?.water ?? null,
+    };
   }
 
-  /** A point's depth in words: "Depth 12 m · measured · BlueTopo, 4–16 m". */
-  describe(p: Probe): string {
-    if (!p.water || p.d === null) return '';
-    const src = this.source(p.src);
-    const v = p.d > 0 ? `Dries: ${p.d.toFixed(1)} m above mean sea level` : p.dries ? `Dries at low tide: ${(-p.d).toFixed(1)} m below mean sea level` : `Depth ${(-p.d).toFixed(p.d > -10 ? 1 : 0)} m`;
-    return [v, CLASSES[p.cls] ?? '', src ? `${src.label} (below ${src.datum})` : ''].filter(Boolean).join(' · ');
+  /** The colour the depth layer gives depth `d` (m, negative below the surface): its ramp's, or the drying colour. */
+  private colourOf(d: number, dries: boolean): string {
+    const s = this.s;
+    if ((d > 0 || dries) && s.dry) return s.dryColour;
+    const [lo, hi] = this.domain(s);
+    const [fwd] = scaleFns(s.scale === 'linear' ? 'linear' : 'log', Math.max(0, lo), Math.max(lo + 0.5, hi));
+    return rgba(depthColour(s.palette, fwd(Math.max(0, -d))));
   }
+}
+
+/** A point's depth as the footer shows it (Depth.water). */
+export interface WaterDepth {
+  /** Metres below the water's surface (negative: above it, drying). */
+  depth: number;
+  /** Water that dries at low tide. */
+  dries: boolean;
+  /** Its swatch: the depth layer's colour there. */
+  colour: string;
+  /** Full detail, coarser, estimated … (CLASSES). */
+  cls: string;
+  source: string;
+  /** As the source's label names it ('' when it doesn't). */
+  resolution: string;
+  datum: string;
+  water: 'sea' | 'lake' | null;
 }

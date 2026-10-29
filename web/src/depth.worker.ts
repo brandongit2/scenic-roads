@@ -11,7 +11,7 @@
 //            the water, 0 on land and water without data its nearest depth, of the tile and its
 //            eight neighbours, so lines meet across tiles)
 // (The floor's shading is the build's: depth.ts.)
-// and, on request, the depth, class and source at a point (the readout), depth histograms of the
+// and, on request, the depth, class and source at a point (the footer's water info on hover), depth histograms of the
 // tiles in view (the colour scale fitted to the view) and the sources in them (the attribution).
 import { HeightTile } from './contour/height-tile';
 import generateIsolines from './contour/isolines';
@@ -311,7 +311,7 @@ function contourValues(c: Composite): Float32Array {
 /** Relief values: a pixel's depth (its nearest within REACH where it has none), +12,000 m beyond;
  * masked, on land too (the map draws it only in its water: depth.ts), else only in the basemap's
  * water. Water that dries at low water takes the ramp's drying colours (heights above 0): those
- * below mean sea level at its lowest; the depth itself stays below MSL everywhere else (readout,
+ * below mean sea level at its lowest; the depth itself stays below MSL everywhere else (footer,
  * shade). */
 function reliefValues(c: Composite, masked: boolean): Float32Array {
   const { src, dist } = nearest(c, false);

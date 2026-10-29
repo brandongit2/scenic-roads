@@ -373,6 +373,18 @@ input.switch:indeterminate::after { transform: translateX(5.5px); }
 #strip .featline .also .n { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.09); color: var(--text); font-weight: 600; }
 #strip .featline i { flex: none; width: 10px; height: 10px; border-radius: 50%; }
 #strip .featline i.fa { border-radius: 2px; opacity: 0.8; }
+/* Water under the cursor (ui/strip.ts showWater): the depth with its swatch, then the name and kind. */
+#strip .r1 > .waterline { grid-column: 1 / -1; align-self: center; display: none; align-items: baseline; gap: 7px; overflow: hidden; white-space: nowrap; }
+#strip .r1.water > .waterline { display: flex; }
+#strip .r1.water > :not(.waterline) { display: none; }
+#strip .waterline .sw { flex: none; align-self: center; width: 12px; height: 12px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18); }
+#strip .waterline .dv { flex: none; color: #eef1f5; font-weight: 600; font-size: 15px; }
+#strip .waterline .dv .u { color: var(--muted); font-weight: 500; font-size: 11px; }
+#strip .waterline .dq { flex: none; color: var(--faint); font-size: 11px; }
+#strip .waterline b { color: #eef1f5; font-weight: 600; font-size: 13px; margin-left: 8px; padding-left: 12px; border-left: 1px solid var(--line-strong); overflow: hidden; text-overflow: ellipsis; }
+#strip .waterline .kind { flex: none; color: var(--muted); }
+#strip .waterline > .dq + .kind { margin-left: 8px; padding-left: 12px; border-left: 1px solid var(--line-strong); }
+#strip .info .chip.depth { background: rgba(127, 196, 232, 0.14); color: #9fd3ef; }
 #strip .road .line-sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 #strip .info .chip.area { background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--c); }
 #strip .info .chip.rail { background: rgba(143, 184, 255, 0.14); color: #a9c8ff; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
@@ -753,12 +765,11 @@ body.panel-off #viewshed { --vs-left: calc(60px + env(safe-area-inset-left)); }
 .press-menu button { display: block; width: 100%; padding: 11px 10px; border: 0; border-radius: 7px; background: none; color: var(--text); text-align: left; font-size: 14px; }
 .press-menu button:active, .press-menu button:hover { background: var(--hover); }
 
-/* Depth under the water (depth.ts, ui/depth.ts): the legend's ticks by depth, the cursor's readout,
+/* Depth under the water (depth.ts, ui/depth.ts): the legend's ticks by depth
    and the depth's sources with their notices in the credits. */
 #layers .depth-ticks { position: relative; display: block; height: 13px; }
 #layers .depth-ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 #layers .depth-ticks span:first-child { transform: none; }
-.depth-readout { position: absolute; left: 10px; bottom: calc(var(--strip-h) + 8px); z-index: 3; pointer-events: none; padding: 3px 8px; border-radius: 6px; background: var(--card); color: var(--text); font-size: 11px; border: 1px solid var(--line); }
 dialog.credits .notices .depth { margin: 10px 0 0; color: var(--text); }
 dialog.credits .notices .notice { margin: 8px 0 0; color: var(--muted); line-height: 1.4; }
 
