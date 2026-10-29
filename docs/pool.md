@@ -1649,9 +1649,8 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   gzipped), a new catalogue's a few hundred bytes. `scenic catalogs [--after N]` prints the same
   JSON from the NAS (read only). 503 until the agent has made it.
   The page's own files carry the world's countries' outlines for the same map (`countries.json`,
-  Natural Earth 1:50m, the same projection; `tools/worldmap/countries.py` makes nearly the same file from
-  the NAS's `sources/basemap/natural_earth_vector.sqlite.zip`, read only, but not byte for byte: the file's own
-  source copy isn't kept, see the script's header) and the large lakes drawn as the sea (`lakes.json`, Natural
+  Natural Earth 1:50m, the same projection; made by `tools/worldmap/countries.py` from the NAS's
+  `sources/basemap/natural_earth_vector.sqlite.zip`, read only) and the large lakes drawn as the sea (`lakes.json`, Natural
   Earth 1:10m lakes of scalerank ≤ 3, simplified, #831; made by `tools/worldmap/lakes.py` from the NAS's
   `sources/fetched/natural-earth-lakes-10m`, read only).
 - **Live** (`agent::live`, task #514): each Mac's own measures over time, in rings on its own

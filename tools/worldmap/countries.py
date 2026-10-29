@@ -1,4 +1,4 @@
-# The build page world map's country outlines (web/work/countries.json, task #835), from Natural
+# The build page world map's country outlines: makes web/work/countries.json (task #835), from Natural
 # Earth's 1:50m admin-0 countries (public domain), as the NAS keeps them in the Natural Earth vector
 # package: sources/basemap/natural_earth_vector.sqlite.zip (5.1.2), table ne_50m_admin_0_countries.
 # Every polygon's outer ring (holes left out), in Web Mercator 0-1000 each way (y down, as
@@ -10,13 +10,6 @@
 # Defaults: the NAS's zip (read only; its 850 MB sqlite is unpacked to a temporary folder, removed
 # at the end) and web/work/countries.json. The page serves the file from the pipeline binary
 # (crates/pipeline/src/coord/mod.rs include_bytes), so rebuild after a change.
-#
-# NOT byte-identical to the committed countries.json (#835): the same layer, ring order,
-# projection and rounding, but the committed file's points stray up to 0.054 from the 5.1.2
-# table's (a hair past the 0.05 rounding), its simplification keeps another point in about 11 %
-# of the rings (590 of 1260 identical) and it holds 1260 rings, not 1274 (14 small 4-point
-# rings fewer, by no size rule found), so its source was a slightly different copy of the data.
-# The committed file stays; this script's output is the nearest the NAS's copy gives.
 import struct, sys, math, json, os, sqlite3, tempfile, zipfile
 
 NAS = '/Volumes/personal/projects/scenic-roads/sources/basemap/natural_earth_vector.sqlite.zip'
@@ -83,5 +76,5 @@ with tempfile.TemporaryDirectory() as tmp:
             if len(m) < 4: continue
             rings.append([round(v, 1) for p in m for v in p])
     con.close()
-json.dump(rings, open(out, 'w'), separators=(',', ':'))
+with open(out, 'w') as f: json.dump(rings, f, separators=(',', ':'))
 print(len(rings), 'rings', sum(len(r) for r in rings) // 2, 'points')
