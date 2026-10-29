@@ -238,6 +238,9 @@ What each step does, in detail. The steps as one table (names, chains, the check
   full precision (Horn's on its own terrain where they aren't), as `shade-webp`: its pack
   `layers/polar-slope-<pole>/polar/4-x-y`. **polar-root**, a pole's z0–3 of both from its blocks'
   z4 tiles as stored, sampled and shaded past them; it drops the packs of blocks no longer built.
+  Progress (polar-terrain, polar-slope): `progress: <k + tiles done / tiles in the block>/<blocks> polar
+  blocks` on stderr (`jobs::report_f`), a line per 16 tiles within a block (a tile counts when sampled or shaded at
+  z9, and again when written out at each level), so a busy block moves the build page's "hasn't moved" check.
   Memory: a block's z9 tiles held whole (heights and shading) and the pool's cache, `mem_mb` 4,096
   for the terrain.
 - **Grids (z11):** land cover, canopy and cover, for analysis only. Each `unit` job makes the grid tiles

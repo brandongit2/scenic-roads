@@ -103,6 +103,8 @@ New steps (docs/steps.md §2, keys §12): no existing step's output or version c
 - **Offline:** the roots are in the World download with every layer's root; a region downloads
   the blocks meeting it (`areafiles::polar_blocks_meeting`: its rings' points in the pole's
   hemisphere, projected, boxed and grown 2 km).
+- **Progress:** `polar-terrain` and `polar-slope` say how far they are within a block, a line per 16
+  tiles (`polar::terrain_block`/`slope_block`'s `progress`; docs/steps.md §2), not once per block.
 - **`scenic-polar`** runs the same code (`terrain_block`, `slope_block`, `root`) into a folder of
   tiles, for measuring and for `web/test/polar.html`; it writes nothing else.
 

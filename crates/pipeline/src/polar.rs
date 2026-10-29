@@ -386,9 +386,37 @@ pub fn samplers<'a>(plans: &'a [Plan], o: &'a crate::dem::generic::Opts<'a>) -> 
     plans.iter().map(|p| Sampler::sharing(p, o, &first)).collect()
 }
 
+/// How far a block is, in its tiles (`progress`'s (done, total)): said as the count passes
+/// `SAY_EVERY` more since it last was, and at the end. Never goes back (a count only adds).
+const SAY_EVERY: u64 = 16;
+
+struct Tally<'a> {
+    done: u64,
+    said: u64,
+    total: u64,
+    say: &'a mut dyn FnMut(u64, u64),
+}
+
+impl<'a> Tally<'a> {
+    fn new(total: u64, say: &'a mut dyn FnMut(u64, u64)) -> Self {
+        Tally { done: 0, said: 0, total, say }
+    }
+
+    /// `n` more tiles are done.
+    fn add(&mut self, n: u64) {
+        self.done = (self.done + n).min(self.total);
+        if self.done - self.said >= SAY_EVERY || self.done == self.total {
+            self.said = self.done;
+            (self.say)(self.done, self.total);
+        }
+    }
+}
+
 /// A block's terrain, z`BLOCK_Z`–`max_z`, handed to `put` as (z, x, y, Terrarium WebP) finest
 /// first: its cap tiles at `max_z` sampled, each coarser level its children's means (sampled where
-/// they aren't, past the cap). `samplers` from `samplers`.
+/// they aren't, past the cap). `samplers` from `samplers`. `progress` is told (tiles done, tiles
+/// in all) as the block goes: a tile counts when it is sampled (`max_z`) and again when it is
+/// handed to `put` (every level).
 pub fn terrain_block(
     samplers: &[Sampler],
     pole: Pole,
@@ -396,17 +424,21 @@ pub fn terrain_block(
     max_z: u8,
     voids: &Voids,
     put: &mut dyn FnMut(u8, u32, u32, Vec<u8>) -> Result<()>,
+    progress: &mut dyn FnMut(u64, u64),
 ) -> Result<()> {
     let inside = |z: u8, x: u32, y: u32| (x >> (z - BLOCK_Z)) == b.0 && (y >> (z - BLOCK_Z)) == b.1;
     let level = |z: u8| -> Vec<(u32, u32)> {
         polar::cap_tiles(pole, z).into_iter().filter(|&(x, y)| inside(z, x, y)).collect()
     };
     let own = level(max_z);
+    let all: u64 = (BLOCK_Z..=max_z).map(|z| level(z).len() as u64).sum();
+    let mut tally = Tally::new(own.len() as u64 + all, progress);
     let mut lv = Heights::new();
     for chunk in own.chunks(16) {
         for (t, e) in chunk.iter().zip(sample(&samplers[max_z as usize], pole, max_z, chunk, voids)?) {
             lv.insert(*t, Arc::new(e));
         }
+        tally.add(chunk.len() as u64);
     }
     let mut z = max_z;
     loop {
@@ -414,6 +446,7 @@ pub fn terrain_block(
         keys.sort();
         for &(x, y) in keys {
             put(z, x, y, encode_terrain(z, &lv[&(x, y)])?)?;
+            tally.add(1);
         }
         if z == BLOCK_Z {
             return Ok(());
@@ -427,13 +460,15 @@ pub fn terrain_block(
 /// A block's shading, z`BLOCK_Z`–`max_z`, handed to `put` as (z, x, y, shade WebP): at `max_z`
 /// Horn's method on the stored terrain (`terrain`: any tile of the cap, its neighbours' blocks'
 /// too), each coarser level its children's means at full precision (Horn's on its own terrain
-/// where they aren't).
+/// where they aren't). `progress` is told (tiles done, tiles in all) as the block goes: a tile
+/// counts when Horn's method has shaded it (`max_z`) and again when it is handed to `put`.
 pub fn slope_block(
     pole: Pole,
     b: (u32, u32),
     max_z: u8,
     terrain: &dyn Fn(u8, u32, u32) -> Result<Option<Arc<Vec<f32>>>>,
     put: &mut dyn FnMut(u8, u32, u32, Vec<u8>) -> Result<()>,
+    progress: &mut dyn FnMut(u64, u64),
 ) -> Result<()> {
     let inside = |z: u8, x: u32, y: u32| (x >> (z - BLOCK_Z)) == b.0 && (y >> (z - BLOCK_Z)) == b.1;
     let level = |z: u8| -> Vec<(u32, u32)> {
@@ -462,11 +497,16 @@ pub fn slope_block(
         Ok(out)
     };
     let own = level(max_z);
+    let all: u64 = (BLOCK_Z..=max_z).map(|z| level(z).len() as u64).sum();
+    let mut tally = Tally::new(own.len() as u64 + all, progress);
     let hs = read(max_z, &own)?;
-    let mut kids: HashMap<(u32, u32), Vec<Px>> = own
-        .iter()
-        .filter_map(|&(x, y)| Some(((x, y), horn(&|a, c| hs.get(&(a, c)).cloned(), pole, max_z, x, y)?)))
-        .collect();
+    let mut kids: HashMap<(u32, u32), Vec<Px>> = HashMap::new();
+    for &(x, y) in &own {
+        if let Some(px) = horn(&|a, c| hs.get(&(a, c)).cloned(), pole, max_z, x, y) {
+            kids.insert((x, y), px);
+        }
+        tally.add(1);
+    }
     drop(hs);
     let mut z = max_z;
     loop {
@@ -474,6 +514,7 @@ pub fn slope_block(
         keys.sort();
         for &(x, y) in keys {
             put(z, x, y, crate::shade_codec::encode(&kids[&(x, y)])?)?;
+            tally.add(1);
         }
         if z == BLOCK_Z {
             return Ok(());
@@ -585,10 +626,20 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
         let ss = samplers(&plans, &o)?;
         let voids = Voids::default();
         let mut tiles = Vec::new();
-        terrain_block(&ss, pole, b, MAX_Z, &voids, &mut |z, x, y, t| {
-            tiles.push((z, x, y, t));
-            Ok(())
-        })?;
+        terrain_block(
+            &ss,
+            pole,
+            b,
+            MAX_Z,
+            &voids,
+            &mut |z, x, y, t| {
+                tiles.push((z, x, y, t));
+                Ok(())
+            },
+            &mut |d, n| {
+                crate::agent::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks")
+            },
+        )?;
         let (v, f, n) = voids.total();
         eprintln!(
             "polar-terrain {t}: {} tiles; of {n} samples {v} with no data, {f} of them filled from voids",
@@ -620,10 +671,19 @@ pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> 
             p.get(z, x, y)?.map(|b| roadcore::grid::decode_terrain(&b).map(Arc::new)).transpose()
         };
         let mut tiles = Vec::new();
-        slope_block(pole, b, MAX_Z, &terrain, &mut |z, x, y, s| {
-            tiles.push((z, x, y, s));
-            Ok(())
-        })?;
+        slope_block(
+            pole,
+            b,
+            MAX_Z,
+            &terrain,
+            &mut |z, x, y, s| {
+                tiles.push((z, x, y, s));
+                Ok(())
+            },
+            &mut |d, n| {
+                crate::agent::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks")
+            },
+        )?;
         eprintln!("polar-slope {t}: {} tiles", tiles.len());
         write(out, "slope", pole, "polar", (BLOCK_Z, b.0, b.1), tiles)?;
         crate::control::done("polar-slope", &t);
@@ -844,6 +904,35 @@ mod tests {
             }
         }
         assert!(cover.meets(roadcore::polar::lat_box(Pole::South, BLOCK_Z, 7, 7)));
+    }
+
+    /// A block in progress says how far it is, within the block: counts never go back, end at the
+    /// whole, and come many times (not once, at the end).
+    #[test]
+    fn a_block_in_progress_reports_progress() {
+        let (pole, b, max_z) = (Pole::South, (7, 7), 7u8);
+        let flat =
+            |_: u8, _: u32, _: u32| -> Result<Option<Arc<Vec<f32>>>> { Ok(Some(Arc::new(vec![100.0; TS * TS]))) };
+        let (mut said, mut puts) = (Vec::new(), 0u64);
+        slope_block(
+            pole,
+            b,
+            max_z,
+            &flat,
+            &mut |_, _, _, _| {
+                puts += 1;
+                Ok(())
+            },
+            &mut |d, n| said.push((d, n)),
+        )
+        .unwrap();
+        assert!(puts > 0);
+        assert!(said.len() > 2, "{said:?}");
+        let total = said[0].1;
+        assert!(said.iter().all(|&(_, n)| n == total));
+        assert!(said.windows(2).all(|w| w[0].0 < w[1].0), "{said:?}");
+        assert_eq!(said.last(), Some(&(total, total)));
+        assert!(said[0].0 < total);
     }
 
     /// A pixel's mean leaves out no-data samples, and a 0 beside data (an overview's file edge).

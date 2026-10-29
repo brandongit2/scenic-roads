@@ -56,7 +56,15 @@ fn main() -> Result<()> {
     let voids = polar::Voids::default();
     for (i, &b) in blocks.iter().enumerate() {
         said(format!("terrain {}/{} ({})", i + 1, blocks.len(), polar::target(pole, b)));
-        polar::terrain_block(&samplers, pole, b, a.max_z, &voids, &mut |z, x, y, t| write("terrain", z, x, y, &t))?;
+        polar::terrain_block(
+            &samplers,
+            pole,
+            b,
+            a.max_z,
+            &voids,
+            &mut |z, x, y, t| write("terrain", z, x, y, &t),
+            &mut |_, _| {},
+        )?;
     }
     let terrain = |p: PathBuf| -> Result<Option<Vec<f32>>> { read(&p, roadcore::grid::decode_terrain) };
     for (i, &b) in blocks.iter().enumerate() {
@@ -67,6 +75,7 @@ fn main() -> Result<()> {
             a.max_z,
             &|z, x, y| Ok(terrain(path("terrain", z, x, y))?.map(std::sync::Arc::new)),
             &mut |z, x, y, s| write("shade", z, x, y, &s),
+            &mut |_, _| {},
         )?;
     }
     if only.is_empty() {
