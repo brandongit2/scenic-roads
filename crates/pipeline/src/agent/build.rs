@@ -4525,12 +4525,23 @@ pub fn depth_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, til
         })
         .cloned()
         .collect();
+    // (The root once no assembly is stale or waits to be merged: its key reads their packs, so it
+    // isn't made while one runs and again after it.)
+    let lo_stale = dt.lo.iter().any(|(t, k)| done.depth_lo.get(t) != Some(k));
+    let lo_pres: Vec<String> = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER]
+        .iter()
+        .map(|l| format!("layers/{l}/lo/"))
+        .collect();
+    let lo_handed = done.handed.iter().any(|l| lo_pres.iter().any(|p| l.starts_with(p.as_str())));
+    let root =
+        if dt.unknown == 0 && hi.is_empty() && !lo_stale && !lo_handed { depth_root_work(m, done) } else { None };
     let mut out = Vec::new();
     for (step, targets) in [("depth", hi), ("depth-lo", lo)] {
         if !targets.is_empty() {
             out.push(Work { step: step.into(), targets });
         }
     }
+    out.extend(root);
     out
 }
 
@@ -4542,7 +4553,36 @@ fn depth_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: 
         return Some(Work { step: "depth".into(), targets: hi });
     }
     let lo: Vec<(String, String)> = dt.lo.into_iter().filter(|(t, k)| done.depth_lo.get(t) != Some(k)).collect();
-    (!lo.is_empty()).then(|| Work { step: "depth-lo".into(), targets: lo })
+    if !lo.is_empty() {
+        return Some(Work { step: "depth-lo".into(), targets: lo });
+    }
+    depth_root_work(m, done)
+}
+
+/// The depth root's key (crate::depth::build::build_root): its version, the depth's versions and
+/// every lo pack of the three layers by content (an assembly made again, or a z3 tile's dropped,
+/// makes it again); None with no lo pack (and no root to drop).
+pub fn depth_root_key(m: &BTreeMap<String, String>) -> Option<String> {
+    let mut ins = vec![format!("depth-root {}", crate::depth::build::DEPTH_ROOT_V), depth_versions("depth-root")];
+    let n = ins.len();
+    for layer in [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER] {
+        let p = format!("layers/{layer}/lo/");
+        ins.extend(m.range(p.clone()..).take_while(|(l, _)| l.starts_with(&p)).map(|(l, c)| format!("{l}={c}")));
+    }
+    let root = format!("layers/{}/root/0-0-0", crate::depth::LAYER);
+    if ins.len() == n && !m.contains_key(&root) {
+        return None;
+    }
+    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+    Some(h(&refs))
+}
+
+/// The depth root's work when it's stale (`depth_root_key`; recorded as the other roots are, in
+/// the `lo` keys).
+fn depth_root_work(m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+    let k = depth_root_key(m)?;
+    (done.lo.get("depth-root") != Some(&k))
+        .then(|| Work { step: "depth-root".into(), targets: vec![("depth-root".into(), k)] })
 }
 
 /// The polar caps' targets with their keys (crate::polar; docs/polar.md §3), of the poles built
@@ -4885,7 +4925,7 @@ pub fn mark_shared(lines: &mut [Line]) {
 
 /// The steps the checklist counts, in order: the regions' build to the end (the pass's own are the
 /// agent's, before them).
-pub const COUNTED: [&str; 34] = [
+pub const COUNTED: [&str; 35] = [
     "heritage-sites",
     "terrain-hi",
     "terrain-deep",
@@ -4897,6 +4937,7 @@ pub const COUNTED: [&str; 34] = [
     "trees-lo",
     "depth",
     "depth-lo",
+    "depth-root",
     "unit",
     "pack",
     "lo",
@@ -5034,6 +5075,8 @@ pub fn checklist(
     let d = dt.as_ref().unwrap_or(&empty);
     out.push(sized("depth", &d.hi, &done.depth, dk));
     out.push(sized("depth-lo", &d.lo, &done.depth_lo, dk));
+    let root: Vec<(String, String)> = depth_root_key(m).map(|k| ("depth-root".to_string(), k)).into_iter().collect();
+    out.push(sized("depth-root", &root, &done.lo, dk));
     next.insert("depth", next_of(&remaining(done, |k| depth_next(cov, m, k, tiles))));
     // (The polar caps where the coverage reaches them: known once the elevation pool's datasets
     // are read.)
@@ -9194,6 +9237,94 @@ pub(crate) mod tests {
         tiles.hold_depth("x", moved);
         let after = depth_targets(&c, &m, &tiles).unwrap();
         assert!(after.hi.iter().zip(&dt.hi).all(|(a, b)| a.1 != b.1));
+    }
+
+    /// The depth's root (z0–2) once every assembly is done and merged, keyed on the lo packs of
+    /// the three layers: one made again makes it again; with none, none.
+    #[test]
+    fn the_depth_root_follows_the_lo_packs() {
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let mut done = Keys::default();
+        assert!(depth_root_key(&m).is_none() && depth_root_work(&m, &done).is_none());
+        for layer in [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER] {
+            for q in [(3, 2), (4, 2)] {
+                let l = crate::depth::build::lo_logical(layer, q.0, q.1);
+                m.insert(l.clone(), format!("{l}.0101010101010101.pack"));
+            }
+        }
+        // Other layers' lo packs aren't read.
+        let k = depth_root_key(&m).unwrap();
+        let mut m1 = m.clone();
+        m1.insert("layers/terrain/lo/3-3-2".into(), "t.pack".into());
+        assert_eq!(depth_root_key(&m1).as_ref(), Some(&k));
+        let w = depth_root_work(&m, &done).unwrap();
+        assert_eq!((w.step.as_str(), w.targets.clone()), ("depth-root", vec![("depth-root".to_string(), k.clone())]));
+        done.record("depth-root", &w.targets);
+        assert_eq!(done.lo.get("depth-root"), Some(&k), "kept with the other roots");
+        assert!(depth_root_work(&m, &done).is_none());
+        for layer in [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER] {
+            let mut m2 = m.clone();
+            m2.insert(crate::depth::build::lo_logical(layer, 4, 2), "y.pack".into());
+            assert_ne!(depth_root_key(&m2), Some(k.clone()), "{layer}");
+            let mut m3 = m.clone();
+            m3.remove(&crate::depth::build::lo_logical(layer, 4, 2));
+            assert_ne!(depth_root_key(&m3), Some(k.clone()), "{layer}");
+        }
+        // Every lo pack gone, the root made once more (dropping its packs).
+        let mut bare = BTreeMap::new();
+        let r = format!("layers/{}/root/0-0-0", crate::depth::LAYER);
+        bare.insert(r.clone(), format!("{r}.0303030303030303.pack"));
+        assert!(depth_root_work(&bare, &done).is_some());
+    }
+
+    /// The depth chain's root waits for its assemblies: one stale, one waiting to be merged, or a
+    /// z6 tile still to make holds it.
+    #[test]
+    fn the_depth_root_waits_for_the_assemblies() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let mut tiles = TerrainTiles::new(None);
+        m.insert(crate::inputs::logical(crate::inputs::sources::UNIT), "x".into());
+        tiles.hold_depth("x", depth_sources());
+        m.insert(
+            "layers/basemap/world-2026-09-28".into(),
+            "layers/basemap/world-2026-09-28.0101010101010101.pmtiles".into(),
+        );
+        let pin = crate::terrain_pack::water_source_pin(&m).unwrap();
+        let mut idx = crate::terrain_water::WaterIdx {
+            fmt: 1,
+            step: "terrain-water".into(),
+            pin: pin.clone(),
+            digests: Default::default(),
+        };
+        for (t, from, _) in &depth_water_reads(&c, &depth_sources()) {
+            idx.digests.insert(t.clone(), (from.clone(), "d".into()));
+        }
+        let name = format!("{}.0202020202020202.json", crate::terrain_water::idx_logical(&pin));
+        m.insert(crate::terrain_water::idx_logical(&pin), name.clone());
+        tiles.hold_water(&name, idx);
+        let l = crate::depth::build::lo_logical(crate::depth::LAYER, 3, 2);
+        m.insert(l.clone(), format!("{l}.0101010101010101.pack"));
+        let dt = depth_targets(&c, &m, &tiles).unwrap();
+        let steps = |w: &[Work]| w.iter().map(|x| x.step.clone()).collect::<Vec<_>>();
+        let mut done = Keys::default();
+        assert!(!steps(&depth_work(&c, &m, &done, &tiles)).contains(&"depth-root".to_string()));
+        done.record("depth", &dt.hi);
+        done.record("depth-lo", &dt.lo[1..]);
+        assert_eq!(steps(&depth_work(&c, &m, &done, &tiles)), ["depth-lo"]);
+        done.record("depth-lo", &dt.lo);
+        let mut handed = done.clone();
+        handed.handed.insert(crate::depth::build::lo_logical(crate::depth::SHADE_LAYER, 3, 2));
+        assert!(depth_work(&c, &m, &handed, &tiles).is_empty());
+        let w = depth_work(&c, &m, &done, &tiles);
+        assert_eq!(steps(&w), ["depth-root"]);
+        // The chain's last step, as `remaining` walks it.
+        assert_eq!(
+            steps(&remaining(&Keys::default(), |d| depth_next(&c, &m, d, &tiles))),
+            ["depth", "depth-lo", "depth-root"]
+        );
+        done.record("depth-root", &w[0].targets);
+        assert!(depth_work(&c, &m, &done, &tiles).is_empty());
     }
 
     #[test]

@@ -447,8 +447,9 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
 
 ## Depth (`layers/depth/`, `layers/depth-class/`, `layers/depth-shade/`; pipeline::depth)
 
-Three layers of 256-px tiles in packs like the terrain's: `lo/3-x-y` (z3–8) and `hi/6-x-y` (z9–16,
-only where a source has grids finer than z8). A tile is stored where one of its water pixels is a
+Three layers of 256-px tiles in packs like the terrain's: `root/0-0-0` (z0–2, the means of the lo
+packs' z3), `lo/3-x-y` (z3–8) and `hi/6-x-y` (z9–16, only where a source has grids finer than z8);
+the catalogue's zooms 0–16. A tile is stored where one of its water pixels is a
 source's own data of its zoom, or where a finer stored tile lies under it (each pixel then the mean
 of the four beneath it with data); never finer than the sources under it (steps.md §3). A missing
 one is its nearest stored ancestor scaled up (bilinear for depth and its shading, with the depth
@@ -469,7 +470,8 @@ ancestor's neighbours' edges; nearest for classes).
   until the depth is rebuilt.
 - **`depth-shade`** (encoding `shade-webp`, as the terrain's shading: Pack above): the floor's
   steepness and mean direction, a tile for each depth tile (docs/steps.md §3), made with the
-  depth's packs: the lo packs' z8 from the hi packs' z9 where they cover it.
+  depth's packs: the lo packs' z8 from the hi packs' z9 where they cover it, the root's z2 from the
+  lo packs' z3.
 - **The catalogue's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "notice"}]}`,
   the accepted depth declarations (the credits' depth line and notices, and the footer's water info on hover).
 

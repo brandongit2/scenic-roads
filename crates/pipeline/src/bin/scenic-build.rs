@@ -46,6 +46,7 @@
 //!   slope-lo <Q …>               z3 tiles Q's zoomed-out slope (lo packs, z3–8) from their z6 tiles'
 //!                                mids and the lo pack as it is
 //!   terrain-root, slope-root     their z0–2 root packs, from the lo packs' z3 tiles
+//!   depth-root                   the depth layers' z0–2 root packs, from the lo packs' z3 tiles
 //!   polar-terrain <s/4/x/y …>    polar blocks' terrain (z4–9) from the elevation pool (pipeline::polar)
 //!   polar-slope <s/4/x/y …>      polar blocks' shading from their and their neighbours' terrain packs
 //!   polar-root <s …> [--regions dir] [--pass d]  a pole's z0–3 of both, from its blocks; those no longer built dropped
@@ -822,6 +823,10 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         "bldtile-task" => bldtile_task_step(&mut out, &args)?,
         "depth-lo" | "depth" => depth_step(&mut out, &args, step.as_str())?,
+        "depth-root" => {
+            let n = pipeline::depth::build::build_root(&mut out)?;
+            eprintln!("depth root: {n} tiles");
+        }
         "trees" => {
             // trees <tile …> [--pass d] [--chm dir] [--expect-same T,…]: the tree cover
             // of z6 tiles (z6 tiles: their hi packs and mids; pipeline::treepacks::build_piece), or a
@@ -1898,9 +1903,11 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         "buildings" => (pipeline::bld::ZOOM, pipeline::bld::ZOOM),
         // Their field: levels 9–14 in the hi packs, 4–8 in the lo (pipeline::bld::field).
         "buildings-field" => (pipeline::bld::field::LEVEL_MIN, pipeline::bld::field::LEVEL_MAX),
-        // Depth: z3–8 in the lo packs, z9–16 in the hi where a source has that detail; the server
-        // makes the others from their ancestors (pipeline::depth).
-        pipeline::depth::LAYER | pipeline::depth::CLASS_LAYER | pipeline::depth::SHADE_LAYER => pipeline::depth::ZOOMS,
+        // Depth: z0–2 in the root, z3–8 in the lo packs, z9–16 in the hi where a source has that
+        // detail; the server makes the others from their ancestors (pipeline::depth).
+        pipeline::depth::LAYER | pipeline::depth::CLASS_LAYER | pipeline::depth::SHADE_LAYER => {
+            (pipeline::depth::build::ROOT.0, pipeline::depth::ZOOMS.1)
+        }
         // The polar caps: z0–3 in the root, z4–9 in the blocks (pipeline::polar).
         l if l.starts_with("polar-") => (0, pipeline::polar::MAX_Z),
         _ => return None,

@@ -76,6 +76,7 @@ const STEPS: &[Step] = &[
     s("bldfield-lo", "<Q …>", "z3 tiles Q's zoomed-out buildings field", &[], &[], ANY),
     s("depth", "<T …>", "z6 tiles T's depth and its shading (hi packs, z9–16) where a depth source is finer than the lo packs", &[], &[], ANY),
     s("depth-lo", "<Q …>", "z3 tiles Q's zoomed-out depth and its shading (lo packs, z3–8): the means of their z6 tiles' depth, composed from the declared depth sources where there's none", &[], &[], ANY),
+    s("depth-root", "", "the depth's z0–2 root packs and their shading, the means of the lo packs' z3 tiles", &[], &[], 0),
     s("bldtile-task", "<8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]", "a z8 tile's task folder as a bldtiles job cuts it", &[], &["--out", "--pass", "--regions"], 1),
     s("trees", "<T …> [--pass d] [--regions dir] [--dem dir] [--chm dir] [--expect-same T,…]", "the tree cover layers, clipped to the coverage: of z6 tiles T, or a z3 tile's whole", &[], &["--pass", "--regions", "--dem", "--chm", "--expect-same"], ANY),
     s("trees-lo", "<Q …> [--pass d] [--regions dir]", "z3 tiles Q's zoomed-out tree cover (lo packs) from their z6 tiles' mids", &[], PASS_REGIONS, ANY),

@@ -21,6 +21,8 @@
 //! - **depth-lo** (a z3 tile Q, after its z6 tiles' depth): its blocks composed z3 to z8, then z8
 //!   the mean of the z9 tiles its z6 tiles' hi packs store, z7 down to z3 each the mean of the
 //!   finer; its shading over them, z8 taking the z9 shading the hi packs store where it covers.
+//! - **depth-root** (the world, after every z3 tile's depth-lo: `build_root`): z2 down to z0 each
+//!   the mean of the finer from the lo packs' z3 tiles, and their shading, as the terrain's root.
 //!
 //! Deterministic: the same sources, water and z9 tiles make the same packs, byte for byte.
 
@@ -784,6 +786,53 @@ pub fn build_lo(
     let n = put_packs(out, &made, Some(&shade), "lo", (3, q.0, q.1))?;
     std::fs::remove_file(crate::resume_log::path(&out.scratch, (3, q.0, q.1))).ok();
     Ok(n)
+}
+
+/// The depth root's version (`build_root`; 1: z0–2 the means of the lo packs' z3, task #824).
+pub const DEPTH_ROOT_V: u32 = 1;
+/// The zooms the root packs hold (`build_root`): those under the lo packs' `LO.0`.
+pub const ROOT: (u8, u8) = (0, LO.0 - 1);
+
+/// The depth's root (its `root` packs, z0–2, of the three layers) from the z3 tiles the lo packs
+/// store, as the terrain's root from its lo packs (`root_of`); how many depth tiles. With no z3
+/// tile, the root packs are dropped.
+pub fn build_root(out: &mut Out) -> Result<usize> {
+    let p = crate::timings::phase("the z3 tiles read", crate::timings::Class::NasRead);
+    let z3: Vec<(u8, u32, u32)> = (0..64u32).map(|k| (LO.0, k % 8, k / 8)).collect();
+    let mut made = Made::new();
+    let mut below = HashMap::new();
+    {
+        let depth = crate::terrain_pack::ManifestTiles::new(out, LAYER);
+        let class = crate::terrain_pack::ManifestTiles::new(out, CLASS_LAYER);
+        let shade = crate::terrain_pack::ManifestTiles::new(out, super::SHADE_LAYER);
+        let (ds, cs, ss) = (depth.get_many(&z3)?, class.get_many(&z3)?, shade.get_many(&z3)?);
+        for (((&(z, x, y), d), c), s) in z3.iter().zip(ds).zip(cs).zip(ss) {
+            let Some(d) = d else { continue };
+            let c = c.with_context(|| format!("depth-class {z}/{x}/{y}: the depth's tile has none"))?;
+            made.insert((z, x, y), (d, c));
+            if let Some(s) = s {
+                let v = roadcore::shade::decode(&s).with_context(|| format!("depth-shade {z}/{x}/{y}"))?;
+                below.insert((z, x, y), roadcore::shade::quadrant(&v));
+            }
+        }
+    }
+    drop(p);
+    let (made, shade) = root_of(made, below)?;
+    put_packs(out, &made, Some(&shade), "root", (0, 0, 0))
+}
+
+/// The root's tiles from the z3 tiles `made` and their shading's quadrants `below`: z2 down to z0
+/// each the mean of the finer (`means`; no level of its own composed, no grid being coarser than
+/// the lo packs'), and their shading (`shading_over`: the mean of the z3 shading where it covers,
+/// else its own depth's); the z3 tiles dropped.
+fn root_of(
+    mut made: Made,
+    below: HashMap<(u8, u32, u32), Vec<roadcore::shade::Px>>,
+) -> Result<(Made, BTreeMap<(u8, u32, u32), Vec<u8>>)> {
+    means_down(&mut made, LO.0, ROOT.0)?;
+    made.retain(|k, _| k.0 <= ROOT.1);
+    let shade = shading_over(&made, ROOT.0, below)?;
+    Ok((made, shade))
 }
 
 /// The depth tiles in metres the floor's shading keeps decoded (`shading_over`), at most.

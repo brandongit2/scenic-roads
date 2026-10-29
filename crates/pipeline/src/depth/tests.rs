@@ -884,6 +884,58 @@ fn the_floors_shading_assembly_takes_the_z6_tiles_finer_shading() {
     assert_eq!(s.len(), 2 * 5 + 1, "two z8 tiles and their parents to z4 apart, one z3");
 }
 
+/// The depth's root (`build::build_root`): z2 down to z0 the means of the lo packs' z3 tiles (each
+/// pixel the mean of those beneath it with data), the classes theirs, the shading the mean of the z3
+/// shading; with the lo packs gone, the root packs dropped.
+#[test]
+fn the_depth_root_is_the_means_of_the_z3_tiles() {
+    use roadcore::shade::{code, decode, quadrant, Px};
+    let d = tempfile::tempdir().unwrap();
+    let mut out =
+        Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+            .unwrap();
+    // Z3 tile 3/3/2: -100 m on its west half, none on its east; its class native; its shading steep.
+    let depth: Vec<f32> = (0..65536).map(|i| if i % 256 < 128 { -100.0 } else { NODATA }).collect();
+    let steep = vec![Px::of_gradient(0.0, 0.5); 65536];
+    let shade_b = crate::shade_codec::encode(&steep).unwrap();
+    for (layer, enc, b) in [
+        (LAYER, ENCODING, fall::encode(&Grid::F(depth)).unwrap()),
+        (CLASS_LAYER, CLASS_ENCODING, fall::encode(&Grid::C(vec![C_NATIVE; 65536])).unwrap()),
+        (SHADE_LAYER, crate::shade_codec::ENCODING, shade_b.clone()),
+    ] {
+        let mut it = vec![(3u8, 3u32, 2u32, b, 0u32)].into_iter();
+        crate::layers::write_pack(&mut out, layer, enc, false, "lo", (3, 3, 2), &mut it).unwrap();
+    }
+    out.save().unwrap();
+    assert_eq!(super::build::build_root(&mut out).unwrap(), 3, "z2, z1 and z0");
+    let get =
+        |layer: &str, z: u8, x: u32, y: u32| crate::terrain_pack::ManifestTiles::new(&out, layer).get(z, x, y).unwrap();
+    let Grid::F(z2) = fall::decode(Kind::Terrarium, &get(LAYER, 2, 1, 1).unwrap()).unwrap() else { panic!() };
+    // (3/3/2 is z2 1/1's north-east quadrant; its west half there, columns 128–191.)
+    assert_eq!(z2[10 * 256 + 150], -100.0);
+    assert!(z2[10 * 256 + 220] >= NODATA_MIN && z2[200 * 256 + 150] >= NODATA_MIN && z2[10 * 256 + 20] >= NODATA_MIN);
+    let Grid::C(c2) = fall::decode(Kind::Class, &get(CLASS_LAYER, 2, 1, 1).unwrap()).unwrap() else { panic!() };
+    assert_eq!(c2[10 * 256 + 150], C_NATIVE);
+    let Grid::F(z0) = fall::decode(Kind::Terrarium, &get(LAYER, 0, 0, 0).unwrap()).unwrap() else { panic!() };
+    // (3/3/2 is z0's 32-px square at columns 96–127, rows 64–95; its west half 96–111.)
+    assert_eq!(z0[70 * 256 + 100], -100.0);
+    assert!(z0[70 * 256 + 120] >= NODATA_MIN);
+    assert!(get(LAYER, 2, 0, 0).is_none(), "no tile without data");
+    let s2 = decode(&get(SHADE_LAYER, 2, 1, 1).unwrap()).unwrap();
+    let want = quadrant(&decode(&shade_b).unwrap());
+    assert_eq!(code(s2[10 * 256 + 150]), code(want[10 * 128 + 22]), "the z3 shading's mean");
+    assert!(get(SHADE_LAYER, 0, 0, 0).is_some());
+    // The lo packs gone: the root's dropped.
+    for layer in [LAYER, CLASS_LAYER, SHADE_LAYER] {
+        out.remove(&lo_logical(layer, 3, 2));
+    }
+    out.save().unwrap();
+    assert_eq!(super::build::build_root(&mut out).unwrap(), 0);
+    for layer in [LAYER, CLASS_LAYER, SHADE_LAYER] {
+        assert!(out.get(&format!("layers/{layer}/root/0-0-0")).is_none(), "{layer}");
+    }
+}
+
 /// A measure (run by hand, read-only): the floor's shading (`build::shading`) of a real z3 tile's
 /// depth as stored (its depth and class lo packs, and the hi packs of its z6 tiles), timed, with
 /// the bytes of its tiles by zoom; with a folder, its tiles written there as `<z>/<x>/<y>.webp`.

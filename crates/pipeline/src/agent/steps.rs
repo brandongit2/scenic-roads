@@ -178,7 +178,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 58] = [
+pub const TABLE: [Step; 59] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -520,6 +520,17 @@ pub const TABLE: [Step; 58] = [
             "depth-lo",
             "Assembles a z3 tile's zoomed-out depth and its shading from its tiles' finer ones, composed from the depth sources where there are none.",
             w_depth_lo,
+        )
+    },
+    // (The root: 64 z3 tiles of each layer read, 21 made.)
+    Step {
+        ..step(
+            "depth",
+            Pack,
+            World,
+            "depth-root",
+            "Builds the world-level depth and its shading from the z3 tiles' zoomed-out packs.",
+            w_depth_root,
         )
     },
     // (A z6 tile's most its jobs took here, 8.4 GB, 2026-10-05; offered by its extract's size.)
@@ -1308,6 +1319,10 @@ fn w_depth_lo(l: &str, _: bool) -> bool {
     pack_of(l, &|ly| DEPTH_LAYERS.contains(&ly), &["lo"])
 }
 
+fn w_depth_root(l: &str, _: bool) -> bool {
+    pack_of(l, &|ly| DEPTH_LAYERS.contains(&ly), &["root"])
+}
+
 /// The depth steps' layers: the depth, its classes and the floor's shading (crate::depth).
 const DEPTH_LAYERS: [&str; 3] = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER];
 
@@ -1846,6 +1861,7 @@ mod tests {
                 "trees-lo",
                 "depth",
                 "depth-lo",
+                "depth-root",
                 "unit",
                 "pack",
                 "lo",

@@ -11708,7 +11708,7 @@ fn first_secs(step: &str) -> f64 {
         "roadunits" => 100.0,
         "stations" => 110.0,
         "ferries" => 30.0,
-        "terrain-root" | "slope-root" => 10.0,
+        "terrain-root" | "slope-root" | "depth-root" => 10.0,
         // (A block to z9 from GLO-30 on the NAS, terrain and shading together: 5.2 min a block on the
         // M4's 8 threads, 25 Oct; the root's z0–3, 41 tiles sampled.)
         "polar-terrain" => 240.0,

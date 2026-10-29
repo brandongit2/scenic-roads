@@ -18,7 +18,8 @@
 //! lacks is made from its nearest stored ancestor (`fall`) by the server, the same way the build
 //! scales a coarser level up (`compose`). Two steps make them (`build`): **depth**, a z6 tile's
 //! hi packs (z9–16) where a source has grids finer than the lo packs', then **depth-lo**, a z3
-//! tile's lo packs (z3–8), the means of them where they are.
+//! tile's lo packs (z3–8), the means of them where they are, and **depth-root**, the world's z0–2
+//! (the root packs), the means of the lo packs' z3.
 
 pub mod build;
 pub mod compose;
@@ -36,7 +37,9 @@ pub const SHADE_LAYER: &str = "depth-shade";
 /// Their encodings in the packs' meta and the catalogue.
 pub const ENCODING: &str = "terrarium-webp";
 pub const CLASS_ENCODING: &str = "class-webp";
-/// The zooms each layer holds.
+/// The zooms composed from the sources (a grid's zoom taken within them: compose::composes_at),
+/// the lo packs' first to the hi packs' last; the root (`build::ROOT`, z0–2) holds the coarser
+/// levels, the means of z3.
 pub const ZOOMS: (u8, u8) = (3, 16);
 
 /// Depth tiles' "no data" (positive: interpolation toward it passes through dry land).

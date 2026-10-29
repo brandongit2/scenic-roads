@@ -354,7 +354,11 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   today's sources z8 alone, GEBCO's, the coarsest grids: z3–7 have none of their own), then z8
   from the z9 tiles its z6 tiles' hi packs store, z7 down to z3 each from the finer; then its floor's
   shading (below).
-- **The floor's shading** (the `depth-shade` layer: `depth::build::shading`): the terrain's
+- **depth-root (the world, after every z3 tile's depth-lo, lead only):** z2 down to z0 each the
+  mean of the finer from the lo packs' z3 tiles (`depth::build::build_root`; no grid is coarser than
+  the lo packs', so nothing is composed there), and their floor's shading, z2 the mean of the z3
+  shading where it covers; the root packs (`root/0-0-0`) of the three layers, as the terrain's root.
+  It waits while a depth z6 tile or assembly is stale or waits to be merged.- **The floor's shading** (the `depth-shade` layer: `depth::build::shading`): the terrain's
   shading pyramid (§2, Slope; the same codes and codec) over the depth: at
   each place's finest stored level each pixel's steepness and direction by Horn's method on the
   depth, a pixel without data taking its nearest's in the tile (no cliff at the shore, which the map
@@ -737,6 +741,8 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   its z3–8 water as the depth reads it, rivers included ("depth 3/x/y", worked out by the
   terrain-water job), and the content names of its z6 tiles' `depth`, `depth-class` and
   `depth-shade` hi packs (its z8 is made from their z9).
+- **depth-root:** `DEPTH_ROOT_V`, the depth's versions and the content names of every `depth`,
+  `depth-class` and `depth-shade` lo pack (recorded with the other roots, by its name).
 - **bldtiles (per z6 tile):** `BUILDINGS_V`, the normalized files of the tile and its 8 neighbours,
   and the coverage's shapes over it with their countries (`Coverage::shapes_key`).
 
