@@ -42,6 +42,35 @@ pub struct Regions {
     pub ctx: Option<Prepared>,
     memo: resolve::Memo,
     needs: Mutex<Vec<String>>,
+    /// The accepted version's regions, by path: what each was resolved from (`resolved_from`),
+    /// told by `seed`.
+    accepted_from: Mutex<BTreeMap<String, String>>,
+}
+
+/// The version of what a region resolves to (its stored geometry and drawing), in each region's
+/// `resolved_from` and the checks' version (`Checks::version`). A region's geometry is pinned to
+/// what it's resolved from (its file, the shapes and regions it names, the pins, the pass, the
+/// datasets: `resolve::Outcome::keys`) and this: a check that finds those as they were keeps the
+/// accepted geometry, whatever else changed (a group file's name, another region's file), so
+/// terrain keyed by it doesn't move. **Bump it in the same commit as any change to the code that
+/// resolves (resolve, tiles, geom, land, stored, shapes, data, the outlines' simplify) which would
+/// change what an unchanged region resolves to**: that, and only that, re-derives every region.
+/// (2: `disabled`, #495: files an older app held as an unknown field are checked again. 3: #600: a
+/// region resolved by cell is drawn with its cells dissolved. 4: #611: the drawn shapes simplified
+/// at each point's own latitude (outlines::simplify), Antarctica's no longer five points. 5: #468:
+/// a region with water stores its land and its water as shapes apart. 6: #648: the cover check's
+/// gaps joined across the cells' edges before the fill and the sizes. 7: #649: one coastline: land
+/// and sea in no region along the coastline go to the region with water beside them. 8: #468: the
+/// coast's land and sea within COAST_REACH_M go to the nearest region, split at the median line.
+/// 9: #468: land mostly in two regions with water said as an overlap; nearest-coast splits reach
+/// past 450 km. 10: #468: the 12-nautical-mile line stored with the pins; the coastline's land the
+/// pass's own, by cell.)
+pub const RESOLUTION: u32 = 10;
+
+/// What `derive` records a region was resolved from (`resolved_from`): its resolution key
+/// (`resolve::Outcome::keys`) with `RESOLUTION`.
+pub fn resolved_from(key: &str) -> String {
+    format!("{RESOLUTION} {key}")
 }
 
 /// What the check reads from the records: the build's current pass, its outline set and extract,
@@ -170,18 +199,7 @@ impl Checks for Regions {
     }
 
     fn version(&self) -> u32 {
-        // (2: `disabled`, #495: files an older app held as an unknown field are checked again.
-        // 3: #600: a region resolved by cell is drawn with its cells dissolved. 4: #611: the drawn
-        // shapes simplified at each point's own latitude (outlines::simplify), Antarctica's no
-        // longer five points. 5: #468: a region with water stores its land and its water as
-        // shapes apart. 6: #648: the cover check's gaps joined across the cells' edges before the
-        // fill and the sizes. 7: #649: one coastline: land and sea in no region along the
-        // coastline go to the region with water beside them. 8: #468: the coast's land and sea
-        // within COAST_REACH_M go to the nearest region, split at the median line. 9: #468: land
-        // mostly in two regions with water said as an overlap; nearest-coast splits reach past 450
-        // km. 10: #468: the 12-nautical-mile line stored with the pins; the coastline's land the
-        // pass's own, by cell.)
-        10
+        RESOLUTION
     }
 
     fn recursive(&self) -> bool {
@@ -289,9 +307,16 @@ impl Checks for Regions {
     fn derive(&self, v: &Version, keep: &BTreeSet<String>) -> Result<Derived> {
         let (folder, out) = self.resolve(v)?;
         let mut d = Derived::default();
+        let accepted = self.accepted_from.lock().unwrap().clone();
         for (id, res) in &out.resolved {
             let path = &folder.regions[id].0;
             if keep.contains(path) {
+                continue;
+            }
+            // (Resolved from what it was accepted from, by this version of the resolution: its
+            // accepted geometry stays, so terrain keyed by it doesn't move.)
+            let from = out.keys.get(id).map(|k| resolved_from(k));
+            if from.is_some() && from.as_ref() == accepted.get(path) {
                 continue;
             }
             let g = res.geometry.encode();
@@ -301,6 +326,9 @@ impl Checks for Regions {
             let mut facts = serde_json::Map::new();
             facts.insert("geometry".into(), gname.clone().into());
             facts.insert("drawn".into(), dname.clone().into());
+            if let Some(f) = from {
+                facts.insert("resolved_from".into(), f.into());
+            }
             d.facts.insert(path.clone(), (facts, Some(gname.clone())));
             d.store.insert(gname, std::sync::Arc::new(g));
             d.store.insert(dname, std::sync::Arc::new(dr));
@@ -320,6 +348,17 @@ impl Checks for Regions {
             }
         }
         Ok(d)
+    }
+
+    fn seed(&self, accepted: &super::Index) {
+        *self.accepted_from.lock().unwrap() = accepted
+            .files
+            .iter()
+            // (An index of another version of the checks: everything derived again.)
+            .filter(|_| accepted.checks == format!("{UNIT} {RESOLUTION}"))
+            .filter(|(_, e)| e.facts.contains_key("geometry") && e.facts.contains_key("drawn"))
+            .filter_map(|(p, e)| Some((p.clone(), e.facts.get("resolved_from")?.as_str()?.to_string())))
+            .collect();
     }
 
     fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {

@@ -258,6 +258,11 @@ pub struct Outcome {
     pub problems: Vec<Problem>,
     /// The relations and ways the extract lacks, which the check holds files for (`rg-extract`).
     pub needs: BTreeSet<Id>,
+    /// By id, a digest of everything its resolution reads: its file, the pins, the
+    /// shapes and regions it names (their own keys), the context. A region with water is resolved
+    /// with every other (the coast shared between them, the rest), so its key is the whole
+    /// folder's (every file but the group files, which no resolution reads).
+    pub keys: BTreeMap<String, String>,
 }
 
 /// Every region of `folder` resolved against `ctx`, in an order where each comes after those it
@@ -370,6 +375,23 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
         pending = rest;
     }
     super::tiles::resolve(folder, ctx, &mut out);
+    let whole = {
+        let mut parts = vec![
+            ctx.names.clone(),
+            ctx.pass.unwrap_or("-").to_string(),
+            format!("{:?}", folder.pins),
+            ctx.data.map(|d| d.names.clone()).unwrap_or_default(),
+        ];
+        parts.extend(folder.hashes.iter().map(|(p, h)| format!("{p} {h}")));
+        store::naming::hash16(parts.join("\n").as_bytes())
+    };
+    for (id, (_, r)) in &folder.regions {
+        if r.has_water() {
+            keys.insert(id.clone(), whole.clone());
+        }
+    }
+    keys.retain(|id, _| out.resolved.contains_key(id));
+    out.keys = keys;
     out.problems.sort_by(|a, b| (a.check, &a.about, &a.found).cmp(&(b.check, &b.about, &b.found)));
     out.problems.dedup();
     out

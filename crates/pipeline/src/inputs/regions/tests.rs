@@ -358,6 +358,85 @@ fn a_new_checks_version_derives_again_and_changes_only_the_drawn_files() {
     assert!(!run(Some(&d2.index), &d2.listed).changed);
 }
 
+/// A region's geometry is pinned to what it's resolved from and `RESOLUTION` (#832): a change
+/// that doesn't touch what a region reads (a folder's `_group.toml`, another region's file) keeps
+/// its accepted geometry, even one the resolution as it is now would make otherwise; a change of
+/// what it reads, or of `RESOLUTION`, derives it again.
+#[test]
+fn a_change_that_a_region_doesnt_read_keeps_its_accepted_geometry() {
+    let f = fx();
+    let checks = Regions::new(Some(Prepared {
+        pass: Some(PASS.into()),
+        outlines: Some(Outlines::open(&f._d.path().join("outlines.sect")).unwrap()),
+        ..Default::default()
+    }));
+    let (a, b, b2) = (
+        region("a", "outline = [\"osm:1\"]\n"),
+        region("b", "outline = [\"osm:2\"]\n"),
+        region("b", "outline = [\"osm:2\", \"osm:4\"]\n"),
+    );
+    let files = |extra: &[(&str, &str)]| -> BTreeMap<String, Vec<u8>> {
+        [("_pins.toml", PINS.1), ("eu/a.toml", a.as_str())]
+            .iter()
+            .chain(extra)
+            .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
+            .collect()
+    };
+    let (accepted, unsettled) = (Default::default(), Default::default());
+    let kept = std::cell::RefCell::new(BTreeMap::<String, Arc<Vec<u8>>>::new());
+    let ro = |e: &FileEntry| -> Result<Vec<u8>> { Ok(kept.borrow()[&e.file].to_vec()) };
+    let run = |update: &BTreeMap<String, Vec<u8>>, prev: Option<&Index>, listed: &BTreeMap<String, (u64, u64)>| {
+        let listing = Listing {
+            files: update.keys().map(|p| (p.clone(), (update[p].len() as u64, 1))).collect(),
+            ..Default::default()
+        };
+        let rn = |p: &str| Ok(update[p].clone());
+        let d = decide(&Given {
+            checks: &checks,
+            prev,
+            prev_listed: listed,
+            listing: &listing,
+            unsettled: &unsettled,
+            accepted: &accepted,
+            full: true,
+            read_new: &rn,
+            read_old: &ro,
+        })
+        .unwrap();
+        kept.borrow_mut().extend(d.store.clone());
+        d
+    };
+    let d = run(&files(&[("eu/b.toml", &b)]), None, &BTreeMap::new());
+    assert!(d.report.is_none(), "{:?}", d.report);
+    let e = d.index.files["eu/a.toml"].clone();
+    assert!(e.facts["resolved_from"].as_str().unwrap().starts_with(&format!("{RESOLUTION} ")));
+    // The accepted geometry as an older resolution made it (same RESOLUTION: a change nobody bumped).
+    let fake = "sources/inputs/regions/@geometry/a.0000000000000000.rgeo";
+    let mut old = d.index.clone();
+    let ea = old.files.get_mut("eu/a.toml").unwrap();
+    ea.facts.insert("geometry".into(), fake.into());
+    ea.keyed = fake.into();
+    // A group's name added and another region edited: a's geometry stays, b's is made again.
+    let next = files(&[("eu/b.toml", &b2), ("eu/_group.toml", "name = \"Europe\"\n")]);
+    let d2 = run(&next, Some(&old), &d.listed);
+    assert!(d2.changed && d2.report.is_none(), "{:?}", d2.report);
+    assert_eq!(d2.index.files["eu/a.toml"].keyed, fake);
+    assert_eq!(d2.index.files["eu/a.toml"].facts["geometry"], fake);
+    assert_ne!(d2.index.files["eu/b.toml"].keyed, d.index.files["eu/b.toml"].keyed);
+    // The resolution's version bumped (an index of the version before): a is resolved again.
+    let mut older = d2.index.clone();
+    older.checks = format!("regions {}", RESOLUTION - 1);
+    let ea = older.files.get_mut("eu/a.toml").unwrap();
+    ea.facts.insert("resolved_from".into(), format!("{} x", RESOLUTION - 1).into());
+    let d3 = run(&next, Some(&older), &d2.listed);
+    assert_eq!(d3.index.files["eu/a.toml"].keyed, e.keyed);
+    // Its own file changed: resolved again.
+    let mut edited = next.clone();
+    edited.insert("eu/a.toml".into(), region("a", "outline = [\"osm:1\", \"osm:4\"]\n").into_bytes());
+    let d4 = run(&edited, Some(&old), &d.listed);
+    assert_ne!(d4.index.files["eu/a.toml"].keyed, fake);
+}
+
 #[test]
 fn a_line_from_ways_buffered_and_ways_that_dont_join() {
     let f = fx();
