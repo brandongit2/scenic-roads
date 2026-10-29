@@ -478,10 +478,18 @@ pub fn after(
         let voters = voters(&hbs);
         let going = run.controls.kept.asked.as_ref().is_some_and(|a| matches!(a.state, State::Going | State::Passed))
             || v.handing.is_some();
+        // (By member, not report: one failing its coordinator and reaching its broker counts once,
+        // as failing.)
+        let failing: std::collections::BTreeSet<&str> =
+            reachable::unreached(&voters, &me, now).iter().map(|(b, _)| b.member.as_str()).collect();
         let unreached = Unreached {
             for_s: reachable::unreachable_for(&voters, &me, now),
-            by: reachable::unreached(&voters, &me, now).len(),
-            reach: voters.iter().filter(|b| reachable::reached(std::slice::from_ref(*b), &me, now)).count(),
+            by: failing.len(),
+            reach: voters
+                .iter()
+                .filter(|b| !failing.contains(b.member.as_str()))
+                .filter(|b| reachable::reached(std::slice::from_ref(*b), &me, now))
+                .count(),
             of: voters.iter().filter(|b| b.member != me && b.beat > 0 && !b.out_of_touch(now)).count(),
         };
         let last_change = v.lead.as_ref().map_or(0, |l| l.since);

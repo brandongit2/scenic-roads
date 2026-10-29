@@ -2051,13 +2051,16 @@ impl Agent {
         root: &store::nasfs::NasRoot,
         waiting: &mut Vec<Waiting>,
     ) -> Option<&crate::coord::client::Client> {
-        // (A coordinator that last answered as another member than the term's lead: the lead
-        // before a handover, kept on as its Mac's broker, which answers every ask with nothing
+        // (A coordinator that last answered as an earlier term's lead than the pool's view: the
+        // lead before a handover, kept on as its Mac's broker, which answers every ask with nothing
         // and never fails a request, so the contact was never read again. Task #815: the M4,
-        // paused through a handover, got no job for hours. Its contact read again.)
+        // paused through a handover, got no job for hours. Its contact read again. By the term,
+        // not the member alone: a view lagging the term, the new lead's answer is kept, not read
+        // again at every ask until the view catches up.)
         let lead = self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()).and_then(|v| v.lead.as_ref());
         if let (Some(c), Some(l)) = (&self.client, lead) {
-            if let Some(m) = c.answered().and_then(|a| a.member).filter(|m| *m != l.member) {
+            let stale = c.answered().filter(|a| a.term.is_some_and(|t| t < l.term)).and_then(|a| a.member);
+            if let Some(m) = stale {
                 eprintln!(
                     "agent: the coordinator it asked answers as {m}, not term {}'s lead {}: reading the lead's contact again",
                     l.term, l.host
@@ -19109,6 +19112,14 @@ mod pool_tests {
         // Kept while the lead answers as itself.
         let urls = a.client(&root, &mut w).unwrap().urls();
         assert_eq!(a.client(&root, &mut w).unwrap().urls(), urls);
+        // A view lagging the term (still naming term 538's lead): the newer lead's kept.
+        if let Some(v) = a.pool_seen.as_mut().and_then(|p| p.lead.as_mut()) {
+            (v.term, v.lead) = (538, Some(lead::LeadOf { term: 538, member: "m-mini".into(), host: "mini".into(), ..Default::default() }));
+        }
+        let c = a.client(&root, &mut w).unwrap();
+        c.ask(&ask).unwrap();
+        let ptr = c as *const _;
+        assert_eq!(a.client(&root, &mut w).unwrap() as *const _, ptr, "kept, not read again");
     }
 
     #[test]
