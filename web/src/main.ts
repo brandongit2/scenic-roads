@@ -44,6 +44,7 @@ import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrai
 import { applyWater, switchCoast, updateCoastRamp } from './coast';
 import { CatalogueWatch } from './catalogue';
 import { PolarCaps } from './polarcaps';
+import { boxKm, viewArea } from './inview';
 import { capGround, globeProjection } from './polarglobe';
 import { TileRetry } from './retry';
 import { RegionLayers } from './regions';
@@ -997,9 +998,8 @@ async function main() {
   const approxQuery = (): boolean => {
     const o = groundOutline();
     if (o.length < 3) return approxLists ?? false;
-    let [w, s, e, n] = [Infinity, Infinity, -Infinity, -Infinity];
-    for (const p of o) [w, s, e, n] = [Math.min(w, p.lng), Math.min(s, p.lat), Math.max(e, p.lng), Math.max(n, p.lat)];
-    const km = Math.max((e - w) * 111.32 * Math.cos((((s + n) / 2) * Math.PI) / 180), (n - s) * 111.32);
+    // (Its box across the antimeridian or round a pole: inview.ts.)
+    const km = boxKm(viewArea(o.map((ll) => [ll.lng, ll.lat]), [-180, -90, 180, 90]).box);
     approxLists = approxLists === null ? km > 1050 : approxLists ? km > 900 : km > 1200;
     return approxLists;
   };

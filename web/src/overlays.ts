@@ -20,6 +20,7 @@ import { fitPopup } from './popupfit';
 import { cap, fmt, h } from './ui/dom';
 import type { LayersCard } from './ui/layers';
 import type { Credit } from './catalogue';
+import { viewArea, type Box, type ViewArea } from './inview';
 
 const POI_LABEL: Record<string, string> = {
   viewpoint: 'Viewpoint', peak: 'Peak', waterfall: 'Waterfall', lighthouse: 'Lighthouse', covered_bridge: 'Covered bridge',
@@ -239,25 +240,15 @@ export class Overlays {
     const s = this.state;
     if (!this.marks || !s) return;
     const srcs = [...this.indexed.keys()].filter((src) => this.byView(src) && OVERLAYS.some(([k]) => OVERLAY_SOURCE[k] === src && s.overlays[k]));
-    const poly = this.viewOutline?.() ?? [];
-    let box: [number, number, number, number];
-    if (poly.length >= 3) {
-      const xs = poly.map((p) => p[0]), ys = poly.map((p) => p[1]);
-      box = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-    } else {
-      const b = this.map.getBounds();
-      box = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
-    }
-    // Longitudes into −180…180 (west > east: across the antimeridian), the whole world past 360°.
-    const wrap = (x: number) => ((((x + 180) % 360) + 360) % 360) - 180;
-    const norm = (b: [number, number, number, number]): [number, number, number, number] =>
-      b[2] - b[0] >= 360 ? [-180, Math.max(-85.06, b[1]), 180, Math.min(85.06, b[3])] : [wrap(b[0]), Math.max(-85.06, b[1]), wrap(b[2]), Math.min(85.06, b[3])];
-    box = norm(box);
+    // The tiles' latitudes (a view past them, round a pole, keeps the row at their edge).
+    const lat = (y: number) => Math.max(-85.06, Math.min(85.06, y));
+    const merc = ([w, s, e, n]: Box): Box => [w, lat(s), e, lat(n)];
+    const box = merc(this.area().box);
     // A tilted view sees ground beyond the outline's box, to the horizon: coarser tiles there.
-    let far: [number, number, number, number] | null = null;
+    let far: Box | null = null;
     if (this.map.getPitch() > 45) {
       const b = this.map.getBounds();
-      far = norm([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+      far = merc(viewArea([], [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]).box);
     }
     this.worker.postMessage({ type: 'view', zoom: this.map.getZoom(), dpr: window.devicePixelRatio || 1, box, far, srcs } satisfies LandmarkRequest);
   }
@@ -434,15 +425,10 @@ export class Overlays {
   /** Outline of the ground in view (lng, lat), as the "in view" lists use; else the bounds. */
   viewOutline: (() => [number, number][]) | null = null;
 
-  /** Whether a point is in view: within the ground outline (and its bounding box). */
-  private inViewTest(): (x: number, y: number) => boolean {
-    const poly = this.viewOutline?.() ?? [];
-    if (poly.length < 3) {
-      const b = this.map.getBounds();
-      const [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
-      return (x, y) => y >= s && y <= n && (w <= e ? x >= w && x <= e : x >= w || x <= e);
-    }
-    return inPolygon(poly);
+  /** The ground in view (inview.ts): the outline's, else the bounds. */
+  private area(): ViewArea {
+    const b = this.map.getBounds();
+    return viewArea(this.viewOutline?.() ?? [], [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
   }
   /** In view (after the filters), per visible landmark kind: how many, and the best-known (fame). */
   viewLandmarks: { key: OverlayKey; label: string; colour: string; n: number; best: { name: string; lngLat: [number, number]; layer: string; props: Record<string, any> } | null }[] = [];
@@ -967,19 +953,3 @@ function spreadRange(lo: number, hi: number): [number, number] {
   return [Math.max(0, m - 0.01), Math.min(1, m + 0.01)];
 }
 
-/** Point-in-polygon test (lng, lat ring), with a bounding-box pre-check. */
-export function inPolygon(poly: [number, number][]): (x: number, y: number) => boolean {
-  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-  for (const [x, y] of poly) {
-    w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y);
-  }
-  return (x, y) => {
-    if (x < w || x > e || y < s || y > n) return false;
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const [xi, yi] = poly[i], [xj, yj] = poly[j];
-      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-    }
-    return inside;
-  };
-}

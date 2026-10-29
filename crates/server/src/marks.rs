@@ -261,74 +261,26 @@ fn blocks_zoom() -> u8 {
     pm::KZ_NONE
 }
 
-/// The view's test (the worker's inOutline): inside the outline (with its bounding box first), or
-/// without a usable outline the bounds (west > east: across the antimeridian).
-pub struct Region {
-    poly: Vec<[f64; 2]>,
-    bbox: [f64; 4],
-    bounds: [f64; 4],
-}
+pub use crate::inview::Region;
 
-impl Region {
-    pub fn new(poly: Vec<[f64; 2]>, bounds: [f64; 4]) -> Region {
-        let (mut w, mut s, mut e, mut n) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-        for &[x, y] in &poly {
-            w = w.min(x);
-            e = e.max(x);
-            s = s.min(y);
-            n = n.max(y);
-        }
-        Region { poly, bbox: [w, s, e, n], bounds }
-    }
-
-    pub fn test(&self, x: f64, y: f64) -> bool {
-        if self.poly.len() < 3 {
-            let [w0, s0, e0, n0] = self.bounds;
-            return y >= s0 && y <= n0 && if w0 <= e0 { x >= w0 && x <= e0 } else { x >= w0 || x <= e0 };
-        }
-        let [w, s, e, n] = self.bbox;
-        if x < w || x > e || y < s || y > n {
-            return false;
-        }
-        let p = &self.poly;
-        let mut inside = false;
-        let mut j = p.len() - 1;
-        for i in 0..p.len() {
-            let ([xi, yi], [xj, yj]) = (p[i], p[j]);
-            if (yi > y) != (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi {
-                inside = !inside;
-            }
-            j = i;
-        }
-        inside
-    }
-
-    /// The z6 tiles a point passing the test can be in (a tile's margin around the box).
-    pub fn tiles(&self) -> Vec<(u32, u32)> {
-        let [w, s, e, n] = if self.poly.len() < 3 { self.bounds } else { self.bbox };
+/// The z6 tiles a point in the region can be in (a tile's margin around its boxes).
+fn region_tiles(region: &Region) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    for &[w, s, e, n] in region.boxes() {
         if !(s <= n) || !w.is_finite() || !e.is_finite() {
-            return Vec::new();
+            continue;
         }
-        let lons: Vec<(f64, f64)> =
-            if self.poly.len() < 3 && w > e { vec![(w, 180.0), (-180.0, e)] } else { vec![(w, e)] };
-        let (lat_n, lat_s) = (n.clamp(-85.06, 85.06), s.clamp(-85.06, 85.06));
-        let mut out = Vec::new();
-        for (a, b) in lons {
-            if a > 180.0 || b < -180.0 {
-                continue;
-            }
-            let (x0, y0) = pm::tile_at(a.max(-180.0), lat_n, 6);
-            let (x1, y1) = pm::tile_at(b.min(180.0), lat_s, 6);
-            for x in x0.saturating_sub(1)..=(x1 + 1).min(63) {
-                for y in y0.saturating_sub(1)..=(y1 + 1).min(63) {
-                    out.push((x, y));
-                }
+        let (x0, y0) = pm::tile_at(w.max(-180.0), n.clamp(-85.06, 85.06), 6);
+        let (x1, y1) = pm::tile_at(e.min(180.0), s.clamp(-85.06, 85.06), 6);
+        for x in x0.saturating_sub(1)..=(x1 + 1).min(63) {
+            for y in y0.saturating_sub(1)..=(y1 + 1).min(63) {
+                out.push((x, y));
             }
         }
-        out.sort_unstable();
-        out.dedup();
-        out
     }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// A row's values for the filters (its kind's fields, NaN: none).
@@ -416,8 +368,7 @@ fn named_props(s: &crate::AppState, raw: &[u8], lon: f64, lat: f64) -> Map<Strin
 /// The markdata tiles a region can need.
 fn views_for(s: &S, region: &Region) -> anyhow::Result<Vec<Arc<MarkView>>> {
     let cat = s.data.catalogue();
-    let want: Vec<String> = region
-        .tiles()
+    let want: Vec<String> = region_tiles(region)
         .into_iter()
         .map(|(x, y)| format!("6/{x}/{y}"))
         .filter(|t| cat.markdata.contains_key(t))

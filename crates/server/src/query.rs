@@ -143,23 +143,25 @@ impl FirstErr {
 
 // ---- tiles ----------------------------------------------------------------------------------
 
-/// The view's box grown by `margin_km` (E7).
-fn grown(region: &Region, margin_km: f64) -> [i32; 4] {
-    let lat = (region.bb[1].unsigned_abs().max(region.bb[3].unsigned_abs()) as f64 * E7).min(85.0);
-    let dlat = (margin_km / 111.32 / E7) as i32;
-    let dlon = (margin_km / 111.32 / lat.to_radians().cos().max(0.05) / E7) as i32;
-    [
-        region.bb[0].saturating_sub(dlon),
-        region.bb[1].saturating_sub(dlat),
-        region.bb[2].saturating_add(dlon),
-        region.bb[3].saturating_add(dlat),
-    ]
+/// The z6 tiles of the view's boxes grown by `margin_km`.
+fn tiles_around(region: &Region, margin_km: f64) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    for &[w, s, e, n] in region.boxes() {
+        let lat = s.abs().max(n.abs()).min(85.0);
+        let dlat = margin_km / 111.32;
+        let dlon = margin_km / 111.32 / lat.to_radians().cos().max(0.05);
+        let e7 = |d: f64| (d / E7) as i32;
+        out.extend(tiles_in([e7(w - dlon), e7(s - dlat), e7(e + dlon), e7(n + dlat)]));
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// The hidata of the z6 tiles in view plus a margin; an error when one can't be read (a query
 /// over part of the view would look complete).
 fn tiles_for(s: &AppState, region: &Region, margin_km: f64, cancel: &Cancel) -> anyhow::Result<Vec<QTile>> {
-    let got: Vec<anyhow::Result<Option<QTile>>> = tiles_in(grown(region, margin_km))
+    let got: Vec<anyhow::Result<Option<QTile>>> = tiles_around(region, margin_km)
         .into_par_iter()
         .map(|(x, y)| {
             cancel.check()?;
@@ -184,7 +186,7 @@ fn ltiles_for(
     rail: bool,
     cancel: &Cancel,
 ) -> anyhow::Result<Option<Vec<LTile>>> {
-    let views: Vec<anyhow::Result<Option<Arc<HiView>>>> = tiles_in(grown(region, margin_km))
+    let views: Vec<anyhow::Result<Option<Arc<HiView>>>> = tiles_around(region, margin_km)
         .into_par_iter()
         .map(|(x, y)| {
             cancel.check()?;

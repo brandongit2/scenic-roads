@@ -17,6 +17,7 @@ mod depth;
 mod descriptions;
 mod details;
 mod downloads;
+mod inview;
 mod marks;
 mod markview;
 mod names_live;
@@ -44,7 +45,6 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use roadcore::E7;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -1092,61 +1092,7 @@ fn urlencoding_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-// ---- the area in view -----------------------------------------------------------------
-
-/// The part of the map in view: a bounding box and, when the client sends it, the outline of the
-/// ground on screen. On a tilted globe the bounding box of a view that reaches a pole spans every
-/// longitude, far more than is on screen.
-pub struct Region {
-    /// west, south, east, north (E7 degrees).
-    pub bb: [i32; 4],
-    poly: Vec<[f64; 2]>,
-}
-
-impl Region {
-    /// `bbox`: west,south,east,north; `poly`: lon,lat,lon,lat,… (degrees), at least 3 points.
-    pub fn parse(bbox: &str, poly: Option<&str>) -> Option<Region> {
-        let pts: Vec<[f64; 2]> = poly
-            .map(|p| {
-                let v: Vec<f64> = p.split(',').filter_map(|x| x.parse().ok()).collect();
-                v.chunks_exact(2).map(|c| [c[0], c[1]]).collect()
-            })
-            .unwrap_or_default();
-        if pts.len() >= 3 {
-            let (mut w, mut so, mut e, mut n) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-            for p in &pts {
-                (w, e, so, n) = (w.min(p[0]), e.max(p[0]), so.min(p[1]), n.max(p[1]));
-            }
-            let bb = [(w / E7) as i32, (so / E7) as i32, (e / E7) as i32, (n / E7) as i32];
-            return Some(Region { bb, poly: pts });
-        }
-        let b: Vec<f64> = bbox.split(',').filter_map(|x| x.parse().ok()).collect();
-        (b.len() == 4).then(|| Region {
-            bb: [(b[0] / E7) as i32, (b[1] / E7) as i32, (b[2] / E7) as i32, (b[3] / E7) as i32],
-            poly: Vec::new(),
-        })
-    }
-
-    /// Point (E7 degrees) in view.
-    pub fn contains(&self, lon: i32, lat: i32) -> bool {
-        if lon < self.bb[0] || lon > self.bb[2] || lat < self.bb[1] || lat > self.bb[3] {
-            return false;
-        }
-        if self.poly.is_empty() {
-            return true;
-        }
-        let (x, y) = (lon as f64 * E7, lat as f64 * E7);
-        let mut inside = false;
-        let n = self.poly.len();
-        for i in 0..n {
-            let (a, b) = (self.poly[i], self.poly[(i + n - 1) % n]);
-            if (a[1] > y) != (b[1] > y) && x < (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0] {
-                inside = !inside;
-            }
-        }
-        inside
-    }
-}
+pub use inview::Region;
 
 #[cfg(test)]
 mod tests {

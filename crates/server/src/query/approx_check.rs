@@ -89,7 +89,7 @@ fn load() -> Tiles {
 }
 
 fn pick<T: Clone>(m: &BTreeMap<(u32, u32), T>, region: &Region, margin_km: f64) -> Vec<T> {
-    tiles_in(grown(region, margin_km)).iter().filter_map(|t| m.get(t).cloned()).collect()
+    tiles_around(region, margin_km).iter().filter_map(|t| m.get(t).cloned()).collect()
 }
 
 fn region(b: [f64; 4]) -> Region {

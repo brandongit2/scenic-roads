@@ -82,7 +82,9 @@ offsets), then each point's lean JSON props back to back. The server attaches di
 
 The server computes as the app does, exactly: the score `(1 − b)·min(1, fa/5) +
 b·clamp((log10(max(0.05, ia)) + 1.3)/5.6, 0, 1)` in f64 (`marks::log10_js` matches V8's log10 bit for
-bit); degrees as `e7 as f64 / 1e7`; outlines across the antimeridian; ties by fa then rank (best per
+bit); degrees as `e7 as f64 / 1e7`; the view's outline tested on the stereographic plane centred in
+it, so a view across the antimeridian or round a pole holds what is on screen (`crates/server/src/inview.rs`,
+`web/src/inview.ts` the same for the app's ferries and landmark tiles, #826); ties by fa then rank (best per
 kind), by score, the kind's place in the request, then rank (top lists); the summit the first in view
 in the summits list's order.
 

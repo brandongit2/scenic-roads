@@ -1,7 +1,7 @@
 // Passenger ferries on the map: data (fetched on first use), styling from the "Ferries" state,
 // hover summaries, click popups and km in view per service group.
 import * as maplibregl from 'maplibre-gl';
-import { inPolygon } from './overlays';
+import { boxesMeet, viewArea, type Box } from './inview';
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
 import { keepable, onVersions, ver } from './api';
 import { hostFor } from './hosts';
@@ -446,18 +446,15 @@ export class Ferries {
   viewSummary(): { routes: number; seasonal: number; busiest: { name: string; perDay: number; lngLat: [number, number] } | null } {
     const out = { routes: 0, seasonal: 0, busiest: null as { name: string; perDay: number; lngLat: [number, number] } | null };
     if (!this.fc) return out;
-    const poly = this.viewOutline?.() ?? [];
     const b = this.map.getBounds();
-    let [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
-    const test = poly.length >= 3 ? inPolygon(poly) : (x: number, y: number) => x >= w && x <= e && y >= s && y <= n;
-    if (poly.length >= 3) for (const [x, y] of poly) [w, s, e, n] = [Math.min(w, x), Math.min(s, y), Math.max(e, x), Math.max(n, y)];
+    const { test, box } = viewArea(this.viewOutline?.() ?? [], [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
     const fs = this.fc.features as Feature[];
     this.boxes ??= lineBoxes(fs);
     const bx = this.boxes;
     const seen = new Set<string>();
     for (let fi = 0; fi < fs.length; fi++) {
       const f = fs[fi];
-      if (f.geometry.type !== 'LineString' || bx[fi * 4] > e || bx[fi * 4 + 2] < w || bx[fi * 4 + 1] > n || bx[fi * 4 + 3] < s) continue;
+      if (f.geometry.type !== 'LineString' || !boxesMeet(box, Array.from(bx.subarray(fi * 4, fi * 4 + 4)) as Box)) continue;
       const c = (f.geometry as GeoJSON.LineString).coordinates;
       const inside = c.filter(([x, y]) => test(x, y));
       if (!inside.length) continue;
