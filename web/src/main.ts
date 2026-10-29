@@ -184,6 +184,8 @@ async function main() {
   const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings)) : CMP ? cmpState(fromHash(location.hash, hasBuildings)) : linked);
   const profiles = new Profiles(store, listing, activePid, () => hasBuildings);
   profiles.use(activePid);
+  // (The opening tilt for 3D terrain was chosen before the profiles arrived.)
+  if (!v && pre.terrain.on && !store.s.terrain.on) map.jumpTo({ pitch: 0 });
   history.replaceState(null, '', toHash(store.s, hasBuildings, profiles.base())); // the address bar holds the restored state
   // (The water's tiles carry its colours: the user's from the start, so they're fetched once.)
   setLandColour(store.s.land);
@@ -2001,10 +2003,9 @@ async function main() {
   let hashTimer = 0;
   const writeHash = () => {
     clearTimeout(hashTimer);
-    // (Not while a profile is previewed: the user's settings stay theirs.)
-    if (profiles.previewing) return;
-    hashTimer = window.setTimeout(() => history.replaceState(null, '', toHash(store.s, hasBuildings, profiles.base())), 150);
-    prefs.saveSoon('state', () => ({ ...store.s, selected: null }));
+    // (While a profile is previewed, the user's settings, not the preview's: userState.)
+    hashTimer = window.setTimeout(() => history.replaceState(null, '', toHash(profiles.userState(), hasBuildings, profiles.base())), 150);
+    prefs.saveSoon('state', () => ({ ...profiles.userState(), selected: null }));
   };
   let styleReady = false;
   // The depth's 3D floor (depth.ts setFloor): the terrain's source swapped and the water's surface
@@ -2228,7 +2229,8 @@ async function main() {
   // Pasted / edited links: apply the new state without a reload.
   window.addEventListener('hashchange', () => {
     const pid = profileIdOf(location.hash);
-    if (profiles.has(pid)) profiles.use(pid);
+    // (A profile that's gone: the default, as at the start.)
+    if (pid) profiles.use(pid);
     const next = fromHash(location.hash, hasBuildings, pid ? profiles.base().s : defaults);
     const { view, buildings, ...rest } = next;
     store.set(hasBuildings ? { ...rest, buildings } : rest);

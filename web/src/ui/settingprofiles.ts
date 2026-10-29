@@ -70,9 +70,8 @@ type Edit = { kind: 'add' } | { kind: 'rename'; id: string };
 export class Profiles {
   /** The dropdown (the sidebar's top, below its heading). */
   readonly el: HTMLDivElement;
-  /** True while a hovered profile is shown on the map (main.ts leaves the link and the saved
-   * state alone then). */
-  previewing = false;
+  /** True while a hovered profile is shown on the map (links and the saved state take userState). */
+  private previewing = false;
   /** Asked for the link once the profile in use or its settings changed. */
   onChange: () => void = () => {};
 
@@ -101,7 +100,9 @@ export class Profiles {
     this.btnMod = h('span', { class: 'pf-mod' }, 'modified');
     this.btn = h('button', { class: 'pf-btn', type: 'button', title: 'Settings profile: every setting of this panel, shared by everyone using the map', 'aria-haspopup': 'listbox' },
       this.btnName, this.btnMod, h('i', { class: 'pf-caret' }));
-    this.btn.addEventListener('click', () => (this.menu.hidden ? this.open() : this.close()));
+    this.btn.setAttribute('aria-expanded', 'false');
+    // (Opened from the keyboard, detail 0: the focus goes to the profile in use.)
+    this.btn.addEventListener('click', (e) => (this.menu.hidden ? this.open(e.detail === 0) : this.close()));
     this.menu = h('div', { class: 'pf-menu', role: 'listbox' });
     this.menu.hidden = true;
     this.menu.addEventListener('mouseleave', () => this.scheduleRevert());
@@ -118,8 +119,20 @@ export class Profiles {
         if (this.edit) {
           this.edit = null;
           this.render();
-        } else this.close();
+        } else {
+          this.close();
+          this.btn.focus();
+        }
       }
+    });
+    // Up and down move through the menu's profiles (and its last item).
+    this.menu.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const items = [...this.menu.querySelectorAll<HTMLButtonElement>('.pf-main:not(:disabled)')];
+      if (!items.length) return;
+      e.preventDefault();
+      const i = items.indexOf(document.activeElement as HTMLButtonElement);
+      items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
     });
     window.addEventListener('resize', () => this.place());
     let queued = false;
@@ -160,6 +173,13 @@ export class Profiles {
     this.active = this.has(id) ? id : this.def;
     prefs.save('profile', this.active);
     this.renderButton();
+  }
+
+  /** The user's state: while a profile is previewed, the one before it (with the map's camera and
+   * selection), so a link, the saved state or a new profile never take the preview's. */
+  userState(): AppState {
+    const b = this.before, s = this.store.s;
+    return b ? { ...b, view: s.view, selected: s.selected, stretch: s.stretch } : s;
   }
 
   /** Whether the settings differ from the profile's (what a link would carry). */
@@ -227,11 +247,13 @@ export class Profiles {
     this.previewing = false;
   }
 
-  private open() {
+  private open(focus = false) {
     this.edit = null;
     this.menu.hidden = false;
     this.btn.classList.add('open');
+    this.btn.setAttribute('aria-expanded', 'true');
     this.render();
+    if (focus) this.menu.querySelector<HTMLElement>('.pf-item.on .pf-main')?.focus();
     // Others' changes since the page loaded.
     fetchProfiles().then((l) => {
       if (l !== FALLBACK && !this.menu.hidden && !this.edit) this.take(l);
@@ -243,6 +265,7 @@ export class Profiles {
     this.edit = null;
     this.menu.hidden = true;
     this.btn.classList.remove('open');
+    this.btn.setAttribute('aria-expanded', 'false');
   }
 
   /** The menu under the button (fixed: its buttons reach past the panel's edge). */
@@ -288,7 +311,7 @@ export class Profiles {
 
   private replace(p: ProfileItem) {
     const old = p.settings;
-    this.run(call('PUT', `/${p.id}`, { settings: profileSettings(this.store.s) }), () =>
+    this.run(call('PUT', `/${p.id}`, { settings: profileSettings(this.userState()) }), () =>
       this.notice(`“${p.name}” now has the current settings`, () => this.run(call('PUT', `/${p.id}`, { settings: old }))));
   }
 
@@ -366,7 +389,7 @@ export class Profiles {
     const add = this.edit?.kind === 'add'
       ? h('div', { class: 'pf-item pf-new editing' }, this.nameBox('', 'Save', (name) => {
           this.edit = null;
-          this.run(call('POST', '', { name, settings: profileSettings(this.store.s) }), (l) => {
+          this.run(call('POST', '', { name, settings: profileSettings(this.userState()) }), (l) => {
             if (l.id) this.use(l.id);
             this.onChange();
           });
