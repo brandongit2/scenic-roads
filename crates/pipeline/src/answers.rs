@@ -218,6 +218,14 @@ impl Kept {
         r
     }
 
+    /// Whether this Mac's answers `files` are all the NAS's too: they're what they were when they
+    /// last matched its archive, and it's there (agent::room's deep clear deletes them only then:
+    /// the step's next sync takes the NAS's back).
+    pub fn on_nas(&self, files: &[String]) -> bool {
+        let Ok(here) = hashes(&self.dir, files) else { return false };
+        self.read_mark().is_some_and(|m| m.files == here) && self.nas.is_file()
+    }
+
     fn read_mark(&self) -> Option<Mark> {
         serde_json::from_slice(&std::fs::read(&self.mark).ok()?).ok()
     }
@@ -1025,6 +1033,20 @@ impl Local {
         Self::writer_then(cache, || {})
     }
 
+    /// The sender's hold, had now or not at all: None while a step reads or adds to the answers
+    /// (agent::room's deep clear passes them over then; none starts while it holds this).
+    pub fn try_writer(cache: &Path) -> Result<Option<Local>> {
+        let gate = Self::open(cache, "answers.gate")?;
+        if !try_flock(&gate) {
+            return Ok(None);
+        }
+        let u = Self::open(cache, "answers.use")?;
+        if !try_flock(&u) {
+            return Ok(None);
+        }
+        Ok(Some(Local { _gate: Some(gate), _use: u }))
+    }
+
     /// `writer`, `gated` run once it holds the gate, before it waits for the readers (the tests').
     fn writer_then(cache: &Path, gated: impl FnOnce()) -> Result<Local> {
         let gate = Self::open(cache, "answers.gate")?;
@@ -1076,6 +1098,21 @@ fn flock(f: &std::fs::File, exclusive: bool) -> Result<()> {
     {
         let _ = (f, exclusive);
         Ok(())
+    }
+}
+
+/// An exclusive flock of `f`, had now or not (held while `f` is open).
+fn try_flock(f: &std::fs::File) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: flock on a descriptor `f` owns.
+        unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = f;
+        true
     }
 }
 

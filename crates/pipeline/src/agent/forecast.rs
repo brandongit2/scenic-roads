@@ -863,13 +863,6 @@ impl ToCome {
 /// accuracy work (`scenic forecast-check`) can tell one model's error from another's.
 pub const VERSION: u32 = 3;
 
-impl Forecast {
-    /// Whether the build is done: nothing left to build or publish, no machine busy.
-    pub fn nothing_left(&self) -> bool {
-        self.why.as_deref() == Some(NOTHING_LEFT)
-    }
-}
-
 /// A run of a machine's work of one step: from and until when (unix seconds), and how many
 /// targets.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -2475,7 +2468,7 @@ mod tests {
         busy(&mut inp);
         inp.running.insert(("labels".into(), "labels".into()), 0);
         let f = forecast(&inp);
-        assert!(!f.nothing_left(), "{:?}", f.why);
+        assert_ne!(f.why.as_deref(), Some(NOTHING_LEFT));
         assert_eq!(f.done_at, Some(1_000_000 + 3600));
         // As the agent has it now, a running item of its own: on the schedule, and its step's.
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
@@ -2497,7 +2490,7 @@ mod tests {
         assert_eq!((f.why.as_deref(), f.done_at), (None, Some(1_000_000 + 3600)));
         // Free: nothing left.
         inp.machines[0].busy_s = 0.0;
-        assert!(forecast(&inp).nothing_left());
+        assert_eq!(forecast(&inp).why.as_deref(), Some(NOTHING_LEFT));
     }
 
     #[test]

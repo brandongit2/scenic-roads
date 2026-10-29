@@ -118,12 +118,16 @@ pub enum Cmd {
     /// The jobs: a running one cancelled
     #[command(subcommand)]
     Job(Job),
-    /// Clear this Mac's build caches once the build is done (jobs running keep what they use),
-    /// after a y/N: its agent does it, and says what it freed
+    /// Clear this Mac's build caches now (what later jobs copy back cheaply from the NAS; jobs
+    /// running keep what they use), after a y/N: its agent does it, and says what it freed and kept
     Clean {
         /// No y/N
         #[arg(long)]
         yes: bool,
+        /// Deeply: also what's costly to make again (the heritage clip while it can be made again,
+        /// the Wikidata and Wikipedia answers the NAS has)
+        #[arg(long)]
+        deep: bool,
         #[command(flatten)]
         home: Home,
     },

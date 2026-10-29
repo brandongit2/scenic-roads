@@ -11,9 +11,11 @@
 //!    when the NAS holds a newer planet, the regions' work, publishing, the chains; backups and
 //!    cleanup once a day) is offered through this Mac's coordinator, and the agent asks it for work
 //!    as any member asks its lead (`Agent::lead_grants`); a member asks the lead's;
-//! 4. this Mac's caches (`room`): the owner's ask to clear them taken up (cleared between jobs once
-//!    the build is done, else declined, why said), else, toward the owner's room target, the caches freed as far
-//!    as it needs; either on a thread of its own, the loop beating meanwhile and no job starting here;
+//! 4. this Mac's caches (`room`): the owner's ask to clear them taken up at any moment, to its level
+//!    (room::Level; declined, why said, only while a job an earlier agent left runs or without the
+//!    NAS), else, toward the owner's room target, the caches freed as far as it needs; either on a
+//!    thread of its own, the loop beating meanwhile and jobs running and starting (what they use
+//!    they hold);
 //! 5. the heartbeat: `state/status.json` on the NAS, and a copy in the agent's local folder.
 //!
 //! Nothing depends on the lead being available: until work is done, the map serves the last
@@ -1186,6 +1188,9 @@ struct Memory {
     worked_at: u64,
     #[serde(default)]
     cleared: Option<room::Freed>,
+    /// The last deep clear (room::Level::Deep).
+    #[serde(default)]
+    cleared_deep: Option<room::Freed>,
     /// The last ask to clear them not done, and why (the last done one kept apart).
     #[serde(default)]
     declined: Option<room::Freed>,
@@ -1530,8 +1535,6 @@ pub struct Agent {
     /// (room::sizes), counted on a thread of its own every ten minutes (a walk of many files), and
     /// again after a clear or a freeing; and when.
     cache_size: std::sync::Arc<std::sync::Mutex<CacheCount>>,
-    /// A member's view of the build: the lead's heartbeat as last read, at most each minute.
-    heard: Option<Heard>,
     /// The lead's heartbeat's `Status::all_new` as a member last read it, and when (`all_new`).
     lead_all_new: Option<(Instant, bool)>,
     /// A clear, a freeing toward the room target or room-making under way.
@@ -1679,15 +1682,6 @@ struct CachesTask {
     disk: bool,
     began: Instant,
     thread: std::thread::JoinHandle<Result<room::Freed>>,
-}
-
-/// The lead's heartbeat as a member last read it (`Agent::heard`).
-struct Heard {
-    /// When it was read, and when the lead beat (None: it couldn't be read).
-    read: Instant,
-    beat: Option<u64>,
-    /// Why the build isn't done (`work_left`; None: it is).
-    left: Option<String>,
 }
 
 /// The last plan's view, kept for the heartbeat between plans.
@@ -1968,7 +1962,6 @@ impl Agent {
             hold_me: None,
             hold_seen: None,
             cache_size: Default::default(),
-            heard: None,
             lead_all_new: None,
             caches_task: None,
             answers_seed: None,
@@ -6261,12 +6254,12 @@ impl Agent {
         )
     }
 
-    /// This Mac's caches between jobs (room::clear, room::toward), each on a thread of its own while the
-    /// loop goes on beating (no job starts here meanwhile: `caches_busy`): the owner's ask to clear
-    /// them taken up (cleared once the build is done and no job runs here, else declined, why said),
-    /// else the freeing toward the owner's room target when the disk is short of it (a Mac with
-    /// room keeps its caches after a build). Why they can't be cleared now (None: they can), for the
-    /// status.
+    /// This Mac's caches (room::clear, room::toward), each on a thread of its own while the loop goes
+    /// on beating (jobs run and start meanwhile, holding what they use: `caches_busy`): the owner's
+    /// ask to clear them taken up at once, to its level (declined, why said, only for
+    /// `caches_why_not`), else the freeing toward the owner's room target when the disk is short of
+    /// it (a Mac with room keeps its caches). Why they can't be cleared now (None: they can), for
+    /// the status.
     fn tend_caches(&mut self, root: Option<&store::nasfs::NasRoot>) -> Option<String> {
         // One under way: its result once it's done.
         if let Some(t) = self.caches_task.take() {
@@ -6285,7 +6278,10 @@ impl Agent {
         self.retire(&cache, root);
         if let Some(ask) = room::take_clear(&self.o.home) {
             match (&why, sources) {
-                (None, Some(s)) => self.caches_start(ask, move || room::clear(&cache, &s)),
+                (None, Some(s)) => {
+                    let (level, answering) = (ask.level, self.answering());
+                    self.caches_start(ask, move || room::clear(&cache, &s, level, answering))
+                }
                 _ => self.caches_record(room::Freed { why_not: why.clone(), ..Default::default() }, ask),
             }
         } else if let (Some(goal), Some(s)) = (self.toward_due(), sources.clone()) {
@@ -6529,11 +6525,14 @@ impl Agent {
     fn caches_record(&mut self, mut f: room::Freed, ask: room::ClearRequest) {
         f.at = now_s();
         (f.asked, f.by) = (Some(ask.at), Some(ask.by.clone()));
+        f.level = Some(ask.level);
         let e = caches_event(&self.host, &f);
         eprintln!("agent: {}", e.note);
         self.note(e);
         let done = f.why_not.is_none();
-        if done {
+        if done && ask.level == room::Level::Deep {
+            self.mem.cleared_deep = Some(f);
+        } else if done {
             self.mem.cleared = Some(f);
         } else {
             self.mem.declined = Some(f);
@@ -6580,10 +6579,12 @@ impl Agent {
     fn caches_view(&self, why: Option<String>, home: bool, nas: bool) -> room::Caches {
         let sizes = self.cache_size.lock().unwrap().1.clone();
         room::Caches {
-            clearable: sizes.as_ref().map(|s| s.clear.values().sum()),
+            clearable: sizes.as_ref().map(|s| s.clearable(room::Level::Caches)),
+            clearable_deep: sizes.as_ref().map(|s| s.clearable(room::Level::Deep)),
             each: sizes.map(|s| room::gone(&s.clear, if home { 60.0 } else { 12.0 })).unwrap_or_default(),
             why_not: why,
             cleared: self.mem.cleared.clone(),
+            cleared_deep: self.mem.cleared_deep.clone(),
             declined: self.mem.declined.clone(),
             room: Some(room::RoomView {
                 target: self.room_target.clone(),
@@ -6596,45 +6597,31 @@ impl Agent {
     }
 
     /// Why this Mac's caches can't be cleared now, if they can't: a job an earlier agent
-    /// left runs here (`orphans`: its programs may not hold what they use), the NAS isn't reachable (what
-    /// goes must be kept there), or the build has work left (`work_left`: by the lead's
-    /// forecast, its own; a member's, the one in the lead's heartbeat on the NAS, read at most
-    /// each minute, with no job of the lead's running, nor beside it).
+    /// left runs here (`orphans`: its programs may not hold what they use), or the NAS isn't
+    /// reachable (what goes must be kept there). Jobs of this agent's running, and work left, are
+    /// no reason: what a job uses it holds (store::cachefile), and the build never ends.
     fn caches_why_not(&mut self, root: Option<&store::nasfs::NasRoot>) -> Option<String> {
-        // (A job of this agent's running is no reason: what it uses it holds, store::cachefile.)
         self.orphans.retain(jobs::Group::is_the_jobs);
         if let Some(g) = self.orphans.first() {
             return Some(format!("a job an earlier agent left still runs here ({})", g.id));
         }
-        let Some(root) = root else { return Some("the NAS isn't reachable".into()) };
-        let since = self.mem.worked_at;
-        if !self.o.helper {
-            return work_left(self.forecast.borrow().as_ref(), since);
-        }
-        if self.heard.as_ref().is_none_or(|h| h.read.elapsed() >= Duration::from_secs(60)) {
-            let st: Option<Status> =
-                nasread::read(&root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-            let left = st.as_ref().map(|s| match s.jobs().first() {
-                Some(j) => Some(format!("the lead runs a job ({})", j.what)),
-                None => work_left(s.forecast.as_ref(), since),
-            });
-            self.heard = Some(Heard { read: Instant::now(), beat: st.map(|s| s.beat), left: left.flatten() });
-        }
-        match self.heard.as_ref().map(|h| (h.beat, &h.left)) {
-            Some((Some(beat), _)) if now_s().saturating_sub(beat) > 600 => {
-                Some(format!("the lead hasn't been heard from for {} min", now_s().saturating_sub(beat) / 60))
-            }
-            Some((Some(_), left)) => left.clone(),
-            _ => Some("the lead's status can't be read now".into()),
-        }
+        root.is_none().then(|| "the NAS isn't reachable".into())
+    }
+
+    /// Whether a job keeping the Wikidata and Wikipedia answers in this Mac's cache runs here (the
+    /// items job, the heritage chain: crate::answers), so a deep clear keeps them (room::clear).
+    fn answering(&self) -> bool {
+        self.slots
+            .iter()
+            .filter_map(|s| s.running.as_ref())
+            .any(|r| matches!(step_of(&r.spec.id).as_deref(), Some("items" | "heritage" | "heritage-sites")))
     }
 
     /// A job of `id` ran here: this Mac's caches may hold more, so a freeing toward the room target
-    /// is tried again (not after the daily ones: they read no cache); the lead's heartbeat read again.
+    /// is tried again (not after the daily ones: they read no cache).
     fn worked(&mut self, id: &str) {
         if !matches!(step_of(id).as_deref(), Some("backup" | "gc")) {
             self.mem.worked_at = now_s();
-            self.heard = None;
         }
     }
 
@@ -6656,8 +6643,10 @@ impl Agent {
         for h in helpers {
             let Some(c) = &h.caches else { continue };
             let seen = *self.helper_caches.entry(h.host.clone()).or_insert(self.started);
-            let mut new: Vec<&room::Freed> =
-                [&c.cleared, &c.declined].into_iter().filter_map(|f| f.as_ref().filter(|f| f.at > seen)).collect();
+            let mut new: Vec<&room::Freed> = [&c.cleared, &c.cleared_deep, &c.declined]
+                .into_iter()
+                .filter_map(|f| f.as_ref().filter(|f| f.at > seen))
+                .collect();
             new.sort_by_key(|f| f.at);
             for f in new {
                 self.note(caches_event(&h.host, f));
@@ -11210,32 +11199,13 @@ fn load_regions(root: &store::nasfs::NasRoot) -> (Vec<recipes::Recipe>, Vec<(Str
     }
 }
 
-/// Why the build isn't done, by its forecast (None: nothing left to build or publish, no machine
-/// busy). One more than ten minutes old (the plan can't be made now), or made before the
-/// last job here ended (`since`: a "done" from before it, as a job that starts and ends between two
-/// forecasts leaves), doesn't say.
-fn work_left(f: Option<&forecast::Forecast>, since: u64) -> Option<String> {
-    match f {
-        Some(f) if now_s().saturating_sub(f.at) > 600 => {
-            Some(format!("the build's forecast is {} min old", now_s().saturating_sub(f.at) / 60))
-        }
-        Some(f) if !f.nothing_left() => Some(
-            f.why
-                .as_ref()
-                .map_or_else(|| "the build has work left".to_string(), |w| format!("the build has work left: {w}")),
-        ),
-        Some(f) if f.at < since => Some("the build's forecast is from before the last job here ended".into()),
-        Some(_) => None,
-        None => Some("the build has no forecast yet".into()),
-    }
-}
-
 /// A clear's event in the history, as `worker` did it, in words.
 fn caches_event(worker: &str, f: &room::Freed) -> crate::coord::history::Event {
     let asked = f.by.as_ref().map(|b| format!(", as {b} asked")).unwrap_or_default();
+    let deeply = if f.level == Some(room::Level::Deep) { " deeply" } else { "" };
     let note = match &f.why_not {
-        Some(why) => format!("didn't clear its build caches{asked}: {why}"),
-        None => format!("cleared its build caches{asked}: {}", f.say()),
+        Some(why) => format!("didn't clear its build caches{deeply}{asked}: {why}"),
+        None => format!("cleared its build caches{deeply}{asked}: {}", f.say()),
     };
     crate::coord::history::Event {
         worker: Some(worker.to_string()),
@@ -14604,7 +14574,7 @@ mod tests {
                 wait.recv().map(|()| room::Freed::default()).map_err(anyhow::Error::from)
             }),
         });
-        room::request_clear(&home, "scenic clean on m4").unwrap();
+        room::request_clear(&home, "scenic clean on m4", room::Level::Caches).unwrap();
         let settle = |a: &mut Agent| {
             while a.caches_task.as_ref().is_some_and(|t| !t.thread.is_finished()) {
                 std::thread::sleep(Duration::from_millis(10));
@@ -14624,7 +14594,8 @@ mod tests {
     }
 
     #[test]
-    fn a_member_hears_the_leads_heartbeat_before_its_caches_can_be_cleared() {
+    fn a_member_clears_its_caches_whatever_the_build_has_left() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
@@ -14659,36 +14630,23 @@ mod tests {
             };
             std::fs::write(root.join("state/status.json"), serde_json::to_vec(&st).unwrap()).unwrap();
         };
-        // No word from the lead: the caches can't be cleared.
-        assert_eq!(
-            a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))).as_deref(),
-            Some("the lead's status can't be read now")
-        );
-        // Its heartbeat an hour old, the build with work left, or a job of the lead's running
-        // (its forecast "done" all the same, as an older agent's said with a lone worldwide job):
-        // still nothing.
-        beat(now_s() - 3600, true, None);
-        a.heard = None;
-        assert_eq!(
-            a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))).as_deref(),
-            Some("the lead hasn't been heard from for 60 min")
-        );
-        beat(now_s(), false, None);
-        a.heard = None;
-        assert!(a
-            .tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)))
-            .is_some_and(|w| w.starts_with("the build has work left")));
-        beat(now_s(), true, Some("labels 2026-09-28"));
-        a.heard = None;
-        assert!(a
-            .tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)))
-            .is_some_and(|w| w.starts_with("the lead runs a job (Ranking")));
-        assert!(c.join("chm10/a.tif").exists());
-        // Fresh, and the build done: nothing to say, and the caches stay.
-        beat(now_s(), true, None);
-        a.heard = None;
+        // No word from the lead: nothing stops a clear (the build never ends).
         assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
-        assert!(c.join("chm10/a.tif").exists() && a.caches_task.is_none());
+        assert!(c.join("chm10/a.tif").exists() && a.caches_task.is_none(), "nothing cleared unasked");
+        // The build with work left and a job of the lead's running: asked, cleared.
+        beat(now_s(), false, Some("labels 2026-09-28"));
+        let r = room::request_clear(&home, "scenic clean on m1", room::Level::Caches).unwrap();
+        a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
+        while a.caches_task.as_ref().is_some_and(|t| !t.thread.is_finished()) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
+        let f = a.mem.cleared.clone().unwrap();
+        assert_eq!(
+            (f.asked, f.why_not.as_deref(), f.freed.get("canopy")),
+            (Some(r.at), None, Some(&(tif.len() as u64)))
+        );
+        assert!(!c.join("chm10/a.tif").exists() && a.mem.declined.is_none());
     }
 
     #[test]
@@ -14704,7 +14662,7 @@ mod tests {
         put(&c.join("base/base/6-1-1.0000000000000001.base"), &[1; 500]);
         put(&c.join("unit-stages.json"), b"{}");
         let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, false);
-        *a.forecast.borrow_mut() = Some(forecast_now(true));
+        *a.forecast.borrow_mut() = Some(forecast_now(false));
         let asked = |home: &Path| home.join(room::CLEAR_REQUEST).exists() || home.join(room::CLEAR_TAKEN).exists();
         // Asked while a job an earlier agent left runs here (its programs may not hold what they
         // use): not cleared, and why said; the ask taken up all the same.
@@ -14718,7 +14676,7 @@ mod tests {
             started: now_s() - 5,
             id: "backup".into(),
         });
-        let r = room::request_clear(&home, "scenic clean on m4").unwrap();
+        let r = room::request_clear(&home, "scenic clean on m4", room::Level::Caches).unwrap();
         a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         let f = a.mem.declined.clone().unwrap();
         assert_eq!(
@@ -14728,7 +14686,7 @@ mod tests {
         assert!(!asked(&home) && c.join("chm10/a.tif").exists() && a.mem.cleared.is_none());
         left.kill().unwrap();
         left.wait().unwrap();
-        // The build done, a job of this agent's running: cleared, the canopy squares too, and what
+        // The build with work left, a job of this agent's running: cleared, the canopy squares too, and what
         // it freed said.
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(a.try_start(
@@ -14738,7 +14696,7 @@ mod tests {
             Some(&store::nasfs::NasRoot::local_for_test(&root)),
             &mut Vec::new()
         ));
-        let r = room::request_clear(&home, "the menu bar on m4").unwrap();
+        let r = room::request_clear(&home, "the menu bar on m4", room::Level::Caches).unwrap();
         assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
         let f = a.mem.cleared.clone().unwrap();
         assert_eq!((f.asked, f.by.as_deref(), f.why_not.as_deref()), (Some(r.at), Some("the menu bar on m4"), None));
@@ -14764,12 +14722,12 @@ mod tests {
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.slots[0].running = None;
         // Declined later (no NAS): said apart, the last clear done kept.
-        room::request_clear(&home, "scenic clean on m4").unwrap();
+        room::request_clear(&home, "scenic clean on m4", room::Level::Caches).unwrap();
         a.tend_caches(None);
         assert_eq!(a.mem.declined.as_ref().and_then(|f| f.why_not.as_deref()), Some("the NAS isn't reachable"));
         assert_eq!(a.mem.cleared.as_ref().map(|f| f.asked), Some(Some(r.at)));
         // A dry run beside it (another agent runs the jobs) takes up no ask.
-        room::request_clear(&home, "scenic clean on m4").unwrap();
+        room::request_clear(&home, "scenic clean on m4", room::Level::Caches).unwrap();
         let mut dry = test_agent(Options {
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),

@@ -42,21 +42,30 @@
 //!   the pageview months, for an items or heritage job; a z6 tile's canopy squares and packs; the
 //!   base packs copied here for the map tiles) goes last.
 //!
-//! After the build nothing is emptied: a Mac keeps its caches while it has room, what the next build
-//! would copy again from the NAS (the mini's ~100 GB). They go only when the disk is short of what a
-//! job needs, or of the owner's room target (`toward`), and then only as far as that, the least
-//! recently used first.
+//! Otherwise nothing is emptied: a Mac keeps its caches while it has room (the mini's ~100 GB). They
+//! go only when the disk is short of what a job needs, or of the owner's room target (`toward`),
+//! and then only as far as that, the least recently used first.
 //!
-//! On the owner's ask (`clear`: the menu bar's Clear the Build's Caches, `scenic clean`, a
-//! `ClearRequest`), once the build is done, jobs running here or not: those caches, the canopy squares
-//! too, and the others a later job fills again from the NAS or makes again from what's there
-//! (`kind`): the pack cache, the local copies of the NAS's files and the heritage jobs' clip of the
-//! planet; and the retired caches (`RETIRED`, which `retire` deletes anyway). Kept: the
-//! Wikidata and Wikipedia answers the items and heritage jobs keep (crate::answers: the NAS has them too, but they free little, and
-//! the heritage chain's working copy, `heritage-<date>/`, is whole or nothing), the heritage
-//! scripts' old Python environment (`heritage-venv/`: their next run removes it), what frees next to
-//! nothing (the trains' stop pairs, under a MB), the agent's own timings (`unit-stages.json`) and
-//! what z6 tiles kept that isn't on the NAS yet (`scenic-units/`).
+//! On the owner's ask (`clear`: the menu bar's Clear the Build's Caches and Clear Caches Deeply,
+//! `scenic clean [--deep]`, a `ClearRequest` and its `Level`), at any moment, jobs running here or
+//! not (the build never ends: regions are added and updated):
+//! - `Level::Caches`: what a later job copies back cheaply from the NAS: those caches, the canopy
+//!   squares too, what the queued jobs read included (no `Hints`: a clear is the owner's), the base
+//!   packs, the local copies of the NAS's files, and the retired caches (`RETIRED`, which `retire`
+//!   deletes anyway).
+//! - `Level::Deep`: those, and what's costly to make again (`deep`): the heritage jobs' clip of the
+//!   planet (an hour of osmium; only while `heritage_remade` says it can be made again, else kept,
+//!   saying why), and the Wikidata and Wikipedia answers the items and heritage jobs keep
+//!   (crate::answers: copied back from the NAS's archive at the step's next start, but they're
+//!   hours of rate-limited asking should that archive be lost): each pass's set only when the NAS
+//!   has it all (`Kept::on_nas`), the heritage chain's working copy (`heritage-<date>/`, its answers
+//!   and what it makes again each run) whole or not at all, and none while a job keeping answers
+//!   runs here or holds them (`answers::Local::try_writer`).
+//! Kept at either: what exists only here (a canopy square or raw tile the NAS lacks once it can't
+//! take it, a pageview month the NAS lacks, the z6 tiles' results not on the NAS yet,
+//! `scenic-units/`), what frees next to nothing (the trains' stop pairs, under a MB), and the agent's
+//! own timings (`unit-stages.json`). What each frees and keeps, and why, goes in the status
+//! (`Caches`: `cleared`, `cleared_deep`).
 //!
 //! The owner's room target (`Target`: `scenic room <GB>`, the menu bar's Disk Room; `toward`): the
 //! free space this Mac's agent keeps, set at any moment, in its folder (each Mac's disk is its own).
@@ -86,7 +95,7 @@
 //!
 //! Each ends early when the agent is asked to stop. Nothing else of the cache is deleted here.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -199,8 +208,35 @@ fn kind(name: &str) -> Option<&'static str> {
         // (scenic-build's local copies, by their logical names: the terrain lo packs, the summits.)
         _ if name.starts_with("sources-") || name.starts_with("work-") || name.starts_with("layers-") => "copies",
         _ if name.starts_with("heritage-merged-") => "heritage",
+        // (The heritage chain's working copy of a pass's answers, or one a deep clear set aside.)
+        _ if epoch_date(name).is_some() || name.starts_with(GONE) => "answers",
         _ => return None,
     })
+}
+
+/// A heritage working copy set aside by a deep clear (renamed first, so it goes whole), deleted
+/// with the answers by the next deep clear should this one stop midway.
+const GONE: &str = "heritage-gone-";
+
+/// The pass's date of the heritage chain's working copy `name` (`heritage-<date>`).
+fn epoch_date(name: &str) -> Option<&str> {
+    name.strip_prefix("heritage-").filter(|d| crate::osmpass::is_date(d))
+}
+
+/// Whether cache `kind` is costly to make again, so only a deep clear empties it (`Level::Deep`).
+fn deep(kind: &str) -> bool {
+    matches!(kind, "heritage" | "answers")
+}
+
+/// How far a clear goes (`ClearRequest::level`; the module's doc, On the owner's ask).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    /// What a later job copies back cheaply from the NAS.
+    #[default]
+    Caches,
+    /// Those and what's costly to make again (`deep`).
+    Deep,
 }
 
 /// Caches no code reads any more, by their names' prefixes in the agent's cache: deleted whenever
@@ -274,7 +310,17 @@ pub fn words(kind: &str) -> &str {
         "retired" => "caches no code reads any more (room::RETIRED)",
         "copies" => "copies of the NAS's files",
         "heritage" => "the heritage jobs' planet clip",
+        "answers" => "the Wikidata and Wikipedia answers",
         k => k,
+    }
+}
+
+/// What a clear of `level` keeps, in words, for its confirmation (`scenic clean`; the menu bar's
+/// says the same).
+pub fn kept_words(level: Level) -> &'static str {
+    match level {
+        Level::Caches => "Kept: what's costly to make again (the heritage clip, the Wikidata and Wikipedia answers: a deep clear takes those too), what exists only here (files the NAS lacks, the z6 tiles' results not on the NAS yet), files a running job holds, and the map's offline copy.",
+        Level::Deep => "Kept: the heritage clip while it can't be made again, answers the NAS hasn't all of (all of them while a job keeping them runs), what exists only here (files the NAS lacks, the z6 tiles' results not on the NAS yet), files a running job holds, and the map's offline copy.",
     }
 }
 
@@ -305,8 +351,15 @@ pub struct Freed {
     /// crate::pageviews puts there when it next reads it).
     #[serde(default)]
     pub left: u64,
-    /// Why it wasn't done, when it wasn't (a clear asked for while a job ran here, or while the
-    /// build had work left).
+    /// A clear's level (None: a freeing, or a clear from before levels: `Level::Caches`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<Level>,
+    /// What a clear kept of what its level empties, cache by cache, and why (the heritage clip
+    /// that can't be made again, answers the NAS hasn't all of, …).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stayed: Vec<Stayed>,
+    /// Why it wasn't done, when it wasn't (a job an earlier agent left runs here, the NAS isn't
+    /// reachable, it failed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why_not: Option<String>,
     /// A freeing toward the owner's disk room target (`toward`): the target it was for (bytes).
@@ -337,31 +390,48 @@ impl Freed {
             );
         }
         if self.left > 0 {
-            s += &format!("; {} kept (the NAS hasn't it yet)", size(self.left));
+            s += &format!("; {} kept (a job uses it, or the NAS hasn't it yet)", size(self.left));
+        }
+        for k in &self.stayed {
+            s += &format!("; {} {} kept: {}", words(&k.cache), size(k.bytes), k.why);
         }
         s
     }
+}
+
+/// A cache a clear kept of what its level empties (`Freed::stayed`): its name (`kind`), its bytes
+/// and why.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stayed {
+    pub cache: String,
+    pub bytes: u64,
+    pub why: String,
 }
 
 /// This Mac's build caches, as its agent's status says (`Status::caches`): what a clear would free,
 /// why they can't be cleared now, and the last clear.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Caches {
-    /// What a clear would free (bytes), as last counted: every ten minutes on a thread of its own,
-    /// and after a clear.
+    /// What a clear (`Level::Caches`) would free (bytes), as last counted: every ten minutes on a
+    /// thread of its own, and after a clear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clearable: Option<u64>,
-    /// Why they can't be cleared now: a job an earlier agent left runs here, the build has work left …;
-    /// None: they can.
+    /// What a deep clear (`Level::Deep`) would free (bytes): those and the `deep` caches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clearable_deep: Option<u64>,
+    /// Why they can't be cleared now: a job an earlier agent left runs here, the NAS isn't
+    /// reachable; None: they can.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why_not: Option<String>,
-    /// What a clear would free, cache by cache, with how each comes back (`gone`): for the owner's
-    /// confirmation.
+    /// What a deep clear would free, cache by cache, with how each comes back (`gone`; `Gone::deep`:
+    /// only a deep clear's): for the owner's confirmation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub each: Vec<Gone>,
-    /// The last clear done, and the last ask declined (why in it).
+    /// The last clear done of each level, and the last ask not done (why in it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleared: Option<Freed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleared_deep: Option<Freed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declined: Option<Freed>,
     /// The owner's disk room target and the free space now (`RoomView`); None on an agent from
@@ -377,6 +447,9 @@ pub struct Gone {
     pub what: String,
     pub bytes: u64,
     pub back: String,
+    /// Only a deep clear empties it (`deep`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deep: bool,
 }
 
 /// What a clear would free (`Sizes::clear`), the most first, with how each cache comes back and
@@ -400,35 +473,41 @@ pub fn gone(clear: &BTreeMap<String, u64>, mb_s: f64) -> Vec<Gone> {
                 "retired" => "never: nothing reads it".to_string(),
                 "copies" => format!("copied back from the NAS when the summits and peaks next run ({})", time(b)),
                 "heritage" => "made again from the NAS's filtered planet when the heritage chain next runs (about an hour of osmium)".to_string(),
+                "answers" => format!("copied back from the NAS's archives when the items and heritage jobs next start ({}; asked of Wikidata and Wikipedia again only if those archives are lost: hours)", time(b)),
                 _ => "filled again from the NAS".to_string(),
             };
-            Gone { cache: k.clone(), what: words(k).to_string(), bytes: b, back }
+            Gone { cache: k.clone(), what: words(k).to_string(), bytes: b, back, deep: deep(k) }
         })
         .collect();
     v.sort_by_key(|g| std::cmp::Reverse(g.bytes));
     v
 }
 
-/// The owner's ask to clear this Mac's build caches (the menu bar's Clear the Build's Caches,
-/// `scenic clean`): a file in its agent's folder (`CLEAR_REQUEST`) the agent takes up within
-/// seconds, as it does a pause's (crate::control): it clears them or says why it can't now, in its
-/// status (`Caches::cleared` or `declined`, with when this was asked), and the ask goes.
+/// The owner's ask to clear this Mac's build caches (the menu bar's Clear the Build's Caches and
+/// Clear Caches Deeply, `scenic clean [--deep]`): a file in its agent's folder (`CLEAR_REQUEST`)
+/// the agent takes up within seconds, as it does a pause's (crate::control): it clears them or
+/// says why it can't now, in its status (`Caches::cleared`, `cleared_deep` or `declined`, with
+/// when this was asked), and the ask goes. Pinned on both sides by
+/// tools/status/test/clear-request-*.json (the menu bar's selfTest, this module's tests).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClearRequest {
     /// Who asked, in words: "the menu bar on …", "scenic clean on …".
     pub by: String,
     /// When it was asked (unix seconds).
     pub at: u64,
+    /// How far (an ask from before levels has none: `Level::Caches`).
+    #[serde(default)]
+    pub level: Level,
 }
 
 /// The ask's file, in the agent's folder; and the one it's renamed to as it's taken up.
 pub const CLEAR_REQUEST: &str = "clear-request.json";
 pub const CLEAR_TAKEN: &str = "clear-request.json.taken";
 
-/// Asks this Mac's agent (its folder `home`) to clear its build caches.
-pub fn request_clear(home: &Path, by: &str) -> Result<ClearRequest> {
+/// Asks this Mac's agent (its folder `home`) to clear its build caches, as far as `level`.
+pub fn request_clear(home: &Path, by: &str, level: Level) -> Result<ClearRequest> {
     std::fs::create_dir_all(home)?;
-    let r = ClearRequest { by: by.to_string(), at: super::jobs::now_s() };
+    let r = ClearRequest { by: by.to_string(), at: super::jobs::now_s(), level };
     store::whole::write(&home.join(CLEAR_REQUEST), &serde_json::to_vec(&r)?)?;
     Ok(r)
 }
@@ -453,32 +532,42 @@ pub fn clear_answered(home: &Path) {
     std::fs::remove_file(home.join(CLEAR_TAKEN)).ok();
 }
 
-/// Clears this Mac's build caches at `cache` on the owner's ask (the module's doc, On the owner's
-/// ask): the cheap caches as room-making empties them, the canopy squares too, then the others whole
-/// (nothing through a link, nor in the NAS's folder: `ours`). What it freed, and what stays of them.
-pub fn clear(cache: &Path, sources: &NasPath) -> Result<Freed> {
+/// Clears this Mac's build caches at `cache` on the owner's ask, as far as `level` (the module's
+/// doc, On the owner's ask): the cheap caches as room-making empties them, the canopy squares and
+/// what the queued jobs read too, then the others whole (nothing through a link, nor in the NAS's
+/// folder: `ours`); deep, the heritage clip while it can be made again and the answers the NAS has
+/// all of, none while `answering` (a job keeping answers runs here) or while one holds them. What it
+/// freed, and what stays of them and why.
+pub fn clear(cache: &Path, sources: &NasPath, level: Level, answering: bool) -> Result<Freed> {
     if !cache.is_dir() {
-        return Ok(Freed::default());
+        return Ok(Freed { level: Some(level), ..Default::default() });
     }
+    let root = sources.root();
     let mut freed = free_cheap(cache, sources, u64::MAX, u64::MAX, &disk_free, &|_| false, None)?;
-    let mut left = cheap_left(cache, Some(sources.root()));
+    let mut left = cheap_left(cache, Some(root));
+    let mut stayed = Vec::new();
     let mut others: Vec<(PathBuf, &str)> = std::fs::read_dir(cache)
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|e| Some((e.path(), kind(&e.file_name().to_string_lossy()).filter(|k| !cheap(k))?)))
+        // (The answers apart, below; the deep caches only for a deep clear.)
+        .filter(|(_, k)| *k != "answers" && (level == Level::Deep || !deep(k)))
         .collect();
     others.sort();
     for (p, k) in others {
         if super::stopping() {
             break;
         }
-        if !ours(&p, Some(sources.root())) {
+        if !ours(&p, Some(root)) {
             continue;
         }
-        let bytes = bytes_under(&p);
-        if k == "heritage" && !heritage_remade(Some(sources.root()), &p) {
-            left += bytes;
+        if k == "heritage" && !heritage_remade(Some(root), &p) {
+            stayed.push(Stayed {
+                cache: k.into(),
+                bytes: bytes_under(&p),
+                why: "it can't be made again now (the NAS's build manifest names no filtered planet of its pass, or that file isn't there)".into(),
+            });
             continue;
         }
         // (File by file, none a job holds: store::cachefile.)
@@ -486,8 +575,109 @@ pub fn clear(cache: &Path, sources: &NasPath) -> Result<Freed> {
         *freed.entry(k.to_string()).or_default() += t.freed;
         left += t.left;
     }
+    if level == Level::Deep && !super::stopping() {
+        let (n, kept) = clear_answers(cache, root, answering)?;
+        *freed.entry("answers".into()).or_default() += n;
+        stayed.extend(kept);
+    }
     freed.retain(|_, b| *b > 0);
-    Ok(Freed { freed, left, ..Default::default() })
+    stayed.retain(|s| s.bytes > 0);
+    Ok(Freed { freed, left, stayed, level: Some(level), ..Default::default() })
+}
+
+/// A set of the Wikidata and Wikipedia answers in the cache (crate::answers): an items pass's
+/// files and its mark (`items/`), or a heritage working copy (`whole`, which goes whole or not at
+/// all); its bytes, and whether the NAS has it all.
+struct AnswerSet {
+    files: Vec<PathBuf>,
+    whole: Option<PathBuf>,
+    bytes: u64,
+    on_nas: bool,
+}
+
+/// The answer sets in `cache` (`AnswerSet`), by the NAS's project folder `root`. Answers no mark
+/// names (a run stopped before it first matched the NAS) aren't one: they stay.
+fn answer_sets(cache: &Path, root: &store::nasfs::NasRoot) -> Vec<AnswerSet> {
+    let mut out = Vec::new();
+    let items = cache.join("items");
+    let mut names: Vec<String> = std::fs::read_dir(&items)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    for n in &names {
+        let Some(date) = n.strip_prefix("kept-").and_then(|r| r.strip_suffix(".json")) else { continue };
+        let files = crate::answers::items_files(&items, date);
+        let k = crate::answers::items(root, &items, date);
+        let mut paths: Vec<PathBuf> = files.iter().map(|f| items.join(f)).collect();
+        // (The mark last: a clear stopped midway leaves it, and the next sync sees what's gone.)
+        paths.push(k.mark.clone());
+        let bytes = paths.iter().filter_map(|p| std::fs::symlink_metadata(p).ok()).map(|m| m.len()).sum();
+        out.push(AnswerSet { on_nas: k.on_nas(&files), files: paths, whole: None, bytes });
+    }
+    let mut dirs: Vec<(PathBuf, String)> = std::fs::read_dir(cache)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| (e.path(), e.file_name().to_string_lossy().into_owned()))
+        .filter(|(p, n)| (epoch_date(n).is_some() || n.starts_with(GONE)) && ours(p, Some(root)))
+        .collect();
+    dirs.sort();
+    for (p, n) in dirs {
+        // (One a deep clear set aside: the answers in it are the NAS's.)
+        let on_nas = match epoch_date(&n) {
+            Some(date) => crate::answers::heritage(root, &p, date).on_nas(&crate::answers::heritage_files(&p)),
+            None => true,
+        };
+        out.push(AnswerSet { files: Vec::new(), bytes: bytes_under(&p), whole: Some(p), on_nas });
+    }
+    out
+}
+
+/// A deep clear's answers (`clear`): each set the NAS has all of, unless `answering` or a job holds
+/// them (`answers::Local`: none starts while this holds it). The bytes freed, and what stays and why.
+fn clear_answers(cache: &Path, root: &store::nasfs::NasRoot, answering: bool) -> Result<(u64, Vec<Stayed>)> {
+    let sets = answer_sets(cache, root);
+    let all: u64 = sets.iter().map(|s| s.bytes).sum();
+    let stay = |bytes: u64, why: &str| Stayed { cache: "answers".into(), bytes, why: why.into() };
+    if answering {
+        return Ok((0, vec![stay(all, "a job that keeps them (items, heritage) runs here")]));
+    }
+    let Some(_hold) = crate::answers::Local::try_writer(cache)? else {
+        return Ok((0, vec![stay(all, "a job is using them")]));
+    };
+    let (mut freed, mut lacking) = (0, 0);
+    for s in sets {
+        if super::stopping() {
+            break;
+        }
+        if !s.on_nas {
+            lacking += s.bytes;
+            continue;
+        }
+        if let Some(dir) = s.whole {
+            // (Renamed aside first: gone whole, or there whole. A set-aside one's deleted as it is.)
+            let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let aside = match epoch_date(&name) {
+                Some(d) => {
+                    let to = cache.join(format!("{GONE}{d}-{}", std::process::id()));
+                    std::fs::rename(&dir, &to).with_context(|| format!("set {} aside", dir.display()))?;
+                    to
+                }
+                None => dir,
+            };
+            freed += store::cachefile::remove_tree(&aside).freed;
+            continue;
+        }
+        for p in &s.files {
+            if let store::cachefile::Removed::Freed(n) = store::cachefile::try_remove(p) {
+                freed += n;
+            }
+        }
+    }
+    Ok((freed, vec![stay(lacking, "the NAS hasn't all of them yet (the step's next run sends them)")]))
 }
 
 /// The owner's disk room target on this Mac (`scenic room <GB>`, the menu bar's Disk Room): the
@@ -848,10 +1038,19 @@ pub struct Sizes {
     pub clear: BTreeMap<String, u64>,
 }
 
+impl Sizes {
+    /// What a clear of `level` would free (bytes).
+    pub fn clearable(&self, level: Level) -> u64 {
+        self.clear.iter().filter(|(k, _)| level == Level::Deep || !deep(k)).map(|(_, b)| b).sum()
+    }
+}
+
 /// What this Mac's caches hold, for the status: what room-making can free (`cheap_bytes`; a
 /// helper's, `helper_cheap_bytes`, its loose raw tiles left out; the pageview months the NAS has, only
-/// when `root` is given), and what a clear would, by cache (those, and the others). Nothing through a link, nor in
-/// the NAS's project folder `root` (`ours`).
+/// when `root` is given), and what a deep clear would, by cache (those, and the others; the `deep`
+/// ones, as far as the NAS can be asked: the heritage clip while it can be made again, the answers
+/// the NAS has all of, only when `root` is given). Nothing through a link, nor in the NAS's project
+/// folder `root` (`ours`).
 pub fn sizes(cache: &Path, helper: bool, root: Option<&store::nasfs::NasRoot>) -> Sizes {
     let mut clear: BTreeMap<String, u64> = BTreeMap::new();
     let tiles = if helper { "aws-terrarium/packs" } else { "aws-terrarium" };
@@ -866,9 +1065,18 @@ pub fn sizes(cache: &Path, helper: bool, root: Option<&store::nasfs::NasRoot>) -
     }
     let cheap_now = clear.values().sum();
     for e in std::fs::read_dir(cache).into_iter().flatten().flatten() {
-        if let Some(k) = kind(&e.file_name().to_string_lossy()).filter(|k| !cheap(k) && ours(&e.path(), root)) {
+        if let Some(k) =
+            kind(&e.file_name().to_string_lossy()).filter(|k| !cheap(k) && *k != "answers" && ours(&e.path(), root))
+        {
+            if k == "heritage" && root.is_some() && !heritage_remade(root, &e.path()) {
+                continue;
+            }
             *clear.entry(k.to_string()).or_default() += bytes_under(&e.path());
         }
+    }
+    if let Some(r) = root {
+        let n = answer_sets(cache, r).iter().filter(|s| s.on_nas).map(|s| s.bytes).sum();
+        clear.insert("answers".to_string(), n);
     }
     clear.retain(|_, b| *b > 0);
     Sizes { cheap: cheap_now, clear }
@@ -1599,6 +1807,125 @@ mod tests {
         assert_eq!(freed, 1000);
     }
 
+    /// Task #814: a clear runs mid-job, at either level; what the jobs hold stays, counted as kept.
+    #[test]
+    fn a_clear_mid_job_keeps_what_the_jobs_hold_at_either_level() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let nas = &d.path().join("nas/sources");
+        filtered_planet(&store::nasfs::NasRoot::local_for_test(&d.path().join("nas")));
+        let blob = c.join("blobs/a/6-1-2.0000000000000001.pack");
+        let base = c.join("base/base/6-1-1.0000000000000001.base");
+        let clip = c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf");
+        for p in [&blob, &base, &clip] {
+            file(p, 100, 60);
+            store::cachefile::hold_existing(p).unwrap();
+        }
+        for (level, left) in [(Level::Caches, 200), (Level::Deep, 300)] {
+            let f = clear(c, &store::nasfs::NasPath::local_for_test(nas), level, false).unwrap();
+            assert_eq!((f.bytes(), f.left), (0, left), "{level:?}");
+            assert!(blob.exists() && base.exists() && clip.exists(), "{level:?}");
+        }
+        for p in [&blob, &base, &clip] {
+            store::cachefile::release(p);
+        }
+    }
+
+    /// Task #814: a clear is the owner's: what the queued jobs read (`Hints`) goes too.
+    #[test]
+    fn a_clear_frees_what_the_queued_jobs_read_too() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let nas = &d.path().join("nas/sources");
+        std::fs::create_dir_all(nas).unwrap();
+        let own = c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles");
+        let n = whole(&own, 60);
+        let mut h = Hints::default();
+        h.add("terrain", &["3/0/0".to_string()]);
+        assert!(h.has(c, &own));
+        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas), Level::Caches, false).unwrap();
+        assert_eq!((f.freed.get("terrain"), own.exists()), (Some(&n), false));
+    }
+
+    /// Task #814: a deep clear takes the Wikidata and Wikipedia answers the NAS has all of (a
+    /// heritage working copy whole), none while a job keeping them runs or holds them, and keeps a
+    /// set changed since it last matched the NAS's, saying why; what the status counts is the same.
+    #[test]
+    fn a_deep_clear_takes_only_the_answers_the_nas_has() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let root = store::nasfs::NasRoot::local_for_test(&d.path().join("nas"));
+        let nas = &d.path().join("nas/sources");
+        std::fs::create_dir_all(nas).unwrap();
+        let scratch = d.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let date = "2026-09-28";
+        let items = c.join("items");
+        bytes(&items.join(format!("facts-{date}.jsonl")), b"{\"id\":\"Q1\"}\n", 60);
+        let k = crate::answers::items(&root, &items, date);
+        assert!(k.keep(&crate::answers::items_files(&items, date), &scratch).unwrap());
+        let epoch = c.join(format!("heritage-{date}"));
+        bytes(&epoch.join("wd/a.json"), b"{}", 60);
+        bytes(&epoch.join("whs/ids.txt"), b"1\n", 60);
+        let h = crate::answers::heritage(&root, &epoch, date);
+        assert!(h.keep(&crate::answers::heritage_files(&epoch), &scratch).unwrap());
+        let (items_n, epoch_n) = (
+            crate::answers::items_files(&items, date)
+                .iter()
+                .map(|f| std::fs::metadata(items.join(f)).unwrap().len())
+                .sum::<u64>()
+                + std::fs::metadata(&k.mark).unwrap().len(),
+            bytes_under(&epoch),
+        );
+        let sources = store::nasfs::NasPath::local_for_test(nas);
+        assert_eq!(sizes(c, false, Some(&root)).clear.get("answers"), Some(&(items_n + epoch_n)));
+        // A job keeping them runs here, or one holds them: none goes.
+        let f = clear(c, &sources, Level::Deep, true).unwrap();
+        assert_eq!((f.bytes(), f.stayed[0].cache.as_str(), f.stayed[0].bytes), (0, "answers", items_n + epoch_n));
+        let reader = crate::answers::Local::reader(c).unwrap();
+        let f = clear(c, &sources, Level::Deep, false).unwrap();
+        assert!(f.bytes() == 0 && f.stayed[0].why.contains("using"), "{f:?}");
+        drop(reader);
+        // A clear of the cheap caches leaves them.
+        assert_eq!(clear(c, &sources, Level::Caches, false).unwrap().freed.get("answers"), None);
+        // The items' changed since they matched the NAS: kept; the working copy goes whole.
+        bytes(&items.join(format!("facts-{date}.jsonl")), b"{\"id\":\"Q1\"}\n{\"id\":\"Q2\"}\n", 60);
+        let items_n = items_n + 12;
+        assert_eq!(sizes(c, false, Some(&root)).clear.get("answers"), Some(&epoch_n));
+        let f = clear(c, &sources, Level::Deep, false).unwrap();
+        assert_eq!(f.freed.get("answers"), Some(&epoch_n));
+        assert_eq!(f.stayed.iter().map(|s| (s.cache.as_str(), s.bytes)).collect::<Vec<_>>(), [("answers", items_n)]);
+        assert!(f.stayed[0].why.contains("NAS hasn't"));
+        assert!(!epoch.exists() && items.join(format!("facts-{date}.jsonl")).exists() && k.mark.exists());
+        let names: Vec<String> =
+            std::fs::read_dir(c).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(!names.iter().any(|n| n.starts_with(GONE)), "{names:?}");
+        // Matched again (the step's next keep): it goes, its mark too.
+        assert!(k.keep(&crate::answers::items_files(&items, date), &scratch).unwrap());
+        let f = clear(c, &sources, Level::Deep, false).unwrap();
+        assert!(f.freed.get("answers").is_some() && f.stayed.is_empty(), "{f:?}");
+        assert!(!items.join(format!("facts-{date}.jsonl")).exists() && !k.mark.exists());
+    }
+
+    /// Task #814: the ask's file as the menu bar writes it (tools/status/main.swift
+    /// clearRequestJSON): read back as asked, and written as it writes it; one from before levels
+    /// is a clear of the cheap caches.
+    #[test]
+    fn the_menu_bars_clear_ask_is_scenics() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/status/test");
+        for (f, level) in [("clear-request-caches.json", Level::Caches), ("clear-request-deep.json", Level::Deep)] {
+            let menu: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(f)).unwrap()).unwrap();
+            let d = tempfile::tempdir().unwrap();
+            let mut ours = request_clear(d.path(), "the menu bar on m1", level).unwrap();
+            ours.at = 1700000000;
+            assert_eq!(serde_json::to_value(&ours).unwrap(), menu, "{f}");
+            std::fs::copy(dir.join(f), d.path().join(CLEAR_REQUEST)).unwrap();
+            assert_eq!(take_clear(d.path()), Some(ours), "{f}");
+        }
+        let old: ClearRequest = serde_json::from_slice(br#"{"by":"the menu bar on m1","at":1700000000}"#).unwrap();
+        assert_eq!(old.level, Level::Caches);
+    }
+
     #[test]
     fn idle_copies_go_first_then_those_read_lately() {
         let d = tempfile::tempdir().unwrap();
@@ -1902,7 +2229,7 @@ mod tests {
         assert!(
             said.starts_with("0 MB freed (")
                 && said.contains("canopy squares 0 MB")
-                && said.ends_with("0 MB kept (the NAS hasn't it yet)"),
+                && said.ends_with("0 MB kept (a job uses it, or the NAS hasn't it yet)"),
             "{said}"
         );
         assert_eq!((size(350 << 20), size((51 << 30) + (1 << 29))), ("350 MB".to_string(), "51.5 GB".to_string()));
@@ -1932,7 +2259,7 @@ mod tests {
             ),
             ("pageview months", true)
         );
-        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas)).unwrap();
+        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas), Level::Caches, false).unwrap();
         assert!(!c.join(MONTHS).join("2026-05.tsv.zst").exists() && !c.join(MONTHS).join("2026-08.json").exists());
         assert_eq!((f.freed.clone(), f.left), (BTreeMap::from([("months".to_string(), 630)]), 50));
         assert!(f.say().contains("pageview months 0 MB"), "{}", f.say());
@@ -1995,7 +2322,7 @@ mod tests {
             file(p, 100, 60);
         }
         filtered_planet(&store::nasfs::NasRoot::local_for_test(&d.path().join("nas")));
-        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas)).unwrap();
+        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas), Level::Caches, false).unwrap();
         assert_eq!(
             f.freed,
             BTreeMap::from([
@@ -2004,19 +2331,33 @@ mod tests {
                 ("canopy".to_string(), square),
                 ("copies".to_string(), 200),
                 ("retired".to_string(), 130),
-                ("heritage".to_string(), 100)
             ])
         );
-        assert_eq!(f.left, 100, "the month the NAS lacks");
+        assert_eq!(
+            (f.left, f.level, f.stayed.as_slice()),
+            (100, Some(Level::Caches), &[][..]),
+            "the month the NAS lacks"
+        );
         assert!(nas.join("canopy/a.tif").exists(), "the square the NAS lacked copied there first");
+        // (The heritage clip, costly to make again: only a deep clear's.)
+        let clip = "heritage-merged-2026-09-28-0123456789ab.osm.pbf";
         for e in std::fs::read_dir(c).unwrap().flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
             assert!(
                 kept.iter().any(|k| k.starts_with(&format!("{n}/")) || *k == n)
-                    || ["chm10", "blobs", "aws-terrarium"].contains(&n.as_str()),
+                    || ["chm10", "blobs", "aws-terrarium", clip].contains(&n.as_str()),
                 "{n} left"
             );
         }
+        // Deeply: the clip too (its planet is there); the answers no mark says the NAS has stay.
+        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas), Level::Deep, false).unwrap();
+        assert_eq!(f.freed, BTreeMap::from([("heritage".to_string(), 100)]));
+        assert!(!c.join(clip).exists());
+        assert_eq!(
+            f.stayed.iter().map(|s| (s.cache.as_str(), s.bytes)).collect::<Vec<_>>(),
+            [("answers", 100)],
+            "the working copy whose answers the NAS hasn't"
+        );
         for k in kept {
             assert!(c.join(k).exists(), "{k} kept");
         }
@@ -2026,7 +2367,7 @@ mod tests {
         // Leftovers of any count, a part or a temporary file: they go too, the NAS asked nothing.
         file(&c.join("dem-cache.keys.u64"), 80, 60);
         file(&c.join("dem-cache.keys.u64.m1.123.tmp"), 30, 60);
-        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas)).unwrap();
+        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas), Level::Caches, false).unwrap();
         assert_eq!((f.freed.get("retired"), f.left), (Some(&110), 100));
         assert!(!c.join("dem-cache.keys.u64").exists() && !c.join("dem-cache.keys.u64.m1.123.tmp").exists());
     }
@@ -2122,7 +2463,15 @@ mod tests {
         // No manifest naming the planet it's clipped from: kept, by a clear too.
         let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| false).unwrap();
         assert_eq!((f.bytes(), f.left), (0, 700));
-        assert_eq!((clear(c, &store::nasfs::NasPath::local_for_test(nas)).unwrap().bytes(), clip.exists()), (0, true));
+        // (A deep clear keeps it too, saying why.)
+        let g = clear(c, &store::nasfs::NasPath::local_for_test(nas), Level::Deep, false).unwrap();
+        assert_eq!((g.bytes(), clip.exists()), (0, true));
+        assert_eq!(g.stayed.iter().map(|s| (s.cache.as_str(), s.bytes)).collect::<Vec<_>>(), [("heritage", 700)]);
+        assert!(
+            g.stayed[0].why.contains("can't be made again") && g.say().contains("can't be made again"),
+            "{}",
+            g.say()
+        );
         // Named, but not there: kept.
         std::fs::create_dir_all(d.path().join("nas/state/build")).unwrap();
         std::fs::write(
@@ -2229,7 +2578,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let home = d.path();
         assert!(take_clear(home).is_none());
-        let r = request_clear(home, "scenic clean on m1").unwrap();
+        let r = request_clear(home, "scenic clean on m1", Level::Caches).unwrap();
         assert_eq!(take_clear(home), Some(r.clone()));
         // Taken up, it's set aside: one written meanwhile (the menu bar's, as it writes it) waits
         // its turn, and is taken up once the first is answered. (An agent that stopped before it
@@ -2264,7 +2613,7 @@ mod tests {
         std::fs::create_dir_all(c).unwrap();
         std::os::unix::fs::symlink(nas.join("canopy"), c.join("chm10")).unwrap();
         let f = trim(c, &nas).unwrap();
-        let g = clear(c, &store::nasfs::NasPath::local_for_test(&nas)).unwrap();
+        let g = clear(c, &store::nasfs::NasPath::local_for_test(&nas), Level::Caches, false).unwrap();
         assert!(nas.join("canopy/a.tif").exists(), "the NAS's copy deleted through the link");
         assert_eq!(
             (f.bytes(), f.left, g.bytes(), cheap_bytes(c, Some(&store::nasfs::NasPath::local_for_test(&nas)))),
@@ -2310,7 +2659,10 @@ mod tests {
         let c = &d.path().join("cache");
         std::os::unix::fs::symlink(&there, c).unwrap();
         assert_eq!(
-            (trim(c, &nas).unwrap().bytes(), clear(c, &store::nasfs::NasPath::local_for_test(&nas)).unwrap().bytes()),
+            (
+                trim(c, &nas).unwrap().bytes(),
+                clear(c, &store::nasfs::NasPath::local_for_test(&nas), Level::Caches, false).unwrap().bytes()
+            ),
             (0, 0)
         );
         assert!(
@@ -2362,7 +2714,7 @@ mod tests {
         file(&elsewhere.join("base/6-1-1.0000000000000001.base"), 100, 60);
         std::fs::create_dir_all(c).unwrap();
         std::os::unix::fs::symlink(&elsewhere, c.join("base")).unwrap();
-        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas)).unwrap();
+        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas), Level::Caches, false).unwrap();
         assert!(elsewhere.join("base/6-1-1.0000000000000001.base").exists() && c.join("base").exists());
         assert_eq!((f.bytes(), f.left), (0, 0));
     }

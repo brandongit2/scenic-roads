@@ -24,10 +24,12 @@
 //!                                       the lead on another Mac) and give it back, not failed, its
 //!                                       scratch for the target cleared; --rerun-after-update: held
 //!                                       until the lead runs a newer app
-//!   scenic clean [--yes]                clear this Mac's build caches (what later jobs copy back
-//!                                       from the NAS or make again) once the build is done (jobs
-//!                                       running keep what they use), after a y/N (--yes: none): its
-//!                                       agent does it, and says what it freed
+//!   scenic clean [--deep] [--yes]       clear this Mac's build caches now (what later jobs copy
+//!                                       back cheaply from the NAS; --deep: also the heritage clip
+//!                                       and the Wikidata and Wikipedia answers, costly to make
+//!                                       again; jobs running keep what they use), after a y/N
+//!                                       (--yes: none): its agent does it, and says what it freed
+//!                                       and kept, and why
 //!   scenic room [<GB> | off]            this Mac's disk room target: the free space its agent
 //!                                       keeps, freeing its caches to it as far as needed, jobs
 //!                                       running or not (what they use stays), and starting no job
@@ -1001,16 +1003,25 @@ fn count_line(done: usize, total: Option<usize>, left: Option<usize>, noun: &str
 /// A Mac's build caches in a line: what a clear would free (`scenic clean` there) or why not now,
 /// and the last clear.
 fn caches_line(c: &agent::room::Caches) -> String {
-    let mut s =
-        c.clearable.map_or_else(|| "not counted yet".to_string(), |n| format!("{} to clear", agent::room::size(n)));
+    let mut s = c.clearable.map_or_else(
+        || "not counted yet".to_string(),
+        |n| {
+            let deep = c.clearable_deep.map(|d| format!(", {} deeply", agent::room::size(d))).unwrap_or_default();
+            format!("{} to clear{deep}", agent::room::size(n))
+        },
+    );
     s += &match &c.why_not {
         Some(w) => format!(" (not now: {w})"),
-        None => " (`scenic clean` there)".to_string(),
+        None => " (`scenic clean [--deep]` there)".to_string(),
     };
     if let Some(f) = &c.cleared {
         s += &format!("; cleared {}: {}", ago(f.at), f.say());
     }
-    if let Some(f) = c.declined.as_ref().filter(|d| c.cleared.as_ref().is_none_or(|c| d.at > c.at)) {
+    if let Some(f) = &c.cleared_deep {
+        s += &format!("; cleared deeply {}: {}", ago(f.at), f.say());
+    }
+    let last = [&c.cleared, &c.cleared_deep].into_iter().flatten().map(|f| f.at).max();
+    if let Some(f) = c.declined.as_ref().filter(|d| last.is_none_or(|at| d.at > at)) {
         s += &format!("; not cleared {}: {}", ago(f.at), f.why_not.as_deref().unwrap_or(""));
     }
     if let Some(r) = &c.room {
@@ -1243,9 +1254,11 @@ fn own_status(home: &Path) -> Option<agent::Status> {
         .max_by_key(|s| s.beat)
 }
 
-/// `scenic clean`: an ask to this Mac's agent to clear its build caches (agent::room::clear), and
-/// what it says it freed, once it has.
-fn clean(yes: bool, home: &Option<PathBuf>) -> Result<()> {
+/// `scenic clean [--deep]`: an ask to this Mac's agent to clear its build caches, as far as the level
+/// (agent::room::clear, Level), and what it says it freed and kept, once it has.
+fn clean(yes: bool, deep: bool, home: &Option<PathBuf>) -> Result<()> {
+    use agent::room::Level;
+    let level = if deep { Level::Deep } else { Level::Caches };
     let home = home_or_default(home);
     let st = own_status(&home).context("this Mac's agent has no status: is it installed here?")?;
     // (Not written while it makes room for a job, minutes at most.)
@@ -1260,12 +1273,12 @@ fn clean(yes: bool, home: &Option<PathBuf>) -> Result<()> {
         bail!("not now: {why}");
     }
     // What goes and how it comes back, and a y/N: a clear is a hundred GB on the M4.
-    let n = caches.clearable.unwrap_or(0);
-    println!("This Mac's build caches, {} in all:", agent::room::size(n));
-    for g in &caches.each {
+    let n = if deep { caches.clearable_deep } else { caches.clearable }.unwrap_or(0);
+    println!("This Mac's build caches{}, {} in all:", if deep { ", deeply" } else { "" }, agent::room::size(n));
+    for g in caches.each.iter().filter(|g| deep || !g.deep) {
         println!("  {} {}: {}", g.what, agent::room::size(g.bytes), g.back);
     }
-    println!("Kept: the Wikidata and Wikipedia answers (the NAS has them too; they free little), a pageview month the NAS lacks, and the map's offline copy.");
+    println!("{}", agent::room::kept_words(level));
     if !yes {
         use std::io::Write;
         print!("Clear them? [y/N] ");
@@ -1277,14 +1290,14 @@ fn clean(yes: bool, home: &Option<PathBuf>) -> Result<()> {
             return Ok(());
         }
     }
-    let r = agent::room::request_clear(&home, &format!("scenic clean on {}", store::sys::host_name()))?;
+    let r = agent::room::request_clear(&home, &format!("scenic clean on {}", store::sys::host_name()), level)?;
     println!("asked this Mac's agent to clear them; waiting for it…");
     let t = std::time::Instant::now();
     loop {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        let answered = own_status(&home)
-            .and_then(|s| s.caches)
-            .and_then(|c| [c.cleared, c.declined].into_iter().flatten().find(|f| f.asked == Some(r.at)));
+        let answered = own_status(&home).and_then(|s| s.caches).and_then(|c| {
+            [c.cleared, c.cleared_deep, c.declined].into_iter().flatten().find(|f| f.asked == Some(r.at))
+        });
         match answered {
             Some(f) => {
                 if let Some(why) = f.why_not {
@@ -1566,7 +1579,7 @@ fn main() -> Result<()> {
         Some(Cmd::Job(cli::Job::Cancel { target, step, rerun_after_update, home })) => {
             job_cancel(&target, step.as_deref(), rerun_after_update, &home.home)
         }
-        Some(Cmd::Clean { yes, home }) => clean(yes, &home.home),
+        Some(Cmd::Clean { yes, deep, home }) => clean(yes, deep, &home.home),
         Some(Cmd::Room { what, places }) => room(what.as_deref(), &places.home),
         Some(Cmd::InUse { cores, off, places }) => in_use(cores, off.is_some(), &places.home),
         Some(Cmd::NasTarget { what, root }) => nas_target(what.as_deref(), &root.root),
