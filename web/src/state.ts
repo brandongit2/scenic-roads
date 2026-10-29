@@ -8,7 +8,7 @@ import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './t
 import { DEPTH_DEFAULTS, DEPTH_PALETTES, type DepthState } from './depthlook';
 import type { BuildingColour, BuildingState } from './buildings';
 import { LAND_COLOUR, PLAIN } from './basecolours';
-import { cleanLooks, type LabelLooks } from './labellook';
+import { cleanLooks, type LabelLook, type LabelLooks } from './labellook';
 import { BUILTIN, DEFAULT_PRESET, DEFAULT_WEIGHTS, RAIL_DEFAULT_PRESET, RAIL_DEFAULT_WEIGHTS, presets, railPresets, sameWeights } from './presets';
 import { MODES, migrateWeights, modeDef, type Mode } from './scenic';
 import {
@@ -836,8 +836,10 @@ export function groupMask(s: AppState): number {
 }
 
 // ---- URL hash ------------------------------------------------------------------------------
-// #map=zoom/lat/lng/bearing/pitch&m=score&p=viridis&r=lo,hi&eq=1&pr=vistas&wt=…&g=11111&sf=pu&lw=1,1,1,1,1,1,1
-//  &l=rwbp&o=<overlay bits>&hl=<levels>&t3=…&t=a500&s=<way>,<lng>,<lat>
+// #map=zoom/lat/lng/bearing/pitch&p=<profile id>-<name>&m=score&pa=viridis&r=lo,hi&eq=1&pr=vistas&wt=…
+//  &g=11111&sf=pu&lw=1,1,1,1,1,1,1&l=rwbp&o=<overlay bits>&t3=…&t=a500&s=<way>,<lng>,<lat>: each setting
+//  only where it differs from the profile's (older links: no p=, each where it differs from the
+//  defaults; p=<palette>, hl=<levels>)
 
 const ob = (k: OverlayKey) => OVERLAYS.findIndex((o) => o[0] === k);
 /** The service-frequency weight given to rail weights from before the factor existed (then the
@@ -845,45 +847,59 @@ const ob = (k: OverlayKey) => OVERLAYS.findIndex((o) => o[0] === k);
 const FREQ_WEIGHT_ADDED = 0.3;
 const HM: HillshadeMethod[] = ['standard', 'basic', 'combined', 'igor', 'multidirectional'];
 
-/** The state as a link (the address bar's hash). `buildings`: whether the catalogue has the 3D
- * buildings; without them their settings stay out of links. */
-export function toHash(s: AppState, buildings: boolean): string {
-  const p = new URLSearchParams();
-  if (s.view) {
-    const v = s.view;
-    const extra = v.bearing || v.pitch || v.elev ? `/${v.bearing.toFixed(1)}/${v.pitch.toFixed(1)}${v.elev ? `/${Math.round(v.elev)}` : ''}` : '';
-    p.set('map', `${v.zoom.toFixed(2)}/${v.lat.toFixed(5)}/${v.lng.toFixed(5)}${extra}`);
-  }
-  if (s.mode !== defaults.mode) p.set('m', s.mode);
-  if (s.palette !== defaults.palette) p.set('p', s.palette);
-  const d = modeDef(s.mode);
-  if (s.auto !== d.auto || (!s.auto && (s.range[0] !== d.range[0] || s.range[1] !== d.range[1])))
-    p.set('r', s.auto ? 'auto' : `${+s.range[0].toFixed(2)},${+s.range[1].toFixed(2)}`);
+/** The profile a link names (`p=<id>-<name>`): its permanent id, name and settings (fromProfile). */
+export interface LinkBase {
+  id: string;
+  name: string;
+  s: AppState;
+}
+
+/** A profile in a link: its id, then its name for reading (lowercase, dashes). */
+export function profileParam(id: string, name: string): string {
+  const slug = name.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return slug ? `${id}-${slug}` : id;
+}
+
+/** The profile id a link's `p=` names, if it has the shape of one (else it is an older link's palette). */
+export function profileIdOf(hash: string): string | null {
+  const v = new URLSearchParams(hash.replace(/^#/, '')).get('p');
+  return v && /^[a-z0-9]{4}(-[a-z0-9-]*)?$/.test(v) ? v.slice(0, 4) : null;
+}
+
+/** Link params that are read together: one differing from the profile's brings the others (the
+ * display type resets its range, threshold and percentiles; a preset names its weights; …). */
+const LINKED: string[][] = [['m', 'r', 't', 'fp', 'fpb', 'fpm'], ['fl', 'flm'], ['pr', 'wt'], ['rw', 'rp']];
+
+/** Every setting a link can carry, each as its link value (the camera and the selection aside). */
+export function linkFields(s: AppState, buildings: boolean): Map<string, string> {
+  const p = new Map<string, string>();
+  p.set('m', s.mode);
+  p.set('pa', s.palette);
+  p.set('r', s.auto ? 'auto' : `${+s.range[0].toFixed(2)},${+s.range[1].toFixed(2)}`);
   // Percentiles: the display type's (fp); the scenic metrics' each their own: their base in fp
   // while a scenic metric is shown, else in fpb, and fpm those with another.
   const scen = isScenic(s.mode);
   const fitAt = (k: Mode) => (k === s.mode ? s.fit : pairOf(s.scenicFits, k, defaults.fit));
   const fpm = pairsField(fitAt, ROAD_FIT_KEYS, defaults.fit);
   const fpBase = scen ? fpm.base : s.fit;
-  if (!samePair(fpBase, defaults.fit)) p.set('fp', `${fpBase[0]},${fpBase[1]}`);
-  if (!scen && !samePair(fpm.base, defaults.fit)) p.set('fpb', `${fpm.base[0]},${fpm.base[1]}`);
-  if (fpm.rest) p.set('fpm', fpm.rest);
+  p.set('fp', `${fpBase[0]},${fpBase[1]}`);
+  p.set('fpb', scen ? '' : `${fpm.base[0]},${fpm.base[1]}`);
+  p.set('fpm', fpm.rest);
   // Screen widths: the scenic metrics' base (fl) and those with another (flm).
   const flm = pairsField((k) => pairOf(s.fitLens, k, FIT_LEN_DEFAULT), ROAD_FIT_KEYS, FIT_LEN_DEFAULT);
-  if (!samePair(flm.base, FIT_LEN_DEFAULT)) p.set('fl', `${flm.base[0]},${flm.base[1]}`);
-  if (flm.rest) p.set('flm', flm.rest);
-  const fu = unitsField(s.fitUnits, ROAD_FIT_KEYS);
-  if (fu) p.set('fu', fu);
-  if (s.equalize) p.set('eq', '1');
-  // Presets are per browser, so a link carries the weights themselves whenever they aren't the default.
-  if (s.preset !== DEFAULT_PRESET) p.set('pr', s.preset || 'custom');
-  if (s.preset !== DEFAULT_PRESET || !sameWeights(s.weights, DEFAULT_WEIGHTS)) p.set('wt', s.weights.map((w) => +w.toFixed(2)).join(','));
-  if (s.groups.some((g) => !g)) p.set('g', s.groups.map((g) => (g ? 1 : 0)).join(''));
-  if (s.unnamed.some((g) => !g)) p.set('un', s.unnamed.map((g) => (g ? 1 : 0)).join(''));
-  if (s.roadLen[0] || s.roadLen[1]) p.set('rl', s.roadLen.map((v) => (v ? +v.toFixed(3) : '')).join(','));
-  if (!s.roadLenOn) p.set('rlo', '0');
-  if (s.mapScheme !== defaults.mapScheme) p.set('ms', s.mapScheme);
-  const r = s.rail, dr = defaults.rail;
+  p.set('fl', `${flm.base[0]},${flm.base[1]}`);
+  p.set('flm', flm.rest);
+  p.set('fu', unitsField(s.fitUnits, ROAD_FIT_KEYS));
+  p.set('eq', s.equalize ? '1' : '0');
+  // Presets are per browser, so a link carries the weights themselves.
+  p.set('pr', s.preset || 'custom');
+  p.set('wt', s.weights.map((w) => +w.toFixed(2)).join(','));
+  p.set('g', s.groups.map((g) => (g ? 1 : 0)).join(''));
+  p.set('un', s.unnamed.map((g) => (g ? 1 : 0)).join(''));
+  p.set('rl', s.roadLen.map((v) => (v ? +v.toFixed(3) : '')).join(','));
+  p.set('rlo', s.roadLenOn ? '1' : '0');
+  p.set('ms', s.mapScheme);
+  const r = s.rail;
   // (Fields 8–10, empty: line weight, ties and casing in older links.)
   const rs = [
     r.on ? 1 : 0, r.groups.map((g) => (g ? 1 : 0)).join(''), r.colour, r.metric, r.palette, r.auto ? 1 : 0,
@@ -892,88 +908,111 @@ export function toHash(s: AppState, buildings: boolean): string {
     r.fit[0], r.fit[1], r.equalize ? 1 : 0, +r.lowSpan.toFixed(2), r.threshold.on ? 1 : 0, THR_CODE[r.threshold.dir], +r.threshold.value.toFixed(3),
     +r.opacity.toFixed(2), ...fitFields(r.fitLens, r.fitUnits, RAIL_FIT_KEYS, looksField(r.looks, r.metric, RAIL_KEYS, railFreshLook)),
   ].join(',');
-  const rsd = [
-    dr.on ? 1 : 0, dr.groups.map((g) => (g ? 1 : 0)).join(''), dr.colour, dr.metric, dr.palette, dr.auto ? 1 : 0,
-    dr.range[0], dr.range[1], '', '', '', dr.single.replace('#', ''), dr.lowFade,
-    dr.freqOn ? 1 : 0, dr.freqMin, dr.freqMax, dr.freqUnknown ? 1 : 0,
-    dr.fit[0], dr.fit[1], dr.equalize ? 1 : 0, dr.lowSpan, dr.threshold.on ? 1 : 0, THR_CODE[dr.threshold.dir], dr.threshold.value,
-    dr.opacity, ...fitFields(dr.fitLens, dr.fitUnits, RAIL_FIT_KEYS, looksField(dr.looks, dr.metric, RAIL_KEYS, railFreshLook)),
-  ].join(',');
-  if (rs !== rsd) p.set('rs', rs);
+  p.set('rs', rs);
   // Ties, then the stop dots' size and contrast.
   const rk = (x: RailState) => [+x.ties.toFixed(2), +x.stopSize.toFixed(2), +x.stopContrast.toFixed(2)].join(',');
-  if (rk(r) !== rk(dr)) p.set('rk', rk(r));
-  if (r.weights.some((w, i) => w !== dr.weights[i])) p.set('rw', r.weights.map((w) => +w.toFixed(2)).join(','));
-  if (r.preset !== dr.preset) p.set('rp', r.preset || 'custom');
+  p.set('rk', rk(r));
+  p.set('rw', r.weights.map((w) => +w.toFixed(2)).join(','));
+  p.set('rp', r.preset || 'custom');
   // (Field 4, empty: line weight in older links.)
   const fy = (f: FerryState) => [f.on ? 1 : 0, f.groups.map((g) => (g ? 1 : 0)).join(''), f.colour, f.palette, '', f.dashed ? 1 : 0, f.single.replace('#', ''), +f.opacity.toFixed(2),
     f.freqOn ? 1 : 0, +f.freqMin.toFixed(2), +f.freqMax.toFixed(2), f.freqUnknown ? 1 : 0,
     f.metric, f.auto ? 1 : 0, +f.range[0].toFixed(3), +f.range[1].toFixed(3), f.fit[0], f.fit[1], f.equalize ? 1 : 0, +f.lowFade.toFixed(2), +f.lowSpan.toFixed(2),
     f.threshold.on ? 1 : 0, THR_CODE[f.threshold.dir], +f.threshold.value.toFixed(3), ...fitFields(f.fitLens, f.fitUnits, FERRY_FIT_KEYS, looksField(f.looks, f.metric, FERRY_KEYS, ferryFreshLook))].join(',');
-  if (fy(s.ferry) !== fy(defaults.ferry)) p.set('fy', fy(s.ferry));
+  p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
-  if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
+  p.set('tc', tc(s.trees));
   const dp = (d: DepthState) => [d.on ? 1 : 0, d.palette, d.scale, Math.round(d.max), +d.opacity.toFixed(2), +d.shade.toFixed(2), Math.round(d.light), d.dry ? 1 : 0, d.dryColour.slice(1),
     d.contours ? 1 : 0, d.interval, d.fixed, d.index, d.labels ? 1 : 0, d.colour.slice(1), +d.weight.toFixed(2), +d.lineOpacity.toFixed(2), d.floor ? 1 : 0].join(',');
-  if (dp(s.depth) !== dp(defaults.depth)) p.set('dp', dp(s.depth));
+  p.set('dp', dp(s.depth));
   const bd = (b: BuildingState) => [b.on ? 1 : 0, b.flat ? 1 : 0, b.colour, +b.opacity.toFixed(2), +b.scale.toFixed(2), b.heritage ? 1 : 0, b.plain.slice(1)].join(',');
-  if (buildings && bd(s.buildings) !== bd(defaults.buildings)) p.set('bd', bd(s.buildings));
-  if (buildings && scaleStr(s.buildings.height) !== scaleStr(defaults.buildings.height)) p.set('bh', scaleStr(s.buildings.height));
-  if (!(s.surface.paved && s.surface.unpaved)) p.set('sf', `${s.surface.paved ? 'p' : ''}${s.surface.unpaved ? 'u' : ''}`);
-  if (!(s.toll.free && s.toll.toll)) p.set('tl', `${s.toll.free ? 'f' : ''}${s.toll.toll ? 't' : ''}`);
+  if (buildings) p.set('bd', bd(s.buildings));
+  if (buildings) p.set('bh', scaleStr(s.buildings.height));
+  p.set('sf', `${s.surface.paved ? 'p' : ''}${s.surface.unpaved ? 'u' : ''}`);
+  p.set('tl', `${s.toll.free ? 'f' : ''}${s.toll.toll ? 't' : ''}`);
   const lw = (l: LineWeights) => [l.global, ...LINE_KINDS.map(([k]) => l[k])].map((v) => +v.toFixed(2)).join(',');
-  if (lw(s.lineWeights) !== lw(defaults.lineWeights)) p.set('lw', lw(s.lineWeights));
-  if (s.roadOpacity !== defaults.roadOpacity) p.set('ro', s.roadOpacity.toFixed(2));
+  p.set('lw', lw(s.lineWeights));
+  p.set('ro', s.roadOpacity.toFixed(2));
   const rp = (q: RoadPersp) => [q.strength, q.cap, q.fade].map((v) => +v.toFixed(2)).join(',');
-  if (rp(s.roadPersp) !== rp(defaults.roadPersp)) p.set('wp', rp(s.roadPersp));
-  if (s.boundaryOpacity !== defaults.boundaryOpacity) p.set('bo', s.boundaryOpacity.toFixed(2));
+  p.set('wp', rp(s.roadPersp));
+  p.set('bo', s.boundaryOpacity.toFixed(2));
   const pl = (x: AppState) => [x.pointOutline.replace('#', ''), +x.pointOutlineOpacity.toFixed(2)].join(',');
-  if (pl(s) !== pl(defaults)) p.set('pl', pl(s));
-  if (s.routeGlow) p.set('rg', '1');
+  p.set('pl', pl(s));
+  p.set('rg', s.routeGlow ? '1' : '0');
   const l = s.layers;
-  if (!(l.roads && l.water && l.boundaries && l.places)) p.set('l', `${l.roads ? 'r' : ''}${l.water ? 'w' : ''}${l.boundaries ? 'b' : ''}${l.places ? 'p' : ''}`);
+  p.set('l', `${l.roads ? 'r' : ''}${l.water ? 'w' : ''}${l.boundaries ? 'b' : ''}${l.places ? 'p' : ''}`);
   const bits = OVERLAYS.map(([k]) => (s.overlays[k] ? '1' : '0')).join('');
-  if (bits !== OVERLAYS.map(([k]) => (defaults.overlays[k] ? '1' : '0')).join('')) p.set('o', bits);
-  if (s.heritageOff.length) p.set('ht', s.heritageOff.join(','));
-  if (s.boundaryLevels.some((x) => !x)) p.set('bl', s.boundaryLevels.map((x) => (x ? 1 : 0)).join(''));
-  if (LABEL_KINDS.some(([k]) => !s.labelKinds[k])) p.set('lk', LABEL_KINDS.map(([k]) => (s.labelKinds[k] ? 1 : 0)).join(''));
-  const sq = filtersToHash(s.stopFilters);
-  if (sq) p.set('sq', sq);
+  p.set('o', bits);
+  p.set('ht', s.heritageOff.join(','));
+  p.set('bl', s.boundaryLevels.map((x) => (x ? 1 : 0)).join(''));
+  p.set('lk', LABEL_KINDS.map(([k]) => (s.labelKinds[k] ? 1 : 0)).join(''));
+  p.set('sq', filtersToHash(s.stopFilters));
   const sqx = OVERLAYS.filter(([k]) => s.stopUnknown[k] === false).map(([k]) => k).join(',');
-  if (sqx) p.set('sqx', sqx);
-  const t = s.terrain, dt = defaults.terrain;
+  p.set('sqx', sqx);
+  const t = s.terrain;
   const tt = [
     t.on ? 1 : 0, +t.exaggeration.toFixed(2), t.hillshade ? 1 : 0, HM.indexOf(t.method), Math.round(t.light),
     +t.shade.toFixed(2), t.tint ? 1 : 0, t.contours ? 1 : 0, t.sky ? 1 : 0,
   ].join(',');
-  const td = [dt.on ? 1 : 0, dt.exaggeration, dt.hillshade ? 1 : 0, HM.indexOf(dt.method), dt.light, dt.shade, dt.tint ? 1 : 0, dt.contours ? 1 : 0, dt.sky ? 1 : 0].join(',');
-  if (tt !== td) p.set('t3', tt);
+  p.set('t3', tt);
   const tv = (x: Terrain) => [x.tintVar, x.tintBands, +x.tintCurve.toFixed(2), +x.tintOpacity.toFixed(2), x.tintMatch ? 1 : 0].join(',');
-  if (tv(t) !== tv(dt)) p.set('tv', tv(t));
+  p.set('tv', tv(t));
   const cl = (c: ContourLook) => [+c.weight.toFixed(2), +c.minor.toFixed(2), +c.major.toFixed(2), c.colour.slice(1), c.density, +c.perspective.toFixed(2), c.labels ? 1 : 0, c.ring, +c.labelSize.toFixed(2)].join(',');
-  if (cl(t.contour) !== cl(dt.contour)) p.set('cl', cl(t.contour));
+  p.set('cl', cl(t.contour));
   const fg = (f: FogLook) => [+f.start.toFixed(2), +f.end.toFixed(2), +f.opacity.toFixed(2), f.colour.slice(1), f.horizonColour.slice(1), +f.horizonBlend.toFixed(2)].join(',');
-  if (fg(t.fog) !== fg(dt.fog)) p.set('fg', fg(t.fog));
+  p.set('fg', fg(t.fog));
   for (const [k, key] of [['elev', 'te'], ['slope', 'ts']] as const) {
-    if (scaleStr(t.tintScales[k]) !== scaleStr(dt.tintScales[k])) p.set(key, scaleStr(t.tintScales[k]));
+    p.set(key, scaleStr(t.tintScales[k]));
   }
-  if (s.lowFade !== defaults.lowFade || s.lowSpan !== defaults.lowSpan) p.set('lf', `${+s.lowFade.toFixed(2)},${+s.lowSpan.toFixed(2)}`);
-  if (s.labelOpacity !== defaults.labelOpacity) p.set('lo', s.labelOpacity.toFixed(2));
-  if (s.labelSize !== defaults.labelSize) p.set('lz', s.labelSize.toFixed(2));
+  p.set('lf', `${+s.lowFade.toFixed(2)},${+s.lowSpan.toFixed(2)}`);
+  p.set('lo', s.labelOpacity.toFixed(2));
+  p.set('lz', s.labelSize.toFixed(2));
   const wa = (w: WaterLook) => [w.colour.slice(1), w.shade ? 1 : 0, w.width, +w.strength.toFixed(2), +w.falloff.toFixed(2), w.shadeColour.slice(1),
     +w.shore.toFixed(2), w.ripples, +w.rippleStrength.toFixed(2), w.lakes ? 1 : 0].join(',');
-  if (wa(s.water) !== wa(defaults.water)) p.set('wa', wa(s.water));
-  if (s.land !== defaults.land) p.set('ln', s.land.slice(1));
+  p.set('wa', wa(s.water));
+  p.set('ln', s.land.slice(1));
   const ldv = (d: LabelDensity) => [d.px, ...DENSITY_KINDS.map(([k]) => +d.kinds[k].toFixed(3)), +d.horizon.toFixed(2)].join(',');
-  if (ldv(s.labelDensity) !== ldv(defaults.labelDensity)) p.set('ld', ldv(s.labelDensity));
-  if (s.poiOpacity !== defaults.poiOpacity) p.set('po', s.poiOpacity.toFixed(2));
-  if (s.poiEmphasis !== defaults.poiEmphasis) p.set('pe', s.poiEmphasis.toFixed(2));
+  p.set('ld', ldv(s.labelDensity));
+  p.set('po', s.poiOpacity.toFixed(2));
+  p.set('pe', s.poiEmphasis.toFixed(2));
   const lm = (l: AppState['landmarks']) => [+l.balance.toFixed(2), l.auto ? 1 : 0, +l.range[0].toFixed(3), +l.range[1].toFixed(3), +l.lowFade.toFixed(2),
     l.fit[0], l.fit[1], l.equalize ? 1 : 0, +l.lowSpan.toFixed(2), l.threshold.on ? 1 : 0, THR_CODE[l.threshold.dir], +l.threshold.value.toFixed(3), l.top[0], l.top[1]].join(',');
-  if (lm(s.landmarks) !== lm(defaults.landmarks)) p.set('lm', lm(s.landmarks));
-  if (!s.globe) p.set('gb', '0');
-  if (s.occlude) p.set('oc', '1');
-  if (s.threshold.on) p.set('t', `${THR_CODE[s.threshold.dir]}${+s.threshold.value.toFixed(3)}`);
+  p.set('lm', lm(s.landmarks));
+  p.set('gb', s.globe ? '1' : '0');
+  p.set('oc', s.occlude ? '1' : '0');
+  p.set('t', s.threshold.on ? `${THR_CODE[s.threshold.dir]}${+s.threshold.value.toFixed(3)}` : '0');
+  p.set('lx', looksStr(s.labelLooks));
+  return p;
+}
+
+/** The label types' looks as a link value: JSON, keys sorted (so equal looks read equal). */
+function looksStr(l: LabelLooks): string {
+  const keys = Object.keys(l).filter((k) => Object.values(l[k]).some((v) => v !== undefined)).sort();
+  const one = (o: Partial<LabelLook>) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined).sort(([a], [b]) => (a < b ? -1 : 1)));
+  return keys.length ? JSON.stringify(Object.fromEntries(keys.map((k) => [k, one(l[k])]))) : '';
+}
+
+/** The settings of `s` a link carries that differ from `base`'s (with those read together). */
+export function overrides(s: AppState, base: AppState, buildings: boolean): Map<string, string> {
+  const a = linkFields(s, buildings), d = linkFields(base, buildings);
+  const out = new Map<string, string>();
+  for (const [k, v] of a) if (v !== d.get(k)) out.set(k, v);
+  for (const g of LINKED) if (g.some((k) => out.has(k))) for (const k of g) if (a.has(k)) out.set(k, a.get(k)!);
+  return out;
+}
+
+/** The state as a link (the address bar's hash): the camera, the profile (`p=`), the settings that
+ * differ from the profile's (no profile: from the app's defaults), the selection. `buildings`:
+ * whether the catalogue has the 3D buildings; without them their settings stay out of links. */
+export function toHash(s: AppState, buildings: boolean, base?: LinkBase): string {
+  const p = new URLSearchParams();
+  if (s.view) {
+    const v = s.view;
+    const extra = v.bearing || v.pitch || v.elev ? `/${v.bearing.toFixed(1)}/${v.pitch.toFixed(1)}${v.elev ? `/${Math.round(v.elev)}` : ''}` : '';
+    p.set('map', `${v.zoom.toFixed(2)}/${v.lat.toFixed(5)}/${v.lng.toFixed(5)}${extra}`);
+  }
+  if (base) p.set('p', profileParam(base.id, base.name));
+  for (const [k, v] of overrides(s, base?.s ?? defaults, buildings)) p.set(k, v);
   // The selected way's OSM id and a point on it.
   if (s.selected !== null) p.set('s', `${s.selected.way},${s.selected.at.map((v) => v.toFixed(5)).join(',')}`);
   if (s.selected !== null && s.stretch) {
@@ -983,10 +1022,12 @@ export function toHash(s: AppState, buildings: boolean): string {
   return '#' + p.toString().replace(/%2F/g, '/').replace(/%2C/g, ',');
 }
 
-/** The state a link gives (`buildings`: whether the catalogue has the 3D buildings; without, their
+
+/** The state a link gives: `base` (the profile it names; older links: the defaults) with the
+ * settings it carries (`buildings`: whether the catalogue has the 3D buildings; without, their
  * `bd=` is left out, as `toHash` leaves it out). */
-export function fromHash(hash: string, buildings = true): AppState {
-  const s: AppState = structuredClone(defaults);
+export function fromHash(hash: string, buildings = true, base: AppState = defaults): AppState {
+  const s: AppState = { ...structuredClone(base), view: null, selected: null, stretch: null };
   const p = new URLSearchParams(hash.replace(/^#/, ''));
   const map = p.get('map')?.split('/').map(Number);
   if (map && map.length >= 3 && map.every(Number.isFinite))
@@ -999,7 +1040,9 @@ export function fromHash(hash: string, buildings = true): AppState {
     s.range = [...d.range] as [number, number];
     s.threshold.value = d.thrDefault;
   }
-  if (p.get('p')) s.palette = p.get('p')!;
+  // (Older links: the palette in p=, where p= names no profile.)
+  const pal = p.get('pa') ?? (profileIdOf(hash) ? null : p.get('p'));
+  if (pal) s.palette = pal;
   const rs = p.get('r');
   if (rs === 'auto') s.auto = true;
   else {
@@ -1016,20 +1059,23 @@ export function fromHash(hash: string, buildings = true): AppState {
     const v = p.get(k)?.split(',').map(Number);
     return v && v.length === 2 && validFit([v[0], v[1]]) ? [v[0], v[1]] : null;
   };
-  const fp = pctPair('fp');
-  const fpm = pairsOfField(p.get('fpm'), ROAD_FIT_KEYS, validFit);
-  const fitBase: Pair = (isScenic(s.mode) ? fp : pctPair('fpb')) ?? defaults.fit;
-  if (fp && !isScenic(s.mode)) s.fit = fp;
-  if (isScenic(s.mode)) s.fit = pairOf(fpm, s.mode, fitBase);
-  s.scenicFits = perMetric(ROAD_FIT_KEYS.filter((k) => k !== s.mode), (k) => fpm[k] ?? fitBase, defaults.fit);
+  if (p.has('fp') || p.has('fpb') || p.has('fpm') || p.has('m')) {
+    const fp = pctPair('fp');
+    const fpm = pairsOfField(p.get('fpm'), ROAD_FIT_KEYS, validFit);
+    const fitBase: Pair = (isScenic(s.mode) ? fp : pctPair('fpb')) ?? defaults.fit;
+    s.fit = isScenic(s.mode) ? pairOf(fpm, s.mode, fitBase) : fp ?? defaults.fit;
+    s.scenicFits = perMetric(ROAD_FIT_KEYS.filter((k) => k !== s.mode), (k) => fpm[k] ?? fitBase, defaults.fit);
+  }
   // Screen widths: fl every scenic metric's but those flm lists (older links: every one's).
-  const flv = p.get('fl')?.split(',');
-  const flOwn = pairsOfField(p.get('flm'), ROAD_FIT_KEYS, validFitLen);
-  const flBase = flv && flv.length === 2 ? fitLenOf(flv[0], flv[1], FIT_LEN_DEFAULT) : FIT_LEN_DEFAULT;
-  s.fitLens = perMetric(ROAD_FIT_KEYS, (k) => flOwn[k] ?? flBase, FIT_LEN_DEFAULT);
+  if (p.has('fl') || p.has('flm')) {
+    const flv = p.get('fl')?.split(',');
+    const flOwn = pairsOfField(p.get('flm'), ROAD_FIT_KEYS, validFitLen);
+    const flBase = flv && flv.length === 2 ? fitLenOf(flv[0], flv[1], FIT_LEN_DEFAULT) : FIT_LEN_DEFAULT;
+    s.fitLens = perMetric(ROAD_FIT_KEYS, (k) => flOwn[k] ?? flBase, FIT_LEN_DEFAULT);
+  }
   // ('p': every scenic metric, as links from before the unit per metric have it.)
-  s.fitUnits = unitsOfField(p.get('fu'), ROAD_FIT_KEYS);
-  s.equalize = p.get('eq') === '1';
+  if (p.has('fu')) s.fitUnits = unitsOfField(p.get('fu'), ROAD_FIT_KEYS);
+  if (p.has('eq')) s.equalize = p.get('eq') === '1';
   const pr = p.get('pr');
   const wt = migrateWeights(p.get('wt')?.split(',').map(Number));
   if (pr !== null) s.preset = pr === 'custom' ? '' : pr;
@@ -1041,7 +1087,7 @@ export function fromHash(hash: string, buildings = true): AppState {
   if (un && un.length === NGROUP) s.unnamed = [...un].map((c) => c === '1');
   const rl = p.get('rl')?.split(',').map((v) => Math.max(0, Number(v) || 0));
   if (rl && rl.length === 2) s.roadLen = [rl[0], rl[1]];
-  s.roadLenOn = p.get('rlo') !== '0';
+  if (p.has('rlo')) s.roadLenOn = p.get('rlo') !== '0';
   const ms = p.get('ms');
   if (ms && MAP_SCHEMES.some((m) => m.key === ms)) s.mapScheme = ms;
   const rsv = p.get('rs')?.split(',');
@@ -1204,7 +1250,7 @@ export function fromHash(hash: string, buildings = true): AppState {
   if (rpv && rpv.length === 3 && rpv.every(Number.isFinite)) s.roadPersp = clampPersp({ strength: rpv[0], cap: rpv[1], fade: rpv[2] });
   const bo = Number(p.get('bo'));
   if (p.get('bo') && bo >= 0 && bo <= 1) s.boundaryOpacity = bo;
-  s.routeGlow = p.get('rg') === '1';
+  if (p.has('rg')) s.routeGlow = p.get('rg') === '1';
   const l = p.get('l');
   if (l !== null) s.layers = { roads: l.includes('r'), water: l.includes('w'), boundaries: l.includes('b'), places: l.includes('p') };
   const o = p.get('o');
@@ -1215,9 +1261,9 @@ export function fromHash(hash: string, buildings = true): AppState {
   if (ht !== null) s.heritageOff = ht.split(',').filter((k) => /^[wnpm]\.[a-z]+$/.test(k));
   const bl = p.get('bl');
   if (bl && bl.length === 3) s.boundaryLevels = [...bl].map((c) => c === '1') as [boolean, boolean, boolean];
-  if (p.get('sq')) s.stopFilters = filtersFromHash(p.get('sq')!);
+  if (p.has('sq')) s.stopFilters = filtersFromHash(p.get('sq')!);
   const sqx = p.get('sqx');
-  if (sqx) s.stopUnknown = Object.fromEntries(sqx.split(',').filter((k) => OVERLAYS.some((o) => o[0] === k)).map((k) => [k, false]));
+  if (sqx !== null) s.stopUnknown = Object.fromEntries(sqx.split(',').filter((k) => OVERLAYS.some((o) => o[0] === k)).map((k) => [k, false]));
   const lk = p.get('lk');
   // Kinds added since the link was made (beyond its length) stay on.
   if (lk && lk.length <= LABEL_KINDS.length) s.labelKinds = Object.fromEntries(LABEL_KINDS.map(([k], i) => [k, i >= lk.length || lk[i] === '1'])) as Record<LabelKind, boolean>;
@@ -1278,8 +1324,8 @@ export function fromHash(hash: string, buildings = true): AppState {
     s.lowFade = Math.min(1, Math.max(0, lf[0]));
     s.lowSpan = Math.min(1, Math.max(0.1, lf[1]));
   }
-  s.globe = p.get('gb') !== '0';
-  s.occlude = p.get('oc') === '1';
+  if (p.has('gb')) s.globe = p.get('gb') !== '0';
+  if (p.has('oc')) s.occlude = p.get('oc') === '1';
   const lo = Number(p.get('lo'));
   if (p.get('lo') && lo >= 0 && lo <= 1) s.labelOpacity = lo;
   const lz = Number(p.get('lz'));
@@ -1316,13 +1362,22 @@ export function fromHash(hash: string, buildings = true): AppState {
     const num = (x: string, dv: number, lo: number, hi: number) => (x !== '' && Number.isFinite(Number(x)) ? Math.min(hi, Math.max(lo, Number(x))) : dv);
     const r0 = num(lmv[2], d.range[0], 0, 1), r1 = num(lmv[3], d.range[1], 0, 1);
     s.landmarks = {
-      ...d, balance: num(lmv[0], d.balance, 0, 1), auto: lmv[1] !== '0', range: r1 > r0 ? [r0, r1] : d.range,
+      ...s.landmarks, balance: num(lmv[0], d.balance, 0, 1), auto: lmv[1] !== '0', range: r1 > r0 ? [r0, r1] : d.range,
       lowFade: num(lmv[4], d.lowFade, 0, 1), ...parseScaleTail(lmv.slice(5), d),
       top: lmv.length >= 14 ? topRanks(num(lmv[12], d.top[0], 1, 100000), num(lmv[13], d.top[1], 1, 100000)) : d.top,
     };
   }
   const t = p.get('t');
   if (t && /^[abl]-?[\d.]+$/.test(t)) s.threshold = { on: true, dir: t[0] === 'a' ? 'above' : t[0] === 'b' ? 'below' : 'low', value: Number(t.slice(1)) };
+  else if (t === '0') s.threshold = { ...s.threshold, on: false };
+  const lx = p.get('lx');
+  if (lx !== null) {
+    try {
+      s.labelLooks = lx ? cleanLooks(JSON.parse(lx)) : {};
+    } catch {
+      /* a broken value: the profile's */
+    }
+  }
   // The selected way and a point on it (older links, a way index alone: no selection).
   const sel = p.get('s')?.match(/^(\d+),(-?[\d.]+),(-?[\d.]+)$/);
   if (sel) {
@@ -1463,7 +1518,8 @@ export function fromSaved(o: unknown): AppState {
     const v = sfv[d.key];
     if (v && typeof v.on === 'boolean' && Number.isFinite(v.min) && Number.isFinite(v.max)) s.stopFilters[d.key] = { on: v.on, min: v.min!, max: v.max! };
   }
-  const suv = (rest.stopUnknown ?? {}) as Record<string, unknown>;
+  // (None saved: the defaults'.)
+  const suv = (rest.stopUnknown ?? defaults.stopUnknown) as Record<string, unknown>;
   s.stopUnknown = Object.fromEntries(OVERLAYS.filter(([k]) => typeof suv[k] === 'boolean').map(([k]) => [k, suv[k] as boolean]));
   // Per-metric colour settings of rail and ferries (merge() only keeps keys the defaults have).
   const rl = ((rest.rail as { looks?: Record<string, unknown> } | undefined)?.looks ?? {}) as Record<string, unknown>;
@@ -1486,4 +1542,17 @@ export function fromSaved(o: unknown): AppState {
     s.view = { zoom: v.zoom, lat: v.lat, lng: v.lng, bearing: Number(v.bearing) || 0, pitch: Number(v.pitch) || 0, elev: Number(v.elev) || 0 };
   }
   return s;
+}
+
+/** A profile's settings (what the server keeps, ui/profiles.ts): the state without the camera and
+ * the selection. */
+export function profileSettings(s: AppState): Record<string, unknown> {
+  const { view: _v, selected: _s, stretch: _t, ...rest } = s;
+  return JSON.parse(JSON.stringify(rest)) as Record<string, unknown>;
+}
+
+/** The state a profile's settings give (merged onto the defaults as saved state is: `{}` is the
+ * defaults), with no camera or selection. */
+export function fromProfile(o: unknown): AppState {
+  return { ...fromSaved(o), view: null, selected: null, stretch: null };
 }
