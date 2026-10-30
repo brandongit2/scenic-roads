@@ -1660,6 +1660,37 @@ mod tests {
         assert_eq!(z0["properties"]["region"], "q");
     }
 
+    /// A folder's outline: two regions side by side (their shared border simplified a little apart)
+    /// and the waters round them, which hold them as a hole, make one ring round all; an enclave
+    /// no region covers stays a hole.
+    #[test]
+    fn a_folders_outline_is_its_regions_as_one() {
+        let sq = |id: &str, polys: Vec<Vec<Vec<[f64; 2]>>>| Simplified {
+            id: id.into(),
+            bbox: [0.0; 4],
+            polys,
+            props: json!({}),
+            json: String::new(),
+        };
+        let r = |w: f64, s: f64, e: f64, n: f64| vec![[w, s], [e, s], [e, n], [w, n], [w, s]];
+        let west = sq("west", vec![vec![r(0.0, 0.0, 1.0, 1.0)]]);
+        // (Its border 1e-4° off the west's: simplified apart.)
+        let east = sq("east", vec![vec![r(1.0001, 0.0, 2.0, 1.0), r(1.4, 0.4, 1.6, 0.6)]]);
+        let waters = sq("waters", vec![vec![r(-1.0, -1.0, 3.0, 2.0), r(0.0, 0.0, 2.0, 1.0)]]);
+        let u = union_of(&[&west, &east, &waters], 100.0).unwrap();
+        assert_eq!(u.id, "west,east,waters");
+        assert_eq!(u.polys.len(), 1, "one polygon");
+        assert_eq!(u.polys[0].len(), 2, "its outer ring and the enclave: {:?}", u.polys);
+        let xs: Vec<f64> = u.polys[0][0].iter().map(|p| p[0]).collect();
+        assert!(
+            xs.iter().all(|x| (*x + 1.0).abs() < 1e-3 || (*x - 3.0).abs() < 1e-3),
+            "the waters' outer ring: {xs:?}"
+        );
+        // Two regions apart: two polygons.
+        let far = sq("far", vec![vec![r(10.0, 0.0, 11.0, 1.0)]]);
+        assert_eq!(union_of(&[&west, &far], 100.0).unwrap().polys.len(), 2);
+    }
+
     #[test]
     fn outlines_are_narrowed_by_box_and_ids() {
         let one = |id: &str, bbox: [f64; 4]| Simplified {
