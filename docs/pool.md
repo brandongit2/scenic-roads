@@ -1000,7 +1000,10 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   an old lead's coordinator kept on as its broker answers every ask with nothing (task #815). A view
   behind the term keeps the newer lead's coordinator.
 - **Its port is free for the next:** children are started (`store::spawn`) only while no listener
-  or connection is being made or closed, under one lock, so no child inherits the socket. clippy.toml's
+  or connection is being made or closed, and one at a time, under one lock, so no child inherits a
+  socket or another child's half-marked pipe (Darwin has no `pipe2`; task #900: two caffeinates held
+  a `scutil`'s output pipe and its reader hung). The long-lived `caffeinate`s are started
+  `store::spawn::detached`, every descriptor but /dev/null on 0–2 closed. clippy.toml's
   disallowed-methods, checked by publish.sh, keeps every start, listen and accept going through it.
 - With a term made, `check_writer` refuses every direct save of the records: everything hands off.
 

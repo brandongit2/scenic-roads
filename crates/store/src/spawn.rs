@@ -9,13 +9,22 @@
 //! every socket of this process, close-on-exec or not, until its exec: a socket closed then stays
 //! open until it does.
 //!
-//! So a child is started (`spawn`, `status`, `output`) only while no listener or connection is
-//! being made or closed (`sockets`), and the other way round: one lock, read by the starts (any
-//! number at once), written by the sockets' few moments. Every start in the workspace goes
-//! through here (clippy.toml's disallowed-methods, checked by tools/app/publish.sh).
+//! A child's pipes have the same gap: std makes them (`Stdio::piped`, and the fork path's pipe
+//! for a failed exec's error) with `pipe`, then marks each end close-on-exec (Darwin has no
+//! `pipe2`). A child started by another thread between the two keeps both ends: two
+//! `caffeinate -w` children held a `scutil` child's output pipe for their whole lives, so its
+//! reader never saw the end and a test hung for 80 minutes (task #900).
 //!
-//! Not a fork-free start with every descriptor but the three closed (posix_spawn's
-//! `POSIX_SPAWN_CLOEXEC_DEFAULT`): std's `Child` can't be had from one.
+//! So a child is started (`spawn`, `status`, `output`, `detached`) only while no other child is
+//! being started and no listener or connection is being made or closed (`sockets`): one lock,
+//! held by each start and by the sockets' few moments, one at a time. Every start in the workspace
+//! goes through here (clippy.toml's disallowed-methods, checked by tools/app/publish.sh).
+//!
+//! A child that outlives what started it, and needs nothing of it (caffeinate), is started by
+//! `detached`: posix_spawn with every descriptor but its three closed
+//! (`POSIX_SPAWN_CLOEXEC_DEFAULT`), those three /dev/null, so it holds nothing of this process's
+//! whatever was open, or half-marked, at its start. (std's `Child` can't be had from one: a
+//! `Detached` is its own.)
 //!
 //! No start leaves a child holding this process's files once it returns (store::cachefile's
 //! deletes count on it: `no_child_starting`). Only std's posix_spawn of a program by its path is
@@ -38,23 +47,114 @@ use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard};
 
-static GAP: RwLock<()> = RwLock::new(());
+static GAP: Mutex<()> = Mutex::new(());
 
-fn starting() -> RwLockReadGuard<'static, ()> {
-    GAP.read().unwrap_or_else(|e| e.into_inner())
+fn gap() -> MutexGuard<'static, ()> {
+    GAP.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn making() -> RwLockWriteGuard<'static, ()> {
-    GAP.write().unwrap_or_else(|e| e.into_inner())
-}
-
-/// `cmd.spawn()`, while no socket is being made or closed.
+/// `cmd.spawn()`, while no other child is being started and no socket is being made or closed.
 pub fn spawn(cmd: &mut Command) -> io::Result<Child> {
     settle(cmd)?;
-    let _g = starting();
+    let _g = gap();
     cmd.spawn()
+}
+
+/// A child started by `detached`: no pipes, no descriptor of this process's. Waited for (reaped)
+/// by `wait`, `kill` or a `try_wait` that finds it ended.
+#[derive(Debug)]
+pub struct Detached {
+    pid: i32,
+    done: bool,
+}
+
+/// Starts `program` (a path, as `command` finds it) with `args`, its standard streams /dev/null and
+/// every other descriptor closed (the module's note), its environment this process's with
+/// `NO_LARGE_CACHE`.
+#[cfg(unix)]
+pub fn detached(program: impl AsRef<OsStr>, args: &[&str]) -> io::Result<Detached> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let cmd = command(program);
+    settle(&cmd)?;
+    let cs = |b: &[u8]| CString::new(b).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e));
+    let prog = cs(cmd.get_program().as_bytes())?;
+    let argv: Vec<CString> =
+        std::iter::once(Ok(prog.clone())).chain(args.iter().map(|a| cs(a.as_bytes()))).collect::<io::Result<_>>()?;
+    let envv: Vec<CString> = std::env::vars_os()
+        .filter(|(k, _)| k != NO_LARGE_CACHE.0)
+        .map(|(k, v)| [k.as_bytes(), b"=", v.as_bytes()].concat())
+        .chain(std::iter::once(format!("{}={}", NO_LARGE_CACHE.0, NO_LARGE_CACHE.1).into_bytes()))
+        .map(|b| cs(&b))
+        .collect::<io::Result<_>>()?;
+    let ptrs = |v: &[CString]| v.iter().map(|c| c.as_ptr() as *mut libc::c_char).chain([std::ptr::null_mut()]).collect::<Vec<_>>();
+    let (argp, envp) = (ptrs(&argv), ptrs(&envv));
+    let null = c"/dev/null";
+    let check = |r: libc::c_int| if r == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(r)) };
+    // SAFETY: attr and actions initialised before use and destroyed after; argv and envp are
+    // NUL-terminated arrays of NUL-terminated strings that outlive the call.
+    unsafe {
+        let mut attr: libc::posix_spawnattr_t = std::mem::zeroed();
+        let mut acts: libc::posix_spawn_file_actions_t = std::mem::zeroed();
+        check(libc::posix_spawnattr_init(&mut attr))?;
+        check(libc::posix_spawn_file_actions_init(&mut acts))?;
+        let r = (|| {
+            #[cfg(target_os = "macos")]
+            check(libc::posix_spawnattr_setflags(&mut attr, libc::POSIX_SPAWN_CLOEXEC_DEFAULT as libc::c_short))?;
+            check(libc::posix_spawn_file_actions_addopen(&mut acts, 0, null.as_ptr(), libc::O_RDONLY, 0))?;
+            check(libc::posix_spawn_file_actions_addopen(&mut acts, 1, null.as_ptr(), libc::O_WRONLY, 0))?;
+            check(libc::posix_spawn_file_actions_addopen(&mut acts, 2, null.as_ptr(), libc::O_WRONLY, 0))?;
+            let mut pid = 0;
+            let _g = gap();
+            check(libc::posix_spawn(&mut pid, prog.as_ptr(), &acts, &attr, argp.as_ptr(), envp.as_ptr()))?;
+            Ok(Detached { pid, done: false })
+        })();
+        libc::posix_spawn_file_actions_destroy(&mut acts);
+        libc::posix_spawnattr_destroy(&mut attr);
+        r
+    }
+}
+
+#[cfg(unix)]
+impl Detached {
+    pub fn id(&self) -> u32 {
+        self.pid as u32
+    }
+
+    fn reap(&mut self, flags: libc::c_int) -> io::Result<bool> {
+        if self.done {
+            return Ok(true);
+        }
+        let mut st = 0;
+        // SAFETY: waitpid on our own child.
+        let r = unsafe { libc::waitpid(self.pid, &mut st, flags) };
+        if r < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        self.done = r == self.pid;
+        Ok(self.done)
+    }
+
+    /// Whether it has ended (reaped if so), as `Child::try_wait`'s `Some`.
+    pub fn try_wait(&mut self) -> io::Result<bool> {
+        self.reap(libc::WNOHANG)
+    }
+
+    /// Waits for its end.
+    pub fn wait(&mut self) -> io::Result<()> {
+        self.reap(0).map(drop)
+    }
+
+    /// SIGKILL, then waited for.
+    pub fn kill(&mut self) -> io::Result<()> {
+        if !self.done {
+            // SAFETY: a signal to our own unreaped child (its pid can't be reused yet).
+            unsafe { libc::kill(self.pid, libc::SIGKILL) };
+        }
+        self.wait()
+    }
 }
 
 /// A command for `program`, named by its path: a name without a folder looked up in this
@@ -142,7 +242,7 @@ pub fn output(cmd: &mut Command) -> io::Result<Output> {
 /// Runs `f`, which makes or closes sockets, while no child is being started. Brief: it waits
 /// for nothing but the calls (no blocking accept, no connect, no lookup by name).
 pub fn sockets<T>(f: impl FnOnce() -> T) -> T {
-    let _g = making();
+    let _g = gap();
     f()
 }
 
@@ -151,9 +251,9 @@ pub fn sockets<T>(f: impl FnOnce() -> T) -> T {
 /// with them, until its exec, so a lock this process let go of would still look taken for that
 /// moment (store::cachefile's `try_remove`, which would pass over a file no one uses).
 /// `f` must be brief (it holds back every start, and `sockets`, which share the lock) and must
-/// not call `spawn`, `status`, `output`, `sockets` or this again: the lock isn't re-entrant.
+/// not call `spawn`, `status`, `output`, `detached`, `sockets` or this again: the lock isn't re-entrant.
 pub fn no_child_starting<T>(f: impl FnOnce() -> T) -> T {
-    let _g = making();
+    let _g = gap();
     f()
 }
 
@@ -186,7 +286,7 @@ pub fn accept(listener: &TcpListener) -> io::Result<(TcpStream, SocketAddr)> {
 /// Whether a child could be started now (none held back by `sockets`). For tests.
 #[doc(hidden)]
 pub fn could_start() -> bool {
-    GAP.try_read().is_ok()
+    GAP.try_lock().is_ok()
 }
 
 #[cfg(all(test, unix))]
@@ -301,5 +401,72 @@ mod tests {
         assert_eq!(unsafe { libc::poll(&mut ready, 1, -1) }, 1, "{}", io::Error::last_os_error());
         let (s, _) = accept(&l).unwrap();
         assert!(!child_holds(s.as_raw_fd()));
+    }
+
+    /// A detached child holds no descriptor of this process's, close-on-exec or not: a pipe whose
+    /// write end is left open across exec (the worst case) still reads to its end once ours closes.
+    #[test]
+    fn a_detached_child_holds_nothing() {
+        let mut fds = [0; 2];
+        // SAFETY: a new pipe, owned from here, neither end close-on-exec.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let mut c = detached("/bin/sleep", &["30"]).unwrap();
+        drop(w);
+        let mut b = [0u8; 1];
+        let mut p = libc::pollfd { fd: r.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: one pollfd on a descriptor `r` owns; then a read into our buffer.
+        assert_eq!(unsafe { libc::poll(&mut p, 1, 5000) }, 1, "no end seen: the child holds the pipe");
+        assert_eq!(unsafe { libc::read(r.as_raw_fd(), b.as_mut_ptr().cast(), 1) }, 0);
+        assert!(!c.try_wait().unwrap());
+        c.kill().unwrap();
+        assert!(c.try_wait().unwrap());
+    }
+
+    /// Task #900: children that outlive a read (here 0.5 s, as caffeinate outlives one) started by
+    /// other threads while one reads children's output (std's pipes, marked close-on-exec a call
+    /// after they're made) never hold that output's pipe: every read ends at once, never when a
+    /// holder ends. Both kinds: `spawn` with its streams null, and `detached`. (With the lock taken
+    /// out of `spawn`, a read waits out a holder within seconds.)
+    #[test]
+    fn long_lived_children_never_hold_another_childs_pipe() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let starters: Vec<_> = (0..6)
+            .map(|i| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    let (mut kids, mut held) = (Vec::new(), Vec::new());
+                    while !stop.load(Ordering::Relaxed) {
+                        if i % 3 == 0 {
+                            kids.push(detached("/bin/sleep", &["0.5"]).unwrap());
+                        } else {
+                            let mut c = command("/bin/sleep");
+                            c.arg("0.5").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+                            held.push(spawn(&mut c).unwrap());
+                        }
+                        kids.retain_mut(|k| !k.try_wait().unwrap());
+                        held.retain_mut(|h| h.try_wait().unwrap().is_none());
+                        if kids.len() + held.len() >= 150 {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    }
+                    kids.iter_mut().for_each(|k| drop(k.kill()));
+                    held.iter_mut().for_each(|h| drop((h.kill(), h.wait())));
+                })
+            })
+            .collect();
+        let start = Instant::now();
+        let mut slowest = Duration::ZERO;
+        while start.elapsed() < Duration::from_secs(6) {
+            let t = Instant::now();
+            let o = output(command("/bin/echo").arg("x")).unwrap();
+            assert_eq!(o.stdout, b"x\n");
+            slowest = slowest.max(t.elapsed());
+        }
+        stop.store(true, Ordering::Relaxed);
+        starters.into_iter().for_each(|t| t.join().unwrap());
+        assert!(slowest < Duration::from_millis(400), "a read took {slowest:?}: a long-lived child held its pipe");
     }
 }

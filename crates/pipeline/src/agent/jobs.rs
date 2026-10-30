@@ -129,7 +129,7 @@ pub struct Running {
     pub adopted: bool,
     /// An adopted job's group ended without a status (killed while no agent tended it).
     pub vanished: bool,
-    caffeinate: Option<Child>,
+    caffeinate: Option<store::spawn::Detached>,
     pub pgid: i32,
     /// Its group's head's start time (`process_start`, 0 when unknown): with `started`, what tells
     /// its group from another given the same id once it's gone (`group`, `Group::is_the_jobs`).
@@ -303,7 +303,6 @@ impl Running {
             crate::sys::signal_group(self.pgid, Signal::Stop);
             if let Some(mut c) = self.caffeinate.take() {
                 let _ = c.kill();
-                let _ = c.wait();
             }
         }
         self.paused = Some(why.to_string());
@@ -363,7 +362,6 @@ impl Running {
         }
         if let Some(c) = self.caffeinate.as_mut() {
             let _ = c.kill();
-            let _ = c.wait();
         }
     }
 
@@ -374,7 +372,6 @@ impl Running {
         save_hand(record, &self, hand);
         if let Some(mut c) = self.caffeinate.take() {
             let _ = c.kill();
-            let _ = c.wait();
         }
         // (Its child dropped unwaited: it goes on, reaped by launchd once this process has ended.)
         self.child.take();
@@ -393,15 +390,9 @@ impl Running {
 
 /// Keeps the Mac awake while process `pid` runs: no idle sleep (on battery too: -i), no system sleep
 /// on mains power (-s), ending with it (-w).
-fn keep_awake(pid: u32) -> Option<Child> {
-    store::spawn::spawn(
-        store::spawn::command("/usr/bin/caffeinate")
-            .args(["-i", "-s", "-w", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null()),
-    )
-    .ok()
+/// Started `detached`: it lives as long as the job, so holds nothing of this process's.
+fn keep_awake(pid: u32) -> Option<store::spawn::Detached> {
+    store::spawn::detached("/usr/bin/caffeinate", &["-i", "-s", "-w", &pid.to_string()]).ok()
 }
 
 /// An exit status read from a job's status file (`HEAD`), when there's one that reads: a code past

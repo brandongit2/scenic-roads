@@ -61,13 +61,41 @@ pub fn host() -> &'static str {
     HOST.get_or_init(host_name)
 }
 
-/// This Mac's name, read now (`host`).
+/// This Mac's name, read now (`host`): its LocalHostName, from SystemConfiguration (what
+/// `scutil --get LocalHostName` prints), no child started.
 pub fn host_name() -> String {
-    crate::spawn::output(crate::spawn::command("/usr/sbin/scutil").args(["--get", "LocalHostName"]))
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".into())
+    local_host_name().filter(|s| !s.is_empty()).unwrap_or_else(|| "unknown".into())
+}
+
+#[cfg(target_os = "macos")]
+fn local_host_name() -> Option<String> {
+    use std::ffi::c_void;
+    #[link(name = "SystemConfiguration", kind = "framework")]
+    unsafe extern "C" {
+        fn SCDynamicStoreCopyLocalHostName(store: *const c_void) -> *const c_void;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFStringGetCString(s: *const c_void, buf: *mut libc::c_char, len: isize, encoding: u32) -> u8;
+        fn CFRelease(cf: *const c_void);
+    }
+    const UTF8: u32 = 0x0800_0100; // kCFStringEncodingUTF8
+    // SAFETY: a CFString we own (Copy rule), read into our buffer, then released.
+    unsafe {
+        let s = SCDynamicStoreCopyLocalHostName(std::ptr::null());
+        if s.is_null() {
+            return None;
+        }
+        let mut b = [0 as libc::c_char; 256];
+        let ok = CFStringGetCString(s, b.as_mut_ptr(), b.len() as isize, UTF8) != 0;
+        CFRelease(s);
+        ok.then(|| std::ffi::CStr::from_ptr(b.as_ptr()).to_string_lossy().into_owned())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn local_host_name() -> Option<String> {
+    hostname().map(|h| h.split('.').next().unwrap_or_default().to_string())
 }
 
 /// This process's id, or 0 where there are no processes (WASI, where `std::process::id` panics).
@@ -288,6 +316,14 @@ pub fn is_disconnect(e: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The name read without a child is the one `scutil --get LocalHostName` prints (task #900).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn host_name_is_scutils_local_host_name() {
+        let o = crate::spawn::output(crate::spawn::command("/usr/sbin/scutil").args(["--get", "LocalHostName"])).unwrap();
+        assert_eq!(host_name(), String::from_utf8_lossy(&o.stdout).trim());
+    }
 
     #[test]
     fn positional_reads_and_writes() {

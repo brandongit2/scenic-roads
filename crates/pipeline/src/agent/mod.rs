@@ -1556,7 +1556,7 @@ pub struct Agent {
     /// **nas**: the share's mount, its probe and remounts, under a deadline (crate::agent::nas).
     nas: nas::Handle,
     /// The idle-sleep assertion it holds while it leads with leases out (`lead_awake`).
-    lead_awake: Option<std::process::Child>,
+    lead_awake: Option<store::spawn::Detached>,
     /// The NAS's project folder as the loop last found it (a job ending between loops tells the
     /// lead through a client made from it).
     last_root: Option<NasRoot>,
@@ -10593,23 +10593,15 @@ impl Agent {
             self.lead_awake_off();
             return;
         }
-        if self.lead_awake.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None))) {
+        if self.lead_awake.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(false))) {
             return;
         }
-        self.lead_awake = store::spawn::spawn(
-            store::spawn::command("/usr/bin/caffeinate")
-                .args(["-i", "-w", &std::process::id().to_string()])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null()),
-        )
-        .ok();
+        self.lead_awake = store::spawn::detached("/usr/bin/caffeinate", &["-i", "-w", &std::process::id().to_string()]).ok();
     }
 
     fn lead_awake_off(&mut self) {
         if let Some(mut c) = self.lead_awake.take() {
             c.kill().ok();
-            c.wait().ok();
         }
     }
 
