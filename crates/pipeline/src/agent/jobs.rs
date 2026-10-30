@@ -1134,12 +1134,12 @@ mod tests {
         assert_eq!(Live::read(&counts, &costs, 0, None), Live::default());
         std::fs::create_dir(&counts).unwrap();
         // (A running process's file, this one's pid: its counts, then its phase.)
-        let mut b = vec![0u8; 18 * 8];
+        let mut b = vec![0u8; 18 * 8 + 1];
         b[0] = 9;
         b[2 * 8] = 4;
         b[10 * 8] = 2;
         b[11 * 8..11 * 8 + 8].copy_from_slice(&5_000u64.to_le_bytes());
-        b[12 * 8..12 * 8 + 18].copy_from_slice(b"records saved\tdisk");
+        b[12 * 8..12 * 8 + 19].copy_from_slice(b"saving records\tdisk");
         std::fs::write(counts.join(format!("{}-1", std::process::id())), &b).unwrap();
         std::fs::write(&costs, "{\"unit\":\"unit 6/1/1\",\"started\":1}\n{\"unit\":\"unit 6/1/1\",\"peak_mb\":1}\n{\"unit\":\"unit 6/1/2\",\"started\":7}\n").unwrap();
         let l = Live::read(&counts, &costs, 3, Some((10, 2)));
