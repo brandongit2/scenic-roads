@@ -154,7 +154,7 @@ mod tests {
             .map(|_| {
                 std::thread::spawn(|| {
                     let _g = nas();
-                    std::thread::sleep(Duration::from_millis(50));
+                    std::thread::sleep(Duration::from_millis(50)); // (sleep ok: a NAS call's stand-in)
                 })
             })
             .collect();
@@ -165,9 +165,9 @@ mod tests {
         // The NAS before the network: a request beside a NAS call counts as the NAS's.
         let g = nas();
         let n = net();
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(20)); // (sleep ok: a NAS call beside a request)
         drop(g);
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(20)); // (sleep ok: the request alone)
         drop(n);
         let t2 = totals();
         let (nas2, net2) = ((t2[0] - t1[0]) / 1_000_000, (t2[1] - t1[1]) / 1_000_000);
@@ -176,7 +176,7 @@ mod tests {
         {
             let _a = disk();
             let _b = disk();
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10)); // (sleep ok: a disk call's stand-in)
         }
         let t3 = totals();
         assert!((10..40).contains(&((t3[2] - t2[2]) / 1_000_000)));

@@ -3645,7 +3645,7 @@ fn route(
             }
             b.progress = b.progress.map(|p| p.chars().take(WHAT_MAX).collect());
             if let Some(l) = &mut b.live {
-                for s in [&mut l.phase, &mut l.class, &mut l.target].into_iter().flatten() {
+                for s in [&mut l.phase, &mut l.target].into_iter().flatten() {
                     *s = s.chars().take(WHAT_MAX).collect();
                 }
             }
