@@ -52,6 +52,8 @@ pub struct Shape {
     tree: std::sync::Arc<EdgeTree>,
     /// Its rings' digest (`Shape::rings_digest`), worked out once.
     rings_digest: std::sync::Arc<std::sync::OnceLock<String>>,
+    /// Its rings' digest with where each ring ends (`Shape::rings_print`), worked out once.
+    rings_print: std::sync::Arc<std::sync::OnceLock<[u8; 32]>>,
     /// What's been worked out of it (`Memo`), shared by its clones (a region's coverage holds the
     /// whole coverage's shapes): its geometry is fixed once made.
     memo: std::sync::Arc<std::sync::Mutex<Memo>>,
@@ -189,6 +191,7 @@ impl Shape {
             grid: std::sync::Arc::new(grid),
             tree: std::sync::Arc::new(tree),
             rings_digest: Default::default(),
+            rings_print: Default::default(),
             memo: Default::default(),
         }
     }
@@ -198,6 +201,22 @@ impl Shape {
     /// loop (task #894: hashing every point of the world's outlines each time was seconds).
     pub fn rings_digest(&self) -> &str {
         self.rings_digest.get_or_init(|| store::naming::hash16(bytemuck::cast_slice(&self.rings.concat())))
+    }
+
+    /// Its rings' digest (`rings_digest`) and where each ring ends (the digest is of the points
+    /// alone, ring after ring), worked out once: `Coverage::version`'s part of it, which every
+    /// `Coverage::kept` asks (task #898: hashing every ring's length each time was most of the
+    /// checklist's deep targets).
+    fn rings_print(&self) -> &[u8; 32] {
+        self.rings_print.get_or_init(|| {
+            let mut h = blake3::Hasher::new();
+            h.update(self.rings_digest().as_bytes());
+            h.update(&(self.rings.len() as u64).to_le_bytes());
+            for r in self.rings.iter() {
+                h.update(&(r.len() as u64).to_le_bytes());
+            }
+            *h.finalize().as_bytes()
+        })
     }
 
     /// The grid cell of `p`, which must be inside the box.
@@ -671,20 +690,15 @@ static KEPT: std::sync::Mutex<Vec<(String, std::sync::Arc<Kept>)>> = std::sync::
 
 impl Coverage {
     /// Its version: a digest of what decides the answers `Kept` keeps (each shape's rings, by
-    /// `Shape::rings_digest` and their lengths, buffer and water, in each list), worked out without
-    /// reading the rings' points.
+    /// `Shape::rings_print`: their digest and lengths, worked out once a shape; buffer and water, in
+    /// each list), worked out without reading the rings' points.
     pub fn version(&self) -> String {
         let mut h = blake3::Hasher::new();
         for (k, list) in [&self.shapes, &self.depth_only].into_iter().enumerate() {
             h.update(&[k as u8]);
             h.update(&(list.len() as u64).to_le_bytes());
             for sh in list {
-                h.update(sh.rings_digest().as_bytes());
-                // (Where each ring ends: the digest is of the points alone, ring after ring.)
-                h.update(&(sh.rings.len() as u64).to_le_bytes());
-                for r in sh.rings.iter() {
-                    h.update(&(r.len() as u64).to_le_bytes());
-                }
+                h.update(sh.rings_print());
                 h.update(&sh.buffer_m.to_bits().to_le_bytes());
                 h.update(&[u8::from(sh.water)]);
             }
@@ -926,6 +940,7 @@ pub(crate) fn from_kept(r: &mut dyn std::io::Read) -> Option<Coverage> {
                 source,
                 tree: std::sync::Arc::new(tree),
                 rings_digest: Default::default(),
+                rings_print: Default::default(),
                 rings: std::sync::Arc::new(rings),
                 buffer_m,
                 bbox,
