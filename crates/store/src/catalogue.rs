@@ -503,13 +503,23 @@ fn pick(
         if let Some(c) = materialize(dir, names, n, have, read)? {
             return Ok(Some(c));
         }
+        // (`have` not the one its number now names: `n` read without it, not passed over.)
+        if have.is_some_and(|h| h.n < n) {
+            if let Some(c) = materialize(dir, names, n, None, read)? {
+                return Ok(Some(c));
+            }
+        }
     }
     Ok(None)
 }
 
 /// Catalogue `n` whole: its own file, or its delta applied to the one before it (`have` when that's
-/// the one, else read the same way), each step checked by the digests the delta carries. None
-/// (logged) when a file is damaged, missing or doesn't carry its own number, or a digest differs.
+/// the one, or this Mac's copy of it (`keep_read_in`), else read the same way). The deltas are
+/// applied to one JSON value (task #895: not the catalogue turned to JSON, hashed and parsed again
+/// at each), checked by the digests they carry: the first's `of_digest` against the catalogue it
+/// starts from, each one's against the `digest` of the one before, the last's `digest` against
+/// what they make. None (logged) when a file is damaged,
+/// missing or doesn't carry its own number, or a digest differs (`first_wrong` names which delta).
 fn materialize(
     dir: &Path,
     names: &Names,
@@ -519,9 +529,10 @@ fn materialize(
 ) -> Result<Option<Catalogue>> {
     let mut chain: Vec<Delta> = Vec::new();
     let mut at = n;
-    let base = loop {
+    // (The catalogue the chain starts from, with its digest when that's known already.)
+    let (base, base_digest) = loop {
         if let Some(h) = have.filter(|h| h.n == at) {
-            break h.clone();
+            break (h.clone(), None);
         }
         if chain.len() > MAX_CHAIN {
             eprintln!("catalogue: skipping {n}: its deltas go back more than {MAX_CHAIN}");
@@ -531,7 +542,7 @@ fn materialize(
             let p = dir.join(file_name(at));
             let Some(bytes) = read(&file_name(at))? else { return Ok(None) };
             match Catalogue::decode(&bytes) {
-                Ok(c) if c.n == at => break c,
+                Ok(c) if c.n == at => break (c, None),
                 Ok(c) => eprintln!("catalogue: skipping {}: it says it is number {}", p.display(), c.n),
                 Err(e) => eprintln!("catalogue: skipping {}: {e:#}", p.display()),
             }
@@ -545,8 +556,17 @@ fn materialize(
         let Some(bytes) = read(&delta_file_name(at))? else { return Ok(None) };
         match Delta::decode(&bytes) {
             Ok(d) if d.n == at && d.of < at => {
+                if chain.is_empty() {
+                    if let Some(c) = kept(d.n, &d.digest) {
+                        return Ok(Some(c));
+                    }
+                }
                 at = d.of;
+                let from = kept(d.of, &d.of_digest).map(|c| (c, d.of_digest.clone()));
                 chain.push(d);
+                if let Some((c, dg)) = from {
+                    break (c, Some(dg));
+                }
             }
             Ok(d) => {
                 eprintln!("catalogue: skipping {}: it says it is number {} over {}", p.display(), d.n, d.of);
@@ -558,23 +578,165 @@ fn materialize(
             }
         }
     };
+    let Some(last) = chain.first().map(|d| d.digest.clone()) else { return Ok(Some(base)) };
     if chain.len() >= MAX_CHAIN / 2 {
         eprintln!(
             "catalogue: {n} is read through {} deltas (at most {MAX_CHAIN}): its writer should have written a whole one",
             chain.len()
         );
     }
-    let mut cat = base;
-    for d in chain.iter().rev() {
-        match d.apply(&cat) {
-            Ok(c) => cat = c,
-            Err(e) => {
-                eprintln!("catalogue: skipping {n}: delta {} over {}: {e:#}", d.n, d.of);
-                return Ok(None);
-            }
+    chain.reverse();
+    let first = &chain[0];
+    let base_digest = match base_digest {
+        Some(d) => d,
+        None => digest(&base)?,
+    };
+    if base_digest != first.of_digest {
+        eprintln!(
+            "catalogue: skipping {n}: delta {} over {}: catalogue {} isn't the one it changes (digests differ)",
+            first.n, first.of, first.of
+        );
+        return Ok(None);
+    }
+    // (Each delta changes the one the one before makes, by their digests: no catalogue's hashed.)
+    if let Some(w) = chain.windows(2).find(|w| w[1].of_digest != w[0].digest) {
+        eprintln!(
+            "catalogue: skipping {n}: delta {} over {}: catalogue {} isn't the one it changes (digests differ)",
+            w[1].n, w[1].of, w[1].of
+        );
+        return Ok(None);
+    }
+    let made = (|| -> Result<Catalogue> {
+        let mut v = serde_json::to_value(&base)?;
+        for d in &chain {
+            delta::apply_in(&mut v, &d.patch).with_context(|| format!("delta {} over {}", d.n, d.of))?;
+        }
+        serde_json::from_value(v).context("the patched catalogue doesn't parse")
+    })();
+    match made {
+        Ok(c) if c.n == n && digest(&c)? == last => {
+            keep(&c, &last);
+            Ok(Some(c))
+        }
+        Ok(_) | Err(_) => {
+            let why = match made {
+                Err(e) => format!("{e:#}"),
+                Ok(_) => first_wrong(&base, &chain),
+            };
+            eprintln!("catalogue: skipping {n}: {why}");
+            Ok(None)
         }
     }
-    Ok(Some(cat))
+}
+
+/// Which of `chain` (applied in order to `base`, which its first changes) first makes a catalogue
+/// other than the one it names by its digest: found by bisection, each try applying the chain
+/// that far to `base` again and hashing what it makes once.
+fn first_wrong(base: &Catalogue, chain: &[Delta]) -> String {
+    let made = |k: usize| -> Result<Catalogue> {
+        let mut v = serde_json::to_value(base)?;
+        for d in &chain[..k] {
+            delta::apply_in(&mut v, &d.patch)?;
+        }
+        Ok(serde_json::from_value(v)?)
+    };
+    let right =
+        |k: usize| made(k).is_ok_and(|c| c.n == chain[k - 1].n && digest(&c).is_ok_and(|g| g == chain[k - 1].digest));
+    let (mut lo, mut hi) = (0, chain.len());
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if right(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let d = &chain[hi - 1];
+    format!("delta {} over {}: applied, it isn't catalogue {} (digests differ)", d.n, d.of, d.n)
+}
+
+/// Where this process keeps the last catalogue it made from deltas (`keep_read_in`), if anywhere.
+static KEPT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+#[cfg(not(test))]
+fn kept_in() -> Option<PathBuf> {
+    KEPT.get().cloned()
+}
+
+// (A test keeps its own, on its own thread: the tests' catalogues are alike, and one test's kept
+// catalogue would be another's chain's start.)
+#[cfg(test)]
+thread_local!(static TEST_KEPT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) });
+#[cfg(test)]
+fn kept_in() -> Option<PathBuf> {
+    TEST_KEPT.with(|k| k.borrow().clone())
+}
+
+/// From now on, each catalogue this process makes from deltas is kept in `dir` (this Mac's, a cache:
+/// `<n>-<digest>.json.zst`, the two of highest numbers), and a later read of a chain through it, by any
+/// process here, starts from it rather than from the whole catalogue the chain goes back to (task
+/// #895: a restart applies only the deltas since). The apps, the agent and the build set it; tests
+/// don't. Set once: later calls change nothing.
+pub fn keep_read_in(dir: PathBuf) {
+    #[cfg(test)]
+    TEST_KEPT.with(|k| *k.borrow_mut() = Some(dir.clone()));
+    let _ = KEPT.set(dir);
+}
+
+/// This Mac's cache folder for `keep_read_in`: `~/Library/Caches/scenic/catalogue` (None without a home).
+pub fn kept_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Caches/scenic/catalogue"))
+}
+
+fn kept_name(n: u64, digest: &str) -> String {
+    format!("{n}-{digest}{SUFFIX}")
+}
+
+/// Catalogue `n` of digest `digest`, as kept here (`keep_read_in`): None when it isn't, or doesn't
+/// read as that one.
+fn kept(n: u64, dg: &str) -> Option<Catalogue> {
+    let b = fs::read(kept_in()?.join(kept_name(n, dg))).ok()?;
+    Catalogue::decode(&b).ok().filter(|c| c.n == n && digest(c).is_ok_and(|g| g == dg))
+}
+
+/// Keeps `cat` (of digest `dg`) here (`keep_read_in`), with one other: a failure is logged, the
+/// read it came from goes on.
+fn keep(cat: &Catalogue, dg: &str) {
+    let Some(dir) = kept_in() else { return };
+    let name = kept_name(cat.n, dg);
+    let made = (|| -> Result<()> {
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(&name);
+        if path.exists() {
+            return Ok(());
+        }
+        let json = serde_json::to_vec(cat)?;
+        // (Fast to write: it's this Mac's, kept for its next start, not stored on the NAS.)
+        let mut enc = zstd::stream::Encoder::new(Vec::with_capacity(json.len() / 4 + 64), 1)?;
+        enc.include_checksum(true)?;
+        enc.write_all(&json)?;
+        let tmp = tmp_path(&path);
+        fs::write(&tmp, enc.finish()?)?;
+        fs::rename(&tmp, &path)?;
+        // (The two highest numbers stay: a held catalogue's chain and the served one's alternate,
+        // and a test's small catalogue never pushes out the map's.)
+        let mut all: Vec<(u64, PathBuf)> = fs::read_dir(&dir)?
+            .flatten()
+            .filter_map(|e| {
+                let f = e.file_name().to_str()?.strip_suffix(SUFFIX)?.to_string();
+                Some((f.split_once('-')?.0.parse().ok()?, e.path()))
+            })
+            .collect();
+        all.sort();
+        all.reverse();
+        for (_, p) in all.into_iter().skip(2) {
+            let _ = fs::remove_file(p);
+        }
+        Ok(())
+    })();
+    if let Err(e) = made {
+        eprintln!("catalogue: can't keep catalogue {} in {}: {e:#}", cat.n, dir.display());
+    }
 }
 
 /// The longest run of deltas read back to a whole catalogue (a writer writes a whole one long
@@ -610,7 +772,8 @@ impl Delta {
     pub fn apply(&self, base: &Catalogue) -> Result<Catalogue> {
         ensure!(base.n == self.of, "it changes catalogue {}, not {}", self.of, base.n);
         ensure!(digest(base)? == self.of_digest, "catalogue {} isn't the one it changes (digests differ)", base.n);
-        let v = delta::apply(&serde_json::to_value(base)?, &self.patch)?;
+        let mut v = serde_json::to_value(base)?;
+        delta::apply_in(&mut v, &self.patch)?;
         let c: Catalogue = serde_json::from_value(v).context("the patched catalogue doesn't parse")?;
         ensure!(c.n == self.n && digest(&c)? == self.digest, "applied, it isn't catalogue {} (digests differ)", self.n);
         Ok(c)
@@ -636,19 +799,17 @@ impl Delta {
         Ok(d)
     }
 
-    /// Whether the next catalogue is written whole rather than as a delta of `size` bytes: when the
-    /// deltas since the last whole one (`since`, their sizes) and it add up to the whole one's size
-    /// (`whole`) or more, so a reader starting afresh never reads more than two whole catalogues' worth.
-    /// A run of deltas as long as MAX_CHAIN, whatever their sizes, is due too (readers stop there).
-    pub fn due_whole(since: &[u64], size: u64, whole: u64) -> bool {
-        if since.len() + 1 >= MAX_CHAIN / 2 {
-            eprintln!(
-                "catalogue: {} deltas since the last whole catalogue (readers stop at {MAX_CHAIN}): a whole one now",
-                since.len()
-            );
+    /// Whether the next catalogue is written whole rather than as one more delta, with `since`
+    /// deltas since the last whole one, reading that whole one taking `whole` and each delta `each`
+    /// (`whole_due`, measured): when the deltas, the next one too, take as long to read as the whole
+    /// one, so a reader starting afresh never takes more than about twice one whole catalogue's read.
+    /// A run of deltas half as long as MAX_CHAIN, however fast, is due too (readers stop there).
+    pub fn due_whole(since: usize, whole: std::time::Duration, each: std::time::Duration) -> bool {
+        if since + 1 >= MAX_CHAIN / 2 {
+            eprintln!("catalogue: {since} deltas since the last whole catalogue (readers stop at {MAX_CHAIN}): a whole one now");
             return true;
         }
-        since.iter().sum::<u64>() + size >= whole
+        each * (since as u32 + 1) >= whole
     }
 }
 
@@ -678,30 +839,33 @@ pub fn write_delta_of(dir: &Path, base: &Catalogue, cat: &Catalogue, d: &Delta) 
     Ok(path)
 }
 
-/// The sizes of the deltas written since the last whole catalogue in `dir` (newest first), and that
-/// whole one's size: what `Delta::due_whole` weighs.
-pub fn since_whole<'a>(dir: impl Into<Loc<'a>>) -> Result<(Vec<u64>, Option<u64>)> {
+/// Whether the next catalogue in `dir` is written whole rather than as a delta: None with no whole
+/// catalogue to start a delta from (it's whole anyway); false with no delta since the last whole one;
+/// else `Delta::due_whole`, from what reading them costs, measured here and now (task #895, not a
+/// figure set by hand): the last whole catalogue read and parsed, and the newest delta read, parsed
+/// and applied (to an empty catalogue: what applying one costs is its patch's work). Asked by the
+/// catalogue step each time it would write a delta, so a writer that's never idle writes whole ones
+/// too.
+pub fn whole_due<'a>(dir: impl Into<Loc<'a>>) -> Result<Option<bool>> {
     let dir = dir.into();
     let names = Names::of_dir(dir)?;
-    let mut sizes = Vec::new();
-    for n in names.numbers() {
-        if names.whole.contains(&n) {
-            let len = dir.join(&file_name(n)).loc().metadata().with_context(|| format!("catalogue {n}"))?.len();
-            return Ok((sizes, Some(len)));
-        }
-        sizes.push(dir.join(&delta_file_name(n)).loc().metadata().with_context(|| format!("delta {n}"))?.len());
+    let ns = names.numbers();
+    let Some(k) = ns.iter().position(|n| names.whole.contains(n)) else { return Ok(None) };
+    if k == 0 {
+        return Ok(Some(false));
     }
-    Ok((sizes, None))
-}
-
-/// Whether the next catalogue in `dir` is written whole rather than as a delta: None with no whole
-/// catalogue to start a delta from (it's whole anyway); else whether one is due, the deltas since the
-/// last whole one adding up to its size or their run half MAX_CHAIN long (`Delta::due_whole`),
-/// false with no delta since one. Asked by the catalogue step each time it would write a delta, so a
-/// writer that's never idle writes whole ones too. Stats each delta since the last whole catalogue.
-pub fn whole_due<'a>(dir: impl Into<Loc<'a>>) -> Result<Option<bool>> {
-    let (since, whole) = since_whole(dir)?;
-    Ok(whole.map(|w| !since.is_empty() && Delta::due_whole(&since, 0, w)))
+    let t = std::time::Instant::now();
+    let p = dir.join(&file_name(ns[k]));
+    Catalogue::decode(&p.loc().read().with_context(|| format!("read {}", p.loc().display()))?)
+        .with_context(|| format!("catalogue {}", ns[k]))?;
+    let whole = t.elapsed();
+    let t = std::time::Instant::now();
+    let p = dir.join(&delta_file_name(ns[0]));
+    let d = Delta::decode(&p.loc().read().with_context(|| format!("read {}", p.loc().display()))?)
+        .with_context(|| format!("delta {}", ns[0]))?;
+    let _ = delta::apply_in(&mut serde_json::to_value(Catalogue::new(d.of))?, &d.patch);
+    let each = t.elapsed();
+    Ok(Some(Delta::due_whole(k, whole, each)))
 }
 
 /// The catalogues catalogue `n` in `dir` is read through: itself, and back by its deltas' `of` to the
@@ -989,10 +1153,8 @@ mod tests {
         // The chains: back to the whole one each starts from.
         assert_eq!(chain(&d, 11).unwrap(), [11, 10, 9]);
         assert_eq!(chain(&d, 9).unwrap(), [9]);
-        let (since, w) = since_whole(&d).unwrap();
-        assert_eq!((since.len(), w.is_some()), (0, true));
-        let (since, _) = since_whole(&dir.path().join("none")).unwrap();
-        assert!(since.is_empty());
+        assert_eq!(whole_due(&d).unwrap(), Some(false));
+        assert_eq!(whole_due(&dir.path().join("none")).unwrap(), None);
         // A delta is smaller than the whole catalogue it makes.
         assert!(
             fs::metadata(d.join("11.delta.json.zst")).unwrap().len()
@@ -1073,18 +1235,19 @@ mod tests {
     }
 
     #[test]
-    fn whole_again_once_the_deltas_add_up_to_a_whole_one() {
-        assert!(!Delta::due_whole(&[], 10, 100));
-        assert!(!Delta::due_whole(&[40, 40], 19, 100));
-        assert!(Delta::due_whole(&[40, 40], 20, 100));
-        assert!(Delta::due_whole(&[], 100, 100));
-        // (However small, before the readers' limit.)
-        assert!(Delta::due_whole(&vec![1; MAX_CHAIN / 2 - 1], 1, u64::MAX));
-        assert!(!Delta::due_whole(&vec![1; MAX_CHAIN / 2 - 2], 1, u64::MAX));
+    fn whole_again_once_the_deltas_take_as_long_as_a_whole_one() {
+        let ms = Duration::from_millis;
+        assert!(!Delta::due_whole(0, ms(100), ms(10)));
+        assert!(!Delta::due_whole(8, ms(100), ms(10)));
+        assert!(Delta::due_whole(9, ms(100), ms(10)));
+        assert!(Delta::due_whole(0, ms(100), ms(100)));
+        // (However fast, before the readers' limit.)
+        assert!(Delta::due_whole(MAX_CHAIN / 2 - 1, Duration::MAX, ms(0)));
+        assert!(!Delta::due_whole(MAX_CHAIN / 2 - 2, Duration::MAX, ms(0)));
     }
 
-    /// A whole catalogue due once the deltas past the newest whole one add up to it; none to start
-    /// a delta from with no whole one.
+    /// A whole catalogue due once reading the deltas past the newest whole one takes as long as it
+    /// (measured: some time before the readers' limit); none to start a delta from with no whole one.
     #[test]
     fn whether_a_whole_one_is_due() {
         let t = tempfile::tempdir().unwrap();
@@ -1094,19 +1257,157 @@ mod tests {
         write(&d, &one).unwrap();
         assert_eq!(whole_due(&d).unwrap(), Some(false));
         let mut prev = one;
-        let whole = fs::metadata(d.join(file_name(1))).unwrap().len();
-        let mut sum = 0;
         let mut n = 2;
-        while sum < whole {
-            assert_eq!(whole_due(&d).unwrap(), Some(false), "{sum} of {whole}");
+        while whole_due(&d).unwrap() == Some(false) {
+            assert!((n as usize) < MAX_CHAIN / 2 + 2, "never due");
             let next = evolve(&prev, n);
             write_delta(&d, &prev, &next).unwrap();
-            sum += fs::metadata(d.join(delta_file_name(n))).unwrap().len();
             prev = next;
             n += 1;
         }
-        assert_eq!(whole_due(&d).unwrap(), Some(true));
+        assert!(n > 2, "due with no delta");
         write(&d, &evolve(&prev, n)).unwrap();
         assert_eq!(whole_due(&d).unwrap(), Some(false));
+    }
+
+    /// Catalogue `n` of `dir` as read before task #895: its chain from the whole one, each delta
+    /// applied by `Delta::apply` (the catalogue to JSON and back, both digests checked, at each).
+    fn stepwise(dir: &Path, n: u64) -> Catalogue {
+        let ch = chain(dir, n).unwrap();
+        let mut c = read(&dir.join(file_name(*ch.last().unwrap()))).unwrap();
+        for &k in ch.iter().rev().skip(1) {
+            c = Delta::decode(&fs::read(dir.join(delta_file_name(k))).unwrap()).unwrap().apply(&c).unwrap();
+        }
+        c
+    }
+
+    /// A recorded chain of 40 deltas: every catalogue on it reads as it did delta by delta (and as
+    /// it was written), byte for byte.
+    #[test]
+    fn a_chain_on_one_value_is_the_chain_delta_by_delta() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path().join("catalog");
+        let mut prev = sample(1);
+        write(&d, &prev).unwrap();
+        let mut made = vec![prev.clone()];
+        for n in 2..=41 {
+            let c = evolve(&prev, n);
+            write_delta(&d, &prev, &c).unwrap();
+            made.push(c.clone());
+            prev = c;
+        }
+        for c in &made {
+            let got = read_n(&d, c.n).unwrap();
+            assert_eq!(serde_json::to_vec(&got).unwrap(), serde_json::to_vec(&stepwise(&d, c.n)).unwrap());
+            assert_eq!(&got, c);
+        }
+        assert_eq!(latest(&d).unwrap().unwrap(), prev);
+    }
+
+    /// A delta in the middle of a chain that makes another catalogue than it names: the chain isn't
+    /// read, and the bisection names that delta.
+    #[test]
+    fn a_wrong_delta_in_a_chain_is_found() {
+        let mut base = sample(1);
+        base.app = "x".into();
+        let mut chain = Vec::new();
+        let mut prev = base.clone();
+        for n in 2..=20 {
+            let c = evolve(&prev, n);
+            chain.push(Delta::between(&prev, &c).unwrap());
+            prev = c;
+        }
+        // (Delta 9's patch changed: what it and every later one make differs from what they name.)
+        chain[7].patch["o"]["app"] = json!({"=": "y"});
+        assert!(first_wrong(&base, &chain).starts_with("delta 9 over 8:"), "{}", first_wrong(&base, &chain));
+        // In a folder, a delta that says it makes another catalogue than it does.
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path().join("catalog");
+        write(&d, &base).unwrap();
+        let mut prev = base.clone();
+        for n in 2..=12 {
+            let mut c = evolve(&prev, n);
+            if n == 6 {
+                c.app = "y".into();
+            }
+            let mut dl = Delta::between(&prev, &c).unwrap();
+            if n == 6 {
+                // (It says it makes the catalogue without the change.)
+                dl.digest = digest(&evolve(&prev, n)).unwrap();
+            }
+            fs::write(d.join(delta_file_name(n)), dl.encode().unwrap()).unwrap();
+            prev = c;
+        }
+        // (Every catalogue from 6 on is read through it: none reads; 5 is the newest that does.)
+        assert_eq!(latest(&d).unwrap().unwrap().n, 5);
+    }
+
+    /// With `keep_read_in`, a catalogue made from deltas is kept here, and the next read of its
+    /// chain starts from it: the whole catalogue under it, and the deltas up to it, aren't read.
+    #[test]
+    fn a_catalogue_made_from_deltas_is_kept_for_the_next_read() {
+        keep_read_in(tempfile::tempdir().unwrap().keep());
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path().join("catalog");
+        let mut prev = sample(1);
+        prev.app = "kept".into();
+        write(&d, &prev).unwrap();
+        for n in 2..=10 {
+            let c = evolve(&prev, n);
+            write_delta(&d, &prev, &c).unwrap();
+            prev = c;
+        }
+        assert_eq!(latest(&d).unwrap().unwrap(), prev);
+        assert!(kept_in().unwrap().join(kept_name(10, &digest(&prev).unwrap())).exists());
+        // The whole one and the deltas before 10 gone: 10 and the two after it still read.
+        fs::remove_file(d.join(file_name(1))).unwrap();
+        for n in 2..10 {
+            fs::remove_file(d.join(delta_file_name(n))).unwrap();
+        }
+        assert_eq!(read_n(&d, 10).unwrap(), prev);
+        for n in 11..=12 {
+            let c = evolve(&prev, n);
+            write_delta(&d, &prev, &c).unwrap();
+            prev = c;
+        }
+        assert_eq!(latest(&d).unwrap().unwrap(), prev);
+        // A kept one that isn't the one a delta changes (its number taken again): not used.
+        let t2 = tempfile::tempdir().unwrap();
+        let d2 = t2.path().join("catalog");
+        let mut other = sample(1);
+        other.app = "other".into();
+        write(&d2, &other).unwrap();
+        let mut p2 = other;
+        for n in 2..=11 {
+            let c = evolve(&p2, n);
+            write_delta(&d2, &p2, &c).unwrap();
+            p2 = c;
+        }
+        assert_eq!(latest(&d2).unwrap().unwrap(), p2);
+        assert_ne!(p2, prev);
+    }
+
+    /// The real chain (task #895): `SCENIC_CATALOGUE_CHAIN=<a catalogue folder>` reads its newest
+    /// catalogue, prints the time it took and its digest, and checks it is, byte for byte, what
+    /// the chain makes delta by delta as before (none set: nothing runs).
+    #[test]
+    fn real_chain_time_the_newest() {
+        let Ok(dir) = std::env::var("SCENIC_CATALOGUE_CHAIN") else { return };
+        let dir = Path::new(&dir);
+        // (`SCENIC_CATALOGUE_KEEP=<folder>`: kept there, `keep_read_in`, as the apps do; run twice,
+        // the second is a restart's read.)
+        if let Some(k) = std::env::var_os("SCENIC_CATALOGUE_KEEP") {
+            keep_read_in(PathBuf::from(k));
+        }
+        let t = std::time::Instant::now();
+        let c = latest(dir).unwrap().unwrap();
+        println!("catalogue {} read in {:.1} s, digest {}", c.n, t.elapsed().as_secs_f64(), digest(&c).unwrap());
+        if std::env::var_os("SCENIC_CATALOGUE_STEPWISE").is_some() {
+            let t = std::time::Instant::now();
+            let s = stepwise(dir, c.n);
+            println!("delta by delta: {:.1} s", t.elapsed().as_secs_f64());
+            assert_eq!(serde_json::to_vec(&s).unwrap(), serde_json::to_vec(&c).unwrap());
+            println!("the same bytes");
+        }
     }
 }

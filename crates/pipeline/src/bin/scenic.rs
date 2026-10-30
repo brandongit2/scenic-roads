@@ -1359,6 +1359,10 @@ fn restore(step: &str, file: &Path, run: bool, root_: &Option<PathBuf>) -> Resul
 fn main() -> Result<()> {
     // (Its command line checked first: `--help` or a flag it doesn't know runs nothing.)
     let cli = cli::Cli::parse();
+    // (A catalogue read through deltas kept on this Mac for the next read: store::catalogue::keep_read_in.)
+    if let Some(d) = store::catalogue::kept_dir() {
+        store::catalogue::keep_read_in(d);
+    }
     match cli.cmd {
         None => status(&cli.status),
         Some(Cmd::Status(places)) => status(&places),

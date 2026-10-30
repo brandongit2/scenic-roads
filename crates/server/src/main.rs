@@ -425,6 +425,10 @@ async fn main() -> Result<()> {
     let Cli { port, web, fonts, home: home_arg, root, no_mirror, mirror: mirror_root, listen, reserve_gb } =
         <Cli as clap::Parser>::parse();
     raise_open_files();
+    // (A catalogue read through deltas kept on this Mac for the next read: store::catalogue::keep_read_in.)
+    if let Some(d) = store::catalogue::kept_dir() {
+        store::catalogue::keep_read_in(d);
+    }
     let home = home_arg.clone().unwrap_or_else(data::default_home);
     if reserve_gb.is_some() {
         eprintln!(

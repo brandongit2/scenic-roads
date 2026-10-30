@@ -1,5 +1,5 @@
 //! What changed between two catalogues, as JSON (docs/formats.md, Delta catalogue): `diff(a, b)` is a
-//! patch that `apply` turns `a` into `b`, exactly (`apply(a, &diff(a, b)) == b` for any two JSON
+//! patch that `apply_in` turns `a` into `b`, exactly (`a` patched by `diff(a, b)` is `b` for any two JSON
 //! values: the tests' property). A patch is one of
 //! - `{"=": v}`: the value is `v`;
 //! - `{"o": {key: patch | null}}`: an object, each key named changed by its patch (null: gone),
@@ -71,46 +71,59 @@ pub fn diff(a: &Value, b: &Value) -> Value {
     }
 }
 
-/// `a` with patch `p` applied (an error when `p` isn't a patch, or names an element `a` hasn't).
-pub fn apply(a: &Value, p: &Value) -> Result<Value> {
+/// `a` becomes `a` with patch `p` applied (an error when `p` isn't a patch, or names an element `a`
+/// hasn't), in place: nothing outside what `p` names is copied (task #895: a catalogue's chain of
+/// deltas is applied to one value). On an error `a` is left part-way.
+pub fn apply_in(a: &mut Value, p: &Value) -> Result<()> {
     let Some(o) = p.as_object().filter(|o| o.len() == 1) else { bail!("not a patch: {}", short(p)) };
     let (op, v) = o.iter().next().expect("one entry");
     match op.as_str() {
-        "=" => Ok(v.clone()),
+        "=" => *a = v.clone(),
         "o" => {
             let Some(changes) = v.as_object() else { bail!("an object's patch isn't an object") };
-            let mut out = a.as_object().cloned().unwrap_or_default();
+            if !a.is_object() {
+                *a = Value::Object(Map::new());
+            }
+            let out = a.as_object_mut().expect("an object");
             for (k, pk) in changes {
                 if pk.is_null() {
                     out.remove(k);
                 } else {
-                    let now = apply(out.get(k).unwrap_or(&Value::Null), pk).with_context(|| format!("in {k}"))?;
-                    out.insert(k.clone(), now);
+                    apply_in(out.entry(k.clone()).or_insert(Value::Null), pk).with_context(|| format!("in {k}"))?;
                 }
             }
-            Ok(Value::Object(out))
         }
         "a" => {
             let (Some(ids), Some(set)) = (v["ids"].as_array(), v["set"].as_object()) else {
                 bail!("an array's patch lacks ids or set")
             };
-            let was = a.as_array().and_then(|x| by_id(x)).unwrap_or_default();
-            ids.iter()
-                .map(|id| {
-                    let Some(id) = id.as_str() else { bail!("an id isn't a string") };
-                    match (set.get(id), was.get(id)) {
-                        (Some(pk), w) => {
-                            apply(w.copied().unwrap_or(&Value::Null), pk).with_context(|| format!("in {id}"))
-                        }
-                        (None, Some(w)) => Ok((*w).clone()),
-                        (None, None) => bail!("{id} is neither kept nor set"),
+            let was = match a.take() {
+                Value::Array(x) if by_id(&x).is_some() => x,
+                _ => Vec::new(),
+            };
+            let mut was: BTreeMap<String, Value> =
+                was.into_iter().map(|e| (e["id"].as_str().expect("by_id").to_string(), e)).collect();
+            // (An id listed twice takes the same element twice, as a copy.)
+            let distinct = ids.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>().len() == ids.len();
+            let mut out = Vec::with_capacity(ids.len());
+            for id in ids {
+                let Some(id) = id.as_str() else { bail!("an id isn't a string") };
+                let w = if distinct { was.remove(id) } else { was.get(id).cloned() };
+                match (set.get(id), w) {
+                    (Some(pk), w) => {
+                        let mut e = w.unwrap_or(Value::Null);
+                        apply_in(&mut e, pk).with_context(|| format!("in {id}"))?;
+                        out.push(e);
                     }
-                })
-                .collect::<Result<Vec<_>>>()
-                .map(Value::Array)
+                    (None, Some(w)) => out.push(w),
+                    (None, None) => bail!("{id} is neither kept nor set"),
+                }
+            }
+            *a = Value::Array(out);
         }
         _ => bail!("not a patch: {}", short(p)),
     }
+    Ok(())
 }
 
 /// The elements of an array by their `id`: when every one is an object with a string `id`, each
@@ -150,6 +163,55 @@ pub fn changed_keys(p: &Value) -> BTreeSet<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn apply(a: &Value, p: &Value) -> Result<Value> {
+        let mut v = a.clone();
+        apply_in(&mut v, p)?;
+        Ok(v)
+    }
+
+    /// `apply` as it was before task #895 (a copy at every level): the reference `apply_in` is held to.
+    fn apply_ref(a: &Value, p: &Value) -> Result<Value> {
+        let Some(o) = p.as_object().filter(|o| o.len() == 1) else { bail!("not a patch: {}", short(p)) };
+        let (op, v) = o.iter().next().expect("one entry");
+        match op.as_str() {
+            "=" => Ok(v.clone()),
+            "o" => {
+                let Some(changes) = v.as_object() else { bail!("an object's patch isn't an object") };
+                let mut out = a.as_object().cloned().unwrap_or_default();
+                for (k, pk) in changes {
+                    if pk.is_null() {
+                        out.remove(k);
+                    } else {
+                        let now =
+                            apply_ref(out.get(k).unwrap_or(&Value::Null), pk).with_context(|| format!("in {k}"))?;
+                        out.insert(k.clone(), now);
+                    }
+                }
+                Ok(Value::Object(out))
+            }
+            "a" => {
+                let (Some(ids), Some(set)) = (v["ids"].as_array(), v["set"].as_object()) else {
+                    bail!("an array's patch lacks ids or set")
+                };
+                let was = a.as_array().and_then(|x| by_id(x)).unwrap_or_default();
+                ids.iter()
+                    .map(|id| {
+                        let Some(id) = id.as_str() else { bail!("an id isn't a string") };
+                        match (set.get(id), was.get(id)) {
+                            (Some(pk), w) => {
+                                apply_ref(w.copied().unwrap_or(&Value::Null), pk).with_context(|| format!("in {id}"))
+                            }
+                            (None, Some(w)) => Ok((*w).clone()),
+                            (None, None) => bail!("{id} is neither kept nor set"),
+                        }
+                    })
+                    .collect::<Result<Vec<_>>>()
+                    .map(Value::Array)
+            }
+            _ => bail!("not a patch: {}", short(p)),
+        }
+    }
 
     /// A small deterministic generator (no clock, no randomness from outside): xorshift.
     struct Gen(u64);
@@ -244,6 +306,43 @@ mod tests {
             // (Round-tripped as JSON too, as it's stored.)
             let back: Value = serde_json::from_slice(&serde_json::to_vec(&p).unwrap()).unwrap();
             assert_eq!(apply(&a, &back).unwrap(), b);
+        }
+    }
+
+    /// `apply_in` (in place) gives what the copying `apply_ref` gave, for any patch on any value:
+    /// one made for it, one made for another value (elements it hasn't, others in their place), and
+    /// hand-made ones (an id listed twice, ids that aren't strings, not a patch at all).
+    #[test]
+    fn in_place_is_the_copying_apply() {
+        let mut g = Gen(0x2545_f491_4f6c_dd1d);
+        let same = |a: &Value, p: &Value| {
+            let mut v = a.clone();
+            match (apply_in(&mut v, p), apply_ref(a, p)) {
+                (Ok(()), Ok(r)) => assert_eq!(v, r, "a {a}\npatch {p}"),
+                (Err(_), Err(_)) => {}
+                (x, y) => panic!("a {a}\npatch {p}\nin place {x:?}\ncopying {y:?}"),
+            }
+        };
+        for _ in 0..20_000 {
+            let a = g.value(4);
+            let b = if g.below(2) == 0 { g.nudge(&a, 4) } else { g.value(4) };
+            let p = diff(&a, &b);
+            same(&a, &p);
+            let other = if g.below(2) == 0 { g.nudge(&a, 4) } else { g.value(4) };
+            same(&other, &p);
+        }
+        let rs = json!([{"id": "a", "v": 1}, {"id": "b", "v": 2}]);
+        for p in [
+            json!({"a": {"ids": ["a", "a", "b"], "set": {"a": {"o": {"v": {"=": 3}}}}}}),
+            json!({"a": {"ids": ["a", "a"], "set": {}}}),
+            json!({"a": {"ids": [1, "a"], "set": {}}}),
+            json!({"a": {"ids": ["c"], "set": {"c": {"o": {}}}}}),
+            json!({"o": {"x": null, "y": {"o": {"z": {"=": 1}}}}}),
+            json!({"=": 1, "o": {}}),
+            json!([1]),
+        ] {
+            same(&rs, &p);
+            same(&json!({"x": rs}), &json!({"o": {"x": p}}));
         }
     }
 

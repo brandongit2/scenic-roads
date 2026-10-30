@@ -563,15 +563,23 @@ number is used once, whole or as a delta:
   objects with distinct string `id`s, in `ids`' order, those in `set` patched (from nothing, if
   new). The writer takes whichever form is shortest.
 - Readers (`store::catalogue`: `latest`, `latest_nas_from`, `read_n`) take the highest number that
-  reads whole: a delta applied to catalogue `of` (itself read the same way), checked against both
-  digests; one that doesn't fit is passed over as damaged.
+  reads whole: its chain of deltas back to a whole catalogue applied in turn to one JSON value, the
+  first's `of_digest` checked against the catalogue it starts from, each one's against the one
+  before's `digest`, and the last's `digest` against what they make (one catalogue hashed at each
+  end, not two at each delta: task #895). A chain that doesn't make what it names is passed over as
+  damaged, the delta that went wrong found by bisection and logged.
+- The apps, the agent and the build keep the last two catalogues they made from deltas (highest
+  numbers) in `~/Library/Caches/scenic/catalogue/<n>-<digest>.json.zst`
+  (`store::catalogue::keep_read_in`); a later read whose chain passes through one, by the
+  digests, starts there: after a restart only the deltas since are read.
 - A delta lists each file's size as the records have it (their sizes, from its job's
   hand-off) or the last catalogue does, looking at the NAS only for a file neither has (one written
   before sizes were recorded: once). A whole catalogue looks at every file, and stops on one missing
   or of another size than recorded.
 - A catalogue is written whole, not as a delta, when there's no whole one to start from, and once
-  the deltas since the last whole one add up to its size or their run is half `MAX_CHAIN`
-  (`store::catalogue::whole_due`, weighed by the catalogue job each time it would write a delta, so a
+  reading the deltas since the last whole one (the next too) takes as long as reading that whole
+  one, or their run is half `MAX_CHAIN` (`store::catalogue::whole_due`: both measured by the
+  catalogue job each time it would write a delta, reading the whole one and the newest delta, so a
   lead that's never idle writes them too). Its content is the same either way: a reader gets the
   same catalogue from the whole one as from the chain.
 - GC also keeps every catalogue a kept delta is read through, back to its whole one. A Mac keeps the

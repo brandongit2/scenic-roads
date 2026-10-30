@@ -912,13 +912,15 @@ mod tests {
         let mut ns = store::catalogue::list(&dir).unwrap();
         ns.sort_unstable();
         let ns = &ns[ns.len().saturating_sub(last.parse().unwrap())..];
-        let (mut prev, mut changed) = (String::new(), 0);
+        let (mut prev, mut changed, mut last) = (String::new(), 0, None);
         for &n in ns {
-            let Ok(cat) = store::catalogue::read_n(&dir, n) else { continue };
+            // (From the one before: only its delta applied.)
+            let Ok(cat) = store::catalogue::read_n_from(&dir, n, last.as_ref()) else { continue };
             let k = super::inputs_key(&cat);
             changed += usize::from(k != prev);
             println!("{n} {} {k}", cat.created);
             prev = k;
+            last = Some(cat);
         }
         println!("{} catalogues, {changed} with the names' inputs changed", ns.len());
     }

@@ -406,9 +406,9 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
        last (docs/formats.md, Delta catalogues), each file's size from the records
        (their sizes, which the files' jobs hand off) or the last catalogue: it looks up no
        file's size on the NAS but a file written before sizes were recorded. The same job writes a whole
-       catalogue instead, which looks at every file, when the deltas since the last whole one add up
-       to it or their run is half `MAX_CHAIN` (`store::catalogue::whole_due`, weighed by each catalogue
-       job, busy lead or not). Readers apply deltas (`store::catalogue::latest_nas_from`). Switch on only once
+       catalogue instead, which looks at every file, when reading the deltas since the last whole one
+       takes as long as reading it, as measured then, or their run is half `MAX_CHAIN`
+       (`store::catalogue::whole_due`, weighed by each catalogue job, busy lead or not). Readers apply deltas (`store::catalogue::latest_nas_from`). Switch on only once
        every Mac's server reads deltas. Held catalogues are always whole.
      - `near-slope`: a done region's slope and tree cover are the z6 tiles near it
        (`Publishing::near`), not every stale z6 tile around; it's recorded built with those.

@@ -191,6 +191,10 @@ fn positional(args: &[String]) -> Vec<String> {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    // (A catalogue read through deltas kept on this Mac for the next read: store::catalogue::keep_read_in.)
+    if let Some(d) = store::catalogue::kept_dir() {
+        store::catalogue::keep_read_in(d);
+    }
     // (Its command line checked first, pipeline::cli::build: `--help` or a flag the step doesn't
     // take runs nothing. The steps read their flags from the line it checked: `opt`, `positional`.)
     if let Err(e) = pipeline::cli::build::command().try_get_matches_from(&args) {
@@ -2025,7 +2029,7 @@ fn served_global(l: &str) -> bool {
 #[derive(Clone, Copy, Default)]
 struct CatalogueWay {
     /// Served (not held): as a delta over the last, unless there's no whole one to start from or
-    /// one is due (store::catalogue::whole_due: the deltas since add up to it, or their run is half
+    /// one is due (store::catalogue::whole_due: reading the deltas since takes as long as it, or their run is half
     /// as long as readers go); each
     /// file's size from the records (crate::out::SIZES) or the last catalogue (by content name: the
     /// same name, the same bytes), the NAS looked at only for a file neither has.
@@ -2218,7 +2222,7 @@ fn catalogue(
     let p = phase("listing the last catalogs and reading the records' sizes");
     let due = if delta && last.is_some() { store::catalogue::whole_due(&dir)? } else { None };
     if due == Some(true) {
-        eprintln!("catalogue: a whole catalogue is due (the deltas since the last add up to it, or their run is long): this one whole");
+        eprintln!("catalogue: a whole catalogue is due (reading the deltas since the last takes as long as it, or their run is long): this one whole");
     }
     let as_delta = due == Some(false);
     let recorded = out.recorded_sizes()?;
@@ -6976,9 +6980,11 @@ mod tests {
             super::catalogue(&mut out, false, None, &Default::default(), way, NOW).unwrap()
         };
         let delta = super::CatalogueWay { delta: true };
-        write(&(0..40).map(|i| (format!("layers/roads/hi/6-2-{i}"), vec![b'x'; 10 + i])).collect::<Vec<_>>());
+        // (Enough files that reading the whole catalogue takes far longer than reading a delta: no
+        // whole one due among the next, store::catalogue::whole_due, as measured.)
+        write(&(0..800).map(|i| (format!("layers/roads/hi/6-2-{i}"), vec![b'x'; 10 + i % 40])).collect::<Vec<_>>());
         let first = run(super::CatalogueWay::default());
-        assert_eq!((first.delta, first.stated), (false, 40));
+        assert_eq!((first.delta, first.stated), (false, 800));
         // A file from before the records kept sizes (named in the manifest by hand, none recorded).
         let old = store::naming::content_name("layers/roads/hi/6-1-1", "00000000000000aa", "pack");
         std::fs::write(root.join(&old), b"written long ago").unwrap();
@@ -6993,7 +6999,7 @@ mod tests {
         ]);
         // The old file alone looked at; the next delta looks at none, even with every file gone.
         let second = run(delta);
-        assert_eq!((second.delta, second.stated, second.files), (true, 1, 42));
+        assert_eq!((second.delta, second.stated, second.files), (true, 1, 802));
         write(&[("layers/roads/hi/6-1-3".into(), b"three".to_vec())]);
         let names: Vec<String> = pipeline::out::read_record::<std::collections::BTreeMap<String, String>>(
             &store::nasfs::NasPath::local_for_test(&p),
@@ -7008,14 +7014,14 @@ mod tests {
             std::fs::remove_file(root.join(c)).unwrap();
         }
         let third = run(delta);
-        assert_eq!((third.delta, third.stated, third.files), (true, 0, 43));
+        assert_eq!((third.delta, third.stated, third.files), (true, 0, 803));
         let as_delta = store::catalogue::latest(&root.join("catalog")).unwrap().unwrap();
         // A whole one of the same manifest: every file looked at, the same sizes.
         for (c, b) in &kept {
             std::fs::write(root.join(c), b).unwrap();
         }
         let whole = run(super::CatalogueWay::default());
-        assert_eq!((whole.delta, whole.stated), (false, 43));
+        assert_eq!((whole.delta, whole.stated), (false, 803));
         let as_whole = store::catalogue::latest(&root.join("catalog")).unwrap().unwrap();
         assert_eq!(as_delta.files, as_whole.files);
         // A recorded size the NAS disagrees with stops a whole one.
