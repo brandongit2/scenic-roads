@@ -333,20 +333,6 @@ impl Checks for Regions {
             d.store.insert(gname, std::sync::Arc::new(g));
             d.store.insert(dname, std::sync::Arc::new(dr));
         }
-        // The 12-nautical-mile line, drawn by the region layer: with the pins (the folder's top),
-        // once the datasets are read.
-        if let Some(data) = self.data(&folder).filter(|d| !d.ts12.is_empty()) {
-            if v.paths.contains(resolve::PINS) && !keep.contains(resolve::PINS) {
-                let lines = data.ts12_line();
-                data.land_failed()?;
-                let b = serde_json::to_vec(&serde_json::json!({"fmt": 1, "lines": lines}))?;
-                let name = format!("{}/@drawn/_ts12.{}.json", super::store_dir(UNIT), store::naming::hash16(&b));
-                let mut facts = serde_json::Map::new();
-                facts.insert("ts12".into(), name.clone().into());
-                d.facts.insert(resolve::PINS.to_string(), (facts, None));
-                d.store.insert(name, std::sync::Arc::new(b));
-            }
-        }
         Ok(d)
     }
 

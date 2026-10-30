@@ -604,6 +604,9 @@ struct Simplified {
 #[derive(Default)]
 pub struct Outlines {
     cur: Mutex<(String, std::collections::HashMap<u8, Arc<Vec<Simplified>>>)>,
+    /// Held while one zoom is made: asks arriving meanwhile wait and take it, rather than each
+    /// reading every drawn file and simplifying the world again.
+    making: Mutex<()>,
 }
 
 /// A region's outline as read from its source, before simplifying: every shape's polygons.
@@ -821,13 +824,20 @@ impl Outlines {
     /// Every region's outline at zoom `z`, made on the first ask for that zoom of this version.
     fn at(&self, s: &crate::AppState, z: u8) -> Arc<Vec<Simplified>> {
         let (key, make) = sources(s);
-        {
+        let cached = || {
             let g = self.cur.lock().unwrap();
             if g.0 == key {
-                if let Some(v) = g.1.get(&z) {
-                    return v.clone();
-                }
+                g.1.get(&z).cloned()
+            } else {
+                None
             }
+        };
+        if let Some(v) = cached() {
+            return v;
+        }
+        let _making = self.making.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(v) = cached() {
+            return v;
         }
         let srcs = make();
         let ix = s.areas.get(s).ok().flatten();

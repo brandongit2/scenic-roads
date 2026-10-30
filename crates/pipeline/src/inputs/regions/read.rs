@@ -488,17 +488,10 @@ pub fn check_folder(
                 "geometry": store::naming::hash16(&res.geometry.encode()), "points": res.geometry.shapes.iter().map(|s| s.rings.iter().map(Vec::len).sum::<usize>()).sum::<usize>()}),
         );
     }
-    // (The 12-nautical-mile line the stored version would draw: its size and time.)
-    let ts12 = checks.ctx.as_ref().and_then(|c| c.data.as_ref()).filter(|d| !d.ts12.is_empty()).map(|d| {
-        let t = std::time::Instant::now();
-        let lines = d.ts12_line();
-        serde_json::json!({"lines": lines.len(), "points": lines.iter().map(Vec::len).sum::<usize>(), "s": t.elapsed().as_secs_f64()})
-    });
     if let Some(d) = checks.ctx.as_ref().and_then(|c| c.data.as_ref()) {
         d.land_failed()?;
     }
     Ok(serde_json::json!({
-        "ts12_line": ts12,
         "files": v.paths.len(),
         "regions": folder.regions.len(),
         "resolved": out.resolved.len(),

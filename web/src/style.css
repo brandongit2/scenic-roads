@@ -434,11 +434,11 @@ input.switch:checked::after { transform: translateX(11px); background: #0b0e13; 
 #strip .r1 > .regionline { grid-column: 1 / -1; align-self: center; display: none; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; }
 #strip .r1.region > .regionline { display: flex; }
 #strip .r1.region > :not(.regionline) { display: none; }
-#strip .regionline .sw { flex: none; width: 12px; height: 12px; border-radius: 3px; box-shadow: inset 0 0 0 1.5px #5fcf8f; }
-#strip .regionline.off .sw { box-shadow: inset 0 0 0 1.5px #8a919c; }
+#strip .regionline .sw { flex: none; width: 14px; height: 2px; border-radius: 1px; background: #5fcf8f; }
+#strip .regionline.off .sw { background: #8a919c; }
 #strip .regionline .flag { flex: none; width: 16px; height: 12px; border-radius: 2px; object-fit: cover; margin-right: 5px; vertical-align: -1px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12); }
 #strip .regionline .crumb { flex: none; color: var(--muted); display: inline-flex; align-items: center; }
-#strip .regionline .sep { flex: none; color: var(--faint); }
+#strip .regionline .sep { flex: none; display: inline-flex; align-items: center; height: 14px; line-height: 14px; font-size: 13px; color: var(--muted); }
 #strip .regionline b { flex: none; display: inline-flex; align-items: center; color: #eef1f5; font-weight: 600; font-size: 13px; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
 #strip .regionline.off b { color: var(--muted); }
 #strip .regionline .kind { flex: none; color: var(--faint); font-size: 11px; }

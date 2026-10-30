@@ -27,11 +27,6 @@ pub const INTERNAL: &str = "regions-internal-waters";
 pub const TERRITORIAL: &str = "regions-territorial-seas";
 pub const LAKES: &str = "regions-lakes";
 
-/// The 12-nautical-mile line drawn: the territorial seas' edges this far (m) from the coastline's
-/// land, at both ends; and how finely (m).
-pub const TS12_OFF_LAND_M: f64 = 2_000.0;
-pub const TS12_DRAW_M: f64 = 100.0;
-
 /// A lake is water, not land, from this size (km², as Natural Earth draws it).
 pub const BIG_LAKE_KM2: f64 = 100.0;
 
@@ -143,76 +138,6 @@ impl Datasets {
             })
             .collect();
         geom::union_all(&areas)
-    }
-
-    /// The 12-nautical-mile line, for drawing (docs/inputs.md §6.1.9): the territorial seas'
-    /// edges more than `TS12_OFF_LAND_M` from the coastline's land (their coast side, along the
-    /// baseline, left out), as lines simplified within `TS12_DRAW_M`, degrees to 5 decimals, in
-    /// the territorial seas' id order. Read cell by cell (2°): each cell's edges against the land
-    /// pieces round it.
-    pub fn ts12_line(&self) -> Vec<Vec<[f64; 2]>> {
-        use super::tiles::{cell_box, Cell, CELL as TCELL};
-        // Every edge, by the cell its start lies in: (ring, index).
-        let mut ids: Vec<&u64> = self.ts12.keys().collect();
-        ids.sort();
-        let mut by_cell: BTreeMap<Cell, Vec<(usize, usize)>> = BTreeMap::new();
-        let rings: Vec<&Ring> = ids.iter().flat_map(|id| self.ts12[id].iter()).collect();
-        for (k, r) in rings.iter().enumerate() {
-            for (i, p) in r.iter().enumerate() {
-                by_cell.entry((p[0].div_euclid(TCELL), p[1].div_euclid(TCELL))).or_default().push((k, i));
-            }
-        }
-        let pad = (TS12_OFF_LAND_M / 111_320.0 * 1e7) as i64 * 4;
-        let kept: Vec<Vec<(usize, usize)>> =
-            crate::inputs::pace::par_map(by_cell.into_iter().collect(), |(c, edges)| {
-                let b = cell_box(c);
-                let bx = [b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad];
-                let land = self.land_in(bx);
-                let idx = super::tiles::SegIndex::new(land.polys.iter().flatten().map(|r| (0, r)));
-                edges
-                    .into_iter()
-                    .filter(|&(k, i)| {
-                        let r = rings[k];
-                        let (p, q) = (r[i], r[(i + 1) % r.len()]);
-                        !idx.within(p, TS12_OFF_LAND_M) && !idx.within(q, TS12_OFF_LAND_M)
-                    })
-                    .collect()
-            });
-        let mut keep: Vec<Vec<bool>> = rings.iter().map(|r| vec![false; r.len()]).collect();
-        for (k, i) in kept.into_iter().flatten() {
-            keep[k][i] = true;
-        }
-        // (Runs of kept edges strung into lines; a ring kept whole starts at its first point.)
-        let mut out = Vec::new();
-        for (k, r) in rings.iter().enumerate() {
-            let n = r.len();
-            let start = (0..n).find(|&i| !keep[k][i]).map_or(0, |i| (i + 1) % n);
-            let mut line: Vec<[i64; 2]> = Vec::new();
-            for j in 0..n {
-                let i = (start + j) % n;
-                if keep[k][i] {
-                    if line.is_empty() {
-                        line.push(r[i]);
-                    }
-                    line.push(r[(i + 1) % n]);
-                } else if line.len() >= 2 {
-                    out.push(std::mem::take(&mut line));
-                } else {
-                    line.clear();
-                }
-            }
-            if line.len() >= 2 {
-                out.push(line);
-            }
-        }
-        out.into_iter()
-            .map(|l| {
-                let (a, z) = (l[0], l[l.len() - 1]);
-                let s =
-                    if l.len() > 2 { geom::simplify_ring_pinned(&l, TS12_DRAW_M, &|p| *p == a || *p == z) } else { l };
-                s.iter().map(|p| [(p[0] as f64 / 100.0).round() / 1e5, (p[1] as f64 / 100.0).round() / 1e5]).collect()
-            })
-            .collect()
     }
 
     /// Whether it has the coastline's land (a region with `water` needs it).

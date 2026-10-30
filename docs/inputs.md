@@ -721,8 +721,7 @@ regions. Without it a region with water is held (`rg-data`). `scenic-build regio
 
 `scenic-build regions-check --dir <folder> --declarations <folder> [--land <file>]` runs the check on a scratch folder in memory with the datasets those declarations name,
 and reports each region's size (a region with water's land and water each read cell by cell and
-summed, never one overlay of the whole: the high seas' would be ~200,000 points), and the
-12-nautical-mile line's size and time (`ts12_line`).
+summed, never one overlay of the whole: the high seas' would be ~200,000 points).
 
 #### 6.1.8 Checks
 
@@ -769,11 +768,6 @@ region file takes it out with the next version.
   boundaries'. The server simplifies the drawn files (copied to the Mac as the translations are)
   for the map's zoom and keeps each zoom's (docs/formats.md). The footer tells the region under
   the cursor: its folders and name with their flags, its state, land and water and download.
-- The check also stores the 12-nautical-mile line: Territorial Seas v4's edges more than 2 km from
-  the coastline's land at both ends (their coast side left out), simplified within 100 m
-  (`data::Datasets::ts12_line`), as `sources/inputs/regions/@drawn/_ts12.<hash16>.json`
-  (`{"fmt": 1, "lines": [[[lon, lat], …], …]}`, degrees to 5 decimals, about 270,000 points), named
-  in `_pins.toml`'s `facts.ts12`. The app no longer draws it (#868).
 - **The banner and menu bar** (§4.7).
 
 #### 6.1.10 The switch

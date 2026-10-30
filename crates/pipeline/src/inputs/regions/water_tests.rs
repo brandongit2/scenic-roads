@@ -920,33 +920,6 @@ fn a_nearest_coast_split_reaches_past_450_km() {
     assert_eq!(geom::nearest_growing(&within, &[east], &[west], 1000.0), within);
 }
 
-/// The 12-nautical-mile line drawn: a territorial sea's outer edge, not its coast side.
-#[test]
-fn the_12_nmi_line_is_the_territorial_seas_edge_off_land() {
-    let island = bx(0.9, 0.9, 1.1, 1.1);
-    let mut ts = bx(0.7, 0.7, 1.3, 1.3);
-    ts.push(island[0].iter().rev().copied().collect());
-    let data = Datasets::from_parts(
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::from([(5, ts)]),
-        HashMap::new(),
-        vec![island],
-        "fixture",
-    );
-    let lines = data.ts12_line();
-    assert_eq!(lines.len(), 1, "{lines:?}");
-    let l = &lines[0];
-    assert!(l.len() >= 5 && l.first() == l.last(), "{l:?}");
-    assert!(
-        l.iter().all(|p| (p[0] - 0.7).abs() < 1e-9
-            || (p[0] - 1.3).abs() < 1e-9
-            || (p[1] - 0.7).abs() < 1e-9
-            || (p[1] - 1.3).abs() < 1e-9),
-        "{l:?}"
-    );
-}
-
 // ---- The coastline's land (crate::inputs::regions::land) ----
 
 fn lp(x: f64, y: f64) -> geom::Pt {
