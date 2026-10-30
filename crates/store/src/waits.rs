@@ -294,6 +294,7 @@ mod tests {
         let spin = Instant::now();
         let mut x = 0u64;
         while spin.elapsed() < Duration::from_millis(30) {
+            // (bound ok: 30 ms of computing beside the NAS call)
             x = std::hint::black_box(x.wrapping_add(1));
         }
         drop(g);
