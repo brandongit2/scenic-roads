@@ -234,6 +234,11 @@ impl Pieces {
         Ok(v)
     }
 
+    /// What an earlier run kept of piece `b`, if it did (not taken).
+    pub fn kept(&self, b: BlockId) -> Option<&[u8]> {
+        self.kept.get(&b).map(Vec::as_slice)
+    }
+
     /// Piece `b`'s result: kept by an earlier run, else `make`'s, kept (a safe point:
     /// Err(crate::control::Paused) with the build pausing, once it's kept).
     pub fn piece(&mut self, b: BlockId, make: impl FnOnce() -> Result<Vec<u8>>) -> Result<Vec<u8>> {

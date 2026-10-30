@@ -733,7 +733,15 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   block is redone). terrain-deep's base tiles not yet begun when it stops aren't (only those under
   way finish). pyramids-fill stops before each tile it would ask (the fetches under way finish),
   what it fetched packed and handed off, the z6 tile not done; its next fill fetches the rest
-  (the same tiles' bytes; its store's archives split where it stopped). Every job's timings record
+  (the same tiles' bytes; its store's archives split where it stopped). A `unit` z6 tile's pieces
+  (`resume_log::Pieces`, task #889) are its preparing (the piece copied, the buildings staged,
+  `prepare_folder`) and each program of its tail run here, each kept with its folders' digest
+  (`unit::folder_digest`: names, lengths, times written), the folders kept beside the log: a
+  resumed run takes them only while its folders are as the last piece left them, else starts the
+  tile afresh; a pause there ends the job as a pause before a tile does (its tails out with
+  workers settled first). Its longest gap is its longest program (its preparing, or `elev`); a
+  tail out with a worker keeps none. A `pois` z6 tile keeps its extract's candidates (one
+  program, no safe point inside it). Every job's timings record
   says how often it reached a safe point and the longest it went without one (`safe_points`,
   `safe_gap_s`, `control::safe_gaps`; its log's `timings: â€¦ safe points` line): each step's time
   between safe points, measured on every run. A log at the top of its step's scratch folder

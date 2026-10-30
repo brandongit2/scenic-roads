@@ -183,7 +183,7 @@ pub fn tile_box_grown(z: u8, x: u32, y: u32, km: f64) -> [f64; 4] {
     [w - dx, (s - dy).max(-85.05), e + dx, (nn + dy).min(85.05)]
 }
 
-#[derive(Debug, Default, serde::Serialize)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Staged {
     pub terrain_tiles: usize,
     pub grid_tiles: usize,

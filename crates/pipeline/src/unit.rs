@@ -503,7 +503,7 @@ fn log_tail(log: &Path, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
-#[derive(Debug, Default, serde::Serialize)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Report {
     pub unit: String,
     pub piece_ways: usize,
@@ -840,6 +840,91 @@ pub fn tail(u: TileId, buildings: bool, store: bool) -> Vec<Run> {
     runs
 }
 
+// ---- A z6 tile resumed where it stopped (task #889; docs/pool.md §7.2) ----------------------------
+//
+// Its pieces (crate::resume_log::Pieces), its folders (`dirs`: the z6 tile's and its buildings') kept
+// on this Mac's disk between runs: its preparing (`PREPARE`: the piece copied, the buildings
+// staged, `prepare_folder`; what's kept, its `Report`), then each program of its tail run here
+// (`tail_piece`). Each piece kept with its folders' digest (`folder_digest`) after it: a run resumed
+// takes them only when its folders are as the last piece left them (`folders_as_kept`).
+
+/// The piece of a z6 tile's preparing.
+pub const PREPARE: crate::resume_log::BlockId = (6, 0, 0);
+
+/// The piece of its tail's program `i` (its place in `tail`).
+pub fn tail_piece(i: usize) -> crate::resume_log::BlockId {
+    (6, 1, i as u32)
+}
+
+/// Folders `dirs`' digest: each file's path in them, length and time written (what a program
+/// changes), in order.
+pub fn folder_digest(dirs: &[&Path]) -> Vec<u8> {
+    fn walk(d: &Path, rel: &str, h: &mut blake3::Hasher) {
+        let mut es: Vec<_> = std::fs::read_dir(d).into_iter().flatten().flatten().collect();
+        es.sort_by_key(|e| e.file_name());
+        for e in es {
+            let name = format!("{rel}/{}", e.file_name().to_string_lossy());
+            let Ok(m) = e.metadata() else { continue };
+            if m.is_dir() {
+                walk(&e.path(), &name, h);
+                continue;
+            }
+            let at = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).unwrap_or_default();
+            h.update(name.as_bytes());
+            h.update(&m.len().to_le_bytes());
+            h.update(&at.as_nanos().to_le_bytes());
+        }
+    }
+    let mut h = blake3::Hasher::new();
+    for (k, d) in dirs.iter().enumerate() {
+        walk(d, &k.to_string(), &mut h);
+    }
+    h.finalize().as_bytes().to_vec()
+}
+
+/// A piece of a z6 tile's: `make`'s payload after the folders' digest once it's run.
+pub fn folder_piece(
+    pieces: &mut crate::resume_log::Pieces,
+    b: crate::resume_log::BlockId,
+    dirs: &[&Path],
+    make: impl FnOnce() -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    let p = pieces.piece(b, || {
+        let m = make()?;
+        Ok([folder_digest(dirs), m].concat())
+    })?;
+    Ok(p.get(32..).map(<[u8]>::to_vec).unwrap_or_default())
+}
+
+/// Whether the z6 tile's folders `dirs` are as its last piece kept left them (nothing kept: true).
+pub fn folders_as_kept(pieces: &crate::resume_log::Pieces, dirs: &[&Path]) -> bool {
+    let Some(mut last) = pieces.kept(PREPARE) else { return true };
+    let mut i = 0;
+    while let Some(p) = pieces.kept(tail_piece(i)) {
+        last = p;
+        i += 1;
+    }
+    last.get(..32) == Some(folder_digest(dirs).as_slice())
+}
+
+/// `run_tail`, each program a piece (`tail_piece`, from `at`: its place in the whole tail), those
+/// an earlier run kept not run again.
+pub fn run_tail_kept(
+    runs: &[Run],
+    at: usize,
+    dir: &Path,
+    dirs: &[&Path],
+    tools: &Tools,
+    pieces: &mut crate::resume_log::Pieces,
+) -> Result<()> {
+    for (i, r) in runs.iter().enumerate() {
+        folder_piece(pieces, tail_piece(at + i), dirs, || {
+            run_tail(std::slice::from_ref(r), dir, tools).map(|()| Vec::new())
+        })?;
+    }
+    Ok(())
+}
+
 /// Runs a task's programs here, natively, in `dir` (snapshotted around each when `tools.snap`
 /// asks).
 pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
@@ -926,6 +1011,79 @@ mod tests {
         c[store::nasio::Count::Tiffs as usize] = tiffs;
         let esc: String = c.iter().flat_map(|v| v.to_le_bytes()).map(|b| format!("\\{b:03o}")).collect();
         format!("printf '{esc}' > \"$SCENIC_NAS_COUNTS/$$-1\"")
+    }
+
+    /// Task #889: a z6 tile paused at every one of its safe points (its preparing and each program
+    /// of its tail, kept as pieces), resumed each time, runs each program once and leaves the same
+    /// folder as one never paused; a folder changed since its last piece isn't taken.
+    #[test]
+    fn a_z6_tile_paused_at_every_safe_point_resumes_to_the_same_folder() {
+        use crate::resume_log::{Pieces, STOP_AFTER};
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let step = bin.join("step");
+        std::fs::write(&step, "#!/bin/sh\necho \"$2 $(cat \"$1/out.txt\" 2>/dev/null | wc -l)\" >> \"$1/out.txt\"\n")
+            .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&step, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = Tools {
+            bin,
+            cache: d.path().join("cache"),
+            buildings: None,
+            sources: None,
+            shared: None,
+            chm: None,
+            stores_read_only: false,
+            elevation: None,
+            declared: None,
+            snap: None,
+        };
+        let runs: Vec<Run> = (0..4)
+            .map(|k| Run {
+                what: format!("step {k}"),
+                prog: "step".into(),
+                args: vec!["{dir}".into(), k.to_string()],
+                env: Vec::new(),
+                reads: Vec::new(),
+            })
+            .collect();
+        // (Its preparing: a file written; its tail split in two, as here and anywhere.)
+        let build = |dir: &Path, pieces: &mut Pieces| -> Result<()> {
+            folder_piece(pieces, PREPARE, &[dir], || {
+                std::fs::create_dir_all(dir)?;
+                std::fs::write(dir.join("prep.txt"), b"x")?;
+                Ok(b"rep".to_vec())
+            })?;
+            run_tail_kept(&runs[..1], 0, dir, &[dir], &tools, pieces)?;
+            run_tail_kept(&runs[1..], 1, dir, &[dir], &tools, pieces)
+        };
+        let fresh = d.path().join("fresh");
+        build(&fresh, &mut Pieces::none()).unwrap();
+        let (dir, scratch) = (d.path().join("paused"), d.path().join("scratch"));
+        let open = || Pieces::open(&scratch, (6, 1, 2), "unit", "a", true);
+        let mut stops = 0;
+        loop {
+            let mut p = open();
+            assert!(folders_as_kept(&p, &[&dir]));
+            STOP_AFTER.set(Some(1));
+            let r = build(&dir, &mut p);
+            STOP_AFTER.set(None);
+            match r {
+                Err(e) => {
+                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    stops += 1;
+                }
+                Ok(()) => break,
+            }
+        }
+        assert_eq!(stops, 5, "after its preparing and each of its four programs");
+        let read = |d: &Path| std::fs::read_to_string(d.join("out.txt")).unwrap();
+        assert_eq!(read(&dir), read(&fresh));
+        assert_eq!(read(&dir).lines().count(), 4, "each program once");
+        // Its folder changed since: not as kept.
+        std::fs::write(dir.join("out.txt"), "changed").unwrap();
+        assert!(!folders_as_kept(&open(), &[&dir]));
     }
 
     #[test]

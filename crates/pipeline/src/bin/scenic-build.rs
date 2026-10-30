@@ -2824,27 +2824,47 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             continue;
         };
         let local = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
-        let p = phase("copying pieces from the NAS");
-        let n = piece.copy_data_to_local(&local).with_context(|| format!("copy {}", piece.display()))?;
-        p.count(n, 1);
-        // (Its input's measure: the extract's bytes.)
-        pipeline::costin::add("bytes", n);
-        drop(p);
         let dir = scratch.join(format!("pois-{}", u.dash()));
-        let p = phase("extracting candidates (extract)");
-        let mut c = store::spawn::command(&extract);
-        c.arg(&dir).arg(&spacing).arg("--candidates").arg("--trailends").arg(&trailends).arg(&local);
-        let o = store::spawn::output(&mut c).with_context(|| format!("run {}", extract.display()))?;
-        anyhow::ensure!(
-            o.status.success(),
-            "extract --candidates for {}: {}\n{}",
-            u.slash(),
-            o.status,
-            String::from_utf8_lossy(&o.stderr).lines().rev().take(8).collect::<Vec<_>>().join("\n")
+        // Its extract's candidates a piece kept (task #889): a run resumed after it takes them, not
+        // running the extract again. (The extract is one program: no safe point inside it.)
+        let id = pipeline::resume_log::job_id(
+            "pois",
+            &u.slash(),
+            &[
+                &args.join(" "),
+                piece.display().to_string().as_str(),
+                &trailends.to_string_lossy(),
+                &std::fs::read_to_string(&spacing)?,
+            ],
         );
-        drop(p);
+        let mut pieces =
+            pipeline::resume_log::Pieces::open(scratch, (6, u.x, u.y), "pois", &id, pipeline::resume_log::on());
+        let pois = pieces.piece((6, 0, 0), || {
+            let p = phase("copying pieces from the NAS");
+            let n = piece.copy_data_to_local(&local).with_context(|| format!("copy {}", piece.display()))?;
+            p.count(n, 1);
+            // (Its input's measure: the extract's bytes.)
+            pipeline::costin::add("bytes", n);
+            drop(p);
+            let p = phase("extracting candidates (extract)");
+            let mut c = store::spawn::command(&extract);
+            c.arg(&dir).arg(&spacing).arg("--candidates").arg("--trailends").arg(&trailends).arg(&local);
+            let o = store::spawn::output(&mut c).with_context(|| format!("run {}", extract.display()))?;
+            anyhow::ensure!(
+                o.status.success(),
+                "extract --candidates for {}: {}\n{}",
+                u.slash(),
+                o.status,
+                String::from_utf8_lossy(&o.stderr).lines().rev().take(8).collect::<Vec<_>>().join("\n")
+            );
+            drop(p);
+            std::fs::remove_file(&local).ok();
+            Ok(std::fs::read(dir.join("pois.json"))?)
+        });
+        std::fs::remove_dir_all(&dir).ok();
+        let pois = pois.map_err(|e| pipeline::control::stop_if_paused("pois", e))?;
         let p = phase("keeping the candidates in the coverage and writing them");
-        let cands = pipeline::candidates::from_pois(&std::fs::read(dir.join("pois.json"))?, u, &cov)?;
+        let cands = pipeline::candidates::from_pois(&pois, u, &cov)?;
         let file = scratch.join(format!("pois-{}.jsonl.zst", u.dash()));
         pipeline::candidates::write(&file, &cands)?;
         drop(p);
@@ -2852,9 +2872,9 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         out.put_file(&format!("work/pois/{}", u.dash()), "jsonl.zst", &file)?;
         drop(p);
         out.save()?;
+        pieces.finish();
         pipeline::control::done("pois", &u.slash());
         let p = phase("removing scratch files");
-        std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_file(&local).ok();
         std::fs::remove_file(&file).ok();
         drop(p);
@@ -3949,8 +3969,38 @@ fn tile_progress(f: impl FnOnce(&mut pipeline::unit::TileProgress)) {
     }
 }
 
+/// Z6 tile `u`'s resumed run's identity (pipeline::resume_log::job_id, task #889): the job's
+/// arguments, the accepted inputs (pipeline::inputs::UNITS), and what the z6 tile reads of the
+/// build's as the manifest has it: its piece, the pass's reaches, the roadside buildings' index,
+/// the packs and heritage slices its box stages.
+fn unit_resume_id(
+    out: &Out,
+    args: &[String],
+    pilot: &Option<(store::nasfs::NasRoot, store::catalogue::Catalogue)>,
+    blobs: &store::blobs::Blobs,
+    date: &str,
+    u: TileId,
+    tools: &pipeline::unit::Tools,
+) -> String {
+    let get = |l: &str| format!("{l}={}", out.get(l).unwrap_or("-"));
+    let mut lines: Vec<String> = pipeline::inputs::UNITS.iter().map(|n| get(&pipeline::inputs::logical(n))).collect();
+    lines.push(args.join(" "));
+    lines.push(get(&format!("sources/osm/{date}/pieces/{}", u.dash())));
+    lines.push(get(&pipeline::reach::logical(date)));
+    if tools.buildings.is_none() {
+        if let Ok(r) = pipeline::buildtiles::release_of(out.root(), &out.manifest) {
+            lines.push(get(&pipeline::buildtiles::index_logical(&r)));
+        }
+    }
+    let b = pipeline::stage::tile_box_grown(u.z, u.x, u.y, pipeline::stage::MARGIN_KM);
+    lines.extend(layers_source(out, pilot, Some(blobs)).pack_contents(b));
+    lines.extend(pipeline::heritage::unit_contents(out, date, b));
+    let parts: Vec<&str> = lines.iter().map(String::as_str).collect();
+    pipeline::resume_log::job_id("unit", &u.slash(), &parts)
+}
+
 fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
-    use pipeline::unit::{prepare_folder, run_tail, stage as unit_stage, Tools};
+    use pipeline::unit::{prepare_folder, stage as unit_stage, Tools};
     let setup = phase("reading the pass, coverage, pieces and reaches");
     let (date, cov, regions) = pass_and_coverage(out, args)?;
     // Global-source layers: as this build's manifest has them now (what the z6 tile keys hash: a
@@ -4038,8 +4088,16 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     }
     eprintln!("unit: pass {date}, {regions} region(s), {} unit(s)", units.len());
     drop(setup);
-    // A z6 tile's folders go once it's built; what an earlier job left (a z6 tile that failed) goes now.
-    std::fs::remove_dir_all(scratch.join("units")).ok();
+    // A z6 tile's folders go once it's built; what an earlier job left (a z6 tile that failed) goes
+    // now, but for a z6 tile's kept for its run resumed (its resume log beside them, task #889).
+    for e in std::fs::read_dir(scratch.join("units")).into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        let t = TileId::parse(&n.splitn(4, '-').take(3).collect::<Vec<_>>().join("/"));
+        if !t.is_some_and(|t| pipeline::resume_log::on() && pipeline::resume_log::path(scratch, (6, t.x, t.y)).exists())
+        {
+            std::fs::remove_dir_all(e.path()).ok();
+        }
+    }
     for e in std::fs::read_dir(scratch).into_iter().flatten().flatten() {
         if e.file_name().to_string_lossy().starts_with("piece-") {
             std::fs::remove_file(e.path()).ok();
@@ -4193,31 +4251,47 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             std::fs::remove_dir_all(&dir).ok();
             std::fs::remove_dir_all(&bdir).ok();
         };
-        clean();
         let piece_logical = format!("sources/osm/{date}/pieces/{}", u.dash());
         let Some(piece) = out.get(&piece_logical).map(|n| out.path(n)) else {
+            clean();
             eprintln!("unit {}: no piece (nothing there)", u.slash());
             tile_progress(|a| a.finished(&u.slash()));
             continue;
         };
-        let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
-        let s = unit_stage("copying the piece from the NAS");
-        // (Copied ahead, while the z6 tile before it built, unless it's the job's first.)
-        if std::fs::metadata(&local_piece).map(|m| m.len()).ok() != piece.metadata().map(|m| m.len()).ok() {
-            let n = piece.copy_data_to_local(&local_piece).with_context(|| format!("copy {}", piece.display()))?;
-            pipeline::timings::count(n, 1);
+        // Its pieces (task #889: pipeline::unit::PREPARE, tail_piece), taken while its folders are
+        // as its last piece left them; else afresh.
+        let dirs = [dir.as_path(), bdir.as_path()];
+        let id = unit_resume_id(out, args, &pilot, &blobs, &date, u, &tools);
+        let open =
+            || pipeline::resume_log::Pieces::open(scratch, (6, u.x, u.y), "unit", &id, pipeline::resume_log::on());
+        let mut pieces = open();
+        if pieces.kept(pipeline::unit::PREPARE).is_some() && pipeline::unit::folders_as_kept(&pieces, &dirs) {
+            eprintln!("unit {}: resumed where its last run stopped", u.slash());
+        } else {
+            pieces.finish();
+            clean();
+            pieces = open();
         }
-        s.end();
+        let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         // Its scenic results from its last run, kept in the shared cache (pipeline::scache::Carry).
         let carry = pipeline::scache::Carry { dir: tools.scenic_kept(u) };
         pipeline::unit::take_peak();
-        let (rep, tools) = {
+        // Its roadside buildings: the folder given by hand, else the release's tiles near its roads.
+        let mut tools = tools.clone();
+        if buildings.is_some() {
+            tools.buildings = Some(bdir.clone());
+        }
+        let prepared = pipeline::unit::folder_piece(&mut pieces, pipeline::unit::PREPARE, &dirs, || {
+            let s = unit_stage("copying the piece from the NAS");
+            // (Copied ahead, while the z6 tile before it built, unless it's the job's first.)
+            if std::fs::metadata(&local_piece).map(|m| m.len()).ok() != piece.metadata().map(|m| m.len()).ok() {
+                let n = piece.copy_data_to_local(&local_piece).with_context(|| format!("copy {}", piece.display()))?;
+                pipeline::timings::count(n, 1);
+            }
+            s.end();
             let o: &Out = out;
             // (Its heritage slices from this Mac's copies: copied ahead, or now.)
             let heritage = |b: [f64; 4], d: &Path| pipeline::heritage::unit_inputs_with(o, &date, b, d, Some(&blobs));
-            // Its roadside buildings: the folder given by hand, else the release's tiles near its
-            // roads.
-            let mut tools = tools.clone();
             if let Some(index) = &buildings {
                 let s = unit_stage("staging the buildings");
                 // (From this Mac's copies of the tiles: copied ahead, or now.)
@@ -4231,9 +4305,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 )?;
                 eprintln!("unit {}: buildings from {n} tiles", u.slash());
                 s.end();
-                tools.buildings = Some(bdir.clone());
             }
-            match prepare_folder(
+            let rep = prepare_folder(
                 u,
                 &local_piece,
                 &dir,
@@ -4242,18 +4315,26 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 &tools,
                 &heritage,
                 Some(&carry),
-            ) {
-                Ok(rep) => (rep, tools),
-                Err(e) => {
-                    set_aside(&mut aside, u, e)?;
-                    std::fs::remove_file(&local_piece).ok();
-                    clean();
-                    tile_progress(|a| a.finished(&u.slash()));
-                    continue;
-                }
+            )?;
+            Ok(serde_json::to_vec(&rep)?)
+        });
+        std::fs::remove_file(&local_piece).ok();
+        let rep: pipeline::unit::Report = match prepared.and_then(|p| Ok(serde_json::from_slice(&p)?)) {
+            Ok(rep) => rep,
+            // (Paused once its preparing's kept: the job ends at its safe point below, its folders and
+            // pieces kept for its run resumed.)
+            Err(e) if pipeline::control::is_paused(&e) => {
+                paused = true;
+                break;
+            }
+            Err(e) => {
+                set_aside(&mut aside, u, e)?;
+                pieces.finish();
+                clean();
+                tile_progress(|a| a.finished(&u.slash()));
+                continue;
             }
         };
-        std::fs::remove_file(&local_piece).ok();
         // Its tail: offered to another worker while this Mac prepares the next z6 tile (when one's
         // around, and fewer than such are out), else run here too. The canopy squares a worker
         // reads where they lie, and can't download one: while the NAS's store lacks one, the
@@ -4264,11 +4345,19 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         let (here, anywhere) = pipeline::unit::split(&runs);
         if rep.kept_ways > 0 {
-            if let Err(e) = run_tail(here, &dir, &tools) {
-                set_aside(&mut aside, u, e)?;
-                clean();
-                tile_progress(|a| a.finished(&u.slash()));
-                continue;
+            match pipeline::unit::run_tail_kept(here, 0, &dir, &dirs, &tools, &mut pieces) {
+                Ok(()) => {}
+                Err(e) if pipeline::control::is_paused(&e) => {
+                    paused = true;
+                    break;
+                }
+                Err(e) => {
+                    set_aside(&mut aside, u, e)?;
+                    pieces.finish();
+                    clean();
+                    tile_progress(|a| a.finished(&u.slash()));
+                    continue;
+                }
             }
         }
         // (Its inputs' measures: the extract's bytes beside what the store's readers read, its ways
@@ -4296,6 +4385,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             disk: store::cachefile::written().saturating_sub(written_at),
             anywhere: anywhere.to_vec(),
             sizes,
+            pieces,
         };
         let offering = phase("offering tails to other workers");
         let offered = match &offload {
@@ -4316,12 +4406,24 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             None => {
                 let mut b = b;
                 if b.rep.kept_ways > 0 {
-                    let (r, taken) = pipeline::costin::measured(|| run_tail(&b.anywhere, &b.dir, &b.tools));
-                    if let Err(e) = r {
-                        set_aside(&mut aside, u, e)?;
-                        clean();
-                        tile_progress(|a| a.finished(&u.slash()));
-                        continue;
+                    let at = here.len();
+                    let (r, taken) = pipeline::costin::measured(|| {
+                        let dirs = [b.dir.as_path(), b.bdir.as_path()];
+                        pipeline::unit::run_tail_kept(&b.anywhere, at, &b.dir, &dirs, &b.tools, &mut b.pieces)
+                    });
+                    match r {
+                        Ok(()) => {}
+                        Err(e) if pipeline::control::is_paused(&e) => {
+                            paused = true;
+                            break;
+                        }
+                        Err(e) => {
+                            set_aside(&mut aside, u, e)?;
+                            b.pieces.finish();
+                            clean();
+                            tile_progress(|a| a.finished(&u.slash()));
+                            continue;
+                        }
                     }
                     pipeline::costin::add_to(&mut b.sizes, taken);
                     b.peak = b.peak.max(pipeline::unit::take_peak());
@@ -4404,6 +4506,8 @@ struct Built {
     anywhere: Vec<pipeline::unit::Run>,
     /// Its inputs' measures (pipeline::costin), for its cost line.
     sizes: BTreeMap<String, u64>,
+    /// Its pieces kept (pipeline::unit::PREPARE, tail_piece): let go once it's committed.
+    pieces: pipeline::resume_log::Pieces,
 }
 
 /// A tail's time on the lead until it has timed its stages (seconds).
@@ -4488,13 +4592,20 @@ fn settle_tails(
 /// removed, and what it cost noted. `how`: where its tail's last steps ran. (What it saves is
 /// `pipeline::unit::saved_files`, all a helper's hand-off may change: keep the two together.)
 fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
-    let Built { u, dir, bdir, rep, carry, piece, t, peak, group, disk, mut sizes, .. } = b;
+    let Built { u, dir, bdir, rep, carry, piece, t, peak, group, disk, mut sizes, pieces, .. } = b;
     use pipeline::unit::{owns, stage as unit_stage};
     tile_progress(|a| a.on(&u.slash()));
     let clean = || {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&bdir).ok();
         std::fs::remove_dir_all(pipeline::unit::ahead_carry(&dir)).ok();
+    };
+    // (Its outputs saved before its pieces go: a stop before then takes them up again.)
+    let pieces = std::cell::Cell::new(Some(pieces));
+    let let_go = || {
+        if let Some(p) = pieces.take() {
+            p.finish();
+        }
     };
     // Grids its packs lacked (new coverage), made in the folder: the z6 tile's own z6 tile's go up,
     // for later z6 tiles and packs. (The canopy step made canopy and cover for every tile.) Their
@@ -4537,6 +4648,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
         // (Saved before it's noted done: its grids above too.)
         out.save()?;
         let s = unit_stage("removing its folders");
+        let_go();
         clean();
         s.end();
         pipeline::control::done("unit", &u.slash());
@@ -4629,6 +4741,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     tile_progress(|a| a.finished(&u.slash()));
     let s = unit_stage("removing its folders");
     drop(lg);
+    let_go();
     clean();
     s.end();
     // The most memory the job's processes held together while it was built here (as the agent's
