@@ -1,7 +1,9 @@
 #!/bin/zsh
 # Gives this checkout's web/ its packages (task #893): pnpm install --frozen-lockfile from this Mac's
 # shared pnpm store (hard links: seconds, almost no disk), only when web/node_modules is missing or
-# installed from another lockfile (pnpm keeps its copy in node_modules/.pnpm/lock.yaml).
+# not a finished install of this lockfile: node_modules/.web-deps-lock, a copy of the lockfile
+# written once pnpm succeeds (pnpm's own node_modules/.pnpm/lock.yaml appears mid-install, so an
+# interrupted install would pass for a whole one).
 #   tools/dev/web-deps.sh            offline: a package missing from the store is an error
 #   tools/dev/web-deps.sh --online   fetches what the store lacks (publish.sh)
 # check.sh's web part and publish.sh call it; run it by hand before node or vite in a fresh worktree.
@@ -10,12 +12,14 @@ mode=--offline
 case $#:${1:-} in
   0:) ;;
   1:--online) mode=--prefer-offline ;;
-  1:-h|1:--help) sed -n '2,7p' ${0:A} | sed 's/^# \{0,1\}//'; exit 0 ;;
+  1:-h|1:--help) sed -n '2,9p' ${0:A} | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) print -u2 "web-deps.sh [--online]"; exit 2 ;;
 esac
 web=${0:A:h:h:h}/web
-cmp -s $web/pnpm-lock.yaml $web/node_modules/.pnpm/lock.yaml && exit 0
+stamp=$web/node_modules/.web-deps-lock
+cmp -s $web/pnpm-lock.yaml $stamp && exit 0
 cd $web || exit 1
+rm -f $stamp
 # (mise.toml's pnpm and Node, also from a shell without mise on its PATH, such as ssh's.)
 path+=(/opt/homebrew/bin)
 eval "$(mise env -s zsh 2>/dev/null)" 2>/dev/null
@@ -30,3 +34,4 @@ if ! out=$(pnpm install --frozen-lockfile $mode --reporter=append-only 2>&1); th
   fi
   exit 1
 fi
+cp pnpm-lock.yaml $stamp
