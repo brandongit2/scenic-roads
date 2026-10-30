@@ -31,4 +31,7 @@ assert.equal(unclipped.length, 1);
 assert.equal(unclipped[0].length, 5);
 // (The box's right edge, x = 2, is a cut: the other three sides stay, in two pieces.)
 assert.deepEqual(outlineLines(clipped, [-1, -1, 2, 2]).geometry.coordinates, [[[0, 0], [2, 0]], [[2, 1], [0, 1], [0, 0]]]);
+// Split at the antimeridian: the stretch along 180° is a cut too, with or without a box.
+const east = region('e', [[[170, 0], [180, 0], [180, 5], [170, 5], [170, 0]]], [170, 0, 180, 5]);
+assert.deepEqual(outlineLines(east, null).geometry.coordinates, [[[170, 0], [180, 0]], [[180, 5], [170, 5], [170, 0]]]);
 console.log('regionoutlines: ok');

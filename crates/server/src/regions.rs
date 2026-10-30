@@ -1121,7 +1121,10 @@ fn union_of(parts: &[&Simplified], tol_m: f64) -> Result<Simplified> {
     let round = |v: f64| (v * k).round() / k;
     let coords = |g: &geos::ConstGeometry| -> Result<Vec<[f64; 2]>> {
         let s = g.get_coord_seq()?;
-        (0..s.size()?).map(|i| Ok([round(s.get_x(i)?), round(s.get_y(i)?)])).collect()
+        // (A ring cut at the antimeridian moved off it by the closing: put back on it, where the map
+        // knows it for a cut, not a border: outlineLines.)
+        let x = |v: f64| if v.abs() >= 180.0 - 2.0 * deg { 180f64.copysign(v) } else { round(v) };
+        (0..s.size()?).map(|i| Ok([x(s.get_x(i)?), round(s.get_y(i)?)])).collect()
     };
     let mut out: Vec<Vec<Vec<[f64; 2]>>> = Vec::new();
     for i in 0..closed.get_num_geometries()? {

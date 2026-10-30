@@ -105,10 +105,11 @@ export function getOutlines(z: number, opts: { bbox?: Bbox; ids?: string[]; unio
 }
 
 /** An outline's rings as lines, leaving out the stretches along the edges of the box it was clipped
- * to (`clip`): those are cuts, not its border. */
+ * to (`clip`) and along the antimeridian (where a ring crossing it is split): those are cuts, not its
+ * border. */
 export function outlineLines(f: Pick<RegionOutline, 'geometry' | 'properties'>, clip: Bbox | null): GeoJSON.Feature<GeoJSON.MultiLineString> {
   const lines: GeoJSON.Position[][] = [];
-  const onEdge = (p: GeoJSON.Position, q: GeoJSON.Position) => !!clip &&
+  const onEdge = (p: GeoJSON.Position, q: GeoJSON.Position) => (Math.abs(p[0]) === 180 && q[0] === p[0]) || !!clip &&
     ((p[0] === clip[0] && q[0] === clip[0]) || (p[0] === clip[2] && q[0] === clip[2]) || (p[1] === clip[1] && q[1] === clip[1]) || (p[1] === clip[3] && q[1] === clip[3]));
   for (const poly of f.geometry.coordinates) {
     for (const ring of poly) {
