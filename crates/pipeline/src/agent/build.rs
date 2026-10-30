@@ -718,15 +718,9 @@ pub fn terrain_packs(m: &BTreeMap<String, String>, b: [f64; 4]) -> Vec<String> {
     out
 }
 
-/// `unit_terrain_tiles` as one digest, kept by `tiles` with what it reads (the z6 tile's reach and the
-/// content names of the packs its staged tiles are in): a plan works out only the z6 tiles next to
-/// what changed.
-pub fn unit_terrain(
-    u: TileId,
-    r: &Reach,
-    m: &BTreeMap<String, String>,
-    tiles: &TerrainTiles,
-) -> Result<String, Unread> {
+/// The content names of the packs z6 tile `u`'s staged terrain tiles are in (z0–12 over its tile +
+/// 30 km: z4–8's lo packs, z9–12's hi packs; the root aside), for `unit_terrain`'s memo.
+pub fn unit_terrain_from(u: TileId, m: &BTreeMap<String, String>) -> String {
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     let mut packs: BTreeSet<String> = BTreeSet::new();
     for z in 4..=12u8 {
@@ -739,8 +733,19 @@ pub fn unit_terrain(
             }
         }
     }
-    let from =
-        [serde_json::to_string(r).unwrap_or_default(), packs.into_iter().collect::<Vec<_>>().join(",")].join("\n");
+    packs.into_iter().collect::<Vec<_>>().join(",")
+}
+
+/// `unit_terrain_tiles` as one digest, kept by `tiles` with what it reads (the z6 tile's reach and the
+/// content names of the packs its staged tiles are in): a plan works out only the z6 tiles next to
+/// what changed.
+pub fn unit_terrain(
+    u: TileId,
+    r: &Reach,
+    m: &BTreeMap<String, String>,
+    tiles: &TerrainTiles,
+) -> Result<String, Unread> {
+    let from = [serde_json::to_string(r).unwrap_or_default(), unit_terrain_from(u, m)].join("\n");
     tiles.memo(&u.slash(), &store::naming::hash16(from.as_bytes()), || {
         Ok(terrain_digest(&unit_terrain_tiles(u, r, m, tiles)?))
     })
@@ -2093,6 +2098,22 @@ pub struct TerrainWork {
     pub held: Vec<(&'static str, &'static str)>,
 }
 
+impl TerrainWork {
+    /// Whether target `t` of terrain or slope step `s` is left (stale, runnable or not): what a
+    /// target reading it waits for (`waits`). Another step's target, none.
+    pub fn is_left(&self, s: &str, t: &str) -> bool {
+        match s {
+            "terrain-hi" => self.terrain_pieces_left.contains(t),
+            "terrain-lo" => self.terrain_lo_left.contains(t),
+            "terrain-deep" => self.terrain_deep_left.contains(t),
+            "slope-deep" => self.slope_deep_left.contains(t),
+            "slope-hi" => self.slope_pieces_left.contains(t),
+            "slope-lo" => self.slope_lo_left.contains(t),
+            _ => false,
+        }
+    }
+}
+
 /// Terrain's and slope's work (`TerrainWork`) for their targets `tt`, the manifest `m` and what was
 /// done (with the hand-offs waiting to be merged: a z6 tile current by one of them has its mid
 /// there, not in `m`, until it's merged).
@@ -2214,14 +2235,7 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
         .chain(w.slope_pieces_left.iter().chain(&w.slope_deep_left).filter_map(|t| z3_of(t)))
         .collect();
     // (Each slope target waits for exactly what it reads, its row's declaration: crate::agent::steps.)
-    let left = |s: &str, t: &str| match s {
-        "terrain-hi" => w.terrain_pieces_left.contains(t),
-        "terrain-lo" => w.terrain_lo_left.contains(t),
-        "terrain-deep" => w.terrain_deep_left.contains(t),
-        "slope-deep" => w.slope_deep_left.contains(t),
-        "slope-hi" => w.slope_pieces_left.contains(t),
-        _ => false,
-    };
+    let left = |s: &str, t: &str| w.is_left(s, t);
     let mut sd_held = false;
     let mut slope_deep = Vec::new();
     for (t, k) in &tt.slope_deep {
@@ -2815,7 +2829,11 @@ pub fn plan(
                 .collect()
         })
         .collect();
-    let buildable = |i: usize| units[i].1.is_some() && reads[i].is_disjoint(&terrain_left);
+    // (What a z6 tile waits for is finer than those z3 tiles: the terrain targets it reads, its row's
+    // declaration, crate::agent::steps; `reads` is the terrain its region lists as its own.)
+    let unit_held: Vec<bool> =
+        units.iter().map(|(u, _)| waits("unit", &u.slash(), &|s: &str, t: &str| tw.is_left(s, t))).collect();
+    let buildable = |i: usize| units[i].1.is_some() && !unit_held[i];
     let unknown: Vec<String> = units.iter().filter(|(_, k)| k.is_none()).map(|(u, _)| u.slash()).collect();
     let target = |i: usize| -> Option<(String, String)> { Some((units[i].0.slash(), units[i].1.clone()?)) };
     struct Region<'a> {
@@ -3051,7 +3069,7 @@ pub fn plan(
                 .all
                 .iter()
                 .copied()
-                .filter(|&i| !unit_stale[i] && !reads[i].is_disjoint(&terrain_left))
+                .filter(|&i| !unit_stale[i] && unit_held[i])
                 .map(|i| units[i].0.slash())
                 .collect(),
             packs: {
@@ -5788,6 +5806,29 @@ pub(crate) mod tests {
             c.push(format!("layers/terrain/lo/3-{x}-{y}"));
         }
         check("slope-lo", "3/3/2", Some("terrain-lo"), c, &|m| slope_lo_terrain((3, 2), m));
+        // Unit 6/24/16 (its z3 tile's corner, 66.5°N: its 30 km reach two z10 tiles wide) and
+        // 6/33/31 (near the equator): the packs its staged tiles are in and its roads' heights read.
+        for (x6, y6) in [(24u32, 16u32), (33, 31)] {
+            let pz = crate::terrain_deep::PACK_Z;
+            let s = 1u32 << (pz - 6);
+            let mut c: Vec<String> = Vec::new();
+            for (x, y) in window(6, x6, y6, 2) {
+                c.push(format!("layers/terrain/hi/6-{x}-{y}"));
+            }
+            for (x, y) in window(3, x6 >> 3, y6 >> 3, 1) {
+                c.push(format!("layers/terrain/lo/3-{x}-{y}"));
+            }
+            for x in x6 * s - 6..(x6 + 1) * s + 6 {
+                for y in y6 * s - 6..(y6 + 1) * s + 6 {
+                    c.push(crate::terrain_deep::pack_logical(x, y));
+                }
+            }
+            let u = TileId { z: 6, x: x6, y: y6 };
+            let b = crate::stage::tile_box_grown(6, x6, y6, crate::stage::MARGIN_KM);
+            check("unit", &u.slash(), None, c, &|m| {
+                format!("{}\n{}", unit_terrain_from(u, m), terrain_packs(m, b).join(" "))
+            });
+        }
     }
 
     /// A step whose stale targets wait for another step's (slope for the terrain of its z3 tile and its

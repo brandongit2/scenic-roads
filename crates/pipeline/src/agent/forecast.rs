@@ -1172,21 +1172,19 @@ fn items(inp: &Input) -> Items {
                 (deps, Vec::new()),
             );
         }
-        // (Its terrain is its own or a region's before it: listed by now; its deep levels too, which
-        // its roads' heights read.)
-        let mut deps: Vec<usize> = r.terrain.iter().filter_map(|t| item_of(&by_target, "terrain-hi", t)).collect();
-        deps.extend(r.terrain_deep.iter().filter_map(|t| item_of(&by_target, "terrain-deep", t)));
-        deps.extend(r.terrain_lo.iter().filter_map(|q| item_of(&by_target, "terrain-lo", q)));
-        deps.extend(&units_need);
-        let g = vec![group(&mut groups, deps)];
-        for u in &r.own_units {
-            add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, (Vec::new(), g.clone()));
-        }
-        // Those its stale terrain may make stale: a share, the first in its order (`add` lists a
-        // z6 tile two regions expect once).
-        let n = (r.expected.len() as f64 * EXPECTED_STALE).round() as usize;
-        for u in r.expected.iter().take(n) {
-            add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, (Vec::new(), g.clone()));
+        // (Each z6 tile once the terrain targets it reads are built, its row's declaration as the
+        // planner's waits (its own region's or one's before it: listed by now), and the jobs all
+        // wait for, one group.)
+        let g = vec![group(&mut groups, units_need.clone())];
+        for u in r
+            .own_units
+            .iter()
+            .chain(r.expected.iter().take((r.expected.len() as f64 * EXPECTED_STALE).round() as usize))
+        {
+            // (The expected: those its stale terrain may make stale, a share, the first in its
+            // order; `add` lists a z6 tile two regions name once.)
+            let deps = reads(&by_target, "unit", u);
+            add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, (deps, g.clone()));
         }
         // Its map tiles, each once the z6 tiles that draw it are built (a tile two regions draw, with
         // the first).

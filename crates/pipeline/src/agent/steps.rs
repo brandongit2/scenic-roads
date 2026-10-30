@@ -247,6 +247,35 @@ fn r_trees_lo(t: &str) -> Vec<(&'static str, String)> {
     at(t, 3).into_iter().flat_map(|(x, y)| z6_under(x, y)).map(|(a, b)| ("trees", format!("6/{a}/{b}"))).collect()
 }
 
+/// unit 6/x/y: the terrain packs over its tile + 30 km (crate::stage::MARGIN_KM) its staged tiles
+/// and its roads' heights read: the lo packs of z4–8's z3 tiles, the hi packs of its box's z6
+/// tiles (z9–12's), its box's deep packs (`build::unit_terrain_from`, `build::terrain_packs`).
+fn r_unit(t: &str) -> Vec<(&'static str, String)> {
+    let Some((x, y)) = at(t, 6) else { return Vec::new() };
+    let b = crate::stage::tile_box_grown(6, x, y, crate::stage::MARGIN_KM);
+    let mut v = Vec::new();
+    for z in 4..=8u8 {
+        let [x0, x1, y0, y1] = crate::stage::tile_range(z, b);
+        let s = z - 3;
+        for a in x0 >> s..=x1 >> s {
+            v.extend((y0 >> s..=y1 >> s).map(|c| ("terrain-lo", format!("3/{a}/{c}"))));
+        }
+    }
+    for z in 9..=12u8 {
+        let [x0, x1, y0, y1] = crate::stage::tile_range(z, b);
+        let s = z - 6;
+        for a in x0 >> s..=x1 >> s {
+            v.extend((y0 >> s..=y1 >> s).map(|c| ("terrain-hi", format!("6/{a}/{c}"))));
+        }
+    }
+    v.extend(crate::stage::tiles_in(6, b).into_iter().map(|(a, c)| ("terrain-hi", format!("6/{a}/{c}"))));
+    let pz = crate::terrain_deep::PACK_Z;
+    v.extend(crate::stage::tiles_in(pz, b).into_iter().map(|(a, c)| ("terrain-deep", format!("{pz}/{a}/{c}"))));
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 /// What a target of `step` reads of other steps' targets (`Step::reads`; none for a step without).
 pub fn reads_of(step: &str, target: &str) -> Vec<(&'static str, String)> {
     row(step).and_then(|r| r.reads).map_or_else(Vec::new, |r| (r.of)(target))
@@ -643,6 +672,10 @@ pub const TABLE: [Step; 59] = [
     },
     // (A z6 tile's most its jobs took here, 8.4 GB, 2026-10-05; offered by its extract's size.)
     Step {
+        reads: Some(Reads {
+            of: r_unit,
+            why: "wait for the terrain they read: the packs over their tile and 30 km round it (terrain-lo, terrain-hi, terrain-deep)",
+        }),
         mem_mb: 8600,
         shared: Some(5),
         ..step(
