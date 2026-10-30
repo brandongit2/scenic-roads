@@ -31,13 +31,27 @@ use store::range::RangeRead;
 pub const K: usize = 2;
 /// The finest zoom of the base (crate::terrain_pack::max_zoom_at's at the equator).
 pub const MAX_Z: u8 = 12;
-/// Tiles sampled in one call (each 256 × 256 × K² points).
-const CHUNK: usize = 16;
-/// Chunks sampled at once (`Tiles::prefetch_counted`), at most the job's threads.
-const AT_ONCE: usize = 4;
+/// Tiles in flight at once while a level is sampled (`Tiles::prefetch_counted`): the memory
+/// `sampling_mb` declares (in crate::terrain_pack::piece_peak_mb, and what terrain-hi 7's and
+/// terrain-lo 2's runs measured, crate::coord::cost_version), shared among the chunks sampled at
+/// once (`at_once`), each `chunk_tiles` of them.
+const IN_FLIGHT: usize = 64;
 
-/// The memory (MB) a level's chunks in flight take at most (`Tiles::prefetch_counted`): `AT_ONCE`
-/// chunks of `CHUNK` tiles' K × K points a pixel, each point's longitude and latitude
+/// Chunks sampled at once (task #896): the job's threads (its grant, `RAYON_NUM_THREADS`), a
+/// chunk to each, so a thread waiting on a chunk's reads leaves the others' sampling going; at
+/// most `IN_FLIGHT`, a tile a chunk.
+fn at_once() -> usize {
+    rayon::current_num_threads().clamp(1, IN_FLIGHT)
+}
+
+/// Tiles sampled in one call (each 256 × 256 × K² points) with `at_once` chunks at once: their
+/// share of `IN_FLIGHT`, so the memory in flight stays `sampling_mb` whatever the threads.
+fn chunk_tiles(at_once: usize) -> usize {
+    IN_FLIGHT / at_once.max(1)
+}
+
+/// The memory (MB) a level's chunks in flight take at most (`Tiles::prefetch_counted`): `IN_FLIGHT`
+/// tiles' K × K points a pixel, each point's longitude and latitude
 /// (`points`), what the sampler gives it (crate::dem::generic::Sampled: its height, dataset and
 /// blend) and works it out with (its height, first dataset and file).
 pub const fn sampling_mb() -> u64 {
@@ -48,7 +62,7 @@ pub const fn sampling_mb() -> u64 {
         + size_of::<bool>()
         + size_of::<u16>()
         + size_of::<u32>();
-    (AT_ONCE * CHUNK * 256 * 256 * K * K * point / (1 << 20)) as u64
+    (IN_FLIGHT * 256 * 256 * K * K * point / (1 << 20)) as u64
 }
 
 /// The Terrarium pyramid's URL template in the accepted elevation version manifest `m` names
@@ -556,15 +570,15 @@ impl RawSource for Tiles<'_> {
         Ok((self.sample(z, &[(x, y)])?.pop().flatten(), false))
     }
 
-    // (Its chunks up to AT_ONCE at a time, the first to fail stopping the rest, as one that finds the
+    // (Its chunks `at_once` at a time, the first to fail stopping the rest, as one that finds the
     // build pausing does (crate::control::Paused, from `sample`). A chunk's reads mostly wait on the NAS, one at a time left a
     // job's threads idle, task #695. The same bytes: a tile's sampling reads only the level below's
     // `with_data`, which a level's own tiles never add to.)
     fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
-        let chunks: Vec<&[(u32, u32)]> = tiles.chunks(CHUNK).collect();
-        // (No more at once than the job's threads: each chunk's own work, its points and their
-        // means, is on its thread, outside the job's pool.)
-        let at_once = AT_ONCE.min(rayon::current_num_threads()).max(1);
+        // (As many at once as the job's threads: each chunk's own work, its points and their means,
+        // is on its thread, outside the job's pool; its sampler's passes on the pool, task #888.)
+        let at_once = at_once();
+        let chunks: Vec<&[(u32, u32)]> = tiles.chunks(chunk_tiles(at_once)).collect();
         let next = std::sync::atomic::AtomicUsize::new(0);
         let failed = std::sync::atomic::AtomicBool::new(false);
         let run = || -> Result<()> {
@@ -988,7 +1002,8 @@ mod tests {
         let x0 = ((10.5 + 180.0) / 360.0 * nn) as u32;
         let y0 = ((1.0 - 45.5f64.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
         let ts: Vec<(u32, u32)> = (x0 - 4..x0 + 4).flat_map(|x| (y0 - 2..y0 + 3).map(move |y| (x, y))).collect();
-        assert!(ts.len() > 2 * CHUNK);
+        let chunk = chunk_tiles(at_once());
+        assert!(ts.len() > 2 * chunk);
         // The drain asked as the first sampling begins: every later one finds it.
         let asked = std::sync::atomic::AtomicUsize::new(0);
         let draining = || asked.fetch_add(1, Ordering::Relaxed) >= 1;
@@ -999,7 +1014,7 @@ mod tests {
         // Exactly one chunk sampled, whole: whichever worker asked first (under load the last,
         // shorter chunk's can), so its size is any chunk's, never part of one or two.
         let held: HashMap<(u8, u32, u32), Option<Vec<u8>>> = paused.held.lock().unwrap().clone();
-        let one = ts.chunks(CHUNK).find(|c| held.contains_key(&(z, c[0].0, c[0].1))).expect("a chunk sampled");
+        let one = ts.chunks(chunk).find(|c| held.contains_key(&(z, c[0].0, c[0].1))).expect("a chunk sampled");
         let mut keys: Vec<_> = held.keys().copied().collect();
         keys.sort();
         let mut want: Vec<_> = one.iter().map(|&(x, y)| (z, x, y)).collect();
@@ -1012,6 +1027,16 @@ mod tests {
         for (k, b) in &held {
             assert!(b.is_some());
             assert_eq!(whole.held.lock().unwrap().get(k), Some(b), "{k:?}");
+        }
+        // (Task #896: the chunks as many as the job's threads, each its share of `IN_FLIGHT`: the
+        // same bytes at any threads.)
+        let all = whole.held.lock().unwrap().clone();
+        assert_eq!(all.len(), ts.len());
+        for n in [1, 3, 7] {
+            let p = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+            let t = Tiles::new(&plans, &o);
+            p.install(|| t.prefetch_counted(z, &ts, n, &AtomicU64::new(0))).unwrap();
+            assert_eq!(*t.held.lock().unwrap(), all, "{n} threads");
         }
     }
 }

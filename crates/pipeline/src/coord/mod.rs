@@ -40,7 +40,7 @@ use crate::agent::memguard::Floor;
 use crate::handoff::Handoff;
 use anyhow::Result;
 use lease::{Lease, Leases, Work};
-pub use sched::{ask_cores, outside_cores, packed_share, JOB_S};
+pub use sched::{ask_cores, outside_cores, JOB_S};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -7224,11 +7224,7 @@ mod tests {
         let a = Ask { want: 6, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         let (_d, c, w, _clock) = every((0, 0));
         heavy(&c, "slope-hi");
-        assert_eq!(
-            all_granted(&w, &a).len(),
-            4,
-            "off: by its room and cores alone (a NAS reader: the packed share, 2 of 8, each)"
-        );
+        assert_eq!(all_granted(&w, &a).len(), 6, "off: by its room and cores alone (its measured 1 each)");
         let (_d, c, w, _clock) = every((0, 0));
         c.set_nas(Some(limits));
         heavy(&c, "slope-hi");
@@ -8151,10 +8147,10 @@ mod tests {
         packable(&c, "slope-hi", 6, Some(2));
         assert_eq!(all_granted(&w, &Ask { want: 1, ..a.clone() }).len(), 1);
         assert_eq!(all_granted(&w, &Ask { want: 0, ..a.clone() }).len(), 1);
-        // Cores not said: each counted as the packed share (2 of 8), four at once.
+        // Cores not said (no run said its threads): a thread each (task #896), all six.
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 6, None);
-        assert_eq!(all_granted(&w, &a).len(), 4);
+        assert_eq!(all_granted(&w, &a).len(), 6);
     }
 
     /// A mixed-version pool (task #247): an older app's ask (no capacity, one slot) is granted one
@@ -8201,9 +8197,10 @@ mod tests {
         assert_eq!(c.largest_limit(), Some(20 << 10));
     }
 
-    /// Threads granted (task #241): each job its measured cores within the packed share (a quarter
-    /// of 8: 2), a serial one 1; a NAS-reading step never fewer than the share. The cores an ask's
-    /// jobs have together leave out the in-use share's while its owner uses its Mac.
+    /// Threads granted (task #241): each job its measured cores, a serial one 1, one its threads
+    /// held the cores free; a NAS-reading step its measured threads too (task #896: no share floors
+    /// or caps a job). The cores an ask's jobs have together leave out the in-use share's while its
+    /// owner uses its Mac.
     #[test]
     fn grants_carry_their_threads() {
         let threads = |w: &client::Client, a: &Ask| -> Vec<u32> {
@@ -8214,22 +8211,20 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 6, Some(2));
         let a = every_ask("m1", "slope-hi", 64_000, 100_000);
-        assert_eq!(threads(&w, &a), [2], "its measured 2, the share");
+        assert_eq!(threads(&w, &a), [2], "its measured 2");
         let cap = Capacity { cores: 8, in_use: true, kept_cores: 2, ..Default::default() };
         let used = Ask { cap: Some(cap), ..a.clone() };
         assert_eq!(ask_cores(&used), 6, "the owner at it");
-        assert_eq!(packed_share(8), 2);
-        assert_eq!((packed_share(14), packed_share(2), packed_share(1)), (3, 2, 1));
         // A serial step's 1 each.
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 6, Some(1));
         let a = Ask { want: 6, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         assert_eq!(threads(&w, &a), [1; 6]);
-        // (Task #888) a busy one (2.4 of its 3 threads, terrain-hi on the M4) climbs past the share:
-        // twice its 3, within the Mac's 8 cores.
+        // (Task #888, #896) a busy one (2.9 of its 3 threads: 3 to the nearest whole, its threads
+        // held it) climbs a thread.
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 1, Some(3));
-        let busy = [("threads".to_string(), 3), ("cpu_ms".to_string(), 1_440_000)];
+        let busy = [("threads".to_string(), 3), ("cpu_ms".to_string(), 1_740_000)];
         let cost = Cost {
             peak_mb: 2000,
             secs: 600,
@@ -8240,8 +8235,8 @@ mod tests {
         };
         c.add_costs_by(&[(cost_key("slope-hi", "6/1/1"), cost)], "m1");
         let one = every_ask("m1", "slope-hi", 64_000, 100_000);
-        assert_eq!(threads(&w, &one), [6], "its measured demand, not the share's 2");
-        // A step reading the NAS (30 MB/s), measured at 1: the share, never fewer.
+        assert_eq!(threads(&w, &one), [4], "its measured demand, not a share");
+        // A step reading the NAS (30 MB/s), measured at 1: its 1, no share floors it.
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 6, Some(1));
         for i in 1..=6 {
@@ -8256,8 +8251,7 @@ mod tests {
             };
             c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost)], "m1");
         }
-        assert_eq!(threads(&w, &a), [2; 4], "the share each, four in 8 cores");
-        assert!(c.shared.lock().unwrap().reads_nas("unit", &[]));
+        assert_eq!(threads(&w, &a), [1; 6], "its measured 1 each");
     }
 
     /// A member holding jobs asks again as the agent does (the same share of its Mac each time, one
@@ -8313,7 +8307,7 @@ mod tests {
         // m1 gone while it waited, its leases lapsed: its room whole again when it's back.
         clock.advance(TTL + Duration::from_secs(1));
         assert_eq!(all_granted(&w, &ask("m1", 4000, 2, vec![], vec![])).len(), 2);
-        // Cores: 8, a packed share of 2: four jobs; one of them waiting, a fifth.
+        // Cores: 8, measured 2 each: four jobs; one of them waiting, a fifth.
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 6, Some(2));
         let gs = w.ask(&ask("m1", 64_000, 8, vec![], vec![])).unwrap().unwrap();
@@ -8344,7 +8338,7 @@ mod tests {
             }),
             ..every_ask(who, "slope-hi", mem, 64_000)
         };
-        // Cores: 8, a packed share of 2: four jobs, then no core left.
+        // Cores: 8, measured 2 each: four jobs, then no core left.
         let gs = w.ask(&ask("m1", 64_000, vec![], vec![])).unwrap().unwrap();
         let mut leases = vec![gs.lease];
         leases.extend(gs.more.iter().map(|g| g.lease));
@@ -8382,7 +8376,8 @@ mod tests {
             let (d, c, w, clock) = every((0, 0));
             let ts: Vec<String> = (1..=12).map(|i| format!("6/1/{i}")).collect();
             for t in &ts {
-                let sizes = [("threads".to_string(), 3), ("cpu_ms".to_string(), cpu_ms)].into();
+                let sizes =
+                    [("threads".to_string(), 3), ("cpu_ms".to_string(), cpu_ms), ("waited_ms".to_string(), 0)].into();
                 let cost = Cost {
                     peak_mb: 3700,
                     secs: 600,
@@ -8404,8 +8399,8 @@ mod tests {
             );
             (d, c, w, clock)
         };
-        // Waiting on its reads (1.16 busy of 3): granted 2 threads (task #888 review: the fewest it
-        // keeps under three quarters busy), counted for 1.2; the build's memory, 39 GB, holds ten
+        // Not held by its threads (1.16 busy of 3): granted 2 (task #896: the cores it computed on,
+        // to the nearest whole, and one more), counted for 1.2; the build's memory, 39 GB, holds ten
         // of 3.7 GB, where by threads 14 cores held seven.
         // (Task #688 review: past the seven their threads allow, one a minute, as the load shows
         // each.)
@@ -8429,13 +8424,13 @@ mod tests {
             clock.advance(sched::SETTLE);
         }
         assert!(w.ask(&ask(39_000, leases.clone())).unwrap().is_none(), "memory decides");
-        // Busy on its threads (3 of 3): each climbs to twice them (task #888), within the cores
-        // left, counted for their busy 3 and the 3 they climb by, unmeasured (task #888 review: no
-        // overcommit): 6 and 6 of 14, a third short of cores.
+        // Busy on its threads (3 of 3): each climbs a thread (task #896), counted for its busy 3
+        // and the one it climbs by, unmeasured (task #888 review: no overcommit): three of 4 in 14
+        // cores, the fourth short of them.
         let (_d, _c, w, _clock) = packed(1_800_000);
         let gs = w.ask(&ask(64_000, vec![])).unwrap().unwrap();
         let threads: Vec<u32> = std::iter::once(&gs).chain(&gs.more).map(|g| g.threads).collect();
-        assert_eq!(threads, [6, 6], "cores decide");
+        assert_eq!(threads, [4, 4, 4], "cores decide");
     }
 
     /// Disk reservations (task #242): a grant carries its job's measured disk, which its agent
@@ -8654,7 +8649,7 @@ mod tests {
 
     /// Task #499 review: a cold start's cores are the whole Mac unless its step honours the threads
     /// it's granted (`THREADS_HONOURED`): a cold terrain job takes all 8, so nothing goes beside
-    /// it, nor it beside a measured job; a cold slope job takes the packed share.
+    /// it, nor it beside a measured job; a cold slope job a thread (task #896).
     #[test]
     fn a_cold_start_counts_the_whole_mac_unless_its_step_honours_its_threads() {
         assert!(sched::THREADS_HONOURED.contains(&"slope-hi") && !sched::THREADS_HONOURED.contains(&"terrain-hi"));
@@ -8686,10 +8681,10 @@ mod tests {
     }
 
     /// Task #823: the lead's own cold pyramids-fill job (a fetch waiting on GSI, its fetches its own
-    /// threads) is granted the packed share, not the whole Mac (the mini's first held 6 of 12
-    /// cores), so a measured job goes beside it.
+    /// threads) is granted one thread (task #896: a cold start's, measured from there), not the
+    /// whole Mac (the mini's first held 6 of 12 cores), so a measured job goes beside it.
     #[test]
-    fn a_cold_pyramids_fill_takes_the_packed_share() {
+    fn a_cold_pyramids_fill_takes_a_thread() {
         assert!(sched::THREADS_HONOURED.contains(&"pyramids-fill"));
         let (_d, c, _w, _clock) = every((0, 0));
         ran_before(&c, "pyramids-fill");
@@ -8708,7 +8703,7 @@ mod tests {
         };
         let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
         assert!(matches!(&g.work, Granted::Job { step, .. } if step == "pyramids-fill"), "{:?}", g.work);
-        assert_eq!(g.threads, packed_share(8));
+        assert_eq!(g.threads, 1);
         assert_eq!(g.more.len(), 1, "a measured job beside it");
     }
 
@@ -8899,17 +8894,18 @@ mod tests {
         assert_eq!(m1_takes(4), 39, "m2 swamped outside the pool: left out");
     }
 
-    /// Task #440 review: the load average lags and is rounded up, so an excess within the packed
-    /// share (a job just ended) counts no cores busy outside the pool.
+    /// Task #440 review, #896: the load average is rounded up, so an excess of one core counts no
+    /// cores busy outside the pool; past it, all of the excess, at most half the Mac's cores.
     #[test]
-    fn a_just_ended_job_isnt_load_outside_the_pool() {
+    fn the_loads_rounding_isnt_load_outside_the_pool() {
         let ask = |free: u32| Ask {
             cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: free, ..Default::default() }),
             ..every_ask("m1", "slope-hi", 64_000, 100_000)
         };
-        assert_eq!(outside_cores(&ask(6), 0), 0, "two busy: a job of the share's just ended");
-        assert_eq!(outside_cores(&ask(5), 0), 3);
-        assert_eq!(outside_cores(&ask(4), 2), 0, "its job's two and two more: within the share");
+        assert_eq!(outside_cores(&ask(7), 0), 0, "one: the load's rounding");
+        assert_eq!(outside_cores(&ask(6), 0), 2);
+        assert_eq!(outside_cores(&ask(5), 2), 0, "its job's two and one more");
+        assert_eq!(outside_cores(&ask(4), 2), 2);
         assert_eq!(outside_cores(&ask(0), 2), 4, "at most half its cores (task #684)");
     }
 

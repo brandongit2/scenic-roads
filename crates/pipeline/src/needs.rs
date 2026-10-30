@@ -286,7 +286,7 @@ fn sizes_of(key: &str, c: Option<&Cost>) -> BTreeMap<String, f64> {
         .map(|c| {
             c.sizes
                 .iter()
-                .filter(|(k, _)| !matches!(k.as_str(), "threads" | "cpu_ms" | "paused_ms"))
+                .filter(|(k, _)| !matches!(k.as_str(), "threads" | "cpu_ms" | "paused_ms" | "waited_ms"))
                 .map(|(k, v)| (k.clone(), *v as f64))
                 .collect()
         })
@@ -687,31 +687,30 @@ impl<'a> Book<'a> {
         let v = cost_version(step);
         let threads = |c: &Cost| c.sizes.get("threads").filter(|_| c.v >= v).map(|&t| t as u32);
         let of = |c: &Cost| {
-            let t = threads(c)?;
+            let t = threads(c)?.max(1);
             // (Its CPU time, `cpu_ms`, over the time it ran: its wall time less the time it was
             // stopped (`paused_ms`), a second at least: the cores it kept busy.)
             let ran = (c.secs * 1000).saturating_sub(c.sizes.get("paused_ms").copied().unwrap_or(0)).max(1000);
             let kept = c.sizes.get("cpu_ms").map(|&ms| ms as f64 / ran as f64);
             Some(match kept {
-                None => Cores { grant: t.max(1), busy_tenths: None },
+                None => Cores { grant: t, busy_tenths: None },
                 Some(k) => {
-                    // (Three quarters of its threads or more busy (`k`, unrounded): it may use
-                    // more, twice them, so a grant climbs (crate::coord caps it at the Mac's
-                    // cores); it counts for the threads it climbs by besides its busy cores, as
-                    // nothing measured them idle yet, so a climb never overcommits its Mac (task
-                    // #888 review). Else the fewest threads it keeps under three quarters busy,
-                    // floor(4k/3) + 1: run at those it measures the same and stays, so a job
-                    // waiting on the NAS settles instead of swinging between a grant and twice
-                    // it (task #888 review: 2.4 cores busy of 4 had climbed to 8, then fell back
-                    // to 4).)
-                    let busy = (k * 10.0).round() as u32;
-                    if k * 4.0 >= f64::from(t) * 3.0 {
-                        let grant = t.max(1) * 2;
-                        Cores { grant, busy_tenths: Some((busy + t * 10).clamp(1, grant * 10)) }
-                    } else {
-                        let grant = ((k * 4.0 / 3.0).floor() as u32 + 1).min(t).max(1);
-                        Cores { grant, busy_tenths: Some(busy.clamp(1, grant * 10)) }
-                    }
+                    // (Task #896: the cores it kept busy while it computed, its CPU time over the
+                    // time it didn't wait (`waited_ms`, store::waits by the wall clock, task #870;
+                    // none said: none), within its threads, to the nearest whole, and one thread
+                    // more: to overlap its waits, or, where it computed on every thread, to climb
+                    // by. So a job waiting on the NAS or the network, or held by its serial parts,
+                    // settles where a run measures the same (2.4 busy of 6 or of 3: 3), and one its
+                    // threads held climbs a thread a run, measured at each, to what it can use
+                    // (crate::coord caps it at the Mac's cores). It counts for the thread it
+                    // climbs by besides its busy cores, as nothing measured it idle yet, so a
+                    // climb never overcommits its Mac (task #888 review).)
+                    let busy = ((k * 10.0).round() as u32).max(1);
+                    let waited = c.sizes.get("waited_ms").map_or(0, |&w| w.min(ran));
+                    let computing = if waited < ran { k * ran as f64 / (ran - waited) as f64 } else { f64::from(t) };
+                    let grant = (computing.min(f64::from(t)) + 0.5) as u32 + 1;
+                    let busy = busy.min(t * 10) + grant.saturating_sub(t) * 10;
+                    Cores { grant, busy_tenths: Some(busy.min(grant * 10)) }
                 }
             })
         };
@@ -957,47 +956,60 @@ mod tests {
         assert_eq!(b.cores("slope", "6/1/2"), c(2, None), "no CPU time said: its busy cores not known");
         assert_eq!(b.cores("slope", "6/1/9"), c(4, None), "an older way's run counts for nothing");
         assert_eq!(b.cores("lo", "3/1/1"), None);
-        // (Its CPU time over its wall time: a serial run given 8 threads is granted 2 and counted
-        // for 0.9 cores, a busy one granted twice its 8 and counted for 8.)
-        costs.insert(cost_key("pois", "6/1/1"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 9_000)])));
+        // (Its CPU time over its wall time: a serial run given 8 threads that waited on nothing is
+        // granted 2 and counted for 0.9 cores; a busy one, its threads full, climbs a thread from
+        // its 8, counted for its 8 busy and the one it climbs by.)
+        let w0 = ("waited_ms", 0);
+        costs.insert(cost_key("pois", "6/1/1"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 9_000), w0])));
         costs.insert(cost_key("pois", "6/1/2"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 80_000)])));
+        // (Task #896: 7.6 cores busy of 8 is 8 to the nearest whole: its threads held it.)
+        costs.insert(cost_key("pois", "6/1/3"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 76_000), w0])));
         let b = Book::new(&costs);
         assert_eq!(
-            (b.cores("pois", "6/1/1"), b.cores("pois", "6/1/2")),
-            (c(2, Some(9)), c(16, Some(160))),
-            "a busy run climbs back"
+            (b.cores("pois", "6/1/1"), b.cores("pois", "6/1/2"), b.cores("pois", "6/1/3")),
+            (c(2, Some(9)), c(9, Some(90)), c(9, Some(86))),
+            "a busy run climbs"
         );
-        // (Task #688: terrain-hi as measured on 26 Oct, 1.16 cores busy of 3 threads: granted 3,
-        // counted for 1.2 (task #697: to the tenth, not rounded down to 1); its step's most, each
-        // the most of its runs'.)
+        // (Task #688: terrain-hi as measured on 26 Oct, 1.16 cores busy of 3 threads, no waits:
+        // granted 2, counted for 1.2 (task #697: to the tenth, not rounded down to 1); its step's
+        // most, each the most of its runs'.)
         let v = cost_version("terrain-hi");
         costs.insert(
             cost_key("terrain-hi", "6/48/16"),
-            Cost { v, ..cost(3700, 1000, &[("threads", 3), ("cpu_ms", 1_160_000)]) },
+            Cost { v, ..cost(3700, 1000, &[("threads", 3), ("cpu_ms", 1_160_000), w0]) },
         );
         costs.insert(
             cost_key("terrain-hi", "6/48/17"),
-            Cost { v, ..cost(3700, 1000, &[("threads", 2), ("cpu_ms", 1_600_000)]) },
+            Cost { v, ..cost(3700, 1000, &[("threads", 2), ("cpu_ms", 1_600_000), w0]) },
         );
         let b = Book::new(&costs);
         assert_eq!(b.cores("terrain-hi", "6/48/16"), c(2, Some(12)));
-        assert_eq!(b.cores("terrain-hi", "6/48/17"), c(4, Some(36)));
+        assert_eq!(b.cores("terrain-hi", "6/48/17"), c(3, Some(26)), "1.6 of 2: climbs");
         assert_eq!(b.cores("terrain-hi", "6/48/18"), c(2, Some(12)), "its runs at the most threads, 3");
-        // (Task #888 review: NAS-bound at 2.4 cores, its grant settles at 4 whatever it ran with:
-        // 4 of 6, then 4 of 4, never climbing to 8.)
-        for t in [6, 4] {
+        // (Task #888 review: 2.4 cores busy, its grant settles at 3 whatever it ran with: 3 of 6,
+        // of 4, of 3, never climbing.)
+        for t in [6, 4, 3] {
             costs.insert(
                 cost_key("terrain-hi", "6/48/19"),
-                Cost { v, ..cost(3700, 1000, &[("threads", t), ("cpu_ms", 2_400_000)]) },
+                Cost { v, ..cost(3700, 1000, &[("threads", t), ("cpu_ms", 2_400_000), w0]) },
             );
-            assert_eq!(Book::new(&costs).cores("terrain-hi", "6/48/19"), c(4, Some(24)), "{t}");
+            assert_eq!(Book::new(&costs).cores("terrain-hi", "6/48/19"), c(3, Some(24)), "{t}");
+        }
+        // (Task #896: 0.3 cores busy of 3 over 1000 s: waits not said, 1; waiting 500 s, 0.6
+        // busy while it computed: 2; waiting 900 s, all 3 busy while it computed: it climbs one,
+        // counted for its 0.3 and the thread.)
+        for (waited, grant, busy) in [(None, 1, 3), (Some(500_000), 2, 3), (Some(900_000), 4, 13)] {
+            let mut s = vec![("threads", 3), ("cpu_ms", 300_000)];
+            s.extend(waited.map(|w| ("waited_ms", w)));
+            costs.insert(cost_key("terrain-hi", "6/48/19"), Cost { v, ..cost(3700, 1000, &s) });
+            assert_eq!(Book::new(&costs).cores("terrain-hi", "6/48/19"), c(grant, Some(busy)), "{waited:?}");
         }
         costs.remove(&cost_key("terrain-hi", "6/48/19"));
         // (Task #697: a run frozen by the memory guard for 420 of its 1000 s kept 2 cores busy over
         // the 580 s it ran, not 1.16.)
         costs.insert(
             cost_key("terrain-hi", "6/48/16"),
-            Cost { v, ..cost(3700, 1000, &[("threads", 3), ("cpu_ms", 1_160_000), ("paused_ms", 420_000)]) },
+            Cost { v, ..cost(3700, 1000, &[("threads", 3), ("cpu_ms", 1_160_000), ("paused_ms", 420_000), w0]) },
         );
         assert_eq!(Book::new(&costs).cores("terrain-hi", "6/48/16"), c(3, Some(20)));
     }

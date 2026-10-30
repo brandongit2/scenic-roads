@@ -612,6 +612,10 @@ pub fn fetched_bytes() -> u64 {
     }
 }
 
+/// Requests to one host this process has in flight at most (`net::HOST_REQUESTS`).
+#[cfg(not(target_os = "wasi"))]
+pub use net::HOST_REQUESTS;
+
 #[cfg(not(target_os = "wasi"))]
 mod net {
     //! HTTP: range requests with retries (as the Python steps' GDAL did: 10 retries, from 2 s,

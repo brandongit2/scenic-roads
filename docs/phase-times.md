@@ -200,14 +200,17 @@ The runs, 3 threads (a job's share before part 1's climb), the same hour:
 | lo 3/4/2, after | 427 | 191 | 185 | 189 | 100 |
 
 A hi run stops scaling at about 8 threads: 12–25 s of each is before the terrain's first level
-(the coverage, the water, the plan), and the sampling's chunks are at most four at once
-(`terrain_base::AT_ONCE`). A deep run keeps gaining to 14 (a fifth of its threads' samples wait in `recvfrom`, HRDEM's files
+(the coverage, the water, the plan), and the sampling's chunks were at most four at once
+(`AT_ONCE`, before task #896; since, as many as the job's threads, the 64 tiles in flight shared
+among them: `terrain_base::at_once`, `chunk_tiles`; the same bytes at any threads, a test samples
+at 1, 3 and 7; not timed since). A deep run keeps gaining to 14 (a fifth of its threads' samples wait in `recvfrom`, HRDEM's files
 fetched, which more threads overlap). A lo run is the NAS's: its times follow the NAS's load, not the threads (its sys
 time grows to 144 s at 14 threads, the SMB reads').
 
 **pyramids-fill** (GSI's tiles fetched and packed onto the NAS) has no CPU to speak of (CPU/wall
-0.03 in its live runs, 35–58 min a z6 tile): its fetches are its own pool of `pyramids::FETCHES`
-(16), whatever threads the job is given, so its rate is GSI's.
+0.03 in its live runs, 35–58 min a z6 tile): its fetches are its own pool, as many as the fetcher lets a host
+have in flight (`fetch::HOST_REQUESTS`, 16; task #896: was its own figure, `pyramids::FETCHES`),
+whatever threads the job is given, so its rate is GSI's.
 
 **The live runs since part 1's publish (16:00 UTC):** no terrain-hi or terrain-lo ran by 18:40
 UTC; the M4's terrain-deep runs, at 4–5 threads, were Japan's (GSI's live layers): CPU/wall 1.02,

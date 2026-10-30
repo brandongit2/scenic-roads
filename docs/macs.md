@@ -35,7 +35,7 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     packed the same way (`pipeline::pyramids`, `sources/pyramids/<host-path>/packs/`, one store a
     URL template, a z14/z15 tile in its z6 tile's shard), by their own step, the lead's
     (`pyramids-fill`, a job per z6 tile a declared pyramid meets, one at a time so GSI sees one
-    process's `HOST_REQUESTS`, tasks #810 and #823; its cold start granted the packed share of cores): it fetches each tile
+    process's `HOST_REQUESTS`, tasks #810 and #823; its cold start granted a thread, task #896): it fetches each tile
     a z6 tile's terrain-hi run reads (under its z9–12 pixels that aren't open sea, and the whole of
     its terrain-deep targets' base tiles, whose presence grids read the sea too; inside the
     dataset's cover) that the store lacks, once, and packs it (a 404 kept as an empty entry; any

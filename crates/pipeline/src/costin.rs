@@ -7,7 +7,10 @@
 //! `local` (of `bytes`, those read from this Mac's own disk, store::nasio's `Local`: a whole
 //! local copy's reads, task #551; not the NAS's, so not in its NAS weight),
 //! `threads` (always), `cpu_ms` (the CPU time its process took over it, where it can be read),
-//! `paused_ms` (the time its process was stopped over it, where it was: `stopped_ms`), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
+//! `paused_ms` (the time its process was stopped over it, where it was: `stopped_ms`), `waited_ms`
+//! (the wall time over it in which the process waited on the NAS, the network, the disk or other
+//! work, store::waits by its wall clock, where the job's run is timed: `waited`; task #896, what
+//! crate::needs::Book::cores reads the cores it computed on from), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
 //! the base packs met), `nas_read` and `nas_secs` (pack, lo: the bytes the job read of the base packs
 //! from the NAS and the seconds that took, the same on each of its targets), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
 //! (the target's area: terrain, slope, trees and their assemblies, the z6 tiles' elevations), `fetched`
@@ -28,11 +31,24 @@ struct State {
     /// been stopped (ms: `stopped_ms`).
     cpu_at: Option<u64>,
     stopped_at: u64,
+    /// The process's time waiting as the target began (ns: `waited`).
+    waited_at: Option<u64>,
     m: BTreeMap<String, u64>,
 }
 
-static STATE: Mutex<State> =
-    Mutex::new(State { at: [0; store::nasio::SLOTS], cpu_at: None, stopped_at: 0, m: BTreeMap::new() });
+static STATE: Mutex<State> = Mutex::new(State {
+    at: [0; store::nasio::SLOTS],
+    cpu_at: None,
+    stopped_at: 0,
+    waited_at: None,
+    m: BTreeMap::new(),
+});
+
+/// The wall time this process has waited on anything so far (ns: store::waits' kinds together, by
+/// its wall clock); None while store::waits isn't measuring (a run not timed, crate::timings::start).
+fn waited() -> Option<u64> {
+    store::waits::enabled().then(|| store::waits::totals()[..store::waits::KINDS].iter().sum())
+}
 
 /// Counts a GeoTIFF opened (crate::geotiff::Tiff::open). One a job's open-file cache keeps from an
 /// earlier target isn't counted again.
@@ -57,6 +73,7 @@ pub fn begin() {
     s.at = store::nasio::own();
     s.cpu_at = crate::timings::cpu_us();
     s.stopped_at = stopped_ms();
+    s.waited_at = waited();
     s.m.clear();
 }
 
@@ -176,6 +193,9 @@ pub fn take() -> BTreeMap<String, u64> {
     if paused > 0 {
         m.insert("paused_ms".into(), paused);
     }
+    if let (Some(a), Some(b)) = (s.waited_at, waited()) {
+        m.insert("waited_ms".into(), b.saturating_sub(a) / 1_000_000);
+    }
     m
 }
 
@@ -188,6 +208,8 @@ pub struct Taken {
     pub tiffs: u64,
     pub cpu_ms: Option<u64>,
     pub paused_ms: u64,
+    /// The wall time it waited (ms: `waited`); None where that isn't measured.
+    pub waited_ms: Option<u64>,
 }
 
 /// Runs `f` (a z6 tile's tail steps run here after its measures were taken, before the next z6 tile
@@ -195,14 +217,15 @@ pub struct Taken {
 /// own (their counts added to this process's as each ends: crate::unit's `run`; their CPU as each
 /// is waited for) among them. (Reads and CPU on other threads meanwhile are counted too.)
 pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
-    let (at, c0, p0) = (store::nasio::own(), crate::timings::cpu_us(), stopped_ms());
+    let (at, c0, p0, w0) = (store::nasio::own(), crate::timings::cpu_us(), stopped_ms(), waited());
     let v = f();
     let cpu_ms = match (c0, crate::timings::cpu_us()) {
         (Some(a), Some(b)) => Some(b.saturating_sub(a) / 1000),
         _ => None,
     };
     let (bytes, local, tiffs) = grew(&at, &store::nasio::own());
-    (v, Taken { bytes, local, tiffs, cpu_ms, paused_ms: stopped_ms().saturating_sub(p0) })
+    let waited_ms = w0.zip(waited()).map(|(a, b)| b.saturating_sub(a) / 1_000_000);
+    (v, Taken { bytes, local, tiffs, cpu_ms, paused_ms: stopped_ms().saturating_sub(p0), waited_ms })
 }
 
 /// Adds measures taken by `measured` to a target's: its CPU and time stopped too, so a z6 tile's `cpu_ms` counts its
@@ -221,6 +244,9 @@ pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {
     }
     if t.paused_ms > 0 {
         *m.entry("paused_ms".into()).or_default() += t.paused_ms;
+    }
+    if let Some(ms) = t.waited_ms {
+        *m.entry("waited_ms".into()).or_default() += ms;
     }
 }
 
@@ -285,7 +311,7 @@ mod tests {
         let ((), t) = measured(|| store::nasio::add_counts(&c));
         assert!(t.bytes >= 1024 && t.local >= 24 && t.tiffs >= 4);
         let mut m = BTreeMap::from([("km2".to_string(), 5)]);
-        add_to(&mut m, Taken { bytes: 7, local: 0, tiffs: 2, cpu_ms: None, paused_ms: 0 });
+        add_to(&mut m, Taken { bytes: 7, local: 0, tiffs: 2, cpu_ms: None, paused_ms: 0, waited_ms: None });
         assert_eq!((m["bytes"], m["tiffs"]), (7, 2));
         assert!(!m.contains_key("cpu_ms"));
     }

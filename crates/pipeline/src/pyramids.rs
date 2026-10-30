@@ -38,9 +38,6 @@ pub const V: u32 = 1;
 /// The archives' metadata (crate::rawpack::Packer::for_pyramid).
 const META: &str = r#"{"kind":"elevation pyramid tiles"}"#;
 
-/// Tiles fetched at once by `fill` (the fetcher holds a host to crate::fetch's HOST_REQUESTS).
-pub const FETCHES: usize = 16;
-
 /// A pyramid's folder under `DIR`: its URL template's host and path up to `{z}`, `/` as `-`
 /// (`https://cyberjapandata.gsi.go.jp/xyz/dem5a_png/{z}/{x}/{y}.png` →
 /// `cyberjapandata.gsi.go.jp-xyz-dem5a_png`).
@@ -315,7 +312,9 @@ pub struct Filled {
 }
 
 /// Each of `want`'s tiles (by template) that its store under `dir` lacks fetched by `fetch`
-/// (`FETCHES` at once) and packed there (crate::rawpack::Packer::for_pyramid, its local work in
+/// (as many at once as the fetcher lets a host have in flight, crate::fetch's `HOST_REQUESTS`:
+/// a layer's tiles are one host's, fetched a layer at a time, and more would wait on its slots;
+/// task #896) and packed there (crate::rawpack::Packer::for_pyramid, its local work in
 /// `work`): a job's archives handed off to `handoff` (`SCENIC_HANDOFF`) for the lead to name, else
 /// the index changed here, under `root`'s build lock. Restartable: a tile packed stays; one cut short is
 /// fetched again. `progress` is told the tiles asked of the network so far of all those the layers'
@@ -338,7 +337,7 @@ pub fn fill(
 ) -> Result<Filled> {
     use rayon::prelude::*;
     let mut done = Filled::default();
-    let threads = rayon::ThreadPoolBuilder::new().num_threads(FETCHES).build()?;
+    let threads = rayon::ThreadPoolBuilder::new().num_threads(crate::fetch::HOST_REQUESTS).build()?;
     // (Each layer's tiles its store lacks, worked out first: the whole fill's count for `progress`.)
     let mut todos: Vec<(&String, Vec<(u8, u32, u32)>)> = Vec::new();
     for (template, tiles) in want {
