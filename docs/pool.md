@@ -461,8 +461,11 @@ tenths, so rounding no longer undercounts by up to half a core a job). A target 
 it runs now, nearly every one granted, counts for its step's most, which no run crowded off the NAS
 lowers. The cores a Mac's jobs may use together (`coord::ask_cores`) are its Mac's
 less, while its owner uses it, its in-use share's. Each job is granted its
-measured grant within the packed share (`coord::packed_share`: a quarter of those cores, at least
-two where they allow: the M1's 8, 2), else the share; a step
+measured grant within its Mac's cores (task #888: no fixed share caps it, so a busy step's grant
+climbs where cores sit idle; the M4's terrain jobs had been held to 3 of 14 threads); a job whose
+runs said no CPU time, its grant within the packed share; one whose runs said nothing of its
+threads, the packed share (`coord::packed_share`: a quarter of those
+cores, at least two where they allow: the M1's 8, 2); a step
 reading the NAS as it goes (`coord::NAS_STEPS`: `unit`, elev, pack, lo; or one whose costs show
 10 MB/s or more of NAS bytes) the share, never fewer, its threads overlapping the waits. **A job
 counts for its busy cores** (task #688, `Sched::need_cores`): the packing takes those, not its
@@ -472,7 +475,7 @@ threads on 26 Oct and counts for 1.2, where it counted for 3 and the M4 packed 3
 2 of 14 left, a job of terrain-hi takes 3") with 22 GB of its 39 GB build memory free. The rule
 reads the runs, not the step: a terrain job reading faster (from this Mac's disk, say) keeps more
 busy and counts for more. A job's threads stay within the cores left plus those it leaves idle
-(its grant less its busy cores). **Past the cores its jobs' threads leave, a Mac climbs one job
+(its grant less its busy cores) up to the packed share; past the share, within the cores left. **Past the cores its jobs' threads leave, a Mac climbs one job
 at a time** (task #688 review, `coord::SETTLE`): an ask is granted at most one job that fits only
 by busy cores, and none until a minute has passed since its last grant (the span of the load
 average its capacity reports) or while that load passes its jobs' busy cores by more than a core.

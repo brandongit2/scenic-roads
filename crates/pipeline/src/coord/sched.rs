@@ -240,10 +240,11 @@ fn tenths(t: u32) -> String {
 /// its jobs' threads leave (`Sched::pack`, task #688 review): the minute its load average spans.
 pub const SETTLE: Duration = Duration::from_secs(60);
 
-/// The most threads a packed job is granted, of the `cores` its Mac has for its jobs:
-/// a quarter of them, at least two where they allow (the M1's 8: 2; the M4's 14: 3). The same alone or
-/// beside others: a run's threads bound what it's measured to use (crate::needs::Book::cores), so a
-/// job given them all while alone could be measured to leave no room beside it.
+/// The threads a job is granted where its runs say nothing of its cores (a cold start of a step
+/// honouring its threads, or a run with no thread count), and the least a NAS-reading step is
+/// granted, of the `cores` its Mac has for its jobs: a quarter of them, at least two where they
+/// allow (the M1's 8: 2; the M4's 14: 3). A measured job is granted its measured demand instead
+/// (`Sched::packed_cores`).
 
 pub fn packed_share(cores: u32) -> u32 {
     (cores / 4).max(2).min(cores.max(1))
@@ -578,14 +579,16 @@ impl Sched {
         }
     }
 
-    /// The threads a packed job of `step` over `targets`, measured to be granted `c`, is granted:
-    /// `c` within the packed `share`; a NAS-reading one (`reads_nas`) the share, never fewer.
-    pub(super) fn packed_cores(&self, step: &str, targets: &[String], c: u32, share: u32) -> u32 {
-        if self.reads_nas(step, targets) {
-            share
-        } else {
-            c.min(share).max(1)
-        }
+    /// The threads a packed job of `step` over `targets`, measured to be granted `c`, is granted on
+    /// a Mac of `total` cores: `c`, its measured demand (crate::needs::Book::cores: twice its threads
+    /// where its runs kept three quarters of them busy, so a busy step climbs), within the Mac's
+    /// cores; a NAS-reading one (`reads_nas`) the packed `share` at least, its threads overlapping
+    /// the waits. No fixed share caps a measured job (task #888: the M4's terrain jobs were held to
+    /// 3 of 14 cores, 2.4 of them busy, while the Mac sat at a load of 4); the packing then
+    /// keeps its threads within the cores left (`Sched::pack`).
+    pub(super) fn packed_cores(&self, step: &str, targets: &[String], c: u32, share: u32, total: u32) -> u32 {
+        let c = if self.reads_nas(step, targets) { c.max(share) } else { c };
+        c.min(total).max(1)
     }
 
     /// What a job of `step` over `targets` is measured to take (as `Coordinator::measured_batch`:
@@ -635,7 +638,7 @@ impl Sched {
     /// The threads a job packed as `n` is granted on a Mac of `total` cores (packed share `share`),
     /// and the cores it counts for there, in tenths of a core (task #688; tenths, task #697: a
     /// job's busy cores rounded to the nearest undercounted up to half a core each): measured, its
-    /// granted ones within the share (`packed_cores`), counted for the cores it kept busy
+    /// granted ones within the Mac's cores (`packed_cores`), counted for the cores it kept busy
     /// (`busy_tenths`; its threads where its runs said no CPU time); not said, the share both; a
     /// cold start the share only when its step honours the threads it's granted
     /// (`THREADS_HONOURED`), else the whole Mac both (task #499 review: one that runs as many
@@ -649,7 +652,10 @@ impl Sched {
         } else {
             match n.cores {
                 Some(c) => {
-                    let threads = self.packed_cores(step, targets, c.grant, share);
+                    // (Its demand is measured only where its runs said their CPU time: else
+                    // the share bounds it, as its threads alone don't say it kept them busy.)
+                    let grant = if c.busy_tenths.is_some() { c.grant } else { c.grant.min(share) };
+                    let threads = self.packed_cores(step, targets, grant, share, total);
                     (threads, c.busy_tenths.unwrap_or(threads * 10))
                 }
                 None => (share, share * 10),
@@ -947,7 +953,9 @@ impl Sched {
             // at least; and the cores it counts for.)
             let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
             let (threads, busy) = self.need_cores(&o.step, &ts, &n, share, total);
-            let threads = threads.min((cores + (threads * 10).saturating_sub(busy)) / 10).max(1);
+            // (Past the packed share, task #888: a grant climbs only into the cores left, whole.)
+            let idle_ok = threads.min(share).min((cores + (threads * 10).saturating_sub(busy)) / 10);
+            let threads = threads.min((cores / 10).max(idle_ok)).max(1);
             // (A planned job of no targets of its own is offered under its id's, keyless, to be
             // measured by it: its lease holds none, as its hand-off names none.)
             let pick = if o.job.is_some() { pick.into_iter().filter(|t| !t.1.is_empty()).collect() } else { pick };

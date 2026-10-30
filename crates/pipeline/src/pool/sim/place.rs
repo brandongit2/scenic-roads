@@ -895,7 +895,9 @@ mod tests {
         let r = run(&Cfg { steps, ..cfg(m4_m1(), 0) }).unwrap();
         let (lo, hi) = r.granted["pois"];
         assert!(lo >= 1 && hi <= 2, "{r:?}");
-        assert!(r.granted.values().all(|&(lo, hi)| lo >= 1 && hi <= 2), "the M1's packed share: 2: {r:?}");
+        // (Task #888: a measured job's grant is its measured demand, no fixed share: within the
+        // cores of the M4, the bigger Mac.)
+        assert!(r.granted.values().all(|&(lo, hi)| lo >= 1 && hi <= 10), "within the cores: {r:?}");
         assert!(r.most[1] >= 3, "serial jobs pack beside each other: {r:?}");
     }
 
@@ -934,7 +936,9 @@ mod tests {
             mem_mb: 2_500,
             disk_mb: 3_000,
             secs: 900,
-            threads: 4,
+            // (2: its demand. Since task #888 a unit busy on 4 threads is granted them, two
+            // filling the M1's 8 cores with nothing beside.)
+            threads: 2,
             nas_mb: 3_000,
             creates: 40,
         };

@@ -8147,6 +8147,16 @@ mod tests {
         packable(&c, "slope-hi", 6, Some(1));
         let a = Ask { want: 6, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         assert_eq!(threads(&w, &a), [1; 6]);
+        // (Task #888) a busy one (2.4 of its 3 threads, terrain-hi on the M4) climbs past the share:
+        // twice its 3, within the Mac's 8 cores.
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "slope-hi", 1, Some(3));
+        let busy = [("threads".to_string(), 3), ("cpu_ms".to_string(), 1_440_000)];
+        let cost =
+            Cost { peak_mb: 2000, secs: 600, worker: None, v: cost_version("slope-hi"), sizes: busy.into(), ..Default::default() };
+        c.add_costs_by(&[(cost_key("slope-hi", "6/1/1"), cost)], "m1");
+        let one = every_ask("m1", "slope-hi", 64_000, 100_000);
+        assert_eq!(threads(&w, &one), [6], "its measured demand, not the share's 2");
         // A step reading the NAS (30 MB/s), measured at 1: the share, never fewer.
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 6, Some(1));
@@ -8221,7 +8231,7 @@ mod tests {
         assert_eq!(all_granted(&w, &ask("m1", 4000, 2, vec![], vec![])).len(), 2);
         // Cores: 8, a packed share of 2: four jobs; one of them waiting, a fifth.
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope-hi", 6, Some(4));
+        packable(&c, "slope-hi", 6, Some(2));
         let gs = w.ask(&ask("m1", 64_000, 8, vec![], vec![])).unwrap().unwrap();
         let mut leases = vec![gs.lease];
         leases.extend(gs.more.iter().map(|g| g.lease));
@@ -8236,7 +8246,7 @@ mod tests {
     #[test]
     fn a_members_job_leaving_its_cores_idle_gives_its_cores_alone() {
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope-hi", 6, Some(4));
+        packable(&c, "slope-hi", 6, Some(2));
         let ask = |who: &str, mem: u64, leases: Vec<u64>, idle: Vec<u64>| Ask {
             want: 8,
             cap: Some(Capacity {
@@ -8260,7 +8270,7 @@ mod tests {
         assert_eq!(all_granted(&w, &ask("m1", 64_000, leases.clone(), leases[..2].to_vec())).len(), 2);
         // Memory still counts at the measure (2000 MB a job): idle, but no room for a fifth in 9000.
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope-hi", 6, Some(4));
+        packable(&c, "slope-hi", 6, Some(2));
         let gs = w.ask(&ask("m1", 64_000, vec![], vec![])).unwrap().unwrap();
         let mut leases = vec![gs.lease];
         leases.extend(gs.more.iter().map(|g| g.lease));
@@ -8334,9 +8344,12 @@ mod tests {
             clock.advance(sched::SETTLE);
         }
         assert!(w.ask(&ask(39_000, leases.clone())).unwrap().is_none(), "memory decides");
-        // Busy on its threads (3 of 3): counted for them, four on 14 cores whatever the memory.
+        // Busy on its threads (3 of 3): each climbs to twice them (task #888), within the cores
+        // left (counted for their busy 3 each: 6, 6, 6 of 14, the load then checking the climb).
         let (_d, _c, w, _clock) = packed(1_800_000);
-        assert_eq!(all_granted(&w, &ask(64_000, vec![])).len(), 4, "cores decide");
+        let gs = w.ask(&ask(64_000, vec![])).unwrap().unwrap();
+        let threads: Vec<u32> = std::iter::once(&gs).chain(&gs.more).map(|g| g.threads).collect();
+        assert_eq!(threads, [6, 6, 6], "cores decide");
     }
 
     /// Disk reservations (task #242): a grant carries its job's measured disk, which its agent
