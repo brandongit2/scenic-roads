@@ -831,8 +831,8 @@ pub struct Status {
     /// the heartbeat's time says the agent is alive, this whether its loop is slow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_age_s: Option<u64>,
-    /// A `loop_age_s` past this (s) is a stuck loop (crate::agent::nasread::STALL_AFTER, the loop's
-    /// watchdog's): the threshold the build page and the menu bar flag it by (task #899).
+    /// A `loop_age_s` past this (s) is a stuck loop (crate::agent::beat::LOOP_STUCK, which the loop's
+    /// watchdog also stalls by): the threshold the build page and the menu bar flag it by (task #899).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_stuck_s: Option<u64>,
     /// The loop's phase in progress (crate::agent::nasread::phase), while it is stuck (task #899).
@@ -1840,7 +1840,7 @@ struct Planned {
 impl Agent {
     pub fn new(o: Options) -> Result<Agent> {
         // The loop's watchdog (nasread::watch), from before anything is opened on the NAS: a start
-        // or a round not finished in STALL_AFTER logged and kept in the agent's folder for
+        // or a round not finished in beat::LOOP_STUCK logged and kept in the agent's folder for
         // `scenic status`. (Not a single round's.)
         if !o.once {
             std::fs::create_dir_all(&o.home).ok();
@@ -1848,7 +1848,7 @@ impl Agent {
                 &nasread::ROUND_AT,
                 &nasread::WATCH_DONE,
                 o.home.clone(),
-                nasread::STALL_AFTER,
+                beat::LOOP_STUCK,
                 nasread::STALL_GRACE,
                 Duration::from_secs(15),
                 Some(PathBuf::from("/usr/bin/sample")).filter(|p| p.exists()),

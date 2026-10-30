@@ -128,8 +128,8 @@ ask always carries it.
 age says that part is slow. The page and menu show a part whose snapshot is older than its period
 ×3 as "planning slow (2 min)", "NAS not answering (since 14:02)", rather than the whole Mac going
 out of touch. `OUT_OF_TOUCH_S` keeps meaning what it says: **beat** itself hasn't written. *Done for the loop as a
-whole (task #899):* the status's `loop_age_s`, its threshold `loop_stuck_s` (the watchdog's
-`STALL_AFTER`) and, past it, `loop_phase`; the page and the menu show "loop stuck 6 min, in <phase>".
+whole (task #899):* the status's `loop_age_s`, its threshold `loop_stuck_s` (`beat::LOOP_STUCK`,
+one constant the watchdog stalls by too, so it outlives the watchdog) and, past it, `loop_phase`; the page and the menu show "loop stuck 6 min, in <phase>".
 
 **Failure:** a shared write that times out is logged once (as `nasread` does) and the next tick
 tries again; the local copy and the endpoint's `/status` are always current. A Mac whose shared

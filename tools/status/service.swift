@@ -839,7 +839,23 @@ func selfTest(_ dir: String) -> Never {
     check("its hold items: the stage, each job finishing, Resume", items.first?.title.hasPrefix("Pausing:") == true && items.filter { $0.title.contains("finishing unit") }.count == 2 && items.last?.held == false)
     let printed = lines(said, line, own: ownSaid).map(\.text)
     check("every job shown, slot by slot", (1...3).allSatisfy { k in printed.contains { $0.hasPrefix("Slot \(k): ") } })
-    check("a stuck loop said, by its agent's threshold", printed.contains("m1: loop stuck 6\u{00A0}min, in the pool's round"))
+    check("a stuck loop said, by its agent's threshold, its age counted on from its beat (400 s said, 30 s ago)", printed.contains("m1: loop stuck 7\u{00A0}min, in the pool's round"))
+    // Each helper's too (task #899): one stuck, one under the threshold, one out of touch (said
+    // elsewhere): the fixture's status with those helpers in it.
+    let withHelpers = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }.flatMap { d -> Reply? in
+        var d = d, st = d["status"] as? [String: Any] ?? [:]
+        let now = d["now"] as? Int ?? 0
+        st["helpers"] = [
+            ["host": "m4", "beat": now - 20, "loop_age_s": 290, "loop_stuck_s": 300, "loop_phase": "planning"],
+            ["host": "m6", "beat": now - 5, "loop_age_s": 100, "loop_stuck_s": 300, "loop_phase": "planning"],
+            ["host": "m7", "beat": now - 3600, "loop_age_s": 900, "loop_stuck_s": 300],
+        ]
+        d["status"] = st
+        return (try? JSONSerialization.data(withJSONObject: d)).flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
+    }
+    let helperPrinted = lines(withHelpers, line, own: ownSaid).map(\.text)
+    check("a helper's stuck loop said, its age counted on from its beat", helperPrinted.contains { $0.hasPrefix("m4: loop stuck ") && $0.hasSuffix(", in planning") })
+    check("a helper under the threshold, or out of touch, never said stuck", !helperPrinted.contains { $0.hasPrefix("m6: loop") || $0.hasPrefix("m7: loop") })
     check("a stage's counts as said", printed.contains { $0.contains("roads: 1,234 of 2,000 z6 tiles (12 with nothing to publish)") } && printed.contains { $0.contains("outlines: done") })
     // The same status from an agent before #846 (a rollout: the lead updated last): its verdict,
     // stage and counts worked out from the older fields, never "older app".

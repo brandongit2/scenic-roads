@@ -372,7 +372,7 @@ The Jobs tab's stages are the one exception.
   bytes). No phase bars yet: they wait for the lead's measured phase shares (task #511).
 - **Machines:** a card per Mac, one under the other at every width (the pool's cards too): name, role, app, state, heard from;
   a chip "loop stuck 6 min, in <phase>" while its status's `loop_age_s` is past its `loop_stuck_s` (the
-  agent's loop watchdog's threshold, `nasread::STALL_AFTER`; task #899; an agent that doesn't say both:
+  agent's `beat::LOOP_STUCK`, which its loop watchdog also stalls by; the age counted on from the status's `beat`; task #899; an agent that doesn't say both:
   none), also among the Overview's alerts; a block per running
   job by its slot, about that job alone (name, progress in words, running since, memory; frozen or stuck; Cancel);
   then **Live** (`live.js`): the Mac's own `/work/live`, asked every 1.5 s while the tab is shown

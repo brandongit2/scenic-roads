@@ -13,7 +13,7 @@
 //! stuck threads never pile up past a pool's size. A healthy share answers well inside the
 //! deadline: the result is the call's own, as before.
 //!
-//! And the loop's watchdog (`watch`): a round not finished in `STALL_AFTER` is logged with the
+//! And the loop's watchdog (`watch`): a round not finished in `beat::LOOP_STUCK` is logged with the
 //! phase of the round it's in (`phase`), kept in the agent's folder for `scenic status`, and the
 //! agent sampled once a stall into that folder (the last few samples kept). The heartbeat is not
 //! the loop's: it beats on a timer of its own (crate::agent::beat).
@@ -468,8 +468,6 @@ pub const STALL_SAMPLE: &str = "loop-stall-sample";
 const SAMPLE_SECS: u32 = 5;
 /// How many stalls' samples stay in the agent's folder.
 const SAMPLES_KEPT: usize = 5;
-/// A loop that hasn't finished a round in this long is stalled (its start counts as a round).
-pub const STALL_AFTER: Duration = Duration::from_secs(300);
 /// The agent's start given this much more before it's a stall (its first round opens the pool).
 pub const STALL_GRACE: Duration = Duration::from_secs(300);
 /// A phase of a round that takes this long or longer is logged by name as it ends (`phase`).
@@ -946,13 +944,13 @@ pub(crate) mod tests {
         assert_eq!(present_or_missing(Err(io::ErrorKind::PermissionDenied.into())), None);
     }
 
-    /// A round past `STALL_AFTER` flagged a stall, with its round and when it was seen.
+    /// A round past `beat::LOOP_STUCK` flagged a stall, with its round and when it was seen.
     #[test]
     fn a_stuck_loop_is_flagged_a_stall() {
         let d = tempfile::tempdir().unwrap();
         let t0 = 1_700_000_000;
-        let mut dog = Watchdog::new(d.path().into(), t0 - 3600, STALL_AFTER, STALL_GRACE, None);
-        let now = t0 + STALL_AFTER.as_secs() + 15;
+        let mut dog = Watchdog::new(d.path().into(), t0 - 3600, crate::agent::beat::LOOP_STUCK, STALL_GRACE, None);
+        let now = t0 + crate::agent::beat::LOOP_STUCK.as_secs() + 15;
         dog.look(now, t0);
         let s: Stall = serde_json::from_slice(&std::fs::read(d.path().join(STALL_FILE)).unwrap()).unwrap();
         assert_eq!((s.round_at, s.seen_at), (t0, now));

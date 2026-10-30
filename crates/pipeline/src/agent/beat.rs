@@ -27,6 +27,9 @@ use store::nasfs::NasPath;
 pub const EVERY: Duration = Duration::from_secs(10);
 /// How long after a change the beat waits for more before it writes.
 pub const DEBOUNCE: Duration = Duration::from_millis(200);
+/// A loop that hasn't finished a round in this long is stuck: the status says it (`Status::loop_stuck_s`,
+/// task #899) and the loop's watchdog (nasread::watch) logs a stall by it.
+pub const LOOP_STUCK: Duration = Duration::from_secs(300);
 
 /// What the loop last composed: its status, where it goes, the hold it said, and when.
 #[derive(Clone)]
@@ -52,7 +55,7 @@ pub struct Beat {
     /// The shared copy's writer, once the beat runs on its thread (else written in line).
     nas: Option<(Mailbox, SyncSender<()>)>,
     failing: bool,
-    /// A loop older than this is stuck (nasread::STALL_AFTER; a test's shorter).
+    /// A loop older than this is stuck (`LOOP_STUCK`; a test's shorter).
     stuck_after: Duration,
 }
 
@@ -120,8 +123,7 @@ impl Handle {
     pub fn new(home: PathBuf, hold: Arc<Snap<HoldState>>) -> Handle {
         let view = Snap::new(None);
         let (tx, rx) = mpsc::channel();
-        let beat =
-            Beat { home, view: view.clone(), hold, nas: None, failing: false, stuck_after: nasread::STALL_AFTER };
+        let beat = Beat { home, view: view.clone(), hold, nas: None, failing: false, stuck_after: LOOP_STUCK };
         Handle { view, tx, inline: Some((beat, rx)) }
     }
 
@@ -266,7 +268,7 @@ mod tests {
         let mut b = Handle::new(d.path().into(), Snap::new(HoldState::default()));
         b.publish(view(local.clone(), None));
         let s = said(&local);
-        assert_eq!((s.loop_stuck_s, s.loop_phase), (Some(nasread::STALL_AFTER.as_secs()), None));
+        assert_eq!((s.loop_stuck_s, s.loop_phase), (Some(LOOP_STUCK.as_secs()), None));
         // (A threshold of 0 s, and a view a second old: past it.)
         b.inline.as_mut().unwrap().0.stuck_after = Duration::ZERO;
         crate::agent::nasread::phase("a test's phase");

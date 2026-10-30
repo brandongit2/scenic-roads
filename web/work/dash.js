@@ -209,12 +209,14 @@ function verdictOf(st, paused) {
   return { state: "idle", said: "Nothing to build" };
 }
 
-// A Mac's loop stuck (task #899): its round older than the agent's own watchdog threshold
-// (`loop_stuck_s`, crate::agent::nasread::STALL_AFTER), with the phase it's in; "" while it isn't,
-// and from an agent that doesn't say both (before #871 and #899).
-function loopStuck(st) {
-  const age = st.loop_age_s, limit = st.loop_stuck_s;
-  if (age == null || !limit || age <= limit) return "";
+// A Mac's loop stuck (task #899): its round older than the agent's own threshold (`loop_stuck_s`,
+// crate::agent::beat::LOOP_STUCK), with the phase it's in; "" while it isn't, and from an agent that
+// doesn't say both (before #871 and #899). The age as of now: as the beat said it, plus the time since.
+function loopStuck(st, now) {
+  const limit = st.loop_stuck_s;
+  if (st.loop_age_s == null || !limit) return "";
+  const age = st.loop_age_s + Math.max(0, now - st.beat);
+  if (age <= limit) return "";
   return `loop stuck ${dur(age)}${st.loop_phase ? `, in ${st.loop_phase}` : ""}`;
 }
 
@@ -229,7 +231,7 @@ function alerts(m) {
     const st = x.status, r = st.resources || {}, c = st.conditions || {};
     const short = x.role === "lead" ? "Lead" : x.name;
     if (x.role !== "lead" && !x.fresh) out.push({ cls: "warn", text: `${short} out of touch for ${dur(now - st.beat)}`, to: "machines" });
-    if (x.fresh && loopStuck(st)) out.push({ cls: "warn", text: `${short}: ${loopStuck(st)}`, to: "machines" });
+    if (x.fresh && loopStuck(st, now)) out.push({ cls: "warn", text: `${short}: ${loopStuck(st, now)}`, to: "machines" });
     for (const j of jobsOf(st)) {
       const k = j.slot, p = j.progress, which = k ? `job in slot ${k + 1}` : "job";
       if (p?.moved_at && !j.paused && now - p.moved_at >= STUCK_S) out.push({ cls: "warn", text: `${short}'s ${which} hasn't moved on for ${dur(now - p.moved_at)}`, to: "machines" });
@@ -870,7 +872,7 @@ function machineCard(m, x) {
   const [state, cls, said] = machineState(st, x.fresh, m.sw.pause);
   const jobs = jobsOf(st);
   const role = x.role === "lead" ? "lead · coordinator" : "member";
-  const stuck = x.fresh && loopStuck(st);
+  const stuck = x.fresh && loopStuck(st, now);
   const card = h("div", { class: `mc ${x.fresh ? "" : "off"}`, style: { borderLeft: `3px solid ${x.colour}` } },
     h("div", "top", h("span", "name", x.name), h("span", "role", role), st.app ? chip(`app ${st.app}`) : null, chip(state, cls, said), stuck ? chip(stuck, "warn", "Its loop hasn't finished a round for longer than its watchdog allows; its status still beats on its own timer") : null, jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
   jobs.forEach((j) => {

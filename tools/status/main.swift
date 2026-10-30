@@ -489,11 +489,14 @@ struct Helper: Decodable {
 }
 
 /// A Mac's loop stuck (task #899): its round older than its agent's own watchdog threshold
-/// (`loop_stuck_s`, crates/pipeline/src/agent/nasread.rs STALL_AFTER), with the phase it's in; nil
+/// (`loop_stuck_s`, crates/pipeline/src/agent/beat.rs LOOP_STUCK), with the phase it's in; nil
 /// while it isn't, and from an agent that doesn't say both (before #871 and #899). Its status still
-/// beats on a timer of its own (crates/pipeline/src/agent/beat.rs), so it isn't out of touch.
-func loopStuck(age: Int?, limit: Int?, phase: String?) -> String? {
-    guard let age = age, let limit = limit, limit > 0, age > limit else { return nil }
+/// beats on a timer of its own (crates/pipeline/src/agent/beat.rs), so it isn't out of touch. The
+/// age as of `now`: as the beat (at `beat`) said it, plus the time since.
+func loopStuck(age: Int?, limit: Int?, phase: String?, beat: Int, now: Int) -> String? {
+    guard let said = age, let limit = limit, limit > 0 else { return nil }
+    let age = said + max(0, now - beat)
+    guard age > limit else { return nil }
     return "loop stuck \(duration(age))\(phase.map { ", in \($0)" } ?? "")"
 }
 
@@ -868,7 +871,9 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         }
     }
     // A Mac's loop stuck (task #899), the lead's and each helper's.
-    for (host, stuck) in [(s.host, loopStuck(age: s.loop_age_s, limit: s.loop_stuck_s, phase: s.loop_phase))] + freshHelpers(r).map({ ($0.host, loopStuck(age: $0.loop_age_s, limit: $0.loop_stuck_s, phase: $0.loop_phase)) }) {
+    // (The lead's only while it's heard from: an out-of-touch lead's said once, above.)
+    let lead = r.now - s.beat <= outOfTouch(r) ? [(s.host, loopStuck(age: s.loop_age_s, limit: s.loop_stuck_s, phase: s.loop_phase, beat: s.beat, now: r.now))] : []
+    for (host, stuck) in lead + freshHelpers(r).map({ ($0.host, loopStuck(age: $0.loop_age_s, limit: $0.loop_stuck_s, phase: $0.loop_phase, beat: $0.beat, now: r.now)) }) {
         if let t = stuck { out.append(Line(text: "\(host): \(t)", style: .plain)) }
     }
     // Web pages working for the build (the helpers are above).

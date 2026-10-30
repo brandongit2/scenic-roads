@@ -468,7 +468,7 @@ async function run() {
       check("over the bound: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }
 
-    // A Mac's loop stuck past its watchdog's threshold (#899): a chip on its card, an alert.
+    // A Mac's loop stuck past its stuck threshold (#899): a chip on its card, an alert.
     if (LOOP_STUCK) {
       errors.length = 0;
       await show("machines");

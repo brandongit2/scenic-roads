@@ -481,7 +481,7 @@ available. Until work is done, the map serves the last catalogue.
   `OUT_OF_TOUCH_S`) shows as out of touch. The menu prints what the agent says (task #846): each
   Mac's state (`verdict`), this Mac's pause's stage (`hold`) and the checklist's counts; it lists
   every running job, slot by slot. A Mac whose loop hasn't finished a round for longer than its
-  agent's watchdog threshold (the status's `loop_age_s` past its `loop_stuck_s`, `nasread::STALL_AFTER`,
+  agent's stuck threshold (the status's `loop_age_s`, counted on from its `beat`, past its `loop_stuck_s`, `beat::LOOP_STUCK`,
   task #899) gets a line "<Mac>: loop stuck 6 min, in <phase>" (`loop_phase`, the loop's phase
   then); its status still beats on its own timer, so it isn't out of touch.
   - **Its panel:** a click opens this Mac's own agent's build page in a popover
