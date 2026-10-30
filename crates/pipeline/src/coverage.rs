@@ -6,7 +6,10 @@
 //! box. Every cell knows whether its centre is inside and which edges cross it (or pass within the
 //! buffer), so a point test reads one cell: the centre's state, flipped by each of the cell's edges
 //! crossing the segment from the centre to the point, then the buffer's distance to the cell's
-//! edges. Building a grid costs one pass over the edges plus a scanline per row.
+//! edges. Building a grid costs one pass over the edges plus a scanline per row. A box test (which
+//! edges meet a box: `Shape::meets_rect`, `covers_rect`, `fingerprint`) reads the shape's edge tree
+//! instead (`EdgeTree`: boxes of runs of edges along the rings), only where its boxes meet the box.
+//! What a whole coverage's tiles are is kept by its version ([`Kept`]).
 //!
 //! A catalogue records the coverage it was built for, simplified for drawing ([`DrawnRegion`]), so
 //! the map draws it from the catalogue rather than from the recipes.
