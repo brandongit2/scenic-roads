@@ -880,14 +880,14 @@ async function run() {
       const shown = await until(`document.getElementById("splitbar").getClientRects().length > 0`, 3000);
       const share = `(() => { const m = document.getElementById("mappane").getBoundingClientRect(), t = document.getElementById("tabpane").getBoundingClientRect(); return Math.round(m.width / (m.width + t.width) * 1000) / 1000; })()`;
       const s0 = await js(share);
-      check("split: side by side at 1280 px, 2:1 at first", shown >= 0 && Math.abs(s0 - 2 / 3) < 0.02, `map ${s0} of the width`);
+      check("split: side by side at 1280 px, 1:1 at first", shown >= 0 && Math.abs(s0 - 1 / 2) < 0.02, `map ${s0} of the width`);
       const b = await js(`(() => { const r = document.getElementById("splitbar").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
       if (PHONE) await drag(b[0], b[1], -200, 0);
       else { await mouse(b[0], b[1]); await mouse(b[0], b[1], "mousePressed"); for (let i = 1; i <= 8; i++) await mouse(b[0] - 25 * i, b[1]); await mouse(b[0] - 200, b[1], "mouseReleased"); }
       const moved = await until(`${share} < ${s0 - 0.1}`, 2000);
       check("split: its bar drags", moved >= 0 && (await js(`+JSON.parse(localStorage.getItem("split"))`)) < s0, `map ${await js(share)} of the width`);
       await js(`document.getElementById("splitbar").dispatchEvent(new MouseEvent("dblclick"))`);
-      check("split: a double click puts it back to 2:1", (await until(`Math.abs(${share} - 2 / 3) < 0.02`, 2000)) >= 0);
+      check("split: a double click puts it back to 1:1", (await until(`Math.abs(${share} - 1 / 2) < 0.02`, 2000)) >= 0);
     }
     await page.send("Emulation.setDeviceMetricsOverride", PHONE ? { width: WIDTH, height: 844, deviceScaleFactor: 3, mobile: true } : { width: WIDTH, height: 900, deviceScaleFactor: 2, mobile: false });
     await until(`document.documentElement.clientWidth === ${WIDTH}`, 3000);

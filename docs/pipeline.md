@@ -165,7 +165,7 @@ kind's others, with templated words.
 
 The shell (task #685): a header kept at the top (the title, the verdict, Pause, Freeze or Resume),
 then two panels side by side, the world map on the left and the tabs on the right (their bar,
-then the tab), split by a bar to drag (2:1 at first; the arrow keys step it, a double click puts
+then the tab), split by a bar to drag (1:1 at first; the arrow keys step it, a double click puts
 it back; this browser's own, kept), each scrolling on its own while the page doesn't; and a footer
 fixed at the bottom (the charts' range, the Live dot). Under 720 px the panels stack, the map
 first, and the page scrolls; what's in the tabs' panel lays out by the panel's width

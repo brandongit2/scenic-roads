@@ -45,10 +45,10 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: var(--fs-b)/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
   /* Two panels side by side (#685): the world map left, the tabs right, a bar between to drag
-     (2:1 at first); each scrolls on its own and the page doesn't. Under 720 px one under the
+     (1:1 at first); each scrolls on its own and the page doesn't. Under 720 px one under the
      other, the map first, the page scrolling. */
   #split { display: flex; min-height: 0; }
-  #mappane { flex: 0 0 var(--split, 66.667%); min-width: 0; overflow: auto; padding: 10px 6px 10px 16px; overscroll-behavior: contain; }
+  #mappane { flex: 0 0 var(--split, 50%); min-width: 0; overflow: auto; padding: 10px 6px 10px 16px; overscroll-behavior: contain; }
   #tabpane { flex: 1 1 0; min-width: 0; overflow: auto; container: tabs / inline-size; overscroll-behavior: contain; }
   #splitbar { flex: none; width: 9px; cursor: col-resize; position: relative; touch-action: none; outline: none; }
   #splitbar::after { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: var(--line); }
@@ -690,8 +690,8 @@ window.addEventListener("hashchange", () => { showTab(); $("tabpane").scrollTop 
 showTab();
 
 // ---- The split (#685): the map's share of the width, dragged, stepped by the arrow keys or reset by
-// a double click (2:1); this browser's own, kept. (Under 720 px the panels stack: no bar.)
-const SPLIT = [0.25, 0.8], SPLIT0 = 2 / 3;
+// a double click (1:1); this browser's own, kept. (Under 720 px the panels stack: no bar.)
+const SPLIT = [0.25, 0.8], SPLIT0 = 1 / 2;
 function setSplit(f, keep) {
   const v = Math.max(SPLIT[0], Math.min(SPLIT[1], f));
   $("split").style.setProperty("--split", `${(v * 100).toFixed(2)}%`);
