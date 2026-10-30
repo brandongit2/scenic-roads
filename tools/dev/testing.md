@@ -53,7 +53,7 @@ PASS. It runs what publish would refuse your work on: `cargo fmt --check`, publi
 (`-D clippy::disallowed_methods`: processes only through `store::spawn`), `tools/app/guards.sh`,
 `tools/app/wasm.sh` when a crate the wasm build compiles changed (an unguarded `crate::net` fails
 there), when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every `web/test/*.test.{ts,mjs}` and
-`tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build, `node --test` of tools/taskboard/test when
+`tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build (after `tools/dev/web-deps.sh`, which gives a fresh worktree its `web/node_modules`: `pnpm install --frozen-lockfile --offline` from this Mac's shared pnpm store, only when node_modules is missing or from another lockfile; a package the store lacks is an error naming the one online install that fills it; publish.sh runs it with `--online`), `node --test` of tools/taskboard/test when
 tools/taskboard changed (#672), `tools/app/test/shell.zsh` (publish.sh's shell
 steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, the Swift build and self-test when tools/status changed,
 the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ or dem/ Python

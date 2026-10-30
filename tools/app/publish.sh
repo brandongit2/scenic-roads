@@ -113,11 +113,7 @@ mise trust -q 2>/dev/null || true
 mise install -q || { echo "mise install failed"; exit 1; }
 eval "$(mise env -s zsh)"
 cargo nextest --version >/dev/null 2>&1 || { echo "publish: cargo nextest is missing (mise.toml pins it; mise install should have put it on the PATH)"; exit 1; }
-lockhash=$(shasum -a 256 web/pnpm-lock.yaml | cut -c1-64)
-if [[ ! -d web/node_modules || $(cat target/.publish-pnpm-lock 2>/dev/null) != $lockhash ]]; then
-  rm -rf web/node_modules; (cd web && pnpm install --frozen-lockfile --reporter=silent) || { echo "pnpm install failed"; exit 1; }
-  mkdir -p target && print -r -- $lockhash > target/.publish-pnpm-lock
-fi
+tools/dev/web-deps.sh --online || exit 1
 # The certificate the listening programs are signed with (below), tried now on a scratch file so a
 # keychain that won't let codesign use its key (locked, or no GUI to answer its prompt) stops the
 # publish before the build rather than after.
