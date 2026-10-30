@@ -760,7 +760,7 @@ region file takes it out with the next version.
 
 - **The Regions panel** (Settings → Regions), read only: the folder tree, each region with its parts
   and state (accepted, checking, "held: <finding>"; a disabled region greyed out with a "disabled" pill and no Download button). The server reads region files through the NAS
-  I/O pool each minute, only those changed, and keeps the listing with their states from the
+  I/O pool each minute, only those changed (all of them hourly), and keeps the listing with their states from the
   accepted index and held report (`GET /api/regions` answers from it at once). Nothing in the
   app writes a region.
 - **Show regions on map** (a switch in Settings → Regions, `/api/regions/outlines`): every declared

@@ -297,11 +297,13 @@ fn read_listing(s: &crate::AppState) -> Option<Listing> {
 static LISTING: Mutex<()> = Mutex::new(());
 
 /// The listing brought up to date from the NAS and kept (written only when it changed); None while
-/// the NAS is away. An error (the NAS failing midway) leaves the kept one as it was.
-fn refresh_listing(s: &crate::AppState) -> Result<Option<Listing>> {
+/// the NAS is away. An error (the NAS failing midway) leaves the kept one as it was. `afresh`: every
+/// file read again, whatever its size and time (a file rewritten with both kept, as `cp -p` or
+/// `rsync -t` do, is otherwise missed; the regions thread does it hourly).
+fn refresh_listing(s: &crate::AppState, afresh: bool) -> Result<Option<Listing>> {
     let Some((dir, pool)) = nas(s) else { return Ok(None) };
     let _one = LISTING.lock().unwrap_or_else(|e| e.into_inner());
-    let prev = read_listing(s).unwrap_or_default();
+    let prev = if afresh { Listing::default() } else { read_listing(s).unwrap_or_default() };
     let mut l = load_all(&pool, &dir, &prev)?;
     states(s, &pool, &mut l);
     if l != prev {
@@ -363,7 +365,8 @@ fn load_all(pool: &IoPool, dir: &store::nasfs::NasPath, prev: &Listing) -> Resul
     Ok(out)
 }
 
-/// Every minute: the listing of the region files, then the regions' accepted copy (for the layer),
+/// Every minute: the listing of the region files (each file read again hourly, whatever its size
+/// and time), then the regions' accepted copy (for the layer),
 /// brought up to date, and the outlines made for every zoom when their version changed; and in a
 /// thread of its own (a fresh home's first pass reads every geometry, ~20 min on the M1, which would
 /// hold the rest back that long), the land and water of the regions not sized yet.
@@ -371,13 +374,15 @@ pub fn spawn_syncer(s: S) {
     let s2 = s.clone();
     std::thread::Builder::new()
         .name("regions".into())
-        .spawn(move || loop {
-            if let Err(e) = refresh_listing(&s) {
-                eprintln!("regions: the listing wasn't brought up to date: {e:#}");
+        .spawn(move || {
+            for pass in 0u64.. {
+                if let Err(e) = refresh_listing(&s, pass % 60 == 59) {
+                    eprintln!("regions: the listing wasn't brought up to date: {e:#}");
+                }
+                sync_accepted(&s);
+                s.outlines.make_all(&s);
+                std::thread::sleep(std::time::Duration::from_secs(60));
             }
-            sync_accepted(&s);
-            s.outlines.make_all(&s);
-            std::thread::sleep(std::time::Duration::from_secs(60));
         })
         .ok();
     std::thread::Builder::new()
@@ -397,7 +402,7 @@ pub async fn list(State(s): State<S>) -> Response {
     tokio::task::spawn_blocking(move || {
         let mut kept = read_listing(&s2);
         if kept.is_none() {
-            kept = match refresh_listing(&s2) {
+            kept = match refresh_listing(&s2, false) {
                 Ok(l) => l,
                 Err(e) => {
                     eprintln!("regions: {e:#}");
@@ -681,26 +686,31 @@ fn first_osm(outline: &[String]) -> Option<u64> {
     outline.iter().find_map(|e| e.strip_prefix("osm:").and_then(|i| i.parse().ok()))
 }
 
-type MakeSources<'a> = Box<dyn FnOnce() -> Vec<Source> + 'a>;
+/// The sources, and whether every one was read (a sync that removed a drawn file the index read
+/// named leaves them short: those aren't kept on disk under the key).
+type MakeSources<'a> = Box<dyn FnOnce() -> (Vec<Source>, bool) + 'a>;
 
 /// What the outlines are made from (the accepted copy kept on this Mac, else the catalogue's
-/// coverage), and a key that changes with it.
+/// coverage), and a key that changes with it: the key is the version of the very index the sources
+/// are read from (one read), so a sync between the two never puts one version's outlines under
+/// another's key.
 fn sources(s: &crate::AppState) -> (String, MakeSources<'_>) {
     let dir = accepted_dir(s);
-    let index = dir.join("@index.json");
-    if let Some((version, _)) = pipeline::inputs::served::files(&dir) {
-        let key = format!("accepted {version}");
+    let kept: Option<pipeline::inputs::served::Kept> =
+        std::fs::read(dir.join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    if let Some(kept) = kept {
+        let key = format!("accepted {}", kept.version);
         let make = move || {
-            let kept: Option<pipeline::inputs::served::Kept> =
-                std::fs::read(&index).ok().and_then(|b| serde_json::from_slice(&b).ok());
             let mut out = Vec::new();
-            for e in kept.map(|k| k.index.files.into_values()).into_iter().flatten() {
+            let mut whole = true;
+            for e in kept.index.files.into_values() {
                 let Some(drawn) = e.facts.get("drawn").and_then(Value::as_str) else { continue };
                 let disabled = e.facts.get("disabled").and_then(Value::as_bool).unwrap_or(false);
                 let Some(d) = std::fs::read(dir.join(drawn))
                     .ok()
                     .and_then(|b| serde_json::from_slice::<pipeline::inputs::regions::stored::Drawn>(&b).ok())
                 else {
+                    whole = false;
                     continue;
                 };
                 out.push(Source {
@@ -711,14 +721,14 @@ fn sources(s: &crate::AppState) -> (String, MakeSources<'_>) {
                     disabled,
                 });
             }
-            out
+            (out, whole)
         };
         return (key, Box::new(make));
     }
     let cat = s.data.catalogue();
     let key = format!("catalogue {}", cat.n);
     let make = move || {
-        recorded(&cat)
+        let v = recorded(&cat)
             .into_iter()
             .map(|r| Source {
                 first_osm: first_osm(&r.outline),
@@ -727,7 +737,8 @@ fn sources(s: &crate::AppState) -> (String, MakeSources<'_>) {
                 name: r.name,
                 disabled: false,
             })
-            .collect()
+            .collect::<Vec<_>>();
+        (v, true)
     };
     (key, Box::new(make))
 }
@@ -953,8 +964,11 @@ impl Outlines {
         }
         let path = zoom_path(s, z);
         let v = Arc::new(read_zoom(&path, &key).unwrap_or_else(|| {
-            let v: Vec<Simplified> = make().iter().map(|r| simplified(r, tolerance_m(z), ix.as_deref())).collect();
-            write_zoom(&path, &key, &v);
+            let (srcs, whole) = make();
+            let v: Vec<Simplified> = srcs.iter().map(|r| simplified(r, tolerance_m(z), ix.as_deref())).collect();
+            if whole {
+                write_zoom(&path, &key, &v);
+            }
             v
         }));
         let mut g = self.cur.lock().unwrap();
@@ -972,7 +986,7 @@ impl Outlines {
         let ix = s.areas.get(s).ok().flatten();
         let key = outlines_key(&source, ix.as_deref());
         let mut make = Some(make);
-        let mut srcs: Vec<Source> = Vec::new();
+        let (mut srcs, mut whole) = (Vec::new(), true);
         for z in 0..=OUTLINE_MAX_Z {
             let _making = self.making.lock().unwrap_or_else(|e| e.into_inner());
             let path = zoom_path(s, z);
@@ -980,7 +994,10 @@ impl Outlines {
                 continue;
             }
             if let Some(m) = make.take() {
-                srcs = m();
+                (srcs, whole) = m();
+            }
+            if !whole {
+                return;
             }
             let v: Vec<Simplified> = srcs.iter().map(|r| simplified(r, tolerance_m(z), ix.as_deref())).collect();
             write_zoom(&path, &key, &v);

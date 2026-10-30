@@ -603,7 +603,7 @@ accepted/regions/@listed.json   the inputs folder's region files as last listed 
                         regions.rs, `Listing`): {"files": {"<path>": {len, modified (ns), read:
                         {"Ok": <the panel's region, with its state>} | {"Err": "<problem>"}}}};
                         /api/regions answers from it, the regions thread lists the folder each
-                        minute and reads only the files whose size or time changed
+                        minute and reads only the files whose size or time changed (every file hourly)
 accepted/regions/@outlines/z<z>.jsonl   the outlines at zoom z (0–12): a key line (the format, the
                         accepted version or catalogue, the pass's outlines), then a GeoJSON feature
                         a line; made for every zoom when the key changes
