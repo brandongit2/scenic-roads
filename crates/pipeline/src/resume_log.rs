@@ -62,6 +62,21 @@ pub fn id(parts: &[&str]) -> String {
     h.finalize().to_hex().to_string()
 }
 
+/// A `Pieces` run's identity (task #889): `id` of the program running it (its executable's digest,
+/// so a run of other code never takes pieces another made), its step's kind, its target, and
+/// `parts` (what it reads, its step's choosing).
+pub fn job_id(kind: &str, target: &str, parts: &[&str]) -> String {
+    static EXE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let exe = EXE.get_or_init(|| {
+        std::env::current_exe()
+            .and_then(std::fs::read)
+            .map_or_else(|_| "-".into(), |b| blake3::hash(&b).to_hex().to_string())
+    });
+    let mut v = vec![exe.as_str(), kind, target];
+    v.extend_from_slice(parts);
+    id(&v)
+}
+
 #[cfg(test)]
 thread_local! {
     /// Tests: the run stops as a pause stops it (crate::control::Paused) once this many blocks more
@@ -166,6 +181,78 @@ impl Log {
             crate::control::piece_saved()?;
         }
         Ok(())
+    }
+}
+
+/// A target's work as pieces, each piece's result kept as it's made (task #889): the shared path of
+/// the steps whose target is a run of independent pieces (a chunk of tiles sampled, a z6 tile's
+/// part, a batch of a pack's tiles), each a pure function of the run's inputs (its identity) and
+/// its own id. `piece` hands back a piece kept by an earlier run of the same identity, else makes
+/// it and keeps it: a safe point once kept (`Log::keep`). A resumed run makes only the pieces its
+/// last didn't keep, and as each is the same bytes, so is the target's output. Without a log
+/// (resuming off, or the log unwritable) it just makes each.
+pub struct Pieces {
+    log: Option<Log>,
+    kept: std::collections::HashMap<BlockId, Vec<u8>>,
+}
+
+impl Pieces {
+    /// Target `t`'s pieces in `scratch` for a run of step kind `kind` and identity `id` (`id()`),
+    /// kept only with `keep` (the job's agent turned resuming on, `on()`; tests say so).
+    pub fn open(scratch: &Path, t: (u8, u32, u32), kind: &str, id: &str, keep: bool) -> Pieces {
+        let mut kept = std::collections::HashMap::new();
+        let log = if keep {
+            Log::open(scratch, t, kind, id, &mut |b, p| {
+                kept.insert(b, p.to_vec());
+                Ok(())
+            })
+        } else {
+            None
+        };
+        Pieces { log, kept }
+    }
+
+    /// Pieces never kept (each just made): a run by hand, a test's.
+    pub fn none() -> Pieces {
+        Pieces { log: None, kept: Default::default() }
+    }
+
+    /// Pieces of floats (`piece`, the floats by their bits).
+    pub fn floats(&mut self, b: BlockId, make: impl FnOnce() -> Result<Vec<Vec<f32>>>) -> Result<Vec<Vec<f32>>> {
+        let p = self.piece(b, || {
+            let mut p = Put::default();
+            let v = make()?;
+            p.u64(v.len() as u64);
+            for e in &v {
+                p.f32s(e);
+            }
+            Ok(p.0)
+        })?;
+        let mut g = Get(&p);
+        let v = (0..g.count(8)?).map(|_| g.f32s()).collect::<Result<_>>()?;
+        g.end()?;
+        Ok(v)
+    }
+
+    /// Piece `b`'s result: kept by an earlier run, else `make`'s, kept (a safe point:
+    /// Err(crate::control::Paused) with the build pausing, once it's kept).
+    pub fn piece(&mut self, b: BlockId, make: impl FnOnce() -> Result<Vec<u8>>) -> Result<Vec<u8>> {
+        if let Some(p) = self.kept.remove(&b) {
+            return Ok(p);
+        }
+        let p = make()?;
+        // (Not kept, no safe point: a stop here would lose the target's pieces.)
+        if let Some(l) = self.log.as_mut() {
+            l.keep(b, &p)?;
+        }
+        Ok(p)
+    }
+
+    /// The target's output saved: its log deleted.
+    pub fn finish(self) {
+        if let Some(l) = self.log {
+            std::fs::remove_file(&l.path).ok();
+        }
     }
 }
 
@@ -465,6 +552,38 @@ mod tests {
         assert!(other.join("notes.txt").exists(), "only logs");
         sweep(&mine, &path(&mine, (6, 9, 9)), 3600);
         assert!(path(&mine, (6, 1, 1)).exists(), "a fresh one kept");
+    }
+
+    /// Task #889: pieces kept are handed back, not made again, to a run of the same identity; to
+    /// another, made afresh; once finished, the log is gone; without keeping, each is made.
+    #[test]
+    fn pieces_kept_are_taken_not_made_again() {
+        let d = tempfile::tempdir().unwrap();
+        let t = (6, 1, 2);
+        let made = std::cell::Cell::new(0);
+        let make = |v: u8| {
+            made.set(made.get() + 1);
+            Ok(vec![v; 3])
+        };
+        let mut p = Pieces::open(d.path(), t, "k", "a", true);
+        assert_eq!(p.piece((9, 0, 0), || make(1)).unwrap(), [1; 3]);
+        assert_eq!(p.floats((9, 0, 1), || Ok(vec![vec![1.5, -0.0], vec![]])).unwrap(), [vec![1.5, -0.0], vec![]]);
+        drop(p);
+        let mut p = Pieces::open(d.path(), t, "k", "a", true);
+        assert_eq!(p.piece((9, 0, 0), || make(2)).unwrap(), [1; 3], "kept");
+        assert_eq!(p.floats((9, 0, 1), || anyhow::bail!("made again")).unwrap(), [vec![1.5, -0.0], vec![]]);
+        assert_eq!(p.piece((9, 1, 0), || make(3)).unwrap(), [3; 3]);
+        assert_eq!(made.get(), 2);
+        p.finish();
+        assert!(!path(d.path(), t).exists(), "gone once finished");
+        let mut p = Pieces::open(d.path(), t, "k", "b", true);
+        assert_eq!(p.piece((9, 0, 0), || make(4)).unwrap(), [4; 3], "another identity: afresh");
+        drop(p);
+        let mut p = Pieces::none();
+        assert_eq!(p.piece((9, 0, 0), || make(5)).unwrap(), [5; 3]);
+        assert!(
+            !job_id("k", "6/1/2", &["x"]).is_empty() && job_id("k", "6/1/2", &["x"]) != job_id("k", "6/1/2", &["y"])
+        );
     }
 
     #[test]

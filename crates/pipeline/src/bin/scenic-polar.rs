@@ -62,6 +62,7 @@ fn main() -> Result<()> {
             b,
             a.max_z,
             &voids,
+            &mut pipeline::resume_log::Pieces::none(),
             &mut |z, x, y, t| write("terrain", z, x, y, &t),
             &mut |_, _| {},
         )?;
@@ -74,6 +75,7 @@ fn main() -> Result<()> {
             b,
             a.max_z,
             &|z, x, y| Ok(terrain(path("terrain", z, x, y))?.map(std::sync::Arc::new)),
+            &mut pipeline::resume_log::Pieces::none(),
             &mut |z, x, y, s| write("shade", z, x, y, &s),
             &mut |_, _| {},
         )?;

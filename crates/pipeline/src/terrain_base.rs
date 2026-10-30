@@ -407,7 +407,8 @@ impl<'a> Tiles<'a> {
         }
         if !todo.is_empty() {
             // (Between chunks: a level's sampling runs for hours, and a pause waits for no more
-            // than the chunks under way, task #705.)
+            // than the chunks under way, task #705; counted in the job's measure, task #889.)
+            crate::control::reached();
             crate::control::pause_point(self.draining)?;
             made.extend(todo.iter().copied().zip(self.sample_all(z, &todo)?));
         }

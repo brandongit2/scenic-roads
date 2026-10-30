@@ -158,7 +158,7 @@ fn parse(p: &[u8]) -> Result<Kept> {
 
 /// What a terrain run reads besides its own tiles, as `manifest` names it: the accepted elevation
 /// datasets (the pool, the fine datasets, the Terrarium pyramid) and sources (the geoids).
-fn inputs(manifest: &BTreeMap<String, String>) -> String {
+pub(crate) fn inputs(manifest: &BTreeMap<String, String>) -> String {
     [crate::inputs::elevation::UNIT, crate::inputs::sources::UNIT]
         .iter()
         .map(|u| {

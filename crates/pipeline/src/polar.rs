@@ -423,6 +423,7 @@ pub fn terrain_block(
     b: (u32, u32),
     max_z: u8,
     voids: &Voids,
+    pieces: &mut crate::resume_log::Pieces,
     put: &mut dyn FnMut(u8, u32, u32, Vec<u8>) -> Result<()>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<()> {
@@ -434,8 +435,12 @@ pub fn terrain_block(
     let all: u64 = (BLOCK_Z..=max_z).map(|z| level(z).len() as u64).sum();
     let mut tally = Tally::new(own.len() as u64 + all, progress);
     let mut lv = Heights::new();
+    // (Each chunk sampled a piece kept, task #889: a resumed block samples only the chunks its last
+    // run didn't keep, their voids not counted again.)
     for chunk in own.chunks(16) {
-        for (t, e) in chunk.iter().zip(sample(&samplers[max_z as usize], pole, max_z, chunk, voids)?) {
+        let id = (max_z, chunk[0].0, chunk[0].1);
+        let es = pieces.floats(id, || sample(&samplers[max_z as usize], pole, max_z, chunk, voids))?;
+        for (t, e) in chunk.iter().zip(es) {
             lv.insert(*t, Arc::new(e));
         }
         tally.add(chunk.len() as u64);
@@ -467,6 +472,7 @@ pub fn slope_block(
     b: (u32, u32),
     max_z: u8,
     terrain: &dyn Fn(u8, u32, u32) -> Result<Option<Arc<Vec<f32>>>>,
+    pieces: &mut crate::resume_log::Pieces,
     put: &mut dyn FnMut(u8, u32, u32, Vec<u8>) -> Result<()>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<()> {
@@ -501,11 +507,23 @@ pub fn slope_block(
     let mut tally = Tally::new(own.len() as u64 + all, progress);
     let hs = read(max_z, &own)?;
     let mut kids: HashMap<(u32, u32), Vec<Px>> = HashMap::new();
-    for &(x, y) in &own {
-        if let Some(px) = horn(&|a, c| hs.get(&(a, c)).cloned(), pole, max_z, x, y) {
-            kids.insert((x, y), px);
+    // (Each chunk of 64 tiles shaded a piece kept, task #889; a tile with no terrain kept empty.)
+    for chunk in own.chunks(64) {
+        let ps = pieces.floats((max_z, chunk[0].0, chunk[0].1), || {
+            Ok(chunk
+                .iter()
+                .map(|&(x, y)| {
+                    horn(&|a, c| hs.get(&(a, c)).cloned(), pole, max_z, x, y)
+                        .map_or_else(Vec::new, |px| px.iter().flat_map(|p| [p.s, p.u[0], p.u[1]]).collect())
+                })
+                .collect())
+        })?;
+        for (&t, f) in chunk.iter().zip(ps) {
+            if !f.is_empty() {
+                kids.insert(t, f.chunks_exact(3).map(|c| Px { s: c[0], u: [c[1], c[2]] }).collect());
+            }
         }
-        tally.add(1);
+        tally.add(chunk.len() as u64);
     }
     drop(hs);
     let (mut z, mut n) = (max_z, own.len());
@@ -617,6 +635,11 @@ fn write(
     Ok(())
 }
 
+/// A block's resume log's target (crate::resume_log::path): the south's blocks at z 4 + 128.
+fn resume_target(pole: Pole, b: (u32, u32)) -> (u8, u32, u32) {
+    (BLOCK_Z + if pole == Pole::South { 128 } else { 0 }, b.0, b.1)
+}
+
 /// `polar-terrain`: each block's terrain pack (`terrain_block`), from the pool over its latitudes.
 pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> Result<()> {
     let net = crate::fetch::Fetcher::from_env();
@@ -628,6 +651,17 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
         let o = crate::dem::generic::Opts { fetch: &net, store: Some(store), local: None };
         let ss = samplers(&plans, &o)?;
         let voids = Voids::default();
+        let mut pieces = crate::resume_log::Pieces::open(
+            &out.scratch,
+            resume_target(pole, b),
+            "polar-terrain",
+            &crate::resume_log::job_id(
+                "polar-terrain",
+                &t,
+                &[&crate::terrain_resume::inputs(&out.manifest), &format!("{plans:?}")],
+            ),
+            crate::resume_log::on(),
+        );
         let mut tiles = Vec::new();
         terrain_block(
             &ss,
@@ -635,6 +669,7 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
             b,
             MAX_Z,
             &voids,
+            &mut pieces,
             &mut |z, x, y, t| {
                 tiles.push((z, x, y, t));
                 Ok(())
@@ -642,17 +677,33 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
             &mut |d, n| {
                 crate::agent::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks")
             },
-        )?;
+        )
+        // (Paused at a chunk kept: the block's pieces kept, the run resumed there.)
+        .map_err(|e| crate::control::stop_if_paused("polar-terrain", e))?;
         let (v, f, n) = voids.total();
         eprintln!(
             "polar-terrain {t}: {} tiles; of {n} samples {v} with no data, {f} of them filled from voids",
             tiles.len()
         );
         write(out, "terrain", pole, "polar", (BLOCK_Z, b.0, b.1), tiles)?;
+        pieces.finish();
         crate::control::done("polar-terrain", &t);
     }
     crate::agent::jobs::report(targets.len() as u64, targets.len() as u64, "polar blocks");
     Ok(())
+}
+
+/// What a block's shading reads: the terrain packs of it and its neighbours, as the manifest names
+/// them.
+fn terrain_of(out: &crate::out::Out, pole: Pole, b: (u32, u32)) -> String {
+    around(pole, b)
+        .into_iter()
+        .map(|n| {
+            let l = block_logical("terrain", pole, n);
+            format!("{l}={}", out.get(&l).unwrap_or("-"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `polar-slope`: each block's shading pack (`slope_block`), from the terrain packs of it (read
@@ -673,12 +724,20 @@ pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> 
             let Some(p) = packs.get(&(x >> (z - BLOCK_Z), y >> (z - BLOCK_Z))) else { return Ok(None) };
             p.get(z, x, y)?.map(|b| roadcore::grid::decode_terrain(&b).map(Arc::new)).transpose()
         };
+        let mut pieces = crate::resume_log::Pieces::open(
+            &out.scratch,
+            resume_target(pole, b),
+            "polar-slope",
+            &crate::resume_log::job_id("polar-slope", &t, &[&terrain_of(out, pole, b)]),
+            crate::resume_log::on(),
+        );
         let mut tiles = Vec::new();
         slope_block(
             pole,
             b,
             MAX_Z,
             &terrain,
+            &mut pieces,
             &mut |z, x, y, s| {
                 tiles.push((z, x, y, s));
                 Ok(())
@@ -686,9 +745,11 @@ pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> 
             &mut |d, n| {
                 crate::agent::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks")
             },
-        )?;
+        )
+        .map_err(|e| crate::control::stop_if_paused("polar-slope", e))?;
         eprintln!("polar-slope {t}: {} tiles", tiles.len());
         write(out, "slope", pole, "polar", (BLOCK_Z, b.0, b.1), tiles)?;
+        pieces.finish();
         crate::control::done("polar-slope", &t);
     }
     crate::agent::jobs::report(targets.len() as u64, targets.len() as u64, "polar blocks");
@@ -909,6 +970,52 @@ mod tests {
         assert!(cover.meets(roadcore::polar::lat_box(Pole::South, BLOCK_Z, 7, 7)));
     }
 
+    /// Task #889: a block's shading paused at every one of its safe points (each chunk kept as a
+    /// piece), resumed each time, puts the same tiles as one never paused.
+    #[test]
+    fn a_block_paused_at_every_safe_point_resumes_to_the_same_tiles() {
+        use crate::resume_log::{Pieces, STOP_AFTER};
+        let (pole, b, max_z) = (Pole::South, (7, 7), 8u8);
+        let hilly = |_: u8, x: u32, y: u32| -> Result<Option<Arc<Vec<f32>>>> {
+            Ok((x % 5 != 0)
+                .then(|| Arc::new((0..TS * TS).map(|i| ((i * 7 + x as usize * 3 + y as usize) % 97) as f32).collect())))
+        };
+        let run = |pieces: &mut Pieces| {
+            let mut tiles = Vec::new();
+            let r = slope_block(
+                pole,
+                b,
+                max_z,
+                &hilly,
+                pieces,
+                &mut |z, x, y, s| {
+                    tiles.push((z, x, y, s));
+                    Ok(())
+                },
+                &mut |_, _| {},
+            );
+            r.map(|()| tiles)
+        };
+        let fresh = run(&mut Pieces::none()).unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let open = || Pieces::open(d.path(), (4 + 128, b.0, b.1), "polar-slope", "a", true);
+        let mut stops = 0;
+        let resumed = loop {
+            STOP_AFTER.set(Some(1));
+            let r = run(&mut open());
+            STOP_AFTER.set(None);
+            match r {
+                Err(e) => {
+                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    stops += 1;
+                }
+                Ok(t) => break t,
+            }
+        };
+        assert!(stops > 2, "several safe points: {stops}");
+        assert!(resumed == fresh, "paused at each of its {stops} safe points");
+    }
+
     /// A block in progress says how far it is, within the block: counts never go back, end at the
     /// whole, and come many times (not once, at the end).
     #[test]
@@ -922,6 +1029,7 @@ mod tests {
             b,
             max_z,
             &flat,
+            &mut crate::resume_log::Pieces::none(),
             &mut |_, _, _, _| {
                 puts += 1;
                 Ok(())
@@ -947,6 +1055,7 @@ mod tests {
             b,
             max_z,
             &holes,
+            &mut crate::resume_log::Pieces::none(),
             &mut |_, _, _, _| {
                 puts += 1;
                 Ok(())
