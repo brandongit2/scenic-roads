@@ -294,14 +294,12 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
   and once it gets it, restarts at once (`Agent::restart_now`), not once its first slot is free: its
   jobs are left running for the next agent, which joins as it starts and takes them over
   (Restarts).
-- **Who leads** is the terms' (`state/build/terms/`): the first Mac makes term 1 (or the owner takes
-  over: `scenic lead`, pool.md §11) and leads it: it plans, runs a coordinator (`pipeline::coord`,
-  port 8090) from which every other worker asks for work, and merges the journal into the records.
-  A lead restarting or waking makes the next term naming itself; one on an app older than its term's
-  stands down, and another member takes over after two minutes (`STOOD_DOWN_S`); a lead gone silent
-  (asleep, away, off the NAS) is taken over by a member after about ten minutes (`SILENT_SEEN_S`,
-  docs/pool.md §6.7). A process changes part in place
-  (docs/pool.md §7.6).
+- **Who leads** is fixed: the Mac mini, the member `state/build/lead-member.json` declares
+  (pool.md §6.1, task #881). It plans, runs a coordinator (`pipeline::coord`, port 8090) from which
+  every other worker asks for work, and merges the journal into the records. Restarting or waking,
+  it makes the next term naming itself (`state/build/terms/`) and goes on with its leases. No other
+  Mac leads: with the mini gone, the members finish their jobs and wait (pool.md §6.3). A process
+  changes part in place when the owner moves the declaration (docs/pool.md §7.6).
 - **What's offered** (crate::agent::every): every step to every member except the lead's own
   (`LEAD_ONLY`: catalogues, prune, `bld-fetch`, the OSM pass, GC, backup, input checks, …), the steps
   that keep the pass's answers, and the worldwide steps. The steps table (`agent::steps`, docs/pool.md
@@ -466,8 +464,7 @@ available. Until work is done, the map serves the last catalogue.
 **Status.**
 - `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions),
   `scenic steps` (the steps table: docs/pipeline.md), `scenic clean [--deep]`, `scenic room` (Room on the
-  disk, above), `scenic nas-room` (the NAS reserve, above), `scenic battery-floor` (this Mac's battery floor for
-  leading: docs/workers.md §7), `scenic memory` (the build's memory: docs/pool.md §7.1).
+  disk, above), `scenic nas-room` (the NAS reserve, above), `scenic memory` (the build's memory: docs/pool.md §7.1).
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
 - **The menu bar item** asks the local server (`/api/build`): this Mac's agent's status, else the
   NAS's copy. An agent not heard from for ten minutes (the status's `out_of_touch_s`, the pool's

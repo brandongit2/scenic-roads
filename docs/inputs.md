@@ -299,7 +299,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   `.jsonl` lines `{"k": "<string>", "v": <number>}`; an error for a bad line, a warning for a
   negative `v` and for a removed file. No build step reads it. `tools/check/gate-two-macs.sh` is
   the procedure that exercises the input check on the NAS between two Macs (an update taken in, an
-  error held, warnings accepted from each Mac, an unaccept, a touch, a removal, a lead handover
+  error held, warnings accepted from each Mac, an unaccept, a touch, a removal, the lead moved
   mid-check).
 - **Tests** (no wall clock, no real NAS): crate::inputs's tests (verdicts as a function of candidate,
   previous version and acceptances; stable ids; held new/edited/removed files; paired files; the
@@ -775,7 +775,7 @@ region file takes it out with the next version.
 Every reader reads `Coverage::accepted`, and only once the records hold
 `sources/inputs/regions/@switched` (crate::inputs::regions::read `switched`); without it the readers
 refuse, saying to do the migration's runbook first. The switch records the app it was made on, and
-no Mac on an older app leads or is handed the lead. Catalogues record their regions' shapes inline
+no Mac on an older app builds. Catalogues record their regions' shapes inline
 (formats.md, Catalogue `coverage`), so old catalogues still draw. The tests (crate::inputs::regions's)
 cover the operations on small fixtures: union, minus, intersect, cuts (past the shape, ending
 inside, pieces missed), a 12 nmi buffer against a geodesic distance, ways that don't join, a loop,
@@ -1334,7 +1334,7 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
 - **The switch:** the check records `sources/inputs/elevation/@switched` (the accepted index and the
   published app that recorded it) once a version of the declarations is accepted; a development
   build records none. Until then `elev` and the z6 tile job don't run and the z6 tiles wait (the agent
-  says why). From then on no older app leads, is handed the lead or is granted work
+  says why). From then on no older app builds or is granted work
   (`regions::read::switch_app`, the coordinator's `min_app`).
 - **The roads' heights** (crate::road_terrain, `elev`): a vertex's height is the finished
   terrain's there, bilinear between pixel centres at the finest zoom stored there, its native zoom

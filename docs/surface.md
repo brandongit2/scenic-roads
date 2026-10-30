@@ -13,9 +13,8 @@
   restarts it after a crash, and it restarts itself into an update). Quitting stops it: at once with
   no job running; with one, the app asks "Finish This Job First" (nothing new taken, the app quits
   when it ends) or "Stop Now" (the job given back, its work kept on disk); a logout, restart or
-  shutdown takes Stop Now without asking. A leading Mac quitting hands the lead to a member that can
-  take it (waiting up to three minutes for the handover), else the build waits for it
-  (`control::Quit`). The map server stays a service of its own: Scenic's window and menu show it
+  shutdown takes Stop Now without asking. The lead quitting hands nothing over: the build waits for
+  it, the members finishing their jobs (`control::Quit`; the lead is fixed, docs/pool.md §6). The map server stays a service of its own: Scenic's window and menu show it
   and start or stop it when asked, never on opening or quitting. On an update Scenic copies the
   installed version's Scenic.app over itself and quits; a helper it starts (the new bundle's
   binary, `--reopen`) waits for it to end, then opens the new app (without its window) after a
@@ -69,8 +68,7 @@
   its plist is in `~/Library/LaunchAgents`, manages nothing (it says "Switch over with
   tools/app/install.sh"); it asks again at each poll and as its menu opens, and once the old
   agent's job and plist are gone it registers and starts its build service as a fresh launch
-  would. On each Mac once the version is installed, the lead's Mac last (or hand
-  the lead away first, `scenic lead give <the other Mac>`): run `tools/app/install.sh` (it removes
+  would. On each Mac once the version is installed, the lead's Mac (the mini) last: run `tools/app/install.sh` (it removes
   the two login items, the old agent's job given back, copies Scenic.app to /Applications and
   opens it), allow Scenic in Login Items if macOS asks, and check its window says "Build service:
   running". The way back, until both Macs have switched: `tools/app/install.sh --legacy` (Scenic

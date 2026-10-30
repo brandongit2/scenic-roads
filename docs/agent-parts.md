@@ -197,7 +197,7 @@ local work meanwhile.
 
 The pool driver keeps its thread (`pool::Ticker`) but reads `Conditions` and `HoldView` snapshots
 instead of the agent's fields, and does its NAS calls through **nas**. Its gates (`pool_step`'s
-`gates`: leads, settle, duties) become `PoolView`, which **plan** and **jobs** read.
+`gates`: leads, duties) become `PoolView`, which **plan** and **jobs** read.
 
 ## 5. Ordering guarantees
 
@@ -217,10 +217,9 @@ instead of the agent's fields, and does its NAS calls through **nas**. Its gates
 
 ## 6. Planned changes this accounts for
 
-- **#881 (the mini as fixed lead, no election).** **plan** runs only on the mini; on the M1 and M4
-  it never starts. `pool_step`'s gates (`settle`, `leads`, re-assert) and the handover and takeover
-  machinery in **pool** go with #881, not here; this design doesn't move them first. Step 6 below is
-  sized on #881 having landed or not.
+- **#881 (the mini as fixed lead, no election: landed).** **plan** runs only on the mini; on the M1
+  and M4 it never starts. The handover and takeover machinery and the settle gate are gone from
+  **pool** (docs/pool.md §6); `pool_step`'s gates left are `leads`, `duties` and the re-assertion.
 - **#878 (pool coordination by HTTP on the lead).** When it lands, **pool** shrinks to an HTTP
   client: a member's heartbeat, mail and holds are posts to the lead's endpoint, and **beat**'s
   shared write goes there too. **nas** then serves only the jobs' and the plan's data reads. The
@@ -247,8 +246,7 @@ in tests.
 | 7 | the no-shared-mutex scan test; docs: pool.md §7.8 and §11, building.md §2 rewritten to the parts | the rest of the ad-hoc `Arc<Mutex<…>>` fields on `Agent` | `agent::bus::tests::no_shared_mutex` |
 
 Steps 2 and 3 matter most to the owner (the 5-min Pause, the heartbeat) and depend only on step 1.
-Step 4 can go before or after 5. Step 6 goes after #881 if that lands first (then no gates to
-carry); otherwise it carries `PoolView`'s gates as they are.
+Step 4 can go before or after 5. Step 6 carries `PoolView`'s gates as #881 left them (no settle).
 
 ## 8. Open decisions
 
@@ -267,4 +265,4 @@ carry); otherwise it carries `PoolView`'s gates as they are.
 2. File asks stay for one app version after **control** lands, then go.
 3. Folder watcher: kqueue plus a 2-s stat sweep (no new dependency).
 4. `sample` stays for a plan stalled past 5 min; it goes for the other parts with the loop watchdog.
-5. Step 6 waits for #881.
+5. Step 6 no longer waits for #881 (landed).

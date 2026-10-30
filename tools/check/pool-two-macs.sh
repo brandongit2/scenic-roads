@@ -22,7 +22,7 @@
 #   pool-two-macs.sh newest <dir>                   a third app installed, 20261010-0000-ccccccc (the
 #                                                   newer's copy), its current: an update to take
 #   pool-two-macs.sh jobs <dir> <seconds>           how long each fake job runs from now on (5 s
-#                                                   until set): long enough to span a handover
+#                                                   until set): long enough to span a restart
 #   pool-two-macs.sh outside <dir>                  the next fake job's hand-off also writes a name
 #                                                   outside every step's outputs: the merge refuses
 #                                                   its entry (docs/pool.md §7.3)
@@ -106,29 +106,17 @@
 # `ssh brandontsang@macbookpro '<this script> run …'` left running), not under `nohup` nor a
 # `screen -dm` started by an ssh command that then ends (both seen 2026-10-10): macOS's
 # local-network privacy then cuts the agent off the LAN (the NAS's LAN name doesn't answer), so it
-# reports itself away from home, can't lead (`able` false: a handover to it is offered and given up
-# after a minute), and never takes over by itself.
+# reports itself away from home, and its jobs reading the NAS crawl over Tailscale.
 #
-# What a run shows (2026-10-08, the M4 the lead, the M1 a member): the lead makes term 1
-# and leads; the lead's jobs hand
-# off under its term's leases, its sweep after a re-assertion; the member's entry reaches the lead's
-# records through the journal and its mail, acknowledged; the lead restarted re-asserts; the lead
-# moved to the older app stands down, the member takes over after two minutes (then by a restart;
-# now in its process), its coordinator up; the old lead, newer again, works as a member of it.
-#
-# A part changing in its process (2026-10-10, then behind state/pool/slots, now always; `region`,
-# `jobs … 300`): the lead handed to
-# the member by `scenic lead give` mid-job, neither agent restarting (same pids), the member's
-# coordinator up in its process and the old lead's port free, the contact the new lead's, the lead's
-# idle-sleep assertion (`caffeinate -i -w <agent>`) moving with the lead; the member's job, granted in
-# the term before, ending in the new lead's coordinator, and the old lead's own job ending there by
-# HTTP, both entries in the new lead's records; the old lead, a member, given a job by the new lead
-# over HTTP, merged; `newest` on the member, then on the lead mid-job: the lead hands the lead over
-# once, its job running on and ending at the new lead, then restarts into the update; the lead
-# frozen (SIGSTOP) past ten minutes and taken over (`scenic lead take`, unforced), then thawed: it
-# stands down to a member in its process, its coordinator stopped and port free, the new lead's
-# contact left alone, nothing granted; a lead killed (-9) mid-job relaunched, re-asserting, its
-# coordinator up, the job its process left stopped and started again.
+# What a run shows (the scratch folder's first Mac, which makes term 1, declares itself the lead:
+# docs/pool.md §6.1): the lead's jobs hand off under its term's leases, its sweep after a
+# re-assertion; the member's entry reaches the lead's records through the journal and its mail,
+# acknowledged; the lead restarted re-asserts, its leases kept; the lead frozen (SIGSTOP) past ten
+# minutes: the member finishes its job, hands it off and waits, making no term; thawed, the lead
+# re-asserts and merges it. The declaration moved by hand to the member (`<F>/state/build/
+# lead-member.json` naming its member id) mid-job: neither agent restarting (same pids), the
+# member's coordinator up in its process and the old lead's port free, the jobs out ending at the
+# new lead.
 #
 # With state/pool/resume on (2026-10-15, `resume`, then `progress` naming the M1's member and host
 # once its heartbeat is there, its agent restarted so it reads its file, then `planet`): the lead

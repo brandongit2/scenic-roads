@@ -33,7 +33,8 @@
 #                                               Mac's agent's folder, as the item writes it (or run
 #                                               the item itself: SCENIC_HOME=<dir> scenic-status,
 #                                               with a map server on <dir> for its /api/build)
-#   gate-two-macs.sh lead <dir> give <member>   the lead handed over (scenic lead give)
+#   gate-two-macs.sh lead <folder> <member>     the lead moved: the scratch folder's declaration
+#                                               (state/build/lead-member.json) names <member>
 #
 # The proof, in order (M4 and M1 each with `app` and `run`; <F> the scratch folder; check each step
 # with `wait`, keep each Mac's <dir>/agent.log):
@@ -51,13 +52,12 @@
 #      shows the check ran, `inputs: _gate-test: 1 file read of 2`).
 #   7. A removal held and accepted: `remove <F> b.jsonl`; wait 'warning gt-removed'; accept it (any
 #      way); wait 'taken in', b.jsonl gone from the version.
-#   8. The lead handed over mid-check: `big <F> c.jsonl 2000000`; once `state` says 'checking',
-#      `lead <dir> give <the other member>`; the check's hand-off reaches the new lead's records
+#   8. The lead moved mid-check: `big <F> c.jsonl 2000000`; once `state` says 'checking',
+#      `lead <F> <the other member>`; the check's hand-off reaches the new lead's records
 #      through the journal: wait 'taken in' with c.jsonl in the version (`state` on either Mac).
-#      (A check of 2,000,000 lines takes ~6 s and a handover ~90 s, so the check ends before the
-#      handover does and the old lead merges it. To have it end under the new lead, stop the check
-#      by its exact pid as it starts, `kill -STOP <pid>` of `<dir>/v/app/current/scenic-build
-#      inputs`, give the lead, and `kill -CONT <pid>` once the give returns.)
+#      (To have it end under the new lead, stop the check by its exact pid as it starts,
+#      `kill -STOP <pid>` of `<dir>/v/app/current/scenic-build inputs`, move the lead, and
+#      `kill -CONT <pid>` once the other Mac leads.)
 # Then `scenic inputs test off --root <F>` and the scratch folder removed.
 #
 # What a run shows (2026-10-10, the M4 and the M1 over a NAS scratch folder, the pool on, its
@@ -72,10 +72,8 @@
 # 6. the touch read once, "1 file read of 2", the version the same, only @listed new.
 # 7. the removal held as `gt-removed`, accepted with `scenic inputs accept` on the M1; the version
 #    went back to step 3's own content name, and the acceptance is listed stale at once.
-# 8. given M4 → M1 unfrozen: the check (6.2 s) ended and merged at the old lead, the handover 95 s.
-#    Given M1 → M4 with the M1's check stopped across it: the new lead (term 5) took up the lease
-#    handed over, and merged the check's journal entry (lease 4-…, the M1's member) once it ended.
-# A lead taking over runs each unit's full check once (its own daily timer), here 0.5 s.
+# 8. not run yet with the lead moved by its declaration.
+# A lead new to the term runs each unit's full check once (its own daily timer), here 0.5 s.
 # GC (`scenic gc`, 14 days, with a catalogue there: with none GC sweeps nothing), every copy aged 30
 # days, then a change: kept the current index and its files, the index it replaced (touched by the
 # check, and again with its touch undone, by @listed's `replaced`) and the current @listed; old
@@ -193,8 +191,10 @@ f = next(p for t in range(e, 0, -1) for p in [f"term/{t}/brief.json", f"term/{t}
     mv $d/agent/inputs-asks/$f.menu.tmp $d/agent/inputs-asks/$f
     ;;
   lead)
-    d=${2:?its folder}; shift 2
-    $(scenic_of $d) lead --home ${d:a}/agent "$@"
+    r=${2:?the scratch folder} m=${3:?the member id}
+    mkdir -p $r/state/build
+    print -r -- "{\"member\": \"$m\", \"since\": $(date +%s)}" > $r/state/build/lead-member.json.tmp
+    mv $r/state/build/lead-member.json.tmp $r/state/build/lead-member.json
     ;;
   *) print -u2 "root, app, run, stop, add, big, touch, remove, state, wait, page-accept, menu-accept or lead"; exit 2 ;;
 esac

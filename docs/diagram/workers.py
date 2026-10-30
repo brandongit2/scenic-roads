@@ -1,7 +1,7 @@
-"""Who builds the map (docs/pool.md, docs/building.md §2, docs/workers.md): the Mac the current term names leads: its agent
+"""Who builds the map (docs/pool.md, docs/building.md §2, docs/workers.md): the Mac mini, the declared lead, leads: its agent
 plans, its coordinator grants every job (its own too) and lends tasks to any worker, a device's page too, and it alone merges
-the journal into the term's records. The lead moves by hand, or by itself only on low battery, its heartbeat silent, the NAS
-lost or a stand-down (pool.md §6.4, task #497). What the pool leaves for later is planned (pool.md §12)."""
+the journal into the term's records. No other Mac leads (pool.md §6, task #881). What the pool leaves for later is planned
+(pool.md §12)."""
 from html import escape as E
 
 from diag import W, Diagram, rpath, wrap
@@ -66,8 +66,8 @@ def build(check=False):
     m1 = box(wx, page[1] + page[3] + 22, ww, 'The M1 (16 GB) · a member', ['takes every shared step’s (⇄) jobs that fit',
                                                                          'the memory its owner gives the build (scenic',
                                                                          'memory) and its disk, the zoomed-out',
-                                                                         'assemblies too; when none fits, tasks; it',
-                                                                         'leads when handed the lead'])
+                                                                         'assemblies too; when none fits, tasks;',
+                                                                         'it never leads'])
 
     # Arrows: the NAS and the agent; the agent and its coordinator; the coordinator and the workers.
     ay = iy + 34
@@ -91,8 +91,8 @@ def build(check=False):
 
     # The pool's controls, built; what it leaves for later, planned.
     py0 = ub + 26
-    ctl = box(nx, py0, (W - 32 - 16) / 2, 'Who leads is your call (docs/pool.md §6)',
-              ['Handed over by hand: the menu bar (Hand the Build To…), the build page or scenic lead;', 'taken over when the lead is gone. By itself only when the lead’s battery is below 30 %,', 'its heartbeat goes silent, it loses the NAS while online, or it stood down. No score.'])
+    ctl = box(nx, py0, (W - 32 - 16) / 2, 'The Mac mini leads (docs/pool.md §6)',
+              ['The declared lead (state/build/lead-member.json): no election, handover or takeover.', 'With it gone, the members finish their jobs and wait; it comes back to its records', 'and leases. The owner moves it only by editing the declaration.'])
     px = nx + ctl[2] + 16
     box(px, py0, W - 16 - px, 'Planned',
         ['The journal’s GC (#455); retiring the mailboxes for the HTTP pool API; resuming beyond the OSM pass;', 'readers reading the term’s snapshot. Behind switches: job slots changing part in place, each', 'member brokering its own jobs’ tasks, resume, placement.'], cls='later')

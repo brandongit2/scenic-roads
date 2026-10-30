@@ -3,8 +3,8 @@
 Each Mac's agent, server and mirror, and the devices the map opens on. The pool itself is `docs/pool.md`; tasks for any worker, `docs/workers.md`.
 
 **Each Mac's agent.** Every Mac runs the agent (`scenic agent`, set up by `tools/app/install.sh`), a
-member of the pool (docs/building.md §2, The pool): it leads while its Mac holds the term, else takes work from the
-lead's coordinator. Below, the M4 (48 GB) unless said.
+member of the pool (docs/building.md §2, The pool): the Mac mini's leads (the declared lead,
+docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, the M4 (48 GB) unless said.
 - It runs under the launcher as a LaunchAgent with `ProcessType Interactive` (else launchd throttles
   it).
 - **Several jobs at once** (docs/building.md §2, Jobs at once). Each job is a child process group at utility
@@ -92,7 +92,7 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
   and view results (`scenic-units/`, docs/steps.md §6). A z6 tile's build
   folders go once it's built.
 
-**The M1 (16 GB)** leads when it holds the term; as a member it builds what the lead's coordinator
+**The M1 (16 GB)** is a member: it builds what the lead's coordinator
 gives it (docs/building.md §2, The pool): any shared step's jobs that fit the memory its owner gives the build there
 (`scenic memory`, within the memory guard's limit: docs/pool.md §7.1) and its disk (its room target kept free past each job's measured disk; a task 5 GB, tree cover's rows and terrain's subtrees 1 GB), from the far end of the list (terrain from the
 near end), else z6 tiles' tails (`docs/workers.md`). A z6 tile's predicted peak is the most its job's
@@ -100,8 +100,8 @@ processes held together last time, else about ten times its extract, never under
 floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, the lead's the heartbeat
 (`state/status.json`).
 
-**The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: a member of the pool like any
-other Mac, with room for more at once (build memory 28 GB by default). It also hosts the task board
+**The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: the pool's lead, fixed
+(docs/pool.md §6, task #881), with room for more at once (build memory 28 GB by default). It also hosts the task board
 (`tools/taskboard`, http://mac-mini-de-brandon:8077, its LaunchAgent and nightly NAS backup from
 `tools/taskboard/launchd/install.sh`) and is the map's address for the phone, the iPad and devices
 away from home: https://map.brandontsang.net (Devices). It publishes the app (`ssh m6 'cd

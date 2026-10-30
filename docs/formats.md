@@ -780,7 +780,7 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
 - `/api/names?n=<name>&at=lon,lat` repeated (each optionally with `en=`, `k=road|settlement|other`,
   `l=` before its `at`): `[{main, sub}]`.
 - `/api/build`: the agent's status (this Mac's when it leads, else the lead's heartbeat, or this
-  member's `helper.json` when that is ten minutes stale), `pool`, `lead_asked`, and `offline:
+  member's `helper.json` when that is ten minutes stale), `pool`, and `offline:
   {world, regions, bytes, here, nas}` (null without a mirror).
 - **Remote access** (docs/macs.md, Devices): no key. A request from anywhere but this Mac, its LAN and
   the tailnet (through `tailscale serve` or Caddy on this Mac too; never Funnel) is 403 ("not from
@@ -965,8 +965,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     from the menu and `scenic inputs check`; taken up at the agent's next
     loop. A member's agent tells the lead's coordinator (`POST /work/inputs`); the build page posts
     there directly (never `forget`).
-  - **Lead asks** (`pipeline::control::LeadRequest`, docs/pool.md §6.3): `lead-request.json`, `{ask:
-    {kind: "give", to} | {kind: "take", force, downgrade}, by, at}`, from the menu or `scenic lead`; the build page's via `POST /work/lead` (never forced).
+  - **The lead's declaration** (`pipeline::pool::term::Declared`, docs/pool.md §6.1), on the NAS:
+    `state/build/lead-member.json`, `{member, host, since}`, made once with create-new; moved by
+    the owner's edit alone.
   - A hand-off (`pipeline::handoff`): `{changes: {logical: content name | null}, pending: {content
     name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] | null, raw: [[shard,
     {name, bytes}], …]}`, named `<ns>-<pid>.json` in write order; `<folder>.merged` holds the last
