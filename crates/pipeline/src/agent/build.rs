@@ -1007,19 +1007,9 @@ pub fn summits_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Op
 /// The status's line for the summits and peaks held for the terrain packs (`Plan::terrain_built`).
 pub const PEAKS_TERRAIN_WAIT: &str = "wait for the terrain packs they read (terrain-hi, terrain-lo)";
 
-/// The waiting notes of the steps a plan holds for other steps' targets (`Plan::held`, the status's
-/// `waiting` list, the checklist's notes), each in the summits' form: what the step waits for.
-const TERRAIN_LO_WAIT: &str = "wait for the terrain-hi tiles of their z3 tile";
-const SLOPE_DEEP_WAIT: &str =
-    "wait for the terrain of their z3 tile and its neighbours' (terrain-hi, terrain-lo, terrain-deep)";
-const SLOPE_HI_WAIT: &str =
-    "wait for the terrain of their z3 tile and its neighbours' (terrain-hi, terrain-lo, terrain-deep)";
-const SLOPE_HI_DEEP_WAIT: &str = "wait for their z10 tiles' slope-deep";
-const SLOPE_HI_BOTH_WAIT: &str =
-    "wait for the terrain of their z3 tile and its neighbours' (terrain-hi, terrain-lo, terrain-deep), or their z10 tiles' slope-deep";
-const SLOPE_LO_WAIT: &str =
-    "wait for their z3 tile's terrain (terrain-hi, terrain-lo, terrain-deep) and slope-hi tiles";
-const TREES_LO_WAIT: &str = "wait for the trees tiles of their z3 tile";
+/// The waiting notes of the world steps a plan holds for other steps' targets (`Plan::held`, the
+/// status's `waiting` list, the checklist's notes), each in the summits' form: what the step waits
+/// for. (A tiled step's is its row's: `wait_note`.)
 const PEAKS_WAIT: &str =
     "wait for the candidates (pois), the pass's summits and the terrain packs they read (terrain-hi, terrain-lo)";
 const ITEMS_WAIT: &str = "wait for the candidates (pois)";
@@ -1029,6 +1019,17 @@ const MARKS_WAIT: &str =
 
 /// The peaks' version (crate::peaks::unit). (2: heights from the terrain packs alone, task #670.)
 pub const PEAKS_V: u32 = 2;
+
+/// The waiting note of a step that declares its reads (crate::agent::steps::Reads::why).
+pub fn wait_note(step: &str) -> &'static str {
+    super::steps::row(step).and_then(|r| r.reads).map_or("wait for what they read", |r| r.why)
+}
+
+/// Whether a target of `step` waits: one of the targets it reads (crate::agent::steps::reads_of)
+/// is left, as `left(step, target)` says.
+pub fn waits(step: &str, target: &str, left: &dyn Fn(&str, &str) -> bool) -> bool {
+    super::steps::reads_of(step, target).iter().any(|(s, t)| left(s, t))
+}
 
 /// The z6 tiles meeting a box (degrees), x wrapping at the antimeridian.
 fn tiles_in_wrapped(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
@@ -1483,14 +1484,7 @@ pub fn terrain_slope_targets_made(
                 .zip(datasets(3, q.0, q.1))
                 .map_or_else(|| UNKNOWN.to_string(), |(w, s)| terrain_lo_key(*q, &w, &s, &tmids)),
         ));
-        // (Its terrain: its own lo pack, its edge neighbours' (Horn's border of the tiles it shades
-        // itself) and the root (a missing tile's ancestor).)
-        let terrain: Vec<String> = std::iter::once(*q)
-            .chain(edge_neighbours(3, q.0, q.1))
-            .map(|(x, y)| get(&format!("layers/terrain/lo/3-{x}-{y}")).to_string())
-            .chain(std::iter::once(get("layers/terrain/root/0-0-0").to_string()))
-            .collect();
-        out.slope_lo.push((qs.clone(), slope_lo_key(*q, &smids, &terrain.join(","))));
+        out.slope_lo.push((qs.clone(), slope_lo_key(*q, &smids, &slope_lo_terrain(*q, m))));
     }
     // The z6 tiles the coverage has left with a hi pack or a mid still named: "none" z6 tiles.
     let pieces: BTreeSet<(u32, u32)> = near.values().flatten().copied().collect();
@@ -1873,6 +1867,19 @@ pub fn slope_lo_key(q: (u32, u32), mids: &[String], terrain_lo: &str) -> String 
     ])
 }
 
+/// The terrain a slope-lo z3 tile `q` reads, by content (its key's): its own lo pack, its edge
+/// neighbours' (Horn's border of the tiles it shades itself) and the root (a missing tile's
+/// ancestor).
+pub fn slope_lo_terrain(q: (u32, u32), m: &BTreeMap<String, String>) -> String {
+    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-").to_string();
+    std::iter::once(q)
+        .chain(edge_neighbours(3, q.0, q.1))
+        .map(|(x, y)| get(&format!("layers/terrain/lo/3-{x}-{y}")))
+        .chain(std::iter::once(get("layers/terrain/root/0-0-0")))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Slope-hi z6 tile `t`'s key (z6 tile (x, y)): the step's version and the codec
 /// (crate::shade_codec::version), its terrain hi pack (which tiles of it there are: what it works
 /// out), its z10 tiles' deep mids by content (their slope-deep runs' parts, which it takes in:
@@ -2045,20 +2052,22 @@ pub struct TerrainWork {
     /// Its assemblies that can run: stale, every z6 tile of theirs current with its mid; and the
     /// "none" assemblies not yet run (`TerrainTargets::terrain_lo_none`), whenever, last.
     pub terrain_lo: Vec<(String, String)>,
-    /// Slope's z6 tiles that can run: stale, their key known, the terrain of their z3 tile and of their
-    /// edge neighbours' z3 tiles built (none of them in `terrain_left`); and the "none" z6 tiles not yet
-    /// run (`TerrainTargets::slope_none`), whenever, last.
+    /// Slope's z6 tiles that can run: stale, their key known, none of the targets they read left
+    /// (crate::agent::steps' declaration: their own and edge neighbours' terrain-hi, those z3 tiles'
+    /// terrain-lo, their z10 tiles' slope-deep); and the "none" z6 tiles not yet run
+    /// (`TerrainTargets::slope_none`), whenever, last.
     pub slope: Vec<(String, String)>,
-    /// Its assemblies that can run: stale, every z6 tile of theirs current, their z3 tile's terrain
-    /// built (one current without a mid has its tiles in the lo pack); and the "none" assemblies
-    /// not yet run (`TerrainTargets::slope_lo_none`), whenever, last.
+    /// Its assemblies that can run: stale, none of the targets they read left (their z6 tiles'
+    /// slope-hi, their own and edge neighbours' terrain-lo); and the "none" assemblies not yet run
+    /// (`TerrainTargets::slope_lo_none`), whenever, last.
     pub slope_lo: Vec<(String, String)>,
     /// Terrain-deep's z10 tiles that can run: every stale one whose key is known, from the start
     /// (its base is made from the pool, not read from built tiles), and the "none" ones not yet run.
     pub terrain_deep: Vec<(String, String)>,
-    /// Slope-deep's z10 tiles that can run: stale, their key known, the terrain of their z6 tile's z3
-    /// tile and of its edge neighbours' built (none of them in `terrain_left`, the deep levels' among
-    /// it); and the "none" ones not yet run, whenever.
+    /// Slope-deep's z10 tiles that can run: stale, their key known, none of the targets they read
+    /// left (their own and edge neighbours' terrain-deep, those tiles' z6 terrain-hi and z3
+    /// terrain-lo), however much other terrain their z3 tile has left (task #864); and the "none"
+    /// ones not yet run, whenever.
     pub slope_deep: Vec<(String, String)>,
     /// The stale terrain-deep and slope-deep targets, "none" ones too, runnable or not.
     pub terrain_deep_left: BTreeSet<String>,
@@ -2068,8 +2077,9 @@ pub struct TerrainWork {
     /// terrain's in z3 tiles whose assembly won't run, slope's all.
     pub backfill: Vec<Work>,
     /// The z3 tiles whose terrain is to be made: a z6 tile stale or wanted for its mid, the assembly
-    /// stale, or a deep target stale (what the z6 tiles and peaks there wait for, and their regions:
-    /// a z6 tile's roads read the deep tiles under them).
+    /// stale, or a deep target stale (what the z6 tiles' roads and peaks there wait for, and their
+    /// regions: a z6 tile's roads read the deep tiles under them; not the slope's, which waits for
+    /// what each target reads).
     pub terrain_left: BTreeSet<String>,
     /// What a region lacks before it's published, runnable or not: the stale z6 tiles, by target, and
     /// the stale assemblies, by z3 tile; and the z3 tiles with either, of slope.
@@ -2124,25 +2134,23 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
         }
     }
     w.terrain.extend(tt.terrain_none.iter().filter(|(t, k)| !current(t, k)).cloned());
-    w.terrain_lo = tt
-        .terrain_lo
-        .iter()
-        .filter(|(q, k)| {
-            k != UNKNOWN
-                && w.terrain_lo_left.contains(q)
-                && tt
-                    .terrain
-                    .iter()
-                    .filter(|(t, _)| z3_of(t).as_deref() == Some(q.as_str()))
-                    .all(|(t, k)| current(t, k) && has_mid(&tmid, t))
-        })
-        .cloned()
-        .collect();
-    if w.terrain_lo_left.iter().any(|q| {
-        !w.terrain_lo.iter().any(|(t, _)| t == q)
-            && w.terrain_pieces_left.iter().any(|t| z3_of(t).as_deref() == Some(q))
-    }) {
-        w.held.push(("terrain-lo", TERRAIN_LO_WAIT));
+    // (Its reads, the z6 tiles' mids: a z6 tile is built for it current with its mid.)
+    let unmid: BTreeSet<&str> =
+        tt.terrain.iter().filter(|(t, k)| !(current(t, k) && has_mid(&tmid, t))).map(|p| p.0.as_str()).collect();
+    let lo_left = |s: &str, t: &str| s == "terrain-hi" && unmid.contains(t);
+    let mut lo_held = false;
+    for (q, k) in &tt.terrain_lo {
+        if k == UNKNOWN || !w.terrain_lo_left.contains(q) {
+            continue;
+        }
+        if !waits("terrain-lo", q, &lo_left) {
+            w.terrain_lo.push((q.clone(), k.clone()));
+        } else if w.terrain_pieces_left.iter().any(|t| z3_of(t).as_deref() == Some(q)) {
+            lo_held = true;
+        }
+    }
+    if lo_held {
+        w.held.push(("terrain-lo", wait_note("terrain-lo")));
     }
     // (A "none" assembly reads nothing: it runs whenever, its z3 tile left until it has.)
     w.terrain_lo.extend(lo_none);
@@ -2205,76 +2213,64 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
         .cloned()
         .chain(w.slope_pieces_left.iter().chain(&w.slope_deep_left).filter_map(|t| z3_of(t)))
         .collect();
-    // (A z6 tile's terrain built: its z3 tile's and its edge neighbours', the deep levels' too.)
-    let built = |t: &str| {
-        TileId::parse(t).is_some_and(|u| {
-            let k = u.z.saturating_sub(6);
-            let (x6, y6) = (u.x >> k, u.y >> k);
-            std::iter::once((x6, y6))
-                .chain(edge_neighbours(6, x6, y6))
-                .all(|(x, y)| !w.terrain_left.contains(&format!("3/{}/{}", x >> 3, y >> 3)))
-        })
+    // (Each slope target waits for exactly what it reads, its row's declaration: crate::agent::steps.)
+    let left = |s: &str, t: &str| match s {
+        "terrain-hi" => w.terrain_pieces_left.contains(t),
+        "terrain-lo" => w.terrain_lo_left.contains(t),
+        "terrain-deep" => w.terrain_deep_left.contains(t),
+        "slope-deep" => w.slope_deep_left.contains(t),
+        "slope-hi" => w.slope_pieces_left.contains(t),
+        _ => false,
     };
     let mut sd_held = false;
+    let mut slope_deep = Vec::new();
     for (t, k) in &tt.slope_deep {
         let Some(k) = k else { continue };
         if !sdcurrent(t, &Some(k.clone())) {
-            if built(t) {
-                w.slope_deep.push((t.clone(), k.clone()));
-            } else {
+            if waits("slope-deep", t, &left) {
                 sd_held = true;
+            } else {
+                slope_deep.push((t.clone(), k.clone()));
             }
         }
     }
-    if sd_held {
-        w.held.push(("slope-deep", SLOPE_DEEP_WAIT));
-    }
-    w.slope_deep.extend(sdnone);
-    // (A z6 tile waits for its z10 tiles' slope-deep runs: it takes their parts in.)
-    let deep_done = |t: &str| {
-        TileId::parse(t).is_some_and(|u| {
-            let k = crate::terrain_deep::PACK_Z - 6;
-            !w.slope_deep_left.iter().any(|d| TileId::parse(d).is_some_and(|d| (d.x >> k, d.y >> k) == (u.x, u.y)))
-        })
-    };
     let mut idle = Vec::new();
-    let (mut s_terrain, mut s_deep) = (false, false);
+    let mut slope = Vec::new();
+    let mut s_held = false;
     for (t, k) in &tt.slope {
         let Some(k) = k else { continue };
         if !scurrent(t, &Some(k.clone())) {
-            if built(t) && deep_done(t) {
-                w.slope.push((t.clone(), k.clone()));
-            } else if built(t) {
-                s_deep = true;
+            if waits("slope-hi", t, &left) {
+                s_held = true;
             } else {
-                s_terrain = true;
+                slope.push((t.clone(), k.clone()));
             }
         } else if !has_mid(&smid, t) {
             idle.push((t.clone(), k.clone()));
         }
     }
-    // (Each wait said once: a z6 tile whose terrain isn't built waits for that first.)
-    match (s_terrain, s_deep) {
-        (true, true) => w.held.push(("slope-hi", SLOPE_HI_BOTH_WAIT)),
-        (true, false) => w.held.push(("slope-hi", SLOPE_HI_WAIT)),
-        (false, true) => w.held.push(("slope-hi", SLOPE_HI_DEEP_WAIT)),
-        (false, false) => {}
+    let mut slope_lo = Vec::new();
+    let mut slo_held = false;
+    for (q, k) in &tt.slope_lo {
+        if w.slope_lo_left.contains(q) {
+            if waits("slope-lo", q, &left) {
+                slo_held = true;
+            } else {
+                slope_lo.push((q.clone(), k.clone()));
+            }
+        }
     }
-    // (A "none" z6 tile reads no terrain: it runs whenever.)
+    for (held, step) in [(sd_held, "slope-deep"), (s_held, "slope-hi"), (slo_held, "slope-lo")] {
+        if held {
+            w.held.push((step, wait_note(step)));
+        }
+    }
+    w.slope_deep = slope_deep;
+    w.slope_deep.extend(sdnone);
+    w.slope = slope;
+    // (A "none" target reads nothing: it runs whenever.)
     w.slope.extend(snone);
-    w.slope_lo = tt
-        .slope_lo
-        .iter()
-        .filter(|(q, _)| {
-            w.slope_lo_left.contains(q)
-                && !w.terrain_left.contains(q)
-                && !w.slope_pieces_left.iter().any(|t| z3_of(t).as_deref() == Some(q.as_str()))
-        })
-        .cloned()
-        .collect();
-    if tt.slope_lo.iter().any(|(q, _)| w.slope_lo_left.contains(q) && !w.slope_lo.iter().any(|(t, _)| t == q)) {
-        w.held.push(("slope-lo", SLOPE_LO_WAIT));
-    }
+    w.slope_lo = slope_lo;
     w.slope_lo.extend(slo_none);
     if !idle.is_empty() {
         w.backfill.push(Work { step: "slope-hi".into(), targets: idle });
@@ -2300,7 +2296,7 @@ pub struct TreeWork {
     /// What a region lacks before it's published: the stale z6 tiles and assemblies, runnable or not.
     pub stale_pieces: BTreeSet<String>,
     pub stale_lo: BTreeSet<String>,
-    /// A stale assembly that can't run yet: it waits for its z6 tiles' mids (`TREES_LO_WAIT`).
+    /// A stale assembly that can't run yet: it waits for its z6 tiles' mids (`wait_note`).
     pub lo_held: bool,
 }
 
@@ -2750,7 +2746,7 @@ pub fn plan(
     } = tree_work(&tt, m, done);
     let mut held_steps: Vec<(String, String)> = tw.held.iter().map(|(s, w)| (s.to_string(), w.to_string())).collect();
     if trees_lo_held {
-        held_steps.push(("trees-lo".into(), TREES_LO_WAIT.into()));
+        held_steps.push(("trees-lo".into(), wait_note("trees-lo").into()));
     }
     let mut backfill: Vec<Work> = Vec::new();
     if !tree_backfill.is_empty() {
@@ -5659,6 +5655,141 @@ pub(crate) mod tests {
         assert!(!reads.contains(&Some((6, 28, 16, 6))) && reads.contains(&None), "{reads:?}");
     }
 
+    /// Task #864: a slope-deep z10 target waits for what it reads alone (its own and its edge
+    /// neighbours' terrain-deep, their z6 tiles' terrain-hi and z3 tiles' terrain-lo): it's offered
+    /// while other terrain of its z3 tile (another z10 tile's deep levels) is left; that one waits.
+    #[test]
+    fn a_slope_deep_target_waits_only_for_what_it_reads() {
+        let k = |s: &str| (s.to_string(), "k".to_string());
+        let (a, b) = ("10/400/300", "10/500/370");
+        assert_eq!((z3_of(a), z3_of(b)), (Some("3/3/2".into()), Some("3/3/2".into())));
+        let near: Vec<String> = std::iter::once((400, 300))
+            .chain(edge_neighbours(10, 400, 300))
+            .map(|(x, y)| format!("10/{x}/{y}"))
+            .collect();
+        let tt = TerrainTargets {
+            terrain: vec![k("6/25/18"), k("6/31/23")],
+            terrain_lo: vec![k("3/3/2")],
+            terrain_deep: near.iter().map(|t| k(t)).chain([k(b)]).collect(),
+            slope_deep: [a, b].iter().map(|t| (t.to_string(), Some("s".to_string()))).collect(),
+            ..Default::default()
+        };
+        let mut done = Keys::default();
+        done.record("terrain-hi", &tt.terrain);
+        done.record("terrain-lo", &tt.terrain_lo);
+        done.record("terrain-deep", &near.iter().map(|t| k(t)).collect::<Vec<_>>());
+        let w = terrain_work(&tt, &BTreeMap::new(), &done);
+        assert!(w.terrain_left.contains("3/3/2"), "its z3 tile still has terrain left (10/500/370's deep)");
+        assert_eq!(w.slope_deep, vec![(a.to_string(), "s".to_string())], "{w:?}");
+        assert!(w.held.contains(&("slope-deep", wait_note("slope-deep"))), "{:?}", w.held);
+        // A neighbour's deep levels left: it waits too.
+        let mut done2 = Keys::default();
+        done2.record("terrain-hi", &tt.terrain);
+        done2.record("terrain-lo", &tt.terrain_lo);
+        done2.record("terrain-deep", &near[..4].iter().map(|t| k(t)).collect::<Vec<_>>());
+        assert!(terrain_work(&tt, &BTreeMap::new(), &done2).slope_deep.is_empty());
+        // Its z6 tile's terrain-hi left: it waits.
+        let mut done3 = Keys::default();
+        done3.record("terrain-hi", &[k("6/31/23")]);
+        done3.record("terrain-lo", &tt.terrain_lo);
+        done3.record("terrain-deep", &near.iter().map(|t| k(t)).collect::<Vec<_>>());
+        assert!(terrain_work(&tt, &BTreeMap::new(), &done3).slope_deep.is_empty());
+    }
+
+    /// Task #864: each slope step's declared reads (crate::agent::steps::reads_of) are exactly the
+    /// packs its key's inputs name (`slope_deep_from`, `slope_piece_from`, the slope-lo key's
+    /// terrain): every pack near a target is changed in turn, and its key changes just when that
+    /// pack is one of a declared target's (the root aside: read, never waited on). A step reading
+    /// something it doesn't declare fails here.
+    #[test]
+    fn declared_reads_cover_the_keys() {
+        use crate::agent::steps::reads_of;
+        // (The logical names a declared read stands for, as the slope keys name them.)
+        let names = |step: &str, t: &str| -> Vec<String> {
+            let u = TileId::parse(t).unwrap();
+            match step {
+                "terrain-hi" => vec![format!("layers/terrain/hi/6-{}-{}", u.x, u.y)],
+                "terrain-lo" => vec![format!("layers/terrain/lo/3-{}-{}", u.x, u.y)],
+                "terrain-deep" => vec![crate::terrain_deep::pack_logical(u.x, u.y)],
+                "slope-deep" => vec![crate::slope_pack::deep_mid_logical(u.x, u.y)],
+                "slope-hi" => vec![crate::slope_pack::mid_logical(u.x, u.y)],
+                s => panic!("an undeclared read's step {s}"),
+            }
+        };
+        // (Every pack in a window around a tile: the candidates.)
+        let window = |z: u8, x: u32, y: u32, r: u32| -> Vec<(u32, u32)> {
+            (x - r..=x + r).flat_map(|a| (y - r..=y + r).map(move |b| (a, b))).filter(|_| z > 0).collect()
+        };
+        // (`of`: the declared reads' step the key checked names; None, all.)
+        let check = |step: &str,
+                     target: &str,
+                     of: Option<&str>,
+                     cands: Vec<String>,
+                     key: &dyn Fn(&BTreeMap<String, String>) -> String| {
+            let declared: BTreeSet<String> = reads_of(step, target)
+                .iter()
+                .filter(|(s, _)| of.is_none_or(|o| o == *s))
+                .flat_map(|(s, t)| names(s, t))
+                .collect();
+            assert!(!declared.is_empty(), "{step} declares its reads");
+            let base: BTreeMap<String, String> = cands.iter().map(|l| (l.clone(), "a".to_string())).collect();
+            let k0 = key(&base);
+            for l in &cands {
+                let mut m = base.clone();
+                m.insert(l.clone(), "b".into());
+                let changed = key(&m) != k0;
+                assert_eq!(changed, declared.contains(l), "{step} {target}: {l} (changed {changed})");
+            }
+            for l in &declared {
+                assert!(cands.contains(l), "{step} {target}: {l} declared, not among the candidates");
+            }
+        };
+        // Slope-deep 10/400/300.
+        let mut c: Vec<String> = Vec::new();
+        for (x, y) in window(10, 400, 300, 2) {
+            c.push(crate::terrain_deep::pack_logical(x, y));
+        }
+        for (x, y) in window(6, 25, 18, 1) {
+            c.push(format!("layers/terrain/hi/6-{x}-{y}"));
+        }
+        for (x, y) in window(3, 3, 2, 1) {
+            c.push(format!("layers/terrain/lo/3-{x}-{y}"));
+        }
+        check("slope-deep", "10/400/300", None, c.clone(), &|m| slope_deep_from((400, 300), m));
+        // Slope-deep at its z6 tile's corner: 10/400/288 (6/25/18's top row), its north neighbour in 6/25/17.
+        let mut c2: Vec<String> = Vec::new();
+        for (x, y) in window(10, 400, 288, 2) {
+            c2.push(crate::terrain_deep::pack_logical(x, y));
+        }
+        for (x, y) in window(6, 25, 18, 1) {
+            c2.push(format!("layers/terrain/hi/6-{x}-{y}"));
+        }
+        for (x, y) in window(3, 3, 2, 1) {
+            c2.push(format!("layers/terrain/lo/3-{x}-{y}"));
+        }
+        check("slope-deep", "10/400/288", None, c2, &|m| slope_deep_from((400, 288), m));
+        // Slope-hi 6/24/16 (its z3 tile's corner: neighbours in three z3 tiles).
+        let mut c: Vec<String> = Vec::new();
+        for (x, y) in window(6, 24, 16, 2) {
+            c.push(format!("layers/terrain/hi/6-{x}-{y}"));
+        }
+        for (x, y) in window(3, 3, 2, 1) {
+            c.push(format!("layers/terrain/lo/3-{x}-{y}"));
+        }
+        for x in 24 * 16 - 1..=25 * 16 {
+            for y in 16 * 16 - 1..=17 * 16 {
+                c.push(crate::slope_pack::deep_mid_logical(x, y));
+            }
+        }
+        check("slope-hi", "6/24/16", None, c, &|m| slope_piece_from((24, 16), m));
+        // Slope-lo 3/3/2: its terrain (its z6 tiles' mids, its key's other part, are its own targets').
+        let mut c: Vec<String> = Vec::new();
+        for (x, y) in window(3, 3, 2, 2) {
+            c.push(format!("layers/terrain/lo/3-{x}-{y}"));
+        }
+        check("slope-lo", "3/3/2", Some("terrain-lo"), c, &|m| slope_lo_terrain((3, 2), m));
+    }
+
     /// A step whose stale targets wait for another step's (slope for the terrain of its z3 tile and its
     /// neighbours', the terrain assemblies for their z6 tiles) reports a waiting note saying so
     /// (`TerrainWork::held`, `Plan::held`); once the terrain is built the slope's note is gone.
@@ -5670,8 +5801,8 @@ pub(crate) mod tests {
         let tw = terrain_work(&tt, &m, &Keys::default());
         assert!(tw.slope.is_empty() && !tw.terrain.is_empty(), "slope offered none, terrain some: {tw:?}");
         let held = |tw: &TerrainWork, s: &str| tw.held.iter().find(|(h, _)| *h == s).map(|(_, w)| *w);
-        assert_eq!(held(&tw, "slope-hi"), Some(SLOPE_HI_WAIT));
-        assert_eq!(held(&tw, "terrain-lo"), Some(TERRAIN_LO_WAIT));
+        assert_eq!(held(&tw, "slope-hi"), Some(wait_note("slope-hi")));
+        assert_eq!(held(&tw, "terrain-lo"), Some(wait_note("terrain-lo")));
         assert!(held(&tw, "slope-lo").is_some());
         // The terrain all built: slope's hi tiles are offered, and say nothing.
         let mut done = Keys::default();

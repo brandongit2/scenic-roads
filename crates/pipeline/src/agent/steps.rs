@@ -163,6 +163,93 @@ pub struct Step {
     /// Its jobs only change build records (no file made, read or removed): never a cold start,
     /// packed beside any jobs at one thread and little memory (task #838, crate::coord::sched).
     pub records_only: bool,
+    /// What one target of it reads of other steps' targets, and so waits for (`Reads`): the
+    /// planner, the forecast and the page's waits all derive readiness per target from it (task
+    /// #864). None: it reads no other tiled step's targets (a world step's waits are its own).
+    pub reads: Option<Reads>,
+}
+
+/// What a target of a step reads of other steps' targets (`of`: (step, target) for each, any
+/// order, repeats allowed; a target listed that isn't one of its step's reads as built), and the
+/// waiting note said while one of them is left (`why`, in the summits' form: what the step waits
+/// for). Derived from what its run reads (its key's inputs: `agent::build`'s `slope_deep_from`,
+/// `slope_piece_from`, the lo keys), each a test checks against (`declared_reads_cover_the_keys`).
+/// Not waited on, though read: the terrain root (z0–2, built at the finish from every lo pack: a
+/// missing tile's farthest ancestor), whose change re-keys its readers anyway.
+#[derive(Clone, Copy, Debug)]
+pub struct Reads {
+    pub of: fn(&str) -> Vec<(&'static str, String)>,
+    pub why: &'static str,
+}
+
+/// The z6 tiles of z3 tile (x, y).
+fn z6_under(x: u32, y: u32) -> impl Iterator<Item = (u32, u32)> {
+    (0..64u32).map(move |i| (x * 8 + i % 8, y * 8 + i / 8))
+}
+
+/// (z, x, y) of a target, at zoom `z` only.
+fn at(t: &str, z: u8) -> Option<(u32, u32)> {
+    TileId::parse(t).filter(|u| u.z == z).map(|u| (u.x, u.y))
+}
+
+/// A tile and its edge neighbours (Horn's border: crate::slope_pack::slope_tile).
+fn with_edges(z: u8, x: u32, y: u32) -> impl Iterator<Item = (u32, u32)> {
+    std::iter::once((x, y)).chain(super::build::edge_neighbours(z, x, y))
+}
+
+/// terrain-lo 3/x/y: its z6 tiles' terrain (their mids).
+fn r_terrain_lo(t: &str) -> Vec<(&'static str, String)> {
+    at(t, 3).into_iter().flat_map(|(x, y)| z6_under(x, y)).map(|(a, b)| ("terrain-hi", format!("6/{a}/{b}"))).collect()
+}
+
+/// slope-deep 10/x/y: the deep packs of it and its edge neighbours, the hi packs of their z6 tiles
+/// and the lo packs of their z3 tiles (`slope_deep_from`).
+fn r_slope_deep(t: &str) -> Vec<(&'static str, String)> {
+    let pz = crate::terrain_deep::PACK_Z;
+    let k = pz - 6;
+    let mut v = Vec::new();
+    for (x, y) in at(t, pz).into_iter().flat_map(|(x, y)| with_edges(pz, x, y)) {
+        v.push(("terrain-deep", format!("{pz}/{x}/{y}")));
+        v.push(("terrain-hi", format!("6/{}/{}", x >> k, y >> k)));
+        v.push(("terrain-lo", format!("3/{}/{}", x >> (k + 3), y >> (k + 3))));
+    }
+    v
+}
+
+/// slope-hi 6/x/y: the hi packs of it and its edge neighbours, their z3 tiles' lo packs, and its
+/// z10 tiles' slope-deep parts (`slope_piece_from`).
+fn r_slope_hi(t: &str) -> Vec<(&'static str, String)> {
+    let pz = crate::terrain_deep::PACK_Z;
+    let s = 1u32 << (pz - 6);
+    let mut v = Vec::new();
+    for (x, y) in at(t, 6).into_iter().flat_map(|(x, y)| with_edges(6, x, y)) {
+        v.push(("terrain-hi", format!("6/{x}/{y}")));
+        v.push(("terrain-lo", format!("3/{}/{}", x >> 3, y >> 3)));
+    }
+    if let Some((x, y)) = at(t, 6) {
+        v.extend((0..s * s).map(|i| ("slope-deep", format!("{pz}/{}/{}", x * s + i % s, y * s + i / s))));
+    }
+    v
+}
+
+/// slope-lo 3/x/y: its z6 tiles' slope (their mids), and the lo terrain of it and its edge
+/// neighbours (`slope_lo_key`'s terrain).
+fn r_slope_lo(t: &str) -> Vec<(&'static str, String)> {
+    let Some((x, y)) = at(t, 3) else { return Vec::new() };
+    z6_under(x, y)
+        .map(|(a, b)| ("slope-hi", format!("6/{a}/{b}")))
+        .chain(with_edges(3, x, y).map(|(a, b)| ("terrain-lo", format!("3/{a}/{b}"))))
+        .collect()
+}
+
+/// trees-lo 3/x/y: its z6 tiles' tree cover (their mids).
+fn r_trees_lo(t: &str) -> Vec<(&'static str, String)> {
+    at(t, 3).into_iter().flat_map(|(x, y)| z6_under(x, y)).map(|(a, b)| ("trees", format!("6/{a}/{b}"))).collect()
+}
+
+/// What a target of `step` reads of other steps' targets (`Step::reads`; none for a step without).
+pub fn reads_of(step: &str, target: &str) -> Vec<(&'static str, String)> {
+    row(step).and_then(|r| r.reads).map_or_else(Vec::new, |r| (r.of)(target))
 }
 
 /// A row with what most steps have: 1.5 GB until measured, none of the sets.
@@ -186,6 +273,7 @@ const fn step(
         answered: false,
         writes,
         records_only: false,
+        reads: None,
     }
 }
 
@@ -404,6 +492,7 @@ pub const TABLE: [Step; 59] = [
     // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its z6 tiles' z9 means, up to 4 MB a
     // z6 tile, and half a GB besides.)
     Step {
+        reads: Some(Reads { of: r_terrain_lo, why: "wait for the terrain-hi tiles of their z3 tile" }),
         mem_mb: 1200,
         ..step(
             "terrain",
@@ -418,6 +507,7 @@ pub const TABLE: [Step; 59] = [
     // lo_peak_mb; slope-deep's and slope-hi's with the coverage their process reads added by the
     // agent, crate::coverage::Coverage::read_peak_mb.)
     Step {
+        reads: Some(Reads { of: r_slope_deep, why: "wait for the terrain they read: their z10 tile's and its edge neighbours' (terrain-deep), those tiles' z6 tiles (terrain-hi) and z3 tiles (terrain-lo)" }),
         mem_mb: crate::slope_pack::deep_peak_mb(),
         shared: Some(2),
         ..step(
@@ -430,6 +520,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
+        reads: Some(Reads { of: r_slope_hi, why: "wait for the terrain they read: their own and their edge neighbours' (terrain-hi) and those tiles' z3 tiles (terrain-lo); and their z10 tiles' slope-deep" }),
         mem_mb: crate::slope_pack::peak_mb(),
         shared: Some(3),
         ..step(
@@ -442,6 +533,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
+        reads: Some(Reads { of: r_slope_lo, why: "wait for the slope-hi tiles of their z3 tile and the terrain of it and its edge neighbours (terrain-lo)" }),
         mem_mb: crate::slope_pack::lo_peak_mb(),
         ..step(
             "slope",
@@ -499,6 +591,7 @@ pub const TABLE: [Step; 59] = [
         ..step("trees", Pack, Z6, "trees", "Maps a tile's tree cover, height and leaf type.", w_trees)
     },
     Step {
+        reads: Some(Reads { of: r_trees_lo, why: "wait for the trees tiles of their z3 tile" }),
         mem_mb: 500,
         ..step(
             "trees",
