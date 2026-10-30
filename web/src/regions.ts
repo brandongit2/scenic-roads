@@ -161,7 +161,7 @@ const COLOUR: ExpressionSpecification = ['case', ['to-boolean', ['get', 'disable
 /** A region row hovered in the panel: its outline in a pale white no other line uses. */
 const PREVIEW = '#dce7f5';
 /** Past this zoom the outlines asked are those meeting the view (and around it), not the world's. */
-const VIEW_FROM_Z = 6;
+const VIEW_FROM_Z = 3;
 
 /**
  * "Show regions on map": every declared region's outline (green, disabled ones grey) and its name,

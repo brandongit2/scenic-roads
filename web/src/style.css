@@ -444,7 +444,7 @@ input.switch:checked::after { transform: translateX(11px); background: #0b0e13; 
 #strip .regionline .kind { flex: none; color: var(--faint); font-size: 11px; }
 #strip .regionline .facts { flex: 0 1 auto; min-width: 0; margin-left: 4px; padding-left: 11px; border-left: 1px solid var(--line-strong); overflow: hidden; text-overflow: ellipsis; }
 #strip .regionline .fact { color: var(--text); }
-#strip .regionline .fact + .fact::before { content: '·'; color: var(--faint); margin: 0 6px; }
+#strip .regionline .fact + .fact::before { content: '·'; color: var(--muted); margin: 0 6px; }
 #strip .info .chip.depth { background: rgba(127, 196, 232, 0.14); color: #9fd3ef; }
 #strip .road .line-sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 #strip .info .chip.area { background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--c); }

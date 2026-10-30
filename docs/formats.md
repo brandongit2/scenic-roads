@@ -813,7 +813,7 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   its largest polygon for its name) and `area` (its first osm: part's `iso`, `country`, `in`: its
   flag), and `z`; `bbox` keeps the regions whose box meets it, `ids` those named. Made from the
   accepted copy's drawn files kept on the Mac (else the catalogue's recorded coverage) once per zoom
-  and version, and kept in memory: about 0.2 MB at z0 against 142 MB for every full outline.
+  and version, and kept in memory: 0.9 MB for the world at z0, 4.7 MB at z4 (the map asks the view's box from z3), against 142 MB for every full outline.
   `/api/coverage` (the catalogue's coverage as GeoJSON, one feature per outline entry, with
   `regions` and `catalog`: the bench's views).
 - **Names in answers:** MVT tiles and API JSON carry `main` and, when any, `sub`; JSON layer files,
