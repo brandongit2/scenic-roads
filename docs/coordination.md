@@ -317,3 +317,12 @@ Once every step has landed and its gate has passed, the pool writes nothing smal
    disk (everything else members re-send).
 5. **The history:** members' events in the beat to the lead's one file (proposed) against members
    keeping their own files on the NAS as today (appends, which SMB handles less badly than creates).
+
+## Decisions (PM, 30 Oct night)
+
+1. An away member's leases are released after 12 h unheard. A repeat costs doubled work only, since the merge refuses the old lease's result, and a lease no one releases would stall the build while the owner is away.
+2. The records brief is served over HTTP to agents too, as a later step.
+3. Store format: JSON log plus snapshot (no new dependency).
+4. The store is backed up to the NAS every 10 min.
+5. History: members' events go in the beat, to one file on the lead.
+6. Step 5 deletes a switch only once it reads on for every member; a switch still off anywhere moves to `/pool/settings` instead.
