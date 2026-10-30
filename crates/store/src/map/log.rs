@@ -32,6 +32,14 @@ pub struct Log {
     map: Arc<Map>,
     cursors: BTreeMap<String, Cursor>,
     open: Option<Segment>,
+    /// A failed append whose bytes couldn't be cut off again: no more appends until the log is
+    /// opened again (which cuts them as a torn last line), so none lands after them.
+    torn: bool,
+}
+
+/// `fsync` of a folder: the names made, renamed or removed in it durable.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    File::open(dir)?.sync_all()
 }
 
 fn segment_name(first: u64) -> String {
@@ -81,7 +89,7 @@ impl Log {
                     break;
                 };
                 if b.seq > map.seq {
-                    map.apply_in(&b).with_context(|| format!("{}", path.display()))?;
+                    drop(map.apply_in(&b).with_context(|| format!("{}", path.display()))?);
                 }
                 batches += 1;
                 at = end.expect("parsed lines end") + 1;
@@ -91,7 +99,7 @@ impl Log {
                 open = Some(Segment { first, file, batches, bytes: at as u64 });
             }
         }
-        Ok(Log { dir: dir.to_owned(), map: Arc::new(map), cursors, open })
+        Ok(Log { dir: dir.to_owned(), map: Arc::new(map), cursors, open, torn: false })
     }
 
     /// The map now: swapped whole at each batch.
@@ -111,45 +119,57 @@ impl Log {
         self.write_snapshot()
     }
 
-    /// Appends `b`: applied to a copy of the map (checked by its digest), written and `fsync`ed, then
-    /// the copy swapped in. Nothing changes when it doesn't apply or can't be written.
+    /// Appends `b`: applied to the map (checked by its digest), written and `fsync`ed. Nothing
+    /// changes when it doesn't apply or can't be written. A reader holding the map (`map`) keeps the
+    /// one it has: the batch is then applied to a copy, swapped in; with none, in place, never a
+    /// second whole map.
     pub fn append(&mut self, b: &Batch) -> Result<Arc<Map>> {
-        let next = Arc::new(self.map.apply(b)?);
+        ensure!(!self.torn, "the map's log has a failed write it couldn't cut off: reopen it");
         let mut line = serde_json::to_vec(b)?;
         line.push(b'\n');
+        let map = Arc::make_mut(&mut self.map);
+        let undo = map.apply_in(b)?;
         let roll = self.open.as_ref().is_none_or(|s| s.batches >= SEGMENT_BATCHES || s.bytes >= SEGMENT_BYTES);
         if roll {
             let path = self.dir.join(segment_name(b.seq));
-            let file = OpenOptions::new()
+            let made = OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&path)
-                .with_context(|| format!("open {}", path.display()))?;
-            self.open = Some(Segment { first: b.seq, file, batches: 0, bytes: 0 });
+                .and_then(|file| sync_dir(&self.dir).map(|()| file))
+                .with_context(|| format!("open {}", path.display()));
+            match made {
+                Ok(file) => self.open = Some(Segment { first: b.seq, file, batches: 0, bytes: 0 }),
+                Err(e) => {
+                    map.undo(undo);
+                    return Err(e);
+                }
+            }
         }
         let s = self.open.as_mut().expect("opened above");
         let wrote = s.file.write_all(&line).and_then(|_| s.file.sync_data());
         if let Err(e) = wrote {
-            // (Whatever went down cut off again; failing that, it's a torn last line, cut at the next
-            // open.)
-            let _ = s.file.set_len(s.bytes);
+            // (Whatever went down cut off again; failing that, no more appends: it's a torn last
+            // line, cut at the next open.)
+            self.torn = s.file.set_len(s.bytes).and_then(|_| s.file.sync_data()).is_err();
+            map.undo(undo);
             return Err(e).context("append to the map's log");
         }
         s.batches += 1;
         s.bytes += line.len() as u64;
-        self.map = next;
         Ok(self.map.clone())
     }
 
     fn write_snapshot(&self) -> Result<()> {
-        let b = Snapshot::of(&self.map, self.cursors.clone()).encode()?;
+        let b = Snapshot::of(&self.map, &self.cursors).encode()?;
         let path = self.dir.join(SNAPSHOT);
         let tmp = crate::naming::tmp_path(&path);
         let mut f = File::create(&tmp)?;
         f.write_all(&b)?;
         f.sync_all()?;
         fs::rename(&tmp, &path).with_context(|| format!("rename into {}", path.display()))?;
-        Ok(())
+        // (The rename durable before any segment it covers goes.)
+        sync_dir(&self.dir).with_context(|| format!("fsync {}", self.dir.display()))
     }
 
     /// Writes the snapshot at the map's `seq` and removes each segment all of whose batches it holds

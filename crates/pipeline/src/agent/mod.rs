@@ -18719,6 +18719,57 @@ mod pool_tests {
     }
 
     #[test]
+    fn a_catalogue_the_lead_publishes_is_its_map_log_s_in_shadow() {
+        // (docs/maplog.md §8, step 2: the catalog job's end, as the loop tends it.)
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let root = store::nasfs::NasRoot::local_for_test(r.clone());
+        let mut lead = test_agent(Options {
+            root: Some(root.clone()),
+            home: d.path().join("l/agent"),
+            bin: app(d.path()),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.step().unwrap();
+        // (What the job publishes, written here: the step's own work isn't the test's.)
+        let mut c = store::catalogue::Catalogue::new(
+            store::catalogue::list(r.join("catalog").as_path()).map_or(0, |ns| ns.into_iter().max().unwrap_or(0)) + 1,
+        );
+        c.units = vec!["6/1/1".into(), "6/1/2".into()];
+        store::catalogue::write(&r.join("catalog"), &c).unwrap();
+        let catalogue = JobSpec {
+            id: "catalog catalog".into(),
+            what: "catalog".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "true".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "catalog".into(), targets: vec![("catalog".into(), "kc".into())] }),
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        assert!(lead.try_start(0, catalogue, &cond, Some(&root), &mut Vec::new()));
+        let t = std::time::Instant::now();
+        while !lead.tend(0, &cond, Some(&root), 0).unwrap() {
+            assert!(t.elapsed() < Duration::from_secs(30), "the job ends");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // (On the shadow's own thread: its log seeded at that catalogue, and the NAS's snapshot.)
+        let nas_snap = r.join(store::map::NAS_DIR).join(store::map::nas_name(c.n));
+        while !nas_snap.exists() {
+            assert!(t.elapsed() < Duration::from_secs(30), "the shadow writes the map at {}", c.n);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let log = store::map::log::Log::open(&d.path().join("l/agent").join(publish::MAPLOG)).unwrap();
+        assert_eq!(log.map().seq, c.n);
+        log.map().check_is(&c).unwrap();
+    }
+
+    #[test]
     fn a_coordinator_stopped_frees_its_port() {
         let d = tempfile::tempdir().unwrap();
         let (c, port) = crate::coord::start_for_test(&d.path().join("a"), "m4", "");

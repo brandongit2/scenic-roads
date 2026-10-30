@@ -187,10 +187,34 @@ fn a_batch_is_checked_by_its_digest() {
     assert!(m.apply(&d).is_err());
     assert!(good.apply(&m.batch_to(&entries(&sample(8)).unwrap(), 8, "t", "", "")).is_err());
     assert_eq!(m, Map::of(&a).unwrap());
-    // Several applied to one copy.
-    let b9 = good.batch_to(&entries(&sample(9)).unwrap(), 9, "t9", "", "");
-    let b8 = m.batch_to(&entries(&sample(8)).unwrap(), 8, "t", "", "");
-    assert_eq!(m.apply_all(&[b8, b9]).unwrap().catalogue().unwrap(), Catalogue { created: "t9".into(), ..sample(9) });
+    // A batch missing one of its entries (its digest the right map's) doesn't apply either: the
+    // digest is of what the map holds after it.
+    let mut short = m.batch_to(&entries(&sample(8)).unwrap(), 8, "t", "", "");
+    let k = short.set.keys().next().unwrap().clone();
+    short.set.remove(&k);
+    assert!(m.apply(&short).is_err());
+    // In place: applied, or nothing changed; and put back by its undo.
+    let mut inplace = m.clone();
+    assert!(inplace.apply_in(&d).is_err());
+    assert_eq!(inplace, m);
+    let u = inplace.apply_in(&m.batch_to(&entries(&sample(8)).unwrap(), 8, "t", "", "")).unwrap();
+    assert_eq!(inplace, good);
+    inplace.undo(u);
+    assert_eq!(inplace, m);
+}
+
+#[test]
+fn a_batch_of_a_catalogue_is_its_entries_batch() {
+    let chain = recorded();
+    let mut m = Map::of(&chain[0]).unwrap();
+    m.check_is(&chain[0]).unwrap();
+    for c in &chain[1..] {
+        let b = m.batch_of(c, &c.app, "").unwrap();
+        assert_eq!(b, m.batch_to(&entries(c).unwrap(), c.n, &c.created, &c.app, ""));
+        assert!(m.check_is(c).is_err(), "catalogue {} changes the map", c.n);
+        drop(m.apply_in(&b).unwrap());
+        m.check_is(c).unwrap();
+    }
 }
 
 #[test]
@@ -210,7 +234,8 @@ fn a_snapshot_reads_back_and_the_nas_keeps_three() {
     assert_eq!(m.catalogue().unwrap(), sample(5));
     assert!(cursors.is_empty());
     // A damaged one doesn't read.
-    let mut b = Snapshot::of(&m, BTreeMap::new());
+    let none = BTreeMap::new();
+    let mut b = Snapshot::of(&m, &none);
     b.digest = hex(0);
     assert!(Snapshot::decode(&b.encode().unwrap()).is_err());
 }

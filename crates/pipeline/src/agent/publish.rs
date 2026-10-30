@@ -63,11 +63,24 @@ pub fn held_at(was: Option<u64>, held: bool, due: bool, now: u64) -> Option<u64>
 /// the lead's `catalog` step publishes becomes a batch of the log in the agent's `maplog/`
 /// (store::map::log), `seq` its number; the map then is checked equal to that catalogue, and a
 /// mismatch is logged loudly. Nothing reads the log yet, and the catalogues are written as before.
-/// The work (a whole catalogue turned to entries, diffed and checked, the hourly snapshots) runs on
-/// a thread of its own, never in the agent's loop.
+///
+/// The work (a catalogue diffed against the map, checked, the hourly snapshots) runs on a thread of
+/// its own, never in the agent's loop, and can't hold the loop up: `published` leaves the newest
+/// catalogue in a slot of one and returns (a catalogue the thread hadn't taken yet is replaced: the
+/// next batch spans both, so a stalled NAS write never piles catalogues up in memory). A panic there
+/// is logged and the thread goes on, its log opened again at the next catalogue.
 #[derive(Default)]
 pub struct Shadow {
-    tx: Option<std::sync::mpsc::Sender<(store::nasfs::NasRoot, std::sync::Arc<store::catalogue::Catalogue>)>>,
+    slot: Option<std::sync::Arc<Slot>>,
+}
+
+type Published = (store::nasfs::NasRoot, std::sync::Arc<store::catalogue::Catalogue>);
+
+/// The newest catalogue the thread hasn't taken.
+#[derive(Default)]
+struct Slot {
+    next: std::sync::Mutex<Option<Published>>,
+    ready: std::sync::Condvar,
 }
 
 /// The log's folder in the agent's home.
@@ -84,24 +97,31 @@ impl Shadow {
         root: &store::nasfs::NasRoot,
         cat: std::sync::Arc<store::catalogue::Catalogue>,
     ) {
-        let tx = self.tx.get_or_insert_with(|| {
-            let (tx, rx) =
-                std::sync::mpsc::channel::<(store::nasfs::NasRoot, std::sync::Arc<store::catalogue::Catalogue>)>();
-            let dir = home.join(MAPLOG);
-            std::thread::Builder::new()
-                .name("maplog".into())
-                .spawn(move || {
-                    let mut w = Writer::new(dir);
-                    for (root, cat) in rx {
-                        w.publish(&root, &cat, now());
-                    }
-                })
-                .expect("a thread starts");
-            tx
+        let slot = self.slot.get_or_insert_with(|| {
+            let slot = std::sync::Arc::new(Slot::default());
+            let (s, dir) = (slot.clone(), home.join(MAPLOG));
+            let started = std::thread::Builder::new().name("maplog".into()).spawn(move || {
+                let mut w = Writer::new(dir);
+                loop {
+                    let (root, cat) = {
+                        let mut g = s.next.lock().unwrap_or_else(|e| e.into_inner());
+                        loop {
+                            match g.take() {
+                                Some(p) => break p,
+                                None => g = s.ready.wait(g).unwrap_or_else(|e| e.into_inner()),
+                            }
+                        }
+                    };
+                    w.publish_guarded(&root, &cat, now());
+                }
+            });
+            if let Err(e) = started {
+                eprintln!("maplog: MISMATCH: the shadow's thread didn't start ({e}); no batches written");
+            }
+            slot
         });
-        if tx.send((root.clone(), cat)).is_err() {
-            eprintln!("maplog: MISMATCH: the shadow's thread is gone; no batch written");
-        }
+        *slot.next.lock().unwrap_or_else(|e| e.into_inner()) = Some((root.clone(), cat));
+        slot.ready.notify_one();
     }
 }
 
@@ -124,13 +144,26 @@ pub(crate) enum Wrote {
 pub(crate) struct Writer {
     dir: std::path::PathBuf,
     log: Option<store::map::log::Log>,
-    /// Whether a catalogue was checked whole against the map's (once a process).
-    whole_checked: bool,
 }
 
 impl Writer {
     pub(crate) fn new(dir: std::path::PathBuf) -> Writer {
-        Writer { dir, log: None, whole_checked: false }
+        Writer { dir, log: None }
+    }
+
+    /// `publish`, a panic in it logged (the log dropped, opened again from its disk next time).
+    fn publish_guarded(
+        &mut self,
+        root: &store::nasfs::NasRoot,
+        cat: &store::catalogue::Catalogue,
+        now: std::time::SystemTime,
+    ) {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.publish(root, cat, now)));
+        if let Err(p) = r {
+            let why = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned());
+            eprintln!("maplog: MISMATCH at catalogue {}: the shadow panicked: {}", cat.n, why.unwrap_or_default());
+            self.log = None;
+        }
     }
 
     /// `cat`'s batch, the map checked against it, and the snapshots when an hour has passed since
@@ -150,7 +183,9 @@ impl Writer {
         }
     }
 
-    /// `cat` as a batch of the log (`seq` its number), and the log's map then checked to be it.
+    /// `cat` as a batch of the log (`seq` its number), and the log's map then checked to be it. The
+    /// map held once: the batch is a diff of `cat`'s entries made one at a time (store::map::
+    /// each_entry), applied in place, and the check another pass of them.
     pub(crate) fn append(&mut self, cat: &store::catalogue::Catalogue) -> anyhow::Result<Wrote> {
         use anyhow::Context;
         if self.log.is_none() {
@@ -160,15 +195,13 @@ impl Writer {
             );
         }
         let log = self.log.as_mut().expect("opened above");
-        let next = store::map::entries(cat)?;
-        let head = log.map();
-        let wrote = if head.is_empty() {
-            log.seed(store::map::Map::new(cat.n, cat.created.clone(), next.clone()))?;
+        let wrote = if log.map().is_empty() {
+            log.seed(store::map::Map::of(cat)?)?;
             Wrote::Seeded
         } else {
-            anyhow::ensure!(cat.n > head.seq, "the log is at {} already: a catalogue number taken again", head.seq);
-            let why = format!("catalogue {}", cat.n);
-            let b = head.batch_to(&next, cat.n, &cat.created, &cat.app, &why);
+            let seq = log.map().seq;
+            anyhow::ensure!(cat.n > seq, "the log is at {seq} already: a catalogue number taken again");
+            let b = log.map().batch_of(cat, &cat.app, &format!("catalogue {}", cat.n))?;
             if b.is_empty() {
                 Wrote::Same
             } else {
@@ -176,28 +209,9 @@ impl Writer {
                 Wrote::Batch(b.set.len(), b.del.len())
             }
         };
-        // The check: the map is the catalogue, entry for entry (its digest, kept by the batches, the
-        // catalogue's from scratch; then the entries themselves), and, at this process's first
-        // publish, as the catalogue it gives back (that whole one costs a second copy of the map).
-        let map = log.map();
-        let want = store::map::digest_of(&next);
-        anyhow::ensure!(
-            map.digest() == want,
-            "the log's map has digest {}, the catalogue {}",
-            store::map::hex(map.digest()),
-            store::map::hex(want)
-        );
-        if let Some((k, _)) = map.entries().iter().zip(next.iter()).find(|(a, b)| a != b) {
-            anyhow::bail!("the log's map isn't the catalogue (first differing at {})", k.0);
-        }
-        anyhow::ensure!(map.entries().len() == next.len(), "the log's map isn't the catalogue (their entries' counts)");
-        if !self.whole_checked {
-            anyhow::ensure!(
-                store::map::catalogue(map.entries(), cat.n, &cat.created)? == *cat,
-                "the log's map doesn't give the catalogue back"
-            );
-            self.whole_checked = true;
-        }
+        // The check: the map is the catalogue, entry for entry, and its digest kept by the batches
+        // is the catalogue's entries' from scratch.
+        log.map().check_is(cat).context("the log's map isn't the catalogue")?;
         Ok(wrote)
     }
 
