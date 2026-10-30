@@ -31,7 +31,7 @@
 
 use super::declared::{Cover, Dataset, Plan, Source};
 use super::proj::{mercator_tile, projected, Projection};
-use super::sample::{bilinear, blocks_read, sample_raster_noting, window_clean, Clean, Seen, NODATA_BELOW};
+use super::sample::{bilinear, blocks_read, sample_raster_noting, window_clean, Clean, Seen, BLOCK, NODATA_BELOW};
 use crate::fetch::Fetch;
 use crate::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, ensure, Context, Result};
@@ -680,13 +680,25 @@ impl GeoSet<'_> {
         // at the radius (nothing in it is invalid), the others grouped by file and by a square of
         // `DIST_CELL` pixels, so a group's points share one map of the invalid pixels around them.
         let mut groups: std::collections::BTreeMap<(u32, i64, i64), Vec<Band>> = Default::default();
+        // (By file, what each point reads of it, found once a file, not a point: its open image
+        // is behind a lock. And the last window's blocks and whether they're all clean: the
+        // points in turn mostly share them, and a block's cleanness is of its pixels alone.)
+        let mut at: HashMap<usize, (Arc<Tiff>, usize, [f64; 6], i64, i64, bool)> = HashMap::new();
+        let mut last: Option<((usize, [i64; 4]), bool)> = None;
         for j in 0..sel.len() {
             let i = sel[j] as usize;
             let k = file[j] as usize;
-            let (t, level) = self.open(k)?.context("an open file")?;
-            let gt = t.transform(level)?;
-            let img = t.level(level)?;
-            let (w, h) = (img.width as i64, img.height as i64);
+            let (t, level, gt, w, h, voids) = match at.get(&k) {
+                Some(f) => f.clone(),
+                None => {
+                    let (t, level) = self.open(k)?.context("an open file")?;
+                    let gt = t.transform(level)?;
+                    let img = t.level(level)?;
+                    let f = (t.clone(), level, gt, img.width as i64, img.height as i64, self.has_voids(k)?);
+                    at.insert(k, f.clone());
+                    f
+                }
+            };
             let (mx, my) = pixel_m(self.crs, &gt, lat[i]);
             let cf = (x[i] - gt[0]) / gt[1] - 0.5;
             let rf = (y[i] - gt[3]) / gt[5] - 0.5;
@@ -695,13 +707,17 @@ impl GeoSet<'_> {
             let (c0, r0) = (cf.floor() as i64, rf.floor() as i64);
             let win = [c0 - rx, c0 + 1 + rx, r0 - ry, r0 + 1 + ry];
             let [cs, ce, rs, re] = win;
-            if !self.has_voids(k)?
-                && cs >= 0
-                && rs >= 0
-                && ce < w
-                && re < h
-                && window_clean(&t, level, &self.clean[k], cs, ce, rs, re)?
-            {
+            if !voids && cs >= 0 && rs >= 0 && ce < w && re < h && {
+                let blocks = (k, [cs / BLOCK, ce / BLOCK, rs / BLOCK, re / BLOCK]);
+                match last {
+                    Some((b, clean)) if b == blocks => clean,
+                    _ => {
+                        let clean = window_clean(&t, level, &self.clean[k], cs, ce, rs, re)?;
+                        last = Some((blocks, clean));
+                        clean
+                    }
+                }
+            } {
                 out[j] = radius[j];
                 continue;
             }
@@ -1769,8 +1785,10 @@ impl<'a> Sampler<'a> {
             let p = phase(&format!("sampling {}", ds.id));
             let since = crate::fetch::fetched_bytes();
             let r = self.sets[k].reader(&xy);
-            let sel: Vec<u32> =
-                (0..n as u32).filter(|&i| first[i as usize] == u16::MAX && covers[k][i as usize]).collect();
+            let sel: Vec<u32> = (0..n as u32)
+                .into_par_iter()
+                .filter(|&i| first[i as usize] == u16::MAX && covers[k][i as usize])
+                .collect();
             // (By tile or file, so a chunk reads each tile once, not once per chunk.)
             let sel = r.in_reading_order(sel, lon, lat);
             if !sel.is_empty() {
@@ -1814,19 +1832,17 @@ impl<'a> Sampler<'a> {
         mono.say(to_sample as f64 / total);
         let mut blended = 0usize;
         for k in 0..plan.datasets.len() {
-            let mut sel = Vec::new();
-            let mut radius = Vec::new();
-            for i in 0..n {
-                if first[i] as usize != k {
-                    continue;
-                }
-                let coarsest =
-                    (k + 1..plan.datasets.len()).filter(|&m| covers[m][i]).map(|m| res[m]).fold(0.0f64, f64::max);
-                if coarsest > 0.0 {
-                    sel.push(i as u32);
-                    radius.push(4.0 * coarsest.max(res[k]));
-                }
-            }
+            let (sel, radius): (Vec<u32>, Vec<f64>) = (0..n)
+                .into_par_iter()
+                .filter_map(|i| {
+                    if first[i] as usize != k {
+                        return None;
+                    }
+                    let coarsest =
+                        (k + 1..plan.datasets.len()).filter(|&m| covers[m][i]).map(|m| res[m]).fold(0.0f64, f64::max);
+                    (coarsest > 0.0).then(|| (i as u32, 4.0 * coarsest.max(res[k])))
+                })
+                .unzip();
             if sel.is_empty() {
                 continue;
             }
@@ -1846,6 +1862,7 @@ impl<'a> Sampler<'a> {
         let mut second = vec![u16::MAX; n];
         for (k, r) in readers.iter().enumerate() {
             let sel: Vec<u32> = (0..n as u32)
+                .into_par_iter()
                 .filter(|&i| {
                     dist[i as usize].is_finite()
                         && second[i as usize] == u16::MAX
@@ -1894,7 +1911,8 @@ impl<'a> Sampler<'a> {
         for (k, ds) in plan.datasets.iter().enumerate() {
             let Some(c) = &ds.convert else { continue };
             for (vals, from, firsts) in [(&mut a, &first, true), (&mut b, &second, false)] {
-                let sel: Vec<usize> = (0..n).filter(|&i| from[i] as usize == k && vals[i].is_finite()).collect();
+                let sel: Vec<usize> =
+                    (0..n).into_par_iter().filter(|&i| from[i] as usize == k && vals[i].is_finite()).collect();
                 if sel.is_empty() {
                     continue;
                 }
@@ -1921,20 +1939,25 @@ impl<'a> Sampler<'a> {
         drop(p);
         mono.say(1.0);
         let mut out = Sampled { elev: a, src: vec![0; n], blended: vec![false; n], unconverted, unconverted_seam: 0 };
-        for i in 0..n {
-            if first[i] == u16::MAX {
-                continue;
-            }
-            out.src[i] = plan.datasets[first[i] as usize].code;
-            if second[i] != u16::MAX {
-                let band = 4.0 * res[first[i] as usize].max(res[second[i] as usize]);
-                if dist[i] < band {
-                    out.elev[i] = blend(out.elev[i], b[i], dist[i], band);
-                    out.blended[i] = true;
-                    out.unconverted_seam += (a_converted[i] && b_kept[i]) as usize;
+        out.unconverted_seam = (out.elev.par_iter_mut(), out.src.par_iter_mut(), out.blended.par_iter_mut())
+            .into_par_iter()
+            .enumerate()
+            .map(|(i, (elev, src, blended))| {
+                if first[i] == u16::MAX {
+                    return 0;
                 }
-            }
-        }
+                *src = plan.datasets[first[i] as usize].code;
+                if second[i] != u16::MAX {
+                    let band = 4.0 * res[first[i] as usize].max(res[second[i] as usize]);
+                    if dist[i] < band {
+                        *elev = blend(*elev, b[i], dist[i], band);
+                        *blended = true;
+                        return (a_converted[i] && b_kept[i]) as usize;
+                    }
+                }
+                0
+            })
+            .sum();
         if out.unconverted_seam > 0 {
             println!(
             "  {} blended vertices mix references: the first converted, the one beneath without a geoid value there",
