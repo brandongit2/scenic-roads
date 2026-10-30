@@ -498,7 +498,7 @@ async function failover() {
 }
 // The dashboard's calls: the build at a glance and the lead's controls at the lead's address when
 // it answers (the lead knows the whole build), else this page's member's.
-const LEADS = new Set(["/work/swarm", "/work/history", "/work/catalogs", "/work/pause", "/work/lead", "/work/inputs"]);
+const LEADS = new Set(["/work/swarm", "/work/history", "/work/catalogs", "/work/pause", "/work/inputs"]);
 async function dashCall(path, body) {
   const lead = peers?.lead;
   if (LEADS.has(path) && reachable(lead)) {

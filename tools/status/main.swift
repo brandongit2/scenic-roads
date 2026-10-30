@@ -15,10 +15,8 @@
 // title says the free space, what's left of it for jobs and what keeps the rest. Memory shows and
 // sets the memory the build's jobs get here together (crates/pipeline/src/agent/buildmem.rs: a few
 // presets, or the memory guard's limit alone). With
-// the pool on (docs/pool.md §11), its agent's view of the pool: who leads, each Mac and its state,
-// and the lead's items: Hand the Build To ▸ on the lead, Make This Mac Lead and Take Over the
-// Build… (confirming) on another Mac; each an ask to that agent
-// (`lead-request.json`), which checks it as its driver would.
+// the pool on (docs/pool.md §11), its agent's view of the pool: who leads (the Mac mini, the fixed
+// lead: no item moves it), each Mac and its state.
 //
 // It's the menu bar item of Scenic.app, the app opened from Launchpad, Spotlight or /Applications
 // (and at login), never in the Dock: opening it starts this Mac's build service, quitting it stops that service, and
@@ -269,15 +267,12 @@ struct PoolView: Decodable {
     let lead: LeadOf?
     let leading: Bool
     let members: [PoolMember]
-    let takeover: TakeoverNeeds?
     let no_lead: String?
     /// No lead for an hour or more (or a lead its take-up refused by the journal GC's marker, #651):
     /// since when, why, and what to do (agents from #195 on).
     let alert: String?
-    let handing: Handing?
     /// Who can't reach whom, each with why (agents from #198 on: docs/pool.md §6.8).
     let unreached: [String]?
-    let asked: LeadAsked?
     let change: LeadChange?
 }
 
@@ -300,30 +295,6 @@ struct PoolMember: Decodable {
     let state: String
     let out_of_touch: Bool?
     let away: Bool?
-    let can_lead: Bool
-    let why_not: String?
-}
-
-struct TakeoverNeeds: Decodable {
-    let refused: String?
-    let force: String?
-    let downgrade: String?
-}
-
-struct Handing: Decodable {
-    let to: String
-    let host: String
-    let term: Int
-    let stage: String
-    let since: Int
-}
-
-struct LeadAsked: Decodable {
-    let by: String
-    let at: Int
-    let since: Int
-    let state: String
-    let said: String
 }
 
 struct LeadChange: Decodable {
@@ -331,54 +302,7 @@ struct LeadChange: Decodable {
     let said: String
 }
 
-/// What a lead item does when chosen.
-enum LeadAction {
-    /// Hand the lead to a member (its id; its host; whether it's away, to warn).
-    case give(String, String, Bool)
-    /// This Mac takes the lead over, confirming first: since when the lead's been gone, and the
-    /// owner's force and downgrade, each with why, when they're needed.
-    case take(String, String?, String?)
-}
-
-/// A lead item of the menu (docs/pool.md §11): its title, whether it can be chosen and why not, what
-/// it does, and its submenu's items.
-struct LeadItem {
-    let title: String
-    var enabled = true
-    var tip = ""
-    var action: LeadAction? = nil
-    var children: [LeadItem] = []
-}
-
-/// The pool's items for this Mac's menu: on the lead, "Hand the Build To ▸" its members, each with
-/// its state, those that can't lead greyed with why; on another member, "Make This Mac Lead" and,
-/// with no lead in touch, "Take Over the Build…"; an ask under way.
-func leadItems(_ v: PoolView, me: String) -> [LeadItem] {
-    var out: [LeadItem] = []
-    if let a = v.asked, a.state == "passed" || a.state == "going" {
-        out.append(LeadItem(title: "\(a.said)…", enabled: false))
-    }
-    if v.leading {
-        let others = v.members.filter { $0.me != true }
-        var it = LeadItem(title: "Hand the Build To", enabled: !others.isEmpty && v.handing == nil, tip: v.handing.map { "A handover to \($0.host) is under way" } ?? (others.isEmpty ? "No other Mac in the pool" : ""))
-        it.children = others.map { m in
-            LeadItem(title: "\(m.host) — \(m.state)", enabled: m.can_lead, tip: m.can_lead ? ((m.away ?? false) ? "Away from home: the build's duties run slowly over Tailscale" : "") : (m.why_not ?? ""), action: .give(m.member, m.host, m.away ?? false))
-        }
-        out.append(it)
-    } else {
-        let mine = v.members.first { $0.me == true }
-        if v.no_lead == nil {
-            out.append(LeadItem(title: "Make This Mac Lead", enabled: mine?.can_lead ?? false, tip: (mine?.can_lead ?? false) ? "Asks \(v.lead?.host ?? "the lead") to hand the build to this Mac" : (mine?.why_not ?? "not in the pool yet"), action: .give(me, mine?.host ?? "this Mac", false)))
-        }
-        if let why = v.no_lead, let t = v.takeover {
-            out.append(LeadItem(title: "Take Over the Build…", enabled: t.refused == nil, tip: t.refused ?? why, action: .take(why, t.force, t.downgrade)))
-        }
-    }
-    return out
-}
-
-/// The pool's lines for the menu: who leads, a handover under way, each member and its state, the
-/// last change of lead, the ask's end.
+/// The pool's lines for the menu: who leads, each member and its state, the last change of term.
 func poolLines(_ v: PoolView, now: Int) -> [Line] {
     var out = [Line(text: "", style: .separator)]
     if let why = v.no_lead {
@@ -389,24 +313,17 @@ func poolLines(_ v: PoolView, now: Int) -> [Line] {
         // (A lead its take-up refused by the journal GC's marker, #651: the alert, what to do.)
         if let a = v.alert { out.append(Line(text: a, style: .plain)) }
     }
-    if let h = v.handing {
-        out.append(Line(text: "Handing over to \(h.host): \(h.stage) since \(clock(h.since))", style: .plain))
-    }
     for m in v.members {
         let who = m.me == true ? "\(m.host) (this Mac)" : m.host
         let lead = m.leads == true ? " · leads" : ""
         let heard = m.out_of_touch == true && m.beat > 0 ? ", last heard \(duration(now - m.beat)) ago" : ""
-        let why = m.leads != true && !m.can_lead ? " · can't lead: \(m.why_not ?? "")" : ""
-        out.append(Line(text: "\(who)\(lead): \(m.state)\(heard)\(why)", style: .small))
+        out.append(Line(text: "\(who)\(lead): \(m.state)\(heard)", style: .small))
     }
     for u in v.unreached ?? [] {
         out.append(Line(text: u, style: .plain))
     }
     if !(v.unreached ?? []).isEmpty {
         out.append(Line(text: "On the Mac named: check it is awake, on the network and its agent running; then allow Scenic in System Settings › Network › Firewall (Options…), or turn the firewall off", style: .small))
-    }
-    if let a = v.asked, ["done", "failed", "refused"].contains(a.state) {
-        out.append(Line(text: "\(a.state == "done" ? "Done" : a.state == "refused" ? "Refused" : "Came to nothing"): \(a.said) (\(clock(a.since)))", style: .small))
     }
     if let c = v.change, now - c.at < 24 * 3600 {
         out.append(Line(text: "\(c.said) (\(clock(c.at)))", style: .small))
@@ -844,7 +761,7 @@ func holdItems(_ r: Reply?, own: Own?) -> [(title: String, held: Bool?, tip: Str
     if h?.pause ?? (r?.held_here != nil) {
         out.append(("Resume This Mac", false, "This Mac takes work again, as `scenic resume --here` does"))
     } else {
-        out.append(("Pause This Mac", true, "Only this Mac: its jobs stop at their next safe point and are given back, it takes no new work and hands the lead away if it leads; the other Macs go on building"))
+        out.append(("Pause This Mac", true, "Only this Mac: its jobs stop at their next safe point and are given back, it takes no new work (the lead goes on granting the others' work); the other Macs go on building"))
     }
     return out
 }
@@ -1097,12 +1014,6 @@ final class LineView: NSView {
     required init?(coder: NSCoder) {
         fatalError("not from a nib")
     }
-}
-
-/// A lead item's action, carried by its menu item.
-final class LeadBox: NSObject {
-    let action: LeadAction
-    init(_ a: LeadAction) { action = a }
 }
 
 /// A view whose subviews lay out from the top.
@@ -1866,7 +1777,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// Quitting (the menu bar item's menu; a logout, restart or shutdown): the build
     /// service stopped. No job running: at once. A job running: asked, "Finish This Job First" (the
     /// app quits once the service has stopped) or "Stop Now". A logout, restart or shutdown: "Stop
-    /// Now" without asking. The agent hands the lead away itself as it quits (control.rs Quit).
+    /// Now" without asking. On the lead the build waits for it (the lead is fixed, docs/pool.md §6).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if mayQuit || !managing || build.blocked != nil { return .terminateNow }
         build.refresh()
@@ -2055,8 +1966,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             m.addItem(now)
         }
         // This Mac alone paused, or going on (`scenic pause --here`, task #224): its jobs stop at
-        // their next safe point and are given back, it takes no new work and hands the lead away;
-        // the rest of the pool goes on.
+        // their next safe point and are given back, it takes no new work; the rest of the pool goes
+        // on.
         for h in holdItems(reply, own: own) {
             let it = NSMenuItem(title: h.title, action: h.held.map { $0 ? #selector(pauseHere) : #selector(resumeHere) }, keyEquivalent: "")
             it.target = self
@@ -2081,11 +1992,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             alt.keyEquivalentModifierMask = [.option]
             alt.toolTip = "Stopped and given back as with Cancel, and held until the lead runs a newer app than this one"
             m.addItem(alt)
-        }
-        // The pool's lead (docs/pool.md §11): handed over, asked for, taken over; asks to this
-        // Mac's agent (crates/pipeline/src/agent/lead.rs), which checks each as its driver would.
-        if let p = own?.pool, let v = p.lead {
-            for li in leadItems(v, me: p.member) { m.addItem(leadMenuItem(li)) }
         }
         // This Mac's build caches, cleared on an ask to its agent (crates/pipeline/src/agent/
         // room.rs), which does it at once, to the item's level, and says what it freed and kept.
@@ -2204,71 +2110,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
         done([.banner, .sound])
-    }
-
-    func leadMenuItem(_ li: LeadItem) -> NSMenuItem {
-        let it = NSMenuItem(title: li.title, action: li.action != nil && li.enabled ? #selector(leadChosen) : nil, keyEquivalent: "")
-        it.target = self
-        it.isEnabled = li.enabled
-        if !li.tip.isEmpty { it.toolTip = li.tip }
-        it.representedObject = li.action.map { LeadBox($0) }
-        if !li.children.isEmpty {
-            let sub = NSMenu()
-            sub.autoenablesItems = false
-            for c in li.children { sub.addItem(leadMenuItem(c)) }
-            it.submenu = sub
-        }
-        return it
-    }
-
-    /// A lead item chosen: confirmed when it needs it (a Mac away; a takeover, saying since when
-    /// the lead's been gone and what it forces), then asked of this Mac's agent.
-    @objc func leadChosen(_ sender: NSMenuItem) {
-        guard let a = (sender.representedObject as? LeadBox)?.action else { return }
-        switch a {
-        case let .give(id, host, away):
-            if away {
-                let alert = NSAlert()
-                alert.messageText = "Hand the build to \(host)?"
-                alert.informativeText = "\(host) is away from home: the build's duties (planning, merging, publishing) run slowly over Tailscale until it's back."
-                alert.addButton(withTitle: "Hand It Over")
-                alert.addButton(withTitle: "Cancel")
-                NSApp.activate()
-                guard alert.runModal() == .alertFirstButtonReturn else { return }
-            }
-            askLead(["kind": "give", "to": id])
-        case let .take(why, force, downgrade):
-            let alert = NSAlert()
-            alert.messageText = "Take over the build on this Mac?"
-            var info = "No lead: \(why).\n\nThis Mac makes the next term naming itself and leads from the build's records on the NAS; nothing built is lost (the old lead's jobs hand off to the journal, and its leases lapse and go back out)."
-            if let f = force { info += "\n\nForced: \(f)." }
-            if let d = downgrade { info += "\n\nA downgrade: \(d) (its steps may build again what a newer app built)." }
-            alert.informativeText = info
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "Take Over")
-            alert.addButton(withTitle: "Cancel")
-            NSApp.activate()
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
-            askLead(["kind": "take", "force": force != nil, "downgrade": downgrade != nil])
-        }
-    }
-
-    /// Asks this Mac's agent of the pool's lead: its ask file (crates/pipeline/src/control.rs
-    /// LeadRequest), written whole, which the pool's next step takes up, within half a minute
-    /// (crates/pipeline/src/agent/pool.rs Ticker).
-    func askLead(_ ask: [String: Any]) {
-        let name = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
-        let dir = home.appendingPathComponent("agent")
-        let (tmp, dst) = (dir.appendingPathComponent("lead-request.json.menu.tmp"), dir.appendingPathComponent("lead-request.json"))
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try JSONSerialization.data(withJSONObject: ["ask": ask, "by": "the menu bar on \(name)", "at": Int(Date().timeIntervalSince1970)] as [String: Any]).write(to: tmp)
-            guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-        } catch {
-            post("Couldn't ask about the build's lead", "\(error.localizedDescription)")
-            return
-        }
-        poll()
     }
 
     /// Accepts a held unit's warnings (the item's unit), once its owner says so, naming them: an ask
@@ -2523,13 +2364,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         sink(title, body)
     }
 
-    /// The pool's lead changing, and this Mac's ask of it ending, each told once (the first look
-    /// only sets where they're told from).
-    var seenLead: (term: Int, asked: Int, alert: Bool)?
+    /// The pool's term changing, and its alert, each told once (the first look only sets where
+    /// they're told from).
+    var seenLead: (term: Int, alert: Bool)?
     func tellLead() {
         guard let v = own?.pool?.lead else { return }
-        let asked = v.asked.map { ["done", "failed", "refused"].contains($0.state) ? $0.since : 0 } ?? 0
-        defer { seenLead = (v.term, asked, v.alert != nil) }
+        defer { seenLead = (v.term, v.alert != nil) }
         // (The alert told on the first look too: a menu bar started while it's on says it once.)
         guard let was = seenLead else {
             if let a = v.alert { post("The build has no lead", a) }
@@ -2540,9 +2380,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         if !was.alert, let a = v.alert {
             post("The build has no lead", a)
-        }
-        if asked > was.asked, let a = v.asked {
-            post(a.state == "done" ? "Lead: done" : "Lead: \(a.state == "refused" ? "refused" : "came to nothing")", a.said)
         }
     }
 
@@ -2694,12 +2531,6 @@ if let i = args.firstIndex(of: "--reopen") {
     if let r = memoryItem(own, set: buildMemory(), totalMB: macMemoryMB()) {
         print("item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
     }
-    if let p = own?.pool, let v = p.lead {
-        for li in leadItems(v, me: p.member) {
-            print("item: \(li.title)\(li.enabled ? "" : " (disabled\(li.tip.isEmpty ? "" : ": \(li.tip)"))")\(li.enabled && !li.tip.isEmpty ? " — \(li.tip)" : "")")
-            for c in li.children { print("    ▸ \(c.title)\(c.enabled ? "" : " (disabled: \(c.tip))")") }
-        }
-    }
 } else if let i = args.firstIndex(of: "--render") {
     // The menu bar's icon and the menu's lines as views, stacked as the menu stacks them, drawn into a PNG.
     let done = DispatchSemaphore(value: 0)
@@ -2718,9 +2549,6 @@ if let i = args.firstIndex(of: "--reopen") {
     bar.imageAlignment = .alignLeft
     let views: [NSView] = [bar] + lines(r, line, own: ownStatus()).map { l in
         l.style == .separator ? NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: 11)) : l.style == .bar ? BarView(l.text, fraction: l.fraction) : LineView(l.text, font: fontFor(l.style).0, color: fontFor(l.style).1, wrapAnywhere: l.style == .mono)
-    } + (ownStatus()?.pool.flatMap { p in p.lead.map { leadItems($0, me: p.member) } } ?? []).flatMap { li in
-        [LineView(li.title + (li.children.isEmpty ? "" : "  ▸"), font: .menuFont(ofSize: 0), color: li.enabled ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false)]
-            + li.children.map { c in LineView("      \(c.title)\(c.enabled ? "" : " — \(c.tip)")", font: .menuFont(ofSize: NSFont.smallSystemFontSize), color: c.enabled ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false) }
     } + holdItems(r, own: ownStatus()).map { hi in LineView(hi.title, font: .menuFont(ofSize: 0), color: hi.held != nil ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false) }
         + (r?.log != nil ? ["Open the Build Log"] : []).map { LineView($0, font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false) }
         + [LineView("Open the Map", font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false)]
@@ -2760,12 +2588,6 @@ if let i = args.firstIndex(of: "--reopen") {
         if let r = roomItem(d.own, target: d.own?.caches?.room?.target?.size, free: d.own?.caches?.room?.free, disk: nil) {
             print("  item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
             print("    tip: \(r.tip)")
-        }
-        if let p = d.own?.pool, let v = p.lead {
-            for li in leadItems(v, me: p.member) {
-                print("  item: \(li.title)\(li.enabled ? "" : " (disabled: \(li.tip))")")
-                for c in li.children { print("    ▸ \(c.title)\(c.enabled ? "" : " (disabled: \(c.tip))")") }
-            }
         }
         d.notifyChanges()
     }

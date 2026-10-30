@@ -1,8 +1,8 @@
 // The owner's settings on the build page (the Machines tab; docs/workers.md §7): this page's Mac's
-// in-use share, build memory, disk room target and battery floor, a block per Mac, each set on that
+// in-use share, build memory and disk room target, a block per Mac, each set on that
 // Mac, and the pool's NAS reserve. Read and set through
 // `/work/settings`, which sets each through the same function as its `scenic` command
-// (`scenic in-use`, `memory`, `room`, `nas-room`, `battery-floor`). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
+// (`scenic in-use`, `memory`, `room`, `nas-room`). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
 
 function h(tag, attrs, ...kids) {
   const e = document.createElement(tag);
@@ -146,8 +146,6 @@ export async function putSetting(host, body, what) {
   const key = m ? m.host : ownHost || "";
   const st = kept.get(key) || {};
   kept.set(key, st);
-  // (An older agent's floor is the pool's: set through it, it would set every older Mac's.)
-  if ("battery_floor" in body && !st.said?.battery_floor?.own) { ctx.onError?.(`couldn't set ${what} on ${host}: ${st.said ? "its app is older, its floor the pool's" : "its settings aren't read yet"}`); return false; }
   return set(m, st, body, `${what} on ${host}`);
 }
 
@@ -177,12 +175,6 @@ export function macRows(s) {
       now: s.room.bytes ? gb(s.room.bytes) : "off",
       note: `free space kept on ${s.mac || "this Mac"}'s disk${s.room.free != null ? `, ${gb(s.room.free)} free now` : ""}${by(s.room)}`,
       input: { min: 1, max: s.room.disk ? Math.floor(s.room.disk / GiB) - 1 : null, step: 1, placeholder: "GB", offTitle: "No target" },
-    })),
-    guarded("battery_floor", "Battery floor", () => ({
-      now: `${s.battery_floor.pct} %`,
-      note: `on battery, ${s.mac || "this Mac"} can't lead below it, and as the lead hands over${s.battery_floor.set ? by(s.battery_floor) : " (the default)"}`,
-      // (An older agent's floor is the pool's: shown, not set from here.)
-      input: s.battery_floor.own ? { min: 0, max: 100, step: 1, placeholder: "%", offTitle: `Back to the default, ${s.battery_floor.default} %` } : null,
     })),
   ];
 }

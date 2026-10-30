@@ -681,7 +681,6 @@ function openCfg(wrap, e) {
   save.addEventListener("click", () => { const v = clamp(+inp.value, e.min, e.max); if (!Number.isFinite(v)) return; e.apply(v); pnl.replaceChildren(h("b", "ok", `Set to ${v} ${e.unit}`), h("p", "dim", e.done(v))); setTimeout(close, 6000); render(now0()); });
   wrap.append(pnl); inp.focus(); inp.select();
 }
-let BATT_MIN = 30;
 function timeAxis(g, L, T, pw, ph, span) {
   const NICE = [15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
   const most = Math.max(2, Math.floor(pw / 80)); const step = NICE.find((x2) => span / x2 <= most) ?? 86400;
@@ -877,7 +876,7 @@ function buildVitals() {
     row("swap", "swap used", "Memory macOS has written out to disk. Rising swap means jobs slow down.");
     row("disk", "disk free", "Free space on the Mac's disk. The dashed line is the owner's room target: below it the disk guard freezes the fastest-growing job.");
     row("dw", "disk write", "Bytes written to this Mac's disk each second: jobs' scratch and caches.");
-    row("batt", "battery", "Battery charge. The light yellow background marks when the Mac was plugged in; the lead won't stay on a Mac on battery under 30 %.");
+    row("batt", "battery", "Battery charge. The light yellow background marks when the Mac was plugged in.");
     row("nas", "NAS response", "How long this Mac waits for the NAS to answer one file lookup. Over a few hundred ms, every job that reads the NAS slows down.");
     row("idle", "someone using this Mac?", "Whether the Mac's owner is using it: in use if the keyboard or trackpad was touched in the last 5 minutes. While it is in use, the build leaves cores free for the owner (the cpu chart's dashed line); while they are away, the build may use every core.");
     row("therm", "heat", "macOS's own thermal state (ProcessInfo.thermalState), in Apple's four levels: nominal, fair (slightly raised), serious (high; macOS reduces performance), critical.");
@@ -912,7 +911,7 @@ function renderVitals() {
     const th = m.therm.last(); say(R.therm, THERM[th], ["within normal limits", "slightly raised", "high: macOS is slowing the Mac", "critical: macOS is slowing the Mac hard"][th]);
     plot(R.therm.c, { series: [{ ring: m.therm, color: th > 1 ? "--bad" : th ? "--warn" : "--ok", stepped: true, fill: false }], max: 3, ticksAt: [0, 1, 2, 3], fmt: (v) => THERM[v] });
     const ac = m.acRing.last(); say(R.batt, `${Math.round(m.batt)} %`, ac ? "now plugged in" : "now on battery", ["--plugged", "plugged in"]);
-    plot(R.batt.c, { series: [{ ring: m.battRing, color: m.batt < BATT_MIN ? "--bad" : "--ok" }], max: 100, ticksAt: [0, 50, 100], fmt: (v) => v + " %", refs: [{ v: BATT_MIN, label: `can't lead below ${BATT_MIN} % on battery`, edit: { key: "batt", title: "Battery floor for leading", note: "On battery, a Mac below this charge can't take or keep the lead. No job waits on the charge. This applies to every Mac.", ask: "Lowest charge a Mac on battery may lead at", unit: "%", value: BATT_MIN, min: 0, max: 100, apply: (v) => { BATT_MIN = v; }, done: (v) => `Not a setting today: the build fixes it at 30 % in code (cond::BATTERY_MIN). This button needs it made a pool-wide setting first.` } }], band: { ring: m.acRing, color: "--plugged" } });
+    plot(R.batt.c, { series: [{ ring: m.battRing, color: "--ok" }], max: 100, ticksAt: [0, 50, 100], fmt: (v) => v + " %", band: { ring: m.acRing, color: "--plugged" } });
     const nm = m.nasMs.last(); say(R.nas, `${Math.round(nm)} ms`, nm > 200 ? "slow" : "normal");
     plot(R.nas.c, { series: [{ ring: m.nasMs, color: nm > 200 ? "--warn" : "--accent" }], max: niceMax(Math.max(100, m.nasMs.max() * 1.05)), fmt: (v) => Math.round(v) + " ms" });
     const act = m.useRing.last(); say(R.idle, act ? "in use" : `away for ${dur(m.idleS)}`, act ? `touched ${dur(m.idleS)} ago` : "no keyboard or trackpad use", act ? `the build leaves ${m.kept} cores free` : "the build may use every core");

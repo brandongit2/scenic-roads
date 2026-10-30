@@ -179,7 +179,7 @@ function build() {
     swap: row(vit, "swap used", "Memory macOS has written out to disk. Rising swap means jobs slow down."),
     disk: row(vit, "disk free", "Free space on the Mac's disk. Dashed: the owner's room target; below it the disk guard freezes the fastest-growing job."),
     dw: row(vit, "disk write", "Bytes written to this Mac's disks each second: the jobs' scratch and caches, and every other app's."),
-    power: row(vit, "battery", "Battery charge; shaded while on mains. Dashed: on battery, a Mac below it can't lead."),
+    power: row(vit, "battery", "Battery charge; shaded while on mains."),
     nas: row(vit, "NAS response", "How long this Mac's listing of the NAS took (measured while a build runs here); its NAS calls in flight; those past their deadline or refused (every thread busy)"),
     use: row(vit, "someone using this Mac?", "Whether the owner is using this Mac (a keyboard or trackpad touch lately), shaded while so. While in use, the build leaves cores free for them."),
     heat: row(vit, "heat", "macOS's own thermal state (ProcessInfo.thermalState's four levels): nominal, fair (slightly raised), serious (macOS slows the Mac), critical (it slows it hard)."),
@@ -336,11 +336,11 @@ function paint(host) {
   const dwNow = at("disk_write_mbs");
   words(b.dw.v, dwNow == null ? ["not measured"] : [fmt(dwNow, "MB/s"), `last min ${fmt(recentMean(s.disk_write_mbs, now), "MB/s")}`]);
 
-  // Battery: its charge, shaded while on mains, against the lead's floor on battery.
-  const bat = loop("battery_pct"), ac = loop("ac"), floor = held("battery_floor", mac.battery_min);
-  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor != null ? [{ v: floor, label: `can't lead below ${floor} % on battery`, edit: edit("battery_floor", { title: "Battery floor", note: `${host}'s own: on battery, it can't lead below it, and as the lead hands over. Off: the default.`, unit: "%", min: 0, max: 100, step: 5, label: (v) => `can't lead below ${fmt(v)} % on battery` }) }] : [],
-    series: [{ points: s.battery_pct, colour: ac === 0 && floor && bat < floor ? bad : ok, label: "battery", unit: "%" }] });
-  words(b.power.v, bat == null ? [ac === 1 ? "on mains, no battery" : "not measured"] : [fmt(bat, "%"), ac === 0 ? "on battery" : "on mains"], ac === 0 && floor && bat < floor ? "warn" : "");
+  // Battery: its charge, shaded while on mains.
+  const bat = loop("battery_pct"), ac = loop("ac");
+  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok },
+    series: [{ points: s.battery_pct, colour: ok, label: "battery", unit: "%" }] });
+  words(b.power.v, bat == null ? [ac === 1 ? "on mains, no battery" : "not measured"] : [fmt(bat, "%"), ac === 0 ? "on battery" : "on mains"], "");
 
   // NAS: how long a listing took (measured only while a build runs here); the calls in flight.
   const ms = latest(s.nas_ms, now, 30);

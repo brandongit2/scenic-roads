@@ -998,7 +998,7 @@ function render() {
       sinceLine(m, events, seenAt), feed(m, events, seenAt)));
   const scrollY = window.scrollY;
   const feedTop = root.querySelector(".feed")?.scrollTop || 0;
-  const pool = poolSection(last.agent, m.now, (body) => ctx.call("/work/lead", body).then(poll, (e) => ctx.onError?.(`couldn't ask about the lead: ${e.message}`))) || section("d-pool", "pool", null, null);
+  const pool = poolSection(last.agent, m.now) || section("d-pool", "pool", null, null);
   const banners = gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`)));
   root.classList.toggle("gated", banners.length > 0);
   const gate = h("section", { class: "d-inputs", id: "inputs" }, banners);
