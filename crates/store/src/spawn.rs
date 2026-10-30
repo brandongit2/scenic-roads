@@ -65,6 +65,7 @@ pub fn spawn(cmd: &mut Command) -> io::Result<Child> {
 /// A child started by `detached`: no pipes, no descriptor of this process's. Waited for (reaped)
 /// by `wait`, `kill` or a `try_wait` that finds it ended.
 #[derive(Debug)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub struct Detached {
     pid: i32,
     done: bool,
@@ -114,6 +115,23 @@ pub fn detached(program: impl AsRef<OsStr>, args: &[&str]) -> io::Result<Detache
         libc::posix_spawn_file_actions_destroy(&mut acts);
         libc::posix_spawnattr_destroy(&mut attr);
         r
+    }
+}
+
+/// No children where there are no processes (WASI).
+#[cfg(not(unix))]
+pub fn detached(_program: impl AsRef<OsStr>, _args: &[&str]) -> io::Result<Detached> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+#[cfg(not(unix))]
+impl Detached {
+    pub fn try_wait(&mut self) -> io::Result<bool> {
+        Ok(true)
+    }
+
+    pub fn kill(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
