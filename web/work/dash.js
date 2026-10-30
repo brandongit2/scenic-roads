@@ -1450,7 +1450,9 @@ const mbText = (mb) => (mb >= 1024 ? `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)
 // A step's row: "time breakdown", then a bar of its time in the range's runs by phase (the lead's
 // `phase_times`: phaseBreakdown), each phase as wide as its share, split into its measured segments
 // (phaseSplit: the NAS, the network, the disk, other work, computing) and labelled where it has
-// room, its card on hover (`phaseCard`); null when no run of it ended in the range.
+// room, its card on hover (`phaseCard`); under a segment, a thin strip per kind that ran alongside
+// it (task #891: its `with`, in that kind's colour, as long as their time at once, from its left;
+// extra, not in the sum), naming it on hover; null when no run of it ended in the range.
 function timeRow(m, step) {
   const range = chartRange();
   const b = phaseBreakdown(m.a.phase_times, step, range);
@@ -1458,7 +1460,10 @@ function timeRow(m, step) {
   const bar = h("div", "tb-bar");
   const part = (w, segs, label, key, build) => {
     const el = h("span", { class: "tb-part", style: { flexGrow: String(w) } },
-      ...segs.map((x) => h("i", { class: "tb-seg", style: { flexGrow: String(x.s), background: x.colour } })),
+      ...segs.map((x) => h("i", { class: "tb-seg", style: { flexGrow: String(x.s), background: x.colour } },
+        ...(x.with || []).map((y, j) => withCard(h("b", { class: "tb-with", style: { width: `${(y.s / x.s * 100).toFixed(1)}%`, bottom: `${j * 3}px`, background: WAIT_COLOURS[y.key] } }),
+          `${key} w ${x.key} ${y.key}`, () => cardBody(`${y.label} for ${dur(y.s)}`, [["Inside", `${x.label}: ${pct(y.s / x.s)} of its ${dur(x.s)}`],
+            ["How", "Seconds both ran at once on parallel threads: drawn under the part the instant went to, beside the bar's sum, not in it."]]))))),
       w / b.wall >= 0.08 ? h("span", "tb-l", label) : null);
     withCard(el, key, build);
     bar.append(el);
@@ -1484,6 +1489,7 @@ function phaseCard(step, b, p, range) {
     stats: [[pct(wall / b.wall), "of the step's time"], [dur(wall), "in all"], [dur(per(wall)), "a job"]] }, [
     ["Jobs", `${n(b.runs)} ended in the range${b.failed ? ` (${n(b.failed)} failed)` : ""}`],
     ["Time", split],
+    ["Alongside", segs.some((x) => x.with?.length) ? h("div", "tb-split", ...segs.flatMap((x) => x.with.map((y) => h("div", null, h("i", { style: { background: WAIT_COLOURS[y.key] } }), `${y.label} ${x.label} for ${dur(y.s)} (${pct(y.s / x.s)} of it)`)))) : null],
     ["How", segs.some((x) => x.key !== "old") ? WAITS_RULE : null],
     ["CPU / wall", cpu != null ? `${cpu.toFixed(2)} (${dur(p.cpu)} of CPU in ${dur(p.wall)}; above 1: several threads)` : p ? "not measured" : null],
     ["NAS", p?.nas ? `${mbText(p.nas)} in all · ${mbText(per(p.nas))} a job` : null],

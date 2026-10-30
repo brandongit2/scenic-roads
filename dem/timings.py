@@ -18,7 +18,10 @@ and the bytes and files it moved:
   read under it). By the process's wall clock, as pipeline::timings: at each instant the process is
   waiting on the NAS when any thread is in a NAS call, else on the network, else on the disk, else
   on other work, else computing; a phase's waits are the difference of those totals between its
-  ends, so they never sum past its wall time. No phase is classed by hand.
+  ends, so they never sum past its wall time. No phase is classed by hand. Beside them, as
+  store::waits (task #891), the seconds two ran at once by PAIRS: two kinds' calls both in
+  progress, and a kind with computing (the process's CPU time while that kind held the instant,
+  at most that time): `both_s`, extra, never in the sum.
 - Run by a step (scenic-build, within one of its phases), the phases go where `SCENIC_PHASES_TO`
   says as the program exits, and come in as that phase's sub-phases. Run by hand: nothing kept.
 - A phase on a thread but the main one is marked `background`; a phase while another thread's is
@@ -37,6 +40,11 @@ import time
 
 # What a wait is on, in the order an instant is given to (the first with a call in it wins).
 KINDS = ("nas", "net", "disk", "other")
+# The pairs whose time at once is counted (store::waits::PAIRS): the waits two by two, then each
+# with computing (CPU, 4).
+CPU = len(KINDS)
+PAIRS = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3), (0, CPU), (1, CPU), (2, CPU), (3, CPU))
+_WAIT_PAIRS = 6
 
 _lock = threading.Lock()
 _main = threading.main_thread().ident
@@ -46,26 +54,54 @@ _start = int(time.time())
 _accs: dict = {}
 _open: list = []  # open spans, every thread's
 _local = threading.local()
-# The waits: calls in progress by kind, when that last changed, and each kind's seconds so far.
+# The waits: calls in progress by kind, when that last changed, each kind's seconds so far, then
+# each of PAIRS'; the kind holding the instant, since when and the process's CPU time then.
 _wlock = threading.Lock()
 _active = [0] * len(KINDS)
 _since = time.monotonic()
-_acc = [0.0] * len(KINDS)
+_acc = [0.0] * (len(KINDS) + len(PAIRS))
+_top = None
+_top_since = _since
+_top_cpu = 0.0
 
 
 def _settle(now: float) -> None:
-    """The time since the last change given to the kind that held it (none: computing)."""
+    """The time since the last change given to the kind that held it (none: computing), and to
+    the pairs of kinds both in progress."""
     global _since
-    for k, n in enumerate(_active):
-        if n:
-            _acc[k] += now - _since
-            break
+    if _top is not None:
+        d = now - _since
+        _acc[_top] += d
+        for p, (i, j) in enumerate(PAIRS[:_WAIT_PAIRS]):
+            if _active[i] and _active[j]:
+                _acc[len(KINDS) + p] += d
     _since = now
+
+
+def _close(now: float) -> None:
+    """The holding kind's time with computing since `_top_since` (the CPU time meanwhile, at most
+    that time); a new span from `now`."""
+    global _top_since, _top_cpu
+    cpu = time.process_time()
+    if _top is not None:
+        _acc[len(KINDS) + _WAIT_PAIRS + _top] += min(max(0.0, cpu - _top_cpu), now - _top_since)
+    _top_since, _top_cpu = now, cpu
+
+
+def _retop(now: float) -> None:
+    global _top
+    top = next((k for k, n in enumerate(_active) if n), None)
+    if top != _top:
+        _close(now)
+        _top = top
 
 
 def _waits() -> list:
     with _wlock:
-        _settle(time.monotonic())
+        now = time.monotonic()
+        _settle(now)
+        if _top is not None:
+            _close(now)
         return list(_acc)
 
 
@@ -77,14 +113,18 @@ class wait:
 
     def __enter__(self) -> "wait":
         with _wlock:
-            _settle(time.monotonic())
+            now = time.monotonic()
+            _settle(now)
             _active[self.k] += 1
+            _retop(now)
         return self
 
     def __exit__(self, *exc) -> None:
         with _wlock:
-            _settle(time.monotonic())
+            now = time.monotonic()
+            _settle(now)
             _active[self.k] -= 1
+            _retop(now)
 
 
 _MNT_LOCAL = 0x1000
@@ -174,7 +214,7 @@ class phase:
         self.overlapped = False
         me = threading.get_ident()
         with _lock:
-            _accs.setdefault(self.key, {"name": self.name, "wall_s": 0.0, "waits": [0.0] * len(KINDS), "cpu_s": 0.0, "n": 0, "bytes": 0, "files": 0, "overlapped": False, "background": me != _main})
+            _accs.setdefault(self.key, {"name": self.name, "wall_s": 0.0, "waits": [0.0] * (len(KINDS) + len(PAIRS)), "cpu_s": 0.0, "n": 0, "bytes": 0, "files": 0, "overlapped": False, "background": me != _main})
             for o in _open:
                 if o.thread != me:
                     o.overlapped = True
@@ -239,6 +279,9 @@ def record(ok: bool = True) -> dict:
         r = {k: v for k, v in a.items() if k != "waits" and (v or k in ("name", "wall_s", "n"))}
         r["cpu_s"] = a["cpu_s"]
         r["waits"] = {f"{k}_s": min(s, a["wall_s"]) for k, s in zip(KINDS, a["waits"])}
+        both = [min(s, a["wall_s"]) for s in a["waits"][len(KINDS):]]
+        if any(both):
+            r["waits"]["both_s"] = both
         subs = [rec(k, s) for k, s in accs.items() if k[1] == key[0] and key[1] is None]
         if subs:
             r["sub"] = subs

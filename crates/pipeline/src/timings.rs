@@ -66,10 +66,22 @@ pub struct Waits {
     /// Waiting on other work: another worker, another thread, a lock.
     #[serde(default)]
     pub other_s: f64,
+    /// The seconds two of them, or one and computing, ran at once on parallel threads, by
+    /// store::waits::PAIRS (task #891): extra, inside the parts above, not adding to them. None
+    /// written when all 0; a record from before #891 has none.
+    #[serde(default, skip_serializing_if = "none_at_once")]
+    pub both_s: [f64; PAIRS],
     #[serde(default, skip_serializing_if = "is_zero")]
     pub nas_b: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub net_b: u64,
+}
+
+/// The pairs `Waits::both_s` counts (store::waits::PAIRS).
+pub const PAIRS: usize = store::waits::PAIRS.len();
+
+fn none_at_once(b: &[f64; PAIRS]) -> bool {
+    b.iter().all(|&x| x == 0.0)
 }
 
 impl Waits {
@@ -83,6 +95,9 @@ impl Waits {
         self.net_s += o.net_s;
         self.disk_s += o.disk_s;
         self.other_s += o.other_s;
+        for (a, b) in self.both_s.iter_mut().zip(o.both_s) {
+            *a += b;
+        }
         self.nas_b += o.nas_b;
         self.net_b += o.net_b;
     }
@@ -97,6 +112,7 @@ impl Waits {
             self.net_s *= k;
             self.disk_s *= k;
             self.other_s *= k;
+            self.both_s.iter_mut().for_each(|b| *b *= k);
         }
         self
     }
@@ -131,6 +147,7 @@ impl Waits {
             net_s: d(1),
             disk_s: d(2),
             other_s: d(3),
+            both_s: std::array::from_fn(|p| d(store::waits::KINDS + p)),
             nas_b: now.1.saturating_sub(at.1),
             net_b: now.2.saturating_sub(at.2),
         }
@@ -1442,13 +1459,17 @@ pub struct PhaseTimes {
 /// phases'. Beside them, its phases' measured waits (task #870) per range: `w`, `[edge, phase,
 /// measured wall s, NAS s, network s, disk s, other work s]` over the runs that measured them (to
 /// a tenth of a second); the rest of a phase's measured wall computing, its unmeasured wall (older
-/// runs') shown by its class.
+/// runs') shown by its class. And what ran at once there (task #891, `Waits::both_s`): `o`,
+/// `[edge, phase, [[pair, s], …]]`, `pair` an index into store::waits::PAIRS (the waits in `w`'s
+/// order, then computing), the pairs of a tenth of a second or more only.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StepTimes {
     pub phases: Vec<(String, String)>,
     pub b: Vec<(usize, u32, u32, u64, u64, Vec<(usize, u64, u64, f64, f64)>)>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub w: Vec<(usize, usize, f64, f64, f64, f64, f64)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub o: Vec<(usize, usize, Vec<(usize, f64)>)>,
 }
 
 /// `PhaseTimes` of `runs` at `now`; a run ended past the last edge isn't counted.
@@ -1503,6 +1524,7 @@ pub fn phase_times<'a>(runs: impl IntoIterator<Item = &'a RunSum>, now: u64) -> 
             let at = |name: &str| phases.iter().position(|(n, _)| n == name).unwrap_or(phases.len() - 1);
             let tenth = |v: f64| (v * 10.0).round() / 10.0;
             let mut w: Vec<(usize, usize, f64, f64, f64, f64, f64)> = Vec::new();
+            let mut o: Vec<(usize, usize, Vec<(usize, f64)>)> = Vec::new();
             for (e, s) in &edges {
                 let mut sums: BTreeMap<usize, (f64, Waits)> = BTreeMap::new();
                 for (name, (mw, ws)) in &s.5 {
@@ -1512,6 +1534,11 @@ pub fn phase_times<'a>(runs: impl IntoIterator<Item = &'a RunSum>, now: u64) -> 
                 }
                 for (i, (mw, ws)) in sums {
                     w.push((*e, i, tenth(mw), tenth(ws.nas_s), tenth(ws.net_s), tenth(ws.disk_s), tenth(ws.other_s)));
+                    let both: Vec<(usize, f64)> =
+                        ws.both_s.iter().enumerate().map(|(p, &b)| (p, tenth(b))).filter(|x| x.1 > 0.0).collect();
+                    if !both.is_empty() {
+                        o.push((*e, i, both));
+                    }
                 }
             }
             let b = edges
@@ -1538,7 +1565,7 @@ pub fn phase_times<'a>(runs: impl IntoIterator<Item = &'a RunSum>, now: u64) -> 
                     (e, runs, failed, wall.round() as u64, cpu.round() as u64, ps)
                 })
                 .collect();
-            (step.to_string(), StepTimes { phases, b, w })
+            (step.to_string(), StepTimes { phases, b, w, o })
         })
         .collect();
     PhaseTimes { at: now, edges: TIMES_EDGES.to_vec(), steps }
@@ -1701,6 +1728,11 @@ mod tests {
         let mut e = share_run("depth", true, 100.0, &[("reading", 80.0, 0)]);
         e.phases[0].waits =
             Some(Waits { nas_s: 50.0, net_s: 4.04, disk_s: 1.0, nas_b: 5_000_000, ..Default::default() });
+        // (Task #891: 40 s of it computing beside the NAS, 2 s the network beside it, 0.04 s too
+        // little to say.)
+        e.phases[0].waits.as_mut().unwrap().both_s[0] = 2.0;
+        e.phases[0].waits.as_mut().unwrap().both_s[6] = 40.0;
+        e.phases[0].waits.as_mut().unwrap().both_s[7] = 0.04;
         e.start = now - 100 - 3000;
         let sums: Vec<RunSum> = [a, b, old, c, e].iter().map(RunSum::of).collect();
         let t = phase_times(&sums, now);
@@ -1715,6 +1747,11 @@ mod tests {
             ]
         );
         assert_eq!(d.w, [(4, 0, 80.0, 50.0, 4.0, 1.0, 0.0)]);
+        assert_eq!(d.o, [(4, 0, vec![(0, 2.0), (6, 40.0)])]);
+        // (A record from before #891, and one without anything at once, read and written alike.)
+        let w: Waits = serde_json::from_str(r#"{"nas_s":1.0,"net_s":0,"disk_s":0,"other_s":0}"#).unwrap();
+        assert_eq!(w.both_s, [0.0; PAIRS]);
+        assert!(!serde_json::to_string(&w).unwrap().contains("both_s"));
         // (Only unmeasured runs: the class said.)
         let only_old = phase_times(
             &[RunSum::of(&{

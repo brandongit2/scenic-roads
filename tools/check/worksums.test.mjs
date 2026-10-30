@@ -440,6 +440,16 @@ test("a phase split into its measured waits and computing (#870)", () => {
   // Over six hours: both edges' waits.
   const six = phaseBreakdown(pt, "terrain-deep", 21600).parts[0];
   assert.deepEqual(seg(six), [["nas", 51], ["net", 2], ["disk", 7], ["other", 5], ["cpu", 85], ["old", 50]]);
+  // What ran alongside (#891, `o`: [edge, phase, [[pair, s], …]]): a strip under the part it ran
+  // inside, the first of its pair; held within that part; not in the sum.
+  pt.steps["terrain-deep"].o = [[0, 0, [[6, 30], [0, 1.5], [9, 3]]]];
+  const o = phaseBreakdown(pt, "terrain-deep", 60).parts[0];
+  const split = phaseSplit(o);
+  const nasSeg = split.find((x) => x.key === "nas");
+  assert.deepEqual(nasSeg.with.map((y) => [y.key, y.s, y.label]), [["cpu", 30, "computing ran alongside"], ["net", 1.5, "network requests ran alongside"]]);
+  assert.deepEqual(split.filter((x) => x.key !== "nas").map((x) => x.with.length), [0, 0, 0, 0], "other work's pair: no part of other work to sit under");
+  assert.ok(Math.abs(split.reduce((t, x) => t + x.s, 0) - o.wall) < 1e-9, "the strips not in the sum");
+  assert.equal(phaseSplit({ wall: 10, measured: 10, waits: { nas: 2, net: 0, disk: 0, other: 0 }, both: [0, 0, 0, 0, 0, 0, 9, 0, 0, 0] })[0].with[0].s, 2, "held within its part");
   // Waits rounded past the measured wall: held within it, no computing.
   assert.deepEqual(phaseSplit({ wall: 10, measured: 10, waits: { nas: 8, net: 4, disk: 0, other: 0 } }).map((x) => x.key), ["nas", "net"]);
 });

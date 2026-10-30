@@ -31,6 +31,21 @@ with phase("waiting"):
     [t.join() for t in ts]
     with wait("net"):
         time.sleep(0.03)
+    # (Task #891: the network beside the NAS, then computing beside the network: each pair's.)
+    t = threading.Thread(target=nas)
+    t.start()
+    with wait("net"):
+        time.sleep(0.03)
+    t.join()
+    def net():
+        with wait("net"):
+            time.sleep(0.05)
+    t = threading.Thread(target=net)
+    t.start()
+    spin = time.monotonic()
+    while time.monotonic() - spin < 0.04:
+        pass
+    t.join()
 with phase("main work"):
     t = threading.Thread(target=lambda: phase("beside").start().end())
     t.start()

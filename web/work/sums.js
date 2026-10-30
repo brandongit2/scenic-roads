@@ -522,13 +522,14 @@ export function rowsWindow(top, height, rowH, n, over = 6) {
 // `edges` their end is within) over the footer's range `range` (seconds): the runs that ended within
 // it (the sums of the edges up to it), each phase's wall and CPU seconds and NAS and internet MB
 // summed, its measured waits (task #870: `w`, the runs that measured them: `measured` of its wall,
-// split into `waits`' NAS, network, disk and other work seconds), and their time in no phase
-// (`untimed`). Null when the step ran none in the range.
+// split into `waits`' NAS, network, disk and other work seconds; task #891, `o`: `both`, the
+// seconds two of them, or one and computing, ran at once, by WAIT_PAIRS), and their time in no
+// phase (`untimed`). Null when the step ran none in the range.
 export function phaseBreakdown(pt, step, range) {
   const st = pt?.steps?.[step];
   if (!st) return null;
   const upto = (pt.edges || []).reduce((k, e, i) => (e <= range ? i : k), -1);
-  const out = { runs: 0, failed: 0, wall: 0, cpu: 0, parts: st.phases.map(([name]) => ({ name, wall: 0, cpu: 0, nas: 0, net: 0, measured: 0, waits: { nas: 0, net: 0, disk: 0, other: 0 } })) };
+  const out = { runs: 0, failed: 0, wall: 0, cpu: 0, parts: st.phases.map(([name]) => ({ name, wall: 0, cpu: 0, nas: 0, net: 0, measured: 0, waits: { nas: 0, net: 0, disk: 0, other: 0 }, both: WAIT_PAIRS.map(() => 0) })) };
   for (const [e, runs, failed, wall, cpu, ps] of st.b) {
     if (e > upto) continue;
     out.runs += runs; out.failed += failed; out.wall += wall; out.cpu += cpu;
@@ -538,6 +539,11 @@ export function phaseBreakdown(pt, step, range) {
     const p = out.parts[i];
     if (e > upto || !p) continue;
     p.measured += mw; p.waits.nas += nas; p.waits.net += net; p.waits.disk += disk; p.waits.other += other;
+  }
+  for (const [e, i, pairs] of st.o || []) {
+    const p = out.parts[i];
+    if (e > upto || !p) continue;
+    for (const [k, s] of pairs) if (k < WAIT_PAIRS.length) p.both[k] += s;
   }
   if (!out.runs) return null;
   out.parts = out.parts.filter((p) => p.wall > 0).sort((a, b) => b.wall - a.wall);
@@ -552,20 +558,32 @@ export const WAIT_PARTS = [
   ["nas", "waiting on the NAS"], ["net", "waiting on the network"], ["disk", "reading/writing the local disk"],
   ["other", "waiting on other work"], ["cpu", "computing"],
 ];
+// The pairs whose time at once is counted (task #891: store::waits::PAIRS, `o`'s indices): the
+// waits two by two, then each with computing; the first of a pair is the one the instant went to.
+export const WAIT_PAIRS = [["nas", "net"], ["nas", "disk"], ["nas", "other"], ["net", "disk"], ["net", "other"], ["disk", "other"],
+  ["nas", "cpu"], ["net", "cpu"], ["disk", "cpu"], ["other", "cpu"]];
+// What each part is, as what ran alongside (a strip's words).
+export const ALONGSIDE = { nas: "NAS calls", net: "network requests", disk: "local disk calls", other: "waiting on other work", cpu: "computing" };
 // How the waits count, for the tooltips.
 export const WAITS_RULE = "Measured by the job's wall clock: an instant counts as waiting on the NAS when any of the job's threads is in a NAS call, else on the network, else on the local disk, else on other work (another worker, a thread); the rest is computing. So the parts add up to the phase's wall time, however many threads wait at once.";
 
 // A phase's time (`phaseBreakdown`'s part) as segments [{key, label, s}]: its measured wall time
 // split by WAIT_PARTS (computing what the waits leave; rounding held within it), then the wall
 // time of runs from before the measurement (`key` "old": no class said, task #870). Empty
-// segments left out.
+// segments left out. A segment's `with` (task #891): what ran alongside it [{key, label, s}], the
+// pairs whose first is its key (held within its own time, scaled as it is), largest first; extra,
+// not in the sum.
 export function phaseSplit(p) {
   const m = Math.min(p.measured || 0, p.wall);
   const w = p.waits || {};
   const waited = ["nas", "net", "disk", "other"].reduce((t, k) => t + (w[k] || 0), 0);
   const k = waited > m && waited > 0 ? m / waited : 1;
   const segs = WAIT_PARTS.map(([key, label]) => ({ key, label, s: key === "cpu" ? Math.max(0, m - waited * k) : (w[key] || 0) * k }));
-  segs.push({ key: "old", label: "not measured (older runs)", s: Math.max(0, p.wall - m) });
+  for (const x of segs) {
+    x.with = WAIT_PAIRS.map(([a, b], i) => ({ a, key: b, label: `${ALONGSIDE[b]} ran alongside`, s: Math.min(x.s, (p.both?.[i] || 0) * k) }))
+      .filter((y) => y.a === x.key && y.s > 0).map(({ a, ...y }) => y).sort((y, z) => z.s - y.s);
+  }
+  segs.push({ key: "old", label: "not measured (older runs)", s: Math.max(0, p.wall - m), with: [] });
   return segs.filter((x) => x.s > 0);
 }
 

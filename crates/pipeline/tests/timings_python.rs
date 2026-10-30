@@ -30,6 +30,9 @@ fn a_python_programs_phases_come_in_under_the_phase_that_ran_it() {
     let w = p.sub[2].waits.unwrap();
     assert!(w.nas_s >= 0.05, "two threads on the NAS for 50 ms: {w:?}");
     assert!(w.net_s >= 0.03 && w.waited() <= p.sub[2].wall_s + 1e-6, "{w:?}");
+    // What ran at once (task #891): the NAS and the network, then the network and computing.
+    assert!(w.both_s[0] >= 0.02 && w.both_s[7] >= 0.02, "{w:?}");
+    assert!(w.both_s.iter().all(|&b| b <= p.sub[2].wall_s), "{w:?}");
     assert_eq!(p.sub[0].waits.unwrap().waited(), 0.0);
     let l = &p.sub[0];
     assert_eq!((l.bytes, l.files), (30, 3));

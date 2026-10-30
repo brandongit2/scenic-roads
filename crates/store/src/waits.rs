@@ -17,9 +17,18 @@
 //! waiting on the NAS), and a second in which one thread reads the NAS while others compute counts
 //! as waiting on the NAS: the job could not have been quicker than its NAS waits allow there.
 //!
+//! What ran alongside (task #891): beside each kind's time, the seconds two things ran at once on
+//! parallel threads, by `PAIRS`: two kinds of wait both in progress (exact: a guard of each held),
+//! and a kind of wait with computing (while that kind held the instant, the process's CPU time
+//! meanwhile, at most that time: a thread blocked in a call spends next to none, so it is the
+//! other threads' computing). A pair's seconds lie inside the first kind's time (the instant was
+//! given to it), except two waits' while a third, earlier kind held the instant. They are extra:
+//! the kinds' times alone add up to the wall time.
+//!
 //! Cost: nothing until `enable` (a relaxed load per call); then a lock and a clock read as a guard
-//! is taken and as it's dropped (tens of ns: `the_guards_cost_little` measures it), against NAS and
-//! network calls of hundreds of µs and more.
+//! is taken and as it's dropped, and a read of the process's CPU time when the kind holding the
+//! instant changes (hundreds of ns a guard: `waits_count_by_wall_clock_and_the_guards_cost_little`
+//! measures it), against NAS and network calls of hundreds of µs and more.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -38,32 +47,97 @@ pub enum On {
 /// The kinds of wait, by `On`'s order.
 pub const KINDS: usize = 4;
 
-/// Wall time (ns) the process spent waiting, by `On`, since `enable`.
-pub type Totals = [u64; KINDS];
+/// Computing, as a pair's second member in `PAIRS` (no guard's kind).
+pub const CPU: usize = KINDS;
+
+/// The pairs whose time at once `Totals` counts after the kinds' own, by `On`'s order and `CPU`:
+/// the waits two by two, then each wait with computing.
+pub const PAIRS: [(usize, usize); 10] =
+    [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3), (0, CPU), (1, CPU), (2, CPU), (3, CPU)];
+
+/// The waits' pairs at the head of `PAIRS` (the rest: with computing).
+const WAIT_PAIRS: usize = 6;
+
+/// Wall time (ns) since `enable`: the process's waiting, by `On` (`[..KINDS]`), then each of
+/// `PAIRS`' time at once (`[KINDS + p]`).
+pub type Totals = [u64; KINDS + PAIRS.len()];
 
 struct State {
     /// Guards held now, by kind.
     active: [u32; KINDS],
     /// When the state last changed.
     since: Instant,
+    /// The kind holding the instant (`active`'s first held), since when, the process's CPU time then.
+    top: Option<usize>,
+    top_since: Instant,
+    top_cpu: u64,
     acc: Totals,
 }
 
 impl State {
-    /// The time since the last change given to the wait that held it (none: computing).
+    /// The time since the last change given to the wait that held it (none: computing), and to the
+    /// pairs of waits both in progress.
     fn settle(&mut self, now: Instant) {
-        if let Some(k) = self.active.iter().position(|&n| n > 0) {
-            self.acc[k] += now.saturating_duration_since(self.since).as_nanos() as u64;
+        let d = now.saturating_duration_since(self.since).as_nanos() as u64;
+        if let Some(k) = self.top {
+            self.acc[k] += d;
+            for (p, &(i, j)) in PAIRS[..WAIT_PAIRS].iter().enumerate() {
+                if self.active[i] > 0 && self.active[j] > 0 {
+                    self.acc[KINDS + p] += d;
+                }
+            }
         }
         self.since = now;
     }
+
+    /// After `active` changed (settled at `now`): when another kind holds the instant, the last
+    /// one's time with computing taken (`close`).
+    fn retop(&mut self, now: Instant) {
+        let top = self.active.iter().position(|&n| n > 0);
+        if top != self.top {
+            self.close(now);
+            self.top = top;
+        }
+    }
+
+    /// The kind holding the instant's time with computing since `top_since`: the process's CPU time
+    /// meanwhile, at most that time. A new span from `now`.
+    fn close(&mut self, now: Instant) {
+        let cpu = cpu_ns();
+        if let Some(k) = self.top {
+            let d = now.saturating_duration_since(self.top_since).as_nanos() as u64;
+            self.acc[KINDS + WAIT_PAIRS + k] += cpu.saturating_sub(self.top_cpu).min(d);
+        }
+        self.top_since = now;
+        self.top_cpu = cpu;
+    }
+}
+
+/// The process's CPU time (ns: user and system, all its threads).
+fn cpu_ns() -> u64 {
+    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: a valid timespec to write to.
+    if unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut t) } != 0 {
+        return 0;
+    }
+    t.tv_sec as u64 * 1_000_000_000 + t.tv_nsec as u64
 }
 
 static ON: AtomicBool = AtomicBool::new(false);
 
 fn state() -> &'static Mutex<State> {
     static S: OnceLock<Mutex<State>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(State { active: [0; KINDS], since: Instant::now(), acc: [0; KINDS] }))
+    S.get_or_init(|| {
+        let now = Instant::now();
+        Mutex::new(State {
+            active: [0; KINDS],
+            since: now,
+            top: None,
+            top_since: now,
+            top_cpu: 0,
+            acc: [0; KINDS + PAIRS.len()],
+        })
+    })
 }
 
 fn lock() -> std::sync::MutexGuard<'static, State> {
@@ -81,13 +155,17 @@ pub fn enabled() -> bool {
     ON.load(Ordering::Relaxed)
 }
 
-/// The wall time spent waiting so far, by kind (ns; all 0 before `enable`).
+/// The wall time spent waiting so far, by kind, and the pairs' at once (ns; all 0 before `enable`).
 pub fn totals() -> Totals {
     if !enabled() {
-        return [0; KINDS];
+        return [0; KINDS + PAIRS.len()];
     }
     let mut s = lock();
-    s.settle(Instant::now());
+    let now = Instant::now();
+    s.settle(now);
+    if s.top.is_some() {
+        s.close(now);
+    }
     s.acc
 }
 
@@ -99,8 +177,10 @@ impl Drop for Guard {
     fn drop(&mut self) {
         if let Some(k) = self.0 {
             let mut s = lock();
-            s.settle(Instant::now());
+            let now = Instant::now();
+            s.settle(now);
             s.active[k as usize] -= 1;
+            s.retop(now);
         }
     }
 }
@@ -111,8 +191,10 @@ pub fn wait(on: On) -> Guard {
         return Guard(None);
     }
     let mut s = lock();
-    s.settle(Instant::now());
+    let now = Instant::now();
+    s.settle(now);
     s.active[on as usize] += 1;
+    s.retop(now);
     Guard(Some(on))
 }
 
@@ -168,7 +250,7 @@ mod tests {
         }
         // Off: nothing counted.
         drop(nas());
-        assert_eq!(totals(), [0; KINDS]);
+        assert_eq!(totals(), [0; KINDS + PAIRS.len()]);
         enable();
         let t0 = totals();
         let span = Instant::now();
@@ -196,6 +278,26 @@ mod tests {
         let t2 = totals();
         let (nas2, net2) = ((t2[0] - t1[0]) / 1_000_000, (t2[1] - t1[1]) / 1_000_000);
         assert!(nas2 >= 20 && net2 >= 20, "{nas2} {net2}");
+        // ...and the 20 ms they ran at once counted as the NAS's and the network's pair (extra).
+        let both = (t2[KINDS] - t1[KINDS]) / 1_000_000;
+        assert!((20..40).contains(&both), "{both} ms at once");
+        // A thread computing beside a NAS call: the NAS's time with computing.
+        let g = nas();
+        let spin = Instant::now();
+        let mut x = 0u64;
+        while spin.elapsed() < Duration::from_millis(30) {
+            x = std::hint::black_box(x.wrapping_add(1));
+        }
+        drop(g);
+        let tc = totals();
+        let with_cpu = (tc[KINDS + 6] - t2[KINDS + 6]) / 1_000_000;
+        assert!((15..=40).contains(&with_cpu), "{with_cpu} ms of computing beside the NAS");
+        // A NAS call alone, nothing computing: next to none.
+        let g = nas();
+        std::thread::sleep(Duration::from_millis(30)); // (sleep ok: a NAS call's stand-in)
+        drop(g);
+        let t2 = totals();
+        assert!((t2[KINDS + 6] - tc[KINDS + 6]) / 1_000_000 < 10, "{:?}", t2);
         // Nested on one thread: counted once.
         {
             let _a = disk();

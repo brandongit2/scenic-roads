@@ -1579,7 +1579,8 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   ranges up to its own). The lead's status carries them as `phase_times`
   (`timings::PhaseTimes`): `{"at", "edges", "steps": {"<step>": {"phases": [[name, class], …],
   "b": [[edge, runs, failed, wall s, CPU s, [[phase, wall s, CPU s, NAS MB, internet MB], …]],
-  …], "w": [[edge, phase, measured wall s, NAS s, network s, disk s, other work s], …]}}}`; a
+  …], "w": [[edge, phase, measured wall s, NAS s, network s, disk s, other work s], …], "o": [[edge,
+  phase, [[pair, s], …]], …]}}}`; a
   step's top-level phases of its main thread, largest over the week first, at most 8
   (`TIMES_PHASES`: past that, the 7 largest and the rest as "other phases"); a run's time in no
   phase is its wall less its phases'.
@@ -1598,8 +1599,19 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   network", "reading/writing the local disk", "waiting on other work" and "computing", the rest of
   its wall (older runs') grey as "not measured", its card giving the numbers and the rule. A phase's
   `class` is said only for records from before (and the twin's and pages'); its bytes are the
-  measured ones, an older record's by class as before. Cost: ~76 ns a guard (store::waits' test),
-  off outside a timed run; NAS and network calls take hundreds of µs and more. Measured on the lead's log of 29 Oct
+  measured ones, an older record's by class as before.
+  **What ran alongside** (task #891): beside the kinds' times (which alone add up to the wall),
+  store::waits counts the seconds two ran at once on parallel threads, by `PAIRS` (the waits two by
+  two, then each with computing): two kinds' guards both held (exact), and a kind with computing
+  (while that kind held the instant, the process's CPU time meanwhile, at most that time: a thread
+  blocked in a call spends next to none). They are `Waits::both_s` in a record (absent when all 0,
+  and in records from before) and `o` in `phase_times` (pairs of 0.1 s or more). The page draws each
+  as a 2px strip along the foot of the first kind's segment (the one the instant went to), in the
+  other's colour, as long as their time at once, its card naming it ("computing ran alongside for
+  6 min"); the phase's card lists them under "Alongside". Extra: never in the bar's sum.
+  Cost: ~620 ns a guard taken and dropped alone (store::waits' test, release; ~80–115 ns before
+  #891: the CPU-time read at each change of the kind holding the instant), off outside a timed
+  run; NAS and network calls take hundreds of µs and more. Measured on the lead's log of 29 Oct
   (6,251 runs, 49 steps over 4 days): ~32 KB of the status (~290 KB: +11 %).
   Phases are named as doings ("reading the depth sources' windows"; before task #844 as done, "the
   depth sources' windows read"); a record read, on any Mac, takes the new name of an old one
