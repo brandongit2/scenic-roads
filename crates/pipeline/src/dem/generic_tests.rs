@@ -980,13 +980,17 @@ fn many_files_are_found_by_their_grid_as_by_a_scan() {
         (0..files.len()).filter(|&k| files[k].1.is_none_or(|b| in_box(&b, x, y))).collect()
     };
     let grid = |x: f64, y: f64| -> Vec<usize> {
-        g.near(x, y).iter().copied().filter(|&k| files[k].1.is_none_or(|b| in_box(&b, x, y))).collect()
+        g.near(&mut None, x, y).iter().copied().filter(|&k| files[k].1.is_none_or(|b| in_box(&b, x, y))).collect()
     };
+    // (The square kept from one point to the next answers as a lookup of its own.)
+    let mut kept = None;
     for (x, y) in [(0.5, 45.5), (0.0, 46.0), (1.0, 45.0), (-10.0, 40.5), (9.99, 49.99), (50.0, 0.0), (-0.0, 40.0)] {
         assert_eq!(grid(x, y), scan(x, y), "({x}, {y})");
+        assert_eq!(g.near(&mut kept, x, y), g.near(&mut None, x, y), "({x}, {y}) kept");
+        assert_eq!(g.near(&mut kept, x, y), g.near(&mut None, x, y), "({x}, {y}) kept again");
     }
     assert_eq!(grid(0.5, 45.5).len(), 4, "its own, the world's, the one without, the other");
-    assert!(g.near(f64::NAN, 1.0).is_empty());
+    assert!(g.near(&mut None, f64::NAN, 1.0).is_empty());
 }
 
 /// The descriptors this process holds on files under `dir` (macOS: by F_GETPATH).

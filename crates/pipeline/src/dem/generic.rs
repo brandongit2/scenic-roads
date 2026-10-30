@@ -451,14 +451,27 @@ impl FileGrid {
         ((x / self.side).floor() as i64, (y / self.side).floor() as i64)
     }
 
-    /// The files whose footprint may hold (x, y), in the plan's order.
-    fn near(&self, x: f64, y: f64) -> &[usize] {
+    /// The files whose footprint may hold (x, y), in the plan's order; `kept`, the square last
+    /// looked up and its files (points in turn mostly fall in the square before theirs: one hash
+    /// lookup a square, not a point).
+    fn near<'g>(&'g self, kept: &mut Kept<'g>, x: f64, y: f64) -> &'g [usize] {
         if !(x.is_finite() && y.is_finite()) {
             return &[];
         }
-        self.squares.get(&self.square(x, y)).map_or(&self.everywhere, Vec::as_slice)
+        let sq = self.square(x, y);
+        if let Some((at, files)) = *kept {
+            if at == sq {
+                return files;
+            }
+        }
+        let files = self.squares.get(&sq).map_or(self.everywhere.as_slice(), Vec::as_slice);
+        *kept = Some((sq, files));
+        files
     }
 }
+
+/// A file grid's square last looked up and its files (`FileGrid::near`).
+type Kept<'g> = Option<((i64, i64), &'g [usize])>;
 
 /// A point in a footprint (min x ≤ x < max x, min y < y ≤ max y).
 fn in_box(b: &[f64; 4], x: f64, y: f64) -> bool {
@@ -551,11 +564,11 @@ impl GeoSet<'_> {
         Ok(t)
     }
 
-    /// The files whose footprint holds native point (x, y), in order.
-    fn holding(&self, x: f64, y: f64) -> impl Iterator<Item = usize> + '_ {
+    /// The files whose footprint holds native point (x, y), in order (`kept`: FileGrid::near's).
+    fn holding<'s>(&'s self, kept: &mut Kept<'s>, x: f64, y: f64) -> impl Iterator<Item = usize> + 's {
         // (Among the grid's few where it has one, else every file.)
         let (near, all) = match &self.grid {
-            Some(g) => (Some(g.near(x, y).iter().copied()), None),
+            Some(g) => (Some(g.near(kept, x, y).iter().copied()), None),
             None => (None, Some(0..self.files.len())),
         };
         near.into_iter()
@@ -569,8 +582,9 @@ impl GeoSet<'_> {
     fn sample(&self, sel: &[u32], x: &[f64], y: &[f64], masks: bool) -> Result<Vec<(f32, u32)>> {
         let mut out = vec![(f32::NAN, u32::MAX); sel.len()];
         let mut todo: Vec<Vec<usize>> = vec![Vec::new(); self.files.len()];
+        let mut kept = None;
         for (j, &i) in sel.iter().enumerate() {
-            if let Some(k) = self.holding(x[i as usize], y[i as usize]).next() {
+            if let Some(k) = self.holding(&mut kept, x[i as usize], y[i as usize]).next() {
                 todo[k].push(j);
             }
         }
@@ -592,7 +606,7 @@ impl GeoSet<'_> {
                     out[j] = (v, k as u32);
                 } else {
                     let i = sel[j] as usize;
-                    if let Some(n) = self.holding(x[i], y[i]).find(|&n| n > k) {
+                    if let Some(n) = self.holding(&mut kept, x[i], y[i]).find(|&n| n > k) {
                         todo[n].push(j);
                     }
                 }
@@ -609,9 +623,10 @@ impl GeoSet<'_> {
         for part in parts {
             starts.push(out.len());
             let mut by: std::collections::BTreeMap<usize, (Vec<f64>, Vec<f64>)> = Default::default();
+            let mut kept = None;
             for &i in *part {
                 let (px, py) = (x[i as usize], y[i as usize]);
-                if let Some(k) = self.holding(px, py).next() {
+                if let Some(k) = self.holding(&mut kept, px, py).next() {
                     let e = by.entry(k).or_default();
                     e.0.push(px);
                     e.1.push(py);
@@ -634,7 +649,7 @@ impl GeoSet<'_> {
     /// The value at native point (x, y) of the files but `skip`: the first holding it whose raster
     /// has it (its nearest pixel); None when none does.
     fn value_at(&self, x: f64, y: f64, skip: usize) -> Result<Option<f32>> {
-        for k in self.holding(x, y).filter(|&k| k != skip) {
+        for k in self.holding(&mut None, x, y).filter(|&k| k != skip) {
             let Some((t, level)) = self.open(k)? else { continue };
             let gt = t.transform(level)?;
             let img = t.level(level)?;
@@ -1479,7 +1494,12 @@ impl Reader<'_, '_> {
                 let (x, y) = native(xy, lon, lat);
                 let keys: Vec<(usize, f64)> = sel
                     .par_iter()
-                    .map(|&i| (g.holding(x[i as usize], y[i as usize]).next().unwrap_or(usize::MAX), y[i as usize]))
+                    .map_init(
+                        || None,
+                        |kept, &i| {
+                            (g.holding(kept, x[i as usize], y[i as usize]).next().unwrap_or(usize::MAX), y[i as usize])
+                        },
+                    )
                     .collect();
                 by_runs(
                     &sel,

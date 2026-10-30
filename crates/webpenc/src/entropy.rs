@@ -19,7 +19,9 @@ extern "C" {
     static mut VP8LCombinedShannonEntropy: Option<Entropy>;
     /// v·log2(v) in libwebp's fixed point for v < 256 (0 for 0).
     static kSLog2Table: [u64; BINS];
-    /// The same for v ≥ 256.
+    /// log2(v) in that fixed point, for v < 256.
+    static kLog2Table: [u32; BINS];
+    /// v·log2(v) for v ≥ 256.
     static VP8LFastSLog2Slow: Option<unsafe extern "C" fn(u32) -> u64>;
 }
 
@@ -42,11 +44,28 @@ pub fn install() {
     });
 }
 
+/// libwebp's fixed point: log2 in units of 2^-23 (LOG_2_PRECISION_BITS).
+const PRECISION_BITS: u64 = 23;
+/// 1/ln 2 in that fixed point (LOG_2_RECIPROCAL_FIXED).
+const RECIPROCAL_FIXED: u64 = 12_102_203;
+/// Past this, libwebp's slog2 takes a floating-point log (APPROX_LOG_WITH_CORRECTION_MAX).
+const WITH_CORRECTION_MAX: u32 = 65_536;
+
+/// v·log2(v) as libwebp's VP8LFastSLog2 has it: from its table below 256; its FastSLog2Slow_C's
+/// integer approximation below 65,536, here inline (its own is a call through a pointer, and
+/// histograms summed over a tile often pass 256); past that its own (a floating-point log, left
+/// to libwebp's C so the libm is the same).
 #[inline(always)]
 fn slog2(v: u32) -> u64 {
     if (v as usize) < BINS {
         // SAFETY: a constant table of BINS entries.
         unsafe { kSLog2Table[v as usize] }
+    } else if v < WITH_CORRECTION_MAX {
+        let log_cnt = (31 - v.leading_zeros()) - 7;
+        let y = 1u32 << log_cnt;
+        // SAFETY: v >> log_cnt is under 256 (v's top bit lands on bit 7).
+        let log2 = unsafe { kLog2Table[(v >> log_cnt) as usize] } as u64;
+        v as u64 * (log2 + ((log_cnt as u64) << PRECISION_BITS)) + RECIPROCAL_FIXED * (v & (y - 1)) as u64
     } else {
         // SAFETY: set by VP8LEncDspInit, which `install` ran first; a pure function.
         unsafe { std::ptr::addr_of!(VP8LFastSLog2Slow).read().expect("libwebp's slog2 set up")(v) }
@@ -72,6 +91,18 @@ unsafe extern "C" fn combined(x: *const u32, y: *const u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// libwebp's own slog2 for every value its inline copy answers, and some past them.
+    #[test]
+    fn slog2_is_libwebps() {
+        install();
+        // SAFETY: set up by `install`; a pure function of v ≥ 256.
+        let own = unsafe { std::ptr::addr_of!(VP8LFastSLog2Slow).read().unwrap() };
+        for v in (BINS as u32..WITH_CORRECTION_MAX + 4096).chain([1 << 20, 123_456_789, u32::MAX]) {
+            // SAFETY: as above.
+            assert_eq!(slog2(v), unsafe { own(v) }, "{v}");
+        }
+    }
 
     /// libwebp's own result on histograms empty, sparse and full, small and large (past the
     /// table, and near u32's top: its wrapping too).
