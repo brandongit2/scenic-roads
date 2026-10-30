@@ -825,6 +825,9 @@ pub fn finish(ok: bool) {
         eprint!("{}", table(&rec));
         if let Some(g) = rec.safe_gap_s {
             eprintln!("timings: {} safe points, the longest without one {}", rec.safe_points, secs(g));
+            if let Some(over) = crate::control::over_bound(g) {
+                eprintln!("timings: {over}");
+            }
         }
     }
     let line = serde_json::to_vec(&rec).unwrap_or_default();

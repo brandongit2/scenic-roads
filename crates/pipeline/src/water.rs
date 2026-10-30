@@ -569,6 +569,7 @@ pub fn build(
     z14: &Z14,
     extra: Option<&dyn Extra>,
     only: Option<&[(u32, u32)]>,
+    pieces: &std::sync::Mutex<crate::resume_log::Pieces>,
     said: &(dyn Fn(u64, u64) + Sync),
 ) -> Result<(Vec<TileOut>, Made)> {
     let fives: Vec<(u32, u32)> = match only {
@@ -580,14 +581,30 @@ pub fn build(
     let total = fives.len() as u64;
     let drawn = std::sync::atomic::AtomicU64::new(0);
     let read = std::sync::atomic::AtomicU64::new(0);
-    // Each z5 tile's subtree: its node and the tiles stored under it (z5–9).
+    // Each z5 tile's subtree: its node and the tiles stored under it (z5–9), each a piece kept
+    // (`Piece`, task #890; a safe point once kept): a resumed run draws only those its last didn't
+    // keep, the same bytes. Drawn side by side, the pieces locked only to take and keep them.
+    let lock = || pieces.lock().unwrap_or_else(|e| e.into_inner());
     let subtrees: Vec<(Node, Vec<TileOut>)> = fives
         .par_iter()
         .map(|&(x5, y5)| -> Result<(Node, Vec<TileOut>)> {
-            let mut out = Vec::new();
-            let node = subtree(pm, z14, extra, &blocks, 5, x5, y5, &mut out, &drawn, &read)?;
+            let id = (5, x5, y5);
+            let taken = lock().take(id);
+            let p = match taken {
+                Some(b) => Piece::decode(&b)?,
+                None => {
+                    let (d, r) = (std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0));
+                    let mut tiles = Vec::new();
+                    let node = subtree(pm, z14, extra, &blocks, 5, x5, y5, &mut tiles, &d, &r)?;
+                    let p = Piece { node, tiles, drawn: d.into_inner(), read: r.into_inner() };
+                    lock().keep(id, &p.encode())?;
+                    p
+                }
+            };
+            drawn.fetch_add(p.drawn, std::sync::atomic::Ordering::Relaxed);
+            read.fetch_add(p.read, std::sync::atomic::Ordering::Relaxed);
             said(done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1, total);
-            Ok((node, out))
+            Ok((p.node, p.tiles))
         })
         .collect::<Result<_>>()?;
     let mut tiles: Vec<TileOut> = Vec::new();
@@ -630,6 +647,57 @@ pub fn build(
     made.drawn = drawn.into_inner();
     made.read = read.into_inner();
     Ok((tiles, made))
+}
+
+/// A z5 tile's subtree as kept (crate::resume_log::Pieces): its node, the tiles stored under it, and
+/// the z`DRAW_Z` tiles it drew and z14 tiles it read (`Made`'s, whole on a resumed run too).
+struct Piece {
+    node: Node,
+    tiles: Vec<TileOut>,
+    drawn: u64,
+    read: u64,
+}
+
+impl Piece {
+    fn encode(&self) -> Vec<u8> {
+        let mut p = crate::resume_log::Put::default();
+        match &self.node {
+            Node::Uniform(s, i) => {
+                p.u8(0);
+                p.u8(*s);
+                p.u8(*i);
+            }
+            Node::Cov(c) => {
+                p.u8(1);
+                p.f32s(&c.sea);
+                p.f32s(&c.inland);
+                p.bytes(&c.some);
+            }
+        }
+        p.u64(self.tiles.len() as u64);
+        for (z, x, y, b) in &self.tiles {
+            p.u8(*z);
+            p.u32(*x);
+            p.u32(*y);
+            p.bytes(b);
+        }
+        p.u64(self.drawn);
+        p.u64(self.read);
+        p.0
+    }
+
+    fn decode(b: &[u8]) -> Result<Piece> {
+        let mut g = crate::resume_log::Get(b);
+        let node = match g.u8()? {
+            0 => Node::Uniform(g.u8()?, g.u8()?),
+            1 => Node::Cov(Cov { sea: g.f32s()?, inland: g.f32s()?, some: g.bytes()? }),
+            t => anyhow::bail!("a water piece's node of kind {t}"),
+        };
+        let tiles = (0..g.count(17)?).map(|_| Ok((g.u8()?, g.u32()?, g.u32()?, g.bytes()?))).collect::<Result<_>>()?;
+        let p = Piece { node, tiles, drawn: g.u64()?, read: g.u64()? };
+        g.end()?;
+        Ok(p)
+    }
 }
 
 /// Four children's parent: uniform when they're all one uniform value.
@@ -825,6 +893,88 @@ mod tests {
     }
 
     /// A clockwise square (tile units, y down).
+    /// A water piece (a z5 tile's subtree) kept reads back as it was made.
+    #[test]
+    fn a_piece_reads_back_as_kept() {
+        let p = Piece {
+            node: Node::Cov(Cov { sea: vec![0.25, 1.0], inland: vec![0.5, 0.0], some: vec![SOME_LAND, 0] }),
+            tiles: vec![(5, 3, 4, vec![1, 2, 3]), (6, 7, 8, Vec::new())],
+            drawn: 9,
+            read: 11,
+        };
+        let q = Piece::decode(&p.encode()).unwrap();
+        assert_eq!((q.node, q.tiles, q.drawn, q.read), (p.node, p.tiles, p.drawn, p.read));
+        let u = Piece { node: Node::Uniform(255, 0), tiles: Vec::new(), drawn: 0, read: 0 };
+        assert_eq!(Piece::decode(&u.encode()).unwrap().node, u.node);
+    }
+
+    /// Task #890: the water paused at every z5 tile kept (`build`'s pieces), resumed each time,
+    /// makes the same tiles and counts as a run never paused.
+    #[test]
+    fn the_water_paused_at_every_z5_tile_resumes_to_the_same_tiles() {
+        use crate::resume_log::{Pieces, STOP_AFTER};
+        use store::pmtiles::{encode_directory, Compression, Header, PmTiles, TileType};
+        // (A basemap with no tiles: every z5 tile's subtree its own, the mechanism what's tested.)
+        let dir = encode_directory(&[]);
+        let end = 127 + dir.len() as u64;
+        let h = Header {
+            version: 3,
+            root_offset: 127,
+            root_length: dir.len() as u64,
+            metadata_offset: end,
+            metadata_length: 0,
+            leaf_offset: end,
+            leaf_length: 0,
+            data_offset: end,
+            data_length: 0,
+            addressed_tiles: 0,
+            tile_entries: 0,
+            tile_contents: 0,
+            clustered: true,
+            internal_compression: Compression::None,
+            tile_compression: Compression::None,
+            tile_type: TileType::Mvt,
+            min_zoom: 0,
+            max_zoom: 14,
+            min_lon_e7: -1_800_000_000,
+            min_lat_e7: -850_000_000,
+            max_lon_e7: 1_800_000_000,
+            max_lat_e7: 850_000_000,
+            center_zoom: 0,
+            center_lon_e7: 0,
+            center_lat_e7: 0,
+        };
+        let pm = PmTiles::open(Box::new([h.to_bytes(), dir].concat())).unwrap();
+        let z14 = Z14::read(&pm).unwrap();
+        let only: Vec<(u32, u32)> = (0..6).map(|x| (x + 10, 12)).collect();
+        let run = |pieces: Pieces| {
+            let r = build(&pm, &z14, None, Some(&only), &std::sync::Mutex::new(pieces), &|_, _| {});
+            r.map(|(t, m)| (t, m.tiles, m.drawn))
+        };
+        let fresh = run(Pieces::none()).unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let mut stops = 0;
+        let resumed = loop {
+            // (On one thread, where the test's stop is set: drawn side by side, each kept piece
+            // is a stop as one.)
+            let r = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap().install(|| {
+                STOP_AFTER.set(Some(1));
+                let r = run(Pieces::open(d.path(), (0, 0, 0), "water", "a", true));
+                STOP_AFTER.set(None);
+                r
+            });
+            match r {
+                Err(e) => {
+                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    stops += 1;
+                }
+                Ok(t) => break t,
+            }
+        };
+        assert_eq!(stops, only.len(), "a stop after each z5 tile kept");
+        assert!(resumed == fresh);
+    }
+
     fn sq(x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<[i32; 2]> {
         vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
     }

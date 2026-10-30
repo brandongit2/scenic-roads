@@ -391,6 +391,22 @@ fn reached_at(at: std::time::Instant) {
     g.points += 1;
 }
 
+/// The longest a job may go without a safe point, in seconds (task #890): the one declared bound
+/// every step is held to. A third of the agent's drain grace (crate::agent's `DRAIN_GRACE`, which
+/// asserts it), so a job asked to stop at its next safe point reaches one well before it's frozen
+/// instead, on the slowest Mac too (the M1 runs a piece about twice the Mac mini's time). A run
+/// past it says so in its log (`over_bound`, crate::timings::finish), so a step that regresses
+/// shows; the pieces' sizes are chosen to keep each step under it.
+pub const SAFE_GAP_BOUND_S: u64 = 300;
+
+/// What a job's log says when its longest gap between safe points, `gap_s` seconds, is past
+/// `SAFE_GAP_BOUND_S`; None within it.
+pub fn over_bound(gap_s: f64) -> Option<String> {
+    (gap_s > SAFE_GAP_BOUND_S as f64).then(|| {
+        format!("over the bound: {gap_s:.0} s without a safe point, past the {SAFE_GAP_BOUND_S} s every step is held to (control::SAFE_GAP_BOUND_S)")
+    })
+}
+
 /// Where a child program notes its safe points (`reached`: a line each, its Unix time in ns).
 pub const SAFE_POINTS_TO_ENV: &str = "SCENIC_SAFE_POINTS_TO";
 
@@ -712,6 +728,15 @@ fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run past the bound on its gaps says so; one within it, nothing.
+    #[test]
+    fn a_gap_past_the_bound_is_said() {
+        assert!(over_bound(SAFE_GAP_BOUND_S as f64).is_none());
+        assert!(over_bound(12.0).is_none());
+        let s = over_bound(SAFE_GAP_BOUND_S as f64 + 1.0).unwrap();
+        assert!(s.contains("over the bound") && s.contains(&SAFE_GAP_BOUND_S.to_string()), "{s}");
+    }
 
     #[test]
     fn asks_and_done_lists() {

@@ -845,8 +845,9 @@ pub fn tail(u: TileId, buildings: bool, store: bool) -> Vec<Run> {
 // Its pieces (crate::resume_log::Pieces), its folders (`dirs`: the z6 tile's and its buildings') kept
 // on this Mac's disk between runs: its preparing (`PREPARE`: the piece copied, the buildings
 // staged, `prepare_folder`; what's kept, its `Report`), then each program of its tail run here
-// (`tail_piece`). Each piece kept with its folders' digest (`folder_digest`) after it: a run resumed
-// takes them only when its folders are as the last piece left them (`folders_as_kept`).
+// (`tail_piece`). Each piece kept with its folders' digest (crate::resume_log::Pieces::folder_piece):
+// a run resumed takes them only when its folders are as the last piece left them
+// (`Pieces::folders_as_kept`).
 
 /// The piece of a z6 tile's preparing.
 pub const PREPARE: crate::resume_log::BlockId = (6, 0, 0);
@@ -854,57 +855,6 @@ pub const PREPARE: crate::resume_log::BlockId = (6, 0, 0);
 /// The piece of its tail's program `i` (its place in `tail`).
 pub fn tail_piece(i: usize) -> crate::resume_log::BlockId {
     (6, 1, i as u32)
-}
-
-/// Folders `dirs`' digest: each file's path in them, length and time written (what a program
-/// changes), in order.
-pub fn folder_digest(dirs: &[&Path]) -> Vec<u8> {
-    fn walk(d: &Path, rel: &str, h: &mut blake3::Hasher) {
-        let mut es: Vec<_> = std::fs::read_dir(d).into_iter().flatten().flatten().collect();
-        es.sort_by_key(|e| e.file_name());
-        for e in es {
-            let name = format!("{rel}/{}", e.file_name().to_string_lossy());
-            let Ok(m) = e.metadata() else { continue };
-            if m.is_dir() {
-                walk(&e.path(), &name, h);
-                continue;
-            }
-            let at = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).unwrap_or_default();
-            h.update(name.as_bytes());
-            h.update(&m.len().to_le_bytes());
-            h.update(&at.as_nanos().to_le_bytes());
-        }
-    }
-    let mut h = blake3::Hasher::new();
-    for (k, d) in dirs.iter().enumerate() {
-        walk(d, &k.to_string(), &mut h);
-    }
-    h.finalize().as_bytes().to_vec()
-}
-
-/// A piece of a z6 tile's: `make`'s payload after the folders' digest once it's run.
-pub fn folder_piece(
-    pieces: &mut crate::resume_log::Pieces,
-    b: crate::resume_log::BlockId,
-    dirs: &[&Path],
-    make: impl FnOnce() -> Result<Vec<u8>>,
-) -> Result<Vec<u8>> {
-    let p = pieces.piece(b, || {
-        let m = make()?;
-        Ok([folder_digest(dirs), m].concat())
-    })?;
-    Ok(p.get(32..).map(<[u8]>::to_vec).unwrap_or_default())
-}
-
-/// Whether the z6 tile's folders `dirs` are as its last piece kept left them (nothing kept: true).
-pub fn folders_as_kept(pieces: &crate::resume_log::Pieces, dirs: &[&Path]) -> bool {
-    let Some(mut last) = pieces.kept(PREPARE) else { return true };
-    let mut i = 0;
-    while let Some(p) = pieces.kept(tail_piece(i)) {
-        last = p;
-        i += 1;
-    }
-    last.get(..32) == Some(folder_digest(dirs).as_slice())
 }
 
 /// `run_tail`, each program a piece (`tail_piece`, from `at`: its place in the whole tail), those
@@ -918,7 +868,7 @@ pub fn run_tail_kept(
     pieces: &mut crate::resume_log::Pieces,
 ) -> Result<()> {
     for (i, r) in runs.iter().enumerate() {
-        folder_piece(pieces, tail_piece(at + i), dirs, || {
+        pieces.folder_piece(tail_piece(at + i), dirs, || {
             run_tail(std::slice::from_ref(r), dir, tools).map(|()| Vec::new())
         })?;
     }
@@ -1050,7 +1000,7 @@ mod tests {
             .collect();
         // (Its preparing: a file written; its tail split in two, as here and anywhere.)
         let build = |dir: &Path, pieces: &mut Pieces| -> Result<()> {
-            folder_piece(pieces, PREPARE, &[dir], || {
+            pieces.folder_piece(PREPARE, &[dir], || {
                 std::fs::create_dir_all(dir)?;
                 std::fs::write(dir.join("prep.txt"), b"x")?;
                 Ok(b"rep".to_vec())
@@ -1065,7 +1015,7 @@ mod tests {
         let mut stops = 0;
         loop {
             let mut p = open();
-            assert!(folders_as_kept(&p, &[&dir]));
+            assert!(p.folders_as_kept(&[&dir]));
             STOP_AFTER.set(Some(1));
             let r = build(&dir, &mut p);
             STOP_AFTER.set(None);
@@ -1083,7 +1033,7 @@ mod tests {
         assert_eq!(read(&dir).lines().count(), 4, "each program once");
         // Its folder changed since: not as kept.
         std::fs::write(dir.join("out.txt"), "changed").unwrap();
-        assert!(!folders_as_kept(&open(), &[&dir]));
+        assert!(!open().folders_as_kept(&[&dir]));
     }
 
     #[test]

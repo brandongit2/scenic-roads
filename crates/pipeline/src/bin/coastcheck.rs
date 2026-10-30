@@ -118,10 +118,14 @@ fn main() -> Result<()> {
                 Some(f) => Some(pipeline::lakefill::Fill::open(&f, &f.to_string_lossy())?),
                 None => None,
             };
-            let (tiles, made) =
-                wt::build(&pm, &z14, fill.as_ref().map(|f| f as &dyn wt::Extra), only.as_deref(), &|d, n| {
-                    eprintln!("coastcheck: {d}/{n} z5 tiles")
-                })?;
+            let (tiles, made) = wt::build(
+                &pm,
+                &z14,
+                fill.as_ref().map(|f| f as &dyn wt::Extra),
+                only.as_deref(),
+                &std::sync::Mutex::new(pipeline::resume_log::Pieces::none()),
+                &|d, n| eprintln!("coastcheck: {d}/{n} z5 tiles"),
+            )?;
             for (z, x, y, png) in &tiles {
                 let f = dir.join(format!("{z}/{x}/{y}.png"));
                 std::fs::create_dir_all(f.parent().unwrap())?;

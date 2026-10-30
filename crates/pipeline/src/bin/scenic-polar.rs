@@ -88,6 +88,7 @@ fn main() -> Result<()> {
             &|x, y| terrain(path("terrain", BLOCK_Z, x, y)),
             &|x, y| read(&path("shade", BLOCK_Z, x, y), roadcore::shade::decode),
             &voids,
+            &mut pipeline::resume_log::Pieces::none(),
             &mut |z, x, y, t, s| {
                 write("terrain", z, x, y, &t)?;
                 write("shade", z, x, y, &s)

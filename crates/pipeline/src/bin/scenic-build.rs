@@ -204,7 +204,9 @@ fn main() -> Result<()> {
     // (Run by hand, its limit is the shell's, 256 on macOS: an agent's jobs inherit its raised one.)
     pipeline::sys::raise_open_files();
     // Its phases' times (pipeline::timings: the log's table, the agent's record), however it ends.
-    pipeline::timings::job(&step, || step_main(&args, &step))
+    // (A pause any step stops on, at a piece it kept, ends the job as paused, exit 75, wherever the
+    // step itself didn't: pipeline::control::piece_saved.)
+    pipeline::timings::job(&step, || step_main(&args, &step).map_err(|e| pipeline::control::stop_if_paused(&step, e)))
 }
 
 /// inputs <unit> [--full] [--listing f]: a gate unit's inputs folder checked against its accepted version
@@ -708,12 +710,14 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 > size + (20 << 30);
             let src = if room && !pipeline::osmpass::missing_sets(&out, &date).is_empty() {
                 let _p = phase("copying the filtered planet here");
+                // (Each 1 % copied a safe point, task #890: a resumed copy appends the rest.)
                 pipeline::osmpass::copy_resume_with(&nas, &local, &mut |d, t| {
                     pipeline::agent::jobs::report(
                         d >> 20,
                         t >> 20,
                         "MB of the filtered planet copied here (then the sets)",
-                    )
+                    );
+                    pipeline::control::piece_saved()
                 })?;
                 pipeline::timings::count(std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0), 1);
                 pipeline::osmpass::Input::Local(local.clone())
@@ -3474,6 +3478,11 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let p = phase("clipping the World Heritage sources to the cover (osmium, once a pass)");
     let merged = whs_over_cover(out, &date, &poly, &cache, scratch)?;
     drop(p);
+    // (Safe points, task #890: here, the clip held in the cache by its set and cover, which a resumed
+    // run takes up, and after each script of the chain, what it fetched kept in the pass's answers
+    // (sent to the NAS as the step ends, paused too). A resumed run redoes the clips before this one
+    // (minutes) and runs the scripts done again on their answers, so its outputs are the same.)
+    pipeline::control::piece_saved()?;
     let p = phase("linking the caches");
     pipeline::sys::symlink(&merged, &root.join("data/osm/merged.osm.pbf"))?;
     // The park facts: the pass's answers' (none yet: pipeline::areadetails asks for them all).
@@ -3528,6 +3537,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         } else {
             unreachable!("{script}: not a step of the chain");
         }
+        pipeline::control::piece_saved()?;
     }
     parts.start(4);
     stage(0, 2, "making the map's layers");
@@ -4364,7 +4374,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let open =
             || pipeline::resume_log::Pieces::open(scratch, (6, u.x, u.y), "unit", &id, pipeline::resume_log::on());
         let mut pieces = open();
-        if pieces.kept(pipeline::unit::PREPARE).is_some() && pipeline::unit::folders_as_kept(&pieces, &dirs) {
+        if pieces.kept(pipeline::unit::PREPARE).is_some() && pieces.folders_as_kept(&dirs) {
             eprintln!("unit {}: resumed where its last run stopped", u.slash());
         } else {
             pieces.finish();
@@ -4380,7 +4390,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         if buildings.is_some() {
             tools.buildings = Some(bdir.clone());
         }
-        let prepared = pipeline::unit::folder_piece(&mut pieces, pipeline::unit::PREPARE, &dirs, || {
+        let prepared = pieces.folder_piece(pipeline::unit::PREPARE, &dirs, || {
             let s = unit_stage("copying the piece from the NAS");
             // (Copied ahead, while the z6 tile before it built, unless it's the job's first.)
             if std::fs::metadata(&local_piece).map(|m| m.len()).ok() != piece.metadata().map(|m| m.len()).ok() {
@@ -4923,26 +4933,56 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         pieces.pieces.iter().filter(|(u, _)| only.is_empty() || only.contains(u)).collect();
     let n = todo.len() as u64;
     let t0 = std::time::Instant::now();
-    for (k, (u, l)) in todo.into_iter().enumerate() {
-        pipeline::agent::jobs::report(k as u64, n, "z6 tiles");
-        let unit = TileId::parse(u).with_context(|| format!("unit {u}"))?;
+    // (Each z6 tile's reach a piece kept, task #890: a resumed run works out only the tiles its last
+    // didn't keep. Its identity: the step's version, the pass and the pieces it reads.)
+    let mut kept = if only.is_empty() {
+        pipeline::resume_log::Pieces::open(
+            scratch,
+            (0, 0, 0),
+            "reach",
+            &pipeline::resume_log::job_id(
+                "reach",
+                &pipeline::reach::REACH_V.to_string(),
+                &date,
+                &[&list, &pipeline::resume_log::names(out, todo.iter().map(|(_, l)| l.to_string()))],
+            ),
+            pipeline::resume_log::on(),
+        )
+    } else {
+        pipeline::resume_log::Pieces::none()
+    };
+    let units: Vec<(TileId, &String)> = todo
+        .iter()
+        .map(|(u, l)| Ok((TileId::parse(u).with_context(|| format!("unit {u}"))?, *l)))
+        .collect::<Result<_>>()?;
+    let mut k = 0;
+    all.units = pipeline::reach::each_kept(&mut kept, &units.iter().map(|u| u.0).collect::<Vec<_>>(), &mut |unit| {
+        pipeline::agent::jobs::report(k, n, "z6 tiles");
+        k += 1;
+        let l = units.iter().find(|u| u.0 == unit).map(|u| u.1).context("a z6 tile listed")?;
+        let t = std::time::Instant::now();
         let src = out.path(out.get(l).with_context(|| format!("{l} isn't in the manifest"))?);
         let p = phase("copying pieces from the NAS");
         p.count(src.copy_data_to_local(&local).with_context(|| format!("copy {}", src.display()))?, 1);
         drop(p);
-        let t = std::time::Instant::now();
         let p = phase("working out their roads' reach");
-        let r = of_piece(&local, unit).with_context(|| format!("piece {u}"))?;
+        let r = of_piece(&local, unit).with_context(|| format!("piece {}", unit.slash()))?;
         drop(p);
-        if let Some(r) = r {
-            if !only.is_empty() {
-                let (owned, verts) =
-                    (r.long.iter().filter(|w| w.owned).count(), r.long.iter().map(|w| w.verts.len()).sum::<usize>());
-                eprintln!("reach {u}: owned box {:?}, {} long ways ({owned} owned, {verts} vertices), extent {:?} ({:.1?}, {} MB)", r.owned, r.long.len(), r.extent(unit), t.elapsed(), std::fs::metadata(&local).map(|m| m.len() >> 20).unwrap_or(0));
-            }
-            all.units.insert(unit.slash(), r);
+        if let Some(r) = r.as_ref().filter(|_| !only.is_empty()) {
+            let (owned, verts) =
+                (r.long.iter().filter(|w| w.owned).count(), r.long.iter().map(|w| w.verts.len()).sum::<usize>());
+            eprintln!(
+                "reach {}: owned box {:?}, {} long ways ({owned} owned, {verts} vertices), extent {:?} ({:.1?}, {} MB)",
+                unit.slash(),
+                r.owned,
+                r.long.len(),
+                r.extent(unit),
+                t.elapsed(),
+                std::fs::metadata(&local).map(|m| m.len() >> 20).unwrap_or(0)
+            );
         }
-    }
+        Ok(r)
+    })?;
     std::fs::remove_file(&local).ok();
     if !only.is_empty() {
         return Ok(());
@@ -4951,6 +4991,7 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     out.put_bytes(&logical(&date), "json.zst", &all.encode()?)?;
     drop(p);
     out.save()?;
+    kept.finish();
     eprintln!("reach: {} units with roads of {} pieces ({:.0?})", all.units.len(), n, t0.elapsed());
     Ok(())
 }
@@ -6457,9 +6498,34 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             None => None,
         },
     };
-    let (tiles, made) = wt::build(&pm, &z14, fill.as_ref().map(|f| f as &dyn wt::Extra), only.as_deref(), &|d, n| {
-        pipeline::agent::jobs::report(d, n, "z5 tiles drawn")
-    })?;
+    // (Each z5 tile's subtree kept as drawn, task #890: the run's identity what its key reads, the
+    // water's version, the basemap and the lakes' fill; a part of the world, by hand, keeps none.)
+    let pieces = std::sync::Mutex::new(match &only {
+        None => pipeline::resume_log::Pieces::open(
+            scratch,
+            (0, 0, 0),
+            "water",
+            &pipeline::resume_log::job_id(
+                "water",
+                &wt::VERSION.to_string(),
+                &date,
+                &[
+                    &pipeline::resume_log::names(
+                        out,
+                        [format!("layers/basemap/world-{date}"), pipeline::lakefill::logical(&date)],
+                    ),
+                    &opt(args, "--basemap").unwrap_or_default(),
+                    &opt(args, "--lakefill").unwrap_or_default(),
+                ],
+            ),
+            pipeline::resume_log::on(),
+        ),
+        Some(_) => pipeline::resume_log::Pieces::none(),
+    });
+    let (tiles, made) =
+        wt::build(&pm, &z14, fill.as_ref().map(|f| f as &dyn wt::Extra), only.as_deref(), &pieces, &|d, n| {
+            pipeline::agent::jobs::report(d, n, "z5 tiles drawn")
+        })?;
     drop(z14);
     drop(p);
     eprintln!("water: {} in {:.0} s", serde_json::to_string(&made)?, t.elapsed().as_secs_f64());
@@ -6502,6 +6568,7 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         out.remove(&k);
     }
     out.save()?;
+    pieces.into_inner().unwrap_or_else(|e| e.into_inner()).finish();
     Ok(())
 }
 

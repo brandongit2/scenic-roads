@@ -129,6 +129,9 @@ pub fn make_missing_sets(out: &mut Out, date: &str, src: &Input, scratch: &Path)
         drop(p);
         out.save()?;
         std::fs::remove_file(&o).ok();
+        // (A safe point, task #890: the set saved in the records, which a resumed run reads as made,
+        // `missing_sets`, so it makes only the rest, each the same bytes as ever.)
+        crate::control::piece_saved()?;
     }
     crate::agent::jobs::report(missing.len() as u64, missing.len() as u64, "sets made");
     Ok(missing.len())
@@ -548,16 +551,13 @@ fn mark(scratch: &Path, stage: &str) -> Result<()> {
 }
 
 /// Copy a (large) file, resuming a partial copy: what's there already is kept when its size is
-/// shorter than the source's, and the rest appended.
-pub fn copy_resume(src: &Path, dst: &Path) -> Result<()> {
-    copy_resume_with(src, dst, &mut |_, _| {})
-}
-
-/// `copy_resume`, telling `progress` the bytes copied and the total as it goes (each 1 %).
+/// shorter than the source's, and the rest appended; `progress` told the bytes copied and the total
+/// as it goes (each 1 %, what's copied so far written: its error, a pause at a safe point, ends the
+/// copy there, to resume).
 pub fn copy_resume_with<'a>(
     src: impl Into<store::nasfs::Loc<'a>>,
     dst: &Path,
-    progress: &mut dyn FnMut(u64, u64),
+    progress: &mut dyn FnMut(u64, u64) -> Result<()>,
 ) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
     let src = src.into();
@@ -580,10 +580,11 @@ pub fn copy_resume_with<'a>(
         }
         d.write_all(&buf[..n])?;
         let step = (total / 100).max(1);
-        if (done + n as u64) / step != done / step {
-            progress(done + n as u64, total);
-        }
+        let was = done;
         done += n as u64;
+        if done / step != was / step {
+            progress(done, total)?;
+        }
         if done % (2 << 30) < n as u64 {
             eprintln!(
                 "copy {}: {:.1}/{:.1} GB ({:.0} MB/s)",
@@ -968,7 +969,10 @@ pub fn run_pass(
     let copy_first = done(scratch, "copy").exists() || room > copy_room(planet_len);
     if copy_first && !done(scratch, "copy").exists() && !done(scratch, "filter").exists() {
         part(0, "the planet copied");
-        copy_resume_with(planet, &local_planet, &mut |d, t| report(d >> 20, t >> 20, "MB of the planet copied"))?;
+        copy_resume_with(planet, &local_planet, &mut |d, t| {
+            report(d >> 20, t >> 20, "MB of the planet copied");
+            Ok(())
+        })?;
         mark(scratch, "copy")?;
     }
     if !done(scratch, "filter").exists() {

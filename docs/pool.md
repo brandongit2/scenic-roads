@@ -693,21 +693,38 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   row of a z6 tile's blocks (kept by the trees program, `--keep`, which exits paused, 75, its safe points counted in the
   job's), peaks
   the summits a z6 tile's peaks see and then each 512 of its peaks measured, polar-terrain each
-  chunk of 16 tiles sampled at its finest zoom, polar-slope each 64 tiles shaded there, slope-lo
-  each row of a z3 tile's z6 tiles shaded from their terrain, lo each zoom of a z3 tile's road and
-  rail tiles (z4–8). trees-lo keeps none: one assembly of its z6 tiles' mids. A paused target is
-  not put, nor noted done.
+  chunk of 16 tiles sampled at every zoom it samples (its finest, and the coarser ones past the
+  cap), polar-root each such chunk of a pole's z0–3 (`polar::sample_pieces`), polar-slope each 64
+  tiles shaded there, slope-lo each row of a z3 tile's z6 tiles shaded from their terrain, lo each
+  zoom of a z3 tile's road and rail tiles (z4–8), reach each z6 tile's reach (task #890), water
+  each z5 tile's subtree (z5–9, drawn side by side, the pieces locked only to take and keep them:
+  `Pieces::take`, `Pieces::keep`). trees-lo keeps none: one assembly of its z6 tiles' mids. A
+  paused target is not put, nor noted done.
+  Steps whose records are their pieces need no log (task #890): pass-sets stops after each set
+  saved (a resumed run makes only the sets the records lack) and each 1 % of its copy of the
+  filtered planet (appended to on resume); heritage after its clip of the World Heritage sources
+  (held in the cache by set and cover) and after each script of its chain (what it fetched kept
+  in the pass's answers), a resumed run redoing the minutes of clips before it and running the
+  scripts done on their answers. A pause any step's piece returns that the step doesn't stop on
+  itself ends its job as paused (scenic-build's `main`), so every safe point stops the job.
   A `unit` z6 tile's pieces are its preparing (the piece copied, the buildings staged,
   `prepare_folder`) and each program of its tail run here, each kept with its folders' digest
   (`unit::folder_digest`: names, lengths, times written), the folders kept beside the log: a
   resumed run takes them only while its folders are as the last piece left them, else starts the
   tile afresh; a pause there ends the job as a pause before a tile does (its tails out with
   workers settled first). Its longest gap is its longest program (its preparing, or `elev`); a
-  tail out with a worker keeps none. A `pois` z6 tile keeps its extract's candidates (one
+  tail out with a worker keeps none. The folder pieces are `Pieces::folder_piece` (the digest
+  `resume_log::folder_digest`), whose last kept `Pieces::folders_as_kept` checks. A `pois` z6 tile keeps its extract's candidates (one
   program, no safe point inside it). Every job's timings record
   says how often it reached a safe point and the longest it went without one (`safe_points`,
   `safe_gap_s`, `control::safe_gaps`; its log's `timings: … safe points` line): each step's time
-  between safe points, measured on every run. A log at the top of its step's scratch folder
+  between safe points, measured on every run. **The bound** (task #890): one declared value,
+  `control::SAFE_GAP_BOUND_S`, 300 s, at most a third of the drain's grace (`DRAIN_GRACE`, 15
+  minutes; asserted where it's declared), so a job asked to stop reaches a safe point before it's
+  frozen, on the slowest Mac too. A run past it says so in its log (`timings: over the bound: …`,
+  `control::over_bound`). Steps still past it by design: catalog, inputs, names-todo,
+  regions-extract (each one pass with no pieces yet), heritage's World Heritage clip and
+  pass-sets' sets (one osmium run each), and unit's longest program. A log at the top of its step's scratch folder
   (`<z>_<x>_<y>.resume`, one append a block, each record with its length and BLAKE3, read a
   record at a time; a slot's moved to the slot running it), taken only for the same inputs (its
   step's versions and encodings, the target, the sources' and water's pins, and what else it

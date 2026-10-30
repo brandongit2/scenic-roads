@@ -3,7 +3,8 @@
 //! pause) starts again at the block after the last it finished. The steps keeping one: depth and
 //! depth-lo (crate::depth::resume), terrain-hi (crate::terrain_pack, a level's blocks),
 //! terrain-deep (crate::terrain_deep, its base tiles), and through `Pieces` (task #889) unit,
-//! pois, peaks, bldtiles, bldprep, bldfield-lo, trees, polar-terrain, polar-slope, slope-lo and lo.
+//! pois, peaks, bldtiles, bldprep, bldfield-lo, trees, polar-terrain, polar-slope, slope-lo and lo;
+//! (task #890) polar-root, reach and water.
 //!
 //! - **On this Mac's disk, never the NAS:** one file per target at the top of the job's scratch
 //!   folder (`<scratch>/<z>_<x>_<y>.resume`, `path`; each step's scratch folder is its own): a line
@@ -200,27 +201,55 @@ impl Log {
 pub struct Pieces {
     log: Option<Log>,
     kept: std::collections::HashMap<BlockId, Vec<u8>>,
+    /// The last piece the earlier run kept (`folders_as_kept`).
+    last: Option<BlockId>,
 }
 
 impl Pieces {
     /// Target `t`'s pieces in `scratch` for a run of step kind `kind` and identity `id` (`id()`),
     /// kept only with `keep` (the job's agent turned resuming on, `on()`; tests say so).
     pub fn open(scratch: &Path, t: (u8, u32, u32), kind: &str, id: &str, keep: bool) -> Pieces {
-        let mut kept = std::collections::HashMap::new();
+        let (mut kept, mut last) = (std::collections::HashMap::new(), None);
         let log = if keep {
             Log::open(scratch, t, kind, id, &mut |b, p| {
                 kept.insert(b, p.to_vec());
+                last = Some(b);
                 Ok(())
             })
         } else {
             None
         };
-        Pieces { log, kept }
+        Pieces { log, kept, last }
     }
 
     /// Pieces never kept (each just made): a run by hand, a test's.
     pub fn none() -> Pieces {
-        Pieces { log: None, kept: Default::default() }
+        Pieces { log: None, kept: Default::default(), last: None }
+    }
+
+    /// A piece whose work is files in folders `dirs` (kept on this Mac's disk between runs): `make`'s
+    /// payload kept after the folders' digest once it has run (`folder_digest`), handed back without
+    /// it. A step made of such pieces (a z6 tile's preparing and tail, crate::unit; the heritage
+    /// chain's stages) takes what an earlier run kept only while `folders_as_kept`.
+    pub fn folder_piece(
+        &mut self,
+        b: BlockId,
+        dirs: &[&Path],
+        make: impl FnOnce() -> Result<Vec<u8>>,
+    ) -> Result<Vec<u8>> {
+        let p = self.piece(b, || {
+            let m = make()?;
+            // (The digest once it has run: what it left.)
+            Ok([folder_digest(dirs), m].concat())
+        })?;
+        Ok(p.get(32..).map(<[u8]>::to_vec).unwrap_or_default())
+    }
+
+    /// Whether folders `dirs` are as the last `folder_piece` an earlier run kept left them (none
+    /// kept: true). Else what it kept is of folders since changed: the step starts afresh.
+    pub fn folders_as_kept(&self, dirs: &[&Path]) -> bool {
+        let Some(last) = self.last.and_then(|b| self.kept.get(&b)) else { return true };
+        last.get(..32) == Some(folder_digest(dirs).as_slice())
     }
 
     /// Pieces of floats (`piece`, the floats by their bits).
@@ -248,15 +277,27 @@ impl Pieces {
     /// Piece `b`'s result: kept by an earlier run, else `make`'s, kept (a safe point:
     /// Err(crate::control::Paused) with the build pausing, once it's kept).
     pub fn piece(&mut self, b: BlockId, make: impl FnOnce() -> Result<Vec<u8>>) -> Result<Vec<u8>> {
-        if let Some(p) = self.kept.remove(&b) {
+        if let Some(p) = self.take(b) {
             return Ok(p);
         }
         let p = make()?;
-        // (Not kept, no safe point: a stop here would lose the target's pieces.)
-        if let Some(l) = self.log.as_mut() {
-            l.keep(b, &p)?;
-        }
+        self.keep(b, &p)?;
         Ok(p)
+    }
+
+    /// What an earlier run kept of piece `b`, taken: for pieces made side by side (`piece`'s halves,
+    /// the pieces held behind a lock only to take and keep them, never while one is made).
+    pub fn take(&mut self, b: BlockId) -> Option<Vec<u8>> {
+        self.kept.remove(&b)
+    }
+
+    /// Piece `b` made, `p` its result: kept (a safe point, as `piece`'s).
+    pub fn keep(&mut self, b: BlockId, p: &[u8]) -> Result<()> {
+        // (Not kept, no safe point: a stop here would lose the target's pieces.)
+        match self.log.as_mut() {
+            Some(l) => l.keep(b, p),
+            None => Ok(()),
+        }
     }
 
     /// The target's output saved: its log deleted.
@@ -265,6 +306,32 @@ impl Pieces {
             std::fs::remove_file(&l.path).ok();
         }
     }
+}
+
+/// Folders `dirs`' digest: each file's path in them, length and time written (what a program
+/// changes), in order.
+pub fn folder_digest(dirs: &[&Path]) -> Vec<u8> {
+    fn walk(d: &Path, rel: &str, h: &mut blake3::Hasher) {
+        let mut es: Vec<_> = std::fs::read_dir(d).into_iter().flatten().flatten().collect();
+        es.sort_by_key(|e| e.file_name());
+        for e in es {
+            let name = format!("{rel}/{}", e.file_name().to_string_lossy());
+            let Ok(m) = e.metadata() else { continue };
+            if m.is_dir() {
+                walk(&e.path(), &name, h);
+                continue;
+            }
+            let at = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).unwrap_or_default();
+            h.update(name.as_bytes());
+            h.update(&m.len().to_le_bytes());
+            h.update(&at.as_nanos().to_le_bytes());
+        }
+    }
+    let mut h = blake3::Hasher::new();
+    for (k, d) in dirs.iter().enumerate() {
+        walk(d, &k.to_string(), &mut h);
+    }
+    h.finalize().as_bytes().to_vec()
 }
 
 /// A record: its payload's length, its BLAKE3, the payload (the block's z, x and y, then what its

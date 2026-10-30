@@ -131,6 +131,24 @@ pub fn logical(date: &str) -> String {
     format!("sources/osm/{date}/reach")
 }
 
+/// Z6 tiles `units`' reaches (`make`'s: none for a tile with no counted way), each a piece kept
+/// (crate::resume_log::Pieces, task #890; a safe point once kept): a resumed run makes only those
+/// its last didn't keep, the same values (whole numbers all, as JSON). By z6 tile ("6/x/y").
+pub fn each_kept(
+    pieces: &mut crate::resume_log::Pieces,
+    units: &[TileId],
+    make: &mut dyn FnMut(TileId) -> anyhow::Result<Option<Reach>>,
+) -> anyhow::Result<BTreeMap<String, Reach>> {
+    let mut all = BTreeMap::new();
+    for &u in units {
+        let p = pieces.piece((u.z, u.x, u.y), || Ok(serde_json::to_vec(&make(u)?)?))?;
+        if let Some(r) = serde_json::from_slice::<Option<Reach>>(&p)? {
+            all.insert(u.slash(), r);
+        }
+    }
+    Ok(all)
+}
+
 /// A z6 tile's tile grown by `LONG_KM` (E7): where its ordinary ways are.
 pub fn near_box(u: TileId) -> [i32; 4] {
     crate::hipack::grow(crate::hipack::tile_bounds(u.z, u.x, u.y), LONG_KM)
@@ -325,6 +343,43 @@ mod tests {
 
     fn e7(x: f64, y: f64) -> [i32; 2] {
         [(x * 1e7) as i32, (y * 1e7) as i32]
+    }
+
+    /// Task #890: the reaches paused at every z6 tile kept (`each_kept`), resumed each time, are
+    /// the same as a run never paused, each tile worked out once.
+    #[test]
+    fn reaches_paused_at_every_tile_resume_to_the_same() {
+        use crate::resume_log::{Pieces, STOP_AFTER};
+        let units: Vec<TileId> = (0..5).map(|x| TileId { z: 6, x, y: 20 }).collect();
+        let made = std::cell::Cell::new(0);
+        let mut make = |u: TileId| -> Result<Option<Reach>> {
+            made.set(made.get() + 1);
+            Ok((u.x != 2).then(|| Reach {
+                owned: Some([u.x as i32, 1, 2, 3]),
+                long: vec![LongWay { owned: true, ferry: u.x == 3, verts: vec![[u.x as i32, -7], [9, 9]] }],
+                cells: vec![[u.x as i32, 4]],
+            }))
+        };
+        let fresh = each_kept(&mut Pieces::none(), &units, &mut make).unwrap();
+        made.set(0);
+        let d = tempfile::tempdir().unwrap();
+        let mut stops = 0;
+        let resumed = loop {
+            STOP_AFTER.set(Some(1));
+            let r = each_kept(&mut Pieces::open(d.path(), (0, 0, 0), "reach", "a", true), &units, &mut make);
+            STOP_AFTER.set(None);
+            match r {
+                Err(e) => {
+                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    stops += 1;
+                }
+                Ok(r) => break r,
+            }
+        };
+        assert_eq!(stops, units.len(), "a stop after each tile kept");
+        assert_eq!(resumed, fresh);
+        assert_eq!(fresh.len(), 4, "a tile with no counted way isn't listed");
+        assert_eq!(made.get(), units.len(), "each tile once");
     }
 
     /// A ferry crossing the open sea between two coasts, the sea a region with no land (the high

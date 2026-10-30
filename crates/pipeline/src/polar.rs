@@ -183,6 +183,31 @@ fn sample_kept(
     Ok(es)
 }
 
+/// The tiles a piece of sampling holds (`sample_pieces`): the terrain's chunk (crate::terrain_base).
+pub const SAMPLE_CHUNK: usize = 16;
+
+/// Tiles `ts` of zoom `z` sampled (`make`, a chunk of them with the voids it counts), in chunks of
+/// `SAMPLE_CHUNK`, each a piece kept (`sample_kept`, task #889/#890; id: z and its first tile):
+/// every level a polar step samples (polar-terrain's own zoom and the coarser ones past the cap,
+/// polar-root's), so a resumed run samples only the chunks its last didn't keep, and each piece's
+/// gap is one chunk's sampling.
+pub fn sample_pieces(
+    pieces: &mut crate::resume_log::Pieces,
+    z: u8,
+    ts: &[(u32, u32)],
+    voids: &Voids,
+    make: &dyn Fn(&[(u32, u32)], &Voids) -> Result<Vec<Vec<f32>>>,
+) -> Result<Vec<Vec<f32>>> {
+    let mut all = Vec::with_capacity(ts.len());
+    for chunk in ts.chunks(SAMPLE_CHUNK) {
+        all.extend(sample_kept(pieces, (z, chunk[0].0, chunk[0].1), voids, || {
+            let mine = Voids::default();
+            Ok((make(chunk, &mine)?, mine))
+        })?);
+    }
+    Ok(all)
+}
+
 /// Tiles `ts` of zoom `z` sampled from `s`: each its 256 × 256 heights (m, EGM2008), each the
 /// mean of its `K` × `K` samples with data; where no dataset has data, a fill mask's own filled
 /// value (`Sampler::fill_voids`; both counted in `voids`); a pixel with no sample with data in a
@@ -346,7 +371,7 @@ pub type Heights = HashMap<(u32, u32), Arc<Vec<f32>>>;
 pub fn parent_heights(
     tiles: &[(u32, u32)],
     kids: &Heights,
-    own: &dyn Fn(&[(u32, u32)]) -> Result<Vec<Vec<f32>>>,
+    own: &mut dyn FnMut(&[(u32, u32)]) -> Result<Vec<Vec<f32>>>,
 ) -> Result<Heights> {
     let missing: Vec<(u32, u32)> =
         tiles.iter().copied().filter(|&t| !all_kids(t, &|c| kids.contains_key(&c))).collect();
@@ -477,12 +502,9 @@ pub fn terrain_block(
     let mut lv = Heights::new();
     // (Each chunk sampled a piece kept, task #889, with its voids counted: a resumed block samples
     // only the chunks its last run didn't keep, and counts the kept ones' voids as they were.)
-    for chunk in own.chunks(16) {
-        let id = (max_z, chunk[0].0, chunk[0].1);
-        let es = sample_kept(pieces, id, voids, || {
-            let mine = Voids::default();
-            Ok((sample(&samplers[max_z as usize], pole, max_z, chunk, &mine)?, mine))
-        })?;
+    for chunk in own.chunks(SAMPLE_CHUNK) {
+        let es =
+            sample_pieces(pieces, max_z, chunk, voids, &|c, v| sample(&samplers[max_z as usize], pole, max_z, c, v))?;
         for (t, e) in chunk.iter().zip(es) {
             lv.insert(*t, Arc::new(e));
         }
@@ -501,7 +523,9 @@ pub fn terrain_block(
         }
         z -= 1;
         let s = &samplers[z as usize];
-        lv = parent_heights(&level(z), &lv, &|t| sample(s, pole, z, t, voids))?;
+        lv = parent_heights(&level(z), &lv, &mut |t| {
+            sample_pieces(pieces, z, t, voids, &|c, v| sample(s, pole, z, c, v))
+        })?;
     }
 }
 
@@ -603,6 +627,7 @@ pub fn root(
     terrain: &dyn Fn(u32, u32) -> Result<Option<Vec<f32>>>,
     shade: &dyn Fn(u32, u32) -> Result<Option<Vec<Px>>>,
     voids: &Voids,
+    pieces: &mut crate::resume_log::Pieces,
     put: &mut dyn FnMut(u8, u32, u32, Vec<u8>, Vec<u8>) -> Result<()>,
 ) -> Result<()> {
     let mut hs = Heights::new();
@@ -618,7 +643,7 @@ pub fn root(
     for z in (0..BLOCK_Z).rev() {
         let ts = polar::cap_tiles(pole, z);
         let s = &samplers[z as usize];
-        hs = parent_heights(&ts, &hs, &|t| sample(s, pole, z, t, voids))?;
+        hs = parent_heights(&ts, &hs, &mut |t| sample_pieces(pieces, z, t, voids, &|c, v| sample(s, pole, z, c, v)))?;
         ss = parent_shading(pole, z, &ts, &ss, &|x, y| hs.get(&(x, y)).cloned());
         for &(x, y) in &ts {
             put(z, x, y, encode_terrain(z, &hs[&(x, y)])?, crate::shade_codec::encode(&ss[&(x, y)])?)?;
@@ -818,12 +843,34 @@ pub fn root_step(out: &mut crate::out::Out, pole: Pole, built: &[(u32, u32)]) ->
     };
     let (mut ts, mut shs) = (Vec::new(), Vec::new());
     let voids = Voids::default();
+    // (Its sampling past the cap kept a chunk at a time, task #890: the run's identity the step's
+    // versions, the pole, the pool's plans and the blocks' packs it reads.)
+    let mut pieces = crate::resume_log::Pieces::open(
+        &out.scratch,
+        (if pole == Pole::South { 128 } else { 0 }, 0, 0),
+        "polar-root",
+        &crate::resume_log::job_id(
+            "polar-root",
+            &format!("{TERRAIN_V} {} {SLOPE_V} {}", crate::terrain_codec::version(), crate::shade_codec::version()),
+            &root_target(pole),
+            &[
+                &crate::terrain_resume::inputs(&out.manifest),
+                &format!("{:?}", &plans[..BLOCK_Z as usize]),
+                &crate::resume_log::names(
+                    out,
+                    built.iter().flat_map(|&b| ["terrain", "slope"].map(|k| block_logical(k, pole, b))),
+                ),
+            ],
+        ),
+        crate::resume_log::on(),
+    );
     root(
         &ss,
         pole,
         &|x, y| get(&tp, x, y)?.map(|b| roadcore::grid::decode_terrain(&b)).transpose(),
         &|x, y| get(&sp, x, y)?.map(|b| roadcore::shade::decode(&b)).transpose(),
         &voids,
+        &mut pieces,
         &mut |z, x, y, t, s| {
             ts.push((z, x, y, t));
             shs.push((z, x, y, s));
@@ -847,6 +894,7 @@ pub fn root_step(out: &mut crate::out::Out, pole: Pole, built: &[(u32, u32)]) ->
             out.remove(&l);
         }
     }
+    pieces.finish();
     crate::control::done("polar-root", &root_target(pole));
     Ok(())
 }
@@ -888,7 +936,7 @@ mod tests {
     fn parents_mean_their_children_and_fill_the_rest() {
         let mut kids = Heights::new();
         kids.insert((0, 0), Arc::new(vec![4.0; TS * TS]));
-        let e = parent_heights(&[(0, 0)], &kids, &|t| Ok(t.iter().map(|_| vec![7.0; TS * TS]).collect())).unwrap();
+        let e = parent_heights(&[(0, 0)], &kids, &mut |t| Ok(t.iter().map(|_| vec![7.0; TS * TS]).collect())).unwrap();
         assert_eq!(e[&(0, 0)][0], 4.0);
         assert_eq!(e[&(0, 0)][TS * TS - 1], 7.0);
         let mut ks = HashMap::new();
@@ -1104,6 +1152,46 @@ mod tests {
         .unwrap();
         assert!(puts < full, "{puts} of {full}: some tiles unshaded");
         assert_eq!(said.last(), Some(&(total, total)), "{said:?}");
+    }
+
+    /// Task #890: a level's sampling paused at every chunk kept (`sample_pieces`), resumed each
+    /// time, hands back the same tiles and counts the same voids as one never paused, each chunk
+    /// sampled once.
+    #[test]
+    fn a_levels_sampling_paused_at_every_chunk_resumes_to_the_same_tiles() {
+        use crate::resume_log::{Pieces, STOP_AFTER};
+        let ts: Vec<(u32, u32)> = (0..5).flat_map(|y| (0..9).map(move |x| (x, y))).collect();
+        let made = std::cell::Cell::new(0);
+        let make = |c: &[(u32, u32)], v: &Voids| -> Result<Vec<Vec<f32>>> {
+            made.set(made.get() + c.len());
+            v.0.lock().unwrap().entry(c[0].1 as i32).or_default()[2] += c.len() as u64;
+            Ok(c.iter().map(|&(x, y)| vec![(x * 10 + y) as f32; 4]).collect())
+        };
+        let fresh_voids = Voids::default();
+        let fresh = sample_pieces(&mut Pieces::none(), 3, &ts, &fresh_voids, &make).unwrap();
+        made.set(0);
+        let d = tempfile::tempdir().unwrap();
+        let voids = Voids::default();
+        let mut stops = 0;
+        let resumed = loop {
+            // (A run's voids are its own: each attempt counts afresh, the kept chunks' with them.)
+            *voids.0.lock().unwrap() = Default::default();
+            STOP_AFTER.set(Some(1));
+            let r =
+                sample_pieces(&mut Pieces::open(d.path(), (128, 0, 0), "polar-root", "a", true), 3, &ts, &voids, &make);
+            STOP_AFTER.set(None);
+            match r {
+                Err(e) => {
+                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    stops += 1;
+                }
+                Ok(t) => break t,
+            }
+        };
+        assert_eq!(stops, ts.len().div_ceil(SAMPLE_CHUNK), "a stop after each chunk kept");
+        assert_eq!(resumed, fresh);
+        assert_eq!(voids.bands(), fresh_voids.bands());
+        assert_eq!(made.get(), ts.len(), "each chunk sampled once");
     }
 
     /// A pixel's mean leaves out no-data samples, and a 0 beside data (an overview's file edge).
