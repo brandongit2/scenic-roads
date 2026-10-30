@@ -1243,12 +1243,49 @@ fn items(inp: &Input) -> Items {
         .filter(|&i| matches!(out[i].step.as_str(), "terrain-hi" | "terrain-deep" | "terrain-lo"))
         .collect();
     let terrain = vec![group(&mut groups, terrain)];
+    // (What the live plan holds back (task #867): a chain's job its scheduler's offers lack, not
+    // running, waits on something even where `chain_deps` says nothing: on its chain's jobs before
+    // it (build::chains_left lists each chain's works as if each before it succeeded; a chain's
+    // steps are its stage's, crate::agent::steps). None without a scheduler (a test, a backtest).)
+    let offered: Option<BTreeSet<(&str, &str)>> = inp.sched.as_ref().map(|s| {
+        s.offers.iter().flat_map(|o| o.targets.iter().map(move |t| (o.step.as_str(), t.0.as_str()))).collect()
+    });
+    let stage = |s: &str| super::steps::row(s).map(|r| r.stage);
     let mut chain: Vec<usize> = Vec::new();
+    // (What a step's jobs wait on, one set for all of them (task #867: 1,328 peaks each listing the
+    // 568 candidates were 0.75M of the kept waits' 1.07M deps): by step, its length when made.)
+    let mut shared_waits: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     for (step, target, cost) in &inp.chains {
         let (pre, earlier, reads_terrain) = chain_deps(step);
         let mut deps: Vec<usize> = before.iter().copied().filter(|&i| pre.contains(&out[i].step.as_str())).collect();
         deps.extend(chain.iter().copied().filter(|&i| earlier.contains(&out[i].step.as_str())));
-        let g = if reads_terrain { terrain.clone() } else { Vec::new() };
+        let mut g = if reads_terrain { terrain.clone() } else { Vec::new() };
+        if deps.len() > 1 {
+            // (The list only grows, so one as long is the same.)
+            let n = deps.len();
+            let k = match shared_waits.get(step.as_str()) {
+                Some(&(len, k)) if len == n => k,
+                _ => {
+                    let k = group(&mut groups, std::mem::take(&mut deps));
+                    shared_waits.insert(step.as_str(), (n, k));
+                    k
+                }
+            };
+            deps.clear();
+            g.push(k);
+        }
+        let held = offered.as_ref().is_some_and(|o| !o.contains(&(step.as_str(), target.as_str())))
+            && !inp.running.contains_key(&(step.clone(), target.clone()));
+        if held && deps.is_empty() && g.is_empty() {
+            let mine: Vec<usize> = chain
+                .iter()
+                .copied()
+                .filter(|&i| stage(&out[i].step).is_some() && stage(&out[i].step) == stage(step))
+                .collect();
+            if !mine.is_empty() {
+                g.push(group(&mut groups, mine));
+            }
+        }
         let i = add(&mut out, &mut by_target, step, target, *cost, Phase::Chain, (deps, g));
         chain.push(i);
     }
@@ -4410,6 +4447,122 @@ mod tests {
         let cpu0 = thread_cpu();
         std::thread::sleep(Duration::from_millis(300)); // (sleep ok: a wait whose CPU time is measured)
         assert!(thread_cpu() - cpu0 < Duration::from_millis(50), "a wait is no CPU time");
+    }
+
+    /// The chains' and the lead's jobs before the regions' the live plan holds back (its
+    /// scheduler's offers lack them, none running) that wait on nothing in the forecast's items:
+    /// none should (task #867).
+    fn held_but_ready(inp: &Input) -> Vec<(String, String)> {
+        let Some(st) = inp.sched.as_ref() else { return Vec::new() };
+        let offered: BTreeSet<(&str, &str)> =
+            st.offers.iter().flat_map(|o| o.targets.iter().map(move |t| (o.step.as_str(), t.0.as_str()))).collect();
+        let listed: BTreeSet<(&str, &str)> =
+            inp.chains.iter().chain(inp.before.iter()).map(|j| (j.0.as_str(), j.1.as_str())).collect();
+        let Items { items, groups, .. } = items(inp);
+        items
+            .iter()
+            .filter(|i| listed.contains(&(i.step.as_str(), i.target.as_str())))
+            .filter(|i| !offered.contains(&(i.step.as_str(), i.target.as_str())))
+            .filter(|i| !inp.running.contains_key(&(i.step.clone(), i.target.clone())))
+            .filter(|i| i.deps.is_empty() && i.groups.iter().all(|&g| groups[g].is_empty()))
+            .map(|i| (i.step.clone(), i.target.clone()))
+            .collect()
+    }
+
+    /// Task #867 (term 604's record: a cold depth-root ready at the start though the live plan
+    /// held it, so the lead refused every ask until its jobs ended): a replay never places a
+    /// target the live plan holds back before what it waits on is done. The depth root waits for
+    /// the depth and its assemblies (`chain_deps`, as build::depth_work); a held job of a chain
+    /// `chain_deps` says nothing of waits on its chain's jobs before it. With
+    /// SCENIC_FORECAST_RECORD, that record's input too.
+    #[test]
+    fn a_replay_never_places_a_target_the_live_plan_holds_back() {
+        let c = |secs: f64| Cost { secs, known: true, peak_mb: 1000 };
+        let regions: [RegionLeft; 0] = [];
+        let unit = |_: &str, _: &str| c(1.0);
+        let base = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 1.0, false)], &unit);
+        let offer =
+            |step: &str, t: &str| Offer { step: step.into(), targets: vec![(t.into(), "k".into(), 1000)], job: None };
+        let job = |s: &str, t: &str, secs: f64| (s.to_string(), t.to_string(), c(secs));
+        // (bldfield-lo stands for a chain step `chain_deps` would know nothing of: held, so after
+        // the chain's jobs before it.)
+        let chains = vec![
+            job("depth", "6/1/1", 300.0),
+            job("depth-lo", "3/0/0", 100.0),
+            job("depth-root", "depth-root", 50.0),
+            job("bldtiles", "6/2/2", 200.0),
+        ];
+        let st = State { offers: vec![offer("depth", "6/1/1"), offer("bldtiles", "6/2/2")], ..Default::default() };
+        let inp = Input { chains, sched: Some(st), ..base };
+        assert!(held_but_ready(&inp).is_empty(), "{:?}", held_but_ready(&inp));
+        let f = forecast(&inp);
+        let at = |s: &str| f.placed.iter().find(|p| p.step == s).map(|p| (p.from, p.until)).unwrap();
+        assert!(at("depth-root").0 >= at("depth-lo").1 && at("depth-lo").0 >= at("depth").1, "{:?}", f.placed);
+        // (The polar caps' chain, one step after another, as build::polar_next; and a held step
+        // with no line in `chain_deps` (bldprep after bld-fetch) after its chain's jobs before it.)
+        let chains = vec![
+            job("polar-terrain", "n", 300.0),
+            job("polar-slope", "n", 100.0),
+            job("polar-root", "n", 50.0),
+            job("bld-fetch", "all", 200.0),
+            job("bldprep", "6/2/2", 20.0),
+        ];
+        let st = State { offers: vec![offer("polar-terrain", "n"), offer("bld-fetch", "all")], ..Default::default() };
+        let inp = Input { chains, sched: Some(st), ..inp };
+        assert!(held_but_ready(&inp).is_empty(), "{:?}", held_but_ready(&inp));
+        let f = forecast(&inp);
+        let at = |s: &str| f.placed.iter().find(|p| p.step == s).map(|p| (p.from, p.until)).unwrap();
+        assert!(at("polar-root").0 >= at("polar-slope").1 && at("polar-slope").0 >= at("polar-terrain").1);
+        assert!(at("bldprep").0 >= at("bld-fetch").1, "{:?}", f.placed);
+        if let Ok(p) = std::env::var("SCENIC_FORECAST_RECORD") {
+            let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
+            let left = held_but_ready(&r.input);
+            assert!(left.is_empty(), "{} held but ready: {:?}", left.len(), &left[..left.len().min(20)]);
+            let f = forecast_by(&r.input, Duration::from_secs(60));
+            let now = r.input.now;
+            let offered: BTreeSet<(String, String)> = r
+                .input
+                .sched
+                .as_ref()
+                .unwrap()
+                .offers
+                .iter()
+                .flat_map(|o| o.targets.iter().map(move |t| (o.step.clone(), t.0.clone())))
+                .collect();
+            let listed: BTreeSet<(String, String)> =
+                r.input.chains.iter().map(|j| (j.0.clone(), j.1.clone())).collect();
+            let early: Vec<&Placed> = f
+                .placed
+                .iter()
+                .filter(|p| p.from <= now && listed.contains(&(p.step.clone(), p.target.clone())))
+                .filter(|p| !offered.contains(&(p.step.clone(), p.target.clone())))
+                .filter(|p| !r.input.running.contains_key(&(p.step.clone(), p.target.clone())))
+                .collect();
+            assert!(early.is_empty(), "held but placed at the start: {early:?}");
+            // (The kept waits' size, for the record: the graph, compact (KeptWaits), and every set
+            // spread into its items' deps.)
+            let g = &f.graph;
+            let n_deps = |g: &crate::coord::history::Graph| {
+                g.deps.iter().map(Vec::len).sum::<usize>() + g.groups.iter().map(Vec::len).sum::<usize>()
+            };
+            let c = g.compact(&Default::default());
+            let mut spread = g.clone();
+            for (i, s) in g.sets.iter().enumerate() {
+                for &k in s {
+                    spread.deps[i].extend(&g.groups[k as usize]);
+                }
+            }
+            spread.sets = vec![Vec::new(); g.keys.len()];
+            spread.groups.clear();
+            for (name, g) in [("graph", g), ("compact", &c), ("spread", &spread)] {
+                eprintln!(
+                    "{name}: {} items, {} deps, {} bytes",
+                    g.keys.len(),
+                    n_deps(g),
+                    serde_json::to_vec(g).unwrap().len()
+                );
+            }
+        }
     }
 
     /// A recorded forecast (SCENIC_FORECAST_RECORD: a forecast-input.json) timed. For profiling at live scale (unset: nothing);

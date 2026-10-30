@@ -105,6 +105,73 @@ pub struct Graph {
     pub groups: Vec<Vec<u32>>,
 }
 
+impl Graph {
+    /// The same waits in less (task #867, for `KeptWaits`): an item that waits on nothing, has
+    /// nothing `resolved` and that nothing waits on left out (what a next graph's items waited on
+    /// is read from the items it shares with this one: one with no waits adds none); the same
+    /// list of deps (two or more) that many items have, one set (`groups`) each names.
+    pub fn compact(&self, resolved: &HashMap<(String, String), BTreeMap<String, u64>>) -> Graph {
+        let n = self.keys.len();
+        let mut used = vec![false; n];
+        for i in 0..n {
+            let waits = !self.deps[i].is_empty()
+                || self.sets[i].iter().any(|&s| self.groups.get(s as usize).is_some_and(|g| !g.is_empty()));
+            if waits || resolved.contains_key(&self.keys[i]) {
+                used[i] = true;
+                for &d in &self.deps[i] {
+                    used[d as usize] = true;
+                }
+                for &s in &self.sets[i] {
+                    for &d in self.groups.get(s as usize).into_iter().flatten() {
+                        used[d as usize] = true;
+                    }
+                }
+            }
+        }
+        let mut new_of = vec![u32::MAX; n];
+        let mut keys = Vec::new();
+        for i in (0..n).filter(|&i| used[i]) {
+            new_of[i] = keys.len() as u32;
+            keys.push(self.keys[i].clone());
+        }
+        let map = |v: &[u32]| -> Vec<u32> { v.iter().map(|&d| new_of[d as usize]).collect() };
+        // (The sets named still, renumbered; a list of deps as long and as many times a set too.)
+        let mut group_of: HashMap<Vec<u32>, u32> = HashMap::new();
+        let mut groups: Vec<Vec<u32>> = Vec::new();
+        let mut old_group: HashMap<u32, u32> = HashMap::new();
+        let mut set_of = |v: Vec<u32>, groups: &mut Vec<Vec<u32>>| -> u32 {
+            *group_of.entry(v.clone()).or_insert_with(|| {
+                groups.push(v);
+                groups.len() as u32 - 1
+            })
+        };
+        let (mut deps, mut sets) = (Vec::new(), Vec::new());
+        for i in (0..n).filter(|&i| used[i]) {
+            let mut s: Vec<u32> = Vec::new();
+            for &g in &self.sets[i] {
+                let k = match old_group.get(&g) {
+                    Some(&k) => k,
+                    None => {
+                        let k = set_of(map(self.groups.get(g as usize).map_or(&[][..], |v| v)), &mut groups);
+                        old_group.insert(g, k);
+                        k
+                    }
+                };
+                s.push(k);
+            }
+            let d = map(&self.deps[i]);
+            if d.len() > 1 {
+                s.push(set_of(d, &mut groups));
+                deps.push(Vec::new());
+            } else {
+                deps.push(d);
+            }
+            sets.push(s);
+        }
+        Graph { keys, deps, sets, groups }
+    }
+}
+
 /// What the targets not yet started wait on: the last forecast's `Graph`, and for each of its items
 /// what it waited on that finished before that forecast was made (an earlier forecast's
 /// dependencies, done since: gone from the last one's), step → the last job's event number.
@@ -191,7 +258,7 @@ impl Waits {
             .map(|(k, r)| (k.clone(), r.iter().filter_map(|(s, &n)| Some((s.clone(), name(n)?))).collect::<Vec<_>>()))
             .filter(|(_, r)| !r.is_empty())
             .collect();
-        KeptWaits { made_t, graph: self.graph.clone(), resolved }
+        KeptWaits { made_t, graph: self.graph.compact(&self.resolved), resolved }
     }
 
     /// Kept waits back in a numbering: `num` each writer's number's here (one not taken in
@@ -670,6 +737,45 @@ mod tests {
         };
         let w = h.waits_basis().next(g2);
         assert_eq!(w.by_run(&[Some(0), Some(0), None], 2), vec![vec![s], vec![]]);
+    }
+
+    /// Kept waits compact (task #867): items with no waits nothing waits on left out, a list many
+    /// items share kept once; what each item waits on, as before.
+    #[test]
+    fn compact_waits_wait_on_the_same() {
+        let k = |s: &str, t: &str| (s.to_string(), t.to_string());
+        let n = 50u32;
+        let mut keys: Vec<(String, String)> = (0..n).map(|i| k("pois", &format!("6/{i}/0"))).collect();
+        keys.extend((0..n).map(|i| k("peaks", &format!("6/{i}/0"))));
+        keys.push(k("idle", "x"));
+        keys.push(k("unit", "6/9/9"));
+        let all: Vec<u32> = (0..n).collect();
+        let mut deps: Vec<Vec<u32>> = vec![vec![]; n as usize];
+        deps.extend((0..n).map(|_| all.clone()));
+        deps.push(vec![]);
+        deps.push(vec![]);
+        let mut sets = vec![vec![]; keys.len()];
+        *sets.last_mut().unwrap() = vec![0];
+        let g = Graph { keys, deps, sets, groups: vec![vec![3, 4]] };
+        let mut resolved = HashMap::new();
+        resolved.insert(k("unit", "6/9/9"), BTreeMap::from([("terrain-hi".to_string(), 1u64)]));
+        let c = g.compact(&resolved);
+        assert!(!c.keys.contains(&k("idle", "x")), "{:?}", c.keys);
+        let size = |g: &Graph| serde_json::to_vec(g).unwrap().len();
+        assert!(size(&c) * 3 < size(&g), "{} vs {}", size(&c), size(&g));
+        // (The same finishes named for every item kept.)
+        let built: HashMap<(String, String), u64> =
+            [(k("pois", "6/7/0"), 9), (k("pois", "6/3/0"), 4), (k("pois", "6/4/0"), 7)].into_iter().collect();
+        let w = |g: Graph| {
+            let index = g.keys.iter().enumerate().map(|(i, key)| (key.clone(), i as u32)).collect();
+            Waits { graph: g, from: 0, index, resolved: resolved.clone() }
+        };
+        let (a, b) = (w(g.clone()), w(c));
+        for (key, &i) in &a.index {
+            let r = a.of(i, &built, &mut HashMap::new());
+            let r2 = b.index.get(key).map(|&j| b.of(j, &built, &mut HashMap::new())).unwrap_or_default();
+            assert_eq!(r, r2, "{key:?}");
+        }
     }
 
     #[test]
