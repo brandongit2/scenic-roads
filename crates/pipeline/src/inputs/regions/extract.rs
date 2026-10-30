@@ -253,6 +253,29 @@ fn scan<T: Serialize + serde::de::DeserializeOwned + Send>(
     Ok(all)
 }
 
+/// The planet's identity for its kept ranges (it has no manifest name, and hashing 95 GB would
+/// cost a scan): its length and a hash of its first and last MiB. The first holds the header blob
+/// (the replication timestamp and sequence), so a planet replaced by another of the same length
+/// still differs. "-" when it isn't there.
+fn planet_print(planet: &store::nasfs::NasPath) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let go = || -> std::io::Result<String> {
+        let mut f = planet.open()?;
+        let len = f.metadata()?.len();
+        let f: &mut std::fs::File = &mut f;
+        let mut h = blake3::Hasher::new();
+        let mut head = Vec::new();
+        f.take(1 << 20).read_to_end(&mut head)?;
+        h.update(&head);
+        f.seek(SeekFrom::Start(len.saturating_sub(1 << 20)))?;
+        let mut tail = Vec::new();
+        f.take(1 << 20).read_to_end(&mut tail)?;
+        h.update(&tail);
+        Ok(format!("{len} {}", h.finalize().to_hex()))
+    };
+    go().unwrap_or_else(|_| "-".into())
+}
+
 /// The extract from what the scans found.
 pub fn assemble(
     date: &str,
@@ -328,7 +351,7 @@ pub fn run(out: &mut crate::out::Out, date: &str, ids: &BTreeSet<Id>) -> Result<
     let planet = out.root().join(format!("sources/osm/{date}/planet.osm.pbf"));
     let filtered = out.get(&format!("sources/osm/{date}/filtered")).map(|n| out.root().join(n));
     // (Each scan's ranges kept as pieces, task #897: by the ids, the filtered planet's name and the
-    // planet's length, what the scans read.)
+    // planet's fingerprint (no manifest name: `planet_print`), what the scans read.)
     let id = crate::resume_log::job_id(
         "regions-extract",
         "1",
@@ -336,7 +359,7 @@ pub fn run(out: &mut crate::out::Out, date: &str, ids: &BTreeSet<Id>) -> Result<
         &[
             &key(date, &all),
             &crate::resume_log::names(out, [format!("sources/osm/{date}/filtered")]),
-            &planet.metadata().map_or(0, |m| m.len()).to_string(),
+            &planet_print(&planet),
         ],
     );
     let mut pieces =

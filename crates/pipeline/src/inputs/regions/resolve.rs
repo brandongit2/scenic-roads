@@ -349,26 +349,26 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
                         };
                         // (Kept as a piece, task #897; given up once a pause came: the check
                         // stops, nothing of it kept.)
-                        let (res, needs) = match ctx.kept {
-                            None => make(),
-                            Some(kp) => kp
-                                .get_or_make(
-                                    super::kept::RESOLVED,
-                                    key,
-                                    make,
-                                    |(res, needs), p| {
-                                        super::kept::result(p, res, super::kept::resolved);
-                                        super::kept::ids(p, needs);
-                                    },
-                                    |g| {
-                                        Ok((
-                                            super::kept::get_result(g, super::kept::get_resolved)?,
-                                            super::kept::get_ids(g)?,
-                                        ))
-                                    },
-                                )
-                                .unwrap_or_else(|| (Err(Vec::new()), Vec::new())),
+                        let got = match ctx.kept {
+                            None => Some(make()),
+                            Some(kp) => kp.get_or_make(
+                                super::kept::RESOLVED,
+                                key,
+                                make,
+                                |(res, needs), p| {
+                                    super::kept::result(p, res, super::kept::resolved);
+                                    super::kept::ids(p, needs);
+                                },
+                                |g| {
+                                    Ok((
+                                        super::kept::get_result(g, super::kept::get_resolved)?,
+                                        super::kept::get_ids(g)?,
+                                    ))
+                                },
+                            ),
                         };
+                        // (Given up: not memoised, as nothing was resolved.)
+                        let Some((res, needs)) = got else { return (id.clone(), Ok((Err(Vec::new()), Vec::new()))) };
                         if let Some(m) = ctx.memo {
                             m.lock().unwrap().insert(key.clone(), (res.clone(), needs.clone()));
                         }

@@ -737,7 +737,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   lakes, the one coastline, each region's area, the hand-outs: one stretch over every region
   with water, no pieces). catalog keeps none: its coverage drawing was the catalogue chain's read
   (task #895 made it seconds: 20 s on the M1 from the NAS, 1 s from the kept one), the rest of
-  its run about 20 s. names-todo's longest gap is its labels' or landmarks' phase (3 min at most measured). A log at the top of its step's scratch folder
+  its run about 20 s. names-todo's labels' phase is still one stretch, past the bound on the slower Macs (288â€“364 s measured in the M4's last runs; the landmarks' 222 s). A log at the top of its step's scratch folder
   (`<z>_<x>_<y>.resume`, one append a block, each record with its length and BLAKE3, read a
   record at a time; a slot's moved to the slot running it), taken only for the same inputs (its
   step's versions and encodings, the target, the sources' and water's pins, and what else it

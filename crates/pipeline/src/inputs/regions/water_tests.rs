@@ -383,9 +383,9 @@ fn a_resolution_paused_at_every_piece_resumes_to_the_same() {
             Ok(()) => break out,
         }
     };
-    // (Old's resolution, and a, b and isl's land and water: slice has none, disputed and the high
-    // seas no land of their own.)
-    assert!(stops >= 4, "a stop after each piece: {stops}");
+    // (Old's resolution and the regions with water's lands and waters: 12 pieces, a run keeping
+    // one each, as the last run, keeping none, didn't stop.)
+    assert_eq!(stops, 12, "a stop after each piece");
     assert_eq!(resumed.resolved, fresh.resolved);
     assert_eq!(resumed.problems, fresh.problems);
     assert_eq!(resumed.needs, fresh.needs);
