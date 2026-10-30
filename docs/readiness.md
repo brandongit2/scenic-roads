@@ -1,9 +1,10 @@
 # Readiness and keys from declared reads
 
-**Planned (task #879; nothing here is built yet).** This doc says how the build will derive, from
+**Step 1 built (task #879, §6); steps 2–4 Planned.** This doc says how the build derives, from
 one declaration per step, both when a target may run (its readiness) and what it is keyed on (its
-key). Until the work below lands, docs/pipeline.md §2, docs/steps.md §12 and the code are what is
-true. The sections marked *today* describe main at 1edf631e.
+key). Readiness is derived now (§3, as built in §6 step 1); the keys are still today's, reproduced
+byte for byte under scheme 1, and the scheme-2 derivation (§4) is planned. The sections marked
+*today* describe main at 1edf631e, before step 1.
 
 ## 1. The problem
 
@@ -171,11 +172,38 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
 
 ## 6. Migration and the rebuild (#862)
 
-1. **Land the derivation behind scheme 1.** `steps::key` emits today's exact bytes for every step
-   while `KEY_SCHEME == 1`: a per-step `legacy` adapter assembling the old order from the declared
-   reads. A test asserts byte-equality with each `*_key` on the fixture coverages. Readiness switches
-   at once (no rebuild: it changes no key). The forecast's tests (§7) land here. This is the bulk of
-   the code change, safe to merge any time.
+1. **Land the derivation behind scheme 1. Done (task #879).** As built:
+   - `Step::reads: &[Read]` replaced `reads` and `after`. `Read` is `Targets { step, of }`,
+     `Whole { step }` and `Input { name }`; `Grain` and an input's identity function come with
+     scheme 2, which needs them for the key lines. `View` is `left`, `any_left` (a `Whole` read)
+     and `known` (an `Input`); `steps::Left` is the planner's view (`Plan::left`).
+   - `steps::readiness` gives `Yes`, `Waits` (with targets) or `Unknown`; `steps::read_targets`
+     lists what a target waits for; `steps::wait_note` words the holds ("wait for terrain-hi (12)").
+     The planner holds every target through it (terrain, slope, trees, the z6 tiles' wait for
+     heritage-sites, reach and buildings, the landmarks, the 3D buildings, depth, polar, the
+     summits' hold in the agent); the forecast's items wait on `read_targets` (`waits_of`, a
+     `Whole` read one shared set); the page and `scenic status` show the planner's notes.
+     `/work/tocome` gives job-to-job dependencies (`jobs`, `deps`, `after` per job) and the build
+     page draws single-job arrows.
+   - Declared reads that differ from §5's table, because the planner held them so and the keys
+     read so: the peaks wait for all terrain-hi and terrain-lo (their key names every lo pack
+     through the z8 digest), their own tile's candidates and the hiking-route ends; the items, the
+     marks and the overlays also declare what their reads' keys read (trailends, summits,
+     heritage-sites, the spacing and registers inputs) so none runs on a read about to change;
+     bldprep reads an input (the declared release), not `Whole bld-fetch`: it runs beside the
+     fetch, as the planner had it; depth-root reads `Whole depth` as well as `Whole depth-lo`; pack
+     and the catalogue declare nothing yet (their reads are the plan's).
+   - Decision 2 (the terrain root a waited read) is not in step 1: the root is made in the
+     publishing chain, behind the map tiles and the low zooms' cadence, so slope waiting for it
+     would wait for that chain. It lands with scheme 2, the root moved to the terrain stage.
+   - `steps::key` (`KEY_SCHEME = 1`) gives each step's key through `build::legacy_keys`, which
+     calls the `*_key` functions and target lists the planner uses (kept until step 3), not lines
+     assembled from the reads (they carry no identities yet). `build::KEYS_FROM_THE_PLAN` lists
+     the steps keyed on the whole plan's state (pack, lo, prune, roadunits, stations, ferries,
+     the catalogue, lakefill, names-todo), not derived until scheme 2.
+   - Cut: `build::waits`, `build::wait_note`, the hand-written wait strings, `steps::Reads`,
+     `steps::reads_of`, `Step::after`, `TerrainWork::is_left`'s step match, `Plan::terrain_built`,
+     `forecast::chain_deps`, `UNITS_NEED`, the `reads_terrain` group, the held-chain guard.
 2. **Merge task-832-keys onto it.** #832's coverage cut becomes the `coverage:piece` input. It still
    ships only with step 3.
 3. **Flip to scheme 2 with #862.** In one commit: `KEY_SCHEME = 2`, the legacy adapters and every
@@ -189,10 +217,11 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
 
 ## 7. Tests
 
-- `steps::tests::every_wait_is_a_read`: for each fixture state, every target the planner leaves
+- `every_wait_is_a_read` (built, in `build::tests`, with the planner's fixtures; every `run_all`
+  plan is checked so): for each fixture state, every target the planner leaves
   out of its offers for readiness has `readiness != Yes`, and every target with `Yes` and a stale key
   is offered (the planner holds nothing undeclared). Replaces #867's held-chain guard.
-- `forecast::tests::the_forecast_waits_for_what_the_planner_does`: for each fixture and on a
+- `forecast::tests::the_forecast_waits_for_what_the_planner_does` (built): for each fixture and on a
   `SCENIC_FORECAST_RECORD` record, each item's deps (expanded through its groups) equal
   `read_targets` filtered to items in the plan; and replaying the forecast's first grants through
   the planner offers each at the time the forecast places it. Supersedes
@@ -203,7 +232,9 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
 - `steps::tests::a_run_reads_only_what_it_declares`: per-target steps run on fixtures under the
   store's read log; each logical file read is named by a declared read. (This is the direction
   nothing checks today.)
-- `steps::tests::scheme_1_bytes` (step 1 only, deleted at step 3) and
+- `scheme_1_bytes` (built, in `build::tests`; every `run_all` plan and the depth, polar and 3D
+  buildings chains' tests check each offered key against `steps::key`; step 1 only, deleted at
+  step 3) and
   `rekey::tests::scheme_2_keeps_what_reads_nothing_new`.
 
 ## 8. What gets deleted

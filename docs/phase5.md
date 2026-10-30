@@ -154,7 +154,7 @@ pack (`peaks::z8::digest`); peaks (`agent::build::peaks_keys`) name the z6 tile'
 summits, every terrain lo pack and the terrain hi packs within U + 30 km, not the z12 tiles read
 (task #484). Any lo pack made again measures every z6 tile's peaks again: the coarse stage reaches
 5,000 km. So the summits and peaks wait until terrain-hi and terrain-lo have no work left
-(`Plan::terrain_built`).
+(their declared reads, `Read::Whole`: docs/readiness.md).
 
 Every step with work left (stale against what's built now) that is held for another step's
 targets says so in the status's `waiting` list (`Plan::held`, in the summits' form: "wait for …"),

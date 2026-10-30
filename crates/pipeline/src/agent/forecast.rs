@@ -112,7 +112,7 @@ pub struct Input<'a> {
     /// heritage sites, reaches or buildings; a new pass under way): no finish is forecast.
     pub blind: Option<String>,
     /// The trains' and the landmarks' chains (but the overlays): from the start, each step once what
-    /// it reads is built (`chain_deps`).
+    /// it reads is built (`waits_of`).
     pub chains: Vec<Job>,
     /// After everything else: the overlays (they read the built z6 tiles) and a catalogue with what the
     /// chains made since.
@@ -1205,7 +1205,7 @@ fn items(inp: &Input) -> Items {
         }
     }
     // The slope: each target once what it reads is built, its row's declaration
-    // (crate::agent::steps::Reads), the planner's waits.
+    // (crate::agent::steps::Read), the planner's waits.
     for r in inp.regions.iter() {
         for t in &r.slope_deep {
             let deps = reads(&by_target, &mut groups, "slope-deep", t);
@@ -3414,7 +3414,7 @@ mod tests {
     /// done: a map tile its "planned" event's z6 tiles; a z3 tile's assembly its z6 tiles; a z6
     /// tile's slope and a z6 tile the terrain of its z3 tile and its neighbours', a z6 tile also
     /// the pass's heritage sites, reaches and buildings; a chain's step the steps it reads,
-    /// `chain_deps`; the lead's jobs on its own clock, `CLOCKED`, when they started, left out of
+    /// `steps::wholes`; the lead's jobs on its own clock, `CLOCKED`, when they started, left out of
     /// the finish), whose busy shares (1, 2, 3,
     /// 4+ jobs at once) are printed beside the history's. The NAS's limits: the lead's own held to
     /// the best of the last day's probes the logs show by then (`nas::Probes`; each probe timed by
@@ -3800,7 +3800,7 @@ mod tests {
             // Each job's dependencies, as the plan has them (`items`): a map tile its "planned" event's
             // z6 tiles; a z3 tile's assembly its z6 tiles; a z6 tile's slope and a z6 tile the
             // terrain of its z3 tile and its neighbours', a z6 tile also the pass's heritage sites,
-            // reaches and buildings; a chain's step the steps it reads (`chain_deps`). Those the
+            // reaches and buildings; a chain's step the steps it reads (`steps::wholes`). Those the
             // history shows started before it only: the plan's order then.
             let mut start: BTreeMap<(String, String), u64> = BTreeMap::new();
             for j in &work {

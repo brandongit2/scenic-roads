@@ -8492,7 +8492,7 @@ impl Agent {
             }
         };
         // The trains' and the landmarks' chains from the start (their steps once what they read is
-        // built: forecast::chain_deps), but the overlays (they read the built z6 tiles) after everything
+        // built: forecast::waits_of), but the overlays (they read the built z6 tiles) after everything
         // else; and a catalogue after them with what the chains made since.
         let (mut chain_jobs, mut after): (Vec<forecast::Job>, Vec<forecast::Job>) = (Vec::new(), Vec::new());
         for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()).chain(depth.iter()).chain(polar.iter()) {

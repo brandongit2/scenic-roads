@@ -1002,7 +1002,7 @@ pub fn heritage_sites_work(
 pub const SUMMITS_V: u32 = 1;
 
 /// Its key: the pass's summits set and the terrain packs' z8 it reads (crate::peaks::z8::digest).
-/// The agent runs it only once no terrain-hi or terrain-lo work is left (`Plan::terrain_built`), so
+/// The agent runs it only once no terrain-hi or terrain-lo work is left (its readiness: crate::agent::steps), so
 /// a lo pack still to be made doesn't make it twice.
 pub fn summits_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let set = m.get(&crate::osmpass::set_name(date, "summits"))?;
@@ -5924,7 +5924,7 @@ pub(crate) mod tests {
         assert!(terrain_work(&tt, &BTreeMap::new(), &done3).slope_deep.is_empty());
     }
 
-    /// Task #864: each slope step's declared reads (crate::agent::steps::reads_of) are exactly the
+    /// Task #864: each slope step's declared reads (crate::agent::steps::read_targets) are exactly the
     /// packs its key's inputs name (`slope_deep_from`, `slope_piece_from`, the slope-lo key's
     /// terrain): every pack near a target is changed in turn, and its key changes just when that
     /// pack is one of a declared target's (the root aside: read, never waited on). A step reading

@@ -179,7 +179,7 @@ No `unit` (roads) key reads any of them.
   at most one a minute (docs/building.md §2).
 - **Status:** the checklist's "3D buildings" stage, its steps "Buildings' sources", "Buildings
   read", "3D buildings", "3D buildings, zoomed out" (docs/pipeline.md §3). The forecast
-  chains `bldtiles` after `bldprep` and `bldfield-lo` after `bldtiles` (`forecast::chain_deps`).
+  chains `bldtiles` after `bldprep` and `bldfield-lo` after `bldtiles` (their declared reads, `steps::read_targets`).
 
 ### 3.4 Formats
 

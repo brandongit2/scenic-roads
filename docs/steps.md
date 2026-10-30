@@ -217,10 +217,10 @@ What each step does, in detail. The steps as one table (names, chains, the check
   assembly per z3 tile from its z6 tiles' mids (each read whole, eight at once, under a deadline and
   tried again while it fails transiently); **slope-root**, z0–2 from the z3 tiles. (Each of these waits, slope-lo's on its z6 tiles' slope-hi
   and its own and edge neighbours' terrain-lo, terrain-lo's and trees-lo's on their z6 tiles, is
-  its row's declared reads in the steps table, `agent::steps::Reads`: the planner, the forecast's
-  waits and the page's notes derive each target's from it; `declared_reads_cover_the_keys` checks
-  each against its key's inputs. The terrain root is read but not waited on: built at the finish,
-  its change re-keys its readers.) Memory from the
+  its row's declared reads in the steps table, `agent::steps::Read` (docs/readiness.md): the planner,
+  the forecast's waits and the page's notes derive each target's from it (`steps::readiness`); `declared_reads_cover_the_keys` checks
+  each against its key's inputs. The terrain root is read but not waited on yet: built at the finish,
+  its change re-keys its readers; its wait comes with scheme 2, docs/readiness.md §6.) Memory from the
   tiles a run holds (`slope_pack::peak_mb`: a z6 tile's hi tiles, each counted at its raw RGB, its
   z10 tiles' quadrants, the pyramid's working memory and the decoded terrain kept; `deep_peak_mb` a
   z10 tile's deep tiles and z10–12 tiles likewise; `lo_peak_mb` an assembly's); slope-hi's and
