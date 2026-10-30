@@ -286,21 +286,23 @@ mod tests {
         let t2 = totals();
         let (nas2, net2) = ((t2[0] - t1[0]) / 1_000_000, (t2[1] - t1[1]) / 1_000_000);
         assert!(nas2 >= 20 && net2 >= 20, "{nas2} {net2}");
-        // ...and the 20 ms they ran at once counted as the NAS's and the network's pair (extra).
+        // ...and the 20 ms they ran at once counted as the NAS's and the network's pair (extra,
+        // within the NAS's time).
         let both = (t2[KINDS] - t1[KINDS]) / 1_000_000;
-        assert!((20..40).contains(&both), "{both} ms at once");
+        assert!(both >= 20 && both <= nas2, "{both} ms at once, {nas2} on the NAS");
         // A thread computing beside a NAS call: the NAS's time with computing.
         let g = nas();
-        let spin = Instant::now();
+        let c0 = cpu_ns();
         let mut x = 0u64;
-        let busy = Duration::from_millis(30); // (bound ok: 30 ms of computing beside the NAS call)
-        while spin.elapsed() < busy {
+        let busy = 30_000_000; // (bound ok: 30 ms of CPU, however loaded the Mac)
+        while cpu_ns() - c0 < busy {
             x = std::hint::black_box(x.wrapping_add(1));
         }
         drop(g);
         let tc = totals();
         let with_cpu = (tc[KINDS + 6] - t2[KINDS + 6]) / 1_000_000;
-        assert!((15..=40).contains(&with_cpu), "{with_cpu} ms of computing beside the NAS");
+        let nas3 = (tc[0] - t2[0]) / 1_000_000;
+        assert!(with_cpu >= 25 && with_cpu <= nas3, "{with_cpu} ms of computing beside {nas3} ms on the NAS");
         // A NAS call alone, nothing computing: next to none.
         let g = nas();
         std::thread::sleep(Duration::from_millis(30)); // (sleep ok: a NAS call's stand-in)
