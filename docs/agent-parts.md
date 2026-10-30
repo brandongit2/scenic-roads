@@ -260,3 +260,11 @@ carry); otherwise it carries `PoolView`'s gates as they are.
    (no new dependency, coarser). Proposed: kqueue plus the 2-s sweep.
 4. **The stall sample:** keep `sample` on a part past 5 min (plan only), or drop it with the loop
    watchdog.
+
+## Decisions (PM, 30 Oct night)
+
+1. The heartbeat is written every 10 s, and at once on a change.
+2. File asks stay for one app version after **control** lands, then go.
+3. Folder watcher: kqueue plus a 2-s stat sweep (no new dependency).
+4. `sample` stays for a plan stalled past 5 min; it goes for the other parts with the loop watchdog.
+5. Step 6 waits for #881.
