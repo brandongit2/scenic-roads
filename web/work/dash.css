@@ -90,6 +90,7 @@ button:disabled { opacity: .5; }
 .wmap-legend .tl.completed { border: 1px dashed var(--st-roads); background: color-mix(in srgb, var(--st-roads) 30%, transparent); }
 .wmap-legend .tl.queued { border: 1px dotted var(--st-roads); background: color-mix(in srgb, var(--st-roads) 7%, transparent); }
 .wmap-legend .tl.published { border-color: transparent; background: color-mix(in srgb, var(--st-roads) 70%, transparent); }
+.wmap-legend .tl.empty { border: 1px solid color-mix(in srgb, var(--st-roads) 30%, transparent); background: color-mix(in srgb, var(--st-roads) 6%, transparent); }
 .wmap-legend .hint { margin-left: auto; }
 /* The tile areas (#659): each swatch's outline as heavy as the area's on the map (worldmap.js AREA_W). */
 .wmap-areas, .wmap-steps { padding-top: 4px; }

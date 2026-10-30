@@ -1170,6 +1170,41 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
     }
 }
 
+/// Whether manifest `m` names a published file (under `layers/` or `base/`) a job of `step` saves
+/// for tile `target` (`saves`' files of it, looked up by name): false for a target recorded built
+/// that made nothing to publish (a deep tile with no fine data there: crate::terrain_deep,
+/// `PRESENCE`; task #839). None for a step whose files aren't told by name here (a worldwide or
+/// root step's, a work step's, a z3 tile's whole run of the scheme before z6 tiles).
+pub fn output_named(step: &str, target: &str, m: &std::collections::BTreeMap<String, String>) -> Option<bool> {
+    let t = TileId::parse(target)?;
+    let dash = target.replace('/', "-");
+    let layers =
+        |ls: &[&str], scope: &str| ls.iter().map(|ly| format!("layers/{ly}/{scope}/{dash}")).collect::<Vec<_>>();
+    let step = current(step);
+    let names: Vec<String> = match (step, t.z) {
+        ("unit", 6) => crate::unit::saved_files(&dash)
+            .into_iter()
+            .filter(|l| l.starts_with("layers/") || l.starts_with("base/"))
+            .collect(),
+        ("terrain-deep", z) if z == crate::terrain_deep::PACK_Z => {
+            vec![crate::terrain_deep::pack_logical(t.x, t.y), format!("{}{dash}", crate::terrain_deep::RETIRED)]
+        }
+        ("slope-deep", z) if z == crate::terrain_deep::PACK_Z => vec![crate::slope_pack::deep_logical(t.x, t.y)],
+        ("terrain-hi", 6) => layers(&["terrain"], "hi"),
+        ("slope-hi", 6) => layers(&["slope"], "hi"),
+        ("trees", 6) => layers(&crate::treepacks::LAYERS, "hi"),
+        ("terrain-lo", 3) => layers(&["terrain"], "lo"),
+        ("slope-lo", 3) => layers(&["slope"], "lo"),
+        ("trees-lo", 3) => layers(&crate::treepacks::LAYERS, "lo"),
+        ("depth", 6) => DEPTH_LAYERS.iter().map(|ly| crate::depth::build::hi_logical(ly, t.x, t.y)).collect(),
+        ("depth-lo", 3) => DEPTH_LAYERS.iter().map(|ly| crate::depth::build::lo_logical(ly, t.x, t.y)).collect(),
+        ("bldtiles", 6) => vec![crate::bld::pack_logical(t.x, t.y), crate::bld::field::hi_logical(t.x, t.y)],
+        ("bldfield-lo", 3) => vec![crate::bld::field::lo_logical(t.x, t.y)],
+        _ => return None,
+    };
+    Some(names.iter().any(|l| m.contains_key(l)))
+}
+
 // The write-sets. A name's parts, split at '/'; a tile in a name is `z-x-y` (`tile`), a pass by its
 // planet's date (`date`).
 
@@ -1740,6 +1775,62 @@ mod tests {
             }
         }
         assert!(!saves("pack", "6/3/4", "hidata/6-3-4"), "not a shared step");
+    }
+
+    #[test]
+    fn a_targets_published_output_is_one_it_saves() {
+        use std::collections::BTreeMap;
+        // Each name output_named looks for is one `saves` counts as the target's (one mechanism),
+        // and a target with none of them named made nothing to publish.
+        for (step, t) in [
+            ("unit", "6/3/4"),
+            ("terrain-deep", "10/3/4"),
+            ("slope-deep", "10/3/4"),
+            ("terrain-hi", "6/3/4"),
+            ("slope-hi", "6/3/4"),
+            ("trees", "6/3/4"),
+            ("terrain-lo", "3/3/4"),
+            ("slope-lo", "3/3/4"),
+            ("trees-lo", "3/3/4"),
+            ("depth", "6/3/4"),
+            ("depth-lo", "3/3/4"),
+            ("bldtiles", "6/3/4"),
+            ("bldfield-lo", "3/3/4"),
+        ] {
+            assert_eq!(output_named(step, t, &BTreeMap::new()), Some(false), "{step} {t}: nothing named");
+            // (Every published name `saves` has for it, among the shapes the steps write.)
+            let dash = t.replace('/', "-");
+            let (x, y) = (3, 4);
+            let mut cands: Vec<String> = crate::unit::saved_files(&dash).to_vec();
+            for ly in ["terrain", "slope", "trees-cover", "trees-leaf", "trees-height", "buildings", "buildings-field"]
+            {
+                for sc in ["hi", "lo", "deep", "fine"] {
+                    cands.push(format!("layers/{ly}/{sc}/{dash}"));
+                }
+            }
+            cands.extend(
+                DEPTH_LAYERS.iter().flat_map(|ly| {
+                    [crate::depth::build::hi_logical(ly, x, y), crate::depth::build::lo_logical(ly, x, y)]
+                }),
+            );
+            cands.extend([
+                crate::bld::pack_logical(x, y),
+                crate::bld::field::hi_logical(x, y),
+                crate::bld::field::lo_logical(x, y),
+            ]);
+            let mut found = false;
+            for l in cands.iter().filter(|l| saves(step, t, l) && (l.starts_with("layers/") || l.starts_with("base/")))
+            {
+                let m: BTreeMap<String, String> = [(l.clone(), "f".into())].into();
+                assert_eq!(output_named(step, t, &m), Some(true), "{step} {t}: {l}");
+                found = true;
+            }
+            assert!(found, "{step} {t}: a published name");
+            let other: BTreeMap<String, String> = [("layers/terrain/deep/10-9-9".into(), "f".into())].into();
+            assert_eq!(output_named(step, t, &other), Some(false), "{step} {t}: another tile's");
+        }
+        assert_eq!(output_named("pois", "6/3/4", &BTreeMap::new()), None, "a work step's: not told");
+        assert_eq!(output_named("terrain-hi", "3/3/4", &BTreeMap::new()), None, "a z3 whole run: not told");
     }
 
     #[test]

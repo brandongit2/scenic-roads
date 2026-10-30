@@ -255,15 +255,20 @@ export function runningTiles(runs, eachS, now) {
 // whenever it was, and those jobs finished well at or after `from` (not merged into the keys yet);
 // the time and worker of the last of the history's ends held for it (a lead's "end", a worker's
 // "done"), at any time; a recorded tile with none held, null for both, and `before`: `heldFrom`,
-// the oldest event the page holds (its end, not held, came before it).
-export function finishedTiles(ends, from, built = {}, heldFrom = null) {
+// the oldest event the page holds (its end, not held, came before it). A recorded tile that made
+// nothing to publish (`empty`, `/work/built`'s: {step: [index into its steps list]}, #839: a deep
+// tile with no fine data there) has `none`, kept when an end held is taken for it.
+export function finishedTiles(ends, from, built = {}, heldFrom = null, empty = {}) {
   const out = new Map();
-  for (const [step, tiles] of Object.entries(built || {})) for (const t of tiles) if (tileOf(t)) out.set(`${step} ${t}`, { t: null, before: heldFrom, step, worker: null });
+  for (const [step, tiles] of Object.entries(built || {})) {
+    const none = new Set(empty?.[step] || []);
+    tiles.forEach((t, i) => { if (tileOf(t)) out.set(`${step} ${t}`, none.has(i) ? { t: null, before: heldFrom, step, worker: null, none: true } : { t: null, before: heldFrom, step, worker: null }); });
+  }
   for (const e of ends || []) {
     if ((e.kind !== "end" && e.kind !== "done") || e.ok === false) continue;
     for (const t of areaTargets(e.step, e.targets)) {
       const k = `${e.step} ${t}`, had = out.get(k);
-      if (tileOf(t) && (e.t >= from || had) && !(had?.t > e.t)) out.set(k, { t: e.t, step: e.step, worker: e.worker });
+      if (tileOf(t) && (e.t >= from || had) && !(had?.t > e.t)) out.set(k, had?.none ? { t: e.t, step: e.step, worker: e.worker, none: true } : { t: e.t, step: e.step, worker: e.worker });
     }
   }
   return out;
@@ -293,13 +298,17 @@ export function queuedTiles(a) {
 
 // A map tile's state (#627, #685): "queued" (to build: the forecast's, or a running job's tile
 // not begun), "progress" (under way), "completed" (its job's work on it done, or finished, and not
-// in a catalogue yet: a finish after the last catalogue's time `pubAt`) or "published" (finished
+// in a catalogue yet: a finish after the last catalogue's time `pubAt`), "published" (finished
 // by `pubAt`: in the app; a recorded tile whose end isn't held, `t` null, finished before the
 // oldest event held, `before`: published when that's by `pubAt`, else completed, as it can't be
-// told).
-export const TILE_STATES = ["queued", "progress", "completed", "published"];
+// told) or "empty" (built, nothing to publish: its job made no file to publish, `none`, #839;
+// told before the catalogue's time, as no catalogue will ever name it).
+export const TILE_STATES = ["queued", "progress", "completed", "published", "empty"];
+// The states the map hides until toggled on in the legend (`f.tiles[state] === true`).
+export const HIDDEN_STATES = ["empty"];
 export const runningState = (r) => (r.frac >= 1 ? "completed" : r.frac > 0 || r.current ? "progress" : "queued");
 export const finishedState = (d, pubAt) => {
+  if (d.none) return "empty";
   const by = d.t ?? d.before;
   return pubAt != null && by != null && by <= pubAt ? "published" : "completed";
 };
@@ -310,10 +319,11 @@ export const finishedState = (d, pubAt) => {
 // finished tile not drawn, the queued one `built: true`: built before, #833). Kept: the states shown (`f.tiles[state] === false`: hidden), the pool member
 // `f.member` (the Mac that ran, runs or will run it: `macOf(worker)` its host), the tile areas not
 // toggled off (`f.offAreas`: AREAS' names), and with `solo` (step ids) those steps' alone. The
-// published tiles are apart in `published` (drawn only for a solo, #833), whatever `f.tiles` says.
-// Returns {running, queued, finished, published}, new Maps.
+// published tiles are apart in `published` (drawn only for a solo, #833), whatever `f.tiles` says;
+// those built with nothing to publish ("empty") are finished ones, shown only when toggled on
+// (HIDDEN_STATES). Returns {running, queued, finished, published}, new Maps.
 export function mapTiles(running, queued, done, f, { pubAt = null, macOf = (w) => w, solo = null } = {}) {
-  const shown = (st) => f.tiles?.[st] !== false;
+  const shown = (st) => (HIDDEN_STATES.includes(st) ? f.tiles?.[st] === true : f.tiles?.[st] !== false);
   const keep = (key, step, who) => (!solo || solo.includes(step)) && !f.offAreas?.includes(areaOf(key)) && (!f.member || (who != null && macOf(who) === f.member));
   const out = { running: new Map(), queued: new Map(), finished: new Map(), published: new Map() };
   for (const [k, r] of running) {

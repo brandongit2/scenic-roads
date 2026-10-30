@@ -1653,8 +1653,11 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   (3,618 targets placed, 3,615 tiles): about 62 KB (the Mac mini's 52 KB, 3,053 tiles, the M4's
   10 KB); held by the agent: ~150 KB.
   Every Mac's port also answers `POST /work/built` (no key; task #674) for the map's finished
-  tiles: `{at, steps: {step: [z/x/y…]}, error}`, every tile target the build's keys
-  (`state/build/jobs.json`) record, by step (a `-root` step's as 0/0/0; worldwide steps', records of steps the app doesn't know (a
+  tiles: `{at, steps: {step: [z/x/y…]}, empty: {step: [i…]}, error}`, every tile target the build's keys
+  (`state/build/jobs.json`) record, by step, and `empty`: indexes into a step's list of the targets
+  whose published files the manifest doesn't name (`agent::steps::output_named`: a deep tile with
+  no fine data, #839; steps whose files aren't told by name left out), keys and manifest from one
+  read of the records' brief (a `-root` step's as 0/0/0; worldwide steps', records of steps the app doesn't know (a
   retired step's) and terrain-hi's, slope-hi's and tree cover's old z3 whole-run records left out:
   `agent::builtview`), read by the agent on a
   thread of its own while a page asks, again a minute after the last read at most (~600 KB over

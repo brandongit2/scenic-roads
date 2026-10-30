@@ -4,6 +4,12 @@
 //! page has read them and the history keeps; the keys hold every target built, whenever, and every
 //! Mac reads the same file, so each Mac's page draws the same tiles.
 //!
+//! With each step's tiles, those that made nothing to publish (task #839): a target recorded built
+//! whose published files (crate::agent::steps::output_named) the manifest doesn't name, e.g. a deep
+//! tile with no fine data there (crate::terrain_deep, `PRESENCE`), sent as `empty: {step: [i]}`,
+//! indexes into the step's list (6,276 of terrain-deep's 7,243 in term 599's brief, 29 Oct: ~50 KB on 247 KB). The keys and the
+//! manifest come from one read of the records' brief.
+//!
 //! Read only while a page asks (`ask`): a thread of its own reads the file again when it's older
 //! than `EVERY` (about 600 KB over SMB); the answer is the last read, never waiting on it.
 
@@ -45,12 +51,32 @@ pub fn tiles_of(keys: &Keys) -> BTreeMap<String, Vec<String>> {
     out
 }
 
+/// Each step's tiles in `steps` (`tiles_of`) that made nothing to publish: indexes into its list of
+/// the targets whose published files manifest `m` doesn't name (crate::agent::steps::output_named);
+/// a step whose files aren't told by name, or with none such, left out.
+pub fn empty_of(steps: &BTreeMap<String, Vec<String>>, m: &BTreeMap<String, String>) -> BTreeMap<String, Vec<usize>> {
+    let mut out = BTreeMap::new();
+    for (step, tiles) in steps {
+        let none: Vec<usize> = tiles
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| super::steps::output_named(step, t, m) == Some(false))
+            .map(|(i, _)| i)
+            .collect();
+        if !none.is_empty() {
+            out.insert(step.clone(), none);
+        }
+    }
+    out
+}
+
 #[derive(Default)]
 struct Read {
     /// When the keys were last read (unix s; 0: never), and when, here.
     at: u64,
     read: Option<Instant>,
     steps: Arc<BTreeMap<String, Vec<String>>>,
+    empty: Arc<BTreeMap<String, Vec<usize>>>,
     error: Option<String>,
 }
 
@@ -78,7 +104,7 @@ impl BuiltView {
     }
 
     /// A page's ask: the reader started when it isn't running and the keys weren't read in the last
-    /// `EVERY`; the last read: `{at, steps: {step: [z/x/y]}, error}`.
+    /// `EVERY`; the last read: `{at, steps: {step: [z/x/y]}, empty: {step: [i]}, error}`.
     pub fn ask(self: &Arc<Self>) -> Value {
         let due = self.read.lock().unwrap().read.is_none_or(|t| t.elapsed() >= EVERY);
         if due && !self.reading.swap(true, Ordering::SeqCst) {
@@ -92,18 +118,23 @@ impl BuiltView {
             }
         }
         let r = self.read.lock().unwrap();
-        serde_json::json!({ "at": r.at, "steps": *r.steps, "error": r.error })
+        serde_json::json!({ "at": r.at, "steps": *r.steps, "empty": *r.empty, "error": r.error })
     }
 
-    /// Reads the keys (the last read kept when they can't be read now).
+    /// Reads the keys and the manifest (the last read kept when they can't be read now).
     pub fn refresh(&self) {
-        let got = Keys::load_strict(&self.root).map(|k| tiles_of(&k));
+        let got = crate::out::brief_now(&self.root).map(|b| {
+            let steps = tiles_of(&b.keys);
+            let empty = empty_of(&steps, &b.manifest);
+            (steps, empty)
+        });
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let mut r = self.read.lock().unwrap();
         r.read = Some(Instant::now());
         match got {
-            Ok(s) => {
+            Ok((s, e)) => {
                 r.steps = Arc::new(s);
+                r.empty = Arc::new(e);
                 r.at = now;
                 r.error = None;
             }
@@ -148,5 +179,28 @@ mod tests {
         let a = v.ask();
         assert_eq!(a["steps"]["terrain-deep"], serde_json::json!(["10/1/2"]));
         assert!(a["error"].is_null() && a["at"].as_u64().unwrap() > 0);
+        assert_eq!(a["empty"], serde_json::json!({ "terrain-deep": [0] }), "no pack named: nothing to publish");
+    }
+
+    #[test]
+    fn the_targets_that_made_nothing_to_publish() {
+        let mut k = Keys::default();
+        k.record(
+            "terrain-deep",
+            &[("10/1/2".into(), "a".into()), ("10/3/4".into(), "b".into()), ("10/5/6".into(), "c".into())],
+        );
+        k.record("slope-deep", &[("10/1/2".into(), "a".into())]);
+        k.record("terrain-hi", &[("6/1/2".into(), "a".into())]);
+        k.record("terrain-root", &[("terrain-root".into(), "e".into())]);
+        let m: BTreeMap<String, String> = [
+            ("layers/terrain/deep/10-3-4".to_string(), "x".to_string()),
+            ("layers/slope/deep/10-1-2".into(), "y".into()),
+            ("layers/terrain/hi/6-1-2".into(), "z".into()),
+        ]
+        .into();
+        let steps = tiles_of(&k);
+        let e = empty_of(&steps, &m);
+        assert_eq!(e["terrain-deep"], [0, 2], "10/1/2 and 10/5/6 made no pack");
+        assert_eq!(e.len(), 1, "slope-deep's and terrain-hi's are named; the root's not told: {e:?}");
     }
 }

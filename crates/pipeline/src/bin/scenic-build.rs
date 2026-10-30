@@ -5368,6 +5368,14 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
                 r.dropped,
                 (pipeline::fetch::fetched_bytes() - fetched) >> 20
             );
+            // (Recorded done all the same: the build page shows it built, nothing to publish, #839.)
+            if r.packs == 0 {
+                eprintln!(
+                    "{STEP} {}: nothing stored, no pack: {}",
+                    t.slash(),
+                    if r.with_data == 0 { "no fine data in any of its base tiles" } else { "no deep tile made" }
+                );
+            }
             pipeline::control::done(STEP, &t.slash());
             note_cost(STEP, &t.slash(), c);
         }

@@ -4777,6 +4777,14 @@ pub struct Item {
     pub total: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub left: Option<usize>,
+    /// Of `done`, the targets that made nothing to publish (task #839: a deep tile with no fine
+    /// data there; crate::agent::steps::output_named), counted apart; 0 left out.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub empty: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 impl Item {
@@ -5113,6 +5121,24 @@ pub fn checklist(
         line
     };
     out.push(slope_of("slope-deep", &ts.slope_deep, &done.slope_deep));
+    // (Of the deep tiles done (their keys as recorded), those that made no pack: nothing to
+    // publish there.)
+    let empty_of =
+        |step: &str, all: &mut dyn Iterator<Item = (&String, Option<&String>)>, map: &BTreeMap<String, String>| {
+            all.filter(|(t, k)| k.is_some() && map.get(*t) == *k)
+                .filter(|(t, _)| super::steps::output_named(step, t, m) == Some(false))
+                .count()
+        };
+    let deep_empty =
+        empty_of("terrain-deep", &mut ts.terrain_deep.iter().map(|(t, k)| (t, Some(k))), &done.terrain_deep);
+    let slope_empty = empty_of("slope-deep", &mut ts.slope_deep.iter().map(|(t, k)| (t, k.as_ref())), &done.slope_deep);
+    for it in out.iter_mut() {
+        it.empty = match it.step.as_str() {
+            "terrain-deep" => deep_empty,
+            "slope-deep" => slope_empty,
+            _ => it.empty,
+        };
+    }
     out.push(slope_of("slope-hi", &ts.slope, &done.slope_hi));
     out.push(sized("slope-lo", &ts.slope_lo, &done.slope_lo, true));
     let tt = crate::treepacks::targets_with(cov, m, tiles.keyed(m).and_then(|k| k.trees.as_deref()));

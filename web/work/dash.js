@@ -20,7 +20,7 @@
 // activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { AREAS, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf } from "./sums.js";
+import { AREAS, HIDDEN_STATES, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf } from "./sums.js";
 import { fmt } from "./chartmath.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
@@ -86,9 +86,12 @@ const S = {
 const waitName = (w) => w.step || w.what;
 // A step's line of the checklist (build::Item) or a stage's (build::Line) in words, done and left
 // (the Jobs tab's stages: the one place the page counts a whole, task #685): "12 tiles done · 468
-// left", "3 runs left", "done", "to come".
+// left", "3 runs left", "done", "to come"; the done that made nothing to publish (`empty`: a deep
+// tile with no fine data there, #839) counted apart: "7,837 z10 tiles done (6,814 with nothing to
+// publish) · 12 left".
 function countOf(x, noun) {
-  if (x.total != null && x.total > 0) return x.done >= x.total ? `${n(x.total)} ${noun} done` : `${n(x.done)} ${noun} done · ${n(x.total - x.done)} left`;
+  const none = x.empty ? ` (${n(x.empty)} with nothing to publish)` : "";
+  if (x.total != null && x.total > 0) return x.done >= x.total ? `${n(x.total)} ${noun} done${none}` : `${n(x.done)} ${noun} done${none} · ${n(x.total - x.done)} left`;
   if (x.left === 0) return "done";
   if (x.left != null) return `${plural(x.left, noun.replace(/s$/, ""))} left`;
   return "to come";
@@ -105,7 +108,7 @@ function countsOf(l) {
     nouns.push(noun);
     const of = l.items.filter((j) => S.noun(j.step) === noun);
     if (of.some((j) => j.total != null)) {
-      if (of.every((j) => j.total != null)) out.push(countOf({ done: of.reduce((t, j) => t + j.done, 0), total: of.reduce((t, j) => t + j.total, 0) }, `${noun}s`));
+      if (of.every((j) => j.total != null)) out.push(countOf({ done: of.reduce((t, j) => t + j.done, 0), total: of.reduce((t, j) => t + j.total, 0), empty: of.reduce((t, j) => t + (j.empty || 0), 0) }, `${noun}s`));
       else out.push(`${noun}s to come`);
     } else if (of.every((j) => j.left != null)) {
       const left = of.reduce((t, j) => t + j.left, 0);
@@ -427,7 +430,8 @@ function askToCome(m) {
 // after `BUILT_SOON_MS` while the agent hasn't read them yet (its first answer after a start, `at`
 // 0, empty: its read begins with that ask), so the map isn't a minute without them (#833 review: a
 // first view drew every queued tile as never built).
-const built = { steps: {}, at: 0, asked: 0, asking: false, soon: false };
+// With them, those that made nothing to publish (`empty`: {step: [index into its list]}, #839).
+const built = { steps: {}, empty: {}, at: 0, asked: 0, asking: false, soon: false };
 const BUILT_EVERY_MS = 60000, BUILT_SOON_MS = 3000;
 function askBuilt() {
   if (built.asking || Date.now() - built.asked < (built.soon ? BUILT_SOON_MS : BUILT_EVERY_MS)) return;
@@ -437,7 +441,7 @@ function askBuilt() {
       built.asking = false;
       built.soon = !(code === 200 && v?.at);
       if (built.soon) setTimeout(render, BUILT_SOON_MS);
-      if (code === 200 && v?.steps && v.at && v.at !== built.at) { Object.assign(built, { steps: v.steps, at: v.at }); render(); }
+      if (code === 200 && v?.steps && v.at && v.at !== built.at) { Object.assign(built, { steps: v.steps, empty: v.empty || {}, at: v.at }); render(); }
     });
 }
 
@@ -472,20 +476,21 @@ function mapData(m) {
   const running = steadyRunning(runningTiles(runs, m.fc?.each_s, m.now));
   const queued = keepQueued([toCome.ans], () => queuedTiles(toCome.ans));
   const ends = endsHeld(), held = heldFrom();
-  const done = keepDone(ends, from, [built.steps, held], () => finishedTiles(ends, from, built.steps, held));
+  const done = keepDone(ends, from, [built.steps, built.empty, held], () => finishedTiles(ends, from, built.steps, held, built.empty));
   const runKeys = [...running.keys()].join("\n");
-  // (A step counts its tiles to build or publish; every state and area its own. The queued and
-  // finished tiles' counts kept while those and the running tiles' keys are.)
+  // (A step counts its tiles to build or publish; every state and area its own, the tiles with
+  // nothing to publish too, shown or not. The queued and finished tiles' counts kept while those
+  // and the running tiles' keys are.)
   const count = (maps, c = { tile: Object.fromEntries(TILE_STATES.map((st) => [st, 0])), step: {}, area: {} }) => {
     for (const t of maps) for (const [k, v] of t) {
       c.tile[v.state]++;
       c.area[areaOf(k)] = (c.area[areaOf(k)] || 0) + 1;
-      if (v.state !== "published") c.step[v.step] = (c.step[v.step] || 0) + 1;
+      if (v.state !== "published" && v.state !== "empty") c.step[v.step] = (c.step[v.step] || 0) + 1;
     }
     return c;
   };
   const counted = (fl, keep) => {
-    const rest = keep([runKeys, queued, done, pubAt, hostsKey, fl.member], () => { const t = mapTiles(running, queued, done, fl, { pubAt, macOf }); return count([t.queued, t.finished, t.published]); });
+    const rest = keep([runKeys, queued, done, pubAt, hostsKey, fl.member], () => { const t = mapTiles(running, queued, done, { ...fl, tiles: { empty: true } }, { pubAt, macOf }); return count([t.queued, t.finished, t.published]); });
     return count([mapTiles(running, NONE, NONE, fl, { pubAt, macOf }).running], structuredClone(rest));
   };
   const whole = counted({}, keepWhole);
@@ -594,6 +599,19 @@ function tileCards(t, painted, age, kinds) {
     ], worldMap.minimap(key)));
   }
   for (const [key, d] of kinds.includes("finished") ? t.finished : []) {
+    // (Built, nothing to publish (#839): its job ran and made no file, a deep tile with no fine
+    // data there; no catalogue will name it.)
+    if (d.state === "empty") {
+      cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "built, nothing to publish"),
+        stats: [[d.t == null ? "earlier" : ago(cardNow(), d.t), "built"], ["none", "files made"]],
+        bar: { frac: 1, label: "no data there to publish (its job made no pack)" },
+        foot: `${d.worker || "?"} · ${key}` }, [
+        ["stage", S.stage(d.step)],
+        ["on", d.worker],
+        ["covers", tileCovers(tileOf(key))],
+      ], worldMap.minimap(key)));
+      continue;
+    }
     const out = d.state === "published";
     cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, out ? "published" : "completed, not yet published"),
       stats: [[d.t == null ? "earlier" : ago(cardNow(), d.t), "finished"], [out ? "yes" : "next catalogue", "in the app"]],
@@ -644,7 +662,7 @@ const mapPick = (keys, x, y) => (keys.length ? pinCard("mstack", x, y, keys.join
 // that draws tiles, grouped by its stage, each a solo: hovered, that step alone on the map while
 // the pointer's on it (a stage: its steps), with its published tiles by age; a click holds it until
 // clicked again. Then the member filter. Every step and stage by its id.
-const TILE_WORDS = { queued: "queued", progress: "in progress", completed: "completed, not yet published", published: "published" };
+const TILE_WORDS = { queued: "queued", progress: "in progress", completed: "completed, not yet published", published: "published", empty: "built, nothing to publish" };
 // The steps the map draws tiles of, by stage in the build's order: a z3, z6 or z10 tile's, or a
 // root's (sums.js areaTargets); then any other step it has tiles of. [{stage, steps}].
 function mapSteps(stepCount) {
@@ -662,7 +680,9 @@ function mapLegend(md) {
   // (`name`: a stage's, step's or area's code name, the item's `data-name`: touch-test.mjs checks each is one.)
   const toggle = (on, flip, emph, swatch, text, title, cls = "", name = null) => h("button", { type: "button", class: `lg${cls}${on ? "" : " off"}`, "aria-pressed": on ? "true" : "false", title, "data-name": name,
     onclick: () => { map.emphasize(null); flip(); }, onpointerenter: (e) => e.pointerType !== "touch" && map.emphasize(emph), onpointerleave: () => map.emphasize(null) }, swatch, text);
-  const byState = (k, st, cls, text) => toggle(f[k][st] !== false, () => setMapFilter(k, { ...f[k], [st]: f[k][st] === false }), { [k === "tiles" ? "tile" : "region"]: st }, h("i", cls), text, "Show or hide these on the map");
+  // (A tile state hidden until toggled on (sums.js HIDDEN_STATES), the tiles with nothing to publish.)
+  const isOn = (k, st) => (k === "tiles" && HIDDEN_STATES.includes(st) ? f[k][st] === true : f[k][st] !== false);
+  const byState = (k, st, cls, text) => toggle(isOn(k, st), () => setMapFilter(k, { ...f[k], [st]: !isOn(k, st) }), { [k === "tiles" ? "tile" : "region"]: st }, h("i", cls), text, "Show or hide these on the map");
   const offA = new Set(f.offAreas || []);
   const held = soloKey(f.solo);
   // (Hovered: soloed while the pointer's on it, `legendHost`'s handlers; a click holds it or lets it go.)
@@ -683,7 +703,7 @@ function mapLegend(md) {
     groups.map(({ stage, steps }) => h("span", { class: "lgg", "data-stage": stage },
       solo({ stage }, sw(stage), h("b", null, stage || "–"), `${stage}'s steps alone on the map, their published tiles by when (a click holds it)`, "stage", stage),
       steps.map((id) => solo({ step: id }, sw(stage), `${id} ${n(counts.step[id] || 0)}`, `${id} alone on the map, its published tiles by when (a click holds it)`, "step", id))))),
-  h("div", "wmap-legend small dim", h("span", null, `counts are tiles (a step's: to build or publish) · queued: faint, dotted · running: outlined, filled as far as done · completed, not yet published: dashed · published: drawn only for a step soloed, by when (below); its queued tiles published before: the same, fainter, dotted · steps at one spot: stripes · outline weight: the tile area`)),
+  h("div", "wmap-legend small dim", h("span", null, `counts are tiles (a step's: to build or publish) · queued: faint, dotted · running: outlined, filled as far as done · completed, not yet published: dashed · published: drawn only for a step soloed, by when (below); its queued tiles published before: the same, fainter, dotted · built, nothing to publish (no data there): hidden until shown, then barely tinted · steps at one spot: stripes · outline weight: the tile area`)),
   mapFilterBar(md.m)];
 }
 // The member filter under the map: a member's tiles alone (those it ran, the history's ends; runs
@@ -1436,7 +1456,7 @@ function stepCard(m, it) {
   const done = finished(it), noun = S.noun(it.step);
   const ps = m.a.phase_shares?.[it.step];
   return jobCard({ kicker: `${S.stage(it.step) || "step"} · step`, colour: S.colour(it.step), title: it.step,
-    stats: it.total ? [[n(it.done), `${noun}s done`], [n(it.total - it.done), "left"]] : [[countOf(it, `${noun}s`), "count"]],
+    stats: it.total ? [[n(it.done), `${noun}s done`], ...(it.empty ? [[n(it.empty), "with nothing to publish"]] : []), [n(it.total - it.done), "left"]] : [[countOf(it, `${noun}s`), "count"]],
     bar: it.total ? { frac: it.done / it.total, label: countOf(it, `${noun}s`) } : done ? { frac: 1, label: "done" } : null,
     chips: (ps?.phases || []).map((p) => `${p.name} ${Math.round(p.wall * 100)}%`), chipsLabel: ps?.phases?.length ? `Time by phase (${plural(ps.runs, "run")})` : "",
     foot: it.step }, [

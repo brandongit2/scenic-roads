@@ -4,7 +4,7 @@
 // how far they are, the queue (task #685: every tile to build, faint under a dotted outline), each
 // running job's target tiles in its stage's colour, filled as far as they're done, and the
 // finished tiles (each fading in as it comes; completed but not in a catalogue yet pale under a
-// dashed outline); a soloed step's published tiles painted by age (`paint`; none drawn without a
+// dashed outline; built with nothing to publish barely tinted under a hairline); a soloed step's published tiles painted by age (`paint`; none drawn without a
 // solo, #833), its queued ones published before the same but fainter under their dotted outline, and
 // a catalogue's tiles lit (`lit`). Steps at one spot share its square as diagonal stripes, each
 // step's colour in turn.
@@ -290,7 +290,15 @@ export function createMap({ pick = () => {} } = {}) {
         // Finished: faded in as it came; completed (not in a catalogue yet) half as strong as
         // published, under a dashed outline.
         const fade = Math.max(0, Math.min(1, (t - (appeared.get(key) ?? 0)) / FADE_MS));
+        // Built with nothing to publish (#839): barely tinted, a hairline, not read as published.
         const pub = v.state === "published";
+        if (v.state === "empty") {
+          c.globalAlpha = fade * f * low * 0.06;
+          c.fillRect(bx, by, s, s);
+          outlines.push([bx, by, s, col, 0.25 * f * fade * low, px * 0.5 * aw, null]);
+          c.restore();
+          continue;
+        }
         c.globalAlpha = fade * f * low * 0.6 * (pub ? 1 : 0.5);
         c.fillRect(bx, by, s, s);
         outlines.push(pub ? [bx, by, s, col, 0.55 * f * fade * low, px * 0.8 * aw, null] : [bx, by, s, col, f * fade * low, px * 1.1 * aw, [4 * px, 3 * px]]);

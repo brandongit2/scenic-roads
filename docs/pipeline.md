@@ -224,6 +224,13 @@ The Jobs tab's stages are the one exception.
     (one with no end held when the oldest event the page holds is by then), else completed:
     completed pale under a dashed outline, each fading in as it comes. Published tiles are drawn
     only while a step or stage is soloed, by when a catalogue last published each (#833).
+  - **built, nothing to publish** (#839): a finished tile whose job made no file to publish (a
+    deep tile with no fine data there: its run finds none in its presence grids, logs "nothing
+    stored, no pack" and is recorded done), told by `/work/built`'s `empty` before the catalogue's
+    time is compared, as no catalogue will name it. Hidden until toggled on in the legend (counted
+    there all the same, not in a step's count), then barely tinted under a hairline; its card says
+    no files were made. The checklist counts them apart: "7,837 z10 tiles done (6,814 with
+    nothing to publish)", on the page and in `scenic status`.
   A tile in two of them is the running one, else the queued one: built before and to be built
   again, its finished tile isn't drawn. It was published before (sums.js publishedBefore) when a
   catalogue kept published its output: a deep (z10) tile's, the last catalogue naming a new file of

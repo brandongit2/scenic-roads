@@ -69,6 +69,23 @@ test('map: every tile the keys record stays finished, whatever the window and ev
   assert.equal(mapTiles(new Map(), new Map(), f, { member: 'm4' }, {}).finished.size, 1, 'a member: the tiles its ends name');
 });
 
+test('map: a tile built with nothing to publish is its own state, hidden until shown (#839)', () => {
+  // (Live, 29 Oct: 10/266/334 ran, found no fine data, recorded done, no pack: it had shown as
+  // published with no catalogue.)
+  const ends = [{ kind: 'end', step: 'terrain-deep', t: 1000, worker: 'mini #3', targets: ['10/266/334'] }];
+  const built = { 'terrain-deep': ['10/266/334', '10/266/335', '10/266/336'] };
+  const f = finishedTiles(ends, 5000, built, 900, { 'terrain-deep': [0, 2] });
+  assert.deepEqual(f.get('terrain-deep 10/266/334'), { t: 1000, step: 'terrain-deep', worker: 'mini #3', none: true }, 'its end held, still none');
+  assert.equal(f.get('terrain-deep 10/266/336').none, true);
+  assert.equal(f.get('terrain-deep 10/266/335').none, undefined);
+  const hidden = mapTiles(new Map(), new Map(), f, {}, { pubAt: 8000 });
+  assert.deepEqual([...hidden.finished.keys()], [], 'empty: hidden by default');
+  assert.deepEqual([...hidden.published.keys()], ['terrain-deep 10/266/335'], 'the one with a pack: published');
+  const shown = mapTiles(new Map(), new Map(), f, { tiles: { empty: true } }, { pubAt: 8000 });
+  assert.deepEqual([...shown.finished].map(([k, v]) => [k.split(' ')[1], v.state]).sort(), [['10/266/334', 'empty'], ['10/266/336', 'empty']], 'before the catalogue check');
+  assert.equal(mapTiles(new Map(), new Map(), f, { tiles: { empty: true } }, { solo: ['slope-deep'] }).finished.size, 0, 'another step soloed');
+});
+
 test('map: the queue from the forecast, the earliest where two Macs name a tile (#685)', () => {
   const a = { at: 1000, macs: { m4: { unit: [['6/1/1', 60], ['norway', 5]], pack: [['3/0/0', 10]] }, mini: { unit: [['6/1/1', 30], ['6/1/2', 90]] } } };
   const q = queuedTiles(a);

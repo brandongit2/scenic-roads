@@ -828,6 +828,7 @@ fn status(places: &cli::Places) -> Result<()> {
                     },
                     agent::steps::current(&i.step),
                     count_line(i.done, i.total, i.left, &noun)
+                        + &if i.empty > 0 { format!(" ({} with nothing to publish)", i.empty) } else { String::new() }
                 );
             }
             for (k, j) in l.next.iter().take(4).enumerate() {
