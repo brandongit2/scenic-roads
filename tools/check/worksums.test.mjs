@@ -436,10 +436,9 @@ test("a phase split into its measured waits and computing (#870)", () => {
   assert.deepEqual(seg(deep), [["nas", 41], ["net", 2], ["disk", 7], ["cpu", 50], ["old", 50]]);
   const sum = phaseSplit(deep).reduce((t, x) => t + x.s, 0);
   assert.ok(Math.abs(sum - deep.wall) < 1e-9, "the segments add up to the phase's wall time");
-  // An older run's phase, nothing measured: one segment, its declared class said.
+  // An older run's phase, nothing measured: one segment, no class said.
   const rec = phaseSplit(b.parts[1]);
-  assert.deepEqual(rec.map((x) => x.key), ["old"]);
-  assert.match(rec[0].label, /reading the NAS/);
+  assert.deepEqual(rec.map((x) => [x.key, x.label]), [["old", "not measured (older runs)"]]);
   // Over six hours: both edges' waits.
   const six = phaseBreakdown(pt, "terrain-deep", 21600).parts[0];
   assert.deepEqual(seg(six), [["nas", 51], ["net", 2], ["disk", 7], ["other", 5], ["cpu", 85], ["old", 50]]);

@@ -1604,8 +1604,9 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   seconds, and the NAS's and network's bytes meanwhile). Waits count by the job's wall clock, not
   summed over threads: an instant is the NAS's when any of the job's threads is in a NAS call, else
   the network's, else the disk's, else other work's, else computing — so a phase's parts add up to
-  its wall time. A phase running a child program takes in the child's phases' waits (the Python
-  twin's, dem/timings.py, by their declared class), held to its wall. `w` sums them over the runs
+  its wall time. A phase running a child program takes in the waits of the child's main-thread
+  phases (the Python twin, dem/timings.py, measures its own the same way: `wait`, `reading`,
+  `lines`), held to its wall. `w` sums them over the runs
   that measured them; the page splits each phase's bar into "waiting on the NAS", "waiting on the
   network", "reading/writing the local disk", "waiting on other work" and "computing", the rest of
   its wall (older runs') grey as "not measured", its card giving the numbers and the rule. A phase's

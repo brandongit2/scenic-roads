@@ -208,6 +208,7 @@ fn named_right<'a>(p: impl Into<store::nasfs::Loc<'a>>, name: &str) -> Result<bo
 pub fn entries_of<'a>(p: impl Into<store::nasfs::Loc<'a>>) -> Result<(std::fs::File, Vec<Entry>)> {
     let p = p.into();
     let f = p.open().with_context(|| format!("open {}", p.display()))?;
+    let _w = store::waits::wait(p.on());
     let mut h = [0u8; 24];
     f.read_exact_at(&mut h, 0).with_context(|| format!("read {}", p.display()))?;
     ensure!(&h[..8] == MAGIC, "{}: not a tile archive", p.display());

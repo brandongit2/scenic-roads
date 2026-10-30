@@ -136,6 +136,7 @@ impl Http {
         body_s: u64,
     ) -> Result<ureq::http::Response<ureq::Body>, Fail> {
         crate::fetch::online(url).map_err(|e| Fail::Other(format!("{e:#}")))?;
+        let _w = store::waits::net();
         let r = if head {
             let mut q = self.agent.head(url);
             for (k, v) in headers {
@@ -963,7 +964,10 @@ fn fetch(http: &Http, job: &Job, root: &store::nasfs::NasRoot, prog: &Progress) 
                 let mut rd = r.body_mut().with_config().limit(want - got + 1).reader();
                 let mut buf = vec![0u8; 1 << 20];
                 loop {
-                    let n = match rd.read(&mut buf) {
+                    let n = match {
+                        let _w = store::waits::net();
+                        rd.read(&mut buf)
+                    } {
                         Ok(0) => break,
                         Ok(n) => n,
                         Err(e) => {

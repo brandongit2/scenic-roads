@@ -161,7 +161,9 @@ impl Local {
             .write(true)
             .open(self.locks.join(format!("{}.lock", store::naming::hash16(content.as_bytes()))))
             .ok()?;
-        // (std's `File::lock`: flock on macOS; the lock goes with the file.)
+        // (std's `File::lock`: flock on macOS; the lock goes with the file. Waiting for it is
+        // waiting on another job's copy: other work.)
+        let _w = store::waits::other();
         f.lock().ok().map(|()| f)
     }
 }

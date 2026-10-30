@@ -860,11 +860,23 @@ impl Loc<'_> {
         }
     }
 
-    /// Opened for reading, as a `File` (a NAS file's reads not counted past its open: for a
-    /// library that wants a `File`).
+    /// What a call on it waits on (crate::waits): for the reads of a `File` it opened (`open`),
+    /// which no guard here covers, `crate::waits::wait(loc.on())` held around each.
+    pub fn on(&self) -> crate::waits::On {
+        match self {
+            Loc::Local(_) => crate::waits::On::Disk,
+            Loc::Nas(_) => crate::waits::On::Nas,
+        }
+    }
+
+    /// Opened for reading, as a `File` (a NAS file's reads not counted, nor waited on, past its
+    /// open: for a library that wants a `File`; its caller's reads hold `crate::waits::wait(on())`).
     pub fn open(&self) -> io::Result<std::fs::File> {
         match self {
-            Loc::Local(p) => std::fs::File::open(p),
+            Loc::Local(p) => {
+                let _w = crate::waits::disk();
+                std::fs::File::open(p)
+            }
             Loc::Nas(p) => p.open().map(|f| f.into_file()),
         }
     }
@@ -880,7 +892,10 @@ impl Loc<'_> {
     /// A stat (`std::fs::metadata`; `NasPath::metadata`).
     pub fn metadata(&self) -> io::Result<std::fs::Metadata> {
         match self {
-            Loc::Local(p) => std::fs::metadata(p),
+            Loc::Local(p) => {
+                let _w = crate::waits::disk();
+                std::fs::metadata(p)
+            }
             Loc::Nas(p) => p.metadata(),
         }
     }

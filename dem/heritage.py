@@ -52,7 +52,7 @@ from shapely.ops import transform as shp_transform
 from tqdm import tqdm
 
 import inputs
-from timings import phase
+from timings import lines, phase, reading
 
 PARK, HERITAGE, SPECIAL, INDIGENOUS = 1 << 1, 1 << 4, 1 << 6, 1 << 7
 # What an entry says about itself that isn't shown: taken here, not passed on.
@@ -66,7 +66,9 @@ def registers(folder: Path) -> list[tuple[str, dict, list[dict]]]:
         g = t.with_suffix(".geojson")
         if not g.exists():
             sys.exit(f"{t.name} without its {g.name}")
-        out.append((t.stem, tomllib.loads(t.read_text(encoding="utf-8")), json.loads(g.read_text(encoding="utf-8"))["features"]))
+        with reading(g):
+            d, gj = t.read_text(encoding="utf-8"), g.read_text(encoding="utf-8")
+        out.append((t.stem, tomllib.loads(d), json.loads(gj)["features"]))
     return out
 
 
@@ -84,7 +86,9 @@ def matches(folder: Path | None) -> tuple[dict[str, str], set[frozenset[str]]]:
         return a
     never: set[frozenset[str]] = set()
     for f in sorted(folder.glob("**/*.jsonl")):
-        for line in f.read_text(encoding="utf-8").splitlines():
+        with reading(f):
+            text = f.read_text(encoding="utf-8")
+        for line in text.splitlines():
             if not line.strip():
                 continue
             m = json.loads(line)
@@ -155,8 +159,10 @@ def merge(feats: list[dict], keys: list[str], sizes: dict[str, int], groups: dic
 
 def write_json(path: Path, obj) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
-    os.replace(tmp, path)
+    text = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    with reading(path):
+        tmp.write_text(text)
+        os.replace(tmp, path)
 
 
 def option(args: list[str], name: str) -> str | None:
@@ -185,8 +191,10 @@ def main():
         sys.exit(__doc__.rsplit("usage: ", 1)[1])
     b = Path(args[0])
     areas_path = b.parent / "areas" / "areas.geojsonseq"
-    with phase("reading the covered tiles", "disk"):
-        tiles = {tuple(t) for t in np.fromfile(inputs.arg(tiles_path), dtype=np.uint32).reshape(-1, 2).tolist()}
+    with phase("reading the covered tiles"):
+        with reading(tiles_path):
+            raw = np.fromfile(inputs.arg(tiles_path), dtype=np.uint32)
+        tiles = {tuple(t) for t in raw.reshape(-1, 2).tolist()}
     n_tiles = 2 ** zoom
 
     def covered(lon, lat):
@@ -198,7 +206,7 @@ def main():
 
     counts = {}
     sites, keys, harea, sp = [], [], [], []
-    with phase("reading the registers", "disk"):
+    with phase("reading the registers"):
         regs = registers(inputs.arg(reg_dir))
         groups, never = matches(inputs.arg(match_dir) if match_dir else None)
     described = {}
@@ -208,7 +216,7 @@ def main():
         klass = d.get("class", "heritage")
         described[rid] = {"class": klass, **{k: d[k] for k in ("wikidata_property", "osm_ref_tags") if k in d}}
         n_sites = n_areas = 0
-        with phase("reading the registers", "compute"):
+        with phase("reading the registers"):
             for f in feats:
                 g, p = f["geometry"], dict(f["properties"])
                 eid = p["id"]
@@ -245,11 +253,11 @@ def main():
         counts[rid] = n_sites + n_areas
         print(f"heritage: {rid:24s} {n_sites:6d} sites, {n_areas:4d} areas")
     print(f"progress: {len(regs)}/{len(regs)} registers", file=sys.stderr, flush=True)
-    with phase("merging the sites", "compute"):
+    with phase("merging the sites"):
         n0 = len(sites)
         sites = merge(sites, keys, {rid: len(feats) for rid, _, feats in regs}, groups, never)
     print(f"heritage: {n0 - len(sites)} sites merged into others")
-    with phase("writing the sites and heritage areas", "disk"):
+    with phase("writing the sites and heritage areas"):
         write_json(b / "heritage.json", {"type": "FeatureCollection", "features": sites})
         write_json(b / "heritage-areas.json", {"type": "FeatureCollection", "features": harea})
     by = {}
@@ -257,7 +265,7 @@ def main():
         by[f["properties"]["level"]] = by.get(f["properties"]["level"], 0) + 1
     print("heritage.json:", len(sites), "sites by level", dict(sorted(by.items())))
 
-    with phase("reading the special places", "compute"):
+    with phase("reading the special places"):
         # Entries by the OSM name to look for; several can share one (e.g. a biosphere reserve named
         # for the national park it surrounds), so each is matched on its own.
         hints: dict[str, list[int]] = {}
@@ -266,11 +274,11 @@ def main():
                 hints.setdefault(norm_name(s.get("polygon_hint") or s["name"]), []).append(i)
 
     print("protected areas & Indigenous lands (OSM)…")
-    with phase("reading the protected areas and Indigenous lands", "compute"):
+    with phase("reading the protected areas and Indigenous lands"):
         special_feats, indigenous_feats, matched = [], [], set()
         # The polygons in degrees, with their bits (rasterised by the units).
         shapes_ll: list[tuple] = []
-        for line in tqdm(open(areas_path), desc="areas", unit="poly"):
+        for line in tqdm(lines(areas_path), desc="areas", unit="poly"):
             f = json.loads(line.strip("\x1e"))
             p = f["properties"]
             try:
@@ -302,7 +310,7 @@ def main():
             else:
                 continue
             shapes_ll.append((g.simplify(0.0002, preserve_topology=True), bit))
-    with phase("drawing the remaining areas", "compute"):
+    with phase("drawing the remaining areas"):
         for i, s in enumerate(sp):
             if i in matched:
                 continue
@@ -322,17 +330,26 @@ def main():
         print(f"special areas: {len(sp)} ({len(matched)} with OSM boundaries)")
         for f in harea:
             shapes_ll.append((shape(f["geometry"]), HERITAGE))
-    with phase("writing the area layers", "disk"):
+    with phase("writing the area layers"):
         write_json(b / "special.json", {"type": "FeatureCollection", "features": special_feats})
         write_json(b / "indigenous.json", {"type": "FeatureCollection", "features": indigenous_feats})
         write_json(b / "heritage-sources.json", {"counts": counts, "special": len(sp), "registers": described,
                                                  "built": date or datetime.now(timezone.utc).isoformat()[:19]})
-    with phase("writing the area shapes", "disk"):
+    with phase("writing the area shapes"):
         tmp = b / "area-shapes.geojsonseq.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        w = reading(tmp)
+        with w:
+            f = open(tmp, "w", encoding="utf-8")
+        try:
             for g, bit in shapes_ll:
-                f.write(json.dumps({"type": "Feature", "geometry": mapping(g), "properties": {"bit": int(bit)}}, separators=(",", ":")) + "\n")
-        os.replace(tmp, b / "area-shapes.geojsonseq")
+                line = json.dumps({"type": "Feature", "geometry": mapping(g), "properties": {"bit": int(bit)}}, separators=(",", ":")) + "\n"
+                with w:
+                    f.write(line)
+        finally:
+            with w:
+                f.close()
+        with w:
+            os.replace(tmp, b / "area-shapes.geojsonseq")
     print(f"area-shapes.geojsonseq: {len(shapes_ll)} polygons (the units rasterise them)")
 
 

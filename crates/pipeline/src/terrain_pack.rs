@@ -322,6 +322,8 @@ pub struct ManifestTiles {
 /// A pack open: its file and index.
 struct OpenPack {
     file: std::fs::File,
+    /// What its reads wait on (the NAS, or this Mac's disk for a copy): held around each.
+    on: store::waits::On,
     idx: store::pack::PackIndex,
 }
 
@@ -366,9 +368,11 @@ impl ManifestTiles {
         let shown = p.loc().display();
         let open = nas_call(&shown, NAS_DEADLINE, &store::retry::waits(), move || {
             let file = p.loc().open()?;
+            let on = p.loc().on();
+            let _w = store::waits::wait(on);
             let len = file.metadata()?.len();
             let idx = store::pack::PackIndex::read_from(&FileSource(&file, len)).map_err(store::retry::as_io)?;
-            Ok(std::sync::Arc::new(OpenPack { file, idx }))
+            Ok(std::sync::Arc::new(OpenPack { file, on, idx }))
         });
         anyhow::Context::with_context(open, || format!("open the pack {shown}"))
     }
@@ -405,6 +409,7 @@ impl ManifestTiles {
         let (off, len) = (ent.offset, ent.len as usize);
         let b = nas_call(&format!("{}'s {z}/{x}/{y}", self.layer), NAS_DEADLINE, &store::retry::waits(), move || {
             let mut b = vec![0u8; len];
+            let _w = store::waits::wait(e.on);
             e.file.read_exact_at(&mut b, off)?;
             Ok(b)
         })?;
@@ -462,6 +467,7 @@ impl ManifestTiles {
                             let what = format!("{}'s bytes {s0}..{s1}", self.layer);
                             let b = nas_call(&what, NAS_DEADLINE, &store::retry::waits(), move || {
                                 let mut b = vec![0u8; n];
+                                let _w = store::waits::wait(e.on);
                                 e.file.read_exact_at(&mut b, s0)?;
                                 Ok(b)
                             });
@@ -636,7 +642,7 @@ enum Opened {
 /// A shard's archives read by range: each one's NAS file and its entries. Shared, so a tile is
 /// read from them outside the shard's lock (`archived_by`: a read of the NAS held every other
 /// thread wanting a tile of the shard).
-type RangedArchives = std::sync::Arc<Vec<(std::fs::File, Vec<roadcore::archive::Entry>)>>;
+type RangedArchives = std::sync::Arc<Vec<(std::fs::File, Vec<roadcore::archive::Entry>, store::waits::On)>>;
 
 /// The tiles of a shard read straight from the NAS's archives before they're copied here whole.
 const RANGED: usize = 16;
@@ -792,7 +798,7 @@ impl RawTiles {
                     _ => store::nasfs::Place::Nas(st.join("packs").join(&p.name)),
                 };
                 match crate::rawpack::entries_of(&at) {
-                    Ok(e) => v.push(e),
+                    Ok(e) => v.push((e.0, e.1, at.loc().on())),
                     // (Gone from the NAS: the index read before is out of date.)
                     Err(e) if !fresh && crate::rawpack::not_found(&e) => break,
                     Err(e) => {
@@ -894,13 +900,15 @@ impl RawTiles {
         match here {
             Ok(here) => here.iter().find_map(|a| a.get(z, x, y).and_then(|b| whole(b))),
             Err(archives) => {
-                for (f, entries) in archives.iter() {
+                for (f, entries, on) in archives.iter() {
                     let Ok(i) = entries.binary_search_by_key(&key, |e| e.key) else { continue };
                     let mut b = vec![0u8; entries[i].len as usize];
+                    let w = store::waits::wait(*on);
                     if let Err(e) = store::sys::PosIo::read_exact_at(f, &mut b, entries[i].offset) {
                         eprintln!("terrain: {z}/{x}/{y} from an archive of {shard}: {e}");
                         return None;
                     }
+                    drop(w);
                     if let Some(t) = whole(&b) {
                         return Some(t);
                     }
@@ -928,7 +936,7 @@ impl RawTiles {
         match c.as_ref() {
             Some(Opened::Here(h)) => h.iter().any(|a| a.get(z, x, y).is_some()),
             Some(Opened::Ranged { archives, .. }) => {
-                archives.iter().any(|(_, e)| e.binary_search_by_key(&key, |e| e.key).is_ok())
+                archives.iter().any(|(_, e, _)| e.binary_search_by_key(&key, |e| e.key).is_ok())
             }
             None => false,
         }

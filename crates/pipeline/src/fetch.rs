@@ -400,6 +400,7 @@ impl RangeRead for Remote {
         if let Some(l) = &self.local {
             if l.have.as_ref().is_none_or(|h| h.covers(off, off + len as u64)) {
                 let mut b = vec![0u8; len];
+                let _w = store::waits::disk();
                 l.file.read_exact_at(&mut b, off)?;
                 return Ok(b);
             }
@@ -496,6 +497,7 @@ impl Fetcher {
                 Some(Found::Absent) => return Ok(None),
                 Some(Found::File(l)) if l.have.as_ref().is_none_or(|h| h.covers(0, l.len)) => {
                     let mut b = vec![0u8; l.len as usize];
+                    let _w = store::waits::disk();
                     l.file.read_exact_at(&mut b, 0)?;
                     return Ok(Some(b));
                 }

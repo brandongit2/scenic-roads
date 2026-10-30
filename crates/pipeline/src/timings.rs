@@ -27,8 +27,8 @@
 //!   `Waits`, the rest of its wall time computing. They count by the job's wall clock (an instant
 //!   is the NAS's when any of its threads is in a NAS call, else the network's, else the disk's,
 //!   else other work's: store::waits), so a phase's parts add up to its wall time. A phase that
-//!   runs a child program takes in the child's phases' waits (an unmeasured one's, the Python
-//!   twin's, by its declared class). No phase is classed by hand.
+//!   runs a child program takes in the waits of the child's main-thread phases (its own measured:
+//!   the Python twin, dem/timings.py, measures them the same way). No phase is classed by hand.
 //! - Live: the top-level phase open on the main thread, and since when, is said in the
 //!   job's counts file (store::nasio::set_phase, a few stores in mapped memory) as it opens, and
 //!   cleared as it ends; the agent shows it under the job (crate::agent::jobs::Live).
@@ -101,8 +101,8 @@ impl Waits {
         self
     }
 
-    /// A phase's waits: its measured ones, else (a record from before task #870, the Python twin's
-    /// or a page's) its declared class's, the whole of its wall time; None when neither says.
+    /// A phase's waits: its measured ones, else (a record from before task #870, or a page's) its
+    /// declared class's, the whole of its wall time; None when neither says.
     pub fn of(p: &PhaseRec) -> Option<Waits> {
         if p.waits.is_some() {
             return p.waits;
@@ -174,7 +174,7 @@ pub struct PhaseRec {
     #[serde(deserialize_with = "current_name")]
     pub name: String,
     /// What it was declared to wait on, in a record from before task #870 (measured since: `waits`),
-    /// the Python twin's (dem/timings.py) or a page's: "nas-read", "net", "compute", "mixed" ….
+    /// or a page's: "nas-read", "net", "compute" …. (The Python twin, dem/timings.py, measures.)
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub class: String,
     pub wall_s: f64,
@@ -732,11 +732,12 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
                 sub: Vec::new(),
             })
             .collect();
-        // (Its child programs' waits taken in beside its own: it waited on the child meanwhile.)
+        // (Its child programs' waits taken in beside its own: it waited on the child meanwhile. Their
+        // main thread's phases' alone: one beside them spans the same wall time. Measured only.)
         let wall_s = a.wall_ns as f64 / 1e9;
         let mut waits = a.waits;
         for k in &a.kids {
-            if let Some(w) = Waits::of(k) {
+            if let Some(w) = k.waits.filter(|_| !k.background) {
                 waits.add(&w);
             }
             merge_into(&mut sub, k.clone());

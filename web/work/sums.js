@@ -528,7 +528,7 @@ export function phaseBreakdown(pt, step, range) {
   const st = pt?.steps?.[step];
   if (!st) return null;
   const upto = (pt.edges || []).reduce((k, e, i) => (e <= range ? i : k), -1);
-  const out = { runs: 0, failed: 0, wall: 0, cpu: 0, parts: st.phases.map(([name, cls]) => ({ name, cls, wall: 0, cpu: 0, nas: 0, net: 0, measured: 0, waits: { nas: 0, net: 0, disk: 0, other: 0 } })) };
+  const out = { runs: 0, failed: 0, wall: 0, cpu: 0, parts: st.phases.map(([name]) => ({ name, wall: 0, cpu: 0, nas: 0, net: 0, measured: 0, waits: { nas: 0, net: 0, disk: 0, other: 0 } })) };
   for (const [e, runs, failed, wall, cpu, ps] of st.b) {
     if (e > upto) continue;
     out.runs += runs; out.failed += failed; out.wall += wall; out.cpu += cpu;
@@ -557,7 +557,7 @@ export const WAITS_RULE = "Measured by the job's wall clock: an instant counts a
 
 // A phase's time (`phaseBreakdown`'s part) as segments [{key, label, s}]: its measured wall time
 // split by WAIT_PARTS (computing what the waits leave; rounding held within it), then the wall
-// time of runs from before the measurement (`key` "old", by its declared class `cls`). Empty
+// time of runs from before the measurement (`key` "old": no class said, task #870). Empty
 // segments left out.
 export function phaseSplit(p) {
   const m = Math.min(p.measured || 0, p.wall);
@@ -565,16 +565,9 @@ export function phaseSplit(p) {
   const waited = ["nas", "net", "disk", "other"].reduce((t, k) => t + (w[k] || 0), 0);
   const k = waited > m && waited > 0 ? m / waited : 1;
   const segs = WAIT_PARTS.map(([key, label]) => ({ key, label, s: key === "cpu" ? Math.max(0, m - waited * k) : (w[key] || 0) * k }));
-  segs.push({ key: "old", label: `not measured (older runs${p.cls ? `: declared ${PHASE_CLASS[p.cls] || p.cls}` : ""})`, s: Math.max(0, p.wall - m) });
+  segs.push({ key: "old", label: "not measured (older runs)", s: Math.max(0, p.wall - m) });
   return segs.filter((x) => x.s > 0);
 }
-
-// What an older run's phase was declared to wait on, by its class (before task #870, and the
-// Python twin's), for the time breakdown's tooltips.
-export const PHASE_CLASS = {
-  "nas-read": "reading the NAS", "nas-write": "writing to the NAS", disk: "the Mac's own disk", net: "the internet (or another Mac)",
-  compute: "the CPU", wait: "a lock, a slot or another worker", mixed: "several things",
-};
 
 // A line on what each phase does (the time breakdown's tooltip), the phases that take a step's time;
 // another phase: its name says it.
