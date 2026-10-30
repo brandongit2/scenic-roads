@@ -52,6 +52,8 @@ pub struct Beat {
     /// The shared copy's writer, once the beat runs on its thread (else written in line).
     nas: Option<(Mailbox, SyncSender<()>)>,
     failing: bool,
+    /// A loop older than this is stuck (nasread::STALL_AFTER; a test's shorter).
+    stuck_after: Duration,
 }
 
 impl Beat {
@@ -65,7 +67,7 @@ impl Beat {
         status.say(asked.as_ref(), &hold, hold.held.is_none() && hold.at > v.hold_at);
         status.beat = now_s();
         let age = v.at.elapsed().as_secs();
-        let stuck = super::nasread::STALL_AFTER.as_secs();
+        let stuck = self.stuck_after.as_secs();
         status.loop_age_s = Some(age);
         status.loop_stuck_s = Some(stuck);
         status.loop_phase = (age > stuck).then(super::nasread::phase_now).flatten().map(|(p, _)| p.to_string());
@@ -118,7 +120,7 @@ impl Handle {
     pub fn new(home: PathBuf, hold: Arc<Snap<HoldState>>) -> Handle {
         let view = Snap::new(None);
         let (tx, rx) = mpsc::channel();
-        let beat = Beat { home, view: view.clone(), hold, nas: None, failing: false };
+        let beat = Beat { home, view: view.clone(), hold, nas: None, failing: false, stuck_after: nasread::STALL_AFTER };
         Handle { view, tx, inline: Some((beat, rx)) }
     }
 
@@ -259,17 +261,17 @@ mod tests {
     #[test]
     fn a_beat_says_a_stuck_loops_phase() {
         let d = tempfile::tempdir().unwrap();
-        let stuck = crate::agent::nasread::STALL_AFTER;
         let local = d.path().join("status.json");
         let mut b = Handle::new(d.path().into(), Snap::new(HoldState::default()));
         b.publish(view(local.clone(), None));
         let s = said(&local);
-        assert_eq!((s.loop_stuck_s, s.loop_phase), (Some(stuck.as_secs()), None));
+        assert_eq!((s.loop_stuck_s, s.loop_phase), (Some(nasread::STALL_AFTER.as_secs()), None));
+        // (A threshold of 0 s, and a view a second old: past it.)
+        b.inline.as_mut().unwrap().0.stuck_after = Duration::ZERO;
         crate::agent::nasread::phase("a test's phase");
-        let mut v = view(local.clone(), None);
-        v.at = Instant::now() - stuck - Duration::from_secs(60);
-        b.publish(v);
+        std::thread::sleep(Duration::from_millis(1100));
+        b.changed();
         let s = said(&local);
-        assert!(s.loop_age_s.unwrap() > stuck.as_secs() && s.loop_phase.is_some(), "{s:?}");
+        assert!(s.loop_age_s.unwrap() > 0 && s.loop_stuck_s == Some(0) && s.loop_phase.is_some(), "{s:?}");
     }
 }
