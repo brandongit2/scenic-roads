@@ -40,9 +40,16 @@ pub fn tiles_of(keys: &Keys) -> BTreeMap<String, Vec<String>> {
     for (name, v) in m {
         let Value::Object(targets) = v else { continue };
         let z3_old = matches!(name.as_str(), "terrain_hi" | "slope_hi" | "trees");
-        for t in targets.keys() {
+        let step = name.replace('_', "-");
+        for (t, k) in &targets {
+            // (A drop's record, its "none" key (build::is_none_key): the tile left coverage, its
+            // packs dropped by design: not a tile built, left out (#839 review; 436 of terrain-hi's
+            // 520 with no pack, 29 Oct).)
+            if k.as_str().is_some_and(|k| super::build::is_none_key(&step, t, k)) {
+                continue;
+            }
             if tile(t) && !(z3_old && t.starts_with("3/")) {
-                out.entry(name.replace('_', "-")).or_default().push(t.clone());
+                out.entry(step.clone()).or_default().push(t.clone());
             } else if name == "lo" && t.ends_with("-root") {
                 out.entry(t.clone()).or_default().push("0/0/0".into());
             }
@@ -202,5 +209,19 @@ mod tests {
         let e = empty_of(&steps, &m);
         assert_eq!(e["terrain-deep"], [0, 2], "10/1/2 and 10/5/6 made no pack");
         assert_eq!(e.len(), 1, "slope-deep's and terrain-hi's are named; the root's not told: {e:?}");
+    }
+
+    #[test]
+    fn a_drops_record_is_no_tile_built() {
+        use super::super::build::{none_deep_key, none_piece_key, piece_key_made};
+        let mut k = Keys::default();
+        let no_hi = piece_key_made((21, 18), "fp", "src", "w", false);
+        k.record("terrain-hi", &[("6/1/2".into(), none_piece_key("terrain-hi", "6/1/2")), ("6/21/18".into(), no_hi)]);
+        k.record("terrain-deep", &[("10/1/2".into(), none_deep_key("terrain-deep", "10/1/2"))]);
+        let steps = tiles_of(&k);
+        assert_eq!(steps["terrain-hi"], ["6/21/18"], "the drop's left out: {steps:?}");
+        assert!(!steps.contains_key("terrain-deep"), "a deep drop too");
+        let e = empty_of(&steps, &BTreeMap::new());
+        assert_eq!(e["terrain-hi"], [0], "no hi tiles made: listed, nothing to publish");
     }
 }
