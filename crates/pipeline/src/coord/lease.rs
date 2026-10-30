@@ -51,6 +51,11 @@ pub struct Lease {
     /// Mac, apart from load outside the pool (crate::coord::outside_cores).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub threads: u32,
+    /// The slot of its worker's Mac running its job (0: the first; crate::agent::slot_worker), as
+    /// the worker last said (its beats, this Mac's loop: `Leases::at_slot`; task #863): a lease
+    /// names its Mac, granted before a slot takes it. None until said (an older app's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u32>,
 }
 
 fn is_zero_u32(n: &u32) -> bool {
@@ -333,6 +338,7 @@ impl Leases {
                 progress: None,
                 frac: None,
                 live: None,
+                slot: None,
                 threads: 0,
             },
         );
@@ -388,6 +394,13 @@ impl Leases {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Lease `id` of `worker` runs on its Mac's slot `slot` (task #863).
+    pub fn at_slot(&mut self, id: u64, worker: &str, slot: u32) {
+        if let Some(l) = self.by_id.get_mut(&id).filter(|l| l.worker == worker) {
+            l.slot = Some(slot);
         }
     }
 

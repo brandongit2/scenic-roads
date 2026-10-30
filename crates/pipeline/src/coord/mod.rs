@@ -1080,6 +1080,10 @@ pub struct Beat {
     /// What its job is doing now (crate::agent::jobs::Live), when it says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<crate::agent::jobs::Live>,
+    /// The slot of its Mac running the job (crate::coord::lease::Lease::slot), when it says (an
+    /// older app or a page doesn't).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u32>,
 }
 
 /// Work done: a job's one hand-off (its saves and done record) and what its z6 tiles cost, or a task's
@@ -1536,8 +1540,14 @@ impl Coordinator {
 
     /// The leases this Mac's slots run jobs under now (crate::agent: each loop): those never lapse,
     /// beats or not, while they're said; one whose job ended leaves and lapses as any (#666).
-    pub fn keep_own(&self, ids: BTreeSet<u64>) {
-        self.shared.lock().unwrap().leases.mine = ids;
+    /// Each with the slot running it (`Lease::slot`).
+    pub fn keep_own(&self, ids: BTreeMap<u64, u32>) {
+        let mut s = self.shared.lock().unwrap();
+        for (&id, &k) in &ids {
+            let me = self.me.clone();
+            s.leases.at_slot(id, &me, k);
+        }
+        s.leases.mine = ids.into_keys().collect();
     }
 
     /// Keeps this Mac's job's lease alive; false when it lapsed (the job paused too long, or the
@@ -2130,21 +2140,27 @@ impl Coordinator {
     /// (worker, step, targets), the history kept, and the memory each worker spares (MB).
     pub fn for_forecast(
         &self,
-    ) -> (BTreeMap<String, Cost>, Vec<(String, String, Vec<String>, u64)>, Vec<history::Event>, BTreeMap<String, u64>)
-    {
+    ) -> (
+        BTreeMap<String, Cost>,
+        Vec<(String, String, Vec<String>, u64, bool)>,
+        Vec<history::Event>,
+        BTreeMap<String, u64>,
+    ) {
         let s = self.shared.lock().unwrap();
         let now = s.now();
-        // (Each with how long ago it was granted.)
+        // (Each with how long ago it was granted; its worker the slot running it when said
+        // (`Lease::slot`, crate::agent::slot_worker; then true), else its Mac.)
         let leased = s
             .leases
             .all(now)
             .iter()
             .filter_map(|l| match &l.work {
                 Work::Job { step, targets } => Some((
-                    l.worker.clone(),
+                    l.slot.map_or_else(|| l.worker.clone(), |k| crate::agent::slot_worker(&l.worker, k as usize)),
                     step.clone(),
                     targets.iter().map(|t| t.0.clone()).collect(),
                     now.duration_since(l.granted).as_secs(),
+                    l.slot.is_some(),
                 )),
                 Work::Task { .. } => None,
             })
@@ -3635,6 +3651,9 @@ fn route(
             }
             let mut s = shared.lock().unwrap();
             let alive = s.leases.renew_frac(b.lease, &b.worker, b.progress.clone(), b.frac, b.live.take(), now);
+            if let Some(k) = b.slot.filter(|_| alive) {
+                s.leases.at_slot(b.lease, &b.worker, k);
+            }
             s.seen(&b.worker, b.progress.unwrap_or_else(|| "working".into()), None, now);
             // (The build paused: its job pauses too, its lease kept meanwhile. The owner cancelled
             // it, `scenic job cancel`: it stops and gives the lease back.)
@@ -5655,7 +5674,7 @@ mod tests {
             let now = s.now();
             s.leases.grant("m1", Work::Job { step: "gc".into(), targets: Vec::new() }, now)
         };
-        c.keep_own([z8, unit].into());
+        c.keep_own([(z8, 0), (unit, 1)].into());
         // No duplicate of a job of no targets, the lead's or a member's, with targets or none.
         assert_eq!(c.hold("buildings", &[]), None);
         assert_eq!(c.hold("gc", &[]), None);
@@ -5670,7 +5689,7 @@ mod tests {
         c.finish(unit, &[]);
         assert!(!c.held("unit").contains("6/1/1"));
         // Said no more (its job gone): z8's lapses too.
-        c.keep_own(BTreeSet::new());
+        c.keep_own(BTreeMap::new());
         clock.advance(TTL + Duration::from_secs(60));
         assert_eq!(c.expire().iter().map(|l| l.id).collect::<Vec<_>>(), [z8]);
         // The member's gone: its step is the lead's to hold.
@@ -5999,6 +6018,36 @@ mod tests {
         );
     }
 
+    /// (Task #863) a lease names the slot running its job once its worker says (a member's beat, the
+    /// lead's loop's `keep_own`): the forecast's input names that slot's lane; one not said yet, or
+    /// read back from an older app's leases, names its Mac.
+    #[test]
+    fn a_lease_names_the_slot_its_worker_says_runs_it() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = start_for_test(&d.path().join("coord"), "m4", "");
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
+        let g = w.ask(&ask(4096)).unwrap().unwrap();
+        let own = c.hold("unit", &[("6/1/1".into(), "k".into())]).unwrap();
+        let workers = |c: &Coordinator| {
+            let mut v: Vec<(String, bool)> = c.for_forecast().1.into_iter().map(|l| (l.0, l.4)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(workers(&c), [("m1".to_string(), false), ("m4".to_string(), false)], "not said yet: its Mac");
+        assert!(w.beat_told(g.lease, None, None, Some(2)).unwrap().0);
+        c.keep_own([(own, 1)].into());
+        assert_eq!(workers(&c), [("m1 #3".to_string(), true), ("m4 #2".to_string(), true)]);
+        // (An older app's lease, no slot: read back as its Mac's.)
+        let mut v = {
+            let s = c.shared.lock().unwrap();
+            serde_json::to_value(s.leases.get(own, "m4", s.now()).unwrap()).unwrap()
+        };
+        assert_eq!(v["slot"], 1);
+        v.as_object_mut().unwrap().remove("slot");
+        assert_eq!(serde_json::from_value::<Lease>(v).unwrap().slot, None);
+    }
+
     /// The owner's cancel (task #373, `scenic job cancel`): a member's lease told in its beat's
     /// answer; given back, nothing kept from it (no failure, no backoff); with --rerun-after-update
     /// its target held from every worker, the lead's own jobs too, until the lead runs a newer app,
@@ -6015,21 +6064,21 @@ mod tests {
         c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
         let g = w.ask(&on(old)).unwrap().unwrap();
         // Nothing told before a cancel; a cancel of another target tells nothing.
-        assert!(w.beat_told(g.lease, None, None).unwrap().2.is_none());
+        assert!(w.beat_told(g.lease, None, None, None).unwrap().2.is_none());
         // (Task #518: what its job is doing now, as its beat says, kept on the lease and shown.)
         let live = crate::agent::jobs::Live { phase: Some("z6 tiles".into()), targets: 1, ..Default::default() };
-        assert!(w.beat_told(g.lease, None, Some(live)).unwrap().0);
+        assert!(w.beat_told(g.lease, None, Some(live), None).unwrap().0);
         let v = c.view();
         assert_eq!(v["leases"][0]["live"]["phase"], "z6 tiles", "{v}");
         let long = crate::agent::jobs::Live { target: Some("x".repeat(WHAT_MAX + 50)), ..Default::default() };
-        assert!(w.beat_told(g.lease, None, Some(long)).unwrap().0);
+        assert!(w.beat_told(g.lease, None, Some(long), None).unwrap().0);
         let v = c.view();
         assert_eq!(v["leases"][0]["live"]["target"].as_str().unwrap().len(), WHAT_MAX, "capped at the lead");
         assert!(c.cancel(&Cancel::new("6/1/1", None, true, "scenic job cancel on m4")).is_empty());
         assert!(c.cancel(&Cancel::new("6/55/25", Some("pack"), true, "x")).is_empty(), "another step's");
         let told = c.cancel(&Cancel::new("6/55/25", None, true, "scenic job cancel on m4"));
         assert_eq!(told, vec![(g.lease, "m1".to_string(), "unit 6/55/25".to_string())]);
-        let (alive, _, cancel) = w.beat_told(g.lease, None, None).unwrap();
+        let (alive, _, cancel) = w.beat_told(g.lease, None, None, None).unwrap();
         assert!(alive && cancel.is_some_and(|x| x.rerun_after_update && x.by == "scenic job cancel on m4"));
         // Given back, not failed: nothing kept from m1, no failure counted.
         w.end_with(g.lease, "cancelled by scenic job cancel on m4", true, &[], &[], 0).unwrap();
@@ -6061,7 +6110,7 @@ mod tests {
         let m2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
         let told = m2.cancel(&Cancel::new("6/55/25", None, false, "scenic job cancel on m2")).unwrap();
         assert_eq!(told, vec![(g.lease, "m1".to_string(), "unit 6/55/25".to_string())]);
-        assert!(w.beat_told(g.lease, None, None).unwrap().2.is_some_and(|x| !x.rerun_after_update));
+        assert!(w.beat_told(g.lease, None, None, None).unwrap().2.is_some_and(|x| !x.rerun_after_update));
         w.end_with(g.lease, "cancelled", true, &[], &[], 0).unwrap();
         assert!(c.held("unit").is_empty());
         assert!(w.ask(&on(new)).unwrap().is_some(), "it reruns at once");

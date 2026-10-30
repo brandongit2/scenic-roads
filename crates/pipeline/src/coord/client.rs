@@ -504,17 +504,18 @@ impl Client {
 
     /// `beat`, and the build's pause, while it's paused (the job pauses with it).
     pub fn beat_paused(&self, lease: u64, progress: Option<&str>) -> Result<(bool, Option<crate::control::Pause>)> {
-        self.beat_told(lease, progress, None).map(|(alive, pause, _)| (alive, pause))
+        self.beat_told(lease, progress, None, None).map(|(alive, pause, _)| (alive, pause))
     }
 
     /// `beat_paused`, with what its job is doing now (crate::agent::jobs::Live), and the owner's
     /// cancel of the lease's job (`scenic job cancel`), when there's one: the job stops and gives
-    /// the lease back.
+    /// the lease back. `slot`: the slot of this Mac running its job (crate::coord::lease::Lease::slot).
     pub fn beat_told(
         &self,
         lease: u64,
         progress: Option<&str>,
         live: Option<crate::agent::jobs::Live>,
+        slot: Option<u32>,
     ) -> Result<(bool, Option<crate::control::Pause>, Option<crate::control::Cancel>)> {
         let b = super::Beat {
             worker: self.worker.clone(),
@@ -522,6 +523,7 @@ impl Client {
             progress: progress.map(str::to_string),
             frac: None,
             live,
+            slot,
         };
         let v = self.post_json("/work/beat", &serde_json::to_value(&b)?)?.1;
         Ok((

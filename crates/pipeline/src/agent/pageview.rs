@@ -589,7 +589,9 @@ impl PageView {
             let kept = keep
                 .as_ref()
                 .and_then(|p| std::fs::read(p).ok())
-                .and_then(|b| serde_json::from_slice::<history::KeptWaits>(&b).ok());
+                .and_then(|b| serde_json::from_slice::<history::KeptWaits>(&b).ok())
+                // (Kept over a day ago: the build moved on, nothing read back.)
+                .filter(|k| now.saturating_sub(k.made_t) < 86_400);
             let st = self.state.lock().unwrap();
             if let (Some(k), Some(h)) = (kept, st.history.as_ref()) {
                 // (Its `from`: this numbering's last event by then.)
@@ -634,13 +636,14 @@ impl PageView {
     }
 }
 
-/// Writes kept waits to `p` whole (a file beside, renamed over it); a failure said, not kept.
+/// Writes kept waits to `p` whole (store::whole: a temporary name unique to the call, renamed over
+/// it); a failure said, not kept.
 fn keep_waits(p: &std::path::Path, k: &history::KeptWaits) {
-    let tmp = p.with_extension("tmp");
-    let done = p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| {
-        std::fs::write(&tmp, serde_json::to_vec(k).unwrap_or_default())?;
-        std::fs::rename(&tmp, p)
-    });
+    let done = p
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .map_err(anyhow::Error::from)
+        .and_then(|_| store::whole::write(p, &serde_json::to_vec(k)?));
     if let Err(e) = done {
         eprintln!("pageview: the forecast's waits not kept at {}: {e}", p.display());
     }

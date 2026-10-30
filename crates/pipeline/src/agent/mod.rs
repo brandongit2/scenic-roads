@@ -3292,7 +3292,7 @@ impl Agent {
                     Some(r) => self.client(r, &mut Vec::new()),
                     None => self.client.as_ref(),
                 };
-                match client.map(|c| c.beat_told(lease, progress.as_deref(), live)) {
+                match client.map(|c| c.beat_told(lease, progress.as_deref(), live, Some(k as u32))) {
                     // (The build's pause as the lead says: this job stops with it, or goes on;
                     // unless this Mac's own ask isn't with it yet. The owner's cancel: it stops at
                     // the next loop, `tend_cancels`.)
@@ -4426,9 +4426,10 @@ impl Agent {
             co.keep_own(
                 self.slots
                     .iter()
-                    .filter(|s| s.running.is_some())
-                    .filter_map(|s| match &s.lease {
-                        Some(Held::Own(id) | Held::Pooled { id, .. }) => Some(*id),
+                    .enumerate()
+                    .filter(|(_, s)| s.running.is_some())
+                    .filter_map(|(k, s)| match &s.lease {
+                        Some(Held::Own(id) | Held::Pooled { id, .. }) => Some((*id, k as u32)),
                         _ => None,
                     })
                     .collect(),
@@ -8572,7 +8573,9 @@ impl Agent {
                 let lease_left = leased
                     .iter()
                     .filter(|l| l.0 == name)
-                    .map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64)
+                    .map(|(_, step, ts, age, _)| {
+                        ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64
+                    })
                     .fold(0.0, f64::max);
                 let job = jobs.iter().find(|j| j.slot == Some(k));
                 // (No progress said: its step's measured time a target, at its pace.)
@@ -8620,10 +8623,10 @@ impl Agent {
                 running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), m)));
             }
         }
-        // (Each lease on a lane of its Mac running its step, `forecast::lease_lanes`: a lease names
-        // its Mac, not its slot. A target a slot's own record put on its lane stays there.)
-        let keys: Vec<(&str, &str)> = leased.iter().map(|l| (l.0.as_str(), l.1.as_str())).collect();
-        for ((_, step, targets, _), m) in leased.iter().zip(forecast::lease_lanes(&machines, &keys)) {
+        // (Each lease on its slot's lane, or one not said yet on a lane of its Mac running its step,
+        // `forecast::lease_lanes`. A target a slot's own record put on its lane stays there.)
+        let keys: Vec<(&str, &str, bool)> = leased.iter().map(|l| (l.0.as_str(), l.1.as_str(), l.4)).collect();
+        for ((_, step, targets, _, _), m) in leased.iter().zip(forecast::lease_lanes(&machines, &keys)) {
             let Some(m) = m else { continue };
             for t in targets {
                 running.entry((step.clone(), t.clone())).or_insert(m);

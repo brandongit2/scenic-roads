@@ -1009,9 +1009,16 @@ point like any member (docs/building.md §2, A newly installed app). The lead's 
 holds packing off for the pool (§7.1, Mixed versions); its heartbeat says whether the pool is all on
 the new app (`all_new`) for its members' heartbeats.
 
+**A lease names its slot** (task #863): granted to a Mac (a member asks as one, the lead holds
+its own under its name), it says which slot runs its job once that slot does: the lead's loop by
+`keep_own`, a member's beats (`Beat::slot`), kept on the lease (`Lease::slot`, saved; an older
+app's has none). The forecast's input puts the lease on that slot's lane and gives that slot its
+time left and target count (`Coordinator::for_forecast` naming it `<host> #k`); one not said yet
+goes on a lane of its Mac running its step (`forecast::lease_lanes`).
+
 **The lead's running jobs' leases never lapse** (task #666): its coordinator runs inside its agent,
-and each loop the agent says which leases its slots run jobs under (`Coordinator::keep_own`,
-`Leases::mine`, its own name's alone): those are live past `coord::TTL`, beats or not, so `expire`
+and each loop the agent says which leases its slots run jobs under, each with its slot
+(`Coordinator::keep_own`, `Leases::mine`, its own name's alone): those are live past `coord::TTL`, beats or not, so `expire`
 passes over them and they can always be renewed and finished, and a loop stuck past the TTL (10 min
 on a slow NAS) no longer kills its running jobs. A lease whose job ended without giving it back
 leaves the set at the next loop and lapses as any; a stopped agent's are dropped as the next one
@@ -1538,7 +1545,10 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   (`forecast::SlotJob`: its own estimate, or its targets left at its speed, a minute at least; its
   running job too); a target missing from the cost table is a bug, logged once. It runs on a
   thread of its own, again when the input changes or a minute has passed (`pageview::Runs`): the
-  answer carries the last one done. Times are given
+  answer carries the last one done. Its waits (`history::KeptWaits`, each event number by its
+  writer) are kept in `<home>/pageview-waits.json` (written whole on this Mac's disk, at most every
+  `KEEP_WAITS_S`) and read back for the first run after a restart (one over a day old, or unreadable,
+  ignored), so that run's `after` isn't empty. Times are given
   the page as ages (`coord::ages`). The answer carries the app serving it (`app`). With a lead on
   an app from before these records (no `view.json`, no `forecast-input.json`), the answer has no
   leases, workers nor tasks, and the forecast is the one in the lead's status. A Mac with neither

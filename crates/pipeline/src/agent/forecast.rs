@@ -2313,24 +2313,35 @@ fn departed(fc: usize, got: usize) -> bool {
     d >= 2 && d * 2 > fc
 }
 
-/// The lane each lease (its worker, its step) runs on, in order (task #863): a lease names its Mac,
-/// not its slot, so each goes on a lane of that Mac (`Machine::mac`, else its name) running a job
-/// of its step and not yet given a lease, else on the lane named as the worker. (Each lease on its
-/// Mac's first lane put the targets of the jobs on its other slots on that first lane, over the
-/// job it ran: its time left drawn as a job to come of theirs.)
-pub fn lease_lanes(machines: &[Machine], leases: &[(&str, &str)]) -> Vec<Option<usize>> {
+/// The lane each lease (its worker, its step, whether the worker names its slot) runs on, in order
+/// (task #863): one naming its slot (crate::coord::lease::Lease::slot) on that slot's lane; one
+/// naming its Mac alone (granted, its slot not said yet, or an older app's) on a lane of that Mac
+/// (`Machine::mac`, else its name) running a job of its step and not taken, else on the lane named
+/// as the worker. (Each on its Mac's first lane put the jobs of its other slots there, over the job
+/// it ran: its time left drawn as a job to come of theirs.)
+pub fn lease_lanes(machines: &[Machine], leases: &[(&str, &str, bool)]) -> Vec<Option<usize>> {
     let mut taken = vec![false; machines.len()];
-    leases
+    let mut out: Vec<Option<usize>> = leases
         .iter()
-        .map(|&(worker, step)| {
-            let on = |m: &Machine| m.name == worker || m.mac.as_deref() == Some(worker);
-            let k = (0..machines.len())
-                .find(|&k| !taken[k] && on(&machines[k]) && machines[k].running.as_ref().is_some_and(|r| r.0 == step))
-                .or_else(|| machines.iter().position(|m| m.name == worker))?;
+        .map(|&(worker, _, slot)| {
+            let k = machines.iter().position(|m| m.name == worker).filter(|_| slot)?;
             taken[k] = true;
             Some(k)
         })
-        .collect()
+        .collect();
+    for (o, &(worker, step, slot)) in out.iter_mut().zip(leases) {
+        if slot {
+            continue;
+        }
+        let on = |m: &Machine| m.name == worker || m.mac.as_deref() == Some(worker);
+        *o = (0..machines.len())
+            .find(|&k| !taken[k] && on(&machines[k]) && machines[k].running.as_ref().is_some_and(|r| r.0 == step))
+            .or_else(|| machines.iter().position(|m| m.name == worker));
+        if let Some(k) = *o {
+            taken[k] = true;
+        }
+    }
+    out
 }
 
 /// A Mac's lanes: the slots it may run now (`slots`: the lead's ramp's, a member's
@@ -2710,10 +2721,13 @@ mod tests {
         };
         let machines = vec![slot(0, 18_000.0), slot(1, 60.0)];
         // (The second slot's lease first: on the first lane free running its step.)
-        assert_eq!(lease_lanes(&machines, &[("m4", "unit"), ("m4", "unit")]), [Some(0), Some(1)]);
-        assert_eq!(lease_lanes(&machines, &[("m4", "pois"), ("m4 #2", "unit")]), [Some(0), Some(1)]);
-        assert_eq!(lease_lanes(&machines, &[("m1", "unit")]), [None]);
-        let lanes = lease_lanes(&machines, &[("m4", "unit"), ("m4", "unit")]);
+        assert_eq!(lease_lanes(&machines, &[("m4", "unit", false), ("m4", "unit", false)]), [Some(0), Some(1)]);
+        assert_eq!(lease_lanes(&machines, &[("m4", "pois", false), ("m4 #2", "unit", true)]), [Some(0), Some(1)]);
+        assert_eq!(lease_lanes(&machines, &[("m1", "unit", false)]), [None]);
+        // (A lease naming its slot keeps that lane; one not said yet takes another running its step.)
+        assert_eq!(lease_lanes(&machines, &[("m4", "unit", false), ("m4 #2", "unit", true)]), [Some(0), Some(1)]);
+        assert_eq!(lease_lanes(&machines, &[("m4", "unit", false), ("m4", "unit", true)]), [Some(1), Some(0)]);
+        let lanes = lease_lanes(&machines, &[("m4", "unit", true), ("m4 #2", "unit", true)]);
         let mut running = BTreeMap::new();
         for ((t, _), m) in [("u1", ()), ("u2", ())].iter().zip(lanes) {
             running.insert(("unit".to_string(), t.to_string()), m.unwrap());
