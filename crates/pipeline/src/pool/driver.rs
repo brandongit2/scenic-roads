@@ -887,20 +887,23 @@ impl Driver {
 
     /// Whether this Mac is the declared lead (crate::pool::term::declared), read each step (the last
     /// read kept when one fails). None declared yet: the current term's lead, as read whole,
-    /// declares itself, once (the pool's move to a fixed lead; in a new pool, term 1's maker).
+    /// declares itself, once (the pool's move to a fixed lead; in a new pool, term 1's maker), and
+    /// counts as declared while its declaration's create fails (tried again next step); the term
+    /// unreadable meanwhile, the last read is kept.
     fn declare(&mut self, io: &dyn Io, out: &mut Out) -> bool {
         match term::declared(io) {
             Ok(Some(d)) => self.declared = Some(d.member),
-            Ok(None) => {
-                if self.cur.lead.as_ref().is_some_and(|t| t.member == self.me.id) {
-                    match term::declare(io, &self.me, io.now()) {
-                        Ok(d) => self.declared = d.map(|d| d.member),
-                        Err(e) => out.events.push(Event::Failed { what: "declare the lead", why: format!("{e:#}") }),
+            Ok(None) => match &self.cur.lead {
+                Some(t) if t.member == self.me.id => match term::declare(io, &self.me, io.now()) {
+                    Ok(d) => self.declared = d.map(|d| d.member).or(Some(self.me.id.clone())),
+                    Err(e) => {
+                        self.declared = Some(self.me.id.clone());
+                        out.events.push(Event::Failed { what: "declare the lead", why: format!("{e:#}") });
                     }
-                } else {
-                    self.declared = None;
-                }
-            }
+                },
+                Some(_) => self.declared = None,
+                None => {}
+            },
             Err(e) => out.events.push(Event::Waits { what: "read the lead's declaration", why: format!("{e:#}") }),
         }
         self.declared.as_deref() == Some(self.me.id.as_str())
@@ -1591,6 +1594,32 @@ mod tests {
         let o = step(&mut b, &ib, able());
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
         assert_eq!(b.records().unwrap().keys.recorded("unit", "6-1-1"), Some("k1"), "from A's records");
+    }
+
+    #[test]
+    fn the_live_pools_lead_declares_itself_and_a_member_on_the_new_app_waits() {
+        // (Task #881's move, the pool building) Term 1 is A's, made by an app before #881: no
+        // declaration on the NAS. B, on the new app first, declares nothing and leads nothing; A,
+        // restarted into it, declares itself and re-asserts.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        mem.remove(term::LEAD).unwrap();
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
+        for _ in 0..3 {
+            ib.pass(20);
+            assert_eq!((step(&mut b, &ib, able()).leads, b.declared()), (None, None));
+        }
+        assert_eq!(term::declared(&mem).unwrap(), None, "a member declares nothing");
+        ia.pass(20);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
+        let o = step(&mut a, &ia, able());
+        assert_eq!((o.leads, a.declared()), (Some(2), Some(A)), "{:?}", o.events);
+        assert_eq!(term::declared(&mem).unwrap().map(|d| d.member), Some(A.to_string()));
+        ib.pass(20);
+        assert_eq!((step(&mut b, &ib, able()).leads, b.declared()), (None, Some(A)));
     }
 
     #[test]
