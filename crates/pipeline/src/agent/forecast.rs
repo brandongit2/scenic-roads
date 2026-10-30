@@ -2947,10 +2947,10 @@ mod tests {
     #[test]
     fn a_region_whose_terrain_a_helper_builds_waits_for_it() {
         // One region: the M1 has its terrain now (900 s left); the lead waits for it.
-        let regions = [region("a", &["3/1/1"], &["6/8/8"], &[])];
+        let regions = [region("a", &["6/8/8"], &["6/8/8"], &[])];
         let mut inp =
             input(&regions, vec![mac("m4", 1.0, false), Machine { busy_s: 900.0, ..mac("m1", 0.5, true) }], &cost);
-        inp.running.insert(("terrain-hi".into(), "3/1/1".into()), 1);
+        inp.running.insert(("terrain-hi".into(), "6/8/8".into()), 1);
         let f = forecast(&inp);
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 900 + 300));
     }
@@ -2959,7 +2959,7 @@ mod tests {
     fn the_runs_say_their_targets_and_what_each_waits_on() {
         // (Task #787.) One Mac, one region: its terrain, then its two z6 tiles (they wait on the
         // region's terrain, a set: `Items::groups`), after the reach they wait on too (its own dep).
-        let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &[])];
+        let regions = [region("a", &["6/8/8"], &["6/8/8", "6/8/9"], &[])];
         let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
         inp.before = vec![("reach".into(), "reach".into(), Cost { secs: 600.0, known: true, peak_mb: 0 })];
         let f = forecast(&inp);
