@@ -10,6 +10,7 @@ mode=--offline
 case $#:${1:-} in
   0:) ;;
   1:--online) mode=--prefer-offline ;;
+  1:-h|1:--help) sed -n '2,7p' ${0:A} | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) print -u2 "web-deps.sh [--online]"; exit 2 ;;
 esac
 web=${0:A:h:h:h}/web
