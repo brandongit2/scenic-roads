@@ -219,6 +219,7 @@ fn run(w: &World, files: &[(&str, &str)]) -> resolve::Outcome {
         extract: None,
         others: &others,
         memo: None,
+        kept: None,
         names: String::new(),
         data: Some(&w.data),
     };
@@ -338,6 +339,59 @@ fn overlapping_water_or_an_uncovered_sea_is_an_error() {
     assert!(out.problems.is_empty(), "{:?}", out.problems);
 }
 
+/// Task #897: the regions' resolution paused after every piece kept (each region without water
+/// resolved, each with water's land and water), resumed each time, comes to the same as one never
+/// paused, each piece made once.
+#[test]
+fn a_resolution_paused_at_every_piece_resumes_to_the_same() {
+    use crate::resume_log::STOP_AFTER;
+    let w = world();
+    let old = "id = \"old\"\nname = \"Old\"\noutline = [\"osm:4\"]\n";
+    let mut files = all();
+    files.retain(|f| f.0 != "far.toml" && f.0 != "_rules.toml");
+    files.push(("old.toml", old));
+    let m: BTreeMap<String, Vec<u8>> = files.iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
+    let folder = resolve::Folder::read(m.keys().cloned(), &|p| Ok(m[p].clone())).unwrap();
+    let others = BTreeMap::new();
+    let with = |kept: Option<&super::kept::Kept>| {
+        let ctx = resolve::Context {
+            pass: Some(PASS),
+            outlines: Some(&w.o),
+            extract: None,
+            others: &others,
+            memo: None,
+            kept,
+            names: String::new(),
+            data: Some(&w.data),
+        };
+        resolve::resolve(&folder, &ctx)
+    };
+    let fresh = with(None);
+    assert!(fresh.problems.is_empty(), "{:?}", fresh.problems);
+    let d = tempfile::tempdir().unwrap();
+    let mut stops = 0;
+    let resumed = loop {
+        let kept = super::kept::Kept::default();
+        STOP_AFTER.set(Some(1));
+        kept.open(d.path(), "a", true);
+        let out = with(Some(&kept));
+        match kept.stopped() {
+            Err(e) => {
+                assert!(crate::control::is_paused(&e), "{e:#}");
+                stops += 1;
+            }
+            Ok(()) => break out,
+        }
+    };
+    // (Old's resolution, and a, b and isl's land and water: slice has none, disputed and the high
+    // seas no land of their own.)
+    assert!(stops >= 4, "a stop after each piece: {stops}");
+    assert_eq!(resumed.resolved, fresh.resolved);
+    assert_eq!(resumed.problems, fresh.problems);
+    assert_eq!(resumed.needs, fresh.needs);
+    assert_eq!(resumed.keys, fresh.keys);
+}
+
 #[test]
 fn old_files_resolve_as_before_beside_new_ones() {
     let w = world();
@@ -361,6 +415,7 @@ fn old_files_resolve_as_before_beside_new_ones() {
         extract: None,
         others: &others,
         memo: None,
+        kept: None,
         names: String::new(),
         data: None,
     };

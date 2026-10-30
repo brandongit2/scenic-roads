@@ -232,6 +232,8 @@ pub struct Context<'a> {
     /// What's been resolved already, kept by what it was resolved from (a check resolves the
     /// candidate, the next version and the accepted one: each region once).
     pub memo: Option<&'a Memo>,
+    /// The resolutions kept as pieces (task #897), when the check keeps them.
+    pub kept: Option<&'a super::kept::Kept>,
     /// What the context is, for the memo's keys: the outline set's and the extract's names.
     pub names: String,
     /// The regions' datasets (sea zones, territorial seas, lakes, the coastline's land), when read.
@@ -340,9 +342,28 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
                 let k = match kept {
                     Some(k) => k,
                     None => {
-                        let mut needs = BTreeSet::new();
-                        let res = resolve_one(r, path, folder, ctx, done, done, false, &mut needs);
-                        let needs: Vec<Id> = needs.into_iter().collect();
+                        let make = || {
+                            let mut needs = BTreeSet::new();
+                            let res = resolve_one(r, path, folder, ctx, done, done, false, &mut needs);
+                            (res, needs.into_iter().collect::<Vec<Id>>())
+                        };
+                        // (Kept as a piece, task #897; given up once a pause came: the check
+                        // stops, nothing of it kept.)
+                        let (res, needs) = match ctx.kept {
+                            None => make(),
+                            Some(kp) => kp
+                                .get_or_make(
+                                    super::kept::RESOLVED,
+                                    key,
+                                    make,
+                                    |(res, needs), p| {
+                                        super::kept::result(p, res, super::kept::resolved);
+                                        super::kept::ids(p, needs);
+                                    },
+                                    |g| Ok((super::kept::get_result(g, super::kept::get_resolved)?, super::kept::get_ids(g)?)),
+                                )
+                                .unwrap_or_else(|| (Err(Vec::new()), Vec::new())),
+                        };
                         if let Some(m) = ctx.memo {
                             m.lock().unwrap().insert(key.clone(), (res.clone(), needs.clone()));
                         }
@@ -375,16 +396,7 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
         pending = rest;
     }
     super::tiles::resolve(folder, ctx, &mut out);
-    let whole = {
-        let mut parts = vec![
-            ctx.names.clone(),
-            ctx.pass.unwrap_or("-").to_string(),
-            format!("{:?}", folder.pins),
-            ctx.data.map(|d| d.names.clone()).unwrap_or_default(),
-        ];
-        parts.extend(folder.hashes.iter().map(|(p, h)| format!("{p} {h}")));
-        store::naming::hash16(parts.join("\n").as_bytes())
-    };
+    let whole = whole_key(folder, ctx);
     for (id, (_, r)) in &folder.regions {
         if r.has_water() {
             keys.insert(id.clone(), whole.clone());
@@ -395,6 +407,19 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
     out.problems.sort_by(|a, b| (a.check, &a.about, &a.found).cmp(&(b.check, &b.about, &b.found)));
     out.problems.dedup();
     out
+}
+
+/// The key of a region with water: the whole folder's (every file but the group files, which no
+/// resolution reads) and the context's, as it's resolved with every other.
+pub(super) fn whole_key(folder: &Folder, ctx: &Context) -> String {
+    let mut parts = vec![
+        ctx.names.clone(),
+        ctx.pass.unwrap_or("-").to_string(),
+        format!("{:?}", folder.pins),
+        ctx.data.map(|d| d.names.clone()).unwrap_or_default(),
+    ];
+    parts.extend(folder.hashes.iter().map(|(p, h)| format!("{p} {h}")));
+    store::naming::hash16(parts.join("\n").as_bytes())
 }
 
 #[allow(clippy::too_many_arguments)]

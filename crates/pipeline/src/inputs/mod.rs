@@ -379,6 +379,11 @@ pub trait Checks: Sync {
     /// Told the accepted version before a check: what its checks read from files still as they
     /// were may be taken from it rather than read again (the elevation datasets' measurements).
     fn seed(&self, _accepted: &Index) {}
+    /// Its work kept as pieces in scratch folder `scratch` from now on (task #897; the regions'
+    /// resolutions): a check resumed after a pause takes what its last kept.
+    fn keep_in(&self, _scratch: &std::path::Path) {}
+    /// The check's outcome saved: what it kept deleted.
+    fn kept_done(&self) {}
     /// Why the check can't run now (the regions' while the current pass has no outline set yet):
     /// the job then changes nothing, and runs again when its key does. None: ready.
     fn not_ready(&self) -> Option<String> {

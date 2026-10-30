@@ -627,6 +627,36 @@ struct Made {
     country: String,
 }
 
+/// An area by cell, as a piece keeps it (super::kept).
+fn put_tarea(p: &mut crate::resume_log::Put, t: &TArea) {
+    p.u64(t.cells.len() as u64);
+    for (c, a) in &t.cells {
+        p.u64(c.0 as u64);
+        p.u64(c.1 as u64);
+        super::kept::area(p, a);
+    }
+}
+
+fn get_tarea(g: &mut crate::resume_log::Get) -> anyhow::Result<TArea> {
+    let mut cells = BTreeMap::new();
+    for _ in 0..g.count(24)? {
+        let c = (g.u64()? as i64, g.u64()? as i64);
+        cells.insert(c, super::kept::get_area(g)?);
+    }
+    Ok(TArea { cells })
+}
+
+fn put_made(p: &mut crate::resume_log::Put, m: &Made) {
+    put_tarea(p, &m.land);
+    put_tarea(p, &m.lakes);
+    put_tarea(p, &m.water);
+    p.bytes(m.country.as_bytes());
+}
+
+fn get_made(g: &mut crate::resume_log::Get) -> anyhow::Result<Made> {
+    Ok(Made { land: get_tarea(g)?, lakes: get_tarea(g)?, water: get_tarea(g)?, country: String::from_utf8(g.bytes()?)? })
+}
+
 // ---- the whole --------------------------------------------------------------------------------------
 
 /// Every region with water resolved (those without, `resolve`'s, as they were): into `out`.
@@ -696,6 +726,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     }
     let mut made: BTreeMap<String, Made> = BTreeMap::new();
     let mut held: BTreeSet<String> = BTreeSet::new();
+    let whole = super::resolve::whole_key(folder, ctx);
     // (What the extract lacks, as the regions without water name it: the held report's needs, so
     // the lead makes the extract; `out` is read by the waves, so added to it after.)
     let mut needs: BTreeSet<Id> = BTreeSet::new();
@@ -724,9 +755,34 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             }
             break;
         }
+        // (Each region's land kept as a piece, task #897, by the folder's key; given up once a
+        // pause came.)
         let res: Vec<(String, Result<Made, Vec<Problem>>)> = wave
             .iter()
-            .map(|id| (id.clone(), make_land(id, folder, ctx, data, &made, &others, out, &held, &mut needs)))
+            .map(|id| {
+                let make = || {
+                    let mut more = BTreeSet::new();
+                    let m = make_land(id, folder, ctx, data, &made, &others, out, &held, &mut more);
+                    (m, more.into_iter().collect::<Vec<Id>>())
+                };
+                let (m, more) = match ctx.kept {
+                    None => make(),
+                    Some(k) => k
+                        .get_or_make(
+                            super::kept::LAND,
+                            &format!("{whole} {id}"),
+                            make,
+                            |(m, more), p| {
+                                super::kept::result(p, m, put_made);
+                                super::kept::ids(p, more);
+                            },
+                            |g| Ok((super::kept::get_result(g, get_made)?, super::kept::get_ids(g)?)),
+                        )
+                        .unwrap_or_else(|| (Err(Vec::new()), Vec::new())),
+                };
+                needs.extend(more);
+                (id.clone(), m)
+            })
             .collect();
         for (id, m) in res {
             match m {
@@ -782,7 +838,27 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             .iter()
             .map(|id| {
                 trace(&format!("water of {id} begins"));
-                let w = make_water(id, folder, ctx, data, &made, &others, out, &mut needs);
+                let make = || {
+                    let mut more = BTreeSet::new();
+                    let w = make_water(id, folder, ctx, data, &made, &others, out, &mut more);
+                    (w, more.into_iter().collect::<Vec<Id>>())
+                };
+                let (w, more) = match ctx.kept {
+                    None => make(),
+                    Some(k) => k
+                        .get_or_make(
+                            super::kept::WATER,
+                            &format!("{whole} {id}"),
+                            make,
+                            |(w, more), p| {
+                                super::kept::result(p, w, put_tarea);
+                                super::kept::ids(p, more);
+                            },
+                            |g| Ok((super::kept::get_result(g, get_tarea)?, super::kept::get_ids(g)?)),
+                        )
+                        .unwrap_or_else(|| (Err(Vec::new()), Vec::new())),
+                };
+                needs.extend(more);
                 trace(&format!("water of {id} ends"));
                 (id.clone(), w)
             })

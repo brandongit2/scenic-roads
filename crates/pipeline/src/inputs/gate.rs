@@ -490,6 +490,8 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
         drop(p);
         return Ok(format!("{unit}: not checked now: {why}"));
     }
+    // (Its work kept as pieces, task #897: a check paused resumes there.)
+    checks.keep_in(&out.scratch);
     let prev_name = out.get(&super::logical(unit)).map(str::to_string);
     let prev = prev_name.as_ref().map(|n| super::read_index(&root, n)).transpose()?;
     let state = super::read_listed(&root, &out.manifest, unit)?;
@@ -576,6 +578,7 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
         }
     }
     out.save()?;
+    checks.kept_done();
     drop(p);
     Ok(said)
 }

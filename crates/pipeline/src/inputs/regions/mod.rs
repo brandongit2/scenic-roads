@@ -19,6 +19,7 @@ pub mod data;
 pub mod extract;
 pub mod file;
 pub mod geom;
+pub mod kept;
 pub mod land;
 pub mod read;
 pub mod resolve;
@@ -41,6 +42,8 @@ pub const UNIT: &str = "regions";
 pub struct Regions {
     pub ctx: Option<Prepared>,
     memo: resolve::Memo,
+    /// Its resolutions kept as pieces (task #897: `Checks::keep_in`).
+    kept: kept::Kept,
     needs: Mutex<Vec<String>>,
     /// The accepted version's regions, by path: what each was resolved from (`resolved_from`),
     /// told by `seed`.
@@ -116,10 +119,13 @@ impl Regions {
             extract: c.and_then(|c| c.extract.as_ref()),
             others: c.map_or(&empty, |c| &c.others),
             memo: Some(&self.memo),
+            kept: Some(&self.kept),
             names: c.map(|c| c.names.clone()).unwrap_or_default(),
             data,
         };
         let out = resolve::resolve(&folder, &ctx);
+        // (A pause a piece kept met: the check stops there.)
+        self.kept.stopped()?;
         if let Some(d) = data {
             d.land_failed()?;
         }
@@ -334,6 +340,15 @@ impl Checks for Regions {
             d.store.insert(dname, std::sync::Arc::new(dr));
         }
         Ok(d)
+    }
+
+    fn keep_in(&self, scratch: &std::path::Path) {
+        let id = crate::resume_log::job_id("inputs", &format!("{UNIT} {RESOLUTION}"), UNIT, &[]);
+        self.kept.open(scratch, &id, crate::resume_log::on());
+    }
+
+    fn kept_done(&self) {
+        self.kept.finish();
     }
 
     fn seed(&self, accepted: &super::Index) {

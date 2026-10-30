@@ -430,6 +430,7 @@ mod tests {
             extract: None,
             others: &others,
             memo: None,
+        kept: None,
             names: String::new(),
             data: Some(&data),
         };

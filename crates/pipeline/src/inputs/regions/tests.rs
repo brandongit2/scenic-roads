@@ -65,6 +65,7 @@ fn run(f: &Fx, files: &[(&str, &str)]) -> resolve::Outcome {
         extract: None,
         others: &others,
         memo: None,
+        kept: None,
         names: String::new(),
         data: None,
     };
@@ -453,6 +454,7 @@ fn a_line_from_ways_buffered_and_ways_that_dont_join() {
         extract: Some(&e),
         others: &others,
         memo: None,
+        kept: None,
         names: String::new(),
         data: None,
     };
