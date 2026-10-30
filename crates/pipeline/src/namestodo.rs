@@ -12,10 +12,12 @@
 //! - **Labels** (places, states, water, parks): the labels layer's zoom-12 tiles in the units' z6
 //!   tiles, each label inside the coverage the catalogue records once (its feature id). Own English:
 //!   `en`, else `kana` romanised; OSM's languages: `l`.
-//! - **Roads, rail lines and ferries:** each unit's base pack (ways, names) and its roads' own
-//!   English (`global/roaden/<u>`), read first; then each named way placed once, at the centre of
-//!   its box, from the hidata's ways-here index (its owner and index there). Roads carry no OSM
-//!   language tags yet.
+//! - **Roads, rail lines and ferries:** each named way placed once, at the centre of its box, from
+//!   the hidata's ways-here index (its owner and index there), its owner unit's base pack (ways,
+//!   names) and roads' own English (`global/roaden/<u>`) read once a record names it; by pieces of
+//!   16 hidata files, each's ways placed kept (task #897, `resume_log::Pieces` in the job's
+//!   scratch, a safe point): a resumed run replays them and reads only the rest. Roads carry no
+//!   OSM language tags yet.
 //! - **Landmarks:** the markdata's points (all eight kinds), their `en`, fame, and popup records
 //!   (Wikidata item, Wikipedia article, register entry, written description).
 //! - **Parks:** the ovdata's park records.
@@ -509,27 +511,50 @@ fn road_priority(c: u8) -> f64 {
     }
 }
 
-/// Roads and rail lines: each unit's named ways, then placed by their boxes in the hidata's
-/// ways-here index (each way once: its first tile's record).
+/// One unit's ways, by index: their names (into `strings`), classes, ids, own English, and whether
+/// placed yet.
+struct UnitWays {
+    ways: Vec<WayRec>,
+    strings: Vec<String>,
+    own: Vec<bool>,
+    placed: Vec<bool>,
+}
+
+/// A named way placed by a ways-here record (its first): what a piece of the roads keeps of it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Placed {
+    owner: u64,
+    index: u32,
+    name: String,
+    class: u8,
+    own: bool,
+    lon: f64,
+    lat: f64,
+    way: i64,
+}
+
+/// How many hidata files' ways-here indexes a piece of the roads is (task #897): a few seconds.
+const HERE_PIECE: usize = 16;
+
+/// Roads and rail lines: each unit's named ways, placed by their boxes in the hidata's ways-here
+/// index (each way once: its first tile's record). By pieces of `HERE_PIECE` hidata files, each's
+/// ways placed kept (crate::resume_log::Pieces, a safe point): a resumed run replays those its last
+/// kept and reads only the rest, a unit's ways read once a record of the rest names it.
 fn roads(
     root: &store::nasfs::NasRoot,
     cat: &store::catalogue::Catalogue,
     lists: &mut Lists,
+    pieces: &mut crate::resume_log::Pieces,
     progress: &dyn Fn(&str, u64, u64),
 ) -> Result<()> {
-    /// One unit's ways, by index: their names (into `strings`), classes, ids, own English, and
-    /// whether placed yet.
-    struct UnitWays {
-        ways: Vec<WayRec>,
-        strings: Vec<String>,
-        own: Vec<bool>,
-        placed: Vec<bool>,
-    }
-    let mut units: HashMap<u64, UnitWays> = HashMap::new();
-    let n = cat.base.len() as u64;
-    for (i, (unit, logical)) in cat.base.iter().enumerate() {
-        progress("units' ways read", i as u64, n);
-        let (Some(path), Some(u)) = (path_of(root, cat, logical), crate::legacy::TileId::parse(unit)) else { continue };
+    let by_key: HashMap<u64, (&String, &String)> = cat
+        .base
+        .iter()
+        .filter_map(|(unit, logical)| Some((crate::legacy::TileId::parse(unit)?.key(), (unit, logical))))
+        .collect();
+    let unit = |key: u64| -> Result<Option<UnitWays>> {
+        let Some((unit, logical)) = by_key.get(&key) else { return Ok(None) };
+        let Some(path) = path_of(root, cat, logical) else { return Ok(None) };
         let s = sect(&path)?;
         let ways: Vec<WayRec> = s.read_pod("ways")?;
         let strings: Vec<String> =
@@ -540,41 +565,98 @@ fn roads(
             .unwrap_or_default();
         let own: Vec<bool> = ways.iter().map(|w| roaden.contains_key(&w.id.to_string())).collect();
         let placed = vec![false; ways.len()];
-        units.insert(u.key(), UnitWays { ways, strings, own, placed });
-    }
-    let n = cat.hidata.len() as u64;
-    for (i, logical) in cat.hidata.values().enumerate() {
-        progress("ways-here indexes read", i as u64, n);
-        let Some(path) = path_of(root, cat, logical) else { continue };
+        Ok(Some(UnitWays { ways, strings, own, placed }))
+    };
+    let hidata: Vec<&String> = cat.hidata.values().collect();
+    let here = |i: usize| -> Result<Vec<roadcore::packs::Here>> {
+        let Some(path) = path_of(root, cat, hidata[i]) else { return Ok(Vec::new()) };
         let s = sect(&path)?;
         if s.section("here").is_none() {
-            continue;
+            return Ok(Vec::new());
         }
-        for h in s.read_pod::<roadcore::packs::Here>("here")? {
-            if h.extra & roadcore::packs::here_extra::UNNAMED != 0 {
-                continue;
+        Ok(s.read_pod::<roadcore::packs::Here>("here")?)
+    };
+    roads_in(pieces, hidata.len(), &here, &unit, lists, progress)
+}
+
+/// `roads`' pieces, of `n` hidata files' ways-here records (`here`), the units' ways read by `unit`.
+fn roads_in(
+    pieces: &mut crate::resume_log::Pieces,
+    n: usize,
+    here: &dyn Fn(usize) -> Result<Vec<roadcore::packs::Here>>,
+    unit: &dyn Fn(u64) -> Result<Option<UnitWays>>,
+    lists: &mut Lists,
+    progress: &dyn Fn(&str, u64, u64),
+) -> Result<()> {
+    let mut units: HashMap<u64, Option<UnitWays>> = HashMap::new();
+    // (Ways placed by kept pieces, in units not read yet: marked as each is read.)
+    let mut pending: HashMap<u64, Vec<u32>> = HashMap::new();
+    for c in 0..n.div_ceil(HERE_PIECE) {
+        let range = c * HERE_PIECE..((c + 1) * HERE_PIECE).min(n);
+        progress("ways-here indexes read", range.start as u64, n as u64);
+        let p = pieces.piece((1, c as u32, 0), || {
+            let mut placed: Vec<Placed> = Vec::new();
+            for i in range.clone() {
+                for h in here(i)? {
+                    if h.extra & roadcore::packs::here_extra::UNNAMED != 0 {
+                        continue;
+                    }
+                    if !units.contains_key(&h.owner) {
+                        let mut u = unit(h.owner)?;
+                        if let (Some(u), Some(ks)) = (u.as_mut(), pending.remove(&h.owner)) {
+                            for k in ks {
+                                if let Some(p) = u.placed.get_mut(k as usize) {
+                                    *p = true;
+                                }
+                            }
+                        }
+                        units.insert(h.owner, u);
+                    }
+                    let Some(Some(u)) = units.get_mut(&h.owner) else { continue };
+                    let k = h.index as usize;
+                    let (Some(w), Some(p)) = (u.ways.get(k), u.placed.get_mut(k)) else { continue };
+                    if *p {
+                        continue;
+                    }
+                    *p = true;
+                    let name = u.strings.get(w.name as usize).map(String::as_str).unwrap_or("");
+                    if name.is_empty() {
+                        continue;
+                    }
+                    placed.push(Placed {
+                        owner: h.owner,
+                        index: h.index,
+                        name: name.to_string(),
+                        class: w.class,
+                        own: u.own[k],
+                        lon: (h.bbox[0] as f64 + h.bbox[2] as f64) * 0.5e-7,
+                        lat: (h.bbox[1] as f64 + h.bbox[3] as f64) * 0.5e-7,
+                        way: w.id,
+                    });
+                }
             }
-            let Some(u) = units.get_mut(&h.owner) else { continue };
-            let k = h.index as usize;
-            let (Some(w), Some(placed)) = (u.ways.get(k), u.placed.get_mut(k)) else { continue };
-            if *placed {
-                continue;
-            }
-            *placed = true;
-            let name = u.strings.get(w.name as usize).map(String::as_str).unwrap_or("");
-            if name.is_empty() {
-                continue;
+            Ok(serde_json::to_vec(&placed)?)
+        })?;
+        for w in serde_json::from_slice::<Vec<Placed>>(&p).context("a kept piece of the roads")? {
+            match units.get_mut(&w.owner) {
+                Some(Some(u)) => {
+                    if let Some(p) = u.placed.get_mut(w.index as usize) {
+                        *p = true;
+                    }
+                }
+                Some(None) => {}
+                None => pending.entry(w.owner).or_default().push(w.index),
             }
             *lists.report.read.entry("ways").or_default() += 1;
             let kind = if class::is_rail(w.class) || w.class == class::FERRY { Kind::Other } else { Kind::Road };
             lists.add(Thing {
-                name,
+                name: &w.name,
                 kind,
-                own: u.own[k],
+                own: w.own,
                 osm: Vec::new(),
-                lon: (h.bbox[0] as f64 + h.bbox[2] as f64) * 0.5e-7,
-                lat: (h.bbox[1] as f64 + h.bbox[3] as f64) * 0.5e-7,
-                id: format!("w{}", w.id),
+                lon: w.lon,
+                lat: w.lat,
+                id: format!("w{}", w.way),
                 priority: road_priority(w.class),
             });
         }
@@ -807,6 +889,7 @@ pub fn run(
     out: &store::nasfs::NasRoot,
     translations: &crate::inputs::Accepted,
     descriptions: &crate::inputs::Accepted,
+    scratch: &Path,
     progress: &dyn Fn(&str, u64, u64),
 ) -> Result<Report> {
     use crate::timings::phase;
@@ -818,6 +901,10 @@ pub fn run(
     anyhow::ensure!(failed.is_empty(), "the translations' accepted files: {}", failed.join("; "));
     drop(p);
     let units = unit_tiles(&cat);
+    // (The roads' pieces, task #897: what they keep is the catalogue's alone, so by what of it the
+    // lists read.)
+    let id = crate::resume_log::job_id("names-todo", &VERSION.to_string(), "roads", &[&inputs_key(&cat)]);
+    let mut pieces = crate::resume_log::Pieces::open(scratch, (0, 0, 0), "names-todo", &id, crate::resume_log::on());
     let mut lists = Lists { names: &names, spoken: &spoken, entries: HashMap::new(), report: Report::default() };
     // (Each kind's names read from the map's files on the NAS and sorted into the lists as they
     // come: a phase a kind.)
@@ -825,7 +912,7 @@ pub fn run(
     labels(root, &cat, &units, &coverage(&cat), &mut lists, progress)?;
     drop(p);
     let p = phase("gathering the roads' names");
-    roads(root, &cat, &mut lists, progress)?;
+    roads(root, &cat, &mut lists, &mut pieces, progress)?;
     drop(p);
     let p = phase("gathering the landmarks' names");
     let done = described(descriptions)?;
@@ -896,6 +983,7 @@ pub fn run(
         }
     }
     put(&ddir.join("README.md"), WRITERS.as_bytes())?;
+    pieces.finish();
     Ok(report)
 }
 
@@ -971,6 +1059,78 @@ mod tests {
                 rect("CA-QC", -75.0, 45.0, -65.0, 55.0),
             ],
         )
+    }
+
+    /// Task #897: the roads paused after every piece kept, resumed each time, gather the same lists
+    /// as a run never paused, each piece's ways-here records read once.
+    #[test]
+    fn roads_paused_at_every_piece_resume_to_the_same() {
+        use crate::resume_log::{Pieces, STOP_AFTER};
+        use roadcore::packs::Here;
+        let names = Names::load(tempfile::tempdir().unwrap().path()).unwrap();
+        let sp = spoken();
+        // Two units' ways (two named, one not; a third unit missing), placed in France and Japan; ways-here records over
+        // 40 files (three pieces), each way in several, some unnamed by the record.
+        let way = |id: i64, name: u32, class: u8| WayRec { id, name, class, ..bytemuck::Zeroable::zeroed() };
+        let unit = |key: u64| -> Result<Option<UnitWays>> {
+            let strings: Vec<String> = match key {
+                1 => vec!["".into(), "Rue Haute".into(), "Chemin Bas".into()],
+                2 => vec!["".into(), "Kita-dori".into(), "大通り".into()],
+                _ => return Ok(None),
+            };
+            let ways = vec![
+                way(key as i64 * 10, 1, class::PRIMARY),
+                way(key as i64 * 10 + 1, 2, 3),
+                way(key as i64 * 10 + 2, 0, 2),
+            ];
+            Ok(Some(UnitWays { own: vec![false, key == 2, false], placed: vec![false; 3], ways, strings }))
+        };
+        let read = std::cell::Cell::new(0);
+        let here = |i: usize| -> Result<Vec<Here>> {
+            read.set(read.get() + 1);
+            let (lon, lat) = if i % 2 == 0 { (2.0, 47.0) } else { (139.0, 36.0) };
+            let e7 = |d: f64| (d * 1e7) as i32 + i as i32;
+            Ok((0..3u32)
+                .map(|k| Here {
+                    owner: 1 + (i as u64 + k as u64) % 3,
+                    index: (k + i as u32) % 4,
+                    extra: if i % 7 == 0 { roadcore::packs::here_extra::UNNAMED } else { 0 },
+                    bbox: [e7(lon), e7(lat), e7(lon), e7(lat)],
+                    ..bytemuck::Zeroable::zeroed()
+                })
+                .collect())
+        };
+        let gather = |pieces: &mut Pieces| -> Result<String> {
+            let mut l = Lists { names: &names, spoken: &sp, entries: HashMap::new(), report: Report::default() };
+            roads_in(pieces, 40, &here, &unit, &mut l, &|_, _, _| {})?;
+            let mut e: Vec<String> = l
+                .entries
+                .iter()
+                .map(|(k, e)| format!("{k:?} {:?} {} {} {:?}", e.langs, e.things, e.best, e.example))
+                .collect();
+            e.sort();
+            Ok(format!("{e:?} {:?}", l.report))
+        };
+        let fresh = gather(&mut Pieces::none()).unwrap();
+        assert!(fresh.contains("Rue Haute") || fresh.contains("Chemin Bas"), "{fresh}");
+        read.set(0);
+        let d = tempfile::tempdir().unwrap();
+        let mut stops = 0;
+        let resumed = loop {
+            STOP_AFTER.set(Some(1));
+            let r = gather(&mut Pieces::open(d.path(), (0, 0, 0), "names-todo", "a", true));
+            STOP_AFTER.set(None);
+            match r {
+                Err(e) => {
+                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    stops += 1;
+                }
+                Ok(r) => break r,
+            }
+        };
+        assert_eq!(stops, 3, "a stop after each piece");
+        assert_eq!(resumed, fresh);
+        assert_eq!(read.get(), 40, "each file read once");
     }
 
     #[test]

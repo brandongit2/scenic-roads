@@ -440,7 +440,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         let (tr, de) =
             (accepted(pipeline::inputs::translations::UNIT)?, accepted(pipeline::inputs::descriptions::UNIT)?);
         let t0 = std::time::Instant::now();
-        let r = pipeline::namestodo::run(&root, &out, &tr, &de, &|what, done, total| {
+        let scratch = PathBuf::from(opt(&args, "--scratch").unwrap_or_else(|| "/tmp/scenic-build".into()));
+        let r = pipeline::namestodo::run(&root, &out, &tr, &de, &scratch, &|what, done, total| {
             pipeline::agent::jobs::report(done, total, what)
         })?;
         eprintln!(
