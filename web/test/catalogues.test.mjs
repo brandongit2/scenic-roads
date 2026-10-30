@@ -2,7 +2,7 @@
 // (web/work/catalogues.js): the range's inputs (parsing, the sides' signs, one span at a time, the
 // swap), the tiles' times, the colour map, the timeline.
 import assert from "node:assert/strict";
-import { axisTicks, commit, formatWhen, keyOf, labelled, mergeCatalogues, pairAt, paint, parseWhen, publishedAt, RAMP, rampColour, rangeOf, tileTimes, timelineSpan } from "../work/catalogues.js";
+import { axisTicks, commit, formatWhen, keyOf, labelled, markLabels, mergeCatalogues, pairAt, paint, parseWhen, publishedAt, RAMP, rampColour, rangeOf, tileTimes, timelineSpan } from "../work/catalogues.js";
 
 process.env.TZ = "UTC";
 const NOW = Date.UTC(2026, 9, 24, 12, 0, 0) / 1000;
@@ -111,6 +111,17 @@ assert.deepEqual(labelled([0, 40, 80], 50, 6, [0]), [0, 2]);
 // (#836 review) Marks bunched at the left edge: the one whose label would be cut passed over, the next in labelled.
 assert.deepEqual(labelled([5, 50, 140], 50, 6, [0], 400), [1, 2]);
 assert.deepEqual(labelled([300, 345, 395], 50, 6, [], 400), [1]);
+// (#839 review) Marks bunched at the left edge, read oldest first: the one label that fits plain
+// ("386 · 22:17", 35 px each side) is its day's first, whose dated one would be cut: kept plain,
+// not dropped (0 labels).
+{
+  const t0 = 1793000000, cats = [0, 1, 2, 3].map((k) => ({ n: 383 + k, t: t0 + k * 60 }));
+  const { lab, text } = markLabels(cats, [2, 10, 20, 40], 390);
+  assert.deepEqual([...lab], [3], "the one that fits");
+  assert.match(text[3], /^386 · \d\d:\d\d$/, "plain: its dated label would pass the edge");
+  const wide = markLabels(cats.slice(3), [200], 390);
+  assert.match(wide.text[0], /^386 · \d+ [A-Z][a-z]{2} \d\d:\d\d$/, "room: dated");
+}
 // The axis: times of day up to two days, days past them.
 assert.ok(axisTicks(NOW - 6 * H, NOW).every((t) => /^\d\d:\d\d$/.test(t.label)));
 const days = axisTicks(NOW - 10 * D, NOW, 6);

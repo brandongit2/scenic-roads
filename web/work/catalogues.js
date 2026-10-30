@@ -176,6 +176,27 @@ const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /** A catalogue's time as named: "Thu 23 Oct 21:32". */
 export const whenText = (t) => { const d = new Date(t * 1000); return `${WD[d.getDay()]} ${d.getDate()} ${MON[d.getMonth()]} ${hhmm(t)}`; };
 
+/** The timeline's mark labels: of catalogues `cats` ({n, t}) at `xs` (sorted) on a timeline `W`
+ * px wide, {lab: the indexes labelled (a Set), text: each one's label}. A label is "386 · 22:17";
+ * the first labelled of a day has its date too, "386 · 23 Oct 22:17": the marks thinned on the
+ * plain widths, those day-firsts then widened and kept, the rest around them; none past the
+ * timeline's edge, the next in labelled instead. A day-first whose dated label would pass the
+ * edge keeps its plain one (#839 review: dropped, the one label of marks bunched at an edge, as
+ * while the catalogues are read oldest first, left none: touch-test's intermittent 'mark labels'
+ * FAIL, 0 labels). */
+export function markLabels(cats, xs, W) {
+  const day = (c) => new Date(c.t * 1000).toDateString();
+  const plain = cats.map((c) => `${c.n} · ${hhmm(c.t)}`);
+  const base = labelled(xs, plain.map((t) => t.length * 6.4), 6, [], W);
+  const datedText = (c) => { const d = new Date(c.t * 1000); return `${c.n} · ${d.getDate()} ${MON[d.getMonth()]} ${hhmm(c.t)}`; };
+  const fits = (i, t) => xs[i] - t.length * 3.2 >= 0 && xs[i] + t.length * 3.2 <= W;
+  const firsts = base.filter((v, k) => k === 0 || day(cats[base[k - 1]]) !== day(cats[v]));
+  const dated = new Set(firsts.filter((i) => fits(i, datedText(cats[i]))));
+  const text = plain.map((t, i) => (dated.has(i) ? datedText(cats[i]) : t));
+  const lab = new Set(labelled(base.map((i) => xs[i]), base.map((i) => text[i].length * 6.4), 6, firsts.map((i) => base.indexOf(i)), W).map((k) => base[k]));
+  return { lab, text };
+}
+
 /** The time axis's ticks over [from, to]: times of day (chartmath.timeTicks) for two days or
  * less, else days ("23 Oct"), at most `most`. */
 export function axisTicks(from, to, most = 6) {
@@ -301,14 +322,7 @@ export function createAges({ call, store, onChange }) {
     }
     const shownCats = cats.filter((c) => c.t >= a && c.t <= b);
     const xs = shownCats.map((c) => x(c.t));
-    // (A label is "386 · 22:17"; the first labelled of a day has its date too, "23 Oct": the
-    // marks thinned on the plain widths, those day-firsts then widened and kept, the rest around them; none past the timeline's edge, the next in labelled instead.)
-    const day = (c) => new Date(c.t * 1000).toDateString();
-    const plain = shownCats.map((c) => `${c.n} · ${hhmm(c.t)}`);
-    const base = labelled(xs, plain.map((t) => t.length * 6.4), 6, [], W);
-    const dated = new Set(base.filter((v, n) => n === 0 || day(shownCats[base[n - 1]]) !== day(shownCats[v])));
-    const text = plain.map((t, i) => (dated.has(i) ? `${shownCats[i].n} · ${new Date(shownCats[i].t * 1000).getDate()} ${MON[new Date(shownCats[i].t * 1000).getMonth()]} ${hhmm(shownCats[i].t)}` : t));
-    const lab = new Set(labelled(base.map((i) => xs[i]), base.map((i) => text[i].length * 6.4), 6, [...dated].map((i) => base.indexOf(i)), W).map((n) => base[n]));
+    const { lab, text } = markLabels(shownCats, xs, W);
     // (Empty catalogues' marks go under the rest, so their hit boxes never cover a real one's.)
     const empties = [], under = kids.length;
     shownCats.forEach((c, i) => {
