@@ -2022,7 +2022,7 @@ switched: `state/pool/slots` isn't read, but stays `on` on the NAS while an olde
 (one reading it missing or `off` restarts to change part). The old files `state/pool/enabled` and
 `state/pool/budgets` are no longer read either.
 
-Planned: retiring the mailbox (§9.1); resuming the terrain's and the slope's z6 tiles (after #639). Packing a terrain z6 tile's fetched raw
+Planned: pool coordination by HTTP on the lead (docs/coordination.md, #878), which also retires the mailbox (§9.1); resuming the terrain's and the slope's z6 tiles (after #639). Packing a terrain z6 tile's fetched raw
 tiles (`pack_raw_with`) stays inside that z6 tile's job.
 
 ## 13. Testing
