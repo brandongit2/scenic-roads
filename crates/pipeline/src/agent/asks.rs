@@ -277,17 +277,34 @@ impl Drop for Handle {
 /// `SWEEP` whatever; ends once control is gone.
 fn watch(home: &Path, tx: &Sender<In>) {
     let cancels = home.join(control::CANCEL_REQUESTS);
-    std::fs::create_dir_all(&cancels).ok();
+    // (A folder removed and made again, or swapped by a rename, leaves the old descriptors on a
+    // vnode that says nothing more: watched anew once either folder isn't the one watched, the old
+    // queue and descriptors closed first, so they stay three. Meanwhile, and without a kqueue, the
+    // sweep.)
     #[cfg(target_os = "macos")]
-    if let Some(kq) = Kqueue::on(&[home, &cancels]) {
-        while tx.send(In::Look).is_ok() {
-            kq.wait(SWEEP);
-        }
-        return;
-    }
+    let mut kq: Option<Kqueue> = None;
     while tx.send(In::Look).is_ok() {
+        #[cfg(target_os = "macos")]
+        {
+            if kq.as_ref().is_none_or(|k| k.stale()) {
+                kq = None;
+                std::fs::create_dir_all(&cancels).ok();
+                kq = Kqueue::on(&[home, &cancels]);
+            }
+            if let Some(k) = &kq {
+                k.wait(SWEEP);
+                continue;
+            }
+        }
         std::thread::sleep(SWEEP);
     }
+}
+
+/// The folder's identity (device, inode), to tell one made again.
+#[cfg(target_os = "macos")]
+fn ident(p: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino()))
 }
 
 /// A kqueue watching folders for their entries' changes (a file made, renamed in, removed).
@@ -295,6 +312,8 @@ fn watch(home: &Path, tx: &Sender<In>) {
 struct Kqueue {
     kq: i32,
     fds: Vec<i32>,
+    /// The folders watched, and each's identity when it was opened.
+    dirs: Vec<(PathBuf, Option<(u64, u64)>)>,
 }
 
 #[cfg(target_os = "macos")]
@@ -306,7 +325,7 @@ impl Kqueue {
         if kq < 0 {
             return None;
         }
-        let mut k = Kqueue { kq, fds: Vec::new() };
+        let mut k = Kqueue { kq, fds: Vec::new(), dirs: Vec::new() };
         for d in dirs {
             let Ok(c) = std::ffi::CString::new(d.as_os_str().as_bytes()) else { return None };
             // SAFETY: a valid C path; O_EVTONLY opens for events only.
@@ -315,6 +334,7 @@ impl Kqueue {
                 return None;
             }
             k.fds.push(fd);
+            k.dirs.push((d.to_path_buf(), ident(d)));
             let ev = libc::kevent {
                 ident: fd as usize,
                 filter: libc::EVFILT_VNODE,
@@ -334,6 +354,11 @@ impl Kqueue {
             }
         }
         Some(k)
+    }
+
+    /// Whether a watched folder is gone or another now has its name.
+    fn stale(&self) -> bool {
+        self.dirs.iter().any(|(p, id)| id.is_none() || ident(p) != *id)
     }
 
     /// Until a watched folder changes, or `most` passed.
@@ -436,6 +461,25 @@ mod tests {
         assert_eq!(s["checklist"][0]["counts"][0], "1,234 of 2,000 z6 tiles (12 with nothing to publish)");
         assert_eq!(s["checklist"][0]["items"][1]["count"], "done");
         assert_eq!(s["checklist"][0]["items"][1]["finished"], true);
+    }
+
+    /// The watcher's kqueue knows a folder made again (removed and made), so the watcher opens it
+    /// anew rather than watch a vnode that says nothing more.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_watcher_sees_a_folder_made_again() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let k = Kqueue::on(&[&a, &b]).unwrap();
+        assert!(!k.stale());
+        std::fs::remove_dir(&b).unwrap();
+        assert!(k.stale(), "gone");
+        std::fs::create_dir_all(&b).unwrap();
+        assert!(k.stale(), "made again");
+        let k = Kqueue::on(&[&a, &b]).unwrap();
+        assert!(!k.stale() && k.fds.len() == 2);
     }
 
     /// Task #846, #871 step 3: this Mac's own pause ask taken up at once, by control's watcher on

@@ -1176,7 +1176,10 @@ published, so a long round (task #795: a plan 94–212 s, the checklist 261 s) o
 leaves it beating. Its content is as of the loop's last view, with its age (`loop_age_s`); its
 time says the agent is alive. The beat is the only writer of either copy (the NAS's on a writer
 thread of its own that takes the newest body each time, under the deadline above), so no beat
-lands over a newer one; once this Mac's part changed (§7.6) it writes no shared beat until the
+lands over a newer one (each a whole file put in place: a temporary file and a rename, one create a
+beat, so about one every 10 s a Mac, far under what SMB takes; written in place, a reader could
+read it half-written); once this Mac's part changed (§7.6) it writes no shared beat (a body still
+waiting for the old path is dropped) until the
 loop composes one under the new part, so a former lead never rewrites `state/status.json` over
 the new lead's. A heartbeat goes out of touch when the beat itself stops (ten minutes,
 `OUT_OF_TOUCH_S`, served as the status's `out_of_touch_s`). (The pool's heartbeat,

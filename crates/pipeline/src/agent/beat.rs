@@ -6,10 +6,11 @@
 //! the two and writes them: every `EVERY`, and at once (`DEBOUNCE`) when told a state changed
 //! (`BeatMsg::Changed`). The local copy is written here, on this Mac's disk; the shared one (the
 //! NAS) by a writer thread of its own that takes the newest body each time it's free, under
-//! nasread's deadline, so a hung share holds neither the timer nor the local copy.
+//! nasread's deadline, so a hung share holds neither the timer nor the local copy; a body for a
+//! path the view no longer shares (past a part change) is dropped unwritten.
 //!
 //! One writer of each copy, in order, each a whole document from snapshots at least as new as the
-//! last: no beat lands over a newer one (what `nasread::BEATING` once ordered by a lock). The
+//! last: no beat lands over a newer one. The
 //! status says how old the loop's part of it is (`Status::loop_age_s`): the heartbeat's time says
 //! the agent is alive, that age whether its loop is slow.
 
@@ -133,12 +134,16 @@ impl Handle {
         let Some((mut beat, rx)) = self.inline.take() else { return };
         let mail: Mailbox = Snap::new(None);
         let (wake, woken) = mpsc::sync_channel::<()>(1);
-        let m = mail.clone();
+        let (m, view) = (mail.clone(), beat.view.clone());
         let nas = std::thread::Builder::new().name("beat-nas".into()).spawn(move || {
             let mut failing = false;
             while woken.recv().is_ok() {
-                // (The newest body each time: one written late is never older than one before.)
+                // (The newest body each time: one written late is never older than one before. One
+                // for a path the view no longer shares, past a part change, is dropped.)
                 let Some((p, body)) = m.get().as_ref().clone() else { continue };
+                if view.get().as_ref().as_ref().and_then(|v| v.shared.as_ref()) != Some(&p) {
+                    continue;
+                }
                 failing = said(write_beat(&p, body), failing);
             }
         });
