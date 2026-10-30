@@ -15,7 +15,7 @@ out=$(mktemp -d "${TMPDIR:-/tmp}/scenic-other-tests.XXXXXX") || exit 2
 trap 'rm -rf $out' EXIT
 js=( web/test/*.test.(ts|mjs)(N) tools/check/*.test.mjs(N) )
 typeset -A cmd
-cmd[js]="node --experimental-transform-types --no-warnings --test ${(j: :)${(q)js}}"
+cmd[js]="node --experimental-transform-types --no-warnings --test ${(j: :)${(@q)js}}"
 cmd[taskboard]='cd tools/taskboard && node --test test/*.test.mjs'
 cmd[swift]="swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)out}/scenic-status tools/status/*.swift && ${(q)out}/scenic-status --test tools/status/test"
 cmd[shell]='zsh tools/app/test/shell.zsh'

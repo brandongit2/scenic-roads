@@ -89,7 +89,7 @@ rm -f $L
 # hold / unhold: a live holder keeps it; a gone one's is taken over; freed only by its owner.
 H=$tmp/tree.busy
 zsh -c "source ${(q)lib}; hold $H; sleep 30" & hp=$!
-for i in {1..50}; do [[ -s $H/owner ]] && break; sleep 0.1; done
+for i in {1..200}; do [[ -s $H/owner ]] && break; sleep 0.1; done
 out=$(r "hold $H || echo \"held: \$lock_held\"; unhold $H; [[ -d $H ]] && echo kept")
 [[ $out == "held: process $hp "*$'\nkept' ]] && ok "hold held by a live process" || no "hold live" "$out"
 kill $hp; wait $hp 2>/dev/null
@@ -116,19 +116,26 @@ out=$(ff $C) && no "fast_forward unknown live" "allowed" || ok "fast_forward unk
 # with the ordering checked under it. The second (c, newer) builds beside the first (b) and goes in
 # right after it; a third, of an older commit (a), is refused at its install.
 rm -f $cur; cache=$tmp/cache; mkdir -p $cache; ev=$tmp/events; : > $ev
-pub() {  # <name> <commit> <build seconds>
+# No timing: each waits on the other's events (w, at most 60 s), so the order checked below is
+# forced by the locks, not by sleeps: c claims while b holds a tree, b's tests before c asks for
+# them, c asks for the NAS lock only while b holds it.
+pub() {  # <name> <commit> <event before built> <event before tested> <event before locking>
   (cd $g && zsh -c "set -euo pipefail; source ${(q)lib}
     e() { print -r -- \"$1 \$*\" >> $ev; }
+    w() { [[ -z \$1 ]] && return; local t=\$(( SECONDS + 60 )); while ! grep -qF -- \"\$1\" $ev; do (( SECONDS < t )) || { e timeout \$1; exit 1; }; sleep 0.05; done; }
     who='$1 '\$\$
-    cleanup=(); claim_tree $cache; e build \${snap:t}; sleep $3; e built
-    until hold $cache/tests.busy; do sleep 0.1; done; e tests; sleep 0.5; e tested; unhold $cache/tests.busy
-    until nas_lock $L \"\$who\"; do sleep 0.1; done; e locked
+    cleanup=(); claim_tree $cache; e build \${snap:t}; w '$3'; e built
+    until hold $cache/tests.busy; do sleep 0.1; done; e tests; w '$4'; e tested; unhold $cache/tests.busy
+    w '$5'; until nas_lock $L \"\$who\"; do sleep 0.1; done; e locked
     if ! fast_forward $cur $2 > $tmp/why-$1; then e refused; nas_unlock $L \"\$who\"; unhold \$snap.busy; exit 1; fi
-    sleep 0.5; print -r -- '{\"version\": \"20261026-0953-$2\"}' > $cur; e installed
+    print -r -- '{\"version\": \"20261026-0953-$2\"}' > $cur; e installed
     nas_unlock $L \"\$who\"; e unlocked; unhold \$snap.busy" 2>&1)
 }
-pub b $B 0.3 & p1=$!
-sleep 0.1; pub c $C 0.6 & p2=$!
+# b: built once c took the other tree, tested once c is built (so c asks for the tests b holds).
+# c: starts once b holds a tree, built once b holds the tests, locks once b holds the NAS lock.
+pub b $B 'c build' 'c built' '' & p1=$!
+t=$(( SECONDS + 60 )); while ! grep -qF 'b build' $ev && (( SECONDS < t )); do sleep 0.05; done
+pub c $C 'b tests' '' 'b locked' & p2=$!
 wait $p1; r1=$?; wait $p2; r2=$?
 order=$(tr '\n' ',' < $ev)
 seq() { local s=$order w; for w in "$@"; do [[ $s == *"$w"* ]] || return 1; s=${s#*"$w"}; done }
@@ -139,7 +146,7 @@ elif ! seq 'b locked' 'b installed' 'b unlocked' 'c locked' 'c installed' 'c unl
 elif [[ $(<$cur) != *$C* ]]; then no "two publishes" "live: $(<$cur)"
 else ok "two publishes: built side by side, tests queued, installed in turn"; fi
 : > $ev
-pub a $A 0 && no "older publish" "installed: $(<$ev)" || {
+pub a $A '' '' '' && no "older publish" "installed: $(<$ev)" || {
   [[ $(<$ev) == *refused* && $(<$cur) == *$C* && ! -e $L && ! -e $cache/tree.busy ]] && ok "older publish refused, lock freed" || no "older publish" "$(<$ev) $(<$tmp/why-a)"; }
 
 # claim_tree: with both trees held a third publish waits (saying so once, naming the holders),
@@ -147,24 +154,27 @@ pub a $A 0 && no "older publish" "installed: $(<$ev)" || {
 ct=$tmp/ct; mkdir -p $ct
 fake() {  # <tree> <seconds>: a holder process
   zsh -c "source ${(q)lib}; hold $ct/$1.busy; sleep $2" & fk=$!
-  for i in {1..50}; do [[ -s $ct/$1.busy/owner ]] && break; sleep 0.1; done
+  for i in {1..200}; do [[ -s $ct/$1.busy/owner ]] && break; sleep 0.1; done
 }
 waiter() {  # <out file>: a third publish
   zsh -c "source ${(q)lib}; cleanup=(); tree_poll=0.2; done_() { for c in \$cleanup; do eval \$c; done; }; at_end done_
     claim_tree $ct; echo claimed \${snap:t}; sleep 30 & wait \$!" > $1 2>&1 & wp=$!
 }
+upon() {  # <text> <file>: until the file says it (at most 20 s; the check after says if it never did)
+  local t=$(( SECONDS + 20 )); while ! grep -qF -- $1 $2 2>/dev/null && (( SECONDS < t )); do sleep 0.05; done
+}
 fake tree 30; f1=$fk; fake tree-2 30; f2=$fk
-waiter $tmp/w1; sleep 1
+waiter $tmp/w1; upon waiting $tmp/w1
 [[ $(grep -c waiting $tmp/w1) == 1 && $(<$tmp/w1) == *"tree: process $f1 "*"tree-2: process $f2 "* ]] && ! grep -q claimed $tmp/w1 \
   && ok "claim_tree waits, saying so once, naming the holders" || no "claim_tree waits" "$(<$tmp/w1)"
 kill $f1; wait $f1 2>/dev/null
-for i in {1..50}; do grep -q claimed $tmp/w1 && break; sleep 0.1; done
+for i in {1..200}; do grep -q claimed $tmp/w1 && break; sleep 0.1; done
 [[ $(grep -c waiting $tmp/w1) == 1 && $(<$tmp/w1) == *'claimed tree' && $(<$ct/tree.busy/owner) == "$wp "* ]] \
   && ok "claim_tree claims the tree a holder freed (a dead holder's)" || no "claim_tree freed" "$(<$tmp/w1)"
 kill $wp; wait $wp 2>/dev/null
 [[ ! -e $ct/tree.busy ]] && ok "claim_tree's tree freed when its publish is stopped" || no "claim_tree holder stopped" "left"
 fake tree 30; f1=$fk
-waiter $tmp/w2; sleep 1; kill $wp; wait $wp 2>/dev/null
+waiter $tmp/w2; upon waiting $tmp/w2; kill $wp; wait $wp 2>/dev/null
 [[ ! -e $ct/tree.busy.aside-$wp && -d $ct/tree.busy && $(<$ct/tree.busy/owner) == "$f1 "* && $(<$ct/tree-2.busy/owner) == "$f2 "* && -z $(ls $ct | grep -v '^tree')  ]] \
   && ok "claim_tree: TERM while waiting leaves no lock of its own, others' kept" || no "claim_tree TERM" "$(ls $ct)"
 kill $f1 $f2; wait $f1 $f2 2>/dev/null

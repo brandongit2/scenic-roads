@@ -54,7 +54,7 @@ if has 'crates/(det|roadcore|pipeline|store|names)/*' || has Cargo.lock; then pa
 else skip wasm "no wasm crate changed"; fi
 if has 'web/*' || has 'tools/check/*.test.mjs'; then
   webtests=( web/test/*.test.(ts|mjs)(N) tools/check/*.test.mjs(N) )
-  part web zsh -c "node --experimental-transform-types --no-warnings --test ${(j: :)${(q)webtests}} && cd web && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir"
+  part web zsh -c "node --experimental-transform-types --no-warnings --test ${(j: :)${(@q)webtests}} && cd web && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir"
 else skip web "web/ unchanged"; fi
 if has 'tools/taskboard/*'; then part taskboard zsh -c "cd tools/taskboard && node --test test/*.test.mjs"
 else skip taskboard "tools/taskboard unchanged"; fi

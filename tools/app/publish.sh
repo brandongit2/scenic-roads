@@ -179,8 +179,8 @@ zsh tools/app/remote-tests.sh publish $snap $suite > $tests_log 2>&1 || tests_ok
 # Then every test outside the Rust workspace (tools/app/other-tests.zsh, #848: web/test and
 # tools/check/*.test.mjs by glob, the taskboard's, the status app's Swift self-test, shell.zsh and
 # test-guard.zsh; their parts at once, ~1 min, most of it swiftc), here, after the Rust suite rather
-# than beside it: shell.zsh's two-publishes check times sub-second sleeps, and on the mini the suite
-# runs on this same Mac. Their whole output follows the suite's in the log.
+# than beside it: on the mini the suite runs on this same Mac. Their whole output follows the
+# suite's in the log; a failing part fails the publish.
 other_ok=0
 zsh tools/app/other-tests.zsh >> $tests_log 2>&1 || other_ok=$?
 # (And every child, listener and taken connection by store::spawn: clippy's disallowed-methods,

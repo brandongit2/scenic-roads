@@ -1050,7 +1050,8 @@ export function overrides(s: AppState, base: AppState, buildings: boolean): Map<
   const a = linkFields(s, buildings), d = linkFields(base, buildings);
   const out = new Map<string, string>();
   for (const [k, v] of a) if (v !== d.get(k)) out.set(k, v);
-  for (const g of LINKED) if (g.some((k) => out.has(k))) for (const k of g) if (a.has(k)) out.set(k, a.get(k)!);
+  // (An empty one the base has empty too stays out: it reads as absent.)
+  for (const g of LINKED) if (g.some((k) => out.has(k))) for (const k of g) if (a.get(k)) out.set(k, a.get(k)!);
   return out;
 }
 

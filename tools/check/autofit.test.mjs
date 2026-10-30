@@ -98,6 +98,14 @@ const st = await vite.ssrLoadModule('/src/state.ts');
 const ROAD = st.ROAD_FIT_KEYS, RAIL = st.RAIL_FIT_KEYS, FERRY = st.FERRY_FIT_KEYS;
 /** The three layers' units, each as a sorted list of its metrics in percentiles. */
 const pcts = (s) => [s.fitUnits, s.rail.fitUnits, s.ferry.fitUnits].map((u) => Object.keys(u).filter((k) => u[k] === 'pct').sort());
+/** An older link `h` written again (task #819: a link carries only what differs from the profile,
+ * here the defaults): the state it gave, and none of the defaults it spelled out. */
+const rewritten = (h, b) => {
+  const again = st.toHash(b, true);
+  assert.deepEqual(st.fromHash(again), b);
+  for (const [k, v] of new URLSearchParams(h.slice(1))) if (st.linkFields(st.defaults, true).get(k) === v) assert.ok(!new URLSearchParams(again.slice(1)).has(k) || ['m', 'r', 't', 'fp', 'fpb', 'fpm', 'fl', 'flm'].includes(k), `${k}=${v} in ${again}`);
+  return again;
+};
 
 test('the metrics with a unit: the scenic modes, rail\'s and ferries\' ranked metrics', () => {
   assert.ok(ROAD.includes('score') && ROAD.includes('view') && !ROAD.includes('elev') && !ROAD.includes('map'));
@@ -200,8 +208,7 @@ test('per-layer links (fu=p, a last p in rs and fy) open with every metric of th
   assert.deepEqual(b.fit, [85, 99]);
   assert.equal(b.rail.metric, 'freq');
   // Written again, the same link: p.
-  const again = st.toHash(b, true);
-  assert.equal(again, h);
+  const again = rewritten(h, b);
   assert.match(again, /(^|[#&])fu=p(&|$)/);
   assert.match(again, /rs=[^&]*,15,1,p(&|$)/);
   assert.match(again, /fy=[^&]*,15,1,p(&|$)/);
@@ -269,9 +276,10 @@ test('two scenic metrics with their own numbers and units through a link, rail a
   s.rail.fitUnits = { freq: 'pct' };
   s.ferry.fitLens = { freq: [12, 1] };
   const h = st.toHash(s, true);
-  assert.ok(!/(^|[#&])fl=/.test(h), h); // most scenic metrics at the default: no base
+  // Most scenic metrics at the default: the base the default's (written with flm and fpm, #819's linked fields).
+  assert.match(h, /(^|[#&])fl=15,1(&|$)/);
   assert.match(h, /(^|[#&])flm=score_10_1\/drama_20_2(&|$)/);
-  assert.ok(!/(^|[#&])fp=/.test(h), h);
+  assert.match(h, /(^|[#&])fp=80,99\.9(&|$)/);
   assert.match(h, /(^|[#&])fpm=score_75_99\/view_70_99\.5(&|$)/);
   assert.match(h, /rs=[^&]*,15,1,freq,rscore_20_2\/freq_8_1(&|$)/);
   assert.match(h, /fy=[^&]*,12,1(&|$)/);
@@ -325,7 +333,7 @@ test('per-layer links\' numbers (fl, fp, rail\'s and ferries\' fit) open as ever
   assert.deepEqual(b.scenicFits, allOf(ROAD.filter((k) => k !== 'view'), [85, 99]));
   assert.deepEqual(b.rail.fitLens, allOf(RAIL, [20, 2]));
   assert.deepEqual(b.ferry.fitLens, { freq: [12, 1] });
-  assert.equal(st.toHash(b, true), h);
+  rewritten(h, b);
   // Another scenic metric picked: the link's one set.
   const store = new st.Store(b);
   store.setMode('drama');
@@ -495,7 +503,7 @@ test('links from before every metric\'s look travelled: the shown one\'s as befo
   assert.deepEqual(b.rail.fit, [10, 90]);
   assert.deepEqual([b.rail.looks, b.ferry.looks], [{}, {}]);
   assert.equal(b.ferry.metric, 'months');
-  assert.equal(st.toHash(b, true), h);
+  rewritten(h, b);
 });
 
 test('each layer\'s default metric: its first look is the defaults\'', () => {
