@@ -964,24 +964,51 @@ enum Phase {
     After,
 }
 
-/// What a chain's step waits for (crate::agent::build::landmarks_work): the candidates for the
-/// pass's hiking-route ends; the summits, while held for the terrain packs (agent::plan puts them
-/// in the landmarks chain then), for those; the peaks for every candidate, the pass's summits and the terrain packs; the
-/// items' facts for every candidate; the rest of the heritage chain for the heritage sites; the
-/// landmark points for those four; trains a day for their feeds; the 3D buildings' tiles for the
-/// normalized files. By step: (the jobs before the
-/// regions', the chains', the terrain's).
-fn chain_deps(step: &str) -> (&'static [&'static str], &'static [&'static str], bool) {
-    // (The chain steps before it: its row's `after`, crate::agent::steps; task #864.)
-    let earlier = crate::agent::steps::row(step).map_or(&[][..], |r| r.after);
-    let (pre, reads_terrain): (&'static [&'static str], bool) = match step {
-        "pois" => (&["trailends"], false),
-        "summits" => (&[], true),
-        "peaks" => (&["summits"], true),
-        "heritage" => (&["heritage-sites"], false),
-        _ => (&[], false),
-    };
-    (pre, earlier, reads_terrain)
+/// The items a target of `step` waits on, of those listed by now (`by`): what it reads
+/// (crate::agent::steps::read_targets, the planner's waits), a target's own item, a step it reads
+/// whole as one set in `groups`, shared by every item reading it (`whole`: by step, the set's length
+/// when made and its index; task #867: 1,328 peaks each listing the 568 candidates were 0.75M of
+/// the kept waits' 1.07M deps).
+fn waits_of(
+    by: &Index,
+    groups: &mut Vec<Vec<usize>>,
+    whole: &mut BTreeMap<&'static str, (usize, usize)>,
+    step: &str,
+    t: &str,
+) -> (Vec<usize>, Vec<usize>) {
+    use crate::agent::steps::ReadTarget;
+    let (mut deps, mut gs) = (Vec::new(), Vec::new());
+    for r in crate::agent::steps::read_targets(step, t) {
+        match r {
+            ReadTarget::One(s, u) => deps.extend(by.of.get(&(s.to_string(), u)).copied()),
+            ReadTarget::Whole(s) => {
+                let mut all: Vec<usize> = by
+                    .of
+                    .range((s.to_string(), String::new())..)
+                    .take_while(|((st, _), _)| st == s)
+                    .map(|(_, &i)| i)
+                    .collect();
+                if all.is_empty() {
+                    continue;
+                }
+                // (Items are only added: a set as long is the same.)
+                let g = match whole.get(s) {
+                    Some(&(n, g)) if n == all.len() => g,
+                    _ => {
+                        all.sort_unstable();
+                        let n = all.len();
+                        groups.push(all);
+                        whole.insert(s, (n, groups.len() - 1));
+                        groups.len() - 1
+                    }
+                };
+                gs.push(g);
+            }
+        }
+    }
+    deps.sort_unstable();
+    deps.dedup();
+    (deps, gs)
 }
 
 #[derive(Clone, Debug)]
@@ -1040,9 +1067,6 @@ pub struct Grant {
 /// had counted none of them until their terrain was built (32 z6 tiles at 17:00, 149 by 19:00).
 pub const EXPECTED_STALE: f64 = 0.6;
 
-/// The jobs before the regions' that the z6 tiles wait for (build::plan).
-const UNITS_NEED: [&str; 3] = ["heritage-sites", "reach", "buildings"];
-
 /// The items listed so far (`items`): by step and target.
 #[derive(Default)]
 struct Index {
@@ -1100,26 +1124,15 @@ fn items(inp: &Input) -> Items {
     for (step, target, cost) in &inp.before {
         add(&mut out, &mut by_target, step, target, *cost, Phase::Before, (Vec::new(), Vec::new()));
     }
-    let before: Vec<usize> = (0..out.len()).collect();
-    // (The z6 tiles wait for the pass's heritage sites, reaches and roadside buildings, as the plan's
-    // do; terrain for nothing.)
-    let units_need: Vec<usize> =
-        before.iter().copied().filter(|&i| UNITS_NEED.contains(&out[i].step.as_str())).collect();
     // A region at a time: its own terrain (the z6 tiles, then each z3 tile's assembly once its z6 tiles
     // are made), then its own z6 tiles (each once its region's terrain is built: the terrain it
     // reads); then every region's slope and tree cover, each target once the targets it reads are
-    // (its row's declaration, as the planner's waits).
+    // (its row's declaration, as the planner's waits: `waits_of`).
     let mut region_items: Vec<Vec<usize>> = vec![Vec::new(); inp.regions.len()];
     let item_of = |by: &Index, step: &str, t: &str| by.of.get(&(step.to_string(), t.to_string())).copied();
-    // (The items a target of `step` waits on: those of the targets it reads, listed by now, in
-    // order, once: crate::agent::steps::reads_of.)
-    let reads = |by: &Index, step: &str, t: &str| -> Vec<usize> {
-        let mut v: Vec<usize> =
-            crate::agent::steps::reads_of(step, t).iter().filter_map(|(s, u)| item_of(by, s, u)).collect();
-        v.sort_unstable();
-        v.dedup();
-        v
-    };
+    let mut whole: BTreeMap<&'static str, (usize, usize)> = BTreeMap::new();
+    let mut reads =
+        |by: &Index, groups: &mut Vec<Vec<usize>>, step: &str, t: &str| waits_of(by, groups, &mut whole, step, t);
     // (A set many wait for, listed once: its index in `groups`.)
     let group = |groups: &mut Vec<Vec<usize>>, mut v: Vec<usize>| -> usize {
         v.sort_unstable();
@@ -1158,21 +1171,9 @@ fn items(inp: &Input) -> Items {
             );
         }
         for q in &r.own_terrain_lo {
-            let deps = reads(&by_target, "terrain-lo", q);
-            add(
-                &mut out,
-                &mut by_target,
-                "terrain-lo",
-                q,
-                inp.cost("terrain-lo", q),
-                Phase::Region,
-                (deps, Vec::new()),
-            );
+            let deps = reads(&by_target, &mut groups, "terrain-lo", q);
+            add(&mut out, &mut by_target, "terrain-lo", q, inp.cost("terrain-lo", q), Phase::Region, deps);
         }
-        // (Each z6 tile once the terrain targets it reads are built, its row's declaration as the
-        // planner's waits (its own region's or one's before it: listed by now), and the jobs all
-        // wait for, one group.)
-        let g = vec![group(&mut groups, units_need.clone())];
         for u in r
             .own_units
             .iter()
@@ -1180,8 +1181,8 @@ fn items(inp: &Input) -> Items {
         {
             // (The expected: those its stale terrain may make stale, a share, the first in its
             // order; `add` lists a z6 tile two regions name once.)
-            let deps = reads(&by_target, "unit", u);
-            add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, (deps, g.clone()));
+            let deps = reads(&by_target, &mut groups, "unit", u);
+            add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, deps);
         }
         // Its map tiles, each once the z6 tiles that draw it are built (a tile two regions draw, with
         // the first).
@@ -1196,16 +1197,16 @@ fn items(inp: &Input) -> Items {
     // (crate::agent::steps::Reads), the planner's waits.
     for r in inp.regions.iter() {
         for t in &r.slope_deep {
-            let deps = reads(&by_target, "slope-deep", t);
-            add(&mut out, &mut by_target, "slope-deep", t, inp.cost("slope-deep", t), Phase::Late, (deps, Vec::new()));
+            let deps = reads(&by_target, &mut groups, "slope-deep", t);
+            add(&mut out, &mut by_target, "slope-deep", t, inp.cost("slope-deep", t), Phase::Late, deps);
         }
         for t in &r.slope {
-            let deps = reads(&by_target, "slope-hi", t);
-            add(&mut out, &mut by_target, "slope-hi", t, inp.cost("slope-hi", t), Phase::Late, (deps, Vec::new()));
+            let deps = reads(&by_target, &mut groups, "slope-hi", t);
+            add(&mut out, &mut by_target, "slope-hi", t, inp.cost("slope-hi", t), Phase::Late, deps);
         }
         for q in &r.slope_lo {
-            let deps = reads(&by_target, "slope-lo", q);
-            add(&mut out, &mut by_target, "slope-lo", q, inp.cost("slope-lo", q), Phase::Late, (deps, Vec::new()));
+            let deps = reads(&by_target, &mut groups, "slope-lo", q);
+            add(&mut out, &mut by_target, "slope-lo", q, inp.cost("slope-lo", q), Phase::Late, deps);
         }
         for t in &r.trees {
             add(&mut out, &mut by_target, "trees", t, inp.cost("trees", t), Phase::Late, (Vec::new(), Vec::new()));
@@ -1213,8 +1214,8 @@ fn items(inp: &Input) -> Items {
         // A z3 tile's tree cover assembled once its z6 tiles are made (a region lists every z6 tile of
         // its z3 tiles: listed by now).
         for q in &r.trees_lo {
-            let deps = reads(&by_target, "trees-lo", q);
-            add(&mut out, &mut by_target, "trees-lo", q, inp.cost("trees-lo", q), Phase::Late, (deps, Vec::new()));
+            let deps = reads(&by_target, &mut groups, "trees-lo", q);
+            add(&mut out, &mut by_target, "trees-lo", q, inp.cost("trees-lo", q), Phase::Late, deps);
         }
     }
     // Each region's items: its terrain, all its z6 tiles (some come with a region before it), its
@@ -1238,61 +1239,14 @@ fn items(inp: &Input) -> Items {
         mine.extend(r.packs.iter().filter_map(|(t, _)| item_of(&by_target, "pack", t)));
         region_items[k] = mine;
     }
-    // The chains: from the start, each step once what it reads is built.
-    let terrain: Vec<usize> = (0..out.len())
-        .filter(|&i| matches!(out[i].step.as_str(), "terrain-hi" | "terrain-deep" | "terrain-lo"))
-        .collect();
-    let terrain = vec![group(&mut groups, terrain)];
-    // (What the live plan holds back (task #867): a chain's job its scheduler's offers lack, not
-    // running, waits on something even where `chain_deps` says nothing: on its chain's jobs before
-    // it (build::chains_left lists each chain's works as if each before it succeeded; a chain's
-    // steps are its stage's, crate::agent::steps). None without a scheduler (a test, a backtest).)
-    let offered: Option<BTreeSet<(&str, &str)>> = inp.sched.as_ref().map(|s| {
-        s.offers.iter().flat_map(|o| o.targets.iter().map(move |t| (o.step.as_str(), t.0.as_str()))).collect()
-    });
-    let stage = |s: &str| super::steps::row(s).map(|r| r.stage);
-    let mut chain: Vec<usize> = Vec::new();
-    // (What a step's jobs wait on, one set for all of them (task #867: 1,328 peaks each listing the
-    // 568 candidates were 0.75M of the kept waits' 1.07M deps): by step, its length when made.)
-    let mut shared_waits: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    // The chains: from the start, each target once what it reads is built (its declared reads, as
+    // the planner's: listed by now, the jobs before the regions', the regions' and the chains'
+    // before it).
     for (step, target, cost) in &inp.chains {
-        let (pre, earlier, reads_terrain) = chain_deps(step);
-        let mut deps: Vec<usize> = before.iter().copied().filter(|&i| pre.contains(&out[i].step.as_str())).collect();
-        deps.extend(chain.iter().copied().filter(|&i| earlier.contains(&out[i].step.as_str())));
-        let mut g = if reads_terrain { terrain.clone() } else { Vec::new() };
-        if deps.len() > 1 {
-            // (The list only grows, so one as long is the same.)
-            let n = deps.len();
-            let k = match shared_waits.get(step.as_str()) {
-                Some(&(len, k)) if len == n => k,
-                _ => {
-                    let k = group(&mut groups, std::mem::take(&mut deps));
-                    shared_waits.insert(step.as_str(), (n, k));
-                    k
-                }
-            };
-            deps.clear();
-            g.push(k);
-        }
-        let held = offered.as_ref().is_some_and(|o| !o.contains(&(step.as_str(), target.as_str())))
-            && !inp.running.contains_key(&(step.clone(), target.clone()));
-        // (Not on its own step's jobs: its targets don't wait on each other, and a held step's all
-        // after one another would be a line, not a step. Not the heritage chain: it runs beside
-        // the candidates, build::landmarks_work.)
-        if held && deps.is_empty() && g.is_empty() && step != "heritage" {
-            let mine: Vec<usize> = chain
-                .iter()
-                .copied()
-                .filter(|&i| out[i].step != *step)
-                .filter(|&i| stage(&out[i].step).is_some() && stage(&out[i].step) == stage(step))
-                .collect();
-            if !mine.is_empty() {
-                g.push(group(&mut groups, mine));
-            }
-        }
-        let i = add(&mut out, &mut by_target, step, target, *cost, Phase::Chain, (deps, g));
-        chain.push(i);
+        let deps = reads(&by_target, &mut groups, step, target);
+        add(&mut out, &mut by_target, step, target, *cost, Phase::Chain, deps);
     }
+
     // (Each after all before it: the catalogue after the overlays.)
     let all = vec![group(&mut groups, (0..out.len()).collect())];
     let mut after: Vec<usize> = Vec::new();
@@ -3454,7 +3408,7 @@ mod tests {
         // The chain's order, as depth_next takes it: each step waits on earlier ones alone (#611).
         let order = ["depth", "depth-lo"];
         for (i, s) in order.iter().enumerate() {
-            let waits: Vec<&str> = z3_reads(s).iter().chain(super::chain_deps(s).1).copied().collect();
+            let waits: Vec<&str> = z3_reads(s).iter().copied().chain(crate::agent::steps::wholes(s)).collect();
             for w in &waits {
                 let at = order.iter().position(|o| o == w).unwrap_or_else(|| panic!("{s} waits on {w}"));
                 assert!(at < i, "{s} waits on {w}, a later step");
@@ -3866,14 +3820,16 @@ mod tests {
                         "unit" => {
                             let mut d = in_z3("terrain-hi", &z3s(t));
                             d.extend(
-                                start.keys().chain(ran.iter()).filter(|k| UNITS_NEED.contains(&k.0.as_str())).cloned(),
+                                start
+                                    .keys()
+                                    .chain(ran.iter())
+                                    .filter(|k| crate::agent::steps::wholes("unit").any(|w| w == k.0))
+                                    .cloned(),
                             );
                             d
                         }
                         s => {
-                            let (pre, earlier, _) = chain_deps(s);
-                            let reads =
-                                |k: &&(String, String)| pre.contains(&k.0.as_str()) || earlier.contains(&k.0.as_str());
+                            let reads = |k: &&(String, String)| crate::agent::steps::wholes(s).any(|w| w == k.0);
                             start.keys().chain(ran.iter()).filter(reads).cloned().collect()
                         }
                     };
@@ -4385,7 +4341,7 @@ mod tests {
         for round in 0..6 {
             let mut inp = live_scale_input(2 + next(5), 3 + next(20));
             let job = |s: &str, t: String| (s.to_string(), t, Cost { secs: 50.0, known: true, peak_mb: 500 });
-            inp.before = (0..next(3)).map(|i| job(UNITS_NEED[i], "all".into())).collect();
+            inp.before = (0..next(3)).map(|i| job(["heritage-sites", "reach", "buildings"][i], "all".into())).collect();
             inp.after = (0..next(3)).map(|i| job("catalog", format!("a{i}"))).collect();
             inp.idle = (0..next(3)).map(|i| job("idle", format!("i{i}"))).collect();
             let mut regions = inp.regions.to_vec();
@@ -4453,142 +4409,120 @@ mod tests {
         assert!(thread_cpu() - cpu0 < Duration::from_millis(50), "a wait is no CPU time");
     }
 
-    /// The chains' and the lead's jobs before the regions' the live plan holds back (its
-    /// scheduler's offers lack them, none running) that wait on nothing in the forecast's items:
-    /// none should (task #867).
-    fn held_but_ready(inp: &Input) -> Vec<(String, String)> {
-        let Some(st) = inp.sched.as_ref() else { return Vec::new() };
-        let offered: BTreeSet<(&str, &str)> =
-            st.offers.iter().flat_map(|o| o.targets.iter().map(move |t| (o.step.as_str(), t.0.as_str()))).collect();
-        let listed: BTreeSet<(&str, &str)> =
-            inp.chains.iter().chain(inp.before.iter()).map(|j| (j.0.as_str(), j.1.as_str())).collect();
-        let Items { items, groups, .. } = items(inp);
-        items
+    /// Each item's waits, its own deps and its sets' items: as (step, target).
+    fn waits_listed(its: &Items) -> Vec<BTreeSet<(String, String)>> {
+        its.items
             .iter()
-            .filter(|i| listed.contains(&(i.step.as_str(), i.target.as_str())))
-            .filter(|i| !offered.contains(&(i.step.as_str(), i.target.as_str())))
-            .filter(|i| !inp.running.contains_key(&(i.step.clone(), i.target.clone())))
-            .filter(|i| i.deps.is_empty() && i.groups.iter().all(|&g| groups[g].is_empty()))
-            .map(|i| (i.step.clone(), i.target.clone()))
+            .map(|it| {
+                it.deps
+                    .iter()
+                    .chain(it.groups.iter().flat_map(|&g| its.groups[g].iter()))
+                    .map(|&d| (its.items[d].step.clone(), its.items[d].target.clone()))
+                    .collect()
+            })
             .collect()
     }
 
-    /// Task #867 (term 604's record: a cold depth-root ready at the start though the live plan
-    /// held it, so the lead refused every ask until its jobs ended): a replay never places a
-    /// target the live plan holds back before what it waits on is done. The depth root waits for
-    /// the depth and its assemblies (`chain_deps`, as build::depth_work); a held job of a chain
-    /// `chain_deps` says nothing of waits on its chain's jobs before it. With
+    /// What an item of `inp`'s regions and chains waits on by its declared reads
+    /// (crate::agent::steps::read_targets), of the items listed before it: a target read, every
+    /// item of a step read whole.
+    fn declared_waits(its: &Items, i: usize) -> BTreeSet<(String, String)> {
+        use crate::agent::steps::ReadTarget;
+        let it = &its.items[i];
+        let reads = crate::agent::steps::read_targets(&it.step, &it.target);
+        its.items[..i]
+            .iter()
+            .filter(|d| {
+                reads.iter().any(|r| match r {
+                    ReadTarget::One(s, u) => d.step == *s && d.target == *u,
+                    ReadTarget::Whole(s) => d.step == *s,
+                })
+            })
+            .map(|d| (d.step.clone(), d.target.clone()))
+            .collect()
+    }
+
+    /// Docs/readiness.md §7 (supersedes task #867's held-chain guard): the forecast waits for what
+    /// the planner does, both from the steps' declared reads: each item of the regions' slope and
+    /// tree cover, the z6 tiles and the chains waits on exactly the items its reads name
+    /// (`read_targets`), and a replay places none before what it waits on is done. With
     /// SCENIC_FORECAST_RECORD, that record's input too.
     #[test]
-    fn a_replay_never_places_a_target_the_live_plan_holds_back() {
+    fn the_forecast_waits_for_what_the_planner_does() {
         let c = |secs: f64| Cost { secs, known: true, peak_mb: 1000 };
         let regions: [RegionLeft; 0] = [];
         let unit = |_: &str, _: &str| c(1.0);
         let base = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 1.0, false)], &unit);
-        let offer =
-            |step: &str, t: &str| Offer { step: step.into(), targets: vec![(t.into(), "k".into(), 1000)], job: None };
         let job = |s: &str, t: &str, secs: f64| (s.to_string(), t.to_string(), c(secs));
-        // (bldfield-lo stands for a chain step `chain_deps` would know nothing of: held, so after
-        // the chain's jobs before it.)
-        let chains = vec![
-            job("depth", "6/1/1", 300.0),
-            job("depth-lo", "3/0/0", 100.0),
-            job("depth-root", "depth-root", 50.0),
-            job("bldtiles", "6/2/2", 200.0),
-        ];
-        let st = State { offers: vec![offer("depth", "6/1/1"), offer("bldtiles", "6/2/2")], ..Default::default() };
-        let inp = Input { chains, sched: Some(st), ..base };
-        assert!(held_but_ready(&inp).is_empty(), "{:?}", held_but_ready(&inp));
-        let f = forecast(&inp);
-        let at = |s: &str| f.placed.iter().find(|p| p.step == s).map(|p| (p.from, p.until)).unwrap();
-        assert!(at("depth-root").0 >= at("depth-lo").1 && at("depth-lo").0 >= at("depth").1, "{:?}", f.placed);
-        // (The polar caps' chain, one step after another, as build::polar_next; and a held step
-        // with no line in `chain_deps` (bldprep after bld-fetch) after its chain's jobs before it.)
-        let chains = vec![
-            job("polar-terrain", "n", 300.0),
-            job("polar-slope", "n", 100.0),
-            job("polar-root", "n", 50.0),
-            job("bld-fetch", "all", 200.0),
-            job("bldprep", "6/2/2", 20.0),
-        ];
-        let st = State { offers: vec![offer("polar-terrain", "n"), offer("bld-fetch", "all")], ..Default::default() };
-        let inp = Input { chains, sched: Some(st), ..inp };
-        assert!(held_but_ready(&inp).is_empty(), "{:?}", held_but_ready(&inp));
-        let f = forecast(&inp);
-        let at = |s: &str| f.placed.iter().find(|p| p.step == s).map(|p| (p.from, p.until)).unwrap();
-        assert!(at("polar-root").0 >= at("polar-slope").1 && at("polar-slope").0 >= at("polar-terrain").1);
-        assert!(at("bldprep").0 >= at("bld-fetch").1, "{:?}", f.placed);
-        // (Held targets of one step wait on what's before them, not on each other; the heritage
-        // chain runs beside the candidates (build::landmarks_work), held or not.)
-        let chains = vec![
-            job("bld-fetch", "all", 200.0),
-            job("bldprep", "6/2/2", 20.0),
-            job("bldprep", "6/3/3", 20.0),
-            job("pois", "6/1/1", 300.0),
-            job("heritage", "heritage", 50.0),
-        ];
-        let st = State { offers: vec![offer("bld-fetch", "all"), offer("pois", "6/1/1")], ..Default::default() };
-        let inp = Input { chains, sched: Some(st), ..inp };
-        let Items { items: its, groups, .. } = items(&inp);
-        let waits = |s: &str, t: &str| -> BTreeSet<String> {
-            let it = its.iter().find(|i| i.step == s && i.target == t).unwrap();
-            it.deps
-                .iter()
-                .chain(it.groups.iter().flat_map(|&g| groups[g].iter()))
-                .map(|&d| its[d].step.clone())
-                .collect()
-        };
-        assert_eq!(waits("bldprep", "6/3/3"), BTreeSet::from(["bld-fetch".to_string()]));
-        assert!(waits("heritage", "heritage").is_empty());
-        if let Ok(p) = std::env::var("SCENIC_FORECAST_RECORD") {
-            let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
-            let left = held_but_ready(&r.input);
-            assert!(left.is_empty(), "{} held but ready: {:?}", left.len(), &left[..left.len().min(20)]);
-            let f = forecast_by(&r.input, Duration::from_secs(60));
-            let now = r.input.now;
-            let offered: BTreeSet<(String, String)> = r
-                .input
-                .sched
-                .as_ref()
-                .unwrap()
-                .offers
-                .iter()
-                .flat_map(|o| o.targets.iter().map(move |t| (o.step.clone(), t.0.clone())))
-                .collect();
-            let listed: BTreeSet<(String, String)> =
-                r.input.chains.iter().map(|j| (j.0.clone(), j.1.clone())).collect();
-            let early: Vec<&Placed> = f
-                .placed
-                .iter()
-                .filter(|p| p.from <= now && listed.contains(&(p.step.clone(), p.target.clone())))
-                .filter(|p| !offered.contains(&(p.step.clone(), p.target.clone())))
-                .filter(|p| !r.input.running.contains_key(&(p.step.clone(), p.target.clone())))
-                .collect();
-            assert!(early.is_empty(), "held but placed at the start: {early:?}");
-            // (The kept waits' size, for the record: the graph, compact (KeptWaits), and every set
-            // spread into its items' deps.)
-            let g = &f.graph;
-            let n_deps = |g: &crate::coord::history::Graph| {
-                g.deps.iter().map(Vec::len).sum::<usize>() + g.groups.iter().map(Vec::len).sum::<usize>()
-            };
-            let c = g.compact(&Default::default());
-            assert!(serde_json::to_vec(&c).unwrap().len() <= serde_json::to_vec(g).unwrap().len(), "compact grew");
-            let mut spread = g.clone();
-            for (i, s) in g.sets.iter().enumerate() {
-                for &k in s {
-                    spread.deps[i].extend(&g.groups[k as usize]);
+        let check = |inp: &Input| {
+            let its = items(inp);
+            let listed = waits_listed(&its);
+            for (i, it) in its.items.iter().enumerate() {
+                if matches!(it.phase, Phase::Before | Phase::After | Phase::Publish) {
+                    continue;
+                }
+                assert_eq!(listed[i], declared_waits(&its, i), "{} {}", it.step, it.target);
+            }
+            let f = forecast(inp);
+            let at =
+                |s: &str, t: &str| f.placed.iter().find(|p| p.step == s && p.target == t).map(|p| (p.from, p.until));
+            for (i, it) in its.items.iter().enumerate() {
+                let Some((from, _)) = at(&it.step, &it.target) else { continue };
+                for (s, t) in &listed[i] {
+                    if let Some((_, until)) = at(s, t) {
+                        assert!(from >= until, "{} {} placed before {s} {t} ends", it.step, it.target);
+                    }
                 }
             }
-            spread.sets = vec![Vec::new(); g.keys.len()];
-            spread.groups.clear();
-            for (name, g) in [("graph", g), ("compact", &c), ("spread", &spread)] {
-                eprintln!(
-                    "{name}: {} items, {} deps, {} bytes",
-                    g.keys.len(),
-                    n_deps(g),
-                    serde_json::to_vec(g).unwrap().len()
-                );
-            }
+        };
+        let before = vec![job("trailends", "trailends", 30.0), job("heritage-sites", "heritage-sites", 30.0)];
+        let chains = vec![
+            job("depth", "6/1/1", 300.0),
+            job("depth", "6/9/9", 300.0),
+            job("depth-lo", "3/0/0", 100.0),
+            job("depth-root", "depth-root", 50.0),
+            job("polar-terrain", "s/4/0/0", 300.0),
+            job("polar-terrain", "s/4/9/9", 300.0),
+            job("polar-slope", "s/4/0/0", 100.0),
+            job("polar-root", "s", 50.0),
+            job("bld-fetch", "bld-fetch", 200.0),
+            job("bldprep", "6/2/2", 20.0),
+            job("bldprep", "6/9/9", 20.0),
+            job("bldtiles", "6/2/2", 200.0),
+            job("pois", "6/1/1", 300.0),
+            job("pois", "6/9/9", 300.0),
+            job("summits", "summits", 30.0),
+            job("peaks", "6/1/1", 60.0),
+            job("items", "items", 60.0),
+            job("heritage", "heritage", 50.0),
+            job("marks", "marks", 50.0),
+        ];
+        let inp = Input { before, chains, ..base };
+        check(&inp);
+        // (Waits as declared: the depth-lo assembly on its own z6 tile's depth, not 6/9/9's; the
+        // polar slope on its own block and neighbours; the 3D tiles on their own normalized files
+        // and neighbours'; the candidates on the hiking-route ends; the heritage chain beside them.)
+        let its = items(&inp);
+        let w = waits_listed(&its);
+        let of = |s: &str, t: &str| &w[its.items.iter().position(|i| i.step == s && i.target == t).unwrap()];
+        let pair = |s: &str, t: &str| (s.to_string(), t.to_string());
+        assert_eq!(*of("depth-lo", "3/0/0"), BTreeSet::from([pair("depth", "6/1/1")]));
+        assert_eq!(*of("polar-slope", "s/4/0/0"), BTreeSet::from([pair("polar-terrain", "s/4/0/0")]));
+        assert_eq!(*of("bldtiles", "6/2/2"), BTreeSet::from([pair("bldprep", "6/2/2")]));
+        assert!(of("bldprep", "6/2/2").is_empty(), "the normalized files go beside the fetch");
+        assert_eq!(*of("pois", "6/1/1"), BTreeSet::from([pair("trailends", "trailends")]));
+        assert_eq!(*of("heritage", "heritage"), BTreeSet::from([pair("heritage-sites", "heritage-sites")]));
+        assert!(
+            of("peaks", "6/1/1").contains(&pair("pois", "6/1/1"))
+                && !of("peaks", "6/1/1").contains(&pair("pois", "6/9/9"))
+        );
+        assert!(
+            of("marks", "marks").contains(&pair("pois", "6/9/9"))
+                && of("marks", "marks").contains(&pair("heritage", "heritage"))
+        );
+        if let Ok(p) = std::env::var("SCENIC_FORECAST_RECORD") {
+            let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
+            check(&r.input);
         }
     }
 

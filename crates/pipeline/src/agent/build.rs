@@ -8,6 +8,7 @@
 //! when it last succeeded (`state/build/jobs.json`) isn't run again; an unchanged output keeps its
 //! content name, so what depends on it keeps its key too.
 
+use super::steps::{readiness, ready, Left, Ready, View};
 use super::tiles::{Reader, TerrainTiles, Tile, Unread};
 use crate::coverage::Coverage;
 use crate::dem::spacing::Fine;
@@ -1010,31 +1011,19 @@ pub fn summits_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Op
         .then(|| Work { step: "summits".into(), targets: vec![("summits".into(), k)] })
 }
 
-/// The status's line for the summits and peaks held for the terrain packs (`Plan::terrain_built`).
-pub const PEAKS_TERRAIN_WAIT: &str = "wait for the terrain packs they read (terrain-hi, terrain-lo)";
-
-/// The waiting notes of the world steps a plan holds for other steps' targets (`Plan::held`, the
-/// status's `waiting` list, the checklist's notes), each in the summits' form: what the step waits
-/// for. (A tiled step's is its row's: `wait_note`.)
-const PEAKS_WAIT: &str =
-    "wait for the candidates (pois), the pass's summits and the terrain packs they read (terrain-hi, terrain-lo)";
-const ITEMS_WAIT: &str = "wait for the candidates (pois)";
-const HERITAGE_WAIT: &str = "wait for the heritage sites (heritage-sites)";
-const MARKS_WAIT: &str =
-    "wait for the candidates, their peaks, the items and the heritage chain (pois, peaks, items, heritage)";
-
 /// The peaks' version (crate::peaks::unit). (2: heights from the terrain packs alone, task #670.)
 pub const PEAKS_V: u32 = 2;
 
-/// The waiting note of a step that declares its reads (crate::agent::steps::Reads::why).
-pub fn wait_note(step: &str) -> &'static str {
-    super::steps::row(step).and_then(|r| r.reads).map_or("wait for what they read", |r| r.why)
-}
-
-/// Whether a target of `step` waits: one of the targets it reads (crate::agent::steps::reads_of)
-/// is left, as `left(step, target)` says.
-pub fn waits(step: &str, target: &str, left: &dyn Fn(&str, &str) -> bool) -> bool {
-    super::steps::reads_of(step, target).iter().any(|(s, t)| left(s, t))
+/// What a step's targets held in `view` wait for (crate::agent::steps::readiness), each a held
+/// target's: the step's waiting note (`Plan::held`), None when none of them waits.
+fn held_note<'a>(step: &str, targets: impl IntoIterator<Item = &'a str>, view: &dyn View) -> Option<String> {
+    let mut waits = Vec::new();
+    for t in targets {
+        if let Ready::Waits(w) = readiness(step, t, view) {
+            waits.extend(w);
+        }
+    }
+    (!waits.is_empty()).then(|| super::steps::wait_note(&waits))
 }
 
 /// The z6 tiles meeting a box (degrees), x wrapping at the antimeridian.
@@ -2095,24 +2084,10 @@ pub struct TerrainWork {
     pub slope_lo_left: BTreeSet<String>,
     pub slope_left: BTreeSet<String>,
     /// The steps with stale targets held for other steps' targets, each with what it waits for
-    /// (`Plan::held`).
-    pub held: Vec<(&'static str, &'static str)>,
-}
-
-impl TerrainWork {
-    /// Whether target `t` of terrain or slope step `s` is left (stale, runnable or not): what a
-    /// target reading it waits for (`waits`). Another step's target, none.
-    pub fn is_left(&self, s: &str, t: &str) -> bool {
-        match s {
-            "terrain-hi" => self.terrain_pieces_left.contains(t),
-            "terrain-lo" => self.terrain_lo_left.contains(t),
-            "terrain-deep" => self.terrain_deep_left.contains(t),
-            "slope-deep" => self.slope_deep_left.contains(t),
-            "slope-hi" => self.slope_pieces_left.contains(t),
-            "slope-lo" => self.slope_lo_left.contains(t),
-            _ => false,
-        }
-    }
+    /// (`Plan::held`, from their readiness).
+    pub held: Vec<(&'static str, String)>,
+    /// Those `_left` sets by step: what a target reading them waits for (crate::agent::steps::View).
+    pub left: Left,
 }
 
 /// Terrain's and slope's work (`TerrainWork`) for their targets `tt`, the manifest `m` and what was
@@ -2157,22 +2132,24 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
     }
     w.terrain.extend(tt.terrain_none.iter().filter(|(t, k)| !current(t, k)).cloned());
     // (Its reads, the z6 tiles' mids: a z6 tile is built for it current with its mid.)
-    let unmid: BTreeSet<&str> =
-        tt.terrain.iter().filter(|(t, k)| !(current(t, k) && has_mid(&tmid, t))).map(|p| p.0.as_str()).collect();
-    let lo_left = |s: &str, t: &str| s == "terrain-hi" && unmid.contains(t);
-    let mut lo_held = false;
+    let mut unmid = Left::default();
+    unmid.set(
+        "terrain-hi",
+        tt.terrain.iter().filter(|(t, k)| !(current(t, k) && has_mid(&tmid, t))).map(|p| p.0.clone()),
+    );
+    let mut lo_held = Vec::new();
     for (q, k) in &tt.terrain_lo {
         if k == UNKNOWN || !w.terrain_lo_left.contains(q) {
             continue;
         }
-        if !waits("terrain-lo", q, &lo_left) {
+        if ready("terrain-lo", q, &unmid) {
             w.terrain_lo.push((q.clone(), k.clone()));
         } else if w.terrain_pieces_left.iter().any(|t| z3_of(t).as_deref() == Some(q)) {
-            lo_held = true;
+            lo_held.push(q.as_str());
         }
     }
-    if lo_held {
-        w.held.push(("terrain-lo", wait_note("terrain-lo")));
+    if let Some(n) = held_note("terrain-lo", lo_held, &unmid) {
+        w.held.push(("terrain-lo", n));
     }
     // (A "none" assembly reads nothing: it runs whenever, its z3 tile left until it has.)
     w.terrain_lo.extend(lo_none);
@@ -2236,50 +2213,62 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
         .chain(w.slope_pieces_left.iter().chain(&w.slope_deep_left).filter_map(|t| z3_of(t)))
         .collect();
     // (Each slope target waits for exactly what it reads, its row's declaration: crate::agent::steps.)
-    let left = |s: &str, t: &str| w.is_left(s, t);
-    let mut sd_held = false;
+    for (step, set) in [
+        ("terrain-hi", &w.terrain_pieces_left),
+        ("terrain-lo", &w.terrain_lo_left),
+        ("terrain-deep", &w.terrain_deep_left),
+        ("slope-deep", &w.slope_deep_left),
+        ("slope-hi", &w.slope_pieces_left),
+        ("slope-lo", &w.slope_lo_left),
+    ] {
+        w.left.set(step, set.iter().cloned());
+    }
+    let left = &w.left;
+    let mut sd_held = Vec::new();
     let mut slope_deep = Vec::new();
     for (t, k) in &tt.slope_deep {
         let Some(k) = k else { continue };
         if !sdcurrent(t, &Some(k.clone())) {
-            if waits("slope-deep", t, &left) {
-                sd_held = true;
-            } else {
+            if ready("slope-deep", t, left) {
                 slope_deep.push((t.clone(), k.clone()));
+            } else {
+                sd_held.push(t.as_str());
             }
         }
     }
     let mut idle = Vec::new();
     let mut slope = Vec::new();
-    let mut s_held = false;
+    let mut s_held = Vec::new();
     for (t, k) in &tt.slope {
         let Some(k) = k else { continue };
         if !scurrent(t, &Some(k.clone())) {
-            if waits("slope-hi", t, &left) {
-                s_held = true;
-            } else {
+            if ready("slope-hi", t, left) {
                 slope.push((t.clone(), k.clone()));
+            } else {
+                s_held.push(t.as_str());
             }
         } else if !has_mid(&smid, t) {
             idle.push((t.clone(), k.clone()));
         }
     }
     let mut slope_lo = Vec::new();
-    let mut slo_held = false;
+    let mut slo_held = Vec::new();
     for (q, k) in &tt.slope_lo {
         if w.slope_lo_left.contains(q) {
-            if waits("slope-lo", q, &left) {
-                slo_held = true;
-            } else {
+            if ready("slope-lo", q, left) {
                 slope_lo.push((q.clone(), k.clone()));
+            } else {
+                slo_held.push(q.as_str());
             }
         }
     }
-    for (held, step) in [(sd_held, "slope-deep"), (s_held, "slope-hi"), (slo_held, "slope-lo")] {
-        if held {
-            w.held.push((step, wait_note(step)));
+    let mut held = Vec::new();
+    for (ts, step) in [(sd_held, "slope-deep"), (s_held, "slope-hi"), (slo_held, "slope-lo")] {
+        if let Some(n) = held_note(step, ts, left) {
+            held.push((step, n));
         }
     }
+    w.held.extend(held);
     w.slope_deep = slope_deep;
     w.slope_deep.extend(sdnone);
     w.slope = slope;
@@ -2311,8 +2300,8 @@ pub struct TreeWork {
     /// What a region lacks before it's published: the stale z6 tiles and assemblies, runnable or not.
     pub stale_pieces: BTreeSet<String>,
     pub stale_lo: BTreeSet<String>,
-    /// A stale assembly that can't run yet: it waits for its z6 tiles' mids (`wait_note`).
-    pub lo_held: bool,
+    /// The stale assemblies that can't run yet wait for their z6 tiles' mids: their waiting note.
+    pub lo_held: Option<String>,
 }
 
 /// Tree cover's work (`TreeWork`) for its targets `tt`, the manifest `m` and what was done (with
@@ -2338,15 +2327,22 @@ pub fn tree_work(tt: &crate::treepacks::Targets, m: &BTreeMap<String, String>, d
             w.backfill.push((t.clone(), k.clone()));
         }
     }
-    w.lo = tt
-        .lo
-        .iter()
-        .filter(|(q, _, none)| {
-            stale_lo.contains(q) && (*none || tt.pieces_of(q).all(|(t, k, _)| current(t, k) && has_mid(t)))
-        })
-        .map(|(q, k, _)| (q.clone(), k.clone()))
-        .collect();
-    w.lo_held = tt.lo.iter().any(|(q, _, _)| stale_lo.contains(q) && !w.lo.iter().any(|(t, _)| t == q));
+    // (An assembly reads its z6 tiles' mids: one is left until it's current with its mid. A "none"
+    // assembly reads nothing.)
+    let mut unmid = Left::default();
+    unmid.set("trees", tt.pieces.iter().filter(|(t, k, _)| !(current(t, k) && has_mid(t))).map(|p| p.0.clone()));
+    let mut held = Vec::new();
+    for (q, k, none) in &tt.lo {
+        if !stale_lo.contains(q) {
+            continue;
+        }
+        if *none || ready("trees-lo", q, &unmid) {
+            w.lo.push((q.clone(), k.clone()));
+        } else {
+            held.push(q.as_str());
+        }
+    }
+    w.lo_held = held_note("trees-lo", held, &unmid);
     w.stale_pieces = stale_pieces;
     w.stale_lo = stale_lo;
     w
@@ -2610,8 +2606,9 @@ pub struct Plan {
     pub publishing: PublishLine,
     /// No z6 tile or terrain left to build: the steps gated by time (`GATED`) run at once.
     pub idle: bool,
-    /// No terrain-hi or terrain-lo work left: the summits and peaks, which read their packs, may run.
-    pub terrain_built: bool,
+    /// What's left of each step the plan's targets read, runnable or not (crate::agent::steps::View):
+    /// every target held is held through its readiness in it (the summits' too, by the agent).
+    pub left: Left,
     /// The steps with work left that is held for other steps' targets, each with what it waits for
     /// (a note in the summits' form): terrain, slope and tree cover's, and the landmarks'.
     pub held: Vec<(String, String)>,
@@ -2748,8 +2745,6 @@ pub fn plan(
     let slope_deep = split("slope-deep", slope_deep);
     let slope = split("slope-hi", slope);
     let slope_lo = split("slope-lo", slope_lo);
-    // (The summits and peaks read the terrain packs' z8 and z12: they wait till none is to be made.)
-    let terrain_built = tw.terrain_pieces_left.is_empty() && tw.terrain_lo_left.is_empty();
     let tt = crate::treepacks::targets_with(cov, m, tiles.keyed(m).and_then(|k| k.trees.as_deref()));
     let TreeWork {
         pieces: trees,
@@ -2759,10 +2754,22 @@ pub fn plan(
         stale_lo: trees_lo_left,
         lo_held: trees_lo_held,
     } = tree_work(&tt, m, done);
-    let mut held_steps: Vec<(String, String)> = tw.held.iter().map(|(s, w)| (s.to_string(), w.to_string())).collect();
-    if trees_lo_held {
-        held_steps.push(("trees-lo".into(), wait_note("trees-lo").into()));
-    }
+    let mut held_steps: Vec<(String, String)> = tw.held.iter().map(|(s, w)| (s.to_string(), w.clone())).collect();
+    held_steps.extend(trees_lo_held.map(|n| ("trees-lo".to_string(), n)));
+    // What's left of the steps the rest wait for (crate::agent::steps::View): every target the
+    // plan holds is held through its readiness in it.
+    let mut left = tw.left.clone();
+    left.set("trees", trees_left.iter().cloned());
+    left.set("trees-lo", trees_lo_left.iter().cloned());
+    left.world(
+        "heritage-sites",
+        sites_pending || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")),
+    );
+    left.world(
+        "buildings",
+        tiles.buildings_release(m).is_none_or(|b| !m.contains_key(&crate::buildtiles::index_logical(b))),
+    );
+    left.world("reach", reach.is_none());
     let mut backfill: Vec<Work> = Vec::new();
     if !tree_backfill.is_empty() {
         backfill.push(Work { step: "trees".into(), targets: tree_backfill });
@@ -2775,18 +2782,18 @@ pub fn plan(
     // The z6 tiles wait for the heritage sites, the pass's reaches (which z6 tiles the coverage builds)
     // and the release's roadside buildings (a worldwide job, once): the terrain, slope and tree
     // cover meanwhile.
-    let waiting = sites_pending
-        || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources"))
-        || tiles.buildings_release(m).is_none_or(|b| !m.contains_key(&crate::buildtiles::index_logical(b)));
+    // (Every z6 tile reads them whole, its row's `Read::Whole`s.)
+    let waiting = super::steps::wholes("unit").any(|s| left.any_left(s));
     // The trains' and the landmarks' chains: from the start, each step once what it reads is built
     // (`landmarks_work`: none waits for the z6 tiles but the overlays), listed after the regions'
     // work. A slot beside the regions' work takes them (crate::agent: every job by grant, packed by
     // its measures), a helper the candidates and peaks.
-    let chains = |last: bool| -> (Vec<Work>, Vec<(String, String)>) {
-        let (lw, held) = landmarks_work(cov, date, m, done, inputs, terrain_built, last, updates.way);
+    let chains = |last: bool, left: &mut Left| -> (Vec<Work>, Vec<(String, String)>) {
+        let (lw, held) = landmarks_work(cov, date, m, done, inputs, left, last, updates.way);
         (rail_chain(cov, date, m, done, inputs).into_iter().chain(lw).collect(), held)
     };
-    let Some(reach) = reach.filter(|_| !waiting) else {
+    let reach = reach.filter(|_| !waiting);
+    let Some(reach) = reach else {
         push(&mut work, "terrain-hi", terrain);
         push(&mut work, "terrain-deep", terrain_deep);
         push(&mut work, "terrain-lo", terrain_lo);
@@ -2795,7 +2802,7 @@ pub fn plan(
         push(&mut work, "slope-lo", slope_lo);
         push(&mut work, "trees", trees);
         push(&mut work, "trees-lo", trees_lo);
-        let (cw, lh) = chains(false);
+        let (cw, lh) = chains(false, &mut left);
         work.extend(cw);
         held_steps.extend(lh);
         let each: Vec<&Coverage> = updates.each.iter().map(|(_, c)| c).collect();
@@ -2808,7 +2815,7 @@ pub fn plan(
             None => "the regions' z6 tiles wait for the pass's heritage sites, reaches or roadside buildings".into(),
         };
         let publishing = PublishLine { why, ..Default::default() };
-        return Plan { work, backfill, publishing, terrain_built, held: held_steps, drops, ..Default::default() };
+        return Plan { work, backfill, publishing, left, held: held_steps, drops, ..Default::default() };
     };
 
     // base(U): the z6 tiles the coverage builds. Each region's: those it builds itself (a road of theirs
@@ -2832,8 +2839,8 @@ pub fn plan(
         .collect();
     // (What a z6 tile waits for is finer than those z3 tiles: the terrain targets it reads, its row's
     // declaration, crate::agent::steps; `reads` is the terrain its region lists as its own.)
-    let unit_held: Vec<bool> =
-        units.iter().map(|(u, _)| waits("unit", &u.slash(), &|s: &str, t: &str| tw.is_left(s, t))).collect();
+    let unit_held: Vec<bool> = units.iter().map(|(u, _)| !ready("unit", &u.slash(), &left)).collect();
+    left.set("unit", units.iter().zip(&unit_stale).filter(|p| *p.1).map(|((u, _), _)| u.slash()));
     let buildable = |i: usize| units[i].1.is_some() && !unit_held[i];
     let unknown: Vec<String> = units.iter().filter(|(_, k)| k.is_none()).map(|(u, _)| u.slash()).collect();
     let target = |i: usize| -> Option<(String, String)> { Some((units[i].0.slash(), units[i].1.clone()?)) };
@@ -3299,7 +3306,7 @@ pub fn plan(
     push(&mut work, "slope-lo", slope_lo);
     push(&mut work, "trees", trees);
     push(&mut work, "trees-lo", trees_lo);
-    let (cw, lh) = chains(last_now);
+    let (cw, lh) = chains(last_now, &mut left);
     work.extend(cw);
     held_steps.extend(lh);
     work.extend(bld);
@@ -3320,7 +3327,7 @@ pub fn plan(
         backfill,
         publishing,
         idle: last_now,
-        terrain_built,
+        left,
         held: held_steps,
     }
 }
@@ -3894,20 +3901,20 @@ fn landmarks_chain(
         .map(|k| Work { step: "overlays".into(), targets: vec![("overlays".into(), k)] })
 }
 
-/// The landmarks' work that can run now (docs/building.md §2, Order), each step once what it reads is
-/// built as it will stay (a worldwide job of the pass that's stale, about to make it again, counts
-/// as not built: what read it would be built twice), none waiting for the z6 tiles but the overlays
-/// (they read the built z6 tiles: after the last, `last`): the candidates (once the pass's
-/// hiking-route ends are made); their peaks once every candidate is, the pass's summits are made
-/// and the terrain packs they read are (`terrain_built`: no terrain-hi or terrain-lo work left); the items' facts
-/// and pageviews once every candidate is; the rest of the heritage chain once the heritage sites
-/// are; the landmark points once those four are (on the pass's heritage, never today's meanwhile);
-/// then the overlays. They don't wait for each other otherwise: the heritage chain (an hour and
-/// more of network) runs beside the candidates. The landmark points and the overlays are gated by
-/// time (`gate_open`, `way`'s gaps): the points at most hourly while z6 tiles build (`MARKS_EVERY_S`),
+/// The landmarks' work that can run now (docs/building.md §2, Order), each target once what it
+/// reads is built as it will stay (its readiness in `left`, crate::agent::steps: a worldwide job of
+/// the pass that's stale, about to make it again, counts as left: what read it would be built
+/// twice), none waiting for the z6 tiles but the overlays (they read the built z6 tiles: after the
+/// last, `last`): the candidates once the pass's hiking-route ends are made; a tile's peaks once its
+/// candidates are, the pass's summits and the terrain packs they read; the items' facts and
+/// pageviews once every candidate is; the rest of the heritage chain once the heritage sites are;
+/// the landmark points and the overlays once those are (on the pass's heritage, never today's
+/// meanwhile). They don't wait for each other otherwise: the heritage chain (an hour and more of
+/// network) runs beside the candidates. The landmark points and the overlays are gated by time
+/// (`gate_open`, `way`'s gaps): the points at most hourly while z6 tiles build (`MARKS_EVERY_S`),
 /// the overlays every `OVERLAYS_EVERY_S`; both at once after the last z6 tile. With it, the steps
-/// with work left (stale against what's built now) that wait for those before them, each with what
-/// it waits for (`Plan::held`); the time gates aren't a wait for a step.
+/// with targets held, each with what they wait for (`Plan::held`); the time gates aren't a wait.
+/// What it finds left of its steps goes into `left`.
 #[allow(clippy::too_many_arguments)]
 fn landmarks_work(
     cov: &Coverage,
@@ -3915,35 +3922,41 @@ fn landmarks_work(
     m: &BTreeMap<String, String>,
     done: &Keys,
     inputs: &BTreeMap<String, String>,
-    terrain_built: bool,
+    left: &mut Left,
     last: bool,
     way: Publishing,
 ) -> (Vec<Work>, Vec<(String, String)>) {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     let mut out = Vec::new();
     let mut held: Vec<(String, String)> = Vec::new();
-    let mut hold = |step: &str, why: &str| held.push((step.into(), why.into()));
+    // (Each of a step's stale targets that can run, the rest held, said.)
+    let mut take = |step: &str, targets: Vec<(String, String)>, left: &Left, out: &mut Vec<Work>| {
+        let (go, wait): (Vec<_>, Vec<_>) = targets.into_iter().partition(|(t, _)| ready(step, t, left));
+        if let Some(n) = held_note(step, wait.iter().map(|(t, _)| t.as_str()), left) {
+            held.push((step.to_string(), n));
+        }
+        if !go.is_empty() {
+            out.push(Work { step: step.into(), targets: go });
+        }
+    };
     // (None while the spacing their extract reads isn't known: the candidates wait, and what reads
     // them.)
     let keyed = pois_keys(cov, date, m, inputs);
-    let units: Vec<(TileId, String)> = keyed.clone().unwrap_or_default();
-    let ends =
-        keyed.is_some() && m.contains_key(&format!("work/trailends/{date}")) && trailends_work(date, m, done).is_none();
-    let stale_pois: Vec<(String, String)> = if ends {
-        units.iter().filter(|(u, k)| stale(&done.pois, &u.slash(), k)).map(|(u, k)| (u.slash(), k.clone())).collect()
-    } else {
-        Vec::new()
-    };
-    let pois_built = ends && stale_pois.is_empty();
-    if !stale_pois.is_empty() {
-        out.push(Work { step: "pois".into(), targets: stale_pois });
+    if keyed.is_none() {
+        left.unknown.insert("spacing");
     }
-    let peaks_ready = pois_built
-        && terrain_built
-        && m.contains_key(&format!("work/summits/{date}"))
-        && summits_work(date, m, done).is_none();
-    // (Held, they're said only with keyed candidates: before, nothing of the chain is known.)
-    let stale_peaks: Vec<(String, String)> = if peaks_ready || keyed.is_some() {
+    let units: Vec<(TileId, String)> = keyed.clone().unwrap_or_default();
+    left.world(
+        "trailends",
+        !m.contains_key(&format!("work/trailends/{date}")) || trailends_work(date, m, done).is_some(),
+    );
+    left.world("summits", !m.contains_key(&format!("work/summits/{date}")) || summits_work(date, m, done).is_some());
+    let stale_pois: Vec<(String, String)> =
+        units.iter().filter(|(u, k)| stale(&done.pois, &u.slash(), k)).map(|(u, k)| (u.slash(), k.clone())).collect();
+    left.world("pois", keyed.is_none());
+    left.set("pois", stale_pois.iter().map(|t| t.0.clone()));
+    // (Before keyed candidates nothing of the chain is known: none of it is said.)
+    let stale_peaks: Vec<(String, String)> = if keyed.is_some() {
         peaks_keys(cov, date, m)
             .into_iter()
             .filter(|(u, k)| stale(&done.peaks, &u.slash(), k))
@@ -3952,61 +3965,58 @@ fn landmarks_work(
     } else {
         Vec::new()
     };
-    if !stale_peaks.is_empty() {
-        if peaks_ready {
-            out.push(Work { step: "peaks".into(), targets: stale_peaks });
-        } else {
-            hold("peaks", PEAKS_WAIT);
-        }
+    left.world("peaks", keyed.is_none());
+    left.set("peaks", stale_peaks.iter().map(|t| t.0.clone()));
+    // (The items are left without candidates now: their key reads them.)
+    let pois_now = if keyed.is_some() { current_pois(cov, date, m) } else { Vec::new() };
+    let items = (!pois_now.is_empty()).then(|| items_key(date, &pois_now));
+    let items_stale = items.as_ref().filter(|k| done.lo.get("items") != Some(*k));
+    left.world("items", items.is_none() || items_stale.is_some());
+    // (With no key for the heritage sites (no registers accepted yet) nothing heritage-related runs,
+    // an older heritage-sources there or not.)
+    if heritage_sites_key(cov, date, m, inputs).is_none() {
+        left.unknown.insert("registers");
+        left.world("heritage-sites", true);
+    } else {
+        left.world("heritage-sites", heritage_sites_work(cov, date, m, done, inputs).is_some());
     }
+    let heritage = heritage_key(cov, date, m);
+    let heritage_stale = heritage.clone().filter(|k| done.lo.get("heritage") != Some(k));
+    left.world("heritage", heritage.is_none() || heritage_stale.is_some());
+    take("pois", stale_pois, left, &mut out);
+    take("peaks", stale_peaks, left, &mut out);
     // (Held for the candidates, the items say so only when stale on the candidates there now: a
     // candidates' run that writes the same files leaves their key as it is.)
-    let pois_now = if keyed.is_some() { current_pois(cov, date, m) } else { Vec::new() };
-    if !pois_now.is_empty() {
-        let k = items_key(date, &pois_now);
-        if done.lo.get("items").map(String::as_str) != Some(k.as_str()) {
-            if pois_built {
-                out.push(Work { step: "items".into(), targets: vec![("items".into(), k)] });
-            } else {
-                hold("items", ITEMS_WAIT);
-            }
-        }
-    }
-    // (Not before the heritage sites are made as the coverage wants them; with no key for them (no
-    // registers accepted yet) nothing heritage-related runs, an older heritage-sources there or
-    // not, and the marks and overlays wait.)
-    let sites_due =
-        heritage_sites_key(cov, date, m, inputs).is_none() || heritage_sites_work(cov, date, m, done, inputs).is_some();
-    if let Some(k) = heritage_key(cov, date, m).filter(|k| done.lo.get("heritage") != Some(k)) {
-        if sites_due {
-            hold("heritage", HERITAGE_WAIT);
-        } else {
-            out.push(Work { step: "heritage".into(), targets: vec![("heritage".into(), k)] });
-        }
-    }
+    take("items", items_stale.map(|k| ("items".to_string(), k.clone())).into_iter().collect(), left, &mut out);
+    take("heritage", heritage_stale.map(|k| ("heritage".to_string(), k)).into_iter().collect(), left, &mut out);
     let marks_k = marks_key(date, m, &units.iter().map(|(u, _)| *u).collect::<Vec<_>>());
-    if !marks_ready(cov, date, m, done, inputs) {
-        if keyed.is_some() && done.lo.get("marks").map(String::as_str) != Some(marks_k.as_str()) {
-            hold("marks", MARKS_WAIT);
-        }
-        if overlays_key(date, m).is_some_and(|k| done.lo.get("overlays") != Some(&k)) {
-            hold("overlays", MARKS_WAIT);
+    let marks_stale = keyed.is_some() && done.lo.get("marks").map(String::as_str) != Some(marks_k.as_str());
+    left.world("marks", marks_stale);
+    let overlays = overlays_key(date, m).filter(|k| done.lo.get("overlays") != Some(k));
+    left.world("overlays", overlays.is_some());
+    if !m.contains_key(crate::markconv::HERITAGE_DOTS) {
+        left.unknown.insert("heritage-dots");
+    }
+    // (Gated by time once ready: not held then.)
+    let marks = marks_stale.then(|| ("marks".to_string(), marks_k));
+    if ready("marks", "marks", left) {
+        if gate_open(last, way.since_marks, MARKS_EVERY_S) {
+            take("marks", marks.into_iter().collect(), left, &mut out);
         }
     } else {
-        if done.lo.get("marks").map(String::as_str) != Some(marks_k.as_str())
-            && gate_open(last, way.since_marks, MARKS_EVERY_S)
-        {
-            out.push(Work { step: "marks".into(), targets: vec![("marks".into(), marks_k)] });
+        take("marks", marks.into_iter().collect(), left, &mut out);
+    }
+    // (The overlays on their own gate, from the dots the last marks run wrote, whether or not
+    // the marks are current: under z6 tiles arriving every minute they rarely are.)
+    let overlays = overlays.map(|k| ("overlays".to_string(), k));
+    match readiness("overlays", "overlays", left) {
+        Ready::Yes => {
+            if gate_open(last, way.since_overlays, OVERLAYS_EVERY_S) {
+                take("overlays", overlays.into_iter().collect(), left, &mut out);
+            }
         }
-        // (The overlays on their own gate, from the dots the last marks run wrote, whether or not
-        // the marks are current: under z6 tiles arriving every minute they rarely are.)
-        if let Some(k) = overlays_key(date, m).filter(|k| {
-            m.contains_key(crate::markconv::HERITAGE_DOTS)
-                && gate_open(last, way.since_overlays, OVERLAYS_EVERY_S)
-                && done.lo.get("overlays") != Some(k)
-        }) {
-            out.push(Work { step: "overlays".into(), targets: vec![("overlays".into(), k)] });
-        }
+        Ready::Unknown(_) => {}
+        Ready::Waits(_) => take("overlays", overlays.into_iter().collect(), left, &mut out),
     }
     (out, held)
 }
@@ -4178,7 +4188,7 @@ fn bld_tiles(cov: &Coverage) -> BldTiles {
 
 /// Z6 tile (x, y) and its 8 neighbours, rows from the north (None past the world's edge: not
 /// wrapped across the antimeridian, as bldtiles reads them: crate::bld::job::work_files).
-fn bld_around(x: u32, y: u32) -> Vec<(Option<u32>, Option<u32>)> {
+pub(crate) fn bld_around(x: u32, y: u32) -> Vec<(Option<u32>, Option<u32>)> {
     let c = |v: u32, d: i64| u32::try_from(v as i64 + d).ok().filter(|&v| v < 64);
     (-1i64..=1)
         .flat_map(|dy| (-1i64..=1).map(move |dx| (dx, dy)))
@@ -4233,37 +4243,32 @@ pub fn bld_work(
 ) -> Vec<Work> {
     let Some(sources) = bld_sources(inputs) else { return Vec::new() };
     let mut out = Vec::new();
+    let mut left = Left::default();
+    if !sources {
+        left.unknown.insert("bld-sources");
+    }
     let k = bld_fetch_key(cov, inputs);
     if done.lo.get("bld-fetch") != Some(&k) {
         out.push(Work { step: "bld-fetch".into(), targets: vec![("bld-fetch".into(), k)] });
     }
     let tt = bld_targets(cov, m, inputs);
     out.extend(prune_bld(m, &tt, sources));
-    let mut prep: Vec<(String, String)> =
-        tt.prep.iter().filter(|(t, k)| done.bldprep.get(t) != Some(k)).cloned().collect();
-    let unprepared: BTreeSet<&str> = prep.iter().map(|t| t.0.as_str()).collect();
-    let ready = |t: &str| {
-        TileId::parse(t).is_some_and(|u| {
-            bld_around(u.x, u.y).into_iter().all(|n| match n {
-                (Some(x), Some(y)) => !unprepared.contains(format!("6/{x}/{y}").as_str()),
-                _ => true,
-            })
-        })
-    };
-    // (None before anything's downloaded: every tile would come out empty.)
+    let prep: Vec<(String, String)> = tt.prep.iter().filter(|(t, k)| done.bldprep.get(t) != Some(k)).cloned().collect();
+    left.set("bldprep", prep.iter().map(|t| t.0.clone()));
+    // (Each target once what it reads is: crate::agent::steps' declaration.)
+    let mut prep: Vec<(String, String)> = prep.into_iter().filter(|(t, _)| ready("bldprep", t, &left)).collect();
+    let tiles_stale: Vec<(String, String)> =
+        tt.tiles.iter().filter(|(t, k)| done.bldtiles.get(t) != Some(k)).cloned().collect();
+    left.set("bldtiles", tiles_stale.iter().map(|t| t.0.clone()));
     let mut tiles: Vec<(String, String)> =
-        tt.tiles.iter().filter(|(t, k)| sources && done.bldtiles.get(t) != Some(k) && ready(t)).cloned().collect();
+        tiles_stale.into_iter().filter(|(t, _)| ready("bldtiles", t, &left)).collect();
     prep.sort_by_cached_key(|t| rank(&t.0));
     tiles.sort_by_cached_key(|t| rank(&t.0));
     // The field's lo levels once every bldtiles target of their z3 tile is done as it will stay.
-    let tiles_stale: BTreeSet<&str> =
-        tt.tiles.iter().filter(|(t, k)| done.bldtiles.get(t) != Some(k)).map(|t| t.0.as_str()).collect();
     let lo: Vec<(String, String)> = tt
         .lo
         .iter()
-        .filter(|(q, k, ts)| {
-            sources && done.bldfield_lo.get(q) != Some(k) && ts.iter().all(|t| !tiles_stale.contains(t.as_str()))
-        })
+        .filter(|(q, k, _)| done.bldfield_lo.get(q) != Some(k) && ready("bldfield-lo", q, &left))
         .map(|(q, k, _)| (q.clone(), k.clone()))
         .collect();
     for (step, targets) in [("bldprep", prep), ("bldtiles", tiles), ("bldfield-lo", lo)] {
@@ -4568,40 +4573,30 @@ pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &Terra
 pub fn depth_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Vec<Work> {
     let Some(dt) = depth_targets(cov, m, tiles) else { return Vec::new() };
     let hi: Vec<(String, String)> = dt.hi.iter().filter(|(t, k)| done.depth.get(t) != Some(k)).cloned().collect();
-    // (A z3 tile waits while one of its z6 tiles is stale or one of their packs it reads is in a
-    // hand-off waiting to be merged: such a pack isn't in the manifest its key reads yet, so it
-    // would run again once it is.)
-    let mut lo_wait: BTreeSet<(u32, u32)> =
-        hi.iter().filter_map(|(t, _)| TileId::parse(t)).map(|u| (u.x >> 3, u.y >> 3)).collect();
-    let pres: Vec<String> = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER]
-        .iter()
-        .map(|l| format!("layers/{l}/hi/6-"))
-        .collect();
-    lo_wait.extend(
+    // (A target is left while stale, or while one of its packs is in a hand-off waiting to be
+    // merged: such a pack isn't in the manifest its readers' keys read yet, so they would run again
+    // once it is. A z6 tile whose key can't be worked out now is left too.)
+    let mut left = Left::default();
+    left.set("depth", hi.iter().map(|t| t.0.clone()));
+    left.world("depth", dt.unknown > 0);
+    let layers = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER];
+    let handed = |level: &str, z: u8| -> Vec<String> {
+        let pres: Vec<String> = layers.iter().map(|l| format!("layers/{l}/{level}/{z}-")).collect();
         done.handed
             .iter()
             .filter_map(|l| pres.iter().find_map(|p| l.strip_prefix(p.as_str())))
-            .filter_map(|r| TileId::parse(&format!("6/{}", r.replace('-', "/"))))
-            .map(|u| (u.x >> 3, u.y >> 3)),
-    );
-    let lo: Vec<(String, String)> = dt
-        .lo
-        .iter()
-        .filter(|(t, k)| {
-            done.depth_lo.get(t) != Some(k) && TileId::parse(t).is_some_and(|u| !lo_wait.contains(&(u.x, u.y)))
-        })
-        .cloned()
-        .collect();
-    // (The root once no assembly is stale or waits to be merged: its key reads their packs, so it
-    // isn't made while one runs and again after it.)
-    let lo_stale = dt.lo.iter().any(|(t, k)| done.depth_lo.get(t) != Some(k));
-    let lo_pres: Vec<String> = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER]
-        .iter()
-        .map(|l| format!("layers/{l}/lo/"))
-        .collect();
-    let lo_handed = done.handed.iter().any(|l| lo_pres.iter().any(|p| l.starts_with(p.as_str())));
-    let root =
-        if dt.unknown == 0 && hi.is_empty() && !lo_stale && !lo_handed { depth_root_work(m, done) } else { None };
+            .filter_map(|r| TileId::parse(&format!("{z}/{}", r.replace('-', "/"))))
+            .map(|u| u.slash())
+            .collect()
+    };
+    left.set("depth", handed("hi", 6));
+    left.set("depth-lo", dt.lo.iter().filter(|(t, k)| done.depth_lo.get(t) != Some(k)).map(|t| t.0.clone()));
+    left.set("depth-lo", handed("lo", 3));
+    let lo: Vec<(String, String)> =
+        dt.lo.iter().filter(|(t, k)| done.depth_lo.get(t) != Some(k) && ready("depth-lo", t, &left)).cloned().collect();
+    // (The root once no assembly is left: its key reads their packs, so it isn't made while one
+    // runs and again after it.)
+    let root = if ready("depth-root", "depth-root", &left) { depth_root_work(m, done) } else { None };
     let mut out = Vec::new();
     for (step, targets) in [("depth", hi), ("depth-lo", lo)] {
         if !targets.is_empty() {
@@ -4726,31 +4721,22 @@ pub fn polar_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, til
         v.iter().filter(|(t, k)| map.get(t) != Some(k)).cloned().collect()
     };
     let terrain = stale(&done.polar_terrain, &pt.terrain);
-    let mut slope = stale(&done.polar_slope, &pt.slope);
-    let left: BTreeSet<&str> = terrain.iter().map(|(t, _)| t.as_str()).collect();
-    // (A hand-off waiting to be merged: its packs aren't in the manifest the keys read yet.)
+    let slope = stale(&done.polar_slope, &pt.slope);
+    // (A block is left while stale, or while its pack is in a hand-off waiting to be merged: it
+    // isn't in the manifest its readers' keys read yet.)
     let handed = |kind: &str, t: &str| {
         crate::polar::parse_target(t)
             .is_some_and(|(pole, b)| done.handed.contains(&crate::polar::block_logical(kind, pole, b)))
     };
-    slope.retain(|(t, _)| {
-        crate::polar::parse_target(t).is_some_and(|(pole, b)| {
-            crate::polar::around(pole, b).into_iter().all(|n| {
-                let nt = crate::polar::target(pole, n);
-                !left.contains(nt.as_str()) && !handed("terrain", &nt)
-            })
-        })
-    });
-    let slope_left: BTreeSet<String> = stale(&done.polar_slope, &pt.slope).into_iter().map(|(t, _)| t).collect();
-    let root: Vec<(String, String)> = stale(&done.polar_root, &pt.root)
-        .into_iter()
-        .filter(|(r, _)| {
-            let of = |t: &String| t.split('/').next() == Some(r.as_str());
-            !left.iter().any(|t| of(&t.to_string()))
-                && !slope_left.iter().any(of)
-                && !pt.terrain.iter().any(|(t, _)| of(t) && (handed("terrain", t) || handed("slope", t)))
-        })
-        .collect();
+    let mut left = Left::default();
+    left.set("polar-terrain", terrain.iter().map(|t| t.0.clone()));
+    left.set("polar-slope", slope.iter().map(|t| t.0.clone()));
+    for (step, kind) in [("polar-terrain", "terrain"), ("polar-slope", "slope")] {
+        left.set(step, pt.terrain.iter().filter(|(t, _)| handed(kind, t)).map(|t| t.0.clone()));
+    }
+    let slope: Vec<(String, String)> = slope.into_iter().filter(|(t, _)| ready("polar-slope", t, &left)).collect();
+    let root: Vec<(String, String)> =
+        stale(&done.polar_root, &pt.root).into_iter().filter(|(r, _)| ready("polar-root", r, &left)).collect();
     let mut out = Vec::new();
     for (step, targets) in [("polar-terrain", terrain), ("polar-slope", slope), ("polar-root", root)] {
         if !targets.is_empty() {
@@ -5383,6 +5369,25 @@ pub(crate) mod tests {
     use crate::agent::recipes::Recipe;
     use crate::reach::{LongWay, Reach};
 
+    /// The targets a target of `step` reads of other steps' (crate::agent::steps::read_targets),
+    /// its whole reads aside.
+    fn reads_of(step: &str, t: &str) -> Vec<(&'static str, String)> {
+        crate::agent::steps::read_targets(step, t)
+            .into_iter()
+            .filter_map(|r| match r {
+                crate::agent::steps::ReadTarget::One(s, u) => Some((s, u)),
+                crate::agent::steps::ReadTarget::Whole(_) => None,
+            })
+            .collect()
+    }
+
+    /// The landmarks' view of the terrain (`landmarks_work`'s `left`): all built, or some left.
+    fn terrain_left(built: bool) -> Left {
+        let mut l = Left::default();
+        l.world("terrain-hi", !built);
+        l
+    }
+
     pub(crate) fn e7box(w: f64, s: f64, e: f64, n: f64) -> [i32; 4] {
         [(w * 1e7) as i32, (s * 1e7) as i32, (e * 1e7) as i32, (n * 1e7) as i32]
     }
@@ -5755,7 +5760,7 @@ pub(crate) mod tests {
         let w = terrain_work(&tt, &BTreeMap::new(), &done);
         assert!(w.terrain_left.contains("3/3/2"), "its z3 tile still has terrain left (10/500/370's deep)");
         assert_eq!(w.slope_deep, vec![(a.to_string(), "s".to_string())], "{w:?}");
-        assert!(w.held.contains(&("slope-deep", wait_note("slope-deep"))), "{:?}", w.held);
+        assert!(w.held.iter().any(|(s, n)| *s == "slope-deep" && n.contains("terrain-deep")), "{:?}", w.held);
         // A neighbour's deep levels left: it waits too.
         let mut done2 = Keys::default();
         done2.record("terrain-hi", &tt.terrain);
@@ -5777,7 +5782,6 @@ pub(crate) mod tests {
     /// something it doesn't declare fails here.
     #[test]
     fn declared_reads_cover_the_keys() {
-        use crate::agent::steps::reads_of;
         // (The logical names a declared read stands for, as the slope keys name them.)
         let names = |step: &str, t: &str| -> Vec<String> {
             let u = TileId::parse(t).unwrap();
@@ -5897,9 +5901,9 @@ pub(crate) mod tests {
         let tt = terrain_slope_targets(&c, &m, &tiles_for(&m));
         let tw = terrain_work(&tt, &m, &Keys::default());
         assert!(tw.slope.is_empty() && !tw.terrain.is_empty(), "slope offered none, terrain some: {tw:?}");
-        let held = |tw: &TerrainWork, s: &str| tw.held.iter().find(|(h, _)| *h == s).map(|(_, w)| *w);
-        assert_eq!(held(&tw, "slope-hi"), Some(wait_note("slope-hi")));
-        assert_eq!(held(&tw, "terrain-lo"), Some(wait_note("terrain-lo")));
+        let held = |tw: &TerrainWork, s: &str| tw.held.iter().find(|(h, _)| *h == s).map(|(_, w)| w.clone());
+        assert!(held(&tw, "slope-hi").is_some_and(|n| n.starts_with("wait for terrain-hi")), "{:?}", tw.held);
+        assert!(held(&tw, "terrain-lo").is_some_and(|n| n.starts_with("wait for terrain-hi")), "{:?}", tw.held);
         assert!(held(&tw, "slope-lo").is_some());
         // The terrain all built: slope's hi tiles are offered, and say nothing.
         let mut done = Keys::default();
@@ -6414,11 +6418,8 @@ pub(crate) mod tests {
         // The roads wait for the deep levels under them; the slope for them too.
         let p = plan(&m, &done, &sets);
         // (Those reading none of the deep targets go now: 6/30/16 and 6/31/16.)
-        let reads_deep = |u: &str| {
-            crate::agent::steps::reads_of("unit", u)
-                .iter()
-                .any(|(s, t)| *s == "terrain-deep" && deep.iter().any(|d| d.0 == *t))
-        };
+        let reads_deep =
+            |u: &str| reads_of("unit", u).iter().any(|(s, t)| *s == "terrain-deep" && deep.iter().any(|d| d.0 == *t));
         assert!(
             unit_targets(&p).iter().all(|u| !reads_deep(u)) && ["6/28/16", "6/29/16"].iter().all(|u| reads_deep(u))
         );
@@ -8689,29 +8690,65 @@ pub(crate) mod tests {
         assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["items"]);
         m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
         // Nor while terrain-hi or terrain-lo has work left (#670: they read the packs it makes).
-        let (w, held) = landmarks_work(&c, "d", &m, &done, &spaced(&BTreeMap::new()), false, false, Default::default());
+        let (w, held) = landmarks_work(
+            &c,
+            "d",
+            &m,
+            &done,
+            &spaced(&BTreeMap::new()),
+            &mut terrain_left(false),
+            false,
+            Default::default(),
+        );
         assert_eq!(steps(&w), vec!["items"]);
         // Said: the peaks wait; the items, offered, don't (#786).
-        assert!(held.iter().any(|(s, w)| s == "peaks" && w == PEAKS_WAIT), "{held:?}");
+        assert!(held.iter().any(|(s, w)| s == "peaks" && w.contains("terrain-hi")), "{held:?}");
         assert!(!held.iter().any(|(s, _)| s == "items"), "{held:?}");
         // The terrain built: offered.
         assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["peaks", "items"]);
         // Offered, the peaks say nothing.
-        let (w, held) = landmarks_work(&c, "d", &m, &done, &spaced(&BTreeMap::new()), true, false, Default::default());
+        let (w, held) = landmarks_work(
+            &c,
+            "d",
+            &m,
+            &done,
+            &spaced(&BTreeMap::new()),
+            &mut terrain_left(true),
+            false,
+            Default::default(),
+        );
         assert!(steps(&w).iter().any(|s| s == "peaks") && !held.iter().any(|(s, _)| s == "peaks"), "{w:?} {held:?}");
         // The items made, then the candidates stale again: the items, current on the candidates
         // there, aren't said to wait (a run writing the same files leaves their key); the peaks are.
         let items = w.iter().find(|w| w.step == "items").unwrap().targets.clone();
         done.record("items", &items);
         done.pois.insert("6/28/16".into(), "older".into());
-        let (w, held) = landmarks_work(&c, "d", &m, &done, &spaced(&BTreeMap::new()), true, false, Default::default());
+        let (w, held) = landmarks_work(
+            &c,
+            "d",
+            &m,
+            &done,
+            &spaced(&BTreeMap::new()),
+            &mut terrain_left(true),
+            false,
+            Default::default(),
+        );
         assert_eq!(steps(&w), vec!["pois"]);
         assert!(!held.iter().any(|(s, _)| s == "items"), "{held:?}");
         assert!(held.iter().any(|(s, _)| s == "peaks"), "{held:?}");
         // Their files changed meanwhile: now the items wait for the candidates.
         m.insert("work/pois/6-28-16".into(), "work/pois/6-28-16.bbbbbbbbbbbbbbbb.json".into());
-        let (_, held) = landmarks_work(&c, "d", &m, &done, &spaced(&BTreeMap::new()), true, false, Default::default());
-        assert!(held.iter().any(|(s, w)| s == "items" && w == ITEMS_WAIT), "{held:?}");
+        let (_, held) = landmarks_work(
+            &c,
+            "d",
+            &m,
+            &done,
+            &spaced(&BTreeMap::new()),
+            &mut terrain_left(true),
+            false,
+            Default::default(),
+        );
+        assert!(held.iter().any(|(s, w)| s == "items" && w == "wait for pois"), "{held:?}");
     }
 
     #[test]

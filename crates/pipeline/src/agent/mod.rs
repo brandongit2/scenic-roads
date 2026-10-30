@@ -7925,13 +7925,15 @@ impl Agent {
         let summits = build::summits_work(date, &manifest, &done);
         // (Held, they're the landmarks chain's first step in the forecast, after the terrain.)
         let mut summits_held = None;
-        if !planned.terrain_built && (summits.is_some() || manifest.contains_key(&format!("work/summits/{date}"))) {
+        let summits_waits = match steps::readiness("summits", "summits", &planned.left) {
+            steps::Ready::Waits(w) => Some(steps::wait_note(&w)),
+            _ => None,
+        };
+        if let Some(why) =
+            summits_waits.filter(|_| summits.is_some() || manifest.contains_key(&format!("work/summits/{date}")))
+        {
             summits_held = summits;
-            waiting.push(Waiting {
-                step: Some("summits".into()),
-                what: "summits".into(),
-                why: build::PEAKS_TERRAIN_WAIT.into(),
-            });
+            waiting.push(Waiting { step: Some("summits".into()), what: "summits".into(), why });
         } else if let Some(w) = summits {
             let j = job(
                 format!("summits {date}"),

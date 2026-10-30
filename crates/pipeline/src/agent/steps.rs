@@ -163,28 +163,167 @@ pub struct Step {
     /// Its jobs only change build records (no file made, read or removed): never a cold start,
     /// packed beside any jobs at one thread and little memory (task #838, crate::coord::sched).
     pub records_only: bool,
-    /// What one target of it reads of other steps' targets, and so waits for (`Reads`): the
-    /// planner, the forecast and the page's waits all derive readiness per target from it (task
-    /// #864). None: it reads no other tiled step's targets (a world step's waits are its own).
-    pub reads: Option<Reads>,
-    /// The steps whose whole work a target of it waits for (a chain's: it reads what all their
-    /// targets make, e.g. depth-root every depth-lo assembly): the forecast's chain waits derive
-    /// from it (forecast::chain_deps, task #864), as the planner's chain code holds them
-    /// (build::landmarks_work, bld_work, depth_work, polar_next).
-    pub after: &'static [&'static str],
+    /// Everything one target of it reads, and so waits for (`Read`, docs/readiness.md §2): the
+    /// planner, the forecast, the page and `scenic status` all answer readiness per target from it
+    /// (`readiness`, `read_targets`). Empty: it reads no other step's targets.
+    pub reads: &'static [Read],
 }
 
-/// What a target of a step reads of other steps' targets (`of`: (step, target) for each, any
-/// order, repeats allowed; a target listed that isn't one of its step's reads as built), and the
-/// waiting note said while one of them is left (`why`, in the summits' form: what the step waits
-/// for). Derived from what its run reads (its key's inputs: `agent::build`'s `slope_deep_from`,
-/// `slope_piece_from`, the lo keys), each a test checks against (`declared_reads_cover_the_keys`).
-/// Not waited on, though read: the terrain root (z0–2, built at the finish from every lo pack: a
-/// missing tile's farthest ancestor), whose change re-keys its readers anyway.
+/// One thing a target's run reads (docs/readiness.md §2).
 #[derive(Clone, Copy, Debug)]
-pub struct Reads {
-    pub of: fn(&str) -> Vec<(&'static str, String)>,
-    pub why: &'static str,
+pub enum Read {
+    /// Some targets of another step, by this target (any order, repeats allowed; one listed that
+    /// isn't among its step's targets as built is never left).
+    Targets { step: &'static str, of: fn(&str) -> Vec<String> },
+    /// Every target of another step (a chain's: it reads what all its targets make, e.g.
+    /// depth-root every depth-lo assembly).
+    Whole { step: &'static str },
+    /// An input that is no step's target (a spacing file, a pass's set): `Ready::Unknown` while
+    /// the caller's `View` can't work it out.
+    Input { name: &'static str },
+}
+
+/// Whether a target may run (`readiness`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ready {
+    Yes,
+    /// The reads still left: (step, target), a `Read::Whole`'s target its step's own name.
+    Waits(Vec<(&'static str, String)>),
+    /// The inputs that can't be worked out now.
+    Unknown(Vec<&'static str>),
+}
+
+/// What a caller knows of the build, for `readiness` (docs/readiness.md §3).
+pub trait View {
+    /// Target `t` of `step` is left (stale or unbuilt, runnable or not).
+    fn left(&self, step: &str, t: &str) -> bool;
+    /// Any target of `step` is left (a `Read::Whole`).
+    fn any_left(&self, step: &str) -> bool;
+    /// Input `name` can be worked out for target `t` (`Read::Input`); known unless the view says.
+    fn known(&self, _name: &str, _t: &str) -> bool {
+        true
+    }
+}
+
+/// A read target (`read_targets`): one target of a step, or a step's every target.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReadTarget {
+    One(&'static str, String),
+    Whole(&'static str),
+}
+
+/// What target `t` of `step` waits for, its row's declaration (`Step::reads`): the one list the
+/// planner and the forecast both wait on. Sorted, no repeats; inputs aren't targets.
+pub fn read_targets(step: &str, t: &str) -> Vec<ReadTarget> {
+    let mut v: Vec<ReadTarget> = Vec::new();
+    for r in row(step).map_or(&[][..], |r| r.reads) {
+        match *r {
+            Read::Targets { step, of } => v.extend(of(t).into_iter().map(|u| ReadTarget::One(step, u))),
+            Read::Whole { step } => v.push(ReadTarget::Whole(step)),
+            Read::Input { .. } => {}
+        }
+    }
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// Whether target `t` of `step` may run in `view` (docs/readiness.md §3): `Waits` while a target or
+/// step it reads is left, else `Unknown` while an input it reads can't be worked out, else `Yes`.
+pub fn readiness(step: &str, t: &str, view: &dyn View) -> Ready {
+    let waits: Vec<(&'static str, String)> = read_targets(step, t)
+        .into_iter()
+        .filter_map(|r| match r {
+            ReadTarget::One(s, u) => view.left(s, &u).then_some((s, u)),
+            ReadTarget::Whole(s) => view.any_left(s).then(|| (s, s.to_string())),
+        })
+        .collect();
+    if !waits.is_empty() {
+        return Ready::Waits(waits);
+    }
+    let unknown: Vec<&'static str> = row(step)
+        .map_or(&[][..], |r| r.reads)
+        .iter()
+        .filter_map(|r| match *r {
+            Read::Input { name } => (!view.known(name, t)).then_some(name),
+            _ => None,
+        })
+        .collect();
+    if unknown.is_empty() {
+        Ready::Yes
+    } else {
+        Ready::Unknown(unknown)
+    }
+}
+
+/// The steps a target of `step` reads whole (`Read::Whole`), in declared order.
+pub fn wholes(step: &str) -> impl Iterator<Item = &'static str> {
+    row(step).map_or(&[][..], |r| r.reads).iter().filter_map(|r| match *r {
+        Read::Whole { step } => Some(step),
+        _ => None,
+    })
+}
+
+/// Whether `readiness` says `Yes`.
+pub fn ready(step: &str, t: &str, view: &dyn View) -> bool {
+    readiness(step, t, view) == Ready::Yes
+}
+
+/// The waiting note of a step's targets held (`Plan::held`, the status's `waiting` list, the
+/// checklist's notes), from what they wait for (their `Ready::Waits`, any number of targets'):
+/// "wait for terrain-hi (12), terrain-lo 3/1/2, summits". Never hand-written: what a target waits
+/// for is its declared reads.
+pub fn wait_note<'a>(waits: impl IntoIterator<Item = &'a (&'static str, String)>) -> String {
+    let mut by: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> = Default::default();
+    for (s, t) in waits {
+        by.entry(s).or_default().insert(t);
+    }
+    let parts: Vec<String> = by
+        .into_iter()
+        .map(|(s, ts)| match ts.len() {
+            1 if ts.contains(s) => s.to_string(),
+            1 => format!("{s} {}", ts.first().unwrap()),
+            n => format!("{s} ({n})"),
+        })
+        .collect();
+    format!("wait for {}", parts.join(", "))
+}
+
+/// Left targets by step, as the planner gathers them (its `View`): a step in `whole` has every
+/// target left (a world step's own), an input in `unknown` can't be worked out.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Left {
+    pub targets: std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>>,
+    pub whole: std::collections::BTreeSet<&'static str>,
+    pub unknown: std::collections::BTreeSet<&'static str>,
+}
+
+impl Left {
+    /// `step`'s targets `ts` left (with those it has).
+    pub fn set(&mut self, step: &'static str, ts: impl IntoIterator<Item = String>) {
+        self.targets.entry(step).or_default().extend(ts);
+    }
+
+    /// World step `step` left, when `left`.
+    pub fn world(&mut self, step: &'static str, left: bool) {
+        if left {
+            self.whole.insert(step);
+        }
+    }
+}
+
+impl View for Left {
+    fn left(&self, step: &str, t: &str) -> bool {
+        self.whole.contains(step) || self.targets.get(step).is_some_and(|s| s.contains(t))
+    }
+
+    fn any_left(&self, step: &str) -> bool {
+        self.whole.contains(step) || self.targets.get(step).is_some_and(|s| !s.is_empty())
+    }
+
+    fn known(&self, name: &str, _t: &str) -> bool {
+        !self.unknown.contains(name)
+    }
 }
 
 /// The z6 tiles of z3 tile (x, y).
@@ -202,89 +341,198 @@ fn with_edges(z: u8, x: u32, y: u32) -> impl Iterator<Item = (u32, u32)> {
     std::iter::once((x, y)).chain(super::build::edge_neighbours(z, x, y))
 }
 
-/// terrain-lo 3/x/y: its z6 tiles' terrain (their mids).
-fn r_terrain_lo(t: &str) -> Vec<(&'static str, String)> {
-    at(t, 3).into_iter().flat_map(|(x, y)| z6_under(x, y)).map(|(a, b)| ("terrain-hi", format!("6/{a}/{b}"))).collect()
+/// The tiles of `v` at zoom `z`, as targets.
+fn named(z: u8, v: impl IntoIterator<Item = (u32, u32)>) -> Vec<String> {
+    v.into_iter().map(|(x, y)| format!("{z}/{x}/{y}")).collect()
+}
+
+/// A z3 tile's z6 tiles (terrain-lo's terrain-hi, slope-lo's slope-hi, trees-lo's trees,
+/// depth-lo's depth, bldfield-lo's bldtiles: their mids or packs).
+fn z6_of_z3(t: &str) -> Vec<String> {
+    named(6, at(t, 3).into_iter().flat_map(|(x, y)| z6_under(x, y)))
 }
 
 /// slope-deep 10/x/y: the deep packs of it and its edge neighbours, the hi packs of their z6 tiles
 /// and the lo packs of their z3 tiles (`slope_deep_from`).
-fn r_slope_deep(t: &str) -> Vec<(&'static str, String)> {
+fn slope_deep_reads(t: &str, z: u8) -> Vec<String> {
     let pz = crate::terrain_deep::PACK_Z;
     let k = pz - 6;
-    let mut v = Vec::new();
-    for (x, y) in at(t, pz).into_iter().flat_map(|(x, y)| with_edges(pz, x, y)) {
-        v.push(("terrain-deep", format!("{pz}/{x}/{y}")));
-        v.push(("terrain-hi", format!("6/{}/{}", x >> k, y >> k)));
-        v.push(("terrain-lo", format!("3/{}/{}", x >> (k + 3), y >> (k + 3))));
-    }
-    v
+    let s = match z {
+        6 => k,
+        3 => k + 3,
+        _ => 0,
+    };
+    named(z, at(t, pz).into_iter().flat_map(|(x, y)| with_edges(pz, x, y)).map(|(x, y)| (x >> s, y >> s)))
+}
+fn sd_deep(t: &str) -> Vec<String> {
+    slope_deep_reads(t, crate::terrain_deep::PACK_Z)
+}
+fn sd_hi(t: &str) -> Vec<String> {
+    slope_deep_reads(t, 6)
+}
+fn sd_lo(t: &str) -> Vec<String> {
+    slope_deep_reads(t, 3)
 }
 
-/// slope-hi 6/x/y: the hi packs of it and its edge neighbours, their z3 tiles' lo packs, and its
-/// z10 tiles' slope-deep parts (`slope_piece_from`).
-fn r_slope_hi(t: &str) -> Vec<(&'static str, String)> {
+/// slope-hi 6/x/y: the hi packs of it and its edge neighbours, their z3 tiles' lo packs
+/// (`slope_piece_from`), and its z10 tiles' slope-deep parts.
+fn sh_hi(t: &str) -> Vec<String> {
+    named(6, at(t, 6).into_iter().flat_map(|(x, y)| with_edges(6, x, y)))
+}
+fn sh_lo(t: &str) -> Vec<String> {
+    named(3, at(t, 6).into_iter().flat_map(|(x, y)| with_edges(6, x, y)).map(|(x, y)| (x >> 3, y >> 3)))
+}
+fn sh_deep(t: &str) -> Vec<String> {
     let pz = crate::terrain_deep::PACK_Z;
     let s = 1u32 << (pz - 6);
-    let mut v = Vec::new();
-    for (x, y) in at(t, 6).into_iter().flat_map(|(x, y)| with_edges(6, x, y)) {
-        v.push(("terrain-hi", format!("6/{x}/{y}")));
-        v.push(("terrain-lo", format!("3/{}/{}", x >> 3, y >> 3)));
-    }
-    if let Some((x, y)) = at(t, 6) {
-        v.extend((0..s * s).map(|i| ("slope-deep", format!("{pz}/{}/{}", x * s + i % s, y * s + i / s))));
-    }
-    v
+    named(pz, at(t, 6).into_iter().flat_map(|(x, y)| (0..s * s).map(move |i| (x * s + i % s, y * s + i / s))))
 }
 
-/// slope-lo 3/x/y: its z6 tiles' slope (their mids), and the lo terrain of it and its edge
-/// neighbours (`slope_lo_key`'s terrain).
-fn r_slope_lo(t: &str) -> Vec<(&'static str, String)> {
-    let Some((x, y)) = at(t, 3) else { return Vec::new() };
-    z6_under(x, y)
-        .map(|(a, b)| ("slope-hi", format!("6/{a}/{b}")))
-        .chain(with_edges(3, x, y).map(|(a, b)| ("terrain-lo", format!("3/{a}/{b}"))))
-        .collect()
-}
-
-/// trees-lo 3/x/y: its z6 tiles' tree cover (their mids).
-fn r_trees_lo(t: &str) -> Vec<(&'static str, String)> {
-    at(t, 3).into_iter().flat_map(|(x, y)| z6_under(x, y)).map(|(a, b)| ("trees", format!("6/{a}/{b}"))).collect()
+/// slope-lo 3/x/y: the lo terrain of it and its edge neighbours (`slope_lo_key`'s terrain).
+fn sl_lo(t: &str) -> Vec<String> {
+    named(3, at(t, 3).into_iter().flat_map(|(x, y)| with_edges(3, x, y)))
 }
 
 /// unit 6/x/y: the terrain packs over its tile + 30 km (crate::stage::MARGIN_KM) its staged tiles
-/// and its roads' heights read: the lo packs of z4–8's z3 tiles, the hi packs of its box's z6
-/// tiles (z9–12's), its box's deep packs (`build::unit_terrain_from`, `build::terrain_packs`).
-fn r_unit(t: &str) -> Vec<(&'static str, String)> {
+/// and its roads' heights read (`build::unit_terrain_from`, `build::terrain_packs`): the lo packs
+/// of z4–8's z3 tiles, the hi packs of its box's z6 tiles (z9–12's), its box's deep packs.
+fn unit_reads(t: &str, z: u8) -> Vec<String> {
     let Some((x, y)) = at(t, 6) else { return Vec::new() };
     let b = crate::stage::tile_box_grown(6, x, y, crate::stage::MARGIN_KM);
-    let mut v = Vec::new();
-    for z in 4..=8u8 {
-        let [x0, x1, y0, y1] = crate::stage::tile_range(z, b);
-        let s = z - 3;
-        for a in x0 >> s..=x1 >> s {
-            v.extend((y0 >> s..=y1 >> s).map(|c| ("terrain-lo", format!("3/{a}/{c}"))));
+    let mut v: Vec<(u32, u32)> = Vec::new();
+    let mut under = |zs: std::ops::RangeInclusive<u8>, to: u8| {
+        for z in zs {
+            let [x0, x1, y0, y1] = crate::stage::tile_range(z, b);
+            let s = z - to;
+            for a in x0 >> s..=x1 >> s {
+                v.extend((y0 >> s..=y1 >> s).map(|c| (a, c)));
+            }
         }
+    };
+    match z {
+        3 => under(4..=8, 3),
+        6 => under(9..=12, 6),
+        _ => {}
     }
-    for z in 9..=12u8 {
-        let [x0, x1, y0, y1] = crate::stage::tile_range(z, b);
-        let s = z - 6;
-        for a in x0 >> s..=x1 >> s {
-            v.extend((y0 >> s..=y1 >> s).map(|c| ("terrain-hi", format!("6/{a}/{c}"))));
-        }
+    if z == 6 || z == crate::terrain_deep::PACK_Z {
+        v.extend(crate::stage::tiles_in(z, b));
     }
-    v.extend(crate::stage::tiles_in(6, b).into_iter().map(|(a, c)| ("terrain-hi", format!("6/{a}/{c}"))));
-    let pz = crate::terrain_deep::PACK_Z;
-    v.extend(crate::stage::tiles_in(pz, b).into_iter().map(|(a, c)| ("terrain-deep", format!("{pz}/{a}/{c}"))));
     v.sort_unstable();
     v.dedup();
-    v
+    named(z, v)
+}
+fn u_lo(t: &str) -> Vec<String> {
+    unit_reads(t, 3)
+}
+fn u_hi(t: &str) -> Vec<String> {
+    unit_reads(t, 6)
+}
+fn u_deep(t: &str) -> Vec<String> {
+    unit_reads(t, crate::terrain_deep::PACK_Z)
 }
 
-/// What a target of `step` reads of other steps' targets (`Step::reads`; none for a step without).
-pub fn reads_of(step: &str, target: &str) -> Vec<(&'static str, String)> {
-    row(step).and_then(|r| r.reads).map_or_else(Vec::new, |r| (r.of)(target))
+/// polar-slope s/4/x/y: its block's terrain and its neighbours' (crate::polar::around).
+fn ps_terrain(t: &str) -> Vec<String> {
+    crate::polar::parse_target(t).map_or_else(Vec::new, |(pole, b)| {
+        std::iter::once(b).chain(crate::polar::around(pole, b)).map(|n| crate::polar::target(pole, n)).collect()
+    })
 }
+
+/// bldtiles 6/x/y: the normalized files of it and its 8 neighbours (`build::bld_around`).
+fn bt_prep(t: &str) -> Vec<String> {
+    at(t, 6).map_or_else(Vec::new, |(x, y)| {
+        super::build::bld_around(x, y)
+            .into_iter()
+            .filter_map(|n| match n {
+                (Some(a), Some(b)) => Some(format!("6/{a}/{b}")),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// peaks 6/x/y: its own tile's candidates.
+fn own(t: &str) -> Vec<String> {
+    vec![t.to_string()]
+}
+
+use Read::{Input as In, Targets as Of, Whole as All};
+const R_TERRAIN_LO: &[Read] = &[Of { step: "terrain-hi", of: z6_of_z3 }];
+const R_SLOPE_DEEP: &[Read] = &[
+    Of { step: "terrain-deep", of: sd_deep },
+    Of { step: "terrain-hi", of: sd_hi },
+    Of { step: "terrain-lo", of: sd_lo },
+];
+const R_SLOPE_HI: &[Read] = &[
+    Of { step: "terrain-hi", of: sh_hi },
+    Of { step: "terrain-lo", of: sh_lo },
+    Of { step: "slope-deep", of: sh_deep },
+];
+const R_SLOPE_LO: &[Read] = &[Of { step: "slope-hi", of: z6_of_z3 }, Of { step: "terrain-lo", of: sl_lo }];
+const R_TREES_LO: &[Read] = &[Of { step: "trees", of: z6_of_z3 }];
+// (The roads wait for the pass's heritage sites, reaches and roadside buildings: their slices, which
+// z6 tiles the coverage builds, the roadside index.)
+const R_UNIT: &[Read] = &[
+    Of { step: "terrain-lo", of: u_lo },
+    Of { step: "terrain-hi", of: u_hi },
+    Of { step: "terrain-deep", of: u_deep },
+    All { step: "heritage-sites" },
+    All { step: "reach" },
+    All { step: "buildings" },
+];
+const R_POLAR_SLOPE: &[Read] = &[Of { step: "polar-terrain", of: ps_terrain }];
+const R_POLAR_ROOT: &[Read] = &[All { step: "polar-terrain" }, All { step: "polar-slope" }];
+const R_DEPTH_LO: &[Read] = &[Of { step: "depth", of: z6_of_z3 }];
+// (Both: an assembly whose z6 tiles are stale isn't stale itself till they're made.)
+const R_DEPTH_ROOT: &[Read] = &[All { step: "depth" }, All { step: "depth-lo" }];
+const R_RAIL: &[Read] = &[All { step: "rail-feeds" }];
+const R_POIS: &[Read] = &[All { step: "trailends" }, In { name: "spacing" }];
+// (The summits and peaks read the terrain packs' z8, a digest of every lo pack
+// (crate::peaks::z8::digest), and lo packs are made from the hi packs: they wait for all of both.)
+const R_SUMMITS: &[Read] = &[All { step: "terrain-hi" }, All { step: "terrain-lo" }];
+// (A read's own reads where its key names them, so a target isn't made on what's about to change:
+// a candidate's key the hiking-route ends, the heritage chain's the sites.)
+const R_PEAKS: &[Read] = &[
+    Of { step: "pois", of: own },
+    All { step: "trailends" },
+    All { step: "summits" },
+    All { step: "terrain-hi" },
+    All { step: "terrain-lo" },
+    In { name: "spacing" },
+];
+const R_ITEMS: &[Read] = &[All { step: "pois" }, All { step: "trailends" }, In { name: "spacing" }];
+// (The accepted heritage registers: without them the sites have no key.)
+const R_HERITAGE: &[Read] = &[All { step: "heritage-sites" }, In { name: "registers" }];
+const R_MARKS: &[Read] = &[
+    All { step: "pois" },
+    All { step: "peaks" },
+    All { step: "items" },
+    All { step: "heritage" },
+    All { step: "trailends" },
+    All { step: "summits" },
+    All { step: "heritage-sites" },
+    In { name: "spacing" },
+    In { name: "registers" },
+];
+// (The overlays read the heritage chain and the marks' dots, from the last marks run: held while
+// the marks' inputs are left, not for the marks themselves.)
+const R_OVERLAYS: &[Read] = &[
+    All { step: "pois" },
+    All { step: "peaks" },
+    All { step: "items" },
+    All { step: "heritage" },
+    All { step: "trailends" },
+    All { step: "summits" },
+    All { step: "heritage-sites" },
+    In { name: "spacing" },
+    In { name: "registers" },
+    In { name: "heritage-dots" },
+];
+// (The normalized files read the declared release, not what the fetch puts on the NAS: they go
+// beside it. The tiles read the sources downloaded: none before, every tile would come out empty.)
+const R_BLDPREP: &[Read] = &[In { name: "bld-key" }];
+const R_BLDTILES: &[Read] = &[Of { step: "bldprep", of: bt_prep }, In { name: "bld-sources" }];
+const R_BLDFIELD_LO: &[Read] = &[Of { step: "bldtiles", of: z6_of_z3 }, In { name: "bld-sources" }];
 
 /// A row with what most steps have: 1.5 GB until measured, none of the sets.
 const fn step(
@@ -307,8 +555,7 @@ const fn step(
         answered: false,
         writes,
         records_only: false,
-        reads: None,
-        after: &[],
+        reads: &[],
     }
 }
 
@@ -383,7 +630,7 @@ pub const TABLE: [Step; 59] = [
             w_buildings,
         )
     },
-    Step { alone: true, ..step("pass", Derive, World, "summits", "Finds the world's summits.", w_summits) },
+    Step { alone: true, reads: R_SUMMITS, ..step("pass", Derive, World, "summits", "Finds the world's summits.", w_summits) },
     // (The labels' 6.7M rows held with their tiles: the process peaked at 2.6 GB on the 2026-09-28
     // pass, 23 Oct, measured by sampling its RSS; osmium's own processes, run beside it, are
     // not in that.)
@@ -527,7 +774,7 @@ pub const TABLE: [Step; 59] = [
     // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its z6 tiles' z9 means, up to 4 MB a
     // z6 tile, and half a GB besides.)
     Step {
-        reads: Some(Reads { of: r_terrain_lo, why: "wait for the terrain-hi tiles of their z3 tile" }),
+        reads: R_TERRAIN_LO,
         mem_mb: 1200,
         ..step(
             "terrain",
@@ -542,7 +789,7 @@ pub const TABLE: [Step; 59] = [
     // lo_peak_mb; slope-deep's and slope-hi's with the coverage their process reads added by the
     // agent, crate::coverage::Coverage::read_peak_mb.)
     Step {
-        reads: Some(Reads { of: r_slope_deep, why: "wait for the terrain they read: their z10 tile's and its edge neighbours' (terrain-deep), those tiles' z6 tiles (terrain-hi) and z3 tiles (terrain-lo)" }),
+        reads: R_SLOPE_DEEP,
         mem_mb: crate::slope_pack::deep_peak_mb(),
         shared: Some(2),
         ..step(
@@ -555,7 +802,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
-        reads: Some(Reads { of: r_slope_hi, why: "wait for the terrain they read: their own and their edge neighbours' (terrain-hi) and those tiles' z3 tiles (terrain-lo); and their z10 tiles' slope-deep" }),
+        reads: R_SLOPE_HI,
         mem_mb: crate::slope_pack::peak_mb(),
         shared: Some(3),
         ..step(
@@ -568,7 +815,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
-        reads: Some(Reads { of: r_slope_lo, why: "wait for the slope-hi tiles of their z3 tile and the terrain of it and its edge neighbours (terrain-lo)" }),
+        reads: R_SLOPE_LO,
         mem_mb: crate::slope_pack::lo_peak_mb(),
         ..step(
             "slope",
@@ -594,7 +841,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
-        after: &["polar-terrain"],
+        reads: R_POLAR_SLOPE,
         mem_mb: 2048,
         ..step(
             "slope",
@@ -606,7 +853,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
-        after: &["polar-terrain", "polar-slope"],
+        reads: R_POLAR_ROOT,
         ..step(
             "slope",
             Pack,
@@ -628,7 +875,7 @@ pub const TABLE: [Step; 59] = [
         ..step("trees", Pack, Z6, "trees", "Maps a tile's tree cover, height and leaf type.", w_trees)
     },
     Step {
-        reads: Some(Reads { of: r_trees_lo, why: "wait for the trees tiles of their z3 tile" }),
+        reads: R_TREES_LO,
         mem_mb: 500,
         ..step(
             "trees",
@@ -657,7 +904,7 @@ pub const TABLE: [Step; 59] = [
     // (A z3 tile's assembly: its composing, ~2 GB, then its floor's shading, from what that holds
     // (crate::depth::build::lo_peak_mb).)
     Step {
-        after: &["depth"],
+        reads: R_DEPTH_LO,
         mem_mb: crate::depth::build::lo_peak_mb(),
         ..step(
             "depth",
@@ -670,7 +917,7 @@ pub const TABLE: [Step; 59] = [
     },
     // (The root: 64 z3 tiles of each layer read, 21 made.)
     Step {
-        after: &["depth", "depth-lo"],
+        reads: R_DEPTH_ROOT,
         ..step(
             "depth",
             Pack,
@@ -682,10 +929,7 @@ pub const TABLE: [Step; 59] = [
     },
     // (A z6 tile's most its jobs took here, 8.4 GB, 2026-10-05; offered by its extract's size.)
     Step {
-        reads: Some(Reads {
-            of: r_unit,
-            why: "wait for the terrain they read: the packs over their tile and 30 km round it (terrain-lo, terrain-hi, terrain-deep)",
-        }),
+        reads: R_UNIT,
         mem_mb: 8600,
         shared: Some(5),
         ..step(
@@ -760,23 +1004,24 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
-        after: &["rail-feeds"],
+        reads: R_RAIL,
         mem_mb: 6144,
         ..step("trains", Derive, World, "rail", "Counts trains a day on the regions' rail.", w_rail)
     },
     Step {
         mem_mb: 2048,
         shared: Some(6),
+        reads: R_POIS,
         ..step("landmarks", Derive, Z6, "pois", "Finds a tile's landmark candidates.", w_pois)
     },
     Step {
-        after: &["pois", "summits"],
+        reads: R_PEAKS,
         mem_mb: 2500,
         shared: Some(7),
         ..step("landmarks", Derive, Z6, "peaks", "Measures a tile's peaks' prominence and isolation.", w_peaks)
     },
     Step {
-        after: &["pois"],
+        reads: R_ITEMS,
         mem_mb: 3072,
         answered: true,
         ..step(
@@ -789,6 +1034,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
+        reads: R_HERITAGE,
         mem_mb: 6144,
         answered: true,
         ..step(
@@ -801,7 +1047,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
-        after: &["pois", "peaks", "items", "heritage"],
+        reads: R_MARKS,
         mem_mb: 4096,
         ..step(
             "landmarks",
@@ -814,6 +1060,7 @@ pub const TABLE: [Step; 59] = [
     },
     Step {
         mem_mb: 4096,
+        reads: R_OVERLAYS,
         ..step("landmarks", Pack, World, "overlays", "Draws the area overlays.", w_overlays)
     },
     // (The coverage read, its outlines indexed (GEOS), the release's footers read, in one process:
@@ -833,7 +1080,7 @@ pub const TABLE: [Step; 59] = [
     // (The 3D buildings, until a target's own run says: the densest tile's, Kantō's 6/56/25 and its
     // 30.3 M rows, by the models of task #579's reads and B5's pilot. Offered by the rows they read.)
     Step {
-        after: &["bld-fetch"],
+        reads: R_BLDPREP,
         mem_mb: super::bldprep_peak(30_300_000),
         shared: Some(8),
         ..step(
@@ -846,7 +1093,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
-        after: &["bldprep"],
+        reads: R_BLDTILES,
         mem_mb: super::bldtiles_peak(30_300_000),
         shared: Some(9),
         ..step(
@@ -860,7 +1107,7 @@ pub const TABLE: [Step; 59] = [
     },
     // (Its field's lo levels a z3 tile: what crate::bld::field's lo holds, from its sizes.)
     Step {
-        after: &["bldtiles"],
+        reads: R_BLDFIELD_LO,
         mem_mb: crate::bld::field::LO_PEAK_MB,
         ..step(
             "buildings",
