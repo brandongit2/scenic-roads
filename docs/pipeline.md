@@ -322,7 +322,8 @@ The Jobs tab's stages are the one exception.
   (`state/coord/history-archive`), not reachable from the page. A job hovered (or its card pinned,
   a tap's): red square-cornered arrows from each forecast run it waits on and to each waiting on
   it (the forecast's runs and dependencies, `/work/tocome`'s `runs` and `deps`: a running job is
-  its lane's first run of its step), and for a job that ran or one running, from each job that
+  its lane's first run of its step, that run's first job its time left, drawn as the running job
+  to its forecast end, never as a job to come, task #863), and for a job that ran or one running, from each job that
   ran it waited on and to each that ran or runs waiting on it (its start's or lease's `after` in
   the history, task #791: per step its targets waited on in the forecast's dependencies, the job
   of that step that finished last; none on events before #791), and for a run to come from each

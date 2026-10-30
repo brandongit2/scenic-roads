@@ -8620,9 +8620,13 @@ impl Agent {
                 running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), m)));
             }
         }
-        for (worker, step, targets, _) in leased.iter().cloned() {
-            if let Some(m) = machines.iter().position(|m| m.name == worker) {
-                running.extend(targets.into_iter().map(|t| ((step.clone(), t), m)));
+        // (Each lease on a lane of its Mac running its step, `forecast::lease_lanes`: a lease names
+        // its Mac, not its slot. A target a slot's own record put on its lane stays there.)
+        let keys: Vec<(&str, &str)> = leased.iter().map(|l| (l.0.as_str(), l.1.as_str())).collect();
+        for ((_, step, targets, _), m) in leased.iter().zip(forecast::lease_lanes(&machines, &keys)) {
+            let Some(m) = m else { continue };
+            for t in targets {
+                running.entry((step.clone(), t.clone())).or_insert(m);
             }
         }
         // (The z6 tiles' mids made in idle time, last.)
@@ -9862,6 +9866,7 @@ impl Agent {
             members,
             app: self.app.clone(),
             own,
+            keep: Some(self.o.home.join("pageview-waits.json")),
         });
         if !self.pageview_reading {
             pageview::spawn(self.pageview.clone());

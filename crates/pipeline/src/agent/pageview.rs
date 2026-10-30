@@ -118,7 +118,15 @@ pub struct Inputs {
     pub members: Vec<String>,
     pub app: String,
     pub own: Vec<OwnLane>,
+    /// Where this Mac keeps the last run's waits across a restart (a local file: `KEEP_WAITS_S`).
+    pub keep: Option<std::path::PathBuf>,
 }
+
+/// The last run's waits (its items' dependencies: `history::Waits`) are kept on this Mac's disk this
+/// often at most, and read back for the first run after a restart (task #863): without them, that
+/// run's tiles to come waited on nothing finished (no `after`), the schedule's arrows from the jobs
+/// that ran missing until the jobs they waited on finished again.
+pub const KEEP_WAITS_S: u64 = 300;
 
 /// One of this Mac's lanes (a slot: the agent's `worker_of`) and its job under way, if any.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -151,6 +159,9 @@ struct Runs {
     running: Option<std::thread::JoinHandle<Ran>>,
     of: Option<(SystemTime, Instant)>,
     waits: (Arc<history::Waits>, u64),
+    /// The kept waits read back (once a process), and when they were last kept.
+    loaded: bool,
+    kept: Option<Instant>,
 }
 
 /// A forecast run here's tiles to come (`/work/tocome`, task #836: made of the same run, so its
@@ -571,11 +582,34 @@ impl PageView {
             return;
         }
         let (rec, own) = (rec.clone(), own.to_vec());
-        // (What its items wait on, worked out from the history as read so far, off its lock.)
-        let basis = {
+        let keep = self.inputs.lock().unwrap().keep.clone();
+        // (The first run after a start: the waits the last process kept, in this numbering.)
+        if !r.loaded && r.waits.0.is_empty() {
+            r.loaded = true;
+            let kept = keep
+                .as_ref()
+                .and_then(|p| std::fs::read(p).ok())
+                .and_then(|b| serde_json::from_slice::<history::KeptWaits>(&b).ok());
             let st = self.state.lock().unwrap();
-            st.history.as_ref().map(|h| (h.waits_basis_from(r.waits.0.clone(), r.waits.1), st.epoch.clone()))
+            if let (Some(k), Some(h)) = (kept, st.history.as_ref()) {
+                // (Its `from`: this numbering's last event by then.)
+                let from = h.since(0, usize::MAX).iter().filter(|e| e.t <= k.made_t).map(|e| e.seq).max().unwrap_or(0);
+                let w = history::Waits::from_kept(k, from, |m, q| st.numbered.get(&(m.to_string(), q)).copied());
+                r.waits = (Arc::new(w), from);
+            }
+        }
+        // (Kept again once `KEEP_WAITS_S` passed: each number's writer and its number there.)
+        let save = keep.filter(|_| r.kept.is_none_or(|t| t.elapsed().as_secs() >= KEEP_WAITS_S));
+        // (What its items wait on, worked out from the history as read so far, off its lock.)
+        let (basis, names) = {
+            let st = self.state.lock().unwrap();
+            let names: Option<std::collections::HashMap<u64, (String, u64)>> =
+                save.as_ref().map(|_| st.numbered.iter().map(|(k, &n)| (n, k.clone())).collect());
+            (st.history.as_ref().map(|h| (h.waits_basis_from(r.waits.0.clone(), r.waits.1), st.epoch.clone())), names)
         };
+        if save.is_some() {
+            r.kept = Some(Instant::now());
+        }
         match std::thread::Builder::new().name("pageview-forecast".into()).spawn(move || {
             super::forecast::low_priority();
             let mut forecast = local_forecast(&rec, now, &own);
@@ -585,6 +619,9 @@ impl PageView {
                 Some(((b, at), epoch)) => {
                     let w = b.next(graph);
                     tocome.runs.after = w.by_run(&item_run, tocome.runs.targets.len());
+                    if let (Some(p), Some(names)) = (&save, &names) {
+                        keep_waits(p, &w.keep(now, |n| names.get(&n).cloned()));
+                    }
                     (Some((w, at)), Some(epoch))
                 }
                 None => (None, None),
@@ -594,6 +631,18 @@ impl PageView {
             Ok(h) => (r.running, r.of) = (Some(h), Some((*t, Instant::now()))),
             Err(e) => eprintln!("pageview: the forecast's thread: {e}"),
         }
+    }
+}
+
+/// Writes kept waits to `p` whole (a file beside, renamed over it); a failure said, not kept.
+fn keep_waits(p: &std::path::Path, k: &history::KeptWaits) {
+    let tmp = p.with_extension("tmp");
+    let done = p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| {
+        std::fs::write(&tmp, serde_json::to_vec(k).unwrap_or_default())?;
+        std::fs::rename(&tmp, p)
+    });
+    if let Err(e) = done {
+        eprintln!("pageview: the forecast's waits not kept at {}: {e}", p.display());
     }
 }
 
@@ -756,7 +805,14 @@ pub(crate) mod tests {
     }
 
     fn inputs(app: &str) -> Inputs {
-        Inputs { root: None, term: 7, members: vec!["m-a".into(), "m-b".into()], app: app.into(), own: Vec::new() }
+        Inputs {
+            root: None,
+            term: 7,
+            members: vec!["m-a".into(), "m-b".into()],
+            app: app.into(),
+            own: Vec::new(),
+            keep: None,
+        }
     }
 
     /// (Task #836) `/work/tocome` is the forecast's the swarm's answer carries (the same `at`, its
@@ -1230,5 +1286,54 @@ pub(crate) mod tests {
         let h = pv.history(0, 10).unwrap();
         let kinds: Vec<&str> = h["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["start", "done", "pause"]);
+    }
+
+    #[test]
+    fn a_freshly_started_pageviews_first_answer_has_targets_and_after() {
+        // (Task #863) a pageview's first run after a restart: the waits the last process kept read
+        // back, so a run waiting on a job that finished since names it (`after`), not none; and
+        // its runs name their targets.
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path());
+        let now = now_s();
+        fixture(&root, now);
+        let mut rec = record(now);
+        let c = Cost { secs: 600.0, known: true, peak_mb: 1000 };
+        rec.input.chains.push(("depth-lo".into(), "6/1/0".into(), c));
+        put(&root, "state/build/term/7/forecast-input.json", &rec.bytes().unwrap());
+        let keep = d.path().join("home/pageview-waits.json");
+        let with_keep = |keep: Option<PathBuf>| Inputs { keep, ..inputs("") };
+        let src = Dir(d.path().into(), AtomicUsize::new(0));
+        let first = PageView::default();
+        first.set_inputs(with_keep(Some(keep.clone())));
+        first.touch_at(now);
+        first.tick(&src, now);
+        settle(&first);
+        assert!(keep.exists(), "the run's waits kept");
+        // (A depth job finishes; the agent restarts.)
+        let day = crate::pool::journal::day(now).unwrap();
+        let ev = |seq: u64, t: u64, kind: &str, step: Option<&str>| {
+            let targets = step.map_or(Vec::new(), |_| vec!["6/1/0".to_string()]);
+            serde_json::to_string(&Event { seq, t, step: step.map(str::to_string), targets, ..Event::new(kind) })
+                .unwrap()
+                + "\n"
+        };
+        let lines =
+            ev(1, now - 50, "start", None) + &ev(2, now - 20, "done", None) + &ev(3, now + 5, "done", Some("depth"));
+        put(&root, &format!("state/coord/history/{day}/m-a.jsonl"), lines.as_bytes());
+        let after_of = |keep: Option<PathBuf>| {
+            let pv = PageView::default();
+            pv.set_inputs(with_keep(keep));
+            pv.touch_at(now + 10);
+            pv.tick(&src, now + 10);
+            settle(&pv);
+            let a = pv.tocome(None).unwrap();
+            let runs = a["runs"].as_array().unwrap();
+            assert!(runs.iter().any(|r| !r.as_array().unwrap().is_empty()), "its runs name their targets: {a}");
+            assert!(a["epoch"].is_string());
+            a["after"].as_array().unwrap().iter().filter(|v| !v.as_array().unwrap().is_empty()).count()
+        };
+        assert!(after_of(Some(keep)) > 0, "depth-lo's run waits on the depth job finished since");
+        assert_eq!(after_of(None), 0, "(without the kept waits: none, as before)");
     }
 }

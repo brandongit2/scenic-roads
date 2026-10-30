@@ -421,7 +421,12 @@ function askToCome(m) {
     .then((v) => {
       const mine = toCome.lead === m.a.host;
       if (mine && !v?.macs) { toCome = { ...toCome, asking: false, again: Date.now() + TOCOME_AGAIN_MS, ans: v?.macs ? v : toCome.ans }; setTimeout(render, TOCOME_AGAIN_MS); return; }
-      toCome = { ...toCome, key, ans: mine ? v : null, asking: false, again: 0 };
+      // (An answer of another forecast than the status's (a pageview's first run not done yet
+      // after a restart, the lead's lagging): drawn meanwhile, asked again after
+      // `TOCOME_AGAIN_MS` until one of this forecast comes, not kept as this forecast's (#863).)
+      const exact = v?.at === m.fc?.at;
+      toCome = { ...toCome, key: exact ? key : "", ans: mine ? v : null, asking: false, again: exact ? 0 : Date.now() + TOCOME_AGAIN_MS };
+      if (!exact) setTimeout(render, TOCOME_AGAIN_MS);
       render();
     });
 }
@@ -1332,17 +1337,23 @@ function schedule(m) {
       const tv = trackOf();
       for (const r of packedOf(nm)) segment(tv, r, "past", `p ${nm} ${r.seq}`);
       const ls = fcLanes[nm] || [];
-      // (A job running now goes on as its lane's first run of its step in the forecast: one job.)
+      // (A job running now goes on as its lane's first run of its step in the forecast: that run's
+      // first job is its time left, drawn as the running job to its forecast end, never as a job to
+      // come (#863).)
+      const under = new Set();
       for (const r of running.filter((r) => r.lane === nm)) {
         const k = ls.findIndex((l) => l.step === r.step && l.from <= fc.at + 1);
-        segment(tv, r, "running", `r ${nm} ${r.job.id}`, k >= 0 ? nums.first[nm] + k : null);
+        const left = k >= 0 ? runJobs(ls[k])[0] : null;
+        if (k >= 0) under.add(k);
+        segment(tv, left ? { ...r, until: Math.max(r.until, left.until) } : r, "running", `r ${nm} ${r.job.id}`, k >= 0 ? nums.first[nm] + k : null);
       }
       ls.forEach((l, k) => {
         if (l.until <= now) return;
         const run = nums.first[nm] + k;
-        // (A block a job: the run's jobs as the scheduler grants them, `runJobs`.)
-        for (const j of runJobs(l, tc?.runs?.[run])) {
-          if (j.until <= now) continue;
+        // (A block a job: the run's jobs as the scheduler grants them, `runJobs`; a running job's
+        // own, its first, drawn with it above.)
+        for (const [i, j] of runJobs(l, tc?.runs?.[run]).entries()) {
+          if (j.until <= now || (i === 0 && under.has(k))) continue;
           segment(tv, { ...l, ...j, from: Math.max(j.from, now), lane: nm, after: tc?.epoch != null && tc.epoch === past.epoch ? tc.after?.[run] || [] : [], waits: tc ? links.on.get(run)?.length || 0 : null, waited: tc ? links.then.get(run)?.length || 0 : null }, "next", `f ${nm} ${j.from} ${l.step}`, run);
         }
       });

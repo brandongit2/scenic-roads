@@ -97,7 +97,7 @@ pub struct History {
 /// The forecast's dependencies (crate::agent::forecast's items): each item (step, target), the
 /// items it waits on (`deps`, indices into `keys`) and the sets it waits on whole (`sets`, into
 /// `groups`, each a list of items).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Graph {
     pub keys: Vec<(String, String)>,
     pub deps: Vec<Vec<u32>>,
@@ -166,7 +166,49 @@ fn last_per_step(
     }
 }
 
+/// Waits as kept on disk across a restart (a pageview's, task #863: crate::agent::pageview), its
+/// event numbers by who wrote them (member, its number there), stable across the numberings: when
+/// its graph was made (unix s), the graph, and what its items waited on that had finished.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct KeptWaits {
+    pub made_t: u64,
+    pub graph: Graph,
+    pub resolved: Vec<((String, String), Vec<(String, (String, u64))>)>,
+}
+
 impl Waits {
+    /// Whether it holds no graph (none made yet).
+    pub fn is_empty(&self) -> bool {
+        self.graph.keys.is_empty()
+    }
+
+    /// As kept (`KeptWaits`), made at `made_t`; `name` each number's writer and its number there
+    /// (one it can't name dropped).
+    pub fn keep(&self, made_t: u64, name: impl Fn(u64) -> Option<(String, u64)>) -> KeptWaits {
+        let resolved = self
+            .resolved
+            .iter()
+            .map(|(k, r)| (k.clone(), r.iter().filter_map(|(s, &n)| Some((s.clone(), name(n)?))).collect::<Vec<_>>()))
+            .filter(|(_, r)| !r.is_empty())
+            .collect();
+        KeptWaits { made_t, graph: self.graph.clone(), resolved }
+    }
+
+    /// Kept waits back in a numbering: `num` each writer's number's here (one not taken in
+    /// dropped), `from` this numbering's last number at its `made_t`.
+    pub fn from_kept(k: KeptWaits, from: u64, num: impl Fn(&str, u64) -> Option<u64>) -> Waits {
+        let index = k.graph.keys.iter().enumerate().map(|(i, key)| (key.clone(), i as u32)).collect();
+        let resolved = k
+            .resolved
+            .into_iter()
+            .map(|(key, r)| {
+                (key, r.into_iter().filter_map(|(s, (m, q))| Some((s, num(&m, q)?))).collect::<BTreeMap<_, _>>())
+            })
+            .filter(|(_, r)| !r.is_empty())
+            .collect();
+        Waits { graph: k.graph, from, index, resolved }
+    }
+
     /// For each of `runs` runs, the finished jobs its items waited on (the numbers `resolved` holds
     /// for them), per step the last, sorted: `item_run` each item's run (`forecast::Runs`).
     pub fn by_run(&self, item_run: &[Option<u32>], runs: usize) -> Vec<Vec<u64>> {

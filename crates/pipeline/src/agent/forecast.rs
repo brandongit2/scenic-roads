@@ -2313,6 +2313,26 @@ fn departed(fc: usize, got: usize) -> bool {
     d >= 2 && d * 2 > fc
 }
 
+/// The lane each lease (its worker, its step) runs on, in order (task #863): a lease names its Mac,
+/// not its slot, so each goes on a lane of that Mac (`Machine::mac`, else its name) running a job
+/// of its step and not yet given a lease, else on the lane named as the worker. (Each lease on its
+/// Mac's first lane put the targets of the jobs on its other slots on that first lane, over the
+/// job it ran: its time left drawn as a job to come of theirs.)
+pub fn lease_lanes(machines: &[Machine], leases: &[(&str, &str)]) -> Vec<Option<usize>> {
+    let mut taken = vec![false; machines.len()];
+    leases
+        .iter()
+        .map(|&(worker, step)| {
+            let on = |m: &Machine| m.name == worker || m.mac.as_deref() == Some(worker);
+            let k = (0..machines.len())
+                .find(|&k| !taken[k] && on(&machines[k]) && machines[k].running.as_ref().is_some_and(|r| r.0 == step))
+                .or_else(|| machines.iter().position(|m| m.name == worker))?;
+            taken[k] = true;
+            Some(k)
+        })
+        .collect()
+}
+
 /// A Mac's lanes: the slots it may run now (`slots`: the lead's ramp's, a member's
 /// crate::agent::job_slots), never fewer than its last running slot's number (`running`: the slots
 /// running a job, 0 the first; they may be sparse).
@@ -2669,6 +2689,46 @@ mod tests {
             f.next["m1"]
         );
         assert!(f.next["m4"].iter().any(|n| n.targets.contains(&"u2".to_string())));
+    }
+
+    #[test]
+    fn a_macs_leases_go_on_its_slots_running_their_steps_and_a_lane_starts_with_its_running_job() {
+        // (Task #863) the Mac's first slot runs a long u1 job (5 h left), its second u2 (a minute
+        // left); the coordinator's leases name the Mac alone, u1's first. Each lease goes on the
+        // slot running its job, so the first slot's lane starts with u1 till its end (one job, no
+        // other's targets), never with u2 drawn over it.
+        let regions = [region("a", &[], &["u1", "u2", "u3"], &[])];
+        let inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        let slot = |k: usize, busy_s: f64| Machine {
+            equal: k > 0,
+            lead_steps: true,
+            mem_mb: u64::MAX,
+            busy_s,
+            running: Some(("unit".into(), 1)),
+            mac: Some("m4".into()),
+            ..mac(&super::super::slot_worker("m4", k), 1.0, false)
+        };
+        let machines = vec![slot(0, 18_000.0), slot(1, 60.0)];
+        // (The second slot's lease first: on the first lane free running its step.)
+        assert_eq!(lease_lanes(&machines, &[("m4", "unit"), ("m4", "unit")]), [Some(0), Some(1)]);
+        assert_eq!(lease_lanes(&machines, &[("m4", "pois"), ("m4 #2", "unit")]), [Some(0), Some(1)]);
+        assert_eq!(lease_lanes(&machines, &[("m1", "unit")]), [None]);
+        let lanes = lease_lanes(&machines, &[("m4", "unit"), ("m4", "unit")]);
+        let mut running = BTreeMap::new();
+        for ((t, _), m) in [("u1", ()), ("u2", ())].iter().zip(lanes) {
+            running.insert(("unit".to_string(), t.to_string()), m.unwrap());
+        }
+        let f = forecast(&Input { machines, running, ..inp });
+        let names: Vec<&String> = f.lanes.keys().collect();
+        let run = |name: &str, k: usize| {
+            let first: usize = names.iter().take_while(|n| n.as_str() != name).map(|n| f.lanes[*n].len()).sum();
+            (&f.lanes[name][k], &f.runs.targets[first + k])
+        };
+        let (l, t) = run("m4", 0);
+        assert_eq!((l.step.as_str(), l.from, l.until), ("unit", 1_000_000, 1_018_000), "{:?}", f.lanes);
+        assert_eq!(jobs_of(l, t), [(1_000_000, &["u1".to_string()][..])], "the running job alone, its own target");
+        let (l, t) = run("m4 #2", 0);
+        assert_eq!(jobs_of(l, t)[0], (1_000_000, &["u2".to_string()][..]));
     }
 
     #[test]
