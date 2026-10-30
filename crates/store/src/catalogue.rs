@@ -706,27 +706,46 @@ fn keep(cat: &Catalogue, dg: &str) {
     let name = kept_name(cat.n, dg);
     let made = (|| -> Result<()> {
         fs::create_dir_all(&dir)?;
+        // (Written even when the name's there: a catalogue is made from deltas only when the kept
+        // one of its name didn't read as it, `kept`, so that file is damaged, a torn write.)
         let path = dir.join(&name);
-        if path.exists() {
-            return Ok(());
-        }
         let json = serde_json::to_vec(cat)?;
         // (Fast to write: it's this Mac's, kept for its next start, not stored on the NAS.)
         let mut enc = zstd::stream::Encoder::new(Vec::with_capacity(json.len() / 4 + 64), 1)?;
         enc.include_checksum(true)?;
         enc.write_all(&json)?;
-        let tmp = tmp_path(&path);
+        // (A temporary name of its own, this process's and this write's: two threads of one server
+        // keeping the same catalogue never write one file; a reader checks the digest anyway.)
+        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mut tmp = tmp_path(&path).into_os_string();
+        tmp.push(format!(".{}", WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        let tmp = PathBuf::from(tmp);
         fs::write(&tmp, enc.finish()?)?;
-        fs::rename(&tmp, &path)?;
+        if let Err(e) = fs::rename(&tmp, &path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e.into());
+        }
         // (The two highest numbers stay: a held catalogue's chain and the served one's alternate,
         // and a test's small catalogue never pushes out the map's.)
-        let mut all: Vec<(u64, PathBuf)> = fs::read_dir(&dir)?
-            .flatten()
-            .filter_map(|e| {
-                let f = e.file_name().to_str()?.strip_suffix(SUFFIX)?.to_string();
-                Some((f.split_once('-')?.0.parse().ok()?, e.path()))
-            })
-            .collect();
+        // (A temporary file an hour old was left by a process that stopped mid-write: removed, so
+        // the folder holds two catalogues and the writes under way, nothing more.)
+        let hour_old = |e: &fs::DirEntry| {
+            e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|a| a.as_secs() > 3600))
+        };
+        let mut all: Vec<(u64, PathBuf)> = Vec::new();
+        for e in fs::read_dir(&dir)?.flatten() {
+            let name = e.file_name();
+            let Some(f) = name.to_str() else { continue };
+            match f.strip_suffix(SUFFIX).and_then(|f| f.split_once('-')?.0.parse().ok()) {
+                Some(k) => all.push((k, e.path())),
+                None if f.ends_with(".tmp") || f.contains(".tmp.") => {
+                    if hour_old(&e) {
+                        let _ = fs::remove_file(e.path());
+                    }
+                }
+                None => {}
+            }
+        }
         all.sort();
         all.reverse();
         for (_, p) in all.into_iter().skip(2) {
@@ -854,15 +873,24 @@ pub fn whole_due<'a>(dir: impl Into<Loc<'a>>) -> Result<Option<bool>> {
     if k == 0 {
         return Ok(Some(false));
     }
+    // (One that doesn't read, the whole one or the newest delta, makes a whole one due: the chain
+    // through it can't be read, so a delta over it would serve nothing. A read that fails stops.)
     let t = std::time::Instant::now();
     let p = dir.join(&file_name(ns[k]));
-    Catalogue::decode(&p.loc().read().with_context(|| format!("read {}", p.loc().display()))?)
-        .with_context(|| format!("catalogue {}", ns[k]))?;
+    if let Err(e) = Catalogue::decode(&p.loc().read().with_context(|| format!("read {}", p.loc().display()))?) {
+        eprintln!("catalogue: {} doesn't read ({e:#}): a whole one due", p.loc().display());
+        return Ok(Some(true));
+    }
     let whole = t.elapsed();
     let t = std::time::Instant::now();
     let p = dir.join(&delta_file_name(ns[0]));
-    let d = Delta::decode(&p.loc().read().with_context(|| format!("read {}", p.loc().display()))?)
-        .with_context(|| format!("delta {}", ns[0]))?;
+    let d = match Delta::decode(&p.loc().read().with_context(|| format!("read {}", p.loc().display()))?) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("catalogue: {} doesn't read ({e:#}): a whole one due", p.loc().display());
+            return Ok(Some(true));
+        }
+    };
     let _ = delta::apply_in(&mut serde_json::to_value(Catalogue::new(d.of))?, &d.patch);
     let each = t.elapsed();
     Ok(Some(Delta::due_whole(k, whole, each)))
@@ -1266,8 +1294,13 @@ mod tests {
             n += 1;
         }
         assert!(n > 2, "due with no delta");
-        write(&d, &evolve(&prev, n)).unwrap();
+        let whole = evolve(&prev, n);
+        write(&d, &whole).unwrap();
         assert_eq!(whole_due(&d).unwrap(), Some(false));
+        // The newest delta damaged: a whole one due (the chain through it doesn't read), not an error.
+        write_delta(&d, &whole, &evolve(&whole, n + 1)).unwrap();
+        fs::write(d.join(delta_file_name(n + 1)), b"torn").unwrap();
+        assert_eq!(whole_due(&d).unwrap(), Some(true));
     }
 
     /// Catalogue `n` of `dir` as read before task #895: its chain from the whole one, each delta
@@ -1365,12 +1398,49 @@ mod tests {
             fs::remove_file(d.join(delta_file_name(n))).unwrap();
         }
         assert_eq!(read_n(&d, 10).unwrap(), prev);
+        // A kept file cut short (a torn write) or changed isn't used, and is written again.
+        let k10 = kept_in().unwrap().join(kept_name(10, &digest(&prev).unwrap()));
+        let good = fs::read(&k10).unwrap();
+        fs::write(&k10, &good[..good.len() / 2]).unwrap();
+        assert!(kept(10, &digest(&prev).unwrap()).is_none());
+        let mut other10 = prev.clone();
+        other10.app = "changed".into();
+        let mut enc = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
+        enc.write_all(&serde_json::to_vec(&other10).unwrap()).unwrap();
+        fs::write(&k10, enc.finish().unwrap()).unwrap();
+        assert!(kept(10, &digest(&prev).unwrap()).is_none());
+        // (Its chain on the NAS again: read from it, and kept whole once more.)
+        let t3 = tempfile::tempdir().unwrap();
+        let d3 = t3.path().join("catalog");
+        let mut p3 = sample(1);
+        p3.app = "kept".into();
+        write(&d3, &p3).unwrap();
+        for n in 2..=10 {
+            let c = evolve(&p3, n);
+            write_delta(&d3, &p3, &c).unwrap();
+            p3 = c;
+        }
+        assert_eq!(p3, prev);
+        assert_eq!(read_n(&d3, 10).unwrap(), prev);
+        assert_eq!(fs::read(&k10).unwrap(), good);
+        // A temporary file an hour old (a writer stopped mid-write) is swept by the next keep.
+        let stale = kept_in().unwrap().join("9-x.json.zst.host-1.tmp.0");
+        fs::write(&stale, b"torn").unwrap();
+        File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(7200))
+            .unwrap();
+        let fresh = kept_in().unwrap().join("9-y.json.zst.host-2.tmp.0");
+        fs::write(&fresh, b"under way").unwrap();
         for n in 11..=12 {
             let c = evolve(&prev, n);
             write_delta(&d, &prev, &c).unwrap();
             prev = c;
         }
         assert_eq!(latest(&d).unwrap().unwrap(), prev);
+        assert!(!stale.exists() && fresh.exists());
         // A kept one that isn't the one a delta changes (its number taken again): not used.
         let t2 = tempfile::tempdir().unwrap();
         let d2 = t2.path().join("catalog");

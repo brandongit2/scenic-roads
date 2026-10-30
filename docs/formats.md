@@ -571,7 +571,10 @@ number is used once, whole or as a delta:
 - The apps, the agent and the build keep the last two catalogues they made from deltas (highest
   numbers) in `~/Library/Caches/scenic/catalogue/<n>-<digest>.json.zst`
   (`store::catalogue::keep_read_in`); a later read whose chain passes through one, by the
-  digests, starts there: after a restart only the deltas since are read.
+  digests, starts there: after a restart only the deltas since are read. A kept file is used only
+  when it reads as the catalogue its name gives (number and digest; a torn or changed one is written
+  again); each is written under a temporary name of its own and renamed, and a temporary file an
+  hour old is removed. Tests that run the binaries give them their own `HOME`.
 - A delta lists each file's size as the records have it (their sizes, from its job's
   hand-off) or the last catalogue does, looking at the NAS only for a file neither has (one written
   before sizes were recorded: once). A whole catalogue looks at every file, and stops on one missing
@@ -580,7 +583,7 @@ number is used once, whole or as a delta:
   reading the deltas since the last whole one (the next too) takes as long as reading that whole
   one, or their run is half `MAX_CHAIN` (`store::catalogue::whole_due`: both measured by the
   catalogue job each time it would write a delta, reading the whole one and the newest delta, so a
-  lead that's never idle writes them too). Its content is the same either way: a reader gets the
+  lead that's never idle writes them too; a whole one or newest delta that doesn't read makes one due). Its content is the same either way: a reader gets the
   same catalogue from the whole one as from the chain.
 - GC also keeps every catalogue a kept delta is read through, back to its whole one. A Mac keeps the
   catalogues it reads whole, in its own `catalog/`.
