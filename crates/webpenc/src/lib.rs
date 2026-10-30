@@ -3,6 +3,8 @@
 //! -lossless -z <level> -exact -metadata none` makes. For the terrain's Terrarium tiles
 //! (pipeline::terrain_codec), which Chrome and Safari decode natively with every value exact.
 
+mod entropy;
+
 use libwebp_sys as w;
 
 /// The linked libwebp's encoder version, as it says it ("1.6.0"): what a key naming the encoder's
@@ -23,6 +25,7 @@ pub fn lossless_rgb8(rgb: &[u8], width: u32, height: u32, level: u8) -> Result<V
     if level > 9 || width == 0 || height == 0 || width > 16383 || height > 16383 {
         return Err(format!("level {level}, {width} × {height}: past libwebp's bounds"));
     }
+    entropy::install();
     let mut config = w::WebPConfig::new().map_err(|_| "libwebp: config".to_string())?;
     // SAFETY: `config` is initialised; the preset sets its lossless fields.
     if unsafe { w::WebPConfigLosslessPreset(&mut config, level.into()) } == 0 {
