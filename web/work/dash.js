@@ -1185,8 +1185,8 @@ function runCard(m, r, kind, laneName) {
     ["takes", `≈ ${dur(r.until - r.from)}`],
     ["does", r.drop ? "drops the packs of tiles no target any more; reads and builds nothing" : null],
     ["while the lead runs", r.of ? S.said(r.of, r.n) : null],
-    ["waits on", r.waits != null ? plural(r.waits, "run") : null],
-    ["then", r.waited != null ? `${plural(r.waited, "run")} wait on it` : null],
+    ["its run waits on", r.waits != null ? plural(r.waits, "run") : null],
+    ["then", r.waited != null ? `${plural(r.waited, "run")} wait on its run` : null],
   ]);
 }
 
