@@ -425,13 +425,56 @@ pub fn gaps_begin() {
     let _ = gaps();
 }
 
-/// A safe point reached now: its gap since the last (or the job's start) counted.
+/// A safe point reached now: its gap since the last (or the job's start) counted. In a child
+/// program its parent asked (`ChildPoints`), also noted for the parent's gaps.
 pub fn reached() {
+    reached_at(std::time::Instant::now());
+    static TO: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    if let Some(p) = TO.get_or_init(|| std::env::var_os(SAFE_POINTS_TO_ENV).map(Into::into)) {
+        let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        // (A point not noted only makes the parent's gap look longer.)
+        let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).and_then(|mut f| writeln!(f, "{ns}"));
+    }
+}
+
+/// A safe point reached at `at`: its gap since the last counted.
+fn reached_at(at: std::time::Instant) {
     let mut g = gaps().lock().unwrap_or_else(|e| e.into_inner());
-    let now = std::time::Instant::now();
-    g.longest = g.longest.max(now - g.last);
-    g.last = now;
+    g.longest = g.longest.max(at.saturating_duration_since(g.last));
+    g.last = g.last.max(at);
     g.points += 1;
+}
+
+/// Where a child program notes its safe points (`reached`: a line each, its Unix time in ns).
+pub const SAFE_POINTS_TO_ENV: &str = "SCENIC_SAFE_POINTS_TO";
+
+/// A child program's safe points, counted in this job's gaps (`safe_gaps`) as if reached here
+/// (task #889: the trees program's rows kept are its step's safe points, #890 sets bounds from
+/// `safe_gap_s`).
+pub struct ChildPoints(std::path::PathBuf);
+
+impl ChildPoints {
+    /// Has child `c` note its safe points.
+    pub fn new(c: &mut std::process::Command) -> ChildPoints {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!("scenic-safe-points-{}-{n}", std::process::id()));
+        std::fs::remove_file(&p).ok();
+        c.env(SAFE_POINTS_TO_ENV, &p);
+        ChildPoints(p)
+    }
+
+    /// The child ended: its safe points counted, in order, at the times it reached them.
+    pub fn merge(self) {
+        let text = std::fs::read_to_string(&self.0).unwrap_or_default();
+        std::fs::remove_file(&self.0).ok();
+        let (now, wall) = (std::time::Instant::now(), std::time::SystemTime::now());
+        for ns in text.lines().filter_map(|l| l.parse::<u64>().ok()) {
+            let t = std::time::UNIX_EPOCH + std::time::Duration::from_nanos(ns);
+            let ago = wall.duration_since(t).unwrap_or_default();
+            reached_at(now.checked_sub(ago).unwrap_or(now));
+        }
+    }
 }
 
 /// The job's safe points so far, the gap from the last to now counted too (a job ending, or

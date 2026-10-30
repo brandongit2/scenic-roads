@@ -211,8 +211,11 @@ fn run_trees(args: &[std::ffi::OsString]) -> Result<()> {
     // crate::costin. Task #606: they weren't, so tree cover weighed only its uploads.)
     let counts = store::nasio::program_dir(&std::env::temp_dir().join(format!("trees-{}.counts", std::process::id())));
     c.env(store::nasio::ENV, &counts);
+    // (Its safe points, the rows it keeps, this job's: crate::control::safe_gaps.)
+    let points = crate::control::ChildPoints::new(&mut c);
     let st = store::spawn::status(&mut c).with_context(|| format!("run {prog}"));
     store::nasio::take_program(&counts);
+    points.merge();
     let st = st?;
     // (Paused at a row it kept: the pause's error, task #889.)
     if st.code() == Some(crate::control::PAUSED_EXIT) {

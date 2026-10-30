@@ -735,10 +735,13 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   what it fetched packed and handed off, the z6 tile not done; its next fill fetches the rest
   (the same tiles' bytes; its store's archives split where it stopped).
   Steps whose target is a run of independent pieces keep each as it's made (`resume_log::Pieces`,
-  task #889; the identity: the program's digest, the target and what it reads), each a safe
+  task #889; the identity, as the logs above: the step, its declared output version(s), the target
+  and the manifest's names of what it reads, never the program, so a pause to restart into a newly
+  installed app resumes its pieces; a change to the output bumps the step's version), each a safe
   point: bldtiles each z8 tile's results (made here or by a worker; a resumed run offers only the
   rest), bldprep each chunk of 4 row groups read, bldfield-lo each z6 tile's levels, trees each
-  row of a z6 tile's blocks (kept by the trees program, `--keep`, which exits paused, 75), peaks
+  row of a z6 tile's blocks (kept by the trees program, `--keep`, which exits paused, 75, its safe points counted in the
+  job's), peaks
   the summits a z6 tile's peaks see and then each 512 of its peaks measured, polar-terrain each
   chunk of 16 tiles sampled at its finest zoom, polar-slope each 64 tiles shaded there, slope-lo
   each row of a z3 tile's z6 tiles shaded from their terrain, lo each zoom of a z3 tile's road and

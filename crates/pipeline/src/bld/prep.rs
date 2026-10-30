@@ -796,7 +796,12 @@ pub fn read(
     }
     // (Each chunk of row groups read a piece kept, task #889: a resumed run reads only the chunks
     // its last didn't keep, and takes them all in the same order.)
-    let id = crate::resume_log::job_id("bldprep", &t.slash(), &[release, ghsl, &serde_json::to_string(&files)?]);
+    let id = crate::resume_log::job_id(
+        "bldprep",
+        &super::BLDPREP_V.to_string(),
+        &t.slash(),
+        &[release, ghsl, &serde_json::to_string(&files)?],
+    );
     let mut pieces = crate::resume_log::Pieces::open(scratch, (6, t.x, t.y), "bldprep", &id, keep);
     let chunks: Vec<&[_]> = jobs.chunks(JOBS).collect();
     let rows = take_chunks(&mut prepped, t, &mut pieces, chunks.len(), &|c| {

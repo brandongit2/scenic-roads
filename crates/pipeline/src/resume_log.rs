@@ -15,8 +15,10 @@
 //! - **Read a record at a time:** a log is streamed as it opens (`Log::open`'s `take`), never read
 //!   whole, so what a resumed run holds is what its step keeps of the blocks, as the run it resumes
 //!   held them.
-//! - **Taken only for the same inputs:** the identity is a digest of everything the run reads, its
-//!   step's choosing; another identity, the log is emptied and the run starts afresh.
+//! - **Taken only for the same inputs:** the identity is a digest of what decides the output: the
+//!   step's version(s), its target and everything the run reads, its step's choosing; never the
+//!   program, so a resume in a newly installed app keeps what was kept. Another identity, the log
+//!   is emptied and the run starts afresh.
 //! - **Where it's found:** the job's scratch folder, or the same step's folder of another of the
 //!   agent's slots (`scratch-2/`, …), moved here.
 //! - **Gone:** once its step's packs are written (each step deletes its own); when its job is
@@ -63,17 +65,14 @@ pub fn id(parts: &[&str]) -> String {
     h.finalize().to_hex().to_string()
 }
 
-/// A `Pieces` run's identity (task #889): `id` of the program running it (its executable's digest,
-/// so a run of other code never takes pieces another made), its step's kind, its target, and
-/// `parts` (what it reads, its step's choosing).
-pub fn job_id(kind: &str, target: &str, parts: &[&str]) -> String {
-    static EXE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    let exe = EXE.get_or_init(|| {
-        std::env::current_exe()
-            .and_then(std::fs::read)
-            .map_or_else(|_| "-".into(), |b| blake3::hash(&b).to_hex().to_string())
-    });
-    let mut v = vec![exe.as_str(), kind, target];
+/// A `Pieces` run's identity (task #889): `id` of its step's kind, `versions` (the step's declared
+/// output version(s), as its target's key names them), its target, and `parts` (what it reads, its
+/// step's choosing: the manifest's names of its reads, `names`). As #885's logs (depth, terrain):
+/// what decides the output, never the program running it, so a run resumed in a newly installed
+/// app (the most common pause) takes the pieces its last run kept; code that changes the output
+/// bumps its step's version, which keys the target afresh and so the log too.
+pub fn job_id(kind: &str, versions: &str, target: &str, parts: &[&str]) -> String {
+    let mut v = vec![kind, versions, target];
     v.extend_from_slice(parts);
     id(&v)
 }
@@ -593,9 +592,30 @@ mod tests {
         drop(p);
         let mut p = Pieces::none();
         assert_eq!(p.piece((9, 0, 0), || make(5)).unwrap(), [5; 3]);
-        assert!(
-            !job_id("k", "6/1/2", &["x"]).is_empty() && job_id("k", "6/1/2", &["x"]) != job_id("k", "6/1/2", &["y"])
-        );
+    }
+
+    /// Task #889: a run's identity is what decides its output (its step, version, target and
+    /// reads), never the program: pieces kept by one app are taken by the next installed (a pause
+    /// to restart into an update, the most common), and a version bump starts afresh.
+    #[test]
+    fn pieces_outlive_a_new_program_but_not_a_new_version() {
+        let d = tempfile::tempdir().unwrap();
+        let t = (6, 1, 2);
+        let reads = "work/x=abc\nwork/y=-";
+        // (Nothing but these: no digest of the program running it, whatever its build.)
+        assert_eq!(job_id("k", "3", "6/1/2", &[reads]), id(&["k", "3", "6/1/2", reads]));
+        let mut p = Pieces::open(d.path(), t, "k", &job_id("k", "3", "6/1/2", &[reads]), true);
+        p.piece((9, 0, 0), || Ok(vec![1; 3])).unwrap();
+        drop(p);
+        // (The app updated: the same step, version, target and reads.)
+        let mut p = Pieces::open(d.path(), t, "k", &job_id("k", "3", "6/1/2", &[reads]), true);
+        assert_eq!(p.piece((9, 0, 0), || anyhow::bail!("made again")).unwrap(), [1; 3], "kept across the update");
+        drop(p);
+        for other in [job_id("k", "4", "6/1/2", &[reads]), job_id("k", "3", "6/1/2", &["work/x=abd"])] {
+            let mut p = Pieces::open(d.path(), t, "k", &other, true);
+            assert_eq!(p.piece((9, 0, 0), || Ok(vec![2; 3])).unwrap(), [2; 3], "a new version or read: afresh");
+            drop(p);
+        }
     }
 
     #[test]

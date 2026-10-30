@@ -969,8 +969,9 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
             let sources = std::fs::read_to_string(&a.sources).with_context(|| a.sources.display().to_string())?;
             let id = crate::resume_log::job_id(
                 "trees",
+                &crate::treepacks::TREES_V.to_string(),
                 &format!("6/{}/{}", a.tile.1, a.tile.2),
-                &[&coverage, &sources, &crate::treepacks::TREES_V.to_string()],
+                &[&coverage, &sources],
             );
             crate::resume_log::Pieces::open(d, (6, a.tile.1, a.tile.2), "trees", &id, true)
         }

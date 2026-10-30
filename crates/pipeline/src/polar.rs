@@ -143,6 +143,46 @@ impl Voids {
     }
 }
 
+/// Piece `id`'s sampled tiles (`make`'s, with the voids it counted), kept with those counts
+/// (crate::resume_log::Pieces): its tiles, its counts added to `voids` whether made now or kept.
+fn sample_kept(
+    pieces: &mut crate::resume_log::Pieces,
+    id: crate::resume_log::BlockId,
+    voids: &Voids,
+    make: impl FnOnce() -> Result<(Vec<Vec<f32>>, Voids)>,
+) -> Result<Vec<Vec<f32>>> {
+    use crate::resume_log::{Get, Put};
+    let p = pieces.piece(id, || {
+        let (es, mine) = make()?;
+        let mut p = Put::default();
+        p.u64(es.len() as u64);
+        for e in &es {
+            p.f32s(e);
+        }
+        let bands = mine.bands();
+        p.u64(bands.len() as u64);
+        for (band, v, f, n) in bands {
+            p.u32(band as u32);
+            p.u64(v);
+            p.u64(f);
+            p.u64(n);
+        }
+        Ok(p.0)
+    })?;
+    let mut g = Get(&p);
+    let es = (0..g.count(8)?).map(|_| g.f32s()).collect::<Result<Vec<_>>>()?;
+    let mut all = voids.0.lock().unwrap();
+    for _ in 0..g.count(28)? {
+        let (band, v, f, n) = (g.u32()? as i32, g.u64()?, g.u64()?, g.u64()?);
+        let b = all.entry(band).or_default();
+        b[0] += v;
+        b[1] += f;
+        b[2] += n;
+    }
+    g.end()?;
+    Ok(es)
+}
+
 /// Tiles `ts` of zoom `z` sampled from `s`: each its 256 × 256 heights (m, EGM2008), each the
 /// mean of its `K` × `K` samples with data; where no dataset has data, a fill mask's own filled
 /// value (`Sampler::fill_voids`; both counted in `voids`); a pixel with no sample with data in a
@@ -435,11 +475,14 @@ pub fn terrain_block(
     let all: u64 = (BLOCK_Z..=max_z).map(|z| level(z).len() as u64).sum();
     let mut tally = Tally::new(own.len() as u64 + all, progress);
     let mut lv = Heights::new();
-    // (Each chunk sampled a piece kept, task #889: a resumed block samples only the chunks its last
-    // run didn't keep, their voids not counted again.)
+    // (Each chunk sampled a piece kept, task #889, with its voids counted: a resumed block samples
+    // only the chunks its last run didn't keep, and counts the kept ones' voids as they were.)
     for chunk in own.chunks(16) {
         let id = (max_z, chunk[0].0, chunk[0].1);
-        let es = pieces.floats(id, || sample(&samplers[max_z as usize], pole, max_z, chunk, voids))?;
+        let es = sample_kept(pieces, id, voids, || {
+            let mine = Voids::default();
+            Ok((sample(&samplers[max_z as usize], pole, max_z, chunk, &mine)?, mine))
+        })?;
         for (t, e) in chunk.iter().zip(es) {
             lv.insert(*t, Arc::new(e));
         }
@@ -657,6 +700,7 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
             "polar-terrain",
             &crate::resume_log::job_id(
                 "polar-terrain",
+                &format!("{} {}", TERRAIN_V, crate::terrain_codec::version()),
                 &t,
                 &[&crate::terrain_resume::inputs(&out.manifest), &format!("{plans:?}")],
             ),
@@ -717,6 +761,7 @@ pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> 
             "polar-slope",
             &crate::resume_log::job_id(
                 "polar-slope",
+                &format!("{} {}", SLOPE_V, crate::shade_codec::version()),
                 &t,
                 &[&crate::resume_log::names(
                     out,

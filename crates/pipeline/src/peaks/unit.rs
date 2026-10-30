@@ -532,9 +532,10 @@ struct Seen {
 const BATCH: usize = 512;
 
 /// A batch's results as a kept piece's payload (crate::resume_log::Put).
-fn put_outs(outs: &[(usize, Out)]) -> Vec<u8> {
+fn put_outs(coarse: usize, outs: &[(usize, Out)]) -> Vec<u8> {
     let mut p = crate::resume_log::Put::default();
     let f64s = |p: &mut crate::resume_log::Put, v: &[f64]| v.iter().for_each(|x| p.u64(x.to_bits()));
+    p.u64(coarse as u64);
     p.u64(outs.len() as u64);
     for (i, o) in outs {
         p.u64(*i as u64);
@@ -552,10 +553,11 @@ fn put_outs(outs: &[(usize, Out)]) -> Vec<u8> {
     p.0
 }
 
-/// `put_outs`'s results read back.
-fn get_outs(p: &[u8]) -> Result<Vec<(usize, Out)>> {
+/// `put_outs`'s count of peaks that needed the coarse stage and results, read back.
+fn get_outs(p: &[u8]) -> Result<(usize, Vec<(usize, Out)>)> {
     let mut g = crate::resume_log::Get(p);
     let f64 = |g: &mut crate::resume_log::Get| g.u64().map(f64::from_bits);
+    let coarse = usize::try_from(g.u64()?)?;
     let mut v = Vec::new();
     for _ in 0..g.count(53)? {
         let at = usize::try_from(g.u64()?)?;
@@ -568,7 +570,7 @@ fn get_outs(p: &[u8]) -> Result<Vec<(usize, Out)>> {
         v.push((at, Out { i, e, p: pr, pl: f & 1 != 0, c, ce, iso, il: f & 2 != 0, hi }));
     }
     g.end()?;
-    Ok(v)
+    Ok((coarse, v))
 }
 
 /// Peaks of a z6 tile: (key, result) in the peaks' order; the summits as they see them, then each
@@ -839,7 +841,7 @@ pub fn run(
                 failed_z12 == 0,
                 "peaks: {failed_z12} z12 tiles were read that weren't loaded (the reach is wrong)"
             );
-            need_coarse += fine.iter().filter(|f| !f.flood_done || !f.iso_done).count();
+            let coarse = fine.iter().filter(|f| !f.flood_done || !f.iso_done).count();
 
             // The coarse stage (z8), a few at a time (a flood holds up to 40M pixels).
             let results: Vec<Result<(usize, Out)>> = pool.install(|| {
@@ -906,9 +908,11 @@ pub fn run(
                     .collect()
             });
             let batch: Vec<(usize, Out)> = results.into_iter().collect::<Result<_>>().context("coarse stage")?;
-            Ok(put_outs(&batch))
+            Ok(put_outs(coarse, &batch))
         })?;
-        outs.extend(get_outs(&kept)?);
+        let (coarse, kept) = get_outs(&kept)?;
+        need_coarse += coarse;
+        outs.extend(kept);
     }
     eprintln!("peaks: measured ({:.0?}), {need_coarse} needed the coarse stage", t0.elapsed());
     outs.sort_by_key(|o| o.0);

@@ -1111,7 +1111,17 @@ pub fn build_lo_keeping(
 ) -> Result<Report> {
     use crate::timings::phase;
     let target = format!("3/{}/{}", q.0, q.1);
-    let id = crate::resume_log::job_id("slope-lo", &target, &[&lo_inputs(out, q, ts)]);
+    let id = crate::resume_log::job_id(
+        "slope-lo",
+        &format!(
+            "slope-lo {} slope {} {}",
+            crate::agent::build::SLOPE_LO_V,
+            crate::agent::build::SLOPE_V,
+            crate::shade_codec::version()
+        ),
+        &target,
+        &[&lo_inputs(out, q, ts)],
+    );
     let mut pieces = crate::resume_log::Pieces::open(&out.scratch, (3, q.0, q.1), "slope-lo", &id, keep);
     let mut rep = Report::default();
     let p = phase("reading the pieces' mids and the terrain packs' indexes");

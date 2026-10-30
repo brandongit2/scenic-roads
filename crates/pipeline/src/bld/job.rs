@@ -517,7 +517,12 @@ pub fn build_lo_keeping(out: &mut Out, q: TileId, keep: bool) -> Result<usize> {
     }
     let p = phase("reading the mids and making the levels");
     let names = paths.keys().map(|&(x, y)| field::mid_logical(x, y));
-    let id = crate::resume_log::job_id("bldfield-lo", &q.slash(), &[&crate::resume_log::names(out, names)]);
+    let id = crate::resume_log::job_id(
+        "bldfield-lo",
+        &field::LO_V.to_string(),
+        &q.slash(),
+        &[&crate::resume_log::names(out, names)],
+    );
     let mut pieces = crate::resume_log::Pieces::open(&out.scratch, (3, q.x, q.y), "bldfield-lo", &id, keep);
     let tiles = field::lo(
         (q.x, q.y),
@@ -704,6 +709,7 @@ pub fn build_later_keeping(
         "bldtiles",
         &crate::resume_log::job_id(
             "bldtiles",
+            &super::BUILDINGS_V.to_string(),
             &t.slash(),
             &[&neighbours_names(out, t), &cov.digest(), &serde_json::to_string(&sites)?],
         ),

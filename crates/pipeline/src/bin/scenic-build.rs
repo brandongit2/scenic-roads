@@ -885,7 +885,10 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                         workers,
                         same.contains(&u.slash()),
                         &writing,
-                    )?;
+                    )
+                    // (The trees program paused at a row it kept, exiting PAUSED_EXIT: the job
+                    // ends paused, the z6 tile resumed from its rows.)
+                    .map_err(|e| pipeline::control::stop_if_paused("trees", e))?;
                 }
                 pipeline::control::done("trees", &u.slash());
                 note_cost("trees", &u.slash(), t);
@@ -1732,6 +1735,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
         // run didn't keep.)
         let id = pipeline::resume_log::job_id(
             "lo",
+            &pipeline::agent::build::LO_V.to_string(),
             &q.slash(),
             &[&pipeline::resume_log::names(out, near.iter().map(|bp| format!("base/{}", bp.unit.slash())))],
         );
@@ -2891,6 +2895,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         // running the extract again. (The extract is one program: no safe point inside it.)
         let id = pipeline::resume_log::job_id(
             "pois",
+            &pipeline::agent::build::POIS_V.to_string(),
             &u.slash(),
             &[
                 &args.join(" "),
@@ -3128,7 +3133,12 @@ fn peaks_from(
                 }
             }
         }
-        let id = pipeline::resume_log::job_id("peaks", &u.slash(), &[read, &pipeline::resume_log::names(out, near)]);
+        let id = pipeline::resume_log::job_id(
+            "peaks",
+            &pipeline::agent::build::PEAKS_V.to_string(),
+            &u.slash(),
+            &[read, &pipeline::resume_log::names(out, near)],
+        );
         let mut pieces =
             pipeline::resume_log::Pieces::open(scratch, (u.z, u.x, u.y), "peaks", &id, pipeline::resume_log::on());
         let res = unit::run(&peaks, summits, base8, &z12, z8, coarse_threads, &mut pieces)
@@ -4081,7 +4091,7 @@ fn unit_resume_id(
     lines.extend(layers_source(out, pilot, Some(blobs)).pack_contents(b));
     lines.extend(pipeline::heritage::unit_contents(out, date, b));
     let parts: Vec<&str> = lines.iter().map(String::as_str).collect();
-    pipeline::resume_log::job_id("unit", &u.slash(), &parts)
+    pipeline::resume_log::job_id("unit", &pipeline::agent::build::UNIT_V.to_string(), &u.slash(), &parts)
 }
 
 fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
