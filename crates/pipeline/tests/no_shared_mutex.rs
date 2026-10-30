@@ -17,7 +17,7 @@ const OWN: &[&str] = &["bus.rs", "nasread.rs"];
 
 /// The files with a `Mutex<` still, and how many, until their step lands.
 const LEFT: &[(&str, usize)] = &[
-    ("asks.rs", 3),
+    ("asks.rs", 1),
     ("build.rs", 1),
     ("builtview.rs", 2),
     ("cataloguesview.rs", 2),

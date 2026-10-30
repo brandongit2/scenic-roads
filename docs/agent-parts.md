@@ -1,6 +1,6 @@
 # The agent in parts
 
-**Planned (task #871; steps 0–1 of §7 built).** This doc says how the build agent's single
+**Planned (task #871; steps 0–2 of §7 built).** This doc says how the build agent's single
 serial loop (`crate::agent::Agent::run` and `step`, crates/pipeline/src/agent/mod.rs) will become
 independent parts, each split by what it waits on. Until each step below lands, docs/pool.md §7.8
 and §11, docs/building.md §2 and the code are what is true. The parts marked *today* describe main
@@ -239,7 +239,7 @@ in tests.
 |---|---|---|---|
 | 0 | *Done (#846):* own hold asks on `asks`' thread | — | `agent::asks::tests` |
 | 1 | *Done:* `agent::bus` (`Snap`, the channel types `ControlMsg`, `BeatMsg`), the slow-NAS fake (`nasread::fake::hang`: every call under a folder held) and the slow-plan fake (`Agent::slow_plan`), and the no-shared-mutex scan | — | `agent::bus::tests`, `nasread::tests::the_slow_nas_fake_hangs_its_folder_alone`, `agent::tests::the_slow_plan_fake_makes_a_plan_take_its_time`, tests/no_shared_mutex.rs |
-| 2 | **beat** on its own timer, sole status writer; the loop publishes `JobsView`/`PlanView` snapshots instead of writing | `nasread::BEATING`, `Beating`, `beat_again`, `asks::Beat`, the watchdog's kept beat (`KEEP_EVERY`, `KEEP_FOR`, `WORKING_S`), the heartbeat phase of `step` | `beat_steady_while_the_nas_hangs`: the NAS fake blocks every call; the local status' time advances every 10 s for 2 min. `beat_steady_while_planning`: the plan fake sleeps 3 min; same |
+| 2 | *Done:* **beat** on its own timer (`agent::beat`), sole status writer; the loop publishes what it composed (one `LoopView`, split into `JobsView`/`PlanView` by steps 5–6) instead of writing; also cut: `nasread::loop_thread`, `loop_work`, `PHASES`, `sys::this_thread`, `sys::thread_cpu_ms`, `Agent::last_beat` (the NAS copy written each beat) | `nasread::BEATING`, `Beating`, `beat_again`, `asks::Beat`, the watchdog's kept beat (`KEEP_EVERY`, `KEEP_FOR`, `WORKING_S`), the heartbeat phase of `step` | `beat_steady_while_the_nas_hangs`: the NAS fake blocks every call; the local status' time advances every 10 s for 2 min. `beat_steady_while_planning`: the plan fake sleeps 3 min; same |
 | 3 | **control** on the HTTP endpoint and a watcher; hold, quit, cancel, settings | `asks`' poll (`EVERY`), `sync_hold`, `adopt_hold`, `hold_asked_anew`, `quit_ask` polls in `run`'s wait, `tend_cancels`' folder read, the settings block in `step` | `pause_shows_within_a_second_on_a_hung_nas` and `…_while_planning`: a hold posted; its answer and a "pausing" status within 1 s, the job's channel says drain |
 | 4 | **nas**: the mount and probe on a worker with a deadline; the §4.3 calls as `NasReq` | the "still under no deadline" list in pool.md §7.8; the mount block in `step` | `a_hung_mount_holds_only_nas_jobs`: the mount fake hangs; a local job starts, the beat and a pause go on, a NAS job waits with "NAS mounting (stuck)" |
 | 5 | **jobs** as its own part; the reaper thread; grants by channel | the slot loop in `step`, `run`'s wait loop and its 2/20-s timing, `save_hands` per round | `a_job_end_starts_the_next_within_2_s`; the guards' tests moved |

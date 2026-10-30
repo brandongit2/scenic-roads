@@ -211,8 +211,12 @@ from the first (`edit_held`).
   agent's end. The app's quit stops its jobs as before (control::Quit). An adopted job's tasks
   offered after the restart run on its own Mac (the coordinator's job token is new: its offers are
   refused, and it runs them itself).
-- **The heartbeat:** written locally each loop (~20 s) and to the NAS (`state/status.json`) when it
-  changes or every two minutes. It holds the job, its progress (from the job's `progress:` lines)
+- **The heartbeat:** written by the agent's beat (`agent::beat`, docs/agent-parts.md §4.2) on a
+  timer of its own, every 10 s whatever the loop waits on, and at once when the loop publishes a
+  new view or this Mac's hold changes: locally, and to the NAS (`state/status.json`) by a writer
+  thread of its own under nasread's deadline (a hung share holds neither). The loop publishes what
+  it composed each round; the beat stamps it, says the hold as it stands, and how old the loop's
+  part is (`loop_age_s`). It holds the job, its progress (from the job's `progress:` lines)
   with the time left, and a checklist of the build to the end: a line per stage with an item per
   step (docs/pipeline.md §4), its targets done of all in its noun, its jobs left in order, and why
   work isn't this Mac's now. A job of several parts says them (`parts: <i>

@@ -24,6 +24,7 @@
 
 pub mod asks;
 pub mod backup;
+pub mod beat;
 pub mod brokers;
 pub mod build;
 pub mod buildmem;
@@ -823,6 +824,10 @@ pub struct Status {
     pub job_apps: Vec<String>,
     /// Seconds since the epoch.
     pub beat: u64,
+    /// How old the loop's part of this status is (s), as the beat wrote it (crate::agent::beat):
+    /// the heartbeat's time says the agent is alive, this whether its loop is slow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_age_s: Option<u64>,
     pub started: u64,
     pub conditions: Conditions,
     /// Its running jobs, every slot's in slot order (each says its slot: `JobView::slot`). Read
@@ -1562,9 +1567,6 @@ pub struct Agent {
     heal: heal::Heal,
     /// How many of this process's stuck calls were taken in (`store::whole::stuck_after`).
     heal_seen: u64,
-    /// The heartbeat last written to the NAS (without its time) and when: written again only when it
-    /// changes or every five minutes, so an idle NAS can rest.
-    last_beat: Option<(Vec<u8>, Instant)>,
     /// The checklist, and when it was worked out.
     progress: Option<(Instant, Vec<build::Line>)>,
     /// How far each region is built (build::region_states), when that count was last started, and
@@ -1650,6 +1652,9 @@ pub struct Agent {
     /// at once; whether its thread runs (else the loop takes them, `sync_hold`).
     asks: std::sync::Arc<asks::Asks>,
     asks_on: bool,
+    /// The heartbeat and status, written on a timer of their own (crate::agent::beat), from what
+    /// the loop publishes.
+    beat: beat::Handle,
     /// The slow-plan fake (docs/agent-parts.md §7): each plan sleeps this long first. Tests only.
     #[cfg(test)]
     slow_plan: Option<Duration>,
@@ -1988,7 +1993,9 @@ impl Agent {
         // The build's pause as this agent last knew it (a member that can't reach the lead stays
         // as it was).
         let hold = crate::control::read_hold(&o.home);
-        let asks_home = o.home.clone();
+        let hold_snap = bus::Snap::new(hold.clone());
+        let beat = beat::Handle::new(o.home.clone(), hold_snap.clone());
+        let asks = asks::Asks::new(o.home.clone(), hold_snap, beat.sender());
         let pause: Option<crate::control::Pause> =
             std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         // (A record that doesn't read: none, the low zooms made with the next catalogue. The map
@@ -2049,7 +2056,6 @@ impl Agent {
             last_mount_try: None,
             heal: Default::default(),
             heal_seen: 0,
-            last_beat: None,
             progress: None,
             built: BTreeMap::new(),
             built_counted: None,
@@ -2082,8 +2088,9 @@ impl Agent {
             pause_local: false,
             mirrored: None,
             pause_pushed: false,
-            asks: asks::Asks::new(asks_home, hold.clone()),
+            asks,
             asks_on: false,
+            beat,
             #[cfg(test)]
             slow_plan: None,
             hold,
@@ -3806,9 +3813,11 @@ impl Agent {
         self.ticker = self.pool.clone().map(pool::Ticker::start);
         // This Mac's own hold asks, taken up at once on a thread of their own (crate::agent::asks):
         // not the next pass's.
+        // The heartbeat on its own timer (crate::agent::beat), whatever the loop waits on.
         if self._lock.is_some() && !self.o.dry_run && !self.o.once {
             self.asks.spawn();
             self.asks_on = true;
+            self.beat.spawn();
         }
         if self._lock.is_some() {
             // (What they finished went to the journal with their hand-offs, as they saved.)
@@ -3822,8 +3831,6 @@ impl Agent {
                 self.orphans.extend(orphan.left);
             }
         }
-        // (Its thread's CPU time is the watchdog's sign the loop works, nasread::loop_thread.)
-        nasread::loop_thread();
         loop {
             let quick = self.step()?;
             nasread::phase("between rounds");
@@ -4919,22 +4926,16 @@ impl Agent {
             inputs: if self.o.helper { Vec::new() } else { self.inputs.view.borrow().clone() },
             ..Default::default()
         };
-        nasread::phase("the heartbeat");
+        nasread::phase("the status");
         status.set_jobs(views, all_new);
-        // (Held from the hold's say on, the local copy and the NAS's written and the kept beat set:
-        // the watchdog's kept beat, an older content, never lands after this one, here or on the
-        // NAS; and the asks thread's hold, set after this say, beats only once this is written,
-        // from this status, crate::agent::asks.)
-        let mut kept = nasread::BEATING.lock().unwrap_or_else(|e| e.into_inner());
         self.adopt_hold();
         status.say(crate::control::peek_hold_request(&self.o.home).as_ref(), &self.hold, false);
         // (The running jobs' channels, for the asks thread to tell them at once.)
         *self.asks.controls.lock().unwrap_or_else(|e| e.into_inner()) =
             (0..self.slots.len()).filter(|&k| self.slots[k].running.is_some()).map(|k| self.control_path(k)).collect();
-        let body = serde_json::to_vec_pretty(&status)?;
         if self._lock.is_none() {
             // Another agent writes the heartbeat; this one only reports.
-            eprintln!("{}", String::from_utf8_lossy(&body));
+            eprintln!("{}", String::from_utf8_lossy(&serde_json::to_vec_pretty(&status)?));
             return Ok(ended);
         }
         // A helper's own status, never the heartbeat (the Macs' status bars show the main agent's,
@@ -4944,56 +4945,17 @@ impl Agent {
         } else {
             ("status.json".to_string(), "state/status.json".to_string())
         };
-        // (Kept for the asks thread to write again with a new hold, at once.)
-        *self.asks.beat.lock().unwrap_or_else(|e| e.into_inner()) = Some(asks::Beat {
-            status: status.clone(),
+        // Published for the beat, which writes it (crate::agent::beat): at once, and every 10 s
+        // after with its time and the hold as they are then. (Not a dry run's on the NAS, in a home
+        // of its own: the NAS's is the real agent's.)
+        let hold_at = self.hold.at;
+        self.beat.publish(beat::LoopView {
+            status,
             local: self.o.home.join(&local),
             shared: root.as_ref().filter(|_| !self.o.dry_run).map(|r| r.join(&shared)),
+            hold_at,
+            at: Instant::now(),
         });
-        write_replace(&self.o.home.join(&local), &body).ok();
-        // (Not a dry run's, in a home of its own: the NAS's is the real agent's.)
-        if let (Some(root), false) = (&root, self.o.dry_run) {
-            // What's new since the last write, without the time and the user's idle seconds (which
-            // change every loop): only whether the user is at the Mac counts.
-            let idle_s = if c.user_active() { 0 } else { cond::AWAY_S };
-            // (Nor this Mac's load, memory and the NAS's answer, which change every loop too.)
-            let same = serde_json::to_vec(&Status {
-                beat: 0,
-                conditions: Conditions { idle_s, ..c },
-                resources: None,
-                ..status.clone()
-            })?;
-            let due =
-                self.last_beat.as_ref().is_none_or(|(b, t)| *b != same || t.elapsed() >= Duration::from_secs(120));
-            if due {
-                // (On the writers, under a deadline: a share that hangs fails it, nasread::write.)
-                let (p, own) = (root.join(&shared), self.o.home.join(&local));
-                match write_beat(&p, body.clone()) {
-                    Ok(()) => {
-                        self.last_beat = Some((same, Instant::now()));
-                        // The same written again (here and on the NAS), stamped later, while a
-                        // round runs long and the loop works (nasread::Watchdog::keep): its time,
-                        // not its content.
-                        *kept = Some(nasread::Beating {
-                            at: status.beat,
-                            again: Box::new(move |t| {
-                                status.beat = t;
-                                let b = serde_json::to_vec_pretty(&status)?;
-                                write_replace(&own, &b).ok();
-                                write_beat(&p, b)
-                            }),
-                        });
-                    }
-                    // (A timeout logged once by nasread.) Nothing kept from here: its content is
-                    // older than this one's, which didn't reach the NAS.
-                    Err(e) if nasread::timed_out(&e) => *kept = None,
-                    Err(e) => {
-                        eprintln!("agent: heartbeat: {e:#}");
-                        *kept = None;
-                    }
-                }
-            }
-        }
         Ok(ended)
     }
 
@@ -10578,9 +10540,9 @@ impl Agent {
     fn change_part(&mut self, root: &store::nasfs::NasRoot, out: &crate::pool::driver::Out) {
         let Some(role) = self.pooled().map(|r| r.role) else { return };
         if matches!((role, out.leads), (pool::Role::Member, Some(_)) | (pool::Role::Lead, None)) {
-            // (Its part's heartbeat no longer: the watchdog keeps none, a lead's `state/status.json`
-            // over the new lead's, till this part writes its own.)
-            *nasread::BEATING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            // (Its part's heartbeat no longer: the beat writes no lead's `state/status.json` over
+            // the new lead's, till this part composes its own.)
+            self.beat.part_changed();
         }
         match (role, out.leads) {
             (pool::Role::Member, Some(term)) => {
@@ -12636,6 +12598,95 @@ mod tests {
         let t = Instant::now();
         a.plan(&root, &c, &mut Vec::new());
         assert!(t.elapsed() >= Duration::from_millis(300));
+    }
+
+    /// A lead's agent for the parts' tests (docs/agent-parts.md §7): its own NAS and home, its lock
+    /// taken, a single loop's (its parts started by the test).
+    fn parts_agent(d: &Path) -> (Agent, PathBuf) {
+        let root = d.join("nas");
+        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        let a = test_agent(Options {
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
+            home: d.join("home"),
+            bin: PathBuf::from("/nonexistent/bin"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        (a, root)
+    }
+
+    /// The local status' beat as it changes while `busy` runs (on this thread) for `ran` at least:
+    /// each change's time, sampled every 100 ms on a thread of the test's.
+    fn beats_while(status: PathBuf, ran: Duration, mut busy: impl FnMut()) -> Vec<(Duration, u64)> {
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let t0 = Instant::now();
+        let sampler = std::thread::spawn(move || {
+            let mut seen: Vec<(Duration, u64)> = Vec::new();
+            while stopped.recv_timeout(Duration::from_millis(100)).is_err() {
+                let beat =
+                    std::fs::read(&status).ok().and_then(|b| serde_json::from_slice::<Status>(&b).ok()).map(|s| s.beat);
+                if let Some(b) = beat.filter(|b| seen.last().is_none_or(|l| l.1 != *b)) {
+                    seen.push((t0.elapsed(), b));
+                }
+            }
+            seen
+        });
+        while t0.elapsed() < ran {
+            busy();
+        }
+        stop.send(()).unwrap();
+        let seen = sampler.join().unwrap();
+        // (Within the beat's period and a second for the sampler and a loaded Mac, all along.)
+        let most = beat::EVERY + Duration::from_millis(1500);
+        let mut at = Duration::ZERO;
+        for (t, _) in &seen {
+            assert!(*t - at <= most, "a beat {:?} after the last: {seen:?}", *t - at);
+            at = *t;
+        }
+        assert!(t0.elapsed() - at <= most && at >= ran - most, "{seen:?}");
+        eprintln!("beats {:?}", seen.iter().map(|(t, _)| t.as_secs_f32()).collect::<Vec<_>>());
+        seen
+    }
+
+    /// Task #871 step 2: the heartbeat advances every 10 s while every NAS call hangs (the slow-NAS
+    /// fake), for 2 min, the loop going round on it meanwhile; the NAS's copy never written then.
+    #[test]
+    fn beat_steady_while_the_nas_hangs() {
+        let d = tempfile::tempdir().unwrap();
+        let (mut a, root) = parts_agent(d.path());
+        a.step().unwrap();
+        let shared = root.join("state/status.json");
+        let before = std::fs::read(&shared).unwrap();
+        a.beat.spawn();
+        let hung = nasread::fake::hang(&root);
+        let seen = beats_while(a.o.home.join("status.json"), Duration::from_secs(120), || {
+            a.step().ok();
+        });
+        assert!(seen.len() >= 12, "{seen:?}");
+        assert_eq!(std::fs::read(&shared).unwrap(), before, "no beat reached the hung NAS");
+        drop(hung);
+    }
+
+    /// Task #871 step 2: the heartbeat advances every 10 s while a plan runs 3 min (the slow-plan
+    /// fake), the loop in it all along; the status says how old the loop's part is.
+    #[test]
+    fn beat_steady_while_planning() {
+        let d = tempfile::tempdir().unwrap();
+        let (mut a, root) = parts_agent(d.path());
+        a.step().unwrap();
+        a.beat.spawn();
+        a.slow_plan = Some(Duration::from_secs(180));
+        let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let r = store::nasfs::NasRoot::local_for_test(&root);
+        let status = a.o.home.join("status.json");
+        let seen = beats_while(status.clone(), Duration::from_secs(180), || {
+            a.plan(&r, &c, &mut Vec::new());
+        });
+        assert!(seen.len() >= 18, "{seen:?}");
+        let s: Status = serde_json::from_slice(&std::fs::read(&status).unwrap()).unwrap();
+        assert!(s.loop_age_s.is_some_and(|age| age >= 170), "{:?}", s.loop_age_s);
     }
 
     #[test]

@@ -416,44 +416,6 @@ pub fn symlink(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
     std::fs::copy(src, dst).map(|_| ())
 }
 
-/// The calling thread, as `thread_cpu_ms` names it (macOS: its Mach port, no reference taken;
-/// elsewhere 0, which names none).
-pub fn this_thread() -> u32 {
-    #[cfg(target_os = "macos")]
-    {
-        // SAFETY: both only read the calling thread's own handles.
-        unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        0
-    }
-}
-
-/// The CPU time thread `t` (`this_thread`) has used so far, user and system (ms); None when it
-/// can't be read (it ended, or not macOS).
-pub fn thread_cpu_ms(t: u32) -> Option<u64> {
-    #[cfg(target_os = "macos")]
-    {
-        if t == 0 {
-            return None;
-        }
-        // SAFETY: the call fills the struct we own, of the flavour and count asked for.
-        let mut info: libc::thread_basic_info = unsafe { std::mem::zeroed() };
-        let mut n = libc::THREAD_BASIC_INFO_COUNT;
-        let r = unsafe {
-            libc::thread_info(t, libc::THREAD_BASIC_INFO as u32, &mut info as *mut _ as libc::thread_info_t, &mut n)
-        };
-        let ms = |v: libc::time_value_t| v.seconds.max(0) as u64 * 1000 + v.microseconds.max(0) as u64 / 1000;
-        (r == libc::KERN_SUCCESS).then(|| ms(info.user_time) + ms(info.system_time))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = t;
-        None
-    }
-}
-
 /// This process's physical footprint now (bytes): what the system charges it, its compressed and
 /// swapped memory included (macOS: `proc_pid_rusage`'s `ri_phys_footprint`); elsewhere, its
 /// resident peak. None when it can't be read.
@@ -913,20 +875,6 @@ pub fn group_peak() -> u64 {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_threads_cpu_time_grows_as_it_works() {
-        let t = this_thread();
-        let a = thread_cpu_ms(t).unwrap();
-        let s = std::time::Instant::now();
-        let mut x = 0u64;
-        while s.elapsed() < std::time::Duration::from_millis(50) {
-            x = std::hint::black_box(x.wrapping_add(1));
-        }
-        assert!(thread_cpu_ms(t).unwrap() > a);
-        assert_eq!(thread_cpu_ms(0), None);
-    }
 
     #[test]
     fn the_macs_memory_pressure_and_swap_read() {

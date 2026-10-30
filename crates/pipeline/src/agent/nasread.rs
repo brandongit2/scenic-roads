@@ -15,8 +15,8 @@
 //!
 //! And the loop's watchdog (`watch`): a round not finished in `STALL_AFTER` is logged with the
 //! phase of the round it's in (`phase`), kept in the agent's folder for `scenic status`, and the
-//! agent sampled once a stall into that folder (the last few samples kept). The watchdog also keeps the loop's heartbeat while a round
-//! runs long and the loop still works (`Watchdog::keep`).
+//! agent sampled once a stall into that folder (the last few samples kept). The heartbeat is not
+//! the loop's: it beats on a timer of its own (crate::agent::beat).
 
 use crate::pool::nas::{Created, Nas};
 use std::collections::BTreeSet;
@@ -481,7 +481,6 @@ pub const WAIT: &str = "the wait between rounds";
 /// the one that ends is logged if it took `SLOW_PHASE` or more (but `WAIT`). A mutex held only to
 /// swap the phase, by the loop ~20 times a round and the watchdog every 15 s.
 pub fn phase(name: &'static str) {
-    PHASES.fetch_add(1, Ordering::SeqCst);
     let was =
         PHASE.lock().unwrap_or_else(|e| e.into_inner()).replace((name, super::now_s(), std::time::Instant::now()));
     if let Some((was, _, t)) = was.filter(|w| w.0 != WAIT && w.2.elapsed() >= SLOW_PHASE) {
@@ -516,8 +515,7 @@ pub struct Stall {
 
 /// The agent's watchdog, started before the agent opens anything on the NAS (`round_at` set to
 /// now): a thread that looks every `every` (`Watchdog::look`) at when the loop last finished a
-/// round (`round_at`, stored by the loop), and keeps the loop's heartbeat (`BEATING`) while a round
-/// runs long but the loop works. It ends once `done` is set.
+/// round (`round_at`, stored by the loop). It ends once `done` is set.
 pub fn watch(
     round_at: &'static AtomicU64,
     done: &'static AtomicBool,
@@ -533,7 +531,7 @@ pub fn watch(
     std::thread::Builder::new()
         .name("loop-watchdog".into())
         .spawn(move || {
-            let mut dog = Watchdog::new(home, start, after, grace, sample, &BEATING, Box::new(loop_work));
+            let mut dog = Watchdog::new(home, start, after, grace, sample);
             while !done.load(Ordering::SeqCst) {
                 dog.look(super::now_s(), round_at.load(Ordering::SeqCst));
                 std::thread::sleep(every);
@@ -541,44 +539,6 @@ pub fn watch(
             std::fs::remove_file(&dog.file).ok();
         })
         .expect("spawn the loop's watchdog")
-}
-
-/// The loop's heartbeat as it last wrote it (`Beating`): kept by the watchdog while a round runs
-/// long. The loop holds it while it writes its own, so the two never cross.
-pub static BEATING: Mutex<Option<Beating>> = Mutex::new(None);
-
-/// The loop's heartbeat written: when (s since the epoch), and how to write it again stamped
-/// another time, its content as it was.
-pub struct Beating {
-    pub at: u64,
-    pub again: Box<dyn FnMut(u64) -> anyhow::Result<()> + Send>,
-}
-
-/// A round running this long gets its heartbeat written again (by the watchdog, `Watchdog::keep`),
-/// at most this often: a loop that finishes rounds sooner writes its own and no more.
-pub const KEEP_EVERY: u64 = 60;
-/// A round running this long gets its heartbeat kept no more, working or not: a loop spinning
-/// forever (its thread using the CPU) goes out of touch too. Six times `STALL_AFTER` (30 min).
-pub const KEEP_FOR: u64 = 6 * STALL_AFTER.as_secs();
-/// The loop works while it moved within this long (`loop_work`): began a phase, or its thread used
-/// the CPU. A loop that didn't (stuck in a call, or waiting on a lock) gets no beat kept, so its
-/// heartbeat goes out of touch as a stuck loop's should. (The normal beat's interval.)
-pub const WORKING_S: u64 = crate::pool::beat::BEAT_EVERY_S;
-
-/// The phases the loop began (`phase`).
-static PHASES: AtomicU64 = AtomicU64::new(0);
-/// The loop's thread (crate::sys::this_thread, `loop_thread`), 0 before it's named.
-static LOOP_THREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// The calling thread is the agent's loop: its CPU time counts as its work (`loop_work`).
-pub fn loop_thread() {
-    LOOP_THREAD.store(crate::sys::this_thread(), Ordering::SeqCst);
-}
-
-/// What the loop has done so far, as a count that moves while it works: its phases begun and its
-/// thread's CPU time (ms).
-fn loop_work() -> u64 {
-    PHASES.load(Ordering::SeqCst) + crate::sys::thread_cpu_ms(LOOP_THREAD.load(Ordering::SeqCst)).unwrap_or(0)
 }
 
 /// What the watchdog keeps between looks.
@@ -591,34 +551,20 @@ pub struct Watchdog {
     sample: Option<PathBuf>,
     /// The round the stall is in: when the one before it finished.
     stalled: Option<u64>,
-    beating: &'static Mutex<Option<Beating>>,
-    /// The loop's work (`loop_work`; a test's), as last seen, and when it last moved.
-    work: Box<dyn Fn() -> u64 + Send>,
-    work_seen: u64,
-    worked_at: u64,
 }
 
 impl Watchdog {
-    pub fn new(
-        home: PathBuf,
-        start: u64,
-        after: Duration,
-        grace: Duration,
-        sample: Option<PathBuf>,
-        beating: &'static Mutex<Option<Beating>>,
-        work: Box<dyn Fn() -> u64 + Send>,
-    ) -> Watchdog {
+    pub fn new(home: PathBuf, start: u64, after: Duration, grace: Duration, sample: Option<PathBuf>) -> Watchdog {
         let file = home.join(STALL_FILE);
         std::fs::remove_file(&file).ok();
-        let work_seen = work();
-        Watchdog { home, file, start, after, grace, sample, stalled: None, beating, work, work_seen, worked_at: start }
+        Watchdog { home, file, start, after, grace, sample, stalled: None }
     }
 
     /// A look at `now` (s since the epoch), the loop's last round finished at `round_at`. Past
     /// `after` (the start given `grace` more: a slow start isn't a stall), the stall is logged once
     /// with its phase (`phase`), the process sampled once into a `sample_name` file in `home` (with `sample`, the
     /// sampler's path), and `STALL_FILE` in `home` (this Mac's disk, never the NAS) kept up to date,
-    /// removed when the loop goes on (its real length logged then). And the heartbeat kept (`keep`).
+    /// removed when the loop goes on (its real length logged then).
     pub fn look(&mut self, now: u64, round_at: u64) {
         let at = round_at;
         let limit = if at == self.start { self.after + self.grace } else { self.after };
@@ -642,34 +588,6 @@ impl Watchdog {
         } else if let Some(from) = self.stalled.take() {
             eprintln!("agent: {} the loop goes on again: that round took {} s", clock(now), at.saturating_sub(from));
             std::fs::remove_file(&self.file).ok();
-        }
-        self.keep(now, round_at);
-    }
-
-    /// The loop's heartbeat written again, stamped `now`, when its round has run `KEEP_EVERY` or
-    /// more but under `KEEP_FOR`, it was last written `KEEP_EVERY` ago or more, and the loop worked
-    /// within `WORKING_S`.
-    /// Not while the loop writes its own (its lock held): the next look's.
-    fn keep(&mut self, now: u64, round_at: u64) {
-        let w = (self.work)();
-        if w != self.work_seen {
-            (self.work_seen, self.worked_at) = (w, now);
-        }
-        let ran = now.saturating_sub(round_at);
-        if !(KEEP_EVERY..KEEP_FOR).contains(&ran) || now.saturating_sub(self.worked_at) >= WORKING_S {
-            return;
-        }
-        let mut g = match self.beating.try_lock() {
-            Ok(g) => g,
-            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return,
-        };
-        let Some(b) = g.as_mut().filter(|b| now.saturating_sub(b.at) >= KEEP_EVERY) else { return };
-        match (b.again)(now) {
-            Ok(()) => b.at = now,
-            // (A timeout logged once by `write`.)
-            Err(e) if timed_out(&e) => {}
-            Err(e) => eprintln!("agent: the heartbeat kept through a long round: {e:#}"),
         }
     }
 }
@@ -1019,81 +937,18 @@ pub(crate) mod tests {
         assert_eq!(present_or_missing(Err(io::ErrorKind::PermissionDenied.into())), None);
     }
 
-    /// A round of the loop's that runs `mins` minutes on the Virtual clock, the watchdog looking every
-    /// 15 s, the loop's work moving (`working`) or not: the heartbeat's times as written (the
-    /// loop's at the round's start, the watchdog's after), and the watchdog's folder.
-    fn long_round(working: bool, mins: u64) -> (Vec<u64>, u64, tempfile::TempDir) {
-        let clock = store::clock::Virtual::new();
-        let secs = |c: &store::clock::Virtual| {
-            use store::clock::Clock;
-            c.wall().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
-        };
+    /// A round past `STALL_AFTER` flagged a stall, with its round and when it was seen.
+    #[test]
+    fn a_stuck_loop_is_flagged_a_stall() {
         let d = tempfile::tempdir().unwrap();
-        let t0 = secs(&clock);
-        let beats = Arc::new(Mutex::new(vec![t0]));
-        let b2 = beats.clone();
-        let beating: &'static Mutex<Option<Beating>> = Box::leak(Box::new(Mutex::new(Some(Beating {
-            at: t0,
-            again: Box::new(move |t| {
-                b2.lock().unwrap().push(t);
-                Ok(())
-            }),
-        }))));
-        let work = Arc::new(AtomicU64::new(0));
-        let w2 = work.clone();
-        let mut dog = Watchdog::new(
-            d.path().into(),
-            t0 - 3600,
-            STALL_AFTER,
-            STALL_GRACE,
-            None,
-            beating,
-            Box::new(move || w2.load(Ordering::SeqCst)),
-        );
-        while secs(&clock) < t0 + mins * 60 {
-            clock.advance(Duration::from_secs(15));
-            if working {
-                work.fetch_add(7, Ordering::SeqCst);
-            }
-            let now = secs(&clock);
-            dog.look(now, t0);
-            let last = *beats.lock().unwrap().last().unwrap();
-            let beat = crate::pool::Beat { beat: last, ..Default::default() };
-            if working && now - t0 < KEEP_FOR {
-                assert!(!beat.out_of_touch(now), "in touch {} s in", now - t0);
-            }
-        }
-        let b = beats.lock().unwrap().clone();
-        (b, secs(&clock), d)
-    }
-
-    #[test]
-    fn a_slow_phase_that_works_keeps_the_heartbeat_in_touch() {
-        let (beats, now, _d) = long_round(true, 12);
-        assert!(beats.len() > 2, "{beats:?}");
-        // (At most one more a minute: the loop's own interval is two.)
-        assert!(beats.windows(2).all(|w| w[1] - w[0] >= KEEP_EVERY), "{beats:?}");
-        assert!(!crate::pool::Beat { beat: *beats.last().unwrap(), ..Default::default() }.out_of_touch(now));
-    }
-
-    #[test]
-    fn a_loop_working_past_the_cap_goes_out_of_touch() {
-        let (beats, now, _d) = long_round(true, 50);
-        let last = *beats.last().unwrap();
-        assert!(last - beats[0] < KEEP_FOR, "{beats:?}");
-        assert!(last - beats[0] >= KEEP_FOR - KEEP_EVERY - 15, "{beats:?}");
-        assert!(crate::pool::Beat { beat: last, ..Default::default() }.out_of_touch(now));
-    }
-
-    #[test]
-    fn a_stuck_loop_goes_out_of_touch_and_is_flagged_a_stall() {
-        let (beats, now, d) = long_round(false, 12);
-        // (Kept no longer than `WORKING_S` past its last work: its start here.)
-        let last = *beats.last().unwrap();
-        assert!(last - beats[0] < WORKING_S, "{beats:?}");
-        assert!(crate::pool::Beat { beat: last, ..Default::default() }.out_of_touch(now));
+        let t0 = 1_700_000_000;
+        let mut dog = Watchdog::new(d.path().into(), t0 - 3600, STALL_AFTER, STALL_GRACE, None);
+        let now = t0 + STALL_AFTER.as_secs() + 15;
+        dog.look(now, t0);
         let s: Stall = serde_json::from_slice(&std::fs::read(d.path().join(STALL_FILE)).unwrap()).unwrap();
-        assert_eq!((s.round_at, s.seen_at), (beats[0], now));
+        assert_eq!((s.round_at, s.seen_at), (t0, now));
+        dog.look(now + 15, now + 10);
+        assert!(!d.path().join(STALL_FILE).exists());
     }
 
     fn samples(d: &Path) -> Vec<String> {

@@ -1169,19 +1169,17 @@ and since when) in the agent's folder (this Mac's disk), which `scenic status` s
 agent loop is stalled"; it's removed when the loop goes on, and the round's real length is logged.
 These lines carry the time of day (UTC).
 
-The same thread keeps the loop's heartbeat (`state/status.json`, or a helper's file, and its copy in
-the agent's folder) through a long round (task #795: under load a plan took 94–212 s and the
-checklist 261 s). Once a round has run a minute, it writes the heartbeat the loop last wrote again,
-its content as it was and only its time new, at most once a minute (`KEEP_EVERY`), and only while
-the loop works: it began a phase or its thread used the CPU within the last two minutes
-(`WORKING_S`), and for at most 30 minutes of a round (`KEEP_FOR`, six times `STALL_AFTER`): past
-it, a loop that still uses the CPU (spinning) goes out of touch too. A loop stuck in a call or waiting on a lock does neither, so its heartbeat stops and
-goes out of touch as before (ten minutes, `OUT_OF_TOUCH_S`, served as the status's `out_of_touch_s`), and the stall is
-flagged as above. A kept heartbeat's content is as of the loop's last write (its jobs, conditions,
-forecast): only its time says the loop still works. The loop holds the heartbeat while it writes
-its own (the local copy and the NAS's), so a kept one never overwrites a newer one; none is kept
-after the loop's own write failed, or once this Mac's part changed (§7.6) until the new part writes
-its own, so a former lead never rewrites `state/status.json` over the new lead's. (The pool's heartbeat,
+The heartbeat (`state/status.json`, or a helper's file, and its copy in the agent's folder) is not
+the loop's to write: the agent's beat writes it (crate::agent::beat, docs/agent-parts.md §4.2,
+task #871) every 10 s on a timer of its own and at once on a change, from the view the loop last
+published, so a long round (task #795: a plan 94–212 s, the checklist 261 s) or a hung share
+leaves it beating. Its content is as of the loop's last view, with its age (`loop_age_s`); its
+time says the agent is alive. The beat is the only writer of either copy (the NAS's on a writer
+thread of its own that takes the newest body each time, under the deadline above), so no beat
+lands over a newer one; once this Mac's part changed (§7.6) it writes no shared beat until the
+loop composes one under the new part, so a former lead never rewrites `state/status.json` over
+the new lead's. A heartbeat goes out of touch when the beat itself stops (ten minutes,
+`OUT_OF_TOUCH_S`, served as the status's `out_of_touch_s`). (The pool's heartbeat,
 `state/pool/members/<id>.json`, is kept by the pool's own thread, §6.7.)
 
 Still under no deadline (planned): the NAS's mount and probe (`root`); the build's keys
@@ -2023,7 +2021,8 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   It keeps beating. This Mac's own ask is taken up at once by the agent's asks thread
   (crate::agent::asks, task #846, the first slice of #871's loop split; it looks every 250 ms):
   the hold kept and answered, the running jobs told "drain" through their channels, and the
-  heartbeat written again then, here and on the NAS, not at the loop's next pass (which on a slow
+  beat told, which writes the heartbeat with the hold's stage then, here and on the NAS, not at
+  the loop's next pass (which on a slow
   NAS took minutes). Another member's ask stays the loop's. The status says the hold's stage
   (`Status::hold`, control::HoldView): asked, pausing (its jobs finishing, named), paused,
   resuming; and the Mac's state (`Status::verdict`). `scenic status`, the build page's machine

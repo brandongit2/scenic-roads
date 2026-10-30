@@ -5,58 +5,44 @@
 //! This Mac's own hold ask (crate::control::HoldRequest, no member: the menu bar's Pause This Mac,
 //! `scenic pause --here`) is watched for every `EVERY`: taken, its setting kept in the agent's
 //! folder and answered, the running jobs told to stop at their next safe point ("drain" in each's
-//! channel), and the heartbeat written again at once with the hold's stage (`Status::say`), here
+//! channel), and the heartbeat told (crate::agent::beat), which says the hold's stage at once, here
 //! and on the NAS, so the lead and the page see "pausing" within seconds. The loop takes the
 //! setting up at its next pass (`Agent::sync_hold`): its jobs given back as they stop, nothing new
 //! started. A member's ask of another Mac needs the pool, and stays the loop's.
 
-use super::{nasread, now_s, write_beat, write_replace, Status};
+use super::bus::{BeatMsg, Snap};
 use crate::control::{self, HoldAnswer, HoldState};
 use std::path::PathBuf;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use store::nasfs::NasPath;
 
 /// How often the thread looks for an ask (a file's stat in the agent's folder).
 pub const EVERY: Duration = Duration::from_millis(250);
-
-/// The last heartbeat the loop wrote, and where: written again by the thread with a new hold.
-#[derive(Clone)]
-pub struct Beat {
-    pub status: Status,
-    pub local: PathBuf,
-    pub shared: Option<NasPath>,
-}
 
 /// What the thread and the loop share.
 pub struct Asks {
     home: PathBuf,
     /// This Mac's hold as last set, by either: the later setting wins (`HoldState::at`).
-    pub hold: Mutex<HoldState>,
+    pub hold: Arc<Snap<HoldState>>,
     /// The running jobs' channels (crate::control::CONTROL_ENV), as the loop last saw them.
     pub controls: Mutex<Vec<PathBuf>>,
-    /// The loop's last heartbeat.
-    pub beat: Mutex<Option<Beat>>,
+    beat: Sender<BeatMsg>,
 }
 
 impl Asks {
-    pub fn new(home: PathBuf, hold: HoldState) -> Arc<Asks> {
-        Arc::new(Asks { home, hold: Mutex::new(hold), controls: Mutex::default(), beat: Mutex::default() })
+    pub fn new(home: PathBuf, hold: Arc<Snap<HoldState>>, beat: Sender<BeatMsg>) -> Arc<Asks> {
+        Arc::new(Asks { home, hold, controls: Mutex::default(), beat })
     }
 
     /// This Mac's hold as last set.
     pub fn hold(&self) -> HoldState {
-        self.hold.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.hold.get().as_ref().clone()
     }
 
     /// Sets the hold (`st`) unless a later setting stands; whether it did.
     pub fn set(&self, st: &HoldState) -> bool {
-        let mut h = self.hold.lock().unwrap_or_else(|e| e.into_inner());
-        if st.at < h.at {
-            return false;
-        }
-        *h = st.clone();
-        true
+        self.hold.update(|h| (st.at >= h.at).then(|| st.clone())).is_some()
     }
 
     /// Starts the thread.
@@ -79,13 +65,10 @@ impl Asks {
         };
         // (This Mac's own ask wins over any earlier setting, whatever another Mac's clock put on
         // it.)
-        let st = {
-            let mut h = self.hold.lock().unwrap_or_else(|e| e.into_inner());
-            *h = HoldState { held: req.held.clone(), at: req.at.max(h.at + 1) };
-            h.clone()
-        };
+        let st = self.hold.update(|h| Some(HoldState { held: req.held.clone(), at: req.at.max(h.at + 1) }));
+        let Some(st) = st else { return false };
         let what = if st.held.is_some() { "paused" } else { "going on" };
-        let kept = serde_json::to_vec(&st)
+        let kept = serde_json::to_vec(&*st)
             .map_err(anyhow::Error::from)
             .and_then(|b| store::whole::write(&self.home.join(control::HOLD), &b));
         if let Err(e) = kept {
@@ -102,48 +85,15 @@ impl Asks {
                 }
             }
         }
-        self.beat_again(&st);
+        // (The beat says it: its stage, its verdict.)
+        self.beat.send(BeatMsg::Changed).ok();
         true
-    }
-
-    /// The loop's last heartbeat written again now with hold `st` (its stage, its verdict), here
-    /// and on the NAS, and kept as the watchdog's beat.
-    fn beat_again(&self, st: &HoldState) {
-        // (Held before the loop's last beat is read, as the loop holds it from its say to its
-        // writes: the beat read is the last written, never one the loop writes after this.)
-        // (The NAS write under nasread::write's deadline: a share that hangs holds the loop's
-        // heartbeat no longer than its own write would.)
-        let mut kept = nasread::BEATING.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(mut b) = self.beat.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
-        // (Going on: resuming, until the loop's next pass starts work again.)
-        b.status.say(None, st, st.held.is_none());
-        b.status.beat = now_s();
-        let Ok(body) = serde_json::to_vec_pretty(&b.status) else { return };
-        write_replace(&b.local, &body).ok();
-        let Some(p) = b.shared.clone() else { return };
-        match write_beat(&p, body) {
-            Ok(()) => {
-                let (mut status, own) = (b.status, b.local);
-                *kept = Some(nasread::Beating {
-                    at: status.beat,
-                    again: Box::new(move |t| {
-                        status.beat = t;
-                        let b = serde_json::to_vec_pretty(&status)?;
-                        write_replace(&own, &b).ok();
-                        write_beat(&p, b)
-                    }),
-                });
-            }
-            Err(e) => {
-                eprintln!("agent: heartbeat: {e:#}");
-                *kept = None;
-            }
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::Status;
     use super::*;
     use crate::control::{Hold, HoldStage};
 
@@ -221,38 +171,30 @@ mod tests {
     }
 
     /// Task #846: this Mac's own pause ask taken up at once, off the loop: kept, answered, the
-    /// running jobs told to drain, and the heartbeat written again saying "pausing" with them;
-    /// another member's ask left for the loop; a resume beats "resuming".
+    /// running jobs told to drain, and the heartbeat told, which says "pausing" with them; another
+    /// member's ask left for the loop; a resume beats "resuming".
     #[test]
     fn a_hold_ask_is_taken_up_at_once() {
         let d = tempfile::tempdir().unwrap();
         let home = d.path().to_path_buf();
-        let asks = Asks::new(home.clone(), HoldState::default());
+        let hold = Snap::new(HoldState::default());
+        let mut beat = super::super::beat::Handle::new(home.clone(), hold.clone());
+        let asks = Asks::new(home.clone(), hold, beat.sender());
         let control = home.join("control");
         std::fs::write(&control, b"run").unwrap();
         *asks.controls.lock().unwrap() = vec![control.clone()];
         let mut st = Status { host: "m1".into(), beat: 1, ..Default::default() };
-        st.set_jobs(
-            vec![super::super::JobView {
-                id: "unit 6/1/2".into(),
-                what: "z6 tile 6/1/2".into(),
-                started: 1,
-                paused: None,
-                pausing: None,
-                tail: String::new(),
-                parts: Vec::new(),
-                part: None,
-                progress: None,
-                mem_mb: None,
-                threads: None,
-                waiting: None,
-                slot: Some(0),
-                live: None,
-            }],
-            true,
-        );
+        st.set_jobs(vec![job("unit 6/1/2", 0)], true);
         let local = home.join("status.json");
-        *asks.beat.lock().unwrap() = Some(Beat { status: st, local: local.clone(), shared: None });
+        beat.publish(super::super::beat::LoopView {
+            status: st,
+            local: local.clone(),
+            shared: None,
+            hold_at: 0,
+            at: std::time::Instant::now(),
+        });
+        beat.spawn();
+        let said = || -> Status { serde_json::from_slice(&std::fs::read(&local).unwrap()).unwrap() };
         assert!(!asks.round());
         // Another member's: the loop's.
         control::request_hold(&home, Some("m4"), Some(Hold::new("scenic pause on m1"))).unwrap();
@@ -263,16 +205,15 @@ mod tests {
         assert!(control::hold_answer(&home, &r).is_some_and(|a| a.ok));
         assert!(control::read_hold(&home).held.is_some() && asks.hold().held.is_some());
         assert_eq!(std::fs::read(&control).unwrap(), b"drain");
-        let said: Status = serde_json::from_slice(&std::fs::read(&local).unwrap()).unwrap();
-        let h = said.hold.unwrap();
+        store::testkit::eventually("the beat says pausing", || said().verdict.is_some_and(|v| v.state == "pausing"));
+        let h = said().hold.unwrap();
         assert_eq!((h.stage, h.finishing), (HoldStage::Pausing, vec!["unit 6/1/2".to_string()]));
-        assert_eq!(said.verdict.map(|v| v.state), Some("pausing".to_string()));
-        assert!(said.held.is_some() && said.beat > 1);
+        assert!(said().held.is_some() && said().beat > 1);
         // Going on: resuming, until the loop's pass.
         control::request_hold(&home, None, None).unwrap();
         assert!(asks.round());
-        let said: Status = serde_json::from_slice(&std::fs::read(&local).unwrap()).unwrap();
-        assert_eq!(said.hold.map(|h| h.stage), Some(HoldStage::Resuming));
-        assert!(said.held.is_none());
+        store::testkit::eventually("the beat says resuming", || {
+            said().hold.is_some_and(|h| h.stage == HoldStage::Resuming) && said().held.is_none()
+        });
     }
 }
