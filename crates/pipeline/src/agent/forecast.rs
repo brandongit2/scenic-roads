@@ -2285,7 +2285,7 @@ fn runs_of(
 /// (`Forecast::grants`, its first hour), by 2 or more and by more than half the forecast's
 /// (`departed`): ((Mac, step), in words). `real`: the grants made, (unix s, Mac, step).
 /// What the scheduler can't see moves them (docs/pool.md §7.8): a job ending sooner or later than
-/// measured, the owner's pause, a Mac handing over on battery, the NAS slower than its probe.
+/// measured, the owner's pause, the NAS slower than its probe.
 pub fn departures(f: &Forecast, real: &[(u64, String, String)], until: u64) -> Vec<((String, String), String)> {
     let until = until.min(f.at + GRANTS_S as u64);
     let mut n: BTreeMap<(&str, &str), (usize, usize)> = BTreeMap::new();

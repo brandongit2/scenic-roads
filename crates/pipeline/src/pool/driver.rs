@@ -76,7 +76,8 @@
 //! never leads one: a term naming it (one of the elected leads' before #881) is left to the
 //! declared lead, which makes the next. With the lead gone, members finish the jobs they hold,
 //! write their hand-offs to the journal, and wait for it. No lead declared yet (the pool's move to
-//! a fixed lead), the current term's lead declares itself, once, with create-new.
+//! a fixed lead), no one leads until the owner writes it; in a new pool, term 1's lead declares
+//! itself, once, with create-new.
 //!
 //! The lead's view can be old without its knowing (§6.6). It re-asserts (makes the next term naming
 //! itself and takes it up from its own records, its coordinator loading the term before's state
@@ -613,7 +614,9 @@ impl Driver {
             if self.cur.term > l.term.term {
                 self.step_down(&mut out, "a later term exists");
             } else if !mine {
-                self.step_down(&mut out, "another member is the declared lead");
+                let why =
+                    if self.declared.is_some() { "another member is the declared lead" } else { "no lead is declared" };
+                self.step_down(&mut out, why);
             }
         }
         if self.lead.is_some() {
@@ -886,15 +889,16 @@ impl Driver {
     }
 
     /// Whether this Mac is the declared lead (crate::pool::term::declared), read each step (the last
-    /// read kept when one fails). None declared yet: the current term's lead, as read whole,
-    /// declares itself, once (the pool's move to a fixed lead; in a new pool, term 1's maker), and
-    /// counts as declared while its declaration's create fails (tried again next step); the term
-    /// unreadable meanwhile, the last read is kept.
+    /// read kept when one fails). None declared yet: in a new pool, term 1's lead declares itself,
+    /// once, and counts as declared while its declaration's create fails (tried again next step);
+    /// the term unreadable meanwhile, the last read is kept. Past term 1 no Mac declares itself
+    /// (a pool that led before #881: an elected lead, maybe not the mini, would make itself the
+    /// fixed one): the owner writes the declaration, and until then no one leads.
     fn declare(&mut self, io: &dyn Io, out: &mut Out) -> bool {
         match term::declared(io) {
             Ok(Some(d)) => self.declared = Some(d.member),
             Ok(None) => match &self.cur.lead {
-                Some(t) if t.member == self.me.id => match term::declare(io, &self.me, io.now()) {
+                Some(t) if t.term == 1 && t.member == self.me.id => match term::declare(io, &self.me, io.now()) {
                     Ok(d) => self.declared = d.map(|d| d.member).or(Some(self.me.id.clone())),
                     Err(e) => {
                         self.declared = Some(self.me.id.clone());
@@ -1597,27 +1601,38 @@ mod tests {
     }
 
     #[test]
-    fn the_live_pools_lead_declares_itself_and_a_member_on_the_new_app_waits() {
-        // (Task #881's move, the pool building) Term 1 is A's, made by an app before #881: no
+    fn the_live_pools_move_waits_for_the_owners_declaration() {
+        // (Task #881's move, the pool building) A leads term 2, made by an app before #881: no
         // declaration on the NAS. B, on the new app first, declares nothing and leads nothing; A,
-        // restarted into it, declares itself and re-asserts.
+        // restarted into it, declares nothing either (a lead elected before #881 may not be the
+        // mini) and leads nothing; the owner's declaration written, A re-asserts.
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        ia.pass(20);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), a.saved());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(2));
         mem.remove(term::LEAD).unwrap();
         let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
         for _ in 0..3 {
             ib.pass(20);
             assert_eq!((step(&mut b, &ib, able()).leads, b.declared()), (None, None));
         }
-        assert_eq!(term::declared(&mem).unwrap(), None, "a member declares nothing");
         ia.pass(20);
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
+        for _ in 0..3 {
+            ia.pass(20);
+            let o = step(&mut a, &ia, able());
+            assert_eq!((o.leads, a.declared()), (None, None), "{:?}", o.events);
+        }
+        assert_eq!(term::declared(&mem).unwrap(), None, "no Mac declares itself past term 1");
+        assert!(!mem.exists(&term::path(3)).unwrap());
+        declare(&mem, A);
+        ia.pass(20);
         let o = step(&mut a, &ia, able());
-        assert_eq!((o.leads, a.declared()), (Some(2), Some(A)), "{:?}", o.events);
-        assert_eq!(term::declared(&mem).unwrap().map(|d| d.member), Some(A.to_string()));
+        assert_eq!((o.leads, a.declared()), (Some(3), Some(A)), "{:?}", o.events);
         ib.pass(20);
         assert_eq!((step(&mut b, &ib, able()).leads, b.declared()), (None, Some(A)));
     }

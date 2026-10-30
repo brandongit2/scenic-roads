@@ -144,10 +144,12 @@ Checked by the simulator (§13):
 
 - **Read every step** by every member (`term::declared`; a read that fails keeps the last). A
   member it doesn't name never makes a term and never leads one (`Driver::step`'s `declare`).
-- **Made once, by the lead of the moment** (`term::declare`, create-new): when there's none, the
-  member the current term names, read whole, declares itself; in a new pool, the first Mac to make
-  term 1. The pool's move to a fixed lead (task #881) is that: the mini, leading the current term,
-  declared itself at its first step on the app that reads it.
+- **Made once** with create-new: in a new pool, by the first Mac to make term 1, which declares
+  itself (`term::declare`); in a pool past term 1, by the owner, by hand. No Mac declares itself
+  past term 1: a lead elected before #881 (any Mac, a takeover during the rollout) would make
+  itself the fixed one. With none there, no Mac leads (a lead steps down: "no lead is declared")
+  and the members wait. The pool's move to a fixed lead (task #881) is the owner's file naming the
+  mini, written before the app that reads it is published.
 - **Why a file and not a setting on each Mac, or the newest term:** one place every Mac reads, so
   two Macs can't each think they're the lead; written once with create-new, so no Mac's process
   replaces it; and apart from the terms, which number the lead's runs, so nothing that makes a
@@ -2067,7 +2069,7 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
 
 - **The Mac mini is the fixed lead** (task #881, the owner, 30 Oct): always on, at home, on power.
   Members never lead; with the mini gone they finish their jobs and wait. Named by a declaration on
-  the NAS made once by the lead of the moment (§6.1), not a setting on each Mac (two could disagree)
+  the NAS made once (§6.1), not a setting on each Mac (two could disagree)
   nor the newest term (anything that makes a term would move it).
 - **`tailscale serve` on every Mac** (`tailscale serve --bg 8090`, port 443) gives pages HTTPS;
   the agent finds it via `tailscale serve status --json` (on any port: the address keeps it) and

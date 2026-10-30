@@ -19,9 +19,8 @@ pub const HINT: &str = "state/build/lead.json";
 pub const LEAD: &str = "state/build/lead-member.json";
 
 /// The declared lead: the one member that makes terms and leads them. Written once with create-new
-/// (`declare`), by the lead of the current term when there's none yet (the pool's move to a fixed
-/// lead, or term 1's maker in a new pool); moving the lead to another Mac is the owner's edit of
-/// this file, by hand.
+/// (`declare`) by term 1's maker in a new pool; in a pool past term 1 with none (the move to a
+/// fixed lead), by the owner, by hand, as is moving the lead to another Mac.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Declared {
     /// Its member id.

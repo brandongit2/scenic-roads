@@ -252,6 +252,24 @@ struct Own: Decodable {
     /// This Mac's own pause's stage and the out-of-touch threshold (task #846).
     let hold: HoldStage?
     let out_of_touch_s: Int?
+
+    init(host: String, beat: Int, caches: Caches?, pool: OwnPool?, hold: HoldStage?, out_of_touch_s: Int?) {
+        (self.host, self.beat, self.caches, self.pool, self.hold, self.out_of_touch_s) = (host, beat, caches, pool, hold, out_of_touch_s)
+    }
+
+    private enum CodingKeys: String, CodingKey { case host, beat, caches, pool, hold, out_of_touch_s }
+
+    /// The pool part read on its own: one this app can't read (an agent of another app's, a
+    /// rollout) leaves it out, not the whole status.
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        host = try c.decode(String.self, forKey: .host)
+        beat = try c.decode(Int.self, forKey: .beat)
+        caches = try c.decodeIfPresent(Caches.self, forKey: .caches)
+        pool = try? c.decodeIfPresent(OwnPool.self, forKey: .pool)
+        hold = try c.decodeIfPresent(HoldStage.self, forKey: .hold)
+        out_of_touch_s = try c.decodeIfPresent(Int.self, forKey: .out_of_touch_s)
+    }
 }
 
 /// This Mac in the pool: its member, and the pool as the controls show it (docs/pool.md §10, §11;
