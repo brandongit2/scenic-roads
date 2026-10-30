@@ -216,7 +216,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
   (its own z6 tile's hi pack copied whole first) and its neighbours' edge strips; **slope-lo**, an
   assembly per z3 tile from its z6 tiles' mids (each read whole, eight at once, under a deadline and
   tried again while it fails transiently); **slope-root**, z0–2 from the z3 tiles. (Each of these waits, slope-lo's on its z6 tiles' slope-hi
-  and its own and edge neighbours' terrain-lo, terrain-lo's and trees-lo's on their z6 tiles, is
+  and its own and edge neighbours' terrain-lo, terrain-lo's and trees-lo's on their z6 tiles' mids (`Read::Mids`: a z6 tile made again for its mid alone holds only them), is
   its row's declared reads in the steps table, `agent::steps::Read` (docs/readiness.md): the planner,
   the forecast's waits and the page's notes derive each target's from it (`steps::readiness`); `declared_reads_cover_the_keys` checks
   each against its key's inputs. The terrain root is read but not waited on yet: built at the finish,

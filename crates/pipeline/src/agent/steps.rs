@@ -175,6 +175,10 @@ pub enum Read {
     /// Some targets of another step, by this target (any order, repeats allowed; one listed that
     /// isn't among its step's targets as built is never left).
     Targets { step: &'static str, of: fn(&str) -> Vec<String> },
+    /// The mids of some targets of another step (the z9 means an assembly reads of its z6 tiles):
+    /// left while a target's mid isn't current (`View::mid_left`: stale, or current without its
+    /// mid, made again for it), which what reads its packs doesn't wait for.
+    Mids { step: &'static str, of: fn(&str) -> Vec<String> },
     /// Every target of another step (a chain's: it reads what all its targets make, e.g.
     /// depth-root every depth-lo assembly).
     Whole { step: &'static str },
@@ -197,6 +201,10 @@ pub enum Ready {
 pub trait View {
     /// Target `t` of `step` is left (stale or unbuilt, runnable or not).
     fn left(&self, step: &str, t: &str) -> bool;
+    /// Target `t`'s mid isn't current (a `Read::Mids`): it's left, or current without its mid.
+    fn mid_left(&self, step: &str, t: &str) -> bool {
+        self.left(step, t)
+    }
     /// Any target of `step` is left (a `Read::Whole`).
     fn any_left(&self, step: &str) -> bool;
     /// Input `name` can be worked out for target `t` (`Read::Input`); known unless the view says.
@@ -218,7 +226,9 @@ pub fn read_targets(step: &str, t: &str) -> Vec<ReadTarget> {
     let mut v: Vec<ReadTarget> = Vec::new();
     for r in row(step).map_or(&[][..], |r| r.reads) {
         match *r {
-            Read::Targets { step, of } => v.extend(of(t).into_iter().map(|u| ReadTarget::One(step, u))),
+            Read::Targets { step, of } | Read::Mids { step, of } => {
+                v.extend(of(t).into_iter().map(|u| ReadTarget::One(step, u)))
+            }
             Read::Whole { step } => v.push(ReadTarget::Whole(step)),
             Read::Input { .. } => {}
         }
@@ -231,18 +241,26 @@ pub fn read_targets(step: &str, t: &str) -> Vec<ReadTarget> {
 /// Whether target `t` of `step` may run in `view` (docs/readiness.md §3): `Waits` while a target or
 /// step it reads is left, else `Unknown` while an input it reads can't be worked out, else `Yes`.
 pub fn readiness(step: &str, t: &str, view: &dyn View) -> Ready {
-    let waits: Vec<(&'static str, String)> = read_targets(step, t)
-        .into_iter()
-        .filter_map(|r| match r {
-            ReadTarget::One(s, u) => view.left(s, &u).then_some((s, u)),
-            ReadTarget::Whole(s) => view.any_left(s).then(|| (s, s.to_string())),
-        })
-        .collect();
+    let reads = row(step).map_or(&[][..], |r| r.reads);
+    let mut waits: Vec<(&'static str, String)> = Vec::new();
+    for r in reads {
+        match *r {
+            Read::Targets { step, of } => {
+                waits.extend(of(t).into_iter().filter(|u| view.left(step, u)).map(|u| (step, u)))
+            }
+            Read::Mids { step, of } => {
+                waits.extend(of(t).into_iter().filter(|u| view.mid_left(step, u)).map(|u| (step, u)))
+            }
+            Read::Whole { step } => waits.extend(view.any_left(step).then(|| (step, step.to_string()))),
+            Read::Input { .. } => {}
+        }
+    }
+    waits.sort_unstable();
+    waits.dedup();
     if !waits.is_empty() {
         return Ready::Waits(waits);
     }
-    let unknown: Vec<&'static str> = row(step)
-        .map_or(&[][..], |r| r.reads)
+    let unknown: Vec<&'static str> = reads
         .iter()
         .filter_map(|r| match *r {
             Read::Input { name } => (!view.known(name, t)).then_some(name),
@@ -302,10 +320,12 @@ pub fn wait_note<'a>(waits: impl IntoIterator<Item = &'a (&'static str, String)>
 }
 
 /// Left targets by step, as the planner gathers them (its `View`): a step in `whole` has every
-/// target left (a world step's own), an input in `unknown` can't be worked out.
+/// target left (a world step's own), an input in `unknown` can't be worked out; `mids`, by step,
+/// the targets whose mid isn't current (stale, or current without it: a `Read::Mids`'s).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Left {
     pub targets: std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>>,
+    pub mids: std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>>,
     pub whole: std::collections::BTreeSet<&'static str>,
     pub unknown: std::collections::BTreeSet<&'static str>,
 }
@@ -327,6 +347,10 @@ impl Left {
 impl View for Left {
     fn left(&self, step: &str, t: &str) -> bool {
         self.whole.contains(step) || self.targets.get(step).is_some_and(|s| s.contains(t))
+    }
+
+    fn mid_left(&self, step: &str, t: &str) -> bool {
+        self.whole.contains(step) || self.mids.get(step).is_some_and(|s| s.contains(t))
     }
 
     fn any_left(&self, step: &str) -> bool {
@@ -450,6 +474,12 @@ fn ps_terrain(t: &str) -> Vec<String> {
     })
 }
 
+/// polar-root `s`: its pole's blocks (crate::polar::blocks).
+fn pole_blocks(t: &str) -> Vec<String> {
+    roadcore::polar::Pole::of_letter(t)
+        .map_or_else(Vec::new, |p| crate::polar::blocks(p).into_iter().map(|b| crate::polar::target(p, b)).collect())
+}
+
 /// bldtiles 6/x/y: the normalized files of it and its 8 neighbours (`build::bld_around`).
 fn bt_prep(t: &str) -> Vec<String> {
     at(t, 6).map_or_else(Vec::new, |(x, y)| {
@@ -468,8 +498,8 @@ fn own(t: &str) -> Vec<String> {
     vec![t.to_string()]
 }
 
-use Read::{Input as In, Targets as Of, Whole as All};
-const R_TERRAIN_LO: &[Read] = &[Of { step: "terrain-hi", of: z6_of_z3 }];
+use Read::{Input as In, Mids, Targets as Of, Whole as All};
+const R_TERRAIN_LO: &[Read] = &[Mids { step: "terrain-hi", of: z6_of_z3 }];
 const R_SLOPE_DEEP: &[Read] = &[
     Of { step: "terrain-deep", of: sd_deep },
     Of { step: "terrain-hi", of: sd_hi },
@@ -481,7 +511,7 @@ const R_SLOPE_HI: &[Read] = &[
     Of { step: "slope-deep", of: sh_deep },
 ];
 const R_SLOPE_LO: &[Read] = &[Of { step: "slope-hi", of: z6_of_z3 }, Of { step: "terrain-lo", of: sl_lo }];
-const R_TREES_LO: &[Read] = &[Of { step: "trees", of: z6_of_z3 }];
+const R_TREES_LO: &[Read] = &[Mids { step: "trees", of: z6_of_z3 }];
 // (The roads wait for the pass's heritage sites, reaches and roadside buildings: their slices, which
 // z6 tiles the coverage builds, the roadside index.)
 const R_UNIT: &[Read] = &[
@@ -493,7 +523,9 @@ const R_UNIT: &[Read] = &[
     All { step: "buildings" },
 ];
 const R_POLAR_SLOPE: &[Read] = &[Of { step: "polar-terrain", of: ps_terrain }];
-const R_POLAR_ROOT: &[Read] = &[All { step: "polar-terrain" }, All { step: "polar-slope" }];
+// (A pole's root reads its own blocks, not the other pole's.)
+const R_POLAR_ROOT: &[Read] =
+    &[Of { step: "polar-terrain", of: pole_blocks }, Of { step: "polar-slope", of: pole_blocks }];
 const R_DEPTH_LO: &[Read] = &[Of { step: "depth", of: z6_of_z3 }];
 // (Both: an assembly whose z6 tiles are stale isn't stale itself till they're made.)
 const R_DEPTH_ROOT: &[Read] = &[All { step: "depth" }, All { step: "depth-lo" }];
@@ -1971,6 +2003,24 @@ fn w_prune(l: &str, removal: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A pole's root waits for its own pole's blocks only, both of their steps; a block's slope for
+    /// its own and its neighbours' terrain (task #879).
+    #[test]
+    fn a_poles_root_waits_for_its_own_blocks() {
+        use super::{read_targets, readiness, Left, ReadTarget, Ready};
+        use roadcore::polar::Pole;
+        let reads = read_targets("polar-root", "s");
+        let south = crate::polar::blocks(Pole::South);
+        assert_eq!(reads.len(), 2 * south.len());
+        assert!(reads.iter().all(|r| matches!(r, ReadTarget::One(_, t) if t.starts_with("s/"))), "{reads:?}");
+        let mut left = Left::default();
+        left.set("polar-terrain", [crate::polar::target(Pole::North, crate::polar::blocks(Pole::North)[0])]);
+        assert_eq!(readiness("polar-root", "s", &left), Ready::Yes, "the other pole's block");
+        let b = crate::polar::target(Pole::South, south[0]);
+        left.set("polar-slope", [b.clone()]);
+        assert_eq!(readiness("polar-root", "s", &left), Ready::Waits(vec![("polar-slope", b)]));
+    }
+
     /// Task #701: no step makes a removed step's names (crate::agent::gc::RETIRED); the clean-up
     /// removes them, and nothing else.
     #[test]

@@ -792,7 +792,7 @@ pub struct Runs {
     /// Each item's job (`Forecast::graph`'s order): for the agent's forecast thread alone, taken
     /// out before the answer's kept.
     pub item_job: Vec<Option<u32>>,
-    /// Each job's finished dependencies, the history's event numbers (`Waits::by_run`; empty
+    /// Each job's finished dependencies, the history's event numbers (`Waits::by_job`; empty
     /// until the forecast thread works them out).
     pub after: Vec<Vec<u64>>,
 }
@@ -873,7 +873,7 @@ impl ToCome {
     }
 
     /// `f`'s tiles to come and runs (at `f.at`: the forecast's own, task #836), taken out of it:
-    /// its `placed` dropped, its jobs' `item_job` handed back for the waits (`Waits::by_run`) with
+    /// its `placed` dropped, its jobs' `item_job` handed back for the waits (`Waits::by_job`) with
     /// how many jobs there are; `machines` the lanes it was run on (each lane's Mac, else its name).
     /// The lead's agent's and a pageview's alike.
     pub fn take(f: &mut Forecast, machines: &[Machine]) -> (ToCome, Vec<Option<u32>>, usize) {

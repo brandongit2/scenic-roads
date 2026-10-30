@@ -2131,10 +2131,14 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
         }
     }
     w.terrain.extend(tt.terrain_none.iter().filter(|(t, k)| !current(t, k)).cloned());
-    // (A z6 tile is left while stale or to be made again for its mid: an assembly reads the mids,
-    // and what reads its packs waits for them as they'll stay.)
-    let remade: Vec<String> = w.terrain.iter().map(|t| t.0.clone()).collect();
-    w.left.set("terrain-hi", w.terrain_pieces_left.iter().cloned().chain(remade));
+    // (An assembly reads its z6 tiles' mids (not a "none" z6 tile's): one is left until it's
+    // current with its mid, made again for it if need be. What reads the packs waits only for
+    // those stale: a z6 tile made again for its mid alone keeps its packs.)
+    w.left.set("terrain-hi", w.terrain_pieces_left.iter().cloned());
+    w.left.mids.insert(
+        "terrain-hi",
+        tt.terrain.iter().filter(|(t, k)| !(current(t, k) && has_mid(&tmid, t))).map(|p| p.0.clone()).collect(),
+    );
     let mut lo_held = Vec::new();
     for (q, k) in &tt.terrain_lo {
         if k == UNKNOWN || !w.terrain_lo_left.contains(q) {
@@ -2300,8 +2304,9 @@ pub struct TreeWork {
     pub stale_lo: BTreeSet<String>,
     /// The stale assemblies that can't run yet wait for their z6 tiles' mids: their waiting note.
     pub lo_held: Option<String>,
-    /// The z6 tiles an assembly waits for: not current with their mid (crate::agent::steps::View).
-    pub left: BTreeSet<String>,
+    /// The z6 tiles an assembly waits for: not current with their mid (crate::agent::steps::Left's
+    /// `mids`).
+    pub unmid: BTreeSet<String>,
 }
 
 /// Tree cover's work (`TreeWork`) for its targets `tt`, the manifest `m` and what was done (with
@@ -2329,9 +2334,9 @@ pub fn tree_work(tt: &crate::treepacks::Targets, m: &BTreeMap<String, String>, d
     }
     // (An assembly reads its z6 tiles' mids: one is left until it's current with its mid. A "none"
     // assembly reads nothing.)
+    w.unmid = tt.pieces.iter().filter(|(t, k, _)| !(current(t, k) && has_mid(t))).map(|p| p.0.clone()).collect();
     let mut unmid = Left::default();
-    unmid.set("trees", tt.pieces.iter().filter(|(t, k, _)| !(current(t, k) && has_mid(t))).map(|p| p.0.clone()));
-    w.left = unmid.targets["trees"].clone();
+    unmid.mids.insert("trees", w.unmid.clone());
     let mut held = Vec::new();
     for (q, k, none) in &tt.lo {
         if !stale_lo.contains(q) {
@@ -2866,14 +2871,15 @@ pub fn plan(
         stale_pieces: trees_left,
         stale_lo: trees_lo_left,
         lo_held: trees_lo_held,
-        left: trees_unmid,
+        unmid: trees_unmid,
     } = tree_work(&tt, m, done);
     let mut held_steps: Vec<(String, String)> = tw.held.iter().map(|(s, w)| (s.to_string(), w.clone())).collect();
     held_steps.extend(trees_lo_held.map(|n| ("trees-lo".to_string(), n)));
     // What's left of the steps the rest wait for (crate::agent::steps::View): every target the
     // plan holds is held through its readiness in it.
     let mut left = tw.left.clone();
-    left.set("trees", trees_unmid);
+    left.set("trees", trees_left.iter().cloned());
+    left.mids.insert("trees", trees_unmid);
     left.set("trees-lo", trees_lo_left.iter().cloned());
     left.world(
         "heritage-sites",
@@ -4448,12 +4454,12 @@ fn bld_rank<'a>(regions: &'a [&'a Coverage]) -> impl Fn(&str) -> BldRank + 'a {
 /// that a source with a grid finer than the lo packs' meets (`depth`: its hi packs, zooms 9–16),
 /// and every z3 tile within it that a depth source meets (`depth-lo`: its lo packs, zooms 3–8, the
 /// depth and its shading, after its z6 tiles), each with its key; the targets whose water digests
-/// aren't worked out yet (`unknown`) wait.
+/// aren't worked out yet (`unknown`, by step) wait.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DepthTargets {
     pub lo: Vec<(String, String)>,
     pub hi: Vec<(String, String)>,
-    pub unknown: usize,
+    pub unknown: Vec<(&'static str, String)>,
 }
 
 /// The depth's version line in its keys: its steps' versions, its tiles' codec
@@ -4663,7 +4669,7 @@ pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &Terra
     for q in lo {
         let t = format!("3/{}/{}", q.0, q.1);
         let Some(w) = water_key(Some(&pin), idx, &format!("depth {t}"), DEPTH_LO_WATER_FROM) else {
-            out.unknown += 1;
+            out.unknown.push(("depth-lo", t));
             continue;
         };
         // (Its z6 tiles' hi packs of a layer, by content, those the manifest has.)
@@ -4685,7 +4691,7 @@ pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &Terra
     for (x, y) in hi {
         let t = format!("6/{x}/{y}");
         let Some(w) = water_key(Some(&pin), idx, &format!("depth {t}"), DEPTH_WATER_FROM) else {
-            out.unknown += 1;
+            out.unknown.push(("depth", t));
             continue;
         };
         out.hi.push((t.clone(), h(&[&depth_versions("depth"), &t, &pins(&depth_hi_box_read((x, y))), &w])));
@@ -4711,9 +4717,12 @@ fn depth_work_in(
     let hi: Vec<(String, String)> = dt.hi.iter().filter(|(t, k)| done.depth.get(t) != Some(k)).cloned().collect();
     // (A target is left while stale, or while one of its packs is in a hand-off waiting to be
     // merged: such a pack isn't in the manifest its readers' keys read yet, so they would run again
-    // once it is. A z6 tile whose key can't be worked out now is left too.)
+    // once it is. A target whose key can't be worked out now is left too: what reads it waits,
+    // what doesn't runs.)
     left.set("depth", hi.iter().map(|t| t.0.clone()));
-    left.world("depth", dt.unknown > 0);
+    for (step, t) in &dt.unknown {
+        left.set(*step, [t.clone()]);
+    }
     let layers = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER];
     let handed = |level: &str, z: u8| -> Vec<String> {
         let pres: Vec<String> = layers.iter().map(|l| format!("layers/{l}/{level}/{z}-")).collect();
@@ -5353,7 +5362,7 @@ pub fn checklist(
     out.push(sized("trees-lo", &assemblies, &done.trees_lo, true));
     // (Known once the depth sources are read and the water's digests are worked out.)
     let dt = depth_targets(cov, m, tiles);
-    let dk = dt.as_ref().is_some_and(|d| d.unknown == 0);
+    let dk = dt.as_ref().is_some_and(|d| d.unknown.is_empty());
     let empty = DepthTargets::default();
     let d = dt.as_ref().unwrap_or(&empty);
     out.push(sized("depth", &d.hi, &done.depth, dk));
@@ -6042,7 +6051,8 @@ pub(crate) mod tests {
 
     /// A step whose stale targets wait for another step's (slope for the terrain of its z3 tile and its
     /// neighbours', the terrain assemblies for their z6 tiles) reports a waiting note saying so
-    /// (`TerrainWork::held`, `Plan::held`); once the terrain is built the slope's note is gone.
+    /// (`TerrainWork::held`, `Plan::held`); once the terrain is built the slope's note is gone. A z6
+    /// tile made again for its mid alone holds its assembly, not its slope.
     #[test]
     fn steps_held_for_other_steps_targets_report_a_note() {
         let c = cov();
@@ -6062,6 +6072,28 @@ pub(crate) mod tests {
         assert!(!tw.slope.is_empty(), "{tw:?}");
         assert_eq!(held(&tw, "slope-hi"), None);
         assert_eq!(held(&tw, "terrain-lo"), None);
+        // One z6 tile stale (no mid anywhere): its z3 tile's others are made again for their mids
+        // alone, which their assembly waits for (`Read::Mids`) and what reads their packs doesn't.
+        let p = tt.terrain[0].0.clone();
+        done.terrain_hi.insert(p.clone(), "stale".into());
+        let tw = terrain_work(&tt, &m, &done);
+        let q = z3_of(&p);
+        let u = TileId::parse(&p).unwrap();
+        let near: Vec<String> = edge_neighbours(6, u.x, u.y).into_iter().map(|(x, y)| format!("6/{x}/{y}")).collect();
+        let t = tw
+            .terrain
+            .iter()
+            .map(|t| t.0.clone())
+            .find(|t| *t != p && z3_of(t) == q && !near.contains(t))
+            .expect("a z6 tile made again for its mid");
+        assert!(!tw.left.left("terrain-hi", &t) && tw.left.mid_left("terrain-hi", &t), "{t}");
+        assert!(tw.left.left("terrain-hi", &p));
+        let waits = |s: &str, x: &str| match readiness(s, x, &tw.left) {
+            Ready::Waits(w) => w,
+            _ => Vec::new(),
+        };
+        assert!(waits("slope-hi", &t).iter().all(|(s, _)| *s != "terrain-hi"), "{:?}", waits("slope-hi", &t));
+        assert!(waits("terrain-lo", q.as_deref().unwrap()).contains(&("terrain-hi", t.clone())));
     }
 
     /// The terrain and slope hi packs and mids of z6 tiles the coverage has left are "none" z6 tiles,
@@ -9652,7 +9684,7 @@ pub(crate) mod tests {
             m.insert(crate::terrain_water::idx_logical(&pin), name.clone());
             tiles.hold_water(&name, idx);
             let dt = depth_targets(&c, &m, &tiles).unwrap();
-            assert_eq!(dt.unknown, 0);
+            assert!(dt.unknown.is_empty());
             let all: BTreeMap<String, String> = dt
                 .lo
                 .into_iter()
@@ -9830,7 +9862,7 @@ pub(crate) mod tests {
         // The water's digests not worked out yet: the targets wait, and the terrain-water job is
         // asked for them.
         let dt = depth_targets(&c, &m, &tiles).unwrap();
-        assert!(dt.lo.is_empty() && dt.hi.is_empty() && dt.unknown > 0);
+        assert!(dt.lo.is_empty() && dt.hi.is_empty() && !dt.unknown.is_empty());
         let pin = crate::terrain_pack::water_source_pin(&m).unwrap();
         let reads = depth_water_reads(&c, &depth_sources());
         assert!(
@@ -9851,7 +9883,7 @@ pub(crate) mod tests {
         m.insert(crate::terrain_water::idx_logical(&pin), name.clone());
         tiles.hold_water(&name, idx);
         let dt = depth_targets(&c, &m, &tiles).unwrap();
-        assert_eq!(dt.unknown, 0);
+        assert!(dt.unknown.is_empty());
         assert!(dt.lo.iter().any(|t| t.0 == "3/3/2"));
         // Z6 tiles only where the fine source is.
         assert!(

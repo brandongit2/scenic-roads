@@ -174,9 +174,13 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
 
 1. **Land the derivation behind scheme 1. Done (task #879).** As built:
    - `Step::reads: &[Read]` replaced `reads` and `after`. `Read` is `Targets { step, of }`,
-     `Whole { step }` and `Input { name }`; `Grain` and an input's identity function come with
-     scheme 2, which needs them for the key lines. `View` is `left`, `any_left` (a `Whole` read)
-     and `known` (an `Input`); `steps::Left` is the planner's view (`Plan::left`).
+     `Mids { step, of }`, `Whole { step }` and `Input { name }`; `Grain` and an input's identity
+     function come with scheme 2, which needs them for the key lines. `Mids` is what terrain-lo
+     and trees-lo read of their z6 tiles: the mids, left while a z6 tile is stale or isn't current
+     with its mid (made again for it alone, its packs unchanged); what reads the packs (slope, the
+     z6 tiles, the summits and peaks) waits only for those stale. `View` is `left`, `mid_left`
+     (a `Mids` read), `any_left` (a `Whole` read) and `known` (an `Input`); `steps::Left` is the
+     planner's view (`Plan::left`).
    - `steps::readiness` gives `Yes`, `Waits` (with targets) or `Unknown`; `steps::read_targets`
      lists what a target waits for; `steps::wait_note` words the holds ("wait for terrain-hi (12)").
      The planner holds every target through it (terrain, slope, trees, the z6 tiles' wait for
@@ -191,8 +195,9 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      marks and the overlays also declare what their reads' keys read (trailends, summits,
      heritage-sites, the spacing and registers inputs) so none runs on a read about to change;
      bldprep reads an input (the declared release), not `Whole bld-fetch`: it runs beside the
-     fetch, as the planner had it; depth-root reads `Whole depth` as well as `Whole depth-lo`; pack
-     and the catalogue declare nothing yet (their reads are the plan's).
+     fetch, as the planner had it; depth-root reads `Whole depth` as well as `Whole depth-lo`; a
+     pole's root reads its own pole's blocks (`Targets`), not every block; pack and the catalogue
+     declare nothing yet (their reads are the plan's).
    - Decision 2 (the terrain root a waited read) is not in step 1: the root is made in the
      publishing chain, behind the map tiles and the low zooms' cadence, so slope waiting for it
      would wait for that chain. It lands with scheme 2, the root moved to the terrain stage.
@@ -223,8 +228,9 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
   is offered (the planner holds nothing undeclared). Replaces #867's held-chain guard.
 - `forecast::tests::the_forecast_waits_for_what_the_planner_does` (built): for each fixture and on a
   `SCENIC_FORECAST_RECORD` record, each item's deps (expanded through its groups) equal
-  `read_targets` filtered to items in the plan; and replaying the forecast's first grants through
-  the planner offers each at the time the forecast places it. Supersedes
+  `read_targets` filtered to items in the plan, and the forecast places none before what it waits
+  on ends. Planned: replaying the forecast's first grants through the planner, each offered at
+  the time the forecast places it. Supersedes
   `a_replay_never_places_a_target_the_live_plan_holds_back`.
 - `steps::tests::a_key_names_exactly_its_reads`: for each step, changing each declared input (one at
   a time, in a fixture manifest) changes the key; changing any undeclared logical file doesn't.

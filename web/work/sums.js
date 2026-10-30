@@ -214,7 +214,6 @@ export function jobRelations(s, all, jobSegs, links) {
   return { on, arrows };
 }
 
-
 // Where to ask `/work/history` from (its `since`) to reach back to time `from`, given the oldest
 // event held (`first`, {seq, t}): up to `chunk` events before it; null once it's reached (`first.t`
 // at or before `from`, or the first event) or with nothing held.
