@@ -1,5 +1,6 @@
 // Colour modes and scenic score components (weight presets: presets.ts).
-// Component normalisation must match crates/server/src/drives.rs.
+// Component normalisation must match crates/roadcore/src/scenic.rs (drive_components; rail:
+// ride_components, mirrored in rail.ts and roads/layer.ts).
 
 export type Mode =
   | 'elev' | 'grade' | 'relief'

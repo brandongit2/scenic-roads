@@ -118,6 +118,11 @@ pub fn drive_components(c: &[u8; ch::N]) -> [f32; NCOMP] {
 
 /// The ride components of a sample but trains a day (0 at `FREQ`): its channels, eye height,
 /// bridge and tunnel flags (`sflag`), and the grade (%) from its neighbours.
+///
+/// Must agree with web/src/rail.ts `railComponents` and the rail score in web/src/roads/layer.ts
+/// (mode 30). They differ today: here a bridge is a flat 0.5 and altitude is `eye - 3`, there
+/// the viaduct is height above the ground / 40 and altitude the track elevation. The
+/// height-based viaduct (a deck height in `PSample`, an `LSUM_V` bump) is planned with #853.
 pub fn ride_components(c: &[u8; ch::N], eye: f32, sflags: u8, grade: f32) -> [f32; RNCOMP] {
     [
         c[ch::VIEW] as f32 / 255.0,

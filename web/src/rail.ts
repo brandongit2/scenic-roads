@@ -92,7 +92,11 @@ export const RNCOMP = RAIL_COMPONENTS.length;
 /** Index of the service-frequency factor (left out of the score where unknown). */
 export const RAIL_FREQ = 10;
 
-/** Components (0..1, RAIL_COMPONENTS order). */
+/**
+ * Components (0..1, RAIL_COMPONENTS order). Must agree with roadcore::scenic::ride_components
+ * (crates/roadcore/src/scenic.rs) and the mode-30 score in roads/layer.ts. The server still gives
+ * a bridge a flat 0.5 for viaduct; the height-based viaduct there is planned with #853.
+ */
 export function railComponents(s: RailSample): number[] {
   const c = s.ch;
   return [

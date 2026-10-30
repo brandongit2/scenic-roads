@@ -348,6 +348,8 @@ float metric(vec2 eh, float g, vec4 sa, vec4 sb, vec4 sc, float bl, uint style) 
   bool tunnel = (style & 64u) != 0u, bridge = (style & 96u) == 32u;
   float viaduct = bridge ? max(0.0, eh.x * 0.1 - eh.y) : 0.0;
   if (u_mode == 30) {
+    // Must agree with railComponents (rail.ts) and roadcore::scenic::ride_components; the
+    // server's viaduct is still a flat 0.5 per bridge, height-based there is planned with #853.
     float s = u_rw[0] * sa.x + u_rw[1] * sa.y + u_rw[2] * sc.x
       + u_rw[3] * min(1.0, sa.z * 255.0 * 3.0 / 600.0)
       + u_rw[4] * min(1.0, abs(sa.w * 255.0 - 128.0) * 2.0 / 60.0)
