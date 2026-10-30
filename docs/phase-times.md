@@ -1,7 +1,9 @@
 # Where a build's time goes (task #803, 27 Oct 2026; task #492's snapshot before it)
 
 **A snapshot, as measured on 27 Oct 2026; not kept up to date.** Each step's live split of time and
-bytes by phase is measured by the lead and shown on the build page (docs/pool.md §10, Phase shares).
+bytes by phase is measured by the lead and shown on the build page (docs/pool.md §10, Phase shares,
+Time by phase). The phases' names here are as they were then; task #844 renamed them as doings
+("the sources' windows read" is now "reading the sources' windows": crate::phase_names).
 
 Measured from the records the pipeline keeps, not new benchmarks: the lead's `coord/timings.jsonl`
 (every run's phases; here the 1,454 runs since 25 Oct 00:00 UTC, the current rebuild under the

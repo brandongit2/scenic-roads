@@ -475,22 +475,27 @@ fn the_depth_steps_time_their_stages() {
     let r = crate::timings::snapshot(true).unwrap();
     let top: Vec<&str> = r.phases.iter().map(|p| p.name.as_str()).collect();
     for p in [
-        "the basemap's water read",
+        "reading the basemap's water",
         "composing",
-        "tiles encoded",
-        "z8 from the z9 tiles",
-        "the coarser levels from the finer",
-        "packs written",
+        "encoding tiles",
+        "making z8 from the z9 tiles",
+        "making the coarser levels from the finer",
+        "writing packs",
     ] {
         assert!(top.contains(&p), "{p} not in {top:?}");
     }
     let composing = r.phases.iter().find(|p| p.name == "composing").unwrap();
     let sub: Vec<&str> = composing.sub.iter().map(|p| p.name.as_str()).collect();
-    // (The fixture's water has no gap near data to fill: "gaps filled" isn't run.)
-    for p in ["depth source files opened", "depth sources' windows read", "feathering", "stored levels scaled up"] {
+    // (The fixture's water has no gap near data to fill: "filling gaps" isn't run.)
+    for p in [
+        "opening the depth source files",
+        "reading the depth sources' windows",
+        "feathering",
+        "scaling up stored levels",
+    ] {
         assert!(sub.contains(&p), "{p} not in composing's {sub:?}");
     }
-    let opened = composing.sub.iter().find(|p| p.name == "depth source files opened").unwrap();
+    let opened = composing.sub.iter().find(|p| p.name == "opening the depth source files").unwrap();
     assert!(opened.files > 0);
     // Nearly all of it timed.
     assert!(r.untimed_s <= 0.2 * r.wall_s + 0.05, "untimed {} of {}", r.untimed_s, r.wall_s);
@@ -702,7 +707,7 @@ fn measure_the_waters_reads() {
 /// source `id`'s grids by a packed index (producers/depth/packs.py's) from its packs in `folder`
 /// instead: the same digest is the same output. With `SCENIC_CACHE` (and `SCENIC_ROOM_TARGET_MB`)
 /// set, the basemap and the packs are read from whole local copies there, as a job's are
-/// (crate::localread, task #551; the copies' time is the phase "whole local copies made").
+/// (crate::localread, task #551; the copies' time is the phase "making whole local copies").
 /// A packed index's feature as the build reads it (`Source::from_declared`'s, one grid).
 fn grid_of(root: &store::nasfs::NasRoot, id: &str, f: &crate::inputs::sources::Feature) -> grids::Grid {
     let decl = "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"depth\"\nkind = \"data\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 3\nwater = \"sea\"\nlabel = \"L\"\ndatum = \"D\"\n";
@@ -760,7 +765,7 @@ fn measure_a_real_assembly() {
     let local =
         crate::localread::Local::from_env(&store::nasfs::NasRoot::local_for_test(root)).map(std::sync::Arc::new);
     let water = {
-        let _p = crate::timings::phase("the basemap's water opened", crate::timings::Class::NasRead);
+        let _p = crate::timings::phase("opening the basemap's water", crate::timings::Class::NasRead);
         crate::terrain_pack::open_water_with(&out, local.as_deref()).unwrap()
     };
     let io0 = grids::io_counts();

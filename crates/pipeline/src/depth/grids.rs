@@ -710,11 +710,11 @@ pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: u
     SAMPLED[1].fetch_add(grids.len() as u64, std::sync::atomic::Ordering::Relaxed);
     let together = GRIDS_TOGETHER.load(std::sync::atomic::Ordering::Relaxed);
     if together {
-        let _p = sub("depth source files opened", Class::NasRead);
+        let _p = sub("opening the depth source files", Class::NasRead);
         let paths: Vec<Loc<'_>> = grids.iter().flat_map(|g| (0..2).filter_map(|k| g.loc(k))).collect();
         rd.open_all(&paths).with_context(|| format!("the depth source {}", src.id))?;
     }
-    let _p = sub("depth sources' windows read", Class::NasRead);
+    let _p = sub("reading the depth sources' windows", Class::NasRead);
     let one = |g: &Grid| {
         sample_grid(rd, g, z, c0, r0, w, h)
             .with_context(|| format!("the depth source {}: {}", src.id, g.file.display()))

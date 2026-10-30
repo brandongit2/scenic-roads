@@ -1359,7 +1359,7 @@ impl<'a> Maker<'a> {
             return Ok((outs, nq));
         }
         let todo: Vec<usize> = (0..blocks.len()).filter(|&bi| !kept.blocks.contains_key(&key(&blocks[bi]))).collect();
-        let p = sub("raw tiles made (the pool's datasets sampled)", Class::Net);
+        let p = sub("making raw tiles (the pool's datasets sampled)", Class::Net);
         // (Nothing kept: the level's tiles in their order, as a run without a log reads them.)
         let want: Vec<(u32, u32)> = if todo.len() == blocks.len() {
             tiles
@@ -1378,7 +1378,7 @@ impl<'a> Maker<'a> {
         // lake is one block's: every tile with a lake not yet levelled waits for the last block.)
         let one_block: Option<HashMap<u64, Option<usize>>> = match (blocks.len() > 1, self.src.water) {
             (true, Some(w)) => {
-                let _p = sub("the level's lakes found by block (the water read)", Class::Compute);
+                let _p = sub("finding the level's lakes by block (the water read)", Class::Compute);
                 lakes_by_block(z, &blocks, w)
             }
             _ => None,
@@ -1404,7 +1404,7 @@ impl<'a> Maker<'a> {
         // (The blocks kept taken, their waiting tiles prepared again: their samples of the lakes
         // shared with other blocks, which the level's end reads; those of their own lakes are in
         // the levels kept.)
-        let p = sub("tiles prepared (the water read)", Class::Compute);
+        let p = sub("preparing tiles (the water read)", Class::Compute);
         for (bi, b) in blocks.iter().enumerate() {
             let Some(k) = kept.blocks.remove(&key(b)) else { continue };
             take(&k, &mut outs, &mut nq, levels);
@@ -1447,7 +1447,7 @@ impl<'a> Maker<'a> {
             // at its end take the other's, so no block waits on its slowest tile. Two blocks'
             // tiles held at most, besides those waiting.)
             let lv: &HashMap<u64, f32> = levels;
-            let p = sub("tiles prepared, the block before them levelled, shaded and encoded", Class::Compute);
+            let p = sub("preparing tiles, levelling, shading and encoding the block before them", Class::Compute);
             let (done, n) =
                 rayon::join(|| self.finish_all(now, lv), || todo.get(k + 1).map(|&b| prep(&blocks[b])).transpose());
             drop(p);
@@ -1462,7 +1462,7 @@ impl<'a> Maker<'a> {
             };
             self.finished_into(done, &mut outs, &mut nq);
         }
-        let _p = sub("tiles' lakes levelled, shaded and encoded", Class::Compute);
+        let _p = sub("levelling the tiles' lakes, shading and encoding them", Class::Compute);
         let ids = new_ids(levels, &shared);
         crate::terrain_water::add_levels(levels, &shared);
         let done = self.finish_all(waiting, levels);
@@ -1954,7 +1954,7 @@ pub fn build_q_with(
     let total: u64 = mine.iter().flatten().map(|(_, t)| t.len() as u64).sum::<u64>() + 1365;
     let mk = Maker::new(raw, src);
     let made =
-        crate::timings::phase("the z3 tile's tiles made and its hi packs uploaded", crate::timings::Class::Mixed);
+        crate::timings::phase("making the z3 tile's tiles and uploading its hi packs", crate::timings::Class::Mixed);
     let lo = saying(&mk, total, progress, || {
         let mut mids: Vec<((u32, u32), Mid)> = Vec::new();
         for (&t, levels) in ts.iter().zip(mine) {
@@ -1964,7 +1964,7 @@ pub fn build_q_with(
                 let n = b.len() as u32;
                 (z, x, y, b, n)
             });
-            let _p = crate::timings::sub("hi packs uploaded", crate::timings::Class::NasWrite);
+            let _p = crate::timings::sub("uploading hi packs", crate::timings::Class::NasWrite);
             if crate::layers::write_pack(
                 out,
                 "terrain",
@@ -1996,7 +1996,7 @@ pub fn build_q_with(
     mk.report(&mut rep);
     drop(made);
     // Then q's lo pack.
-    let up = crate::timings::phase("the lo pack uploaded", crate::timings::Class::NasWrite);
+    let up = crate::timings::phase("uploading the lo pack", crate::timings::Class::NasWrite);
     progress("packs", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| {
@@ -2124,7 +2124,7 @@ pub(crate) fn build_piece_kept(
     let levels = piece_levels(cov, t);
     let total: u64 = levels.iter().map(|(_, t)| t.len() as u64).sum();
     let mk = Maker::new(raw, src);
-    let p = crate::timings::phase("the piece's tiles made (z12 → z9)", crate::timings::Class::Mixed);
+    let p = crate::timings::phase("making the piece's tiles (z12 → z9)", crate::timings::Class::Mixed);
     let (mut hi, mid) = saying(&mk, total, progress, || {
         let mine = offers.rest(&levels);
         let n = mine.iter().map(|(_, t)| t.len()).sum();
@@ -2137,7 +2137,7 @@ pub(crate) fn build_piece_kept(
         let began = std::time::Instant::now();
         let (mut hi, mut mid) = mk.piece(mine, true, log.as_mut())?;
         offers.made_here(began.elapsed().as_secs_f64(), n);
-        let _w = crate::timings::sub("the subtrees out taken in (or made here)", crate::timings::Class::Wait);
+        let _w = crate::timings::sub("taking in the subtrees out (or making them here)", crate::timings::Class::Wait);
         offers.settle(&|lv| mk.piece(lv, true, None), &mut hi, &mut mid)?;
         hi.sort_by_key(|t| (t.0, t.1, t.2));
         Ok((hi, mid))
@@ -2145,8 +2145,10 @@ pub(crate) fn build_piece_kept(
     drop(p);
     mk.report(&mut rep);
     if let Some(d) = deep {
-        let _p =
-            crate::timings::phase("its deep levels coarser than z13 made (north of 67°)", crate::timings::Class::Mixed);
+        let _p = crate::timings::phase(
+            "making its deep levels coarser than z13 (north of 67°)",
+            crate::timings::Class::Mixed,
+        );
         let (r, more) = crate::terrain_deep::hi_levels(out, t, &hi, src.water, d, progress)?;
         rep.deep_tiles = r.tiles;
         // (Its deep levels of z12, north of 67°: in its hi pack, as every reader looks for them.)
@@ -2156,7 +2158,7 @@ pub(crate) fn build_piece_kept(
         }
     }
     progress("packs", 0, 1);
-    let p = crate::timings::phase("its hi pack and mid written", crate::timings::Class::Disk);
+    let p = crate::timings::phase("writing its hi pack and mid", crate::timings::Class::Disk);
     rep.hi_tiles = hi.len();
     let mut it = hi.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;
@@ -2223,7 +2225,7 @@ pub fn build_lo(
     progress: crate::rawpack::Progress,
 ) -> anyhow::Result<PackReport> {
     let (lo, mut rep) = make_lo(out, raw, q, ts, src, progress)?;
-    let up = crate::timings::phase("the lo pack uploaded", crate::timings::Class::NasWrite);
+    let up = crate::timings::phase("uploading the lo pack", crate::timings::Class::NasWrite);
     progress("packs", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| {
@@ -2253,7 +2255,7 @@ pub fn make_lo(
 ) -> anyhow::Result<(Vec<Made>, PackReport)> {
     use anyhow::Context;
     let mut rep = PackReport::default();
-    let p = crate::timings::phase("the pieces' mids read", crate::timings::Class::NasRead);
+    let p = crate::timings::phase("reading the pieces' mids", crate::timings::Class::NasRead);
     let mut paths = Vec::with_capacity(ts.len());
     for &t in ts {
         anyhow::ensure!((t.0 >> 3, t.1 >> 3) == q, "6/{}/{} isn't in 3/{}/{}", t.0, t.1, q.0, q.1);
@@ -2288,7 +2290,7 @@ pub fn make_lo(
     drop(p);
     let mk = Maker::new(raw, src);
     let refs: Vec<((u32, u32), &Mid)> = mids.iter().map(|(t, m)| (*t, m)).collect();
-    let p = crate::timings::phase("the z3 tile's tiles made (z8 → z3)", crate::timings::Class::Mixed);
+    let p = crate::timings::phase("making the z3 tile's tiles (z8 → z3)", crate::timings::Class::Mixed);
     let lo = saying(&mk, 1365, progress, || mk.lo(q, &refs))?;
     drop(p);
     mk.report(&mut rep);
@@ -2298,7 +2300,7 @@ pub fn make_lo(
 /// The root pack (z0–2) remade from the 64 z3 tiles as stored in the lo packs (their 2×2 means),
 /// over the raw z0–2 tiles; deterministic given the lo packs.
 pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::Result<usize> {
-    let p = crate::timings::phase("the z3 tiles read from the lo packs", crate::timings::Class::NasRead);
+    let p = crate::timings::phase("reading the z3 tiles from the lo packs", crate::timings::Class::NasRead);
     let have = ManifestTiles::new(out, "terrain");
     let mut quads: HashMap<(u32, u32), Vec<f32>> = HashMap::new();
     for x in 0..8u32 {
@@ -2322,7 +2324,7 @@ pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::
         }
     }
     drop(p);
-    let p = crate::timings::phase("the root's tiles made (the raw z0–2 read)", crate::timings::Class::Compute);
+    let p = crate::timings::phase("making the root's tiles (the raw z0–2 read)", crate::timings::Class::Compute);
     let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
     for z in (0..=2u8).rev() {
         let n = 1u32 << z;
@@ -2344,7 +2346,7 @@ pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::
     drop(have);
     tiles.sort_by_key(|t| (t.0, t.1, t.2));
     drop(p);
-    let up = crate::timings::phase("the root pack uploaded", crate::timings::Class::NasWrite);
+    let up = crate::timings::phase("uploading the root pack", crate::timings::Class::NasWrite);
     let n = tiles.len();
     let mut it = tiles.into_iter();
     crate::layers::write_pack(out, "terrain", crate::terrain_codec::ENCODING, false, "root", (0, 0, 0), &mut it)?;

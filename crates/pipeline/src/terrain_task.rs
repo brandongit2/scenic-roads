@@ -508,7 +508,8 @@ impl<'a> Offers<'a> {
         if workers == 0 {
             return o;
         }
-        let _p = crate::timings::phase("the z6 tile's subtrees offered to other workers", crate::timings::Class::Mixed);
+        let _p =
+            crate::timings::phase("offering the z6 tile's subtrees to other workers", crate::timings::Class::Mixed);
         let groups = match groups(levels, src.water) {
             Ok(g) => g,
             Err(e) => {

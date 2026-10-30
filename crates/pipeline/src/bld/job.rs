@@ -510,7 +510,7 @@ pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
             }
         }
     }
-    let p = phase("the mids read, the levels made", Class::Compute);
+    let p = phase("reading the mids and making the levels", Class::Compute);
     let tiles = field::lo((q.x, q.y), &|x, y| {
         paths.get(&(x, y)).map(|p| p.read().with_context(|| format!("read {}", p.display()))).transpose()
     })?;
@@ -534,7 +534,7 @@ pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
         bytes += b.len();
     }
     w.finish()?;
-    let p = phase("uploaded", Class::NasWrite);
+    let p = phase("uploading", Class::NasWrite);
     out.put_file(&logical, "pack", &local)?;
     drop(p);
     out.save()?;
@@ -592,7 +592,7 @@ pub fn build_later(
     ensure!(t.z == 6, "bldtiles takes z6 tiles ({} isn't one)", t.slash());
     use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
-    let p = phase("the normalized files read", Class::NasRead);
+    let p = phase("reading the normalized files", Class::NasRead);
     let files = work_files(out, t)?;
     drop(p);
     let logical = super::pack_logical(t.x, t.y);
@@ -614,7 +614,7 @@ pub fn build_later(
     for (k, &a) in z8s.iter().enumerate() {
         crate::agent::jobs::report(k as u64, z8s.len() as u64, "z8 tiles done");
         {
-            let _p = phase("z8 tiles offered to other workers", Class::Net);
+            let _p = phase("offering z8 tiles to other workers", Class::Net);
             offers.top_up(&files, cov, &z8s, k)?;
         }
         let mut add = |z: u8, x: u32, y: u32, gz: &[u8], raw: u32| {
@@ -623,13 +623,13 @@ pub fn build_later(
         };
         let (s, f) = match offers.result(&files, cov, &z8s, k)? {
             Some(dir) => {
-                let _p = phase("another worker's z8 tile taken in", Class::Disk);
+                let _p = phase("taking in another worker's z8 tile", Class::Disk);
                 let s = super::task::take_z8(&dir, TileId { z: 8, x: a.0, y: a.1 }, &mut add)?;
                 std::fs::remove_dir_all(&dir).ok();
                 s
             }
             None => {
-                let _p = phase("z8 tiles' tiles made here", Class::Compute);
+                let _p = phase("making z8 tiles' tiles here", Class::Compute);
                 let here = std::time::Instant::now();
                 let (s, f) = z8_tiles(&files, cov, t, a, &sites, &mut add)?;
                 offers.made_here(s.buildings + s.parts + s.outside, here.elapsed().as_secs_f64());

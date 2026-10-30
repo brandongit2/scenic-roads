@@ -116,7 +116,7 @@ impl Local {
         {
             return nas();
         }
-        let _p = crate::timings::phase("whole local copies made", crate::timings::Class::NasRead);
+        let _p = crate::timings::phase("making whole local copies", crate::timings::Class::NasRead);
         let t = std::time::Instant::now();
         match self.blobs.get(&self.root, &content) {
             Ok(l) => {

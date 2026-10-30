@@ -216,11 +216,11 @@ fn merged(have: &[(String, Py)], part: &[(String, Py)]) -> Py {
 /// its area, and what `extra` adds.
 fn index_layer(b: &Path, name: &str, layer: &str, extra: impl Fn(&Py) -> Option<Vec<(String, Py)>>) -> Result<()> {
     let path = b.join(name);
-    let p = phase("the layers read", Class::Disk);
+    let p = phase("reading the layers", Class::Disk);
     let mut fc = loads(&std::fs::read_to_string(&path).with_context(|| format!("read {name}"))?)
         .with_context(|| format!("parse {name}"))?;
     drop(p);
-    let p = phase("the area details made and written", Class::Compute);
+    let p = phase("making and writing the area details", Class::Compute);
     let mut out = String::new();
     let feats = match fc.get_mut("features") {
         Some(Py::List(l)) => l,
@@ -242,7 +242,7 @@ fn index_layer(b: &Path, name: &str, layer: &str, extra: impl Fn(&Py) -> Option<
     }
     std::fs::write(b.join(format!("details-{layer}.jsonl")), out)?;
     drop(p);
-    let _p = phase("the layers written with their indexes", Class::Disk);
+    let _p = phase("writing the layers with their indexes", Class::Disk);
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, dumps(&fc))?;
     std::fs::rename(&tmp, &path)?;
@@ -256,7 +256,7 @@ pub fn run(root: &Path, wikidata: &str) -> Result<()> {
     let b = root.join("data/build");
     let areas = root.join("data/areas/areas.geojsonseq");
     // Protected areas and Indigenous lands from OSM.
-    let p = phase("the protected areas read and measured", Class::Compute);
+    let p = phase("reading and measuring the protected areas", Class::Compute);
     let mut parks: Vec<Py> = vec![];
     let mut aboriginal: Vec<(String, Vec<Py>)> = vec![];
     let mut ab_at: HashMap<String, usize> = HashMap::new();
@@ -299,7 +299,7 @@ pub fn run(root: &Path, wikidata: &str) -> Result<()> {
         }
     }
     drop(p);
-    let p = phase("the Wikidata cache read", Class::Disk);
+    let p = phase("reading the Wikidata cache", Class::Disk);
     let cache = root.join("data/areas/wikidata.json");
     let mut have: Vec<(String, Py)> = if cache.exists() {
         match loads(&std::fs::read_to_string(&cache)?).context("parse the Wikidata cache")? {
@@ -316,17 +316,17 @@ pub fn run(root: &Path, wikidata: &str) -> Result<()> {
     drop(p);
     if !todo.is_empty() {
         // Saved after every batch, so a rerun picks up where a failed one stopped.
-        let p = phase("park facts fetched from Wikidata", Class::Net);
+        let p = phase("fetching park facts from Wikidata", Class::Net);
         let ask = Asker::new();
         let got =
             wd_parks(&ask, wikidata, &todo, |part| Ok(std::fs::write(&cache, dumps_spaced(&merged(&have, part)))?))?;
         drop(p);
-        let _p = phase("the Wikidata cache written", Class::Disk);
+        let _p = phase("writing the Wikidata cache", Class::Disk);
         let Py::Dict(d) = merged(&have, &got) else { unreachable!() };
         have = d;
         std::fs::write(&cache, dumps_spaced(&Py::Dict(have.clone())))?;
     }
-    let p = phase("the park details written", Class::Disk);
+    let p = phase("writing the park details", Class::Disk);
     let facts: HashMap<&str, &Py> = have.iter().map(|(k, v)| (k.as_str(), v)).collect();
     let add_wd = |rec: &mut Py| {
         let q = rec.at("wikidata").as_str().unwrap_or("").to_string();

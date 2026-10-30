@@ -331,9 +331,16 @@ The Jobs tab's stages are the one exception.
   tiles lit on the map (only the map's lit tiles drawn again, once a frame); a legend item hovered (a stage, ran, failed, running, to come): its jobs
   at full strength and all their tiles lit on the map.
 - **Jobs tab, the stages:** done and left of all the enabled regions' work (the one place the
-  page counts a whole, task #685), in each step's noun (map tiles, z3 tiles, runs), no past runs or
-  time: a stage's line (mark, id, counts, bar), then a row per step (mark, id, ⇄ when any Mac may
-  take it, "12 z6 tiles done · 468 left", bar). A step's card: done and left, what it makes, kind,
+  page counts a whole, task #685), in each step's noun (map tiles, z3 tiles, runs): a stage's line
+  (mark, id, counts, bar), then a row per step (mark, id, ⇄ when any Mac may take it, "12 z6 tiles
+  done · 468 left", bar), and under a step that ran in the footer's range ("Charts show the last
+  6 h"), its **time breakdown** (task #844): a bar of its jobs' time by phase, those that ended in
+  that range (the lead's `phase_times`, docs/pool.md §10, Time by phase; again as the range is
+  picked), each part as wide as its share, coloured by what it waits on (NAS read or write, local
+  disk, internet, CPU, a wait, mixed) and labelled where it has room, the time in no phase last and
+  faint; a part hovered: its card (its share, the time summed and a job's, the jobs and how many
+  failed, what it waits on, CPU over wall, the NAS's and the internet's bytes where counted, and a
+  line on what it does: web/work/sums.js `PHASE_ABOUT`, else its name and class). A step's card: done and left, what it makes, kind,
   where it runs, memory, its forecast; its time by phase as chips.
 - **Cards:** everything in the Jobs tab has a card, drawn as the final mockup's (#659: a head
   with the stage's swatch, a kicker ("terrain-hi · step", "terrain-deep · job under way", "stage")

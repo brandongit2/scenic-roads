@@ -274,6 +274,14 @@ body.dragging-ref { cursor: ns-resize; user-select: none; -webkit-user-select: n
 .stages .n { overflow-wrap: break-word; }
 .stages .st .title { cursor: pointer; }
 .stages .n { color: var(--dim); font-size: var(--fs-s); }
+/* A step's time breakdown (task #844): under its row, a bar of its time by phase over the footer's
+   range, each part labelled where it has room, its card on hover. */
+.stages > .tb { grid-column: 2 / -1; display: flex; align-items: center; gap: 8px; padding: 2px 0 4px; border-bottom: 1px solid var(--row-line); min-width: 0; }
+.stages .tb-k { flex: none; color: var(--dim); font-size: var(--fs-s); cursor: default; }
+.stages .tb-bar { flex: 1; display: flex; min-width: 0; height: 16px; gap: 1px; border-radius: 2px; overflow: hidden; }
+.stages .tb-part { min-width: 2px; flex-basis: 0; display: flex; align-items: center; overflow: hidden; cursor: pointer; }
+.stages .tb-part:hover { filter: brightness(1.25); }
+.stages .tb-l { padding: 0 4px; font-size: var(--fs-s); color: #e8edf2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mono { font: var(--fs-s)/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
 @container tabs (max-width: 719px) {
   /* (A name keeps 96 px, the counts wrap beside it: long counts once squeezed the names to a letter a line.) */

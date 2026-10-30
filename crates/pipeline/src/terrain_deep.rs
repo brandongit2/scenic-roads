@@ -1199,16 +1199,16 @@ pub(crate) fn build_target_kept(
         .flatten();
     let mut base_of = |data: &[(u8, u32, u32)]| {
         let _p =
-            crate::timings::sub("its base made (the pool sampled, its lakes levelled)", crate::timings::Class::Mixed);
+            crate::timings::sub("making its base (the pool sampled, its lakes levelled)", crate::timings::Class::Mixed);
         target_base(bases, t, Some(data))
     };
-    let p = crate::timings::phase("its deep tiles made (the fine datasets read)", crate::timings::Class::Mixed);
+    let p = crate::timings::phase("making its deep tiles (the fine datasets read)", crate::timings::Class::Mixed);
     let (mut rep, pack) = make(out, t, &mut base_of, water, fine, fetch, log.as_mut())?;
     drop(p);
     let mut gone = named_under(&out.manifest, PACK_Z, t.0, t.1);
     if let Some(p) = pack {
         gone.retain(|l| *l != p.logical);
-        let _p = crate::timings::phase("its deep pack uploaded", crate::timings::Class::NasWrite);
+        let _p = crate::timings::phase("uploading its deep pack", crate::timings::Class::NasWrite);
         out.put_file(&p.logical, "pack", &p.local)?;
     }
     rep.dropped = crate::terrain_pack::drop_named(out, &gone);

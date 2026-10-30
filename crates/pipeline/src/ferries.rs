@@ -882,7 +882,7 @@ pub struct Written {
 /// static files (`statics`: name, path).
 pub fn run(src: &Path, feeds: &[serde_json::Value], statics_: &[(String, std::path::PathBuf)]) -> Result<Written> {
     use crate::timings::{phase, Class};
-    let p = phase("the ferry ways and relations read", Class::Disk);
+    let p = phase("reading the ferry ways and relations", Class::Disk);
     let mut ways: BTreeMap<i64, Way> = BTreeMap::new();
     let mut way_order: Vec<i64> = Vec::new();
     let text = std::fs::read_to_string(src.join("ways.geojsonseq")).context("ways.geojsonseq")?;
@@ -909,7 +909,7 @@ pub fn run(src: &Path, feeds: &[serde_json::Value], statics_: &[(String, std::pa
     }
     let rels = read_relations(&std::fs::read_to_string(src.join("relations.opl")).context("relations.opl")?)?;
     drop(p);
-    let p = phase("the lines grouped", Class::Compute);
+    let p = phase("grouping the lines", Class::Compute);
     let mut routes: Vec<&Rel> = Vec::new();
     let mut route_at: HashMap<i64, usize> = HashMap::new();
     for r in &rels {
@@ -1049,7 +1049,7 @@ pub fn run(src: &Path, feeds: &[serde_json::Value], statics_: &[(String, std::pa
     let mut counted: Vec<Vec<Py>> = Vec::new();
     let mut unmatched: Vec<Py> = Vec::new();
     {
-        let _p = phase("the ferry feeds counted", Class::Mixed);
+        let _p = phase("counting the ferry feeds", Class::Mixed);
         let mut feeds: Vec<&serde_json::Value> = feeds.iter().collect();
         feeds.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
         for f in feeds {
@@ -1075,7 +1075,7 @@ pub fn run(src: &Path, feeds: &[serde_json::Value], statics_: &[(String, std::pa
         }
     }
     {
-        let _p = phase("the static files counted", Class::Mixed);
+        let _p = phase("counting the static files", Class::Mixed);
         for (name, path) in statics_ {
             let res = (|| -> crate::gtfs::R<(Vec<Py>, Vec<Py>)> {
                 let mut found: Vec<Py> = Vec::new();
@@ -1125,7 +1125,7 @@ pub fn run(src: &Path, feeds: &[serde_json::Value], statics_: &[(String, std::pa
             }
         }
     }
-    let p = phase("the frequencies read", Class::Compute);
+    let p = phase("reading the frequencies", Class::Compute);
     let rank = |rec: &Py| match rec.get("kind").map_or(Some("timetable"), |k| k.as_str()) {
         Some("gtfs") => 0,
         Some("timetable") => 1,
@@ -1174,7 +1174,7 @@ pub fn run(src: &Path, feeds: &[serde_json::Value], statics_: &[(String, std::pa
     }
     drop(p);
 
-    let p = phase("the lines described", Class::Compute);
+    let p = phase("describing the lines", Class::Compute);
     let mut out_lines: Vec<(String, Py)> = Vec::new();
     let mut info_of: HashMap<String, usize> = HashMap::new();
     let mut n_src: BTreeMap<String, u64> = BTreeMap::new();
@@ -1294,7 +1294,7 @@ pub fn run(src: &Path, feeds: &[serde_json::Value], statics_: &[(String, std::pa
     drop(p);
 
     // ---- Features
-    let p = phase("the ways' features made", Class::Compute);
+    let p = phase("making the ways' features", Class::Compute);
     const PRIORITY: [i64; 4] = [LONG, CROSSING, URBAN, CABLE];
     let mut feats: Vec<Py> = Vec::new();
     let g_of = |i: &Py| Num::of(i.at("group")).map_or(0, |n| n.f() as i64);
@@ -1405,7 +1405,7 @@ pub fn run(src: &Path, feeds: &[serde_json::Value], statics_: &[(String, std::pa
     drop(p);
 
     // Terminals: named ferry terminals within 1 km of a line's ends.
-    let p = phase("the terminals placed", Class::Compute);
+    let p = phase("placing the terminals", Class::Compute);
     let mut cell: HashMap<(i64, i64), Vec<[f64; 2]>> = HashMap::new();
     for (_, l) in &lines.items {
         for w in &l.ways {
@@ -1468,7 +1468,7 @@ pub fn run(src: &Path, feeds: &[serde_json::Value], statics_: &[(String, std::pa
     }
     drop(p);
 
-    let _p = phase("the ferry layers made", Class::Compute);
+    let _p = phase("making the ferry layers", Class::Compute);
     let ferries = dumps(&Py::Dict(vec![
         ("type".into(), Py::Str("FeatureCollection".into())),
         ("features".into(), Py::List(feats)),

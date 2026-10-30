@@ -154,7 +154,7 @@ pub fn compose(
     let mut ups: std::collections::HashMap<u8, Vec<f32>> = std::collections::HashMap::new();
     let mut get_up = |zv: u8, ups: &mut std::collections::HashMap<u8, Vec<f32>>| -> Result<()> {
         if !ups.contains_key(&zv) {
-            let _p = crate::timings::sub("stored levels scaled up", crate::timings::Class::Compute);
+            let _p = crate::timings::sub("scaling up stored levels", crate::timings::Class::Compute);
             let v = if zv < zmin { vec![NODATA; n] } else { up(zv)? };
             ups.insert(zv, v);
         }
@@ -271,7 +271,7 @@ pub fn compose(
         c[i] = c[i].min(DRY_MAX);
     }
     if (0..n).any(|i| water.water[i] && !c[i].is_finite()) {
-        let _p = crate::timings::sub("gaps filled", crate::timings::Class::Compute);
+        let _p = crate::timings::sub("filling gaps", crate::timings::Class::Compute);
         fill(&mut c, &mut k, water, w, h, gpx);
     }
     let (dl, near) = nearest(&water.water, w, h);

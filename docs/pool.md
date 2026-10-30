@@ -1566,6 +1566,22 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   partly written last line waits for the next read; a log cut to its newer half, or replaced, i.e.
   another file at the path or a shorter one, is read whole again, at most 16 MB). A member's status
   carries none.
+- **Time by phase** (task #844): each step's runs summed by when they ended, so the build page's
+  step rows break a step's time down over the range its footer picks ("Charts show the last": 1 min
+  to 7 days). The same thread reads every run of the log (failed ones too) and, every minute, sums
+  those that ended within the last 7 days by the first of the page's ranges their end is within
+  (`timings::TIMES_EDGES`: 60 s, 5, 10, 30 min, 1, 2, 6, 24, 72 h, 7 days; the page adds up the
+  ranges up to its own). The lead's status carries them as `phase_times`
+  (`timings::PhaseTimes`): `{"at", "edges", "steps": {"<step>": {"phases": [[name, class], …],
+  "b": [[edge, runs, failed, wall s, CPU s, [[phase, wall s, CPU s, NAS MB, internet MB], …]],
+  …]}}}`; a step's top-level phases of its main thread, largest over the week first, at most 8
+  (`TIMES_PHASES`: past that, the 7 largest and the rest as "other phases"); a phase's bytes by its class (a compute or mixed
+  phase's sub-phases' by theirs, else the NAS or internet phase above them; the local disk's not
+  said); a run's time in no phase is its wall less its phases'. Measured on the lead's log of 29 Oct
+  (6,251 runs, 49 steps over 4 days): ~32 KB of the status (~290 KB: +11 %).
+  Phases are named as doings ("reading the depth sources' windows"; before task #844 as done, "the
+  depth sources' windows read"); a record read, on any Mac, takes the new name of an old one
+  (`crate::phase_names`), so the history keeps its phases.
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
   the lead's first, marked coordinator (`scenic status` with its ramp, §7.1); its capacity as the coordinator last
   heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and

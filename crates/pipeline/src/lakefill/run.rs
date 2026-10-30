@@ -415,7 +415,7 @@ pub fn all(
     std::fs::create_dir_all(work)?;
     part(0);
     // (Each stage its sub-phase, with the memory it held: crate::timings.)
-    let p = sub("the sheets surveyed", Class::NasRead);
+    let p = sub("surveying the sheets", Class::NasRead);
     let rows = survey(basemap, outlines, said)?;
     drop(p);
     std::fs::write(work.join("sheets.csv"), sheets_csv(&rows))?;
@@ -428,12 +428,12 @@ pub fn all(
     for (k, &b) in BANDS.iter().enumerate() {
         part(1 + k);
         let d = work.join(format!("band-{k}"));
-        let _p = sub("a band's sheets filled", Class::NasRead);
+        let _p = sub("filling a band's sheets", Class::NasRead);
         fill(&o, &keys, Some(b), &d)?;
         runs.push(d);
     }
     part(1 + BANDS.len());
-    let _p = sub("the bands merged", Class::Disk);
+    let _p = sub("merging the bands", Class::Disk);
     let (f, _) = merge(&runs, &work.join("fill"))?;
     Ok(f)
 }
@@ -1006,7 +1006,7 @@ mod tests {
         let decl = decl.role(crate::inputs::sources::LAKE_FILL).unwrap();
         let source = out.root().join(source_dir(decl));
         crate::timings::start("lakefill");
-        let p = crate::timings::phase("the lakes filled from CanVec's zips", crate::timings::Class::NasRead);
+        let p = crate::timings::phase("filling the lakes from CanVec's zips", crate::timings::Class::NasRead);
         let f = all(
             &basemap.unchecked_path(),
             &outlines.unchecked_path(),

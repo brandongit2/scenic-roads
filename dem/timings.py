@@ -4,7 +4,7 @@ Its run in named phases, each with its wall time, CPU time (user + system, this 
 finished children's), class and the bytes and files it moved:
 
     from timings import phase, count
-    with phase("months read", "disk"):
+    with phase("reading the months", "disk"):
         ...
         count(len(b), 1)
 

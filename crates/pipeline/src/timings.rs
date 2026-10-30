@@ -82,6 +82,8 @@ impl Class {
 /// A phase as recorded: its totals over its spans.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PhaseRec {
+    /// Its name (one from before task #844 read as its new one: crate::phase_names).
+    #[serde(deserialize_with = "current_name")]
     pub name: String,
     pub class: Class,
     pub wall_s: f64,
@@ -105,6 +107,13 @@ pub struct PhaseRec {
     pub peak_mb: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub: Vec<PhaseRec>,
+}
+
+/// A phase's name as recorded, renamed when it's one from before task #844 (crate::phase_names).
+fn current_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let s = String::deserialize(d)?;
+    let n = crate::phase_names::current(&s);
+    Ok(if n == s.as_str() { s } else { n.into_owned() })
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -148,7 +157,9 @@ pub struct RunRec {
 /// it fell there.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Gap {
+    #[serde(deserialize_with = "current_name")]
     pub after: String,
+    #[serde(deserialize_with = "current_name")]
     pub before: String,
     pub wall_s: f64,
     pub n: u64,
@@ -391,7 +402,7 @@ fn open(name: &str, class: Class) -> Phase {
     // (Its parent: the phase open on this thread; in a sub-phase, it's folded into that one.)
     let inner = STACK.with(|s| s.borrow().last().map(|o| o.idx));
     // (Nor under one of its own name: a library's phase inside the step's that already says it,
-    // the records saved within "records saved".)
+    // the records saved within "saving records".)
     if inner.is_some_and(|i| r.accs[i].parent.is_some() || r.accs[i].name == name) {
         return Phase::none();
     }
@@ -1165,6 +1176,9 @@ pub struct LogTail {
     at: u64,
     file: u64,
     runs: std::collections::BTreeMap<String, std::collections::VecDeque<RunRec>>,
+    /// Every run that ended within `TIMES_EDGES`' last edge of the newest one read, oldest first:
+    /// failed runs too (`PhaseTimes`).
+    recent: std::collections::VecDeque<RunSum>,
 }
 
 #[cfg(unix)]
@@ -1197,7 +1211,11 @@ impl LogTail {
         self.at += end as u64 + 1;
         for l in b[..end].split(|&c| c == b'\n') {
             let Ok(r) = serde_json::from_slice::<RunRec>(l) else { continue };
-            if !r.ok || r.wall_s <= 0.0 {
+            if r.wall_s <= 0.0 {
+                continue;
+            }
+            self.recent.push_back(RunSum::of(&r));
+            if !r.ok {
                 continue;
             }
             let q = self.runs.entry(step_of(&r.kind).to_string()).or_default();
@@ -1213,6 +1231,171 @@ impl LogTail {
     pub fn shares(&self) -> std::collections::BTreeMap<String, PhaseShares> {
         phase_shares(self.runs.values().flatten())
     }
+
+    /// Each step's time by phase over the runs that ended within each of `TIMES_EDGES` of `now`
+    /// (runs older than the last edge let go).
+    pub fn times(&mut self, now: u64) -> PhaseTimes {
+        let last = TIMES_EDGES[TIMES_EDGES.len() - 1];
+        while self.recent.front().is_some_and(|r| r.end + last < now) {
+            self.recent.pop_front();
+        }
+        phase_times(self.recent.iter(), now)
+    }
+}
+
+/// The page's chart ranges (the build page's footer, "Charts show the last": web/work/index.html's
+/// `RANGES`), in seconds: `PhaseTimes` sums a step's runs by the first of these its end is within.
+pub const TIMES_EDGES: [u64; 10] = [60, 300, 600, 1800, 3600, 7200, 21600, 86400, 259200, 604800];
+
+/// The most phases of a step `PhaseTimes` names; the rest are summed as `OTHER_PHASES`.
+pub const TIMES_PHASES: usize = 8;
+
+/// The phases past a step's `TIMES_PHASES` largest, summed.
+pub const OTHER_PHASES: &str = "other phases";
+
+/// A run as `PhaseTimes` sums it: its step, end, wall and CPU, and its main thread's top-level
+/// phases (name, class, wall s, CPU s, NAS bytes, internet bytes).
+#[derive(Clone, Debug)]
+pub struct RunSum {
+    step: String,
+    end: u64,
+    ok: bool,
+    wall: f64,
+    cpu: f64,
+    phases: Vec<(String, Class, f64, f64, u64, u64)>,
+}
+
+impl RunSum {
+    pub fn of(r: &RunRec) -> RunSum {
+        // (Bytes by what moved them: a phase's own counted bytes go by its class, a sub-phase's by
+        // its own, a compute or mixed one's by the nearest phase above it that reads the NAS or the
+        // internet; bytes of the local disk, or of no such phase, aren't said.)
+        fn moved(p: &PhaseRec, above: Class, nas: &mut u64, net: &mut u64) {
+            let c = match p.class {
+                Class::Compute | Class::Mixed | Class::Wait => above,
+                c => c,
+            };
+            match c {
+                Class::NasRead | Class::NasWrite => *nas += p.bytes,
+                Class::Net => *net += p.bytes,
+                _ => {}
+            }
+            for k in &p.sub {
+                moved(k, c, nas, net);
+            }
+        }
+        let phases = r
+            .phases
+            .iter()
+            .filter(|p| !p.background)
+            .map(|p| {
+                let (mut nas, mut net) = (0, 0);
+                moved(p, Class::Compute, &mut nas, &mut net);
+                (p.name.clone(), p.class, p.wall_s, p.cpu_s.unwrap_or(0.0), nas, net)
+            })
+            .collect();
+        RunSum {
+            step: step_of(&r.kind).to_string(),
+            end: r.start + r.wall_s.round() as u64,
+            ok: r.ok,
+            wall: r.wall_s,
+            cpu: r.cpu_s.unwrap_or(0.0),
+            phases,
+        }
+    }
+}
+
+/// Each step's time by phase over the runs that ended within each of the page's chart ranges
+/// (`TIMES_EDGES`): the lead's, in its status as `phase_times` (docs/pool.md §10, Time by phase),
+/// so the build page breaks a step's time down over the range its footer picks. Compact: a step's
+/// runs are summed by the first range their end is within (`b`), the page adding up those within
+/// its own.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PhaseTimes {
+    /// When (seconds since the epoch) the ranges end.
+    pub at: u64,
+    pub edges: Vec<u64>,
+    pub steps: std::collections::BTreeMap<String, StepTimes>,
+}
+
+/// A step's runs in `PhaseTimes`: its phases named once (`[name, class]`, the largest over all
+/// its runs first; at most `TIMES_PHASES`, then `OTHER_PHASES`), and a sum per range its runs
+/// ended within: `[edge, runs, failed, wall s, CPU s, [[phase, wall s, CPU s, NAS MB, internet
+/// MB], …]]`, `edge` an index into `edges`, `phase` into `phases`; whole seconds, MB to a tenth.
+/// A run's time in no phase is its wall less its phases'.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StepTimes {
+    pub phases: Vec<(String, Class)>,
+    pub b: Vec<(usize, u32, u32, u64, u64, Vec<(usize, u64, u64, f64, f64)>)>,
+}
+
+/// `PhaseTimes` of `runs` at `now`; a run ended past the last edge isn't counted.
+pub fn phase_times<'a>(runs: impl IntoIterator<Item = &'a RunSum>, now: u64) -> PhaseTimes {
+    use std::collections::BTreeMap;
+    // (Step → its edge's sums: runs, failed, wall, CPU, by phase: wall, CPU, NAS, internet.)
+    type Sums = (u32, u32, f64, f64, BTreeMap<String, (f64, f64, u64, u64)>);
+    let mut by: BTreeMap<&str, (BTreeMap<String, (Class, f64)>, BTreeMap<usize, Sums>)> = BTreeMap::new();
+    for r in runs {
+        let Some(e) = TIMES_EDGES.iter().position(|&e| r.end + e >= now) else { continue };
+        let (all, edges) = by.entry(&r.step).or_default();
+        let s = edges.entry(e).or_default();
+        s.0 += 1;
+        s.1 += !r.ok as u32;
+        s.2 += r.wall;
+        s.3 += r.cpu;
+        for (name, class, wall, cpu, nas, net) in &r.phases {
+            all.entry(name.clone()).or_insert((*class, 0.0)).1 += wall;
+            let p = s.4.entry(name.clone()).or_default();
+            p.0 += wall;
+            p.1 += cpu;
+            p.2 += nas;
+            p.3 += net;
+        }
+    }
+    let mb = |b: u64| (b as f64 / 1e5).round() / 10.0;
+    let steps = by
+        .into_iter()
+        .map(|(step, (all, edges))| {
+            let mut order: Vec<(String, Class, f64)> = all.into_iter().map(|(n, (c, w))| (n, c, w)).collect();
+            order.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+            let others = order.len() > TIMES_PHASES;
+            let mut phases: Vec<(String, Class)> = order
+                .iter()
+                .take(if others { TIMES_PHASES - 1 } else { TIMES_PHASES })
+                .map(|(n, c, _)| (n.clone(), *c))
+                .collect();
+            if others {
+                phases.push((OTHER_PHASES.to_string(), Class::Mixed));
+            }
+            let at = |name: &str| phases.iter().position(|(n, _)| n == name).unwrap_or(phases.len() - 1);
+            let b = edges
+                .into_iter()
+                .map(|(e, (runs, failed, wall, cpu, ps))| {
+                    let mut sums: Vec<(usize, f64, f64, u64, u64)> = Vec::new();
+                    for (name, (w, c, nas, net)) in ps {
+                        let i = at(&name);
+                        match sums.iter_mut().find(|x| x.0 == i) {
+                            Some(x) => {
+                                x.1 += w;
+                                x.2 += c;
+                                x.3 += nas;
+                                x.4 += net;
+                            }
+                            None => sums.push((i, w, c, nas, net)),
+                        }
+                    }
+                    sums.sort_by_key(|x| x.0);
+                    let ps = sums
+                        .into_iter()
+                        .map(|(i, w, c, nas, net)| (i, w.round() as u64, c.round() as u64, mb(nas), mb(net)))
+                        .collect();
+                    (e, runs, failed, wall.round() as u64, cpu.round() as u64, ps)
+                })
+                .collect();
+            (step.to_string(), StepTimes { phases, b })
+        })
+        .collect();
+    PhaseTimes { at: now, edges: TIMES_EDGES.to_vec(), steps }
 }
 
 /// The last `last` runs of each kind (or of `kind`), oldest first.
@@ -1347,6 +1530,66 @@ mod tests {
         }
     }
 
+    /// Task #844: a step's runs summed by the first chart range their end is within; failed runs
+    /// counted; bytes by their phase's class (a compute phase's by the NAS phase above it); past a
+    /// step's `TIMES_PHASES` largest phases, the rest summed as one; a leased task's runs its step's.
+    #[test]
+    fn phase_times_by_range() {
+        let now = 1_000_000;
+        let mut a = share_run("depth", true, 100.0, &[("reading", 60.0, 2_000_000), ("composing", 30.0, 0)]);
+        a.phases[0].class = Class::NasRead;
+        a.phases[0].cpu_s = Some(6.0);
+        a.phases[0].sub =
+            vec![PhaseRec { name: "decoding".into(), class: Class::Compute, bytes: 1_000_000, ..Default::default() }];
+        a.start = now - 100 - 30; // (ended 30 s ago: the first range, a minute)
+        let mut b = share_run("task depth", false, 50.0, &[("composing", 50.0, 0)]);
+        b.start = now - 50 - 3000; // (50 min ago: within the hour)
+        let mut old = share_run("depth", true, 10.0, &[("reading", 10.0, 0)]);
+        old.start = now - 10 - 700_000; // (past a week: not counted)
+        let many: Vec<(String, f64, u64)> =
+            (0..TIMES_PHASES + 2).map(|i| (format!("p{i}"), 10.0 - i as f64, 0)).collect();
+        let many: Vec<(&str, f64, u64)> = many.iter().map(|(n, w, b)| (n.as_str(), *w, *b)).collect();
+        let mut c = share_run("slope", true, 60.0, &many);
+        c.start = now - 60;
+        let sums: Vec<RunSum> = [a, b, old, c].iter().map(RunSum::of).collect();
+        let t = phase_times(&sums, now);
+        assert_eq!(t.edges, TIMES_EDGES);
+        let d = &t.steps["depth"];
+        assert_eq!(d.phases, [("composing".to_string(), Class::Compute), ("reading".to_string(), Class::NasRead)]);
+        assert_eq!(
+            d.b,
+            [
+                (0, 1, 0, 100, 0, vec![(0, 30, 0, 0.0, 0.0), (1, 60, 6, 3.0, 0.0)]),
+                (4, 1, 1, 50, 0, vec![(0, 50, 0, 0.0, 0.0)])
+            ]
+        );
+        let s = &t.steps["slope"];
+        assert_eq!(s.phases.len(), TIMES_PHASES);
+        assert_eq!(s.phases[TIMES_PHASES - 1].0, OTHER_PHASES);
+        let other = s.b[0].5.iter().find(|p| p.0 == TIMES_PHASES - 1).unwrap();
+        assert_eq!(other.1, (TIMES_PHASES - 1..TIMES_PHASES + 2).map(|i| 10 - i as u64).sum::<u64>());
+        // (A log read: its runs' times, the old ones let go as the ranges move on.)
+        let d = tempfile::tempdir().unwrap();
+        let log = d.path().join("timings.jsonl");
+        let mut r = share_run("pack", false, 5.0, &[("x", 5.0, 0)]);
+        r.start = now - 5;
+        append(&log, &r).unwrap();
+        let mut tail = LogTail::default();
+        assert!(tail.read(&log));
+        assert_eq!(tail.times(now).steps["pack"].b[0].2, 1, "a failed run counts");
+        assert!(tail.times(now + 700_000).steps.is_empty());
+    }
+
+    /// Task #844: a record from before the phases' renaming reads with their new names (gaps too).
+    #[test]
+    fn old_phase_names_read_as_new() {
+        let l = r#"{"v":1,"kind":"depth","start":1,"wall_s":2,"ok":true,"untimed_s":0,"phases":[{"name":"depth sources' windows read","class":"nas-read","wall_s":1,"n":1}],"gaps":[{"after":"the start","before":"gaps filled","wall_s":1,"n":1}]}"#;
+        let r: RunRec = serde_json::from_str(l).unwrap();
+        assert_eq!(r.phases[0].name, "reading the depth sources' windows");
+        assert_eq!(r.gaps[0].before, "filling gaps");
+        assert_eq!(r.gaps[0].after, "the start");
+    }
+
     #[test]
     fn phase_shares_mean_of_last_runs() {
         let mut runs = vec![share_run("t", true, 10.0, &[("read", 10.0, 100)])];
@@ -1447,7 +1690,7 @@ mod tests {
             {
                 let _s = sub("child a", Class::NasRead);
                 count(100, 2);
-                let _ss = sub("folded", Class::Disk);
+                let _ss = sub("folding", Class::Disk);
             }
             // A child program's phases, as one writes them.
             let mut c = store::spawn::command("true");
@@ -1514,7 +1757,7 @@ mod tests {
         let net = RunRec {
             wall_s: 4.0,
             phases: vec![PhaseRec {
-                name: "its files fetched from the coordinator".into(),
+                name: "fetching its files from the coordinator".into(),
                 class: Class::Net,
                 wall_s: 4.0,
                 n: 1,
@@ -1615,8 +1858,8 @@ mod tests {
             ..Default::default()
         };
         let runs = [
-            run("depth-lo", 100.0, 30.0, ("z3–7 from their children", END)),
-            run("depth-lo", 100.0, 10.0, ("z3–7 from their children", END)),
+            run("depth-lo", 100.0, 30.0, ("making z3–7 from their children", END)),
+            run("depth-lo", 100.0, 10.0, ("making z3–7 from their children", END)),
             run("depth-lo", 100.0, 5.0, (START, "work")),
             run("terrain", 100.0, 1.0, ("work", END)),
         ];

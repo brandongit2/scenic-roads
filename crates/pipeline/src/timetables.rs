@@ -285,13 +285,13 @@ pub fn run(
         Ok(serde_json::from_slice(&out.path(c).read().with_context(|| format!("read {c}"))?)?)
     };
     use crate::timings::{phase, Class};
-    let p = phase("the rail and ferry lines read", Class::NasRead);
+    let p = phase("reading the rail and ferry lines", Class::NasRead);
     let (rail, ferries) = (read(RAIL_LINES)?, read(FERRY_LINES)?);
     drop(p);
-    let p = phase("the lines matched", Class::Compute);
+    let p = phase("matching the lines", Class::Compute);
     let (todo, report, r) = merge(&rail, &ferries, &|p| cov.contains(p));
     drop(p);
-    let _p = phase("the to-do list and the report written", Class::NasWrite);
+    let _p = phase("writing the to-do list and the report", Class::NasWrite);
     let dir = crate::inputs::todo_dir(todo_root, crate::inputs::gtfs::UNIT);
     dir.create_dir_all()?;
     let text: String = todo.iter().map(|l| l.to_string() + "\n").collect();

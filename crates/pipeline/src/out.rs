@@ -226,7 +226,7 @@ impl Out {
     /// job that hands off (`SCENIC_HANDOFF`): one that saves the records has none. They're the snapshot's,
     /// not this job's changes: its saves hand off only its own.
     pub fn open_with(root: &store::nasfs::NasRoot, scratch: &Path, unmerged: Option<&Path>) -> Result<Self> {
-        let _p = crate::timings::phase("records read", crate::timings::Class::NasRead);
+        let _p = crate::timings::phase("reading records", crate::timings::Class::NasRead);
         std::fs::create_dir_all(scratch)?;
         let manifest_path = root.join("state/build/manifest.json");
         let records = records_now(root)?;
@@ -479,7 +479,7 @@ impl Out {
         if self.later.landed >= upto.0 {
             return Ok(());
         }
-        let _p = crate::timings::phase("uploads put off landed", crate::timings::Class::NasWrite);
+        let _p = crate::timings::phase("waiting for the uploads put off to land", crate::timings::Class::NasWrite);
         while self.later.landed < upto.0 {
             let size = self.later.sizes.front().map_or(0, |s| s.0);
             let deadline = upload_deadline(size);
@@ -632,7 +632,7 @@ impl Out {
     /// on their way, are left for a later save (a target's, while the next one's are uploading).
     pub fn save_upto(&mut self, upto: Mark) -> Result<()> {
         self.settle(upto)?;
-        let _p = crate::timings::phase("records saved", crate::timings::Class::NasWrite);
+        let _p = crate::timings::phase("saving records", crate::timings::Class::NasWrite);
         // (Nothing saved of a job that named something outside its step's outputs.)
         if let Some(first) = self.outside.first() {
             bail!(

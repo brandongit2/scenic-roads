@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, publishedBefore, pastFrom, pastRuns, runLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion, ringsArea } from '../../web/work/sums.js';
+import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, publishedBefore, pastFrom, pastRuns, runLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion, ringsArea, phaseBreakdown } from '../../web/work/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -372,4 +372,25 @@ test("forecast runs: numbered by lane name in byte order, linked both ways (#787
   assert.deepEqual(l.on.get(2), [0, 1]);
   assert.deepEqual(l.then.get(2), [3]);
   assert.equal(l.on.get(0), undefined);
+});
+
+test("a step's time breakdown over the footer's range (#844)", () => {
+  // (crate::timings::PhaseTimes: runs summed by the first range edge their end is within.)
+  const pt = { at: 0, edges: [60, 300, 600, 1800, 3600, 7200, 21600, 86400, 259200, 604800], steps: {
+    depth: { phases: [["composing", "compute"], ["reading the depth sources' windows", "nas-read"]],
+      b: [[0, 1, 0, 100, 40, [[0, 30, 30, 0, 0], [1, 60, 6, 3.5, 0]]], [6, 2, 1, 200, 50, [[0, 150, 140, 0, 0]]], [8, 5, 0, 900, 0, [[1, 900, 0, 10, 0]]]] },
+  } };
+  assert.equal(phaseBreakdown(pt, "slope", 21600), null, "a step with no runs");
+  // The last minute: the first edge's alone.
+  const m = phaseBreakdown(pt, "depth", 60);
+  assert.deepEqual([m.runs, m.failed, m.wall, m.untimed], [1, 0, 100, 10]);
+  assert.deepEqual(m.parts.map((p) => [p.name, p.wall, p.nas]), [["reading the depth sources' windows", 60, 3.5], ["composing", 30, 0]]);
+  // Six hours: the edges up to it; largest first.
+  const six = phaseBreakdown(pt, "depth", 21600);
+  assert.deepEqual([six.runs, six.failed, six.wall, six.cpu], [3, 1, 300, 90]);
+  assert.deepEqual(six.parts.map((p) => [p.name, p.wall, p.cpu]), [["composing", 180, 170], ["reading the depth sources' windows", 60, 6]]);
+  // A week: everything; a range between edges takes the edges below it.
+  assert.equal(phaseBreakdown(pt, "depth", 604800).runs, 8);
+  assert.equal(phaseBreakdown(pt, "depth", 50000).runs, 3);
+  assert.equal(phaseBreakdown(pt, "depth", 30), null, "under the first edge: none");
 });

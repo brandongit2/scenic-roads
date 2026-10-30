@@ -200,32 +200,32 @@ pub fn stage_said(stage: &str, frac: f64, took: Option<std::time::Duration>) {
 /// how long it takes (seconds: the M4's, over its z6 tiles of 2026-10): how far a z6 tile is, by
 /// the stages it's through (`TileProgress`), until this Mac has timed its own.
 pub const STAGES: [(&str, f64); 25] = [
-    ("piece copied from the NAS", 10.0),
-    ("buildings staged", 1.0),
+    ("copying the piece from the NAS", 10.0),
+    ("staging the buildings", 1.0),
     ("extract", 10.0),
-    ("subset to the coverage", 1.0),
+    ("cutting to the coverage", 1.0),
     ("DEM cache slice", 30.0),
     ("elevations (elev)", 150.0),
-    ("DEM samples kept", 40.0),
-    ("layers staged from the packs", 60.0),
-    ("heritage inputs", 8.0),
+    ("keeping DEM samples", 40.0),
+    ("staging layers from the packs", 60.0),
+    ("staging the heritage inputs", 8.0),
     ("area flags (areaflags)", 5.0),
     ("land cover (landcover)", 4.0),
-    ("scenic results restored", 20.0),
+    ("restoring scenic results", 20.0),
     ("clean-up and grade (tile elev)", 1.0),
     ("scenic prep", 1.0),
     ("scenic canopy", 25.0),
     ("scenic view", 12.0),
     ("scenic buildings", 19.0),
     ("scenic flags", 1.0),
-    ("missing grids written", 2.0),
-    ("scenic results kept", 8.0),
-    ("base pack made", 1.0),
-    ("base pack written", 1.0),
-    ("road values made and written", 20.0),
+    ("writing missing grids", 2.0),
+    ("keeping scenic results", 8.0),
+    ("making the base pack", 1.0),
+    ("writing the base pack", 1.0),
+    ("making and writing road values", 20.0),
     // (With the grids' and base pack's uploads, put off until here.)
-    ("records saved", 60.0),
-    ("its folders removed", 1.0),
+    ("saving records", 60.0),
+    ("removing its folders", 1.0),
 ];
 
 /// A `unit` job's progress (scenic-build's `unit` step), z6 tile by z6 tile: those finished, and each under
@@ -580,7 +580,7 @@ pub fn prepare_folder(
     c.arg(dir).arg(&spacing).arg(piece);
     run_in(c, "extract", &log, dir, tools)?;
     use crate::timings::Class;
-    let s = stage("subset to the coverage", Class::Compute);
+    let s = stage("cutting to the coverage", Class::Compute);
     rep.piece_ways = roadcore::Ways::open(dir)?.ways().len();
     // 2. Only what touches the coverage goes on.
     let (kw, kv) = subset(dir, |_, vs| cov.touches(vs))?;
@@ -602,7 +602,7 @@ pub fn prepare_folder(
         .context("the unit's sources: the declared sources' accepted version isn't given (docs/inputs.md §6.9)")?;
     std::fs::write(dir.join(UnitSources::FILE), serde_json::to_vec(&UnitSources::of(declared)?)?)?;
     // 4. The global-source layers the steps read, from the packs.
-    let s = stage("layers staged from the packs", Class::NasRead);
+    let s = stage("staging layers from the packs", Class::NasRead);
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     // (With the terrain the roads' heights read: the deep tiles under the vertices; and the
     // datasets' codes.)
@@ -612,7 +612,7 @@ pub fn prepare_folder(
     s.end();
     // The heritage sites around the z6 tile (the flags step's `heritage.json`), and the designated
     // areas rasterised onto its grid (`grid.areas.u8`), from the heritage-sites job's slices.
-    let s = stage("heritage inputs", Class::NasRead);
+    let s = stage("staging the heritage inputs", Class::NasRead);
     (rep.heritage, rep.areas) = heritage(b, dir)?;
     s.end();
     let mut c = store::spawn::command(tools.bin.join("areaflags"));
@@ -628,7 +628,7 @@ pub fn prepare_folder(
     // Its last run's scenic results (pipeline::scache: the canopy and view steps copy what's
     // unchanged), restored over the staged grids they were made from.
     if let Some(c) = carry {
-        let s = stage("scenic results restored", Class::NasRead);
+        let s = stage("restoring scenic results", Class::NasRead);
         // (From the copy made ahead of it, while the z6 tile before it built: `ahead_carry`.)
         let ahead = ahead_carry(dir);
         match c.restore_ahead(dir, ahead.is_dir().then_some(ahead.as_path())) {
@@ -946,7 +946,7 @@ mod tests {
         let mut a = TileProgress::new(4, Some(file.clone()));
         let total: f64 = STAGES.iter().map(|s| s.1).sum();
         a.on("6/1/1");
-        a.stage("piece copied from the NAS", 1.0, None);
+        a.stage("copying the piece from the NAS", 1.0, None);
         assert!((a.done() - 10.0 / total).abs() < 1e-9);
         // Halfway through its elevations: the stages before, and half of that one.
         a.stage("elevations (elev)", 0.5, None);
@@ -964,7 +964,7 @@ mod tests {
         a.on("6/1/1");
         a.finished("6/1/1");
         // (Its folders removed after: nothing more.)
-        a.stage("its folders removed", 1.0, None);
+        a.stage("removing its folders", 1.0, None);
         assert!((a.done() - (1.0 + (STAGES[..3].iter().map(|s| s.1).sum::<f64>()) / total)).abs() < 1e-9);
         // A stage's time teaches its weight, kept for the next job.
         a.on("6/1/2");

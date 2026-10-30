@@ -589,7 +589,7 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
     let os = |s: &'static str| std::ffi::OsStr::new(s);
     jobs::stage(0, STEPS, "steps (the label points and areas filtered)");
     {
-        let _p = phase("the label points filtered by osmium", Class::Compute);
+        let _p = phase("filtering the label points (osmium)", Class::Compute);
         let mut a = vec![os("tags-filter"), os("--overwrite"), os("-R"), src.as_os_str()];
         a.extend(NODE_FILTERS.map(os));
         a.extend([os("-o"), nodes.as_os_str()]);
@@ -599,7 +599,7 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
     // read. Members of a named relation stay (as its references), named or not.
     jobs::stage(1, STEPS, "steps (the named areas filtered)");
     {
-        let _p = phase("the named areas filtered by osmium", Class::Compute);
+        let _p = phase("filtering the named areas (osmium)", Class::Compute);
         let mut a = vec![os("tags-filter"), os("--overwrite"), src.as_os_str()];
         a.extend(AREA_FILTERS.map(os));
         a.extend([os("-o"), all_areas.as_os_str()]);
@@ -612,7 +612,7 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
     jobs::stage(2, STEPS, "steps (reading the points)");
     let mut rows: Vec<Row> = Vec::new();
     {
-        let _p = phase("the label points read", Class::Compute);
+        let _p = phase("reading the label points", Class::Compute);
         let r = osmpbf::ElementReader::from_path(&nodes).with_context(|| format!("open {}", nodes.display()))?;
         r.for_each(|e| {
             let mut t = Tags::default();
@@ -636,7 +636,7 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
     // sparse index on disk (16 bytes a node): a dense array is as big as the highest node id.
     jobs::stage(3, STEPS, "steps (reading the named areas)");
     {
-        let _p = phase("the named areas read", Class::Compute);
+        let _p = phase("reading the named areas", Class::Compute);
         let idx = work.join("labels-nodes.idx");
         let mut c = crate::osmpass::osmium();
         c.args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "-o", "-", "-i"])
@@ -661,14 +661,14 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
     eprintln!("{} labels read ({:.0?})", rows.len(), t0.elapsed());
     let n0 = rows.len();
     {
-        let _p = phase("the duplicates left out", Class::Compute);
+        let _p = phase("leaving out the duplicates", Class::Compute);
         let keep = dedupe(&rows);
         let mut k = keep.into_iter();
         rows.retain(|_| k.next().unwrap());
     }
     eprintln!("{} duplicates left out ({:.0?})", n0 - rows.len(), t0.elapsed());
     jobs::stage(4, STEPS, "steps (each label's isolation and tiles)");
-    let p = phase("the isolation measured", Class::Compute);
+    let p = phase("measuring the isolation", Class::Compute);
     let n = rows.len();
     // Areas: the zoom where √area spans one pixel; ms where it spans SIZE_PX.
     let zs: Vec<f64> =
@@ -703,7 +703,7 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
     let first: Vec<u32> =
         (0..n).map(|i| (mz[i] + MIN_PX.dlog2()).max(ms[i] - shift).floor().clamp(0.0, MAXZ as f64) as u32).collect();
     drop(p);
-    let p = phase("the labels placed in tiles", Class::Compute);
+    let p = phase("placing the labels in tiles", Class::Compute);
     let mut tiles: HashMap<(u32, u32, u32), Vec<u32>> = HashMap::new();
     for i in 0..n {
         for z in first[i]..=MAXZ {
@@ -716,7 +716,7 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
     eprintln!("{} tiles ({:.0?})", tiles.len(), t0.elapsed());
     let english: Vec<Option<&str>> =
         rows.iter().map(|r| r.en.as_deref().filter(|e| pytext::differs(&r.name, Some(e))).map(pytext::strip)).collect();
-    let _p = phase("the label tiles made and written", Class::Compute);
+    let _p = phase("making and writing the label tiles", Class::Compute);
     if let Some(d) = out.parent() {
         std::fs::create_dir_all(d)?;
     }

@@ -40,7 +40,7 @@ pub(crate) fn src_bytes(out: &Out, src: &str, stem: &str) -> Result<Vec<u8>> {
     let mirror = std::env::var_os("HOME")
         .map(|h| PathBuf::from(h).join("Library/Application Support/scenic/mirror").join(content));
     // (Its own phase, or a sub-phase of the one reading it: crate::timings.)
-    let p = crate::timings::phase("the heritage outputs read", crate::timings::Class::NasRead);
+    let p = crate::timings::phase("reading the heritage outputs", crate::timings::Class::NasRead);
     // (The mirror's copy read under a shared lock, so the mirror's delete, under an exclusive one,
     // waits it out: store::cachefile; gone meanwhile, the NAS's.)
     let here = match &mirror {
@@ -205,7 +205,7 @@ fn id_sources(pts: &[Point]) -> Vec<IdSource> {
 pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) -> Result<Converted> {
     use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
-    let p = phase("their ids and zooms worked out", Class::Compute);
+    let p = phase("working out their ids and zooms", Class::Compute);
     let ids = marks::assign_ids(&id_sources(&pts))?;
     let mut all: Vec<(u64, Pt)> = ids.into_iter().zip(pts).collect();
     eprintln!("marks: {} points with ids in {:.1?}", all.len(), t0.elapsed());
@@ -223,7 +223,7 @@ pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec,
         })
         .collect();
     {
-        let _p = phase("markdata tiles uploaded", Class::NasWrite);
+        let _p = phase("uploading markdata tiles", Class::NasWrite);
         let heritage = out.get(&format!("{src}/layer-heritage")).unwrap_or_default().to_string();
         out.put_bytes(HERITAGE_DOTS, "json", &serde_json::to_vec(&Dots { heritage, dots })?)?;
     }
@@ -256,7 +256,7 @@ pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec,
 
     drop(p);
     // Markdata per z6 tile.
-    let p = phase("markdata tiles made", Class::Compute);
+    let p = phase("making markdata tiles", Class::Compute);
     let mut tiles: BTreeMap<(u32, u32), Vec<usize>> = BTreeMap::new();
     for (j, (_, p)) in all.iter().enumerate() {
         tiles.entry(marks::tile_at(p.lon, p.lat, 6)).or_default().push(j);
@@ -297,7 +297,7 @@ pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec,
     // kind's thinned tiles.)
     let kinds = by_kind.len().max(1) as f64;
     drop(p);
-    let p = phase("markdata tiles uploaded", Class::NasWrite);
+    let p = phase("uploading markdata tiles", Class::NasWrite);
     // (One bundle of every tile's file, uploaded beside the thinned tiles' making: task #449.)
     let ntiles = written.len();
     let files = written.into_iter().map(|((x, y), local)| (6u8, x, y, local)).collect();
@@ -318,7 +318,7 @@ pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec,
     for (n, (&k, idx)) in by_kind.iter().enumerate() {
         crate::agent::jobs::within(0.5 + 0.5 * n as f64 / kinds);
         let kind = KINDS[k];
-        let made_p = phase("thinned tiles made", Class::Compute);
+        let made_p = phase("making thinned tiles", Class::Compute);
         let kp: Vec<KeepPt> = idx
             .iter()
             .map(|&j| {
@@ -363,7 +363,7 @@ pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec,
             }
         }
         drop(made_p);
-        let _p = phase("thinned packs uploaded", Class::NasWrite);
+        let _p = phase("uploading thinned packs", Class::NasWrite);
         if let Some((l, _)) = crate::layers::write_layer_bundle(out, &format!("marks-{kind}"), "rdmt", true, tiles)? {
             wrote.insert(l);
         }

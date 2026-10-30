@@ -460,3 +460,85 @@ export function rowsWindow(top, height, rowH, n, over = 6) {
   const from = Math.max(0, Math.floor(top / rowH) - over);
   return [Math.min(n, from), Math.min(n, Math.ceil((top + height) / rowH) + over)];
 }
+
+// ---- A step's time by phase over the charts' range (task #844) ------------------------------------
+// The lead's `phase_times` (crate::timings::PhaseTimes: each step's runs summed by the first of
+// `edges` their end is within) over the footer's range `range` (seconds): the runs that ended within
+// it (the sums of the edges up to it), each phase's wall and CPU seconds and NAS and internet MB
+// summed, and their time in no phase (`untimed`). Null when the step ran none in the range.
+export function phaseBreakdown(pt, step, range) {
+  const st = pt?.steps?.[step];
+  if (!st) return null;
+  const upto = (pt.edges || []).reduce((k, e, i) => (e <= range ? i : k), -1);
+  const out = { runs: 0, failed: 0, wall: 0, cpu: 0, parts: st.phases.map(([name, cls]) => ({ name, cls, wall: 0, cpu: 0, nas: 0, net: 0 })) };
+  for (const [e, runs, failed, wall, cpu, ps] of st.b) {
+    if (e > upto) continue;
+    out.runs += runs; out.failed += failed; out.wall += wall; out.cpu += cpu;
+    for (const [i, w, c, nas, net] of ps) { const p = out.parts[i]; if (!p) continue; p.wall += w; p.cpu += c; p.nas += nas; p.net += net; }
+  }
+  if (!out.runs) return null;
+  out.parts = out.parts.filter((p) => p.wall > 0).sort((a, b) => b.wall - a.wall);
+  out.untimed = Math.max(0, out.wall - out.parts.reduce((t, p) => t + p.wall, 0));
+  return out;
+}
+
+// What a phase waits on, by its class (crate::timings::Class), for the time breakdown's tooltips.
+export const PHASE_CLASS = {
+  "nas-read": "reading the NAS", "nas-write": "writing to the NAS", disk: "the Mac's own disk", net: "the internet (or another Mac)",
+  compute: "the CPU", wait: "a lock, a slot or another worker", mixed: "several things (its sub-phases)",
+};
+
+// A line on what each phase does (the time breakdown's tooltip), the phases that take a step's time;
+// another phase: its name and class say it.
+export const PHASE_ABOUT = {
+  "making the piece's tiles (z12 → z9)": "Samples the terrain pool's datasets for a z9 piece's tiles, levels the lakes, shades and encodes them as WebP.",
+  "making its deep tiles (the fine datasets read)": "Samples the fine datasets (HRDEM, 3DEP and others) for the z10 tile's deep levels, blends their edges and brings them to EGM2008.",
+  "making z8 tiles' tiles here": "Makes the z8 tiles' slope tiles on this Mac from the terrain it reads.",
+  "drawing the coverage and finding the credits": "Draws the catalogue's coverage and finds the credits its tiles need.",
+  "composing": "Composes the depth tiles from the sources' windows: fills the gaps, scales stored levels up, feathers the seams.",
+  "waiting for the uploads beside to land": "Waits for the uploads sent beside the job (packs, tiles) to land on the NAS.",
+  "working out slope tiles (the terrain read as needed)": "Works out the slope tiles from the terrain, read from its packs as needed.",
+  "loading z12 terrain tiles (packs, else AWS)": "Loads the z12 terrain tiles from the packs, else from AWS's Terrarium tiles.",
+  "uploading its deep pack": "Uploads the z10 tile's deep pack to the NAS.",
+  "waiting for the next z6 tile's z12 tiles": "Waits for the next z6 tile's z12 terrain tiles, being copied ahead.",
+  "reading the regions and their outlines": "Reads the regions and parses their outlines into the coverage's grid: every step's run pays it.",
+  "making the z3 tile's tiles (z8 → z3)": "Makes a z3 tile's coarser levels, z8 down to z3, from the finer.",
+  "opening the basemap's water": "Opens the basemap's water (on the NAS) for the tiles' lakes and coasts.",
+  "sampling and making the world's z8 tiles": "Samples the world's z8 terrain tiles from the pool and makes them, once a build.",
+  "reading and checking the changes": "Reads the inputs' changes and checks them before they're accepted.",
+  "reading the fine datasets' declarations": "Reads the fine datasets' declarations from the NAS: what covers the tile.",
+  "getting the z6 tiles' base packs here": "Copies the z6 tiles' base packs from the NAS to this Mac.",
+  "staging layers from the packs": "Stages a z6 tile's layers from its packs on the NAS for the scenic programs.",
+  "shading the floor": "Shades the sea floor's relief for the depth tiles.",
+  "blending the edges": "Blends the datasets' heights where they meet.",
+  "encoding tiles": "Encodes the tiles (WebP).",
+  "keeping scenic results": "Keeps the scenic programs' results on the NAS.",
+  "copying its terrain pack here": "Copies the z6 tile's terrain pack from the NAS to this Mac.",
+  "reading the basemap's water": "Reads the basemap's water for the tiles.",
+  "reading the pass, coverage, pieces and reaches": "Reads the OSM pass, the coverage, the pieces and the reaches from the NAS.",
+  "copying pieces from the NAS": "Copies the z6 tile's OSM pieces from the NAS to this Mac.",
+  "extracting candidates (extract)": "Extracts the candidate features from the pieces (the extract program).",
+  "drawing road and rail tiles": "Draws the road and rail vector tiles.",
+  "saving records": "Saves the job's records (its outputs' keys) to the NAS.",
+  "reading records": "Reads the build's records from the NAS.",
+  "waiting for the copying ahead": "Waits for the copies made ahead (the next tile's inputs).",
+  "writing packs": "Writes the packs on this Mac.",
+  "making the coarser levels from the finer": "Makes the coarser zooms from the finer ones, a plain mean.",
+  "packing new raw tiles onto the NAS": "Packs the raw terrain tiles just fetched onto the NAS's archives.",
+  "uploading the candidates": "Uploads the candidates to the NAS.",
+  "reading the depth sources' declarations": "Reads the depth sources' declarations from the NAS.",
+  "finding the block's sources": "Finds the sources that cover the block.",
+  "reading the depth sources' windows": "Reads the depth sources' windows over the tile, from the NAS.",
+  "opening the depth source files": "Opens the depth sources' files on the NAS.",
+  "making whole local copies": "Copies whole source files from the NAS to this Mac to read them locally.",
+  "sampling glo30": "Samples Copernicus GLO-30 heights.",
+  "sampling hrdem": "Samples Canada's HRDEM heights.",
+  "sampling hrdem-1m": "Samples Canada's HRDEM 1 m heights.",
+  "offering z8 tiles to other workers": "Offers the z8 tiles to other workers, and takes back what they made.",
+  "offering the z6 tile's subtrees to other workers": "Offers the z6 tile's subtrees to other workers, and takes back what they made.",
+  "fetching its files from the coordinator": "Fetches the task's files from the coordinator.",
+  "sending back what they wrote": "Sends the task's outputs back to the coordinator.",
+  "uploading the lo pack": "Uploads the lo pack to the NAS.",
+  "reading the pieces' mids": "Reads the pieces' mids from the NAS.",
+  "other phases": "The step's smaller phases, summed.",
+};

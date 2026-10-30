@@ -101,7 +101,7 @@ def fetch(url: str, path: Path, params: dict | None = None) -> Path:
     """Download `url` to `path` once (cached)."""
     if path.exists() and path.stat().st_size > 0:
         return path
-    with phase("sources downloaded", "net"):
+    with phase("downloading sources", "net"):
         path.parent.mkdir(parents=True, exist_ok=True)
         if params:
             url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
@@ -124,7 +124,7 @@ def arcgis(url: str, where: str, fields: str, cache: Path, page: int = 2000, ext
     """All features of an ArcGIS REST layer (GeoJSON, WGS84), paged by resultOffset; cached."""
     if cache.exists() and cache.stat().st_size > 0:
         return json.loads(cache.read_text())
-    with phase("sources downloaded", "net"):
+    with phase("downloading sources", "net"):
         feats, off = [], 0
         try:  # the layer's object id field (usually OBJECTID) keeps paging stable
             with urllib.request.urlopen(urllib.request.Request(f"{url}?f=json", headers=UA), timeout=120) as r:
@@ -271,7 +271,7 @@ def wd_search_labels(name: str, cache: dict, langs=("fr", "es", "pt", "ca", "gl"
                 time.sleep(float(e.headers.get("Retry-After") or 5) * (attempt + 1))
         return {}
     # (A failed search fails the run rather than leave the name untranslated, uncached.)
-    with phase("sources downloaded", "net"):
+    with phase("downloading sources", "net"):
         hits = get({"action": "wbsearchentities", "search": name, "language": search_lang, "limit": 1}).get("search", [])
         labels = {}
         if hits:
@@ -474,7 +474,7 @@ def hes_layer(layer: int, where: str, fields: str, cache: str, step: int = 10000
     path = H / "uk" / cache
     if path.exists() and path.stat().st_size > 0:
         return json.loads(path.read_text())
-    with phase("sources downloaded", "net"):
+    with phase("downloading sources", "net"):
         feats, lo = [], 0
         while True:
             q = {"where": f"({where}) AND FID >= {lo} AND FID < {lo + step}", "outFields": fields, "outSR": 4326, "f": "geojson",
@@ -976,7 +976,7 @@ def jp_csv(cat: int, pref: str) -> Path:
     path = H / "jp" / f"{cat}-{pref}.csv"
     if path.exists():
         return path
-    with phase("sources downloaded", "net"):
+    with phase("downloading sources", "net"):
         op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         op.addheaders = list(UA.items())
         tok = lambda html: re.search(r'name="_csrfToken" autocomplete="off" value="([^"]*)"', html).group(1)
@@ -1127,7 +1127,7 @@ def sg_dataset(did: str) -> tuple[dict, str]:
 
     path = H / "sg" / f"{did}.geojson"
     if not path.exists():
-        with phase("sources downloaded", "net"):
+        with phase("downloading sources", "net"):
             for attempt in range(8):
                 try:
                     with urllib.request.urlopen(urllib.request.Request(f"https://api-open.data.gov.sg/v1/public/api/datasets/{did}/poll-download",

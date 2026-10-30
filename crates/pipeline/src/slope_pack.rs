@@ -770,7 +770,7 @@ pub fn build_piece_later(
 ) -> Result<Report> {
     use crate::timings::{phase, Class};
     let mut rep = Report::default();
-    let p = phase("the terrain packs' indexes and its z10 tiles' deep mids read", Class::NasRead);
+    let p = phase("reading the terrain packs' indexes and its z10 tiles' deep mids", Class::NasRead);
     let terr = ManifestTiles::with_copies(out, "terrain", out.scratch_file("terrain-copies"));
     let (get, has) = terrain_reads(&terr);
     let terrain = Terrain::new(&get, &has);
@@ -781,17 +781,17 @@ pub fn build_piece_later(
     // Its own z6 tile's terrain pack, which it reads thousands of tiles of (each a round trip to
     // the share), copied here whole, one sequential read; its neighbours' few edge tiles read where
     // they are.
-    let p = phase("its terrain pack copied here", Class::NasRead);
+    let p = phase("copying its terrain pack here", Class::NasRead);
     if let Some(n) = terr.copy_here(9, t.0 << 3, t.1 << 3) {
         p.count(n, 1);
     }
     drop(p);
     on("slope tiles worked out", 0, count.total);
-    let p = phase("slope tiles worked out (the terrain read as needed)", Class::Compute);
+    let p = phase("working out slope tiles (the terrain read as needed)", Class::Compute);
     let (hi, lo) = piece(&terrain, &tiles, &mids, t, &count);
     drop(terrain);
     drop(p);
-    let p = phase("its hi pack and mid written", Class::Disk);
+    let p = phase("writing its hi pack and mid", Class::Disk);
     rep.hi_tiles = hi.len();
     rep.lo_tiles = lo.len();
     let mut it = hi.into_iter().map(|(z, x, y, b)| {
@@ -839,7 +839,7 @@ pub fn build_piece_later(
 pub fn build_deep(out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
     use crate::timings::{phase, Class};
     let mut rep = Report::default();
-    let p = phase("the terrain packs' indexes read", Class::NasRead);
+    let p = phase("reading the terrain packs' indexes", Class::NasRead);
     let terr = ManifestTiles::with_copies(out, "terrain", out.scratch_file("terrain-copies"));
     let (get, has) = terrain_reads(&terr);
     let terrain = Terrain::new(&get, &has);
@@ -848,7 +848,7 @@ pub fn build_deep(out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + S
     let count = Count::new(tiles.len() as u64 + 1, on);
     drop(p);
     // (Its terrain deep pack and its z6 tile's hi pack, read thousands of tiles of, copied here whole.)
-    let p = phase("its terrain packs copied here", Class::NasRead);
+    let p = phase("copying its terrain packs here", Class::NasRead);
     for (z, x, y) in [(crate::terrain_deep::FIRST_Z, t.0 << 3, t.1 << 3), (9, t.0 >> 1, t.1 >> 1)] {
         if let Some(n) = terr.copy_here(z, x, y) {
             p.count(n, 1);
@@ -856,11 +856,11 @@ pub fn build_deep(out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + S
     }
     drop(p);
     on("slope tiles worked out", 0, count.total);
-    let p = phase("slope tiles worked out (the terrain read as needed)", Class::Compute);
+    let p = phase("working out slope tiles (the terrain read as needed)", Class::Compute);
     let (made, mid) = deep_part(&terrain, &tiles, t, &count);
     drop(terrain);
     drop(p);
-    let p = phase("its deep pack and deep mid written", Class::Disk);
+    let p = phase("writing its deep pack and deep mid", Class::Disk);
     rep.deep_tiles = made.len();
     let mut it = made.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;
@@ -872,7 +872,7 @@ pub fn build_deep(out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + S
     let path = out.scratch_file(&format!("{ml}.sect"));
     write_deep_mid(&path, t, &mid)?;
     drop(p);
-    let up = phase("its deep pack and deep mid uploaded", Class::NasWrite);
+    let up = phase("uploading its deep pack and deep mid", Class::NasWrite);
     match pack {
         Some(p) => {
             rep.deep_packs = 1;
@@ -1060,7 +1060,7 @@ pub fn build_lo(
 ) -> Result<Report> {
     use crate::timings::{phase, Class};
     let mut rep = Report::default();
-    let p = phase("the pieces' mids and the terrain packs' indexes read", Class::NasRead);
+    let p = phase("reading the pieces' mids and the terrain packs' indexes", Class::NasRead);
     let mids = read_mids(out, q, ts)?;
     p.count(0, mids.len() as u64);
     let terr = ManifestTiles::new(out, "terrain");
@@ -1068,12 +1068,12 @@ pub fn build_lo(
     let terrain = Terrain::new(&get, &has);
     let count = Count::new(64 + 16 + 4 + 1, on);
     drop(p);
-    let p = phase("the z3 tile's slope assembled", Class::Compute);
+    let p = phase("assembling the z3 tile's slope", Class::Compute);
     let lo = assemble(out, &terrain, q, ts, &mids, &count)?;
     drop(terrain);
     drop(p);
-    let up = phase("the lo pack uploaded", Class::NasWrite);
-    on("packs written", 0, 1);
+    let up = phase("uploading the lo pack", Class::NasWrite);
+    on("writing packs", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;
@@ -1085,7 +1085,7 @@ pub fn build_lo(
     }
     drop(up);
     out.save()?;
-    on("packs written", 1, 1);
+    on("writing packs", 1, 1);
     Ok(rep)
 }
 
@@ -1093,7 +1093,7 @@ pub fn build_lo(
 /// tile is missing from its own terrain's shading.
 pub fn build_root(out: &mut Out) -> Result<usize> {
     use crate::timings::{phase, Class};
-    let p = phase("the z3 slope tiles and the terrain packs' indexes read", Class::NasRead);
+    let p = phase("reading the z3 slope tiles and the terrain packs' indexes", Class::NasRead);
     let terr = ManifestTiles::new(out, "terrain");
     let have = ManifestTiles::new(out, "slope");
     let (get, has) = terrain_reads(&terr);
@@ -1107,7 +1107,7 @@ pub fn build_root(out: &mut Out) -> Result<usize> {
         }
     }
     drop(p);
-    let p = phase("the root's slope worked out", Class::Compute);
+    let p = phase("working out the root's slope", Class::Compute);
     let mut made: Vec<Made> = Vec::new();
     for z in (0..=2u8).rev() {
         let n = 1u32 << z;
@@ -1128,7 +1128,7 @@ pub fn build_root(out: &mut Out) -> Result<usize> {
     drop((terr, have));
     made.sort_by_key(|t| (t.0, t.1, t.2));
     drop(p);
-    let up = phase("the root pack uploaded", Class::NasWrite);
+    let up = phase("uploading the root pack", Class::NasWrite);
     let n = made.len();
     let mut it = made.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;

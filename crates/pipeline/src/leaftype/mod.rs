@@ -82,7 +82,7 @@ fn name(top: i32, left: i32) -> String {
 /// many, is said as they come (crate::agent::jobs::report_f; an EEA square counted by its chunks).
 pub fn make(sqs: &[(i32, i32)], out: &Path, src: &LeafSources) -> Result<()> {
     let missing: Vec<(i32, i32)> = {
-        let _p = phase("the squares made checked", Class::NasRead);
+        let _p = phase("checking the squares made", Class::NasRead);
         sqs.iter()
             .copied()
             .filter(|&(t, l)| !crate::trees::squares::complete(&out.join(format!("{}.tif", name(t, l)))))
@@ -364,7 +364,7 @@ fn europe_square(top: i32, left: i32, out: &Path, src: &LeafSources, progress: &
     // coarser levels, so its classes aren't compared, only where there's data.
     let path = out.join(format!("{}.tif", name(top, left)));
     let old: Option<Vec<u8>> = {
-        let _p = phase("today's squares read", Class::NasRead);
+        let _p = phase("reading today's squares", Class::NasRead);
         (path.exists() && crate::whole::tiff_file_whole(&path))
             .then(|| {
                 let t = crate::geotiff::Tiff::open(Arc::new(store::range::PlainFile::open(&path).ok()?)).ok()?;
@@ -425,7 +425,7 @@ fn europe_square(top: i32, left: i32, out: &Path, src: &LeafSources, progress: &
     };
     eprintln!("{}: {} EEA chunks", name(top, left), jobs.len());
     {
-        let _p = phase("the EEA's chunks fetched", Class::Net);
+        let _p = phase("fetching the EEA's chunks", Class::Net);
         // Two at a time, taken in order; once one fails the rest still run (their chunks kept for
         // the next try), then the square fails.
         let next = std::sync::atomic::AtomicUsize::new(0);
@@ -487,7 +487,7 @@ fn europe_square(top: i32, left: i32, out: &Path, src: &LeafSources, progress: &
     if k > 0 {
         eprintln!("  {k} chunks kept from today's square");
     }
-    let _p = phase("the squares written", Class::NasWrite);
+    let _p = phase("writing the squares", Class::NasWrite);
     save(top, left, &a, EEA_SOURCE, out)?;
     std::fs::remove_dir_all(&parts).ok();
     Ok(())
@@ -502,7 +502,7 @@ fn fetch_nalcms(tif: &Path, src: &LeafSources) -> Result<()> {
     }
     let url = &src.north_america;
     let [offset, compressed] = src.north_america_member;
-    let _p = phase("NALCMS's GeoTIFF downloaded", Class::Net);
+    let _p = phase("downloading NALCMS's GeoTIFF", Class::Net);
     std::fs::create_dir_all(tif.parent().context("NALCMS: no folder")?)?;
     crate::fetch::online(url)?;
     let ag = agent(None);
@@ -662,7 +662,7 @@ fn north_america_squares(
     for (k, &(top, left)) in todo.iter().enumerate() {
         let t0 = std::time::Instant::now();
         let a = {
-            let _p = phase("the NALCMS squares resampled", Class::Compute);
+            let _p = phase("resampling the NALCMS squares", Class::Compute);
             let mut a = nalcms_square(&t, top, left).with_context(|| format!("square {}", name(top, left)))?;
             for v in &mut a {
                 *v = na_class(*v);
@@ -670,7 +670,7 @@ fn north_america_squares(
             a
         };
         {
-            let _p = phase("the squares written", Class::NasWrite);
+            let _p = phase("writing the squares", Class::NasWrite);
             save(top, left, &a, NALCMS_SOURCE, out)?;
         }
         eprintln!("    ({:.0} s)", t0.elapsed().as_secs_f64());

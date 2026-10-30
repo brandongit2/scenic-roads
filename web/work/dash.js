@@ -20,7 +20,7 @@
 // activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { AREAS, HIDDEN_STATES, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf } from "./sums.js";
+import { AREAS, HIDDEN_STATES, PHASE_ABOUT, PHASE_CLASS, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown } from "./sums.js";
 import { fmt } from "./chartmath.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
@@ -1406,7 +1406,8 @@ function schedule(m) {
 // A list, a stage under another (the checklist's lines, build::Line): its mark, title, counts and
 // bar; under it a row per step (build::Item): its mark, id (⇄ when any Mac may take it), count and
 // bar. Done and left of all the enabled regions' work, in the steps' nouns (map tiles, z3 tiles,
-// runs): the one place the page counts a whole (task #685); no past runs, no time.
+// runs): the one place the page counts a whole (task #685). Under a step that ran in the footer's
+// range ("Charts show the last"), its time breakdown (task #844): `timeRow`.
 function stagesList(m) {
   if (!m.lines.length) return h("div", "small dim", "No word from the lead yet.");
   const list = h("div", "stages");
@@ -1423,9 +1424,55 @@ function stagesList(m) {
         withCard(h("span", "title", step, S.any(step) ? h("span", { class: "dim" }, " ⇄") : null), `t ${step}`, () => stepCard(m, it)),
         h("span", "n", countOf(it, `${S.noun(step)}s`)),
         pbar(fraction(it), itDone ? "ok" : itRun ? "" : "dimbar", itDone ? null : S.colour(step))));
+      const tr = timeRow(m, step);
+      if (tr) list.append(tr);
     }
   }
   return list;
+}
+
+// ---- A step's time breakdown (task #844) ------------------------------------------------------------
+// The footer's range (seconds; this browser's own, index.html's `range`), and its words ("6 h").
+const chartRange = () => ctx?.store.get("range", 3600) ?? 3600;
+const rangeWords = (r) => document.querySelector(`#range option[value="${r}"]`)?.textContent || dur(r);
+// What each phase class is drawn in (crate::timings::Class); time in no phase, faint.
+const PHASE_COLOURS = { "nas-read": "#3d6fa8", "nas-write": "#2f8a8a", disk: "#56708f", net: "#7a5fb0", compute: "#a8823d", wait: "#6b6f76", mixed: "#4f6d8f" };
+const pct = (f) => (f > 0 && f < 0.005 ? "<1%" : `${Math.round(f * 100)}%`);
+const mbText = (mb) => (mb >= 1024 ? `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)} GB` : mb >= 1 ? `${Math.round(mb)} MB` : mb > 0 ? "<1 MB" : "0");
+// A step's row: "time breakdown", then a bar of its time in the range's runs by phase (the lead's
+// `phase_times`: phaseBreakdown), each part as wide as its share and labelled where it has room,
+// its card on hover (`phaseCard`); null when no run of it ended in the range.
+function timeRow(m, step) {
+  const range = chartRange();
+  const b = phaseBreakdown(m.a.phase_times, step, range);
+  if (!b || !b.wall) return null;
+  const bar = h("div", "tb-bar");
+  const seg = (w, colour, label, key, build) => {
+    const el = h("span", { class: "tb-part", style: { flexGrow: String(w), background: colour } }, w / b.wall >= 0.08 ? h("span", "tb-l", label) : null);
+    if (key) withCard(el, key, build);
+    bar.append(el);
+  };
+  b.parts.forEach((p, i) => seg(p.wall, PHASE_COLOURS[p.cls] || PHASE_COLOURS.mixed, `${p.name} ${pct(p.wall / b.wall)}`, `pt ${step} ${i}`, () => phaseCard(step, b, p, range)));
+  if (b.untimed > 0) seg(b.untimed, "var(--line)", `in no phase ${pct(b.untimed / b.wall)}`, `pt ${step} untimed`, () => phaseCard(step, b, null, range));
+  return h("div", "tb", h("span", { class: "tb-k", title: `${plural(b.runs, "job")} that ended in the last ${rangeWords(range)}` }, "time breakdown"), bar);
+}
+// A phase's card: its share of the step's time in the range, the time summed and a job's, the jobs,
+// what it waits on, its CPU against its wall time, the NAS's and the internet's bytes (where
+// counted), and what it does (PHASE_ABOUT; `p` null: the jobs' time in no phase).
+function phaseCard(step, b, p, range) {
+  const per = (v) => v / b.runs;
+  const wall = p ? p.wall : b.untimed;
+  const name = p ? p.name : "in no phase";
+  const cpu = p ? (p.wall > 0 && p.cpu > 0 ? p.cpu / p.wall : null) : null;
+  return cardBody({ kicker: `${step} · phase · the last ${rangeWords(range)}`, colour: p ? PHASE_COLOURS[p.cls] || PHASE_COLOURS.mixed : "var(--line)", title: name,
+    stats: [[pct(wall / b.wall), "of the step's time"], [dur(wall), "in all"], [dur(per(wall)), "a job"]] }, [
+    ["Jobs", `${n(b.runs)} ended in the range${b.failed ? ` (${n(b.failed)} failed)` : ""}`],
+    ["Waits on", p ? PHASE_CLASS[p.cls] || p.cls : null],
+    ["CPU / wall", cpu != null ? `${cpu.toFixed(2)} (${dur(p.cpu)} of CPU in ${dur(p.wall)}; above 1: several threads)` : p ? "not measured" : null],
+    ["NAS", p?.nas ? `${mbText(p.nas)} in all · ${mbText(per(p.nas))} a job` : null],
+    ["Internet", p?.net ? `${mbText(p.net)} in all · ${mbText(per(p.net))} a job` : null],
+    ["Does", p ? PHASE_ABOUT[p.name] || `${p.name[0].toUpperCase()}${p.name.slice(1)}: its time waits on ${PHASE_CLASS[p.cls] || p.cls}.` : "The jobs' time between their phases, or before the first and after the last: setting up, and what no phase times."],
+  ]);
 }
 
 // A stage's card: its work left and finish (stat tiles), in the Jobs tab's stages its counts done
@@ -2165,6 +2212,9 @@ export function dashboard(opts) {
   // (A tab opened: made now, after index.html shows it; the Regions tab's stage counts asked then,
   // as only while it shows, askSteps.)
   window.addEventListener("hashchange", () => queueMicrotask(render));
+  // (The footer's range picked, here or in another tab: the steps' time breakdowns follow at once.)
+  document.getElementById("range")?.addEventListener("change", () => queueMicrotask(render));
+  window.addEventListener("storage", (e) => e.key === "range" && queueMicrotask(render));
   poll();
   startLive({ call: ctx.call, store: ctx.store, macs: () => last?.macs || [], active: () => location.hash === "#machines" || location.hash === "#nas", only: () => (location.hash === "#nas" ? last?.agent?.host || null : null) });
   startActivity({ call: ctx.call, macs: () => last?.macs || [], machines: () => shownMacs, active: () => location.hash === "#activity" });

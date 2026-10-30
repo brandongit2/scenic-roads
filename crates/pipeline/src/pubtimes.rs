@@ -128,9 +128,15 @@ pub struct CatalogueStats {
     /// The files it listed, and those it looked at on the NAS (stat'ed).
     pub files: u64,
     pub stated: u64,
-    /// Its phases' wall times, in order.
-    #[serde(default)]
+    /// Its phases' wall times, in order (a name from before task #844 read as its new one:
+    /// crate::phase_names).
+    #[serde(default, deserialize_with = "current_names")]
     pub phases: Vec<(String, f64)>,
+}
+
+fn current_names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(String, f64)>, D::Error> {
+    let v = Vec::<(String, f64)>::deserialize(d)?;
+    Ok(v.into_iter().map(|(n, s)| (crate::phase_names::current(&n).into_owned(), s)).collect())
 }
 
 /// The start of a catalogue's line in its log: stored in the job logs on the NAS, so it keeps its old
@@ -755,8 +761,8 @@ mod tests {
             files: 1000,
             stated: if delta { 12 } else { 1000 },
             phases: vec![
-                ("every file checked on the NAS".into(), if delta { 1.0 } else { 9.0 }),
-                ("the catalog written".into(), 2.0),
+                ("checking every file on the NAS".into(), if delta { 1.0 } else { 9.0 }),
+                ("writing the catalog".into(), 2.0),
             ],
         };
         Event { n: Some(n), secs: Some(secs), data: serde_json::to_value(&st).ok(), ..ev("catalog", t) }

@@ -60,6 +60,7 @@ pub mod ovconv;
 #[cfg(not(target_os = "wasi"))]
 pub mod pageviews;
 pub mod peaks;
+pub mod phase_names;
 pub mod polar;
 pub mod pool;
 pub mod pubtimes;

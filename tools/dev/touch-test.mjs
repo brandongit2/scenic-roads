@@ -35,6 +35,10 @@
 //   --width W         the Chrome run at W px wide (default 390, a phone; 768 or more: a desktop, DPR 2)
 //   --scheme S        dark or light (prefers-color-scheme; default the system's)
 //   --agent H:P       the agent read (default 127.0.0.1:8090; the lead's to see the NAS tab filled)
+//   --phase-times FILE  the lead's `phase_times` in /work/swarm replaced by FILE's (a PhaseTimes
+//                     as JSON, crate::timings: an agent before #844 hasn't it), its `at` now; the
+//                     Jobs tab's time breakdowns then checked at two ranges and a part's card
+//                     (chrome-time-6h, chrome-time-7d, chrome-time-card)
 //   --only-map        only the map's checks (its solo, its age controls) and screenshots
 //   --solo STEP       the step the map's checks solo (default: the one with the most tiles built)
 //   --zoom-on X,Y     the map then zoomed in on world point X,Y (Web Mercator 0–1000; Ontario and
@@ -100,6 +104,7 @@ const SCHEME = arg("--scheme", null);
 const PAUSE_LAG = +arg("--pause-lag", 3000);
 const fake = { pause: null, posts: 0 }; // (the page's Pause as this server keeps it)
 const ONLY_MAP = process.argv.includes("--only-map");
+const PHASE_TIMES = arg("--phase-times", null);
 const ZOOM_ON = arg("--zoom-on", null)?.split(",").map(Number) ?? null;
 // Served names whose file on disk is named otherwise, as the coordinator's list has them
 // (crate::coord's page files): the route keeps its old spelling (task #547).
@@ -183,7 +188,7 @@ function serve() {
           if (call !== "swarm" || r.statusCode !== 200) { res.writeHead(r.statusCode, r.headers); return r.pipe(res); }
           let b = "";
           r.on("data", (c) => (b += c));
-          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (FORECAST === "none" && o.agent) delete o.agent.forecast; if (HISTORY) Object.assign(o, { seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
+          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (PHASE_TIMES && o.agent) o.agent.phase_times = { ...JSON.parse(readFileSync(PHASE_TIMES, "utf8")), at: Math.floor(Date.now() / 1000) }; if (FORECAST === "none" && o.agent) delete o.agent.forecast; if (HISTORY) Object.assign(o, { seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
         });
         fw.on("error", (e) => { console.error(`touch-test server: ${url.pathname}: ${e.message}`); res.writeHead(502); res.end("{}"); });
         fw.end(out);
@@ -428,6 +433,41 @@ async function run() {
       check("member: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
       await pick("");
       await until(`!!document.querySelector('#mappane .wmap-filters input[value=""]:checked')`, 3000);
+    }
+
+    // The steps' time breakdowns (#844): a row under each step that ran in the footer's range, its
+    // parts as the range says, a part's card on hover (a tap on a phone).
+    if (PHASE_TIMES) {
+      errors.length = 0;
+      await show("jobs");
+      const setRange = (v) => js(`(() => { const s = document.getElementById("range"); s.value = "${v}"; s.dispatchEvent(new Event("change")); return true; })()`);
+      const rows = `[...document.querySelectorAll(".stages .tb")].map((r) => r.previousElementSibling?.querySelector(".title")?.firstChild?.textContent + ": " + [...r.querySelectorAll(".tb-part")].length)`;
+      const saved = await js(`localStorage.getItem("range")`);
+      await setRange(21600);
+      await until(`document.querySelectorAll(".stages .tb").length > 0`, 5000);
+      const six = await js(rows);
+      check("time: rows under the steps that ran in 6 h", six.length > 0, six.slice(0, 6).join(", "));
+      await js(`document.querySelector(".stages .tb")?.scrollIntoView({ block: "center" })`);
+      await shot("chrome-time-6h");
+      await setRange(604800);
+      await until(`JSON.stringify(${rows}) !== ${JSON.stringify(JSON.stringify(six))}`, 5000);
+      const week = await js(rows);
+      check("time: the week's rows follow the range", week.length >= six.length && JSON.stringify(week) !== JSON.stringify(six), week.slice(0, 6).join(", "));
+      await shot("chrome-time-7d");
+      const at = await js(`(() => { const p = [...document.querySelectorAll(".stages .tb-part")].find((e) => e.querySelector(".tb-l")); if (!p) return null; p.scrollIntoView({ block: "center" }); const r = p.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+      if (at) {
+        if (PHONE) await tap(at[0], at[1]);
+        else await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at[0], y: at[1] });
+        await until(`[...document.querySelectorAll(".card-tip")].some((c) => !c.hidden && /of the step's time/.test(c.textContent))`, 3000);
+      }
+      const card = await js(`[...document.querySelectorAll(".card-tip")].find((c) => !c.hidden)?.innerText || ""`);
+      check("time: a part's card says its share, jobs and what it does", /of the step's time/.test(card) && /Jobs/.test(card) && /Does/.test(card), card.replace(/\s+/g, " ").slice(0, 200));
+      const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(join(OUT, "chrome-time-card.png"), Buffer.from(data, "base64"));
+      if (PHONE) await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+      else await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2 });
+      await setRange(saved == null ? 3600 : JSON.parse(saved));
+      check("time: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }
 
     // Each tab: no sideways scroll, no console errors, screenshots.

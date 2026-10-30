@@ -769,6 +769,9 @@ pub struct Coordinator {
     /// Each step's phase shares over its last runs (crate::timings::PhaseShares), kept by their
     /// own thread (`phase_sharer`), apart from the pool's lock.
     phase_shares: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>>,
+    /// Each step's time by phase over the page's chart ranges (crate::timings::PhaseTimes), kept
+    /// by the same thread.
+    phase_times: Arc<Mutex<Option<Arc<crate::timings::PhaseTimes>>>>,
 }
 
 impl Drop for Coordinator {
@@ -1389,9 +1392,10 @@ impl Coordinator {
         };
         let urls = http::serve(listener, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
         let phase_shares: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>> = Default::default();
+        let phase_times: Arc<Mutex<Option<Arc<crate::timings::PhaseTimes>>>> = Default::default();
         if !viewer {
             nas_prober(shared.clone(), root.clone(), stopped.clone(), me.to_string());
-            phase_sharer(dir.join("timings.jsonl"), phase_shares.clone(), stopped.clone());
+            phase_sharer(dir.join("timings.jsonl"), phase_shares.clone(), phase_times.clone(), stopped.clone());
         }
         let c = Coordinator {
             shared,
@@ -1406,6 +1410,7 @@ impl Coordinator {
             routes,
             cors,
             phase_shares,
+            phase_times,
         };
         if !viewer {
             c.write_page();
@@ -1771,6 +1776,12 @@ impl Coordinator {
     /// (`phase_sharer`; empty till then).
     pub fn phase_shares(&self) -> BTreeMap<String, crate::timings::PhaseShares> {
         self.phase_shares.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Each step's time by phase over the page's chart ranges, as its thread last summed them
+    /// (`phase_sharer`, every minute; None till then).
+    pub fn phase_times(&self) -> Option<Arc<crate::timings::PhaseTimes>> {
+        self.phase_times.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Each worker's share of the NAS budget now: its leased jobs' NAS weights summed, in
@@ -2854,13 +2865,16 @@ fn nas_prober(
 #[cfg(not(target_os = "wasi"))]
 const SHARES_EVERY_S: u64 = 60;
 
-/// Keeps `into` to each step's phase shares over its last runs in the timings log at `log`, read
-/// on its own thread every `SHARES_EVERY_S` as it grows (crate::timings::LogTail: its size first,
-/// then only what was added), never under the pool's lock; till the coordinator stops.
+/// Keeps `into` to each step's phase shares over its last runs in the timings log at `log`, and
+/// `times` to each step's time by phase over the page's chart ranges, read on its own thread every
+/// `SHARES_EVERY_S` as it grows (crate::timings::LogTail: its size first, then only what was
+/// added; the ranges summed again each time, as they move on), never under the pool's lock; till
+/// the coordinator stops.
 #[cfg(not(target_os = "wasi"))]
 fn phase_sharer(
     log: PathBuf,
     into: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>>,
+    times: Arc<Mutex<Option<Arc<crate::timings::PhaseTimes>>>>,
     stopped: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let run = move || {
@@ -2869,6 +2883,8 @@ fn phase_sharer(
             if tail.read(&log) {
                 *into.lock().unwrap_or_else(|e| e.into_inner()) = tail.shares();
             }
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            *times.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(tail.times(now)));
             for _ in 0..SHARES_EVERY_S {
                 if stopped.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
@@ -5942,7 +5958,7 @@ mod tests {
             host: host.into(),
             wall_s: 10.0,
             ok: true,
-            phases: vec![PhaseRec { name: "records read".into(), wall_s: 1.0, n: 1, ..Default::default() }],
+            phases: vec![PhaseRec { name: "reading records".into(), wall_s: 1.0, n: 1, ..Default::default() }],
             ..Default::default()
         };
         // A helper's, with its hand-off (its host as its lease says, whatever it said); this Mac's own.
@@ -5973,7 +5989,7 @@ mod tests {
         let body = serde_json::json!({ "worker": "m1", "lease": 999, "timings": { "kind": 5 } });
         assert!(serde_json::from_value::<Done>(body).unwrap().timings.is_none());
         // A page's, as web/work/worker.js writes it (no CPU time).
-        let page = serde_json::json!({ "v": 1, "kind": "task tail", "id": "task 7", "start": 1, "wall_s": 9.5, "ok": true, "untimed_s": 0.5, "overhead_s": 0, "phases": [{ "name": "its files fetched from the coordinator", "class": "net", "wall_s": 2.0, "n": 1, "bytes": 1000, "files": 3 }, { "name": "elevations (elev)", "class": "mixed", "wall_s": 7.0, "n": 1, "bytes": 0, "files": 0 }] });
+        let page = serde_json::json!({ "v": 1, "kind": "task tail", "id": "task 7", "start": 1, "wall_s": 9.5, "ok": true, "untimed_s": 0.5, "overhead_s": 0, "phases": [{ "name": "fetching its files from the coordinator", "class": "net", "wall_s": 2.0, "n": 1, "bytes": 1000, "files": 3 }, { "name": "elevations (elev)", "class": "mixed", "wall_s": 7.0, "n": 1, "bytes": 0, "files": 0 }] });
         let d: Done =
             serde_json::from_value(serde_json::json!({ "worker": "ipad", "lease": 999, "timings": page })).unwrap();
         let t = d.timings.unwrap();

@@ -9780,16 +9780,16 @@ pub(crate) mod tests {
         let date = crate::osmpass::latest_pass_by(&store::nasfs::NasRoot::local_for_test(&root), false).unwrap();
         let keys = Keys::load(&store::nasfs::NasRoot::local_for_test(&root));
         let a = crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
-        lap("records read", &mut t);
+        lap("reading records", &mut t);
         let cov = Coverage::accepted(&store::nasfs::NasRoot::local_for_test(&root), &a, None).unwrap();
         let each = cov.by_region();
-        lap(&format!("coverage made ({} shapes, {} regions)", cov.shapes.len(), each.len()), &mut t);
+        lap(&format!("making the coverage ({} shapes, {} regions)", cov.shapes.len(), each.len()), &mut t);
         let reach =
             crate::reach::Reaches::load(&store::nasfs::NasRoot::local_for_test(&root), &m, &date).ok().flatten();
         let mut tiles = TerrainTiles::new(std::env::var("SCENIC_BENCH_IDX").ok().map(std::path::PathBuf::from));
         tiles.load(&store::nasfs::NasRoot::local_for_test(&root), &m);
         let inputs = crate::agent::input_digests(&store::nasfs::NasRoot::local_for_test(&root));
-        lap("reaches, terrain indexes, input digests", &mut t);
+        lap("reading reaches, terrain indexes and input digests", &mut t);
         for round in 1..=2 {
             let nr = store::nasfs::NasRoot::local_for_test(&root);
             let times = crate::agent::rekey::FileTimes::new(&nr);

@@ -450,7 +450,7 @@ pub(crate) fn wikipedias_told(
     qids: &[String],
     progress: &mut dyn FnMut(usize),
 ) -> Result<Vec<(String, Py)>> {
-    let _p = phase("Wikipedia articles looked up", Class::Net);
+    let _p = phase("looking up Wikipedia articles", Class::Net);
     let mut out = Vec::new();
     for (k, chunk) in qids.chunks(1000).enumerate() {
         let q = format!(
@@ -504,7 +504,7 @@ fn other_article(arts: &Py) -> Option<(String, String)> {
 /// answer ("" when it has none), and the titles they were normalized or redirected from. A batch
 /// that can't be fetched fails the run.
 fn shortdescs(ask: &Asker, api: &str, titles: &[String]) -> Result<Ordered<String>> {
-    let _p = phase("short descriptions fetched from Wikipedia", Class::Net);
+    let _p = phase("fetching short descriptions from Wikipedia", Class::Net);
     let mut out = Ordered::new();
     for (k, chunk) in titles.chunks(50).enumerate() {
         let joined = chunk.join("|");
@@ -580,7 +580,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
     let b = root.join("data/build");
     let w = root.join("data/heritage/wd");
     let ask = Asker::new();
-    let p = phase("the sites and their registers read", Class::Disk);
+    let p = phase("reading the sites and their registers", Class::Disk);
     std::fs::create_dir_all(&w)?;
     let fc = loads(&std::fs::read_to_string(b.join("heritage.json"))?).context("parse heritage.json")?;
     let feats = fc.at("features").list().context("heritage.json: no features")?;
@@ -599,7 +599,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
         _ => vec![],
     };
     drop(p);
-    let p = phase("the register IDs matched", Class::Compute);
+    let p = phase("matching the register IDs", Class::Compute);
     let mut by_prop: Ordered<Ordered<Vec<usize>>> = Ordered::new();
     for (i, f) in feats.iter().enumerate() {
         let p = f.at("properties");
@@ -622,7 +622,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
     drop(p);
 
     // Results per register ID (ids.jsonl: prop, id, result rows, [] = no item).
-    let p = phase("the register ID cache read", Class::Disk);
+    let p = phase("reading the register ID cache", Class::Disk);
     let id_cache = w.join("ids.jsonl");
     let mut seen = read_lines(&id_cache, |r| Ok(sk(str_at(r, "prop")?, str_at(r, "id")?)))?;
     drop(p);
@@ -636,7 +636,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
     }
     let n_ids: usize = by_prop.vals.iter().map(|v| v.keys.len()).sum();
     eprintln!("{n_ids} register IDs, {} to look up", jobs.iter().map(|j| j.1.len()).sum::<usize>());
-    let p = phase("register IDs looked up on Wikidata", Class::Net);
+    let p = phase("looking up register IDs on Wikidata", Class::Net);
     let save = |seen: &mut Ordered<Py>, jobs: &[(String, Vec<String>)], res: Vec<Vec<(String, Py)>>| {
         for ((prop, _), rows) in jobs.iter().zip(res) {
             for (k, rows) in rows {
@@ -651,7 +651,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
     save(&mut seen, &jobs, res);
     drop(p);
     let write_ids = |seen: &Ordered<Py>| -> Result<()> {
-        let _p = phase("the register ID cache written", Class::Disk);
+        let _p = phase("writing the register ID cache", Class::Disk);
         let mut s = String::new();
         for (_, r) in seen.iter() {
             s.push_str(&dumps_spaced(r));
@@ -664,7 +664,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
         seen.get(&sk(prop, id)).and_then(|r| r.at("rows").list().cloned()).unwrap_or_default()
     };
 
-    let p = phase("the records made", Class::Compute);
+    let p = phase("making the records", Class::Compute);
     let mut items: Vec<Py> = Vec::new();
     let mut rid_of: HashMap<usize, String> = HashMap::new();
     for (prop, ids) in by_prop.iter() {
@@ -683,11 +683,11 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
         items.iter().filter(|r| r.at("wiki").truthy()).filter_map(|r| r.at("i").number()).map(|n| n as usize).collect();
     let todo: Vec<usize> = (0..feats.len()).filter(|i| !linked.contains(i)).collect();
     eprintln!("OSM links: indexing features with a Wikidata item; {} sites to link", todo.len());
-    let p = phase("the OSM features with an item indexed", Class::Compute);
+    let p = phase("indexing the OSM features with an item", Class::Compute);
     let cells = todo.iter().map(|&i| site_cell(&feats[i])).collect::<Result<HashSet<_>>>()?;
     let (grid, ofeats) = osm_index(&root.join("data/heritage/osm/named.geojsonseq"), &cells, &osm_ref)?;
     drop(p);
-    let p = phase("sites linked through OSM", Class::Compute);
+    let p = phase("linking sites through OSM", Class::Compute);
     let have_q: HashSet<(usize, String)> =
         items.iter().map(|r| (r.at("i").number().unwrap_or(-1.0) as usize, r.at("qid").py_str())).collect();
     let mut osm_sites: Ordered<Vec<usize>> = Ordered::new();
@@ -709,13 +709,13 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
         osm_sites.keys.len(),
         new_q.len()
     );
-    let p = phase("OSM-linked items looked up on Wikidata", Class::Net);
+    let p = phase("looking up OSM-linked items on Wikidata", Class::Net);
     let jobs: Vec<(String, Vec<String>)> = new_q.chunks(BATCH).map(|c| ("QID".to_string(), c.to_vec())).collect();
     let res = look_up(&ask, &ends.wikidata, &jobs)?;
     save(&mut seen, &jobs, res);
     drop(p);
     write_ids(&seen)?;
-    let p = phase("the records made", Class::Compute);
+    let p = phase("making the records", Class::Compute);
     for (q, sites) in osm_sites.iter() {
         for b in rows_of(&seen, "QID", q) {
             let r = record(&b)?;
@@ -725,7 +725,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
     drop(p);
 
     // Wikipedia articles in any language, per item (wp.jsonl).
-    let p = phase("the article cache read", Class::Disk);
+    let p = phase("reading the article cache", Class::Disk);
     let wp_cache = w.join("wp.jsonl");
     let mut wp = read_lines(&wp_cache, |r| Ok(r.at("qid").py_str()))?;
     drop(p);
@@ -741,7 +741,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
         wp.set(&q, Py::Dict(d));
     }
     {
-        let _p = phase("the article cache written", Class::Disk);
+        let _p = phase("writing the article cache", Class::Disk);
         let mut s = String::new();
         for (_, r) in wp.iter() {
             s.push_str(&dumps_spaced(r));
@@ -749,7 +749,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
         }
         write_atomic(&wp_cache, &s)?;
     }
-    let p = phase("the records made", Class::Compute);
+    let p = phase("making the records", Class::Compute);
     let empty = Py::Dict(vec![]);
     for r in items.iter_mut() {
         let w = wp.get(&r.at("qid").py_str()).unwrap_or(&empty);
@@ -766,7 +766,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
         items.iter().filter(|r| r.at("wiki").truthy()).filter_map(|r| r.at("i").number()).map(|n| n as usize).collect();
     eprintln!("{} of {} sites with a Wikipedia article", with.len(), feats.len());
     {
-        let _p = phase("the items written", Class::Disk);
+        let _p = phase("writing the items", Class::Disk);
         let mut s = String::new();
         for r in &items {
             s.push_str(&dumps_spaced(r));
@@ -774,7 +774,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
         }
         write_atomic(&w.join("items.jsonl"), &s)?;
     }
-    let p = phase("the short description cache read", Class::Disk);
+    let p = phase("reading the short description cache", Class::Disk);
     let mut titles: Vec<String> = items
         .iter()
         .filter_map(|r| r.at("wiki").get("en"))
@@ -811,7 +811,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
         }
     }
     {
-        let _p = phase("the short description cache written", Class::Disk);
+        let _p = phase("writing the short description cache", Class::Disk);
         write_atomic(&sd_path, &dumps_spaced(&have))?;
     }
     eprintln!("done: {} short descriptions", at.len());

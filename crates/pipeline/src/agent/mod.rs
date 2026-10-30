@@ -888,6 +888,11 @@ pub struct Status {
     /// step. Empty on a member, and until the lead has read them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub phase_shares: BTreeMap<String, crate::timings::PhaseShares>,
+    /// Each step's time by phase over the build page's chart ranges, summed from the build's
+    /// timings by the lead's coordinator (crate::coord::Coordinator::phase_times): the page's step
+    /// rows' time breakdown. None on a member, and until the lead has read them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_times: Option<crate::timings::PhaseTimes>,
     /// The NAS as the lead sees it: its probes, limits, disk load and the pool's traffic
     /// (crate::coord::Coordinator::nas_view).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4795,6 +4800,7 @@ impl Agent {
             nas_share: self.coord.as_ref().map(|c| c.nas_shares()).unwrap_or_default(),
             nas_step: self.coord.as_ref().map(|c| c.nas_step_weights()).unwrap_or_default(),
             phase_shares: self.coord.as_ref().map(|c| c.phase_shares()).unwrap_or_default(),
+            phase_times: self.coord.as_ref().and_then(|c| c.phase_times()).map(|t| (*t).clone()),
             nas: self.coord.as_ref().and_then(|c| c.nas_view()),
             workers: self
                 .coord

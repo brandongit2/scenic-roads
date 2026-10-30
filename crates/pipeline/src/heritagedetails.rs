@@ -96,7 +96,7 @@ pub fn run(root: &Path) -> Result<()> {
     let b = root.join("data/build");
     let w = root.join("data/heritage/wd");
     let d = root.join("data/heritage/desc");
-    let p = phase("the items, descriptions and sites read", Class::Disk);
+    let p = phase("reading the items, descriptions and sites", Class::Disk);
     let items = best_items(&w)?;
     let sdp = w.join("enwiki-shortdesc.json");
     let sd = if sdp.exists() {
@@ -114,7 +114,7 @@ pub fn run(root: &Path) -> Result<()> {
     }
     let mut fc = loads(&std::fs::read_to_string(b.join("heritage.json"))?).context("parse heritage.json")?;
     drop(p);
-    let p = phase("the site details made and written", Class::Compute);
+    let p = phase("making and writing the site details", Class::Compute);
     let empty = Py::Dict(vec![]);
     let (mut n, mut nl) = (0, 0);
     let mut out = String::new();
@@ -175,7 +175,7 @@ pub fn run(root: &Path) -> Result<()> {
     }
     std::fs::write(b.join("details-heritage.jsonl"), out)?;
     drop(p);
-    let _p = phase("the sites written with their indexes", Class::Disk);
+    let _p = phase("writing the sites with their indexes", Class::Disk);
     let tmp = b.join("heritage.json.tmp");
     std::fs::write(&tmp, dumps(&fc))?;
     std::fs::rename(&tmp, b.join("heritage.json"))?;

@@ -132,7 +132,7 @@ async function exec({ lease, task, mem_mb, base = "" }) {
     }),
   );
   const fetchS = (performance.now() - t0) / 1000;
-  timings.add("its files fetched from the coordinator", "net", fetchS * 1000, got, task.inputs.length);
+  timings.add("fetching its files from the coordinator", "net", fetchS * 1000, got, task.inputs.length);
   const root = filesystem(files);
   files.length = 0;
   // What it reads where it lies (`/net`: the NAS's data and the data servers' files, through the
@@ -176,7 +176,7 @@ async function exec({ lease, task, mem_mb, base = "" }) {
     outputs.push({ path, size: data.byteLength });
     sentBytes += data.byteLength;
   }
-  timings.add("what they wrote sent back", "net", performance.now() - ts, sentBytes, outputs.length);
+  timings.add("sending back what they wrote", "net", performance.now() - ts, sentBytes, outputs.length);
   const status = await post("/work/done", { worker, lease, outputs, removed, secs: runS, fetch_s: fetchS, peak_mb: Math.round(peak), timings: timings.done() }, base);
   if (status === 410) throw new Error("taken back");
   return { peak: Math.round(peak), runS };

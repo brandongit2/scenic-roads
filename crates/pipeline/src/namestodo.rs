@@ -810,7 +810,7 @@ pub fn run(
     progress: &dyn Fn(&str, u64, u64),
 ) -> Result<Report> {
     use crate::timings::{phase, Class};
-    let p = phase("the catalog, the languages spoken and the translations read", Class::NasRead);
+    let p = phase("reading the catalog, the languages spoken and the translations", Class::NasRead);
     let cat = store::catalogue::latest(&root.join(store::catalogue::NAME))?.context("no catalogue")?;
     let spoken = spoken_for(root, &cat)?;
     let mut names = Names::from_files(&translation_files(translations));
@@ -821,23 +821,23 @@ pub fn run(
     let mut lists = Lists { names: &names, spoken: &spoken, entries: HashMap::new(), report: Report::default() };
     // (Each kind's names read from the map's files on the NAS and sorted into the lists as they
     // come: a phase a kind.)
-    let p = phase("the labels' names gathered", Class::NasRead);
+    let p = phase("gathering the labels' names", Class::NasRead);
     labels(root, &cat, &units, &coverage(&cat), &mut lists, progress)?;
     drop(p);
-    let p = phase("the roads' names gathered", Class::NasRead);
+    let p = phase("gathering the roads' names", Class::NasRead);
     roads(root, &cat, &mut lists, progress)?;
     drop(p);
-    let p = phase("the landmarks' names gathered", Class::NasRead);
+    let p = phase("gathering the landmarks' names", Class::NasRead);
     let done = described(descriptions)?;
     let mut want = Vec::new();
     landmarks(root, &cat, &mut lists, &done, &mut want, progress)?;
     drop(p);
-    let p = phase("the areas gathered", Class::NasRead);
+    let p = phase("gathering the areas", Class::NasRead);
     let mut wanted_areas = Vec::new();
     areas(root, &cat, &done, &mut wanted_areas)?;
     drop(p);
     let Lists { entries, mut report, .. } = lists;
-    let _p = phase("the lists sorted and written", Class::NasWrite);
+    let _p = phase("sorting and writing the lists", Class::NasWrite);
 
     // The translations' lists.
     let mut by_lang: BTreeMap<Lang, Vec<(String, Kind, Entry)>> = BTreeMap::new();

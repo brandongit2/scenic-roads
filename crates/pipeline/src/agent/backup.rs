@@ -121,17 +121,17 @@ pub fn run(root: &store::nasfs::NasRoot, local: Option<&Path>, today: &str, keep
     use crate::timings::{phase, Class};
     blobs.create_dir_all()?;
     let prev = {
-        let _p = phase("last backup read", Class::NasRead);
+        let _p = phase("reading the last backup", Class::NasRead);
         latest((&dir).into()).map(|(_, m)| m).unwrap_or_default()
     };
     let mut rep = Report::default();
     let mut now: Manifest = BTreeMap::new();
     let files = {
-        let _p = phase("folders scanned", Class::NasRead);
+        let _p = phase("scanning folders", Class::NasRead);
         scan(root, &prev)?
     };
     // (Each changed file copied into the blobs and hashed there: the NAS read and written.)
-    let copying = phase("changed files copied", Class::NasWrite);
+    let copying = phase("copying the changed files", Class::NasWrite);
     let (n, mut said) = (files.len() as u64, std::time::Instant::now());
     for (k, (rel, p, size, mtime, known)) in files.into_iter().enumerate() {
         // (How far it is, for the status, at most once a second.)
@@ -164,18 +164,18 @@ pub fn run(root: &store::nasfs::NasRoot, local: Option<&Path>, today: &str, keep
     drop(copying);
     rep.files = now.len();
     if now != prev {
-        let _p = phase("day's list written", Class::NasWrite);
+        let _p = phase("writing the day's list", Class::NasWrite);
         dir.join(format!("{today}.json")).write_whole(serde_json::to_vec_pretty(&now)?)?;
         rep.written = Some(today.to_string());
     }
     let (d, b) = {
-        let _p = phase("old days pruned", Class::NasWrite);
+        let _p = phase("pruning old days", Class::NasWrite);
         prune((&dir).into(), today, keep_days)?
     };
     rep.days_removed = d;
     rep.blobs_removed = b;
     if let Some(l) = local {
-        let _p = phase("mirrored to this Mac", Class::Disk);
+        let _p = phase("mirroring to this Mac", Class::Disk);
         mirror(&dir, l, today, keep_days)?;
     }
     Ok(rep)

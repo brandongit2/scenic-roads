@@ -1146,7 +1146,7 @@ mod tests {
         assert_eq!(
             l,
             Live {
-                phase: Some("records saved".into()),
+                phase: Some("saving records".into()),
                 class: Some("disk".into()),
                 phase_since: Some(5),
                 target: Some("unit 6/1/2".into()),

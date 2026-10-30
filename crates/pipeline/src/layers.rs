@@ -242,7 +242,7 @@ pub fn split_archive(
     max_z: u8,
 ) -> Result<LayerOut> {
     split_archive_with(out, arc, layer, encoding, gzip, max_z, &|k, n| {
-        crate::agent::jobs::report(k, n, "packs written")
+        crate::agent::jobs::report(k, n, "writing packs")
     })
 }
 

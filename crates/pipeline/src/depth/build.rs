@@ -555,14 +555,14 @@ fn block(
         {
             let (c0, r0) = b.origin();
             let bbox = super::grids::window_box(z, c0, r0, b.w(), b.h());
-            let _p = phase("the block's sources found", Class::Compute);
+            let _p = phase("finding the block's sources", Class::Compute);
             let any = super::compose::composes_at(sources, bbox, z);
             drop(_p);
             if !any {
                 return Ok(put);
             }
             let wt = {
-                let _p = phase("the basemap's water read", Class::NasRead);
+                let _p = phase("reading the basemap's water", Class::NasRead);
                 wc.block(water, b)?
             };
             let made = {
@@ -572,7 +572,7 @@ fn block(
                 compose(b, sources, rd, &wt, &mut up, zmin)?
             };
             let Some(c) = made else { return Ok(put) };
-            let _p = phase("tiles encoded", Class::Compute);
+            let _p = phase("encoding tiles", Class::Compute);
             for (x, y, d, k) in tiles(b, &c) {
                 t.put(z, x, y, &d, k)?;
                 put.push((z, x, y));
@@ -591,7 +591,7 @@ fn put_packs(
     scope: &str,
     root: (u8, u32, u32),
 ) -> Result<usize> {
-    let _p = crate::timings::phase("packs written", crate::timings::Class::NasWrite);
+    let _p = crate::timings::phase("writing packs", crate::timings::Class::NasWrite);
     for (layer, enc, which) in [(LAYER, ENCODING, 0usize), (CLASS_LAYER, CLASS_ENCODING, 1)] {
         let mut it = made.iter().map(move |(&(z, x, y), p)| {
             let b = if which == 0 { &p.0 } else { &p.1 };
@@ -757,7 +757,7 @@ fn put_means(made: &mut Made, got: Means) {
 
 /// Zooms `top - 1` down to `bottom` of `made`, each the mean of the finer over its own (`means`).
 fn means_down(made: &mut Made, top: u8, bottom: u8) -> Result<()> {
-    let _p = crate::timings::phase("the coarser levels from the finer", crate::timings::Class::Compute);
+    let _p = crate::timings::phase("making the coarser levels from the finer", crate::timings::Class::Compute);
     for z in (bottom..top).rev() {
         let got = means(made, made, z)?;
         put_means(made, got);
@@ -797,7 +797,7 @@ pub const ROOT: (u8, u8) = (0, LO.0 - 1);
 /// store, as the terrain's root from its lo packs (`root_of`); how many depth tiles. With no z3
 /// tile, the root packs are dropped.
 pub fn build_root(out: &mut Out) -> Result<usize> {
-    let p = crate::timings::phase("the z3 tiles read", crate::timings::Class::NasRead);
+    let p = crate::timings::phase("reading the z3 tiles", crate::timings::Class::NasRead);
     let z3: Vec<(u8, u32, u32)> = (0..64u32).map(|k| (LO.0, k % 8, k / 8)).collect();
     let mut made = Made::new();
     let mut below = HashMap::new();
@@ -873,7 +873,7 @@ const fn shade_lo_peak_mb() -> u64 {
 /// `shading` over its depth tiles `made`, each z8 pixel under a z6 tile's z9 shading the mean of
 /// those four as the hi packs store them (the fine sources' detail), else its own depth's.
 pub(super) fn shading_lo(out: &Out, made: &Made, q: (u32, u32)) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
-    let p = crate::timings::phase("the z9 shading read", crate::timings::Class::NasRead);
+    let p = crate::timings::phase("reading the z9 shading", crate::timings::Class::NasRead);
     let shade = crate::terrain_pack::ManifestTiles::new(out, super::SHADE_LAYER);
     let mut below = HashMap::new();
     for k in 0..64u32 {
@@ -934,7 +934,7 @@ pub fn compose_lo(
 /// Z3 tile `q`'s z8 tiles in `made` from the z9 tiles its z6 tiles' hi packs store (`means`, a z6
 /// tile at a time: its z9 tiles held only while its z8 is made).
 fn from_hi(out: &Out, q: (u32, u32), made: &mut Made) -> Result<()> {
-    let _p = crate::timings::phase("z8 from the z9 tiles", crate::timings::Class::NasRead);
+    let _p = crate::timings::phase("making z8 from the z9 tiles", crate::timings::Class::NasRead);
     let depth = crate::terrain_pack::ManifestTiles::new(out, LAYER);
     let class = crate::terrain_pack::ManifestTiles::new(out, CLASS_LAYER);
     for k in 0..64u32 {
@@ -985,7 +985,7 @@ fn resume_log(
 /// The grids a reader holds open closed and the water's polygons let go, as a phase: on the NAS
 /// a close is a round trip, and a reader keeps up to 2,000 open (grids::open_grids_limit).
 fn close(rd: Reader, wc: WaterCache) {
-    let _p = crate::timings::phase("the grids closed and the caches let go", crate::timings::Class::NasRead);
+    let _p = crate::timings::phase("closing the grids and letting the caches go", crate::timings::Class::NasRead);
     drop(rd);
     drop(wc);
 }
@@ -1038,7 +1038,7 @@ fn shading_over(
 ) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
     use std::collections::HashSet;
     use std::sync::Mutex;
-    let _p = crate::timings::phase("the floor's shading", crate::timings::Class::Compute);
+    let _p = crate::timings::phase("shading the floor", crate::timings::Class::Compute);
     let mut tiles: HashSet<(u8, u32, u32)> = HashSet::new();
     for &(z, x, y) in made.keys().chain(below.keys()).filter(|k| k.0 >= top) {
         for dz in 0..=(z - top) {
