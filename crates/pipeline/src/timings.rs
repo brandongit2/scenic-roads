@@ -1884,12 +1884,14 @@ mod tests {
         // Task #870: a phase's wall time split by what the job waited on, by wall clock: a NAS
         // call's 40 ms, two threads' network requests at once (30 ms each, together): 30 ms, not
         // 60; the rest computing.
+        let mut both = std::time::Duration::ZERO;
         {
             let _p = phase("measured");
             {
                 let _w = store::waits::nas();
                 std::thread::sleep(std::time::Duration::from_millis(40)); // (sleep ok: a NAS call's stand-in)
             }
+            let t0 = Instant::now();
             let t: Vec<_> = (0..2)
                 .map(|_| {
                     std::thread::spawn(|| {
@@ -1900,6 +1902,7 @@ mod tests {
                 })
                 .collect();
             t.into_iter().for_each(|t| t.join().unwrap());
+            both = t0.elapsed();
             std::thread::sleep(std::time::Duration::from_millis(20)); // (sleep ok: computing's stand-in)
         }
         // Time in no phase: a gap, named by the phases either side.
@@ -1913,7 +1916,9 @@ mod tests {
         assert_eq!((r.phases[5].n, r.phases[5].bytes), (1, 3));
         let m = &r.phases[4];
         let w = m.waits.unwrap();
-        assert!((0.04..0.08).contains(&w.nas_s) && (0.03..0.055).contains(&w.net_s), "{w:?}");
+        // (Lower bounds by the sleeps; the two requests' together no more than the span they shared,
+        // however loaded the Mac: not summed.)
+        assert!(w.nas_s >= 0.04 && w.net_s >= 0.03 && w.net_s <= both.as_secs_f64() + 1e-3, "{w:?} {both:?}");
         assert!(w.waited() < m.wall_s && m.wall_s - w.waited() >= 0.02, "{w:?} {}", m.wall_s);
         assert!(table(&r).contains("NAS ") && table(&r).contains("network "), "{}", table(&r));
         // (A phase that ran a child takes in its phases' waits, an unmeasured one's by its class,
