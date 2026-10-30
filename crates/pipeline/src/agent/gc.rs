@@ -573,6 +573,7 @@ pub fn note_cost() {
 fn yield_point() {
     #[cfg(test)]
     YIELD_CHECKS.set(YIELD_CHECKS.get() + 1);
+    crate::control::reached();
     if crate::control::draining() {
         note_cost();
         crate::control::stop_paused(STEP);

@@ -2538,7 +2538,11 @@ fn pyramids_fill(out: &Out, args: &[String]) -> Result<bool> {
             handoff.as_deref(),
             &|l| eprintln!("{l}"),
             &|d, t| pipeline::agent::jobs::report(d, t, "elevation tiles"),
-            &pipeline::control::draining_lately,
+            // (Each tile asked a safe point: crate::control::reached, for the job's measure.)
+            &|| {
+                pipeline::control::reached();
+                pipeline::control::draining_lately()
+            },
         )?;
         most = most.max(f.bytes);
         // (The tiles it asked of the network, the work its time is weighed by: a z6 tile whose
@@ -4070,6 +4074,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         // A safe point before each z6 tile: with the build pausing, the z6 tiles whose last steps are out
         // are settled (below), and the job ends.
+        pipeline::control::reached();
         if pipeline::control::draining() {
             paused = true;
             break;
@@ -5615,6 +5620,7 @@ impl Landing {
     /// `step`'s safe point: with the build pausing, the target uploading is landed (saved and noted
     /// done) and the job stops here (read once, so a drain between can't skip the landing).
     fn safe_point(&mut self, out: &mut Out, step: &str) -> Result<()> {
+        pipeline::control::reached();
         if pipeline::control::draining() {
             self.land(out)?;
             pipeline::control::stop_paused(step);

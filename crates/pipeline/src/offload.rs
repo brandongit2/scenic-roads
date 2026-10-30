@@ -358,6 +358,7 @@ impl Offload {
         // (Whether to give a worker a moment to take it: decided on the first status.)
         let mut lease_wait = None;
         loop {
+            crate::control::reached();
             if crate::control::draining() {
                 return Ok(st);
             }
