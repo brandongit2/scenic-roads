@@ -467,10 +467,8 @@ mod tests {
         let said = || -> Status { serde_json::from_slice(&std::fs::read(&local).unwrap()).unwrap() };
         let within = |what: &str, f: &dyn Fn() -> bool| {
             let t = std::time::Instant::now();
-            while !f() {
-                assert!(t.elapsed() < Duration::from_secs(1), "{what}: not within a second");
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            store::testkit::eventually(what, f);
+            store::testkit::ended_before(t, Duration::from_secs(1), what);
         };
         // Another member's: the loop's, woken for it.
         while c.woken.try_recv().is_ok() {}

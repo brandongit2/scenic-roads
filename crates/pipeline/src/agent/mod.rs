@@ -12633,6 +12633,7 @@ mod tests {
         std::fs::write(&chan, b"run").unwrap();
         a.control.jobs.set(vec![chan.clone()]);
         let asker = std::thread::spawn(move || {
+            // (sleep ok: the ask comes once the loop is deep in its plan or its hung calls)
             std::thread::sleep(after);
             let t = Instant::now();
             let ask = crate::control::request_hold(&home, None, Some(crate::control::Hold::new("the menu bar on m1")))

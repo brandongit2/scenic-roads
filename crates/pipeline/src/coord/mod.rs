@@ -9778,7 +9778,7 @@ mod tests {
         let t = Instant::now();
         let (code, _, b) = send(&addr, "POST", "/work/hold", None, &far, &held);
         assert_eq!((code, b["ok"].as_bool()), (200, Some(true)), "{b}");
-        assert!(t.elapsed() < Duration::from_secs(1), "answered in {:?}", t.elapsed());
+        store::testkit::ended_before(t, Duration::from_secs(1), "answered within a second");
         assert!(hold.get().held.as_ref().is_some_and(|h| h.by == "the build page (100.101.1.2)"));
         assert!(crate::control::read_hold(home.path()).held.is_some());
         let (code, _, b) = send(&addr, "POST", "/work/hold", None, &far, &serde_json::json!({ "held": false }));
