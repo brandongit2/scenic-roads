@@ -6341,13 +6341,11 @@ pub(crate) mod tests {
         let p = plan(&m, &done, &sets);
         let deep = of(&p, "terrain-deep");
         assert!(!deep.is_empty() && deep.iter().all(|(t, _)| t.starts_with("10/")), "{deep:?}");
-        assert!(
-            !of(&p, "terrain-hi").is_empty() && of(&p, "unit").is_empty(),
-            "DBG hi {:?} unit {:?} deep {:?}",
-            of(&p, "terrain-hi"),
-            of(&p, "unit"),
-            deep.len()
-        );
+        // (Task #864: a z6 tile waits only for the terrain it reads; 6/31/16 reads none of the
+        // targets made again, the other three do.)
+        let unit_targets = |p: &Plan| -> Vec<String> { of(p, "unit").into_iter().map(|t| t.0).collect() };
+        assert!(!of(&p, "terrain-hi").is_empty());
+        assert_eq!(unit_targets(&p), ["6/31/16"]);
         for step in ["terrain-hi", "terrain-lo"] {
             loop {
                 let w = of(&plan(&m, &done, &sets), step);
@@ -6359,7 +6357,20 @@ pub(crate) mod tests {
         }
         // The roads wait for the deep levels under them; the slope for them too.
         let p = plan(&m, &done, &sets);
-        assert!(of(&p, "unit").is_empty() && of(&p, "slope-deep").is_empty() && of(&p, "slope-hi").is_empty());
+        // (Those reading none of the deep targets go now: 6/30/16 and 6/31/16.)
+        let reads_deep = |u: &str| {
+            crate::agent::steps::reads_of("unit", u)
+                .iter()
+                .any(|(s, t)| *s == "terrain-deep" && deep.iter().any(|d| d.0 == *t))
+        };
+        assert!(
+            unit_targets(&p).iter().all(|u| !reads_deep(u)) && ["6/28/16", "6/29/16"].iter().all(|u| reads_deep(u))
+        );
+        assert!(
+            unit_targets(&p) == ["6/31/16", "6/30/16"]
+                && of(&p, "slope-deep").is_empty()
+                && of(&p, "slope-hi").is_empty()
+        );
         assert_eq!(of(&p, "terrain-deep"), deep, "its deep targets as they were: what they read hasn't changed");
         terrain_did(&mut m, &mut done, &Work { step: "terrain-deep".into(), targets: deep.clone() });
         let p = plan(&m, &done, &sets);
