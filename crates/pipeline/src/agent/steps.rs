@@ -256,6 +256,18 @@ pub fn readiness(step: &str, t: &str, view: &dyn View) -> Ready {
     }
 }
 
+/// The key derivation's scheme (docs/readiness.md §4, §6): 1 gives today's keys byte for byte
+/// (each step's legacy adapter, `build::legacy_keys`); 2, the lines of the declared reads, comes
+/// with #862's rebuild.
+pub const KEY_SCHEME: u32 = 1;
+
+/// Target `t`'s key of `step` (docs/readiness.md §4) under `KEY_SCHEME`; None while it can't be
+/// worked out, or for a step scheme 1 doesn't derive (`build::KEYS_FROM_THE_PLAN`, the pass's and
+/// upkeep's own).
+pub fn key(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<String> {
+    super::build::legacy_keys(step, x)?.into_iter().find(|(u, _)| u == t).map(|(_, k)| k)
+}
+
 /// The steps a target of `step` reads whole (`Read::Whole`), in declared order.
 pub fn wholes(step: &str) -> impl Iterator<Item = &'static str> {
     row(step).map_or(&[][..], |r| r.reads).iter().filter_map(|r| match *r {

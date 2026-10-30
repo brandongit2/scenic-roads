@@ -2665,6 +2665,118 @@ pub struct RegionLeft {
     pub packs: Vec<(String, Vec<String>)>,
 }
 
+/// What a key is worked out from (crate::agent::steps::key): the planner's arguments.
+#[derive(Clone, Copy)]
+pub struct KeyCtx<'a> {
+    pub cov: &'a Coverage,
+    pub date: &'a str,
+    pub m: &'a BTreeMap<String, String>,
+    pub inputs: &'a BTreeMap<String, String>,
+    pub reach: Option<&'a Reaches>,
+    pub tiles: &'a TerrainTiles,
+}
+
+/// The steps whose keys scheme 1 doesn't derive from a step's own inputs (crate::agent::steps::key):
+/// they're keyed on the whole plan's state (the publishing chain's, the catalogue's, the pass's,
+/// upkeep's). Scheme 2 (docs/readiness.md §6, step 3) declares them.
+pub const KEYS_FROM_THE_PLAN: [&str; 9] =
+    ["pack", "lo", "prune", "roadunits", "stations", "ferries", store::catalogue::NAME, "lakefill", "names-todo"];
+
+/// Scheme 1's keys of `step` (docs/readiness.md §6, step 1): every target's, byte for byte as the
+/// planner's (its `*_key` functions and targets, kept until scheme 2), each target with its key;
+/// None for a step whose key it doesn't derive (`KEYS_FROM_THE_PLAN`, the pass's and upkeep's own).
+pub fn legacy_keys(step: &str, x: &KeyCtx) -> Option<Vec<(String, String)>> {
+    let none = Keys::default();
+    let (cov, date, m, inputs, tiles) = (x.cov, x.date, x.m, x.inputs, x.tiles);
+    let world = |k: Option<String>| Some(k.map(|k| vec![(step.to_string(), k)]).unwrap_or_default());
+    let of_work = |w: Option<Work>| Some(w.map(|w| w.targets).unwrap_or_default());
+    let tt = || terrain_slope_targets(cov, m, tiles);
+    let known = |v: Vec<(String, Option<String>)>| v.into_iter().filter_map(|(t, k)| Some((t, k?))).collect::<Vec<_>>();
+    let tiled = |v: Vec<(TileId, String)>| Some(v.into_iter().map(|(u, k)| (u.slash(), k)).collect());
+    let trees = || crate::treepacks::targets_with(cov, m, tiles.keyed(m).and_then(|k| k.trees.as_deref()));
+    match super::steps::current(step) {
+        "outlines" => world(outlines_key(date, m)),
+        "regions-land" => of_work(regions_land_work(date, m, &none)),
+        "trailends" => of_work(trailends_work(date, m, &none)),
+        "reach" => world(reach_key(date, m)),
+        "labels" => of_work(labels_work(date, m, &none)),
+        "spoken" => of_work(spoken_work(date, m, &none)),
+        "summits" => of_work(summits_work(date, m, &none)),
+        "water" => of_work(water_work(date, m, &none)),
+        "timetables-todo" => of_work(timetables_todo_work(cov, m, &none)),
+        "heritage-sites" => world(heritage_sites_key(cov, date, m, inputs)),
+        "terrain-water" => of_work(terrain_water_work(cov, m, &none, tiles)),
+        "pyramids-fill" => pyramids_targets(cov, m, tiles),
+        "terrain-hi" => {
+            let t = tt();
+            Some(t.terrain.into_iter().chain(t.terrain_none).filter(|(_, k)| k != UNKNOWN).collect())
+        }
+        "terrain-lo" => {
+            let t = tt();
+            Some(t.terrain_lo.into_iter().chain(t.terrain_lo_none).filter(|(_, k)| k != UNKNOWN).collect())
+        }
+        "terrain-deep" => {
+            let t = tt();
+            Some(t.terrain_deep.into_iter().chain(t.terrain_deep_none).filter(|(_, k)| k != UNKNOWN).collect())
+        }
+        "slope-hi" => {
+            let t = tt();
+            Some(known(t.slope).into_iter().chain(t.slope_none).collect())
+        }
+        "slope-lo" => {
+            let t = tt();
+            Some(t.slope_lo.into_iter().chain(t.slope_lo_none).collect())
+        }
+        "slope-deep" => {
+            let t = tt();
+            Some(known(t.slope_deep).into_iter().chain(t.slope_deep_none).collect())
+        }
+        "trees" => Some(trees().pieces.into_iter().map(|(t, k, _)| (t, k)).collect()),
+        "trees-lo" => Some(trees().lo.into_iter().map(|(t, k, _)| (t, k)).collect()),
+        "unit" => Some(
+            unit_keys(cov, date, m, x.reach, tiles).into_iter().filter_map(|(u, k)| Some((u.slash(), k?))).collect(),
+        ),
+        "pois" => tiled(pois_keys(cov, date, m, inputs)?),
+        "peaks" => tiled(peaks_keys(cov, date, m)),
+        "items" => {
+            let now = current_pois(cov, date, m);
+            world((!now.is_empty()).then(|| items_key(date, &now)))
+        }
+        "heritage" => world(heritage_key(cov, date, m)),
+        "marks" => {
+            let units: Vec<TileId> = pois_keys(cov, date, m, inputs)?.into_iter().map(|(u, _)| u).collect();
+            world(Some(marks_key(date, m, &units)))
+        }
+        "overlays" => world(overlays_key(date, m)),
+        "terrain-root" => world(root_key("terrain", m)),
+        "slope-root" => world(root_key("slope", m)),
+        "depth" => depth_targets(cov, m, tiles).map(|d| d.hi),
+        "depth-lo" => depth_targets(cov, m, tiles).map(|d| d.lo),
+        "depth-root" => world(depth_root_key(m)),
+        "polar-terrain" => polar_targets(cov, m, tiles).map(|p| p.terrain),
+        "polar-slope" => polar_targets(cov, m, tiles).map(|p| p.slope),
+        "polar-root" => polar_targets(cov, m, tiles).map(|p| p.root),
+        "bld-fetch" => bld_sources(inputs).map(|_| vec![(step.to_string(), bld_fetch_key(cov, inputs))]),
+        "bldprep" => bld_sources(inputs).map(|_| bld_targets(cov, m, inputs).prep),
+        "bldtiles" => bld_sources(inputs).map(|_| bld_targets(cov, m, inputs).tiles),
+        "bldfield-lo" => {
+            bld_sources(inputs).map(|_| bld_targets(cov, m, inputs).lo.into_iter().map(|(q, k, _)| (q, k)).collect())
+        }
+        "rail-feeds" | "rail" => {
+            // (The chain's first stale step as if each before it succeeded: rail's once its feeds'
+            // is recorded.)
+            let mut d = Keys::default();
+            let feeds = rail_next(cov, date, m, &d, inputs)??;
+            if step == "rail-feeds" {
+                return Some(feeds.targets);
+            }
+            d.record(&feeds.step, &feeds.targets);
+            of_work(rail_next(cov, date, m, &d, inputs)?)
+        }
+        _ => None,
+    }
+}
+
 /// The plan for the coverage `cov`, the pass of `date`, the build manifest `m` (logical → content)
 /// and what was done (`done`). `inputs`: digests of what jobs read from `inputs/` (not in the
 /// manifest), by name: "keys" (the key names inputs/keys.env holds), "regions" (the regions' accepted version). `tiles`: the
@@ -6126,6 +6238,72 @@ pub(crate) mod tests {
         }
     }
 
+    /// Docs/readiness.md §6, step 1: every key the plan offers a target under is crate::agent::steps::key's,
+    /// byte for byte, but the steps keyed on the whole plan (`KEYS_FROM_THE_PLAN`). The steps whose
+    /// keys it checked.
+    fn keys_are_derived(p: &Plan, x: &KeyCtx) -> BTreeSet<String> {
+        let mut seen = BTreeSet::new();
+        for w in &p.work {
+            if KEYS_FROM_THE_PLAN.contains(&w.step.as_str()) {
+                continue;
+            }
+            for (t, k) in &w.targets {
+                let derived = crate::agent::steps::key(&w.step, t, x);
+                assert_eq!(derived.as_deref(), Some(k.as_str()), "{} {t}: the derived key", w.step);
+            }
+            seen.insert(w.step.clone());
+        }
+        seen
+    }
+
+    /// Scheme 1's bytes (docs/readiness.md §7, deleted at scheme 2): from nothing to built, every
+    /// target the plan offers (and so records) is keyed as crate::agent::steps::key derives it, for
+    /// every step it offers but those keyed on the whole plan.
+    #[test]
+    fn scheme_1_bytes() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        unit_inputs(&mut m, "d");
+        for l in ["work/trailends/d", "work/summits/d"] {
+            m.insert(l.into(), format!("{l}.6161616161616161.bin"));
+        }
+        let mut done = Keys::default();
+        run_all(&c, &reach(), &mut m, &mut done);
+        let seen = KEYS_SEEN.with(|s| s.borrow().clone());
+        eprintln!("scheme 1: every offered key derived byte for byte, of {seen:?}");
+        for s in
+            ["heritage-sites", "terrain-hi", "terrain-lo", "slope-hi", "slope-lo", "unit", "pois", "peaks", "items"]
+        {
+            assert!(seen.contains(s), "{s}'s key checked: {seen:?}");
+        }
+        // And the 3D buildings', depth's and the polar caps' chains, as their tests' plans offer them.
+        let inputs = bld_inputs(&c, "a");
+        let tiles = tiles_for(&m);
+        let x = KeyCtx { cov: &c, date: "d", m: &m, inputs: &inputs, reach: None, tiles: &tiles };
+        let w = bld_work(&c, &m, &Keys::default(), &inputs, &|_| (0, (0, 0, 0, 0)));
+        let p = Plan { work: w, ..Default::default() };
+        assert!(keys_are_derived(&p, &x).contains("bldprep"));
+    }
+
+    /// `keys_are_derived` of a chain's work `w` on `m` (no reach, no inputs but `inputs`).
+    fn chain_keys_derived(
+        c: &Coverage,
+        m: &BTreeMap<String, String>,
+        inputs: &BTreeMap<String, String>,
+        tiles: &TerrainTiles,
+        w: &[Work],
+    ) {
+        let x = KeyCtx { cov: c, date: "d", m, inputs, reach: None, tiles };
+        let seen = keys_are_derived(&Plan { work: w.to_vec(), ..Default::default() }, &x);
+        assert_eq!(seen.len(), w.iter().map(|w| &w.step).collect::<BTreeSet<_>>().len(), "{seen:?}");
+    }
+
+    thread_local! {
+        /// The steps `run_all`'s plans had their keys checked for (`keys_are_derived`).
+        static KEYS_SEEN: std::cell::RefCell<BTreeSet<String>> = Default::default();
+    }
+
     fn run_all(c: &Coverage, reach: &Reaches, m: &mut BTreeMap<String, String>, done: &mut Keys) -> Vec<String> {
         let mut ran = Vec::new();
         for _ in 0..60 {
@@ -6148,6 +6326,10 @@ pub(crate) mod tests {
                 },
             );
             waits_are_reads(&p);
+            let (inputs, tiles) = (spaced(&BTreeMap::new()), tiles_for(m));
+            let x = KeyCtx { cov: c, date: "d", m, inputs: &inputs, reach: Some(reach), tiles: &tiles };
+            let seen = keys_are_derived(&p, &x);
+            KEYS_SEEN.with(|s| s.borrow_mut().extend(seen));
             let Some(w) = p.work.into_iter().next() else { return ran };
             ran.extend(w.targets.iter().map(|t| format!("{} {}", w.step, t.0)));
             match w.step.as_str() {
@@ -9604,6 +9786,8 @@ pub(crate) mod tests {
         let w = polar_work(&c, &m2, &done, &tiles);
         assert_eq!(steps(&w), ["polar-slope"]);
         assert_eq!(w[0].targets.len(), 4);
+        chain_keys_derived(&c, &m2, &BTreeMap::new(), &tiles, &w);
+        chain_keys_derived(&c, &m2, &BTreeMap::new(), &tiles, &polar_work(&c, &m2, &Keys::default(), &tiles));
         // A terrain pack waiting to be merged holds its neighbours' shading.
         let mut handed = done.clone();
         handed.handed.insert(crate::polar::block_logical("terrain", roadcore::polar::Pole::South, (7, 7)));
@@ -9611,6 +9795,7 @@ pub(crate) mod tests {
         done.record("polar-slope", &w[0].targets);
         let w = polar_work(&c, &m2, &done, &tiles);
         assert_eq!(steps(&w), ["polar-root"]);
+        chain_keys_derived(&c, &m2, &BTreeMap::new(), &tiles, &w);
         done.record("polar-root", &w[0].targets);
         assert!(polar_work(&c, &m2, &done, &tiles).is_empty());
         assert!(remaining(&done, |d| polar_next(&c, &m2, d, &tiles)).is_empty());
@@ -9710,6 +9895,8 @@ pub(crate) mod tests {
         let w = depth_work(&c, &m, &d2, &tiles);
         assert_eq!(steps(&w), ["depth-lo"]);
         assert_eq!(w[0].targets.len(), dt.lo.len());
+        chain_keys_derived(&c, &m, &BTreeMap::new(), &tiles, &w);
+        chain_keys_derived(&c, &m, &BTreeMap::new(), &tiles, &depth_work(&c, &m, &done, &tiles));
         d2.record("depth-lo", &w[0].targets);
         assert!(depth_work(&c, &m, &d2, &tiles).is_empty());
         assert!(remaining(&d2, |d| depth_next(&c, &m, d, &tiles)).is_empty());
@@ -9867,6 +10054,7 @@ pub(crate) mod tests {
         let w = bld_work(&c, &m, &done, &inputs, &by_spatial);
         assert_eq!(steps(&w), ["bldtiles"]);
         assert_eq!(w[0].targets, bld_targets(&c, &m, &inputs).tiles);
+        chain_keys_derived(&c, &m, &inputs, &tiles_for(&m), &bld_work(&c, &m, &Keys::default(), &inputs, &by_spatial));
         done.record("bldtiles", &w[0].targets);
         for (t, k) in &w[0].targets {
             let u = TileId::parse(t).unwrap();
