@@ -5,11 +5,9 @@
 //!                                   checking, held with the findings), the files that don't parse,
 //!                                   and the folders' tree (docs/inputs.md §6.1.9); away from the
 //!                                   NAS, the last list read
-//!   GET    /api/regions/layer       every region's accepted outline for drawing (its drawn files,
-//!                                   kept on this Mac), a colour from its id, held or not, and the
-//!                                   12-nautical-mile line (`kind: "ts12"`); the catalogue's
-//!                                   regions until this Mac has the accepted copy
-//!   GET    /api/areas/{id}          one outline, simplified (a GeoJSON feature)
+//!   GET    /api/regions/outlines    every region's outline simplified for a zoom (`z`; `bbox`, `ids`
+//!                                   narrow it), a feature per region, made once per zoom and kept;
+//!                                   from the accepted copy kept on this Mac, else the catalogue's
 //!   GET    /api/coverage            the coverage the catalogue was built for: its regions' outlines,
 //!                                   simplified (GeoJSON), and the regions
 //!
@@ -24,7 +22,7 @@
 use crate::S;
 use anyhow::{Context, Result};
 use axum::{
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -556,36 +554,11 @@ pub fn sync_accepted(s: &crate::AppState) {
     let read = |p: &str| -> anyhow::Result<Vec<u8>> {
         Ok(crate::views::RemoteFile::new(root.join(p), pool.clone()).read_all()?)
     };
-    if let Err(e) = pipeline::inputs::served::sync_with(
-        &read,
-        pipeline::inputs::regions::UNIT,
-        &accepted_dir(s),
-        &["drawn", "ts12"],
-    ) {
+    if let Err(e) =
+        pipeline::inputs::served::sync_with(&read, pipeline::inputs::regions::UNIT, &accepted_dir(s), &["drawn"])
+    {
         eprintln!("regions: the accepted copy wasn't brought up to date: {e:#}");
     }
-}
-
-/// A region's colour, from its id's hash (stable: a region keeps its colour whatever is added).
-pub fn colour(id: &str) -> String {
-    let h = store::naming::hash16(id.as_bytes());
-    let v = u64::from_str_radix(&h[..8], 16).unwrap_or(0);
-    // A hue from the hash, at a fixed saturation and lightness, for the dark map.
-    let hue = (v % 360) as f64;
-    let (s, l) = (0.65, 0.6);
-    let c = (1.0 - (2.0 * l - 1.0f64).abs()) * s;
-    let x = c * (1.0 - ((hue / 60.0) % 2.0 - 1.0).abs());
-    let m = l - c / 2.0;
-    let (r, g, b) = match (hue / 60.0) as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let to = |v: f64| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
-    format!("#{:02x}{:02x}{:02x}", to(r), to(g), to(b))
 }
 
 /// Whether region `id` is disabled (`disabled = true`): by the accepted copy kept on this Mac, else
@@ -607,62 +580,339 @@ pub fn is_disabled(s: &crate::AppState, id: &str) -> bool {
     last.iter().any(|l| l.id == id && l.disabled)
 }
 
-/// The region layer (docs/inputs.md §6.1.9): every region's accepted outline, from the drawn files
-/// kept on this Mac, a feature per stored shape with the region's id, name, colour and whether it's
-/// held now; the catalogue's regions (as built) until this Mac has the accepted copy.
-pub async fn layer(State(s): State<S>) -> Response {
+/// The deepest zoom the outlines are simplified for: past it, z12's (about 10 m) are drawn.
+pub const OUTLINE_MAX_Z: u8 = 12;
+
+/// The simplification at zoom `z` (metres): about half a pixel at the equator (MapLibre's 512 px
+/// tiles: 40 075 km over 512 × 2^z px).
+fn tolerance_m(z: u8) -> f64 {
+    0.5 * 40_075_016.7 / (512.0 * f64::from(1u32 << z.min(OUTLINE_MAX_Z)))
+}
+
+/// One region's outline at one zoom, ready to send: its id and box, its polygons and properties
+/// (to clip to a box), and its GeoJSON feature as text.
+struct Simplified {
+    id: String,
+    bbox: [f64; 4],
+    polys: Vec<Vec<Vec<[f64; 2]>>>,
+    props: Value,
+    json: String,
+}
+
+/// The regions' outlines simplified per zoom, made once per version of their source (the accepted
+/// copy's index on this Mac, else the catalogue's coverage) and kept: `/api/regions/outlines`.
+#[derive(Default)]
+pub struct Outlines {
+    cur: Mutex<(String, std::collections::HashMap<u8, Arc<Vec<Simplified>>>)>,
+}
+
+/// A region's outline as read from its source, before simplifying: every shape's polygons.
+struct Source {
+    id: String,
+    name: String,
+    disabled: bool,
+    /// Its first osm: entry's relation (its area gives the panel's flag).
+    first_osm: Option<u64>,
+    polygons: Vec<Vec<Vec<[f64; 2]>>>,
+}
+
+/// A region's first osm: entry's relation.
+fn first_osm(outline: &[String]) -> Option<u64> {
+    outline.iter().find_map(|e| e.strip_prefix("osm:").and_then(|i| i.parse().ok()))
+}
+
+type MakeSources<'a> = Box<dyn FnOnce() -> Vec<Source> + 'a>;
+
+/// What the outlines are made from (the accepted copy kept on this Mac, else the catalogue's
+/// coverage), and a key that changes with it.
+fn sources(s: &crate::AppState) -> (String, MakeSources<'_>) {
+    let dir = accepted_dir(s);
+    let index = dir.join("@index.json");
+    if let Some(m) = std::fs::metadata(&index).ok().filter(|_| pipeline::inputs::served::files(&dir).is_some()) {
+        let key = format!("accepted {:?} {}", m.modified().ok(), m.len());
+        let make = move || {
+            let kept: Option<pipeline::inputs::served::Kept> =
+                std::fs::read(&index).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            let mut out = Vec::new();
+            for e in kept.map(|k| k.index.files.into_values()).into_iter().flatten() {
+                let Some(drawn) = e.facts.get("drawn").and_then(Value::as_str) else { continue };
+                let disabled = e.facts.get("disabled").and_then(Value::as_bool).unwrap_or(false);
+                let Some(d) = std::fs::read(dir.join(drawn))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<pipeline::inputs::regions::stored::Drawn>(&b).ok())
+                else {
+                    continue;
+                };
+                out.push(Source {
+                    first_osm: first_osm(&d.outline),
+                    polygons: d.shapes.into_values().flatten().collect(),
+                    id: d.id,
+                    name: d.name,
+                    disabled,
+                });
+            }
+            out
+        };
+        return (key, Box::new(make));
+    }
+    let cat = s.data.catalogue();
+    let key = format!("catalogue {}", cat.n);
+    let make = move || {
+        recorded(&cat)
+            .into_iter()
+            .map(|r| Source {
+                first_osm: first_osm(&r.outline),
+                polygons: r.shapes.into_values().flatten().collect(),
+                id: r.id,
+                name: r.name,
+                disabled: false,
+            })
+            .collect()
+    };
+    (key, Box::new(make))
+}
+
+/// A ring's area in square degrees (shoelace; its sign the ring's turn).
+fn ring_area(r: &[[f64; 2]]) -> f64 {
+    let mut a = 0.0;
+    for i in 0..r.len() {
+        let (p, q) = (r[i], r[(i + 1) % r.len()]);
+        a += p[0] * q[1] - q[0] * p[1];
+    }
+    a / 2.0
+}
+
+/// A point inside a polygon (its outer ring, then its holes) to put its name on: the middle of the
+/// widest span inside it along the parallel through its outer ring's centroid, or through the
+/// middle of its box, whichever is wider.
+fn label_point(poly: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
+    let outer = poly.first()?;
+    let (mut s, mut n) = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in outer {
+        s = s.min(p[1]);
+        n = n.max(p[1]);
+    }
+    let a = ring_area(outer);
+    let cy = if a.abs() > 0.0 {
+        let mut c = 0.0;
+        for i in 0..outer.len() {
+            let (p, q) = (outer[i], outer[(i + 1) % outer.len()]);
+            c += (p[1] + q[1]) * (p[0] * q[1] - q[0] * p[1]);
+        }
+        c / (6.0 * a)
+    } else {
+        (s + n) / 2.0
+    };
+    let widest = |y: f64| -> Option<([f64; 2], f64)> {
+        let mut xs: Vec<f64> = Vec::new();
+        for r in poly {
+            for i in 0..r.len() {
+                let (p, q) = (r[i], r[(i + 1) % r.len()]);
+                if (p[1] > y) != (q[1] > y) {
+                    xs.push(p[0] + (y - p[1]) / (q[1] - p[1]) * (q[0] - p[0]));
+                }
+            }
+        }
+        xs.sort_by(f64::total_cmp);
+        xs.chunks_exact(2).map(|c| ([(c[0] + c[1]) / 2.0, y], c[1] - c[0])).max_by(|a, b| a.1.total_cmp(&b.1))
+    };
+    [cy, (s + n) / 2.0].into_iter().filter_map(widest).max_by(|a, b| a.1.total_cmp(&b.1)).map(|w| w.0)
+}
+
+/// A ring simplified to `tol_m` metres (pipeline::outlines::simplify, on its 1e-7° grid), its
+/// degrees rounded to a tenth of that (fewer digits to send).
+fn simplify_ring(r: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
+    let grid: Vec<[i32; 2]> = r.iter().map(|p| [(p[0] * 1e7).round() as i32, (p[1] * 1e7).round() as i32]).collect();
+    let k = 10f64.powi(((111_320.0 / tol_m).log10() + 1.0).ceil().clamp(1.0, 7.0) as i32);
+    let round = |v: i32| (f64::from(v) * 1e-7 * k).round() / k;
+    pipeline::outlines::simplify(&grid, tol_m).into_iter().map(|p| [round(p[0]), round(p[1])]).collect()
+}
+
+/// A ring clipped to a box (Sutherland–Hodgman): what of it lies inside, closed, its cuts along the
+/// box's edges (none when nothing is left).
+fn clip_ring(r: &[[f64; 2]], b: [f64; 4]) -> Vec<[f64; 2]> {
+    let mut pts: Vec<[f64; 2]> = r.to_vec();
+    if pts.first() == pts.last() {
+        pts.pop();
+    }
+    // Each edge of the box: inside, and where a segment crosses it.
+    for edge in 0..4 {
+        if pts.is_empty() {
+            break;
+        }
+        let ins = |p: &[f64; 2]| match edge {
+            0 => p[0] >= b[0],
+            1 => p[0] <= b[2],
+            2 => p[1] >= b[1],
+            _ => p[1] <= b[3],
+        };
+        let cut = |p: [f64; 2], q: [f64; 2]| -> [f64; 2] {
+            let (i, v) = match edge {
+                0 => (0, b[0]),
+                1 => (0, b[2]),
+                2 => (1, b[1]),
+                _ => (1, b[3]),
+            };
+            let t = (v - p[i]) / (q[i] - p[i]);
+            let mut o = [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])];
+            o[i] = v;
+            o
+        };
+        let mut out = Vec::with_capacity(pts.len());
+        for k in 0..pts.len() {
+            let (p, q) = (pts[(k + pts.len() - 1) % pts.len()], pts[k]);
+            match (ins(&p), ins(&q)) {
+                (true, true) => out.push(q),
+                (true, false) => out.push(cut(p, q)),
+                (false, true) => {
+                    out.push(cut(p, q));
+                    out.push(q);
+                }
+                (false, false) => {}
+            }
+        }
+        pts = out;
+    }
+    if pts.len() < 3 {
+        return Vec::new();
+    }
+    pts.push(pts[0]);
+    pts
+}
+
+/// One region's outline at a tolerance: rings smaller than about the tolerance across left out
+/// (but its largest polygon), its name on its largest polygon.
+fn simplified(src: &Source, tol_m: f64, ix: Option<&OutlineIndex>) -> Simplified {
+    // (Square degrees of a square the tolerance across, at the equator: smaller elsewhere.)
+    let tiny = (tol_m / 111_320.0).powi(2);
+    let outer_area = |p: &Vec<Vec<[f64; 2]>>| p.first().map_or(0.0, |r| ring_area(r).abs());
+    let largest =
+        src.polygons.iter().enumerate().max_by(|a, b| outer_area(a.1).total_cmp(&outer_area(b.1))).map(|l| l.0);
+    let label = largest.and_then(|k| label_point(&src.polygons[k]));
+    let mut bbox = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut polys: Vec<Vec<Vec<[f64; 2]>>> = Vec::new();
+    for (k, p) in src.polygons.iter().enumerate() {
+        for q in p.first().into_iter().flatten() {
+            bbox = [bbox[0].min(q[0]), bbox[1].min(q[1]), bbox[2].max(q[0]), bbox[3].max(q[1])];
+        }
+        if Some(k) != largest && outer_area(p) < tiny {
+            continue;
+        }
+        let rings = p
+            .iter()
+            .enumerate()
+            .filter(|(i, r)| *i == 0 || ring_area(r).abs() >= tiny)
+            .map(|(_, r)| simplify_ring(r, tol_m))
+            .collect();
+        polys.push(rings);
+    }
+    let area = src
+        .first_osm
+        .and_then(|i| ix.and_then(|ix| ix.by_id(i).map(|o| ix.summary(o))))
+        .map(|a| json!({ "iso": a["iso"], "country": a["country"], "in": a["in"] }));
+    let props = json!({ "region": src.id, "name": src.name, "disabled": src.disabled, "bbox": bbox, "label": label, "area": area });
+    let json =
+        json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": polys }, "properties": props })
+            .to_string();
+    Simplified { id: src.id.clone(), bbox, polys, props, json }
+}
+
+impl Outlines {
+    /// Every region's outline at zoom `z`, made on the first ask for that zoom of this version.
+    fn at(&self, s: &crate::AppState, z: u8) -> Arc<Vec<Simplified>> {
+        let (key, make) = sources(s);
+        {
+            let g = self.cur.lock().unwrap();
+            if g.0 == key {
+                if let Some(v) = g.1.get(&z) {
+                    return v.clone();
+                }
+            }
+        }
+        let srcs = make();
+        let ix = s.areas.get(s).ok().flatten();
+        let tol = tolerance_m(z);
+        let v = Arc::new(srcs.iter().map(|r| simplified(r, tol, ix.as_deref())).collect::<Vec<_>>());
+        let mut g = self.cur.lock().unwrap();
+        if g.0 != key {
+            *g = (key, Default::default());
+        }
+        g.1.insert(z, v.clone());
+        v
+    }
+}
+
+/// What `/api/regions/outlines` is asked: `z` (the map's zoom; 0–12, deeper as 12), optionally
+/// `bbox=w,s,e,n` (only the regions whose box meets it) and `ids=a,b` (only those regions).
+#[derive(Deserialize)]
+pub struct OutlinesQuery {
+    z: Option<f64>,
+    bbox: Option<String>,
+    ids: Option<String>,
+}
+
+/// The features of `all` that `bbox` and `ids` keep, as a GeoJSON FeatureCollection's text; with a
+/// box, each outline reaching out of it clipped to it (`clip`: the cuts lie along its edges, which
+/// the map leaves undrawn).
+fn collection(
+    all: &[Simplified],
+    z: u8,
+    bbox: Option<[f64; 4]>,
+    ids: Option<&std::collections::HashSet<&str>>,
+) -> String {
+    let mut body = String::from("{\"type\":\"FeatureCollection\",\"features\":[");
+    let mut first = true;
+    for r in all {
+        if ids.is_some_and(|i| !i.contains(r.id.as_str())) {
+            continue;
+        }
+        if bbox.is_some_and(|b| r.bbox[0] > b[2] || r.bbox[2] < b[0] || r.bbox[1] > b[3] || r.bbox[3] < b[1]) {
+            continue;
+        }
+        if !first {
+            body.push(',');
+        }
+        first = false;
+        match bbox {
+            Some(b) if r.bbox[0] < b[0] || r.bbox[1] < b[1] || r.bbox[2] > b[2] || r.bbox[3] > b[3] => {
+                let polys: Vec<Vec<Vec<[f64; 2]>>> = r
+                    .polys
+                    .iter()
+                    .filter_map(|p| {
+                        let rings: Vec<Vec<[f64; 2]>> =
+                            p.iter().map(|ring| clip_ring(ring, b)).filter(|c| !c.is_empty()).collect();
+                        // (A hole left without its outer ring isn't one.)
+                        (!rings.is_empty() && !clip_ring(&p[0], b).is_empty()).then_some(rings)
+                    })
+                    .collect();
+                let f = json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": polys }, "properties": r.props });
+                body.push_str(&f.to_string());
+            }
+            _ => body.push_str(&r.json),
+        }
+    }
+    let clip = bbox.map_or("null".to_string(), |b| json!(b).to_string());
+    body.push_str(&format!("],\"z\":{z},\"clip\":{clip}}}"));
+    body
+}
+
+/// The regions' outlines for drawing at a zoom (docs/formats.md): a feature per region, its every
+/// shape in one MultiPolygon simplified to about half a pixel there (rings smaller than that left
+/// out), with properties region, name, disabled, bbox, label (a point inside it for its name) and
+/// area (its first osm: entry's iso, country and in, for its flag). From the accepted copy kept on
+/// this Mac, else the catalogue's coverage; made once per zoom and version, and kept.
+pub async fn outlines(State(s): State<S>, axum::extract::Query(q): axum::extract::Query<OutlinesQuery>) -> Response {
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || -> Result<Response> {
         sync_accepted(&s2);
-        let held: std::collections::BTreeSet<String> = s2.data.pool().filter(|p| p.is_online()).and_then(|p| records(&s2, &p)).and_then(|(_, h)| h).map(|h| h.held.into_iter().collect()).unwrap_or_default();
-        let dir = accepted_dir(&s2);
-        let kept = pipeline::inputs::served::files(&dir);
-        let mut feats = Vec::new();
-        let source = if kept.is_some() {
-            let index: Option<pipeline::inputs::served::Kept> = std::fs::read(dir.join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-            for (path, e) in index.map(|k| k.index.files).unwrap_or_default() {
-                // (The 12-nautical-mile line, with the pins: one feature of lines.)
-                if let Some(lines) = e.facts.get("ts12").and_then(Value::as_str).and_then(|n| std::fs::read(dir.join(n)).ok()).and_then(|b| serde_json::from_slice::<Value>(&b).ok()) {
-                    feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiLineString", "coordinates": lines["lines"] }, "properties": { "kind": "ts12" } }));
-                }
-                let Some(drawn) = e.facts.get("drawn").and_then(Value::as_str) else { continue };
-                let disabled = e.facts.get("disabled").and_then(Value::as_bool).unwrap_or(false);
-                let Some(d) = std::fs::read(dir.join(drawn)).ok().and_then(|b| serde_json::from_slice::<pipeline::inputs::regions::stored::Drawn>(&b).ok()) else { continue };
-                for (from, coords) in &d.shapes {
-                    feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": coords }, "properties": { "region": d.id, "name": d.name, "from": from, "colour": colour(&d.id), "held": held.contains(&path), "disabled": disabled } }));
-                }
-            }
-            "accepted"
-        } else {
-            for r in recorded(&s2.data.catalogue()) {
-                for (from, coords) in &r.shapes {
-                    feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": coords }, "properties": { "region": r.id, "name": r.name, "from": from, "colour": colour(&r.id), "held": false } }));
-                }
-            }
-            store::catalogue::NAME
-        };
-        Ok(Json(json!({ "type": "FeatureCollection", "features": feats, "source": source })).into_response())
-    })
-    .await
-    .map(|r| r.unwrap_or_else(|e| err(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}"))))
-    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-}
-
-fn feature(ix: &OutlineIndex, o: &OutlineRec, extra: Value) -> Result<Value> {
-    let coords = ix.polygons(o)?;
-    let mut props = ix.summary(o);
-    if let (Some(p), Some(x)) = (props.as_object_mut(), extra.as_object()) {
-        p.extend(x.clone());
-    }
-    Ok(json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": coords }, "properties": props }))
-}
-
-pub async fn one(State(s): State<S>, Path(id): Path<u64>) -> Response {
-    let s2 = s.clone();
-    tokio::task::spawn_blocking(move || -> Result<Response> {
-        let Some(ix) = s2.areas.get(&s2)? else { return Ok(err(StatusCode::NOT_FOUND, "no outlines yet")) };
-        let Some(o) = ix.by_id(id) else { return Ok(err(StatusCode::NOT_FOUND, format!("no outline {id}"))) };
-        Ok(Json(feature(&ix, o, json!({}))?).into_response())
+        let z = q.z.unwrap_or(0.0).clamp(0.0, f64::from(OUTLINE_MAX_Z)) as u8;
+        let bbox: Option<[f64; 4]> = q.bbox.as_deref().and_then(|b| {
+            let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            <[f64; 4]>::try_from(v).ok()
+        });
+        let ids: Option<std::collections::HashSet<&str>> = q.ids.as_deref().map(|i| i.split(',').collect());
+        let body = collection(&s2.outlines.at(&s2, z), z, bbox, ids.as_ref());
+        Ok(([(axum::http::header::CONTENT_TYPE, "application/json")], body).into_response())
     })
     .await
     .map(|r| r.unwrap_or_else(|e| err(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}"))))
@@ -1006,5 +1256,108 @@ mod tests {
         assert_eq!(at(2), s("", ""), "nor a territory");
         assert_eq!(at(3), s("GP", "Guadeloupe"));
         assert_eq!(at(4), s("FR", "France"));
+    }
+
+    /// A circle of `n` points around (`x`, `y`), `r` degrees across, as a closed ring.
+    fn circle(x: f64, y: f64, r: f64, n: usize) -> Vec<[f64; 2]> {
+        let mut v: Vec<[f64; 2]> = (0..n)
+            .map(|i| {
+                let a = i as f64 / n as f64 * std::f64::consts::TAU;
+                [x + r * a.cos(), y + r * a.sin()]
+            })
+            .collect();
+        v.push(v[0]);
+        v
+    }
+
+    #[test]
+    fn outlines_are_simplified_for_the_zoom_with_a_name_inside() {
+        // A big round region with a hole, and a speck of an island far off.
+        let src = Source {
+            id: "q".into(),
+            name: "Q".into(),
+            disabled: true,
+            first_osm: None,
+            polygons: vec![
+                vec![circle(-72.0, 52.0, 5.0, 20_000), circle(-72.0, 52.0, 1.0, 4_000)],
+                vec![circle(-60.0, 45.0, 0.001, 50)],
+            ],
+        };
+        let points = |v: &Value| -> usize {
+            v["geometry"]["coordinates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|p| p.as_array().unwrap())
+                .map(|r| r.as_array().unwrap().len())
+                .sum()
+        };
+        let at = |z: u8| {
+            let s = simplified(&src, tolerance_m(z), None);
+            (serde_json::from_str::<Value>(&s.json).unwrap(), s)
+        };
+        let (z0, s0) = at(0);
+        let (z12, _) = at(OUTLINE_MAX_Z);
+        // Zoomed out: few points, the speck left out (but the hole, about a pixel at z0, kept or not).
+        assert!(points(&z0) < 200, "{} points at z0", points(&z0));
+        assert_eq!(z0["geometry"]["coordinates"].as_array().unwrap().len(), 1, "the speck is under a pixel at z0");
+        // Zoomed in: the shape's detail, and the speck.
+        assert!(points(&z12) > 10 * points(&z0), "{} points at z12", points(&z12));
+        assert_eq!(z12["geometry"]["coordinates"].as_array().unwrap().len(), 2);
+        // The box is the whole region's, the speck too, whatever was left out.
+        assert!((s0.bbox[0] - -77.0).abs() < 1e-6 && (s0.bbox[2] - -59.999).abs() < 1e-3, "{:?}", s0.bbox);
+        // The name inside the ring, out of the hole.
+        let l = z0["properties"]["label"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
+        let d = ((l[0] + 72.0).powi(2) + (l[1] - 52.0).powi(2)).sqrt();
+        assert!(d > 1.0 && d < 5.0, "label {l:?}");
+        assert_eq!(z0["properties"]["disabled"], true);
+        assert_eq!(z0["properties"]["region"], "q");
+    }
+
+    #[test]
+    fn outlines_are_narrowed_by_box_and_ids() {
+        let one = |id: &str, bbox: [f64; 4]| Simplified {
+            id: id.into(),
+            bbox,
+            polys: vec![],
+            props: json!({}),
+            json: format!("{{\"id\":\"{id}\"}}"),
+        };
+        let all = [one("a", [0.0, 0.0, 1.0, 1.0]), one("b", [10.0, 10.0, 11.0, 11.0])];
+        let ids = |b: &str| {
+            serde_json::from_str::<Value>(b).unwrap()["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["id"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&collection(&all, 3, None, None)), ["a", "b"]);
+        assert_eq!(ids(&collection(&all, 3, Some([-0.5, -0.5, 2.0, 2.0]), None)), ["a"]);
+        let only_b: std::collections::HashSet<&str> = ["b"].into();
+        assert_eq!(ids(&collection(&all, 3, None, Some(&only_b))), ["b"]);
+        assert_eq!(serde_json::from_str::<Value>(&collection(&all, 7, None, None)).unwrap()["z"], 7);
+    }
+
+    #[test]
+    fn an_outline_reaching_out_of_the_box_is_clipped_to_it() {
+        let sq = vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], [0.0, 0.0]];
+        let c = clip_ring(&sq, [1.0, -1.0, 2.0, 5.0]);
+        assert_eq!(c.first(), c.last());
+        assert!(c.iter().all(|p| p[0] >= 1.0 && p[0] <= 2.0), "{c:?}");
+        assert!((ring_area(&c).abs() - 4.0).abs() < 1e-9, "{c:?}");
+        assert!(clip_ring(&sq, [5.0, 5.0, 6.0, 6.0]).is_empty());
+        let r = Simplified {
+            id: "a".into(),
+            bbox: [0.0, 0.0, 4.0, 4.0],
+            polys: vec![vec![sq.clone()]],
+            props: json!({"region": "a"}),
+            json: String::new(),
+        };
+        let v: Value = serde_json::from_str(&collection(&[r], 9, Some([1.0, -1.0, 2.0, 5.0]), None)).unwrap();
+        assert_eq!(v["clip"], json!([1.0, -1.0, 2.0, 5.0]));
+        let ring = &v["features"][0]["geometry"]["coordinates"][0][0];
+        assert!(ring.as_array().unwrap().iter().all(|p| p[0].as_f64().unwrap() >= 1.0), "{ring}");
+        assert_eq!(v["features"][0]["properties"]["region"], "a");
     }
 }

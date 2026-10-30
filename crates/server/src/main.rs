@@ -68,6 +68,8 @@ pub struct AppState {
     home: PathBuf,
     /// The outlines of the latest OSM pass (the Regions panel).
     pub areas: regions::Areas,
+    /// The regions' outlines simplified per zoom (/api/regions/outlines).
+    pub outlines: regions::Outlines,
     /// The user's descriptions, laid over popup details.
     pub descriptions: Arc<descriptions::Descriptions>,
     /// The map's places, for its search (made when first searched, again when the labels or the
@@ -330,6 +332,7 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
         agent: Mutex::new(None),
         home: home.to_owned(),
         areas: regions::Areas::default(),
+        outlines: regions::Outlines::default(),
         descriptions: descriptions::Descriptions::new(home),
         places: Default::default(),
         downloads: downloads::Downloads::load(home),
@@ -472,6 +475,7 @@ async fn main() -> Result<()> {
         agent: Mutex::new(None),
         home: home.clone(),
         areas: regions::Areas::default(),
+        outlines: regions::Outlines::default(),
         descriptions: descs,
         places: Default::default(),
         downloads: downloads::Downloads::load(&home),
@@ -549,8 +553,7 @@ async fn main() -> Result<()> {
         .route("/api/names", get(names_h))
         .route("/api/places", get(places::search))
         .route("/api/regions", get(regions::list))
-        .route("/api/regions/layer", get(regions::layer))
-        .route("/api/areas/{id}", get(regions::one))
+        .route("/api/regions/outlines", get(regions::outlines))
         .route("/api/coverage", get(regions::coverage))
         .route("/api/downloads", get(downloads::get_status))
         .route("/api/downloads/world", axum::routing::put(downloads::put_world))
