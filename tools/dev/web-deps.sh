@@ -14,8 +14,11 @@ case $#:${1:-} in
 esac
 web=${0:A:h:h:h}/web
 cmp -s $web/pnpm-lock.yaml $web/node_modules/.pnpm/lock.yaml && exit 0
-command -v pnpm >/dev/null || eval "$(cd $web && mise env -s zsh 2>/dev/null)" 2>/dev/null
 cd $web || exit 1
+# (mise.toml's pnpm and Node, also from a shell without mise on its PATH, such as ssh's.)
+path+=(/opt/homebrew/bin)
+eval "$(mise env -s zsh 2>/dev/null)" 2>/dev/null
+command -v pnpm >/dev/null || { print -u2 "web-deps: no pnpm (mise.toml pins it: mise install)"; exit 1; }
 if ! out=$(pnpm install --frozen-lockfile $mode --reporter=append-only 2>&1); then
   print -r -- $out
   if [[ $mode == --offline ]]; then
