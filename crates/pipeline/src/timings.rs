@@ -151,6 +151,12 @@ pub struct RunRec {
     /// phases either side ("the start", "the end" at the run's ends), largest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gaps: Vec<Gap>,
+    /// The safe points it reached (crate::control::safe_gaps; task #885), and the longest it went
+    /// without one, in seconds (from its start, and to its end): how soon a pause could stop it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub safe_points: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_gap_s: Option<f64>,
 }
 
 /// Untimed time between two of a run's top-level phases on its main thread, summed over the times
@@ -287,6 +293,7 @@ fn now_s() -> u64 {
 pub fn start(kind: &str) {
     let mut g = run().lock().unwrap();
     if g.is_none() {
+        crate::control::gaps_begin();
         *g = Some(Run {
             kind: kind.to_string(),
             start_wall: now_s(),
@@ -705,7 +712,12 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
         overhead_s: r.overhead_ns as f64 / 1e9,
         phases,
         gaps: Vec::new(),
+        safe_points: 0,
+        safe_gap_s: None,
     };
+    let sg = crate::control::safe_gaps();
+    rec.safe_points = sg.points;
+    rec.safe_gap_s = Some((sg.longest * 10.0).round() / 10.0);
     rec.untimed_s = (wall_s - rec.timed_s()).max(0.0);
     // (Its gaps, the one since the main thread's last phase too where none is open on it now.)
     let mut gaps = r.gaps.clone();
@@ -745,6 +757,9 @@ pub fn finish(ok: bool) {
     // (A child's table: its parent's log has it, under the phase that ran it.)
     if child.is_none() {
         eprint!("{}", table(&rec));
+        if let Some(g) = rec.safe_gap_s {
+            eprintln!("timings: {} safe points, the longest without one {}", rec.safe_points, secs(g));
+        }
     }
     let line = serde_json::to_vec(&rec).unwrap_or_default();
     for p in [std::env::var_os(TIMINGS_ENV), child].into_iter().flatten() {

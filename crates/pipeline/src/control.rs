@@ -10,8 +10,10 @@
 //!
 //! A pause stops the work at its next safe point (`Mode::Drain`): the running job finishes the
 //! target it's on (a z3 tile, a z6 tile, a map tile), saves it, notes it done (`done`) and ends
-//! (`PAUSED_EXIT`); nothing new starts. The terrain's steps stop sooner, between their sampling's
-//! chunks, the target they're on unsaved but for its resume log (`Paused`). A job that hasn't
+//! (`PAUSED_EXIT`); nothing new starts. Steps keeping a resume log stop sooner, at each piece saved
+//! (`piece_saved`: a block kept in it; the terrain's also between their sampling's chunks), the
+//! target they're on unsaved but for its resume log (`Paused`). Every job's record says how often
+//! it reached a safe point (`safe_gaps`). A job that hasn't
 //! reached a safe point within the agent's grace is frozen where it is instead, and goes on from
 //! there. Or at once (`Mode::Freeze`): the job frozen where it is. Either way no target finished is
 //! lost, and nothing is counted as a failure.
@@ -378,9 +380,65 @@ pub fn draining_lately() -> bool {
 /// A safe point of `step`: with the build pausing, the job ends here, as paused (each target before
 /// it saved and noted done as it finished).
 pub fn safe_point(step: &str) {
+    reached();
     if draining() {
         stop_paused(step);
     }
+}
+
+/// The shared safe point inside a target (task #885): a piece of it (a block, a base tile, a
+/// fetched tile) has just been saved whole where its resumed run takes it up (its resume log,
+/// crate::resume_log; a fill's store, crate::pyramids), nothing of the next begun. Counted for the
+/// job's measure (`reached`); Err(`Paused`) when the build is pausing (`draining_lately`), which
+/// the step stops on at its own safe point (`stop_if_paused`), its uploads in flight landed.
+pub fn piece_saved() -> anyhow::Result<()> {
+    reached();
+    pause_point(&draining_lately)
+}
+
+/// How often the job reached a safe point: how many, and the longest time it went without one
+/// (from its start, and to now), for its timings record (crate::timings::RunRec's `safe_points`,
+/// `safe_gap_s`): what each step's time between safe points is, measured on every run.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SafeGaps {
+    pub points: u64,
+    /// Seconds.
+    pub longest: f64,
+}
+
+struct Gaps {
+    last: std::time::Instant,
+    points: u64,
+    longest: std::time::Duration,
+}
+
+fn gaps() -> &'static std::sync::Mutex<Gaps> {
+    static G: std::sync::OnceLock<std::sync::Mutex<Gaps>> = std::sync::OnceLock::new();
+    G.get_or_init(|| {
+        let t = std::time::Instant::now();
+        std::sync::Mutex::new(Gaps { last: t, points: 0, longest: Default::default() })
+    })
+}
+
+/// The job's start, for its gaps (`reached`): the first safe point's gap is from here.
+pub fn gaps_begin() {
+    let _ = gaps();
+}
+
+/// A safe point reached now: its gap since the last (or the job's start) counted.
+pub fn reached() {
+    let mut g = gaps().lock().unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    g.longest = g.longest.max(now - g.last);
+    g.last = now;
+    g.points += 1;
+}
+
+/// The job's safe points so far, the gap from the last to now counted too (a job ending, or
+/// frozen, went that long without one).
+pub fn safe_gaps() -> SafeGaps {
+    let g = gaps().lock().unwrap_or_else(|e| e.into_inner());
+    SafeGaps { points: g.points, longest: g.longest.max(g.last.elapsed()).as_secs_f64() }
 }
 
 /// What a long piece of work between a step's safe points returns when the build is pausing
