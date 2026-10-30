@@ -67,6 +67,25 @@ pub fn tiles_of(keys: &Keys) -> BTreeMap<String, Vec<String>> {
     out
 }
 
+/// Each step's tile targets whose record in `keys` is a drop's (its "none" key, build::is_none_key:
+/// the tile left coverage, its packs dropped), left out of `tiles_of`: the page leaves out a job end
+/// for one of them (the drop run's own), task #866 review: an exact signal, not a time guess.
+pub fn dropped_of(keys: &Keys) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let known = Keys { other: BTreeMap::new(), ..keys.clone() };
+    let Ok(Value::Object(m)) = serde_json::to_value(&known) else { return out };
+    for (name, v) in m {
+        let Value::Object(targets) = v else { continue };
+        let step = name.replace('_', "-");
+        for (t, k) in &targets {
+            if k.as_str().is_some_and(|k| super::build::is_none_key(&step, t, k)) {
+                out.entry(step.clone()).or_default().push(t.clone());
+            }
+        }
+    }
+    out
+}
+
 /// Each step's tiles in `steps` (`tiles_of`) that made nothing to publish: indexes into its list of
 /// the targets whose published files manifest `m` doesn't name (crate::agent::steps::output_named);
 /// a step whose files aren't told by name, or with none such, left out.
@@ -93,6 +112,7 @@ struct Read {
     read: Option<Instant>,
     steps: Arc<BTreeMap<String, Vec<String>>>,
     empty: Arc<BTreeMap<String, Vec<usize>>>,
+    dropped: Arc<BTreeMap<String, Vec<String>>>,
     error: Option<String>,
 }
 
@@ -148,7 +168,7 @@ impl BuiltView {
 
     /// A page's ask: the reader started when it isn't running and the keys weren't read in the last
     /// `EVERY` (and the catalogues' reader, when due); the last read: `{at, steps: {step: [z/x/y]},
-    /// empty: {step: [i]}, error}`, with `published: {step: [i]}` and `catalogue` once the
+    /// empty: {step: [i]}, dropped: {step: [z/x/y]}, error}`, with `published: {step: [i]}` and `catalogue` once the
     /// catalogues are read.
     pub fn ask(self: &Arc<Self>) -> Value {
         let due = self.read.lock().unwrap().read.is_none_or(|t| t.elapsed() >= EVERY);
@@ -166,11 +186,12 @@ impl BuiltView {
             cv.wake();
             cv.names()
         });
-        let (at, steps, empty, error) = {
+        let (at, steps, empty, dropped, error) = {
             let r = self.read.lock().unwrap();
-            (r.at, r.steps.clone(), r.empty.clone(), r.error.clone())
+            (r.at, r.steps.clone(), r.empty.clone(), r.dropped.clone(), r.error.clone())
         };
-        let mut a = serde_json::json!({ "at": at, "steps": *steps, "empty": *empty, "error": error });
+        let mut a =
+            serde_json::json!({ "at": at, "steps": *steps, "empty": *empty, "dropped": *dropped, "error": error });
         if let Some((n, names)) = names {
             let has = |s: &str| names.contains(&super::cataloguesview::hash(s));
             a["published"] = serde_json::json!(published_of(&steps, has));
@@ -184,15 +205,16 @@ impl BuiltView {
         let got = crate::out::brief_now(&self.root).map(|b| {
             let steps = tiles_of(&b.keys);
             let empty = empty_of(&steps, &b.manifest);
-            (steps, empty)
+            (steps, empty, dropped_of(&b.keys))
         });
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let mut r = self.read.lock().unwrap();
         r.read = Some(Instant::now());
         match got {
-            Ok((s, e)) => {
+            Ok((s, e, d)) => {
                 r.steps = Arc::new(s);
                 r.empty = Arc::new(e);
+                r.dropped = Arc::new(d);
                 r.at = now;
                 r.error = None;
             }
@@ -239,6 +261,12 @@ mod tests {
         assert!(a["error"].is_null() && a["at"].as_u64().unwrap() > 0);
         assert_eq!(a["empty"], serde_json::json!({ "terrain-deep": [0] }), "no pack named: nothing to publish");
         assert!(a.get("published").is_none(), "no catalogues told: not said");
+        let mut k = Keys::default();
+        k.record("terrain-deep", &[("10/1/2".into(), "k1".into())]);
+        let none = crate::agent::build::none_deep_key("terrain-deep", "10/3/4");
+        k.record("terrain-deep", &[("10/3/4".into(), none)]);
+        assert_eq!(dropped_of(&k), BTreeMap::from([("terrain-deep".to_string(), vec!["10/3/4".to_string()])]));
+        assert_eq!(tiles_of(&k)["terrain-deep"], ["10/1/2"], "a drop's record: no tile");
     }
 
     #[test]

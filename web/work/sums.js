@@ -260,12 +260,12 @@ export function runningTiles(runs, eachS, now) {
 // tile with no fine data there) has `none`, kept when an end held is taken for it.
 // Which are published (#866): `published` (`/work/built`'s: {step: [index]}, the targets the latest
 // catalogue still names an output of, for every step whose files are told by name) gives a told
-// step's recorded tiles `pub` (true or false, kept when an end is taken). A told step's end for a
-// tile the keys don't record, ended `DROPPED_S` or more before they were read (`readAt`), is a drop's
-// (its record a none key, left out of `built`): not a tile, left out (Alaska's deep drops, 29 Oct,
-// had been drawn as published from their job ends).
-export const DROPPED_S = 600;
-export function finishedTiles(ends, from, built = {}, heldFrom = null, empty = {}, { published = null, readAt = 0 } = {}) {
+// step's recorded tiles `pub` (true or false, kept when an end is taken). An end for a tile whose
+// record is a drop's (`dropped`, /work/built's {step: [z/x/y]}: its none key, left out of `built`),
+// ended by when the keys were read (`readAt`), is the drop run's: not a tile, left out (Alaska's deep
+// drops, 29 Oct, had been drawn as published from their job ends).
+export function finishedTiles(ends, from, built = {}, heldFrom = null, empty = {}, { published = null, dropped = null, readAt = 0 } = {}) {
+  const gone = new Set(Object.entries(dropped || {}).flatMap(([s, ts]) => ts.map((t) => `${s} ${t}`)));
   const out = new Map();
   for (const [step, tiles] of Object.entries(built || {})) {
     const none = new Set(empty?.[step] || []);
@@ -281,7 +281,7 @@ export function finishedTiles(ends, from, built = {}, heldFrom = null, empty = {
     if ((e.kind !== "end" && e.kind !== "done") || e.ok === false) continue;
     for (const t of areaTargets(e.step, e.targets)) {
       const k = `${e.step} ${t}`, had = out.get(k);
-      if (!had && published?.[e.step] && e.t <= readAt - DROPPED_S) continue;
+      if (!had && e.t <= readAt && gone.has(k)) continue;
       if (tileOf(t) && (e.t >= from || had) && !(had?.t > e.t)) {
         const d = had?.none ? { t: e.t, step: e.step, worker: e.worker, none: true } : { t: e.t, step: e.step, worker: e.worker };
         if (had && "pub" in had) d.pub = had.pub;

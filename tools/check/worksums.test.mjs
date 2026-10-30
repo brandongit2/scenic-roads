@@ -92,13 +92,14 @@ test('map: published only while the latest catalogue names its output; a drop le
   const readAt = 100000;
   const ends = [
     { kind: 'end', step: 'terrain-deep', t: 80000, worker: 'mini #1', targets: ['10/10/337'] }, // a drop's
-    { kind: 'end', step: 'terrain-deep', t: readAt - 60, worker: 'mini #1', targets: ['10/9/9'] }, // newer than the keys
+    { kind: 'end', step: 'terrain-deep', t: readAt - 60, worker: 'mini #1', targets: ['10/9/9'] }, // not yet in the keys read
     { kind: 'end', step: 'terrain-hi', t: 80000, worker: 'mini #1', targets: ['6/1/1'] },
     { kind: 'end', step: 'pack', t: 80000, worker: 'mini #1', targets: ['6/1/1'] },
   ];
   const built = { 'terrain-deep': ['10/266/335', '10/266/336'], 'terrain-hi': ['6/1/1'] };
   const published = { 'terrain-deep': [0], 'terrain-hi': [] };
-  const f = finishedTiles(ends, 0, built, 900, {}, { published, readAt });
+  const dropped = { 'terrain-deep': ['10/10/337'] };
+  const f = finishedTiles(ends, 0, built, 900, {}, { published, dropped, readAt });
   assert.equal(f.has('terrain-deep 10/10/337'), false, 'the drop: no tile');
   assert.equal(f.has('terrain-deep 10/9/9'), true, 'ended after the keys were read: kept');
   assert.equal(f.get('terrain-hi 6/1/1').pub, false, 'its end taken, the catalogue still says');

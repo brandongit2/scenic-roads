@@ -228,9 +228,9 @@ The Jobs tab's stages are the one exception.
     unit), only while the latest catalogue still names one of its outputs (`/work/built`'s
     `published`, #866: a removal, a delta's null, ends a tile's published life whatever catalogue
     named it before), else completed:
-    completed pale under a dashed outline, each fading in as it comes. A told step's end for a
-    tile the keys don't record, 10 min or more before they were read, is a drop's (its record a
-    none key, left out of `/work/built`): not drawn at all (Alaska's deep drops of 29 Oct had been
+    completed pale under a dashed outline, each fading in as it comes. An end for a tile whose
+    record is a drop's none key (`/work/built`'s `dropped`, ended by when the keys were read) is
+    the drop run's: not drawn at all (Alaska's deep drops of 29 Oct had been
     drawn as published from their job ends). Published tiles are drawn
     only while a step or stage is soloed, by when a catalogue last published each (#833).
   - **built, nothing to publish** (#839): a finished tile whose job made no file to publish (a

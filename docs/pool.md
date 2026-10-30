@@ -1686,7 +1686,8 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   no fine data, #839; steps whose files aren't told by name left out), keys and manifest from one
   read of the records' brief (a `-root` step's as 0/0/0; worldwide steps', records of steps the app doesn't know (a
   retired step's) and terrain-hi's, slope-hi's and tree cover's old z3 whole-run records left out:
-  `agent::builtview`), and, once the agent's catalogue view has read the catalogues, `published`
+  `agent::builtview`), `dropped` ({step: [z/x/y]}, the targets whose record is a drop's none
+  key: the page leaves out their drop runs' job ends), and, once the agent's catalogue view has read the catalogues, `published`
   (indexes the same way, for every step whose files are told by name, an empty list when none) and
   `catalogue`, its number: the targets one of whose published files the latest catalogue's `files`
   still names (task #866: a drop's null ends it; the page draws no other told tile as published),
