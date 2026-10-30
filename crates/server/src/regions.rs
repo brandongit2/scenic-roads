@@ -444,10 +444,9 @@ fn size_regions(s: &crate::AppState) {
     sizes.retain(|g, _| used.contains(g));
     let mut dirty = sizes.len() != before;
     let write = |sizes: &std::collections::BTreeMap<String, Sized>| {
-        let p = sizes_path(s);
-        let tmp = p.with_extension("json.tmp");
-        if serde_json::to_vec(sizes).is_ok_and(|b| std::fs::write(&tmp, b).is_ok()) {
-            std::fs::rename(&tmp, &p).ok();
+        // (Through a temporary name unique to the call: two servers may share a home.)
+        if let Ok(b) = serde_json::to_vec(sizes) {
+            store::whole::write(&sizes_path(s), &b).ok();
         }
     };
     let mut n = 0;
