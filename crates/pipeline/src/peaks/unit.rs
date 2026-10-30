@@ -127,7 +127,7 @@ impl UnitZ12 {
     /// `load`, from the terrain packs `packs` reads (a job's several z6 tiles', each pack opened once).
     pub fn load_from(packs: &crate::terrain_pack::ManifestTiles, want: &BTreeSet<(u32, u32)>) -> Result<UnitZ12> {
         // (In one phase, its tiles' bytes counted.)
-        let p = crate::timings::phase("loading z12 terrain tiles from the packs", crate::timings::Class::NasRead);
+        let p = crate::timings::phase("loading z12 terrain tiles from the packs");
         // (The packs' tiles read in spans, a pack's at once: `get_many`.)
         let want: Vec<(u32, u32)> = want.iter().copied().collect();
         let from_packs = packs.get_many(&want.iter().map(|&(x, y)| (Z12, x, y)).collect::<Vec<_>>())?;
@@ -203,10 +203,7 @@ pub fn read_ahead<I: Sync, T: Send>(
         for (k, it) in items.iter().enumerate() {
             let t = match ahead.take() {
                 Some(h) => {
-                    let _p = crate::timings::phase(
-                        "waiting for the next z6 tile's z12 tiles",
-                        crate::timings::Class::NasRead,
-                    );
+                    let _p = crate::timings::phase("waiting for the next z6 tile's z12 tiles");
                     h.join().map_err(|_| anyhow::anyhow!("the read ahead panicked"))??
                 }
                 None => load(it)?,

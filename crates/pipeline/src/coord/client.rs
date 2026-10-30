@@ -215,6 +215,7 @@ pub fn probe(urls: &[String]) -> std::result::Result<(), (crate::pool::reachable
         .build()
         .into();
     let mut last = (Cause::Other, "no address".to_string());
+    let _w = store::waits::net();
     for url in urls {
         match agent.get(&format!("{url}/")).call() {
             Ok(_) => return Ok(()),
@@ -380,6 +381,7 @@ impl Client {
                 }
             }
             let c = self.contact.lock().unwrap().clone();
+            let _w = store::waits::net();
             for url in &c.urls {
                 let full = format!("{url}{path}");
                 let auth = format!("Bearer {}", c.token);

@@ -36,7 +36,7 @@ pub struct Needs {
 
 /// What a running job is doing now (docs/pool.md §10, Live; task #518), as the agent reads it for
 /// its status and its lease's beat: the phase its main thread has open (crate::timings, said in its
-/// counts file: store::nasio::set_phase) with its class and since when; the target under way (its
+/// counts file: store::nasio::set_phase) and since when; the target under way (its
 /// costs file: crate::agent::memguard::targets) and since when, and how many of its targets ended;
 /// its NAS bytes read and written (its processes' counts, store::nasio) and its internet bytes in
 /// and out (the proxy's count of its tag, crate::budget::net), since it began. Each None: not said
@@ -45,8 +45,6 @@ pub struct Needs {
 pub struct Live {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub class: Option<String>,
     /// Unix s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_since: Option<u64>,
@@ -76,19 +74,13 @@ impl Live {
     /// and its internet bytes (in, out).
     pub fn read(counts: &Path, costs: &Path, targets: usize, net: Option<(u64, u64)>) -> Live {
         let phase = store::nasio::phase_in(counts).filter(|p| !p.0.is_empty());
-        let (name, class) = match &phase {
-            Some((t, _)) => match t.split_once('\t') {
-                Some((n, c)) => (Some(n.to_string()), Some(c.to_string())),
-                None => (Some(t.clone()), None),
-            },
-            None => (None, None),
-        };
+        // (An older process says its phase's class after a tab: left out.)
+        let name = phase.as_ref().map(|(t, _)| t.split_once('\t').map_or(t.as_str(), |(n, _)| n).to_string());
         let t = super::memguard::targets(costs);
         let nas = store::nasio::sum_dir(counts);
         let at = |c: store::nasio::Count| nas.map(|n| n[c as usize]);
         Live {
             phase: name,
-            class,
             phase_since: phase.map(|p| p.1 / 1000),
             target_since: t.on.as_ref().map(|o| o.1),
             target: t.on.map(|o| o.0),
@@ -1125,7 +1117,7 @@ mod tests {
         drop(here);
     }
 
-    /// A job's live view: the phase its counts file says (name and class), the target under way
+    /// A job's live view: the phase its counts file says (its name), the target under way
     /// and the ended ones its costs file says, its NAS and internet bytes; each None when not said.
     #[test]
     fn a_jobs_live_view_reads_its_phase_target_and_bytes() {
@@ -1147,7 +1139,6 @@ mod tests {
             l,
             Live {
                 phase: Some("saving records".into()),
-                class: Some("disk".into()),
                 phase_since: Some(5),
                 target: Some("unit 6/1/2".into()),
                 target_since: Some(7),

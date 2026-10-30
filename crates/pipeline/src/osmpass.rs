@@ -124,7 +124,7 @@ pub fn make_missing_sets(out: &mut Out, date: &str, src: &Input, scratch: &Path)
         crate::agent::jobs::stage(k as u64, missing.len() as u64, &format!("sets made ({name} now)"));
         let o = scratch.join(format!("set-{name}.osm.pbf"));
         tags_filter(src, &o, exprs, scratch, &format!("osmium tags-filter (set {name})"), Some("filtering sets"))?;
-        let p = crate::timings::phase("uploading sets", crate::timings::Class::NasWrite);
+        let p = crate::timings::phase("uploading sets");
         out.put_file(&set_name(date, name), "osm.pbf", &o)?;
         drop(p);
         out.save()?;
@@ -144,10 +144,9 @@ pub enum Input {
 /// `osmium tags-filter` of `src` by `exprs` into `o` (`read_input`), in a phase of its own when
 /// given one (`phase`: osmium's time for a local file, the NAS's read for one on the NAS).
 fn tags_filter(src: &Input, o: &Path, exprs: &[&str], scratch: &Path, what: &str, phase: Option<&str>) -> Result<()> {
-    use crate::timings::Class;
     let _p = phase.map(|ph| match src {
-        Input::Local(_) => crate::timings::phase(&format!("{ph} (osmium)"), Class::Compute),
-        Input::Nas(_) => crate::timings::phase(&format!("{ph} (osmium, over SSH)"), Class::NasRead),
+        Input::Local(_) => crate::timings::phase(&format!("{ph} (osmium)")),
+        Input::Nas(_) => crate::timings::phase(&format!("{ph} (osmium, over SSH)")),
     });
     // (Adding the objects the matches reference, osmium reads its input twice.)
     read_input(src, &scratch.join("stream"), 2, |input, local| {
@@ -865,13 +864,6 @@ const PARTS: [&str; 9] = [
     "Walking the world's roads and writing their values",
 ];
 
-/// What each part of the pass mostly waits on (crate::timings: its phase's class; a mixed part's
-/// sub-phases say).
-const PART_CLASSES: [crate::timings::Class; 9] = {
-    use crate::timings::Class::*;
-    [NasRead, Compute, NasWrite, Mixed, Compute, Compute, Mixed, Disk, Mixed]
-};
-
 /// The part under way's phase (crate::timings), ended as the next begins (`part`) or the pass ends
 /// (`end_part`).
 static PART: std::sync::Mutex<Option<crate::timings::Phase>> = std::sync::Mutex::new(None);
@@ -879,7 +871,7 @@ static PART: std::sync::Mutex<Option<crate::timings::Phase>> = std::sync::Mutex:
 /// Part `i` of the pass begins (`PARTS`), its progress one item's (`one`) until it says its own.
 fn part(i: usize, one: &str) {
     end_part();
-    *PART.lock().unwrap() = Some(crate::timings::phase(one, PART_CLASSES[i]));
+    *PART.lock().unwrap() = Some(crate::timings::phase(one));
     crate::agent::jobs::part(i, &PARTS);
     crate::agent::jobs::stage(0, 1, one);
 }
@@ -910,16 +902,16 @@ pub fn previous_outlines<'a>(
 /// into `scratch` first (osmium reads it twice); the previous pass's outlines
 /// (`previous_outlines`) are what a country this planet can't assemble keeps.
 pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<crate::outlines::Summary> {
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     std::fs::create_dir_all(scratch)?;
     let nas = out.path(out.get(&set_name(date, "outlines")).context("the pass's outline set")?);
     let set = scratch.join("set-outlines.osm.pbf");
-    let p = phase("copying the outline set here", Class::NasRead);
+    let p = phase("copying the outline set here");
     p.count(nas.copy_data_to_local(&set).with_context(|| format!("copy {}", nas.display()))?, 1);
     drop(p);
     let file = scratch.join("outlines.sect");
     let previous = previous_outlines(&out.manifest, date).map(|(d, c)| (out.path(c), d.to_string()));
-    let p = phase("assembling", Class::Compute);
+    let p = phase("assembling");
     let s = crate::outlines::assemble(
         &set,
         &scratch.join("outlines-work"),
@@ -945,7 +937,7 @@ pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<crate:
             s.unassembled
         );
     }
-    let p = phase("uploading", Class::NasWrite);
+    let p = phase("uploading");
     out.put_file(&format!("sources/osm/{date}/outlines"), "sect", &file)?;
     drop(p);
     out.save()?;
@@ -1001,7 +993,7 @@ pub fn run_pass(
             let o = scratch.join(format!("set-{name}.osm.pbf"));
             let src = Input::Local(filtered.clone());
             tags_filter(&src, &o, exprs, scratch, &format!("osmium tags-filter (set {name})"), Some("filtering sets"))?;
-            let _p = crate::timings::sub("uploading sets", crate::timings::Class::NasWrite);
+            let _p = crate::timings::sub("uploading sets");
             out.put_file(&set_name(date, name), "osm.pbf", &o)?;
             std::fs::remove_file(&o).ok();
         }
@@ -1087,7 +1079,7 @@ pub fn run_pass(
         j.arg("--output=basemap.pmtiles");
         run_planetiler(j, "planetiler (basemap)")?;
         end_part();
-        let _p = crate::timings::phase("uploading the basemap", crate::timings::Class::NasWrite);
+        let _p = crate::timings::phase("uploading the basemap");
         out.put_file(&format!("layers/basemap/world-{date}"), "pmtiles", &pm)?;
         out.save()?;
         std::fs::remove_file(&b).ok();
@@ -1136,7 +1128,7 @@ pub fn run_pass(
             let logical = format!("sources/osm/{date}/pieces/{}", u.dash());
             if out.get(&logical).is_none() {
                 let mb = std::fs::metadata(f).map(|m| m.len() >> 20).unwrap_or(0);
-                let _p = crate::timings::sub("uploading pieces", crate::timings::Class::NasWrite);
+                let _p = crate::timings::sub("uploading pieces");
                 out.put_file(&logical, "osm.pbf", &copy_keep(f, scratch)?)?;
                 out.save()?;
                 done_mb += mb;
@@ -1144,10 +1136,7 @@ pub fn run_pass(
             }
             let lf = links.join(format!("{}.bin", u.dash()));
             if !lf.exists() {
-                let _p = crate::timings::sub(
-                    "working out how their roads connect (extract)",
-                    crate::timings::Class::Compute,
-                );
+                let _p = crate::timings::sub("working out how their roads connect (extract)");
                 let ul = unit_links(extract_bin, &spacing, f, u, &work)?;
                 eprintln!("roads: {} {} ways, {} pairs", u.slash(), ul.ways.len(), ul.pairs.len());
                 ul.save(&lf)?;
@@ -1195,10 +1184,10 @@ pub fn run_pass(
         report(n, n, "z6 tiles' road links read");
         let (units, mut lists): (Vec<TileId>, Vec<UnitLinks>) = all.into_iter().unzip();
         part(8, "the roads walked");
-        let p = crate::timings::sub("walking", crate::timings::Class::Compute);
+        let p = crate::timings::sub("walking");
         let (ways, vals) = walk_all(&mut lists);
         drop(p);
-        let _p = crate::timings::sub("uploading their values", crate::timings::Class::NasWrite);
+        let _p = crate::timings::sub("uploading their values");
         for (k, (unit, ul)) in units.iter().zip(&lists).enumerate() {
             report(k as u64, n, "z6 tiles' road values written");
             let mut recs: Vec<u8> = Vec::with_capacity(ul.ways.len() * 32);

@@ -32,7 +32,7 @@
 use crate::interest::{py_round, same_names};
 use crate::pyjson::{dumps, loads, Py};
 use crate::pytext::{circled, differs, word_char};
-use crate::timings::{phase, Class};
+use crate::timings::phase;
 use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -66,7 +66,7 @@ const SIMPLIFY_DEG: f64 = 1e-5;
 /// Writes the layers into `b` (the chain's `data/build`) from its files there, the sites' English
 /// Wikipedia titles from `items` (crate::heritagewd's matches, `wd/items.jsonl`, when there).
 pub fn write_all(b: &Path, items: &Path) -> Result<()> {
-    let _p = phase("making the map's layers", Class::Mixed);
+    let _p = phase("making the map's layers");
     let record = heritage(b, items)?;
     if b.join("whs-shapes.json").exists() {
         whs_outlines(b, &record)?;
@@ -79,12 +79,12 @@ pub fn write_all(b: &Path, items: &Path) -> Result<()> {
     ] {
         summary.set(key, polygons(b, src, tol)?);
     }
-    let _p = phase("writing the layers", Class::Disk);
+    let _p = phase("writing the layers");
     write(b, "layer-summary.json", &summary)
 }
 
 fn read(b: &Path, name: &str) -> Result<Py> {
-    let _p = phase("reading the layers", Class::Disk);
+    let _p = phase("reading the layers");
     let text = std::fs::read_to_string(b.join(name)).with_context(|| format!("read {name}"))?;
     loads(&text).with_context(|| format!("parse {name}"))
 }
@@ -255,7 +255,7 @@ fn feature(geometry: Py, properties: Py) -> Py {
 /// layer-heritage.json and props-heritage.jsonl; returns each World Heritage id's record.
 fn heritage(b: &Path, items: &Path) -> Result<HashMap<String, Py>> {
     let mut fc = read(b, "heritage.json")?;
-    let p = phase("ordering the points and spacing repeated names", Class::Compute);
+    let p = phase("ordering the points and spacing repeated names");
     let feats = std::mem::take(features(&mut fc)?);
     let (mut feats, record) = merged_sites(b, feats)?;
     let fame = |f: &Py| {
@@ -268,7 +268,7 @@ fn heritage(b: &Path, items: &Path) -> Result<HashMap<String, Py>> {
     feats.sort_by(|a, b| fame(a).partial_cmp(&fame(b)).unwrap_or(std::cmp::Ordering::Equal));
     let waits = space_names(&mut feats)?;
     drop(p);
-    let p = phase("making the points' properties", Class::Compute);
+    let p = phase("making the points' properties");
     let wiki = wiki_titles(items)?;
     let mut rest_of: Vec<(Py, Vec<(String, Py)>)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -298,7 +298,7 @@ fn heritage(b: &Path, items: &Path) -> Result<HashMap<String, Py>> {
     drop(p);
     let n = feats.len();
     *features(&mut fc)? = feats;
-    let _p = phase("writing the layers", Class::Disk);
+    let _p = phase("writing the layers");
     write(b, "layer-heritage.json", &fc)?;
     rest_of.sort_by(|a, b| a.0.number().partial_cmp(&b.0.number()).unwrap_or(std::cmp::Ordering::Equal));
     let mut text = String::new();
@@ -368,7 +368,7 @@ fn wiki_titles(items: &Path) -> Result<HashMap<String, String>> {
 /// an outline opens the site like its dot.
 fn whs_outlines(b: &Path, record: &HashMap<String, Py>) -> Result<()> {
     let mut fc = read(b, "whs-shapes.json")?;
-    let p = phase("making the points' properties", Class::Compute);
+    let p = phase("making the points' properties");
     let feats = features(&mut fc)?;
     let n = feats.len();
     for f in feats.iter_mut() {
@@ -379,7 +379,7 @@ fn whs_outlines(b: &Path, record: &HashMap<String, Py>) -> Result<()> {
         }
     }
     drop(p);
-    let _p = phase("writing the layers", Class::Disk);
+    let _p = phase("writing the layers");
     write(b, "layer-whs-shapes.json", &fc)?;
     eprintln!("layers: whs-shapes: {n} outlines");
     Ok(())
@@ -389,7 +389,7 @@ fn whs_outlines(b: &Path, record: &HashMap<String, Py>) -> Result<()> {
 /// returns their summary (`n`, and `a`, each one's area).
 fn polygons(b: &Path, src: &str, tol: f64) -> Result<Py> {
     let mut fc = read(b, &format!("{src}.json"))?;
-    let p = phase("simplifying the polygons", Class::Compute);
+    let p = phase("simplifying the polygons");
     let feats = features(&mut fc)?;
     for f in feats.iter_mut() {
         let p = props_mut(f)?;
@@ -410,7 +410,7 @@ fn polygons(b: &Path, src: &str, tol: f64) -> Result<Py> {
     drop(p);
     let n = feats.len();
     let areas: Vec<Py> = feats.iter().map(|f| props(f).at("a").clone()).collect();
-    let _p = phase("writing the layers", Class::Disk);
+    let _p = phase("writing the layers");
     write(b, &format!("layer-{src}.json"), &fc)?;
     eprintln!("layers: {src}: {n} areas");
     Ok(Py::Dict(vec![("n".into(), Py::Int(n.to_string())), ("a".into(), Py::List(areas))]))

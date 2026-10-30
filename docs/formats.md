@@ -663,7 +663,7 @@ A job's run, a JSON object, `pipeline::timings::RunRec`:
 
 ```
 {v: 1, kind, id, host, start, wall_s, cpu_s, threads, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …]}
-phase: {name, class, wall_s, cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
+phase: {name, class (only before task #870, and the Python twin's), wall_s, waits: {nas_s, net_s, disk_s, other_s, nas_b, net_b} (task #870: measured, by wall clock), cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
 ```
 
 - `kind`: the job's step (`unit`, `peaks`, `gc`, `backup`, `osm-pass`), or `task <kind>` (`task

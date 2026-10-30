@@ -3,14 +3,16 @@
 //! crate::naming's and crate::blobs' copies), every network request (pipeline::fetch's `Net`, the
 //! coordinator's client and the other HTTP callers) and the local disk calls the store makes
 //! (crate::cachefile, crate::range's local files, the NAS's copies to this Mac's disk count as the
-//! NAS's). A caller holds a guard (`nas()`, `net()`, `disk()`) across the call; pipeline::timings
+//! NAS's), and the waits on other work a job's code says it blocks in (`other()`: another worker's
+//! subtrees, a thread copying ahead: a wait on a condition or a join, which no I/O call shows). A
+//! caller holds a guard (`nas()`, `net()`, `disk()`) across the call; pipeline::timings
 //! takes `totals()` as a phase opens and as it closes, and splits the phase's wall time by the
 //! difference.
 //!
 //! How parallel waits count: by the job's wall clock, not summed over threads. At each instant the
 //! process is in one state: waiting on the NAS when at least one of its threads is in a NAS call;
 //! else on the network when at least one is in a request; else on the local disk when one is in a
-//! disk call; else computing. So the states' times add up to the wall time exactly, however many
+//! disk call; else on other work when one waits for it; else computing. So the states' times add up to the wall time exactly, however many
 //! threads wait at once (eight threads reading the NAS for the same second are one second of
 //! waiting on the NAS), and a second in which one thread reads the NAS while others compute counts
 //! as waiting on the NAS: the job could not have been quicker than its NAS waits allow there.
@@ -29,10 +31,12 @@ pub enum On {
     Nas = 0,
     Net = 1,
     Disk = 2,
+    /// Another worker, another thread's work, a lock.
+    Other = 3,
 }
 
 /// The kinds of wait, by `On`'s order.
-pub const KINDS: usize = 3;
+pub const KINDS: usize = 4;
 
 /// Wall time (ns) the process spent waiting, by `On`, since `enable`.
 pub type Totals = [u64; KINDS];
@@ -125,6 +129,11 @@ pub fn net() -> Guard {
 /// A call on this Mac's own disk in progress.
 pub fn disk() -> Guard {
     wait(On::Disk)
+}
+
+/// A wait on other work (another worker, a thread, a lock) in progress.
+pub fn other() -> Guard {
+    wait(On::Other)
 }
 
 #[cfg(test)]

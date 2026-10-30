@@ -363,7 +363,7 @@ impl Counted {
     /// (None) by its months and days; each route's stop pairs into the routes, named by `source`.
     /// Its status, day, trips and duplicates.
     pub fn process(&mut self, zpath: &Path, anchor: Option<Date>, source: &str) -> R<Vec<(String, Py)>> {
-        let p = crate::timings::phase("reading the feeds' tables", crate::timings::Class::Mixed);
+        let p = crate::timings::phase("reading the feeds' tables");
         let z = Zip::open(zpath)?;
         let routes = rail_routes(&z)?;
         let st = |s: &str| vec![("status".to_string(), Py::Str(s.to_string()))];
@@ -472,7 +472,7 @@ impl Counted {
             }
         }
         drop(p);
-        let _p = crate::timings::phase("counting the trains", crate::timings::Class::Compute);
+        let _p = crate::timings::phase("counting the trains");
         let (mut n_trips, mut n_dup) = (0u64, 0u64);
         let (facts, agencies) = route_facts(&z)?;
         for (tid, c) in calls.items.iter_mut() {
@@ -721,7 +721,7 @@ pub fn run(feeds: &[serde_json::Value], statics_: &[(String, std::path::PathBuf)
         entry.extend(res);
         used.push(Py::Dict(entry));
     }
-    let _p = crate::timings::phase("writing the stop pairs", crate::timings::Class::Compute);
+    let _p = crate::timings::phase("writing the stop pairs");
     let (pairs, n_week) = c.pairs();
     eprintln!("{n_week} stop pairs served only on other days of the week (weekly average)");
     let ok: Vec<&Py> = used.iter().filter(|u| u.at("status").as_str() == Some("ok")).collect();

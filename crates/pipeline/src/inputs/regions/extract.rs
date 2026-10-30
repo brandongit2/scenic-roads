@@ -258,7 +258,7 @@ pub fn assemble(
 /// The job: pass `date`'s extract of `ids` and every id its current one has (never shrinking within
 /// a pass), stored and named in the records.
 pub fn run(out: &mut crate::out::Out, date: &str, ids: &BTreeSet<Id>) -> Result<String> {
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     let mut all = ids.clone();
     if let Some(name) = out.get(&logical(date)).map(str::to_string) {
         let e = Extract::read(&out.root().join(&name).read().with_context(|| format!("read {name}"))?)?;
@@ -268,11 +268,11 @@ pub fn run(out: &mut crate::out::Out, date: &str, ids: &BTreeSet<Id>) -> Result<
     let filtered = out.get(&format!("sources/osm/{date}/filtered")).map(|n| out.root().join(n));
     let mut e = match &filtered {
         Some(f) => {
-            let _p = phase("reading the filtered planet three times (relations, ways, nodes)", Class::NasRead);
+            let _p = phase("reading the filtered planet three times (relations, ways, nodes)");
             make(f, date, &all)?
         }
         None => {
-            let _p = phase("reading the planet three times (relations, ways, nodes)", Class::NasRead);
+            let _p = phase("reading the planet three times (relations, ways, nodes)");
             make(&planet, date, &all)?
         }
     };
@@ -286,12 +286,12 @@ pub fn run(out: &mut crate::out::Out, date: &str, ids: &BTreeSet<Id>) -> Result<
         })
         .collect();
     if filtered.is_some() && !lacking.is_empty() && planet.exists() {
-        let _p = phase("reading the planet three times for the ids the filtered planet lacks", Class::NasRead);
+        let _p = phase("reading the planet three times for the ids the filtered planet lacks");
         let more = make(&planet, date, &lacking)?;
         e.relations.extend(more.relations);
         e.ways.extend(more.ways);
     }
-    let p = phase("storing the extract", Class::NasWrite);
+    let p = phase("storing the extract");
     let name = out.store_bytes(&logical(date), "json", &serde_json::to_vec_pretty(&e)?)?;
     out.set(&logical(date), Some(name.clone()));
     out.save()?;

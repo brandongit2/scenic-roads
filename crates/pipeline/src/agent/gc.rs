@@ -688,7 +688,7 @@ pub fn run(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool, depth: O
 }
 
 fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Result<Report> {
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     let keep = Duration::from_secs(keep_days * 86400);
     let now = SystemTime::now();
     let old = |t: SystemTime| now.duration_since(t).is_ok_and(|d| d > keep);
@@ -697,7 +697,7 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
     // Catalogues: the newest always, and every one of the last `keep_days`.
     let cat_dir = root.join("catalog");
     // (Phase names are stored in the job logs and their stats: the old spelling stays, task #547.)
-    let read = phase("reading the catalogs", Class::NasRead);
+    let read = phase("reading the catalogs");
     let ns = if cat_dir.exists() { store::catalogue::list(&cat_dir).context("list catalogues")? } else { Vec::new() };
     // Before the first catalogue there's nothing to keep track of, so nothing is removed.
     let Some(&latest) = ns.iter().max() else { return Ok(rep) };
@@ -760,14 +760,14 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
     // (Not `exists()`: it's false on an I/O error too, and then the manifest's files would go.)
     drop(read);
     let m: std::collections::BTreeMap<String, String> = {
-        let _p = phase("reading the build manifest", Class::NasRead);
+        let _p = phase("reading the build manifest");
         crate::out::read_manifest(root).context("the build manifest")?
     };
     // The pool's newest records and its journal's entries not merged yet: unreadable, nothing
     // removed, the job failed (said in the status, tried again as failures are); entries passed
     // over, no term led, said as warnings (the job's note).
     let um = {
-        let _p = phase("reading the journal", Class::NasRead);
+        let _p = phase("reading the journal");
         let now_s = now.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         unmerged(root, now_s).context("nothing removed: the pool's records or journal can't be read whole")?
     };
@@ -807,7 +807,7 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
 
     crate::agent::jobs::stage(1, 2, "steps (sweeping the folders)");
     // (Listing the folders and removing what's due, file by file: one phase, the removals counted.)
-    let sweep = phase("sweeping folders", Class::NasWrite);
+    let sweep = phase("sweeping folders");
     for (k, top) in tops.iter().enumerate() {
         yield_point();
         crate::agent::jobs::within(k as f64 / tops.len() as f64);
@@ -865,7 +865,7 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
     drop(sweep);
     // The gate's checked copies: what's kept named, the rest once old.
     if let Some(keep) = inputs_keep {
-        let _p = phase("sweeping the inputs' copies", Class::NasWrite);
+        let _p = phase("sweeping the inputs' copies");
         let mut stack = vec![root.join("sources/inputs")];
         while let Some(dir) = stack.pop() {
             yield_point();
@@ -912,7 +912,7 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
     }
     // Retired passes' sources: passes older than the newest complete one.
     if let Some(latest) = crate::osmpass::latest_pass(root) {
-        let _p = phase("sweeping retired passes", Class::NasWrite);
+        let _p = phase("sweeping retired passes");
         // When the newest pass completed (its summary's time): a retired pass's plain files (the
         // planet download) go once that's `keep_days` ago, so a fresh pass can still be compared.
         let done_at = root
@@ -936,11 +936,11 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
         }
     }
     {
-        let _p = phase("sweeping removed steps' files", Class::NasWrite);
+        let _p = phase("sweeping removed steps' files");
         sweep_retired_names(root, &referenced, &old, dry_run, &mut rep)?;
     }
     // (Stored phase name: old spelling, task #547.)
-    let _p = phase("removing old catalogs", Class::NasWrite);
+    let _p = phase("removing old catalogs");
     for p in drop_cats {
         remove(&p, dry_run)?;
         rep.catalogues_removed += 1;

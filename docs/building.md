@@ -245,8 +245,9 @@ from the first (`edit_held`).
   agents, conditions, cache clears and freeings. Summed by the hour for the worker page, and the
   forecast's measure of members' pace and of publishing's time.
 - **Timings** (`pipeline::timings`; `dem/timings.py`; a page's task in `web/work/worker.js`): every
-  job's run is broken into named phases, each with wall time, CPU time (`getrusage`), its class
-  (`nas-read`, `nas-write`, `disk`, `net`, `compute`, `wait`, `mixed`), spans, bytes and files. One
+  job's run is broken into named phases, each with wall time, CPU time (`getrusage`), its wall time
+  split by measured waits (task #870: NAS, network, local disk, other work, the rest computing;
+  the Python twin and pages still declare a class), spans, bytes and files. One
   level of sub-phases; a child program's phases arrive as sub-phases (`SCENIC_PHASES_TO`). Rules:
   every bulk data move, compute stage and external program is a phase; `Out::open` and `Out::save`
   are phases for free; a loop is never a phase per iteration; nothing is timed per item in a hot

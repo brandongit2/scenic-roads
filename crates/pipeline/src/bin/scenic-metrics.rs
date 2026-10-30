@@ -369,6 +369,7 @@ fn fetch_file(
         return Ok(None);
     };
     pipeline::fetch::online(url)?;
+    let _w = store::waits::net();
     for attempt in 0..6 {
         match agent.get(url).call() {
             Ok(mut r) => {

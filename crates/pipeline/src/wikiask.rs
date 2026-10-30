@@ -54,6 +54,7 @@ impl Asker {
         if crate::fetch::online(url).is_err() {
             return 0;
         }
+        let _w = store::waits::net();
         let r = self.agent.head(url).config().timeout_global(Some(Duration::from_secs(30))).build().call();
         r.ok()
             .filter(|r| r.status() == 200)
@@ -64,6 +65,7 @@ impl Asker {
     /// GET: the status, the body, and a `Retry-After` if any.
     fn get_text(&self, url: &str, timeout_s: u64) -> Result<(u16, String, Option<String>)> {
         crate::fetch::online(url)?;
+        let _w = store::waits::net();
         let r = self.agent.get(url).config().timeout_global(Some(Duration::from_secs(timeout_s))).build().call();
         answer(r)
     }

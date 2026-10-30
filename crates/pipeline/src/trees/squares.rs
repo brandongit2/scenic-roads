@@ -246,6 +246,7 @@ fn download(url: Option<&str>, path: &Path, coming: &dyn Fn(f64)) -> Result<()> 
     for attempt in 0..6u32 {
         let got = (|| -> Result<Option<String>> {
             crate::fetch::online(url)?;
+            let _w = store::waits::net();
             let found = match agent.get(url).call() {
                 Ok(r) if matches!(r.status().as_u16(), 403 | 404) => None,
                 Ok(r) => Some(r),

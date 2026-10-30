@@ -479,10 +479,10 @@ pub fn forget(out: &mut crate::out::Out, unit: &str) -> Result<String> {
 }
 
 pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<super::Planned>) -> Result<String> {
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     let checks = super::checks(unit).with_context(|| format!("{unit} isn't a gate unit this app knows"))?;
     let root = out.root().clone();
-    let p = phase("listing the accepted version and the inputs folder", Class::NasRead);
+    let p = phase("listing the accepted version and the inputs folder");
     let prepared = checks.prepared(&root, &out.manifest)?;
     let checks: &dyn Checks = prepared.as_deref().unwrap_or(checks);
     // (Not ready: nothing read, nothing held or taken, nothing asked for; its key changes when it is.)
@@ -497,7 +497,7 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
     let (listing, accepted, unsettled) =
         candidate(&root, unit, checks.recursive(), planned, crate::agent::jobs::now_s())?;
     drop(p);
-    let p = phase("reading and checking the changes", Class::NasRead);
+    let p = phase("reading and checking the changes");
     let dir = super::inputs_folder(&root, unit);
     let read_new = |path: &str| dir.join(path).read().with_context(|| format!("read {}", dir.join(path).display()));
     let read_old = |e: &FileEntry| root.join(&e.file).read().with_context(|| format!("read {}", e.file));
@@ -515,7 +515,7 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
     p.count(d.store.values().map(|b| b.len() as u64).sum(), d.read.len() as u64);
     drop(p);
     jobs::stage(5, STAGES, "inputs check (the accepted files stored)");
-    let p = phase("storing the accepted files, the index and the report", Class::NasWrite);
+    let p = phase("storing the accepted files, the index and the report");
     for (name, bytes) in &d.store {
         let c = store::naming::parse_content_name(name).context("a copy's name")?;
         out.store_bytes(c.logical, c.ext, bytes)?;

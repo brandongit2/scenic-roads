@@ -10,7 +10,9 @@ Measured from the records the pipeline keeps, not new benchmarks: the lead's `co
 terrain of task #639: terrain-hi, terrain-deep, terrain-lo) and the coordinator's costs (the latest
 measured run of each target, `coord/costs.json`). CPU/wall is the run's CPU time over its wall time
 (a job has 1–3 threads). The NAS, net and compute columns are the shares of the run's wall time in
-top-level phases of that class; "untimed" is in no phase. A phase marked `beside` in a record (a
+top-level phases of that class (classes declared by hand then; since task #870 phases have no
+class, their waits on the NAS, network and disk are measured: docs/pool.md §10, Time by phase, so
+the "mixed" shares below would now split into those and computing); "untimed" is in no phase. A phase marked `beside` in a record (a
 sampling thread's) is summed over the threads that ran it, so a run's `beside` phases add up to
 more than its wall.
 

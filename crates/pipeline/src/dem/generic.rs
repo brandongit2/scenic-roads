@@ -1715,7 +1715,7 @@ impl<'a> Sampler<'a> {
     /// their points to measure against the points to sample), not per point. The blend stage hands
     /// `step` (the share of its call done, 0 to 1) to a distance measure that reports.
     pub fn sample(&self, lon: &[f64], lat: &[f64], said: Said) -> Result<Sampled> {
-        use crate::timings::{phase, Class};
+        use crate::timings::phase;
         let plan = self.plan;
         let n = lon.len();
         let mono = Mono { last: Mutex::new(0.0), to: said };
@@ -1746,7 +1746,7 @@ impl<'a> Sampler<'a> {
         let fetched =
             |p: &crate::timings::Phase, since: u64| p.count(crate::fetch::fetched_bytes().saturating_sub(since), 0);
         for (k, ds) in plan.datasets.iter().enumerate() {
-            let p = phase(&format!("sampling {}", ds.id), Class::Net);
+            let p = phase(&format!("sampling {}", ds.id));
             let since = crate::fetch::fetched_bytes();
             let r = self.sets[k].reader(&xy);
             let sel: Vec<u32> =
@@ -1787,7 +1787,7 @@ impl<'a> Sampler<'a> {
         // The blends: each point's distance to its first dataset's invalid area, up to the widest band
         // it could have (four of the coarsest pixels of the datasets after it there); then the next
         // dataset with data, for those within it.
-        let p = phase("blending the edges", Class::Net);
+        let p = phase("blending the edges");
         let since = crate::fetch::fetched_bytes();
         let res: Vec<f64> = plan.datasets.iter().map(|d| d.resolution).collect();
         let mut dist = vec![f64::INFINITY; n];
@@ -1865,7 +1865,7 @@ impl<'a> Sampler<'a> {
         drop(p);
         // Each dataset's heights brought to EGM2008 (crate::dem::geoid) before the blend: the first's
         // and the second's alike.
-        let p = phase("bringing the heights to EGM2008", Class::Net);
+        let p = phase("bringing the heights to EGM2008");
         let since = crate::fetch::fetched_bytes();
         let grids = &self.grids;
         let mut unconverted = 0usize;

@@ -1592,10 +1592,26 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   ranges up to its own). The lead's status carries them as `phase_times`
   (`timings::PhaseTimes`): `{"at", "edges", "steps": {"<step>": {"phases": [[name, class], …],
   "b": [[edge, runs, failed, wall s, CPU s, [[phase, wall s, CPU s, NAS MB, internet MB], …]],
-  …]}}}`; a step's top-level phases of its main thread, largest over the week first, at most 8
-  (`TIMES_PHASES`: past that, the 7 largest and the rest as "other phases"); a phase's bytes by its class (a compute or mixed
-  phase's sub-phases' by theirs, else the NAS or internet phase above them; the local disk's not
-  said); a run's time in no phase is its wall less its phases'. Measured on the lead's log of 29 Oct
+  …], "w": [[edge, phase, measured wall s, NAS s, network s, disk s, other work s], …]}}}`; a
+  step's top-level phases of its main thread, largest over the week first, at most 8
+  (`TIMES_PHASES`: past that, the 7 largest and the rest as "other phases"); a run's time in no
+  phase is its wall less its phases'.
+  **Measured waits, not classes** (task #870): no phase is classed by hand. Every NAS call
+  (store::nasfs, range, iopool, naming, blobs), network request (fetch's `Net`, the coordinator's
+  client, the other HTTP callers), local-disk read of the store's, and wait on other work (another
+  worker's subtrees, a thread copying ahead) holds a store::waits guard; each phase span takes the
+  totals as it opens and closes (`timings::Waits` in its record: NAS, network, disk, other work
+  seconds, and the NAS's and network's bytes meanwhile). Waits count by the job's wall clock, not
+  summed over threads: an instant is the NAS's when any of the job's threads is in a NAS call, else
+  the network's, else the disk's, else other work's, else computing — so a phase's parts add up to
+  its wall time. A phase running a child program takes in the child's phases' waits (the Python
+  twin's, dem/timings.py, by their declared class), held to its wall. `w` sums them over the runs
+  that measured them; the page splits each phase's bar into "waiting on the NAS", "waiting on the
+  network", "reading/writing the local disk", "waiting on other work" and "computing", the rest of
+  its wall (older runs') grey as "not measured", its card giving the numbers and the rule. A phase's
+  `class` is said only for records from before (and the twin's and pages'); its bytes are the
+  measured ones, an older record's by class as before. Cost: ~76 ns a guard (store::waits' test),
+  off outside a timed run; NAS and network calls take hundreds of µs and more. Measured on the lead's log of 29 Oct
   (6,251 runs, 49 steps over 4 days): ~32 KB of the status (~290 KB: +11 %).
   Phases are named as doings ("reading the depth sources' windows"; before task #844 as done, "the
   depth sources' windows read"); a record read, on any Mac, takes the new name of an old one

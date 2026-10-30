@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, publishedBefore, pastFrom, pastRuns, runLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion, ringsArea, phaseBreakdown } from '../../web/work/sums.js';
+import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, publishedBefore, pastFrom, pastRuns, runLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion, ringsArea, phaseBreakdown, phaseSplit } from '../../web/work/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -419,4 +419,30 @@ test("a step's time breakdown over the footer's range (#844)", () => {
   assert.equal(phaseBreakdown(pt, "depth", 604800).runs, 8);
   assert.equal(phaseBreakdown(pt, "depth", 50000).runs, 3);
   assert.equal(phaseBreakdown(pt, "depth", 30), null, "under the first edge: none");
+});
+
+test("a phase split into its measured waits and computing (#870)", () => {
+  // (`w`: [edge, phase, measured wall, NAS, network, disk, other work]; a part of an older run unmeasured.)
+  const pt = { at: 0, edges: [60, 300, 600, 1800, 3600, 7200, 21600, 86400, 259200, 604800], steps: {
+    "terrain-deep": { phases: [["sampling the fine elevation data into high-zoom terrain", ""], ["reading records", "nas-read"]],
+      b: [[0, 2, 0, 200, 300, [[0, 150, 290, 40, 0], [1, 20, 1, 1, 0]]], [6, 1, 0, 100, 10, [[0, 50, 9, 0, 0]]]],
+      w: [[0, 0, 100, 41, 2, 7, 0], [6, 0, 50, 10, 0, 0, 5]] },
+  } };
+  const b = phaseBreakdown(pt, "terrain-deep", 60);
+  const deep = b.parts[0];
+  assert.deepEqual([deep.measured, deep.waits], [100, { nas: 41, net: 2, disk: 7, other: 0 }]);
+  const seg = (p) => phaseSplit(p).map((x) => [x.key, Math.round(x.s * 10) / 10]);
+  // Its measured 100 s: 41 NAS, 2 network, 7 disk, 50 computing; the 50 s of older runs unmeasured.
+  assert.deepEqual(seg(deep), [["nas", 41], ["net", 2], ["disk", 7], ["cpu", 50], ["old", 50]]);
+  const sum = phaseSplit(deep).reduce((t, x) => t + x.s, 0);
+  assert.ok(Math.abs(sum - deep.wall) < 1e-9, "the segments add up to the phase's wall time");
+  // An older run's phase, nothing measured: one segment, its declared class said.
+  const rec = phaseSplit(b.parts[1]);
+  assert.deepEqual(rec.map((x) => x.key), ["old"]);
+  assert.match(rec[0].label, /reading the NAS/);
+  // Over six hours: both edges' waits.
+  const six = phaseBreakdown(pt, "terrain-deep", 21600).parts[0];
+  assert.deepEqual(seg(six), [["nas", 51], ["net", 2], ["disk", 7], ["other", 5], ["cpu", 85], ["old", 50]]);
+  // Waits rounded past the measured wall: held within it, no computing.
+  assert.deepEqual(phaseSplit({ wall: 10, measured: 10, waits: { nas: 8, net: 4, disk: 0, other: 0 } }).map((x) => x.key), ["nas", "net"]);
 });

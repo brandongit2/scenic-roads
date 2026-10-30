@@ -500,7 +500,7 @@ pub fn work_files(out: &Out, t: TileId) -> Result<Vec<Option<WorkFile>>> {
 /// there. Its tiles.
 pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
     ensure!(q.z == 3, "bldfield-lo takes z3 tiles ({} isn't one)", q.slash());
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     let t0 = std::time::Instant::now();
     let mut paths: BTreeMap<(u32, u32), store::nasfs::NasPath> = BTreeMap::new();
     for y in q.y * 8..q.y * 8 + 8 {
@@ -510,7 +510,7 @@ pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
             }
         }
     }
-    let p = phase("reading the mids and making the levels", Class::Compute);
+    let p = phase("reading the mids and making the levels");
     let tiles = field::lo((q.x, q.y), &|x, y| {
         paths.get(&(x, y)).map(|p| p.read().with_context(|| format!("read {}", p.display()))).transpose()
     })?;
@@ -534,7 +534,7 @@ pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
         bytes += b.len();
     }
     w.finish()?;
-    let p = phase("uploading", Class::NasWrite);
+    let p = phase("uploading");
     out.put_file(&logical, "pack", &local)?;
     drop(p);
     out.save()?;
@@ -590,9 +590,9 @@ pub fn build_later(
     offload: Option<&crate::offload::Offload>,
 ) -> Result<Summary> {
     ensure!(t.z == 6, "bldtiles takes z6 tiles ({} isn't one)", t.slash());
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     let t0 = std::time::Instant::now();
-    let p = phase("reading the normalized files", Class::NasRead);
+    let p = phase("reading the normalized files");
     let files = work_files(out, t)?;
     drop(p);
     let logical = super::pack_logical(t.x, t.y);
@@ -614,7 +614,7 @@ pub fn build_later(
     for (k, &a) in z8s.iter().enumerate() {
         crate::agent::jobs::report(k as u64, z8s.len() as u64, "z8 tiles done");
         {
-            let _p = phase("offering z8 tiles to other workers", Class::Net);
+            let _p = phase("offering z8 tiles to other workers");
             offers.top_up(&files, cov, &z8s, k)?;
         }
         let mut add = |z: u8, x: u32, y: u32, gz: &[u8], raw: u32| {
@@ -623,13 +623,13 @@ pub fn build_later(
         };
         let (s, f) = match offers.result(&files, cov, &z8s, k)? {
             Some(dir) => {
-                let _p = phase("taking in another worker's z8 tile", Class::Disk);
+                let _p = phase("taking in another worker's z8 tile");
                 let s = super::task::take_z8(&dir, TileId { z: 8, x: a.0, y: a.1 }, &mut add)?;
                 std::fs::remove_dir_all(&dir).ok();
                 s
             }
             None => {
-                let _p = phase("making the z8 tile's slope tiles here", Class::Compute);
+                let _p = phase("making the z8 tile's slope tiles here");
                 let here = std::time::Instant::now();
                 let (s, f) = z8_tiles(&files, cov, t, a, &sites, &mut add)?;
                 offers.made_here(s.buildings + s.parts + s.outside, here.elapsed().as_secs_f64());

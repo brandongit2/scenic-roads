@@ -4,7 +4,7 @@
 //!
 //! scans: tools/check/timings_py.py dem/timings.py
 
-use pipeline::timings::{self, Class};
+use pipeline::timings;
 use std::path::Path;
 
 #[test]
@@ -12,7 +12,7 @@ fn a_python_programs_phases_come_in_under_the_phase_that_ran_it() {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/check/timings_py.py");
     timings::start("test");
     {
-        let _p = timings::phase("python step", Class::Mixed);
+        let _p = timings::phase("python step");
         let mut c = store::spawn::command("python3");
         c.arg("-I").arg(&script);
         timings::child(&mut c);
@@ -22,16 +22,11 @@ fn a_python_programs_phases_come_in_under_the_phase_that_ran_it() {
     let r = timings::snapshot(true).unwrap();
     assert_eq!(r.phases.len(), 1);
     let p = &r.phases[0];
-    let subs: Vec<(&str, Class, u64)> = p.sub.iter().map(|s| (s.name.as_str(), s.class, s.n)).collect();
+    let subs: Vec<(&str, &str, u64)> = p.sub.iter().map(|s| (s.name.as_str(), s.class.as_str(), s.n)).collect();
     // Top-level phases alone (theirs folded into them), in the order they began.
     assert_eq!(
         subs,
-        [
-            ("loop stage", Class::Compute, 3),
-            ("parent", Class::Mixed, 1),
-            ("main work", Class::Compute, 1),
-            ("beside", Class::NasRead, 1)
-        ]
+        [("loop stage", "compute", 3), ("parent", "mixed", 1), ("main work", "compute", 1), ("beside", "nas-read", 1)]
     );
     let l = &p.sub[0];
     assert_eq!((l.bytes, l.files), (30, 3));

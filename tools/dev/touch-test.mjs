@@ -37,7 +37,8 @@
 //   --agent H:P       the agent read (default 127.0.0.1:8090; the lead's to see the NAS tab filled)
 //   --phase-times FILE  the lead's `phase_times` in /work/swarm replaced by FILE's (a PhaseTimes
 //                     as JSON, crate::timings: an agent before #844 hasn't it), its `at` now; the
-//                     Jobs tab's time breakdowns then checked at two ranges and a part's card
+//                     Jobs tab's time breakdowns then checked at two ranges, each phase split into
+//                     its measured segments where its `w` says (#870), and a part's card
 //                     (chrome-time-6h, chrome-time-7d, chrome-time-card)
 //   --only-map        only the map's checks (its solo, its age controls) and screenshots
 //   --solo STEP       the step the map's checks solo (default: the one with the most tiles built)
@@ -447,6 +448,11 @@ async function run() {
       await until(`document.querySelectorAll(".stages .tb").length > 0`, 5000);
       const six = await js(rows);
       check("time: rows under the steps that ran in 6 h", six.length > 0, six.slice(0, 6).join(", "));
+      // (#870: a phase's measured wall split into its waits and computing: more segments than phases
+      // where the file has `w`, the NAS's colour among them.)
+      const segs = await js(`[document.querySelectorAll(".stages .tb-part").length, document.querySelectorAll(".stages .tb-seg").length, [...document.querySelectorAll(".stages .tb-seg")].filter((e) => getComputedStyle(e).backgroundColor === "rgb(61, 111, 168)").length]`);
+      const measured = Object.values(JSON.parse(readFileSync(PHASE_TIMES, "utf8")).steps || {}).some((s) => s.w?.length);
+      check("time: phases split into measured segments", !measured || (segs[1] > segs[0] && segs[2] > 0), `${segs[0]} phases, ${segs[1]} segments, ${segs[2]} the NAS's`);
       await js(`document.querySelector(".stages .tb")?.scrollIntoView({ block: "center" })`);
       await shot("chrome-time-6h");
       await setRange(604800);
@@ -461,7 +467,7 @@ async function run() {
         await until(`[...document.querySelectorAll(".card-tip")].some((c) => !c.hidden && /of the step's time/.test(c.textContent))`, 3000);
       }
       const card = await js(`[...document.querySelectorAll(".card-tip")].find((c) => !c.hidden)?.innerText || ""`);
-      check("time: a part's card says its share, jobs and what it does", /of the step's time/.test(card) && /Jobs/.test(card) && /Does/.test(card), card.replace(/\s+/g, " ").slice(0, 200));
+      check("time: a part's card says its share, jobs, its segments and what it does", /of the step's time/.test(card) && /Jobs/.test(card) && /Does/.test(card) && /computing|not measured|waiting on/.test(card), card.replace(/\s+/g, " ").slice(0, 300));
       const { data } = await page.send("Page.captureScreenshot", { format: "png" });
       writeFileSync(join(OUT, "chrome-time-card.png"), Buffer.from(data, "base64"));
       if (PHONE) await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);

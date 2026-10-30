@@ -41,7 +41,7 @@
 use crate::pyjson::{dumps, loads, Py};
 use crate::pynumpy;
 use crate::pytext::{decimal, strip};
-use crate::timings::{phase, Class};
+use crate::timings::phase;
 use crate::wikiask::Asker;
 use anyhow::{bail, Context, Result};
 use geos::{CapStyle, CoordSeq, Geom, Geometry, GeometryTypes, JoinStyle};
@@ -241,7 +241,7 @@ fn our_sites(b: &Path) -> Result<Sites> {
 /// there, of the declared `wikidata` source: QLever's endpoint).
 fn wd_sparql(ask: &Asker, wikidata: &str, query: &str, cache: &Path) -> Result<Vec<HashMap<String, String>>> {
     if std::fs::metadata(cache).map_or(true, |m| m.len() == 0) {
-        let _p = phase("downloading sources", Class::Net);
+        let _p = phase("downloading sources");
         let (body, _) = ask.sparql_answer(wikidata, query)?;
         std::fs::create_dir_all(cache.parent().unwrap())?;
         let tmp = cache.with_extension("json.part");
@@ -361,13 +361,13 @@ fn outlines(
     // Their OSM objects: everything tagged wikidata or ref:whc (tags only), picked by value, then
     // those objects with their geometry (a filter on thousands of values at once is slow).
     let tagged = w.join("tagged.osm.pbf");
-    let p = phase("filtering the tagged objects (osmium)", Class::Compute);
+    let p = phase("filtering the tagged objects (osmium)");
     let mut c = crate::osmpass::osmium();
     c.arg("tags-filter").arg(osm).args(["nwr/wikidata", "nwr/ref:whc", "nwr/heritage:operator=whc", "-R", "-o"]);
     c.arg(&tagged).arg("--overwrite");
     osmium_run(c, "osmium tags-filter", &[0])?;
     drop(p);
-    let p = phase("picking the sites' objects", Class::Compute);
+    let p = phase("picking the sites' objects");
     let opl = w.join("tagged.opl");
     let mut c = crate::osmpass::osmium();
     c.arg("cat").arg(&tagged).args(["-f", "opl", "--overwrite", "-o"]).arg(&opl);
@@ -390,18 +390,18 @@ fn outlines(
     drop(p);
     let pbf = w.join("whs.osm.pbf");
     // (exit 1: some objects weren't found, e.g. a relation member outside our extracts)
-    let p = phase("extracting the sites' objects (osmium)", Class::Compute);
+    let p = phase("extracting the sites' objects (osmium)");
     let mut c = crate::osmpass::osmium();
     c.args(["getid", "-r"]).arg(osm).arg("-i").arg(&ids).arg("-o").arg(&pbf).arg("--overwrite");
     osmium_run(c, "osmium getid", &[0, 1])?;
     drop(p);
-    let p = phase("exporting the sites' objects (osmium)", Class::Compute);
+    let p = phase("exporting the sites' objects (osmium)");
     let mut c = crate::osmpass::osmium();
     c.arg("export").arg(&pbf).args(["-f", "geojsonseq", "-a", "type,id", "--geometry-types=linestring,polygon", "-o"]);
     c.arg(w.join("whs.geojsonseq")).arg("--overwrite");
     osmium_run(c, "osmium export", &[0])?;
     drop(p);
-    let p = phase("listing the relations (osmium)", Class::Compute);
+    let p = phase("listing the relations (osmium)");
     let mut c = crate::osmpass::osmium();
     c.arg("cat").arg(&pbf).args(["-t", "relation", "-f", "opl", "-o"]).arg(w.join("relations.opl")).arg("--overwrite");
     osmium_run(c, "osmium cat (relations)", &[0])?;
@@ -419,7 +419,7 @@ fn outlines(
 
     // Route, waterway and site relations of a site pass it on to their member ways (not areas'
     // relations: their ways are the area's edges).
-    let p = phase("reading the relations' members", Class::Compute);
+    let p = phase("reading the relations' members");
     let mut member_site: HashMap<String, String> = HashMap::new();
     for line in std::fs::read_to_string(w.join("relations.opl"))?.lines() {
         let (Some(tm), Some(mm)) = (field(line, " T"), field(line, " M")) else { continue };
@@ -443,7 +443,7 @@ fn outlines(
     drop(p);
 
     // A closed way comes out twice, as a line and as an area: one of them, by its tags.
-    let p = phase("picking and simplifying the outlines", Class::Compute);
+    let p = phase("picking and simplifying the outlines");
     let mut keys: Vec<String> = vec![];
     let mut found: HashMap<String, [Option<Py>; 2]> = HashMap::new();
     let text = std::fs::read_to_string(w.join("whs.geojsonseq"))?;
@@ -754,14 +754,14 @@ pub fn run(root: &Path, wikidata: &str) -> Result<()> {
     let w = root.join("data/heritage/whs");
     let osm = root.join("data/osm/merged.osm.pbf");
     std::fs::create_dir_all(&w)?;
-    let p = phase("reading the sites", Class::Disk);
+    let p = phase("reading the sites");
     let sites = our_sites(&b)?;
     drop(p);
     eprintln!("{} World Heritage Sites in our regions", sites.ids.len());
     let ask = Asker::new();
 
     // Its Wikidata items: the site and its components (P757), and items part of one (P361).
-    let p = phase("reading the Wikidata items", Class::Disk);
+    let p = phase("reading the Wikidata items");
     // (An item of several of our sites, or part of several, is the lowest-numbered site's; an
     // item's own P757 before what it is part of.)
     let p757 = sorted(wd_sparql(&ask, wikidata, P757, &w.join("wd-p757.json"))?, ["item", "id"]);
@@ -800,7 +800,7 @@ pub fn run(root: &Path, wikidata: &str) -> Result<()> {
     eprintln!("{} Wikidata items", site_of.len());
     let (order, shapes) = outlines(&sites, &site_of, &w, &osm)?;
 
-    let p = phase("making the outlines' features", Class::Compute);
+    let p = phase("making the outlines' features");
     let mut feats = vec![];
     let mut per: Vec<(String, usize)> = vec![];
     for s in &order {
@@ -825,7 +825,7 @@ pub fn run(root: &Path, wikidata: &str) -> Result<()> {
         per.push((s.clone(), shapes[s].len()));
     }
     drop(p);
-    let p = phase("writing the outlines", Class::Disk);
+    let p = phase("writing the outlines");
     let fc = Py::Dict(vec![("type".into(), Py::Str("FeatureCollection".into())), ("features".into(), Py::List(feats))]);
     std::fs::write(b.join("whs-shapes.json"), dumps(&fc))?;
     drop(p);
@@ -836,10 +836,10 @@ pub fn run(root: &Path, wikidata: &str) -> Result<()> {
         sites.ids.len()
     );
 
-    let p = phase("finding the sites' items", Class::Compute);
+    let p = phase("finding the sites' items");
     let items = site_items(&sites, &p757);
     drop(p);
-    let p = phase("placing the sites' dots", Class::Compute);
+    let p = phase("placing the sites' dots");
     let mut out = vec![];
     for s in &sites.ids {
         let q = items.get(s).map_or(vec![], |l| l.iter().map(|q| Py::Str(q.clone())).collect());
@@ -882,7 +882,7 @@ pub fn run(root: &Path, wikidata: &str) -> Result<()> {
         out.push((s.clone(), Py::Dict(rec)));
     }
     drop(p);
-    let p = phase("writing the sites", Class::Disk);
+    let p = phase("writing the sites");
     let n = out.iter().filter(|(_, r)| r.get("dot").is_some()).count();
     std::fs::write(b.join("whs-sites.json"), dumps(&Py::Dict(out)))?;
     drop(p);

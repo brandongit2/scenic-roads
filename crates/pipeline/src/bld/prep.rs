@@ -731,9 +731,9 @@ const JOBS: usize = 4;
 #[cfg(not(target_os = "wasi"))]
 pub fn read(root: &store::nasfs::NasRoot, release: &str, ghsl: &str, t: TileId) -> Result<Prepped> {
     use super::sources::{release_dir, Sources, PART_MARGIN_DEG};
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     ensure!(t.z == 6, "bldprep takes z6 tiles ({} isn't one)", t.slash());
-    let p = phase("reading the file list and footers", Class::NasRead);
+    let p = phase("reading the file list and footers");
     let src = Sources::read(root, release, ghsl)?
         .with_context(|| format!("{}: nothing downloaded (no buildings.json)", release_dir(release)))?;
     drop(p);
@@ -763,7 +763,7 @@ pub fn read(root: &store::nasfs::NasRoot, release: &str, ghsl: &str, t: TileId) 
         files.push(serde_json::json!([f.name, f.etag, rgs]));
     }
     eprintln!("bldprep: {}: {} row groups in {} files", t.slash(), jobs.len(), files.len());
-    let p = phase("reading the GHSL windows", Class::NasRead);
+    let p = phase("reading the GHSL windows");
     let (ghsl_frames, used) = super::ghsl::windows(&root.join(ghsl), &src.ghsl, b)?;
     drop(p);
     let mut prepped = Prepped::default();
@@ -771,7 +771,7 @@ pub fn read(root: &store::nasfs::NasRoot, release: &str, ghsl: &str, t: TileId) 
         prepped.take(f, t)?;
     }
     drop(ghsl_frames);
-    let _p = phase("reading the row groups", Class::Mixed);
+    let _p = phase("reading the row groups");
     // Each file's footer, once.
     let mut opened: HashMap<usize, (store::nasfs::NasPath, parquet::arrow::arrow_reader::ArrowReaderMetadata)> =
         HashMap::new();
@@ -818,7 +818,7 @@ pub fn read(root: &store::nasfs::NasRoot, release: &str, ghsl: &str, t: TileId) 
 /// (or, when T has no building, the one it had dropped). Its counts.
 #[cfg(not(target_os = "wasi"))]
 pub fn run(out: &mut crate::out::Out, t: TileId) -> Result<Stats> {
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     let (release, ghsl, _) = super::sources::declared(&crate::inputs::sources::read(out.root(), &out.manifest)?)?;
     let t0 = std::time::Instant::now();
     let p = read(out.root(), &release, &ghsl, t).with_context(|| format!("bldprep {}", t.slash()))?;
@@ -832,10 +832,10 @@ pub fn run(out: &mut crate::out::Out, t: TileId) -> Result<Stats> {
         return Ok(p.stats);
     }
     let local = out.scratch_file(&format!("{logical}.sect"));
-    let w = phase("writing the normalized file", Class::Disk);
+    let w = phase("writing the normalized file");
     let st = p.write(t, &release, &local)?;
     drop(w);
-    let w = phase("uploading", Class::NasWrite);
+    let w = phase("uploading");
     let name = out.put_file(&logical, "sect", &local)?;
     drop(w);
     out.save()?;

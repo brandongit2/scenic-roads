@@ -704,17 +704,17 @@ fn read(t: &Tiff, level: usize, x0: i64, y0: i64, x1: i64, y1: i64) -> Result<Op
 /// Source `src` on the zoom-z window of global pixels `c0..c0 + w`, `r0..r0 + h` (beyond the
 /// world's edge: none); None when it has nothing there.
 pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: usize) -> Result<Option<Sample>> {
-    use crate::timings::{sub, Class};
+    use crate::timings::sub;
     let b = window_box(z, c0, r0, w, h);
     let grids: Vec<&Grid> = src.meeting(b).collect();
     SAMPLED[1].fetch_add(grids.len() as u64, std::sync::atomic::Ordering::Relaxed);
     let together = GRIDS_TOGETHER.load(std::sync::atomic::Ordering::Relaxed);
     if together {
-        let _p = sub("opening the depth source files", Class::NasRead);
+        let _p = sub("opening the depth source files");
         let paths: Vec<Loc<'_>> = grids.iter().flat_map(|g| (0..2).filter_map(|k| g.loc(k))).collect();
         rd.open_all(&paths).with_context(|| format!("the depth source {}", src.id))?;
     }
-    let _p = sub("reading the depth sources' windows", Class::NasRead);
+    let _p = sub("reading the depth sources' windows");
     let one = |g: &Grid| {
         sample_grid(rd, g, z, c0, r0, w, h)
             .with_context(|| format!("the depth source {}: {}", src.id, g.file.display()))

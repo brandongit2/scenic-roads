@@ -173,6 +173,7 @@ impl Http {
 
     /// `url`'s bytes (`rng`: first and last), whole.
     pub fn get_bytes(&self, url: &str, rng: Option<(u64, u64)>) -> Result<Vec<u8>> {
+        let _w = store::waits::net();
         let what = url.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(url);
         let what: String = what.chars().take(60).collect();
         self.retried(&what, || {
@@ -516,11 +517,11 @@ fn overture_jobs(
     types: &[String],
     near: &Near,
 ) -> Result<(Vec<Job>, NasPath)> {
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     let base = root.join(super::sources::release_dir(release));
     base.create_dir_all()?;
     // Every file's row groups (kept: a release's files never change).
-    let p = phase("reading the footers' kept copy", Class::NasRead);
+    let p = phase("reading the footers' kept copy");
     let foot_path = base.join("footers.json.gz");
     let mut footers: BTreeMap<String, Py> = BTreeMap::new();
     if foot_path.exists() {
@@ -535,7 +536,7 @@ fn overture_jobs(
         }
     }
     drop(p);
-    let p = phase("listing the release's files on S3", Class::Net);
+    let p = phase("listing the release's files on S3");
     let mut listed = Vec::new();
     for t in types {
         let prefix = format!("release/{release}/theme=buildings/type={t}/");
@@ -573,7 +574,7 @@ fn overture_jobs(
         .collect();
     if !todo.is_empty() {
         eprintln!("bld-fetch: reading {} files' footers", todo.len());
-        let p = phase("reading the files' footers from S3", Class::Net);
+        let p = phase("reading the files' footers from S3");
         let done = AtomicU64::new(0);
         let read: Vec<Result<(String, Py)>> = {
             let pool = rayon::ThreadPoolBuilder::new().num_threads(TRANSFERS + 1).build()?;
@@ -610,10 +611,10 @@ fn overture_jobs(
             footers.insert(k, v);
         }
         drop(p);
-        let _p = phase("writing the footers' kept copy", Class::NasWrite);
+        let _p = phase("writing the footers' kept copy");
         write_json(&foot_path, Py::Dict(footers.clone().into_iter().collect()), true)?;
     }
-    let _p = phase("picking the files meeting the coverage", Class::Compute);
+    let _p = phase("picking the files meeting the coverage");
     let mut jobs = Vec::new();
     for f in &listed {
         let c = &footers[&f.key];
@@ -674,11 +675,11 @@ fn ghsl_jobs(
     src: &crate::inputs::sources::Source,
     near: &Near,
 ) -> Result<(Vec<Job>, NasPath)> {
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     let base = root.join(super::sources::ghsl_dir(src.version()?));
     base.create_dir_all()?;
     ensure!(!src.index.is_empty(), "GHSL: its declaration's index lists no tiles");
-    let p = phase("picking the files meeting the coverage", Class::Compute);
+    let p = phase("picking the files meeting the coverage");
     let mut index: Vec<&crate::inputs::sources::Feature> = src.index.iter().collect();
     index.sort_by(|a, b| a.url.cmp(&b.url));
     let mut jobs = Vec::new();
@@ -701,7 +702,7 @@ fn ghsl_jobs(
         }
     }
     drop(p);
-    let _p = phase("listing the GHSL tiles", Class::Net);
+    let _p = phase("listing the GHSL tiles");
     let pool = rayon::ThreadPoolBuilder::new().num_threads(TRANSFERS).build()?;
     let sizes: Vec<Result<u64>> = pool.install(|| {
         use rayon::prelude::*;
@@ -1071,7 +1072,7 @@ fn regions(cov: &Coverage) -> Vec<String> {
 /// Fetches what the coverage needs and writes the indexes (see the module's docs).
 pub fn run(a: Args<'_>) -> Result<()> {
     use crate::inputs::sources::{BUILDINGS, BUILDING_HEIGHTS};
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     let root = a.root;
     ensure!(root.join("sources").is_dir(), "{}: not the NAS's project folder (no sources/)", root.display());
     let lock = crate::sys::PathLock::take(&std::env::temp_dir().join("bldfetch.lock"), false)?;
@@ -1087,7 +1088,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
         store::sys::host(),
         root.display()
     );
-    let p = phase("reading the coverage", Class::Compute);
+    let p = phase("reading the coverage");
     let near = Near::new(a.cov, MARGIN_KM)?;
     let what = regions(a.cov);
     drop(p);
@@ -1102,7 +1103,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
     let (gh, gh_base) = ghsl_jobs(&http, root, g, &near)?;
     eprintln!("bld-fetch: ghsl: {} tiles meet the coverage, {}", gh.len(), gb(gh.iter().map(|j| j.size as f64).sum()));
     let jobs: Vec<Job> = ov.into_iter().chain(gh).collect();
-    let p = phase("checking the files here", Class::NasRead);
+    let p = phase("checking the files here");
     let whole = |j: &Job| j.dest.metadata().is_ok_and(|m| m.len() == j.size);
     let known: u64 = jobs.iter().map(|j| j.size).sum();
     let left: u64 = jobs.iter().filter(|j| !whole(j)).map(|j| j.size).sum();
@@ -1136,7 +1137,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
     order.sort_by_key(|j| (!j.ghsl, !j.name.contains("type=building_part/"), j.name.clone()));
     let next = AtomicU64::new(0);
     let stop_report = AtomicBool::new(false);
-    let p = phase("downloading the files to the NAS", Class::Net);
+    let p = phase("downloading the files to the NAS");
     std::thread::scope(|s| {
         s.spawn(|| {
             let mut last = Instant::now();
@@ -1191,7 +1192,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
     });
     drop(p);
     eprintln!("bld-fetch: {}", prog.line());
-    let _p = phase("writing the indexes", Class::NasWrite);
+    let _p = phase("writing the indexes");
     save(&checked.lock().unwrap_or_else(|e| e.into_inner()));
     let failed = failed.into_inner().unwrap_or_default();
     if !failed.is_empty() {

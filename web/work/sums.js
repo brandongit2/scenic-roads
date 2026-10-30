@@ -521,16 +521,23 @@ export function rowsWindow(top, height, rowH, n, over = 6) {
 // The lead's `phase_times` (crate::timings::PhaseTimes: each step's runs summed by the first of
 // `edges` their end is within) over the footer's range `range` (seconds): the runs that ended within
 // it (the sums of the edges up to it), each phase's wall and CPU seconds and NAS and internet MB
-// summed, and their time in no phase (`untimed`). Null when the step ran none in the range.
+// summed, its measured waits (task #870: `w`, the runs that measured them: `measured` of its wall,
+// split into `waits`' NAS, network, disk and other work seconds), and their time in no phase
+// (`untimed`). Null when the step ran none in the range.
 export function phaseBreakdown(pt, step, range) {
   const st = pt?.steps?.[step];
   if (!st) return null;
   const upto = (pt.edges || []).reduce((k, e, i) => (e <= range ? i : k), -1);
-  const out = { runs: 0, failed: 0, wall: 0, cpu: 0, parts: st.phases.map(([name, cls]) => ({ name, cls, wall: 0, cpu: 0, nas: 0, net: 0 })) };
+  const out = { runs: 0, failed: 0, wall: 0, cpu: 0, parts: st.phases.map(([name, cls]) => ({ name, cls, wall: 0, cpu: 0, nas: 0, net: 0, measured: 0, waits: { nas: 0, net: 0, disk: 0, other: 0 } })) };
   for (const [e, runs, failed, wall, cpu, ps] of st.b) {
     if (e > upto) continue;
     out.runs += runs; out.failed += failed; out.wall += wall; out.cpu += cpu;
     for (const [i, w, c, nas, net] of ps) { const p = out.parts[i]; if (!p) continue; p.wall += w; p.cpu += c; p.nas += nas; p.net += net; }
+  }
+  for (const [e, i, mw, nas, net, disk, other] of st.w || []) {
+    const p = out.parts[i];
+    if (e > upto || !p) continue;
+    p.measured += mw; p.waits.nas += nas; p.waits.net += net; p.waits.disk += disk; p.waits.other += other;
   }
   if (!out.runs) return null;
   out.parts = out.parts.filter((p) => p.wall > 0).sort((a, b) => b.wall - a.wall);
@@ -538,14 +545,39 @@ export function phaseBreakdown(pt, step, range) {
   return out;
 }
 
-// What a phase waits on, by its class (crate::timings::Class), for the time breakdown's tooltips.
+// What a phase's measured segments are (task #870), in the bar's order: waits by the job's wall
+// clock (an instant is the NAS's when any of its threads is in a NAS call, else the network's, else
+// the disk's, else other work's; the rest computing: crate::timings::Waits).
+export const WAIT_PARTS = [
+  ["nas", "waiting on the NAS"], ["net", "waiting on the network"], ["disk", "reading/writing the local disk"],
+  ["other", "waiting on other work"], ["cpu", "computing"],
+];
+// How the waits count, for the tooltips.
+export const WAITS_RULE = "Measured by the job's wall clock: an instant counts as waiting on the NAS when any of the job's threads is in a NAS call, else on the network, else on the local disk, else on other work (another worker, a thread); the rest is computing. So the parts add up to the phase's wall time, however many threads wait at once.";
+
+// A phase's time (`phaseBreakdown`'s part) as segments [{key, label, s}]: its measured wall time
+// split by WAIT_PARTS (computing what the waits leave; rounding held within it), then the wall
+// time of runs from before the measurement (`key` "old", by its declared class `cls`). Empty
+// segments left out.
+export function phaseSplit(p) {
+  const m = Math.min(p.measured || 0, p.wall);
+  const w = p.waits || {};
+  const waited = ["nas", "net", "disk", "other"].reduce((t, k) => t + (w[k] || 0), 0);
+  const k = waited > m && waited > 0 ? m / waited : 1;
+  const segs = WAIT_PARTS.map(([key, label]) => ({ key, label, s: key === "cpu" ? Math.max(0, m - waited * k) : (w[key] || 0) * k }));
+  segs.push({ key: "old", label: `not measured (older runs${p.cls ? `: declared ${PHASE_CLASS[p.cls] || p.cls}` : ""})`, s: Math.max(0, p.wall - m) });
+  return segs.filter((x) => x.s > 0);
+}
+
+// What an older run's phase was declared to wait on, by its class (before task #870, and the
+// Python twin's), for the time breakdown's tooltips.
 export const PHASE_CLASS = {
   "nas-read": "reading the NAS", "nas-write": "writing to the NAS", disk: "the Mac's own disk", net: "the internet (or another Mac)",
-  compute: "the CPU", wait: "a lock, a slot or another worker", mixed: "several things (its sub-phases)",
+  compute: "the CPU", wait: "a lock, a slot or another worker", mixed: "several things",
 };
 
 // A line on what each phase does (the time breakdown's tooltip), the phases that take a step's time;
-// another phase: its name and class say it.
+// another phase: its name says it.
 export const PHASE_ABOUT = {
   "making the piece's terrain tiles, z12 down to z9": "Samples the terrain pool's datasets for a z9 piece's tiles, levels the lakes, shades and encodes them as WebP.",
   "sampling the fine elevation data into high-zoom terrain": "Samples the fine datasets (HRDEM, 3DEP and others) for the z10 tile's deep levels, blends their edges and brings them to EGM2008.",

@@ -965,7 +965,7 @@ impl Run<'_> {
                 .ok_or_else(|| ("ValueError".to_string(), format!("Invalid isoformat string: {fetched:?}")))?;
             let path = PathBuf::from(c["path"].as_str().unwrap_or(""));
             let fresh = {
-                let _p = crate::timings::phase("checking the NAS's zips for service", crate::timings::Class::NasRead);
+                let _p = crate::timings::phase("checking the NAS's zips for service");
                 let rail = if serves(f, "rail") { railcount::has_service(&path, day) } else { Ok(false) };
                 let r = match rail {
                     Ok(true) => Ok(true),
@@ -996,7 +996,7 @@ impl Run<'_> {
                 return Ok((State::Zip, cached));
             }
             let got = {
-                let _p = crate::timings::phase("downloading the feeds' zips", crate::timings::Class::Net);
+                let _p = crate::timings::phase("downloading the feeds' zips");
                 self.net.fetch(f, &dest, key.as_deref())
             };
             let (ok, why) = got.unwrap_or_else(|e| (false, format!("no answer ({e})")));
@@ -1009,7 +1009,7 @@ impl Run<'_> {
             return Ok((State::Zip, with(rec, &[("zip", st("new".into())), ("fetched", st(self.today.iso()))])));
         }
         let got = {
-            let _p = crate::timings::phase("downloading the feeds' zips", crate::timings::Class::Net);
+            let _p = crate::timings::phase("downloading the feeds' zips");
             self.net.fetch(f, &dest, key.as_deref())
         };
         let (ok, why) = match got {
@@ -1044,7 +1044,7 @@ impl Run<'_> {
     /// Why a declared feed with a zip is left out of the rail list: its stops all beyond the
     /// coverage, or (its modes not said) no rail routes. None: it's in.
     fn beyond(&self, f: &Py, rec: &Py, cov: &Coverage) -> Result<Option<String>> {
-        let _p = crate::timings::phase("reading the declared feeds' stops", crate::timings::Class::NasRead);
+        let _p = crate::timings::phase("reading the declared feeds' stops");
         let i = f.at("id").py_str();
         let path = self.zip_path(&i, rec);
         let r = (|| -> gtfs::R<Option<String>> {
@@ -1070,11 +1070,11 @@ impl Run<'_> {
 
 /// The run: what it checked and fetched is written in `out` even when it fails (Err).
 pub fn run(a: Args<'_>) -> Result<()> {
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     let out = a.out.clone();
     std::fs::create_dir_all(&out)?;
     let today = gtfs::today();
-    let p = phase("reading the checks, keys and the NAS's list", Class::Disk);
+    let p = phase("reading the checks, keys and the NAS's list");
     let countries: HashSet<String> = a.countries.iter().filter(|c| !c.is_empty()).cloned().collect();
     let decls: Vec<Py> = a.declarations.iter().map(pyjson::from_serde).collect();
     let cat = decls
@@ -1120,7 +1120,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
     // The catalogue: its pinned copy, else its declaration's URL fetched.
     let mut catalogue = a.catalogue.clone();
     if catalogue.is_none() && cat.at("url").truthy() {
-        let _p = phase("fetching the catalogue", Class::Net);
+        let _p = phase("fetching the catalogue");
         let url = cat.at("url").py_str();
         let dest = out.join("catalogue.csv");
         let r = net.ask(&url, None, false);
@@ -1137,7 +1137,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
         catalogue = Some(dest);
     }
     // The catalogue's feeds here, each checked once (again while one gets no answer).
-    let p = phase("listing the catalogue's feeds", Class::Compute);
+    let p = phase("listing the catalogue's feeds");
     let country_of: HashMap<String, String> = match cat.get("country") {
         Some(Py::Dict(d)) => d.iter().map(|(k, v)| (k.clone(), v.py_str())).collect(),
         _ => HashMap::new(),
@@ -1158,7 +1158,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
         todo.len()
     );
     let done: Vec<Py> = {
-        let _p = phase("checking the catalogue's feeds", Class::Net);
+        let _p = phase("checking the catalogue's feeds");
         let next = std::sync::atomic::AtomicUsize::new(0);
         let n_done = std::sync::atomic::AtomicUsize::new(0);
         let results: Vec<std::sync::Mutex<Option<Py>>> = todo.iter().map(|_| std::sync::Mutex::new(None)).collect();
@@ -1178,7 +1178,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
         results.into_iter().map(|m| m.into_inner().unwrap().unwrap()).collect()
     };
     {
-        let _p = phase("writing the lists", Class::Disk);
+        let _p = phase("writing the lists");
         for c in &done {
             checked.insert(c.at("id").py_str(), c.clone());
         }
@@ -1260,7 +1260,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
 
     // Each feed's zip: the NAS's, else fetched; a stale one again once it's its `refresh` days old.
     let mine: HashSet<String> = own.iter().map(|f| f.at("id").py_str()).collect();
-    let p = phase("placing the feeds' zips", Class::Mixed);
+    let p = phase("placing the feeds' zips");
     let mut feeds = Vec::new();
     for (k, f) in order.iter().enumerate() {
         crate::agent::jobs::report(k as u64, order.len() as u64, "feeds' zips");

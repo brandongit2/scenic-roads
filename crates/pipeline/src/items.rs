@@ -24,7 +24,7 @@ use crate::agent::jobs::report;
 use crate::heritagewd::{wikipedias_told, write_atomic};
 use crate::interest::py_round;
 use crate::pyjson::{dumps_spaced, loads, Py};
-use crate::timings::{phase, Class};
+use crate::timings::phase;
 use crate::wikiask::{val, Asker};
 use anyhow::{Context, Result};
 use std::collections::{BTreeSet, HashMap};
@@ -194,7 +194,7 @@ pub fn run(
     std::fs::create_dir_all(cache)?;
     std::fs::create_dir_all(out)?;
     let ask = Asker::new();
-    let p = phase("reading the caches", Class::Disk);
+    let p = phase("reading the caches");
     let dpath = cache.join(format!("fetched-{epoch}.json"));
     let mut fetched = match std::fs::read_to_string(&dpath) {
         Ok(t) => loads(&t).context("parse fetched.json")?,
@@ -222,11 +222,11 @@ pub fn run(
         let k = c * CHUNK;
         // (The job's progress; within a chunk, said again after each of its batches.)
         report(k as u64, todo.len() as u64, what);
-        let p = phase("fetching facts from Wikidata", Class::Net);
+        let p = phase("fetching facts from Wikidata");
         let got = facts_of(&ask, wikidata, chunk, &mut |n| report((k + n) as u64, todo.len() as u64, what))?;
         drop(p);
         // Items Wikidata doesn't know (merged, deleted) are remembered as such, not asked again.
-        let _p = phase("appending to the caches", Class::Disk);
+        let _p = phase("appending to the caches");
         let missing = Py::Dict(vec![("sl".into(), Py::Int("0".into())), ("missing".into(), Py::Bool(true))]);
         let rows: Vec<Py> = chunk.iter().map(|q| with_qid(q, got.get(q).unwrap_or(&missing))).collect();
         append_jsonl(&fpath, &rows)?;
@@ -238,7 +238,7 @@ pub fn run(
 
     // Each item's Wikipedia articles: this epoch's.
     let wpath = cache.join(format!("wp-{epoch}.jsonl"));
-    let p = phase("reading the caches", Class::Disk);
+    let p = phase("reading the caches");
     let wp: BTreeSet<String> = read_jsonl(&wpath)?.into_iter().map(|(q, _)| q).collect();
     drop(p);
     let need: Vec<String> = views_q.iter().filter(|q| !wp.contains(*q)).cloned().collect();
@@ -249,12 +249,12 @@ pub fn run(
         let k = c * CHUNK;
         report(k as u64, need.len() as u64, what);
         let got = wikipedias_told(&ask, wikidata, chunk, &mut |n| report((k + n) as u64, need.len() as u64, what))?;
-        let _p = phase("appending to the caches", Class::Disk);
+        let _p = phase("appending to the caches");
         append_jsonl(&wpath, &got.iter().map(|(q, r)| with_qid(q, r)).collect::<Vec<_>>())?;
         note_fetch()?;
     }
 
-    let p = phase("writing the outputs", Class::Disk);
+    let p = phase("writing the outputs");
     let known: Vec<(String, Py)> = facts_q
         .iter()
         .map(|q| (q.clone(), facts[q].clone()))
@@ -264,7 +264,7 @@ pub fn run(
     write_atomic(&file, &dumps_spaced(&Py::Dict(known)))?;
     drop(p);
     // Older epochs' caches go.
-    let _p = phase("deleting the old caches", Class::Disk);
+    let _p = phase("deleting the old caches");
     for e in std::fs::read_dir(cache)?.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let stem = name.split('.').next().unwrap_or("");

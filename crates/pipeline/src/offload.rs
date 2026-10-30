@@ -304,7 +304,7 @@ impl Offload {
         p: Patience,
         here: &mut dyn FnMut() -> Result<()>,
     ) -> Result<Option<Settled>> {
-        use crate::timings::{phase, Class};
+        use crate::timings::phase;
         let root = t.root.clone();
         self.settle_with(
             t,
@@ -312,11 +312,11 @@ impl Offload {
             p,
             here,
             &mut |st| {
-                let _p = phase("taking in a worker's results", Class::Disk);
+                let _p = phase("taking in a worker's results");
                 take(st, dir)
             },
             &mut |st, since| {
-                let _p = phase("checking a worker's results against this Mac's", Class::Disk);
+                let _p = phase("checking a worker's results against this Mac's");
                 same(st, dir, &root, since)
             },
         )
@@ -346,7 +346,8 @@ impl Offload {
     }
 
     fn wait_on(&self, t: &Offered, mut st: serde_json::Value, p: Patience) -> Result<serde_json::Value> {
-        let _p = crate::timings::phase("waiting on other workers", crate::timings::Class::Wait);
+        let _p = crate::timings::phase("waiting on other workers");
+        let _o = store::waits::other();
         let status = || -> Result<serde_json::Value> { Ok(self.status(t)) };
         let clock = &*self.clock;
         let since = |t: std::time::Instant| clock.now().saturating_duration_since(t);
@@ -581,7 +582,7 @@ pub fn run_task(
     })));
     // (Each input's hash: what's written back unchanged isn't sent, the z6 tile's folder has it.)
     let mut sent = std::collections::HashMap::new();
-    let fetching = crate::timings::phase("fetching its files from the coordinator", crate::timings::Class::Net);
+    let fetching = crate::timings::phase("fetching its files from the coordinator");
     for (p, n) in &inputs {
         let rel = crate::coord::task::safe(p).with_context(|| format!("a task input outside its folder: {p}"))?;
         let t = std::time::Instant::now();
@@ -634,7 +635,7 @@ pub fn run_task(
     crate::unit::on_stage(None);
     crate::agent::jobs::stage(steps - 1, steps, "steps (sending what they wrote)");
     let had: std::collections::BTreeSet<&str> = inputs.iter().map(|(p, _)| p.as_str()).collect();
-    let sending = crate::timings::phase("sending back what they wrote", crate::timings::Class::Net);
+    let sending = crate::timings::phase("sending back what they wrote");
     let mut outputs = Vec::new();
     for (rel, f) in files_under(&dir.join("u"), "u")? {
         let written = std::fs::metadata(&f)?.modified()? >= started || !had.contains(rel.as_str());

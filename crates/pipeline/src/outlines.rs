@@ -319,11 +319,11 @@ pub fn assemble(
     out: &Path,
     previous: Option<(store::nasfs::Loc<'_>, &str)>,
 ) -> Result<Summary> {
-    use crate::timings::{sub, Class};
+    use crate::timings::sub;
     std::fs::create_dir_all(work)?;
     let rels_opl = work.join("outlines-relations.opl");
     // (Each program and stage its sub-phase, with the memory it held: crate::timings.)
-    let p = sub("listing the relations (osmium cat)", Class::Compute);
+    let p = sub("listing the relations (osmium cat)");
     osmium(
         store::spawn::command("osmium")
             .args(["cat", "-t", "relation", "-f", "opl", "--overwrite", "-o"])
@@ -339,7 +339,7 @@ pub fn assemble(
     // dense array as big as the highest node id (about 100 GB for the planet's).
     let idx = work.join("outlines-nodes.idx");
     std::fs::remove_file(&idx).ok();
-    let p = sub("exporting the polygons (osmium export)", Class::Compute);
+    let p = sub("exporting the polygons (osmium export)");
     let st = store::spawn::status(
         store::spawn::command("osmium")
             .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite"])
@@ -352,12 +352,12 @@ pub fn assemble(
     std::fs::remove_file(&idx).ok();
     ensure!(st.success(), "osmium export of {} failed: {st}", set.display());
     drop(p);
-    let p = sub("reading the export", Class::Compute);
+    let p = sub("reading the export");
     let parsed = read_export(&geo);
     std::fs::remove_file(&geo).ok();
     let mut parsed = parsed?;
     drop(p);
-    let p = sub("repairing the left-out countries", Class::Compute);
+    let p = sub("repairing the left-out countries");
     let have: std::collections::HashSet<u64> = parsed.iter().map(|p| p.id).collect();
     let missing: Vec<&opl::Relation> = rels.iter().filter(|r| !have.contains(&r.id)).collect();
     let (countries, others): (Vec<&opl::Relation>, Vec<&opl::Relation>) =
@@ -405,7 +405,7 @@ pub fn assemble(
         }
     }
     drop(p);
-    let _p = sub("simplifying, placing and writing", Class::Compute);
+    let _p = sub("simplifying, placing and writing");
     write(parsed, out, sum)
 }
 
@@ -1249,7 +1249,7 @@ mod tests {
         let previous =
             crate::osmpass::previous_outlines(&out.manifest, a[1]).map(|(d, c)| (out.path(c), d.to_string()));
         crate::timings::start("outlines");
-        let p = crate::timings::phase("assembling", crate::timings::Class::Compute);
+        let p = crate::timings::phase("assembling");
         let s = assemble(
             &set.unchecked_path(),
             &scratch.path().join("work"),

@@ -13,7 +13,7 @@
 //! order, numbers as Python writes them (crate::pyjson).
 
 use crate::pyjson::{dumps, loads, Py};
-use crate::timings::{phase, Class};
+use crate::timings::phase;
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
@@ -102,11 +102,11 @@ fn props(f: &mut Py) -> Option<&mut Py> {
 
 /// The heritage sites' values (heritage.json, from details-heritage.jsonl).
 fn heritage(b: &Path) -> Result<()> {
-    let p = phase("reading the layers and details", Class::Disk);
+    let p = phase("reading the layers and details");
     let mut fc = read(b, "heritage.json")?;
     let det = jsonl(b, "details-heritage.jsonl")?;
     drop(p);
-    let ph = phase("setting the filter values", Class::Compute);
+    let ph = phase("setting the filter values");
     let empty = Py::Dict(vec![]);
     let mut n = 0;
     for f in features(&mut fc)? {
@@ -132,7 +132,7 @@ fn heritage(b: &Path) -> Result<()> {
         n += (p.get("by").is_some() || p.get("wp").is_some()) as usize;
     }
     drop(ph);
-    let _p = phase("writing the layers", Class::Disk);
+    let _p = phase("writing the layers");
     write(b, "heritage.json", &fc)?;
     eprintln!("heritage.json: {n} sites with a build year or article");
     Ok(())
@@ -143,11 +143,11 @@ fn areas(b: &Path) -> Result<()> {
     for (name, layer) in
         [("heritage-areas.json", "harea"), ("special.json", "special"), ("indigenous.json", "indigenous")]
     {
-        let p = phase("reading the layers and details", Class::Disk);
+        let p = phase("reading the layers and details");
         let mut fc = read(b, name)?;
         let det = jsonl(b, &format!("details-{layer}.jsonl"))?;
         drop(p);
-        let p = phase("setting the filter values", Class::Compute);
+        let p = phase("setting the filter values");
         for f in features(&mut fc)? {
             let Some(p) = props(f) else { bail!("a feature of {name} without properties") };
             let a = det.get(&p.at("i").key()).map(|r| r.at("area_km2").clone()).unwrap_or(Py::Null);
@@ -156,7 +156,7 @@ fn areas(b: &Path) -> Result<()> {
             }
         }
         drop(p);
-        let _p = phase("writing the layers", Class::Disk);
+        let _p = phase("writing the layers");
         write(b, name, &fc)?;
     }
     eprintln!("areas: a (km²) on heritage districts, biospheres & co., Indigenous lands");

@@ -353,9 +353,9 @@ pub struct Stage {
     _p: crate::timings::Phase,
 }
 
-/// Starts stage `what` of class `class`.
-pub fn stage(what: &str, class: crate::timings::Class) -> Stage {
-    Stage { what: what.to_string(), t: std::time::Instant::now(), _p: crate::timings::phase(what, class) }
+/// Starts stage `what`.
+pub fn stage(what: &str) -> Stage {
+    Stage { what: what.to_string(), t: std::time::Instant::now(), _p: crate::timings::phase(what) }
 }
 
 impl Stage {
@@ -363,18 +363,6 @@ impl Stage {
         let took = self.t.elapsed();
         eprintln!("  {}: {took:.0?}", self.what);
         stage_said(&self.what, 1.0, Some(took));
-    }
-}
-
-/// What a z6 tile's step program mostly waits on, for its phase (crate::timings): its elevations read
-/// the DEM servers' files (and say their own phases), the land cover downloads ESA's, the canopy
-/// reads the canopy squares; the rest compute over the z6 tile's folder.
-pub fn program_class(what: &str) -> crate::timings::Class {
-    use crate::timings::Class;
-    match what {
-        "sampling the elevations (elev)" => Class::Mixed,
-        "classifying the land cover (landcover)" => Class::Net,
-        _ => Class::Compute,
     }
 }
 
@@ -451,7 +439,7 @@ pub fn source_down(e: &anyhow::Error) -> bool {
 fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     let f = std::fs::File::options().create(true).append(true).open(log)?;
     // (Its phase, the program's own phases under it where it says them.)
-    let _p = crate::timings::phase(what, program_class(what));
+    let _p = crate::timings::phase(what);
     crate::timings::child(&mut c);
     // (What it and its programs read and open, counted in a folder of their own inside this
     // process's, seen as it runs: added to this process's as it ends, store::nasio.)
@@ -581,8 +569,7 @@ pub fn prepare_folder(
     let mut c = store::spawn::command(tools.bin.join("extract"));
     c.arg(dir).arg(&spacing).arg(piece);
     run_in(c, "extracting the ways (extract)", &log, dir, tools)?;
-    use crate::timings::Class;
-    let s = stage("cutting to the coverage", Class::Compute);
+    let s = stage("cutting to the coverage");
     rep.piece_ways = roadcore::Ways::open(dir)?.ways().len();
     // 2. Only what touches the coverage goes on.
     let (kw, kv) = subset(dir, |_, vs| cov.touches(vs))?;
@@ -604,7 +591,7 @@ pub fn prepare_folder(
         .context("the unit's sources: the declared sources' accepted version isn't given (docs/inputs.md §6.9)")?;
     std::fs::write(dir.join(UnitSources::FILE), serde_json::to_vec(&UnitSources::of(declared)?)?)?;
     // 4. The global-source layers the steps read, from the packs.
-    let s = stage("staging layers from the packs", Class::NasRead);
+    let s = stage("staging layers from the packs");
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     // (With the terrain the roads' heights read: the deep tiles under the vertices; and the
     // datasets' codes.)
@@ -614,7 +601,7 @@ pub fn prepare_folder(
     s.end();
     // The heritage sites around the z6 tile (the flags step's `heritage.json`), and the designated
     // areas rasterised onto its grid (`grid.areas.u8`), from the heritage-sites job's slices.
-    let s = stage("staging the heritage inputs", Class::NasRead);
+    let s = stage("staging the heritage inputs");
     (rep.heritage, rep.areas) = heritage(b, dir)?;
     s.end();
     let mut c = store::spawn::command(tools.bin.join("areaflags"));
@@ -630,7 +617,7 @@ pub fn prepare_folder(
     // Its last run's scenic results (pipeline::scache: the canopy and view steps copy what's
     // unchanged), restored over the staged grids they were made from.
     if let Some(c) = carry {
-        let s = stage("restoring scenic results", Class::NasRead);
+        let s = stage("restoring scenic results");
         // (From the copy made ahead of it, while the z6 tile before it built: `ahead_carry`.)
         let ahead = ahead_carry(dir);
         match c.restore_ahead(dir, ahead.is_dir().then_some(ahead.as_path())) {

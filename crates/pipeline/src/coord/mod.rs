@@ -6013,8 +6013,8 @@ mod tests {
             serde_json::from_value(serde_json::json!({ "worker": "ipad", "lease": 999, "timings": page })).unwrap();
         let t = d.timings.unwrap();
         assert_eq!(
-            (t.kind.as_str(), t.phases.len(), t.phases[1].class, t.phases[0].cpu_s),
-            ("task tail", 2, crate::timings::Class::Mixed, None)
+            (t.kind.as_str(), t.phases.len(), t.phases[1].class.as_str(), t.phases[0].cpu_s),
+            ("task tail", 2, "mixed", None)
         );
     }
 

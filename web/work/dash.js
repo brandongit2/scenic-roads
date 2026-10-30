@@ -20,7 +20,7 @@
 // activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { AREAS, HIDDEN_STATES, PHASE_ABOUT, PHASE_CLASS, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobRelations, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown } from "./sums.js";
+import { AREAS, HIDDEN_STATES, PHASE_ABOUT, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobRelations, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown, phaseSplit, WAITS_RULE } from "./sums.js";
 import { fmt } from "./chartmath.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
@@ -800,7 +800,7 @@ function inside(j, now, fc) {
   const l = j.live;
   if (!l) return null;
   const rows = [];
-  if (l.phase) rows.push(h("div", null, h("span", "k", "phase"), h("span", null, h("b", null, l.phase), l.class ? h("span", "dim", ` ${l.class}`) : null, l.phase_since ? h("span", "dim", ` · ${dur(now - l.phase_since)}`) : null)));
+  if (l.phase) rows.push(h("div", null, h("span", "k", "phase"), h("span", null, h("b", null, l.phase), l.phase_since ? h("span", "dim", ` · ${dur(now - l.phase_since)}`) : null)));
   if (l.target) {
     const each = fc?.each_s?.[stepOf(j.id)];
     const took = l.target_since ? now - l.target_since : null;
@@ -1442,43 +1442,53 @@ function stagesList(m) {
 // The footer's range (seconds; this browser's own, index.html's `range`), and its words ("6 h").
 const chartRange = () => ctx?.store.get("range", 3600) ?? 3600;
 const rangeWords = (r) => document.querySelector(`#range option[value="${r}"]`)?.textContent || dur(r);
-// What each phase class is drawn in (crate::timings::Class); time in no phase, faint.
-const PHASE_COLOURS = { "nas-read": "#3d6fa8", "nas-write": "#2f8a8a", disk: "#56708f", net: "#7a5fb0", compute: "#a8823d", wait: "#6b6f76", mixed: "#4f6d8f" };
+// What each measured segment of a phase is drawn in (WAIT_PARTS; "old": an older run's unmeasured
+// time); time in no phase, faint.
+const WAIT_COLOURS = { nas: "#3d6fa8", net: "#7a5fb0", disk: "#2f8a8a", other: "#6b6f76", cpu: "#a8823d", old: "#4a5260" };
 const pct = (f) => (f > 0 && f < 0.005 ? "<1%" : `${Math.round(f * 100)}%`);
 const mbText = (mb) => (mb >= 1024 ? `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)} GB` : mb >= 1 ? `${Math.round(mb)} MB` : mb > 0 ? "<1 MB" : "0");
 // A step's row: "time breakdown", then a bar of its time in the range's runs by phase (the lead's
-// `phase_times`: phaseBreakdown), each part as wide as its share and labelled where it has room,
-// its card on hover (`phaseCard`); null when no run of it ended in the range.
+// `phase_times`: phaseBreakdown), each phase as wide as its share, split into its measured segments
+// (phaseSplit: the NAS, the network, the disk, other work, computing) and labelled where it has
+// room, its card on hover (`phaseCard`); null when no run of it ended in the range.
 function timeRow(m, step) {
   const range = chartRange();
   const b = phaseBreakdown(m.a.phase_times, step, range);
   if (!b || !b.wall) return null;
   const bar = h("div", "tb-bar");
-  const seg = (w, colour, label, key, build) => {
-    const el = h("span", { class: "tb-part", style: { flexGrow: String(w), background: colour } }, w / b.wall >= 0.08 ? h("span", "tb-l", label) : null);
-    if (key) withCard(el, key, build);
+  const part = (w, segs, label, key, build) => {
+    const el = h("span", { class: "tb-part", style: { flexGrow: String(w) } },
+      ...segs.map((x) => h("i", { class: "tb-seg", style: { flexGrow: String(x.s), background: x.colour } })),
+      w / b.wall >= 0.08 ? h("span", "tb-l", label) : null);
+    withCard(el, key, build);
     bar.append(el);
   };
-  b.parts.forEach((p, i) => seg(p.wall, PHASE_COLOURS[p.cls] || PHASE_COLOURS.mixed, `${p.name} ${pct(p.wall / b.wall)}`, `pt ${step} ${i}`, () => phaseCard(step, b, p, range)));
-  if (b.untimed > 0) seg(b.untimed, "var(--line)", `in no phase ${pct(b.untimed / b.wall)}`, `pt ${step} untimed`, () => phaseCard(step, b, null, range));
+  b.parts.forEach((p, i) => part(p.wall, phaseSplit(p).map((x) => ({ ...x, colour: WAIT_COLOURS[x.key] })), `${p.name} ${pct(p.wall / b.wall)}`, `pt ${step} ${i}`, () => phaseCard(step, b, p, range)));
+  if (b.untimed > 0) part(b.untimed, [{ s: 1, colour: "var(--line)" }], `in no phase ${pct(b.untimed / b.wall)}`, `pt ${step} untimed`, () => phaseCard(step, b, null, range));
   return h("div", "tb", h("span", { class: "tb-k", title: `${plural(b.runs, "job")} that ended in the last ${rangeWords(range)}` }, "time breakdown"), bar);
 }
 // A phase's card: its share of the step's time in the range, the time summed and a job's, the jobs,
-// what it waits on, its CPU against its wall time, the NAS's and the internet's bytes (where
-// counted), and what it does (PHASE_ABOUT; `p` null: the jobs' time in no phase).
+// its time by measured segment (phaseSplit: each one's share of the phase and its time, a key
+// coloured as the bar) and how the waits count (WAITS_RULE), its CPU against its wall time, the
+// NAS's and the internet's bytes (where counted), and what it does (PHASE_ABOUT; `p` null: the
+// jobs' time in no phase).
 function phaseCard(step, b, p, range) {
   const per = (v) => v / b.runs;
   const wall = p ? p.wall : b.untimed;
   const name = p ? p.name : "in no phase";
   const cpu = p ? (p.wall > 0 && p.cpu > 0 ? p.cpu / p.wall : null) : null;
-  return cardBody({ kicker: `${step} · phase · the last ${rangeWords(range)}`, colour: p ? PHASE_COLOURS[p.cls] || PHASE_COLOURS.mixed : "var(--line)", title: name,
+  const segs = p ? phaseSplit(p) : [];
+  const top = segs.slice().sort((x, y) => y.s - x.s)[0];
+  const split = segs.length ? h("div", "tb-split", ...segs.map((x) => h("div", null, h("i", { style: { background: WAIT_COLOURS[x.key] } }), `${x.label}: ${pct(x.s / p.wall)} · ${dur(x.s)} (${dur(per(x.s))} a job)`))) : null;
+  return cardBody({ kicker: `${step} · phase · the last ${rangeWords(range)}`, colour: top ? WAIT_COLOURS[top.key] : "var(--line)", title: name,
     stats: [[pct(wall / b.wall), "of the step's time"], [dur(wall), "in all"], [dur(per(wall)), "a job"]] }, [
     ["Jobs", `${n(b.runs)} ended in the range${b.failed ? ` (${n(b.failed)} failed)` : ""}`],
-    ["Waits on", p ? PHASE_CLASS[p.cls] || p.cls : null],
+    ["Time", split],
+    ["How", segs.some((x) => x.key !== "old") ? WAITS_RULE : null],
     ["CPU / wall", cpu != null ? `${cpu.toFixed(2)} (${dur(p.cpu)} of CPU in ${dur(p.wall)}; above 1: several threads)` : p ? "not measured" : null],
     ["NAS", p?.nas ? `${mbText(p.nas)} in all · ${mbText(per(p.nas))} a job` : null],
     ["Internet", p?.net ? `${mbText(p.net)} in all · ${mbText(per(p.net))} a job` : null],
-    ["Does", p ? PHASE_ABOUT[p.name] || `${p.name[0].toUpperCase()}${p.name.slice(1)}: its time waits on ${PHASE_CLASS[p.cls] || p.cls}.` : "The jobs' time between their phases, or before the first and after the last: setting up, and what no phase times."],
+    ["Does", p ? PHASE_ABOUT[p.name] || `${p.name[0].toUpperCase()}${p.name.slice(1)}.` : "The jobs' time between their phases, or before the first and after the last: setting up, and what no phase times."],
   ]);
 }
 

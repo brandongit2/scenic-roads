@@ -267,17 +267,17 @@ pub fn scan_file(http: &crate::bld::fetch::Http, url: &str, size: u64, out: &Pat
 #[cfg(not(target_os = "wasi"))]
 pub fn scan(parts: &Path, z: u8, workers: usize, release: &str, bucket: &str, s3: &str) -> Result<()> {
     use crate::pyjson::Py;
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     use rayon::prelude::*;
     std::fs::create_dir_all(parts)?;
     let http = crate::bld::fetch::Http::new();
     let prefix = format!("release/{release}/theme=buildings/type=building/");
-    let p = phase("listing the release's files on S3", Class::Net);
+    let p = phase("listing the release's files on S3");
     let objs = crate::bld::fetch::s3_list(&http, bucket, &prefix)?;
     drop(p);
     let files: Vec<String> = objs.iter().map(|o| format!("{s3}/{}", o.key)).collect();
     anyhow::ensure!(!files.is_empty(), "buildings: no files for release {release} ({s3}/{prefix})");
-    let p = phase("checking and writing the file list", Class::Disk);
+    let p = phase("checking and writing the file list");
     let listed = parts.join("files.json");
     if let Ok(b) = std::fs::read(&listed) {
         let was: Vec<String> = serde_json::from_slice(&b).with_context(|| listed.display().to_string())?;
@@ -295,7 +295,7 @@ pub fn scan(parts: &Path, z: u8, workers: usize, release: &str, bucket: &str, s3
     let done = std::sync::atomic::AtomicU64::new((files.len() - todo.len()) as u64);
     let n = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
-    let _p = phase("scanning the files' boxes from S3", Class::Net);
+    let _p = phase("scanning the files' boxes from S3");
     // (`workers` files at once, each file's chunks fetched in turn: `workers` requests in flight.)
     let pool = rayon::ThreadPoolBuilder::new().num_threads(workers.max(1)).build()?;
     pool.install(|| {
@@ -331,7 +331,7 @@ pub fn build(out: &mut Out, scratch: &Path, workers: usize) -> Result<()> {
         PARTS_ROOM >> 30,
         free >> 30
     );
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     let t0 = std::time::Instant::now();
     scan(&parts, ZOOM, workers, &release, b.url()?, b.param_str("s3")?)?;
     eprintln!("buildings: the release scanned ({:.0?})", t0.elapsed());
@@ -341,7 +341,7 @@ pub fn build(out: &mut Out, scratch: &Path, workers: usize) -> Result<()> {
     let done = (0..files.len()).filter(|i| parts.join(format!("{i:04}/.done")).exists()).count();
     anyhow::ensure!(!files.is_empty() && done == files.len(), "{done} of the release's {} files scanned", files.len());
     // Each tile's parts, from every file of the release.
-    let p = phase("listing the scan's parts", Class::Disk);
+    let p = phase("listing the scan's parts");
     let mut by_tile: BTreeMap<TileId, Vec<PathBuf>> = BTreeMap::new();
     for d in std::fs::read_dir(&parts)? {
         let d = d?.path();
@@ -362,7 +362,7 @@ pub fn build(out: &mut Out, scratch: &Path, workers: usize) -> Result<()> {
     let mut index = Index { fmt: 1, release: release.clone(), zoom: ZOOM, tiles: BTreeMap::new(), tag: String::new() };
     let t1 = std::time::Instant::now();
     for (k, (t, files)) in by_tile.iter().enumerate() {
-        let p = phase("reading and sorting each tile's parts", Class::Disk);
+        let p = phase("reading and sorting each tile's parts");
         let mut v: Vec<[f32; 4]> = Vec::new();
         for f in files {
             each_box(f, |b| v.push(b))?;
@@ -370,7 +370,7 @@ pub fn build(out: &mut Out, scratch: &Path, workers: usize) -> Result<()> {
         let v = canonical(v);
         let bytes: &[u8] = bytemuck::cast_slice(&v);
         drop(p);
-        let p = phase("writing tiles to the NAS and reading them back", Class::NasWrite);
+        let p = phase("writing tiles to the NAS and reading them back");
         let dest = tile_path(out.root(), &release, *t);
         // (Written whole by a run cut short: as it is.)
         if dest.metadata().map(|m| m.len()).ok() != Some(bytes.len() as u64) {
@@ -396,11 +396,11 @@ pub fn build(out: &mut Out, scratch: &Path, workers: usize) -> Result<()> {
     eprintln!("buildings: {n} buildings in {} tiles ({:.0?})", index.tiles.len(), t1.elapsed());
     let local = scratch.join("index.json");
     std::fs::write(&local, serde_json::to_vec(&index)?)?;
-    let p = phase("uploading the index", Class::NasWrite);
+    let p = phase("uploading the index");
     out.put_file(&index_logical(&release), "json", &local)?;
     drop(p);
     out.save()?;
-    let _p = phase("removing the scan's parts", Class::Disk);
+    let _p = phase("removing the scan's parts");
     std::fs::remove_dir_all(&parts).ok();
     Ok(())
 }

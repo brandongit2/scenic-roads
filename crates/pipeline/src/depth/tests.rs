@@ -765,7 +765,7 @@ fn measure_a_real_assembly() {
     let local =
         crate::localread::Local::from_env(&store::nasfs::NasRoot::local_for_test(root)).map(std::sync::Arc::new);
     let water = {
-        let _p = crate::timings::phase("opening the basemap's water", crate::timings::Class::NasRead);
+        let _p = crate::timings::phase("opening the basemap's water");
         crate::terrain_pack::open_water_with(&out, local.as_deref()).unwrap()
     };
     let io0 = grids::io_counts();

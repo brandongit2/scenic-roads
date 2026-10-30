@@ -1063,10 +1063,7 @@ impl Local {
         if std::env::var_os(crate::budget::PROXY_ENV).is_none() {
             return Ok(None);
         }
-        let _p = crate::timings::phase(
-            "waiting for the agent to send the pass's answers (if it is)",
-            crate::timings::Class::Disk,
-        );
+        let _p = crate::timings::phase("waiting for the agent to send the pass's answers (if it is)");
         Local::reader(cache).map(Some)
     }
 }

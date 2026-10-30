@@ -13,7 +13,7 @@
 //! (crate::pyjson).
 
 use crate::pyjson::{dumps, dumps_spaced, loads, Py};
-use crate::timings::{phase, Class};
+use crate::timings::phase;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
@@ -96,7 +96,7 @@ pub fn run(root: &Path) -> Result<()> {
     let b = root.join("data/build");
     let w = root.join("data/heritage/wd");
     let d = root.join("data/heritage/desc");
-    let p = phase("reading the items, descriptions and sites", Class::Disk);
+    let p = phase("reading the items, descriptions and sites");
     let items = best_items(&w)?;
     let sdp = w.join("enwiki-shortdesc.json");
     let sd = if sdp.exists() {
@@ -114,7 +114,7 @@ pub fn run(root: &Path) -> Result<()> {
     }
     let mut fc = loads(&std::fs::read_to_string(b.join("heritage.json"))?).context("parse heritage.json")?;
     drop(p);
-    let p = phase("making and writing the site details", Class::Compute);
+    let p = phase("making and writing the site details");
     let empty = Py::Dict(vec![]);
     let (mut n, mut nl) = (0, 0);
     let mut out = String::new();
@@ -175,7 +175,7 @@ pub fn run(root: &Path) -> Result<()> {
     }
     std::fs::write(b.join("details-heritage.jsonl"), out)?;
     drop(p);
-    let _p = phase("writing the sites with their indexes", Class::Disk);
+    let _p = phase("writing the sites with their indexes");
     let tmp = b.join("heritage.json.tmp");
     std::fs::write(&tmp, dumps(&fc))?;
     std::fs::rename(&tmp, b.join("heritage.json"))?;

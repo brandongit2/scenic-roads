@@ -1,9 +1,9 @@
 //! A job's timings (docs/building.md §2, Timings; the record: docs/formats.md, timings.jsonl): its run
 //! broken into named phases, each with its wall time, its CPU time (user + system, the process's
-//! and its finished children's), its class (what it waits on: the NAS, the network, the local disk,
-//! the CPU, a lock or another worker) and, for I/O, the bytes and files it moved.
+//! and its finished children's), its wall time split by what the job waited on while it was open
+//! (`Waits`: measured, store::waits) and, for I/O, the bytes and files it moved.
 //!
-//! - `phase(name, class)` opens a phase (a guard: it ends when dropped); `sub` opens one inside the
+//! - `phase(name)` opens a phase (a guard: it ends when dropped); `sub` opens one inside the
 //!   phase open on this thread, at most one level down. A phase opened again under the same name
 //!   adds to it (`n` counts its spans): a loop over z3 tiles or tiles gives each of its stages one
 //!   phase, with totals, never one per z3 tile.
@@ -21,7 +21,15 @@
 //!   memory guard measures a job), and each phase keeps the most it saw while open (`peak_mb`): a
 //!   phase that runs a program (a unit's steps, the heritage chain's scripts, osmium) is that
 //!   program's peak, with the job's own memory beside it. A child's own phases carry its samples.
-//! - Live: the top-level phase open on the main thread, its class and since when, is said in the
+//! - Waits (task #870): as a span opens and closes it takes store::waits' totals, the job's wall
+//!   time blocked in NAS calls, network requests, local disk calls and waits on other work so far,
+//!   and the NAS's and the network's bytes (store::nasio, crate::fetch); the differences are its
+//!   `Waits`, the rest of its wall time computing. They count by the job's wall clock (an instant
+//!   is the NAS's when any of its threads is in a NAS call, else the network's, else the disk's,
+//!   else other work's: store::waits), so a phase's parts add up to its wall time. A phase that
+//!   runs a child program takes in the child's phases' waits (an unmeasured one's, the Python
+//!   twin's, by its declared class). No phase is classed by hand.
+//! - Live: the top-level phase open on the main thread, and since when, is said in the
 //!   job's counts file (store::nasio::set_phase, a few stores in mapped memory) as it opens, and
 //!   cleared as it ends; the agent shows it under the job (crate::agent::jobs::Live).
 //! - `finish(ok)` ends the run: the readable table in the log (stderr), and the record, where
@@ -44,38 +52,118 @@ pub const PHASES_TO_ENV: &str = "SCENIC_PHASES_TO";
 /// The record's version.
 pub const VERSION: u32 = 1;
 
-/// What a phase waits on, declared where it's opened.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum Class {
-    /// Reading the NAS (its share, mounted).
-    NasRead,
-    /// Writing the NAS.
-    NasWrite,
-    /// The Mac's own disk (its caches, the scratch folder).
-    Disk,
-    /// The internet, or another Mac's coordinator.
-    Net,
-    /// The CPU.
-    #[default]
-    Compute,
-    /// A lock, a slot, another worker, another thread.
-    Wait,
-    /// A phase of several classes, each in a sub-phase (a child program's run).
-    Mixed,
+/// A phase's wall time by what the job waited on while it was open, measured (store::waits): by
+/// the job's wall clock, so the waits never sum past the phase's wall time; the rest is computing.
+/// The NAS's and the network's bytes moved meanwhile beside them (the job's, all its threads').
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Waits {
+    #[serde(default)]
+    pub nas_s: f64,
+    #[serde(default)]
+    pub net_s: f64,
+    #[serde(default)]
+    pub disk_s: f64,
+    /// Waiting on other work: another worker, another thread, a lock.
+    #[serde(default)]
+    pub other_s: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub nas_b: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub net_b: u64,
 }
 
-impl Class {
-    pub fn name(self) -> &'static str {
-        match self {
-            Class::NasRead => "nas-read",
-            Class::NasWrite => "nas-write",
-            Class::Disk => "disk",
-            Class::Net => "net",
-            Class::Compute => "compute",
-            Class::Wait => "wait",
-            Class::Mixed => "mixed",
+impl Waits {
+    /// Its waits' seconds together.
+    pub fn waited(&self) -> f64 {
+        self.nas_s + self.net_s + self.disk_s + self.other_s
+    }
+
+    fn add(&mut self, o: &Waits) {
+        self.nas_s += o.nas_s;
+        self.net_s += o.net_s;
+        self.disk_s += o.disk_s;
+        self.other_s += o.other_s;
+        self.nas_b += o.nas_b;
+        self.net_b += o.net_b;
+    }
+
+    /// Held to `wall`: scaled down when they sum past it (a child's waits taken in beside its
+    /// parent's own).
+    fn within(mut self, wall: f64) -> Waits {
+        let w = self.waited();
+        if w > wall && w > 0.0 {
+            let k = wall / w;
+            self.nas_s *= k;
+            self.net_s *= k;
+            self.disk_s *= k;
+            self.other_s *= k;
         }
+        self
+    }
+
+    /// A phase's waits: its measured ones, else (a record from before task #870, the Python twin's
+    /// or a page's) its declared class's, the whole of its wall time; None when neither says.
+    pub fn of(p: &PhaseRec) -> Option<Waits> {
+        if p.waits.is_some() {
+            return p.waits;
+        }
+        let w = p.wall_s;
+        let (nas_b, net_b) = match p.class.as_str() {
+            "nas-read" | "nas-write" => (p.bytes, 0),
+            "net" => (0, p.bytes),
+            _ => (0, 0),
+        };
+        Some(match p.class.as_str() {
+            "nas-read" | "nas-write" => Waits { nas_s: w, nas_b, ..Default::default() },
+            "net" => Waits { net_s: w, net_b, ..Default::default() },
+            "disk" => Waits { disk_s: w, ..Default::default() },
+            "wait" => Waits { other_s: w, ..Default::default() },
+            "compute" => Waits::default(),
+            _ => return None,
+        })
+    }
+
+    /// The waits between two of store::waits' totals and the bytes then (`at` the earlier).
+    fn between(at: &(store::waits::Totals, u64, u64), now: &(store::waits::Totals, u64, u64)) -> Waits {
+        let d = |i: usize| now.0[i].saturating_sub(at.0[i]) as f64 / 1e9;
+        Waits {
+            nas_s: d(0),
+            net_s: d(1),
+            disk_s: d(2),
+            other_s: d(3),
+            nas_b: now.1.saturating_sub(at.1),
+            net_b: now.2.saturating_sub(at.2),
+        }
+    }
+
+    /// Its parts as shares of `wall`, readably ("NAS 41%, network 3%"; none under 1%).
+    pub fn text(&self, wall: f64) -> String {
+        if wall <= 0.0 {
+            return String::new();
+        }
+        let mut v = Vec::new();
+        for (name, s) in
+            [("NAS", self.nas_s), ("network", self.net_s), ("disk", self.disk_s), ("other work", self.other_s)]
+        {
+            let f = s / wall * 100.0;
+            if f >= 1.0 {
+                v.push(format!("{name} {f:.0}%"));
+            }
+        }
+        v.push(format!("CPU-side {:.0}%", ((wall - self.waited()) / wall * 100.0).max(0.0)));
+        v.join(" ")
+    }
+}
+
+/// store::waits' totals and the NAS's and network's bytes now (a span's ends).
+fn waits_now() -> (store::waits::Totals, u64, u64) {
+    use store::nasio::{get, Count};
+    (store::waits::totals(), get(Count::ReadBytes) + get(Count::WroteBytes), crate::fetch::fetched_bytes())
+}
+
+fn add_waits(a: &mut Option<Waits>, b: Option<Waits>) {
+    if let Some(b) = b {
+        a.get_or_insert_with(Waits::default).add(&b);
     }
 }
 
@@ -85,8 +173,14 @@ pub struct PhaseRec {
     /// Its name (one from before task #844 read as its new one: crate::phase_names).
     #[serde(deserialize_with = "current_name")]
     pub name: String,
-    pub class: Class,
+    /// What it was declared to wait on, in a record from before task #870 (measured since: `waits`),
+    /// the Python twin's (dem/timings.py) or a page's: "nas-read", "net", "compute", "mixed" ….
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub class: String,
     pub wall_s: f64,
+    /// Its wall time by what the job waited on (task #870): None in a record from before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waits: Option<Waits>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_s: Option<f64>,
     /// Its spans (a loop's stage: one a pass).
@@ -192,8 +286,9 @@ impl RunRec {
 #[derive(Clone)]
 struct Acc {
     name: String,
-    class: Class,
     parent: Option<usize>,
+    /// Its spans' waits (`Waits::between` each span's ends).
+    waits: Waits,
     wall_ns: u64,
     cpu_us: Option<u64>,
     n: u64,
@@ -220,6 +315,8 @@ struct Open {
     /// When it opened, and the CPU then: a span still open as the run ends counts to then.
     t0: Instant,
     cpu0: Option<u64>,
+    /// store::waits' totals and the bytes as it opened.
+    w0: (store::waits::Totals, u64, u64),
 }
 
 struct Run {
@@ -294,6 +391,7 @@ pub fn start(kind: &str) {
     let mut g = run().lock().unwrap();
     if g.is_none() {
         crate::control::gaps_begin();
+        store::waits::enable();
         *g = Some(Run {
             kind: kind.to_string(),
             start_wall: now_s(),
@@ -390,16 +488,16 @@ impl Phase {
 /// Opens a phase: a top-level one when none is open on this thread, else a sub-phase of the one
 /// that is; inside a sub-phase, nothing (it's folded into that one: one level only). So a library's
 /// own phases (the records read and saved, `crate::out::Out`) nest under the step's.
-pub fn phase(name: &str, class: Class) -> Phase {
-    open(name, class)
+pub fn phase(name: &str) -> Phase {
+    open(name)
 }
 
 /// `phase`, where the call site means a sub-phase (read as one).
-pub fn sub(name: &str, class: Class) -> Phase {
-    open(name, class)
+pub fn sub(name: &str) -> Phase {
+    open(name)
 }
 
-fn open(name: &str, class: Class) -> Phase {
+fn open(name: &str) -> Phase {
     let t_in = Instant::now();
     let mut g = run().lock().unwrap();
     let Some(r) = g.as_mut().filter(|r| !r.finished) else {
@@ -417,7 +515,7 @@ fn open(name: &str, class: Class) -> Phase {
     // (The main thread's time since its last top-level phase ended: a gap, named by its ends.)
     if parent.is_none() && me == r.main {
         // (Said in the job's counts file for the agent to show live: store::nasio::set_phase.)
-        store::nasio::set_phase(&format!("{name}\t{}", class.name()));
+        store::nasio::set_phase(name);
         let ns = r.mark.0.elapsed().as_nanos() as u64;
         let after = std::mem::take(&mut r.mark.1);
         add_gap(&mut r.gaps, &after, name, ns);
@@ -428,8 +526,8 @@ fn open(name: &str, class: Class) -> Phase {
         None => {
             r.accs.push(Acc {
                 name: name.to_string(),
-                class,
                 parent,
+                waits: Waits::default(),
                 wall_ns: 0,
                 cpu_us: None,
                 n: 0,
@@ -453,6 +551,7 @@ fn open(name: &str, class: Class) -> Phase {
         children: Mutex::new(Vec::new()),
         t0: Instant::now(),
         cpu0: cpu_us(),
+        w0: waits_now(),
     });
     // (Another thread's phase open now, or opening while this one is: both overlap.)
     let mut over = false;
@@ -475,6 +574,7 @@ impl Drop for Phase {
         let Some(o) = self.open.take() else { return };
         let wall = self.t.elapsed();
         let t_in = Instant::now();
+        let waits = Waits::between(&o.w0, &waits_now());
         let cpu = match (self.cpu, cpu_us()) {
             (Some(a), Some(b)) => Some(b.saturating_sub(a)),
             _ => None,
@@ -503,6 +603,7 @@ impl Drop for Phase {
         }
         let a = &mut r.accs[o.idx];
         a.wall_ns += wall.as_nanos() as u64;
+        a.waits.add(&waits);
         a.cpu_us = match (a.cpu_us, cpu) {
             (Some(x), Some(y)) => Some(x + y),
             (None, y) if a.n == 0 => y,
@@ -530,6 +631,7 @@ fn merge_into(list: &mut Vec<PhaseRec>, k: PhaseRec) {
     match list.iter_mut().find(|p| p.name == k.name) {
         Some(p) => {
             p.wall_s += k.wall_s;
+            add_waits(&mut p.waits, k.waits);
             p.cpu_s = match (p.cpu_s, k.cpu_s) {
                 (Some(a), Some(b)) => Some(a + b),
                 (a, b) => a.or(b),
@@ -552,52 +654,6 @@ pub fn count(bytes: u64, files: u64) {
             o.files.fetch_add(files, Ordering::Relaxed);
         }
     });
-}
-
-/// Records a span timed by the caller (a lap: `crate::unit::Laps`) as phase `name`, as `phase`
-/// would have, with the CPU taken since `cpu0` (`cpu_us()` at its start).
-pub fn record(name: &str, class: Class, wall: std::time::Duration, cpu0: Option<u64>, bytes: u64, files: u64) {
-    let mut g = run().lock().unwrap();
-    let Some(r) = g.as_mut().filter(|r| !r.finished) else {
-        return;
-    };
-    let me = std::thread::current().id();
-    let idx = match r.accs.iter().position(|a| a.name == name && a.parent.is_none()) {
-        Some(i) => i,
-        None => {
-            r.accs.push(Acc {
-                name: name.to_string(),
-                class,
-                parent: None,
-                wall_ns: 0,
-                cpu_us: None,
-                n: 0,
-                bytes: 0,
-                files: 0,
-                overlapped: false,
-                background: me != r.main,
-                peak: None,
-                kids: Vec::new(),
-            });
-            r.accs.len() - 1
-        }
-    };
-    let over = r.open.iter().any(|x| x.thread != me);
-    let cpu = match (cpu0, cpu_us()) {
-        (Some(a), Some(b)) => Some(b.saturating_sub(a)),
-        _ => None,
-    };
-    let a = &mut r.accs[idx];
-    a.wall_ns += wall.as_nanos() as u64;
-    a.cpu_us = match (a.cpu_us, cpu) {
-        (Some(x), Some(y)) => Some(x + y),
-        (None, y) if a.n == 0 => y,
-        (x, _) => x,
-    };
-    a.n += 1;
-    a.bytes += bytes;
-    a.files += files;
-    a.overlapped |= over;
 }
 
 /// Has `c`, a child program about to run within this thread's innermost phase, write its phases
@@ -645,6 +701,7 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
     for o in &r.open {
         let a = &mut accs[o.idx];
         a.wall_ns += o.t0.elapsed().as_nanos() as u64;
+        a.waits.add(&Waits::between(&o.w0, &waits_now()));
         if let (Some(c0), Some(c1)) = (o.cpu0, now_cpu) {
             a.cpu_us = Some(a.cpu_us.unwrap_or(0) + c1.saturating_sub(c0));
         }
@@ -662,8 +719,9 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
             .filter(|s| s.parent == Some(i) && s.n > 0)
             .map(|s| PhaseRec {
                 name: s.name.clone(),
-                class: s.class,
+                class: String::new(),
                 wall_s: s.wall_ns as f64 / 1e9,
+                waits: Some(s.waits),
                 cpu_s: s.cpu_us.map(|c| c as f64 / 1e6),
                 n: s.n,
                 bytes: s.bytes,
@@ -674,13 +732,20 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
                 sub: Vec::new(),
             })
             .collect();
+        // (Its child programs' waits taken in beside its own: it waited on the child meanwhile.)
+        let wall_s = a.wall_ns as f64 / 1e9;
+        let mut waits = a.waits;
         for k in &a.kids {
+            if let Some(w) = Waits::of(k) {
+                waits.add(&w);
+            }
             merge_into(&mut sub, k.clone());
         }
         PhaseRec {
             name: a.name.clone(),
-            class: a.class,
-            wall_s: a.wall_ns as f64 / 1e9,
+            class: String::new(),
+            wall_s,
+            waits: Some(waits.within(wall_s)),
             cpu_s: a.cpu_us.map(|c| c as f64 / 1e6),
             n: a.n,
             bytes: a.bytes,
@@ -833,9 +898,9 @@ pub fn table(r: &RunRec) -> String {
         }
         if p.bytes > 0 {
             extra.push(bytes(p.bytes));
-            // (A transfer's rate over its phase's time.)
-            if p.class == Class::Net && p.wall_s > 0.0 {
-                extra.push(format!("{}/s", bytes((p.bytes as f64 / p.wall_s) as u64)));
+            // (A transfer's rate over its time waiting on the network.)
+            if let Some(w) = Waits::of(p).filter(|w| w.net_s > 0.0 && w.net_s >= w.nas_s) {
+                extra.push(format!("{}/s", bytes((p.bytes as f64 / w.net_s) as u64)));
             }
         }
         if p.files > 0 {
@@ -848,11 +913,11 @@ pub fn table(r: &RunRec) -> String {
             extra.push("beside".into());
         }
         s.push_str(&format!(
-            "timings: {indent}{:<40} {:>10} {:>4.0}%  {:<9} {}\n",
+            "timings: {indent}{:<40} {:>10} {:>4.0}%  {:<34} {}\n",
             p.name,
             secs(p.wall_s),
             share,
-            p.class.name(),
+            p.waits.map(|w| w.text(p.wall_s)).unwrap_or_else(|| p.class.clone()),
             extra.join(", ")
         ));
     };
@@ -924,7 +989,11 @@ pub fn take_record(p: &Path, host: &str) -> Option<RunRec> {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct PhaseSum {
     pub name: String,
-    pub class: Class,
+    /// Its waits summed over the runs that measured them (`Waits::of`: an older run's by its class),
+    /// and the wall time of those runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waits: Option<Waits>,
+    pub waits_wall_s: f64,
     /// The runs it was in.
     pub runs: usize,
     pub wall_s: f64,
@@ -1031,13 +1100,17 @@ fn add_phase(list: &mut Vec<PhaseSum>, p: &PhaseRec, total: f64, top: bool) {
     let i = match list.iter().position(|q| q.name == p.name) {
         Some(i) => i,
         None => {
-            list.push(PhaseSum { name: p.name.clone(), class: p.class, ..Default::default() });
+            list.push(PhaseSum { name: p.name.clone(), ..Default::default() });
             list.len() - 1
         }
     };
     let q = &mut list[i];
     q.runs += 1;
     q.wall_s += p.wall_s;
+    if let Some(w) = Waits::of(p) {
+        add_waits(&mut q.waits, Some(w));
+        q.waits_wall_s += p.wall_s;
+    }
     q.cpu_s = match (q.cpu_s, p.cpu_s) {
         (Some(a), Some(b)) => Some(a + b),
         (a, b) => a.or(b),
@@ -1128,7 +1201,6 @@ pub struct PhaseShares {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PhaseShare {
     pub name: String,
-    pub class: Class,
     /// Its mean share of a run's wall time (a run without it: 0; the rest of a run is in no phase).
     pub wall: f64,
     /// Its mean share of the bytes a run's phases moved (over the runs that moved any; 0 if none).
@@ -1161,7 +1233,7 @@ pub fn phase_shares<'a>(runs: impl IntoIterator<Item = &'a RunRec>) -> std::coll
                     let i = match out.iter().position(|q| q.name == p.name) {
                         Some(i) => i,
                         None => {
-                            out.push(PhaseShare { name: p.name.clone(), class: p.class, ..Default::default() });
+                            out.push(PhaseShare { name: p.name.clone(), ..Default::default() });
                             out.len() - 1
                         }
                     };
@@ -1269,7 +1341,7 @@ pub const TIMES_PHASES: usize = 8;
 pub const OTHER_PHASES: &str = "other phases";
 
 /// A run as `PhaseTimes` sums it: its step, end, wall and CPU, and its main thread's top-level
-/// phases (name, class, wall s, CPU s, NAS bytes, internet bytes).
+/// phases.
 #[derive(Clone, Debug)]
 pub struct RunSum {
     step: String,
@@ -1277,22 +1349,36 @@ pub struct RunSum {
     ok: bool,
     wall: f64,
     cpu: f64,
-    phases: Vec<(String, Class, f64, f64, u64, u64)>,
+    phases: Vec<PhaseSumOf>,
+}
+
+/// A top-level phase of a run in `RunSum`: its name, its declared class (an unmeasured record's;
+/// empty since task #870), wall and CPU seconds, NAS and internet bytes, and its measured waits.
+#[derive(Clone, Debug)]
+struct PhaseSumOf {
+    name: String,
+    class: String,
+    wall: f64,
+    cpu: f64,
+    nas: u64,
+    net: u64,
+    waits: Option<Waits>,
 }
 
 impl RunSum {
     pub fn of(r: &RunRec) -> RunSum {
-        // (Bytes by what moved them: a phase's own counted bytes go by its class, a sub-phase's by
-        // its own, a compute or mixed one's by the nearest phase above it that reads the NAS or the
+        // (A measured phase's bytes are the job's NAS and network bytes while it was open. An older
+        // record's go by class: a phase's own counted bytes by its class, a sub-phase's by its own,
+        // a compute or mixed one's by the nearest phase above it that reads the NAS or the
         // internet; bytes of the local disk, or of no such phase, aren't said.)
-        fn moved(p: &PhaseRec, above: Class, nas: &mut u64, net: &mut u64) {
-            let c = match p.class {
-                Class::Compute | Class::Mixed | Class::Wait => above,
-                c => c,
+        fn moved(p: &PhaseRec, above: &str, nas: &mut u64, net: &mut u64) {
+            let c = match p.class.as_str() {
+                "nas-read" | "nas-write" | "net" | "disk" => p.class.as_str(),
+                _ => above,
             };
             match c {
-                Class::NasRead | Class::NasWrite => *nas += p.bytes,
-                Class::Net => *net += p.bytes,
+                "nas-read" | "nas-write" => *nas += p.bytes,
+                "net" => *net += p.bytes,
                 _ => {}
             }
             for k in &p.sub {
@@ -1305,8 +1391,19 @@ impl RunSum {
             .filter(|p| !p.background)
             .map(|p| {
                 let (mut nas, mut net) = (0, 0);
-                moved(p, Class::Compute, &mut nas, &mut net);
-                (p.name.clone(), p.class, p.wall_s, p.cpu_s.unwrap_or(0.0), nas, net)
+                match p.waits {
+                    Some(w) => (nas, net) = (w.nas_b, w.net_b),
+                    None => moved(p, "compute", &mut nas, &mut net),
+                }
+                PhaseSumOf {
+                    name: p.name.clone(),
+                    class: p.class.clone(),
+                    wall: p.wall_s,
+                    cpu: p.cpu_s.unwrap_or(0.0),
+                    nas,
+                    net,
+                    waits: p.waits,
+                }
             })
             .collect();
         RunSum {
@@ -1334,22 +1431,29 @@ pub struct PhaseTimes {
 }
 
 /// A step's runs in `PhaseTimes`: its phases named once (`[name, class]`, the largest over all
-/// its runs first; at most `TIMES_PHASES`, then `OTHER_PHASES`), and a sum per range its runs
-/// ended within: `[edge, runs, failed, wall s, CPU s, [[phase, wall s, CPU s, NAS MB, internet
-/// MB], …]]`, `edge` an index into `edges`, `phase` into `phases`; whole seconds, MB to a tenth.
-/// A run's time in no phase is its wall less its phases'.
+/// its runs first; at most `TIMES_PHASES`, then `OTHER_PHASES`; the class only an unmeasured
+/// record's, else empty), and a sum per range its runs ended within: `[edge, runs, failed, wall s,
+/// CPU s, [[phase, wall s, CPU s, NAS MB, internet MB], …]]`, `edge` an index into `edges`, `phase`
+/// into `phases`; whole seconds, MB to a tenth. A run's time in no phase is its wall less its
+/// phases'. Beside them, its phases' measured waits (task #870) per range: `w`, `[edge, phase,
+/// measured wall s, NAS s, network s, disk s, other work s]` over the runs that measured them (to
+/// a tenth of a second); the rest of a phase's measured wall computing, its unmeasured wall (older
+/// runs') shown by its class.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StepTimes {
-    pub phases: Vec<(String, Class)>,
+    pub phases: Vec<(String, String)>,
     pub b: Vec<(usize, u32, u32, u64, u64, Vec<(usize, u64, u64, f64, f64)>)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub w: Vec<(usize, usize, f64, f64, f64, f64, f64)>,
 }
 
 /// `PhaseTimes` of `runs` at `now`; a run ended past the last edge isn't counted.
 pub fn phase_times<'a>(runs: impl IntoIterator<Item = &'a RunSum>, now: u64) -> PhaseTimes {
     use std::collections::BTreeMap;
     // (Step → its edge's sums: runs, failed, wall, CPU, by phase: wall, CPU, NAS, internet.)
-    type Sums = (u32, u32, f64, f64, BTreeMap<String, (f64, f64, u64, u64)>);
-    let mut by: BTreeMap<&str, (BTreeMap<String, (Class, f64)>, BTreeMap<usize, Sums>)> = BTreeMap::new();
+    // (And by phase: its measured wall and its waits.)
+    type Sums = (u32, u32, f64, f64, BTreeMap<String, (f64, f64, u64, u64)>, BTreeMap<String, (f64, Waits)>);
+    let mut by: BTreeMap<&str, (BTreeMap<String, (String, f64)>, BTreeMap<usize, Sums>)> = BTreeMap::new();
     for r in runs {
         let Some(e) = TIMES_EDGES.iter().position(|&e| r.end + e >= now) else { continue };
         let (all, edges) = by.entry(&r.step).or_default();
@@ -1358,34 +1462,57 @@ pub fn phase_times<'a>(runs: impl IntoIterator<Item = &'a RunSum>, now: u64) -> 
         s.1 += !r.ok as u32;
         s.2 += r.wall;
         s.3 += r.cpu;
-        for (name, class, wall, cpu, nas, net) in &r.phases {
-            all.entry(name.clone()).or_insert((*class, 0.0)).1 += wall;
-            let p = s.4.entry(name.clone()).or_default();
-            p.0 += wall;
-            p.1 += cpu;
-            p.2 += nas;
-            p.3 += net;
+        for ph in &r.phases {
+            let e = all.entry(ph.name.clone()).or_insert((ph.class.clone(), 0.0));
+            if ph.waits.is_some() {
+                // (Measured in some run: no class said.)
+                e.0.clear();
+            }
+            e.1 += ph.wall;
+            let p = s.4.entry(ph.name.clone()).or_default();
+            p.0 += ph.wall;
+            p.1 += ph.cpu;
+            p.2 += ph.nas;
+            p.3 += ph.net;
+            if let Some(w) = ph.waits {
+                let m = s.5.entry(ph.name.clone()).or_default();
+                m.0 += ph.wall;
+                m.1.add(&w);
+            }
         }
     }
     let mb = |b: u64| (b as f64 / 1e5).round() / 10.0;
     let steps = by
         .into_iter()
         .map(|(step, (all, edges))| {
-            let mut order: Vec<(String, Class, f64)> = all.into_iter().map(|(n, (c, w))| (n, c, w)).collect();
+            let mut order: Vec<(String, String, f64)> = all.into_iter().map(|(n, (c, w))| (n, c, w)).collect();
             order.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
             let others = order.len() > TIMES_PHASES;
-            let mut phases: Vec<(String, Class)> = order
+            let mut phases: Vec<(String, String)> = order
                 .iter()
                 .take(if others { TIMES_PHASES - 1 } else { TIMES_PHASES })
-                .map(|(n, c, _)| (n.clone(), *c))
+                .map(|(n, c, _)| (n.clone(), c.clone()))
                 .collect();
             if others {
-                phases.push((OTHER_PHASES.to_string(), Class::Mixed));
+                phases.push((OTHER_PHASES.to_string(), String::new()));
             }
             let at = |name: &str| phases.iter().position(|(n, _)| n == name).unwrap_or(phases.len() - 1);
+            let tenth = |v: f64| (v * 10.0).round() / 10.0;
+            let mut w: Vec<(usize, usize, f64, f64, f64, f64, f64)> = Vec::new();
+            for (e, s) in &edges {
+                let mut sums: BTreeMap<usize, (f64, Waits)> = BTreeMap::new();
+                for (name, (mw, ws)) in &s.5 {
+                    let x = sums.entry(at(name)).or_default();
+                    x.0 += mw;
+                    x.1.add(ws);
+                }
+                for (i, (mw, ws)) in sums {
+                    w.push((*e, i, tenth(mw), tenth(ws.nas_s), tenth(ws.net_s), tenth(ws.disk_s), tenth(ws.other_s)));
+                }
+            }
             let b = edges
                 .into_iter()
-                .map(|(e, (runs, failed, wall, cpu, ps))| {
+                .map(|(e, (runs, failed, wall, cpu, ps, _))| {
                     let mut sums: Vec<(usize, f64, f64, u64, u64)> = Vec::new();
                     for (name, (w, c, nas, net)) in ps {
                         let i = at(&name);
@@ -1407,7 +1534,7 @@ pub fn phase_times<'a>(runs: impl IntoIterator<Item = &'a RunSum>, now: u64) -> 
                     (e, runs, failed, wall.round() as u64, cpu.round() as u64, ps)
                 })
                 .collect();
-            (step.to_string(), StepTimes { phases, b })
+            (step.to_string(), StepTimes { phases, b, w })
         })
         .collect();
     PhaseTimes { at: now, edges: TIMES_EDGES.to_vec(), steps }
@@ -1447,8 +1574,8 @@ pub fn summary_text(sums: &[KindSum]) -> String {
             if k.wall_s > 0.0 { k.overhead_s / k.wall_s * 100.0 } else { 0.0 },
         ));
         out.push_str(&format!(
-            "  {:<44} {:>6} {:>11} {:>11} {:>7}  {:<9} {:>9}  {}\n",
-            "phase", "share", "total", "a run", "CPU/wall", "class", "peak", "moved"
+            "  {:<44} {:>6} {:>11} {:>11} {:>7}  {:<34} {:>9}  {}\n",
+            "phase", "share", "total", "a run", "CPU/wall", "waits", "peak", "moved"
         ));
         let row = |out: &mut String, indent: &str, p: &PhaseSum| {
             let ratio = match p.cpu_s {
@@ -1469,13 +1596,13 @@ pub fn summary_text(sums: &[KindSum]) -> String {
             }
             let name = format!("{indent}{}", p.name);
             out.push_str(&format!(
-                "  {:<44} {:>5.1}% {:>11} {:>11} {:>7}  {:<9} {:>9}  {}\n",
+                "  {:<44} {:>5.1}% {:>11} {:>11} {:>7}  {:<34} {:>9}  {}\n",
                 name,
                 p.share * 100.0,
                 secs(p.wall_s),
                 secs(p.wall_s / n),
                 ratio,
-                p.class.name(),
+                p.waits.map(|w| w.text(p.waits_wall_s)).unwrap_or_default(),
                 p.peak_mb.map(|m| bytes(m << 20)).unwrap_or_default(),
                 moved.join(", ")
             ));
@@ -1552,10 +1679,10 @@ mod tests {
     fn phase_times_by_range() {
         let now = 1_000_000;
         let mut a = share_run("depth", true, 100.0, &[("reading", 60.0, 2_000_000), ("composing", 30.0, 0)]);
-        a.phases[0].class = Class::NasRead;
+        a.phases[0].class = "nas-read".into();
         a.phases[0].cpu_s = Some(6.0);
         a.phases[0].sub =
-            vec![PhaseRec { name: "decoding".into(), class: Class::Compute, bytes: 1_000_000, ..Default::default() }];
+            vec![PhaseRec { name: "decoding".into(), class: "compute".into(), bytes: 1_000_000, ..Default::default() }];
         a.start = now - 100 - 30; // (ended 30 s ago: the first range, a minute)
         let mut b = share_run("task depth", false, 50.0, &[("composing", 50.0, 0)]);
         b.start = now - 50 - 3000; // (50 min ago: within the hour)
@@ -1566,18 +1693,36 @@ mod tests {
         let many: Vec<(&str, f64, u64)> = many.iter().map(|(n, w, b)| (n.as_str(), *w, *b)).collect();
         let mut c = share_run("slope", true, 60.0, &many);
         c.start = now - 60;
-        let sums: Vec<RunSum> = [a, b, old, c].iter().map(RunSum::of).collect();
+        // (Task #870: a measured run: its phases' waits beside, its NAS bytes measured, no class.)
+        let mut e = share_run("depth", true, 100.0, &[("reading", 80.0, 0)]);
+        e.phases[0].waits =
+            Some(Waits { nas_s: 50.0, net_s: 4.04, disk_s: 1.0, nas_b: 5_000_000, ..Default::default() });
+        e.start = now - 100 - 3000;
+        let sums: Vec<RunSum> = [a, b, old, c, e].iter().map(RunSum::of).collect();
         let t = phase_times(&sums, now);
         assert_eq!(t.edges, TIMES_EDGES);
         let d = &t.steps["depth"];
-        assert_eq!(d.phases, [("composing".to_string(), Class::Compute), ("reading".to_string(), Class::NasRead)]);
+        assert_eq!(d.phases, [("reading".to_string(), String::new()), ("composing".to_string(), String::new())]);
         assert_eq!(
             d.b,
             [
-                (0, 1, 0, 100, 0, vec![(0, 30, 0, 0.0, 0.0), (1, 60, 6, 3.0, 0.0)]),
-                (4, 1, 1, 50, 0, vec![(0, 50, 0, 0.0, 0.0)])
+                (0, 1, 0, 100, 0, vec![(0, 60, 6, 3.0, 0.0), (1, 30, 0, 0.0, 0.0)]),
+                (4, 2, 1, 150, 0, vec![(0, 80, 0, 5.0, 0.0), (1, 50, 0, 0.0, 0.0)])
             ]
         );
+        assert_eq!(d.w, [(4, 0, 80.0, 50.0, 4.0, 1.0, 0.0)]);
+        // (Only unmeasured runs: the class said.)
+        let only_old = phase_times(
+            &[RunSum::of(&{
+                let mut r = share_run("x", true, 5.0, &[("reading", 5.0, 0)]);
+                r.phases[0].class = "nas-read".into();
+                r.start = now - 5;
+                r
+            })],
+            now,
+        );
+        assert_eq!(only_old.steps["x"].phases, [("reading".to_string(), "nas-read".to_string())]);
+        assert!(only_old.steps["x"].w.is_empty());
         let s = &t.steps["slope"];
         assert_eq!(s.phases.len(), TIMES_PHASES);
         assert_eq!(s.phases[TIMES_PHASES - 1].0, OTHER_PHASES);
@@ -1695,17 +1840,17 @@ mod tests {
         reset();
         start("test");
         for _ in 0..3 {
-            let p = phase("loop stage", Class::Compute);
+            let p = phase("loop stage");
             p.count(10, 1);
             count(5, 0);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         {
-            let _p = phase("parent", Class::Mixed);
+            let _p = phase("parent");
             {
-                let _s = sub("child a", Class::NasRead);
+                let _s = sub("child a");
                 count(100, 2);
-                let _ss = sub("folding", Class::Disk);
+                let _ss = sub("folding");
             }
             // A child program's phases, as one writes them.
             let mut c = store::spawn::command("true");
@@ -1716,7 +1861,7 @@ mod tests {
                 kind: "x".into(),
                 phases: vec![PhaseRec {
                     name: "py read".into(),
-                    class: Class::NasRead,
+                    class: "nas-read".into(),
                     wall_s: 1.5,
                     n: 1,
                     bytes: 7,
@@ -1729,22 +1874,52 @@ mod tests {
         }
         // A thread's phase beside the main one's.
         {
-            let _m = phase("main work", Class::Compute);
+            let _m = phase("main work");
             std::thread::spawn(|| {
-                let _b = phase("beside", Class::NasRead);
+                let _b = phase("beside");
             })
             .join()
             .unwrap();
         }
+        // Task #870: a phase's wall time split by what the job waited on, by wall clock: a NAS
+        // call's 40 ms, two threads' network requests at once (30 ms each, together): 30 ms, not
+        // 60; the rest computing.
+        {
+            let _p = phase("measured");
+            {
+                let _w = store::waits::nas();
+                std::thread::sleep(std::time::Duration::from_millis(40)); // (sleep ok: a NAS call's stand-in)
+            }
+            let t: Vec<_> = (0..2)
+                .map(|_| {
+                    std::thread::spawn(|| {
+                        let _w = store::waits::net();
+                        std::thread::sleep(std::time::Duration::from_millis(30));
+                        // (sleep ok: a request's stand-in)
+                    })
+                })
+                .collect();
+            t.into_iter().for_each(|t| t.join().unwrap());
+            std::thread::sleep(std::time::Duration::from_millis(20)); // (sleep ok: computing's stand-in)
+        }
         // Time in no phase: a gap, named by the phases either side.
         std::thread::sleep(std::time::Duration::from_millis(30)); // (sleep ok: a gap of at least 30 ms to find)
                                                                   // A span still open as the run ends: counted to then.
-        let held = phase("held open", Class::Disk);
+        let held = phase("held open");
         held.count(3, 1);
         let r = snapshot(true).unwrap();
         let names: Vec<&str> = r.phases.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["loop stage", "parent", "main work", "beside", "held open"]);
-        assert_eq!((r.phases[4].n, r.phases[4].bytes), (1, 3));
+        assert_eq!(names, ["loop stage", "parent", "main work", "beside", "measured", "held open"]);
+        assert_eq!((r.phases[5].n, r.phases[5].bytes), (1, 3));
+        let m = &r.phases[4];
+        let w = m.waits.unwrap();
+        assert!((0.04..0.08).contains(&w.nas_s) && (0.03..0.055).contains(&w.net_s), "{w:?}");
+        assert!(w.waited() < m.wall_s && m.wall_s - w.waited() >= 0.02, "{w:?} {}", m.wall_s);
+        assert!(table(&r).contains("NAS ") && table(&r).contains("network "), "{}", table(&r));
+        // (A phase that ran a child takes in its phases' waits, an unmeasured one's by its class,
+        // held to its own wall time: "py read", 1.5 s of NAS read, in a phase of a few ms.)
+        let pw = r.phases[1].waits.unwrap();
+        assert!((pw.nas_s - r.phases[1].wall_s).abs() < 1e-9 && pw.nas_b == 7, "{pw:?}");
         let l = &r.phases[0];
         assert_eq!((l.n, l.bytes, l.files), (3, 45, 3));
         assert!(l.wall_s >= 0.015);
@@ -1763,17 +1938,17 @@ mod tests {
         assert!((r.untimed_s - (r.wall_s - r.timed_s()).max(0.0)).abs() < 1e-9);
         assert!(table(&r).contains("(unaccounted)"));
         let g = &r.gaps[0];
-        assert_eq!((g.after.as_str(), g.before.as_str(), g.n), ("main work", "held open", 1), "{:?}", r.gaps);
+        assert_eq!((g.after.as_str(), g.before.as_str(), g.n), ("measured", "held open", 1), "{:?}", r.gaps);
         assert!(g.wall_s >= 0.03 && g.wall_s <= r.untimed_s + 1e-9, "{:?} {}", r.gaps, r.untimed_s);
         // (A phase open on the main thread: no gap after the last.)
         assert!(r.gaps.iter().all(|g| g.before != END), "{:?}", r.gaps);
-        assert!(table(&r).contains("between main work and held open"), "{}", table(&r));
+        assert!(table(&r).contains("between measured and held open"), "{}", table(&r));
         // A transfer's rate beside its bytes.
         let net = RunRec {
             wall_s: 4.0,
             phases: vec![PhaseRec {
                 name: "fetching its files from the coordinator".into(),
-                class: Class::Net,
+                class: "net".into(),
                 wall_s: 4.0,
                 n: 1,
                 bytes: 8_000_000,
@@ -1787,7 +1962,7 @@ mod tests {
         drop(held);
         assert!(!on());
         // Nothing timed after.
-        let _p = phase("after", Class::Compute);
+        let _p = phase("after");
         reset();
     }
 
@@ -1822,11 +1997,11 @@ mod tests {
             std::hint::black_box(&v);
         };
         {
-            let _p = phase("light", Class::Compute);
+            let _p = phase("light");
             hold(0);
         }
         {
-            let _p = phase("heavy", Class::Compute);
+            let _p = phase("heavy");
             hold(400);
             let mut c = store::spawn::command("true");
             child(&mut c);
@@ -1898,7 +2073,7 @@ mod tests {
         let log = d.path().join("timings.jsonl");
         let ph = |name: &str, w: f64, b: u64| PhaseRec {
             name: name.into(),
-            class: Class::NasRead,
+            class: "nas-read".into(),
             wall_s: w,
             cpu_s: Some(w / 2.0),
             n: 1,

@@ -231,7 +231,7 @@ fn areas_and_parks(
             Some((f, _)) => details_by_i(out, src, f)?,
             None => HashMap::new(),
         };
-        let p = crate::timings::phase("making the areas' features and ids", crate::timings::Class::Compute);
+        let p = crate::timings::phase("making the areas' features and ids");
         let mut src: Vec<IdSource> = Vec::new();
         // Per feature: it, its id (outlines: their dot's), its details record, its owner.
         let mut made: Vec<(Feature, Option<u64>, String, String)> = Vec::new();
@@ -320,7 +320,7 @@ fn areas_and_parks(
         parks += 1;
     }
     // ovdata, per z3 tile.
-    let _p = crate::timings::phase("making and uploading ovdata", crate::timings::Class::NasWrite);
+    let _p = crate::timings::phase("making and uploading ovdata");
     let n_ov = owned.len();
     for (tile, keys) in owned {
         let u = TileId::parse(&tile).unwrap();
@@ -419,8 +419,7 @@ pub fn ferries_job(out: &mut Out, date: &str, statics: &crate::inputs::Accepted)
     };
     // (osmium's input, read where it lies: tests/nas_access.rs.)
     let set_s = set.unchecked_path().to_string_lossy().into_owned();
-    let p =
-        crate::timings::phase("pulling the ferry routes out of the map data (osmium)", crate::timings::Class::NasRead);
+    let p = crate::timings::phase("pulling the ferry routes out of the map data (osmium)");
     run(
         osmium(&["tags-filter", &set_s, "w/route=ferry", "r/route=ferry", "-o", "ferries.osm.pbf", "--overwrite"]),
         "osmium (ferry routes)",
@@ -463,12 +462,12 @@ pub fn ferries_job(out: &mut Out, date: &str, statics: &crate::inputs::Accepted)
         "osmium export (terminals)",
     )?;
     drop(p);
-    let p = crate::timings::phase("listing the feeds and static files", crate::timings::Class::NasRead);
+    let p = crate::timings::phase("listing the feeds and static files");
     let feeds = crate::rail::feeds_for_counting(out, crate::rail::FERRY_FEEDS)?;
     let zips = crate::inputs::gtfs::zips(statics);
     let n_static = zips.len();
     drop(p);
-    let p = crate::timings::phase("finding the ferry lines and their sailings", crate::timings::Class::Mixed);
+    let p = crate::timings::phase("finding the ferry lines and their sailings");
     let w = crate::ferries::run(&work, feeds["feeds"].as_array().context("the ferry feeds' list")?, &zips)?;
     std::fs::write(work.join("timetables.json"), &w.timetables)?;
     drop(p);
@@ -494,7 +493,7 @@ fn ferry_blocks(
     ntiles: &mut usize,
 ) -> Result<usize> {
     // (Made, then written: their own phases below this one.)
-    let _p = crate::timings::phase("making and writing the ferries' blocks", crate::timings::Class::Mixed);
+    let _p = crate::timings::phase("making and writing the ferries' blocks");
     let feats = fc["features"].as_array().context("ferries: no features")?;
     // Per feature: its geometry (a way's line, a terminal's point), properties, id.
     struct F {
@@ -639,8 +638,8 @@ fn write_tiles(
     ntiles: &mut usize,
     bundle: bool,
 ) -> Result<Vec<String>> {
-    use crate::timings::{phase, Class};
-    let p = phase("cutting vector tiles", Class::Compute);
+    use crate::timings::phase;
+    let p = phase("cutting vector tiles");
     let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
     let mut err = None;
     vtgen::tiles(mvt_layer, feats, 0, MAXZ, want, &mut |z, x, y, raw| match names::mvt::gzip(&raw) {
@@ -653,7 +652,7 @@ fn write_tiles(
         return Err(e);
     }
     drop(p);
-    let _p = phase("uploading their packs", Class::NasWrite);
+    let _p = phase("uploading their packs");
     let mut wrote = Vec::new();
     if bundle {
         let tiles: Vec<_> = packs.into_values().flatten().collect();
@@ -706,10 +705,10 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
     let logical = crate::osmpass::set_name(date, "rail");
     let set = out.path(out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?);
     let t0 = std::time::Instant::now();
-    let p = crate::timings::phase("reading the rail set's stops", crate::timings::Class::NasRead);
+    let p = crate::timings::phase("reading the rail set's stops");
     let all = crate::stations::stops(&set)?;
     drop(p);
-    let p = crate::timings::phase("keeping the stops in the coverage", crate::timings::Class::Compute);
+    let p = crate::timings::phase("keeping the stops in the coverage");
     let cover = hi_cover(out);
     let kept: Vec<&crate::stations::Stop> = all
         .iter()

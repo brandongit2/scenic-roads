@@ -26,7 +26,7 @@
 mod tiff;
 mod warp;
 
-use crate::timings::{phase, Class};
+use crate::timings::phase;
 use crate::trees::LeafSources;
 use anyhow::{bail, ensure, Context, Result};
 use std::path::Path;
@@ -82,7 +82,7 @@ fn name(top: i32, left: i32) -> String {
 /// many, is said as they come (crate::agent::jobs::report_f; an EEA square counted by its chunks).
 pub fn make(sqs: &[(i32, i32)], out: &Path, src: &LeafSources) -> Result<()> {
     let missing: Vec<(i32, i32)> = {
-        let _p = phase("checking the squares made", Class::NasRead);
+        let _p = phase("checking the squares made");
         sqs.iter()
             .copied()
             .filter(|&(t, l)| !crate::trees::squares::complete(&out.join(format!("{}.tif", name(t, l)))))
@@ -214,6 +214,7 @@ fn eea_request(src: &LeafSources, bb: [f64; 4], width: usize, height: usize) -> 
     let ag = agent(Some(Duration::from_secs(240)));
     for attempt in 1..=3u64 {
         let mut wait = 10 * attempt;
+        let _w = store::waits::net();
         let got = ag.get(&url).call().map_err(anyhow::Error::from).and_then(|mut resp| {
             let status = resp.status().as_u16();
             let retry = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -364,7 +365,7 @@ fn europe_square(top: i32, left: i32, out: &Path, src: &LeafSources, progress: &
     // coarser levels, so its classes aren't compared, only where there's data.
     let path = out.join(format!("{}.tif", name(top, left)));
     let old: Option<Vec<u8>> = {
-        let _p = phase("reading today's squares", Class::NasRead);
+        let _p = phase("reading today's squares");
         (path.exists() && crate::whole::tiff_file_whole(&path))
             .then(|| {
                 let t = crate::geotiff::Tiff::open(Arc::new(store::range::PlainFile::open(&path).ok()?)).ok()?;
@@ -425,7 +426,7 @@ fn europe_square(top: i32, left: i32, out: &Path, src: &LeafSources, progress: &
     };
     eprintln!("{}: {} EEA chunks", name(top, left), jobs.len());
     {
-        let _p = phase("fetching the EEA's chunks", Class::Net);
+        let _p = phase("fetching the EEA's chunks");
         // Two at a time, taken in order; once one fails the rest still run (their chunks kept for
         // the next try), then the square fails.
         let next = std::sync::atomic::AtomicUsize::new(0);
@@ -487,7 +488,7 @@ fn europe_square(top: i32, left: i32, out: &Path, src: &LeafSources, progress: &
     if k > 0 {
         eprintln!("  {k} chunks kept from today's square");
     }
-    let _p = phase("writing the squares", Class::NasWrite);
+    let _p = phase("writing the squares");
     save(top, left, &a, EEA_SOURCE, out)?;
     std::fs::remove_dir_all(&parts).ok();
     Ok(())
@@ -502,9 +503,10 @@ fn fetch_nalcms(tif: &Path, src: &LeafSources) -> Result<()> {
     }
     let url = &src.north_america;
     let [offset, compressed] = src.north_america_member;
-    let _p = phase("downloading NALCMS's GeoTIFF", Class::Net);
+    let _p = phase("downloading NALCMS's GeoTIFF");
     std::fs::create_dir_all(tif.parent().context("NALCMS: no folder")?)?;
     crate::fetch::online(url)?;
+    let _w = store::waits::net();
     let ag = agent(None);
     let get = |from: u64, to: u64| -> Result<ureq::http::Response<ureq::Body>> {
         let r = ag.get(url).header("Range", &format!("bytes={from}-{to}")).call()?;
@@ -662,7 +664,7 @@ fn north_america_squares(
     for (k, &(top, left)) in todo.iter().enumerate() {
         let t0 = std::time::Instant::now();
         let a = {
-            let _p = phase("resampling the NALCMS squares", Class::Compute);
+            let _p = phase("resampling the NALCMS squares");
             let mut a = nalcms_square(&t, top, left).with_context(|| format!("square {}", name(top, left)))?;
             for v in &mut a {
                 *v = na_class(*v);
@@ -670,7 +672,7 @@ fn north_america_squares(
             a
         };
         {
-            let _p = phase("writing the squares", Class::NasWrite);
+            let _p = phase("writing the squares");
             save(top, left, &a, NALCMS_SOURCE, out)?;
         }
         eprintln!("    ({:.0} s)", t0.elapsed().as_secs_f64());

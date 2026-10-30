@@ -24,7 +24,7 @@
 use crate::agent::jobs::report;
 use crate::heritagewd::{read_lines, wikipedias, write_atomic, Ordered};
 use crate::pyjson::{dumps_spaced, loads, Py};
-use crate::timings::{phase, Class};
+use crate::timings::phase;
 use crate::wikiask::Asker;
 use anyhow::{bail, Context, Result};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -223,7 +223,7 @@ impl Months {
     pub fn views(&self, months: &[String], wanted: &HashSet<String>) -> Result<Vec<HashMap<String, u64>>> {
         self.moved.lock().unwrap().clear();
         {
-            let _p = phase("planning the work", Class::Mixed);
+            let _p = phase("planning the work");
             let mut total = 0;
             for m in months {
                 total += self.plan(m, wanted)?;
@@ -231,7 +231,7 @@ impl Months {
             self.planned.store(total, Ordering::Relaxed);
         }
         let (stop, stopped) = std::sync::mpsc::channel::<()>();
-        let _p = phase("counting the months' views", Class::Mixed);
+        let _p = phase("counting the months' views");
         let next = AtomicUsize::new(0);
         let got: Vec<Mutex<Option<Result<HashMap<String, u64>>>>> = months.iter().map(|_| Mutex::new(None)).collect();
         std::thread::scope(|s| {
@@ -399,7 +399,7 @@ impl Months {
     /// Copies `src` (the NAS's) into `dst` in place (a scratch file of store::cachefile), its length
     /// checked.
     fn copy_into(&self, month: &str, src: &Path, dst: &Path) -> io::Result<()> {
-        let p = phase("copying the months' indexes from the NAS", Class::NasRead);
+        let p = phase("copying the months' indexes from the NAS");
         let mut a = Counted { r: File::open(src)?, n: self.counter(month, "copied") };
         let mut b = File::options().write(true).truncate(true).open(dst)?;
         io::copy(&mut a, &mut b)?;
@@ -415,7 +415,7 @@ impl Months {
     /// Copies `src` to the NAS's `dst` by a temporary name (this Mac's and process's), flushed, its
     /// length checked.
     fn copy_whole(&self, month: &str, src: &Path, dst: &Path) -> Result<()> {
-        let p = phase("copying the months' indexes to the NAS", Class::NasWrite);
+        let p = phase("copying the months' indexes to the NAS");
         std::fs::create_dir_all(dst.parent().unwrap_or(Path::new(".")))?;
         let name = dst.file_name().unwrap_or_default().to_string_lossy();
         let tmp = dst.with_file_name(format!("{name}.{}.{}.tmp", host(), std::process::id()));
@@ -442,7 +442,7 @@ impl Months {
         index: &Path,
         wanted: &HashSet<String>,
     ) -> Result<Result<HashMap<String, u64>, Damaged>> {
-        let _p = phase("reading the months' indexes", Class::Disk);
+        let _p = phase("reading the months' indexes");
         let t0 = Instant::now();
         // (Marked used: room-making lets the least recently used copies go first.)
         cachefile::touch(index);
@@ -485,7 +485,7 @@ impl Months {
         let local = self.local(month);
         let t0 = Instant::now();
         let rows = {
-            let _p = phase("streaming the months' dumps into indexes", Class::Net);
+            let _p = phase("streaming the months' dumps into indexes");
             cachefile::make_dir(&self.dir)?;
             eprintln!("  {month}: streaming its dump, every article of the map's languages counted");
             let url = self.dump_url(month);
@@ -665,7 +665,7 @@ pub fn heritage(root: &Path, epoch: &str, wikidata: &str, months: &Months) -> Re
     let ms = months_before(epoch)?;
     let w = root.join("data/heritage/wd");
     let out = root.join("data/pageviews");
-    let p = phase("reading the item lists and article cache", Class::Disk);
+    let p = phase("reading the item lists and article cache");
     std::fs::create_dir_all(&out)?;
     let mut qids: BTreeSet<String> = BTreeSet::new();
     let items = std::fs::read_to_string(w.join("items.jsonl")).context("read items.jsonl")?;
@@ -697,7 +697,7 @@ pub fn heritage(root: &Path, epoch: &str, wikidata: &str, months: &Months) -> Re
             }
             wp.set(&q, Py::Dict(d));
         }
-        let _p = phase("writing the article cache", Class::Disk);
+        let _p = phase("writing the article cache");
         write_atomic(&wp_path, &wp.iter().map(|(_, r)| dumps_spaced(r) + "\n").collect::<String>())?;
     }
     let qids: Vec<String> = qids.into_iter().collect();
@@ -707,7 +707,7 @@ pub fn heritage(root: &Path, epoch: &str, wikidata: &str, months: &Months) -> Re
     let per_month = months.views(&ms, &wanted)?;
     let per_item = item_views(&qids, &arts_of, &per_month);
     {
-        let _p = phase("writing the views", Class::Disk);
+        let _p = phase("writing the views");
         write_atomic(&out.join("items.json"), &dumps_spaced(&per_item))?;
     }
     if let Py::Dict(d) = &per_item {
@@ -734,7 +734,7 @@ pub fn items(
     out: &Path,
 ) -> Result<()> {
     let ms = months_before(epoch)?;
-    let p = phase("reading the article cache", Class::Disk);
+    let p = phase("reading the article cache");
     let wp = read_lines(&cache.join(format!("wp-{epoch}.jsonl")), |r| Ok(r.at("qid").py_str()))?;
     let qids: Vec<String> = views_q.iter().cloned().collect();
     let arts_of: HashMap<String, Vec<String>> = qids.iter().map(|q| (q.clone(), arts_in_langs(wp.get(q)))).collect();
@@ -744,7 +744,7 @@ pub fn items(
     let per_month = months.views(&ms, &wanted)?;
     let views = item_views(&qids, &arts_of, &per_month);
     let n = if let Py::Dict(d) = &views { d.len() } else { 0 };
-    let p = phase("writing the outputs", Class::Disk);
+    let p = phase("writing the outputs");
     let fetched = match std::fs::read_to_string(cache.join(format!("fetched-{epoch}.json"))) {
         Ok(t) => loads(&t).context("parse fetched.json")?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => Py::Dict(vec![]),
@@ -763,7 +763,7 @@ pub fn items(
     write_atomic(&out.join("meta.json"), &dumps_spaced(&meta))?;
     drop(p);
     // (Later epochs' months are later.)
-    let _p = phase("deleting the old months", Class::Disk);
+    let _p = phase("deleting the old months");
     for e in std::fs::read_dir(&months.dir).into_iter().flatten().flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
         if n.get(..7).is_some_and(|m| m < ms[0].as_str()) {

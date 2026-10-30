@@ -203,7 +203,7 @@ fn run_trees(args: &[std::ffi::OsString]) -> Result<()> {
     let prog = "the trees program";
     let mut c = store::spawn::command(std::env::current_exe()?.parent().context("the programs' folder")?.join("trees"));
     // (Its phase, its own under it: crate::timings.)
-    let _p = crate::timings::phase(prog, crate::timings::Class::Mixed);
+    let _p = crate::timings::phase(prog);
     c.args(args);
     crate::timings::child(&mut c);
     // (What it reads of the NAS, the canopy rows above all, counted in a folder of its own, seen as
@@ -285,7 +285,7 @@ pub fn build_with(
 /// Uploads z3 tile `q`'s packs from its whole run's archives in `dir`, dropping its packs it no
 /// longer makes.
 pub fn put_z3(out: &mut Out, q: TileId, dir: &Path) -> Result<()> {
-    let _p = crate::timings::phase("uploading packs", crate::timings::Class::NasWrite);
+    let _p = crate::timings::phase("uploading packs");
     for (i, layer) in LAYERS.iter().enumerate() {
         let arc = roadcore::archive::Archive::open(&dir.join(format!("{layer}.tiles")))?;
         let n = LAYERS.len() as u64;
@@ -413,7 +413,7 @@ fn check_same(out: &Out, made: &[(String, Option<String>)], what: &str) -> Resul
 /// each must come out with the content name the manifest has (its mid, when it has one), else an
 /// error and nothing uploaded.
 pub fn put_piece(out: &mut Out, t: TileId, dir: &Path, expect_same: bool) -> Result<()> {
-    let p = crate::timings::phase("making packs and mid", crate::timings::Class::Disk);
+    let p = crate::timings::phase("making packs and mid");
     let mut made: Made = Vec::new();
     for layer in LAYERS {
         let tiles = archive_tiles(&dir.join(format!("{layer}.tiles")))?;
@@ -451,7 +451,7 @@ pub fn put_piece(out: &mut Out, t: TileId, dir: &Path, expect_same: bool) -> Res
 /// Uploads a run's files (`made`), dropping from the manifest those it made none of; with `same`,
 /// once each is checked against the manifest (`check_same`), else nothing.
 fn put_made(out: &mut Out, made: Made, same: Option<&str>) -> Result<()> {
-    let p = crate::timings::phase("uploading packs", crate::timings::Class::NasWrite);
+    let p = crate::timings::phase("uploading packs");
     if let Some(what) = same {
         let names: Vec<(String, Option<String>)> = made
             .iter()
@@ -550,7 +550,7 @@ pub fn build_lo(out: &mut Out, cov: &Coverage, q: TileId, scratch: &Path, worker
 /// dropping the manifest's of a layer it made none of. `expect_same`: each as the manifest has it,
 /// else an error and nothing uploaded.
 pub fn put_lo(out: &mut Out, q: TileId, dir: &Path, expect_same: bool) -> Result<()> {
-    let p = crate::timings::phase("making packs", crate::timings::Class::Disk);
+    let p = crate::timings::phase("making packs");
     let mut made: Made = Vec::new();
     for layer in LAYERS {
         let tiles = archive_tiles(&dir.join(format!("{layer}.tiles")))?;

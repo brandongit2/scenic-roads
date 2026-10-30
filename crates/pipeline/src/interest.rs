@@ -384,10 +384,10 @@ pub fn same_names(
 /// back into data/build/heritage.json as Python's `json` writes it.
 pub fn heritage(root: &std::path::Path) -> anyhow::Result<()> {
     use crate::pyjson::{dumps, loads, Py};
-    use crate::timings::{phase, Class};
+    use crate::timings::phase;
     use anyhow::Context;
     let b = root.join("data/build");
-    let p = phase("reading the layers and details", Class::Disk);
+    let p = phase("reading the layers and details");
     let pv_path = root.join("data/pageviews/items.json");
     let views: HashMap<String, Py> = if pv_path.exists() {
         match loads(&std::fs::read_to_string(&pv_path)?).context("parse items.json")? {
@@ -413,7 +413,7 @@ pub fn heritage(root: &std::path::Path) -> anyhow::Result<()> {
         _ => Py::Dict(vec![]),
     };
     drop(p);
-    let p = phase("scoring the fame", Class::Compute);
+    let p = phase("scoring the fame");
     let Some(Py::List(hf)) = hfc.get_mut("features") else { anyhow::bail!("heritage.json: no features") };
     let role = crate::heritage_layers::roles(hf, &sites)?;
     let views_of = |q: &str| views.get(q).filter(|v| v.truthy());
@@ -460,7 +460,7 @@ pub fn heritage(root: &std::path::Path) -> anyhow::Result<()> {
     }
     drop(p);
     // Isolation among the sites as the map shows them: a merged site once, at its dot.
-    let p = phase("measuring the isolation", Class::Compute);
+    let p = phase("measuring the isolation");
     let keep: Vec<usize> = (0..hf.len()).filter(|i| !role.get(i).is_some_and(|r| !r.0)).collect();
     let mut lon = Vec::with_capacity(keep.len());
     let mut lat = Vec::with_capacity(keep.len());
@@ -490,7 +490,7 @@ pub fn heritage(root: &std::path::Path) -> anyhow::Result<()> {
         ia.iter().filter(|&&x| x >= 20.0).count(),
         hf.len() - keep.len()
     );
-    let _p = phase("writing the layers", Class::Disk);
+    let _p = phase("writing the layers");
     let tmp = b.join("heritage.json.tmp");
     std::fs::write(&tmp, dumps(&hfc))?;
     std::fs::rename(&tmp, b.join("heritage.json"))?;

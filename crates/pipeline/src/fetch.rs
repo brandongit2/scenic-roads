@@ -1078,6 +1078,7 @@ mod net {
 
         /// The file's length and first bytes; None when the server has no such file.
         fn head(&self, url: &str) -> Result<Option<(u64, Vec<u8>)>> {
+            let _w = store::waits::net();
             let _slot = HostSlot::take(url);
             self.retrying(url, || {
                 crate::fetch::online(url)?;
@@ -1130,6 +1131,7 @@ mod net {
         /// answering it whole, 200, or another validator or length) is fetched again from the start.
         pub(super) fn range(&self, url: &str, s: u64, e: u64) -> Result<Vec<u8>> {
             const CHUNK: usize = 1 << 20;
+            let _w = store::waits::net();
             let _slot = HostSlot::take(url);
             let want = (e - s) as usize;
             let mut out: Vec<u8> = Vec::with_capacity(want);
@@ -1236,6 +1238,7 @@ mod net {
         /// tiles at once) mustn't set the job's z6 tiles aside; one that never answered is.
         pub(super) fn get_by(&self, url: &str, deadline: Option<super::Within>) -> Result<Option<Vec<u8>>> {
             down_check(self.down.as_deref(), url)?;
+            let _w = store::waits::net();
             let _slot = HostSlot::take(url);
             let mut last = String::new();
             let mut all_late = true;
