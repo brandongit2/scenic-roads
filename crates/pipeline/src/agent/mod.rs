@@ -28,6 +28,7 @@ pub mod brokers;
 pub mod build;
 pub mod buildmem;
 pub mod builtview;
+pub mod bus;
 pub mod cataloguesview;
 pub mod cond;
 pub mod every;
@@ -1649,6 +1650,9 @@ pub struct Agent {
     /// at once; whether its thread runs (else the loop takes them, `sync_hold`).
     asks: std::sync::Arc<asks::Asks>,
     asks_on: bool,
+    /// The slow-plan fake (docs/agent-parts.md §7): each plan sleeps this long first. Tests only.
+    #[cfg(test)]
+    slow_plan: Option<Duration>,
     /// The bytes the caches hold, for the status: what room-making can free and what a clear would
     /// (room::sizes), counted on a thread of its own every ten minutes (a walk of many files), and
     /// again after a clear or a freeing; and when.
@@ -2080,6 +2084,8 @@ impl Agent {
             pause_pushed: false,
             asks: asks::Asks::new(asks_home, hold.clone()),
             asks_on: false,
+            #[cfg(test)]
+            slow_plan: None,
             hold,
             hold_mirrored: false,
             hold_read: None,
@@ -7249,6 +7255,11 @@ impl Agent {
     }
 
     fn plan(&self, root: &store::nasfs::NasRoot, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+        // (The slow-plan fake's, docs/agent-parts.md §7: a plan that takes minutes.)
+        #[cfg(test)]
+        if let Some(d) = self.slow_plan {
+            std::thread::sleep(d);
+        }
         let jobs = self.plan_unchecked(root, c, waiting);
         // (In the tests, every planned command checked against its program's table, crate::cli.)
         #[cfg(test)]
@@ -12612,6 +12623,19 @@ mod tests {
             .collect();
         let want = [crate::terrain_task::KIND, crate::trees::task::KIND, crate::bld::task::KIND, "tail"];
         assert_eq!(kinds, want.iter().zip([1, 1, 5, 5]).map(|(k, n)| (k.to_string(), n)).collect::<Vec<_>>());
+    }
+
+    /// The slow-plan fake (docs/agent-parts.md §7): a plan that sleeps first, as long as asked.
+    #[test]
+    fn the_slow_plan_fake_makes_a_plan_take_its_time() {
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(&d.path().join("nas"));
+        let mut a = agent(&root, &d.path().join("home"));
+        let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        a.slow_plan = Some(Duration::from_millis(300));
+        let t = Instant::now();
+        a.plan(&root, &c, &mut Vec::new());
+        assert!(t.elapsed() >= Duration::from_millis(300));
     }
 
     #[test]

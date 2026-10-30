@@ -1,6 +1,6 @@
 # The agent in parts
 
-**Planned (task #871; only the first slice is built).** This doc says how the build agent's single
+**Planned (task #871; steps 0–1 of §7 built).** This doc says how the build agent's single
 serial loop (`crate::agent::Agent::run` and `step`, crates/pipeline/src/agent/mod.rs) will become
 independent parts, each split by what it waits on. Until each step below lands, docs/pool.md §7.8
 and §11, docs/building.md §2 and the code are what is true. The parts marked *today* describe main
@@ -71,8 +71,9 @@ Two kinds of link, both named types in a new `agent::bus` module:
 
 The rule: a part's own state is `&mut` inside its thread; anything another part needs it publishes
 as a snapshot or sends as a message. No `Mutex` on shared state outside `bus`. A test
-(`agent::bus::tests::no_shared_mutex`, a scan of `agent/` for `Mutex<` outside `bus` and `nasread`'s
-own pools) holds the rule.
+(crates/pipeline/tests/no_shared_mutex.rs, a scan of `agent/` for `Mutex<` outside `bus` and
+`nasread`'s own pools; *built*) holds the rule: the files not yet split keep the count they have,
+listed, and the list only shrinks (a file with fewer fails it too).
 
 ## 4. Each part
 
@@ -237,13 +238,13 @@ in tests.
 | # | Step | Deletes | Test that proves it |
 |---|---|---|---|
 | 0 | *Done (#846):* own hold asks on `asks`' thread | — | `agent::asks::tests` |
-| 1 | `agent::bus` (`Snap`, the channel types), and the slow-NAS and slow-plan fakes | — | the fakes' own tests |
+| 1 | *Done:* `agent::bus` (`Snap`, the channel types `ControlMsg`, `BeatMsg`), the slow-NAS fake (`nasread::fake::hang`: every call under a folder held) and the slow-plan fake (`Agent::slow_plan`), and the no-shared-mutex scan | — | `agent::bus::tests`, `nasread::tests::the_slow_nas_fake_hangs_its_folder_alone`, `agent::tests::the_slow_plan_fake_makes_a_plan_take_its_time`, tests/no_shared_mutex.rs |
 | 2 | **beat** on its own timer, sole status writer; the loop publishes `JobsView`/`PlanView` snapshots instead of writing | `nasread::BEATING`, `Beating`, `beat_again`, `asks::Beat`, the watchdog's kept beat (`KEEP_EVERY`, `KEEP_FOR`, `WORKING_S`), the heartbeat phase of `step` | `beat_steady_while_the_nas_hangs`: the NAS fake blocks every call; the local status' time advances every 10 s for 2 min. `beat_steady_while_planning`: the plan fake sleeps 3 min; same |
 | 3 | **control** on the HTTP endpoint and a watcher; hold, quit, cancel, settings | `asks`' poll (`EVERY`), `sync_hold`, `adopt_hold`, `hold_asked_anew`, `quit_ask` polls in `run`'s wait, `tend_cancels`' folder read, the settings block in `step` | `pause_shows_within_a_second_on_a_hung_nas` and `…_while_planning`: a hold posted; its answer and a "pausing" status within 1 s, the job's channel says drain |
 | 4 | **nas**: the mount and probe on a worker with a deadline; the §4.3 calls as `NasReq` | the "still under no deadline" list in pool.md §7.8; the mount block in `step` | `a_hung_mount_holds_only_nas_jobs`: the mount fake hangs; a local job starts, the beat and a pause go on, a NAS job waits with "NAS mounting (stuck)" |
 | 5 | **jobs** as its own part; the reaper thread; grants by channel | the slot loop in `step`, `run`'s wait loop and its 2/20-s timing, `save_hands` per round | `a_job_end_starts_the_next_within_2_s`; the guards' tests moved |
 | 6 | **plan** triggered by changes; grants from the last `PlanView`; the checklist and side threads as its workers | `step` itself, `plan_due`, `plan_seen`, `may_pack`, `try_pooled`, `built_making`'s polling, the loop watchdog (`nasread::loop_thread`, `ROUND_AT`, `loop-stall.json`; the per-part stall log replaces it) | `a_slow_plan_delays_no_grant`: the plan fake sleeps 2 min; a member's ask is granted from the last plan within 1 s |
-| 7 | the no-shared-mutex scan test; docs: pool.md §7.8 and §11, building.md §2 rewritten to the parts | the rest of the ad-hoc `Arc<Mutex<…>>` fields on `Agent` | `agent::bus::tests::no_shared_mutex` |
+| 7 | docs: pool.md §7.8 and §11, building.md §2 rewritten to the parts | the rest of the ad-hoc `Arc<Mutex<…>>` fields on `Agent` | tests/no_shared_mutex.rs's list empty |
 
 Steps 2 and 3 matter most to the owner (the 5-min Pause, the heartbeat) and depend only on step 1.
 Step 4 can go before or after 5. Step 6 carries `PoolView`'s gates as #881 left them (no settle).

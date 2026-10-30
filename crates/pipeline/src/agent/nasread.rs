@@ -93,6 +93,19 @@ impl Calls {
                 format!("{}: every NAS thread for it is stuck in an earlier call", what.display()),
             ));
         }
+        // (The slow-NAS fake's: a test's hung share holds the call, `fake::hang`.)
+        #[cfg(test)]
+        let f = {
+            let gate = fake::gate(what);
+            move || {
+                if let Some(g) = gate {
+                    while !g.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                }
+                f()
+            }
+        };
         let (rtx, rrx) = mpsc::sync_channel(1);
         let busy = self.busy.clone();
         let job: Job = Box::new(move || {
@@ -121,6 +134,41 @@ impl Calls {
     /// Its calls missed so far: past their deadline, or refused with every thread busy.
     pub fn missed(&self) -> u64 {
         self.missed.load(Ordering::Relaxed)
+    }
+}
+
+/// The slow-NAS fake (docs/agent-parts.md §7): every call on a path under a test's folder held
+/// until the test lets the share answer again (`Hung` dropped), as a share stuck in the kernel
+/// holds them. Only in tests.
+#[cfg(test)]
+pub(crate) mod fake {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    static HUNG: Mutex<Vec<(PathBuf, Arc<AtomicBool>)>> = Mutex::new(Vec::new());
+
+    /// The share hung under `prefix` while this lives.
+    pub struct Hung(PathBuf, Arc<AtomicBool>);
+
+    impl Drop for Hung {
+        fn drop(&mut self) {
+            self.1.store(true, Ordering::SeqCst);
+            HUNG.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, g)| !(p == &self.0 && Arc::ptr_eq(g, &self.1)));
+        }
+    }
+
+    /// Every NAS call on a path under `prefix` hangs until the answer is dropped.
+    pub fn hang(prefix: &Path) -> Hung {
+        let g = Arc::new(AtomicBool::new(false));
+        HUNG.lock().unwrap_or_else(|e| e.into_inner()).push((prefix.to_path_buf(), g.clone()));
+        Hung(prefix.to_path_buf(), g)
+    }
+
+    /// The gate a call on `what` waits on, if it's hung.
+    pub(super) fn gate(what: &Path) -> Option<Arc<AtomicBool>> {
+        let h = HUNG.lock().unwrap_or_else(|e| e.into_inner());
+        h.iter().find(|(p, _)| what.starts_with(p)).map(|(_, g)| g.clone())
     }
 }
 
@@ -828,6 +876,22 @@ pub(crate) mod tests {
         drop(hold);
         store::testkit::eventually("the threads free", || r.busy() == 0);
         assert_eq!(r.call(Path::new("x"), Duration::from_secs(5), || 1).unwrap(), 1);
+    }
+
+    /// The slow-NAS fake: a call under the hung folder held past its deadline, one elsewhere
+    /// answered; the share answering again frees the thread.
+    #[test]
+    fn the_slow_nas_fake_hangs_its_folder_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let r = leak(Calls::new("fake", 2));
+        let hung = fake::hang(d.path());
+        let e = r.call(&d.path().join("state/status.json"), Duration::from_millis(200), || 1).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(r.busy(), 1);
+        assert_eq!(r.call(Path::new("/elsewhere/x"), Duration::from_secs(5), || 2).unwrap(), 2);
+        drop(hung);
+        store::testkit::eventually("the hung call answers", || r.busy() == 0);
+        assert_eq!(r.call(&d.path().join("state/status.json"), Duration::from_secs(5), || 3).unwrap(), 3);
     }
 
     #[test]
