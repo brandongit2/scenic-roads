@@ -399,6 +399,8 @@ pub fn fill(
                     })
                     .collect()
             });
+            // (The tiles of the chunk asked: all of them, unless the build paused it.)
+            let asked_now = got.iter().filter(|g| g.is_some()).count() as u64;
             for (&(z, x, y), g) in chunk.iter().zip(got) {
                 let Some(g) = g else {
                     done.cut = true;
@@ -421,10 +423,10 @@ pub fn fill(
             say(&format!(
                 "pyramids: {}: {} of {n} ({:.1} GB fetched so far)",
                 folder(template),
-                ((k + 1) * CHUNK).min(n),
+                k * CHUNK + asked_now as usize,
                 done.bytes as f64 / 1e9
             ));
-            asked += chunk.len() as u64;
+            asked += asked_now;
             progress(asked, total);
             // (The build pausing: what's fetched is packed, the rest left for the next fill.)
             if done.cut || draining() {
