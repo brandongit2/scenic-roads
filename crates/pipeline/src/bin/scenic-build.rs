@@ -2529,9 +2529,17 @@ fn pyramids_fill(out: &Out, args: &[String]) -> Result<bool> {
         let want = py::want(&pool.plan, &water, &levels, &deep)?;
         let before = pipeline::fetch::fetched_bytes();
         // (How far the z6 tile's fill is, in its part: the tiles asked of GSI of those to fetch.)
-        let f = py::fill(&net, &want, &dir, &cache, &root, handoff.as_deref(), &|l| eprintln!("{l}"), &|d, t| {
-            pipeline::agent::jobs::report(d, t, "elevation tiles")
-        })?;
+        let f = py::fill(
+            &net,
+            &want,
+            &dir,
+            &cache,
+            &root,
+            handoff.as_deref(),
+            &|l| eprintln!("{l}"),
+            &|d, t| pipeline::agent::jobs::report(d, t, "elevation tiles"),
+            &pipeline::control::draining_lately,
+        )?;
         most = most.max(f.bytes);
         // (The tiles it asked of the network, the work its time is weighed by: a z6 tile whose
         // tiles were all stored took seconds, not the hours of one fetching them, crate::needs::per_work.)

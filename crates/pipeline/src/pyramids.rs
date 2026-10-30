@@ -320,7 +320,10 @@ pub struct Filled {
 /// the index changed here, under `root`'s build lock. Restartable: a tile packed stays; one cut short is
 /// fetched again. `progress` is told the tiles asked of the network so far of all those the layers'
 /// stores lack (at the start, then after each `CHUNK`: a z6 tile's hours-long fill says how far it
-/// is every minute or two, nothing written a tile).
+/// is every minute or two, nothing written a tile). With the build pausing (`draining`:
+/// crate::control::draining_lately, a test's own), each tile not yet asked is left (task #885: the
+/// stop waits for the fetches under way, seconds, not the rest of a chunk), what was fetched packed
+/// and the fill `cut`.
 #[allow(clippy::too_many_arguments)]
 pub fn fill(
     fetch: &dyn Fetch,
@@ -331,6 +334,7 @@ pub fn fill(
     handoff: Option<&std::path::Path>,
     say: &(dyn Fn(&str) + Sync),
     progress: &(dyn Fn(u64, u64) + Sync),
+    draining: &(dyn Fn() -> bool + Sync),
 ) -> Result<Filled> {
     use rayon::prelude::*;
     let mut done = Filled::default();
@@ -370,25 +374,36 @@ pub fn fill(
         p.keep = false;
         let n = todo.len();
         for (k, chunk) in todo.chunks(CHUNK).enumerate() {
-            let got: Vec<Result<Option<Vec<u8>>>> = threads.install(|| {
+            // (None: left, the build pausing.)
+            #[allow(clippy::type_complexity)]
+            let got: Vec<Option<Result<Option<Vec<u8>>>>> = threads.install(|| {
                 chunk
                     .par_iter()
                     .map(|&(z, x, y)| {
-                        let url = template
-                            .replace("{z}", &z.to_string())
-                            .replace("{x}", &x.to_string())
-                            .replace("{y}", &y.to_string());
-                        let b = fetch.get_within(&url, crate::dem::generic::TILE_WITHIN)?;
-                        match b {
-                            Some(b) if !crate::whole::png_whole(&b) => {
-                                anyhow::bail!("{url}: not a whole PNG ({} bytes)", b.len())
-                            }
-                            b => Ok(b),
+                        if draining() {
+                            return None;
                         }
+                        Some((|| {
+                            let url = template
+                                .replace("{z}", &z.to_string())
+                                .replace("{x}", &x.to_string())
+                                .replace("{y}", &y.to_string());
+                            let b = fetch.get_within(&url, crate::dem::generic::TILE_WITHIN)?;
+                            match b {
+                                Some(b) if !crate::whole::png_whole(&b) => {
+                                    anyhow::bail!("{url}: not a whole PNG ({} bytes)", b.len())
+                                }
+                                b => Ok(b),
+                            }
+                        })())
                     })
                     .collect()
             });
             for (&(z, x, y), g) in chunk.iter().zip(got) {
+                let Some(g) = g else {
+                    done.cut = true;
+                    continue;
+                };
                 match g {
                     Ok(b) => {
                         match &b {
@@ -412,7 +427,7 @@ pub fn fill(
             asked += chunk.len() as u64;
             progress(asked, total);
             // (The build pausing: what's fetched is packed, the rest left for the next fill.)
-            if crate::control::draining() {
+            if done.cut || draining() {
                 done.cut = true;
                 break;
             }
@@ -527,9 +542,17 @@ mod tests {
         let want = BTreeMap::from([(T.to_string(), BTreeSet::from([(15, 1, 9), (15, 2, 9)]))]);
         // (Task #830: told how far it is, of the tiles the store lacks: at the start and by chunk.)
         let said = std::sync::Mutex::new(Vec::new());
-        let f = fill(&net, &want, &dir, &d.path().join("cache"), &root, None, &|_| {}, &|d, t| {
-            said.lock().unwrap().push((d, t))
-        })
+        let f = fill(
+            &net,
+            &want,
+            &dir,
+            &d.path().join("cache"),
+            &root,
+            None,
+            &|_| {},
+            &|d, t| said.lock().unwrap().push((d, t)),
+            &|| false,
+        )
         .unwrap();
         assert_eq!((f.had, f.fetched, f.none, f.failed.len()), (0, 1, 1, 0));
         assert_eq!(*said.lock().unwrap(), [(0, 2), (2, 2)]);
@@ -540,13 +563,89 @@ mod tests {
         assert!(s.get(&url(3)).is_err(), "not stored: asked of the network");
         assert_eq!((s.hits.load(Ordering::Relaxed), s.misses.load(Ordering::Relaxed)), (2, 1));
         said.lock().unwrap().clear();
-        let again = fill(&empty, &want, &dir, &d.path().join("cache"), &root, None, &|_| {}, &|d, t| {
-            said.lock().unwrap().push((d, t))
-        })
+        let again = fill(
+            &empty,
+            &want,
+            &dir,
+            &d.path().join("cache"),
+            &root,
+            None,
+            &|_| {},
+            &|d, t| said.lock().unwrap().push((d, t)),
+            &|| false,
+        )
         .unwrap();
         assert_eq!((again.had, again.fetched), (2, 0));
         assert_eq!(*said.lock().unwrap(), [(0, 0)], "nothing to fetch");
         assert_eq!(sizes(&dir, &[T.to_string()]).unwrap()[0].2, 1);
+    }
+
+    /// Task #885: a fill paused at every one of its safe points in turn (before each tile it asks),
+    /// then filled again until it isn't cut, serves every tile with the same bytes as a fill never
+    /// paused; a paused fill leaves the tiles it didn't ask, never one half-packed.
+    #[test]
+    fn a_fill_paused_at_every_tile_resumes_to_the_same_tiles() {
+        let url = |x: u32| T.replace("{z}", "15").replace("{x}", &x.to_string()).replace("{y}", "9");
+        let mut net = crate::fetch::MapFetch::default();
+        let n = 6u32;
+        for x in 0..n {
+            net.0.insert(url(x), if x % 3 == 2 { None } else { Some(png()) });
+        }
+        let want = BTreeMap::from([(T.to_string(), (0..n).map(|x| (15, x, 9)).collect::<BTreeSet<_>>())]);
+        let empty = crate::fetch::MapFetch::default();
+        let served = |dir: &NasPath| -> Vec<Option<Vec<u8>>> {
+            let s = Stored::new(&empty, dir, &plan());
+            (0..n).map(|x| s.get(&url(x)).unwrap()).collect()
+        };
+        let d = tempfile::tempdir().unwrap();
+        let fresh_root = store::nasfs::NasRoot::from_arg(d.path().join("fresh").to_str().unwrap());
+        let f = fill(
+            &net,
+            &want,
+            &fresh_root.join(DIR),
+            &d.path().join("c0"),
+            &fresh_root,
+            None,
+            &|_| {},
+            &|_, _| {},
+            &|| false,
+        )
+        .unwrap();
+        assert!(!f.cut);
+        let fresh = served(&fresh_root.join(DIR));
+        for at in 0..n as u64 {
+            let root = store::nasfs::NasRoot::from_arg(d.path().join(format!("at-{at}")).to_str().unwrap());
+            let dir = root.join(DIR);
+            // (Pausing once `at` tiles were asked: which those are, the fetches' threads choose.)
+            let asked = AtomicU64::new(0);
+            let pausing = || asked.fetch_add(1, Ordering::SeqCst) >= at;
+            let f =
+                fill(&net, &want, &dir, &d.path().join(format!("c-{at}")), &root, None, &|_| {}, &|_, _| {}, &pausing)
+                    .unwrap();
+            assert_eq!(f.fetched + f.none, at, "paused before tile {at}: the rest left");
+            assert!(f.cut, "paused before tile {at}");
+            let mut fills = 1;
+            loop {
+                let f = fill(
+                    &net,
+                    &want,
+                    &dir,
+                    &d.path().join(format!("c-{at}")),
+                    &root,
+                    None,
+                    &|_| {},
+                    &|_, _| {},
+                    &|| false,
+                )
+                .unwrap();
+                fills += 1;
+                if !f.cut {
+                    break;
+                }
+            }
+            assert_eq!(fills, 2, "one fill more finishes it");
+            assert_eq!(served(&dir), fresh, "paused before tile {at}");
+        }
     }
 
     /// Task #810: a job's fill (the pool's step) changes no index: its archives go onto the NAS and
@@ -562,7 +661,8 @@ mod tests {
         let mut net = crate::fetch::MapFetch::default();
         net.0.insert(url.clone(), Some(png()));
         let want = BTreeMap::from([(T.to_string(), BTreeSet::from([(15, 1, 9)]))]);
-        let f = fill(&net, &want, &dir, &d.path().join("cache"), &root, Some(&outbox), &|_| {}, &|_, _| {}).unwrap();
+        let f = fill(&net, &want, &dir, &d.path().join("cache"), &root, Some(&outbox), &|_| {}, &|_, _| {}, &|| false)
+            .unwrap();
         assert_eq!((f.fetched, f.cut), (1, false));
         let empty = crate::fetch::MapFetch::default();
         assert!(Stored::new(&empty, &dir, &plan()).get(&url).is_err(), "unnamed: not served yet");

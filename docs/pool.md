@@ -721,11 +721,22 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   composing's blocks, crate::depth::resume), a terrain-hi z6 tile (each level's blocks, a z8
   tile's tiles at z12, then the level's end) and a terrain-deep z10 tile (its base tiles, each
   with its z13–16 subtree; crate::terrain_resume). slope-hi and slope-deep keep none: their
-  targets take minutes at most. A drain also stops the terrain's steps (terrain-hi, -deep, -lo, -root) mid-target: their
-  sampling of the elevation pool checks `SCENIC_CONTROL` (`control::draining_lately`, read at most once a second) before each chunk (16 tiles) or tile read alone and ends
-  with `control::Paused` (a level's sampling ran 7.7 h on 3/7/3, task #705); the step catches it
-  once its uploads in flight have landed and exits as paused, the target unsaved and not noted
-  done, its log kept (terrain-hi, terrain-deep; a level's sampling not yet in a block is redone). A log at the top of its step's scratch folder
+  targets take minutes at most. A drain also stops these steps mid-target, at **one shared safe
+  point** (task #885): each block (base tile) a resume log keeps is one (`resume_log::Log::keep`
+  calls `control::piece_saved`: the block's record written, nothing of the next begun; a log that
+  can't be written makes none, as its work would be lost), and the terrain's sampling of the
+  elevation pool checks before each chunk (16 tiles) or tile read alone (terrain-hi, -deep, -lo,
+  -root; a level's sampling ran 7.7 h on 3/7/3, task #705). Both check `SCENIC_CONTROL`
+  (`control::draining_lately`, read at most once a second) and end with `control::Paused`; the
+  step (depth and depth-lo too) catches it once its uploads in flight have landed and exits as
+  paused, the target unsaved and not noted done, its log kept (a level's sampling not yet in a
+  block is redone). terrain-deep's base tiles not yet begun when it stops aren't (only those under
+  way finish). pyramids-fill stops before each tile it would ask (the fetches under way finish),
+  what it fetched packed and handed off, the z6 tile not done; its next fill fetches the rest
+  (the same tiles' bytes; its store's archives split where it stopped). Every job's timings record
+  says how often it reached a safe point and the longest it went without one (`safe_points`,
+  `safe_gap_s`, `control::safe_gaps`; its log's `timings: … safe points` line): each step's time
+  between safe points, measured on every run. A log at the top of its step's scratch folder
   (`<z>_<x>_<y>.resume`, one append a block, each record with its length and BLAKE3, read a
   record at a time; a slot's moved to the slot running it), taken only for the same inputs (its
   step's versions and encodings, the target, the sources' and water's pins, and what else it
