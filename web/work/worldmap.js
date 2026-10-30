@@ -56,6 +56,16 @@ export function constrain(v, size) {
 /** Whether `v` (constrained) can move on some axis: the map bigger than the box there. */
 export const pannable = (v, size) => v.k * 1000 > size.w + 1e-6 || v.k * 1000 > size.h + 1e-6;
 
+/** A two-finger scroll (dx, dy px) split between the map and the page (#865 review): the map takes
+ * the axes it can move on (`map`), the page the locked ones (`page`); `native` when the page's part
+ * is the larger, the event then left to the browser to scroll the page itself (nothing to the map). */
+export function wheelSplit(v, size, dx, dy) {
+  const px = v.k * 1000 > size.w + 1e-6, py = v.k * 1000 > size.h + 1e-6;
+  const map = [px ? dx : 0, py ? dy : 0], page = [px ? 0 : dx, py ? 0 : dy];
+  const native = Math.hypot(...page) > Math.hypot(...map);
+  return native ? { native, map: [0, 0], page } : { native, map, page };
+}
+
 export function createMap({ pick = () => {} } = {}) {
   const canvas = document.createElement("canvas");
   canvas.className = "wmap";
@@ -491,13 +501,24 @@ export function createMap({ pick = () => {} } = {}) {
   canvas.addEventListener("wheel", (e) => {
     const f = e.deltaMode === 1 ? 16 : 1;
     if (e.ctrlKey) { e.preventDefault(); if (!gesturing) zoomAt(Math.exp((-e.deltaY * f) / 200), ...local(e)); return; }
-    if (!pannable(view, size)) return; // (Nothing to move on either axis: the page scrolls.)
+    // (The map moves on the axes it can; a locked axis's part goes to the page: by the browser
+    // when it's most of the scroll, else by scrollBy on the nearest scroller.)
+    const w = wheelSplit(view, size, e.deltaX * f, e.deltaY * f);
+    if (w.native) return;
     e.preventDefault();
-    view.cx += (e.deltaX * f) / view.k;
-    view.cy += (e.deltaY * f) / view.k;
+    if (w.page[0] || w.page[1]) scroller().scrollBy(w.page[0], w.page[1]);
+    view.cx += w.map[0] / view.k;
+    view.cy += w.map[1] / view.k;
     clampView();
     draw();
   }, { passive: false });
+  const scroller = () => {
+    for (let el = canvas.parentElement; el; el = el.parentElement) {
+      const o = getComputedStyle(el).overflowY;
+      if ((o === "auto" || o === "scroll") && el.scrollHeight > el.clientHeight) return el;
+    }
+    return document.scrollingElement || document.documentElement;
+  };
   // (Safari's trackpad pinch.)
   // (Its ctrl+wheel events, should it send them too, aren't counted twice.)
   let gk = 0, gesturing = false;

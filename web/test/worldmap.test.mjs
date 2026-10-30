@@ -1,7 +1,7 @@
 // node web/test/worldmap.test.mjs (tools/dev/check.sh's web part): the build page's world map's
 // view rule (web/work/worldmap.js constrain, #865).
 import assert from "node:assert/strict";
-import { constrain, minZoom, pannable } from "../work/worldmap.js";
+import { constrain, minZoom, pannable, wheelSplit } from "../work/worldmap.js";
 
 const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-6, `${a} ≉ ${b}`);
 const wide = { w: 1600, h: 800 }, narrow = { w: 400, h: 900 }, square = { w: 600, h: 600 };
@@ -42,4 +42,11 @@ near(constrain({ cx: 500, cy: 0, k: 0.91 }, narrow).cy, 450 / 0.91);
 { const v = constrain({ cx: 0, cy: 1000, k: 1 }, square); near(v.cx, 300); near(v.cy, 700); }
 // A box not laid out yet (0×0): a finite view.
 assert.ok(Number.isFinite(constrain({ cx: 500, cy: 500, k: 0 }, { w: 0, h: 0 }).k));
+// A two-finger scroll: the locked axis's part to the page, the map only the axes it moves on.
+{ const v = { cx: 500, cy: 500, k: 0.6 }; // narrow: x pans, y locked
+  assert.deepEqual(wheelSplit(v, narrow, 30, 5), { native: false, map: [30, 0], page: [0, 5] });
+  assert.equal(wheelSplit(v, narrow, 3, 40).native, true); // mostly vertical: the page's
+  assert.deepEqual(wheelSplit(v, narrow, 3, 40).map, [0, 0]); }
+assert.deepEqual(wheelSplit({ k: 2 }, narrow, 3, 40), { native: false, map: [3, 40], page: [0, 0] });
+assert.equal(wheelSplit({ k: 0.4 }, narrow, 30, 40).native, true); // not pannable: all the page's
 console.log("worldmap ok");
