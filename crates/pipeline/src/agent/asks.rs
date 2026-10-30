@@ -480,6 +480,10 @@ mod tests {
         let held =
             HoldState { held: Some(Hold { by: "the menu bar on m1".into(), at: 1_700_000_000 }), at: 1_700_000_000 };
         st.say(None, &held, false);
+        // (Its loop stuck past the watchdog's threshold, as the beat says it: task #899.)
+        st.loop_age_s = Some(crate::agent::nasread::STALL_AFTER.as_secs() + 100);
+        st.loop_stuck_s = Some(crate::agent::nasread::STALL_AFTER.as_secs());
+        st.loop_phase = Some("the pool's round".into());
         st
     }
 
@@ -494,6 +498,7 @@ mod tests {
         assert_eq!(ours, menu, "tools/status/test/status-said.json: SCENIC_BLESS=1 writes it anew");
         let s = &ours["status"];
         assert_eq!(s["verdict"]["state"], "pausing");
+        assert_eq!(s["loop_stuck_s"], crate::agent::nasread::STALL_AFTER.as_secs());
         assert_eq!(s["out_of_touch_s"], crate::pool::beat::OUT_OF_TOUCH_S);
         assert_eq!(s["checklist"][0]["counts"][0], "1,234 of 2,000 z6 tiles (12 with nothing to publish)");
         assert_eq!(s["checklist"][0]["items"][1]["count"], "done");
