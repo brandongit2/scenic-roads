@@ -1,6 +1,6 @@
 # The agent in parts
 
-**Planned (task #871; steps 0–4 of §7 built).** This doc says how the build agent's single
+**Planned (task #871; steps 0–5 of §7 built, 5 in part).** This doc says how the build agent's single
 serial loop (`crate::agent::Agent::run` and `step`, crates/pipeline/src/agent/mod.rs) will become
 independent parts, each split by what it waits on. Until each step below lands, docs/pool.md §7.8
 and §11, docs/building.md §2 and the code are what is true. The parts marked *today* describe main
@@ -201,6 +201,30 @@ today's `tend`.
 needs the NAS is queued in **nas** (the outbox, `held_entries`) and retried; the slot is free for
 local work meanwhile.
 
+*Built (step 5), a first slice:* `agent::slots`, **jobs**' own thread, ticking every 100 ms on what
+the loop publishes of its running jobs (`slots::JobRef`: channel, group, status file, step and
+targets; published each round and the moment a job starts, shared with control):
+
+- **the reaper:** a job's end seen as its group's head writes its status file (or its group
+  empties) wakes the loop (`ControlMsg::Ended`), which records it and fills the slot at once: the
+  loop's 2/20-s timing is gone (a round that ended a job goes again at once; else it waits 20 s,
+  cut short by control or this thread);
+- **cancels:** control tells this thread (not the loop) of a cancel ask; it takes the ask from
+  `cancel-requests/`, passes it to the loop, then stops the jobs running its target at once
+  (SIGTERM, SIGKILL 30 s on). The loop records each as cancelled (given back, the lead told, the
+  answer written) when it next tends: a cancel is passed on before its job is signalled, and the
+  loop looks for one again before taking an end it sees, so a cancel's end is never taken as a
+  failure;
+- **another member's hold ask:** taken by this thread at once (`slots::take_member_hold`: the
+  pool's lock tried each tick, never waited on; the member's hold written on the NAS under
+  nasread's deadline, through **nas**'s root), this Mac's own through control (`asks::Setter`).
+
+Nothing starts under a hold: `try_start_said` refuses one, and the start itself reads control's
+newest hold again just before it starts the job. A hold's drain stays control's, at once (§4.1).
+In line (a single loop's, a dry run's) the loop takes cancels and members' asks itself. Still the
+loop's, for steps 6–7: the slots themselves (their starts, `tend`, the memory and disk guards, the
+ramp, `save_hands`, grants by channel).
+
 ### 4.6 pool (until #878)
 
 The pool driver keeps its thread (`pool::Ticker`) but reads `Conditions` and `HoldView` snapshots
@@ -249,7 +273,7 @@ in tests.
 | 2 | *Done:* **beat** on its own timer (`agent::beat`), sole status writer; the loop publishes what it composed (one `LoopView`, split into `JobsView`/`PlanView` by steps 5–6) instead of writing; also cut: `nasread::loop_thread`, `loop_work`, `PHASES`, `sys::this_thread`, `sys::thread_cpu_ms`, `Agent::last_beat` (the NAS copy written each beat) | `nasread::BEATING`, `Beating`, `beat_again`, `asks::Beat`, the watchdog's kept beat (`KEEP_EVERY`, `KEEP_FOR`, `WORKING_S`), the heartbeat phase of `step` | `beat_steady_while_the_nas_hangs`: the NAS fake blocks every call; the local status' time advances every 10 s for 2 min. `beat_steady_while_planning`: the plan fake sleeps 3 min; same |
 | 3 | *Done:* **control** (`agent::asks::Handle`: its thread and a kqueue watcher on the agent's folder and `cancel-requests/`, opened anew when either is made again, a 2-s sweep behind it; inline for a single loop) on the files the endpoint writes too (`/work/hold`, `/work/quit` added beside `/work/settings`); this Mac's hold, the quit and the settings taken up and published at once, the loop's wait woken (`ControlMsg`). A cancel and another member's hold ask wake the loop, which still takes them (they need the jobs, the pool: steps 5 and #878); the hold's NAS mirror stays the loop's (`hold_on_nas`) | `asks`' poll (`EVERY`), `Asks`, `sync_hold`, `adopt_hold`, `hold_asked_anew`, `hold_ask_time`, `hold_seen`, `asks_on`, `Agent::hold` the field (control's snapshot now), `quit_ask`'s file reads and the wait's polls, the settings block in `step`, `Snap::update` | `pause_shows_within_a_second_on_a_hung_nas` and `…_while_planning`: a hold posted; its answer and a "pausing" status within 1 s, the job's channel says drain |
 | 4 | *Done:* **nas** (`agent::nas`): the mount, probe, LAN remount and the heal's remount on its thread, each look under a 30-s deadline, published as `NasView`; the planner's keys under `nasread::with_big` | the mount block in `step`, `root`'s own finding and mounting, `Agent::last_mount_try`, `Agent::probe`, `heal_step`'s unmount, `answers`' `CHECKING` (a `Mutex`: mod.rs 4 → 3 in the scan's list); the mount, probe and keys off pool.md §7.8's "still under no deadline" list | `a_hung_mount_holds_only_nas_work`: the mount fake hangs; 20 rounds each in moments, "the NAS is mounting (stuck since …)" said, a pause answered at once, the root back once it answers; `agent::nas::tests` |
-| 5 | **jobs** as its own part; the reaper thread; grants by channel | the slot loop in `step`, `run`'s wait loop and its 2/20-s timing, `save_hands` per round | `a_job_end_starts_the_next_within_2_s`; the guards' tests moved |
+| 5 | *Done, a first slice:* **jobs**' thread (`agent::slots`): the reaper, cancels and other members' hold asks taken at once; nothing starts under a hold (checked again at the start). Left for 6–7: the slots, the guards and grants by channel | `run`'s 2/20-s timing (the 2-s look after a job's end, the 2-s look while quitting), `tend_cancels`' folder read (`take_cancels` is the thread's, or in line), `hold_on_nas`' member asks (now `slots::take_member_hold`) and its "pool step busy: ask again" refusal (asked again each tick instead); the loop woken for cancels and member asks (`ControlMsg::Ask` goes to the thread) | `a_job_is_reaped_while_the_nas_hangs`, `a_cancel_is_acted_on_within_a_second_while_planning`, `nothing_starts_under_a_hold` |
 | 6 | **plan** triggered by changes; grants from the last `PlanView`; the checklist and side threads as its workers | `step` itself, `plan_due`, `plan_seen`, `may_pack`, `try_pooled`, `built_making`'s polling, the loop watchdog (`nasread::loop_thread`, `ROUND_AT`, `loop-stall.json`; the per-part stall log replaces it) | `a_slow_plan_delays_no_grant`: the plan fake sleeps 2 min; a member's ask is granted from the last plan within 1 s |
 | 7 | docs: pool.md §7.8 and §11, building.md §2 rewritten to the parts | the rest of the ad-hoc `Arc<Mutex<…>>` fields on `Agent` | tests/no_shared_mutex.rs's list empty |
 

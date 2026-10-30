@@ -59,6 +59,7 @@ pub mod resume;
 pub mod room;
 pub mod settings;
 pub mod share;
+pub mod slots;
 pub mod steps;
 pub mod takeover;
 pub mod tiles;
@@ -1644,6 +1645,9 @@ pub struct Agent {
     /// **control** (crate::agent::asks, docs/agent-parts.md §4.1): the owner's asks of this Mac
     /// (its hold, the quit, the settings) taken up at once, on its thread once the agent runs.
     control: asks::Handle,
+    /// **jobs**' own thread (crate::agent::slots, docs/agent-parts.md §4.5): the jobs' ends reaped, their
+    /// cancels and other members' hold asks taken at once.
+    jobs_part: slots::Handle,
     /// The heartbeat and status, written on a timer of their own (crate::agent::beat), from what
     /// the loop publishes.
     beat: beat::Handle,
@@ -1994,6 +1998,7 @@ impl Agent {
             None => std::sync::Arc::new(find_root),
         };
         let nas = nas::Handle::new(finder, o.root.is_none() && !cfg!(test), probe);
+        let jobs_part = slots::Handle::new(o.home.clone(), control.jobs.clone());
         let pause: Option<crate::control::Pause> =
             std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         // (A record that doesn't read: none, the low zooms made with the next catalogue. The map
@@ -2085,6 +2090,7 @@ impl Agent {
             pause_local: false,
             mirrored: None,
             pause_pushed: false,
+            jobs_part,
             control,
             beat,
             #[cfg(test)]
@@ -3799,6 +3805,7 @@ impl Agent {
         // The owner's asks taken up at once (crate::agent::asks: control), and the heartbeat on its
         // own timer (crate::agent::beat), on threads of their own whatever the loop waits on.
         if self._lock.is_some() && !self.o.dry_run && !self.o.once {
+            self.spawn_jobs_part();
             self.control.spawn();
             self.beat.spawn();
             self.nas.spawn();
@@ -3849,14 +3856,15 @@ impl Agent {
                 eprintln!("agent: {why}; restarting");
                 break;
             }
-            // (While quitting, the loop looks again soon.)
-            let quitting = self.quit_ask().is_some();
-            let wait = Duration::from_secs(if quick || quitting { 2 } else { 20 });
+            // (A job ended this round: its slot filled at once. Else 20 s, cut short by what control
+            // took up (a hold, a quit, a setting), by **jobs**' thread (a job's end, a cancel it
+            // took: crate::agent::slots), and by the regions' states in: the loop takes them up
+            // at once, as it did when it counted them itself.)
+            if quick {
+                continue;
+            }
             nasread::phase(nasread::WAIT);
-            // (Cut short by what control took up (a hold, a quit, a setting, an ask that's the
-            // loop's), and by the regions' states in: the loop takes them up at once, as it did
-            // when it counted them itself.)
-            let until = Instant::now() + wait;
+            let until = Instant::now() + Duration::from_secs(20); // (bound ok: the wait between rounds, cut short by every part)
             while let Some(left) = until.checked_duration_since(Instant::now()) {
                 let counting = self.built_making.is_some();
                 if STOP.load(Ordering::SeqCst)
@@ -4198,91 +4206,45 @@ impl Agent {
         self.control.set_hold(crate::control::HoldState { held, at })
     }
 
-    /// This Mac's hold and the NAS (task #224, docs/pool.md §11): an ask for another member written
-    /// to its file on the NAS, under a deadline (this Mac's own are control's, crate::agent::asks);
-    /// this Mac's file on the NAS read every `HOLD_READ_EVERY` (a later setting there, another
-    /// Mac's ask, given control), and its own written there once it changed.
+    /// What **jobs**' thread needs for other members' hold asks (crate::agent::slots::Members).
+    fn members(&self) -> slots::Members {
+        slots::Members {
+            pool: self.pool.clone(),
+            app: self.app.clone(),
+            nas: self.nas.view.clone(),
+            hold: self.control.hold.clone(),
+        }
+    }
+
+    /// **jobs**' own thread started (crate::agent::slots): control tells it of cancels and other
+    /// members' hold asks from now, and it wakes the loop for a job's end and a cancel it took.
+    fn spawn_jobs_part(&mut self) {
+        self.control.tell_jobs(self.jobs_part.teller());
+        let (wake, members, setter) = (self.control.waker(), self.members(), self.control.setter());
+        self.jobs_part.spawn(wake, members, setter);
+    }
+
+    /// This Mac's hold and the NAS (task #224, docs/pool.md §11): this Mac's file on the NAS read
+    /// every `HOLD_READ_EVERY` (a later setting there, another Mac's ask, given control), and its
+    /// own written there once it changed. An ask for another member is **jobs**' thread's
+    /// (`slots::take_member_hold`, at once), or taken here while that thread doesn't run.
     fn hold_on_nas(&mut self, root: Option<&store::nasfs::NasRoot>) {
-        use crate::control::{HoldAnswer, HoldState};
+        use crate::control::HoldState;
         if self._lock.is_none() || self.o.dry_run {
             return;
         }
+        if !self.jobs_part.spawned() {
+            let (home, members) = (self.o.home.clone(), self.members());
+            slots::take_member_hold(&home, &members, &mut |st| self.control.set_hold(st));
+        }
         // (Never waiting on the pool's lock: its step may hang on the NAS. Busy, this member's id as
-        // last seen, and an ask left for the next loop.)
-        let (me, busy) = match self.try_pooled() {
-            Some(Some(p)) => (Some(p.side.member().id.clone()), false),
-            Some(None) => (self.hold_me.clone(), true),
-            None => (None, false),
+        // last seen.)
+        let me = match self.try_pooled() {
+            Some(Some(p)) => Some(p.side.member().id.clone()),
+            Some(None) => self.hold_me.clone(),
+            None => None,
         };
         self.hold_me = me.clone();
-        // (Another member's ask: this Mac's own are control's.)
-        let theirs = crate::control::peek_hold_request(&self.o.home).is_some_and(|r| r.member.is_some());
-        if let Some(req) = (theirs && !busy).then(|| crate::control::take_hold_request(&self.o.home)).flatten() {
-            let what = if req.held.is_some() { "paused" } else { "going on" };
-            let target: Result<Option<(String, String)>, String> = match req.member.as_deref() {
-                None => Ok(None),
-                Some(name) => match self.try_pooled() {
-                    Some(Some(run)) => lead::resolve(&run, name).and_then(|id| {
-                        if me.as_deref() == Some(id.as_str()) {
-                            return Ok(None);
-                        }
-                        // (An app from before this Mac's may not know a pause of its own: refused,
-                        // not said done.)
-                        match run.side.heartbeat(&id) {
-                            Some(h) if crate::pool::term::app_at_least(&h.pool.app, &self.app) => {
-                                Ok(Some((id, name.to_string())))
-                            }
-                            Some(_) => Err(format!(
-                                "{name}'s app is too old to pause alone (older than this Mac's): update it, or pause the whole build"
-                            )),
-                            None => Err(format!("{name}'s heartbeat can't be read now: ask again")),
-                        }
-                    }),
-                    Some(None) => Err("this Mac's pool step is busy (the NAS slow?): ask again".to_string()),
-                    None => Err("this Mac isn't in the pool: it can pause only itself".to_string()),
-                },
-            };
-            let (ok, said) = match target {
-                Ok(None) => {
-                    // (This Mac's own ask wins over any earlier setting, whatever another Mac's
-                    // clock put on it.)
-                    let at = req.at.max(self.hold().at + 1);
-                    if self.set_hold(req.held.clone(), at) {
-                        (true, format!("this Mac is {what}"))
-                    } else {
-                        (false, "a later setting of this Mac's pause stands".to_string())
-                    }
-                }
-                Ok(Some((id, name))) => match root {
-                    None => (false, "the NAS isn't reachable from this Mac".to_string()),
-                    Some(r) => {
-                        // (Later than the setting there, whatever the two Macs' clocks say: a
-                        // member's own ask since, not yet written there, may still lose to it.)
-                        let path = r.join(crate::control::hold_path(&id));
-                        // (Only a missing file counts as none set; one that can't be read or
-                        // parsed now could hide a later setting: asked again, never a false ok.)
-                        let there = match nasread::read_switch(&path) {
-                            Ok(t) => serde_json::from_str::<HoldState>(&t).map(|h| h.at).ok(),
-                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(0),
-                            Err(_) => None,
-                        };
-                        match there {
-                            None => (false, format!("{name}'s pause on the NAS can't be read now: ask again")),
-                            Some(there) => {
-                                let st = HoldState { held: req.held.clone(), at: req.at.max(there + 1) };
-                                match write_hold(&path, &st) {
-                                    Ok(()) => (true, format!("{name} is {what} (it takes it up within a minute)")),
-                                    Err(e) => (false, format!("{name}'s pause on the NAS: {e:#}")),
-                                }
-                            }
-                        }
-                    }
-                },
-                Err(e) => (false, e),
-            };
-            eprintln!("agent: {said}");
-            crate::control::answer_hold(&self.o.home, &HoldAnswer { ask: req, said, ok });
-        }
         let (Some(r), Some(me)) = (root, me) else { return };
         let path = r.join(crate::control::hold_path(&me));
         if self.hold_read.is_none_or(|t| t.elapsed() >= HOLD_READ_EVERY) {
@@ -4836,10 +4798,7 @@ impl Agent {
         status.set_jobs(views, all_new);
         let hold = self.hold();
         status.say(crate::control::peek_hold_request(&self.o.home).as_ref(), &hold, false);
-        // (The running jobs' channels, for control to tell them at once.)
-        self.control.jobs.set(
-            (0..self.slots.len()).filter(|&k| self.slots[k].running.is_some()).map(|k| self.control_path(k)).collect(),
-        );
+        self.publish_jobs();
         if self._lock.is_none() {
             // Another agent writes the heartbeat; this one only reports.
             eprintln!("{}", String::from_utf8_lossy(&serde_json::to_vec_pretty(&status)?));
@@ -4866,11 +4825,49 @@ impl Agent {
         Ok(ended)
     }
 
+    /// The running jobs published (`slots::JobRef`: each one's channel, group, status file and
+    /// targets), for control to tell them at once and for **jobs**' thread to reap and cancel them.
+    fn publish_jobs(&self) {
+        let jobs = (0..self.slots.len())
+            .filter_map(|k| {
+                let r = self.slots[k].running.as_ref()?;
+                let (step, targets) = r.spec.record.as_ref().map_or((None, Vec::new()), |w| {
+                    (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect())
+                });
+                Some(slots::JobRef {
+                    chan: self.control_path(k),
+                    pgid: r.pgid,
+                    status: jobs::status_path(&self.record_path(k)),
+                    step,
+                    targets,
+                })
+            })
+            .collect();
+        self.control.jobs.set(jobs);
+    }
+
     /// Slot `k`'s running job, looked after: ended (recorded, its lease ended, a failure retried with
     /// a growing delay), restarted after a sleep when it touches the NAS, stopped when its lease
     /// lapsed or another Mac took its claims, paused or resumed as its conditions and the build's
     /// pause say. True when it ended.
     fn tend(&mut self, k: usize, c: &Conditions, root: Option<&store::nasfs::NasRoot>, slept: u64) -> Result<bool> {
+        // (A cancel **jobs**' thread took since `tend_cancels` and signalled: its job recorded as
+        // cancelled before its end is seen as a failure. The thread passes a cancel on before it
+        // signals, so an end seen here after a look finds its cancel in the second.)
+        let mut cancelled = self.take_cancels(root);
+        if self.slots[k].running.as_mut().is_some_and(|r| matches!(r.poll(), Ok(Some(_)))) {
+            cancelled |= self.take_cancels(root);
+        }
+        Ok(self.tend_slot(k, c, root, slept)? || cancelled)
+    }
+
+    fn tend_slot(
+        &mut self,
+        k: usize,
+        c: &Conditions,
+        root: Option<&store::nasfs::NasRoot>,
+        slept: u64,
+    ) -> Result<bool> {
         let run_time = self.run_time(k);
         // (Or told by control, before this loop's tend: crate::agent::asks.)
         let draining = self.slots[k].drain_since.is_some() || self.told_drain(k);
@@ -5475,6 +5472,12 @@ impl Agent {
         if spec.id.starts_with("catalog") {
             self.mem.catalogue_at = now_s();
             self.save();
+        }
+        // Nothing starts under a hold (docs/agent-parts.md §5.3): control's newest, read now, so one
+        // taken up during this round holds this start too.
+        if let Some(h) = self.hold().held.clone() {
+            waiting.push(Waiting { step: step_of(&spec.id), what: what.clone(), why: h.why() });
+            return false;
         }
         if let Err(e) = self.start(k, spec, c) {
             // It couldn't even start (a missing program, a full disk): retried later.
@@ -6850,6 +6853,9 @@ impl Agent {
         std::fs::remove_file(self.slot_costs(k)).ok();
         self.slots[k].running =
             Some(Running::start(spec, threads, &env, log, &self.record_path(k), Some(&done), sandbox)?);
+        // (Known to control and **jobs**' thread at once: a hold drains it, a cancel stops it, its
+        // end wakes the loop.)
+        self.publish_jobs();
         self.slots[k].beaten = None;
         self.slots[k].hand_saved = None;
         // (A job of no targets of its own, the OSM pass, GC, a catalogue: measured by its id, so it's
@@ -9323,11 +9329,7 @@ impl Agent {
     /// member's in its beat's answer, `beat`), and each slot so told stopped (`cancel_slot`); the
     /// targets held for a newer app said in `waiting`. True when a job ended.
     fn tend_cancels(&mut self, root: Option<&store::nasfs::NasRoot>, waiting: &mut Vec<Waiting>) -> bool {
-        if self._lock.is_some() && !self.o.dry_run {
-            for ask in crate::control::take_cancels(&self.o.home, now_s()) {
-                self.take_cancel(ask, root);
-            }
-        }
+        let mut ended = self.take_cancels(root);
         if let Some(c) = &self.coord {
             for s in self.slots.iter_mut().filter(|s| s.running.is_some() && s.cancel.is_none()) {
                 if let Some(Held::Own(id) | Held::Pooled { id, .. }) = &s.lease {
@@ -9335,17 +9337,7 @@ impl Agent {
                 }
             }
         }
-        let mut ended = false;
-        for k in 0..self.slots.len() {
-            if let Some(c) = self.slots[k].cancel.take() {
-                // (A job that has ended already is left to `tend`, which records how it ended.)
-                let exited = self.slots[k].running.as_mut().map(|r| !matches!(r.poll(), Ok(None)));
-                if exited == Some(false) {
-                    self.cancel_slot(k, &c);
-                    ended = true;
-                }
-            }
-        }
+        ended |= self.cancel_slots();
         if let Some(c) = &self.coord {
             for h in c.holds() {
                 waiting.push(Waiting {
@@ -9353,6 +9345,45 @@ impl Agent {
                     what: format!("{} {}", h.step, h.target),
                     why: format!("cancelled by {}: held until the lead runs an app newer than {}", h.by, h.newer_than),
                 });
+            }
+        }
+        ended
+    }
+
+    /// The owner's cancels **jobs**' thread took (their jobs already told to stop: crate::agent::slots),
+    /// or, while it doesn't run, those waiting in the folder: each taken up (`take_cancel`) and its
+    /// slots stopped as cancelled; whether one ended.
+    fn take_cancels(&mut self, root: Option<&store::nasfs::NasRoot>) -> bool {
+        if self._lock.is_none() || self.o.dry_run {
+            return false;
+        }
+        let asks = self.jobs_part.cancels();
+        if asks.is_empty() {
+            return false;
+        }
+        for ask in asks {
+            self.take_cancel(ask, root);
+        }
+        self.cancel_slots()
+    }
+
+    /// The slots marked cancelled stopped and given back (`cancel_slot`); whether one ended. A job
+    /// ended already is left to `tend`, which records how it ended, unless it ended killed: the
+    /// cancel's own stop (**jobs**' thread signals it the moment it takes the ask).
+    fn cancel_slots(&mut self) -> bool {
+        let mut ended = false;
+        for k in 0..self.slots.len() {
+            if let Some(c) = self.slots[k].cancel.take() {
+                let exit = self.slots[k].running.as_mut().map(|r| r.poll().ok().flatten());
+                let cancel = match exit {
+                    Some(None) => true,
+                    Some(Some(st)) => !st.success(),
+                    None => false,
+                };
+                if cancel {
+                    self.cancel_slot(k, &c);
+                    ended = true;
+                }
             }
         }
         ended
@@ -12609,7 +12640,7 @@ mod tests {
         let home = a.o.home.clone();
         let chan = home.join("job-control");
         std::fs::write(&chan, b"run").unwrap();
-        a.control.jobs.set(vec![chan.clone()]);
+        a.control.jobs.set(vec![slots::JobRef::on_chan(chan.clone())]);
         let asker = std::thread::spawn(move || {
             // (sleep ok: the ask comes once the loop is deep in its plan or its hung calls)
             std::thread::sleep(after);
@@ -12665,7 +12696,7 @@ mod tests {
             true,
         );
         a.beat.publish(v);
-        a.control.jobs.set(vec![a.o.home.join("job-control")]);
+        a.control.jobs.set(vec![slots::JobRef::on_chan(a.o.home.join("job-control"))]);
     }
 
     /// Task #871 step 3: a pause on a hung NAS (every call hung, the loop going round on it):
@@ -12736,6 +12767,122 @@ mod tests {
             assert!(t.elapsed() < Duration::from_secs(60), "the root never came back");
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// A job of `secs` seconds started in slot `k` (a unit job of target `target`), published.
+    fn a_real_job(a: &mut Agent, k: usize, target: &str, secs: u64) -> i32 {
+        let spec = JobSpec {
+            id: format!("unit {target}"),
+            what: format!("z6 tile {target}"),
+            cmd: vec!["/bin/sh".into(), "-c".into(), format!("sleep {secs}")],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "unit".into(), targets: vec![(target.into(), "k".into())] }),
+        };
+        std::fs::create_dir_all(&a.o.home).unwrap();
+        let log = a.o.home.join(format!("job-{k}.log"));
+        let r = Running::start(spec, 1, &[], log, &a.record_path(k), None, None).unwrap();
+        let pgid = r.pgid;
+        a.slots[k].running = Some(r);
+        a.publish_jobs();
+        pgid
+    }
+
+    /// Task #871 step 5: the NAS hung (every call), a job's end wakes the loop at once (**jobs**'
+    /// reaper), and the loop, going round all along, records it and frees its slot.
+    #[test]
+    fn a_job_is_reaped_while_the_nas_hangs() {
+        let d = tempfile::tempdir().unwrap();
+        // (No round first: it may start a job of its own in the slot.)
+        let (mut a, root) = parts_agent(d.path());
+        a.spawn_jobs_part();
+        a.control.spawn();
+        let hung = nasread::fake::hang(&root);
+        a_real_job(&mut a, 0, "6/1/2", 2);
+        let t = Instant::now();
+        loop {
+            match a.control.woken.recv_timeout(Duration::from_secs(30)) {
+                Ok(bus::ControlMsg::Ended) => break,
+                Ok(_) => continue,
+                Err(e) => panic!("the loop never woken for the job's end: {e}"),
+            }
+        }
+        let woke = t.elapsed();
+        eprintln!("a 2-s job's end woke the loop after {woke:?}");
+        assert!(woke >= Duration::from_secs(2), "{woke:?}");
+        store::testkit::ended_before(t, Duration::from_secs(6), "the end told (2 s and the reaper's tick)");
+        let r = Instant::now();
+        while a.slots[0].running.is_some() {
+            a.step().unwrap();
+            // (A round on a hung NAS waits out each NAS call's deadline, 20 s: about 100 s.)
+            assert!(r.elapsed() < Duration::from_secs(400), "the slot never freed");
+        }
+        eprintln!("recorded and its slot freed in {:?} on the hung NAS", r.elapsed());
+        assert!(a.mem.recent.iter().any(|j| j.id == "unit 6/1/2"), "its end recorded");
+        drop(hung);
+    }
+
+    /// Task #871 step 5: a cancel asked (as `scenic job cancel` asks: its file) while the loop is
+    /// in a 30-s plan (the slow-plan fake): the job's group stopped within a second, by **jobs**'
+    /// thread; the loop, its plan done, records it as cancelled (not failed) and answers.
+    #[test]
+    fn a_cancel_is_acted_on_within_a_second_while_planning() {
+        let d = tempfile::tempdir().unwrap();
+        let (mut a, root) = parts_agent(d.path());
+        // (No round first: it may start a job of its own in the slot.)
+        a.spawn_jobs_part();
+        a.control.spawn();
+        let pgid = a_real_job(&mut a, 0, "6/1/2", 600);
+        a.slow_plan = Some(Duration::from_secs(30));
+        let home = a.o.home.clone();
+        let asker = std::thread::spawn(move || {
+            // (sleep ok: the ask comes once the loop is deep in its plan)
+            std::thread::sleep(Duration::from_secs(5));
+            let t = Instant::now();
+            let ask = crate::control::Cancel {
+                target: "6/1/2".into(),
+                step: Some("unit".into()),
+                rerun_after_update: false,
+                by: "scenic job cancel on m1".into(),
+                at: now_s(),
+            };
+            crate::control::request_cancel(&home, &ask).unwrap();
+            while crate::sys::signal_group(pgid, crate::sys::Signal::Probe) {
+                assert!(t.elapsed() < Duration::from_secs(30), "the job never stopped");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let took = t.elapsed();
+            eprintln!("the cancel stopped the job in {took:?}");
+            store::testkit::ended_before(t, Duration::from_secs(2), "the cancel's stop");
+            took
+        });
+        let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let r = store::nasfs::NasRoot::local_for_test(&root);
+        let t = Instant::now();
+        a.plan(&r, &c, &mut Vec::new());
+        assert!(t.elapsed() >= Duration::from_secs(29), "the plan was slow all along");
+        assert!(asker.join().unwrap() < Duration::from_secs(1));
+        a.step().unwrap();
+        // (Its slot free of it: the round may start another job there.)
+        assert!(a.slots[0].running.as_ref().is_none_or(|r| r.pgid != pgid));
+        let j = a.mem.recent.iter().find(|j| j.id == "unit 6/1/2").expect("recorded");
+        assert!(j.cancelled, "recorded as cancelled, not failed");
+        assert!(crate::control::peek_cancels(&a.o.home).is_empty());
+    }
+
+    /// Task #871 step 5: nothing starts under a hold, even one taken up after the round began: a
+    /// held Mac's granted job waits, said why.
+    #[test]
+    fn nothing_starts_under_a_hold() {
+        let d = tempfile::tempdir().unwrap();
+        let (mut a, _root) = parts_agent(d.path());
+        a.step().unwrap();
+        assert!(a.set_hold(Some(crate::control::Hold::new("the menu bar on m1")), now_s()));
+        let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let mut waiting = Vec::new();
+        assert!(!a.try_start_said(0, waiting_job("unit 6/1/2"), &c, None, &mut waiting));
+        assert!(a.slots[0].running.is_none(), "nothing started");
+        assert!(waiting.iter().any(|w| w.why.contains("paused")), "{waiting:?}");
     }
 
     /// Task #871 step 3: a pause during a plan (the slow-plan fake, 30 s): the same.

@@ -16,9 +16,10 @@
 //! - the app's ask to quit;
 //! - the owner's settings: the disk room target, the in-use share, the build's memory.
 //!
-//! Each change wakes the loop's wait (`ControlMsg`). Asks that need the jobs or the pool stay the
-//! loop's until those parts land (a cancel, a hold ask for another member): control wakes the loop
-//! for them. It never touches the NAS, so it can't hang on one.
+//! Each change wakes the loop's wait (`ControlMsg`). Asks that need the jobs or the pool (a cancel,
+//! a hold ask for another member) are told to **jobs**' thread (crate::agent::slots, step 5), which
+//! takes them at once; the loop is woken for them while that thread doesn't run. It never touches
+//! the NAS, so it can't hang on one.
 
 use super::bus::{BeatMsg, ControlMsg, Snap};
 use super::{buildmem, room, share};
@@ -63,10 +64,13 @@ pub struct Control {
     hold: Arc<Snap<HoldState>>,
     quit: Arc<Snap<Option<Quit>>>,
     settings: Arc<Snap<Settings>>,
-    jobs: Arc<Snap<Vec<PathBuf>>>,
+    jobs: Arc<Snap<Vec<super::slots::JobRef>>>,
     beat: Sender<BeatMsg>,
     wake: Sender<ControlMsg>,
-    /// The asks left for the loop as last woken for (a member's hold ask, the cancels).
+    /// **jobs**' thread (crate::agent::slots), told of a cancel or a member's hold ask; the loop
+    /// woken for them while it doesn't run.
+    jobs_part: Option<Sender<ControlMsg>>,
+    /// The asks left as last told of (a member's hold ask, the cancels).
     left: String,
 }
 
@@ -103,12 +107,12 @@ impl Control {
             self.settings.set(s);
             self.tell(ControlMsg::Settings);
         }
-        // (The loop's asks: woken once for each new state of them.)
+        // (The jobs' asks: told once for each new state of them.)
         let member = control::peek_hold_request(&self.home).filter(|r| r.member.is_some());
         let left = format!("{member:?} {:?}", control::peek_cancels(&self.home));
         if left != self.left {
             if member.is_some() || left.contains("Cancel") {
-                self.wake.send(ControlMsg::Ask).ok();
+                self.jobs_part.as_ref().unwrap_or(&self.wake).send(ControlMsg::Ask).ok();
             }
             self.left = left;
         }
@@ -138,7 +142,7 @@ impl Control {
         // (Held: every job told at once; going on, the loop tells them, as it knows which other
         // drain, the memory guard's say, still stands.)
         if held {
-            for c in self.jobs.get().iter() {
+            for c in self.jobs.get().iter().map(|j| &j.chan) {
                 if let Err(e) = std::fs::write(c, b"drain") {
                     eprintln!("agent: asking {} to stop: {e}", c.display());
                 }
@@ -190,13 +194,31 @@ pub struct Handle {
     pub hold: Arc<Snap<HoldState>>,
     pub quit: Arc<Snap<Option<Quit>>>,
     pub settings: Arc<Snap<Settings>>,
-    /// The running jobs' channels (crate::control::CONTROL_ENV), as the loop last saw them.
-    pub jobs: Arc<Snap<Vec<PathBuf>>>,
-    /// What changed, for the loop's wait.
+    /// The running jobs (each one's channel, crate::control::CONTROL_ENV), as the loop last
+    /// published them; shared with **jobs**' thread.
+    pub jobs: Arc<Snap<Vec<super::slots::JobRef>>>,
+    /// What changed, for the loop's wait (control's, and **jobs**' thread's: `waker`).
     pub woken: Receiver<ControlMsg>,
+    wake: Sender<ControlMsg>,
     home: PathBuf,
     tx: Sender<In>,
     inline: Option<(Control, Receiver<In>)>,
+}
+
+/// This Mac's hold set from another thread (**jobs**', taking a member's ask that names this Mac),
+/// through control, in order with its own.
+pub struct Setter(Sender<In>);
+
+impl Setter {
+    /// `st` set unless a later setting stands; whether it was.
+    pub fn set(&self, st: HoldState) -> bool {
+        let (answer, answered) = mpsc::sync_channel(1);
+        if self.0.send(In::SetHold(st, answer)).is_err() {
+            return false;
+        }
+        // (Control never waits on the NAS: answered in moments.)
+        answered.recv_timeout(Duration::from_secs(10)).unwrap_or(false)
+    }
 }
 
 impl Handle {
@@ -211,11 +233,30 @@ impl Handle {
             settings: Snap::new(Settings::default()),
             jobs: Snap::new(Vec::new()),
             beat,
-            wake,
+            wake: wake.clone(),
+            jobs_part: None,
             left: String::new(),
         };
         let (quit, settings, jobs) = (c.quit.clone(), c.settings.clone(), c.jobs.clone());
-        Handle { hold, quit, settings, jobs, woken, home, tx, inline: Some((c, rx)) }
+        Handle { hold, quit, settings, jobs, woken, wake, home, tx, inline: Some((c, rx)) }
+    }
+
+    /// Where another part wakes the loop's wait.
+    pub fn waker(&self) -> Sender<ControlMsg> {
+        self.wake.clone()
+    }
+
+    /// The hold's setter for another thread.
+    pub fn setter(&self) -> Setter {
+        Setter(self.tx.clone())
+    }
+
+    /// From now (before `spawn`), cancels and members' hold asks are told to `jobs` (**jobs**'
+    /// thread), not the loop.
+    pub fn tell_jobs(&mut self, jobs: Sender<ControlMsg>) {
+        if let Some((c, _)) = &mut self.inline {
+            c.jobs_part = Some(jobs);
+        }
     }
 
     /// Its thread, and the watcher's: from now each ask is taken up as it comes.
@@ -258,12 +299,7 @@ impl Handle {
         if let Some((c, _)) = &mut self.inline {
             return c.set_hold(st);
         }
-        let (answer, answered) = mpsc::sync_channel(1);
-        if self.tx.send(In::SetHold(st, answer)).is_err() {
-            return false;
-        }
-        // (Control never waits on the NAS: answered in moments.)
-        answered.recv_timeout(Duration::from_secs(10)).unwrap_or(false)
+        self.setter().set(st)
     }
 }
 
@@ -495,7 +531,7 @@ mod tests {
         let mut c = Handle::new(home.clone(), hold, beat.sender());
         let chan = home.join("control");
         std::fs::write(&chan, b"run").unwrap();
-        c.jobs.set(vec![chan.clone()]);
+        c.jobs.set(vec![super::super::slots::JobRef::on_chan(chan.clone())]);
         let mut st = Status { host: "m1".into(), beat: 1, ..Default::default() };
         st.set_jobs(vec![job("unit 6/1/2", 0)], true);
         let local = home.join("status.json");

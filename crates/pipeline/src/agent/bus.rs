@@ -45,8 +45,8 @@ impl<T> Snap<T> {
     }
 }
 
-/// What **control** tells the loop (until **jobs**, step 5, takes them): each wakes the loop's wait
-/// between rounds, so it acts on it at once rather than after its 20 s.
+/// What **control** and **jobs**' thread tell the loop (and control tells **jobs**): each wakes the
+/// loop's wait between rounds, so it acts on it at once rather than after its 20 s.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlMsg {
     /// This Mac's hold changed (`crate::control::HoldState`, the later `at` winning).
@@ -56,8 +56,11 @@ pub enum ControlMsg {
     /// The owner's settings changed (room target, in-use share, build memory).
     Settings,
     /// A cancel ask waits (`crate::control::CANCEL_REQUESTS`), or a hold ask for another member:
-    /// the loop's, as they need the jobs or the pool.
+    /// told to **jobs**' thread (crate::agent::slots), which takes them at once; the loop is woken
+    /// for a cancel it took (to record it), or for both when that thread doesn't run.
     Ask,
+    /// A running job ended (**jobs**' reaper): the loop records it and fills the slot at once.
+    Ended,
 }
 
 /// What **beat** is told.

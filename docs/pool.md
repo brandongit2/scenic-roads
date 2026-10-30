@@ -1959,7 +1959,9 @@ planned: `/pool/status` in place of reading heartbeats for the view.
 - **Cancelling a job** (`crate::control::Cancel`): `scenic job cancel <target> [--step <step>]
   [--rerun-after-update]`, or the menu bar's "Cancel <job>" on the Mac running it (Option: "…,
   Rerun on a Newer App"), writes an ask to that Mac's agent (a file in `cancel-requests/`; one older than two minutes is dropped). The agent
-  stops a slot of its own running the target, and tells the lead's coordinator (in process, or
+  stops a slot of its own running the target at once, whatever its loop waits on (its jobs' own
+  thread, `crate::agent::slots`, docs/agent-parts.md §4.5: SIGTERM, SIGKILL 30 s on), records it at
+  its next round, and tells the lead's coordinator (in process, or
   `/work/cancel` from a member), which marks every live lease of the target; a member's job hears
   it in its beat's answer (within a minute) and stops (a member on an app from before the cancel ignores it, and its job runs on). A cancelled job ends as given back, not
   failed: no retry delay, no backoff or guard hold against its Mac, its finished targets handed
@@ -2036,9 +2038,11 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   at the loop's next pass, which on a slow NAS took minutes). The agent's HTTP endpoint asks the
   same way (`POST /work/hold` `{"held": true|false, "member"?: …}`, from any device, answered
   once it's taken up; `POST /work/quit` `{"mode": "now"|"finish"}` from this Mac only), and so
-  does an older CLI's file. Another member's ask wakes the loop, and stays the loop's (it needs
-  the pool), as does this Mac's setting on the NAS (read every 30 s, written back once changed),
-  which it gives control to apply. The status says the hold's stage
+  does an older CLI's file. Another member's ask is taken at once by the jobs' own thread
+  (crate::agent::slots, docs/agent-parts.md §4.5: the pool's lock tried every 100 ms, never
+  waited on; that member's hold written on the NAS under nasread's deadline). This Mac's setting
+  on the NAS stays the loop's (read every 30 s, written back once changed), which it gives
+  control to apply. The status says the hold's stage
   (`Status::hold`, control::HoldView): asked, pausing (its jobs finishing, named), paused,
   resuming; and the Mac's state (`Status::verdict`). `scenic status`, the build page's machine
   card and the menu bar print these (`Status::held` kept for older readers; the pool's view says
