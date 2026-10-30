@@ -1651,6 +1651,7 @@ dependencies = [
  "bytes",
  "clap",
  "flate2",
+ "geos",
  "libc",
  "memmap2 0.9.11",
  "names",

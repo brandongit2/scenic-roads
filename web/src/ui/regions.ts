@@ -10,9 +10,9 @@
 // downloaded region's terrain detail, each with its size, its state and a Download, Cancel or
 // Remove button; this Mac's room (downloads.ts).
 import { behindText, dlDetail, dlRegion, dlStatus, dlUpdate, dlWorld, pct, setReserve, size, sizeOf, stateClass, stateText, type Dl, type DlStatus, type DetailDl, type RegionDl } from '../downloads';
-import { FLAGS } from '../flags';
+import { countryFlag, regionFlag, type Flag } from '../flags';
 import * as prefs from '../prefs';
-import { allIds, areaText, entries, filter, flagCode, folderFlag, withInherited, type Shown } from '../regionlist';
+import { allIds, areaText, countryCode, entries, filter, folderCountry, type Shown } from '../regionlist';
 import { RegionLayers, RegionsError, getOutlines, listRegions, type Folder, type Region, type RegionOutline } from '../regions';
 import { fmt, h } from './dom';
 
@@ -20,7 +20,8 @@ import { fmt, h } from './dom';
 const FRESH_MS = 10_000;
 
 type Bbox = [number, number, number, number];
-/** The zoom of the outlines the panel asks for its rows (their flags, boxes and hover). */
+/** The zoom of the outlines the panel asks for its rows (their areas and boxes; a row's hover asks
+ * the map's zoom's, RegionLayers.setHover). */
 const PANEL_Z = 4;
 
 /** An error in plain words. */
@@ -46,9 +47,9 @@ function bboxOf(fs: RegionOutline[]): Bbox | null {
 /** A region as the footer tells it (Strip.showRegion): its folders' and its own names with flags,
  * then its facts. */
 export interface RegionInfo {
-  path: { name: string; flag: string | null }[];
+  path: { name: string; flag: Flag | null }[];
   name: string;
-  flag: string | null;
+  flag: Flag | null;
   disabled: boolean;
   /** Its check's state ('' when accepted), its land and water, and its download here. */
   state: string;
@@ -95,8 +96,6 @@ export class RegionsPanel {
   private dlTok = 0;
   private dlTimer = 0;
   private sizeTimer = 0;
-  /** Every region's flag, a region without one of its own taking its folder's country (withInherited). */
-  private flagsById = new Map<string, string>();
   /** What each region row shows of its download, updated in place as the state comes (a row isn't
    * drawn again: a hover or a rename in it stays). */
   private dlEls = new Map<string, { row: HTMLElement; slot: HTMLElement; btn: HTMLButtonElement | null; mode: Mode | null; size: HTMLElement; prog: HTMLElement; detail: HTMLElement; detailSize: HTMLElement; detailBtn: HTMLButtonElement | null; detailOn: boolean; detailProg: HTMLElement }>();
@@ -121,13 +120,13 @@ export class RegionsPanel {
   /** The folders the list is grouped by (null: a server from before folders). */
   private tree: Folder | null = null;
   private bad: [string, string][] = [];
-  /** Each region's outline at PANEL_Z (its flag's area, its box, its row's hover). */
+  /** Each region's outline at PANEL_Z (its area: its flag and country; its box). */
   private outlines = new Map<string, RegionOutline>();
   private loadedAt = -Infinity;
   private loadTok = 0;
   private open = false;
-  /** The region whose row is hovered (its outline shown). */
-  private hoverRegion: string | null = null;
+  /** A row hovered (its region's or folder's outline shown). */
+  private hovered = false;
 
   constructor(private layers: RegionLayers) {
     // (The switches before #868, "Coverage on the map" and "Regions on the map", gone.)
@@ -288,8 +287,8 @@ export class RegionsPanel {
 
   private renderList() {
     // (A hovered row goes without a mouseleave.)
-    if (this.hoverRegion) {
-      this.hoverRegion = null;
+    if (this.hovered) {
+      this.hovered = false;
       this.layers.setHover(null);
     }
     this.dlEls.clear();
@@ -301,7 +300,6 @@ export class RegionsPanel {
     const tree = this.tree ?? { path: '', name: '', regions: [], folders: [] };
     const placed = new Set(allIds(tree));
     const root: Folder = { ...tree, regions: [...tree.regions, ...this.regions.filter((r) => !placed.has(r.id)).map((r) => r.id)] };
-    this.flagsById = withInherited(root, (id) => this.flagOf(byId.get(id)));
     const only = this.onlyBox.checked;
     if (only) this.onKey = this.downloadedKey();
     const shown = filter(root, byId, this.q.value, (id) => !only || this.isOn(id));
@@ -346,15 +344,16 @@ export class RegionsPanel {
     const slot = h('span', { class: 'rg-dlslot' });
     const sz = h('span', { class: 'rg-size' });
     const prog = h('div', { class: 'rg-prog', hidden: true });
-    const code = folderFlag(f, (id) => this.flagOf(this.byId.get(id)), (id) => this.byId.get(id)?.land_km2 ?? 0);
     const head = h('summary', { class: 'rg', title: `inputs/regions/${f.path}/` },
-      h('div', { class: 'rg1' }, h('i', { class: 'rg-tri' }), flag(code), name, slot),
+      h('div', { class: 'rg1' }, h('i', { class: 'rg-tri' }), flag(this.folderFlag(f)), name, slot),
       // (Some of its regions not sized yet: so far, "…" after it.)
       h('div', { class: 'rg2 rg-in2' }, h('span', { class: 'rg2s', title: 'Its regions’ land and water' }, `${areaText(sum('land_km2'), sum('water_km2'))}${regs.some((r) => r.land_km2 === undefined) && regs.some((r) => r.land_km2 !== undefined) ? ' …' : ''}`), sz),
       prog);
     head.style.setProperty('--rg-depth', String(depth));
     this.dirEls.set(f.path, { f, row: head, slot, btn: null, mode: null, size: sz, prog });
     box.append(head, h('div', { class: 'rg-kids' }, ...list(f, depth + 1)));
+    // Hovered: the outline around all of its regions (one line, none between them).
+    this.hoverable(head, allIds(f));
     return box;
   }
 
@@ -369,12 +368,36 @@ export class RegionsPanel {
     return null;
   }
 
-  /** A region's flag (a flag file's code), from its first osm: part's area, else its geometry's
-   * country (regionlist.flagCode). */
-  private flagOf(r: Region | undefined): string | null {
+  /** A region's own flag or symbol (flags.ts: by its first osm: relation, else its area's ISO
+   * code); null when it has none of its own: never its folder's or its country's. */
+  private flagOf(r: Region): Flag | null {
+    const rel = r.outline.find((p) => /^osm:\d+$/.test(p))?.slice(4);
+    return regionFlag(rel, this.outlines.get(r.id)?.properties.area?.iso || undefined);
+  }
+
+  /** A region's country (ISO 3166-1), for its folder's flag. */
+  private countryOf(id: string): string | null {
+    const r = this.byId.get(id);
     if (!r) return null;
-    const a = this.outlines.get(r.id)?.properties.area;
-    return flagCode({ iso: a?.iso, country: a?.country, in: a?.in, geo: r.country }, (c) => FLAGS.has(c));
+    const a = this.outlines.get(id)?.properties.area;
+    return countryCode({ iso: a?.iso, country: a?.country, in: a?.in, geo: r.country });
+  }
+
+  /** A folder's flag: its country's (regionlist.folderCountry). */
+  private folderFlag(f: Folder): Flag | null {
+    return countryFlag(folderCountry(f, (id) => this.countryOf(id), (id) => this.byId.get(id)?.land_km2 ?? 0));
+  }
+
+  /** A row whose hover outlines `ids` on the map (a folder's: their outline as one). */
+  private hoverable(row: HTMLElement, ids: string[]) {
+    row.addEventListener('mouseenter', () => {
+      this.hovered = true;
+      this.layers.setHover(ids);
+    });
+    row.addEventListener('mouseleave', () => {
+      this.hovered = false;
+      this.layers.setHover(null);
+    });
   }
 
   /** The region `id` as the footer tells it: the folders it's in (each with its flag, as the list
@@ -392,7 +415,7 @@ export class RegionsPanel {
     const path: RegionInfo['path'] = [];
     const walk = (f: Folder, up: Folder[]): boolean => {
       if (f.regions.includes(id)) {
-        path.push(...up.map((u) => ({ name: u.name, flag: folderFlag(u, (i) => this.flagOf(this.byId.get(i)), (i) => this.byId.get(i)?.land_km2 ?? 0) })));
+        path.push(...up.map((u) => ({ name: u.name, flag: this.folderFlag(u) })));
         return true;
       }
       return f.folders.some((c) => walk(c, [...up, c]));
@@ -402,7 +425,7 @@ export class RegionsPanel {
     const dl = this.dl?.regions[id];
     const download = r?.disabled ? 'never downloaded' : !dl?.on ? 'not downloaded here' : `${stateText(dl)}${sizeOf(dl) ? ` · ${sizeOf(dl)}` : ''}`;
     return {
-      path, name: r?.name ?? name, flag: this.flagsById.get(id) ?? (r ? this.flagOf(r) : null), disabled: !!r?.disabled,
+      path, name: r?.name ?? name, flag: r ? this.flagOf(r) : null, disabled: !!r?.disabled,
       state: st && st.cls !== 'off' ? st.text : '', area: r ? areaText(r.land_km2, r.water_km2) : '', download,
     };
   }
@@ -424,7 +447,7 @@ export class RegionsPanel {
     const detailProg = h('div', { class: 'rg-prog', hidden: true });
     this.dlEls.set(r.id, { row, slot, btn: null, mode: null, size: sz, prog, detail, detailSize, detailBtn: null, detailOn: false, detailProg });
     row.replaceChildren(
-      h('div', { class: 'rg1' }, h('i', { class: 'rg-tri none' }), flag(this.flagsById.get(r.id) ?? null), name, h('span', { class: 'rg-id faint', title: `Its file: inputs/regions/${r.path ?? `${r.id}.toml`}` }, r.id),
+      h('div', { class: 'rg1' }, h('i', { class: 'rg-tri none' }), flag(this.flagOf(r)), name, h('span', { class: 'rg-id faint', title: `Its file: inputs/regions/${r.path ?? `${r.id}.toml`}` }, r.id),
         ...(state ? [h('span', { class: `rg-state ${state.cls}`, title: state.title }, state.text)] : []),
         slot),
       h('div', { class: 'rg2 rg-in2' }, h('span', { class: 'rg2s', title: 'Its land and its water (the sea and the lakes over 100 km² it holds)' }, areaText(r.land_km2, r.water_km2)), sz),
@@ -433,14 +456,7 @@ export class RegionsPanel {
       detailProg,
     );
     this.showDl(r.id);
-    row.addEventListener('mouseenter', () => {
-      this.hoverRegion = r.id;
-      this.layers.setHover(fs);
-    });
-    row.addEventListener('mouseleave', () => {
-      this.hoverRegion = null;
-      this.layers.setHover(null);
-    });
+    this.hoverable(row, [r.id]);
     return row;
   }
 
@@ -892,10 +908,10 @@ function progBar(share: number | null, title: string): HTMLElement {
   return bar;
 }
 
-/** A flag of fixed width (flag-icons' 4:3, flags.ts), or a bordered "?" where there's none. */
-function flag(code: string | null): HTMLElement {
-  const url = code ? FLAGS.get(code) : undefined;
-  if (!url) return h('span', { class: 'rg-flag none', title: 'No flag' }, '?');
-  return h('span', { class: 'rg-flag' }, h('img', { src: url, alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' }));
+/** A region's or folder's flag (or symbol) fitted in a box of fixed width in its own aspect ratio,
+ * or the "?" placeholder where it has none of its own. */
+function flag(f: Flag | null): HTMLElement {
+  if (!f) return h('span', { class: 'rg-flag none', title: 'No flag of its own' }, '?');
+  return h('span', { class: 'rg-flag', title: f.title }, h('img', { src: f.url, alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' }));
 }
 

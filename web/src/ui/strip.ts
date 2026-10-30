@@ -19,7 +19,7 @@ import { RAIL_COMPONENTS, fmtTrains, railComponents, railScore, type RailSample 
 import type { HoverInfo } from '../roads/layer';
 import type { WaterDepth } from '../depth';
 import type { WayInfo } from '../api';
-import { FLAGS } from '../flags';
+import { flagCredits, flagLicences, type Flag } from '../flags';
 import type { RegionInfo } from './regions';
 import { COMPONENTS, FLAG_LABELS, components, scoreOf } from '../scenic';
 import { cap, fmt, h } from './dom';
@@ -271,10 +271,8 @@ export class Strip {
     this.last = null;
     this.r1.classList.remove('idle', 'feat', 'water');
     this.r1.classList.add('region');
-    const flag = (code: string | null) => {
-      const url = code ? FLAGS.get(code) : undefined;
-      return url ? h('img', { class: 'flag', src: url, alt: '', draggable: 'false' }) : null;
-    };
+    // (Each flag fitted in a box of fixed width, in its own aspect ratio, as the list shows them.)
+    const flag = (f: Flag | null) => (f ? h('span', { class: 'flag', title: f.title }, h('img', { src: f.url, alt: '', draggable: 'false' })) : null);
     const crumbs = r.path.flatMap((p) => [h('span', { class: 'crumb' }, ...[flag(p.flag)].filter((x) => x !== null), p.name), h('span', { class: 'sep' }, '›')]);
     const facts = [r.disabled ? 'disabled' : '', r.state, r.area, r.download].filter(Boolean);
     this.regionLine.classList.toggle('off', r.disabled);
@@ -396,7 +394,11 @@ const APP_CREDITS: Credit[] = [
     terms: 'ColorBrewer: Apache 2.0; Crameri, cmocean: MIT; colorcet: CC BY 4.0',
   },
   { what: 'Stops & sights icons', source: 'Maki (Mapbox)', terms: 'CC0 1.0' },
-  { what: 'Flags (the Regions list)', source: 'flag-icons (Panayiotis Lipiridis), 7.6.0', terms: 'MIT' },
+  {
+    what: 'Flags and coats of arms (the Regions list)',
+    source: 'Wikimedia Commons, chosen by Wikidata (each file’s author in the list below and in its tooltip)',
+    terms: flagLicences().map(([l, n]) => `${l} (${n})`).join('; '),
+  },
 ];
 
 /** Data sources and licences in a modal dialog: the catalogue's credits (`set`), then the app's. */
@@ -410,6 +412,13 @@ function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void;
   const set = (data: Credit[]) =>
     body.replaceChildren(...[...data, ...APP_CREDITS].map((c) => h('tr', {}, h('td', {}, c.what), h('td', {}, c.source), h('td', {}, c.terms))));
   set([]);
+  // Each flag's file: its author and licence, linked to its page (listed when first opened).
+  const flagList = h('details', { class: 'flags' }, h('summary', {}, 'Flags and coats of arms, file by file'));
+  flagList.addEventListener('toggle', () => {
+    if (flagList.open && !flagList.querySelector('ul')) {
+      flagList.append(h('ul', {}, ...flagCredits().map((c) => h('li', {}, h('a', { href: c.page, target: '_blank', rel: 'noopener' }, c.name), ` · ${c.author || 'unknown author'} · ${c.licence}`))));
+    }
+  });
   const d = h('dialog', { class: 'credits' },
     h('div', { class: 'hd' }, h('b', {}, 'Data sources & licences'), h('button', { class: 'x', title: 'Close', onclick: () => d.close() }, '×')),
     h('table', {},
@@ -417,6 +426,7 @@ function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void;
       body,
     ),
     noticeBox,
+    flagList,
     h('p', { class: 'faint' }, 'For personal use: do not publish or redistribute the built data or a hosted copy of this map.'),
   );
   // Click on the backdrop closes it.

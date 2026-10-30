@@ -436,7 +436,9 @@ input.switch:checked::after { transform: translateX(11px); background: #0b0e13; 
 #strip .r1.region > :not(.regionline) { display: none; }
 #strip .regionline .sw { flex: none; width: 14px; height: 2px; border-radius: 1px; background: #5fcf8f; }
 #strip .regionline.off .sw { background: #8a919c; }
-#strip .regionline .flag { flex: none; width: 16px; height: 12px; border-radius: 2px; object-fit: cover; margin-right: 5px; vertical-align: -1px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12); }
+/* A flag fitted in a fixed-width box in its own aspect ratio (no border, no rounding). */
+#strip .regionline .flag { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 13px; margin-right: 5px; vertical-align: -2px; }
+#strip .regionline .flag img { max-width: 100%; max-height: 100%; }
 #strip .regionline .crumb { flex: none; color: var(--muted); display: inline-flex; align-items: center; }
 #strip .regionline .sep { flex: none; display: inline-flex; align-items: center; height: 14px; line-height: 14px; font-size: 13px; color: var(--muted); }
 #strip .regionline b { flex: none; display: inline-flex; align-items: center; color: #eef1f5; font-weight: 600; font-size: 13px; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
@@ -493,6 +495,10 @@ dialog.credits th { text-align: left; color: var(--faint); font-weight: 500; pad
 dialog.credits td { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 dialog.credits td:first-child { color: var(--muted); }
 dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
+dialog.credits details.flags { margin: 8px 0 0; font-size: 10.5px; }
+dialog.credits details.flags summary { cursor: pointer; color: var(--muted); }
+dialog.credits details.flags ul { max-height: 220px; overflow: auto; margin: 4px 0 0; padding-left: 16px; color: var(--muted); }
+dialog.credits details.flags a { color: var(--text); }
 .scale { display: inline-flex; align-items: flex-end; gap: 6px; }
 .scale i { display: inline-block; height: 5px; border: 1px solid var(--muted); border-top: 0; }
 .hint { color: var(--faint); }
@@ -725,9 +731,10 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .rg-in2 { padding-left: 38px; }
 #layers .rg-kids { margin-left: 4px; padding-left: 6px; border-left: 1px solid var(--line-strong); }
 #layers .rg-kids > .rg, #layers .rg-kids > .rg-dir > summary { margin-left: 0; }
-#layers .rg-flag { flex: none; display: grid; place-items: center; width: 18px; height: 13.5px; border-radius: 2px; overflow: hidden; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12); }
-#layers .rg-flag img { width: 100%; height: 100%; object-fit: cover; }
-#layers .rg-flag.none { box-sizing: border-box; box-shadow: none; border: 1px solid var(--line-strong); color: var(--faint); font-size: 8.5px; line-height: 1; }
+/* A flag (or coat of arms) fitted in a fixed-width box in its own aspect ratio: no border, no rounding. */
+#layers .rg-flag { flex: none; display: grid; place-items: center; width: 20px; height: 14px; }
+#layers .rg-flag img { max-width: 100%; max-height: 100%; }
+#layers .rg-flag.none { color: var(--faint); font-size: 9px; line-height: 1; }
 #layers .rg-dl.cx { color: #f3c77a; border-color: color-mix(in srgb, #f3c77a 45%, transparent); }
 #layers .kp-bar.busy { position: relative; }
 #layers .kp-bar.busy i { position: absolute; width: 35%; animation: status-sweep 1.1s linear infinite; }

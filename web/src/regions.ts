@@ -53,7 +53,11 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
     throw new RegionsError(0, 'The map server isn’t answering');
   }
   if (r.status === 503) throw new RegionsError(503, NAS_AWAY);
-  const body = (await r.json().catch(() => null)) as { error?: string } | null;
+  // (Aborted while the body comes: aborted, not an empty answer.)
+  const body = (await r.json().catch((e) => {
+    if ((e as Error).name === 'AbortError') throw e;
+    return null;
+  })) as { error?: string } | null;
   if (!r.ok) throw new RegionsError(r.status, cap(body?.error ?? `HTTP ${r.status}`));
   return body as T;
 }
@@ -90,18 +94,19 @@ export const OUTLINE_MAX_Z = 12;
 /** The outlines asked for at a map zoom: floored, 0–12. */
 export const outlineZoom = (zoom: number) => Math.max(0, Math.min(OUTLINE_MAX_Z, Math.floor(zoom)));
 /** Every region's outline for zoom `z` (outlineZoom); with `bbox`, those meeting it, clipped to it
- * (`clip`: the box, whose edges the cuts follow), with `ids` those named (#869 asks a few regions'
- * outlines this way). */
-export function getOutlines(z: number, opts: { bbox?: Bbox; ids?: string[]; signal?: AbortSignal } = {}) {
+ * (`clip`: the box, whose edges the cuts follow), with `ids` those named; with `union`, those named
+ * as one outline (their union: no line between regions that touch), a folder's hovered in the panel. */
+export function getOutlines(z: number, opts: { bbox?: Bbox; ids?: string[]; union?: boolean; signal?: AbortSignal } = {}) {
   const q = new URLSearchParams({ z: String(z) });
   if (opts.bbox) q.set('bbox', opts.bbox.map((v) => v.toFixed(3)).join(','));
   if (opts.ids) q.set('ids', opts.ids.join(','));
+  if (opts.union) q.set('union', '1');
   return call<{ features: RegionOutline[]; z: number; clip: Bbox | null }>(`/api/regions/outlines?${q}`, { signal: opts.signal });
 }
 
 /** An outline's rings as lines, leaving out the stretches along the edges of the box it was clipped
  * to (`clip`): those are cuts, not its border. */
-export function outlineLines(f: RegionOutline, clip: Bbox | null): GeoJSON.Feature<GeoJSON.MultiLineString> {
+export function outlineLines(f: Pick<RegionOutline, 'geometry' | 'properties'>, clip: Bbox | null): GeoJSON.Feature<GeoJSON.MultiLineString> {
   const lines: GeoJSON.Position[][] = [];
   const onEdge = (p: GeoJSON.Position, q: GeoJSON.Position) => !!clip &&
     ((p[0] === clip[0] && q[0] === clip[0]) || (p[0] === clip[2] && q[0] === clip[2]) || (p[1] === clip[1] && q[1] === clip[1]) || (p[1] === clip[3] && q[1] === clip[3]));
@@ -169,7 +174,8 @@ const VIEW_FROM_Z = 3;
  * asked again as the zoom changes. The lines' width and opacity follow the boundaries' (basemap.ts
  * LINE_WIDTHS, applyBoundaryOpacity), whatever the boundaries' own switch. Draped on the terrain
  * under the roads; nothing here takes the pointer (the footer tells the region hovered: regionAt).
- * A region row hovered in the panel is outlined on its own (setHover).
+ * A row hovered in the panel is outlined on its own at the map's zoom (setHover): a region's, or a
+ * folder's regions' as one.
  */
 export class RegionLayers {
   private ready = false;
@@ -178,6 +184,11 @@ export class RegionLayers {
   /** What was asked last: its zoom and the box it covers (null: the world). */
   private asked: { z: number; box: Bbox | null } | null = null;
   private abort: AbortController | null = null;
+  /** The regions a panel row hovered outlines (null: none), the ask for them, and the last answers
+   * (by their ask: hovering a row again draws at once). */
+  private hoverIds: string[] | null = null;
+  private hoverAbort: AbortController | null = null;
+  private hoverSeen = new Map<string, GeoJSON.Feature<GeoJSON.MultiLineString>[]>();
   /** Set by the app: the layers just added (their widths, opacity and label look to apply). */
   onAdded: () => void = () => {};
   /** Set by the app: whether the region names are shown (their label type's look). */
@@ -186,7 +197,10 @@ export class RegionLayers {
   onData: () => void = () => {};
 
   constructor(private map: MLMap) {
-    map.on('moveend', () => this.on && this.load());
+    map.on('moveend', () => {
+      if (this.on) this.load();
+      if (this.hoverIds) this.loadHover();
+    });
   }
 
   /** The outlines drawn now (for the footer's hover). */
@@ -252,12 +266,58 @@ export class RegionLayers {
     if (on) this.load();
   }
 
-  /** The region row hovered in the panel outlined (null: none). */
-  setHover(fs: RegionOutline[] | null) {
-    if (!this.ready && !fs?.length) return;
-    if (!this.ensure()) return;
-    if (fs?.length) this.map.getSource<GeoJSONSource>('region-hover')?.setData({ type: 'FeatureCollection', features: fs });
-    const want = fs?.length ? 'visible' : 'none';
+  /** The row hovered in the panel outlined: a region (one id) or a folder's regions as one (null:
+   * none). */
+  setHover(ids: string[] | null) {
+    this.hoverIds = ids?.length ? ids : null;
+    this.hoverAbort?.abort();
+    this.hoverAbort = null;
+    if (!this.hoverIds) {
+      if (this.ready) this.showHover(null);
+      return;
+    }
+    this.loadHover();
+  }
+
+  /** The hovered regions' outline at the map's zoom, as the regions' own are asked (the view's box
+   * and around it past VIEW_FROM_Z), drawn when it comes (at once when asked before). */
+  private loadHover() {
+    const ids = this.hoverIds;
+    if (!ids || !this.ensure()) return;
+    const z = outlineZoom(this.map.getZoom());
+    let box: Bbox | undefined;
+    if (z >= VIEW_FROM_Z) {
+      const b = this.map.getBounds();
+      const [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      const dx = (e - w) / 2, dy = (n - s) / 2;
+      box = [Math.max(-180, w - dx), Math.max(-90, s - dy), Math.min(180, e + dx), Math.min(90, n + dy)];
+    }
+    const key = `${z} ${box?.map((v) => v.toFixed(3)).join(',') ?? ''} ${ids.join(',')}`;
+    const seen = this.hoverSeen.get(key);
+    if (seen) return this.showHover(seen);
+    // (One ask at a time for a hover: a move meanwhile asks again once it's answered, the outline
+    // asked first drawn meanwhile; only another row's hover gives it up, setHover.)
+    if (this.hoverAbort) return;
+    const ac = (this.hoverAbort = new AbortController());
+    getOutlines(z, { ids, bbox: box, union: ids.length > 1, signal: ac.signal }).then(({ features, clip }) => {
+      const lines = features.map((f) => outlineLines(f, clip));
+      // (A few answers kept: rows hovered one after another.)
+      if (this.hoverSeen.size >= 24) this.hoverSeen.delete(this.hoverSeen.keys().next().value!);
+      this.hoverSeen.set(key, lines);
+      if (ac.signal.aborted || this.hoverIds !== ids) return;
+      this.hoverAbort = null;
+      this.showHover(lines);
+      this.loadHover();
+    }, (e) => {
+      if ((e as Error).name === 'AbortError') return;
+      console.warn('regions: hover outline', e);
+      if (this.hoverAbort === ac) this.hoverAbort = null;
+    });
+  }
+
+  private showHover(lines: GeoJSON.Feature<GeoJSON.MultiLineString>[] | null) {
+    if (lines?.length) this.map.getSource<GeoJSONSource>('region-hover')?.setData({ type: 'FeatureCollection', features: lines });
+    const want = lines?.length ? 'visible' : 'none';
     if (this.map.getLayoutProperty('region-hover-line', 'visibility') !== want) this.map.setLayoutProperty('region-hover-line', 'visibility', want);
   }
 

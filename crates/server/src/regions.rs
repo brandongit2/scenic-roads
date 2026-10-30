@@ -669,7 +669,18 @@ pub struct Outlines {
     /// Held while one zoom is made: asks arriving meanwhile wait and take it, rather than each
     /// reading every drawn file and simplifying the world again.
     making: Mutex<()>,
+    /// Folders' outlines made (`union_of`), by the outlines' key, the zoom and the regions' ids:
+    /// the last few, a folder hovered again drawn at once.
+    unions: Mutex<Vec<(String, Arc<Simplified>)>>,
 }
+
+/// The deepest zoom a folder's outline is made for (`Outlines::union`): about 1.2 km, a
+/// folder being an overview; deeper zooms draw it. Canada's, its waters round the Arctic
+/// islands, takes about 1 s here, 4 s at z6 and 20 s at z8.
+const UNION_MAX_Z: u8 = 5;
+
+/// How many folders' outlines are kept (`Outlines::unions`).
+const UNIONS_KEPT: usize = 32;
 
 /// A region's outline as read from its source, before simplifying: every shape's polygons.
 struct Source {
@@ -790,11 +801,17 @@ fn label_point(poly: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
     [cy, (s + n) / 2.0].into_iter().filter_map(widest).max_by(|a, b| a.1.total_cmp(&b.1)).map(|w| w.0)
 }
 
+/// The rounding of degrees simplified to `tol_m` metres: to a tenth of it (fewer digits to send),
+/// as 10^digits.
+fn rounding(tol_m: f64) -> f64 {
+    10f64.powi(((111_320.0 / tol_m).log10() + 1.0).ceil().clamp(1.0, 7.0) as i32)
+}
+
 /// A ring simplified to `tol_m` metres (pipeline::outlines::simplify, on its 1e-7° grid), its
 /// degrees rounded to a tenth of that (fewer digits to send).
 fn simplify_ring(r: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
     let grid: Vec<[i32; 2]> = r.iter().map(|p| [(p[0] * 1e7).round() as i32, (p[1] * 1e7).round() as i32]).collect();
-    let k = 10f64.powi(((111_320.0 / tol_m).log10() + 1.0).ceil().clamp(1.0, 7.0) as i32);
+    let k = rounding(tol_m);
     let round = |v: i32| (f64::from(v) * 1e-7 * k).round() / k;
     pipeline::outlines::simplify(&grid, tol_m).into_iter().map(|p| [round(p[0]), round(p[1])]).collect()
 }
@@ -979,6 +996,36 @@ impl Outlines {
         v
     }
 
+    /// The outline of the regions `ids` as one at zoom `z` (UNION_MAX_Z at most; a folder's:
+    /// `union_of`), made once and kept for the version (the last UNIONS_KEPT); None when none of
+    /// them is drawn.
+    fn union(
+        &self,
+        s: &crate::AppState,
+        z: u8,
+        ids: &std::collections::HashSet<&str>,
+    ) -> Result<Option<Arc<Simplified>>> {
+        let z = z.min(UNION_MAX_Z);
+        let all = self.at(s, z);
+        let mut sorted: Vec<&str> = ids.iter().copied().collect();
+        sorted.sort_unstable();
+        let key = format!("{} {z} {}", self.cur.lock().unwrap().0, sorted.join(","));
+        if let Some((_, u)) = self.unions.lock().unwrap().iter().find(|u| u.0 == key) {
+            return Ok(Some(u.clone()));
+        }
+        let parts: Vec<&Simplified> = all.iter().filter(|r| ids.contains(r.id.as_str())).collect();
+        if parts.is_empty() {
+            return Ok(None);
+        }
+        let u = Arc::new(union_of(&parts, tolerance_m(z))?);
+        let mut kept = self.unions.lock().unwrap();
+        if kept.len() >= UNIONS_KEPT {
+            kept.remove(0);
+        }
+        kept.push((key, u.clone()));
+        Ok(Some(u))
+    }
+
     /// Every zoom's outlines kept on disk for the current version: those not kept yet made, the
     /// sources read once (the regions thread, after a sync).
     fn make_all(&self, s: &crate::AppState) {
@@ -1005,13 +1052,111 @@ impl Outlines {
     }
 }
 
+/// Some regions' outlines at a tolerance as one (a folder's, hovered in the panel): their union,
+/// with no line between regions that touch. Their outer rings are unioned, and a hole of one is
+/// kept only where none of the others covers it (a country's waters hold its provinces as holes:
+/// filled; a folder round an enclave keeps it): the waters' rings round every coast never meet
+/// the overlay, which made Canada's take minutes. Each region was simplified on its own, so
+/// neighbours' shared borders no longer quite meet: the union is snapped to a grid of half the
+/// tolerance and closed by the tolerance (grown by it, then shrunk: slivers up to about twice it
+/// wide filled), then simplified to it again.
+fn union_of(parts: &[&Simplified], tol_m: f64) -> Result<Simplified> {
+    use geos::{CapStyle, CoordSeq, Geom, Geometry, JoinStyle, Precision};
+    let ring = |r: &[[f64; 2]]| -> Result<Option<Geometry>> {
+        let mut v: Vec<Vec<f64>> = r.iter().map(|p| vec![p[0], p[1]]).collect();
+        if v.first() != v.last() {
+            v.push(v[0].clone());
+        }
+        if v.len() < 4 {
+            return Ok(None);
+        }
+        Ok(Some(Geometry::create_polygon(Geometry::create_linear_ring(CoordSeq::new_from_vec(&v)?)?, vec![])?))
+    };
+    let deg = tol_m / 111_320.0;
+    let grid = deg / 2.0;
+    // Each region's outer rings as polygons (made valid: a ring simplified may touch itself),
+    // and its holes.
+    let mut shells: Vec<(usize, Geometry)> = Vec::new();
+    let mut holes: Vec<(usize, Geometry)> = Vec::new();
+    for (k, r) in parts.iter().enumerate() {
+        for p in &r.polys {
+            for (i, rr) in p.iter().enumerate() {
+                if let Some(g) = ring(rr)? {
+                    let g = g.buffer(0.0, 2)?;
+                    if i == 0 {
+                        shells.push((k, g))
+                    } else {
+                        holes.push((k, g))
+                    }
+                }
+            }
+        }
+    }
+    // A hole stays when no other region's outer rings hold a point inside it.
+    let mut kept = Vec::new();
+    for (k, h) in holes {
+        if h.is_empty()? {
+            continue;
+        }
+        let pt = h.point_on_surface()?;
+        if !shells.iter().any(|(j, s)| *j != k && s.contains(&pt).unwrap_or(false)) {
+            kept.push(h);
+        }
+    }
+    let snap = |gs: Vec<Geometry>| -> Result<Geometry> {
+        let gs =
+            gs.into_iter().map(|g| g.set_precision(grid, Precision::ValidOutput)).collect::<Result<Vec<_>, _>>()?;
+        Ok(Geometry::create_geometry_collection(gs)?.unary_union_prec(grid)?)
+    };
+    let mut whole = snap(shells.into_iter().map(|s| s.1).collect())?;
+    if !kept.is_empty() {
+        whole = whole.difference_prec(&snap(kept)?, grid)?;
+    }
+    let closed = whole
+        .buffer_with_style(deg, 2, CapStyle::Round, JoinStyle::Mitre, 2.0)?
+        .buffer_with_style(-deg, 2, CapStyle::Round, JoinStyle::Mitre, 2.0)?
+        .topology_preserve_simplify(deg)?;
+    // (Degrees rounded as simplify_ring's are.)
+    let k = rounding(tol_m);
+    let round = |v: f64| (v * k).round() / k;
+    let coords = |g: &geos::ConstGeometry| -> Result<Vec<[f64; 2]>> {
+        let s = g.get_coord_seq()?;
+        (0..s.size()?).map(|i| Ok([round(s.get_x(i)?), round(s.get_y(i)?)])).collect()
+    };
+    let mut out: Vec<Vec<Vec<[f64; 2]>>> = Vec::new();
+    for i in 0..closed.get_num_geometries()? {
+        let p = closed.get_geometry_n(i)?;
+        if p.geometry_type()? != geos::GeometryTypes::Polygon || p.is_empty()? {
+            continue;
+        }
+        let mut rings = vec![coords(&p.get_exterior_ring()?)?];
+        for k in 0..p.get_num_interior_rings()? {
+            rings.push(coords(&p.get_interior_ring_n(k)?)?);
+        }
+        out.push(rings);
+    }
+    let mut bbox = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for r in parts {
+        bbox = [bbox[0].min(r.bbox[0]), bbox[1].min(r.bbox[1]), bbox[2].max(r.bbox[2]), bbox[3].max(r.bbox[3])];
+    }
+    let ids: Vec<&str> = parts.iter().map(|r| r.id.as_str()).collect();
+    let props =
+        json!({ "region": ids.join(","), "name": "", "disabled": false, "bbox": bbox, "label": null, "area": null });
+    let json =
+        json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": out }, "properties": props })
+            .to_string();
+    Ok(Simplified { id: ids.join(","), bbox, polys: out, props, json })
+}
+
 /// What `/api/regions/outlines` is asked: `z` (the map's zoom; 0–12, deeper as 12), optionally
-/// `bbox=w,s,e,n` (only the regions whose box meets it) and `ids=a,b` (only those regions).
+/// `bbox=w,s,e,n` (only the regions whose box meets it), `ids=a,b` (only those regions) and
+/// `union=1` (those regions as one outline: `union_of`).
 #[derive(Deserialize)]
 pub struct OutlinesQuery {
     z: Option<f64>,
     bbox: Option<String>,
     ids: Option<String>,
+    union: Option<u8>,
 }
 
 /// The features of `all` that `bbox` and `ids` keep, as a GeoJSON FeatureCollection's text; with a
@@ -1063,7 +1208,8 @@ fn collection(
 /// shape in one MultiPolygon simplified to about half a pixel there (rings smaller than that left
 /// out), with properties region, name, disabled, bbox, label (a point inside it for its name) and
 /// area (its first osm: entry's iso, country and in, for its flag). From the accepted copy kept on
-/// this Mac, else the catalogue's coverage; made once per zoom and version, and kept.
+/// this Mac, else the catalogue's coverage; made once per zoom and version, and kept. With
+/// `union=1`, the regions `ids` names as one feature (`union_of`; its region their ids, no name).
 pub async fn outlines(State(s): State<S>, axum::extract::Query(q): axum::extract::Query<OutlinesQuery>) -> Response {
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || -> Result<Response> {
@@ -1073,7 +1219,13 @@ pub async fn outlines(State(s): State<S>, axum::extract::Query(q): axum::extract
             <[f64; 4]>::try_from(v).ok()
         });
         let ids: Option<std::collections::HashSet<&str>> = q.ids.as_deref().map(|i| i.split(',').collect());
-        let body = collection(&s2.outlines.at(&s2, z), z, bbox, ids.as_ref());
+        let body = match (&ids, q.union) {
+            (Some(ids), Some(1)) => {
+                let u = s2.outlines.union(&s2, z, ids)?;
+                collection(u.as_deref().map(std::slice::from_ref).unwrap_or(&[]), z, bbox, None)
+            }
+            _ => collection(&s2.outlines.at(&s2, z), z, bbox, ids.as_ref()),
+        };
         Ok(([(axum::http::header::CONTENT_TYPE, "application/json")], body).into_response())
     })
     .await

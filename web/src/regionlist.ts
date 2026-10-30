@@ -1,6 +1,6 @@
 // The Regions list's logic (ui/regions.ts draws it; web/test/regionlist.test.ts): folders sorted
-// among the regions, the search and the "downloaded only" filter, each entry's flag, and its land and
-// water in words. No DOM here.
+// among the regions, the search and the "downloaded only" filter, each folder's country (its flag), and its land
+// and water in words. No DOM here.
 import type { Folder, Region } from './regions';
 
 /** Text for matching: lower case, accents off ("Ñuble" matches "nuble"). */
@@ -62,69 +62,35 @@ export function filter(root: Folder, byId: Map<string, Region>, q: string, keep:
   return out;
 }
 
-/** What a region's flag is chosen from: its first osm: part's area (its ISO code, whether it's a
+/** What a region's country is told from: its first osm: part's area (its ISO code, whether it's a
  * country, the country it lies in) and its country from its geometry (the server's). */
-export interface FlagFrom {
+export interface CountryFrom {
   iso?: string;
   country?: boolean;
   in?: string;
   geo?: string;
 }
 
-/** A region's flag (a flag file's code: "pt", "gb-sct"), or null for none: its own when its area is a
- * country or territory, or a subdivision with a flag of its own; else its country's. */
-export function flagCode(a: FlagFrom, have: (code: string) => boolean): string | null {
-  const iso = (a.iso ?? '').toLowerCase();
-  const tries = [a.country ? iso : '', iso.includes('-') ? iso : '', (a.in ?? '').toLowerCase(), (a.geo ?? '').toLowerCase()];
-  return tries.find((c) => c && have(c)) ?? null;
+/** A region's country (ISO 3166-1, "PT"), for its folder's flag: its own code when its area is a
+ * country or territory, else the country its area lies in, else its geometry's; null for none. */
+export function countryCode(a: CountryFrom): string | null {
+  const c = (a.country ? a.iso : '') || a.in || a.geo || '';
+  return c ? c.toUpperCase() : null;
 }
 
-/** A folder's flag: the one its own regions' land weighs most for (all its regions' when it has none
- * of its own); none when they have none. */
-export function folderFlag(f: Folder, flagOf: (id: string) => string | null, land: (id: string) => number): string | null {
+/** A folder's country (its flag): the one its own regions' land weighs most for (all its regions'
+ * when it has none of its own); none when they have none. Flags aren't passed down: a region shows
+ * only its own (flags.ts), never its folder's. */
+export function folderCountry(f: Folder, countryOf: (id: string) => string | null, land: (id: string) => number): string | null {
   const ids = f.regions.length ? f.regions : allIds(f);
   const w = new Map<string, number>();
   for (const id of ids) {
-    const c = flagOf(id)?.split('-')[0];
+    const c = countryOf(id);
     if (c) w.set(c, (w.get(c) ?? 0) + Math.max(land(id), 1e-3));
   }
   let best: string | null = null;
   for (const [c, v] of w) if (best === null || v > w.get(best)!) best = c;
   return best;
-}
-
-/** The country a folder stands for: the code more than half of its own flagged regions share (all
- * its regions' at any depth when it has none of its own), or null when none has a majority (the
- * Danish Realm: dk, fo; the Kingdom of the Netherlands). A subdivision's ("gb-sct") counts as its
- * country's. A majority, not all: the United States folder holds Puerto Rico and Guam, Australia's
- * Christmas and Norfolk Islands, China's Hong Kong and Macau, each with a flag of its own. */
-export function folderCountry(f: Folder, flagOf: (id: string) => string | null): string | null {
-  const flagged = (ids: string[]) => ids.flatMap((id) => flagOf(id)?.split('-')[0] ?? []);
-  const own = flagged(f.regions);
-  const codes = own.length ? own : flagged(allIds(f));
-  const n = new Map<string, number>();
-  for (const c of codes) n.set(c, (n.get(c) ?? 0) + 1);
-  for (const [c, k] of n) if (k * 2 > codes.length) return c;
-  return null;
-}
-
-/** A region with a flag of its own keeps it; one without (national waters, "land outside its
- * regions", a park with no country of its own in its geometry) takes the flag of the country of the
- * nearest folder around it that is of one country. A region in the top level, or in folders of
- * several countries, stays without. Returns the flags of the regions that have one, by id. */
-export function withInherited(root: Folder, flagOf: (id: string) => string | null): Map<string, string> {
-  const out = new Map<string, string>();
-  const visit = (f: Folder) => {
-    // (A folder of several countries gives none to the regions in it, not its parent's either.)
-    const inherit = f.path === '' ? null : folderCountry(f, flagOf);
-    for (const id of f.regions) {
-      const c = flagOf(id) ?? inherit;
-      if (c) out.set(id, c);
-    }
-    for (const g of f.folders) visit(g);
-  };
-  visit(root);
-  return out;
 }
 
 /** Every region id in a folder, at any depth. */

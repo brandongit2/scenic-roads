@@ -89,15 +89,23 @@
   Regions change only as files in `inputs/regions/` (docs/inputs.md §6.1); the app writes none.
   - **The list**: folders (named by their `_group.toml`) sorted by name among the regions, collapsed
     until opened (remembered); an open folder's entries indented along a line from its triangle, its
-    heading sticking under the section's header while they scroll. Each entry: a flag (flag-icons'
-    SVGs, MIT, bundled: a country's or territory's own, a subdivision's where the set has one, else its
-    country's; a folder's, that of the country its own regions' land is most in; a bordered "?" with
-    none), the name, the input check's state while it's checking, held or disabled, and its land and
+    heading sticking under the section's header while they scroll. Each entry: a flag, its own only
+    (a country's, territory's, province's or state's: from Wikimedia Commons as Wikidata names it for
+    the region's first osm: relation, else its ISO 3166 code; where it has no flag, the symbol it
+    goes by: its coat of arms, else its seal; none of those, a "?" placeholder, never its folder's or
+    country's; a folder's, that of the country its own regions' land is most in), fitted in a box of
+    fixed width in its own aspect ratio, without border or rounding (the files, each one's author
+    and licence, are bundled: web/src/flags/, made by tools/flags/fetch.py and credited in the
+    Credits, file by file), the name, the input check's state while it's checking, held or disabled, and its land and
     water in km² (from its accepted geometry: the server works each out once, `region-areas.json`).
     No build state.
   - **Search** and **Show only downloaded regions**, sticking atop the section: a region shows when
     its name or id holds the query, a folder whose name holds it keeps all its contents, and a folder
     with a match inside opens while the search is on.
+  - **Hover**: a region's row outlines it on the map (a dashed pale line), a folder's heading the
+    outline around all of its regions as one (no line between regions that touch: Canada with its
+    waters), at the map's zoom's simplification (a folder's to z5's: `/api/regions/outlines`,
+    `union=1`), in and around the view.
 - **Downloads on this Mac** (docs/macs.md, Mirror): nothing is copied to a Mac unless downloaded there.
   - **World, zoomed out**: its own row, Download or Remove, downloaded on its own (a region doesn't
     bring it; it can go while regions stay). Without it the map needs the NAS; while a region is

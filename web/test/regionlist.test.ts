@@ -1,7 +1,7 @@
 // node web/test/regionlist.test.ts (tools/dev/check.sh's web part): src/regionlist.ts, the Regions
-// list's sorting, filters, flags and areas.
+// list's sorting, filters, folders' countries and areas.
 import assert from 'node:assert/strict';
-import { areaText, entries, filter, flagCode, folderFlag, km2, norm, withInherited, folderCountry } from '../src/regionlist.ts';
+import { areaText, countryCode, entries, filter, folderCountry, km2, norm } from '../src/regionlist.ts';
 
 const reg = (id: string, name: string) => ({ id, name, outline: [] });
 const regions = [reg('azores', 'Azores'), reg('madeira', 'Madeira'), reg('alabama', 'Alabama'), reg('alaska', 'Alaska'), reg('nuble', 'Ñuble'), reg('bermuda', 'Bermuda'), reg('baker-island', 'Baker Island')];
@@ -43,57 +43,22 @@ assert.deepEqual([...s.folders].sort(), ['', 'united-states']);
 assert.equal(s.open.size, 0, 'the downloaded filter alone opens nothing');
 assert.equal(filter(root, byId, 'zzz', all).folders.size, 0);
 
-// Flags: a country's own; a subdivision's own when there's one; else its country's; else the
-// geometry's country; none.
-const have = (c: string) => ['pt', 'us', 'gb', 'gb-sct', 'gl', 'dk'].includes(c);
-assert.equal(flagCode({ iso: 'PT', country: true }, have), 'pt');
-assert.equal(flagCode({ iso: 'GB-SCT', in: 'GB' }, have), 'gb-sct');
-assert.equal(flagCode({ iso: 'US-AL', in: 'US' }, have), 'us');
-assert.equal(flagCode({ geo: 'GL' }, have), 'gl');
-assert.equal(flagCode({ iso: 'XX', country: true }, have), null);
-assert.equal(flagCode({}, have), null);
-// A folder's: its own regions' by land; all its regions' without any of its own.
+// A region's country (its folder's flag): a country's or territory's own code; else the country
+// its area lies in; else its geometry's; none.
+assert.equal(countryCode({ iso: 'PT', country: true }), 'PT');
+assert.equal(countryCode({ iso: 'GB-SCT', in: 'GB' }), 'GB');
+assert.equal(countryCode({ iso: 'US-AL', in: 'us' }), 'US');
+assert.equal(countryCode({ geo: 'GL' }), 'GL');
+assert.equal(countryCode({}), null);
+// A folder's country: its own regions' by land; all its regions' without any of its own; none.
 const realm = f('dk', 'Danish Realm', ['denmark', 'faroe'], [f('dk/gl', 'Greenland', ['kujalleq'])]);
-const flags: Record<string, string> = { denmark: 'dk', faroe: 'fo', kujalleq: 'gl' };
+const cc: Record<string, string> = { denmark: 'DK', faroe: 'FO', kujalleq: 'GL', 'gl-waters': 'GL' };
 const land: Record<string, number> = { denmark: 43_000, faroe: 1_400, kujalleq: 2e6 };
-assert.equal(folderFlag(realm, (id) => flags[id] ?? null, (id) => land[id] ?? 0), 'dk');
-assert.equal(folderFlag(realm.folders[0], (id) => flags[id] ?? null, () => 0), 'gl');
-assert.equal(folderFlag(f('x', 'X', ['q']), () => null, () => 1), null);
-
-// A region without a flag of its own takes its folder's country; a folder of several, or the top
-// level, gives none.
-const gflags: Record<string, string> = { algeria: 'dz', oran: 'dz', denmark: 'dk', 'faroe-islands': 'fo', kujalleq: 'gl', uk: 'gb', scotland: 'gb-sct' };
-const gof = (id: string) => gflags[id] ?? null;
-const dz = f('algeria', 'Algeria', ['oran', 'algerian-waters', 'algeria-outside']);
-const gl = f('dk/gl', 'Greenland', ['kujalleq', 'greenlandic-waters', 'ne-greenland-np']);
-const dk = f('dk', 'Danish Realm', ['denmark', 'faroe-islands', 'realm-waters'], [gl]);
-const gb = f('gb', 'United Kingdom', ['uk', 'scotland', 'uk-waters']);
-const top = f('', '', ['high-seas', 'lake-constance'], [dz, dk, gb]);
-const inh = withInherited(top, gof);
-assert.equal(inh.get('algerian-waters'), 'dz');
-assert.equal(inh.get('algeria-outside'), 'dz');
-assert.equal(inh.get('oran'), 'dz', 'its own kept');
-assert.equal(inh.get('greenlandic-waters'), 'gl');
-assert.equal(inh.get('ne-greenland-np'), 'gl', 'a park in a one-country subfolder of a several-country folder');
-assert.equal(inh.get('realm-waters'), undefined, 'a folder of several countries');
-assert.equal(inh.get('high-seas'), undefined, 'top level');
-assert.equal(inh.get('lake-constance'), undefined);
-assert.equal(inh.get('scotland'), 'gb-sct', 'a subdivision keeps its own');
-assert.equal(inh.get('uk-waters'), 'gb', 'a subdivision counts as its country for the folder');
-assert.equal(folderCountry(dk, gof), null);
-assert.equal(folderCountry(gl, gof), 'gl');
-assert.equal(folderCountry(f('x', 'X', ['q']), gof), null);
-// A country's folder holding territories with flags of their own (the United States: Puerto Rico,
-// Guam; a subfolder of islands with their own) is still that country's: the majority of its own.
-const uflags: Record<string, string> = { texas: 'us', ohio: 'us', utah: 'us', pr: 'pr', gu: 'gu', wake: 'um', midway: 'um' };
-const uof = (id: string) => uflags[id] ?? null;
-const usmi = f('us/umi', 'U.S. Minor Outlying Islands', ['wake', 'midway']);
-const usa = f('us', 'United States', ['texas', 'ohio', 'utah', 'pr', 'gu', 'us-waters'], [usmi]);
-assert.equal(folderCountry(usa, uof), 'us');
-assert.equal(withInherited(f('', '', [], [usa]), uof).get('us-waters'), 'us');
-assert.equal(withInherited(f('', '', [], [usa]), uof).get('pr'), 'pr', 'a territory keeps its own');
-// No majority: two of two different, or a tie.
-assert.equal(folderCountry(f('k', 'K', ['texas', 'pr']), uof), null);
+assert.equal(folderCountry(realm, (id) => cc[id] ?? null, (id) => land[id] ?? 0), 'DK');
+assert.equal(folderCountry(realm.folders[0], (id) => cc[id] ?? null, () => 0), 'GL');
+assert.equal(folderCountry(f('x', 'X', ['q']), () => null, () => 1), null);
+// (A region's own flag, and the placeholder for one with none of its own, are flags.ts's: nothing
+// is passed down a folder.)
 
 // Areas in words, compact (metric).
 assert.equal(km2(0.4), '<1 km²');

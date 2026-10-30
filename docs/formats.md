@@ -824,13 +824,18 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   downloaded or isn't behind). `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the disk
   size) → `{ok, reserve}`. A download or update that wouldn't fit is refused; refusals are 400
   `{error}`.
-- **Regions** (read only): `GET /api/regions`; `/api/regions/outlines?z=Z[&bbox=w,s,e,n][&ids=a,b]`,
+- **Regions** (read only): `GET /api/regions`; `/api/regions/outlines?z=Z[&bbox=w,s,e,n][&ids=a,b][&union=1]`,
   every region's outline for drawing at zoom Z (0–12, deeper as 12): a GeoJSON feature per region,
   its every shape in one MultiPolygon simplified to half a pixel there (Douglas–Peucker,
   `pipeline::outlines::simplify`, 0.5 × 40,075 km ÷ (512 × 2^Z) m; rings smaller than that left out
   but its largest polygon), properties `region`, `name`, `disabled`, `bbox`, `label` (a point inside
   its largest polygon for its name) and `area` (its first osm: part's `iso`, `country`, `in`: its
-  flag), and `z`; `bbox` keeps the regions whose box meets it, `ids` those named. Made from the
+  flag), and `z`; `bbox` keeps the regions whose box meets it, `ids` those named; `union=1` sends
+  those named as one feature (a folder's outline, hovered in the panel), `region` their ids: their
+  outer rings unioned at Z (z5 at most: deeper zooms draw z5's), a hole of one kept only where no
+  other covers it, snapped to half the zoom's tolerance and closed by it (grown, then shrunk: the
+  slivers between neighbours simplified apart filled), simplified to it again; made with GEOS
+  (`regions.rs` `union_of`) and kept in memory for the last 32 asked. Made from the
   accepted copy's drawn files kept on the Mac (else the catalogue's recorded coverage) once per zoom
   and version, by the regions thread for every zoom when the version changes, and kept on disk
   (`accepted/regions/@outlines/`) and in memory for the zooms asked: 0.9 MB for the world at z0, 4.7 MB at z4 (the map asks the view's box from z3), against 142 MB for every full outline.
