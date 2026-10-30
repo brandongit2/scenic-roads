@@ -33,3 +33,11 @@ const links = runLinks([[0, 1], [1, 2]]);
   const lone = job("next", 9);
   assert.deepEqual(jobRelations(lone, [lone], new Map([[9, [lone]]]), runLinks([])), { on: [lone], arrows: [] });
 }
+// A running job (seq 7) on run 3, which run 4 waits on by the forecast and by `after`: one arrow.
+{
+  const run = job("running", 3, { seq: 7 });
+  const r4 = [job("next", 4, { after: [7] }), job("next", 4, { after: [7] })];
+  const { on, arrows } = jobRelations(run, [run, ...r4], new Map([[3, [run]], [4, r4]]), runLinks([[3, 4]]));
+  assert.deepEqual(on, [run, r4[0]]);
+  assert.deepEqual(arrows, [[run, r4[0]]]);
+}

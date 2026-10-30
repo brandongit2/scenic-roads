@@ -185,7 +185,13 @@ export function jobRelations(s, all, runSegs, links) {
   const of = (run) => runSegs.get(run) || [];
   const first = (x) => x.run == null || of(x.run)[0] === x;
   const on = [s], arrows = [];
-  const tie = (from, to) => { on.push(from === s ? to : from); arrows.push([from, to]); };
+  // (A running job is tied both ways, by its forecast run and by `after`: each tie once.)
+  const tie = (from, to) => {
+    if (arrows.some(([f, t]) => f === from && t === to)) return;
+    const x = from === s ? to : from;
+    if (!on.includes(x)) on.push(x);
+    arrows.push([from, to]);
+  };
   if (s.run != null) {
     for (const a of links.on.get(s.run) || []) { const x = of(a); if (x.length) tie(x[x.length - 1], s); }
     for (const b of links.then.get(s.run) || []) { const x = of(b); if (x.length) tie(s, x[0]); }
