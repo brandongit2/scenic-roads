@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, publishedBefore, pastFrom, pastRuns, runLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion, ringsArea, phaseBreakdown, phaseSplit } from '../../web/work/sums.js';
+import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, publishedBefore, pastFrom, pastRuns, jobLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion, ringsArea, phaseBreakdown, phaseSplit } from '../../web/work/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -392,7 +392,7 @@ test("schedule's view: 12 h each side of now at first, held in the domain, zoome
 test("forecast runs: numbered by lane name in byte order, linked both ways (#787)", () => {
   const lanes = { m4: [{}, {}], "Mac-mini": [{}], "m4 #2": [{}] };
   assert.deepEqual(runNumbers(lanes), { first: { "Mac-mini": 0, m4: 1, "m4 #2": 3 }, total: 4 });
-  const l = runLinks([[0, 2], [1, 2], [2, 3]]);
+  const l = jobLinks([[0, 2], [1, 2], [2, 3]]);
   assert.deepEqual(l.on.get(2), [0, 1]);
   assert.deepEqual(l.then.get(2), [3]);
   assert.equal(l.on.get(0), undefined);
