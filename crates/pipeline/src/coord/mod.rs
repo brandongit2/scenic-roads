@@ -8152,8 +8152,14 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 1, Some(3));
         let busy = [("threads".to_string(), 3), ("cpu_ms".to_string(), 1_440_000)];
-        let cost =
-            Cost { peak_mb: 2000, secs: 600, worker: None, v: cost_version("slope-hi"), sizes: busy.into(), ..Default::default() };
+        let cost = Cost {
+            peak_mb: 2000,
+            secs: 600,
+            worker: None,
+            v: cost_version("slope-hi"),
+            sizes: busy.into(),
+            ..Default::default()
+        };
         c.add_costs_by(&[(cost_key("slope-hi", "6/1/1"), cost)], "m1");
         let one = every_ask("m1", "slope-hi", 64_000, 100_000);
         assert_eq!(threads(&w, &one), [6], "its measured demand, not the share's 2");
