@@ -16,6 +16,14 @@ pub fn tmp_name(path: &Path) -> PathBuf {
     path.with_file_name(format!("{name}.{}.{}.tmp", crate::sys::host(), crate::sys::pid()))
 }
 
+/// A temporary name beside `path` unique to the call (`<name>.<host>.<pid>.<n>.tmp`): two threads
+/// of one process writing or copying to the same file, as two concurrent syncs of a copy do, must
+/// not share a temporary file. `left_by_write` knows it (`write`'s and `copy`'s).
+fn call_tmp_name(path: &Path) -> PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    tmp_name(path).with_extension(format!("{}.tmp", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
+}
+
 /// Whether `p` is a temporary file (these, or another program's `.part`).
 pub fn is_tmp(p: &Path) -> bool {
     p.extension().is_some_and(|x| x == "tmp" || x == "part" || x == "adopt")
@@ -157,10 +165,7 @@ fn aside_with(
 /// must never read as missing read it through `read_replaced`. The folder's day-old asides and
 /// writes' leftover temporary files are swept once it is written (`sweep_hourly`).
 pub fn write(path: &Path, b: &[u8]) -> Result<()> {
-    // (Unique to the call: two threads of one process writing the same file, as two concurrent
-    // syncs of a copy do, must not share a temporary file. `left_by_write` still knows it.)
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let tmp = tmp_name(path).with_extension(format!("{}.tmp", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let tmp = call_tmp_name(path);
     let r = (|| -> Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(b)?;
@@ -347,7 +352,8 @@ pub fn sweep_asides(dir: &Path, prefix: &str, older: std::time::Duration) -> usi
     sweep_where(dir, older, &|name, _| name.starts_with(prefix) && name.ends_with(".aside.tmp"))
 }
 
-/// Whether `name` is a temporary file a `write` left (`tmp_name`'s `<name>.<host>.<pid>.tmp`: its
+/// Whether `name` is a temporary file a `write` or `copy` left (`call_tmp_name`'s
+/// `<name>.<host>.<pid>.<n>.tmp`, or `tmp_name`'s `<name>.<host>.<pid>.tmp`: its
 /// process ended, or its call was given up on, before its rename).
 fn left_by_write(name: &str) -> bool {
     let Some(rest) = name.strip_suffix(".tmp") else { return false };
@@ -401,7 +407,7 @@ fn swept_hourly(name: &str, folder: bool) -> bool {
 
 /// Copies `src` to `dst`, whole; the bytes copied.
 pub fn copy(src: &Path, dst: &Path) -> Result<u64> {
-    let tmp = tmp_name(dst);
+    let tmp = call_tmp_name(dst);
     let r = (|| -> Result<u64> {
         let mut from = std::fs::File::open(src)?;
         let want = from.metadata()?.len();
@@ -669,6 +675,39 @@ mod tests {
         write(&p, b"bb").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"bb");
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1, "no temporary file left");
+    }
+
+    /// Threads of one process copying to the same file at once each use their own temporary file:
+    /// all succeed, the copy is one of the sources whole, and no temporary file is left.
+    #[test]
+    fn concurrent_copies_to_one_file_all_succeed() {
+        let d = tempfile::tempdir().unwrap();
+        let srcs: Vec<PathBuf> = (0..8u8)
+            .map(|i| {
+                let p = d.path().join(format!("s{i}.bin"));
+                std::fs::write(&p, [i; 4096]).unwrap();
+                p
+            })
+            .collect();
+        let q = d.path().join("q.bin");
+        let bar = std::sync::Barrier::new(8);
+        std::thread::scope(|s| {
+            for src in &srcs {
+                let (q, bar) = (&q, &bar);
+                s.spawn(move || {
+                    for _ in 0..50 {
+                        bar.wait();
+                        assert_eq!(copy(src, q).unwrap(), 4096);
+                    }
+                });
+            }
+        });
+        let got = std::fs::read(&q).unwrap();
+        assert!(got.len() == 4096 && got.iter().all(|b| *b == got[0]));
+        let left = std::fs::read_dir(d.path()).unwrap().filter(|e| is_tmp(&e.as_ref().unwrap().path())).count();
+        assert_eq!(left, 0);
+        let t = call_tmp_name(&q);
+        assert!(left_by_write(&t.file_name().unwrap().to_string_lossy()), "{}", t.display());
     }
 
     #[test]

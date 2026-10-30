@@ -318,6 +318,14 @@ pub fn spawn_syncer(s: S) {
         .ok();
 }
 
+/// Keeps the list read as `cache`, for going away: whole, through a temporary name unique to the
+/// call (two list requests run at once). Failures passed over.
+fn keep_list(cache: &std::path::Path, ok: &[Listed]) {
+    if let Ok(b) = serde_json::to_vec(ok) {
+        store::whole::write(cache, &b).ok();
+    }
+}
+
 pub async fn list(State(s): State<S>) -> Response {
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || {
@@ -335,12 +343,7 @@ pub async fn list(State(s): State<S>) -> Response {
                 };
                 states(&s2, &pool, &mut ok);
                 sizes_into(&s2, &mut ok);
-                if let Ok(b) = serde_json::to_vec(&ok) {
-                    let tmp = cache.with_extension("json.tmp");
-                    if std::fs::write(&tmp, b).is_ok() {
-                        std::fs::rename(&tmp, &cache).ok();
-                    }
-                }
+                keep_list(&cache, &ok);
                 let t = tree(&s2, &ok);
                 Json(json!({ "regions": ok, "bad": bad, "tree": t })).into_response()
             }
@@ -872,6 +875,29 @@ mod tests {
 
     fn ids(v: &Value) -> Vec<String> {
         v["regions"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap().to_string()).collect()
+    }
+
+    /// Two list requests at once keep the list each through its own temporary file: the kept
+    /// list reads whole, and no temporary file is left.
+    #[test]
+    fn concurrent_lists_keep_one_whole() {
+        let home = tempfile::tempdir().unwrap();
+        let cache = home.path().join("regions.json");
+        let bar = std::sync::Barrier::new(8);
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                let (cache, bar) = (&cache, &bar);
+                s.spawn(move || {
+                    for _ in 0..30 {
+                        bar.wait();
+                        keep_list(cache, &[]);
+                    }
+                });
+            }
+        });
+        let v: Vec<Listed> = serde_json::from_slice(&std::fs::read(&cache).unwrap()).unwrap();
+        assert!(v.is_empty());
+        assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 1, "no temporary file left");
     }
 
     #[tokio::test]
