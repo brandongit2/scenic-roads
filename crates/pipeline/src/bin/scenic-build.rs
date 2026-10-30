@@ -1728,7 +1728,30 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
         let p = phase("drawing road and rail tiles");
         let win = hipack::way_inputs(&near, &staged)?;
         at(k, 0.3);
-        let (roads, rails) = hipack::tiles(&win, 3, q.x, q.y, 4..=8, true);
+        // (Each zoom drawn a piece kept, task #889: a resumed z3 tile draws only the zooms its last
+        // run didn't keep.)
+        let id = pipeline::resume_log::job_id(
+            "lo",
+            &q.slash(),
+            &[&pipeline::resume_log::names(out, near.iter().map(|bp| format!("base/{}", bp.unit.slash())))],
+        );
+        let mut pieces =
+            pipeline::resume_log::Pieces::open(&out.scratch, (q.z, q.x, q.y), "lo", &id, pipeline::resume_log::on());
+        let (mut roads, mut rails) = (Vec::new(), Vec::new());
+        for z in 4..=8u8 {
+            let kept = pieces
+                .piece((z, q.x, q.y), || {
+                    let (r, l) = hipack::tiles(&win, 3, q.x, q.y, z..=z, true);
+                    Ok(put_encoded(&[&r, &l]))
+                })
+                .and_then(|p| get_encoded(&p))
+                .map_err(|e| pipeline::control::stop_if_paused("lo", e))?;
+            let [r, l]: [Vec<pipeline::tiling::Encoded>; 2] =
+                kept.try_into().map_err(|_| anyhow::anyhow!("a kept zoom: not two layers"))?;
+            roads.extend(r);
+            rails.extend(l);
+            at(k, 0.3 + 0.1 * f64::from(z - 3));
+        }
         drop(p);
         at(k, 0.8);
         let p = phase("writing road and rail packs to the NAS");
@@ -1744,6 +1767,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
         }
         drop(p);
         out.save()?;
+        pieces.finish();
         note_cost("lo", &q.slash(), c);
         pipeline::control::done("lo", &q.slash());
         eprintln!(
@@ -1758,6 +1782,43 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
     }
     pipeline::agent::jobs::report(n, n, "zoomed-out tiles");
     Ok(())
+}
+
+/// Lists of encoded tiles as a kept piece's payload (crate::resume_log::Put).
+fn put_encoded(lists: &[&[pipeline::tiling::Encoded]]) -> Vec<u8> {
+    let mut p = pipeline::resume_log::Put::default();
+    p.u64(lists.len() as u64);
+    for l in lists {
+        p.u64(l.len() as u64);
+        for e in *l {
+            p.u64(e.key);
+            p.bytes(&e.gz);
+            p.u64(e.raw_len as u64);
+            p.u64(e.nverts as u64);
+        }
+    }
+    p.0
+}
+
+/// `put_encoded`'s lists read back.
+fn get_encoded(p: &[u8]) -> Result<Vec<Vec<pipeline::tiling::Encoded>>> {
+    let mut g = pipeline::resume_log::Get(p);
+    let lists = (0..g.count(8)?)
+        .map(|_| {
+            (0..g.count(32)?)
+                .map(|_| {
+                    Ok(pipeline::tiling::Encoded {
+                        key: g.u64()?,
+                        gz: g.bytes()?,
+                        raw_len: usize::try_from(g.u64()?)?,
+                        nverts: usize::try_from(g.u64()?)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .collect::<Result<Vec<_>>>()?;
+    g.end()?;
+    Ok(lists)
 }
 
 // ---- catalogue --------------------------------------------------------------------------------
@@ -3008,7 +3069,13 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let pois: Vec<Option<store::nasfs::NasPath>> =
         units.iter().map(|u| out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c))).collect();
     let packs = pipeline::terrain_pack::ManifestTiles::new(out, "terrain");
-    peaks_from(out, scratch, &units, &pois, &packs, &summits, &base8, &z8, coarse_threads)
+    // (What every z6 tile's measure reads besides its own candidates and terrain: a `job_id`'s.)
+    let read = pipeline::resume_log::names(
+        out,
+        std::iter::once(format!("work/summits/{date}"))
+            .chain(pipeline::peaks::z8::lo_packs(&out.manifest).into_iter().map(|(l, _)| l)),
+    );
+    peaks_from(out, scratch, &units, &pois, &packs, &summits, &base8, &z8, coarse_threads, &read)
 }
 
 /// `peaks_step`'s z6 tiles measured, their z12 from the packs `packs`.
@@ -3023,6 +3090,7 @@ fn peaks_from(
     base8: &pipeline::peaks::unit::Z8Base,
     z8: &pipeline::peaks::z8::Z8,
     coarse_threads: usize,
+    read: &str,
 ) -> Result<()> {
     use pipeline::peaks::unit;
     let load = |&k: &usize| -> Result<(Vec<unit::UnitPeak>, unit::UnitZ12)> {
@@ -3049,7 +3117,22 @@ fn peaks_from(
         pipeline::agent::jobs::report(k as u64, units.len() as u64, "z6 tiles");
         let t = cost_start("peaks", &u.slash());
         let p = phase("measuring prominence and isolation");
-        let res = unit::run(&peaks, summits, base8, &z12, z8, coarse_threads)?;
+        // (Its pieces kept as measured, task #889: a pause stops at the next, the z6 tile resumed
+        // there; what it reads, its candidates and the terrain's hi packs within its reach.)
+        let mut near = vec![format!("work/pois/{}", u.dash())];
+        for dy in -1i64..=1 {
+            for dx in -1i64..=1 {
+                let (x, y) = (i64::from(u.x) + dx, i64::from(u.y) + dy);
+                if (0..64).contains(&y) {
+                    near.push(format!("layers/terrain/hi/6-{}-{y}", x.rem_euclid(64)));
+                }
+            }
+        }
+        let id = pipeline::resume_log::job_id("peaks", &u.slash(), &[read, &pipeline::resume_log::names(out, near)]);
+        let mut pieces =
+            pipeline::resume_log::Pieces::open(scratch, (u.z, u.x, u.y), "peaks", &id, pipeline::resume_log::on());
+        let res = unit::run(&peaks, summits, base8, &z12, z8, coarse_threads, &mut pieces)
+            .map_err(|e| pipeline::control::stop_if_paused("peaks", e))?;
         drop(p);
         let file = scratch.join(format!("peaks-{}.jsonl.zst", u.dash()));
         let p = phase("writing results");
@@ -3069,6 +3152,7 @@ fn peaks_from(
         out.put_file(&format!("work/peaks/{}", u.dash()), "jsonl.zst", &file)?;
         drop(p);
         out.save()?;
+        pieces.finish();
         pipeline::control::done("peaks", &u.slash());
         std::fs::remove_file(&file).ok();
         eprintln!(
@@ -5753,7 +5837,9 @@ fn slope_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::control::safe_point("slope-lo");
         pipeline::agent::jobs::report(k as u64, qs.len() as u64, "z3 tiles");
         let c = cost_start("slope-lo", &q.slash());
-        let r = pipeline::slope_pack::build_lo(out, (q.x, q.y), ts, &|_, _, _| {})?;
+        // (Paused at a row of z6 tiles kept: nothing of the z3 tile put, the run resumed there.)
+        let r = pipeline::slope_pack::build_lo(out, (q.x, q.y), ts, &|_, _, _| {})
+            .map_err(|e| pipeline::control::stop_if_paused("slope-lo", e))?;
         eprintln!("slope-lo {}: {r:?} ({:.0?})", q.slash(), c.elapsed());
         pipeline::control::done("slope-lo", &q.slash());
         note_cost("slope-lo", &q.slash(), c);

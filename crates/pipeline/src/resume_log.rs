@@ -1,8 +1,9 @@
 //! A long target's run resumed where it stopped (docs/pool.md §7.2, Resuming): its work goes
 //! block by block, and a run stopped (sleep, an update, the NAS restarting, the memory guard, a
 //! pause) starts again at the block after the last it finished. The steps keeping one: depth and
-//! depth-lo (crate::depth::resume), terrain-hi (crate::terrain_pack, a level's blocks), and
-//! terrain-deep (crate::terrain_deep, its base tiles).
+//! depth-lo (crate::depth::resume), terrain-hi (crate::terrain_pack, a level's blocks),
+//! terrain-deep (crate::terrain_deep, its base tiles), and through `Pieces` (task #889) unit,
+//! pois, peaks, bldtiles, bldprep, bldfield-lo, trees, polar-terrain, polar-slope, slope-lo and lo.
 //!
 //! - **On this Mac's disk, never the NAS:** one file per target at the top of the job's scratch
 //!   folder (`<scratch>/<z>_<x>_<y>.resume`, `path`; each step's scratch folder is its own): a line
@@ -257,11 +258,6 @@ impl Pieces {
             l.keep(b, &p)?;
         }
         Ok(p)
-    }
-
-    /// Whether piece `b` was kept by an earlier run (and not yet taken).
-    pub fn has(&self, b: BlockId) -> bool {
-        self.kept.contains_key(&b)
     }
 
     /// The target's output saved: its log deleted.

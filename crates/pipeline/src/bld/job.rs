@@ -709,7 +709,7 @@ pub fn build_later_keeping(
         ),
         keep,
     );
-    let todo: Vec<(u32, u32)> = z8s.iter().copied().filter(|a| !pieces.has((8, a.0, a.1))).collect();
+    let todo: Vec<(u32, u32)> = z8s.iter().copied().filter(|a| pieces.kept((8, a.0, a.1)).is_none()).collect();
     let mut offers = super::task::Offers::new(offload, &out.scratch, t, todo.len(), &sites);
     let mut sum = Summary::default();
     let mut j = 0;

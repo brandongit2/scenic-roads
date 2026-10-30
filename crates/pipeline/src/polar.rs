@@ -693,19 +693,6 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
     Ok(())
 }
 
-/// What a block's shading reads: the terrain packs of it and its neighbours, as the manifest names
-/// them.
-fn terrain_of(out: &crate::out::Out, pole: Pole, b: (u32, u32)) -> String {
-    around(pole, b)
-        .into_iter()
-        .map(|n| {
-            let l = block_logical("terrain", pole, n);
-            format!("{l}={}", out.get(&l).unwrap_or("-"))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// `polar-slope`: each block's shading pack (`slope_block`), from the terrain packs of it (read
 /// whole) and its neighbours (their tiles read as wanted).
 pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> Result<()> {
@@ -728,7 +715,14 @@ pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> 
             &out.scratch,
             resume_target(pole, b),
             "polar-slope",
-            &crate::resume_log::job_id("polar-slope", &t, &[&terrain_of(out, pole, b)]),
+            &crate::resume_log::job_id(
+                "polar-slope",
+                &t,
+                &[&crate::resume_log::names(
+                    out,
+                    around(pole, b).into_iter().map(|n| block_logical("terrain", pole, n)),
+                )],
+            ),
             crate::resume_log::on(),
         );
         let mut tiles = Vec::new();

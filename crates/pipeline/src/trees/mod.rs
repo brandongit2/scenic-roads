@@ -976,7 +976,7 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
         }
         None => crate::resume_log::Pieces::none(),
     };
-    let kept: Vec<bool> = rows.iter().map(|r| pieces.has(row_id(r))).collect();
+    let kept: Vec<bool> = rows.iter().map(|r| pieces.kept(row_id(r)).is_some()).collect();
     let todo: Vec<(u32, u32)> = rows.iter().zip(&kept).filter(|(_, k)| !**k).flat_map(|(r, _)| r.clone()).collect();
     let p = phase("offering rows of blocks to other workers");
     let offers = task::Offers::offer(

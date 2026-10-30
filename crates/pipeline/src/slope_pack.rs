@@ -658,6 +658,7 @@ fn assemble(
     ts: &[(u32, u32)],
     mids: &BTreeMap<(u32, u32), Vec<Made>>,
     count: &Count,
+    pieces: &mut crate::resume_log::Pieces,
 ) -> Result<Vec<Made>> {
     let slope_now = ManifestTiles::new(out, "slope");
     let mut made: Vec<Made> = Vec::new();
@@ -685,18 +686,40 @@ fn assemble(
         }
         made.extend(tiles);
     }
-    // The other z6 tiles of q: their terrain's own shading.
-    for x in q.0 * 8..(q.0 + 1) * 8 {
-        for y in q.1 * 8..(q.1 + 1) * 8 {
-            if z6q.contains_key(&(x, y)) {
+    // The other z6 tiles of q: their terrain's own shading, a row of them a piece kept (each tile its
+    // bytes and quadrant, none for one with no terrain).
+    for y in q.1 * 8..(q.1 + 1) * 8 {
+        let row: Vec<u32> = (q.0 * 8..(q.0 + 1) * 8).filter(|&x| !z6q.contains_key(&(x, y))).collect();
+        if row.is_empty() {
+            continue;
+        }
+        let p = pieces.piece((6, q.0 * 8, y), || {
+            let mut p = crate::resume_log::Put::default();
+            for &x in &row {
+                count.one();
+                match shade_tile(terrain, 6, x, y) {
+                    Some(v) => {
+                        let (blob, qd) = stored(&v);
+                        p.u8(1);
+                        p.bytes(&blob);
+                        p.f32s(&qd.iter().flat_map(|c| [c.s, c.u[0], c.u[1]]).collect::<Vec<_>>());
+                    }
+                    None => p.u8(0),
+                }
+            }
+            Ok(p.0)
+        })?;
+        let mut g = crate::resume_log::Get(&p);
+        for &x in &row {
+            if g.u8()? == 0 {
                 continue;
             }
-            count.one();
-            let Some(v) = shade_tile(terrain, 6, x, y) else { continue };
-            let (blob, qd) = stored(&v);
+            let blob = g.bytes()?;
+            let qd = g.f32s()?.chunks_exact(3).map(|c| Px { s: c[0], u: [c[1], c[2]] }).collect();
             made.push((6, x, y, blob));
             z6q.insert((x, y), qd);
         }
+        g.end()?;
     }
     // z5 → z3 of q from the z6 quadrants.
     let mut below = z6q;
@@ -1058,7 +1081,38 @@ pub fn build_lo(
     ts: &[(u32, u32)],
     on: &(dyn Fn(&str, u64, u64) + Sync),
 ) -> Result<Report> {
+    build_lo_keeping(out, q, ts, on, crate::resume_log::on())
+}
+
+/// What z3 tile `q`'s zoomed-out slope reads besides its z6 tiles' mids `ts`: the terrain's lo
+/// packs of it and around it and its root, and its slope lo pack as it is (a `job_id`'s inputs).
+fn lo_inputs(out: &Out, q: (u32, u32), ts: &[(u32, u32)]) -> String {
+    let mut ls = vec!["layers/terrain/root/0-0-0".to_string(), format!("layers/slope/lo/3-{}-{}", q.0, q.1)];
+    for dy in -1i64..=1 {
+        for dx in -1i64..=1 {
+            let (x, y) = (q.0 as i64 + dx, q.1 as i64 + dy);
+            if (0..8).contains(&x) && (0..8).contains(&y) {
+                ls.push(format!("layers/terrain/lo/3-{x}-{y}"));
+            }
+        }
+    }
+    ls.extend(ts.iter().map(|t| mid_logical(t.0, t.1)));
+    crate::resume_log::names(out, ls)
+}
+
+/// `build_lo`, its z6 tiles shaded from their terrain kept a row at a time (task #889:
+/// crate::resume_log::Pieces) with `keep`.
+pub fn build_lo_keeping(
+    out: &mut Out,
+    q: (u32, u32),
+    ts: &[(u32, u32)],
+    on: &(dyn Fn(&str, u64, u64) + Sync),
+    keep: bool,
+) -> Result<Report> {
     use crate::timings::phase;
+    let target = format!("3/{}/{}", q.0, q.1);
+    let id = crate::resume_log::job_id("slope-lo", &target, &[&lo_inputs(out, q, ts)]);
+    let mut pieces = crate::resume_log::Pieces::open(&out.scratch, (3, q.0, q.1), "slope-lo", &id, keep);
     let mut rep = Report::default();
     let p = phase("reading the pieces' mids and the terrain packs' indexes");
     let mids = read_mids(out, q, ts)?;
@@ -1069,7 +1123,7 @@ pub fn build_lo(
     let count = Count::new(64 + 16 + 4 + 1, on);
     drop(p);
     let p = phase("assembling the z3 tile's slope");
-    let lo = assemble(out, &terrain, q, ts, &mids, &count)?;
+    let lo = assemble(out, &terrain, q, ts, &mids, &count, &mut pieces)?;
     drop(terrain);
     drop(p);
     let up = phase("uploading the lo pack");
@@ -1085,6 +1139,7 @@ pub fn build_lo(
     }
     drop(up);
     out.save()?;
+    pieces.finish();
     on("writing packs", 1, 1);
     Ok(rep)
 }
@@ -1508,6 +1563,31 @@ mod tests {
         build_piece(&mut again, (28, 16), false, &|_, _, _| {}).unwrap();
         build_lo(&mut again, (3, 2), &[(28, 16)], &|_, _, _| {}).unwrap();
         assert_eq!(again.get(lo), fresh.get(lo), "the same lo pack as a fresh build's");
+        // Task #889: paused at every one of its safe points (each row of z6 tiles shaded kept),
+        // resumed each time: the same lo pack, nothing of it put before its end.
+        let mut paused = Out::unbound(
+            &store::nasfs::NasRoot::local_for_test(&d.path().join("paused")),
+            &d.path().join("paused-scratch"),
+        )
+        .unwrap();
+        terrain(&mut paused);
+        build_piece(&mut paused, (28, 16), false, &|_, _, _| {}).unwrap();
+        let mut stops = 0;
+        loop {
+            crate::resume_log::STOP_AFTER.set(Some(1));
+            let r = build_lo_keeping(&mut paused, (3, 2), &[(28, 16)], &|_, _, _| {}, true);
+            crate::resume_log::STOP_AFTER.set(None);
+            match r {
+                Err(e) => {
+                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(paused.get(lo).is_none(), "nothing of it put");
+                    stops += 1;
+                }
+                Ok(_) => break,
+            }
+        }
+        assert!(stops > 2, "several safe points: {stops}");
+        assert_eq!(paused.get(lo), fresh.get(lo), "paused at each of its {stops} safe points");
         // The root from the z3 tiles as stored (no terrain there but 3/3/2's: its ancestors alone),
         // 3/3/2's quadrant in its z2 tile's north-east quarter.
         assert_eq!(build_root(&mut again).unwrap(), 3);
@@ -1685,7 +1765,16 @@ mod tests {
                     .filter(|&(x, y)| out.get(&hi_logical(x, y)).is_some() || out.get(&mid_logical(x, y)).is_some())
                     .collect();
                 let mids = read_mids(&out, t, &ts).unwrap();
-                put(&assemble(&out, &terrain, t, &ts, &mids, &Count::new(85, &none)).unwrap());
+                put(&assemble(
+                    &out,
+                    &terrain,
+                    t,
+                    &ts,
+                    &mids,
+                    &Count::new(85, &none),
+                    &mut crate::resume_log::Pieces::none(),
+                )
+                .unwrap());
             }
             "z3" => {
                 let ts: Vec<(u32, u32)> = match a.get(4) {
@@ -1700,7 +1789,16 @@ mod tests {
                     mids.insert(p, piece_of(p, &mut put));
                     eprintln!("6/{}/{} made ({:.0} s)", p.0, p.1, t0.elapsed().as_secs_f64());
                 }
-                let lo = assemble(&out, &terrain, t, &ts, &mids, &Count::new(85, &none)).unwrap();
+                let lo = assemble(
+                    &out,
+                    &terrain,
+                    t,
+                    &ts,
+                    &mids,
+                    &Count::new(85, &none),
+                    &mut crate::resume_log::Pieces::none(),
+                )
+                .unwrap();
                 put(&lo
                     .into_iter()
                     .filter(|m| m.0 < 6 || !ts.contains(&(m.1 >> (m.0 - 6), m.2 >> (m.0 - 6))))

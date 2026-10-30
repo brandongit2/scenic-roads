@@ -528,7 +528,51 @@ struct Seen {
     e: f32,
 }
 
-/// Peaks of a z6 tile: (key, result) in the peaks' order.
+/// The peaks of a z6 tile measured a piece at a time (`run`; a multiple of the fine stage's 64).
+const BATCH: usize = 512;
+
+/// A batch's results as a kept piece's payload (crate::resume_log::Put).
+fn put_outs(outs: &[(usize, Out)]) -> Vec<u8> {
+    let mut p = crate::resume_log::Put::default();
+    let f64s = |p: &mut crate::resume_log::Put, v: &[f64]| v.iter().for_each(|x| p.u64(x.to_bits()));
+    p.u64(outs.len() as u64);
+    for (i, o) in outs {
+        p.u64(*i as u64);
+        p.u64(o.i as u64);
+        p.u32(o.e.to_bits());
+        p.u32(o.p.to_bits());
+        p.u32(o.ce.to_bits());
+        f64s(&mut p, &o.c);
+        f64s(&mut p, &[o.iso]);
+        p.u8(u8::from(o.pl) | u8::from(o.il) << 1 | u8::from(o.hi.is_some()) << 2);
+        if let Some(h) = o.hi {
+            f64s(&mut p, &h);
+        }
+    }
+    p.0
+}
+
+/// `put_outs`'s results read back.
+fn get_outs(p: &[u8]) -> Result<Vec<(usize, Out)>> {
+    let mut g = crate::resume_log::Get(p);
+    let f64 = |g: &mut crate::resume_log::Get| g.u64().map(f64::from_bits);
+    let mut v = Vec::new();
+    for _ in 0..g.count(53)? {
+        let at = usize::try_from(g.u64()?)?;
+        let i = usize::try_from(g.u64()?)?;
+        let (e, pr, ce) = (f32::from_bits(g.u32()?), f32::from_bits(g.u32()?), f32::from_bits(g.u32()?));
+        let c = [f64(&mut g)?, f64(&mut g)?];
+        let iso = f64(&mut g)?;
+        let f = g.u8()?;
+        let hi = if f & 4 != 0 { Some([f64(&mut g)?, f64(&mut g)?]) } else { None };
+        v.push((at, Out { i, e, p: pr, pl: f & 1 != 0, c, ce, iso, il: f & 2 != 0, hi }));
+    }
+    g.end()?;
+    Ok(v)
+}
+
+/// Peaks of a z6 tile: (key, result) in the peaks' order; the summits as they see them, then each
+/// batch of them (`BATCH`), kept in `pieces` as made.
 pub fn run(
     peaks: &[UnitPeak],
     summits: &[Summit],
@@ -536,6 +580,7 @@ pub fn run(
     z12: &UnitZ12,
     z8: &Z8,
     coarse_threads: usize,
+    pieces: &mut crate::resume_log::Pieces,
 ) -> Result<Vec<(String, Out)>> {
     let t0 = std::time::Instant::now();
     let by_id: HashMap<&str, usize> = summits.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
@@ -578,87 +623,117 @@ pub fn run(
             extra.push(Summit { id: p.id.clone(), kind: "peak".into(), lon: p.lon, lat: p.lat, ele: p.ele, z8: None });
         }
     }
-    // Every summit's pixel and the highest within 150 m, from z12.
-    let mut all: Vec<(u32, &Summit)> = need.iter().map(|&i| (i, &summits[i as usize])).collect();
+    // (The summits as the peaks see them a piece kept, task #889: each its id, its summit pixel and
+    // height; then each batch of peaks measured.)
     let extra_base = summits.len() as u32;
-    all.extend(extra.iter().enumerate().map(|(k, s)| (extra_base + k as u32, s)));
-    let seen: Vec<(u32, (i64, i64), (i64, i64), f32, f32)> = all
-        .par_chunks(256)
-        .flat_map_iter(|chunk| {
-            let mut d = UDem { z: Z12, z12: Some(z12), z8: None, cache: HashMap::new(), max_cache: 96, failed: None };
-            chunk
-                .iter()
-                .map(|&(i, s)| {
-                    let (lon, lat) = (s.lon as f64 * 1e-7, s.lat as f64 * 1e-7);
-                    let (px, py) = d.px(lon, lat);
-                    let r = (150.0
-                        / (gc_m(lon, lat, lon + 0.001, lat) / 0.001 * 360.0 / ((1u64 << Z12) as f64 * 256.0)))
-                        .ceil() as i64;
-                    let (mut sx, mut sy, mut e) = (px, py, f32::MIN);
-                    for dy in -r..=r {
-                        for dx in -r..=r {
-                            if dx * dx + dy * dy <= r * r {
-                                if let Some(v) = d.at(None, px + dx, py + dy) {
-                                    if v > e {
-                                        (sx, sy, e) = ((px + dx).rem_euclid(d.w()), py + dy, v);
+    let kept = pieces.piece((0, 0, 0), || {
+        // Every summit's pixel and the highest within 150 m, from z12.
+        let mut all: Vec<(u32, &Summit)> = need.iter().map(|&i| (i, &summits[i as usize])).collect();
+        all.extend(extra.iter().enumerate().map(|(k, s)| (extra_base + k as u32, s)));
+        let seen: Vec<(u32, (i64, i64), (i64, i64), f32, f32)> = all
+            .par_chunks(256)
+            .flat_map_iter(|chunk| {
+                let mut d =
+                    UDem { z: Z12, z12: Some(z12), z8: None, cache: HashMap::new(), max_cache: 96, failed: None };
+                chunk
+                    .iter()
+                    .map(|&(i, s)| {
+                        let (lon, lat) = (s.lon as f64 * 1e-7, s.lat as f64 * 1e-7);
+                        let (px, py) = d.px(lon, lat);
+                        let r = (150.0
+                            / (gc_m(lon, lat, lon + 0.001, lat) / 0.001 * 360.0 / ((1u64 << Z12) as f64 * 256.0)))
+                            .ceil() as i64;
+                        let (mut sx, mut sy, mut e) = (px, py, f32::MIN);
+                        for dy in -r..=r {
+                            for dx in -r..=r {
+                                if dx * dx + dy * dy <= r * r {
+                                    if let Some(v) = d.at(None, px + dx, py + dy) {
+                                        if v > e {
+                                            (sx, sy, e) = ((px + dx).rem_euclid(d.w()), py + dy, v);
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    (i, (px, py), (sx, sy), e, s.ele.unwrap_or(f32::NAN))
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    // The claims: one summit per summit pixel, the highest tagged, then the nearest, then the lowest
-    // OSM id; the others start from their own point.
-    let summit_of = |i: u32| if i < extra_base { &summits[i as usize] } else { &extra[(i - extra_base) as usize] };
-    let mut by_px: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
-    for (k, s) in seen.iter().enumerate() {
-        by_px.entry(s.2).or_default().push(k);
-    }
-    let mut info: HashMap<u32, Seen> = HashMap::with_capacity(seen.len());
-    let mut d0 = UDem { z: Z12, z12: Some(z12), z8: None, cache: HashMap::new(), max_cache: 256, failed: None };
-    let mut moved = 0;
-    let mut groups: Vec<(&(i64, i64), &Vec<usize>)> = by_px.iter().collect();
-    groups.sort_unstable_by_key(|g| *g.0);
-    for (_, ks) in groups {
-        let win = if ks.len() > 1 {
-            let score = |k: usize| {
-                let s = &seen[k];
-                let dd = d0.d2(s.1, s.2) as f32;
-                (if s.4.is_finite() { s.4 } else { f32::MIN / 2.0 }, -dd)
-            };
-            *ks.iter()
-                .max_by(|&&a, &&b| {
-                    score(a)
-                        .partial_cmp(&score(b))
-                        .unwrap()
-                        .then_with(|| summit_of(seen[b].0).order().cmp(&summit_of(seen[a].0).order()))
-                })
-                .unwrap()
-        } else {
-            ks[0]
-        };
-        for &k in ks {
-            let s = seen[k];
-            let (sp, dem) = if k == win {
-                (s.2, s.3)
-            } else {
-                moved += 1;
-                (s.1, d0.at(None, s.1 .0, s.1 .1).unwrap_or(f32::MIN))
-            };
-            let ele = s.4;
-            let e = if dem > f32::MIN && ele.is_finite() && ele >= dem - 30.0 && ele <= dem + 200.0 {
-                ele.max(dem)
-            } else {
-                dem
-            };
-            info.insert(s.0, Seen { sp, e });
+                        (i, (px, py), (sx, sy), e, s.ele.unwrap_or(f32::NAN))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        // The claims: one summit per summit pixel, the highest tagged, then the nearest, then the lowest
+        // OSM id; the others start from their own point.
+        let summit_of = |i: u32| if i < extra_base { &summits[i as usize] } else { &extra[(i - extra_base) as usize] };
+        let mut by_px: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+        for (k, s) in seen.iter().enumerate() {
+            by_px.entry(s.2).or_default().push(k);
         }
+        let mut info: HashMap<u32, Seen> = HashMap::with_capacity(seen.len());
+        let mut d0 = UDem { z: Z12, z12: Some(z12), z8: None, cache: HashMap::new(), max_cache: 256, failed: None };
+        let mut moved = 0;
+        let mut groups: Vec<(&(i64, i64), &Vec<usize>)> = by_px.iter().collect();
+        groups.sort_unstable_by_key(|g| *g.0);
+        for (_, ks) in groups {
+            let win = if ks.len() > 1 {
+                let score = |k: usize| {
+                    let s = &seen[k];
+                    let dd = d0.d2(s.1, s.2) as f32;
+                    (if s.4.is_finite() { s.4 } else { f32::MIN / 2.0 }, -dd)
+                };
+                *ks.iter()
+                    .max_by(|&&a, &&b| {
+                        score(a)
+                            .partial_cmp(&score(b))
+                            .unwrap()
+                            .then_with(|| summit_of(seen[b].0).order().cmp(&summit_of(seen[a].0).order()))
+                    })
+                    .unwrap()
+            } else {
+                ks[0]
+            };
+            for &k in ks {
+                let s = seen[k];
+                let (sp, dem) = if k == win {
+                    (s.2, s.3)
+                } else {
+                    moved += 1;
+                    (s.1, d0.at(None, s.1 .0, s.1 .1).unwrap_or(f32::MIN))
+                };
+                let ele = s.4;
+                let e = if dem > f32::MIN && ele.is_finite() && ele >= dem - 30.0 && ele <= dem + 200.0 {
+                    ele.max(dem)
+                } else {
+                    dem
+                };
+                info.insert(s.0, Seen { sp, e });
+            }
+        }
+        drop(d0);
+        let mut p = crate::resume_log::Put::default();
+        p.u64(moved);
+        let mut ks: Vec<(&u32, &Seen)> = info.iter().collect();
+        ks.sort_unstable_by_key(|k| *k.0);
+        p.u64(ks.len() as u64);
+        for (k, s) in ks {
+            p.u32(*k);
+            p.u64(s.sp.0 as u64);
+            p.u64(s.sp.1 as u64);
+            p.u32(s.e.to_bits());
+        }
+        Ok(p.0)
+    })?;
+    let mut info: HashMap<u32, Seen> = HashMap::new();
+    let moved;
+    {
+        let mut g = crate::resume_log::Get(&kept);
+        moved = g.u64()?;
+        for _ in 0..g.count(24)? {
+            let k = g.u32()?;
+            let sp = (g.u64()? as i64, g.u64()? as i64);
+            info.insert(k, Seen { sp, e: f32::from_bits(g.u32()?) });
+        }
+        g.end()?;
     }
-    drop(d0);
+    drop(kept);
     eprintln!(
         "peaks: {} summits near {} peaks, {moved} moved off a shared pixel ({:.0?})",
         info.len(),
@@ -687,142 +762,155 @@ pub fn run(
         sum: [f64; 2],
     }
     let done = AtomicUsize::new(0);
-    let fine: Vec<Fine> = order
-        .par_chunks(64)
-        .flat_map_iter(|chunk| {
-            let mut d = UDem { z: Z12, z12: Some(z12), z8: None, cache: HashMap::new(), max_cache: 96, failed: None };
-            chunk
-                .iter()
-                .map(|&i| {
-                    let p = &peaks[i];
-                    let me = info[&peak_summit(p)];
-                    let near = within(p.lon, p.lat, near_km);
-                    let mut ov = Overlay::default();
-                    for &k in near.iter().chain(std::iter::once(&peak_summit(p))) {
-                        if let Some(s) = info.get(&k) {
-                            if s.e > f32::MIN {
-                                ov.add(s.sp.0, s.sp.1, s.e);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(coarse_threads.max(1)).build()?;
+    let mut need_coarse = 0;
+    let mut outs: Vec<(usize, Out)> = Vec::with_capacity(peaks.len());
+    // (Each batch of peaks in that order measured, fine then coarse, a piece kept, task #889: a
+    // peak's result is its own, so a resumed z6 tile measures only the batches not kept.)
+    for (n, batch) in order.chunks(BATCH).enumerate() {
+        let kept = pieces.piece((1, n as u32, 0), || {
+            let fine: Vec<Fine> = batch
+                .par_chunks(64)
+                .flat_map_iter(|chunk| {
+                    let mut d =
+                        UDem { z: Z12, z12: Some(z12), z8: None, cache: HashMap::new(), max_cache: 96, failed: None };
+                    chunk
+                        .iter()
+                        .map(|&i| {
+                            let p = &peaks[i];
+                            let me = info[&peak_summit(p)];
+                            let near = within(p.lon, p.lat, near_km);
+                            let mut ov = Overlay::default();
+                            for &k in near.iter().chain(std::iter::once(&peak_summit(p))) {
+                                if let Some(s) = info.get(&k) {
+                                    if s.e > f32::MIN {
+                                        ov.add(s.sp.0, s.sp.1, s.e);
+                                    }
+                                }
+                            }
+                            ov.index();
+                            let (sx, sy) = me.sp;
+                            let e = me.e;
+                            let s_ll = d.lonlat(sx, sy);
+                            let mut out = Out {
+                                i,
+                                e: e.max(0.0),
+                                p: 0.0,
+                                pl: false,
+                                c: [p.lon as f64 * 1e-7, p.lat as f64 * 1e-7],
+                                ce: 0.0,
+                                iso: 0.0,
+                                il: false,
+                                hi: None,
+                            };
+                            let (mut flood_done, mut iso_done) = (e <= f32::MIN, e <= f32::MIN);
+                            if e > f32::MIN {
+                                // The reach in pixels at the summit's latitude, a little short.
+                                let px_m = gc_m(s_ll[0], s_ll[1], s_ll[0] + 360.0 / (256.0 * 4096.0), s_ll[1]);
+                                let r = (FINE_REACH_KM * 1000.0 / px_m * 0.995) as i64;
+                                if let Flood::Done(col, at, reached) =
+                                    flood(&mut d, Some(&ov), sx, sy, e, FINE_MAX, Some(r * r))
+                                {
+                                    out.p = e - col;
+                                    out.pl = !reached;
+                                    out.c = round5(d.lonlat(at.0, at.1));
+                                    out.ce = col;
+                                    flood_done = true;
+                                }
+                                if let Some((km, at)) =
+                                    nearest_higher(&mut d, Some(&ov), sx, sy, e, ISO_FINE_KM, &|_, _| None)
+                                {
+                                    out.iso = km;
+                                    out.hi = Some(round5(d.lonlat(at.0, at.1)));
+                                    iso_done = true;
+                                }
+                            }
+                            let k = done.fetch_add(1, Ordering::Relaxed);
+                            if k % 10_000 == 0 && k > 0 {
+                                eprintln!("  fine {k}/{} ({:.0?})", peaks.len(), t0.elapsed());
+                            }
+                            Fine { i, out, near, flood_done, iso_done, sum: s_ll }
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let failed_z12 = z12.unexpected();
+            anyhow::ensure!(
+                failed_z12 == 0,
+                "peaks: {failed_z12} z12 tiles were read that weren't loaded (the reach is wrong)"
+            );
+            need_coarse += fine.iter().filter(|f| !f.flood_done || !f.iso_done).count();
+
+            // The coarse stage (z8), a few at a time (a flood holds up to 40M pixels).
+            let results: Vec<Result<(usize, Out)>> = pool.install(|| {
+                fine.into_par_iter()
+                    .map(|f| {
+                        if f.flood_done && f.iso_done {
+                            return Ok((f.i, f.out));
+                        }
+                        let mut out = f.out;
+                        let p = &peaks[f.i];
+                        let near: FxSet<u32> = f.near.iter().copied().chain(std::iter::once(peak_summit(p))).collect();
+                        let mut over: FxMap<(i64, i64), f32> = FxMap::default();
+                        for k in &near {
+                            if let Some(s) = info.get(k) {
+                                if s.e > f32::MIN {
+                                    let q = (s.sp.0 >> (Z12 - Z8_), s.sp.1 >> (Z12 - Z8_));
+                                    let v = over.entry(q).or_insert(f32::MIN);
+                                    *v = v.max(s.e);
+                                }
                             }
                         }
-                    }
-                    ov.index();
-                    let (sx, sy) = me.sp;
-                    let e = me.e;
-                    let s_ll = d.lonlat(sx, sy);
-                    let mut out = Out {
-                        i,
-                        e: e.max(0.0),
-                        p: 0.0,
-                        pl: false,
-                        c: [p.lon as f64 * 1e-7, p.lat as f64 * 1e-7],
-                        ce: 0.0,
-                        iso: 0.0,
-                        il: false,
-                        hi: None,
-                    };
-                    let (mut flood_done, mut iso_done) = (e <= f32::MIN, e <= f32::MIN);
-                    if e > f32::MIN {
-                        // The reach in pixels at the summit's latitude, a little short.
-                        let px_m = gc_m(s_ll[0], s_ll[1], s_ll[0] + 360.0 / (256.0 * 4096.0), s_ll[1]);
-                        let r = (FINE_REACH_KM * 1000.0 / px_m * 0.995) as i64;
-                        if let Flood::Done(col, at, reached) =
-                            flood(&mut d, Some(&ov), sx, sy, e, FINE_MAX, Some(r * r))
-                        {
-                            out.p = e - col;
-                            out.pl = !reached;
-                            out.c = round5(d.lonlat(at.0, at.1));
-                            out.ce = col;
-                            flood_done = true;
+                        let ov8 = Ov8 { base: base8, near: &near, over };
+                        let mut d =
+                            UDem { z: Z8_, z12: None, z8: Some(z8), cache: HashMap::new(), max_cache: 0, failed: None };
+                        let (sx, sy) = d.px(f.sum[0], f.sum[1]);
+                        // The z8 pixel is a mean: the summit keeps its fine height.
+                        let e = out.e;
+                        if !f.flood_done {
+                            match flood(&mut d, Some(&ov8), sx, sy, e, COARSE_MAX, None) {
+                                Flood::Done(col, at, reached) => {
+                                    out.p = e - col;
+                                    out.pl = !reached;
+                                    out.c = round5(d.lonlat(at.0, at.1));
+                                    out.ce = col;
+                                }
+                                Flood::Budget(low, at) => {
+                                    out.p = e - low;
+                                    out.pl = true;
+                                    out.c = round5(d.lonlat(at.0, at.1));
+                                    out.ce = low;
+                                }
+                                Flood::Beyond => unreachable!("no reach at z8"),
+                            }
                         }
-                        if let Some((km, at)) = nearest_higher(&mut d, Some(&ov), sx, sy, e, ISO_FINE_KM, &|_, _| None)
-                        {
-                            out.iso = km;
-                            out.hi = Some(round5(d.lonlat(at.0, at.1)));
-                            iso_done = true;
+                        if !f.iso_done {
+                            match nearest_higher(&mut d, Some(&ov8), sx, sy, e, COARSE_ISO_KM, &|x, y| {
+                                Some(z8.max(x, y).unwrap_or(f32::INFINITY))
+                            }) {
+                                Some((km, at)) => {
+                                    out.iso = km.max(ISO_FINE_KM);
+                                    out.hi = Some(round5(d.lonlat(at.0, at.1)));
+                                }
+                                None => {
+                                    out.iso = COARSE_ISO_KM;
+                                    out.il = true;
+                                }
+                            }
                         }
-                    }
-                    let k = done.fetch_add(1, Ordering::Relaxed);
-                    if k % 10_000 == 0 && k > 0 {
-                        eprintln!("  fine {k}/{} ({:.0?})", peaks.len(), t0.elapsed());
-                    }
-                    Fine { i, out, near, flood_done, iso_done, sum: s_ll }
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    let failed_z12 = z12.unexpected();
-    anyhow::ensure!(
-        failed_z12 == 0,
-        "peaks: {failed_z12} z12 tiles were read that weren't loaded (the reach is wrong)"
-    );
-    let need_coarse = fine.iter().filter(|f| !f.flood_done || !f.iso_done).count();
-    eprintln!("peaks: fine stage done ({:.0?}), {need_coarse} need the coarse stage", t0.elapsed());
-
-    // The coarse stage (z8), a few at a time (a flood holds up to 40M pixels).
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(coarse_threads.max(1)).build()?;
-    let results: Vec<Result<(usize, Out)>> = pool.install(|| {
-        fine.into_par_iter()
-            .map(|f| {
-                if f.flood_done && f.iso_done {
-                    return Ok((f.i, f.out));
-                }
-                let mut out = f.out;
-                let p = &peaks[f.i];
-                let near: FxSet<u32> = f.near.iter().copied().chain(std::iter::once(peak_summit(p))).collect();
-                let mut over: FxMap<(i64, i64), f32> = FxMap::default();
-                for k in &near {
-                    if let Some(s) = info.get(k) {
-                        if s.e > f32::MIN {
-                            let q = (s.sp.0 >> (Z12 - Z8_), s.sp.1 >> (Z12 - Z8_));
-                            let v = over.entry(q).or_insert(f32::MIN);
-                            *v = v.max(s.e);
+                        if let Some(e) = d.failed {
+                            anyhow::bail!("peaks: z8 read failed: {e}");
                         }
-                    }
-                }
-                let ov8 = Ov8 { base: base8, near: &near, over };
-                let mut d = UDem { z: Z8_, z12: None, z8: Some(z8), cache: HashMap::new(), max_cache: 0, failed: None };
-                let (sx, sy) = d.px(f.sum[0], f.sum[1]);
-                // The z8 pixel is a mean: the summit keeps its fine height.
-                let e = out.e;
-                if !f.flood_done {
-                    match flood(&mut d, Some(&ov8), sx, sy, e, COARSE_MAX, None) {
-                        Flood::Done(col, at, reached) => {
-                            out.p = e - col;
-                            out.pl = !reached;
-                            out.c = round5(d.lonlat(at.0, at.1));
-                            out.ce = col;
-                        }
-                        Flood::Budget(low, at) => {
-                            out.p = e - low;
-                            out.pl = true;
-                            out.c = round5(d.lonlat(at.0, at.1));
-                            out.ce = low;
-                        }
-                        Flood::Beyond => unreachable!("no reach at z8"),
-                    }
-                }
-                if !f.iso_done {
-                    match nearest_higher(&mut d, Some(&ov8), sx, sy, e, COARSE_ISO_KM, &|x, y| {
-                        Some(z8.max(x, y).unwrap_or(f32::INFINITY))
-                    }) {
-                        Some((km, at)) => {
-                            out.iso = km.max(ISO_FINE_KM);
-                            out.hi = Some(round5(d.lonlat(at.0, at.1)));
-                        }
-                        None => {
-                            out.iso = COARSE_ISO_KM;
-                            out.il = true;
-                        }
-                    }
-                }
-                if let Some(e) = d.failed {
-                    anyhow::bail!("peaks: z8 read failed: {e}");
-                }
-                Ok((f.i, out))
-            })
-            .collect()
-    });
-    let mut outs: Vec<(usize, Out)> = results.into_iter().collect::<Result<_>>().context("coarse stage")?;
+                        Ok((f.i, out))
+                    })
+                    .collect()
+            });
+            let batch: Vec<(usize, Out)> = results.into_iter().collect::<Result<_>>().context("coarse stage")?;
+            Ok(put_outs(&batch))
+        })?;
+        outs.extend(get_outs(&kept)?);
+    }
+    eprintln!("peaks: measured ({:.0?}), {need_coarse} needed the coarse stage", t0.elapsed());
     outs.sort_by_key(|o| o.0);
     Ok(outs
         .into_iter()
@@ -969,7 +1057,8 @@ mod tests {
                 let z12 = UnitZ12::from_tiles(
                     wants[k].iter().map(|&(x, y)| ((x, y), Some(one.get(Z12, x, y).unwrap().unwrap()))).collect(),
                 );
-                let r = run(&peaks_of(k), &summits, &base8, &z12, &z8, 2).unwrap();
+                let r =
+                    run(&peaks_of(k), &summits, &base8, &z12, &z8, 2, &mut crate::resume_log::Pieces::none()).unwrap();
                 assert_eq!(z12.unexpected(), 0);
                 bytes(r)
             })
@@ -982,13 +1071,41 @@ mod tests {
             |&k| UnitZ12::load_from(&packs, &wants[k]),
             |_, &k, z12| {
                 assert_eq!(z12.from, (wants[k].len(), 0), "every tile from the packs");
-                ahead.push(bytes(run(&peaks_of(k), &summits, &base8, &z12, &z8, 2)?));
+                ahead.push(bytes(run(
+                    &peaks_of(k),
+                    &summits,
+                    &base8,
+                    &z12,
+                    &z8,
+                    2,
+                    &mut crate::resume_log::Pieces::none(),
+                )?));
                 Ok(())
             },
         )
         .unwrap();
         assert!(in_turn.iter().all(|b| b.len() > 100), "{in_turn:?}");
         assert_eq!(ahead, in_turn);
+        // Task #889: paused at every one of its safe points (the summits seen, each batch measured),
+        // resumed each time: the same bytes.
+        let z12 = UnitZ12::load_from(&packs, &wants[0]).unwrap();
+        let scratch = d.path().join("resume");
+        let mut stops = 0;
+        let resumed = loop {
+            crate::resume_log::STOP_AFTER.set(Some(1));
+            let mut pieces = crate::resume_log::Pieces::open(&scratch, (6, 33, 22), "peaks", "a", true);
+            let r = run(&peaks_of(0), &summits, &base8, &z12, &z8, 2, &mut pieces);
+            crate::resume_log::STOP_AFTER.set(None);
+            match r {
+                Err(e) => {
+                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    stops += 1;
+                }
+                Ok(r) => break bytes(r),
+            }
+        };
+        assert_eq!(stops, 2, "the summits seen, then its one batch");
+        assert_eq!(resumed, in_turn[0], "paused at each of its safe points");
     }
 
     /// A load that fails fails in its turn, after the z6 tiles before it were done.

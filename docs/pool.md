@@ -738,10 +738,13 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   task #889; the identity: the program's digest, the target and what it reads), each a safe
   point: bldtiles each z8 tile's results (made here or by a worker; a resumed run offers only the
   rest), bldprep each chunk of 4 row groups read, bldfield-lo each z6 tile's levels, trees each
-  row of a z6 tile's blocks (kept by the trees program, `--keep`, which exits paused, 75).
-  trees-lo keeps none: one assembly of its z6 tiles' mids.
-  A `unit` z6 tile's pieces
-  (`resume_log::Pieces`, task #889) are its preparing (the piece copied, the buildings staged,
+  row of a z6 tile's blocks (kept by the trees program, `--keep`, which exits paused, 75), peaks
+  the summits a z6 tile's peaks see and then each 512 of its peaks measured, polar-terrain each
+  chunk of 16 tiles sampled at its finest zoom, polar-slope each 64 tiles shaded there, slope-lo
+  each row of a z3 tile's z6 tiles shaded from their terrain, lo each zoom of a z3 tile's road and
+  rail tiles (z4â€“8). trees-lo keeps none: one assembly of its z6 tiles' mids. A paused target is
+  not put, nor noted done.
+  A `unit` z6 tile's pieces are its preparing (the piece copied, the buildings staged,
   `prepare_folder`) and each program of its tail run here, each kept with its folders' digest
   (`unit::folder_digest`: names, lengths, times written), the folders kept beside the log: a
   resumed run takes them only while its folders are as the last piece left them, else starts the
