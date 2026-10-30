@@ -21,7 +21,8 @@
 //! parallel threads, by `PAIRS`: two kinds of wait both in progress (exact: a guard of each held),
 //! and a kind of wait with computing (while that kind held the instant, the process's CPU time
 //! meanwhile, at most that time: an estimate, which also counts the waiting threads' own CPU in
-//! their calls, large for local disk reads from memory, and other waits' threads'). A pair's seconds lie inside the first kind's time (the instant was
+//! their calls, and other waits' threads'; not counted for the local disk, whose reads from memory
+//! are nearly all their own CPU: its pair with computing stays 0). A pair's seconds lie inside the first kind's time (the instant was
 //! given to it), except two waits' while a third, earlier kind held the instant. They are extra:
 //! the kinds' times alone add up to the wall time.
 //!
@@ -116,7 +117,9 @@ impl State {
         if change != self.changes {
             return;
         }
-        if let Some(k) = self.span {
+        // (Not the disk's: a local read served from memory is its own thread's CPU, which would
+        // show as computing alongside even on one thread.)
+        if let Some(k) = self.span.filter(|&k| k != On::Disk as usize) {
             let d = now.saturating_duration_since(self.span_since).as_nanos() as u64;
             self.acc[KINDS + WAIT_PAIRS + k] += cpu.saturating_sub(self.span_cpu).min(d);
         }
@@ -343,6 +346,14 @@ mod tests {
         drop(g);
         let t2 = totals();
         assert!((t2[KINDS + 6] - tc[KINDS + 6]) / 1_000_000 < 10, "{:?}", t2);
+        // Computing under a local disk call: not counted (a read from memory is its own CPU).
+        let g = disk();
+        let c0 = cpu_ns();
+        while cpu_ns() - c0 < 10_000_000 {
+            x = std::hint::black_box(x.wrapping_add(1));
+        }
+        drop(g);
+        assert_eq!(totals()[KINDS + 8], t2[KINDS + 8]);
         // Nested on one thread: counted once.
         {
             let _a = disk();

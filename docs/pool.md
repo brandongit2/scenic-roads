@@ -1604,8 +1604,9 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   store::waits counts the seconds two ran at once on parallel threads, by `PAIRS` (the waits two by
   two, then each with computing): two kinds' guards both held (exact), and a kind with computing
   (while that kind held the instant, the process's CPU time meanwhile, at most that time: an
-  estimate, which also counts the waiting threads' own CPU in their calls, large for local disk
-  reads from memory, small for the NAS and the network, and other waits' threads'; the strip's card's "How"
+  estimate, which also counts the waiting threads' own CPU in their calls, small for the NAS and the
+  network, and other waits' threads'; not for the local disk, whose reads from memory are nearly
+  all their own CPU: that pair stays 0 and isn't drawn; the strip's card's "How"
   says so). They are `Waits::both_s` in a record (absent when all 0,
   and in records from before) and `o` in `phase_times` (pairs of 0.1 s or more). The page draws each
   as a 2px strip along the foot of the first kind's segment (the one the instant went to), in the

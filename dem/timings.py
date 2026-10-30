@@ -83,7 +83,7 @@ def _close(now: float) -> None:
     that time); a new span from `now`."""
     global _top_since, _top_cpu
     cpu = time.process_time()
-    if _top is not None:
+    if _top is not None and KINDS[_top] != "disk":  # (the disk's: its own CPU, not counted)
         _acc[len(KINDS) + _WAIT_PAIRS + _top] += min(max(0.0, cpu - _top_cpu), now - _top_since)
     _top_since, _top_cpu = now, cpu
 

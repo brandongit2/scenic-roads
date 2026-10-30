@@ -566,7 +566,7 @@ export const WAIT_PAIRS = [["nas", "net"], ["nas", "disk"], ["nas", "other"], ["
 export const ALONGSIDE = { nas: "NAS calls", net: "network requests", disk: "local disk calls", other: "waiting on other work", cpu: "computing" };
 // How what ran alongside counts (task #891), for the tooltips: exact for two waits, an estimate with
 // computing, and the estimate's limits.
-export const ALONGSIDE_RULE = "Seconds both ran at once on parallel threads; extra, not in the bar's sum. Two waits: exact. A wait with computing: the process's CPU time while that wait held the instant, an estimate that also counts the waiting threads' own CPU in their calls (much for local disk reads from memory, little for the NAS and the network).";
+export const ALONGSIDE_RULE = "Seconds both ran at once on parallel threads; extra, not in the bar's sum. Two waits: exact. A wait with computing: the process's CPU time while that wait held the instant, an estimate that also counts the waiting threads' own CPU in their calls (little for the NAS and the network). Not for the local disk: its reads from memory are nearly all their own CPU.";
 // How the waits count, for the tooltips.
 export const WAITS_RULE = "Measured by the job's wall clock: an instant counts as waiting on the NAS when any of the job's threads is in a NAS call, else on the network, else on the local disk, else on other work (another worker, a thread); the rest is computing. So the parts add up to the phase's wall time, however many threads wait at once.";
 
@@ -584,7 +584,7 @@ export function phaseSplit(p) {
   const segs = WAIT_PARTS.map(([key, label]) => ({ key, label, s: key === "cpu" ? Math.max(0, m - waited * k) : (w[key] || 0) * k }));
   for (const x of segs) {
     x.with = WAIT_PAIRS.map(([a, b], i) => ({ a, key: b, label: `${ALONGSIDE[b]} ran alongside`, s: Math.min(x.s, (p.both?.[i] || 0) * k) }))
-      .filter((y) => y.a === x.key && y.s > 0).map(({ a, ...y }) => y).sort((y, z) => z.s - y.s);
+      .filter((y) => y.a === x.key && y.s > 0 && !(y.a === "disk" && y.key === "cpu")).map(({ a, ...y }) => y).sort((y, z) => z.s - y.s);
   }
   segs.push({ key: "old", label: "not measured (older runs)", s: Math.max(0, p.wall - m), with: [] });
   return segs.filter((x) => x.s > 0);
