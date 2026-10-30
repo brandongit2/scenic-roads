@@ -100,7 +100,7 @@ def main():
     strip = lambda s: re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', '', s or ''))).strip()
     for i in range(0, len(names), 50):
         q = {'action': 'query', 'format': 'json', 'formatversion': 2, 'prop': 'imageinfo', 'iiprop': 'url|size|extmetadata|mime',
-             'iiurlheight': PNG_H, 'iiextmetadatafilter': 'LicenseShortName|Artist|LicenseUrl', 'titles': '|'.join('File:' + n for n in names[i:i + 50])}
+             'iiurlheight': PNG_H, 'iiextmetadatafilter': 'LicenseShortName|Artist', 'titles': '|'.join('File:' + n for n in names[i:i + 50])}
         j = json.loads(get('https://commons.wikimedia.org/w/api.php?' + urllib.parse.urlencode(q)))
         norm = {n['to']: n['from'] for n in j['query'].get('normalized', [])}
         for p in j['query']['pages']:
@@ -110,7 +110,7 @@ def main():
                 meta[norm.get(p['title'], p['title'])[5:]] = {
                     'svg': ii['mime'] == 'image/svg+xml' and ii['size'] <= SVG_MAX, 'url': ii['url'], 'thumb': ii.get('thumburl'), 'page': ii['descriptionurl'],
                     'licence': strip(m.get('LicenseShortName', {}).get('value')) or 'see its page',
-                    'licence_url': m.get('LicenseUrl', {}).get('value', ''), 'author': strip(m.get('Artist', {}).get('value'))[:160]}
+                    'author': strip(m.get('Artist', {}).get('value'))[:160]}
         time.sleep(1)
     os.makedirs(a.out, exist_ok=True)
     old = {f for f in os.listdir(a.out) if re.fullmatch(r'Q\d+\.(svg|png)', f)}
@@ -127,7 +127,7 @@ def main():
                 o.write(body)
             time.sleep(0.2)
         old.discard(file)
-        index['items'][item] = {'file': file, 'kind': kind, 'name': f, 'page': m['page'], 'licence': m['licence'], 'licence_url': m['licence_url'], 'author': m['author'], 'rendered': not m['svg']}
+        index['items'][item] = {'file': file, 'kind': kind, 'name': f, 'page': m['page'], 'licence': m['licence'], 'author': m['author'], 'rendered': not m['svg']}
     for k, (item, _, _) in sorted(by_osm.items()):
         if item in index['items']:
             index['osm'][k] = item

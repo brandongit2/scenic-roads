@@ -21,7 +21,6 @@ interface Item {
   name: string;
   page: string;
   licence: string;
-  licence_url: string;
   author: string;
   rendered: boolean;
 }

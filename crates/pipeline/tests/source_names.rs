@@ -81,6 +81,11 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/budget/mod.rs", "QUERY_DOMAINS", "\"qlever.dev\"", "the polite-use budget is by host (docs/pool.md §7.7): the query services' own limits, which hold for any request to them"),
     // Links that open a place elsewhere.
     ("web/src/main.ts", "-", "https://www.google.com/maps/", "opens the place in Google Maps"),
+    // The Regions list's flags (task #869, tools/flags/fetch.py): made once by hand from Wikidata and Commons.
+    ("web/src/flags/index.json", "-", "\"page\": \"https://commons.wikimedia.org/wiki/File:", "each flag's credit: its file's page on Commons, where its author and licence are (the Credits link it)"),
+    ("web/src/flags/index.json", "-", "\"author\": \"", "each flag's credit: its author as Commons gives it (some name where they uploaded it, or a decree's link)"),
+    ("tools/flags/fetch.py", "sparql", "https://query.wikidata.org/sparql", "the flags' maker asks Wikidata's query service which flag each region has (run by hand, not a build step)"),
+    ("tools/flags/fetch.py", "main", "https://commons.wikimedia.org/w/api.php", "the flags' maker asks the Commons API for each file's URL, author and licence (run by hand, not a build step)"),
     // Tools that check the app.
     ("tools/check/pool-two-macs.sh", "-", "http://en.wikipedia.org/budget-test", "the pool's check of the budgets' proxy: a request the proxy must meter, not a read of the source"),
     // Kept in code (§6.9).

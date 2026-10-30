@@ -1698,6 +1698,7 @@ declarations are made and staged there.
 | timing phases (`scenic-build`'s lake fill, `leaftype`'s NALCMS download and squares) | a phase's name is its key in the timings kept |
 | `budget::QUERY_HOSTS`, `QUERY_DOMAINS` | the polite-use budget is by host (docs/pool.md §7.7): the query services' limits hold for any request to them |
 | `web/src/main.ts`'s Google Maps link | opens the place elsewhere |
+| `web/src/flags/index.json`'s pages and authors, `tools/flags/fetch.py`'s two queries | each flag's credit is its file's page on Wikimedia Commons (the Credits link it) and its author as Commons gives it; the flags' maker, run by hand, asks Wikidata's query service and the Commons API |
 | `tools/check/pool-two-macs.sh`'s budget test | a request the budgets' proxy must meter, not a read |
 | `tools/nas/fetch-planet.sh`'s mirrors | kept in code (§6.9, OSM planet): the test checks the row says so (`KEPT`) |
 | `scripts/fonts.sh` | the app's own assets (§6.9, also kept) |
