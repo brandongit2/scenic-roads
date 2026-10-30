@@ -20,7 +20,7 @@
 // activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { AREAS, HIDDEN_STATES, PHASE_ABOUT, PHASE_CLASS, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown } from "./sums.js";
+import { AREAS, HIDDEN_STATES, PHASE_ABOUT, PHASE_CLASS, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobRelations, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown } from "./sums.js";
 import { fmt } from "./chartmath.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
@@ -1213,8 +1213,8 @@ let tl = null, schedRoot = null, schedBody = null;
 // This render's segments by card key (timeline.js's: {key, from, until, colour, kind, failed}, with
 // its step, run `r` and `run`: `run` a forecast run's number,
 // sums.js runNumbers; a running job's is the run it goes on in), the runs' links (sums.js
-// runLinks), each run's segments' keys.
-let segs = new Map(), links = runLinks([]), runKeys = new Map();
+// runLinks), each run's segments in time order.
+let segs = new Map(), links = runLinks([]), runSegs = new Map();
 // The tiles the schedule lights on the map (a job's or a legend item's), null: none.
 let schedLit = null;
 function scheduleSection(m) {
@@ -1249,52 +1249,30 @@ function runJobs(l, targets = []) {
     return { from: l.from + off, until: next ? l.from + next[0] : l.until, n, targets: t };
   });
 }
-// A segment's tiles on the map ("z/x/y"): a run that ran, its jobs' targets; one running, its
-// targets; one to come, its forecast run's (`/work/tocome`'s `runs`, when it's this forecast's).
-function segTiles(s, m) {
+// A segment's tiles on the map ("z/x/y"): a packed one that ran, its jobs' targets; any other, its
+// job's (one to come: its share of `/work/tocome`'s `runs`, `runJobs`, when it's this forecast's).
+function segTiles(s) {
   const r = s.r;
-  let targets = [];
-  if (s.kind === "past") targets = (r.parts || [r]).flatMap((p) => p.targets || []);
-  else if (s.kind === "running") targets = r.targets || [];
-  else targets = r.targets || [];
+  const targets = s.kind === "past" ? (r.parts || [r]).flatMap((p) => p.targets || []) : r.targets || [];
   return areaTargets(s.step, targets).filter((t) => tileOf(t)).map((t) => t.slice(t.lastIndexOf(" ") + 1));
 }
-// What a key points at in the schedule (timeline.js `relations`): a segment's run's own segments,
-// those of the runs it waits on and of those waiting on it, and its arrows (from a run's end, its
-// last segment, to a run's start, its first); a legend item's (`lg stage <id>`, `lg kind <kind>`)
-// segments. A job that ran or one running links by the history instead (`after`: the ends it
-// waited on, sums.js pastRuns, startOf), to the jobs that ran and those running; a run to come
-// by `/work/tocome`'s `after` (its finished dependencies), when its `epoch` is the history's. Their tiles for the
-// map: the segment's own, the legend item's all.
+// What a key points at in the schedule (timeline.js `relations`): a job's segment, the single jobs
+// it waits on and those waiting on it, and their arrows (sums.js jobRelations: by the forecast's run
+// links, and by the history's `after`; a run to come's `after`, `/work/tocome`'s finished
+// dependencies, when its `epoch` is the history's); a legend item's (`lg stage <id>`,
+// `lg kind <kind>`) segments. Their tiles for the map: the segment's own, the legend item's all.
 function schedRelations(key) {
   const m = lastSchedM;
   if (!m) return null;
   if (key.startsWith("lg ")) {
     const [, by, v] = key.split(" ");
     const on = [...segs.values()].filter((s) => (by === "stage" ? S.stage(s.step) === v : by === "failed" ? s.kind === "past" && !s.r.ok : by === "past" ? s.kind === "past" && s.r.ok : s.kind === v));
-    return { on, arrows: [], tiles: [...new Set(on.flatMap((s) => segTiles(s, m)))] };
+    return { on, arrows: [], tiles: [...new Set(on.flatMap((s) => segTiles(s)))] };
   }
   const s = segs.get(key);
   if (!s) return null;
-  const of = (run) => (runKeys.get(run) || []).map((k) => segs.get(k)).filter(Boolean);
-  const self = s.run != null ? of(s.run) : [s];
-  const head = (ss) => ss[0], tail = (ss) => ss[ss.length - 1];
-  const on = [...self], arrows = [];
-  for (const a of s.run != null ? links.on.get(s.run) || [] : []) { const x = of(a); on.push(...x); if (x.length) arrows.push([tail(x), head(self)]); }
-  for (const b of s.run != null ? links.then.get(s.run) || [] : []) { const x = of(b); on.push(...x); if (x.length) arrows.push([tail(self), head(x)]); }
-  // (Jobs that ran, and those running, by what the history says each waited on: `after`, the ends'
-  // seqs of the jobs it waited on. A segment packs several runs: its parts'.)
-  const parts = (x) => (x.kind === "past" ? x.r.parts || [x.r] : x.kind === "running" || x.kind === "next" ? [x.r] : []);
-  const seqs = new Set(parts(s).map((p) => p.seq).filter((q) => q != null));
-  const waited = new Set(parts(s).flatMap((p) => p.after || []));
-  if (seqs.size || waited.size) {
-    for (const x of segs.values()) {
-      if (x === s) continue;
-      if (parts(x).some((p) => waited.has(p.seq))) { on.push(x); arrows.push([x, head(self)]); }
-      if (parts(x).some((p) => p.after?.some((q) => seqs.has(q)))) { on.push(x); arrows.push([tail(self), x]); }
-    }
-  }
-  return { on, arrows, tiles: segTiles(s, m) };
+  const { on, arrows } = jobRelations(s, segs.values(), runSegs, links);
+  return { on, arrows, tiles: segTiles(s) };
 }
 let lastSchedM = null;
 const keepPast = windowKeeper(), keepPacked = keeper();
@@ -1334,15 +1312,16 @@ function schedule(m) {
   const tc = toCome.ans?.at === fc?.at && toCome.ans?.runs?.length === nums.total ? toCome.ans : null;
   links = runLinks(tc?.deps);
   segs = new Map();
-  runKeys = new Map();
+  runSegs = new Map();
   const stagesSeen = new Set();
   const kinds = new Set();
   const lanes = h("div", "lanes");
   const tracks = [];
   const segment = (track, r, kind, key, run = null) => {
     cards.set(key, () => runCard(m, r, kind, laneName));
-    segs.set(key, track.add({ key, from: r.from, until: r.until, colour: S.colour(r.step), kind, failed: kind === "past" && !r.ok, step: r.step, r, run }));
-    if (run != null) (runKeys.get(run) || runKeys.set(run, []).get(run)).push(key);
+    const s = track.add({ key, from: r.from, until: r.until, colour: S.colour(r.step), kind, failed: kind === "past" && !r.ok, step: r.step, r, run });
+    segs.set(key, s);
+    if (run != null) (runSegs.get(run) || runSegs.set(run, []).get(run)).push(s);
     if (S.stage(r.step)) stagesSeen.add(S.stage(r.step));
     kinds.add(kind === "past" && !r.ok ? "failed" : kind);
   };

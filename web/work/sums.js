@@ -173,6 +173,36 @@ export function runLinks(deps) {
   return { on, then };
 }
 
+// What one job's segment `s` (dash.js's: {kind, r, run}) is tied to (task #884): the jobs it
+// waits on and the jobs waiting on it, each a single job, never a run's whole row (#834 cut a run
+// into jobs). A run to come waits on its dependencies' runs (`links`, runLinks), so each of its jobs
+// is drawn from each such run's last job; a run waiting on `s`'s run is drawn to its first job, the
+// one that starts once `s`'s run ends. A job that ran, or one running, links by the history
+// (`after`: the seqs of the jobs it waited on; a packed segment, its `parts`'), from a job it
+// waited on to it, and from it to a run's first job (or a job that ran, or one running) naming it.
+// `runSegs`: each run's segments in time order. {on: s and the jobs tied to it, arrows: [from, to]}.
+export function jobRelations(s, all, runSegs, links) {
+  const of = (run) => runSegs.get(run) || [];
+  const first = (x) => x.run == null || of(x.run)[0] === x;
+  const on = [s], arrows = [];
+  const tie = (from, to) => { on.push(from === s ? to : from); arrows.push([from, to]); };
+  if (s.run != null) {
+    for (const a of links.on.get(s.run) || []) { const x = of(a); if (x.length) tie(x[x.length - 1], s); }
+    for (const b of links.then.get(s.run) || []) { const x = of(b); if (x.length) tie(s, x[0]); }
+  }
+  const parts = (x) => (x.kind === "past" ? x.r.parts || [x.r] : x.kind === "running" || x.kind === "next" ? [x.r] : []);
+  const seqs = new Set(parts(s).map((p) => p.seq).filter((q) => q != null));
+  const waited = new Set(parts(s).flatMap((p) => p.after || []));
+  if (seqs.size || waited.size) {
+    for (const x of all) {
+      if (x === s) continue;
+      if (parts(x).some((p) => waited.has(p.seq))) tie(x, s);
+      if (first(x) && parts(x).some((p) => p.after?.some((q) => seqs.has(q)))) tie(s, x);
+    }
+  }
+  return { on, arrows };
+}
+
 // Where to ask `/work/history` from (its `since`) to reach back to time `from`, given the oldest
 // event held (`first`, {seq, t}): up to `chunk` events before it; null once it's reached (`first.t`
 // at or before `from`, or the first event) or with nothing held.
