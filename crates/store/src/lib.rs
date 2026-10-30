@@ -22,6 +22,7 @@ pub mod spawn;
 pub mod sys;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
+pub mod waits;
 pub mod whole;
 
 pub use iopool::{IoError, IoPool};

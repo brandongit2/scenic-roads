@@ -273,9 +273,12 @@ fn tick() -> u64 {
 impl PlainFile {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let t = std::time::Instant::now();
+        // (Taken as the NAS's: which it is isn't known till it's open.)
+        let w = crate::waits::nas();
         let file = File::open(path)?;
         let len = file.metadata()?.len();
         let local = network_fs(&file)?.is_none();
+        drop(w);
         if !local {
             crate::nasio::opened(path, len, t.elapsed().as_millis() as u64);
         }
@@ -344,6 +347,7 @@ impl RangeRead for PlainFile {
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         check_range(self.len, off, len)?;
+        let _w = if self.local { crate::waits::disk() } else { crate::waits::nas() };
         let mut b = vec![0u8; len];
         if let Err(e) = self.handle().and_then(|f| self.read_once(&f, &mut b, off)) {
             if !crate::retry::transient(&e) {

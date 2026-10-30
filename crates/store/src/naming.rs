@@ -154,6 +154,7 @@ fn write_atomic_as(
     src: Source<'_>,
     known: Option<(String, u64)>,
 ) -> Result<String> {
+    let _w = crate::waits::nas();
     ensure!(valid_logical(logical), "bad logical name {logical:?}");
     ensure!(valid_ext(ext), "bad extension {ext:?}");
     let (hash, size) = match (known, src) {

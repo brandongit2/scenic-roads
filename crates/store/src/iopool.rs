@@ -272,6 +272,7 @@ impl IoPool {
         if !self.is_online() {
             return Err(IoError::Offline);
         }
+        let _w = crate::waits::nas();
         self.inner.ensure_workers();
         let (tx, rx) = mpsc::sync_channel::<Msg<T>>(2);
         let state = Arc::new(AtomicU8::new(QUEUED));

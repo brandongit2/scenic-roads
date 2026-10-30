@@ -415,6 +415,7 @@ impl NasPath {
 
     /// Its bytes (crate::whole::read: a busy file waited out). Counted as a file read.
     pub fn read(&self) -> io::Result<Vec<u8>> {
+        let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
         let b = self.retry("read", || crate::whole::read(&p))?;
@@ -430,6 +431,7 @@ impl NasPath {
     /// Its bytes, a file `write_whole` replaces and nothing removes on purpose
     /// (crate::whole::read_replaced: read from its newest aside when a writer left it missing).
     pub fn read_replaced(&self) -> io::Result<Vec<u8>> {
+        let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
         let b = self.retry("read", || crate::whole::read_replaced(&p))?;
@@ -440,6 +442,7 @@ impl NasPath {
     /// Its bytes past this Mac's cache (the file opened with `F_NOCACHE` on macOS: from the
     /// server, not the unified buffer cache; an SMB lease may still answer).
     pub fn read_fresh(&self) -> io::Result<Vec<u8>> {
+        let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
         let b = self.retry("read", || {
@@ -462,6 +465,7 @@ impl NasPath {
 
     /// The file opened for reading (`std::fs::File::open`; the open retried): its reads counted.
     pub fn open(&self) -> io::Result<NasFile> {
+        let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
         let f = self.retry("open", || std::fs::File::open(&p))?;
@@ -473,12 +477,14 @@ impl NasPath {
     /// The file opened for positioned reads (crate::range::PlainFile: counted there; the open
     /// retried here, its reads there).
     pub fn open_plain(&self) -> io::Result<crate::range::PlainFile> {
+        let _w = crate::waits::nas();
         let p = self.full();
         self.retry("open", || crate::range::PlainFile::open(&p))
     }
 
     /// A stat (`std::fs::metadata`). One `Stats`.
     pub fn metadata(&self) -> io::Result<std::fs::Metadata> {
+        let _w = crate::waits::nas();
         let p = self.full();
         nasio::add(Count::Stats, 1);
         self.retry("stat", || std::fs::metadata(&p))
@@ -486,6 +492,7 @@ impl NasPath {
 
     /// A stat not following a link (`std::fs::symlink_metadata`). One `Stats`.
     fn symlink_metadata(&self) -> io::Result<std::fs::Metadata> {
+        let _w = crate::waits::nas();
         let p = self.full();
         nasio::add(Count::Stats, 1);
         self.retry("stat", || std::fs::symlink_metadata(&p))
@@ -493,6 +500,7 @@ impl NasPath {
 
     /// Whether it exists (`Path::try_exists`). One `Stats`.
     pub fn try_exists(&self) -> io::Result<bool> {
+        let _w = crate::waits::nas();
         let p = self.full();
         nasio::add(Count::Stats, 1);
         self.retry("stat", || p.try_exists())
@@ -516,6 +524,7 @@ impl NasPath {
     /// The folder's entries (`std::fs::read_dir`, read to its end: an error midway is an error),
     /// in the listing's order. Its entries counted as `Listed`.
     pub fn read_dir(&self) -> io::Result<Vec<NasEntry>> {
+        let _w = crate::waits::nas();
         let p = self.full();
         let v = self.retry("list", || {
             std::fs::read_dir(&p)?
@@ -541,6 +550,7 @@ impl NasPath {
     /// Copies it to local file `dst`, whole (crate::whole::copy: a temporary name, renamed). The
     /// bytes copied, counted as a file read.
     pub fn copy_to_local(&self, dst: &Path) -> Result<u64> {
+        let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
         let n = crate::whole::copy(&p, dst)?;
@@ -551,6 +561,7 @@ impl NasPath {
     /// Copies it to local file `dst` (crate::sys::copy_data: its bytes and mode, no temporary name).
     /// Counted as a file read.
     pub fn copy_data_to_local(&self, dst: &Path) -> io::Result<u64> {
+        let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
         let n = crate::sys::copy_data(&p, dst)?;
@@ -574,6 +585,7 @@ impl NasPath {
 
     /// Writes `b` as it (`std::fs::write`: in place, no temporary name). Counted as a file made.
     pub fn write(&self, b: impl AsRef<[u8]>) -> io::Result<()> {
+        let _w = crate::waits::nas();
         let p = self.full();
         let b = b.as_ref();
         let t = Instant::now();
@@ -585,6 +597,7 @@ impl NasPath {
     /// Writes `b` as it, whole (crate::whole::write: a temporary name renamed over it, the old one
     /// renamed aside when that stays busy). Counted as a file made.
     pub fn write_whole(&self, b: impl AsRef<[u8]>) -> Result<()> {
+        let _w = crate::waits::nas();
         let p = self.full();
         let b = b.as_ref();
         let t = Instant::now();
@@ -612,6 +625,7 @@ impl NasPath {
     /// Makes it holding `b` unless something has that name (the pool protocol's create-new: atomic
     /// on the server; the bytes follow the create), its folder made once a process. Never retried.
     pub fn create_new(&self, b: &[u8]) -> Result<Created> {
+        let _w = crate::waits::nas();
         let p = self.full();
         self.make_parent()?;
         let open = || std::fs::OpenOptions::new().write(true).create_new(true).open(&p);
@@ -657,6 +671,7 @@ impl NasPath {
     /// may make is counted as made, with the bytes written through it, when it is dropped; one
     /// opened only for reading as a file read. Never retried.
     pub fn open_with(&self, o: &std::fs::OpenOptions) -> io::Result<NasFile> {
+        let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
         let f = o.open(&p)?;
@@ -683,6 +698,7 @@ impl NasPath {
 
     /// Copies local file `src` to it, whole (crate::whole::copy). The bytes, counted as made.
     pub fn copy_from_local(&self, src: &Path) -> Result<u64> {
+        let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
         let n = crate::whole::copy(src, &p)?;
@@ -692,6 +708,7 @@ impl NasPath {
 
     /// Copies it to `to` on the NAS (crate::sys::copy_data). Counted as a read and a file made.
     pub fn copy_data_to(&self, to: &NasPath) -> io::Result<u64> {
+        let _w = crate::waits::nas();
         let (p, q) = (self.full(), to.full());
         let t = Instant::now();
         let n = crate::sys::copy_data(&p, &q)?;
@@ -702,21 +719,25 @@ impl NasPath {
 
     /// Renames it to `to` (`std::fs::rename`).
     pub fn rename(&self, to: &NasPath) -> io::Result<()> {
+        let _w = crate::waits::nas();
         std::fs::rename(self.full(), to.full())
     }
 
     /// Renames it over `to`, busy waited out (crate::whole::rename_over).
     pub fn rename_over(&self, to: &NasPath) -> io::Result<()> {
+        let _w = crate::waits::nas();
         crate::whole::rename_over(&self.full(), &to.full())
     }
 
     /// Renames it to `to` unless `to` exists (then `AlreadyExists`): crate::naming::rename_no_replace.
     pub fn rename_no_replace(&self, to: &NasPath) -> io::Result<()> {
+        let _w = crate::waits::nas();
         crate::naming::rename_no_replace(&self.full(), &to.full())
     }
 
     /// Removes the file (`std::fs::remove_file`). One `Deletes`.
     pub fn remove_file(&self) -> io::Result<()> {
+        let _w = crate::waits::nas();
         std::fs::remove_file(self.full())?;
         nasio::add(Count::Deletes, 1);
         Ok(())
@@ -724,6 +745,7 @@ impl NasPath {
 
     /// Removes the empty folder (`std::fs::remove_dir`). One `Deletes`.
     pub fn remove_dir(&self) -> io::Result<()> {
+        let _w = crate::waits::nas();
         std::fs::remove_dir(self.full())?;
         nasio::add(Count::Deletes, 1);
         Ok(())
@@ -731,6 +753,7 @@ impl NasPath {
 
     /// Removes the folder and all in it (`std::fs::remove_dir_all`). One `Deletes`.
     pub fn remove_dir_all(&self) -> io::Result<()> {
+        let _w = crate::waits::nas();
         std::fs::remove_dir_all(self.full())?;
         nasio::add(Count::Deletes, 1);
         Ok(())
@@ -738,6 +761,7 @@ impl NasPath {
 
     /// Makes the folder and those above it (`std::fs::create_dir_all`).
     pub fn create_dir_all(&self) -> io::Result<()> {
+        let _w = crate::waits::nas();
         std::fs::create_dir_all(self.full())
     }
 
@@ -745,6 +769,7 @@ impl NasPath {
     /// EEXIST when its follow-up stat of a folder another Mac just made is stale: taken as made
     /// (the write that follows fails if the folder truly is missing), but not remembered.
     fn make_parent(&self) -> Result<()> {
+        let _w = crate::waits::nas();
         let Some(d) = self.full().parent().map(Path::to_path_buf) else { return Ok(()) };
         if self.root.0.made.lock().unwrap().contains(&d) {
             return Ok(());
@@ -774,6 +799,7 @@ impl NasPath {
 
     /// Sets its modification time (a reuse's touch: what GC reads as in use). Not counted.
     pub fn set_modified(&self, t: std::time::SystemTime) -> io::Result<()> {
+        let _w = crate::waits::nas();
         std::fs::File::options().write(true).open(self.full())?.set_modified(t)
     }
 }
@@ -815,7 +841,10 @@ impl Loc<'_> {
     /// Its bytes (`std::fs::read`; `NasPath::read`).
     pub fn read(&self) -> io::Result<Vec<u8>> {
         match self {
-            Loc::Local(p) => std::fs::read(p),
+            Loc::Local(p) => {
+                let _w = crate::waits::disk();
+                std::fs::read(p)
+            }
             Loc::Nas(p) => p.read(),
         }
     }
@@ -823,7 +852,10 @@ impl Loc<'_> {
     /// Its text (`std::fs::read_to_string`; `NasPath::read_to_string`).
     pub fn read_to_string(&self) -> io::Result<String> {
         match self {
-            Loc::Local(p) => std::fs::read_to_string(p),
+            Loc::Local(p) => {
+                let _w = crate::waits::disk();
+                std::fs::read_to_string(p)
+            }
             Loc::Nas(p) => p.read_to_string(),
         }
     }
@@ -864,7 +896,10 @@ impl Loc<'_> {
     /// Copies it to local file `dst` (crate::sys::copy_data; `NasPath::copy_data_to_local`).
     pub fn copy_data_to_local(&self, dst: &Path) -> io::Result<u64> {
         match self {
-            Loc::Local(p) => crate::sys::copy_data(p, dst),
+            Loc::Local(p) => {
+                let _w = crate::waits::disk();
+                crate::sys::copy_data(p, dst)
+            }
             Loc::Nas(p) => p.copy_data_to_local(dst),
         }
     }
@@ -996,7 +1031,10 @@ impl std::ops::DerefMut for NasFile {
 
 impl Read for NasFile {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
-        let n = (**self).read(b)?;
+        let n = {
+            let _w = crate::waits::nas();
+            (**self).read(b)?
+        };
         nasio::read(n as u64);
         Ok(n)
     }
@@ -1004,7 +1042,10 @@ impl Read for NasFile {
 
 impl Write for NasFile {
     fn write(&mut self, b: &[u8]) -> io::Result<usize> {
-        let n = (**self).write(b)?;
+        let n = {
+            let _w = crate::waits::nas();
+            (**self).write(b)?
+        };
         if let Some(w) = &mut self.wrote {
             *w += n as u64;
         }
@@ -1012,6 +1053,7 @@ impl Write for NasFile {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        let _w = crate::waits::nas();
         (**self).flush()
     }
 }
@@ -1031,6 +1073,11 @@ impl Seek for NasFile {
 
 impl Drop for NasFile {
     fn drop(&mut self) {
+        // (Its close: where SMB sends what's left of a write.)
+        if let Some(f) = self.f.take() {
+            let _w = crate::waits::nas();
+            drop(f);
+        }
         if let Some(n) = self.wrote {
             nasio::wrote(&self.path, n, ms_since(self.t));
         }

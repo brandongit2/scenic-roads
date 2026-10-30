@@ -42,6 +42,7 @@ impl Blobs {
         // (Raw: crate::sys::copy_data's copy, counted by its caller: tests/nas_access.rs.)
         let src = root.join(content).unchecked_path();
         crate::cachefile::hold(&local, &mut |tmp| {
+            let _w = crate::waits::nas();
             let n = crate::sys::copy_data(&src, tmp)?;
             let want = fs::metadata(&src)?.len();
             if n != want {
