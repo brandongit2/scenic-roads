@@ -10027,7 +10027,8 @@ pub(crate) mod tests {
             for z in 9..=12u8 {
                 let s = 1u32 << (z - 6);
                 for k in 0..8u32 {
-                    let (dx, dy) = ((k * 2654435761u32.wrapping_mul(z as u32 + 1)) % s, (k * 40503 + z as u32) % s);
+                    let (dx, dy) =
+                        (k.wrapping_mul(2654435761u32.wrapping_mul(z as u32 + 1)) % s, (k * 40503 + z as u32) % s);
                     boxes.push(wide(grown_e7(z, x * s + dx, y * s + dy, 20.0)));
                 }
             }

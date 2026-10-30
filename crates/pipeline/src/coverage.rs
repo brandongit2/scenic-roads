@@ -662,14 +662,17 @@ pub struct Kept {
 }
 
 /// The coverage versions `Kept` keeps answers of: the whole coverage, and each region's (the
-/// regions' progress asks each its own) with room.
+/// regions' progress asks each its own) with room. A version's answers are at most the 4,096 z6
+/// tiles twice (its tiles, 8 B each, and `makes_hi`, ~16 B an entry), under 100 KB; all 512 under
+/// 50 MB, in practice far less (a region is near a few z6 tiles).
 const KEPT_VERSIONS: usize = 512;
 
 static KEPT: std::sync::Mutex<Vec<(String, std::sync::Arc<Kept>)>> = std::sync::Mutex::new(Vec::new());
 
 impl Coverage {
     /// Its version: a digest of what decides the answers `Kept` keeps (each shape's rings, by
-    /// `Shape::rings_digest`, buffer and water, in each list), worked out without reading the rings.
+    /// `Shape::rings_digest` and their lengths, buffer and water, in each list), worked out without
+    /// reading the rings' points.
     pub fn version(&self) -> String {
         let mut h = blake3::Hasher::new();
         for (k, list) in [&self.shapes, &self.depth_only].into_iter().enumerate() {
@@ -677,6 +680,11 @@ impl Coverage {
             h.update(&(list.len() as u64).to_le_bytes());
             for sh in list {
                 h.update(sh.rings_digest().as_bytes());
+                // (Where each ring ends: the digest is of the points alone, ring after ring.)
+                h.update(&(sh.rings.len() as u64).to_le_bytes());
+                for r in sh.rings.iter() {
+                    h.update(&(r.len() as u64).to_le_bytes());
+                }
                 h.update(&sh.buffer_m.to_bits().to_le_bytes());
                 h.update(&[u8::from(sh.water)]);
             }
@@ -1426,6 +1434,14 @@ pub(crate) mod tests {
         assert!(std::sync::Arc::ptr_eq(&a.kept(), &same.kept()));
         assert_ne!(a.version(), other.version());
         assert_ne!(a.version(), moved.version());
+        // The same points split into other rings: another shape, another version.
+        let split = |r: Vec<Vec<[i32; 2]>>| {
+            let p = r.concat();
+            vec![p[..2].to_vec(), p[2..].to_vec()]
+        };
+        let resplit = Coverage { shapes: vec![Shape::new("a: x".into(), split(sq(0.0)), 0.0)], ..Default::default() };
+        assert_eq!(resplit.shapes[0].rings_digest(), a.shapes[0].rings_digest());
+        assert_ne!(a.version(), resplit.version());
         assert!(!std::sync::Arc::ptr_eq(&a.kept(), &moved.kept()));
     }
 
