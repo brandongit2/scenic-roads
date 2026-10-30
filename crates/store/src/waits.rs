@@ -20,14 +20,14 @@
 //! What ran alongside (task #891): beside each kind's time, the seconds two things ran at once on
 //! parallel threads, by `PAIRS`: two kinds of wait both in progress (exact: a guard of each held),
 //! and a kind of wait with computing (while that kind held the instant, the process's CPU time
-//! meanwhile, at most that time: a thread blocked in a call spends next to none, so it is the
-//! other threads' computing). A pair's seconds lie inside the first kind's time (the instant was
+//! meanwhile, at most that time: an estimate, which also counts the waiting threads' own CPU in
+//! their calls, large for local disk reads from memory, and other waits' threads'). A pair's seconds lie inside the first kind's time (the instant was
 //! given to it), except two waits' while a third, earlier kind held the instant. They are extra:
 //! the kinds' times alone add up to the wall time.
 //!
 //! Cost: nothing until `enable` (a relaxed load per call); then a lock and a clock read as a guard
-//! is taken and as it's dropped, and a read of the process's CPU time when the kind holding the
-//! instant changes (hundreds of ns a guard: `waits_count_by_wall_clock_and_the_guards_cost_little`
+//! is taken and as it's dropped, and a read of the process's CPU time, outside the lock, when the
+//! kind holding the instant changes (hundreds of ns a guard: `waits_count_by_wall_clock_and_the_guards_cost_little`
 //! measures it), against NAS and network calls of hundreds of µs and more.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -67,10 +67,15 @@ struct State {
     active: [u32; KINDS],
     /// When the state last changed.
     since: Instant,
-    /// The kind holding the instant (`active`'s first held), since when, the process's CPU time then.
+    /// The kind holding the instant (`active`'s first held).
     top: Option<usize>,
-    top_since: Instant,
-    top_cpu: u64,
+    /// Changes of `top` so far: a CPU time read after one is taken only while no later one came.
+    changes: u64,
+    /// The span whose CPU time is counted next: the kind that held it (none: computing), since
+    /// when, and the process's CPU time then.
+    span: Option<usize>,
+    span_since: Instant,
+    span_cpu: u64,
     acc: Totals,
 }
 
@@ -90,26 +95,43 @@ impl State {
         self.since = now;
     }
 
-    /// After `active` changed (settled at `now`): when another kind holds the instant, the last
-    /// one's time with computing taken (`close`).
-    fn retop(&mut self, now: Instant) {
+    /// After `active` changed: whether another kind holds the instant now, and if so the change's
+    /// number, for `close` once the CPU time is read (outside the lock: the process clock takes
+    /// hundreds of ns, more with more threads, and every other guard would wait on it).
+    fn retop(&mut self) -> Option<u64> {
         let top = self.active.iter().position(|&n| n > 0);
-        if top != self.top {
-            self.close(now);
+        (top != self.top).then(|| {
             self.top = top;
-        }
+            self.changes += 1;
+            self.changes
+        })
     }
 
-    /// The kind holding the instant's time with computing since `top_since`: the process's CPU time
-    /// meanwhile, at most that time. A new span from `now`.
-    fn close(&mut self, now: Instant) {
-        let cpu = cpu_ns();
-        if let Some(k) = self.top {
-            let d = now.saturating_duration_since(self.top_since).as_nanos() as u64;
-            self.acc[KINDS + WAIT_PAIRS + k] += cpu.saturating_sub(self.top_cpu).min(d);
+    /// The open span's time with computing, to change `change` at `now`, `cpu` the process's CPU
+    /// time read just after it: that CPU time less the span's start's, at most the span's wall
+    /// time, to the kind that held it; a new span from there, of the kind holding the instant now.
+    /// A reading overtaken by a later change's is dropped: that one closes the span whole, as the
+    /// kind it opened with (off by the changes' microsecond or so apart).
+    fn close(&mut self, change: u64, now: Instant, cpu: u64) {
+        if change != self.changes {
+            return;
         }
-        self.top_since = now;
-        self.top_cpu = cpu;
+        if let Some(k) = self.span {
+            let d = now.saturating_duration_since(self.span_since).as_nanos() as u64;
+            self.acc[KINDS + WAIT_PAIRS + k] += cpu.saturating_sub(self.span_cpu).min(d);
+        }
+        self.span = self.top;
+        self.span_since = now;
+        self.span_cpu = cpu;
+    }
+}
+
+/// After a guard changed `active`, the lock released: when the kind holding the instant changed
+/// with it, the CPU time read and the span closed; nothing else (most guards at once).
+fn reread(change: Option<(u64, Instant)>) {
+    if let Some((c, now)) = change {
+        let cpu = cpu_ns();
+        lock().close(c, now, cpu);
     }
 }
 
@@ -141,8 +163,10 @@ fn state() -> &'static Mutex<State> {
             active: [0; KINDS],
             since: now,
             top: None,
-            top_since: now,
-            top_cpu: 0,
+            changes: 0,
+            span: None,
+            span_since: now,
+            span_cpu: 0,
             acc: [0; KINDS + PAIRS.len()],
         })
     })
@@ -168,12 +192,16 @@ pub fn totals() -> Totals {
     if !enabled() {
         return [0; KINDS + PAIRS.len()];
     }
+    let (now, change) = {
+        let mut s = lock();
+        let now = Instant::now();
+        s.settle(now);
+        (now, s.changes)
+    };
+    // (The open span closed here too, so that a phase's end has its time with computing so far.)
+    let cpu = cpu_ns();
     let mut s = lock();
-    let now = Instant::now();
-    s.settle(now);
-    if s.top.is_some() {
-        s.close(now);
-    }
+    s.close(change, now, cpu);
     s.acc
 }
 
@@ -184,11 +212,14 @@ pub struct Guard(Option<On>);
 impl Drop for Guard {
     fn drop(&mut self) {
         if let Some(k) = self.0 {
-            let mut s = lock();
-            let now = Instant::now();
-            s.settle(now);
-            s.active[k as usize] -= 1;
-            s.retop(now);
+            let change = {
+                let mut s = lock();
+                let now = Instant::now();
+                s.settle(now);
+                s.active[k as usize] -= 1;
+                s.retop().map(|c| (c, now))
+            };
+            reread(change);
         }
     }
 }
@@ -198,11 +229,14 @@ pub fn wait(on: On) -> Guard {
     if !enabled() {
         return Guard(None);
     }
-    let mut s = lock();
-    let now = Instant::now();
-    s.settle(now);
-    s.active[on as usize] += 1;
-    s.retop(now);
+    let change = {
+        let mut s = lock();
+        let now = Instant::now();
+        s.settle(now);
+        s.active[on as usize] += 1;
+        s.retop().map(|c| (c, now))
+    };
+    reread(change);
     Guard(Some(on))
 }
 

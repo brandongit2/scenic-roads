@@ -20,7 +20,7 @@
 // activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { AREAS, HIDDEN_STATES, PHASE_ABOUT, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobRelations, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown, phaseSplit, WAITS_RULE } from "./sums.js";
+import { AREAS, HIDDEN_STATES, PHASE_ABOUT, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobRelations, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown, phaseSplit, ALONGSIDE_RULE, WAITS_RULE } from "./sums.js";
 import { fmt } from "./chartmath.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
@@ -1463,7 +1463,7 @@ function timeRow(m, step) {
       ...segs.map((x) => h("i", { class: "tb-seg", style: { flexGrow: String(x.s), background: x.colour } },
         ...(x.with || []).map((y, j) => withCard(h("b", { class: "tb-with", style: { width: `${(y.s / x.s * 100).toFixed(1)}%`, bottom: `${j * 3}px`, background: WAIT_COLOURS[y.key] } }),
           `${key} w ${x.key} ${y.key}`, () => cardBody(`${y.label} for ${dur(y.s)}`, [["Inside", `${x.label}: ${pct(y.s / x.s)} of its ${dur(x.s)}`],
-            ["How", "Seconds both ran at once on parallel threads: drawn under the part the instant went to, beside the bar's sum, not in it."]]))))),
+            ["How", ALONGSIDE_RULE]]))))),
       w / b.wall >= 0.08 ? h("span", "tb-l", label) : null);
     withCard(el, key, build);
     bar.append(el);
@@ -1490,7 +1490,7 @@ function phaseCard(step, b, p, range) {
     ["Jobs", `${n(b.runs)} ended in the range${b.failed ? ` (${n(b.failed)} failed)` : ""}`],
     ["Time", split],
     ["Alongside", segs.some((x) => x.with?.length) ? h("div", "tb-split", ...segs.flatMap((x) => x.with.map((y) => h("div", null, h("i", { style: { background: WAIT_COLOURS[y.key] } }), `${y.label} ${x.label} for ${dur(y.s)} (${pct(y.s / x.s)} of it)`)))) : null],
-    ["How", segs.some((x) => x.key !== "old") ? WAITS_RULE : null],
+    ["How", segs.some((x) => x.key !== "old") ? (segs.some((x) => x.with?.length) ? `${WAITS_RULE} Alongside: ${ALONGSIDE_RULE}` : WAITS_RULE) : null],
     ["CPU / wall", cpu != null ? `${cpu.toFixed(2)} (${dur(p.cpu)} of CPU in ${dur(p.wall)}; above 1: several threads)` : p ? "not measured" : null],
     ["NAS", p?.nas ? `${mbText(p.nas)} in all · ${mbText(per(p.nas))} a job` : null],
     ["Internet", p?.net ? `${mbText(p.net)} in all · ${mbText(per(p.net))} a job` : null],

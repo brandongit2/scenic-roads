@@ -1603,15 +1603,19 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   **What ran alongside** (task #891): beside the kinds' times (which alone add up to the wall),
   store::waits counts the seconds two ran at once on parallel threads, by `PAIRS` (the waits two by
   two, then each with computing): two kinds' guards both held (exact), and a kind with computing
-  (while that kind held the instant, the process's CPU time meanwhile, at most that time: a thread
-  blocked in a call spends next to none). They are `Waits::both_s` in a record (absent when all 0,
+  (while that kind held the instant, the process's CPU time meanwhile, at most that time: an
+  estimate, which also counts the waiting threads' own CPU in their calls, large for local disk
+  reads from memory, small for the NAS and the network, and other waits' threads'; the cards' "How"
+  says so). They are `Waits::both_s` in a record (absent when all 0,
   and in records from before) and `o` in `phase_times` (pairs of 0.1 s or more). The page draws each
   as a 2px strip along the foot of the first kind's segment (the one the instant went to), in the
   other's colour, as long as their time at once, its card naming it ("computing ran alongside for
   6 min"); the phase's card lists them under "Alongside". Extra: never in the bar's sum.
-  Cost: ~620 ns a guard taken and dropped alone (store::waits' test, release; ~80–115 ns before
-  #891: the CPU-time read at each change of the kind holding the instant), off outside a timed
-  run; NAS and network calls take hundreds of µs and more. Measured on the lead's log of 29 Oct
+  Cost: ~620 ns a guard taken and dropped alone (store::waits' test, release; ~70–115 ns before
+  #891), the process CPU clock read (300–750 ns on macOS, more with more threads) at each change of
+  the kind holding the instant, outside the lock; while some guard is always held, as at 16 threads
+  reading page-cached files, next to none (within noise of main, 30 Oct). Off outside a timed run;
+  NAS and network calls take hundreds of µs and more. Measured on the lead's log of 29 Oct
   (6,251 runs, 49 steps over 4 days): ~32 KB of the status (~290 KB: +11 %).
   Phases are named as doings ("reading the depth sources' windows"; before task #844 as done, "the
   depth sources' windows read"); a record read, on any Mac, takes the new name of an old one
