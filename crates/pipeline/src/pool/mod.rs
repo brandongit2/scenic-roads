@@ -1,21 +1,20 @@
-//! The pool (docs/pool.md): any Mac can lead the build. This is the core of its protocol, the part
+//! The pool (docs/pool.md): the Mac mini leads the build, the other Macs are its members. This is the core of its protocol, the part
 //! that can lose work if it's wrong (§12, phases 1 and 2), kept apart from the agent and the
 //! coordinator so the same code runs against the share and against a model of its faults (§13):
 //!
 //! - `nas`: the operations the protocol makes on the NAS, with what the SMB share guarantees and
 //!   what it doesn't (§3);
-//! - `term`: the terms, each lead's turn, a file made once with create-new (§6.1); the app rule;
-//!   term 1, made by the Mac today's `state/build/writer` names; the owner's forced takeover;
+//! - `term`: the declared lead (`state/build/lead-member.json`) and its terms, a file each made once
+//!   with create-new (§6.1): term 1, then its re-assertions;
 //! - `records`: the build's records in one snapshot per term (§6.2), term 1's first made from
 //!   today's three files; the merge of journal entries into them, and taking up a term;
 //! - `journal`: the jobs' hand-offs, written by their members straight to the NAS as a log the lead
 //!   merges (§7.3), and what a member keeps telling the lead until it's acknowledged;
-//! - `handover`: handing the lead to another Mac, as pure transitions (§6.4);
 //! - `beat`: the fields of a member's heartbeat the protocol reads and writes (§10);
 //! - `driver`: what a member is in the pool and does as that, one step per loop of the agent's,
-//!   through an I/O trait (the NAS's operations and the clocks): taking up terms, leading,
-//!   re-asserting after a gap (§6.6), handing over and taking back, taking over, telling the lead
-//!   of its entries; the API the agent's loop calls;
+//!   through an I/O trait (the NAS's operations and the clocks): the declared lead taking up its
+//!   terms, leading, re-asserting after a restart or a gap (§6.6); a member telling the lead of its
+//!   entries; the API the agent's loop calls;
 //! - `sim` (tests): the simulator, which runs the driver on two to four Macs on seeded schedules of
 //!   sleeps, stale reads, delayed renames, busy files, cut creates and lost answers, and checks the
 //!   invariants of §4 at every step and its progress at the end.
@@ -33,7 +32,6 @@
 
 pub mod beat;
 pub mod driver;
-pub mod handover;
 pub mod journal;
 pub mod journal_gc;
 pub mod nas;
@@ -46,7 +44,6 @@ mod sim;
 
 pub use beat::Beat;
 pub use driver::Driver;
-pub use handover::Handover;
 pub use journal::{Entry, LeaseId, Mine};
 pub use nas::Nas;
 pub use records::Records;

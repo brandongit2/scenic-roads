@@ -55,8 +55,8 @@ pub fn switch_app(
     Ok(newest)
 }
 
-/// Whether a Mac on app `app` may lead, or be handed the lead or work, given the readers' switches'
-/// app as read (`switch_app`): not on an older one; not while that can't be read (unknown).
+/// Whether a Mac on app `app` may build, given the readers' switches' app as read (`switch_app`):
+/// not on an older one; not while that can't be read (unknown).
 pub fn may_lead(app: &str, regions: &std::result::Result<Option<String>, String>) -> std::result::Result<(), String> {
     match regions {
         Err(e) => Err(format!("the app the newer readers' switch (the regions', the elevation datasets') was recorded on can't be read now ({e})")),
@@ -65,7 +65,8 @@ pub fn may_lead(app: &str, regions: &std::result::Result<Option<String>, String>
     }
 }
 
-/// The app a member needs to lead: the term's and the readers' switches', whichever is newer.
+/// The app a member needs (its view's "app too old" else): the term's and the readers' switches',
+/// whichever is newer.
 pub fn needed_app(term: Option<&str>, regions: Option<&str>) -> Option<String> {
     match (term, regions) {
         (Some(t), Some(r)) => Some(if crate::pool::term::app_at_least(t, r) { t } else { r }.to_string()),

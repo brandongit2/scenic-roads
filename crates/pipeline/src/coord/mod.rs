@@ -291,14 +291,13 @@ pub struct Shared {
     pub pause_at: u64,
     /// What happened, the last week's (`history`): the worker page's activity.
     pub history: history::History,
-    /// The pool's lead (docs/pool.md §6.4): why it grants nothing now (settling a handover, its view
-    /// not fresh, no longer leading), workers told to ask again in a moment.
+    /// The pool's lead (docs/pool.md §6.6): why it grants nothing now (its view not fresh, no longer
+    /// leading), workers told to ask again in a moment.
     pub moving: Option<String>,
     /// When the pool's agent last said whether it grants (`set_moving`; this Mac's wall clock, unix
     /// s): None out of the pool. Not told for `pool::driver::STALL_S` (its process held up, or its
-    /// Mac asleep and just woken, its step not run yet), it grants nothing, as if moving: a member
-    /// may take over a lead gone silent (docs/pool.md §6.5), and a lead back from that is caught by
-    /// its next step before it grants again.
+    /// Mac asleep and just woken, its step not run yet), it grants nothing, as if moving: its view
+    /// may be old, and its next step re-asserts before it grants again.
     pub told: Option<u64>,
     /// The app the newer of the readers' switches was recorded on (the regions', the elevation
     /// datasets': crate::inputs::regions::read::switch_app), as the lead's agent last read it: no
@@ -306,11 +305,8 @@ pub struct Shared {
     pub min_app: Option<String>,
     /// The pool's member this coordinator is (its agent's), while it leads: every answer says so,
     /// with its term (`POOL_MEMBER`, `POOL_TERM`), so a member tells its lead's coordinator from
-    /// another's (crate::agent::lead's "late, not gone"). None while its Mac has lost the NAS.
+    /// another's (its reach, crate::pool::reachable). None while its Mac has lost the NAS.
     pub pool_member: Option<String>,
-    /// The build page's asks of the pool's lead (`/work/lead`), for the agent to take up
-    /// (crate::agent::lead).
-    pub lead_asks: Vec<crate::control::LeadRequest>,
     /// Where the members' messages to this Mac's member go (`/pool/mail`, `inbox`): its agent's
     /// (`Coordinator::set_inbox`); None, refused (the member sends by mail).
     pub inbox: Option<std::sync::Arc<inbox::Inbox>>,
@@ -1342,7 +1338,6 @@ impl Coordinator {
             told: None,
             min_app: None,
             pool_member: None,
-            lead_asks: Vec::new(),
             inbox: None,
             inputs_asks: Vec::new(),
             redo_asks: Vec::new(),
@@ -2090,21 +2085,6 @@ impl Coordinator {
             .max()
     }
 
-    /// The agent among the workers heard from in the last ten minutes with the largest memory
-    /// limit (this Mac's own aside): its worker name (an agent's host name, which `scenic lead give` matches; not its
-    /// label, "<host> (helper)") and that limit (MB). A page can't lead: agents only.
-    pub fn roomiest_agent(&self) -> Option<(String, u64)> {
-        let s = self.shared.lock().unwrap();
-        let now = s.now();
-        s.workers
-            .iter()
-            .filter(|(n, w)| {
-                **n != self.me && w.kind == "native" && now.duration_since(w.seen) < Duration::from_secs(600)
-            })
-            .filter_map(|(n, w)| w.ask.as_ref().and_then(ask_limit).map(|l| (n.clone(), l)))
-            .max_by_key(|(_, l)| *l)
-    }
-
     /// The memory a job of `step` for `target` is expected to take (MB), as `pick` sizes it: its
     /// step's model's (crate::needs), its first guess what the plan offered it with (a z6 tile's extract,
     /// another step's guess); None when nothing of its step was measured and it isn't offered.
@@ -2218,8 +2198,7 @@ impl Coordinator {
     }
 
     /// The pool's member this coordinator answers as (`Shared::pool_member`); None while its Mac
-    /// has lost the NAS: its answers then say no term, so its members don't count it "late, not
-    /// gone" and take over once its heartbeat is silent (docs/pool.md §6.5).
+    /// has lost the NAS: its answers then say no term (a member's reach counts no answer of it).
     pub fn set_member(&self, member: Option<&str>) {
         self.shared.lock().unwrap().pool_member = member.map(str::to_string);
     }
@@ -2250,8 +2229,8 @@ impl Coordinator {
         gone
     }
 
-    /// The pool's lead granting nothing now, and why (settling a handover, its view not fresh, no
-    /// longer leading); None: granting again.
+    /// The pool's lead granting nothing now, and why (its view not fresh, no longer leading); None:
+    /// granting again.
     pub fn set_moving(&self, why: Option<String>) {
         self.set_moving_as_of(why, wall_now());
     }
@@ -2303,7 +2282,6 @@ impl Coordinator {
         self.shared.lock().unwrap().min_app = app;
     }
 
-    /// The build page's asks of the pool's lead since the last call (`/work/lead`).
     /// A target's failures forgotten (a page's retry, crate::pool::driver::Act::Retry): every
     /// worker's, of its step (any step: None); how many.
     pub fn clear_failed(&self, step: Option<&str>, target: &str) -> usize {
@@ -2335,10 +2313,6 @@ impl Coordinator {
     /// NAS's project folder `root`.
     pub fn set_settings(&self, home: &Path, root: Option<&store::nasfs::NasRoot>) {
         self.shared.lock().unwrap().settings = Some((home.to_path_buf(), root.cloned()));
-    }
-
-    pub fn take_lead_asks(&self) -> Vec<crate::control::LeadRequest> {
-        std::mem::take(&mut self.shared.lock().unwrap().lead_asks)
     }
 
     /// The owner's asks to build targets again since the last call (`/work/redo`).
@@ -2412,7 +2386,7 @@ impl Coordinator {
         keep::keep(&self.shared, nas, term, keep::PACE);
     }
 
-    /// Takes up `p`, another lead's state (a handover's, or the term before's): its leases over
+    /// Takes up `p`, the term before's state (its own before a restart): its leases over
     /// these, its costs and failures added, its pause if it's the later.
     pub fn load_pool_state(&self, p: &PoolState) -> Result<usize> {
         let mut s = self.shared.lock().unwrap();
@@ -2528,7 +2502,6 @@ impl Coordinator {
         s.resume = None;
         s.moving = None;
         s.told = None;
-        s.lead_asks.clear();
         s.inputs_asks.clear();
         s.redo_asks.clear();
         s.done.clear();
@@ -2588,7 +2561,7 @@ fn pool_state_of(s: &Shared) -> PoolState {
 }
 
 /// The coordinator's state as the pool keeps it per term (`Coordinator::pool_state`):
-/// `state/coord/term/<E>/state.json`, and what a lead settling a handover hands over.
+/// `state/coord/term/<E>/state.json`, which the lead's next term loads (a restart's: its leases).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PoolState {
     #[serde(default)]
@@ -3486,7 +3459,7 @@ fn route(
                     serde_json::json!({ "error": "too many pages have helped today: ask again tomorrow, or as one of them" }),
                 ));
             }
-            // The pool's lead moving or not fresh: nothing now (docs/pool.md §6.4).
+            // The pool's lead not fresh: nothing now (docs/pool.md §6.5).
             if let Some(why) = s.moving_now(wall_now()) {
                 s.seen(&a.worker, format!("waiting: {why}"), None, now);
                 return Ok(if a.kind == "native" {
@@ -3713,7 +3686,7 @@ fn route(
         "/work/settings" => {
             // The owner's settings from the build page (docs/workers.md §7): `{}` reads them;
             // `{"in_use": <cores> | "off"}`, `{"memory": <GB> | "off"}`, `{"room": <GB> | "off"}`,
-            // `{"battery_floor": <%> | "off"}` set this Mac's, `{"nas_room": <GB> | "off"}` the pool's, each through the same function as
+            // set this Mac's, `{"nas_room": <GB> | "off"}` the pool's, each through the same function as
             // its `scenic` command (crate::agent::settings). Answered with them as they stand.
             use crate::agent::settings;
             let b: serde_json::Value = serde_json::from_slice(body)?;
@@ -3749,9 +3722,6 @@ fn route(
                 let root =
                     root.as_ref().ok_or_else(|| anyhow::anyhow!("the NAS is away: its reserve can't be set now"))?;
                 settings::set_nas_room(root, &v, &by)?;
-            }
-            if let Some(v) = said("battery_floor")? {
-                settings::set_battery_floor(&home, &v, &by)?;
             }
             let mut v = settings::view(&home, root.as_ref());
             v["mac"] = store::sys::host().into();
@@ -3822,24 +3792,6 @@ fn route(
                 }
                 _ => Ok((409, serde_json::json!({ "error": "not this member's mail" }))),
             }
-        }
-        "/work/lead" => {
-            // The build page's ask of the pool's lead (docs/pool.md §11): hand it to a member
-            // (`{"to": <member>}`), or have this Mac take it over (`{"take": true}`), unforced: the
-            // owner's force and downgrade come from the Mac's own menu or `scenic lead` alone.
-            let b: serde_json::Value = serde_json::from_slice(body)?;
-            anyhow::ensure!(
-                b.get("force").is_none() && b.get("downgrade").is_none(),
-                "forcing a takeover is for the Mac's own menu or `scenic lead take` alone"
-            );
-            let ask = match (b["to"].as_str(), b["take"].as_bool()) {
-                (Some(to), None) if !to.is_empty() => crate::control::LeadAsk::Give { to: plain(to, 100) },
-                (None, Some(true)) => crate::control::LeadAsk::Take { force: false, downgrade: false },
-                _ => anyhow::bail!("{{\"to\": <member>}} or {{\"take\": true}}"),
-            };
-            let by = format!("the build page ({})", caller.from);
-            shared.lock().unwrap().lead_asks.push(crate::control::LeadRequest { ask, by, at: unix_now() });
-            Ok((200, ok))
         }
         "/work/inputs" => {
             // The build page's Accept and Accept All on a held unit's banner (docs/inputs.md §4.5):
@@ -4725,7 +4677,6 @@ mod http {
             .route("/work/where", any(json))
             .route("/work/beat", any(json))
             .route("/work/pause", any(json))
-            .route("/work/lead", any(json))
             .route("/work/inputs", any(json))
             .route("/work/done", any(json))
             .route("/work/fail", any(json))
@@ -4986,8 +4937,7 @@ mod http {
         // (The owner's asks from a build page, on any device that reaches it (the owner, 21 Oct:
         // no page of this Mac's own first); a viewer's and a member's broker's passed to its agent.)
         let viewer = c.shared.lock().unwrap().viewer;
-        let owners_asks =
-            matches!(path.as_str(), "/work/pause" | "/work/lead" | "/work/inputs" | "/work/act" | "/work/settings");
+        let owners_asks = matches!(path.as_str(), "/work/pause" | "/work/inputs" | "/work/act" | "/work/settings");
         if viewer {
             return if key.is_none() && owners_asks && req.method() == Method::POST {
                 next.run(req).await
@@ -5020,7 +4970,6 @@ mod http {
                     | "/work/done"
                     | "/work/fail"
                     | "/work/pause"
-                    | "/work/lead"
                     | "/work/inputs"
                     | "/work/act"
                     | "/work/settings"
@@ -5589,7 +5538,7 @@ mod tests {
     }
 
     /// A pool lead's coordinator whose agent hasn't said it may grant for `STALL_S` (held up, or
-    /// just woken before its step: maybe taken over meanwhile) grants nothing; told again, it does.
+    /// just woken before its step: its view maybe old) grants nothing; told again, it does.
     #[test]
     fn a_lead_not_stepped_for_a_stall_grants_nothing() {
         let d = tempfile::tempdir().unwrap();
@@ -9726,7 +9675,6 @@ mod tests {
             assert_eq!(send(&addr, "POST", "/work/pause", None, h, &pause).0, 200);
             assert!(crate::control::take_request(home.path()).is_some() && c.pause().is_none(), "passed to its agent");
         }
-        assert_eq!(send(&addr, "POST", "/work/lead", None, &far, &serde_json::json!({ "take": true })).0, 200);
         c.set_retry_blocked(Some("no lead now".into()));
         let (code, _, b) =
             send(&addr, "POST", "/work/act", None, &far, &serde_json::json!({ "retry": { "target": "6/1/1" } }));
@@ -9738,7 +9686,7 @@ mod tests {
     #[test]
     fn the_build_pages_settings_go_through_the_commands_own_functions() {
         // (Task #521) `/work/settings` from any device: read, set and cleared in this Mac's agent's
-        // folder and on the NAS, as `scenic in-use|memory|room|battery-floor|nas-room` would; a bad ask changes
+        // folder and on the NAS, as `scenic in-use|memory|room|nas-room` would; a bad ask changes
         // nothing.
         let (_d, c, w) = start();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
@@ -9750,8 +9698,7 @@ mod tests {
         let (code, _, v) = post(serde_json::json!({}));
         assert_eq!(code, 200, "{v}");
         assert_eq!(v["memory"]["set"], false);
-        let (code, _, v) =
-            post(serde_json::json!({ "in_use": 0, "memory": "2", "room": 1, "nas_room": "3 GB", "battery_floor": 20 }));
+        let (code, _, v) = post(serde_json::json!({ "in_use": 0, "memory": "2", "room": 1, "nas_room": "3 GB" }));
         assert_eq!(code, 200, "{v}");
         assert_eq!(crate::agent::share::read(home.path()).unwrap().cores, Some(0));
         let m = crate::agent::buildmem::read(home.path()).unwrap();
@@ -9762,14 +9709,11 @@ mod tests {
             3 << 30
         );
         assert_eq!(v["nas_room"]["bytes"], 3u64 << 30);
-        assert_eq!(crate::agent::cond::battery_min(home.path()), 20, "this Mac's own");
-        assert_eq!(v["battery_floor"]["pct"], 20);
         assert_eq!(post(serde_json::json!({ "memory": "0.1" })).0, 400);
         assert_eq!(post(serde_json::json!({ "in_use": [1] })).0, 400);
         assert_eq!(crate::agent::buildmem::read(home.path()).unwrap().mb, 2048);
-        let (code, _, v) = post(
-            serde_json::json!({ "in_use": "off", "memory": "off", "room": "off", "nas_room": "off", "battery_floor": "off" }),
-        );
+        let (code, _, v) =
+            post(serde_json::json!({ "in_use": "off", "memory": "off", "room": "off", "nas_room": "off" }));
         assert_eq!(code, 200, "{v}");
         assert!(
             crate::agent::share::read(home.path()).is_none() && crate::agent::buildmem::read(home.path()).is_none()
@@ -9778,10 +9722,9 @@ mod tests {
             crate::agent::room::target(home.path()).is_none()
                 && crate::agent::room::nas_reserve(&store::nasfs::NasRoot::local_for_test(nas.path())).is_none()
         );
-        assert!(crate::agent::cond::read_battery_floor(home.path()).is_none());
         c.set_settings(home.path(), None);
         assert_eq!(post(serde_json::json!({ "nas_room": "3" })).0, 400, "the NAS away");
-        assert_eq!(post(serde_json::json!({ "battery_floor": "20" })).0, 200, "the NAS away: this Mac's still");
+        assert_eq!(post(serde_json::json!({ "room": "off" })).0, 200, "the NAS away: this Mac's still");
     }
 
     #[test]
@@ -9825,7 +9768,7 @@ mod tests {
             )
             .0
         };
-        for p in ["/work/pause", "/work/ask", "/work/beat", "/work/lead", "/work/status", "/work/act", "/work/inputs"] {
+        for p in ["/work/pause", "/work/ask", "/work/beat", "/work/status", "/work/act", "/work/inputs"] {
             assert_eq!(ask(p, Some(&v.contact.token)), 403, "{p} with its key");
         }
         for p in ["/work/ask", "/work/beat", "/work/status"] {
@@ -10027,56 +9970,6 @@ mod tests {
         let asks = c.take_inputs_asks();
         assert!(asks[0].check && asks[0].full && asks[1].forget && asks.len() == 2);
         assert!(c.take_inputs_asks().is_empty());
-    }
-
-    #[test]
-    fn a_page_asks_the_lead_handed_over_or_taken_never_forced() {
-        let (_d, c, w) = start();
-        let addr = w.urls()[0].trim_start_matches("http://").to_string();
-        let page = |body: serde_json::Value| send(&addr, "POST", "/work/lead", None, &[], &body).0;
-        assert_eq!(page(serde_json::json!({ "to": "MacBook-Air" })), 200);
-        assert_eq!(page(serde_json::json!({ "take": true })), 200);
-        // The owner's force and downgrade: from the Mac's own menu or `scenic lead` alone, never a
-        // page (nor with the build's key).
-        assert_eq!(page(serde_json::json!({ "take": true, "force": true })) / 100, 4);
-        assert_eq!(page(serde_json::json!({ "take": true, "downgrade": false })) / 100, 4);
-        assert_eq!(
-            send(
-                &addr,
-                "POST",
-                "/work/lead",
-                Some(&c.contact.token),
-                &[],
-                &serde_json::json!({ "take": true, "force": true })
-            )
-            .0 / 100,
-            4
-        );
-        assert_eq!(page(serde_json::json!({ "to": "" })) / 100, 4);
-        assert_eq!(page(serde_json::json!({})) / 100, 4);
-        // From a site elsewhere: no.
-        assert_eq!(
-            send(
-                &addr,
-                "POST",
-                "/work/lead",
-                None,
-                &[("Origin", "https://evil.example")],
-                &serde_json::json!({ "to": "MacBook-Air" })
-            )
-            .0,
-            403
-        );
-        let asks = c.take_lead_asks();
-        assert_eq!(
-            asks.iter().map(|a| a.ask.clone()).collect::<Vec<_>>(),
-            [
-                crate::control::LeadAsk::Give { to: "MacBook-Air".into() },
-                crate::control::LeadAsk::Take { force: false, downgrade: false }
-            ]
-        );
-        assert!(asks.iter().all(|a| a.by.starts_with("the build page")));
-        assert!(c.take_lead_asks().is_empty());
     }
 
     #[test]

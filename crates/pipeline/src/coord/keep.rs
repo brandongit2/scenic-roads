@@ -13,11 +13,12 @@
 //! - Only while its agent leads: `Coordinator::keep_state` names the term, each lead's step; the
 //!   thread ends with the coordinator (`stop`, or dropped).
 //!
-//! What it is for: a lead gone without handing over (crashed, asleep, off the NAS, or restarted: its
-//! re-assertion loads the file over the leases on its disk) is taken up from the newest term's file. A lease granted since that file was written is unknown to the new lead:
-//! its worker's next renewal is refused and its job stops, its targets granted again (lost work, never
-//! corrupted records: the merge's lease order, §6.5). The grant isn't held for the write: a handover
-//! hands the state over whole in its settling, granting stopped (`Run::settled`).
+//! What it is for: the lead's next term (a restart, an update's at a safe point, or a crash: its
+//! re-assertion loads the file over the leases on its disk; or the owner's move of the lead to
+//! another Mac) is taken up from the newest term's file, so every job out goes on renewing. A lease
+//! granted since that file was written (a crash right after it) is unknown to the next term: its
+//! worker's next renewal is refused and its job stops, its targets granted again (lost work, never
+//! corrupted records: the merge's lease order, §6.5). The grant isn't held for the write.
 
 use super::Shared;
 use crate::pool::nas::Nas;
@@ -214,7 +215,7 @@ mod tests {
     }
 
     /// A member's grant is on the NAS with no step of the lead's agent after it, so a lead gone
-    /// right after it (no handover) leaves it to the next: its worker's renewal is the new lead's.
+    /// right after it leaves it to the next: its worker's renewal is the new lead's.
     #[test]
     fn a_grant_is_on_the_nas_before_the_leads_next_step_and_the_next_lead_takes_it_up() {
         let d = tempfile::tempdir().unwrap();

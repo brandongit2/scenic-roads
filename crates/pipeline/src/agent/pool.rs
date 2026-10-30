@@ -6,9 +6,8 @@
 //!   `Shared`): by the agent's loop, its step and what follows it in one hold of the run
 //!   (`Run::in_step`), and by the pool's own thread (`Ticker`) whenever that loop hasn't stepped it
 //!   for `QUIET_S` (a plan, a job being stopped, a share slow to answer): `Run::tick`, every `TICK_S`
-//!   while the loop stays busy. A tick does what's the pool's alone: the owner's asks, the driver's
-//!   step (its heartbeat, mail and listings with it), a handover's offer, answer, settling (when no
-//!   duty runs or starts here: `Cx`) and pass, the history, the view (`VIEW`), whether the
+//!   while the loop stays busy. A tick does what's the pool's alone: the driver's step (its
+//!   heartbeat, mail and listings with it), the history, the view (`VIEW`), whether the
 //!   coordinator grants. What's the agent's (its jobs, its coordinator's start and stop, the state a
 //!   term taken up loads: `Run::pending_took_up`) waits for its loop's next step. One step at a
 //!   time, each file of the pool's written by the run alone.
@@ -34,7 +33,8 @@
 //! - **The merge's checks** (`check`): what phase 1 checks of an entry.
 //!
 //! The pool is always on (§12 phase 4's thirteenth batch): every agent with the NAS leads or works
-//! as a member as the terms say. (`state/pool/enabled`, the switch of before, is no longer read; an
+//! as a member: the declared lead (crate::pool::term::declared, the Mac mini) leads, every other
+//! Mac is a member (task #881). (`state/pool/enabled`, the switch of before, is no longer read; an
 //! older app reads it, so it stays on the NAS until none runs.)
 
 use crate::handoff::Handoff;
@@ -246,56 +246,10 @@ pub struct Conds {
     /// The battery's charge (%), when it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub battery: Option<u8>,
-    /// It can lead now (its disk, home and power: `Heard::able`).
-    pub able: bool,
-    /// Paused alone (crate::control::Hold, task #224): it takes no work and can't lead until
-    /// resumed. Left out by apps before it.
+    /// Paused alone (crate::control::Hold, task #224): it takes no work until resumed. Left out by
+    /// apps before it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
-    /// The owner's disk room target there (MB; 0: none, and left out by apps before it): what
-    /// stays free past the free space it needs to lead.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub target_mb: u64,
-    /// The battery floor it went by (%; crate::agent::cond::FloorCache; left out by apps before it:
-    /// `floor` says the default).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub battery_min: Option<u8>,
-}
-
-fn is_zero(n: &u64) -> bool {
-    *n == 0
-}
-
-impl Conds {
-    /// The battery floor it went by (%).
-    pub fn floor(&self) -> u8 {
-        self.battery_min.unwrap_or(crate::agent::cond::DEFAULT_BATTERY_MIN)
-    }
-
-    /// On battery below its floor: it can't lead, and leading, hands the lead over.
-    pub fn low_battery(&self) -> bool {
-        !self.ac && self.battery.is_some_and(|b| b < self.floor())
-    }
-
-    /// Why a member with these conditions can't lead now (`able` false), as the agent decides it
-    /// (crate::agent's `pool_step`: home, on power or charged past its battery floor, free space past its room target, or with none, a disk not full).
-    pub fn why_unable(&self) -> String {
-        if self.held {
-            "paused: it can't lead until it's resumed (`scenic resume`)".into()
-        } else if !self.home {
-            "away from home: it can't lead until it's back".into()
-        } else if self.low_battery() {
-            format!("on battery at {}%: it can't lead below {}%", self.battery.unwrap_or(0), self.floor())
-        } else {
-            match self.target_mb {
-                0 => "its disk is full: it can't lead until some space is free".into(),
-                t => format!(
-                    "short of room on its disk: it can't lead without free space past its disk room target ({} GB)",
-                    t >> 10
-                ),
-            }
-        }
-    }
 }
 
 /// A listing made off the loop: its kind, and the thread making it.
@@ -315,18 +269,12 @@ pub struct Give {
     /// Its jobs' hand-offs that ended, each with the folder (or file) holding it, removed once a
     /// saved state holding the entry is on disk.
     pub entries: Vec<(Entry, Option<PathBuf>)>,
-    /// Settling a handover: the coordinator's state, as written.
-    pub settled: Option<serde_json::Value>,
-    /// Whether this Mac can lead now (its disk, home, power).
-    pub able: bool,
     /// Re-assert first (before a GC sweep).
     pub reassert: bool,
-    /// Its owner's asks.
+    /// Its build page's asks.
     pub asks: Vec<driver::Ask>,
     /// Its Mac's conditions, for its heartbeat (None: left out).
     pub conds: Option<Conds>,
-    /// When the lead's coordinator last answered this Mac (`Heard::answered`).
-    pub answered: Option<u64>,
     /// The raw archives named since its records last dropped them (`Heard::named_raw`).
     pub named_raw: Vec<String>,
 }
@@ -383,8 +331,7 @@ pub struct Side {
     /// Whom it reached and whom it couldn't, for its heartbeat (crate::pool::reachable).
     pub reach: Vec<crate::pool::reachable::Reach>,
     /// The members' heartbeats (their pool's fields, shadow runs' left out) as `Run::tend_reach`
-    /// last read them: handed to each step (`Heard::reports`), so the driver's `hand_to` reads
-    /// none from the NAS.
+    /// last read them.
     pub beats: Vec<Beat>,
     /// When (unix s) `beats` were last read whole: a round with a read failing keeps the last.
     pub beats_at: Option<u64>,
@@ -499,7 +446,7 @@ impl Side {
         &self.me
     }
 
-    /// The driver (the controls' queries: `takeover`, `hand_to`; the current term; the records).
+    /// The driver (the current term, the declared lead, the records).
     pub fn driver(&self) -> &Driver {
         self.driver.as_ref().expect("a driver")
     }
@@ -585,41 +532,13 @@ impl Side {
         }
     }
 
-    /// Whether the lead can be handed to member `to` now, and why not (`Driver::hand_to`, §11), and
-    /// whether it can lead now by its heartbeat's conditions (`Conds::able`): a member that can't
-    /// wouldn't answer the offer (its driver's `ready_for` takes `Give::able`), so the views and the
-    /// asks refuse it up front, saying why, rather than offer and give up a minute on.
-    pub fn hand_to(&self, to: &str) -> std::result::Result<(), String> {
-        self.hand_to_with(to, &self.regions_app())
-    }
-
-    /// `hand_to`, the readers' switches' app (`regions_app`) read already: a view reads it once.
-    pub fn hand_to_with(
-        &self,
-        to: &str,
-        regions: &std::result::Result<Option<String>, String>,
-    ) -> std::result::Result<(), String> {
-        self.driver().hand_to(&self.io(), to)?;
-        let app = self.heartbeat(to).map(|h| h.pool.app).unwrap_or_default();
-        crate::inputs::regions::read::may_lead(&app, regions)?;
-        match self.heartbeat(to).and_then(|h| h.conds) {
-            Some(c) if !c.able => Err(c.why_unable()),
-            _ => Ok(()),
-        }
-    }
-
     /// The app the newer readers' switch (the regions', the elevation datasets') was recorded on, when the records have it
-    /// (crate::inputs::regions::read::switch_app): no member on an older one leads.
+    /// (crate::inputs::regions::read::switch_app): a member on an older one is "app too old".
     pub fn regions_app(&self) -> std::result::Result<Option<String>, String> {
         let read =
             |n: &str| -> anyhow::Result<Vec<u8>> { self.nas.read(n)?.with_context(|| format!("{n} isn't there")) };
         let m = crate::pool::records::Brief::now(&*self.nas).map_err(|e| format!("the records: {e:#}"))?.manifest;
         crate::inputs::regions::read::switch_app(&m, &read).map_err(|e| format!("{e:#}"))
-    }
-
-    /// What a takeover from this Mac needs now, and why (`Driver::takeover`, §11).
-    pub fn takeover(&self) -> driver::Takeover {
-        self.driver().takeover(&self.io())
     }
 
     /// Member `m`'s heartbeat as it wrote it (None: none, or one that can't be read now).
@@ -704,12 +623,7 @@ impl Side {
             asks: give.asks,
             entries,
             listed: self.made.pop_front(),
-            settled: give.settled,
-            able: give.able,
             reassert: give.reassert,
-            members: self.members.iter().cloned().collect(),
-            reports: self.beats.clone(),
-            answered: give.answered,
             named_raw: give.named_raw,
         };
         self.conds = give.conds;
@@ -728,7 +642,7 @@ impl Side {
         }
         if let Err(e) = kept {
             out.events.push(Event::Failed { what: "save the member's state", why: format!("{e:#}") });
-            (out.duties, out.settle, out.caught_up, out.fresh) = (false, false, false, false);
+            (out.duties, out.caught_up, out.fresh) = (false, false, false);
             out.send.clear();
             // (Its listings are made all the same: the driver counts them asked.)
             self.asked.extend(out.list.clone());
@@ -1160,12 +1074,8 @@ pub fn check_from(
 pub fn said(e: &Event) -> String {
     match e {
         Event::Made { term, how } => format!("made term {term} ({how})"),
-        Event::TookUp { term, how, handed } => format!(
-            "took up term {term} ({how}){}",
-            if handed.is_some() { ", the coordinator's state handed over" } else { "" }
-        ),
+        Event::TookUp { term, how } => format!("took up term {term} ({how})"),
         Event::SteppedDown { term, why } => format!("no longer leads term {term}: {why}"),
-        Event::Handover { term, to, what } => format!("its handover of term {term} to {to}: {what}"),
         Event::Merged { applied, overtaken, refused, listed, .. } => format!(
             "merged {} entr{} ({overtaken} passed over, {refused} refused){}",
             applied.len(),
@@ -1178,7 +1088,7 @@ pub fn said(e: &Event) -> String {
 }
 
 /// What a process of the agent is in the pool while it's on: decided as it starts, by the terms
-/// (`Run::open`), and kept for its life. A process whose member takes up a term, or stops leading
+/// and the lead's declaration (`Run::open`), and kept for its life. A process whose member takes up a term, or stops leading
 /// one, restarts into its new part once its first job's slot is free (phase 1: the lead's jobs run
 /// in its own process; phase 2 moves them into its slots).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1199,9 +1109,6 @@ pub struct Gates {
     pub leads: Option<u64>,
     /// Leading: grant jobs and plan.
     pub duties: bool,
-    /// Leading: settle a handover.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub settle: bool,
     /// Leading: its records reflect the journal (a catalogue may go out).
     pub caught_up: bool,
     /// Leading: it re-asserted this step (a sweep may run, caught up).
@@ -1221,7 +1128,6 @@ impl Gates {
             term: o.term,
             leads: o.leads,
             duties: o.duties,
-            settle: o.settle,
             caught_up: o.caught_up,
             fresh: o.fresh,
             listed_at: o.listed_at,
@@ -1256,8 +1162,6 @@ pub struct Run {
     pub gates: Gates,
     /// Its jobs' hand-offs for the next step, with the folders or files holding them.
     pub entries: Vec<(Entry, Option<PathBuf>)>,
-    /// Settling: the coordinator's state, written, for the next step.
-    pub settled: Option<serde_json::Value>,
     /// Re-assert at the next step (a sweep waits for it).
     pub reassert: bool,
     /// Why it restarts once its first slot is free (it left the pool, or its coordinator didn't
@@ -1288,13 +1192,12 @@ pub struct Run {
     /// hosts), for the history's joins and leaves (crate::agent::lead::membership).
     pub in_touch: Option<(u64, BTreeMap<String, String>)>,
     /// The terms this process led (a take-up of the next one after them keeps its coordinator's
-    /// state; one after another lead's loads that lead's).
+    /// state; one after a restart loads the term before's).
     pub led: BTreeSet<u64>,
-    /// The owner's asks for the next step (crate::agent::lead), and this Mac's conditions for its
-    /// heartbeat.
+    /// The build page's asks for the next step, and this Mac's conditions for its heartbeat.
     pub asks: Vec<driver::Ask>,
     pub conds: Option<Conds>,
-    /// The owner's controls: their asks, where each stands, the view (crate::agent::lead).
+    /// The view of the lead and members (crate::agent::lead).
     pub controls: super::lead::Controls,
     /// What a tick needs of the agent (`Cx`), as its loop left it.
     pub cx: Cx,
@@ -1304,8 +1207,8 @@ pub struct Run {
     /// The awake time (its driver's clock, s) of its last step, and of the agent's loop's last.
     last_step: Option<u64>,
     last_full: Option<u64>,
-    /// Terms a tick took up whose coordinator's part is the agent's (`took_up`: the state handed
-    /// over loaded, its own host's leases from before dropped), at its loop's next step.
+    /// Terms a tick took up whose coordinator's part is the agent's (`took_up`: the term before's
+    /// state loaded, its own host's leases from before dropped), at its loop's next step.
     pub pending_took_up: Vec<Event>,
     /// Tasks brokered by every member: when the members' brokers were last read from their
     /// heartbeats, and this Mac's last given to its own (`tend_brokers`).
@@ -1373,17 +1276,9 @@ pub struct Cx {
     pub root: Option<store::nasfs::NasRoot>,
     /// The agent's folder.
     pub home: PathBuf,
-    /// This process's coordinator (the lead's), for what the lead's step asks of it: the build
-    /// page's asks, settling's state, whether it grants (`set_moving`), its term.
+    /// This process's coordinator (the lead's), for what the lead's step asks of it: whether it
+    /// grants (`set_moving`), its term.
     pub coord: Option<Arc<crate::coord::Coordinator>>,
-    /// Whether this Mac can lead now (its disk, home and power).
-    pub able: bool,
-    /// A duty (a catalogue, a sweep) runs here, or passed its gate to start: a tick doesn't settle a
-    /// handover (the agent's step stops the duty first).
-    pub duty: bool,
-    /// The agent's loop is starting a job (its lease from this coordinator): a tick doesn't settle
-    /// until it's done.
-    pub starting: bool,
     /// When this Mac last had an answer from the lead's coordinator (its clock, unix s): a member's
     /// client's (crate::coord::client::Client::answered).
     pub lead_answered: Option<u64>,
@@ -1457,8 +1352,8 @@ impl Drop for InStep {
 }
 
 /// The pool's own thread: it steps the driver (`Run::tick`) whenever the agent's loop hasn't for a
-/// while (`TICK_S`, `QUIET_S`), so the heartbeat, the mail, the owner's asks, a handover's offers,
-/// answers and settling, and the view go on while the agent plans or tends its jobs. Stopped (and
+/// while (`TICK_S`, `QUIET_S`), so the heartbeat, the mail, the build page's asks and the view go
+/// on while the agent plans or tends its jobs. Stopped (and
 /// waited for) when dropped.
 pub struct Ticker {
     stop: Arc<std::sync::atomic::AtomicBool>,
@@ -1527,14 +1422,12 @@ pub fn lead_answered(
     (a.term == Some(t.term) && a.member.as_deref() == Some(t.member.as_str())).then_some(a.at)
 }
 
-/// What the coordinator answers asks for jobs with, by the gates (None: it grants): settling a
-/// handover, its term being taken up (`pending`: its state not loaded yet), its view not fresh, or
-/// no longer leading.
+/// What the coordinator answers asks for jobs with, by the gates (None: it grants): its term being
+/// taken up (`pending`: its state not loaded yet), its view not fresh, or no longer leading.
 pub fn moving(g: &Gates, pending: bool) -> Option<String> {
     match () {
         _ if g.leads.is_some() && pending => Some("taking up its term".into()),
         _ if g.leads.is_some() && g.duties => None,
-        _ if g.settle => Some("settling a handover".into()),
         _ if g.leads.is_some() => Some("re-asserting its term".into()),
         _ => Some("no longer leads".into()),
     }
@@ -1548,7 +1441,6 @@ impl Run {
             role,
             gates,
             entries: Vec::new(),
-            settled: None,
             reassert: false,
             restart: None,
             drained: BTreeSet::new(),
@@ -1599,35 +1491,25 @@ impl Run {
     }
 
     /// A step of the pool's own thread (`Ticker`), the agent's loop busy: what the loop's step does
-    /// that's the pool's alone. The owner's asks taken (this Mac's and the build page's); a
-    /// handover settled when nothing the agent would stop runs or starts here (`Cx::duty`,
-    /// `Cx::starting`: else the loop's next step stops it and settles); the driver's step, its
-    /// heartbeat and mail with it; the history and the view; the coordinator told whether it grants.
-    /// A term it takes up that isn't its own re-asserted is left to the loop's next step for the
-    /// coordinator's part (`pending_took_up`: the state handed over, its leases), the coordinator
+    /// that's the pool's alone. The build page's asks taken; the driver's step, its heartbeat and
+    /// mail with it; the history and the view; the coordinator told whether it grants. A term it
+    /// takes up that isn't its own re-asserted in this process is left to the loop's next step for
+    /// the coordinator's part (`pending_took_up`: the term before's state, its leases), the coordinator
     /// granting nothing until then; a change of this process's part is the loop's too (its next
     /// step's `change_part`). None when there was nothing to step (no NAS).
     pub fn tick(&mut self) -> Option<Out> {
         let root = self.cx.root.clone()?;
         let home = self.cx.home.clone();
         let coord = self.cx.coord.clone();
-        if let Some(co) = &coord {
-            if self.gates.settle && self.settled.is_none() && !self.cx.duty && !self.cx.starting {
-                co.set_moving(Some("settling a handover".into()));
-                self.settled = serde_json::to_value(co.pool_state()).ok();
-            }
-            self.controls.page.extend(co.take_lead_asks());
-        }
-        super::lead::take(self, &home);
         self.tend_brokers();
         self.tend_reach();
-        let out = self.step(self.cx.able);
+        let out = self.step();
         // (When its checks ran: the coordinator's grants count from then, not from the tell.)
         let checked = crate::coord::wall_now();
         for e in &out.events {
-            let Event::TookUp { term, handed, .. } = e else { continue };
+            let Event::TookUp { term, .. } = e else { continue };
             match &coord {
-                Some(c) if self.led.contains(&(term - 1)) && handed.is_none() => c.set_term(*term),
+                Some(c) if self.led.contains(&(term - 1)) => c.set_term(*term),
                 _ => self.pending_took_up.push(e.clone()),
             }
         }
@@ -1839,7 +1721,7 @@ impl Run {
     /// handed over later, `take_left`, once the agent has stopped any still running.)
     pub fn start(side: Side, _home: &Path) -> (Run, Out) {
         let mut r = Run::new(side, Role::Member, Gates::default());
-        let out = r.step(false);
+        let out = r.step();
         r.role = if out.leads.is_some() { Role::Lead } else { Role::Member };
         r.restart = out.stop.as_ref().map(|why| format!("this process left the pool: {why}"));
         (r, out)
@@ -1847,7 +1729,7 @@ impl Run {
 
     /// One step: what the agent gathered handed over, the gates kept; the role's change noted (it
     /// restarts into its new part).
-    pub fn step(&mut self, able: bool) -> Out {
+    pub fn step(&mut self) -> Out {
         // (Its members' posts to its coordinator, when it leads, go to its inbox; its own to the
         // lead's coordinator as its contact says.)
         if let Some(co) = &self.cx.coord {
@@ -1856,12 +1738,9 @@ impl Run {
         self.side.lead_contact = (self.cx.lead_urls.clone(), self.cx.lead_token.clone());
         let give = Give {
             entries: std::mem::take(&mut self.entries),
-            settled: self.settled.take(),
-            able,
             reassert: self.reassert,
             asks: std::mem::take(&mut self.asks),
             conds: self.conds,
-            answered: self.cx.lead_answered,
             named_raw: self.named_raw.iter().cloned().collect(),
         };
         let marks = std::mem::take(&mut self.marks);
@@ -2006,10 +1885,10 @@ impl Run {
 }
 
 /// A term taken up (`Event::TookUp`), as the lead's coordinator takes it (§6.2, §7.5): the leases it
-/// grants from now in that term; the state handed over with it (a handover's), else the newest a
-/// term before has (a takeover's, or its own before a restart), loaded; its own host's leases from
-/// before dropped (its jobs ended with the process that ran them), but those of the jobs this
-/// process runs (`keep`: a member that took the lead in its process, its job going on).
+/// grants from now in that term; the newest state a term before has (its own before a restart: its
+/// leases, so every job out goes on renewing), loaded; its own host's leases from before dropped
+/// (its jobs ended with the process that ran them), but those of the jobs this process runs
+/// (`keep`).
 ///
 /// `events`: a step's, with those a tick left it (`Run::pending_took_up`); `leads`: the term the
 /// last step says this member leads.
@@ -2023,26 +1902,21 @@ pub fn took_up(
 ) {
     let Some(c) = coord else { return };
     for e in events {
-        let Event::TookUp { term, handed, .. } = e else { continue };
+        let Event::TookUp { term, .. } = e else { continue };
         c.set_term(*term);
         // (A take-up after a term this process led keeps what it has: it's newer than the files.)
-        if run.led.contains(&(term - 1)) && handed.is_none() {
+        if run.led.contains(&(term - 1)) {
             continue;
         }
-        // (The newest a term before has: one whose lead had no coordinator, a member that took it
-        // over before restarting into its lead, wrote none.)
-        let state: Option<crate::coord::PoolState> = match handed {
-            Some(v) => serde_json::from_value(v.clone()).ok(),
-            None => (1..*term).rev().find_map(|e| {
-                run.side.nas().read(&state_path(e)).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok())
-            }),
-        };
+        // (The newest a term before has: one whose lead had no coordinator wrote none.)
+        let state: Option<crate::coord::PoolState> = (1..*term).rev().find_map(|e| {
+            run.side.nas().read(&state_path(e)).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok())
+        });
         if let Some(st) = state {
             match c.load_pool_state(&st) {
                 Ok(n) => eprintln!(
-                    "pool: term {term}'s coordinator took up {n} lease{} {}",
-                    if n == 1 { "" } else { "s" },
-                    if handed.is_some() { "handed over" } else { "from the term before" }
+                    "pool: term {term}'s coordinator took up {n} lease{} from the term before",
+                    if n == 1 { "" } else { "s" }
                 ),
                 Err(e) => eprintln!("pool: the coordinator's state for term {term}: {e:#}"),
             }
@@ -2336,24 +2210,15 @@ pub fn status(root: &store::nasfs::NasRoot) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// Why a Mac with room short can't lead (task #421): past its room target, or with none, a
-    /// full disk.
-    #[test]
-    fn a_mac_short_of_disk_says_why_by_its_target() {
-        let c = super::Conds { home: true, ac: true, ..Default::default() };
-        assert!(c.why_unable().starts_with("its disk is full"), "{}", c.why_unable());
-        let c = super::Conds { target_mb: 20 << 10, ..c };
-        assert!(c.why_unable().contains("past its disk room target (20 GB)"), "{}", c.why_unable());
-    }
-
     #[test]
     fn a_message_this_app_doesnt_know_is_read_past() {
         // (Task #409 review) a newer app's message among the others: passed over, the rest taken,
         // and read past (its number the top), so it holds nothing back and isn't read again.
-        let b = br#"{"msgs": [[5, {"Leads": 3}], [6, {"FromTheFuture": {"x": 1}}], [7, {"HandTo": "m-b"}]]}"#;
+        // (So are the messages of the apps before #881: "Leads", "HandTo".)
+        let b = br#"{"msgs": [[5, {"Leads": 3}], [6, {"FromTheFuture": {"x": 1}}], [7, {"Tell": ["k"]}]]}"#;
         let raw = || serde_json::from_slice::<super::RawMailbox>(b).unwrap().msgs;
         let (msgs, top) = super::after(raw(), 4);
-        assert_eq!(msgs, vec![super::Msg::Leads(3), super::Msg::HandTo("m-b".into())]);
+        assert_eq!(msgs, vec![super::Msg::Tell(vec!["k".into()])]);
         assert_eq!(top, 7);
         let (msgs, top) = super::after(raw(), 7);
         assert!(msgs.is_empty() && top == 7);
@@ -2361,7 +2226,6 @@ mod tests {
 
     use super::*;
 
-    use crate::pool::driver::Ask;
     use crate::pool::journal::LeaseId;
 
     /// A NAS folder as the pool begins: today's records, and this Mac named their writer.
@@ -2596,15 +2460,7 @@ mod tests {
             pool: pool.clone(),
             members: vec!["m-000000000000000b".into()],
             shadow: false,
-            conds: Some(Conds {
-                home: true,
-                ac: false,
-                battery: Some(54),
-                able: false,
-                held: false,
-                target_mb: 0,
-                battery_min: None,
-            }),
+            conds: Some(Conds { home: true, ac: false, battery: Some(54), held: false }),
             broker: None,
             mail_http: true,
         };
@@ -2640,7 +2496,7 @@ mod tests {
         let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
         let id = a.member().id.clone();
         // Its first step: term 1, its own (this Mac is the writer), taken up from today's records.
-        let out = a.step(Give { able: true, ..Default::default() }, &any);
+        let out = a.step(Give::default(), &any);
         assert_eq!((out.term, out.leads, out.duties, out.caught_up), (1, Some(1), true, false));
         assert!(out.list.as_ref().is_some_and(|l| l.since.is_none()), "a take-up lists every day");
         // Its saved state on disk before anything else: naming it, the term it led.
@@ -2652,7 +2508,7 @@ mod tests {
         assert_eq!((hb.pool.leads, hb.members.clone()), (Some(1), vec![id.clone()]));
         assert!(hb.pool.beat > 0 && !hb.shadow);
         // The listing is made on a thread of its own and handed back: caught up.
-        let out = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.caught_up);
+        let out = until(&mut a, || Give::default(), |o| o.caught_up);
         assert!(out.listed_at.is_some() && a.listings_out() <= 1);
     }
 
@@ -2667,7 +2523,7 @@ mod tests {
             Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas).unwrap().is_none(),
             "a second process of the member runs none"
         );
-        a.step(Give { able: true, ..Default::default() }, &any);
+        a.step(Give::default(), &any);
         // Its lock file removed and taken by another process: it stops, its state saved, its
         // hand-offs kept in it, no heartbeat written.
         let lock = home.parent().unwrap().join(format!("pool-{}.lock", a.member().id));
@@ -2676,7 +2532,7 @@ mod tests {
         let beat = r.join(crate::pool::beat::path(&a.member().id));
         std::fs::remove_file(&beat).unwrap();
         let e = unit_entry(&a.member().id, LeaseId { term: 1, n: 7 }, "6/1/2", "k2");
-        let out = a.step(Give { entries: vec![(e, None)], able: true, ..Default::default() }, &any);
+        let out = a.step(Give { entries: vec![(e, None)], ..Default::default() }, &any);
         assert!(out.stop.is_some() && a.stopped.is_some());
         let saved: Saved = serde_json::from_slice(&std::fs::read(home.join("pool/saved.json")).unwrap()).unwrap();
         assert_eq!(saved.mine.unwritten().count(), 1, "its hand-off kept for the next process");
@@ -2690,7 +2546,7 @@ mod tests {
         let r = root(d.path());
         let home = d.path().join("a/agent");
         let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
-        until(&mut a, || Give { able: true, ..Default::default() }, |o| o.leads == Some(1));
+        until(&mut a, || Give::default(), |o| o.leads == Some(1));
         drop(a);
         // Switched off, its terms moved aside: the state of term 1 would hold this member above them.
         std::fs::rename(r.join("state/build"), d.path().join("aside")).unwrap();
@@ -2701,7 +2557,7 @@ mod tests {
         let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
         assert_eq!(a.driver().saved().term, 0);
         assert!(home.join("pool/saved.earlier.json").exists());
-        let out = a.step(Give { able: true, ..Default::default() }, &any);
+        let out = a.step(Give::default(), &any);
         assert_eq!((out.term, out.leads), (1, Some(1)), "term 1 afresh");
     }
 
@@ -2739,11 +2595,11 @@ mod tests {
         let mut a =
             Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas.clone()).unwrap().unwrap();
         a.set_clock(store::clock::Virtual::new());
-        a.step(Give { able: true, ..Default::default() }, &any);
+        a.step(Give::default(), &any);
         // (Stepped until the failed listing, made off the loop, is back.)
         let end = Instant::now() + WATCHDOG;
         let out = loop {
-            let out = a.step(Give { able: true, ..Default::default() }, &any);
+            let out = a.step(Give::default(), &any);
             if a.failed_at.is_some() {
                 break out;
             }
@@ -2752,13 +2608,13 @@ mod tests {
         };
         assert!(!out.caught_up, "the failed one isn't handed back");
         a.failed_at = a.failed_at.map(|t| t - AGAIN);
-        let out = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.caught_up);
+        let out = until(&mut a, || Give::default(), |o| o.caught_up);
         assert!(out.listed_at.is_some());
         assert!(nas.1.load(std::sync::atomic::Ordering::SeqCst) >= 2, "made again");
     }
 
     #[test]
-    fn two_members_mail_entries_acknowledge_and_hand_the_lead_over() {
+    fn two_members_mail_entries_and_acknowledge() {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let (mut a, mut b) = (
@@ -2766,7 +2622,7 @@ mod tests {
             side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("b/agent")),
         );
         let (ia, ib) = (a.member().id.clone(), b.member().id.clone());
-        let lead = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.caught_up);
+        let lead = until(&mut a, || Give::default(), |o| o.caught_up);
         assert_eq!(lead.leads, Some(1));
         // B's job's hand-off, in its folder: written to the journal, told to A by mail; the folder
         // removed once B's saved state holds it.
@@ -2774,7 +2630,7 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let e = unit_entry(&ib, LeaseId { term: 1, n: 5 }, "6/1/2", "k2");
         let key = e.key().unwrap();
-        let out = b.step(Give { entries: vec![(e, Some(folder.clone()))], able: true, ..Default::default() }, &any);
+        let out = b.step(Give { entries: vec![(e, Some(folder.clone()))], ..Default::default() }, &any);
         assert_eq!(out.leads, None);
         assert!(
             out.send.iter().any(|(to, m)| *to == ia && matches!(m, Msg::Tell(k) if k.contains(&key))),
@@ -2787,42 +2643,13 @@ mod tests {
         a.know(&ib);
         let out = until(
             &mut a,
-            || Give { able: true, ..Default::default() },
+            || Give::default(),
             |o| o.events.iter().any(|e| matches!(e, Event::Merged { applied, .. } if applied.contains(&key))),
         );
         assert!(out.send.iter().any(|(to, m)| *to == ib && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))));
         assert_eq!(a.driver().records().unwrap().keys.recorded("unit", "6/1/2"), Some("k2"));
-        b.step(Give { able: true, ..Default::default() }, &any);
+        b.step(Give::default(), &any);
         assert!(b.driver().mine().to_tell(1).is_empty(), "acknowledged");
-        // The owner hands the lead to B: offered; B ready; A settles, the coordinator's state
-        // handed back; passed; B takes term 2 up with that state.
-        let out = a.step(Give { asks: vec![Ask::HandTo(ib.clone())], able: true, ..Default::default() }, &any);
-        assert!(out.events.iter().any(|e| matches!(e, Event::Handover { what: "offered", .. })), "{:?}", out.events);
-        b.step(Give { able: true, ..Default::default() }, &any);
-        let out = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.settle);
-        assert!(!out.duties, "settling, it grants nothing");
-        let state = serde_json::json!({ "leases": { "next": 9, "leases": [] }, "costs": {}, "failed": [], "pause": null, "pause_at": 0 });
-        let out = until(
-            &mut a,
-            || Give { settled: Some(state.clone()), able: true, ..Default::default() },
-            |o| o.events.iter().any(|e| matches!(e, Event::Handover { what: "passed", .. })),
-        );
-        assert!(
-            out.leads.is_none()
-                && out.send.iter().any(|(to, m)| *to == ib && matches!(m, Msg::Passed(t) if t.term == 2))
-        );
-        let out = until(&mut b, || Give { able: true, ..Default::default() }, |o| o.leads == Some(2));
-        let handed = out.events.iter().find_map(|e| match e {
-            Event::TookUp { term: 2, handed, .. } => Some(handed.clone()),
-            _ => None,
-        });
-        assert_eq!(handed, Some(Some(state)), "{:?}", out.events);
-        let out = until(
-            &mut a,
-            || Give { able: true, ..Default::default() },
-            |o| o.events.iter().any(|e| matches!(e, Event::Handover { what: "over", .. })),
-        );
-        assert_eq!(out.term, 2);
     }
 
     /// The lead's tailnet address as its contact says it, in the mail tests: posts to it reach
@@ -2857,7 +2684,7 @@ mod tests {
             side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("a/agent")),
             side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("b/agent")),
         );
-        assert_eq!(until(&mut a, || Give { able: true, ..Default::default() }, |o| o.caught_up).leads, Some(1));
+        assert_eq!(until(&mut a, || Give::default(), |o| o.caught_up).leads, Some(1));
         let (c, port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "");
         c.set_member(Some(&a.member().id));
         c.set_inbox(Some(a.inbox()));
@@ -2873,7 +2700,7 @@ mod tests {
             let (ia, ib) = (self.a.member().id.clone(), self.b.member().id.clone());
             let e = unit_entry(&ib, LeaseId { term: 1, n }, &format!("6/1/{n}"), "k2");
             let key = e.key().unwrap();
-            let out = self.b.step(Give { entries: vec![(e, None)], able: true, ..Default::default() }, &any);
+            let out = self.b.step(Give { entries: vec![(e, None)], ..Default::default() }, &any);
             assert!(
                 out.send.iter().any(|(to, m)| *to == ia && matches!(m, Msg::Tell(k) if k.contains(&key))),
                 "{:?}",
@@ -2886,7 +2713,7 @@ mod tests {
         fn acknowledged(a: &mut Side, ib: &str, key: &str) {
             until(
                 a,
-                || Give { able: true, ..Default::default() },
+                || Give::default(),
                 |o| {
                     o.send
                         .iter()
@@ -2921,7 +2748,7 @@ mod tests {
         // (Review) a post from an id with no heartbeat makes up no member: passed over, dropped.
         let stranger = "m-00000000000000dd";
         m.a.inbox().put(stranger, vec![(1, serde_json::json!({"Leads": 9}))]).unwrap();
-        m.a.step(Give { able: true, ..Default::default() }, &any);
+        m.a.step(Give::default(), &any);
         assert!(!m.a.members().contains(stranger));
         assert!(m.a.inbox().held().is_empty());
         // An old lead: its heartbeat says nothing of mail by HTTP.
@@ -3097,7 +2924,7 @@ mod tests {
         run.drain_outbox(&home.join("outbox"));
         assert_eq!(run.entries.len(), 3);
         // Merged by the lead's step; their sources removed once its saved state holds them.
-        let out = run.step(true);
+        let out = run.step();
         assert_eq!(out.leads, Some(1));
         let rec = run.side.driver().records().unwrap();
         assert_eq!(
@@ -3161,7 +2988,7 @@ mod tests {
         o.set("layers/terrain/hi/6-1-3", Some("layers/terrain/hi/6-1-3.0000000000000002.pack".into()));
         assert!(o.save().is_err());
         run.entries.extend([(within, None), (outside, None)]);
-        let out = run.step(true);
+        let out = run.step();
         assert_eq!(out.leads, Some(1));
         // The one within merged, the one outside refused, with why, and nothing of it taken.
         let rec = run.side.driver().records().unwrap();
@@ -3197,13 +3024,13 @@ mod tests {
         let bad = too_far.key().unwrap();
         let drop = gc(2, &["sources/terrain-z8-v1", "sources/terrain-z8-v1-max"]);
         run.entries.extend([(too_far, None), (drop.clone(), None)]);
-        assert_eq!(run.step(true).leads, Some(1));
+        assert_eq!(run.step().leads, Some(1));
         let rec = run.side.driver().records().unwrap();
         assert_eq!(rec.manifest.keys().collect::<Vec<_>>(), ["base/6-1-1"]);
         assert!(rec.rejected.get(&bad).expect("refused").contains("base/6-1-1"));
         let seq = rec.seq;
         run.entries.push((drop, None));
-        run.step(true);
+        run.step();
         let rec = run.side.driver().records().unwrap();
         assert_eq!((rec.manifest.len(), rec.seq), (1, seq));
     }
@@ -3239,7 +3066,7 @@ mod tests {
         let terrain = entry(4, "gc", &[("layers/terrain/hi/6-2-33", None)]);
         let bad = terrain.key().unwrap();
         run.entries.extend([(drop, None), (terrain.clone(), None)]);
-        run.step(true);
+        run.step();
         let rec = run.side.driver().records().unwrap();
         assert_eq!(rec.manifest.keys().collect::<Vec<_>>(), ["layers/terrain/hi/6-2-33"]);
         assert!(rec.rejected.get(&bad).expect("refused").contains("layers/terrain/hi/6-2-33"));
@@ -3249,7 +3076,7 @@ mod tests {
         job.handoff.pending.insert("layers/depth/hi/6-2-33.4444444444444444.pack".into(), "0".repeat(64));
         job.handoff.done = Some(("depth".into(), vec![("6/2/33".into(), "k".into())]));
         run.entries.push((job, None));
-        run.step(true);
+        run.step();
         let rec = run.side.driver().records().unwrap();
         assert_eq!(
             rec.manifest.get("layers/depth/hi/6-2-33").map(String::as_str),
@@ -3511,15 +3338,13 @@ mod tests {
             since: 1,
             how: String::new(),
             from: t - 1,
-            seq: None,
         };
         assert_eq!(lead_answered(Some(&a), Some(&term(3, "m-000000000000000a"))), Some(a.at));
         assert_eq!(lead_answered(Some(&a), Some(&term(4, "m-000000000000000a"))), None, "an earlier term's lead");
         assert_eq!(lead_answered(Some(&a), Some(&term(3, "m-000000000000000c"))), None, "another member's");
         assert_eq!(lead_answered(Some(&first), Some(&term(3, "m-000000000000000a"))), None, "one that says nothing");
         assert_eq!(lead_answered(None, Some(&term(3, "m-000000000000000a"))), None);
-        // (Task #497) Its Mac lost the NAS: its answers say nothing, so its members don't count it
-        // late, and take it over once its heartbeat is silent.
+        // (Task #497) Its Mac lost the NAS: its answers say nothing of its term.
         c.set_member(None);
         client.ask(&ask).ok();
         let lost = client.answered().unwrap();
@@ -3567,20 +3392,6 @@ mod tests {
     }
 
     #[test]
-    fn a_handovers_times_fit_the_pools_steps() {
-        use crate::pool::handover::{OFFER_S, SETTLE_S, TAKE_UP_S};
-        // (Derived, not figures of their own: each Mac's pool is stepped at least every `QUIET_S`
-        // whatever its agent does, a step itself taking up to as long again on a share under load.)
-        // An offer: the target's step reads it and answers, the lead's step reads the answer.
-        assert!(OFFER_S >= 2 * 2 * QUIET_S, "{OFFER_S}");
-        // Settling: the lead's next step settles, the one after passes.
-        assert!(SETTLE_S >= 2 * QUIET_S, "{SETTLE_S}");
-        // Taking up: the target's next step reads the term (or the message) and takes it up.
-        assert!(TAKE_UP_S >= 2 * 2 * QUIET_S, "{TAKE_UP_S}");
-        assert!(TICK_S <= QUIET_S && QUIET_S < crate::pool::driver::STALL_S);
-    }
-
-    #[test]
     fn a_tick_is_due_while_the_agents_loop_is_quiet_and_never_during_its_step() {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
@@ -3590,14 +3401,13 @@ mod tests {
         run.cx = Cx {
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: home.clone(),
-            able: true,
             ..Default::default()
         };
         assert!(run.tick_due(), "never stepped");
         // The loop's step: none while it runs, nor for `QUIET_S` after it.
         run.in_step = true;
         assert!(!run.tick_due());
-        run.step(true);
+        run.step();
         run.stepped_full();
         assert!(!run.in_step && !run.tick_due());
         pass(&mut run, TICK_S);
@@ -3615,91 +3425,21 @@ mod tests {
         assert_eq!((v.pool.member, v.beat), (run.side.member().id.clone(), run.side.now() - TICK_S));
     }
 
+    /// Task #881: the lead's restart (an update's, at a safe point) keeps its leases. A member asks
+    /// for work all through term 1; the lead's process ends, and the next takes term 2 up from its
+    /// saved state: its coordinator loads term 1's, every lease granted in it there, still term 1's,
+    /// so every job out goes on renewing with it.
     #[test]
-    fn a_handover_goes_through_both_pools_threads_while_both_agents_plan() {
-        // (#191: the target answered an offer only once per agent step, minutes apart while it
-        // planned, and the lead gave up after a minute.) Neither agent's loop steps here: their
-        // pools' ticks alone offer, answer, settle, pass and take up, `TICK_S` apart.
-        let d = tempfile::tempdir().unwrap();
-        let r = root(d.path());
-        let (ha, hb) = (d.path().join("a/agent"), d.path().join("b/agent"));
-        let mut a = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &ha), Role::Member, Gates::default());
-        let mut b = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &hb), Role::Member, Gates::default());
-        let (ia, ib) = (a.side.member().id.clone(), b.side.member().id.clone());
-        let (coord, _) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "development");
-        let coord = Arc::new(coord);
-        // (A's first steps its loop's, as the agent's start makes them: it takes term 1 up.)
-        let end = Instant::now() + WATCHDOG;
-        while !a.step(true).caught_up {
-            assert!(Instant::now() < end);
-            std::thread::sleep(Duration::from_millis(30));
-        }
-        assert_eq!(a.gates.leads, Some(1));
-        a.cx = Cx {
-            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
-            home: ha.clone(),
-            coord: Some(coord.clone()),
-            able: true,
-            ..Default::default()
-        };
-        b.cx = Cx {
-            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
-            home: hb.clone(),
-            able: true,
-            ..Default::default()
-        };
-        tick_until(&mut [&mut a], |r| r[0].gates.caught_up);
-        assert_eq!(coord.shared.lock().unwrap().moving, None, "it grants");
-        a.side.know(&ib);
-        b.side.know(&ia);
-        tick_until(&mut [&mut b], |r| r[0].side.driver().current().term == 1);
-        // A duty runs on A (a catalogue): offered and answered, but not settled while it runs.
-        crate::control::request_lead(&ha, crate::control::LeadAsk::Give { to: ib.clone() }, "a test").unwrap();
-        a.cx.duty = true;
-        tick_until(&mut [&mut a, &mut b], |r| r[0].gates.settle);
-        assert!(a.settled.is_none() && coord.shared.lock().unwrap().moving.as_deref() == Some("settling a handover"));
-        a.tick();
-        assert!(a.settled.is_none(), "a duty runs: the agent's loop stops it first");
-        // Stopped (the loop's step): settled, passed, taken up, within the offer's and the settle's
-        // minutes on A's clock.
-        a.cx.duty = false;
-        tick_until(&mut [&mut a, &mut b], |r| r[1].side.driver().leads() == Some(2));
-        assert_eq!(a.side.driver().leads(), None);
-        assert_eq!(
-            coord.shared.lock().unwrap().moving.as_deref(),
-            Some("no longer leads"),
-            "its coordinator grants nothing; the loop stops it"
-        );
-        // B's coordinator's part (the state handed over) is its loop's next step's.
-        let handed = b.pending_took_up.iter().find_map(|e| match e {
-            Event::TookUp { term: 2, handed, .. } => Some(handed.clone()),
-            _ => None,
-        });
-        assert!(handed.is_some_and(|h| h.is_some_and(|h| h["leases"].is_object())), "{:?}", b.pending_took_up);
-        tick_until(&mut [&mut a, &mut b], |r| {
-            r[0].controls.kept.asked.as_ref().is_some_and(|k| k.state == super::super::lead::State::Done)
-        });
-        // The views, fresh on both Macs without their loops.
-        assert_eq!(read_view(&hb).and_then(|v| v.pool.lead).map(|v| (v.term, v.leading)), Some((2, true)));
-        assert_eq!(read_view(&ha).and_then(|v| v.pool.gates.leads), None);
-    }
-
-    /// Task #641: a member asking all through a handover. Every grant it was answered is in the
-    /// state handed over (none after the settling's), so the new lead's coordinator holds them all;
-    /// the old lead's state's writer, off its loop, wrote its term's file meanwhile, none other.
-    #[test]
-    fn every_grant_of_a_burst_through_a_handover_is_in_the_state_handed_over() {
+    fn the_leads_restart_keeps_its_leases() {
         use std::sync::atomic::{AtomicBool, Ordering};
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
-        let (ha, hb) = (d.path().join("a/agent"), d.path().join("b/agent"));
+        let ha = d.path().join("a/agent");
         let mut a = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &ha), Role::Member, Gates::default());
-        let mut b = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &hb), Role::Member, Gates::default());
-        let (ia, ib) = (a.side.member().id.clone(), b.side.member().id.clone());
         let (coord, port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "development");
         let coord = Arc::new(coord);
         let end = Instant::now() + WATCHDOG;
-        while !a.step(true).caught_up {
+        while !a.step().caught_up {
             assert!(Instant::now() < end);
             std::thread::sleep(Duration::from_millis(30));
         }
@@ -3707,21 +3447,11 @@ mod tests {
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: ha.clone(),
             coord: Some(coord.clone()),
-            able: true,
-            ..Default::default()
-        };
-        b.cx = Cx {
-            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
-            home: hb.clone(),
-            able: true,
             ..Default::default()
         };
         tick_until(&mut [&mut a], |r| r[0].gates.caught_up);
         coord.set_term(1);
         coord.keep_state(a.side.shared_nas(), 1);
-        a.side.know(&ib);
-        b.side.know(&ia);
-        tick_until(&mut [&mut b], |r| r[0].side.driver().current().term == 1);
         // The member asks without a pause, each grant a target of its own.
         let stop = Arc::new(AtomicBool::new(false));
         let (c2, s2) = (coord.clone(), stop.clone());
@@ -3767,24 +3497,43 @@ mod tests {
             granted
         });
         store::testkit::eventually("the burst's first grants", || coord.leases_out() >= 3);
-        crate::control::request_lead(&ha, crate::control::LeadAsk::Give { to: ib.clone() }, "a test").unwrap();
-        tick_until(&mut [&mut a, &mut b], |r| r[1].side.driver().leads() == Some(2));
+        // The update's safe point: the process ends, its coordinator's state on the NAS as its
+        // writer left it.
         stop.store(true, Ordering::Relaxed);
         let granted = burst.join().unwrap();
-        let handed = b
-            .pending_took_up
-            .iter()
-            .find_map(|e| match e {
-                Event::TookUp { term: 2, handed: Some(h), .. } => Some(h.clone()),
-                _ => None,
+        let state = || -> Option<crate::coord::PoolState> {
+            serde_json::from_slice(&std::fs::read(r.join(state_path(1))).ok()?).ok()
+        };
+        let (probe, _) = crate::coord::start_for_test(&d.path().join("probe/coord"), "p", "development");
+        store::testkit::eventually("term 1's state written with every grant", || {
+            state().is_some_and(|s| {
+                probe.load_pool_state(&s).is_ok() && granted.iter().all(|id| probe.lease_term(*id) == 1)
             })
-            .expect("the state handed over");
-        let (cb, _) = crate::coord::start_for_test(&d.path().join("b/coord"), "b", "development");
-        cb.load_pool_state(&serde_json::from_value(handed).unwrap()).unwrap();
+        });
+        coord.stop();
+        drop(a);
+        // The next process: its driver from the saved state re-asserts (term 2), and its new
+        // coordinator takes term 1's leases up.
+        let mut a = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &ha), Role::Member, Gates::default());
+        let mut took = Vec::new();
+        let end = Instant::now() + WATCHDOG;
+        let out = loop {
+            let out = a.step();
+            took.extend(out.events.iter().filter(|e| matches!(e, Event::TookUp { .. })).cloned());
+            if out.leads.is_some() {
+                break out;
+            }
+            assert!(Instant::now() < end, "not leading again: {:?}", out.events);
+            std::thread::sleep(Duration::from_millis(30));
+        };
+        assert_eq!(out.leads, Some(2));
+        assert!(
+            took.iter().any(|e| matches!(e, Event::TookUp { term: 2, how } if how == "restarted: re-asserted")),
+            "{took:?}"
+        );
+        let (cb, _) = crate::coord::start_for_test(&d.path().join("a2/coord"), "a", "development");
+        took_up(&mut a, Some(&cb), &took, out.leads, "a", &[]);
         let lost: Vec<u64> = granted.iter().copied().filter(|id| cb.lease_term(*id) != 1).collect();
-        assert!(granted.len() >= 3 && lost.is_empty(), "{} granted, not handed over: {lost:?}", granted.len());
-        // Its writer, off the loop (no loop step ran here), kept term 1's file; term 2's is B's.
-        store::testkit::eventually("term 1's state written", || r.join(state_path(1)).exists());
-        assert!(!r.join(state_path(2)).exists());
+        assert!(granted.len() >= 3 && lost.is_empty(), "{} granted, not taken up: {lost:?}", granted.len());
     }
 }

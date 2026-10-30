@@ -2,15 +2,9 @@
 //! lead's coordinator and the other members' brokers (crate::agent::pool's `Run::tend_reach`: a
 //! cheap request with a short timeout every `PROBE_S`, and the outcome of its client's own requests
 //! to the lead) and says in its heartbeat (`Beat::reach`) whom it reached lately, and whom it has
-//! failed to reach for `REPORT_S` or more, and why. Read back from the heartbeats:
-//!
-//! - a member some other member in touch reports it can't reach isn't handed the lead
-//!   (`Driver::hand_to`): its coordinator would grant nobody else work;
-//! - a lead reported so for `AWAY_S` or more, by enough of the members that vote (home, not paused
-//!   alone: crate::agent::lead's `voters`), hands the lead to a member that another member
-//!   reached lately and none reports unreachable (crate::agent::lead's `away`), no sooner than
-//!   `crate::agent::lead::CALM_S` after the last change of lead or the last such ask;
-//! - the views say who can't reach whom, and why, with what the owner can do.
+//! failed to reach for `REPORT_S` or more, and why. Read back from the heartbeats, the views say who
+//! can't reach whom, and why, with what the owner can do (the lead is fixed: nothing moves it off a
+//! Mac its members can't reach, task #881).
 //!
 //! Every time here is the reporter's own clock (its `Beat::beat` is too), so readers compare a
 //! report's times with its own heartbeat's, never with theirs.
@@ -29,8 +23,6 @@ pub const REPORT_S: u64 = 120;
 /// A success or failure older than this (the reporter's clock, against its heartbeat's) says
 /// nothing now (s).
 pub const REACHED_S: u64 = 300;
-/// A lead reported unreachable this long (s) hands the lead to a member others reach.
-pub const AWAY_S: u64 = 600;
 
 /// What a failure to reach a coordinator came to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,27 +183,13 @@ pub fn unreached<'a>(beats: &'a [Beat], to: &str, now: u64) -> Vec<(&'a Beat, &'
         .collect()
 }
 
-/// Why `to` can't be handed the lead for being unreachable, in words ("unreachable from m4:
-/// connection timed out (…)"); None when no member in touch reports so.
+/// Why `to` is unreachable, in words ("unreachable from m4: connection timed out (…)"); None when no
+/// member in touch reports so.
 pub fn why_unreachable(beats: &[Beat], to: &str, to_host: &str, now: u64) -> Option<String> {
     let u = unreached(beats, to, now);
     let (b, r) = u.first()?;
     let host = if b.host.is_empty() { b.member.as_str() } else { b.host.as_str() };
     Some(format!("unreachable from {host}: {}", words(r, to_host)))
-}
-
-/// How long `to` has been reported unreachable (s, the longest report, each by its reporter's
-/// clock); None when it isn't.
-pub fn unreachable_for(beats: &[Beat], to: &str, now: u64) -> Option<u64> {
-    unreached(beats, to, now).iter().map(|(b, r)| b.beat.saturating_sub(r.since)).max()
-}
-
-/// Whether a member in touch other than `to` reached it within `REACHED_S` of its heartbeat.
-pub fn reached(beats: &[Beat], to: &str, now: u64) -> bool {
-    beats
-        .iter()
-        .filter(|b| b.member != to && b.beat > 0 && !b.out_of_touch(now))
-        .any(|b| b.reach.iter().any(|r| r.member == to && r.ok && b.beat.saturating_sub(r.at) <= REACHED_S))
 }
 
 #[cfg(test)]
@@ -284,12 +262,9 @@ mod tests {
         assert!(why_unreachable(&beats, A, "m1", 5020).is_some_and(|w| w.starts_with(
             "unreachable from m4: connection timed out (m1 asleep, off the network, or its firewall blocking Scenic"
         )));
-        assert_eq!(unreachable_for(&beats, A, 5020), Some(1010));
         assert_eq!(why_unreachable(&beats, B, "m4", 5020), None);
-        assert!(reached(&beats, C, 5020) && !reached(&beats, A, 5020), "its own report of itself doesn't count");
         // Out of touch, its reports count for nothing.
         assert_eq!(why_unreachable(&beats, A, "m1", 5010 + OUT_OF_TOUCH_S + 1), None);
-        assert!(!reached(&beats, C, 5010 + OUT_OF_TOUCH_S + 1));
         assert_eq!(
             cause_of("reach the coordinator at http://m1:8090: io: Connection refused (os error 61)"),
             Cause::Refused

@@ -87,8 +87,8 @@ pub enum Cmd {
         #[command(flatten)]
         root: Root,
     },
-    /// Who leads the build, its term, since when, a handover under way, each member and whether it
-    /// can lead (docs/pool.md §11); an ask of it
+    /// Who leads the build (the declared lead, the Mac mini), its term, since when, and each member
+    /// (docs/pool.md §11)
     Lead(Lead),
     /// Pause the whole build: every Mac's jobs stop at their next safe point. --here or a member
     /// (host name or id): that Mac alone, its jobs given back at their next safe point, the rest of
@@ -178,15 +178,6 @@ pub enum Cmd {
         what: Option<String>,
         #[command(flatten)]
         root: Root,
-    },
-    /// This Mac's battery floor: on battery, it can't lead below it and as the lead hands the lead
-    /// over below it (by default 30); off: the default; with none, how it stands
-    BatteryFloor {
-        /// The floor in percent (0 to 100), or off
-        #[arg(value_name = "PERCENT|off")]
-        what: Option<String>,
-        #[command(flatten)]
-        home: Home,
     },
     /// Remove replaced files from the NAS (the agent runs it daily)
     Gc {
@@ -340,34 +331,12 @@ pub enum PoolCmd {
 
 #[derive(Args, Debug)]
 pub struct Lead {
-    #[command(subcommand)]
-    pub cmd: Option<LeadCmd>,
     /// This Mac's agent's folder (default: ~/Library/Application Support/scenic/agent)
     #[arg(long, value_name = "DIR", global = true)]
     pub home: Option<PathBuf>,
     /// (Taken for the commands' common form; the lead's view is this Mac's agent's.)
     #[arg(long, value_name = "DIR", global = true, hide = true)]
     pub root: Option<PathBuf>,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum LeadCmd {
-    /// Who leads (the same as `scenic lead`)
-    Status,
-    /// Hand the lead to a member
-    Give {
-        /// The member (its host name or member id)
-        member: String,
-    },
-    /// This Mac takes the lead over: once the lead is out of touch or stood down
-    Take {
-        /// With the lead in touch, past a term that can't be read, or over this Mac's own handover
-        #[arg(long)]
-        force: bool,
-        /// On an app older than the term's
-        #[arg(long)]
-        downgrade: bool,
-    },
 }
 
 #[derive(Subcommand, Debug)]

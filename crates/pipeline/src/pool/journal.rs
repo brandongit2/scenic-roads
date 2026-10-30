@@ -29,8 +29,8 @@ pub const DIR: &str = "state/journal";
 /// Where a refused entry's why is noted, under its key (`<key>.why`).
 pub const REJECTED: &str = "state/journal/rejected";
 
-/// A lease's id (§6.4, §7.5): the term it was granted in and its number there, `<term>-<n>`, so no
-/// two leads ever give the same one.
+/// A lease's id (§6.5, §7.5): the term it was granted in and its number there, `<term>-<n>`, so no
+/// two terms ever give the same one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LeaseId {
     /// The term it was granted in.

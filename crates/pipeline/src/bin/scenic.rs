@@ -2,17 +2,11 @@
 //!
 //!   scenic status                       what the lead is doing, what waits and why, regions
 //!   scenic agent [--once] [--dry-run] [--home <dir>]  the agent (every Mac's login item: its
-//!                                       member of the pool, leading or not as the terms say;
+//!                                       member of the pool, leading when it's the declared lead;
 //!                                       --helper, of before, accepted and ignored)
 //!   scenic pool [status]                the pool as it stands (docs/pool.md): the terms, the agents
-//!   scenic lead                         who leads the build, its term, since when, a handover
-//!                                       under way, each member and whether it can lead (docs/pool.md
-//!                                       §11)
-//!   scenic lead give <member>           hand the lead to a member (its host name or member id)
-//!   scenic lead take [--force] [--downgrade]  this Mac takes the lead over: once the lead is out
-//!                                       of touch or stood down; --force with it in touch, past a
-//!                                       term that can't be read, or over this Mac's own handover;
-//!                                       --downgrade on an app older than the term's
+//!   scenic lead                         who leads the build (the declared lead, the Mac mini), its
+//!                                       term, since when, and each member (docs/pool.md §11)
 //!   scenic pause [--now] | resume       pause the whole build (every Mac's jobs stop at their next
 //!                                       safe point; --now: frozen at once), or let it go on
 //!   scenic pause --here | <member>      pause one Mac alone (this one, or a member by host name or
@@ -180,72 +174,18 @@ fn timings_publish(last: usize, file: Option<&Path>, json: bool, places: &cli::P
     Ok(())
 }
 
-/// `scenic lead`: the pool's lead as this Mac's agent sees it; an ask of it, followed until it's
-/// done or refused (docs/pool.md §11).
+/// `scenic lead`: the pool's lead as this Mac's agent sees it (docs/pool.md §11): the lead is
+/// fixed (the member `state/build/lead-member.json` declares), so there's nothing to ask of it.
 fn lead(a: &cli::Lead) -> Result<()> {
-    use cli::LeadCmd;
-    use pipeline::agent::lead::{self as l, State};
-    use pipeline::control::LeadAsk;
+    use pipeline::agent::lead as l;
     let home = home_or_default(&a.home);
-    let host = store::sys::host_name();
-    let view = || l::own_status(&home).and_then(|s| s.pool).and_then(|p| p.lead);
-    let ask = match &a.cmd {
-        None | Some(LeadCmd::Status) => {
-            let v = view().context("this Mac's agent isn't in the pool (`scenic pool status`), or hasn't said yet")?;
-            for line in l::said(&v, now_s()) {
-                println!("{line}");
-            }
-            return Ok(());
-        }
-        Some(LeadCmd::Give { member: to }) => {
-            // (What the agent would say, said at once when it says so already.)
-            if let Some(m) =
-                view().and_then(|v| v.members.into_iter().find(|m| m.member == *to || m.host.eq_ignore_ascii_case(to)))
-            {
-                if !m.can_lead {
-                    bail!("the lead can't be handed to {}: {}", m.host, m.why_not.unwrap_or_default());
-                }
-            }
-            LeadAsk::Give { to: to.clone() }
-        }
-        Some(LeadCmd::Take { force, downgrade }) => {
-            let (force, downgrade) = (*force, *downgrade);
-            if let Some(t) = view().and_then(|v| v.takeover) {
-                if let Some(w) = t.refused {
-                    bail!("this Mac can't take the lead over: {w}");
-                }
-                if let (Some(w), false) = (&t.force, force) {
-                    bail!("taking the lead over needs --force: {w}");
-                }
-                if let (Some(w), false) = (&t.downgrade, downgrade) {
-                    bail!("taking the lead over needs --downgrade: {w}");
-                }
-            }
-            LeadAsk::Take { force, downgrade }
-        }
-    };
-    let r = pipeline::control::request_lead(&home, ask, &format!("scenic lead on {host}"))?;
-    println!("asked this Mac's agent; its pool's next step takes the ask up, within half a minute");
-    // Followed as the agent's status says, two minutes at most.
-    let start = std::time::Instant::now();
-    let mut last = String::new();
-    while start.elapsed() < std::time::Duration::from_secs(150) {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        let Some(a) = view().and_then(|v| v.asked).filter(|a| a.ask == r.ask && a.at >= r.at.saturating_sub(1)) else {
-            continue;
-        };
-        let now = format!("{:?}: {}", a.state, a.said);
-        if now != last {
-            println!("{}", a.said);
-            last = now;
-        }
-        match a.state {
-            State::Done => return Ok(()),
-            State::Refused | State::Failed => bail!("{}", a.said),
-            _ => {}
-        }
+    let v = l::own_status(&home)
+        .and_then(|s| s.pool)
+        .and_then(|p| p.lead)
+        .context("this Mac's agent isn't in the pool (`scenic pool status`), or hasn't said yet")?;
+    for line in l::said(&v, now_s()) {
+        println!("{line}");
     }
-    println!("still under way: `scenic lead` says how it stands");
     Ok(())
 }
 
@@ -1122,24 +1062,6 @@ fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// `scenic battery-floor [<percent> | off]`: this Mac's battery floor (agent::cond::FILE), set in
-/// its agent's folder, which its agent reads; off: the default; with none, how it stands.
-fn battery_floor(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
-    use agent::cond::{read_battery_floor, DEFAULT_BATTERY_MIN};
-    let home = home_or_default(home);
-    let by = format!("scenic battery-floor on {}", store::sys::host_name());
-    if let Some(what) = what {
-        agent::settings::set_battery_floor(&home, what, &by)?;
-    }
-    match read_battery_floor(&home) {
-        Some(f) => println!("Battery floor: {} % (set {} by {})", f.pct, ago(f.at), f.by),
-        None => {
-            println!("Battery floor: {DEFAULT_BATTERY_MIN} %, the default (`scenic battery-floor <percent>` sets one)")
-        }
-    }
-    Ok(())
-}
-
 /// `scenic memory [<GB> | off]`: the memory this Mac gives the build's jobs together
 /// (agent::buildmem), set in its agent's folder, which the agent reads each loop; within the memory
 /// guard's limit; off: the limit alone; with none, how it stands.
@@ -1624,7 +1546,6 @@ fn main() -> Result<()> {
         Some(Cmd::InUse { cores, off, places }) => in_use(cores, off.is_some(), &places.home),
         Some(Cmd::NasTarget { what, root }) => nas_target(what.as_deref(), &root.root),
         Some(Cmd::NasRoom { what, root }) => nas_room(what.as_deref(), &root.root),
-        Some(Cmd::BatteryFloor { what, home }) => battery_floor(what.as_deref(), &home.home),
         Some(Cmd::Memory { what, places }) => memory(what.as_deref(), &places.home),
         Some(Cmd::Gc { dry_run, days, depth_keep, root: r }) => {
             // (The depth's targets not read: said, and no depth name dropped this run.)

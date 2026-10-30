@@ -1556,7 +1556,7 @@ mod tests {
         let me = crate::pool::Member { id: "m-0000000000000001".into(), host: "a".into(), app: "development".into() };
         fs::write(root.join("state/build/jobs.json"), "{}").unwrap();
         fs::write(root.join("state/build/pending.json"), "{}").unwrap();
-        crate::pool::term::bootstrap(&nas, &me, 1_791_500_000, false).unwrap().unwrap();
+        crate::pool::term::bootstrap(&nas, &me, 1_791_500_000).unwrap().unwrap();
         let mut rec = crate::pool::records::Records { term: 1, ..Default::default() };
         rec.reflected.insert(e.key().unwrap());
         rec.save(&nas).unwrap();

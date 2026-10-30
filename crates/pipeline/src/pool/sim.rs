@@ -15,30 +15,24 @@
 //!
 //! Each Mac runs in a thread of its own, but one at a time: every NAS operation, message and look
 //! at a clock waits for the Mac's turn, and after each the schedule (`World::after`) says whose
-//! turn is next, puts the Mac to sleep there or not, and brings the owner's asks: hand the lead to
-//! a Mac, take it over (forced at times, the lead alive; on an older app, by the owner's say-so), a
-//! newer app on a Mac (a restart: its memory gone but what its driver saved), or a development
-//! build or a rollback (`Cfg::downgrade`); a member may leave for good (`Cfg::leave`). The Macs
-//! play the agent's part around the driver (`Mac`): its jobs' hand-offs, its coordinator's state
-//! (granted while the driver lets it, handed over when it settles), the listings the driver asks
-//! for, off its step, its heartbeat, stamped as it's written, a job reading the records. Once the
-//! faults stop every Mac stays awake for a while, and the owner takes over a term left with no
-//! lead the views would show as such (its lead gone, stood down, or its term unreadable); then the
-//! last term's lead must be leading, alone, its records must name every entry ever written, and no
-//! term may have been made in the run's last ten minutes.
-//!
-//! The first draft's scheme (`Cfg::draft`: one shared records file the lead rewrites after checking
-//! the term, and a journal it empties as it merges) runs on the same model, to show the model
-//! finds what lost work there.
+//! turn is next, puts the Mac to sleep there or not, and brings the owner's changes: a newer app on
+//! a Mac (a restart: its memory gone but what its driver saved), or a development build or a
+//! rollback (`Cfg::downgrade`); a member may leave for good (`Cfg::leave`). Mac 0 is the declared
+//! lead (task #881): no other Mac may make a term. The Macs play the agent's part around the driver
+//! (`Mac`): its jobs' hand-offs, its coordinator's grants (while the driver lets it), the listings
+//! the driver asks for, off its step, its heartbeat, stamped as it's written, a job reading the
+//! records. Once the faults stop every Mac stays awake for a while; then the last term must be the
+//! declared lead's, leading it alone, its records must name every entry ever written, and no term
+//! may have been made in the run's last ten minutes.
 
 mod place;
 
 use super::beat::Beat;
-use super::driver::{self, Ask, Driver, Event, Heard, Io, Listed, Out};
+use super::driver::{self, Driver, Event, Heard, Io, Listed, Out};
 use super::journal::{self, Entry, LeaseId};
 use super::nas::{Created, Nas};
 use super::records::{self, Records};
-use super::term::{self, Current, Term};
+use super::term::{self, Term};
 use super::Member;
 use crate::handoff::Handoff;
 use anyhow::{anyhow, bail, Result};
@@ -57,8 +51,6 @@ const LOOP_S: u64 = 20;
 const T0: u64 = 1_791_331_200 - 1_800;
 /// The units the jobs build, again and again.
 const TARGETS: [&str; 5] = ["6-1-0", "6-1-1", "6-1-2", "6-1-3", "6-1-4"];
-/// The shared records file of the first draft.
-const DRAFT: &str = "state/build/records.json";
 /// A development build's app number.
 const DEV: u64 = u64::MAX;
 
@@ -67,10 +59,7 @@ const DEV: u64 = u64::MAX;
 /// rename landing late, a file empty meanwhile).
 const P_SLEEP: f64 = 0.004;
 const P_SLEEP_MIDWAY: f64 = 0.05;
-/// Per step: that the owner asks a Mac's menu to hand the lead to a Mac, asks a Mac to take over,
-/// or installs a newer app on a Mac.
-const P_ASK: f64 = 0.006;
-const P_TAKE: f64 = 0.0012;
+/// Per step: that the owner installs a newer app on a Mac.
 const P_APP: f64 = 0.0004;
 /// With `Cfg::cuts`: per create, that its bytes don't land (the share gone between); per create
 /// and whole write, that its answer is lost (done, said failed).
@@ -88,14 +77,6 @@ const P_AWAY: f64 = 0.001;
 const P_STALL: f64 = 0.0001;
 /// With `Cfg::lost_lists`: per listing asked for while the faults last, that its agent loses it.
 const P_LOSE_LIST: f64 = 0.1;
-/// Per handover passed while the faults last: that its target falls asleep before taking up, and
-/// its old lead restarts into a development build (with `Cfg::downgrade`) or is asked by the owner
-/// to take over, forced (review N1's paths: a take-back the app rule refuses, and a forced
-/// takeover over a handover waiting; each drops it).
-const P_SPLIT: f64 = 0.3;
-/// How long a Mac may be awake with a handover it passed neither over, taken back nor dropped (s):
-/// its target's two minutes, and loops on a slow share.
-const PASSING_S: u64 = 900;
 /// Per step: that the turn stays with the Mac that has it.
 const P_KEEP: f64 = 0.85;
 /// Per loop of a Mac while the faults last: that one of its jobs ends (a journal entry); that one
@@ -105,13 +86,11 @@ const P_JOB: f64 = 0.35;
 const P_READ: f64 = 0.2;
 const P_GRANT: f64 = 0.3;
 const P_SWEEP: f64 = 0.01;
-/// Once the faults stop: how long a term may be left with no lead before the owner, seeing "No
-/// lead" in the views, takes it over (s); and how long the run's end must have seen no new term.
-const NO_LEAD_S: u64 = 300;
+/// How long the run's end must have seen no new term (s).
 const QUIET_S: u64 = 600;
 /// At most how long a run goes on past its end while its last term's lead still merges what the
 /// faults left, or isn't caught up yet (s): a share taking seconds an operation, a lead's minute of
-/// reads a loop merges a dozen entries, and hours of faults with no lead leave hundreds; a listing
+/// reads a loop merges a dozen entries, and hours of faults with the lead asleep leave hundreds; a listing
 /// its agent lost as the faults end is asked for again two hours on, and an entry never whole that
 /// only it finds is refused an hour after.
 const MERGING_S: u64 = driver::OVERDUE_S + driver::UNREADABLE_S + 3600;
@@ -126,8 +105,6 @@ struct Cfg {
     end: u64,
     /// The longest a Mac keeps what it read, stat'ed or listed (s).
     stale: u64,
-    /// The first draft's scheme instead of the pool's.
-    draft: bool,
     /// How long a listing of a folder takes (s), lo..=hi; (0, 0): no time.
     list_s: (u64, u64),
     /// A member leaves for good (never wakes) partway through.
@@ -168,7 +145,6 @@ impl Cfg {
             faults: 2400,
             end: 3900,
             stale: 30,
-            draft: false,
             list_s: (0, 0),
             leave: false,
             old_days: 0,
@@ -245,15 +221,11 @@ impl Rng {
     }
 }
 
-/// What reaches a Mac (the pool's HTTP API, and its menu: only while it's awake).
+/// What reaches a Mac (the pool's HTTP API: only while it's awake): a member's message.
 #[derive(Clone, Debug)]
-enum Msg {
-    /// A member's message, over the pool's API.
-    Pool { from: usize, msg: driver::Msg },
-    /// The owner, on this Mac's menu, asks to hand the lead to a member.
-    HandTo(String),
-    /// The owner asks this Mac to take the lead over.
-    TakeOver { force: bool, downgrade: bool },
+struct Msg {
+    from: usize,
+    msg: driver::Msg,
 }
 
 /// A Mac as the world sees it.
@@ -357,17 +329,11 @@ struct World {
     written_at: BTreeMap<String, u64>,
     writers: BTreeMap<String, usize>,
     acked: BTreeSet<String>,
-    /// The coordinator's state each settle saved with its records, by term and snapshot.
-    settles: BTreeMap<(u64, u64), serde_json::Value>,
-    /// After the faults: when the owner looks at the views next.
-    looks: u64,
     /// The leases granted in each term (the lead grants in order: the coordinator isn't modelled).
     leases: BTreeMap<u64, u64>,
     /// The terms whose lead was seen caught up, and by the listing begun when (its clock).
     caught: BTreeSet<(u64, u64)>,
-    /// When each member's heartbeat first said it stood down from a term; the entries refused as
-    /// never read whole.
-    stood: BTreeMap<(String, u64), u64>,
+    /// The entries refused as never read whole.
     unreadable: BTreeSet<String>,
     /// Entries whose files error on every read (`Cfg::fails`), and until when the share answers
     /// none of each Mac's reads.
@@ -495,6 +461,11 @@ impl World {
             })
             .collect();
         let mut files = BTreeMap::new();
+        // Mac 0 the declared lead.
+        files.insert(
+            term::LEAD.to_string(),
+            serde_json::to_vec(&term::Declared { member: id(0), host: "mac0".into(), since: T0 }).unwrap(),
+        );
         // Today's records: one unit built.
         files.insert(
             "state/build/manifest.json".to_string(),
@@ -526,7 +497,6 @@ impl World {
             written.insert(key, Kind::Taken);
         }
         let n = macs.len();
-        let looks = cfg.faults + 180;
         let mut w = World {
             cfg,
             t: 0,
@@ -550,11 +520,8 @@ impl World {
             written_at: BTreeMap::new(),
             writers: BTreeMap::new(),
             acked: BTreeSet::new(),
-            settles: BTreeMap::new(),
-            looks,
             leases: BTreeMap::new(),
             caught: BTreeSet::new(),
-            stood: BTreeMap::new(),
             unreadable: BTreeSet::new(),
             erroring: BTreeSet::new(),
             away: vec![0; n],
@@ -615,9 +582,6 @@ impl World {
         self.advance(self.t + dt);
         if self.t < self.cfg.faults {
             self.faults(me);
-        } else if self.t >= self.looks {
-            self.looks = self.t + NO_LEAD_S;
-            self.no_lead();
         }
         self.pick(me);
     }
@@ -652,13 +616,13 @@ impl World {
     fn goes_on(&mut self) -> bool {
         let Some(&h) = self.made.keys().next_back() else { return false };
         let r = self.files.get(&records::path(h)).and_then(|b| serde_json::from_slice::<Records>(b).ok());
-        // (Its records not saved yet: none but a handover taking up goes on.)
+        // (Its records not saved yet: nothing to go on for.)
         let lack = r.as_ref().map_or(0, |r| self.written.iter().filter(|&(k, &kind)| !names(r, k, kind)).count());
         // (Or its lead not caught up yet: an entry never whole, refused only after an hour of its
         // lead's reads; a listing its agent lost, asked for again two hours on.)
         let behind = r.is_some() && self.macs.iter().any(|m| m.leads == Some(h) && !m.gone && !m.caught);
         let merging = lack > 0 && self.behind.is_none_or(|b| lack < b);
-        if self.cfg.draft || !(merging || behind) || self.t >= self.cfg.end + MERGING_S {
+        if !(merging || behind) || self.t >= self.cfg.end + MERGING_S {
             return false;
         }
         self.behind = Some(lack);
@@ -683,43 +647,6 @@ impl World {
         self.note(|| format!("mac{k} sleeps {d} s"));
     }
 
-    /// A handover Mac `me` just passed to member `to`, while the faults last: now and then its
-    /// target falls asleep before taking up (or leaves for good, its lid closed for the week, a
-    /// term then naming it for the owner to take over), and `me` restarts into a development build
-    /// (its take-back then refused by the app rule) or the owner asks it to take over, forced
-    /// (review N1: either drops the handover).
-    fn split(&mut self, me: usize, to: &str) {
-        let k = mac_of(to);
-        if self.t >= self.cfg.faults
-            || k >= self.macs.len()
-            || !self.awake(k)
-            || self.macs[k].gone
-            || !self.rng.chance(P_SPLIT)
-        {
-            return;
-        }
-        if self.cfg.leave && !self.macs.iter().any(|m| m.gone) && self.rng.chance(0.3) {
-            self.macs[k].gone = true;
-            self.macs[k].asleep_until = u64::MAX;
-            self.count("Macs gone for good");
-            self.note(|| format!("mac{k} leaves for good"));
-        } else {
-            let d = self.rng.range(300, 1500);
-            self.sleep(k, d);
-        }
-        self.count("handovers split");
-        if self.cfg.downgrade && self.rng.chance(0.5) {
-            self.macs[me].app = DEV;
-            self.note(|| format!("mac{me} gets app development"));
-        } else {
-            let downgrade = self.cfg.downgrade;
-            self.note(|| {
-                format!("the owner asks mac{me} to take over (forced){}", if downgrade { " (on any app)" } else { "" })
-            });
-            self.deliver(me, Msg::TakeOver { force: true, downgrade });
-        }
-    }
-
     fn faults(&mut self, me: usize) {
         if self.cfg.fails && self.rng.chance(P_AWAY) {
             let d = self.rng.range(60, 600);
@@ -736,27 +663,8 @@ impl World {
             };
             self.sleep(me, d);
         }
-        let n = self.macs.len() as u64;
-        if self.rng.chance(P_ASK) {
-            let (at, to) = (self.rng.below(n) as usize, self.rng.below(n) as usize);
-            self.note(|| format!("the owner asks mac{at} to hand the lead to mac{to}"));
-            self.deliver(at, Msg::HandTo(id(to)));
-        }
-        if self.rng.chance(P_TAKE) {
-            let at = self.rng.below(n) as usize;
-            let force = self.rng.chance(0.3);
-            let downgrade = force && self.cfg.downgrade && self.rng.chance(0.5);
-            self.note(|| {
-                format!(
-                    "the owner asks mac{at} to take over{}{}",
-                    if force { " (forced)" } else { "" },
-                    if downgrade { " (on any app)" } else { "" }
-                )
-            });
-            self.deliver(at, Msg::TakeOver { force, downgrade });
-        }
         if self.rng.chance(P_APP) {
-            let at = self.rng.below(n) as usize;
+            let at = self.rng.below(self.macs.len() as u64) as usize;
             let newest = self.macs.iter().map(|m| m.app).filter(|&a| a != DEV).max().unwrap_or(0);
             self.macs[at].app = if self.cfg.downgrade && self.rng.chance(0.5) {
                 // A development build, or the published app rolled back.
@@ -771,64 +679,6 @@ impl World {
             let v = app(self.macs[at].app);
             self.note(|| format!("mac{at} gets app {v}"));
         }
-    }
-
-    /// The owner looks at the views after the faults: a term with no lead they'd show as such
-    /// (its lead gone for good, stood down for its app, or the term unreadable) for five minutes
-    /// is taken over from a member that can lead it (by the owner's downgrade when none's app is
-    /// new enough).
-    fn no_lead(&mut self) {
-        let Some((&h, &(_, at))) = self.made.iter().next_back() else { return };
-        if self.t < at + NO_LEAD_S || self.macs.iter().any(|m| m.leads == Some(h) && !m.gone) {
-            return;
-        }
-        let named = self.files.get(&term::path(h)).and_then(|b| serde_json::from_slice::<Term>(b).ok());
-        let force = match &named {
-            None => true,
-            Some(t) => {
-                let gone = self.macs.get(mac_of(&t.member)).is_some_and(|m| m.gone);
-                let stood = self
-                    .files
-                    .get(&super::beat::path(&t.member))
-                    .and_then(|b| serde_json::from_slice::<Beat>(b).ok())
-                    .is_some_and(|b| b.stood_down == Some(h));
-                // (A lead that stood down is taken over by itself, by a member the app rule lets:
-                // the owner steps in only when none can.)
-                let auto = (0..self.macs.len()).any(|k| {
-                    !self.macs[k].gone
-                        && self.macs[k].id != t.member
-                        && term::app_at_least(&app(self.macs[k].app), &t.app)
-                });
-                if !gone && !(stood && !auto) {
-                    return;
-                }
-                gone
-            }
-        };
-        // (A Mac whose app is new enough; else any, the lead that stood down too, by the owner's
-        // downgrade.)
-        let known = (1..=h)
-            .rev()
-            .find_map(|e| self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()))
-            .map(|t| t.app)
-            .unwrap_or_default();
-        let can: Vec<usize> = (0..self.macs.len()).filter(|&k| !self.macs[k].gone).collect();
-        let Some(&first) = can.first() else { return };
-        let (at, downgrade) = match can.iter().find(|&&k| {
-            term::app_at_least(&app(self.macs[k].app), &known)
-                && named.as_ref().is_none_or(|t| t.member != self.macs[k].id)
-        }) {
-            Some(&k) => (k, false),
-            None => (first, true),
-        };
-        self.count("the owner takes over a term with no lead");
-        self.note(|| {
-            format!(
-                "the owner sees no lead of term {h}: asks mac{at} to take over{}",
-                if downgrade { " on its app" } else { "" }
-            )
-        });
-        self.deliver(at, Msg::TakeOver { force: force || downgrade, downgrade });
     }
 
     /// Whose turn is next: this Mac's again, most often, while it can run; else another's that can
@@ -960,6 +810,9 @@ impl World {
         self.midway = true;
         self.see(me, path, Some(Vec::new()));
         if let Some(e) = term_of(path) {
+            if me != 0 {
+                self.wrong(format!("mac{me}, a member, made term {e}: only the declared lead makes terms"));
+            }
             let want = self.made.keys().max().map_or(1, |m| m + 1);
             if e != want {
                 self.wrong(format!("mac{me} made term {e} when the next was {want}"));
@@ -1045,9 +898,6 @@ impl World {
                 if bt.beat + driver::GAP_S < at {
                     self.wrong(format!("{m}'s heartbeat says it beat at {}, written at {at} by its clock", bt.beat));
                 }
-                if let Some(e) = bt.stood_down {
-                    self.stood.entry((bt.member.clone(), e)).or_insert(self.t);
-                }
             }
         }
         self.landed(me, path, &b, finishing);
@@ -1059,9 +909,7 @@ impl World {
             self.wrong(format!("mac{me} removed {path}"));
         }
         if let Some(key) = entry_of(path) {
-            if !self.cfg.draft {
-                self.wrong(format!("mac{me} removed entry {key}"));
-            }
+            self.wrong(format!("mac{me} removed entry {key}"));
         }
         self.files.remove(path);
         self.see(me, path, None);
@@ -1077,68 +925,18 @@ impl World {
             let Ok(t) = serde_json::from_slice::<Term>(b) else {
                 return self.wrong(format!("term {e}'s file isn't a term"));
             };
-            let term_at =
-                |w: &World, e: u64| w.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok());
-            if t.term != e || !self.macs.iter().any(|m| m.id == t.member) {
+            if t.term != e || t.member != id(0) {
                 return self.wrong(format!("term {e}'s file names term {} and {}", t.term, t.member));
-            }
-            // The app rule: against the term before; a take-back's, against the term it handed
-            // over. Not on the owner's downgrade; nor on a term forced past one that can't be
-            // read, whose maker checked it against the newest term it could read (`term::forced`),
-            // which the world doesn't know.
-            let back = t.how.starts_with(term::BACK);
-            let against = if back {
-                e.checked_sub(2).and_then(|p| term_at(self, p))
-            } else {
-                e.checked_sub(1).and_then(|p| term_at(self, p))
-            };
-            if let Some(p) = against.filter(|p| {
-                !term::app_at_least(&t.app, &p.app) && !t.how.contains(term::UNREAD) && !t.how.contains(term::DOWNGRADE)
-            }) {
-                self.wrong(format!("term {e} has app {}, older than term {}'s {}", t.app, p.term, p.app));
-            }
-            if t.how.contains(term::DOWNGRADE) {
-                self.count("forced downgrades");
-            }
-            if t.how.ends_with("stood down") {
-                self.count("automatic takeovers");
-                // Only of a lead whose heartbeat said it stood down from the term, two minutes
-                // before at least (§6.5, §14): one asleep or gone is the owner's to take over.
-                let from = e.checked_sub(1).and_then(|p| term_at(self, p));
-                match from.as_ref().and_then(|p| self.stood.get(&(p.member.clone(), p.term)).copied()) {
-                    None => self.wrong(format!(
-                        "term {e} was taken over automatically from a lead that didn't say it stood down ({:?})",
-                        from.map(|p| p.member)
-                    )),
-                    Some(at) if self.t < at + driver::STOOD_DOWN_S => self.wrong(format!(
-                        "term {e} was taken over automatically {} s after its lead said it stood down",
-                        self.t - at
-                    )),
-                    _ => {}
-                }
             }
             if t.how.contains("saved state lost") {
                 self.count("re-assertions with a saved state lost");
             }
-            if back
-                && e.checked_sub(1).and_then(|p| term_at(self, p)).is_some_and(|p| !term::app_at_least(&t.app, &p.app))
-            {
-                self.count("take-backs from a newer app");
-            }
-            let kind =
-                ["handed over", "taken back", "taken over", "re-asserted", "restarted", "the first Mac in the pool"]
-                    .into_iter()
-                    .find(|k| t.how.starts_with(k))
-                    .unwrap_or("other");
+            let kind = ["re-asserted", "restarted", "the first Mac in the pool"]
+                .into_iter()
+                .find(|k| t.how.starts_with(k))
+                .unwrap_or("other");
             *self.counts.entry(kind).or_default() += 1;
-            self.note(|| {
-                format!(
-                    "term {e}: {} ({}{})",
-                    t.member,
-                    t.how,
-                    t.seq.map(|s| format!(", records at {s}")).unwrap_or_default()
-                )
-            });
+            self.note(|| format!("term {e}: {} ({})", t.member, t.how));
         } else if let Some(e) = records_of(path) {
             let r = match serde_json::from_slice::<Records>(b) {
                 Ok(r) => r,
@@ -1176,9 +974,6 @@ impl World {
                 self.count("records saved after a later term began");
             }
             self.note(|| format!("mac{me} saves term {e}'s records at {} ({} entries)", r.seq, handled.len()));
-            if let Some(h) = &r.handed {
-                self.settles.insert((e, r.seq), h.clone());
-            }
             self.landed.insert(e, (r.seq, handled));
         } else if path == records::FIRST {
             // Term 1's first snapshot: made with create-new before term 1 is, its bytes landing
@@ -1259,22 +1054,6 @@ impl World {
         }
     }
 
-    /// A Mac took up a term: a handover's with the coordinator's state its old lead settled with,
-    /// saved with the snapshot the term names (review M7: the records only).
-    fn took_up(&mut self, me: usize, e: u64, how: &str, handed: Option<&serde_json::Value>) {
-        let Some(t) = self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()) else {
-            return;
-        };
-        let Some(seq) = t.seq.filter(|_| how.starts_with("handed over")) else { return };
-        match self.settles.get(&(t.from, seq)) {
-            Some(v) if handed == Some(v) => self.count("coordinator states handed over"),
-            v => {
-                let v = v.cloned();
-                self.wrong(format!("mac{me} took up term {e}, handed over at term {}'s {seq}, with the coordinator's state {handed:?}, not {v:?} as its old lead settled", t.from));
-            }
-        }
-    }
-
     /// Mac `me`, leading term `e`, says its records reflect the journal as the listing of every day
     /// it asked for at `listed` (its clock) found it (review N2; re-review F3, F4). That listing
     /// began less than a day before (`driver::RELIST_S`); after its Mac last woke from a sleep
@@ -1328,12 +1107,6 @@ impl World {
 
     /// Entries merged: counted by what they were.
     fn merged(&mut self, applied: &[String], overtaken: usize, listed: bool) {
-        let again = applied.iter().filter(|k| self.acked.contains(*k)).count() as u64;
-        *self.counts.entry("acknowledged entries merged again by a later lead").or_default() += again;
-        let refused =
-            applied.iter().filter(|k| self.files.contains_key(&format!("{}/{k}.why", journal::REJECTED))).count()
-                as u64;
-        *self.counts.entry("entries another lead refused, taken").or_default() += refused;
         *self.counts.entry("entries passed over for a later lease's").or_default() += overtaken as u64;
         if listed {
             *self.counts.entry("entries found by a listing").or_default() += applied.len() as u64;
@@ -1345,10 +1118,6 @@ impl World {
     /// every entry ever written.
     fn finish(&mut self) {
         let Some((&h, &(_, at))) = self.made.iter().next_back() else { return self.wrong("no term was made".into()) };
-        if self.cfg.draft {
-            let r = self.files.get(DRAFT).and_then(|b| serde_json::from_slice::<Records>(b).ok()).unwrap_or_default();
-            return self.lost(&r, "the shared records");
-        }
         let Some(t) = self.files.get(&term::path(h)).and_then(|b| serde_json::from_slice::<Term>(b).ok()) else {
             return self.wrong(format!("term {h}'s file isn't whole at the end"));
         };
@@ -1529,15 +1298,11 @@ impl Sim {
         self.op(|w, me| {
             let j = w.rng.below(5);
             w.macs[me].ready_at = w.t + LOOP_S + j;
-            // A member leaves for good, between two of its loops: its lid closed for the week. Now
-            // and then the lead (or the Mac the newest term names): the owner then takes its term
-            // over (§6.5: one gone isn't taken over by itself).
-            if w.cfg.leave && !w.macs.iter().any(|m| m.gone) && w.t > w.cfg.faults / 3 && w.t < w.cfg.faults {
-                let h = w.made.keys().max().copied().unwrap_or(0);
-                let named =
-                    w.files.get(&term::path(h)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member);
-                let leads = w.macs[me].leads.is_some() || named.as_deref() == Some(w.macs[me].id.as_str());
-                if w.rng.chance(if leads { 0.005 } else { 0.02 }) {
+            // A member leaves for good, between two of its loops: its lid closed for the week (never
+            // the declared lead: with it gone, nothing builds until it's back).
+            if w.cfg.leave && me != 0 && !w.macs.iter().any(|m| m.gone) && w.t > w.cfg.faults / 3 && w.t < w.cfg.faults
+            {
+                if w.rng.chance(0.02) {
                     w.macs[me].gone = true;
                     w.macs[me].asleep_until = u64::MAX;
                     w.count("Macs gone for good");
@@ -1642,19 +1407,12 @@ struct Mac {
     /// oldest first (one that failed made again after the next step).
     listed: Option<Listed>,
     listings: std::collections::VecDeque<driver::Listing>,
-    /// The Macs in the run (their ids: the pool's members).
-    n: usize,
-    /// Its coordinator's state (what a handover hands on): the term it's of, and the jobs granted.
+    /// Its coordinator's state: the term it's of, and the jobs granted.
     coord: (u64, u64),
-    /// Settling: the coordinator's state it wrote, and whether its driver has it.
-    settled: Option<serde_json::Value>,
-    gave: bool,
-    /// Since when (its awake clock) a handover it passed has waited.
-    passing: Option<u64>,
 }
 
 impl Mac {
-    fn new(sim: Sim, k: usize, n: usize, seed: u64) -> Mac {
+    fn new(sim: Sim, k: usize, seed: u64) -> Mac {
         let me = Member { id: id(k), host: format!("mac{k}"), app: app(0) };
         let rng = Rng(seed ^ (k as u64 + 1).wrapping_mul(0xA076_1D64_78BD_642F));
         let driver = Driver::unlocked(me.clone(), driver::Saved::default());
@@ -1669,11 +1427,7 @@ impl Mac {
             leads: None,
             listed: None,
             listings: Default::default(),
-            n,
             coord: (0, 0),
-            settled: None,
-            gave: false,
-            passing: None,
         }
     }
 
@@ -1710,7 +1464,7 @@ impl Mac {
                 saved = driver::Saved::default();
             }
             self.driver = Driver::unlocked(self.me.clone(), saved);
-            (self.listed, self.coord, self.settled, self.gave) = (None, (0, 0), None, false);
+            (self.listed, self.coord) = (None, (0, 0));
             self.listings.clear();
             self.sim.count("restarts");
             if self.leads.take().is_some() {
@@ -1718,38 +1472,23 @@ impl Mac {
             }
         }
         let faulting = self.sim.faulting()?;
-        let members = (0..self.n).map(id).collect();
-        let mut heard = Heard { able: self.rng.chance(0.9), listed: self.listed.take(), members, ..Default::default() };
-        let mut forced = None;
+        let mut heard = Heard { listed: self.listed.take(), ..Default::default() };
         for m in self.sim.inbox()? {
-            match m {
-                Msg::Pool { from, msg } => heard.msgs.push((id(from), msg)),
-                Msg::HandTo(to) => heard.asks.push(Ask::HandTo(to)),
-                Msg::TakeOver { force, downgrade } => {
-                    // (Its driver takes the last ask.)
-                    forced = force.then_some(downgrade);
-                    heard.asks.push(Ask::TakeOver { force, downgrade });
-                }
-            }
+            heard.msgs.push((id(m.from), m.msg));
         }
         if faulting && self.rng.chance(P_JOB) {
             let lease = self.sim.lease(self.term)?;
             let now = Io::now(&self.sim);
             heard.entries.push(self.job(lease, now));
         }
-        if let Some(s) = self.settled.as_ref().filter(|_| !self.gave) {
-            heard.settled = Some(s.clone());
-            self.gave = true;
-        }
         heard.reassert = faulting && self.leads.is_some() && self.rng.chance(P_SWEEP);
         let sweep = heard.reassert;
         let out = self.driver.step(&self.sim, heard, &check);
-        self.after(out, faulting, sweep, forced)
+        self.after(out, faulting, sweep)
     }
 
-    /// What its driver's step came to, done (`sweep`: the step was asked to re-assert, for one;
-    /// `forced`: the owner asked it to take over, forced, and with the downgrade or not).
-    fn after(&mut self, out: Out, faulting: bool, sweep: bool, forced: Option<bool>) -> Result<()> {
+    /// What its driver's step came to, done (`sweep`: the step was asked to re-assert, for one).
+    fn after(&mut self, out: Out, faulting: bool, sweep: bool) -> Result<()> {
         // (First: as of its step's end, a sleep since not counted.)
         let (k, caught) = (self.k, out.leads.is_some() && out.caught_up);
         self.sim.quiet(|w| w.macs[k].caught = caught);
@@ -1766,55 +1505,19 @@ impl Mac {
             self.sim.leads(out.leads)?;
             self.leads = out.leads;
         }
-        // A handover it passed: over, taken back or dropped within its target's two minutes and a
-        // few loops, awake; and dropped by the owner's forced takeover, unless that needs the
-        // downgrade not given (review N1: a take-back the app rule refused, and the forced
-        // takeover with it, kept it waiting for good).
-        let passing = out.leads.is_none() && out.beat.handing_to.is_some();
-        let awake = Io::awake(&self.sim);
-        match (passing, self.passing) {
-            (false, _) => self.passing = None,
-            (true, None) => self.passing = Some(awake),
-            (true, Some(since)) if awake.saturating_sub(since) > PASSING_S => {
-                self.sim.op(|w, me| {
-                    w.wrong(format!(
-                        "mac{me} passed a handover {} s awake ago, neither over, taken back nor dropped",
-                        awake - since
-                    ))
-                })?;
-                self.passing = Some(awake);
-            }
-            _ => {}
-        }
-        if let Some(downgrade) = forced.filter(|_| passing) {
-            let q = self.driver.takeover(&self.sim);
-            if q.refused.is_none() && (downgrade || q.downgrade.is_none()) {
-                self.sim.op(|w, me| {
-                    w.wrong(format!("mac{me}'s forced takeover left the handover it passed waiting ({q:?})"))
-                })?;
-            }
-        }
         // (A sweep needs both: its step re-asserted, and its records reflect the journal.)
         if sweep && out.fresh && out.caught_up {
             self.sim.count("sweeps a lead could make");
         }
-        // Its coordinator: grants while its lead may; settling, writes its state once.
+        // Its coordinator: grants while its lead may.
         if out.leads.is_some() && out.duties && faulting && self.rng.chance(P_GRANT) {
             self.coord.1 += 1;
-        }
-        if out.settle {
-            if self.settled.is_none() {
-                self.settled = Some(serde_json::json!({ "term": self.coord.0, "grants": self.coord.1 }));
-                self.gave = false;
-            }
-        } else {
-            self.settled = None;
         }
         for (to, m) in out.send {
             if let driver::Msg::Ack { term, keys, .. } = &m {
                 self.sim.op(|w, me| w.ack(me, *term, keys))?;
             }
-            self.sim.send(mac_of(&to), Msg::Pool { from: self.k, msg: m })?;
+            self.sim.send(mac_of(&to), Msg { from: self.k, msg: m })?;
         }
         if let Err(e) = self.sim.beat(out.beat) {
             if self.sim.over() {
@@ -1859,23 +1562,13 @@ impl Mac {
     fn event(&mut self, ev: &Event) -> Result<()> {
         let k = self.k;
         match ev {
-            Event::TookUp { term, how, handed } => {
-                self.sim.op(|w, me| w.took_up(me, *term, how, handed.as_ref()))?;
-                self.coord = match handed {
-                    Some(v) => (v["term"].as_u64().unwrap_or(0), v["grants"].as_u64().unwrap_or(0)),
-                    None => (*term, 0),
-                };
-                (self.settled, self.gave) = (None, false);
-            }
+            Event::TookUp { term, .. } => self.coord = (*term, 0),
             Event::Merged { applied, overtaken, listed, .. } => {
                 self.sim.quiet(|w| w.merged(applied, *overtaken, *listed))
             }
             Event::Waits { what: "take up", .. } => self.sim.count("take-ups tried again"),
             Event::Waits { what: "have a listing back", .. } => self.sim.count("listings overdue, asked for again"),
             Event::Failed { what: "save the records", .. } => self.sim.count("saves tried again"),
-            Event::SteppedDown { why, .. } if why.starts_with("can't re-assert") => self.sim.count("stood down"),
-            Event::Handover { to, what: "passed", .. } => self.sim.op(|w, me| w.split(me, to))?,
-            Event::Handover { what: "dropped", .. } => self.sim.count("handovers dropped"),
             _ => {}
         }
         self.sim.note(|| format!("mac{k}: {ev:?}"));
@@ -1923,137 +1616,6 @@ impl Mac {
     }
 }
 
-/// A Mac running the first draft's scheme: terms as the pool's, but one shared records file the
-/// lead reads, merges the journal into, writes after checking the term, and the merged entries
-/// then taken off the journal.
-struct Draft {
-    sim: Sim,
-    k: usize,
-    rng: Rng,
-    me: Member,
-    cur: Current,
-    leads: Option<u64>,
-    led: u64,
-    jobs: u64,
-}
-
-impl Draft {
-    fn new(sim: Sim, k: usize, seed: u64) -> Draft {
-        let me = Member { id: id(k), host: format!("mac{k}"), app: app(0) };
-        let rng = Rng(seed ^ (k as u64 + 1).wrapping_mul(0xA076_1D64_78BD_642F));
-        Draft { sim, k, rng, me, cur: Current::default(), leads: None, led: 0, jobs: 0 }
-    }
-
-    fn run(mut self) {
-        loop {
-            if let Err(e) = self.turn() {
-                if self.sim.over() {
-                    return;
-                }
-                self.sim.note(|| format!("mac{}: {e:#}", self.k));
-                if self.sim.idle().is_err() {
-                    return;
-                }
-            }
-        }
-    }
-
-    fn step_down(&mut self) -> Result<()> {
-        if self.leads.take().is_some() {
-            self.sim.leads(None)?;
-        }
-        Ok(())
-    }
-
-    fn turn(&mut self) -> Result<()> {
-        let now = Io::now(&self.sim);
-        let msgs = self.sim.inbox()?;
-        if self.cur.term == 0 {
-            term::bootstrap(&self.sim, &self.me, now, false)?;
-            self.cur = term::current(&self.sim)?;
-        }
-        if self.cur.term > 0 && self.cur.lead.is_none() {
-            self.cur.lead = term::read(&self.sim, self.cur.term)?;
-        }
-        while self.cur.term > 0 && term::next(&self.sim, self.cur.term)? {
-            let e = self.cur.term + 1;
-            self.cur = Current { term: e, lead: term::read(&self.sim, e)? };
-        }
-        self.sim.view(self.cur.term)?;
-        if self.leads.is_some_and(|e| self.cur.term > e) {
-            self.step_down()?;
-        }
-        if self.leads.is_none() {
-            if let Some(t) = self.cur.lead.clone().filter(|t| t.member == self.me.id && t.term > self.led) {
-                self.led = t.term;
-                self.leads = Some(t.term);
-                self.sim.leads(Some(t.term))?;
-            }
-        }
-        for m in msgs {
-            if let Msg::TakeOver { force, .. } = m {
-                if self.leads.is_none() && self.cur.term > 0 {
-                    let gone = match &self.cur.lead {
-                        Some(t) => Beat::read(&self.sim, &t.member)?.is_none_or(|b| b.out_of_touch(now)),
-                        None => true,
-                    };
-                    if gone || force {
-                        if let Ok(Some(t)) = term::claim(&self.sim, &self.cur, &self.me, "taken over", now) {
-                            self.cur = Current { term: t.term, lead: Some(t) };
-                            self.sim.view(self.cur.term)?;
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(e) = self.leads {
-            let mut r: Records = match self.sim.read(DRAFT)? {
-                Some(b) => serde_json::from_slice(&b)?,
-                None => Records::load(&self.sim, 1)?.unwrap_or_default(),
-            };
-            let keys = journal::list(&self.sim, None)?;
-            let m = records::merge(&self.sim, &mut r, &keys, &check);
-            if !m.applied.is_empty() || !m.refused.is_empty() || !m.overtaken.is_empty() {
-                // Check the term, then write: two steps, and the write's rename may land late.
-                if term::next(&self.sim, e)? {
-                    self.step_down()?;
-                } else if self.sim.write_whole(DRAFT, &serde_json::to_vec(&r)?).is_ok() {
-                    for k in m.applied.iter().chain(&m.overtaken).chain(m.refused.iter().map(|(k, _)| k)) {
-                        self.sim.remove(&journal::path(k))?;
-                    }
-                }
-            }
-        }
-        if self.sim.faulting()? && self.rng.chance(P_JOB) {
-            self.jobs += 1;
-            let t = TARGETS[self.rng.below(TARGETS.len() as u64) as usize];
-            let k = format!("k{}x{}", self.k, self.jobs);
-            let h = Handoff {
-                changes: [(logical(t), Some(content(t, &k)))].into(),
-                done: Some(("unit".into(), vec![(t.into(), k.clone())])),
-                ..Default::default()
-            };
-            let e = Entry {
-                member: self.me.id.clone(),
-                lease: LeaseId { term: self.cur.term, n: self.jobs * 8 + self.k as u64 },
-                step: "unit".into(),
-                handoff: h,
-                at: now,
-            };
-            journal::write(&self.sim, &e).ok();
-        }
-        let b = Beat {
-            member: self.me.id.clone(),
-            host: self.me.host.clone(),
-            app: self.me.app.clone(),
-            leads: self.leads,
-            ..Default::default()
-        };
-        self.sim.beat(b).ok();
-        self.sim.idle()
-    }
-}
-
 /// What a run gave: what went wrong, the counts of what happened, and its events (when traced).
 struct Ran {
     wrong: Vec<String>,
@@ -2070,13 +1632,7 @@ fn run(seed: u64, cfg: Cfg, tracing: bool) -> Ran {
             let sh = sh.clone();
             std::thread::spawn(move || {
                 let sim = Sim { sh: sh.clone(), me: k };
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    if cfg.draft {
-                        Draft::new(sim, k, seed).run()
-                    } else {
-                        Mac::new(sim, k, macs, seed).run()
-                    }
-                }));
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Mac::new(sim, k, seed).run()));
                 if let Err(p) = r {
                     let why = p
                         .downcast_ref::<String>()
@@ -2154,18 +1710,14 @@ fn check_all(seeds: Range<u64>, cfg: impl Fn(u64) -> Cfg + Sync) -> Counts {
     counts
 }
 
-/// Each kind of change of lead and fault, and what the knobs bring, that the default runs must see
-/// at least three times (a simulator that never got there would pass too).
-const KINDS: [&str; 41] = [
+/// Each kind of term and fault, and what the knobs bring, that the default runs must see at least
+/// three times (a simulator that never got there would pass too).
+const KINDS: [&str; 27] = [
     "entries outside their step's outputs, refused by every lead",
-    "handed over",
-    "taken back",
-    "taken over",
     "re-asserted",
     "restarted",
     "sleeps",
     "busy renames",
-    "late renames over another's write",
     "take-ups tried again",
     "saves tried again",
     "creates cut short",
@@ -2173,25 +1725,15 @@ const KINDS: [&str; 41] = [
     "listing seconds",
     "old journal days",
     "Macs gone for good",
-    "stood down",
-    "forced downgrades",
-    "take-backs from a newer app",
-    "coordinator states handed over",
     "entries found by a listing",
     "entries passed over for a later lease's",
-    "entries another lead refused, taken",
-    "acknowledged entries merged again by a later lead",
-    "automatic takeovers",
     "operation seconds",
     "saved states lost",
     "re-assertions with a saved state lost",
     "leads caught up",
     "sweeps a lead could make",
-    "the owner takes over a term with no lead",
     "entry reads lagging",
     "entries cut short on the share",
-    "handovers split",
-    "handovers dropped",
     "entries erroring on every read",
     "reads of an erroring entry",
     "shares away from a Mac",
@@ -2229,9 +1771,8 @@ fn the_pool_keeps_its_invariants_through_a_long_run() {
 
 #[test]
 fn a_run_goes_on_only_while_its_lead_merges() {
-    // (The long run's: hours of faults with no lead leave hundreds of entries, and on a share
-    // taking seconds an operation the lead that takes over merges a dozen a loop, past the run's
-    // end. The run goes on while its records lack fewer entries each ten minutes; a lead that
+    // (The long run's: hours of faults with the lead asleep leave hundreds of entries, and on a
+    // share taking seconds an operation the lead back merges a dozen a loop, past the run's end. The run goes on while its records lack fewer entries each ten minutes; a lead that
     // merges none is wrong at the end, as before.)
     let mut w = World::new(0, 4, Cfg::pool(), false);
     let (k1, k2) = ("2026-10-06/1-1".to_string(), "2026-10-06/1-2".to_string());
@@ -2259,10 +1800,9 @@ fn a_run_goes_on_only_while_its_lead_merges() {
 fn a_lead_keeps_leading_over_slow_listings_and_a_week_of_journal() {
     // Listings of 3 to 33 s a folder, and a week of the journal's days to list. (Review H1: a
     // take-up listed the journal in its loop, the loop ran past a minute, and the next re-asserted
-    // and took up again, for ever; a handover's take-up ran past its two minutes and was taken
-    // back.)
+    // and took up again, for ever.)
     let counts = check_all(0..300, |_| Cfg { list_s: (3, 33), old_days: 7, ..Cfg::pool() });
-    for what in ["handed over", "taken over", "entries found by a listing"] {
+    for what in ["re-asserted", "entries found by a listing"] {
         assert!(counts.get(what).is_some_and(|&n| n >= 3), "{what}: {:?}", counts.get(what));
     }
 }
@@ -2270,12 +1810,9 @@ fn a_lead_keeps_leading_over_slow_listings_and_a_week_of_journal() {
 #[test]
 fn a_development_build_or_a_rollback_leaves_a_lead() {
     // (Review H2: a lead restarted into an older app had its re-assertion refused, and stopped
-    // there every loop; a handover to a newer app that didn't take up couldn't be taken back, nor
-    // taken over from an older app.)
+    // there every loop. Since #881 there's no app rule: the declared lead leads whatever app.)
     let counts = check_all(0..1000, |_| Cfg { downgrade: true, leave: true, ..Cfg::pool() });
-    for what in ["stood down", "forced downgrades"] {
-        assert!(counts.get(what).is_some_and(|&n| n >= 1), "{what}: {:?}", counts.get(what));
-    }
+    assert!(counts.get("restarts").is_some_and(|&n| n >= 3), "{counts:?}");
 }
 
 #[test]
@@ -2288,11 +1825,11 @@ fn a_lead_lists_every_day_again_daily() {
 }
 
 #[test]
-fn term_ones_first_snapshot_cut_short_then_a_forced_takeover() {
+fn term_ones_first_snapshot_cut_short_then_stale_reads() {
     // Seed 3090226 of the four-hour runs (re-review 2, H1): term 1's first snapshot's create cut
-    // short, term 1 made all the same, its lead's saves and today's files after them read stale by
-    // a Mac the owner then has take over: term 2's first snapshot paired a manifest of one version
-    // with keys of another (invariant 4).
+    // short, term 1 made all the same, its lead's saves and today's files after them read stale:
+    // a later term's first snapshot paired a manifest of one version with keys of another
+    // (invariant 4).
     let cfg = Cfg { faults: 14_400, end: 15_900, stale: 184, list_s: (3, 33), cuts: true, lose: true, ..Cfg::pool() };
     let r = run(3_090_226, cfg, false);
     assert!(r.wrong.is_empty(), "{:?}", r.wrong.iter().take(3).collect::<Vec<_>>());
@@ -2336,27 +1873,6 @@ fn a_mac_gone_for_good_loses_none_of_its_entries() {
 }
 
 #[test]
-fn the_first_drafts_shared_records_lose_an_update_under_a_delayed_rename() {
-    // (Every read fresh: what's lost is the renames'.)
-    let cfg = Cfg { draft: true, stale: 0, ..Cfg::pool() };
-    let (bad, _) = run_all(0..500, |_| cfg);
-    let Some(&(seed, _)) = bad.iter().find(|(_, wrong)| wrong.iter().any(|w| w.contains("is lost"))) else {
-        panic!("the first draft's scheme lost nothing in 500 schedules: the simulator doesn't find its lost update")
-    };
-    // Seen as it happens: a lead's rename of the shared records, written before it slept, lands
-    // over the next lead's, whose merged entries are off the journal by then.
-    let r = run(seed, cfg, true);
-    assert!(r.counts.get("late renames over another's write").is_some_and(|&n| n > 0), "seed {seed}: {:?}", r.wrong);
-    let late: Vec<&String> = r.trace.iter().filter(|l| l.contains("rename of state/build/records.json")).collect();
-    assert!(!late.is_empty(), "seed {seed}");
-    eprintln!(
-        "the first draft, seed {seed}:\n{}\n{}",
-        late.iter().map(|l| l.as_str()).collect::<Vec<_>>().join("\n"),
-        r.wrong.join("\n")
-    );
-}
-
-#[test]
 fn a_seed_runs_the_same_every_time() {
     for seed in [11, 12, 13] {
         let (a, b) = (run(seed, Cfg::mixed(seed), true), run(seed, Cfg::mixed(seed), true));
@@ -2396,7 +1912,14 @@ fn the_knobs_one_at_a_time() {
     for (name, cfg) in knobs {
         let (bad, c) = run_all(0..n, |_| cfg);
         let get = |k: &str| c.get(k).copied().unwrap_or(0);
-        eprintln!("{name}: {} of {n} wrong; handed over {}, taken back {}, taken over {} ({} automatically), re-asserted {}, stood down {}, handovers dropped {}, refused never read whole {}{}", bad.len(), get("handed over"), get("taken back"), get("taken over"), get("automatic takeovers"), get("re-asserted"), get("stood down"), get("handovers dropped"), get("entries refused, never read whole"), bad.first().map(|(s, w)| format!("; seed {s}: {}", w[0])).unwrap_or_default());
+        eprintln!(
+            "{name}: {} of {n} wrong; re-asserted {}, restarted {}, refused never read whole {}{}",
+            bad.len(),
+            get("re-asserted"),
+            get("restarted"),
+            get("entries refused, never read whole"),
+            bad.first().map(|(s, w)| format!("; seed {s}: {}", w[0])).unwrap_or_default()
+        );
     }
 }
 
@@ -2418,7 +1941,7 @@ fn every_seed_runs_the_same_every_time() {
 #[ignore]
 fn a_seeds_events() {
     // POOL_SIM_SEED's events, its knobs as by default, or as POOL_SIM_KNOBS lists them (none:
-    // "plain"; "draft", "list", "old", "leave", "downgrade", "cuts", "slow", "lose", "truncs",
+    // "plain"; "list", "old", "leave", "downgrade", "cuts", "slow", "lose", "truncs",
     // "fails", "stalls", "lost", "skew=<s>", "stale=<s>", "lag=<s>"), its faults POOL_SIM_MINUTES
     // long (40), to look into one.
     let seed = std::env::var("POOL_SIM_SEED").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
@@ -2428,7 +1951,6 @@ fn a_seeds_events() {
             Some(("stale", v)) => Cfg { stale: v.parse().unwrap_or(30), ..c },
             Some(("lag", v)) => Cfg { lag: v.parse().unwrap_or(0), ..c },
             _ => match k {
-                "draft" => Cfg { draft: true, ..c },
                 "list" => Cfg { list_s: (3, 33), ..c },
                 "old" => Cfg { old_days: 7, ..c },
                 "leave" => Cfg { leave: true, ..c },

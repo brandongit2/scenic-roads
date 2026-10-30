@@ -269,18 +269,15 @@ impl AppState {
         // What this Mac has downloaded (the menu says when the map needs the NAS).
         let offline = downloads::summary(self);
         // This Mac in the pool (docs/pool.md §10, §11), as its own agent says (fresh: its status, or
-        // its pool's own view, written each step of the pool's whatever its loop is doing), and its
-        // lead ask while its agent hasn't taken it up.
+        // its pool's own view, written each step of the pool's whatever its loop is doing).
         let pool = pipeline::agent::lead::own_pool(&self.home.join("agent"), now, 120)
             .map_or(serde_json::Value::Null, |(p, _)| serde_json::to_value(p).unwrap_or_default());
-        let lead_asked =
-            pipeline::control::peek_lead(&self.home.join("agent")).map(|r| serde_json::to_value(r).unwrap_or_default());
         // This Mac paused alone (pipeline::control::Hold, task #224), as its agent keeps it, and its
         // ask while the agent hasn't taken it up.
         let agent_home = self.home.join("agent");
         let held_here = pipeline::control::read_hold(&agent_home).held;
         let hold_asked = agent_home.join(pipeline::control::HOLD_REQUEST).exists();
-        serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "offline": offline, "pool": pool, "lead_asked": lead_asked, "held_here": held_here, "hold_asked": hold_asked})
+        serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "offline": offline, "pool": pool, "held_here": held_here, "hold_asked": hold_asked})
     }
 
     /// Lets go of everything mapped from what the mirror has just deleted (`names`: content
