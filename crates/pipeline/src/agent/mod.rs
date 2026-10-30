@@ -607,33 +607,62 @@ fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
 /// tile's run its shard's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), a z6 tile its z6
 /// tile's, a deep target those of the z6 tiles its base is made of
 /// (crate::terrain_deep::base_want), an assembly its z3 tile's (crate::rawpack's shards).
-fn terrain_reads(id: &str, p: &Path) -> bool {
-    let tile = |s: &str| -> Option<(u32, u32, u32)> {
-        let mut v = s.split(['/', '-']).map(|t| t.parse::<u32>().ok());
-        Some((v.next()??, v.next()??, v.next()??))
+/// How often a member asks the lead for its tiles to come (`Agent::ask_upcoming`): the lead makes
+/// a forecast each `forecast::EVERY`, and the order of a Mac's next jobs moves little in minutes;
+/// an answer is every Mac's (29 Oct's forecast: 5,397 jobs, ~0.5 MB).
+const UPCOMING_EVERY: Duration = Duration::from_secs(5 * 60);
+
+/// Tiles to come older than this (s from their forecast's time) hint nothing (`Agent::hints`): a
+/// member that can't reach the lead keeps no stale order for long.
+const UPCOMING_STALE_S: u64 = 3600;
+
+/// This Mac's (`host`) tiles to come in a `/work/tocome` answer (`forecast::ToCome::answer`), as
+/// cache hints at the forecast's time, with that time (none placed on it: no hints); None when the
+/// answer isn't a forecast's (a lead before its first answers 200 with `making`).
+fn upcoming_of(code: u16, v: &serde_json::Value, host: &str) -> Option<(u64, room::Hints)> {
+    let at = v["at"].as_u64().filter(|_| code == 200 && v["macs"].is_object())?;
+    let mine: BTreeMap<String, Vec<(String, u32)>> = match v["macs"].get(host) {
+        Some(m) => serde_json::from_value(m.clone()).ok()?,
+        None => BTreeMap::new(),
     };
-    let in_packs = p.parent().and_then(Path::file_name).is_some_and(|d| d == "packs");
-    let shard = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).and_then(tile);
-    if !in_packs {
-        return false;
+    Some((at, room::Hints::of_tocome(&mine, at)))
+}
+
+#[cfg(test)]
+fn terrain_reads(id: &str, p: &Path) -> bool {
+    archive_shard(p).is_some_and(|a| terrain_shards(id).contains(&a))
+}
+
+/// The shard (z, x, y) of an archive copy of the raw tiles (`…/packs/<z>-<x>-<y>.<hash>.…`); None
+/// for any other file.
+pub(crate) fn archive_shard(p: &Path) -> Option<(u32, u32, u32)> {
+    if !p.parent().and_then(Path::file_name).is_some_and(|d| d == "packs") {
+        return None;
     }
-    match (id.split_once(' ').map(|(s, t)| (steps::current(s), t)), shard) {
-        (Some(("terrain-deep", t)), Some((6, ax, ay))) => tile(t).is_some_and(|(z, x, y)| {
-            z == crate::terrain_deep::PACK_Z as u32
-                && crate::terrain_deep::base_want((x, y))
-                    .iter()
-                    .any(|&(bz, bx, by)| (bx >> (bz - 6), by >> (bz - 6)) == (ax, ay))
-        }),
-        (Some(("terrain-hi", t)), Some(a)) => match tile(t) {
-            Some((3, x, y)) => {
-                matches!(a, (3, ax, ay) if (ax, ay) == (x, y))
-                    || matches!(a, (6, ax, ay) if (ax >> 3, ay >> 3) == (x, y))
-            }
-            Some((6, x, y)) => a == (6, x, y),
-            _ => false,
-        },
-        (Some(("terrain-lo", t)), Some(a)) => tile(t).is_some_and(|(z, x, y)| z == 3 && a == (3, x, y)),
-        _ => false,
+    p.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).and_then(tile_of)
+}
+
+fn tile_of(s: &str) -> Option<(u32, u32, u32)> {
+    let mut v = s.split(['/', '-']).map(|t| t.parse::<u32>().ok());
+    Some((v.next()??, v.next()??, v.next()??))
+}
+
+/// The archive shards (`archive_shard`) a terrain job's target reads (`terrain_reads`'s rule);
+/// none for any other step's.
+pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
+    let Some((s, t)) = id.split_once(' ').map(|(s, t)| (steps::current(s), t)) else { return BTreeSet::new() };
+    let Some((z, x, y)) = tile_of(t) else { return BTreeSet::new() };
+    match (s, z) {
+        ("terrain-deep", z) if z == crate::terrain_deep::PACK_Z as u32 => crate::terrain_deep::base_want((x, y))
+            .iter()
+            .map(|&(bz, bx, by)| (6, bx >> (bz - 6), by >> (bz - 6)))
+            .collect(),
+        ("terrain-hi", 3) => std::iter::once((3, x, y))
+            .chain((0..8).flat_map(|i| (0..8).map(move |j| (6, x * 8 + i, y * 8 + j))))
+            .collect(),
+        ("terrain-hi", 6) => BTreeSet::from([(6, x, y)]),
+        ("terrain-lo", 3) => BTreeSet::from([(3, x, y)]),
+        _ => BTreeSet::new(),
     }
 }
 
@@ -1584,6 +1613,13 @@ pub struct Agent {
     /// The forecast being run off the loop (its own thread, `start_forecast`): its answer, its
     /// record's bytes and how long it took, taken in once it's done (`take_forecast`).
     forecasting: std::cell::RefCell<Option<std::thread::JoinHandle<Forecasted>>>,
+    /// This Mac's tiles to come in the lead's last forecast, as cache hints (room::Hints::of_tocome,
+    /// task #843), with that forecast's time: the lead's from its own forecast (`take_forecast`), a
+    /// member's asked of the lead (`ask_upcoming`). Room-making lets go first what none of them
+    /// reads, then what's read furthest ahead (`hints`).
+    upcoming: std::cell::RefCell<Option<(u64, std::sync::Arc<room::Hints>)>>,
+    /// A member's ask for them under way (`ask_upcoming`), and when the last began.
+    upcoming_ask: (Option<std::thread::JoinHandle<Option<(u64, room::Hints)>>>, Option<Instant>),
     /// Publishing as last planned (build::PublishLine), and the key of the last line logged (logged
     /// again only when it changes).
     publish_line: std::cell::RefCell<Option<build::PublishLine>>,
@@ -1984,6 +2020,8 @@ impl Agent {
             region_bytes: Default::default(),
             regions_making: Default::default(),
             forecasting: Default::default(),
+            upcoming: Default::default(),
+            upcoming_ask: (None, None),
             publish_line: Default::default(),
             timetables: Default::default(),
             publish_logged: Default::default(),
@@ -2252,6 +2290,35 @@ impl Agent {
         }
     }
 
+    /// A member's tiles to come in the lead's forecast (`/work/tocome`, `{"raw": true}`: every
+    /// Mac's, as the lead last made them), this Mac's taken as cache hints (`upcoming`, task #843):
+    /// asked on a thread of its own (the loop never waits on the lead), at most every
+    /// `UPCOMING_EVERY`; the last answer kept while a new one fails.
+    fn ask_upcoming(&mut self, root: &store::nasfs::NasRoot) {
+        let done = self.upcoming_ask.0.as_ref().is_some_and(|h| h.is_finished());
+        if done {
+            if let Some(Ok(Some((at, h)))) = self.upcoming_ask.0.take().map(|h| h.join()) {
+                *self.upcoming.borrow_mut() = Some((at, std::sync::Arc::new(h)));
+            }
+        }
+        let due = self.upcoming_ask.1.is_none_or(|t| t.elapsed() >= UPCOMING_EVERY);
+        if self.upcoming_ask.0.is_some() || !due {
+            return;
+        }
+        let Some(c) = self.client(root, &mut Vec::new()) else { return };
+        let (urls, token, host) = (c.urls(), c.token(), self.host.clone());
+        self.upcoming_ask.1 = Some(Instant::now());
+        let ask = move || -> Option<(u64, room::Hints)> {
+            let c = crate::coord::client::Client::at(urls, token, &host);
+            let (code, v) = c.post_json("/work/tocome", &serde_json::json!({ "raw": true })).ok()?;
+            upcoming_of(code, &v, &host)
+        };
+        match std::thread::Builder::new().name("upcoming".into()).spawn(ask) {
+            Ok(h) => self.upcoming_ask.0 = Some(h),
+            Err(e) => eprintln!("agent: the tiles to come's thread: {e}"),
+        }
+    }
+
     /// A member's next job: work of the plan the lead's coordinator leases it (a job's worth of
     /// a shared step's targets, none needing more memory than it spares), built from the pass it
     /// says, saving into the lease's outbox folder. Asked only when it could start now. (Its jobs
@@ -2277,6 +2344,8 @@ impl Agent {
         // Not while this Mac's own pause holds (its ask not yet with the lead: the start loop
         // says so), nor while a newer app waits to start: nothing would start. (While the lead
         // says the build is paused, it asks: the answer says when it goes on.)
+        // (This Mac's jobs to come in the lead's forecast, for its caches: `ask_upcoming`.)
+        self.ask_upcoming(root);
         if self.pause_local {
             return Vec::new();
         }
@@ -3580,6 +3649,12 @@ impl Agent {
             if let Some(st) = step_of(&r.spec.id) {
                 h.add(&st, &[]);
             }
+        }
+        // (And what the forecast has this Mac read next, at its time: task #843.)
+        if let Some((_, u)) =
+            self.upcoming.borrow().as_ref().filter(|(at, _)| now_s().saturating_sub(*at) < UPCOMING_STALE_S)
+        {
+            h.merge(u);
         }
         h
     }
@@ -8576,6 +8651,7 @@ impl Agent {
     fn start_forecast(&self, record: forecast::Record<'static>) {
         let app = self.app.clone();
         let coord = self.coord.clone();
+        let host = self.host.clone();
         let run = std::thread::Builder::new().name("forecast".into()).spawn(move || {
             forecast::low_priority();
             let took = std::time::Instant::now();
@@ -8591,7 +8667,9 @@ impl Agent {
             if let Some(w) = &waits {
                 tocome.runs.after = w.by_run(&item_run, tocome.runs.targets.len());
             }
-            Forecasted { forecast: f, bytes: record.bytes(), entry, tocome, waits, took: took.elapsed() }
+            // (This Mac's own, as cache hints: `upcoming`.)
+            let upcoming = tocome.macs.get(&host).map(|m| (tocome.at, room::Hints::of_tocome(m, tocome.at)));
+            Forecasted { forecast: f, bytes: record.bytes(), entry, tocome, upcoming, waits, took: took.elapsed() }
         });
         match run {
             Ok(h) => *self.forecasting.borrow_mut() = Some(h),
@@ -8620,6 +8698,7 @@ impl Agent {
                     Err(e) => eprintln!("agent: the forecast's input as data: {e:#}"),
                 }
                 *self.fc_entry.borrow_mut() = Some(done.entry);
+                *self.upcoming.borrow_mut() = done.upcoming.map(|(at, h)| (at, std::sync::Arc::new(h)));
                 if let Some(c) = &self.coord {
                     c.set_tocome(std::sync::Arc::new(done.tocome));
                     if let Some(w) = done.waits {
@@ -11802,6 +11881,8 @@ struct Forecasted {
     bytes: anyhow::Result<Vec<u8>>,
     entry: fcarchive::Entry,
     tocome: forecast::ToCome,
+    /// This Mac's tiles to come in it, as cache hints, with its time (`Agent::upcoming`).
+    upcoming: Option<(u64, room::Hints)>,
     waits: Option<crate::coord::history::Waits>,
     took: std::time::Duration,
 }
@@ -12149,6 +12230,24 @@ mod tests {
             crate::cli::check_command(&cmd).unwrap_or_else(|| panic!("{cmd:?}: not a program of this crate")).unwrap();
         }
         assert!(runs.len() >= 8, "{}", runs.len());
+    }
+
+    /// Task #843: a member takes its own Mac's tiles to come from the lead's `/work/tocome` answer
+    /// (as `ToCome::answer` writes it), at the forecast's time; none from a lead still `making`.
+    #[test]
+    fn a_member_takes_its_own_tiles_to_come_as_cache_hints() {
+        let placed = [
+            forecast::Placed { lane: 0, step: "unit".into(), target: "6/33/22".into(), from: 1_000_060, until: 0 },
+            forecast::Placed { lane: 1, step: "unit".into(), target: "6/33/23".into(), from: 1_000_000, until: 0 },
+        ];
+        let tc = forecast::ToCome::of(&placed, &["m4".to_string(), "mini".to_string()], 1_000_000);
+        let (at, h) = upcoming_of(200, &tc.answer(), "m4").unwrap();
+        let c = Path::new("/c");
+        assert_eq!(at, 1_000_000);
+        assert_eq!(h.when(c, &c.join("blobs/base/6-33-22.0123456789abcdef.base")), Some(1_000_060));
+        assert_eq!(h.when(c, &c.join("blobs/base/6-33-23.0123456789abcdef.base")), None);
+        assert_eq!(upcoming_of(200, &tc.answer(), "m1"), Some((1_000_000, room::Hints::default())));
+        assert!(upcoming_of(200, &serde_json::json!({ "making": "no forecast yet" }), "m4").is_none());
     }
 
     #[test]

@@ -113,18 +113,25 @@ from the first (`edit_held`).
     under a temporary name and named only if the name is free. A guard test fails on code naming a
     cache path outside the accessor (`tests/cache_accessor.rs`), and chaos tests delete cache files
     under real steps and check the outputs are byte-identical. What can't be refilled (the heritage clip without its planet, raw tiles and pageview
-    months the NAS lacks) stays. What queued and running jobs read goes last (`room::Hints`).
+    months the NAS lacks) stays. What a job on this Mac is known to read goes after what none is,
+    the file read furthest ahead first (`room::Hints`, `room::order`): the queued and running jobs'
+    (now) last, and the jobs the lead's forecast places on this Mac (its tiles to come,
+    `forecast::ToCome`, task #843) at the time each placing starts: the lead's from its own
+    forecast, a member's asked of the lead every 5 minutes (`/work/tocome`, `{"raw": true}`, on a
+    thread of its own); an hour old, they hint nothing. Only an order: nothing is deleted for it.
   - **Disk measured** (docs/pool.md §7.7): what each job writes is counted by the accessor and by
     the agent's sampler over the job's scratch folder; the most a target took is its **disk floor**
     (the lead's `disks.json`). The **disk guard**: below the owner's room target, the fastest-growing
     job is frozen, room is made, and the job goes on or is given back; with no target set, only at
     a full disk.
-  - The order of freeing: canopy squares and copies idle an hour, least recently used first; then
-    raw tiles a folder at a time and the squares read since. A file goes once the NAS has it at the
+  - The order of freeing: first what no job here is known to read, then what's read furthest ahead
+    (`room::Hints`); within each, canopy squares and copies idle an hour, least recently used first;
+    then raw tiles a folder at a time and the squares read since. A file goes once the NAS has it at the
     same size; what the NAS lacks is put there first (raw tiles packed as an archive), or kept.
   - **Otherwise** nothing is emptied: a Mac keeps its caches while it has room, and frees them
     only when the disk is short of a job's room or of the owner's room target (`room::toward`), as
-    far as that needs, least recently used first.
+    far as that needs, in that order. A file no upcoming job reads isn't deleted while there's
+    room: it costs nothing until the room is needed, and the room target already frees it first.
   - **On the owner's ask** (`room::clear`, `room::Level`), at any moment, jobs running (the build
     never ends: regions are added and updated): the menu bar's Clear the Build's Caches or `scenic
     clean` (level `caches`), Clear Caches Deeply or `scenic clean --deep` (level `deep`), after a

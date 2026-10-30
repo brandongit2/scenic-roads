@@ -496,7 +496,9 @@ build, its room made as it starts and the disk guard behind it (§7.7). A
 job starting beside others waits on the target, its own measured room and the other slots'
 reservations (a job alone in the first slot on the target alone); room-making alone makes room for the leases granted and not yet started too, and
 the owner's room-target freeing (`room::toward`) frees toward the target plus the reservations,
-the jobs' hints merged (`Agent::hints`). The disk guard stays the backstop (§7.7). `scenic
+the jobs' hints merged (`Agent::hints`: the queued and running jobs', and those the lead's forecast
+places on this Mac, a member's asked of the lead's `/work/tocome` every 5 minutes; docs/building.md
+§2, Room on the disk). The disk guard stays the backstop (§7.7). `scenic
 status` shows each member's in its capacity line, as `coord::disk_words` says it (`disk 49 GB free ·
 20 GB for jobs (20 GB room target, 9 GB reserved by its jobs)`). Every job is told the target
 (`SCENIC_ROOM_TARGET_MB`, room::TARGET_ENV; 0 for the backup and GC, which keep none): the OSM pass

@@ -40,7 +40,8 @@
 //!
 //! - A file the jobs queued and running read (`Hints`: a terrain run's own shard's archive copies;
 //!   the pageview months, for an items or heritage job; a z6 tile's canopy squares and packs; the
-//!   base packs copied here for the map tiles) goes last.
+//!   base packs copied here for the map tiles) goes last, and so, before them, does what the jobs
+//!   the lead's forecast places on this Mac read, the furthest ahead first (task #843).
 //!
 //! Otherwise nothing is emptied: a Mac keeps its caches while it has room (the mini's ~100 GB). They
 //! go only when the disk is short of what a job needs, or of the owner's room target (`toward`),
@@ -543,7 +544,7 @@ pub fn clear(cache: &Path, sources: &NasPath, level: Level, answering: bool) -> 
         return Ok(Freed { level: Some(level), ..Default::default() });
     }
     let root = sources.root();
-    let mut freed = free_cheap(cache, sources, u64::MAX, u64::MAX, &disk_free, &|_| false, None)?;
+    let mut freed = free_cheap(cache, sources, u64::MAX, u64::MAX, &disk_free, &|_| None, None)?;
     let mut left = cheap_left(cache, Some(root));
     let mut stayed = Vec::new();
     let mut others: Vec<(PathBuf, &str)> = std::fs::read_dir(cache)
@@ -868,7 +869,7 @@ pub fn toward(
     hint: &Hints,
 ) -> Result<Freed> {
     toward_with(cache, sources, &|| goal.load(std::sync::atomic::Ordering::Relaxed), &disk_free, &|p| {
-        hint.has(cache, p)
+        hint.when(cache, p)
     })
 }
 
@@ -877,7 +878,7 @@ fn toward_with(
     sources: &NasPath,
     goal: &dyn Fn() -> u64,
     free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
-    hint: &dyn Fn(&Path) -> bool,
+    hint: &dyn Fn(&Path) -> Option<u64>,
 ) -> Result<Freed> {
     let first = goal();
     if !cache.is_dir() || free_space(cache)? >= first {
@@ -914,7 +915,7 @@ fn toward_with(
                 }
             }
             // (Those the queued jobs read last: `Hints`.)
-            files.sort_by_key(|f| (hint(&f.2), f.0, f.2.clone()));
+            files.sort_by_key(|f| (order(hint(&f.2)), f.0, f.2.clone()));
             let mut aim = goal();
             let (mut since, mut lack) = (0, aim.saturating_sub(free_space(cache)?));
             for (_, len, p) in files {
@@ -966,31 +967,58 @@ fn toward_with(
     Ok(Freed { freed, left: if short { left } else { 0 }, target: Some(first), ..Default::default() })
 }
 
-/// What the jobs queued here (and running) read of the caches, as far as the agent knows it: a hint
-/// that has those files go last when room is made, so they aren't fetched twice. Only a hint: what
-/// a running job uses it holds (store::cachefile), and a stale hint costs only a fetch.
+/// What the jobs on this Mac will read of the caches, as far as the agent knows it, and when: those
+/// queued here and running (now, 0), and those the lead's forecast places on this Mac's lanes
+/// (`add_at`, at the time its placing starts: `forecast::ToCome`, task #843). When room is made,
+/// the files no job here is known to read go first, then those read furthest ahead, those read
+/// now last (`when`, `order`: the file needed furthest in the future goes first), so what an
+/// upcoming job reads isn't fetched twice. Only a hint: what a running job uses it holds
+/// (store::cachefile), and a stale or wrong hint costs only a fetch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hints {
-    /// Terrain jobs' targets ("terrain-hi 3/x/y", a z3 tile's whole run; "terrain-hi 6/x/y", a z6
-    /// tile; "terrain-deep 10/x/y", a z10 tile's deep levels; "terrain-lo 3/x/y", an assembly): the
-    /// archive copies they read (`terrain_reads`).
-    pub terrain: Vec<String>,
+    /// The raw tiles' archive copies (`aws-terrarium/packs/<z>-<x>-<y>.…`) the terrain jobs read, by
+    /// shard (`agent::terrain_shards`: "terrain-hi 3/x/y" a z3 tile's whole run; "terrain-hi
+    /// 6/x/y" a z6 tile; "terrain-deep 10/x/y" a z10 tile's deep levels; "terrain-lo 3/x/y" an
+    /// assembly).
+    pub terrain: BTreeMap<(u32, u32, u32), u64>,
     /// An items or heritage job: the pageview months.
-    pub months: bool,
+    pub months: Option<u64>,
     /// Canopy squares' files (`chm10/<name>`) the z6 tiles and tree cover read.
-    pub squares: BTreeSet<String>,
+    pub squares: BTreeMap<String, u64>,
     /// Z6 tiles ("6-x-y"): the copies of their packs (`blobs/…/<unit>.<hash>.…`).
-    pub units: BTreeSet<String>,
+    pub units: BTreeMap<String, u64>,
     /// The map tiles (`pack`, `lo`): the base packs and road values copied here for them
     /// (`base/`), which the next such job copies again when they're gone.
-    pub packs: bool,
+    pub packs: Option<u64>,
+}
+
+/// `at` into `slot`, the earlier kept.
+fn sooner(slot: &mut Option<u64>, at: u64) {
+    *slot = Some(slot.map_or(at, |t| t.min(at)));
+}
+
+fn sooner_in<K: Ord>(m: &mut BTreeMap<K, u64>, k: K, at: u64) {
+    let e = m.entry(k).or_insert(at);
+    *e = (*e).min(at);
+}
+
+/// Room-making's order of a file by when a job here reads it (`Hints::when`): none known first,
+/// then the furthest ahead, the soonest last.
+pub fn order(when: Option<u64>) -> u64 {
+    when.map_or(0, |t| u64::MAX - t)
 }
 
 impl Hints {
-    /// The hints of the work of `step` on `targets` ("z/x/y"): a z6 tile's canopy squares (its box
-    /// with staging's margin) and packs; a tree cover tile's squares; a terrain run's archives; an
-    /// items or heritage job's pageview months.
+    /// The hints of the work of `step` on `targets` ("z/x/y") queued or running here: read now.
     pub fn add(&mut self, step: &str, targets: &[String]) {
+        self.add_at(step, targets, 0)
+    }
+
+    /// The hints of the work of `step` on `targets` ("z/x/y") from `at` (unix s; 0, now): a z6
+    /// tile's canopy squares (its box with staging's margin) and packs; a tree cover tile's
+    /// squares; a terrain run's archives; an items or heritage job's pageview months; the map
+    /// tiles' base packs.
+    pub fn add_at(&mut self, step: &str, targets: &[String], at: u64) {
         let step = super::steps::current(step);
         let tile = |t: &str| -> Option<(u8, u32, u32)> {
             let mut v = t.split(['/', '-']).map(|s| s.parse::<u32>().ok());
@@ -999,7 +1027,7 @@ impl Hints {
         let mut squares = |b: [f64; 4]| {
             for (top, left) in crate::trees::squares_of(b) {
                 for kind in ["median", "p95", "cover5m"] {
-                    self.squares.insert(crate::trees::chm_name(top, left, kind));
+                    sooner_in(&mut self.squares, crate::trees::chm_name(top, left, kind), at);
                 }
             }
         };
@@ -1007,7 +1035,7 @@ impl Hints {
             "unit" => {
                 for (z, x, y) in targets.iter().filter_map(|t| tile(t)) {
                     squares(crate::stage::tile_box_grown(z, x, y, crate::stage::MARGIN_KM));
-                    self.units.insert(format!("{z}-{x}-{y}"));
+                    sooner_in(&mut self.units, format!("{z}-{x}-{y}"), at);
                 }
             }
             "trees" => {
@@ -1016,22 +1044,80 @@ impl Hints {
                 }
             }
             s @ ("terrain-hi" | "terrain-deep" | "terrain-lo") => {
-                self.terrain.extend(targets.iter().map(|t| format!("{s} {t}")))
+                for t in targets {
+                    for a in super::terrain_shards(&format!("{s} {t}")) {
+                        sooner_in(&mut self.terrain, a, at);
+                    }
+                }
             }
-            "items" | "heritage" => self.months = true,
-            "pack" | "lo" => self.packs = true,
+            "items" | "heritage" => sooner(&mut self.months, at),
+            "pack" | "lo" => sooner(&mut self.packs, at),
             _ => {}
         }
     }
 
-    /// Whether file `p` of the caches at `cache` is one the queued jobs read.
-    pub fn has(&self, cache: &Path, p: &Path) -> bool {
+    /// The hints of this Mac's tiles to come in a forecast made at `at` (`forecast::ToCome::macs`'
+    /// entry for this Mac: by step, [tile, s from `at`]).
+    pub fn of_tocome(steps: &BTreeMap<String, Vec<(String, u32)>>, at: u64) -> Hints {
+        let mut h = Hints::default();
+        for (step, tiles) in steps {
+            for (t, s) in tiles {
+                h.add_at(step, std::slice::from_ref(t), at + u64::from(*s));
+            }
+        }
+        h
+    }
+
+    /// `other`'s hints added to these, each file's sooner time kept.
+    pub fn merge(&mut self, other: &Hints) {
+        for (k, &t) in &other.terrain {
+            sooner_in(&mut self.terrain, *k, t);
+        }
+        for (k, &t) in &other.squares {
+            sooner_in(&mut self.squares, k.clone(), t);
+        }
+        for (k, &t) in &other.units {
+            sooner_in(&mut self.units, k.clone(), t);
+        }
+        if let Some(t) = other.months {
+            sooner(&mut self.months, t);
+        }
+        if let Some(t) = other.packs {
+            sooner(&mut self.packs, t);
+        }
+    }
+
+    /// When (unix s; 0, now) a job here is known to read file `p` of the caches at `cache`; None
+    /// when none is.
+    pub fn when(&self, cache: &Path, p: &Path) -> Option<u64> {
         let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-        (self.months && p.starts_with(cache.join(MONTHS)))
-            || (self.packs && p.starts_with(cache.join("base")))
-            || self.terrain.iter().any(|id| super::terrain_reads(id, p))
-            || (p.starts_with(cache.join("chm10")) && self.squares.contains(name.as_ref()))
-            || (p.starts_with(cache.join("blobs")) && name.split('.').next().is_some_and(|u| self.units.contains(u)))
+        let mut w = None;
+        let mut take = |t: Option<u64>| {
+            if let Some(t) = t {
+                sooner(&mut w, t);
+            }
+        };
+        if p.starts_with(cache.join(MONTHS)) {
+            take(self.months);
+        }
+        if p.starts_with(cache.join("base")) {
+            take(self.packs);
+        }
+        if p.starts_with(cache.join("aws-terrarium")) {
+            take(super::archive_shard(p).and_then(|a| self.terrain.get(&a).copied()));
+        }
+        if p.starts_with(cache.join("chm10")) {
+            take(self.squares.get(name.as_ref()).copied());
+        }
+        if p.starts_with(cache.join("blobs")) {
+            take(name.split('.').next().and_then(|u| self.units.get(u).copied()));
+        }
+        w
+    }
+
+    /// Whether a job here is known to read file `p` of the caches at `cache` (`when`).
+    pub fn has(&self, cache: &Path, p: &Path) -> bool {
+        self.when(cache, p).is_some()
     }
 }
 
@@ -1213,7 +1299,7 @@ fn bytes_under(p: &Path) -> u64 {
 /// and `margin` more (or they're empty), each cheap file only once the NAS's `sources` has it; the
 /// bytes deleted.
 pub fn make_room(cache: &Path, sources: &NasPath, need: u64, margin: u64, hint: &Hints) -> Result<u64> {
-    make_room_with(cache, sources, need, need + margin, &disk_free, &|p| hint.has(cache, p))
+    make_room_with(cache, sources, need, need + margin, &disk_free, &|p| hint.when(cache, p))
 }
 
 /// The NAS folders' files and their sizes, each folder listed once (a folder not there: none; one
@@ -1330,7 +1416,7 @@ fn make_room_with(
     need: u64,
     target: u64,
     free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
-    hint: &dyn Fn(&Path) -> bool,
+    hint: &dyn Fn(&Path) -> Option<u64>,
 ) -> Result<u64> {
     Ok(free_cheap(cache, sources, need, target, free_space, hint, None)?.values().sum())
 }
@@ -1344,7 +1430,7 @@ fn free_cheap(
     need: u64,
     target: u64,
     free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
-    hint: &dyn Fn(&Path) -> bool,
+    hint: &dyn Fn(&Path) -> Option<u64>,
     goal: Option<&dyn Fn() -> u64>,
 ) -> Result<BTreeMap<String, u64>> {
     // (No caches yet, a new home's: nothing to free.)
@@ -1399,7 +1485,7 @@ fn free_cheap(
         let newest = g.last().map(|f| f.0);
         let idle_square = !g.first().is_some_and(|f| f.2.starts_with(&tiles) && !f.2.starts_with(&packs))
             && newest.is_some_and(|t| t < lately);
-        (g.iter().any(|f| hint(&f.2)), !idle_square, newest)
+        (g.iter().map(|f| order(hint(&f.2))).max().unwrap_or(0), !idle_square, newest)
     });
     let by = if packed > 0 { BTreeMap::from([("terrain".to_string(), packed)]) } else { BTreeMap::new() };
     let mut room = Room { cache, free_space, target, goal, short: target.saturating_sub(free), since: packed, by };
@@ -1591,7 +1677,7 @@ mod tests {
             goal,
             goal,
             free_space,
-            &|_| false,
+            &|_| None,
             None,
         )?;
         let left = if free_space(cache)? < goal {
@@ -1614,7 +1700,7 @@ mod tests {
         target: u64,
         free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
     ) -> Result<u64> {
-        make_room_with(cache, &store::nasfs::NasPath::local_for_test(sources), need, target, free_space, &|_| false)
+        make_room_with(cache, &store::nasfs::NasPath::local_for_test(sources), need, target, free_space, &|_| None)
     }
     use std::cell::Cell;
     use std::time::Duration;
@@ -1749,7 +1835,7 @@ mod tests {
         let other = whole(&c.join("aws-terrarium/packs/6-9-9.0000000000000002.tiles"), 7200);
         let all = used(c);
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
-        let hint = |p: &Path| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("6-1-1."));
+        let hint = |p: &Path| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("6-1-1.")).then_some(0);
         // Short of one archive: the other shard's goes, though the job's own was idle longer.
         assert_eq!(
             make_room_with(c, &store::nasfs::NasPath::local_for_test(nas), 1000 + own, 1000 + own, &disk(1000), &hint)
@@ -1779,7 +1865,7 @@ mod tests {
             h.has(c, &c.join("blobs/base/6-33-22.0123456789abcdef.base"))
                 && !h.has(c, &c.join("blobs/base/6-33-23.0123456789abcdef.base"))
         );
-        assert!(h.squares.iter().all(|n| n.starts_with("meta_chm_lat=")) && !h.squares.is_empty());
+        assert!(h.squares.keys().all(|n| n.starts_with("meta_chm_lat=")) && !h.squares.is_empty());
         assert!(h.has(c, &c.join(MONTHS).join("2026-08.tsv.zst")));
         // The map tiles: the base packs copied here for them.
         assert!(!h.has(c, &c.join("base/base/6-1-1.0000000000000001.base")));
@@ -1788,6 +1874,44 @@ mod tests {
             h.has(c, &c.join("base/base/6-1-1.0000000000000001.base"))
                 && h.has(c, &c.join("base/global/roads/6-2-2.0000000000000002.roads"))
         );
+    }
+
+    /// Task #843: what the forecast places on this Mac goes after what no job here reads, the
+    /// furthest ahead first, whatever their last use (the least recently used first only among
+    /// equals); queued and running jobs' (now) after all.
+    #[test]
+    fn the_file_needed_furthest_ahead_goes_first() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let nas = &d.path().join("nas/sources");
+        let soon = c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles");
+        let later = c.join("aws-terrarium/packs/6-2-2.0000000000000002.tiles");
+        let none = c.join("aws-terrarium/packs/6-9-9.0000000000000003.tiles");
+        // (The least recently used is the one needed soonest; the one no job reads, the newest.)
+        let (n_soon, n_later, n_none) = (whole(&soon, 9000), whole(&later, 7200), whole(&none, 60));
+        let tocome =
+            BTreeMap::from([("terrain-hi".to_string(), vec![("6/1/1".to_string(), 100), ("6/2/2".to_string(), 5000)])]);
+        let h = Hints::of_tocome(&tocome, 1_000_000);
+        assert_eq!((h.when(c, &soon), h.when(c, &later), h.when(c, &none)), (Some(1_000_100), Some(1_005_000), None));
+        let all = used(c);
+        let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
+        let hint = |p: &Path| h.when(c, p);
+        let sources = store::nasfs::NasPath::local_for_test(nas);
+        // Short of one: the one no job reads.
+        assert_eq!(make_room_with(c, &sources, 1000 + n_none, 1000 + n_none, &disk(1000), &hint).unwrap(), n_none);
+        assert!(soon.exists() && later.exists() && !none.exists());
+        // Short of one more: the one read furthest ahead, though the other was idle longer.
+        let all = used(c);
+        let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
+        assert_eq!(make_room_with(c, &sources, 1000 + n_later, 1000 + n_later, &disk(1000), &hint).unwrap(), n_later);
+        assert!(soon.exists() && !later.exists());
+        // A queued job's (now) outranks a forecast's.
+        let mut q = Hints::default();
+        q.add("terrain-hi", &["6/2/2".to_string()]);
+        let mut m = h.clone();
+        m.merge(&q);
+        assert_eq!((m.when(c, &later), order(m.when(c, &later)) > order(m.when(c, &soon))), (Some(0), true));
+        assert_eq!(n_soon, std::fs::metadata(&soon).unwrap().len());
     }
 
     #[test]
@@ -2410,7 +2534,7 @@ mod tests {
         // the old DEM cache (130), the copies (500), then base packs a file at a time, the oldest
         // first, as far as needed: one.
         let disk = move |p: &Path| Ok(held - all(p));
-        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 3500, &disk, &|_| false).unwrap();
+        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 3500, &disk, &|_| None).unwrap();
         assert_eq!(
             f.freed,
             BTreeMap::from([
@@ -2430,17 +2554,17 @@ mod tests {
         );
         // A little more: the next base pack.
         assert_eq!(
-            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 4000, &disk, &|_| false).unwrap().freed,
+            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 4000, &disk, &|_| None).unwrap().freed,
             BTreeMap::from([("base".to_string(), 2000)])
         );
         // Already there: nothing goes.
         assert_eq!(
-            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 3500, &disk, &|_| false).unwrap(),
+            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 3500, &disk, &|_| None).unwrap(),
             Freed::default()
         );
         // A target past everything: the last base pack, then the heritage clip; short, and what
         // stays said (nothing here).
-        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| false).unwrap();
+        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| None).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("heritage".to_string(), 700)]));
         assert_eq!(f.left, 0);
     }
@@ -2469,7 +2593,7 @@ mod tests {
         };
         let disk = move |p: &Path| Ok(700 - all(p));
         // No manifest naming the planet it's clipped from: kept, by a clear too.
-        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| false).unwrap();
+        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| None).unwrap();
         assert_eq!((f.bytes(), f.left), (0, 700));
         // (A deep clear keeps it too, saying why.)
         let g = clear(c, &store::nasfs::NasPath::local_for_test(nas), Level::Deep, false).unwrap();
@@ -2488,7 +2612,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| false)
+            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| None)
                 .unwrap()
                 .freed
                 .is_empty()
@@ -2497,7 +2621,7 @@ mod tests {
         // There: it goes.
         filtered_planet(&store::nasfs::NasRoot::local_for_test(&d.path().join("nas")));
         assert_eq!(
-            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| false)
+            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| None)
                 .unwrap()
                 .freed
                 .get("heritage"),
@@ -2527,7 +2651,7 @@ mod tests {
         let first = c.join("base/base/6-1-1.0000000000000001.base");
         let goal = || if first.exists() { u64::MAX } else { 0 };
         let disk = move |p: &Path| Ok(held - all(p));
-        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &goal, &disk, &|_| false).unwrap();
+        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &goal, &disk, &|_| None).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("copies".to_string(), 500)]));
         assert!(
             c.join("base/base/6-1-2.0000000000000001.base").exists()
@@ -2551,7 +2675,7 @@ mod tests {
             fs.iter().map(|f| f.1).sum::<u64>()
         };
         let disk = move |p: &Path| Ok(held - all(p));
-        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 400, &disk, &|_| false).unwrap();
+        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 400, &disk, &|_| None).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("copies".to_string(), 500)]));
         assert!(
             !c.join("sources-a").exists()
@@ -2800,7 +2924,7 @@ mod nas_tests {
         std::fs::create_dir_all(d.path().join("nas")).unwrap();
         std::fs::write(&nas, b"").unwrap();
         assert_eq!(
-            make_room_with(&c, &store::nasfs::NasPath::local_for_test(&nas), 1000, 1000, &|_| Ok(0), &|_| false)
+            make_room_with(&c, &store::nasfs::NasPath::local_for_test(&nas), 1000, 1000, &|_| Ok(0), &|_| None)
                 .unwrap(),
             0
         );
@@ -2829,7 +2953,7 @@ mod nas_tests {
         put(&nas.join("canopy/b.tif"), &tif[..10]);
         put(&c.join("aws-terrarium/9/1/3.png"), &png);
         put(&nas.join("aws-terrarium/9/1/3.png"), &png[..10]);
-        make_room_with(&c, &store::nasfs::NasPath::local_for_test(&nas), 1 << 40, 1 << 40, &|_| Ok(0), &|_| false)
+        make_room_with(&c, &store::nasfs::NasPath::local_for_test(&nas), 1 << 40, 1 << 40, &|_| Ok(0), &|_| None)
             .unwrap();
         for f in ["aws-terrarium/9/1/1.png", "chm10/a.tif.m4.12.tmp", "aws-terrarium/9/1/2.png", "chm10/b.tif"] {
             assert!(!c.join(f).exists(), "{f} deleted");
