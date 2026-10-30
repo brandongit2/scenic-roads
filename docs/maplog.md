@@ -20,8 +20,9 @@ what steps 3 and 6 change:
 - **The batch follows the catalogue,** not the other way round: the step still writes the catalogue
   itself, and the agent diffs the published catalogue against the map, rather than the step posting
   its map to the agent (§6.7) until step 6.
-- **A catalogue the thread hasn't taken yet is replaced by the next** (a slot of one, so a stalled
-  NAS write never piles catalogues up in memory): the next batch spans both, and `seq` skips one.
+- **At most one catalogue waits for the thread:** one published while another waits untaken is
+  skipped (logged), so a stalled NAS write never piles catalogues up in memory; the next batch spans
+  it, and `seq` skips its number.
 - **No snapshot at a clean stop** (§4.4): the lead's log replays its segments on a start instead.
 - **Nothing reads the log:** the routes (`GET /map/changes`, `/map/snapshot`) come with step 3.
 - **Memory:** the lead holds the map once (about 380 MB for catalogue 798's 82 MB of JSON). A

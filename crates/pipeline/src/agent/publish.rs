@@ -65,23 +65,16 @@ pub fn held_at(was: Option<u64>, held: bool, due: bool, now: u64) -> Option<u64>
 /// mismatch is logged loudly. Nothing reads the log yet, and the catalogues are written as before.
 ///
 /// The work (a catalogue diffed against the map, checked, the hourly snapshots) runs on a thread of
-/// its own, never in the agent's loop, and can't hold the loop up: `published` leaves the newest
-/// catalogue in a slot of one and returns (a catalogue the thread hadn't taken yet is replaced: the
-/// next batch spans both, so a stalled NAS write never piles catalogues up in memory). A panic there
-/// is logged and the thread goes on, its log opened again at the next catalogue.
+/// its own, never in the agent's loop, and can't hold the loop up: `published` hands the catalogue
+/// over a channel of one place and returns. While one waits there untaken, a newer one isn't queued
+/// (the next batch after it spans both): a stalled NAS write never piles catalogues up in memory.
+/// A panic there is logged and the thread goes on, its log opened again at the next catalogue.
 #[derive(Default)]
 pub struct Shadow {
-    slot: Option<std::sync::Arc<Slot>>,
+    tx: Option<std::sync::mpsc::SyncSender<Published>>,
 }
 
 type Published = (store::nasfs::NasRoot, std::sync::Arc<store::catalogue::Catalogue>);
-
-/// The newest catalogue the thread hasn't taken.
-#[derive(Default)]
-struct Slot {
-    next: std::sync::Mutex<Option<Published>>,
-    ready: std::sync::Condvar,
-}
 
 /// The log's folder in the agent's home.
 pub const MAPLOG: &str = "maplog";
@@ -97,31 +90,29 @@ impl Shadow {
         root: &store::nasfs::NasRoot,
         cat: std::sync::Arc<store::catalogue::Catalogue>,
     ) {
-        let slot = self.slot.get_or_insert_with(|| {
-            let slot = std::sync::Arc::new(Slot::default());
-            let (s, dir) = (slot.clone(), home.join(MAPLOG));
+        let tx = self.tx.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Published>(1);
+            let dir = home.join(MAPLOG);
             let started = std::thread::Builder::new().name("maplog".into()).spawn(move || {
                 let mut w = Writer::new(dir);
-                loop {
-                    let (root, cat) = {
-                        let mut g = s.next.lock().unwrap_or_else(|e| e.into_inner());
-                        loop {
-                            match g.take() {
-                                Some(p) => break p,
-                                None => g = s.ready.wait(g).unwrap_or_else(|e| e.into_inner()),
-                            }
-                        }
-                    };
+                for (root, cat) in rx {
                     w.publish_guarded(&root, &cat, now());
                 }
             });
             if let Err(e) = started {
                 eprintln!("maplog: MISMATCH: the shadow's thread didn't start ({e}); no batches written");
             }
-            slot
+            tx
         });
-        *slot.next.lock().unwrap_or_else(|e| e.into_inner()) = Some((root.clone(), cat));
-        slot.ready.notify_one();
+        match tx.try_send((root.clone(), cat)) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::TrySendError::Full(p)) => {
+                eprintln!("maplog: catalogue {} not queued: the shadow is behind (the next batch spans it)", p.1.n)
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(p)) => {
+                eprintln!("maplog: MISMATCH at catalogue {}: the shadow's thread is gone", p.1.n)
+            }
+        }
     }
 }
 
