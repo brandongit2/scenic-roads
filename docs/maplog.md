@@ -478,3 +478,12 @@ following each publish within a second, from home or away, and GC that keeps up.
    are within `GRACE`. Proposed: not built now (no one asks for it); the grace keeps the option.
 6. **Clients' cursors durable:** proposed not `fsync`ed per request (saved with the log's snapshot):
    a lead restart that loses an hour of cursor advances only delays GC by that hour.
+
+## Decisions (PM, 30 Oct night)
+
+1. The map log is its own store on the lead, so it lands without waiting for #878; #878's pool store may absorb it later.
+2. `GRACE` is 2 days.
+3. `CURSOR_TTL` is 7 days.
+4. The orphan sweep runs over SMB in chunks for now.
+5. Rolling back a publish is not built; the grace keeps the option open.
+6. Cursors are saved with the log's snapshot. A lead restart can only bring a cursor back older, which keeps files longer and never frees one early.
