@@ -1490,7 +1490,7 @@ function phaseCard(step, b, p, range) {
     ["Jobs", `${n(b.runs)} ended in the range${b.failed ? ` (${n(b.failed)} failed)` : ""}`],
     ["Time", split],
     ["Alongside", segs.some((x) => x.with?.length) ? h("div", "tb-split", ...segs.flatMap((x) => x.with.map((y) => h("div", null, h("i", { style: { background: WAIT_COLOURS[y.key] } }), `${y.label} ${x.label} for ${dur(y.s)} (${pct(y.s / x.s)} of it)`)))) : null],
-    ["How", segs.some((x) => x.key !== "old") ? (segs.some((x) => x.with?.length) ? `${WAITS_RULE} Alongside: ${ALONGSIDE_RULE}` : WAITS_RULE) : null],
+    ["How", segs.some((x) => x.key !== "old") ? WAITS_RULE : null],
     ["CPU / wall", cpu != null ? `${cpu.toFixed(2)} (${dur(p.cpu)} of CPU in ${dur(p.wall)}; above 1: several threads)` : p ? "not measured" : null],
     ["NAS", p?.nas ? `${mbText(p.nas)} in all · ${mbText(per(p.nas))} a job` : null],
     ["Internet", p?.net ? `${mbText(p.net)} in all · ${mbText(per(p.net))} a job` : null],

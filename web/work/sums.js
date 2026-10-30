@@ -566,7 +566,7 @@ export const WAIT_PAIRS = [["nas", "net"], ["nas", "disk"], ["nas", "other"], ["
 export const ALONGSIDE = { nas: "NAS calls", net: "network requests", disk: "local disk calls", other: "waiting on other work", cpu: "computing" };
 // How what ran alongside counts (task #891), for the tooltips: exact for two waits, an estimate with
 // computing, and the estimate's limits.
-export const ALONGSIDE_RULE = "Seconds two ran at once on parallel threads, drawn under the part the instant went to, extra: not in the bar's sum. Two kinds of wait at once are exact. Computing beside a wait is the process's CPU time while that wait held the instant, at most that time: an estimate, which also counts the waiting threads' own CPU (the system's work for a call: large for local disk reads from memory, small for the NAS and the network), and the CPU of other waits' threads.";
+export const ALONGSIDE_RULE = "Seconds both ran at once on parallel threads; extra, not in the bar's sum. Two waits: exact. A wait with computing: the process's CPU time while that wait held the instant, an estimate that also counts the waiting threads' own CPU in their calls (much for local disk reads from memory, little for the NAS and the network).";
 // How the waits count, for the tooltips.
 export const WAITS_RULE = "Measured by the job's wall clock: an instant counts as waiting on the NAS when any of the job's threads is in a NAS call, else on the network, else on the local disk, else on other work (another worker, a thread); the rest is computing. So the parts add up to the phase's wall time, however many threads wait at once.";
 
