@@ -167,6 +167,11 @@ pub struct Step {
     /// planner, the forecast and the page's waits all derive readiness per target from it (task
     /// #864). None: it reads no other tiled step's targets (a world step's waits are its own).
     pub reads: Option<Reads>,
+    /// The steps whose whole work a target of it waits for (a chain's: it reads what all their
+    /// targets make, e.g. depth-root every depth-lo assembly): the forecast's chain waits derive
+    /// from it (forecast::chain_deps, task #864), as the planner's chain code holds them
+    /// (build::landmarks_work, bld_work, depth_work, polar_next).
+    pub after: &'static [&'static str],
 }
 
 /// What a target of a step reads of other steps' targets (`of`: (step, target) for each, any
@@ -303,6 +308,7 @@ const fn step(
         writes,
         records_only: false,
         reads: None,
+        after: &[],
     }
 }
 
@@ -588,6 +594,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
+        after: &["polar-terrain"],
         mem_mb: 2048,
         ..step(
             "slope",
@@ -599,6 +606,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
+        after: &["polar-terrain", "polar-slope"],
         ..step(
             "slope",
             Pack,
@@ -649,6 +657,7 @@ pub const TABLE: [Step; 59] = [
     // (A z3 tile's assembly: its composing, ~2 GB, then its floor's shading, from what that holds
     // (crate::depth::build::lo_peak_mb).)
     Step {
+        after: &["depth"],
         mem_mb: crate::depth::build::lo_peak_mb(),
         ..step(
             "depth",
@@ -661,6 +670,7 @@ pub const TABLE: [Step; 59] = [
     },
     // (The root: 64 z3 tiles of each layer read, 21 made.)
     Step {
+        after: &["depth", "depth-lo"],
         ..step(
             "depth",
             Pack,
@@ -750,6 +760,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
+        after: &["rail-feeds"],
         mem_mb: 6144,
         ..step("trains", Derive, World, "rail", "Counts trains a day on the regions' rail.", w_rail)
     },
@@ -759,11 +770,13 @@ pub const TABLE: [Step; 59] = [
         ..step("landmarks", Derive, Z6, "pois", "Finds a tile's landmark candidates.", w_pois)
     },
     Step {
+        after: &["pois", "summits"],
         mem_mb: 2500,
         shared: Some(7),
         ..step("landmarks", Derive, Z6, "peaks", "Measures a tile's peaks' prominence and isolation.", w_peaks)
     },
     Step {
+        after: &["pois"],
         mem_mb: 3072,
         answered: true,
         ..step(
@@ -788,6 +801,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
+        after: &["pois", "peaks", "items", "heritage"],
         mem_mb: 4096,
         ..step(
             "landmarks",
@@ -819,6 +833,7 @@ pub const TABLE: [Step; 59] = [
     // (The 3D buildings, until a target's own run says: the densest tile's, Kantō's 6/56/25 and its
     // 30.3 M rows, by the models of task #579's reads and B5's pilot. Offered by the rows they read.)
     Step {
+        after: &["bld-fetch"],
         mem_mb: super::bldprep_peak(30_300_000),
         shared: Some(8),
         ..step(
@@ -831,6 +846,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
+        after: &["bldprep"],
         mem_mb: super::bldtiles_peak(30_300_000),
         shared: Some(9),
         ..step(
@@ -844,6 +860,7 @@ pub const TABLE: [Step; 59] = [
     },
     // (Its field's lo levels a z3 tile: what crate::bld::field's lo holds, from its sizes.)
     Step {
+        after: &["bldtiles"],
         mem_mb: crate::bld::field::LO_PEAK_MB,
         ..step(
             "buildings",

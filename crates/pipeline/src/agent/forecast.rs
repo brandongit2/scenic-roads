@@ -972,19 +972,16 @@ enum Phase {
 /// normalized files. By step: (the jobs before the
 /// regions', the chains', the terrain's).
 fn chain_deps(step: &str) -> (&'static [&'static str], &'static [&'static str], bool) {
-    match step {
-        "pois" => (&["trailends"], &[], false),
-        "summits" => (&[], &[], true),
-        "peaks" => (&["summits"], &["pois", "summits"], true),
-        "items" => (&[], &["pois"], false),
-        "heritage" => (&["heritage-sites"], &[], false),
-        "marks" => (&[], &["pois", "peaks", "items", "heritage"], false),
-        "rail" => (&[], &["rail-feeds"], false),
-        "bldtiles" => (&[], &["bldprep"], false),
-        "bldfield-lo" => (&[], &["bldtiles"], false),
-        "depth-lo" => (&[], &["depth"], false),
-        _ => (&[], &[], false),
-    }
+    // (The chain steps before it: its row's `after`, crate::agent::steps; task #864.)
+    let earlier = crate::agent::steps::row(step).map_or(&[][..], |r| r.after);
+    let (pre, reads_terrain): (&'static [&'static str], bool) = match step {
+        "pois" => (&["trailends"], false),
+        "summits" => (&[], true),
+        "peaks" => (&["summits"], true),
+        "heritage" => (&["heritage-sites"], false),
+        _ => (&[], false),
+    };
+    (pre, earlier, reads_terrain)
 }
 
 #[derive(Clone, Debug)]
