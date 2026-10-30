@@ -4572,6 +4572,7 @@ mod tests {
                 g.deps.iter().map(Vec::len).sum::<usize>() + g.groups.iter().map(Vec::len).sum::<usize>()
             };
             let c = g.compact(&Default::default());
+            assert!(serde_json::to_vec(&c).unwrap().len() <= serde_json::to_vec(g).unwrap().len(), "compact grew");
             let mut spread = g.clone();
             for (i, s) in g.sets.iter().enumerate() {
                 for &k in s {

@@ -145,6 +145,11 @@ impl Graph {
                 groups.len() as u32 - 1
             })
         };
+        // (A list only once is shorter inline than as a set.)
+        let mut times: HashMap<&[u32], usize> = HashMap::new();
+        for i in (0..n).filter(|&i| used[i] && self.deps[i].len() > 1) {
+            *times.entry(&self.deps[i][..]).or_default() += 1;
+        }
         let (mut deps, mut sets) = (Vec::new(), Vec::new());
         for i in (0..n).filter(|&i| used[i]) {
             let mut s: Vec<u32> = Vec::new();
@@ -160,7 +165,7 @@ impl Graph {
                 s.push(k);
             }
             let d = map(&self.deps[i]);
-            if d.len() > 1 {
+            if d.len() > 1 && times.get(&self.deps[i][..]).is_some_and(|&t| t > 1) {
                 s.push(set_of(d, &mut groups));
                 deps.push(Vec::new());
             } else {
