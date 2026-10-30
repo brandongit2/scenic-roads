@@ -8,11 +8,14 @@ mod entropy;
 use libwebp_sys as w;
 
 /// The linked libwebp's encoder version, as it says it ("1.6.0"): what a key naming the encoder's
-/// bytes names.
-pub fn version() -> String {
-    // SAFETY: no arguments, no state.
-    let v = unsafe { w::WebPGetEncoderVersion() } as u32;
-    format!("{}.{}.{}", v >> 16, (v >> 8) & 0xff, v & 0xff)
+/// bytes names. Asked once a process (it can't change while linked).
+pub fn version() -> &'static str {
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| {
+        // SAFETY: no arguments, no state.
+        let v = unsafe { w::WebPGetEncoderVersion() } as u32;
+        format!("{}.{}.{}", v >> 16, (v >> 8) & 0xff, v & 0xff)
+    })
 }
 
 /// RGB image `rgb` (`width` × `height`, 3 bytes a pixel, row by row) as a lossless WebP file at

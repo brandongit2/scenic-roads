@@ -17,9 +17,13 @@ pub const NATIVE_M: f64 = 0.01;
 pub const COARSER_M: f64 = 0.1;
 
 /// What a key naming the tiles' bytes names of their making: the encoding, libwebp's version and
-/// level, the rounding.
+/// level, the rounding. Made once a process (its parts are constants and the linked library's).
 pub fn version() -> String {
-    format!("{ENCODING} libwebp {} z{LEVEL} exact; {NATIVE_M} m native, {COARSER_M} m coarser", webpenc::version())
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| {
+        format!("{ENCODING} libwebp {} z{LEVEL} exact; {NATIVE_M} m native, {COARSER_M} m coarser", webpenc::version())
+    })
+    .clone()
 }
 
 /// Heights `e` rounded to `quantum` metres.

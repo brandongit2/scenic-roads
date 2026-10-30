@@ -15,11 +15,14 @@ pub const LEVEL: u8 = 6;
 
 /// What a key naming the tiles' bytes names of their making: the encoding, libwebp's version and
 /// level, the codes' constants, and how a parent is made (crate::slope_pack::stored).
+/// Made once a process (its parts are constants and the linked library's).
 pub fn version() -> String {
-    format!(
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| format!(
         "{ENCODING} libwebp {} z{LEVEL} exact; steepness sqrt to {SLOPE_MAX} %, direction 128 + {DIR_SCALE} u by {DIR_STEP}, none under {COHERENT}; parents from full precision within a job",
         webpenc::version()
-    )
+    ))
+    .clone()
 }
 
 /// A tile's pixels (256 × 256) as stored: lossless WebP of their codes.

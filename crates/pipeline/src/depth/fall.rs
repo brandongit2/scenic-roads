@@ -46,9 +46,13 @@ pub enum Grid {
 pub const LEVEL: u8 = 6;
 
 /// What a key naming the tiles' bytes names of their making: the encodings, libwebp's version and
-/// level.
+/// level. Made once a process (its parts are constants and the linked library's).
 pub fn version() -> String {
-    format!("{} {} libwebp {} z{LEVEL} exact", super::ENCODING, super::CLASS_ENCODING, webpenc::version())
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| {
+        format!("{} {} libwebp {} z{LEVEL} exact", super::ENCODING, super::CLASS_ENCODING, webpenc::version())
+    })
+    .clone()
 }
 
 /// A stored tile's pixels: lossless WebP (`RIFF…WEBPVP8L`), RGB; or a PNG, a pack from before
