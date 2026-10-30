@@ -4913,11 +4913,13 @@ fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
         pipeline::control::safe_point(step);
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start(step, &t.slash());
+        // (Paused at a block kept in its resume log: nothing of the tile put, the run resumed there.)
         let n = if z == 3 {
-            pipeline::depth::build::build_lo(out, &sources, &water, local.clone(), (t.x, t.y))?
+            pipeline::depth::build::build_lo(out, &sources, &water, local.clone(), (t.x, t.y))
         } else {
-            pipeline::depth::build::build_hi(out, &sources, &water, local.clone(), (t.x, t.y))?
-        };
+            pipeline::depth::build::build_hi(out, &sources, &water, local.clone(), (t.x, t.y))
+        }
+        .map_err(|e| pipeline::control::stop_if_paused(step, e))?;
         eprintln!("{step} {}: {n} tiles", t.slash());
         pipeline::control::done(step, &t.slash());
         note_cost(step, &t.slash(), c);

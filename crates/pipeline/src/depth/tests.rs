@@ -1085,6 +1085,49 @@ fn a_resumed_z6_tiles_packs_and_shading_are_the_same_bytes() {
     }
 }
 
+/// Task #885: a z6 tile's job paused at every one of its safe points (each block kept in its
+/// resume log): paused after its first block, resumed and paused after the next, and so on to its
+/// end, each stop the pause's own error (crate::control::Paused) with nothing of the tile put,
+/// stores the same packs as one never paused.
+#[test]
+fn a_z6_tile_paused_at_every_safe_point_resumes_to_the_same_bytes() {
+    use super::build::build_hi_keeping;
+    use crate::resume_log::STOP_AFTER;
+    let d = tempfile::tempdir().unwrap();
+    let srcs = sources(d.path());
+    let packs = |out: &Out| {
+        [LAYER, CLASS_LAYER, SHADE_LAYER].map(|l| {
+            let c = out.get(&hi_logical(l, T.0, T.1)).unwrap_or_else(|| panic!("{l}'s hi pack")).to_string();
+            out.path(&c).read().unwrap()
+        })
+    };
+    let open = |name: &str| {
+        Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join(name)), &d.path().join(format!("{name}-s")))
+            .unwrap()
+    };
+    let mut out = open("fresh");
+    build_hi_keeping(&mut out, &srcs, &Fixture, None, T, true).unwrap();
+    let fresh = packs(&out);
+    let mut out = open("paused");
+    let mut stops = 0;
+    loop {
+        STOP_AFTER.set(Some(1));
+        let r = build_hi_keeping(&mut out, &srcs, &Fixture, None, T, true);
+        STOP_AFTER.set(None);
+        match r {
+            Err(e) => {
+                assert!(crate::control::is_paused(&e), "{e:#}");
+                assert!(out.get(&hi_logical(LAYER, T.0, T.1)).is_none(), "nothing of the tile put");
+                stops += 1;
+            }
+            // (Past its last block: put whole.)
+            Ok(_) => break,
+        }
+    }
+    assert!(stops > 2, "a z6 tile has several safe points: {stops}");
+    assert!(packs(&out) == fresh, "paused at each of its {stops} safe points");
+}
+
 /// Task #804: a new fine source dropped in the open sea, of any zoom, gets tiles up to its zoom
 /// and none finer, with no change to the code; every coarser level over it is the mean of the
 /// finer (as the terrain's), down through the z6 tile's z9 to the assembly's z8 and z3.

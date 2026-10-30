@@ -64,7 +64,8 @@ pub fn id(parts: &[&str]) -> String {
 
 #[cfg(test)]
 thread_local! {
-    /// Tests: the run stops (an error) once this many blocks more are kept.
+    /// Tests: the run stops as a pause stops it (crate::control::Paused) once this many blocks more
+    /// are kept.
     pub static STOP_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
@@ -139,7 +140,10 @@ impl Log {
     }
 
     /// Block `b` finished, what its step keeps of it `payload`: appended. A failure to keep it is
-    /// said and the run goes on keeping nothing more.
+    /// said and the run goes on keeping nothing more. Once it's kept, a safe point (task #885,
+    /// crate::control::piece_saved): Err(crate::control::Paused) with the build pausing, the run
+    /// resumed from here; a block not kept (the log failed) is no safe point, as its work would be
+    /// lost.
     pub fn keep(&mut self, b: BlockId, payload: &[u8]) -> Result<()> {
         if let Some(f) = self.file.as_mut() {
             if let Err(e) = f.write_all(&record(b, payload)) {
@@ -152,9 +156,14 @@ impl Log {
         if let Some(n) = STOP_AFTER.get() {
             if n <= 1 {
                 STOP_AFTER.set(None);
-                anyhow::bail!("stopped (a test's interruption) after block {b:?}");
+                // (As a pause stops it: the same error, at the same point.)
+                return Err(anyhow::Error::new(crate::control::Paused)
+                    .context(format!("stopped (a test's pause) after block {b:?}")));
             }
             STOP_AFTER.set(Some(n - 1));
+        }
+        if self.file.is_some() {
+            crate::control::piece_saved()?;
         }
         Ok(())
     }

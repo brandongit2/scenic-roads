@@ -838,7 +838,7 @@ mod tests {
                 let stood = raw.stood.load(std::sync::atomic::Ordering::Relaxed);
                 let read = raw.read.into_inner().unwrap();
                 if let Err(e) = r {
-                    assert!(e.to_string().contains("a test's interruption"), "{e:#}");
+                    assert!(crate::control::is_paused(&e), "{e:#}");
                     return (None, stood, read);
                 }
                 let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
@@ -925,7 +925,7 @@ mod tests {
             STOP_AFTER.set(None);
             let log = crate::resume_log::path(&scratch, (6, t.0, t.1));
             if let Err(e) = r {
-                assert!(e.to_string().contains("a test's interruption") && log.exists(), "{e:#}");
+                assert!(crate::control::is_paused(&e) && log.exists(), "{e:#}");
                 return None;
             }
             assert!(!log.exists(), "the log gone once written");

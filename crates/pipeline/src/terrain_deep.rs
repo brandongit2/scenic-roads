@@ -1415,23 +1415,34 @@ fn make_tiles(
         }
         // (Each base tile's deep tiles kept as it's made: made on the pool's threads, kept here.)
         let (tx, rx) = std::sync::mpsc::channel();
+        // (Stopped, a pause at a base tile kept or an error: the base tiles not begun aren't, so
+        // the stop waits only for those under way, task #885.)
+        let stop = std::sync::atomic::AtomicBool::new(false);
         let made = std::thread::scope(|s| -> Result<()> {
             s.spawn(|| {
                 groups[k].par_iter().zip(&with[k]).zip(&todo[k]).filter(|((_, &d), &t)| d && t).for_each_with(
                     tx,
                     |tx, ((&(t, zf), _), _)| {
-                        tx.send((t, deep_tiles(&samplers, water, &decoded, t, zf, &zs))).ok();
+                        if !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            tx.send((t, deep_tiles(&samplers, water, &decoded, t, zf, &zs))).ok();
+                        }
                     },
                 )
             });
-            for (t, r) in rx {
-                let r = r?;
-                if let Some(l) = log.as_mut() {
-                    l.keep(t, &r)?;
+            let r = (|| -> Result<()> {
+                for (t, r) in rx {
+                    let r = r?;
+                    if let Some(l) = log.as_mut() {
+                        l.keep(t, &r)?;
+                    }
+                    tiles.extend(r);
                 }
-                tiles.extend(r);
+                Ok(())
+            })();
+            if r.is_err() {
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            Ok(())
+            r
         });
         made?;
         rep.tiles += tiles.len();
@@ -2046,7 +2057,7 @@ mod tests {
             STOP_AFTER.set(None);
             let log = crate::resume_log::path(&scratch, (PACK_Z, t.0, t.1));
             if let Err(e) = r {
-                assert!(e.to_string().contains("a test's interruption") && log.exists(), "{e:#}");
+                assert!(crate::control::is_paused(&e) && log.exists(), "{e:#}");
                 return None;
             }
             assert!(r.unwrap().tiles > 0 && !log.exists(), "the log gone once put");
