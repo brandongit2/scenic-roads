@@ -3,11 +3,12 @@
 //!   GET    /api/regions             the region files in inputs/regions on the NAS, in every folder,
 //!                                   each with its path and its state in the input check (accepted,
 //!                                   checking, held with the findings), the files that don't parse,
-//!                                   and the folders' tree (docs/inputs.md §6.1.9); away from the
-//!                                   NAS, the last list read
+//!                                   and the folders' tree (docs/inputs.md §6.1.9); from the listing
+//!                                   kept on this Mac (`Listing`), brought up to date every minute
 //!   GET    /api/regions/outlines    every region's outline simplified for a zoom (`z`; `bbox`, `ids`
-//!                                   narrow it), a feature per region, made once per zoom and kept;
-//!                                   from the accepted copy kept on this Mac, else the catalogue's
+//!                                   narrow it), a feature per region, made once per zoom and version
+//!                                   and kept on this Mac (made for every zoom when the version
+//!                                   changes); from the accepted copy kept on this Mac, else the catalogue's
 //!   GET    /api/coverage            the coverage the catalogue was built for: its regions' outlines,
 //!                                   simplified (GeoJSON), and the regions
 //!
@@ -250,11 +251,71 @@ impl Listed {
 /// The region files and the files that don't parse (path, problem), as the panel lists them.
 type ListedAll = (Vec<Listed>, Vec<(String, String)>);
 
+/// The inputs folder's region files as this Mac last listed them (`accepted/regions/@listed.json`,
+/// beside the accepted copy; docs/formats.md): each file by path with the size and modification time
+/// it had when read, and what it read as (with its state in the input check). /api/regions answers
+/// from it; the regions thread brings it up to date every minute, reading only the files whose size
+/// or time changed (SMB reads ~1,000 small files in about 30 s).
+#[derive(serde::Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Listing {
+    files: std::collections::BTreeMap<String, Seen>,
+}
+
+#[derive(serde::Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct Seen {
+    len: u64,
+    /// Nanoseconds since the epoch (None: the share gave none, so the file is read each time).
+    modified: Option<u64>,
+    read: Result<Listed, String>,
+}
+
+impl Listing {
+    /// The region files by id, and the files that don't parse (path, problem).
+    fn split(self) -> ListedAll {
+        let (mut ok, mut bad) = (Vec::new(), Vec::new());
+        for (path, f) in self.files {
+            match f.read {
+                Ok(l) => ok.push(l),
+                Err(e) => bad.push((path, e)),
+            }
+        }
+        ok.sort_by(|a, b| a.id.cmp(&b.id));
+        (ok, bad)
+    }
+}
+
+fn listing_path(s: &crate::AppState) -> std::path::PathBuf {
+    accepted_dir(s).join("@listed.json")
+}
+
+fn read_listing(s: &crate::AppState) -> Option<Listing> {
+    serde_json::from_slice(&std::fs::read(listing_path(s)).ok()?).ok()
+}
+
+/// One listing made at a time (the regions thread, a first /api/regions on a fresh home): the
+/// other waits and takes it.
+static LISTING: Mutex<()> = Mutex::new(());
+
+/// The listing brought up to date from the NAS and kept (written only when it changed); None while
+/// the NAS is away. An error (the NAS failing midway) leaves the kept one as it was.
+fn refresh_listing(s: &crate::AppState) -> Result<Option<Listing>> {
+    let Some((dir, pool)) = nas(s) else { return Ok(None) };
+    let _one = LISTING.lock().unwrap_or_else(|e| e.into_inner());
+    let prev = read_listing(s).unwrap_or_default();
+    let mut l = load_all(&pool, &dir, &prev)?;
+    states(s, &pool, &mut l);
+    if l != prev {
+        std::fs::create_dir_all(accepted_dir(s))?;
+        store::whole::write(&listing_path(s), &serde_json::to_vec(&l)?)?;
+    }
+    Ok(Some(l))
+}
+
 /// Every region file in the folder and its subfolders (`how/`, `todo/` and the names every inputs folder
-/// passes over aside, and the special files), by id; the files that don't parse. The NAS failing midway is
-/// an error, never a shorter list.
-fn load_all(pool: &IoPool, dir: &store::nasfs::NasPath) -> Result<ListedAll> {
-    let (mut ok, mut bad) = (Vec::new(), Vec::new());
+/// passes over aside, and the special files), by path; those `prev` saw with the same size and time
+/// taken from it, the rest read. The NAS failing midway is an error, never a shorter list.
+fn load_all(pool: &IoPool, dir: &store::nasfs::NasPath, prev: &Listing) -> Result<Listing> {
+    let mut out = Listing::default();
     let mut stack = vec![(dir.clone(), String::new())];
     while let Some((d, rel)) = stack.pop() {
         let items = match pool.list(&d) {
@@ -274,6 +335,14 @@ fn load_all(pool: &IoPool, dir: &store::nasfs::NasPath) -> Result<ListedAll> {
             if !it.name.ends_with(".toml") || pipeline::inputs::regions::resolve::special(&path).is_some() {
                 continue;
             }
+            let modified =
+                it.modified.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos() as u64);
+            if let Some(seen) =
+                prev.files.get(&path).filter(|f| f.len == it.len && f.modified.is_some() && f.modified == modified)
+            {
+                out.files.insert(path, seen.clone());
+                continue;
+            }
             let p = d.join(&it.name);
             let text = match pool.read_all(&p) {
                 Ok(b) => String::from_utf8(b).map_err(anyhow::Error::from),
@@ -281,29 +350,33 @@ fn load_all(pool: &IoPool, dir: &store::nasfs::NasPath) -> Result<ListedAll> {
                 Err(IoError::Io(e)) if pool.is_online() => Err(e.into()),
                 Err(e) => return Err(e).with_context(|| format!("read {}", p.display())),
             };
-            match text.and_then(|t| {
+            let read = match text.and_then(|t| {
                 pipeline::inputs::regions::file::parse(&it.name, &t)
                     .map_err(|fs| anyhow::anyhow!(fs.iter().map(|f| f.message.clone()).collect::<Vec<_>>().join("; ")))
             }) {
-                Ok(r) => ok.push(Listed::of(&r, path)),
-                Err(e) => bad.push((path, format!("{e:#}"))),
-            }
+                Ok(r) => Ok(Listed::of(&r, path.clone())),
+                Err(e) => Err(format!("{e:#}")),
+            };
+            out.files.insert(path, Seen { len: it.len, modified, read });
         }
     }
-    ok.sort_by(|a, b| a.id.cmp(&b.id));
-    bad.sort();
-    Ok((ok, bad))
+    Ok(out)
 }
 
-/// Every minute: the regions' accepted copy (for the layer) brought up to date; and in a thread of
-/// its own (a fresh home's first pass reads every geometry, ~20 min on the M1, which would hold the
-/// copy back that long), the land and water of the regions not sized yet.
+/// Every minute: the listing of the region files, then the regions' accepted copy (for the layer),
+/// brought up to date, and the outlines made for every zoom when their version changed; and in a
+/// thread of its own (a fresh home's first pass reads every geometry, ~20 min on the M1, which would
+/// hold the rest back that long), the land and water of the regions not sized yet.
 pub fn spawn_syncer(s: S) {
     let s2 = s.clone();
     std::thread::Builder::new()
         .name("regions".into())
         .spawn(move || loop {
+            if let Err(e) = refresh_listing(&s) {
+                eprintln!("regions: the listing wasn't brought up to date: {e:#}");
+            }
             sync_accepted(&s);
+            s.outlines.make_all(&s);
             std::thread::sleep(std::time::Duration::from_secs(60));
         })
         .ok();
@@ -316,44 +389,30 @@ pub fn spawn_syncer(s: S) {
         .ok();
 }
 
-/// Keeps the list read as `cache`, for going away: whole, through a temporary name unique to the
-/// call (two list requests run at once). Failures passed over.
-fn keep_list(cache: &std::path::Path, ok: &[Listed]) {
-    if let Ok(b) = serde_json::to_vec(ok) {
-        store::whole::write(cache, &b).ok();
-    }
-}
-
+/// The region files from the listing kept on this Mac (`offline` while the NAS is away: the last
+/// listing). With none kept yet (a fresh home), the listing is made now; the NAS not answering then
+/// is a 503, as for any read it can't answer.
 pub async fn list(State(s): State<S>) -> Response {
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || {
-        let cache = s2.data.home.join("regions.json");
-        match nas(&s2) {
-            Some((dir, pool)) => {
-                // The NAS not answering is a 503, as for any read it can't answer; the list kept
-                // for going away stays as it was.
-                let (mut ok, bad) = match load_all(&pool, &dir) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("regions: {e:#}");
-                        return err(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}"));
-                    }
-                };
-                states(&s2, &pool, &mut ok);
-                sizes_into(&s2, &mut ok);
-                keep_list(&cache, &ok);
-                let t = tree(&s2, &ok);
-                Json(json!({ "regions": ok, "bad": bad, "tree": t })).into_response()
-            }
-            None => {
-                // Away: the last list read.
-                let mut last: Vec<Listed> =
-                    std::fs::read(&cache).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-                sizes_into(&s2, &mut last);
-                let t = tree(&s2, &last);
-                Json(json!({ "regions": last, "bad": [], "offline": true, "tree": t })).into_response()
-            }
+        let mut kept = read_listing(&s2);
+        if kept.is_none() {
+            kept = match refresh_listing(&s2) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("regions: {e:#}");
+                    return err(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}"));
+                }
+            };
         }
+        let (mut ok, bad) = kept.unwrap_or_default().split();
+        sizes_into(&s2, &mut ok);
+        let t = tree(&s2, &ok);
+        let mut v = json!({ "regions": ok, "bad": bad, "tree": t });
+        if nas(&s2).is_none() {
+            v["offline"] = true.into();
+        }
+        Json(v).into_response()
     })
     .await
     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
@@ -492,11 +551,11 @@ fn records(
 }
 
 /// Each region's state in the input check: held (with the findings holding it), accepted (its
-/// name and parts as the accepted version has them), or checking; none when the records can't be
-/// read now.
-fn states(s: &crate::AppState, pool: &IoPool, list: &mut [Listed]) {
+/// name and parts as the accepted version has them), or checking; as they were when the records
+/// can't be read now.
+fn states(s: &crate::AppState, pool: &IoPool, list: &mut Listing) {
     let Some((index, held)) = records(s, pool) else { return };
-    for r in list.iter_mut() {
+    for r in list.files.values_mut().filter_map(|f| f.read.as_mut().ok()) {
         let findings: Vec<Value> = held
             .iter()
             .flat_map(|h| h.findings.iter())
@@ -521,7 +580,6 @@ fn states(s: &crate::AppState, pool: &IoPool, list: &mut [Listed]) {
 /// from their `_group.toml`, and their regions (pipeline::inputs::regions::read::tree), from the
 /// copy kept on this Mac; with none yet, the folders of the files listed, by their own names.
 fn tree(s: &crate::AppState, listed: &[Listed]) -> pipeline::inputs::regions::read::Folder {
-    sync_accepted(s);
     let kept: Option<pipeline::inputs::served::Kept> =
         std::fs::read(accepted_dir(s).join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
     let index = kept.map(|k| k.index).unwrap_or_else(|| {
@@ -562,7 +620,7 @@ pub fn sync_accepted(s: &crate::AppState) {
 }
 
 /// Whether region `id` is disabled (`disabled = true`): by the accepted copy kept on this Mac, else
-/// the last list read from the inputs folder.
+/// the listing of the inputs folder.
 pub fn is_disabled(s: &crate::AppState, id: &str) -> bool {
     let dir = accepted_dir(s);
     let kept: Option<pipeline::inputs::served::Kept> =
@@ -573,11 +631,7 @@ pub fn is_disabled(s: &crate::AppState, id: &str) -> bool {
                 && e.facts.get("disabled").and_then(Value::as_bool) == Some(true)
         });
     }
-    let last: Vec<Listed> = std::fs::read(s.data.home.join("regions.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
-    last.iter().any(|l| l.id == id && l.disabled)
+    read_listing(s).is_some_and(|l| l.files.values().any(|f| f.read.as_ref().is_ok_and(|l| l.id == id && l.disabled)))
 }
 
 /// The deepest zoom the outlines are simplified for: past it, z12's (about 10 m) are drawn.
@@ -600,7 +654,10 @@ struct Simplified {
 }
 
 /// The regions' outlines simplified per zoom, made once per version of their source (the accepted
-/// copy's index on this Mac, else the catalogue's coverage) and kept: `/api/regions/outlines`.
+/// version kept on this Mac, else the catalogue's coverage) and of the pass's outlines (the flags),
+/// and kept: in memory for the zooms asked, and on this Mac's disk for every zoom
+/// (`accepted/regions/@outlines/z<z>.jsonl`), made by the regions thread when the version changes, so
+/// a first ask after a restart reads the zoom's file: `/api/regions/outlines`.
 #[derive(Default)]
 pub struct Outlines {
     cur: Mutex<(String, std::collections::HashMap<u8, Arc<Vec<Simplified>>>)>,
@@ -631,8 +688,8 @@ type MakeSources<'a> = Box<dyn FnOnce() -> Vec<Source> + 'a>;
 fn sources(s: &crate::AppState) -> (String, MakeSources<'_>) {
     let dir = accepted_dir(s);
     let index = dir.join("@index.json");
-    if let Some(m) = std::fs::metadata(&index).ok().filter(|_| pipeline::inputs::served::files(&dir).is_some()) {
-        let key = format!("accepted {:?} {}", m.modified().ok(), m.len());
+    if let Some((version, _)) = pipeline::inputs::served::files(&dir) {
+        let key = format!("accepted {version}");
         let make = move || {
             let kept: Option<pipeline::inputs::served::Kept> =
                 std::fs::read(&index).ok().and_then(|b| serde_json::from_slice(&b).ok());
@@ -820,10 +877,65 @@ fn simplified(src: &Source, tol_m: f64, ix: Option<&OutlineIndex>) -> Simplified
     Simplified { id: src.id.clone(), bbox, polys, props, json }
 }
 
+/// What the kept outlines are made with: changed when `simplified` makes them otherwise.
+const OUTLINES_FMT: u32 = 1;
+
+/// The outlines' key: the format, the source's key, and the pass's outlines that give the flags.
+fn outlines_key(source: &str, ix: Option<&OutlineIndex>) -> String {
+    format!("{OUTLINES_FMT} {source} {}", ix.map_or("-", |i| i.content.as_str()))
+}
+
+fn zoom_path(s: &crate::AppState, z: u8) -> std::path::PathBuf {
+    accepted_dir(s).join("@outlines").join(format!("z{z}.jsonl"))
+}
+
+/// A zoom's outlines kept on disk, when kept for `key`: its key on the first line, then a feature a line.
+fn read_zoom(path: &std::path::Path, key: &str) -> Option<Vec<Simplified>> {
+    use std::io::BufRead;
+    let mut lines = std::io::BufReader::new(std::fs::File::open(path).ok()?).lines();
+    if lines.next()?.ok()? != key {
+        return None;
+    }
+    let mut out = Vec::new();
+    for l in lines {
+        let json = l.ok()?;
+        let mut f: Value = serde_json::from_str(&json).ok()?;
+        let props = f["properties"].take();
+        let polys = serde_json::from_value(f["geometry"]["coordinates"].take()).ok()?;
+        let bbox = serde_json::from_value(props["bbox"].clone()).ok()?;
+        out.push(Simplified { id: props["region"].as_str()?.to_string(), bbox, polys, props, json });
+    }
+    Some(out)
+}
+
+/// Whether `path` keeps a zoom for `key` (its first line only).
+fn zoom_kept(path: &std::path::Path, key: &str) -> bool {
+    use std::io::BufRead;
+    let Ok(f) = std::fs::File::open(path) else { return false };
+    let mut first = String::new();
+    std::io::BufReader::new(f).read_line(&mut first).is_ok() && first.trim_end_matches('\n') == key
+}
+
+/// Keeps a zoom's outlines on disk for `key` (one local write; failures said and passed over).
+fn write_zoom(path: &std::path::Path, key: &str, v: &[Simplified]) {
+    let mut b = String::with_capacity(v.iter().map(|r| r.json.len() + 1).sum::<usize>() + key.len() + 1);
+    b.push_str(key);
+    for r in v {
+        b.push('\n');
+        b.push_str(&r.json);
+    }
+    let w = path.parent().map_or(Ok(()), std::fs::create_dir_all).map_err(anyhow::Error::from);
+    if let Err(e) = w.and_then(|_| store::whole::write(path, b.as_bytes())) {
+        eprintln!("regions: the outlines weren't kept: {e:#}");
+    }
+}
+
 impl Outlines {
-    /// Every region's outline at zoom `z`, made on the first ask for that zoom of this version.
+    /// Every region's outline at zoom `z`: kept in memory, else read from disk, else made (and kept).
     fn at(&self, s: &crate::AppState, z: u8) -> Arc<Vec<Simplified>> {
-        let (key, make) = sources(s);
+        let (source, make) = sources(s);
+        let ix = s.areas.get(s).ok().flatten();
+        let key = outlines_key(&source, ix.as_deref());
         let cached = || {
             let g = self.cur.lock().unwrap();
             if g.0 == key {
@@ -839,16 +951,40 @@ impl Outlines {
         if let Some(v) = cached() {
             return v;
         }
-        let srcs = make();
-        let ix = s.areas.get(s).ok().flatten();
-        let tol = tolerance_m(z);
-        let v = Arc::new(srcs.iter().map(|r| simplified(r, tol, ix.as_deref())).collect::<Vec<_>>());
+        let path = zoom_path(s, z);
+        let v = Arc::new(read_zoom(&path, &key).unwrap_or_else(|| {
+            let v: Vec<Simplified> = make().iter().map(|r| simplified(r, tolerance_m(z), ix.as_deref())).collect();
+            write_zoom(&path, &key, &v);
+            v
+        }));
         let mut g = self.cur.lock().unwrap();
         if g.0 != key {
             *g = (key, Default::default());
         }
         g.1.insert(z, v.clone());
         v
+    }
+
+    /// Every zoom's outlines kept on disk for the current version: those not kept yet made, the
+    /// sources read once (the regions thread, after a sync).
+    fn make_all(&self, s: &crate::AppState) {
+        let (source, make) = sources(s);
+        let ix = s.areas.get(s).ok().flatten();
+        let key = outlines_key(&source, ix.as_deref());
+        let mut make = Some(make);
+        let mut srcs: Vec<Source> = Vec::new();
+        for z in 0..=OUTLINE_MAX_Z {
+            let _making = self.making.lock().unwrap_or_else(|e| e.into_inner());
+            let path = zoom_path(s, z);
+            if zoom_kept(&path, &key) {
+                continue;
+            }
+            if let Some(m) = make.take() {
+                srcs = m();
+            }
+            let v: Vec<Simplified> = srcs.iter().map(|r| simplified(r, tolerance_m(z), ix.as_deref())).collect();
+            write_zoom(&path, &key, &v);
+        }
     }
 }
 
@@ -914,7 +1050,6 @@ fn collection(
 pub async fn outlines(State(s): State<S>, axum::extract::Query(q): axum::extract::Query<OutlinesQuery>) -> Response {
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || -> Result<Response> {
-        sync_accepted(&s2);
         let z = q.z.unwrap_or(0.0).clamp(0.0, f64::from(OUTLINE_MAX_Z)) as u8;
         let bbox: Option<[f64; 4]> = q.bbox.as_deref().and_then(|b| {
             let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -1020,6 +1155,11 @@ mod tests {
         })
     }
 
+    /// Every region file, read afresh, as the panel lists them.
+    fn listed(pool: &IoPool, dir: &store::nasfs::NasPath) -> Result<ListedAll> {
+        load_all(pool, dir, &Listing::default()).map(Listing::split)
+    }
+
     /// A region file's text.
     fn region(id: &str, name: &str) -> String {
         format!("id = \"{id}\"\nname = \"{name}\"\noutline = [\"osm:1877178\"]\n")
@@ -1050,7 +1190,7 @@ mod tests {
         let dir = share.path().join("inputs/regions");
         let pool = pool(&store::nasfs::NasRoot::local_for_test(share.path()));
         // No folder yet: no regions.
-        assert_eq!(load_all(&pool, &store::nasfs::NasPath::local_for_test(&dir)).unwrap(), (vec![], vec![]));
+        assert_eq!(listed(&pool, &store::nasfs::NasPath::local_for_test(&dir)).unwrap(), (vec![], vec![]));
         std::fs::create_dir_all(dir.join("eu/pt")).unwrap();
         std::fs::write(dir.join("borders.toml"), region("borders", "Scottish Borders")).unwrap();
         std::fs::write(
@@ -1068,7 +1208,7 @@ mod tests {
         }
         std::fs::create_dir_all(dir.join("how")).unwrap();
         std::fs::write(dir.join("how/example.toml"), region("example", "Example")).unwrap();
-        let (ok, bad) = load_all(&pool, &store::nasfs::NasPath::local_for_test(&dir)).unwrap();
+        let (ok, bad) = listed(&pool, &store::nasfs::NasPath::local_for_test(&dir)).unwrap();
         assert_eq!(
             ok.iter().map(|l| (l.id.as_str(), l.path.as_str())).collect::<Vec<_>>(),
             [("azores", "eu/pt/azores.toml"), ("borders", "borders.toml")]
@@ -1084,7 +1224,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("on.toml"), region("on", "On")).unwrap();
         std::fs::write(dir.join("off.toml"), format!("{}disabled = true\n", region("off", "Off"))).unwrap();
-        let (ok, bad) = load_all(
+        let (ok, bad) = listed(
             &pool(&store::nasfs::NasRoot::local_for_test(share.path())),
             &store::nasfs::NasPath::local_for_test(&dir),
         )
@@ -1116,7 +1256,7 @@ mod tests {
         // (A watchdog: a listing that waited on the read would never return.)
         let (tx, rx) = std::sync::mpsc::channel();
         let (h, d) = (hung.clone(), dir.clone());
-        std::thread::spawn(move || tx.send(load_all(&h, &store::nasfs::NasPath::local_for_test(&d)).unwrap_err()).ok());
+        std::thread::spawn(move || tx.send(listed(&h, &store::nasfs::NasPath::local_for_test(&d)).unwrap_err()).ok());
         let e = rx
             .recv_timeout(Duration::from_secs(300))
             .unwrap_or_else(|_| panic!("the listing waited on the hung read: no answer in 5 min"));
@@ -1125,7 +1265,7 @@ mod tests {
         // The share still answers, so it's busy rather than away: the rest goes on.
         assert!(hung.is_online());
         std::fs::remove_file(&stuck).unwrap();
-        assert_eq!(load_all(&pool, &store::nasfs::NasPath::local_for_test(&dir)).unwrap().0.len(), 1);
+        assert_eq!(listed(&pool, &store::nasfs::NasPath::local_for_test(&dir)).unwrap().0.len(), 1);
     }
 
     async fn json_of(r: Response) -> Value {
@@ -1136,27 +1276,54 @@ mod tests {
         v["regions"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap().to_string()).collect()
     }
 
-    /// Two list requests at once keep the list each through its own temporary file: the kept
-    /// list reads whole, and no temporary file is left.
+    /// The listing reads only the files whose size or time changed since the one before.
     #[test]
-    fn concurrent_lists_keep_one_whole() {
-        let home = tempfile::tempdir().unwrap();
-        let cache = home.path().join("regions.json");
-        let bar = std::sync::Barrier::new(8);
-        std::thread::scope(|s| {
-            for _ in 0..8 {
-                let (cache, bar) = (&cache, &bar);
-                s.spawn(move || {
-                    for _ in 0..30 {
-                        bar.wait();
-                        keep_list(cache, &[]);
-                    }
-                });
-            }
-        });
-        let v: Vec<Listed> = serde_json::from_slice(&std::fs::read(&cache).unwrap()).unwrap();
-        assert!(v.is_empty());
-        assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 1, "no temporary file left");
+    fn only_changed_files_are_read_again() {
+        let share = tempfile::tempdir().unwrap();
+        let dir = share.path().join("inputs/regions");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.toml"), region("a", "A")).unwrap();
+        std::fs::write(dir.join("b.toml"), region("b", "B")).unwrap();
+        let (pool, nas) =
+            (pool(&store::nasfs::NasRoot::local_for_test(share.path())), store::nasfs::NasPath::local_for_test(&dir));
+        let mut first = load_all(&pool, &nas, &Listing::default()).unwrap();
+        // (What the listing before read for a.toml, told apart from the file's text.)
+        if let Ok(l) = first.files.get_mut("a.toml").unwrap().read.as_mut() {
+            l.name = "as listed before".into();
+        }
+        // b.toml changes (its size with it), c.toml comes: both read; a.toml taken as listed.
+        std::fs::write(dir.join("b.toml"), region("b", "B, renamed")).unwrap();
+        std::fs::write(dir.join("c.toml"), region("c", "C")).unwrap();
+        let (ok, _) = load_all(&pool, &nas, &first).unwrap().split();
+        assert_eq!(
+            ok.iter().map(|l| (l.id.as_str(), l.name.as_str())).collect::<Vec<_>>(),
+            [("a", "as listed before"), ("b", "B, renamed"), ("c", "C")]
+        );
+        // A file gone is gone from it.
+        std::fs::remove_file(dir.join("c.toml")).unwrap();
+        assert_eq!(load_all(&pool, &nas, &first).unwrap().files.len(), 2);
+    }
+
+    /// A zoom's outlines kept on disk read back as made, and only for their key.
+    #[test]
+    fn kept_outlines_read_back_for_their_key() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("@outlines/z3.jsonl");
+        let src = Source {
+            id: "c".into(),
+            name: "C".into(),
+            disabled: true,
+            first_osm: None,
+            polygons: vec![vec![circle(10.0, 20.0, 1.0, 64)]],
+        };
+        let made = vec![simplified(&src, tolerance_m(3), None)];
+        write_zoom(&path, "1 accepted v1 -", &made);
+        assert!(zoom_kept(&path, "1 accepted v1 -") && !zoom_kept(&path, "1 accepted v2 -"));
+        assert!(read_zoom(&path, "1 accepted v2 -").is_none());
+        let back = read_zoom(&path, "1 accepted v1 -").unwrap();
+        assert_eq!(back.len(), 1);
+        let (a, b) = (&back[0], &made[0]);
+        assert_eq!((&a.id, a.bbox, &a.polys, &a.props, &a.json), (&b.id, b.bbox, &b.polys, &b.props, &b.json));
     }
 
     #[tokio::test]

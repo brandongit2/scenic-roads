@@ -597,12 +597,20 @@ mirror/.basemap/<hash16>/  the basemap's pieces (store::pieces): lo.pmtiles (zoo
 idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trailer)
 catalog/<n>.json.zst    the last catalogues read
 accepted/<unit>/        accepted inputs copied from the NAS: @index.json ({"version", "index"}) and
-                        each file by content name (pipeline::inputs::served)
+                        each file by content name (pipeline::inputs::served); a sync leaves the
+                        other `@` names at its top, the server's own:
+accepted/regions/@listed.json   the inputs folder's region files as last listed (crates/server/src/
+                        regions.rs, `Listing`): {"files": {"<path>": {len, modified (ns), read:
+                        {"Ok": <the panel's region, with its state>} | {"Err": "<problem>"}}}};
+                        /api/regions answers from it, the regions thread lists the folder each
+                        minute and reads only the files whose size or time changed
+accepted/regions/@outlines/z<z>.jsonl   the outlines at zoom z (0–12): a key line (the format, the
+                        accepted version or catalogue, the pass's outlines), then a GeoJSON feature
+                        a line; made for every zoom when the key changes
 names/spoken-<content>.bin   languages spoken where, for a catalogue without `global/spoken`
                         (names::spoken::Spoken::to_bytes: "SPOKEN01", u32 head length, head (rules'
                         version, then per region its ISO code, a tab, its languages), u32 run
                         count, 23,041 u32 row starts, runs of (u32 first column, u16 region))
-regions.json            the last regions read
 region-areas.json       each accepted region's land and water (km²) and country, by its geometry's
                         content name: {"<name>": {land, water, country}} (crates/server/src/regions.rs,
                         `sized`; worked out once per geometry, unused names dropped)
@@ -813,7 +821,10 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   its largest polygon for its name) and `area` (its first osm: part's `iso`, `country`, `in`: its
   flag), and `z`; `bbox` keeps the regions whose box meets it, `ids` those named. Made from the
   accepted copy's drawn files kept on the Mac (else the catalogue's recorded coverage) once per zoom
-  and version, and kept in memory: 0.9 MB for the world at z0, 4.7 MB at z4 (the map asks the view's box from z3), against 142 MB for every full outline.
+  and version, by the regions thread for every zoom when the version changes, and kept on disk
+  (`accepted/regions/@outlines/`) and in memory for the zooms asked: 0.9 MB for the world at z0, 4.7 MB at z4 (the map asks the view's box from z3), against 142 MB for every full outline.
+  `/api/regions` answers from the listing kept on the Mac (`accepted/regions/@listed.json`), so at
+  once; it follows the folder within a minute.
   `/api/coverage` (the catalogue's coverage as GeoJSON, one feature per outline entry, with
   `regions` and `catalog`: the bench's views).
 - **Names in answers:** MVT tiles and API JSON carry `main` and, when any, `sub`; JSON layer files,

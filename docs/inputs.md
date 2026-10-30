@@ -760,13 +760,14 @@ region file takes it out with the next version.
 
 - **The Regions panel** (Settings → Regions), read only: the folder tree, each region with its parts
   and state (accepted, checking, "held: <finding>"; a disabled region greyed out with a "disabled" pill and no Download button). The server reads region files through the NAS
-  I/O pool (`GET /api/regions`) and states from the accepted index and held report. Nothing in the
+  I/O pool each minute, only those changed, and keeps the listing with their states from the
+  accepted index and held report (`GET /api/regions` answers from it at once). Nothing in the
   app writes a region.
 - **Show regions on map** (a switch in Settings → Regions, `/api/regions/outlines`): every declared
   region's stored outline as a line, green (a disabled region grey: it is checked even though it
   isn't built), with its name as a country's label; the line's width and opacity are the
   boundaries'. The server simplifies the drawn files (copied to the Mac as the translations are)
-  for the map's zoom and keeps each zoom's (docs/formats.md). The footer tells the region under
+  for every zoom when the accepted version changes and keeps them on the Mac (docs/formats.md). The footer tells the region under
   the cursor: its folders and name with their flags, its state, land and water and download.
 - **The banner and menu bar** (§4.7).
 

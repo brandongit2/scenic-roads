@@ -6,7 +6,8 @@
 //! On the Mac, in the unit's folder: `@index.json` (the index's content name and the index), and
 //! each accepted file under its content name. A sync reads the records, and when they name another
 //! index, copies the files it doesn't have yet (each checked against its content name's hash),
-//! then the index, then removes the files no longer named.
+//! then the index, then removes the files no longer named. The other `@` names at the top of the
+//! folder are the reader's own (the server's listing and outlines of the regions): a sync leaves them.
 
 use super::{logical, Index};
 use anyhow::{Context, Result};
@@ -115,16 +116,19 @@ pub fn sync_with(read: &dyn Fn(&str) -> Result<Vec<u8>>, unit: &str, local: &Pat
         &local.join(LOCAL),
         &serde_json::to_vec(&Kept { version: version.clone(), index: index.clone() })?,
     )?;
-    // (The files the version kept no longer names go.)
+    // (The files the version kept no longer names go; the `@` names at the top stay.)
     let named: BTreeSet<PathBuf> = wanted.iter().map(|(n, _)| local.join(n)).collect();
     let mut stack = vec![local.to_path_buf()];
     while let Some(d) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&d) else { continue };
         for e in rd.flatten() {
             let p = e.path();
+            if d == local && e.file_name().to_string_lossy().starts_with('@') {
+                continue;
+            }
             if e.file_type().is_ok_and(|t| t.is_dir()) {
                 stack.push(p);
-            } else if p != local.join(LOCAL) && !named.contains(&p) {
+            } else if !named.contains(&p) {
                 std::fs::remove_file(&p).ok();
             }
         }
@@ -185,10 +189,17 @@ mod tests {
         let (_, f2) = files(&local).unwrap();
         assert_eq!(f2.keys().collect::<Vec<_>>(), ["a.jsonl"]);
         assert!(!f["a.jsonl"].0.exists() && !f["x/b.jsonl"].0.exists());
+        // The reader's own `@` names at the top stay through a sync that copies.
+        std::fs::create_dir_all(local.join("@own")).unwrap();
+        std::fs::write(local.join("@own/z0"), b"x").unwrap();
+        std::fs::write(local.join("@listed.json"), b"[]").unwrap();
+        accept(&[("a.jsonl", b"one, edited again\n")]);
+        assert_eq!(sync(&read, "translations", &local).unwrap(), Synced::Kept(true));
+        assert!(local.join("@own/z0").exists() && local.join("@listed.json").exists());
         // The records unreadable now: an error, the copy as it was.
         put(RECORDS, b"{");
         assert!(sync(&read, "translations", &local).is_err());
-        assert_eq!(std::fs::read(&files(&local).unwrap().1["a.jsonl"].0).unwrap(), b"one, edited\n");
+        assert_eq!(std::fs::read(&files(&local).unwrap().1["a.jsonl"].0).unwrap(), b"one, edited again\n");
         // A copy whose bytes aren't its name's: refused.
         let v3 = accept(&[("c.jsonl", b"three\n")]);
         let index: Index = serde_json::from_slice(&std::fs::read(nas.join(&v3)).unwrap()).unwrap();
