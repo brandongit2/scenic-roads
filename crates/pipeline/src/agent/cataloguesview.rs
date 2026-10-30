@@ -19,10 +19,14 @@
 //! NAS reads (crate::agent::nasread); the answer is what's read so far, never waiting on it. What it
 //! keeps: the entries (a few hundred, tens of tiles each) and, to tell a whole catalogue's tiles from
 //! the last's, each tile file's name by its key, hashed (some 18 000, about 2 MB): never a catalogue.
+//!
+//! The latest catalogue's stable names (its `files`, hashed: `names`) are what the map's finished
+//! tiles are published by (crate::agent::builtview, task #866): a tile is published only while the
+//! latest catalogue still names its output; a removal (a delta's null) ends it.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -78,7 +82,8 @@ fn tiles_of(key: &str) -> Vec<Tile> {
     }
 }
 
-fn hash(s: &str) -> u64 {
+/// A stable name as `names` holds it.
+pub fn hash(s: &str) -> u64 {
     xxhash_rust::xxh3::xxh3_64(s.as_bytes())
 }
 
@@ -481,6 +486,8 @@ struct Read {
     entries: Vec<Entry>,
     listed: Option<Instant>,
     error: Option<String>,
+    /// The latest catalogue read (`at`) and every stable name it names, hashed (`names`).
+    names: Option<(u64, Arc<HashSet<u64>>)>,
 }
 
 /// The view: what's read, and its reader.
@@ -518,6 +525,12 @@ impl CataloguesView {
     /// A page's ask: the reader started when it isn't running and the folder wasn't listed in the
     /// last `EVERY`; the catalogues after `after` as read so far.
     pub fn ask(self: &Arc<Self>, after: Option<u64>) -> Value {
+        self.wake();
+        self.answer(after)
+    }
+
+    /// The reader started when it isn't running and the folder wasn't listed in the last `EVERY`.
+    pub fn wake(self: &Arc<Self>) {
         let due = self.read.lock().unwrap().listed.is_none_or(|t| t.elapsed() >= EVERY);
         if due && !self.reading.swap(true, Ordering::SeqCst) {
             let me = self.clone();
@@ -529,7 +542,11 @@ impl CataloguesView {
                 self.reading.store(false, Ordering::SeqCst);
             }
         }
-        self.answer(after)
+    }
+
+    /// The latest catalogue read and the stable names it names (`hash`); None before the first.
+    pub fn names(&self) -> Option<(u64, Arc<HashSet<u64>>)> {
+        self.read.lock().unwrap().names.clone()
     }
 
     /// The answer now: `catalogs` after `after` (all with none), the last read (`latest`), whether
@@ -593,6 +610,9 @@ impl CataloguesView {
             }
         }
         let mut r = self.read.lock().unwrap();
+        if let Some(n) = at.filter(|n| r.names.as_ref().is_none_or(|(m, _)| m != n)) {
+            r.names = Some((n, Arc::new(files.file.keys().copied().collect())));
+        }
         r.files = files;
         r.error = error;
     }

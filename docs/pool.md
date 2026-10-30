@@ -1686,7 +1686,11 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   no fine data, #839; steps whose files aren't told by name left out), keys and manifest from one
   read of the records' brief (a `-root` step's as 0/0/0; worldwide steps', records of steps the app doesn't know (a
   retired step's) and terrain-hi's, slope-hi's and tree cover's old z3 whole-run records left out:
-  `agent::builtview`), read by the agent on a
+  `agent::builtview`), and, once the agent's catalogue view has read the catalogues, `published`
+  (indexes the same way, for every step whose files are told by name, an empty list when none) and
+  `catalogue`, its number: the targets one of whose published files the latest catalogue's `files`
+  still names (task #866: a drop's null ends it; the page draws no other told tile as published),
+  read by the agent on a
   thread of its own while a page asks, again a minute after the last read at most (~600 KB over
   SMB), the last read kept when the file can't be read now. The page asks each minute while the
   map is drawn.
@@ -1704,7 +1708,8 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   the catalogues after the last it read, oldest first (a delta when it changes the last read, else
   the whole file, streamed from zstd into only the tile sections), through nasread, and the answer
   is what's read so far. Kept: the entries, each tile file's name hash by its key (about 18 000)
-  and each stable name's file hash (about 23 000), never a catalogue. Measured 24 Oct on the M4 (372 catalogues, 15–386, 14 whole): the first read
+  and each stable name's file hash (about 23 000), with a copy of the latest's stable names
+  (`/work/built`'s `published`, #866), never a catalogue. Measured 24 Oct on the M4 (372 catalogues, 15–386, 14 whole): the first read
   35 s (debug build, mostly the NAS) at 34 MB peak; the whole answer 67 KB of JSON (17 KB
   gzipped), a new catalogue's a few hundred bytes. `scenic catalogs [--after N]` prints the same
   JSON from the NAS (read only). 503 until the agent has made it.

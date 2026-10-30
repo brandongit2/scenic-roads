@@ -1319,6 +1319,13 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
 /// `PRESENCE`; task #839). None for a step whose files aren't told by name here (a worldwide or
 /// root step's, a work step's, a z3 tile's whole run of the scheme before z6 tiles).
 pub fn output_named(step: &str, target: &str, m: &std::collections::BTreeMap<String, String>) -> Option<bool> {
+    Some(output_names(step, target)?.iter().any(|l| m.contains_key(l)))
+}
+
+/// The published files' names (under `layers/` or `base/`) a job of `step` saves for tile `target`,
+/// any of which names its output (`output_named`; the build page's map asks the latest catalogue,
+/// crate::agent::builtview, task #866). None for a step whose files aren't told by name here.
+pub fn output_names(step: &str, target: &str) -> Option<Vec<String>> {
     let t = TileId::parse(target)?;
     let dash = target.replace('/', "-");
     let layers =
@@ -1345,7 +1352,7 @@ pub fn output_named(step: &str, target: &str, m: &std::collections::BTreeMap<Str
         ("bldfield-lo", 3) => vec![crate::bld::field::lo_logical(t.x, t.y)],
         _ => return None,
     };
-    Some(names.iter().any(|l| m.contains_key(l)))
+    Some(names)
 }
 
 // The write-sets. A name's parts, split at '/'; a tile in a name is `z-x-y` (`tile`), a pass by its

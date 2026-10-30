@@ -223,8 +223,15 @@ The Jobs tab's stages are the one exception.
     finishedTiles, #674: every tile the build's keys record as built, `/work/built`, and those the
     history's ends held finished in the Jobs tab's past window, not merged into the keys yet; its
     time and Mac the last end held for it); published when finished by the last catalogue's time
-    (one with no end held when the oldest event the page holds is by then), else completed:
-    completed pale under a dashed outline, each fading in as it comes. Published tiles are drawn
+    (one with no end held when the oldest event the page holds is by then) and, for a step whose
+    files are told by name (`agent::steps::output_names`: deep, hi, lo, trees, depth, buildings,
+    unit), only while the latest catalogue still names one of its outputs (`/work/built`'s
+    `published`, #866: a removal, a delta's null, ends a tile's published life whatever catalogue
+    named it before), else completed:
+    completed pale under a dashed outline, each fading in as it comes. A told step's end for a
+    tile the keys don't record, 10 min or more before they were read, is a drop's (its record a
+    none key, left out of `/work/built`): not drawn at all (Alaska's deep drops of 29 Oct had been
+    drawn as published from their job ends). Published tiles are drawn
     only while a step or stage is soloed, by when a catalogue last published each (#833).
   - **built, nothing to publish** (#839): a finished tile whose job made no file to publish (a
     deep tile with no fine data there: its run finds none in its presence grids, logs "nothing

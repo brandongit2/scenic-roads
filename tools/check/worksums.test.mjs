@@ -86,6 +86,31 @@ test('map: a tile built with nothing to publish is its own state, hidden until s
   assert.equal(mapTiles(new Map(), new Map(), f, { tiles: { empty: true } }, { solo: ['slope-deep'] }).finished.size, 0, 'another step soloed');
 });
 
+test('map: published only while the latest catalogue names its output; a drop leaves the map (#866)', () => {
+  // (Live, 29-30 Oct: Alaska's deep drops ran at ~22:35, catalogue 756 dropped their packs; their
+  // records are none keys, out of /work/built, but their job ends had drawn them as published.)
+  const readAt = 100000;
+  const ends = [
+    { kind: 'end', step: 'terrain-deep', t: 80000, worker: 'mini #1', targets: ['10/10/337'] }, // a drop's
+    { kind: 'end', step: 'terrain-deep', t: readAt - 60, worker: 'mini #1', targets: ['10/9/9'] }, // newer than the keys
+    { kind: 'end', step: 'terrain-hi', t: 80000, worker: 'mini #1', targets: ['6/1/1'] },
+    { kind: 'end', step: 'pack', t: 80000, worker: 'mini #1', targets: ['6/1/1'] },
+  ];
+  const built = { 'terrain-deep': ['10/266/335', '10/266/336'], 'terrain-hi': ['6/1/1'] };
+  const published = { 'terrain-deep': [0], 'terrain-hi': [] };
+  const f = finishedTiles(ends, 0, built, 900, {}, { published, readAt });
+  assert.equal(f.has('terrain-deep 10/10/337'), false, 'the drop: no tile');
+  assert.equal(f.has('terrain-deep 10/9/9'), true, 'ended after the keys were read: kept');
+  assert.equal(f.get('terrain-hi 6/1/1').pub, false, 'its end taken, the catalogue still says');
+  const m = mapTiles(new Map(), new Map(), f, {}, { pubAt: readAt });
+  assert.deepEqual([...m.published.keys()].sort(), ['pack 6/1/1', 'terrain-deep 10/266/335', 'terrain-deep 10/9/9'], 'a work step by its time as before');
+  assert.equal(m.finished.get('terrain-deep 10/266/336').state, 'completed', 'not named by the latest: not published');
+  assert.equal(m.finished.get('terrain-hi 6/1/1').state, 'completed');
+  // (No catalogue read yet: the time rule, as before.)
+  const old = finishedTiles(ends, 0, built, 900);
+  assert.ok(old.has('terrain-deep 10/10/337'));
+});
+
 test('map: the queue from the forecast, the earliest where two Macs name a tile (#685)', () => {
   const a = { at: 1000, macs: { m4: { unit: [['6/1/1', 60], ['norway', 5]], pack: [['3/0/0', 10]] }, mini: { unit: [['6/1/1', 30], ['6/1/2', 90]] } } };
   const q = queuedTiles(a);

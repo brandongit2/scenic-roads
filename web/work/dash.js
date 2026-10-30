@@ -435,8 +435,9 @@ function askToCome(m) {
 // after `BUILT_SOON_MS` while the agent hasn't read them yet (its first answer after a start, `at`
 // 0, empty: its read begins with that ask), so the map isn't a minute without them (#833 review: a
 // first view drew every queued tile as never built).
-// With them, those that made nothing to publish (`empty`: {step: [index into its list]}, #839).
-const built = { steps: {}, empty: {}, at: 0, asked: 0, asking: false, soon: false };
+// With them, those that made nothing to publish (`empty`: {step: [index into its list]}, #839), and
+// those the latest catalogue publishes (`published`, the same, and its number `catalogue`, #866).
+const built = { steps: {}, empty: {}, published: null, catalogue: null, at: 0, asked: 0, asking: false, soon: false };
 const BUILT_EVERY_MS = 60000, BUILT_SOON_MS = 3000;
 function askBuilt() {
   if (built.asking || Date.now() - built.asked < (built.soon ? BUILT_SOON_MS : BUILT_EVERY_MS)) return;
@@ -446,7 +447,10 @@ function askBuilt() {
       built.asking = false;
       built.soon = !(code === 200 && v?.at);
       if (built.soon) setTimeout(render, BUILT_SOON_MS);
-      if (code === 200 && v?.steps && v.at && v.at !== built.at) { Object.assign(built, { steps: v.steps, empty: v.empty || {}, at: v.at }); render(); }
+      if (code === 200 && v?.steps && v.at && (v.at !== built.at || (v.catalogue ?? null) !== built.catalogue)) {
+        Object.assign(built, { steps: v.steps, empty: v.empty || {}, published: v.published || null, catalogue: v.catalogue ?? null, at: v.at });
+        render();
+      }
     });
 }
 
@@ -481,7 +485,7 @@ function mapData(m) {
   const running = steadyRunning(runningTiles(runs, m.fc?.each_s, m.now));
   const queued = keepQueued([toCome.ans], () => queuedTiles(toCome.ans));
   const ends = endsHeld(), held = heldFrom();
-  const done = keepDone(ends, from, [built.steps, built.empty, held], () => finishedTiles(ends, from, built.steps, held, built.empty));
+  const done = keepDone(ends, from, [built.steps, built.empty, built.published, held], () => finishedTiles(ends, from, built.steps, held, built.empty, { published: built.published, readAt: built.at }));
   const runKeys = [...running.keys()].join("\n");
   // (A step counts its tiles to build or publish; every state and area its own, the tiles with
   // nothing to publish too, shown or not. The queued and finished tiles' counts kept while those

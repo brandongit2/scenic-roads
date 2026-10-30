@@ -258,17 +258,35 @@ export function runningTiles(runs, eachS, now) {
 // the oldest event the page holds (its end, not held, came before it). A recorded tile that made
 // nothing to publish (`empty`, `/work/built`'s: {step: [index into its steps list]}, #839: a deep
 // tile with no fine data there) has `none`, kept when an end held is taken for it.
-export function finishedTiles(ends, from, built = {}, heldFrom = null, empty = {}) {
+// Which are published (#866): `published` (`/work/built`'s: {step: [index]}, the targets the latest
+// catalogue still names an output of, for every step whose files are told by name) gives a told
+// step's recorded tiles `pub` (true or false, kept when an end is taken). A told step's end for a
+// tile the keys don't record, ended `DROPPED_S` or more before they were read (`readAt`), is a drop's
+// (its record a none key, left out of `built`): not a tile, left out (Alaska's deep drops, 29 Oct,
+// had been drawn as published from their job ends).
+export const DROPPED_S = 600;
+export function finishedTiles(ends, from, built = {}, heldFrom = null, empty = {}, { published = null, readAt = 0 } = {}) {
   const out = new Map();
   for (const [step, tiles] of Object.entries(built || {})) {
     const none = new Set(empty?.[step] || []);
-    tiles.forEach((t, i) => { if (tileOf(t)) out.set(`${step} ${t}`, none.has(i) ? { t: null, before: heldFrom, step, worker: null, none: true } : { t: null, before: heldFrom, step, worker: null }); });
+    const on = published?.[step] ? new Set(published[step]) : null;
+    tiles.forEach((t, i) => {
+      if (!tileOf(t)) return;
+      const d = none.has(i) ? { t: null, before: heldFrom, step, worker: null, none: true } : { t: null, before: heldFrom, step, worker: null };
+      if (on) d.pub = on.has(i);
+      out.set(`${step} ${t}`, d);
+    });
   }
   for (const e of ends || []) {
     if ((e.kind !== "end" && e.kind !== "done") || e.ok === false) continue;
     for (const t of areaTargets(e.step, e.targets)) {
       const k = `${e.step} ${t}`, had = out.get(k);
-      if (tileOf(t) && (e.t >= from || had) && !(had?.t > e.t)) out.set(k, had?.none ? { t: e.t, step: e.step, worker: e.worker, none: true } : { t: e.t, step: e.step, worker: e.worker });
+      if (!had && published?.[e.step] && e.t <= readAt - DROPPED_S) continue;
+      if (tileOf(t) && (e.t >= from || had) && !(had?.t > e.t)) {
+        const d = had?.none ? { t: e.t, step: e.step, worker: e.worker, none: true } : { t: e.t, step: e.step, worker: e.worker };
+        if (had && "pub" in had) d.pub = had.pub;
+        out.set(k, d);
+      }
     }
   }
   return out;
@@ -302,13 +320,15 @@ export function queuedTiles(a) {
 // by `pubAt`: in the app; a recorded tile whose end isn't held, `t` null, finished before the
 // oldest event held, `before`: published when that's by `pubAt`, else completed, as it can't be
 // told) or "empty" (built, nothing to publish: its job made no file to publish, `none`, #839;
-// told before the catalogue's time, as no catalogue will ever name it).
+// told before the catalogue's time, as no catalogue will ever name it). A tile the latest catalogue
+// doesn't name an output of (`pub` false, #866) is never "published", whatever its time: completed.
 export const TILE_STATES = ["queued", "progress", "completed", "published", "empty"];
 // The states the map hides until toggled on in the legend (`f.tiles[state] === true`).
 export const HIDDEN_STATES = ["empty"];
 export const runningState = (r) => (r.frac >= 1 ? "completed" : r.frac > 0 || r.current ? "progress" : "queued");
 export const finishedState = (d, pubAt) => {
   if (d.none) return "empty";
+  if (d.pub === false) return "completed";
   const by = d.t ?? d.before;
   return pubAt != null && by != null && by <= pubAt ? "published" : "completed";
 };

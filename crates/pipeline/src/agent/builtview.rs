@@ -10,6 +10,15 @@
 //! indexes into the step's list (6,276 of terrain-deep's 7,243 in term 599's brief, 29 Oct: ~50 KB on 247 KB). The keys and the
 //! manifest come from one read of the records' brief.
 //!
+//! And which are published (task #866): a target is published only while the latest catalogue
+//! (crate::agent::cataloguesview `names`) still names one of its published files
+//! (crate::agent::steps::output_names), sent as `published: {step: [i]}` for every step whose files
+//! are told by name (an empty list: none published) with that catalogue's number (`catalogue`), both
+//! left out before the catalogues are read. A removal (a drop's null in a delta) ends a tile's
+//! published life whatever catalogue named it before: Alaska's 4,363 deep packs dropped by
+//! catalogue 756 (29 Oct) had stayed drawn as published, their drop runs' job ends taken as
+//! published once a later catalogue came.
+//!
 //! Read only while a page asks (`ask`): a thread of its own reads the file again when it's older
 //! than `EVERY` (about 600 KB over SMB); the answer is the last read, never waiting on it.
 
@@ -87,8 +96,31 @@ struct Read {
     error: Option<String>,
 }
 
+/// Each told step's tiles in `steps` (`tiles_of`) the latest catalogue publishes: indexes into its
+/// list of the targets one of whose published files (crate::agent::steps::output_names) `has` names.
+pub fn published_of(steps: &BTreeMap<String, Vec<String>>, has: impl Fn(&str) -> bool) -> BTreeMap<String, Vec<usize>> {
+    let mut out = BTreeMap::new();
+    for (step, tiles) in steps {
+        let mut told = false;
+        let mut on = vec![];
+        for (i, t) in tiles.iter().enumerate() {
+            let Some(names) = super::steps::output_names(step, t) else { continue };
+            told = true;
+            if names.iter().any(|n| has(n)) {
+                on.push(i);
+            }
+        }
+        if told {
+            out.insert(step.clone(), on);
+        }
+    }
+    out
+}
+
 pub struct BuiltView {
     root: store::nasfs::NasRoot,
+    /// The catalogues read (the latest's names publish a tile); None: not told.
+    catalogues: Option<Arc<super::cataloguesview::CataloguesView>>,
     read: Mutex<Read>,
     reading: AtomicBool,
 }
@@ -102,16 +134,22 @@ impl std::fmt::Debug for BuiltView {
 impl BuiltView {
     /// `root` read on the server's short schedule (store::nasfs::NasRoot::short_retry): a page's
     /// answer, read again a minute on; a blip ridden out, an outage shown as the error at once.
-    pub fn new(root: &store::nasfs::NasRoot) -> Arc<Self> {
+    pub fn new(
+        root: &store::nasfs::NasRoot,
+        catalogues: Option<Arc<super::cataloguesview::CataloguesView>>,
+    ) -> Arc<Self> {
         Arc::new(BuiltView {
             root: root.short_retry(),
+            catalogues,
             read: Mutex::new(Read::default()),
             reading: AtomicBool::new(false),
         })
     }
 
     /// A page's ask: the reader started when it isn't running and the keys weren't read in the last
-    /// `EVERY`; the last read: `{at, steps: {step: [z/x/y]}, empty: {step: [i]}, error}`.
+    /// `EVERY` (and the catalogues' reader, when due); the last read: `{at, steps: {step: [z/x/y]},
+    /// empty: {step: [i]}, error}`, with `published: {step: [i]}` and `catalogue` once the
+    /// catalogues are read.
     pub fn ask(self: &Arc<Self>) -> Value {
         let due = self.read.lock().unwrap().read.is_none_or(|t| t.elapsed() >= EVERY);
         if due && !self.reading.swap(true, Ordering::SeqCst) {
@@ -124,8 +162,21 @@ impl BuiltView {
                 self.reading.store(false, Ordering::SeqCst);
             }
         }
-        let r = self.read.lock().unwrap();
-        serde_json::json!({ "at": r.at, "steps": *r.steps, "empty": *r.empty, "error": r.error })
+        let names = self.catalogues.as_ref().and_then(|cv| {
+            cv.wake();
+            cv.names()
+        });
+        let (at, steps, empty, error) = {
+            let r = self.read.lock().unwrap();
+            (r.at, r.steps.clone(), r.empty.clone(), r.error.clone())
+        };
+        let mut a = serde_json::json!({ "at": at, "steps": *steps, "empty": *empty, "error": error });
+        if let Some((n, names)) = names {
+            let has = |s: &str| names.contains(&super::cataloguesview::hash(s));
+            a["published"] = serde_json::json!(published_of(&steps, has));
+            a["catalogue"] = n.into();
+        }
+        a
     }
 
     /// Reads the keys and the manifest (the last read kept when they can't be read now).
@@ -176,7 +227,7 @@ mod tests {
     #[test]
     fn read_from_the_keys_file_while_asked() {
         let d = tempfile::tempdir().unwrap();
-        let v = BuiltView::new(&store::nasfs::NasRoot::local_for_test(d.path()));
+        let v = BuiltView::new(&store::nasfs::NasRoot::local_for_test(d.path()), None);
         v.refresh();
         assert_eq!(v.ask()["steps"], serde_json::json!({}), "no keys yet: none built");
         let mut k = Keys::default();
@@ -187,6 +238,7 @@ mod tests {
         assert_eq!(a["steps"]["terrain-deep"], serde_json::json!(["10/1/2"]));
         assert!(a["error"].is_null() && a["at"].as_u64().unwrap() > 0);
         assert_eq!(a["empty"], serde_json::json!({ "terrain-deep": [0] }), "no pack named: nothing to publish");
+        assert!(a.get("published").is_none(), "no catalogues told: not said");
     }
 
     #[test]
@@ -223,5 +275,62 @@ mod tests {
         assert!(!steps.contains_key("terrain-deep"), "a deep drop too");
         let e = empty_of(&steps, &BTreeMap::new());
         assert_eq!(e["terrain-hi"], [0], "no hi tiles made: listed, nothing to publish");
+    }
+
+    /// Task #866: a tile is published only while the latest catalogue names its output; a delta's
+    /// null (a drop) ends it, though an older catalogue kept named it.
+    #[test]
+    fn published_only_while_the_latest_catalogue_names_it() {
+        use super::super::cataloguesview::{hash, CataloguesView, Source};
+        use std::io::Write;
+        #[derive(Default)]
+        struct Mem(Mutex<BTreeMap<String, Vec<u8>>>);
+        impl Source for Mem {
+            fn list(&self) -> Option<Vec<String>> {
+                Some(self.0.lock().unwrap().keys().cloned().collect())
+            }
+            fn read(&self, name: &str) -> Option<Vec<u8>> {
+                self.0.lock().unwrap().get(name).cloned()
+            }
+        }
+        let zst = |v: &Value| {
+            let mut e = zstd::stream::Encoder::new(vec![], 3).unwrap();
+            e.write_all(&serde_json::to_vec(v).unwrap()).unwrap();
+            e.finish().unwrap()
+        };
+        let f = |n: &str| serde_json::json!({"file": format!("{n}.aaaa.pack"), "size": 1, "fmt": 1});
+        let (deep, fine, hi) = ("layers/terrain/deep/10-1-2", "layers/terrain/fine/10-3-4", "layers/terrain/hi/6-1-2");
+        let c1 = serde_json::json!({"n": 1, "created": "2026-10-29T00:00:00Z",
+            "layers": {"terrain": {"deep": {"10/1/2": deep}, "hi": {"6/1/2": hi}}},
+            "files": {deep: f(deep), fine: f(fine), hi: f(hi)}});
+        // 2: the retired-name pack of 10/3/4 dropped (as catalogue 756 dropped Alaska's), and the
+        // hi pack with its tile.
+        let p2 = serde_json::json!({"o": {"created": {"=": "2026-10-29T01:00:00Z"},
+            "layers": {"o": {"terrain": {"o": {"hi": {"o": {"6/1/2": null}}}}}},
+            "files": {"o": {fine: null, hi: null}}}});
+        let mem = Arc::new(Mem::default());
+        mem.0.lock().unwrap().insert("1.json.zst".into(), zst(&c1));
+        let cv = CataloguesView::new(mem.clone());
+        assert!(cv.names().is_none(), "nothing read yet");
+        cv.refresh();
+        let steps: BTreeMap<String, Vec<String>> = [
+            ("terrain-deep".to_string(), vec!["10/1/2".to_string(), "10/3/4".into(), "10/5/6".into()]),
+            ("terrain-hi".into(), vec!["6/1/2".into()]),
+            ("pack".into(), vec!["6/1/2".into()]),
+        ]
+        .into();
+        let (n, names) = cv.names().unwrap();
+        assert_eq!(n, 1);
+        let p = published_of(&steps, |s| names.contains(&hash(s)));
+        assert_eq!(p["terrain-deep"], [0, 1], "10/5/6 never named");
+        assert_eq!(p["terrain-hi"], [0]);
+        assert!(!p.contains_key("pack"), "a work step's files aren't told");
+        mem.0.lock().unwrap().insert("2.delta.json.zst".into(), zst(&serde_json::json!({"n": 2, "of": 1, "patch": p2})));
+        cv.refresh();
+        let (n, names) = cv.names().unwrap();
+        assert_eq!(n, 2);
+        let p = published_of(&steps, |s| names.contains(&hash(s)));
+        assert_eq!(p["terrain-deep"], [0], "the dropped pack's tile is published no more");
+        assert_eq!(p["terrain-hi"], Vec::<usize>::new(), "told, none published");
     }
 }
