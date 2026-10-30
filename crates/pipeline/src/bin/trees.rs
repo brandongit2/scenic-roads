@@ -11,9 +11,10 @@
 //!       out/trees-{cover,height,leaf}.tiles holding its zoom 4–12 tiles;
 //!       `sources.json`: where the declared canopy and leaf-type sources are
 //!       (pipeline::trees::RunSources, written by the trees job)
-//!   trees --z6 x,y (the same options)
+//!   trees --z6 x,y (the same options) [--keep dir]
 //!       z6 tile x,y alone: out/trees-*.tiles holding its zoom 9–12 tiles, and out/trees-mid.sect
-//!       its mid (its blocks' zoom-8 tiles and values)
+//!       its mid (its blocks' zoom-8 tiles and values); `--keep`: each row of blocks kept in a
+//!       resume log there as it's made, a run stopped resumed from it (pipeline::resume_log::Pieces)
 //!   trees --assemble-lo --out dir [--workers n] <mid>…
 //!       a z3 tile's zoom 8–4 from its z6 tiles' mids: out/trees-*.tiles
 //!   trees --block 8/x/y --coverage cov.json --chm dir|url --leaf dir|url --out dir [--record dir]
@@ -41,7 +42,15 @@ use std::path::PathBuf;
 fn main() -> Result<()> {
     let a = Trees::parse();
     // (Its phases, for the job's phase that runs it: pipeline::timings.)
-    pipeline::timings::job("trees", || run(&a))
+    let r = pipeline::timings::job("trees", || run(&a));
+    // (Paused at a row kept, task #889: its job takes the exit as the pause's.)
+    if let Err(e) = &r {
+        if pipeline::control::is_paused(e) {
+            eprintln!("trees: {e:#}");
+            std::process::exit(pipeline::control::PAUSED_EXIT);
+        }
+    }
+    r
 }
 
 /// An option the mode needs.
@@ -93,6 +102,7 @@ fn run(a: &Trees) -> Result<()> {
             sources: need(&a.sources, "sources")?.clone(),
             leaf: PathBuf::from(need(&a.leaf, "leaf")?),
             out: out.clone(),
+            keep: a.keep.clone(),
         };
         return within(&|| (if z == 3 { trees::z3(&r) } else { trees::z6(&r) }).map(|_| ()));
     }

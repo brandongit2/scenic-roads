@@ -733,7 +733,14 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   block is redone). terrain-deep's base tiles not yet begun when it stops aren't (only those under
   way finish). pyramids-fill stops before each tile it would ask (the fetches under way finish),
   what it fetched packed and handed off, the z6 tile not done; its next fill fetches the rest
-  (the same tiles' bytes; its store's archives split where it stopped). A `unit` z6 tile's pieces
+  (the same tiles' bytes; its store's archives split where it stopped).
+  Steps whose target is a run of independent pieces keep each as it's made (`resume_log::Pieces`,
+  task #889; the identity: the program's digest, the target and what it reads), each a safe
+  point: bldtiles each z8 tile's results (made here or by a worker; a resumed run offers only the
+  rest), bldprep each chunk of 4 row groups read, bldfield-lo each z6 tile's levels, trees each
+  row of a z6 tile's blocks (kept by the trees program, `--keep`, which exits paused, 75).
+  trees-lo keeps none: one assembly of its z6 tiles' mids.
+  A `unit` z6 tile's pieces
   (`resume_log::Pieces`, task #889) are its preparing (the piece copied, the buildings staged,
   `prepare_folder`) and each program of its tail run here, each kept with its folders' digest
   (`unit::folder_digest`: names, lengths, times written), the folders kept beside the log: a

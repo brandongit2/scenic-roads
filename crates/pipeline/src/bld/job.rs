@@ -499,6 +499,11 @@ pub fn work_files(out: &Out, t: TileId) -> Result<Vec<Option<WorkFile>>> {
 /// (`field::lo`), as the lo pack `layers/buildings-field/lo/3-x-y`, or that dropped with no mid
 /// there. Its tiles.
 pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
+    build_lo_keeping(out, q, crate::resume_log::on())
+}
+
+/// `build_lo`, its z6 tiles' levels kept as pieces with `keep` (crate::resume_log::Pieces).
+pub fn build_lo_keeping(out: &mut Out, q: TileId, keep: bool) -> Result<usize> {
     ensure!(q.z == 3, "bldfield-lo takes z3 tiles ({} isn't one)", q.slash());
     use crate::timings::phase;
     let t0 = std::time::Instant::now();
@@ -511,9 +516,14 @@ pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
         }
     }
     let p = phase("reading the mids and making the levels");
-    let tiles = field::lo((q.x, q.y), &|x, y| {
-        paths.get(&(x, y)).map(|p| p.read().with_context(|| format!("read {}", p.display()))).transpose()
-    })?;
+    let names = paths.keys().map(|&(x, y)| field::mid_logical(x, y));
+    let id = crate::resume_log::job_id("bldfield-lo", &q.slash(), &[&crate::resume_log::names(out, names)]);
+    let mut pieces = crate::resume_log::Pieces::open(&out.scratch, (3, q.x, q.y), "bldfield-lo", &id, keep);
+    let tiles = field::lo(
+        (q.x, q.y),
+        &|x, y| paths.get(&(x, y)).map(|p| p.read().with_context(|| format!("read {}", p.display()))).transpose(),
+        &mut pieces,
+    )?;
     drop(p);
     let logical = field::lo_logical(q.x, q.y);
     if tiles.is_empty() {
@@ -521,6 +531,7 @@ pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
             out.remove(&logical);
         }
         out.save()?;
+        pieces.finish();
         eprintln!("bldfield-lo {}: no mid; nothing made", q.slash());
         return Ok(0);
     }
@@ -538,6 +549,7 @@ pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
     out.put_file(&logical, "pack", &local)?;
     drop(p);
     out.save()?;
+    pieces.finish();
     eprintln!(
         "bldfield-lo {}: {} mids, {} tiles ({:.1} MB) ({:.0?})",
         q.slash(),
@@ -552,6 +564,70 @@ pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
 /// T's heritage sites for the field's heritage lists: the newest pass's slice of T's sites
 /// (`crate::heritage::pos_logical`) less its World Heritage components (`parts_logical`), as the
 /// map's dots are; none without a slice.
+/// What the manifest names of T's work files and its neighbours' (`work_files`'), for a run's
+/// identity.
+fn neighbours_names(out: &Out, t: TileId) -> String {
+    let mut ls = Vec::new();
+    for dy in -1i64..=1 {
+        for dx in -1i64..=1 {
+            let (x, y) = (t.x as i64 + dx, t.y as i64 + dy);
+            if (0..64).contains(&x) && (0..64).contains(&y) {
+                ls.push(super::work_logical(x as u32, y as u32));
+            }
+        }
+    }
+    crate::resume_log::names(out, ls)
+}
+
+/// A z8 tile's results as a piece kept (crate::resume_log::Pieces): its tiles, summary, field
+/// tiles and mid.
+fn z8_piece(a: (u32, u32), tiles: &[(u8, u32, u32, Vec<u8>, u32)], s: &Summary, f: &field::Z8Field) -> Result<Vec<u8>> {
+    let mut p = crate::resume_log::Put::default();
+    p.u64(tiles.len() as u64);
+    for (z, x, y, gz, raw) in tiles {
+        p.u8(*z);
+        p.u32(*x);
+        p.u32(*y);
+        p.bytes(gz);
+        p.u32(*raw);
+    }
+    p.bytes(&serde_json::to_vec(s)?);
+    p.u64(f.tiles.len() as u64);
+    for (z, x, y, b) in &f.tiles {
+        p.u8(*z);
+        p.u32(*x);
+        p.u32(*y);
+        p.bytes(b);
+    }
+    match &f.mid {
+        Some(m) => p.bytes(&field::write_mid(&BTreeMap::from([(a, m.clone())]))?),
+        None => p.bytes(&[]),
+    }
+    Ok(p.0)
+}
+
+/// `z8_piece`'s results read back.
+type Z8Piece = (Vec<(u8, u32, u32, Vec<u8>, u32)>, Summary, field::Z8Field);
+
+fn z8_unpiece(a: (u32, u32), p: &[u8]) -> Result<Z8Piece> {
+    let mut g = crate::resume_log::Get(p);
+    let mut tiles = Vec::new();
+    for _ in 0..g.count(21)? {
+        tiles.push((g.u8()?, g.u32()?, g.u32()?, g.bytes()?, g.u32()?));
+    }
+    let s: Summary = serde_json::from_slice(&g.bytes()?)?;
+    let mut f = field::Z8Field::default();
+    for _ in 0..g.count(17)? {
+        f.tiles.push((g.u8()?, g.u32()?, g.u32()?, g.bytes()?));
+    }
+    let m = g.bytes()?;
+    if !m.is_empty() {
+        f.mid = field::read_mid(&m)?.remove(&a);
+    }
+    g.end()?;
+    Ok((tiles, s, f))
+}
+
 pub fn sites(out: &Out, t: TileId) -> Result<Vec<[i32; 2]>> {
     let Some(d) = crate::heritage::latest_date(&out.manifest) else { return Ok(Vec::new()) };
     let read = |l: String| -> Result<Vec<[i32; 2]>> {
@@ -589,6 +665,17 @@ pub fn build_later(
     t: TileId,
     offload: Option<&crate::offload::Offload>,
 ) -> Result<Summary> {
+    build_later_keeping(out, cov, t, offload, crate::resume_log::on())
+}
+
+/// `build_later`, its z8 tiles kept as pieces with `keep` (crate::resume_log::Pieces).
+pub fn build_later_keeping(
+    out: &mut Out,
+    cov: &Coverage,
+    t: TileId,
+    offload: Option<&crate::offload::Offload>,
+    keep: bool,
+) -> Result<Summary> {
     ensure!(t.z == 6, "bldtiles takes z6 tiles ({} isn't one)", t.slash());
     use crate::timings::phase;
     let t0 = std::time::Instant::now();
@@ -609,33 +696,62 @@ pub fn build_later(
     let mut mids: BTreeMap<(u32, u32), field::Mid> = BTreeMap::new();
     let sites = sites(out, t)?;
     let z8s = z8_tiles_of(&files);
-    let mut offers = super::task::Offers::new(offload, &out.scratch, t, z8s.len(), &sites);
+    // (Each z8 tile's results a piece kept, task #889: a resumed run makes, or offers, only the z8
+    // tiles its last didn't keep.)
+    let mut pieces = crate::resume_log::Pieces::open(
+        &out.scratch,
+        (6, t.x, t.y),
+        "bldtiles",
+        &crate::resume_log::job_id(
+            "bldtiles",
+            &t.slash(),
+            &[&neighbours_names(out, t), &cov.digest(), &serde_json::to_string(&sites)?],
+        ),
+        keep,
+    );
+    let todo: Vec<(u32, u32)> = z8s.iter().copied().filter(|a| !pieces.has((8, a.0, a.1))).collect();
+    let mut offers = super::task::Offers::new(offload, &out.scratch, t, todo.len(), &sites);
     let mut sum = Summary::default();
+    let mut j = 0;
     for (k, &a) in z8s.iter().enumerate() {
         crate::agent::jobs::report(k as u64, z8s.len() as u64, "z8 tiles done");
-        {
-            let _p = phase("offering z8 tiles to other workers");
-            offers.top_up(&files, cov, &z8s, k)?;
-        }
-        let mut add = |z: u8, x: u32, y: u32, gz: &[u8], raw: u32| {
+        let made = (todo.get(j) == Some(&a)).then(|| {
+            j += 1;
+            j - 1
+        });
+        let p = pieces.piece((8, a.0, a.1), || {
+            let j = made.context("a z8 tile neither kept nor to make")?;
+            {
+                let _p = phase("offering z8 tiles to other workers");
+                offers.top_up(&files, cov, &todo, j)?;
+            }
+            let mut tiles = Vec::new();
+            let mut add = |z: u8, x: u32, y: u32, gz: &[u8], raw: u32| {
+                tiles.push((z, x, y, gz.to_vec(), raw));
+                Ok(())
+            };
+            let (s, f) = match offers.result(&files, cov, &todo, j)? {
+                Some(dir) => {
+                    let _p = phase("taking in another worker's z8 tile");
+                    let s = super::task::take_z8(&dir, TileId { z: 8, x: a.0, y: a.1 }, &mut add)?;
+                    std::fs::remove_dir_all(&dir).ok();
+                    s
+                }
+                None => {
+                    let _p = phase("making the z8 tile's slope tiles here");
+                    let here = std::time::Instant::now();
+                    let (s, f) = z8_tiles(&files, cov, t, a, &sites, &mut add)?;
+                    offers.made_here(s.buildings + s.parts + s.outside, here.elapsed().as_secs_f64());
+                    (s, f)
+                }
+            };
+            z8_piece(a, &tiles, &s, &f)
+        })?;
+        let (tiles, s, f) = z8_unpiece(a, &p)?;
+        for (z, x, y, gz, raw) in &tiles {
             n += 1;
-            w.add(z, x, y, gz, raw)
-        };
-        let (s, f) = match offers.result(&files, cov, &z8s, k)? {
-            Some(dir) => {
-                let _p = phase("taking in another worker's z8 tile");
-                let s = super::task::take_z8(&dir, TileId { z: 8, x: a.0, y: a.1 }, &mut add)?;
-                std::fs::remove_dir_all(&dir).ok();
-                s
-            }
-            None => {
-                let _p = phase("making the z8 tile's slope tiles here");
-                let here = std::time::Instant::now();
-                let (s, f) = z8_tiles(&files, cov, t, a, &sites, &mut add)?;
-                offers.made_here(s.buildings + s.parts + s.outside, here.elapsed().as_secs_f64());
-                (s, f)
-            }
-        };
+            w.add(*z, *x, *y, gz, *raw)?;
+        }
         sum.merge(&s);
         for (z, x, y, b) in &f.tiles {
             fw.add(*z, *x, *y, b, b.len() as u32)?;
@@ -647,6 +763,7 @@ pub fn build_later(
     crate::agent::jobs::report(z8s.len() as u64, z8s.len() as u64, "z8 tiles done");
     w.finish()?;
     fw.finish()?;
+    pieces.finish();
     // The field's hi pack and mid, and the meshes': each uploaded, or dropped with nothing in it.
     let mid_logical = field::mid_logical(t.x, t.y);
     let mid_local = out.scratch_file(&format!("{mid_logical}.zst"));
@@ -727,6 +844,87 @@ mod tests {
         let path = dir.join(format!("{}.sect", t.dash()));
         p.write(t, "2026-09-23.1", &path).unwrap();
         WorkFile::open(&path).unwrap()
+    }
+
+    /// Task #889: a z6 tile's buildings paused at every one of their safe points (each z8 tile
+    /// kept), resumed each time, upload the same packs and mid as a run never paused; and its z3
+    /// tile's field likewise (each z6 tile's levels kept).
+    #[test]
+    fn bldtiles_and_bldfield_lo_paused_at_every_safe_point_resume_to_the_same_bytes() {
+        use crate::resume_log::STOP_AFTER;
+        let t = TileId { z: 6, x: 32, y: 22 };
+        let d = tempfile::tempdir().unwrap();
+        let (lon, lat) = (2.3470, 48.8580);
+        // Buildings in three z8 tiles of 6/32/22 (each z8 tile is ~1.4° wide).
+        let bs: Vec<B> = [(0.0, 0.0), (1.5, 0.0), (0.0, -1.0)]
+            .iter()
+            .enumerate()
+            .map(|(k, (dx, dy))| B {
+                id: 1 + k as u128,
+                rings: vec![square(lon + dx, lat + dy, 0.0004)],
+                height: 20.0 + k as f64,
+                ..Default::default()
+            })
+            .collect();
+        let wf = d.path().join("w");
+        std::fs::create_dir_all(&wf).unwrap();
+        work(&wf, t, &bs);
+        let c = cov("place:3.0,48.3,150", "FR");
+        let open = |name: &str| {
+            let mut o = Out::unbound(
+                &store::nasfs::NasRoot::local_for_test(&d.path().join(name)),
+                &d.path().join(format!("{name}-s")),
+            )
+            .unwrap();
+            // (A copy each: put_file takes its file.)
+            let f = d.path().join(format!("{name}.sect"));
+            std::fs::copy(wf.join(format!("{}.sect", t.dash())), &f).unwrap();
+            o.put_file(&super::super::work_logical(t.x, t.y), "sect", &f).unwrap();
+            o
+        };
+        let outputs = |out: &Out, ls: &[String]| -> Vec<Option<Vec<u8>>> {
+            ls.iter().map(|l| out.get(l).map(|c| out.path(c).read().unwrap())).collect()
+        };
+        let hi = [super::super::pack_logical(t.x, t.y), field::hi_logical(t.x, t.y), field::mid_logical(t.x, t.y)];
+        let lo = [field::lo_logical(4, 2)];
+        let q = TileId { z: 3, x: 4, y: 2 };
+        let mut fresh = open("fresh");
+        build_later_keeping(&mut fresh, &c, t, None, false).unwrap();
+        fresh.save().unwrap();
+        build_lo_keeping(&mut fresh, q, false).unwrap();
+        let mut out = open("paused");
+        let mut stops = 0;
+        loop {
+            STOP_AFTER.set(Some(1));
+            let r = build_later_keeping(&mut out, &c, t, None, true);
+            STOP_AFTER.set(None);
+            match r {
+                Err(e) => {
+                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    stops += 1;
+                }
+                Ok(_) => break,
+            }
+        }
+        out.save().unwrap();
+        assert!(stops >= 3, "a z8 tile a safe point: {stops}");
+        assert!(outputs(&out, &hi) == outputs(&fresh, &hi), "paused at each of its {stops} safe points");
+        assert!(outputs(&out, &hi).iter().all(Option::is_some));
+        let mut stops = 0;
+        loop {
+            STOP_AFTER.set(Some(1));
+            let r = build_lo_keeping(&mut out, q, true);
+            STOP_AFTER.set(None);
+            match r {
+                Err(e) => {
+                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    stops += 1;
+                }
+                Ok(_) => break,
+            }
+        }
+        assert!(stops >= 1, "a z6 tile a safe point: {stops}");
+        assert!(outputs(&out, &lo) == outputs(&fresh, &lo) && outputs(&out, &lo)[0].is_some());
     }
 
     #[test]

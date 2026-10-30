@@ -214,6 +214,10 @@ fn run_trees(args: &[std::ffi::OsString]) -> Result<()> {
     let st = store::spawn::status(&mut c).with_context(|| format!("run {prog}"));
     store::nasio::take_program(&counts);
     let st = st?;
+    // (Paused at a row it kept: the pause's error, task #889.)
+    if st.code() == Some(crate::control::PAUSED_EXIT) {
+        return Err(anyhow::Error::new(crate::control::Paused).context(format!("{prog} paused")));
+    }
     anyhow::ensure!(st.success(), "{prog}: {st}");
     Ok(())
 }
@@ -357,9 +361,16 @@ pub fn build_piece(
     let dir = fresh(cov, t, scratch, true)?.context("a piece's scratch folder")?;
     // (Its scratch removed whatever the run's end, as `build_with`'s.)
     let r = (|| {
-        run_trees(&run_args(out, t, &dir, chm, workers)?).with_context(|| format!("z6 tile {}", t.slash()))?;
+        let mut a = run_args(out, t, &dir, chm, workers)?;
+        if crate::resume_log::on() {
+            a.extend(["--keep".into(), scratch.into()]);
+        }
+        run_trees(&a).with_context(|| format!("z6 tile {}", t.slash()))?;
         writing();
-        put_piece(out, t, &dir, expect_same)
+        put_piece(out, t, &dir, expect_same)?;
+        // (Its rows kept by the program, gone once uploaded.)
+        std::fs::remove_file(crate::resume_log::path(scratch, (6, t.x, t.y))).ok();
+        Ok(())
     })();
     std::fs::remove_dir_all(&dir).ok();
     r
@@ -671,6 +682,7 @@ mod tests {
                 sources: crate::trees::tests::sources_file(dir),
                 leaf: sq.path().into(),
                 out: dir.into(),
+                keep: None,
             };
             (if t.z == 3 { crate::trees::z3(&r) } else { crate::trees::z6(&r) }).unwrap();
         };
@@ -850,6 +862,7 @@ mod tests {
                 },
                 leaf: leaf_dir(&store::nasfs::NasRoot::local_for_test(&root)).unchecked_path(),
                 out: dir.into(),
+                keep: None,
             };
             (if t.z == 3 { crate::trees::z3(&r) } else { crate::trees::z6(&r) }).unwrap();
         };

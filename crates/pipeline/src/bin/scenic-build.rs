@@ -818,7 +818,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 pipeline::control::safe_point("bldfield-lo");
                 pipeline::agent::jobs::report(k as u64, qs.len() as u64, "z3 tiles");
                 let t = cost_start("bldfield-lo", &q.slash());
-                pipeline::bld::job::build_lo(&mut out, q)?;
+                pipeline::bld::job::build_lo(&mut out, q)
+                    .map_err(|e| pipeline::control::stop_if_paused("bldfield-lo", e))?;
                 pipeline::control::done("bldfield-lo", &q.slash());
                 note_cost("bldfield-lo", &q.slash(), t);
             }
@@ -4974,7 +4975,7 @@ fn bldprep_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::control::safe_point("bldprep");
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start("bldprep", &t.slash());
-        let st = pipeline::bld::prep::run(out, t)?;
+        let st = pipeline::bld::prep::run(out, t).map_err(|e| pipeline::control::stop_if_paused("bldprep", e))?;
         eprintln!("bldprep {}: {}", t.slash(), serde_json::to_string(&st)?);
         // (Its inputs' measures: the rows read, the buildings and parts among them.)
         pipeline::costin::set("rows", st.rows);
@@ -5002,7 +5003,10 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
         landing.safe_point(out, "bldtiles")?;
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start("bldtiles", &t.slash());
-        let sum = landing.after(out, |out| pipeline::bld::job::build_later(out, &cov, t, offload.as_ref()))?;
+        // (Paused at a z8 tile kept: the uploading tile landed, the run resumed there.)
+        let sum = landing
+            .after(out, |out| pipeline::bld::job::build_later(out, &cov, t, offload.as_ref()))
+            .map_err(|e| pipeline::control::stop_if_paused("bldtiles", e))?;
         // (Its inputs' measures: the buildings and parts read, drawn or not.)
         pipeline::costin::set("buildings", sum.buildings + sum.outside);
         pipeline::costin::set("parts", sum.parts);

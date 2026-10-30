@@ -729,7 +729,14 @@ const JOBS: usize = 4;
 /// (crate::bld::sources::ghsl_dir: the windows under T, first). A listed file whose footer isn't
 /// the downloaded one's fails where it meets T.
 #[cfg(not(target_os = "wasi"))]
-pub fn read(root: &store::nasfs::NasRoot, release: &str, ghsl: &str, t: TileId) -> Result<Prepped> {
+pub fn read(
+    root: &store::nasfs::NasRoot,
+    release: &str,
+    ghsl: &str,
+    t: TileId,
+    scratch: &std::path::Path,
+    keep: bool,
+) -> Result<(Prepped, crate::resume_log::Pieces)> {
     use super::sources::{release_dir, Sources, PART_MARGIN_DEG};
     use crate::timings::phase;
     ensure!(t.z == 6, "bldprep takes z6 tiles ({} isn't one)", t.slash());
@@ -787,9 +794,13 @@ pub fn read(root: &store::nasfs::NasRoot, release: &str, ghsl: &str, t: TileId) 
             e.insert((path, meta));
         }
     }
-    let mut rows = 0u64;
-    for (c, chunk) in jobs.chunks(JOBS).enumerate() {
-        let frames: Vec<Result<Option<Frame>>> = chunk
+    // (Each chunk of row groups read a piece kept, task #889: a resumed run reads only the chunks
+    // its last didn't keep, and takes them all in the same order.)
+    let id = crate::resume_log::job_id("bldprep", &t.slash(), &[release, ghsl, &serde_json::to_string(&files)?]);
+    let mut pieces = crate::resume_log::Pieces::open(scratch, (6, t.x, t.y), "bldprep", &id, keep);
+    let chunks: Vec<&[_]> = jobs.chunks(JOBS).collect();
+    let rows = take_chunks(&mut prepped, t, &mut pieces, chunks.len(), &|c| {
+        chunks[c]
             .par_iter()
             .map(|(fi, k, part, bx, name)| {
                 let (path, meta) = &opened[fi];
@@ -797,20 +808,75 @@ pub fn read(root: &store::nasfs::NasRoot, release: &str, ghsl: &str, t: TileId) 
                     super::overture::row_group(path, meta, *k, *part, *bx, name)
                 })
             })
-            .collect();
-        for f in frames {
-            let Some(f) = f? else { continue };
+            .collect()
+    })?;
+    let end = serde_json::json!({ "release": release, "tile": t.slash(), "files": files, "ghsl": used, "rows": rows });
+    prepped.take(&Frame { kind: kind::END, header: end, cols: HashMap::new() }, t)?;
+    Ok((prepped, pieces))
+}
+
+/// The row groups' frames, `n` chunks of them (`read`, each chunk's a piece kept in `pieces`),
+/// taken in order into `prepped`: the rows read.
+fn take_chunks(
+    prepped: &mut Prepped,
+    t: TileId,
+    pieces: &mut crate::resume_log::Pieces,
+    n: usize,
+    read: &(dyn Fn(usize) -> Result<Vec<Option<Frame>>> + Sync),
+) -> Result<u64> {
+    let mut rows = 0u64;
+    for c in 0..n {
+        let p = pieces.piece((6, c as u32, 0), || Ok(frames_piece(&read(c)?)))?;
+        for f in frames_unpiece(&p)?.into_iter().flatten() {
             rows += f.header["n"].as_u64().unwrap_or(0);
             prepped.take(&f, t)?;
         }
-        let done = (c * JOBS + chunk.len()) as u64;
-        if c % 6 == 0 || done == jobs.len() as u64 {
-            crate::agent::jobs::report(done, jobs.len() as u64, "row groups read");
+        crate::agent::jobs::report((c + 1) as u64, n as u64, "chunks of row groups read");
+    }
+    Ok(rows)
+}
+
+/// A chunk's frames (None: a row group with nothing for T) as a piece's payload.
+fn frames_piece(fs: &[Option<Frame>]) -> Vec<u8> {
+    let mut p = crate::resume_log::Put::default();
+    p.u64(fs.len() as u64);
+    for f in fs {
+        let Some(f) = f else {
+            p.u8(0);
+            continue;
+        };
+        p.u8(1);
+        p.u8(f.kind);
+        p.bytes(f.header.to_string().as_bytes());
+        let mut cols: Vec<(&String, &Vec<u8>)> = f.cols.iter().collect();
+        cols.sort();
+        p.u64(cols.len() as u64);
+        for (k, v) in cols {
+            p.bytes(k.as_bytes());
+            p.bytes(v);
         }
     }
-    let end = serde_json::json!({ "release": release, "tile": t.slash(), "files": files, "ghsl": used, "rows": rows });
-    prepped.take(&Frame { kind: kind::END, header: end, cols: HashMap::new() }, t)?;
-    Ok(prepped)
+    p.0
+}
+
+fn frames_unpiece(p: &[u8]) -> Result<Vec<Option<Frame>>> {
+    let mut g = crate::resume_log::Get(p);
+    let mut v = Vec::new();
+    for _ in 0..g.count(1)? {
+        if g.u8()? == 0 {
+            v.push(None);
+            continue;
+        }
+        let kind = g.u8()?;
+        let header = serde_json::from_slice(&g.bytes()?)?;
+        let mut cols = HashMap::new();
+        for _ in 0..g.count(16)? {
+            cols.insert(String::from_utf8(g.bytes()?)?, g.bytes()?);
+        }
+        v.push(Some(Frame { kind, header, cols }));
+    }
+    g.end()?;
+    Ok(v)
 }
 
 /// Runs `bldprep T`: tile `t`'s records read (`read`: the declared sources' release and GHSL's
@@ -821,7 +887,8 @@ pub fn run(out: &mut crate::out::Out, t: TileId) -> Result<Stats> {
     use crate::timings::phase;
     let (release, ghsl, _) = super::sources::declared(&crate::inputs::sources::read(out.root(), &out.manifest)?)?;
     let t0 = std::time::Instant::now();
-    let p = read(out.root(), &release, &ghsl, t).with_context(|| format!("bldprep {}", t.slash()))?;
+    let (p, pieces) = read(out.root(), &release, &ghsl, t, &out.scratch, crate::resume_log::on())
+        .with_context(|| format!("bldprep {}", t.slash()))?;
     eprintln!("bldprep {}: read in {:.0?}: {:?}", t.slash(), t0.elapsed(), p.stats);
     let logical = super::work_logical(t.x, t.y);
     if p.is_empty() {
@@ -829,6 +896,7 @@ pub fn run(out: &mut crate::out::Out, t: TileId) -> Result<Stats> {
             out.remove(&logical);
         }
         out.save()?;
+        pieces.finish();
         return Ok(p.stats);
     }
     let local = out.scratch_file(&format!("{logical}.sect"));
@@ -839,6 +907,7 @@ pub fn run(out: &mut crate::out::Out, t: TileId) -> Result<Stats> {
     let name = out.put_file(&logical, "sect", &local)?;
     drop(w);
     out.save()?;
+    pieces.finish();
     eprintln!("bldprep {}: {} buildings, {} parts -> {name} ({:.0?})", t.slash(), st.buildings, st.parts, t0.elapsed());
     Ok(st)
 }
@@ -976,6 +1045,62 @@ pub(crate) mod tests {
 
     pub(crate) fn end(w: &mut Vec<Frame>) {
         w.push(Frame { kind: kind::END, header: serde_json::json!({ "files": [] }), cols: HashMap::new() });
+    }
+
+    /// Task #889: a z6 tile's row groups read in chunks, paused at every one of its safe points
+    /// (each chunk kept), resumed each time, make the same normalized file as a read never paused.
+    #[test]
+    fn row_groups_paused_at_every_safe_point_resume_to_the_same_bytes() {
+        use crate::resume_log::{Pieces, STOP_AFTER};
+        let t = TileId { z: 6, x: 32, y: 22 };
+        let chunks: Vec<Vec<Option<Frame>>> = (0..4)
+            .map(|c| {
+                let mut w = Vec::new();
+                let b = B {
+                    id: 1 + c,
+                    rings: vec![square(2.3 + c as f64 * 0.01, 48.8, 0.0004)],
+                    height: 9.0,
+                    ..Default::default()
+                };
+                frame(&mut w, false, &[b]);
+                let mut v: Vec<Option<Frame>> = w.into_iter().map(Some).collect();
+                v.push(None);
+                v
+            })
+            .collect();
+        let read = |c: usize| -> Result<Vec<Option<Frame>>> {
+            Ok(chunks[c]
+                .iter()
+                .map(|f| f.as_ref().map(|f| Frame { kind: f.kind, header: f.header.clone(), cols: f.cols.clone() }))
+                .collect())
+        };
+        let d = tempfile::tempdir().unwrap();
+        let file = |pieces: &mut Pieces, name: &str| -> Result<Vec<u8>> {
+            let mut p = Prepped::default();
+            take_chunks(&mut p, t, pieces, chunks.len(), &read)?;
+            let mut e = Vec::new();
+            end(&mut e);
+            p.take(&e[0], t)?;
+            let f = d.path().join(name);
+            p.write(t, "2026-09-23.1", &f)?;
+            Ok(std::fs::read(f)?)
+        };
+        let fresh = file(&mut Pieces::none(), "fresh").unwrap();
+        let mut stops = 0;
+        let resumed = loop {
+            STOP_AFTER.set(Some(1));
+            let r = file(&mut Pieces::open(d.path(), (6, t.x, t.y), "bldprep", "a", true), "paused");
+            STOP_AFTER.set(None);
+            match r {
+                Err(e) => {
+                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    stops += 1;
+                }
+                Ok(b) => break b,
+            }
+        };
+        assert_eq!(stops, 4, "a chunk a safe point");
+        assert!(resumed == fresh, "paused at each of its {stops} safe points");
     }
 
     #[test]

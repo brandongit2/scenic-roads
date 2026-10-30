@@ -182,6 +182,9 @@ pub struct Trees {
     /// The bytes read kept in this mirror folder (blocks)
     #[arg(long, value_name = "DIR")]
     pub record: Option<PathBuf>,
+    /// A z6 run's rows of blocks kept here as they're made, a stopped run resumed from them
+    #[arg(long, value_name = "DIR")]
+    pub keep: Option<PathBuf>,
     /// The canopy squares the job found (blocks: one not found fails the run; south of the
     /// equator a square's top is negative)
     #[arg(long, value_name = "TOP,LEFT;…", allow_hyphen_values = true)]

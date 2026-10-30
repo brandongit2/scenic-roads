@@ -169,7 +169,9 @@ fn mids_and_lo() {
     let bytes = write_mid(&z8s).unwrap();
     assert_eq!(read_mid(&bytes).unwrap(), z8s, "kept exactly");
     // Z3 tile 3/4/2 holds z6 6/32/22 (z8 tile 129/88's).
-    let lo_tiles = lo((4, 2), &|x, y| Ok(((x, y) == (32, 22)).then(|| bytes.clone()))).unwrap();
+    let lo_tiles =
+        lo((4, 2), &|x, y| Ok(((x, y) == (32, 22)).then(|| bytes.clone())), &mut crate::resume_log::Pieces::none())
+            .unwrap();
     let got: Vec<(u8, u32, u32)> = lo_tiles.iter().map(|t| (t.0, t.1, t.2)).collect();
     assert_eq!(got, [(8, 129, 88), (7, 64, 44), (6, 32, 22), (5, 16, 11), (4, 8, 5)]);
     // Level 8 the z8 tile's planes, its heritage list after them.

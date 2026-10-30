@@ -767,6 +767,9 @@ pub struct Run {
     /// The leaf-type squares (the NAS's), made where missing (crate::leaftype).
     pub leaf: PathBuf,
     pub out: PathBuf,
+    /// Where a z6 run keeps its rows of blocks as they're made (crate::resume_log::Pieces, task
+    /// #889: its job's scratch folder), resumed from there; None: nothing kept.
+    pub keep: Option<PathBuf>,
 }
 
 /// A run begun (`begin`): the coverage's shapes, the blocks they meet, the canopy squares there and
@@ -957,12 +960,30 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
     let (shapes, blocks, sqs, chm) = begin(a)?;
     let shapes = &shapes;
     let coverage = std::fs::read_to_string(&a.coverage).with_context(|| a.coverage.display().to_string())?;
+    // (Each row of blocks made a piece kept, task #889: a resumed run makes, or offers, only the
+    // rows its last didn't keep.)
+    let rows = task::rows_of(&blocks);
+    let row_id = |r: &[(u32, u32)]| (ZBLOCK, r[0].0, r[0].1);
+    let mut pieces = match &a.keep {
+        Some(d) => {
+            let sources = std::fs::read_to_string(&a.sources).with_context(|| a.sources.display().to_string())?;
+            let id = crate::resume_log::job_id(
+                "trees",
+                &format!("6/{}/{}", a.tile.1, a.tile.2),
+                &[&coverage, &sources, &crate::treepacks::TREES_V.to_string()],
+            );
+            crate::resume_log::Pieces::open(d, (6, a.tile.1, a.tile.2), "trees", &id, true)
+        }
+        None => crate::resume_log::Pieces::none(),
+    };
+    let kept: Vec<bool> = rows.iter().map(|r| pieces.has(row_id(r))).collect();
+    let todo: Vec<(u32, u32)> = rows.iter().zip(&kept).filter(|(_, k)| !**k).flat_map(|(r, _)| r.clone()).collect();
     let p = phase("offering rows of blocks to other workers");
     let offers = task::Offers::offer(
         offload,
         (a.tile.1, a.tile.2),
         &coverage,
-        &blocks,
+        &todo,
         &sqs,
         &a.out.join("offload").join("results"),
     );
@@ -975,7 +996,6 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
     let here = task::here_run(shapes, &inp);
     let mut w = Writers::create(&a.out)?;
     let mut mid: MidBlocks = BTreeMap::new();
-    let rows = task::rows_of(&blocks);
     crate::agent::jobs::report(0, blocks.len() as u64, "zoom-8 blocks");
     let finished = std::sync::atomic::AtomicUsize::new(0);
     let (offers_ref, rows_ref) = (&offers, &rows);
@@ -988,7 +1008,7 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
         rayon::current_num_threads().div_ceil(wide) + 1,
         |i| -> Result<Option<Vec<BlockOut>>> {
             let row = &rows_ref[i];
-            if offers_ref.is_out(row[0]) {
+            if kept[i] || offers_ref.is_out(row[0]) {
                 return Ok(None);
             }
             let t = std::time::Instant::now();
@@ -1005,12 +1025,15 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
         },
         |i, made| {
             let row = &rows[i];
-            let made: Vec<(Vec<Tile>, Vec<u8>)> = match made {
-                Some(m) => m.into_iter().map(|b| Ok((b.tiles, b.tops.to_bytes()?))).collect::<Result<_>>()?,
-                // (Its task: its worker's result, or made here, in its turn.)
-                None => row.iter().map(|&at| offers.take(at, &here)).collect::<Result<_>>()?,
-            };
-            made_all.extend(row.iter().copied().zip(made));
+            let p = pieces.piece(row_id(row), || {
+                let made: Vec<(Vec<Tile>, Vec<u8>)> = match made {
+                    Some(m) => m.into_iter().map(|b| Ok((b.tiles, b.tops.to_bytes()?))).collect::<Result<_>>()?,
+                    // (Its task: its worker's result, or made here, in its turn.)
+                    None => row.iter().map(|&at| offers.take(at, &here)).collect::<Result<_>>()?,
+                };
+                Ok(row_piece(&made))
+            })?;
+            made_all.extend(row.iter().copied().zip(row_unpiece(&p)?));
             Ok(())
         },
     )?;
@@ -1029,7 +1052,41 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
     drop(p);
     let _p = phase("writing its mid and archives");
     write_mid(&a.out.join(MID), (a.tile.1, a.tile.2), &mid)?;
+    // (Its log goes once its job has uploaded what it made: crate::treepacks::build_piece.)
+    drop(pieces);
     Ok(end(a, w.finish()?, t0))
+}
+
+/// A row's blocks made (each its tiles and zoom-8 values) as a piece kept (`z6_with`).
+fn row_piece(made: &[(Vec<Tile>, Vec<u8>)]) -> Vec<u8> {
+    let mut p = crate::resume_log::Put::default();
+    p.u64(made.len() as u64);
+    for (tiles, tops) in made {
+        p.u64(tiles.len() as u64);
+        for t in tiles {
+            p.u8(t.layer);
+            p.u8(t.z);
+            p.u32(t.x);
+            p.u32(t.y);
+            p.bytes(&t.webp);
+        }
+        p.bytes(tops);
+    }
+    p.0
+}
+
+fn row_unpiece(p: &[u8]) -> Result<Vec<(Vec<Tile>, Vec<u8>)>> {
+    let mut g = crate::resume_log::Get(p);
+    let mut v = Vec::new();
+    for _ in 0..g.count(16)? {
+        let mut tiles = Vec::new();
+        for _ in 0..g.count(18)? {
+            tiles.push(Tile { layer: g.u8()?, z: g.u8()?, x: g.u32()?, y: g.u32()?, webp: g.bytes()? });
+        }
+        v.push((tiles, g.bytes()?));
+    }
+    g.end()?;
+    Ok(v)
 }
 
 /// A z6 tile's mid beside its archives (`z6`).

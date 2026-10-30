@@ -495,6 +495,7 @@ fn the_z3_run_and_its_blocks_alike() {
             sources: sources_file(o.path()),
             leaf: d.path().into(),
             out: o.path().join(out),
+            keep: None,
         };
         rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| z3(&a)).unwrap()
     };
@@ -561,6 +562,7 @@ fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
         sources: sources_file(o.path()),
         leaf: d.path().into(),
         out: o.path().join(out),
+        keep: None,
     };
     let pool = |n: usize| rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
     let n3 = pool(4).install(|| z3(&run((3, 4, 2), "z3"))).unwrap();
@@ -632,6 +634,50 @@ fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
     // A block's values in another tile's mid: refused as written.
     let tops = m.tops[&(132, 88)].clone();
     assert!(write_mid(&o.path().join("bad.sect"), (32, 22), &[((132, 88), (Vec::new(), tops))].into()).is_err());
+}
+
+/// Task #889: a z6 tile's run paused at every one of its safe points (each row of blocks kept),
+/// resumed each time, writes the same mid and archives as one never paused.
+#[test]
+fn a_z6_run_paused_at_every_safe_point_resumes_to_the_same_bytes() {
+    use crate::resume_log::STOP_AFTER;
+    let d = squares_dir();
+    let o = tempfile::tempdir().unwrap();
+    const COV: &str = r#"{"shapes": [[[[8.5, 48.6], [9.5, 48.6], [9.5, 48.95], [8.5, 48.95]]]]}"#;
+    std::fs::write(o.path().join("cov.json"), COV).unwrap();
+    let run = |out: &str, keep: Option<PathBuf>| Run {
+        tile: (6, 33, 22),
+        coverage: o.path().join("cov.json"),
+        chm: d.path().into(),
+        chm_store: o.path().join("store"),
+        sources: sources_file(o.path()),
+        leaf: d.path().into(),
+        out: o.path().join(out),
+        keep,
+    };
+    let files = |out: &str| {
+        std::iter::once(MID.to_string())
+            .chain(LAYERS.iter().map(|l| format!("trees-{l}.tiles")))
+            .map(|f| std::fs::read(o.path().join(out).join(f)).unwrap())
+            .collect::<Vec<_>>()
+    };
+    z6(&run("fresh", None)).unwrap();
+    let keep = o.path().join("keep");
+    let mut stops = 0;
+    loop {
+        STOP_AFTER.set(Some(1));
+        let r = z6(&run("paused", Some(keep.clone())));
+        STOP_AFTER.set(None);
+        match r {
+            Err(e) => {
+                assert!(crate::control::is_paused(&e), "{e:#}");
+                stops += 1;
+            }
+            Ok(_) => break,
+        }
+    }
+    assert!(stops >= 1, "a row a safe point: {stops}");
+    assert!(files("paused") == files("fresh"), "paused at each of its {stops} safe points");
 }
 
 #[test]
@@ -891,6 +937,7 @@ fn room_making_mid_run_never_reads_a_square_as_none_there() {
             sources: sources_file(o.path()),
             leaf: d.path().into(),
             out: o.path().join(out),
+            keep: None,
         };
         let n = z3(&a).unwrap();
         // (This process's holds let go, as the job's end would.)

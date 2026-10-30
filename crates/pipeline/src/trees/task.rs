@@ -479,6 +479,7 @@ mod tests {
             sources: crate::trees::tests::sources_file(d),
             leaf: sq.into(),
             out: d.join(out),
+            keep: None,
         };
         rayon::ThreadPoolBuilder::new()
             .num_threads(4)

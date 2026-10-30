@@ -885,10 +885,77 @@ pub fn read_mid(b: &[u8]) -> Result<BTreeMap<(u32, u32), Mid>> {
 pub fn lo(
     q: (u32, u32),
     mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sync),
+    pieces: &mut crate::resume_log::Pieces,
 ) -> Result<Vec<(u8, u32, u32, Vec<u8>)>> {
+    type Mid<'a> = dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sync + 'a;
     type Out = (Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>);
-    fn node(z: u8, x: u32, y: u32, mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sync)) -> Result<Out> {
+    // (Each z6 tile's levels a piece kept, task #889: a resumed run reads only the mids its last
+    // didn't keep.)
+    fn node(z: u8, x: u32, y: u32, mid: &Mid, pieces: &mut crate::resume_log::Pieces) -> Result<Out> {
         if z == 6 {
+            let p = pieces.piece((6, x, y), || Ok(out_piece(&z6(x, y, mid)?)))?;
+            return out_unpiece(&p);
+        }
+        // (One z6 tile's mid at a time: `LO_PEAK_MB`.)
+        let kids: Vec<Out> =
+            (0..4u32).map(|q| node(z + 1, x * 2 + q % 2, y * 2 + q / 2, mid, pieces)).collect::<Result<_>>()?;
+        Ok(up(z, x, y, kids))
+    }
+    fn out_piece(o: &Out) -> Vec<u8> {
+        let mut p = crate::resume_log::Put::default();
+        p.u64(o.0.len() as u64);
+        for (z, x, y, b) in &o.0 {
+            p.u8(*z);
+            p.u32(*x);
+            p.u32(*y);
+            p.bytes(b);
+        }
+        match &o.1 {
+            None => p.u8(0),
+            Some(pl) => {
+                p.u8(1);
+                p.u64(pl.n as u64);
+                for c in &pl.c {
+                    match c {
+                        None => p.u8(0),
+                        Some(c) => {
+                            p.u8(1);
+                            for v in c.iter() {
+                                p.f32s(v);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        p.0
+    }
+    fn out_unpiece(b: &[u8]) -> Result<Out> {
+        let mut g = crate::resume_log::Get(b);
+        let mut tiles = Vec::new();
+        for _ in 0..g.count(17)? {
+            tiles.push((g.u8()?, g.u32()?, g.u32()?, g.bytes()?));
+        }
+        let pl = if g.u8()? == 0 {
+            None
+        } else {
+            let mut pl = Planes::empty(usize::try_from(g.u64()?)?);
+            for c in &mut pl.c {
+                if g.u8()? != 0 {
+                    let mut k: Class = Default::default();
+                    for v in &mut k {
+                        *v = g.f32s()?;
+                    }
+                    *c = Some(Box::new(k));
+                }
+            }
+            Some(pl)
+        };
+        g.end()?;
+        Ok((tiles, pl))
+    }
+    fn z6(x: u32, y: u32, mid: &Mid) -> Result<Out> {
+        {
             let Some(b) = mid(x, y)? else { return Ok((Vec::new(), None)) };
             let z8s = read_mid(&b)?;
             let get = |ax: u32, ay: u32| z8s.get(&(ax, ay)).map(|m| &m.planes);
@@ -916,16 +983,12 @@ pub fn lo(
             if let Some(b) = p6.as_ref().and_then(|p| encode(p, ALL_CLASSES, &[])) {
                 tiles.push((6, x, y, b));
             }
-            return Ok((tiles, p6));
+            Ok((tiles, p6))
         }
-        // (One z6 tile's mid at a time: `LO_PEAK_MB`.)
-        let kids: Vec<Out> =
-            (0..4u32).map(|q| node(z + 1, x * 2 + q % 2, y * 2 + q / 2, mid)).collect::<Result<_>>()?;
-        Ok(up(z, x, y, kids))
     }
     let mut tiles = Vec::new();
     for qq in 0..4u32 {
-        tiles.extend(node(4, q.0 * 2 + qq % 2, q.1 * 2 + qq / 2, mid)?.0);
+        tiles.extend(node(4, q.0 * 2 + qq % 2, q.1 * 2 + qq / 2, mid, pieces)?.0);
     }
     tiles.sort_by(|p, q| q.0.cmp(&p.0).then((p.1, p.2).cmp(&(q.1, q.2))));
     Ok(tiles)

@@ -539,6 +539,33 @@ pub struct Coverage {
 }
 
 impl Coverage {
+    /// A digest of what the coverage holds (every shape's source, rings, buffer, country and
+    /// water): part of a resumed run's identity (crate::resume_log::job_id), task #889.
+    pub fn digest(&self) -> String {
+        let mut h = blake3::Hasher::new();
+        for (k, list) in [&self.shapes, &self.depth_only].into_iter().enumerate() {
+            h.update(&[k as u8]);
+            h.update(&(list.len() as u64).to_le_bytes());
+            for sh in list {
+                for t in [&sh.source, &sh.country] {
+                    h.update(&(t.len() as u64).to_le_bytes());
+                    h.update(t.as_bytes());
+                }
+                h.update(&sh.buffer_m.to_bits().to_le_bytes());
+                h.update(&[u8::from(sh.water)]);
+                h.update(&(sh.rings.len() as u64).to_le_bytes());
+                for r in sh.rings.iter() {
+                    h.update(&(r.len() as u64).to_le_bytes());
+                    for p in r {
+                        h.update(&p[0].to_le_bytes());
+                        h.update(&p[1].to_le_bytes());
+                    }
+                }
+            }
+        }
+        h.finalize().to_hex().to_string()
+    }
+
     /// The memory a step's process takes to read this coverage (MB; `coverage_of` in scenic-build,
     /// through `Coverage::accepted`), worked out from the coverage itself: every shape's rings (8 B a
     /// point), its grid (`Grid`: per cell a bool and its edges' 4 B start, 8 B an entry), the

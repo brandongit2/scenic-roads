@@ -77,6 +77,12 @@ pub fn job_id(kind: &str, target: &str, parts: &[&str]) -> String {
     id(&v)
 }
 
+/// What the manifest names `logicals` (each `<logical>=<content>`, `-` for none), a line each: the
+/// inputs part of a `job_id`.
+pub fn names(out: &crate::out::Out, logicals: impl IntoIterator<Item = String>) -> String {
+    logicals.into_iter().map(|l| format!("{}={}", l, out.get(&l).unwrap_or("-"))).collect::<Vec<_>>().join("\n")
+}
+
 #[cfg(test)]
 thread_local! {
     /// Tests: the run stops as a pause stops it (crate::control::Paused) once this many blocks more
@@ -251,6 +257,11 @@ impl Pieces {
             l.keep(b, &p)?;
         }
         Ok(p)
+    }
+
+    /// Whether piece `b` was kept by an earlier run (and not yet taken).
+    pub fn has(&self, b: BlockId) -> bool {
+        self.kept.contains_key(&b)
     }
 
     /// The target's output saved: its log deleted.
