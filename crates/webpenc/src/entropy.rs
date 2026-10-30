@@ -1,11 +1,21 @@
 //! libwebp's combined Shannon entropy (`VP8LCombinedShannonEntropy`: of a histogram X and of
 //! X + Y, 256 bins), the lossless encoder's hottest function at the terrain's level (task #888:
 //! about a third of a terrain-hi run's CPU, most of it from the cross-colour search, which calls it
-//! for every multiplier it tries), replaced by one without a branch a bin. libwebp 1.6 has no NEON
+//! for every multiplier it tries), replaced by one without the branch on each bin's emptiness
+//! (its slog2 still picks table, inline or libwebp's own by the value). libwebp 1.6 has no NEON
 //! version of it (SSE2 and AVX2 only), so on the Macs its plain C ran, which branches on whether
-//! each bin is empty: at random in a histogram. Its arithmetic is integer (fixed-point logarithms
-//! summed in u64, wrapping as C's unsigned does), so the same sums in another order are the same
-//! result to the bit, and the bytes are libwebp's.
+//! each bin is empty: at random in a histogram.
+//!
+//! Why it is libwebp's result on every input, not only the tested ones: per bin its C adds, to a
+//! u32 sum of x, a u32 sum of x + y and a u64 sum of slog2s, either x, x + y, slog2(x) and
+//! slog2(x + y) (x ≠ 0), or 0, y, 0 and slog2(y) (x = 0, y ≠ 0), or nothing (both 0). This adds
+//! x, x + y, slog2(x) and slog2(x + y) always; with x = 0 those are 0, y, slog2(0) = 0 (libwebp's
+//! table starts with 0, which a test checks) and slog2(y): the same terms. Every sum is unsigned and
+//! wrapping (C's u32 and u64, Rust's wrapping_add), so mod 2^32 and 2^64, where the order of the
+//! terms doesn't matter, and the end, slog2(Σx) + slog2(Σ(x + y)) − the sum, wraps the same in
+//! both. slog2 is libwebp's: its table below 256; below 65,536 its own integer formula, tested at
+//! every one of those values (the shift is 1 to 8, the table index 128 to 255, the product under
+//! 2^43: no overflow); from 65,536 libwebp's own function, called.
 
 /// The bins of the histograms it reads.
 const BINS: usize = 256;
@@ -96,6 +106,9 @@ mod tests {
     #[test]
     fn slog2_is_libwebps() {
         install();
+        // (The proof above leans on slog2(0) being 0.)
+        // SAFETY: a constant table.
+        assert_eq!(unsafe { kSLog2Table[0] }, 0);
         // SAFETY: set up by `install`; a pure function of v ≥ 256.
         let own = unsafe { std::ptr::addr_of!(VP8LFastSLog2Slow).read().unwrap() };
         for v in (BINS as u32..WITH_CORRECTION_MAX + 4096).chain([1 << 20, 123_456_789, u32::MAX]) {
