@@ -1359,7 +1359,7 @@ impl<'a> Maker<'a> {
             return Ok((outs, nq));
         }
         let todo: Vec<usize> = (0..blocks.len()).filter(|&bi| !kept.blocks.contains_key(&key(&blocks[bi]))).collect();
-        let p = sub("making raw tiles (the pool's datasets sampled)", Class::Net);
+        let p = sub("sampling the terrain pool into raw tiles", Class::Net);
         // (Nothing kept: the level's tiles in their order, as a run without a log reads them.)
         let want: Vec<(u32, u32)> = if todo.len() == blocks.len() {
             tiles
@@ -1378,7 +1378,7 @@ impl<'a> Maker<'a> {
         // lake is one block's: every tile with a lake not yet levelled waits for the last block.)
         let one_block: Option<HashMap<u64, Option<usize>>> = match (blocks.len() > 1, self.src.water) {
             (true, Some(w)) => {
-                let _p = sub("finding the level's lakes by block (the water read)", Class::Compute);
+                let _p = sub("finding the level's lakes, block by block", Class::Compute);
                 lakes_by_block(z, &blocks, w)
             }
             _ => None,
@@ -1404,7 +1404,7 @@ impl<'a> Maker<'a> {
         // (The blocks kept taken, their waiting tiles prepared again: their samples of the lakes
         // shared with other blocks, which the level's end reads; those of their own lakes are in
         // the levels kept.)
-        let p = sub("preparing tiles (the water read)", Class::Compute);
+        let p = sub("preparing the tiles with the water", Class::Compute);
         for (bi, b) in blocks.iter().enumerate() {
             let Some(k) = kept.blocks.remove(&key(b)) else { continue };
             take(&k, &mut outs, &mut nq, levels);
@@ -1954,7 +1954,7 @@ pub fn build_q_with(
     let total: u64 = mine.iter().flatten().map(|(_, t)| t.len() as u64).sum::<u64>() + 1365;
     let mk = Maker::new(raw, src);
     let made =
-        crate::timings::phase("making the z3 tile's tiles and uploading its hi packs", crate::timings::Class::Mixed);
+        crate::timings::phase("making the z3 tile's terrain and uploading its hi packs", crate::timings::Class::Mixed);
     let lo = saying(&mk, total, progress, || {
         let mut mids: Vec<((u32, u32), Mid)> = Vec::new();
         for (&t, levels) in ts.iter().zip(mine) {
@@ -2124,7 +2124,7 @@ pub(crate) fn build_piece_kept(
     let levels = piece_levels(cov, t);
     let total: u64 = levels.iter().map(|(_, t)| t.len() as u64).sum();
     let mk = Maker::new(raw, src);
-    let p = crate::timings::phase("making the piece's tiles (z12 → z9)", crate::timings::Class::Mixed);
+    let p = crate::timings::phase("making the piece's terrain tiles, z12 down to z9", crate::timings::Class::Mixed);
     let (mut hi, mid) = saying(&mk, total, progress, || {
         let mine = offers.rest(&levels);
         let n = mine.iter().map(|(_, t)| t.len()).sum();
@@ -2137,7 +2137,10 @@ pub(crate) fn build_piece_kept(
         let began = std::time::Instant::now();
         let (mut hi, mut mid) = mk.piece(mine, true, log.as_mut())?;
         offers.made_here(began.elapsed().as_secs_f64(), n);
-        let _w = crate::timings::sub("taking in the subtrees out (or making them here)", crate::timings::Class::Wait);
+        let _w = crate::timings::sub(
+            "waiting for the subtrees other workers make (or making them here)",
+            crate::timings::Class::Wait,
+        );
         offers.settle(&|lv| mk.piece(lv, true, None), &mut hi, &mut mid)?;
         hi.sort_by_key(|t| (t.0, t.1, t.2));
         Ok((hi, mid))
@@ -2290,7 +2293,7 @@ pub fn make_lo(
     drop(p);
     let mk = Maker::new(raw, src);
     let refs: Vec<((u32, u32), &Mid)> = mids.iter().map(|(t, m)| (*t, m)).collect();
-    let p = crate::timings::phase("making the z3 tile's tiles (z8 → z3)", crate::timings::Class::Mixed);
+    let p = crate::timings::phase("making the z3 tile's coarser levels, z8 down to z3", crate::timings::Class::Mixed);
     let lo = saying(&mk, 1365, progress, || mk.lo(q, &refs))?;
     drop(p);
     mk.report(&mut rep);
@@ -2324,7 +2327,7 @@ pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::
         }
     }
     drop(p);
-    let p = crate::timings::phase("making the root's tiles (the raw z0–2 read)", crate::timings::Class::Compute);
+    let p = crate::timings::phase("making the top tiles (z0–2) from the z3 tiles", crate::timings::Class::Compute);
     let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
     for z in (0..=2u8).rev() {
         let n = 1u32 << z;

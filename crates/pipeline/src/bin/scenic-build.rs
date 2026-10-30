@@ -4583,7 +4583,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
         })
         .collect();
     {
-        let _p = pipeline::timings::sub("writing the unit's", Class::NasWrite);
+        let _p = pipeline::timings::sub("writing the unit's roads", Class::NasWrite);
         put_roads(out, u, &recs)?;
         put_road_ids(out, u, &recs)?;
     }
@@ -4597,7 +4597,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
         .collect();
     let logical = format!("global/roaden/{}", u.dash());
     if !mine.is_empty() {
-        let _p = pipeline::timings::sub("writing the unit's", Class::NasWrite);
+        let _p = pipeline::timings::sub("writing the unit's roads", Class::NasWrite);
         out.put_bytes(&logical, "json", &serde_json::to_vec(&mine)?)?;
     } else if out.get(&logical).is_some() {
         out.remove(&logical);

@@ -1198,11 +1198,14 @@ pub(crate) fn build_target_kept(
         })
         .flatten();
     let mut base_of = |data: &[(u8, u32, u32)]| {
-        let _p =
-            crate::timings::sub("making its base (the pool sampled, its lakes levelled)", crate::timings::Class::Mixed);
+        let _p = crate::timings::sub(
+            "sampling the terrain pool for its base and levelling the lakes",
+            crate::timings::Class::Mixed,
+        );
         target_base(bases, t, Some(data))
     };
-    let p = crate::timings::phase("making its deep tiles (the fine datasets read)", crate::timings::Class::Mixed);
+    let p =
+        crate::timings::phase("sampling the fine elevation data into high-zoom terrain", crate::timings::Class::Mixed);
     let (mut rep, pack) = make(out, t, &mut base_of, water, fine, fetch, log.as_mut())?;
     drop(p);
     let mut gone = named_under(&out.manifest, PACK_Z, t.0, t.1);

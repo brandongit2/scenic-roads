@@ -419,7 +419,8 @@ pub fn ferries_job(out: &mut Out, date: &str, statics: &crate::inputs::Accepted)
     };
     // (osmium's input, read where it lies: tests/nas_access.rs.)
     let set_s = set.unchecked_path().to_string_lossy().into_owned();
-    let p = crate::timings::phase("filtering and exporting the ferries set (osmium)", crate::timings::Class::NasRead);
+    let p =
+        crate::timings::phase("pulling the ferry routes out of the map data (osmium)", crate::timings::Class::NasRead);
     run(
         osmium(&["tags-filter", &set_s, "w/route=ferry", "r/route=ferry", "-o", "ferries.osm.pbf", "--overwrite"]),
         "osmium (ferry routes)",

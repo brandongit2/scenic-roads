@@ -1144,7 +1144,10 @@ pub fn run_pass(
             }
             let lf = links.join(format!("{}.bin", u.dash()));
             if !lf.exists() {
-                let _p = crate::timings::sub("working out their road links (extract)", crate::timings::Class::Compute);
+                let _p = crate::timings::sub(
+                    "working out how their roads connect (extract)",
+                    crate::timings::Class::Compute,
+                );
                 let ul = unit_links(extract_bin, &spacing, f, u, &work)?;
                 eprintln!("roads: {} {} ways, {} pairs", u.slash(), ul.ways.len(), ul.pairs.len());
                 ul.save(&lf)?;

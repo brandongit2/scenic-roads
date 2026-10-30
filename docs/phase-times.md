@@ -54,7 +54,7 @@ the rebuild has measured so far, not a whole build's.
 | water, names-todo, terrain-water, heritage, pois, task tail, the rest | | ≈ 5 | | | | | | | |
 
 The terrain's steps are 89 % of the rebuild's worker time, and inside them the elevation pool's
-sampling (`raw tiles made`, `making its deep tiles`) is 78 % of terrain-hi's run and 92 % of
+sampling (`sampling the terrain pool into raw tiles`, `sampling the fine elevation data into high-zoom terrain`) is 78 % of terrain-hi's run and 92 % of
 terrain-deep's; everything else of this rebuild (slope, trees, depth, unit, pack: the steps task
 #492 measured) is under 5 % of it, each with the profile §3 of the 20 Oct snapshot gives, minus
 what tasks #689, #706, #728 and #532 took out: depth's run is now 76 % compute (composing 51 %,
@@ -63,8 +63,8 @@ their files opened 14 %, the whole local copies made beside 54 %).
 
 ## 3. Inside the terrain, and what each part waits on
 
-- **terrain-hi** (1,053 s a run on average; 512 median): `raw tiles made (the pool's datasets
-  sampled)` 820 s a run, CPU/wall 0.5 with 3 threads: the level's tiles sampled from the pool in
+- **terrain-hi** (1,053 s a run on average; 512 median): `sampling the terrain pool into raw
+  tiles` 820 s a run, CPU/wall 0.5 with 3 threads: the level's tiles sampled from the pool in
   chunks of 16 tiles on up to 3 threads beside the main one. Then `tiles prepared, the block
   before them levelled, shaded and encoded` 159 s (CPU/wall 1.7: the water rasterised, lakes
   levelled, rivers, WebP), the regions read 22 s, the uploads 20 s.
@@ -92,7 +92,7 @@ their files opened 14 %, the whole local copies made beside 54 %).
     coverage's outlines parsed and gridded; every step's run pays it: 2.1 % of terrain-hi, 2.5 %
     of terrain-deep, 16 % of a unit run, half a pois run), `waiting for the uploads beside to land` 20 s.
 - **terrain-deep** (777 s a run on average, 177 median; 42 h of its 57 are 135 runs on the Mac
-  mini at CPU/wall ≥ 0.8): `making its deep tiles` 718 s: `sampling hrdem-1m` 370 s (summed over
+  mini at CPU/wall ≥ 0.8): `sampling the fine elevation data into high-zoom terrain` 718 s: `sampling hrdem-1m` 370 s (summed over
   threads, CPU/wall 2.0: HRDEM's 1 m blocks decoded and bilinearly sampled, 533 MB a run fetched),
   `bringing the heights to EGM2008` 191 s (CPU/wall 1.9: the geoid grids read bilinearly for every
   point of every chunk, 2.2 G points a run), `sampling hrdem` 139 s, `blending the edges` 104 s,

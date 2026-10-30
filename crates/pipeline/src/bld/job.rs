@@ -629,7 +629,7 @@ pub fn build_later(
                 s
             }
             None => {
-                let _p = phase("making z8 tiles' tiles here", Class::Compute);
+                let _p = phase("making the z8 tile's slope tiles here", Class::Compute);
                 let here = std::time::Instant::now();
                 let (s, f) = z8_tiles(&files, cov, t, a, &sites, &mut add)?;
                 offers.made_here(s.buildings + s.parts + s.outside, here.elapsed().as_secs_f64());

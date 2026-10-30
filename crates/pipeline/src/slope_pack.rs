@@ -787,7 +787,7 @@ pub fn build_piece_later(
     }
     drop(p);
     on("slope tiles worked out", 0, count.total);
-    let p = phase("working out slope tiles (the terrain read as needed)", Class::Compute);
+    let p = phase("working out the slope tiles", Class::Compute);
     let (hi, lo) = piece(&terrain, &tiles, &mids, t, &count);
     drop(terrain);
     drop(p);
@@ -856,7 +856,7 @@ pub fn build_deep(out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + S
     }
     drop(p);
     on("slope tiles worked out", 0, count.total);
-    let p = phase("working out slope tiles (the terrain read as needed)", Class::Compute);
+    let p = phase("working out the slope tiles", Class::Compute);
     let (made, mid) = deep_part(&terrain, &tiles, t, &count);
     drop(terrain);
     drop(p);

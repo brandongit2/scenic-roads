@@ -814,7 +814,7 @@ fn begin(a: &Run) -> Result<Begun> {
     want.dedup();
     let mut sqs = Vec::new();
     let mut files: Vec<(String, squares::Here, (i32, i32))> = Vec::new();
-    let p = phase("finding canopy squares (the NAS's store, else fetched)", Class::NasRead);
+    let p = phase("finding the canopy squares (on the NAS, else downloading them)", Class::NasRead);
     for (i, &(top, left)) in want.iter().enumerate() {
         crate::agent::jobs::report(i as u64, want.len() as u64, "canopy squares");
         // (And within the square, as its files come.)
