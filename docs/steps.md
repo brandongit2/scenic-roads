@@ -179,7 +179,9 @@ What each step does, in detail. The steps as one table (names, chains, the check
     z12 tiles with HRDEM, some 3DEP): 86,773 tiles in 27 min with 12.6 GB fetched.
   - **Stored** (crate::terrain_codec; the owner's, 24 Oct): every terrain tile, at every zoom, is
     Terrarium RGB as lossless WebP (libwebp 1.6.0, `cwebp -lossless -z 6 -exact`, no metadata:
-    crates/webpenc, the same bytes on every Mac and in the WebAssembly build, its golden hashes),
+    crates/webpenc, the same bytes on every Mac and in the WebAssembly build, its golden hashes;
+    libwebp's combined Shannon entropy, its hottest function, replaced by webpenc's own of the same
+    integer sums, task #888),
     heights rounded first to 1 cm at the place's native zoom and in the deep levels, to 10 cm on the
     coarser levels (`Sources::quantum`), then to Terrarium's 1/256 m: at most 0.39 cm and 5.1 cm off.
     Chrome and Safari decode it natively, every value exact; a z12 tile is ~47 KB, 0.71× the PNG it

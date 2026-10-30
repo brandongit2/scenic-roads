@@ -161,6 +161,59 @@ the two deep packs: the pixels changed, the largest and the mean difference.
 | **A window's pixels copied a row at a time** (`geotiff::Block::row_f32`, `Tiff::read_window`), **a block's cleanness noted once** (`dem::sample::sample_raster_noting`). Profiled on 10/258/345: the largest part of the sampling's CPU was `read_window` copying each 512² window a sample at a time through `Block::f32_at` (its type matched per sample), and `Clean::note` scanning every block again each time a group of points read it; the bilinear itself under 1 %. | terrain-deep-same 10/258/345: `sampling hrdem-1m` 8 min 44 s → 2 min 52 s of CPU summed over threads (now the LZW decode and the download); the target 271 → 206 s | byte-identical (8c1e32762eb0b1ab, the geoid's change's) |
 | **An overview read whole from the NAS** (`geotiff::Tiff::read_level_whole`, from `dem::generic::GeoSet::source`): a stored file read in place on the NAS at a coarser level than its own (terrain-lo's GLO-30) has that level's blocks read in one range (where they're at least half the bytes they span, and 32 MB at most) and served from memory. Was: a round trip a block. | terrain-same 3/4/2 (1,347 lo tiles): `sampling glo30` 12 min 49 s → 9 min 35 s summed over threads, the target 333 → 261 s; the run's peak 7.5 → 8.8 GB uncapped (the levels held while their files are open: a process's spans now capped at 512 MB, `geotiff::SPANNED_MAX`, past which a level is read a block at a time) | byte-identical (lo 61ef52dfb4f7ab6c both; the manifest's bc55fdaa05b56820 differs before this change as after; not traced) |
 
+## 4c. What task #888 did (30 Oct)
+
+Measured on the M4 with `terrain-same` and `terrain-deep-same` (release; the NAS and the live app
+read-only, under `sandbox-exec`; own scratch, home and cache; the live agent's jobs beside: noisy,
+its load 10–90), main's binary (02f165ce) against this branch's, alternated. CPU is user + sys.
+Every run's packs and mids had the manifest's content names, before and after, at every thread
+count (hi 37fd592ec4c34e7d / mid b5ead4f29c18907f, hi c6e206311767f103 / mid 1dfe15dbfe28ba3c,
+deep 8c1e32762eb0b1ab, lo e1ede1a0acc01de7).
+
+Profiled with `sample` (terrain-same 6/37/17, GLO-30 alone, 3 threads, main): of the CPU, the WebP
+encode 52 % (libwebp's `CombinedShannonEntropy_C` alone 29 %, `GetCombinedEntropyUnrefined_C` 8 %),
+the sampler 15 %, the blends' distances 10 %, finding each point's file 6 %; and 45 s of sys
+time in a 157 s run that a single thread doesn't have (8.6 s): the threads' locks.
+
+| change | before → after |
+|---|---|
+| **libwebp's combined entropy replaced** (`webpenc::entropy`, installed once before the first encode): the same integer sums without a branch a bin, its slog2 below 65,536 inline. libwebp 1.6 has it in SSE2 and AVX2, not NEON, so the Macs ran its C, which branches on each bin being empty. Integer arithmetic, so the same result to the bit (a test against libwebp's own, 5,000 histograms; slog2 at every value it answers) | its share of a hi run's CPU 31 → 16 % |
+| **A point's file found by the square kept from the point before** (`FileGrid::near`, `GeoSet::holding`): one hash lookup a grid square, not a point | in the runs below |
+| **The sampler's passes over a batch on the pool** (`Sampler::sample`: each dataset's points, the blends' points and radii, the second datasets', the geoid's, the blend itself; order kept), and **a distance measure's files read once a file, its last window's cleanness kept** (`GeoSet::distance`: was the open files' lock, the level, the mask and the blocks' map behind their lock, a point) | sys time 45 → 8 s a hi run |
+
+The runs, 3 threads (a job's share before part 1's climb), the same hour:
+
+| target | main: s, CPU s | after: s, CPU s | targets an hour on 3 threads |
+|---|---|---|---|
+| terrain-same 6/37/17 (GLO-30; 3,665 tiles) | 137.6, 348 (2.5 cores) | 101.7, 275 (2.7 cores) | 26 → 35 |
+| terrain-same 6/16/19 (HRDEM, GLO-30; 1,200 tiles) | 41.9, 108 | 36.6, 99 | 86 → 98 |
+| terrain-deep-same 10/258/345 (HRDEM 1 m; 5,011 tiles, 2.7 GB fetched) | 222, 439 | 209, 390 | 16 → 17 |
+| terrain-same 3/4/2 (lo, GLO-30 read in place on the NAS; 1,347 tiles) | 240, 212 | 379, 205 (the NAS: 715 s of the threads' waits, against 419 s) | NAS-bound |
+
+**Scaling** (the whole process's seconds at 1, 2, 4, 8, 14 threads; the speedup over one thread):
+
+| target | 1 | 2 | 4 | 8 | 14 |
+|---|---|---|---|---|---|
+| hi 6/37/17, main | 316 | 217 (1.5×) | 140 (2.3×) | 103 (3.1×) | 105 (3.0×) |
+| hi 6/37/17, after | 313 | 178 (1.8×) | 113 (2.8×) | 94 (3.3×) | 96 (3.3×) |
+| deep 10/258/345, after | 444 | 241 (1.8×) | 172 (2.6×) | 136 (3.3×) | 116 (3.8×) |
+| lo 3/4/2, after | 427 | 191 | 185 | 189 | 100 |
+
+A hi run stops scaling at about 8 threads: 12–25 s of each is before the terrain's first level
+(the coverage, the water, the plan), and the sampling's chunks are at most four at once
+(`terrain_base::AT_ONCE`). A deep run keeps gaining to 14 (a fifth of its threads' samples wait in `recvfrom`, HRDEM's files
+fetched, which more threads overlap). A lo run is the NAS's: its times follow the NAS's load, not the threads (its sys
+time grows to 144 s at 14 threads, the SMB reads').
+
+**pyramids-fill** (GSI's tiles fetched and packed onto the NAS) has no CPU to speak of (CPU/wall
+0.03 in its live runs, 35–58 min a z6 tile): its fetches are its own pool of `pyramids::FETCHES`
+(16), whatever threads the job is given, so its rate is GSI's.
+
+**The live runs since part 1's publish (16:00 UTC):** no terrain-hi or terrain-lo ran by 18:40
+UTC; the M4's terrain-deep runs, at 4–5 threads, were Japan's (GSI's live layers): CPU/wall 1.02,
+1,524 s a run, half of the sampling's wall waiting on the network. So the climb's threads idle
+there; the hours before it (3 threads, mostly HRDEM) ran at CPU/wall 1.80.
+
 ## 5. Not done, with what the data says (the ranking of what's left)
 
 1. **GSI's tiles fetched live, every run (41 % of terrain-hi: 58.6 h in 16 Japan runs; the
