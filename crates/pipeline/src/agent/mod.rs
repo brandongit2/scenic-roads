@@ -1731,6 +1731,8 @@ pub struct Agent {
     catalogue_low: std::cell::Cell<bool>,
     /// Publishing's switches as last read (crate::agent::publish).
     publishing: std::cell::Cell<publish::Switches>,
+    /// The map's log, written in shadow (crate::agent::publish::Shadow).
+    maplog: publish::Shadow,
     /// The map tiles noted planned in the history (crate::pubtimes), since the last catalogue.
     planned_tiles: std::cell::RefCell<crate::pubtimes::PlannedNotes>,
     /// The pool (docs/pool.md, crate::agent::pool), always on: this Mac's part in it (None while this
@@ -2130,6 +2132,7 @@ impl Agent {
             catalogues: std::cell::RefCell::new(catalogues),
             catalogue_low: Default::default(),
             publishing: Default::default(),
+            maplog: Default::default(),
             planned_tiles: Default::default(),
             member_id: run.as_ref().map(|r| r.side.member().id.clone()),
             ticking: run.as_ref().map(|r| r.ticking.clone()),
@@ -4978,6 +4981,15 @@ impl Agent {
                 crate::net::catalogue_written();
                 let ready = self.ready.borrow().clone();
                 let (n, data) = (cat_stats.as_ref().map(|c| c.n), cat_stats.and_then(|c| serde_json::to_value(c).ok()));
+                // (And the map's log, in shadow: crate::agent::publish::Shadow.)
+                if let Some(root) = root.filter(|_| self.keeps_publishing()) {
+                    match served((&root.join(store::catalogue::NAME)).into())
+                        .filter(|s| n.is_none_or(|n| s.seen.n == n))
+                    {
+                        Some(s) => self.maplog.published(&self.o.home, root, s.cat),
+                        None => eprintln!("maplog: MISMATCH: catalogue {n:?} isn't the newest that reads; no batch"),
+                    }
+                }
                 self.note(crate::coord::history::Event {
                     worker: Some(self.host.clone()),
                     step: Some(step.clone()),

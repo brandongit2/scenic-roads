@@ -7,6 +7,8 @@
 //!   and the sizes of the files the last one lists taken from it, not looked at again.
 //! - **Slope and tree cover near** (`near-slope`): a done region's slope and tree cover the z6 tiles
 //!   near it (crate::agent::build::Publishing::near), their assemblies with the low zooms.
+//!
+//! And the map's log written beside the catalogues, in shadow (docs/maplog.md §8, step 2: `Shadow`).
 
 pub const DELTA_CATALOGUE: &str = "state/pool/delta-catalog";
 pub const NEAR_SLOPE: &str = "state/pool/near-slope";
@@ -57,6 +59,168 @@ pub fn held_at(was: Option<u64>, held: bool, due: bool, now: u64) -> Option<u64>
     }
 }
 
+/// The map's log written in shadow beside the catalogues (docs/maplog.md §8, step 2): each catalogue
+/// the lead's `catalog` step publishes becomes a batch of the log in the agent's `maplog/`
+/// (store::map::log), `seq` its number; the map then is checked equal to that catalogue, and a
+/// mismatch is logged loudly. Nothing reads the log yet, and the catalogues are written as before.
+/// The work (a whole catalogue turned to entries, diffed and checked, the hourly snapshots) runs on
+/// a thread of its own, never in the agent's loop.
+#[derive(Default)]
+pub struct Shadow {
+    tx: Option<std::sync::mpsc::Sender<(store::nasfs::NasRoot, std::sync::Arc<store::catalogue::Catalogue>)>>,
+}
+
+/// The log's folder in the agent's home.
+pub const MAPLOG: &str = "maplog";
+/// How often the map is written whole: the lead's snapshot and the NAS's (docs/maplog.md §4.4).
+const SNAPSHOT_EVERY_S: u64 = 3600;
+
+impl Shadow {
+    /// Catalogue `cat`, just published at `root`: its batch, on the shadow's thread (started the
+    /// first time, its log in `home`'s `maplog/`).
+    pub fn published(
+        &mut self,
+        home: &std::path::Path,
+        root: &store::nasfs::NasRoot,
+        cat: std::sync::Arc<store::catalogue::Catalogue>,
+    ) {
+        let tx = self.tx.get_or_insert_with(|| {
+            let (tx, rx) =
+                std::sync::mpsc::channel::<(store::nasfs::NasRoot, std::sync::Arc<store::catalogue::Catalogue>)>();
+            let dir = home.join(MAPLOG);
+            std::thread::Builder::new()
+                .name("maplog".into())
+                .spawn(move || {
+                    let mut w = Writer::new(dir);
+                    for (root, cat) in rx {
+                        w.publish(&root, &cat, now());
+                    }
+                })
+                .expect("a thread starts");
+            tx
+        });
+        if tx.send((root.clone(), cat)).is_err() {
+            eprintln!("maplog: MISMATCH: the shadow's thread is gone; no batch written");
+        }
+    }
+}
+
+fn now() -> std::time::SystemTime {
+    std::time::SystemTime::now()
+}
+
+/// What a publish did to the log.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Wrote {
+    /// The log started at this catalogue (its snapshot).
+    Seeded,
+    /// A batch appended, of this many entries set and deleted.
+    Batch(usize, usize),
+    /// Nothing changed in the map.
+    Same,
+}
+
+/// The shadow's writer: the log, opened at its first publish.
+pub(crate) struct Writer {
+    dir: std::path::PathBuf,
+    log: Option<store::map::log::Log>,
+    /// Whether a catalogue was checked whole against the map's (once a process).
+    whole_checked: bool,
+}
+
+impl Writer {
+    pub(crate) fn new(dir: std::path::PathBuf) -> Writer {
+        Writer { dir, log: None, whole_checked: false }
+    }
+
+    /// `cat`'s batch, the map checked against it, and the snapshots when an hour has passed since
+    /// the last (`now`); each failure and mismatch logged loudly.
+    pub(crate) fn publish(
+        &mut self,
+        root: &store::nasfs::NasRoot,
+        cat: &store::catalogue::Catalogue,
+        now: std::time::SystemTime,
+    ) {
+        match self.append(cat) {
+            Ok(w) => {
+                eprintln!("maplog: catalogue {} in shadow: {w:?}", cat.n);
+                self.snapshots(root, now, w == Wrote::Seeded);
+            }
+            Err(e) => eprintln!("maplog: MISMATCH at catalogue {}: {e:#}", cat.n),
+        }
+    }
+
+    /// `cat` as a batch of the log (`seq` its number), and the log's map then checked to be it.
+    pub(crate) fn append(&mut self, cat: &store::catalogue::Catalogue) -> anyhow::Result<Wrote> {
+        use anyhow::Context;
+        if self.log.is_none() {
+            self.log = Some(
+                store::map::log::Log::open(&self.dir)
+                    .with_context(|| format!("open the log in {}", self.dir.display()))?,
+            );
+        }
+        let log = self.log.as_mut().expect("opened above");
+        let next = store::map::entries(cat)?;
+        let head = log.map();
+        let wrote = if head.is_empty() {
+            log.seed(store::map::Map::new(cat.n, cat.created.clone(), next.clone()))?;
+            Wrote::Seeded
+        } else {
+            anyhow::ensure!(cat.n > head.seq, "the log is at {} already: a catalogue number taken again", head.seq);
+            let why = format!("catalogue {}", cat.n);
+            let b = head.batch_to(&next, cat.n, &cat.created, &cat.app, &why);
+            if b.is_empty() {
+                Wrote::Same
+            } else {
+                log.append(&b)?;
+                Wrote::Batch(b.set.len(), b.del.len())
+            }
+        };
+        // The check: the map is the catalogue, entry for entry (its digest, kept by the batches, the
+        // catalogue's from scratch; then the entries themselves), and, at this process's first
+        // publish, as the catalogue it gives back (that whole one costs a second copy of the map).
+        let map = log.map();
+        let want = store::map::digest_of(&next);
+        anyhow::ensure!(
+            map.digest() == want,
+            "the log's map has digest {}, the catalogue {}",
+            store::map::hex(map.digest()),
+            store::map::hex(want)
+        );
+        if let Some((k, _)) = map.entries().iter().zip(next.iter()).find(|(a, b)| a != b) {
+            anyhow::bail!("the log's map isn't the catalogue (first differing at {})", k.0);
+        }
+        anyhow::ensure!(map.entries().len() == next.len(), "the log's map isn't the catalogue (their entries' counts)");
+        if !self.whole_checked {
+            anyhow::ensure!(
+                store::map::catalogue(map.entries(), cat.n, &cat.created)? == *cat,
+                "the log's map doesn't give the catalogue back"
+            );
+            self.whole_checked = true;
+        }
+        Ok(wrote)
+    }
+
+    /// The lead's snapshot (the log compacted) and the NAS's (`map/<seq>.json.zst`), when the last
+    /// was written an hour or more before `now`, or the log just started (`started`).
+    fn snapshots(&mut self, root: &store::nasfs::NasRoot, now: std::time::SystemTime, started: bool) {
+        let Some(log) = self.log.as_mut() else { return };
+        let due = started
+            || log.snapshot_at().is_none_or(|t| now.duration_since(t).is_ok_and(|d| d.as_secs() >= SNAPSHOT_EVERY_S));
+        if !due {
+            return;
+        }
+        if let Err(e) = log.compact() {
+            eprintln!("maplog: compacting the log: {e:#}");
+        }
+        let map = log.map();
+        match store::map::write_nas_snapshot(root, &map) {
+            Ok(()) => eprintln!("maplog: the map at {} written to the NAS", map.seq),
+            Err(e) => eprintln!("maplog: writing the map's snapshot to the NAS: {e:#}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +260,49 @@ mod tests {
         assert_eq!(held_at(Some(100), false, true, 720), Some(100));
         // None held and none due: the count starts again.
         assert_eq!(held_at(Some(100), false, false, 800), None);
+    }
+
+    /// The recorded chain of real catalogues (store's `src/map/testdata`), lowest first.
+    fn recorded() -> Vec<store::catalogue::Catalogue> {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../store/src/map/testdata");
+        let mut ns = store::catalogue::list(dir.as_path()).unwrap();
+        ns.reverse();
+        ns.into_iter().map(|n| store::catalogue::read_n(dir.as_path(), n).unwrap()).collect()
+    }
+
+    #[test]
+    fn the_log_s_map_is_each_catalogue() {
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let chain = recorded();
+        let mut w = Writer::new(d.path().join(MAPLOG));
+        let t0 = std::time::SystemTime::now();
+        for (i, c) in chain.iter().enumerate() {
+            w.publish(&root, c, t0);
+            let m = w.log.as_ref().unwrap().map();
+            assert_eq!((m.seq, m.catalogue().unwrap()), (c.n, c.clone()));
+            if i == 0 {
+                // (Started: the NAS's snapshot at once.)
+                assert!(d.path().join(format!("nas/map/{}.json.zst", c.n)).exists());
+            }
+        }
+        // The NAS's snapshot only hourly: none since the first, then one an hour on.
+        let snaps = || std::fs::read_dir(d.path().join("nas/map")).unwrap().count();
+        assert_eq!(snaps(), 1);
+        let last = chain.last().unwrap();
+        w.snapshots(&root, t0 + std::time::Duration::from_secs(SNAPSHOT_EVERY_S + 5), false);
+        assert!(d.path().join(format!("nas/map/{}.json.zst", last.n)).exists());
+        // Reopened (an agent restarted), the log goes on from where it was.
+        let mut again = Writer::new(d.path().join(MAPLOG));
+        let mut next = last.clone();
+        next.n += 1;
+        next.units.push("6/0/0".into());
+        next.units.sort();
+        assert_eq!(again.append(&next).unwrap(), Wrote::Batch(1, 0));
+        // A catalogue number taken again, or one the map doesn't change, writes nothing.
+        assert!(again.append(&next).is_err());
+        next.n += 1;
+        assert_eq!(again.append(&next).unwrap(), Wrote::Same);
+        assert_eq!(again.log.as_ref().unwrap().map().seq, last.n + 1);
     }
 }
