@@ -206,14 +206,21 @@ What each step does, in detail. The steps as one table (names, chains, the check
   part of its z6 tile's pyramid, z10 down to the terrain's deep levels (`slope_pack::build_deep`):
   its deep pack (z13–16, `layers/slope/deep/10-x-y`, its terrain deep pack copied here first) and
   its deep mid (`work/slope-deep-mid/10-x-y`: its z10–12 tiles as made and its quadrant at full
-  precision), once the terrain of its z6 tile's z3 tile and its edge neighbours' is built (their
-  deep levels too); a z10 tile no target any more has its deep pack and deep mid dropped.
-  **slope-hi**, a run per z6 tile once its z10 tiles' slope-deep runs are done: its hi pack (z9–12,
+  precision), once the terrain it reads is built (its own and its edge neighbours' terrain-deep,
+  those tiles' z6 terrain-hi and z3 terrain-lo; not the rest of its z3 tile: task #864); a z10 tile
+  no target any more has its deep pack and deep mid dropped.
+  **slope-hi**, a run per z6 tile once what it reads is built (its own and its edge neighbours'
+  terrain-hi, their z3 tiles' terrain-lo, its z10 tiles' slope-deep): its hi pack (z9–12,
   its z10 tiles' parts taken in from their deep mids as made, the same bytes as one run of the
   whole pyramid) and its mid (`work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs
   (its own z6 tile's hi pack copied whole first) and its neighbours' edge strips; **slope-lo**, an
   assembly per z3 tile from its z6 tiles' mids (each read whole, eight at once, under a deadline and
-  tried again while it fails transiently); **slope-root**, z0–2 from the z3 tiles. Memory from the
+  tried again while it fails transiently); **slope-root**, z0–2 from the z3 tiles. (Each of these waits, slope-lo's on its z6 tiles' slope-hi
+  and its own and edge neighbours' terrain-lo, terrain-lo's and trees-lo's on their z6 tiles, is
+  its row's declared reads in the steps table, `agent::steps::Reads`: the planner, the forecast's
+  waits and the page's notes derive each target's from it; `declared_reads_cover_the_keys` checks
+  each against its key's inputs. The terrain root is read but not waited on: built at the finish,
+  its change re-keys its readers.) Memory from the
   tiles a run holds (`slope_pack::peak_mb`: a z6 tile's hi tiles, each counted at its raw RGB, its
   z10 tiles' quadrants, the pyramid's working memory and the decoded terrain kept; `deep_peak_mb` a
   z10 tile's deep tiles and z10–12 tiles likewise; `lo_peak_mb` an assembly's); slope-hi's and
