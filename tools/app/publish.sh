@@ -156,8 +156,9 @@ export SCENIC_PUBLISH=1
 # file and line (the panic's location needs none), and no backtrace is asked for here. (Passed to
 # the test Mac with the other CARGO_PROFILE_* variables: tools/app/remote-tests.sh.)
 export CARGO_PROFILE_DEV_DEBUG=false CARGO_PROFILE_TEST_DEBUG=false
-# (After the libraries, every one of the pipeline's integration tests, by glob (#662: a list of four
-# had missed no_instant_back, cli, grant_rules and whole_kill as they were added): every cache read
+# (The whole workspace's tests, #848: every crate's libraries, binaries and integration tests, by
+# nextest's own discovery (#662: a list of four had missed no_instant_back, cli, grant_rules and
+# whole_kill as they were added): every cache read
 # through the accessor, the records written only through Out (docs/pool.md §7.3), every Wikimedia
 # request through the budgets' proxy (§7.7), the Python steps' timer, no Instant dated back...)
 # Both run on the test Mac, the mini by default (tools/app/remote-tests.sh, #442: an exact copy of this snapshot, its build
@@ -165,8 +166,7 @@ export CARGO_PROFILE_DEV_DEBUG=false CARGO_PROFILE_TEST_DEBUG=false
 # or with SCENIC_TESTS_LOCAL=1): the suite took 13-30 min on the M1 beside its builds, and a
 # timing test failed under that load. Its exit status is the suite's.
 suite='export SCENIC_PUBLISH=1; cargo nextest --version >/dev/null 2>&1 || { mise install -q; eval "$(mise env -s zsh)"; }; rc=0
-cargo nextest run --no-fail-fast --hide-progress-bar -p store -p names -p pipeline --lib || rc=$?
-cargo nextest run --no-fail-fast --hide-progress-bar -p pipeline --test "*" || rc=$?
+cargo nextest run --no-fail-fast --hide-progress-bar --workspace || rc=$?
 exit $rc'
 # One publish's suite and clippy at a time on this Mac (two at once overload the test Mac, #684): the
 # second waits for the first's (tests.busy).
@@ -176,6 +176,13 @@ until hold $cache/tests.busy; do
 done
 cleanup+=("unhold $cache/tests.busy")
 zsh tools/app/remote-tests.sh publish $snap $suite > $tests_log 2>&1 || tests_ok=$?
+# Then every test outside the Rust workspace (tools/app/other-tests.zsh, #848: web/test and
+# tools/check/*.test.mjs by glob, the taskboard's, the status app's Swift self-test, shell.zsh and
+# test-guard.zsh; their parts at once, ~1 min, most of it swiftc), here, after the Rust suite rather
+# than beside it: shell.zsh's two-publishes check times sub-second sleeps, and on the mini the suite
+# runs on this same Mac. Their whole output follows the suite's in the log.
+other_ok=0
+zsh tools/app/other-tests.zsh >> $tests_log 2>&1 || other_ok=$?
 # (And every child, listener and taken connection by store::spawn: clippy's disallowed-methods,
 # clippy.toml, docs/pool.md §7.5. A hit fails the publish.)
 cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
@@ -185,6 +192,8 @@ unhold $cache/tests.busy
 from=$(grep -n -- '^--- remote result discarded, local rerun ---$' $tests_log | tail -1 | cut -d: -f1 || true)
 final() { tail -n +${from:-1} $tests_log; }
 final | grep -E '^ *Summary ' || true
+grep -E '^other tests: ' $tests_log || true
+(( other_ok == 0 )) || { (( tests_ok != 0 )) || tests_ok=$other_ok; }
 if (( tests_ok != 0 )); then
   final | sed -n '/^ *FAIL \[/,/^ *\(PASS\|SLOW\|FAIL\|Summary\) /p' | grep -v '^progress: ' || true
   echo "tests failed; their whole output: $tests_log"

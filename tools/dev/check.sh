@@ -9,7 +9,8 @@
 #   guards    tools/app/guards.sh
 #   wasm      tools/app/wasm.sh, when a crate the wasm build compiles changed (det, roadcore,
 #             pipeline, store, names)
-#   web       web/test/rings.test.ts, inview.test.ts, wheelkind.test.ts, regionlist.test.ts, links.test.ts, chartmath.test.mjs, catalogues.test.mjs and tools/check/worksums.test.mjs under node, pnpm typecheck and vite build (to a scratch folder), when web/ changed
+#   web       node --test of web/test/*.test.{ts,mjs} and tools/check/*.test.mjs (by glob), pnpm
+#             typecheck and vite build (to a scratch folder), when web/ or a tools/check test changed
 #   taskboard node --test tools/taskboard/test/*.test.mjs, when tools/taskboard changed
 #   shell     tools/app/test/shell.zsh (publish.sh's shell steps, tools/app/lib.zsh), when tools/app changed
 #   testguard tools/dev/test/test-guard.zsh (the test guard's worktree lookup), when it changed
@@ -25,7 +26,7 @@
 set -uo pipefail
 case $#:${1:-} in
   0:) ;;
-  1:-h|1:--help) sed -n '2,23p' ${0:A} | sed 's/^# \{0,1\}//'; exit 0 ;;
+  1:-h|1:--help) sed -n '2,25p' ${0:A} | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) print -u2 "check.sh takes no arguments (check.sh --help)"; exit 2 ;;
 esac
 root=$(git rev-parse --show-toplevel) || exit 2
@@ -51,8 +52,9 @@ part clippy cargo clippy -q --workspace --all-targets -- -A clippy::all -D clipp
 part guards tools/app/guards.sh
 if has 'crates/(det|roadcore|pipeline|store|names)/*' || has Cargo.lock; then part wasm tools/app/wasm.sh
 else skip wasm "no wasm crate changed"; fi
-if has 'web/*' || has 'tools/check/worksums.test.mjs'; then
-  part web zsh -c "cd web && node test/rings.test.ts && node test/inview.test.ts && node test/wheelkind.test.ts && node test/regionlist.test.ts && node --experimental-transform-types --no-warnings test/links.test.ts && node test/chartmath.test.mjs && node test/catalogues.test.mjs && node --test ../tools/check/worksums.test.mjs && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir"
+if has 'web/*' || has 'tools/check/*.test.mjs'; then
+  webtests=( web/test/*.test.(ts|mjs)(N) tools/check/*.test.mjs(N) )
+  part web zsh -c "node --experimental-transform-types --no-warnings --test ${(j: :)${(q)webtests}} && cd web && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir"
 else skip web "web/ unchanged"; fi
 if has 'tools/taskboard/*'; then part taskboard zsh -c "cd tools/taskboard && node --test test/*.test.mjs"
 else skip taskboard "tools/taskboard unchanged"; fi

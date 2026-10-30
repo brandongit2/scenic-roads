@@ -32,8 +32,18 @@ refuses runs it can't read (`$c test`, `cargo --config alias.…`, `cargo -C`, `
   it holds them to module-path filters). A full suite only to reproduce a failure
   the PM names: mark the command `#repro`.
 - `--release` only for performance work: mark the command `#perf` (it may use `--workspace`).
-- Full suites run in `tools/app/publish.sh` (everything, under cargo-nextest, before a publish),
-  the PM's; and once by the PM on main after a merge batch, in the background, before publishing.
+- Full suites run in `tools/app/publish.sh` before a publish, the PM's; and once by the PM on main
+  after a merge batch, in the background, before publishing. Publish runs (#848):
+  - `cargo nextest run --workspace`: every workspace crate's libraries, binaries and integration
+    tests (det, roadcore, pipeline, server, store, names, webpenc), on the test Mac;
+  - then `tools/app/other-tests.zsh`, on the publishing Mac, its parts at once: `node --test` of
+    `web/test/*.test.{ts,mjs}` and `tools/check/*.test.mjs` (by glob), `tools/taskboard/test/*.test.mjs`,
+    the status app's `swiftc` build and `--test tools/status/test`, `tools/app/test/shell.zsh` and
+    `tools/dev/test/test-guard.zsh`;
+  - publish's clippy line.
+  Every output goes whole to ~/Library/Logs/scenic/publish-tests-<time>.log; any failure stops the
+  publish. Not run by publish: Python (producers/, dem/: check.sh only), doctests, the browser
+  checks in tools/check and tools/bldcheck that are not `*.test.mjs` (run by hand).
 
 ## Before reporting: tools/dev/check.sh (#273, 18 Oct)
 
@@ -41,9 +51,10 @@ Run `tools/dev/check.sh` in your worktree after your last commit, and report onl
 PASS. It runs what publish would refuse your work on: `cargo fmt --check`, publish's clippy line
 (`-D clippy::disallowed_methods`: processes only through `store::spawn`), `tools/app/guards.sh`,
 `tools/app/wasm.sh` when a crate the wasm build compiles changed (an unguarded `crate::net` fails
-there), the web typecheck and build when web/ changed, `node --test` of tools/taskboard/test when
+there), when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every `web/test/*.test.{ts,mjs}` and
+`tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build, `node --test` of tools/taskboard/test when
 tools/taskboard changed (#672), `tools/app/test/shell.zsh` (publish.sh's shell
-steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, the Swift build when tools/status changed,
+steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, the Swift build and self-test when tools/status changed,
 the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ or dem/ Python
 changed. One PASS/FAIL line per part; whole outputs in ~/Library/Logs/scenic/check-<time>/. A pass
 on a clean tree records HEAD in `.git/check-passed`.
