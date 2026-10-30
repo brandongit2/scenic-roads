@@ -120,7 +120,8 @@ impl Handle {
     pub fn new(home: PathBuf, hold: Arc<Snap<HoldState>>) -> Handle {
         let view = Snap::new(None);
         let (tx, rx) = mpsc::channel();
-        let beat = Beat { home, view: view.clone(), hold, nas: None, failing: false, stuck_after: nasread::STALL_AFTER };
+        let beat =
+            Beat { home, view: view.clone(), hold, nas: None, failing: false, stuck_after: nasread::STALL_AFTER };
         Handle { view, tx, inline: Some((beat, rx)) }
     }
 
@@ -269,7 +270,7 @@ mod tests {
         // (A threshold of 0 s, and a view a second old: past it.)
         b.inline.as_mut().unwrap().0.stuck_after = Duration::ZERO;
         crate::agent::nasread::phase("a test's phase");
-        std::thread::sleep(Duration::from_millis(1100));
+        std::thread::sleep(Duration::from_millis(1100)); // (sleep ok: the age is whole seconds of the view's own Instant, nothing to wait on)
         b.changed();
         let s = said(&local);
         assert!(s.loop_age_s.unwrap() > 0 && s.loop_stuck_s == Some(0) && s.loop_phase.is_some(), "{s:?}");
