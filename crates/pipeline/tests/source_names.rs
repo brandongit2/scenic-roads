@@ -20,7 +20,7 @@
 //! fails (`every_exemption_matches_a_line`), so the list can't go stale. A name built at run time
 //! (joined from parts) isn't seen.
 //!
-//! scans: crates dem web/src tools scripts producers
+//! scans: crates dem web/src tools scripts producers docs/inputs.md
 
 mod common;
 

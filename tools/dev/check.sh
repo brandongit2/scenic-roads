@@ -44,7 +44,10 @@ changed=( ${(f)"$(git diff --name-only $base; git ls-files --others --exclude-st
 # only the tree and its diff against that base.)
 passed=$(git rev-parse --path-format=absolute --git-common-dir)/check-passed
 treekey="tree $(git rev-parse 'HEAD^{tree}') base $(git rev-parse "$base^{tree}")"
-if [[ -z $(git status --porcelain) ]] && grep -qF -- " $treekey" $passed 2>/dev/null; then
+# (Clean at the start: a file untracked or edited during the run and gone by its end was in the
+# check, so the end's state alone can't vouch for the tree.)
+[[ -z $(git status --porcelain) ]] || treekey=
+if [[ -n $treekey ]] && grep -qF -- " $treekey" $passed 2>/dev/null; then
   print -r -- "$(git rev-parse HEAD) $(date -u +%FT%TZ) $treekey" >> $passed
   print "PASS: this tree was already checked (against the same base): recorded $(git rev-parse --short HEAD) as checked"
   exit 0
@@ -122,7 +125,8 @@ if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
   print "PASS, but uncommitted changes: commit them and run again (the pass is recorded for a commit)"
   exit 1
 fi
-# (The tree key only when nothing untracked was in the check either.)
-[[ -z $(git status --porcelain) ]] || treekey=
+# (The tree key only when the checkout was clean at the start, still is, and HEAD's tree is the one
+# checked: a commit made during the run gets no key.)
+[[ -z $(git status --porcelain) && $treekey == "tree $(git rev-parse 'HEAD^{tree}') "* ]] || treekey=
 print -r -- "$(git rev-parse HEAD) $(date -u +%FT%TZ)${treekey:+ $treekey}" >> $passed
 print "PASS: recorded $(git rev-parse --short HEAD) as checked"
