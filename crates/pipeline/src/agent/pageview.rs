@@ -615,12 +615,12 @@ impl PageView {
         match std::thread::Builder::new().name("pageview-forecast".into()).spawn(move || {
             super::forecast::low_priority();
             let mut forecast = local_forecast(&rec, now, &own);
-            let (mut tocome, item_run) = ToCome::take(&mut forecast, &rec.input.machines);
+            let (mut tocome, item_job, jobs) = ToCome::take(&mut forecast, &rec.input.machines);
             let graph = std::mem::take(&mut forecast.graph);
             let (waits, epoch) = match basis {
                 Some(((b, at), epoch)) => {
                     let w = b.next(graph);
-                    tocome.runs.after = w.by_run(&item_run, tocome.runs.targets.len());
+                    tocome.runs.after = w.by_job(&item_job, jobs);
                     if let (Some(p), Some(names)) = (&save, &names) {
                         keep_waits(p, &w.keep(now, |n| names.get(&n).cloned()));
                     }
@@ -1302,7 +1302,7 @@ pub(crate) mod tests {
         fixture(&root, now);
         let mut rec = record(now);
         let c = Cost { secs: 600.0, known: true, peak_mb: 1000 };
-        rec.input.chains.push(("depth-lo".into(), "6/1/0".into(), c));
+        rec.input.chains.push(("depth-lo".into(), "3/0/0".into(), c));
         put(&root, "state/build/term/7/forecast-input.json", &rec.bytes().unwrap());
         let keep = d.path().join("home/pageview-waits.json");
         let with_keep = |keep: Option<PathBuf>| Inputs { keep, ..inputs("") };

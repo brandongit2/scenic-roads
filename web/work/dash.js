@@ -20,7 +20,7 @@
 // activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { AREAS, HIDDEN_STATES, PHASE_ABOUT, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobRelations, runLinks, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown, phaseSplit, ALONGSIDE_RULE, WAITS_RULE } from "./sums.js";
+import { AREAS, HIDDEN_STATES, PHASE_ABOUT, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobLinks, jobNumbers, jobRelations, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown, phaseSplit, ALONGSIDE_RULE, WAITS_RULE } from "./sums.js";
 import { fmt } from "./chartmath.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
@@ -1185,8 +1185,8 @@ function runCard(m, r, kind, laneName) {
     ["takes", `≈ ${dur(r.until - r.from)}`],
     ["does", r.drop ? "drops the packs of tiles no target any more; reads and builds nothing" : null],
     ["while the lead runs", r.of ? S.said(r.of, r.n) : null],
-    ["its run waits on", r.waits != null ? plural(r.waits, "run") : null],
-    ["then", r.waited != null ? `${plural(r.waited, "run")} wait on its run` : null],
+    ["its job waits on", r.waits != null ? plural(r.waits, "job") : null],
+    ["then", r.waited != null ? `${plural(r.waited, "job")} wait on it` : null],
   ]);
 }
 
@@ -1211,10 +1211,9 @@ function laneChips(x) {
 // (the timeline's view and gestures with it), its lanes made again each render.
 let tl = null, schedRoot = null, schedBody = null;
 // This render's segments by card key (timeline.js's: {key, from, until, colour, kind, failed}, with
-// its step, run `r` and `run`: `run` a forecast run's number,
-// sums.js runNumbers; a running job's is the run it goes on in), the runs' links (sums.js
-// runLinks), each run's segments in time order.
-let segs = new Map(), links = runLinks([]), runSegs = new Map();
+// its step, run `r` and `job`: a forecast job's number, sums.js jobNumbers; a running job's is the
+// first job of the run it goes on in), the jobs' links (sums.js jobLinks), each job's segment.
+let segs = new Map(), links = jobLinks([]), jobSegs = new Map();
 // The tiles the schedule lights on the map (a job's or a legend item's), null: none.
 let schedLit = null;
 function scheduleSection(m) {
@@ -1271,7 +1270,7 @@ function schedRelations(key) {
   }
   const s = segs.get(key);
   if (!s) return null;
-  const { on, arrows } = jobRelations(s, segs.values(), runSegs, links);
+  const { on, arrows } = jobRelations(s, segs.values(), jobSegs, links);
   return { on, arrows, tiles: segTiles(s) };
 }
 let lastSchedM = null;
@@ -1306,22 +1305,23 @@ function schedule(m) {
     const host = hosts.find((hh) => isSlotOf(nm, hh));
     return host ? `${short[host]} · slot ${slotNo(nm, host)}` : nm;
   };
-  // The forecast's runs (numbered as `/work/tocome` numbers them) and what each waits on, when
-  // its answer is this forecast's.
+  // The forecast's runs and their jobs (numbered as `/work/tocome` numbers them) and what each job
+  // waits on, when its answer is this forecast's.
   const nums = runNumbers(fcLanes);
   const tc = toCome.ans?.at === fc?.at && toCome.ans?.runs?.length === nums.total ? toCome.ans : null;
-  links = runLinks(tc?.deps);
+  const jobNo = jobNumbers(tc?.jobs);
+  links = jobLinks(tc?.deps);
   segs = new Map();
-  runSegs = new Map();
+  jobSegs = new Map();
   const stagesSeen = new Set();
   const kinds = new Set();
   const lanes = h("div", "lanes");
   const tracks = [];
-  const segment = (track, r, kind, key, run = null) => {
+  const segment = (track, r, kind, key, job = null) => {
     cards.set(key, () => runCard(m, r, kind, laneName));
-    const s = track.add({ key, from: r.from, until: r.until, colour: S.colour(r.step), kind, failed: kind === "past" && !r.ok, step: r.step, r, run });
+    const s = track.add({ key, from: r.from, until: r.until, colour: S.colour(r.step), kind, failed: kind === "past" && !r.ok, step: r.step, r, job });
     segs.set(key, s);
-    if (run != null) (runSegs.get(run) || runSegs.set(run, []).get(run)).push(s);
+    if (job != null) jobSegs.set(job, s);
     if (S.stage(r.step)) stagesSeen.add(S.stage(r.step));
     kinds.add(kind === "past" && !r.ok ? "failed" : kind);
   };
@@ -1341,7 +1341,8 @@ function schedule(m) {
         const k = ls.findIndex((l) => l.step === r.step && l.from <= fc.at + 1);
         const left = k >= 0 ? runJobs(ls[k])[0] : null;
         if (k >= 0) under.add(k);
-        segment(tv, left ? { ...r, until: Math.max(r.until, left.until) } : r, "running", `r ${nm} ${r.job.id}`, k >= 0 ? nums.first[nm] + k : null);
+        const job = k >= 0 && tc ? jobNo.first[nums.first[nm] + k] : null;
+        segment(tv, left ? { ...r, until: Math.max(r.until, left.until) } : r, "running", `r ${nm} ${r.job.id}`, job ?? null);
       }
       ls.forEach((l, k) => {
         if (l.until <= now) return;
@@ -1350,7 +1351,8 @@ function schedule(m) {
         // own, its first, drawn with it above.)
         for (const [i, j] of runJobs(l, tc?.runs?.[run]).entries()) {
           if (j.until <= now || (i === 0 && under.has(k))) continue;
-          segment(tv, { ...l, ...j, from: Math.max(j.from, now), lane: nm, after: tc?.epoch != null && tc.epoch === past.epoch ? tc.after?.[run] || [] : [], waits: tc ? links.on.get(run)?.length || 0 : null, waited: tc ? links.then.get(run)?.length || 0 : null }, "next", `f ${nm} ${j.from} ${l.step}`, run);
+          const job = tc ? jobNo.first[run] + i : null;
+          segment(tv, { ...l, ...j, from: Math.max(j.from, now), lane: nm, after: tc?.epoch != null && tc.epoch === past.epoch ? tc.after?.[job] || [] : [], waits: tc ? links.on.get(job)?.length || 0 : null, waited: tc ? links.then.get(job)?.length || 0 : null }, "next", `f ${nm} ${j.from} ${l.step}`, job);
         }
       });
       lanes.append(h("div", { class: "ln", title: nm }, `${slotNo(nm, g.host) ?? nm}`), tv.el);

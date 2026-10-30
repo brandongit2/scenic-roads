@@ -160,9 +160,17 @@ export function runNumbers(lanes) {
   }
   return { first, total };
 }
-// The runs' dependencies (`/work/tocome`'s `deps`, [a, b]: b waits on a) both ways: `on` each
-// run's runs it waits on, `then` those waiting on it.
-export function runLinks(deps) {
+// The jobs to come numbered as `/work/tocome` numbers them (forecast::Runs): each run's jobs (its
+// `jobs`, one per `runJobs` cut) after the runs before it's. `first[run]`: its first job's number.
+export function jobNumbers(jobs) {
+  const first = [];
+  let total = 0;
+  for (const n of jobs || []) { first.push(total); total += n; }
+  return { first, total };
+}
+// The jobs' dependencies (`/work/tocome`'s `deps`, [a, b]: job b waits on job a, from what its
+// targets read) both ways: `on` each job's jobs it waits on, `then` those waiting on it.
+export function jobLinks(deps) {
   const on = new Map(), then = new Map();
   for (const [a, b] of deps || []) {
     if (!on.has(b)) on.set(b, []);
@@ -173,28 +181,25 @@ export function runLinks(deps) {
   return { on, then };
 }
 
-// What one job's segment `s` (dash.js's: {kind, r, run}) is tied to (task #884): the jobs it
-// waits on and the jobs waiting on it, each a single job, never a run's whole row (#834 cut a run
-// into jobs). A run to come waits on its dependencies' runs (`links`, runLinks), so each of its jobs
-// is drawn from each such run's last job; a run waiting on `s`'s run is drawn to its first job, the
-// one that starts once `s`'s run ends. A job that ran, or one running, links by the history
-// (`after`: the seqs of the jobs it waited on; a packed segment, its `parts`'), from a job it
-// waited on to it, and from it to a run's first job (or a job that ran, or one running) naming it.
-// `runSegs`: each run's segments in time order. {on: s and the jobs tied to it, arrows: [from, to]}.
-export function jobRelations(s, all, runSegs, links) {
-  const of = (run) => runSegs.get(run) || [];
-  const first = (x) => x.run == null || of(x.run)[0] === x;
+// What one job's segment `s` (dash.js's: {kind, r, job}) is tied to (tasks #884, #879): the jobs it
+// waits on and the jobs waiting on it, each a single job. A job to come (or the running job its
+// run goes on in) links by the forecast's job dependencies (`links`, jobLinks: from its targets'
+// readiness), each job its own segment (`jobSegs`: job number → segment). A job that ran, or one
+// running, links by the history (`after`: the seqs of the jobs it waited on; a packed segment, its
+// `parts`'), from a job it waited on to it, and from it to a job naming it.
+// {on: s and the jobs tied to it, arrows: [from, to]}.
+export function jobRelations(s, all, jobSegs, links) {
   const on = [s], arrows = [];
-  // (A running job is tied both ways, by its forecast run and by `after`: each tie once.)
+  // (A running job is tied both ways, by its forecast job and by `after`: each tie once.)
   const tie = (from, to) => {
     if (arrows.some(([f, t]) => f === from && t === to)) return;
     const x = from === s ? to : from;
     if (!on.includes(x)) on.push(x);
     arrows.push([from, to]);
   };
-  if (s.run != null) {
-    for (const a of links.on.get(s.run) || []) { const x = of(a); if (x.length) tie(x[x.length - 1], s); }
-    for (const b of links.then.get(s.run) || []) { const x = of(b); if (x.length) tie(s, x[0]); }
+  if (s.job != null) {
+    for (const a of links.on.get(s.job) || []) { const x = jobSegs.get(a); if (x) tie(x, s); }
+    for (const b of links.then.get(s.job) || []) { const x = jobSegs.get(b); if (x) tie(s, x); }
   }
   const parts = (x) => (x.kind === "past" ? x.r.parts || [x.r] : x.kind === "running" || x.kind === "next" ? [x.r] : []);
   const seqs = new Set(parts(s).map((p) => p.seq).filter((q) => q != null));
@@ -203,11 +208,12 @@ export function jobRelations(s, all, runSegs, links) {
     for (const x of all) {
       if (x === s) continue;
       if (parts(x).some((p) => waited.has(p.seq))) tie(x, s);
-      if (first(x) && parts(x).some((p) => p.after?.some((q) => seqs.has(q)))) tie(s, x);
+      if (parts(x).some((p) => p.after?.some((q) => seqs.has(q)))) tie(s, x);
     }
   }
   return { on, arrows };
 }
+
 
 // Where to ask `/work/history` from (its `since`) to reach back to time `from`, given the oldest
 // event held (`first`, {seq, t}): up to `chunk` events before it; null once it's reached (`first.t`

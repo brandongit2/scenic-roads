@@ -281,15 +281,15 @@ impl Waits {
         Waits { graph: k.graph, from, index, resolved }
     }
 
-    /// For each of `runs` runs, the finished jobs its items waited on (the numbers `resolved` holds
-    /// for them), per step the last, sorted: `item_run` each item's run (`forecast::Runs`).
-    pub fn by_run(&self, item_run: &[Option<u32>], runs: usize) -> Vec<Vec<u64>> {
-        let mut out: Vec<BTreeMap<&str, u64>> = vec![BTreeMap::new(); runs];
+    /// For each of `jobs` jobs to come, the finished jobs its items waited on (the numbers `resolved` holds
+    /// for them), per step the last, sorted: `item_job` each item's job (`forecast::Runs`).
+    pub fn by_job(&self, item_job: &[Option<u32>], jobs: usize) -> Vec<Vec<u64>> {
+        let mut out: Vec<BTreeMap<&str, u64>> = vec![BTreeMap::new(); jobs];
         for (key, r) in &self.resolved {
-            let Some(run) = self.index.get(key).and_then(|&i| item_run.get(i as usize).copied().flatten()) else {
+            let Some(job) = self.index.get(key).and_then(|&i| item_job.get(i as usize).copied().flatten()) else {
                 continue;
             };
-            let Some(m) = out.get_mut(run as usize) else { continue };
+            let Some(m) = out.get_mut(job as usize) else { continue };
             for (step, &seq) in r {
                 let e = m.entry(step.as_str()).or_default();
                 *e = (*e).max(seq);
@@ -741,7 +741,7 @@ mod tests {
             groups: vec![],
         };
         let w = h.waits_basis().next(g2);
-        assert_eq!(w.by_run(&[Some(0), Some(0), None], 2), vec![vec![s], vec![]]);
+        assert_eq!(w.by_job(&[Some(0), Some(0), None], 2), vec![vec![s], vec![]]);
     }
 
     /// Kept waits compact (task #867): items with no waits nothing waits on left out, a list many

@@ -329,13 +329,13 @@ The Jobs tab's stages are the one exception.
   narrowest. Each track is a canvas: its segments are data, those in view drawn on it once a frame
   as the view moves, so a pan or zoom lays nothing out (measured 26 Oct in Chrome, windowed at 120 Hz, a week with ~4,200 segments: a frame 8.3 ms median, 10 ms at the 95th percentile while a sideways wheel pans or a pinch zooms, under 1 ms of script; before, as each segment an element, 17–18 ms at the 95th). At its far left end an archive sign: older history is in the archive
   (`state/coord/history-archive`), not reachable from the page. A job hovered (or its card pinned,
-  a tap's): red square-cornered arrows from each forecast run it waits on and to each waiting on
-  it (the forecast's runs and dependencies, `/work/tocome`'s `runs` and `deps`: a running job is
+  a tap's): red square-cornered arrows from each forecast job it waits on and to each waiting on
+  it (the forecast's jobs and their dependencies, `/work/tocome`'s `runs`, `jobs` and `deps`, job to job from the targets' readiness, task #879: a running job is
   its lane's first run of its step, that run's first job its time left, drawn as the running job
   to its forecast end, never as a job to come, task #863), and for a job that ran or one running, from each job that
   ran it waited on and to each that ran or runs waiting on it (its start's or lease's `after` in
   the history, task #791: per step its targets waited on in the forecast's dependencies, the job
-  of that step that finished last; none on events before #791), and for a run to come from each
+  of that step that finished last; none on events before #791), and for a job to come from each
   finished job it waits on (`/work/tocome`'s `after`, drawn only when its `epoch` is the history's),
   everything else dimmed, its
   tiles lit on the map (only the map's lit tiles drawn again, once a frame); a legend item hovered (a stage, ran, failed, running, to come): its jobs

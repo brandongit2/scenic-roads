@@ -778,18 +778,21 @@ pub struct Forecast {
 }
 
 /// The schedule's runs (`Forecast::lanes`) numbered in turn: the lanes by name, each lane's runs in
-/// order (run k is the k-th of that list). Each run's targets (its items', in order; a job under way
-/// that no item is, none), and the runs each waits on: [a, b] when an item of run b waits on one of
-/// run a (its own deps, a time-ordered release's, or a set's it waits on whole: `Items::groups`),
-/// each pair once, sorted; a run never on itself.
+/// order (run k is the k-th of that list), each run's jobs (`Lane::cuts`) numbered in turn after
+/// the runs before it's (job j is the j-th of every run's jobs in that order). Each run's targets
+/// (its items', in order; a job under way that no item is, none) and how many jobs it is, and the
+/// jobs each waits on, from the items' readiness (crate::agent::steps::read_targets): [a, b] when
+/// an item of job b waits on one of job a, a set it reads whole (`Items::groups`) by the job of
+/// its item ending last (what it waits for till then), each pair once, sorted; a job never on itself.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Runs {
     pub targets: Vec<Vec<String>>,
+    pub jobs: Vec<u32>,
     pub deps: Vec<[u32; 2]>,
-    /// Each item's run (`Forecast::graph`'s order): for the agent's forecast thread alone, taken
+    /// Each item's job (`Forecast::graph`'s order): for the agent's forecast thread alone, taken
     /// out before the answer's kept.
-    pub item_run: Vec<Option<u32>>,
-    /// Each run's finished dependencies, the history's event numbers (`Waits::by_run`; empty
+    pub item_job: Vec<Option<u32>>,
+    /// Each job's finished dependencies, the history's event numbers (`Waits::by_run`; empty
     /// until the forecast thread works them out).
     pub after: Vec<Vec<u64>>,
 }
@@ -855,24 +858,32 @@ impl ToCome {
     }
 
     /// `/work/tocome`'s answer: {at, macs: {mac: {step: [[tile, s from at]…]}}, runs: [[target…]…],
-    /// deps: [[a, b]…], after: [[seq…]…]}, every Mac's; runs numbered as `Runs` says, `after` each
-    /// run's finished dependencies (the history's event numbers; the coordinator adds the `epoch`
-    /// they're numbered in).
+    /// jobs: [n…], deps: [[a, b]…], after: [[seq…]…]}, every Mac's; runs and their jobs numbered as
+    /// `Runs` says, `deps` job to job, `after` each job's finished dependencies (the history's event
+    /// numbers; the coordinator adds the `epoch` they're numbered in).
     pub fn answer(&self) -> serde_json::Value {
-        serde_json::json!({ "at": self.at, "macs": self.macs, "runs": self.runs.targets, "deps": self.runs.deps, "after": self.runs.after })
+        serde_json::json!({
+            "at": self.at,
+            "macs": self.macs,
+            "runs": self.runs.targets,
+            "jobs": self.runs.jobs,
+            "deps": self.runs.deps,
+            "after": self.runs.after,
+        })
     }
 
     /// `f`'s tiles to come and runs (at `f.at`: the forecast's own, task #836), taken out of it:
-    /// its `placed` dropped, its runs' `item_run` handed back for the waits (`Waits::by_run`);
-    /// `machines` the lanes it was run on (each lane's Mac, else its name). The lead's agent's and
-    /// a pageview's alike.
-    pub fn take(f: &mut Forecast, machines: &[Machine]) -> (ToCome, Vec<Option<u32>>) {
+    /// its `placed` dropped, its jobs' `item_job` handed back for the waits (`Waits::by_run`) with
+    /// how many jobs there are; `machines` the lanes it was run on (each lane's Mac, else its name).
+    /// The lead's agent's and a pageview's alike.
+    pub fn take(f: &mut Forecast, machines: &[Machine]) -> (ToCome, Vec<Option<u32>>, usize) {
         let macs: Vec<String> = machines.iter().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())).collect();
         let mut tc = ToCome::of(&f.placed, &macs, f.at);
-        let item_run = std::mem::take(&mut f.runs.item_run);
+        let item_job = std::mem::take(&mut f.runs.item_job);
         tc.runs = std::mem::take(&mut f.runs);
         f.placed = Vec::new();
-        (tc, item_run)
+        let jobs = tc.runs.jobs.iter().map(|&n| n as usize).sum();
+        (tc, item_job, jobs)
     }
 }
 
@@ -2206,32 +2217,43 @@ fn runs_of(
             by_run[*r as usize].push(k);
         }
     }
+    // (Each run's cuts, in the runs' order: its jobs after the first, by the targets before each.)
+    let cuts: Vec<&[[u32; 2]]> = lanes.values().flat_map(|l| l.iter().map(|l| l.cuts.as_slice())).collect();
+    let jobs: Vec<u32> = cuts.iter().map(|c| c.len() as u32 + 1).collect();
+    let first_job: Vec<u32> = jobs.iter().scan(0u32, |n, &j| Some(std::mem::replace(n, *n + j))).collect();
+    let mut item_job: Vec<Option<u32>> = vec![None; sim.items.len()];
     let targets: Vec<Vec<String>> = by_run
         .into_iter()
-        .map(|mut v| {
+        .enumerate()
+        .map(|(r, mut v)| {
             v.sort_by(|&a, &b| sim.items[a].from.total_cmp(&sim.items[b].from));
+            for (p, &k) in v.iter().enumerate() {
+                let j = cuts.get(r).map_or(0, |c| c.iter().filter(|c| c[1] as usize <= p).count() as u32);
+                item_job[k] = Some(first_job.get(r).copied().unwrap_or(0) + j);
+            }
             v.into_iter().map(|k| sim.items[k].target.clone()).collect()
         })
         .collect();
-    // (A set's runs, worked out once: the sets are shared by many items.)
-    let group_runs: Vec<Vec<u32>> = sim
+    // (A set's job, worked out once: the sets are shared by many items. Its item ending last's: a
+    // reader of it waits till then.)
+    let group_job: Vec<Option<u32>> = sim
         .groups
         .iter()
         .map(|g| {
-            let mut v: Vec<u32> = g.iter().filter_map(|&d| ids.get(d).copied().flatten()).collect();
-            v.sort_unstable();
-            v.dedup();
-            v
+            g.iter()
+                .filter(|&&d| item_job.get(d).copied().flatten().is_some())
+                .max_by(|&&a, &&b| sim.items[a].end.total_cmp(&sim.items[b].end))
+                .and_then(|&d| item_job[d])
         })
         .collect();
     let mut deps: std::collections::BTreeSet<[u32; 2]> = std::collections::BTreeSet::new();
     for (k, it) in sim.items.iter().enumerate() {
-        let Some(b) = ids[k] else { continue };
-        let on = it.deps.iter().filter_map(|&d| ids.get(d).copied().flatten());
-        let on_sets = it.groups.iter().filter_map(|&g| group_runs.get(g)).flatten().copied();
+        let Some(b) = item_job[k] else { continue };
+        let on = it.deps.iter().filter_map(|&d| item_job.get(d).copied().flatten());
+        let on_sets = it.groups.iter().filter_map(|&g| group_job.get(g).copied().flatten());
         deps.extend(on.chain(on_sets).filter(|&a| a != b).map(|a| [a, b]));
     }
-    Runs { targets, deps: deps.into_iter().collect(), item_run: ids, after: Vec::new() }
+    Runs { targets, jobs, deps: deps.into_iter().collect(), item_job, after: Vec::new() }
 }
 
 /// Where the lead's real grants departed from forecast `f`'s next steps: each Mac and step granted
@@ -2961,9 +2983,15 @@ mod tests {
         // (Each z6 tile a job of its own, as the scheduler grants it: task #834.)
         assert_eq!(f.runs.targets[at("unit") as usize], ["6/8/8", "6/8/9"]);
         assert_eq!(f.lanes["m4"][at("unit") as usize].cuts.len(), 1);
-        assert!(f.runs.deps.contains(&[at("terrain-hi"), at("unit")]), "{:?} {steps:?}", f.runs.deps);
-        assert!(f.runs.deps.contains(&[at("reach"), at("unit")]), "{:?} {steps:?}", f.runs.deps);
-        assert!(f.runs.deps.iter().all(|[a, b]| a != b), "never a run on itself");
+        // (Job to job, as the page draws them: each z6 tile's job on the terrain's and the reach's.)
+        let job = |run: u32| f.runs.jobs[..run as usize].iter().sum::<u32>();
+        assert_eq!(f.runs.jobs[at("unit") as usize], 2);
+        let (t, r, u) = (job(at("terrain-hi")), job(at("reach")), job(at("unit")));
+        for d in [[t, u], [r, u], [t, u + 1], [r, u + 1]] {
+            assert!(f.runs.deps.contains(&d), "{d:?}: {:?} {steps:?}", f.runs.deps);
+        }
+        assert!(!f.runs.deps.contains(&[u, u + 1]), "the z6 tiles don't wait on each other");
+        assert!(f.runs.deps.iter().all(|[a, b]| a != b), "never a job on itself");
         // Two Macs: the runs numbered by lane name, so a run on "m1" comes before "m4"'s.
         let mut two = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 1.0, true)], &cost);
         two.before = inp.before.clone();
@@ -2973,6 +3001,7 @@ mod tests {
         let tc = ToCome { runs: f.runs.clone(), ..ToCome::default() }.answer();
         assert_eq!(tc["runs"].as_array().unwrap().len(), f.runs.targets.len());
         assert_eq!(tc["deps"].as_array().unwrap().len(), f.runs.deps.len());
+        assert_eq!(tc["jobs"].as_array().unwrap().len(), f.runs.targets.len());
     }
 
     #[test]
@@ -4572,7 +4601,7 @@ mod tests {
         }
         // (`/work/tocome`'s answer as the lead would make it: for the page's tests, touch-test.mjs --tocome.)
         if let Ok(out) = std::env::var("SCENIC_TOCOME_OUT") {
-            let (tc, _) = ToCome::take(&mut f.clone(), &r.input.machines);
+            let (tc, _, _) = ToCome::take(&mut f.clone(), &r.input.machines);
             std::fs::write(out, serde_json::to_vec(&tc.answer()).unwrap()).unwrap();
         }
     }

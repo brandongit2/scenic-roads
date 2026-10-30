@@ -8752,12 +8752,12 @@ impl Agent {
             // (Each Mac's tiles to come, for the page's map (`/work/tocome`), and the schedule's runs
             // (their targets and dependencies); the rest of `placed` the archive's alone: neither
             // kept with the forecast the agent holds.)
-            let (mut tocome, item_run) = forecast::ToCome::take(&mut f, &record.input.machines);
+            let (mut tocome, item_job, jobs) = forecast::ToCome::take(&mut f, &record.input.machines);
             // (What its items wait on as the history's, worked out here: off the loop; each run's
             // finished dependencies from it, for the page's arrows.)
             let waits = coord.map(|c| c.waits_of(std::mem::take(&mut f.graph)));
             if let Some(w) = &waits {
-                tocome.runs.after = w.by_run(&item_run, tocome.runs.targets.len());
+                tocome.runs.after = w.by_job(&item_job, jobs);
             }
             // (This Mac's own, as cache hints: `upcoming`.)
             let upcoming = tocome.macs.get(&host).map(|m| (tocome.at, room::Hints::of_tocome(m, tocome.at)));

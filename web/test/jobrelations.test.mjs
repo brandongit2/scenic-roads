@@ -1,43 +1,47 @@
 // node web/test/jobrelations.test.mjs (tools/dev/check.sh's web part): the build page's schedule
-// ties a hovered job to single jobs, never to its run's whole row (web/work/sums.js jobRelations, #884).
+// ties a hovered job to single jobs, by `/work/tocome`'s job-to-job dependencies (from the targets'
+// readiness, task #879) and the history's `after` (web/work/sums.js jobRelations, #884).
 import assert from "node:assert/strict";
-import { jobRelations, runLinks } from "../work/sums.js";
+import { jobLinks, jobNumbers, jobRelations } from "../work/sums.js";
 
-const job = (kind, run, r = {}) => ({ kind, run, r });
-// Run 0: two jobs to come; run 1: seven jobs to come, waiting on run 0 and on a job that ran
-// (seq 5, in their `after`); run 2: three jobs to come, waiting on run 1.
-const r0 = [job("next", 0), job("next", 0)];
-const r1 = Array.from({ length: 7 }, () => job("next", 1, { after: [5] }));
-const r2 = [job("next", 2), job("next", 2), job("next", 2)];
+const job = (kind, no, r = {}) => ({ kind, job: no, r });
+// Jobs 0–1 (a run of two), 2–8 (a run of seven: job 5 waits on job 1, the others on job 0, and on
+// a job that ran, seq 5, in their `after`), 9 (waiting on job 5 alone).
+assert.deepEqual(jobNumbers([2, 7, 1]), { first: [0, 2, 9], total: 10 });
+const jobs = Array.from({ length: 10 }, (_, i) => job("next", i, i >= 2 && i <= 8 ? { after: [5] } : {}));
 const ran = job("past", null, { seq: 5 });
-const runSegs = new Map([[0, r0], [1, r1], [2, r2]]);
-const all = [ran, ...r0, ...r1, ...r2];
-const links = runLinks([[0, 1], [1, 2]]);
+const jobSegs = new Map(jobs.map((s) => [s.job, s]));
+const all = [ran, ...jobs];
+const links = jobLinks([[0, 2], [0, 3], [0, 4], [1, 5], [0, 6], [0, 7], [0, 8], [5, 9]]);
 
-// A middle job of run 1: itself, run 0's last job, run 2's first job, the job that ran: no row.
+// Job 5: itself, the one job it waits on, the one waiting on it, the job that ran: no row.
 {
-  const s = r1[3];
-  const { on, arrows } = jobRelations(s, all, runSegs, links);
-  assert.deepEqual(new Set(on), new Set([s, r0[1], r2[0], ran]));
-  assert.equal(on.filter((x) => x.run === 1).length, 1);
-  assert.deepEqual(arrows, [[r0[1], s], [s, r2[0]], [ran, s]]);
+  const s = jobs[5];
+  const { on, arrows } = jobRelations(s, all, jobSegs, links);
+  assert.deepEqual(new Set(on), new Set([s, jobs[1], jobs[9], ran]));
+  assert.deepEqual(arrows, [[jobs[1], s], [s, jobs[9]], [ran, s]]);
 }
-// The job that ran: to run 1's first job only, not its seven.
+// Job 0: to each job reading what it makes, not job 5.
 {
-  const { on, arrows } = jobRelations(ran, all, runSegs, links);
-  assert.deepEqual(on, [ran, r1[0]]);
-  assert.deepEqual(arrows, [[ran, r1[0]]]);
+  const { on, arrows } = jobRelations(jobs[0], all, jobSegs, links);
+  assert.deepEqual(on, [jobs[0], ...[2, 3, 4, 6, 7, 8].map((i) => jobs[i])]);
+  assert.equal(arrows.length, 6);
+}
+// The job that ran: to each job naming it in its `after`.
+{
+  const { on } = jobRelations(ran, all, jobSegs, links);
+  assert.deepEqual(on, [ran, ...jobs.slice(2, 9)]);
 }
 // A job with nothing tied: itself alone.
 {
-  const lone = job("next", 9);
-  assert.deepEqual(jobRelations(lone, [lone], new Map([[9, [lone]]]), runLinks([])), { on: [lone], arrows: [] });
+  const lone = job("next", 42);
+  assert.deepEqual(jobRelations(lone, [lone], new Map([[42, lone]]), jobLinks([])), { on: [lone], arrows: [] });
 }
-// A running job (seq 7) on run 3, which run 4 waits on by the forecast and by `after`: one arrow.
+// A running job (seq 7) as job 3, which job 4 waits on by the forecast and by `after`: one arrow.
 {
   const run = job("running", 3, { seq: 7 });
-  const r4 = [job("next", 4, { after: [7] }), job("next", 4, { after: [7] })];
-  const { on, arrows } = jobRelations(run, [run, ...r4], new Map([[3, [run]], [4, r4]]), runLinks([[3, 4]]));
-  assert.deepEqual(on, [run, r4[0]]);
-  assert.deepEqual(arrows, [[run, r4[0]]]);
+  const next = job("next", 4, { after: [7] });
+  const { on, arrows } = jobRelations(run, [run, next], new Map([[3, run], [4, next]]), jobLinks([[3, 4]]));
+  assert.deepEqual(on, [run, next]);
+  assert.deepEqual(arrows, [[run, next]]);
 }
