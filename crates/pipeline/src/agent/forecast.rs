@@ -1276,10 +1276,14 @@ fn items(inp: &Input) -> Items {
         }
         let held = offered.as_ref().is_some_and(|o| !o.contains(&(step.as_str(), target.as_str())))
             && !inp.running.contains_key(&(step.clone(), target.clone()));
-        if held && deps.is_empty() && g.is_empty() {
+        // (Not on its own step's jobs: its targets don't wait on each other, and a held step's all
+        // after one another would be a line, not a step. Not the heritage chain: it runs beside
+        // the candidates, build::landmarks_work.)
+        if held && deps.is_empty() && g.is_empty() && step != "heritage" {
             let mine: Vec<usize> = chain
                 .iter()
                 .copied()
+                .filter(|&i| out[i].step != *step)
                 .filter(|&i| stage(&out[i].step).is_some() && stage(&out[i].step) == stage(step))
                 .collect();
             if !mine.is_empty() {
@@ -4514,6 +4518,28 @@ mod tests {
         let at = |s: &str| f.placed.iter().find(|p| p.step == s).map(|p| (p.from, p.until)).unwrap();
         assert!(at("polar-root").0 >= at("polar-slope").1 && at("polar-slope").0 >= at("polar-terrain").1);
         assert!(at("bldprep").0 >= at("bld-fetch").1, "{:?}", f.placed);
+        // (Held targets of one step wait on what's before them, not on each other; the heritage
+        // chain runs beside the candidates (build::landmarks_work), held or not.)
+        let chains = vec![
+            job("bld-fetch", "all", 200.0),
+            job("bldprep", "6/2/2", 20.0),
+            job("bldprep", "6/3/3", 20.0),
+            job("pois", "6/1/1", 300.0),
+            job("heritage", "heritage", 50.0),
+        ];
+        let st = State { offers: vec![offer("bld-fetch", "all"), offer("pois", "6/1/1")], ..Default::default() };
+        let inp = Input { chains, sched: Some(st), ..inp };
+        let Items { items: its, groups, .. } = items(&inp);
+        let waits = |s: &str, t: &str| -> BTreeSet<String> {
+            let it = its.iter().find(|i| i.step == s && i.target == t).unwrap();
+            it.deps
+                .iter()
+                .chain(it.groups.iter().flat_map(|&g| groups[g].iter()))
+                .map(|&d| its[d].step.clone())
+                .collect()
+        };
+        assert_eq!(waits("bldprep", "6/3/3"), BTreeSet::from(["bld-fetch".to_string()]));
+        assert!(waits("heritage", "heritage").is_empty());
         if let Ok(p) = std::env::var("SCENIC_FORECAST_RECORD") {
             let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
             let left = held_but_ready(&r.input);
