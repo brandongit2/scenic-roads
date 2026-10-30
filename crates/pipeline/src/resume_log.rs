@@ -4,7 +4,8 @@
 //! depth-lo (crate::depth::resume), terrain-hi (crate::terrain_pack, a level's blocks),
 //! terrain-deep (crate::terrain_deep, its base tiles), and through `Pieces` (task #889) unit,
 //! pois, peaks, bldtiles, bldprep, bldfield-lo, trees, polar-terrain, polar-slope, slope-lo and lo;
-//! (task #890) polar-root, reach and water.
+//! (task #890) polar-root, reach and water; (task #897) regions-extract, names-todo and the
+//! regions' input check.
 //!
 //! - **On this Mac's disk, never the NAS:** one file per target at the top of the job's scratch
 //!   folder (`<scratch>/<z>_<x>_<y>.resume`, `path`; each step's scratch folder is its own): a line

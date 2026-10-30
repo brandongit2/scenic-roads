@@ -698,8 +698,15 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   tiles shaded there, slope-lo each row of a z3 tile's z6 tiles shaded from their terrain, lo each
   zoom of a z3 tile's road and rail tiles (z4â€“8), reach each z6 tile's reach (task #890), water
   each z5 tile's subtree (z5â€“9, drawn side by side, the pieces locked only to take and keep them:
-  `Pieces::take`, `Pieces::keep`). trees-lo keeps none: one assembly of its z6 tiles' mids. A
-  paused target is not put, nor noted done.
+  `Pieces::take`, `Pieces::keep`), regions-extract (task #897) each 256 MiB range of the file in
+  each of its three scans (`extract::RANGE_BYTES`: the blobs whose headers start there, their
+  finds; a resumed run passes a kept range by its blobs' headers alone), names-todo each 16
+  hidata files' roads placed (`namestodo::roads_in`, replayed in order on resume; a unit's ways
+  read once a record names it), and the regions' input check each region without water resolved
+  and each region with water's land and water (`inputs::regions::kept`, by the resolution's keys:
+  a digest of everything it reads; a pause met while regions resolve side by side gives the rest
+  up, `Kept::stopped`). trees-lo keeps none: one assembly of its z6 tiles' mids. A paused target
+  is not put, nor noted done.
   Steps whose records are their pieces need no log (task #890): pass-sets stops after each set
   saved (a resumed run makes only the sets the records lack) and each 1 % of its copy of the
   filtered planet (appended to on resume); heritage after its clip of the World Heritage sources
@@ -722,9 +729,15 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   `control::SAFE_GAP_BOUND_S`, derived as a third of the drain's grace (`DRAIN_GRACE`, 15
   minutes: 300 s), so a job asked to stop reaches a safe point before it's
   frozen, on the slowest Mac too. A run past it says so in its log (`timings: over the bound: â€¦`,
-  `control::over_bound`). Steps still past it by design: catalog, inputs, names-todo,
-  regions-extract (each one pass with no pieces yet), heritage's World Heritage clip and
-  pass-sets' sets (one osmium run each), and unit's longest program. A log at the top of its step's scratch folder
+  `control::over_bound`), and the build page marks a step whose last runs did: the gap after its
+  count on the Jobs tab, its card a "Safe points" line (the lead's phase shares'
+  `over_bound`: how many of its last runs, the longest gap, from timings.jsonl's `safe_gap_s`).
+  Steps still past it by design: heritage's World Heritage clip and pass-sets' sets (one osmium
+  run each), unit's longest program, and the regions' check's stages after the waters (the
+  lakes, the one coastline, each region's area, the hand-outs: one stretch over every region
+  with water, no pieces). catalog keeps none: its coverage drawing was the catalogue chain's read
+  (task #895 made it seconds: 20 s on the M1 from the NAS, 1 s from the kept one), the rest of
+  its run about 20 s. names-todo's longest gap is its labels' or landmarks' phase (3 min at most measured). A log at the top of its step's scratch folder
   (`<z>_<x>_<y>.resume`, one append a block, each record with its length and BLAKE3, read a
   record at a time; a slot's moved to the slot running it), taken only for the same inputs (its
   step's versions and encodings, the target, the sources' and water's pins, and what else it
