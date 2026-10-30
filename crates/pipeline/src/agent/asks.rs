@@ -207,6 +207,7 @@ pub struct Handle {
 
 /// This Mac's hold set from another thread (**jobs**', taking a member's ask that names this Mac),
 /// through control, in order with its own.
+#[derive(Clone)]
 pub struct Setter(Sender<In>);
 
 impl Setter {

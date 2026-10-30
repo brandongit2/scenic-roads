@@ -21,7 +21,6 @@
 
 use super::bus::{ControlMsg, Snap};
 use crate::control::{self, Cancel, HoldAnswer, HoldState};
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -38,8 +37,11 @@ pub const GRACE: Duration = Duration::from_secs(30);
 pub struct JobRef {
     /// Its control channel (crate::control::CONTROL_ENV): "drain" asks it to stop at a safe point.
     pub chan: PathBuf,
-    /// Its process group (0: none, a job taken over as ended).
-    pub pgid: i32,
+    /// Its process group, as the loop's `Running` knows it (pgid 0: none, a job taken over as
+    /// ended): confirmed the job's (`Group::is_the_jobs`: its head the process the job started, or
+    /// every member started after it) before each signal, so a group id the loop has reaped and the
+    /// system has given another is never signalled.
+    pub group: super::jobs::Group,
     /// Where its group's head writes its exit status.
     pub status: PathBuf,
     pub step: Option<String>,
@@ -50,7 +52,8 @@ impl JobRef {
     /// A job known by its channel alone (a test's).
     #[cfg(test)]
     pub fn on_chan(chan: PathBuf) -> JobRef {
-        JobRef { chan, pgid: 0, status: PathBuf::new(), step: None, targets: Vec::new() }
+        let group = super::jobs::Group { pgid: 0, leader_start: 0, started: 0, id: String::new() };
+        JobRef { chan, group, status: PathBuf::new(), step: None, targets: Vec::new() }
     }
 
     /// Whether the cancel `c` is of this job.
@@ -59,7 +62,7 @@ impl JobRef {
     }
 
     fn ended(&self) -> bool {
-        self.status.exists() || (self.pgid > 0 && !crate::sys::signal_group(self.pgid, crate::sys::Signal::Probe))
+        self.status.exists() || (self.group.pgid > 0 && !self.group.is_the_jobs())
     }
 }
 
@@ -81,52 +84,72 @@ struct Part {
     cancels: Sender<Cancel>,
     members: Members,
     set_hold: super::asks::Setter,
+    /// A member's hold ask being taken, on a worker of its own (its NAS calls, each under
+    /// nasread's deadline, never hold the reaper or a cancel): one at a time.
+    member_ask: Arc<AtomicBool>,
     /// Jobs seen ended (their status file and group), told once.
     told: Vec<(PathBuf, i32)>,
-    /// Groups signalled to stop, killed past their time.
-    stopping: BTreeMap<i32, Instant>,
+    /// Groups signalled to stop, killed past their time if still the job's.
+    stopping: Vec<(super::jobs::Group, Instant)>,
 }
 
 impl Part {
     fn tick(&mut self) {
         let jobs = self.jobs.get();
         // (Told once each; forgotten once the loop no longer lists it.)
-        self.told.retain(|t| jobs.iter().any(|j| (&j.status, j.pgid) == (&t.0, t.1)));
+        self.told.retain(|t| jobs.iter().any(|j| (&j.status, j.group.pgid) == (&t.0, t.1)));
         for j in jobs.iter() {
-            if !self.told.contains(&(j.status.clone(), j.pgid)) && j.ended() {
-                self.told.push((j.status.clone(), j.pgid));
+            if !self.told.contains(&(j.status.clone(), j.group.pgid)) && j.ended() {
+                self.told.push((j.status.clone(), j.group.pgid));
                 self.wake.send(ControlMsg::Ended).ok();
             }
         }
         let now = Instant::now();
-        self.stopping.retain(|&pgid, at| {
+        self.stopping.retain(|(g, at)| {
             if now < *at {
                 return true;
             }
-            if crate::sys::signal_group(pgid, crate::sys::Signal::Probe) {
-                eprintln!("agent: a cancelled job's group {pgid} still runs {GRACE:?} on: killed");
-                crate::sys::signal_group(pgid, crate::sys::Signal::Kill);
+            // (Gone, or its id another's since the loop reaped it: nothing signalled.)
+            if g.is_the_jobs() {
+                eprintln!("agent: a cancelled job's group {} still runs {GRACE:?} on: killed", g.pgid);
+                crate::sys::signal_group(g.pgid, crate::sys::Signal::Kill);
             }
             false
         });
-        if control::peek_hold_request(&self.home).is_some_and(|r| r.member.is_some()) {
-            let set = &self.set_hold;
-            take_member_hold(&self.home, &self.members, &mut |st| set.set(st));
+        if control::peek_hold_request(&self.home).is_some_and(|r| r.member.is_some())
+            && !self.member_ask.swap(true, Ordering::SeqCst)
+        {
+            let (home, members, set, busy) =
+                (self.home.clone(), self.members.clone(), self.set_hold.clone(), self.member_ask.clone());
+            let started = std::thread::Builder::new().name("member-hold".into()).spawn(move || {
+                take_member_hold(&home, &members, &mut |st| set.set(st));
+                busy.store(false, Ordering::SeqCst);
+            });
+            if let Err(e) = started {
+                eprintln!("agent: a member's hold ask: {e}");
+                self.member_ask.store(false, Ordering::SeqCst);
+            }
         }
     }
 
     /// The cancels waiting taken: each passed to the loop, then its jobs here signalled to stop.
     fn take_cancels(&mut self) {
         for ask in control::take_cancels(&self.home, super::jobs::now_s()) {
-            let hit: Vec<i32> = self.jobs.get().iter().filter(|j| j.pgid > 0 && j.hit(&ask)).map(|j| j.pgid).collect();
+            let hit: Vec<super::jobs::Group> =
+                self.jobs.get().iter().filter(|j| j.group.pgid > 0 && j.hit(&ask)).map(|j| j.group.clone()).collect();
             let target = ask.target.clone();
             self.cancels.send(ask).ok();
             self.wake.send(ControlMsg::Ask).ok();
-            for pgid in hit {
-                eprintln!("agent: {target} cancelled: stopping its job's group {pgid} now");
-                crate::sys::signal_group(pgid, crate::sys::Signal::Cont);
-                crate::sys::signal_group(pgid, crate::sys::Signal::Term);
-                self.stopping.insert(pgid, Instant::now() + GRACE);
+            for g in hit {
+                // (The published list may be a moment old: a group the loop has reaped since, its
+                // id maybe another's now, is left alone; the loop's own stop sees to the job.)
+                if !g.is_the_jobs() {
+                    continue;
+                }
+                eprintln!("agent: {target} cancelled: stopping its job's group {} now", g.pgid);
+                crate::sys::signal_group(g.pgid, crate::sys::Signal::Cont);
+                crate::sys::signal_group(g.pgid, crate::sys::Signal::Term);
+                self.stopping.push((g, Instant::now() + GRACE));
             }
         }
     }
@@ -168,8 +191,9 @@ impl Handle {
             cancels,
             members,
             set_hold,
+            member_ask: Arc::new(AtomicBool::new(false)),
             told: Vec::new(),
-            stopping: BTreeMap::new(),
+            stopping: Vec::new(),
         };
         p.take_cancels();
         let stop = self.stop.clone();

@@ -131,6 +131,9 @@ pub struct Running {
     pub vanished: bool,
     caffeinate: Option<Child>,
     pub pgid: i32,
+    /// Its group's head's start time (`process_start`, 0 when unknown): with `started`, what tells
+    /// its group from another given the same id once it's gone (`group`, `Group::is_the_jobs`).
+    leader_start: u64,
     pub started: u64,
     pub log: PathBuf,
     /// Why it's frozen where it is, while it is.
@@ -257,11 +260,12 @@ impl Running {
         test_groups::track(pgid);
         let caffeinate = keep_awake(child.id());
         let started = now_s();
+        let leader_start = process_start(pgid).unwrap_or(0);
         let rec = Record {
             id: spec.id.clone(),
             pgid,
             started,
-            leader_start: process_start(pgid).unwrap_or(0),
+            leader_start,
             work: spec.record.clone(),
             done_file: done_file.map(Path::to_path_buf),
             spec: Some(spec.clone()),
@@ -279,6 +283,7 @@ impl Running {
             vanished: false,
             caffeinate,
             pgid,
+            leader_start,
             started,
             log,
             paused: None,
@@ -375,6 +380,12 @@ impl Running {
         self.child.take();
     }
 
+    /// Its process group as signals must know it (`Group::is_the_jobs` before each, by a thread
+    /// that doesn't hold its child: crate::agent::slots).
+    pub fn group(&self) -> Group {
+        Group { pgid: self.pgid, leader_start: self.leader_start, started: self.started, id: self.spec.id.clone() }
+    }
+
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }
@@ -469,6 +480,7 @@ pub fn adopt(record: &Path) -> Option<(Running, serde_json::Value)> {
             vanished: false,
             caffeinate,
             pgid,
+            leader_start: rec.leader_start,
             started: rec.started,
             log,
             paused: rec.paused,
@@ -520,7 +532,7 @@ pub struct Orphan {
 
 /// A job's process group as its record has it: its id, its leader's start time and the job's own,
 /// and the job's id.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Group {
     pub pgid: i32,
     pub leader_start: u64,

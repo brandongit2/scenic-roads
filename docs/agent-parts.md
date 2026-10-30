@@ -211,16 +211,25 @@ targets; published each round and the moment a job starts, shared with control):
   cut short by control or this thread);
 - **cancels:** control tells this thread (not the loop) of a cancel ask; it takes the ask from
   `cancel-requests/`, passes it to the loop, then stops the jobs running its target at once
-  (SIGTERM, SIGKILL 30 s on). The loop records each as cancelled (given back, the lead told, the
+  (SIGTERM, SIGKILL 30 s on). The thread holds no job's child, so before each signal it confirms
+  the group is still the job's (`jobs::Group::is_the_jobs`: its head the process the job started,
+  by its start time, or every member started after the job): a group the loop has reaped since,
+  its id maybe another's, is never signalled, and the loop's own stop (`cancel_slot`) sees to
+  what is left. The loop records each as cancelled (given back, the lead told, the
   answer written) when it next tends: a cancel is passed on before its job is signalled, and the
   loop looks for one again before taking an end it sees, so a cancel's end is never taken as a
   failure;
 - **another member's hold ask:** taken by this thread at once (`slots::take_member_hold`: the
   pool's lock tried each tick, never waited on; the member's hold written on the NAS under
-  nasread's deadline, through **nas**'s root), this Mac's own through control (`asks::Setter`).
+  nasread's deadline, through **nas**'s root), this Mac's own through control (`asks::Setter`);
+  each ask on a worker of its own, one at a time, so a hung NAS holds neither the reaper nor a
+  cancel.
 
 Nothing starts under a hold: `try_start_said` refuses one, and the start itself reads control's
-newest hold again just before it starts the job. A hold's drain stays control's, at once (§4.1).
+newest hold again just before it starts the job, and once more just after publishing it: control
+sets a hold before it reads the jobs to drain, so a hold taken up in that gap is either control's
+to drain or seen by the start, and the new job is told "drain" before its first safe point. A
+hold's drain stays control's, at once (§4.1).
 In line (a single loop's, a dry run's) the loop takes cancels and members' asks itself. Still the
 loop's, for steps 6–7: the slots themselves (their starts, `tend`, the memory and disk guards, the
 ramp, `save_hands`, grants by channel).

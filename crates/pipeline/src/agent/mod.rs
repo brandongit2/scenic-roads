@@ -4836,7 +4836,7 @@ impl Agent {
                 });
                 Some(slots::JobRef {
                     chan: self.control_path(k),
-                    pgid: r.pgid,
+                    group: r.group(),
                     status: jobs::status_path(&self.record_path(k)),
                     step,
                     targets,
@@ -6854,8 +6854,13 @@ impl Agent {
         self.slots[k].running =
             Some(Running::start(spec, threads, &env, log, &self.record_path(k), Some(&done), sandbox)?);
         // (Known to control and **jobs**' thread at once: a hold drains it, a cancel stops it, its
-        // end wakes the loop.)
+        // end wakes the loop. Control sets a hold before it reads the jobs to drain, and this reads
+        // the hold after publishing: a hold taken up since `try_start_said`'s look is either
+        // control's to drain or seen here, so the job is told "drain" before its first safe point.)
         self.publish_jobs();
+        if self.hold().held.is_some() {
+            std::fs::write(&control, b"drain").ok();
+        }
         self.slots[k].beaten = None;
         self.slots[k].hand_saved = None;
         // (A job of no targets of its own, the OSM pass, GC, a catalogue: measured by its id, so it's
