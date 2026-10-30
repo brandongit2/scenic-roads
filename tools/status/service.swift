@@ -825,6 +825,21 @@ func selfTest(_ dir: String) -> Never {
         let got = (try? JSONSerialization.jsonObject(with: clearRequestJSON(by: "the menu bar on m1", at: 1700000000, deep: deep))) as? NSDictionary
         check("the clear ask's file as scenic writes it (\(f))", want != nil && want == got)
     }
+    // The status as the agent serves it (task #846: agent/asks.rs said_status writes the same
+    // file): a Mac paused alone with three jobs finishing, printed as said, every job shown.
+    let said = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
+    let ownSaid = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap { d in (try? JSONSerialization.jsonObject(with: d) as? [String: Any])?["status"] }.flatMap { try? JSONSerialization.data(withJSONObject: $0) }.flatMap { try? JSONDecoder().decode(Own.self, from: $0) }
+    check("the agent's status reads (status-said.json)", said?.status != nil && ownSaid?.hold != nil)
+    check("out of touch: the agent's threshold", outOfTouch(said) == 600 && outOfTouch(nil) == outOfTouchDefault)
+    let (kind, line) = classify(said)
+    check("the lead's state: its verdict, printed", kind == .paused && line.hasPrefix("Pausing: 3 jobs"))
+    let here = state(said, own: ownSaid)
+    check("this Mac pausing alone: pausing while its jobs finish, never paused at once", here.0 == .paused && here.1.hasPrefix("Pausing:"))
+    let items = holdItems(said, own: ownSaid)
+    check("its hold items: the stage, each job finishing, Resume", items.first?.title.hasPrefix("Pausing:") == true && items.filter { $0.title.contains("finishing unit") }.count == 2 && items.last?.held == false)
+    let printed = lines(said, line, own: ownSaid).map(\.text)
+    check("every job shown, slot by slot", (1...3).allSatisfy { k in printed.contains { $0.hasPrefix("Slot \(k): ") } })
+    check("a stage's counts as said", printed.contains { $0.contains("roads: 1,234 of 2,000 z6 tiles (12 with nothing to publish)") } && printed.contains { $0.contains("outlines: done") })
     // The reopen helper. A fake system: the old process ends after `exitAfter` polls; each open
     // succeeds from attempt `worksFrom` on (earlier ones go to the old process, as procNotFound did,
     // or to a stray copy until it's ended, `stray`); the app runs from the check after a

@@ -41,9 +41,13 @@ import WebKit
 
 let server = URL(string: ProcessInfo.processInfo.environment["SCENIC_STATUS_SERVER"] ?? info["ScenicServer"] as? String ?? "http://127.0.0.1:7311")!
 let home = (ProcessInfo.processInfo.environment["SCENIC_HOME"] ?? info["ScenicHome"] as? String).map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/scenic")
-/// Without a heartbeat for this long, the lead counts as out of touch (asleep, off, away, or
-/// its agent stuck): its agent writes one at least every two minutes.
-let outOfTouch = 6 * 60
+/// Without a heartbeat for this long, a Mac counts as out of touch (asleep, off, away, or its
+/// agent stuck): the agent's own threshold, served in its status (`out_of_touch_s`, task #846:
+/// crates/pipeline/src/pool/beat.rs OUT_OF_TOUCH_S), this from an agent before it.
+let outOfTouchDefault = 600
+
+/// The out-of-touch threshold of an answer's status.
+func outOfTouch(_ r: Reply?) -> Int { r?.status?.out_of_touch_s ?? outOfTouchDefault }
 
 // What /api/build answers (the agent's status, crates/pipeline/src/agent/mod.rs Status).
 struct Reply: Decodable {
@@ -127,11 +131,34 @@ struct Status: Decodable {
 
     /// Its running jobs, every slot's in order (`jobs`, else the old fields).
     var allJobs: [Job] { jobs ?? ([job, beside].compactMap { $0 } + (more ?? [])) }
-    /// Its first running job, and its second.
+    /// Its first running job.
     var firstJob: Job? { allJobs.first }
-    var secondJob: Job? { allJobs.dropFirst().first }
     /// The gate's units (docs/inputs.md §4.7; agents from #134 on): a held one badges the icon.
     let inputs: [InputUnit]?
+    /// Its Mac's own pause's stage, its state in a word and a line, and the out-of-touch threshold,
+    /// as its agent says them (task #846: crates/pipeline/src/agent/mod.rs Status::say); the menu
+    /// prints them, working none of them out.
+    let hold: HoldStage?
+    let verdict: Verdict?
+    let out_of_touch_s: Int?
+}
+
+/// A Mac's own pause's stage (crates/pipeline/src/control.rs HoldView): "asked", "pausing" (its
+/// jobs finishing, by id), "paused", "resuming"; whether it goes to paused; who asked, since when;
+/// the stage in words.
+struct HoldStage: Decodable {
+    let stage: String
+    let pause: Bool
+    let by: String?
+    let since: Int?
+    let finishing: [String]?
+    let said: String
+}
+
+/// A Mac's state as its agent says it (crates/pipeline/src/agent/mod.rs Verdict): a word and a line.
+struct Verdict: Decodable {
+    let state: String
+    let said: String
 }
 
 /// A gate unit (crates/pipeline/src/inputs/view.rs InputView).
@@ -204,6 +231,9 @@ struct Own: Decodable {
     let caches: Caches?
     /// This Mac in the pool, while it's on (crates/pipeline/src/agent/mod.rs PoolView).
     let pool: OwnPool?
+    /// This Mac's own pause's stage and the out-of-touch threshold (task #846).
+    let hold: HoldStage?
+    let out_of_touch_s: Int?
 }
 
 /// This Mac in the pool: its member, and the pool as the controls show it (docs/pool.md §10, §11;
@@ -489,7 +519,8 @@ struct Helper: Decodable {
     /// Its running jobs (a newer agent's), else its first slot's (`job`): `firstJob`.
     let jobs: [Job]?
     let job: Job?
-    var firstJob: Job? { jobs?.first ?? job }
+    /// Its running jobs, every slot's (an older agent's: its first).
+    var allJobs: [Job] { jobs ?? (job.map { [$0] } ?? []) }
     let pause: PauseInfo?
     let here: Bool?
 }
@@ -511,42 +542,12 @@ struct Step: Decodable {
     /// Which of its jobs a helper may do: "all", or the parts by name.
     let shared: String?
 
-    var finished: Bool {
-        if let l = left { return l == 0 }
-        if let t = total, let d = done { return d >= t }
-        return false
-    }
-
-    /// Its counts in words, a noun at a time in its items' order ("398 of 398 z6 tiles", "18 of 18
-    /// z3 tiles", "2 runs left"), as the build page and `scenic status` say them; an agent's before
-    /// items: its own count.
-    var counts: [String] {
-        guard let items, !items.isEmpty else {
-            if let t = total, let d = done, t > 0 { return ["\(grouped(Double(d))) of \(grouped(Double(t))) \(unit ?? "")"] }
-            if let l = left, l > 0 { return ["\(l) left"] }
-            return [finished ? "done" : "to come"]
-        }
-        var out: [String] = []
-        var nouns: [String] = []
-        for i in items {
-            if nouns.contains(i.noun) { continue }
-            nouns.append(i.noun)
-            let of = items.filter { $0.noun == i.noun }
-            if of.contains(where: { $0.total != nil }) {
-                if of.allSatisfy({ $0.total != nil }) {
-                    out.append("\(grouped(Double(of.reduce(0) { $0 + ($1.done ?? 0) }))) of \(grouped(Double(of.reduce(0) { $0 + ($1.total ?? 0) }))) \(i.noun)s")
-                } else {
-                    out.append("\(i.noun)s to come")
-                }
-            } else if of.allSatisfy({ $0.left != nil }) {
-                let l = of.reduce(0) { $0 + ($1.left ?? 0) }
-                if l > 0 { out.append("\(l) \(i.noun)\(l == 1 ? "" : "s") left") }
-            } else {
-                out.append("\(i.noun)s to come")
-            }
-        }
-        return out.isEmpty ? [finished ? "done" : "to come"] : out
-    }
+    /// Its counts in words and whether it's done, as the agent says them (build.rs Line::said, task
+    /// #846: the build page and `scenic status` say the same).
+    let counts: [String]?
+    let finished: Bool?
+    var isDone: Bool { finished ?? false }
+    var said: [String] { counts ?? ["to come"] }
 }
 
 /// A step's line of a stage (docs/pipeline.md §4): its targets done of total, or left.
@@ -557,13 +558,9 @@ struct Item: Decodable {
     let done: Int?
     let total: Int?
     let left: Int?
-
-    var finished: Bool { left == 0 }
-    var count: String {
-        if let t = total, let d = done, t > 0 { return "\(grouped(Double(d))) of \(grouped(Double(t))) \(noun)s" }
-        if let l = left { return l == 0 ? "done" : "\(l) \(noun)\(l == 1 ? "" : "s") left" }
-        return "to come"
-    }
+    /// Its count in words and whether it's done, as the agent says them (build.rs Item, task #846).
+    let count: String?
+    let finished: Bool?
 }
 
 struct JobProgress: Decodable {
@@ -597,6 +594,8 @@ struct Job: Decodable {
     /// Its parts, in order (a job of more than one says them), and the one it's on.
     let parts: [String]?
     let part: Int?
+    /// Its slot (0: the first; an older agent's: none).
+    let slot: Int?
 }
 
 struct Waiting: Decodable {
@@ -682,7 +681,7 @@ func clip(_ s: String, _ n: Int = 80) -> String {
 
 /// The helpers heard from lately (one not heard from for `outOfTouch` is left out).
 func freshHelpers(_ r: Reply) -> [Helper] {
-    (r.status?.helpers ?? []).filter { r.now - $0.beat <= outOfTouch }
+    (r.status?.helpers ?? []).filter { r.now - $0.beat <= outOfTouch(r) }
 }
 
 /// The state, with a line saying it.
@@ -690,29 +689,23 @@ func classify(_ r: Reply?) -> (Kind, String) {
     guard let r = r else { return (.unknown, "The map's server on this Mac isn't answering") }
     guard let s = r.status else { return (.unknown, "No word from the lead (is the NAS reachable?)") }
     // A helper building counts as building, whatever the lead is doing.
-    let helping = freshHelpers(r).filter { $0.firstJob != nil && $0.firstJob?.paused == nil }
-    if r.now - s.beat > outOfTouch {
+    let helping = freshHelpers(r).filter { h in h.allJobs.contains { $0.paused == nil } }
+    if r.now - s.beat > outOfTouch(r) {
         if let h = helping.first { return (.building, clip("Building on \(h.host); lead out of touch since \(clock(s.beat))")) }
         return (.outOfTouch, "Lead out of touch since \(clock(s.beat))")
     }
-    // Paused: stopping (a job finishing what it's on, here or on a helper), else paused.
-    if let p = s.pause {
-        let stopping = (s.firstJob.map { $0.paused == nil } ?? false) || (s.secondJob.map { $0.paused == nil } ?? false) || helping.contains { $0.firstJob?.pausing != nil }
-        return (.paused, stopping ? "Pausing: finishing what it's on" : "Paused since \(clock(p.at))")
+    // The lead's state as its agent says it (task #846).
+    guard let v = s.verdict else { return (.unknown, "The lead runs an older app: its state shows once it's updated") }
+    let kind: Kind
+    switch v.state {
+    case "building": kind = .building
+    case "asked", "pausing", "paused", "stopping", "frozen", "resuming": kind = .paused
+    case "failed": kind = .problem
+    case "waiting": kind = .waiting
+    default: kind = .idle
     }
-    // (The lead's jobs: its second's beside its first.)
-    if let j = s.firstJob {
-        if j.paused != nil && (s.secondJob.map { $0.paused != nil } ?? true) {
-            if let h = helping.first { return (.building, clip("Building on \(h.host); the lead's job paused")) }
-            return (.paused, "Paused")
-        }
-        return (.building, "Building")
-    }
-    if let h = helping.first { return (.building, clip("Building on \(h.host)")) }
-    if let w = s.waiting.first(where: { $0.why.contains("failed") }) { return (.problem, clip("Failed: \(w.what)")) }
-    if let d = s.recent.first, !d.ok { return (.problem, clip("Failed: \(d.what)")) }
-    if let w = s.waiting.first { return (.waiting, clip("Waiting: \(w.what)")) }
-    return (.idle, "Nothing to build")
+    if kind != .building, s.pause == nil, let h = helping.first { return (.building, clip("Building on \(h.host); the lead: \(v.said)")) }
+    return (kind, clip(v.said))
 }
 
 /// The state with a line saying it, this Mac's agent's view of the pool considered: no lead for an
@@ -720,9 +713,12 @@ func classify(_ r: Reply?) -> (Kind, String) {
 /// why and what to do (docs/pool.md §10).
 func state(_ r: Reply?, own: Own?) -> (Kind, String) {
     let now = r?.now ?? Int(Date().timeIntervalSince1970)
-    // (This Mac paused alone, task #224: what this Mac does, whatever the pool's state; #628.)
-    if r?.held_here != nil { return (.pausedHere, "This Mac is paused; the other Macs go on") }
-    if let o = own, now - o.beat <= outOfTouch, let a = o.pool?.lead?.alert { return (.problem, a) }
+    // (This Mac paused alone, task #224: what this Mac does, whatever the pool's state, #628; its
+    // stage as its agent says it, #846: asked, pausing while its jobs finish, paused, resuming.)
+    if let o = own, now - o.beat <= (o.out_of_touch_s ?? outOfTouchDefault), let h = o.hold {
+        return (h.stage == "paused" ? .pausedHere : .paused, clip(h.said))
+    }
+    if let o = own, now - o.beat <= (o.out_of_touch_s ?? outOfTouchDefault), let a = o.pool?.lead?.alert { return (.problem, a) }
     return classify(r)
 }
 
@@ -774,13 +770,20 @@ func holdRequestJSON(_ held: Bool, by: String, at: Int) -> Data {
 }
 
 /// The menu's items for this Mac paused alone (`scenic pause --here`, task #224): the ask while the
-/// agent hasn't taken it up, then who paused it and Resume This Mac, else Pause This Mac. `held`:
-/// what pressing it asks (pause: true, resume: false), nil for a line only.
-func holdItems(_ r: Reply?) -> [(title: String, held: Bool?, tip: String)] {
+/// agent hasn't taken it up, then its stage as the agent says it (task #846: pausing with each job
+/// finishing, paused since when, resuming) and Resume This Mac, else Pause This Mac. `held`: what
+/// pressing it asks (pause: true, resume: false), nil for a line only.
+func holdItems(_ r: Reply?, own: Own?) -> [(title: String, held: Bool?, tip: String)] {
     var out: [(title: String, held: Bool?, tip: String)] = []
-    if r?.hold_asked == true { out.append(("Asked… (this Mac's agent takes it up within seconds)", nil, "")) }
-    if let h = r?.held_here {
-        out.append(("Paused since \(clock(h.at)) (from \(clip(h.by, 40)))", nil, ""))
+    let h = own?.hold
+    if r?.hold_asked == true && h?.stage != "asked" { out.append(("Asked… (this Mac's agent takes it up within seconds)", nil, "")) }
+    if let h = h {
+        out.append((clip(h.said, 90) + (h.stage == "paused" ? " since \(clock(h.since ?? 0))" : ""), nil, ""))
+        for j in h.finishing ?? [] { out.append(("    finishing \(j)", nil, "")) }
+    } else if let held = r?.held_here {
+        out.append(("Paused since \(clock(held.at)) (from \(clip(held.by, 40)))", nil, ""))
+    }
+    if h?.pause ?? (r?.held_here != nil) {
         out.append(("Resume This Mac", false, "This Mac takes work again, as `scenic resume --here` does"))
     } else {
         out.append(("Pause This Mac", true, "Only this Mac: its jobs stop at their next safe point and are given back, it takes no new work and hands the lead away if it leads; the other Macs go on building"))
@@ -795,7 +798,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     if let o = r?.offline { out.append(Line(text: offlineText(o), style: .small)) }
     guard let r = r, let s = r.status else { return out }
     // When it'll be done and the map next gets new data (as the worker page and the map say it).
-    if let f = s.forecast, r.now - s.beat <= outOfTouch {
+    if let f = s.forecast, r.now - s.beat <= outOfTouch(r) {
         var t = f.done_at.map { "Done ≈ \(soon($0))" } ?? "No finish to forecast: \(f.why ?? "unknown")"
         if let rg = f.range, rg.count == 2, f.done_at != nil { t += " (\(soon(rg[0]))–\(soon(rg[1])))" }
         out.append(Line(text: t, style: .small))
@@ -809,8 +812,10 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         let how = p.mode == "freeze" ? "every Mac's job frozen where it was" : "every Mac's job stops at its next safe point"
         out.append(Line(text: "From \(p.by), \(clock(p.at)): \(how); nothing new starts until it's resumed", style: .small))
     }
-    if let j = s.firstJob {
-        out.append(Line(text: j.what, style: .plain))
+    // Every running job, slot by slot (task #846: a Mac runs up to six).
+    let jobs = s.allJobs
+    for (i, j) in jobs.enumerated() {
+        out.append(Line(text: jobs.count > 1 ? "Slot \((j.slot ?? i) + 1): \(j.what)" : j.what, style: .plain))
         // How far the job says it is, and the time it has left at its pace.
         var bar: Line? = nil
         if let p = j.progress {
@@ -831,33 +836,26 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         if let p = j.paused { out.append(Line(text: p, style: .small)) } else if j.pausing != nil { out.append(Line(text: "Stopping at its next safe point (what it's on is kept)", style: .small)) }
         if let w = j.waiting { out.append(Line(text: w.prefix(1).uppercased() + w.dropFirst(), style: .small)) }
         out.append(Line(text: "Running \(duration(r.now - j.started)) (since \(clock(j.started)))", style: .small))
-        // The log's last lines, without the terminal's colour codes.
+        // The log's last lines, without the terminal's colour codes (one job alone: the menu stays short).
+        guard jobs.count == 1 else { continue }
         let plain = (j.tail ?? "").replacingOccurrences(of: "\u{1B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
         for l in plain.split(separator: "\n").suffix(3) where !l.trimmingCharacters(in: .whitespaces).isEmpty {
             out.append(Line(text: tildes(String(l).trimmingCharacters(in: .whitespaces)), style: .mono))
         }
     }
-    // The lead's second slot's job, beside the first.
-    if let j = s.secondJob {
-        out.append(Line(text: "Beside it: \(j.what)", style: .plain))
-        if let p = j.progress {
-            out.append(Line(text: progressText(p, paused: j.paused != nil, now: r.now), style: .bar, fraction: p.total > 0 ? min(1, p.done / p.total) : 0))
-        }
-        if let p = j.paused { out.append(Line(text: p, style: .small)) } else if j.pausing != nil { out.append(Line(text: "Stopping at its next safe point (what it's on is kept)", style: .small)) }
-        if let w = j.waiting { out.append(Line(text: w.prefix(1).uppercased() + w.dropFirst(), style: .small)) }
-        out.append(Line(text: "Running \(duration(r.now - j.started)) (since \(clock(j.started)))", style: .small))
-    }
-    // The other Macs helping (z6 tile jobs only), each with its job.
+    // The other Macs helping, each with every job.
     for h in freshHelpers(r) {
-        guard let j = h.firstJob else {
+        if h.allJobs.isEmpty {
             out.append(Line(text: "\(h.host) is helping; nothing for it to build now", style: .small))
             continue
         }
-        out.append(Line(text: "\(h.host): \(j.what)", style: .plain))
-        if let p = j.progress {
-            out.append(Line(text: progressText(p, paused: j.paused != nil, now: r.now), style: .bar, fraction: p.total > 0 ? min(1, p.done / p.total) : 0))
+        for j in h.allJobs {
+            out.append(Line(text: "\(h.host): \(j.what)", style: .plain))
+            if let p = j.progress {
+                out.append(Line(text: progressText(p, paused: j.paused != nil, now: r.now), style: .bar, fraction: p.total > 0 ? min(1, p.done / p.total) : 0))
+            }
+            if let p = j.paused { out.append(Line(text: "\(h.host): \(p)", style: .small)) } else if j.pausing != nil { out.append(Line(text: "\(h.host): stopping at its next safe point", style: .small)) }
         }
-        if let p = j.paused { out.append(Line(text: "\(h.host): \(p)", style: .small)) } else if j.pausing != nil { out.append(Line(text: "\(h.host): stopping at its next safe point", style: .small)) }
     }
     // Web pages working for the build (the helpers are above).
     for w in (s.workers ?? []) where w.kind == "web" {
@@ -874,24 +872,24 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     if let v = own?.pool?.lead { out += poolLines(v, now: r.now) }
     // The build to the end: each step done, under way, or to come.
     if let steps = s.checklist, !steps.isEmpty {
-        let now = [s.firstJob, s.secondJob].compactMap { $0.map { String($0.id.split(separator: " ").first ?? "") } }
-        let finished = steps.filter(\.finished).count
+        let now = s.allJobs.map { String($0.id.split(separator: " ").first ?? "") }
+        let finished = steps.filter(\.isDone).count
         out.append(Line(text: "", style: .separator))
-        let legend = steps.contains { !$0.finished && $0.shared != nil } ? "  ·  ⇄ any Mac can take part" : ""
+        let legend = steps.contains { !$0.isDone && $0.shared != nil } ? "  ·  ⇄ any Mac can take part" : ""
         out.append(Line(text: "To the end: \(finished) of \(steps.count) stages done\(legend)", style: .header))
         for st in steps {
-            if st.finished {
+            if st.isDone {
                 out.append(Line(text: "✓ \(st.what)", style: .stepDone))
                 continue
             }
-            let count = ": " + st.counts.joined(separator: " · ")
+            let count = ": " + st.said.joined(separator: " · ")
             let running = now.contains { st.steps.contains($0) }
             let mark = st.shared != nil ? "  ⇄" : ""
             out.append(Line(text: "\(running ? "▸" : "○") \(st.what)\(count)\(mark)", style: running ? .stepNow : .stepToDo))
             // Its steps, each the same: done, under way or to come, its count in its noun.
             for it in st.items ?? [] {
                 let here = now.contains(it.step)
-                out.append(Line(text: "      \(it.finished ? "✓" : here ? "▸" : "○") \(it.step): \(it.count)", style: .small))
+                out.append(Line(text: "      \(it.finished == true ? "✓" : here ? "▸" : "○") \(it.step): \(it.count ?? "to come")", style: .small))
             }
             // (Only some of its jobs: which.)
             if let sh = st.shared, sh != "all" { out.append(Line(text: "      ⇄ any Mac can take its \(sh)", style: .small)) }
@@ -1431,7 +1429,7 @@ func ownStatus() -> Own? {
     let dir = home.appendingPathComponent("agent")
     guard let own = ["status.json", "helper.json"].compactMap({ (try? Data(contentsOf: dir.appendingPathComponent($0))).flatMap { try? JSONDecoder().decode(Own.self, from: $0) } }).max(by: { $0.beat < $1.beat }) else { return nil }
     if let v = (try? Data(contentsOf: dir.appendingPathComponent("pool/view.json"))).flatMap({ try? JSONDecoder().decode(PoolFile.self, from: $0) }), v.beat > own.beat {
-        return Own(host: own.host, beat: own.beat, caches: own.caches, pool: v.pool)
+        return Own(host: own.host, beat: own.beat, caches: own.caches, pool: v.pool, hold: own.hold, out_of_touch_s: own.out_of_touch_s)
     }
     return own
 }
@@ -1569,7 +1567,7 @@ func cachesItems(_ own: Own?, now: Int, asked: Bool) -> [(title: String, enabled
     if asked { return [("Clearing the Build's Caches… (asked; this Mac's agent does it now, jobs running keeping what they use)", false, "", false)] }
     return [false, true].map { deep in
         let title = (deep ? "Clear Caches Deeply" : "Clear the Build's Caches") + (c.clearable(deep: deep).map { " (\(gb($0)))" } ?? "")
-        if now - own.beat > outOfTouch { return (title, false, "This Mac's agent hasn't written its status since \(clock(own.beat)): is it running?", deep) }
+        if now - own.beat > (own.out_of_touch_s ?? outOfTouchDefault) { return (title, false, "This Mac's agent hasn't written its status since \(clock(own.beat)): is it running?", deep) }
         if let why = c.why_not { return (title, false, "Not now: \(why)", deep) }
         if let n = c.clearable(deep: deep), n < 50 << 20 { return (title, false, "They hold nothing now", deep) }
         let what = deep
@@ -2001,7 +1999,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // This Mac alone paused, or going on (`scenic pause --here`, task #224): its jobs stop at
         // their next safe point and are given back, it takes no new work and hands the lead away;
         // the rest of the pool goes on.
-        for h in holdItems(reply) {
+        for h in holdItems(reply, own: own) {
             let it = NSMenuItem(title: h.title, action: h.held.map { $0 ? #selector(pauseHere) : #selector(resumeHere) }, keyEquivalent: "")
             it.target = self
             it.isEnabled = h.held != nil
@@ -2425,7 +2423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // (A unit held stays so for the notifications while it's checked again, its report gone
         // but the check not over: taken in only once its state is ok.)
         let rechecking = Set((s.inputs ?? []).filter { $0.state == "checking" }.map(\.unit)).intersection(seen?.held ?? [])
-        let now = Seen(job: s.firstJob?.id, paused: s.firstJob?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil, held: Set(held.map(\.unit)).union(rechecking))
+        let now = Seen(job: s.firstJob?.id, paused: s.firstJob?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch(r), buildPaused: s.pause != nil, held: Set(held.map(\.unit)).union(rechecking))
         defer { seen = now }
         // The first answer only sets what changes are measured from.
         guard let was = seen else { return }
@@ -2628,7 +2626,7 @@ if let i = args.firstIndex(of: "--reopen") {
         let bar = l.style == .bar ? "[" + String(repeating: "█", count: Int(l.fraction * 20)) + String(repeating: "░", count: 20 - Int(l.fraction * 20)) + "] " : ""
         print(l.style == .separator ? "────" : (l.style == .title ? "" : "  ") + bar + l.text)
     }
-    for h in holdItems(r) { print("item: \(h.title)\(h.held == nil ? " (disabled)" : "")") }
+    for h in holdItems(r, own: own) { print("item: \(h.title)\(h.held == nil ? " (disabled)" : "")") }
     for c in cachesItems(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
         print("item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
     }
@@ -2665,7 +2663,7 @@ if let i = args.firstIndex(of: "--reopen") {
     } + (ownStatus()?.pool.flatMap { p in p.lead.map { leadItems($0, me: p.member) } } ?? []).flatMap { li in
         [LineView(li.title + (li.children.isEmpty ? "" : "  ▸"), font: .menuFont(ofSize: 0), color: li.enabled ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false)]
             + li.children.map { c in LineView("      \(c.title)\(c.enabled ? "" : " — \(c.tip)")", font: .menuFont(ofSize: NSFont.smallSystemFontSize), color: c.enabled ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false) }
-    } + holdItems(r).map { hi in LineView(hi.title, font: .menuFont(ofSize: 0), color: hi.held != nil ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false) }
+    } + holdItems(r, own: ownStatus()).map { hi in LineView(hi.title, font: .menuFont(ofSize: 0), color: hi.held != nil ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false) }
         + (r?.log != nil ? ["Open the Build Log"] : []).map { LineView($0, font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false) }
         + [LineView("Open the Map", font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false)]
     let height = views.reduce(CGFloat(0)) { $0 + $1.frame.height } + 16
