@@ -654,7 +654,12 @@ fn put_made(p: &mut crate::resume_log::Put, m: &Made) {
 }
 
 fn get_made(g: &mut crate::resume_log::Get) -> anyhow::Result<Made> {
-    Ok(Made { land: get_tarea(g)?, lakes: get_tarea(g)?, water: get_tarea(g)?, country: String::from_utf8(g.bytes()?)? })
+    Ok(Made {
+        land: get_tarea(g)?,
+        lakes: get_tarea(g)?,
+        water: get_tarea(g)?,
+        country: String::from_utf8(g.bytes()?)?,
+    })
 }
 
 // ---- the whole --------------------------------------------------------------------------------------

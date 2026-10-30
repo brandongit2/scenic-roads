@@ -360,7 +360,12 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
                                         super::kept::result(p, res, super::kept::resolved);
                                         super::kept::ids(p, needs);
                                     },
-                                    |g| Ok((super::kept::get_result(g, super::kept::get_resolved)?, super::kept::get_ids(g)?)),
+                                    |g| {
+                                        Ok((
+                                            super::kept::get_result(g, super::kept::get_resolved)?,
+                                            super::kept::get_ids(g)?,
+                                        ))
+                                    },
                                 )
                                 .unwrap_or_else(|| (Err(Vec::new()), Vec::new())),
                         };

@@ -1216,6 +1216,19 @@ pub struct PhaseShares {
     pub runs: usize,
     /// Each top-level phase of its main thread, by its mean share of wall time, largest first.
     pub phases: Vec<PhaseShare>,
+    /// Of those runs, the ones that went longer than the bound without a safe point
+    /// (crate::control::SAFE_GAP_BOUND_S; their `safe_gap_s`; task #897): how many, the longest
+    /// gap, and the bound, for the build page's mark. None when none did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub over_bound: Option<OverBound>,
+}
+
+/// A step's last runs past the bound on its gap between safe points (`PhaseShares::over_bound`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OverBound {
+    pub runs: usize,
+    pub gap_s: f64,
+    pub bound_s: u64,
 }
 
 /// A phase's mean shares of its step's runs (`PhaseShares`).
@@ -1269,7 +1282,14 @@ pub fn phase_shares<'a>(runs: impl IntoIterator<Item = &'a RunRec>) -> std::coll
                 q.bytes = if moved > 0 { q.bytes / moved as f64 } else { 0.0 };
             }
             out.sort_by(|a, b| b.wall.total_cmp(&a.wall));
-            (k.to_string(), PhaseShares { runs: rs.len(), phases: out })
+            let bound = crate::control::SAFE_GAP_BOUND_S;
+            let over: Vec<f64> = rs.iter().filter_map(|r| r.safe_gap_s).filter(|g| *g > bound as f64).collect();
+            let over_bound = (!over.is_empty()).then(|| OverBound {
+                runs: over.len(),
+                gap_s: over.iter().copied().fold(0.0, f64::max),
+                bound_s: bound,
+            });
+            (k.to_string(), PhaseShares { runs: rs.len(), phases: out, over_bound })
         })
         .collect()
 }
@@ -1808,6 +1828,22 @@ mod tests {
         // (Bytes over the 9 runs that moved any: 3/4 read, 1/4 write.)
         assert!((s.phases[1].bytes - 0.75).abs() < 1e-9);
         assert!((s.phases[0].bytes - 0.25).abs() < 1e-9);
+        assert_eq!(s.over_bound, None, "no run past the bound");
+    }
+
+    /// Task #897: a step's last runs past the bound on their gap between safe points, for the
+    /// build page's mark: how many, the longest.
+    #[test]
+    fn phase_shares_say_the_runs_over_the_bound() {
+        let b = crate::control::SAFE_GAP_BOUND_S as f64;
+        let mut runs = Vec::new();
+        for g in [Some(b + 900.0), Some(b), None, Some(b + 10.0)] {
+            let mut r = share_run("t", true, 10.0, &[("x", 1.0, 0)]);
+            r.safe_gap_s = g;
+            runs.push(r);
+        }
+        let o = phase_shares(&runs)["t"].over_bound.clone().unwrap();
+        assert_eq!((o.runs, o.gap_s, o.bound_s), (2, b + 900.0, crate::control::SAFE_GAP_BOUND_S));
     }
 
     #[test]

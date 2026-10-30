@@ -1429,7 +1429,7 @@ function stagesList(m) {
       list.append(h("div", { class: `st ${itDone ? "done" : ""}` },
         mark(itDone, itRun),
         withCard(h("span", "title", step, S.any(step) ? h("span", { class: "dim" }, " ⇄") : null), `t ${step}`, () => stepCard(m, it)),
-        h("span", "n", countOf(it)),
+        h("span", "n", countOf(it), overMark(m.a.phase_shares?.[step]?.over_bound)),
         pbar(fraction(it), itDone ? "ok" : itRun ? "" : "dimbar", itDone ? null : S.colour(step))));
       const tr = timeRow(m, step);
       if (tr) list.append(tr);
@@ -1537,8 +1537,14 @@ function stepCard(m, it) {
     ["Work left", !done && f?.work_s ? dur(f.work_s) : null],
     ["Done ≈", !done && f?.done_at ? clock(f.done_at) : null],
     ["A target", each ? `≈ ${dur(each)}` : null],
+    ["Safe points", overWords(ps?.over_bound, ps?.runs)],
   ]);
 }
+
+// A step whose last runs went past the bound without a safe point (`phase_shares`' `over_bound`,
+// task #897): a subtle mark after its count, its longest gap; its card says the rest.
+const overMark = (o) => (o ? h("span", { class: "over", title: `went ${dur(o.gap_s)} without a safe point, past the ${dur(o.bound_s)} bound: a pause waits that long` }, ` ${dur(o.gap_s)}`) : null);
+const overWords = (o, runs) => (o ? `${o.runs} of its last ${plural(runs, "run")} went past the ${dur(o.bound_s)} bound without one: ${dur(o.gap_s)} at most` : null);
 
 // ---- Regions --------------------------------------------------------------------------------------
 // The Regions tab: the regions' list (virtual: only the rows in view are made), ordered as they

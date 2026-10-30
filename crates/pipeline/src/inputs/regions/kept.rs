@@ -58,11 +58,18 @@ impl Kept {
             return None;
         }
         let h = blake3::hash(format!("{stage} {key}").as_bytes());
-        let b: BlockId =
-            (stage, u32::from_le_bytes(h.as_bytes()[..4].try_into().unwrap()), u32::from_le_bytes(h.as_bytes()[4..8].try_into().unwrap()));
-        let had = self.made.lock().unwrap().get(&b).cloned().or_else(|| {
-            self.pieces.lock().unwrap().as_ref().and_then(|p| p.kept(b)).map(|p| Arc::new(p.to_vec()))
-        });
+        let b: BlockId = (
+            stage,
+            u32::from_le_bytes(h.as_bytes()[..4].try_into().unwrap()),
+            u32::from_le_bytes(h.as_bytes()[4..8].try_into().unwrap()),
+        );
+        let had = self
+            .made
+            .lock()
+            .unwrap()
+            .get(&b)
+            .cloned()
+            .or_else(|| self.pieces.lock().unwrap().as_ref().and_then(|p| p.kept(b)).map(|p| Arc::new(p.to_vec())));
         if let Some(p) = had {
             let mut g = Get(&p);
             let read = (|| -> Result<T> {

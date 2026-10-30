@@ -40,6 +40,10 @@
 //                     Jobs tab's time breakdowns then checked at two ranges, each phase split into
 //                     its measured segments where its `w` says (#870), and a part's card
 //                     (chrome-time-6h, chrome-time-7d, chrome-time-card)
+//   --over-bound STEP:GAP  the lead's `phase_shares` in /work/swarm saying STEP's last runs went GAP
+//                     seconds without a safe point, past the bound (task #897: an agent before it
+//                     hasn't `over_bound`); the Jobs tab's step row then checked for its mark and
+//                     its card for the words (chrome-over-bound)
 //   --only-map        only the map's checks (its solo, its age controls) and screenshots
 //   --solo STEP       the step the map's checks solo (default: the one with the most tiles built)
 //   --zoom-on X,Y     the map then zoomed in on world point X,Y (Web Mercator 0–1000; Ontario and
@@ -106,6 +110,7 @@ const PAUSE_LAG = +arg("--pause-lag", 3000);
 const fake = { pause: null, posts: 0 }; // (the page's Pause as this server keeps it)
 const ONLY_MAP = process.argv.includes("--only-map");
 const PHASE_TIMES = arg("--phase-times", null);
+const OVER_BOUND = arg("--over-bound", null)?.split(":") ?? null;
 const ZOOM_ON = arg("--zoom-on", null)?.split(",").map(Number) ?? null;
 // Served names whose file on disk is named otherwise, as the coordinator's list has them
 // (crate::coord's page files): the route keeps its old spelling (task #547).
@@ -189,7 +194,7 @@ function serve() {
           if (call !== "swarm" || r.statusCode !== 200) { res.writeHead(r.statusCode, r.headers); return r.pipe(res); }
           let b = "";
           r.on("data", (c) => (b += c));
-          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (PHASE_TIMES && o.agent) o.agent.phase_times = { ...JSON.parse(readFileSync(PHASE_TIMES, "utf8")), at: Math.floor(Date.now() / 1000) }; if (FORECAST === "none" && o.agent) delete o.agent.forecast; if (HISTORY) Object.assign(o, { seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
+          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (PHASE_TIMES && o.agent) o.agent.phase_times = { ...JSON.parse(readFileSync(PHASE_TIMES, "utf8")), at: Math.floor(Date.now() / 1000) }; if (OVER_BOUND && o.agent) { const ps = (o.agent.phase_shares ||= {}); ps[OVER_BOUND[0]] = { runs: 3, phases: [], ...ps[OVER_BOUND[0]], over_bound: { runs: 2, gap_s: +OVER_BOUND[1], bound_s: 300 } }; } if (FORECAST === "none" && o.agent) delete o.agent.forecast; if (HISTORY) Object.assign(o, { seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
         });
         fw.on("error", (e) => { console.error(`touch-test server: ${url.pathname}: ${e.message}`); res.writeHead(502); res.end("{}"); });
         fw.end(out);
@@ -436,6 +441,28 @@ async function run() {
       await until(`!!document.querySelector('#mappane .wmap-filters input[value=""]:checked')`, 3000);
     }
 
+    // A step over the bound on its gap between safe points (#897): a mark beside its name, its card's words.
+    if (OVER_BOUND) {
+      errors.length = 0;
+      await show("jobs");
+      const sel = `[...document.querySelectorAll(".stages .st .title")].find((t) => t.firstChild?.textContent === ${JSON.stringify(OVER_BOUND[0])})`;
+      await until(`!!${sel}?.closest(".st")?.querySelector(".over")`, 5000);
+      const mark = await js(`${sel}?.closest(".st")?.querySelector(".over")?.textContent || ""`);
+      check("over the bound: the step's mark says its gap", /\d/.test(mark), mark || "no mark");
+      const others = await js(`document.querySelectorAll(".stages .st .over").length`);
+      check("over the bound: only that step marked", others === 1, `${others} marks`);
+      const at = await js(`(() => { const t = ${sel}; t.scrollIntoView({ block: "center" }); const r = t.getBoundingClientRect(); return [r.left + 20, r.top + r.height / 2]; })()`);
+      if (PHONE) await tap(at[0], at[1]);
+      else await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at[0], y: at[1] });
+      await until(`[...document.querySelectorAll(".card-tip")].some((c) => !c.hidden && /safe point/i.test(c.textContent))`, 3000);
+      const card = await js(`[...document.querySelectorAll(".card-tip")].find((c) => !c.hidden)?.innerText || ""`);
+      check("over the bound: the step's card says the runs and the bound", /past the 5 min bound/.test(card), card.replace(/\s+/g, " ").slice(0, 300));
+      await shot("chrome-over-bound");
+      if (PHONE) await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+      else await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2 });
+      check("over the bound: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
+    }
+
     // The steps' time breakdowns (#844): a row under each step that ran in the footer's range, its
     // parts as the range says, a part's card on hover (a tap on a phone).
     if (PHASE_TIMES) {
@@ -512,10 +539,11 @@ async function run() {
         }
       }
       // (Jobs: the stages count done and left in each step's noun (#685, the one place a whole is
-      // counted), as the agent says them ("1,234 of 2,000 z6 tiles", #846), with no job squares.)
+      // counted), as the agent says them ("1,234 of 2,000 z6 tiles", #846; an over-the-bound mark after
+      // it, #897), with no job squares.)
       if (tab === "jobs") {
         await until(`!!document.querySelector(".panel:not([hidden]) .stages > .st")`, 10000);
-        const j = await js(`(() => { const s = document.querySelector(".panel:not([hidden]) .stages"); if (!s) return null; const rows = [...s.querySelectorAll(":scope > .st")]; return [rows.length, s.querySelectorAll(".cells, .jb").length, rows.filter((r) => !/(done|left|to come)$|^[0-9,]+ of [0-9,]+ /.test(r.querySelector(".n")?.textContent || "")).map((r) => r.querySelector(".n")?.textContent).slice(0, 3)]; })()`);
+        const j = await js(`(() => { const s = document.querySelector(".panel:not([hidden]) .stages"); if (!s) return null; const rows = [...s.querySelectorAll(":scope > .st")]; return [rows.length, s.querySelectorAll(".cells, .jb").length, rows.filter((r) => !/(done|left|to come)$|^[0-9,]+ of [0-9,]+ /.test(r.querySelector(".n")?.firstChild?.textContent || "")).map((r) => r.querySelector(".n")?.firstChild?.textContent).slice(0, 3)]; })()`);
         check("jobs: the stages count done and left, no job squares", j && j[0] > 0 && !j[1] && !j[2].length, j ? `${j[0]} steps, ${j[1]} squares; not done or left: ${j[2].join(" | ")}` : "no stages");
         await js(`document.querySelector(".panel:not([hidden]) .d-stages")?.scrollIntoView({ block: "start" })`);
         const { data } = await page.send("Page.captureScreenshot", { format: "png" });
