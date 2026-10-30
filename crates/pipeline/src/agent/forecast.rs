@@ -1046,19 +1046,17 @@ pub const EXPECTED_STALE: f64 = 0.6;
 /// The jobs before the regions' that the z6 tiles wait for (build::plan).
 const UNITS_NEED: [&str; 3] = ["heritage-sites", "reach", "buildings"];
 
-/// The items listed so far (`items`): by step and target, and each step's by z3 tile (its z6
-/// tiles there and its target that's the z3 tile itself, in order).
+/// The items listed so far (`items`): by step and target.
 #[derive(Default)]
 struct Index {
     of: BTreeMap<(String, String), usize>,
-    z3: BTreeMap<(String, String), Vec<usize>>,
 }
 
 /// The work as items (`items`): each region's, and the sets of items many wait for, each listed
-/// once (sorted, no repeats): a z3 tile's terrain that its slope targets wait for, a region's
-/// terrain that its z6 tiles wait for, all the terrain, all before the steps after. (Lead memory,
-/// 25 Oct: each slope target had its own copy, about 6,750 items, 8x that in capacity: 20,000
-/// lists of 432 KB in the three runs, 8.7 GB of the agents' 17 GB.)
+/// once (sorted, no repeats): a region's terrain that its z6 tiles wait for, all the terrain, all
+/// before the steps after. (Lead memory, 25 Oct: each slope target had its own copy of its z3
+/// tiles' terrain, about 6,750 items, 8.7 GB of the agents' 17 GB. Since #864 a slope target's own
+/// list is only what it reads: a slope-deep's 15 at most, a slope-hi's 10 and its 256 z10 tiles'.)
 struct Items {
     items: Vec<Item>,
     region_items: Vec<Vec<usize>>,
@@ -1100,10 +1098,6 @@ fn items(inp: &Input) -> Items {
         });
         let i = out.len() - 1;
         by.of.insert((step.to_string(), target.to_string()), i);
-        by.z3.entry((step.to_string(), target.to_string())).or_default().push(i);
-        if let Some(q) = crate::agent::build::z3_of(target).filter(|q| q != target) {
-            by.z3.entry((step.to_string(), q)).or_default().push(i);
-        }
         i
     };
     for (step, target, cost) in &inp.before {
@@ -1116,14 +1110,18 @@ fn items(inp: &Input) -> Items {
         before.iter().copied().filter(|&i| UNITS_NEED.contains(&out[i].step.as_str())).collect();
     // A region at a time: its own terrain (the z6 tiles, then each z3 tile's assembly once its z6 tiles
     // are made), then its own z6 tiles (each once its region's terrain is built: the terrain it
-    // reads); then every region's slope (a z6 tile once the terrain of its z3 tile and its neighbours'
-    // is, a z3 tile's assembly once its z6 tiles are) and tree cover.
+    // reads); then every region's slope and tree cover, each target once the targets it reads are
+    // (its row's declaration, as the planner's waits).
     let mut region_items: Vec<Vec<usize>> = vec![Vec::new(); inp.regions.len()];
     let item_of = |by: &Index, step: &str, t: &str| by.of.get(&(step.to_string(), t.to_string())).copied();
-    // (A step's items in z3 tile `q`: its z6 tiles there, or its target that's the z3 tile itself;
-    // in order, no repeats: `add` lists each item once, in order.)
-    let of_z3 = |by: &Index, step: &str, q: &str| -> Vec<usize> {
-        by.z3.get(&(step.to_string(), q.to_string())).cloned().unwrap_or_default()
+    // (The items a target of `step` waits on: those of the targets it reads, listed by now, in
+    // order, once: crate::agent::steps::reads_of.)
+    let reads = |by: &Index, step: &str, t: &str| -> Vec<usize> {
+        let mut v: Vec<usize> =
+            crate::agent::steps::reads_of(step, t).iter().filter_map(|(s, u)| item_of(by, s, u)).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     };
     // (A set many wait for, listed once: its index in `groups`.)
     let group = |groups: &mut Vec<Vec<usize>>, mut v: Vec<usize>| -> usize {
@@ -1163,7 +1161,7 @@ fn items(inp: &Input) -> Items {
             );
         }
         for q in &r.own_terrain_lo {
-            let deps = of_z3(&by_target, "terrain-hi", q);
+            let deps = reads(&by_target, "terrain-lo", q);
             add(
                 &mut out,
                 &mut by_target,
@@ -1199,55 +1197,19 @@ fn items(inp: &Input) -> Items {
             add(&mut out, &mut by_target, "pack", t, inp.cost("pack", t), Phase::Publish, (built, Vec::new()));
         }
     }
-    // (The terrain of a set of z3 tiles, a group listed once: by_z3s.)
-    let mut by_z3s: BTreeMap<Vec<String>, usize> = BTreeMap::new();
+    // The slope: each target once what it reads is built, its row's declaration
+    // (crate::agent::steps::Reads), the planner's waits.
     for r in inp.regions.iter() {
-        // (A slope target waits for the terrain of its z6 tile's z3 tile and its edge neighbours' z3
-        // tiles, the deep levels' too; a slope-hi z6 tile for its z10 tiles' slope-deep too.)
-        let mut terrain_of = |by: &Index, groups: &mut Vec<Vec<usize>>, t: &str| -> Vec<usize> {
-            let mut z3s: Vec<String> = match crate::legacy::TileId::parse(t) {
-                Some(u) if u.z >= 6 => {
-                    let k = u.z - 6;
-                    std::iter::once((u.x >> k, u.y >> k))
-                        .chain(crate::agent::build::edge_neighbours(6, u.x >> k, u.y >> k))
-                        .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
-                        .collect()
-                }
-                _ => vec![t.to_string()],
-            };
-            z3s.sort_unstable();
-            z3s.dedup();
-            let g = *by_z3s.entry(z3s).or_insert_with_key(|z3s| {
-                let mut deps: Vec<usize> = Vec::new();
-                for q in z3s {
-                    deps.extend(of_z3(by, "terrain-hi", q));
-                    deps.extend(of_z3(by, "terrain-deep", q));
-                    deps.extend(item_of(by, "terrain-lo", q));
-                }
-                group(groups, deps)
-            });
-            vec![g]
-        };
         for t in &r.slope_deep {
-            let g = terrain_of(&by_target, &mut groups, t);
-            add(&mut out, &mut by_target, "slope-deep", t, inp.cost("slope-deep", t), Phase::Late, (Vec::new(), g));
+            let deps = reads(&by_target, "slope-deep", t);
+            add(&mut out, &mut by_target, "slope-deep", t, inp.cost("slope-deep", t), Phase::Late, (deps, Vec::new()));
         }
         for t in &r.slope {
-            let g = terrain_of(&by_target, &mut groups, t);
-            let mut deps: Vec<usize> = Vec::new();
-            if let Some(q) = crate::agent::build::z3_of(t) {
-                let k = crate::terrain_deep::PACK_Z - 6;
-                deps.extend(of_z3(&by_target, "slope-deep", &q).into_iter().filter(|&i| {
-                    let (a, b) = (crate::legacy::TileId::parse(&out[i].target), crate::legacy::TileId::parse(t));
-                    a.zip(b).is_some_and(|(a, b)| (a.x >> k, a.y >> k) == (b.x, b.y))
-                }));
-            }
-            add(&mut out, &mut by_target, "slope-hi", t, inp.cost("slope-hi", t), Phase::Late, (deps, g));
+            let deps = reads(&by_target, "slope-hi", t);
+            add(&mut out, &mut by_target, "slope-hi", t, inp.cost("slope-hi", t), Phase::Late, (deps, Vec::new()));
         }
         for q in &r.slope_lo {
-            let mut deps = of_z3(&by_target, "slope-hi", q);
-            deps.extend(of_z3(&by_target, "terrain-hi", q));
-            deps.extend(item_of(&by_target, "terrain-lo", q));
+            let deps = reads(&by_target, "slope-lo", q);
             add(&mut out, &mut by_target, "slope-lo", q, inp.cost("slope-lo", q), Phase::Late, (deps, Vec::new()));
         }
         for t in &r.trees {
@@ -1256,8 +1218,7 @@ fn items(inp: &Input) -> Items {
         // A z3 tile's tree cover assembled once its z6 tiles are made (a region lists every z6 tile of
         // its z3 tiles: listed by now).
         for q in &r.trees_lo {
-            // (crate::treepacks::z3_of is build's: a z6 tile's z3 tile.)
-            let deps: Vec<usize> = of_z3(&by_target, "trees", q).into_iter().filter(|&i| out[i].target != *q).collect();
+            let deps = reads(&by_target, "trees-lo", q);
             add(&mut out, &mut by_target, "trees-lo", q, inp.cost("trees-lo", q), Phase::Late, (deps, Vec::new()));
         }
     }
@@ -3331,7 +3292,7 @@ mod tests {
 
     #[test]
     fn a_helper_takes_the_candidates_while_the_units_wait() {
-        let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])];
+        let regions = [region("a", &["6/8/8"], &["6/8/8", "6/8/9"], &["6/8/8"])];
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
         (inp.chains, inp.after) = (chains(), Vec::new());
         let f = forecast(&inp);
