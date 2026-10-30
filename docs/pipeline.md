@@ -204,8 +204,9 @@ The Jobs tab's stages are the one exception.
   tiles to draw; each Mac by name, a line each, with its jobs, idle or out of touch).
 - **World map** (`worldmap.js`, the left panel; a canvas in Web Mercator, the world 0–1000 each
   way, as tall as the panel leaves it): the z3 grid (z6's too once its cells are 24 px), opening on
-  the whole world (about 82° N to 66° S) and zoomed out at most to that whole world fitting the box
-  both ways (bands beside it in a wide box), a crosshair over it, the countries (`countries.json`) and large lakes as the sea (`lakes.json`),
+  and zoomed out at most to the whole square (its side the box's shorter one); one rule for every
+  pan and zoom input (`constrain`, #865): on each axis by itself the map no bigger than the box is
+  centred and fixed, a bigger one pans with its edges kept outside the box, a crosshair over it, the countries (`countries.json`) and large lakes as the sea (`lakes.json`),
   the regions' outlines (`/work/regions`) coloured by state (on the map or done, building, to
   come). The tiles (`sums.js` mapTiles), each keyed by its step and tile ("<step> z/x/y"), in its
   stage's colour, a state each (`sums.js` runningState, finishedState):

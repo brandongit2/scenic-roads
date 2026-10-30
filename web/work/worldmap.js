@@ -13,8 +13,9 @@
 //
 // Moved by a drag (mouse, pen or one finger), zoomed by a pinch (a trackpad's: ctrl+wheel in
 // Chrome, gesture events in Safari; two fingers on a touch screen), a double click, the +/−
-// buttons or the keyboard (+, −, arrows, 0); a two-finger scroll moves it once zoomed in, else
-// scrolls the page. Opens on the whole world. What's under the pointer is said by the page's cards,
+// buttons or the keyboard (+, −, arrows, 0); a two-finger scroll moves it while it's bigger than
+// the box either way, else scrolls the page. Every input kept to one rule (`constrain`, #865).
+// Opens on the whole world. What's under the pointer is said by the page's cards,
 // the whole stack there (every tile at every zoom, then the innermost region): under a mouse the map names
 // it in its `data-card` ("mstack") and `data-also` (the keys, "|" between: dash.js wireCards); a
 // click or a tap the map takes itself, at the point lifted, and hands the stack to `pick` (a
@@ -39,6 +40,22 @@ const regionPaths = new WeakMap();
  * keys in litColour: a catalogue's, its z6 tiles filled)}, `minimap(key)` a canvas of a tile and
  * around it; `pick(keys, x, y)` called on a click or tap (keys: the stack there, none off
  * everything). Every key but lit's "<step> z/x/y". */
+/** The least zoom (pixels a world unit): the whole square, its side the box's shorter one. */
+export const minZoom = (size) => Math.min(size.w, size.h) / 1000;
+
+/** The view `v` ({cx, cy, k}) kept to the rule every pan and zoom input shares (#865): k between
+ * the whole square (minZoom) and MAX_K; then on each axis by itself, the map no bigger than the box
+ * that way is centred there and can't move, and a map bigger has its edges kept outside the box
+ * (no empty room on that side). A new object; `size` the box ({w, h}, CSS px). */
+export function constrain(v, size) {
+  const k = Math.max(minZoom(size), Math.min(MAX_K, v.k || 0)) || 1;
+  const axis = (c, half) => (half >= 500 - 1e-9 ? 500 : Math.max(half, Math.min(1000 - half, c)));
+  return { ...v, k, cx: axis(v.cx, size.w / 2 / k), cy: axis(v.cy, size.h / 2 / k) };
+}
+
+/** Whether `v` (constrained) can move on some axis: the map bigger than the box there. */
+export const pannable = (v, size) => v.k * 1000 > size.w + 1e-6 || v.k * 1000 > size.h + 1e-6;
+
 export function createMap({ pick = () => {} } = {}) {
   const canvas = document.createElement("canvas");
   canvas.className = "wmap";
@@ -96,24 +113,13 @@ export function createMap({ pick = () => {} } = {}) {
   };
 
   // ---- The view ----------------------------------------------------------------------------------
-  // (Zoomed out at most to the whole world (82° N to 66° S) fitting the box, both ways: in a box
-  // wider or taller than that, bands beside or under it, the world centred.)
-  const minK = () => Math.min(size.w / 1000, size.h / 730);
+  // (One rule, `constrain`, after every pan and zoom: drag, wheel, keys, pinch, buttons, resize.)
+  const minK = () => minZoom(size);
   function fit() {
-    // (The whole world, but not the poles' stretched rows: from about 82° N to 66° S.)
-    const b = [0, 60, 1000, 790];
-    view.cx = (b[0] + b[2]) / 2;
-    view.cy = (b[1] + b[3]) / 2;
-    view.k = Math.max(minK(), Math.min(MAX_K, size.w / (b[2] - b[0]), size.h / (b[3] - b[1])));
+    Object.assign(view, constrain({ cx: 500, cy: 500, k: 0 }, size));
     view.fitted = true;
-    clampView();
   }
-  const clampView = () => {
-    view.k = Math.max(minK(), Math.min(MAX_K, view.k));
-    const hw = size.w / 2 / view.k, hh = size.h / 2 / view.k;
-    view.cx = hw >= 500 ? 500 : Math.max(hw, Math.min(1000 - hw, view.cx));
-    view.cy = hh >= 500 ? 425 : Math.max(hh, Math.min(1000 - hh, view.cy));
-  };
+  const clampView = () => Object.assign(view, constrain(view, size));
   const toWorld = (px, py) => [view.cx + (px - size.w / 2) / view.k, view.cy + (py - size.h / 2) / view.k];
   function zoomAt(f, px = size.w / 2, py = size.h / 2) {
     const [wx, wy] = toWorld(px, py);
@@ -126,8 +132,7 @@ export function createMap({ pick = () => {} } = {}) {
     draw();
   }
   const zoomBy = (f) => zoomAt(f);
-  const zoomed = () => view.k > minK() * 1.02 && view.k > fitK() * 1.02;
-  const fitK = () => { const s = { ...view }; fit(); const k = view.k; Object.assign(view, s); return k; };
+  const zoomed = () => view.k > minK() * 1.02;
   // (Zoomed out, a vertical swipe on a touch screen scrolls the page; zoomed in, it moves the map.)
   const touchAction = () => { canvas.style.touchAction = zoomed() ? "none" : "pan-y"; };
 
@@ -486,7 +491,7 @@ export function createMap({ pick = () => {} } = {}) {
   canvas.addEventListener("wheel", (e) => {
     const f = e.deltaMode === 1 ? 16 : 1;
     if (e.ctrlKey) { e.preventDefault(); if (!gesturing) zoomAt(Math.exp((-e.deltaY * f) / 200), ...local(e)); return; }
-    if (!zoomed()) return; // (Zoomed out: the page scrolls.)
+    if (!pannable(view, size)) return; // (Nothing to move on either axis: the page scrolls.)
     e.preventDefault();
     view.cx += (e.deltaX * f) / view.k;
     view.cy += (e.deltaY * f) / view.k;
