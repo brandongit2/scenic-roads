@@ -6341,7 +6341,13 @@ pub(crate) mod tests {
         let p = plan(&m, &done, &sets);
         let deep = of(&p, "terrain-deep");
         assert!(!deep.is_empty() && deep.iter().all(|(t, _)| t.starts_with("10/")), "{deep:?}");
-        assert!(!of(&p, "terrain-hi").is_empty() && of(&p, "unit").is_empty());
+        assert!(
+            !of(&p, "terrain-hi").is_empty() && of(&p, "unit").is_empty(),
+            "DBG hi {:?} unit {:?} deep {:?}",
+            of(&p, "terrain-hi"),
+            of(&p, "unit"),
+            deep.len()
+        );
         for step in ["terrain-hi", "terrain-lo"] {
             loop {
                 let w = of(&plan(&m, &done, &sets), step);
