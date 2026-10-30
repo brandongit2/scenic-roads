@@ -1922,10 +1922,10 @@ mod tests {
         assert!(w.nas_s >= 0.04 && w.net_s >= 0.03 && w.net_s <= both.as_secs_f64() + 1e-3, "{w:?} {both:?}");
         assert!(w.waited() < m.wall_s && m.wall_s - w.waited() >= 0.02, "{w:?} {}", m.wall_s);
         assert!(table(&r).contains("NAS ") && table(&r).contains("network "), "{}", table(&r));
-        // (A phase that ran a child takes in its phases' waits, an unmeasured one's by its class,
-        // held to its own wall time: "py read", 1.5 s of NAS read, in a phase of a few ms.)
+        // (A phase that ran a child takes in its phases' measured waits only: "py read", an
+        // unmeasured record's phase declared a NAS read, adds none, no class guessed from.)
         let pw = r.phases[1].waits.unwrap();
-        assert!((pw.nas_s - r.phases[1].wall_s).abs() < 1e-9 && pw.nas_b == 7, "{pw:?}");
+        assert!(pw.nas_s < r.phases[1].wall_s && pw.nas_b == 0, "{pw:?}");
         let l = &r.phases[0];
         assert_eq!((l.n, l.bytes, l.files), (3, 45, 3));
         assert!(l.wall_s >= 0.015);
