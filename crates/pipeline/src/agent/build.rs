@@ -2131,24 +2131,22 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
         }
     }
     w.terrain.extend(tt.terrain_none.iter().filter(|(t, k)| !current(t, k)).cloned());
-    // (Its reads, the z6 tiles' mids: a z6 tile is built for it current with its mid.)
-    let mut unmid = Left::default();
-    unmid.set(
-        "terrain-hi",
-        tt.terrain.iter().filter(|(t, k)| !(current(t, k) && has_mid(&tmid, t))).map(|p| p.0.clone()),
-    );
+    // (A z6 tile is left while stale or to be made again for its mid: an assembly reads the mids,
+    // and what reads its packs waits for them as they'll stay.)
+    let remade: Vec<String> = w.terrain.iter().map(|t| t.0.clone()).collect();
+    w.left.set("terrain-hi", w.terrain_pieces_left.iter().cloned().chain(remade));
     let mut lo_held = Vec::new();
     for (q, k) in &tt.terrain_lo {
         if k == UNKNOWN || !w.terrain_lo_left.contains(q) {
             continue;
         }
-        if ready("terrain-lo", q, &unmid) {
+        if ready("terrain-lo", q, &w.left) {
             w.terrain_lo.push((q.clone(), k.clone()));
         } else if w.terrain_pieces_left.iter().any(|t| z3_of(t).as_deref() == Some(q)) {
             lo_held.push(q.as_str());
         }
     }
-    if let Some(n) = held_note("terrain-lo", lo_held, &unmid) {
+    if let Some(n) = held_note("terrain-lo", lo_held, &w.left) {
         w.held.push(("terrain-lo", n));
     }
     // (A "none" assembly reads nothing: it runs whenever, its z3 tile left until it has.)
@@ -2302,6 +2300,8 @@ pub struct TreeWork {
     pub stale_lo: BTreeSet<String>,
     /// The stale assemblies that can't run yet wait for their z6 tiles' mids: their waiting note.
     pub lo_held: Option<String>,
+    /// The z6 tiles an assembly waits for: not current with their mid (crate::agent::steps::View).
+    pub left: BTreeSet<String>,
 }
 
 /// Tree cover's work (`TreeWork`) for its targets `tt`, the manifest `m` and what was done (with
@@ -2331,6 +2331,7 @@ pub fn tree_work(tt: &crate::treepacks::Targets, m: &BTreeMap<String, String>, d
     // assembly reads nothing.)
     let mut unmid = Left::default();
     unmid.set("trees", tt.pieces.iter().filter(|(t, k, _)| !(current(t, k) && has_mid(t))).map(|p| p.0.clone()));
+    w.left = unmid.targets["trees"].clone();
     let mut held = Vec::new();
     for (q, k, none) in &tt.lo {
         if !stale_lo.contains(q) {
@@ -2753,13 +2754,14 @@ pub fn plan(
         stale_pieces: trees_left,
         stale_lo: trees_lo_left,
         lo_held: trees_lo_held,
+        left: trees_unmid,
     } = tree_work(&tt, m, done);
     let mut held_steps: Vec<(String, String)> = tw.held.iter().map(|(s, w)| (s.to_string(), w.clone())).collect();
     held_steps.extend(trees_lo_held.map(|n| ("trees-lo".to_string(), n)));
     // What's left of the steps the rest wait for (crate::agent::steps::View): every target the
     // plan holds is held through its readiness in it.
     let mut left = tw.left.clone();
-    left.set("trees", trees_left.iter().cloned());
+    left.set("trees", trees_unmid);
     left.set("trees-lo", trees_lo_left.iter().cloned());
     left.world(
         "heritage-sites",
@@ -2806,9 +2808,9 @@ pub fn plan(
         work.extend(cw);
         held_steps.extend(lh);
         let each: Vec<&Coverage> = updates.each.iter().map(|(_, c)| c).collect();
-        work.extend(bld_work(cov, m, done, inputs, &bld_rank(&each)));
-        work.extend(depth_work(cov, m, done, tiles));
-        work.extend(polar_work(cov, m, done, tiles));
+        work.extend(bld_work_in(cov, m, done, inputs, &bld_rank(&each), &mut left));
+        work.extend(depth_work_in(cov, m, done, tiles, &mut left));
+        work.extend(polar_work_in(cov, m, done, tiles, &mut left));
         work.extend(backfill.iter().cloned());
         let why = match heritage_awaits_acceptance(cov, date, m, inputs) {
             Some(r) => format!("the regions' z6 tiles wait for the pass's heritage sites: {r}"),
@@ -3143,9 +3145,9 @@ pub fn plan(
         .chain(regions.iter().map(|r| r.id))
         .filter_map(|id| updates.each.iter().find(|(x, _)| x == id).map(|(_, c)| c))
         .collect();
-    let bld = bld_work(cov, m, done, inputs, &bld_rank(&bld_regions));
-    let depth = depth_work(cov, m, done, tiles);
-    let polar = polar_work(cov, m, done, tiles);
+    let bld = bld_work_in(cov, m, done, inputs, &bld_rank(&bld_regions), &mut left);
+    let depth = depth_work_in(cov, m, done, tiles, &mut left);
+    let polar = polar_work_in(cov, m, done, tiles, &mut left);
     // The low zooms (the roads' and rails' lo packs, the terrain's and slope's roots, the near
     // way's assemblies) by their cadence (`low_gate`): nothing else queued counts the z6 tiles, terrain,
     // slope and tree z6 tiles, the 3D buildings and the depths (their assemblies aside: they go with
@@ -4241,9 +4243,20 @@ pub fn bld_work(
     inputs: &BTreeMap<String, String>,
     rank: &dyn Fn(&str) -> BldRank,
 ) -> Vec<Work> {
+    bld_work_in(cov, m, done, inputs, rank, &mut Left::default())
+}
+
+/// `bld_work`, what it finds left of its steps put in `left`.
+fn bld_work_in(
+    cov: &Coverage,
+    m: &BTreeMap<String, String>,
+    done: &Keys,
+    inputs: &BTreeMap<String, String>,
+    rank: &dyn Fn(&str) -> BldRank,
+    left: &mut Left,
+) -> Vec<Work> {
     let Some(sources) = bld_sources(inputs) else { return Vec::new() };
     let mut out = Vec::new();
-    let mut left = Left::default();
     if !sources {
         left.unknown.insert("bld-sources");
     }
@@ -4256,19 +4269,19 @@ pub fn bld_work(
     let prep: Vec<(String, String)> = tt.prep.iter().filter(|(t, k)| done.bldprep.get(t) != Some(k)).cloned().collect();
     left.set("bldprep", prep.iter().map(|t| t.0.clone()));
     // (Each target once what it reads is: crate::agent::steps' declaration.)
-    let mut prep: Vec<(String, String)> = prep.into_iter().filter(|(t, _)| ready("bldprep", t, &left)).collect();
+    let mut prep: Vec<(String, String)> = prep.into_iter().filter(|(t, _)| ready("bldprep", t, &*left)).collect();
     let tiles_stale: Vec<(String, String)> =
         tt.tiles.iter().filter(|(t, k)| done.bldtiles.get(t) != Some(k)).cloned().collect();
     left.set("bldtiles", tiles_stale.iter().map(|t| t.0.clone()));
     let mut tiles: Vec<(String, String)> =
-        tiles_stale.into_iter().filter(|(t, _)| ready("bldtiles", t, &left)).collect();
+        tiles_stale.into_iter().filter(|(t, _)| ready("bldtiles", t, &*left)).collect();
     prep.sort_by_cached_key(|t| rank(&t.0));
     tiles.sort_by_cached_key(|t| rank(&t.0));
     // The field's lo levels once every bldtiles target of their z3 tile is done as it will stay.
     let lo: Vec<(String, String)> = tt
         .lo
         .iter()
-        .filter(|(q, k, _)| done.bldfield_lo.get(q) != Some(k) && ready("bldfield-lo", q, &left))
+        .filter(|(q, k, _)| done.bldfield_lo.get(q) != Some(k) && ready("bldfield-lo", q, &*left))
         .map(|(q, k, _)| (q.clone(), k.clone()))
         .collect();
     for (step, targets) in [("bldprep", prep), ("bldtiles", tiles), ("bldfield-lo", lo)] {
@@ -4571,12 +4584,22 @@ pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &Terra
 /// The depth chain's work that can run now: the stale z6 tiles; the stale assemblies whose z6 tiles
 /// are done as they'll stay (their hi packs are in the assemblies' keys).
 pub fn depth_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Vec<Work> {
+    depth_work_in(cov, m, done, tiles, &mut Left::default())
+}
+
+/// `depth_work`, what it finds left of its steps put in `left`.
+fn depth_work_in(
+    cov: &Coverage,
+    m: &BTreeMap<String, String>,
+    done: &Keys,
+    tiles: &TerrainTiles,
+    left: &mut Left,
+) -> Vec<Work> {
     let Some(dt) = depth_targets(cov, m, tiles) else { return Vec::new() };
     let hi: Vec<(String, String)> = dt.hi.iter().filter(|(t, k)| done.depth.get(t) != Some(k)).cloned().collect();
     // (A target is left while stale, or while one of its packs is in a hand-off waiting to be
     // merged: such a pack isn't in the manifest its readers' keys read yet, so they would run again
     // once it is. A z6 tile whose key can't be worked out now is left too.)
-    let mut left = Left::default();
     left.set("depth", hi.iter().map(|t| t.0.clone()));
     left.world("depth", dt.unknown > 0);
     let layers = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER];
@@ -4592,11 +4615,15 @@ pub fn depth_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, til
     left.set("depth", handed("hi", 6));
     left.set("depth-lo", dt.lo.iter().filter(|(t, k)| done.depth_lo.get(t) != Some(k)).map(|t| t.0.clone()));
     left.set("depth-lo", handed("lo", 3));
-    let lo: Vec<(String, String)> =
-        dt.lo.iter().filter(|(t, k)| done.depth_lo.get(t) != Some(k) && ready("depth-lo", t, &left)).cloned().collect();
+    let lo: Vec<(String, String)> = dt
+        .lo
+        .iter()
+        .filter(|(t, k)| done.depth_lo.get(t) != Some(k) && ready("depth-lo", t, &*left))
+        .cloned()
+        .collect();
     // (The root once no assembly is left: its key reads their packs, so it isn't made while one
     // runs and again after it.)
-    let root = if ready("depth-root", "depth-root", &left) { depth_root_work(m, done) } else { None };
+    let root = if ready("depth-root", "depth-root", &*left) { depth_root_work(m, done) } else { None };
     let mut out = Vec::new();
     for (step, targets) in [("depth", hi), ("depth-lo", lo)] {
         if !targets.is_empty() {
@@ -4716,6 +4743,17 @@ pub fn polar_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &Terra
 /// whose own and neighbours' terrain is done as it'll stay (their packs are in its key); a pole's
 /// root once none of its blocks is stale in either.
 pub fn polar_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Vec<Work> {
+    polar_work_in(cov, m, done, tiles, &mut Left::default())
+}
+
+/// `polar_work`, what it finds left of its steps put in `left`.
+fn polar_work_in(
+    cov: &Coverage,
+    m: &BTreeMap<String, String>,
+    done: &Keys,
+    tiles: &TerrainTiles,
+    left: &mut Left,
+) -> Vec<Work> {
     let Some(pt) = polar_targets(cov, m, tiles) else { return Vec::new() };
     let stale = |map: &BTreeMap<String, String>, v: &[(String, String)]| -> Vec<(String, String)> {
         v.iter().filter(|(t, k)| map.get(t) != Some(k)).cloned().collect()
@@ -4728,15 +4766,14 @@ pub fn polar_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, til
         crate::polar::parse_target(t)
             .is_some_and(|(pole, b)| done.handed.contains(&crate::polar::block_logical(kind, pole, b)))
     };
-    let mut left = Left::default();
     left.set("polar-terrain", terrain.iter().map(|t| t.0.clone()));
     left.set("polar-slope", slope.iter().map(|t| t.0.clone()));
     for (step, kind) in [("polar-terrain", "terrain"), ("polar-slope", "slope")] {
         left.set(step, pt.terrain.iter().filter(|(t, _)| handed(kind, t)).map(|t| t.0.clone()));
     }
-    let slope: Vec<(String, String)> = slope.into_iter().filter(|(t, _)| ready("polar-slope", t, &left)).collect();
+    let slope: Vec<(String, String)> = slope.into_iter().filter(|(t, _)| ready("polar-slope", t, &*left)).collect();
     let root: Vec<(String, String)> =
-        stale(&done.polar_root, &pt.root).into_iter().filter(|(r, _)| ready("polar-root", r, &left)).collect();
+        stale(&done.polar_root, &pt.root).into_iter().filter(|(r, _)| ready("polar-root", r, &*left)).collect();
     let mut out = Vec::new();
     for (step, targets) in [("polar-terrain", terrain), ("polar-slope", slope), ("polar-root", root)] {
         if !targets.is_empty() {
@@ -6035,10 +6072,64 @@ pub(crate) mod tests {
 
     /// Every step of the plan done as its job does it (`did`, `terrain_did`), a z6 tile's candidates in
     /// the manifest once they're made; the steps run, in order, until nothing's left.
+    /// Docs/readiness.md §7: the plan holds nothing undeclared. Each target left of a step that
+    /// declares its reads (`Plan::left`) is offered just when its readiness there is `Yes`, but for
+    /// what's held by no read: a time gate (`GATED`), a key not known yet.
+    fn waits_are_reads(p: &Plan) {
+        use crate::agent::steps::{readiness, row};
+        let offered: BTreeSet<(&str, &str)> =
+            p.work.iter().flat_map(|w| w.targets.iter().map(move |t| (w.step.as_str(), t.0.as_str()))).collect();
+        // (A drop reads nothing: its packs go whenever, docs/readiness.md §4's "none" targets.)
+        let drops: BTreeSet<(&str, &str)> = p
+            .work
+            .iter()
+            .flat_map(|w| {
+                w.targets
+                    .iter()
+                    .filter(|t| is_none_key(&w.step, &t.0, &t.1))
+                    .map(move |t| (w.step.as_str(), t.0.as_str()))
+            })
+            .collect();
+        for (step, ts) in &p.left.targets {
+            if row(step).is_none_or(|r| r.reads.is_empty()) || GATED.contains(step) {
+                continue;
+            }
+            for t in ts {
+                let r = readiness(step, t, &p.left);
+                let on = offered.contains(&(*step, t.as_str()));
+                if drops.contains(&(*step, t.as_str())) {
+                    continue;
+                }
+                assert!(!on || r == Ready::Yes, "{step} {t} offered, its readiness {r:?}");
+                let unknown = p.unknown.contains(t) && *step == "unit";
+                assert!(on || r != Ready::Yes || unknown, "{step} {t} ready, not offered: {:?}", p.work);
+            }
+        }
+    }
+
+    /// Docs/readiness.md §7: every target the plan holds waits for one of its declared reads, and
+    /// every one ready is offered (`waits_are_reads`, which every `run_all` checks at each plan):
+    /// the regions' terrain, slope and z6 tiles, and the landmarks' chain, built from nothing.
+    #[test]
+    fn every_wait_is_a_read() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        unit_inputs(&mut m, "d");
+        for l in ["work/trailends/d", "work/summits/d"] {
+            m.insert(l.into(), format!("{l}.6161616161616161.bin"));
+        }
+        let mut done = Keys::default();
+        let ran = run_all(&c, &reach(), &mut m, &mut done);
+        for s in ["terrain-hi", "terrain-lo", "slope-hi", "slope-lo", "unit", "pois", "peaks"] {
+            assert!(ran.iter().any(|r| r.starts_with(&format!("{s} "))), "{s} ran: {ran:?}");
+        }
+    }
+
     fn run_all(c: &Coverage, reach: &Reaches, m: &mut BTreeMap<String, String>, done: &mut Keys) -> Vec<String> {
         let mut ran = Vec::new();
         for _ in 0..60 {
-            let w = super::plan(
+            let p = super::plan(
                 c,
                 "d",
                 m,
@@ -6055,9 +6146,9 @@ pub(crate) mod tests {
                     held: false,
                     way: Default::default(),
                 },
-            )
-            .work;
-            let Some(w) = w.into_iter().next() else { return ran };
+            );
+            waits_are_reads(&p);
+            let Some(w) = p.work.into_iter().next() else { return ran };
             ran.extend(w.targets.iter().map(|t| format!("{} {}", w.step, t.0)));
             match w.step.as_str() {
                 "heritage-sites" => heritage_done(m, done, "d", &w),
