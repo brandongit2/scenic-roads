@@ -2344,8 +2344,6 @@ impl Agent {
         // Not while this Mac's own pause holds (its ask not yet with the lead: the start loop
         // says so), nor while a newer app waits to start: nothing would start. (While the lead
         // says the build is paused, it asks: the answer says when it goes on.)
-        // (This Mac's jobs to come in the lead's forecast, for its caches: `ask_upcoming`.)
-        self.ask_upcoming(root);
         if self.pause_local {
             return Vec::new();
         }
@@ -4558,6 +4556,10 @@ impl Agent {
                 let unsent = std::fs::read_dir(self.outbox())
                     .map(|d| d.flatten().any(|e| !held.contains(&e.path())))
                     .unwrap_or(false);
+                // (This Mac's jobs to come in the lead's forecast, for its caches: each loop, busy
+                // or not, so a member running long jobs still has them fresh when room is made at
+                // the next start: `ask_upcoming`.)
+                self.ask_upcoming(root);
                 // (Not while a clear or a freeing runs here: `caches_busy`.)
                 if free && !unsent && self.caches_task.is_none() {
                     granted = self.helper_grants(root, &c, &mut waiting);
@@ -4984,8 +4986,18 @@ impl Agent {
                 None
             };
             self.progress_ended(&id, ok);
+            // (What it read from this Mac's disk, its caches above all, and from the NAS: how far
+            // the caches spared it the NAS, task #843.)
+            let reads = store::nasio::sum_dir(&self.nas_counts_path(k)).map_or(String::new(), |n| {
+                let mb = |c: store::nasio::Count| n[c as usize] >> 20;
+                format!(
+                    "; read {} MB here, {} MB from the NAS",
+                    mb(store::nasio::Count::Local),
+                    mb(store::nasio::Count::ReadBytes)
+                )
+            });
             eprintln!(
-                "agent: {id} {} after {} s{why}",
+                "agent: {id} {} after {} s{reads}{why}",
                 if ok {
                     "finished"
                 } else if paused {
@@ -5425,9 +5437,16 @@ impl Agent {
             let measured = if !self.o.helper { self.measured_job(&spec).map_or(0, |m| m.disk_mb << 20) } else { 0 };
             let sized = room.saturating_add(measured);
             match room::make_room(&cache, &r.join("sources"), sized, margin, &hints) {
-                Ok(0) => {}
-                Ok(n) => {
-                    eprintln!("agent: {} GB of the cheap caches deleted (canopy squares, raw terrain tiles, copies of the records' files, pageview months) for {} GB free", n >> 30, sized.saturating_add(margin) >> 30);
+                Ok(by) if by.values().sum::<u64>() == 0 => {}
+                Ok(by) => {
+                    // (By kind, for what the order of task #843 lets go: room::Hints.)
+                    let n: u64 = by.values().sum();
+                    let kinds = by.iter().map(|(k, b)| format!("{k} {} MB", b >> 20)).collect::<Vec<_>>().join(", ");
+                    eprintln!(
+                        "agent: {} GB of the cheap caches deleted ({kinds}) for {} GB free to start {id}",
+                        n >> 30,
+                        sized.saturating_add(margin) >> 30
+                    );
                     self.cheap = None;
                 }
                 Err(e) => eprintln!("agent: making room on the disk: {e:#}"),

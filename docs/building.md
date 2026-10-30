@@ -118,7 +118,10 @@ from the first (`edit_held`).
     (now) last, and the jobs the lead's forecast places on this Mac (its tiles to come,
     `forecast::ToCome`, task #843) at the time each placing starts: the lead's from its own
     forecast, a member's asked of the lead every 5 minutes (`/work/tocome`, `{"raw": true}`, on a
-    thread of its own); an hour old, they hint nothing. Only an order: nothing is deleted for it.
+    thread of its own, each loop whether or not it has a slot free); an hour old, they hint
+    nothing. Only an order: nothing is deleted for it. The agent's log says what room-making
+    deleted by cache, and each job's end line what it read from this Mac's disk and from the NAS,
+    so the order's effect can be measured.
   - **Disk measured** (docs/pool.md §7.7): what each job writes is counted by the accessor and by
     the agent's sampler over the job's scratch folder; the most a target took is its **disk floor**
     (the lead's `disks.json`). The **disk guard**: below the owner's room target, the fastest-growing

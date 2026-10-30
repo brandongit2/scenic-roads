@@ -1297,9 +1297,15 @@ fn bytes_under(p: &Path) -> u64 {
 
 /// When the disk has less than `need` free, deletes from the caches at `cache` until it has `need`
 /// and `margin` more (or they're empty), each cheap file only once the NAS's `sources` has it; the
-/// bytes deleted.
-pub fn make_room(cache: &Path, sources: &NasPath, need: u64, margin: u64, hint: &Hints) -> Result<u64> {
-    make_room_with(cache, sources, need, need + margin, &disk_free, &|p| hint.when(cache, p))
+/// bytes deleted, by cache (`free_cheap`).
+pub fn make_room(
+    cache: &Path,
+    sources: &NasPath,
+    need: u64,
+    margin: u64,
+    hint: &Hints,
+) -> Result<BTreeMap<String, u64>> {
+    free_cheap(cache, sources, need, need + margin, &disk_free, &|p| hint.when(cache, p), None)
 }
 
 /// The NAS folders' files and their sizes, each folder listed once (a folder not there: none; one
