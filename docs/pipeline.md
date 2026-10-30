@@ -370,7 +370,10 @@ The Jobs tab's stages are the one exception.
   live. Escape or × close it too. A running job's card says what's inside it (the status's `jobs[].live`, docs/pool.md §10,
   Live: its phase and since when, its target under way against the step's `each_s`, its targets done, its NAS and internet
   bytes). No phase bars yet: they wait for the lead's measured phase shares (task #511).
-- **Machines:** a card per Mac, one under the other at every width (the pool's cards too): name, role, app, state, heard from; a block per running
+- **Machines:** a card per Mac, one under the other at every width (the pool's cards too): name, role, app, state, heard from;
+  a chip "loop stuck 6 min, in <phase>" while its status's `loop_age_s` is past its `loop_stuck_s` (the
+  agent's loop watchdog's threshold, `nasread::STALL_AFTER`; task #899; an agent that doesn't say both:
+  none), also among the Overview's alerts; a block per running
   job by its slot, about that job alone (name, progress in words, running since, memory; frozen or stuck; Cancel);
   then **Live** (`live.js`): the Mac's own `/work/live`, asked every 1.5 s while the tab is shown
   (the footer's range, then the points since), drawn by `chart.js` (its sums in `chartmath.js`,

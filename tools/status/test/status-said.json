@@ -56,7 +56,23 @@
       "at": 1700000000,
       "by": "the menu bar on m1"
     },
-    "helpers": [],
+    "helpers": [
+      {
+        "host": "m4",
+        "beat": 1700000020,
+        "jobs": [],
+        "loop_age_s": 600,
+        "loop_stuck_s": 300
+      },
+      {
+        "host": "m6",
+        "beat": 1700000020,
+        "jobs": [],
+        "loop_age_s": 200,
+        "loop_stuck_s": 300,
+        "loop_phase": "a slow read"
+      }
+    ],
     "hold": {
       "by": "the menu bar on m1",
       "finishing": [
@@ -108,6 +124,9 @@
       "said": "Pausing: 3 jobs finishing what they're on (unit 6/1/2, pack 6/1/1, unit 6/1/3)",
       "state": "pausing"
     },
-    "waiting": []
+    "waiting": [],
+    "loop_age_s": 400,
+    "loop_stuck_s": 300,
+    "loop_phase": "the pool's round"
   }
 }

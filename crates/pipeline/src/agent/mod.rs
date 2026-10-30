@@ -831,6 +831,13 @@ pub struct Status {
     /// the heartbeat's time says the agent is alive, this whether its loop is slow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_age_s: Option<u64>,
+    /// A `loop_age_s` past this (s) is a stuck loop (crate::agent::nasread::STALL_AFTER, the loop's
+    /// watchdog's): the threshold the build page and the menu bar flag it by (task #899).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_stuck_s: Option<u64>,
+    /// The loop's phase in progress (crate::agent::nasread::phase), while it is stuck (task #899).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_phase: Option<String>,
     pub started: u64,
     pub conditions: Conditions,
     /// Its running jobs, every slot's in slot order (each says its slot: `JobView::slot`). Read

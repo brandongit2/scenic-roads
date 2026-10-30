@@ -839,11 +839,12 @@ func selfTest(_ dir: String) -> Never {
     check("its hold items: the stage, each job finishing, Resume", items.first?.title.hasPrefix("Pausing:") == true && items.filter { $0.title.contains("finishing unit") }.count == 2 && items.last?.held == false)
     let printed = lines(said, line, own: ownSaid).map(\.text)
     check("every job shown, slot by slot", (1...3).allSatisfy { k in printed.contains { $0.hasPrefix("Slot \(k): ") } })
+    check("a stuck loop said, each Mac's, by its agent's threshold", printed.contains("m1: loop stuck 6\u{00A0}min, in the pool's round") && printed.contains("m4: loop stuck 10\u{00A0}min") && !printed.contains { $0.hasPrefix("m6: loop stuck") })
     check("a stage's counts as said", printed.contains { $0.contains("roads: 1,234 of 2,000 z6 tiles (12 with nothing to publish)") } && printed.contains { $0.contains("outlines: done") })
     // The same status from an agent before #846 (a rollout: the lead updated last): its verdict,
     // stage and counts worked out from the older fields, never "older app".
     func strip(_ v: Any) -> Any {
-        if let d = v as? [String: Any] { return d.filter { !["verdict", "hold", "counts", "count", "finished", "out_of_touch_s"].contains($0.key) }.mapValues(strip) }
+        if let d = v as? [String: Any] { return d.filter { !["verdict", "hold", "counts", "count", "finished", "out_of_touch_s", "loop_stuck_s"].contains($0.key) }.mapValues(strip) }
         if let a = v as? [Any] { return a.map(strip) }
         return v
     }
@@ -851,6 +852,7 @@ func selfTest(_ dir: String) -> Never {
     let (oldKind, oldLine) = classify(old)
     check("an older lead's state from its older fields", old?.status?.verdict == nil && oldKind == .paused && oldLine.hasPrefix("Paused (from the menu bar on m1)") && outOfTouch(old) == outOfTouchDefault)
     let oldPrinted = lines(old, oldLine).map(\.text)
+    check("an older agent's loop never said stuck", !oldPrinted.contains { $0.contains("loop stuck") })
     check("an older lead's counts from its older fields", oldPrinted.contains { $0.contains("roads: 1,234 of 2,000 z6 tiles") } && oldPrinted.contains { $0.contains("outlines: done") } && oldPrinted.contains { $0.contains("unit: 1,234 of 2,000 z6 tiles") })
     // The reopen helper. A fake system: the old process ends after `exitAfter` polls; each open
     // succeeds from attempt `worksFrom` on (earlier ones go to the old process, as procNotFound did,

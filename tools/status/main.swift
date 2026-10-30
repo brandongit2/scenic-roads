@@ -141,6 +141,10 @@ struct Status: Decodable {
     let out_of_touch_s: Int?
     /// This Mac paused alone (task #224): what an agent before #846 says of its hold.
     let held: HeldInfo?
+    /// Its loop's round's age, the threshold past which it's stuck, the phase it's in: `loopStuck`.
+    let loop_age_s: Int?
+    let loop_stuck_s: Int?
+    let loop_phase: String?
 
     /// Its verdict; an agent's before #846 (a rollout: the pool's Macs update one by one), worked
     /// out from its older fields as crates/pipeline/src/agent/mod.rs Status::verdict_of does.
@@ -478,6 +482,19 @@ struct Helper: Decodable {
     var allJobs: [Job] { jobs ?? (job.map { [$0] } ?? []) }
     let pause: PauseInfo?
     let here: Bool?
+    /// Its loop's round's age, the threshold past which it's stuck, the phase it's in: `loopStuck`.
+    let loop_age_s: Int?
+    let loop_stuck_s: Int?
+    let loop_phase: String?
+}
+
+/// A Mac's loop stuck (task #899): its round older than its agent's own watchdog threshold
+/// (`loop_stuck_s`, crates/pipeline/src/agent/nasread.rs STALL_AFTER), with the phase it's in; nil
+/// while it isn't, and from an agent that doesn't say both (before #871 and #899). Its status still
+/// beats on a timer of its own (crates/pipeline/src/agent/beat.rs), so it isn't out of touch.
+func loopStuck(age: Int?, limit: Int?, phase: String?) -> String? {
+    guard let age = age, let limit = limit, limit > 0, age > limit else { return nil }
+    return "loop stuck \(duration(age))\(phase.map { ", in \($0)" } ?? "")"
 }
 
 /// A stage of the build to the end (docs/pipeline.md §4; agents before it: a group of steps): its
@@ -849,6 +866,10 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
             }
             if let p = j.paused { out.append(Line(text: "\(h.host): \(p)", style: .small)) } else if j.pausing != nil { out.append(Line(text: "\(h.host): stopping at its next safe point", style: .small)) }
         }
+    }
+    // A Mac's loop stuck (task #899), the lead's and each helper's.
+    for (host, stuck) in [(s.host, loopStuck(age: s.loop_age_s, limit: s.loop_stuck_s, phase: s.loop_phase))] + freshHelpers(r).map({ ($0.host, loopStuck(age: $0.loop_age_s, limit: $0.loop_stuck_s, phase: $0.loop_phase)) }) {
+        if let t = stuck { out.append(Line(text: "\(host): \(t)", style: .plain)) }
     }
     // Web pages working for the build (the helpers are above).
     for w in (s.workers ?? []) where w.kind == "web" {

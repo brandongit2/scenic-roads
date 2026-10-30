@@ -64,7 +64,11 @@ impl Beat {
         let asked = crate::control::peek_hold_request(&self.home);
         status.say(asked.as_ref(), &hold, hold.held.is_none() && hold.at > v.hold_at);
         status.beat = now_s();
-        status.loop_age_s = Some(v.at.elapsed().as_secs());
+        let age = v.at.elapsed().as_secs();
+        let stuck = super::nasread::STALL_AFTER.as_secs();
+        status.loop_age_s = Some(age);
+        status.loop_stuck_s = Some(stuck);
+        status.loop_phase = (age > stuck).then(super::nasread::phase_now).flatten().map(|(p, _)| p.to_string());
         Some((status, v.local.clone(), v.shared.clone()))
     }
 
@@ -249,5 +253,23 @@ mod tests {
         std::fs::remove_file(&shared).unwrap();
         b.changed();
         assert!(local.exists() && !shared.exists());
+    }
+
+    /// A loop past the watchdog's threshold: the beat says the threshold, and the phase it's in.
+    #[test]
+    fn a_beat_says_a_stuck_loops_phase() {
+        let d = tempfile::tempdir().unwrap();
+        let stuck = crate::agent::nasread::STALL_AFTER;
+        let local = d.path().join("status.json");
+        let mut b = Handle::new(d.path().into(), Snap::new(HoldState::default()));
+        b.publish(view(local.clone(), None));
+        let s = said(&local);
+        assert_eq!((s.loop_stuck_s, s.loop_phase), (Some(stuck.as_secs()), None));
+        crate::agent::nasread::phase("a test's phase");
+        let mut v = view(local.clone(), None);
+        v.at = Instant::now() - stuck - Duration::from_secs(60);
+        b.publish(v);
+        let s = said(&local);
+        assert!(s.loop_age_s.unwrap() > stuck.as_secs() && s.loop_phase.is_some(), "{s:?}");
     }
 }

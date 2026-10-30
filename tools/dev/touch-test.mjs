@@ -44,6 +44,10 @@
 //                     seconds without a safe point, past the bound (task #897: an agent before it
 //                     hasn't `over_bound`); the Jobs tab's step row then checked for its mark and
 //                     its card for the words (chrome-over-bound)
+//   --loop-stuck AGE:PHASE  the lead's status in /work/swarm saying its loop last finished a round
+//                     AGE s ago, in PHASE, past a threshold (`loop_stuck_s`) of 300 s (task #899:
+//                     an agent before it says no threshold); the Machines tab's lead card then
+//                     checked for its chip, the Overview for its alert (chrome-loop-stuck)
 //   --only-map        only the map's checks (its solo, its age controls) and screenshots
 //   --solo STEP       the step the map's checks solo (default: the one with the most tiles built)
 //   --zoom-on X,Y     the map then zoomed in on world point X,Y (Web Mercator 0–1000; Ontario and
@@ -111,6 +115,7 @@ const fake = { pause: null, posts: 0 }; // (the page's Pause as this server keep
 const ONLY_MAP = process.argv.includes("--only-map");
 const PHASE_TIMES = arg("--phase-times", null);
 const OVER_BOUND = arg("--over-bound", null)?.split(":") ?? null;
+const LOOP_STUCK = arg("--loop-stuck", null)?.split(/:(.*)/s) ?? null;
 const ZOOM_ON = arg("--zoom-on", null)?.split(",").map(Number) ?? null;
 // Served names whose file on disk is named otherwise, as the coordinator's list has them
 // (crate::coord's page files): the route keeps its old spelling (task #547).
@@ -194,7 +199,7 @@ function serve() {
           if (call !== "swarm" || r.statusCode !== 200) { res.writeHead(r.statusCode, r.headers); return r.pipe(res); }
           let b = "";
           r.on("data", (c) => (b += c));
-          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (PHASE_TIMES && o.agent) o.agent.phase_times = { ...JSON.parse(readFileSync(PHASE_TIMES, "utf8")), at: Math.floor(Date.now() / 1000) }; if (OVER_BOUND && o.agent) { const ps = (o.agent.phase_shares ||= {}); ps[OVER_BOUND[0]] = { runs: 3, phases: [], ...ps[OVER_BOUND[0]], over_bound: { runs: 2, gap_s: +OVER_BOUND[1], bound_s: 300 } }; } if (FORECAST === "none" && o.agent) delete o.agent.forecast; if (HISTORY) Object.assign(o, { seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
+          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (PHASE_TIMES && o.agent) o.agent.phase_times = { ...JSON.parse(readFileSync(PHASE_TIMES, "utf8")), at: Math.floor(Date.now() / 1000) }; if (OVER_BOUND && o.agent) { const ps = (o.agent.phase_shares ||= {}); ps[OVER_BOUND[0]] = { runs: 3, phases: [], ...ps[OVER_BOUND[0]], over_bound: { runs: 2, gap_s: +OVER_BOUND[1], bound_s: 300 } }; } if (LOOP_STUCK && o.agent) Object.assign(o.agent, { loop_age_s: +LOOP_STUCK[0], loop_stuck_s: 300, loop_phase: LOOP_STUCK[1] || undefined }); if (FORECAST === "none" && o.agent) delete o.agent.forecast; if (HISTORY) Object.assign(o, { seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
         });
         fw.on("error", (e) => { console.error(`touch-test server: ${url.pathname}: ${e.message}`); res.writeHead(502); res.end("{}"); });
         fw.end(out);
@@ -461,6 +466,21 @@ async function run() {
       if (PHONE) await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
       else await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2 });
       check("over the bound: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
+    }
+
+    // A Mac's loop stuck past its watchdog's threshold (#899): a chip on its card, an alert.
+    if (LOOP_STUCK) {
+      errors.length = 0;
+      await show("machines");
+      await until(`[...document.querySelectorAll(".mc .top .chip")].some((c) => /^loop stuck/.test(c.textContent))`, 5000);
+      const chips = await js(`[...document.querySelectorAll(".mc .top .chip")].map((c) => c.textContent).filter((t) => /^loop stuck/.test(t))`);
+      check("loop stuck: one card's chip says how long and where", chips.length === 1 && (!LOOP_STUCK[1] || chips[0].endsWith(`in ${LOOP_STUCK[1]}`)), chips.join(" | ") || "no chip");
+      await shot("chrome-loop-stuck");
+      await show("overview");
+      const said = await js(`document.body.innerText.includes(": loop stuck ")`);
+      check("loop stuck: the overview's alerts say it", said);
+      await shot("chrome-loop-stuck-overview");
+      check("loop stuck: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }
 
     // The steps' time breakdowns (#844): a row under each step that ran in the footer's range, its

@@ -498,7 +498,7 @@ pub fn phase(name: &'static str) {
 }
 
 /// The loop's phase in progress, and when it began (s since the epoch).
-fn phase_now() -> Option<(&'static str, u64)> {
+pub fn phase_now() -> Option<(&'static str, u64)> {
     PHASE.lock().unwrap_or_else(|e| e.into_inner()).map(|(n, at, _)| (n, at))
 }
 
