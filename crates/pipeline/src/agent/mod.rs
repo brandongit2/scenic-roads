@@ -101,9 +101,8 @@ pub struct Options {
 
 /// How long a job asked to stop at its next safe point (the build pausing, the battery low) is given
 /// before it's frozen where it is instead: a z6 tile takes up to ~11 min, a map tile ~10.
-const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
-// (The bound on a step's gap between safe points is a third of it at most: crate::control.)
-const _: () = assert!(crate::control::SAFE_GAP_BOUND_S * 3 <= DRAIN_GRACE.as_secs());
+/// (The bound on a step's gap between safe points, crate::control::SAFE_GAP_BOUND_S, is a third of it.)
+pub(crate) const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
 /// Why an agent is out of the pool (`Status::out_of_pool`): the NAS not answering as it started.
 const NAS_AWAY: &str = "the NAS didn't answer as this agent started";
 /// Or this Mac's member's lock held by another process past `JOIN_WAIT`.

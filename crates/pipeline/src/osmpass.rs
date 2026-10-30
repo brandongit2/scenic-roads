@@ -583,6 +583,8 @@ pub fn copy_resume_with<'a>(
         let was = done;
         done += n as u64;
         if done / step != was / step {
+            // (What's copied durable before a safe point: a resumed copy appends after its length.)
+            d.sync_data()?;
             progress(done, total)?;
         }
         if done % (2 << 30) < n as u64 {
@@ -1504,6 +1506,33 @@ pub fn check_tools(extract_bin: &Path, planetiler: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task #890: a copy paused at each 1 % safe point and resumed each time appends only the rest,
+    /// the same bytes as the source; a finished copy resumed appends nothing.
+    #[test]
+    fn a_copy_paused_at_each_safe_point_resumes_to_the_same_bytes() {
+        let d = tempfile::tempdir().unwrap();
+        let (src, dst) = (d.path().join("src"), d.path().join("dst"));
+        // (Three reads of its 16 MB buffer: a safe point after each.)
+        let bytes: Vec<u8> = (0..(40u64 << 20)).map(|i| (i * 2654435761 >> 13) as u8).collect();
+        std::fs::write(&src, &bytes).unwrap();
+        let mut stops = 0;
+        loop {
+            let r = copy_resume_with(&src, &dst, &mut |_, _| Err(crate::control::Paused.into()));
+            match r {
+                Err(e) => {
+                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    stops += 1;
+                    assert!(stops < 10);
+                }
+                Ok(()) => break,
+            }
+        }
+        assert_eq!(stops, 3, "a stop at each read that crossed a 1 % mark");
+        assert!(std::fs::read(&dst).unwrap() == bytes);
+        copy_resume_with(&src, &dst, &mut |_, _| panic!("nothing left to copy")).unwrap();
+        assert_eq!(std::fs::metadata(&dst).unwrap().len(), bytes.len() as u64);
+    }
 
     #[test]
     fn the_previous_outlines_are_the_newest_before() {

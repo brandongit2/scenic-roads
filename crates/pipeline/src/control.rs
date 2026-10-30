@@ -392,12 +392,12 @@ fn reached_at(at: std::time::Instant) {
 }
 
 /// The longest a job may go without a safe point, in seconds (task #890): the one declared bound
-/// every step is held to. A third of the agent's drain grace (crate::agent's `DRAIN_GRACE`, which
-/// asserts it), so a job asked to stop at its next safe point reaches one well before it's frozen
-/// instead, on the slowest Mac too (the M1 runs a piece about twice the Mac mini's time). A run
-/// past it says so in its log (`over_bound`, crate::timings::finish), so a step that regresses
-/// shows; the pieces' sizes are chosen to keep each step under it.
-pub const SAFE_GAP_BOUND_S: u64 = 300;
+/// every step is held to. Derived, not typed: a third of the agent's drain grace (crate::agent's
+/// `DRAIN_GRACE`), so a job asked to stop at its next safe point reaches one well before it's
+/// frozen instead, with room for a Mac slower than the one a step's gaps were seen on. A run past
+/// it says so in its log (`over_bound`, crate::timings::finish), so a step that regresses shows;
+/// each step's gaps are measured on every run (`safe_gaps`).
+pub const SAFE_GAP_BOUND_S: u64 = crate::agent::DRAIN_GRACE.as_secs() / 3;
 
 /// What a job's log says when its longest gap between safe points, `gap_s` seconds, is past
 /// `SAFE_GAP_BOUND_S`; None within it.

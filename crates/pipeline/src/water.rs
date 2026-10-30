@@ -892,7 +892,6 @@ mod tests {
         names::mvt::gzip(&Tile { layers: vec![other, l], unknown: Vec::new() }.encode()).unwrap()
     }
 
-    /// A clockwise square (tile units, y down).
     /// A water piece (a z5 tile's subtree) kept reads back as it was made.
     #[test]
     fn a_piece_reads_back_as_kept() {
@@ -908,14 +907,18 @@ mod tests {
         assert_eq!(Piece::decode(&u.encode()).unwrap().node, u.node);
     }
 
-    /// Task #890: the water paused at every z5 tile kept (`build`'s pieces), resumed each time,
-    /// makes the same tiles and counts as a run never paused.
-    #[test]
-    fn the_water_paused_at_every_z5_tile_resumes_to_the_same_tiles() {
-        use crate::resume_log::{Pieces, STOP_AFTER};
-        use store::pmtiles::{encode_directory, Compression, Header, PmTiles, TileType};
-        // (A basemap with no tiles: every z5 tile's subtree its own, the mechanism what's tested.)
-        let dir = encode_directory(&[]);
+    /// A basemap of z14 tiles `tiles` (z14 x, y, the tile), header and directory as the store's.
+    fn basemap(tiles: &[(u32, u32, Vec<u8>)]) -> store::pmtiles::PmTiles {
+        use store::pmtiles::{encode_directory, zxy_to_tile_id, Compression, DirEntry, Header, PmTiles, TileType};
+        let mut ts: Vec<(u64, &Vec<u8>)> =
+            tiles.iter().map(|(x, y, t)| (zxy_to_tile_id(14, *x, *y).unwrap(), t)).collect();
+        ts.sort_by_key(|t| t.0);
+        let (mut entries, mut data) = (Vec::new(), Vec::new());
+        for (id, t) in ts {
+            entries.push(DirEntry { tile_id: id, offset: data.len() as u64, length: t.len() as u32, run_length: 1 });
+            data.extend_from_slice(t);
+        }
+        let dir = encode_directory(&entries);
         let end = 127 + dir.len() as u64;
         let h = Header {
             version: 3,
@@ -926,10 +929,10 @@ mod tests {
             leaf_offset: end,
             leaf_length: 0,
             data_offset: end,
-            data_length: 0,
-            addressed_tiles: 0,
-            tile_entries: 0,
-            tile_contents: 0,
+            data_length: data.len() as u64,
+            addressed_tiles: entries.len() as u64,
+            tile_entries: entries.len() as u64,
+            tile_contents: entries.len() as u64,
             clustered: true,
             internal_compression: Compression::None,
             tile_compression: Compression::None,
@@ -944,37 +947,59 @@ mod tests {
             center_lon_e7: 0,
             center_lat_e7: 0,
         };
-        let pm = PmTiles::open(Box::new([h.to_bytes(), dir].concat())).unwrap();
-        let z14 = Z14::read(&pm).unwrap();
-        let only: Vec<(u32, u32)> = (0..6).map(|x| (x + 10, 12)).collect();
-        let run = |pieces: Pieces| {
-            let r = build(&pm, &z14, None, Some(&only), &std::sync::Mutex::new(pieces), &|_, _| {});
-            r.map(|(t, m)| (t, m.tiles, m.drawn))
-        };
-        let fresh = run(Pieces::none()).unwrap();
-        let d = tempfile::tempdir().unwrap();
-        let mut stops = 0;
-        let resumed = loop {
-            // (On one thread, where the test's stop is set: drawn side by side, each kept piece
-            // is a stop as one.)
-            let r = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap().install(|| {
-                STOP_AFTER.set(Some(1));
-                let r = run(Pieces::open(d.path(), (0, 0, 0), "water", "a", true));
-                STOP_AFTER.set(None);
-                r
-            });
-            match r {
-                Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
-                    stops += 1;
-                }
-                Ok(t) => break t,
-            }
-        };
-        assert_eq!(stops, only.len(), "a stop after each z5 tile kept");
-        assert!(resumed == fresh);
+        PmTiles::open(Box::new([h.to_bytes(), dir, data].concat())).unwrap()
     }
 
+    /// Task #890: the water paused at every z5 tile kept (`build`'s pieces), resumed each time,
+    /// makes the same tiles and counts as a run never paused: on a basemap with no tiles (each
+    /// subtree uniform) and on one with sea, a lake and land in some of its z5 tiles.
+    #[test]
+    fn the_water_paused_at_every_z5_tile_resumes_to_the_same_tiles() {
+        use crate::resume_log::{Pieces, STOP_AFTER};
+        let only: Vec<(u32, u32)> = (0..6).map(|x| (x + 10, 12)).collect();
+        // (z5 tile 10/12's first z14 tiles sea, 12/12's a lake, 13/12's a tile of land.)
+        let wet = vec![
+            (10 * 512, 12 * 512, mvt(&[("ocean", vec![sq(0, 0, 4096, 2048)])])),
+            (10 * 512 + 1, 12 * 512, mvt(&[("ocean", vec![sq(0, 0, 4096, 4096)])])),
+            (12 * 512 + 7, 12 * 512 + 3, mvt(&[("lake", vec![sq(1024, 1024, 3072, 3072)])])),
+            (13 * 512, 12 * 512 + 9, mvt(&[])),
+        ];
+        for tiles in [Vec::new(), wet] {
+            let pm = basemap(&tiles);
+            let z14 = Z14::read(&pm).unwrap();
+            let run = |pieces: Pieces| {
+                let r = build(&pm, &z14, None, Some(&only), &std::sync::Mutex::new(pieces), &|_, _| {});
+                r.map(|(t, m)| (t, m.tiles, m.drawn, m.read))
+            };
+            let fresh = run(Pieces::none()).unwrap();
+            if !tiles.is_empty() {
+                assert!(fresh.3 > 0, "the geometry read: {:?}", (&fresh.1, fresh.2, fresh.3));
+            }
+            let d = tempfile::tempdir().unwrap();
+            let mut stops = 0;
+            let resumed = loop {
+                // (On one thread, where the test's stop is set: drawn side by side, each kept piece
+                // is a stop as one.)
+                let r = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap().install(|| {
+                    STOP_AFTER.set(Some(1));
+                    let r = run(Pieces::open(d.path(), (0, 0, 0), "water", "a", true));
+                    STOP_AFTER.set(None);
+                    r
+                });
+                match r {
+                    Err(e) => {
+                        assert!(crate::control::is_paused(&e), "{e:#}");
+                        stops += 1;
+                    }
+                    Ok(t) => break t,
+                }
+            };
+            assert_eq!(stops, only.len(), "a stop after each z5 tile kept");
+            assert!(resumed == fresh);
+        }
+    }
+
+    /// A clockwise square (tile units, y down).
     fn sq(x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<[i32; 2]> {
         vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
     }

@@ -719,8 +719,8 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   says how often it reached a safe point and the longest it went without one (`safe_points`,
   `safe_gap_s`, `control::safe_gaps`; its log's `timings: … safe points` line): each step's time
   between safe points, measured on every run. **The bound** (task #890): one declared value,
-  `control::SAFE_GAP_BOUND_S`, 300 s, at most a third of the drain's grace (`DRAIN_GRACE`, 15
-  minutes; asserted where it's declared), so a job asked to stop reaches a safe point before it's
+  `control::SAFE_GAP_BOUND_S`, derived as a third of the drain's grace (`DRAIN_GRACE`, 15
+  minutes: 300 s), so a job asked to stop reaches a safe point before it's
   frozen, on the slowest Mac too. A run past it says so in its log (`timings: over the bound: …`,
   `control::over_bound`). Steps still past it by design: catalog, inputs, names-todo,
   regions-extract (each one pass with no pieces yet), heritage's World Heritage clip and
