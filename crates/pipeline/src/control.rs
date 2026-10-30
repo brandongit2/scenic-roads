@@ -569,6 +569,95 @@ pub fn hold_answer(home: &Path, r: &HoldRequest) -> Option<HoldAnswer> {
     (a.ask == *r).then_some(a)
 }
 
+/// Where this Mac's own pause stands (task #846), for every surface to print as it is: an ask
+/// written and not yet taken up (`Asked`), held with jobs still finishing what they're on
+/// (`Pausing`), held with none running (`Paused`), and going on again, taken up but not yet by
+/// the loop that starts work (`Resuming`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HoldStage {
+    Asked,
+    Pausing,
+    Paused,
+    Resuming,
+}
+
+/// This Mac's own pause as the status says it (`hold_view`): its stage, whether it goes to paused
+/// (`pause`; false: going on), who asked and since when (unix seconds), the jobs still finishing
+/// (their ids), and the stage in words.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HoldView {
+    pub stage: HoldStage,
+    pub pause: bool,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub since: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finishing: Vec<String>,
+    pub said: String,
+}
+
+/// This Mac's own pause's stage: the ask waiting for its agent (`asked`, this Mac's own: no
+/// member), the hold as set (`state`), whether a going-on is set and not yet taken up by the loop
+/// (`resuming`), and the jobs running here not frozen (`finishing`). None: building as usual.
+pub fn hold_view(
+    asked: Option<&HoldRequest>,
+    state: &HoldState,
+    resuming: bool,
+    finishing: &[String],
+) -> Option<HoldView> {
+    if let Some(a) = asked.filter(|a| a.member.is_none()) {
+        let pause = a.held.is_some();
+        return Some(HoldView {
+            stage: HoldStage::Asked,
+            pause,
+            by: a.held.as_ref().map(|h| h.by.clone()).unwrap_or_default(),
+            since: a.at,
+            finishing: Vec::new(),
+            said: format!(
+                "{} asked: this Mac's agent takes it up within seconds",
+                if pause { "Pause" } else { "Resume" }
+            ),
+        });
+    }
+    match &state.held {
+        Some(h) if !finishing.is_empty() => {
+            let n = finishing.len();
+            Some(HoldView {
+                stage: HoldStage::Pausing,
+                pause: true,
+                by: h.by.clone(),
+                since: state.at,
+                finishing: finishing.to_vec(),
+                said: format!(
+                    "Pausing: {n} job{} finishing what {} on ({})",
+                    if n == 1 { "" } else { "s" },
+                    if n == 1 { "it's" } else { "they're" },
+                    finishing.join(", ")
+                ),
+            })
+        }
+        Some(h) => Some(HoldView {
+            stage: HoldStage::Paused,
+            pause: true,
+            by: h.by.clone(),
+            since: state.at,
+            finishing: Vec::new(),
+            said: format!("Paused (from {}); the other Macs go on", h.by),
+        }),
+        None if resuming => Some(HoldView {
+            stage: HoldStage::Resuming,
+            pause: false,
+            by: String::new(),
+            since: state.at,
+            finishing: Vec::new(),
+            said: "Resuming: this Mac takes work again at its next round".into(),
+        }),
+        None => None,
+    }
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -653,6 +742,26 @@ mod tests {
         answer_hold(d.path(), &HoldAnswer { ask: r.clone(), said: "m4 is paused".into(), ok: true });
         assert!(hold_answer(d.path(), &r).is_some_and(|a| a.ok));
         assert_eq!(Hold::new("x").as_pause().mode, Mode::Drain);
+    }
+
+    /// This Mac's own pause's stages (task #846): asked, pausing with its jobs named, paused,
+    /// resuming; another Mac's ask isn't this Mac's stage.
+    #[test]
+    fn a_hold_says_its_stage() {
+        let held = HoldState { held: Some(Hold { by: "the menu bar on m1".into(), at: 5 }), at: 5 };
+        let ask = HoldRequest { member: None, held: Some(Hold { by: "the menu bar on m1".into(), at: 4 }), at: 4 };
+        let v = hold_view(Some(&ask), &HoldState::default(), false, &[]).unwrap();
+        assert_eq!((v.stage, v.pause, v.since), (HoldStage::Asked, true, 4));
+        let other = HoldRequest { member: Some("m4".into()), ..ask.clone() };
+        assert!(hold_view(Some(&other), &HoldState::default(), false, &[]).is_none());
+        let jobs = ["unit 6/1/2".to_string(), "pack 6/1/1".to_string()];
+        let v = hold_view(None, &held, false, &jobs).unwrap();
+        assert_eq!(v.stage, HoldStage::Pausing);
+        assert_eq!(v.said, "Pausing: 2 jobs finishing what they're on (unit 6/1/2, pack 6/1/1)");
+        assert_eq!(hold_view(None, &held, false, &[]).map(|v| v.stage), Some(HoldStage::Paused));
+        let on = HoldState { held: None, at: 9 };
+        assert_eq!(hold_view(None, &on, true, &[]).map(|v| (v.stage, v.pause)), Some((HoldStage::Resuming, false)));
+        assert!(hold_view(None, &on, false, &jobs).is_none());
     }
 
     /// Cancel asks (task #373): a file each, taken once in order; one older than CANCEL_STALE_S

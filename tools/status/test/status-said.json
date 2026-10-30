@@ -1,0 +1,113 @@
+{
+  "local": true,
+  "now": 1700000030,
+  "status": {
+    "all_new": true,
+    "app": "2026-10-30",
+    "bad_recipes": [],
+    "beat": 1700000000,
+    "built": {},
+    "checklist": [
+      {
+        "counts": [
+          "1,234 of 2,000 z6 tiles (12 with nothing to publish)"
+        ],
+        "done": 1234,
+        "finished": false,
+        "id": "roads",
+        "items": [
+          {
+            "count": "1,234 of 2,000 z6 tiles (12 with nothing to publish)",
+            "done": 1234,
+            "empty": 12,
+            "finished": false,
+            "left": 766,
+            "noun": "z6 tile",
+            "step": "unit",
+            "total": 2000
+          },
+          {
+            "count": "done",
+            "done": 0,
+            "finished": true,
+            "left": 0,
+            "noun": "run",
+            "step": "outlines"
+          }
+        ],
+        "left": 766,
+        "steps": [
+          "unit",
+          "pack"
+        ],
+        "total": 2000,
+        "unit": "z6 tiles",
+        "what": "roads"
+      }
+    ],
+    "conditions": {
+      "ac": false,
+      "battery": null,
+      "home": false,
+      "idle_s": 0,
+      "nas": false
+    },
+    "held": {
+      "at": 1700000000,
+      "by": "the menu bar on m1"
+    },
+    "helpers": [],
+    "hold": {
+      "by": "the menu bar on m1",
+      "finishing": [
+        "unit 6/1/2",
+        "pack 6/1/1",
+        "unit 6/1/3"
+      ],
+      "pause": true,
+      "said": "Pausing: 3 jobs finishing what they're on (unit 6/1/2, pack 6/1/1, unit 6/1/3)",
+      "since": 1700000000,
+      "stage": "pausing"
+    },
+    "host": "m1",
+    "jobs": [
+      {
+        "id": "unit 6/1/2",
+        "paused": null,
+        "progress": null,
+        "slot": 0,
+        "started": 1699999400,
+        "tail": "",
+        "what": "unit 6/1/2's work"
+      },
+      {
+        "id": "pack 6/1/1",
+        "paused": null,
+        "progress": null,
+        "slot": 1,
+        "started": 1699999400,
+        "tail": "",
+        "what": "pack 6/1/1's work"
+      },
+      {
+        "id": "unit 6/1/3",
+        "paused": null,
+        "progress": null,
+        "slot": 2,
+        "started": 1699999400,
+        "tail": "",
+        "what": "unit 6/1/3's work"
+      }
+    ],
+    "out_of_touch_s": 600,
+    "pid": 0,
+    "recent": [],
+    "regions": [],
+    "started": 0,
+    "verdict": {
+      "said": "Pausing: 3 jobs finishing what they're on (unit 6/1/2, pack 6/1/1, unit 6/1/3)",
+      "state": "pausing"
+    },
+    "waiting": []
+  }
+}

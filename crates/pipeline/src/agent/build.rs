@@ -4795,10 +4795,35 @@ pub struct Item {
     /// data there; crate::agent::steps::output_named), counted apart; 0 left out.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub empty: usize,
+    /// Its count in words (`count`) and whether it's done, as the status serves them (`said`,
+    /// task #846): what the menu bar and the build page print.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub count: String,
+    #[serde(default)]
+    pub finished: bool,
 }
 
 fn is_zero(n: &usize) -> bool {
     *n == 0
+}
+
+/// "12,345": a count as every surface says it (docs/pipeline.md §2).
+pub fn grouped(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// "{done} of {total} {noun}s", and the done that made nothing to publish apart.
+fn of_total(done: usize, total: usize, empty: usize, nouns: &str) -> String {
+    let none = if empty > 0 { format!(" ({} with nothing to publish)", grouped(empty)) } else { String::new() };
+    format!("{} of {} {nouns}{none}", grouped(done), grouped(total))
 }
 
 impl Item {
@@ -4817,6 +4842,17 @@ impl Item {
 
     pub fn finished(&self) -> bool {
         self.left == Some(0)
+    }
+
+    /// Its count in words: "156 of 284 z6 tiles", "3 runs left", "done", "to come".
+    pub fn count(&self) -> String {
+        let noun = if self.noun.is_empty() { super::steps::noun(&self.step) } else { self.noun.as_str() };
+        match (self.total, self.left) {
+            (Some(t), _) if t > 0 => of_total(self.done, t, self.empty, &format!("{noun}s")),
+            (_, Some(0)) => "done".into(),
+            (_, Some(l)) => format!("{} {noun}{} left", grouped(l), if l == 1 { "" } else { "s" }),
+            _ => "to come".into(),
+        }
     }
 }
 
@@ -4858,9 +4894,27 @@ pub struct Line {
     /// the parts by their targets' noun ("candidates and peaks"); none, the lead's alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared: Option<String>,
+    /// Its counts in words (`counts`) and whether it's done, as the status serves them (`said`,
+    /// task #846): what the menu bar and the build page print.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub counts: Vec<String>,
+    #[serde(default)]
+    pub finished: bool,
 }
 
 impl Line {
+    /// Its counts and its items' said in its fields (`counts`, `finished`), as the status serves
+    /// them: what every surface prints.
+    pub fn said(mut self) -> Line {
+        for i in self.items.iter_mut() {
+            i.count = i.count();
+            i.finished = i.finished();
+        }
+        self.counts = self.counts();
+        self.finished = self.finished();
+        self
+    }
+
     pub fn finished(&self) -> bool {
         self.left == Some(0) || self.total.is_some_and(|t| self.done >= t && self.left.is_none())
     }
@@ -4898,9 +4952,10 @@ impl Line {
                 if of.iter().all(|j| j.total.is_some()) {
                     let (d, t): (usize, usize) =
                         (of.iter().map(|j| j.done).sum(), of.iter().map(|j| j.total.unwrap_or(0)).sum());
+                    let e: usize = of.iter().map(|j| j.empty).sum();
                     // (A noun past the line's own with nothing to do isn't said.)
                     if t > 0 || out.is_empty() {
-                        out.push(format!("{d} of {t} {noun}s"));
+                        out.push(of_total(d, t, e, &format!("{noun}s")));
                     }
                 } else {
                     out.push(format!("{noun}s to come"));
@@ -4964,7 +5019,7 @@ pub fn fold(items: &[Item], next: &BTreeMap<&str, Vec<String>>, notes: &BTreeMap
             items: its,
             next: next.get(st.id).cloned().unwrap_or_default(),
             note: notes.get(st.id).cloned(),
-            shared: None,
+            ..Default::default()
         });
     }
     mark_shared(&mut out);
