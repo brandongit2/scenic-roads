@@ -1165,7 +1165,7 @@ its content as it was and only its time new, at most once a minute (`KEEP_EVERY`
 the loop works: it began a phase or its thread used the CPU within the last two minutes
 (`WORKING_S`), and for at most 30 minutes of a round (`KEEP_FOR`, six times `STALL_AFTER`): past
 it, a loop that still uses the CPU (spinning) goes out of touch too. A loop stuck in a call or waiting on a lock does neither, so its heartbeat stops and
-goes out of touch as before (the status bar's six minutes, the helpers' ten), and the stall is
+goes out of touch as before (ten minutes, `OUT_OF_TOUCH_S`, served as the status's `out_of_touch_s`), and the stall is
 flagged as above. A kept heartbeat's content is as of the loop's last write (its jobs, conditions,
 forecast): only its time says the loop still works. The loop holds the heartbeat while it writes
 its own (the local copy and the NAS's), so a kept one never overwrites a newer one; none is kept
@@ -1978,8 +1978,15 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   at their next safe point and are given back (as the build's pause stops them, frozen past the
   grace), it asks for no work and starts none, it can't take the lead anew (`Conds::held`, `able`
   false), and a lead paused keeps the lead, granting the others' work, and runs none of its own.
-  It keeps beating. `scenic status`, the build page's machine card and the menu bar show it
-  paused (`Status::held`; the pool's view says "paused"); the forecast gives it no lanes. The
+  It keeps beating. This Mac's own ask is taken up at once by the agent's asks thread
+  (crate::agent::asks, task #846, the first slice of #871's loop split; it looks every 250 ms):
+  the hold kept and answered, the running jobs told "drain" through their channels, and the
+  heartbeat written again then, here and on the NAS, not at the loop's next pass (which on a slow
+  NAS took minutes). Another member's ask stays the loop's. The status says the hold's stage
+  (`Status::hold`, control::HoldView): asked, pausing (its jobs finishing, named), paused,
+  resuming; and the Mac's state (`Status::verdict`). `scenic status`, the build page's machine
+  card and the menu bar print these (`Status::held` kept for older readers; the pool's view says
+  "paused"); the forecast gives it no lanes. The
   rest of the pool goes on. `--now` stays the whole build's.
 - Every control asks the driver (`Driver::hand_to`, `Driver::takeover`) rather than re-checking.
 

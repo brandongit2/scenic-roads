@@ -47,7 +47,7 @@ templated from its row (its `id`, `steps::said`, `counted`):
 |---|---|---|
 | a job's name (agent, menu bar) | `{id}: {n} {noun}s`; a worldwide step `{id}` | "terrain-hi: 8 z6 tiles", "outlines" |
 | a job's name (the build page) | its id: `{id} {first target}`; a worldwide step `{id}` | "terrain-deep 10/259/338", "outlines" |
-| a checklist count | `{done} of {total} {noun}s`, `{left} {noun}s left`, "done", "to come" (not sized yet) | "156 of 284 z6 tiles" |
+| a checklist count | `{done} of {total} {noun}s` (thousands grouped; the done that made nothing to publish apart), `{left} {noun}s left`, "done", "to come" (not sized yet): served as `counts`/`count` and `finished` (build::Line::said), printed as is by the menu bar and the page | "156 of 284 z6 tiles", "7,837 of 7,849 z10 tiles (6,814 with nothing to publish)" |
 | a step waiting | `{id}: {why}` | "lakefill: failed 3 times in a row: …" |
 | an event | `{who} finished {job's name} in {time}` | "m4 finished unit 6/33/22 (unit: 6 z6 tiles) in 10 min" |
 

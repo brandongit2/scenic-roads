@@ -467,7 +467,10 @@ available. Until work is done, the map serves the last catalogue.
   leading: docs/workers.md §7), `scenic memory` (the build's memory: docs/pool.md §7.1).
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
 - **The menu bar item** asks the local server (`/api/build`): this Mac's agent's status, else the
-  NAS's copy. An agent not heard from for six minutes shows as out of touch.
+  NAS's copy. An agent not heard from for ten minutes (the status's `out_of_touch_s`, the pool's
+  `OUT_OF_TOUCH_S`) shows as out of touch. The menu prints what the agent says (task #846): each
+  Mac's state (`verdict`), this Mac's pause's stage (`hold`) and the checklist's counts; it lists
+  every running job, slot by slot.
   - **Its panel:** a click opens this Mac's own agent's build page in a popover
     (`http://127.0.0.1:8090/work/?view`: every Mac's agent serves it from its own read of the
     build's state, docs/pool.md §10), in a web view that keeps nothing, kept for the next opening

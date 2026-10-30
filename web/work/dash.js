@@ -34,7 +34,9 @@ const POLL_MS = 10000;
 // A pressed Pause or Resume: the page asks again this often until the build says so, for this long at most.
 const PENDING_POLL_MS = 1000;
 const PENDING_MAX_MS = 60000;
-const STALE_S = 360;
+// A heartbeat older than this is out of touch: the agent's own threshold, served in its status
+// (`out_of_touch_s`, crate::pool::beat::OUT_OF_TOUCH_S, task #846); this from an agent before it.
+const OUT_OF_TOUCH_S = 600;
 const STUCK_S = 900;
 
 // ---- Words and numbers ------------------------------------------------------------------------
@@ -84,40 +86,12 @@ const S = {
 };
 // The one word a waiting line's or notice's `what` is said by: its step, else its own (a stage's id).
 const waitName = (w) => w.step || w.what;
-// A step's line of the checklist (build::Item) or a stage's (build::Line) in words, done and left
-// (the Jobs tab's stages: the one place the page counts a whole, task #685): "12 tiles done · 468
-// left", "3 runs left", "done", "to come"; the done that made nothing to publish (`empty`: a deep
-// tile with no fine data there, #839) counted apart: "7,837 z10 tiles done (6,814 with nothing to
-// publish) · 12 left".
-function countOf(x, noun) {
-  const none = x.empty ? ` (${n(x.empty)} with nothing to publish)` : "";
-  if (x.total != null && x.total > 0) return x.done >= x.total ? `${n(x.total)} ${noun} done${none}` : `${n(x.done)} ${noun} done${none} · ${n(x.total - x.done)} left`;
-  if (x.left === 0) return "done";
-  if (x.left != null) return `${plural(x.left, noun.replace(/s$/, ""))} left`;
-  return "to come";
-}
-// A stage's counts, a noun at a time in its items' order (build::Line::counts): "398 tiles done ·
-// 18 z3 tiles done · 2 left", "2 runs left"; "done" or "to come" with no item to count (an older
-// lead's line: its own count).
-function countsOf(l) {
-  const out = [];
-  const nouns = [];
-  for (const i of l.items || []) {
-    const noun = S.noun(i.step);
-    if (nouns.includes(noun)) continue;
-    nouns.push(noun);
-    const of = l.items.filter((j) => S.noun(j.step) === noun);
-    if (of.some((j) => j.total != null)) {
-      if (of.every((j) => j.total != null)) out.push(countOf({ done: of.reduce((t, j) => t + j.done, 0), total: of.reduce((t, j) => t + j.total, 0), empty: of.reduce((t, j) => t + (j.empty || 0), 0) }, `${noun}s`));
-      else out.push(`${noun}s to come`);
-    } else if (of.every((j) => j.left != null)) {
-      const left = of.reduce((t, j) => t + j.left, 0);
-      if (left) out.push(`${plural(left, noun)} left`);
-    } else out.push(`${noun}s to come`);
-  }
-  if (!out.length) out.push(l.items?.length ? (finished(l) ? "done" : "to come") : countOf(l, l.unit || "targets"));
-  return out.join(" · ");
-}
+// A step's line of the checklist (build::Item) or a stage's (build::Line) in words, as the agent
+// says them (build::Line::said, task #846: the menu bar and `scenic status` say the same): "156 of
+// 284 z6 tiles", "3 runs left", "done", "to come"; the done that made nothing to publish counted
+// apart: "7,837 of 7,849 z10 tiles (6,814 with nothing to publish)".
+const countOf = (x) => x.count || "to come";
+const countsOf = (l) => (l.counts?.length ? l.counts : ["to come"]).join(" · ");
 const fraction = (x) => (x.total ? x.done / x.total : x.left != null ? (x.left ? 0 : 1) : 0);
 // Machines' colours, the lead first.
 const MACHINE_COLOURS = ["#5b8fd8", "#b48ae8", "#e0a36a", "#e07a9a", "#6cc28a"];
@@ -157,11 +131,12 @@ const kpi = (k, v, s) => h("div", "kpi", h("div", "k", k), h("div", "v", v), s ?
 function model(sw) {
   const a = sw.agent || {};
   const now = sw.now;
-  const fresh = (beat) => beat && now - beat < STALE_S;
+  const touch = a.out_of_touch_s || OUT_OF_TOUCH_S;
+  const fresh = (beat) => beat && now - beat < touch;
   const fc = a.forecast && { ...a.forecast, publishes: a.forecast.publishes ?? [] };
   const regionName = Object.fromEntries((a.regions || []).map((r) => [r.id, r.name]));
   // (Not the lead's own helper file, from while it was a member: it leads now.)
-  const helpers = (a.helpers || []).filter((x) => x.beat && now - x.beat < 600 && x.host !== a.host);
+  const helpers = (a.helpers || []).filter((x) => x.beat && now - x.beat < touch && x.host !== a.host);
   const pages = (sw.workers || []).filter((w) => w.kind === "web" && w.seen_s < 900);
   const leasesOf = (name) => (sw.leases || []).filter((l) => l.worker === name);
   // Every machine: the lead, its helpers, then the pages (one entry).
@@ -175,7 +150,7 @@ function model(sw) {
   const gone = (sw.workers || []).filter((w) => w.kind === "native" && w.name !== a.host && !helpers.some((x) => x.host === w.name));
   // The steps under way, on any machine: the lead's jobs, its helpers', the leases.
   const running = new Set([...macs.flatMap((x) => jobsOf(x.status)).map((j) => stepOf(j.id)), ...(sw.leases || []).map((l) => l.step)]);
-  return { sw, a, now, fresh, fc, regionName, helpers, pages, macs, gone, leasesOf, colourOf, tasks, running, lines: a.checklist || [] };
+  return { sw, a, now, touch, fresh, fc, regionName, helpers, pages, macs, gone, leasesOf, colourOf, tasks, running, lines: a.checklist || [] };
 }
 
 const stepOf = (id) => String(id || "").split(" ")[0];
@@ -185,17 +160,14 @@ const jobsOf = (st) => (st.jobs?.length ? st.jobs : [st.job, st.beside, ...(st.m
 // What the lead's coordinator says of a Mac, by its slots' names: its capacity (coord::Capacity).
 
 // ---- The verdict --------------------------------------------------------------------------------
-function machineState(st, fresh, paused) {
+// A Mac's state as its agent says it (agent::Verdict, task #846: the menu bar shows the same), out
+// of touch the page's to tell.
+const VERDICT_CLASS = { building: "run", idle: "", waiting: "", failed: "bad" };
+function machineState(st, fresh) {
   if (!fresh) return ["out of touch", "bad"];
-  // (Its jobs, every slot's: building while any is.)
-  const jobs = jobsOf(st);
-  if (jobs.some((j) => !j.paused && !j.pausing)) return ["building", "run"];
-  // (This Mac paused alone, task #224: its jobs stopping, then nothing new.)
-  if (st.held) return [jobs.length ? "pausing" : "paused", "warn"];
-  if (jobs.some((j) => j.pausing)) return ["stopping", "warn"];
-  if (jobs.some((j) => j.paused)) return ["frozen", "warn"];
-  if (paused) return ["paused", "warn"];
-  return ["idle", ""];
+  const v = st.verdict;
+  if (!v) return ["older app", ""];
+  return [v.state, VERDICT_CLASS[v.state] ?? "warn", v.said];
 }
 
 function alerts(m) {
@@ -204,7 +176,7 @@ function alerts(m) {
   if (!a.host) return [{ cls: "bad", text: "No word from the lead yet", to: "machines" }];
   if (!m.fresh(a.beat)) out.push({ cls: "bad", text: `Lead out of touch for ${dur(now - a.beat)}`, to: "machines" });
   if (a.pool?.lead?.alert) out.push({ cls: "bad", text: a.pool.lead.alert, to: "machines" });
-  for (const w of m.gone) if (w.seen_s < 86400) out.push({ cls: "warn", text: w.seen_s < 360 ? `${w.name}'s status is old (can it reach the NAS?)` : `${w.name} out of touch for ${dur(w.seen_s)}`, to: "machines" });
+  for (const w of m.gone) if (w.seen_s < 86400) out.push({ cls: "warn", text: w.seen_s < m.touch ? `${w.name}'s status is old (can it reach the NAS?)` : `${w.name} out of touch for ${dur(w.seen_s)}`, to: "machines" });
   for (const x of m.macs) {
     const st = x.status, r = st.resources || {}, c = st.conditions || {};
     const short = x.role === "lead" ? "Lead" : x.name;
@@ -846,22 +818,24 @@ function fitText(w, host) {
 // slot, with what's inside it (or why none runs); live on it (live.js).
 function machineCard(m, x) {
   const st = x.status, now = m.now;
-  const [state, cls] = machineState(st, x.fresh, m.sw.pause);
+  const [state, cls, said] = machineState(st, x.fresh);
   const jobs = jobsOf(st);
   const role = x.role === "lead" ? "lead · coordinator" : "member";
   const card = h("div", { class: `mc ${x.fresh ? "" : "off"}`, style: { borderLeft: `3px solid ${x.colour}` } },
-    h("div", "top", h("span", "name", x.name), h("span", "role", role), st.app ? chip(`app ${st.app}`) : null, chip(state, cls), jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
+    h("div", "top", h("span", "name", x.name), h("span", "role", role), st.app ? chip(`app ${st.app}`) : null, chip(state, cls, said), jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
   jobs.forEach((j) => {
     // (Its real slot, slots may be sparse: jobsOf.)
     const b = jobBlock(j, now);
     b.querySelector(".what").prepend(h("span", "slot", `${j.slot + 1}`));
     card.append(b);
   });
+  // (Its pause's stage, while jobs still finish: task #846.)
+  if (jobs.length && st.hold) card.append(h("div", "sub", st.hold.said));
   if (!jobs.length) {
     // Why it isn't building.
     // (Paused alone or with the build: its own waits say the same again, left out; the same words once.)
-    const why = st.held || m.sw.pause ? [] : [...new Map((st.waiting || []).filter((w) => !w.step || x.role !== "lead").map((w) => [x.role === "lead" ? `${waitName(w)}: ${w.why}` : w.why, w])).values()].slice(0, 2);
-    card.append(h("div", "job", h("div", "what dim", st.held ? `This Mac is paused (from ${st.held.by}); the rest of the pool goes on` : m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
+    const why = st.hold || m.sw.pause ? [] : [...new Map((st.waiting || []).filter((w) => !w.step || x.role !== "lead").map((w) => [x.role === "lead" ? `${waitName(w)}: ${w.why}` : w.why, w])).values()].slice(0, 2);
+    card.append(h("div", "job", h("div", "what dim", st.hold ? st.hold.said : m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
     for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${waitName(w)}: ${w.why}` : w.why));
   }
   card.append(...[x.role === "helper" ? fitText(x.worker, x.name) : null, liveBlock(x.name, st.memory?.last)].filter(Boolean));
@@ -1183,7 +1157,7 @@ function runCard(m, r, kind, laneName) {
 function laneChips(x) {
   const st = x.status, c = st.conditions || {};
   return [
-    st.held && chip(jobsOf(st).length ? "pausing" : "paused", "warn", `Paused alone, from ${st.held.by}: it takes no new work; the other Macs go on`),
+    st.hold && chip(st.hold.stage, "warn", st.hold.said),
     !x.fresh && chip("out of touch", "bad", `Last heard from ${clock(st.beat)}`),
     c.ac === false && chip(`on battery${c.battery != null ? ` ${c.battery}%` : ""}`, c.battery != null && c.battery < 40 ? "warn" : ""),
   ].filter(Boolean);
@@ -1437,7 +1411,7 @@ function stagesList(m) {
       list.append(h("div", { class: `st ${itDone ? "done" : ""}` },
         mark(itDone, itRun),
         withCard(h("span", "title", step, S.any(step) ? h("span", { class: "dim" }, " ⇄") : null), `t ${step}`, () => stepCard(m, it)),
-        h("span", "n", countOf(it, `${S.noun(step)}s`)),
+        h("span", "n", countOf(it)),
         pbar(fraction(it), itDone ? "ok" : itRun ? "" : "dimbar", itDone ? null : S.colour(step))));
       const tr = timeRow(m, step);
       if (tr) list.append(tr);
@@ -1518,8 +1492,8 @@ function stepCard(m, it) {
   const done = finished(it), noun = S.noun(it.step);
   const ps = m.a.phase_shares?.[it.step];
   return jobCard({ kicker: `${S.stage(it.step) || "step"} · step`, colour: S.colour(it.step), title: it.step,
-    stats: it.total ? [[n(it.done), `${noun}s done`], ...(it.empty ? [[n(it.empty), "with nothing to publish"]] : []), [n(it.total - it.done), "left"]] : [[countOf(it, `${noun}s`), "count"]],
-    bar: it.total ? { frac: it.done / it.total, label: countOf(it, `${noun}s`) } : done ? { frac: 1, label: "done" } : null,
+    stats: it.total ? [[n(it.done), `${noun}s done`], ...(it.empty ? [[n(it.empty), "with nothing to publish"]] : []), [n(it.total - it.done), "left"]] : [[countOf(it), "count"]],
+    bar: it.total ? { frac: it.done / it.total, label: countOf(it) } : done ? { frac: 1, label: "done" } : null,
     chips: (ps?.phases || []).map((p) => `${p.name} ${Math.round(p.wall * 100)}%`), chipsLabel: ps?.phases?.length ? `Time by phase (${plural(ps.runs, "run")})` : "",
     foot: it.step }, [
     ["Makes", row?.does],
@@ -2072,7 +2046,7 @@ function render() {
   window.scrollTo(0, scrollY);
   ctx.tabsEl.scrollTop = paneY;
   refreshPin();
-  ctx.onState?.(m.sw.pause ? "paused" : !m.a.host ? "no word from the lead" : m.fresh(m.a.beat) ? (jobsOf(m.a).length ? "building" : "idle") : "lead out of touch");
+  ctx.onState?.(m.sw.pause ? "paused" : !m.a.host ? "no word from the lead" : m.fresh(m.a.beat) ? (m.a.verdict?.state ?? "older app") : "lead out of touch");
 }
 
 let polling = null;
