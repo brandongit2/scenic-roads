@@ -2,7 +2,9 @@
 // factor as a bar (full = the factor at its cap), then roadside tree height. A rail
 // line shows its services and the ride factors in the same slots; a marker or highlighted area
 // (with no road under the cursor) gets one descriptive line, and water (nothing else under the
-// cursor, a depth layer on) its depth with the ramp's colour, its name and kind (showWater).
+// cursor, a depth layer on) its depth with the ramp's colour, its name and kind (showWater); a
+// region (Regions → Show regions on map) its folders and name with their flags, then its state,
+// land and water and download here (showRegion).
 // Row 2: yes/no flags as chips, road tags and elevation sources on the left; loading status,
 // cursor position, zoom, scale, the server and NAS connection and reload prompt (mapstatus.ts), links and the credits
 // dialog on the right. Every slot has a fixed width and its elements persist, so nothing moves as
@@ -17,6 +19,8 @@ import { RAIL_COMPONENTS, fmtTrains, railComponents, railScore, type RailSample 
 import type { HoverInfo } from '../roads/layer';
 import type { WaterDepth } from '../depth';
 import type { WayInfo } from '../api';
+import { FLAGS } from '../flags';
+import type { RegionInfo } from './regions';
 import { COMPONENTS, FLAG_LABELS, components, scoreOf } from '../scenic';
 import { cap, fmt, h } from './dom';
 import { coarse } from './touch';
@@ -94,6 +98,7 @@ export class Strip {
   private last: { hov: HoverInfo; info: WayInfo | null | 'loading'; areas: FeatureSummary[] } | null = null;
   private featLine: HTMLSpanElement;
   private waterLine: HTMLSpanElement;
+  private regionLine: HTMLSpanElement;
   /** Which factors the bars currently show. */
   private barsFor: 'road' | 'rail' = 'road';
   /** Rail: the ride factors shown in the bar slots (tunnels go to row 2). */
@@ -115,8 +120,9 @@ export class Strip {
     this.bars = COMPONENTS.flatMap((c, i) => (c.bar ? [{ i, bar: new Bar(c.bar.short, c.bar.unit, `${c.label}: ${c.help}`) }] : []));
     this.featLine = h('span', { class: 'featline' });
     this.waterLine = h('span', { class: 'waterline' });
+    this.regionLine = h('span', { class: 'regionline' });
     this.r1 = h('div', { class: 'r1 idle' },
-      idle, this.featLine, this.waterLine, this.road, this.score.el, ...this.bars.map((b) => b.bar.el), t.el);
+      idle, this.featLine, this.waterLine, this.regionLine, this.road, this.score.el, ...this.bars.map((b) => b.bar.el), t.el);
     this.r1.style.setProperty('--bars', String(this.bars.length)); // a column each (style.css)
 
     this.info = h('span', { class: 'info' });
@@ -192,7 +198,7 @@ export class Strip {
   /** A marker or highlighted area (no road under the cursor), with the other areas it lies in. */
   showFeature(f: FeatureSummary, areas: FeatureSummary[]) {
     this.last = null;
-    this.r1.classList.remove('idle', 'water');
+    this.r1.classList.remove('idle', 'water', 'region');
     this.r1.classList.add('feat');
     const dot = h('i', { class: f.area ? 'fa' : 'fp' });
     dot.style.background = f.colour;
@@ -241,7 +247,7 @@ export class Strip {
    * in row 2. */
   showWater(w: WaterDepth, name: string, kind: string) {
     this.last = null;
-    this.r1.classList.remove('idle', 'feat');
+    this.r1.classList.remove('idle', 'feat', 'region');
     this.r1.classList.add('water');
     const sw = h('i', { class: 'sw' });
     sw.style.background = w.colour;
@@ -258,8 +264,30 @@ export class Strip {
       h('span', { class: 'tags', title: [w.source, w.resolution, w.datum && `below ${w.datum}`].filter(Boolean).join(' · ') }, facts.join(' · ')), h('span', { class: 'src' }, 'not for navigation'));
   }
 
+  /** A region under the cursor (Show regions on map): its folders and its name, each with its
+   * flag as the Regions list shows them ("Canada › Quebec"), then its state, land and water, and
+   * its download here; disabled in grey. */
+  showRegion(r: RegionInfo) {
+    this.last = null;
+    this.r1.classList.remove('idle', 'feat', 'water');
+    this.r1.classList.add('region');
+    const flag = (code: string | null) => {
+      const url = code ? FLAGS.get(code) : undefined;
+      return url ? h('img', { class: 'flag', src: url, alt: '', draggable: 'false' }) : null;
+    };
+    const crumbs = r.path.flatMap((p) => [h('span', { class: 'crumb' }, ...[flag(p.flag)].filter((x) => x !== null), p.name), h('span', { class: 'sep' }, '›')]);
+    const facts = [r.disabled ? 'disabled' : '', r.state, r.area, r.download].filter(Boolean);
+    this.regionLine.classList.toggle('off', r.disabled);
+    this.regionLine.replaceChildren(h('i', { class: 'sw' }), ...crumbs,
+      h('b', {}, ...[flag(r.flag)].filter((x) => x !== null), r.name),
+      h('span', { class: 'kind' }, 'region'),
+      h('span', { class: 'facts' }, ...facts.map((x) => h('span', { class: 'fact' }, x))));
+    this.regionLine.title = [[...r.path.map((p) => p.name), r.name].join(' › '), ...facts].join(' · ');
+    this.info.replaceChildren();
+  }
+
   show(hov: HoverInfo | null, info: WayInfo | null | 'loading', areas: FeatureSummary[] = []) {
-    this.r1.classList.remove('feat', 'water');
+    this.r1.classList.remove('feat', 'water', 'region');
     if (!hov) {
       this.last = null;
       this.r1.classList.add('idle');

@@ -84,7 +84,10 @@
 - The server mounts the NAS itself when it's missing, at home.
 
 **The Regions panel** (Settings → Regions):
-- The regions, read only, and on the map the published coverage and each region's accepted outline.
+- The regions, read only, and on the map (**Show regions on map**) each region's accepted outline,
+  green (disabled grey), named as countries are, as wide and opaque as the boundaries (drawn while
+  it's on, whatever the boundaries' switch); hovered, the footer shows its folders and name with
+  their flags (Canada › Quebec), its state, land and water and download here.
   Regions change only as files in `inputs/regions/` (docs/inputs.md §6.1); the app writes none.
   - **The list**: folders (named by their `_group.toml`) sorted by name among the regions, collapsed
     until opened (remembered); an open folder's entries indented along a line from its triangle, its

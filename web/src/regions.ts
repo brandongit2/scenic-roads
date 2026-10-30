@@ -1,27 +1,15 @@
-// Regions (docs/surface.md, docs/regions.md), read only: the server's list of the region files (/api/regions),
-// the outlines of the administrative areas they're made of (/api/areas/{id}), and the coverage the
-// map's catalogue was built for, drawn on the map (/api/coverage). The panel is ui/regions.ts.
+// Regions (docs/surface.md, docs/regions.md), read only: the server's list of the region files
+// (/api/regions) and their outlines simplified for a zoom (/api/regions/outlines), drawn on the map
+// while "Show regions on map" is on. The panel is ui/regions.ts.
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
-import { nested } from './rings';
 
-/** An administrative or ISO 3166 area from the OSM pass's outlines. */
+/** An administrative or ISO 3166 area's fields a region's flag comes from (its first osm: part's). */
 export interface Area {
-  /** Its OSM relation. */
-  id: number;
-  name: string;
-  /** English name ('' when none). */
-  en: string;
-  /** admin_level (0: none, an ISO 3166 code only). */
-  level: number;
   iso: string;
   /** An ISO 3166-1 country (Hong Kong is one, at admin_level 3). */
   country: boolean;
-  /** The country it lies in: its ISO 3166-1 code and name ('' for a country, or outlines made
-   * before this was recorded). */
+  /** The country it lies in: its ISO 3166-1 code ('' for a country). */
   in?: string;
-  in_name?: string;
-  km2: number;
-  bbox: [number, number, number, number];
 }
 
 /** A region as the server lists it (docs/inputs.md §6.1): a checked input in the inputs folder's
@@ -82,53 +70,131 @@ export interface Folder {
   regions: string[];
   folders: Folder[];
 }
-/**
- * The coverage the map's catalogue (`catalog`, its number) was built for: each region's outline
- * entries, simplified for drawing (properties: region, region_name, entry, and an osm: entry's area
- * fields), and the regions themselves. A catalogue made before catalogues recorded their coverage has
- * no `regions`: its outlines are then the recipes', and which regions it holds isn't known.
- */
-export type Coverage = GeoJSON.FeatureCollection<GeoJSON.MultiPolygon> & { regions?: Region[]; catalog?: number };
-/** Every region's accepted outline for drawing, a feature per stored shape (properties: region,
- * name, from, colour, held, disabled). `source` 'catalog': the catalogue's coverage stands in until this Mac
- * has the accepted copy. */
-/** Every region's outline, and the 12-nautical-mile line (`kind: "ts12"`, lines). */
-export type RegionsLayer = GeoJSON.FeatureCollection<GeoJSON.MultiPolygon | GeoJSON.MultiLineString> & { source?: 'accepted' | 'catalog' };
-export const getRegionsLayer = () => call<RegionsLayer>('/api/regions/layer');
-export const getCoverage = () => call<Coverage>('/api/coverage').then((fc) => ({ ...fc, features: fc.features.map(nested) }));
 
-/** An area's outline (simplified), kept once loaded. */
-const outlines = new Map<number, Promise<GeoJSON.Feature<GeoJSON.MultiPolygon>>>();
-export function areaOutline(id: number): Promise<GeoJSON.Feature<GeoJSON.MultiPolygon>> {
-  let p = outlines.get(id);
-  if (!p) {
-    p = call<GeoJSON.Feature<GeoJSON.MultiPolygon>>(`/api/areas/${id}`).then(nested);
-    outlines.set(id, p);
-    p.catch(() => outlines.get(id) === p && outlines.delete(id));
-  }
-  return p;
+type Bbox = [number, number, number, number];
+/** A region's outline as /api/regions/outlines sends it: every shape in one MultiPolygon,
+ * simplified for the zoom asked. */
+export type RegionOutline = GeoJSON.Feature<GeoJSON.MultiPolygon, {
+  region: string;
+  name: string;
+  disabled: boolean;
+  bbox: Bbox;
+  /** A point inside it for its name (none: an empty outline). */
+  label: [number, number] | null;
+  /** Its first osm: part's area (its flag), when the pass has it. */
+  area: Area | null;
+}>;
+
+/** The deepest zoom the server simplifies for (regions.rs OUTLINE_MAX_Z). */
+export const OUTLINE_MAX_Z = 12;
+/** The outlines asked for at a map zoom: floored, 0–12. */
+export const outlineZoom = (zoom: number) => Math.max(0, Math.min(OUTLINE_MAX_Z, Math.floor(zoom)));
+/** Every region's outline for zoom `z` (outlineZoom); with `bbox`, those meeting it, clipped to it
+ * (`clip`: the box, whose edges the cuts follow), with `ids` those named (#869 asks a few regions'
+ * outlines this way). */
+export function getOutlines(z: number, opts: { bbox?: Bbox; ids?: string[]; signal?: AbortSignal } = {}) {
+  const q = new URLSearchParams({ z: String(z) });
+  if (opts.bbox) q.set('bbox', opts.bbox.map((v) => v.toFixed(3)).join(','));
+  if (opts.ids) q.set('ids', opts.ids.join(','));
+  return call<{ features: RegionOutline[]; z: number; clip: Bbox | null }>(`/api/regions/outlines?${q}`, { signal: opts.signal });
 }
 
-// The coverage in the app's accent; the area being looked at in a pale white no overlay uses.
-const COVERAGE = '#6fd3a6';
+/** An outline's rings as lines, leaving out the stretches along the edges of the box it was clipped
+ * to (`clip`): those are cuts, not its border. */
+export function outlineLines(f: RegionOutline, clip: Bbox | null): GeoJSON.Feature<GeoJSON.MultiLineString> {
+  const lines: GeoJSON.Position[][] = [];
+  const onEdge = (p: GeoJSON.Position, q: GeoJSON.Position) => !!clip &&
+    ((p[0] === clip[0] && q[0] === clip[0]) || (p[0] === clip[2] && q[0] === clip[2]) || (p[1] === clip[1] && q[1] === clip[1]) || (p[1] === clip[3] && q[1] === clip[3]));
+  for (const poly of f.geometry.coordinates) {
+    for (const ring of poly) {
+      let cur: GeoJSON.Position[] = [];
+      for (let i = 1; i < ring.length; i++) {
+        if (onEdge(ring[i - 1], ring[i])) {
+          if (cur.length > 1) lines.push(cur);
+          cur = [];
+          continue;
+        }
+        if (!cur.length) cur.push(ring[i - 1]);
+        cur.push(ring[i]);
+      }
+      if (cur.length > 1) lines.push(cur);
+    }
+  }
+  return { type: 'Feature', geometry: { type: 'MultiLineString', coordinates: lines }, properties: { disabled: f.properties.disabled } };
+}
+
+/** Whether `p` ([lng, lat]) lies in a MultiPolygon (even-odd over every ring). */
+export function inside(coords: GeoJSON.Position[][][], p: [number, number]): boolean {
+  const [x, y] = p;
+  let isIn = false;
+  for (const poly of coords) {
+    for (const ring of poly) {
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, yi] = ring[i], [xj, yj] = ring[j];
+        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) isIn = !isIn;
+      }
+    }
+  }
+  return isIn;
+}
+
+/** The region at `p` among `fs`: the smallest (by its box) holding it, so a province wins over the
+ * waters around its country. */
+export function regionAt(fs: RegionOutline[], p: [number, number]): RegionOutline | null {
+  let best: RegionOutline | null = null, bestA = Infinity;
+  for (const f of fs) {
+    const [w, s, e, n] = f.properties.bbox;
+    if (p[0] < w || p[0] > e || p[1] < s || p[1] > n) continue;
+    const a = (e - w) * (n - s);
+    if (a < bestA && inside(f.geometry.coordinates, p)) {
+      best = f;
+      bestA = a;
+    }
+  }
+  return best;
+}
+
+/** The outlines' colours: green, disabled regions grey; the names in the same. */
+const GREEN = '#5fcf8f';
+const GREY = '#8a919c';
+const COLOUR: ExpressionSpecification = ['case', ['to-boolean', ['get', 'disabled']], GREY, GREEN];
+/** A region row hovered in the panel: its outline in a pale white no other line uses. */
 const PREVIEW = '#dce7f5';
-const TS12 = '#7fb8e6';
+/** Past this zoom the outlines asked are those meeting the view (and around it), not the world's. */
+const VIEW_FROM_Z = 6;
 
 /**
- * The regions on the map: the coverage (every region's outline, a thin line and a faint fill), each
- * region in its own colour, and the region or view hovered in the panel.
- * Draped on the terrain under the roads and every label; nothing here takes the pointer.
+ * "Show regions on map": every declared region's outline (green, disabled ones grey) and its name,
+ * as a country's name (labellook.ts's 'country' type), simplified for the zoom by the server and
+ * asked again as the zoom changes. The lines' width and opacity follow the boundaries' (basemap.ts
+ * LINE_WIDTHS, applyBoundaryOpacity), whatever the boundaries' own switch. Draped on the terrain
+ * under the roads; nothing here takes the pointer (the footer tells the region hovered: regionAt).
+ * A region row hovered in the panel is outlined on its own (setHover).
  */
 export class RegionLayers {
   private ready = false;
-  private coverageOn = false;
-  private coverage: GeoJSON.Feature[] = [];
-  private regionsOn = false;
-  private regions: GeoJSON.Feature[] = [];
+  private on = false;
+  private features: RegionOutline[] = [];
+  /** What was asked last: its zoom and the box it covers (null: the world). */
+  private asked: { z: number; box: Bbox | null } | null = null;
+  private abort: AbortController | null = null;
+  /** Set by the app: the layers just added (their widths, opacity and label look to apply). */
+  onAdded: () => void = () => {};
+  /** Set by the app: whether the region names are shown (their label type's look). */
+  labelsShown: () => boolean = () => true;
+  /** Set by the app: new outlines drawn (the footer's region may change). */
+  onData: () => void = () => {};
 
-  constructor(private map: MLMap) {}
+  constructor(private map: MLMap) {
+    map.on('moveend', () => this.on && this.load());
+  }
 
-  /** The sources and layers, once the style is there: above the draped layers (terrain, water,
+  /** The outlines drawn now (for the footer's hover). */
+  get shown(): RegionOutline[] {
+    return this.on ? this.features : [];
+  }
+
+  /** The source and layers, once the style is there: above the draped layers (terrain, water,
    * areas), below the roads' and contours' own layers. */
   private ensure(): boolean {
     const map = this.map;
@@ -137,64 +203,102 @@ export class RegionLayers {
     // (Under the first layer that isn't draped: one between draped layers would split the draping
     // in two.)
     const before = ['contours-3d', 'roads'].find((id) => map.getLayer(id));
-    const width = (w: number): ExpressionSpecification => ['interpolate', ['linear'], ['zoom'], 3, w * 0.8, 10, w * 1.2, 15, w * 1.8];
-    const hidden = { visibility: 'none' as const };
-    for (const src of ['coverage', 'region-hover']) map.addSource(src, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-    map.addLayer({ id: 'coverage-fill', type: 'fill', source: 'coverage', layout: hidden, paint: { 'fill-color': COVERAGE, 'fill-opacity': 0.05 } }, before);
-    map.addLayer({ id: 'coverage-line', type: 'line', source: 'coverage', layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': COVERAGE, 'line-width': width(1), 'line-opacity': 0.65 } }, before);
-    // Every region in its own colour: a light fill, so overlaps mix and gaps show, and a thin line,
-    // dashed while a finding holds the region back (its last accepted outline is what's drawn).
-    map.addSource('regions', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-    const colour: ExpressionSpecification = ['coalesce', ['get', 'colour'], COVERAGE];
-    const held: ExpressionSpecification = ['to-boolean', ['get', 'held']];
-    // (The 12-nautical-mile line is a feature of its own, `kind: "ts12"`: no region's.)
-    const region: ExpressionSpecification = ['!', ['has', 'kind']];
-    map.addLayer({ id: 'regions-fill', type: 'fill', source: 'regions', filter: region, layout: hidden, paint: { 'fill-color': colour, 'fill-opacity': 0.07 } }, before);
-    map.addLayer({ id: 'regions-line', type: 'line', source: 'regions', filter: ['all', region, ['!', held]], layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': colour, 'line-width': width(1), 'line-opacity': 0.75 } }, before);
-    map.addLayer({ id: 'regions-held', type: 'line', source: 'regions', filter: ['all', region, held], layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': colour, 'line-width': width(1), 'line-opacity': 0.75, 'line-dasharray': [3, 2] } }, before);
-    // The 12-nautical-mile line (Territorial Seas v4): thin, dotted, the sea's colour.
-    map.addLayer({ id: 'regions-ts12', type: 'line', source: 'regions', filter: ['==', ['get', 'kind'], 'ts12'], layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': TS12, 'line-width': width(0.8), 'line-opacity': 0.7, 'line-dasharray': [1, 2] } }, before);
+    const empty = { type: 'FeatureCollection' as const, features: [] };
+    map.addSource('regions', { type: 'geojson', data: empty });
+    map.addSource('regions-labels', { type: 'geojson', data: empty });
+    map.addSource('region-hover', { type: 'geojson', data: empty });
+    map.addLayer({
+      id: 'regions-line', type: 'line', source: 'regions', layout: { visibility: 'none', 'line-join': 'round' },
+      paint: { 'line-color': COLOUR, 'line-width': ['interpolate', ['linear'], ['zoom'], 3, 0.8, 10, 1.6], 'line-opacity': 0.85 },
+    }, before);
+    map.addLayer({
+      id: 'region-hover-line', type: 'line', source: 'region-hover', layout: { visibility: 'none', 'line-join': 'round' },
+      paint: { 'line-color': PREVIEW, 'line-width': ['interpolate', ['linear'], ['zoom'], 3, 1, 10, 1.8], 'line-dasharray': [2, 1.5], 'line-opacity': 0.9 },
+    }, before);
     // The names on top: a symbol layer isn't draped, so it can't split the draping.
     map.addLayer({
-      id: 'regions-label', type: 'symbol', source: 'regions', filter: region,
-      layout: { ...hidden, 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Regular'], 'text-size': 11, 'text-padding': 8 },
-      paint: { 'text-color': colour, 'text-halo-color': '#0b0e13', 'text-halo-width': 1.2, 'text-opacity': 0.85 },
+      id: 'regions-label', type: 'symbol', source: 'regions-labels', layout: {
+        visibility: 'none', 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Medium'], 'text-transform': 'uppercase',
+        'text-size': ['interpolate', ['linear'], ['zoom'], 2, 10, 6, 13, 10, 15], 'text-letter-spacing': 0.15, 'text-max-width': 9, 'text-padding': 6,
+      },
+      paint: { 'text-color': COLOUR, 'text-halo-color': '#0b0e13', 'text-halo-width': 1.4, 'text-halo-blur': 0.4 },
     });
-    map.addLayer({ id: 'region-hover-fill', type: 'fill', source: 'region-hover', layout: hidden, paint: { 'fill-color': PREVIEW, 'fill-opacity': 0.05 } }, before);
-    map.addLayer({ id: 'region-hover-line', type: 'line', source: 'region-hover', layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': PREVIEW, 'line-width': width(1.2), 'line-dasharray': [2, 1.5], 'line-opacity': 0.9 } }, before);
     this.ready = true;
+    this.onAdded();
     return true;
   }
 
-  /** A source's features, and its layers shown while it has some (and `on`). Hidden rather than
-   * emptied: with 3D terrain an emptied source leaves its last outlines in the draped textures,
-   * which a change of the layers' visibility redraws. */
-  private put(src: string, features: GeoJSON.Feature[], on = true) {
-    if (!this.ready && !(on && features.length)) return;
+  /** The layers shown or hidden: hidden rather than emptied (with 3D terrain an emptied source
+   * leaves its last outlines in the draped textures, which a change of visibility redraws). */
+  private apply() {
+    if (!this.ready && !this.on) return;
     if (!this.ensure()) return;
-    const map = this.map;
-    const vis = on && features.length ? 'visible' : 'none';
-    if (features.length) map.getSource<GeoJSONSource>(src)?.setData({ type: 'FeatureCollection', features });
-    const ids = src === 'regions' ? ['regions-fill', 'regions-line', 'regions-held', 'regions-ts12', 'regions-label'] : [`${src}-fill`, `${src}-line`];
-    for (const id of ids) if (map.getLayoutProperty(id, 'visibility') !== vis) map.setLayoutProperty(id, 'visibility', vis);
+    const vis = (id: string, v: boolean) => {
+      const want = v ? 'visible' : 'none';
+      if (this.map.getLayoutProperty(id, 'visibility') !== want) this.map.setLayoutProperty(id, 'visibility', want);
+    };
+    vis('regions-line', this.on);
+    vis('regions-label', this.on && this.labelsShown());
   }
 
-  /** The coverage shown or not, and its outlines (kept for when it's shown). */
-  setCoverage(on: boolean, data?: GeoJSON.FeatureCollection) {
-    this.coverageOn = on;
-    if (data) this.coverage = data.features;
-    this.put('coverage', this.coverage, this.coverageOn);
+  /** Shown or not. */
+  set(on: boolean) {
+    this.on = on;
+    if (!on) {
+      this.abort?.abort();
+      this.abort = null;
+    }
+    this.apply();
+    if (on) this.load();
   }
 
-  /** The regions layer shown or not, and its features (kept for when it's shown). */
-  setRegions(on: boolean, data?: GeoJSON.FeatureCollection) {
-    this.regionsOn = on;
-    if (data) this.regions = data.features;
-    this.put('regions', this.regions, this.regionsOn);
+  /** The region row hovered in the panel outlined (null: none). */
+  setHover(fs: RegionOutline[] | null) {
+    if (!this.ready && !fs?.length) return;
+    if (!this.ensure()) return;
+    if (fs?.length) this.map.getSource<GeoJSONSource>('region-hover')?.setData({ type: 'FeatureCollection', features: fs });
+    const want = fs?.length ? 'visible' : 'none';
+    if (this.map.getLayoutProperty('region-hover-line', 'visibility') !== want) this.map.setLayoutProperty('region-hover-line', 'visibility', want);
   }
 
-  /** The area or region hovered in the panel (none: null). */
-  setHover(features: GeoJSON.Feature[] | null) {
-    this.put('region-hover', features ?? []);
+  /** The names' look changed (shown or not). */
+  restyle() {
+    this.apply();
+  }
+
+  /** The outlines for the view's zoom, unless those drawn are for it already. */
+  private load() {
+    if (!this.ensure()) {
+      this.map.once('styledata', () => this.on && this.load());
+      return;
+    }
+    const z = outlineZoom(this.map.getZoom());
+    let box: Bbox | null = null;
+    if (z >= VIEW_FROM_Z) {
+      const b = this.map.getBounds();
+      const [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      const inAsked = this.asked?.z === z && this.asked.box && w >= this.asked.box[0] && s >= this.asked.box[1] && e <= this.asked.box[2] && n <= this.asked.box[3];
+      if (inAsked) return;
+      // (A view and as much again around it: a pan needn't ask again.)
+      const dx = (e - w) / 2, dy = (n - s) / 2;
+      box = [Math.max(-180, w - dx), Math.max(-90, s - dy), Math.min(180, e + dx), Math.min(90, n + dy)];
+    } else if (this.asked?.z === z && !this.asked.box) return;
+    this.abort?.abort();
+    const ac = (this.abort = new AbortController());
+    this.asked = { z, box };
+    getOutlines(z, { bbox: box ?? undefined, signal: ac.signal }).then(({ features: fs, clip }) => {
+      if (ac.signal.aborted) return;
+      this.features = fs;
+      this.map.getSource<GeoJSONSource>('regions')?.setData({ type: 'FeatureCollection', features: fs.map((f) => outlineLines(f, clip)) });
+      const labels = fs.flatMap((f) => f.properties.label ? [{
+        type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: f.properties.label },
+        properties: { name: f.properties.name, disabled: f.properties.disabled },
+      }] : []);
+      this.map.getSource<GeoJSONSource>('regions-labels')?.setData({ type: 'FeatureCollection', features: labels });
+      this.onData();
+    }, (e) => {
+      if ((e as Error).name !== 'AbortError') console.warn('regions: outlines', e);
+      if (this.asked?.z === z && this.asked.box === box) this.asked = null;
+    });
   }
 }

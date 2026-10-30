@@ -38,3 +38,12 @@ export function saveSoon(key: string, value: () => unknown, ms = 300) {
   clearTimeout(timers.get(key));
   timers.set(key, window.setTimeout(() => save(key, value()), ms));
 }
+
+/** A saved preference gone (a setting the app no longer has). */
+export function remove(key: string) {
+  try {
+    localStorage.removeItem(NS + key);
+  } catch {
+    /* storage unavailable */
+  }
+}

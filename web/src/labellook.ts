@@ -37,12 +37,14 @@ const POI_NAMES: Record<string, string> = {
 };
 
 /** Every type of label the map draws, its layers (contour and depth labels: their own colour and
- * size under Terrain and Depth; the map draws no country or road names). */
+ * size under Terrain and Depth; the map draws no road names, and country names only as the regions'
+ * while Regions → Show regions on map is on). */
 export const LABEL_TYPES: { key: string; label: string; layers: string[] }[] = [
   { key: 'city', label: 'Cities (the biggest larger)', layers: ['place-city'] },
   { key: 'town', label: 'Towns', layers: ['place-town'] },
   { key: 'village', label: 'Villages', layers: ['place-village'] },
   { key: 'minor', label: 'Hamlets & neighbourhoods', layers: ['place-minor'] },
+  { key: 'country', label: 'Countries & regions', layers: ['regions-label'] },
   { key: 'state', label: 'Provinces & states', layers: ['place-state'] },
   { key: 'water', label: 'Seas, bays & lakes', layers: ['water-name'] },
   { key: 'river', label: 'Rivers', layers: ['water-name-line'] },

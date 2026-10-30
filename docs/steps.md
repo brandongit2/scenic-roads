@@ -776,6 +776,7 @@ keeps its content name, so jobs keyed on it stop there.
 | `/api/meta` | the map's meta, summed from the base packs' summaries |
 | `/api/catalog` | the catalogue's number, layers, zoom ranges, versions, credits, regions, NAS and build state |
 | `/api/coverage` | each region's outlines, simplified |
+| `/api/regions/outlines` | each region's outline simplified for a zoom (kept per zoom) |
 
 **Browser:** the map is drawn by our own MapLibre, `web/maplibre/` (MapLibre GL JS 6.11.2's source,
 changed where needed: `web/maplibre/FORK.md`), compiled with the app. English comes from the server.

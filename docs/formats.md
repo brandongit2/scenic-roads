@@ -805,9 +805,17 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   downloaded or isn't behind). `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the disk
   size) → `{ok, reserve}`. A download or update that wouldn't fit is refused; refusals are 400
   `{error}`.
-- **Regions** (read only): `GET /api/regions`, `/api/regions/layer`, `/api/areas/{id}`,
-  `/api/coverage` (the catalogue's coverage as GeoJSON, one feature per outline entry, with `regions`
-  and `catalog`).
+- **Regions** (read only): `GET /api/regions`; `/api/regions/outlines?z=Z[&bbox=w,s,e,n][&ids=a,b]`,
+  every region's outline for drawing at zoom Z (0–12, deeper as 12): a GeoJSON feature per region,
+  its every shape in one MultiPolygon simplified to half a pixel there (Douglas–Peucker,
+  `pipeline::outlines::simplify`, 0.5 × 40,075 km ÷ (512 × 2^Z) m; rings smaller than that left out
+  but its largest polygon), properties `region`, `name`, `disabled`, `bbox`, `label` (a point inside
+  its largest polygon for its name) and `area` (its first osm: part's `iso`, `country`, `in`: its
+  flag), and `z`; `bbox` keeps the regions whose box meets it, `ids` those named. Made from the
+  accepted copy's drawn files kept on the Mac (else the catalogue's recorded coverage) once per zoom
+  and version, and kept in memory: about 0.2 MB at z0 against 142 MB for every full outline.
+  `/api/coverage` (the catalogue's coverage as GeoJSON, one feature per outline entry, with
+  `regions` and `catalog`: the bench's views).
 - **Names in answers:** MVT tiles and API JSON carry `main` and, when any, `sub`; JSON layer files,
   ferry blocks and marks tiles carry `main` only where it differs from the name; popup records are
   served as stored.

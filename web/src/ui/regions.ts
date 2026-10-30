@@ -3,8 +3,8 @@
 // alone and checked before they're used: the list shows their folders (by their _group.toml names)
 // sorted among them, collapsed until opened, each entry with a flag, its land and water, and its
 // check's state (and the findings holding it); a search and a "downloaded only" filter atop the
-// section (regionlist.ts). The coverage they add up to is drawn on the map: the one the map's
-// catalogue was built for.
+// section (regionlist.ts). "Show regions on map" draws every region's outline and name (regions.ts
+// RegionLayers), and the footer tells the region under the cursor (regionInfo).
 // Downloads (docs/macs.md, "Mirror, per Mac"): nothing is copied to this Mac unless it's
 // downloaded here: the World, zoomed out, each region (a folder's button: all of its regions), and a
 // downloaded region's terrain detail, each with its size, its state and a Download, Cancel or
@@ -13,17 +13,15 @@ import { behindText, dlDetail, dlRegion, dlStatus, dlUpdate, dlWorld, pct, setRe
 import { FLAGS } from '../flags';
 import * as prefs from '../prefs';
 import { allIds, areaText, entries, filter, flagCode, folderFlag, withInherited, type Shown } from '../regionlist';
-import {
-  RegionLayers, RegionsError, areaOutline, getCoverage, getRegionsLayer, listRegions,
-  type Area, type Coverage, type Folder, type Region, type RegionsLayer,
-} from '../regions';
+import { RegionLayers, RegionsError, getOutlines, listRegions, type Folder, type Region, type RegionOutline } from '../regions';
 import { fmt, h } from './dom';
 
 /** Opened again within this long of the last load: the list as it was. */
 const FRESH_MS = 10_000;
 
 type Bbox = [number, number, number, number];
-type Outline = GeoJSON.Feature<GeoJSON.MultiPolygon>;
+/** The zoom of the outlines the panel asks for its rows (their flags, boxes and hover). */
+const PANEL_Z = 4;
 
 /** An error in plain words. */
 function says(e: unknown): string {
@@ -33,19 +31,29 @@ function says(e: unknown): string {
 }
 
 /** The box around some outlines. */
-function bboxOf(fs: Outline[]): Bbox | null {
+function bboxOf(fs: RegionOutline[]): Bbox | null {
   let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
   for (const f of fs) {
-    for (const poly of f.geometry.coordinates) {
-      for (const [x, y] of poly[0] ?? []) {
-        w = Math.min(w, x);
-        s = Math.min(s, y);
-        e = Math.max(e, x);
-        n = Math.max(n, y);
-      }
-    }
+    const b = f.properties.bbox;
+    w = Math.min(w, b[0]);
+    s = Math.min(s, b[1]);
+    e = Math.max(e, b[2]);
+    n = Math.max(n, b[3]);
   }
   return w <= e ? [w, s, e, n] : null;
+}
+
+/** A region as the footer tells it (Strip.showRegion): its folders' and its own names with flags,
+ * then its facts. */
+export interface RegionInfo {
+  path: { name: string; flag: string | null }[];
+  name: string;
+  flag: string | null;
+  disabled: boolean;
+  /** Its check's state ('' when accepted), its land and water, and its download here. */
+  state: string;
+  area: string;
+  download: string;
 }
 
 /** The list's sizes are looked for again every 3 s while some are missing, for 2 minutes without news. */
@@ -58,11 +66,8 @@ export class RegionsPanel {
   /** Set by the app: the view framed on a box [w, s, e, n]. */
   onFit: (bbox: Bbox) => void = () => {};
 
-  private covBox = h('input', { type: 'checkbox' });
-  private covCount = h('span', { class: 'km' });
-  private regBox = h('input', { type: 'checkbox' });
-  private regNote = h('span', { class: 'km' });
-  private layer: RegionsLayer | null = null;
+  private regBox = h('input', { type: 'checkbox' }) as HTMLInputElement;
+  private regCount = h('span', { class: 'km' });
   private list = h('div', { class: 'rg-list' });
   private note = h('div', { class: 'rg-note' });
   // Downloads: this Mac's room, the World.
@@ -85,6 +90,7 @@ export class RegionsPanel {
   /** The downloads' state, as last asked (null: not yet), when (ms), or why it couldn't be. */
   private dl: DlStatus | null = null;
   private dlAt = 0;
+  private dlBusy = false;
   private dlErr = '';
   private dlTok = 0;
   private dlTimer = 0;
@@ -115,11 +121,8 @@ export class RegionsPanel {
   /** The folders the list is grouped by (null: a server from before folders). */
   private tree: Folder | null = null;
   private bad: [string, string][] = [];
-  private coverage: Coverage | null = null;
-  /** The outlines of the regions the catalogue doesn't have yet, from their osm: entries' areas. */
-  private pendingOutlines = new Map<string, Outline[]>();
-  /** The catalogue the map shows, as last told (setCatalogue). */
-  private catalogueN: number | undefined;
+  /** Each region's outline at PANEL_Z (its flag's area, its box, its row's hover). */
+  private outlines = new Map<string, RegionOutline>();
   private loadedAt = -Infinity;
   private loadTok = 0;
   private open = false;
@@ -127,17 +130,14 @@ export class RegionsPanel {
   private hoverRegion: string | null = null;
 
   constructor(private layers: RegionLayers) {
-    this.covBox.checked = prefs.load('regions.coverage', false);
-    this.covBox.addEventListener('change', () => {
-      prefs.save('regions.coverage', this.covBox.checked);
-      this.layers.setCoverage(this.covBox.checked, this.coverage ?? undefined);
-      if (this.covBox.checked && !this.coverage) void this.refresh();
-    });
-    this.regBox.checked = prefs.load('regions.layer', false);
+    // (The switches before #868, "Coverage on the map" and "Regions on the map", gone.)
+    prefs.remove('regions.coverage');
+    prefs.remove('regions.layer');
+    this.regBox.checked = prefs.load('regions.shown', false);
     this.regBox.addEventListener('change', () => {
-      prefs.save('regions.layer', this.regBox.checked);
-      this.layers.setRegions(this.regBox.checked, this.layer ?? undefined);
-      if (this.regBox.checked && !this.layer) void this.refresh();
+      prefs.save('regions.shown', this.regBox.checked);
+      this.layers.set(this.regBox.checked);
+      if (this.regBox.checked && !this.regions.length) void this.refresh();
     });
     this.resBtn.hidden = true;
     this.resRow.hidden = true;
@@ -173,8 +173,7 @@ export class RegionsPanel {
     this.bar.append(this.q, h('label', { class: 'tog', title: 'Only the regions downloaded to this Mac (and those being downloaded)' }, this.onlyBox, h('span', {}, 'Show only downloaded regions')));
     this.nodes = [
       this.bar,
-      h('label', { class: 'tog', title: 'Every region’s outline on the map: the map is built within them' }, this.covBox, h('span', {}, 'Coverage on the map'), this.covCount),
-      h('label', { class: 'tog', title: 'Each region’s accepted outline in its own colour, with its name: overlaps and gaps show; dashed while a finding holds it' }, this.regBox, h('span', {}, 'Regions on the map'), this.regNote),
+      h('label', { class: 'tog', title: 'Every declared region’s outline and name on the map (disabled ones grey), as the boundaries are drawn; the footer tells the region under the cursor' }, this.regBox, h('span', {}, 'Show regions on map'), this.regCount),
       h('div', { class: 'subhd', title: 'What’s downloaded to this Mac, for when it’s away from the NAS: nothing else is copied here' }, 'Downloads on this Mac'),
       this.dlSum,
       this.resRow,
@@ -188,18 +187,12 @@ export class RegionsPanel {
     this.renderList();
   }
 
-  /** The map is ready: the coverage drawn if it's on. */
+  /** The map is ready: the regions drawn if they're shown (and their list for the footer). */
   start() {
-    if (this.covBox.checked || this.regBox.checked) void this.refresh();
-  }
-
-  /** The map's catalogue now (catalogue.ts). A new one was built for its own coverage: drawn again
-   * while it's shown or the panel is open. */
-  setCatalogue(n: number | undefined) {
-    if (n === undefined || n === this.catalogueN) return;
-    this.catalogueN = n;
-    const had = this.coverage?.catalog;
-    if (had !== undefined && had !== n && (this.covBox.checked || this.open)) void this.refresh();
+    if (this.regBox.checked) {
+      this.layers.set(true);
+      void this.refresh();
+    }
   }
 
   /** The section opened (the list again, unless just loaded) or closed (its previews leave the
@@ -221,27 +214,14 @@ export class RegionsPanel {
 
   // ---- the regions ------------------------------------------------------------------
 
-  /** The regions and the coverage again. */
+  /** The regions and their outlines (at PANEL_Z) again. */
   private async refresh() {
     const tok = ++this.loadTok;
     if (!this.regions.length) this.note.replaceChildren(h('span', { class: 'spin' }), ' Loading the regions…');
-    // (The regions layer only while it's shown: it's every region's full outline.)
-    const [list, cov, layer] = await Promise.allSettled([listRegions(), getCoverage(), this.regBox.checked ? getRegionsLayer() : Promise.resolve(null)]);
+    const [list, outlines] = await Promise.allSettled([listRegions(), getOutlines(PANEL_Z)]);
     if (tok !== this.loadTok) return;
     this.loadedAt = performance.now();
-    if (layer.status === 'fulfilled' && layer.value) {
-      this.layer = layer.value;
-      this.layers.setRegions(this.regBox.checked, layer.value);
-      this.regNote.textContent = layer.value.source === 'catalog' ? 'as built' : '';
-      this.regNote.title = layer.value.source === 'catalog' ? 'This Mac doesn’t have the accepted outlines yet: these are the ones the map was built for' : '';
-    } else if (layer.status === 'rejected') {
-      this.regNote.textContent = 'unavailable';
-      this.regNote.title = says(layer.reason);
-    }
-    if (cov.status === 'fulfilled') {
-      this.coverage = cov.value;
-      this.layers.setCoverage(this.covBox.checked, cov.value);
-    }
+    if (outlines.status === 'fulfilled') this.outlines = new Map(outlines.value.features.map((f) => [f.properties.region, f]));
     if (list.status === 'fulfilled') {
       this.regions = list.value.regions;
       this.tree = list.value.tree ?? null;
@@ -255,7 +235,6 @@ export class RegionsPanel {
       this.note.classList.add('warn');
     }
     this.renderList();
-    this.loadPending(tok);
     this.watchSizes(0);
   }
 
@@ -276,42 +255,16 @@ export class RegionsPanel {
           this.regions = l.regions;
           this.tree = l.tree ?? this.tree;
           this.renderList();
-          this.loadPending(tok);
         }
         this.watchSizes(now < before ? 0 : stalled + 1);
       }, () => this.watchSizes(stalled + 1));
     }, SIZE_POLL_MS);
   }
 
-  /** Not on the map yet: the catalogue has no region by its id with its outline (added or redrawn
-   * since it was made). Never when the catalogue doesn't say which regions it was built for. */
-  private isPending(r: Region): boolean {
-    const built = this.coverage?.regions;
-    if (!built) return false;
-    const c = built.find((b) => b.id === r.id);
-    return !c || c.outline.length !== r.outline.length || c.outline.some((e, i) => e !== r.outline[i]);
-  }
-
-  /** A region's outlines: the catalogue's (each entry's; none until the coverage is loaded), or for a
-   * pending one its osm: entries' areas, once loaded. */
-  private outlinesOf(r: Region): Outline[] {
-    if (this.isPending(r)) return this.pendingOutlines.get(r.id) ?? [];
-    return (this.coverage?.features ?? []).filter((f) => f.properties?.region === r.id);
-  }
-
-  /** The pending regions' outlines, from their osm: entries' areas (other entries have none to
-   * show until built), for their flags and showing them on the map; then the list again. */
-  private loadPending(tok: number) {
-    const pending = this.regions.filter((r) => this.isPending(r));
-    void Promise.all(pending.map(async (r) => {
-      const fs = await Promise.all(r.outline.filter((e) => e.startsWith('osm:')).map((e) =>
-        areaOutline(Number(e.slice(4))).then((f): Outline => ({ ...f, properties: { ...f.properties, region: r.id, entry: e } }), () => null)));
-      return [r.id, fs.filter((f): f is Outline => f !== null)] as const;
-    })).then((got) => {
-      if (tok !== this.loadTok) return;
-      this.pendingOutlines = new Map(got);
-      if (got.length) this.renderList();
-    });
+  /** A region's outline (none until loaded, or for a region with no accepted outline). */
+  private outlinesOf(r: Region): RegionOutline[] {
+    const f = this.outlines.get(r.id);
+    return f ? [f] : [];
   }
 
   /** The heights the sticky search bar and folder headings sit under: the section's header (under
@@ -342,7 +295,7 @@ export class RegionsPanel {
     this.dlEls.clear();
     this.dirEls.clear();
     const n = this.regions.length;
-    this.covCount.textContent = n ? `${n} region${n === 1 ? '' : 's'}` : '';
+    this.regCount.textContent = n ? `${n} region${n === 1 ? '' : 's'}` : '';
     const byId = (this.byId = new Map(this.regions.map((r) => [r.id, r])));
     // The tree; regions it doesn't hold (not in the accepted version yet) at the top level.
     const tree = this.tree ?? { path: '', name: '', regions: [], folders: [] };
@@ -420,9 +373,38 @@ export class RegionsPanel {
    * country (regionlist.flagCode). */
   private flagOf(r: Region | undefined): string | null {
     if (!r) return null;
-    const first = r.outline.find((e) => e.startsWith('osm:'));
-    const a = first ? (this.outlinesOf(r).find((f) => f.properties?.entry === first)?.properties as Partial<Area> | undefined) : undefined;
+    const a = this.outlines.get(r.id)?.properties.area;
     return flagCode({ iso: a?.iso, country: a?.country, in: a?.in, geo: r.country }, (c) => FLAGS.has(c));
+  }
+
+  /** The region `id` as the footer tells it: the folders it's in (each with its flag, as the list
+   * shows them), its name and flag, and its state, land and water and download here (null: a
+   * region the list doesn't have yet). Asks for the downloads' state when it's old. */
+  regionInfo(id: string, name: string): RegionInfo {
+    const r = this.byId.get(id);
+    if (Date.now() - this.dlAt > 30_000 && !this.dlBusy) {
+      this.dlBusy = true;
+      void dlStatus().then((d) => {
+        this.dl = d;
+        this.dlAt = Date.now();
+      }, () => {}).finally(() => (this.dlBusy = false));
+    }
+    const path: RegionInfo['path'] = [];
+    const walk = (f: Folder, up: Folder[]): boolean => {
+      if (f.regions.includes(id)) {
+        path.push(...up.map((u) => ({ name: u.name, flag: folderFlag(u, (i) => this.flagOf(this.byId.get(i)), (i) => this.byId.get(i)?.land_km2 ?? 0) })));
+        return true;
+      }
+      return f.folders.some((c) => walk(c, [...up, c]));
+    };
+    if (this.tree) walk(this.tree, []);
+    const st = r ? this.stateOf(r) : null;
+    const dl = this.dl?.regions[id];
+    const download = r?.disabled ? 'never downloaded' : !dl?.on ? 'not downloaded here' : `${stateText(dl)}${sizeOf(dl) ? ` · ${sizeOf(dl)}` : ''}`;
+    return {
+      path, name: r?.name ?? name, flag: this.flagsById.get(id) ?? (r ? this.flagOf(r) : null), disabled: !!r?.disabled,
+      state: st && st.cls !== 'off' ? st.text : '', area: r ? areaText(r.land_km2, r.water_km2) : '', download,
+    };
   }
 
   private regionRow(r: Region): HTMLElement {

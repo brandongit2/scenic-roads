@@ -378,8 +378,7 @@ crate::inputs::regions (`file`, `shapes`, `geom`, `resolve`, `water`, `data`, `s
 
 A name for a piece of the coverage. The coverage is the union of every region; nothing is built per
 region (docs/regions.md). Without `_rules.toml`, regions may overlap freely and the check validates each
-region's definition, not how regions fit together; the map's region layer shows overlaps and gaps
-by eye. With `cover = "earth"` in `_rules.toml` (§6.1.3, "Land and water"), the regions must cover
+region's definition, not how regions fit together. With `cover = "earth"` in `_rules.toml` (§6.1.3, "Land and water"), the regions must cover
 the Earth once: the check fills land gaps and settles land overlaps by the folder-wide rules, and
 any water in two regions, or in none, is an error.
 
@@ -519,7 +518,7 @@ without `water` resolves as before, and no new rule changes it: a hand-out gives
 with water (naming one without is `rg-ref`), and one without `water` may not name one with it
 (`rg-ref`). So old and new files sit together, and `cover = "earth"` only holds once every
 file is new. The 12-nautical-mile line is the `regions-territorial-seas` source,
-named as `ts12:` parts; it divides nothing, and the region layer draws it (§6.1.9).
+named as `ts12:` parts; it divides nothing (§6.1.9).
 
 **Examples:**
 ```toml
@@ -764,16 +763,17 @@ region file takes it out with the next version.
   and state (accepted, checking, "held: <finding>"; a disabled region greyed out with a "disabled" pill and no Download button). The server reads region files through the NAS
   I/O pool (`GET /api/regions`) and states from the accepted index and held report. Nothing in the
   app writes a region.
-- **The region layer** (a switch in Settings → Regions, `/api/regions/layer`): each region's stored
-  outline, a light fill coloured by its id's hash, its name as a label; a held region drawn dashed;
-  a disabled region drawn too (its feature's `disabled`), since it is checked even though it isn't built.
-  With it, the 12-nautical-mile line, dotted: Territorial Seas v4's edges more than 2 km from the
-  coastline's land at both ends (their coast side left out), simplified within 100 m
-  (`data::Datasets::ts12_line`), stored by the check once the datasets are read as
-  `sources/inputs/regions/@drawn/_ts12.<hash16>.json` (`{"fmt": 1, "lines": [[[lon, lat], …], …]}`,
-  degrees to 5 decimals, about 270,000 points), named in `_pins.toml`'s `facts.ts12`, one feature
-  (`kind: "ts12"`) of the layer. Read from the drawn files, copied to the Mac as the translations
-  are.
+- **Show regions on map** (a switch in Settings → Regions, `/api/regions/outlines`): every declared
+  region's stored outline as a line, green (a disabled region grey: it is checked even though it
+  isn't built), with its name as a country's label; the line's width and opacity are the
+  boundaries'. The server simplifies the drawn files (copied to the Mac as the translations are)
+  for the map's zoom and keeps each zoom's (docs/formats.md). The footer tells the region under
+  the cursor: its folders and name with their flags, its state, land and water and download.
+- The check also stores the 12-nautical-mile line: Territorial Seas v4's edges more than 2 km from
+  the coastline's land at both ends (their coast side left out), simplified within 100 m
+  (`data::Datasets::ts12_line`), as `sources/inputs/regions/@drawn/_ts12.<hash16>.json`
+  (`{"fmt": 1, "lines": [[[lon, lat], …], …]}`, degrees to 5 decimals, about 270,000 points), named
+  in `_pins.toml`'s `facts.ts12`. The app no longer draws it (#868).
 - **The banner and menu bar** (§4.7).
 
 #### 6.1.10 The switch

@@ -47,7 +47,7 @@ import { PolarCaps } from './polarcaps';
 import { boxKm, viewArea } from './inview';
 import { capGround, globeProjection } from './polarglobe';
 import { TileRetry } from './retry';
-import { RegionLayers } from './regions';
+import { RegionLayers, regionAt } from './regions';
 import { ContourLayer, type ContourDraw } from './contours';
 import { terrainDist } from './terrainstats';
 import { cheaperCovers } from './covers';
@@ -745,8 +745,10 @@ async function main() {
     return [c.lng, c.lat];
   });
   const viewshed = new ViewshedTool(document.getElementById('viewshed')!, map);
-  // Regions (Layers → Regions): the regions the map is built for and their coverage on the map.
-  const regions = new RegionsPanel(new RegionLayers(map));
+  // Regions (Layers → Regions): the regions the map is built for, and their outlines on the map.
+  const regionLayers = new RegionLayers(map);
+  regionLayers.labelsShown = () => labelLayerShown(store.s.labelLooks, 'regions-label');
+  const regions = new RegionsPanel(regionLayers);
   layers.addSection('regions', 'Regions', regions.nodes, (open) => regions.setOpen(open));
   // The landmark dots, drawn on the GPU (dots.ts); the overlays feed them.
   const dots = new LandmarkDots();
@@ -1585,6 +1587,14 @@ async function main() {
         rails.setHover(null);
         return strip.showFeature(buildingSummary(bf), feats.areas);
       }
+      // A region (Show regions on map), before the areas inside it.
+      const ll = cursorLL ?? map.unproject([pt.x, pt.y]);
+      const rg = feats.point ? null : regionAt(regionLayers.shown, [ll.lng, ll.lat]);
+      if (rg) {
+        roads.setHover(null);
+        rails.setHover(null);
+        return strip.showRegion(regions.regionInfo(rg.properties.region, rg.properties.name));
+      }
       const f = feats.point ?? feats.areas[0];
       if (f) return showFeat(f, feats.areas);
       // Nothing else here: water, if the depth has it (else the strip goes idle).
@@ -2176,7 +2186,10 @@ async function main() {
       }
       // Label sizes lay the labels out again: at most every 150 ms while a slider is dragged.
       if (ch.has('labelSize') || ch.has('terrain') || ch.has('labelLooks')) labelSizeSoon();
-      if (ch.has('labelLooks')) applyLabelLooks(map, s.labelLooks);
+      if (ch.has('labelLooks')) {
+        applyLabelLooks(map, s.labelLooks);
+        regionLayers.restyle();
+      }
       if (ch.has('land')) applyLand(s.land);
       if (ch.has('water') || ch.has('layers') || ch.has('land')) applyWater(map, s.water, coastInput, s.layers.water);
       // (after the terrain: contour lines are added when first shown)
@@ -2393,6 +2406,15 @@ async function main() {
     applyLabelOpacity(map, store.s.labelOpacity, overlayLabelScale(store.s.poiOpacity));
     applyOverlayOpacity(map, store.s.poiOpacity);
     applyBoundaryOpacity(map, store.s.boundaryOpacity);
+    // The regions' layers, added when first shown: the boundaries' width and opacity, the country
+    // labels' look and size.
+    regionLayers.onAdded = () => {
+      applyLineWidths(map, store.s.lineWeights);
+      applyBoundaryOpacity(map, store.s.boundaryOpacity);
+      layers.setLabelDefaults(defaultLooks(map));
+      applyLabelLooks(map, store.s.labelLooks);
+      applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize, (id) => labelSizeOf(store.s.labelLooks, id));
+    };
     setHorizonThinning(map, store.s.labelDensity.horizon);
     refreshTint();
     overlays.apply(store.s);
@@ -2406,9 +2428,7 @@ async function main() {
     // Newer points on the server than the page has (a 409): the catalogue now, not in a minute.
     overlays.onStale = () => void watch?.poll();
     new MapStatus(strip.buildStatus, watch);
-    // The coverage drawn is the catalogue's, so it follows a new one.
     const w = watch;
-    w.on(() => regions.setCatalogue(w.status?.n));
     // The credits of the sources the catalogue's data comes from.
     w.on(() => strip.setCredits(w.status?.credits));
     // (The heritage registers' among them: what the heritage popups name as their source.)

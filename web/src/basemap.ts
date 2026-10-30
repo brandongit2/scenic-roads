@@ -304,9 +304,10 @@ export function applyOverlayOpacity(map: import('maplibre-gl').Map, f: number) {
   }
 }
 
-/** The boundary lines' opacity (Layers → Map → Boundaries), × their own. */
+/** The boundary lines' opacity (Layers → Map → Boundaries), × their own; the regions' outlines
+ * (regions.ts) follow it too. */
 export function applyBoundaryOpacity(map: import('maplibre-gl').Map, f: number) {
-  for (const id of [...LAYER_GROUPS.boundaries, 'boundary-country-disputed']) {
+  for (const id of [...LAYER_GROUPS.boundaries, 'boundary-country-disputed', 'regions-line']) {
     if (!map.getLayer(id)) continue;
     const key = `${id}|line-opacity`;
     if (!baseOpacity.has(key)) baseOpacity.set(key, map.getPaintProperty(id, 'line-opacity'));
@@ -319,6 +320,8 @@ export function applyBoundaryOpacity(map: import('maplibre-gl').Map, f: number) 
  * layers. */
 const LINE_WIDTHS: [string, LineKind | 'global'][] = [
   ['boundary-county', 'borders'], ['boundary-state', 'borders'], ['boundary-country', 'borders'], ['boundary-country-disputed', 'borders'],
+  // The regions' outlines (Regions → Show regions on map) as the borders.
+  ['regions-line', 'borders'],
   ['waterway', 'rivers'],
   ['park-line', 'outlines'], ['indigenous-line', 'outlines'], ['special-line', 'outlines'], ['heritage-area-line', 'outlines'], ['whs-line', 'outlines'],
   // The highlights along roads stay wider than the road they mark.
