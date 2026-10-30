@@ -325,7 +325,10 @@ mod tests {
         assert_eq!(p["terrain-deep"], [0, 1], "10/5/6 never named");
         assert_eq!(p["terrain-hi"], [0]);
         assert!(!p.contains_key("pack"), "a work step's files aren't told");
-        mem.0.lock().unwrap().insert("2.delta.json.zst".into(), zst(&serde_json::json!({"n": 2, "of": 1, "patch": p2})));
+        mem.0
+            .lock()
+            .unwrap()
+            .insert("2.delta.json.zst".into(), zst(&serde_json::json!({"n": 2, "of": 1, "patch": p2})));
         cv.refresh();
         let (n, names) = cv.names().unwrap();
         assert_eq!(n, 2);
