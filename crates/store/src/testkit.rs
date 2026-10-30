@@ -3,7 +3,7 @@
 //! tests (their dev-dependency on store turns it on).
 //!
 //! A test never waits a time of its own choosing for something to happen: a loaded test Mac (the
-//! suite's three runs at nice 10, builds beside them) takes seconds for what takes milliseconds
+//! suite's three runs at nice 20, builds beside them) takes seconds for what takes milliseconds
 //! idle. It waits for the event, under one watchdog ([`WATCHDOG`]) that only turns a hang into a
 //! failure:
 //! - [`eventually`] / [`wait_for`]: poll a condition (or a look-up) until it holds;

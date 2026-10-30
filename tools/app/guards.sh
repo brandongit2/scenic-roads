@@ -15,7 +15,11 @@ esac
 cd ${0:A:h}/../..
 mkdir -p ~/Library/Logs/scenic
 log=~/Library/Logs/scenic/guards-$(date +%Y%m%d-%H%M%S).log
-(cargo fmt --check && cargo fmt --check --manifest-path tools/bldfield/Cargo.toml) > $log 2>&1 || {
+# With SCENIC_GUARDS_IN_CHECK=1 (tools/dev/check.sh, #887) the fmt check and the two tests below are
+# left to check.sh's own parts: its fmt, and its tests, where tools/dev/affected-tests.sh runs both
+# (scan tests of crates/) whenever a file they read changed.
+in_check=${SCENIC_GUARDS_IN_CHECK:-}
+[[ -n $in_check ]] || (cargo fmt --check && cargo fmt --check --manifest-path tools/bldfield/Cargo.toml) > $log 2>&1 || {
   head -40 $log
   echo "the Rust isn't formatted; run cargo fmt (rustfmt.toml)"
   exit 1
@@ -33,7 +37,7 @@ bad = [t for t in sorted(glob.glob("crates/*/tests/*.rs"))
 for t in bad: print(t + ": reads the repo's files without a `//! scans: <path prefix> …` line (tools/dev/testing.md)")
 sys.exit(1 if bad else 0)
 PY
-cargo test -q -p pipeline --test inputs_accessor --test source_names > $log 2>&1 || {
+[[ -n $in_check ]] || cargo test -q -p pipeline --test inputs_accessor --test source_names > $log 2>&1 || {
   sed -n '/^---- /,/^failures:$/p' $log
   echo "a guard failed; the tests' whole output: $log"
   exit 1

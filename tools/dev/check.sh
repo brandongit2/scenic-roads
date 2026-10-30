@@ -6,7 +6,8 @@
 #   fmt       cargo fmt --check (and tools/bldfield's)
 #   clippy    publish's line: cargo clippy -q --workspace --all-targets -- -A clippy::all
 #             -D clippy::disallowed_methods (processes only through store::spawn; clippy.toml)
-#   guards    tools/app/guards.sh
+#   guards    tools/app/guards.sh, its fmt and two tests left to the fmt and tests parts
+#             (SCENIC_GUARDS_IN_CHECK=1: tools/dev/affected-tests.sh runs both whenever their files change)
 #   wasm      tools/app/wasm.sh, when a crate the wasm build compiles changed (det, roadcore,
 #             pipeline, store, names)
 #   web       node --test of web/test/*.test.{ts,mjs} and tools/check/*.test.mjs (by glob), pnpm
@@ -19,8 +20,10 @@
 #             here when it can't be reached or SCENIC_CHECK_LOCAL=1)
 #   python    pyflakes on the changed .py files (a deleted one's: the rest of its folder's) and
 #             unittest in their folders' test_*.py, when producers/ or dem/ changed
-# Prints PASS/FAIL/skip per part; each part's whole output is kept in
-# ~/Library/Logs/scenic/check-<time>/. When every part passes on a clean tree it records HEAD in
+# Prints PASS/FAIL/skip per part, with its wall and CPU time on this Mac (tests: the test Mac's too);
+# each part's whole output is kept in ~/Library/Logs/scenic/check-<time>/. A clean checkout whose
+# tree and merge-base tree a pass already recorded passes at once (no part runs again).
+# When every part passes on a clean tree it records HEAD (and, nothing untracked, its tree key) in
 # $(git rev-parse --git-common-dir)/check-passed, which the SubagentStop hook
 # (tools/dev/report-guard.sh) and tools/dev/merge-ok.sh read. Exit 0 only when all passed.
 set -uo pipefail
@@ -36,20 +39,33 @@ logs=~/Library/Logs/scenic/check-$(date +%Y%m%d-%H%M%S)-$$
 mkdir -p $logs
 base=$(git merge-base main HEAD)
 changed=( ${(f)"$(git diff --name-only $base; git ls-files --others --exclude-standard)"} )
+# A tree already checked is not checked again (#887): a clean checkout (no untracked files either)
+# whose tree and merge-base's tree a pass recorded passes at once, recording HEAD. (Every part reads
+# only the tree and its diff against that base.)
+passed=$(git rev-parse --path-format=absolute --git-common-dir)/check-passed
+treekey="tree $(git rev-parse 'HEAD^{tree}') base $(git rev-parse "$base^{tree}")"
+if [[ -z $(git status --porcelain) ]] && grep -qF -- " $treekey" $passed 2>/dev/null; then
+  print -r -- "$(git rev-parse HEAD) $(date -u +%FT%TZ) $treekey" >> $passed
+  print "PASS: this tree was already checked (against the same base): recorded $(git rev-parse --short HEAD) as checked"
+  exit 0
+fi
 has() { local p; for p in $changed; do [[ $p == ${~1} ]] && return 0; done; return 1 }
 typeset -a summary; failed=0
-part() {  # part <name> <command...>: runs it, its output to $logs/<name>.log
-  local name=$1; shift
+part() {  # part <name> <command...>: runs it, its output to $logs/<name>.log, with its wall and CPU time
+  local name=$1 rc t; shift
   print -n -- "$name ... "
-  if "$@" > $logs/$name.log 2>&1; then summary+="PASS  $name"; print PASS
-  else summary+="FAIL  $name  ($logs/$name.log)"; print FAIL; failed=1
+  # (zsh's time of the subshell: wall, and user + sys CPU of all it ran on this Mac.)
+  t=$( { TIMEFMT='%E %U %S'; time ( "$@" > $logs/$name.log 2>&1 ) } 2>&1 ); rc=$?
+  t=( ${${=t}%s} 0 0 0 ); t=$(printf '%.0f s, cpu %.0f s' ${t[1]} $(( t[2] + t[3] )))
+  if (( rc == 0 )); then summary+="PASS  $name  ($t)"; print "PASS  ($t)"
+  else summary+="FAIL  $name  ($t; $logs/$name.log)"; print "FAIL  ($t)"; failed=1
     tail -25 $logs/$name.log | sed 's/^/    /'; fi
 }
 skip() { summary+="skip  $1  ($2)" }
 
 part fmt zsh -c 'cargo fmt --check && cargo fmt --check --manifest-path tools/bldfield/Cargo.toml'
 part clippy cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods
-part guards tools/app/guards.sh
+part guards env SCENIC_GUARDS_IN_CHECK=1 tools/app/guards.sh
 if has 'crates/(det|roadcore|pipeline|store|names)/*' || has Cargo.lock; then part wasm tools/app/wasm.sh
 else skip wasm "no wasm crate changed"; fi
 if has 'web/*' || has 'tools/check/*.test.mjs'; then
@@ -70,9 +86,15 @@ tests=( ${(f)"$(${0:A:h}/affected-tests.sh | grep -v '^#')"} )
 # build folder per worktree, three runs at a time there, the rest queued); here on the test Mac itself
 # (the publishing Mac), when it is down, or with SCENIC_CHECK_LOCAL=1.
 rt=$root/tools/app/remote-tests.sh
+# Test builds without debug info, as publish's (#660, #887): less to write and link; a failed test
+# still names its file and line.
+nodebug='export CARGO_PROFILE_DEV_DEBUG=false CARGO_PROFILE_TEST_DEBUG=false'
 if (( ${#tests} )) && [[ -x $rt ]]; then
   key=${root:t}; [[ $root == */.claude/worktrees/* ]] || key=main-checkout
-  part tests $rt $key $root "set -e; ${(j:; :)tests}"
+  part tests $rt $key $root "$nodebug; set -e; ${(j:; :)tests}"
+  # (The test Mac's own wall and CPU, which this Mac's time of the part doesn't count.)
+  r=$(grep -h '^remote-tests: the run took' $logs/tests.log | tail -1)
+  [[ -n $r ]] && summary[-1]+="  [${r#remote-tests: }]"
 elif (( ${#tests} )); then part tests zsh -c "set -e; ${(j:; :)tests}"
 else skip tests "no affected Rust tests"; fi
 py=( ${(M)changed:#(producers|dem)/*.py} ); py=( ${py:#*/.venv/*} )
@@ -100,5 +122,7 @@ if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
   print "PASS, but uncommitted changes: commit them and run again (the pass is recorded for a commit)"
   exit 1
 fi
-print -r -- "$(git rev-parse HEAD) $(date -u +%FT%TZ)" >> $(git rev-parse --path-format=absolute --git-common-dir)/check-passed
+# (The tree key only when nothing untracked was in the check either.)
+[[ -z $(git status --porcelain) ]] || treekey=
+print -r -- "$(git rev-parse HEAD) $(date -u +%FT%TZ)${treekey:+ $treekey}" >> $passed
 print "PASS: recorded $(git rev-parse --short HEAD) as checked"

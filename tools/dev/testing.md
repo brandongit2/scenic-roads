@@ -13,7 +13,8 @@ refuses runs it can't read (`$c test`, `cargo --config alias.…`, `cargo -C`, `
 - Agents run only the affected tests: `tools/dev/affected-tests.sh` in the worktree prints them as
   `cargo test` commands, from the branch's diff against main (working tree included): each changed
   module (`agent/build.rs` → `-p pipeline --lib -- agent::build::`), the modules using it one level
-  out, and the integration tests naming it. Run those, or narrower: the same `-p` and target, each
+  out, and the integration tests naming it (a crate's whole targets on one line, one cargo run
+  building them in parallel). Run those, or narrower: the same `-p` and target, each
   filter starting with one it prints. No Rust change, nothing to run. `affected-tests.sh <commit>`
   or `<a>..<b>` shows the set for past work.
 - Scan tests (#662): an integration test that reads the repo's own files (write_sets,
@@ -56,8 +57,15 @@ there), when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every 
 tools/taskboard changed (#672), `tools/app/test/shell.zsh` (publish.sh's shell
 steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, the Swift build and self-test when tools/status changed,
 the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ or dem/ Python
-changed. One PASS/FAIL line per part; whole outputs in ~/Library/Logs/scenic/check-<time>/. A pass
-on a clean tree records HEAD in `.git/check-passed`.
+changed. guards.sh runs there without its own fmt check and its two tests (inputs_accessor,
+source_names: scan tests of crates/ and dem/, run by the tests part whenever a file they read
+changed; #887: they had built the pipeline's tests on this Mac, ~5 min, beside the test Mac's run).
+The tests part builds without debug info (`CARGO_PROFILE_{DEV,TEST}_DEBUG=false`, as publish's).
+One PASS/FAIL line per part with its wall and CPU time here (the tests part also the test Mac's);
+whole outputs in ~/Library/Logs/scenic/check-<time>/. A pass on a clean tree records HEAD in
+`.git/check-passed`, with its tree key (HEAD's tree and the merge-base's tree) when nothing is
+untracked; a later run on a clean checkout with the same key passes at once, recording its HEAD
+(an amend of the message, a cherry-pick onto the same base: nothing a part reads changed).
 Enforced twice: `tools/dev/report-guard.sh` (a SubagentStop hook) keeps a worktree agent with
 commits beyond main from finishing until its HEAD passed, and the PM runs
 `tools/dev/merge-ok.sh <commit>…` before cherry-picking.
@@ -85,9 +93,12 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   taken over.
 - The copy: the tree's tracked and untracked-not-ignored files and symlinks (uncommitted edits
   included) rsync into `~/scenic-check/<key>/src`; files and symlinks not in that list, then empty
-  folders, are deleted there. Build folder `~/scenic-check/<key>/target`, kept between runs; rustc
-  through the test Mac's sccache.
-- The run: nice 10 at utility priority (`taskpolicy -c utility`, as the pool's jobs, so the lead's
+  folders, are deleted there. Build folder `~/scenic-check/<key>/target`, kept between runs, set by
+  `~/scenic-check/<key>/.cargo/config.toml`, not CARGO_TARGET_DIR (sccache hashes every CARGO_*
+  variable, so a per-key one missed the cache for every key: 0 % Rust hits on the mini, #887); rustc
+  through the test Mac's sccache, third-party crates shared between keys.
+- The run: nice 20 at utility priority (`taskpolicy -c utility`, as the pool's jobs, whose nice 0
+  wins the CPU, #887; and so the lead's
   agent loop isn't starved: #700), 8192 open files, `mise env` of the tree, with this side's exported RUST_LOG,
   RUST_BACKTRACE, RUST_TEST_THREADS, RUST_MIN_STACK, CARGO_TERM_COLOR, CARGO_INCREMENTAL,
   CARGO_BUILD_JOBS, CARGO_PROFILE_*, NEXTEST_* and SCENIC_*. Both sides print their rustc, cargo
@@ -110,7 +121,7 @@ fmt, clippy, guards, wasm, web, swift and python stay on this Mac.
 
 ## A test that can't flake (#662, 25 Oct)
 
-The suite runs three at a time on the test Mac at nice 10 and utility priority, beside builds: what takes milliseconds
+The suite runs three at a time on the test Mac at nice 20 and utility priority, beside builds: what takes milliseconds
 idle takes seconds there. Every flaky test so far measured that machine. The way to write a test
 that can't is the shortest one, in `store::testkit` (test builds only; other crates' tests get it
 through their dev-dependency on store, `features = ["testkit"]`):

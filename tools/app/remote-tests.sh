@@ -18,9 +18,11 @@
 # is deleted, so the test Mac builds exactly what's here. A tree holding ignored test data (data/build,
 # which tests read when present and skip without) runs here, where that data is.
 # The build folder, ~/scenic-check/<key>/target, is kept between runs (only what changed rebuilds),
-# and rustc goes through the test Mac's sccache when it has one (third-party crates shared between keys).
-# The command runs at nice 10 and utility priority (`taskpolicy -c utility`, as the pool's jobs: the
-# agent's loop first, task #700), under `mise env` of the tree, with 8192
+# set by ~/scenic-check/<key>/.cargo/config.toml, and rustc goes through the test Mac's sccache when it
+# has one (third-party crates shared between keys).
+# The command runs at nice 20 and utility priority (`taskpolicy -c utility`, as the pool's jobs: the
+# agent's loop first, task #700; the lowest nice, so the pool's jobs at nice 0 win the CPU, #887),
+# timed (a line with its wall and CPU), under `mise env` of the tree, with 8192
 # open files, its stdin closed, with this side's RUST_LOG, RUST_BACKTRACE, RUST_TEST_THREADS,
 # RUST_MIN_STACK, CARGO_TERM_COLOR, CARGO_INCREMENTAL, CARGO_BUILD_JOBS, CARGO_PROFILE_*, NEXTEST_*
 # and SCENIC_* (exported ones). Both sides print their rustc, cargo and nextest versions.
@@ -161,7 +163,12 @@ remote_main() {  # on the test Mac: <key> <owner> <command>
   path=(/opt/homebrew/bin ~/.cargo/bin $path)
   mise trust -q 2>/dev/null
   eval "$(mise env -s zsh 2>/dev/null)" 2>/dev/null
-  export CARGO_TARGET_DIR=$dir/target
+  # The build folder set by a cargo config in the key's folder (cargo reads each parent's), not by
+  # CARGO_TARGET_DIR: sccache hashes every CARGO_* variable a rustc sees, so a per-key value made
+  # every key miss the shared cache (#887: 0 % Rust hits on the mini, 82 % on the M1).
+  mkdir -p $dir/.cargo
+  print -r -- "[build]"$'\n'"target-dir = \"$dir/target\"" > $dir/.cargo/config.toml
+  unset CARGO_TARGET_DIR
   if [[ -x /opt/homebrew/bin/sccache ]]; then
     export RUSTC_WRAPPER=/opt/homebrew/bin/sccache SCCACHE_DIR=~/Library/Caches/scenic-sccache SCCACHE_CACHE_SIZE=10G
   fi
@@ -183,7 +190,8 @@ remote_main() {  # on the test Mac: <key> <owner> <command>
   versions "the test Mac"
   print "remote-tests: on the test Mac (load $(loadavg), slot $slot, $dir)"
   # (In the background, waited for: a TERM's trap runs at once, not when the command ends.)
-  nice -n 10 /usr/sbin/taskpolicy -c utility zsh -c "$cmd" </dev/null 2>&1 &
+  # (Timed: the run's wall and CPU on the test Mac, a line at its end.)
+  nice -n 20 /usr/sbin/taskpolicy -c utility zsh -c 'TIMEFMT="remote-tests: the run took %E on the test Mac, cpu %U user + %S sys"; time ( eval "$1" )' zsh "$cmd" </dev/null 2>&1 &
   g_cpid=$!
   wait $g_cpid
   local rc=$?

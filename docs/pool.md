@@ -672,7 +672,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   for jobs (`coord::ask_cores`: less the in-use share; `coord::outside_cores`; task #440: a Mac swamped by other work, builds and tests, gets no job
   beside those it holds past the other half, and its refusal says the cores busy outside the
   pool; task #684: the load average can't tell a niced test build (`tools/app/remote-tests.sh`
-  runs at nice 10 on the Mac mini, the lead) from work that competes, and on 26 Oct one held the
+  runs at nice 20 on the Mac mini, the lead) from work that competes, and on 26 Oct one held the
   lead's load at 47 of 12 cores, its free cores none, for two hours; the owner's own use keeps
   the in-use share besides), less the measured needs of every job it holds and of those granted
   with it. A lease counts until it ends or lapses: a restarted Mac's old leases hold its room

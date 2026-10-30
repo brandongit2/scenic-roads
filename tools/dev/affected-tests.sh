@@ -174,9 +174,14 @@ for c, tgt, reason in scan_hits: add(c, tgt, None, reason)
 if not want:
     print("# the changed Rust files have no tests and no tested users: nothing to run"); sys.exit()
 print("# why:"); print("\n".join(dict.fromkeys(why)))
+# A crate's whole targets in one command (#887): one cargo run builds and links them in parallel.
+whole = OrderedDict()
 for (c, tgt), fs in want.items():
-    if None in fs:
-        print("cargo test -p %s %s" % (c, tgt)); continue
+    if None in fs: whole.setdefault(c, []).append(tgt)
+for c, tgts in whole.items():
+    print("cargo test -p %s %s" % (c, " ".join(tgts)))
+for (c, tgt), fs in want.items():
+    if None in fs: continue
     fs = sorted(fs)
     fs = [x for x in fs if not any(x != y and x.startswith(y) for y in fs)]
     print("cargo test -p %s %s -- %s" % (c, tgt, " ".join(fs)))

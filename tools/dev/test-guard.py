@@ -151,8 +151,9 @@ for args in found:
     for line in r.stdout.splitlines():
         if not line.startswith("cargo test "): continue
         c, ts, fs, _ = parse(shlex.split(line)[2:])
-        key = (c[0], ts[0])
-        allowed[key] = None if not fs else (allowed.get(key) or set()) | set(fs)
+        for t in ts:   # (a line may name several whole targets of one crate)
+            key = (c[0], t)
+            allowed[key] = None if not fs else (allowed.get(key) or set()) | set(fs)
     why = None
     bad = [f for f in ("--workspace", "--all", "--bins", "--tests", "--all-targets", "--doc", "--examples", "--benches", "-E", "--filterset", "--filter-expr", "--ignored", "--include-ignored", "--run-ignored") if f in flags]
     if bad: why = "%s widens the run" % bad[0]
