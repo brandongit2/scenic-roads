@@ -244,3 +244,9 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
    terrain-lo is done.
 3. **Generated steps.md §12.** Replace the hand prose with a table generated from the declarations, or keep the
    prose and test it against the declarations.
+
+## Decisions (PM, 30 Oct night)
+
+1. At the flip to scheme 2, records outside the terrain family are rekeyed; only #862's terrain rebuild runs.
+2. The terrain root is a waited read: it is built once all terrain-lo is done, and slope waits for it.
+3. docs/steps.md §12 is generated from the declarations.
