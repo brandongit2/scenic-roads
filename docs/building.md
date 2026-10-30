@@ -216,7 +216,11 @@ from the first (`edit_held`).
   new view or this Mac's hold changes: locally, and to the NAS (`state/status.json`) by a writer
   thread of its own under nasread's deadline (a hung share holds neither). The loop publishes what
   it composed each round; the beat stamps it, says the hold as it stands, and how old the loop's
-  part is (`loop_age_s`). It holds the job, its progress (from the job's `progress:` lines)
+  part is (`loop_age_s`). The owner's asks of the Mac (its pause alone, the app's quit, the room
+  target, in-use share and build memory) are taken up the moment their files change by the
+  agent's control (`agent::asks`, §4.1 there), which publishes them for the loop and the beat and
+  cuts the loop's wait short; a cancel and another member's pause wake the loop, which takes
+  them. It holds the job, its progress (from the job's `progress:` lines)
   with the time left, and a checklist of the build to the end: a line per stage with an item per
   step (docs/pipeline.md §4), its targets done of all in its noun, its jobs left in order, and why
   work isn't this Mac's now. A job of several parts says them (`parts: <i>

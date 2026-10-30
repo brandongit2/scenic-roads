@@ -43,16 +43,6 @@ impl<T> Snap<T> {
         g.1 += 1;
         g.1
     }
-
-    /// The state replaced by what `f` makes of it, if anything (`f` run under the swap's lock: kept
-    /// to a comparison); the new state, if set.
-    pub fn update(&self, f: impl FnOnce(&T) -> Option<T>) -> Option<Arc<T>> {
-        let mut g = self.lock();
-        let v = Arc::new(f(&g.0)?);
-        g.0 = v.clone();
-        g.1 += 1;
-        Some(v)
-    }
 }
 
 /// What **control** tells the loop (until **jobs**, step 5, takes them): each wakes the loop's wait
@@ -91,7 +81,6 @@ mod tests {
         assert_eq!(s.set(vec![3]), 1);
         // (The reader's Arc is the state it took, whole, whatever was set since.)
         assert_eq!(*old, vec![1, 2]);
-        assert!(s.update(|_| None).is_none() && s.read().1 == 1);
         assert_eq!((s.get().as_slice(), s.read().1), (&[3][..], 1));
         // Many writers, many readers: every read is one set's whole state.
         let s = Snap::new((0u64, 0u64));

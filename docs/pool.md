@@ -2018,12 +2018,18 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   at their next safe point and are given back (as the build's pause stops them, frozen past the
   grace), it asks for no work and starts none (`Conds::held`), and a lead paused keeps the lead,
   granting the others' work, and runs none of its own.
-  It keeps beating. This Mac's own ask is taken up at once by the agent's asks thread
-  (crate::agent::asks, task #846, the first slice of #871's loop split; it looks every 250 ms):
-  the hold kept and answered, the running jobs told "drain" through their channels, and the
-  beat told, which writes the heartbeat with the hold's stage then, here and on the NAS, not at
-  the loop's next pass (which on a slow
-  NAS took minutes). Another member's ask stays the loop's. The status says the hold's stage
+  It keeps beating. This Mac's own ask is taken up at once by the agent's control
+  (crate::agent::asks, docs/agent-parts.md §4.1, task #871; #846 its first slice): a thread of
+  its own woken by a kqueue watcher on the agent's folder the moment the ask's file lands (a
+  sweep every 2 s behind it), never by the loop: the hold kept and answered, the running jobs
+  told "drain" through their channels, and the beat told, which writes the heartbeat with the
+  hold's stage then, here and on the NAS, within a second on a hung NAS or during a plan (not
+  at the loop's next pass, which on a slow NAS took minutes). The agent's HTTP endpoint asks the
+  same way (`POST /work/hold` `{"held": true|false, "member"?: …}`, from any device, answered
+  once it's taken up; `POST /work/quit` `{"mode": "now"|"finish"}` from this Mac only), and so
+  does an older CLI's file. Another member's ask wakes the loop, and stays the loop's (it needs
+  the pool), as does this Mac's setting on the NAS (read every 30 s, written back once changed),
+  which it gives control to apply. The status says the hold's stage
   (`Status::hold`, control::HoldView): asked, pausing (its jobs finishing, named), paused,
   resuming; and the Mac's state (`Status::verdict`). `scenic status`, the build page's machine
   card and the menu bar print these (`Status::held` kept for older readers; the pool's view says

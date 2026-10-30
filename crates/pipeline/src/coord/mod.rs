@@ -3683,6 +3683,55 @@ fn route(
             set_pause(&mut shared.lock().unwrap(), pause, at);
             Ok((200, ok))
         }
+        "/work/hold" => {
+            // This Mac paused alone, or going on (docs/agent-parts.md §4.1, docs/pool.md §11):
+            // `{"held": true | false}`, or another member's with `"member": <host or id>`. Asked of
+            // this Mac's agent as `scenic pause --here` asks (its hold ask, the file an older CLI
+            // writes too, which its control takes up the moment it lands), and answered as soon as
+            // it is: `{"ok": …, "said": …}`, within a second for this Mac's own; past 2 s,
+            // `{"asked": true}` (another member's waits for the agent's next round).
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            let held = b["held"].as_bool().ok_or_else(|| anyhow::anyhow!("held: true or false"))?;
+            let member = b["member"].as_str().map(|m| plain(m, 100));
+            let Some((home, _)) = shared.lock().unwrap().settings.clone() else {
+                return Ok((
+                    503,
+                    serde_json::json!({ "error": "this Mac's agent hasn't said where its folder is yet" }),
+                ));
+            };
+            let by = if caller.page { format!("the build page ({})", caller.from) } else { caller.from.clone() };
+            let ask =
+                crate::control::request_hold(&home, member.as_deref(), held.then(|| crate::control::Hold::new(&by)))?;
+            let t = Instant::now();
+            while t.elapsed() < Duration::from_secs(2) {
+                if let Some(a) = crate::control::hold_answer(&home, &ask) {
+                    return Ok((200, serde_json::json!({ "ok": a.ok, "said": a.said })));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok((202, serde_json::json!({ "asked": true })))
+        }
+        "/work/quit" => {
+            // The app quits (crate::control::Quit): `{"mode": "now" | "finish"}`, from this Mac only.
+            // Asked of its agent as the app asks (the quit ask's file), taken up at once.
+            if !caller.local {
+                return Ok((403, serde_json::json!({ "error": "only this Mac quits its app" })));
+            }
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            let mode = match b["mode"].as_str() {
+                Some("now") => crate::control::QuitMode::Now,
+                Some("finish") => crate::control::QuitMode::Finish,
+                _ => anyhow::bail!("mode: \"now\" or \"finish\""),
+            };
+            let Some((home, _)) = shared.lock().unwrap().settings.clone() else {
+                return Ok((
+                    503,
+                    serde_json::json!({ "error": "this Mac's agent hasn't said where its folder is yet" }),
+                ));
+            };
+            crate::control::request_quit(&home, mode, &caller.from)?;
+            Ok((200, serde_json::json!({ "asked": true })))
+        }
         "/work/settings" => {
             // The owner's settings from the build page (docs/workers.md §7): `{}` reads them;
             // `{"in_use": <cores> | "off"}`, `{"memory": <GB> | "off"}`, `{"room": <GB> | "off"}`,
@@ -4683,6 +4732,8 @@ mod http {
             .route("/work/cancel", any(json))
             .route("/work/act", any(json))
             .route("/work/settings", any(json))
+            .route("/work/hold", any(json))
+            .route("/work/quit", any(json))
             .route("/work/status", any(json))
             .route("/work/swarm", any(json))
             .route("/work/history", any(json))
@@ -4937,7 +4988,10 @@ mod http {
         // (The owner's asks from a build page, on any device that reaches it (the owner, 21 Oct:
         // no page of this Mac's own first); a viewer's and a member's broker's passed to its agent.)
         let viewer = c.shared.lock().unwrap().viewer;
-        let owners_asks = matches!(path.as_str(), "/work/pause" | "/work/inputs" | "/work/act" | "/work/settings");
+        let owners_asks = matches!(
+            path.as_str(),
+            "/work/pause" | "/work/inputs" | "/work/act" | "/work/settings" | "/work/hold" | "/work/quit"
+        );
         if viewer {
             return if key.is_none() && owners_asks && req.method() == Method::POST {
                 next.run(req).await
@@ -4973,6 +5027,8 @@ mod http {
                     | "/work/inputs"
                     | "/work/act"
                     | "/work/settings"
+                    | "/work/hold"
+                    | "/work/quit"
             ),
             Method::GET => (files && !path.starts_with("/work/out/")) || path.starts_with("/work/prog/"),
             Method::PUT => path.starts_with("/work/out/"),
@@ -9702,6 +9758,39 @@ mod tests {
         assert_eq!(code, 409);
         assert!(b["error"].as_str().is_some_and(|e| e.contains("no lead now")), "{b}");
         assert!(c.take_page_acts().is_empty());
+    }
+
+    /// Task #871 step 3: this Mac's pause from any device, through its agent's control (answered
+    /// once it takes it up, within a second), and the app's quit from this Mac alone.
+    #[test]
+    fn a_hold_is_answered_by_the_agents_control_and_a_quit_is_this_macs() {
+        let (_d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let far = [("X-Forwarded-For", "100.101.1.2")];
+        let held = serde_json::json!({ "held": true });
+        assert_eq!(send(&addr, "POST", "/work/hold", None, &far, &held).0, 503, "no folder said yet");
+        let home = tempfile::tempdir().unwrap();
+        c.set_settings(home.path(), None);
+        let hold = crate::agent::bus::Snap::new(crate::control::HoldState::default());
+        let (beat, _beats) = std::sync::mpsc::channel();
+        let mut control = crate::agent::asks::Handle::new(home.path().to_path_buf(), hold.clone(), beat);
+        control.spawn();
+        let t = Instant::now();
+        let (code, _, b) = send(&addr, "POST", "/work/hold", None, &far, &held);
+        assert_eq!((code, b["ok"].as_bool()), (200, Some(true)), "{b}");
+        assert!(t.elapsed() < Duration::from_secs(1), "answered in {:?}", t.elapsed());
+        assert!(hold.get().held.as_ref().is_some_and(|h| h.by == "the build page (100.101.1.2)"));
+        assert!(crate::control::read_hold(home.path()).held.is_some());
+        let (code, _, b) = send(&addr, "POST", "/work/hold", None, &far, &serde_json::json!({ "held": false }));
+        assert_eq!((code, b["ok"].as_bool()), (200, Some(true)), "{b}");
+        assert!(hold.get().held.is_none());
+        assert_eq!(send(&addr, "POST", "/work/hold", None, &far, &serde_json::json!({})).0, 400);
+        let quit = serde_json::json!({ "mode": "finish" });
+        assert_eq!(send(&addr, "POST", "/work/quit", None, &far, &quit).0, 403);
+        assert!(crate::control::peek_quit(home.path()).is_none());
+        assert_eq!(send(&addr, "POST", "/work/quit", None, &[], &quit).0, 200);
+        assert!(crate::control::peek_quit(home.path()).is_some_and(|q| q.mode == crate::control::QuitMode::Finish));
+        store::testkit::eventually("control took the quit up", || control.quit.get().is_some());
     }
 
     #[test]
