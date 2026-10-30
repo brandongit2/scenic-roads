@@ -95,7 +95,7 @@ function taskKind(task) {
 
 // A step program's class, as pipeline::unit::program_class has it.
 function programClass(what) {
-  return what === "elevations (elev)" ? "mixed" : what === "land cover (landcover)" ? "net" : "compute";
+  return what === "sampling the elevations (elev)" ? "mixed" : what === "classifying the land cover (landcover)" ? "net" : "compute";
 }
 
 function fill(v, places) {

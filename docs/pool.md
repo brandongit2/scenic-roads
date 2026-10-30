@@ -1581,7 +1581,9 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   (6,251 runs, 49 steps over 4 days): ~32 KB of the status (~290 KB: +11 %).
   Phases are named as doings ("reading the depth sources' windows"; before task #844 as done, "the
   depth sources' windows read"); a record read, on any Mac, takes the new name of an old one
-  (`crate::phase_names`), so the history keeps its phases.
+  (`crate::phase_names`), so the history keeps its phases, and so do a Mac's z6 tiles' stage times
+  kept for its unit jobs' progress and tails' patience (`unit-stages.json`, `unit::TileProgress`):
+  nothing is learned again.
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
   the lead's first, marked coordinator (`scenic status` with its ramp, §7.1); its capacity as the coordinator last
   heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and

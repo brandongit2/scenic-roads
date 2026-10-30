@@ -4247,7 +4247,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         // steps through the canopy stay here (where it's downloaded).
         let mut runs = pipeline::unit::tail(u, tools.buildings.is_some(), tools.sources.is_some());
         if !tools.sources.as_deref().is_some_and(|s| pipeline::unit::canopy_stored(&dir, s)) {
-            pipeline::unit::keep_here(&mut runs, "scenic canopy");
+            pipeline::unit::keep_here(&mut runs, "scoring the scenery (canopy)");
         }
         let (here, anywhere) = pipeline::unit::split(&runs);
         if rep.kept_ways > 0 {

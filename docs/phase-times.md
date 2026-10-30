@@ -2,8 +2,8 @@
 
 **A snapshot, as measured on 27 Oct 2026; not kept up to date.** Each step's live split of time and
 bytes by phase is measured by the lead and shown on the build page (docs/pool.md §10, Phase shares,
-Time by phase). The phases' names here are as they were then; task #844 renamed them as doings
-("the sources' windows read" is now "reading the sources' windows": crate::phase_names).
+Time by phase). The phases are named here as they are now, as doings (task #844 renamed them:
+"the sources' windows read" became "reading the sources' windows"; crate::phase_names).
 
 Measured from the records the pipeline keeps, not new benchmarks: the lead's `coord/timings.jsonl`
 (every run's phases; here the 1,454 runs since 25 Oct 00:00 UTC, the current rebuild under the
@@ -54,7 +54,7 @@ the rebuild has measured so far, not a whole build's.
 | water, names-todo, terrain-water, heritage, pois, task tail, the rest | | ≈ 5 | | | | | | | |
 
 The terrain's steps are 89 % of the rebuild's worker time, and inside them the elevation pool's
-sampling (`raw tiles made`, `its deep tiles made`) is 78 % of terrain-hi's run and 92 % of
+sampling (`raw tiles made`, `making its deep tiles`) is 78 % of terrain-hi's run and 92 % of
 terrain-deep's; everything else of this rebuild (slope, trees, depth, unit, pack: the steps task
 #492 measured) is under 5 % of it, each with the profile §3 of the 20 Oct snapshot gives, minus
 what tasks #689, #706, #728 and #532 took out: depth's run is now 76 % compute (composing 51 %,
@@ -73,14 +73,14 @@ their files opened 14 %, the whole local copies made beside 54 %).
     - **Japan (16 runs, 58.6 h: 41 % of terrain-hi's time), CPU/wall under 0.3: the network.**
       Each GSI layer (gsi-1a, 5a, 5b, 5c, 10) is a tile pyramid fetched live from GSI's server at
       its own zoom, never cached between runs: 6/56/23, a small coastal z6 tile, fetched 2.9 GB of
-      GSI tiles in its sampling and 1.8 GB more in `the edges blended` (the tiles were out of the
+      GSI tiles in its sampling and 1.8 GB more in `blending the edges` (the tiles were out of the
       512 MB memo by then), 4.7 GB at 1.5–2.5 MB/s, 31 min; run again (the job retried) it
       fetched it all again. 6/54/26 + 6/53/31 ran 15.3 h and failed; 6/53/31 8.5 h, 6/56/25
       7.6 h, 6/52/31 5.8 h. Not the NAS, not CPU (9 min of CPU in 15 h).
     - **Everywhere else (468 runs, 83 h), CPU/wall 0.8–1.7: the CPU, on 3 threads.** A run with
       HRDEM in its plan (Canada: 6/16/19, 350 s in the job) spent its sampling threads' time in
-      `hrdem-1m sampled` 180 s, `hrdem sampled` 157 s, `glo30 sampled` 185 s, `the edges blended`
-      136 s; a GLO-30-only run (6/37/17, 658 s) in `glo30 sampled` 417 s and `the edges blended`
+      `sampling hrdem-1m` 180 s, `sampling hrdem` 157 s, `sampling glo30` 185 s, `blending the edges`
+      136 s; a GLO-30-only run (6/37/17, 658 s) in `sampling glo30` 417 s and `blending the edges`
       458 s. Profiled on the M4 (`sample`, 10 s of 6/16/19's sampling, before this task): 60 % of
       the CPU was `Cover::contains` (a point-in-outline test per point per dataset, called five
       times a point: the counts, each dataset's projection, its selection, the blend's two
@@ -88,21 +88,21 @@ their files opened 14 %, the whole local copies made beside 54 %).
       each projected all 4.2 M points of a chunk to EPSG:3979, Helmert and Lambert); the NAS's
       `pread`s were a tenth of it; and 44 % of the threads' wall was waiting on one lock: the raw
       tiles' shard lock, held while a Terrarium tile was read from the NAS's archive by range.
-  - The remaining fixed costs a run: `the regions and their outlines read` 22 s (CPU 14 s: the
+  - The remaining fixed costs a run: `reading the regions and their outlines` 22 s (CPU 14 s: the
     coverage's outlines parsed and gridded; every step's run pays it: 2.1 % of terrain-hi, 2.5 %
-    of terrain-deep, 16 % of a unit run, half a pois run), `the uploads beside landed` 20 s.
+    of terrain-deep, 16 % of a unit run, half a pois run), `waiting for the uploads beside to land` 20 s.
 - **terrain-deep** (777 s a run on average, 177 median; 42 h of its 57 are 135 runs on the Mac
-  mini at CPU/wall ≥ 0.8): `its deep tiles made` 718 s: `hrdem-1m sampled` 370 s (summed over
+  mini at CPU/wall ≥ 0.8): `making its deep tiles` 718 s: `sampling hrdem-1m` 370 s (summed over
   threads, CPU/wall 2.0: HRDEM's 1 m blocks decoded and bilinearly sampled, 533 MB a run fetched),
-  `the heights brought to EGM2008` 191 s (CPU/wall 1.9: the geoid grids read bilinearly for every
-  point of every chunk, 2.2 G points a run), `hrdem sampled` 139 s, `the edges blended` 104 s,
+  `bringing the heights to EGM2008` 191 s (CPU/wall 1.9: the geoid grids read bilinearly for every
+  point of every chunk, 2.2 G points a run), `sampling hrdem` 139 s, `blending the edges` 104 s,
   `its base made` 70 s, 3DEP 67 s; then its deep pack uploaded 21 s, the regions read 19 s, the
   basemap's water opened 11 s (CPU/wall 0.01: the NAS). Bound by the CPU on its three threads;
   the same sampler as terrain-hi's, so this task's cuts apply. Eleven runs (0.4 h) waited at
   CPU/wall under 0.3: 3DEP's files opened and read ahead over the internet (`store = false`
-  datasets), and on the mini the NAS (`the basemap's water opened` 52 s, `the fine datasets'
+  datasets), and on the mini the NAS (`opening the basemap's water` 52 s, `the fine datasets'
   declarations read` 32 s in 10/299/385).
-- **terrain-lo** (664 s a run, 24 runs): `glo30 sampled` 434 s summed over threads at CPU/wall
+- **terrain-lo** (664 s a run, 24 runs): `sampling glo30` 434 s summed over threads at CPU/wall
   0.34: the z8–z3 levels read GLO-30 at its overviews from the NAS in place (not the whole local
   copies: a coarse level reads under half of each file), round trips.
 - **terrain-z8** (5 runs, 61 min each, CPU/wall 0.6): the world's z8 tiles sampled and made, once
@@ -113,8 +113,8 @@ their files opened 14 %, the whole local copies made beside 54 %).
 - **depth** (399 s a run): composing 202 s (gaps filled 64 s, the sources' windows read 37 s,
   stored levels scaled up 22 s), the floor's shading 89 s, the water read 44 s and opened 39 s.
   CPU/wall 0.8 with 1–3 threads: half compute on one thread, half the NAS.
-- **pack** (46 s): the z6 tiles' base packs here 20 s, the uploads beside landed 17 s, drawn 7 s.
-- **catalog** (71 s a run, 134 runs on the mini): `the coverage drawn and the credits found`
+- **pack** (46 s): getting the z6 tiles' base packs here 20 s, waiting for the uploads beside to land 17 s, drawn 7 s.
+- **catalog** (71 s a run, 134 runs on the mini): `drawing the coverage and finding the credits`
   86 % (CPU/wall 0.6).
 
 ## 4. What was done (task #803), and what each is bound by
@@ -128,7 +128,7 @@ manifest has (the `-same` tools' line), before and after.
 | change | bound by | before → after (measured) |
 |---|---|---|
 | **The sampler's cover tests once a point** (`dem::generic::membership`, `Cover::contains_box`): which datasets hold each point of a batch is worked out once, in runs of 1,024 neighbours answered by their box where it lies inside a cell away from an outline (the terrain's rows), the rest point by point; the counts, each dataset's selection and the blends read it. Was: `Cover::contains` five times a point a dataset, each a point-in-outline test in an outline's cell. | CPU | 6/16/19 (1,200 tiles, HRDEM + GLO-30): the sampling 64 → 39 s, the run 109 → 87 s |
-| **One projection a CRS a batch** (`Sampler::projections`): the datasets of one projected CRS (HRDEM's two in EPSG:3979, 3DEP's zones) share one projection of the points any of them holds. Was: each dataset projected every point its cover held. | CPU | 6/16/19: the sampling 39 → 32 s, the run 87 → 76 s (both: 109 → 76 s, −30 %; `hrdem-1m sampled` 36 → 6 s a thread) |
+| **One projection a CRS a batch** (`Sampler::projections`): the datasets of one projected CRS (HRDEM's two in EPSG:3979, 3DEP's zones) share one projection of the points any of them holds. Was: each dataset projected every point its cover held. | CPU | 6/16/19: the sampling 39 → 32 s, the run 87 → 76 s (both: 109 → 76 s, −30 %; `sampling hrdem-1m` 36 → 6 s a thread) |
 | **A file's fill mask found once a block, not a point** (`GeoSet::sample`, `distance_group`): `mask()` cloned two handles a point. | CPU | within the noise on 6/16/19 (profiled at 3 % of the sampling's CPU) |
 | **The raw tiles' shard lock covers the lookup, not the read** (`RawTiles::archived_by`): a Terrarium tile read from the NAS's archive by range is read outside the shard's lock. Was: the threads sampling a level waited on each other's NAS round trips (44 % of their wall in the profile). | the NAS's round trips | no separate measure: in the runs above |
 
@@ -137,7 +137,7 @@ The three sampler changes together, main's binary against this branch's, the sam
 | target | before | after | the content names |
 |---|---|---|---|
 | terrain-same 6/16/19 (Canada: HRDEM's two datasets, GLO-30; 1,200 tiles) | 109 s (sampling 64 s) | 76 s (32 s) | hi c6e206311767f103, mid 1dfe15dbfe28ba3c, both the manifest's |
-| terrain-deep-same 10/258/345 (HRDEM 1 m; 5,011 deep tiles) | 371 s | 306 s (`hrdem sampled` 83 → 8 s, `hrdem-1m sampled` 246 → 153 s, `the edges blended` 59 → 35 s, EGM2008 102 → 94 s, summed over threads) | deep 926a54b38aabbe2c, the manifest's |
+| terrain-deep-same 10/258/345 (HRDEM 1 m; 5,011 deep tiles) | 371 s | 306 s (`sampling hrdem` 83 → 8 s, `sampling hrdem-1m` 246 → 153 s, `blending the edges` 59 → 35 s, EGM2008 102 → 94 s, summed over threads) | deep 926a54b38aabbe2c, the manifest's |
 | terrain-same 6/37/17 (GLO-30 and Terrarium alone, no outline, no projection; 4,000 tiles) | 227 s | 216 s | hi 37fd592ec4c34e7d, mid b5ead4f29c18907f, the manifest's |
 
 So a run with a regional dataset (an outline, a projected CRS: Canada, the US, Japan's land)
@@ -154,10 +154,10 @@ the two deep packs: the pixels changed, the largest and the mean difference.
 
 | change | before → after | the output |
 |---|---|---|
-| **The geoid's offsets on a lattice** (`dem::geoid::Grids::offsets`): found exactly at the corners of a 7.5″ lattice over a call's points and bilinear between them; a point whose corners lack a value or were served by different sources (a grid's edge, a link's grids meeting) read alone, and points spread wider than twice their count in corners read as before. 7.5″ divides EGM2008's 2.5′ grid and its half-pixel, so inside its cells the result is the grid's own bilinear to rounding. Was: every point read bilinearly from the grids (2.2 G a run). | terrain-deep-same 10/258/345 (HRDEM 1 m; 5,011 deep tiles): `the heights brought to EGM2008` 4 min 48 s → 10.8 s of CPU summed over threads; the run 394 → 258 s | 26 of 328 M pixels changed, each by one quantum (1–2 cm: rounding at a quantum's edge), the mean 0.000 m: invisible. Not byte-identical (content name 8c1e32762eb0b1ab, the manifest's 926a54b38aabbe2c) |
-| **The coverage kept with its grids** (`coverage::write_kept`, `RDCOV005`): the cache file each Mac keeps by the regions' accepted version (`<SCENIC_CACHE>/coverage/<hash16>.cov`, written by the first job to read a version) holds every shape's grid as well as its rings, so a job reads it rather than gridding the outlines again (`Shape::new`); `pois` and the z6 tiles' steps read through it too (they passed no cache). Not on the NAS: a local read beats a NAS one, and each Mac makes it once a version. | `the regions and their outlines read`: 18.7 s (CPU 14.4 s) → 1.1 s (CPU 0.7 s) a run once the file is there; the file 1.84 GB for the current version, read and written as a stream (`from_kept`, `write_kept`), so a run holds the shapes alone, no more than before (as first written it was read whole: a run's peak 2.35 → 3.6 GB) | the same shapes (a test: the grids read back equal those made) |
-| **A window's pixels copied a row at a time** (`geotiff::Block::row_f32`, `Tiff::read_window`), **a block's cleanness noted once** (`dem::sample::sample_raster_noting`). Profiled on 10/258/345: the largest part of the sampling's CPU was `read_window` copying each 512² window a sample at a time through `Block::f32_at` (its type matched per sample), and `Clean::note` scanning every block again each time a group of points read it; the bilinear itself under 1 %. | terrain-deep-same 10/258/345: `hrdem-1m sampled` 8 min 44 s → 2 min 52 s of CPU summed over threads (now the LZW decode and the download); the target 271 → 206 s | byte-identical (8c1e32762eb0b1ab, the geoid's change's) |
-| **An overview read whole from the NAS** (`geotiff::Tiff::read_level_whole`, from `dem::generic::GeoSet::source`): a stored file read in place on the NAS at a coarser level than its own (terrain-lo's GLO-30) has that level's blocks read in one range (where they're at least half the bytes they span, and 32 MB at most) and served from memory. Was: a round trip a block. | terrain-same 3/4/2 (1,347 lo tiles): `glo30 sampled` 12 min 49 s → 9 min 35 s summed over threads, the target 333 → 261 s; the run's peak 7.5 → 8.8 GB uncapped (the levels held while their files are open: a process's spans now capped at 512 MB, `geotiff::SPANNED_MAX`, past which a level is read a block at a time) | byte-identical (lo 61ef52dfb4f7ab6c both; the manifest's bc55fdaa05b56820 differs before this change as after; not traced) |
+| **The geoid's offsets on a lattice** (`dem::geoid::Grids::offsets`): found exactly at the corners of a 7.5″ lattice over a call's points and bilinear between them; a point whose corners lack a value or were served by different sources (a grid's edge, a link's grids meeting) read alone, and points spread wider than twice their count in corners read as before. 7.5″ divides EGM2008's 2.5′ grid and its half-pixel, so inside its cells the result is the grid's own bilinear to rounding. Was: every point read bilinearly from the grids (2.2 G a run). | terrain-deep-same 10/258/345 (HRDEM 1 m; 5,011 deep tiles): `bringing the heights to EGM2008` 4 min 48 s → 10.8 s of CPU summed over threads; the run 394 → 258 s | 26 of 328 M pixels changed, each by one quantum (1–2 cm: rounding at a quantum's edge), the mean 0.000 m: invisible. Not byte-identical (content name 8c1e32762eb0b1ab, the manifest's 926a54b38aabbe2c) |
+| **The coverage kept with its grids** (`coverage::write_kept`, `RDCOV005`): the cache file each Mac keeps by the regions' accepted version (`<SCENIC_CACHE>/coverage/<hash16>.cov`, written by the first job to read a version) holds every shape's grid as well as its rings, so a job reads it rather than gridding the outlines again (`Shape::new`); `pois` and the z6 tiles' steps read through it too (they passed no cache). Not on the NAS: a local read beats a NAS one, and each Mac makes it once a version. | `reading the regions and their outlines`: 18.7 s (CPU 14.4 s) → 1.1 s (CPU 0.7 s) a run once the file is there; the file 1.84 GB for the current version, read and written as a stream (`from_kept`, `write_kept`), so a run holds the shapes alone, no more than before (as first written it was read whole: a run's peak 2.35 → 3.6 GB) | the same shapes (a test: the grids read back equal those made) |
+| **A window's pixels copied a row at a time** (`geotiff::Block::row_f32`, `Tiff::read_window`), **a block's cleanness noted once** (`dem::sample::sample_raster_noting`). Profiled on 10/258/345: the largest part of the sampling's CPU was `read_window` copying each 512² window a sample at a time through `Block::f32_at` (its type matched per sample), and `Clean::note` scanning every block again each time a group of points read it; the bilinear itself under 1 %. | terrain-deep-same 10/258/345: `sampling hrdem-1m` 8 min 44 s → 2 min 52 s of CPU summed over threads (now the LZW decode and the download); the target 271 → 206 s | byte-identical (8c1e32762eb0b1ab, the geoid's change's) |
+| **An overview read whole from the NAS** (`geotiff::Tiff::read_level_whole`, from `dem::generic::GeoSet::source`): a stored file read in place on the NAS at a coarser level than its own (terrain-lo's GLO-30) has that level's blocks read in one range (where they're at least half the bytes they span, and 32 MB at most) and served from memory. Was: a round trip a block. | terrain-same 3/4/2 (1,347 lo tiles): `sampling glo30` 12 min 49 s → 9 min 35 s summed over threads, the target 333 → 261 s; the run's peak 7.5 → 8.8 GB uncapped (the levels held while their files are open: a process's spans now capped at 512 MB, `geotiff::SPANNED_MAX`, past which a level is read a block at a time) | byte-identical (lo 61ef52dfb4f7ab6c both; the manifest's bc55fdaa05b56820 differs before this change as after; not traced) |
 
 ## 5. Not done, with what the data says (the ranking of what's left)
 
@@ -174,15 +174,15 @@ the two deep packs: the pixels changed, the largest and the mean difference.
    the packing job, room-making), not a fix. The same bytes: a tile is the server's bytes
    whichever copy it's read from. Until then, `TILE_MEMO_BYTES` (512 MB) could hold a run's GSI
    tiles for the blend (a small tile's 2.9 GB wouldn't fit the mini's jobs: the memo is per job).
-2. *(Done by task #807: §4b.)* The heights brought to EGM2008.
+2. *(Done by task #807: §4b.)* Bringing the heights to EGM2008.
 3. **HRDEM at 1 m decoded for every deep level** (after task #807, §4b: 2 min 52 s of CPU a run
    summed over threads, nearly all the 1 m blocks' LZW decode and their download; the bilinear
    itself is under 1 % in a profile, so a nearest-pixel read would buy nothing). z13–15 read the
    same 1 m blocks z16 does; reading HRDEM's overviews nearest those levels' pixels (as the base's
    levels read GeoTIFFs: `read_resolution`) would decode about a third as much, at the price of
    averaged heights there (to be measured before it's kept).
-4. *(Done by task #807: §4b.)* `the regions and their outlines read`.
-5. **terrain-lo's GLO-30 reads**, after task #807 (§4b): 3/4/2's `glo30 sampled` is still 9.6 min
+4. *(Done by task #807: §4b.)* `reading the regions and their outlines`.
+5. **terrain-lo's GLO-30 reads**, after task #807 (§4b): 3/4/2's `sampling glo30` is still 9.6 min
    summed over threads at CPU/wall about 0.6; what's left is most likely each file's opening (its
    header windows, a round trip or two a file, some 1,800 files a z3 tile), not yet profiled.
 6. **depth's compute** (composing on one thread: gaps filled 16 %, scaled up 6 %): as task #492

@@ -540,5 +540,13 @@ export const PHASE_ABOUT = {
   "sending back what they wrote": "Sends the task's outputs back to the coordinator.",
   "uploading the lo pack": "Uploads the lo pack to the NAS.",
   "reading the pieces' mids": "Reads the pieces' mids from the NAS.",
+  "extracting the ways (extract)": "Extracts the z6 tile's roads and rails from its OSM piece, densified for the elevation datasets (the extract program).",
+  "sampling the elevations (elev)": "Samples the roads' heights from the terrain at every vertex (the elev program).",
+  "cleaning up and grading (tile elev)": "Cleans up the heights (bridges, tunnels, junctions) and works out the grades (the tile program).",
+  "scoring the scenery (canopy)": "Measures the tree canopy along the roads (scenic-metrics).",
+  "scoring the scenery (view)": "Measures the views from the roads over the terrain (scenic-metrics).",
+  "scoring the scenery (buildings)": "Measures the buildings along the roads (scenic-metrics).",
+  "flagging the areas (areaflags)": "Rasterises the designated areas onto the z6 tile's grid (the areaflags program).",
+  "classifying the land cover (landcover)": "Fills in the land cover the packs lack, from the declared source (the landcover program).",
   "other phases": "The step's smaller phases, summed.",
 };

@@ -199,25 +199,24 @@ pub fn stage_said(stage: &str, frac: f64, took: Option<std::time::Duration>) {
 /// A z6 tile's stages in the order they run (`Laps::lap`'s and the programs' names), each with about
 /// how long it takes (seconds: the M4's, over its z6 tiles of 2026-10): how far a z6 tile is, by
 /// the stages it's through (`TileProgress`), until this Mac has timed its own.
-pub const STAGES: [(&str, f64); 25] = [
+pub const STAGES: [(&str, f64); 24] = [
     ("copying the piece from the NAS", 10.0),
     ("staging the buildings", 1.0),
-    ("extract", 10.0),
+    ("extracting the ways (extract)", 10.0),
     ("cutting to the coverage", 1.0),
-    ("DEM cache slice", 30.0),
-    ("elevations (elev)", 150.0),
+    ("sampling the elevations (elev)", 150.0),
     ("keeping DEM samples", 40.0),
     ("staging layers from the packs", 60.0),
     ("staging the heritage inputs", 8.0),
-    ("area flags (areaflags)", 5.0),
-    ("land cover (landcover)", 4.0),
+    ("flagging the areas (areaflags)", 5.0),
+    ("classifying the land cover (landcover)", 4.0),
     ("restoring scenic results", 20.0),
-    ("clean-up and grade (tile elev)", 1.0),
-    ("scenic prep", 1.0),
-    ("scenic canopy", 25.0),
-    ("scenic view", 12.0),
-    ("scenic buildings", 19.0),
-    ("scenic flags", 1.0),
+    ("cleaning up and grading (tile elev)", 1.0),
+    ("scoring the scenery (prep)", 1.0),
+    ("scoring the scenery (canopy)", 25.0),
+    ("scoring the scenery (view)", 12.0),
+    ("scoring the scenery (buildings)", 19.0),
+    ("scoring the scenery (flags)", 1.0),
     ("writing missing grids", 2.0),
     ("keeping scenic results", 8.0),
     ("making the base pack", 1.0),
@@ -256,8 +255,11 @@ impl TileProgress {
             .and_then(|f| std::fs::read(f).ok())
             .and_then(|b| serde_json::from_slice::<BTreeMap<String, f64>>(&b).ok())
         {
-            for (s, t) in
-                kept.into_iter().filter(|(s, t)| STAGES.iter().any(|x| x.0 == s) && t.is_finite() && *t >= 0.0)
+            // (A stage kept under its name from before task #844 is read as its new one: crate::phase_names.)
+            for (s, t) in kept
+                .into_iter()
+                .map(|(s, t)| (crate::phase_names::current(&s).into_owned(), t))
+                .filter(|(s, t)| STAGES.iter().any(|x| x.0 == s) && t.is_finite() && *t >= 0.0)
             {
                 learned.insert(s.clone());
                 secs.insert(s, t);
@@ -370,8 +372,8 @@ impl Stage {
 pub fn program_class(what: &str) -> crate::timings::Class {
     use crate::timings::Class;
     match what {
-        "elevations (elev)" => Class::Mixed,
-        "land cover (landcover)" => Class::Net,
+        "sampling the elevations (elev)" => Class::Mixed,
+        "classifying the land cover (landcover)" => Class::Net,
         _ => Class::Compute,
     }
 }
@@ -578,7 +580,7 @@ pub fn prepare_folder(
     fine.write(&spacing)?;
     let mut c = store::spawn::command(tools.bin.join("extract"));
     c.arg(dir).arg(&spacing).arg(piece);
-    run_in(c, "extract", &log, dir, tools)?;
+    run_in(c, "extracting the ways (extract)", &log, dir, tools)?;
     use crate::timings::Class;
     let s = stage("cutting to the coverage", Class::Compute);
     rep.piece_ways = roadcore::Ways::open(dir)?.ways().len();
@@ -617,13 +619,13 @@ pub fn prepare_folder(
     s.end();
     let mut c = store::spawn::command(tools.bin.join("areaflags"));
     c.arg(dir).arg(dir.join("area-shapes.geojsonseq"));
-    run_in(c, "area flags (areaflags)", &log, dir, tools)?;
+    run_in(c, "flagging the areas (areaflags)", &log, dir, tools)?;
     // Land cover the packs lack (new coverage): the declared land-cover source for those grid tiles
     // only; the rest stays as staged.
     if rep.staged.missing.get("class").copied().unwrap_or(0) > 0 {
         let mut c = store::spawn::command(tools.bin.join("landcover"));
         c.arg(dir).arg("--only").arg(dir.join("grid.class.missing.u32"));
-        run_in(c, "land cover (landcover)", &log, dir, tools)?;
+        run_in(c, "classifying the land cover (landcover)", &log, dir, tools)?;
     }
     // Its last run's scenic results (pipeline::scache: the canopy and view steps copy what's
     // unchanged), restored over the staged grids they were made from.
@@ -816,17 +818,17 @@ pub fn tail(u: TileId, buildings: bool, store: bool) -> Vec<Run> {
             ]),
             _ => Vec::new(),
         };
-        Run { what: format!("scenic {step}"), prog: "scenic-metrics".into(), args, env: e, reads }
+        Run { what: format!("scoring the scenery ({step})"), prog: "scenic-metrics".into(), args, env: e, reads }
     };
     let elev = Run {
-        what: "elevations (elev)".into(),
+        what: "sampling the elevations (elev)".into(),
         prog: "elev".into(),
         args: vec!["{dir}".into()],
         env: Vec::new(),
         reads: mine(&["verts.bin", "terrain.tiles", "fine.tiles", "codes.json"]),
     };
     let grade = Run {
-        what: "clean-up and grade (tile elev)".into(),
+        what: "cleaning up and grading (tile elev)".into(),
         prog: "tile".into(),
         args: vec!["{dir}".into(), "elev".into()],
         env: Vec::new(),
@@ -949,16 +951,16 @@ mod tests {
         a.stage("copying the piece from the NAS", 1.0, None);
         assert!((a.done() - 10.0 / total).abs() < 1e-9);
         // Halfway through its elevations: the stages before, and half of that one.
-        a.stage("elevations (elev)", 0.5, None);
-        let before: f64 = STAGES[..5].iter().map(|s| s.1).sum();
+        a.stage("sampling the elevations (elev)", 0.5, None);
+        let before: f64 = STAGES[..4].iter().map(|s| s.1).sum();
         assert!((a.done() - (before + 75.0) / total).abs() < 1e-9);
         // A stage said again, or an earlier one, is no step back; one it doesn't know, nothing.
-        a.stage("extract", 1.0, None);
+        a.stage("extracting the ways (extract)", 1.0, None);
         a.stage("something else", 1.0, None);
         assert!((a.done() - (before + 75.0) / total).abs() < 1e-9);
         // Its last steps out with another worker while the next z6 tile builds: both count.
         a.on("6/1/2");
-        a.stage("extract", 1.0, None);
+        a.stage("extracting the ways (extract)", 1.0, None);
         let two = a.done();
         assert!(two > (before + 75.0) / total);
         a.on("6/1/1");
@@ -968,16 +970,28 @@ mod tests {
         assert!((a.done() - (1.0 + (STAGES[..3].iter().map(|s| s.1).sum::<f64>()) / total)).abs() < 1e-9);
         // A stage's time teaches its weight, kept for the next job.
         a.on("6/1/2");
-        a.stage("DEM cache slice", 1.0, Some(std::time::Duration::from_secs(70)));
+        a.stage("keeping DEM samples", 1.0, Some(std::time::Duration::from_secs(70)));
         a.finished("6/1/2");
         let kept: BTreeMap<String, f64> = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-        assert_eq!(kept["DEM cache slice"], 0.75 * 30.0 + 0.25 * 70.0);
-        assert_eq!(TileProgress::new(4, Some(file.clone())).secs["DEM cache slice"], 40.0);
+        assert_eq!(kept["keeping DEM samples"], 0.75 * 40.0 + 0.25 * 70.0);
+        assert_eq!(TileProgress::new(4, Some(file.clone())).secs["keeping DEM samples"], 47.5);
         assert_eq!(a.done(), 2.0);
         // How long stages take here, once this Mac has timed each (kept or now): a tail's patience.
-        assert_eq!(a.here_s(&["DEM cache slice"]), Some(40.0));
-        assert_eq!(a.here_s(&["DEM cache slice", "scenic view"]), None);
-        assert_eq!(TileProgress::new(4, Some(file)).here_s(&["DEM cache slice"]), Some(40.0));
+        assert_eq!(a.here_s(&["keeping DEM samples"]), Some(47.5));
+        assert_eq!(a.here_s(&["keeping DEM samples", "scoring the scenery (view)"]), None);
+        assert_eq!(TileProgress::new(4, Some(file)).here_s(&["keeping DEM samples"]), Some(47.5));
+    }
+
+    #[test]
+    fn stage_times_kept_under_old_names_are_read_as_the_new() {
+        // (Kept before task #844: its phases' names then, crate::phase_names.)
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("unit-stages.json");
+        std::fs::write(&file, r#"{"elevations (elev)": 300, "DEM samples kept": 12, "scenic canopy": 50}"#).unwrap();
+        let a = TileProgress::new(1, Some(file));
+        assert_eq!(a.here_s(&["sampling the elevations (elev)"]), Some(300.0));
+        assert_eq!(a.here_s(&["keeping DEM samples"]), Some(12.0));
+        assert_eq!(a.here_s(&["scoring the scenery (canopy)"]), Some(50.0));
     }
 
     #[test]
@@ -1001,14 +1015,14 @@ mod tests {
         // (Its program's own status for a server that gave no answer: crate::fetch::exit_with.)
         let mut c = store::spawn::command("sh");
         c.args(["-c", &format!("echo no answer; exit {}", crate::fetch::UNREACHABLE_EXIT)]);
-        let e = run(c, "elevations (elev)", &log).unwrap_err();
+        let e = run(c, "sampling the elevations (elev)", &log).unwrap_err();
         assert!(e.is::<SourceDown>() && source_down(&e), "{e:#}");
         // (Wrapped in context, too.)
         assert!(source_down(&e.context("unit 6/1/1")));
         // Any other failure is the job's.
         let mut c = store::spawn::command("sh");
         c.args(["-c", "exit 1"]);
-        let e = run(c, "elevations (elev)", &log).unwrap_err();
+        let e = run(c, "sampling the elevations (elev)", &log).unwrap_err();
         assert!(!source_down(&e), "{e:#}");
         // A request of the job's own process that gave no answer, as the fetcher says it.
         let e = anyhow::anyhow!("https://example.org/a.zip: no answer (connection reset); tried 11 times");
@@ -1025,23 +1039,34 @@ mod tests {
         assert_eq!(
             what(anywhere),
             [
-                "elevations (elev)",
-                "clean-up and grade (tile elev)",
-                "scenic prep",
-                "scenic canopy",
-                "scenic view",
-                "scenic buildings",
-                "scenic flags"
+                "sampling the elevations (elev)",
+                "cleaning up and grading (tile elev)",
+                "scoring the scenery (prep)",
+                "scoring the scenery (canopy)",
+                "scoring the scenery (view)",
+                "scoring the scenery (buildings)",
+                "scoring the scenery (flags)"
             ]
         );
         assert!(anywhere
             .iter()
             .all(|r| r.reads.iter().all(|p| p.starts_with("{dir}/") || p.starts_with("{buildings}/"))));
         // A canopy square the NAS's store lacks: the steps through the canopy stay here.
-        keep_here(&mut runs, "scenic canopy");
+        keep_here(&mut runs, "scoring the scenery (canopy)");
         let (here, anywhere) = split(&runs);
-        assert_eq!(what(here), ["elevations (elev)", "clean-up and grade (tile elev)", "scenic prep", "scenic canopy"]);
-        assert_eq!(what(anywhere), ["scenic view", "scenic buildings", "scenic flags"]);
+        assert_eq!(
+            what(here),
+            [
+                "sampling the elevations (elev)",
+                "cleaning up and grading (tile elev)",
+                "scoring the scenery (prep)",
+                "scoring the scenery (canopy)"
+            ]
+        );
+        assert_eq!(
+            what(anywhere),
+            ["scoring the scenery (view)", "scoring the scenery (buildings)", "scoring the scenery (flags)"]
+        );
         // Without the roadside buildings, flags still follows view.
         let runs = tail(u, false, false);
         assert_eq!(split(&runs).1.len(), 6);
