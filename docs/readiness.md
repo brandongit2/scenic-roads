@@ -108,7 +108,7 @@ The key is `hash16` of these lines, in this order:
    - `w <step> <target> <logical>=<content>` for a `Whole` read, every target listed (sorted)
    - `in <name> <identity>` per `Input`
 
-So a key's text is self-describing. `scenic-build key <step> <target>` prints the lines, not just
+So a key's text is self-describing. A planned command (a `key` subcommand of scenic-build) prints the lines, not just
 the hash, and a re-keyed target can be diffed against its last run's lines (kept with the record, as
 today's restore keeps water's).
 
@@ -222,7 +222,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
 - `slope_lo_terrain`, `slope_piece_from`, `slope_deep_from`, `unit_terrain_from` as separate memo
   keys (the memo is keyed on the read's `Grain::Outputs` lines, derived).
 - `UNKNOWN` (`Ready::Unknown`).
-- docs/steps.md §12's per-step prose becomes a generated table (`scenic steps --keys`), so it can't
+- docs/steps.md §12's per-step prose becomes a table generated from the declarations (a planned flag of scenic steps), so it can't
   drift either.
 
 ## 9. Work in flight
@@ -242,5 +242,5 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
    keeps reading it without waiting (an explicit `Read::Input` on its content, documented as the one
    read that isn't waited on). Moving root earlier is the root-cause fix; it delays slope until all
    terrain-lo is done.
-3. **Generated steps.md §12.** Replace the hand prose with `scenic steps --keys` output, or keep the
+3. **Generated steps.md §12.** Replace the hand prose with a table generated from the declarations, or keep the
    prose and test it against the declarations.
