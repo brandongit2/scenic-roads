@@ -15,7 +15,7 @@ use crate::dem::spacing::Fine;
 use crate::legacy::TileId;
 use crate::reach::{Reach, Reaches};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Step versions: bumping one rebuilds that step everywhere (oldest first, when idle).
 /// Terrain-hi 7 (task #639): its deep levels are their terrain-deep targets' (`TERRAIN_DEEP_V`), it
@@ -1456,6 +1456,9 @@ pub fn terrain_slope_targets_made(
     };
     let mut out = TerrainTargets::default();
     let near = coverage_tiles(cov);
+    // (Each z6 tile's coverage fingerprint, datasets and water, as its deep targets' keys read
+    // them too: worked out once a z6 tile, not once a target over it.)
+    let mut piece_reads: HashMap<(u32, u32), Option<String>> = HashMap::new();
     for (q, ts) in &near {
         let qs = format!("3/{}/{}", q.0, q.1);
         let (mut tmids, mut smids) = (Vec::new(), Vec::new());
@@ -1463,11 +1466,11 @@ pub fn terrain_slope_targets_made(
             let t = format!("6/{x}/{y}");
             let fp = cov.fingerprint(grown_e7(6, x, y, 20.0));
             let hi = crate::terrain_pack::makes_hi(cov, (x, y));
+            let ws = water(&t, &piece_water_from(&fp)).zip(piece_datasets(x, y));
+            piece_reads.insert((x, y), ws.as_ref().map(|(w, s)| format!("{t} {fp} {s} {w}")));
             out.terrain.push((
                 t.clone(),
-                water(&t, &piece_water_from(&fp))
-                    .zip(piece_datasets(x, y))
-                    .map_or_else(|| UNKNOWN.to_string(), |(w, s)| piece_key_made((x, y), &fp, &s, &w, hi)),
+                ws.map_or_else(|| UNKNOWN.to_string(), |(w, s)| piece_key_made((x, y), &fp, &s, &w, hi)),
             ));
             out.slope.push((t.clone(), slope_piece_key((x, y), m, tiles).ok()));
             tmids.push(format!("{t}={}", get(&crate::terrain_pack::mid_logical(x, y))));
@@ -1516,14 +1519,10 @@ pub fn terrain_slope_targets_made(
                     crate::terrain_deep::base_want(t).iter().map(|&(z, x, y)| (x >> (z - 6), y >> (z - 6))).collect();
                 let reads: Option<Vec<String>> = bases
                     .into_iter()
-                    .filter(|p| pieces.contains(p))
-                    .map(|(x, y)| {
-                        let p = format!("6/{x}/{y}");
-                        let fp = cov.fingerprint(grown_e7(6, x, y, 20.0));
-                        // (As its terrain-hi key names them, the z10 tiles it rounds as coarser than
-                        // native among them, crate::terrain_pack::Sources::deeper: the base is made so.)
-                        Some(format!("{p} {fp} {} {}", piece_datasets(x, y)?, water(&p, &piece_water_from(&fp))?))
-                    })
+                    .filter_map(|p| piece_reads.get(&p))
+                    // (As its terrain-hi key names them, the z10 tiles it rounds as coarser than
+                    // native among them, crate::terrain_pack::Sources::deeper: the base is made so.)
+                    .cloned()
                     .collect();
                 let key = reads.map_or_else(
                     || UNKNOWN.to_string(),

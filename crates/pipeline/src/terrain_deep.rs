@@ -79,12 +79,16 @@ pub const BASE_URL: &str = "scenic-terrain:{z}/{x}/{y}";
 pub const DEEP_V: u32 = 5;
 
 /// What a z6 tile's key names of the deep levels' code: their version, every constant their bytes
-/// follow and the codec (crate::terrain_codec::version).
+/// follow and the codec (crate::terrain_codec::version). Made once a process.
 pub fn versions() -> String {
-    format!(
-        "deep {DEEP_V} {} finer {FINER} max {MAX_Z} presence {PRESENCE} pack {PACK_Z}",
-        crate::terrain_codec::version()
-    )
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| {
+        format!(
+            "deep {DEEP_V} {} finer {FINER} max {MAX_Z} presence {PRESENCE} pack {PACK_Z}",
+            crate::terrain_codec::version()
+        )
+    })
+    .clone()
 }
 
 /// The finest zoom at latitude `lat` whose pixels are no finer than half of `res` metres.
@@ -1106,14 +1110,49 @@ pub fn zooms(sets: &[FineSet], t: (u32, u32)) -> Vec<((u8, u32, u32), u8)> {
     if here.is_empty() {
         return Vec::new();
     }
-    base_want(t)
-        .into_iter()
-        .filter(|&(z, x, y)| under(z, x, y, PACK_Z, t))
-        .filter_map(|bt| zoom_here(&here, bt).map(|zf| (bt, zf)))
-        .collect()
+    // (Whether each dataset meets the base tiles, for all of them at once where its cells say
+    // (Cover::meets_within), and the zoom it reaches by row: asked once a z10 tile, not a base tile.)
+    let within: Vec<Option<bool>> =
+        here.iter().map(|s| s.cover.meets_within(crate::stage::tile_box_grown(PACK_Z, t.0, t.1, 0.0))).collect();
+    if within.iter().all(|&w| w == Some(false)) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for z in PACK_Z..=crate::terrain_base::MAX_Z {
+        let k = 1u32 << (z - PACK_Z);
+        let rows: Vec<(u32, Vec<u8>)> = (t.1 * k..(t.1 + 1) * k)
+            .filter(|&y| crate::terrain_pack::max_zoom_at(crate::terrain_pack::tile_lat(z, y)) == z)
+            .map(|y| {
+                let lat = crate::terrain_pack::tile_lat(z, y);
+                (y, here.iter().map(|s| s.detail.zoom_at(lat)).collect())
+            })
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        for x in t.0 * k..(t.0 + 1) * k {
+            for (y, zs) in &rows {
+                let bb = std::cell::OnceCell::new();
+                let zf = (0..here.len())
+                    .filter(|&i| {
+                        within[i].unwrap_or_else(|| {
+                            here[i].cover.meets(*bb.get_or_init(|| crate::stage::tile_box_grown(z, x, *y, 0.0)))
+                        })
+                    })
+                    .map(|i| zs[i])
+                    .max()
+                    .filter(|&f| f > z);
+                if let Some(zf) = zf {
+                    out.push(((z, x, *y), zf));
+                }
+            }
+        }
+    }
+    out
 }
 
-/// The finest zoom datasets `here` reach in base tile `b` (at its middle latitude), where past its own.
+/// The finest zoom datasets `here` reach in base tile `b` (at its middle latitude), where past its
+/// own: a run's, by base tile (`zooms` answers a z10 tile's at once).
 fn zoom_here(here: &[&FineSet], b: (u8, u32, u32)) -> Option<u8> {
     let (z, x, y) = b;
     let bb = crate::stage::tile_box_grown(z, x, y, 0.0);
@@ -1625,6 +1664,39 @@ mod tests {
             detail,
             cut: None,
         }
+    }
+
+    #[test]
+    fn a_z10_tiles_zooms_are_its_base_tiles_each_asked() {
+        // (Cells cutting z10 tiles, one partly covered, two datasets over each other, a pole-ward
+        // row and the antimeridian's edge.)
+        let sets = vec![
+            set("lidar", Detail::Raster(2000), &[(-75, 45), (-74, 46), (-180, 70), (179, 70)]),
+            set("mid", Detail::Raster(8000), &[(-75, 45), (-75, 46), (-180, 70)]),
+            set("pyr", Detail::Pyramid(15), &[(-74, 45)]),
+        ];
+        let mut n = 0;
+        for (x0, y0) in [(296u32, 362u32), (0, 270), (1020, 270)] {
+            for x in x0..x0 + 8 {
+                for y in y0..y0 + 8 {
+                    let s = (x >> (PACK_Z - SUB_Z), y >> (PACK_Z - SUB_Z));
+                    let b = crate::stage::tile_box_grown(SUB_Z, s.0, s.1, 0.0);
+                    let here = meeting(&sets, b, poleward(b));
+                    let each: Vec<((u8, u32, u32), u8)> = if here.is_empty() {
+                        Vec::new()
+                    } else {
+                        base_want((x, y))
+                            .into_iter()
+                            .filter(|&(z, bx, by)| under(z, bx, by, PACK_Z, (x, y)))
+                            .filter_map(|bt| zoom_here(&here, bt).map(|zf| (bt, zf)))
+                            .collect()
+                    };
+                    n += each.len();
+                    assert_eq!(zooms(&sets, (x, y)), each, "10/{x}/{y}");
+                }
+            }
+        }
+        assert!(n > 0);
     }
 
     #[test]

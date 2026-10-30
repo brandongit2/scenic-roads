@@ -575,6 +575,36 @@ impl Cover {
             })
         })
     }
+
+    /// `meets` of every box inside box `b` at once: Some(false) where `b` meets none of its cells
+    /// (so no box inside does), Some(true) where every cell `b` meets is one of its cells (so every
+    /// box inside meets the cell its middle is in), None where the boxes must each be asked (or `b`
+    /// spans more than a few cells). A deep target's base tiles are one answer, not a test a tile.
+    pub fn meets_within(&self, b: [f64; 4]) -> Option<bool> {
+        if self.world {
+            return Some(true);
+        }
+        let (x0, x1, y0, y1) =
+            (b[0].floor() as i32 - 1, b[2].floor() as i32, b[1].floor() as i32 - 1, b[3].floor() as i32);
+        if ((x1 - x0 + 1) as i64) * ((y1 - y0 + 1) as i64) > 16 {
+            return None;
+        }
+        let (mut some, mut all) = (false, true);
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                if (x as f64) <= b[2] && (x + 1) as f64 >= b[0] && (y as f64) <= b[3] && (y + 1) as f64 >= b[1] {
+                    let has = self.cells.contains(&(x, y));
+                    some |= has;
+                    all &= has;
+                }
+            }
+        }
+        match (some, all) {
+            (false, _) => Some(false),
+            (true, true) => Some(true),
+            _ => None,
+        }
+    }
 }
 
 /// The 1° cells that native boxes (`boxes`, in projected CRS `crs`) meet: every cell sampled on a
