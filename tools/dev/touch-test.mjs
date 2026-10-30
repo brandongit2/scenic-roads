@@ -506,10 +506,10 @@ async function run() {
         }
       }
       // (Jobs: the stages count done and left in each step's noun (#685, the one place a whole is
-      // counted), with no job squares.)
+      // counted), as the agent says them ("1,234 of 2,000 z6 tiles", #846), with no job squares.)
       if (tab === "jobs") {
         await until(`!!document.querySelector(".panel:not([hidden]) .stages > .st")`, 10000);
-        const j = await js(`(() => { const s = document.querySelector(".panel:not([hidden]) .stages"); if (!s) return null; const rows = [...s.querySelectorAll(":scope > .st")]; return [rows.length, s.querySelectorAll(".cells, .jb").length, rows.filter((r) => !/(done|left|to come)$/.test(r.querySelector(".n")?.textContent || "")).map((r) => r.querySelector(".n")?.textContent).slice(0, 3)]; })()`);
+        const j = await js(`(() => { const s = document.querySelector(".panel:not([hidden]) .stages"); if (!s) return null; const rows = [...s.querySelectorAll(":scope > .st")]; return [rows.length, s.querySelectorAll(".cells, .jb").length, rows.filter((r) => !/(done|left|to come)$|^[0-9,]+ of [0-9,]+ /.test(r.querySelector(".n")?.textContent || "")).map((r) => r.querySelector(".n")?.textContent).slice(0, 3)]; })()`);
         check("jobs: the stages count done and left, no job squares", j && j[0] > 0 && !j[1] && !j[2].length, j ? `${j[0]} steps, ${j[1]} squares; not done or left: ${j[2].join(" | ")}` : "no stages");
         await js(`document.querySelector(".panel:not([hidden]) .d-stages")?.scrollIntoView({ block: "start" })`);
         const { data } = await page.send("Page.captureScreenshot", { format: "png" });

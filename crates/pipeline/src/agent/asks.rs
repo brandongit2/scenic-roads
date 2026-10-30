@@ -109,14 +109,16 @@ impl Asks {
     /// The loop's last heartbeat written again now with hold `st` (its stage, its verdict), here
     /// and on the NAS, and kept as the watchdog's beat.
     fn beat_again(&self, st: &HoldState) {
+        // (Held before the loop's last beat is read, as the loop holds it from its say to its
+        // writes: the beat read is the last written, never one the loop writes after this.)
+        // (The NAS write under nasread::write's deadline: a share that hangs holds the loop's
+        // heartbeat no longer than its own write would.)
+        let mut kept = nasread::BEATING.lock().unwrap_or_else(|e| e.into_inner());
         let Some(mut b) = self.beat.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
         // (Going on: resuming, until the loop's next pass starts work again.)
         b.status.say(None, st, st.held.is_none());
         b.status.beat = now_s();
         let Ok(body) = serde_json::to_vec_pretty(&b.status) else { return };
-        // (Held from the local copy's write on, as the loop's own beat: an older content never
-        // lands after this one.)
-        let mut kept = nasread::BEATING.lock().unwrap_or_else(|e| e.into_inner());
         write_replace(&b.local, &body).ok();
         let Some(p) = b.shared.clone() else { return };
         match write_beat(&p, body) {

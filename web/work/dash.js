@@ -90,8 +90,36 @@ const waitName = (w) => w.step || w.what;
 // says them (build::Line::said, task #846: the menu bar and `scenic status` say the same): "156 of
 // 284 z6 tiles", "3 runs left", "done", "to come"; the done that made nothing to publish counted
 // apart: "7,837 of 7,849 z10 tiles (6,814 with nothing to publish)".
-const countOf = (x) => x.count || "to come";
-const countsOf = (l) => (l.counts?.length ? l.counts : ["to come"]).join(" · ");
+// (An agent's before #846, a rollout's: worked out from the older fields as build.rs Item::count
+// and Line::counts do.)
+function countOf(x) {
+  if (x.count) return x.count;
+  const noun = x.noun || S.noun(x.step) || (x.unit || "target").replace(/s$/, "");
+  if (x.total > 0) return `${n(x.done)} of ${n(x.total)} ${noun}s`;
+  if (x.left === 0) return "done";
+  if (x.left != null) return `${n(x.left)} ${noun}${x.left === 1 ? "" : "s"} left`;
+  return "to come";
+}
+function countsOf(l) {
+  if (l.counts?.length) return l.counts.join(" · ");
+  const out = [], nouns = [], items = l.items || [];
+  for (const i of items) {
+    const noun = S.noun(i.step);
+    if (nouns.includes(noun)) continue;
+    nouns.push(noun);
+    const of = items.filter((j) => S.noun(j.step) === noun);
+    if (of.some((j) => j.total != null)) {
+      const t = of.reduce((a, j) => a + (j.total ?? 0), 0);
+      if (!of.every((j) => j.total != null)) out.push(`${noun}s to come`);
+      else if (t > 0 || !out.length) out.push(`${n(of.reduce((a, j) => a + j.done, 0))} of ${n(t)} ${noun}s`);
+    } else if (of.every((j) => j.left != null)) {
+      const left = of.reduce((a, j) => a + j.left, 0);
+      if (left) out.push(`${n(left)} ${noun}${left === 1 ? "" : "s"} left`);
+    } else out.push(`${noun}s to come`);
+  }
+  if (!out.length) out.push(finished(l) ? "done" : "to come");
+  return out.join(" · ");
+}
 const fraction = (x) => (x.total ? x.done / x.total : x.left != null ? (x.left ? 0 : 1) : 0);
 // Machines' colours, the lead first.
 const MACHINE_COLOURS = ["#5b8fd8", "#b48ae8", "#e0a36a", "#e07a9a", "#6cc28a"];
@@ -163,11 +191,22 @@ const jobsOf = (st) => (st.jobs?.length ? st.jobs : [st.job, st.beside, ...(st.m
 // A Mac's state as its agent says it (agent::Verdict, task #846: the menu bar shows the same), out
 // of touch the page's to tell.
 const VERDICT_CLASS = { building: "run", idle: "", waiting: "", failed: "bad" };
-function machineState(st, fresh) {
+function machineState(st, fresh, paused) {
   if (!fresh) return ["out of touch", "bad"];
-  const v = st.verdict;
-  if (!v) return ["older app", ""];
+  const v = verdictOf(st, paused);
   return [v.state, VERDICT_CLASS[v.state] ?? "warn", v.said];
+}
+// Its verdict; an agent's before #846 (a rollout: the pool's Macs update one by one), worked out
+// from its older fields as Status::verdict_of does.
+function verdictOf(st, paused) {
+  if (st.verdict) return st.verdict;
+  const jobs = jobsOf(st);
+  if (st.held) return { state: jobs.some((j) => !j.paused) ? "pausing" : "paused", said: `Paused (from ${st.held.by}); the other Macs go on` };
+  if (jobs.some((j) => !j.paused && !j.pausing)) return { state: "building", said: jobs.length === 1 ? `Building: ${jobs[0].what}` : `Building: ${plural(jobs.length, "job")}` };
+  if (jobs.some((j) => j.pausing && !j.paused)) return { state: "stopping", said: "Pausing: finishing what it's on" };
+  if (jobs.some((j) => j.paused)) return { state: "frozen", said: "Paused" };
+  if (paused || st.pause) return { state: "paused", said: "Paused with the build" };
+  return { state: "idle", said: "Nothing to build" };
 }
 
 function alerts(m) {
@@ -818,7 +857,7 @@ function fitText(w, host) {
 // slot, with what's inside it (or why none runs); live on it (live.js).
 function machineCard(m, x) {
   const st = x.status, now = m.now;
-  const [state, cls, said] = machineState(st, x.fresh);
+  const [state, cls, said] = machineState(st, x.fresh, m.sw.pause);
   const jobs = jobsOf(st);
   const role = x.role === "lead" ? "lead · coordinator" : "member";
   const card = h("div", { class: `mc ${x.fresh ? "" : "off"}`, style: { borderLeft: `3px solid ${x.colour}` } },
@@ -1157,7 +1196,7 @@ function runCard(m, r, kind, laneName) {
 function laneChips(x) {
   const st = x.status, c = st.conditions || {};
   return [
-    st.hold && chip(st.hold.stage, "warn", st.hold.said),
+    st.hold ? chip(st.hold.stage, "warn", st.hold.said) : st.held && chip(jobsOf(st).length ? "pausing" : "paused", "warn", `Paused alone, from ${st.held.by}: it takes no new work; the other Macs go on`),
     !x.fresh && chip("out of touch", "bad", `Last heard from ${clock(st.beat)}`),
     c.ac === false && chip(`on battery${c.battery != null ? ` ${c.battery}%` : ""}`, c.battery != null && c.battery < 40 ? "warn" : ""),
   ].filter(Boolean);
@@ -2046,7 +2085,7 @@ function render() {
   window.scrollTo(0, scrollY);
   ctx.tabsEl.scrollTop = paneY;
   refreshPin();
-  ctx.onState?.(m.sw.pause ? "paused" : !m.a.host ? "no word from the lead" : m.fresh(m.a.beat) ? (m.a.verdict?.state ?? "older app") : "lead out of touch");
+  ctx.onState?.(m.sw.pause ? "paused" : !m.a.host ? "no word from the lead" : m.fresh(m.a.beat) ? verdictOf(m.a, m.sw.pause).state : "lead out of touch");
 }
 
 let polling = null;

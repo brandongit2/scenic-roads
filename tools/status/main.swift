@@ -141,6 +141,26 @@ struct Status: Decodable {
     let hold: HoldStage?
     let verdict: Verdict?
     let out_of_touch_s: Int?
+    /// This Mac paused alone (task #224): what an agent before #846 says of its hold.
+    let held: HeldInfo?
+
+    /// Its verdict; an agent's before #846 (a rollout: the pool's Macs update one by one), worked
+    /// out from its older fields as crates/pipeline/src/agent/mod.rs Status::verdict_of does.
+    var said: Verdict {
+        if let v = verdict { return v }
+        let jobs = allJobs
+        let n = { (k: Int) in "\(k) job\(k == 1 ? "" : "s")" }
+        if let h = held { return Verdict(state: jobs.contains { $0.paused == nil } ? "pausing" : "paused", said: "Paused (from \(h.by)); the other Macs go on") }
+        if jobs.contains(where: { $0.paused == nil && $0.pausing == nil }) { return Verdict(state: "building", said: jobs.count == 1 ? "Building: \(jobs[0].what)" : "Building: \(n(jobs.count))") }
+        let stopping = jobs.filter { $0.paused == nil && $0.pausing != nil }.count
+        if stopping > 0 { return Verdict(state: "stopping", said: "Pausing: \(n(stopping)) finishing what \(stopping == 1 ? "it's" : "they're") on") }
+        if let p = jobs.first(where: { $0.paused != nil })?.paused { return Verdict(state: "frozen", said: "Paused: \(p)") }
+        if let p = pause { return Verdict(state: "paused", said: "Paused with the build (from \(p.by))") }
+        if let w = waiting.first(where: { $0.why.contains("failed") }) { return Verdict(state: "failed", said: "Failed: \(w.what)") }
+        if let d = recent.first, !d.ok { return Verdict(state: "failed", said: "Failed: \(d.what)") }
+        if let w = waiting.first { return Verdict(state: "waiting", said: "Waiting: \(w.what)") }
+        return Verdict(state: "idle", said: "Nothing to build")
+    }
 }
 
 /// A Mac's own pause's stage (crates/pipeline/src/control.rs HoldView): "asked", "pausing" (its
@@ -546,8 +566,29 @@ struct Step: Decodable {
     /// #846: the build page and `scenic status` say the same).
     let counts: [String]?
     let finished: Bool?
-    var isDone: Bool { finished ?? false }
-    var said: [String] { counts ?? ["to come"] }
+    /// (An agent's before #846, a rollout's: worked out from the older fields as build.rs Line
+    /// `finished` and `counts` do.)
+    var isDone: Bool { finished ?? (left == 0 || (left == nil && total.map { (done ?? 0) >= $0 } == true)) }
+    var said: [String] {
+        if let c = counts { return c }
+        var out: [String] = []
+        var nouns: [String] = []
+        let items = self.items ?? []
+        for i in items where !nouns.contains(i.noun) {
+            nouns.append(i.noun)
+            let of = items.filter { $0.noun == i.noun }
+            if of.contains(where: { $0.total != nil }) {
+                if of.allSatisfy({ $0.total != nil }) {
+                    let t = of.reduce(0) { $0 + ($1.total ?? 0) }
+                    if t > 0 || out.isEmpty { out.append("\(commas(of.reduce(0) { $0 + ($1.done ?? 0) })) of \(commas(t)) \(i.noun)s") }
+                } else { out.append("\(i.noun)s to come") }
+            } else if of.allSatisfy({ $0.left != nil }) {
+                let l = of.reduce(0) { $0 + ($1.left ?? 0) }
+                if l > 0 { out.append("\(commas(l)) \(i.noun)\(l == 1 ? "" : "s") left") }
+            } else { out.append("\(i.noun)s to come") }
+        }
+        return out.isEmpty ? [isDone ? "done" : "to come"] : out
+    }
 }
 
 /// A step's line of a stage (docs/pipeline.md §4): its targets done of total, or left.
@@ -561,6 +602,14 @@ struct Item: Decodable {
     /// Its count in words and whether it's done, as the agent says them (build.rs Item, task #846).
     let count: String?
     let finished: Bool?
+    /// (An agent's before #846, a rollout's: worked out as build.rs Item::count does.)
+    var isDone: Bool { finished ?? (left == 0) }
+    var said: String {
+        if let c = count { return c }
+        if let t = total, t > 0 { return "\(commas(done ?? 0)) of \(commas(t)) \(noun)s" }
+        if let l = left { return l == 0 ? "done" : "\(commas(l)) \(noun)\(l == 1 ? "" : "s") left" }
+        return "to come"
+    }
 }
 
 struct JobProgress: Decodable {
@@ -695,7 +744,7 @@ func classify(_ r: Reply?) -> (Kind, String) {
         return (.outOfTouch, "Lead out of touch since \(clock(s.beat))")
     }
     // The lead's state as its agent says it (task #846).
-    guard let v = s.verdict else { return (.unknown, "The lead runs an older app: its state shows once it's updated") }
+    let v = s.said
     let kind: Kind
     switch v.state {
     case "building": kind = .building
@@ -718,6 +767,8 @@ func state(_ r: Reply?, own: Own?) -> (Kind, String) {
     if let o = own, now - o.beat <= (o.out_of_touch_s ?? outOfTouchDefault), let h = o.hold {
         return (h.stage == "paused" ? .pausedHere : .paused, clip(h.said))
     }
+    // (An agent's before #846, a rollout's: its hold alone.)
+    if own?.hold == nil, r?.held_here != nil { return (.pausedHere, "This Mac is paused; the other Macs go on") }
     if let o = own, now - o.beat <= (o.out_of_touch_s ?? outOfTouchDefault), let a = o.pool?.lead?.alert { return (.problem, a) }
     return classify(r)
 }
@@ -735,6 +786,13 @@ struct Line {
 }
 
 /// "12,345".
+/// "12,345", whatever the Mac's locale: a count as the agent says it (build.rs grouped), for an
+/// older agent's counts worked out here.
+func commas(_ v: Int) -> String {
+    let s = String(v)
+    return s.enumerated().map { i, c in i > 0 && (s.count - i) % 3 == 0 ? ",\(c)" : "\(c)" }.joined()
+}
+
 func grouped(_ v: Double) -> String {
     let f = NumberFormatter()
     f.numberStyle = .decimal
@@ -889,7 +947,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
             // Its steps, each the same: done, under way or to come, its count in its noun.
             for it in st.items ?? [] {
                 let here = now.contains(it.step)
-                out.append(Line(text: "      \(it.finished == true ? "✓" : here ? "▸" : "○") \(it.step): \(it.count ?? "to come")", style: .small))
+                out.append(Line(text: "      \(it.isDone ? "✓" : here ? "▸" : "○") \(it.step): \(it.said)", style: .small))
             }
             // (Only some of its jobs: which.)
             if let sh = st.shared, sh != "all" { out.append(Line(text: "      ⇄ any Mac can take its \(sh)", style: .small)) }

@@ -6291,6 +6291,23 @@ mod tests {
     #[test]
     fn a_target_uploading_is_noted_done_once_its_uploads_have_landed() {
         use super::{Landing, Out};
+        // (Alone in a process of its own: a target's cost line takes this process's measures
+        // (pipeline::costin, every NAS write any test here makes counted in them), and the done
+        // and cost files are named by its environment: run beside the others, a test's put_file
+        // landing between two cost lines was counted in this one's `wrote`, task #846's review.)
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let mut c = store::spawn::command(std::env::current_exe().unwrap());
+            c.args(["--exact", "tests::a_target_uploading_is_noted_done_once_its_uploads_have_landed"]).env(ALONE, "1");
+            let out = store::spawn::output(&mut c).unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
         let d = tempfile::tempdir().unwrap();
         let done = d.path().join("done");
         // (The only test here that notes targets done or their costs.)

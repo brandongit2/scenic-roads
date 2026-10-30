@@ -4981,6 +4981,12 @@ impl Agent {
         };
         nasread::phase("the heartbeat");
         status.set_jobs(views, all_new);
+        // (Held from the hold's say on, the local copy and the NAS's written and the kept beat set:
+        // the watchdog's kept beat, an older content, never lands after this one, here or on the
+        // NAS; and the asks thread's hold, set after this say, beats only once this is written,
+        // from this status, crate::agent::asks.)
+        let mut kept = nasread::BEATING.lock().unwrap_or_else(|e| e.into_inner());
+        self.adopt_hold();
         status.say(crate::control::peek_hold_request(&self.o.home).as_ref(), &self.hold, false);
         // (The running jobs' channels, for the asks thread to tell them at once.)
         *self.asks.controls.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -5004,9 +5010,6 @@ impl Agent {
             local: self.o.home.join(&local),
             shared: root.as_ref().filter(|_| !self.o.dry_run).map(|r| r.join(&shared)),
         });
-        // (Held from the local copy's write on: the watchdog's kept beat, an older content, never
-        // lands after this one, here or on the NAS.)
-        let mut kept = nasread::BEATING.lock().unwrap_or_else(|e| e.into_inner());
         write_replace(&self.o.home.join(&local), &body).ok();
         // (Not a dry run's, in a home of its own: the NAS's is the real agent's.)
         if let (Some(root), false) = (&root, self.o.dry_run) {
@@ -5060,6 +5063,9 @@ impl Agent {
     /// pause say. True when it ended.
     fn tend(&mut self, k: usize, c: &Conditions, root: Option<&store::nasfs::NasRoot>, slept: u64) -> Result<bool> {
         let run_time = self.run_time(k);
+        // (A hold the asks thread took up: drained by its say, not told "run" again by a loop that
+        // hadn't seen it.)
+        self.adopt_hold();
         // (Or told by the asks thread, before this loop's tend: crate::agent::asks.)
         let draining = self.slots[k].drain_since.is_some() || self.told_drain(k);
         let Some(r) = self.slots[k].running.as_mut() else { return Ok(false) };
