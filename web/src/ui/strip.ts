@@ -416,7 +416,7 @@ function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void;
   const flagList = h('details', { class: 'flags' }, h('summary', {}, 'Flags and coats of arms, file by file'));
   flagList.addEventListener('toggle', () => {
     if (flagList.open && !flagList.querySelector('ul')) {
-      flagList.append(h('ul', {}, ...flagCredits().map((c) => h('li', {}, h('a', { href: c.page, target: '_blank', rel: 'noopener' }, c.name), ` · ${c.author || 'unknown author'} · ${c.licence}`))));
+      flagList.append(h('ul', {}, ...flagCredits().map((c) => h('li', {}, h('a', { href: c.page, target: '_blank', rel: 'noopener' }, c.name), ` · ${c.author || 'author on its page'} · ${c.licence}`))));
     }
   });
   const d = h('dialog', { class: 'credits' },

@@ -95,7 +95,7 @@
     goes by: its coat of arms, else its seal; none of those, a "?" placeholder, never its folder's or
     country's; a folder's, that of the country its own regions' land is most in), fitted in a box of
     fixed width in its own aspect ratio, without border or rounding (the files, each one's author
-    and licence, are bundled: web/src/flags/, made by tools/flags/fetch.py and credited in the
+    and licence, are bundled: web/src/flags/, made by producers/flags/fetch.py and credited in the
     Credits, file by file), the name, the input check's state while it's checking, held or disabled, and its land and
     water in km² (from its accepted geometry: the server works each out once, `region-areas.json`).
     No build state.

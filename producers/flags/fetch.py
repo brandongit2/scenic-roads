@@ -3,7 +3,7 @@
 symbol it goes by where it has none (its coat of arms, else its seal), from Wikidata and Wikimedia
 Commons, stored in web/src/flags/ with each file's source, author and licence (index.json).
 
-  python3 -I tools/flags/fetch.py [--server http://localhost:7311] [--out web/src/flags]
+  uv run --project producers python producers/flags/fetch.py [--server http://localhost:7311] [--out web/src/flags]
 
 The regions come from a map server (/api/regions and /api/regions/outlines?z=4: each region's
 first osm: relation and its area's ISO 3166 code). A region's item is the Wikidata item naming its
@@ -11,6 +11,11 @@ relation (P402), else its ISO 3166-2 code (P300); a country's (folders') by ISO 
 image: its current flag (P41, preferred rank first, none ended by P582), else coat of arms (P94),
 else seal (P158); none of those, no file (the list shows the placeholder). Commons' SVG as is up to
 SVG_MAX bytes, else Commons' own PNG rendering PNG_H px high (big coats of arms, raster sources).
+
+Only files under a licence in FREE are kept (each lets the app ship it offline, with its credit); a
+file under any other, or in REFUSED (a free-use claim that can't be checked), isn't fetched and its
+region shows the placeholder. An author Commons gives only as a pointer ("see the file history")
+is kept empty: the Credits then send to the file's page, where its history names them.
 
 Wikidata's query service and the Commons API are documented APIs, used by their policies (a
 User-Agent naming the app, one request at a time, Retry-After honoured); the files come from
@@ -33,6 +38,17 @@ SVG_MAX = 60_000
 PNG_H = 48
 PROPS = {'flag': 'P41', 'coat of arms': 'P94', 'seal': 'P158'}
 RANK = {'PreferredRank': 0, 'NormalRank': 1}
+FETCHES = "api, data"
+# Licences that allow redistribution offline: public domain and CC0; Creative Commons' BY and BY-SA
+# (any version or port, credited by author, licence and the file's page); "Copyrighted free use"
+# (the holder lets anyone use it for any purpose; see REFUSED); the Open Government Licence - Oman
+# (any use, with the source acknowledged).
+FREE = re.compile(r'Public domain|CC0|CC BY(-SA)? \d\.\d( [a-z]{2})?|Copyrighted free use|OGL-om 1\.0')
+# Files whose licence tag can't be checked: Cabinda's logo, "free use" by a provincial government's
+# site that no longer answers (its permission is only the site's address).
+REFUSED = {'Cabinda logo.gif'}
+# An author that only points elsewhere, or none.
+NO_AUTHOR = re.compile(r'(?i)^((various, )?see (the )?(file|upload) (history|log)\b.*|see below\.?|(unknown ?(author)?)+|n\.a|own work)$')
 
 
 def get(url, data=None, accept=None):
@@ -69,6 +85,12 @@ def sparql(head):
                 out.setdefault(b['k']['value'], []).append((list(PROPS).index(n), RANK[b[v + '_r']['value'].rsplit('#', 1)[1]], item, n, f))
     # Each key's best: flag before coat of arms before seal, preferred before normal, then by name.
     return {k: min(v)[2:] for k, v in out.items()}
+
+
+def author(s):
+    """Commons' author, cut to 160 characters, or empty where it only points elsewhere."""
+    s = s.replace('</ref>', '').strip()
+    return '' if NO_AUTHOR.match(s) else s[:160]
 
 
 def values(keys):
@@ -109,15 +131,15 @@ def main():
                 m = ii.get('extmetadata', {})
                 meta[norm.get(p['title'], p['title'])[5:]] = {
                     'svg': ii['mime'] == 'image/svg+xml' and ii['size'] <= SVG_MAX, 'url': ii['url'], 'thumb': ii.get('thumburl'), 'page': ii['descriptionurl'],
-                    'licence': strip(m.get('LicenseShortName', {}).get('value')) or 'see its page',
-                    'author': strip(m.get('Artist', {}).get('value'))[:160]}
+                    'licence': strip(m.get('LicenseShortName', {}).get('value')),
+                    'author': author(strip(m.get('Artist', {}).get('value')))}
         time.sleep(1)
     os.makedirs(a.out, exist_ok=True)
     old = {f for f in os.listdir(a.out) if re.fullmatch(r'Q\d+\.(svg|png)', f)}
     index = {'osm': {}, 'iso': {}, 'items': {}}
     for item, (kind, f) in sorted(items.items()):
         m = meta.get(f)
-        if not m or not (m['svg'] or m['thumb']):
+        if not m or not (m['svg'] or m['thumb']) or f in REFUSED or not FREE.fullmatch(m['licence']):
             continue
         file = f'{item}.{"svg" if m["svg"] else "png"}'
         path = os.path.join(a.out, file)
