@@ -45,6 +45,10 @@ pub struct Shape {
     /// no target (`Coverage::meets_rect`, `meets_box`): only the depth's (`meets_rect_depth`).
     pub water: bool,
     grid: std::sync::Arc<Grid>,
+    /// Its edges by place (`EdgeTree`): what `edges_meeting` reads.
+    tree: std::sync::Arc<EdgeTree>,
+    /// Its rings' digest (`Shape::rings_digest`), worked out once.
+    rings_digest: std::sync::Arc<std::sync::OnceLock<String>>,
     /// What's been worked out of it (`Memo`), shared by its clones (a region's coverage holds the
     /// whole coverage's shapes): its geometry is fixed once made.
     memo: std::sync::Arc<std::sync::Mutex<Memo>>,
@@ -171,6 +175,7 @@ impl Shape {
         let bbox =
             [bb[0].saturating_sub(bx), bb[1].saturating_sub(by), bb[2].saturating_add(bx), bb[3].saturating_add(by)];
         let grid = Grid::build(&rings, bbox, bx.max(by) as f64);
+        let tree = EdgeTree::build(&rings);
         Shape {
             source,
             rings: std::sync::Arc::new(rings),
@@ -179,8 +184,17 @@ impl Shape {
             country: String::new(),
             water: false,
             grid: std::sync::Arc::new(grid),
+            tree: std::sync::Arc::new(tree),
+            rings_digest: Default::default(),
             memo: Default::default(),
         }
+    }
+
+    /// A digest of its rings (`store::naming::hash16` of their points, ring after ring), worked out
+    /// once: what keys made of the whole coverage read (crate::agent::build::coverage_all), every
+    /// loop (task #894: hashing every point of the world's outlines each time was seconds).
+    pub fn rings_digest(&self) -> &str {
+        self.rings_digest.get_or_init(|| store::naming::hash16(bytemuck::cast_slice(&self.rings.concat())))
     }
 
     /// The grid cell of `p`, which must be inside the box.
@@ -311,7 +325,7 @@ impl Shape {
     }
 
     /// The ring edges meeting the box `rg` (w, s, e, n, E7, edges included), sorted, each once per
-    /// place in the rings (a cell grid lists an edge in every cell it crosses) as its lesser end
+    /// place in the rings as its lesser end
     /// then its other (direction doesn't matter to which points are inside); an edge the rings
     /// hold twice stays twice, since under even–odd the two cancel.
     pub fn edges_in(&self, rg: [i64; 4]) -> Vec<[i32; 4]> {
@@ -328,27 +342,10 @@ impl Shape {
         edges
     }
 
-    /// Calls `f` with each ring edge meeting the box `rg`, with its place (ring, index), from the
-    /// grid cells the box overlaps (so an edge crossing several cells comes several times), until it
-    /// returns true; whether one did.
+    /// Calls `f` with each ring edge meeting the box `rg`, with its place (ring, index), once each
+    /// (by the edge tree, `EdgeTree`), until it returns true; whether one did.
     fn edges_meeting(&self, rg: [i64; 4], f: &mut dyn FnMut((u32, u32), [i32; 2], [i32; 2]) -> bool) -> bool {
-        let g = &self.grid;
-        let cell = |v: f64, v0: f64, size: f64, n: usize| (((v - v0) / size).floor().max(0.0) as usize).min(n - 1);
-        let (cx0, cx1) = (cell(rg[0] as f64, g.x0, g.cw, g.nx), cell(rg[2] as f64, g.x0, g.cw, g.nx));
-        let (cy0, cy1) = (cell(rg[1] as f64, g.y0, g.ch, g.ny), cell(rg[3] as f64, g.y0, g.ch, g.ny));
-        for cy in cy0..=cy1 {
-            for cx in cx0..=cx1 {
-                for &(ri, i) in g.edges(cy * g.nx + cx) {
-                    let ring = &self.rings[ri as usize];
-                    let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
-                    if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) && f((ri, i), a, b)
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
+        self.tree.meeting(&self.rings, rg, f)
     }
 
     /// The shape as it is inside the box w, s, e, n (E7): whether a reference point of the box (its
@@ -358,6 +355,12 @@ impl Shape {
     /// point's, flipped by the edges crossing the line between them (inside the box), and its buffer
     /// reads the edges within the buffer of it. None when the shape has nothing in the box.
     fn fingerprint(&self, r: [i32; 4]) -> Option<String> {
+        // (A box its box misses has none: told at once, not kept. Every shape was asked of every
+        // z6 tile near the coverage, most far from it, each answer kept: the memos' cap was
+        // reached and begun again every loop, task #894.)
+        if !self.grown_meets_box(r) {
+            return None;
+        }
         {
             let m = self.memo.lock().unwrap();
             if let Some(f) = m.fingerprints.get(&r).filter(|_| m.current()) {
@@ -371,16 +374,18 @@ impl Shape {
         f
     }
 
-    /// `fingerprint`, worked out.
-    fn fingerprint_made(&self, r: [i32; 4]) -> Option<String> {
+    /// Whether the box w, s, e, n (E7) grown by the buffer meets its box.
+    fn grown_meets_box(&self, r: [i32; 4]) -> bool {
         let rg = self.grown(r);
-        if rg[0] > self.bbox[2] as i64
+        !(rg[0] > self.bbox[2] as i64
             || rg[2] < self.bbox[0] as i64
             || rg[1] > self.bbox[3] as i64
-            || rg[3] < self.bbox[1] as i64
-        {
-            return None;
-        }
+            || rg[3] < self.bbox[1] as i64)
+    }
+
+    /// `fingerprint`, worked out (for a box `grown_meets_box`).
+    fn fingerprint_made(&self, r: [i32; 4]) -> Option<String> {
+        let rg = self.grown(r);
         let edges = self.edges_in(rg);
         // A reference point on no edge, so its inside-ness doesn't depend on how the grid's cells
         // fall (on an edge, either answer would be right, and the cell decides).
@@ -528,6 +533,109 @@ impl Grid {
     }
 }
 
+/// A shape's edges by place, for the boxes they meet (`Shape::edges_meeting`: `meets_rect`,
+/// `covers_rect`, `fingerprint`): runs of `EdgeTree::RUN` edges one after another along a ring, each
+/// run's box, and above them boxes of `EdgeTree::FAN` boxes each, up to a few at the top; a box is
+/// read down only where it meets the box asked. (The grid's cells were read edge by edge: a z9–12
+/// tile on a long coast read cells of thousands of edges, minutes a loop on the world's coverage,
+/// task #894.) Made from the rings when a shape is (`Shape::new`, `from_kept`): about a byte an edge.
+struct EdgeTree {
+    /// Each run: its ring, its first edge, its edges (≤ RUN), in the order of `levels[0]`.
+    runs: Vec<(u32, u32, u32)>,
+    /// Boxes (w, s, e, n, E7): `levels[0]` the runs', `levels[k][i]` the box of
+    /// `levels[k - 1][i * FAN..(i + 1) * FAN]`; the last level has FAN boxes at most.
+    levels: Vec<Vec<[i32; 4]>>,
+}
+
+impl EdgeTree {
+    const RUN: usize = 16;
+    const FAN: usize = 8;
+
+    fn build(rings: &[Vec<[i32; 2]>]) -> EdgeTree {
+        let mut runs: Vec<((u32, u32, u32), [i32; 4])> = Vec::new();
+        for (ri, r) in rings.iter().enumerate() {
+            for start in (0..r.len()).step_by(Self::RUN) {
+                let n = Self::RUN.min(r.len() - start);
+                let mut b = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+                for i in start..=start + n {
+                    let p = r[i % r.len()];
+                    b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+                }
+                runs.push(((ri as u32, start as u32, n as u32), b));
+            }
+        }
+        // Near runs together (by their centres' Morton order), so the boxes above them are tight.
+        let morton = |b: &[i32; 4]| {
+            let c = |lo: i32, hi: i32| (((lo as i64 + hi as i64) / 2 + (1i64 << 31)) >> 16) as u64;
+            let spread = |mut v: u64| {
+                v &= 0xffff;
+                v = (v | (v << 8)) & 0x00ff_00ff;
+                v = (v | (v << 4)) & 0x0f0f_0f0f;
+                v = (v | (v << 2)) & 0x3333_3333;
+                (v | (v << 1)) & 0x5555_5555
+            };
+            spread(c(b[0], b[2])) | (spread(c(b[1], b[3])) << 1)
+        };
+        runs.sort_by_key(|(at, b)| (morton(b), *at));
+        let mut levels = vec![runs.iter().map(|&(_, b)| b).collect::<Vec<_>>()];
+        while levels.last().unwrap().len() > Self::FAN {
+            let up = levels
+                .last()
+                .unwrap()
+                .chunks(Self::FAN)
+                .map(|c| {
+                    c.iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |a, b| {
+                        [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
+                    })
+                })
+                .collect();
+            levels.push(up);
+        }
+        EdgeTree { runs: runs.into_iter().map(|(at, _)| at).collect(), levels }
+    }
+
+    /// The bytes it holds, about.
+    fn bytes(&self) -> u64 {
+        (self.runs.len() * 12 + self.levels.iter().map(|l| l.len() * 16).sum::<usize>()) as u64
+    }
+
+    /// `Shape::edges_meeting` of `rings` (the rings it was made from): each edge (not of a
+    /// point twice) meeting `rg` once, until `f` returns true; whether it did.
+    fn meeting(
+        &self,
+        rings: &[Vec<[i32; 2]>],
+        rg: [i64; 4],
+        f: &mut dyn FnMut((u32, u32), [i32; 2], [i32; 2]) -> bool,
+    ) -> bool {
+        let meets =
+            |b: &[i32; 4]| b[0] as i64 <= rg[2] && b[2] as i64 >= rg[0] && b[1] as i64 <= rg[3] && b[3] as i64 >= rg[1];
+        let top = self.levels.len() - 1;
+        let mut stack: Vec<(usize, usize)> = (0..self.levels[top].len()).rev().map(|i| (top, i)).collect();
+        while let Some((k, i)) = stack.pop() {
+            if !meets(&self.levels[k][i]) {
+                continue;
+            }
+            if k > 0 {
+                let below = self.levels[k - 1].len();
+                stack.extend((i * Self::FAN..((i + 1) * Self::FAN).min(below)).rev().map(|j| (k - 1, j)));
+                continue;
+            }
+            let (ri, start, n) = self.runs[i];
+            let ring = &rings[ri as usize];
+            for e in start..start + n {
+                let (a, b) = (ring[e as usize], ring[(e as usize + 1) % ring.len()]);
+                if a != b
+                    && segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg)
+                    && f((ri, e), a, b)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
 /// The coverage: every region's outlines.
 #[derive(Clone, Default)]
 pub struct Coverage {
@@ -538,7 +646,57 @@ pub struct Coverage {
     pub depth_only: Vec<Shape>,
 }
 
+/// What's been worked out of a whole coverage, by its version (`Coverage::version`): the answers
+/// every loop asks of it again (the z6 tiles near it, which of them make hi tiles), which depend on
+/// its shapes alone (task #894: worked out every loop from the full geometry, they were most of the
+/// checklist's minutes). Kept for the last `KEPT_VERSIONS` versions (a region's coverage is one).
+#[derive(Default)]
+pub struct Kept {
+    /// crate::agent::build::coverage_tiles.
+    pub tiles: std::sync::OnceLock<BTreeMap<(u32, u32), Vec<(u32, u32)>>>,
+    /// crate::terrain_pack::makes_hi, by z6 tile.
+    pub makes_hi: std::sync::Mutex<std::collections::HashMap<(u32, u32), bool>>,
+}
+
+/// The coverage versions `Kept` keeps answers of: the whole coverage, and each region's (the
+/// regions' progress asks each its own) with room.
+const KEPT_VERSIONS: usize = 512;
+
+static KEPT: std::sync::Mutex<Vec<(String, std::sync::Arc<Kept>)>> = std::sync::Mutex::new(Vec::new());
+
 impl Coverage {
+    /// Its version: a digest of what decides the answers `Kept` keeps (each shape's rings, by
+    /// `Shape::rings_digest`, buffer and water, in each list), worked out without reading the rings.
+    pub fn version(&self) -> String {
+        let mut h = blake3::Hasher::new();
+        for (k, list) in [&self.shapes, &self.depth_only].into_iter().enumerate() {
+            h.update(&[k as u8]);
+            h.update(&(list.len() as u64).to_le_bytes());
+            for sh in list {
+                h.update(sh.rings_digest().as_bytes());
+                h.update(&sh.buffer_m.to_bits().to_le_bytes());
+                h.update(&[u8::from(sh.water)]);
+            }
+        }
+        h.finalize().to_hex()[..32].to_string()
+    }
+
+    /// What's been worked out of this coverage's version (`Kept`), the same for every coverage of it.
+    pub fn kept(&self) -> std::sync::Arc<Kept> {
+        let v = self.version();
+        let mut all = KEPT.lock().unwrap();
+        if let Some(i) = all.iter().position(|(k, _)| *k == v) {
+            let e = all.remove(i);
+            all.push(e);
+        } else {
+            if all.len() >= KEPT_VERSIONS {
+                all.remove(0);
+            }
+            all.push((v, Default::default()));
+        }
+        all.last().unwrap().1.clone()
+    }
+
     /// A digest of what the coverage holds (every shape's source, rings, buffer, country and
     /// water): part of a resumed run's identity (crate::resume_log::job_id), task #889.
     pub fn digest(&self) -> String {
@@ -568,7 +726,8 @@ impl Coverage {
 
     /// The memory a step's process takes to read this coverage (MB; `coverage_of` in scenic-build,
     /// through `Coverage::accepted`), worked out from the coverage itself: every shape's rings (8 B a
-    /// point), its grid (`Grid`: per cell a bool and its edges' 4 B start, 8 B an entry), the
+    /// point), its grid (`Grid`: per cell a bool and its edges' 4 B start, 8 B an entry), its edge tree
+    /// (`EdgeTree::bytes`), the
     /// kept file's stream buffer and one shape's cells in passing (`from_kept`, `write_kept`: read
     /// and written as a stream, task #807), and the memos' cap (`MEMO_CAP`). A job's memory bound
     /// adds it to what its step holds besides (the agent's `guess` and `peak`, task #639).
@@ -580,7 +739,7 @@ impl Coverage {
                 let points: u64 = sh.rings.iter().map(|r| r.len() as u64).sum();
                 let g = &sh.grid;
                 let rings = points * 8 + sh.rings.len() as u64 * 24;
-                let grid = (g.nx * g.ny) as u64 * 5 + 4 + g.edges.len() as u64 * 8;
+                let grid = (g.nx * g.ny) as u64 * 5 + 4 + g.edges.len() as u64 * 8 + sh.tree.bytes();
                 passing = passing.max((g.nx * g.ny) as u64);
                 bytes += rings + grid + sh.source.len() as u64 + sh.country.len() as u64;
             }
@@ -751,8 +910,11 @@ pub(crate) fn from_kept(r: &mut dyn std::io::Read) -> Option<Coverage> {
                 return None;
             }
             let grid = Grid { x0, y0, cw, ch, nx, ny, centre, starts, edges };
+            let tree = EdgeTree::build(&rings);
             shapes.push(Shape {
                 source,
+                tree: std::sync::Arc::new(tree),
+                rings_digest: Default::default(),
                 rings: std::sync::Arc::new(rings),
                 buffer_m,
                 bbox,
@@ -993,7 +1155,7 @@ pub fn inside_plain(rings: &[Vec<[i32; 2]>], p: [i32; 2]) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn e7(x: f64, y: f64) -> [i32; 2] {
@@ -1170,6 +1332,100 @@ mod tests {
         assert_eq!(draw_tolerance_m(&[vec![e7(0.0, 40.0), e7(0.01, 40.0), e7(0.01, 40.01)]]), 60.0);
     }
 
+    /// The edges meeting the box `rg` by the grid's cells, each edge of each cell read (how
+    /// `edges_meeting` worked before the edge tree, task #894), each place once, sorted.
+    fn edges_by_cells(s: &Shape, rg: [i64; 4]) -> Vec<(u32, u32)> {
+        let g = &s.grid;
+        let cell = |v: f64, v0: f64, size: f64, n: usize| (((v - v0) / size).floor().max(0.0) as usize).min(n - 1);
+        let (cx0, cx1) = (cell(rg[0] as f64, g.x0, g.cw, g.nx), cell(rg[2] as f64, g.x0, g.cw, g.nx));
+        let (cy0, cy1) = (cell(rg[1] as f64, g.y0, g.ch, g.ny), cell(rg[3] as f64, g.y0, g.ch, g.ny));
+        let mut out = std::collections::BTreeSet::new();
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                for &(ri, i) in g.edges(cy * g.nx + cx) {
+                    let ring = &s.rings[ri as usize];
+                    let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
+                    if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) {
+                        out.insert((ri, i));
+                    }
+                }
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    fn edges_by_tree(s: &Shape, rg: [i64; 4]) -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        s.edges_meeting(rg, &mut |at, _, _| {
+            out.push(at);
+            false
+        });
+        let n = out.len();
+        out.sort_unstable();
+        out.dedup();
+        assert_eq!(out.len(), n, "each edge once");
+        out
+    }
+
+    /// Of `boxes`, each meets the same edges of `s` by the edge tree as by the grid's cells.
+    pub(crate) fn tree_agrees(s: &Shape, boxes: impl Iterator<Item = [i64; 4]>) -> usize {
+        let mut n = 0;
+        for rg in boxes {
+            assert_eq!(edges_by_tree(s, rg), edges_by_cells(s, rg), "{}: box {rg:?}", s.source);
+            n += 1;
+        }
+        n
+    }
+
+    #[test]
+    fn the_edge_tree_meets_the_edges_the_grid_cells_do() {
+        // A jagged ring of many points (several runs, several levels), a hole, a ring of one point
+        // twice, buffered and not; boxes of every size, inside, across and outside.
+        let mut ring: Vec<[i32; 2]> = (0..2000)
+            .map(|i| {
+                let a = i as f64 / 2000.0 * std::f64::consts::TAU;
+                let r = 2.0 + 0.3 * ((i * 7919) % 13) as f64 / 13.0;
+                e7(10.0 + r * a.cos(), 50.0 + r * a.sin())
+            })
+            .collect();
+        ring.push(ring[0]);
+        let hole = vec![e7(10.0, 50.0), e7(10.5, 50.0), e7(10.5, 50.5), e7(10.0, 50.5)];
+        let dup = vec![e7(9.0, 49.0), e7(9.0, 49.0), e7(9.1, 49.0)];
+        let mut seed = 12345u64;
+        let mut rnd = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as f64 / (1u64 << 31) as f64
+        };
+        let mut boxes = Vec::new();
+        for _ in 0..3000 {
+            let (x, y) = (7.0 + 6.0 * rnd(), 47.0 + 6.0 * rnd());
+            let size = 10f64.powf(-3.0 + 3.5 * rnd());
+            let (a, b) = (e7(x, y), e7(x + size, y + size * rnd()));
+            boxes.push([a[0] as i64, a[1] as i64, b[0] as i64, b[1] as i64]);
+        }
+        for buffer in [0.0, 1000.0] {
+            let s = Shape::new("t".into(), vec![ring.clone(), hole.clone(), dup.clone()], buffer);
+            assert_eq!(tree_agrees(&s, boxes.iter().copied()), boxes.len());
+        }
+        // No rings: nothing meets.
+        assert!(edges_by_tree(&Shape::new("e".into(), vec![], 0.0), [0, 0, 10, 10]).is_empty());
+    }
+
+    #[test]
+    fn a_coverage_keeps_its_answers_by_version() {
+        let sq = |x: f64| vec![vec![e7(x, 0.0), e7(x + 1.0, 0.0), e7(x + 1.0, 1.0), e7(x, 1.0)]];
+        let a = Coverage { shapes: vec![Shape::new("a: x".into(), sq(0.0), 0.0)], ..Default::default() };
+        let same = Coverage { shapes: vec![Shape::new("b: y".into(), sq(0.0), 0.0)], ..Default::default() };
+        let mut other = a.clone();
+        other.shapes[0].water = true;
+        let moved = Coverage { shapes: vec![Shape::new("a: x".into(), sq(2.0), 0.0)], ..Default::default() };
+        assert_eq!(a.version(), same.version(), "the geometry decides, not the names");
+        assert!(std::sync::Arc::ptr_eq(&a.kept(), &same.kept()));
+        assert_ne!(a.version(), other.version());
+        assert_ne!(a.version(), moved.version());
+        assert!(!std::sync::Arc::ptr_eq(&a.kept(), &moved.kept()));
+    }
+
     #[test]
     fn each_regions_coverage_is_its_own_shapes() {
         let d = tempfile::tempdir().unwrap();
@@ -1218,7 +1474,8 @@ mod tests {
             assert_eq!(clone.fingerprint(bx), fresh, "a clone's, kept by the first");
             assert_eq!(kept.fingerprint(bx), fresh, "asked again");
         }
-        assert_eq!(kept.memo.lock().unwrap().fingerprints.len(), 4);
+        // (The box its box misses told at once, not kept.)
+        assert_eq!(kept.memo.lock().unwrap().fingerprints.len(), 3);
         // A way's points: in, out (its box apart: not kept), and one asked again by its digest.
         let (inside, outside) = ([7u8; 32], [8u8; 32]);
         let never = || -> std::vec::IntoIter<[i32; 2]> { panic!("not asked: kept, or its box misses the shape's") };

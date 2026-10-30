@@ -1705,8 +1705,15 @@ pub fn piece_levels(cov: &Coverage, t: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)>
 
 /// Whether z6 tile `t`'s z6 tile makes any hi tile (`piece_levels` not all empty): one near the
 /// coverage at z6 can still have none of its z9–12 tiles near it (6/21/18).
+/// Once per coverage version and z6 tile (`Coverage::kept`).
 pub fn makes_hi(cov: &Coverage, t: (u32, u32)) -> bool {
-    piece_levels(cov, t).iter().any(|(_, ts)| !ts.is_empty())
+    let kept = cov.kept();
+    if let Some(&v) = kept.makes_hi.lock().unwrap().get(&t) {
+        return v;
+    }
+    let v = piece_levels(cov, t).iter().any(|(_, ts)| !ts.is_empty());
+    kept.makes_hi.lock().unwrap().insert(t, v);
+    v
 }
 
 /// Base tiles as a terrain-hi run of their z6 tile makes them, the same bytes, made alone: what a

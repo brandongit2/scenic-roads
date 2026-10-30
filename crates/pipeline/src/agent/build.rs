@@ -368,11 +368,7 @@ pub(crate) fn h(parts: &[&str]) -> String {
 /// Which region or outline entry a shape came from never enters a key, so renaming a region's id,
 /// or splitting and merging regions with the same outlines, reruns nothing.
 pub(crate) fn coverage_all(cov: &Coverage) -> String {
-    let mut v: Vec<String> = cov
-        .shapes
-        .iter()
-        .map(|s| format!("{}:{}", s.buffer_m, store::naming::hash16(bytemuck::cast_slice(&s.rings.concat()))))
-        .collect();
+    let mut v: Vec<String> = cov.shapes.iter().map(|s| format!("{}:{}", s.buffer_m, s.rings_digest())).collect();
     v.sort();
     v.dedup();
     v.join(",")
@@ -384,8 +380,13 @@ pub fn grown_e7(z: u8, x: u32, y: u32, km: f64) -> [i32; 4] {
     [e7(b[0]), e7(b[1]), e7(b[2]), e7(b[3])]
 }
 
-/// The z6 tiles near the coverage (20 km), by z3 pack.
+/// The z6 tiles near the coverage (20 km), by z3 pack; once per coverage version (`Coverage::kept`).
 pub fn coverage_tiles(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> {
+    cov.kept().tiles.get_or_init(|| coverage_tiles_made(cov)).clone()
+}
+
+/// `coverage_tiles`, worked out.
+fn coverage_tiles_made(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> {
     let mut by_q: BTreeMap<(u32, u32), Vec<(u32, u32)>> = BTreeMap::new();
     for x in 0..64u32 {
         for y in 0..64u32 {
@@ -10004,6 +10005,40 @@ pub(crate) mod tests {
         );
     }
 
+    /// The edge tree meets the edges the grid's cells do (crate::coverage's tests) on a real
+    /// coverage (`SCENIC_BENCH_ROOT`, read only): each shape, every z6 tile's box grown as the
+    /// targets ask and, of the z6 tiles near it, a sample of z9–12 tiles' boxes.
+    #[test]
+    #[ignore]
+    fn the_edge_tree_agrees_on_a_real_coverage() {
+        let Ok(root) = std::env::var("SCENIC_BENCH_ROOT") else { return };
+        let nr = store::nasfs::NasRoot::local_for_test(std::path::Path::new(&root));
+        let m: BTreeMap<String, String> = crate::out::read_record(&nr.join("state/build/manifest.json")).unwrap();
+        let a = crate::inputs::regions::read::source(&nr, &m).unwrap();
+        let cov = Coverage::accepted(&nr, &a, None).unwrap();
+        let wide = |b: [i32; 4]| [b[0] as i64, b[1] as i64, b[2] as i64, b[3] as i64];
+        let mut boxes: Vec<[i64; 4]> = Vec::new();
+        for x in 0..64u32 {
+            for y in 0..64u32 {
+                boxes.push(wide(grown_e7(6, x, y, 20.0)));
+            }
+        }
+        for &(x, y) in coverage_tiles(&cov).values().flatten() {
+            for z in 9..=12u8 {
+                let s = 1u32 << (z - 6);
+                for k in 0..8u32 {
+                    let (dx, dy) = ((k * 2654435761u32.wrapping_mul(z as u32 + 1)) % s, (k * 40503 + z as u32) % s);
+                    boxes.push(wide(grown_e7(z, x * s + dx, y * s + dy, 20.0)));
+                }
+            }
+        }
+        let mut n = 0;
+        for sh in cov.shapes.iter().chain(&cov.depth_only) {
+            n += crate::coverage::tests::tree_agrees(sh, boxes.iter().copied());
+        }
+        eprintln!("the edge tree agreed on {n} boxes of {} shapes", cov.shapes.len() + cov.depth_only.len());
+    }
+
     /// The plan's phases timed on a real root, read only (`SCENIC_BENCH_ROOT`: the NAS's project
     /// folder; `SCENIC_BENCH_IDX`: a copy of an agent's `pack-idx`, which the terrain indexes are
     /// read from and kept in). Twice over one coverage, as the agent's loops reuse theirs.
@@ -10047,6 +10082,14 @@ pub(crate) mod tests {
             lap(&format!("[{round}] unit_keys ({n})"), &mut t);
             let n = dg(format!("{:?}", region_states(&cov, &each, &date, &m, &k, reach.as_ref(), &tiles)));
             lap(&format!("[{round}] region_states ({n})"), &mut t);
+            // (The terrain's and slope's targets, as the checklist reads them: the same before and
+            // after task #894's edge tree and kept answers.)
+            let n = dg(format!("{:?}", coverage_tiles(&cov)));
+            lap(&format!("[{round}] coverage_tiles ({n})"), &mut t);
+            let n = dg(serde_json::to_string(&terrain_slope_targets_made(&cov, &m, &tiles)).unwrap());
+            lap(&format!("[{round}] terrain_slope_targets_made ({n})"), &mut t);
+            let n = dg(serde_json::to_string(&terrain_slope_targets(&cov, &m, &tiles)).unwrap());
+            lap(&format!("[{round}] terrain_slope_targets ({n})"), &mut t);
             let n =
                 dg(format!("{:?}", super::checklist(&cov, &date, &m, &k, &inputs, false, reach.as_ref(), &[], &tiles)));
             lap(&format!("[{round}] checklist ({n})"), &mut t);
