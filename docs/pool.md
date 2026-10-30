@@ -452,13 +452,18 @@ workers read it: `scenic-build`'s); costs record them (`threads`), with the CPU 
 took (`cpu_ms`) and the time its process was stopped meanwhile (`paused_ms`: frozen by the memory
 or disk guard, or paused for its conditions; `costin::stopped_ms`, a thread that counts its own
 wakes coming late, task #697). A job's measured cores (`needs::Book::cores`, its own run's, else the most of its
-step's) are two: its **grant**, the threads its runs were given, or fewer where their CPU time over
-their wall time says fewer were busy, plus one (a serial step: 1–2), or twice them where three
-quarters or more were busy (so a grant can climb back; capped at the Mac's cores); and its
+step's) are two: its **grant**, twice the threads its runs were given where three quarters or more
+of them were busy (CPU time over the time it ran), so a busy step climbs (capped at the Mac's
+cores), else the fewest threads it keeps under three quarters busy (busy cores × 4/3, rounded down,
+plus one; a serial step: 1–2), which a run at those measures the same, so a job waiting on the NAS
+settles there instead of swinging between a grant and twice it (task #888 review); and its
 **busy** cores, that CPU time over the time it ran (its wall time less the time stopped) to the
 nearest tenth of a core (a tenth at least, never past its grant; the packing sums a Mac's jobs'
-tenths, so rounding no longer undercounts by up to half a core a job). A target not run the way
-it runs now, nearly every one granted, counts for its step's most, which no run crowded off the NAS
+tenths, so rounding no longer undercounts by up to half a core a job), plus, for a climb, the
+threads it climbs by: none measured them idle yet, so a climbed job counts for every thread it
+may keep busy and no Mac is overcommitted by a climb. A target not run the way it runs now, nearly
+every one granted, counts for its step's most over its runs at the most threads it ran with (runs
+at fewer, their climb measured since, say nothing past them), which no run crowded off the NAS
 lowers. The cores a Mac's jobs may use together (`coord::ask_cores`) are its Mac's
 less, while its owner uses it, its in-use share's. Each job is granted its
 measured grant within its Mac's cores (task #888: no fixed share caps it, so a busy step's grant
@@ -483,9 +488,9 @@ So the M4 takes four terrain-hi jobs by their threads at once, then one a minute
 memory, disk and the NAS budget hold, and stops climbing as soon as jobs keep more busy than their
 runs said (a run's busy cores read low where it waited on a busy NAS). Load past the busy cores beyond the packed share comes off
 the cores left as outside load does (`outside_cores`, at most half the Mac's), which stops further
-grants but stops no running job. A first
-job alone gets no more than the share, so its run is never measured to take every core and leave
-no room beside it. The agent, the lead's as a member's,
+grants but stops no running job. A cold
+start that honours its threads gets the share alone: a measured run counts for its busy cores,
+not its threads, so a job given many leaves room beside it once measured. The agent, the lead's as a member's,
 starts a granted job with those threads, within its Mac's cores less those the in-use share keeps
 while the owner uses it (one at least; not less those its other jobs were given: its lead packed
 them by their busy cores), and logs a

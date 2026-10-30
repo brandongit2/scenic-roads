@@ -685,8 +685,9 @@ impl<'a> Book<'a> {
     /// one a job is granted for, counts for its step's most, which no crowded run lowers: task #697.)
     pub fn cores(&self, step: &str, target: &str) -> Option<Cores> {
         let v = cost_version(step);
+        let threads = |c: &Cost| c.sizes.get("threads").filter(|_| c.v >= v).map(|&t| t as u32);
         let of = |c: &Cost| {
-            let t = *c.sizes.get("threads").filter(|_| c.v >= v)? as u32;
+            let t = threads(c)?;
             // (Its CPU time, `cpu_ms`, over the time it ran: its wall time less the time it was
             // stopped (`paused_ms`), a second at least: the cores it kept busy.)
             let ran = (c.secs * 1000).saturating_sub(c.sizes.get("paused_ms").copied().unwrap_or(0)).max(1000);
@@ -694,20 +695,37 @@ impl<'a> Book<'a> {
             Some(match kept {
                 None => Cores { grant: t.max(1), busy_tenths: None },
                 Some(k) => {
-                    let b = k.ceil() as u32;
-                    // (Three quarters of them or more: it may have used more, twice them, so a
-                    // grant can climb back (crate::coord caps it at the Mac's cores); else one
-                    // more than it kept busy (a serial step's: 1–2).)
-                    let grant = if b * 4 >= t * 3 { t * 2 } else { (b + 1).min(t) }.max(1);
-                    Cores { grant, busy_tenths: Some(((k * 10.0).round() as u32).clamp(1, grant * 10)) }
+                    // (Three quarters of its threads or more busy (`k`, unrounded): it may use
+                    // more, twice them, so a grant climbs (crate::coord caps it at the Mac's
+                    // cores); it counts for the threads it climbs by besides its busy cores, as
+                    // nothing measured them idle yet, so a climb never overcommits its Mac (task
+                    // #888 review). Else the fewest threads it keeps under three quarters busy,
+                    // floor(4k/3) + 1: run at those it measures the same and stays, so a job
+                    // waiting on the NAS settles instead of swinging between a grant and twice
+                    // it (task #888 review: 2.4 cores busy of 4 had climbed to 8, then fell back
+                    // to 4).)
+                    let busy = (k * 10.0).round() as u32;
+                    if k * 4.0 >= f64::from(t) * 3.0 {
+                        let grant = t.max(1) * 2;
+                        Cores { grant, busy_tenths: Some((busy + t * 10).clamp(1, grant * 10)) }
+                    } else {
+                        let grant = ((k * 4.0 / 3.0).floor() as u32 + 1).min(t).max(1);
+                        Cores { grant, busy_tenths: Some(busy.clamp(1, grant * 10)) }
+                    }
                 }
             })
         };
         if let Some(c) = self.costs.get(&cost_key(step, target)).and_then(of) {
             return Some(c);
         }
+        // (The most of its runs at the most threads its step ran with: those measured a climb's
+        // threads; a run at fewer, its doubling done, says nothing past them (task #888 review:
+        // else a step's one busy run at 2 kept it granted 4 and counted for 4 after its runs at
+        // 4 showed 2 busy).)
         let most = || {
-            self.costs.iter().filter(|(k, _)| step_of_key(k) == step).filter_map(|(_, c)| of(c)).reduce(|a, b| Cores {
+            let of_step = || self.costs.iter().filter(|(k, _)| step_of_key(k) == step).map(|(_, c)| c);
+            let top = of_step().filter_map(threads).max()?;
+            of_step().filter(|c| threads(c) == Some(top)).filter_map(of).reduce(|a, b| Cores {
                 grant: a.grant.max(b.grant),
                 busy_tenths: a.busy_tenths.zip(b.busy_tenths).map(|(a, b)| a.max(b)),
             })
@@ -946,7 +964,7 @@ mod tests {
         let b = Book::new(&costs);
         assert_eq!(
             (b.cores("pois", "6/1/1"), b.cores("pois", "6/1/2")),
-            (c(2, Some(9)), c(16, Some(80))),
+            (c(2, Some(9)), c(16, Some(160))),
             "a busy run climbs back"
         );
         // (Task #688: terrain-hi as measured on 26 Oct, 1.16 cores busy of 3 threads: granted 3,
@@ -962,9 +980,19 @@ mod tests {
             Cost { v, ..cost(3700, 1000, &[("threads", 2), ("cpu_ms", 1_600_000)]) },
         );
         let b = Book::new(&costs);
-        assert_eq!(b.cores("terrain-hi", "6/48/16"), c(3, Some(12)));
-        assert_eq!(b.cores("terrain-hi", "6/48/17"), c(4, Some(16)));
-        assert_eq!(b.cores("terrain-hi", "6/48/18"), c(4, Some(16)));
+        assert_eq!(b.cores("terrain-hi", "6/48/16"), c(2, Some(12)));
+        assert_eq!(b.cores("terrain-hi", "6/48/17"), c(4, Some(36)));
+        assert_eq!(b.cores("terrain-hi", "6/48/18"), c(2, Some(12)), "its runs at the most threads, 3");
+        // (Task #888 review: NAS-bound at 2.4 cores, its grant settles at 4 whatever it ran with:
+        // 4 of 6, then 4 of 4, never climbing to 8.)
+        for t in [6, 4] {
+            costs.insert(
+                cost_key("terrain-hi", "6/48/19"),
+                Cost { v, ..cost(3700, 1000, &[("threads", t), ("cpu_ms", 2_400_000)]) },
+            );
+            assert_eq!(Book::new(&costs).cores("terrain-hi", "6/48/19"), c(4, Some(24)), "{t}");
+        }
+        costs.remove(&cost_key("terrain-hi", "6/48/19"));
         // (Task #697: a run frozen by the memory guard for 420 of its 1000 s kept 2 cores busy over
         // the 580 s it ran, not 1.16.)
         costs.insert(

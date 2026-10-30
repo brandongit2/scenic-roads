@@ -8326,22 +8326,23 @@ mod tests {
             );
             (d, c, w, clock)
         };
-        // Waiting on its reads (1.16 busy): granted 3 threads, counted for 1.2; the build's memory,
-        // 39 GB, holds ten of 3.7 GB, where by threads 14 cores held four.
-        // (Task #688 review: past the four their threads allow, one a minute, as the load shows
+        // Waiting on its reads (1.16 busy of 3): granted 2 threads (task #888 review: the fewest it
+        // keeps under three quarters busy), counted for 1.2; the build's memory, 39 GB, holds ten
+        // of 3.7 GB, where by threads 14 cores held seven.
+        // (Task #688 review: past the seven their threads allow, one a minute, as the load shows
         // each.)
         let (_d, _c, w, clock) = packed(696_000);
         let gs = w.ask(&ask(39_000, vec![])).unwrap().unwrap();
         let mut leases = vec![gs.lease];
         leases.extend(gs.more.iter().map(|g| g.lease));
-        assert_eq!(leases.len(), 5, "four by their threads, one past them");
-        assert!(std::iter::once(&gs).chain(&gs.more).all(|g| g.threads == 3), "each keeps its threads");
+        assert_eq!(leases.len(), 8, "seven by their threads, one past them");
+        assert!(std::iter::once(&gs).chain(&gs.more).all(|g| g.threads == 2), "each keeps its threads");
         assert!(w.ask(&ask(39_000, leases.clone())).unwrap().is_none(), "none before the load shows the last");
-        // (Load past their busy cores, 5 × 1.2 = 6 (task #697: summed in tenths), by more than
+        // (Load past their busy cores, 8 × 1.2 = 10 (task #697: summed in tenths), by more than
         // one: the climb stops.)
         clock.advance(sched::SETTLE);
         let mut swamped = ask(39_000, leases.clone());
-        swamped.cap.as_mut().unwrap().cores_free = 14 - 6 - 2;
+        swamped.cap.as_mut().unwrap().cores_free = 14 - 10 - 2;
         assert!(w.ask(&swamped).unwrap().is_none(), "busier than measured: no more");
         while leases.len() < 10 {
             let gs = w.ask(&ask(39_000, leases.clone())).unwrap().expect("one more each minute");
@@ -8351,11 +8352,12 @@ mod tests {
         }
         assert!(w.ask(&ask(39_000, leases.clone())).unwrap().is_none(), "memory decides");
         // Busy on its threads (3 of 3): each climbs to twice them (task #888), within the cores
-        // left (counted for their busy 3 each: 6, 6, 6 of 14, the load then checking the climb).
+        // left, counted for their busy 3 and the 3 they climb by, unmeasured (task #888 review: no
+        // overcommit): 6 and 6 of 14, a third short of cores.
         let (_d, _c, w, _clock) = packed(1_800_000);
         let gs = w.ask(&ask(64_000, vec![])).unwrap().unwrap();
         let threads: Vec<u32> = std::iter::once(&gs).chain(&gs.more).map(|g| g.threads).collect();
-        assert_eq!(threads, [6, 6, 6], "cores decide");
+        assert_eq!(threads, [6, 6], "cores decide");
     }
 
     /// Disk reservations (task #242): a grant carries its job's measured disk, which its agent
