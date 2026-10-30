@@ -425,6 +425,15 @@ pub fn with<T: Send + 'static>(p: &NasPath, f: impl FnOnce() -> io::Result<T> + 
     noted(p, records().call(p, DEADLINE, f))
 }
 
+/// How long a big read may take (the build's keys: the manifest and its records).
+pub const BIG_READ_DEADLINE: Duration = if cfg!(test) { Duration::from_secs(20) } else { Duration::from_secs(300) };
+
+/// `with`, for a big read of what's under `p` (the build's keys), within `BIG_READ_DEADLINE`.
+pub fn with_big<T: Send + 'static>(p: &NasPath, f: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
+    let p = &label(p);
+    noted(p, records().call(p, BIG_READ_DEADLINE, f))
+}
+
 /// How long the NAS takes to list folder `p` (the latency series, crate::agent::live: a listing,
 /// which macOS's SMB client asks the server for, where a stat may come from its cache), on
 /// the records' readers within `DEADLINE`: None when it didn't answer in time, or when the last

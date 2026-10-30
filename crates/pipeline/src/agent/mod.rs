@@ -44,6 +44,7 @@ pub mod jobs;
 pub mod lead;
 pub mod live;
 pub mod memguard;
+pub mod nas;
 pub mod nasread;
 pub mod pageview;
 pub mod placement;
@@ -1387,23 +1388,19 @@ pub fn find_root(mount: bool) -> Option<NasRoot> {
     NasRoot::find(mount)
 }
 
-/// The shares with a check still waiting on a hung mount: no second one starts meanwhile.
-static CHECKING: std::sync::Mutex<std::collections::BTreeSet<String>> =
-    std::sync::Mutex::new(std::collections::BTreeSet::new());
-
-/// Whether `root` answers within a few seconds (a stat on a worker thread; a hung share counts as
-/// away, and its thread is left to finish on its own, the only one for that share until it does).
+/// Whether `root` answers: a stat of its catalogue, on **nas**'s look worker under its deadline
+/// (crate::agent::nas: one look at a time, a hung one left to the kernel).
 fn answers(root: &store::nasfs::NasRoot) -> bool {
-    let key = root.display().to_string();
-    if !CHECKING.lock().unwrap().insert(key.clone()) {
-        return false;
-    }
+    root.join("catalog").metadata().is_ok()
+}
+
+/// `probe`'s answer within eight seconds, at the start before **nas** runs (a hung share counts as
+/// away, its thread left to finish on its own).
+fn answers_soon(probe: fn(&NasRoot) -> bool, root: &NasRoot) -> bool {
     let (tx, rx) = std::sync::mpsc::channel();
     let p = root.clone();
     std::thread::spawn(move || {
-        let ok = p.join("catalog").metadata().is_ok();
-        CHECKING.lock().unwrap().remove(&key);
-        let _ = tx.send(ok);
+        let _ = tx.send(probe(&p));
     });
     rx.recv_timeout(Duration::from_secs(8)).unwrap_or(false)
 }
@@ -1548,9 +1545,8 @@ pub struct Agent {
     /// The disk guard's room-making for the jobs it froze (when it began): its result decides
     /// whether they go on or one is given back.
     disk_room: Option<Instant>,
-    /// Whether the NAS's folder answers now (`answers`: a stat on a thread, eight seconds at most); a
-    /// test's own, deciding it without the clock or the Mac's load (`test_agent`).
-    probe: fn(&NasRoot) -> bool,
+    /// **nas**: the share's mount, its probe and remounts, under a deadline (crate::agent::nas).
+    nas: nas::Handle,
     /// The idle-sleep assertion it holds while it leads with leases out (`lead_awake`).
     lead_awake: Option<std::process::Child>,
     /// The NAS's project folder as the loop last found it (a job ending between loops tells the
@@ -1562,7 +1558,6 @@ pub struct Agent {
     /// The Mac it reads its conditions and resources from (a test's fixed one: cond::Mac::TEST).
     pub(crate) mac: cond::Mac,
     sleep: SleepWatch,
-    last_mount_try: Option<Instant>,
     /// The self-heal for stale SMB handles: stuck NAS calls seen, its drain and remounts
     /// (crate::agent::heal).
     heal: heal::Heal,
@@ -1905,7 +1900,7 @@ impl Agent {
         let mut out_why = NAS_AWAY.to_string();
         let mut first: Option<(crate::pool::driver::Out, NasRoot)> = None;
         if lock.is_some() && !o.dry_run {
-            if let Some(r) = o.root.clone().or_else(|| find_root(false)).filter(|r| probe(r)) {
+            if let Some(r) = o.root.clone().or_else(|| find_root(false)).filter(|r| answers_soon(probe, r)) {
                 {
                     let nas: pool::SharedNas =
                         std::sync::Arc::new(nasread::Deadlined::new(std::sync::Arc::new(r.no_retry())));
@@ -1993,6 +1988,12 @@ impl Agent {
         let hold_snap = bus::Snap::new(hold.clone());
         let beat = beat::Handle::new(o.home.clone(), hold_snap.clone());
         let control = asks::Handle::new(o.home.clone(), hold_snap, beat.sender());
+        // (Given a root, that one, never mounted; a test never mounts nor unmounts the real share.)
+        let finder: nas::Finder = match o.root.clone() {
+            Some(r) => std::sync::Arc::new(move |_| Some(r.clone())),
+            None => std::sync::Arc::new(find_root),
+        };
+        let nas = nas::Handle::new(finder, o.root.is_none() && !cfg!(test), probe);
         let pause: Option<crate::control::Pause> =
             std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         // (A record that doesn't read: none, the low zooms made with the next catalogue. The map
@@ -2044,13 +2045,12 @@ impl Agent {
             broker_https: None,
             held_progress: None,
             disk_room: None,
-            probe,
+            nas,
             lead_awake: None,
             last_root: None,
             quit_done: false,
             mac: cond::Mac::Real,
             sleep: SleepWatch::default(),
-            last_mount_try: None,
             heal: Default::default(),
             heal_seen: 0,
             progress: None,
@@ -2150,8 +2150,13 @@ impl Agent {
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
     /// on top (a worker's job built and handed back, not yet merged: not built again).
+    /// (Under nasread's big-read deadline, docs/agent-parts.md §4.3: a hung share fails this plan.)
     fn planning_keys(&self, root: &store::nasfs::NasRoot) -> Result<build::Keys> {
-        build::Keys::load_with(root, &self.handoff_bases(root))
+        let (r, bases) = (root.clone(), self.handoff_bases(root));
+        let keys = nasread::with_big(&root.join("state/build"), move || {
+            build::Keys::load_with(&r, &bases).map_err(|e| std::io::Error::other(format!("{e:#}")))
+        });
+        keys.context("the build's keys")
     }
 
     /// The records' manifest and the planning keys (`planning_keys`), from one read of the records.
@@ -3765,28 +3770,14 @@ impl Agent {
         }
     }
 
-    /// The NAS root, when mounted and answering; tries to mount it every five minutes otherwise.
+    /// The NAS root, when mounted and answering, as **nas** last saw it (crate::agent::nas: a mount
+    /// tried every five minutes otherwise, each look under its deadline, never the loop's wait).
     /// Its reads are never retried (`NasRoot::no_retry`): the loop plans, gates, steps the pool and
     /// feeds the coordinator with it, and a read riding out an outage for minutes would stall them
     /// all (25 Oct); a failed read fails this beat, and the next reads again. A thread the loop
     /// starts and never waits on takes `long_retry()`.
     fn root(&mut self) -> Option<NasRoot> {
-        let root = match &self.o.root {
-            Some(r) => Some(r.clone()),
-            None => {
-                let try_mount = self.last_mount_try.is_none_or(|t| t.elapsed() > Duration::from_secs(300));
-                let r = find_root(false).or_else(|| {
-                    if try_mount {
-                        self.last_mount_try = Some(Instant::now());
-                        find_root(true)
-                    } else {
-                        None
-                    }
-                });
-                r
-            }
-        };
-        root.filter(|r| (self.probe)(r)).map(|r| r.no_retry())
+        self.nas.root()
     }
 
     /// Runs until stopped (SIGTERM, SIGINT), or for one loop with `once`.
@@ -3810,6 +3801,7 @@ impl Agent {
         if self._lock.is_some() && !self.o.dry_run && !self.o.once {
             self.control.spawn();
             self.beat.spawn();
+            self.nas.spawn();
         }
         if self._lock.is_some() {
             // (What they finished went to the journal with their hand-offs, as they saved.)
@@ -4180,8 +4172,8 @@ impl Agent {
     }
 
     /// The self-heal's round (crate::agent::heal): this process's and its jobs' stuck calls taken
-    /// in; once drained, the share unmounted under the pool's lock (no tick mid-write) and mounted
-    /// again by this loop's `root` at once.
+    /// in; once drained, **nas** asked to unmount the share under the pool's lock (no tick
+    /// mid-write) and mount it again at once.
     fn heal_step(&mut self) {
         let (mut new, seen) = store::whole::stuck_after(self.heal_seen);
         self.heal_seen = seen;
@@ -4190,20 +4182,9 @@ impl Agent {
         if self.heal.tick(new, now_s(), idle) != heal::Act::Remount {
             return;
         }
-        // (The pool's lock held: a tick never writes as the share goes. Taken by another thread
-        // now: the next round.)
-        let guard = match self.try_pooled() {
-            Some(None) => return,
-            g => g.flatten(),
-        };
-        if let Some(m) = store::nas::find_mount(store::nas::HOST, store::nas::SHARE) {
-            eprintln!("agent: drained; remounting {} to end this Mac's SMB session", m.point.display());
-            if let Err(e) = store::nas::unmount(&m.point, Duration::from_secs(30)) {
-                eprintln!("agent: {e:#}");
-            }
-        }
-        drop(guard);
-        self.last_mount_try = None;
+        // (**nas** unmounts it under the pool's lock, a tick never writing as the share goes, and
+        // mounts it again at once.)
+        self.nas.ask(nas::Req::Remount(self.pool.clone()));
         self.heal.remounted(now_s());
     }
 
@@ -4351,16 +4332,9 @@ impl Agent {
         let home = self.mac.at_home();
         // Back home with the share mounted through Tailscale (mounted while away): unmounted while
         // nothing runs, and mounted again by the LAN name below, at the LAN's speed.
+        // (**nas**'s to do: the loop never waits on it.)
         if home && self.idle() && self.o.root.is_none() {
-            if let Some(m) =
-                store::nas::find_mount(store::nas::HOST, store::nas::SHARE).filter(|m| !store::nas::by_lan_name(m))
-            {
-                eprintln!("agent: home again; remounting the NAS by its LAN name (it was mounted as {})", m.from);
-                if let Err(e) = store::nas::unmount(&m.point, Duration::from_secs(30)) {
-                    eprintln!("agent: {e:#}");
-                }
-                self.last_mount_try = None;
-            }
+            self.nas.ask(nas::Req::Lan);
         }
         // NAS calls staying busy past whole's retries (a stale handle of this Mac's session):
         // new work drained, then the share remounted (crate::agent::heal).
@@ -4395,6 +4369,10 @@ impl Agent {
         self.tend_live(root.as_ref(), &c);
         let mut waiting: Vec<Waiting> = Vec::new();
         if let Some(why) = self.heal.warning() {
+            waiting.push(Waiting { step: None, what: "the NAS".into(), why });
+        }
+        // (A mount or probe hung: only the NAS's work waits, said.)
+        if let Some(why) = self.nas.view.get().stuck_why() {
             waiting.push(Waiting { step: None, what: "the NAS".into(), why });
         }
         let mut ended = false;
@@ -12707,6 +12685,57 @@ mod tests {
             a_job_running(a);
         });
         drop(hung);
+    }
+
+    /// Task #871 step 4: the share's mount hung (a finder that never answers): the loop goes round
+    /// in moments all along, NAS work waits ("the NAS is mounting (stuck since …)"), the beat and a
+    /// pause go on; the root comes back once the mount answers.
+    #[test]
+    fn a_hung_mount_holds_only_nas_work() {
+        let d = tempfile::tempdir().unwrap();
+        let (mut a, root) = parts_agent(d.path());
+        a.step().unwrap();
+        let (release, go) = std::sync::mpsc::channel::<()>();
+        let go = std::sync::Mutex::new(go);
+        let found = root.clone();
+        a.nas = nas::Handle::new(
+            std::sync::Arc::new(move |_| {
+                go.lock().unwrap().recv().ok();
+                Some(store::nasfs::NasRoot::local_for_test(found.clone()))
+            }),
+            false,
+            |_| true,
+        );
+        a.nas.spawn();
+        a.control.spawn();
+        a.beat.spawn();
+        let status = a.o.home.join("status.json");
+        let t = Instant::now();
+        for _ in 0..20 {
+            let r = Instant::now();
+            a.step().unwrap();
+            store::testkit::ended_before(r, Duration::from_secs(10), "a round on a hung mount");
+        }
+        eprintln!("20 rounds on a hung mount in {:?}", t.elapsed());
+        let said = || std::fs::read_to_string(&status).unwrap_or_default();
+        let t = Instant::now();
+        store::testkit::eventually("the stuck mount said", || said().contains("the NAS is mounting (stuck since"));
+        store::testkit::ended_before(t, Duration::from_secs(10), "the stuck mount said");
+        assert!(a.root().is_none(), "no root while the mount hangs");
+        // A pause goes on: answered at once.
+        let t = Instant::now();
+        let ask =
+            crate::control::request_hold(&a.o.home, None, Some(crate::control::Hold::new("the menu bar"))).unwrap();
+        store::testkit::eventually("the pause answered", || {
+            crate::control::hold_answer(&a.o.home, &ask).is_some_and(|x| x.ok)
+        });
+        store::testkit::ended_before(t, Duration::from_secs(2), "the pause on a hung mount");
+        drop(release);
+        let t = Instant::now();
+        while a.root().is_none() {
+            assert!(t.elapsed() < Duration::from_secs(60), "the root never came back");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Task #871 step 3: a pause during a plan (the slow-plan fake, 30 s): the same.

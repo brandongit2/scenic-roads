@@ -1185,8 +1185,14 @@ the new lead's. A heartbeat goes out of touch when the beat itself stops (ten mi
 `OUT_OF_TOUCH_S`, served as the status's `out_of_touch_s`). (The pool's heartbeat,
 `state/pool/members/<id>.json`, is kept by the pool's own thread, §6.7.)
 
-Still under no deadline (planned): the NAS's mount and probe (`root`); the build's keys
-(`build::Keys::load`, `load_with`); the manifest read through `out::read_record`; the regions'
+The NAS's mount and probe are the agent's **nas** part's (crate::agent::nas, docs/agent-parts.md
+§4.3): on a thread of its own, each look (find, mount every 5 min at most, probe) on a worker
+waited for 30 s; past it the round says "the NAS is mounting (stuck since …)", only NAS work waits,
+and the loop, the beat and control go on. The planner's keys (`build::Keys::load_with`) are read
+under a 5-min deadline (`nasread::with_big`).
+
+Still under no deadline (planned): the manifest read through `out::read_record` outside the
+planner's keys; the regions'
 held report (`inputs::read_report`); the helpers' listing (`state/helpers`); the coordinator's
 contact published and removed; GC's reads of the journal and records;
 the caches' clears; and every NAS call of the coordinator's and the jobs' own.
