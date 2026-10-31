@@ -1992,6 +1992,36 @@ const askCard = (kind) => {
     h("div", "ask-btns", h("button", { class: "quiet", onclick: unpin }, "Cancel"), h("button", { class: "primary", onclick: () => { unpin(); ctx.ask(kind); } }, a.ok))];
 };
 let pending = null; // {kind, at}: a press waiting for the build to say so
+
+// A pool member's Pause/Resume pressed (task #873), by member id: {stage, at} while posted, then
+// with the answer's words (`said`), until that member's status says another stage (or 60 s).
+const holdPress = new Map();
+const stageOf = (m, host) => m.macs.find((x) => x.name === host)?.status?.hold?.stage || null;
+function holdAsks(m) {
+  const out = new Map();
+  for (const [id, p] of holdPress) {
+    if (p.said != null && (stageOf(m, p.host) !== p.stage || Date.now() - p.at > 60000)) holdPress.delete(id);
+    else out.set(id, p.said ?? true);
+  }
+  return out;
+}
+async function askHold(member, held) {
+  const p = { host: member.host, stage: last ? stageOf(model(last), member.host) : null, at: Date.now(), said: null };
+  holdPress.set(member.member, p);
+  render();
+  try {
+    // (Another member's by its id: this page's agent writes it on the NAS as that member's hold.)
+    const [code, r] = await ctx.call("/work/hold", member.me ? { held } : { held, member: member.member });
+    p.said = r?.said || r?.error || (r?.asked ? `Asked: ${member.host}'s agent takes it up at its next round` : `answer ${code}`);
+    if (code >= 400 || r?.ok === false) ctx.onError?.(`couldn't ${held ? "pause" : "resume"} ${member.host}: ${p.said}`);
+  } catch (e) {
+    p.said = "";
+    ctx.onError?.(`couldn't ${held ? "pause" : "resume"} ${member.host}: ${e.message}`);
+  }
+  p.at = Date.now();
+  await poll();
+  render();
+}
 const settled = (kind, p) => (kind === "resume" ? !p : kind === "freeze" ? p?.mode === "freeze" : !!p);
 function head(m) {
   cards.set("ask", askCard); // (The cards are made again with each render.)
@@ -2050,7 +2080,7 @@ function tabs(m, md) {
     machines: () => [
       part("d-machines", () => section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
         h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m)))),
-      part("d-pool", () => poolSection(last.agent, m.now) || section("d-pool")),
+      part("d-pool", () => poolSection(last.agent, m.now, new Map(m.macs.map((x) => [x.name, x])), holdAsks(m), askHold) || section("d-pool")),
       part("d-settings", () => settingsSection(ctx.call, last?.macs || [], render, ctx.onError)),
     ],
     regions: () => [part("d-regions", () => regionsPane(m, md))],

@@ -2048,7 +2048,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   control to apply. The status says the hold's stage
   (`Status::hold`, control::HoldView): asked, pausing (its jobs finishing, named), paused,
   resuming; and the Mac's state (`Status::verdict`). `scenic status`, the build page's machine
-  card and the menu bar print these (`Status::held` kept for older readers; the pool's view says
+  card and its pool section (a Pause/Resume per member, task #873) and the menu bar print these (`Status::held` kept for older readers; the pool's view says
   "paused"); the forecast gives it no lanes. The
   rest of the pool goes on. `--now` stays the whole build's.
 
