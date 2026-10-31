@@ -96,13 +96,18 @@ room_target_kb() {  # the agent's room target (KB; 0 without one)
   [[ $b == <-> ]] && print $(( b / 1024 )) || print 0
 }
 drop_copy() {  # <base> <key folder> <why>: 0 removed, 1 in use
-  local base=$1 d=$2 sz
+  local base=$1 d=$2 sz gone=$base/.gone-${2:t}-$$
   if ! mkdir $d/.busy 2>/dev/null; then
-    [[ -n $(find $d/.busy -maxdepth 0 -newermt "$stale_after seconds ago" 2>/dev/null) ]] && return 1
+    # Held, or gone meanwhile: kept. A stale one (older than 6 h) taken over as remote_lock does:
+    # moved aside, then taken by mkdir (another taking it meanwhile wins).
+    [[ -d $d/.busy && -z $(find $d/.busy -maxdepth 0 -newermt "$stale_after seconds ago" 2>/dev/null) ]] || return 1
+    mv $d/.busy $d/.busy.aside-$$ 2>/dev/null && mkdir $d/.busy 2>/dev/null || return 1
   fi
-  sz=$(du -sk $d 2>/dev/null | cut -f1)
-  mv $d $base/.gone-${d:t}-$$ 2>/dev/null || return 1
-  rm -rf $base/.gone-${d:t}-$$
+  # (Its owner written at once: a lock without one is taken over by remote_lock after 10 s.)
+  print -r -- "make_room $$" > $d/.busy/owner
+  mv $d $gone 2>/dev/null || { rm -rf $d/.busy; return 1; }
+  sz=$(du -sk $gone 2>/dev/null | cut -f1)
+  rm -rf $gone
   print "remote-tests: removed ${d:t} on the test Mac ($3; $(( ${sz:-0} / 1024 )) MB)"
 }
 make_room() {  # <base> <this key> <origin> <live keys>
