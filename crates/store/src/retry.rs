@@ -456,6 +456,7 @@ mod tests {
             },
         )
         .unwrap_err();
+        // (bound ok: a 60 s wait cut short; 5 s is far from both)
         assert!(t.elapsed() < Duration::from_secs(5) && tries.get() == 1);
         assert!(io_of(&e).is_some_and(|i| transient(&i)), "not marked exhausted");
     }
