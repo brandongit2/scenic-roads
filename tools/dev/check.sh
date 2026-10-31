@@ -92,12 +92,10 @@ tests=( ${(f)"$(${0:A:h}/affected-tests.sh | grep -v '^#')"} )
 # build folder per worktree, three runs at a time there, the rest queued); here on the test Mac itself
 # (the publishing Mac), when it is down, or with SCENIC_CHECK_LOCAL=1.
 rt=$root/tools/app/remote-tests.sh
-# Test builds without debug info, as publish's (#660, #887): less to write and link; a failed test
-# still names its file and line.
-nodebug='export CARGO_PROFILE_DEV_DEBUG=false CARGO_PROFILE_TEST_DEBUG=false'
+# (Test builds without debug info: Cargo.toml's [profile.test], #918, the same as an agent's own runs.)
 if (( ${#tests} )) && [[ -x $rt ]]; then
   key=${root:t}; [[ $root == */.claude/worktrees/* ]] || key=main-checkout
-  part tests $rt $key $root "$nodebug; set -e; ${(j:; :)tests}"
+  part tests $rt $key $root "set -e; ${(j:; :)tests}"
   # (The test Mac's own wall and CPU, which this Mac's time of the part doesn't count.)
   r=$(grep -h '^remote-tests: the run took' $logs/tests.log | tail -1)
   [[ -n $r ]] && summary[-1]+="  [${r#remote-tests: }]"

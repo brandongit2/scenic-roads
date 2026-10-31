@@ -59,7 +59,7 @@ the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ 
 changed. guards.sh runs there without its own fmt check and its two tests (inputs_accessor,
 source_names: scan tests of crates/ and dem/, run by the tests part whenever a file they read
 changed; #887: they had built the pipeline's tests on this Mac, ~5 min, beside the test Mac's run).
-The tests part builds without debug info (`CARGO_PROFILE_{DEV,TEST}_DEBUG=false`, as publish's).
+Tests build without debug info (`debug = false` in Cargo.toml's `[profile.test]`, #918), every run alike: check.sh's, publish's and an agent's own.
 One PASS/FAIL line per part with its wall and CPU time here (the tests part also the test Mac's);
 whole outputs in ~/Library/Logs/scenic/check-<time>/. A pass on a clean tree records HEAD in
 `.git/check-passed`, with its tree key (HEAD's tree and the merge-base's tree) when nothing is

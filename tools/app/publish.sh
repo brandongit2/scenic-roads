@@ -147,12 +147,10 @@ tests_ok=0
 # (Tests that pass over what a Mac lacks fail instead when they're run for a publish: uv for the
 # translations' checker.)
 export SCENIC_PUBLISH=1
-# The tests' and clippy's builds without debug info (task #660): on macOS each build's line tables
-# stay in its object files beside the binaries (split-debuginfo "unpacked"), 80 GB of the 122 GB this
-# tree's target/debug had grown to in 3.5 days on the mini (25 Oct). A failed test still says its
-# file and line (the panic's location needs none), and no backtrace is asked for here. (Passed to
-# the test Mac with the other CARGO_PROFILE_* variables: tools/app/remote-tests.sh.)
-export CARGO_PROFILE_DEV_DEBUG=false CARGO_PROFILE_TEST_DEBUG=false
+# The tests build without debug info (task #660; Cargo.toml's [profile.test] since #918): on macOS
+# each build's line tables stay in its object files beside the binaries (split-debuginfo
+# "unpacked"), 80 GB of the 122 GB this tree's target/debug had grown to in 3.5 days on the mini
+# (25 Oct). A failed test still says its file and line (the panic's location needs none).
 # (The whole workspace's tests, #848: every crate's libraries, binaries and integration tests, by
 # nextest's own discovery (#662: a list of four had missed no_instant_back, cli, grant_rules and
 # whole_kill as they were added): every cache read

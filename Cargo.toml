@@ -30,8 +30,15 @@ debug = false
 # simulations) ran 5-15x slower unoptimized; the slowest, 193 s, takes 28 s at these levels. The
 # workspace's crates at 1 (a rebuild after an edit stays ~15 s), the third-party ones at 3 (built
 # once). Debug assertions and overflow checks stay on, as in dev.
+# No debug info in tests (#660, #918): a failed test still names its file and line (the panic's
+# location needs none). Set here rather than by CARGO_PROFILE_TEST_DEBUG in check.sh and publish.sh,
+# so an agent's own `cargo test` and check.sh's tests part build the same artifacts: with line
+# tables in one and not the other, each rebuilt every crate the other had built (a whole test
+# build: 186 s on the M4, 31 Oct). Line tables also cost the clean test build 212 s against 182,
+# 7.3 GB of target against 4.5, its largest rustc 6.8 GB against 6.0 (M4, 31 Oct, under load).
 [profile.test]
 opt-level = 1
+debug = false
 
 [profile.test.package."*"]
 opt-level = 3
