@@ -35,6 +35,10 @@ pub struct Log {
     /// A failed append whose bytes couldn't be cut off again: no more appends until the log is
     /// opened again (which cuts them as a torn last line), so none lands after them.
     torn: bool,
+    /// The batches replayed at the open, after the snapshot's `seq` (`base`): what its clients are
+    /// answered from until it appends more (`replayed`, taken once).
+    base: u64,
+    replayed: Vec<Batch>,
 }
 
 /// `fsync` of a folder: the names made, renamed or removed in it durable.
@@ -70,6 +74,7 @@ impl Log {
         };
         let segs = segments(dir)?;
         let mut open = None;
+        let (base, mut replayed) = (map.seq, Vec::new());
         for (i, &first) in segs.iter().enumerate() {
             let path = dir.join(segment_name(first));
             let text = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
@@ -90,6 +95,7 @@ impl Log {
                 };
                 if b.seq > map.seq {
                     drop(map.apply_in(&b).with_context(|| format!("{}", path.display()))?);
+                    replayed.push(b);
                 }
                 batches += 1;
                 at = end.expect("parsed lines end") + 1;
@@ -99,7 +105,22 @@ impl Log {
                 open = Some(Segment { first, file, batches, bytes: at as u64 });
             }
         }
-        Ok(Log { dir: dir.to_owned(), map: Arc::new(map), cursors, open, torn: false })
+        Ok(Log { dir: dir.to_owned(), map: Arc::new(map), cursors, open, torn: false, base, replayed })
+    }
+
+    /// The batches replayed at the open and the `seq` they follow (taken: once).
+    pub fn replayed(&mut self) -> (u64, Vec<Batch>) {
+        (self.base, std::mem::take(&mut self.replayed))
+    }
+
+    /// The clients' cursors as its snapshot kept them.
+    pub fn cursors(&self) -> &BTreeMap<String, Cursor> {
+        &self.cursors
+    }
+
+    /// The clients' cursors as heard now, saved with the next snapshot (`compact`).
+    pub fn set_cursors(&mut self, cursors: BTreeMap<String, Cursor>) {
+        self.cursors = cursors;
     }
 
     /// The map now: swapped whole at each batch.
@@ -173,7 +194,7 @@ impl Log {
     }
 
     /// Writes the snapshot at the map's `seq` and removes each segment all of whose batches it holds
-    /// (none is read by a client yet: docs/maplog.md §8, step 3). The open one stays.
+    /// (its clients are answered from memory: store::map::feed). The open one stays.
     pub fn compact(&mut self) -> Result<()> {
         self.write_snapshot()?;
         let segs = segments(&self.dir)?;
