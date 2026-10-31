@@ -90,7 +90,9 @@ pub fn detached(program: impl AsRef<OsStr>, args: &[&str]) -> io::Result<Detache
         .chain(std::iter::once(format!("{}={}", NO_LARGE_CACHE.0, NO_LARGE_CACHE.1).into_bytes()))
         .map(|b| cs(&b))
         .collect::<io::Result<_>>()?;
-    let ptrs = |v: &[CString]| v.iter().map(|c| c.as_ptr() as *mut libc::c_char).chain([std::ptr::null_mut()]).collect::<Vec<_>>();
+    let ptrs = |v: &[CString]| {
+        v.iter().map(|c| c.as_ptr() as *mut libc::c_char).chain([std::ptr::null_mut()]).collect::<Vec<_>>()
+    };
     let (argp, envp) = (ptrs(&argv), ptrs(&envv));
     let null = c"/dev/null";
     let check = |r: libc::c_int| if r == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(r)) };

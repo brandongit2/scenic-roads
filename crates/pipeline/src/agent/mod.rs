@@ -10596,7 +10596,8 @@ impl Agent {
         if self.lead_awake.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(false))) {
             return;
         }
-        self.lead_awake = store::spawn::detached("/usr/bin/caffeinate", &["-i", "-w", &std::process::id().to_string()]).ok();
+        self.lead_awake =
+            store::spawn::detached("/usr/bin/caffeinate", &["-i", "-w", &std::process::id().to_string()]).ok();
     }
 
     fn lead_awake_off(&mut self) {

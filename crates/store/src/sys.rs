@@ -80,7 +80,7 @@ fn local_host_name() -> Option<String> {
         fn CFRelease(cf: *const c_void);
     }
     const UTF8: u32 = 0x0800_0100; // kCFStringEncodingUTF8
-    // SAFETY: a CFString we own (Copy rule), read into our buffer, then released.
+                                   // SAFETY: a CFString we own (Copy rule), read into our buffer, then released.
     unsafe {
         let s = SCDynamicStoreCopyLocalHostName(std::ptr::null());
         if s.is_null() {
@@ -321,7 +321,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn host_name_is_scutils_local_host_name() {
-        let o = crate::spawn::output(crate::spawn::command("/usr/sbin/scutil").args(["--get", "LocalHostName"])).unwrap();
+        let o =
+            crate::spawn::output(crate::spawn::command("/usr/sbin/scutil").args(["--get", "LocalHostName"])).unwrap();
         assert_eq!(host_name(), String::from_utf8_lossy(&o.stdout).trim());
     }
 
