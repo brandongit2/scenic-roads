@@ -319,9 +319,11 @@ impl Leases {
     }
 
     /// The cancels a plan numbered `plan` started after (`at` below it): forgotten, that plan's
-    /// offers knowing of them.
-    pub fn forget_cancels_before(&mut self, plan: u64) {
+    /// offers knowing of them. True when one was.
+    pub fn forget_cancels_before(&mut self, plan: u64) -> bool {
+        let n = self.cancelled.len();
         self.cancelled.retain(|c| c.at >= plan);
+        self.cancelled.len() < n
     }
 
     /// The cancels standing (`Cancelled`).

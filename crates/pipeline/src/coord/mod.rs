@@ -1609,10 +1609,12 @@ impl Coordinator {
         // (Without what was cancelled after this plan began; the cancels before it forgotten,
         // lease::Cancelled.)
         let plan = s.plan;
-        s.leases.forget_cancels_before(plan);
+        // (Saved only when one was forgotten: a plan's offers come every few seconds.)
+        if s.leases.forget_cancels_before(plan) {
+            s.save_leases();
+        }
         let offers = offers.iter().filter_map(|o| s.leases.unoffered(plan, o)).collect();
         s.set_offers(offers);
-        s.save_leases();
         let steps: BTreeSet<String> = s.offers.iter().map(|o| o.step.clone()).collect();
         s.last.retain(|(_, st), _| steps.contains(st));
     }
@@ -2557,12 +2559,14 @@ pub struct PoolState {
 /// The owner's cancel (crate::control::Cancel) taken up in `s`: `Coordinator::cancel`, and the
 /// `/work/cancel` of a member's agent.
 ///
-/// The target noted at the newest plan's number (the one running included, and never below the time
-/// in ms) and left out of the offers standing (lease::Cancelled): a plan begun before the cancel
+/// The target noted at the newest plan's number (the one running included, past the last offered,
+/// and never below the time in ms) and left out of the offers standing (lease::Cancelled): a plan begun before the cancel
 /// grants it to no one, its offers set before the cancel or after.
 fn cancel_in(s: &mut Shared, c: &crate::control::Cancel) -> Vec<(u64, String, String)> {
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-    let (plan, at) = (s.plan, s.plan.max(s.planning).max(ms));
+    // (Past the last offered plan too: a plan numbered `plan + 1` because the clock stepped back
+    // may have started before `plan_started` told of it.)
+    let (plan, at) = (s.plan, (s.plan + 1).max(s.planning).max(ms));
     s.leases.note_cancel(&c.target, c.step.clone(), at);
     let offers = s.offers.iter().filter_map(|o| s.leases.unoffered(plan, o)).collect();
     s.set_offers(offers);
@@ -5824,6 +5828,10 @@ mod tests {
         c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
         c.cancel(&Cancel::new("6/55/25", None, false, "x"));
         assert!(w.ask(&ask(4096)).unwrap().is_none());
+        // A newer plan offering nothing still forgets it (`cancelled` never grows past a plan).
+        c.set_plan(crate::agent::plan::next_n(0, std::time::SystemTime::now() + Duration::from_secs(1)));
+        c.offer("", Vec::new());
+        assert!(c.shared.lock().unwrap().leases.cancelled().is_empty());
     }
 
     #[test]
