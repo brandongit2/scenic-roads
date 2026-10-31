@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Runs a test command on the test Mac (`ssh $SCENIC_TEST_HOST`, default `m6`: the Mac mini) against an exact
+# Runs a test command on the test Mac (`ssh $SCENIC_TEST_HOST`, default `m4`: the M4) against an exact
 # copy of a source tree, streaming its output back; on the test Mac itself, when it can't be reached,
 # or with SCENIC_CHECK_LOCAL=1 (or SCENIC_TESTS_LOCAL=1), it runs here instead. Its exit status is the
 # command's. (Task #442: the heavy test runs of tools/dev/check.sh and tools/app/publish.sh go to one
@@ -42,7 +42,7 @@
 # side makes runs under a watchdog: the first, a fresh-connection probe, within 20 s; the lock and
 # drop calls within 60 s; the run itself must print its first line within 120 s (its first,
 # "connected", comes at once). Past a bound, the ssh is stopped and the command runs here, saying why.
-host=${SCENIC_TEST_HOST:-m6}  # the test Mac: the Mac mini by default; any ssh alias, or this Mac itself (then it runs here)
+host=${SCENIC_TEST_HOST:-m4}  # the test Mac: the M4 by default (owner, 31 Oct); any ssh alias, or this Mac itself (then it runs here)
 self=${0:A}
 setopt extendedglob
 [[ -n ${SCENIC_TESTS_TRACE:-} ]] && set -x
