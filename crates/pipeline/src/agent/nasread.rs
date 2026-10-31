@@ -143,32 +143,44 @@ impl Calls {
 #[cfg(test)]
 pub(crate) mod fake {
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    static HUNG: Mutex<Vec<(PathBuf, Arc<AtomicBool>)>> = Mutex::new(Vec::new());
+    type Gate = (PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>);
+    static HUNG: Mutex<Vec<Gate>> = Mutex::new(Vec::new());
 
-    /// The share hung under `prefix` while this lives.
-    pub struct Hung(PathBuf, Arc<AtomicBool>);
+    /// The share hung under `prefix` while this lives; it counts the calls it held (`held`).
+    pub struct Hung(PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>);
+
+    impl Hung {
+        /// The calls under its prefix that came while it hung.
+        pub fn held(&self) -> usize {
+            self.2.load(Ordering::SeqCst)
+        }
+    }
 
     impl Drop for Hung {
         fn drop(&mut self) {
             self.1.store(true, Ordering::SeqCst);
-            HUNG.lock().unwrap_or_else(|e| e.into_inner()).retain(|(p, g)| !(p == &self.0 && Arc::ptr_eq(g, &self.1)));
+            HUNG.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|(p, g, _)| !(p == &self.0 && Arc::ptr_eq(g, &self.1)));
         }
     }
 
     /// Every NAS call on a path under `prefix` hangs until the answer is dropped.
     pub fn hang(prefix: &Path) -> Hung {
-        let g = Arc::new(AtomicBool::new(false));
-        HUNG.lock().unwrap_or_else(|e| e.into_inner()).push((prefix.to_path_buf(), g.clone()));
-        Hung(prefix.to_path_buf(), g)
+        let (g, n) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+        HUNG.lock().unwrap_or_else(|e| e.into_inner()).push((prefix.to_path_buf(), g.clone(), n.clone()));
+        Hung(prefix.to_path_buf(), g, n)
     }
 
     /// The gate a call on `what` waits on, if it's hung.
     pub(super) fn gate(what: &Path) -> Option<Arc<AtomicBool>> {
         let h = HUNG.lock().unwrap_or_else(|e| e.into_inner());
-        h.iter().find(|(p, _)| what.starts_with(p)).map(|(_, g)| g.clone())
+        let (_, g, n) = h.iter().find(|(p, _, _)| what.starts_with(p))?;
+        n.fetch_add(1, Ordering::SeqCst);
+        Some(g.clone())
     }
 }
 

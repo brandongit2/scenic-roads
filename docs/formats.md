@@ -667,7 +667,8 @@ clear-request.json      the owner's ask to clear build caches ({by, at, level: c
 room-target.json        the owner's free-disk target {bytes, by, at} (agent::room::Target; none: off)
 member                  this Mac's pool member id `m-<16 hex>`, then its hardware UUID
 pack-idx/<hash16>.idx   indexes of the terrain packs the manifest names (agent::tiles); never
-                        trimmed; one unnamed and untouched for a fortnight goes
+                        trimmed; one unnamed and untouched for a fortnight goes; the lead's
+                        alone (removed as a member starts)
 pool/                   crate::agent::pool: saved.json (crate::pool::driver::Saved: {member, mine:
                         {entries, unwritten}, term, led, made, unfinished?, stood_down?, passing?};
                         saved.earlier.json one set aside), mail.json ({read, sent, n}), members.json,

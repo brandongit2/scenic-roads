@@ -222,6 +222,19 @@ fn role_by(run: &pool::Run) -> Role {
     crate::pool::term::role_of(run.side.driver().declared(), Some(&run.side.member().id))
 }
 
+/// What only the lead's parts keep in the agent's folder `home`, removed on a member (docs/roles.md
+/// §5 step 2): the terrain packs' indexes the plan reads (`pack-idx/`, agent::plan's
+/// `TerrainTiles`; no job reads them).
+fn drop_lead_caches(home: &Path) {
+    let idx = home.join("pack-idx");
+    if idx.exists() {
+        match std::fs::remove_dir_all(&idx) {
+            Ok(()) => eprintln!("agent: removed {} (a lead's, this Mac a member)", idx.display()),
+            Err(e) => eprintln!("agent: removing {}: {e}", idx.display()),
+        }
+    }
+}
+
 /// A role in words, for the log.
 fn role_name(r: Role) -> &'static str {
     match r {
@@ -232,11 +245,17 @@ fn role_name(r: Role) -> &'static str {
 }
 
 /// The build's records' manifest and keys as a reader has them now (crate::out::brief_now), read
-/// within `nasread::DEADLINE`: none (empty ones) when they can't be read now, for showing.
+/// within `nasread::DEADLINE` (a call on the briefs' folder, `BRIEFS`): none (empty ones) when they
+/// can't be read now.
 fn records_deadlined(root: &store::nasfs::NasRoot) -> crate::pool::records::Brief {
     let r = root.clone();
-    nasread::with(&root.path(), move || crate::out::brief_now(&r).map_err(std::io::Error::other)).unwrap_or_default()
+    nasread::with(&root.join(BRIEFS), move || crate::out::brief_now(&r).map_err(std::io::Error::other))
+        .unwrap_or_default()
 }
+
+/// The folder of the terms' briefs (crate::pool::records::brief_path), as the NAS calls reading
+/// them name it.
+const BRIEFS: &str = "state/build/term";
 
 /// `SCENIC_TEST_WORKER` when set: the name the agent works and reports under in place of its Mac's
 /// (the two-Mac test's alone, tools/check/pool-two-macs.sh: a member beside the lead on one Mac,
@@ -1898,6 +1917,9 @@ impl Agent {
         if plan.plans() {
             beat.watch_plan(plan.running());
         }
+        if role == Role::Member && lock.is_some() && !o.dry_run {
+            drop_lead_caches(&o.home);
+        }
         let mut a = Agent {
             role,
             plan,
@@ -2816,14 +2838,12 @@ impl Agent {
         cmd.extend(targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t) && *t != step));
         cmd.extend(self.step_args(step, pass));
         if matches!(step, "trees" | "terrain-hi" | "slope-hi") {
-            let same = build::Keys::load_with(root, &[])
-                .map(|k| {
-                    expect_same(
-                        &build::Work { step: step.to_string(), targets: targets.to_vec() },
-                        &self.as_read(root, k),
-                    )
-                })
-                .unwrap_or_default();
+            // (Under the NAS's deadline: none read, nothing expected the same.)
+            let keys = records_deadlined(root).keys;
+            let same = expect_same(
+                &build::Work { step: step.to_string(), targets: targets.to_vec() },
+                &self.as_read(root, keys),
+            );
             if !same.is_empty() {
                 cmd.extend(["--expect-same".to_string(), same.join(",")]);
             }
@@ -6795,6 +6815,9 @@ impl Agent {
     /// the coverage and terrain packs' indexes the last plan read (`plan::PlanView`); as they are
     /// when what that reads can't be told now (no plan yet, or the regions' version changed since).
     fn as_read(&self, root: &store::nasfs::NasRoot, mut keys: build::Keys) -> build::Keys {
+        // (The plan's first: a member has none, and reads nothing for it.)
+        let view = self.plan.view.get();
+        let (Some((version, covs)), Some(tiles)) = (view.coverage.as_ref(), view.tiles.as_ref()) else { return keys };
         if self.latest_pass(root).is_none() {
             return keys;
         }
@@ -6803,8 +6826,6 @@ impl Agent {
             return keys;
         }
         let Ok(manifest) = crate::out::read_manifest(root) else { return keys };
-        let view = self.plan.view.get();
-        let (Some((version, covs)), Some(tiles)) = (view.coverage.as_ref(), view.tiles.as_ref()) else { return keys };
         let now = crate::inputs::regions::read::source(root, &manifest).map(|a| a.version);
         if now.ok().as_ref() != Some(version) {
             return keys;
@@ -8183,6 +8204,7 @@ impl Agent {
             (Role::Unknown, Role::Member) => {
                 eprintln!("agent: the lead's declaration read: this Mac is a member");
                 self.role = Role::Member;
+                drop_lead_caches(&self.o.home);
             }
             (was, now) => self.restart_for_part(format!(
                 "the lead's declaration changed this Mac's role ({} → {}): restarting into it",
@@ -15669,6 +15691,86 @@ mod pool_tests {
         assert!(m.slots[0].running.is_some(), "its job taken over");
         stop_jobs(&mut m);
         stop_jobs(&mut lead);
+    }
+
+    /// Task #882 step 2 (docs/roles.md §5): two agents, the lead and a member. The member counts
+    /// no region: it has no plan (so no `start_as_built`, no regions' states or steps, no
+    /// checklist), opens no pack index, and the indexes a lead's process left in its folder go as it
+    /// starts; its status carries none of the build's regions or checklist.
+    #[test]
+    fn a_member_never_counts_the_regions() {
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let bin = app(d.path());
+        let o = |who: &str| Options {
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
+            home: d.path().join(who).join("agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            member: false,
+        };
+        let mut lead = test_agent(o("l")).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.round().unwrap();
+        // (Left by a process of this Mac's that led.)
+        let idx = d.path().join("m/agent/pack-idx");
+        std::fs::create_dir_all(&idx).unwrap();
+        std::fs::write(idx.join("0123456789abcdef.idx"), b"x").unwrap();
+        let mut m = test_agent(o("m")).unwrap();
+        assert_eq!(m.role, Role::Member);
+        assert!(!idx.exists(), "its pack indexes removed as it starts");
+        for _ in 0..3 {
+            lead.round().unwrap();
+            m.round().unwrap();
+        }
+        assert!(lead.plan.plans() && !m.plan.plans(), "the member has no plan to count with");
+        assert!(!idx.exists(), "no pack index opened");
+        let view = m.plan.view.get();
+        assert!(view.built.is_empty() && view.checklist.is_empty() && view.tiles.is_none());
+        let st: Status = serde_json::from_slice(&std::fs::read(m.o.home.join("helper.json")).unwrap()).unwrap();
+        assert!(st.regions.is_empty() && st.checklist.is_empty(), "{:?}", st.checklist);
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+    }
+
+    /// Task #882 step 2, with #871's slow-NAS fake: the records' briefs hung, a member's rounds go
+    /// on and never call for one (no checklist, no counts).
+    #[test]
+    fn a_members_round_never_waits_on_the_records_brief() {
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let bin = app(d.path());
+        let o = |who: &str| Options {
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
+            home: d.path().join(who).join("agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            member: false,
+        };
+        let mut lead = test_agent(o("l")).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.round().unwrap();
+        let mut m = test_agent(o("m")).unwrap();
+        m.round().unwrap();
+        let hung = nasread::fake::hang(&store::nasfs::NasRoot::local_for_test(&r).join(BRIEFS).unchecked_path());
+        for _ in 0..5 {
+            m.round().unwrap();
+        }
+        assert_eq!(hung.held(), 0, "the member's rounds asked for no brief");
+        // (The fake sees a reader of the briefs, the plan's checklist's: held, it returns past
+        // the deadline with none.)
+        let read = records_deadlined(&store::nasfs::NasRoot::local_for_test(&r));
+        assert!(hung.held() == 1 && read.keys.recorded("unit", "6/1/1").is_none());
+        drop(hung);
+        lead.plan.stop(Duration::ZERO);
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
     }
 
     /// A term taken up by a process with no coordinator (its role as it started a member's, or

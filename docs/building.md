@@ -63,7 +63,8 @@ from the first (`edit_held`).
   a plan of minutes holds no grant, pause or heartbeat, and a grant from a plan no newer than a
   cancel of its job or target is dropped. The checklist and the regions' counts are the plan's
   too. Planning reads the terrain packs' indexes once each by content name, kept in the agent's
-  `pack-idx/`. On the lead, the journal is merged each round.
+  `pack-idx/` (the lead's alone: a member plans nothing, and removes its own as it starts). On the
+  lead, the journal is merged each round.
 - **Jobs at once** (docs/pool.md §7.2, §7.7): every job starts by a grant of the lead's
   coordinator, the lead's own too, packed by their measures: a job beside others only when their
   measured memory, disk and cores fit the Mac's room. Never beside a cold start (a step none of
