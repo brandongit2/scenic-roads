@@ -8,7 +8,9 @@
 # module with submodules gives only its own test modules, e.g. agent::tests::); one level of users
 # in the same crate (`crate::<mod>`, `use crate::<parent>::{…<leaf>…}`, the crate's binaries naming
 # `<crate>::<mod>`, the parent naming `<leaf>::`, a child using `super::`); the integration tests
-# under crates/<crate>/tests/ that name it, or that changed. Modules without tests are left out.
+# under crates/<crate>/tests/ that name it, or that changed; other crates' modules naming
+# `<crate>::<mod>`, or `crate::<mod>` where their root re-exports it (`pub use <crate>::…`, #916).
+# Modules without tests are left out.
 # Lines starting with # explain; the others are the commands. No command for doc-only or non-Rust
 # changes. A `#[path]` module's file maps to its declared module (dem/generic_tests.rs → dem::generic::tests).
 # tools/dev/test-guard.sh holds agents' cargo test to this set.
@@ -160,6 +162,16 @@ for f in changed:
             if os.path.isdir(p): p += "/mod.rs"
             elif not ch.endswith(".rs") or ch == "mod.rs": continue
             if "super::" in read(p): users.add(p)
+    # Other crates' users (#916: modules moved to their own crates): `<c>::<path>` anywhere in
+    # them, and `crate::<path>` in a crate whose root re-exports the module (`pub use c::{…}`).
+    top = segs[0]
+    for oc in sorted(os.listdir("crates")):
+        osrc = "crates/%s/src" % oc
+        if oc == c or not os.path.isdir(osrc): continue
+        users |= set(rg(r"\b%s::%s\b%s" % (c, re.escape(path), notkid), [osrc]))
+        if re.search(r"pub use %s::(?:\{[^}]*\b%s\b|%s\b)" % (c, re.escape(top), re.escape(top)), read(root_file(oc))):
+            users |= set(rg(r"crate::%s\b%s" % (re.escape(path), notkid), [osrc]))
+            if has_lib(oc): users |= set(rg(r"\b%s::%s\b%s" % (oc, re.escape(path), notkid), [osrc + "/bin"]))
     for u in sorted(users - {f}): add_file(u, "uses " + path)
     tdir = "crates/%s/tests" % c
     named = set(rg(r"\b%s::%s\b%s" % (c, re.escape(path), notkid), [tdir])) | set(rg(r"\b%s::%s\{[^}]*\b%s\b" % (c, pp, re.escape(leaf)), [tdir], True))

@@ -47,6 +47,11 @@ The cycle is held together by a few thin edges from low-level code up to `agent`
 | out → pool::records | `Records::now`, `Brief::now` | callers name `pool::records` directly; out's two wrappers go |
 | out → inputs | `in_inputs_folder`, the gate | the inputs folder's path predicates move down to the store layer |
 | fetch → control | `draining_lately` | `control` sits below `fetch` (runtime crate) |
+| fetch, out, outlines → osmpass | osmpass's reading helpers (fetch, out: one reference each; outlines: 2) | the named items move down to buildstore; osmpass (inputs) stays above |
+| dem → terrain_deep, terrain_pack | terrain's tile helpers (7 references) | the helpers move down (codecs or buildstore), or dem joins the terrain family |
+| inputs → lakefill, rail | 2 references to lakefill, 4 to rail, from the input checks | the named items move down beside inputs, or the checks call them through the agent |
+| cli → polar | one reference to polar | it moves down with cli (jobrt) |
+| layers → ovconv | one item | layers sits in the terrain family; the item moves down to codecs |
 | terrain_task, trees, offload → coord | offloading a step's parts to other Macs | a trait in the runtime crate (`Offload`), implemented by coord; the step names only the trait |
 
 ## 2. Proposed crates
@@ -67,7 +72,13 @@ names, webpenc as now).
    fetch, geotiff. ~12k lines.
 5. **inputs** (the declared inputs): inputs (21.9k lines), dem, rules, osmpass, areafiles. Its
    edges up to agent (23) and pool (7) are cut as in §1 first; ~33k lines.
-6. Step families, side by side (each compiles in parallel with the others):
+6. Step families. They are not independent today: modgraph.py shows trees → terrain (treepacks →
+   layers), roads → trees and terrain (unit → trees, landcover, stage), names → terrain (heritage →
+   stage, terrain_pack; gtfs → lakefill), bld → names and roads (bld → heritage, unit), offload →
+   bld, trees, unit. So they stack (terrain, then trees, roads, names, bld) unless those edges are
+   cut too (moving the shared items, `layers`, `stage`'s tile helpers, down to codecs/buildstore);
+   only the families with no edge between them compile in parallel. An edit in a family still
+   rebuilds every family above it and pipeline.
    - **terrain**: terrain_base, terrain_deep, terrain_pack, terrain_resume, terrain_task,
      pyramids, stage, road_terrain, slope_pack, depth, polar, lakefill, water, peaks, summits,
      layers. ~25k lines. (terrain_pack ↔ terrain_deep ↔ stage stay one crate.)
@@ -127,8 +138,9 @@ agent/rekey.rs; #856: crates/server; #882 step 4: coord; #914) move only after t
    edge and most step → agent edges. Needs #879 merged (agent/ edits).
 4. **buildstore**: `Recipe` and the inputs folder's predicates down; out's write-set check behind a
    registry the agent fills; out's `pool::records` wrappers removed. Needs #879 (agent/steps.rs).
-5. **inputs** and the step families (one step each: names, trees, bld, roads, terrain), each after
-   rerunning modgraph.py shows it leaves no edge back into what remains above.
+5. **inputs** and the step families (one step each, bottom up: terrain, trees, roads, names, bld),
+   each after rerunning modgraph.py shows it leaves no edge back into what remains above; the
+   cross-family edges of §2.6 are cut where cheap so families compile in parallel.
 6. **coordination**, after #882 lands.
 7. Path rewrites: per crate, `crate::x` → `<crate>::x`, and the re-exports dropped.
 
