@@ -468,7 +468,23 @@ thread it climbs by: none measured it idle yet, so a climbed job counts for ever
 may keep busy and no Mac is overcommitted by a climb. A target not run the way it runs now, nearly
 every one granted, counts for its step's most over its runs at the most threads it ran with (runs
 at fewer, their climb measured since, say nothing past them), which no run crowded off the NAS
-lowers. The cores a Mac's jobs may use together (`coord::ask_cores`) are its Mac's
+lowers. **A job whose waits dominate takes its threads from its step's curve** (task #904,
+`needs::Curve`): a single run can't tell how much more threads help a step waiting on the NAS, so
+each step's runs the way it runs now (the costs book, each target's last run) are grouped by their
+threads, each run's wall time (less the time stopped) over its target's work (what the step's good
+time fit predicts for its size, without its thread term; no good fit, the MB it read, where every run says some; else the wall alone); a thread
+count of 5 runs or more (`CURVE_RUNS`) is a point: their median and its standard error (1.4826 ×
+the median absolute deviation over √runs). The **knee** is the fewest threads that no more threads
+beat by 2 standard errors of the difference (`CURVE_SE`): the margin is the runs' own spread, not a
+set figure. With two points or more known, a job whose waits dominate (each run it is read from waited half its time or more, `waited_ms`, and didn't climb) is
+granted the knee, whatever its busy cores' grant; under two, that grant. **One target in ten**
+(`EXPLORE_EVERY`, by a stable hash of its name) is granted a neighbour of that (one thread more
+first, else one fewer) while the neighbour has under 5 runs and that count itself has 5 or more, so the curve is learned around its
+knee and the exploring stops once both are known. A curve's grant counts for the most cores a run
+kept busy at the most threads known up to it, plus each thread past those as a whole busy core
+(none measured them idle yet), so exploring never overcommits a Mac, and it stays within the Mac's
+cores like any grant. Any other job (a climbing one, its runs computed on every thread, or one
+computing more than it waited) keeps its busy cores' grant. `scenic pool needs` prints each step's curve, knee and grant. The cores a Mac's jobs may use together (`coord::ask_cores`) are its Mac's
 less, while its owner uses it, its in-use share's. Each job is granted its
 measured grant within its Mac's cores (task #888: no fixed share caps it, so a busy step's grant
 climbs where cores sit idle; the M4's terrain jobs had been held to 3 of 14 threads; task #896: no

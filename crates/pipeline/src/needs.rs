@@ -230,6 +230,95 @@ pub struct Cores {
     pub busy_tenths: Option<u32>,
 }
 
+/// The fewest runs at a thread count that make it a point of its step's curve (`Curve`).
+pub const CURVE_RUNS: usize = 5;
+/// One target in this many explores a neighbouring thread count its step's curve lacks (`Curve::pick`).
+pub const EXPLORE_EVERY: u64 = 10;
+/// The standard errors by which one point's wall must beat another's to count as faster.
+pub const CURVE_SE: f64 = 2.0;
+
+/// A thread count's runs on its step's curve: how many, their median wall time per unit of work
+/// (`Curve::size`), that median's standard error (from their spread: 1.4826 × the median absolute
+/// deviation over √runs), and the most cores one kept busy (tenths; None where none said its CPU
+/// time).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Point {
+    pub threads: u32,
+    pub runs: usize,
+    pub wall: f64,
+    pub se: f64,
+    pub busy_tenths: Option<u32>,
+}
+
+/// A step's wall time by threads (task #904), from its runs the way it runs now (the costs book:
+/// each target's last run, its threads and its wall time less the time stopped), each run's wall
+/// over its target's size: what the step's good time fit predicts for it without its thread term
+/// (`size` names that fit's size; no good fit, the MB its runs read, where each says some, else
+/// None: the wall alone). Points ascend by threads.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Curve {
+    pub size: Option<String>,
+    pub points: Vec<Point>,
+}
+
+impl Curve {
+    /// The points made of `CURVE_RUNS` runs or more.
+    fn known(&self) -> impl Iterator<Item = &Point> {
+        self.points.iter().filter(|p| p.runs >= CURVE_RUNS)
+    }
+
+    fn at(&self, threads: u32) -> Option<&Point> {
+        self.points.iter().find(|p| p.threads == threads)
+    }
+
+    /// The knee: the fewest threads that no more threads beat, beating meaning a wall lower by
+    /// `CURVE_SE` standard errors of the difference (the runs' own spread, no set margin); None
+    /// while under two thread counts are known.
+    pub fn knee(&self) -> Option<u32> {
+        let k: Vec<&Point> = self.known().collect();
+        if k.len() < 2 {
+            return None;
+        }
+        let beats = |q: &Point, p: &Point| p.wall - q.wall > CURVE_SE * (p.se * p.se + q.se * q.se).sqrt();
+        k.iter().find(|p| !k.iter().any(|q| q.threads > p.threads && beats(q, p))).map(|p| p.threads)
+    }
+
+    /// The threads a job for `target` is given about `at` (the knee, else what its busy cores
+    /// grant): one target in `EXPLORE_EVERY` (by a hash of its name, so its grant holds) runs a
+    /// neighbour of `at` that has under `CURVE_RUNS` runs, the one above first, once `at` itself is
+    /// known (`CURVE_RUNS` runs: a step new to the pool runs its grant first); so the curve is
+    /// learned around its knee, and the exploring stops once both neighbours are known.
+    pub fn pick(&self, at: u32, target: &str) -> u32 {
+        // (FNV-1a: stable across runs and builds, unlike std's hasher.)
+        let h = target.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
+        if h % EXPLORE_EVERY != 0 || self.at(at).is_none_or(|p| p.runs < CURVE_RUNS) {
+            return at;
+        }
+        [at + 1, at.saturating_sub(1)]
+            .into_iter()
+            .find(|&n| n >= 1 && self.at(n).is_none_or(|p| p.runs < CURVE_RUNS))
+            .unwrap_or(at)
+    }
+
+    /// The cores granted a job for `target` that doesn't climb, `c` as its busy cores grant it:
+    /// the knee's threads (`c`'s grant while under two counts are known), explored by `pick`;
+    /// counted for the most cores a run kept busy at the most threads known up to those, and every
+    /// thread past them as a busy core (none measured them idle yet: no Mac is overcommitted); none
+    /// known, `c`'s busy cores so.
+    pub fn grant(&self, c: Cores, target: &str) -> Cores {
+        let grant = self.pick(self.knee().unwrap_or(c.grant), target).max(1);
+        if grant == c.grant {
+            return c;
+        }
+        let below = self.known().filter(|p| p.threads <= grant && p.busy_tenths.is_some()).last();
+        let busy = match below {
+            Some(p) => p.busy_tenths.map(|b| b + (grant - p.threads) * 10),
+            None => c.busy_tenths.map(|b| b + grant.saturating_sub(c.grant) * 10),
+        };
+        Cores { grant, busy_tenths: busy.map(|b| b.clamp(1, grant * 10)) }
+    }
+}
+
 /// The models made, kept until the measures they're made from change: the change count they were
 /// made at (the owner's: the coordinator bumps its count with each cost, floor or disk floor it
 /// takes), by (step, measure); each step's most cores (`Book::cores`) and NAS prior
@@ -237,11 +326,13 @@ pub struct Cores {
 #[derive(Debug, Default)]
 pub struct Cache(
     Mutex<(u64, BTreeMap<(String, Measure), Model>)>,
-    Mutex<(u64, BTreeMap<String, Option<Cores>>)>,
+    Mutex<(u64, BTreeMap<String, Option<(Cores, bool)>>)>,
     Mutex<(u64, BTreeMap<String, Option<crate::budget::nas::Rate>>)>,
     /// Each target's `Book::nas` (step → target → it): the NAS budget weighs each target offered
     /// and leased for every ask.
     Mutex<(u64, Rates)>,
+    /// Each step's wall time by threads (`Book::curve`).
+    Mutex<(u64, BTreeMap<String, Curve>)>,
 );
 
 /// `Cache`'s targets' NAS rates: step → target → `Book::nas`.
@@ -683,7 +774,18 @@ impl<'a> Book<'a> {
     /// packs none beside it). (A run waiting on a crowded NAS reads less busy, which would pack more
     /// jobs, each reading less busy still; but a target not run the way it runs now, nearly every
     /// one a job is granted for, counts for its step's most, which no crowded run lowers: task #697.)
+    /// One whose waits dominate (task #904: its runs waited half their time or more, `waited_ms`,
+    /// and didn't climb) takes its threads from its step's wall time by threads instead
+    /// (`Curve::grant`): a wait-bound step gets the threads that pay, and no more; a busy one climbs.
     pub fn cores(&self, step: &str, target: &str) -> Option<Cores> {
+        let (c, waits) = self.cores_busy(step, target)?;
+        Some(if waits { self.curve(step).grant(c, target) } else { c })
+    }
+
+    /// `cores` by its busy cores alone (task #896), and whether its waits dominate (each run it's
+    /// read from waited half its time or more and didn't compute on every thread): its own run's,
+    /// else its step's most.
+    fn cores_busy(&self, step: &str, target: &str) -> Option<(Cores, bool)> {
         let v = cost_version(step);
         let threads = |c: &Cost| c.sizes.get("threads").filter(|_| c.v >= v).map(|&t| t as u32);
         let of = |c: &Cost| {
@@ -693,7 +795,7 @@ impl<'a> Book<'a> {
             let ran = (c.secs * 1000).saturating_sub(c.sizes.get("paused_ms").copied().unwrap_or(0)).max(1000);
             let kept = c.sizes.get("cpu_ms").map(|&ms| ms as f64 / ran as f64);
             Some(match kept {
-                None => Cores { grant: t, busy_tenths: None },
+                None => (Cores { grant: t, busy_tenths: None }, false),
                 Some(k) => {
                     // (Task #896: the cores it kept busy while it computed, its CPU time over the
                     // time it didn't wait (`waited_ms`, store::waits by the wall clock, task #870;
@@ -713,7 +815,7 @@ impl<'a> Book<'a> {
                     let computing = if ran - waited >= 1000 { k * ran as f64 / (ran - waited) as f64 } else { k };
                     let grant = (computing.min(f64::from(t)) + 0.5) as u32 + 1;
                     let busy = busy.min(t * 10) + grant.saturating_sub(t) * 10;
-                    Cores { grant, busy_tenths: Some(busy.min(grant * 10)) }
+                    (Cores { grant, busy_tenths: Some(busy.min(grant * 10)) }, grant <= t && waited * 2 >= ran)
                 }
             })
         };
@@ -727,9 +829,12 @@ impl<'a> Book<'a> {
         let most = || {
             let of_step = || self.costs.iter().filter(|(k, _)| step_of_key(k) == step).map(|(_, c)| c);
             let top = of_step().filter_map(threads).max()?;
-            of_step().filter(|c| threads(c) == Some(top)).filter_map(of).reduce(|a, b| Cores {
-                grant: a.grant.max(b.grant),
-                busy_tenths: a.busy_tenths.zip(b.busy_tenths).map(|(a, b)| a.max(b)),
+            of_step().filter(|c| threads(c) == Some(top)).filter_map(of).reduce(|(a, ca), (b, cb)| {
+                let c = Cores {
+                    grant: a.grant.max(b.grant),
+                    busy_tenths: a.busy_tenths.zip(b.busy_tenths).map(|(a, b)| a.max(b)),
+                };
+                (c, ca && cb)
             })
         };
         // (Its step's most kept with the models while the measures stand: a placement asks it for
@@ -740,6 +845,73 @@ impl<'a> Book<'a> {
             *g = (self.rev, BTreeMap::new());
         }
         *g.1.entry(step.to_string()).or_insert_with(most)
+    }
+
+    /// The step's wall time by threads (`Curve`), kept with the models while the measures stand.
+    pub fn curve(&self, step: &str) -> Curve {
+        let cache = match &self.cache {
+            CacheRef::Own(c) => c,
+            CacheRef::Kept(c) => *c,
+        };
+        {
+            let mut g = cache.4.lock().unwrap_or_else(|e| e.into_inner());
+            if g.0 != self.rev {
+                *g = (self.rev, BTreeMap::new());
+            }
+            if let Some(c) = g.1.get(step) {
+                return c.clone();
+            }
+        }
+        let fit = self.fits(step, Measure::Secs).into_iter().find(Fit::good);
+        let v = cost_version(step);
+        let of_step = || self.costs.iter().filter(|(k, c)| step_of_key(k) == step && c.v >= v && !is_drop(c));
+        // (No good fit: its runs' bytes read (MB), where every one says some: a wait-bound step's
+        // work; else the wall alone.)
+        let per_mb = fit.is_none() && of_step().all(|(_, c)| c.sizes.get("bytes").is_some_and(|&b| b > 0));
+        let mut by: BTreeMap<u32, (Vec<f64>, Option<u32>)> = BTreeMap::new();
+        for (k, c) in of_step() {
+            let Some(&t) = c.sizes.get("threads") else { continue };
+            let ran = (c.secs * 1000).saturating_sub(c.sizes.get("paused_ms").copied().unwrap_or(0));
+            if ran == 0 || time_weight(step, c).is_none() {
+                continue;
+            }
+            // (Its work: the fit's prediction for its size, without the fit's thread term.)
+            let work = match &fit {
+                Some(f) => match sizes_of(k, Some(c)).get(&f.size).map(|&x| f.base + f.k * x) {
+                    Some(w) if w > 0.0 => w,
+                    _ => continue,
+                },
+                None if per_mb => c.sizes["bytes"] as f64 / 1e6,
+                None => 1.0,
+            };
+            let e = by.entry((t as u32).max(1)).or_default();
+            e.0.push(ran as f64 / 1000.0 / work);
+            if let Some(&ms) = c.sizes.get("cpu_ms") {
+                let b = (ms as f64 / ran.max(1000) as f64 * 10.0).round() as u32;
+                e.1 = Some(e.1.unwrap_or(0).max(b));
+            }
+        }
+        let median = |v: &mut Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            let n = v.len();
+            if n % 2 == 1 {
+                v[n / 2]
+            } else {
+                (v[n / 2 - 1] + v[n / 2]) / 2.0
+            }
+        };
+        let points = by
+            .into_iter()
+            .map(|(threads, (mut w, busy_tenths))| {
+                let m = median(&mut w);
+                let mut dev: Vec<f64> = w.iter().map(|x| (x - m).abs()).collect();
+                let mad = median(&mut dev);
+                Point { threads, runs: w.len(), wall: m, se: 1.4826 * mad / (w.len() as f64).sqrt(), busy_tenths }
+            })
+            .collect();
+        let c = Curve { size: fit.map(|f| f.size).or(per_mb.then(|| "MB read".to_string())), points };
+        cache.4.lock().unwrap_or_else(|e| e.into_inner()).1.insert(step.to_string(), c.clone());
+        c
     }
 
     /// The NAS rate a job of `step` for `target` runs at, as measured (crate::costin: `bytes` read
@@ -896,6 +1068,29 @@ pub fn fit_table(book: &Book) -> String {
     for (s, ms) in &poor {
         out += &format!("  {s}: {}\n", ms.join(", "));
     }
+    // (Task #904: each step's wall time by threads, its knee, and what a job not exploring is
+    // granted: by its busy cores alone (task #896), and with its curve.)
+    out += &format!(
+        "\nthreads: wall per unit of work by threads (runs × median ± its standard error; a point from {CURVE_RUNS} runs), the knee (beaten by {CURVE_SE} standard errors or more), the grant by busy cores → by the curve (where waits dominate)\n"
+    );
+    for s in &steps {
+        let c = book.curve(s);
+        if c.points.is_empty() {
+            continue;
+        }
+        let pts: Vec<String> =
+            c.points.iter().map(|p| format!("{}: {}×{:.3}±{:.3}", p.threads, p.runs, p.wall, p.se)).collect();
+        let grants = book.cores_busy(s, "").map_or("-".to_string(), |(b, waits)| {
+            let after = if waits { c.knee().unwrap_or(b.grant) } else { b.grant };
+            format!("{} → {}{}", b.grant, after, if waits { "" } else { " (not waits)" })
+        });
+        out += &format!(
+            "  {s:<14} per {:<8} knee {:<3} grant {grants:<14} {}\n",
+            c.size.as_deref().unwrap_or("run"),
+            c.knee().map_or("-".to_string(), |k| k.to_string()),
+            pts.join("  ")
+        );
+    }
     out
 }
 
@@ -943,6 +1138,89 @@ mod tests {
             v: 0,
             sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
         }
+    }
+
+    /// `runs` runs of slope a thread count, each target's wall `wall(t)` seconds give or take
+    /// `noise` (a share, from a fixed sequence), keeping 0.3 cores busy and waiting the rest.
+    fn curve_costs(threads: &[u32], runs: u32, noise: f64, wall: impl Fn(u32) -> f64) -> BTreeMap<String, Cost> {
+        let mut costs = BTreeMap::new();
+        let mut r = 12345u64;
+        for &t in threads {
+            for i in 0..runs {
+                r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let u = (r >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0;
+                let secs = (wall(t) * (1.0 + noise * u)).round() as u64;
+                let sizes = [("threads", u64::from(t)), ("cpu_ms", secs * 300), ("waited_ms", secs * 700)];
+                let c = Cost { v: cost_version("slope"), ..cost(100, secs, &sizes) };
+                costs.insert(cost_key("slope", &format!("6/{t}/{i}")), c);
+            }
+        }
+        costs
+    }
+
+    /// Task #904: the knee, the fewest threads no more threads beat by their runs' own spread, on
+    /// flat, linear, saturating and noisy curves.
+    #[test]
+    fn the_knee_is_found_on_synthetic_curves() {
+        let t6 = [1, 2, 3, 4, 5, 6];
+        let knee = |costs: &BTreeMap<String, Cost>| Book::new(costs).curve("slope").knee();
+        assert_eq!(knee(&curve_costs(&t6, 8, 0.0, |_| 100.0)), Some(1), "flat: one thread");
+        assert_eq!(knee(&curve_costs(&t6, 8, 0.0, |t| 600.0 / f64::from(t))), Some(6), "linear: the most");
+        // (#896's review on the M4: unit 6/46/16 at 121 s on 1 thread, 57 s on 3; 6 never beat 3.)
+        let sat = |t: u32| [121.0, 80.0, 57.0, 57.0, 57.0, 57.0][t as usize - 1];
+        assert_eq!(knee(&curve_costs(&t6, 8, 0.0, sat)), Some(3), "saturating: where it stops");
+        assert_eq!(knee(&curve_costs(&t6, 30, 0.2, sat)), Some(3), "noisy, saturating");
+        assert_eq!(knee(&curve_costs(&t6, 30, 0.3, |_| 100.0)), Some(1), "noisy, flat: no false knee");
+        // (A gain inside the runs' spread isn't one: 2 % faster, 30 % noise, 8 runs.)
+        assert_eq!(knee(&curve_costs(&[2, 3], 8, 0.3, |t| 100.0 - f64::from(t))), Some(2));
+        assert_eq!(knee(&curve_costs(&[3], 30, 0.0, sat)), None, "one count known: no curve yet");
+        assert_eq!(knee(&curve_costs(&[1, 3], 4, 0.0, sat)), None, "too few runs at each");
+    }
+
+    /// Task #904: a tenth of the targets explore a neighbour of the knee the curve lacks, and none
+    /// once both are known; the threads explored past the measured count as busy cores.
+    #[test]
+    fn exploring_is_bounded() {
+        let sat = |t: u32| [121.0, 80.0, 57.0, 57.0, 57.0, 57.0][t as usize - 1];
+        let count = |costs: &BTreeMap<String, Cost>| {
+            let b = Book::new(costs);
+            let mut n = BTreeMap::new();
+            for i in 0..10_000 {
+                *n.entry(b.cores("slope", &format!("7/{i}/0")).unwrap().grant).or_insert(0u32) += 1;
+            }
+            n
+        };
+        // (Known at 3 alone: the busy cores' grant, 0.3 + 0.5 → 1 and a thread, 2, not known yet:
+        // none explore; known at 2 too, its knee 3, a tenth explore 4.)
+        let n = count(&curve_costs(&[3], 30, 0.0, sat));
+        assert_eq!(n.keys().copied().collect::<Vec<_>>(), [2], "{n:?}");
+        assert_eq!(count(&curve_costs(&[3], 4, 0.0, sat)).keys().copied().collect::<Vec<_>>(), [2]);
+        // (Known at 2 and 3: the knee 3, a tenth exploring 4.)
+        let n = count(&curve_costs(&[2, 3], 30, 0.0, sat));
+        assert_eq!(n.keys().copied().collect::<Vec<_>>(), [3, 4], "{n:?}");
+        assert!((700..1300).contains(&n[&4]), "{n:?}");
+        // (Known at 2, 3, 4: nothing to explore.)
+        assert_eq!(count(&curve_costs(&[2, 3, 4], 30, 0.0, sat)).keys().copied().collect::<Vec<_>>(), [3]);
+        // (The fourth thread, unmeasured, counts as a busy core besides 3's 0.3.)
+        let costs = curve_costs(&[2, 3], 30, 0.0, sat);
+        let b = Book::new(&costs);
+        let explorer = (0..).map(|i| format!("7/{i}/0")).find(|t| b.cores("slope", t).unwrap().grant == 4).unwrap();
+        assert_eq!(b.cores("slope", &explorer), Some(Cores { grant: 4, busy_tenths: Some(13) }));
+        // (A job whose runs computed on every thread climbs by its busy cores: the curve doesn't hold it.)
+        let mut costs = BTreeMap::new();
+        for i in 0..30 {
+            let c = Cost {
+                v: cost_version("slope"),
+                ..cost(100, 100, &[("threads", 3), ("cpu_ms", 300_000), ("waited_ms", 0)])
+            };
+            costs.insert(cost_key("slope", &format!("6/3/{i}")), c);
+            let c = Cost {
+                v: cost_version("slope"),
+                ..cost(100, 100, &[("threads", 2), ("cpu_ms", 200_000), ("waited_ms", 0)])
+            };
+            costs.insert(cost_key("slope", &format!("6/2/{i}")), c);
+        }
+        assert_eq!(Book::new(&costs).cores("slope", "7/0/0").map(|c| c.grant), Some(4));
     }
 
     /// A job's cores: its target's run's, else the most of its step's; None when no run says.
