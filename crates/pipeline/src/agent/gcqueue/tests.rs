@@ -185,12 +185,21 @@ fn a_torn_last_line_is_dropped() {
     assert!(GcQueue::default().open(d.path(), &m2, T0).is_err());
 }
 
-/// The shadow's check holds when every due name was removed or gone; a kept one says why.
+/// The shadow's check holds unless a due name is held (records, the newest catalogue); names kept
+/// for today's window alone are counted, not warned of (they're expected every day).
 #[test]
 fn the_shadow_s_check_says_what_today_s_gc_kept() {
     let mut c = ShadowCheck { due: 2, removed: vec!["a".into()], gone: vec!["b".into()], ..Default::default() };
     assert!(c.holds());
+    for w in ["catalogue", "young", "not swept"] {
+        c.kept.insert(w.into(), vec!["w".into()]);
+    }
+    assert!(c.holds(), "{}", c.said());
+    assert!(c.said().contains("kept for its window: 1 catalogue, 1 not swept, 1 young") && !c.said().contains("HELD"));
     c.kept.insert("records".into(), vec!["c".into()]);
     assert!(!c.holds());
-    assert!(c.said().contains("1 records"), "{}", c.said());
+    assert!(c.said().contains("HELD (a holder the queue missed): 1 records (e.g. c)"), "{}", c.said());
+    c.kept.remove("records");
+    c.kept.insert("map".into(), vec!["m".into()]);
+    assert!(!c.holds());
 }

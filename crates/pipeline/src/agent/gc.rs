@@ -648,6 +648,7 @@ pub fn run(
             if let Err(e) = store::whole::write(&to, &serde_json::to_vec(c).unwrap_or_default()) {
                 rep.warnings.push(format!("GC's queue's check not written to {}: {e:#}", to.display()));
             }
+            // (Only a holder the queue missed is warned of; its window's reasons are counted.)
             if !c.holds() {
                 rep.warnings.push(c.said());
             }
@@ -779,6 +780,8 @@ fn run_once(
     // Read oldest first, each delta applied to the one before when that's just been read (not
     // its chain read again).
     let mut prev: Option<store::catalogue::Catalogue> = None;
+    // (The newest catalogue's names: what the map names now, for the shadow's check.)
+    let mut newest: BTreeSet<String> = BTreeSet::new();
     for (k, &n) in in_window.iter().enumerate() {
         crate::agent::jobs::within(k as f64 / in_window.len() as f64);
         let p = store::catalogue::path_n(&cat_dir, n)
@@ -794,6 +797,9 @@ fn run_once(
         };
         read.count(p.metadata().map(|m| m.len()).unwrap_or(0), 1);
         referenced.extend(cat.files.values().map(|f| f.file.clone()));
+        if n == latest && due.is_some() {
+            newest = cat.files.values().map(|f| f.file.clone()).collect();
+        }
         rep.catalogues_kept += 1;
         prev = Some(cat);
     }
@@ -896,7 +902,13 @@ fn run_once(
                 }
                 if referenced.contains(&rel) {
                     if let Some(c) = &mut check {
-                        let why = if c.by_records.contains(&rel) { "records" } else { "catalogue" };
+                        let why = if c.by_records.contains(&rel) {
+                            "records"
+                        } else if newest.contains(&rel) {
+                            "map"
+                        } else {
+                            "catalogue"
+                        };
                         c.note(&rel, Some(why));
                     }
                     continue;
@@ -1310,9 +1322,17 @@ mod tests {
         put(rec_kept, 30);
         put(young, 1);
         put(removed, 30);
+        // (Named by an older catalogue of the window: kept for it, expected; by the newest: the map
+        // holds it, a holder the queue missed.)
+        let held = "layers/a/6-1-6.5555555555555555.pack";
+        put(held, 30);
         let mut cat = store::catalogue::Catalogue::new(1);
         cat.files
             .insert("layers/a/6-1-1".into(), store::catalogue::FileRef { file: cat_kept.into(), ..Default::default() });
+        store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+        let mut cat = store::catalogue::Catalogue::new(2);
+        cat.files
+            .insert("layers/a/6-1-6".into(), store::catalogue::FileRef { file: held.into(), ..Default::default() });
         store::catalogue::write(&root.join("catalog"), &cat).unwrap();
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(
@@ -1322,19 +1342,20 @@ mod tests {
         .unwrap();
         let home = tempfile::tempdir().unwrap();
         let due_p = home.path().join(SHADOW_DUE);
-        let mut names: Vec<String> = [cat_kept, rec_kept, young, removed, gone].map(String::from).to_vec();
+        let mut names: Vec<String> = [cat_kept, rec_kept, young, removed, gone, held].map(String::from).to_vec();
         names.sort();
         fs::write(&due_p, serde_json::to_vec(&ShadowDue { at: 7, queued: 9, names }).unwrap()).unwrap();
         let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, Some(&due_p)).unwrap();
         let c: ShadowCheck = serde_json::from_slice(&fs::read(home.path().join(SHADOW_CHECK)).unwrap()).unwrap();
-        assert_eq!((c.due, c.due_at), (5, 7), "{c:?}");
+        assert_eq!((c.due, c.due_at), (6, 7), "{c:?}");
         assert_eq!(c.removed, vec![removed.to_string()]);
         assert_eq!(c.gone, vec![gone.to_string()], "{c:?}");
         assert_eq!(c.kept["catalogue"], vec![cat_kept.to_string()]);
         assert_eq!(c.kept["records"], vec![rec_kept.to_string()]);
         assert_eq!(c.kept["young"], vec![young.to_string()]);
+        assert_eq!(c.kept["map"], vec![held.to_string()]);
         assert!(!c.holds());
-        assert!(r.warnings.iter().any(|w| w.contains("GC's queue (shadow)")), "{:?}", r.warnings);
+        assert!(r.warnings.iter().any(|w| w.contains("HELD")), "{:?}", r.warnings);
     }
 
     /// Task #451: a run in a job counts its NAS metadata work (crate::costin: `listed`, `stats`,

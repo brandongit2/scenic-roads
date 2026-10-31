@@ -331,7 +331,7 @@ its snapshot, not `fsync`ed per request). The clients:
 | Client | Id | Holds files on the NAS? |
 | --- | --- | --- |
 | each Mac's map server | `server/<host>` | yes: it reads the NAS for what its mirror lacks |
-| each Mac's mirror sync | `mirror/<host>` | yes, while it copies a `seq`'s files |
+| each Mac's mirror sync (not built: before step 8) | `mirror/<host>` | yes, while it copies a `seq`'s files |
 | the lead's agent (plan, status, page views) | in process | no: it reads names, not files |
 | a job leased with files of the map as inputs (names-todo, regions' checks) | its lease | yes, until it ends (§7.2) |
 | the NAS snapshot | `snapshot` | yes: a reader may start from it |
@@ -518,8 +518,12 @@ its cursor the oldest of the snapshots kept there). Deletions are kept for the m
 `DELETIONS_KEPT_S` (`CURSOR_TTL`). In shadow nothing deletes by the queue: the `gc` job is handed
 the due set and checks it against what it removes that day (storage.md, GC); what it removed or
 found gone is then marked deleted. With today's 14-day catalogue window and `GRACE` of 2 days, the
-check is expected to report due names today's GC keeps for its window ("catalogue", "young"); one
-kept for "records" is a holder the queue missed.
+check is expected to report due names today's GC keeps for its window every day ("catalogue": an
+older catalogue of the window names it, "young", "not swept": a folder it doesn't sweep): those are
+counted only. A due name kept because the records, an unmerged hand-off ("records") or the newest
+catalogue ("map") name it is a holder the queue missed: only those make GC's report warn.
+Not built yet, needed before step 8 deletes: the mirror's client (`mirror/<host>`, §5.4, §6.2); until
+then a download copying an older `seq`'s list holds nothing (today's 14-day window keeps its files).
 
 ### 7.3 Running
 

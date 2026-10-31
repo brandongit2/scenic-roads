@@ -144,9 +144,11 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
   name the map's log or the records stop naming (`agent::gcqueue`, `agent/maplog/gc.jsonl`) and,
   as each plan finds GC due, writes the names due by the queue's rules to `agent/maplog/gc-shadow.json`
   and passes them (`scenic gc --shadow-due`). Nothing is deleted by them: the run checks them
-  against what it removes (each removed, gone already, or kept for its reason: a catalogue of the
-  window, the records or an unmerged entry, too young, not swept), writes the check beside them
-  (`gc-shadow-check.json`) and says it in its report (`shadow`, and a warning when one was kept).
+  against what it removes (each removed, gone already, or kept for its reason), writes the check beside them
+  (`gc-shadow-check.json`) and says it in its report (`shadow`). Names kept for the 14-day window
+  (a catalogue of the window, too young, not swept) are counted only: expected daily. A warning
+  only when one is held, a holder the queue missed: the records, an unmerged entry or the newest
+  catalogue name it.
   The next plan marks what the run removed or found gone deleted in the queue, which the merge
   refuses for a hand-off whose lease was granted before (§7.4).
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/`, inputs,

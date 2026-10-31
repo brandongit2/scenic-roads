@@ -52,29 +52,49 @@ pub struct ShadowCheck {
     pub removed: Vec<String>,
     /// Due and not on the NAS (gone before).
     pub gone: Vec<String>,
-    /// Due and kept by today's GC, by its reason: `records` (the manifest, the records or a hand-off
-    /// not merged name it: the shadow missed a holder), `catalogue` (a catalogue of its window
-    /// names it), `young` (younger than its window), `not swept` (in no folder it sweeps).
+    /// Due and kept by today's GC, by its reason. A holder the queue missed (`MISSED`): `records`
+    /// (the manifest, the records or a hand-off not merged name it), `map` (the newest catalogue
+    /// names it). Expected while today's GC keeps its 14-day window: `catalogue` (an older
+    /// catalogue of its window names it), `young` (younger than its window), `not swept` (in no
+    /// folder it sweeps: the queue covers more than its folders).
     pub kept: BTreeMap<String, Vec<String>>,
 }
 
+/// The reasons that mean the queue missed a holder: a due name it would have deleted while held.
+pub const MISSED: [&str; 2] = ["records", "map"];
+
 impl ShadowCheck {
-    /// Whether the due set is a part of what today's GC removed (or found gone).
+    /// Whether no due name is held by what the queue should have seen (`MISSED`). Names today's GC
+    /// keeps for its window alone don't count: expected every day until step 8 ends the window.
     pub fn holds(&self) -> bool {
-        self.kept.values().all(Vec::is_empty)
+        MISSED.iter().all(|r| self.kept.get(*r).is_none_or(Vec::is_empty))
     }
 
     /// In words, for the log and GC's note.
     pub fn said(&self) -> String {
-        let kept: Vec<String> =
-            self.kept.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| format!("{} {k}", v.len())).collect();
-        format!(
-            "GC's queue (shadow): {} due, {} removed by today's GC, {} gone already{}",
+        let count = |missed: bool| -> Vec<String> {
+            self.kept
+                .iter()
+                .filter(|(k, v)| !v.is_empty() && MISSED.contains(&k.as_str()) == missed)
+                .map(|(k, v)| format!("{} {k}", v.len()))
+                .collect()
+        };
+        let (missed, window) = (count(true), count(false));
+        let mut s = format!(
+            "GC's queue (shadow): {} due, {} removed by today's GC, {} gone already",
             self.due,
             self.removed.len(),
             self.gone.len(),
-            if kept.is_empty() { String::new() } else { format!(", kept by it: {}", kept.join(", ")) }
-        )
+        );
+        if !window.is_empty() {
+            s += &format!(", kept for its window: {}", window.join(", "));
+        }
+        if !missed.is_empty() {
+            let first: Vec<&str> =
+                MISSED.iter().filter_map(|r| self.kept.get(*r)).flatten().take(3).map(String::as_str).collect();
+            s += &format!(", HELD (a holder the queue missed): {} (e.g. {})", missed.join(", "), first.join(", "));
+        }
+        s
     }
 }
 
