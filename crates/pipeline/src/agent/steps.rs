@@ -14,7 +14,8 @@
 //! - **place**: which Mac runs it (`Place`: the lead alone, or any member), derived from the pool's
 //!   rules (crate::agent::every), never kept by hand.
 //! - **resources**: the memory a job of it is first guessed to take until a target's own run says,
-//!   whether members take it and at what rank (the shared steps), whether it's the lead's alone (a
+//!   whether members take it (the shared steps; which ready job goes first is derived from the
+//!   reads, `rank`, never kept by hand), whether it's the lead's alone (a
 //!   run alone of the whole build, or one that keeps the pass's answers: crate::agent::every), and
 //!   what it may write (its write-set: the logical names its jobs may add, change or remove in the
 //!   build's manifest). How many targets go in a job is measured, not kept here: as many as fit a
@@ -149,9 +150,9 @@ pub struct Step {
     /// beside other jobs at 3/2 of it (crate::coord::sched::provisional_mb). (Z6 tiles and candidates are offered by their extract's size, terrain by its z3 tile's,
     /// the 3D buildings by their rows: crate::agent's offers.)
     pub mem_mb: u64,
-    /// Other members take its jobs (the shared steps), at this rank of preference (what later steps
-    /// wait on first).
-    pub shared: Option<u8>,
+    /// Other members take its jobs (the shared steps). No preference among them is kept here:
+    /// which ready job goes first is derived from the reads (`rank`).
+    pub shared: bool,
     /// A run of the whole build's, the lead's alone (not offered to members: crate::agent::every).
     pub alone: bool,
     /// It keeps the pass's Wikidata and Wikipedia answers (crate::answers): none starts while the
@@ -598,7 +599,7 @@ const fn step(
         scope,
         stage,
         mem_mb: 1500,
-        shared: None,
+        shared: false,
         alone: false,
         answered: false,
         writes,
@@ -796,7 +797,7 @@ pub const TABLE: [Step; 59] = [
     // crate::coverage::Coverage::read_peak_mb. Until a z6 tile's own run says.)
     Step {
         cost_v: 7,
-        shared: Some(0),
+        shared: true,
         ..step(
             "terrain",
             Pack,
@@ -811,7 +812,7 @@ pub const TABLE: [Step; 59] = [
     // crate::coverage::Coverage::read_peak_mb. Until a target's own run says.)
     Step {
         mem_mb: crate::terrain_deep::target_peak_mb(),
-        shared: Some(1),
+        shared: true,
         ..step(
             "terrain",
             Pack,
@@ -842,7 +843,7 @@ pub const TABLE: [Step; 59] = [
     Step {
         reads: R_SLOPE_DEEP,
         mem_mb: crate::slope_pack::deep_peak_mb(),
-        shared: Some(2),
+        shared: true,
         ..step(
             "slope",
             Pack,
@@ -856,7 +857,7 @@ pub const TABLE: [Step; 59] = [
         cost_v: 4,
         reads: R_SLOPE_HI,
         mem_mb: crate::slope_pack::peak_mb(),
-        shared: Some(3),
+        shared: true,
         ..step(
             "slope",
             Pack,
@@ -927,7 +928,7 @@ pub const TABLE: [Step; 59] = [
     Step {
         cost_v: 3,
         mem_mb: 2500,
-        shared: Some(4),
+        shared: true,
         ..step("trees", Pack, Z6, "trees", "Maps a tile's tree cover, height and leaf type.", w_trees)
     },
     Step {
@@ -952,7 +953,7 @@ pub const TABLE: [Step; 59] = [
     Step {
         cost_v: 2,
         mem_mb: 2500,
-        shared: Some(10),
+        shared: true,
         ..step(
             "depth",
             Pack,
@@ -999,7 +1000,7 @@ pub const TABLE: [Step; 59] = [
         cost_v: 3,
         reads: R_UNIT,
         mem_mb: 8600,
-        shared: Some(5),
+        shared: true,
         ..step(
             "roads",
             Pack,
@@ -1078,14 +1079,14 @@ pub const TABLE: [Step; 59] = [
     },
     Step {
         mem_mb: 2048,
-        shared: Some(6),
+        shared: true,
         reads: R_POIS,
         ..step("landmarks", Derive, Z6, "pois", "Finds a tile's landmark candidates.", w_pois)
     },
     Step {
         reads: R_PEAKS,
         mem_mb: 2500,
-        shared: Some(7),
+        shared: true,
         ..step("landmarks", Derive, Z6, "peaks", "Measures a tile's peaks' prominence and isolation.", w_peaks)
     },
     Step {
@@ -1156,7 +1157,7 @@ pub const TABLE: [Step; 59] = [
     Step {
         reads: R_BLDPREP,
         mem_mb: super::bldprep_peak(30_300_000),
-        shared: Some(8),
+        shared: true,
         ..step(
             "buildings",
             Derive,
@@ -1169,7 +1170,7 @@ pub const TABLE: [Step; 59] = [
     Step {
         reads: R_BLDTILES,
         mem_mb: super::bldtiles_peak(30_300_000),
-        shared: Some(9),
+        shared: true,
         ..step(
             "buildings",
             Pack,
@@ -1447,78 +1448,98 @@ enum Set {
     Answered,
 }
 
-/// Whether row `s` is in `set`, and its rank there (the shared steps by their ranks, the others in
-/// the table's order).
-const fn rank_in(s: &Step, set: Set, i: usize) -> Option<usize> {
+/// Whether row `s` is in `set`.
+const fn in_set(s: &Step, set: Set) -> bool {
     match set {
-        Set::Shared => match s.shared {
-            Some(r) => Some(r as usize),
-            None => None,
-        },
-        Set::Answered if s.answered => Some(i),
-        _ => None,
+        Set::Shared => s.shared,
+        Set::Answered => s.answered,
     }
 }
 
-/// Whether `set`'s ranks are its own, 0 to N-1 (the shared steps), not an order taken from the
-/// table's order.
-const fn dense(set: Set) -> bool {
-    matches!(set, Set::Shared)
-}
-
-/// The steps of `set`, by rank: N of them, or the build fails: two steps of one rank, a rank
-/// missing from a set whose ranks are its own (`dense`), more steps than N or fewer.
+/// The steps of `set`, in the table's order: N of them, or the build fails.
 const fn set_of<const N: usize>(set: Set) -> [&'static str; N] {
     let mut out = [""; N];
     let mut n = 0;
-    // (Each rank in turn: the row with the next rank up.)
-    let mut last: Option<usize> = None;
-    loop {
-        let mut best: Option<(usize, usize)> = None;
-        let mut i = 0;
-        while i < TABLE.len() {
-            if let Some(r) = rank_in(&TABLE[i], set, i) {
-                let after = match last {
-                    Some(l) => r > l,
-                    None => true,
-                };
-                let better = match best {
-                    Some((b, _)) => r < b,
-                    None => true,
-                };
-                if after && better {
-                    best = Some((r, i));
-                }
-            }
-            i += 1;
+    let mut i = 0;
+    while i < TABLE.len() {
+        if in_set(&TABLE[i], set) {
+            assert!(n < N, "the table has more steps in a set than its size");
+            out[n] = TABLE[i].name;
+            n += 1;
         }
-        match best {
-            Some((r, i)) => {
-                // (No other row of the same rank: it would be passed over.)
-                let mut k = 0;
-                while k < TABLE.len() {
-                    if k != i {
-                        if let Some(r2) = rank_in(&TABLE[k], set, k) {
-                            assert!(r2 != r, "two steps of the table share a rank in a set");
-                        }
-                    }
-                    k += 1;
-                }
-                assert!(!dense(set) || r == n, "a rank is missing from a set of the table");
-                assert!(n < N, "the table has more steps in a set than its size");
-                out[n] = TABLE[i].name;
-                n += 1;
-                last = Some(r);
-            }
-            None => break,
-        }
+        i += 1;
     }
     assert!(n == N, "the table has fewer steps in a set than its size");
     out
 }
 
-/// The shared steps: other members take their jobs (crate::coord leases them), in this order of
-/// preference: what later steps wait on first.
+/// Whether some step reads several of `step`'s targets for one of its own (task #909): a slope
+/// tile its terrain and its edge neighbours', an assembly its z6 tiles. Probed from the declared
+/// reads (`Step::reads`) at a tile of each zoom, never listed by hand. Such a step's targets are
+/// planned in compact blocks (`block_order`), so what reads them is ready a neighbourhood at a time
+/// rather than once a row's done.
+pub fn read_together(step: &str) -> bool {
+    const PROBES: [&str; 4] = ["3/4/2", "6/32/20", "10/512/300", "12/2048/1200"];
+    TABLE.iter().flat_map(|r| r.reads).any(|x| match *x {
+        Read::Targets { step: s, of } | Read::Mids { step: s, of } if s == step => {
+            PROBES.iter().any(|t| of(t).len() > 1)
+        }
+        _ => false,
+    })
+}
+
+/// Where tile target `t` goes in a compact block order (task #909): its zoom, then its (x, y)
+/// interleaved bit by bit (a Z-order curve), so any run of targets taken in order covers squares
+/// of tiles, not rows. None for a target that isn't a tile.
+pub fn block_order(t: &str) -> Option<(u8, u64)> {
+    let u = TileId::parse(t)?;
+    let spread = |v: u32| {
+        let mut v = v as u64 & 0xffff_ffff;
+        v = (v | (v << 16)) & 0x0000_ffff_0000_ffff;
+        v = (v | (v << 8)) & 0x00ff_00ff_00ff_00ff;
+        v = (v | (v << 4)) & 0x0f0f_0f0f_0f0f_0f0f;
+        v = (v | (v << 2)) & 0x3333_3333_3333_3333;
+        (v | (v << 1)) & 0x5555_5555_5555_5555
+    };
+    Some((u.z, spread(u.x) | (spread(u.y) << 1)))
+}
+
+/// Whether a target of `reader` reads, directly or through other steps, targets of `step`
+/// (`Step::reads`; task #909). Derived from the table alone.
+pub fn reads_from(reader: &str, step: &str) -> bool {
+    fn go(r: &str, step: &str, seen: &mut Vec<&'static str>) -> bool {
+        let Some(row) = row(r) else { return false };
+        if seen.contains(&row.name) {
+            return false;
+        }
+        seen.push(row.name);
+        row.reads.iter().any(|x| match *x {
+            Read::Targets { step: s, .. } | Read::Mids { step: s, .. } | Read::Whole { step: s } => {
+                s == step || go(s, step, seen)
+            }
+            Read::Input { .. } => false,
+        })
+    }
+    reader != step && go(reader, step, &mut Vec::new())
+}
+
+/// `v` in the order ready work is granted (docs/pool.md §7.2, task #909): as given (the plan's
+/// order), but each item ahead of the first before it of a step it reads (`reads_from`):
+/// finishing what's started. Nothing upstream needs a rank to go first: what reads it isn't ready
+/// until it's built (`readiness`), so a hand-set order could only starve what's downstream (a
+/// ready slope-deep job waited while any terrain-deep job fitted). Steps the reads don't relate
+/// keep the plan's order.
+pub fn readers_first<T>(v: Vec<T>, step: impl Fn(&T) -> &str) -> Vec<T> {
+    let mut out: Vec<T> = Vec::with_capacity(v.len());
+    for x in v {
+        let at = out.iter().position(|y| reads_from(step(&x), step(y))).unwrap_or(out.len());
+        out.insert(at, x);
+    }
+    out
+}
+
+/// The shared steps: other members take their jobs (crate::coord leases them), in the table's
+/// order (no preference: which ready job goes first is `rank`'s).
 pub const SHARED: [&str; 11] = set_of(Set::Shared);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
 pub const ANSWERED: [&str; 3] = set_of(Set::Answered);
@@ -2155,10 +2176,12 @@ mod tests {
 
     #[test]
     fn the_sets_are_todays() {
-        // (As they were before the table: the agent's and the coordinator's rules unchanged.)
+        // (As they were before the table: the agent's and the coordinator's rules unchanged; their
+        // order is the table's, no preference, task #909.)
+        let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
         assert_eq!(
-            SHARED,
-            [
+            set(&SHARED),
+            set(&[
                 "terrain-hi",
                 "terrain-deep",
                 "slope-deep",
@@ -2170,10 +2193,37 @@ mod tests {
                 "bldprep",
                 "bldtiles",
                 "depth"
-            ]
+            ])
         );
-        let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
         assert_eq!(set(&ANSWERED), set(&["items", "heritage-sites", "heritage"]));
+    }
+
+    #[test]
+    fn steps_read_together_are_known_from_the_reads() {
+        // (Task #909: slope-deep reads terrain-deep's 3×3, slope-hi terrain-hi's and slope-deep's,
+        // an assembly its z6 tiles.)
+        for s in ["terrain-deep", "terrain-hi", "terrain-lo", "slope-deep", "slope-hi", "trees"] {
+            assert!(read_together(s), "{s}");
+        }
+        assert!(!read_together("catalog"));
+        // A run of four targets in block order is a 2×2 square.
+        let mut ts: Vec<String> = (0..4).flat_map(|y| (0..4).map(move |x| format!("10/{x}/{y}"))).collect();
+        ts.sort_by_key(|t| block_order(t));
+        assert_eq!(ts[..4], ["10/0/0", "10/1/0", "10/0/1", "10/1/1"]);
+        assert_eq!(block_order("s/x"), None);
+    }
+
+    #[test]
+    fn readers_go_before_what_they_read() {
+        // (Task #909: the owner's case, a ready slope-deep job before terrain-deep's; slope-hi
+        // before both; steps the reads don't relate in the order given.)
+        assert!(reads_from("slope-deep", "terrain-deep"));
+        assert!(reads_from("slope-lo", "terrain-hi"), "through terrain-lo");
+        assert!(!reads_from("terrain-deep", "slope-deep"));
+        let v = vec!["terrain-deep", "trees", "slope-deep", "slope-hi"];
+        assert_eq!(readers_first(v, |s| s), ["slope-hi", "slope-deep", "terrain-deep", "trees"]);
+        let v = vec!["trees", "terrain-hi", "pois"];
+        assert_eq!(readers_first(v.clone(), |s| s), v);
     }
 
     #[test]

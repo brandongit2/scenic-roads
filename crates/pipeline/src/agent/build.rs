@@ -2853,11 +2853,13 @@ pub fn plan(
     // second or two where a build takes minutes, waiting on nothing (`terrain_work` lists them
     // runnable); what reads their tiles waits on them as before.
     let mut drops: Vec<(String, String)> = Vec::new();
+    // (The rest in compact blocks where another step reads its targets together (`blocks`): the
+    // regions' order below keeps it within each region.)
     let mut split = |step: &'static str, list: Vec<(String, String)>| -> Vec<(String, String)> {
         let (d, rest): (Vec<_>, Vec<_>) = list.into_iter().partition(|(t, k)| is_none_key(step, t, k));
         drops.extend(d.iter().map(|(t, _)| (step.to_string(), t.clone())));
         push(&mut work, step, d);
-        rest
+        blocks(step, rest)
     };
     let terrain = split("terrain-hi", terrain);
     let terrain_deep = split("terrain-deep", terrain_deep);
@@ -3112,27 +3114,72 @@ pub fn plan(
     });
     let mut taken = vec![false; units.len()];
     let mut listed: BTreeSet<String> = BTreeSet::new();
-    let mut by_region: Vec<Work> = Vec::new();
+    let mut by_region_all: Vec<Work> = Vec::new();
     for r in &order {
+        // (Its work, then the ready work of the steps reading it in the region (its slope), each moved
+        // ahead of what it reads (steps::readers_first, task #909): its z6 tiles and slope ready
+        // ahead of the terrain of its others. No step ranked by hand: what reads a target is
+        // never offered before it's built.)
+        let mut chunk: Vec<Work> = Vec::new();
+        let by_region = &mut chunk;
         let t: Vec<(String, String)> =
             terrain.iter().filter(|t| r.terrain.contains(&z3(t)) && listed.insert(t.0.clone())).cloned().collect();
-        push(&mut by_region, "terrain-hi", t);
+        push(by_region, "terrain-hi", t);
         let t: Vec<(String, String)> =
             terrain_deep.iter().filter(|t| r.terrain.contains(&z3(t)) && listed.insert(t.0.clone())).cloned().collect();
-        push(&mut by_region, "terrain-deep", t);
+        push(by_region, "terrain-deep", t);
         let t: Vec<(String, String)> = terrain_lo
             .iter()
             .filter(|t| r.terrain.contains(&t.0) && listed.insert(format!("lo {}", t.0)))
             .cloned()
             .collect();
-        push(&mut by_region, "terrain-lo", t);
+        push(by_region, "terrain-lo", t);
         let mut mine: Vec<usize> = r.stale.iter().copied().filter(|&i| !taken[i] && buildable(i)).collect();
         mine.sort_by_key(|&i| spatial_order(units[i].0));
         for &i in &mine {
             taken[i] = true;
         }
-        push(&mut by_region, "unit", mine.into_iter().filter_map(target).collect());
+        push(by_region, "unit", mine.into_iter().filter_map(target).collect());
+        for (step, list, trees) in [
+            ("slope-deep", &slope_deep, false),
+            ("slope-hi", &slope, false),
+            ("slope-lo", &slope_lo, false),
+            ("trees", &trees, true),
+            ("trees-lo", &trees_lo, true),
+        ] {
+            // (Only a step reading the region's own work: the rest keep their place after it.)
+            if !["terrain-hi", "terrain-deep", "terrain-lo", "unit"].iter().any(|s| super::steps::reads_from(step, s)) {
+                continue;
+            }
+            let t: Vec<(String, String)> = list
+                .iter()
+                .filter(|t| if trees { r.tree_z3s.contains(&tree_z3(t)) } else { r.z3s.contains(&z3(t)) })
+                // (Not a done region's, off the map as it is now: that goes before every region's work.)
+                .filter(|t| {
+                    !regions.iter().any(|q| {
+                        q.stale.is_empty()
+                            && q.terrain.is_empty()
+                            && updates.on_map.get(q.id) != Some(&true)
+                            && (q.z3s.contains(&z3(t)) || q.slope_near.contains(&t.0) || q.tree_pieces.contains(&t.0))
+                    })
+                })
+                .filter(|t| listed.insert(format!("{step} {}", t.0)))
+                .cloned()
+                .collect();
+            push(by_region, step, t);
+        }
+        by_region_all.extend(super::steps::readers_first(chunk, |w| w.step.as_str()));
     }
+    let mut by_region = by_region_all;
+    // (What a region's work took of the slope and tree cover isn't listed again.)
+    let unlisted = |step: &str, v: Vec<(String, String)>| -> Vec<(String, String)> {
+        v.into_iter().filter(|t| !listed.contains(&format!("{step} {}", t.0))).collect()
+    };
+    let slope_deep = unlisted("slope-deep", slope_deep);
+    let slope = unlisted("slope-hi", slope);
+    let slope_lo = unlisted("slope-lo", slope_lo);
+    let trees = unlisted("trees", trees);
+    let trees_lo = unlisted("trees-lo", trees_lo);
     // Every region's work left, buildable now or not, for the forecast: its z6 tiles (each with the
     // first region in this order that builds it) and terrain likewise, its slope and tree cover.
     let mut claimed = vec![false; units.len()];
@@ -3519,6 +3566,18 @@ fn by_unit(
 
 /// Where a z6 tile comes in a run of z6 tiles: by the 10° square its tile's centre is in (column, then
 /// row from the north), then by tile.
+/// `targets` of `step` in compact blocks when another step reads several of them for one of its own
+/// (steps::read_together: slope-deep a z10 tile's terrain-deep and its 8 neighbours', an assembly
+/// its z6 tiles), by steps::block_order; else as they are. A job takes a run of its step's targets
+/// in this order (crate::coord::sched's `pick_every`), so the runs are squares and what reads them
+/// is ready a neighbourhood at a time, not once a row is done (task #909).
+pub fn blocks(step: &str, mut targets: Vec<(String, String)>) -> Vec<(String, String)> {
+    if super::steps::read_together(step) && targets.iter().all(|t| super::steps::block_order(&t.0).is_some()) {
+        targets.sort_by_cached_key(|t| super::steps::block_order(&t.0));
+    }
+    targets
+}
+
 fn spatial_order(u: TileId) -> (i32, i32, u32, u32) {
     let b = crate::hipack::tile_bounds(u.z, u.x, u.y);
     let (lon, lat) = ((b[0] as f64 + b[2] as f64) / 2.0 * 1e-7, (b[1] as f64 + b[3] as f64) / 2.0 * 1e-7);
@@ -7341,10 +7400,11 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>()
         };
         // Nothing on the map: the regions with the fewest z6 tiles left first (a and c, one each: by
-        // place), then b's two together; their slope and tree cover after them (nothing to publish
+        // place), then b's two together; a region's slope with it, after its z6 tiles (task #909: no
+        // "slope after terrain", readiness holds it), the tree cover after them (nothing to publish
         // before a z6 tile is built).
         let p = plan(&BTreeMap::new());
-        assert_eq!(steps(&p), ["unit", "slope-hi", "trees"]);
+        assert_eq!(steps(&p), ["unit", "slope-hi", "unit", "trees"]);
         assert_eq!(p.publishing.why, "nothing to publish until a z6 tile is built");
         assert_eq!(units(&p), ["6/28/16", "6/31/16", "6/29/16", "6/30/16"]);
         assert!(p.ready.is_empty());
@@ -7701,9 +7761,10 @@ pub(crate) mod tests {
         assert_eq!(
             line(&w),
             [
+                // (g's slope with g, ahead of a's terrain: task #909.)
                 "unit 6/22/17",
-                "terrain-hi 6/27/16,6/27/17,6/28/16,6/28/17",
                 "slope-hi 6/22/16,6/22/17",
+                "terrain-hi 6/27/16,6/27/17,6/28/16,6/28/17",
                 "trees 6/22/16,6/22/17,6/28/16,6/28/17"
             ]
         );

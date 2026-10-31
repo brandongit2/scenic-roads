@@ -3516,12 +3516,10 @@ fn route(
                 }
             }
             if !s.pass.is_empty() {
-                // (The shared steps by their rank, then the others in plan order; the lead's own
-                // planned jobs never: crate::agent::every::grants.)
+                // (In plan order, as the lead's own (task #909: no step ranked by hand; the plan
+                // lists readers first, steps::readers_first); the lead's own planned jobs never:
+                // crate::agent::every::grants.)
                 let mut offers: Vec<Offer> = s.offers.iter().filter(|o| a.can.contains(&o.step)).cloned().collect();
-                offers.sort_by_key(|o| {
-                    crate::agent::steps::SHARED.iter().position(|st| *st == o.step).unwrap_or(usize::MAX)
-                });
                 // (Placement on: the long poles' steps first, by their slack in the forecast; plan
                 // order between equals.)
                 if let Some((p, _)) = &s.placement {
@@ -8321,7 +8319,11 @@ mod tests {
         packable(c, step, n, Some(2));
         ran_before(c, "slope-hi");
         let mut offers = c.shared.lock().unwrap().offers.clone();
-        offers.push(Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None });
+        // (Listed first, as the plan lists a region's slope ahead of what it reads: task #909.)
+        offers.insert(
+            0,
+            Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None },
+        );
         c.offer("p", offers);
     }
 
@@ -8339,7 +8341,7 @@ mod tests {
         // Room for both measured (2 GB each) and the cold one: all three.
         let (_d, c, w, _clock) = every((0, 0));
         with_cold_slope(&c, "trees", 2);
-        // (Slope first: a shared step, offered to members by its rank.)
+        // (Slope first: listed first in the plan.)
         assert_eq!(all_granted(&w, &a(4000 + provisional)), [["6/2/2"], ["6/1/1"], ["6/1/2"]], "beside");
         // A megabyte short: the measured ones only.
         let (_d, c, w, _clock) = every((0, 0));
@@ -8551,7 +8553,7 @@ mod tests {
 
     /// Placement on (crate::agent::placement): a member's ask tried on the long poles' step first
     /// (no slack in the forecast), and within it from the target measured to take longest; off, the
-    /// shared steps by their rank, from the plan's front.
+    /// shared steps in plan order, from the plan's front.
     #[test]
     fn placement_the_long_poles_first() {
         let (_d, c, w, _clock) = every((0, 0));
@@ -8581,10 +8583,10 @@ mod tests {
             ]
         };
         let a = Ask { can: vec!["pack".into(), "slope-hi".into()], ..every_ask("m1", "pack", 4096, 10_000) };
-        // Off: the shared step (slope) first, from its front.
+        // Off: plan order (no step ranked by hand, task #909), from its front.
         c.offer("p", offers());
         let g = w.ask(&a).unwrap().unwrap();
-        assert!(matches!(&g.work, Granted::Job { step, targets, .. } if step == "slope-hi" && targets[0].0 == "3/1/1"));
+        assert!(matches!(&g.work, Granted::Job { step, targets, .. } if step == "pack" && targets[0].0 == "6/1/1"));
         w.give_back(g.lease, "the test").unwrap();
         // On: slope has no slack (it ends with the build), pack ten minutes': slope first, from its
         // longest, then the next longest.

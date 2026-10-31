@@ -87,6 +87,13 @@ deps are exactly those reads still in the plan. The #867 guard existed because t
 chain jobs for reasons it never declared. Under this design the planner may hold a target only
 through `readiness`, and a test enforces that (§7). The guard and its "offers lack it" inference go.
 
+The reads also order the work (task #909): readiness holds what's upstream ahead of what reads
+it, so no step is ranked by hand. The plan lists a region's ready work with each step ahead of the
+steps it reads (`steps::readers_first`; docs/pool.md §7.2), and every ask is granted in plan order, and a step whose targets
+another reads several of for one of its own (`steps::read_together`, probed from these same
+declarations) is planned in compact Z-order blocks (`steps::block_order`), so its readers become
+ready a neighbourhood at a time.
+
 Naming: `store::waits` (#870, measured I/O waits) keeps its name. This design adds no `waits`
 symbol: `readiness`, `Ready`, `read_targets`. It doesn't touch `Class` or the measures.
 

@@ -881,17 +881,22 @@ mod tests {
     #[test]
     fn jobs_are_granted_their_measured_threads_within_the_cores() {
         let mut steps = plan();
-        steps.push(Step {
-            cache_mb: 0,
-            name: "pois",
-            targets: 20,
-            mem_mb: 500,
-            disk_mb: 50,
-            secs: 100,
-            threads: 1,
-            nas_mb: 100,
-            creates: 5,
-        });
+        // (First in the plan: members are offered the plan in its order, no step ranked ahead by
+        // hand, task #909.)
+        steps.insert(
+            0,
+            Step {
+                cache_mb: 0,
+                name: "pois",
+                targets: 20,
+                mem_mb: 500,
+                disk_mb: 50,
+                secs: 100,
+                threads: 1,
+                nas_mb: 100,
+                creates: 5,
+            },
+        );
         let r = run(&Cfg { steps, ..cfg(m4_m1(), 0) }).unwrap();
         let (lo, hi) = r.granted["pois"];
         assert!(lo >= 1 && hi <= 2, "{r:?}");

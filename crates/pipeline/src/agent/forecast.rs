@@ -1688,9 +1688,10 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
         } else {
             [Phase::Publish, Phase::Late, Phase::Chain, Phase::After].iter().flat_map(|&p| ready.steps(pi(p))).collect()
         };
-        // What it takes: a job the scheduler grants its Mac (its targets one after another), or
-        // for the pages' lane the far end of the first shared step it can do (terrain-hi's near end:
-        // the lead's next z6 tiles wait on it, as crate::coord picks).
+        // What it takes: a job the scheduler grants its Mac (its targets one after another, in
+        // plan order), or for the pages' lane the far end of the first shared step it can do, in
+        // the table's order (terrain-hi's near end: the lead's next z6 tiles
+        // wait on it, as crate::coord picks).
         let took: Vec<(usize, u32)> = if mac.helper {
             SHARED
                 .iter()

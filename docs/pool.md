@@ -545,7 +545,7 @@ generated from it at build time.
 | Column | Meaning |
 | --- | --- |
 | memory | a first guess until a target's run is measured (`crate::coord::Cost`) |
-| shared | whether members take it, and its rank |
+| shared | whether members take it (no rank: which ready job goes first is derived from the reads, §7.2) |
 | alone | a whole-build run kept to the lead (`crate::agent::every`) |
 | answered | keeps the pass's answers (the lead's alone) |
 | write-set | the manifest names its jobs may change (`agent::steps::writes`, §7.3) |
@@ -662,9 +662,25 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   its own name as a worker (`<host> #<k>`). Each job runs with the threads granted it (§7.1,
   Threads granted).
 - **Order and locality:** a Mac gets a contiguous run of plan targets, from the front or just
-  after its last target, as many as fit `coord::JOB_S` (a quarter hour) of measured time. A
-  member's asks try the shared steps first, by their rank, then the others in plan order; the
-  lead's own, the plan's order.
+  after its last target, as many as fit `coord::JOB_S` (a quarter hour) of measured time. Every
+  ask, the lead's own and a member's, and the forecast's, tries the offers in plan order (task
+  #909: the members' fixed step ranking is gone). The plan lists each region's work, then the ready
+  work in it of the steps reading that work (its slope), each moved ahead of the steps it reads,
+  directly or not (`steps::readers_first`, `steps::reads_from`): finishing what's started, so a
+  ready slope-deep job no longer waits while any terrain-deep job fits. Steps the reads don't
+  relate keep the plan's order (the regions' order, a done region's slope and tree cover first).
+  No step's rank is kept by hand: what's upstream needs none, since what reads it isn't offered until it's built
+  (`steps::readiness`), and a hand-set "terrain before slope" only starved ready slope work into
+  the gaps. A step another reads several targets of for one of its own (`steps::read_together`,
+  probed from the reads: terrain-deep's 3×3 for a slope-deep tile, an assembly's z6 tiles) has
+  its targets planned in Z-order (`steps::block_order`, `build::blocks`) within each region, so a
+  run is a square and what reads it is ready a neighbourhood at a time, not once a row is done.
+  Measured on the real state of 31 Oct (3,705 terrain-deep and 8,082 slope-deep z10 tiles left,
+  10 lanes, the lead's forecast's pace, a model of `pick_every`; the 24 hours before, the pool
+  made 1,605 terrain-deep tiles and 244 slope-deep): slope-deep's wait once ready went
+  from a median of 10.2 h (p90 15.2 h) to 0.1 h (p90 2.8 h), a tile's lag from its terrain-deep
+  to its slope-deep from 9.0 h to 0.1 h, the whole from 16.0 h to 16.2 h (the last terrain job's
+  slope after it).
 - **Placement by how crucial** (`crate::agent::placement`, behind `state/pool/placement`): asks are
   tried on steps by their forecast slack (least first); within a step, the targets in the asker's
   last one's z3 tile first (`placement::group`, from just after it in plan order: its jobs read
