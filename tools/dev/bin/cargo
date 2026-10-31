@@ -1,0 +1,60 @@
+#!/bin/zsh
+# cargo for agent worktrees (#915): every worktree under .claude/worktrees/ on this Mac builds into
+# one shared folder, ~/Library/Caches/scenic-target (SCENIC_SHARED_TARGET overrides), so third-party
+# crates and unchanged code compile once per Mac, not once per worktree (11-17 GB each before).
+# On the PATH of agents' shells through CLAUDE_ENV_FILE (tools/dev/agent-env.sh) and check.sh.
+#
+# One cargo at a time in that folder, for the whole command: a lock (zsystem flock, an fcntl lock
+# that exec keeps and no child inherits) taken before cargo starts. A second one prints that it is
+# waiting, for whom, and again every minute (also to $SCENIC_CARGO_SAY: check.sh's terminal). This is the point on a 16 GB laptop: two heavy rustc at
+# once restarted the M1 (31 Oct). (Cargo's own build-folder lock would serialize only the compile.)
+#
+# Correctness: cargo judges a workspace crate fresh by mtimes, and a crate's artifact names don't
+# depend on the checkout's path, so a build of worktree A would pass as fresh for worktree B's older
+# sources (seen on a toy workspace, 18 Oct). So when the last build in the folder came from another
+# worktree, the workspace crates' fingerprints are deleted first (under the lock): cargo then runs
+# rustc for them again, whose incremental state (checked by content hashes) reuses what is the same.
+# Third-party crates are untouched: their names hash their version, source and features.
+#
+# Passed straight to cargo: outside .claude/worktrees/, inside a cargo this shim started
+# (SCENIC_CARGO_SHARED set: a build script's cargo), and commands that never build.
+setopt extendedglob
+self=${0:A}
+real=
+for c in $(whence -ap cargo); do [[ ${c:A} == $self ]] || { real=$c; break; }; done
+[[ -n $real ]] || { print -u2 "cargo (tools/dev/bin): no other cargo on the PATH"; exit 127; }
+top=$PWD; while [[ $top != / && ! -e $top/.git ]]; do top=${top:h}; done  # the checkout (a worktree's .git is a file)
+[[ -z ${SCENIC_CARGO_SHARED:-} && $top == */.claude/worktrees/* ]] || exec $real "$@"
+sub=
+for a in "$@"; do [[ $a == [+-]* ]] || { sub=$a; break; }; done
+case $sub in
+  ''|fmt|metadata|locate-project|pkgid|tree|help|verify-project|read-manifest|search|version) exec $real "$@" ;;
+esac
+t=${SCENIC_SHARED_TARGET:-$HOME/Library/Caches/scenic-target}
+mkdir -p $t || exit 1
+zmodload zsh/system
+lock=$t/.scenic-lock
+: >> $lock || exit 1
+if ! zsystem flock -e -t 0 -f fd $lock 2>/dev/null; then
+  start=$SECONDS
+  say() { print -u2 -r -- "$1"; [[ -n ${SCENIC_CARGO_SAY:-} ]] && print -r -- "    $1" >> $SCENIC_CARGO_SAY 2>/dev/null; }
+  while say "cargo: waiting for the shared build folder $t ($(( SECONDS - start )) s; held by: $(cat $t/.scenic-holder 2>/dev/null || print unknown))"
+        ! zsystem flock -e -t 60 -f fd $lock 2>/dev/null; do :; done
+  say "cargo: got the shared build folder after $(( SECONDS - start )) s"
+fi
+print -r -- "${top:t} pid $$ since $(date '+%T'): cargo $*" > $t/.scenic-holder
+if [[ $(cat $t/.scenic-built-by 2>/dev/null) != $top ]]; then
+  # The workspace's package and target names (- and _ forms): their fingerprints go.
+  names=( ${(f)"$($real metadata --no-deps --format-version 1 --offline 2>/dev/null | python3 -c '
+import json, sys
+for p in json.load(sys.stdin)["packages"]:
+    for n in [p["name"]] + [t["name"] for t in p["targets"]]: print(n); print(n.replace("-", "_"))')"} )
+  if (( ! $#names )); then print -u2 "cargo: could not list the workspace's crates"; exit 1; fi
+  typeset -A ws; for n in $names; do ws[$n]=1; done
+  for f in $t/*/.fingerprint/*(DN/) $t/*/*/.fingerprint/*(DN/); do  # <profile>/ and <triple>/<profile>/
+    n=${f:t}; (( ${+ws[${n%-[0-9a-f](#c16)}]} )) && rm -rf $f
+  done
+  print -r -- $top > $t/.scenic-built-by
+fi
+export CARGO_TARGET_DIR=$t SCENIC_CARGO_SHARED=1
+exec $real "$@"

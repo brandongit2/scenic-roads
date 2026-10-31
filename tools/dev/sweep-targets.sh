@@ -13,7 +13,8 @@
 # - data/ is never deleted on its own; it goes only with its whole worktree.
 # Never touched: a worktree a cargo or rustc process runs in; one with any file modified in the last
 # hour; one listed in .claude/sweep-keep (one agent id per line).
-# Build folders of new worktrees are seeded from main's by tools/dev/seed-target.sh.
+# Agent worktrees build into this Mac's shared folder (tools/dev/bin/cargo, #915); a worktree's own
+# target/ is left from before, or from a cargo run without tools/dev/bin on the PATH.
 # The agents' compile cache (sccache) is emptied when free disk is below 20 GB (end of this file).
 setopt extendedglob
 usage="usage: tools/dev/sweep-targets.sh [--dry-run]"
@@ -90,15 +91,23 @@ for wt in $repo/.claude/worktrees/*(N/); do
     fi
   fi
 done
-# The main checkout's own debug builds: each change of flags or dependencies leaves the old
-# artifacts behind (cargo never deletes them). Those untouched for 2 days go, unless cargo runs here.
-if ! print -r -- "$busy" | grep -qx "$repo"; then
-  d=$repo/target/debug
-  n=$(find $d/deps $d/incremental $d/build -mindepth 1 -maxdepth 1 ! -newermt '2 days ago' 2>/dev/null | wc -l | tr -d ' ')
-  if (( n > 0 )); then
-    say "swept $n stale entries from target/debug"
-    [[ -z $dry ]] && find $d/deps $d/incremental $d/build -mindepth 1 -maxdepth 1 ! -newermt '2 days ago' -exec rm -rf {} + 2>/dev/null
-  fi
+# Build folders' old artifacts: each change of flags, dependencies or branch leaves the old ones
+# behind (cargo never deletes them). Entries untouched for 2 days go: from the main checkout's
+# target/debug unless cargo runs there, and from this Mac's shared folder for agent worktrees
+# (tools/dev/bin/cargo, #915) unless its lock is held.
+stale() {  # stale <profile folder> <name in the log>
+  local d=$1 n
+  n=$(find $d/deps $d/incremental $d/build $d/.fingerprint -mindepth 1 -maxdepth 1 ! -newermt '2 days ago' 2>/dev/null | wc -l | tr -d ' ')
+  (( n > 0 )) || return 0
+  say "swept $n stale entries from $2"
+  [[ -z $dry ]] && find $d/deps $d/incremental $d/build $d/.fingerprint -mindepth 1 -maxdepth 1 ! -newermt '2 days ago' -exec rm -rf {} + 2>/dev/null
+}
+print -r -- "$busy" | grep -qx "$repo" || stale $repo/target/debug target/debug
+shared=${SCENIC_SHARED_TARGET:-$HOME/Library/Caches/scenic-target}
+zmodload zsh/system
+if [[ -e $shared/.scenic-lock ]] && zsystem flock -t 0 -f lockfd $shared/.scenic-lock 2>/dev/null; then
+  for d in $shared/*/.fingerprint(N:h) $shared/*/*/.fingerprint(N:h); do stale $d "${d#$shared/} (shared)"; done
+  exec {lockfd}>&-
 fi
 # The agents' shared compile cache (#439; sccache, set up by .claude/worktrees/.cargo/config.toml):
 # sccache holds it under its 10G cap by itself. When the disk's free space falls below this Mac's

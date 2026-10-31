@@ -69,15 +69,28 @@ Enforced twice: `tools/dev/report-guard.sh` (a SubagentStop hook) keeps a worktr
 commits beyond main from finishing until its HEAD passed, and the PM runs
 `tools/dev/merge-ok.sh <commit>…` before cherry-picking.
 
-## Shared compile cache (#439, 19 Oct)
+## One build folder per Mac (#915, 31 Oct)
 
-Every cargo run inside `.claude/worktrees/` goes through sccache (brew), set by the untracked
-`.claude/worktrees/.cargo/config.toml` (cargo reads config from each parent folder), so the main
-checkout and publish.sh's tree are untouched. Third-party crates (debug, clippy's check builds) come from one cache shared by all worktrees, ~/Library/Caches/scenic-sccache,
-capped at 10 GB by sccache; workspace crates still build incrementally per worktree (sccache passes
-incremental builds through). `sccache --show-stats` shows hits. tools/dev/seed-target.sh still
-clones main's compiled third-party crates into a new worktree (one cp per folder, ~7 s);
-tools/dev/sweep-targets.sh empties the cache when free disk is below 20 GB.
+Every agent worktree on a Mac builds into one folder outside the repo, ~/Library/Caches/scenic-target
+(`SCENIC_SHARED_TARGET` overrides), through `tools/dev/bin/cargo`, which Claude Code puts first on
+the PATH of every Bash command (`CLAUDE_ENV_FILE` = tools/dev/agent-env.sh, below) and check.sh puts
+there itself. Third-party crates and unchanged code compile once per Mac, not once per worktree.
+- One cargo at a time in that folder, for the whole command: a second one prints
+  `cargo: waiting for the shared build folder … held by: <worktree> pid … cargo <args>` at once and
+  every minute, then `got the shared build folder after N s` (check.sh shows it on its terminal,
+  not only in the part's log). On a 16 GB laptop this is the point: two heavy rustc at once
+  restarted the M1 (31 Oct). A cargo started by a build under the lock passes through.
+- Correct across worktrees: cargo judges a workspace crate fresh by mtimes, and its artifact names
+  don't depend on the checkout's path, so worktree A's build would pass as fresh for worktree B's
+  older sources. When the folder's last build (`.scenic-built-by`) came from another worktree, the
+  workspace crates' fingerprints are deleted first, under the lock: they compile again, reusing their
+  incremental state where the code is the same. Test: tools/dev/test/shared-target.zsh (check.sh).
+- Passed straight to cargo: outside `.claude/worktrees/` (the main checkout, publish.sh's tree)
+  and commands that never build (fmt, metadata, tree, …).
+- sccache still wraps rustc inside `.claude/worktrees/` (the untracked
+  `.claude/worktrees/.cargo/config.toml`, #439; ~/Library/Caches/scenic-sccache, 10 GB cap): it
+  refills third-party crates after a sweep. tools/dev/sweep-targets.sh empties it when free disk is
+  below 20 GB, and drops entries of the shared folder untouched for 2 days (not while it is locked).
 
 ## Tests on the test Mac (#442, 19 Oct)
 
@@ -181,11 +194,11 @@ checkout it runs in from the top level), so a worktree has its own copy and no p
 - The hooks go in the untracked `.claude/settings.local.json`. Claude Code sets `$CLAUDE_PROJECT_DIR`
   (the session's project folder) for hook commands, so no absolute path is needed:
 ```json
-{"hooks": {
+{"env": {"CLAUDE_ENV_FILE": "<main checkout>/tools/dev/agent-env.sh"},
+ "hooks": {
   "PreToolUse": [
     {"matcher": "Bash|Agent", "hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/tools/dev/test-guard.sh"}]},
-    {"matcher": "Bash", "hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/tools/dev/shell-guard.sh"}]},
-    {"matcher": "Bash", "hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/tools/dev/seed-target.sh", "timeout": 120}]}
+    {"matcher": "Bash", "hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/tools/dev/shell-guard.sh"}]}
   ],
   "SubagentStop": [
     {"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/tools/dev/report-guard.sh"}]}

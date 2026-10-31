@@ -13,11 +13,14 @@
 #   taskboard node --test tools/taskboard/test/*.test.mjs, when tools/taskboard changed
 #   shell     tools/app/test/shell.zsh (publish.sh's shell steps, tools/app/lib.zsh) and remote-tests.zsh (the test Mac's disk room), when tools/app changed
 #   testguard tools/dev/test/test-guard.zsh (the test guard's worktree lookup), when it changed
+#   sharedtarget tools/dev/test/shared-target.zsh (tools/dev/bin/cargo on a toy workspace), when either changed
 #   swift     swiftc of tools/status/main.swift (publish's line) and its --test (arguments, reopen, launchd), when tools/status changed
 #   tests     each command tools/dev/affected-tests.sh prints, run on the test Mac (tools/app/remote-tests.sh;
 #             here when it can't be reached or SCENIC_CHECK_LOCAL=1)
 #   python    pyflakes on the changed .py files (a deleted one's: the rest of its folder's) and
 #             unittest in their folders' test_*.py, when producers/ or dem/ changed
+# Its cargo is tools/dev/bin/cargo: in an agent worktree, this Mac's shared build folder, one cargo
+# at a time (#915): a wait for another worktree's build is printed here as it happens (SCENIC_CARGO_SAY).
 # Prints PASS/FAIL/skip per part, with its wall and CPU time on this Mac (tests: the test Mac's too);
 # each part's whole output is kept in ~/Library/Logs/scenic/check-<time>/. A clean checkout whose
 # tree and merge-base tree a pass already recorded passes at once (no part runs again).
@@ -27,12 +30,14 @@
 set -uo pipefail
 case $#:${1:-} in
   0:) ;;
-  1:-h|1:--help) sed -n '2,25p' ${0:A} | sed 's/^# \{0,1\}//'; exit 0 ;;
+  1:-h|1:--help) sed -n '2,29p' ${0:A} | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) print -u2 "check.sh takes no arguments (check.sh --help)"; exit 2 ;;
 esac
 root=$(git rev-parse --show-toplevel) || exit 2
 cd $root
 eval "$(mise env -s zsh 2>/dev/null)" 2>/dev/null
+path=($root/tools/dev/bin $path)  # (after mise's: its PATH puts rustup's cargo first)
+exec {say}>&2; export SCENIC_CARGO_SAY=/dev/fd/$say  # (the parts' output goes to their logs; a wait comes here too)
 logs=~/Library/Logs/scenic/check-$(date +%Y%m%d-%H%M%S)-$$
 mkdir -p $logs
 base=$(git merge-base main HEAD)
@@ -77,6 +82,8 @@ if has 'tools/app/*'; then part shell zsh -c 'zsh tools/app/test/shell.zsh && zs
 else skip shell "tools/app unchanged"; fi
 if has 'tools/dev/test-guard*' || has 'tools/dev/test/*'; then part testguard zsh tools/dev/test/test-guard.zsh
 else skip testguard "tools/dev/test-guard unchanged"; fi
+if has 'tools/dev/bin/*' || has 'tools/dev/test/shared-target.zsh'; then part sharedtarget zsh tools/dev/test/shared-target.zsh
+else skip sharedtarget "tools/dev/bin unchanged"; fi
 if has 'tools/status/*'; then
   part swift zsh -c "swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)logs}/scenic-status tools/status/*.swift && ${(q)logs}/scenic-status --test tools/status/test"
 else skip swift "tools/status unchanged"; fi
