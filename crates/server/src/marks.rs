@@ -196,8 +196,8 @@ mod tests {
 
 // ---- the In view query and the points by view (docs/phase5.md), over markdata --------------------
 
+use crate::cache::Lru;
 use crate::markview::MarkView;
-use crate::pages::Lru;
 use crate::S;
 use anyhow::Context;
 use axum::{
@@ -209,7 +209,7 @@ use axum::{
 use pipeline::marks::{self as pm, flag, Cell, MarkPt, MarkTile, KINDS};
 use rayon::prelude::*;
 use serde_json::{json, Map, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
 
 /// Bins of the in-view score histogram (the worker's HIST_BINS).
@@ -657,25 +657,13 @@ pub async fn view(State(s): State<S>, Json(q): Json<ViewQ>) -> Response {
 // ---- tiles, blocks and specks ----------------------------------------------------------------------
 
 /// Tiles made for serving (names attached, gzip'd), by key, under a byte budget.
-static MADE: LazyLock<Mutex<Lru<String, Arc<Vec<u8>>>>> = LazyLock::new(|| Mutex::new(Lru::new(192 << 20)));
+static MADE: LazyLock<Mutex<Lru<String, bytes::Bytes>>> = LazyLock::new(|| Mutex::new(Lru::new(192 << 20)));
 
 fn gzip(b: &[u8]) -> Vec<u8> {
     use std::io::Write;
     let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(4));
     e.write_all(b).expect("gzip to memory");
     e.finish().expect("gzip to memory")
-}
-
-fn respond_tile(body: Arc<Vec<u8>>, etag: &str, versioned: bool) -> Response {
-    let mut r = body.to_vec().into_response();
-    let h = r.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
-    h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
-    if let Ok(e) = HeaderValue::from_str(etag) {
-        h.insert(header::ETAG, e);
-    }
-    h.insert(header::CACHE_CONTROL, crate::cache::cache_control(versioned, "no-cache"));
-    r
 }
 
 /// A tile with names attached to its points' properties.
@@ -692,7 +680,7 @@ fn with_names(s: &S, mut t: MarkTile) -> MarkTile {
     t
 }
 
-/// Serves a made tile: a 304 for its ETag, from memory, or made now.
+/// Serves a made tile (crate::cache::serve_made): `make`'s bytes gzip'd.
 async fn serve_made(
     s: S,
     key: String,
@@ -701,27 +689,11 @@ async fn serve_made(
     q: Option<String>,
     make: impl FnOnce(&S) -> anyhow::Result<Option<Vec<u8>>> + Send + 'static,
 ) -> Response {
-    let versioned = crate::cache::versioned(q.as_deref());
-    if crate::tiles::etag_match(&headers, &etag) {
-        return crate::tiles::not_modified(&etag, versioned);
-    }
-    if let Some(b) = MADE.lock().unwrap().get(&key) {
-        return respond_tile(b, &etag, versioned);
-    }
-    let s2 = s.clone();
-    match tokio::task::spawn_blocking(move || make(&s2)).await {
-        Ok(Ok(Some(raw))) => {
-            let b = Arc::new(gzip(&raw));
-            MADE.lock().unwrap().put(key, b.clone(), b.len() as u64);
-            respond_tile(b, &etag, versioned)
-        }
-        Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(e)) => {
-            eprintln!("marks tile: {e:#}");
-            StatusCode::SERVICE_UNAVAILABLE.into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+    let v = crate::cache::versioned(q.as_deref());
+    crate::cache::serve_made(&MADE, key, &etag, &headers, v, "application/octet-stream", "marks tile", move || {
+        Ok(make(&s)?.map(|raw| gzip(&raw)))
+    })
+    .await
 }
 
 /// The `v=` of a request's query string.
@@ -744,14 +716,11 @@ pub async fn tile(
     }
     let layer = format!("marks-{kind}");
     let (s2, l2) = (s.clone(), layer.clone());
-    let h = match tokio::task::spawn_blocking(move || s2.data.tile_hash(&l2, z, x, y)).await {
-        Ok(Ok(Some(h))) => h,
-        Ok(Ok(None)) => return StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(e)) => {
-            eprintln!("{layer} {z}/{x}/{y}: {e:#}");
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        }
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    let h = match crate::cache::blocking(format!("{layer} {z}/{x}/{y}"), move || s2.data.tile_hash(&l2, z, x, y)).await
+    {
+        Ok(Some(h)) => h,
+        Ok(None) => return crate::cache::none(),
+        Err(r) => return r,
     };
     let nv = s.names.version_for_tile(z, x, y, 0.0);
     let etag = format!("\"{h:016x}-{nv:x}\"");
@@ -903,7 +872,8 @@ pub async fn specks(
 }
 
 /// Worldwide filtered counts, per catalogue, kind and query.
-static COUNTS: LazyLock<Mutex<HashMap<(u64, String, String), (u64, u64)>>> = LazyLock::new(Default::default);
+static COUNTS: LazyLock<Mutex<Lru<(u64, String, String), (u64, u64)>>> =
+    LazyLock::new(|| Mutex::new(Lru::entries(512)));
 
 #[derive(Deserialize)]
 pub struct CountQ {
@@ -927,7 +897,7 @@ pub async fn count(State(s): State<S>, Query(c): Query<CountQ>) -> Response {
     };
     let n_cat = s.data.catalogue().n;
     let key = (n_cat, c.kind.clone(), qs);
-    if let Some((n, of)) = COUNTS.lock().unwrap().get(&key).copied() {
+    if let Some((n, of)) = COUNTS.lock().unwrap().get(&key) {
         return Json(json!({ "n": n, "of": of })).into_response();
     }
     let s2 = s.clone();
@@ -971,12 +941,9 @@ pub async fn count(State(s): State<S>, Query(c): Query<CountQ>) -> Response {
     match got {
         Ok(Ok((n, of))) => {
             let mut c = COUNTS.lock().unwrap();
-            // (Per catalogue and filter setting: a few hundred at most in use; older ones go.)
+            // (Per catalogue and filter setting: a few hundred at most in use; older catalogues' go.)
             c.retain(|k, _| k.0 == n_cat);
-            if c.len() > 512 {
-                c.clear();
-            }
-            c.insert(key, (n, of));
+            c.put(key, (n, of), 0);
             Json(json!({ "n": n, "of": of })).into_response()
         }
         Ok(Err(e)) => {

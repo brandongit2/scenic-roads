@@ -98,7 +98,7 @@ New steps (docs/steps.md §2, keys §12): no existing step's output or version c
   `polar-terrain-s` and `polar-slope-s` name the blocks under `polar` (docs/formats.md, Pack), the
   root holds z0–3, zooms 0–9.
 - **Served:** `/tiles/polar-terrain/<pole>/{z}/{x}/{y}` and `/tiles/polar-slope/…` (`image/webp`,
-  `?v=` the pack's version from meta's `packs`): as stored, else 404. Nothing is made from an
+  `?v=` the pack's version from meta's `packs`): as stored, else 204 (none), as every layer's missing tile (a pole that isn't `n` or `s`: 404). Nothing is made from an
   ancestor on the server: the map draws a missing tile's loaded ancestor.
 - **Offline:** the roots are in the World download with every layer's root; a region downloads
   the blocks meeting it (`areafiles::polar_blocks_meeting`: its rings' points in the pole's

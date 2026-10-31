@@ -1,56 +1,35 @@
-//! Tiles of every layer, from the catalogue's packs (and the basemap's PMTiles archives).
+//! Tiles of every layer, from the catalogue's packs (and the basemap's PMTiles archives), answered
+//! through crate::cache's responder.
 //!
 //! Caching: a tile's ETag is its content hash (the basemap's: its archives' content names and its
-//! position), plus, for tiles with names, the version of the translations it uses. A 304 is answered
-//! from the pack index (the basemap's from the catalogue) alone, never the NAS. URLs the app versions
-//! (`?v=`, the layer's version from the catalogue) are cached for good.
+//! position), plus, for tiles with names (`has_names`), the version of the translations it uses. A
+//! 304 is answered from the pack index (the basemap's from the catalogue) alone, never the NAS. URLs
+//! the app versions (`?v=`, the layer's version from the catalogue) are cached for good.
 
+use crate::cache::{self, blocking, none, not_modified, respond, serve_made, Lru};
 use crate::S;
 use anyhow::Context;
 use axum::{
     extract::{Path, RawQuery, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
-/// A request for a versioned URL (`v=` in its query).
-pub fn versioned(query: Option<&str>) -> bool {
-    crate::cache::versioned(query)
+/// Whether a layer's tiles are served with display names attached (so their ETags and versions
+/// carry the translations' version).
+pub fn has_names(layer: &str) -> bool {
+    matches!(layer, "labels" | "stations" | "ferries") || layer.starts_with("ov-")
 }
 
-pub fn etag_match(headers: &HeaderMap, etag: &str) -> bool {
-    headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag))
+/// A layer's stored tile's content hash, read from its pack's index alone: None where the layer
+/// has none.
+async fn hash(s: &S, layer: &str, z: u8, x: u32, y: u32) -> Result<Option<u64>, Response> {
+    let (s2, l2) = (s.clone(), layer.to_string());
+    blocking(format!("{layer} {z}/{x}/{y}"), move || s2.data.tile_hash(&l2, z, x, y)).await
 }
 
-pub fn not_modified(etag: &str, versioned: bool) -> Response {
-    let mut r = StatusCode::NOT_MODIFIED.into_response();
-    if let Ok(e) = HeaderValue::from_str(etag) {
-        r.headers_mut().insert(header::ETAG, e);
-    }
-    r.headers_mut().insert(header::CACHE_CONTROL, crate::cache::cache_control(versioned, "no-cache"));
-    r
-}
-
-fn respond(body: Vec<u8>, content_type: &'static str, gzip: bool, etag: &str, versioned: bool) -> Response {
-    let mut r = body.into_response();
-    let h = r.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    if gzip {
-        h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
-    }
-    if let Ok(e) = HeaderValue::from_str(etag) {
-        h.insert(header::ETAG, e);
-    }
-    h.insert(header::CACHE_CONTROL, crate::cache::cache_control(versioned, "no-cache"));
-    r
-}
-
-/// A plain tile of one of our layers, served as stored.
+/// A plain tile of one of our layers, served as stored (gzip'd as its pack says).
 async fn plain(
     s: S,
     layer: String,
@@ -60,33 +39,21 @@ async fn plain(
     q: Option<String>,
     headers: HeaderMap,
     content_type: &'static str,
-    gzip: bool,
 ) -> Response {
-    let v = versioned(q.as_deref());
-    let s2 = s.clone();
-    let l2 = layer.clone();
-    let h = match tokio::task::spawn_blocking(move || s2.data.tile_hash(&l2, z, x, y)).await {
-        Ok(Ok(Some(h))) => h,
-        Ok(Ok(None)) => return StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(e)) => {
-            eprintln!("{layer} {z}/{x}/{y}: {e:#}");
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        }
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    let v = cache::versioned(q.as_deref());
+    let h = match hash(&s, &layer, z, x, y).await {
+        Ok(Some(h)) => h,
+        Ok(None) => return none(),
+        Err(r) => return r,
     };
     let etag = format!("\"{h:016x}\"");
-    if etag_match(&headers, &etag) {
+    if cache::etag_match(&headers, &etag) {
         return not_modified(&etag, v);
     }
-    let s2 = s.clone();
-    match tokio::task::spawn_blocking(move || s2.data.tile(&layer, z, x, y)).await {
-        Ok(Ok(Some((b, _)))) => respond(b.bytes().to_vec(), content_type, gzip, &etag, v),
-        Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(e)) => {
-            eprintln!("tile {z}/{x}/{y}: {e:#}");
-            StatusCode::SERVICE_UNAVAILABLE.into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    match blocking(format!("{layer} {z}/{x}/{y}"), move || s.data.tile(&layer, z, x, y)).await {
+        Ok(Some((b, gzip))) => respond(b.bytes().to_vec(), content_type, gzip, Some(&etag), v),
+        Ok(None) => none(),
+        Err(r) => r,
     }
 }
 
@@ -96,7 +63,7 @@ pub async fn road_tile(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    plain(s, "roads".into(), z, x, y, q, headers, "application/octet-stream", true).await
+    plain(s, "roads".into(), z, x, y, q, headers, "application/octet-stream").await
 }
 
 pub async fn rail_tile(
@@ -105,7 +72,7 @@ pub async fn rail_tile(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    plain(s, "rails".into(), z, x, y, q, headers, "application/octet-stream", true).await
+    plain(s, "rails".into(), z, x, y, q, headers, "application/octet-stream").await
 }
 
 /// The 3D buildings' field (pipeline::bld::field): `field5-webp` tiles, levels 4–14, as stored.
@@ -115,7 +82,7 @@ pub async fn building_field_tile(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    plain(s, "buildings-field".into(), z, x, y, q, headers, "application/octet-stream", false).await
+    plain(s, "buildings-field".into(), z, x, y, q, headers, "application/octet-stream").await
 }
 
 /// The 3D buildings (pipeline::bld): gzip'd MVT, layer `b`, served as stored (no names).
@@ -125,7 +92,7 @@ pub async fn building_tile(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    plain(s, "buildings".into(), z, x, y, q, headers, "application/x-protobuf", true).await
+    plain(s, "buildings".into(), z, x, y, q, headers, "application/x-protobuf").await
 }
 
 pub async fn tree_tile(
@@ -137,27 +104,15 @@ pub async fn tree_tile(
     if !["cover", "height", "leaf"].contains(&var.as_str()) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    plain(s, format!("trees-{var}"), z, x, y, q, headers, "image/webp", false).await
+    plain(s, format!("trees-{var}"), z, x, y, q, headers, "image/webp").await
 }
 
 // ---- tiles with names --------------------------------------------------------------------------
 
-/// Rewritten tiles (names attached), by (layer, z, x, y, content hash, names version).
-type Rewritten = Mutex<HashMap<(u8, u8, u32, u32, u64, u64), Arc<Vec<u8>>>>;
-static REWRITTEN: OnceLock<Rewritten> = OnceLock::new();
-
-fn remember(key: (u8, u8, u32, u32, u64, u64), v: Arc<Vec<u8>>) {
-    let c = REWRITTEN.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut c = c.lock().unwrap();
-    if c.len() > 6000 {
-        c.clear();
-    }
-    c.insert(key, v);
-}
-
-fn recall(key: &(u8, u8, u32, u32, u64, u64)) -> Option<Arc<Vec<u8>>> {
-    REWRITTEN.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap().get(key).cloned()
-}
+/// Tiles made here (names attached, gzip'd), by (kind: 0 a named MVT layer's, 1 the basemap's, 2 a
+/// ferry block; z, x, y, content hash, names version), under a byte budget.
+type Key = (u8, u8, u32, u32, u64, u64);
+static MADE: LazyLock<Mutex<Lru<Key, bytes::Bytes>>> = LazyLock::new(|| Mutex::new(Lru::new(192 << 20)));
 
 /// Labels by importance (pipeline::labels): gzip'd MVT, one layer "l", name n, OSM's English en.
 pub async fn label_tile(
@@ -177,38 +132,21 @@ pub async fn ferry_block(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    let v = versioned(q.as_deref());
+    let v = cache::versioned(q.as_deref());
     let nv = s.names.version_all();
-    let s2 = s.clone();
-    let got = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<(u64, Vec<u8>)>> {
-        let Some(h) = s2.data.tile_hash("ferries", z, x, y)? else { return Ok(None) };
-        let key = (2u8, z, x, y, h, nv);
-        if let Some(b) = recall(&key) {
-            return Ok(Some((h, b.to_vec())));
-        }
-        let Some((b, _)) = s2.data.tile("ferries", z, x, y)? else { return Ok(None) };
+    let h = match hash(&s, "ferries", z, x, y).await {
+        Ok(Some(h)) => h,
+        Ok(None) => return none(),
+        Err(r) => return r,
+    };
+    let etag = format!("\"{h:016x}-{nv:x}\"");
+    let what = format!("ferries {z}/{x}/{y}");
+    serve_made(&MADE, (2, z, x, y, h, nv), &etag, &headers, v, "application/geo+json", what, move || {
+        let Some((b, _)) = s.data.tile("ferries", z, x, y)? else { return Ok(None) };
         let raw = names::mvt::gunzip_if_gzip(b.bytes())?;
-        let named = crate::cache::with_names(&s2, &raw);
-        let gz = names::mvt::gzip(&named)?;
-        remember(key, Arc::new(gz.clone()));
-        Ok(Some((h, gz)))
+        Ok(Some(names::mvt::gzip(&cache::with_names(&s, &raw))?))
     })
-    .await;
-    match got {
-        Ok(Ok(Some((h, body)))) => {
-            let etag = format!("\"{h:016x}-{nv:x}\"");
-            if etag_match(&headers, &etag) {
-                return not_modified(&etag, v);
-            }
-            respond(body, "application/geo+json", true, &etag, v)
-        }
-        Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(e)) => {
-            eprintln!("ferries {z}/{x}/{y}: {e:#}");
-            StatusCode::SERVICE_UNAVAILABLE.into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+    .await
 }
 
 /// Rail stops by view (pipeline::ovconv): gzip'd MVT, layer "s", name n.
@@ -233,48 +171,21 @@ pub async fn named_mvt_tile(
     q: Option<String>,
     headers: HeaderMap,
 ) -> Response {
-    let v = versioned(q.as_deref());
-    let s2 = s.clone();
-    let l2 = layer.clone();
-    let h = match tokio::task::spawn_blocking(move || s2.data.tile_hash(&l2, z, x, y)).await {
-        Ok(Ok(Some(h))) => h,
-        Ok(Ok(None)) => return StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(e)) => {
-            eprintln!("{layer} {z}/{x}/{y}: {e:#}");
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        }
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    let v = cache::versioned(q.as_deref());
+    let h = match hash(&s, &layer, z, x, y).await {
+        Ok(Some(h)) => h,
+        Ok(None) => return none(),
+        Err(r) => return r,
     };
     let nv = s.names.version_for_tile(z, x, y, 0.0);
     let etag = format!("\"{h:016x}-{nv:x}\"");
-    if etag_match(&headers, &etag) {
-        return not_modified(&etag, v);
-    }
     // (Tiles of different layers have different contents, so the content hash keys them apart.)
-    let key = (0u8, z, x, y, h, nv);
-    if let Some(b) = recall(&key) {
-        return respond(b.to_vec(), "application/x-protobuf", true, &etag, v);
-    }
-    let s2 = s.clone();
-    let l2 = layer.clone();
-    let made = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u8>>> {
-        let Some((b, _)) = s2.data.tile(&l2, z, x, y)? else { return Ok(None) };
-        Ok(Some(s2.names.attach_gz(b.bytes(), z, x, y, rules)))
+    let what = format!("{layer} {z}/{x}/{y}");
+    serve_made(&MADE, (0, z, x, y, h, nv), &etag, &headers, v, "application/x-protobuf", what, move || {
+        let Some((b, _)) = s.data.tile(&layer, z, x, y)? else { return Ok(None) };
+        Ok(Some(s.names.attach_gz(b.bytes(), z, x, y, rules)))
     })
-    .await;
-    match made {
-        Ok(Ok(Some(b))) => {
-            let b = Arc::new(b);
-            remember(key, b.clone());
-            respond(b.to_vec(), "application/x-protobuf", true, &etag, v)
-        }
-        Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(e)) => {
-            eprintln!("{layer} {z}/{x}/{y}: {e:#}");
-            StatusCode::SERVICE_UNAVAILABLE.into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+    .await
 }
 
 /// A basemap tile's identity, known from the catalogue without reading the tile: its archives'
@@ -301,25 +212,18 @@ pub async fn base_tile(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    let v = versioned(q.as_deref());
+    let v = cache::versioned(q.as_deref());
     let archives = s.data.basemap_names();
     if archives.is_empty() {
-        return StatusCode::NO_CONTENT.into_response();
+        return none();
     }
     let nv = s.names.version_for_tile(z, x, y, 1.0);
     let h = base_hash(&archives, z, x, y);
     let etag = format!("\"{h:016x}-{nv:x}\"");
-    if etag_match(&headers, &etag) {
-        return not_modified(&etag, v);
-    }
-    let key = (1u8, z, x, y, h, nv);
-    if let Some(b) = recall(&key) {
-        return respond(b.to_vec(), "application/x-protobuf", true, &etag, v);
-    }
-    let s2 = s.clone();
-    let got = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u8>>> {
+    let what = format!("basemap {z}/{x}/{y}");
+    serve_made(&MADE, (1, z, x, y, h, nv), &etag, &headers, v, "application/x-protobuf", what, move || {
         // From the archives the ETag names, even if a new catalogue came meanwhile.
-        let tiles = s2.basemap.tiles(&s2.data, &archives, z, x, y)?;
+        let tiles = s.basemap.tiles(&s.data, &archives, z, x, y)?;
         let raw: Vec<Vec<u8>> =
             tiles.iter().filter_map(|b| names::mvt::gunzip_if_gzip(b).ok().map(|c| c.into_owned())).collect();
         let merged = match raw.len() {
@@ -330,34 +234,28 @@ pub async fn base_tile(
                 names::mvt::merge(&refs)?
             }
         };
-        let out = s2.names.attach_raw(&merged, z, x, y, crate::names_live::Rules::Basemap);
-        let gz = names::mvt::gzip(&out)?;
-        remember(key, Arc::new(gz.clone()));
-        Ok(Some(gz))
+        let out = s.names.attach_raw(&merged, z, x, y, crate::names_live::Rules::Basemap);
+        Ok(Some(names::mvt::gzip(&out)?))
     })
-    .await;
-    match got {
-        Ok(Ok(Some(body))) => respond(body, "application/x-protobuf", true, &etag, v),
-        Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(e)) => {
-            eprintln!("basemap {z}/{x}/{y}: {e:#}");
-            StatusCode::SERVICE_UNAVAILABLE.into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+    .await
 }
 
 /// The basemap's archives (PMTiles) and the pieces of them this Mac has downloaded
 /// (store::pieces), opened as they're read.
-#[derive(Default)]
 pub struct Basemap {
     /// The mirror's generation they were opened for, and the opened ones by their key
     /// (`Data::basemap_key`: a piece's path in the mirror, or an archive's content name).
-    open: Mutex<(u64, HashMap<String, Arc<store::pmtiles::PmTiles>>)>,
+    open: Mutex<(u64, Lru<String, Arc<store::pmtiles::PmTiles>>)>,
 }
 
 /// Opened pieces and archives kept, at most.
 const OPEN: usize = 256;
+
+impl Default for Basemap {
+    fn default() -> Self {
+        Basemap { open: Mutex::new((0, Lru::entries(OPEN))) }
+    }
+}
 
 impl Basemap {
     fn open(&self, data: &crate::data::Data, key: &str) -> anyhow::Result<Arc<store::pmtiles::PmTiles>> {
@@ -366,7 +264,7 @@ impl Basemap {
         {
             let mut g = self.open.lock().unwrap();
             if g.0 != gen {
-                *g = (gen, HashMap::new());
+                *g = (gen, Lru::entries(OPEN));
             }
             if let Some(a) = g.1.get(key) {
                 return Ok(a.clone());
@@ -378,10 +276,7 @@ impl Basemap {
         };
         let pm = Arc::new(pm.with_context(|| format!("basemap {key}"))?);
         let mut g = self.open.lock().unwrap();
-        if g.1.len() >= OPEN {
-            g.1.clear();
-        }
-        g.1.insert(key.to_string(), pm.clone());
+        g.1.put(key.to_string(), pm.clone(), 0);
         Ok(pm)
     }
 
@@ -434,6 +329,7 @@ impl Basemap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::{header, HeaderValue};
 
     /// A PMTiles archive holding one tile, 0/0/0: the 127-byte header, a root directory of one
     /// entry (uncompressed), the tile.
@@ -604,5 +500,106 @@ mod tests {
         );
         // The other z6 tile's: not here, and the NAS hasn't it.
         assert_eq!(get(&s, (12, 32 << 6, 21 << 6), None).await.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A NAS whose catalogue has a roads lo pack (gzip'd blobs) and a buildings-field one (not),
+    /// each holding tile 3/0/0, and the rail frequencies' file.
+    fn nas_with_packs(root: &std::path::Path) {
+        let mut cat = store::catalogue::Catalogue::new(1);
+        for (layer, gzip, n) in [("roads", true, 1), ("buildings-field", false, 2)] {
+            let logical = format!("layers/{layer}/lo/3-0-0");
+            let content = format!("{logical}.{n:016x}.pack");
+            let p = root.join(&content);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            let mut w = store::pack::PackWriter::create(&p, serde_json::json!({"layer": layer}), gzip).unwrap();
+            let b = if gzip { names::mvt::gzip(layer.as_bytes()).unwrap() } else { layer.as_bytes().to_vec() };
+            w.add(3, 0, 0, &b, layer.len() as u32).unwrap();
+            w.finish().unwrap();
+            let size = std::fs::metadata(&p).unwrap().len();
+            let mut l = store::catalogue::Layer { maxzoom: 8, ..Default::default() };
+            l.lo.insert("3/0/0".into(), logical.clone());
+            cat.layers.insert(layer.into(), l);
+            cat.files.insert(logical, store::catalogue::FileRef { file: content, size, ..Default::default() });
+        }
+        let content = "global/railfreq.00000000000000aa.bin";
+        std::fs::create_dir_all(root.join("global")).unwrap();
+        std::fs::write(root.join(content), b"freq").unwrap();
+        cat.files.insert(
+            "global/railfreq".into(),
+            store::catalogue::FileRef { file: content.into(), size: 4, ..Default::default() },
+        );
+        store::catalogue::write_copy(&root.join("catalog"), &cat).unwrap();
+    }
+
+    fn headers(etags: Option<&str>) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        if let Some(e) = etags {
+            h.insert(header::IF_NONE_MATCH, HeaderValue::from_str(e).unwrap());
+        }
+        h
+    }
+
+    fn header_of(r: &Response, name: header::HeaderName) -> Option<&str> {
+        r.headers().get(name).map(|v| v.to_str().unwrap())
+    }
+
+    /// Every endpoint answers alike (crate::cache): a body with its type, gzip by the pack's own
+    /// flag, its ETag and Cache-Control (for good when versioned); a 304 for any ETag of an
+    /// `If-None-Match` list; 204 where a layer has no tile (also the depth's and the polar caps',
+    /// which said 404).
+    #[tokio::test]
+    async fn endpoints_answer_alike() {
+        let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        nas_with_packs(nas.path());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
+        let q = |v: bool| v.then(|| "v=1".to_string());
+        let roads = |h, v| road_tile(State(s.clone()), Path((3, 0, 0)), RawQuery(q(v)), h);
+        let r = roads(headers(None), false).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(header_of(&r, header::CONTENT_ENCODING), Some("gzip"));
+        assert_eq!(header_of(&r, header::CONTENT_TYPE), Some("application/octet-stream"));
+        assert_eq!(header_of(&r, header::CACHE_CONTROL), Some("no-cache"));
+        let etag = header_of(&r, header::ETAG).unwrap().to_string();
+        let r = roads(headers(None), true).await;
+        assert_eq!(header_of(&r, header::CACHE_CONTROL), Some("public, max-age=31536000, immutable"));
+        let r = roads(headers(Some(&format!("\"other\", {etag}"))), true).await;
+        assert_eq!(r.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(header_of(&r, header::ETAG), Some(etag.as_str()));
+        assert_eq!(header_of(&r, header::CACHE_CONTROL), Some("public, max-age=31536000, immutable"));
+        // Not gzip'd where its pack's blobs aren't.
+        let r = building_field_tile(State(s.clone()), Path((3, 0, 0)), RawQuery(None), headers(None)).await;
+        assert_eq!((r.status(), header_of(&r, header::CONTENT_ENCODING)), (StatusCode::OK, None));
+        // No tile there: 204, every layer alike; a URL naming nothing: 404.
+        assert_eq!(
+            road_tile(State(s.clone()), Path((3, 1, 0)), RawQuery(None), headers(None)).await.status(),
+            StatusCode::NO_CONTENT
+        );
+        let depth = crate::depth::depth_tile(State(s.clone()), Path((5, 0, 0)), RawQuery(None), headers(None)).await;
+        assert_eq!(depth.status(), StatusCode::NO_CONTENT);
+        let polar = |pole: &str| {
+            crate::terrain::polar_terrain_tile(
+                State(s.clone()),
+                Path((pole.into(), 4, 0, 0)),
+                RawQuery(None),
+                headers(None),
+            )
+        };
+        assert_eq!(polar("n").await.status(), StatusCode::NO_CONTENT);
+        assert_eq!(polar("x").await.status(), StatusCode::NOT_FOUND);
+        // The rail frequencies: an ETag from the catalogue, and its 304.
+        let rf = |h| crate::rail_freq_h(State(s.clone()), RawQuery(None), h);
+        let r = rf(headers(None)).await;
+        assert_eq!((r.status(), header_of(&r, header::ETAG)), (StatusCode::OK, Some("\"00000000000000aa\"")));
+        assert_eq!(rf(headers(Some("\"00000000000000aa\""))).await.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[test]
+    fn named_layers() {
+        for l in ["labels", "stations", "ferries", "ov-whs"] {
+            assert!(has_names(l), "{l}");
+        }
+        for l in ["roads", "rails", "buildings", "terrain", "marks-peak"] {
+            assert!(!has_names(l), "{l}");
+        }
     }
 }

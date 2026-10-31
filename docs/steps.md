@@ -773,7 +773,7 @@ keeps its content name, so jobs keyed on it stop there.
 | What | How |
 |---|---|
 | our layers | the pack for the tile; names attached |
-| polar caps | `/tiles/polar-terrain/<pole>/z/x/y`, `/tiles/polar-slope/…`: the pole's root (z0–3) or block (z4–9) pack's tile as stored, else 404 |
+| polar caps | `/tiles/polar-terrain/<pole>/z/x/y`, `/tiles/polar-slope/…`: the pole's root (z0–3) or block (z4–9) pack's tile as stored, else 204 (none) |
 | basemap | tiles from the catalogue's PMTiles archives (`/tiles/base`); names attached |
 | drives, rides, rail lines | parts from the hidata in view plus half the window, joined by offset; zoomed out (wider than ~1,200 km) from the 500 m summaries (`approx`) |
 | whole road (hover) | the road's parts, through the road → z6 tiles index; away from the NAS, cut where the Mac's downloads end |

@@ -785,10 +785,18 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   names). The map's tiles carry their pack's token (root z0–2, lo z3–8 by z3 tile, hi z9–14 by z6
   tile: `web/src/api.ts` packVersion; MapLibre's sources through the map's request transform), so a
   catalogue re-requests only the tiles of the packs it changed. Every pack token and layer version
-  meta gives out is current.
+  meta gives out is current (the polar caps' blocks' too).
+- **Every data endpoint answers alike** (`server/src/cache.rs`): `Content-Encoding: gzip` by the
+  pack's own flag (`PackIndex::gzip`) or for what the server gzips; `If-None-Match` read as a list,
+  a match a 304 with the ETag and the same Cache-Control; a tile the layer hasn't, at an address
+  that can hold one, 204 (no body; depth and polar caps included); a URL naming no tile (an unknown
+  kind or pole, outside the grid or the layer's zooms) 404; a read that failed (the NAS away) 503.
+  What the server keeps in memory is kept in one kind of cache (`cache::Lru`, least recently used
+  out past a byte or entry budget).
 - **Ways:** `/api/way/{id}?at=lon,lat`, `/api/profile/{id}?at=…`, `/api/road/{id}?at=…`: `at` picks
   the hidata of the z6 tile holding it, or a neighbour's whose `here` holds the way.
-- `/api/railfreq`: sorted `(u32 way id, f32 trains a day each way)`; negative: a lower bound.
+- `/api/railfreq`: sorted `(u32 way id, f32 trains a day each way)`; negative: a lower bound. ETag: its
+  content name's hash.
 - **Landmarks** (docs/phase5.md): `POST /api/marks/view`; `/api/marks/tile/{kind}/{z}/{x}/{y}` (z ≤
   5) and `/api/marks/block/{kind}/6/{x}/{y}` (RDMT); `/api/marks/specks/{kind}/{z}/{x}/{y}?q=`;
   `/api/marks/count?kind=&q=`; `/api/marks/detail/{kind}/{id}?at=lon,lat`.
@@ -808,7 +816,7 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   `warning`, `waiting`), `v`, `marks` (tiles with points, kinds with tiles, totals), `depth` (the
   catalogue meta's: its sources, Depth below). The map's meta: `/api/meta`.
 - **Depth:** `/tiles/depth/…` and `/tiles/depth-class/…`: the stored tile, else made from its nearest
-  stored ancestor (`pipeline::depth::fall`), 404 outside the layer; versions `depth.tiles`,
+  stored ancestor (`pipeline::depth::fall`), 204 where it has no ancestor, 404 past its zooms; versions `depth.tiles`,
   `depth-class.tiles`. `/tiles/terrain/{z}/{x}/{y}?floor=1`: the terrain less the depth where the
   class tile says water (the floor under the water, for a 3D floor); the terrain as it is without
   depth in the catalogue.

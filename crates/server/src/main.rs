@@ -180,7 +180,7 @@ impl AppState {
         // The packs' tokens (tiles' `?v=`).
         for l in meta.get("packs").and_then(|v| v.as_object()).into_iter().flat_map(|m| m.values()) {
             t.extend(l.get("root").and_then(tok));
-            for scope in ["lo", "hi", "deep"] {
+            for scope in ["lo", "hi", "deep", "polar"] {
                 t.extend(l.get(scope).and_then(|v| v.as_object()).into_iter().flat_map(|m| m.values()).filter_map(tok));
             }
         }
@@ -553,19 +553,20 @@ async fn main() -> Result<()> {
 }
 
 /// Rail service frequency per way: sorted (u32 OSM way id, f32 trains a day each way) pairs.
-async fn rail_freq_h(State(s): State<S>, RawQuery(q): RawQuery) -> Response {
+/// Its ETag is its content name's hash (read from the catalogue: a 304 reads nothing).
+async fn rail_freq_h(State(s): State<S>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+    const LOGICAL: &str = "global/railfreq";
+    let v = cache::versioned(q.as_deref());
+    let Some(content) = s.data.content(LOGICAL) else { return cache::none() };
+    let etag = format!("\"{}\"", store::naming::parse_content_name(&content).map_or("", |c| c.hash16));
+    if cache::etag_match(&headers, &etag) {
+        return cache::not_modified(&etag, v);
+    }
     let s2 = s.clone();
-    match tokio::task::spawn_blocking(move || s2.data.global("global/railfreq")).await {
-        Ok(Ok(Some(b))) => (
-            [
-                (header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream")),
-                (header::CACHE_CONTROL, cache::cache_control(cache::versioned(q.as_deref()), "no-cache")),
-            ],
-            b.to_vec(),
-        )
-            .into_response(),
-        Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
-        _ => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    match cache::blocking(LOGICAL, move || s2.data.global(LOGICAL)).await {
+        Ok(Some(b)) => cache::respond(b.to_vec(), "application/octet-stream", false, Some(&etag), v),
+        Ok(None) => cache::none(),
+        Err(r) => r,
     }
 }
 
@@ -728,7 +729,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
             if layer == "slope" || layer == "depth-shade" {
                 v = format!("{v}-{}", pipeline::shade_codec::ENCODING);
             }
-            versions.insert(old.into(), if layer == "labels" { named(v) } else { serde_json::Value::from(v) });
+            versions.insert(old.into(), if tiles::has_names(layer) { named(v) } else { serde_json::Value::from(v) });
         }
     }
     // The area overlays' and the rail stops' tiles (names attached).
@@ -766,7 +767,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     // grid (Data::pack_of) ("z/x/y").
     let mut packs = serde_json::Map::new();
     for (k, l) in &cat.layers {
-        let names = k == "labels" || k == "stations" || k == "ferries" || k.starts_with("ov-");
+        let names = tiles::has_names(k);
         let tok = |logical: &String| {
             s.data.content(logical).map(|f| {
                 let v = pack_token(&f);

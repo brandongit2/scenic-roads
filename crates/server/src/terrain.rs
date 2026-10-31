@@ -11,40 +11,35 @@
 //! layer lacks (past its finest there, or a deep tile that can't be read now) is made from its
 //! nearest stored ancestor, scaled up, as the terrain's are; outside the layer, a flat one.
 
-use crate::tiles::{etag_match, not_modified, versioned};
+use crate::cache::{self, not_modified, Lru};
 use crate::S;
 use axum::{
     extract::{Path, RawQuery, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use roadcore::grid::tile_with_fallback_by;
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
-static SYNTH: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
 static FLAT: OnceLock<Vec<u8>> = OnceLock::new();
 static FLAT_SHADE: OnceLock<Vec<u8>> = OnceLock::new();
-static SHADE: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
-static DEPTH_SHADE: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
-static FLOOR: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
+
+/// What a made tile is (`Made`'s keys): the terrain's from its ancestors, with the floor, or a
+/// shading or depth layer's (its layer name).
+pub(crate) const TERRAIN: &str = "terrain";
+pub(crate) const FLOOR: &str = "terrain-floor";
+
+/// Tiles made here (from ancestors, neighbours, or flat), by (what, z, x, y, catalogue generation),
+/// under a byte budget: the terrain's, the shading's and the depth's.
+type Made = Lru<(&'static str, u8, u32, u32, u64), bytes::Bytes>;
+pub(crate) static MADE: LazyLock<Mutex<Made>> = LazyLock::new(|| Mutex::new(Lru::new(256 << 20)));
 
 /// A tile's response: a terrain, shading or depth tile's WebP (pipeline::terrain_codec,
 /// pipeline::shade_codec, pipeline::depth::fall), else a PNG (a depth pack from before task #671).
-fn image(b: Vec<u8>, versioned: bool, etag: Option<String>) -> Response {
+fn image(b: impl Into<bytes::Bytes>, versioned: bool, etag: Option<&str>) -> Response {
+    let b = b.into();
     let kind = if b.starts_with(b"RIFF") { "image/webp" } else { "image/png" };
-    let mut r = (
-        [
-            (header::CONTENT_TYPE, HeaderValue::from_static(kind)),
-            (header::CACHE_CONTROL, crate::cache::cache_control(versioned, "no-cache")),
-        ],
-        b,
-    )
-        .into_response();
-    if let Some(e) = etag.and_then(|e| HeaderValue::from_str(&e).ok()) {
-        r.headers_mut().insert(header::ETAG, e);
-    }
-    r
+    cache::respond(b, kind, false, etag, versioned)
 }
 
 /// A terrain tile made here (from an ancestor, with the floor under the water, flat) as the stored
@@ -106,23 +101,25 @@ pub(crate) enum Got {
     /// The browser has it (its ETag).
     Same(String),
     /// Made here (from ancestors or neighbours), or flat.
-    Made(Vec<u8>),
+    Made(bytes::Bytes),
     /// A read failed: 503, so nothing is cached.
     Failed,
 }
 
-pub(crate) fn respond(got: Got, v: bool) -> Response {
+/// The response to what a tile request came to (None: the layer has none there, 204).
+pub(crate) fn respond(got: Option<Got>, v: bool) -> Response {
     match got {
-        Got::Stored(b, e) => image(b, v, Some(e)),
-        Got::Same(e) => not_modified(&e, v),
+        None => cache::none(),
+        Some(Got::Stored(b, e)) => image(b, v, Some(&e)),
+        Some(Got::Same(e)) => not_modified(&e, v),
         // Made from other tiles (an ancestor, neighbours, possibly in other packs than the one whose
         // version the URL carries): never cached for good (cache::NotForGood).
-        Got::Made(b) => {
+        Some(Got::Made(b)) => {
             let mut r = image(b, false, None);
-            r.extensions_mut().insert(crate::cache::NotForGood);
+            r.extensions_mut().insert(cache::NotForGood);
             r
         }
-        Got::Failed => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Some(Got::Failed) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }
 
@@ -147,7 +144,7 @@ pub(crate) fn stored(
         }
     };
     let etag = format!("\"{h:016x}{tag}\"");
-    if etag_match(headers, &etag) {
+    if cache::etag_match(headers, &etag) {
         return Some(Got::Same(etag));
     }
     match s.data.tile(layer, z, x, y) {
@@ -160,31 +157,30 @@ pub(crate) fn stored(
     }
 }
 
-/// A tile made here, cached per catalogue generation; failures aren't kept.
-fn made(
-    cache: &'static OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>>,
+/// A tile made here (`what`: `TERRAIN`, `FLOOR` or a layer's name), kept per catalogue generation
+/// in `MADE`; None when `make` has none; failures aren't kept.
+pub(crate) fn made(
+    what: &'static str,
     g: u64,
     z: u8,
     x: u32,
     y: u32,
-    make: impl FnOnce() -> anyhow::Result<Vec<u8>>,
-) -> Got {
-    let cache = cache.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(b) = cache.lock().unwrap().get(&(z, x, y, g)) {
-        return Got::Made(b.clone());
+    make: impl FnOnce() -> anyhow::Result<Option<Vec<u8>>>,
+) -> Option<Got> {
+    let key = (what, z, x, y, g);
+    if let Some(b) = MADE.lock().unwrap().get(&key) {
+        return Some(Got::Made(b));
     }
     match make() {
-        Ok(b) => {
-            let mut c = cache.lock().unwrap();
-            if c.len() > 4000 {
-                c.clear();
-            }
-            c.insert((z, x, y, g), b.clone());
-            Got::Made(b)
+        Ok(Some(b)) => {
+            let b = bytes::Bytes::from(b);
+            MADE.lock().unwrap().put(key, b.clone(), b.len() as u64);
+            Some(Got::Made(b))
         }
+        Ok(None) => None,
         Err(e) => {
-            eprintln!("tile {z}/{x}/{y}: {e:#}");
-            Got::Failed
+            eprintln!("{what} {z}/{x}/{y}: {e:#}");
+            Some(Got::Failed)
         }
     }
 }
@@ -197,26 +193,26 @@ pub async fn terrain_tile(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    let v = versioned(q.as_deref());
+    let v = cache::versioned(q.as_deref());
     let floor = q.as_deref().is_some_and(|q| q.split('&').any(|kv| kv == "floor=1"));
     let got = tokio::task::spawn_blocking(move || {
         if floor && s.data.catalogue().layers.contains_key(pipeline::depth::LAYER) {
-            return made(&FLOOR, gen(&s), z, x, y, || {
-                Ok(crate::depth::terrain_floor(&s, z, x, y)?.unwrap_or_else(flat))
+            return made(FLOOR, gen(&s), z, x, y, || {
+                Ok(Some(crate::depth::terrain_floor(&s, z, x, y)?.unwrap_or_else(flat)))
             });
         }
         match stored(&s, "terrain", z, x, y, &headers, "") {
             // (A deep tile that can't be read now: made from its ancestor, `terrain_f32`.)
             Some(Got::Failed) if deep_zoom(z) => {}
-            Some(g) => return g,
+            Some(g) => return Some(g),
             None => {}
         }
-        made(&SYNTH, gen(&s), z, x, y, || {
-            Ok(terrain_f32(&s, z, x, y)?.and_then(|e| encode(e).ok()).unwrap_or_else(flat))
+        made(TERRAIN, gen(&s), z, x, y, || {
+            Ok(Some(terrain_f32(&s, z, x, y)?.and_then(|e| encode(e).ok()).unwrap_or_else(flat)))
         })
     })
     .await
-    .unwrap_or(Got::Failed);
+    .unwrap_or(Some(Got::Failed));
     respond(got, v)
 }
 
@@ -289,21 +285,20 @@ pub async fn shade_tile(
     q: Option<String>,
     headers: HeaderMap,
 ) -> Response {
-    let v = versioned(q.as_deref());
+    let v = cache::versioned(q.as_deref());
     let flat =
         || FLAT_SHADE.get_or_init(|| pipeline::shade_codec::encode(&vec![Default::default(); 65536]).unwrap()).clone();
-    let cache = if layer == "slope" { &SHADE } else { &DEPTH_SHADE };
     let got = tokio::task::spawn_blocking(move || {
         match stored(&s, layer, z, x, y, &headers, &format!("-{}", pipeline::shade_codec::ENCODING)) {
             Some(Got::Stored(b, _)) if !is_shade(&b) => none_once(&s, layer, z, x, y, &not_shade(&b)),
             Some(Got::Failed) if deep_zoom(z) => {}
-            Some(g) => return g,
+            Some(g) => return Some(g),
             None => {}
         }
-        made(cache, gen(&s), z, x, y, || Ok(shade_from_ancestor(&s, layer, z, x, y)?.unwrap_or_else(flat)))
+        made(layer, gen(&s), z, x, y, || Ok(Some(shade_from_ancestor(&s, layer, z, x, y)?.unwrap_or_else(flat))))
     })
     .await
-    .unwrap_or(Got::Failed);
+    .unwrap_or(Some(Got::Failed));
     respond(got, v)
 }
 
@@ -326,7 +321,7 @@ pub async fn depth_shade_tile(
 }
 
 /// A polar cap's tile (`/tiles/polar-terrain/{pole}/{z}/{x}/{y}`, `/tiles/polar-slope/…`: the
-/// catalogue's `polar-<kind>-<pole>`, pipeline::polar): as stored, else 404 (past the cap, or not
+/// catalogue's `polar-<kind>-<pole>`, pipeline::polar): as stored, else none (204: past the cap, or not
 /// built; the map draws the tile's loaded ancestor). Nothing is made here: a renderer of any
 /// projection reads the grid's tiles as they are.
 #[allow(clippy::too_many_arguments)]
@@ -341,15 +336,12 @@ async fn polar_tile(
     headers: HeaderMap,
 ) -> Response {
     let Some(pole) = roadcore::polar::Pole::of_letter(pole) else { return StatusCode::NOT_FOUND.into_response() };
-    let v = versioned(q.as_deref());
+    let v = cache::versioned(q.as_deref());
     let layer = pipeline::polar::layer(kind, pole);
     let got = tokio::task::spawn_blocking(move || stored(&s, &layer, z, x, y, &headers, ""))
         .await
         .unwrap_or(Some(Got::Failed));
-    match got {
-        Some(g) => respond(g, v),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
+    respond(got, v)
 }
 
 pub async fn polar_terrain_tile(
@@ -373,6 +365,7 @@ pub async fn polar_slope_tile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header;
 
     /// A pack of terrain tiles at `path`, each `(z, x, y, metres)`, as the terrain stores them.
     fn pack(path: &std::path::Path, tiles: &[(u8, u32, u32, f32)]) -> u64 {

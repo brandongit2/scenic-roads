@@ -2,7 +2,7 @@
 //! rows (ids, points, the filters' values), their lean properties and popup records (zstd blocks,
 //! decompressed on use and kept under a budget), and the tile's named peaks.
 
-use crate::pages::Lru;
+use crate::cache::Lru;
 use crate::views::{Blob, Sect, SectView};
 use anyhow::{ensure, Context, Result};
 use pipeline::marks::{self, MarkPt, SummitRec, KINDS};

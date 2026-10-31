@@ -3,6 +3,7 @@
 //! bounded I/O pool, never mapped), and the background work that keeps all that current: finding
 //! and mounting the NAS, following new catalogues, filling the mirror.
 
+use crate::cache::Lru;
 use crate::views::{BaseView, Blob, HiView, RoadUnits, SectView, Src};
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
@@ -18,56 +19,6 @@ use store::range::{MmapFile, PooledFile, RangeRead};
 pub const NAS_HOST: &str = store::nas::HOST;
 pub const NAS_SHARE: &str = store::nas::SHARE;
 pub const PROJECT: &str = store::nas::PROJECT;
-
-/// A bounded cache (least recently inserted out first), by entries and by bytes: entries read
-/// from the NAS weigh their size in memory, mapped local files nothing (the OS pages them).
-struct Bounded<V> {
-    map: HashMap<String, (V, u64)>,
-    order: std::collections::VecDeque<String>,
-    cap: usize,
-    bytes: u64,
-    cap_bytes: u64,
-}
-
-impl<V: Clone> Bounded<V> {
-    fn new(cap: usize) -> Self {
-        Self::with_bytes(cap, u64::MAX)
-    }
-    fn with_bytes(cap: usize, cap_bytes: u64) -> Self {
-        Bounded { map: HashMap::new(), order: Default::default(), cap, bytes: 0, cap_bytes }
-    }
-    fn get(&self, k: &str) -> Option<V> {
-        self.map.get(k).map(|(v, _)| v.clone())
-    }
-    fn put(&mut self, k: String, v: V) {
-        self.put_weighed(k, v, 0)
-    }
-    fn put_weighed(&mut self, k: String, v: V, weight: u64) {
-        if let Some((_, w)) = self.map.insert(k.clone(), (v, weight)) {
-            self.bytes = self.bytes - w + weight;
-            return;
-        }
-        self.bytes += weight;
-        self.order.push_back(k);
-        while self.order.len() > self.cap || (self.bytes > self.cap_bytes && self.order.len() > 1) {
-            if let Some(old) = self.order.pop_front() {
-                if let Some((_, w)) = self.map.remove(&old) {
-                    self.bytes -= w;
-                }
-            }
-        }
-    }
-    /// Drops the entries `drop` picks.
-    fn retain(&mut self, mut keep: impl FnMut(&str, &V) -> bool) {
-        let gone: Vec<String> = self.map.iter().filter(|(k, (v, _))| !keep(k, v)).map(|(k, _)| k.clone()).collect();
-        for k in gone {
-            if let Some((_, w)) = self.map.remove(&k) {
-                self.bytes -= w;
-            }
-            self.order.retain(|x| x != &k);
-        }
-    }
-}
 
 /// Memory budgets for what's read from the NAS (a Mac whose mirror isn't complete): sectioned
 /// files read whole, and the base views' names. Base packs' and hidata's sections are paged
@@ -93,16 +44,16 @@ pub struct Data {
     /// the catalogues (docs/maplog.md §8, step 3: shadow first, then serve).
     serve_map: std::sync::atomic::AtomicBool,
     /// Local maps of mirrored files, and open NAS files, by content name.
-    maps: Mutex<Bounded<Arc<MmapFile>>>,
-    remotes: Mutex<Bounded<Arc<PooledFile>>>,
-    indexes: Mutex<Bounded<Arc<PackIndex>>>,
-    sects: Mutex<Bounded<Arc<SectView>>>,
-    bases: Mutex<Bounded<Arc<BaseView>>>,
-    his: Mutex<Bounded<Arc<HiView>>>,
-    marks: Mutex<Bounded<Arc<crate::markview::MarkView>>>,
-    ovs: Mutex<Bounded<Arc<crate::ovdata::OvView>>>,
+    maps: Mutex<Lru<String, Arc<MmapFile>>>,
+    remotes: Mutex<Lru<String, Arc<PooledFile>>>,
+    indexes: Mutex<Lru<String, Arc<PackIndex>>>,
+    sects: Mutex<Lru<String, Arc<SectView>>>,
+    bases: Mutex<Lru<String, Arc<BaseView>>>,
+    his: Mutex<Lru<String, Arc<HiView>>>,
+    marks: Mutex<Lru<String, Arc<crate::markview::MarkView>>>,
+    ovs: Mutex<Lru<String, Arc<crate::ovdata::OvView>>>,
     roadunits: Mutex<Option<(String, Arc<RoadUnits>)>>,
-    globals: Mutex<Bounded<Arc<Vec<u8>>>>,
+    globals: Mutex<Lru<String, Arc<Vec<u8>>>>,
     /// The older files the downloads behind the catalogue keep, by logical name (`set_older`).
     older: RwLock<Arc<HashMap<String, String>>>,
     /// Set when the catalogue changes, or what's read of the downloads behind it
@@ -151,16 +102,16 @@ impl Data {
             from_map: RwLock::new(None),
             serve_map: Default::default(),
             older: Default::default(),
-            maps: Mutex::new(Bounded::new(4096)),
-            remotes: Mutex::new(Bounded::new(128)),
-            indexes: Mutex::new(Bounded::new(8192)),
-            sects: Mutex::new(Bounded::with_bytes(512, SECTS_BYTES)),
-            bases: Mutex::new(Bounded::with_bytes(256, BASES_BYTES)),
-            his: Mutex::new(Bounded::new(512)),
-            marks: Mutex::new(Bounded::new(4096)),
-            ovs: Mutex::new(Bounded::new(512)),
+            maps: Mutex::new(Lru::entries(4096)),
+            remotes: Mutex::new(Lru::entries(128)),
+            indexes: Mutex::new(Lru::entries(8192)),
+            sects: Mutex::new(Lru::bounded(512, SECTS_BYTES)),
+            bases: Mutex::new(Lru::bounded(256, BASES_BYTES)),
+            his: Mutex::new(Lru::entries(512)),
+            marks: Mutex::new(Lru::entries(4096)),
+            ovs: Mutex::new(Lru::entries(512)),
             roadunits: Mutex::new(None),
-            globals: Mutex::new(Bounded::new(128)),
+            globals: Mutex::new(Lru::entries(128)),
             generation: Default::default(),
             mirror_gen: Default::default(),
             last_mount: Mutex::new(None),
@@ -390,7 +341,7 @@ impl Data {
                     // what's cached of it (`forget_removed`): asked again once cached, the list
                     // has dropped it, or the cache's drop is still to come.
                     if mi.has(content) {
-                        self.maps.lock().unwrap().put(content.to_string(), m.clone());
+                        self.maps.lock().unwrap().put(content.to_string(), m.clone(), 0);
                         if !mi.has(content) {
                             self.maps.lock().unwrap().retain(|c, _| c != content);
                         }
@@ -409,7 +360,7 @@ impl Data {
             return Err(anyhow!("{content}: not on this Mac, and the NAS isn't mounted"));
         };
         let r = Arc::new(PooledFile::new(root.join(content), pool));
-        self.remotes.lock().unwrap().put(content.to_string(), r.clone());
+        self.remotes.lock().unwrap().put(content.to_string(), r.clone(), 0);
         Ok(Src::Remote(r))
     }
 
@@ -421,7 +372,7 @@ impl Data {
         }
         let s = Arc::new(SectView::open(self.src(&content)?).with_context(|| format!("open {content}"))?);
         let w = s.remote_bytes();
-        self.sects.lock().unwrap().put_weighed(content, s.clone(), w);
+        self.sects.lock().unwrap().put(content, s.clone(), w);
         Ok(Some(s))
     }
 
@@ -437,7 +388,7 @@ impl Data {
         }
         let (bs, rs) = (SectView::open(self.src(&bc)?)?, SectView::open(self.src(&rc)?)?);
         let v = Arc::new(BaseView::new(bs, rs).with_context(|| format!("base pack {bc}"))?);
-        self.bases.lock().unwrap().put_weighed(key, v.clone(), v.weight());
+        self.bases.lock().unwrap().put(key, v.clone(), v.weight());
         Ok(Some(v))
     }
 
@@ -456,7 +407,7 @@ impl Data {
         }
         let v =
             Arc::new(HiView::new(SectView::open(self.src(content)?)?).with_context(|| format!("hidata {content}"))?);
-        self.his.lock().unwrap().put(content.to_string(), v.clone());
+        self.his.lock().unwrap().put(content.to_string(), v.clone(), 0);
         Ok(v)
     }
 
@@ -487,7 +438,7 @@ impl Data {
             SectView::open(self.src(&content)?)
         };
         let v = Arc::new(crate::markview::MarkView::new(s?, id.clone()).with_context(|| format!("markdata {id}"))?);
-        self.marks.lock().unwrap().put(id, v.clone());
+        self.marks.lock().unwrap().put(id, v.clone(), 0);
         Ok(Some(v))
     }
 
@@ -502,7 +453,7 @@ impl Data {
         let v = Arc::new(crate::ovdata::OvView::new(
             SectView::open(self.src(&content)?).with_context(|| format!("ovdata {content}"))?,
         ));
-        self.ovs.lock().unwrap().put(content, v.clone());
+        self.ovs.lock().unwrap().put(content, v.clone(), 0);
         Ok(Some(v))
     }
 
@@ -543,7 +494,7 @@ impl Data {
             Src::Remote(r) => r.read_all()?,
         };
         let b = Arc::new(bytes);
-        self.globals.lock().unwrap().put(content, b.clone());
+        self.globals.lock().unwrap().put(content, b.clone(), 0);
         Ok(Some(b))
     }
 
@@ -587,12 +538,13 @@ impl Data {
             None => load()?,
         };
         let idx = Arc::new(idx);
-        self.indexes.lock().unwrap().put(content.to_string(), idx.clone());
+        self.indexes.lock().unwrap().put(content.to_string(), idx.clone(), 0);
         Ok(idx)
     }
 
-    /// A tile of one of our layers: its bytes as stored, and its content hash.
-    pub fn tile(&self, layer: &str, z: u8, x: u32, y: u32) -> Result<Option<(Blob, u64)>> {
+    /// A tile of one of our layers: its bytes as stored, and whether they are gzip'd (its pack's flag,
+    /// `PackIndex::gzip`).
+    pub fn tile(&self, layer: &str, z: u8, x: u32, y: u32) -> Result<Option<(Blob, bool)>> {
         let Some(logical) = self.pack_of(layer, z, x, y) else { return Ok(None) };
         let Some(content) = self.content(&logical) else { return Ok(None) };
         let idx = self.index(&content)?;
@@ -601,7 +553,7 @@ impl Data {
             Src::Local(m) => Blob::Map(m, e.offset as usize, e.len as usize),
             Src::Remote(r) => Blob::from_vec(r.read_at(e.offset, e.len as usize)?),
         };
-        Ok(Some((blob, e.hash)))
+        Ok(Some((blob, idx.gzip())))
     }
 
     /// The content hash of a tile, without reading it (for 304s): None when there's no such tile,
@@ -722,7 +674,7 @@ impl Data {
         // (A piece is never modified once in place; removal unlinks it, and `forget_removed` drops
         // the map.)
         let m = Arc::new(MmapFile::open(&mirror.path(key))?);
-        self.maps.lock().unwrap().put(key.to_string(), m.clone());
+        self.maps.lock().unwrap().put(key.to_string(), m.clone(), 0);
         Ok(Src::Local(m))
     }
 
@@ -786,12 +738,12 @@ impl Data {
     /// back; whatever needs them again reads them from the NAS.
     pub fn forget_removed(&self, names: &[String]) {
         let gone: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
-        self.maps.lock().unwrap().retain(|c, _| !gone.contains(c));
-        self.sects.lock().unwrap().retain(|c, _| !gone.contains(c));
+        self.maps.lock().unwrap().retain(|c, _| !gone.contains(c.as_str()));
+        self.sects.lock().unwrap().retain(|c, _| !gone.contains(c.as_str()));
         self.bases.lock().unwrap().retain(|k, _| !k.split('|').any(|c| gone.contains(c)));
-        self.his.lock().unwrap().retain(|c, _| !gone.contains(c));
-        self.marks.lock().unwrap().retain(|c, _| !gone.contains(c));
-        self.ovs.lock().unwrap().retain(|c, _| !gone.contains(c));
+        self.his.lock().unwrap().retain(|c, _| !gone.contains(c.as_str()));
+        self.marks.lock().unwrap().retain(|c, _| !gone.contains(c.as_str()));
+        self.ovs.lock().unwrap().retain(|c, _| !gone.contains(c.as_str()));
         let mut ru = self.roadunits.lock().unwrap();
         if ru.as_ref().is_some_and(|(c, _)| gone.contains(c.as_str())) {
             *ru = None;

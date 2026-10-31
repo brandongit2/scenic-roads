@@ -3,10 +3,9 @@
 //! search), and whole sections, for what a query scans or a long road touches throughout. Both drop
 //! the least recently used first. Mirrored files are mapped instead and never come here.
 
+use crate::cache::Lru;
 use crate::views::Blob;
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashMap};
-use std::hash::Hash;
 use std::sync::{Arc, LazyLock, Mutex};
 use store::iopool::IoError;
 use store::range::{PooledFile, RangeRead};
@@ -17,69 +16,6 @@ const PAGES_BYTES: u64 = 384 << 20;
 const WHOLES_BYTES: u64 = 1536 << 20;
 /// The most a batch of range reads fetches in pages; past it the section is read whole.
 pub const PAGES_PER_BATCH: u64 = PAGES_BYTES / 2;
-
-/// A map that drops its least recently used entries past a total weight.
-pub struct Lru<K, V> {
-    /// Value, weight, last use.
-    map: HashMap<K, (V, u64, u64)>,
-    by_use: BTreeMap<u64, K>,
-    tick: u64,
-    bytes: u64,
-    cap: u64,
-}
-
-impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
-    pub fn new(cap: u64) -> Self {
-        Lru { map: HashMap::new(), by_use: BTreeMap::new(), tick: 0, bytes: 0, cap }
-    }
-
-    pub fn get(&mut self, k: &K) -> Option<V> {
-        self.tick += 1;
-        let t = self.tick;
-        let e = self.map.get_mut(k)?;
-        self.by_use.remove(&e.2);
-        e.2 = t;
-        self.by_use.insert(t, k.clone());
-        Some(e.0.clone())
-    }
-
-    pub fn contains(&self, k: &K) -> bool {
-        self.map.contains_key(k)
-    }
-
-    /// Adds `v`; past the budget the least recently used go (never the newest).
-    pub fn put(&mut self, k: K, v: V, weight: u64) {
-        self.tick += 1;
-        let t = self.tick;
-        if let Some((_, w, used)) = self.map.insert(k.clone(), (v, weight, t)) {
-            self.by_use.remove(&used);
-            self.bytes -= w;
-        }
-        self.by_use.insert(t, k);
-        self.bytes += weight;
-        while self.bytes > self.cap && self.map.len() > 1 {
-            let Some((_, old)) = self.by_use.pop_first() else { break };
-            if let Some((_, w, _)) = self.map.remove(&old) {
-                self.bytes -= w;
-            }
-        }
-    }
-
-    /// Keeps only the entries `keep` says.
-    pub fn retain(&mut self, keep: impl Fn(&K) -> bool) {
-        let gone: Vec<K> = self.map.keys().filter(|k| !keep(k)).cloned().collect();
-        for k in gone {
-            if let Some((_, w, used)) = self.map.remove(&k) {
-                self.bytes -= w;
-                self.by_use.remove(&used);
-            }
-        }
-    }
-
-    pub fn bytes(&self) -> u64 {
-        self.bytes
-    }
-}
 
 /// Pages by (file, page number); whole sections by (file, offset, length) (an empty section can
 /// share its offset with the next one); sections being read whole right now, so a second request
@@ -203,8 +139,8 @@ pub fn derived(f: &PooledFile, tag: u64) -> Option<Blob> {
 
 /// Drops what was read from the files `ids` (the mirror has them now; other NAS files keep theirs).
 pub fn forget(ids: &std::collections::HashSet<u64>) {
-    PAGES.lock().unwrap().retain(|k| !ids.contains(&k.0));
-    WHOLES.lock().unwrap().retain(|k| !ids.contains(&k.0));
+    PAGES.lock().unwrap().retain(|k, _| !ids.contains(&k.0));
+    WHOLES.lock().unwrap().retain(|k, _| !ids.contains(&k.0));
 }
 
 /// Bytes held: (pages, whole sections).
@@ -215,23 +151,6 @@ pub fn held() -> (u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn lru_drops_the_least_recently_used() {
-        let mut l: Lru<u32, u32> = Lru::new(30);
-        l.put(1, 10, 10);
-        l.put(2, 20, 10);
-        l.put(3, 30, 10);
-        assert_eq!(l.get(&1), Some(10)); // 1 is now the most recent
-        l.put(4, 40, 10); // over budget: 2 goes
-        assert!(l.contains(&1) && !l.contains(&2) && l.contains(&3) && l.contains(&4));
-        assert_eq!(l.bytes(), 30);
-        // Replacing keeps the count right; something heavier than the budget stays alone.
-        l.put(3, 31, 5);
-        assert_eq!(l.bytes(), 25);
-        l.put(9, 90, 100);
-        assert!(l.contains(&9) && l.map.len() == 1 && l.bytes() == 100);
-    }
 
     #[test]
     fn reads_across_pages() {

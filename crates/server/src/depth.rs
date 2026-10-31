@@ -2,13 +2,15 @@
 //! metres below the water's surface) and `depth-class` (a byte a pixel: class, dries, source), as
 //! stored, or, where the layer stores none (depth stops at each source's own zoom), made from the
 //! nearest stored ancestor as the build scales a level up (pipeline::depth::fall), encoded as the
-//! stored ones are (lossless WebP). Outside the layer: 404.
+//! stored ones are (lossless WebP). Outside the layer's zooms: 404; where it has nothing (no
+//! stored ancestor): 204, as every layer's missing tile (crate::cache).
 //!
 //! And the terrain with the floor (`terrain_floor`): the terrain's heights minus the depth on the
 //! water the depth lies on (the terrain flattened there to the water's surface), for the map's 3D
 //! floor; no second terrain is stored.
 
-use crate::terrain::{respond, Got};
+use crate::cache::Lru;
+use crate::terrain::{made, respond, Got};
 use crate::S;
 use axum::{
     extract::{Path, RawQuery, State},
@@ -16,34 +18,38 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use pipeline::depth::fall::{self, Grid, Kind, Stored};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
 
-/// Decoded stored tiles, by layer, tile and catalogue generation (an ancestor serves many children).
-static DECODED: OnceLock<Mutex<HashMap<(&'static str, u8, u32, u32, u64), Stored>>> = OnceLock::new();
-/// Tiles made here, by the same.
-static MADE: OnceLock<Mutex<HashMap<(&'static str, u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
+use std::sync::{Arc, LazyLock, Mutex};
+
+/// Decoded stored tiles, by layer, tile and catalogue generation (an ancestor serves many children),
+/// under a byte budget. (Tiles made here are kept with the terrain's, crate::terrain::MADE.)
+type Decoded = Lru<(&'static str, u8, u32, u32, u64), Stored>;
+static DECODED: LazyLock<Mutex<Decoded>> = LazyLock::new(|| Mutex::new(Lru::bounded(4096, 256 << 20)));
 
 fn gen(s: &crate::AppState) -> u64 {
     s.data.generation.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// A decoded tile's bytes in memory.
+fn weight(d: &Stored) -> u64 {
+    match d.as_deref() {
+        Some(Grid::F(v)) => std::mem::size_of_val(v.as_slice()) as u64,
+        Some(Grid::C(v)) => v.len() as u64,
+        None => 0,
+    }
+}
+
 /// Layer `layer`'s stored tile z/x/y, decoded; None where it has none.
 fn decoded(s: &crate::AppState, layer: &'static str, kind: Kind, z: u8, x: u32, y: u32) -> anyhow::Result<Stored> {
-    let g = gen(s);
-    let cache = DECODED.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(d) = cache.lock().unwrap().get(&(layer, z, x, y, g)) {
-        return Ok(d.clone());
+    let key = (layer, z, x, y, gen(s));
+    if let Some(d) = DECODED.lock().unwrap().get(&key) {
+        return Ok(d);
     }
     let d = match s.data.tile(layer, z, x, y)? {
         Some((b, _)) => Some(Arc::new(fall::decode(kind, b.bytes())?)),
         None => None,
     };
-    let mut c = cache.lock().unwrap();
-    if c.len() > 1024 {
-        c.clear();
-    }
-    c.insert((layer, z, x, y, g), d.clone());
+    DECODED.lock().unwrap().put(key, d.clone(), weight(&d));
     Ok(d)
 }
 
@@ -57,7 +63,7 @@ pub fn served(s: &crate::AppState, layer: &'static str, z: u8, x: u32, y: u32) -
 }
 
 async fn tile(s: S, layer: &'static str, z: u8, x: u32, y: u32, q: Option<String>, headers: HeaderMap) -> Response {
-    let v = crate::tiles::versioned(q.as_deref());
+    let v = crate::cache::versioned(q.as_deref());
     if !fall::in_layer(z, x, y) {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -68,33 +74,11 @@ async fn tile(s: S, layer: &'static str, z: u8, x: u32, y: u32, q: Option<String
         if let Some(g) = crate::terrain::stored(&s, layer, z, x, y, &headers, "") {
             return Some(g);
         }
-        let g = gen(&s);
-        let cache = MADE.get_or_init(|| Mutex::new(HashMap::new()));
-        if let Some(b) = cache.lock().unwrap().get(&(layer, z, x, y, g)) {
-            return Some(Got::Made(b.clone()));
-        }
-        match served(&s, layer, z, x, y).and_then(|t| t.map(|t| fall::encode(&t)).transpose()) {
-            Ok(Some(b)) => {
-                let mut c = cache.lock().unwrap();
-                if c.len() > 2000 {
-                    c.clear();
-                }
-                c.insert((layer, z, x, y, g), b.clone());
-                Some(Got::Made(b))
-            }
-            Ok(None) => None,
-            Err(e) => {
-                eprintln!("{layer} {z}/{x}/{y}: {e:#}");
-                Some(Got::Failed)
-            }
-        }
+        made(layer, gen(&s), z, x, y, || served(&s, layer, z, x, y)?.map(|t| fall::encode(&t)).transpose())
     })
     .await
     .unwrap_or(Some(Got::Failed));
-    match got {
-        Some(g) => respond(g, v),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
+    respond(got, v)
 }
 
 pub async fn depth_tile(

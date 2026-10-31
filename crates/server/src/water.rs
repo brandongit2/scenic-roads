@@ -13,7 +13,7 @@
 //!   once, on `THREADS` threads of their own (not the shared pool the queries use); a draw the map
 //!   stopped waiting for still finishes and is kept. Stored tiles don't wait for draws.
 
-use crate::tiles::{etag_match, not_modified, versioned};
+use crate::cache::{self, etag_match, not_modified, Lru};
 use crate::S;
 use anyhow::Result;
 use axum::{
@@ -22,10 +22,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use pipeline::water::{self as wt, Cov};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
-/// Drawn tiles kept (by z, x, y and what they're made from).
-const KEPT: usize = 192;
 /// Tiles drawn at once (more wait), and the threads they're drawn on.
 const DRAWING: usize = 4;
 const THREADS: usize = 4;
@@ -33,15 +31,15 @@ const THREADS: usize = 4;
 /// Shares as bytes, two a pixel (sea, inland): a drawn tile kept.
 type Shares = Arc<Vec<u8>>;
 
-#[derive(Default)]
-struct Kept {
-    tick: u64,
-    map: std::collections::HashMap<(u8, u32, u32, u64), (u64, Shares)>,
-}
+/// Drawn tiles kept, by (z, x, y, what they're made from), the least recently used let go past
+/// `KEPT` tiles' bytes.
+const KEPT: u64 = 192;
+static KEPT_TILES: LazyLock<Mutex<Lru<(u8, u32, u32, u64), Shares>>> =
+    LazyLock::new(|| Mutex::new(Lru::new(KEPT * (wt::SIZE * wt::SIZE * 2) as u64)));
 
-fn kept() -> &'static Mutex<Kept> {
-    static K: OnceLock<Mutex<Kept>> = OnceLock::new();
-    K.get_or_init(Default::default)
+fn keep(key: (u8, u32, u32, u64), sh: Shares) {
+    let n = sh.len() as u64;
+    KEPT_TILES.lock().unwrap().put(key, sh, n);
 }
 
 fn blocks() -> &'static wt::Blocks {
@@ -63,19 +61,6 @@ fn pool() -> &'static rayon::ThreadPool {
             .build()
             .expect("the water's threads")
     })
-}
-
-/// A drawn tile kept, the least recently used let go past `KEPT`.
-fn keep(key: (u8, u32, u32, u64), sh: Shares) {
-    let mut k = kept().lock().unwrap();
-    k.tick += 1;
-    let t = k.tick;
-    k.map.insert(key, (t, sh));
-    if k.map.len() > KEPT {
-        if let Some(old) = k.map.iter().min_by_key(|e| e.1 .0).map(|e| *e.0) {
-            k.map.remove(&old);
-        }
-    }
 }
 
 fn shares(c: &Cov) -> Vec<u8> {
@@ -343,7 +328,7 @@ pub async fn water_tile(
     if z > wt::MAXZ || x >= 1 << z || y >= 1 << z {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let v = versioned(q.as_deref());
+    let v = cache::versioned(q.as_deref());
     let query: std::collections::HashMap<String, String> = q.as_deref().map(|q| url_pairs(q)).unwrap_or_default();
     let colours = match query.get("c") {
         Some(c) => {
@@ -364,15 +349,7 @@ pub async fn water_tile(
         return not_modified(&etag, v);
     }
     let key = (z, x, y, from);
-    let hit = {
-        let mut k = kept().lock().unwrap();
-        k.tick += 1;
-        let t = k.tick;
-        k.map.get_mut(&key).map(|e| {
-            e.0 = t;
-            e.1.clone()
-        })
-    };
+    let hit = KEPT_TILES.lock().unwrap().get(&key);
     let sh = match hit {
         Some(sh) => sh,
         None => {
@@ -412,17 +389,17 @@ pub async fn water_tile(
                 Ok(sh) => sh,
                 Err(e) => {
                     eprintln!("water {z}/{x}/{y}: {e:#}");
-                    // The coarser zoom's water instead, not kept and not to be cached for good: the
-                    // tile is drawn properly once the basemap can be read again.
+                    // The coarser zoom's water instead, not kept, without an ETag, not stored, and never
+                    // cached for good (cache::NotForGood): the tile is drawn properly once the basemap can be
+                    // read again.
                     let s2 = s.clone();
                     let fb = tokio::task::spawn_blocking(move || fallback(&s2, z, x, y)).await;
                     let Ok(Ok(Some(b))) = fb else { return StatusCode::SERVICE_UNAVAILABLE.into_response() };
                     return match tokio::task::spawn_blocking(move || encode(&b, colours)).await {
                         Ok(Ok(body)) => {
-                            let mut r = body.into_response();
-                            let h = r.headers_mut();
-                            h.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
-                            h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                            let mut r = cache::respond(body, "image/png", false, None, false);
+                            r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                            r.extensions_mut().insert(cache::NotForGood);
                             r
                         }
                         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -432,16 +409,7 @@ pub async fn water_tile(
         }
     };
     match tokio::task::spawn_blocking(move || encode(&sh, colours)).await {
-        Ok(Ok(body)) => {
-            let mut r = body.into_response();
-            let h = r.headers_mut();
-            h.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
-            if let Ok(e) = HeaderValue::from_str(&etag) {
-                h.insert(header::ETAG, e);
-            }
-            h.insert(header::CACHE_CONTROL, crate::cache::cache_control(v, "no-cache"));
-            r
-        }
+        Ok(Ok(body)) => cache::respond(body, "image/png", false, Some(&etag), v),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
