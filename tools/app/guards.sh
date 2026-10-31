@@ -49,14 +49,16 @@ python3 - <<'PY' || exit 1
 import glob, re, sys
 pool = re.search(r'POOL_PORTS: \[u16; \d+\] = \[([\d, ]+)\]', open("crates/store/src/spawn.rs").read()).group(1).replace(" ", "").split(",")
 bad_re = re.compile(r"(?:127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[:\"', ]+(?:%s)\b|\bcoord::PORT\b|\bDEFAULT_PORT\b" % "|".join(pool))
-fixed_re = re.compile(r"""\b(?:listen|bind|listeners_on)\s*\(\s*(?:\(\s*(?:"[^"]*"|[\w:.\[\]]+)\s*,\s*|["'][^"']*:|)([1-9]\d{0,4})\b""")
-bad, fixed = [], []
+fixed = r"""\b(?:%s)\s*\(\s*(?:\(\s*(?:"[^"]*"|[\w:.\[\]]+)\s*,\s*|["'][^"']*:|)([1-9]\d{0,4})\b"""
+fixed_re = re.compile(fixed % "listen|bind|listeners_on")
+fixed_py = re.compile(fixed % "bind")  # (Python's socket.listen(n) takes a backlog, not a port.)
+bad, fixed_at = [], []
 def scan(path, text, first=1):
     for i, line in enumerate(text.split("\n"), first):
         if bad_re.search(line) and "pool port: not bound" not in line:
             bad.append(f"{path}:{i}: {line.strip()}")
-        if fixed_re.search(line):
-            fixed.append(f"{path}:{i}: {line.strip()}")
+        if (fixed_py if path.endswith(".py") else fixed_re).search(line):
+            fixed_at.append(f"{path}:{i}: {line.strip()}")
 for f in sorted(glob.glob("crates/*/src/**/*.rs", recursive=True)):
     s = open(f).read()
     if f.endswith("/tests.rs") or "/tests/" in f:
@@ -73,8 +75,8 @@ for f in sorted(tests):
     except (IsADirectoryError, UnicodeDecodeError):
         pass
 for b in bad: print(b + "  <- a test naming a live program's port on this Mac (store::spawn::POOL_PORTS): use port 0, or mark a line that only quotes it `pool port: not bound`")
-for b in fixed: print(b + "  <- a test listening on a fixed port (#914): another test running beside may hold it; listen on port 0, or on coord::test_port's")
-sys.exit(1 if bad or fixed else 0)
+for b in fixed_at: print(b + "  <- a test listening on a fixed port (#914): another test running beside may hold it; listen on port 0, or on coord::test_port's")
+sys.exit(1 if bad or fixed_at else 0)
 PY
 [[ -n $in_check ]] || cargo test -q -p pipeline --test inputs_accessor --test source_names > $log 2>&1 || {
   sed -n '/^---- /,/^failures:$/p' $log

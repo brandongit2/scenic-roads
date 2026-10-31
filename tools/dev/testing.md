@@ -170,13 +170,15 @@ through their dev-dependency on store, `features = ["testkit"]`):
 - **Process-wide settings:** pass the value in. Where the code reads an environment variable, a
   test sets it with `EnvVar::set(k, v)` (restored on drop, tests taking turns), and only for a
   variable no other test in that binary reads. A static a test changes is thread-local in test
-  builds where it can be (the agent's `TEST_PORT`, `TEST_ROOT`), so tests in one process can't see
+  builds where it can be (the agent's `TEST_ROOT`), so tests in one process can't see
   each other's; the one that can't, the plain-open cap, is set through a guard
   (`store::range::cap_plain_opens`) that tests take in turn and that restores it on drop (other
   tests in a `cargo test` process run under it meanwhile: a lower cap only closes files sooner).
 - **Hermetic by default:** temp folders (`tempfile::tempdir()`), never the real NAS or app home
-  (`agent::is_live_path`); coordinators on loopback ports from `coord::test_port()` (held until the
-  coordinator takes them), or port 0 (the agent's `coord_port()` without a `TEST_PORT`); no
+  (`agent::is_live_path`); coordinators, brokers and viewers on loopback ports from `coord::test_port()` (each test agent
+  its own, its `coord_port()`): the test program holds each such port for good, a stopped one's
+  listeners kept for the next on it (`coord::KEPT`), and refuses a listen anew on any other but
+  port 0 (#914); no
   `.local` names (`net::urls` gives 127.0.0.1 in tests).
 - **Never a live program's port (#906):** the tests run on the Macs beside the live agent (the
   mini runs check.sh's remote tests and publish's suite), and a test listening on 127.0.0.1:8090

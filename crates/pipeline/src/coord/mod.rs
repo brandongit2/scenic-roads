@@ -75,33 +75,44 @@ impl From<std::net::TcpListener> for Listeners {
     }
 }
 
-/// The listeners of each port a coordinator, broker or viewer of this process answered on, kept
-/// open as it stopped (and a test's, `test_port`, from the start): the next of this process on
-/// that port takes them (`listeners_on`), so no other process takes the port between. (Let go,
-/// a test's port was taken by another test running beside while its agent turned its viewer into
-/// a coordinator, which then never started: #914.)
+/// A test program's listeners of each port a coordinator, broker or viewer of it answered on,
+/// kept open as it stopped (and those of `test_port`, from the start): the next of the program
+/// on that port takes them (`listeners_on`), so no test running beside takes the port between.
+/// (Let go, a test's port was taken by another test while its agent turned its viewer into a
+/// coordinator, which then never started: #914.) A test only: a Mac's agent changes role by
+/// restarting its process (docs/roles.md), and a port kept open with nothing taking its
+/// connections would leave every member's, page's and job's connection to a Mac that just
+/// stopped hanging in its backlog where it is refused at once.
+#[cfg(test)]
 static KEPT: Mutex<BTreeMap<u16, Listeners>> = Mutex::new(BTreeMap::new());
 
-/// The listeners for `port`: the ones this process kept for it (`KEPT`), else listened on anew.
-/// A test never listens anew on a port of its own choosing (another test running beside may hold
-/// it by now): refused, loudly, at once (#914; port 0 is any free port).
+/// The listeners for `port`, listened on anew; in a test program, the ones it kept for the port
+/// (`KEPT`), and it never listens anew on a port of its own choosing (another test running beside
+/// may hold it by now): refused, loudly, at once (#914; port 0 is any free port).
 pub fn listeners_on(port: u16) -> std::io::Result<Listeners> {
-    if let Some(l) = KEPT.lock().unwrap_or_else(|e| e.into_inner()).remove(&port) {
-        return Ok(l);
+    #[cfg(test)]
+    {
+        if let Some(l) = KEPT.lock().unwrap_or_else(|e| e.into_inner()).remove(&port) {
+            return Ok(l);
+        }
+        assert!(
+            port == 0,
+            "a test listened anew on port {port}, which this process kept no listener of: another test's may \
+             hold it by now (#914); take a port from coord::test_port, which this process keeps"
+        );
     }
-    assert!(
-        port == 0 || !store::spawn::in_test_program(),
-        "a test listened anew on port {port}, which this process kept no listener of: another test's may \
-         hold it by now (#914); take a port from coord::test_port, which this process keeps"
-    );
     Ok(store::spawn::listen((LISTEN, port))?.into())
 }
 
-/// Keeps a stopped coordinator's listeners for the next of this process on their port.
+/// A stopped coordinator's listeners: a test program keeps them for the next of it on their port
+/// (`KEPT`); else closed, so a connection to the port is refused at once.
 fn keep_listeners(l: Listeners) {
+    #[cfg(test)]
     if let Ok(a) = l.listener.local_addr() {
         KEPT.lock().unwrap_or_else(|e| e.into_inner()).insert(a.port(), l);
     }
+    #[cfg(not(test))]
+    drop(l);
 }
 
 #[cfg(test)]
@@ -1226,8 +1237,8 @@ impl Coordinator {
     /// runs, the one an agent asking for work must run too.
     pub fn start(dir: &Path, port: u16, me: &str, app: &str) -> Result<Coordinator> {
         // (Listening first: a port in use writes nothing of its state. One a coordinator of this
-        // process answered on is taken over as it stopped, `listeners_on`; another process's is
-        // no reason to wait, and isn't waited for.)
+        // process stopped on is free as its `stop` returned (a test's kept and taken over,
+        // `listeners_on`); another process's is no reason to wait, and isn't waited for.)
         let listeners = anyhow::Context::with_context(listeners_on(port), || format!("listen on port {port}"))?;
         Coordinator::start_on(dir, listeners, me, app)
     }
@@ -1501,8 +1512,8 @@ impl Coordinator {
         s.leases.all(now).len()
     }
 
-    /// Stops answering (this process no longer leads): its runtime shut down, its listeners kept
-    /// for the next coordinator of this process on its port once this returns (`KEPT`; its thread
+    /// Stops answering (this process no longer leads): its runtime shut down, its listeners closed
+    /// (a test program's kept for the next of it on the port, `KEPT`) once this returns (its thread
     /// says so, `closed`: no clock decides it), whatever a blocking task of it waits on. Its state stays on disk, as the
     /// requests under way left it: the JSON routes under way are let finish (local and short: the
     /// state's lock and its files), and none starts after, so no JSON route writes once this
@@ -4878,7 +4889,7 @@ mod http {
             });
             // (Every connection's socket closed by `accept` as it returned; its runtime shut down
             // without waiting for its blocking tasks (a stat of a NAS that doesn't answer may never
-            // return), which hold no socket; its listeners kept for the next on its port.)
+            // return), which hold no socket; its listeners closed (a test's kept, `keep_listeners`).)
             rt.shutdown_background();
             if let Some(l) = kept {
                 super::keep_listeners(l);
