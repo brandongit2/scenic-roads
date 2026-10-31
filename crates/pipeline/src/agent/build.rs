@@ -6392,6 +6392,123 @@ pub(crate) mod tests {
         assert!(keys_are_derived(&p, &x).contains("bldprep"));
     }
 
+    /// A build as the tests' plans leave it, for the scheme-2 keys' tests: the coverage, the
+    /// manifest after every step's run (with the pass's sets and a previous pass's outlines) and the
+    /// planner's inputs (the spacing, the 3D buildings' release).
+    fn built() -> (Coverage, BTreeMap<String, String>, BTreeMap<String, String>) {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        unit_inputs(&mut m, "d");
+        for l in ["work/trailends/d", "work/summits/d"] {
+            m.insert(l.into(), format!("{l}.6161616161616161.bin"));
+        }
+        run_all(&c, &reach(), &mut m, &mut Keys::default());
+        for kind in ["outlines", "coastline", "hikes", "summits", "named", "whs"] {
+            let l = crate::osmpass::set_name("d", kind);
+            m.entry(l.clone()).or_insert_with(|| format!("{l}.7a7a7a7a7a7a7a7a.osm.pbf"));
+        }
+        m.insert("sources/osm/c/outlines".into(), "sources/osm/c/outlines.7b7b7b7b7b7b7b7b.bin".into());
+        let inputs = spaced(&bld_inputs(&c, "d"));
+        (c, m, inputs)
+    }
+
+    /// The steps whose keys scheme 2 derives (a version declared: crate::agent::steps::key_lines).
+    fn derived_steps() -> Vec<&'static str> {
+        crate::agent::steps::TABLE.iter().filter(|r| !r.versions.is_empty()).map(|r| r.name).collect()
+    }
+
+    /// Every target's keys of `step` under both schemes, in build `m`, `inputs`.
+    fn both_keys(
+        step: &str,
+        c: &Coverage,
+        m: &BTreeMap<String, String>,
+        inputs: &BTreeMap<String, String>,
+    ) -> BTreeMap<String, (Option<String>, Option<String>)> {
+        let tiles = tiles_for(m);
+        let x = KeyCtx { cov: c, date: "d", m, inputs, reach: Some(&reach()), tiles: &tiles };
+        legacy_keys(step, &x)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(t, k)| {
+                let d = crate::agent::steps::derived_key(step, &t, &x);
+                (t, (Some(k), d))
+            })
+            .collect()
+    }
+
+    /// Each of the build's manifest entries and inputs changed alone (its content or value with a
+    /// mark added): what changed, and the build with it.
+    fn one_changed(
+        m: &BTreeMap<String, String>,
+        inputs: &BTreeMap<String, String>,
+    ) -> Vec<(String, BTreeMap<String, String>, BTreeMap<String, String>)> {
+        let mut out = Vec::new();
+        for (l, c) in m {
+            let mut m2 = m.clone();
+            m2.insert(l.clone(), format!("{c}~"));
+            out.push((l.clone(), m2, inputs.clone()));
+        }
+        for (n, v) in inputs {
+            let mut i2 = inputs.clone();
+            i2.insert(n.clone(), format!("{v}~"));
+            out.push((format!("input {n}"), m.clone(), i2));
+        }
+        out
+    }
+
+    /// docs/readiness.md §7: a scheme-2 key names exactly its reads. For each step it derives, on a
+    /// built fixture, changing a manifest entry changes a target's key just when its key lines name
+    /// that entry (by its logical name or its content), and every target scheme 1 keys has lines.
+    #[test]
+    fn a_key_names_exactly_its_reads() {
+        let (c, m, inputs) = built();
+        let steps = derived_steps();
+        assert!(!steps.is_empty());
+        for step in steps {
+            let tiles = tiles_for(&m);
+            let x = KeyCtx { cov: &c, date: "d", m: &m, inputs: &inputs, reach: Some(&reach()), tiles: &tiles };
+            let base = both_keys(step, &c, &m, &inputs);
+            assert!(!base.is_empty(), "{step}: the fixture keys a target of it");
+            for (t, (_, k2)) in &base {
+                assert!(k2.is_some(), "{step} {t}: its scheme-2 key is worked out");
+                let lines = crate::agent::steps::key_lines(step, t, &x).unwrap();
+                for (l, m2, _) in one_changed(&m, &BTreeMap::new()) {
+                    let named = lines.iter().any(|s| s.contains(&format!("{l}=")) || s.contains(&m[&l]));
+                    let after = both_keys(step, &c, &m2, &inputs);
+                    let changed = after.get(t).map(|k| &k.1) != Some(k2);
+                    assert_eq!(changed, named, "{step} {t}: {l} changed (named in its lines: {named}) {lines:#?}");
+                }
+            }
+        }
+    }
+
+    /// The rekey's ground (docs/readiness.md §6 step 3, crate::agent::rekey): for every step scheme
+    /// 2 derives outside those it rebuilds (`rekey::REBUILT`), the scheme-2 key names no input the
+    /// scheme-1 key didn't pin, and pins every one it did: each manifest entry and input changed
+    /// alone changes a target's scheme-1 key just when it changes its scheme-2 key.
+    #[test]
+    fn scheme_2_pins_what_scheme_1_did() {
+        let (c, m, inputs) = built();
+        for step in derived_steps() {
+            if crate::agent::rekey::REBUILT.contains(&step) {
+                continue;
+            }
+            let base = both_keys(step, &c, &m, &inputs);
+            for (what, m2, i2) in one_changed(&m, &inputs) {
+                let after = both_keys(step, &c, &m2, &i2);
+                for (t, (k1, k2)) in &base {
+                    let (a1, a2) = after.get(t).map_or((None, None), |k| (k.0.clone(), k.1.clone()));
+                    assert_eq!(
+                        &a1 != k1,
+                        &a2 != k2,
+                        "{step} {t}: {what} changed: scheme 1 {k1:?} → {a1:?}, scheme 2 {k2:?} → {a2:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// Tree cover's "none" targets are drops, as terrain's and slope's are (task #849): a z6 tile
     /// and a z3 tile the coverage has left, with tree packs still named, are offered first under
     /// their "none" keys, byte for byte as before (the trees' own key form, "|"-joined), and listed

@@ -228,6 +228,20 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
    records go, and they are #862's planned rebuild. The cascade then follows by content names: a
    unit whose terrain tiles' XXH3 didn't change keeps its key. So the rebuild is terrain and slope,
    plus what genuinely reads changed tiles.
+
+   Built in parts (task #879), the flip last:
+   - **3a (built): the derivation beside scheme 1.** `Read::Targets` and `Read::Whole` carry a
+     `Grain` (`Outputs`, or `Read(f)`: what the run reads inside them), `Read::Input` an identity
+     function (`Ident`, in agent/idents.rs, the runs' own code), and `Step::versions` the named
+     code versions. `steps::key_lines` assembles §4's lines from them (an output by
+     `steps::output_names`, a whole step's by its write-set, a mid by `steps::mid_logical`),
+     `steps::derived_key` hashes them, `steps::none_key` gives a "none" target's. A step with no
+     versions declared isn't derived yet. `rekey::REBUILT` lists the steps whose records go.
+     Tests: `a_key_names_exactly_its_reads` and `scheme_2_pins_what_scheme_1_did` (each manifest
+     entry and input changed alone moves a target's scheme-1 key just when it moves its scheme-2
+     key, for every derived step outside `REBUILT`), both over every derived step.
+   - 3b: every step declared so, a family at a time. 3c: the terrain root in the terrain stage.
+     3d: the rekey and its measurement. 3e: the flip.
 4. The scheme-1 rekey adapter is deleted once no record is scheme 1 (one catalogue after).
 
 ## 7. Tests

@@ -44,6 +44,7 @@ pub mod gc;
 pub mod gcqueue;
 pub mod heal;
 pub mod histarchive;
+pub mod idents;
 pub mod jobs;
 pub mod lead;
 pub mod live;

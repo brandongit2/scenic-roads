@@ -166,6 +166,13 @@ impl<'a> FileTimes<'a> {
     }
 }
 
+/// The steps whose records go at the switch to scheme 2 (docs/readiness.md §6 step 3, task #862's
+/// planned terrain rebuild): their scheme-2 keys name inputs their scheme-1 keys didn't pin (#832's
+/// coverage cut and the datasets' outlines; slope's waited terrain root). Every other step scheme 2
+/// derives pins exactly what scheme 1 did (`build::tests::scheme_2_pins_what_scheme_1_did`), so its
+/// current records are re-keyed, not rebuilt.
+pub const REBUILT: [&str; 6] = ["pyramids-fill", "terrain-hi", "terrain-deep", "slope-hi", "slope-deep", "slope-lo"];
+
 /// Re-keys the records in `keys`, for the coverage `cov`, the manifest `m` and the declared sources
 /// the keys name (`tiles`): tree cover's from a z3 tile's whole run to z6 tiles and assemblies
 /// (`rekey_trees`). `times`: the NAS's files' times (`FileTimes`; None where they can't be told now).

@@ -168,28 +168,51 @@ pub struct Step {
     /// planner, the forecast, the page and `scenic status` all answer readiness per target from it
     /// (`readiness`, `read_targets`). Empty: it reads no other step's targets.
     pub reads: &'static [Read],
+    /// The code its targets' bytes depend on, each named (docs/readiness.md §2): its own version
+    /// first, then codecs and borrowed code. The key's `v` lines (`key_lines`); empty for a step
+    /// whose key isn't derived from its reads yet (scheme 1's, `build::legacy_keys`).
+    pub versions: &'static [(&'static str, fn() -> String)],
     /// The way it runs now, as far as its memory and time go (crate::coord::cost_version): a cost
     /// measured another way says nothing of what a run takes now. Bumped with a change that moves
     /// them; never a build key.
     pub cost_v: u32,
 }
 
-/// One thing a target's run reads (docs/readiness.md §2).
+/// One thing a target's run reads (docs/readiness.md §2): what it waits for (`readiness`) and what
+/// its key names (`key_lines`), the same declaration.
 #[derive(Clone, Copy, Debug)]
 pub enum Read {
     /// Some targets of another step, by this target (any order, repeats allowed; one listed that
-    /// isn't among its step's targets as built is never left).
-    Targets { step: &'static str, of: fn(&str) -> Vec<String> },
+    /// isn't among its step's targets as built is never left), keyed by `grain`.
+    Targets { step: &'static str, of: fn(&str) -> Vec<String>, grain: Grain },
     /// The mids of some targets of another step (the z9 means an assembly reads of its z6 tiles):
     /// left while a target's mid isn't current (`View::mid_left`: stale, or current without its
-    /// mid, made again for it), which what reads its packs doesn't wait for.
+    /// mid, made again for it), which what reads its packs doesn't wait for. Keyed on each mid by
+    /// content (`mid_logical`).
     Mids { step: &'static str, of: fn(&str) -> Vec<String> },
     /// Every target of another step (a chain's: it reads what all its targets make, e.g.
-    /// depth-root every depth-lo assembly).
-    Whole { step: &'static str },
+    /// depth-root every depth-lo assembly), keyed by `grain`.
+    Whole { step: &'static str, grain: Grain },
     /// An input that is no step's target (a spacing file, a pass's set): `Ready::Unknown` while
-    /// the caller's `View` can't work it out.
-    Input { name: &'static str },
+    /// the caller's `View` can't work it out; keyed on what `of` says of it for a target (its
+    /// identity: the lines the run's own code reads it by, crate::agent::idents), None while it
+    /// can't be worked out.
+    Input { name: &'static str, of: Ident },
+}
+
+/// An input's identity for a target (`Read::Input`), or what a target reads of another step's
+/// outputs (`Grain::Read`): lines, each naming one thing read by content. None while it can't be
+/// worked out now (the key is unknown then: the target waits).
+pub type Ident = fn(&str, &super::build::KeyCtx) -> Option<Vec<String>>;
+
+/// How a key names a read of another step's targets (docs/readiness.md §2).
+#[derive(Clone, Copy, Debug)]
+pub enum Grain {
+    /// Their outputs by content name (`outputs_of`): the default.
+    Outputs,
+    /// What it reads inside them, by the run's own code (the terrain tiles a slope tile or a z6
+    /// tile's roads read, by their XXH3): a change elsewhere in those outputs doesn't re-key.
+    Read(Ident),
 }
 
 /// Whether a target may run (`readiness`).
@@ -231,10 +254,10 @@ pub fn read_targets(step: &str, t: &str) -> Vec<ReadTarget> {
     let mut v: Vec<ReadTarget> = Vec::new();
     for r in row(step).map_or(&[][..], |r| r.reads) {
         match *r {
-            Read::Targets { step, of } | Read::Mids { step, of } => {
+            Read::Targets { step, of, .. } | Read::Mids { step, of } => {
                 v.extend(of(t).into_iter().map(|u| ReadTarget::One(step, u)))
             }
-            Read::Whole { step } => v.push(ReadTarget::Whole(step)),
+            Read::Whole { step, .. } => v.push(ReadTarget::Whole(step)),
             Read::Input { .. } => {}
         }
     }
@@ -250,13 +273,13 @@ pub fn readiness(step: &str, t: &str, view: &dyn View) -> Ready {
     let mut waits: Vec<(&'static str, String)> = Vec::new();
     for r in reads {
         match *r {
-            Read::Targets { step, of } => {
+            Read::Targets { step, of, .. } => {
                 waits.extend(of(t).into_iter().filter(|u| view.left(step, u)).map(|u| (step, u)))
             }
             Read::Mids { step, of } => {
                 waits.extend(of(t).into_iter().filter(|u| view.mid_left(step, u)).map(|u| (step, u)))
             }
-            Read::Whole { step } => waits.extend(view.any_left(step).then(|| (step, step.to_string()))),
+            Read::Whole { step, .. } => waits.extend(view.any_left(step).then(|| (step, step.to_string()))),
             Read::Input { .. } => {}
         }
     }
@@ -268,7 +291,7 @@ pub fn readiness(step: &str, t: &str, view: &dyn View) -> Ready {
     let unknown: Vec<&'static str> = reads
         .iter()
         .filter_map(|r| match *r {
-            Read::Input { name } => (!view.known(name, t)).then_some(name),
+            Read::Input { name, .. } => (!view.known(name, t)).then_some(name),
             _ => None,
         })
         .collect();
@@ -291,10 +314,113 @@ pub fn key(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<String> {
     super::build::legacy_keys(step, x)?.into_iter().find(|(u, _)| u == t).map(|(_, k)| k)
 }
 
+/// Target `t`'s scheme-2 key of `step` (docs/readiness.md §4): `hash16` of its `key_lines`.
+pub fn derived_key(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<String> {
+    Some(store::naming::hash16(key_lines(step, t, x)?.join("\n").as_bytes()))
+}
+
+/// A "none" target's scheme-2 key (one the coverage left, kept to drop its outputs: it reads
+/// nothing): its scheme, step, target and versions, then `none`. None for a step with no versions
+/// declared.
+pub fn none_key(step: &str, t: &str) -> Option<String> {
+    let mut lines = head_lines(step, t)?;
+    lines.push("none".to_string());
+    Some(store::naming::hash16(lines.join("\n").as_bytes()))
+}
+
+/// Lines 1-3 of a key: the scheme, the step and target, a line per version in declared order.
+/// None for a step with no versions declared (its key isn't derived yet).
+fn head_lines(step: &str, t: &str) -> Option<Vec<String>> {
+    let r = row(step).filter(|r| !r.versions.is_empty())?;
+    let mut lines = vec![format!("scheme 2"), format!("step {} {t}", r.name)];
+    lines.extend(r.versions.iter().map(|(n, v)| format!("v {n} {}", v())));
+    Some(lines)
+}
+
+/// Target `t`'s key lines under scheme 2 (docs/readiness.md §4): `head_lines`, then one line per
+/// thing it reads, from its declared reads (`Step::reads`), sorted: `t <step> <target>
+/// <logical>=<content>` per output of a read target (`t <step> <target> -` for one with none),
+/// `mid <step> <target> <content>` per mid, `w <step> <logical>=<content>` per output of a step
+/// read whole, a `Grain::Read`'s lines after `t <step>` or `w <step>`, and `in <name> <line>` per
+/// line of an input's identity. None while any of them can't be worked out, or for a step with no
+/// versions declared.
+pub fn key_lines(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<Vec<String>> {
+    let mut lines = head_lines(step, t)?;
+    let mut reads: Vec<String> = Vec::new();
+    for r in row(step)?.reads {
+        match *r {
+            Read::Targets { step: s, of, grain } => match grain {
+                Grain::Outputs => {
+                    for u in of(t) {
+                        reads.extend(outputs_of(s, &u, x.m).map(|o| format!("t {s} {u} {o}")));
+                    }
+                }
+                Grain::Read(f) => reads.extend(f(t, x)?.into_iter().map(|l| format!("t {s} {l}"))),
+            },
+            Read::Mids { step: s, of } => {
+                for u in of(t) {
+                    let c = mid_logical(s, &u).and_then(|l| x.m.get(&l)).map_or("-", String::as_str);
+                    reads.push(format!("mid {s} {u} {c}"));
+                }
+            }
+            Read::Whole { step: s, grain } => match grain {
+                Grain::Outputs => {
+                    let all: Vec<String> = whole_outputs(s, x.m).collect();
+                    if all.is_empty() {
+                        reads.push(format!("w {s} -"));
+                    }
+                    reads.extend(all.into_iter().map(|o| format!("w {s} {o}")));
+                }
+                Grain::Read(f) => reads.extend(f(t, x)?.into_iter().map(|l| format!("w {s} {l}"))),
+            },
+            Read::Input { name, of } => reads.extend(of(t, x)?.into_iter().map(|l| format!("in {name} {l}"))),
+        }
+    }
+    reads.sort_unstable();
+    reads.dedup();
+    lines.extend(reads);
+    Some(lines)
+}
+
+/// Target `u` of `step`'s outputs as a key names them: `<logical>=<content>` per one in the
+/// manifest `m` (`output_names`), `-` with none.
+fn outputs_of(step: &str, u: &str, m: &std::collections::BTreeMap<String, String>) -> impl Iterator<Item = String> {
+    let mut v: Vec<String> = output_names(step, u)
+        .unwrap_or_else(|| panic!("{step}'s outputs are named (output_names): a read of its targets keys on them"))
+        .into_iter()
+        .filter_map(|l| m.get(&l).map(|c| format!("{l}={c}")))
+        .collect();
+    if v.is_empty() {
+        v.push("-".to_string());
+    }
+    v.into_iter()
+}
+
+/// Every output of `step` in the manifest `m` (its write-set's names: `writes`), `<logical>=<content>`.
+fn whole_outputs<'a>(
+    step: &'a str,
+    m: &'a std::collections::BTreeMap<String, String>,
+) -> impl Iterator<Item = String> + 'a {
+    let w = row(step).map(|r| r.writes);
+    m.iter().filter(move |(l, _)| w.is_some_and(|w| w(l, false))).map(|(l, c)| format!("{l}={c}"))
+}
+
+/// The mid a target of `step` makes (`Read::Mids`): the z9 means an assembly reads.
+pub fn mid_logical(step: &str, t: &str) -> Option<String> {
+    let u = TileId::parse(t).filter(|u| u.z == 6)?;
+    match current(step) {
+        "terrain-hi" => Some(crate::terrain_pack::mid_logical(u.x, u.y)),
+        "slope-hi" => Some(crate::slope_pack::mid_logical(u.x, u.y)),
+        "trees" => Some(crate::treepacks::mid_logical(u.x, u.y)),
+        "bldtiles" => Some(crate::bld::field::mid_logical(u.x, u.y)),
+        _ => None,
+    }
+}
+
 /// The steps a target of `step` reads whole (`Read::Whole`), in declared order.
 pub fn wholes(step: &str) -> impl Iterator<Item = &'static str> {
     row(step).map_or(&[][..], |r| r.reads).iter().filter_map(|r| match *r {
-        Read::Whole { step } => Some(step),
+        Read::Whole { step, .. } => Some(step),
         _ => None,
     })
 }
@@ -503,88 +629,100 @@ fn own(t: &str) -> Vec<String> {
     vec![t.to_string()]
 }
 
+use super::idents;
+use Grain::Outputs;
 use Read::{Input as In, Mids, Targets as Of, Whole as All};
 // (What a terrain z6 tile's run reads of the coverage: the tiles it makes near it, task #832's cut,
 // build::piece_coverage; terrain-deep reads it through its bases, pyramids-fill for its levels.)
-const R_PIECE: &[Read] = &[In { name: "coverage:piece" }];
+const R_PIECE: &[Read] = &[In { name: "coverage:piece", of: idents::coverage_piece }];
 const R_TERRAIN_LO: &[Read] = &[Mids { step: "terrain-hi", of: z6_of_z3 }];
 const R_SLOPE_DEEP: &[Read] = &[
-    Of { step: "terrain-deep", of: sd_deep },
-    Of { step: "terrain-hi", of: sd_hi },
-    Of { step: "terrain-lo", of: sd_lo },
+    Of { step: "terrain-deep", of: sd_deep, grain: Outputs },
+    Of { step: "terrain-hi", of: sd_hi, grain: Outputs },
+    Of { step: "terrain-lo", of: sd_lo, grain: Outputs },
 ];
 const R_SLOPE_HI: &[Read] = &[
-    Of { step: "terrain-hi", of: sh_hi },
-    Of { step: "terrain-lo", of: sh_lo },
-    Of { step: "slope-deep", of: sh_deep },
+    Of { step: "terrain-hi", of: sh_hi, grain: Outputs },
+    Of { step: "terrain-lo", of: sh_lo, grain: Outputs },
+    Of { step: "slope-deep", of: sh_deep, grain: Outputs },
 ];
-const R_SLOPE_LO: &[Read] = &[Of { step: "slope-hi", of: z6_of_z3 }, Of { step: "terrain-lo", of: sl_lo }];
+const R_SLOPE_LO: &[Read] =
+    &[Of { step: "slope-hi", of: z6_of_z3, grain: Outputs }, Of { step: "terrain-lo", of: sl_lo, grain: Outputs }];
 const R_TREES_LO: &[Read] = &[Mids { step: "trees", of: z6_of_z3 }];
 // (The roads wait for the pass's heritage sites, reaches and roadside buildings: their slices, which
 // z6 tiles the coverage builds, the roadside index.)
 const R_UNIT: &[Read] = &[
-    Of { step: "terrain-lo", of: u_lo },
-    Of { step: "terrain-hi", of: u_hi },
-    Of { step: "terrain-deep", of: u_deep },
-    All { step: "heritage-sites" },
-    All { step: "reach" },
-    All { step: "buildings" },
+    Of { step: "terrain-lo", of: u_lo, grain: Outputs },
+    Of { step: "terrain-hi", of: u_hi, grain: Outputs },
+    Of { step: "terrain-deep", of: u_deep, grain: Outputs },
+    All { step: "heritage-sites", grain: Outputs },
+    All { step: "reach", grain: Outputs },
+    All { step: "buildings", grain: Outputs },
 ];
-const R_POLAR_SLOPE: &[Read] = &[Of { step: "polar-terrain", of: ps_terrain }];
+const R_POLAR_SLOPE: &[Read] = &[Of { step: "polar-terrain", of: ps_terrain, grain: Outputs }];
 // (A pole's root reads its own blocks, not the other pole's.)
-const R_POLAR_ROOT: &[Read] =
-    &[Of { step: "polar-terrain", of: pole_blocks }, Of { step: "polar-slope", of: pole_blocks }];
-const R_DEPTH_LO: &[Read] = &[Of { step: "depth", of: z6_of_z3 }];
+const R_POLAR_ROOT: &[Read] = &[
+    Of { step: "polar-terrain", of: pole_blocks, grain: Outputs },
+    Of { step: "polar-slope", of: pole_blocks, grain: Outputs },
+];
+const R_DEPTH_LO: &[Read] = &[Of { step: "depth", of: z6_of_z3, grain: Outputs }];
 // (Both: an assembly whose z6 tiles are stale isn't stale itself till they're made.)
-const R_DEPTH_ROOT: &[Read] = &[All { step: "depth" }, All { step: "depth-lo" }];
-const R_RAIL: &[Read] = &[All { step: "rail-feeds" }];
-const R_POIS: &[Read] = &[All { step: "trailends" }, In { name: "spacing" }];
+const R_DEPTH_ROOT: &[Read] = &[All { step: "depth", grain: Outputs }, All { step: "depth-lo", grain: Outputs }];
+const R_RAIL: &[Read] = &[All { step: "rail-feeds", grain: Outputs }];
+const R_POIS: &[Read] = &[All { step: "trailends", grain: Outputs }, In { name: "spacing", of: idents::spacing }];
 // (The summits and peaks read the terrain packs' z8, a digest of every lo pack
 // (crate::peaks::z8::digest), and lo packs are made from the hi packs: they wait for all of both.)
-const R_SUMMITS: &[Read] = &[All { step: "terrain-hi" }, All { step: "terrain-lo" }];
+const R_SUMMITS: &[Read] = &[All { step: "terrain-hi", grain: Outputs }, All { step: "terrain-lo", grain: Outputs }];
 // (A read's own reads where its key names them, so a target isn't made on what's about to change:
 // a candidate's key the hiking-route ends, the heritage chain's the sites.)
 const R_PEAKS: &[Read] = &[
-    Of { step: "pois", of: own },
-    All { step: "trailends" },
-    All { step: "summits" },
-    All { step: "terrain-hi" },
-    All { step: "terrain-lo" },
-    In { name: "spacing" },
+    Of { step: "pois", of: own, grain: Outputs },
+    All { step: "trailends", grain: Outputs },
+    All { step: "summits", grain: Outputs },
+    All { step: "terrain-hi", grain: Outputs },
+    All { step: "terrain-lo", grain: Outputs },
+    In { name: "spacing", of: idents::spacing },
 ];
-const R_ITEMS: &[Read] = &[All { step: "pois" }, All { step: "trailends" }, In { name: "spacing" }];
+const R_ITEMS: &[Read] = &[
+    All { step: "pois", grain: Outputs },
+    All { step: "trailends", grain: Outputs },
+    In { name: "spacing", of: idents::spacing },
+];
 // (The accepted heritage registers: without them the sites have no key.)
-const R_HERITAGE: &[Read] = &[All { step: "heritage-sites" }, In { name: "registers" }];
+const R_HERITAGE: &[Read] =
+    &[All { step: "heritage-sites", grain: Outputs }, In { name: "registers", of: idents::registers }];
 const R_MARKS: &[Read] = &[
-    All { step: "pois" },
-    All { step: "peaks" },
-    All { step: "items" },
-    All { step: "heritage" },
-    All { step: "trailends" },
-    All { step: "summits" },
-    All { step: "heritage-sites" },
-    In { name: "spacing" },
-    In { name: "registers" },
+    All { step: "pois", grain: Outputs },
+    All { step: "peaks", grain: Outputs },
+    All { step: "items", grain: Outputs },
+    All { step: "heritage", grain: Outputs },
+    All { step: "trailends", grain: Outputs },
+    All { step: "summits", grain: Outputs },
+    All { step: "heritage-sites", grain: Outputs },
+    In { name: "spacing", of: idents::spacing },
+    In { name: "registers", of: idents::registers },
 ];
 // (The overlays read the heritage chain and the marks' dots, from the last marks run: held while
 // the marks' inputs are left, not for the marks themselves.)
 const R_OVERLAYS: &[Read] = &[
-    All { step: "pois" },
-    All { step: "peaks" },
-    All { step: "items" },
-    All { step: "heritage" },
-    All { step: "trailends" },
-    All { step: "summits" },
-    All { step: "heritage-sites" },
-    In { name: "spacing" },
-    In { name: "registers" },
-    In { name: "heritage-dots" },
+    All { step: "pois", grain: Outputs },
+    All { step: "peaks", grain: Outputs },
+    All { step: "items", grain: Outputs },
+    All { step: "heritage", grain: Outputs },
+    All { step: "trailends", grain: Outputs },
+    All { step: "summits", grain: Outputs },
+    All { step: "heritage-sites", grain: Outputs },
+    In { name: "spacing", of: idents::spacing },
+    In { name: "registers", of: idents::registers },
+    In { name: "heritage-dots", of: idents::heritage_dots },
 ];
 // (The normalized files read the declared release, not what the fetch puts on the NAS: they go
 // beside it. The tiles read the sources downloaded: none before, every tile would come out empty.)
-const R_BLDPREP: &[Read] = &[In { name: "bld-key" }];
-const R_BLDTILES: &[Read] = &[Of { step: "bldprep", of: bt_prep }, In { name: "bld-sources" }];
-const R_BLDFIELD_LO: &[Read] = &[Of { step: "bldtiles", of: z6_of_z3 }, In { name: "bld-sources" }];
+const R_BLDPREP: &[Read] = &[In { name: "bld-key", of: idents::bld_key }];
+const R_BLDTILES: &[Read] =
+    &[Of { step: "bldprep", of: bt_prep, grain: Outputs }, In { name: "bld-sources", of: idents::bld_sources }];
+const R_BLDFIELD_LO: &[Read] =
+    &[Of { step: "bldtiles", of: z6_of_z3, grain: Outputs }, In { name: "bld-sources", of: idents::bld_sources }];
 
 /// A row with what most steps have: 1.5 GB until measured, none of the sets.
 const fn step(
@@ -608,6 +746,7 @@ const fn step(
         writes,
         records_only: false,
         reads: &[],
+        versions: &[],
         cost_v: 0,
     }
 }
@@ -645,6 +784,12 @@ pub const TABLE: [Step; 59] = [
     Step {
         mem_mb: 9216,
         alone: true,
+        versions: &[("outlines", || super::build::OUTLINES_V.to_string())],
+        reads: &[
+            In { name: "pass", of: idents::pass },
+            In { name: "set:outlines", of: idents::set_outlines },
+            In { name: "previous-outlines", of: idents::previous_outlines },
+        ],
         ..step(
             "pass",
             Derive,
@@ -1487,7 +1632,7 @@ const fn set_of<const N: usize>(set: Set) -> [&'static str; N] {
 pub fn read_together(step: &str) -> bool {
     const PROBES: [&str; 4] = ["3/4/2", "6/32/20", "10/512/300", "12/2048/1200"];
     TABLE.iter().flat_map(|r| r.reads).any(|x| match *x {
-        Read::Targets { step: s, of } | Read::Mids { step: s, of } if s == step => {
+        Read::Targets { step: s, of, .. } | Read::Mids { step: s, of } if s == step => {
             PROBES.iter().any(|t| of(t).len() > 1)
         }
         _ => false,
@@ -1520,7 +1665,7 @@ pub fn reads_from(reader: &str, step: &str) -> bool {
         }
         seen.push(row.name);
         row.reads.iter().any(|x| match *x {
-            Read::Targets { step: s, .. } | Read::Mids { step: s, .. } | Read::Whole { step: s } => {
+            Read::Targets { step: s, .. } | Read::Mids { step: s, .. } | Read::Whole { step: s, .. } => {
                 s == step || go(s, step, seen)
             }
             Read::Input { .. } => false,
