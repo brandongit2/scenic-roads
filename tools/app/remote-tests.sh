@@ -33,8 +33,10 @@
 # here and not shown. Without one (the connection failed, no tree, no slot), it prints
 # "--- remote result discarded, local rerun ---" and runs the command here: what follows the last
 # such line is the result.
-# Disk: a key's folder unused for 3 days goes; past 60 GB in all, the least recently used go
-# (never one locked). tools/dev/sweep-targets.sh drops a removed worktree's key.
+# Disk (#912, make_room): before a run, other keys' folders not in use go, a gone worktree's first,
+# then the least recently used, until the test Mac has its agent's room target free plus what this
+# run needs (this key's last build folder; never one locked). tools/dev/sweep-targets.sh drops a
+# removed worktree's key too.
 # Connecting never hangs (#637): a fresh connection asks ~/.ssh/config's agent (1Password) for the
 # key, and a locked 1Password waits for its approval for ever, BatchMode or not. So each ssh this
 # side makes runs under a watchdog: the first, a fresh-connection probe, within 20 s; the lock and
@@ -78,8 +80,62 @@ remote_unlock() {  # <key> <owner> [quiet]: removes the lock only while it is st
   return 1
 }
 
-remote_main() {  # on the test Mac: <key> <owner> <command>
-  local key=$1 owner=$2 cmd=$3 base=~/scenic-check slots=3 cap_gb=60
+# Disk (#912): the test Mac's agent keeps its room target free (room-target.json in its folder, set
+# from the menu bar or `scenic room`); the copies here mustn't eat into it, or the pool's jobs there
+# wait. Before a run, other keys' copies not in use go: first those whose worktree is gone (their
+# requests named an origin, the calling Mac and its repo, whose latest request no longer lists them
+# among its worktrees), then the least recently used, until the disk has the room target free plus
+# what this run needs (this key's build folder as it was, or, a new key, the largest one there: a
+# full build). A copy in use (its lock, .busy, held: younger than 6 h, as the takeover rule) is never
+# removed; one is removed by taking its lock first (mkdir, atomic), then moved aside and deleted, so
+# no run takes it meanwhile.
+agent_home=~/"Library/Application Support/scenic/agent"
+free_kb() { df -k $1 | awk 'NR==2 {print $4}'; }  # the free space on <path>'s disk (KB)
+room_target_kb() {  # the agent's room target (KB; 0 without one)
+  local b=$(plutil -extract bytes raw -o - "$agent_home/room-target.json" 2>/dev/null)
+  [[ $b == <-> ]] && print $(( b / 1024 )) || print 0
+}
+drop_copy() {  # <base> <key folder> <why>: 0 removed, 1 in use
+  local base=$1 d=$2 sz
+  if ! mkdir $d/.busy 2>/dev/null; then
+    [[ -n $(find $d/.busy -maxdepth 0 -newermt "$stale_after seconds ago" 2>/dev/null) ]] && return 1
+  fi
+  sz=$(du -sk $d 2>/dev/null | cut -f1)
+  mv $d $base/.gone-${d:t}-$$ 2>/dev/null || return 1
+  rm -rf $base/.gone-${d:t}-$$
+  print "remote-tests: removed ${d:t} on the test Mac ($3; $(( ${sz:-0} / 1024 )) MB)"
+}
+make_room() {  # <base> <this key> <origin> <live keys>
+  local base=$1 key=$2 origin=$3 d f sz need=0 want
+  local -a live=(${=4}) keys=()
+  setopt localoptions nullglob
+  rm -rf $base/.gone-*  # (removals cut short)
+  if [[ -n $origin ]]; then
+    print -r -- "$origin" > $base/$key/origin
+    for d in $base/*(/); do
+      [[ ${d:t} != $key && $(cat $d/origin 2>/dev/null) == "$origin" && ${live[(Ie)${d:t}]} == 0 ]] || continue
+      drop_copy $base $d "its worktree is gone"
+    done
+  fi
+  if [[ -d $base/$key/target ]]; then need=$(du -sk $base/$key/target | cut -f1)
+  else for d in $base/*/target(/); do sz=$(du -sk $d | cut -f1); (( sz > need )) && need=$sz; done
+  fi
+  want=$(( $(room_target_kb) + need ))
+  for d in $base/*(/); do
+    [[ ${d:t} == $key ]] && continue
+    f=$d/stamp; [[ -e $f ]] || f=$d
+    keys+=("$(stat -f %m $f) $d")
+  done
+  for d in ${${(on)keys}#* }; do  # the least recently used first
+    (( $(free_kb $base) >= want )) && return 0
+    drop_copy $base $d "room target $(( $(room_target_kb) / 1048576 )) GB + this run's $(( need / 1024 )) MB not free"
+  done
+  (( $(free_kb $base) >= want )) || print "remote-tests: the test Mac has less free than its room target + this run's $(( need / 1024 )) MB, the other copies in use"
+  return 0
+}
+
+remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
+  local key=$1 owner=$2 cmd=$3 origin=$4 live=$5 base=~/scenic-check slots=3
   local dir=$base/$key slot= waited=0 s held pid start mine
   setopt nullglob
   # (At once: the calling side's first-line bound (120 s) is for connecting, not the prune and
@@ -139,26 +195,8 @@ remote_main() {  # on the test Mac: <key> <owner> <command>
   }
   trap on_signal TERM HUP INT
   (( waited )) && print "remote-tests: got a test-Mac slot after ${waited} s"
-  # Disk: stale keys, then the least recently used past the cap; never a locked one (a lock older
-  # than 6 h aside), whose stamp was touched as it was taken.
-  local d f
-  locked() { [[ -d $1/.busy && -n $(find $1/.busy -maxdepth 0 -newermt "$stale_after seconds ago" 2>/dev/null) ]]; }
-  for d in $base/*(/); do
-    locked $d && continue
-    f=$d/stamp; [[ -e $f ]] || f=$d
-    [[ -n $(find $f -maxdepth 0 ! -newermt '3 days ago' 2>/dev/null) ]] && rm -rf $d
-  done
-  local total=$(du -sk $base 2>/dev/null | cut -f1)
-  if (( total > cap_gb * 1024 * 1024 )); then
-    for d in $base/*(/Om); do  # oldest first (a run touches its folder as it starts)
-      (( total <= cap_gb * 1024 * 1024 )) && break
-      locked $d && continue
-      local sz=$(du -sk $d | cut -f1)
-      print "remote-tests: over ${cap_gb} GB on the test Mac: removed ${d:t} ($(( sz / 1024 )) MB)"
-      rm -rf $d; (( total -= sz ))
-    done
-  fi
   touch $dir $dir/stamp
+  make_room $base $key "$origin" "$live"
   # (ssh's non-login shell has only the system's PATH: brew's, where mise is, first.)
   path=(/opt/homebrew/bin ~/.cargo/bin $path)
   mise trust -q 2>/dev/null
@@ -308,10 +346,22 @@ local_main() {  # <key> <source dir> <command>
   # watcher there reads.) The status line is read off the stream, not shown.
   print -rn -- '' > $tmp/status
   local full="$envs$cmd"
+  # The key's origin, for the test Mac's disk (make_room): a key naming a linked worktree of this
+  # Mac's repo is that worktree's; sent with the names of the repo's worktrees now, so a gone one's
+  # copy goes. (Another key, as main-checkout or publish, has none.)
+  # (The list read whole, or none sent: it must name this key, or nothing is taken for gone.)
+  local origin= live= gd common
+  local -a wts
+  gd=$(git -C $src rev-parse --absolute-git-dir 2>/dev/null)
+  common=$(git -C $src rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  if [[ -n $gd && $gd != "$common" && $key == ${src:t} ]] && wts=(${(f)"$(git -C $src worktree list --porcelain)"}); then
+    wts=(${(M)wts:#worktree *}); wts=(${wts##*/})
+    if (( ${wts[(Ie)$key]} )); then origin="$me:$common"; live=${(j: :)wts}; fi
+  fi
   # (No MULTIOS here: a coprocess's stdin plus `< $self` would be joined into one never-ending input.)
   setopt localoptions nomultios
   coproc ssh -o BatchMode=yes -o ControlPath=none -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
-      $host zsh -s -- --remote $key ${(q)owner} ${(q)full} < $self 2>&1
+      $host zsh -s -- --remote $key ${(q)owner} ${(q)full} ${(q)origin} ${(q)live} < $self 2>&1
   local sp=$! first=-t120 t1=$SECONDS
   trap "kill $sp 2>/dev/null; exit 143" INT TERM HUP
   # (Its first line within 120 s, or the connection is stopped: hung connecting.)
@@ -334,9 +384,11 @@ local_main() {  # <key> <source dir> <command>
   run_local $src "$cmd"
 }
 
+# (Sourced, by its tests (tools/app/test/remote-tests.zsh): the functions only.)
+[[ $ZSH_EVAL_CONTEXT == *:file ]] && return 0
 case ${1:-} in
   -h|--help) print "usage: remote-tests.sh <key> <source dir> <command> | --drop <key>"; exit 0 ;;
-  --remote) remote_main $2 $3 $4 ;;
+  --remote) remote_main $2 $3 $4 "${5:-}" "${6:-}" ;;
   --remote-lock) remote_lock $2 $3 ;;
   --remote-unlock) remote_unlock $2 $3; exit $? ;;
   --remote-drop) remote_drop $2 ;;

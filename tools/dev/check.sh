@@ -11,7 +11,7 @@
 #   web       tools/dev/web-deps.sh (web/node_modules from pnpm's store, when missing or stale), node --test of web/test/*.test.{ts,mjs} and tools/check/*.test.mjs (by glob), pnpm
 #             typecheck and vite build (to a scratch folder), when web/ or a tools/check test changed
 #   taskboard node --test tools/taskboard/test/*.test.mjs, when tools/taskboard changed
-#   shell     tools/app/test/shell.zsh (publish.sh's shell steps, tools/app/lib.zsh), when tools/app changed
+#   shell     tools/app/test/shell.zsh (publish.sh's shell steps, tools/app/lib.zsh) and remote-tests.zsh (the test Mac's disk room), when tools/app changed
 #   testguard tools/dev/test/test-guard.zsh (the test guard's worktree lookup), when it changed
 #   swift     swiftc of tools/status/main.swift (publish's line) and its --test (arguments, reopen, launchd), when tools/status changed
 #   tests     each command tools/dev/affected-tests.sh prints, run on the test Mac (tools/app/remote-tests.sh;
@@ -73,7 +73,7 @@ if has 'web/*' || has 'tools/check/*.test.mjs'; then
 else skip web "web/ unchanged"; fi
 if has 'tools/taskboard/*'; then part taskboard zsh -c "cd tools/taskboard && node --test test/*.test.mjs"
 else skip taskboard "tools/taskboard unchanged"; fi
-if has 'tools/app/*'; then part shell zsh tools/app/test/shell.zsh
+if has 'tools/app/*'; then part shell zsh -c 'zsh tools/app/test/shell.zsh && zsh tools/app/test/remote-tests.zsh'
 else skip shell "tools/app unchanged"; fi
 if has 'tools/dev/test-guard*' || has 'tools/dev/test/*'; then part testguard zsh tools/dev/test/test-guard.zsh
 else skip testguard "tools/dev/test-guard unchanged"; fi

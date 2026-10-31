@@ -113,8 +113,13 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   there); when the test Mac is down or the copy fails; when the tree
   has `data/build` (ignored test data that tests skip without, which the copy wouldn't carry); with
   `SCENIC_CHECK_LOCAL=1` (also `SCENIC_TESTS_LOCAL=1`).
-- Disk on the test Mac: a key unused 3 days goes; past 60 GB in all the least recently used go; never a
-  locked key. The sweep drops a removed worktree's key (`remote-tests.sh --drop <key>`).
+- Disk on the test Mac (#912): before a run, other keys' folders go until the test Mac has its
+  agent's room target free (`room-target.json` in its agent's folder, set from the menu bar) plus
+  what the run needs (the key's last build folder; a new key, the largest there): first those
+  whose worktree is gone (a worktree's key records its origin, the calling Mac and repo; each run
+  sends that repo's worktrees), then the least recently used. Never a locked key (a lock younger
+  than 6 h); a folder is removed by taking its lock first. The sweep also drops a removed
+  worktree's key (`remote-tests.sh --drop <key>`). Tests: `tools/app/test/remote-tests.zsh`.
 fmt, clippy, guards, web, swift and python stay on this Mac.
 
 ## A test that can't flake (#662, 25 Oct)
