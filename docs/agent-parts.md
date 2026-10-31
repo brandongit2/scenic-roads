@@ -129,7 +129,7 @@ age says that part is slow. The page and menu show a part whose snapshot is olde
 ×3 as "planning slow (2 min)", "NAS not answering (since 14:02)", rather than the whole Mac going
 out of touch. `OUT_OF_TOUCH_S` keeps meaning what it says: **beat** itself hasn't written. *Done for the loop as a
 whole (task #899):* the status's `loop_age_s`, its threshold `loop_stuck_s` (`beat::LOOP_STUCK`,
-one constant the watchdog stalls by too, so it outlives the watchdog) and, past it, `loop_phase`; the page and the menu show "loop stuck 6 min, in <phase>".
+the one constant the plan's stall log goes by too) and, past it, `loop_phase`; the page and the menu show "loop stuck 6 min, in <phase>". Since step 6 the age is the older of the round's view and a plan running (`plan::Handle::running`, read by the beat), the phase the round's or "the plan: <its phase>".
 
 **Failure:** a shared write that times out is logged once (as `nasread` does) and the next tick
 tries again; the local copy and the endpoint's `/status` are always current. A Mac whose shared
@@ -200,7 +200,7 @@ every 5 s) changed, a timed wait ended, or the 5-min fallback. The round grants 
 at once (`Agent::lead_grants`; `may_pack`'s check is the grants' own, `takes_more`), each grant
 carrying the plan's number (`coord::Grant::plan`, serde-defaulted for a mixed rollout); a cancel
 notes the newest plan's number per target (`cancels_at`), and a grant from a plan no newer is
-dropped (§5.4). A plan past `nasread::STALL_AFTER` is logged with its phase and sampled once
+dropped (§5.4). A plan past `beat::LOOP_STUCK` is logged with its phase and sampled once
 (`plan::Handle::stalled`), and the status says so. The forecast's files for the NAS come back on a
 channel (`plan::Out`) for the lead's pool step. Not done: a plan's errors stay waiting lines (`plan`
 returns jobs, not a result); the pool's own run is still locked by the pool's ops (`pool::try_lock`:

@@ -1188,7 +1188,8 @@ duty holds another: **control** takes the owner's asks, **beat** writes the hear
 the mount, **jobs**' thread reaps and cancels, the lead's **plan** plans (crate::agent::plan), and
 the round (`Agent::round`, **jobs**' own: its slots, guards, the pool's step until #878, grants and
 starts) never plans: it grants from the last plan. One stall threshold holds them,
-`nasread::STALL_AFTER` (5 min): a plan running past it is logged with its phase and the agent
+`beat::LOOP_STUCK` (5 min): a round or a plan past it is a stuck loop in the status (`loop_age_s`,
+`loop_phase`: the round's phase, or "the plan: <its phase>"), and a plan running past it is logged with its phase and the agent
 sampled by `/usr/bin/sample` for 5 s into `plan-stall-sample-<UTC date>-<time>Z.txt` in the agent's
 folder (once per plan; the newest five kept; never two at once; a sampler still running at 300 s is
 killed), and the status says "planning has taken N min so far" while it lasts, grants going on from
