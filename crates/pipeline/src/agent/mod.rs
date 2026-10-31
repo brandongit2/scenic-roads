@@ -9762,6 +9762,12 @@ impl Agent {
                 c.set_catalogues(cv.clone());
             }
         }
+        // (The map's log, which the servers follow: the lead's coordinator answers it.)
+        if self.keeps_publishing() {
+            if let Some(c) = self.coord.as_ref().filter(|c| !c.has_maplog()) {
+                c.set_maplog(self.maplog.feed(&self.o.home));
+            }
+        }
         // (The map's finished tiles, the same: the build's keys on the NAS.)
         let bv = self.built_view.get_or_insert_with(|| builtview::BuiltView::new(root, Some(cv.clone()))).clone();
         for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
@@ -18767,6 +18773,10 @@ mod pool_tests {
         let log = store::map::log::Log::open(&d.path().join("l/agent").join(publish::MAPLOG)).unwrap();
         assert_eq!(log.map().seq, c.n);
         log.map().check_is(&c).unwrap();
+        // (Step 3: the lead's coordinator answers the servers from the shadow's feed.)
+        lead.step().unwrap();
+        assert!(lead.coord.as_ref().is_some_and(|c| c.has_maplog()), "the map's routes answer");
+        assert_eq!(lead.maplog.feed(&lead.o.home).head(), Some(c.n));
     }
 
     #[test]

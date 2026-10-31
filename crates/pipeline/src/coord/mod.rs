@@ -31,6 +31,8 @@ pub mod hosts;
 pub mod inbox;
 pub mod keep;
 pub mod lease;
+#[cfg(not(target_os = "wasi"))]
+pub mod maproutes;
 pub mod sched;
 pub mod task;
 
@@ -353,6 +355,9 @@ pub struct Shared {
     /// The build page's Catalogues map (crate::agent::cataloguesview): `/work/catalogs`. None: not
     /// given one (503).
     pub catalogues: Option<Arc<crate::agent::cataloguesview::CataloguesView>>,
+    /// The map and its log's batches (store::map::feed, the lead's log writer's): `/map/changes`,
+    /// `/map/snapshot` (maproutes). None: not the lead (503).
+    pub maplog: Option<Arc<store::map::feed::Feed>>,
     /// The build page's map's finished tiles (crate::agent::builtview): `/work/built`. None: not
     /// given one (503).
     pub built: Option<Arc<crate::agent::builtview::BuiltView>>,
@@ -1351,6 +1356,7 @@ impl Coordinator {
             pageview: None,
             live: None,
             catalogues: None,
+            maplog: None,
             built: None,
             regions: None,
             region_steps: None,
@@ -2356,6 +2362,16 @@ impl Coordinator {
     /// `/work/catalogs` answered from `cv` (crate::agent::cataloguesview) from here on.
     pub fn set_catalogues(&self, cv: Arc<crate::agent::cataloguesview::CataloguesView>) {
         self.shared.lock().unwrap().catalogues = Some(cv);
+    }
+
+    /// `/map/changes` and `/map/snapshot` answered from `feed` (maproutes) from here on.
+    pub fn set_maplog(&self, feed: Arc<store::map::feed::Feed>) {
+        self.shared.lock().unwrap().maplog = Some(feed);
+    }
+
+    /// Whether it answers the map's routes.
+    pub fn has_maplog(&self) -> bool {
+        self.shared.lock().unwrap().maplog.is_some()
     }
 
     /// `/work/built` answered from `bv` (crate::agent::builtview) from here on.
@@ -4701,6 +4717,7 @@ mod http {
             .and(NotForContentType::const_new("application/octet-stream"))
             .and(NotForContentType::const_new("application/x-tar"))
             .and(NotForContentType::const_new("application/zip"))
+            .and(NotForContentType::const_new("application/zstd"))
             .and(|_: StatusCode, _: axum::http::Version, h: &axum::http::HeaderMap, _: &axum::http::Extensions| {
                 !h.contains_key(header::CONTENT_RANGE)
             })
@@ -4752,6 +4769,11 @@ mod http {
             .route("/work/out/{lease}/{*path}", put(output))
             .route("/work/prog/{name}", get(prog))
             .route("/task/{*rest}", any(json));
+        // (The map's, answered from memory: maproutes.)
+        let shared = ctx.shared.clone();
+        let routes = routes.merge(super::maproutes::router::<Ctx>(Arc::new(move || {
+            shared.lock().unwrap_or_else(|e| e.into_inner()).maplog.clone()
+        })));
         // (A test's handler that waits on a blocking task for good: a stop returns all the same.)
         #[cfg(test)]
         let routes = routes.route("/work/test-block", get(test_block));

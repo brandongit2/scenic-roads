@@ -8,7 +8,8 @@
 //! - **Slope and tree cover near** (`near-slope`): a done region's slope and tree cover the z6 tiles
 //!   near it (crate::agent::build::Publishing::near), their assemblies with the low zooms.
 //!
-//! And the map's log written beside the catalogues, in shadow (docs/maplog.md §8, step 2: `Shadow`).
+//! And the map's log written beside the catalogues, in shadow (docs/maplog.md §8, step 2: `Shadow`),
+//! which the servers follow (step 3: its `feed`, the coordinator's `/map/` routes).
 
 pub const DELTA_CATALOGUE: &str = "state/pool/delta-catalog";
 pub const NEAR_SLOPE: &str = "state/pool/near-slope";
@@ -62,16 +63,19 @@ pub fn held_at(was: Option<u64>, held: bool, due: bool, now: u64) -> Option<u64>
 /// The map's log written in shadow beside the catalogues (docs/maplog.md §8, step 2): each catalogue
 /// the lead's `catalog` step publishes becomes a batch of the log in the agent's `maplog/`
 /// (store::map::log), `seq` its number; the map then is checked equal to that catalogue, and a
-/// mismatch is logged loudly. Nothing reads the log yet, and the catalogues are written as before.
+/// mismatch is logged loudly. The catalogues are written as before. The servers follow the log
+/// through the coordinator's `/map/` routes (step 3), answered from the `feed` it keeps.
 ///
-/// The work (a catalogue diffed against the map, checked, the hourly snapshots) runs on a thread of
-/// its own, never in the agent's loop, and can't hold the loop up: `published` hands the catalogue
-/// over a channel of one place and returns. While one waits there untaken, a newer one isn't queued
-/// (the next batch after it spans both): a stalled NAS write never piles catalogues up in memory.
-/// A panic there is logged and the thread goes on, its log opened again at the next catalogue.
+/// The work (the log opened, a catalogue diffed against the map, checked, the hourly snapshots)
+/// runs on a thread of its own, never in the agent's loop, and can't hold the loop up: `published`
+/// hands the catalogue over a channel of one place and returns. While one waits there untaken, a
+/// newer one isn't queued (the next batch after it spans both): a stalled NAS write never piles
+/// catalogues up in memory. A panic there is logged and the thread goes on, its log opened again
+/// at the next catalogue.
 #[derive(Default)]
 pub struct Shadow {
     tx: Option<std::sync::mpsc::SyncSender<Published>>,
+    feed: Option<std::sync::Arc<store::map::feed::Feed>>,
 }
 
 type Published = (store::nasfs::NasRoot, std::sync::Arc<store::catalogue::Catalogue>);
@@ -82,19 +86,21 @@ pub const MAPLOG: &str = "maplog";
 const SNAPSHOT_EVERY_S: u64 = 3600;
 
 impl Shadow {
-    /// Catalogue `cat`, just published at `root`: its batch, on the shadow's thread (started the
-    /// first time, its log in `home`'s `maplog/`).
-    pub fn published(
-        &mut self,
-        home: &std::path::Path,
-        root: &store::nasfs::NasRoot,
-        cat: std::sync::Arc<store::catalogue::Catalogue>,
-    ) {
-        let tx = self.tx.get_or_insert_with(|| {
+    /// What the coordinator's `/map/` routes answer from: the thread started (its log in `home`'s
+    /// `maplog/`, opened at once, so a lead started again answers before its next catalogue).
+    pub fn feed(&mut self, home: &std::path::Path) -> std::sync::Arc<store::map::feed::Feed> {
+        self.start(home);
+        self.feed.clone().expect("started")
+    }
+
+    fn start(&mut self, home: &std::path::Path) -> &std::sync::mpsc::SyncSender<Published> {
+        let feed = self.feed.get_or_insert_with(store::map::feed::Feed::new).clone();
+        self.tx.get_or_insert_with(|| {
             let (tx, rx) = std::sync::mpsc::sync_channel::<Published>(1);
             let dir = home.join(MAPLOG);
             let started = std::thread::Builder::new().name("maplog".into()).spawn(move || {
-                let mut w = Writer::new(dir);
+                let mut w = Writer::new(dir, feed);
+                w.open_guarded();
                 for (root, cat) in rx {
                     w.publish_guarded(&root, &cat, now());
                 }
@@ -103,8 +109,18 @@ impl Shadow {
                 eprintln!("maplog: MISMATCH: the shadow's thread didn't start ({e}); no batches written");
             }
             tx
-        });
-        match tx.try_send((root.clone(), cat)) {
+        })
+    }
+
+    /// Catalogue `cat`, just published at `root`: its batch, on the shadow's thread (started the
+    /// first time, its log in `home`'s `maplog/`).
+    pub fn published(
+        &mut self,
+        home: &std::path::Path,
+        root: &store::nasfs::NasRoot,
+        cat: std::sync::Arc<store::catalogue::Catalogue>,
+    ) {
+        match self.start(home).try_send((root.clone(), cat)) {
             Ok(()) => {}
             Err(std::sync::mpsc::TrySendError::Full(p)) => {
                 eprintln!("maplog: catalogue {} not queued: the shadow is behind (the next batch spans it)", p.1.n)
@@ -131,15 +147,45 @@ pub(crate) enum Wrote {
     Same,
 }
 
-/// The shadow's writer: the log, opened at its first publish.
+/// The shadow's writer: the log, opened when its thread starts (or at its first publish), and the
+/// feed the coordinator answers from, told of each batch.
 pub(crate) struct Writer {
     dir: std::path::PathBuf,
     log: Option<store::map::log::Log>,
+    feed: std::sync::Arc<store::map::feed::Feed>,
 }
 
 impl Writer {
-    pub(crate) fn new(dir: std::path::PathBuf) -> Writer {
-        Writer { dir, log: None }
+    pub(crate) fn new(dir: std::path::PathBuf, feed: std::sync::Arc<store::map::feed::Feed>) -> Writer {
+        Writer { dir, log: None, feed }
+    }
+
+    /// The log opened now, its map and the batches it replayed handed to the feed (a log not
+    /// started yet: nothing to hand; it starts at the first catalogue).
+    fn open(&mut self) -> anyhow::Result<&mut store::map::log::Log> {
+        use anyhow::Context;
+        if self.log.is_none() {
+            let mut log = store::map::log::Log::open(&self.dir)
+                .with_context(|| format!("open the log in {}", self.dir.display()))?;
+            if !log.map().is_empty() {
+                let (base, held) = log.replayed();
+                self.feed.start(log.map(), base, &held, log.cursors().clone());
+            }
+            self.log = Some(log);
+        }
+        Ok(self.log.as_mut().expect("opened above"))
+    }
+
+    /// `open`, a failure or panic logged.
+    fn open_guarded(&mut self) {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.open().map(|_| ()))) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("maplog: MISMATCH: {e:#}"),
+            Err(_) => {
+                eprintln!("maplog: MISMATCH: opening the log panicked");
+                self.log = None;
+            }
+        }
     }
 
     /// `publish`, a panic in it logged (the log dropped, opened again from its disk next time).
@@ -179,15 +225,11 @@ impl Writer {
     /// each_entry), applied in place, and the check another pass of them.
     pub(crate) fn append(&mut self, cat: &store::catalogue::Catalogue) -> anyhow::Result<Wrote> {
         use anyhow::Context;
-        if self.log.is_none() {
-            self.log = Some(
-                store::map::log::Log::open(&self.dir)
-                    .with_context(|| format!("open the log in {}", self.dir.display()))?,
-            );
-        }
-        let log = self.log.as_mut().expect("opened above");
+        let feed = self.feed.clone();
+        let log = self.open()?;
         let wrote = if log.map().is_empty() {
             log.seed(store::map::Map::of(cat)?)?;
+            feed.start(log.map(), cat.n, &[], log.cursors().clone());
             Wrote::Seeded
         } else {
             let seq = log.map().seq;
@@ -196,7 +238,7 @@ impl Writer {
             if b.is_empty() {
                 Wrote::Same
             } else {
-                log.append(&b)?;
+                feed.push(log.append(&b)?, &b);
                 Wrote::Batch(b.set.len(), b.del.len())
             }
         };
@@ -215,6 +257,7 @@ impl Writer {
         if !due {
             return;
         }
+        log.set_cursors(self.feed.cursors());
         if let Err(e) = log.compact() {
             eprintln!("maplog: compacting the log: {e:#}");
         }
@@ -280,7 +323,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let chain = recorded();
-        let mut w = Writer::new(d.path().join(MAPLOG));
+        let mut w = Writer::new(d.path().join(MAPLOG), store::map::feed::Feed::new());
         let t0 = std::time::SystemTime::now();
         for (i, c) in chain.iter().enumerate() {
             w.publish(&root, c, t0);
@@ -298,7 +341,7 @@ mod tests {
         w.snapshots(&root, t0 + std::time::Duration::from_secs(SNAPSHOT_EVERY_S + 5), false);
         assert!(d.path().join(format!("nas/map/{}.json.zst", last.n)).exists());
         // Reopened (an agent restarted), the log goes on from where it was.
-        let mut again = Writer::new(d.path().join(MAPLOG));
+        let mut again = Writer::new(d.path().join(MAPLOG), store::map::feed::Feed::new());
         let mut next = last.clone();
         next.n += 1;
         next.units.push("6/0/0".into());
