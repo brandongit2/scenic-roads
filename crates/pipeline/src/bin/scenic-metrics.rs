@@ -1431,9 +1431,26 @@ mod tests {
         assert!(fetch_file(&agent, Some(url.as_str()), &store.join("e.tif"), None, true).is_err());
         assert!(!store.join("e.tif").exists());
         assert_eq!(mtime(&a), at, "not touched");
-        let mut taken = 0;
-        assert!(damaged(&a, None, true, &mut taken, anyhow::anyhow!("bad strip")).is_err());
-        assert!(a.exists() && taken == 0);
+        // A damaged file read where it lies: the error at once, nothing removed; a moment's outage
+        // of the share (ENXIO): tried again.
+        let mut tries = 0;
+        let e = where_it_lies(&a, || -> Result<()> {
+            tries += 1;
+            anyhow::bail!("bad strip")
+        })
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("read where it lies") && a.exists() && tries == 1);
+        store::retry::fast();
+        let mut tries = 0;
+        where_it_lies(&a, || -> Result<()> {
+            tries += 1;
+            if tries < 3 {
+                return Err(std::io::Error::from_raw_os_error(libc::ENXIO).into());
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(tries, 3);
     }
 
     #[test]
