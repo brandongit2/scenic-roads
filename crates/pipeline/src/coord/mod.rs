@@ -4,7 +4,7 @@
 //!
 //! Two kinds of work, by what a worker can reach (§2):
 //! - **Jobs** of the plan (crate::agent::steps::SHARED: z6 tiles, terrain, slope, tree cover,
-//!   landmark candidates and peaks), for workers that mount the NAS (a member's agent, `--helper`). A
+//!   landmark candidates and peaks), for workers that mount the NAS (a member's agent). A
 //!   worker's job saves through the coordinator: its hand-off (its manifest changes and done record,
 //!   one per job) is journaled on this Mac's disk, written whole, then merged into the records by the
 //!   agent (crate::handoff::merge_from), all of it or none.
@@ -2538,9 +2538,8 @@ impl Coordinator {
         self.shared.lock().unwrap().brokers = b;
     }
 
-    /// A coordinator kept on as its Mac's broker alone (docs/pool.md §8): a lead's that no longer
-    /// leads (its tasks, and the workers holding them, going on), or a member's started for its own
-    /// jobs' tasks. Nothing of the plan offered nor held: the jobs' leases are the lead's (handed
+    /// A coordinator as its Mac's broker alone (docs/pool.md §8): a member's, started for its own
+    /// jobs' tasks (a lead that no longer leads restarts instead: docs/roles.md §1). Nothing of the plan offered nor held: the jobs' leases are the lead's (handed
     /// over with the term), the asks its.
     pub fn become_broker(&self) {
         let mut s = self.shared.lock().unwrap();

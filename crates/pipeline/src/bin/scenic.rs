@@ -2,8 +2,7 @@
 //!
 //!   scenic status                       what the lead is doing, what waits and why, regions
 //!   scenic agent [--once] [--dry-run] [--home <dir>]  the agent (every Mac's login item: its
-//!                                       member of the pool, leading when it's the declared lead;
-//!                                       --helper, of before, accepted and ignored)
+//!                                       member of the pool, leading when it's the declared lead)
 //!   scenic pool [status]                the pool as it stands (docs/pool.md): the terms, the agents
 //!   scenic lead                         who leads the build (the declared lead, the Mac mini), its
 //!                                       term, since when, and each member (docs/pool.md §11)
@@ -1367,7 +1366,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Lead(a)) => lead(&a),
-        Some(Cmd::Agent { once, dry_run, helper: _, places }) => {
+        Some(Cmd::Agent { once, dry_run, places }) => {
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             let o = Options {
                 home: home_or_default(&places.home),

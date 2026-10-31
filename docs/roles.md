@@ -140,7 +140,8 @@ Each step ships alone and keeps the build running; each ends with its tests.
    by role; `o.helper` derived from it, then removed. A changed declaration restarts the agent.
    Tests: `role_reads_the_declared_lead`, `an_unknown_role_starts_the_members_parts`,
    `a_changed_declaration_restarts_into_the_new_role`; the server's retire tests on the shared
-   function. As built: `Options::helper` is gone (the CLI's `--helper` stays accepted and ignored);
+   function. As built: `Options::helper` and the CLI's `--helper` are gone (no Mac's run file passes it: the status app
+   writes `run/agent` without it);
    a role change, or the lead losing its term, restarts at once (`role_restart`), its jobs handed
    over; the coordinator is built from the role, and the in-process promotion, demotion and the
    coordinator kept on as a broker are deleted. An unknown role learnt a member's is taken in place.

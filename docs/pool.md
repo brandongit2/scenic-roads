@@ -1047,10 +1047,11 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
 Jobs call the lead through one interface re-resolved each call (`crate::agent`'s `beat`,
 `end_lease`): in process while this Mac leads, over HTTP otherwise, so a job carries on across the
 owner's move of the lead (§6.1). A job's tasks are offered through its own Mac's coordinator or broker; one that stopped
-answers nothing and the job runs the task itself. A member taking up a term starts its
-coordinator in process, and a lead losing it stops its coordinator and duties, keeping its jobs
-running; only a coordinator that fails to start leaves the part to a restart once its first slot is
-free. A lead drains the hand-offs its coordinator journaled on its disk (those a member out of the
+answers nothing and the job runs the task itself. A process's parts are its role's, read as it
+starts (docs/roles.md §1): the declared lead's coordinator, built then, leads each term it takes
+up; a change of the declaration, or a lead losing its term, restarts the agent at once, its duties
+in flight stopped and every other job (a task leased from the lead too) handed over to the next
+process; a lead whose coordinator failed to start restarts once its first slot is free. A lead drains the hand-offs its coordinator journaled on its disk (those a member out of the
 pool told it, `journaled: false`) into the pool's journal (`Run::drain`); every member drains,
 once a process, the jobs a process of its ran out of the pool and left in its outbox untold
 (`Run::drain_outbox`). A lead whose update waits on its jobs keeps the lead and restarts into the new app at a safe

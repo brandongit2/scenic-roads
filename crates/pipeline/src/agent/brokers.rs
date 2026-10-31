@@ -6,11 +6,10 @@
 //!   (its broker, on the pool's port, crate::coord::PORT) and gives its jobs its address, so their
 //!   tasks are offered there (crate::offload: `SCENIC_COORD`), served from its disk and handed back
 //!   to it. The lead's coordinator brokers the lead's, as before.
-//! - **A change of lead drops no task** (the owner's move of the declaration): a part changes in its process (docs/pool.md §7.6), the lead's
-//!   coordinator stays on as its broker once it no longer leads (crate::coord::Coordinator::
-//!   become_broker: the jobs' leases left to the new lead), and a member's broker becomes its
-//!   coordinator as it takes the lead (its tasks' leases kept as it takes up the term's: crate::
-//!   coord's `load_pool_state`).
+//! - **A change of lead** (the owner's move of the declaration) restarts both Macs' agents into
+//!   their new roles (docs/roles.md §1), their jobs handed over to the next process; a job taken
+//!   over offers its tasks through the new process's coordinator or broker on the same port (the
+//!   jobs' token kept: docs/building.md, Restarts).
 //! - **Its heartbeat says where it is** (crate::agent::pool::Heartbeat's `broker`): its addresses,
 //!   given to its heartbeat when they change, at most every half minute (`due`): a heartbeat is a
 //!   whole write on the NAS.

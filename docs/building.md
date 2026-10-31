@@ -214,8 +214,10 @@ from the first (`edit_held`).
   followed as it starts, so an app installed while it runs changes none of them.) Its end is read from the status file: a pause's 75 counts as paused;
   a group gone with no status (killed while no agent tended it) is interrupted, not failed. A
   record an older app wrote, or one with no slot saved, isn't taken over: its job is stopped at
-  start when provably ours, as before. A helper's leased job (before the pool) is stopped at the
-  agent's end. The app's quit stops its jobs as before (control::Quit). An adopted job offers its
+  start when provably ours, as before. A member's task leased from the lead (`run-task`) is taken
+  over the same way, its lease kept by the next agent's beats (docs/coordination.md §6.1) and its
+  result sent from its outbox by that agent, a lead's too (one taken over as the Mac restarted into
+  the lead). The app's quit stops its jobs as before (control::Quit). An adopted job offers its
   tasks through the new coordinator as before: the jobs' token is kept (`agent/coord/jobs-token`,
   this Mac's alone), and the coordinator holds 127.0.0.1 on its port beside its wildcard listener,
   so no other process (a test's coordinator) answers its jobs there (#906); one that finds it

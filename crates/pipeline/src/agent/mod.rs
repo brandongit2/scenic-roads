@@ -3163,10 +3163,13 @@ impl Agent {
         }
     }
 
-    /// The lead's leases this member holds: its slots' jobs', and those whose ends it owes.
+    /// The lead's leases this member holds: its slots' jobs', and those whose ends it owes. (A job
+    /// of its own the lead before a change of role left running, taken over here: its lease is in
+    /// the store the new lead took up, so listed too, or the new lead would release it and grant its
+    /// targets again.)
     fn held_of_lead(&self) -> BTreeSet<u64> {
         let slots = self.slots.iter().filter_map(|s| match &s.lease {
-            Some(Held::Leased { lease, .. } | Held::Pooled { id: lease, own: false, .. }) => Some(*lease),
+            Some(Held::Leased { lease, .. } | Held::Pooled { id: lease, .. }) => Some(*lease),
             _ => None,
         });
         slots.chain(self.owed.iter().map(Tell::lease)).collect()
@@ -3803,8 +3806,8 @@ impl Agent {
 
     /// Each running job's slot saved with its record (jobs::save_hand) when it changed since it
     /// was last: a restart, or a crash, at any moment leaves what the next agent needs to take the
-    /// job over (`adopt_jobs`). Not a helper's leased job's (its outbox is sent by its agent,
-    /// `send_outbox`): stopped at a restart, as before.
+    /// job over (`adopt_jobs`), a member's leased task's too (its outbox is sent by the next agent,
+    /// `send_outbox`, its lease kept by that agent's beats: crate::coord::held).
     fn save_hands(&mut self) {
         if self._lock.is_none() || self.o.dry_run {
             return;
@@ -3814,9 +3817,6 @@ impl Agent {
                 self.slots[k].hand_saved = None;
                 continue;
             };
-            if matches!(self.slots[k].lease, Some(Held::Leased { .. })) {
-                continue;
-            }
             let now = (self.hand_of(k), r.paused.clone());
             if self.slots[k].hand_saved.as_ref() == Some(&now) {
                 continue;
@@ -3829,12 +3829,13 @@ impl Agent {
     }
 
     /// The jobs running here left running as this agent ends (a newer app, its launcher restarted,
-    /// SIGTERM): each one's slot saved with its record, its lease kept, for the next agent to take
-    /// it over (`adopt_jobs`). A helper's leased job, which can't be, stopped (`stop_jobs`).
+    /// SIGTERM, a change of role): each one's slot saved with its record, its lease kept, for the
+    /// next agent to take it over (`adopt_jobs`), whatever its lease: the lead's own, or one leased
+    /// from the lead (a member's job or task, its lease ending only by its holder's word).
     fn hand_over_jobs(&mut self) {
         self.save_hands();
         for k in 0..self.slots.len() {
-            if self.slots[k].running.is_none() || matches!(self.slots[k].lease, Some(Held::Leased { .. })) {
+            if self.slots[k].running.is_none() {
                 continue;
             }
             let hand = serde_json::to_value(self.hand_of(k)).unwrap_or_default();
@@ -4287,8 +4288,10 @@ impl Agent {
             }
         }
         nasread::phase("the outbox");
-        // A helper's finished jobs not yet with the coordinator: sent before anything new.
-        if let (true, Some(r)) = (self.is_member(), root.clone()) {
+        // A member's finished tasks not yet with the coordinator: sent before anything new. (On the
+        // lead too: a task it ran as a member, taken over as it restarted into the lead, reports
+        // to its own coordinator.)
+        if let Some(r) = root.clone() {
             self.send_outbox(&r, &mut waiting);
         }
 
@@ -14763,7 +14766,6 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let home = d.path().join("app-folder/agent");
-        // (`--helper` passed, as the M1's launch file does: the pool says what it is.)
         let mut a = test_agent(Options {
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: home.clone(),
@@ -14903,7 +14905,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         // The lead (this Mac is the writer: term 1 is its), and a member, another process with a
-        // folder (and member) of its own; its `--helper` or not, the pool says.
+        // folder (and member) of its own.
         let dry = test_agent(Options {
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
@@ -15658,7 +15660,7 @@ mod pool_tests {
             record: None,
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        lead.start(0, job, &cond).unwrap();
+        lead.start(0, job.clone(), &cond).unwrap();
         let im = m.pooled().unwrap().side.member().id.clone();
         move_lead(&r, &im);
         let end = Instant::now() + WATCHDOG;
@@ -15669,12 +15671,16 @@ mod pool_tests {
             std::thread::sleep(Duration::from_millis(250));
         }
         assert!(lead.slots[0].running.is_some(), "at once, its job running");
+        // A task leased from the lead runs in the member's first slot as it restarts.
+        m.start(0, job, &cond).unwrap();
+        m.slots[0].lease = Some(Held::Leased { lease: 7, dir: m.outbox().join("7") });
         assert!(lead.restart_now().unwrap().contains("the lead → a member"), "{:?}", lead.restart_now());
         assert!(m.restart_now().unwrap().contains("a member → the lead"), "{:?}", m.restart_now());
         // Its parts unchanged in its process.
         assert!(lead.coord.is_some() && lead.leads() && m.coord.is_none() && m.is_member());
         // Restarted (the old processes' jobs handed over, their coordinators stopped).
         lead.hand_over_jobs();
+        m.hand_over_jobs();
         for a in [&mut lead, &mut m] {
             if let Some(c) = a.coord.take() {
                 c.stop();
@@ -15690,6 +15696,10 @@ mod pool_tests {
         assert!(lead.coord.is_some() && lead.plan.plans(), "the new lead's parts");
         assert!(m.coord.is_none() && !m.plan.plans(), "the old lead's are a member's now");
         assert!(m.slots[0].running.is_some(), "its job taken over");
+        assert!(
+            matches!(lead.slots[0].lease, Some(Held::Leased { lease: 7, .. })),
+            "the task taken over, its lease kept"
+        );
         stop_jobs(&mut m);
         stop_jobs(&mut lead);
     }

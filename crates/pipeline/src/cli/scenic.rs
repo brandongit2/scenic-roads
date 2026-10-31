@@ -65,9 +65,6 @@ pub enum Cmd {
         /// Plans and says what it would start, starting nothing
         #[arg(long)]
         dry_run: bool,
-        /// (Of before: accepted and ignored; the pool says what a member is.)
-        #[arg(long, hide = true)]
-        helper: bool,
         #[command(flatten)]
         places: Places,
     },
