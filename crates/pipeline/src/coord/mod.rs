@@ -1236,13 +1236,7 @@ impl Coordinator {
     /// `start_on`, a member's broker (`Broker`) or a viewer alone (`viewer`): a coordinator on a
     /// wildcard `listener` answers the same on 127.0.0.1 beside it (`loopback_beside`), its jobs'
     /// address.
-    fn start_with(
-        dir: &Path,
-        listener: std::net::TcpListener,
-        me: &str,
-        app: &str,
-        mode: Mode,
-    ) -> Result<Coordinator> {
+    fn start_with(dir: &Path, listener: std::net::TcpListener, me: &str, app: &str, mode: Mode) -> Result<Coordinator> {
         let viewer = mode == Mode::Viewer;
         let port = listener.local_addr()?.port();
         let loopback = if viewer { None } else { Self::loopback_beside(&listener)? };
@@ -11033,16 +11027,12 @@ mod tests {
         let w = client::Client::at(lead.contact.urls.clone(), lead.contact.token.clone(), "m1");
         assert!(w.ask(&ask).unwrap().is_some());
         assert_eq!(lead.held("slope-hi").len(), 1);
-        let end = Instant::now() + Duration::from_secs(10);
-        while lead.phase_times().is_none() {
-            assert!(Instant::now() < end, "the lead's phase sharer never ran");
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        store::testkit::eventually("the lead's phase sharer runs", || lead.phase_times().is_some());
         drop(lead);
         // The same Mac, a member now: its broker on the coordinator's folder.
         let (b, port) = broker::start_for_test(&dir, "m4", "");
         b.set_member(Some("m-m4"));
-        std::thread::sleep(Duration::from_millis(100));
+        // (None started: its phases are None from the start, not yet empty.)
         assert!(b.phase_times().is_none() && b.phase_shares().is_empty(), "no phase sharer");
         assert!(b.held("slope-hi").is_empty() && b.leases_out() == 0, "the term's job lease is the lead's");
         assert!(b.shared.lock().unwrap().keep.store().is_none(), "nothing kept in the pool's store");

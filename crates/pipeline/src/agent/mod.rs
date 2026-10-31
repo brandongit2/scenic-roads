@@ -7414,7 +7414,8 @@ impl Agent {
             self.stop_viewer();
             let tried = match self.pool.as_ref().map(pool::try_lock) {
                 Some(Some(run)) => Some(
-                    make_broker(&self.o, &run, &self.app, &self.host).inspect(|b| b.set_member(Some(&run.side.member().id))),
+                    make_broker(&self.o, &run, &self.app, &self.host)
+                        .inspect(|b| b.set_member(Some(&run.side.member().id))),
                 ),
                 _ => None,
             };
@@ -7714,7 +7715,9 @@ impl Agent {
     /// The coordinator brokering this Mac's tasks, for the run's steps (`Cx::broker`): the lead's,
     /// or a member's broker; None with tasks brokered by every member off.
     fn brokering(&self) -> Option<std::sync::Arc<crate::coord::Coordinator>> {
-        self.brokers_on().then(|| self.coord.clone().or_else(|| self.broker.as_ref().map(|b| b.server().clone()))).flatten()
+        self.brokers_on()
+            .then(|| self.coord.clone().or_else(|| self.broker.as_ref().map(|b| b.server().clone())))
+            .flatten()
     }
 
     /// The newest complete pass: by the merged records with resuming on (docs/pool.md §7.4), else
@@ -15587,9 +15590,18 @@ mod pool_tests {
             a.round().unwrap();
         };
         let told = |a: &Agent, who: &str| {
-            a.coord.as_ref().or(a.broker.as_ref().map(crate::coord::Broker::server)).unwrap().shared.lock().unwrap().brokers.as_ref().is_some_and(|b| {
-                b.peers.iter().any(|p| p.member == who && p.broker.as_ref().is_some_and(|b| !b.urls.is_empty()))
-            })
+            a.coord
+                .as_ref()
+                .or(a.broker.as_ref().map(crate::coord::Broker::server))
+                .unwrap()
+                .shared
+                .lock()
+                .unwrap()
+                .brokers
+                .as_ref()
+                .is_some_and(|b| {
+                    b.peers.iter().any(|p| p.member == who && p.broker.as_ref().is_some_and(|b| !b.urls.is_empty()))
+                })
         };
         let end = Instant::now() + WATCHDOG;
         while !(told(&lead, &im) && told(&m, &il)) {
