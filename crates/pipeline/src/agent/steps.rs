@@ -504,6 +504,9 @@ fn own(t: &str) -> Vec<String> {
 }
 
 use Read::{Input as In, Mids, Targets as Of, Whole as All};
+// (What a terrain z6 tile's run reads of the coverage: the tiles it makes near it, task #832's cut,
+// build::piece_coverage; terrain-deep reads it through its bases, pyramids-fill for its levels.)
+const R_PIECE: &[Read] = &[In { name: "coverage:piece" }];
 const R_TERRAIN_LO: &[Read] = &[Mids { step: "terrain-hi", of: z6_of_z3 }];
 const R_SLOPE_DEEP: &[Read] = &[
     Of { step: "terrain-deep", of: sd_deep },
@@ -782,6 +785,7 @@ pub const TABLE: [Step; 59] = [
     // the lead to name in their stores' indexes, as AWS's raw tiles' are: crate::pyramids. A z6
     // tile's fetch at most 4,096 tiles in memory at once, its wanted set a few MB.)
     Step {
+        reads: R_PIECE,
         ..step(
             "terrain",
             Fetch,
@@ -796,6 +800,7 @@ pub const TABLE: [Step; 59] = [
     // it, crate::terrain_deep::peak_mb; with the coverage its process reads,
     // crate::coverage::Coverage::read_peak_mb. Until a z6 tile's own run says.)
     Step {
+        reads: R_PIECE,
         cost_v: 7,
         shared: true,
         ..step(
@@ -811,6 +816,7 @@ pub const TABLE: [Step; 59] = [
     // tiles, crate::terrain_deep::target_peak_mb; the agent adds the coverage its process reads,
     // crate::coverage::Coverage::read_peak_mb. Until a target's own run says.)
     Step {
+        reads: R_PIECE,
         mem_mb: crate::terrain_deep::target_peak_mb(),
         shared: true,
         ..step(

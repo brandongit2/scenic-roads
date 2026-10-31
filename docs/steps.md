@@ -678,27 +678,30 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **pyramids-fill (a z6 tile a pyramid read tile by tile meets, making hi tiles or with terrain-deep
   targets; the lead's):** `pyramids::V` (bumped
   with any change to which tiles it wants), the tile, and what `pyramids::want` reads for it: the
-  coverage within 20 km (its terrain-hi levels), the declared pyramids meeting it (their lines as
+  coverage as its terrain-hi run reads it (`agent::build::piece_coverage`: the tiles of its levels), the declared pyramids meeting it (their lines as
   the terrain's keys name them), its water's digest (the open sea it spares) and its terrain-deep
   targets (whose base tiles it takes whole); until the water or the fine datasets are read its key
   is unknown and it waits (`agent::build::pyramids_key`). Nothing waits for it: a terrain job
   fetches what the store lacks. Its time is weighed by the tiles it fetched (`needs::PER_WORK`):
   a z6 tile whose tiles were stored already says nothing of the next one's.
 - **terrain-hi (a z6 tile):** `TERRAIN_V` and the codec (`terrain_codec::version`: the encoding,
-  libwebp's version and level, the rounding), the coverage within 20 km of its tile, the elevation
+  libwebp's version and level, the rounding), the coverage as it reads it (`agent::build::piece_coverage`: which z9–12 tiles of it are within 20 km of the coverage, digested, not the rings there, task #832), the elevation
   pool's datasets meeting the tile (`TerrainTiles::terrain_datasets`: their lines as the roads' keys
-  name them), what it reads of the fine datasets (`terrain_deep::piece_key_lines`: its z10 tiles past
+  name them, each dataset's regions' outlines read so `declared::cut_note` names the outlines inside the tile, never their files: task #832), what it reads of the fine datasets (`terrain_deep::piece_key_lines`: its z10 tiles past
   the base's zoom, rounded as coarser than native; where it makes deep z12 north of 67°, their code,
   then each such z8 tile near the coverage a fine dataset meets, each such dataset's line, `id
   keyed` and its heights' conversion to EGM2008, and the zoom it reaches there; until the datasets
   are read its key is unknown and it waits), the digest of its water (`agent::build::water_key`),
   and "no hi tiles" for a z6 tile making none (`piece_key_made`). A "none" z6 tile is keyed on the
   version and the tile (`none_piece_key`).
+  These coverage and outline parts (task #832) changed every terrain-hi and terrain-deep key
+  once (and the pyramids-fill keys with them): they ship with the planned terrain rebuild (#862,
+  docs/readiness.md §6 step 3), never on their own.
 - **terrain-deep (a z10 tile):** `TERRAIN_DEEP_V`, `TERRAIN_V` (its base is terrain-hi's code's)
   and the codec, the tile, what it reads of the fine datasets (`terrain_deep::target_key_lines`:
   their code, the datasets meeting its z8 tile and its z10 tile with the zoom each reaches there,
   and which z10 tiles around it go past the base's zoom, its ring's rounding), and for each z6 tile
-  its base is made of what that z6 tile's terrain-hi run reads: its coverage's fingerprint, the
+  its base is made of what that z6 tile's terrain-hi run reads: the coverage as it reads it (`piece_coverage`), the
   pool's datasets meeting it and its water's digest (`agent::build::terrain_deep_key`). Never a
   built tile: no target of it waits for another. A z10 tile no target any more is keyed on the
   version and the tile (`none_deep_key`).

@@ -1335,8 +1335,8 @@ pub const SLOPE_LO_V: u32 = 3;
 /// z6 tile per z6 tile near the coverage (`coverage_tiles`), an assembly per z3 tile with z6 tiles.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TerrainTargets {
-    /// Terrain's z6 tiles ("6/x/y"): keyed on the terrain's version, the coverage within 20 km of the
-    /// tile (which decides its tiles), the terrain's declared sources and the water it reads
+    /// Terrain's z6 tiles ("6/x/y"): keyed on the terrain's version, the tiles it makes near the
+    /// coverage (`piece_coverage`), the terrain's declared sources and the water it reads
     /// (`water_key`); `UNKNOWN` while either isn't worked out.
     pub terrain: Vec<(String, String)>,
     /// Its assemblies ("3/x/y"): keyed on their z6 tiles' mids by content ("-" for one without: it
@@ -1456,7 +1456,7 @@ pub fn terrain_slope_targets_made(
     };
     let mut out = TerrainTargets::default();
     let near = coverage_tiles(cov);
-    // (Each z6 tile's coverage fingerprint, datasets and water, as its deep targets' keys read
+    // (Each z6 tile's coverage as it reads it, datasets and water, as its deep targets' keys read
     // them too: worked out once a z6 tile, not once a target over it.)
     let mut piece_reads: HashMap<(u32, u32), Option<String>> = HashMap::new();
     for (q, ts) in &near {
@@ -1464,7 +1464,7 @@ pub fn terrain_slope_targets_made(
         let (mut tmids, mut smids) = (Vec::new(), Vec::new());
         for &(x, y) in ts {
             let t = format!("6/{x}/{y}");
-            let fp = cov.fingerprint(grown_e7(6, x, y, 20.0));
+            let fp = piece_coverage(cov, (x, y));
             let hi = crate::terrain_pack::makes_hi(cov, (x, y));
             let ws = water(&t, &piece_water_from(&fp)).zip(piece_datasets(x, y));
             piece_reads.insert((x, y), ws.as_ref().map(|(w, s)| format!("{t} {fp} {s} {w}")));
@@ -1611,7 +1611,7 @@ pub fn none_deep_key(step: &str, t: &str) -> String {
 /// Terrain-deep z10 tile `t`'s key: its version, terrain-hi's (its base is made by terrain-hi's
 /// code) and the codec, the tile, what it reads of the fine datasets
 /// (crate::terrain_deep::target_key_lines: their code too), and of each z6 tile its base is made
-/// of, what that tile's terrain-hi run reads (`bases`: its coverage's fingerprint, the pool's
+/// of, what that tile's terrain-hi run reads (`bases`: the coverage as it reads it (`piece_coverage`), the pool's
 /// datasets meeting it with its z10 tiles past the base's zoom, and its water, as `terrain_piece_key`
 /// names them).
 pub fn terrain_deep_key(t: (u32, u32), fine: &str, bases: &[String]) -> String {
@@ -1648,7 +1648,7 @@ pub const TERRAIN_WATER_V: u32 = 1;
 
 /// The water terrain target `t` (a z6 tile "6/x/y", an assembly "3/x/y") reads, as its key names it:
 /// "water <digest>" from the water source's digests (`idx`, pinned `pin`) made from `from` (a
-/// z6 tile's: the coverage's fingerprint that decides its tiles; an assembly's,
+/// z6 tile's: the coverage as it reads it (`piece_coverage`); an assembly's,
 /// crate::terrain_water::AREA_FROM); "-" without a water source (none read); None while its digest
 /// isn't there.
 pub fn water_key(
@@ -1664,7 +1664,7 @@ pub fn water_key(
 }
 
 /// Terrain z6 tile `t`'s key (z6 tile (x, y)): the version and the codec
-/// (crate::terrain_codec::version), the coverage within 20 km (`fp`: which decides its tiles), the
+/// (crate::terrain_codec::version), the coverage as it reads it (`fp`: `piece_coverage`, the tiles it makes), the
 /// elevation pool's datasets meeting it and what its deep levels read (`sources`:
 /// TerrainTiles::terrain_datasets, crate::terrain_deep::piece_key_lines) and the water it reads
 /// (`water_key`).
@@ -1685,17 +1685,31 @@ pub fn water_wants(cov: &Coverage) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (q, ts) in &coverage_tiles(cov) {
         for &(x, y) in ts {
-            out.push((format!("6/{x}/{y}"), piece_water_from(&cov.fingerprint(grown_e7(6, x, y, 20.0)))));
+            out.push((format!("6/{x}/{y}"), piece_water_from(&piece_coverage(cov, (x, y)))));
         }
         out.push((format!("3/{}/{}", q.0, q.1), crate::terrain_water::AREA_FROM.to_string()));
     }
     out
 }
 
-/// A z6 tile's water reads' from (`WaterIdx`): the coverage's fingerprint `fp` that decides its
+/// A z6 tile's water reads' from (`WaterIdx`): the coverage as it reads it (`fp`, `piece_coverage`): its
 /// tiles, as the terrain reads them since it levels rivers (crate::terrain_water::FLOW_FROM).
 pub fn piece_water_from(fp: &str) -> String {
     format!("{fp}{}", crate::terrain_water::FLOW_FROM)
+}
+
+/// What a terrain z6 tile's run reads of the coverage (task #832), as its keys name it: the tiles
+/// of its levels it makes (crate::terrain_pack::piece_levels, each z9–12 tile within 20 km of
+/// it), digested. Not the coverage's rings near it (`Coverage::fingerprint`): a region's outline
+/// moved, an islet dropped or added, that leaves the same tiles near it changes nothing the run
+/// reads, so it rebuilds nothing. Its deep levels' reads of it are crate::terrain_deep's
+/// (`piece_key_lines`, `targets_in`: near the coverage by tile too).
+pub fn piece_coverage(cov: &Coverage, t: (u32, u32)) -> String {
+    let lines: Vec<String> = crate::terrain_pack::piece_levels(cov, t)
+        .into_iter()
+        .map(|(z, ts)| format!("{z}:{}", ts.iter().map(|(x, y)| format!("{x},{y}")).collect::<Vec<_>>().join(" ")))
+        .collect();
+    format!("tiles {}", store::naming::hash16(lines.join("\n").as_bytes()))
 }
 
 /// `water_wants` with the tiles each reads: a z6 tile's z9–12 (crate::terrain_pack::piece_levels),
@@ -1783,7 +1797,7 @@ pub fn pyramids_targets(
             continue;
         }
         let t = format!("6/{x}/{y}");
-        let fp = cov.fingerprint(grown_e7(6, x, y, 20.0));
+        let fp = piece_coverage(cov, (x, y));
         let water = water_key(pin.as_deref(), idx, &t, &piece_water_from(&fp));
         let deep = fine.as_deref().map(|f| crate::terrain_deep::targets_in(f, cov, (x, y)));
         // (One making no hi tile and no deep target wants nothing: no job.)
@@ -1800,7 +1814,7 @@ pub fn pyramids_targets(
 }
 
 /// Pyramids-fill z6 tile `t`'s key: the fill's version (crate::pyramids::V), the tile, and what
-/// crate::pyramids::want reads for it: the coverage within 20 km (`fp`: its terrain-hi levels), the
+/// crate::pyramids::want reads for it: the coverage as it reads it (`fp`: `piece_coverage`, its terrain-hi levels), the
 /// declared pyramids meeting it (`pyramids`: their lines as the terrain's keys name them, their
 /// templates and covers in them), the water its open sea is read from (`water_key`) and its
 /// terrain-deep targets (`deep`: whose base tiles it takes whole).
@@ -6252,7 +6266,7 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         let near = crate::terrain_pack::tests::near_without_hi(d.path());
         let tt = terrain_slope_targets(&near, &BTreeMap::new(), &TerrainTiles::new(None));
-        let fp = near.fingerprint(grown_e7(6, 21, 18, 20.0));
+        let fp = piece_coverage(&near, (21, 18));
         let k = tt.terrain.iter().find(|(t, _)| t == "6/21/18").unwrap().1.clone();
         // (The pool's datasets, then what it reads of the fine datasets: here none.)
         let sources = format!(
@@ -6266,7 +6280,7 @@ pub(crate) mod tests {
             terrain_piece_key((21, 18), &fp, &sources, "-"),
             "a record from before its hi pack was dropped isn't current"
         );
-        let fp = near.fingerprint(grown_e7(6, 22, 18, 20.0));
+        let fp = piece_coverage(&near, (22, 18));
         assert_eq!(
             tt.terrain.iter().find(|(t, _)| t == "6/22/18").unwrap().1,
             terrain_piece_key((22, 18), &fp, &sources, "-"),
@@ -6917,6 +6931,33 @@ pub(crate) mod tests {
         assert_eq!(serde_json::from_value::<Keys>(saved).unwrap(), k);
         assert_eq!(crate::agent::steps::current("slope"), "slope-hi");
         assert!(crate::agent::steps::row("terrain").is_some_and(|r| r.name == "terrain-hi"));
+    }
+
+    /// Task #832: a terrain z6 tile is keyed on what its run reads of the coverage, the tiles it
+    /// makes (`piece_coverage`), not the rings near it: an islet added or dropped where it changes no
+    /// tile near the coverage leaves every terrain key as it was, though the coverage's fingerprint
+    /// there moves; one that brings tiles near the coverage changes the keys of its z6 tile.
+    #[test]
+    fn an_islet_that_changes_no_tile_changes_no_terrain_key() {
+        let d = tempfile::tempdir().unwrap();
+        let of = |extra: &[&str]| {
+            let mut outline = vec!["place:-21.9,64.13,20".to_string()];
+            outline.extend(extra.iter().map(|s| s.to_string()));
+            Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline }], None, d.path()).unwrap()
+        };
+        let (plain, near, far) = (of(&[]), of(&["place:-21.95,64.15,0.05"]), of(&["place:-20.2,64.4,0.05"]));
+        let keys = |c: &Coverage| terrain_slope_targets(c, &BTreeMap::new(), &TerrainTiles::new(None)).terrain;
+        let t = (28, 17);
+        assert_ne!(
+            plain.fingerprint(grown_e7(6, t.0, t.1, 20.0)),
+            near.fingerprint(grown_e7(6, t.0, t.1, 20.0)),
+            "the rings near it differ"
+        );
+        assert_eq!(piece_coverage(&plain, t), piece_coverage(&near, t));
+        assert_eq!(keys(&plain), keys(&near), "no terrain key moves");
+        // (Far from the coverage: tiles near it now that weren't.)
+        let (a, b) = (keys(&plain), keys(&far));
+        assert_ne!(a, b, "the tiles it makes changed: its z6 tile's key with them");
     }
 
     /// Task #832: a restore's done record ("<step> <target> <from>" with its key) records the target

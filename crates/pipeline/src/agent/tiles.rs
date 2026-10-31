@@ -172,19 +172,18 @@ impl TerrainTiles {
                     eprintln!("agent: elevation: {w}");
                 }
             }
-            Ok(ds)
+            // (Each with its coverage as sampled, its regions' outlines read: the keys name what's
+            // inside a box of them, `cut_note`, never their files, task #832.)
+            let read = |n: &str| -> anyhow::Result<Vec<u8>> { Ok(root.join(n).read()?) };
+            ds.into_iter()
+                .map(|d| Ok((crate::dem::declared::cover_read(&d, &read)?, d)))
+                .collect::<anyhow::Result<Vec<_>>>()
         });
         self.elevation_geoid = sources.cloned();
         match got {
             Ok(ds) => {
                 self.unread.remove(want);
-                let e: Elevation = ds
-                    .into_iter()
-                    .map(|d| {
-                        let c = crate::dem::declared::Cover::of(d.measured.cover.as_deref());
-                        (d, c)
-                    })
-                    .collect();
+                let e: Elevation = ds.into_iter().map(|(c, d)| (d, c)).collect();
                 self.elevation = Some((want.clone(), std::sync::Arc::new(e)));
             }
             Err(e) => {

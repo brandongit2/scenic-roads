@@ -1,6 +1,6 @@
 # Readiness and keys from declared reads
 
-**Step 1 built (task #879, §6); steps 2–4 Planned.** This doc says how the build derives, from
+**Steps 1 and 2 built (task #879, §6); steps 3–4 Planned.** This doc says how the build derives, from
 one declaration per step, both when a target may run (its readiness) and what it is keyed on (its
 key). Readiness is derived now (§3, as built in §6 step 1); the keys are still today's, reproduced
 byte for byte under scheme 1, and the scheme-2 derivation (§4) is planned. The sections marked
@@ -216,8 +216,11 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
    - Cut: `build::waits`, `build::wait_note`, the hand-written wait strings, `steps::Reads`,
      `steps::reads_of`, `Step::after`, `TerrainWork::is_left`'s step match, `Plan::terrain_built`,
      `forecast::chain_deps`, `UNITS_NEED`, the `reads_terrain` group, the held-chain guard.
-2. **Merge task-832-keys onto it.** #832's coverage cut becomes the `coverage:piece` input. It still
-   ships only with step 3.
+2. **Merge task-832-keys onto it. Done (task #879).** #832's coverage cut (`build::piece_coverage`:
+   the z9–12 tiles a terrain z6 tile makes near the coverage, digested) is the `coverage:piece`
+   input, declared by terrain-hi, terrain-deep and pyramids-fill, and the elevation covers read
+   their outlines (`dem::declared::cover_read`). It changes every terrain-hi, terrain-deep and
+   pyramids-fill key, so it ships only with step 3.
 3. **Flip to scheme 2 with #862.** In one commit: `KEY_SCHEME = 2`, the legacy adapters and every
    `*_key` deleted, and a `rekey` scheme (agent/rekey.rs, docs/building.md §2): a record current
    under scheme 1 is recorded under its scheme-2 key when its scheme-2 lines name no input the

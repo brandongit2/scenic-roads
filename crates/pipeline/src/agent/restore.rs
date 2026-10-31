@@ -174,7 +174,7 @@ pub fn piece_same(_root: &store::nasfs::NasRoot, o: &Gen, n: &Gen, t: (u32, u32)
         return Err(format!("the tiles it makes (the coverage within 20 km): {}", d.join(", ")));
     }
     let ts = format!("6/{}/{}", t.0, t.1);
-    let fp = |g: &Gen| g.cov.fingerprint(build::grown_e7(6, t.0, t.1, 20.0));
+    let fp = |g: &Gen| build::piece_coverage(&g.cov, t);
     let (wo, wn) = (o.water(&ts, &build::piece_water_from(&fp(o))), n.water(&ts, &build::piece_water_from(&fp(n))));
     match (&wo, &wn) {
         (Some(a), Some(b)) if a == b => {}

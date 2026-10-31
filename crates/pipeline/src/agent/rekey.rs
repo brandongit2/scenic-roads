@@ -743,7 +743,7 @@ mod tests {
             .map(|t| {
                 let u = TileId::parse(t).unwrap();
                 let k = if u.z == 6 {
-                    let fp = c.fingerprint(build::grown_e7(6, u.x, u.y, 20.0));
+                    let fp = build::piece_coverage(&c, (u.x, u.y));
                     let ds = tf.terrain_datasets(&mf, crate::stage::tile_box_grown(6, u.x, u.y, 0.0)).unwrap();
                     // (And what its deep levels read: crate::terrain_deep.)
                     let deep = crate::terrain_deep::piece_key_lines(&tf.fine(&mf).unwrap(), &c, (u.x, u.y));

@@ -926,20 +926,37 @@ pub fn line(d: &Accepted) -> String {
 
 /// The digest of the datasets' `keyed` digests (and conversions), in their order.
 pub fn tag(ds: &[Accepted]) -> String {
-    tag_at(ds, None)
+    tag_at(ds, None).expect("no outline read without a box")
 }
 
 /// `tag`, of a plan over box `b`: a dataset whose `regions` cut its coverage near `b` (`cut_note`)
 /// noted so, so samples kept from before the cut don't count there; elsewhere the tag is as before.
-fn tag_at(ds: &[Accepted], b: Option<[f64; 4]>) -> String {
-    let lines: Vec<String> = ds
-        .iter()
-        .map(|d| match b.and_then(|b| cut_note(&d.measured, &Cover::of(d.measured.cover.as_deref()), b)) {
+/// Its outlines read with `b`'s reader (`cover_read`), so the note names them by what's in the box.
+fn tag_at(ds: &[Accepted], b: Option<([f64; 4], &dyn Fn(&str) -> Result<Vec<u8>>)>) -> Result<String> {
+    let mut lines = Vec::new();
+    for d in ds {
+        let n = match b {
+            Some((b, read)) if d.measured.uncut.is_some() => cut_note(&d.measured, &cover_read(d, read)?, b),
+            _ => None,
+        };
+        lines.push(match n {
             None => line(d),
             Some(n) => format!("{} {n}", line(d)),
-        })
-        .collect();
-    store::naming::hash16(lines.join("\n").as_bytes())
+        });
+    }
+    Ok(store::naming::hash16(lines.join("\n").as_bytes()))
+}
+
+/// Dataset `d`'s coverage as it's sampled: its cells and its regions' outlines, read by `read`
+/// (`OutlineCut::read`, kept by geometry).
+pub fn cover_read(d: &Accepted, read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<Cover> {
+    let outline = match &d.measured.outline {
+        Some(o) => Some(std::sync::Arc::new(
+            OutlineCut::read(o, read).with_context(|| format!("{}: its regions' outlines", d.id))?,
+        )),
+        None => None,
+    };
+    Ok(Cover { outline, ..Cover::of(d.measured.cover.as_deref()) })
 }
 
 /// Coverage `cover` (1° cells merged into boxes; None: the world) cut to the cells meeting one of
@@ -1095,11 +1112,12 @@ pub fn cut_note(measured: &Measured, cover: &Cover, b: [f64; 4]) -> Option<Strin
                             cut = true;
                             kept.push(format!("{c} outline {f}"));
                         }
-                        // (Its outlines not read: named by their files, so any change to them shows.)
-                        None => {
-                            cut = true;
-                            kept.push(format!("{c} outline {}", measured.outline.as_ref().unwrap().geometry.join(" ")));
-                        }
+                        // (Its outlines not read: a caller's fault. Named by their files, the key
+                        // would move with any region's geometry anywhere: task #832.)
+                        None => unreachable!(
+                            "cut_note: the outlines of a dataset cut by {:?} weren't read (Cover::of_dataset, cover_read)",
+                            measured.outline.as_ref().map(|o| &o.geometry)
+                        ),
                     }
                 }
                 (true, false) => cut = true,
@@ -1145,7 +1163,7 @@ pub fn plan_converted(
     }
     let g = 0.05;
     let near = [near[0] - g, near[1] - g, near[2] + g, near[3] + g];
-    let tagged = tag_at(&ds, Some(near));
+    let tagged = tag_at(&ds, Some((near, &|n: &str| Ok(a.root().join(n).read()?))))?;
     let mut out = Vec::new();
     for d in &ds {
         let cover = Cover::of(d.measured.cover.as_deref());
@@ -1395,8 +1413,8 @@ mod tests {
         assert!(held.iter().all(|(r, w)| within(&o.shapes, *r) == *w));
         assert_eq!(at(&m, &c, coast), at(&m, &c, coast));
         assert_eq!(o.held.lock().unwrap().len(), held.len(), "asked again: none worked out afresh");
-        // (Its outlines not read: named by their files, never as held.)
-        assert!(at(&m, &plain, inland).is_some());
+        // (Its outlines not read: a caller's fault, never a key naming their files (task #832).)
+        assert!(std::panic::catch_unwind(|| at(&m, &plain, inland)).is_err());
     }
 
     /// A box's answer (`contains_box`) is every point's (`contains`): boxes inside a whole cell,
