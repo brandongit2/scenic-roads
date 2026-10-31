@@ -3668,6 +3668,7 @@ impl Agent {
                 if STOP.load(Ordering::SeqCst) {
                     break;
                 }
+                // (bound ok: the STOP flag looked at each second)
                 if self.control.woken.recv_timeout(Duration::from_secs(1).min(left)).is_ok() {
                     while self.control.woken.try_recv().is_ok() {}
                     break;
