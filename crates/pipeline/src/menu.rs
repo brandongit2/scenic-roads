@@ -70,9 +70,12 @@ pub fn status(home: &Path, lead: serde_json::Value, now: u64) -> serde_json::Val
     serde_json::json!({"status": status, "local": local, "now": now, "log": log, "held_here": held_here, "hold_asked": hold_asked})
 }
 
-/// The lead's heartbeat (`state/status.json`) as the NAS has it; Null when it can't be read.
+/// The lead's heartbeat on the NAS (the lead's agent writes it), relative to the project folder.
+pub const LEAD_STATUS: &str = "state/status.json";
+
+/// The lead's heartbeat (`LEAD_STATUS`) as the NAS has it; Null when it can't be read.
 pub fn lead_heartbeat(root: Option<&store::nasfs::NasRoot>) -> serde_json::Value {
-    root.and_then(|r| r.join("state/status.json").read().ok())
+    root.and_then(|r| r.join(LEAD_STATUS).read().ok())
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or(serde_json::Value::Null)
 }

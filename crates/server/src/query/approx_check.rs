@@ -66,9 +66,7 @@ fn load() -> Tiles {
     let mut out =
         Tiles { exact: BTreeMap::new(), roads: BTreeMap::new(), rail: BTreeMap::new(), q_bytes: 0, l_bytes: (0, 0) };
     for ((x, y), (_, path)) in newest {
-        let f = std::fs::File::open(&path).unwrap();
-        // SAFETY: the mirror's files aren't changed while mapped (content-named, replaced whole).
-        let map = unsafe { memmap2::Mmap::map(&f) }.unwrap();
+        let map = store::MmapFile::open(&path).unwrap();
         let hv = Arc::new(HiView::new(SectView::open(Src::Local(Arc::new(map))).unwrap()).unwrap());
         let q = QTile::new(hv.clone()).unwrap();
         let ri = hv.railinfo.all().unwrap();

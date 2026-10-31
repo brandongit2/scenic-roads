@@ -54,9 +54,14 @@ pub struct Kept {
 /// The accepted files kept in `local`: by inputs-folder path, the local copy and its content name. None
 /// before a version was kept.
 pub fn files(local: &Path) -> Option<(String, Files)> {
-    let k: Kept = serde_json::from_slice(&std::fs::read(local.join(LOCAL)).ok()?).ok()?;
+    let k = kept(local)?;
     let files = k.index.files.iter().map(|(p, f)| (p.clone(), (local.join(&f.file), f.file.clone()))).collect();
     Some((k.version, files))
+}
+
+/// The local copy's index in `local`; None before a version was kept (or when it can't be read).
+pub fn kept(local: &Path) -> Option<Kept> {
+    serde_json::from_slice(&std::fs::read(local.join(LOCAL)).ok()?).ok()
 }
 
 /// What a sync found.

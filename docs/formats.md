@@ -99,8 +99,11 @@ task #449) is read as before.
 table        count × Section (48 bytes): [u8; 24] name (NUL-padded), u64 offset, u64 len, u64 xxh3
 ```
 
-A local file is mmapped and its sections cast in place. A NAS file is read through the I/O pool in
-256 KB pages, or whole sections for scans.
+One reader, `store::sect::SectReader`, takes the header and table for the build and the map server
+alike (versions 1 to `sect::VERSION`; a table out of place is an error). A local file is mmapped
+(`store::MmapFile`, which refuses a file on the share) and its sections cast in place, unchecked. A
+NAS file is read through the I/O pool (`store::PooledFile`) in 256 KB pages, unchecked, or whole
+sections for scans, each checked against its XXH3.
 
 ## Roads' z6 tiles
 

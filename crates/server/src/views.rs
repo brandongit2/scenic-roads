@@ -1,11 +1,12 @@
-//! Typed views of the per-z6-tile files (docs/formats.md): sectioned files read from the Mac's mirror
-//! (memory-mapped) or from the NAS (never mapped: read through the I/O pool, a page at a time for
-//! the few records a request needs, or whole for what a query scans; see `pages`).
+//! Typed views of the per-z6-tile files (docs/formats.md): sectioned files read with
+//! `store::sect::SectReader` from the Mac's mirror (`store::MmapFile`) or from the NAS
+//! (`store::PooledFile`, never mapped: read through the I/O pool, a page at a time for the few
+//! records a request needs, or whole, checked against the section's XXH3, for what a query scans;
+//! see `pages`).
 
 use crate::pages;
 use anyhow::{bail, ensure, Context, Result};
 use bytemuck::Pod;
-use memmap2::Mmap;
 use roadcore::elev::Elevs;
 use roadcore::packs::{Here, LBin, LPart, PSample, Part, RailInfo, RailRel, RoadRec};
 use roadcore::scenic::ch;
@@ -14,13 +15,15 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::ops::Range;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use store::iopool::IoError;
+use store::range::{Mapped, MmapFile, PooledFile, RangeRead, Slice};
+use store::sect::SectReader;
 
 /// Bytes of one section: a slice of a local file's map, or aligned memory read from the NAS.
 #[derive(Clone)]
 pub enum Blob {
-    Map(Arc<Mmap>, usize, usize),
+    Map(Arc<MmapFile>, usize, usize),
     /// 8-byte aligned storage and the byte length used.
     Own(Arc<Vec<u64>>, usize),
 }
@@ -35,7 +38,7 @@ impl Blob {
 
     pub fn bytes(&self) -> &[u8] {
         match self {
-            Blob::Map(m, o, l) => &m[*o..*o + *l],
+            Blob::Map(m, o, l) => &m.bytes()[*o..*o + *l],
             Blob::Own(w, l) => &bytemuck::cast_slice::<u64, u8>(w)[..*l],
         }
     }
@@ -46,196 +49,91 @@ impl Blob {
     }
 }
 
-/// A local map as a range source (for readers that take one, e.g. PMTiles).
-pub struct MapRange(pub Arc<Mmap>);
-
-impl store::range::RangeRead for MapRange {
-    fn len(&self) -> Result<u64, store::iopool::IoError> {
-        Ok(self.0.len() as u64)
-    }
-    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::iopool::IoError> {
-        let end = off.checked_add(len as u64).filter(|&e| e <= self.0.len() as u64);
-        match end {
-            Some(e) => Ok(self.0[off as usize..e as usize].to_vec()),
-            None => Err(store::iopool::IoError::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "read past the end",
-            ))),
-        }
-    }
-}
-
-/// A file on the NAS, read through the pool. Its handle (and length: content-named files never
-/// change) is opened once and kept; a read that fails with an I/O error (a handle gone stale after
-/// sleep or a reconnect) reopens it and tries again. Reads go in pieces of at most `PIECE`, each
-/// its own pool operation, so a big read on a busy NAS doesn't overrun the pool's timeout (which
-/// would mark the NAS offline).
-pub struct RemoteFile {
-    pub path: store::nasfs::NasPath,
-    pub pool: Arc<store::iopool::IoPool>,
-    /// Unique per instance: its pages' key in `pages`.
-    pub id: u64,
-    file: Mutex<Option<(Arc<std::fs::File>, u64)>>,
-}
-
-const PIECE: usize = 1 << 20;
-
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
-impl RemoteFile {
-    pub fn new(path: store::nasfs::NasPath, pool: Arc<store::iopool::IoPool>) -> RemoteFile {
-        RemoteFile { path, pool, id: NEXT_ID.fetch_add(1, Ordering::Relaxed), file: Mutex::new(None) }
-    }
-
-    fn handle(&self, fresh: bool) -> Result<(Arc<std::fs::File>, u64), store::iopool::IoError> {
-        let mut g = self.file.lock().unwrap();
-        if fresh {
-            *g = None;
-        }
-        if let Some(h) = g.as_ref() {
-            return Ok(h.clone());
-        }
-        let h = self.pool.open_len(&self.path)?;
-        *g = Some(h.clone());
-        Ok(h)
-    }
-
-    fn read_piece(&self, off: u64, len: usize) -> Result<Vec<u8>, store::iopool::IoError> {
-        let (f, _) = self.handle(false)?;
-        match self.pool.read_at(&f, off, len) {
-            Err(store::iopool::IoError::Io(_)) => {
-                let (f, _) = self.handle(true)?;
-                self.pool.read_at(&f, off, len)
-            }
-            Err(e) => {
-                // A handle that hung (sleep, a reconnect) isn't used again: the next read reopens.
-                *self.file.lock().unwrap() = None;
-                Err(e)
-            }
-            r => r,
-        }
-    }
-
-    pub fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::iopool::IoError> {
-        if len <= PIECE {
-            return self.read_piece(off, len);
-        }
-        let mut v = Vec::with_capacity(len);
-        while v.len() < len {
-            let n = (len - v.len()).min(PIECE);
-            v.extend_from_slice(&self.read_piece(off + v.len() as u64, n)?);
-        }
-        Ok(v)
-    }
-
-    pub fn len(&self) -> Result<u64, store::iopool::IoError> {
-        Ok(self.handle(false)?.1)
-    }
-
-    pub fn read_all(&self) -> Result<Vec<u8>, store::iopool::IoError> {
-        let n = self.len()? as usize;
-        self.read_at(0, n)
-    }
-
-    /// `len` bytes from `off` into 8-byte aligned memory, piece by piece (never a second copy of
-    /// the whole).
-    pub fn read_aligned(&self, off: u64, len: usize) -> Result<Blob, store::iopool::IoError> {
-        let mut words = vec![0u64; len.div_ceil(8)];
-        let buf = &mut bytemuck::cast_slice_mut::<u64, u8>(&mut words)[..len];
-        let mut at = 0usize;
-        while at < len {
-            let n = (len - at).min(PIECE);
-            buf[at..at + n].copy_from_slice(&self.read_piece(off + at as u64, n)?);
-            at += n;
-        }
-        Ok(Blob::Own(Arc::new(words), len))
-    }
-}
-
-impl store::range::RangeRead for RemoteFile {
-    fn len(&self) -> Result<u64, store::iopool::IoError> {
-        RemoteFile::len(self)
-    }
-    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::iopool::IoError> {
-        RemoteFile::read_at(self, off, len)
-    }
+/// `len` bytes from `off` of a NAS file into 8-byte aligned memory, piece by piece (never a second
+/// copy of the whole).
+pub fn read_aligned(f: &PooledFile, off: u64, len: usize) -> Result<Blob, IoError> {
+    let mut words = vec![0u64; len.div_ceil(8)];
+    f.read_into(off, &mut bytemuck::cast_slice_mut::<u64, u8>(&mut words)[..len])?;
+    Ok(Blob::Own(Arc::new(words), len))
 }
 
 /// Where a file lives.
 #[derive(Clone)]
 pub enum Src {
-    Local(Arc<Mmap>),
+    Local(Arc<MmapFile>),
     /// On the NAS: reads go through the pool.
-    Remote(Arc<RemoteFile>),
+    Remote(Arc<PooledFile>),
 }
 
-/// A sectioned file (RDSECT v1): its table, and its sections read on first use.
+impl RangeRead for Src {
+    fn len(&self) -> Result<u64, IoError> {
+        match self {
+            Src::Local(m) => m.len(),
+            Src::Remote(r) => r.len(),
+        }
+    }
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
+        match self {
+            Src::Local(m) => m.read_at(off, len),
+            Src::Remote(r) => r.read_at(off, len),
+        }
+    }
+}
+
+/// An error unless a section read whole (`what`) has the XXH3 its table gives.
+pub(crate) fn checked(what: &str, bytes: &[u8], hash: u64) -> Result<(), IoError> {
+    if store::naming::xxh3(bytes) == hash {
+        return Ok(());
+    }
+    Err(IoError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("{what} is damaged (checksum mismatch)"),
+    )))
+}
+
+/// A section's place in its file (`src`, a bundle's offset added) and its XXH3.
+#[derive(Clone, Copy)]
+struct Place {
+    off: u64,
+    len: u64,
+    hash: u64,
+}
+
+/// A sectioned file (store::sect, which reads and checks its header and table), and its sections
+/// read on first use.
 pub struct SectView {
-    pub meta: serde_json::Value,
-    table: HashMap<String, (u64, u64)>,
+    reader: SectReader<Slice<Src>>,
+    /// Where the file starts in `src` (a bundle's member; else 0).
+    base: u64,
     src: Src,
     loaded: Mutex<HashMap<String, Blob>>,
 }
 
 impl SectView {
-    /// Parse the header and table: from the mapped file, or with two reads from the NAS.
+    /// Opens a sectioned file: its header and table from the mapped file, or with two reads from
+    /// the NAS.
     pub fn open(src: Src) -> Result<SectView> {
-        let len = match &src {
-            Src::Local(m) => m.len() as u64,
-            Src::Remote(r) => r.len()?,
-        };
+        let len = src.len()?;
         SectView::open_at(src, 0, len)
     }
 
     /// `open` of a sectioned file stored at bytes `base..base + len` of `src`: a bundle's member
     /// (docs/formats.md "Bundles"), read in place as a file of its own would be.
     pub fn open_at(src: Src, base: u64, len: u64) -> Result<SectView> {
-        let total = match &src {
-            Src::Local(m) => m.len() as u64,
-            Src::Remote(r) => r.len()?,
-        };
-        ensure!(base.checked_add(len).is_some_and(|e| e <= total), "sectioned file at {base}+{len} past the end");
-        let (b, n) = (base as usize, len as usize);
-        let head: Vec<u8> = match &src {
-            Src::Local(m) => m[b..b + n.min(1 << 16)].to_vec(),
-            Src::Remote(r) => r.read_at(base, n.min(1 << 16))?,
-        };
-        ensure!(head.len() >= 28 && &head[..8] == b"RDSECT01", "not a sectioned file");
-        let version = u32::from_le_bytes(head[8..12].try_into()?);
-        ensure!(version == 1, "sectioned file version {version}");
-        let count = u32::from_le_bytes(head[12..16].try_into()?) as usize;
-        let table_off = u64::from_le_bytes(head[16..24].try_into()?);
-        let mlen = u32::from_le_bytes(head[24..28].try_into()?) as usize;
-        ensure!(28 + mlen <= n, "sectioned file meta past its end");
-        let meta: serde_json::Value = if 28 + mlen <= head.len() {
-            serde_json::from_slice(&head[28..28 + mlen])?
-        } else {
-            match &src {
-                Src::Local(m) => serde_json::from_slice(&m[b + 28..b + 28 + mlen])?,
-                Src::Remote(r) => serde_json::from_slice(&r.read_at(base + 28, mlen)?)?,
-            }
-        };
-        ensure!(table_off.checked_add(count as u64 * 48).is_some_and(|e| e <= len), "section table out of bounds");
-        let tbytes: Vec<u8> = match &src {
-            Src::Local(m) => {
-                let a = b + table_off as usize;
-                m[a..a + count * 48].to_vec()
-            }
-            Src::Remote(r) => r.read_at(base + table_off, count * 48)?,
-        };
-        let mut table = HashMap::new();
-        for e in tbytes.chunks_exact(48) {
-            let name = String::from_utf8_lossy(&e[..24]).trim_end_matches('\0').to_string();
-            let (off, slen) = (u64::from_le_bytes(e[24..32].try_into()?), u64::from_le_bytes(e[32..40].try_into()?));
-            ensure!(off.checked_add(slen).is_some_and(|e| e <= len), "section {name} out of bounds");
-            // (Kept as offsets in `src`.)
-            table.insert(name, (base + off, slen));
-        }
-        Ok(SectView { meta, table, src, loaded: Mutex::new(HashMap::new()) })
+        let win = Slice::new(src.clone(), base, len).with_context(|| format!("sectioned file at {base}+{len}"))?;
+        Ok(SectView { reader: SectReader::open(win)?, base, src, loaded: Mutex::new(HashMap::new()) })
+    }
+
+    pub fn meta(&self) -> &serde_json::Value {
+        self.reader.meta()
+    }
+
+    fn place(&self, name: &str) -> Option<Place> {
+        self.reader.section(name).map(|s| Place { off: self.base + s.offset, len: s.len, hash: s.hash })
     }
 
     pub fn has(&self, name: &str) -> bool {
-        self.table.contains_key(name)
+        self.reader.section(name).is_some()
     }
 
     /// Read from the NAS (not a mapped local copy).
@@ -246,7 +144,7 @@ impl SectView {
     /// What it may hold in memory: its sections' sizes when read from the NAS, else nothing.
     pub fn remote_bytes(&self) -> u64 {
         if self.is_remote() {
-            self.table.values().map(|&(_, len)| len).sum()
+            self.reader.sections().iter().map(|s| s.len).sum()
         } else {
             0
         }
@@ -254,52 +152,44 @@ impl SectView {
 
     /// A section as records of `T`, read on demand (an empty one when the file hasn't it).
     pub fn sect<T: Pod>(&self, name: &str) -> Result<Sect<T>> {
-        let Some(&(off, len)) = self.table.get(name) else { return Ok(Sect::empty()) };
+        let Some(p) = self.place(name) else { return Ok(Sect::empty()) };
         let at = match &self.src {
-            Src::Local(m) => {
-                ensure!(off.checked_add(len).is_some_and(|e| e <= m.len() as u64), "section {name} out of bounds");
-                At::Blob(Blob::Map(m.clone(), off as usize, len as usize))
-            }
-            Src::Remote(r) => At::Remote { file: r.clone(), off, len },
+            Src::Local(m) => At::Blob(Blob::Map(m.clone(), p.off as usize, p.len as usize)),
+            Src::Remote(r) => At::Remote { file: r.clone(), off: p.off, len: p.len, hash: p.hash },
         };
-        Sect::new(at, len, name)
+        Sect::new(at, p.len, name)
     }
 
-    /// `len` bytes from `start` within a section (for sections too big to read whole).
+    /// `len` bytes from `start` within a section (for sections too big to read whole; not
+    /// checked: only whole sections can be).
     pub fn get_part(&self, name: &str, start: u64, len: usize) -> Result<Vec<u8>> {
-        let &(off, slen) = self.table.get(name).ok_or_else(|| anyhow::anyhow!("no section {name}"))?;
-        ensure!(
-            start.checked_add(len as u64).is_some_and(|e| e <= slen),
-            "bytes {start}+{len} outside section {name} ({slen})"
-        );
         match &self.src {
-            Src::Local(m) => Ok(m[(off + start) as usize..(off + start) as usize + len].to_vec()),
-            Src::Remote(r) => Ok(r.read_at(off + start, len)?),
+            Src::Local(m) => {
+                let s = self.reader.section(name).ok_or_else(|| anyhow::anyhow!("no section {name:?}"))?;
+                ensure!(
+                    start.checked_add(len as u64).is_some_and(|e| e <= s.len),
+                    "bytes {start}..+{len} are outside section {name:?} ({} bytes)",
+                    s.len
+                );
+                let a = (self.base + s.offset + start) as usize;
+                Ok(m.bytes()[a..a + len].to_vec())
+            }
+            Src::Remote(_) => self.reader.read_part(name, start, len),
         }
     }
 
-    /// A section's bytes (an empty blob when it's missing).
+    /// A section's bytes (an empty blob when it's missing): in place from a map; else read whole
+    /// from the NAS, checked, and kept.
     pub fn get(&self, name: &str) -> Result<Blob> {
-        let Some(&(off, len)) = self.table.get(name) else { return Ok(Blob::from_vec(Vec::new())) };
+        let Some(p) = self.place(name) else { return Ok(Blob::from_vec(Vec::new())) };
         match &self.src {
-            Src::Local(m) => {
-                let (o, l) = (off as usize, len as usize);
-                ensure!(o + l <= m.len(), "section {name} out of bounds");
-                Ok(Blob::Map(m.clone(), o, l))
-            }
+            Src::Local(m) => Ok(Blob::Map(m.clone(), p.off as usize, p.len as usize)),
             Src::Remote(r) => {
                 if let Some(b) = self.loaded.lock().unwrap().get(name) {
                     return Ok(b.clone());
                 }
-                // Large sections in 8 MB reads, so one slow read times out alone.
-                let mut v = Vec::with_capacity(len as usize);
-                let mut at = 0u64;
-                while at < len {
-                    let n = (len - at).min(8 << 20) as usize;
-                    v.extend_from_slice(&r.read_at(off + at, n)?);
-                    at += n as u64;
-                }
-                let b = Blob::from_vec(v);
+                let b = read_aligned(r, p.off, p.len as usize)?;
+                checked(&format!("section {name:?}"), b.bytes(), p.hash)?;
                 self.loaded.lock().unwrap().insert(name.to_string(), b.clone());
                 Ok(b)
             }
@@ -313,7 +203,7 @@ enum At {
     /// Mapped (a mirrored file), or empty.
     Blob(Blob),
     /// Bytes [off, off + len) of a file on the NAS.
-    Remote { file: Arc<RemoteFile>, off: u64, len: u64 },
+    Remote { file: Arc<PooledFile>, off: u64, len: u64, hash: u64 },
 }
 
 /// A section as records of `T`: a slice of the map when the file is on this Mac; else read from
@@ -374,7 +264,7 @@ impl<T: Pod> Sect<T> {
         self.check(&r)?;
         match &self.at {
             At::Blob(b) => Ok(Cow::Borrowed(&b.cast::<T>()[r])),
-            At::Remote { file, off, len } => {
+            At::Remote { file, off, len, .. } => {
                 if let Some(b) = pages::cached_whole(file, *off, *len) {
                     return Ok(Cow::Owned(b.cast::<T>()[r].to_vec()));
                 }
@@ -396,7 +286,7 @@ impl<T: Pod> Sect<T> {
     }
 
     /// The NAS file it's read from (None when mapped).
-    pub fn remote_file(&self) -> Option<&RemoteFile> {
+    pub fn remote_file(&self) -> Option<&PooledFile> {
         match &self.at {
             At::Remote { file, .. } => Some(file),
             At::Blob(_) => None,
@@ -407,7 +297,7 @@ impl<T: Pod> Sect<T> {
     pub fn all(&self) -> Result<Blob> {
         match &self.at {
             At::Blob(b) => Ok(b.clone()),
-            At::Remote { file, off, len } => Ok(pages::whole(file, *off, *len)?),
+            At::Remote { file, off, len, hash } => Ok(pages::whole(file, *off, *len, *hash)?),
         }
     }
 
@@ -419,7 +309,7 @@ impl<T: Pod> Sect<T> {
         }
         match &self.at {
             At::Blob(b) => Ok(Gathered::In(b.clone(), ranges.to_vec())),
-            At::Remote { file, off, len } => {
+            At::Remote { file, off, len, hash } => {
                 if let Some(b) = pages::cached_whole(file, *off, *len) {
                     return Ok(Gathered::In(b, ranges.to_vec()));
                 }
@@ -428,7 +318,7 @@ impl<T: Pod> Sect<T> {
                     ranges.iter().map(|r| (off + r.start as u64 * sz, r.len() as u64 * sz)).collect();
                 let need = pages::missing(file, &bytes);
                 if need > len / 2 || need > pages::PAGES_PER_BATCH {
-                    return Ok(Gathered::In(pages::whole(file, *off, *len)?, ranges.to_vec()));
+                    return Ok(Gathered::In(pages::whole(file, *off, *len, *hash)?, ranges.to_vec()));
                 }
                 pages::prefetch(file, &bytes)?;
                 Ok(Gathered::Owned(
@@ -519,7 +409,7 @@ pub struct BaseView {
 
 impl BaseView {
     pub fn new(base: SectView, roads: SectView) -> Result<BaseView> {
-        let unit = base.meta.get("unit").and_then(|v| v.as_str()).context("base pack without a unit")?.to_string();
+        let unit = base.meta().get("unit").and_then(|v| v.as_str()).context("base pack without a unit")?.to_string();
         let strings = String::from_utf8_lossy(base.get("strings")?.bytes()).split('\n').map(str::to_owned).collect();
         let v = BaseView {
             unit,
@@ -627,14 +517,14 @@ pub struct HiView {
 impl HiView {
     pub fn new(s: SectView) -> Result<HiView> {
         Ok(HiView {
-            tile: s.meta.get("tile").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            tile: s.meta().get("tile").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             remote: s.is_remote(),
             here: s.sect("here")?,
             parts: s.sect("parts")?,
             psamples: s.sect("psamples")?,
             pch: s.sect("pch")?,
             railinfo: s.sect("railinfo")?,
-            lsum: s.meta.get("lsum").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            lsum: s.meta().get("lsum").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             lparts: s.sect("lparts")?,
             lbins: s.sect("lbins")?,
             lrparts: s.sect("lrparts")?,

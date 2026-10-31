@@ -64,8 +64,6 @@ pub struct AppState {
     road_en: Mutex<Option<(u64, Arc<HashMap<u64, String>>)>>,
     /// Trains a day per rail way (OSM id), sorted, per catalogue.
     rail_freq: Mutex<Option<(u64, Arc<Vec<(u32, f32)>>)>>,
-    /// The build agent's heartbeat (state/status.json), re-read at most every 30 s.
-    agent: Mutex<Option<(std::time::Instant, serde_json::Value)>>,
     /// This Mac's app folder (`~/Library/Application Support/scenic`): its own agent's status.
     home: PathBuf,
     /// The outlines of the latest OSM pass (the Regions panel).
@@ -191,26 +189,6 @@ impl AppState {
         t
     }
 
-    /// The build agent's heartbeat, as it wrote it (null when there's none or the NAS is away).
-    fn agent_status(&self) -> serde_json::Value {
-        let mut cur = self.agent.lock().unwrap();
-        if let Some((t, v)) = cur.as_ref() {
-            if t.elapsed() < std::time::Duration::from_secs(30) {
-                return v.clone();
-            }
-        }
-        let v = match (self.data.nas_root(), self.data.pool()) {
-            (Some(root), Some(pool)) if pool.is_online() => pool
-                .read_all(&root.join("state/status.json"))
-                .ok()
-                .and_then(|b| serde_json::from_slice(&b).ok())
-                .unwrap_or(serde_json::Value::Null),
-            _ => serde_json::Value::Null,
-        };
-        *cur = Some((std::time::Instant::now(), v.clone()));
-        v
-    }
-
     /// Lets go of everything mapped from what the mirror has just deleted (`names`: content
     /// names, and basemap pieces by their paths in it), so the disk gets their room back.
     fn forget_removed(&self, names: &[String]) {
@@ -257,7 +235,6 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
         packs: Arc::new(cache::Packs::default()),
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
-        agent: Mutex::new(None),
         home: home.to_owned(),
         areas: regions::Areas::default(),
         outlines: regions::Outlines::default(),
@@ -404,7 +381,6 @@ async fn main() -> Result<()> {
         packs: Arc::new(cache::Packs::default()),
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
-        agent: Mutex::new(None),
         home: home.clone(),
         areas: regions::Areas::default(),
         outlines: regions::Outlines::default(),
@@ -919,7 +895,7 @@ fn save_bench(dir: &std::path::Path, name: &str, body: &[u8]) -> std::result::Re
 
 async fn catalogue_h(State(s): State<S>) -> Response {
     let s2 = s.clone();
-    let agent = tokio::task::spawn_blocking(move || s2.agent_status()).await.unwrap_or(serde_json::Value::Null);
+    let agent = tokio::task::spawn_blocking(move || s2.data.lead_status()).await.unwrap_or(serde_json::Value::Null);
     let cat = s.data.catalogue();
     // Landmarks by view (docs/phase5.md): the z6 tiles with points, the kinds with tiles, and their
     // totals; absent while the catalogue has none.

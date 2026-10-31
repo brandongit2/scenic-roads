@@ -473,8 +473,7 @@ fn read_sizes(s: &crate::AppState) -> std::collections::BTreeMap<String, Sized> 
 
 /// The accepted version kept on this Mac: each region file's path and its geometry's content name.
 fn geometry_names(s: &crate::AppState) -> std::collections::BTreeMap<String, String> {
-    let kept: Option<pipeline::inputs::served::Kept> =
-        std::fs::read(accepted_dir(s).join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    let kept = pipeline::inputs::served::kept(&accepted_dir(s));
     kept.map(|k| k.index.files)
         .unwrap_or_default()
         .into_iter()
@@ -516,7 +515,7 @@ fn size_regions(s: &crate::AppState) {
         if sizes.contains_key(g) || !pool.is_online() {
             continue;
         }
-        let read = crate::views::RemoteFile::new(root.join(g), pool.clone()).read_all();
+        let read = store::PooledFile::new(root.join(g), pool.clone()).read_all();
         match read.map_err(anyhow::Error::from).and_then(|b| pipeline::inputs::regions::stored::Geometry::decode(&b)) {
             Ok(geo) => {
                 sizes.insert(g.clone(), sized(&geo));
@@ -585,8 +584,7 @@ fn states(s: &crate::AppState, pool: &IoPool, list: &mut Listing) {
 /// from their `_group.toml`, and their regions (pipeline::inputs::regions::read::tree), from the
 /// copy kept on this Mac; with none yet, the folders of the files listed, by their own names.
 fn tree(s: &crate::AppState, listed: &[Listed]) -> pipeline::inputs::regions::read::Folder {
-    let kept: Option<pipeline::inputs::served::Kept> =
-        std::fs::read(accepted_dir(s).join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    let kept = pipeline::inputs::served::kept(&accepted_dir(s));
     let index = kept.map(|k| k.index).unwrap_or_else(|| {
         let mut i = pipeline::inputs::Index::default();
         for l in listed {
@@ -614,9 +612,8 @@ pub fn sync_accepted(s: &crate::AppState) {
     if !pool.is_online() {
         return;
     }
-    let read = |p: &str| -> anyhow::Result<Vec<u8>> {
-        Ok(crate::views::RemoteFile::new(root.join(p), pool.clone()).read_all()?)
-    };
+    let read =
+        |p: &str| -> anyhow::Result<Vec<u8>> { Ok(store::PooledFile::new(root.join(p), pool.clone()).read_all()?) };
     if let Err(e) =
         pipeline::inputs::served::sync_with(&read, pipeline::inputs::regions::UNIT, &accepted_dir(s), &["drawn"])
     {
@@ -628,8 +625,7 @@ pub fn sync_accepted(s: &crate::AppState) {
 /// the listing of the inputs folder.
 pub fn is_disabled(s: &crate::AppState, id: &str) -> bool {
     let dir = accepted_dir(s);
-    let kept: Option<pipeline::inputs::served::Kept> =
-        std::fs::read(dir.join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    let kept = pipeline::inputs::served::kept(&dir);
     if let Some(k) = kept {
         return k.index.files.values().any(|e| {
             e.facts.get("id").and_then(Value::as_str) == Some(id)
@@ -707,8 +703,7 @@ type MakeSources<'a> = Box<dyn FnOnce() -> (Vec<Source>, bool) + 'a>;
 /// another's key.
 fn sources(s: &crate::AppState) -> (String, MakeSources<'_>) {
     let dir = accepted_dir(s);
-    let kept: Option<pipeline::inputs::served::Kept> =
-        std::fs::read(dir.join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    let kept = pipeline::inputs::served::kept(&dir);
     if let Some(kept) = kept {
         let key = format!("accepted {}", kept.version);
         let make = move || {
@@ -1312,7 +1307,7 @@ mod tests {
 
     /// A pool over the share `root` with a minute for each operation: none here is timed.
     fn pool(root: &store::nasfs::NasRoot) -> Arc<IoPool> {
-        IoPool::new(2, Duration::from_secs(60), root.unchecked_path())
+        IoPool::for_root(root, 2, Duration::from_secs(60))
     }
 
     /// A pool over the share `root` that gives up on an operation after 300 ms (`hang`'s never

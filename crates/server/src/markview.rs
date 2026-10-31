@@ -33,7 +33,7 @@ pub struct MarkView {
 
 impl MarkView {
     pub fn new(s: SectView, content: String) -> Result<MarkView> {
-        let tile = s.meta["tile"].as_str().and_then(|t| {
+        let tile = s.meta()["tile"].as_str().and_then(|t| {
             let mut p = t.split('/').skip(1).map(|v| v.parse::<u32>().ok());
             Some((p.next()??, p.next()??))
         });
@@ -43,7 +43,7 @@ impl MarkView {
         let fields: Vec<Vec<&'static str>> = KINDS.iter().map(|k| marks::fields(k)).collect();
         // The file's own fields must be today's (a new filter is a format change).
         for (k, f) in KINDS.iter().zip(&fields) {
-            let theirs: Vec<&str> = s.meta["fields"][k]
+            let theirs: Vec<&str> = s.meta()["fields"][k]
                 .as_array()
                 .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
                 .unwrap_or_default();

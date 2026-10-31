@@ -5,7 +5,6 @@
 
 use crate::views::{BaseView, Blob, HiView, RoadUnits, SectView, Src};
 use anyhow::{anyhow, Context, Result};
-use memmap2::Mmap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
@@ -13,6 +12,7 @@ use std::time::Duration;
 use store::catalogue::Catalogue;
 use store::iopool::IoPool;
 use store::pack::PackIndex;
+use store::range::{MmapFile, PooledFile, RangeRead};
 
 /// The NAS share and the project folder on it.
 pub const NAS_HOST: &str = store::nas::HOST;
@@ -93,8 +93,8 @@ pub struct Data {
     /// the catalogues (docs/maplog.md §8, step 3: shadow first, then serve).
     serve_map: std::sync::atomic::AtomicBool,
     /// Local maps of mirrored files, and open NAS files, by content name.
-    maps: Mutex<Bounded<Arc<Mmap>>>,
-    remotes: Mutex<Bounded<Arc<crate::views::RemoteFile>>>,
+    maps: Mutex<Bounded<Arc<MmapFile>>>,
+    remotes: Mutex<Bounded<Arc<PooledFile>>>,
     indexes: Mutex<Bounded<Arc<PackIndex>>>,
     sects: Mutex<Bounded<Arc<SectView>>>,
     bases: Mutex<Bounded<Arc<BaseView>>>,
@@ -112,8 +112,8 @@ pub struct Data {
     pub mirror_gen: std::sync::atomic::AtomicU64,
     /// The last attempt to mount the share.
     last_mount: Mutex<Option<std::time::Instant>>,
-    /// Whether the build agent runs a job, and when that was read.
-    busy: Mutex<Option<(std::time::Instant, bool)>>,
+    /// The lead's heartbeat and when it was read (`lead_status`).
+    lead: Mutex<Option<(std::time::Instant, serde_json::Value)>>,
     /// A mount by the bare name has been reported (once).
     warned_tunnel: std::sync::atomic::AtomicBool,
     /// Held while a catalogue is followed (the background poll and /api/catalog/refresh: one at a time).
@@ -164,7 +164,7 @@ impl Data {
             generation: Default::default(),
             mirror_gen: Default::default(),
             last_mount: Mutex::new(None),
-            busy: Mutex::new(None),
+            lead: Mutex::new(None),
             warned_tunnel: Default::default(),
             refreshing: Mutex::new(()),
         });
@@ -257,7 +257,7 @@ impl Data {
             return;
         }
         // (The pool's probe: a stat of the root itself, on its own thread: tests/nas_access.rs.)
-        *self.pool.write().unwrap() = root.as_ref().map(|r| IoPool::new(8, Duration::from_secs(8), r.unchecked_path()));
+        *self.pool.write().unwrap() = root.as_ref().map(|r| IoPool::for_root(r, 8, Duration::from_secs(8)));
         *cur = root;
     }
 
@@ -380,11 +380,11 @@ impl Data {
             return Ok(Src::Local(m));
         }
         if let Some((mi, p)) = self.mirror.as_ref().and_then(|mi| Some((mi, mi.local(content)?))) {
-            match std::fs::File::open(&p) {
-                Ok(f) => {
-                    // SAFETY: mirrored files are content-named and never modified; removal
-                    // unlinks them (and `forget_removed` drops the maps).
-                    let m = Arc::new(unsafe { Mmap::map(&f)? });
+            // (Mirrored files are content-named and never modified; removal unlinks them, and
+            // `forget_removed` drops the maps.)
+            match MmapFile::open(&p) {
+                Ok(m) => {
+                    let m = Arc::new(m);
                     // Kept only while the mirror has the file: a map kept after it let the file go
                     // would hold its room. A removal drops the file from the mirror's list, then
                     // what's cached of it (`forget_removed`): asked again once cached, the list
@@ -398,8 +398,8 @@ impl Data {
                     return Ok(Src::Local(m));
                 }
                 // Let go just now: the NAS's copy.
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e).with_context(|| format!("open {}", p.display())),
+                Err(e) if not_found(&e) => {}
+                Err(e) => return Err(e),
             }
         }
         if let Some(r) = self.remotes.lock().unwrap().get(content) {
@@ -408,7 +408,7 @@ impl Data {
         let (Some(root), Some(pool)) = (self.nas_root(), self.pool()) else {
             return Err(anyhow!("{content}: not on this Mac, and the NAS isn't mounted"));
         };
-        let r = Arc::new(crate::views::RemoteFile::new(root.join(content), pool));
+        let r = Arc::new(PooledFile::new(root.join(content), pool));
         self.remotes.lock().unwrap().put(content.to_string(), r.clone());
         Ok(Src::Remote(r))
     }
@@ -539,7 +539,7 @@ impl Data {
             return Ok(Some(b));
         }
         let bytes = match self.src(&content)? {
-            Src::Local(m) => m.to_vec(),
+            Src::Local(m) => m.bytes().to_vec(),
             Src::Remote(r) => r.read_all()?,
         };
         let b = Arc::new(bytes);
@@ -578,7 +578,7 @@ impl Data {
         }
         let load = || -> Result<PackIndex> {
             match self.src(content)? {
-                Src::Local(m) => PackIndex::parse_bytes(&m),
+                Src::Local(m) => PackIndex::parse_bytes(m.bytes()),
                 Src::Remote(r) => PackIndex::read_from(&*r),
             }
         };
@@ -656,6 +656,7 @@ impl Data {
                     &buf
                 }
                 From::Src(Src::Local(m)) => m
+                    .bytes()
                     .get(lo as usize..hi as usize)
                     .ok_or_else(|| anyhow!("{content}: its index points past its end"))?,
                 From::Src(Src::Remote(r)) => {
@@ -701,13 +702,10 @@ impl Data {
         let older =
             store::naming::parse_content_name(archive).and_then(|c| self.older.read().unwrap().get(c.logical).cloned());
         let piece = self.mirror.as_ref().zip(store::pieces::Piece::of(z, x, y)).and_then(|(m, p)| {
-            older.iter().map(String::as_str).chain([archive]).find(|a| m.has_piece(a, p)).map(|a| (m, a, p))
+            older.iter().map(String::as_str).chain([archive]).find(|a| m.has_piece(a, p)).map(|a| (a, p))
         });
         match piece {
-            Some((m, archive, p)) => m
-                .piece_path(archive, p)
-                .strip_prefix(m.root().join("mirror"))
-                .map_or_else(|_| archive.to_string(), |r| r.to_string_lossy().into_owned()),
+            Some((archive, p)) => store::mirror::Mirror::piece_key(archive, p),
             None => archive.to_string(),
         }
     }
@@ -721,33 +719,37 @@ impl Data {
             return Ok(Src::Local(m));
         }
         let mirror = self.mirror.as_ref().context("no mirror")?;
-        let p = mirror.root().join("mirror").join(key);
-        let f = std::fs::File::open(&p).with_context(|| format!("open {}", p.display()))?;
-        // SAFETY: a piece is never modified once in place; removal unlinks it (and
-        // `forget_removed` drops the map).
-        let m = Arc::new(unsafe { Mmap::map(&f)? });
+        // (A piece is never modified once in place; removal unlinks it, and `forget_removed` drops
+        // the map.)
+        let m = Arc::new(MmapFile::open(&mirror.path(key))?);
         self.maps.lock().unwrap().put(key.to_string(), m.clone());
         Ok(Src::Local(m))
     }
 
-    /// Whether the lead is running a job (its heartbeat on the NAS, fresh, with a job that
-    /// isn't paused). Read at most every 30 s.
-    pub fn agent_busy(&self) -> bool {
-        let mut g = self.busy.lock().unwrap();
-        if let Some((t, b)) = *g {
+    /// The lead's heartbeat (pipeline::menu::LEAD_STATUS on the NAS), as it wrote it: Null when
+    /// there's none or the NAS is away. Read at most every 30 s.
+    pub fn lead_status(&self) -> serde_json::Value {
+        let mut g = self.lead.lock().unwrap();
+        if let Some((t, v)) = g.as_ref() {
             if t.elapsed() < Duration::from_secs(30) {
-                return b;
+                return v.clone();
             }
         }
-        let b = (|| -> Option<bool> {
-            let (root, pool) = (self.nas_root()?, self.pool()?);
-            let v: serde_json::Value =
-                serde_json::from_slice(&pool.read_all(&root.join("state/status.json")).ok()?).ok()?;
-            Some(runs(&v, 600, &["job"]))
-        })()
-        .unwrap_or(false);
-        *g = Some((std::time::Instant::now(), b));
-        b
+        let v = match (self.nas_root(), self.pool()) {
+            (Some(root), Some(pool)) if pool.is_online() => pool
+                .read_all(&root.join(pipeline::menu::LEAD_STATUS))
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or(serde_json::Value::Null),
+            _ => serde_json::Value::Null,
+        };
+        *g = Some((std::time::Instant::now(), v.clone()));
+        v
+    }
+
+    /// Whether the lead is running a job (its heartbeat, fresh, with a job that isn't paused).
+    pub fn agent_busy(&self) -> bool {
+        runs(&self.lead_status(), 600, &["job"])
     }
 
     /// Drops what was opened from the NAS and is now on this Mac, so the local copy serves it
@@ -760,7 +762,7 @@ impl Data {
         self.remotes.lock().unwrap().retain(|c, r| {
             let keep = !local(c);
             if !keep {
-                gone.insert(r.id);
+                gone.insert(r.id());
             }
             keep
         });
@@ -1020,8 +1022,8 @@ mod tests {
             assert_eq!(rows(&vz), rows(&va), "{t}");
             assert_eq!(z.markdata_id(&t).unwrap(), format!("{c}#{t}"));
             // Mapped here (a mirror's copy): the same.
-            let m = Arc::new(unsafe { Mmap::map(&std::fs::File::open(nas.path().join(&c)).unwrap()).unwrap() });
-            let e = store::pack::PackIndex::parse_bytes(&m).unwrap().find(6, x, y).unwrap();
+            let m = Arc::new(MmapFile::open(&nas.path().join(&c)).unwrap());
+            let e = store::pack::PackIndex::parse_bytes(m.bytes()).unwrap().find(6, x, y).unwrap();
             let s = SectView::open_at(Src::Local(m), e.offset, u64::from(e.len)).unwrap();
             // (Its own name: the blocks are cached by it.)
             let vm = crate::markview::MarkView::new(s, format!("mapped {t}")).unwrap();
@@ -1138,14 +1140,14 @@ mod tests {
 
 /// A file's bytes whole and in place (`Data::whole`): mapped from the mirror, or read from the NAS.
 pub enum Whole {
-    Mapped(Arc<Mmap>),
+    Mapped(Arc<MmapFile>),
     Read(Vec<u8>),
 }
 
 impl store::range::Mapped for Whole {
     fn bytes(&self) -> &[u8] {
         match self {
-            Whole::Mapped(m) => m,
+            Whole::Mapped(m) => m.bytes(),
             Whole::Read(v) => v,
         }
     }
@@ -1167,6 +1169,11 @@ impl store::RangeRead for Whole {
             ))),
         }
     }
+}
+
+/// Whether opening a file failed because it isn't there (store::range::MmapFile's error).
+fn not_found(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound))
 }
 
 /// Whether a content name is a bundle of files (an RDPACK whose members are files: docs/formats.md

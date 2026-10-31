@@ -200,6 +200,11 @@ impl IoPool {
         Self::with_config(PoolConfig::new(threads, op_timeout, probe))
     }
 
+    /// A pool over the NAS project folder `root`, which its prober stats while the NAS is offline.
+    pub fn for_root(root: &crate::nasfs::NasRoot, threads: usize, op_timeout: Duration) -> Arc<IoPool> {
+        Self::new(threads, op_timeout, root.unchecked_path())
+    }
+
     /// A pool with every setting given.
     pub fn with_config(mut cfg: PoolConfig) -> Arc<IoPool> {
         cfg.threads = cfg.threads.max(1);

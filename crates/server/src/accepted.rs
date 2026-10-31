@@ -34,9 +34,8 @@ pub fn synced(data: &Data, unit: &str, local: &Path) -> anyhow::Result<Option<Sy
     if !pool.is_online() {
         return Ok(None);
     }
-    let read = |p: &str| -> anyhow::Result<Vec<u8>> {
-        Ok(crate::views::RemoteFile::new(root.join(p), pool.clone()).read_all()?)
-    };
+    let read =
+        |p: &str| -> anyhow::Result<Vec<u8>> { Ok(store::PooledFile::new(root.join(p), pool.clone()).read_all()?) };
     served::sync(&read, unit, local).map(Some)
 }
 

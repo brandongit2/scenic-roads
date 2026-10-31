@@ -359,7 +359,13 @@ impl Mirror {
 
     /// Where a piece of `archive` (a content name) lives, whether or not it's there.
     pub fn piece_path(&self, archive: &str, piece: Piece) -> PathBuf {
-        self.pieces_dir(hash_of(archive).unwrap_or("none")).join(format!("{}.pmtiles", piece.name()))
+        self.path(&Self::piece_key(archive, piece))
+    }
+
+    /// A piece's name in the mirror (`.basemap/<hash16>/<piece>.pmtiles`: as `on_remove` tells it,
+    /// and `path` takes it).
+    pub fn piece_key(archive: &str, piece: Piece) -> String {
+        format!("{BASEMAP}/{}/{}.pmtiles", hash_of(archive).unwrap_or("none"), piece.name())
     }
 
     fn piece_part(&self, archive: &str, piece: Piece) -> PathBuf {

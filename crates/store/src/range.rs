@@ -124,43 +124,123 @@ impl Mapped for MmapFile {
     }
 }
 
-/// A NAS file, read with pread through the I/O pool (never mmapped). Its length is taken once at
-/// open: content-named files never change.
+/// A NAS file, read with pread through the I/O pool (never mmapped). Its handle and length
+/// (content-named files never change) are taken at its first read and kept; a read that fails with
+/// an I/O error (a handle gone stale after sleep or a reconnect) opens it again and tries once more,
+/// and a handle whose read hung or was refused isn't used again. Reads go in pieces of at most
+/// `PIECE`, each its own pool operation, so a big read on a busy NAS doesn't overrun the pool's
+/// timeout (which would mark the NAS offline).
 pub struct PooledFile {
-    file: Arc<File>,
-    len: u64,
+    path: crate::nasfs::NasPath,
     pool: Arc<IoPool>,
-    path: PathBuf,
+    /// Unique per instance: a key for what's kept of its bytes.
+    id: u64,
+    file: std::sync::Mutex<Option<(Arc<File>, u64)>>,
+    /// (For its errors and Debug.)
+    shown: PathBuf,
 }
 
+/// The most a PooledFile reads in one pool operation.
+pub const PIECE: usize = 1 << 20;
+
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 impl PooledFile {
-    /// Opens `path` through the pool (open and fstat in one trip; counted there).
+    /// `path`, opened at its first read.
+    pub fn new(path: crate::nasfs::NasPath, pool: Arc<IoPool>) -> Self {
+        let shown = path.unchecked_path();
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self { path, pool, id, file: std::sync::Mutex::new(None), shown }
+    }
+
+    /// Opens `path` through the pool now (open and fstat in one trip; counted there).
     pub fn open(pool: &Arc<IoPool>, path: &crate::nasfs::NasPath) -> Result<Self, IoError> {
-        let (file, len) = pool.open_len(path)?;
-        Ok(Self { file, len, pool: pool.clone(), path: path.unchecked_path() })
+        let f = Self::new(path.clone(), pool.clone());
+        f.handle(false)?;
+        Ok(f)
     }
 
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.shown
+    }
+
+    /// Unique to this instance (for caches of its bytes).
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn pool(&self) -> &Arc<IoPool> {
+        &self.pool
+    }
+
+    fn handle(&self, fresh: bool) -> Result<(Arc<File>, u64), IoError> {
+        let mut g = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        if fresh {
+            *g = None;
+        }
+        if let Some(h) = g.as_ref() {
+            return Ok(h.clone());
+        }
+        let h = self.pool.open_len(&self.path)?;
+        *g = Some(h.clone());
+        Ok(h)
+    }
+
+    fn read_piece(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
+        let (f, flen) = self.handle(false)?;
+        check_range(flen, off, len)?;
+        let b = match self.pool.read_at(&f, off, len) {
+            Err(IoError::Io(_)) => {
+                let (f, _) = self.handle(true)?;
+                self.pool.read_at(&f, off, len)
+            }
+            Err(e) => {
+                // A handle that hung (sleep, a reconnect) isn't used again: the next read reopens.
+                *self.file.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                Err(e)
+            }
+            r => r,
+        }?;
+        crate::nasio::read(len as u64);
+        Ok(b)
+    }
+
+    /// Fills `buf` from `off`, piece by piece (no second copy of the whole).
+    pub fn read_into(&self, off: u64, buf: &mut [u8]) -> Result<(), IoError> {
+        let mut at = 0usize;
+        while at < buf.len() {
+            let n = (buf.len() - at).min(PIECE);
+            buf[at..at + n].copy_from_slice(&self.read_piece(off + at as u64, n)?);
+            at += n;
+        }
+        Ok(())
+    }
+
+    /// The whole file.
+    pub fn read_all(&self) -> Result<Vec<u8>, IoError> {
+        let n = self.len()? as usize;
+        self.read_at(0, n)
     }
 }
 
 impl std::fmt::Debug for PooledFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PooledFile({}, {} bytes)", self.path.display(), self.len)
+        write!(f, "PooledFile({})", self.shown.display())
     }
 }
 
 impl RangeRead for PooledFile {
     fn len(&self) -> Result<u64, IoError> {
-        Ok(self.len)
+        Ok(self.handle(false)?.1)
     }
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
-        check_range(self.len, off, len)?;
-        let b = self.pool.read_at(&self.file, off, len)?;
-        crate::nasio::read(len as u64);
-        Ok(b)
+        if len <= PIECE {
+            return self.read_piece(off, len);
+        }
+        let mut v = vec![0u8; len];
+        self.read_into(off, &mut v)?;
+        Ok(v)
     }
 }
 

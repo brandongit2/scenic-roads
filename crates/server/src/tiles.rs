@@ -373,7 +373,7 @@ impl Basemap {
             }
         }
         let pm = match data.basemap_src(key)? {
-            crate::views::Src::Local(m) => store::pmtiles::PmTiles::open(Box::new(crate::views::MapRange(m))),
+            crate::views::Src::Local(m) => store::pmtiles::PmTiles::open(Box::new(m)),
             crate::views::Src::Remote(r) => store::pmtiles::PmTiles::open(Box::new(r)),
         };
         let pm = Arc::new(pm.with_context(|| format!("basemap {key}"))?);

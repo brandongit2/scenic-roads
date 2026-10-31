@@ -666,16 +666,6 @@ fn gzip(b: &[u8]) -> Vec<u8> {
     e.finish().expect("gzip to memory")
 }
 
-fn gunzip(b: &[u8]) -> anyhow::Result<Vec<u8>> {
-    use std::io::Read;
-    if !b.starts_with(&[0x1f, 0x8b]) {
-        return Ok(b.to_vec());
-    }
-    let mut out = Vec::new();
-    flate2::read::GzDecoder::new(b).read_to_end(&mut out)?;
-    Ok(out)
-}
-
 fn respond_tile(body: Arc<Vec<u8>>, etag: &str, versioned: bool) -> Response {
     let mut r = body.to_vec().into_response();
     let h = r.headers_mut();
@@ -768,7 +758,7 @@ pub async fn tile(
     let key = format!("t|{kind}|{z}/{x}/{y}|{h:x}|{nv:x}");
     serve_made(s, key, etag, headers, q, move |s| {
         let Some((b, _)) = s.data.tile(&layer, z, x, y)? else { return Ok(None) };
-        let t = MarkTile::decode(&gunzip(b.bytes())?)?;
+        let t = MarkTile::decode(&names::mvt::gunzip_if_gzip(b.bytes())?)?;
         Ok(Some(with_names(s, t).encode()))
     })
     .await

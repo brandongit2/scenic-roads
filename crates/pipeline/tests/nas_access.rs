@@ -33,7 +33,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/store/src/iopool.rs", "rename", 2, "the I/O pool runs the rename on its worker thread, under its timeout"),
     ("crates/store/src/iopool.rs", "write_new", 1, "the I/O pool runs the create-new on its worker thread, under its timeout"),
     ("crates/store/src/iopool.rs", "write", 1, "the I/O pool runs the write on its worker thread, under its timeout"),
-    ("crates/store/src/range.rs", "open", 1, "a PooledFile keeps its path for its errors (opened and counted by the pool)"),
+    ("crates/store/src/range.rs", "new", 1, "a PooledFile keeps its path for its errors (opened and counted by the pool)"),
     ("crates/store/src/naming.rs", "write_atomic_as", 1, "a content-named upload: its own temporary name, an exclusive rename, a read-back past the cache, counted once by its caller as the upload lands"),
     ("crates/store/src/blobs.rs", "get", 1, "a whole local copy by crate::sys::copy_data, counted by its caller (pipeline::localread)"),
     // A child process's or a program's argument.
@@ -76,7 +76,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/pipeline/src/coord/mod.rs", "nas_prober", 1, "the share's mount: its statfs"),
     ("crates/pipeline/src/budget/nas.rs", "probe_dir", 1, "the NAS's speed probe measures raw calls, never counted as the build's NAS work"),
     ("crates/pipeline/src/agent/live.rs", "add_files", 1, "a note's full path (store::nasio's ring) shown under the root"),
-    ("crates/server/src/data.rs", "set_nas", 1, "the I/O pool's probe: a stat of the root itself, on its own thread"),
+    ("crates/store/src/iopool.rs", "for_root", 1, "the I/O pool's probe: a stat of the root itself, on its own thread"),
 ];
 
 /// Items constructing a root from a user's or a parent's string (`NasRoot::from_arg`): (file, item).
