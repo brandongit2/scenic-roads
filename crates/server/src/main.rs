@@ -30,6 +30,7 @@ mod query;
 mod regions;
 mod remote;
 mod reserve;
+mod retire;
 mod terrain;
 mod tiles;
 mod updater;
@@ -210,77 +211,6 @@ impl AppState {
         v
     }
 
-    /// The build agent's status for the menu bar (tools/status): this Mac's own agent's when it runs
-    /// here (written every few seconds), else the heartbeat it copies to the NAS (on change, and
-    /// every five minutes); whether it's this Mac's; for this Mac's, the running job's log; and
-    /// what this Mac has downloaded (downloads::summary). (The build page: this Mac's own agent's,
-    /// on its port, tools/status's panel.)
-    fn build_status(&self) -> serde_json::Value {
-        self.build_status_at(
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-        )
-    }
-
-    /// `build_status` at `now` (unix seconds).
-    fn build_status_at(&self, now: u64) -> serde_json::Value {
-        let own: Option<serde_json::Value> =
-            std::fs::read(self.home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        let fresh = own.as_ref().and_then(|v| v["beat"].as_u64()).is_some_and(|b| now.saturating_sub(b) < 120);
-        // A helper on this Mac (docs/building.md §2, The pool; a pool's member): its own status, fresh.
-        let helper: Option<serde_json::Value> = std::fs::read(self.home.join("agent/helper.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .filter(|h: &serde_json::Value| h["beat"].as_u64().is_some_and(|b| now.saturating_sub(b) < 120));
-        // (The lead's heartbeat on the NAS, written every two minutes at least while there's a
-        // lead: older than ten, there's none to show, and a member shows its own status in its place,
-        // so its menu bar stays fresh.)
-        let (mut status, local, helping) = match own {
-            Some(v) if fresh => (v, true, false),
-            _ => {
-                let lead = self.agent_status();
-                let lead_fresh = lead["beat"].as_u64().is_some_and(|b| now.saturating_sub(b) < 600);
-                match &helper {
-                    Some(h) if !lead_fresh => (h.clone(), true, true),
-                    _ => (lead, false, false),
-                }
-            }
-        };
-        // Its own status, fresh, in place of what the lead last read of it (which stops while
-        // the lead sleeps); not when it's the status shown.
-        if let (Some(h), Some(obj)) =
-            (helper.filter(|h| !helping && h["host"] != status["host"]), status.as_object_mut())
-        {
-            let host = h["host"].clone();
-            let mut list: Vec<serde_json::Value> =
-                obj.get("helpers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            list.retain(|x| x["host"] != host);
-            list.push(serde_json::json!({"host": host, "beat": h["beat"], "job": h["job"], "pause": h["pause"], "held": h["held"], "here": true}));
-            obj.insert("helpers".into(), serde_json::Value::Array(list));
-        }
-        let log = if local {
-            status["job"]["id"].as_str().map(|id| {
-                self.home.join("agent/logs").join(format!("{}.log", id.replace([' ', '/'], "-"))).display().to_string()
-            })
-        } else {
-            None
-        };
-        // This Mac's ask to pause or go on, while its agent hasn't taken it up (pipeline::control).
-        let asked = pipeline::control::peek_request(&self.home.join("agent"))
-            .map(|r| serde_json::json!({ "pause": r.pause.is_some(), "at": r.at }));
-        // What this Mac has downloaded (the menu says when the map needs the NAS).
-        let offline = downloads::summary(self);
-        // This Mac in the pool (docs/pool.md §10, §11), as its own agent says (fresh: its status, or
-        // its pool's own view, written each step of the pool's whatever its loop is doing).
-        let pool = pipeline::agent::lead::own_pool(&self.home.join("agent"), now, 120)
-            .map_or(serde_json::Value::Null, |(p, _)| serde_json::to_value(p).unwrap_or_default());
-        // This Mac paused alone (pipeline::control::Hold, task #224), as its agent keeps it, and its
-        // ask while the agent hasn't taken it up.
-        let agent_home = self.home.join("agent");
-        let held_here = pipeline::control::read_hold(&agent_home).held;
-        let hold_asked = agent_home.join(pipeline::control::HOLD_REQUEST).exists();
-        serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "offline": offline, "pool": pool, "held_here": held_here, "hold_asked": hold_asked})
-    }
-
     /// Lets go of everything mapped from what the mirror has just deleted (`names`: content
     /// names, and basemap pieces by their paths in it), so the disk gets their room back.
     fn forget_removed(&self, names: &[String]) {
@@ -399,10 +329,6 @@ struct Cli {
     /// loopback
     #[arg(long, value_name = "IPV4 ADDRESS")]
     listen: Option<std::net::Ipv4Addr>,
-    /// Taken and ignored (warned): a run file written before the reserve became the Regions panel's
-    /// setting passes it until tools/app/install.sh writes it again
-    #[arg(long, value_name = "GB", hide = true)]
-    reserve_gb: Option<String>,
 }
 
 /// Raises the open-file limit (launchd starts us at 256): NAS handles, mapped files and
@@ -423,7 +349,7 @@ fn raise_open_files() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let Cli { port, web, fonts, home: home_arg, root, no_mirror, mirror: mirror_root, listen, reserve_gb } =
+    let Cli { port, web, fonts, home: home_arg, root, no_mirror, mirror: mirror_root, listen } =
         <Cli as clap::Parser>::parse();
     raise_open_files();
     // (A catalogue read through deltas kept on this Mac for the next read: store::catalogue::keep_read_in.)
@@ -431,11 +357,12 @@ async fn main() -> Result<()> {
         store::catalogue::keep_read_in(d);
     }
     let home = home_arg.clone().unwrap_or_else(data::default_home);
-    if reserve_gb.is_some() {
-        eprintln!(
-            "server: --reserve-gb is ignored: the reserve is set in the Regions panel ({} GB now)",
-            reserve::load(&home)
-        );
+    // (An installed server on a Mac that doesn't serve the map, as every Mac ran one until #874:
+    // retired, its files deleted and its job unloaded.)
+    let user_home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    if home_arg.is_none() && pipeline::appupdate::running_version(&home).is_some() && !retire::the_maps_mac(&user_home)
+    {
+        retire::retire(&home, &user_home);
     }
     check_root_mirror(root.is_some(), mirror_root, home_arg.as_deref(), &data::default_home())?;
     let mirror = !no_mirror && (root.is_none() || mirror_root);
@@ -570,7 +497,6 @@ async fn main() -> Result<()> {
         .route("/api/profiles/{id}", axum::routing::put(profiles::put).delete(profiles::delete))
         .route("/api/profiles/{id}/default", axum::routing::post(profiles::set_default))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
-        .route("/api/build", get(build_h))
         .route("/api/bench", axum::routing::post(bench_h))
         .nest_service(
             "/fonts",
@@ -710,7 +636,7 @@ async fn warm(s: S) {
 /// are made (`poll=1`: places.rs).
 fn is_use(uri: &axum::http::Uri) -> bool {
     match uri.path() {
-        "/api/catalog" | "/api/ping" | "/api/build" | "/api/downloads" => false,
+        "/api/catalog" | "/api/ping" | "/api/downloads" => false,
         "/api/places" => !uri.query().is_some_and(|q| q.split('&').any(|kv| kv == "poll=1")),
         _ => true,
     }
@@ -931,12 +857,6 @@ fn credits_of(cat: &store::catalogue::Catalogue) -> serde_json::Value {
     }
 }
 
-/// The build agent's status (AppState::build_status), for the menu bar.
-async fn build_h(State(s): State<S>) -> Response {
-    let body = tokio::task::spawn_blocking(move || s.build_status()).await.unwrap_or(serde_json::Value::Null);
-    ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
-}
-
 /// A result of the in-page self-benchmark (web/src/selfbench.ts): its JSON saved as
 /// `<home>/bench/<name>.json` (`?name=`, letters, digits, `-` and `_` alone), for analysis
 /// (tools/bench/inpage.mjs). At most 2 MB each (axum's body limit), and the folder at most
@@ -1140,8 +1060,6 @@ mod tests {
         assert!(v(&["--port", "18150", "--home", "/tmp/h", "--root", "/tmp/r", "--no-mirror"]).is_ok());
         assert_eq!(v(&["--help"]).unwrap_err(), ErrorKind::DisplayHelp);
         assert_eq!(v(&["-h"]).unwrap_err(), ErrorKind::DisplayHelp);
-        // An old run file's reserve: taken (and ignored), never a server that won't start.
-        assert!(v(&["--web", "w", "--reserve-gb", "150"]).is_ok());
         assert_eq!(v(&["--verbose"]).unwrap_err(), ErrorKind::UnknownArgument);
         assert!(v(&["--home"]).is_err());
         assert!(v(&["--home", "--root", "/tmp/r"]).is_err());
@@ -1161,43 +1079,10 @@ mod tests {
     }
 
     #[test]
-    fn a_members_own_status_stands_in_for_a_lead_not_heard_from() {
-        // 12 Oct: no lead for three days, the lead's heartbeat on the NAS frozen, and this member's
-        // menu bar with it. Its own status, fresh, is shown in its place.
-        let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let now = 1_791_300_000;
-        std::fs::create_dir_all(nas.path().join("state")).unwrap();
-        std::fs::create_dir_all(home.path().join("agent")).unwrap();
-        std::fs::write(
-            home.path().join("agent/helper.json"),
-            serde_json::json!({ "host": "member", "beat": now - 5, "job": null }).to_string(),
-        )
-        .unwrap();
-        // The lead heard from: its status, this member's beside it as a helper.
-        std::fs::write(
-            nas.path().join("state/status.json"),
-            serde_json::json!({ "host": "lead", "beat": now - 100 }).to_string(),
-        )
-        .unwrap();
-        let body = test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path())).build_status_at(now);
-        assert_eq!((body["status"]["host"].as_str(), body["local"].as_bool()), (Some("lead"), Some(false)));
-        assert_eq!(body["status"]["helpers"][0]["host"], "member");
-        // Not for ten minutes: this member's own, as this Mac's.
-        std::fs::write(
-            nas.path().join("state/status.json"),
-            serde_json::json!({ "host": "lead", "beat": now - 3 * 86_400 }).to_string(),
-        )
-        .unwrap();
-        let body = test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path())).build_status_at(now);
-        assert_eq!((body["status"]["host"].as_str(), body["local"].as_bool()), (Some("member"), Some(true)));
-        assert!(body["status"]["helpers"].is_null() && body.get("pages").is_none(), "{body}");
-    }
-
-    #[test]
     fn polls_arent_use() {
         let use_ = |u: &str| is_use(&u.parse().unwrap());
         assert!(use_("/tiles/roads/8/1/2?v=abc") && use_("/api/places?q=banff&near=1,2"));
-        assert!(!use_("/api/catalog") && !use_("/api/build"));
+        assert!(!use_("/api/catalog") && !use_("/api/downloads"));
         // The search box asking again while the places are made.
         assert!(!use_("/api/places?q=banff&near=1,2&n=8&poll=1"));
         assert!(use_("/api/places?q=poll%3D1"));

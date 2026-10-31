@@ -1092,22 +1092,6 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
     }))
 }
 
-/// What this Mac has downloaded, in brief, for the menu bar (`/api/build`'s `offline`): whether the
-/// World is, how many regions, their bytes and how many of those are here, and whether
-/// the NAS is reachable from here. Null without a mirror.
-pub fn summary(s: &crate::AppState) -> Value {
-    let Some(m) = s.data.mirror.as_ref() else { return Value::Null };
-    let plan = s.downloads.plan(&s.data);
-    let (mut bytes, mut here) = (0, 0);
-    for i in &plan.wanted.items {
-        if let Some(b) = m.item_size(i) {
-            bytes += b;
-            here += m.item_here(i).min(b);
-        }
-    }
-    json!({ "world": plan.asked.world.is_some(), "regions": plan.asked.regions.len(), "bytes": bytes, "here": here, "nas": s.data.online() })
-}
-
 // ---- the API ----------------------------------------------------------------------------------
 
 fn err(code: StatusCode, msg: impl std::fmt::Display) -> Response {

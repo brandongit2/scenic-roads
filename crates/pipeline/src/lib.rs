@@ -1,6 +1,8 @@
 pub mod agent;
 pub mod answers;
 #[cfg(not(target_os = "wasi"))]
+pub mod appupdate;
+#[cfg(not(target_os = "wasi"))]
 pub mod areadetails;
 pub mod areafiles;
 pub mod areaflags;
@@ -48,6 +50,8 @@ pub mod localread;
 pub mod markconv;
 pub mod marks;
 pub mod marksjob;
+#[cfg(not(target_os = "wasi"))]
+pub mod menu;
 pub mod namestodo;
 pub mod needs;
 #[cfg(not(target_os = "wasi"))]

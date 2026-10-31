@@ -46,6 +46,9 @@ pub struct Root {
 pub enum Cmd {
     /// What the lead is doing, what waits and why, the build to the end by stage and step, regions
     Status(Places),
+    /// What the menu bar item (Scenic.app) shows, as JSON: this Mac's agent's status, else the
+    /// lead's heartbeat, this Mac's asks and hold (pipeline::menu)
+    Menu(Places),
     /// The steps table (docs/pipeline.md): every step's title, what it does, its kind, scope, stage
     /// and where it runs
     Steps {

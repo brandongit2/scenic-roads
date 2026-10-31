@@ -46,7 +46,6 @@ fn config(url: String, cache: &Path, wait_s: u64) -> Config {
         wait_s,
         retry: Duration::from_millis(50),
         client: "server/test".into(),
-        only_on_the_lead: false,
         stop: Arc::new(AtomicBool::new(false)),
     }
 }
@@ -320,22 +319,4 @@ fn a_lead_behind_the_map_never_takes_the_server_back() {
     append(&mut log, &feed, &publish(&[nas.path()], 3));
     assert!(f.round());
     assert_eq!((f.seq(), b.catalogue().n), (Some(3), 3));
-}
-
-/// On a Mac that isn't the declared lead nothing is followed or held; on the declared lead, it is.
-#[test]
-fn only_the_declared_lead_follows() {
-    let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let b = data(home.path(), nas.path());
-    let lead = |host: &str| {
-        let p = nas.path().join(pipeline::pool::term::LEAD);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, serde_json::json!({ "member": "m-1", "host": host }).to_string()).unwrap();
-    };
-    let mut f = Follower::new(b.clone(), config("http://127.0.0.1:1".into(), home.path(), 0));
-    assert!(!f.on_the_lead(), "no declaration");
-    lead("another-mac");
-    assert!(!f.on_the_lead());
-    lead(crate::data::host());
-    assert!(f.on_the_lead());
 }

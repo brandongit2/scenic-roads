@@ -1366,6 +1366,13 @@ fn main() -> Result<()> {
     match cli.cmd {
         None => status(&cli.status),
         Some(Cmd::Status(places)) => status(&places),
+        Some(Cmd::Menu(places)) => {
+            // (`--home` here is the app's folder's agent folder, as everywhere: its parent read.)
+            let home = places.home.as_ref().and_then(|h| h.parent().map(Path::to_path_buf)).unwrap_or_else(app_home);
+            let root = root(&places.root, false).ok().map(|r| r.short_retry());
+            println!("{}", pipeline::menu::status(&home, pipeline::menu::lead_heartbeat(root.as_ref()), now_s()));
+            Ok(())
+        }
         Some(Cmd::Lead(a)) => lead(&a),
         Some(Cmd::Agent { once, dry_run, helper: _, places }) => {
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
@@ -1387,6 +1394,10 @@ fn main() -> Result<()> {
                 eprintln!("agent: WARNING: SCENIC_TEST_DISK_EXTRA_MB: this agent counts {extra} MB more free on its disk than there is (the two-Mac test's alone, never a real agent's)");
             }
             pipeline::sys::raise_open_files();
+            // (Every Mac's app kept current from here, the map server's Mac too: pipeline::appupdate.)
+            if places.home.is_none() {
+                pipeline::appupdate::spawn(app_home(), o.root.clone());
+            }
             let mut a = agent::Agent::new(o)?;
             a.run()?;
             // (Quit as Scenic asked: the launcher ends with it rather than starting it again.)

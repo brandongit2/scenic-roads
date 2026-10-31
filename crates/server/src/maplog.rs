@@ -3,7 +3,7 @@
 //! batches whole to its own map (each checked by its digest; one that doesn't apply fetches the
 //! snapshot), and hands the result on as one catalogue, swapped whole (`Data::set_from_map`): a
 //! request never reads a torn set. Its requests say its cursor (`client=server/<host>`). It runs
-//! on the declared lead alone (`Config::only_on_the_lead`) until #874.
+//! wherever the server runs: the Mac mini alone (#874; crate::retire).
 //!
 //! With the lead away it keeps the map it holds, asking again each `retry`; holding none (or an
 //! older one than the NAS's), it takes the newest NAS snapshot (`map/<seq>.json.zst`). Neither:
@@ -55,10 +55,6 @@ pub struct Config {
     pub retry: Duration,
     /// This server's cursor's name.
     pub client: String,
-    /// Followed only while this Mac is the pool's declared lead (`state/build/lead-member.json`,
-    /// the Mac mini): the map and its catalogues take about 1 GB (docs/maplog.md §8, step 3), too
-    /// much beside every Mac's app while the server runs in each (until #874). False: always.
-    pub only_on_the_lead: bool,
     /// Set to stop following (tests).
     pub stop: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -73,7 +69,6 @@ impl Config {
             wait_s: store::map::feed::WAIT_S,
             retry: Duration::from_secs(10),
             client: format!("server/{}", crate::data::host()),
-            only_on_the_lead: true,
             stop: Default::default(),
         }
     }
@@ -104,8 +99,6 @@ pub(crate) struct Follower {
     checked: u64,
     handed: u64,
     away: bool,
-    /// Whether this Mac was the declared lead when last looked (`on_the_lead`).
-    lead_here: bool,
 }
 
 impl Follower {
@@ -121,49 +114,16 @@ impl Follower {
             checked: 0,
             handed: 0,
             away: false,
-            lead_here: false,
         }
     }
 
     fn run(mut self) {
-        let mut started = false;
+        self.start();
         while !self.cfg.stop.load(std::sync::atomic::Ordering::SeqCst) {
-            if self.cfg.only_on_the_lead && !self.on_the_lead() {
-                // (No longer the lead: the map let go, the catalogues served.)
-                if self.map.take().is_some() {
-                    self.d.set_serve_map(false);
-                    (self.handed, self.checked, started) = (0, 0, false);
-                }
-                std::thread::sleep(SWITCH_EVERY);
-                continue;
-            }
-            if !started {
-                started = true;
-                self.start();
-            }
             if !self.round() {
                 std::thread::sleep(self.cfg.retry);
             }
         }
-    }
-
-    /// Whether this Mac is the declared lead (its host the declaration's), as the NAS says; as it
-    /// was while the NAS can't be read (at first: no).
-    fn on_the_lead(&mut self) -> bool {
-        #[derive(serde::Deserialize)]
-        struct Declared {
-            #[serde(default)]
-            host: String,
-        }
-        let Some(root) = self.d.nas_root() else { return self.lead_here };
-        if let Ok(b) = root.join(pipeline::pool::term::LEAD).read() {
-            let here = serde_json::from_slice::<Declared>(&b).is_ok_and(|d| d.host == crate::data::host());
-            if here != self.lead_here {
-                eprintln!("maplog: this Mac {} the declared lead", if here { "is" } else { "isn't" });
-                self.lead_here = here;
-            }
-        }
-        self.lead_here
     }
 
     /// The saved map and the switch as this Mac kept them.
