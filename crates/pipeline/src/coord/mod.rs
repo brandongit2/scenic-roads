@@ -29,7 +29,7 @@ pub mod brokers;
 pub mod client;
 pub mod history;
 pub mod inbox;
-pub mod keep;
+pub mod kept;
 pub mod lease;
 pub mod maproutes;
 pub mod sched;
@@ -389,8 +389,9 @@ pub struct Shared {
     /// Not the lead's: why a page's retry can't be passed on to the lead now (none leads, or it runs
     /// another app: crate::pool::driver's `Act`), as its agent last saw; None: it can.
     pub retry_blocked: Option<String>,
-    /// Its state's writer to the NAS, while it leads (`keep`, task #641): told of each change saved.
-    pub keep: Arc<keep::Keep>,
+    /// Its state in the pool's store on this Mac's disk (`kept`, docs/coordination.md §4; task
+    /// #878): told of each change saved, opened by `Coordinator::start_on`.
+    pub keep: Arc<kept::Kept>,
 }
 
 /// How long a target waits on the NAS budget before the status says so (s).
@@ -415,45 +416,16 @@ impl Shared {
         self.clock.now()
     }
 
+    /// The jobs' leases saved: in the store's memory at once, on its disk by its writer (a handler
+    /// answers once they are: `http::json`).
     fn save_leases(&self) {
-        self.keep.changed();
-        if let Err(e) = self.leases.save(&self.dir.join("leases.json")) {
-            eprintln!("coordinator: saving the leases: {e:#}");
-        }
+        let (meta, each) = self.leases.kept();
+        self.keep.leases(meta, each);
     }
 
+    /// The measures saved (`save_leases`).
     fn save_costs(&self) {
-        self.keep.changed();
-        let r = serde_json::to_vec(&self.costs)
-            .map_err(anyhow::Error::from)
-            .and_then(|b| store::whole::write(&self.dir.join("costs.json"), &b));
-        if let Err(e) = r {
-            eprintln!("coordinator: saving the costs: {e:#}");
-        }
-        let r = serde_json::to_vec(&self.floors)
-            .map_err(anyhow::Error::from)
-            .and_then(|b| store::whole::write(&self.dir.join("floors.json"), &b));
-        if let Err(e) = r {
-            eprintln!("coordinator: saving the floors: {e:#}");
-        }
-        let r = serde_json::to_vec(&self.disks)
-            .map_err(anyhow::Error::from)
-            .and_then(|b| store::whole::write(&self.dir.join("disks.json"), &b));
-        if let Err(e) = r {
-            eprintln!("coordinator: saving the disk floors: {e:#}");
-        }
-        let r = serde_json::to_vec(&self.fills)
-            .map_err(anyhow::Error::from)
-            .and_then(|b| store::whole::write(&self.dir.join(FILLS), &b));
-        if let Err(e) = r {
-            eprintln!("coordinator: saving the caches' fills: {e:#}");
-        }
-        let r = serde_json::to_vec(&self.job_disks)
-            .map_err(anyhow::Error::from)
-            .and_then(|b| store::whole::write(&self.dir.join(JOB_DISKS), &b));
-        if let Err(e) = r {
-            eprintln!("coordinator: saving the jobs' disk: {e:#}");
-        }
+        self.keep.measures(&self.costs, &self.floors, &self.disks, &self.job_disks, &self.fills);
     }
 
     /// Disk floors seen (by cost key, MB): each kept where it's more than the one kept. One of the
@@ -1224,7 +1196,9 @@ impl Coordinator {
     /// `start`, answering on `listener`, already listening (a test's, on a port it held from the
     /// start: no other can take it between).
     pub fn start_on(dir: &Path, listener: std::net::TcpListener, me: &str, app: &str) -> Result<Coordinator> {
-        Coordinator::start_with(dir, listener, me, app, false)
+        let c = Coordinator::start_with(dir, listener, me, app, false)?;
+        c.open_store()?;
+        Ok(c)
     }
 
     /// `start_on`, or a viewer alone (`viewer`): a coordinator on a wildcard `listener` answers
@@ -1438,8 +1412,10 @@ impl Coordinator {
     /// returns (an upload's rename already under way, `/work/out`, may still land).
     pub fn stop(&self) {
         self.stopped.store(true, std::sync::atomic::Ordering::Relaxed);
-        self.shared.lock().unwrap().keep.stop();
         *self.routes.write().unwrap_or_else(|e| e.into_inner()) = true;
+        // (Once no route is under way: what they saved is on disk.)
+        let keep = self.shared.lock().unwrap_or_else(|e| e.into_inner()).keep.clone();
+        keep.stop();
         self.wake.notify_one();
         if let Some(rx) = self.closed.lock().unwrap().take() {
             // (Its thread gone already, its listener with it: the sender dropped.)
@@ -2407,17 +2383,60 @@ impl Coordinator {
         self.shared.lock().unwrap().catalogues.is_some()
     }
 
-    /// Its state as the pool keeps it per term (docs/pool.md §6.2, §7.5): the jobs' leases (each
-    /// with its term and when it was granted), what each target cost, the workers' failures (when,
-    /// by this Mac's wall clock), the pause. Taken under the lock, written by the caller without it.
+    /// Its state as another lead takes it up (`load_pool_state`): the jobs' leases (each with its
+    /// term and when it was granted), what each target cost, the workers' failures (when, by this
+    /// Mac's wall clock), the pause. Taken under the lock.
     pub fn pool_state(&self) -> PoolState {
         pool_state_of(&self.shared.lock().unwrap())
     }
 
-    /// Writes its state of term `term` to the NAS from now on, off the caller's thread (`keep`):
-    /// each lead's step names its term.
-    pub fn keep_state(&self, nas: Arc<dyn crate::pool::nas::Nas + Send + Sync>, term: u64) {
-        keep::keep(&self.shared, nas, term, keep::PACE);
+    /// Backs its store up to the NAS each `pool::store::BACKUP_EVERY` from now on, off every
+    /// handler's thread (docs/coordination.md §3.2): each lead's step says so.
+    pub fn back_up(&self, nas: Arc<dyn crate::pool::nas::Nas + Send + Sync>) {
+        self.back_up_every(nas, crate::pool::store::BACKUP_EVERY);
+    }
+
+    pub fn back_up_every(&self, nas: Arc<dyn crate::pool::nas::Nas + Send + Sync>, every: Duration) {
+        let keep = self.shared.lock().unwrap().keep.clone();
+        keep.back_up(nas, &self.me, every);
+    }
+
+    /// Opens its store (`kept`; none for a viewer): one found is its state, in place of what its start
+    /// read from the files of an agent before the store; none, it's filled from those. Its leases
+    /// come back unconfirmed (docs/coordination.md §4.4), this Mac's own ended with the agent before.
+    fn open_store(&self) -> Result<()> {
+        let mut s = self.shared.lock().unwrap();
+        if s.viewer {
+            return Ok(());
+        }
+        let dir = s.dir.join("store");
+        let found = crate::pool::store::Store::exists(&dir);
+        let store = crate::pool::store::Store::open(&dir)?;
+        let loaded = kept::Loaded::of(&store.snapshot().docs);
+        if found {
+            let now = s.now();
+            s.leases.restore(&loaded.leases, now)?;
+            for l in s.leases.drop_where(|l| l.worker == self.me) {
+                eprintln!("coordinator: {}'s lease ended with the agent before this one", l.what());
+            }
+            s.costs = loaded.costs.clone();
+            s.floors = loaded.floors.clone();
+            s.disks = loaded.disks.clone();
+            s.job_disks = loaded.job_disks.clone();
+            s.fills = loaded.fills.clone();
+            s.needs_rev += 1;
+            if let Some((p, at)) = loaded.pause.clone() {
+                (s.paused, s.pause_at) = (p, at);
+            }
+        } else {
+            eprintln!("coordinator: its store made at {}, from its files", dir.display());
+        }
+        let keep = s.keep.clone();
+        keep.open(store, &loaded);
+        s.save_leases();
+        s.save_costs();
+        keep.pause(s.paused.as_ref(), s.pause_at);
+        Ok(())
     }
 
     /// Takes up `p`, the term before's state (its own before a restart): its leases over
@@ -2509,8 +2528,6 @@ impl Coordinator {
     /// over with the term), the asks its.
     pub fn become_broker(&self) {
         let mut s = self.shared.lock().unwrap();
-        // (Its term's state no longer its to write: the new lead's, `keep`.)
-        s.keep.off();
         s.pass.clear();
         s.set_offers(Vec::new());
         s.resume = None;
@@ -2574,8 +2591,8 @@ fn pool_state_of(s: &Shared) -> PoolState {
     }
 }
 
-/// The coordinator's state as the pool keeps it per term (`Coordinator::pool_state`):
-/// `state/coord/term/<E>/state.json`, which the lead's next term loads (a restart's: its leases).
+/// The coordinator's state as a lead takes up another's (`Coordinator::pool_state`; from the NAS
+/// backup of the store of the Mac that led before it, `kept::Loaded::pool_state`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PoolState {
     #[serde(default)]
@@ -3232,12 +3249,7 @@ fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
         };
         s.history.add(e);
     }
-    let kept = serde_json::to_vec(&serde_json::json!({ "pause": pause, "at": at }))
-        .map_err(anyhow::Error::from)
-        .and_then(|b| store::whole::write(&s.dir.join("pause.json"), &b));
-    if let Err(e) = kept {
-        eprintln!("coordinator: keeping the pause: {e:#} (it holds until this agent stops)");
-    }
+    s.keep.pause(pause.as_ref(), at);
     s.paused = pause;
 }
 
@@ -4991,7 +5003,13 @@ mod http {
             if *stopped {
                 return Ok((503, serde_json::json!({ "error": "this coordinator has stopped" })));
             }
-            route(&path, &body, &c.shared, &c.journal, &caller)
+            let r = route(&path, &body, &c.shared, &c.journal, &caller);
+            // (What it changed on disk before its answer: docs/coordination.md §2, principle 5.)
+            let keep = c.shared.lock().unwrap().keep.clone();
+            if matches!(r, Ok((200..=299, _))) && !keep.durable(keep.last()) {
+                return Ok((503, serde_json::json!({ "error": "the lead's disk didn't take the change in time" })));
+            }
+            r
         });
         match routed.await {
             Ok(Ok((204, _))) => (StatusCode::NO_CONTENT, [(header::CACHE_CONTROL, "no-store")]).into_response(),
@@ -5201,6 +5219,93 @@ pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Coordinator, u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// docs/coordination.md §2, principle 3 (task #878, step 1): the handlers answer from memory and
+    /// the store, never the NAS: no `nasread`, NAS handle or whole-file write in `route`, nor in what
+    /// it saves through (`save_leases`, `save_costs`, `set_pause`). `/work/settings` alone still
+    /// reaches the NAS's room setting through crate::agent::settings: moved to `/pool/settings` by
+    /// step 5.
+    #[test]
+    fn coord_handlers_never_touch_the_nas() {
+        let src = include_str!("mod.rs");
+        let body = |start: &str, end: &str| -> String {
+            let a = src.find(start).unwrap_or_else(|| panic!("{start} not found"));
+            let b = a + src[a..].find(end).unwrap_or_else(|| panic!("{end} not found after {start}"));
+            src[a..b].to_string()
+        };
+        let route = body("\nfn route(", "\nmod http {");
+        let settings = body("\n        \"/work/settings\" => {", "\n        \"/work/act\" => {");
+        let route = route.replace(&settings, "");
+        let parts = [
+            ("route", route),
+            ("save_leases", body("    fn save_leases(", "\n    }\n")),
+            ("save_costs", body("    fn save_costs(", "\n    }\n")),
+            ("set_pause", body("\nfn set_pause(", "\n}\n")),
+        ];
+        for (name, text) in parts {
+            for bad in ["nasread", "NasRoot", "dyn Nas", "pool::nas", "store::whole", "settings::"] {
+                assert!(!text.contains(bad), "{name} reaches {bad}");
+            }
+        }
+    }
+
+    /// A grant is on the store's disk before its answer (docs/coordination.md §6.1): a coordinator
+    /// killed right after it answered (no stop) and started again from its folder has the lease.
+    #[test]
+    fn a_grant_is_durable_before_its_answer() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = start_for_test(d.path(), "m4", "");
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        c.offer("p", vec![Offer { step: "unit".into(), targets: vec![("6/1/1".into(), "k".into(), 100)], job: None }]);
+        let ask = Ask {
+            worker: "m1".into(),
+            kind: "native".into(),
+            can: vec!["unit".into()],
+            mem_mb: 4096,
+            cores: 8,
+            ..Default::default()
+        };
+        let g = w.ask(&ask).unwrap().expect("granted");
+        // (Killed: its writer stopped, nothing more written.)
+        c.shared.lock().unwrap().keep.store().unwrap().kill();
+        std::mem::forget(c);
+        let (b, _) = start_for_test(d.path(), "m4", "");
+        let l = b.shared.lock().unwrap().leases.of(g.lease).cloned().expect("the lease kept");
+        assert!(l.unconfirmed, "back unconfirmed until its member's beat lists it");
+        assert_eq!(l.targets(), [("6/1/1".to_string(), "k".to_string())]);
+    }
+
+    /// A restart replays the store: leases, costs, the pause, the epoch past the last.
+    #[test]
+    fn a_lead_restart_replays_the_store() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, _) = start_for_test(d.path(), "m4", "");
+        let epoch = c.shared.lock().unwrap().keep.store().unwrap().epoch();
+        // (Another Mac's: this Mac's own end with the agent before.)
+        let id = {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            let id = s.leases.grant(
+                "m1",
+                Work::Job { step: "unit".into(), targets: vec![("6/1/1".into(), "k".into())] },
+                now,
+            );
+            s.save_leases();
+            id
+        };
+        c.add_costs(&[("6/1/1".into(), Cost { peak_mb: 700, secs: 9, ..Default::default() })]);
+        let pause = crate::control::Pause { mode: crate::control::Mode::Freeze, by: "owner".into(), at: 5 };
+        c.set_pause(Some(pause.clone()), 5);
+        c.stop();
+        let (b, _) = start_for_test(d.path(), "m4", "");
+        let s = b.shared.lock().unwrap();
+        assert_eq!(s.leases.of(id).map(|l| l.worker.as_str()), Some("m1"));
+        assert_eq!(s.costs.get("6/1/1").map(|c| c.peak_mb), Some(700));
+        assert_eq!((s.paused.clone(), s.pause_at), (Some(pause), 5));
+        assert_eq!(s.keep.store().unwrap().epoch(), epoch + 1);
+        // (Nothing of it in the old files: the store holds it.)
+        assert!(!d.path().join("leases.json").exists() && !d.path().join("costs.json").exists());
+    }
 
     use axum::body::Body;
     use axum::extract::Request;
@@ -6363,8 +6468,8 @@ mod tests {
         let Granted::Job { targets, .. } = g.work else { panic!() };
         assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/4/1", "6/4/2", "6/4/3"]);
         // Kept across a restart of the coordinator; cleared as the owner asks (`scenic pool floors`).
-        let kept: BTreeMap<String, Floor> =
-            serde_json::from_slice(&std::fs::read(c.shared.lock().unwrap().dir.join("floors.json")).unwrap()).unwrap();
+        let docs = c.shared.lock().unwrap().keep.store().unwrap().snapshot().docs;
+        let kept = kept::Loaded::of(&docs).floors;
         assert_eq!(kept.get(&cost_key("peaks", "6/2/2")), Some(&f(4000, true)));
         let (code, v) = w
             .post_json("/work/floors", &serde_json::json!({ "clear": true, "step": "peaks", "target": "6/2/2" }))

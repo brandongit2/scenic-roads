@@ -37,6 +37,7 @@ pub mod journal_gc;
 pub mod nas;
 pub mod reachable;
 pub mod records;
+pub mod store;
 pub mod term;
 
 #[cfg(test)]
@@ -108,7 +109,7 @@ fn member_id_on(home: &Path, mac: Option<&str>) -> Result<String> {
                 (Some(_), _) | (None, None) => return Ok(id.to_string()),
                 // Made before its Mac could be read: bound now.
                 (None, Some(mac)) => {
-                    store::whole::write(&p, format!("{id}\n{mac}\n").as_bytes())?;
+                    ::store::whole::write(&p, format!("{id}\n{mac}\n").as_bytes())?;
                     return Ok(id.to_string());
                 }
             }
@@ -118,7 +119,7 @@ fn member_id_on(home: &Path, mac: Option<&str>) -> Result<String> {
     }
     std::fs::create_dir_all(home).with_context(|| format!("make {}", home.display()))?;
     let id = new_id();
-    store::whole::write(&p, format!("{id}\n{}\n", mac.unwrap_or("")).as_bytes())?;
+    ::store::whole::write(&p, format!("{id}\n{}\n", mac.unwrap_or("")).as_bytes())?;
     Ok(id)
 }
 
@@ -127,7 +128,7 @@ fn member_id_on(home: &Path, mac: Option<&str>) -> Result<String> {
 fn platform_uuid() -> Option<&'static str> {
     static UUID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     UUID.get_or_init(|| {
-        let o = store::spawn::output(store::spawn::command("/usr/sbin/ioreg").args([
+        let o = ::store::spawn::output(::store::spawn::command("/usr/sbin/ioreg").args([
             "-rd1",
             "-c",
             "IOPlatformExpertDevice",
@@ -217,8 +218,8 @@ fn new_id() -> String {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     seed.extend_from_slice(&t.to_le_bytes());
     seed.extend_from_slice(&std::process::id().to_le_bytes());
-    seed.extend_from_slice(store::sys::host().as_bytes());
-    format!("m-{}", store::naming::hash16(&seed))
+    seed.extend_from_slice(::store::sys::host().as_bytes());
+    format!("m-{}", ::store::naming::hash16(&seed))
 }
 
 #[cfg(test)]

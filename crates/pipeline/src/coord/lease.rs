@@ -56,6 +56,10 @@ pub struct Lease {
     /// names its Mac, granted before a slot takes it. None until said (an older app's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<u32>,
+    /// Loaded (a restart's, a take-up's) and not yet listed by its member's beat
+    /// (docs/coordination.md §4.4): its member's first beat that leaves it out releases it at once.
+    #[serde(skip)]
+    pub unconfirmed: bool,
 }
 
 fn is_zero_u32(n: &u32) -> bool {
@@ -207,16 +211,19 @@ impl Leases {
             l.next = l.next.max(s.next);
             (l.holds, l.cancelled) = (s.holds, s.cancelled);
             for mut x in s.leases {
-                (x.granted, x.deadline) = (now, now + ttl);
+                (x.granted, x.deadline, x.unconfirmed) = (now, now + ttl, true);
                 l.by_id.insert(x.id, x);
             }
         }
         l
     }
 
-    /// Saves the jobs' leases (whole: a crash never leaves half a file).
-    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        store::whole::write(path, &serde_json::to_vec_pretty(&self.saved())?)
+    /// The jobs' leases as the coordinator's store keeps them (crate::coord::kept): the next id, the
+    /// holds and cancels, and each lease by its id.
+    pub fn kept(&self) -> (serde_json::Value, Vec<(u64, serde_json::Value)>) {
+        let Saved { next, leases, holds, cancelled } = self.saved();
+        let meta = serde_json::to_value(Saved { next, leases: Vec::new(), holds, cancelled }).unwrap_or_default();
+        (meta, leases.into_iter().filter_map(|l| Some((l.id, serde_json::to_value(&l).ok()?))).collect())
     }
 
     fn saved(&self) -> Saved {
@@ -247,7 +254,7 @@ impl Leases {
         (self.holds, self.cancelled) = (s.holds, s.cancelled);
         let n = s.leases.len();
         for mut x in s.leases {
-            (x.granted, x.deadline) = (now, now + self.ttl);
+            (x.granted, x.deadline, x.unconfirmed) = (now, now + self.ttl, true);
             self.next = self.next.max(x.id + 1);
             self.by_id.insert(x.id, x);
         }
@@ -396,6 +403,7 @@ impl Leases {
                 live: None,
                 slot: None,
                 threads: 0,
+                unconfirmed: false,
             },
         );
         id
@@ -552,13 +560,14 @@ mod tests {
         assert!(!l.renew(b, "m4", None, t2), "a lapsed lease can't be renewed");
         assert!(l.finish(b, "m4", t2).is_none(), "nor finished");
         assert_eq!(l.expire(t2).iter().map(|x| x.id).collect::<Vec<_>>(), [b, t]);
-        // Saved and read back: the job's lease, live again for a whole ttl; ids go on.
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("leases.json");
+        // Kept (the coordinator's store) and read back: the job's lease, live again for a whole ttl;
+        // ids go on.
         l.grant("m2", Work::Task { id: 8 }, t2);
-        l.save(&p).unwrap();
+        let (mut kept, each) = l.kept();
+        kept["leases"] = each.into_iter().map(|x| x.1).collect();
         let t3 = t2 + Duration::from_secs(5000);
-        let mut back = Leases::load(&p, Duration::from_secs(600), t3);
+        let mut back = Leases::new(Duration::from_secs(600));
+        back.restore(&kept, t3).unwrap();
         assert_eq!(
             back.all(t3).iter().map(|x| (x.id, x.worker.as_str())).collect::<Vec<_>>(),
             [(a, "m1")],

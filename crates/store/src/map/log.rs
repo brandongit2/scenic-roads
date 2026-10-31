@@ -2,7 +2,8 @@
 //! at some `seq`, with the clients' cursors) and segments `<first seq>.jsonl` of batches, one JSON
 //! line each, appended and `fsync`ed before a batch counts. Opening loads the snapshot and replays
 //! the segments' batches past it; a torn last line (a write cut short: it was never answered) is
-//! dropped. `compact` writes the snapshot again and removes the segments it covers.
+//! dropped. `compact` writes the snapshot again and removes the segments it covers. The segments,
+//! their torn lines and the snapshot's whole write are crate::seglog's, shared with the pool's store.
 //!
 //! It keeps, for each watch its opener names (a key prefix, or a part of a batch's `why`:
 //! super::marks), the last batch that marked it (docs/maplog.md §6.8), saved with the snapshot and
@@ -10,36 +11,24 @@
 //! changed, or when the low zooms last went out, whatever the log still holds.
 
 use super::{Batch, Cursor, Map, Mark, Snapshot};
-use anyhow::{bail, ensure, Context, Result};
+use crate::seglog::{self, Appender};
+use anyhow::{ensure, Context, Result};
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub const SNAPSHOT: &str = "snapshot.json.zst";
-const SEGMENT: &str = ".jsonl";
 /// A new segment each this many batches or bytes (§4.2).
 const SEGMENT_BATCHES: u64 = 10_000;
 const SEGMENT_BYTES: u64 = 64 << 20;
 
-/// The open segment being appended to.
-struct Segment {
-    first: u64,
-    file: File,
-    batches: u64,
-    bytes: u64,
-}
-
-/// The map and its log in a folder of the lead's disk.
+/// The map and its log in a folder of the lead's disk (its segments: crate::seglog).
 pub struct Log {
     dir: PathBuf,
     map: Arc<Map>,
     cursors: BTreeMap<String, Cursor>,
-    open: Option<Segment>,
-    /// A failed append whose bytes couldn't be cut off again: no more appends until the log is
-    /// opened again (which cuts them as a torn last line), so none lands after them.
-    torn: bool,
+    open: Option<Appender>,
     /// The batches replayed at the open, after the snapshot's `seq` (`base`): what its clients are
     /// answered from until it appends more (`replayed`, taken once).
     base: u64,
@@ -47,26 +36,6 @@ pub struct Log {
     /// What's watched, and each watch's last mark (`marks`).
     watch: Vec<String>,
     marks: BTreeMap<String, Mark>,
-}
-
-/// `fsync` of a folder: the names made, renamed or removed in it durable.
-fn sync_dir(dir: &Path) -> std::io::Result<()> {
-    File::open(dir)?.sync_all()
-}
-
-fn segment_name(first: u64) -> String {
-    format!("{first}{SEGMENT}")
-}
-
-/// The segments in `dir` by their first `seq`, lowest first.
-fn segments(dir: &Path) -> Result<Vec<u64>> {
-    let mut v: Vec<u64> = fs::read_dir(dir)
-        .with_context(|| format!("list {}", dir.display()))?
-        .flatten()
-        .filter_map(|e| e.file_name().to_str()?.strip_suffix(SEGMENT)?.parse().ok())
-        .collect();
-    v.sort_unstable();
-    Ok(v)
 }
 
 impl Log {
@@ -93,41 +62,16 @@ impl Log {
                 marks.entry(w.clone()).or_insert_with(|| Mark { seq: map.seq, at: map.at.clone() });
             }
         }
-        let segs = segments(dir)?;
-        let mut open = None;
         let (base, mut replayed) = (map.seq, Vec::new());
-        for (i, &first) in segs.iter().enumerate() {
-            let path = dir.join(segment_name(first));
-            let text = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-            let last_seg = i + 1 == segs.len();
-            let (mut at, mut batches) = (0usize, 0u64);
-            while at < text.len() {
-                let end = text[at..].iter().position(|&c| c == b'\n').map(|p| at + p);
-                let line = &text[at..end.unwrap_or(text.len())];
-                let parsed = end.and_then(|_| serde_json::from_slice::<Batch>(line).ok());
-                let Some(b) = parsed else {
-                    let rest_blank = end.is_none_or(|e| text[e + 1..].iter().all(u8::is_ascii_whitespace));
-                    ensure!(last_seg && rest_blank, "{}: a damaged line at byte {at}", path.display());
-                    eprintln!("maplog: {}: a torn last line ({} bytes) dropped", path.display(), text.len() - at);
-                    let f = OpenOptions::new().write(true).open(&path)?;
-                    f.set_len(at as u64)?;
-                    f.sync_all()?;
-                    break;
-                };
-                if b.seq > map.seq {
-                    drop(map.apply_in(&b).with_context(|| format!("{}", path.display()))?);
-                    mark(&watch, &mut marks, &b);
-                    replayed.push(b);
-                }
-                batches += 1;
-                at = end.expect("parsed lines end") + 1;
+        let open = seglog::read::<Batch>(dir, "maplog", |b| {
+            if b.seq > map.seq {
+                drop(map.apply_in(&b)?);
+                mark(&watch, &mut marks, &b);
+                replayed.push(b);
             }
-            if last_seg {
-                let file = OpenOptions::new().append(true).open(&path)?;
-                open = Some(Segment { first, file, batches, bytes: at as u64 });
-            }
-        }
-        Ok(Log { dir: dir.to_owned(), map: Arc::new(map), cursors, open, torn: false, base, replayed, watch, marks })
+            Ok(())
+        })?;
+        Ok(Log { dir: dir.to_owned(), map: Arc::new(map), cursors, open, base, replayed, watch, marks })
     }
 
     /// Each watch's last mark (none for a `why` part no batch since its watch began has said).
@@ -175,22 +119,18 @@ impl Log {
     /// one it has: the batch is then applied to a copy, swapped in; with none, in place, never a
     /// second whole map.
     pub fn append(&mut self, b: &Batch) -> Result<Arc<Map>> {
-        ensure!(!self.torn, "the map's log has a failed write it couldn't cut off: reopen it");
+        ensure!(
+            !self.open.as_ref().is_some_and(|s| s.torn),
+            "the map's log has a failed write it couldn't cut off: reopen it"
+        );
         let mut line = serde_json::to_vec(b)?;
         line.push(b'\n');
         let map = Arc::make_mut(&mut self.map);
         let undo = map.apply_in(b)?;
-        let roll = self.open.as_ref().is_none_or(|s| s.batches >= SEGMENT_BATCHES || s.bytes >= SEGMENT_BYTES);
+        let roll = self.open.as_ref().is_none_or(|s| s.lines >= SEGMENT_BATCHES || s.bytes >= SEGMENT_BYTES);
         if roll {
-            let path = self.dir.join(segment_name(b.seq));
-            let made = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .and_then(|file| sync_dir(&self.dir).map(|()| file))
-                .with_context(|| format!("open {}", path.display()));
-            match made {
-                Ok(file) => self.open = Some(Segment { first: b.seq, file, batches: 0, bytes: 0 }),
+            match Appender::create(&self.dir, b.seq) {
+                Ok(a) => self.open = Some(a),
                 Err(e) => {
                     map.undo(undo);
                     return Err(e);
@@ -198,48 +138,24 @@ impl Log {
             }
         }
         let s = self.open.as_mut().expect("opened above");
-        let wrote = s.file.write_all(&line).and_then(|_| s.file.sync_data());
-        if let Err(e) = wrote {
-            // (Whatever went down cut off again; failing that, no more appends: it's a torn last
-            // line, cut at the next open.)
-            self.torn = s.file.set_len(s.bytes).and_then(|_| s.file.sync_data()).is_err();
+        if let Err(e) = s.append(&line, 1) {
             map.undo(undo);
             return Err(e).context("append to the map's log");
         }
-        s.batches += 1;
-        s.bytes += line.len() as u64;
         mark(&self.watch, &mut self.marks, b);
         Ok(self.map.clone())
     }
 
     fn write_snapshot(&self) -> Result<()> {
         let b = Snapshot { marks: self.marks.clone(), ..Snapshot::of(&self.map, &self.cursors) }.encode()?;
-        let path = self.dir.join(SNAPSHOT);
-        let tmp = crate::naming::tmp_path(&path);
-        let mut f = File::create(&tmp)?;
-        f.write_all(&b)?;
-        f.sync_all()?;
-        fs::rename(&tmp, &path).with_context(|| format!("rename into {}", path.display()))?;
-        // (The rename durable before any segment it covers goes.)
-        sync_dir(&self.dir).with_context(|| format!("fsync {}", self.dir.display()))
+        seglog::write_durable(&self.dir.join(SNAPSHOT), &b)
     }
 
     /// Writes the snapshot at the map's `seq` and removes each segment all of whose batches it holds
     /// (its clients are answered from memory: store::map::feed). The open one stays.
     pub fn compact(&mut self) -> Result<()> {
         self.write_snapshot()?;
-        let segs = segments(&self.dir)?;
-        let open = self.open.as_ref().map(|s| s.first);
-        for w in segs.windows(2) {
-            let (first, next) = (w[0], w[1]);
-            if next <= self.map.seq + 1 && Some(first) != open {
-                let p = self.dir.join(segment_name(first));
-                if let Err(e) = fs::remove_file(&p) {
-                    bail!("remove {}: {e}", p.display());
-                }
-            }
-        }
-        Ok(())
+        seglog::remove_covered(&self.dir, self.map.seq, self.open.as_ref().map(|s| s.first()))
     }
 }
 
@@ -253,7 +169,10 @@ fn mark(watch: &[String], marks: &mut BTreeMap<String, Mark>, b: &Batch) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seglog::{segment_name, segments};
     use serde_json::json;
+    use std::fs::OpenOptions;
+    use std::io::Write;
 
     fn map_at(seq: u64, n: usize) -> Map {
         let e = (0..n).map(|i| (format!("u/6/{i}/0"), json!(true))).collect();

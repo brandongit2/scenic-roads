@@ -223,10 +223,10 @@ of the lead's, between restarts and sleeps.
   that didn't fail a save (`Run::keep_today`): a Mac back on an older app reads them up to
   `PROBE_S` and a step stale. Once every member's says so the files are left as they were, stale, read by
   no app that heartbeats. Term 1's own saves still write them (`Records::save`).
-- **The coordinator's state** is per term too: `state/coord/term/<E>/state.json`
-  (`crate::coord::PoolState`: leases, costs, floors, disks, failures, pause), written by the lead's
-  coordinator's own thread as it changes (§7.5). A take-up in a new process loads the newest earlier
-  term's (`took_up`): so a restart keeps its leases.
+- **The coordinator's state** is in its store on its own disk (docs/coordination.md §4, task #878:
+  `agent/coord/store/`), not per term: a restart opens it, so it keeps its leases. Its backup on the
+  NAS (`state/lead/store.json`, §7.5) is what a take-up in a new process loads when another Mac led
+  before it (`took_up`: the backup naming another member).
 
 ### 6.3 With the lead gone
 
@@ -988,24 +988,19 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
 
 ### 7.5 The coordinator across terms
 
-- **Its state on the NAS** (`crate::coord::keep`, task #641) is written by a thread of the
-  coordinator's own, never the agent's loop (whose step only names the term it leads): woken by
-  every change the coordinator saves on its disk (a grant, a finish, a lapse, a given-back lease, a
-  measure) and each minute for the rest (failures, the pause), written when its bytes changed. A
-  change waits `BATCH` (2 s) for the rest of its burst, and a write starts at least `GAP` (10 s)
-  after the one before, so a burst of grants is one ~3 MB file each 10 s at most (200 grants in 3 s:
-  15 writes at the test's 0.2 s gap), through the agent's NAS deadlines (§7.8), a failed write tried
-  again a gap on. A lead that loses its term stops writing it (its coordinator stopped, or kept on
-  as a broker: `Keep::off`), and a writer that panics is started again at the next lead's step.
-  Renewals aren't saved (a loaded lease gets a fresh deadline).
-- **What it must hold, and when.** The lead's next term in a new process (a restart, an update's
-  at a safe point, or a crash: its re-assertion loads the file over the leases on its disk; or the
-  owner's move of the lead, §6.1) is taken up from the newest file, so every job out goes on
-  renewing (test `agent::pool::tests::the_leads_restart_keeps_its_leases`). A lease granted since
-  that file (a crash right after it) is unknown there: its worker's next renewal is refused, its
-  job stops and its targets go out again. That costs the work, never the records (the merge's
-  lease order, §6.5), so a grant isn't held for the write; it's on the NAS within `BATCH` plus a write (a `GAP` in a burst), where it waited for the
-  lead's next loop step before (20 s, minutes while the loop was busy).
+- **Its state** is in the pool's store on the lead's own disk (`crate::pool::store`,
+  `crate::coord::kept`; docs/coordination.md §4, task #878): each change (a grant, a finish, a
+  lapse, a measure, the pause) in the store's log, `fsync`ed by its writer thread before the
+  request that made it is answered (a grant is never answered before it's durable); a restart, an
+  update's or a crash's, opens the store, its leases back unconfirmed (test
+  `agent::pool::tests::the_leads_restart_keeps_its_leases`). Renewals aren't saved (a loaded lease
+  gets a fresh deadline).
+- **Its backup on the NAS** (`state/lead/store.json`, the store's snapshot whole) is written by a
+  thread of its own each `pool::store::BACKUP_EVERY` (10 min) while the store changed, started by
+  the lead's step, never on a handler's path. The owner's move of the lead (§6.1) takes it up there
+  (`took_up`, the backup naming another member): a lease granted since it is unknown to the new lead,
+  its worker's next renewal refused, its job stopped and its targets out again (the work, never the
+  records: the merge's lease order, §6.5).
 - Workers are a member id and an agent instance; a new term drops only instances that no longer
   exist.
 - **What a job waited on** (task #791): the lead's coordinator writes on each "start" and "lease"

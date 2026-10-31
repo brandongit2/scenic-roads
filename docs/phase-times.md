@@ -8,7 +8,7 @@ Time by phase). The phases are named here as they are now, as doings (task #844 
 Measured from the records the pipeline keeps, not new benchmarks: the lead's `coord/timings.jsonl`
 (every run's phases; here the 1,454 runs since 25 Oct 00:00 UTC, the current rebuild under the
 terrain of task #639: terrain-hi, terrain-deep, terrain-lo) and the coordinator's costs (the latest
-measured run of each target, `coord/costs.json`). CPU/wall is the run's CPU time over its wall time
+measured run of each target, `cost/<key>` in the coordinator's store, `coord/store/`). CPU/wall is the run's CPU time over its wall time
 (a job has 1–3 threads). The NAS, net and compute columns are the shares of the run's wall time in
 top-level phases of that class (classes declared by hand then; since task #870 phases have no
 class, their waits on the NAS, network and disk are measured: docs/pool.md §10, Time by phase, so

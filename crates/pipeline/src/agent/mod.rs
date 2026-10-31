@@ -8157,7 +8157,7 @@ impl Agent {
     /// What the lead keeps written besides its records (docs/pool.md §12): today's files while a
     /// member's app still reads them (`pool::Run::keep_today`; `saved`: this step's records are on
     /// the NAS), the raw tiles' and pyramids' archives its records hold named in their stores'
-    /// indexes, its term named to the coordinator's state's writer (crate::coord::keep), its history's
+    /// indexes, its coordinator's store's backup started (crate::pool::store::back_up), its history's
     /// new events.
     fn pool_lead_files(&mut self, root: &store::nasfs::NasRoot, saved: bool) {
         // (The forecast's files the plan handed over, written below.)
@@ -8183,8 +8183,8 @@ impl Agent {
         }
         let Some(co) = &self.coord else { return };
         let term = run.gates.leads.unwrap_or(run.gates.term);
-        // (Its state: written by the coordinator's own thread as it changes, crate::coord::keep.)
-        co.keep_state(run.side.shared_nas(), term);
+        // (Its store backed up to the NAS by a thread of its own, crate::pool::store::back_up.)
+        co.back_up(run.side.shared_nas());
         // The coordinator's view (what the worker page takes from its memory): when it changed, at
         // most each `pool::VIEW_EVERY`.
         let view = serde_json::to_vec(&co.view()).unwrap_or_default();
@@ -14736,9 +14736,11 @@ mod pool_tests {
         // The writer isn't named any more (its file as it was), the coordinator's state of its term
         // and its history are on the NAS, its heartbeat names it.
         assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap(), "another-mac");
-        // (The state's by the coordinator's own thread, within `keep::BATCH` of a change, for the
-        // term it leads then: a re-assertion's may come first.)
-        until(&mut a, |a| a.pooled().and_then(|p| p.gates.leads).is_some_and(|t| r.join(pool::state_path(t)).exists()));
+        // (The coordinator's store's backup, by its own thread each `store::BACKUP_EVERY` (a test's
+        // shorter), once the lead's step has started it.)
+        until(&mut a, |a| {
+            a.pooled().and_then(|p| p.gates.leads).is_some() && r.join(crate::pool::store::BACKUP_PATH).exists()
+        });
         assert!(std::fs::read_dir(r.join("state/coord/history"))
             .unwrap()
             .flatten()
@@ -15792,11 +15794,11 @@ mod pool_tests {
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         assert!(matches!(lead.slots[0].lease, Some(Held::Pooled { own: true, .. })));
-        // (Its lease in term 1's state on the NAS, which the next lead takes up: written by the
-        // coordinator's own thread, crate::coord::keep, once the loop's step has named the term.)
+        // (Its lease in the lead's store's backup on the NAS, which the next lead takes up: written by the
+        // store's backup thread, crate::pool::store::back_up, once the loop's step has started it.)
         lead.round().unwrap();
-        store::testkit::eventually("the lease in term 1's state", || {
-            std::fs::read_to_string(r.join(pool::state_path(1))).is_ok_and(|s| s.contains("6/4/4"))
+        store::testkit::eventually("the lease in the lead's store's backup", || {
+            std::fs::read_to_string(r.join(crate::pool::store::BACKUP_PATH)).is_ok_and(|s| s.contains("6/4/4"))
         });
         move_lead(&r, &im);
         let both = |lead: &mut Agent, m: &mut Agent, done: &dyn Fn(&Agent, &Agent) -> bool| {
@@ -15899,8 +15901,8 @@ mod pool_tests {
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         lead.round().unwrap();
-        store::testkit::eventually("the lease in term 1's state", || {
-            std::fs::read_to_string(r.join(pool::state_path(1))).is_ok_and(|s| s.contains("pass-sets"))
+        store::testkit::eventually("the lease in the lead's store's backup", || {
+            std::fs::read_to_string(r.join(crate::pool::store::BACKUP_PATH)).is_ok_and(|s| s.contains("pass-sets"))
         });
         move_lead(&r, &im);
         let both = |lead: &mut Agent, m: &mut Agent, done: &dyn Fn(&Agent, &Agent) -> bool| {
@@ -15984,11 +15986,11 @@ mod pool_tests {
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
-        // (Its coordinator's state, its job's lease with it, saved for the term: by the coordinator's
-        // own thread, crate::coord::keep, once the loop's step has named the term.)
+        // (Its coordinator's state, its job's lease with it, in its store's backup on the NAS: by the
+        // store's backup thread, crate::pool::store::back_up, once the loop's step has started it.)
         lead.round().unwrap();
-        store::testkit::eventually("the lease in term 1's state", || {
-            std::fs::read_to_string(r.join(pool::state_path(1))).is_ok_and(|s| s.contains("6/4/4"))
+        store::testkit::eventually("the lease in the lead's store's backup", || {
+            std::fs::read_to_string(r.join(crate::pool::store::BACKUP_PATH)).is_ok_and(|s| s.contains("6/4/4"))
         });
         // The lead "frozen" (not stepped): the owner moves the lead to the member, which leads on a
         // port of its own.

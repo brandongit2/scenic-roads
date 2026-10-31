@@ -19,6 +19,7 @@ pub mod pmtiles;
 pub mod range;
 pub mod retry;
 pub mod sect;
+pub mod seglog;
 pub mod spawn;
 pub mod sys;
 #[cfg(any(test, feature = "testkit"))]

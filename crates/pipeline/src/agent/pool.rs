@@ -1905,21 +1905,28 @@ pub fn took_up(
         if run.led.contains(&(term - 1)) {
             continue;
         }
-        // (The newest a term before has: one whose lead had no coordinator wrote none.)
-        let state: Option<crate::coord::PoolState> = (1..*term).rev().find_map(|e| {
-            run.side.nas().read(&state_path(e)).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok())
-        });
-        if let Some(st) = state {
+        // (Its own store holds its state (crate::coord::kept); another Mac's lead before it, the lead
+        // moved by the owner, left its store's backup on the NAS: taken up.)
+        let backup = match crate::pool::store::read_backup(run.side.nas()) {
+            Ok(b) => b.filter(|b| b.member != host),
+            Err(e) => {
+                eprintln!("pool: the lead's store's backup: {e:#}");
+                None
+            }
+        };
+        if let Some(b) = backup {
+            let st = crate::coord::kept::Loaded::of(&b.docs).pool_state();
             match c.load_pool_state(&st) {
                 Ok(n) => eprintln!(
-                    "pool: term {term}'s coordinator took up {n} lease{} from the term before",
-                    if n == 1 { "" } else { "s" }
+                    "pool: term {term}'s coordinator took up {n} lease{} from {}'s store",
+                    if n == 1 { "" } else { "s" },
+                    b.member
                 ),
                 Err(e) => eprintln!("pool: the coordinator's state for term {term}: {e:#}"),
             }
-            for l in c.drop_workers(&crate::agent::slot_workers(host), keep) {
-                eprintln!("pool: {}'s lease ended with the process before this one", l.what());
-            }
+        }
+        for l in c.drop_workers(&crate::agent::slot_workers(host), keep) {
+            eprintln!("pool: {}'s lease ended with the process before this one", l.what());
         }
     }
     if let Some(e) = leads {
@@ -2044,11 +2051,6 @@ fn outbox_entries(outbox: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
         }
     }
     out
-}
-
-/// The coordinator's state of term `term` on the NAS (§6.2, §7.5).
-pub fn state_path(term: u64) -> String {
-    format!("state/coord/term/{term}/state.json")
 }
 
 /// The coordinator's view of term `term` (§10): what the worker page takes from its memory.
@@ -3423,9 +3425,9 @@ mod tests {
     }
 
     /// Task #881: the lead's restart (an update's, at a safe point) keeps its leases. A member asks
-    /// for work all through term 1; the lead's process ends, and the next takes term 2 up from its
-    /// saved state: its coordinator loads term 1's, every lease granted in it there, still term 1's,
-    /// so every job out goes on renewing with it.
+    /// for work all through term 1; the lead's process ends, and the next takes term 2 up: its
+    /// coordinator opens the store (task #878), every lease granted and answered in term 1 there,
+    /// still term 1's, so every job out goes on renewing with it.
     #[test]
     fn the_leads_restart_keeps_its_leases() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -3448,7 +3450,6 @@ mod tests {
         };
         tick_until(&mut [&mut a], |r| r[0].gates.caught_up);
         coord.set_term(1);
-        coord.keep_state(a.side.shared_nas(), 1);
         // The member asks without a pause, each grant a target of its own.
         let stop = Arc::new(AtomicBool::new(false));
         let (c2, s2) = (coord.clone(), stop.clone());
@@ -3494,19 +3495,9 @@ mod tests {
             granted
         });
         store::testkit::eventually("the burst's first grants", || coord.leases_out() >= 3);
-        // The update's safe point: the process ends, its coordinator's state on the NAS as its
-        // writer left it.
+        // The update's safe point: the process ends, every grant answered in its store.
         stop.store(true, Ordering::Relaxed);
         let granted = burst.join().unwrap();
-        let state = || -> Option<crate::coord::PoolState> {
-            serde_json::from_slice(&std::fs::read(r.join(state_path(1))).ok()?).ok()
-        };
-        let (probe, _) = crate::coord::start_for_test(&d.path().join("probe/coord"), "p", "development");
-        store::testkit::eventually("term 1's state written with every grant", || {
-            state().is_some_and(|s| {
-                probe.load_pool_state(&s).is_ok() && granted.iter().all(|id| probe.lease_term(*id) == 1)
-            })
-        });
         coord.stop();
         drop(a);
         // The next process: its driver from the saved state re-asserts (term 2), and its new
@@ -3528,7 +3519,7 @@ mod tests {
             took.iter().any(|e| matches!(e, Event::TookUp { term: 2, how } if how == "restarted: re-asserted")),
             "{took:?}"
         );
-        let (cb, _) = crate::coord::start_for_test(&d.path().join("a2/coord"), "a", "development");
+        let (cb, _) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "development");
         took_up(&mut a, Some(&cb), &took, out.leads, "a", &[]);
         let lost: Vec<u64> = granted.iter().copied().filter(|id| cb.lease_term(*id) != 1).collect();
         assert!(granted.len() >= 3 && lost.is_empty(), "{} granted, not taken up: {lost:?}", granted.len());

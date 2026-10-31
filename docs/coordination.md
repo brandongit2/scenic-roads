@@ -1,8 +1,8 @@
 # Pool coordination by HTTP on the lead
 
-**Planned (task #878; nothing here is built yet).** This doc says how the pool's coordination
-moves off the NAS onto the lead, which holds it on its own disk and serves it over HTTP. Until
-each step below lands, docs/pool.md and the code are what is true. It assumes #881 (the Mac mini
+**Planned (task #878); step 1 is built, the rest planned.** This doc says how the pool's
+coordination moves off the NAS onto the lead, which holds it on its own disk and serves it over
+HTTP. For the steps not yet built (§8 says which are), docs/pool.md and the code are what is true. It assumes #881 (the Mac mini
 as a fixed lead: no election, no takeover) has landed; where #881 leaves a piece of the
 election machinery in place, the step that deletes it here says so. docs/agent-parts.md's **pool**
 part (#871) is the client side of this design.
@@ -62,7 +62,7 @@ disk.
 | `state/pool/mail/<to>/<from>.json`, and the lead's `inbox.json` (#642) | each sender | member → lead: `POST /pool/mail` stays, now the only path; lead → member: carried in the answer to the member's next beat (`msgs`), so members need no endpoint for it | the outgoing queue per member, until a beat acknowledges it |
 | `state/journal/<day>/<lease>.json`, `rejected/`, `gc.json` | each member; the lead's GC | `POST /pool/handoff` (the hand-off as today's entry, with its sizes) | the log; merged into records; the refusals in the snapshot |
 | `state/build/terms/<E>.json`, `state/build/lead.json` | create-new by any Mac | none: the lead is #881's, fixed; members learn its address from #881's declaration | an **epoch** (§4.3), bumped each start |
-| `state/coord/term/<E>/state.json` (3 MB, every 10 s at most, `coord::keep`) | the lead's coordinator | none | the coordinator's state is the store's |
+| `state/coord/term/<E>/state.json` (gone with `coord::keep`, step 1) | — | none | the coordinator's state is the store's |
 | `state/build/term/<E>/status.json`, `state/coord/term/<E>/view.json`, `forecast-input.json`, `regions.json`, `state/build/pause.json` | the lead | `GET /pool/view` (one document with each part's time; `If-None-Match` by generation) and `GET /pool/view/forecast-input` (big, fetched only when its generation changed) | in memory; regenerated from the store and the plan |
 | `state/pool/holds/<member>.json` (another Mac's pause) | any Mac | `POST /pool/hold {member, on, at}` from any Mac's agent; the held member gets it in its next beat answer | a setting per member |
 | switches and pool-wide settings: `state/pool/resume`, `placement`, `brokers`, `memory-guard`, `nas-budget`, `nas-target.json`, `nas-room.json`, `battery-floor.json`, `delta-catalog`, `near-slope`, `journal-gc` | the owner's CLI | `GET/POST /pool/settings`; each beat's answer carries the settings' generation, a member fetching them when it changes | settings, each with `by` and `at` |
@@ -95,42 +95,48 @@ never "beating" in one and "out of touch" in the other.
 
 ### 4.1 Shape
 
-`crate::pool::store` on the lead, in `agent/pool/store/` on its disk:
+`crate::pool::store` on the lead, in `agent/coord/store/` on its disk (built, step 1), its files
+`store::seglog`'s, shared with the map's log (docs/maplog.md §4.2):
 
 - `snapshot.json`: the whole state as of a log position, written whole (temporary file, `fsync`,
   rename, `fsync` of the folder).
-- `log.jsonl`: one line per change after that position, each with its position, appended and
-  `fsync`ed in batches (a batch is every change waiting when the writer wakes: one `fsync` for a
-  burst of grants).
-- The state: leases (id, holder, step, targets, granted, last renewed, `held_by_away`), each
-  member's last beat and sequence high-water, the queued messages to each member, hand-offs taken
-  and not yet in a saved records snapshot, refusals, the pause and holds, settings, the coordinator's
-  costs, floors, disks and failures (today's `coord::PoolState`), the answers lease, the epoch, and
-  the records' last saved `seq`.
+- the log, segments `<first seq>.jsonl`: one line per change after that position, each with its
+  position, appended and `fsync`ed in batches (a batch is every change waiting when the writer
+  wakes: one `fsync` for a burst of grants).
+- The state: keyed JSON documents (`crate::coord::kept` names them) and the epoch. Built (step
+  1): the jobs' leases (id, holder, step, targets, granted; the next id, the holds and cancels),
+  the coordinator's measures (costs, floors, disks, jobs' disks, caches' fills) and the pause.
+  Planned, with the steps that move them: each member's last beat and sequence high-water, the
+  queued messages to each member, hand-offs taken and not yet in a saved records snapshot,
+  refusals, holds and settings, the workers' failures, the answers lease, and the records' last
+  saved `seq`.
 
-One writer thread owns it (the agent-parts.md rule: no shared `Mutex`); handlers send it a change
-and wait for its "durable at N" reply, under a 2-s deadline past which the post answers 503 (a
-lead disk that slow is broken, and said so in the status).
+One writer thread owns the files (the agent-parts.md rule); handlers submit a change (applied to
+the state in memory at once) and wait for its "durable at N", under a 2-s deadline past which the
+post answers 503 (a lead disk that slow is broken). Built: every JSON post of the coordinator
+waits so (`http::json`). Planned: saying it in the status.
 
 ### 4.2 Compaction
 
 When the log passes 10 MB or an hour, the writer writes a new snapshot at its position and starts
-a new log; the old log is removed only after the new snapshot's rename and folder `fsync`. A crash
-between leaves a snapshot and a log that overlaps it: replay skips positions at or below the
-snapshot's.
+a new segment; the old segments are removed only after the new snapshot's rename and folder
+`fsync`. A crash between leaves a snapshot and a log that overlaps it: replay skips positions at or
+below the snapshot's. A failed append is followed by a compaction too (the snapshot from memory),
+so a change in memory is never left out of the files.
 
 ### 4.3 The epoch
 
-A counter in the store, bumped and `fsync`ed before the coordinator listens. Lease ids become
-`<epoch>-<n>` (today's `<term>-<n>`, so lease order across restarts is kept by the same rule). Every
-answer carries `x-pool-epoch`. A member seeing a new epoch re-sends what it keeps (§5.3); nothing
-else changes for it.
+A counter in the store, bumped and `fsync`ed as the store opens (built; the coordinator opens
+it right after it starts listening, before the agent asks anything of it). Planned: lease ids
+become `<epoch>-<n>` (still `<term>-<n>` today, so lease order across restarts is kept by the same
+rule); every answer carries `x-pool-epoch`; a member seeing a new epoch re-sends what it keeps
+(§5.3), nothing else changing for it.
 
 ### 4.4 Recovery
 
 - **A restart** (crash, update, reboot): load the snapshot, replay the log, bump the epoch, listen.
   A torn last line (a crash mid-append) is dropped: it was never answered. Every lease comes back
-  as it was, with a fresh deadline (as today's `coord::keep` load), marked *unconfirmed*; each
+  as it was, with a fresh deadline, marked *unconfirmed*; each
   member's first beat lists the leases it holds, confirming them, and those of that member it
   doesn't list are released at once (§6.2).
 - **The lead's disk lost** (the mini's disk replaced, `agent/` deleted): the store is rebuilt from
@@ -139,9 +145,12 @@ else changes for it.
   leases (adopted as granted, with their ids) and their unmerged hand-offs (re-posted, §5.3). What
   is lost: grants answered since the backup to members that then lost them too (none in practice),
   the settings changed since (the owner's, said in the status: "settings restored as of 14:02").
-  `scenic lead restore` does it; the agent never does it by itself (a missing store on a lead
+  Built: `pool::store::Store::restore` (test `store_restores_from_the_backup`). Planned:
+  `scenic lead restore` to run it; the agent never does it by itself (a missing store on a lead
   that had one is an error, not a fresh start: the agent refuses to lead without `--restore` or
-  `--fresh`).
+  `--fresh`). Today a coordinator finding no store makes one from its old files (the migration),
+  and a lead whose take-up finds the NAS backup written by another member loads it
+  (`agent::pool::took_up`: the owner moved the lead).
 
 ## 5. The protocol
 
@@ -265,7 +274,7 @@ from the same folder).
 
 | # | Step | Deletes | Tests |
 | --- | --- | --- | --- |
-| 1 | `pool::store` on the lead: snapshot, log, epoch, compaction, backup to the NAS; the coordinator's state moves into it. The handler rule: a scan test that no `coord` handler path reaches `nasread`, `Nas` or `store::whole` | `coord::keep`'s per-term NAS state file and its thread (`BATCH`, `GAP`, `Keep::off`) | `store_recovers_after_a_torn_append`, `store_compaction_crash_between_snapshot_and_log`, `store_restores_from_the_backup`, `coord_handlers_never_touch_the_nas` |
+| 1 (done) | `pool::store` on the lead: snapshot, log, epoch, compaction, backup to the NAS; the coordinator's state moves into it. The handler rule: a scan test that no `coord` handler path reaches `nasread`, `Nas` or `store::whole` | `coord::keep`'s per-term NAS state file and its thread (`BATCH`, `GAP`, `Keep::off`) | `store_recovers_after_a_torn_append`, `store_compaction_crash_between_snapshot_and_log`, `store_restores_from_the_backup`, `coord_handlers_never_touch_the_nas` |
 | 2 | **Leases by the holder's word**: grants durable before the answer; beats list held leases; release on omission; `held_by_away`; `scenic pool release` | the TTL lapse re-grant (`coord::TTL`'s re-grant path; renewals by `/work/beat` become the agent's beat), `OWED_S` | `a_partitioned_member_s_target_is_never_regranted` (network fake drops one member for 3 h; its job finishes; its hand-off merges; no second grant), `a_crash_before_the_answer_releases_the_grant`, `a_restarted_agent_s_lost_job_is_released_in_one_beat` |
 | 3 | **One beat by HTTP** (`POST /pool/beat`), the lead's answers carrying messages, holds, settings' generation and acks | `state/pool/members/`, `state/helpers/`, `state/status.json` writes, `pool::beat`'s NAS read/write and listing, members forgotten by listing (now: no beat for 20 min) | `beats_go_on_while_the_nas_hangs` (slow-NAS fake blocks every call: the lead sees each member's beat every 10 s for 10 min), mixed versions: an old member's NAS heartbeat still read |
 | 4 | **The view by HTTP**: pageview fetches `/pool/view` from the lead | pageview's NAS reads (status, view, forecast-input, regions, pause, heartbeats, the 12-s reader), the lead's writes of `term/<E>/status.json`, `view.json`, `forecast-input.json`, `regions.json`, `pause.json` | `the_page_on_a_member_shows_the_lead_s_view_with_the_nas_hung`; a page asking with the lead down gets the last view with its age |

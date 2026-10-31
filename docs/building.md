@@ -97,7 +97,7 @@ from the first (`edit_held`).
     panel or `scenic pause [--now]`, lifted by Resume or `scenic resume`: an ask in the agent's folder
     (`pause-request.json`) passed to the lead's coordinator; an ask older than the build's last
     change is passed over.
-  - **Held** by the lead's coordinator (`coord/pause.json`, mirrored to `state/build/pause.json`) and
+  - **Held** by the lead's coordinator (in its store, `coord/store/`, mirrored to `state/build/pause.json`) and
     told to every worker; each agent keeps what it last heard.
   - **At a safe point** (the default): each job finishes its target, notes it done (`SCENIC_DONE`)
     and exits as paused (75; `SCENIC_CONTROL` said "drain"); the steps keeping a resume log (depth,
@@ -350,8 +350,9 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   reason all the same (`fail_why`). Paused, every lease is held. The lead's own jobs hold leases too, so a
   target is never built twice at once. A worker's failed z6 tile isn't offered to it for an hour,
   doubling.
-- **The coordinator's state** (leases, costs, failures, the pause) is the term's, on the NAS
-  (`state/coord/term/<E>/state.json`); the workers' token and accepted devices are the pool's
+- **The coordinator's state** (leases, costs, the pause) is in the store on the lead's disk
+  (`agent/coord/store/`, backed up to the NAS as `state/lead/store.json` every 10 min,
+  docs/coordination.md §4); the workers' token and accepted devices are the pool's
   (`state/coord/`); the history is each writer's own file per day (`state/coord/history/`; days older than a week one tar each in `state/coord/history-archive/`, docs/pool.md §7.5).
 - **Every job hands off:** under a lease `<term>-<id>` it saves into `agent/pool/jobs/<term>-<id>/`
   (`SCENIC_HANDOFF`, `pipeline::handoff`), then as an entry to the journal

@@ -950,8 +950,14 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **Workers** (docs/workers.md):
   - `state/coordinator.json`: `{urls: [Tailscale's, then the LAN name's], token, page}`, while the
     lead's agent runs (`page`: the build page over HTTPS when `tailscale serve` proxies it).
-  - On the lead, `agent/coord/`: `workers-token` (32 hex digits, mode 600); `page`; `leases.json`
-    (`{next, leases: [{id, worker, work, progress}]}`); `costs.json` (`{<cost key>: {peak_mb,
+  - On the lead, `agent/coord/`: `workers-token` (32 hex digits, mode 600); `page`; `store/` (the
+    pool's store, `pipeline::pool::store`, docs/coordination.md §4: `snapshot.json`, `{epoch, seq,
+    docs}`, written whole, and segments `<first seq>.jsonl`, one line per change after it, `{seq,
+    epoch?, set: {key: value}, del: [key]}`; its documents, `pipeline::coord::kept`: `leases`
+    (`{next, holds, cancelled}`), `lease/<id>` (`{id, term, granted_at, worker, work, progress,
+    …}`), `cost/<key>`, `floor/<key>`, `disk/<key>`, `job_disks`, `fills` and `pause`, each as the
+    files below held them). Read once, into a store not made yet (an agent before the store's), and
+    no longer written: `leases.json` (`{next, leases: [{id, worker, work, progress}]}`); `costs.json` (`{<cost key>: {peak_mb,
     secs, worker, v, sizes}}`, `sizes` as in `costs.jsonl`, absent before task #235; keys: a z6 tile, `"<step> <target>"`, or `"<kind> <tile>"` for tasks: `tail 6/x/y`,
     `bldtile 8/x/y`, `treeblock 8/x/y`, `terrainsub 8/x/y`); `floors.json` (`{<cost key>: {mb, alone,
     v}}`, crate::agent::memguard::Floor; `scenic pool floors` lists and clears them);
@@ -1041,10 +1047,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/pool/mail/<to>/<from>.json`: the last 64 messages, `{msgs: [[n, msg], …]}`, `msg` one of
     `{"Tell": [keys]}`, `{"Ack": {term, keys, horizon}}`, `{"Passed": term}`, `{"Leads": E}`,
     `{"HandTo": member}`.
-  - `state/coord/term/<E>/state.json`: `{leases, costs, floors, disks, job_disks (the 90th percentiles), job_peaks, fills, disks_v, failed: [[worker,
-    cost key, unix seconds, times]], pause, pause_at}` (`disks_v`: its disks' generation, 6; a state
-    without it brings no `pack`'s nor `lo`'s targets' disks to a take-up, and fills only of the caches
-    there are); `state/coord/token`;
+  - `state/lead/store.json`: the lead's store's backup (`pipeline::pool::store::Snapshot`, `{epoch,
+    seq, member, at, docs}`), each 10 min while it changed; `state/coord/token`;
     `state/coord/history/<day>/<member>.jsonl` (history events, terms' as `kind: term`; days older than 7 are
     `state/coord/history-archive/<day>.tar`, a ustar of `<day>/<member>.jsonl`);
     `state/coord/forecasts/<day>.jsonl.zst` (the lead's forecasts, The forecasts' archive above;

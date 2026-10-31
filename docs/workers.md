@@ -118,7 +118,7 @@ Common rules:
   WebAssembly (all without a key: what a page left open from before #876 still asks) are refused
   with "pages no longer help with the build: reload this page" (`coord::NO_PAGE_HELPERS`; a
   beat answered `ok: false`, so it stops that task); its service worker loads the new page.
-- **Pausing** (docs/building.md §2, Pausing): the coordinator holds `pause.json`; asks are refused, beats carry
+- **Pausing** (docs/building.md §2, Pausing): the coordinator holds the pause (in its store); asks are refused, beats carry
   it, and no lease lapses while it holds. Work given back for an interruption isn't held against it.
 - **Leases** (`coord::lease`): ten minutes on the coordinator's monotonic clock, renewed by a beat
   each minute; a lapsed lease's work is offered again.
