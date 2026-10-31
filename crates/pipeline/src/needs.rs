@@ -259,6 +259,10 @@ pub struct Point {
 pub struct Curve {
     pub size: Option<String>,
     pub points: Vec<Point>,
+    /// Its waits dominate: the median of its runs' share of time waited (`waited_ms`) is half or
+    /// more. Taken over the step's runs, not one target's last, so a single run waiting a little
+    /// more or less doesn't switch a job between the curve and the climb (task #904 review).
+    pub waits: bool,
 }
 
 impl Curve {
@@ -778,13 +782,12 @@ impl<'a> Book<'a> {
     /// and didn't climb) takes its threads from its step's wall time by threads instead
     /// (`Curve::grant`): a wait-bound step gets the threads that pay, and no more; a busy one climbs.
     pub fn cores(&self, step: &str, target: &str) -> Option<Cores> {
-        let (c, waits) = self.cores_busy(step, target)?;
-        Some(if waits { self.curve(step).grant(c, target) } else { c })
+        let (c, no_climb) = self.cores_busy(step, target)?;
+        Some(if no_climb && self.curve(step).waits { self.curve(step).grant(c, target) } else { c })
     }
 
-    /// `cores` by its busy cores alone (task #896), and whether its waits dominate (each run it's
-    /// read from waited half its time or more and didn't compute on every thread): its own run's,
-    /// else its step's most.
+    /// `cores` by its busy cores alone (task #896), and whether it doesn't climb (each run it's read
+    /// from didn't compute on every thread): its own run's, else its step's most.
     fn cores_busy(&self, step: &str, target: &str) -> Option<(Cores, bool)> {
         let v = cost_version(step);
         let threads = |c: &Cost| c.sizes.get("threads").filter(|_| c.v >= v).map(|&t| t as u32);
@@ -815,7 +818,7 @@ impl<'a> Book<'a> {
                     let computing = if ran - waited >= 1000 { k * ran as f64 / (ran - waited) as f64 } else { k };
                     let grant = (computing.min(f64::from(t)) + 0.5) as u32 + 1;
                     let busy = busy.min(t * 10) + grant.saturating_sub(t) * 10;
-                    (Cores { grant, busy_tenths: Some(busy.min(grant * 10)) }, grant <= t && waited * 2 >= ran)
+                    (Cores { grant, busy_tenths: Some(busy.min(grant * 10)) }, grant <= t)
                 }
             })
         };
@@ -869,6 +872,7 @@ impl<'a> Book<'a> {
         // work; else the wall alone.)
         let per_mb = fit.is_none() && of_step().all(|(_, c)| c.sizes.get("bytes").is_some_and(|&b| b > 0));
         let mut by: BTreeMap<u32, (Vec<f64>, Option<u32>)> = BTreeMap::new();
+        let mut waited: Vec<f64> = Vec::new();
         for (k, c) in of_step() {
             let Some(&t) = c.sizes.get("threads") else { continue };
             let ran = (c.secs * 1000).saturating_sub(c.sizes.get("paused_ms").copied().unwrap_or(0));
@@ -884,6 +888,9 @@ impl<'a> Book<'a> {
                 None if per_mb => c.sizes["bytes"] as f64 / 1e6,
                 None => 1.0,
             };
+            if let Some(&w) = c.sizes.get("waited_ms") {
+                waited.push(w as f64 / ran as f64);
+            }
             let e = by.entry((t as u32).max(1)).or_default();
             e.0.push(ran as f64 / 1000.0 / work);
             if let Some(&ms) = c.sizes.get("cpu_ms") {
@@ -909,7 +916,8 @@ impl<'a> Book<'a> {
                 Point { threads, runs: w.len(), wall: m, se: 1.4826 * mad / (w.len() as f64).sqrt(), busy_tenths }
             })
             .collect();
-        let c = Curve { size: fit.map(|f| f.size).or(per_mb.then(|| "MB read".to_string())), points };
+        let waits = !waited.is_empty() && median(&mut waited) >= 0.5;
+        let c = Curve { size: fit.map(|f| f.size).or(per_mb.then(|| "MB read".to_string())), points, waits };
         cache.4.lock().unwrap_or_else(|e| e.into_inner()).1.insert(step.to_string(), c.clone());
         c
     }
@@ -1080,7 +1088,8 @@ pub fn fit_table(book: &Book) -> String {
         }
         let pts: Vec<String> =
             c.points.iter().map(|p| format!("{}: {}×{:.3}±{:.3}", p.threads, p.runs, p.wall, p.se)).collect();
-        let grants = book.cores_busy(s, "").map_or("-".to_string(), |(b, waits)| {
+        let grants = book.cores_busy(s, "").map_or("-".to_string(), |(b, no_climb)| {
+            let waits = no_climb && c.waits;
             let after = if waits { c.knee().unwrap_or(b.grant) } else { b.grant };
             format!("{} → {}{}", b.grant, after, if waits { "" } else { " (not waits)" })
         });

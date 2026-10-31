@@ -475,8 +475,13 @@ threads, each run's wall time (less the time stopped) over its target's work (wh
 time fit predicts for its size, without its thread term; no good fit, the MB it read, where every run says some; else the wall alone); a thread
 count of 5 runs or more (`CURVE_RUNS`) is a point: their median and its standard error (1.4826 ×
 the median absolute deviation over √runs). The **knee** is the fewest threads that no more threads
-beat by 2 standard errors of the difference (`CURVE_SE`): the margin is the runs' own spread, not a
-set figure. With two points or more known, a job whose waits dominate (each run it is read from waited half its time or more, `waited_ms`, and didn't climb) is
+beat by 2 standard errors of the difference (`CURVE_SE`): the margin scales with the runs' own spread,
+not a set time. These three are statistical choices, not measures of a step: 5 runs is the fewest whose
+median and MAD say anything about spread; 2 standard errors is the usual ~95 % bar against calling noise
+a gain; one in ten bounds the share of jobs run off the knee while learning. With two points or more
+known, a job whose waits dominate (the median of its step's runs' shares of time waited, `waited_ms`, is
+half or more, taken over the step so one run doesn't switch a job between the curve and the climb, and
+its own run didn't climb) is
 granted the knee, whatever its busy cores' grant; under two, that grant. **One target in ten**
 (`EXPLORE_EVERY`, by a stable hash of its name) is granted a neighbour of that (one thread more
 first, else one fewer) while the neighbour has under 5 runs and that count itself has 5 or more, so the curve is learned around its
