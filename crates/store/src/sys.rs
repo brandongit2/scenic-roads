@@ -1,6 +1,5 @@
-//! What differs between the platforms the build's code runs on: macOS (the Macs) and WASI (the
-//! WebAssembly programs workers run, docs/workers.md). Unix gets the real calls; elsewhere a
-//! portable fallback, or `Unsupported`.
+//! What differs between platforms: the build runs on macOS (the Macs). Unix gets the real calls;
+//! elsewhere a portable fallback, or `Unsupported`.
 
 use std::fs::File;
 use std::io;
@@ -101,7 +100,7 @@ fn local_host_name() -> Option<String> {
     hostname().map(|h| h.split('.').next().unwrap_or_default().to_string())
 }
 
-/// This process's id, or 0 where there are no processes (WASI, where `std::process::id` panics).
+/// This process's id (0 off Unix).
 pub fn pid() -> u32 {
     #[cfg(unix)]
     return std::process::id();

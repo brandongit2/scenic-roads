@@ -120,7 +120,7 @@ pub fn detached(program: impl AsRef<OsStr>, args: &[&str]) -> io::Result<Detache
     }
 }
 
-/// No children where there are no processes (WASI).
+/// No children off Unix.
 #[cfg(not(unix))]
 pub fn detached(_program: impl AsRef<OsStr>, _args: &[&str]) -> io::Result<Detached> {
     Err(io::ErrorKind::Unsupported.into())
