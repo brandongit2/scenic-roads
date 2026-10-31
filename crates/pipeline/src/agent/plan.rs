@@ -288,7 +288,7 @@ impl Handle {
 /// The next plan's number after `last`: past it, and at least the time in ms, so a lead started
 /// again (or another Mac taking the lead) numbers past every plan before it, and a member's cancel
 /// noted at an old lead's number never drops a new lead's grants (`Agent::cancelled_since`).
-pub(super) fn next_n(last: u64, now: std::time::SystemTime) -> u64 {
+pub(crate) fn next_n(last: u64, now: std::time::SystemTime) -> u64 {
     let ms = now.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
     (last + 1).max(ms)
 }
@@ -622,6 +622,9 @@ impl Planner {
             // (Numbered as it starts: a cancel taken meanwhile drops its grants too.)
             let n = next_n(self.n, std::time::SystemTime::now());
             self.running_n.store(n, Ordering::SeqCst);
+            if let Some(c) = &self.coord {
+                c.plan_started(n);
+            }
             let plan = self.plan(&root, &c, &mut waiting);
             self.n = n;
             self.offer_plan(&plan);

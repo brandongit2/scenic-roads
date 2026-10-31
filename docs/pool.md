@@ -1988,7 +1988,10 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   stops a slot of its own running the target at once, whatever its loop waits on (its jobs' own
   thread, `crate::agent::slots`, docs/agent-parts.md §4.5: SIGTERM, SIGKILL 30 s on), records it at
   its next round, and tells the lead's coordinator (in process, or
-  `/work/cancel` from a member), which marks every live lease of the target; a member's job hears
+  `/work/cancel` from a member), which marks every live lease of the target and offers it to no one
+  again from a plan begun before the cancel (`coord::lease::Cancelled`, saved with the leases: the
+  next plan offers it as usual, a member's agent dropping a grant no newer than a cancel it saw
+  as a second guard); a member's job hears
   it in its beat's answer (within a minute) and stops (a member on an app from before the cancel ignores it, and its job runs on). A cancelled job ends as given back, not
   failed: no retry delay, no backoff or guard hold against its Mac, its finished targets handed
   off, and its scratch entries named for the target (exactly, or with an extension) removed, so it starts again from the start.

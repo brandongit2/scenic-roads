@@ -119,6 +119,21 @@ impl Hold {
     }
 }
 
+/// A target the owner cancelled (`scenic job cancel`, crate::control::Cancel), told to the lead
+/// while its plan numbered `at` or older ran or was offered (`at`: that number, and never below the
+/// time in ms then, so it compares with any lead's plan numbers, crate::agent::plan's `next_n`):
+/// no offer of a plan no newer has it (`Leases::unoffered`), so a plan started before the cancel
+/// never grants it, whenever its offers come. Forgotten once a newer plan's offers are in
+/// (`forget_cancels_before`); saved, and carried across leads, with the leases.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cancelled {
+    pub target: String,
+    /// Its step, when the cancel named one (None: every step's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    pub at: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct Leases {
     next: u64,
@@ -145,6 +160,8 @@ pub struct Leases {
     /// which stops its job and gives the lease back, not failed. Each goes with its lease (finished,
     /// given back, withdrawn, dropped or lapsed); not saved.
     cancels: BTreeMap<u64, crate::control::Cancel>,
+    /// The targets cancelled while a plan no newer than its `at` was the newest (`Cancelled`).
+    cancelled: Vec<Cancelled>,
 }
 
 /// What's saved: the next id (ids never repeat across restarts), the jobs' leases and the holds.
@@ -154,6 +171,8 @@ struct Saved {
     leases: Vec<Lease>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     holds: Vec<Hold>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cancelled: Vec<Cancelled>,
 }
 
 impl Default for Leases {
@@ -174,6 +193,7 @@ impl Leases {
             me: String::new(),
             mine: BTreeSet::new(),
             cancels: BTreeMap::new(),
+            cancelled: Vec::new(),
         }
     }
 
@@ -185,7 +205,7 @@ impl Leases {
         l.next = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64);
         if let Some(s) = std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<Saved>(&b).ok()) {
             l.next = l.next.max(s.next);
-            l.holds = s.holds;
+            (l.holds, l.cancelled) = (s.holds, s.cancelled);
             for mut x in s.leases {
                 (x.granted, x.deadline) = (now, now + ttl);
                 l.by_id.insert(x.id, x);
@@ -204,6 +224,7 @@ impl Leases {
             next: self.next,
             leases: self.by_id.values().filter(|l| matches!(l.work, Work::Job { .. })).cloned().collect(),
             holds: self.holds(),
+            cancelled: self.cancelled.clone(),
         }
     }
 
@@ -223,7 +244,7 @@ impl Leases {
         self.by_id.clear();
         self.cancels.clear();
         self.next = self.next.max(s.next);
-        self.holds = s.holds;
+        (self.holds, self.cancelled) = (s.holds, s.cancelled);
         let n = s.leases.len();
         for mut x in s.leases {
             (x.granted, x.deadline) = (now, now + self.ttl);
@@ -288,6 +309,39 @@ impl Leases {
         if self.by_id.contains_key(&id) {
             self.cancels.insert(id, c);
         }
+    }
+
+    /// `target` (of `step`, None: of every step) cancelled while plan `at` was the newest
+    /// (`Cancelled`).
+    pub fn note_cancel(&mut self, target: &str, step: Option<String>, at: u64) {
+        self.cancelled.retain(|c| !(c.target == target && c.step == step));
+        self.cancelled.push(Cancelled { target: target.to_string(), step, at });
+    }
+
+    /// The cancels a plan numbered `plan` started after (`at` below it): forgotten, that plan's
+    /// offers knowing of them.
+    pub fn forget_cancels_before(&mut self, plan: u64) {
+        self.cancelled.retain(|c| c.at >= plan);
+    }
+
+    /// The cancels standing (`Cancelled`).
+    pub fn cancelled(&self) -> &[Cancelled] {
+        &self.cancelled
+    }
+
+    /// Offer `o`, of plan `plan`, without what was cancelled after that plan began (`Cancelled`):
+    /// a shared step's offer without those targets, the lead's own planned job (`Offer::job`, whole)
+    /// not at all; None when nothing of it is left.
+    pub fn unoffered(&self, plan: u64, o: &super::Offer) -> Option<super::Offer> {
+        let cut = |t: &str| {
+            self.cancelled.iter().any(|c| c.target == t && plan <= c.at && c.step.as_ref().is_none_or(|s| *s == o.step))
+        };
+        let mut o = o.clone();
+        if o.job.is_some() && o.targets.iter().any(|t| cut(&t.0)) {
+            return None;
+        }
+        o.targets.retain(|t| !cut(&t.0));
+        (!o.targets.is_empty()).then_some(o)
     }
 
     /// The owner's cancel of lease `id`, if there's one.

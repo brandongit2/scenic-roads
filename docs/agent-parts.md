@@ -202,7 +202,14 @@ busy pool: the plan holds half a core at most). The round grants from the last p
 at once (`Agent::lead_grants`; `may_pack`'s check is the grants' own, `takes_more`), each grant
 carrying the plan's number (`coord::Grant::plan`, serde-defaulted for a mixed rollout); a cancel
 notes the newest plan's number per target (`cancels_at`; a plan is numbered as it starts,
-`Handle::newest_n`), and a grant from a plan no newer is dropped (§5.4). Numbers are at least the
+`Handle::newest_n`), and a grant from a plan no newer is dropped (§5.4). That check is the
+member's second guard: it knows only the plan numbers it has seen, and a lead plan begun before the
+cancel can reach it later with a higher one. The lead's coordinator is the first: told of a cancel
+(`coord::cancel_in`), it notes the target at the newest plan's number, the running one included
+(`Coordinator::plan_started`), and never below the time in ms (`coord::lease::Cancelled`), drops it
+from the offers standing, and leaves it out of every later offer of a plan no newer
+(`Leases::unoffered`); a newer plan's offers forget it. The notes are saved with the leases and
+carried in the term's state, so a restarted or new lead keeps them while they matter. Numbers are at least the
 time in ms (`plan::next_n`), so a lead started again, or another Mac leading, numbers past every
 plan before it and an old cancel drops none of its grants. A plan past `beat::LOOP_STUCK` is logged with its phase and sampled once
 (`plan::Handle::stalled`), and the status says so. The forecast's files for the NAS come back on a
@@ -271,8 +278,9 @@ instead of the agent's fields, and does its NAS calls through **nas**. Its gates
    `HoldView` before `Changed`; the beat that says "pausing" is written after the jobs were told.
 3. **Nothing starts under a hold.** **jobs** checks `HoldView` (its newest, read at the start) before
    it starts a granted job, and a hold arriving during a start drains that job at once.
-4. **Grants follow the plan they came from.** A `Grant` carries its `PlanView` generation; **jobs**
-   drops a grant older than a cancel of the same target.
+4. **Grants follow the plan they came from.** A `Grant` carries its plan's number; the lead
+   grants no target cancelled after that plan began (`coord::lease::Cancelled`), and **jobs**
+   drops a grant no newer than a cancel of the same target it saw, as a second guard.
 5. **A part change stops beats first.** When this Mac's part changes (lead → member, or a restart),
    **beat** is told first and writes no more shared status under the old part (pool.md §7.6's rule,
    today enforced by clearing `BEATING`).

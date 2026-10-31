@@ -268,6 +268,10 @@ pub struct Shared {
     /// The number of the lead's plan the offers came from (crate::agent::plan::PlanView::n): each
     /// grant carries it (`Grant::plan`).
     pub plan: u64,
+    /// The number of the lead's plan running now (`Coordinator::plan_started`; 0: none yet): a
+    /// cancel told meanwhile is noted at it, so that plan's offers, set after, leave its target
+    /// out (lease::Cancelled).
+    pub planning: u64,
     /// A resumable job offered to the one worker whose Mac holds its progress (its name, and the
     /// job as an offer: its step, its target and key, `offer_resume`; crate::agent::resume), to
     /// no other, whatever pass is offered.
@@ -1279,6 +1283,7 @@ impl Coordinator {
             },
             pass: String::new(),
             plan: 0,
+            planning: 0,
             resume: None,
             tasks: task::Tasks::new(dir.join("tasks")),
             paused,
@@ -1579,6 +1584,13 @@ impl Coordinator {
         self.shared.lock().unwrap().plan = n;
     }
 
+    /// Plan `n` started (crate::agent::plan's numbering): a cancel told before its offers come is
+    /// noted at it (`Shared::planning`).
+    pub fn plan_started(&self, n: u64) {
+        let mut s = self.shared.lock().unwrap();
+        s.planning = s.planning.max(n);
+    }
+
     /// The plan's work, in plan order, and its pass: the steps offered to every member, and the
     /// lead's own planned jobs (`Offer::job`). The plan's keys include what's journaled, so work done
     /// under the key the plan has now is no longer kept out by hand.
@@ -1594,7 +1606,13 @@ impl Coordinator {
             .filter(|((st, t), k)| planned.get(&(st.as_str(), t.as_str())) == Some(&k.as_str()))
             .collect();
         s.pass = pass.to_string();
-        s.set_offers(offers.into_iter().filter(|o| !o.targets.is_empty()).collect());
+        // (Without what was cancelled after this plan began; the cancels before it forgotten,
+        // lease::Cancelled.)
+        let plan = s.plan;
+        s.leases.forget_cancels_before(plan);
+        let offers = offers.iter().filter_map(|o| s.leases.unoffered(plan, o)).collect();
+        s.set_offers(offers);
+        s.save_leases();
         let steps: BTreeSet<String> = s.offers.iter().map(|o| o.step.clone()).collect();
         s.last.retain(|(_, st), _| steps.contains(st));
     }
@@ -1790,7 +1808,9 @@ impl Coordinator {
     /// job's progress), or none: granted whole, its targets as `o` has them, to that worker only,
     /// while no lease holds them.
     pub fn offer_resume(&self, to: Option<(String, Offer)>) {
-        self.shared.lock().unwrap().resume = to.filter(|(_, o)| !o.targets.is_empty());
+        let mut s = self.shared.lock().unwrap();
+        let plan = s.plan;
+        s.resume = to.and_then(|(w, o)| Some((w, s.leases.unoffered(plan, &o)?)));
     }
 
     /// `offer` with z6 tiles alone (target, key, extract bytes).
@@ -2536,7 +2556,17 @@ pub struct PoolState {
 
 /// The owner's cancel (crate::control::Cancel) taken up in `s`: `Coordinator::cancel`, and the
 /// `/work/cancel` of a member's agent.
+///
+/// The target noted at the newest plan's number (the one running included, and never below the time
+/// in ms) and left out of the offers standing (lease::Cancelled): a plan begun before the cancel
+/// grants it to no one, its offers set before the cancel or after.
 fn cancel_in(s: &mut Shared, c: &crate::control::Cancel) -> Vec<(u64, String, String)> {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let (plan, at) = (s.plan, s.plan.max(s.planning).max(ms));
+    s.leases.note_cancel(&c.target, c.step.clone(), at);
+    let offers = s.offers.iter().filter_map(|o| s.leases.unoffered(plan, o)).collect();
+    s.set_offers(offers);
+    s.resume = s.resume.take().and_then(|(w, o)| Some((w, s.leases.unoffered(plan, &o)?)));
     let now = s.now();
     let hits: Vec<Lease> = s
         .leases
@@ -5725,6 +5755,8 @@ mod tests {
         let (c, port) = start_for_test(&d.path().join("coord"), "m4", new);
         assert!(c.held("unit").is_empty() && c.holds().is_empty());
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        // (A plan after the cancel: lease::Cancelled.)
+        c.set_plan(crate::agent::plan::next_n(0, std::time::SystemTime::now() + Duration::from_secs(1)));
         c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
         let g = w.ask(&on(new)).unwrap().unwrap();
         // A member's agent passes on its owner's cancel (no hold asked): told, nothing held.
@@ -5734,10 +5766,64 @@ mod tests {
         assert!(w.beat_told(g.lease, None, None, None).unwrap().2.is_some_and(|x| !x.rerun_after_update));
         w.end_with(g.lease, "cancelled", true, &[], &[], 0).unwrap();
         assert!(c.held("unit").is_empty());
-        assert!(w.ask(&on(new)).unwrap().is_some(), "it reruns at once");
+        // Not from the plan it was cancelled under (lease::Cancelled); the next plan reruns it.
+        assert!(w.ask(&on(new)).unwrap().is_none());
+        c.set_plan(crate::agent::plan::next_n(0, std::time::SystemTime::now() + Duration::from_secs(2)));
+        c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
+        assert!(w.ask(&on(new)).unwrap().is_some(), "it reruns from the next plan");
         // (A hold's release by app: another app not older than its own, or any in a test's "".)
         let h = lease::Hold { step: "u".into(), target: "t".into(), newer_than: new.into(), by: String::new(), at: 0 };
         assert!(!h.released(new) && !h.released(old) && h.released("20261019-0000-ccccccc") && h.released(""));
+    }
+
+    #[test]
+    fn a_plan_begun_before_a_cancel_never_grants_its_target() {
+        // Task #907: a plan starts, the owner cancels one of its targets, and its offers come after:
+        // no worker is granted it, the lead's own job of it neither; a lead restarted meanwhile
+        // keeps the cancel; the next plan grants it again.
+        use crate::control::Cancel;
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = start_for_test(&d.path().join("coord"), "m4", "");
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        let units = vec![("6/55/25".to_string(), "k".to_string(), 100 << 20)];
+        let now = std::time::SystemTime::now();
+        let n = crate::agent::plan::next_n(0, now);
+        c.plan_started(n);
+        assert!(c.cancel(&Cancel::new("6/55/25", None, false, "scenic job cancel on m4")).is_empty());
+        c.set_plan(n);
+        c.offer_units("2026-09-28", units.clone());
+        assert!(w.ask(&ask(4096)).unwrap().is_none(), "the plan begun before the cancel grants it not");
+        let own =
+            Offer { step: "pack".into(), targets: vec![("6/55/25".into(), "k".into(), 1)], job: Some("j".into()) };
+        assert_eq!(c.shared.lock().unwrap().leases.unoffered(n, &own), None, "nor the lead's own job");
+        // A restart keeps it while it matters: the offers of a plan no newer still leave it out.
+        c.stop();
+        drop(c);
+        let (c, port) = start_for_test(&d.path().join("coord"), "m4", "");
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        assert_eq!(c.shared.lock().unwrap().leases.cancelled().len(), 1);
+        c.set_plan(n);
+        c.offer_units("2026-09-28", units.clone());
+        assert!(w.ask(&ask(4096)).unwrap().is_none(), "kept across the restart");
+        // A plan begun after the cancel: granted again, the cancel forgotten.
+        c.set_plan(crate::agent::plan::next_n(n, now + Duration::from_secs(1)));
+        c.offer_units("2026-09-28", units.clone());
+        let g = w.ask(&ask(4096)).unwrap().unwrap();
+        assert!(matches!(&g.work, Granted::Job { targets, .. } if targets[0].0 == "6/55/25"));
+        assert!(c.shared.lock().unwrap().leases.cancelled().is_empty());
+    }
+
+    #[test]
+    fn a_cancel_drops_the_offers_standing() {
+        // Offers set before the cancel, from a plan no newer: its target left out at once.
+        use crate::control::Cancel;
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = start_for_test(&d.path().join("coord"), "m4", "");
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        c.set_plan(crate::agent::plan::next_n(0, std::time::SystemTime::now()));
+        c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
+        c.cancel(&Cancel::new("6/55/25", None, false, "x"));
+        assert!(w.ask(&ask(4096)).unwrap().is_none());
     }
 
     #[test]
