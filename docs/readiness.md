@@ -280,7 +280,25 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      publishing chain keeps the slope's root alone (`root_held`). So all slope waits until all
      terrain-lo is done, as the decision accepted: a region's slope no longer comes with it while
      another region's terrain is left.
-   - 3d: the rekey and its measurement. 3e: the flip.
+   - **3d (built): the rekey, and what it would do now.** `rekey::scheme_2` records each record
+     current under scheme 1 (its scheme-1 key for its target, "none" ones too) under its scheme-2
+     key; one scheme 1 doesn't find current is kept as it is, and built again; one whose key can't
+     be worked out now, or no target any more, is kept too. It isn't called until the flip (3e).
+     `scenic-build rekey-check` says what it would do to the records now, reading only. Test:
+     `rekey::tests::scheme_2_keeps_what_reads_nothing_new`.
+     Measured on the NAS's records (31 Oct, pass 2026-09-28, read only, 16 min, 3.4 GB on the M1):
+     every step outside terrain re-keys what scheme 1 finds current. Built again: terrain-water's one
+     run (its water wants name #832's cut), the 20 pyramids-fill z6 tiles (#832), and every
+     terrain-hi (2,326) and terrain-deep (10,258) target, whose keys can't be worked out until that
+     terrain-water run has digested their water under the new cut (`unknown` there now) and then
+     name #832's cut: #862's rebuild. Every other record counted "rebuilt" (peaks 1,306, slope-hi
+     1,090, depth 416, trees 193, bldtiles 213, unit 85, the 34 slope-lo, 10 terrain-lo, the roots,
+     summits, marks, overlays, …) is stale under scheme 1 as main makes it too: those steps' scheme-1
+     code is main's (step 2 changed only the terrain's coverage cut), so the live build has them
+     to make either way. What the terrain rebuild then re-keys follows by content names: an
+     assembly's mids, a slope tile's terrain tiles and a z6 tile's roads' staged tiles by XXH3,
+     those reading the hi and deep packs whole (a z6 tile's roads' heights) by the packs' content.
+   - 3e: the flip.
 4. The scheme-1 rekey adapter is deleted once no record is scheme 1 (one catalogue after).
 
 ## 7. Tests

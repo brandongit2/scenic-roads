@@ -141,6 +141,9 @@
 //!                                (pipeline::agent::rekey) would do now: each z3 tile re-keyed, or
 //!                                made again as z6 tiles and why, the work left and its time by the
 //!                                last runs (`f`: the coordinator's costs.json). Reads only
+//!   rekey-check [--pass d] [--stale n]  what the switch to key scheme 2 (pipeline::agent::rekey::
+//!                                scheme_2) does to the records now: per step, those re-keyed, those
+//!                                built again (`n` of them listed) and those unknown. Reads only
 //!
 //! `--cache` is where base packs are kept locally (copied from the NAS when missing). `--help` (or
 //! `-h`) on any step prints its usage and does nothing; a flag the step doesn't take or an argument
@@ -412,6 +415,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
     }
     if step == "p5-check" {
         return p5_check(&root, &args);
+    }
+    if step == "rekey-check" {
+        return rekey_check(&root, &args);
     }
     if step == "names-todo" {
         // names-todo --translations-index <index> --descriptions-index <index> [--out <dir>]: the
@@ -2728,6 +2734,72 @@ fn terrain_restore_check(root: &store::nasfs::NasRoot, args: &[String]) -> Resul
     }
     eprintln!(
         "terrain-restore-check: {:.0} s, {} MB",
+        t0.elapsed().as_secs_f64(),
+        pipeline::sys::footprint().unwrap_or(0) / 1_000_000
+    );
+    Ok(())
+}
+
+/// `rekey-check`: what the switch to key scheme 2 (pipeline::agent::rekey::scheme_2) does to the
+/// records now, read from the NAS with nothing written: the records as every reader reads them,
+/// the coverage, the terrain's declared sources and packs' indexes, the reaches and the planner's
+/// inputs as the agent reads them; per step, the records re-keyed (current under scheme 1), those
+/// built again (scheme 1 doesn't find them current now: `--stale n` lists n of each) and those
+/// unknown (a key that can't be worked out now, or no target any more).
+fn rekey_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
+    use pipeline::agent::{build, rekey, tiles::TerrainTiles};
+    let t0 = std::time::Instant::now();
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
+    let list: usize = opt(args, "--stale").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let pipeline::pool::records::Brief { manifest: m, keys, .. } = pipeline::out::brief_now(root)?;
+    let a = pipeline::inputs::open(root, &m, pipeline::inputs::regions::UNIT)?.context("no regions version")?;
+    let cov = pipeline::coverage::Coverage::accepted(root, &a, None)?;
+    let mut tiles = TerrainTiles::new(None);
+    tiles.load(root, &m);
+    let mut inputs = pipeline::agent::input_digests(root);
+    if let Some(ix) = m.get(&pipeline::inputs::logical(pipeline::inputs::feeds::UNIT)) {
+        let d = pipeline::inputs::feeds::declared(root, ix);
+        inputs.insert("feed-keys".into(), d.as_ref().map(|d| d.key_names.join(",")).unwrap_or_else(|_| "?".into()));
+        inputs.insert("feeds".into(), d.map(|d| d.keyed).unwrap_or_else(|_| "?".into()));
+    }
+    inputs.insert(
+        pipeline::dem::spacing::INPUT.into(),
+        pipeline::dem::spacing::digest_read(root, &m).unwrap_or_else(|_| "?".into()),
+    );
+    let reach = pipeline::reach::Reaches::load(root, &m, &date).ok().flatten();
+    eprintln!("rekey-check: pass {date}, the inputs read ({:.0} s)", t0.elapsed().as_secs_f64());
+    let mut done = keys;
+    rekey::as_read(&mut done, &cov, &m, &tiles, &rekey::FileTimes::new(root));
+    let x = build::KeyCtx { cov: &cov, date: &date, m: &m, inputs: &inputs, reach: reach.as_ref(), tiles: &tiles };
+    let before = done.clone();
+    let r = rekey::scheme_2(&mut done, &x, &|s, x| {
+        let t = std::time::Instant::now();
+        let k = build::legacy_keys(s, x);
+        eprintln!("rekey-check: {s}'s scheme-1 keys ({:.0} s)", t.elapsed().as_secs_f64());
+        k
+    });
+    println!("{:<16} {:>9} {:>9} {:>9}", "step", "re-keyed", "rebuilt", "unknown");
+    for (s, c) in &r {
+        println!("{s:<16} {:>9} {:>9} {:>9}", c.rekeyed, c.stale, c.unknown);
+    }
+    if list > 0 {
+        for (s, c) in r.iter().filter(|(_, c)| c.stale > 0) {
+            let old: BTreeMap<String, String> = build::legacy_keys(s, &x).unwrap_or_default().into_iter().collect();
+            let mut n = 0;
+            for (t, now) in &old {
+                let rec = before.recorded(s, t).or_else(|| before.lo.get(t).map(String::as_str));
+                if rec.is_some_and(|k| k != now) {
+                    println!("  rebuilt: {s} {t}");
+                    n += 1;
+                    if n == list || n == c.stale {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "rekey-check: {:.0} s, {} MB",
         t0.elapsed().as_secs_f64(),
         pipeline::sys::footprint().unwrap_or(0) / 1_000_000
     );

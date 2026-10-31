@@ -166,6 +166,82 @@ impl<'a> FileTimes<'a> {
     }
 }
 
+/// What the switch to scheme 2 (`scheme_2`) did to a step's records.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Scheme2Step {
+    /// Records current under scheme 1, recorded under their scheme-2 keys.
+    pub rekeyed: usize,
+    /// Records scheme 1 doesn't find current now: kept as they are, and so built again (a key that
+    /// changed with this code, #832's coverage cut; or stale before).
+    pub stale: usize,
+    /// Records of targets whose key can't be worked out now (an input unread), or that are no
+    /// target now: kept as they are (for the next pass; a prune's).
+    pub unknown: usize,
+}
+
+/// The record of target `t` of `step` (a world step's in the `lo` keys).
+fn record_of<'a>(keys: &'a Keys, step: &str, t: &str) -> Option<&'a str> {
+    keys.recorded(step, t).or_else(|| keys.lo.get(t).map(String::as_str))
+}
+
+/// Records `k` for target `t` of `step` (a world step's in the `lo` keys).
+fn set_record(keys: &mut Keys, step: &str, t: &str, k: String) {
+    match keys.per_target(step) {
+        Some(m) => m.insert(t.to_string(), k),
+        None => keys.lo.insert(t.to_string(), k),
+    };
+}
+
+/// The switch to scheme 2 (docs/readiness.md §6 step 3): for each step whose keys it derives (a
+/// version declared), each record current under scheme 1 now (`scheme_1`: its key for the target,
+/// "none" ones too) is recorded under its scheme-2 key (`steps::derived_key`, `steps::none_key`).
+/// Every scheme-2 key pins exactly what its scheme-1 key does
+/// (`build::tests::scheme_2_pins_what_scheme_1_did`), so a record current under one is current
+/// under the other, and no list says which steps are rebuilt: those whose records scheme 1 no
+/// longer finds current (`Scheme2Step::stale`) are. Run again, it changes nothing: a record already
+/// under scheme 2 isn't scheme 1's.
+pub fn scheme_2(
+    keys: &mut Keys,
+    x: &super::build::KeyCtx,
+    scheme_1: &dyn Fn(&str, &super::build::KeyCtx) -> Option<Vec<(String, String)>>,
+) -> BTreeMap<&'static str, Scheme2Step> {
+    use super::steps;
+    let mut out = BTreeMap::new();
+    for row in steps::TABLE.iter().filter(|r| !r.versions.is_empty()) {
+        let step = row.name;
+        let mut s = Scheme2Step::default();
+        let old: BTreeMap<String, String> = scheme_1(step, x).unwrap_or_default().into_iter().collect();
+        let targets: Vec<(String, String)> = match keys.per_target(step) {
+            Some(m) => m.iter().map(|(t, k)| (t.clone(), k.clone())).collect(),
+            None => record_of(keys, step, step).map(|k| (step.to_string(), k.to_string())).into_iter().collect(),
+        };
+        for (t, k) in targets {
+            let Some(now) = old.get(&t) else {
+                s.unknown += 1;
+                continue;
+            };
+            if *now != k {
+                s.stale += 1;
+                continue;
+            }
+            let new = if super::build::is_none_key(step, &t, now) {
+                steps::none_key(step, &t)
+            } else {
+                steps::derived_key(step, &t, x)
+            };
+            match new {
+                Some(n) => {
+                    set_record(keys, step, &t, n);
+                    s.rekeyed += 1;
+                }
+                None => s.unknown += 1,
+            }
+        }
+        out.insert(step, s);
+    }
+    out
+}
+
 /// Re-keys the records in `keys`, for the coverage `cov`, the manifest `m` and the declared sources
 /// the keys name (`tiles`): tree cover's from a z3 tile's whole run to z6 tiles and assemblies
 /// (`rekey_trees`). `times`: the NAS's files' times (`FileTimes`; None where they can't be told now).
@@ -397,6 +473,55 @@ mod tests {
                 way: Default::default(),
             },
         )
+    }
+
+    /// docs/readiness.md §7: at the switch to scheme 2, a record current under scheme 1 is recorded
+    /// under its scheme-2 key ("none" ones under theirs), one stale is kept as it is (built again),
+    /// in every fixture build; a second pass re-keys nothing.
+    #[test]
+    fn scheme_2_keeps_what_reads_nothing_new() {
+        use crate::agent::steps;
+        for f in build::tests::fixtures() {
+            let tiles = (f.tiles)(&f.m);
+            let x = build::KeyCtx {
+                cov: &f.c,
+                date: "d",
+                m: &f.m,
+                inputs: &f.inputs,
+                reach: f.reach.as_ref(),
+                tiles: &tiles,
+            };
+            let mut keys = Keys::default();
+            let mut stale = None;
+            for row in steps::TABLE.iter().filter(|r| !r.versions.is_empty()) {
+                let mut ts = build::legacy_keys(row.name, &x).unwrap_or_default();
+                // (One record stale: under a key scheme 1 doesn't give it now.)
+                if stale.is_none() && !ts.is_empty() {
+                    ts[0].1 = "an older key".into();
+                    stale = Some((row.name, ts[0].0.clone()));
+                }
+                keys.record(row.name, &ts);
+            }
+            let r = scheme_2(&mut keys, &x, &|s, x| build::legacy_keys(s, x));
+            let (s, t) = stale.unwrap();
+            assert_eq!(record_of(&keys, s, &t), Some("an older key"), "{}: a stale record kept", f.name);
+            for row in steps::TABLE.iter().filter(|r| !r.versions.is_empty()) {
+                for (u, k) in build::legacy_keys(row.name, &x).unwrap_or_default() {
+                    if (row.name, u.as_str()) == (s, t.as_str()) {
+                        continue;
+                    }
+                    let want = if build::is_none_key(row.name, &u, &k) {
+                        steps::none_key(row.name, &u)
+                    } else {
+                        steps::derived_key(row.name, &u, &x)
+                    };
+                    assert_eq!(record_of(&keys, row.name, &u), want.as_deref(), "{} {} {u}", f.name, row.name);
+                }
+            }
+            assert_eq!(r.get(s).map(|c| c.stale), Some(1), "{}: {r:?}", f.name);
+            let again = scheme_2(&mut keys.clone(), &x, &|s, x| build::legacy_keys(s, x));
+            assert!(again.values().all(|c| c.rekeyed == 0), "{}: {again:?}", f.name);
+        }
     }
 
     #[test]

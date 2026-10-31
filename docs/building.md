@@ -47,7 +47,10 @@ from the first (`edit_held`).
   the regions' state, `--expect-same`, `scenic-build p5-check`), a record a job saved always
   winning. The one old scheme kept is tree cover's before its z6 tiles (`rekey::v1`);
   `scenic-build p5-check trees` says what it would do, reading only. Z6 tiles re-keyed so have no
-  mid: it's made in idle time, expected the same (Order).
+  mid: it's made in idle time, expected the same (Order). The switch to keys derived from the
+  steps' declared reads (docs/readiness.md §6 step 3, `rekey::scheme_2`) re-keys every record
+  current under the hand-made keys, every derived key pinning exactly what its hand-made one did;
+  `scenic-build rekey-check` says what it would do, reading only.
 - **A job** is one step over a run of stale targets: as many as fit a quarter of an hour by their
   measured times (`coord::JOB_S`), a step kept to the lead in one job, so a failure or a new app
   costs one run.

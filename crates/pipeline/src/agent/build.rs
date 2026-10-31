@@ -6443,13 +6443,13 @@ pub(crate) mod tests {
     /// A build the scheme-2 keys' tests key steps in: the coverage, the manifest, the planner's
     /// inputs, the reaches, and the terrain packs' indexes and declared sources it holds for a
     /// manifest (`tiles`).
-    struct Fixture {
-        name: &'static str,
-        c: Coverage,
-        m: BTreeMap<String, String>,
-        inputs: BTreeMap<String, String>,
-        reach: Option<Reaches>,
-        tiles: Box<dyn Fn(&BTreeMap<String, String>) -> TerrainTiles>,
+    pub(crate) struct Fixture {
+        pub name: &'static str,
+        pub c: Coverage,
+        pub m: BTreeMap<String, String>,
+        pub inputs: BTreeMap<String, String>,
+        pub reach: Option<Reaches>,
+        pub tiles: Box<dyn Fn(&BTreeMap<String, String>) -> TerrainTiles>,
     }
 
     impl Fixture {
@@ -6494,7 +6494,7 @@ pub(crate) mod tests {
     /// The builds the scheme-2 keys' tests key steps in (`Fixture`): the tests' plans run to the end
     /// (with the pass's files the steps' keys read, the spacing and the 3D buildings' release); with
     /// a water source; with a pyramid read tile by tile; at a pole; with depth sources.
-    fn fixtures() -> Vec<Fixture> {
+    pub(crate) fn fixtures() -> Vec<Fixture> {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
