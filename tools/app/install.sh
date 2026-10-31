@@ -82,7 +82,7 @@ if grep -Eqv '^[[:space:]]*(#|$)' "$HOME/.config/scenic/names" 2>/dev/null; then
 else
   launchctl bootout gui/$uid/local.scenic.server 2>/dev/null || true
   rm -f "$server_plist" "$HOME_S/run/server"
-  map_said="the map is the Mac mini's: https://map.brandontsang.net"
+  map_said="the map is the Mac mini's (docs/macs.md, Devices)"
 fi
 # A running Scenic ended before it's replaced or removed (SIGTERM: it quits without asking, its build
 # service left as it is).
