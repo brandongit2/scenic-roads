@@ -187,8 +187,26 @@ pub fn ensure_square(store: &Path, kept: &Path, url: Option<&str>, coming: &dyn 
             Ok(mut f) => {
                 use std::io::Write;
                 f.write_all(format!("{} {}", store::sys::host(), std::process::id()).as_bytes()).ok();
+                // (Touched each minute while the download lasts, its retries' waits too: a square
+                // of 2 GB takes up to two hours, and a lock untouched for 30 minutes is a holder
+                // that died. A crashed holder's is so taken over.)
+                let done = std::sync::atomic::AtomicBool::new(false);
+                let r = std::thread::scope(|s| {
+                    s.spawn(|| {
+                        let mut t = std::time::Instant::now();
+                        while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                            if t.elapsed() >= std::time::Duration::from_secs(60) {
+                                t = std::time::Instant::now();
+                                f.set_modified(std::time::SystemTime::now()).ok();
+                            }
+                        }
+                    });
+                    let r = download(url, kept, coming);
+                    done.store(true, std::sync::atomic::Ordering::Relaxed);
+                    r
+                });
                 drop(f);
-                let r = download(url, kept, coming);
                 std::fs::remove_file(&lock).ok();
                 r?;
             }

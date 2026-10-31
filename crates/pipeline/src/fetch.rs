@@ -238,11 +238,11 @@ pub enum Kind {
 
 /// Outside data by URL.
 pub trait Fetch: Send + Sync {
-    /// `url`'s file for range reads; None when the server says it has none (404, 403 or 410: S3's
-    /// answers for a key that doesn't exist).
+    /// `url`'s file for range reads; None when the server says it has none (404 or 410, or S3's
+    /// 403 for a key that doesn't exist, said twice and without Retry-After: `net::says_none`).
     fn open(&self, url: &str) -> Result<Option<Arc<dyn RangeRead>>>;
 
-    /// `url`'s file whole (a small one); None when the server says it has none (404, 403 or 410).
+    /// `url`'s file whole (a small one); None when the server says it has none (as `open`).
     fn get(&self, url: &str) -> Result<Option<Vec<u8>>>;
 
     /// As `get`, each request over the network held to `within` (and tried again, as a failed
@@ -575,7 +575,7 @@ pub fn fetched_bytes() -> u64 {
 
 /// `url`'s small file whole over the network, by this process's one `net::Net` (its retries, its
 /// wait for this Mac's agent's proxy through a restart, its per-host slots); None when the server
-/// says it has none (404, 403 or 410). For a step's own downloads with no mirror (`Fetcher`'s are
+/// says it has none (`net::says_none`). For a step's own downloads with no mirror (`Fetcher`'s are
 /// the data readers').
 pub fn get(url: &str) -> Result<Option<Vec<u8>>> {
     NET.get_by(url, None)
@@ -583,7 +583,7 @@ pub fn get(url: &str) -> Result<Option<Vec<u8>>> {
 
 /// `url`'s (large) file streamed into file `to` (made again from its start each attempt), by this
 /// process's one `net::Net`: true once it's all there and `whole(to)`; false when the server says
-/// it has none (404, 403 or 410) twice, a moment apart (`to` then left as it was). A body shorter
+/// it has none (`net::says_none`) twice, a moment apart (`to` then left as it was). A body shorter
 /// than its Content-Length, or not `whole`, is asked again, as a failure to write `to` is (a share
 /// not taking it for a moment). `coming` is told how much has come (0–1), at most once a second.
 /// The caller makes `to` whole under its own name (a temporary one, then renamed).
@@ -846,6 +846,21 @@ mod net {
         code == 429 || code >= 500
     }
 
+    /// Whether an answer says the file isn't there. 404 and 410 say so at once; a 403 (S3's
+    /// answer for a key that isn't there) only the second time for this file (`forbidden` counts
+    /// them: one 403 may be a host refusing for a moment), and never one with Retry-After (a host
+    /// saying "later", not "none"). Every reader goes by it: `head`, `get_by`, `download`.
+    fn says_none(r: &ureq::http::Response<ureq::Body>, forbidden: &mut u32) -> bool {
+        match r.status().as_u16() {
+            404 | 410 => true,
+            403 if r.headers().get("retry-after").is_none() => {
+                *forbidden += 1;
+                *forbidden >= 2
+            }
+            _ => false,
+        }
+    }
+
     fn header(r: &ureq::http::Response<ureq::Body>, name: &str) -> Option<String> {
         r.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string)
     }
@@ -1054,6 +1069,7 @@ mod net {
         fn head(&self, url: &str) -> Result<Option<(u64, Vec<u8>)>> {
             let _w = store::waits::net();
             let _slot = HostSlot::take(url);
+            let mut forbidden = 0;
             self.retrying(url, || {
                 crate::fetch::online(url)?;
                 let mut r = match self.agent.get(url).header("Range", format!("bytes=0-{}", READ_AHEAD - 1)).call() {
@@ -1087,7 +1103,8 @@ mod net {
                         }
                     }
                     416 => Ok(Ok(Some((0, Vec::new())))),
-                    403 | 404 | 410 => Ok(Ok(None)),
+                    _ if says_none(&r, &mut forbidden) => Ok(Ok(None)),
+                    403 => Ok(Err("status 403".into())),
                     c if transient(c) => Ok(Err(format!("status {c}"))),
                     c => bail!("{url}: status {c}"),
                 }
@@ -1217,7 +1234,7 @@ mod net {
             use std::io::Read;
             let _w = store::waits::net();
             let _slot = HostSlot::take(url);
-            let mut missing = 0;
+            let (mut missing, mut forbidden) = (0, 0);
             self.retrying(url, || {
                 crate::fetch::online(url)?;
                 let req = self
@@ -1232,13 +1249,18 @@ mod net {
                     Ok(r) => r,
                     Err(e) => return Ok(Err(e.to_string())),
                 };
+                // (None only when said twice, a moment apart, a 404 too: a square of GBs isn't
+                // given up on one answer. `says_none`'s 403 rules hold.)
                 match r.status().as_u16() {
                     200 => {}
-                    403 | 404 | 410 => {
+                    c if says_none(&r, &mut forbidden) && {
                         missing += 1;
-                        return Ok(if missing == 2 { Ok(false) } else { Err("none there, asked again".into()) });
+                        missing == 2 || c == 403
+                    } =>
+                    {
+                        return Ok(Ok(false))
                     }
-                    c => return Ok(Err(format!("status {c}"))),
+                    c => return Ok(Err(format!("status {c}, asked again"))),
                 }
                 let want: Option<u64> = header(&r, "content-length").and_then(|v| v.parse().ok());
                 let on_disk = |e: std::io::Error| Ok(Err(format!("{}: {e}", to.display())));
@@ -1282,8 +1304,8 @@ mod net {
             })
         }
 
-        /// The whole (small) file; None for 404, 403 or 410 (S3's answers for a key that isn't
-        /// there, as `head`). Other answers are asked again: 8 tries, waiting 2,
+        /// The whole (small) file; None when the server says it has none (`says_none`, as
+        /// `head`). Other answers are asked again: 8 tries, waiting 2,
         /// 4, 6 … s. Each attempt is held to `deadline` when one's given (the agent's own 90 s
         /// in all otherwise): a connection silent past its head's wait, or a body not all in by
         /// its time, is an attempt failed, asked again. A host whose every failure was a body past
@@ -1300,6 +1322,7 @@ mod net {
             let late = |e: &ureq::Error| matches!(e, ureq::Error::Timeout(ureq::Timeout::RecvBody));
             let mut attempt = 0u64;
             let mut busy = 0u32;
+            let mut forbidden = 0;
             let mut proxy_left = self.proxy_wait();
             while attempt < 8 {
                 if attempt > 0 {
@@ -1331,7 +1354,7 @@ mod net {
                                 last = e.to_string();
                             }
                         },
-                        403 | 404 | 410 => return Ok(None),
+                        _ if says_none(&r, &mut forbidden) => return Ok(None),
                         c => {
                             all_late = false;
                             last = format!("status {c}");
@@ -1449,34 +1472,49 @@ mod tests {
         url
     }
 
-    /// Task #852: a small file S3 answers 403 or 410 for (a key that isn't there) is none at once,
-    /// as `head` reads it, not an error after eight tries (the terrain's raw tiles come this way).
+    /// Task #852: a small file a server answers 404 or 410 for is none at once; S3's 403 (a key
+    /// that isn't there) only when said twice (one 403 may be a host refusing for a moment); a 403
+    /// with Retry-After (a host saying "later") never: asked again, then an error.
     #[test]
-    fn a_small_files_403_or_410_is_none() {
+    fn a_small_files_none_by_its_answers() {
         use std::io::{Read, Write};
-        for code in ["403 Forbidden", "410 Gone", "404 Not Found"] {
+        let serve = |answers: Vec<&'static str>| {
             let l = store::spawn::listen("127.0.0.1:0").unwrap();
             let url = format!("http://127.0.0.1:{}/t.png", l.local_addr().unwrap().port());
-            let answer = format!("HTTP/1.1 {code}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
             l.set_nonblocking(true).unwrap();
             std::thread::spawn(move || {
-                let mut c = loop {
-                    match store::spawn::accept(&l) {
-                        Ok((c, _)) => break c,
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(std::time::Duration::from_millis(2))
+                for a in answers {
+                    let mut c = loop {
+                        match store::spawn::accept(&l) {
+                            Ok((c, _)) => break c,
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                std::thread::sleep(std::time::Duration::from_millis(2))
+                            }
+                            Err(_) => return,
                         }
-                        Err(_) => return,
-                    }
-                };
-                c.set_nonblocking(false).ok();
-                let mut b = [0u8; 4096];
-                let _ = c.read(&mut b);
-                let _ = c.write_all(answer.as_bytes());
+                    };
+                    c.set_nonblocking(false).ok();
+                    let mut b = [0u8; 4096];
+                    let _ = c.read(&mut b);
+                    let _ = c.write_all(a.as_bytes());
+                }
             });
-            let net = net::Net::new().with_down(None).with_clock(store::clock::Virtual::new());
-            assert_eq!(net.get_by(&url, None).unwrap(), None, "{code}");
+            url
+        };
+        let net = || net::Net::new().with_down(None).with_clock(store::clock::Virtual::new());
+        const GONE: &str = "HTTP/1.1 410 Gone\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        const NOT_FOUND: &str = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        const FORBIDDEN: &str = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        const LATER: &str =
+            "HTTP/1.1 403 Forbidden\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        const OK: &str = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+        for a in [GONE, NOT_FOUND] {
+            assert_eq!(net().get_by(&serve(vec![a]), None).unwrap(), None, "{a}");
         }
+        assert_eq!(net().get_by(&serve(vec![FORBIDDEN; 2]), None).unwrap(), None, "a 403 twice");
+        let got = net().get_by(&serve(vec![FORBIDDEN, OK]), None).unwrap();
+        assert_eq!(got.as_deref(), Some(&b"ok"[..]), "a 403 once, then the file");
+        assert!(net().get_by(&serve(vec![LATER; 8]), None).is_err(), "a 403 with Retry-After is never none");
     }
 
     /// Task #426 review: a tile's limits are the head's wait and a body's rate, not a cap on the
