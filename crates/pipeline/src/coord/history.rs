@@ -427,11 +427,16 @@ impl History {
     }
 
     /// Adds `e` (now, unless it says when), kept on disk at once; its number.
-    pub fn add(&mut self, mut e: Event) -> u64 {
+    pub fn add(&mut self, e: Event) -> u64 {
+        self.add_at(e, now_s())
+    }
+
+    /// [`History::add`] at `now` (seconds): what's older than a week before it let go of.
+    pub fn add_at(&mut self, mut e: Event, now: u64) -> u64 {
         self.seq += 1;
         e.seq = self.seq;
         if e.t == 0 {
-            e.t = now_s();
+            e.t = now;
         }
         if matches!(e.kind.as_str(), "start" | "lease") && e.after.is_empty() {
             e.after = self.after(e.step.as_deref().unwrap_or(""), &e.targets);
@@ -452,7 +457,7 @@ impl History {
             self.lines += 1;
         }
         self.events.push_back(e);
-        let from = now_s().saturating_sub(KEEP_S);
+        let from = now.saturating_sub(KEEP_S);
         while self.events.front().is_some_and(|e| e.t < from) || self.events.len() > KEEP_MAX {
             self.events.pop_front();
         }

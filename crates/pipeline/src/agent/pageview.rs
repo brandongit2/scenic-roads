@@ -448,7 +448,7 @@ impl PageView {
                 e.after = e.after.iter().filter_map(|q| st.numbered.get(&(m.clone(), *q)).copied()).collect();
                 let done = history::finished(&e);
                 // (Numbered here: the page's cursor, rising as events arrive.)
-                let n = h.add(e);
+                let n = h.add_at(e, now);
                 if done {
                     st.numbered.insert((m, seq), n);
                 }
@@ -1187,45 +1187,56 @@ pub(crate) mod tests {
 
     #[test]
     fn the_history_is_the_last_seven_days_an_old_day_read_once() {
-        // (Task #509) today's and the six days before; the eighth not; `data` dropped.
-        let d = tempfile::tempdir().unwrap();
-        let now = now_s();
-        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
-        for k in 1..=DAYS {
-            let t = now - k * 86_400 + 60;
-            let day = crate::pool::journal::day(t).unwrap();
-            let e = Event {
-                seq: 100 + k,
-                t,
-                note: format!("day {k}"),
-                data: Some(serde_json::json!({ "big": 1 })),
-                ..Event::new("task")
-            };
-            let line = serde_json::to_string(&e).unwrap() + "\n";
-            put(
-                &store::nasfs::NasRoot::local_for_test(d.path()),
-                &format!("state/coord/history/{day}/m-a.jsonl"),
-                line.as_bytes(),
-            );
+        // (Task #509) today's and the six days before; the eighth not; `data` dropped. (Task #901)
+        // On a clock of its own, never the wall's, at times of day round a UTC midnight: an event a
+        // minute into the day a week back was in the 7th day back's folder, unless the run fell in
+        // a day's last minute (then in the 6th's, read: the test failed).
+        let midnight = 1_790_000_000 / 86_400 * 86_400;
+        for now in [midnight - 1, midnight, midnight + 1, midnight + 43_200, midnight + 86_399] {
+            let d = tempfile::tempdir().unwrap();
+            let root = store::nasfs::NasRoot::local_for_test(d.path());
+            fixture(&root, now);
+            let today = now / 86_400 * 86_400;
+            for k in 1..=DAYS {
+                // (In the folder of day k back, at its first minute and its last.)
+                let start = today - k * 86_400;
+                let day = crate::pool::journal::day(start).unwrap();
+                let text: String = [start + 60, start + 86_340]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        let e = Event {
+                            seq: 100 + 2 * k + i as u64,
+                            t,
+                            note: format!("day {k}"),
+                            data: Some(serde_json::json!({ "big": 1 })),
+                            ..Event::new("task")
+                        };
+                        serde_json::to_string(&e).unwrap() + "\n"
+                    })
+                    .collect();
+                put(&root, &format!("state/coord/history/{day}/m-a.jsonl"), text.as_bytes());
+            }
+            let src = Dir(d.path().into(), AtomicUsize::new(0));
+            let pv = PageView::default();
+            pv.set_inputs(inputs(""));
+            pv.touch_at(now);
+            pv.tick(&src, now);
+            let h = pv.history(0, 1000).unwrap();
+            let evs = h["events"].as_array().unwrap();
+            let notes: Vec<&str> = evs.iter().filter_map(|e| e["note"].as_str()).collect();
+            let want: Vec<String> = (1..DAYS).rev().flat_map(|k| [format!("day {k}"), format!("day {k}")]).collect();
+            assert_eq!(notes, want, "at {now}: the 7th day back is past the week");
+            assert!(evs.iter().all(|e| e.get("data").is_none()));
+            // (A second read: m-a's five days before yesterday not read again; today's and
+            // yesterday's are, and m-b's missing files are tried again.)
+            let first = src.1.load(Ordering::Relaxed);
+            pv.state.lock().unwrap().last = None;
+            pv.tick(&src, now);
+            let history = 2 * 2 + 5; // (today's and yesterday's of both; m-b's five missing old days)
+            let others = 9; // (the lead's files, the beats and the members' statuses; not the forecast's input)
+            assert_eq!(src.1.load(Ordering::Relaxed) - first, history + others, "at {now}");
         }
-        let src = Dir(d.path().into(), AtomicUsize::new(0));
-        let pv = PageView::default();
-        pv.set_inputs(inputs(""));
-        pv.touch_at(now);
-        pv.tick(&src, now);
-        let h = pv.history(0, 1000).unwrap();
-        let evs = h["events"].as_array().unwrap();
-        let notes: Vec<&str> = evs.iter().filter_map(|e| e["note"].as_str()).collect();
-        assert_eq!(notes, ["day 6", "day 5", "day 4", "day 3", "day 2", "day 1"], "the 7th day back is past the week");
-        assert!(evs.iter().all(|e| e.get("data").is_none()));
-        // (A second read: m-a's five days before yesterday not read again; today's and
-        // yesterday's are, and m-b's missing files are tried again.)
-        let first = src.1.load(Ordering::Relaxed);
-        pv.state.lock().unwrap().last = None;
-        pv.tick(&src, now);
-        let history = 2 * 2 + 5; // (today's and yesterday's of both; m-b's five missing old days)
-        let others = 9; // (the lead's files, the beats and the members' statuses; not the forecast's input)
-        assert_eq!(src.1.load(Ordering::Relaxed) - first, history + others);
     }
 
     #[test]
