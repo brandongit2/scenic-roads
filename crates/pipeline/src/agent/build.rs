@@ -1383,6 +1383,11 @@ pub struct TerrainTargets {
     pub terrain_deep_none: Vec<(String, String)>,
     #[serde(default)]
     pub slope_deep_none: Vec<(String, String)>,
+    /// The slope-hi and slope-deep targets whose slope reads a tile of the terrain's root (z0–2:
+    /// an edge neighbour's ancestor where its z3 tile has no lo pack, `slope_reads`): those alone
+    /// wait for the root while it's stale (`idents::root_tiles`); the rest read nothing of it.
+    #[serde(default)]
+    pub reads_root: BTreeSet<String>,
 }
 
 /// The z3 tile ("3/x/y") of a z6 tile ("6/x/y"), or of a finer one (a deep target's "10/x/y").
@@ -1473,6 +1478,9 @@ pub fn terrain_slope_targets_made(
                 ws.map_or_else(|| UNKNOWN.to_string(), |(w, s)| piece_key_made((x, y), &fp, &s, &w, hi)),
             ));
             out.slope.push((t.clone(), slope_piece_key((x, y), m, tiles).ok()));
+            if reads_root((6, x, y), m, tiles) {
+                out.reads_root.insert(t.clone());
+            }
             tmids.push(format!("{t}={}", get(&crate::terrain_pack::mid_logical(x, y))));
             smids.push(format!("{t}={}", get(&crate::slope_pack::mid_logical(x, y))));
         }
@@ -1529,6 +1537,9 @@ pub fn terrain_slope_targets_made(
                     |r| terrain_deep_key(t, &crate::terrain_deep::target_key_lines(sets, t), &r),
                 );
                 out.terrain_deep.push((ts.clone(), key));
+                if reads_root((crate::terrain_deep::PACK_Z, t.0, t.1), m, tiles) {
+                    out.reads_root.insert(ts.clone());
+                }
                 out.slope_deep.push((ts, slope_deep_key(t, m, tiles).ok()));
             }
         }
@@ -1951,6 +1962,21 @@ pub fn slope_tile_lines(
     Ok(v.lines().map(str::to_string).collect())
 }
 
+/// The root's tiles (z0–2) a slope pyramid of `top` reads by content (`slope_tile_lines`); none
+/// while they can't be read (its key waits then anyway).
+pub fn root_tile_lines(top: (u8, u32, u32), m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Vec<String> {
+    slope_tile_lines(top, m, tiles)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|l| l.split('/').next().and_then(|z| z.parse::<u8>().ok()).is_some_and(|z| z <= 2))
+        .collect()
+}
+
+/// Whether a slope pyramid of `top` reads a tile of the terrain's root (`root_tile_lines`).
+fn reads_root(top: (u8, u32, u32), m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> bool {
+    !root_tile_lines(top, m, tiles).is_empty()
+}
+
 /// Terrain tiles read (`slope_reads`), as a key's lines.
 fn read_lines(reads: &[Option<Tile>]) -> Vec<String> {
     reads.iter().map(|r| r.map_or("-".to_string(), |(z, x, y, h)| format!("{z}/{x}/{y} {h:016x}"))).collect()
@@ -2272,6 +2298,9 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
     // stay; left (and what reads it waiting) while stale.
     if let Some(k) = root_key("terrain", m).filter(|k| done.lo.get("terrain-root") != Some(k)) {
         w.left.world("terrain-root", true);
+        // (The slope tiles reading a tile of it wait for it: their `root-tiles` input isn't known
+        // until it's made.)
+        w.left.unknown_for.insert("root-tiles", tt.reads_root.clone());
         match readiness("terrain-root", "terrain-root", &w.left) {
             Ready::Waits(n) => w.held.push(("terrain-root", super::steps::wait_note(&n))),
             _ => w.terrain_root.push(("terrain-root".to_string(), k)),
@@ -6171,6 +6200,30 @@ pub(crate) mod tests {
         }
     }
 
+    /// Slope reads the terrain's root only where an edge neighbour's ancestor is one of its tiles
+    /// (`TerrainTargets::reads_root`, `idents::root_tiles`): such a slope tile waits while the root
+    /// is stale; the rest don't wait for it at all.
+    #[test]
+    fn only_slope_reading_the_root_waits_for_it() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("layers/terrain/lo/3-3-2".into(), "layers/terrain/lo/3-3-2.1111111111111111.pack".into());
+        let mut tt = terrain_slope_targets(&c, &m, &tiles_for(&m));
+        let mut done = Keys::default();
+        done.record("terrain-hi", &tt.terrain);
+        done.record("terrain-lo", &tt.terrain_lo);
+        let reads = tt.slope[0].0.clone();
+        tt.reads_root = [reads.clone()].into();
+        let tw = terrain_work(&tt, &m, &done);
+        assert_eq!(tw.terrain_root.len(), 1, "the root stale");
+        let offered: Vec<&str> = tw.slope.iter().map(|t| t.0.as_str()).collect();
+        let keyed = tt.slope.iter().filter(|t| t.1.is_some()).count();
+        assert!(!offered.contains(&reads.as_str()) && offered.len() + 1 == keyed, "{offered:?}");
+        done.record("terrain-root", &tw.terrain_root);
+        let tw = terrain_work(&tt, &m, &done);
+        assert!(tw.terrain_root.is_empty() && tw.slope.iter().any(|t| t.0 == reads));
+    }
+
     /// A step whose stale targets wait for another step's (slope for the terrain of its z3 tile and its
     /// neighbours', the terrain assemblies for their z6 tiles) reports a waiting note saying so
     /// (`TerrainWork::held`, `Plan::held`); once the terrain is built the slope's note is gone. A z6
@@ -8144,9 +8197,10 @@ pub(crate) mod tests {
         assert_eq!(
             line(&w),
             [
-                // (g's slope waits for the terrain's root, made once a's terrain is built too:
-                // docs/readiness.md decision 2.)
+                // (g's slope with g, ahead of a's terrain: task #909; it reads nothing of the
+                // terrain's root, which waits for a's.)
                 "unit 6/22/17",
+                "slope-hi 6/22/16,6/22/17",
                 "terrain-hi 6/27/16,6/27/17,6/28/16,6/28/17",
                 "trees 6/22/16,6/22/17,6/28/16,6/28/17"
             ]

@@ -274,12 +274,16 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
        backup) are keyed in agent::plan, outside this derivation.
    - **3c (built): decision 2.** terrain-root is the terrain stage's (its row and the checklist's
      terrain line): planned in `terrain_work` once its readiness (it reads every terrain-lo,
-     whole) says so, first of the regions-done slope's work; left, and so waited for, while
-     stale. slope-lo and slope-root read it (`Grain::Read`: its content), slope-hi and slope-deep
-     wait for it (`Grain::Tiles`: the root tiles they read are their slope tiles' lines). The
-     publishing chain keeps the slope's root alone (`root_held`). So all slope waits until all
-     terrain-lo is done, as the decision accepted: a region's slope no longer comes with it while
-     another region's terrain is left.
+     whole) says so, first of the regions-done slope's work; left while stale. slope-lo and
+     slope-root read it whole (`Grain::Read`: its content) and wait for it. slope-hi and slope-deep
+     read of it only the root tiles (z0–2) their pyramid resolves to (`slope_reads` takes a
+     missing tile's nearest ancestor: an edge neighbour's past a z3 tile with no lo pack, beyond the
+     coverage), by XXH3 in their slope tiles' lines; that is their `root-tiles` input
+     (`idents::root_tiles`), and only the targets reading one (`TerrainTargets::reads_root`) wait,
+     through it (`Left::unknown_for`), while the root is stale. Every other slope tile reads
+     nothing of the root and doesn't wait for it, so a region's slope still comes with it while
+     another region's terrain is left (#909's per-region order). The publishing chain keeps the
+     slope's root alone (`root_held`).
    - **3d (built): the rekey, and what it would do now.** `rekey::scheme_2` records each record
      current under scheme 1 (its scheme-1 key for its target, "none" ones too) under its scheme-2
      key; one scheme 1 doesn't find current is kept as it is, and built again; one whose key can't

@@ -764,3 +764,11 @@ pub fn ferries_reads(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     v.extend(required(x, [crate::rail::FERRY_FEEDS.to_string(), crate::inputs::logical(crate::inputs::gtfs::UNIT)])?);
     Some(v)
 }
+
+/// The tiles of the terrain's root (z0–2) a slope tile reads by content (`build::root_tile_lines`:
+/// an edge neighbour's ancestor where its z3 tile has no lo pack); none for most. Those reading
+/// one wait while the root is stale (the planner's `Left::unknown_for`), the rest not at all.
+pub fn root_tiles(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    let u = TileId::parse(t)?;
+    Some(super::build::root_tile_lines((u.z, u.x, u.y), x.m, x.tiles))
+}

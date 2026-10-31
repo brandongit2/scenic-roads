@@ -502,6 +502,8 @@ pub struct Left {
     pub mids: std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>>,
     pub whole: std::collections::BTreeSet<&'static str>,
     pub unknown: std::collections::BTreeSet<&'static str>,
+    /// By input, the targets it can't be worked out for now (an input some targets read only).
+    pub unknown_for: std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>>,
 }
 
 impl Left {
@@ -531,8 +533,8 @@ impl View for Left {
         self.whole.contains(step) || self.targets.get(step).is_some_and(|s| !s.is_empty())
     }
 
-    fn known(&self, name: &str, _t: &str) -> bool {
-        !self.unknown.contains(name)
+    fn known(&self, name: &str, t: &str) -> bool {
+        !self.unknown.contains(name) && !self.unknown_for.get(name).is_some_and(|s| s.contains(t))
     }
 }
 
@@ -995,7 +997,7 @@ pub const TABLE: [Step; 59] = [
         mem_mb: crate::slope_pack::deep_peak_mb(),
         shared: true,
         versions: &[("slope-deep", || super::build::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
-        reads: &[Of { step: "terrain-deep", of: sd_deep, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-hi", of: sd_hi, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-lo", of: sd_lo, grain: Grain::Tiles(idents::nothing) }, All { step: "terrain-root", grain: Grain::Tiles(idents::nothing) }],
+        reads: &[Of { step: "terrain-deep", of: sd_deep, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-hi", of: sd_hi, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-lo", of: sd_lo, grain: Grain::Tiles(idents::nothing) }, In { name: "root-tiles", of: idents::root_tiles }],
         ..step(
             "slope",
             Pack,
@@ -1010,7 +1012,7 @@ pub const TABLE: [Step; 59] = [
         mem_mb: crate::slope_pack::peak_mb(),
         shared: true,
         versions: &[("slope-hi", || super::build::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
-        reads: &[Of { step: "terrain-hi", of: own, grain: Outputs }, Of { step: "terrain-hi", of: sh_hi, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-lo", of: sh_lo, grain: Grain::Tiles(idents::nothing) }, Of { step: "slope-deep", of: sh_deep, grain: Grain::Read(idents::deep_mids) }, All { step: "terrain-root", grain: Grain::Tiles(idents::nothing) }],
+        reads: &[Of { step: "terrain-hi", of: own, grain: Outputs }, Of { step: "terrain-hi", of: sh_hi, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-lo", of: sh_lo, grain: Grain::Tiles(idents::nothing) }, Of { step: "slope-deep", of: sh_deep, grain: Grain::Read(idents::deep_mids) }, In { name: "root-tiles", of: idents::root_tiles }],
         ..step(
             "slope",
             Pack,
