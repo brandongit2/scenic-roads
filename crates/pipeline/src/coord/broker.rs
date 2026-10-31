@@ -24,8 +24,7 @@ pub struct Broker {
 impl Broker {
     /// Starts answering on `port`, its state in `dir` (the coordinator's); `me`: this Mac's name.
     pub fn start(dir: &Path, port: u16, me: &str, app: &str) -> Result<Broker> {
-        let listeners =
-            anyhow::Context::with_context(super::listeners_on(port), || format!("listen on port {port}"))?;
+        let listeners = anyhow::Context::with_context(super::listeners_on(port), || format!("listen on port {port}"))?;
         Broker::start_on(dir, listeners, me, app)
     }
 
