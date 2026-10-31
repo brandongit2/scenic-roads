@@ -15598,7 +15598,8 @@ mod pool_tests {
         let r = nas(d.path());
         let root = store::nasfs::NasRoot::local_for_test(r.clone());
         // (Term 2 by another Mac, the pool from before #881: none declared.)
-        let other = crate::pool::Member { id: "m-00000000000000ff".into(), host: "mini".into(), app: "x".into() };
+        let id = String::from("m-00000000000000ff");
+        let other = crate::pool::Member { id, host: "mini".into(), app: "x".into() };
         crate::pool::term::bootstrap(&root, &other, now_s() - 60).unwrap();
         let cur = crate::pool::term::current(&root).unwrap();
         crate::pool::term::claim(&root, &cur, &other, "a test", now_s() - 30).unwrap();
