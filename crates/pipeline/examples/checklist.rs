@@ -7,7 +7,7 @@
 //! `<pack-idx copy>`: a copy of an agent's `pack-idx` folder (the terrain packs' indexes are read
 //! from and kept in it; never an agent's own).
 
-use pipeline::agent::build::{checklist, fold, Keys};
+use pipeline::agent::build::{checklist, fold, KeyCtx, Keys};
 use pipeline::agent::rekey::{as_read, FileTimes};
 use pipeline::agent::tiles::TerrainTiles;
 use pipeline::coverage::Coverage;
@@ -29,9 +29,10 @@ fn main() -> anyhow::Result<()> {
     let reach = pipeline::reach::Reaches::load(&nr, &m, &date).ok().flatten();
     let mut tiles = TerrainTiles::new(Some(PathBuf::from(idx)));
     tiles.load(&nr, &m);
-    let inputs = pipeline::agent::input_digests(&nr);
+    let inputs = pipeline::agent::key_inputs(&nr, &m);
     let times = FileTimes::new(&nr);
-    as_read(&mut keys, &cov, &m, &tiles, &times);
+    as_read(&mut keys, &KeyCtx::new(&cov, &date, &m, &inputs, reach.as_ref(), &tiles), &times);
+
     let (items, next) = checklist(
         &cov,
         &date,

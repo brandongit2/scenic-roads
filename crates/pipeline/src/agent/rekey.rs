@@ -169,6 +169,8 @@ impl<'a> FileTimes<'a> {
 /// What the switch to scheme 2 (`scheme_2`) did to a step's records.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Scheme2Step {
+    /// Records already under their scheme-2 keys (made since the switch), left as they are.
+    pub current: usize,
     /// Records current under scheme 1, recorded under their scheme-2 keys.
     pub rekeyed: usize,
     /// Records scheme 1 doesn't find current now: kept as they are, and so built again (a key that
@@ -192,54 +194,77 @@ fn set_record(keys: &mut Keys, step: &str, t: &str, k: String) {
     };
 }
 
-/// The switch to scheme 2 (docs/readiness.md §6 step 3): for each step whose keys it derives (a
-/// version declared), each record current under scheme 1 now (`scheme_1`: its key for the target,
-/// "none" ones too) is recorded under its scheme-2 key (`steps::derived_key`, `steps::none_key`).
-/// No scheme-2 key pins an input its scheme-1 key doesn't
-/// (`build::tests::scheme_2_pins_no_input_scheme_1_didnt`), so a record current under one is current
-/// under the other, and no list says which steps are rebuilt: those whose records scheme 1 no
-/// longer finds current (`Scheme2Step::stale`) are. Run again, it changes nothing: a record already
-/// under scheme 2 isn't scheme 1's.
+/// The switch to scheme 2 (docs/readiness.md §6 step 3): for each step whose keys are derived
+/// (`steps::derived`), each record current under scheme 1 now (`scheme_1`, crate::agent::rekey's
+/// `scheme1::keys` but in a test: its key for the target, "none" ones too) is recorded under its
+/// key now (`x`, under scheme 2: `build::step_keys`, the planner's own). No scheme-2 key pins an
+/// input its scheme-1 key doesn't (`build::tests::scheme_2_pins_no_input_scheme_1_didnt`), so a
+/// record current under one is current under the other, and no list says which steps are rebuilt:
+/// those whose records scheme 1 no longer finds current (`Scheme2Step::stale`) are. A step whose
+/// every record is already its key now isn't keyed under scheme 1 at all; run again, it changes
+/// nothing.
 pub fn scheme_2(
     keys: &mut Keys,
     x: &super::build::KeyCtx,
+    which: &dyn Fn(&str) -> bool,
     scheme_1: &dyn Fn(&str, &super::build::KeyCtx) -> Option<Vec<(String, String)>>,
 ) -> BTreeMap<&'static str, Scheme2Step> {
     use super::steps;
     let mut out = BTreeMap::new();
-    for row in steps::TABLE.iter().filter(|r| !r.versions.is_empty()) {
+    for row in steps::TABLE.iter().filter(|r| steps::derived(r.name) && which(r.name)) {
         let step = row.name;
         let mut s = Scheme2Step::default();
-        let old: BTreeMap<String, String> = scheme_1(step, x).unwrap_or_default().into_iter().collect();
         let targets: Vec<(String, String)> = match keys.per_target(step) {
             Some(m) => m.iter().map(|(t, k)| (t.clone(), k.clone())).collect(),
             None => record_of(keys, step, step).map(|k| (step.to_string(), k.to_string())).into_iter().collect(),
         };
-        for (t, k) in targets {
-            let Some(now) = old.get(&t) else {
-                s.unknown += 1;
-                continue;
-            };
-            if *now != k {
-                s.stale += 1;
-                continue;
-            }
-            let new = if super::build::is_none_key(step, &t, now) {
-                steps::none_key(step, &t)
-            } else {
-                steps::derived_key(step, &t, x)
-            };
-            match new {
-                Some(n) => {
-                    set_record(keys, step, &t, n);
-                    s.rekeyed += 1;
+        if targets.is_empty() {
+            continue;
+        }
+        let now: BTreeMap<String, String> = super::build::step_keys(step, x).unwrap_or_default().into_iter().collect();
+        let (current, rest): (Vec<_>, Vec<_>) = targets.into_iter().partition(|(t, k)| now.get(t) == Some(k));
+        s.current = current.len();
+        if !rest.is_empty() {
+            let old: BTreeMap<String, String> = scheme_1(step, x).unwrap_or_default().into_iter().collect();
+            for (t, k) in rest {
+                match (old.get(&t), now.get(&t)) {
+                    (Some(o), Some(n)) if *o == k => {
+                        set_record(keys, step, &t, n.clone());
+                        s.rekeyed += 1;
+                    }
+                    (Some(o), _) if *o != k => s.stale += 1,
+                    _ => s.unknown += 1,
                 }
-                None => s.unknown += 1,
             }
         }
         out.insert(step, s);
     }
     out
+}
+
+/// The hand-made keys (scheme 1, docs/readiness.md §6 step 1), kept to re-key their records
+/// (`scheme_2`) until no record is scheme 1's (step 4).
+pub mod scheme1 {
+    use crate::agent::build::{self, KeyCtx};
+
+    /// Every target of `step` with its scheme-1 key (`build::step_keys` under scheme 1); None for
+    /// a step whose key isn't derived.
+    pub fn keys(step: &str, x: &KeyCtx) -> Option<Vec<(String, String)>> {
+        build::step_keys(step, &x.scheme_1())
+    }
+
+    /// Whether `key` is target `t` of `step`'s scheme-1 "none" key (`build::none_piece_key`,
+    /// `none_lo_key`, `none_deep_key`, crate::treepacks::none_piece_key and none_lo_key).
+    pub fn is_none_key(step: &str, t: &str, key: &str) -> bool {
+        match step {
+            "terrain-hi" | "slope-hi" => key == build::none_piece_key(step, t),
+            "terrain-lo" | "slope-lo" => key == build::none_lo_key(step.trim_end_matches("-lo"), t),
+            "terrain-deep" | "slope-deep" => key == build::none_deep_key(step, t),
+            "trees" => key == crate::treepacks::none_piece_key(t),
+            "trees-lo" => key == crate::treepacks::none_lo_key(t),
+            _ => false,
+        }
+    }
 }
 
 /// Re-keys the records in `keys`, for the coverage `cov`, the manifest `m` and the declared sources
@@ -360,14 +385,31 @@ pub mod declared_before {
 
 /// The records as every reader reads them (the plan, the checklist, the regions' state, the jobs'
 /// `--expect-same`): re-keyed (`rekey`). The one way to read them.
-pub fn as_read(
+pub fn as_read(keys: &mut Keys, x: &super::build::KeyCtx, times: &dyn Times) -> Rekeyed {
+    as_read_of(keys, x, times, &|_| true)
+}
+
+/// `as_read`, the switch to scheme 2 applied to the steps `which` names alone (a job's
+/// `--expect-same` reads its own step's records).
+pub fn as_read_of(
     keys: &mut Keys,
-    cov: &Coverage,
-    m: &BTreeMap<String, String>,
-    tiles: &TerrainTiles,
+    x: &super::build::KeyCtx,
     times: &dyn Times,
+    which: &dyn Fn(&str) -> bool,
 ) -> Rekeyed {
-    rekey(keys, cov, m, tiles, times)
+    let r = rekey(keys, x.cov, x.m, x.tiles, times);
+    if x.scheme == 2 {
+        scheme_2(keys, x, which, &scheme1::keys);
+    }
+    r
+}
+
+/// The pass's steps' records as read before there's a coverage (agent::plan's pass:
+/// `build::PASS_STEPS`, keyed in `build::PassCtx`'s `x`): `as_read`'s for them alone.
+pub fn pass_as_read(keys: &mut Keys, x: &super::build::KeyCtx) {
+    if x.scheme == 2 {
+        scheme_2(keys, x, &|s| super::build::PASS_STEPS.contains(&s), &scheme1::keys);
+    }
 }
 
 #[cfg(test)]
@@ -429,7 +471,14 @@ mod tests {
                 format!("layers/terrain/hi/6-{x}-{y}.2222222222222222.pack"),
             );
         }
-        let tt = build::terrain_slope_targets(&c, &m, &tiles_for(&m));
+        let tt = build::terrain_slope_targets(&crate::agent::build::KeyCtx::new(
+            &c,
+            "d",
+            &m,
+            &std::collections::BTreeMap::new(),
+            None,
+            &tiles_for(&m),
+        ));
         done.record("terrain", &tt.terrain);
         done.record("terrain-lo", &tt.terrain_lo);
         loop {
@@ -483,18 +532,12 @@ mod tests {
         use crate::agent::steps;
         for f in build::tests::fixtures() {
             let tiles = (f.tiles)(&f.m);
-            let x = build::KeyCtx {
-                cov: &f.c,
-                date: "d",
-                m: &f.m,
-                inputs: &f.inputs,
-                reach: f.reach.as_ref(),
-                tiles: &tiles,
-            };
+            let x =
+                build::KeyCtx { scheme: 2, ..build::KeyCtx::new(&f.c, "d", &f.m, &f.inputs, f.reach.as_ref(), &tiles) };
             let mut keys = Keys::default();
             let mut stale = None;
-            for row in steps::TABLE.iter().filter(|r| !r.versions.is_empty()) {
-                let mut ts = build::legacy_keys(row.name, &x).unwrap_or_default();
+            for row in steps::TABLE.iter().filter(|r| steps::derived(r.name)) {
+                let mut ts = scheme1::keys(row.name, &x).unwrap_or_default();
                 // (One record stale: under a key scheme 1 doesn't give it now.)
                 if stale.is_none() && !ts.is_empty() {
                     ts[0].1 = "an older key".into();
@@ -502,11 +545,11 @@ mod tests {
                 }
                 keys.record(row.name, &ts);
             }
-            let r = scheme_2(&mut keys, &x, &|s, x| build::legacy_keys(s, x));
+            let r = scheme_2(&mut keys, &x, &|_| true, &scheme1::keys);
             let (s, t) = stale.unwrap();
             assert_eq!(record_of(&keys, s, &t), Some("an older key"), "{}: a stale record kept", f.name);
-            for row in steps::TABLE.iter().filter(|r| !r.versions.is_empty()) {
-                for (u, k) in build::legacy_keys(row.name, &x).unwrap_or_default() {
+            for row in steps::TABLE.iter().filter(|r| steps::derived(r.name)) {
+                for (u, k) in scheme1::keys(row.name, &x).unwrap_or_default() {
                     if (row.name, u.as_str()) == (s, t.as_str()) {
                         continue;
                     }
@@ -519,7 +562,7 @@ mod tests {
                 }
             }
             assert_eq!(r.get(s).map(|c| c.stale), Some(1), "{}: {r:?}", f.name);
-            let again = scheme_2(&mut keys.clone(), &x, &|s, x| build::legacy_keys(s, x));
+            let again = scheme_2(&mut keys.clone(), &x, &|_| true, &scheme1::keys);
             assert!(again.values().all(|c| c.rekeyed == 0), "{}: {again:?}", f.name);
         }
     }
@@ -779,7 +822,14 @@ mod tests {
 
     /// Terrain's targets' keys, by target.
     fn tkeys(c: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> BTreeMap<String, String> {
-        let tt = build::terrain_slope_targets(c, m, tiles);
+        let tt = build::terrain_slope_targets(&crate::agent::build::KeyCtx::new(
+            c,
+            "d",
+            m,
+            &std::collections::BTreeMap::new(),
+            None,
+            tiles,
+        ));
         tt.terrain.into_iter().chain(tt.terrain_lo).collect()
     }
 
@@ -824,12 +874,41 @@ mod tests {
         let (m2, tiles) = with_water(&m, Some(A), &[]);
         assert!(tkeys(&c, &m2, &tiles).values().all(|k| k == build::UNKNOWN));
         let done = Keys::default();
-        assert_eq!(build::terrain_water_work(&c, &m2, &done, &tiles).map(|w| w.step), Some("terrain-water".into()));
-        let w = build::terrain_work(&build::terrain_slope_targets(&c, &m2, &tiles), &m2, &done);
+        assert_eq!(
+            build::terrain_water_work(
+                &crate::agent::build::KeyCtx::new(&c, "d", &m2, &std::collections::BTreeMap::new(), None, &tiles),
+                &done
+            )
+            .map(|w| w.step),
+            Some("terrain-water".into())
+        );
+        let w = build::terrain_work(
+            &build::terrain_slope_targets(&crate::agent::build::KeyCtx::new(
+                &c,
+                "d",
+                &m2,
+                &std::collections::BTreeMap::new(),
+                None,
+                &tiles,
+            )),
+            &crate::agent::build::KeyCtx::new(
+                &crate::coverage::Coverage::default(),
+                "d",
+                &m2,
+                &std::collections::BTreeMap::new(),
+                None,
+                &crate::agent::tiles::TerrainTiles::default(),
+            ),
+            &done,
+        );
         assert!(w.terrain.is_empty() && w.terrain_lo.is_empty() && w.terrain_left.contains("3/3/2"), "{w:?}");
         // Made: no job.
         let (m3, tiles) = with_water(&m, Some(A), &[&at(A, vec![])]);
-        assert!(build::terrain_water_work(&c, &m3, &done, &tiles).is_none());
+        assert!(build::terrain_water_work(
+            &crate::agent::build::KeyCtx::new(&c, "d", &m3, &std::collections::BTreeMap::new(), None, &tiles),
+            &done
+        )
+        .is_none());
     }
 
     #[test]

@@ -2847,7 +2847,7 @@ impl Agent {
             let keys = records_deadlined(root).keys;
             let same = expect_same(
                 &build::Work { step: step.to_string(), targets: targets.to_vec() },
-                &self.as_read(root, keys),
+                &self.as_read(root, step, keys),
             );
             if !same.is_empty() {
                 cmd.extend(["--expect-same".to_string(), same.join(",")]);
@@ -6835,13 +6835,11 @@ impl Agent {
     /// `keys` as every reader reads them (agent::rekey::as_read), for a job's `--expect-same`, by
     /// the coverage and terrain packs' indexes the last plan read (`plan::PlanView`); as they are
     /// when what that reads can't be told now (no plan yet, or the regions' version changed since).
-    fn as_read(&self, root: &store::nasfs::NasRoot, mut keys: build::Keys) -> build::Keys {
+    fn as_read(&self, root: &store::nasfs::NasRoot, step: &str, mut keys: build::Keys) -> build::Keys {
         // (The plan's first: a member has none, and reads nothing for it.)
         let view = self.plan.view.get();
         let (Some((version, covs)), Some(tiles)) = (view.coverage.as_ref(), view.tiles.as_ref()) else { return keys };
-        if self.latest_pass(root).is_none() {
-            return keys;
-        }
+        let Some(date) = self.latest_pass(root) else { return keys };
         let (recipes, unread) = load_regions(root);
         if recipes.is_empty() || !unread.is_empty() {
             return keys;
@@ -6852,7 +6850,9 @@ impl Agent {
             return keys;
         }
         let times = rekey::FileTimes::new(root);
-        rekey::as_read(&mut keys, &covs.all, &manifest, &tiles, &times);
+        let inputs = key_inputs(root, &manifest);
+        let x = build::KeyCtx::new(&covs.all, &date, &manifest, &inputs, None, tiles);
+        rekey::as_read_of(&mut keys, &x, &times, &|s| s == step);
         keys
     }
 
@@ -8654,22 +8654,30 @@ fn clear_target_scratch(dir: &Path, target: &str) -> Vec<PathBuf> {
     gone
 }
 
+/// The planner's inputs the steps' keys read (build::KeyCtx's `inputs`): `input_digests`, the
+/// timetable feeds' declarations as rail-feeds' key names them ("feed-keys": the key names they
+/// fetch with; "feeds": the digest of what of them it reads; "?" while their index can't be read,
+/// and rail-feeds waits) and the declared elevation datasets' spacing, which the rail and
+/// candidates keys name ("?" while it can't be read, and they wait: crate::dem::spacing). Every
+/// reader keying targets reads these (the plan, the checklist, the regions' counts,
+/// `--expect-same`, scenic-build's rekey-check).
+pub fn key_inputs(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut inputs = input_digests(root);
+    if let Some(ix) = manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
+        let d = crate::inputs::feeds::declared(root, ix);
+        inputs.insert("feed-keys".into(), d.as_ref().map(|d| d.key_names.join(",")).unwrap_or_else(|_| "?".into()));
+        inputs.insert("feeds".into(), d.map(|d| d.keyed).unwrap_or_else(|_| "?".into()));
+    }
+    inputs.insert(
+        crate::dem::spacing::INPUT.into(),
+        crate::dem::spacing::digest_read(root, manifest).unwrap_or_else(|_| "?".into()),
+    );
+    inputs
+}
+
 /// What jobs read from inputs/ beside the manifest, by digest: which keys inputs/keys.env holds
 /// ("keys", `key_names`), and the 3D buildings' downloaded sources ("bld-release", "bld-key", "bldprep 6/x/y",
 /// "bldprep-rows 6/x/y": crate::bld::sources::digests).
-/// `keys` as every reader reads them (agent::rekey::as_read), for `Agent::start_as_built`'s counts
-/// off the loop.
-fn as_built_keys(
-    root: &store::nasfs::NasRoot,
-    cov: &crate::coverage::Coverage,
-    manifest: &BTreeMap<String, String>,
-    keys: &mut build::Keys,
-    tiles: &tiles::TerrainTiles,
-) {
-    let times = rekey::FileTimes::new(root);
-    rekey::as_read(keys, cov, manifest, tiles, &times);
-}
-
 pub fn input_digests(root: &store::nasfs::NasRoot) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
     // The heritage registers as the heritage sites' key names them (crate::heritage::registers_line);
@@ -12895,10 +12903,23 @@ mod tests {
         }
         put(&root.unchecked_path().join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
         let mut keys = build::Keys::default();
-        keys.lo.insert("reach".into(), build::reach_key(date, &m).unwrap());
+        keys.lo
+            .insert("reach".into(), build::reach_key(&crate::agent::build::PassCtx::default().ctx(date, &m)).unwrap());
         keys.record(
             "heritage-sites",
-            &build::heritage_sites_work(&cov, date, &m, &keys, &input_digests(root)).unwrap().targets,
+            &build::heritage_sites_work(
+                &crate::agent::build::KeyCtx::new(
+                    &cov,
+                    date,
+                    &m,
+                    &input_digests(root),
+                    None,
+                    &crate::agent::tiles::TerrainTiles::default(),
+                ),
+                &keys,
+            )
+            .unwrap()
+            .targets,
         );
         keys.record("trees", &rekey::v1::trees_targets(&cov, &m));
         let tiles = {
@@ -12907,7 +12928,14 @@ mod tests {
             t
         };
         // (The terrain made under its keys now.)
-        let tt = build::terrain_slope_targets(&cov, &m, &tiles);
+        let tt = build::terrain_slope_targets(&crate::agent::build::KeyCtx::new(
+            &cov,
+            "d",
+            &m,
+            &std::collections::BTreeMap::new(),
+            None,
+            &tiles,
+        ));
         keys.record("terrain-hi", &tt.terrain);
         keys.record("terrain-lo", &tt.terrain_lo);
         let plan = build::plan(
@@ -13021,7 +13049,10 @@ mod tests {
         assert!(w.iter().any(|x| x.why.contains("outlines job")), "{w:?}");
         // Made under its key: the rest comes back, and no outlines job.
         let mut keys = build::Keys::load(&store::nasfs::NasRoot::local_for_test(&root));
-        keys.record("outlines", &build::outlines_work(date, &m, &keys).unwrap().targets);
+        keys.record(
+            "outlines",
+            &build::outlines_work(&crate::agent::build::PassCtx::default().ctx(date, &m), &keys).unwrap().targets,
+        );
         keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         let plan = a.planner().plan(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut Vec::new());
         assert!(!ids(&plan).iter().any(|i| i.starts_with("outlines")) && !ids(&plan).is_empty(), "{:?}", ids(&plan));

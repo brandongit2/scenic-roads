@@ -1257,11 +1257,17 @@ mod tests {
         assert!(build::lakefill_work(date, &m, &done2, Some("a.zip 1")).is_none(), "done");
         assert!(build::lakefill_work(date, &m, &done2, Some("a.zip 2")).is_some(), "a zip replaced");
         // The water's key and the terrain's water pin take the fill once the manifest has it.
-        let water = build::water_work(date, &m, &done).unwrap().targets[0].1.clone();
+        let water = build::water_work(&crate::agent::build::PassCtx::default().ctx(date, &m), &done).unwrap().targets
+            [0]
+        .1
+        .clone();
         let pin = crate::terrain_pack::water_source_pin(&m).unwrap();
         assert_eq!(pin, "layers/basemap/world-x.0123456789abcdef.pmtiles");
         m.insert(crate::lakefill::logical(date), "work/lakefill/2026-09-28.0123456789abcdef.sect".to_string());
-        let filled = build::water_work(date, &m, &done).unwrap().targets[0].1.clone();
+        let filled = build::water_work(&crate::agent::build::PassCtx::default().ctx(date, &m), &done).unwrap().targets
+            [0]
+        .1
+        .clone();
         assert_ne!(filled, water);
         assert_eq!(
             crate::terrain_pack::water_source_pin(&m).unwrap(),
@@ -1278,9 +1284,15 @@ mod tests {
             crate::terrain_pack::water_source_pin(&m).unwrap(),
             "layers/basemap/world-y.fedcba9876543210.pmtiles"
         );
-        let w_new = build::water_work(newer, &m, &done).unwrap().targets[0].1.clone();
+        let w_new = build::water_work(&crate::agent::build::PassCtx::default().ctx(newer, &m), &done).unwrap().targets
+            [0]
+        .1
+        .clone();
         m.insert(crate::lakefill::logical(newer), "work/lakefill/2027-03-01.0123456789abcdef.sect".to_string());
-        assert_ne!(build::water_work(newer, &m, &done).unwrap().targets[0].1, w_new);
+        assert_ne!(
+            build::water_work(&crate::agent::build::PassCtx::default().ctx(newer, &m), &done).unwrap().targets[0].1,
+            w_new
+        );
         assert_eq!(crate::lakefill::current(&m).map(|(l, _)| l), Some(crate::lakefill::logical(newer)));
     }
 }

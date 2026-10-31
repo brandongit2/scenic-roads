@@ -353,16 +353,24 @@ fn whole_left(step: &str, view: &dyn View) -> bool {
         })
 }
 
-/// The key derivation's scheme (docs/readiness.md §4, §6): 1 gives today's keys byte for byte
-/// (each step's legacy adapter, `build::legacy_keys`); 2, the lines of the declared reads, comes
-/// with #862's rebuild.
+/// The key derivation's scheme (docs/readiness.md §4, §6): 1 gave the hand-made keys (now
+/// crate::agent::rekey::scheme1's, to re-key their records); 2, the lines of the declared reads.
 pub const KEY_SCHEME: u32 = 1;
 
-/// Target `t`'s key of `step` (docs/readiness.md §4) under `KEY_SCHEME`; None while it can't be
-/// worked out, or for a step scheme 1 doesn't derive (`build::KEYS_FROM_THE_PLAN`, the pass's and
-/// upkeep's own).
+/// Target `t`'s key of `step` (docs/readiness.md §4) under `KEY_SCHEME`: under 2 its
+/// `derived_key` (a "none" target's is `none_key`); None while it can't be worked out, or for a
+/// step whose key isn't derived (`derived`).
 pub fn key(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<String> {
-    super::build::legacy_keys(step, x)?.into_iter().find(|(u, _)| u == t).map(|(_, k)| k)
+    if KEY_SCHEME == 1 {
+        return super::build::step_keys(step, x)?.into_iter().find(|(u, _)| u == t).map(|(_, k)| k);
+    }
+    derived_key(step, t, x)
+}
+
+/// Whether `step`'s keys are derived from its declared reads (it declares its versions): not
+/// those keyed on the whole plan (`build::KEYS_FROM_THE_PLAN`), nor the pass's and upkeep's own.
+pub fn derived(step: &str) -> bool {
+    row(step).is_some_and(|r| !r.versions.is_empty())
 }
 
 /// Target `t`'s scheme-2 key of `step` (docs/readiness.md §4): `hash16` of its `key_lines`.

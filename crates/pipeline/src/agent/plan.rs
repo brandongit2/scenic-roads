@@ -1341,7 +1341,7 @@ impl Planner {
         // (The depth's targets for GC: none until this plan finds them.)
         self.depth_keep.borrow_mut().take();
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
-        let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match self.planning_records(root) {
+        let (manifest, mut keys): (BTreeMap<String, String>, build::Keys) = match self.planning_records(root) {
             Ok(r) => r,
             Err(e) => {
                 waiting.push(Waiting {
@@ -1412,7 +1412,11 @@ impl Planner {
         // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
         // since it ran), the hiking routes' ends, AWS's z8 (once), Overture's buildings (once per
         // release), the summits, the labels, the water.
+        // (The pass's steps keyed as the pass has them, before the coverage: build::PASS_STEPS.)
+        let pass_cx = build::PassCtx::default();
         if let Some(date) = pass {
+            let px = pass_cx.ctx(date, &manifest);
+            rekey::pass_as_read(&mut keys, &px);
             let p = vec!["--pass".to_string(), date.to_string()];
             if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {
                 jobs.push(job(format!("pass-sets {date}"), "pass-sets", p.clone(), None));
@@ -1423,7 +1427,7 @@ impl Planner {
             // nothing is made from the outlines they replace; unless the job has failed
             // `build::OUTLINES_HOLDS` times in a row (counted on this Mac) and the pass has
             // outlines: the rest then goes on with those.
-            if let Some(w) = build::outlines_work(date, &manifest, &keys) {
+            if let Some(w) = build::outlines_work(&px, &keys) {
                 let failures = self.inp.mem.retry.get(&format!("outlines {date}")).map_or(0, |r| r.0);
                 let made = manifest.contains_key(&format!("sources/osm/{date}/outlines"));
                 jobs.push(job(format!("outlines {date}"), "outlines", p.clone(), Some(w)));
@@ -1443,15 +1447,15 @@ impl Planner {
                     ),
                 });
             }
-            if let Some(w) = build::trailends_work(date, &manifest, &keys) {
+            if let Some(w) = build::trailends_work(&px, &keys) {
                 jobs.push(job(format!("trailends {date}"), "trailends", p.clone(), Some(w)));
             }
             // The coastline's land, which the regions' check cuts a region with water back to.
-            if let Some(w) = build::regions_land_work(date, &manifest, &keys) {
+            if let Some(w) = build::regions_land_work(&px, &keys) {
                 jobs.push(job(format!("regions-land {date}"), "regions-land", p.clone(), Some(w)));
             }
             let reach_job = |w: build::Work| job(format!("reach {date}"), "reach", p.clone(), Some(w));
-            if let Some(w) = build::reach_work(date, &manifest, &keys) {
+            if let Some(w) = build::reach_work(&px, &keys) {
                 jobs.push(reach_job(w));
             } else if let Err(why) = self.current_reach(root, &manifest, &keys, date) {
                 match why {
@@ -1462,7 +1466,7 @@ impl Planner {
                             what: "roads".into(),
                             why: format!("the pass's reaches don't read ({e}); making them again"),
                         });
-                        if let Some(k) = build::reach_key(date, &manifest) {
+                        if let Some(k) = build::reach_key(&px) {
                             jobs.push(reach_job(build::Work {
                                 step: "reach".into(),
                                 targets: vec![("reach".into(), k)],
@@ -1488,11 +1492,11 @@ impl Planner {
                     std::fs::remove_dir_all(e.path()).ok();
                 }
             }
-            if let Some(w) = build::labels_work(date, &manifest, &keys) {
+            if let Some(w) = build::labels_work(&px, &keys) {
                 jobs.push(job(format!("labels {date}"), "labels", p.clone(), Some(w)));
             }
             let table = manifest.get(&crate::inputs::logical(crate::inputs::languages::UNIT));
-            if let (Some(w), Some(table)) = (build::spoken_work(date, &manifest, &keys), table) {
+            if let (Some(w), Some(table)) = (build::spoken_work(&px, &keys), table) {
                 // (The languages' accepted version the key names.)
                 jobs.push(job(
                     format!("spoken {date}"),
@@ -1538,7 +1542,7 @@ impl Planner {
                     }
                 }
             }
-            if let Some(w) = build::water_work(date, &manifest, &keys) {
+            if let Some(w) = build::water_work(&px, &keys) {
                 jobs.push(job(format!("water {date}"), "water", p.clone(), Some(w)));
             }
         }
@@ -1599,19 +1603,9 @@ impl Planner {
             }
         };
         let cov = &covs.all;
-        // The timetables' to-do list and report, after each rail and ferries run (lead-only: it
-        // writes into the static timetables' inputs folder's todo/, never read as an input).
-        if let Some(w) = build::timetables_todo_work(cov, &manifest, &keys) {
-            jobs.push(job(
-                "timetables-todo".into(),
-                "timetables-todo",
-                vec!["--pass".to_string(), date.to_string()],
-                Some(w),
-            ));
-        }
         self.note_timetables(root, &manifest);
         let mut done = keys;
-        let mut inputs = input_digests(root);
+        let mut inputs = key_inputs(root, &manifest);
         // (The inputs' descriptions' credits, for the catalogue's key: crate::inputs::credits. None
         // yet, no line, so the catalogue's key is as it was. Unreadable now: the last digest read
         // stands, or, with none read yet, the catalogue waits; never a key that flips on a failed
@@ -1625,14 +1619,6 @@ impl Planner {
         if let Some(Some(c)) = self.inputs.credits.borrow().clone() {
             inputs.insert("credits".into(), c);
         }
-        // (The timetable feeds' declarations as rail-feeds' key names them: the key names they fetch
-        // with and the digest of what of them it reads; "?" while their index can't be read, and
-        // rail-feeds waits.)
-        if let Some(ix) = manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
-            let d = crate::inputs::feeds::declared(root, ix);
-            inputs.insert("feed-keys".into(), d.as_ref().map(|d| d.key_names.join(",")).unwrap_or_else(|_| "?".into()));
-            inputs.insert("feeds".into(), d.map(|d| d.keyed).unwrap_or_else(|_| "?".into()));
-        }
         // (The declared feeds the catalogue credits, for its key: "?" while they can't be read, and
         // the catalogue waits.)
         match crate::inputs::feeds::credited(root, &manifest) {
@@ -1644,12 +1630,6 @@ impl Planner {
                 inputs.insert("feeds-credited".into(), "?".into());
             }
         }
-        // (The declared elevation datasets' spacing, which the rail and candidates keys name: "?"
-        // while it can't be read, and they wait: crate::dem::spacing.)
-        inputs.insert(
-            crate::dem::spacing::INPUT.into(),
-            crate::dem::spacing::digest_read(root, &manifest).unwrap_or_else(|_| "?".into()),
-        );
         let held = root.join("inputs/hold-catalog").exists();
         // The base packs' extents (crate::extents), kept by the lead alone, against its manifest:
         // the headers of packs new since read once, timed. (A pack whose header can't be read is
@@ -1741,7 +1721,11 @@ impl Planner {
             // or a loop that couldn't take the build lock, plans too.)
             let times = rekey::FileTimes::new(root);
             nasread::phase("the plan: the records re-keyed");
-            rekey::as_read(&mut done, cov, &manifest, &tiles, &times);
+            rekey::as_read(
+                &mut done,
+                &build::KeyCtx::new(cov, date, &manifest, &inputs, reach.as_deref(), &tiles),
+                &times,
+            );
             nasread::phase("the plan: build::plan");
             build::plan(
                 &cov,
@@ -1770,7 +1754,14 @@ impl Planner {
             waiting.push(Waiting { what: step.clone(), why, step: Some(step) });
         }
         // The z6 tiles held until the heritage registers are first accepted: said, not a silent stall.
-        if let Some(why) = build::heritage_awaits_acceptance(cov, date, &manifest, &inputs) {
+        if let Some(why) = build::heritage_awaits_acceptance(&build::KeyCtx::new(
+            cov,
+            date,
+            &manifest,
+            &inputs,
+            reach.as_deref(),
+            &self.terrain_tiles(root, &manifest),
+        )) {
             waiting.push(Waiting {
                 step: Some("heritage-sites".into()),
                 what: "sites".into(),
@@ -1779,7 +1770,20 @@ impl Planner {
         }
         // The pass's summits (worldwide), once the terrain packs they read are built (as the
         // peaks after them): held, said.
-        let summits = build::summits_work(date, &manifest, &done);
+        // The timetables' to-do list and report, after each rail and ferries run (lead-only: it
+        // writes into the static timetables' inputs folder's todo/, never read as an input).
+        if let Some(w) = build::timetables_todo_work(
+            &build::KeyCtx::new(cov, date, &manifest, &inputs, reach.as_deref(), &self.terrain_tiles(root, &manifest)),
+            &done,
+        ) {
+            jobs.push(job(
+                "timetables-todo".into(),
+                "timetables-todo",
+                vec!["--pass".to_string(), date.to_string()],
+                Some(w),
+            ));
+        }
+        let summits = build::summits_work(&pass_cx.ctx(date, &manifest), &done);
         // (Held, they're the landmarks chain's first step in the forecast, after the terrain.)
         let mut summits_held = None;
         let summits_waits = match steps::readiness("summits", "summits", &planned.left) {
@@ -2074,8 +2078,18 @@ impl Planner {
                     .filter(|w| matches!(w.step.as_str(), "heritage-sites" | "pyramids-fill"))
                     .map(|w| job(format!("{} {date}", w.step), &w.step, Vec::new(), Some(w.clone()))),
             );
-            let mut chains =
-                build::chains_left(cov, date, &manifest, &done, &inputs, &self.terrain_tiles(root, &manifest));
+            let mut chains = build::chains_left(
+                &build::KeyCtx::new(
+                    cov,
+                    date,
+                    &manifest,
+                    &inputs,
+                    reach.as_deref(),
+                    &self.terrain_tiles(root, &manifest),
+                ),
+                &done,
+            );
+
             chains[1].splice(0..0, summits_held);
             let record = self.forecast_record(
                 root,
@@ -2722,7 +2736,10 @@ impl Planner {
             items.extend(build::checklist_to_come());
             return build::fold(&items, &next, &notes);
         };
-        let crate::pool::records::Brief { manifest, keys, .. } = records_deadlined(root);
+        let crate::pool::records::Brief { manifest, mut keys, .. } = records_deadlined(root);
+        let pass_cx = build::PassCtx::default();
+        let px = pass_cx.ctx(&date, &manifest);
+        rekey::pass_as_read(&mut keys, &px);
         // Countries the pass couldn't assemble, kept as the previous pass's outlines: said on the
         // pass's line until a pass has them whole (crate::outlines::assemble).
         if let Some(c) = manifest.get(&format!("sources/osm/{date}/outlines")) {
@@ -2745,20 +2762,19 @@ impl Planner {
         // The pass's worldwide steps, each one run left or none.
         let left = [
             !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(&date, st.0))),
-            build::outlines_work(&date, &manifest, &keys).is_some()
+            build::outlines_work(&px, &keys).is_some()
                 || !manifest.contains_key(&format!("sources/osm/{date}/outlines")),
-            build::trailends_work(&date, &manifest, &keys).is_some()
+            build::trailends_work(&px, &keys).is_some()
                 || !manifest.contains_key(&crate::osmpass::set_name(&date, "hikes")),
-            build::reach_work(&date, &manifest, &keys).is_some(),
+            build::reach_work(&px, &keys).is_some(),
             crate::buildtiles::release_of(root, &manifest)
                 .map_or(true, |r| !manifest.contains_key(&crate::buildtiles::index_logical(&r))),
-            build::summits_work(&date, &manifest, &keys).is_some()
-                || !manifest.contains_key(&format!("work/summits/{date}")),
-            build::labels_work(&date, &manifest, &keys).is_some(),
+            build::summits_work(&px, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
+            build::labels_work(&px, &keys).is_some(),
             // (A source folder that can't be read: held, left, as the jobs see it.)
             crate::lakefill::run::planned_source(root, &manifest)
                 .map_or(true, |s| build::lakefill_work(&date, &manifest, &keys, s.as_deref()).is_some()),
-            build::water_work(&date, &manifest, &keys).is_some(),
+            build::water_work(&px, &keys).is_some(),
         ];
         items.extend(WORLDWIDE_STEPS.iter().zip(left).map(|(s, l)| build::Item {
             step: s.to_string(),
@@ -2775,11 +2791,15 @@ impl Planner {
         let cov = &covs.all;
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         let tiles = self.terrain_tiles(root, &manifest);
-        let inputs = input_digests(root);
+        let inputs = key_inputs(root, &manifest);
         // (As re-keyed: agent::rekey.)
-        let mut keys = keys;
         let times = rekey::FileTimes::new(root);
-        rekey::as_read(&mut keys, cov, &manifest, &tiles, &times);
+        rekey::as_read(
+            &mut keys,
+            &build::KeyCtx::new(cov, &date, &manifest, &inputs, reach.as_deref(), &tiles),
+            &times,
+        );
+
         let (more, more_next) = build::checklist(
             cov,
             &date,
@@ -2806,15 +2826,7 @@ impl Planner {
         &self,
         root: &store::nasfs::NasRoot,
         name: &str,
-        f: fn(
-            &crate::coverage::Coverage,
-            &[(String, crate::coverage::Coverage)],
-            &str,
-            &BTreeMap<String, String>,
-            &build::Keys,
-            Option<&crate::reach::Reaches>,
-            &tiles::TerrainTiles,
-        ) -> T,
+        f: fn(&build::KeyCtx, &[(String, crate::coverage::Coverage)], &build::Keys) -> T,
     ) -> Option<std::thread::JoinHandle<(T, Duration)>> {
         let (date, manifest, covs, keys, reach) = self.as_built_parts(root)?;
         let tiles = self.terrain_tiles(root, &manifest).clone();
@@ -2822,9 +2834,12 @@ impl Planner {
         let run = move || {
             let t = Instant::now();
             let mut keys = keys;
-            as_built_keys(&root, &covs.all, &manifest, &mut keys, &tiles);
-            (f(&covs.all, &covs.each, &date, &manifest, &keys, reach.as_deref(), &tiles), t.elapsed())
+            let inputs = key_inputs(&root, &manifest);
+            let x = build::KeyCtx::new(&covs.all, &date, &manifest, &inputs, reach.as_deref(), &tiles);
+            rekey::as_read(&mut keys, &x, &rekey::FileTimes::new(&root));
+            (f(&x, &covs.each, &keys), t.elapsed())
         };
+
         std::thread::Builder::new()
             .name(name.into())
             .spawn(run)
@@ -2881,7 +2896,13 @@ impl Planner {
         keys: &build::Keys,
         date: &str,
     ) -> Result<Option<std::sync::Arc<crate::reach::Reaches>>, crate::reach::LoadError> {
-        if build::reach_work(date, manifest, keys).is_some() {
+        // (Its record as read: agent::rekey::pass_as_read, of it alone.)
+        let cx = build::PassCtx::default();
+        let px = cx.ctx(date, manifest);
+        let mut reach_rec = build::Keys::default();
+        reach_rec.lo.extend(keys.lo.get("reach").map(|k| ("reach".to_string(), k.clone())));
+        rekey::pass_as_read(&mut reach_rec, &px);
+        if build::reach_work(&px, &reach_rec).is_some() {
             return Ok(None);
         }
         let Some(c) = manifest.get(&crate::reach::logical(date)) else { return Ok(None) };

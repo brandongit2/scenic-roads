@@ -2756,35 +2756,27 @@ fn rekey_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
     let cov = pipeline::coverage::Coverage::accepted(root, &a, None)?;
     let mut tiles = TerrainTiles::new(None);
     tiles.load(root, &m);
-    let mut inputs = pipeline::agent::input_digests(root);
-    if let Some(ix) = m.get(&pipeline::inputs::logical(pipeline::inputs::feeds::UNIT)) {
-        let d = pipeline::inputs::feeds::declared(root, ix);
-        inputs.insert("feed-keys".into(), d.as_ref().map(|d| d.key_names.join(",")).unwrap_or_else(|_| "?".into()));
-        inputs.insert("feeds".into(), d.map(|d| d.keyed).unwrap_or_else(|_| "?".into()));
-    }
-    inputs.insert(
-        pipeline::dem::spacing::INPUT.into(),
-        pipeline::dem::spacing::digest_read(root, &m).unwrap_or_else(|_| "?".into()),
-    );
+    let inputs = pipeline::agent::key_inputs(root, &m);
     let reach = pipeline::reach::Reaches::load(root, &m, &date).ok().flatten();
     eprintln!("rekey-check: pass {date}, the inputs read ({:.0} s)", t0.elapsed().as_secs_f64());
     let mut done = keys;
-    rekey::as_read(&mut done, &cov, &m, &tiles, &rekey::FileTimes::new(root));
-    let x = build::KeyCtx { cov: &cov, date: &date, m: &m, inputs: &inputs, reach: reach.as_ref(), tiles: &tiles };
+    rekey::rekey(&mut done, &cov, &m, &tiles, &rekey::FileTimes::new(root));
+    let x = build::KeyCtx::new(&cov, &date, &m, &inputs, reach.as_ref(), &tiles);
     let before = done.clone();
-    let r = rekey::scheme_2(&mut done, &x, &|s, x| {
+    let r = rekey::scheme_2(&mut done, &x, &|_| true, &|s, x| {
         let t = std::time::Instant::now();
-        let k = build::legacy_keys(s, x);
+        let k = rekey::scheme1::keys(s, x);
         eprintln!("rekey-check: {s}'s scheme-1 keys ({:.0} s)", t.elapsed().as_secs_f64());
         k
     });
-    println!("{:<16} {:>9} {:>9} {:>9}", "step", "re-keyed", "rebuilt", "unknown");
+    println!("{:<16} {:>9} {:>9} {:>9} {:>9}", "step", "current", "re-keyed", "rebuilt", "unknown");
     for (s, c) in &r {
-        println!("{s:<16} {:>9} {:>9} {:>9}", c.rekeyed, c.stale, c.unknown);
+        println!("{s:<16} {:>9} {:>9} {:>9} {:>9}", c.current, c.rekeyed, c.stale, c.unknown);
     }
     if list > 0 {
         for (s, c) in r.iter().filter(|(_, c)| c.stale > 0) {
-            let old: BTreeMap<String, String> = build::legacy_keys(s, &x).unwrap_or_default().into_iter().collect();
+            let old: BTreeMap<String, String> = rekey::scheme1::keys(s, &x).unwrap_or_default().into_iter().collect();
+
             let mut n = 0;
             for (t, now) in &old {
                 let rec = before.recorded(s, t).or_else(|| before.lo.get(t).map(String::as_str));
