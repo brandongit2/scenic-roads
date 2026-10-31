@@ -31,6 +31,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 png = "0.18"
 base64 = "0.22"
 rayon = { workspace = true }
+ureq = "=3.4.2"
 bytemuck = { workspace = true }
 
 [dev-dependencies]

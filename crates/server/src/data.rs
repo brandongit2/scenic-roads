@@ -82,7 +82,16 @@ pub struct Data {
     nas: RwLock<Option<store::nasfs::NasRoot>>,
     pool: RwLock<Option<Arc<IoPool>>>,
     pub mirror: Option<Arc<store::mirror::Mirror>>,
+    /// The catalogue served: swapped whole, never changed in place (a request reads one from start
+    /// to end). The newer of `read` and `from_map` while serving the map (`serve_map`), else `read`.
     cat: RwLock<Arc<Catalogue>>,
+    /// The catalogue as the catalogues on the NAS (or this Mac's copy) give it (`refresh_catalogue`).
+    read: RwLock<Arc<Catalogue>>,
+    /// The catalogue of the map the log gives (crate::maplog), while it's served.
+    from_map: RwLock<Option<Arc<Catalogue>>>,
+    /// Whether the map the log gives is served (crate::maplog's switch), else only checked against
+    /// the catalogues (docs/maplog.md §8, step 3: shadow first, then serve).
+    serve_map: std::sync::atomic::AtomicBool,
     /// Local maps of mirrored files, and open NAS files, by content name.
     maps: Mutex<Bounded<Arc<Mmap>>>,
     remotes: Mutex<Bounded<Arc<crate::views::RemoteFile>>>,
@@ -138,6 +147,9 @@ impl Data {
             pool: RwLock::new(None),
             mirror,
             cat: RwLock::new(Arc::new(Catalogue::default())),
+            read: RwLock::new(Arc::new(Catalogue::default())),
+            from_map: RwLock::new(None),
+            serve_map: Default::default(),
             older: Default::default(),
             maps: Mutex::new(Bounded::new(4096)),
             remotes: Mutex::new(Bounded::new(128)),
@@ -168,7 +180,8 @@ impl Data {
             };
             if let Some(c) = kept {
                 eprintln!("offline: serving catalogue {} from this Mac", c.n);
-                *d.cat.write().unwrap() = Arc::new(c);
+                *d.read.write().unwrap() = Arc::new(c);
+                d.choose();
             }
         }
         Ok(d)
@@ -176,6 +189,52 @@ impl Data {
 
     pub fn catalogue(&self) -> Arc<Catalogue> {
         self.cat.read().unwrap().clone()
+    }
+
+    /// The catalogue as the catalogues give it (`refresh_catalogue`), whatever is served.
+    pub fn read_catalogue(&self) -> Arc<Catalogue> {
+        self.read.read().unwrap().clone()
+    }
+
+    /// The map's catalogue (crate::maplog), served while `serve_map` is on and it's no older than
+    /// the catalogues' (`choose`).
+    pub fn set_from_map(&self, c: Arc<Catalogue>) {
+        *self.from_map.write().unwrap() = Some(c);
+        self.choose();
+    }
+
+    /// Whether the map's catalogue is served (crate::maplog's switch).
+    pub fn set_serve_map(&self, on: bool) {
+        if self.serve_map.swap(on, std::sync::atomic::Ordering::SeqCst) != on {
+            eprintln!("maplog: the map {} served", if on { "is" } else { "is no longer" });
+            if !on {
+                *self.from_map.write().unwrap() = None;
+            }
+            self.choose();
+        }
+    }
+
+    pub fn serves_map(&self) -> bool {
+        self.serve_map.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The catalogue served picked again: the map's while it's served and no older than the
+    /// catalogues' (a lead away, its NAS snapshot older than the catalogue read: the catalogue's),
+    /// else the catalogues'. Swapped whole when its number changes, the generation moved on.
+    fn choose(&self) {
+        let read = self.read_catalogue();
+        let map = self.from_map.read().unwrap().clone().filter(|m| self.serves_map() && m.n >= read.n);
+        let (pick, how) = match map {
+            Some(m) => (m, "the map's log"),
+            None => (read, "the catalogues"),
+        };
+        let mut cur = self.cat.write().unwrap();
+        if cur.n != pick.n {
+            eprintln!("catalogue {} ({} files), from {how}", pick.n, pick.files.len());
+            *cur = pick;
+            drop(cur);
+            self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     pub fn nas_root(&self) -> Option<store::nasfs::NasRoot> {
@@ -242,15 +301,14 @@ impl Data {
     pub fn refresh_catalogue(&self) -> bool {
         let _one = self.refreshing.lock().unwrap_or_else(|e| e.into_inner());
         let (Some(root), Some(pool)) = (self.nas_root(), self.pool()) else { return false };
-        let have = self.catalogue();
+        let have = self.read_catalogue();
         match store::catalogue::latest_nas_from(
             &pool,
             &root.join(store::catalogue::NAME),
             Some(&have).filter(|c| c.n > 0).map(|c| c.as_ref()),
         ) {
             Ok(Some(c)) => {
-                if c.n != self.catalogue().n {
-                    eprintln!("catalogue {} ({} files)", c.n, c.files.len());
+                if c.n != have.n {
                     // Keep a copy on this Mac for offline starts (and so the mirror protects it).
                     let kept = match &self.mirror {
                         Some(m) => m.save_catalogue(&c),
@@ -260,8 +318,8 @@ impl Data {
                         eprintln!("catalogue: can't keep a local copy: {e:#}");
                     }
                     let n = c.n;
-                    *self.cat.write().unwrap() = Arc::new(c);
-                    self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    *self.read.write().unwrap() = Arc::new(c);
+                    self.choose();
                     publish_event(&root, "adopt", n, None);
                 }
                 true

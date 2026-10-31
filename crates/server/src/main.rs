@@ -18,6 +18,7 @@ mod descriptions;
 mod details;
 mod downloads;
 mod inview;
+mod maplog;
 mod marks;
 mod markview;
 mod names_live;
@@ -457,6 +458,7 @@ async fn main() -> Result<()> {
     );
     if root.is_none() {
         d.spawn_background();
+        maplog::spawn(d.clone(), maplog::Config::this_mac());
     }
     let names = names_live::NamesState::new(&home);
     names.spawn(d.clone());

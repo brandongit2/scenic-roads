@@ -1669,6 +1669,7 @@ dependencies = [
  "tower",
  "tower-http",
  "unicode-normalization",
+ "ureq",
  "xxhash-rust",
  "zstd 0.13.3",
 ]
