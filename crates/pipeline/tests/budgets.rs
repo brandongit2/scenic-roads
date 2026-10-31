@@ -47,11 +47,6 @@ const OFF: &[&str] = &[".proxy(None)", "ProxyHandler({})", "--noproxy", "no_prox
 /// The lines turning the proxy off: by file and what the line says, with why.
 const BYPASS: &[(&str, &str, &str)] = &[
     (
-        "crates/pipeline/src/bin/scenic-metrics.rs",
-        ".proxy(None)",
-        "the owner's metrics tool, run by hand on this Mac, asking the agents here and on the LAN: never a job",
-    ),
-    (
         "crates/pipeline/src/budget/mod.rs",
         ".proxy(None)",
         "the hold and the retries told to the proxy itself, on this Mac (budget::seen, budget::retried)",
