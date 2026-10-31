@@ -148,11 +148,17 @@ impl Detached {
             return Ok(true);
         }
         let mut st = 0;
-        // SAFETY: waitpid on our own child.
-        let r = unsafe { libc::waitpid(self.pid, &mut st, flags) };
-        if r < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let r = loop {
+            // SAFETY: waitpid on our own child.
+            let r = unsafe { libc::waitpid(self.pid, &mut st, flags) };
+            if r >= 0 {
+                break r;
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        };
         self.done = r == self.pid;
         Ok(self.done)
     }
@@ -167,7 +173,8 @@ impl Detached {
         self.reap(0).map(drop)
     }
 
-    /// SIGKILL, then waited for.
+    /// SIGKILL, then waited for: a signal it can't catch or block, so the wait is its teardown's
+    /// (an interrupted wait taken up again). Where there are no processes, nothing to wait for.
     pub fn kill(&mut self) -> io::Result<()> {
         if !self.done {
             // SAFETY: a signal to our own unreaped child (its pid can't be reused yet).
@@ -443,32 +450,34 @@ mod tests {
         assert!(c.try_wait().unwrap());
     }
 
-    /// Task #900: children that outlive a read (here 0.5 s, as caffeinate outlives one) started by
+    /// Task #900: children that outlive a read (here 1 s, as caffeinate outlives one) started by
     /// other threads while one reads children's output (std's pipes, marked close-on-exec a call
     /// after they're made) never hold that output's pipe: every read ends at once, never when a
-    /// holder ends. Both kinds: `spawn` with its streams null, and `detached`. (With the lock taken
-    /// out of `spawn`, a read waits out a holder within seconds.)
+    /// holder ends. Both kinds: `spawn` with its streams null (six threads), and `detached` (one).
+    /// At most 40 children a thread (~280 at once, well under a user's process limit on a pool Mac);
+    /// 8 s, so that with the lock taken out of `spawn` a read waits out a holder (8 runs of 8 on a
+    /// loaded M4).
     #[test]
     fn long_lived_children_never_hold_another_childs_pipe() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::time::{Duration, Instant};
         let stop = std::sync::Arc::new(AtomicBool::new(false));
-        let starters: Vec<_> = (0..6)
+        let starters: Vec<_> = (0..7)
             .map(|i| {
                 let stop = stop.clone();
                 std::thread::spawn(move || {
                     let (mut kids, mut held) = (Vec::new(), Vec::new());
                     while !stop.load(Ordering::Relaxed) {
-                        if i % 3 == 0 {
-                            kids.push(detached("/bin/sleep", &["0.5"]).unwrap());
+                        if i == 0 {
+                            kids.push(detached("/bin/sleep", &["1"]).unwrap());
                         } else {
                             let mut c = command("/bin/sleep");
-                            c.arg("0.5").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+                            c.arg("1").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
                             held.push(spawn(&mut c).unwrap());
                         }
                         kids.retain_mut(|k| !k.try_wait().unwrap());
                         held.retain_mut(|h| h.try_wait().unwrap().is_none());
-                        if kids.len() + held.len() >= 150 {
+                        if kids.len() + held.len() >= 40 {
                             std::thread::sleep(Duration::from_millis(1));
                         }
                     }
@@ -479,7 +488,7 @@ mod tests {
             .collect();
         let start = Instant::now();
         let mut slowest = Duration::ZERO;
-        while start.elapsed() < Duration::from_secs(6) {
+        while start.elapsed() < Duration::from_secs(8) {
             let t = Instant::now();
             let o = output(command("/bin/echo").arg("x")).unwrap();
             assert_eq!(o.stdout, b"x\n");
@@ -487,6 +496,6 @@ mod tests {
         }
         stop.store(true, Ordering::Relaxed);
         starters.into_iter().for_each(|t| t.join().unwrap());
-        assert!(slowest < Duration::from_millis(400), "a read took {slowest:?}: a long-lived child held its pipe");
+        assert!(slowest < Duration::from_millis(700), "a read took {slowest:?}: a long-lived child held its pipe");
     }
 }

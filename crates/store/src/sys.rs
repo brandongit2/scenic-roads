@@ -79,8 +79,11 @@ fn local_host_name() -> Option<String> {
         fn CFStringGetCString(s: *const c_void, buf: *mut libc::c_char, len: isize, encoding: u32) -> u8;
         fn CFRelease(cf: *const c_void);
     }
-    const UTF8: u32 = 0x0800_0100; // kCFStringEncodingUTF8
-                                   // SAFETY: a CFString we own (Copy rule), read into our buffer, then released.
+    // kCFStringEncodingUTF8
+    const UTF8: u32 = 0x0800_0100;
+    // SAFETY: SCDynamicStoreCopyLocalHostName takes a null store (a session of its own for the
+    // call, so safe from any thread) and returns a CFString we own (the Copy rule), or null when
+    // no LocalHostName is set; read into our buffer (a name is at most 63 bytes), then released.
     unsafe {
         let s = SCDynamicStoreCopyLocalHostName(std::ptr::null());
         if s.is_null() {
