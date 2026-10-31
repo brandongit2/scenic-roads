@@ -67,8 +67,9 @@ pub struct ToLead {
     pub token: String,
     /// This Mac's worker name (the leases' holder).
     pub member: String,
-    /// The lead's leases it holds.
+    /// The lead's leases it holds, as its loop listed them at `listed`.
     pub held: BTreeSet<u64>,
+    pub listed: Instant,
     /// Its pool heartbeat (`Beats::own`) and where the answer goes.
     pub beats: Arc<Beats>,
 }
@@ -93,6 +94,7 @@ impl ToLead {
             member: self.member.clone(),
             speaks: vec![held::SPEAKS.to_string(), beats::SPEAKS.to_string()],
             held: self.held.clone(),
+            held_age_s: 0,
             heartbeat,
             status: serde_json::to_value(&status).ok(),
         }
@@ -101,14 +103,22 @@ impl ToLead {
     /// Posts `b` to the lead; its answer to the registry (an older lead's 404: the NAS copies go
     /// on). Whether it failed.
     fn post(&self, b: &crate::coord::held::Beat, failing: bool) -> bool {
+        // (Its list's age as it goes: the loop's, stuck maybe, may lack a lease granted since,
+        // which the lead then keeps. A lead that doesn't say it takes the beat may not read the
+        // age: a list older than its grace isn't sent it, the lease held as away meanwhile.)
+        let age = self.listed.elapsed();
+        if !self.beats.lead_takes() && age >= crate::coord::held::OMIT_GRACE / 2 {
+            return failing;
+        }
+        let b = crate::coord::held::Beat { held_age_s: age.as_secs_f64().ceil() as u64, ..b.clone() };
         let c = crate::coord::client::Client::at(self.urls.clone(), self.token.clone(), &self.member);
-        match c.pool_beat(b) {
+        match c.pool_beat(&b) {
             Ok(Some(a)) => {
                 self.beats.answered(&a, now_s());
                 false
             }
             Ok(None) => {
-                self.beats.set_nas_too(true);
+                self.beats.lead_older();
                 false
             }
             Err(e) => {
@@ -444,6 +454,7 @@ mod tests {
                         token: c.contact.token.clone(),
                         member: id.clone(),
                         held: Default::default(),
+                        listed: Instant::now(),
                         beats: beats.clone(),
                     }),
                     hold_at: 0,

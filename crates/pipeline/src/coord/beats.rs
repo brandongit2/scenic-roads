@@ -48,6 +48,7 @@ struct Inner {
     heard: BTreeMap<String, Heard>,
     own: Option<Heartbeat>,
     nas_too: bool,
+    lead_takes: bool,
     released: Vec<u64>,
 }
 
@@ -65,7 +66,15 @@ impl std::fmt::Debug for Beats {
 
 impl Default for Beats {
     fn default() -> Beats {
-        Beats { inner: Mutex::new(Inner { heard: BTreeMap::new(), own: None, nas_too: true, released: Vec::new() }) }
+        Beats {
+            inner: Mutex::new(Inner {
+                heard: BTreeMap::new(),
+                own: None,
+                nas_too: true,
+                lead_takes: false,
+                released: Vec::new(),
+            }),
+        }
     }
 }
 
@@ -134,6 +143,7 @@ impl Beats {
         let takes = a.speaks.iter().any(|w| w == SPEAKS);
         self.set_nas_too(!takes || a.nas_too);
         let mut g = self.inner.lock().unwrap();
+        g.lead_takes = takes;
         if takes {
             let before = std::mem::take(&mut g.heard);
             for h in &a.members {
@@ -142,6 +152,17 @@ impl Beats {
             }
         }
         g.released.extend(a.released.iter().copied());
+    }
+
+    /// Whether the lead's last answer said it takes the beat (and so reads `held_age_s`).
+    pub fn lead_takes(&self) -> bool {
+        self.inner.lock().unwrap().lead_takes
+    }
+
+    /// An older lead's 404: it takes neither the beat nor its leases' word; the NAS copies go on.
+    pub fn lead_older(&self) {
+        self.set_nas_too(true);
+        self.inner.lock().unwrap().lead_takes = false;
     }
 
     /// The leases the lead said this member doesn't hold, since last taken.

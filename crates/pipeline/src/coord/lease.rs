@@ -297,7 +297,8 @@ impl Leases {
     /// `member`'s beat listing the leases it holds (docs/coordination.md §6.1; crate::coord::held):
     /// each listed confirmed; each of its jobs' leases it leaves out ended, but one granted within
     /// `grace` of `now` and not loaded since (its answer may still be on its way). Those ended, and
-    /// those listed that aren't its leases here (ended meanwhile: its jobs stop).
+    /// those listed that aren't its leases here (ended meanwhile: its jobs stop). `now` is when the
+    /// list was made: one granted after isn't in it, and stays.
     pub fn word(
         &mut self,
         member: &str,
@@ -309,7 +310,7 @@ impl Leases {
         let gone: Vec<u64> = self
             .by_id
             .values()
-            .filter(|l| of(l) && !held.contains(&l.id))
+            .filter(|l| of(l) && !held.contains(&l.id) && l.granted <= now)
             .filter(|l| l.unconfirmed || now.saturating_duration_since(l.granted) >= grace)
             .map(|l| l.id)
             .collect();
@@ -318,7 +319,9 @@ impl Leases {
                 l.unconfirmed = false;
             }
         }
-        let unknown = held.iter().filter(|id| !self.by_id.get(id).is_some_and(of)).copied().collect();
+        // (A task's lease it lists is its too: live, not ended.)
+        let its = |l: &Lease| crate::agent::host_of(&l.worker) == member;
+        let unknown = held.iter().filter(|id| !self.by_id.get(id).is_some_and(its)).copied().collect();
         (self.drop_where(|l| gone.contains(&l.id)), unknown)
     }
 
@@ -633,6 +636,12 @@ mod tests {
         let (gone, unknown) = l.word("m1", &[a, c].into(), t0 + Duration::from_secs(5), grace);
         assert!(gone.is_empty(), "b granted within the grace");
         assert_eq!(unknown, [c], "not m1's");
+        // (A task's lease it lists is its, live: not said ended, nor ended by leaving it out.)
+        let t = l.grant("m1 #3", Work::Task { id: 9 }, t0);
+        let (gone, unknown) = l.word("m1", &[a, b, t].into(), t0 + Duration::from_secs(5), grace);
+        assert!(gone.is_empty() && unknown.is_empty(), "{unknown:?}");
+        let (gone, _) = l.word("m1", &[a, b].into(), far, grace);
+        assert!(gone.is_empty() && l.of(t).is_some(), "a task's lease isn't the beat's to end");
         let (gone, _) = l.word("m1", &[a].into(), far, grace);
         assert_eq!(gone.iter().map(|x| x.id).collect::<Vec<_>>(), [b]);
         // Loaded: unconfirmed, left out at once.

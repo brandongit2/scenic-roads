@@ -40,12 +40,21 @@ pub struct Beat {
     /// The leases of the lead it holds.
     #[serde(default)]
     pub held: BTreeSet<u64>,
+    /// How old its list `held` is (s): made by its agent's loop, posted by its beat's own thread
+    /// while the loop may be stuck; no lease granted since is released for leaving it out. Left
+    /// out by apps before it (their list as of the beat).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub held_age_s: u64,
     /// Its pool heartbeat (speaking `beats::SPEAKS`: crate::coord::beats).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat: Option<crate::agent::pool::Heartbeat>,
     /// Its agent's status (crate::agent::Status), its plan's parts left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<serde_json::Value>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// The lead's answer.
@@ -100,7 +109,9 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         a.nas_too = beats.nas_too();
     }
     if b.speaks.iter().any(|w| w == SPEAKS) {
+        // (As of when its list was made: a lease granted since isn't in it.)
         let now = s.now();
+        let now = now.checked_sub(Duration::from_secs(b.held_age_s)).unwrap_or(now);
         let (gone, released) = s.leases.word(&b.member, &b.held, now, OMIT_GRACE);
         ended(s, &gone, "its member's beat didn't list it: it doesn't hold it");
         a.released = released;

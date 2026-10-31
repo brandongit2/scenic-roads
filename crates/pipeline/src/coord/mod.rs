@@ -5459,6 +5459,27 @@ mod tests {
         assert!(!w.beat(g.lease, None).unwrap());
     }
 
+    /// Task #878 step 3: a member's beat goes from its own thread with the list its loop made last;
+    /// a loop stuck after a grant posts a list without it, past the grace. Its age (`held_age_s`)
+    /// keeps the lease granted after the list was made; a list made after the grant releases it.
+    #[test]
+    fn a_stuck_loop_s_old_list_releases_no_later_grant() {
+        let (_d, c, w) = start();
+        let clock = store::clock::Virtual::new();
+        c.shared.lock().unwrap().clock = clock.clone();
+        measure_units(&c, 2);
+        unit_offer(&c, "6/1/1");
+        let g = w.ask(&ask(8192)).unwrap().expect("granted");
+        clock.advance(held::OMIT_GRACE * 3);
+        // (The list made a moment before the grant, posted since by the beat's thread.)
+        let age = (held::OMIT_GRACE * 3).as_secs() + 1;
+        assert!(c.member_beat(&held::Beat { held_age_s: age, ..word("m1", &[]) }).released.is_empty());
+        assert!(c.held("unit").contains("6/1/1"), "granted after the list was made");
+        c.member_beat(&word("m1", &[]));
+        assert!(!c.held("unit").contains("6/1/1"), "a list made after the grant leaves it out");
+        assert!(!w.beat(g.lease, None).unwrap());
+    }
+
     /// Mixed versions (docs/coordination.md §8): a member that doesn't say it speaks for its leases
     /// keeps the old rule (they lapse after `TTL` unrenewed, and its beat releases nothing); a lead
     /// that doesn't take the beat answers 404, which a member takes as nothing to do.

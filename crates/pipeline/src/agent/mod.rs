@@ -3157,6 +3157,7 @@ impl Agent {
             token: c.token(),
             member: self.host.clone(),
             held: self.held_of_lead(),
+            listed: Instant::now(),
             beats,
         })
     }

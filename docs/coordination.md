@@ -203,11 +203,14 @@ the lead can always tell "holder gone" from "holder unreachable" only by hearing
 waits to hear.
 
 Built (step 2: `crate::coord::held`; step 3: one beat), but for what is marked planned below. A
-member's agent posts `POST /pool/beat {member, speaks, held, heartbeat, status}` every 10 s
+member's agent posts `POST /pool/beat {member, speaks, held, held_age_s, heartbeat, status}` every 10 s
 (`agent::beat::EVERY`) while it's a member, from its beat's own poster thread, whatever its loop
-waits on; the answer is `{epoch, released, speaks, nas_too, members}` (the leases it listed
-that aren't its on the lead: its jobs stop as their own beats are then refused; the rest, step 3's,
-§8). The rule holds for a
+waits on; `held` is the list its loop made last, `held_age_s` its age: the lead releases only
+leases granted before the list was made (a loop stuck after a grant never loses it), and a member
+whose lead hasn't said it takes `beat` sends no list older than half the grace. The answer is
+`{epoch, released, speaks, nas_too, members}` (the leases it listed that aren't its on the lead,
+its tasks' leases counted its: its jobs stop as their own beats are then refused; the rest, step
+3's, §8). The rule holds for a
 member whose beat says it speaks `held-leases` (`held::SPEAKS`), kept in the store
 (`member/<host>`) so a lead's restart keeps it; an older member's leases lapse after `coord::TTL`
 unrenewed as before, and an older lead answers the beat 404, which the member passes over (§8's
