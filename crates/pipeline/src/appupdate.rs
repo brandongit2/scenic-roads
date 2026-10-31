@@ -321,9 +321,12 @@ mod tests {
         // A program still running from the first (the map server waiting for an idle map, or an
         // older server): a copy of `sleep` run from its folder.
         std::fs::copy("/bin/sleep", app.join("20261001-0000-aaaaaaa/server")).unwrap();
-        let mut child = std::process::Command::new(app.join("20261001-0000-aaaaaaa/server")).arg("30").spawn().unwrap();
-        std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(running_versions(&app), vec!["20261001-0000-aaaaaaa".to_string()]);
+        let mut child =
+            store::spawn::spawn(std::process::Command::new(app.join("20261001-0000-aaaaaaa/server")).arg("30"))
+                .unwrap();
+        store::testkit::eventually("the copy runs", || {
+            running_versions(&app) == vec!["20261001-0000-aaaaaaa".to_string()]
+        });
         prune(d.path(), "20261004-0000-eeeeeee", "20261004-0000-eeeeeee");
         child.kill().ok();
         child.wait().ok();
