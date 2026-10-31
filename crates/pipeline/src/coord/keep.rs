@@ -271,7 +271,7 @@ mod tests {
         eprintln!("200 grants in {took:?}: {n} writes (at most {most})");
         assert!(n >= 1 && n <= most, "{n} writes for 200 grants in {took:?}");
         c.hold("unit", &[("6/3/1".into(), "k".into())]).unwrap();
-        std::thread::sleep(QUICK.gap * 2);
+        std::thread::sleep(QUICK.gap * 2); // (absence)
         assert_eq!(k.writes(), n + 1, "stopped: no more");
     }
 
@@ -296,14 +296,14 @@ mod tests {
         let (n, before) = (k.writes(), std::fs::read(root.join(crate::agent::pool::state_path(4))).unwrap());
         assert!(n >= 1);
         c.hold("unit", &[("6/4/2".into(), "k".into())]).unwrap();
-        std::thread::sleep(QUICK.gap * 3);
+        std::thread::sleep(QUICK.gap * 3); // (absence)
         assert_eq!(k.writes(), n, "a broker: no more writes");
         assert_eq!(std::fs::read(root.join(crate::agent::pool::state_path(4))).unwrap(), before);
         // Leading again (a later term): that term's file.
         keep(&c.shared, Arc::new(store::nasfs::NasRoot::local_for_test(&root)), 6, QUICK);
         until("term 6's file", || state(&store::nasfs::NasRoot::local_for_test(&root), 6).is_some());
         c.stop();
-        std::thread::sleep(QUICK.gap * 2);
+        std::thread::sleep(QUICK.gap * 2); // (absence)
         assert_eq!(k.writes(), n + 1, "stopped: no more");
     }
 }

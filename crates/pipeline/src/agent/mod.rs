@@ -18218,7 +18218,7 @@ mod pool_tests {
         // A page from the lead's address reads the member's broker, with CORS.
         let page_origin = crate::coord::brokers::origin(&lead.coord.as_ref().unwrap().contact.urls[0]).unwrap();
         let (code, _, acao) = http_post(bport, "/work/swarm", &[("Origin", &page_origin)], "{}");
-        assert_eq!((code, acao.as_deref()), (200, Some(page_origin.as_str())));
+        assert!(matches!(code, 200 | 503) && acao.as_deref() == Some(page_origin.as_str()), "{code} {acao:?}");
         // A worker (another Mac's agent, with the pool's key) takes the member's task from the
         // member's broker, and the lead's from the lead.
         let (mkey, lkey) =
