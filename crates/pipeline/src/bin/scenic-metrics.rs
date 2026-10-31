@@ -677,15 +677,13 @@ fn canopy_tiff(file: File) -> Result<Tiff> {
 }
 
 /// `f()` over canopy file `path` read where it lies (on the NAS: a task's worker, which doesn't
-/// download one), natively tried again while it fails as the share does for a moment
-/// (store::retry, task #656: ~3.5 min; the agent remounts a share that's gone); else its error,
-/// marked read where it lies. (A Mac taking a task whose share dropped failed the canopy step,
-/// which its lead then ran itself from its own copies: task #903. A page reads through the
-/// coordinator, whose answers say what's gone: tried once.) The build pausing stops its retries at
+/// download one), tried again while it fails as the share does for a moment (store::retry, task
+/// #656: ~3.5 min; the agent remounts a share that's gone); else its error, marked read where it
+/// lies. (A Mac taking a task whose share dropped failed the canopy step, which its lead then ran
+/// itself from its own copies: task #903.) The build pausing stops its retries at
 /// once: the program exits as paused (crate::control::PAUSED_EXIT), and its task is given back,
 /// not failed (`unit::run`, `scenic run-task`).
 fn where_it_lies<T>(path: &Path, f: impl FnMut() -> Result<T>) -> Result<T> {
-    #[cfg(not(target_family = "wasm"))]
     let r = store::retry::any_until(
         &format!("canopy: {}", path.display()),
         Some(path),
@@ -694,12 +692,9 @@ fn where_it_lies<T>(path: &Path, f: impl FnMut() -> Result<T>) -> Result<T> {
         pipeline::control::draining,
         f,
     );
-    #[cfg(not(target_family = "wasm"))]
     if r.is_err() && pipeline::control::draining() {
         pipeline::control::stop_paused("canopy");
     }
-    #[cfg(target_family = "wasm")]
-    let r = { f }();
     r.with_context(|| format!("{} (read where it lies)", path.display()))
 }
 
