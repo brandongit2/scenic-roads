@@ -528,14 +528,25 @@ async fn main() -> Result<()> {
         }
         // 127.0.0.1 held beside the wildcard socket, as the coordinator holds it (#906): otherwise
         // any process may bind it beside and take this Mac's own requests (the agent's catalogue
-        // refresh, the status app, the dev proxy).
-        match store::spawn::listen((std::net::Ipv4Addr::LOCALHOST, port)).and_then(pipeline::net::Listener::new) {
-            Ok(l4) => {
-                let svc4 = svc.clone();
-                tokio::spawn(async move { axum::serve(l4.tap_io(|_| ()), svc4).await });
+        // refresh, the status app, the dev proxy). Held by another (the server before a restart,
+        // still letting go): said once, tried again every 2 s, nothing served till it's free.
+        let mut said = false;
+        let l4 = loop {
+            match store::spawn::listen((std::net::Ipv4Addr::LOCALHOST, port)).and_then(pipeline::net::Listener::new) {
+                Ok(l) => break l,
+                Err(e) if !said => {
+                    eprintln!("127.0.0.1:{port} is another process's ({e}): waiting for it to be free");
+                    said = true;
+                }
+                Err(_) => {}
             }
-            Err(e) => anyhow::bail!("127.0.0.1:{port} is another process's ({e}): this Mac's requests would reach it"),
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        };
+        if said {
+            eprintln!("127.0.0.1:{port} free: serving");
         }
+        let svc4 = svc.clone();
+        tokio::spawn(async move { axum::serve(l4.tap_io(|_| ()), svc4).await });
     }
     axum::serve(listener, svc).await?;
     Ok(())

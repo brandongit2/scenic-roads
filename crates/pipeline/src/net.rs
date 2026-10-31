@@ -31,10 +31,22 @@ pub fn kept_token(p: &Path) -> Result<String> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
     }
-    store::whole::write(p, t.as_bytes())?;
-    if let Ok(f) = std::fs::File::open(p) {
-        store::sys::set_mode(&f, 0o600).ok();
+    // (Made 0600 from the start, never readable by another user meanwhile: written beside, then
+    // renamed over.)
+    let tmp = p.with_extension(format!("tmp{}", std::process::id()));
+    let made = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::remove_file(&tmp);
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+        f.write_all(t.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, p)
+    })();
+    if made.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
+    made?;
     Ok(t)
 }
 
@@ -496,5 +508,8 @@ mod tests {
         let p = d.path().join("t/token");
         let a = kept_token(&p).unwrap();
         assert_eq!((a.len(), kept_token(&p).unwrap()), (32, a.clone()));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_dir(p.parent().unwrap()).unwrap().count(), 1, "nothing left beside it");
     }
 }

@@ -52,6 +52,9 @@ pub const PORT: u16 = 8090;
 /// the other Macs; loopback alone in a unit test, whose members are in the same process and reach
 /// it at 127.0.0.1 (crate::net::urls): a freshly built test binary is no app a Mac's firewall lets
 /// its Tailscale or LAN addresses reach (#596).
+/// How often a coordinator whose 127.0.0.1 is held tries again (`Coordinator::loopback_beside`).
+const LOOPBACK_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub const LISTEN: &str = if cfg!(test) { "127.0.0.1" } else { "0.0.0.0" };
 /// How long a lease lasts without a heartbeat (workers beat every minute).
 pub const TTL: Duration = Duration::from_secs(600);
@@ -1178,24 +1181,38 @@ impl Coordinator {
     /// (`SCENIC_COORD`, 127.0.0.1). A wildcard listener leaves it to any process that binds it
     /// beside (SO_REUSEADDR, as std sets it), which then takes every connection this Mac's jobs
     /// make and refuses their token (a test's coordinator on the pool's port, #906); held here, no
-    /// other can. None for a listener on one address. Held by another process already: an error,
-    /// and no coordinator (its jobs would offer to that process), till a later start finds it free.
+    /// other can. None for a listener on one address. Held by another process (the agent before a
+    /// restart, still letting go): said once, tried again every `LOOPBACK_RETRY` till it's free,
+    /// never served beside; an error only when the agent is asked to stop meanwhile.
     fn loopback_beside(listener: &std::net::TcpListener) -> Result<Option<std::net::TcpListener>> {
         let at = listener.local_addr()?;
         if !at.ip().is_unspecified() {
             return Ok(None);
         }
-        let l = anyhow::Context::with_context(
-            store::spawn::listen((std::net::Ipv4Addr::LOCALHOST, at.port())),
-            || {
-                format!(
-                "127.0.0.1:{} is another process's (lsof -nP -iTCP:{} -sTCP:LISTEN): this Mac's jobs would reach it, not this coordinator",
-                at.port(),
-                at.port()
-            )
-            },
-        )?;
-        Ok(Some(l))
+        let mut said = false;
+        loop {
+            match store::spawn::listen((std::net::Ipv4Addr::LOCALHOST, at.port())) {
+                Ok(l) => {
+                    if said {
+                        eprintln!("coordinator: 127.0.0.1:{} free: starting", at.port());
+                    }
+                    return Ok(Some(l));
+                }
+                Err(e) if !said => {
+                    eprintln!(
+                        "coordinator: 127.0.0.1:{p} is another process's ({e}; lsof -nP -iTCP:{p} -sTCP:LISTEN): \
+                         this Mac's jobs would reach it, not this coordinator; waiting for it to be free",
+                        p = at.port()
+                    );
+                    said = true;
+                }
+                Err(_) => {}
+            }
+            if crate::agent::stopping() {
+                anyhow::bail!("127.0.0.1:{} still another process's as the agent stops", at.port());
+            }
+            std::thread::sleep(LOOPBACK_RETRY);
+        }
     }
 
     /// `start`, answering on `listener`, already listening (a test's, on a port it held from the
@@ -9437,18 +9454,28 @@ mod tests {
         store::spawn::sockets(|| drop(again));
     }
 
-    /// Its jobs' loopback address already another process's: no coordinator (fail-safe), rather
-    /// than one whose jobs offer to that process; nothing of its state written.
+    /// Its jobs' loopback address another process's: the coordinator waits, never serving beside
+    /// it, and starts once it's let go (an agent before a restart, still letting go: #906).
     #[test]
-    fn a_coordinator_whose_loopback_is_taken_does_not_start() {
+    fn a_coordinator_whose_loopback_is_taken_starts_once_it_is_free() {
+        use std::sync::atomic::{AtomicBool, Ordering};
         let d = tempfile::tempdir().unwrap();
         let other = store::spawn::listen(("127.0.0.1", 0)).unwrap();
         let port = other.local_addr().unwrap().port();
         let l = store::spawn::listen(("0.0.0.0", port)).unwrap();
-        let e = Coordinator::start_on(&d.path().join("coord"), l, "m4", "").err().expect("refused");
-        assert!(format!("{e:#}").contains(&format!("127.0.0.1:{port} is another process's")), "{e:#}");
-        assert!(!d.path().join("coord").exists());
-        store::spawn::sockets(|| drop(other));
+        let let_go = Arc::new(AtomicBool::new(false));
+        let lg = let_go.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(LOOPBACK_RETRY * 2); // (absence: it doesn't start meanwhile)
+            lg.store(true, Ordering::SeqCst);
+            store::spawn::sockets(|| drop(other));
+        });
+        let c = Coordinator::start_on(&d.path().join("coord"), l, "m4", "").unwrap();
+        assert!(let_go.load(Ordering::SeqCst), "started beside the other process");
+        t.join().unwrap();
+        let job = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.job_token.clone(), "job");
+        assert_eq!(job.post_json("/task/workers", &serde_json::json!({ "kind": "tail" })).unwrap().0, 200);
+        c.stop();
     }
 
     /// A request as a browser, a page or a proxy sends it, straight to `addr`: `headers` over the

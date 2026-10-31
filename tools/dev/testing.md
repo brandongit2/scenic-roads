@@ -157,7 +157,7 @@ through their dev-dependency on store, `features = ["testkit"]`):
   `tools/app/guards.sh` refuses test code naming one on a loopback or wildcard address (or
   `coord::PORT`, `DEFAULT_PORT`) unless the line says `pool port: not bound`. The coordinator and
   the map's server hold 127.0.0.1 beside their wildcard socket, so no other process takes it; a
-  coordinator that finds it taken doesn't start.
+  server that finds it taken waits, serving nothing, till it's free.
 
 `tools/app/guards.sh` (publish and check.sh) runs `tools/app/test_timing.py`, which refuses what
 these replace: an assert of a short `elapsed()` bound, a fixed sleep then an assert, and (#662) a
