@@ -271,13 +271,7 @@ impl Chm10 {
 /// `read_only`: the files read where they lie (a task's worker, the NAS's store): what's there
 /// whole, else an error; nothing downloaded, written, touched or removed there. `url`: the file's
 /// URL by the declared canopy source's index (pipeline::unit::UnitSources); none when it lists none.
-fn fetch_file(
-    agent: &ureq::Agent,
-    url: Option<&str>,
-    path: &Path,
-    store: Option<&Path>,
-    read_only: bool,
-) -> Result<Option<File>> {
+fn fetch_file(url: Option<&str>, path: &Path, store: Option<&Path>, read_only: bool) -> Result<Option<File>> {
     if read_only {
         let f = File::open(path).with_context(|| format!("{} isn't there to read", path.display()))?;
         if f.metadata()?.len() == 0 {
@@ -311,122 +305,41 @@ fn fetch_file(
     if let Some(f) = here() {
         return Ok(f);
     }
-    // The NAS's copy; else the right to download it there (`<file>.lock`, made with create-new: a
-    // unit on one Mac and a trees job on the other may want the same square at once), or the copy
-    // the holder downloads, waited for. A lock not touched for 30 minutes is a holder that died.
-    let mut _lock = None;
+    // The NAS's copy, downloaded into it once when it isn't there whole (the trees step's own
+    // protocol, pipeline::trees::squares::ensure_square: a unit on one Mac and a trees job on the
+    // other may want the same square at once), then copied here.
     if let Some(st) = store {
-        if let Some(d) = st.parent() {
-            std::fs::create_dir_all(d)?;
-        }
-        let lock = st.with_file_name(format!(
-            "{}.lock",
-            st.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-        ));
-        loop {
-            match kept(st) {
-                Some(None) => {
-                    store::cachefile::create_bytes(path, b"")?;
-                    return Ok(None);
-                }
-                Some(Some(_)) => {
-                    store::cachefile::create(path, &mut |tmp| copy_whole(st, tmp))?;
-                    return here().with_context(|| format!("{} isn't whole as copied", path.display()));
-                }
-                None => {}
+        let dir = st.parent().context("a canopy store file's folder")?;
+        pipeline::trees::squares::ensure_square(dir, st, url, &|_| {})?;
+        return match kept(st) {
+            Some(None) => {
+                store::cachefile::create_bytes(path, b"")?;
+                Ok(None)
             }
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
-                Ok(mut f) => {
-                    use std::io::Write;
-                    f.write_all(format!("{} {}", store::sys::host(), std::process::id()).as_bytes()).ok();
-                    _lock = Some(DownloadLock(lock));
-                    break;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let age = std::fs::metadata(&lock).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
-                    if age.is_some_and(|a| a > std::time::Duration::from_secs(1800)) {
-                        eprintln!(
-                            "canopy: taking over {} (not touched for {:.0?})",
-                            lock.display(),
-                            age.unwrap_or_default()
-                        );
-                        std::fs::remove_file(&lock).ok();
-                    } else {
-                        std::thread::sleep(std::time::Duration::from_secs(20));
-                    }
-                }
-                Err(e) => return Err(e).with_context(|| format!("lock {}", lock.display())),
+            Some(Some(_)) => {
+                store::cachefile::create(path, &mut |tmp| copy_whole(st, tmp))?;
+                here().with_context(|| format!("{} isn't whole as copied", path.display()))
             }
-        }
+            None => bail!("{} isn't whole as downloaded", st.display()),
+        };
     }
-    let mut missing = 0;
-    // (A file the source's index doesn't list: none there, asked of no one.)
+    // (No store: downloaded here alone. A file the source's index doesn't list: none there, asked
+    // of no one.)
     let Some(url) = url else {
-        if let Some(st) = store {
-            store::whole::write(st, b"")?;
-        }
         store::cachefile::create_bytes(path, b"")?;
         return Ok(None);
     };
-    pipeline::fetch::online(url)?;
-    let _w = store::waits::net();
-    for attempt in 0..6 {
-        match agent.get(url).call() {
-            Ok(mut r) => {
-                let want: Option<u64> =
-                    r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
-                // Into a temporary file beside `path`, not memory (up to 1.2 GB), flushed. (A body cut
-                // short, or not a whole TIFF, is tried again, never kept.)
-                // (Held as it's written, store::cachefile's scratch file: room-making leaves it.)
-                let (tmp, mut f) = store::cachefile::scratch(path)?;
-                let got = (|| -> Result<Option<File>> {
-                    let Some(n) = copy_body(&mut r.body_mut().with_config().limit(3_000_000_000).reader(), &mut f)?
-                    else {
-                        return Ok(None);
-                    };
-                    f.sync_all()?;
-                    if want.is_some_and(|w| w != n) || !pipeline::whole::tiff_whole(&f) {
-                        return Ok(None);
-                    }
-                    if let Some(st) = store {
-                        store::whole::copy(&tmp, st)?;
-                    }
-                    store::cachefile::publish(f.try_clone()?, &tmp, path)?;
-                    Ok(here().flatten())
-                })();
-                if !matches!(got, Ok(Some(_))) {
-                    std::fs::remove_file(&tmp).ok();
-                }
-                if let Some(f) = got.with_context(|| format!("write {}", path.display()))? {
-                    return Ok(Some(f));
-                }
-            }
-            // Meta has none there (404, or S3's 403): so it says twice, a moment apart, before
-            // it's remembered for good.
-            Err(ureq::Error::StatusCode(404 | 403)) => {
-                missing += 1;
-                if missing == 2 {
-                    if let Some(st) = store {
-                        store::whole::write(st, b"")?;
-                    }
-                    store::cachefile::create_bytes(path, b"")?;
-                    return Ok(None);
-                }
-            }
-            Err(_) => {}
-        }
-        std::thread::sleep(std::time::Duration::from_millis(if missing > 0 { 5000 } else { 1000 << attempt }));
+    let mut there = true;
+    store::cachefile::create(path, &mut |tmp| {
+        there = pipeline::fetch::download(url, tmp, &pipeline::whole::tiff_file_whole, &|_| {})
+            .map_err(std::io::Error::other)?;
+        Ok(())
+    })?;
+    if !there {
+        store::cachefile::create_bytes(path, b"")?;
+        return Ok(None);
     }
-    bail!("download failed: {url}")
-}
-
-/// The right to download one canopy file into the NAS's store (fetch_file), given up when dropped.
-struct DownloadLock(PathBuf);
-
-impl Drop for DownloadLock {
-    fn drop(&mut self) {
-        std::fs::remove_file(&self.0).ok();
-    }
+    here().with_context(|| format!("{} isn't whole as downloaded", path.display()))
 }
 
 /// Copies file `src` into `dst` in place (store::cachefile's temporary file), whole.
@@ -436,24 +349,6 @@ fn copy_whole(src: &Path, dst: &Path) -> std::io::Result<()> {
         return Err(std::io::Error::other(format!("{}: {n} of {want} bytes copied", src.display())));
     }
     Ok(())
-}
-
-/// Copies `r` to `w`: the bytes copied once `r` ends, None when reading fails (a body cut short);
-/// failing to write is an error.
-fn copy_body(r: &mut impl std::io::Read, w: &mut impl std::io::Write) -> Result<Option<u64>> {
-    let mut b = vec![0u8; 1 << 20];
-    let mut n = 0;
-    loop {
-        match r.read(&mut b) {
-            Ok(0) => return Ok(Some(n)),
-            Ok(k) => {
-                w.write_all(&b[..k])?;
-                n += k as u64;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => return Ok(None),
-        }
-    }
 }
 
 /// Minimal little-endian TIFF strip index.
@@ -591,8 +486,7 @@ fn decode_rows(
 /// One layer of a square: its file (fetch_file, a 40000² uint16 LZW TIFF), from which the bands
 /// read their windows. A file that doesn't decode is damaged: this Mac's copy is deleted and it's
 /// taken again (from the NAS), then the NAS's copy too (from Meta).
-struct Layer<'a> {
-    agent: &'a ureq::Agent,
+struct Layer {
     /// Its URL (none: the source has none there).
     url: Option<String>,
     path: PathBuf,
@@ -604,31 +498,30 @@ struct Layer<'a> {
     taken: usize,
 }
 
-impl<'a> Layer<'a> {
+impl Layer {
     /// The layer's file, opened; None when Meta has none there.
     fn open(
-        agent: &'a ureq::Agent,
         url: Option<String>,
         path: PathBuf,
         store: Option<PathBuf>,
         read_only: bool,
         f: fn(u16) -> u8,
-    ) -> Result<Option<Layer<'a>>> {
+    ) -> Result<Option<Layer>> {
         let mut taken = 0;
         if read_only {
             // (Read where it lies: a moment's outage of the share ridden out, `where_it_lies`.)
-            let tiff = where_it_lies(&path, || match fetch_file(agent, None, &path, None, true)? {
+            let tiff = where_it_lies(&path, || match fetch_file(None, &path, None, true)? {
                 Some(file) => canopy_tiff(file).map(Some),
                 None => Ok(None),
             })?;
-            return Ok(tiff.map(|tiff| Layer { agent, url, path, store, read_only, f, tiff, taken }));
+            return Ok(tiff.map(|tiff| Layer { url, path, store, read_only, f, tiff, taken }));
         }
         loop {
-            let Some(file) = fetch_file(agent, url.as_deref(), &path, store.as_deref(), read_only)? else {
+            let Some(file) = fetch_file(url.as_deref(), &path, store.as_deref(), read_only)? else {
                 return Ok(None);
             };
             match canopy_tiff(file) {
-                Ok(tiff) => return Ok(Some(Layer { agent, url, path, store, read_only, f, tiff, taken })),
+                Ok(tiff) => return Ok(Some(Layer { url, path, store, read_only, f, tiff, taken })),
                 Err(e) => damaged(&path, store.as_deref(), &mut taken, e)?,
             }
         }
@@ -656,7 +549,7 @@ impl<'a> Layer<'a> {
             };
             damaged(&self.path, self.store.as_deref(), &mut self.taken, e)?;
             // (Bands before this one have used the square: found missing now, it can't be passed over.)
-            let file = fetch_file(self.agent, self.url.as_deref(), &self.path, self.store.as_deref(), self.read_only)?
+            let file = fetch_file(self.url.as_deref(), &self.path, self.store.as_deref(), self.read_only)?
                 .with_context(|| format!("{}: Meta has none there now", self.path.display()))?;
             got = canopy_tiff(file).and_then(|t| {
                 self.tiff = t;
@@ -849,11 +742,6 @@ fn canopy(dir: &Path) -> Result<()> {
         .and_then(|v| v.parse().ok())
         .filter(|&b: &usize| b > 0)
         .unwrap_or(BAND_ROWS);
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(1800)))
-        .user_agent(pipeline::fetch::USER_AGENT)
-        .build()
-        .into();
 
     // 10° tiles needed: (top latitude, left longitude).
     let mut need: BTreeSet<(i32, i32)> = pipeline::unit::canopy_squares(&grid.tiles);
@@ -984,7 +872,6 @@ fn canopy(dir: &Path) -> Result<()> {
             .par_iter()
             .map(|&(st, f)| {
                 Layer::open(
-                    &agent,
                     urls.get(&name(st)).cloned(),
                     cache.join(name(st)),
                     store.as_ref().map(|s| s.join(name(st))),
@@ -1366,7 +1253,6 @@ mod tests {
         let (cache, store) = (d.path().join("cache"), d.path().join("store"));
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::create_dir_all(&store).unwrap();
-        let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).build().into();
         let b = tiff(5, 7, 3);
         let whole = |f: &File| {
             let len = f.metadata().unwrap().len();
@@ -1377,13 +1263,12 @@ mod tests {
         std::fs::write(store.join("a.tif"), &b).unwrap();
         std::fs::write(cache.join("a.tif"), &b[..b.len() - 1]).unwrap();
         for _ in 0..2 {
-            let f =
-                fetch_file(&agent, never, &cache.join("a.tif"), Some(&store.join("a.tif")), false).unwrap().unwrap();
+            let f = fetch_file(never, &cache.join("a.tif"), Some(&store.join("a.tif")), false).unwrap().unwrap();
             assert_eq!(whole(&f), b);
         }
         // Meta's "none there", from the NAS.
         std::fs::write(store.join("b.tif"), b"").unwrap();
-        assert!(fetch_file(&agent, never, &cache.join("b.tif"), Some(&store.join("b.tif")), false).unwrap().is_none());
+        assert!(fetch_file(never, &cache.join("b.tif"), Some(&store.join("b.tif")), false).unwrap().is_none());
         assert_eq!(std::fs::metadata(cache.join("b.tif")).unwrap().len(), 0);
         // Downloaded (a body cut short tried again), into the NAS's store and here.
         let srv = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1407,9 +1292,8 @@ mod tests {
                 s.write_all(&body[..if cut { body.len() / 2 } else { body.len() }]).unwrap();
             }
         });
-        let f = fetch_file(&agent, Some(url.as_str()), &cache.join("c.tif"), Some(&store.join("c.tif")), false)
-            .unwrap()
-            .unwrap();
+        let f =
+            fetch_file(Some(url.as_str()), &cache.join("c.tif"), Some(&store.join("c.tif")), false).unwrap().unwrap();
         server.join().unwrap();
         assert_eq!(whole(&f), b);
         assert_eq!(std::fs::read(cache.join("c.tif")).unwrap(), b);
@@ -1425,12 +1309,12 @@ mod tests {
         // or missing, an error, with nothing removed, written or downloaded.
         let mtime = |p: &Path| std::fs::metadata(p).unwrap().modified().unwrap();
         let (a, at) = (store.join("a.tif"), mtime(&store.join("a.tif")));
-        assert_eq!(whole(&fetch_file(&agent, never, &a, None, true).unwrap().unwrap()), b);
-        assert!(fetch_file(&agent, never, &store.join("b.tif"), None, true).unwrap().is_none());
+        assert_eq!(whole(&fetch_file(never, &a, None, true).unwrap().unwrap()), b);
+        assert!(fetch_file(never, &store.join("b.tif"), None, true).unwrap().is_none());
         std::fs::write(store.join("d.tif"), &b[..b.len() - 1]).unwrap();
-        assert!(fetch_file(&agent, never, &store.join("d.tif"), None, true).is_err());
+        assert!(fetch_file(never, &store.join("d.tif"), None, true).is_err());
         assert!(store.join("d.tif").exists(), "a copy cut short is left to the lead");
-        assert!(fetch_file(&agent, Some(url.as_str()), &store.join("e.tif"), None, true).is_err());
+        assert!(fetch_file(Some(url.as_str()), &store.join("e.tif"), None, true).is_err());
         assert!(!store.join("e.tif").exists());
         assert_eq!(mtime(&a), at, "not touched");
         // A damaged file read where it lies: the error at once, nothing removed; a moment's outage
@@ -1460,8 +1344,7 @@ mod tests {
         // (No URL: nothing asked; "none there" kept in the NAS's store and here, as a 404 twice was.)
         let d = tempfile::tempdir().unwrap();
         let (path, store) = (d.path().join("f.tif"), d.path().join("store-f.tif"));
-        let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).build().into();
-        assert!(fetch_file(&agent, None, &path, Some(&store), false).unwrap().is_none());
+        assert!(fetch_file(None, &path, Some(&store), false).unwrap().is_none());
         assert_eq!((std::fs::metadata(&path).unwrap().len(), std::fs::metadata(&store).unwrap().len()), (0, 0));
     }
 }

@@ -578,9 +578,21 @@ pub fn fetched_bytes() -> u64 {
 /// says it has none (404, 403 or 410). For a step's own downloads with no mirror (`Fetcher`'s are
 /// the data readers').
 pub fn get(url: &str) -> Result<Option<Vec<u8>>> {
-    static NET: std::sync::LazyLock<net::Net> = std::sync::LazyLock::new(net::Net::new);
     NET.get_by(url, None)
 }
+
+/// `url`'s (large) file streamed into file `to` (made again from its start each attempt), by this
+/// process's one `net::Net`: true once it's all there and `whole(to)`; false when the server says
+/// it has none (404, 403 or 410) twice, a moment apart (`to` then left as it was). A body shorter
+/// than its Content-Length, or not `whole`, is asked again, as a failure to write `to` is (a share
+/// not taking it for a moment). `coming` is told how much has come (0–1), at most once a second.
+/// The caller makes `to` whole under its own name (a temporary one, then renamed).
+pub fn download(url: &str, to: &Path, whole: &dyn Fn(&Path) -> bool, coming: &dyn Fn(f64)) -> Result<bool> {
+    NET.download(url, to, whole, coming)
+}
+
+/// This process's one `net::Net` (`get`, `download`).
+static NET: std::sync::LazyLock<net::Net> = std::sync::LazyLock::new(net::Net::new);
 
 /// Requests to one host this process has in flight at most, whichever readers ask (the
 /// elevation sampler's pool, its reading ahead, a pyramid's tile fetches): what one step asks
@@ -1190,6 +1202,84 @@ mod net {
                     bail!("{url}: {} of {want} bytes after {requests} requests ({last})", out.len());
                 }
             }
+        }
+
+        /// `super::download`: through `retrying` (its tries, its wait for this Mac's agent's
+        /// proxy); each request's head within a minute, its body within two hours (a square of
+        /// 2 GB comes at 0.3 MB/s too).
+        pub(super) fn download(
+            &self,
+            url: &str,
+            to: &Path,
+            whole: &dyn Fn(&Path) -> bool,
+            coming: &dyn Fn(f64),
+        ) -> Result<bool> {
+            use std::io::Read;
+            let _w = store::waits::net();
+            let _slot = HostSlot::take(url);
+            let mut missing = 0;
+            self.retrying(url, || {
+                crate::fetch::online(url)?;
+                let req = self
+                    .agent
+                    .get(url)
+                    .config()
+                    .timeout_global(None)
+                    .timeout_recv_response(Some(Duration::from_secs(60)))
+                    .timeout_recv_body(Some(Duration::from_secs(7200)))
+                    .build();
+                let mut r = match req.call() {
+                    Ok(r) => r,
+                    Err(e) => return Ok(Err(e.to_string())),
+                };
+                match r.status().as_u16() {
+                    200 => {}
+                    403 | 404 | 410 => {
+                        missing += 1;
+                        return Ok(if missing == 2 { Ok(false) } else { Err("none there, asked again".into()) });
+                    }
+                    c => return Ok(Err(format!("status {c}"))),
+                }
+                let want: Option<u64> = header(&r, "content-length").and_then(|v| v.parse().ok());
+                let on_disk = |e: std::io::Error| Ok(Err(format!("{}: {e}", to.display())));
+                let mut f = match std::fs::File::create(to) {
+                    Ok(f) => f,
+                    Err(e) => return on_disk(e),
+                };
+                let mut body = r.body_mut().with_config().limit(u64::MAX).reader();
+                let mut b = vec![0u8; 16 << 20];
+                let (mut n, mut at) = (0u64, std::time::Instant::now());
+                loop {
+                    let k = match body.read(&mut b) {
+                        Ok(0) => break,
+                        Ok(k) => k,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(e) => return Ok(Err(e.to_string())),
+                    };
+                    if let Err(e) = f.write_all(&b[..k]) {
+                        return on_disk(e);
+                    }
+                    n += k as u64;
+                    fetched(k);
+                    if let Some(w) = want.filter(|&w| w > 0) {
+                        if at.elapsed() >= Duration::from_secs(1) {
+                            at = std::time::Instant::now();
+                            coming(n as f64 / w as f64);
+                        }
+                    }
+                }
+                if let Err(e) = f.sync_all() {
+                    return on_disk(e);
+                }
+                drop(f);
+                if let Some(w) = want.filter(|&w| w != n) {
+                    return Ok(Err(format!("{n} of {w} bytes")));
+                }
+                if !whole(to) {
+                    return Ok(Err("not whole".into()));
+                }
+                Ok(Ok(true))
+            })
         }
 
         /// The whole (small) file; None for 404, 403 or 410 (S3's answers for a key that isn't
