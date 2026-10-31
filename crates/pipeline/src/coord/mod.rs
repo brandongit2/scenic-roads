@@ -58,10 +58,58 @@ pub const PORT: u16 = 8090;
 /// the other Macs; loopback alone in a unit test, whose members are in the same process and reach
 /// it at 127.0.0.1 (crate::net::urls): a freshly built test binary is no app a Mac's firewall lets
 /// its Tailscale or LAN addresses reach (#596).
+pub const LISTEN: &str = if cfg!(test) { "127.0.0.1" } else { "0.0.0.0" };
 /// How often a coordinator whose 127.0.0.1 is held tries again (`Coordinator::loopback_beside`).
 const LOOPBACK_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
-pub const LISTEN: &str = if cfg!(test) { "127.0.0.1" } else { "0.0.0.0" };
+/// A coordinator's listeners: on its port, and on 127.0.0.1 beside a wildcard one (its jobs'
+/// address, `Coordinator::loopback_beside`), once it holds that.
+pub struct Listeners {
+    pub listener: std::net::TcpListener,
+    pub loopback: Option<std::net::TcpListener>,
+}
+
+impl From<std::net::TcpListener> for Listeners {
+    fn from(listener: std::net::TcpListener) -> Listeners {
+        Listeners { listener, loopback: None }
+    }
+}
+
+/// The listeners of each port a coordinator, broker or viewer of this process answered on, kept
+/// open as it stopped (and a test's, `test_port`, from the start): the next of this process on
+/// that port takes them (`listeners_on`), so no other process takes the port between. (Let go,
+/// a test's port was taken by another test running beside while its agent turned its viewer into
+/// a coordinator, which then never started: #914.)
+static KEPT: Mutex<BTreeMap<u16, Listeners>> = Mutex::new(BTreeMap::new());
+
+/// The listeners for `port`: the ones this process kept for it (`KEPT`), else listened on anew.
+/// A test never listens anew on a port of its own choosing (another test running beside may hold
+/// it by now): refused, loudly, at once (#914; port 0 is any free port).
+pub fn listeners_on(port: u16) -> std::io::Result<Listeners> {
+    if let Some(l) = KEPT.lock().unwrap_or_else(|e| e.into_inner()).remove(&port) {
+        return Ok(l);
+    }
+    assert!(
+        port == 0 || !store::spawn::in_test_program(),
+        "a test listened anew on port {port}, which this process kept no listener of: another test's may \
+         hold it by now (#914); take a port from coord::test_port, which this process keeps"
+    );
+    Ok(store::spawn::listen((LISTEN, port))?.into())
+}
+
+/// Keeps a stopped coordinator's listeners for the next of this process on their port.
+fn keep_listeners(l: Listeners) {
+    if let Ok(a) = l.listener.local_addr() {
+        KEPT.lock().unwrap_or_else(|e| e.into_inner()).insert(a.port(), l);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether a test's coordinator waits for its 127.0.0.1 held by another process
+    /// (`loopback_beside`): only the test of that wait says so; any other fails at once.
+    static LOOPBACK_WAITS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 /// How long `/work/hold` waits for this Mac's agent to answer (its control takes this Mac's own up
 /// at once) before it says "asked": another member's waits for the agent's next round.
 const HOLD_WAIT: Duration = Duration::from_secs(2);
@@ -1152,11 +1200,12 @@ impl Coordinator {
     /// from the live store; this Mac's settings and hold; every other call refused. No state of a coordinator's: nothing loaded nor kept (its token,
     /// the one thing it makes, in a scratch folder of its own, emptied as it starts), no history,
     /// no background loop, no page address written.
-    pub fn viewer(listener: std::net::TcpListener, me: &str, app: &str) -> Result<Coordinator> {
+    pub fn viewer(listeners: impl Into<Listeners>, me: &str, app: &str) -> Result<Coordinator> {
+        let listeners = listeners.into();
         let dir = std::env::temp_dir().join(format!(
             "scenic-viewer-{}-{}",
             std::process::id(),
-            listener.local_addr()?.port()
+            listeners.listener.local_addr()?.port()
         ));
         std::fs::remove_dir_all(&dir).ok();
         // (Those of viewers whose process is gone: removed.)
@@ -1170,19 +1219,17 @@ impl Coordinator {
                 }
             }
         }
-        Coordinator::start_with(&dir, listener, me, app, Mode::Viewer)
+        Coordinator::start_with(&dir, listeners, me, app, Mode::Viewer)
     }
 
     /// Starts answering on `port`, keeping its state in `dir`; `app`: the app this Mac's agent
     /// runs, the one an agent asking for work must run too.
     pub fn start(dir: &Path, port: u16, me: &str, app: &str) -> Result<Coordinator> {
-        // (Listening first: a port in use writes nothing of its state. A coordinator this process
-        // stopped has let its port go as its `stop` returned; another process's is no reason to
-        // wait, and isn't waited for.)
-        let listener = anyhow::Context::with_context(store::spawn::listen((crate::coord::LISTEN, port)), || {
-            format!("listen on port {port}")
-        })?;
-        Coordinator::start_on(dir, listener, me, app)
+        // (Listening first: a port in use writes nothing of its state. One a coordinator of this
+        // process answered on is taken over as it stopped, `listeners_on`; another process's is
+        // no reason to wait, and isn't waited for.)
+        let listeners = anyhow::Context::with_context(listeners_on(port), || format!("listen on port {port}"))?;
+        Coordinator::start_on(dir, listeners, me, app)
     }
 
     /// The loopback address beside a wildcard `listener`, on its port: its jobs' address
@@ -1207,6 +1254,15 @@ impl Coordinator {
                     return Ok(Some(l));
                 }
                 Err(e) if !said => {
+                    // (A test's doesn't wait: one beside it holding the port would leave it
+                    // waiting for good, #914.)
+                    #[cfg(test)]
+                    if !LOOPBACK_WAITS.with(|w| w.get()) {
+                        anyhow::bail!(
+                            "127.0.0.1:{} is another process's ({e}): a test's coordinator doesn't wait for it",
+                            at.port()
+                        );
+                    }
                     eprintln!(
                         "coordinator: 127.0.0.1:{p} is another process's ({e}; lsof -nP -iTCP:{p} -sTCP:LISTEN): \
                          this Mac's jobs would reach it, not this coordinator; waiting for it to be free",
@@ -1223,10 +1279,10 @@ impl Coordinator {
         }
     }
 
-    /// `start`, answering on `listener`, already listening (a test's, on a port it held from the
+    /// `start`, answering on `listeners`, already listening (a test's, on a port it held from the
     /// start: no other can take it between).
-    pub fn start_on(dir: &Path, listener: std::net::TcpListener, me: &str, app: &str) -> Result<Coordinator> {
-        let c = Coordinator::start_with(dir, listener, me, app, Mode::Lead)?;
+    pub fn start_on(dir: &Path, listeners: impl Into<Listeners>, me: &str, app: &str) -> Result<Coordinator> {
+        let c = Coordinator::start_with(dir, listeners.into(), me, app, Mode::Lead)?;
         c.open_store()?;
         Ok(c)
     }
@@ -1234,10 +1290,14 @@ impl Coordinator {
     /// `start_on`, a member's broker (`Broker`) or a viewer alone (`viewer`): a coordinator on a
     /// wildcard `listener` answers the same on 127.0.0.1 beside it (`loopback_beside`), its jobs'
     /// address.
-    fn start_with(dir: &Path, listener: std::net::TcpListener, me: &str, app: &str, mode: Mode) -> Result<Coordinator> {
+    fn start_with(dir: &Path, listeners: Listeners, me: &str, app: &str, mode: Mode) -> Result<Coordinator> {
         let viewer = mode == Mode::Viewer;
+        let Listeners { listener, loopback } = listeners;
         let port = listener.local_addr()?.port();
-        let loopback = if viewer { None } else { Self::loopback_beside(&listener)? };
+        let loopback = match loopback {
+            None if !viewer => Self::loopback_beside(&listener)?,
+            l => l,
+        };
         if viewer {
             std::fs::create_dir_all(dir)?;
         } else {
@@ -1441,9 +1501,9 @@ impl Coordinator {
         s.leases.all(now).len()
     }
 
-    /// Stops answering (this process no longer leads): its listener closed and its runtime shut down,
-    /// its port free for the next coordinator once this returns (its thread says so, `closed`: no
-    /// clock decides it), whatever a blocking task of it waits on. Its state stays on disk, as the
+    /// Stops answering (this process no longer leads): its runtime shut down, its listeners kept
+    /// for the next coordinator of this process on its port once this returns (`KEPT`; its thread
+    /// says so, `closed`: no clock decides it), whatever a blocking task of it waits on. Its state stays on disk, as the
     /// requests under way left it: the JSON routes under way are let finish (local and short: the
     /// state's lock and its files), and none starts after, so no JSON route writes once this
     /// returns (an upload's rename already under way, `/work/out`, may still land).
@@ -4804,16 +4864,25 @@ mod http {
             .enable_all()
             .build()?;
         std::thread::Builder::new().name("coordinator".into()).spawn(move || {
-            rt.block_on(async move {
+            let kept = rt.block_on(async move {
                 match (crate::net::Listener::new(listener), loopback.map(crate::net::Listener::new).transpose()) {
-                    (Ok(l), Ok(lo)) => accept(l, lo, app, stopped, wake).await,
-                    (Err(e), _) | (_, Err(e)) => eprintln!("coordinator: its socket: {e}"),
+                    (Ok(l), Ok(lo)) => {
+                        let (l, lo) = accept(l, lo, app, stopped, wake).await;
+                        Some(super::Listeners { listener: l.into_std(), loopback: lo.map(|l| l.into_std()) })
+                    }
+                    (Err(e), _) | (_, Err(e)) => {
+                        eprintln!("coordinator: its socket: {e}");
+                        None
+                    }
                 }
             });
-            // (Its listener and every connection's socket closed by `accept` as it returned; its
-            // runtime shut down without waiting for its blocking tasks (a stat of a NAS that
-            // doesn't answer may never return), which hold no socket: nothing of it holds the port.)
+            // (Every connection's socket closed by `accept` as it returned; its runtime shut down
+            // without waiting for its blocking tasks (a stat of a NAS that doesn't answer may never
+            // return), which hold no socket; its listeners kept for the next on its port.)
             rt.shutdown_background();
+            if let Some(l) = kept {
+                super::keep_listeners(l);
+            }
             closed.send(()).ok();
         })?;
         Ok(urls(port))
@@ -4849,14 +4918,15 @@ mod http {
     /// Takes connections, on `listener` and its `loopback` beside it when it has one: one from
     /// elsewhere, or past the cap, is closed before a byte is read;
     /// each is kept alive by TCP (a device gone without a word is noticed), its headers bounded in
-    /// time (which closes idle ones too), and its whole life bounded.
+    /// time (which closes idle ones too), and its whole life bounded. Stopped: its listeners
+    /// handed back.
     async fn accept(
         listener: crate::net::Listener,
         loopback: Option<crate::net::Listener>,
         app: Router,
         stopped: Arc<std::sync::atomic::AtomicBool>,
         wake: Arc<tokio::sync::Notify>,
-    ) {
+    ) -> (crate::net::Listener, Option<crate::net::Listener>) {
         use tower::ServiceExt;
         let room = Arc::new(tokio::sync::Semaphore::new(CONNECTIONS));
         // (Its connections: each ended, its socket closed, before a stop returns.)
@@ -4864,13 +4934,12 @@ mod http {
         let (end, ending) = tokio::sync::watch::channel(false);
         loop {
             // (Stopped: every connection told to end, its socket closed at once (reset, not left
-            // closing), and waited for, whatever its handler waits on; then the listener closed.
-            // No socket of it is left holding the port once `stop` returns: a connection still
-            // open would refuse the next coordinator's listen on it, EADDRINUSE.)
+            // closing), and waited for, whatever its handler waits on; then the listeners handed
+            // back. No connection of it is left once `stop` returns.)
             if stopped.load(std::sync::atomic::Ordering::Relaxed) {
                 end.send(true).ok();
                 while conns.join_next().await.is_some() {}
-                return;
+                return (listener, loopback);
             }
             while conns.try_join_next().is_some() {}
             let got = tokio::select! {
@@ -5376,25 +5445,19 @@ mod http {
 }
 
 /// A port for a test's coordinator that no other test in this process has been given (the system's
-/// pick, once): one a stopped coordinator let go is never handed to another test meanwhile, so a
-/// test that checks its port is free finds it so.
+/// pick, once), its listener kept open (`KEPT`) for the coordinator, broker or viewer the test
+/// starts on it (`listeners_on`): no other process can take it between, for the process's life.
 #[cfg(test)]
 pub(crate) fn test_port() -> u16 {
     let (l, port) = test_listener();
-    HELD.lock().unwrap().insert(port, l);
+    keep_listeners(l.into());
     port
 }
 
-/// The ports `test_port` gave, each still held open (its listener), for the coordinator a test
-/// starts on it to take (`take_test_listener`): no other process can take one between.
+/// Whether this process keeps listeners for `port` (`KEPT`), none of its coordinators on it now.
 #[cfg(test)]
-static HELD: std::sync::Mutex<BTreeMap<u16, std::net::TcpListener>> = std::sync::Mutex::new(BTreeMap::new());
-
-/// The listener `test_port` holds for `port`, when it holds one (a coordinator starting on it takes
-/// it, rather than listen on the port again).
-#[cfg(test)]
-pub(crate) fn take_test_listener(port: u16) -> Option<std::net::TcpListener> {
-    HELD.lock().unwrap().remove(&port)
+pub(crate) fn port_kept(port: u16) -> bool {
+    KEPT.lock().unwrap().contains_key(&port)
 }
 
 /// Whether nothing listens on `port`: listened on here, at once let go (std sets SO_REUSEADDR, so
@@ -5816,7 +5879,7 @@ mod tests {
     }
 
     /// A stop returns whatever a blocking task of the coordinator waits on (a stat of a NAS that
-    /// doesn't answer, here one that never returns), its listener closed: no clock decides it.
+    /// doesn't answer, here one that never returns), its listener kept: no clock decides it.
     #[test]
     fn a_stop_returns_while_a_blocking_task_never_does() {
         let d = tempfile::tempdir().unwrap();
@@ -5828,7 +5891,7 @@ mod tests {
         // (Its blocking task under way, for good; a request that never reached it fails here.)
         rx.recv_timeout(WATCHDOG).expect("the request reached its handler");
         c.stop();
-        crate::coord::port_free(port).unwrap_or_else(|e| panic!("its listener closed: {e}"));
+        assert!(port_kept(port), "its listener kept for the next");
         // (The request's connection ended with the runtime: it fails, it doesn't hang.)
         assert!(asked.join().unwrap());
     }
@@ -5836,16 +5899,19 @@ mod tests {
     use store::testkit::WATCHDOG;
 
     /// The next coordinator, this process's (a member that takes the lead again), starts on the port
-    /// a stopped one let go, a request answered by it before: `stop` returns once the port is free,
-    /// no wait and no retry. It answers there, the state the first left loaded.
+    /// a stopped one answered on, a request answered by it before: it takes the listener the first
+    /// kept (no other process could take the port between), no wait and no retry. It answers
+    /// there, the state the first left loaded.
     #[test]
-    fn the_next_coordinator_starts_on_the_port_a_stopped_one_let_go() {
+    fn the_next_coordinator_starts_on_the_port_a_stopped_one_answered_on() {
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().join("a");
         let (c, port) = start_for_test(&dir, "m4", "");
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         w.ask(&ask(4096)).unwrap();
         c.stop();
+        // (Held meanwhile: another process's listen there is refused.)
+        assert_eq!(port_free(port).unwrap_err().kind(), std::io::ErrorKind::AddrInUse);
         let next = Coordinator::start(&dir, port, "m4", "").unwrap();
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], next.contact.token.clone(), "m1");
         w.ask(&ask(4096)).unwrap();
@@ -10007,10 +10073,29 @@ mod tests {
         let job = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.job_token.clone(), "job");
         assert_eq!(job.post_json("/task/workers", &serde_json::json!({ "kind": "tail" })).unwrap().0, 200);
         c.stop();
-        // (Both let go as it stops: the next coordinator listens on the port again.)
-        let again = store::spawn::listen(("0.0.0.0", port)).unwrap();
-        port_free(port).unwrap();
-        store::spawn::sockets(|| drop(again));
+        // (Both kept as it stops, held still: the next coordinator of this process takes both.)
+        assert_eq!(port_free(port).unwrap_err().kind(), std::io::ErrorKind::AddrInUse);
+        let next = Coordinator::start(&d.path().join("next"), port, "m4", "").unwrap();
+        let job = client::Client::at(vec![format!("http://127.0.0.1:{port}")], next.job_token.clone(), "job");
+        assert_eq!(job.post_json("/task/workers", &serde_json::json!({ "kind": "tail" })).unwrap().0, 200);
+        next.stop();
+    }
+
+    /// A test's coordinator whose jobs' loopback address is another process's (a test's running
+    /// beside) fails at once, never waiting (#914); a test listening anew on a port this process
+    /// kept no listener of is refused at once too.
+    #[test]
+    fn a_test_s_coordinator_never_waits_for_a_port() {
+        let d = tempfile::tempdir().unwrap();
+        let other = store::spawn::listen(("127.0.0.1", 0)).unwrap();
+        let port = other.local_addr().unwrap().port();
+        let l = store::spawn::listen(("0.0.0.0", port)).unwrap();
+        let e = Coordinator::start_on(&d.path().join("coord"), l, "m4", "").err().expect("refused");
+        assert!(format!("{e:#}").contains("doesn't wait"), "{e:#}");
+        // (Its port no longer this process's: a test listening there anew is refused.)
+        let refused = std::panic::catch_unwind(|| listeners_on(port).map(drop));
+        assert!(refused.is_err(), "listened anew on {port}");
+        store::spawn::sockets(|| drop(other));
     }
 
     /// Its jobs' loopback address another process's: the coordinator waits, never serving beside
@@ -10018,6 +10103,7 @@ mod tests {
     #[test]
     fn a_coordinator_whose_loopback_is_taken_starts_once_it_is_free() {
         use std::sync::atomic::{AtomicBool, Ordering};
+        LOOPBACK_WAITS.with(|w| w.set(true));
         let d = tempfile::tempdir().unwrap();
         let other = store::spawn::listen(("127.0.0.1", 0)).unwrap();
         let port = other.local_addr().unwrap().port();

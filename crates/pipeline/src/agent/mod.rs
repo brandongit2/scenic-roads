@@ -1349,25 +1349,18 @@ pub(crate) fn stopping() -> bool {
 }
 
 /// The coordinator's port: `crate::coord::PORT`, or another for a test agent beside the real one
-/// (`SCENIC_COORD_PORT`; a unit test's own, `TEST_PORT`, else any free port).
+/// (`SCENIC_COORD_PORT`). A unit test's agent: one of its own (crate::coord::test_port): never the
+/// pool's (#906), nor another agent's of the test (a lead and a member in one process once shared
+/// one, #914: the member's viewer could take the lead's port as its coordinator stopped).
 fn coord_port() -> u16 {
     #[cfg(test)]
-    if let Some(p) = TEST_PORT.with(|p| p.get()) {
-        return p;
-    }
-    // (A unit test without one of its own: any free port, never the pool's. Its 127.0.0.1:8090
-    // beside a running agent's wildcard listener took that lead's jobs' requests, #906.)
-    #[cfg(test)]
-    return 0;
+    return crate::coord::test_port();
     #[cfg(not(test))]
     std::env::var("SCENIC_COORD_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(crate::coord::PORT)
 }
 
 #[cfg(test)]
 thread_local! {
-    static TEST_PORT: std::cell::Cell<Option<u16>> = const { std::cell::Cell::new(None) };
-    /// A member's broker's port, beside its lead's coordinator in the same process (`broker_port`).
-    static TEST_BROKER_PORT: std::cell::Cell<Option<u16>> = const { std::cell::Cell::new(None) };
     /// What `find_root` finds in a test: nothing unless a test sets it (never the real NAS).
     static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
@@ -1505,6 +1498,9 @@ pub struct Agent {
     /// The port the proxy listened on for the jobs this agent took over (`adopt_jobs`): its own
     /// listens there again, so they reach it (their sandbox lets them out only through it).
     proxy_port: Option<u16>,
+    /// This Mac's coordinator port (`coord_port`, as it started): its coordinator's, broker's or
+    /// viewer's.
+    port: u16,
     /// Resuming, and planning from the records alone (docs/pool.md §7.2, §7.4; crate::agent::resume,
     /// `state/pool/resume`), in the pool: a resumable job's progress named on the NAS and offered to
     /// its Mac alone, its job given this member's unmerged hand-offs, a pass complete by the records.
@@ -1873,8 +1869,9 @@ impl Agent {
         // The lead's agent coordinates (not a member's, nor a dry run's, nor a process not in the
         // pool), with a root of its own too (a test's, on a port of its own, SCENIC_COORD_PORT).
         let pooled = run.is_some();
+        let port = coord_port();
         let coord = if role == Role::Lead && lock.is_some() && !o.dry_run && pooled {
-            make_coordinator(&o, run.as_ref(), &app, &store::sys::host_name()).map(std::sync::Arc::new)
+            make_coordinator_on(&o, run.as_ref(), &app, &store::sys::host_name(), port).map(std::sync::Arc::new)
         } else {
             None
         };
@@ -1956,6 +1953,7 @@ impl Agent {
             ask_spare_mb: None,
             proxy: early_proxy,
             proxy_port: None,
+            port,
             resume: false,
             placement: false,
             brokers: false,
@@ -7407,7 +7405,7 @@ impl Agent {
             self.stop_viewer();
             let tried = match self.pool.as_ref().map(pool::try_lock) {
                 Some(Some(run)) => Some(
-                    make_broker(&self.o, &run, &self.app, &self.host)
+                    make_broker(&self.o, &run, &self.app, &self.host, self.port)
                         .inspect(|b| b.set_member(Some(&run.side.member().id))),
                 ),
                 _ => None,
@@ -7600,7 +7598,7 @@ impl Agent {
             && self.pool.is_some()
             && brokers::stale(self.viewer_failed, now, brokers::HTTPS_EVERY)
         {
-            match make_viewer(&self.app, &self.host) {
+            match make_viewer(self.port, &self.app, &self.host) {
                 Some(v) => {
                     eprintln!("agent: this Mac's port shows the lead's build page at {}", v.contact.urls.join(", "));
                     self.viewer = Some(std::sync::Arc::new(v));
@@ -8945,85 +8943,80 @@ fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
 }
 
 /// The lead's coordinator for an agent of options `o` on app `app`, on Mac `host` (its own jobs'
-/// leases held under its name), the pool's `run` when it's on
-/// (its token copied from the pool first: the same on every lead); None when it can't start (this
-/// Mac then builds alone, or, a member that took the lead in its process, restarts into it).
-fn make_coordinator(o: &Options, run: Option<&pool::Run>, app: &str, host: &str) -> Option<crate::coord::Coordinator> {
-    let port = coord_port();
+/// leases held under its name), on `port` (its Mac's coordinator port, `coord_port`), the
+/// pool's `run` when it's on (its token copied from the pool first: the same on every lead); None
+/// when it can't start (this Mac then builds alone, or, a member that took the lead in its
+/// process, restarts into it).
+fn make_coordinator_on(
+    o: &Options,
+    run: Option<&pool::Run>,
+    app: &str,
+    host: &str,
+    port: u16,
+) -> Option<crate::coord::Coordinator> {
     if let Some(r) = run {
         if let Err(e) = pool::seed(r.side.nas(), &o.home.join("coord")) {
             eprintln!("agent: the pool's token: {e:#}");
         }
     }
-    // (A test's port, held open by it from the start: no other process can take it between.)
-    #[cfg(test)]
-    let held = crate::coord::take_test_listener(port);
-    #[cfg(not(test))]
-    let held: Option<std::net::TcpListener> = None;
-    let started = match held {
-        Some(l) => crate::coord::Coordinator::start_on(&o.home.join("coord"), l, host, app),
-        None => crate::coord::Coordinator::start(&o.home.join("coord"), port, host, app),
-    };
-    match started {
+    // (On the listeners this process kept for the port, a test's from the start: no other process
+    // can take it between.)
+    match crate::coord::Coordinator::start(&o.home.join("coord"), port, host, app) {
         Ok(c) => {
             eprintln!("agent: coordinating at {}", c.contact.urls.join(", "));
             Some(c)
         }
         Err(e) => {
-            eprintln!("agent: no coordinator ({e:#})");
-            None
+            // (A test's would be waited on until its watchdog: it fails at once, #914.)
+            #[cfg(test)]
+            panic!("agent: no coordinator ({e:#})");
+            #[cfg(not(test))]
+            {
+                eprintln!("agent: no coordinator ({e:#})");
+                None
+            }
         }
     }
 }
 
-/// A member's broker (crate::coord::Broker) on `broker_port`, in the coordinator's folder, its
-/// token the pool's (copied first, as the lead's coordinator's); None when it can't start.
-fn make_broker(o: &Options, run: &pool::Run, app: &str, host: &str) -> Option<crate::coord::Broker> {
+/// A member's broker (crate::coord::Broker) on `port` (this Mac's coordinator port: one of them
+/// runs at a time, docs/pool.md §8), in the coordinator's folder, its token the pool's (copied
+/// first, as the lead's coordinator's); None when it can't start.
+fn make_broker(o: &Options, run: &pool::Run, app: &str, host: &str, port: u16) -> Option<crate::coord::Broker> {
     if let Err(e) = pool::seed(run.side.nas(), &o.home.join("coord")) {
         eprintln!("agent: the pool's token: {e:#}");
     }
-    let port = broker_port();
-    #[cfg(test)]
-    let held = crate::coord::take_test_listener(port);
-    #[cfg(not(test))]
-    let held: Option<std::net::TcpListener> = None;
-    let started = match held {
-        Some(l) => crate::coord::Broker::start_on(&o.home.join("coord"), l, host, app),
-        None => crate::coord::Broker::start(&o.home.join("coord"), port, host, app),
-    };
-    started.map_err(|e| eprintln!("agent: no broker ({e:#})")).ok()
-}
-
-/// A viewer alone on this Mac's coordinator port (crate::coord::Coordinator::viewer): a member's
-/// port with no broker, the lead's page sent there; None when it can't listen.
-fn make_viewer(app: &str, host: &str) -> Option<crate::coord::Coordinator> {
-    let port = coord_port();
-    #[cfg(test)]
-    let held = crate::coord::take_test_listener(port);
-    #[cfg(not(test))]
-    let held: Option<std::net::TcpListener> = None;
-    let l = match held {
-        Some(l) => Ok(l),
-        None => store::spawn::listen((crate::coord::LISTEN, port)),
-    };
-    match l.map_err(anyhow::Error::from).and_then(|l| crate::coord::Coordinator::viewer(l, host, app)) {
-        Ok(v) => Some(v),
+    match crate::coord::Broker::start(&o.home.join("coord"), port, host, app) {
+        Ok(b) => Some(b),
         Err(e) => {
-            eprintln!("agent: no viewer on port {port} ({e:#})");
-            None
+            // (A test's would be waited on until its watchdog: it fails at once, #914.)
+            #[cfg(test)]
+            panic!("agent: no broker ({e:#})");
+            #[cfg(not(test))]
+            {
+                eprintln!("agent: no broker ({e:#})");
+                None
+            }
         }
     }
 }
 
-/// The port a member's broker answers on (docs/pool.md §8): the coordinator's (one runs at a time
-/// on a Mac: the lead's, or a member's broker); a unit test's own (`TEST_BROKER_PORT`), beside
-/// its lead's in the same process.
-fn broker_port() -> u16 {
-    #[cfg(test)]
-    if let Some(p) = TEST_BROKER_PORT.with(|p| p.get()) {
-        return p;
+/// A viewer alone on this Mac's coordinator port `port` (crate::coord::Coordinator::viewer): a
+/// member's port with no broker, the lead's page sent there; None when it can't listen.
+fn make_viewer(port: u16, app: &str, host: &str) -> Option<crate::coord::Coordinator> {
+    let l = crate::coord::listeners_on(port).map_err(anyhow::Error::from);
+    match l.and_then(|l| crate::coord::Coordinator::viewer(l, host, app)) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            #[cfg(test)]
+            panic!("agent: no viewer on port {port} ({e:#})");
+            #[cfg(not(test))]
+            {
+                eprintln!("agent: no viewer on port {port} ({e:#})");
+                None
+            }
+        }
     }
-    coord_port()
 }
 
 /// A port's address over HTTPS, when `tailscale serve` proxies it (crate::net::served_https); none
@@ -14669,10 +14662,6 @@ mod pool_tests {
         std::fs::write(bin.join("scenic-build"), script).unwrap();
     }
 
-    fn free_port() -> u16 {
-        crate::coord::test_port()
-    }
-
     /// Loops `a` until `done` says so, at most a minute.
     /// Steps `a` until `done` (its jobs and listings run meanwhile, as long as a busy Mac takes:
     /// `WATCHDOG` is a watchdog, not a measure).
@@ -14730,7 +14719,6 @@ mod pool_tests {
 
     #[test]
     fn a_tick_that_never_returns_stops_the_leads_grants_and_says_so() {
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
@@ -14823,7 +14811,6 @@ mod pool_tests {
 
     #[test]
     fn the_lead_leads_and_hands_its_jobs_off() {
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
@@ -14901,7 +14888,6 @@ mod pool_tests {
     /// then comes off the records, saved so on the NAS.
     #[test]
     fn the_leads_raw_archives_named_come_off_its_saved_records() {
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
@@ -14962,7 +14948,6 @@ mod pool_tests {
     #[test]
     fn a_member_asks_the_lead_and_its_job_reaches_the_records_through_the_journal() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
@@ -15058,7 +15043,6 @@ mod pool_tests {
     #[test]
     fn every_step_a_member_takes_pack_and_its_entry_is_merged() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
@@ -15169,7 +15153,6 @@ mod pool_tests {
     #[test]
     fn placement_a_member_drawn_its_target_and_its_job_told_to_offer_ahead() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
@@ -15258,7 +15241,6 @@ mod pool_tests {
     #[test]
     fn an_osm_pass_stopped_on_a_member_is_resumed_there_alone_and_released_after_a_day() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let date = "2026-10-01";
@@ -15403,7 +15385,6 @@ mod pool_tests {
     #[test]
     fn a_member_on_another_app_than_the_leads_gets_nothing_until_they_run_the_same() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
@@ -15462,9 +15443,6 @@ mod pool_tests {
     #[test]
     fn brokers_a_members_task_is_taken_from_it() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
-        TEST_PORT.with(|p| p.set(Some(free_port())));
-        let bport = free_port();
-        TEST_BROKER_PORT.with(|p| p.set(Some(bport)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         switch_on(&r, brokers::SWITCH);
@@ -15493,6 +15471,7 @@ mod pool_tests {
             member: false,
         })
         .unwrap();
+        let bport = m.port;
         m.mac = MEMBER_MAC;
         m.round().unwrap();
         let (il, im) = (lead.pooled().unwrap().side.member().id.clone(), m.pooled().unwrap().side.member().id.clone());
@@ -15634,7 +15613,6 @@ mod pool_tests {
         assert_eq!(http_post(lport, "/work/swarm", &[("Origin", "http://m4.local:8090")], "{}").0, 403);
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
-        TEST_BROKER_PORT.with(|p| p.set(None));
     }
 
     /// A POST of JSON to this process's coordinator on `port`, as a page sends it: its status, its
@@ -15667,7 +15645,6 @@ mod pool_tests {
     /// declaration then read naming another member, it is a member, with no restart.
     #[test]
     fn an_unknown_role_starts_the_members_parts() {
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let root = store::nasfs::NasRoot::local_for_test(r.clone());
@@ -15702,7 +15679,6 @@ mod pool_tests {
     /// its process; started again, each has the parts of its new role.
     #[test]
     fn a_changed_declaration_restarts_into_the_new_role() {
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
@@ -15761,7 +15737,6 @@ mod pool_tests {
         }
         drop(lead);
         drop(m);
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let mut lead = test_agent(o("m")).unwrap();
         let mut m = test_agent(o("l")).unwrap();
         assert_eq!((lead.role, m.role), (Role::Lead, Role::Member));
@@ -15782,7 +15757,6 @@ mod pool_tests {
     /// starts; its status carries none of the build's regions or checklist.
     #[test]
     fn a_member_never_counts_the_regions() {
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
@@ -15823,7 +15797,6 @@ mod pool_tests {
     /// on and never call for one (no checklist, no counts).
     #[test]
     fn a_members_round_never_waits_on_the_records_brief() {
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
@@ -15860,7 +15833,6 @@ mod pool_tests {
     /// its coordinator didn't start): it restarts at once.
     #[test]
     fn a_term_without_a_coordinator_restarts_at_once() {
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
@@ -15930,7 +15902,6 @@ mod pool_tests {
     /// The declared lead that loses its term: its duties stopped, and it restarts at once.
     #[test]
     fn a_lead_that_loses_its_term_stops_its_duties_and_restarts() {
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
@@ -15967,7 +15938,6 @@ mod pool_tests {
     #[test]
     fn a_catalogue_the_lead_publishes_is_its_map_log_s_in_shadow() {
         // (docs/maplog.md §8, step 2: the catalog job's end, as the loop tends it.)
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let root = store::nasfs::NasRoot::local_for_test(r.clone());
@@ -16014,16 +15984,37 @@ mod pool_tests {
         assert_eq!(*lead.planner().map_now(&root).unwrap(), c);
     }
 
+    /// Two agents' tests at once, each turning its viewer into a coordinator and back on its own
+    /// port, while another test (here, this thread) listens on their ports: never had, so neither
+    /// finds its port taken (#914: a viewer let go of its port, another test's took it, and the
+    /// coordinator after it never started, the test waiting out its watchdog).
     #[test]
-    fn a_coordinator_stopped_frees_its_port() {
-        let d = tempfile::tempdir().unwrap();
-        let (c, port) = crate::coord::start_for_test(&d.path().join("a"), "m4", "");
-        assert!(crate::coord::port_free(port).is_err(), "it listens");
-        c.stop();
-        drop(c);
-        // (Its listener closed as its stop returned, however loaded the Mac: the port can be
-        // listened on again.)
-        crate::coord::port_free(port).unwrap_or_else(|e| panic!("its listener closed: {e}"));
+    fn two_agents_turning_viewer_to_coordinator_at_once_keep_their_ports() {
+        let ports = [crate::coord::test_port(), crate::coord::test_port()];
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let agents: Vec<_> = ports
+            .into_iter()
+            .map(|port| {
+                let done = done.clone();
+                std::thread::spawn(move || {
+                    let d = tempfile::tempdir().unwrap();
+                    for _ in 0..20 {
+                        make_viewer(port, "", "m4").unwrap().stop();
+                        crate::coord::Coordinator::start(&d.path().join("coord"), port, "m4", "").unwrap().stop();
+                    }
+                    done.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                })
+            })
+            .collect();
+        while done.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            for port in ports {
+                let e = crate::coord::port_free(port).unwrap_err();
+                assert_eq!(e.kind(), std::io::ErrorKind::AddrInUse, "{port}: {e}");
+            }
+        }
+        for a in agents {
+            a.join().unwrap();
+        }
     }
 
     #[test]
@@ -16031,7 +16022,6 @@ mod pool_tests {
         // (Task #497) A newer app waits on the lead's own job, a member already on it: the lead
         // keeps the lead; it restarts at a safe point like any member.
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         // Two published apps; the member runs the newer, which this Mac has installed (`current`)
@@ -16099,7 +16089,6 @@ mod pool_tests {
         // (Task #194: Scenic quit on the lead's Mac. Since #881 the lead is fixed: it hands nothing
         // over; the build waits for it, the members finishing their jobs.)
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let made = app(d.path());
@@ -16146,7 +16135,6 @@ mod pool_tests {
         // jobs stop; it keeps the lead and goes on granting the members' work; it goes on once
         // resumed.)
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let made = app(d.path());
@@ -16342,7 +16330,6 @@ mod pool_tests {
     #[test]
     fn a_local_resume_wins_over_a_future_dated_pause_and_a_busy_pool_step_never_spins_the_loop() {
         // (Task #224 review.)
-        TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());

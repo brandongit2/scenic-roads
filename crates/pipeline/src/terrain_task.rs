@@ -1215,7 +1215,7 @@ mod tests {
     /// again in a scratch root over the NAS (`TT_ROOT`: its terrain hi packs' and mids' folders its
     /// own, the rest read only; `TT_SCRATCH`, `TT_RAW` the raw tiles' cache), expecting the same as
     /// the manifest has them (hi pack and mid), some of each z6 tile's subtrees made by another worker
-    /// through a coordinator listening on `TT_PORT`: a thread running each task as `scenic run-task`
+    /// through a coordinator listening on a port of its own: a thread running each task as `scenic run-task`
     /// does (the programs in `TT_BIN`). Its results are taken (the worker's pace set so: this is
     /// the exchange, not the waiting rule). Each group's worker, time and peak memory said.
     #[test]
@@ -1223,7 +1223,6 @@ mod tests {
     fn live_pieces_with_a_worker() {
         let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} isn't set"));
         let (root, scratch) = (PathBuf::from(env("TT_ROOT")), PathBuf::from(env("TT_SCRATCH")));
-        let port: u16 = env("TT_PORT").parse().unwrap();
         let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch.join("job")).unwrap();
         let cov = live_coverage(&out);
         let raw = RawTiles::with_store(
@@ -1234,7 +1233,7 @@ mod tests {
         );
         let water = crate::terrain_pack::open_water(&out).unwrap();
         let src = Sources { water: Some(&water), deeper: None };
-        let c = crate::coord::Coordinator::start(&scratch.join("coord"), port, "m4", "").unwrap();
+        let (c, port) = crate::coord::start_for_test(&scratch.join("coord"), "m4", "");
         let url = format!("http://127.0.0.1:{port}");
         let off = Offload::at(url.clone(), c.job_token.clone(), &scratch.join("offload"))
             .waiting(crate::offload::Waiting::UntilDone);

@@ -24,15 +24,14 @@ pub struct Broker {
 impl Broker {
     /// Starts answering on `port`, its state in `dir` (the coordinator's); `me`: this Mac's name.
     pub fn start(dir: &Path, port: u16, me: &str, app: &str) -> Result<Broker> {
-        let listener = anyhow::Context::with_context(store::spawn::listen((super::LISTEN, port)), || {
-            format!("listen on port {port}")
-        })?;
-        Broker::start_on(dir, listener, me, app)
+        let listeners =
+            anyhow::Context::with_context(super::listeners_on(port), || format!("listen on port {port}"))?;
+        Broker::start_on(dir, listeners, me, app)
     }
 
-    /// `start`, answering on `listener`, already listening.
-    pub fn start_on(dir: &Path, listener: std::net::TcpListener, me: &str, app: &str) -> Result<Broker> {
-        Ok(Broker { c: Arc::new(Coordinator::start_with(dir, listener, me, app, Mode::Broker)?) })
+    /// `start`, answering on `listeners`, already listening.
+    pub fn start_on(dir: &Path, listeners: impl Into<super::Listeners>, me: &str, app: &str) -> Result<Broker> {
+        Ok(Broker { c: Arc::new(Coordinator::start_with(dir, listeners.into(), me, app, Mode::Broker)?) })
     }
 
     /// Its addresses and token (its jobs' token is `job_token`).

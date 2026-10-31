@@ -339,6 +339,11 @@ impl Listener {
     pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
         self.0.as_ref().expect("open until dropped").get_ref().local_addr()
     }
+
+    /// The listener itself, still open, taken off its runtime (on that runtime's thread).
+    pub fn into_std(mut self) -> std::net::TcpListener {
+        self.0.take().expect("open until dropped").into_inner()
+    }
 }
 
 impl Drop for Listener {
