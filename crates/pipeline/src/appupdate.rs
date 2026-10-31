@@ -322,8 +322,7 @@ mod tests {
         // older server): a copy of `sleep` run from its folder.
         std::fs::copy("/bin/sleep", app.join("20261001-0000-aaaaaaa/server")).unwrap();
         let mut child =
-            store::spawn::spawn(std::process::Command::new(app.join("20261001-0000-aaaaaaa/server")).arg("30"))
-                .unwrap();
+            store::spawn::spawn(store::spawn::command(app.join("20261001-0000-aaaaaaa/server")).arg("30")).unwrap();
         store::testkit::eventually("the copy runs", || {
             running_versions(&app) == vec!["20261001-0000-aaaaaaa".to_string()]
         });
