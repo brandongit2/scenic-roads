@@ -203,6 +203,8 @@ pub struct Handle {
     home: PathBuf,
     tx: Sender<In>,
     inline: Option<(Control, Receiver<In>)>,
+    /// The watcher's backstop (`SWEEP`; a test's never, so only an event takes an ask up).
+    sweep: Duration,
 }
 
 /// This Mac's hold set from another thread (**jobs**', taking a member's ask that names this Mac),
@@ -239,7 +241,7 @@ impl Handle {
             left: String::new(),
         };
         let (quit, settings, jobs) = (c.quit.clone(), c.settings.clone(), c.jobs.clone());
-        Handle { hold, quit, settings, jobs, woken, wake, home, tx, inline: Some((c, rx)) }
+        Handle { hold, quit, settings, jobs, woken, wake, home, tx, inline: Some((c, rx)), sweep: SWEEP }
     }
 
     /// Where another part wakes the loop's wait.
@@ -258,6 +260,12 @@ impl Handle {
         if let Some((c, _)) = &mut self.inline {
             c.jobs_part = Some(jobs);
         }
+    }
+
+    /// No sweep (before `spawn`): what's taken up was the watcher's event's, however long it took.
+    #[cfg(test)]
+    pub fn never_sweep(&mut self) {
+        self.sweep = Duration::from_secs(365 * 86_400);
     }
 
     /// Its thread, and the watcher's: from now each ask is taken up as it comes.
@@ -279,8 +287,8 @@ impl Handle {
             eprintln!("agent: control's thread: {e}");
             return;
         }
-        let (home, tx) = (self.home.clone(), self.tx.clone());
-        let watching = std::thread::Builder::new().name("control-watch".into()).spawn(move || watch(&home, &tx));
+        let (home, tx, sweep) = (self.home.clone(), self.tx.clone(), self.sweep);
+        let watching = std::thread::Builder::new().name("control-watch".into()).spawn(move || watch(&home, &tx, sweep));
         if let Err(e) = watching {
             eprintln!("agent: control's watcher: {e}");
         }
@@ -311,8 +319,8 @@ impl Drop for Handle {
 }
 
 /// The folder `home` (and its cancels' folder) watched: a look asked at each change, and every
-/// `SWEEP` whatever; ends once control is gone.
-fn watch(home: &Path, tx: &Sender<In>) {
+/// `sweep` whatever; ends once control is gone.
+fn watch(home: &Path, tx: &Sender<In>, sweep: Duration) {
     let cancels = home.join(control::CANCEL_REQUESTS);
     // (A folder removed and made again, or swapped by a rename, leaves the old descriptors on a
     // vnode that says nothing more: watched anew once either folder isn't the one watched, the old
@@ -329,11 +337,11 @@ fn watch(home: &Path, tx: &Sender<In>) {
                 kq = Kqueue::on(&[home, &cancels]);
             }
             if let Some(k) = &kq {
-                k.wait(SWEEP);
+                k.wait(sweep);
                 continue;
             }
         }
-        std::thread::sleep(SWEEP);
+        std::thread::sleep(sweep);
     }
 }
 
@@ -548,14 +556,14 @@ mod tests {
             hold_at: 0,
             at: std::time::Instant::now(),
         });
+        // (No sweep, no beat on its timer: whatever is taken up, said and written was the watcher's
+        // event and control's telling, however long a loaded Mac took: #910.)
+        beat.never_tick();
         beat.spawn();
+        c.never_sweep();
         c.spawn();
         let said = || -> Status { serde_json::from_slice(&std::fs::read(&local).unwrap()).unwrap() };
-        let within = |what: &str, f: &dyn Fn() -> bool| {
-            let t = std::time::Instant::now();
-            store::testkit::eventually(what, f);
-            store::testkit::ended_before(t, Duration::from_secs(1), what);
-        };
+        let within = |what: &str, f: &dyn Fn() -> bool| store::testkit::eventually(what, f);
         // Another member's: the loop's, woken for it.
         while c.woken.try_recv().is_ok() {}
         control::request_hold(&home, Some("m4"), Some(Hold::new("scenic pause on m1"))).unwrap();
@@ -589,17 +597,11 @@ mod tests {
         let hold = Snap::new(HoldState::default());
         let (beat, _beats) = mpsc::channel();
         let mut c = Handle::new(home.clone(), hold, beat);
+        // (No sweep: each wake was the watcher's event's, however long it took: #910.)
+        c.never_sweep();
         c.spawn();
         let wait = |want: ControlMsg| {
-            let t = std::time::Instant::now();
-            loop {
-                let left = Duration::from_secs(1).saturating_sub(t.elapsed());
-                match c.woken.recv_timeout(left) {
-                    Ok(m) if m == want => return,
-                    Ok(_) => {}
-                    Err(_) => panic!("{want:?}: not within a second"),
-                }
-            }
+            store::testkit::wait_for(&format!("{want:?}"), || c.woken.try_recv().ok().filter(|m| *m == want))
         };
         control::request_quit(&home, control::QuitMode::Finish, "a test").unwrap();
         wait(ControlMsg::Quit);

@@ -473,72 +473,129 @@ mod tests {
         assert!(!child_holds(s.as_raw_fd()));
     }
 
-    /// A detached child holds no descriptor of this process's, close-on-exec or not: a pipe whose
-    /// write end is left open across exec (the worst case) still reads to its end once ours closes.
+    /// A detached child holds no descriptor of this process's, close-on-exec or not: a file left
+    /// open across exec (the worst case) isn't among its descriptors, which are its three alone.
+    /// (#910: read from the kernel, not a pipe's end awaited for 5 s; and a file, not a pipe, so a
+    /// child another test starts meanwhile, which takes it, holds no pipe.)
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_detached_child_holds_nothing() {
-        let mut fds = [0; 2];
-        // SAFETY: a new pipe, owned from here, neither end close-on-exec.
-        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-        let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-        let mut c = detached("/bin/sleep", &["30"]).unwrap();
-        drop(w);
-        let mut b = [0u8; 1];
-        let mut p = libc::pollfd { fd: r.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-        // SAFETY: one pollfd on a descriptor `r` owns; then a read into our buffer.
-        assert_eq!(unsafe { libc::poll(&mut p, 1, 5000) }, 1, "no end seen: the child holds the pipe");
-        assert_eq!(unsafe { libc::read(r.as_raw_fd(), b.as_mut_ptr().cast(), 1) }, 0);
+        let d = tempfile::tempdir().unwrap();
+        let p = std::ffi::CString::new(d.path().join("f").into_os_string().into_encoded_bytes()).unwrap();
+        // SAFETY: a valid C path; opened without close-on-exec, owned from here.
+        let f = unsafe { libc::open(p.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o600) };
+        assert!(f >= 0, "{}", io::Error::last_os_error());
+        let f = unsafe { OwnedFd::from_raw_fd(f) };
+        let mut c = detached("/bin/sleep", &["3600"]).unwrap();
+        let fds: Vec<i32> = fds_of(c.id()).iter().map(|x| x.proc_fd).collect();
+        assert_eq!(fds, [0, 1, 2], "beside its three: {}", f.as_raw_fd());
         assert!(!c.try_wait().unwrap());
         c.kill().unwrap();
         assert!(c.try_wait().unwrap());
     }
 
-    /// Task #900: children that outlive a read (here 1 s, as caffeinate outlives one) started by
-    /// other threads while one reads children's output (std's pipes, marked close-on-exec a call
-    /// after they're made) never hold that output's pipe: every read ends at once, never when a
-    /// holder ends. Both kinds: `spawn` with its streams null (six threads), and `detached` (one).
-    /// At most 40 children a thread (~280 at once, well under a user's process limit on a pool Mac);
-    /// 8 s, so that with the lock taken out of `spawn` a read waits out a holder (8 runs of 8 on a
-    /// loaded M4).
+    /// The kernel's handles of the pipe whose end `pid` has as `fd`: that end's and its peer's
+    /// (`struct pipe_fdinfo`, sys/proc_info.h: a 24-byte proc_fileinfo, then pipe_info's 136-byte
+    /// vinfo_stat and the two handles); None if `fd` isn't a pipe's.
+    /// A handle of 0 is an end closed.
+    #[cfg(target_os = "macos")]
+    fn pipe_of(pid: i32, fd: i32) -> Option<[u64; 2]> {
+        const PROC_PIDFDPIPEINFO: i32 = 6;
+        let mut b = [0u64; 23];
+        // SAFETY: a buffer of the size given, ours.
+        let n = unsafe { libc::proc_pidfdinfo(pid, fd, PROC_PIDFDPIPEINFO, b.as_mut_ptr().cast(), 184) };
+        (n == 184).then_some([b[20], b[21]])
+    }
+
+    /// `pid`'s descriptors, as the kernel lists them (`PROC_PIDLISTFDS`).
+    #[cfg(target_os = "macos")]
+    fn fds_of(pid: u32) -> Vec<libc::proc_fdinfo> {
+        let size = std::mem::size_of::<libc::proc_fdinfo>();
+        // SAFETY: plain integers; zeroed is a valid value.
+        let mut fds: Vec<libc::proc_fdinfo> = (0..256).map(|_| unsafe { std::mem::zeroed() }).collect();
+        // SAFETY: a buffer of the size given, ours.
+        let n = unsafe {
+            libc::proc_pidinfo(pid as i32, libc::PROC_PIDLISTFDS, 0, fds.as_mut_ptr().cast(), (fds.len() * size) as i32)
+        };
+        assert!(n > 0, "pid {pid}'s descriptors: {}", io::Error::last_os_error());
+        fds.truncate(n as usize / size);
+        fds
+    }
+
+    /// The pipes `pid` holds an end of (each `pipe_of`).
+    #[cfg(target_os = "macos")]
+    fn pipes_held(pid: u32) -> Vec<[u64; 2]> {
+        fds_of(pid)
+            .iter()
+            .filter(|f| f.proc_fdtype == libc::PROX_FDTYPE_PIPE as u32)
+            .filter_map(|f| pipe_of(pid as i32, f.proc_fd))
+            .collect()
+    }
+
+    /// Task #900: children that outlive a read (as caffeinate outlives one), started by other
+    /// threads while one reads children's output (std's pipes, marked close-on-exec a call after
+    /// they're made), never hold that output's pipe. Both kinds: `spawn` with its streams null (six
+    /// threads), and `detached` (one); at most 40 alive a thread (~280 at once, well under a user's
+    /// process limit on a pool Mac). #910: proven by what each child holds, not by how long a read
+    /// took: every child lives until its thread has listed its descriptors (the kernel's
+    /// `PROC_PIDLISTFDS`), then is killed, and none may hold an end of a pipe a read had. A child
+    /// that took one in the gap holds it until listed, so none is missed however loaded the Mac,
+    /// and nothing turns on time. With the lock taken out of `spawn` it fails (#910's runs).
+    #[cfg(target_os = "macos")]
     #[test]
     fn long_lived_children_never_hold_another_childs_pipe() {
+        use std::collections::{HashSet, VecDeque};
+        use std::os::fd::AsRawFd;
         use std::sync::atomic::{AtomicBool, Ordering};
-        use std::time::{Duration, Instant};
-        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        use std::sync::{Arc, Mutex};
+        type Kid = (u32, Box<dyn FnOnce()>);
+        let stop = Arc::new(AtomicBool::new(false));
+        let held: Arc<Mutex<Vec<[u64; 2]>>> = Arc::default();
         let starters: Vec<_> = (0..7)
             .map(|i| {
-                let stop = stop.clone();
+                let (stop, held) = (stop.clone(), held.clone());
                 std::thread::spawn(move || {
-                    let (mut kids, mut held) = (Vec::new(), Vec::new());
+                    // (Oldest first; each listed, then killed.)
+                    let mut kids: VecDeque<Kid> = VecDeque::new();
+                    let end = |(pid, kill): Kid| {
+                        held.lock().unwrap().extend(pipes_held(pid));
+                        kill();
+                    };
                     while !stop.load(Ordering::Relaxed) {
                         if i == 0 {
-                            kids.push(detached("/bin/sleep", &["1"]).unwrap());
+                            let mut k = detached("/bin/sleep", &["3600"]).unwrap();
+                            kids.push_back((k.id(), Box::new(move || drop(k.kill()))));
                         } else {
                             let mut c = command("/bin/sleep");
-                            c.arg("1").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-                            held.push(spawn(&mut c).unwrap());
+                            c.arg("3600").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+                            let mut h = spawn(&mut c).unwrap();
+                            kids.push_back((h.id(), Box::new(move || drop((h.kill(), h.wait())))));
                         }
-                        kids.retain_mut(|k| !k.try_wait().unwrap());
-                        held.retain_mut(|h| h.try_wait().unwrap().is_none());
-                        if kids.len() + held.len() >= 40 {
-                            std::thread::sleep(Duration::from_millis(1));
+                        if kids.len() >= 40 {
+                            end(kids.pop_front().unwrap());
                         }
                     }
-                    kids.iter_mut().for_each(|k| drop(k.kill()));
-                    held.iter_mut().for_each(|h| drop((h.kill(), h.wait())));
+                    kids.into_iter().for_each(end);
                 })
             })
             .collect();
-        let start = Instant::now();
-        let mut slowest = Duration::ZERO;
-        while start.elapsed() < Duration::from_secs(8) {
-            let t = Instant::now();
-            let o = output(command("/bin/echo").arg("x")).unwrap();
-            assert_eq!(o.stdout, b"x\n");
-            slowest = slowest.max(t.elapsed());
+        // (Reads as `output` makes them, each pipe named as it's made: a read a child held waits for
+        // that child's kill, which its thread's next turns bring.)
+        let me = std::process::id() as i32;
+        let mut ours = HashSet::new();
+        for _ in 0..1000 {
+            let mut c = command("/bin/echo");
+            c.arg("x").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            let c = spawn(&mut c).unwrap();
+            for fd in [c.stdout.as_ref().unwrap().as_raw_fd(), c.stderr.as_ref().unwrap().as_raw_fd()] {
+                ours.extend(pipe_of(me, fd).expect("a pipe").into_iter().filter(|&h| h != 0));
+            }
+            assert_eq!(c.wait_with_output().unwrap().stdout, b"x\n");
         }
         stop.store(true, Ordering::Relaxed);
         starters.into_iter().for_each(|t| t.join().unwrap());
-        assert!(slowest < Duration::from_millis(700), "a read took {slowest:?}: a long-lived child held its pipe");
+        let took: Vec<_> =
+            held.lock().unwrap().iter().filter(|p| p.iter().any(|h| ours.contains(h))).copied().collect();
+        assert!(took.is_empty(), "{} children held a read's pipe: {took:?}", took.len());
     }
 }

@@ -64,6 +64,8 @@ pub struct Beat {
     stuck_after: Duration,
     /// The lead's plan, when one runs here: a plan running long is a stuck loop too.
     plan: Option<PlanRunning>,
+    /// The timer's period (`EVERY`; a test's never, so what it says was told it).
+    every: Duration,
 }
 
 impl Beat {
@@ -138,8 +140,16 @@ impl Handle {
     pub fn new(home: PathBuf, hold: Arc<Snap<HoldState>>) -> Handle {
         let view = Snap::new(None);
         let (tx, rx) = mpsc::channel();
-        let beat =
-            Beat { home, view: view.clone(), hold, nas: None, failing: false, stuck_after: LOOP_STUCK, plan: None };
+        let beat = Beat {
+            home,
+            view: view.clone(),
+            hold,
+            nas: None,
+            failing: false,
+            stuck_after: LOOP_STUCK,
+            plan: None,
+            every: EVERY,
+        };
         Handle { view, tx, inline: Some((beat, rx)) }
     }
 
@@ -148,6 +158,14 @@ impl Handle {
     pub fn watch_plan(&mut self, f: PlanRunning) {
         if let Some((b, _)) = self.inline.as_mut() {
             b.plan = Some(f);
+        }
+    }
+
+    /// No timer (before `spawn`): it writes only when told a state changed.
+    #[cfg(test)]
+    pub fn never_tick(&mut self) {
+        if let Some((b, _)) = self.inline.as_mut() {
+            b.every = Duration::from_secs(365 * 86_400);
         }
     }
 
@@ -184,7 +202,8 @@ impl Handle {
             beat.nas = Some((mail, wake));
         }
         let spawned = std::thread::Builder::new().name("beat".into()).spawn(move || {
-            let mut next = Instant::now() + EVERY;
+            let every = beat.every;
+            let mut next = Instant::now() + every;
             loop {
                 match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
                     Ok(BeatMsg::Changed) => {
@@ -200,7 +219,7 @@ impl Handle {
                 beat.write();
                 // (Steady: a change's write doesn't move the timer.)
                 while next <= Instant::now() {
-                    next += EVERY;
+                    next += every;
                 }
             }
         });

@@ -57,6 +57,9 @@ const LOOPBACK_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub const LISTEN: &str = if cfg!(test) { "127.0.0.1" } else { "0.0.0.0" };
 /// How long a lease lasts without a heartbeat (workers beat every minute).
+/// How long `/work/hold` waits for this Mac's agent to answer (its control takes this Mac's own up
+/// at once) before it says "asked": another member's waits for the agent's next round.
+const HOLD_WAIT: Duration = Duration::from_secs(2);
 pub const TTL: Duration = Duration::from_secs(600);
 /// How long a worker counts as around after its last request.
 const AROUND: Duration = Duration::from_secs(120);
@@ -377,6 +380,9 @@ pub struct Shared {
     /// This Mac's agent's folder and the NAS's project folder (None: away), where the owner's
     /// settings lie (`/work/settings`, crate::agent::settings; `set_settings`). None: not said yet.
     pub settings: Option<(PathBuf, Option<store::nasfs::NasRoot>)>,
+    /// How long `/work/hold` waits for this Mac's agent to answer before it says "asked"
+    /// (`HOLD_WAIT`; a test's, long enough that only an answer ends it).
+    pub hold_wait: Duration,
     /// The build pages' asks to cancel a job or try a target again (`/work/act`), for this Mac's
     /// agent to act on, leading, or to pass on to the lead (crate::pool::driver::Act).
     pub page_acts: Vec<crate::pool::driver::Act>,
@@ -1358,6 +1364,7 @@ impl Coordinator {
             viewer,
             forward: None,
             settings: None,
+            hold_wait: HOLD_WAIT,
             page_acts: Vec::new(),
             retry_blocked: None,
             keep: Default::default(),
@@ -3632,12 +3639,16 @@ fn route(
             // `{"held": true | false}`, or another member's with `"member": <host or id>`. Asked of
             // this Mac's agent as `scenic pause --here` asks (its hold ask, the file an older CLI
             // writes too, which its control takes up the moment it lands), and answered as soon as
-            // it is: `{"ok": …, "said": …}`, within a second for this Mac's own; past 2 s,
+            // it is: `{"ok": …, "said": …}`, within a second for this Mac's own; past `HOLD_WAIT`,
             // `{"asked": true}` (another member's waits for the agent's next round).
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let held = b["held"].as_bool().ok_or_else(|| anyhow::anyhow!("held: true or false"))?;
             let member = b["member"].as_str().map(|m| plain(m, 100));
-            let Some((home, _)) = shared.lock().unwrap().settings.clone() else {
+            let (settings, wait) = {
+                let s = shared.lock().unwrap();
+                (s.settings.clone(), s.hold_wait)
+            };
+            let Some((home, _)) = settings else {
                 return Ok((
                     503,
                     serde_json::json!({ "error": "this Mac's agent hasn't said where its folder is yet" }),
@@ -3647,7 +3658,7 @@ fn route(
             let ask =
                 crate::control::request_hold(&home, member.as_deref(), held.then(|| crate::control::Hold::new(&by)))?;
             let t = Instant::now();
-            while t.elapsed() < Duration::from_secs(2) {
+            while t.elapsed() < wait {
                 if let Some(a) = crate::control::hold_answer(&home, &ask) {
                     return Ok((200, serde_json::json!({ "ok": a.ok, "said": a.said })));
                 }
@@ -9575,7 +9586,7 @@ mod tests {
     }
 
     /// Task #871 step 3: this Mac's pause from any device, through its agent's control (answered
-    /// once it takes it up, within a second), and the app's quit from this Mac alone.
+    /// once it takes it up, by its watcher's event), and the app's quit from this Mac alone.
     #[test]
     fn a_hold_is_answered_by_the_agents_control_and_a_quit_is_this_macs() {
         let (_d, c, w) = start();
@@ -9588,11 +9599,14 @@ mod tests {
         let hold = crate::agent::bus::Snap::new(crate::control::HoldState::default());
         let (beat, _beats) = std::sync::mpsc::channel();
         let mut control = crate::agent::asks::Handle::new(home.path().to_path_buf(), hold.clone(), beat);
+        // (Only an answer ends the request's wait, and only the watcher's event takes the ask up:
+        // no sweep comes in the watchdog's time. Answered at all is answered at once, however
+        // loaded the Mac: #910.)
+        c.shared.lock().unwrap().hold_wait = store::testkit::WATCHDOG;
+        control.never_sweep();
         control.spawn();
-        let t = Instant::now();
         let (code, _, b) = send(&addr, "POST", "/work/hold", None, &far, &held);
         assert_eq!((code, b["ok"].as_bool()), (200, Some(true)), "{b}");
-        store::testkit::ended_before(t, Duration::from_secs(1), "answered within a second");
         assert!(hold.get().held.as_ref().is_some_and(|h| h.by == "the build page (100.101.1.2)"));
         assert!(crate::control::read_hold(home.path()).held.is_some());
         let (code, _, b) = send(&addr, "POST", "/work/hold", None, &far, &serde_json::json!({ "held": false }));
