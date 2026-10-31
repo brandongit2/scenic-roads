@@ -38,7 +38,7 @@ pub mod maproutes;
 pub mod sched;
 pub mod task;
 
-pub use broker::Broker;
+pub use broker::{Broker, Brokering, Pages};
 
 use crate::agent::memguard::Floor;
 use crate::handoff::Handoff;
@@ -5939,7 +5939,7 @@ mod tests {
     fn start_broker() -> (tempfile::TempDir, Broker, client::Client) {
         let d = tempfile::tempdir().unwrap();
         let (c, port) = broker::start_for_test(&d.path().join("coord"), "m4", "");
-        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact().token.clone(), "m1");
         (d, c, w)
     }
 
@@ -10082,7 +10082,8 @@ mod tests {
         // (Task #409 review; #521: from any device) a broker (not the lead's: its agent passes them
         // on): a page's pause goes to its agent, from this Mac or another device; a retry that
         // can't reach the lead is answered so.
-        let (_d, c, w) = start_broker();
+        let (_d, b, w) = start_broker();
+        let c = &*b.c;
         let home = tempfile::tempdir().unwrap();
         c.set_forward(Some(home.path().to_path_buf()));
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
@@ -10530,7 +10531,8 @@ mod tests {
     /// why the note and no `ok: false`; one that failed stays "task-fail".
     #[test]
     fn a_task_given_back_is_not_a_failure() {
-        let (d, c, w) = start_broker();
+        let (d, b, w) = start_broker();
+        let c = &*b.c;
         let root = d.path().join("job");
         std::fs::create_dir_all(&root).unwrap();
         let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
@@ -10573,7 +10575,8 @@ mod tests {
 
     #[test]
     fn a_task_goes_out_and_comes_back() {
-        let (d, c, w) = start_broker();
+        let (d, b, w) = start_broker();
+        let c = &*b.c;
         let root = d.path().join("job");
         std::fs::create_dir_all(root.join("u")).unwrap();
         std::fs::write(root.join("u/in.bin"), b"input").unwrap();
@@ -11033,6 +11036,7 @@ mod tests {
         let (b, port) = broker::start_for_test(&dir, "m4", "");
         b.set_member(Some("m-m4"));
         // (None started: its phases are None from the start, not yet empty.)
+        let b = &*b.c;
         assert!(b.phase_times().is_none() && b.phase_shares().is_empty(), "no phase sharer");
         assert!(b.held("slope-hi").is_empty() && b.leases_out() == 0, "the term's job lease is the lead's");
         assert!(b.shared.lock().unwrap().keep.store().is_none(), "nothing kept in the pool's store");

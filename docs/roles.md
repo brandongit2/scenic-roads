@@ -96,8 +96,11 @@ coordinator's server and folder (one at a time on a Mac; the jobs' token kept th
 outlives a change of role), started as a broker: no phase sharer, nothing kept in the pool's store,
 no job lease (those of a term the Mac once led are left to the lead as it starts). Its answers say
 term 0 and its member, so a member still asking that Mac as the lead after a change of lead reads
-the contact again (an older member too: it compares the term). The page data it still serves goes
-with step 4. The lead's coordinator stays as it is.
+the contact again (an older member too: it compares the term). Its API is its own, not the
+coordinator's: its addresses and jobs' token, its member, its jobs' tasks closed and leases lapsed,
+its pause, placement and the members' brokers (`coord::Brokering` is what the run's steps tell,
+the lead's coordinator or a member's broker). The page data it still serves (`coord::Pages`, the
+same on the lead's coordinator and a viewer) goes with step 4. The lead's coordinator stays as it is.
 
 ### 3.3 The build page
 

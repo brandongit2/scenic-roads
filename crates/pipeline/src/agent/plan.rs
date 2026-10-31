@@ -68,7 +68,7 @@ pub(super) struct Inputs {
     pub resume_now: u64,
     pub ramp_held: bool,
     pub ramp_trouble: Option<String>,
-    pub broker: Option<std::sync::Arc<crate::coord::Coordinator>>,
+    pub broker: Option<crate::coord::Broker>,
     pub viewer: Option<std::sync::Arc<crate::coord::Coordinator>>,
     /// This Mac's coordinator as the round has it (made or stopped as its part changes).
     pub coord: Option<std::sync::Arc<crate::coord::Coordinator>>,
@@ -3141,8 +3141,11 @@ impl Planner {
             return;
         }
         let mut asks = crate::inputs::take_asks(&self.o.home);
-        for c in [&self.coord, &self.inp.broker, &self.inp.viewer].into_iter().flatten() {
+        for c in [&self.coord, &self.inp.viewer].into_iter().flatten() {
             asks.extend(c.take_inputs_asks());
+        }
+        if let Some(b) = &self.inp.broker {
+            asks.extend(crate::coord::Pages::take_inputs_asks(b));
         }
         if asks.is_empty() {
             return;

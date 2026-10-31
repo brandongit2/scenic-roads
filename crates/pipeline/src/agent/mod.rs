@@ -4659,7 +4659,7 @@ impl Agent {
             resume_now: self.resume_now(),
             ramp_held: self.ramp_held,
             ramp_trouble: self.ramp_trouble.clone(),
-            broker: self.broker.as_ref().map(|b| b.server().clone()),
+            broker: self.broker.clone(),
             viewer: self.viewer.clone(),
             coord: self.coord.clone(),
             ended,
@@ -6604,7 +6604,7 @@ impl Agent {
         } else if let Some(b) = &self.broker {
             // (A member's job offers its tasks through this Mac's broker, docs/pool.md §8.)
             env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", b.port())));
-            env.push(("SCENIC_COORD_TOKEN".into(), b.job_token.clone()));
+            env.push(("SCENIC_COORD_TOKEN".into(), b.job_token().to_string()));
         }
         // Placement on: its tasks offered ahead, with their head starts (crate::agent::placement).
         if self.placement_on() {
@@ -7424,7 +7424,7 @@ impl Agent {
                     Some(b) => {
                         eprintln!(
                             "agent: this Mac's broker started at {}: its jobs' tasks are offered there",
-                            b.contact.urls.join(", ")
+                            b.contact().urls.join(", ")
                         );
                         self.broker = Some(b);
                     }
@@ -7432,7 +7432,9 @@ impl Agent {
                 }
             }
         }
-        let Some(c) = self.coord.as_ref().or(self.broker.as_ref().map(crate::coord::Broker::server)) else { return };
+        let Some(port) = self.coord.as_ref().map(|c| c.port()).or(self.broker.as_ref().map(|b| b.port())) else {
+            return;
+        };
         if let Some(b) = &self.broker {
             for l in b.expire() {
                 eprintln!(
@@ -7448,7 +7450,7 @@ impl Agent {
             }
         }
         if brokers::stale(self.broker_https.as_ref().map(|h| h.0), now, brokers::HTTPS_EVERY) {
-            self.broker_https = Some((now, served_https(c.port())));
+            self.broker_https = Some((now, served_https(port)));
         }
     }
 
@@ -7702,21 +7704,24 @@ impl Agent {
         }
     }
 
-    /// This Mac's servers: its coordinator, its broker, its viewer (one at a time, in the pool).
-    fn servers(&self) -> impl Iterator<Item = &std::sync::Arc<crate::coord::Coordinator>> {
-        [self.coord.as_ref()].into_iter().flatten().chain(self.not_lead_servers())
+    /// This Mac's servers of the build page: its coordinator, its broker, its viewer (one at a
+    /// time, in the pool).
+    fn servers(&self) -> impl Iterator<Item = &dyn crate::coord::Pages> {
+        self.coord.as_deref().map(|c| c as &dyn crate::coord::Pages).into_iter().chain(self.not_lead_servers())
     }
 
     /// Its broker and its viewer: a page's asks there are its agent's to pass on.
-    fn not_lead_servers(&self) -> impl Iterator<Item = &std::sync::Arc<crate::coord::Coordinator>> {
-        [self.broker.as_ref().map(crate::coord::Broker::server), self.viewer.as_ref()].into_iter().flatten()
+    fn not_lead_servers(&self) -> impl Iterator<Item = &dyn crate::coord::Pages> {
+        let b = self.broker.as_ref().map(|b| b as &dyn crate::coord::Pages);
+        b.into_iter().chain(self.viewer.as_deref().map(|v| v as &dyn crate::coord::Pages))
     }
 
     /// The coordinator brokering this Mac's tasks, for the run's steps (`Cx::broker`): the lead's,
     /// or a member's broker; None with tasks brokered by every member off.
-    fn brokering(&self) -> Option<std::sync::Arc<crate::coord::Coordinator>> {
+    fn brokering(&self) -> Option<crate::coord::Brokering> {
+        use crate::coord::Brokering;
         self.brokers_on()
-            .then(|| self.coord.clone().or_else(|| self.broker.as_ref().map(|b| b.server().clone())))
+            .then(|| self.coord.clone().map(Brokering::Lead).or_else(|| self.broker.clone().map(Brokering::Member)))
             .flatten()
     }
 
@@ -10153,7 +10158,14 @@ mod tests {
             true,
         );
         a.beat.publish(v);
-        a.control.jobs.set(vec![slots::JobRef::on_chan(a.o.home.join("job-control"))]);
+        // (Published again after each round's `publish_jobs`, which knows no fake job: a hold
+        // control took up in between found no job to drain. Told here as `try_start` tells a job
+        // it starts under a hold; else the pause's waiter waited out its watchdog, #882 step 3.)
+        let chan = a.o.home.join("job-control");
+        a.control.jobs.set(vec![slots::JobRef::on_chan(chan.clone())]);
+        if a.hold().held.is_some() {
+            std::fs::write(&chan, b"drain").unwrap();
+        }
     }
 
     /// Task #871 step 3: a pause on a hung NAS (every call hung, the loop going round on it):
@@ -15576,13 +15588,13 @@ mod pool_tests {
         // (The agents themselves, slower at a tail than the job's own run: neither takes these
         // tasks while the heartbeats are awaited below, however many steps that takes; the
         // worker below must.)
-        for co in [m.broker.as_ref().unwrap().server(), lead.coord.as_ref().unwrap()] {
+        for co in [m.broker.as_ref().unwrap().server(), &**lead.coord.as_ref().unwrap()] {
             let mut s = co.shared.lock().unwrap();
             for w in [&lead.host, &m.host] {
                 s.tasks.paces.insert((w.clone(), "tail".into()), 10.0);
             }
         }
-        let mt = offer(bport, &m.broker.as_ref().unwrap().job_token, "6/1/1");
+        let mt = offer(bport, m.broker.as_ref().unwrap().job_token(), "6/1/1");
         let lt = offer(lport, &lead.coord.as_ref().unwrap().job_token, "6/1/2");
         // The heartbeats say so, and each reads the other's (now: not waiting the half minute).
         let fresh = |a: &mut Agent| {
@@ -15591,7 +15603,7 @@ mod pool_tests {
         };
         let told = |a: &Agent, who: &str| {
             a.coord
-                .as_ref()
+                .as_deref()
                 .or(a.broker.as_ref().map(crate::coord::Broker::server))
                 .unwrap()
                 .shared
@@ -15617,7 +15629,7 @@ mod pool_tests {
         // A worker (another Mac's agent, with the pool's key) takes the member's task from the
         // member's broker, and the lead's from the lead.
         let (mkey, lkey) =
-            (m.broker.as_ref().unwrap().contact.token.clone(), lead.coord.as_ref().unwrap().contact.token.clone());
+            (m.broker.as_ref().unwrap().contact().token.clone(), lead.coord.as_ref().unwrap().contact.token.clone());
         let call = |port: u16, path: &str, body: serde_json::Value| -> (u16, serde_json::Value, Option<String>) {
             let key = format!("Bearer {}", if port == bport { &mkey } else { &lkey });
             http_post(port, path, &[("Authorization", &key), ("X-Worker", "w9")], &body.to_string())
@@ -15626,7 +15638,7 @@ mod pool_tests {
             let app = c.shared.lock().unwrap().app.clone();
             serde_json::json!({ "worker": "w9", "kind": "native", "app": app, "can": ["tail"], "mem_mb": 1000, "cores": 4 })
         };
-        let (code, g, _) = call(bport, "/work/ask", ask(m.broker.as_ref().unwrap()));
+        let (code, g, _) = call(bport, "/work/ask", ask(m.broker.as_ref().unwrap().server()));
         assert_eq!((code, g["id"].as_u64()), (200, Some(mt)), "{g}");
         let ml = g["lease"].as_u64().unwrap();
         let (code, g, _) = call(lport, "/work/ask", ask(lead.coord.as_ref().unwrap()));
@@ -15643,7 +15655,7 @@ mod pool_tests {
             );
             assert_eq!(code, 200, "task {id} handed back at {port}");
         }
-        assert_eq!(m.broker.as_ref().unwrap().leases_out(), 0);
+        assert_eq!(m.broker.as_ref().unwrap().server().leases_out(), 0);
         // The member's job had its broker's address, and ends through it, reaching the lead.
         std::fs::write(&gate, b"").unwrap();
         let end = Instant::now() + WATCHDOG;
