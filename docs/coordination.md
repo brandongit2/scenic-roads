@@ -142,7 +142,8 @@ rule); every answer carries `x-pool-epoch`; a member seeing a new epoch re-sends
 - **The lead's disk lost** (the mini's disk replaced, `agent/` deleted): the store is rebuilt from
   the NAS backup (`state/lead/store.json`, at most `BACKUP_EVERY` old), the epoch set past it by
   1000 (no lease id repeats), then members' first beats fill in what the backup missed: their held
-  leases (adopted as granted, with their ids) and their unmerged hand-offs (re-posted, §5.3). What
+  leases (adopted as granted, with their ids; planned: today a beat's lease the lead doesn't know is
+  answered released, and its job stops) and their unmerged hand-offs (re-posted, §5.3; planned). What
   is lost: grants answered since the backup to members that then lost them too (none in practice),
   the settings changed since (the owner's, said in the status: "settings restored as of 14:02").
   Built: `pool::store::Store::restore` (test `store_restores_from_the_backup`). Planned:
