@@ -1530,6 +1530,9 @@ pub struct Agent {
     /// The build page's map's finished tiles (crate::agent::builtview): made with `catalogues_view`.
     built_view: Option<std::sync::Arc<builtview::BuiltView>>,
     pageview_reading: bool,
+    /// Where the pageview asks the lead's view (`pageview::Lead`) as last told it: this Mac's own
+    /// coordinator (`None` inside), or the lead's addresses and key.
+    pageview_lead: Option<Option<(Vec<String>, String)>>,
     /// This Mac's live store (crate::agent::live), kept in its folder and answered on its port's
     /// `/work/live`: made as the loop starts, on a real Mac with the agent's lock alone.
     live: Option<std::sync::Arc<live::Store>>,
@@ -1965,6 +1968,7 @@ impl Agent {
             catalogues_lead: None,
             built_view: None,
             pageview_reading: false,
+            pageview_lead: None,
             live: None,
             page_acts: Vec::new(),
             viewer: None,
@@ -6916,12 +6920,16 @@ impl Agent {
             None => self.pause_local = false,
         }
         if let Some(c) = &self.coord {
-            let p = c.pause();
+            let (p, on_nas) = (c.pause(), c.page_on_nas());
             if p != self.pause {
                 self.know_pause(p.clone());
             }
-            // Mirrored to the NAS, until it's written there.
-            if let (Some(r), false) = (root, self.mirrored.as_ref() == Some(&p)) {
+            // Mirrored to the NAS, until it's written there, while a member that reads it there is
+            // in touch (`Coordinator::page_on_nas`: the pages have it by `/pool/view` otherwise);
+            // off, written again at once when it's on.
+            if !on_nas {
+                self.mirrored = None;
+            } else if let (Some(r), false) = (root, self.mirrored.as_ref() == Some(&p)) {
                 let path = r.join("state/build/pause.json");
                 let kept = match &p {
                     Some(x) => serde_json::to_vec(x).map_err(anyhow::Error::from).and_then(|b| path.write_whole(b)),
@@ -7630,6 +7638,24 @@ impl Agent {
             own,
             keep: Some(self.o.home.join("pageview-waits.json")),
         });
+        // (The lead's view asked of its coordinator, here on the lead, else at its address; told
+        // again only when that changed. None known yet: the NAS's files, docs/coordination.md step 4.)
+        let at = match (&self.coord, &self.client) {
+            (Some(_), _) => Some(None),
+            (None, Some(c)) => Some(Some((c.urls(), c.token()))),
+            (None, None) => None,
+        };
+        if at != self.pageview_lead {
+            let lead: Option<std::sync::Arc<dyn pageview::Lead>> = match (&at, &self.coord) {
+                (Some(None), Some(c)) => Some(c.clone()),
+                (Some(Some((urls, token))), _) => Some(std::sync::Arc::new(pageview::ByHttp(
+                    crate::coord::client::Client::at(urls.clone(), token.clone(), &self.host),
+                ))),
+                _ => None,
+            };
+            self.pageview.set_lead(lead);
+            self.pageview_lead = at;
+        }
         if !self.pageview_reading {
             pageview::spawn(self.pageview.clone());
             self.pageview_reading = true;
@@ -8291,39 +8317,57 @@ impl Agent {
         let term = run.gates.leads.unwrap_or(run.gates.term);
         // (Its store backed up to the NAS by a thread of its own, crate::pool::store::back_up.)
         co.back_up(run.side.shared_nas());
-        // The coordinator's view (what the worker page takes from its memory): when it changed, at
-        // most each `pool::VIEW_EVERY`.
-        let view = serde_json::to_vec(&co.view()).unwrap_or_default();
-        let due = match &run.view_written {
-            Some((t, b, at)) => *t != term || (*b != view && at.elapsed() >= pool::VIEW_EVERY),
-            None => true,
-        };
-        if due {
-            let mut rec = serde_json::json!({ "at": now_s() });
-            rec["view"] = serde_json::from_slice(&view).unwrap_or_default();
-            match run.side.nas().write_whole(&pool::view_path(term), &serde_json::to_vec(&rec).unwrap_or_default()) {
-                Ok(()) => run.view_written = Some((term, view, std::time::Instant::now())),
-                Err(e) => eprintln!("agent: the coordinator's view of term {term}: {e:#}"),
+        // The page's files: to its coordinator, which serves every Mac's page from memory
+        // (`/pool/view`, docs/coordination.md step 4); on the NAS too only while a member that reads
+        // them there is in touch (`Coordinator::page_on_nas`: the older apps' path, deleted with the
+        // #642 gate). Off, the next write when it's on again is at once.
+        let regions = self.plan.view.get().regions_view.clone();
+        if let Some((key, v)) = regions.as_ref() {
+            if run.regions_handed.as_ref() != Some(key) {
+                co.set_page_regions(v.clone());
+                run.regions_handed = Some(key.clone());
             }
         }
-        // The build page's regions, each time they're made again (and in each new term).
-        if let Some((key, v)) = self.plan.view.get().regions_view.as_ref() {
-            if run.regions_written.as_ref() != Some(&(term, key.clone())) {
-                match run
-                    .side
-                    .nas()
-                    .write_whole(&pool::regions_path(term), &serde_json::to_vec(&**v).unwrap_or_default())
+        if let Some(b) = &fc_bytes {
+            co.set_page_forecast(b);
+        }
+        if co.page_on_nas() {
+            // The coordinator's view: when it changed, at most each `pool::VIEW_EVERY`.
+            let view = serde_json::to_vec(&co.view()).unwrap_or_default();
+            let due = match &run.view_written {
+                Some((t, b, at)) => *t != term || (*b != view && at.elapsed() >= pool::VIEW_EVERY),
+                None => true,
+            };
+            if due {
+                let mut rec = serde_json::json!({ "at": now_s() });
+                rec["view"] = serde_json::from_slice(&view).unwrap_or_default();
+                match run.side.nas().write_whole(&pool::view_path(term), &serde_json::to_vec(&rec).unwrap_or_default())
                 {
-                    Ok(()) => run.regions_written = Some((term, key.clone())),
-                    Err(e) => eprintln!("agent: the build page's regions of term {term}: {e:#}"),
+                    Ok(()) => run.view_written = Some((term, view, std::time::Instant::now())),
+                    Err(e) => eprintln!("agent: the coordinator's view of term {term}: {e:#}"),
                 }
             }
-        }
-        // The forecast's input, each time the forecast's made (at most each minute).
-        if let Some(b) = fc_bytes {
-            if let Err(e) = run.side.nas().write_whole(&pool::forecast_input_path(term), &b) {
-                eprintln!("agent: the forecast's input of term {term}: {e:#}");
+            // The regions, each time they're made again (and in each new term).
+            if let Some((key, v)) = regions.as_ref() {
+                if run.regions_written.as_ref() != Some(&(term, key.clone())) {
+                    match run
+                        .side
+                        .nas()
+                        .write_whole(&pool::regions_path(term), &serde_json::to_vec(&**v).unwrap_or_default())
+                    {
+                        Ok(()) => run.regions_written = Some((term, key.clone())),
+                        Err(e) => eprintln!("agent: the build page's regions of term {term}: {e:#}"),
+                    }
+                }
             }
+            // The forecast's input, each time the forecast's made (at most each minute).
+            if let Some(b) = fc_bytes {
+                if let Err(e) = run.side.nas().write_whole(&pool::forecast_input_path(term), &b) {
+                    eprintln!("agent: the forecast's input of term {term}: {e:#}");
+                }
+            }
+        } else {
+            (run.view_written, run.regions_written) = (None, None);
         }
         // Into the forecasts' archive (fcarchive): handed to its thread, which writes in batches.
         if let Some(e) = fc_entry {

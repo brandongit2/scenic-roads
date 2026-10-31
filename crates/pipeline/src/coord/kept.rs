@@ -5,7 +5,9 @@
 //!
 //! - its documents: `leases` (the next id, the holds, the cancels), `lease/<id>` (each job's
 //!   lease), `cost/<key>`, `floor/<key>`, `disk/<key>`, `job_disks`, `fills`, `pause`, and
-//!   `member/<host>` (what a member speaks and when the lead last heard it: `Heard`);
+//!   `member/<host>` (what a member speaks and when the lead last heard it: `Heard`), and
+//!   `beat/<member>` (its last beat's heartbeat and status, crate::coord::beats: `Beat`, saved each
+//!   `HEARD_SAVE_S` at most, so a lead's restart has the members for the page at once);
 //! - each save submits what changed since the last (`Mirror`), never the whole state;
 //! - opened by `Coordinator::start_on` after the coordinator's start: a store found is the truth (the
 //!   files start read are a store's first fill alone: an agent before the store's); none, it's
@@ -31,7 +33,17 @@ pub struct Heard {
     pub at: u64,
 }
 
-/// A member's `Heard` is saved again once its time moved this far (its beats come every 10 s; the
+/// A member's last beat as kept (`beat/<member>`): its heartbeat, its agent's status, when heard
+/// (unix s).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Beat {
+    pub beat: crate::agent::pool::Heartbeat,
+    #[serde(default)]
+    pub status: Option<Value>,
+    pub at: u64,
+}
+
+/// A member's `Heard` (and its `Beat`) is saved again once its time moved this far (its beats come every 10 s; the
 /// 12-h rule needs no finer).
 const HEARD_SAVE_S: u64 = 60;
 
@@ -50,6 +62,8 @@ struct Mirror {
     floors: BTreeMap<String, Floor>,
     disks: BTreeMap<String, u64>,
     members: BTreeMap<String, Heard>,
+    /// When each member's beat was last saved (unix s).
+    beats: BTreeMap<String, u64>,
 }
 
 /// The coordinator's state as its store holds it.
@@ -215,6 +229,42 @@ impl Kept {
         if let Ok(v) = serde_json::to_value(&h) {
             self.submit([(format!("member/{member}"), v)].into(), Vec::new());
         }
+    }
+
+    /// `member`'s beat heard at `at`: saved when it's new or `HEARD_SAVE_S` passed.
+    pub fn beat(&self, member: &str, beat: &crate::agent::pool::Heartbeat, status: Option<&Value>, at: u64) {
+        if self.store.get().is_none() {
+            return;
+        }
+        let mut m = self.m.lock().unwrap_or_else(|e| e.into_inner());
+        if m.beats.get(member).is_some_and(|&t| at < t + HEARD_SAVE_S) {
+            return;
+        }
+        m.beats.insert(member.to_string(), at);
+        drop(m);
+        let b = Beat { beat: beat.clone(), status: status.cloned(), at };
+        if let Ok(v) = serde_json::to_value(&b) {
+            self.submit([(format!("beat/{member}"), v)].into(), Vec::new());
+        }
+    }
+
+    /// The members' beats as the store holds them, heard after `since` (unix s); those heard
+    /// before it deleted (none without a store).
+    pub fn beats(&self, since: u64) -> Vec<Beat> {
+        let Some(s) = self.store.get() else { return Vec::new() };
+        let (fresh, stale): (Vec<_>, Vec<_>) =
+            of_prefix::<Beat>(&s.snapshot().docs, "beat/").into_iter().partition(|(_, b)| b.at > since);
+        if !stale.is_empty() {
+            s.submit(Docs::new(), stale.iter().map(|(m, _)| format!("beat/{m}")).collect());
+        }
+        let mut m = self.m.lock().unwrap_or_else(|e| e.into_inner());
+        fresh
+            .into_iter()
+            .map(|(id, b)| {
+                m.beats.insert(id, b.at);
+                b
+            })
+            .collect()
     }
 
     /// When `member` was last heard (unix seconds, to `HEARD_SAVE_S`), and whether it speaks `what`.

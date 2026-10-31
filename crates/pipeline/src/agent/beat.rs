@@ -92,7 +92,7 @@ impl ToLead {
         });
         held::Beat {
             member: self.member.clone(),
-            speaks: vec![held::SPEAKS.to_string(), beats::SPEAKS.to_string()],
+            speaks: vec![held::SPEAKS.to_string(), beats::SPEAKS.to_string(), beats::VIEW.to_string()],
             held: self.held.clone(),
             held_age_s: 0,
             heartbeat,

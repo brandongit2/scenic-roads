@@ -1,29 +1,32 @@
-//! The build page's data as this Mac reads it from the NAS (docs/pool.md §10, task #409): in the
-//! pool, every Mac's port 8090 answers `/work/swarm` and `/work/history` the same way, from a few
-//! whole files the lead writes, read by known name (never a folder listing) while a page asks.
+//! The build page's data on this Mac (docs/pool.md §10, task #409): in the pool, every Mac's port
+//! 8090 answers `/work/swarm` and `/work/history` the same way, from the lead's view and the
+//! members' history files.
 //!
-//! A thread of the agent (`spawn`) reads them only while a page has asked in the last
-//! `ASKED_FOR_S`, every `EVERY` at most: the lead's status (`state/status.json`), its
-//! coordinator's view (`state/coord/term/<E>/view.json`), its forecast's input
-//! (`state/build/term/<E>/forecast-input.json`, read again only when its time changes), its
-//! regions for the page (`state/build/term/<E>/regions.json`, the same), the
-//! pause (`state/build/pause.json`), each member's heartbeat (its host and broker: the lead's status
-//! has those it hears by their beats, docs/coordination.md step 3; a member on an older app's from
-//! `state/pool/members/<id>.json`, the members as the pool's driver knows them) and own status (the
-//! lead's status's `helpers`), and what the members' history files of the last `DAYS` days
-//! (`state/coord/history/<day>/<member>.jsonl`) gained since the last read (from the offset read
-//! up to; from the start again when a file is now shorter; a day older than yesterday once read,
-//! not again), `CHUNK_MAX` of a file a read at most, the week's events kept (`data` dropped: the
-//! page doesn't show it), `history::KEEP_MAX` at most. Every read is done before its state's
-//! lock is taken, so a slow NAS never holds up an answer. It keeps one snapshot: those, the history
-//! merged and numbered here (`epoch` names the numbering), and the forecast run here
-//! (`forecast::Record::forecast`) with its time brought to now, this Mac's own lanes as its slots
-//! are now (`Inputs::own`, worked out as the lead works out its own: forecast::SlotJob). The
-//! forecast runs on a thread of its own (`Runs`, task #544), again when the input changed or
-//! `forecast::EVERY` passed: the snapshot carries the last one done, never waiting on it.
+//! While a page has asked in the last `ASKED_FOR_S`, a thread of the agent (`spawn`) asks the
+//! lead's view every `LEAD_EVERY` (`tick_lead`; `POST /pool/view`, docs/coordination.md step 4: the
+//! lead's own pageview asks its coordinator in process, `Lead`): its status, its coordinator's
+//! view, the pause, the Macs' addresses (each member's broker: where a page reads its
+//! `/work/live`), and the forecast's input and the page's regions when their time changed. A lead
+//! that can't be asked leaves the last view, said with its age. Another thread reads the NAS
+//! (`tick`), every `EVERY` at most, by known name (never a folder listing): what the members'
+//! history files of the last `DAYS` days (`state/coord/history/<day>/<member>.jsonl`) gained since
+//! the last read (from the offset read up to; from the start again when a file is now shorter; a
+//! day older than yesterday once read, not again), `CHUNK_MAX` of a file a read at most, the week's
+//! events kept (`data` dropped: the page doesn't show it), `history::KEEP_MAX` at most; and, while
+//! the lead doesn't serve its view (an older app's 404, or none known: the older apps' path, gone
+//! with step 4's gate), the lead's files there (`nas_lead_files`: `state/status.json`, the term's
+//! `view.json`, `forecast-input.json` and `regions.json`, `state/build/pause.json`, an older
+//! member's heartbeat). Every read is done before its state's lock is taken, so a slow NAS or lead
+//! never holds up an answer. It keeps one snapshot: those, the history merged and numbered here
+//! (`epoch` names the numbering), and the forecast run here (`forecast::Record::forecast`) with its
+//! time brought to now, this Mac's own lanes as its slots are now (`Inputs::own`, worked out as the
+//! lead works out its own: forecast::SlotJob). The forecast runs on a thread of its own (`Runs`,
+//! task #544), again when the input changed or `forecast::EVERY` passed: the snapshot carries the
+//! last one done, never waiting on it.
 
 use super::forecast::{Forecast, Record, SlotJob, ToCome};
 use crate::coord::history::{self, Event, History, DAYS};
+use crate::coord::ViewAsk;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,8 +35,38 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// A page that asked this long ago (s) keeps the reads going; after it, nothing is read.
 pub const ASKED_FOR_S: u64 = 60;
-/// The files are read again this often at most.
+/// The NAS's files (the history's; the lead's on the older apps' path) are read again this often at
+/// most.
 pub const EVERY: Duration = Duration::from_secs(12);
+/// The lead's view is asked again this often at most (it answers from memory: docs/coordination.md
+/// step 4).
+pub const LEAD_EVERY: Duration = Duration::from_secs(2);
+
+/// Where the lead's view is asked (`/pool/view`, crate::coord::ViewAsk): its coordinator here (the
+/// lead's own page), else its address (`ByHttp`).
+pub trait Lead: Send + Sync {
+    /// The view's answer to `ask`; None from a lead that doesn't serve it (an older app's: 404).
+    fn view(&self, ask: &ViewAsk) -> anyhow::Result<Option<Value>>;
+}
+
+impl Lead for crate::coord::Coordinator {
+    fn view(&self, ask: &ViewAsk) -> anyhow::Result<Option<Value>> {
+        Ok(Some(self.pool_view(ask)))
+    }
+}
+
+/// The lead at its address, with the build's key (a member's).
+pub struct ByHttp(pub crate::coord::client::Client);
+
+impl Lead for ByHttp {
+    fn view(&self, ask: &ViewAsk) -> anyhow::Result<Option<Value>> {
+        match self.0.post_json("/pool/view", &serde_json::to_value(ask)?)? {
+            (200, v) => Ok(Some(v)),
+            (404, _) => Ok(None),
+            (c, v) => anyhow::bail!("/pool/view: {c} {v}"),
+        }
+    }
+}
 /// A member's status older than this (s) isn't shown (as the lead's own `helpers` takes them).
 const HELPER_FRESH_S: u64 = 600;
 /// The most of a history file taken in a read (bytes); the rest is read the next time.
@@ -145,6 +178,8 @@ struct Snap {
     helpers: Vec<Value>,
     /// Each member's addresses, from its heartbeat's broker: where a page reads its `/work/live`.
     macs: Vec<Value>,
+    /// When the lead made it (unix s; None: read from the NAS's files).
+    at: Option<u64>,
 }
 
 /// The forecast run here off the reads (`PageView::forecast_run`): the last one done and the one
@@ -224,6 +259,13 @@ struct State {
     last: Option<Instant>,
     /// History chunks of CHUNK_MAX passed over for holding no line's end.
     skipped: u64,
+    /// Whether the lead's view is asked of it (it answered `/pool/view`); else its files are read
+    /// on the NAS (the older apps' path).
+    by_lead: bool,
+    /// When the lead was last asked.
+    lead_last: Option<Instant>,
+    /// Since when (unix s) and why the lead can't be asked: the last view kept meanwhile.
+    lead_failed: Option<(u64, String)>,
 }
 
 /// The page's data on this Mac.
@@ -233,6 +275,7 @@ pub struct PageView {
     inputs: Mutex<Inputs>,
     state: Mutex<State>,
     forecast: Mutex<Runs>,
+    lead: Mutex<Option<Arc<dyn Lead>>>,
 }
 
 fn now_s() -> u64 {
@@ -280,20 +323,114 @@ impl PageView {
         }
     }
 
-    /// The reads, when a page asked lately and `EVERY` has passed (the first at once): true when
-    /// it read.
+    /// Where the lead's view is asked from (`Lead`): the lead's coordinator here, or the lead's
+    /// address on a member; None, the NAS's files are read (the older apps' path).
+    pub fn set_lead(&self, lead: Option<Arc<dyn Lead>>) {
+        *self.lead.lock().unwrap() = lead;
+    }
+
+    /// The NAS's reads, when a page asked lately and `EVERY` has passed (the first at once): the
+    /// history's files, and the lead's files while its view isn't asked of it (`by_lead`: an older
+    /// lead's, or none known); true when it read.
     pub fn tick(&self, src: &dyn Source, now: u64) -> bool {
         if !self.wanted(now) {
             return false;
         }
-        if self.state.lock().unwrap().last.is_some_and(|t| t.elapsed() < EVERY) {
-            // (Between the full reads, the pause alone, one small file: a press of Pause or
-            // Resume shows within a second or two, not at the next full read.)
-            self.refresh_pause(src);
+        let (last, by_lead) = {
+            let st = self.state.lock().unwrap();
+            (st.last, st.by_lead)
+        };
+        if last.is_some_and(|t| t.elapsed() < EVERY) {
+            if !by_lead {
+                // (Between the full reads, the pause alone, one small file: a press of Pause or
+                // Resume shows within a second or two, not at the next full read.)
+                self.refresh_pause(src);
+            }
             return false;
         }
-        self.refresh(src, now);
+        self.refresh(src, now, !by_lead);
         true
+    }
+
+    /// The lead's view asked of it (`Lead::view`), when a page asked lately and `LEAD_EVERY` has
+    /// passed (the first at once), off the NAS's reads (its own thread: a hung NAS never holds it
+    /// up); true when it asked.
+    pub fn tick_lead(&self, now: u64) -> bool {
+        if !self.wanted(now) {
+            return false;
+        }
+        let Some(lead) = self.lead.lock().unwrap().clone() else { return false };
+        if self.state.lock().unwrap().lead_last.is_some_and(|t| t.elapsed() < LEAD_EVERY) {
+            return false;
+        }
+        self.ask_lead(&*lead, now);
+        true
+    }
+
+    /// Asks the lead for its view (`Lead::view`) with what it has, and takes it in: its status,
+    /// view, pause, Macs, and the forecast's input and regions when they changed. A lead that
+    /// doesn't serve it: the NAS's files from the next read on. One that can't be asked: the last
+    /// view kept, said with its age (`lead_failed`).
+    fn ask_lead(&self, lead: &dyn Lead, now: u64) {
+        let ask = {
+            let st = self.state.lock().unwrap();
+            ViewAsk {
+                forecast_at: st.record.as_ref().map(|r| ms_of(r.0)),
+                regions_at: st.regions.as_ref().map(|r| ms_of(r.0)),
+            }
+        };
+        let got = lead.view(&ask);
+        let mut st = self.state.lock().unwrap();
+        st.lead_last = Some(Instant::now());
+        let v = match got {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                if st.by_lead {
+                    eprintln!("pageview: the lead doesn't serve its view: its files read on the NAS");
+                    st.last = None;
+                }
+                st.by_lead = false;
+                return;
+            }
+            Err(e) => {
+                if st.lead_failed.is_none() {
+                    eprintln!("pageview: the lead's view: {e:#}");
+                }
+                st.lead_failed.get_or_insert((now, format!("{e:#}")));
+                return;
+            }
+        };
+        st.by_lead = true;
+        st.lead_failed = None;
+        let at = |k: &str| v[k].as_u64().map(|ms| SystemTime::UNIX_EPOCH + Duration::from_millis(ms));
+        match (at("forecast_at"), v.get("forecast_input")) {
+            (None, _) => st.record = None,
+            (Some(t), Some(f)) => match serde_json::from_value::<Record<'static>>(f.clone()) {
+                Ok(r) => st.record = Some((t, Arc::new(r))),
+                Err(e) => eprintln!("pageview: the forecast's input: {e:#}"),
+            },
+            (Some(_), None) => {}
+        }
+        match (at("regions_at"), v.get("regions")) {
+            (None, _) => st.regions = None,
+            (Some(t), Some(r)) => st.regions = Some((t, Arc::new(r.clone()))),
+            (Some(_), None) => {}
+        }
+        let status = v["status"].clone();
+        let helpers = helpers_of(&status, now);
+        let macs = v["macs"].as_array().cloned().unwrap_or_default();
+        st.snap = Some(Snap {
+            status,
+            view: v["view"].clone(),
+            pause: v["pause"].clone(),
+            helpers,
+            macs,
+            at: v["at"].as_u64(),
+        });
+        let record = st.record.clone();
+        drop(st);
+        let own = self.inputs.lock().unwrap().own.clone();
+        self.forecast_run(record.as_ref(), now, &own);
     }
 
     /// Reads `state/build/pause.json` alone (without the state's lock) into the snapshot, if there
@@ -309,69 +446,15 @@ impl PageView {
     }
 
     /// Reads the files (without the state's lock: what it needs of it taken first) and makes the
-    /// snapshot (under it, briefly).
-    fn refresh(&self, src: &dyn Source, now: u64) {
+    /// snapshot (under it, briefly): the history's, and with `nas` the lead's files too (the older
+    /// apps' path: a lead that doesn't serve `/pool/view`).
+    fn refresh(&self, src: &dyn Source, now: u64, nas: bool) {
         let inp = self.inputs.lock().unwrap().clone();
         let (offsets, had, had_regions) = {
             let st = self.state.lock().unwrap();
             (st.offsets.clone(), st.record.clone(), st.regions.clone())
         };
-        let json = |p: &str| src.read(p).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-        let status = json("state/status.json").unwrap_or(Value::Null);
-        let view = json(&super::pool::view_path(inp.term)).map_or(Value::Null, |v| v["view"].clone());
-        let pause = json("state/build/pause.json").unwrap_or(Value::Null);
-        // (Each member's host and addresses, from its heartbeat as the lead's status has it, by
-        // their beats; a member on an older app's from the NAS. Their statuses, the lead's
-        // `helpers`: docs/coordination.md step 3.)
-        let mut beats: Vec<Value> = status["beats"].as_array().cloned().unwrap_or_default();
-        let heard: BTreeSet<String> = beats.iter().filter_map(|b| b["member"].as_str().map(str::to_string)).collect();
-        beats.extend(
-            inp.members
-                .iter()
-                .filter(|m| !heard.contains(*m))
-                .filter_map(|m| json(&format!("state/pool/members/{m}.json"))),
-        );
-        let macs: Vec<Value> = beats.iter().filter_map(mac_of).collect();
-        let helpers: Vec<Value> = status["helpers"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|h| now.saturating_sub(h["beat"].as_u64().unwrap_or(0)) < HELPER_FRESH_S)
-            .map(|mut h| {
-                if let Some(o) = h.as_object_mut() {
-                    for k in ["regions", "checklist", "built", "recent"] {
-                        o.remove(k);
-                    }
-                }
-                h
-            })
-            .collect();
-        // The forecast's input, again only when its file changed.
-        let fpath = super::pool::forecast_input_path(inp.term);
-        let record = match src.mtime(&fpath) {
-            Some(t) if had.as_ref().is_none_or(|r| r.0 != t) => {
-                match src.read(&fpath).map(|b| Record::from_bytes(&b)) {
-                    Some(Ok(r)) => Some((t, Arc::new(r))),
-                    Some(Err(e)) => {
-                        eprintln!("pageview: the forecast's input: {e:#}");
-                        had
-                    }
-                    None => had,
-                }
-            }
-            Some(_) => had,
-            None => None,
-        };
-        // The regions, again only when their file changed.
-        let rpath = super::pool::regions_path(inp.term);
-        let regions = match src.mtime(&rpath) {
-            Some(t) if had_regions.as_ref().is_none_or(|r| r.0 != t) => {
-                json(&rpath).map(|v| (t, Arc::new(v))).or(had_regions)
-            }
-            Some(_) => had_regions,
-            None => None,
-        };
+        let lead_files = nas.then(|| nas_lead_files(src, &inp, now, had, had_regions));
         // The history: what each member's files of the last DAYS days gained.
         let mut new: Vec<(u64, String, u64, Event)> = Vec::new();
         let mut read_to: BTreeMap<String, (u64, FileId, bool)> = BTreeMap::new();
@@ -431,8 +514,7 @@ impl PageView {
         // (The newest KEEP_MAX alone: the most the history keeps.)
         new.drain(..new.len().saturating_sub(history::KEEP_MAX));
         // Swapped in.
-        let ran = record.clone();
-        {
+        let ran = {
             let mut st = self.state.lock().unwrap();
             // (Days gone from the last DAYS: their offsets forgotten.)
             st.offsets = read_to;
@@ -440,8 +522,10 @@ impl PageView {
                 st.skipped += skipped;
                 eprintln!("pageview: {} history chunks passed over without a line's end", st.skipped);
             }
-            st.record = record;
-            st.regions = regions;
+            // (Not over the lead's own view, taken meanwhile.)
+            if let Some((snap, record, regions)) = lead_files.filter(|_| !st.by_lead) {
+                (st.snap, st.record, st.regions) = (Some(snap), record, regions);
+            }
             if st.history.is_none() {
                 st.epoch = format!("view {} {}", std::process::id(), now);
             }
@@ -472,9 +556,9 @@ impl PageView {
                 let oldest = st.history.as_ref().and_then(History::oldest).unwrap_or(week);
                 st.taken.retain(|k| k.1 >= oldest);
             }
-            st.snap = Some(Snap { status, view, pause, helpers, macs });
             st.last = Some(Instant::now());
-        }
+            st.record.clone()
+        };
         // (The forecast run once the history is taken in: its runs' `after` in its numbering.)
         self.forecast_run(ran.as_ref(), now, &inp.own);
     }
@@ -491,7 +575,11 @@ impl PageView {
         };
         let st = self.state.lock().unwrap();
         let s = st.snap.as_ref()?;
-        Some(answer(s, forecast.as_ref(), st.history.as_ref(), &st.epoch, &app, now_s()))
+        let mut a = answer(s, forecast.as_ref(), st.history.as_ref(), &st.epoch, &app, now_s());
+        if let Some((since, why)) = &st.lead_failed {
+            a["view_unreached"] = serde_json::json!({ "since": since, "why": why });
+        }
+        Some(a)
     }
 
     /// `/work/tocome`'s answer (task #836) from the forecast run here: the one at `at` (the swarm's
@@ -536,6 +624,84 @@ impl PageView {
     }
 }
 
+/// The lead's files on the NAS, as the older apps' leads write them (docs/coordination.md step 4's
+/// gate, deleted with it): its status, its coordinator's view, the pause, each member's heartbeat
+/// (the status's `beats`, else its NAS file), the forecast's input and the regions (each read again
+/// only when its file's time changed, `had` and `had_regions` the last).
+type Kept<T> = Option<(SystemTime, Arc<T>)>;
+
+fn nas_lead_files(
+    src: &dyn Source,
+    inp: &Inputs,
+    now: u64,
+    had: Kept<Record<'static>>,
+    had_regions: Kept<Value>,
+) -> (Snap, Kept<Record<'static>>, Kept<Value>) {
+    let json = |p: &str| src.read(p).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let status = json("state/status.json").unwrap_or(Value::Null);
+    let view = json(&super::pool::view_path(inp.term)).map_or(Value::Null, |v| v["view"].clone());
+    let pause = json("state/build/pause.json").unwrap_or(Value::Null);
+    let mut beats: Vec<Value> = status["beats"].as_array().cloned().unwrap_or_default();
+    let heard: BTreeSet<String> = beats.iter().filter_map(|b| b["member"].as_str().map(str::to_string)).collect();
+    beats.extend(
+        inp.members
+            .iter()
+            .filter(|m| !heard.contains(*m))
+            .filter_map(|m| json(&format!("state/pool/members/{m}.json"))),
+    );
+    let macs: Vec<Value> = beats.iter().filter_map(mac_of).collect();
+    let helpers = helpers_of(&status, now);
+    // The forecast's input, again only when its file changed.
+    let fpath = super::pool::forecast_input_path(inp.term);
+    let record = match src.mtime(&fpath) {
+        Some(t) if had.as_ref().is_none_or(|r| r.0 != t) => match src.read(&fpath).map(|b| Record::from_bytes(&b)) {
+            Some(Ok(r)) => Some((t, Arc::new(r))),
+            Some(Err(e)) => {
+                eprintln!("pageview: the forecast's input: {e:#}");
+                had
+            }
+            None => had,
+        },
+        Some(_) => had,
+        None => None,
+    };
+    // The regions, again only when their file changed.
+    let rpath = super::pool::regions_path(inp.term);
+    let regions = match src.mtime(&rpath) {
+        Some(t) if had_regions.as_ref().is_none_or(|r| r.0 != t) => {
+            json(&rpath).map(|v| (t, Arc::new(v))).or(had_regions)
+        }
+        Some(_) => had_regions,
+        None => None,
+    };
+    (Snap { status, view, pause, helpers, macs, at: None }, record, regions)
+}
+
+/// The members' statuses fresh (`HELPER_FRESH_S`) from the lead's status's `helpers`, trimmed of
+/// what the page doesn't show.
+fn helpers_of(status: &Value, now: u64) -> Vec<Value> {
+    status["helpers"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|h| now.saturating_sub(h["beat"].as_u64().unwrap_or(0)) < HELPER_FRESH_S)
+        .map(|mut h| {
+            if let Some(o) = h.as_object_mut() {
+                for k in ["regions", "checklist", "built", "recent"] {
+                    o.remove(k);
+                }
+            }
+            h
+        })
+        .collect()
+}
+
+/// A time as unix ms.
+fn ms_of(t: SystemTime) -> u64 {
+    t.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
 /// The swarm's answer at `now` from snapshot `s` and the last forecast run here.
 fn answer(s: &Snap, forecast: Option<&Forecast>, h: Option<&History>, epoch: &str, app: &str, now: u64) -> Value {
     let mut agent = s.status.clone();
@@ -564,6 +730,8 @@ fn answer(s: &Snap, forecast: Option<&Forecast>, h: Option<&History>, epoch: &st
         "rates": h.map(|h| h.rates(now, 24)),
         "app": app,
         "macs": s.macs,
+        // (How old the lead's view is: it's kept while the lead can't be asked.)
+        "view_age_s": s.at.map(|at| now.saturating_sub(at)),
     })
 }
 
@@ -690,9 +858,11 @@ pub fn local_forecast(r: &Record, now: u64, own: &[OwnLane]) -> Forecast {
     r.forecast()
 }
 
-/// The thread that reads while a page asks (`PageView::tick`, each second), from `root` as the
-/// agent last told it.
+/// The threads that read while a page asks, each second: the NAS's (`PageView::tick`, from `root`
+/// as the agent last told it) and the lead's view (`PageView::tick_lead`), apart so a hung NAS never
+/// holds the view up.
 pub fn spawn(pv: Arc<PageView>) {
+    let lead = pv.clone();
     std::thread::Builder::new()
         .name("pageview".into())
         .spawn(move || loop {
@@ -701,6 +871,13 @@ pub fn spawn(pv: Arc<PageView>) {
             if let Some(r) = root {
                 pv.tick(&NasFiles(r), now_s());
             }
+        })
+        .ok();
+    std::thread::Builder::new()
+        .name("pageview-lead".into())
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(1));
+            lead.tick_lead(now_s());
         })
         .ok();
 }
@@ -1360,5 +1537,143 @@ pub(crate) mod tests {
         };
         assert!(after_of(Some(keep)) > 0, "depth-lo's run waits on the depth job finished since");
         assert_eq!(after_of(None), 0, "(without the kept waits: none, as before)");
+    }
+
+    /// A lead's coordinator (`crate::coord::start_for_test` in `d/coord`), its agent's status beside
+    /// it, its page's files handed to it; a member's pageview asking it at its address.
+    fn lead_and_member(d: &std::path::Path, now: u64) -> (crate::coord::Coordinator, PageView) {
+        let (c, port) = crate::coord::start_for_test(&d.join("coord"), "m4", "1.2.3");
+        let status = serde_json::json!({ "host": "m4", "beat": now, "helpers": [{ "host": "m1", "beat": now }] });
+        std::fs::write(d.join("status.json"), status.to_string()).unwrap();
+        c.set_page_forecast(&record(now).bytes().unwrap());
+        c.set_page_regions(Arc::new(serde_json::json!({ "catalog": 3 })));
+        let w =
+            crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        let pv = PageView::default();
+        pv.set_inputs(Inputs { root: Some(store::nasfs::NasRoot::local_for_test(&d.join("nas"))), ..inputs("1.2.3") });
+        pv.set_lead(Some(Arc::new(ByHttp(w))));
+        (c, pv)
+    }
+
+    /// docs/coordination.md step 4: a member's page has the lead's view by HTTP (its status, view,
+    /// pause, forecast and regions) while every NAS call hangs: the NAS's reads (the history's)
+    /// wait on their own thread, the view asked again and again meanwhile.
+    #[test]
+    fn the_page_on_a_member_shows_the_lead_s_view_with_the_nas_hung() {
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        let (c, pv) = lead_and_member(d.path(), now);
+        let pv = Arc::new(pv);
+        pv.touch_at(now);
+        let hung = super::super::nasread::fake::hang(&d.path().join("nas"));
+        let nas = {
+            let pv = pv.clone();
+            let root = store::nasfs::NasRoot::local_for_test(&d.path().join("nas"));
+            std::thread::spawn(move || pv.tick(&NasFiles(root), now))
+        };
+        while hung.held() == 0 {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for k in 0..3 {
+            c.set_pause(Some(crate::control::Pause::new(crate::control::Mode::Drain, &format!("m{k}"))), now + k);
+            pv.state.lock().unwrap().lead_last = None;
+            assert!(pv.tick_lead(now));
+            settle(&pv);
+            let a = pv.swarm().expect("the lead's view, the NAS hung");
+            assert_eq!(a["agent"]["host"], "m4");
+            assert_eq!(a["pause"]["by"], format!("m{k}"), "each ask the lead's pause as it is");
+            assert_eq!(a["agent"]["helpers"].as_array().map(Vec::len), Some(1));
+            assert!(a["agent"]["forecast"]["at"].as_u64().is_some(), "its forecast run here: {a}");
+            assert!(a["view_age_s"].as_u64().is_some_and(|s| s < 60));
+            assert_eq!(pv.regions().unwrap()["catalog"], 3);
+        }
+        assert!(!nas.is_finished(), "the NAS's read still hung");
+        drop(hung);
+        nas.join().unwrap();
+        // (The forecast's input and the regions sent only when they changed.)
+        let (f, r) = {
+            let st = pv.state.lock().unwrap();
+            (st.record.as_ref().map(|r| ms_of(r.0)), st.regions.as_ref().map(|r| ms_of(r.0)))
+        };
+        let again = c.pool_view(&ViewAsk { forecast_at: f, regions_at: r });
+        assert!(again.get("forecast_input").is_none() && again.get("regions").is_none(), "{again}");
+        assert!(c.pool_view(&ViewAsk::default()).get("forecast_input").is_some());
+    }
+
+    /// A lead as a test sets it: its answers, or down.
+    struct Fake(Mutex<anyhow::Result<Option<Value>>>);
+
+    impl Lead for Fake {
+        fn view(&self, _: &ViewAsk) -> anyhow::Result<Option<Value>> {
+            match &*self.0.lock().unwrap() {
+                Ok(v) => Ok(v.clone()),
+                Err(e) => Err(anyhow::anyhow!("{e}")),
+            }
+        }
+    }
+
+    /// docs/coordination.md step 4: a page asking with the lead down gets the last view, with its
+    /// age and since when the lead isn't reached; the lead back, its view again.
+    #[test]
+    fn a_page_asking_with_the_lead_down_gets_the_last_view_with_its_age() {
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        let (c, _) = lead_and_member(d.path(), now);
+        let view = c.pool_view(&ViewAsk::default());
+        let lead = Arc::new(Fake(Mutex::new(Ok(Some(view)))));
+        let pv = PageView::default();
+        pv.set_inputs(inputs("1.2.3"));
+        pv.set_lead(Some(lead.clone()));
+        pv.touch_at(now);
+        assert!(pv.tick_lead(now));
+        assert!(pv.swarm().unwrap()["view_unreached"].is_null());
+        *lead.0.lock().unwrap() = Err(anyhow::anyhow!("connection refused"));
+        pv.state.lock().unwrap().lead_last = None;
+        pv.tick_lead(now + 20);
+        let a = pv.swarm().expect("the last view kept");
+        assert_eq!(a["agent"]["host"], "m4");
+        assert_eq!(a["view_unreached"]["since"], now + 20);
+        assert!(a["view_unreached"]["why"].as_str().unwrap().contains("refused"));
+        assert!(a["view_age_s"].as_u64().is_some());
+        // (Not the NAS's files meanwhile: the view stays the lead's.)
+        assert!(pv.state.lock().unwrap().by_lead);
+        *lead.0.lock().unwrap() = Ok(Some(c.pool_view(&ViewAsk::default())));
+        pv.state.lock().unwrap().lead_last = None;
+        pv.tick_lead(now + 30);
+        assert!(pv.swarm().unwrap()["view_unreached"].is_null());
+    }
+
+    /// Mixed versions (docs/coordination.md step 4's gate): a lead on an older app (`/pool/view`
+    /// 404) has its files read on the NAS, as before; a lead that serves its view has its files
+    /// left unread.
+    #[test]
+    fn an_older_lead_s_files_are_read_on_the_nas() {
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
+        let lead = Arc::new(Fake(Mutex::new(Ok(None))));
+        let pv = PageView::default();
+        pv.set_inputs(inputs("1.2.3"));
+        pv.set_lead(Some(lead.clone()));
+        pv.touch_at(now);
+        let src = Dir(d.path().into(), AtomicUsize::new(0));
+        assert!(pv.tick_lead(now));
+        assert!(pv.tick(&src, now));
+        let a = pv.swarm().unwrap();
+        assert_eq!(a["tasks"]["done"], 3, "the NAS's view.json");
+        assert!(a["view_age_s"].is_null());
+        // (Its lead updated: the view by HTTP, the NAS's lead files no longer read.)
+        let (c, _) = lead_and_member(&d.path().join("lead"), now);
+        *lead.0.lock().unwrap() = Ok(Some(c.pool_view(&ViewAsk::default())));
+        pv.state.lock().unwrap().lead_last = None;
+        assert!(pv.tick_lead(now));
+        pv.state.lock().unwrap().last = None;
+        let before = src.1.load(Ordering::Relaxed);
+        assert!(pv.tick(&src, now));
+        let a = pv.swarm().unwrap();
+        assert_eq!(a["tasks"]["done"], Value::Null, "the lead's own view: no tasks done");
+        assert_eq!(a["agent"]["host"], "m4");
+        // (Only the history's files read: its two members' over the week.)
+        assert_eq!(src.1.load(Ordering::Relaxed) - before, 2 * DAYS as usize);
     }
 }

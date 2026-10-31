@@ -315,6 +315,9 @@ pub struct Shared {
     /// The members' beats its agent's pool side hears by HTTP (`/pool/beat`, crate::coord::beats):
     /// its (`Coordinator::set_beats`); None, the beats' heartbeats and statuses not taken.
     pub beats: Option<std::sync::Arc<beats::Beats>>,
+    /// The page's files its agent hands it on the lead (`/pool/view`, docs/coordination.md step 4):
+    /// the forecast's input and the page's regions, each with when it was handed (unix ms).
+    pub page: PageFiles,
     /// The build page's acceptances of the gate's warnings (`/work/inputs`), for the agent to write
     /// (crate::inputs::apply_ask).
     pub inputs_asks: Vec<crate::inputs::Ask>,
@@ -1323,6 +1326,7 @@ impl Coordinator {
             pool_member: None,
             inbox: None,
             beats: None,
+            page: PageFiles::default(),
             inputs_asks: Vec::new(),
             redo_asks: Vec::new(),
             nas_failures: 0,
@@ -2213,7 +2217,9 @@ impl Coordinator {
 
     /// Where the members' beats go (`Shared::beats`).
     pub fn set_beats(&self, beats: Option<std::sync::Arc<beats::Beats>>) {
-        self.shared.lock().unwrap().beats = beats;
+        let mut s = self.shared.lock().unwrap();
+        s.beats = beats;
+        load_beats(&s);
     }
 
     /// Where the members' messages to its member go (`Shared::inbox`).
@@ -2346,6 +2352,39 @@ impl Coordinator {
         view_of(&self.shared.lock().unwrap())
     }
 
+    /// `/pool/view`'s answer to `ask`, taken here (the lead's own page: crate::agent::pageview).
+    pub fn pool_view(&self, ask: &ViewAsk) -> serde_json::Value {
+        pool_view(&self.shared.lock().unwrap(), ask)
+    }
+
+    /// The forecast's input its agent made (crate::agent::forecast::Record's bytes), for
+    /// `/pool/view`; unreadable, said and not kept.
+    pub fn set_page_forecast(&self, bytes: &[u8]) {
+        let v = crate::agent::forecast::Record::from_bytes(bytes).and_then(|r| Ok(serde_json::to_value(r)?));
+        match v {
+            Ok(v) => self.shared.lock().unwrap().page.forecast = Some((unix_ms(), Arc::new(v))),
+            Err(e) => eprintln!("coordinator: the forecast's input for the page: {e:#}"),
+        }
+    }
+
+    /// The page's regions as its agent made them again, for `/pool/view`.
+    pub fn set_page_regions(&self, v: Arc<serde_json::Value>) {
+        self.shared.lock().unwrap().page.regions = Some((unix_ms(), v));
+    }
+
+    /// Whether the page's files still go to the NAS (docs/coordination.md step 4's gate): while a
+    /// member on an older app is in touch (`Beats::nas_too`, no registry: true) or one heard by its
+    /// beats within `beats::FORGET_S` doesn't say it speaks `beats::VIEW` (it reads them there).
+    pub fn page_on_nas(&self) -> bool {
+        let s = self.shared.lock().unwrap();
+        let since = held::wall(&s).saturating_sub(beats::FORGET_S);
+        s.beats.as_ref().is_none_or(|b| b.nas_too())
+            || s.keep
+                .members()
+                .iter()
+                .any(|(m, h)| *m != s.lead_name && h.at > since && !h.speaks.iter().any(|w| w == beats::VIEW))
+    }
+
     /// The page's data served from `pv` (crate::agent::pageview) from here on.
     pub fn set_pageview(&self, pv: Arc<crate::agent::pageview::PageView>) {
         self.shared.lock().unwrap().pageview = Some(pv);
@@ -2452,6 +2491,7 @@ impl Coordinator {
         s.save_costs();
         keep.pause(s.paused.as_ref(), s.pause_at);
         held::refresh(&mut s);
+        load_beats(&s);
         Ok(())
     }
 
@@ -3318,6 +3358,83 @@ fn making(why: &str) -> (u16, serde_json::Value) {
 
 /// What the page takes from a coordinator's memory (`Coordinator::view`): the pause, each lease and
 /// worker, the tasks by state and `task_mb`, its times as unix seconds (`unix_of`).
+/// What the lead's agent hands its coordinator for `/pool/view` besides its own state: the forecast's
+/// input (crate::agent::forecast::Record, as JSON) and the page's regions
+/// (crate::agent::regionsview), each with when it was handed (unix ms: a member asks for it again
+/// only when that changed).
+#[derive(Clone, Debug, Default)]
+pub struct PageFiles {
+    pub forecast: Option<(u64, Arc<serde_json::Value>)>,
+    pub regions: Option<(u64, Arc<serde_json::Value>)>,
+}
+
+/// What a `/pool/view` asks: the forecast's input and the regions it has, by when they were made.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ViewAsk {
+    #[serde(default)]
+    pub forecast_at: Option<u64>,
+    #[serde(default)]
+    pub regions_at: Option<u64>,
+}
+
+/// `/pool/view`'s answer (docs/coordination.md step 4: every Mac's page data from the lead's
+/// memory, no NAS): when, its agent's status (its local copy, as `/work/swarm` takes it), its view
+/// (`view_of`, unix times), the pause, the Macs' addresses (the brokers as its agent read the
+/// members' heartbeats; else the beats heard), its app, and the forecast's input and regions with
+/// their times, each only when the ask's differs.
+fn pool_view(s: &Shared, ask: &ViewAsk) -> serde_json::Value {
+    let unix = held::wall(s);
+    let status: serde_json::Value = s
+        .dir
+        .parent()
+        .and_then(|h| std::fs::read(h.join("status.json")).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let mac = |host: &str, b: &brokers::Broker| serde_json::json!({ "host": host, "urls": b.urls, "https": b.https });
+    let macs: Vec<serde_json::Value> = match (&s.brokers, &s.beats) {
+        (Some(b), _) => b.peers.iter().filter_map(|p| Some(mac(&p.host, p.broker.as_ref()?))).collect(),
+        (None, Some(b)) => {
+            b.members(unix, "").iter().filter_map(|h| Some(mac(&h.pool.host, h.broker.as_ref()?))).collect()
+        }
+        (None, None) => Vec::new(),
+    };
+    let mut a = serde_json::json!({
+        "at": unix,
+        "status": status,
+        "view": view_of(s),
+        "pause": s.paused,
+        "macs": macs,
+        "app": s.app,
+        "forecast_at": s.page.forecast.as_ref().map(|f| f.0),
+        "regions_at": s.page.regions.as_ref().map(|r| r.0),
+    });
+    if let Some((_, f)) = s.page.forecast.as_ref().filter(|f| ask.forecast_at != Some(f.0)) {
+        a["forecast_input"] = (**f).clone();
+    }
+    if let Some((_, r)) = s.page.regions.as_ref().filter(|r| ask.regions_at != Some(r.0)) {
+        a["regions"] = (**r).clone();
+    }
+    a
+}
+
+/// The wall clock in unix ms.
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// The members' beats its store kept (`kept::Beat`) heard again into its registry, once it has
+/// both: a lead's restart has the members it heard within `beats::FORGET_S` for the page at once
+/// (docs/coordination.md step 4), their next beats replacing them.
+fn load_beats(s: &Shared) {
+    let Some(b) = &s.beats else { return };
+    let unix = held::wall(s);
+    for k in s.keep.beats(unix.saturating_sub(beats::FORGET_S)) {
+        if b.get(&k.beat.pool.member, unix).is_none() {
+            b.heard(k.beat, k.status, k.at);
+        }
+    }
+}
+
 fn view_of(s: &Shared) -> serde_json::Value {
     let now = s.now();
     let leases: Vec<serde_json::Value> = s
@@ -3826,6 +3943,11 @@ fn route(
             let mut s = shared.lock().unwrap();
             Ok((200, serde_json::to_value(held::beat(&mut s, &b))?))
         }
+        "/pool/view" => {
+            // Every Mac's page data (docs/coordination.md step 4), from memory.
+            let ask: ViewAsk = serde_json::from_slice(body).unwrap_or_default();
+            Ok((200, pool_view(&shared.lock().unwrap(), &ask)))
+        }
         "/pool/release" => {
             // The owner's release of a member's leases (`scenic pool release <member>`).
             let v: serde_json::Value = serde_json::from_slice(body)?;
@@ -4174,7 +4296,7 @@ fn route(
             ))
         }
         "/work/swarm" => {
-            // (In the pool, from this Mac's read of the NAS: the same on every Mac; none yet, not
+            // (In the pool, from this Mac's pageview, the lead's view: the same on every Mac; none yet, not
             // ready. Never the memory's meanwhile: its numbering isn't the read's.)
             // (The pause, on the lead (nothing to forward: its pages' asks are set here), from its
             // memory: its NAS mirror waits for the agent's next loop, many seconds on a busy lead.)
@@ -4660,6 +4782,7 @@ mod http {
             .route("/pool/mail", any(json))
             .route("/pool/beat", any(json))
             .route("/pool/release", any(json))
+            .route("/pool/view", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
             .route("/work/out/{lease}/{*path}", put(output))
             .route("/task/{*rest}", any(json));
@@ -5503,6 +5626,59 @@ mod tests {
     }
 
     /// `scenic pool release <member>`: the owner releases an away member's leases.
+    /// A member's beat speaking `speaks`, with its heartbeat.
+    fn heard_beat(m: &str, speaks: &[&str]) -> held::Beat {
+        let heartbeat = crate::agent::pool::Heartbeat {
+            pool: crate::pool::Beat { member: m.into(), host: format!("{m}-host"), beat: 1, ..Default::default() },
+            beat_http: true,
+            ..Default::default()
+        };
+        held::Beat {
+            member: m.into(),
+            speaks: speaks.iter().map(|w| w.to_string()).collect(),
+            heartbeat: Some(heartbeat),
+            status: Some(serde_json::json!({ "host": format!("{m}-host") })),
+            ..Default::default()
+        }
+    }
+
+    /// docs/coordination.md step 4's gate: the lead writes the page's files on the NAS while a
+    /// member heard doesn't say it reads the view by HTTP (`beats::VIEW`: a step-3 app's), or one
+    /// on an older app heartbeats there (`Beats::nas_too`); not once every member says it.
+    #[test]
+    fn the_page_s_files_go_to_the_nas_only_while_a_member_reads_them_there() {
+        let (_d, c, _w) = start();
+        assert!(c.page_on_nas(), "no registry: as before");
+        let b = std::sync::Arc::new(beats::Beats::default());
+        b.set_nas_too(false);
+        c.set_beats(Some(b.clone()));
+        assert!(!c.page_on_nas(), "no member heard");
+        c.member_beat(&heard_beat("m1", &[held::SPEAKS, beats::SPEAKS]));
+        assert!(c.page_on_nas(), "a step-3 member reads them on the NAS");
+        c.member_beat(&heard_beat("m1", &[held::SPEAKS, beats::SPEAKS, beats::VIEW]));
+        assert!(!c.page_on_nas());
+        b.set_nas_too(true);
+        assert!(c.page_on_nas(), "an older app in touch");
+    }
+
+    /// docs/coordination.md step 4: the members' beats are in the store, so a lead's restart has
+    /// them (for the page and the members' answers) before their next beats.
+    #[test]
+    fn a_lead_s_restart_keeps_the_members_beats() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, _) = start_for_test(&d.path().join("coord"), "m4", "");
+        c.set_beats(Some(std::sync::Arc::default()));
+        c.member_beat(&heard_beat("m1", &[held::SPEAKS, beats::SPEAKS, beats::VIEW]));
+        drop(c);
+        let (c, _) = start_for_test(&d.path().join("coord"), "m4", "");
+        let b = std::sync::Arc::new(beats::Beats::default());
+        c.set_beats(Some(b.clone()));
+        let heard = b.fresh(held::wall(&c.shared.lock().unwrap()));
+        assert_eq!(heard.len(), 1);
+        assert_eq!(heard[0].beat.pool.host, "m1-host");
+        assert_eq!(heard[0].status.as_ref().unwrap()["host"], "m1-host");
+    }
+
     #[test]
     fn the_owner_releases_a_member_s_leases() {
         let (_d, c, w) = start();

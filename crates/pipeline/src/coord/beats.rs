@@ -28,6 +28,11 @@ use std::sync::Mutex;
 /// status ride in the beat.
 pub const SPEAKS: &str = "beat";
 
+/// What a member's beat says it reads: the page's data from the lead (`/pool/view`,
+/// docs/coordination.md step 4), not the NAS's files. The lead writes those
+/// (`Coordinator::page_on_nas`) while a member heard doesn't say it.
+pub const VIEW: &str = "view";
+
 /// A member not heard from this long is forgotten (s): as the listing forgets one
 /// (crate::agent::pool::FORGET_AFTER).
 pub const FORGET_S: u64 = crate::agent::pool::FORGET_AFTER.as_secs();

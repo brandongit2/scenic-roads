@@ -1228,6 +1228,8 @@ pub struct Run {
     pub view_written: Option<(u64, Vec<u8>, std::time::Instant)>,
     /// The build page's regions as last written: the term and what they were made of.
     pub regions_written: Option<(u64, super::RegionsKey)>,
+    /// The page's regions as last handed to its coordinator (`/pool/view`): what they were made of.
+    pub regions_handed: Option<super::RegionsKey>,
     /// The history's last event written.
     pub history_seq: u64,
     /// The members in touch at the lead's last read of their heartbeats (its time; their ids and
@@ -1494,6 +1496,7 @@ impl Run {
             marks: Vec::new(),
             view_written: None,
             regions_written: None,
+            regions_handed: None,
             history_seq: 0,
             in_touch: None,
             led: BTreeSet::new(),

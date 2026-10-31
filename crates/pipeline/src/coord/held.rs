@@ -86,7 +86,7 @@ pub fn refresh(s: &mut Shared) {
 }
 
 /// The coordinator's wall clock (unix s; a test's virtual one).
-fn wall(s: &Shared) -> u64 {
+pub(super) fn wall(s: &Shared) -> u64 {
     s.clock.wall().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
@@ -102,6 +102,7 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
     if let Some(beats) = s.beats.clone() {
         if let Some(h) = b.heartbeat.clone().filter(|_| b.speaks.iter().any(|w| w == super::beats::SPEAKS)) {
             let id = h.pool.member.clone();
+            s.keep.beat(&id, &h, b.status.as_ref(), unix);
             beats.heard(h, b.status.clone(), unix);
             a.members = beats.members(unix, &id);
         }

@@ -1547,7 +1547,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   minutes is forgotten. On the NAS (`state/pool/members/<id>.json`, written when it changes, at least
   every two minutes; listed every two minutes) only while a member on an older app is in touch
   (`crate::coord::beats`), whose heartbeat is read there.
-- **Build status**, written by the lead per term (`state/build/term/<E>/status.json`): the
+- **Build status**, written by the lead (`state/status.json`): the
   checklist (a line per stage with an item per step: docs/pipeline.md §4), forecast, regions,
   waits, what publishing does, publishing as it stands (`published`: the last catalogue and its
   kind, the map tiles being drawn by Mac, each Mac's adopted catalogue), recent jobs, pause, last
@@ -1559,8 +1559,11 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   step, targets' count, progress, `frac`, when granted, its last beat and when it lapses), each
   worker (label, kind, memory, cores, done/failed, `can`, `fit`, when last seen), the tasks by
   state. Times are unix seconds, so it is the
-  same until something changes. Written as a whole (create and rename) when it changed, at most
-  every 15 s (`pool::VIEW_EVERY`), and at once in a new term. Each time is taken from one
+  same until something changes. Served by the lead's coordinator from memory (`POST /pool/view`,
+  docs/coordination.md step 4); on the NAS only while a member that reads it there is in touch
+  (`Coordinator::page_on_nas`, with the forecast's input, the regions and `state/build/pause.json`),
+  written as a whole (create and rename) when it changed, at most every 15 s (`pool::VIEW_EVERY`),
+  and at once in a new term or when that turns on. Each time is taken from one
   anchor (an `Instant` and the wall clock read together, taken again only when they drift apart
   by more than 2 s), so an idle pool doesn't rewrite it. Read by each Mac's page data (below).
 - **Forecast input**, written by the lead per term (`state/build/term/<E>/forecast-input.json`,
@@ -1571,15 +1574,23 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   most once a minute); zstd-compressed when its JSON is over 2 MiB (`forecast::ZSTD_OVER`; a
   reader tells by zstd's magic number). About 70 KB with today's work left (88 regions, ~500
   targets, 24 lanes); about 2 MB for a whole rebuild's. Every time and speed in it is made
-  finite before it's written (`Record::clamp`). Read by each Mac's page data (below).
+  finite before it's written (`Record::clamp`). Handed to the lead's coordinator for `/pool/view`
+  (on the NAS only under the gate above). Read by each Mac's page data (below).
 - **The page's data on every Mac** (`agent::pageview`, task #409): in the pool, each Mac's port
-  8090 answers `/work/swarm` and `/work/history` from its own read of the NAS, the same JSON on
-  every Mac (`/work/steps` is the steps table, the same everywhere); out of the pool the
-  coordinator answers from its memory, as before. A thread of the agent reads only while a page
-  has asked in the last 60 s, every 12 s at most, by known name (no listing): the lead's
-  `state/status.json`, the term's `view.json`, its `forecast-input.json` (again only when its
-  time changes), `state/build/pause.json` (also alone each second between the full reads; its absence is no pause, never the view's; on the lead the answer's pause is its coordinator's own, which the NAS copy follows only at the agent's next loop), the term's `regions.json` (again only when its time changes), each member's heartbeat (for its host and broker: the lead's status's `beats`, a member on an older
-  app's from `state/pool/members/<id>.json`) and own status (the lead's status's `helpers`), and what each member's history
+  8090 answers `/work/swarm` and `/work/history` the same JSON on every Mac (`/work/steps` is the
+  steps table, the same everywhere); out of the pool the coordinator answers from its memory, as
+  before. While a page has asked in the last 60 s, a thread of the agent asks the lead's view
+  every 2 s (`POST /pool/view`, docs/coordination.md step 4: the lead's own pageview its
+  coordinator in process): the lead's status, its coordinator's view, the pause (on the lead the
+  answer's is its coordinator's own), the Macs' addresses, and the forecast's input and the regions
+  when their time changed; with the lead down, the last view is kept and the answer says its age
+  (`view_age_s`) and since when the lead isn't reached (`view_unreached`). With a lead that doesn't
+  serve it (an older app's 404) or none known, the older path: the lead's `state/status.json`, the
+  term's `view.json`, `forecast-input.json` and `regions.json` (again only when their time
+  changes), `state/build/pause.json` (also alone each second between the full reads; its absence is
+  no pause) and each member's heartbeat (the lead's status's `beats`, an older app's from
+  `state/pool/members/<id>.json`), read on the NAS. Another thread reads, every 12 s at most, by
+  known name (no listing), what each member's history
   file of the last 7 days (today's and the six before: `pageview::DAYS`) gained since the offset
   it last read to (whole lines, 4 MiB of a file a read at most, `CHUNK_MAX`, the rest the next
   time; a whole 4 MiB without a line's end passed over, counted and logged; from the start again when the file is now shorter than that). A day before yesterday

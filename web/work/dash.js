@@ -2125,7 +2125,10 @@ function render() {
   window.scrollTo(0, scrollY);
   ctx.tabsEl.scrollTop = paneY;
   refreshPin();
-  ctx.onState?.(m.sw.pause ? "paused" : !m.a.host ? "no word from the lead" : m.fresh(m.a.beat) ? verdictOf(m.a, m.sw.pause).state : "lead out of touch");
+  // (The lead not reached: this Mac's last view of it, kept, said with its age: /pool/view,
+  // docs/coordination.md step 4.)
+  const unreached = m.sw.view_unreached ? `lead not reached: its view from ${dur(m.sw.view_age_s ?? 0)} ago` : null;
+  ctx.onState?.(unreached || (m.sw.pause ? "paused" : !m.a.host ? "no word from the lead" : m.fresh(m.a.beat) ? verdictOf(m.a, m.sw.pause).state : "lead out of touch"));
 }
 
 let polling = null;
