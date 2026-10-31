@@ -2354,7 +2354,9 @@ impl Coordinator {
 
     /// `/pool/view`'s answer to `ask`, taken here (the lead's own page: crate::agent::pageview).
     pub fn pool_view(&self, ask: &ViewAsk) -> serde_json::Value {
-        pool_view(&self.shared.lock().unwrap(), ask)
+        let dir = self.shared.lock().unwrap().dir.clone();
+        let status = status_beside(&dir);
+        pool_view(&self.shared.lock().unwrap(), ask, status)
     }
 
     /// The forecast's input its agent made (crate::agent::forecast::Record's bytes), for
@@ -3356,8 +3358,6 @@ fn making(why: &str) -> (u16, serde_json::Value) {
     (200, serde_json::json!({ "making": why }))
 }
 
-/// What the page takes from a coordinator's memory (`Coordinator::view`): the pause, each lease and
-/// worker, the tasks by state and `task_mb`, its times as unix seconds (`unix_of`).
 /// What the lead's agent hands its coordinator for `/pool/view` besides its own state: the forecast's
 /// input (crate::agent::forecast::Record, as JSON) and the page's regions
 /// (crate::agent::regionsview), each with when it was handed (unix ms: a member asks for it again
@@ -3382,14 +3382,8 @@ pub struct ViewAsk {
 /// (`view_of`, unix times), the pause, the Macs' addresses (the brokers as its agent read the
 /// members' heartbeats; else the beats heard), its app, and the forecast's input and regions with
 /// their times, each only when the ask's differs.
-fn pool_view(s: &Shared, ask: &ViewAsk) -> serde_json::Value {
+fn pool_view(s: &Shared, ask: &ViewAsk, status: serde_json::Value) -> serde_json::Value {
     let unix = held::wall(s);
-    let status: serde_json::Value = s
-        .dir
-        .parent()
-        .and_then(|h| std::fs::read(h.join("status.json")).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or(serde_json::Value::Null);
     let mac = |host: &str, b: &brokers::Broker| serde_json::json!({ "host": host, "urls": b.urls, "https": b.https });
     let macs: Vec<serde_json::Value> = match (&s.brokers, &s.beats) {
         (Some(b), _) => b.peers.iter().filter_map(|p| Some(mac(&p.host, p.broker.as_ref()?))).collect(),
@@ -3417,6 +3411,15 @@ fn pool_view(s: &Shared, ask: &ViewAsk) -> serde_json::Value {
     a
 }
 
+/// Its agent's status beside the coordinator's folder (`<home>/status.json`, local disk, a few
+/// kB), read before the coordinator's lock is taken: `Value::Null` when none.
+fn status_beside(dir: &std::path::Path) -> serde_json::Value {
+    dir.parent()
+        .and_then(|h| std::fs::read(h.join("status.json")).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
 /// The wall clock in unix ms.
 fn unix_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
@@ -3435,6 +3438,8 @@ fn load_beats(s: &Shared) {
     }
 }
 
+/// What the page takes from a coordinator's memory (`Coordinator::view`): the pause, each lease and
+/// worker, the tasks by state and `task_mb`, its times as unix seconds (`unix_of`).
 fn view_of(s: &Shared) -> serde_json::Value {
     let now = s.now();
     let leases: Vec<serde_json::Value> = s
@@ -3945,8 +3950,11 @@ fn route(
         }
         "/pool/view" => {
             // Every Mac's page data (docs/coordination.md step 4), from memory.
+            // (Its agent's status read off the lock: a busy disk never holds the coordinator.)
             let ask: ViewAsk = serde_json::from_slice(body).unwrap_or_default();
-            Ok((200, pool_view(&shared.lock().unwrap(), &ask)))
+            let dir = shared.lock().unwrap().dir.clone();
+            let status = status_beside(&dir);
+            Ok((200, pool_view(&shared.lock().unwrap(), &ask, status)))
         }
         "/pool/release" => {
             // The owner's release of a member's leases (`scenic pool release <member>`).
@@ -5625,7 +5633,6 @@ mod tests {
         assert_eq!(older_lead.pool_beat(&word("m1", &[])).unwrap(), None);
     }
 
-    /// `scenic pool release <member>`: the owner releases an away member's leases.
     /// A member's beat speaking `speaks`, with its heartbeat.
     fn heard_beat(m: &str, speaks: &[&str]) -> held::Beat {
         let heartbeat = crate::agent::pool::Heartbeat {
@@ -5679,6 +5686,7 @@ mod tests {
         assert_eq!(heard[0].status.as_ref().unwrap()["host"], "m1-host");
     }
 
+    /// `scenic pool release <member>`: the owner releases an away member's leases.
     #[test]
     fn the_owner_releases_a_member_s_leases() {
         let (_d, c, w) = start();

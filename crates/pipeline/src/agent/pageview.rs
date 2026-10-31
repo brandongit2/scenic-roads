@@ -340,8 +340,16 @@ impl PageView {
     /// What the agent tells it (`Inputs`).
     pub fn set_inputs(&self, i: Inputs) {
         let mut cur = self.inputs.lock().unwrap();
+        let no_lead = i.lead.0.is_none();
         if *cur != i {
             *cur = i;
+        }
+        drop(cur);
+        // (No lead to ask any more: the NAS's files read again at the next read, not the last
+        // view kept with nothing to replace it.)
+        let mut st = self.state.lock().unwrap();
+        if no_lead && st.by_lead {
+            (st.by_lead, st.last) = (false, None);
         }
     }
 
@@ -1693,5 +1701,9 @@ pub(crate) mod tests {
         assert_eq!(a["agent"]["host"], "m4");
         // (Only the history's files read: its two members' over the week.)
         assert_eq!(src.1.load(Ordering::Relaxed) - before, 2 * DAYS as usize);
+        // (No lead known any more: the NAS's files read again at once, not the last view kept.)
+        pv.set_inputs(inputs("1.2.3"));
+        assert!(pv.tick(&src, now));
+        assert_eq!(pv.swarm().unwrap()["tasks"]["done"], 3, "the NAS's view.json again");
     }
 }
