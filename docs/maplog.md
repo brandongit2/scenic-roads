@@ -115,7 +115,9 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
 
 **Built (step 5):** each download keeps its own list (§6.2): `downloads.json` (fmt 5) holds, by
 `seq`, each download's content names and sizes and basemap pieces, written for the `seq` served
-while it's served and kept for each `seq` a download is at or updating to
+while it's served (`partial` while some of its ways' owners aren't known, their hidata unread:
+made again from its catalogue once they are, and while one is read no base pack or old catalogue
+goes) and kept for each `seq` a download is at or updating to
 (`server::downloads::Downloads::keep_lists`). What a download keeps, what changed and what an
 Update copies are its list against its part of the map served. The mirror's `catalog/` keeps the
 last few catalogues only (`Mirror::release_catalogues`, once every download has its list); a file

@@ -273,14 +273,19 @@ pub struct At {
     pub cat: Option<Arc<Catalogue>>,
     pub world: Option<Part>,
     pub regions: Regions,
+    /// A list kept while some of its ways' owners weren't known (their hidata unread): it may lack
+    /// a base pack, so it's made again from its catalogue while that's here, and while it's read
+    /// no base pack goes (`once`), nor the old catalogues (`Mirror::release_catalogues`).
+    pub partial: bool,
 }
 
 impl At {
     /// What the downloads of `asked` keep of it (`cat` none).
-    fn listed(&self, asked: &Asked) -> At {
+    fn listed(&self, asked: &Asked, partial: bool) -> At {
         let ids: HashSet<&str> = asked.regions.iter().map(|r| r.id.as_str()).collect();
         At {
             cat: None,
+            partial,
             world: self.world.clone().filter(|_| asked.world.is_some()),
             regions: self
                 .regions
@@ -293,7 +298,7 @@ impl At {
 
     /// The same lists.
     fn same(&self, o: &At) -> bool {
-        self.world == o.world && self.regions == o.regions
+        self.world == o.world && self.regions == o.regions && self.partial == o.partial
     }
 }
 
@@ -320,6 +325,8 @@ struct ListedAt {
     world: Option<Vec<Listed>>,
     #[serde(default)]
     regions: BTreeMap<String, ListedRegion>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    partial: bool,
 }
 
 fn to_listed(p: &Part) -> Vec<Listed> {
@@ -349,6 +356,7 @@ fn from_listed(v: Vec<Listed>) -> Result<Part> {
 impl ListedAt {
     fn of(a: &At) -> ListedAt {
         ListedAt {
+            partial: a.partial,
             world: a.world.as_ref().map(to_listed),
             regions: a
                 .regions
@@ -371,7 +379,7 @@ impl ListedAt {
                 Ok((id, RegionParts { coarse: from_listed(r.coarse)?, detail: from_listed(r.detail)?, cover: r.cover }))
             })
             .collect::<Result<_>>()?;
-        Ok(At { cat: None, world: self.world.map(from_listed).transpose()?, regions })
+        Ok(At { cat: None, partial: self.partial, world: self.world.map(from_listed).transpose()?, regions })
     }
 }
 
@@ -603,9 +611,9 @@ impl Downloads {
 
     /// Keeps each download's list at the catalogue served and at each one a download is at or
     /// updating to (those it has; the others go). The served one's are made again at each plan
-    /// while it's served (a download asked, owners learned: their base packs). One made from a
-    /// catalogue this Mac kept for a download of format 4 only once all owners are known (a list
-    /// missing a base pack here would let it go). Once every download's catalogue has its lists,
+    /// while it's served (a download asked, owners learned: their base packs), marked `partial`
+    /// while some owners aren't known, and made again from its catalogue once they are. One made
+    /// from a catalogue this Mac kept for a download of format 4 only once all owners are known. Once every download's catalogue has its lists,
     /// the catalogues kept for them go (`Mirror::release_catalogues`).
     fn keep_lists(&self, plan: &Plan, owners_known: bool, m: &Mirror) {
         let held = self.lists.lock().unwrap().clone();
@@ -617,7 +625,7 @@ impl Downloads {
             let remake = n == plan.current || owners_known;
             match (made, held.get(&n)) {
                 (Some(a), h) if remake => {
-                    let a = a.listed(&plan.asked);
+                    let a = a.listed(&plan.asked, !owners_known);
                     next.insert(n, h.filter(|h| h.same(&a)).cloned().unwrap_or_else(|| Arc::new(a)));
                 }
                 (_, Some(h)) => {
@@ -633,7 +641,7 @@ impl Downloads {
                 return;
             }
         }
-        if pinned.iter().all(|n| next.contains_key(n)) {
+        if pinned.iter().all(|n| next.get(n).is_some_and(|a| !a.partial)) {
             if let Err(e) = m.release_catalogues() {
                 eprintln!("mirror: letting the downloads' old catalogues go: {e:#}");
             }
@@ -673,15 +681,18 @@ impl Downloads {
         let lists = self.lists.lock().unwrap().clone();
         let at: BTreeMap<u64, Arc<At>> = {
             let mut g = self.ats.lock().unwrap();
-            g.retain(|n, _| ns.contains(n) && (*n == cur.n || !lists.contains_key(n)));
+            g.retain(|n, _| ns.contains(n) && (*n == cur.n || lists.get(n).is_none_or(|a| a.partial)));
             ns.iter()
                 .filter_map(|&n| {
                     // (Each download's own lists, but at the catalogue served; made from a
                     // catalogue this Mac kept otherwise only where none were kept: a download of
                     // format 4, or one the map moved past before the mirror's round listed it.)
                     if n != cur.n {
+                        // (A partial one only while its catalogue isn't here to make it whole.)
                         if let Some(a) = lists.get(&n) {
-                            return Some((n, a.clone()));
+                            if !a.partial || data.mirror.as_ref().is_none_or(|m| m.catalogue(n).is_none()) {
+                                return Some((n, a.clone()));
+                            }
                         }
                     }
                     if let Some((c, a)) = g.get(&n) {
@@ -716,7 +727,7 @@ fn at_of(cat: Arc<Catalogue>, owners: &Owners) -> At {
         .iter()
         .map(|r| (r.id.clone(), region_parts(&cat, &r.id, &outer_rings(r), owners)))
         .collect();
-    At { world: Some(world_part(&cat)), regions, cat: Some(cat) }
+    At { world: Some(world_part(&cat)), regions, cat: Some(cat), partial: false }
 }
 
 /// The older files the downloads behind the catalogue served keep, by logical name, for the map to
@@ -1007,6 +1018,8 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
     }
     let owners_known = s.downloads.learn_owners(&s.data, &s.downloads.plan(&s.data));
     s.downloads.keep_lists(&s.downloads.plan(&s.data), owners_known, m);
+    // (A partial list read, its catalogue gone: its owners are as unknown.)
+    let owners_known = owners_known && s.downloads.plan(&s.data).at.values().all(|a| !a.partial);
     if s.downloads.advance(&s.downloads.plan(&s.data), m) {
         return true;
     }

@@ -631,14 +631,15 @@ region-areas.json       each accepted region's land and water (km²) and country
 reserve.json            the mirror's reserve {gb} (crates/server/src/reserve.rs); default 30 GB
 downloads.json          {fmt: 5, world: {at, cat, to?} | null, regions: [{id, name, at, cat, to?,
                         detail: {cat, to?} | null}], lists: {"<cat>": {world?: [item], regions:
-                        {"<id>": {coarse: [item], detail: [item], cover}}}}}
+                        {"<id>": {coarse: [item], detail: [item], cover}}, partial?}}}
                         (crates/server/src/downloads.rs; `at` unix seconds; `cat` the catalogue a
                         download is at, 0 until the mirror's next round pins it to the one served;
                         `to` the catalogue an Update is copying; `detail` its terrain detail, when
                         downloaded; `lists` each download's own list at the catalogue served and at
                         each one a download is at or updating to, an item {file, size} (a content
                         name) or {archive, piece} (a basemap piece: lo, 6-x-y), `cover` the share
-                        of the region its terrain detail covers, per cent). A file of fmt 4 keeps
+                        of the region its terrain detail covers, per cent; `partial` true when made
+                        while some of its ways' owners weren't known, made again once they are). A file of fmt 4 keeps
                         its pins, its lists made from the catalogues this Mac kept for it; one of
                         fmt 3 or before (`world` a time, `detail` or `fine` a flag, fmt 2's `views`)
                         is written again as fmt 5, each download pinned to the catalogue served; one

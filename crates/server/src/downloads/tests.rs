@@ -949,6 +949,11 @@ async fn at_home_an_unread_hidata_lets_no_owner_go() {
     let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(&root), true);
     tokio::task::block_in_place(|| settle(&s));
     assert!(s.data.mirror.clone().unwrap().has(&far), "kept while its hidata is unread");
+    // (Its list at 3 is partial while its owners can't be told: made again from catalogue 3 once
+    // they are; until then no base pack goes and no old catalogue.)
+    let j: Value = serde_json::from_slice(&std::fs::read(home.path().join(FILE)).unwrap()).unwrap();
+    assert_eq!(j["lists"]["3"]["partial"], json!(true), "{}", j["lists"]);
+    assert!(s.data.mirror.clone().unwrap().catalogue(2).is_some());
 }
 
 /// Two regions sharing z6 tiles (task #796), on the roads fixture at catalogue 2: London (its tile
@@ -1181,6 +1186,7 @@ fn an_update_s_size_from_its_list_equals_the_two_catalogues_diff() {
             .collect();
         let at = |c: &Catalogue| At {
             cat: None,
+            partial: false,
             world: Some(world_part(c)),
             regions: tiles
                 .iter()
@@ -1216,30 +1222,37 @@ fn an_update_s_size_from_its_list_equals_the_two_catalogues_diff() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_download_behind_the_log_compares_its_list() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let root = store::nasfs::NasRoot::local_for_test(nas.path());
-    let cat = catalogue(&root);
+    let nas_root = nas.path().join("project");
+    std::fs::create_dir_all(&nas_root).unwrap();
+    let root = store::nasfs::NasRoot::local_for_test(&nas_root);
+    // (Its hidata real: its owners known, its list whole, so the old catalogues go.)
+    let mut cat = catalogue(&root);
+    put_roads(&nas_root, &mut cat);
+    cat.n = 2;
+    cat.validate().unwrap();
+    store::catalogue::write(&nas_root.join("catalog"), &cat).unwrap();
     let s = crate::test_state_with(home.path(), &root, true);
     assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
     let roads = "layers/roads/hi/6-31-21";
     let old = cat.files[roads].file.clone();
     let mut c = cat.clone();
-    for n in 2..=5 {
-        let remade = if n == 2 { roads } else { "layers/roads/hi/6-30-21" };
-        c = next_catalogue(&s, nas.path(), &c, n, &[remade]);
+    for n in 3..=6 {
+        let remade = if n == 3 { roads } else { "layers/roads/hi/6-30-21" };
+        c = next_catalogue(&s, &nas_root, &c, n, &[remade]);
         tokio::task::block_in_place(|| settle(&s));
     }
     let m = s.data.mirror.clone().unwrap();
-    assert!(m.catalogue(1).is_none(), "catalogue 1 not kept");
+    assert!(m.catalogue(2).is_none(), "catalogue 2 not kept");
     for s in [s.clone(), crate::test_state_with(home.path(), &root, true)] {
         tokio::task::block_in_place(|| settle(&s));
-        assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 1, to: None });
+        assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 2, to: None });
         let v = get(&s).await;
         let r = &v["regions"]["london"];
-        assert_eq!((r["state"].as_str(), r["cat"].as_u64()), (Some("done"), Some(1)), "{v}");
+        assert_eq!((r["state"].as_str(), r["cat"].as_u64()), (Some("done"), Some(2)), "{v}");
         assert_eq!(
             (r["behind"]["cat"].as_u64(), r["behind"]["files"].as_u64(), r["behind"]["gone"].as_u64()),
-            (Some(5), Some(1), Some(1)),
+            (Some(6), Some(1), Some(1)),
             "{r}"
         );
         assert_eq!((r["behind"]["bytes"].as_u64(), &r["behind"]["what"]), (Some(1_234), &json!(["roads"])));
@@ -1248,7 +1261,7 @@ async fn a_download_behind_the_log_compares_its_list() {
     let s = crate::test_state_with(home.path(), &root, true);
     assert_eq!(call(post_region_update(State(s.clone()), Path("london".into())).await).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
-    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 5, to: None });
+    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 6, to: None });
     assert_eq!(s.data.content(roads), Some(c.files[roads].file.clone()));
     assert!(!s.data.mirror.as_ref().unwrap().has(&old));
 }
