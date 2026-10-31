@@ -141,4 +141,21 @@ given), main's Cargo.toml profiles, a fresh target dir, third-party crates from 
 the largest process, rustc). "Leaf edit": one line appended to pyjson.rs; "core edit": to
 timings.rs.
 
-MEASUREMENTS
+31 Oct 2026, rustc 1.98.1, `cargo build --workspace --bins` (dev) and
+`cargo test --workspace --no-run` (test):
+
+| run | before step 1 (21:59 UTC) | after step 1 (22:23 UTC) |
+|---|---|---|
+| dev, clean | 192 s, 2.15 GB (load 34) | 363 s, 1.94 GB (load 76) |
+| dev, leaf edit | 33 s, 1.81 GB | 41 s, 1.36 GB (load 83) |
+| dev, core edit | 29 s, 2.05 GB | 43 s, 1.62 GB (load 104) |
+| test, clean | 1026 s, 2.94 GB (load 125) | 995 s, 2.42 GB (load 81) |
+| test, leaf edit | 41 s, 1.29 GB | 52 s, 1.29 GB |
+| test, core edit | 54 s, 1.09 GB | 45 s, 1.36 GB |
+
+The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
+are a baseline of the method, not evidence either way. What follows from the structure, not the
+timings: an edit in a crate recompiles every crate that depends on it, so moving a *leaf* module
+down (step 1's pyjson) does not spare the pipeline's recompile after an edit to it. The gains come
+when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
+and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
