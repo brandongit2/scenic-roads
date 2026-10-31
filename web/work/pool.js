@@ -3,8 +3,8 @@
 // do when the lead is out of touch. From the agent's status the coordinator serves (`/work/swarm`'s
 // agent: its `pool.lead`, crates/pipeline/src/agent/lead.rs View). Each member a Pause/Resume of
 // its own (task #873): the hold ask (`POST /work/hold`, docs/pool.md §11) of this page's agent,
-// another member's by its id (written on the NAS as that member's hold, taken up when it reads it:
-// so one out of touch has it queued), and its hold's stage as its own status serves it
+// always by member id (its own set at once; another's written on the NAS as that member's hold,
+// taken up when it reads it: so one out of touch has it queued), and its hold's stage as its own status serves it
 // (`Status::hold`, control::HoldView: asked, pausing with its jobs named, paused, resuming).
 
 function h(tag, attrs, ...kids) {
@@ -59,7 +59,7 @@ export function poolSection(agent, now, macs = new Map(), asks = new Map(), ask 
   const sub = v.no_lead ? `term ${v.term}: no lead` : lead ? `${lead.host} leads term ${lead.term} since ${clock(lead.since)}` : "";
   const cards = v.members.map((m) => {
     const [state, cls] = chipFor(m);
-    const x = macs.get(m.host), hold = x?.status?.hold || null;
+    const x = macs.get(m.member), hold = x?.status?.hold || null;
     const card = h("div", { class: `mc ${m.out_of_touch ? "off" : ""}` },
       h("div", "top", h("span", "name", m.host), h("span", "role", [m.me ? "serves this page" : null, m.app].filter(Boolean).join(" · ")), h("span", { class: `chip ${cls}` }, state),
         hold && hold.stage !== m.state ? h("span", { class: "chip warn", title: hold.said }, hold.stage) : null,

@@ -407,11 +407,12 @@ The Jobs tab's stages are the one exception.
   it was silent. What the lead offered a member is one line (its steps and the pieces it can
   take), the steps on a click. Pages one card.
 - **The pool:** `pool.js`, under the machines (the Machines tab): each member's card with a
-  Pause/Resume of its own (task #873): `POST /work/hold` to this page's agent (another member's with
-  its id, written on the NAS as its hold, so one out of touch has it kept until it's back, said in
-  the button's tip), and its hold's stage as its own status serves it (`Status::hold`: asked,
+  Pause/Resume of its own (task #873): `POST /work/hold` to this page's agent, always with the member's id
+  (its own set at once; another's written on the NAS as its hold, so one out of touch has it kept
+  until it's back, said in the button's tip), and its hold's stage as its own status serves it,
+  matched by member id, never by host (`Status::hold`: asked,
   pausing with its jobs named, paused, resuming; the button disabled while asked or resuming, and
-  while a press is posted).
+  while a press is posted, 60 s at most).
 - **Settings:** `settings.js`, under the pool (the Machines tab): a row per setting (its name, its
   value, who set it and when, a field with Set and Off) for the in-use share, build memory and disk
   room target, a block per Mac named by its host (this page's own first; each other Mac's asked at

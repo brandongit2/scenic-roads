@@ -1996,29 +1996,36 @@ let pending = null; // {kind, at}: a press waiting for the build to say so
 // A pool member's Pause/Resume pressed (task #873), by member id: {stage, at} while posted, then
 // with the answer's words (`said`), until that member's status says another stage (or 60 s).
 const holdPress = new Map();
-const stageOf = (m, host) => m.macs.find((x) => x.name === host)?.status?.hold?.stage || null;
+// (By member id, the status's own `pool.member`: never by host, which two members may share or a
+// rename may change.)
+const macOf = (m, id) => m.macs.find((x) => x.status?.pool?.member === id);
+const stageOf = (m, id) => macOf(m, id)?.status?.hold?.stage || null;
 function holdAsks(m) {
   const out = new Map();
   for (const [id, p] of holdPress) {
-    if (p.said != null && (stageOf(m, p.host) !== p.stage || Date.now() - p.at > 60000)) holdPress.delete(id);
+    // (60 s at most from the press, answered or not: this page's own agent's call has no timeout,
+    // so a post that never comes back can't keep the button disabled.)
+    if (Date.now() - p.at > 60000 || (p.said != null && stageOf(m, id) !== p.stage)) holdPress.delete(id);
     else out.set(id, p.said ?? true);
   }
   return out;
 }
 async function askHold(member, held) {
-  const p = { host: member.host, stage: last ? stageOf(model(last), member.host) : null, at: Date.now(), said: null };
+  const p = { host: member.host, stage: last ? stageOf(model(last), member.member) : null, at: Date.now(), said: null };
   holdPress.set(member.member, p);
   render();
   try {
-    // (Another member's by its id: this page's agent writes it on the NAS as that member's hold.)
-    const [code, r] = await ctx.call("/work/hold", member.me ? { held } : { held, member: member.member });
+    // (Always by its member id, this page's agent's own too: the pool's view may be the lead's, whose
+    // `me` is the lead, not this page's agent; an ask with no member would pause this page's Mac.
+    // This page's agent sets its own hold when the id is its own, else writes it on the NAS.)
+    const [code, r] = await ctx.call("/work/hold", { held, member: member.member });
     p.said = r?.said || r?.error || (r?.asked ? `Asked: ${member.host}'s agent takes it up at its next round` : `answer ${code}`);
     if (code >= 400 || r?.ok === false) ctx.onError?.(`couldn't ${held ? "pause" : "resume"} ${member.host}: ${p.said}`);
   } catch (e) {
     p.said = "";
     ctx.onError?.(`couldn't ${held ? "pause" : "resume"} ${member.host}: ${e.message}`);
   }
-  p.at = Date.now();
+  if (holdPress.get(member.member) === p) p.at = Date.now();
   await poll();
   render();
 }
@@ -2080,7 +2087,7 @@ function tabs(m, md) {
     machines: () => [
       part("d-machines", () => section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
         h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m)))),
-      part("d-pool", () => poolSection(last.agent, m.now, new Map(m.macs.map((x) => [x.name, x])), holdAsks(m), askHold) || section("d-pool")),
+      part("d-pool", () => poolSection(last.agent, m.now, new Map(m.macs.filter((x) => x.status?.pool?.member).map((x) => [x.status.pool.member, x])), holdAsks(m), askHold) || section("d-pool")),
       part("d-settings", () => settingsSection(ctx.call, last?.macs || [], render, ctx.onError)),
     ],
     regions: () => [part("d-regions", () => regionsPane(m, md))],
