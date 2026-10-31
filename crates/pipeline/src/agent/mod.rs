@@ -15571,9 +15571,10 @@ mod pool_tests {
             assert!(Instant::now() < end, "the brokers' heartbeats not read");
             std::thread::sleep(Duration::from_millis(250));
         }
-        // A page from the lead's address reads the member's broker, with CORS.
+        // The lead's page reads the member's live store at its broker, with CORS (the page itself is
+        // the lead's: docs/roles.md §3.3).
         let page_origin = crate::coord::brokers::origin(&lead.coord.as_ref().unwrap().contact.urls[0]).unwrap();
-        let (code, _, acao) = http_post(bport, "/work/swarm", &[("Origin", &page_origin)], "{}");
+        let (code, _, acao) = http_post(bport, "/work/live", &[("Origin", &page_origin)], "{}");
         assert!(matches!(code, 200 | 503) && acao.as_deref() == Some(page_origin.as_str()), "{code} {acao:?}");
         // A worker (another Mac's agent, with the pool's key) takes the member's task from the
         // member's broker, and the lead's from the lead.
