@@ -10,11 +10,7 @@
 // from its file, says what its build caches hold, whether they can be cleared now,
 // and the last clears (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
 // that agent to clear what later jobs copy back cheaply from the NAS, Clear Caches Deeply that
-// and what's costly to make again, at any moment. Disk Room shows the disk's free space and the owner's room target, and
-// sets it (a few presets, or Off): the free space that agent keeps, freeing its caches to it; its
-// title says the free space, what's left of it for jobs and what keeps the rest. Memory shows and
-// sets the memory the build's jobs get here together (crates/pipeline/src/agent/buildmem.rs: a few
-// presets, or the memory guard's limit alone). With
+// and what's costly to make again, at any moment. (The disk room target and the build's memory are set on the build page.) With
 // the pool on (docs/pool.md §11), its agent's view of the pool: who leads (the Mac mini, the fixed
 // lead: no item moves it), each Mac and its state.
 //
@@ -364,33 +360,9 @@ struct Caches: Decodable {
     let cleared: Freed?
     let cleared_deep: Freed?
     let declined: Freed?
-    let room: RoomView?
 
     /// What a clear of that level would free.
     func clearable(deep: Bool) -> Int? { deep ? clearable_deep : clearable }
-}
-
-/// The owner's disk room target as the agent keeps it (room.rs RoomView): the target, the disk's
-/// free space as its status was written, its last freeing toward it, and why the disk is short of
-/// it and stays so.
-struct RoomView: Decodable {
-    let target: RoomTarget?
-    let free: Int
-    /// The disk its jobs have reserved (MB; nil from an older agent).
-    let reserved_mb: Int?
-    let toward: Freed?
-    let short: String?
-}
-
-/// The target (room.rs Target): bytes to keep free, who set it and when.
-struct RoomTarget: Decodable {
-    /// (A Double: a hand-edited file's past Int's range doesn't drop the whole status.)
-    let bytes: Double
-    let by: String
-    let at: Int
-
-    /// The bytes, at most the agent's largest target (room.rs MAX_TARGET, 1 PB).
-    var size: Int { Int(min(max(bytes, 0), Double(1 << 50))) }
 }
 
 /// A cache a clear would empty (room.rs Gone): its name in words, its bytes, how it comes back,
@@ -1130,7 +1102,7 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         reload.action = #selector(reloadPage)
         reload.toolTip = "Load the build page again"
         more.action = #selector(showMenu)
-        more.toolTip = "Pause, the lead, disk room, the map…"
+        more.toolTip = "Pause, the lead, the map…"
         footer.addSubview(state)
         root.addSubview(footer)
         let vc = NSViewController()
@@ -1453,100 +1425,6 @@ let clearFile = "clear-request.json"
 func clearAsked() -> Bool {
     [clearFile, "\(clearFile).taken"].contains { FileManager.default.fileExists(atPath: home.appendingPathComponent("agent").appendingPathComponent($0).path) }
 }
-
-/// The owner's disk room target on this Mac (room.rs Target, `scenic room`), in its agent's folder:
-/// its bytes, as set now (nil: off).
-let targetFile = "room-target.json"
-func roomTarget() -> Int? {
-    guard let d = try? Data(contentsOf: home.appendingPathComponent("agent").appendingPathComponent(targetFile)),
-          let t = try? JSONDecoder().decode(RoomTarget.self, from: d), t.size > 0 else { return nil }
-    return t.size
-}
-
-/// The free space on the disk of the agent's folder, now (as its agent measures it: statfs's).
-func diskFree() -> Int? {
-    (try? FileManager.default.attributesOfFileSystem(forPath: home.path))?[.systemFreeSize] as? Int
-}
-
-/// The size of the disk of the agent's folder.
-func diskSize() -> Int? {
-    (try? FileManager.default.attributesOfFileSystem(forPath: home.path))?[.systemSize] as? Int
-}
-
-/// The room target's presets (GB).
-let roomPresets = [10, 20, 50, 100, 150, 200, 300]
-
-/// The menu's Disk Room item (none without an agent here): its title, with the free space and the
-/// target; its tooltip (why the disk is short of it, when it stays so); and its submenu's choices
-/// (a preset's GB, 0 for Off), with the one set checked: none the disk (`disk`, its size) can't hold,
-/// as `scenic room` refuses them.
-func roomItem(_ own: Own?, target: Int?, free: Int?, disk: Int?) -> (title: String, tip: String, choices: [(title: String, gb: Int, on: Bool)])? {
-    guard own?.caches != nil else { return nil }
-    let title = "Disk Room: " + diskWords(free: free, target: target, reserved: (own?.caches?.room?.reserved_mb ?? 0) << 20)
-    let r = own?.caches?.room
-    var tip = "The free space this Mac's agent keeps: it frees its build caches to it, as far as needed, jobs running or not (what they use stays), and starts no job that would cross it, until it's lowered or off."
-    if let t = target, r?.target?.size == t, let why = r?.short { tip = "Short of it: \(why)" }
-    if let t = target, r?.target?.size == t, let f = r?.toward, f.bytes > 0 { tip += "\nFreed toward it \(clock(f.at)): \(freedText(f))" }
-    var choices = roomPresets.filter { p in disk.map { p << 30 < $0 } ?? true }.map { (title: "Keep \($0) GB Free", gb: $0, on: target == $0 << 30) }
-    if let t = target, !choices.contains(where: \.on) { choices.append((title: "Keep \(gb(t)) Free", gb: -1, on: true)) }
-    choices.append((title: "Off", gb: 0, on: target == nil))
-    return (title, tip, choices)
-}
-
-/// The disk in words (task #391, as coord::disk_words): "38 GB free · 18 GB for jobs (20 GB room
-/// target)": what's left for jobs, the free space less the owner's room target and its jobs'
-/// reservations (no fixed reserve: task #421); nothing kept, no parentheses.
-func diskWords(free: Int?, target: Int?, reserved: Int = 0) -> String {
-    let g = { (b: Int) in "\(Int((Double(b) / Double(1 << 30)).rounded()))\u{00A0}GB" }
-    guard let f = free else { return "? free" }
-    var kept: [String] = []
-    if let t = target { kept.append("\(g(t)) room target") }
-    if reserved > 0 { kept.append("\(g(reserved)) reserved by its jobs") }
-    let why = kept.isEmpty ? "" : " (\(kept.joined(separator: ", ")))"
-    return "\(g(f)) free · \(g(max(0, f - (target ?? 0) - reserved))) for jobs\(why)"
-}
-
-/// The memory this Mac gives the build's jobs together (crates/pipeline/src/agent/buildmem.rs,
-/// `scenic memory`), in its agent's folder: its MB, as set now (nil: the memory guard's limit).
-let memoryFile = "build-memory.json"
-struct BuildMemory: Decodable {
-    let mb: Double
-    let by: String
-    let at: Int
-}
-func buildMemory() -> Int? {
-    guard let d = try? Data(contentsOf: home.appendingPathComponent("agent").appendingPathComponent(memoryFile)),
-          let m = try? JSONDecoder().decode(BuildMemory.self, from: d), m.mb >= 1 else { return nil }
-    return Int(min(m.mb, Double(1 << 40)))
-}
-
-/// The memory guard's limit on a Mac of `total` MB (memguard.rs limit_mb): an eighth kept, 4 GB at least.
-func guardLimitMB(_ total: Int) -> Int { max(0, total - max(total / 8, 4096)) }
-
-/// The build memory's presets (GB).
-let memoryPresets = [4, 6, 8, 10, 12, 16, 24, 32, 48, 64]
-
-/// The menu's Memory item (none without an agent here): its title, the memory the build's jobs get
-/// together (the amount set, within the guard's limit; none set, the limit); its tooltip; its
-/// submenu's choices (a preset's GB under the limit, 0 for the limit alone), the one set checked.
-func memoryItem(_ own: Own?, set: Int?, totalMB: Int) -> (title: String, tip: String, choices: [(title: String, gb: Int, on: Bool)])? {
-    guard own?.caches != nil else { return nil }
-    let limit = guardLimitMB(totalMB)
-    let g = { (mb: Int) in String(format: "%.0f\u{00A0}GB", Double(mb) / 1024) }
-    let title: String
-    // (As the page says it: the limit named only where it holds the build's memory under it.)
-    if let m = set, limit <= 0 { title = "Memory: \(g(m)) for the build" }
-    else if let m = set, m < limit { title = "Memory: \(g(m)) for the build (limit \(g(limit)))" }
-    else { title = "Memory: \(g(limit)) for the build (the memory guard's limit)" }
-    let tip = "The memory this Mac's jobs get together, whether you're using the Mac or not; the memory guard's limit (\(g(limit))) stays the ceiling."
-    var choices = memoryPresets.filter { limit == 0 || $0 << 10 <= limit }.map { (title: "Give the Build \($0) GB", gb: $0, on: set == $0 << 10) }
-    if let m = set, !choices.contains(where: \.on) { choices.append((title: "Give the Build \(g(m))", gb: -1, on: true)) }
-    choices.append((title: "The Memory Guard's Limit (\(g(limit)))", gb: 0, on: set == nil))
-    return (title, tip, choices)
-}
-
-/// This Mac's memory (MB).
-func macMemoryMB() -> Int { Int(ProcessInfo.processInfo.physicalMemory >> 20) }
 
 /// "51.2 GB", or under a GB, "350 MB" (number and unit never split across lines).
 func gb(_ b: Int) -> String {
@@ -2047,38 +1925,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if !c.tip.isEmpty { it.toolTip = c.tip }
             m.addItem(it)
         }
-        // This Mac's disk room target (room.rs Target): its agent keeps that much free.
-        if let r = roomItem(own, target: roomTarget(), free: diskFree(), disk: diskSize()) {
-            let it = NSMenuItem(title: r.title, action: nil, keyEquivalent: "")
-            it.toolTip = r.tip
-            let sub = NSMenu()
-            for c in r.choices {
-                let ci = NSMenuItem(title: c.title, action: c.gb >= 0 ? #selector(setRoom) : nil, keyEquivalent: "")
-                ci.target = self
-                ci.tag = c.gb
-                ci.state = c.on ? .on : .off
-                if c.gb == 0 { sub.addItem(.separator()) }
-                sub.addItem(ci)
-            }
-            it.submenu = sub
-            m.addItem(it)
-        }
-        // The memory this Mac gives the build's jobs (buildmem.rs): its agent's asks are held to it.
-        if let r = memoryItem(own, set: buildMemory(), totalMB: macMemoryMB()) {
-            let it = NSMenuItem(title: r.title, action: nil, keyEquivalent: "")
-            it.toolTip = r.tip
-            let sub = NSMenu()
-            for c in r.choices {
-                let ci = NSMenuItem(title: c.title, action: c.gb >= 0 ? #selector(setMemory) : nil, keyEquivalent: "")
-                ci.target = self
-                ci.tag = c.gb
-                ci.state = c.on ? .on : .off
-                if c.gb == 0 { sub.addItem(.separator()) }
-                sub.addItem(ci)
-            }
-            it.submenu = sub
-            m.addItem(it)
-        }
         m.addItem(.separator())
         if let log = reply?.log {
             let it = NSMenuItem(title: "Open the Build Log", action: #selector(openLog), keyEquivalent: "")
@@ -2287,50 +2133,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
             post("Couldn't ask to clear the build's caches", "\(error.localizedDescription)")
-            return
-        }
-        poll()
-    }
-
-    /// Sets this Mac's disk room target to the item's GB (its tag; 0: off): the target's file in
-    /// the agent's folder (room.rs Target), written whole, which the agent reads each loop; signed
-    /// with the name the agent goes by.
-    @objc func setRoom(_ sender: NSMenuItem) {
-        let dir = home.appendingPathComponent("agent")
-        let dst = dir.appendingPathComponent(targetFile)
-        do {
-            if sender.tag == 0 {
-                if FileManager.default.fileExists(atPath: dst.path) { try FileManager.default.removeItem(at: dst) }
-            } else {
-                let name = SCDynamicStoreCopyLocalHostName(nil) as String? ?? "this Mac"
-                let tmp = dir.appendingPathComponent("\(targetFile).menu.tmp")
-                try JSONSerialization.data(withJSONObject: ["bytes": sender.tag << 30, "by": "the menu bar on \(name)", "at": Int(Date().timeIntervalSince1970)] as [String: Any]).write(to: tmp)
-                guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-            }
-        } catch {
-            post("Couldn't set the disk room target", "\(error.localizedDescription)")
-            return
-        }
-        poll()
-    }
-
-    /// Sets the memory this Mac gives the build to the item's GB (its tag; 0: the memory guard's
-    /// limit alone): the file in the agent's folder (buildmem.rs Memory), written whole, which the
-    /// agent reads each loop; signed with the name the agent goes by.
-    @objc func setMemory(_ sender: NSMenuItem) {
-        let dir = home.appendingPathComponent("agent")
-        let dst = dir.appendingPathComponent(memoryFile)
-        do {
-            if sender.tag == 0 {
-                if FileManager.default.fileExists(atPath: dst.path) { try FileManager.default.removeItem(at: dst) }
-            } else {
-                let name = SCDynamicStoreCopyLocalHostName(nil) as String? ?? "this Mac"
-                let tmp = dir.appendingPathComponent("\(memoryFile).menu.tmp")
-                try JSONSerialization.data(withJSONObject: ["mb": sender.tag << 10, "by": "the menu bar on \(name)", "at": Int(Date().timeIntervalSince1970)] as [String: Any]).write(to: tmp)
-                guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-            }
-        } catch {
-            post("Couldn't set the build's memory", "\(error.localizedDescription)")
             return
         }
         poll()
@@ -2569,12 +2371,6 @@ if let i = args.firstIndex(of: "--reopen") {
     for c in cachesItems(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
         print("item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
     }
-    if let r = roomItem(own, target: roomTarget(), free: diskFree(), disk: diskSize()) {
-        print("item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
-    }
-    if let r = memoryItem(own, set: buildMemory(), totalMB: macMemoryMB()) {
-        print("item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
-    }
 } else if let i = args.firstIndex(of: "--render") {
     // The menu bar's icon and the menu's lines as views, stacked as the menu stacks them, drawn into a PNG.
     let done = DispatchSemaphore(value: 0)
@@ -2627,11 +2423,6 @@ if let i = args.firstIndex(of: "--reopen") {
             print("  item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
             // (What its confirmation lists.)
             for g in ((c.enabled ? d.own?.caches?.each : nil) ?? []).filter({ c.deep || $0.deep != true }) { print("    \(g.what) \(gb(g.bytes)): \(g.back)") }
-        }
-        // (The target and free space as the agent's status says them.)
-        if let r = roomItem(d.own, target: d.own?.caches?.room?.target?.size, free: d.own?.caches?.room?.free, disk: nil) {
-            print("  item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
-            print("    tip: \(r.tip)")
         }
         d.notifyChanges()
     }

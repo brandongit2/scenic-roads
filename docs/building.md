@@ -158,7 +158,7 @@ from the first (`edit_held`).
       `caches.each` with `deep` on the deep-only caches) and what the last of each freed and kept,
       and why (`caches.cleared`, `caches.cleared_deep`: `freed`, `left`, `stayed`).
   - **The owner's room target** (`room::Target`, `room::toward`): `scenic room <GB>` / `scenic room
-    off` or the menu's Disk Room, per Mac (`room-target.json`). A job starts only with the target free
+    off` or the build page's chart, per Mac (`room-target.json`). A job starts only with the target free
     past its own room; one that can't waits, saying so in `waiting`. Whenever the disk is short of
     the target, the agent frees its caches toward it on a thread of its own, the cheapest to refill
     first (copies, base packs, the heritage clip last), measuring as it goes; short with
@@ -496,7 +496,7 @@ available. Until work is done, the map serves the last catalogue.
     (the swarm answer's `app`), the footer says so. From it, as from any page on this Mac, a job
     can be cancelled and a failed target tried again (docs/pool.md §11).
   - **Its menu** (right-click, or "⋯"): the state, downloads and caches; Pause/Resume Building; the
-    lead items (docs/pool.md §11); Clear the Build's Caches; Clear Caches Deeply; Disk Room ▸; Memory ▸; Open the Build Log; Open
+    lead items (docs/pool.md §11); Clear the Build's Caches; Clear Caches Deeply; Open the Build Log; Open
     the Map; Copy the Map's Address; Open/Copy the Build Page.
   - Its timers run in the run loop's common modes, so it updates while a menu is open
     (`scenic-status --menu-proof`).

@@ -505,8 +505,8 @@ be read, the default then in force). The agent reads it each loop, as the disk r
 
 **The build's memory** (`crate::agent::buildmem`, task #390): one fixed amount of memory a Mac gives
 its build's jobs together, set per Mac, whether its owner uses it or not. `scenic memory <GB>` or
-the menu bar's Memory ▸ sets it in the agent's folder (`build-memory.json`); `scenic memory off` or
-the menu's The Memory Guard's Limit clears it; `scenic memory` says how it stands. The agent reads
+the build page's chart sets it in the agent's folder (`build-memory.json`); `scenic memory off`
+clears it; `scenic memory` says how it stands. The agent reads
 it each loop. It is the memory of the Mac's asks (`Ask::mem_mb`, a member's and the lead's own:
 `Agent::build_room`), its capacity's `build_mb`, and so the forecast's (which asks as that Mac's
 last ask did), always within the memory guard's limit (`buildmem::room_mb`: the smaller of

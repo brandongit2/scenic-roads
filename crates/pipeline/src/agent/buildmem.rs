@@ -1,5 +1,5 @@
 //! The build's memory (docs/pool.md §7.1): one fixed amount of memory a Mac gives the build's jobs
-//! together, set per Mac by `scenic memory <GB>` or the menu bar's Memory submenu, in its agent's
+//! together, set per Mac by `scenic memory <GB>` or the build page's chart, in its agent's
 //! folder (`FILE`), which the agent reads each loop (as the disk room target, crate::agent::room).
 //! It bounds the Mac's asks (`coord::Ask::mem_mb`: a member's and the lead's own) and the
 //! forecast's room for the Mac (crate::agent::forecast's `MacRoom`), within the memory guard's

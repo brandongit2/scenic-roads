@@ -68,7 +68,7 @@
 //! own timings (`unit-stages.json`). What each frees and keeps, and why, goes in the status
 //! (`Caches`: `cleared`, `cleared_deep`).
 //!
-//! The owner's room target (`Target`: `scenic room <GB>`, the menu bar's Disk Room; `toward`): the
+//! The owner's room target (`Target`: `scenic room <GB>`, the build page's chart; `toward`): the
 //! free space this Mac's agent keeps, set at any moment, in its folder (each Mac's disk is its own).
 //! A job starts only with the target free past its own room, so nothing a job copies back crosses
 //! it; the jobs wait, saying why, until it's lowered or off (the daily backup and GC keep none).
@@ -686,7 +686,7 @@ fn clear_answers(cache: &Path, root: &store::nasfs::NasRoot, answering: bool) ->
     Ok((freed, vec![stay(lacking, "the NAS hasn't all of them yet (the step's next run sends them)")]))
 }
 
-/// The owner's disk room target on this Mac (`scenic room <GB>`, the menu bar's Disk Room): the
+/// The owner's disk room target on this Mac (`scenic room <GB>`, the build page's chart): the
 /// free space its agent keeps (the module's doc, The room target). In the agent's folder
 /// (`TARGET`): each Mac's disk is its own.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
