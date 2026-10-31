@@ -2095,6 +2095,10 @@ pub struct TerrainWork {
     /// slope-hi, their own and edge neighbours' terrain-lo); and the "none" assemblies not yet run
     /// (`TerrainTargets::slope_lo_none`), whenever, last.
     pub slope_lo: Vec<(String, String)>,
+    /// The terrain's root when stale and every terrain-lo assembly is done (its readiness: it reads
+    /// them all), made in the terrain stage so the slope that reads it waits for it
+    /// (docs/readiness.md decision 2).
+    pub terrain_root: Vec<(String, String)>,
     /// Terrain-deep's z10 tiles that can run: every stale one whose key is known, from the start
     /// (its base is made from the pool, not read from built tiles), and the "none" ones not yet run.
     pub terrain_deep: Vec<(String, String)>,
@@ -2263,6 +2267,15 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
         ("slope-lo", &w.slope_lo_left),
     ] {
         w.left.set(step, set.iter().cloned());
+    }
+    // The terrain's root, once no assembly is left (its readiness), so slope reads it as it'll
+    // stay; left (and what reads it waiting) while stale.
+    if let Some(k) = root_key("terrain", m).filter(|k| done.lo.get("terrain-root") != Some(k)) {
+        w.left.world("terrain-root", true);
+        match readiness("terrain-root", "terrain-root", &w.left) {
+            Ready::Waits(n) => w.held.push(("terrain-root", super::steps::wait_note(&n))),
+            _ => w.terrain_root.push(("terrain-root".to_string(), k)),
+        }
     }
     let left = &w.left;
     let mut sd_held = Vec::new();
@@ -2881,7 +2894,16 @@ pub fn plan(
     // published.
     let tw = terrain_work(&terrain_slope_targets(cov, m, tiles), m, done);
     let TerrainWork {
-        terrain, terrain_lo, terrain_deep, slope, slope_lo, slope_deep, terrain_left, slope_left, ..
+        terrain,
+        terrain_lo,
+        terrain_root,
+        terrain_deep,
+        slope,
+        slope_lo,
+        slope_deep,
+        terrain_left,
+        slope_left,
+        ..
     } = tw.clone();
     // The drops, every step's targets offered under its "none" key (`is_none_key`: packs of tiles no
     // target any more, dropped, nothing read): first of all the terrain, slope and tree cover work, each a
@@ -2958,6 +2980,7 @@ pub fn plan(
         push(&mut work, "terrain-hi", terrain);
         push(&mut work, "terrain-deep", terrain_deep);
         push(&mut work, "terrain-lo", terrain_lo);
+        push(&mut work, "terrain-root", terrain_root);
         push(&mut work, "slope-deep", slope_deep);
         push(&mut work, "slope-hi", slope);
         push(&mut work, "slope-lo", slope_lo);
@@ -3365,14 +3388,10 @@ pub fn plan(
         && depth.is_empty()
         && polar.is_empty();
     let low = low_gate(last_now, queue_empty, low_due_of(&pl.1, done), updates.way.since_low);
-    // The terrain's and slope's roots wait for what makes the lo packs they read: terrain's for the
-    // terrain left (its z6 tiles' mids, its assemblies), slope's for that and the slope left, so a
-    // root isn't made while an assembly runs (or waits to be merged) and again after it.
-    let roots_held = if low {
-        [!tw.terrain_left.is_empty(), !tw.terrain_left.is_empty() || !tw.slope_left.is_empty()]
-    } else {
-        [true, true]
-    };
+    // The slope's root waits for what makes the lo packs it reads (the terrain left and the slope
+    // left), so it isn't made while an assembly runs (or waits to be merged) and again after it.
+    // (The terrain's is made in the terrain stage: `TerrainWork::terrain_root`.)
+    let root_held = !low || !tw.terrain_left.is_empty() || !tw.slope_left.is_empty() || !tw.terrain_root.is_empty();
     let mut plan_low = low;
     let mut catalogue_held = false;
     let mut catalogue_due = false;
@@ -3405,7 +3424,7 @@ pub fn plan(
             publishing.why = "nothing to publish until a z6 tile is built".into();
         }
         None => {
-            let chain = publish_chain(date, m, done, &pl, roots_held, low);
+            let chain = publish_chain(date, m, done, &pl, root_held, low);
             // A catalogue once the z6 tiles' map tiles and the road index are drawn (`CATALOGUE_GATE`): the
             // low zooms, rail stops, ferries and roots go out with a later one. Postponed past
             // `CATALOGUE_CAP_S` by map tiles still to draw (z6 tiles landing one after another), it goes
@@ -3491,6 +3510,8 @@ pub fn plan(
     };
     let trees_lo_waits =
         |t: &(String, String)| (!near || low) && to_publish.iter().any(|r| r.tree_z3s.contains(&tree_z3(t)));
+    // (The terrain's root first of them: all the slope waits for it, a short run of the lead's.)
+    push(&mut work, "terrain-root", terrain_root);
     let (prep, rest): (Vec<_>, Vec<_>) = slope_deep.into_iter().partition(slope_waits);
     push(&mut work, "slope-deep", prep);
     let slope_deep = rest;
@@ -3825,7 +3846,7 @@ fn prune_tiles(m: &BTreeMap<String, String>, pl: &PackLo) -> Option<Work> {
 
 /// The publishing chain, every step drawn (the forecast's and the checklist's: `publish_chain`).
 fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches>) -> Option<Work> {
-    publish_chain(date, m, done, &pack_lo_targets(m, reach), [false, false], true)
+    publish_chain(date, m, done, &pack_lo_targets(m, reach), false, true)
 }
 
 /// Whether so much of the low zooms is stale that they're made however long since they last were
@@ -3843,15 +3864,15 @@ fn low_due_of(lo: &[(String, String)], done: &Keys) -> bool {
 
 /// The publishing chain after the z6 tiles, its first stale step: map tiles no z6 tile reaches pruned,
 /// the map tiles whose owners changed (pack(T)), the road → z6 tiles index, the roads' and rails' lo
-/// packs, rail stops and ferries, the terrain and slope roots (`pl`: pack(T)'s and lo's targets,
+/// packs, rail stops and ferries, the slope root (`pl`: pack(T)'s and lo's targets,
 /// `pack_lo_targets`). `low` false: the low zooms not due (`low_gate`): no lo packs (the roots are
-/// held by `roots_held`).
+/// root held by `root_held`).
 fn publish_chain(
     date: &str,
     m: &BTreeMap<String, String>,
     done: &Keys,
     pl: &PackLo,
-    roots_held: [bool; 2],
+    root_held: bool,
     low: bool,
 ) -> Option<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
@@ -3887,17 +3908,13 @@ fn publish_chain(
         }
     }
 
-    // The terrain and slope roots (z0–2), from their lo packs.
-    for ((layer, step), held) in [("terrain", "terrain-root"), ("slope", "slope-root")].into_iter().zip(roots_held) {
-        if held {
-            continue;
-        }
-        let Some(k) = root_key(layer, m) else { continue };
-        if done.lo.get(step).map(String::as_str) != Some(k.as_str()) {
-            return Some(Work { step: step.into(), targets: vec![(step.to_string(), k)] });
-        }
+    // The slope's root (z0–2), from its lo packs.
+    if root_held {
+        return None;
     }
-    None
+    let k = root_key("slope", m)?;
+    (done.lo.get("slope-root").map(String::as_str) != Some(k.as_str()))
+        .then(|| Work { step: "slope-root".into(), targets: vec![("slope-root".to_string(), k)] })
 }
 
 /// The road → z6 tiles index's key: on each z6 tile's road ids by content (`global/roadids/`; a z6
@@ -5304,6 +5321,7 @@ pub const COUNTED: [&str; 35] = [
     "terrain-hi",
     "terrain-deep",
     "terrain-lo",
+    "terrain-root",
     "slope-deep",
     "slope-hi",
     "slope-lo",
@@ -5319,7 +5337,6 @@ pub const COUNTED: [&str; 35] = [
     "roadunits",
     "stations",
     "ferries",
-    "terrain-root",
     "slope-root",
     "rail-feeds",
     "rail",
@@ -5427,6 +5444,10 @@ pub fn checklist(
     out.push(sized("terrain-hi", &ts.terrain, &done.terrain_hi, true));
     out.push(sized("terrain-deep", &ts.terrain_deep, &done.terrain_deep, tiles.fine(m).is_some()));
     out.push(sized("terrain-lo", &ts.terrain_lo, &done.terrain_lo, true));
+    // (The terrain's root, made in the terrain stage once its assemblies are: one target.)
+    let root: Vec<(String, String)> =
+        root_key("terrain", m).map(|k| ("terrain-root".to_string(), k)).into_iter().collect();
+    out.push(sized("terrain-root", &root, &done.lo, true));
     let slope_of = |step: &str, all: &[(String, Option<String>)], map: &BTreeMap<String, String>| {
         let known: Vec<(String, String)> = all.iter().filter_map(|(t, k)| Some((t.clone(), k.clone()?))).collect();
         let mut line = sized(step, &known, map, true);
@@ -5501,11 +5522,7 @@ pub fn checklist(
         .into_iter()
         .filter(|w| !matches!(w.step.as_str(), "pack" | "lo"))
         .collect();
-    out.extend(chain_items(
-        &roads,
-        &["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root"],
-        built,
-    ));
+    out.extend(chain_items(&roads, &["prune", "roadunits", "stations", "ferries", "slope-root"], built));
     next.insert("finish", next_of(&roads));
     // (A run of rail-feeds is followed by rail, whose key reads what it writes. Unknown while the
     // chain can't go on: before the rail sources are seeded, while inputs/keys.env can't be read,
@@ -5887,6 +5904,11 @@ pub(crate) mod tests {
     /// z6 tile's mid in the manifest (named by its key), or dropped for one of "none".
     pub(crate) fn did(m: &mut BTreeMap<String, String>, done: &mut Keys, w: &Work) {
         done.record(&w.step, &w.targets);
+        // (A root its z0–2 pack, named by its key.)
+        if let Some(layer) = w.step.strip_suffix("-root").filter(|l| ["terrain", "slope"].contains(l)) {
+            let l = format!("layers/{layer}/root/0-0-0");
+            m.insert(l.clone(), format!("{l}.{}.pack", w.targets[0].1));
+        }
         // (Terrain's and slope's z6 tiles: their mids, named by their keys; a "none" z6 tile's hi pack
         // and mid dropped. Slope-deep's z10 tiles their deep mids likewise.)
         let step = crate::agent::steps::current(&w.step);
@@ -6684,17 +6706,15 @@ pub(crate) mod tests {
     }
 
     /// The rekey's ground (docs/readiness.md §6 step 3, crate::agent::rekey): for every step scheme
-    /// 2 derives outside those it rebuilds (`rekey::REBUILT`), the scheme-2 key names no input the
-    /// scheme-1 key didn't pin, and pins every one it did: in each fixture build, each manifest
+    /// 2 derives, the scheme-2 key names no input the scheme-1 key (as this code makes it, #832's
+    /// coverage cut in) didn't pin, and pins every one it did: in each fixture build, each manifest
     /// entry and input changed alone changes a target's scheme-1 key just when it changes its
-    /// scheme-2 key.
+    /// scheme-2 key. So a record current under scheme 1 is current under scheme 2, and the records
+    /// that go at the switch are those scheme 1 itself no longer finds current: no list of steps.
     #[test]
     fn scheme_2_pins_what_scheme_1_did() {
         for f in fixtures() {
             for step in derived_steps() {
-                if crate::agent::rekey::REBUILT.contains(&step) {
-                    continue;
-                }
                 let base = f.keys(step, &f.m, &f.inputs);
                 if base.is_empty() {
                     continue;
@@ -7005,6 +7025,7 @@ pub(crate) mod tests {
                 let works = [
                     ("terrain-hi", tw.terrain),
                     ("terrain-lo", tw.terrain_lo),
+                    ("terrain-root", tw.terrain_root),
                     ("slope-hi", tw.slope),
                     ("slope-lo", tw.slope_lo),
                 ];
@@ -7156,7 +7177,7 @@ pub(crate) mod tests {
         let unit_targets = |p: &Plan| -> Vec<String> { of(p, "unit").into_iter().map(|t| t.0).collect() };
         assert!(!of(&p, "terrain-hi").is_empty());
         assert_eq!(unit_targets(&p), ["6/31/16"]);
-        for step in ["terrain-hi", "terrain-lo"] {
+        for step in ["terrain-hi", "terrain-lo", "terrain-root"] {
             loop {
                 let w = of(&plan(&m, &done, &sets), step);
                 if w.is_empty() {
@@ -7496,6 +7517,7 @@ pub(crate) mod tests {
             match w[0].step.as_str() {
                 "heritage-sites" => heritage_done(&mut m, &mut done, "d", &w[0]),
                 "terrain-hi" | "terrain-lo" => terrain_did(&mut m, &mut done, &w[0]),
+                "terrain-root" => did(&mut m, &mut done, &w[0]),
                 _ => break,
             }
         }
@@ -8122,9 +8144,9 @@ pub(crate) mod tests {
         assert_eq!(
             line(&w),
             [
-                // (g's slope with g, ahead of a's terrain: task #909.)
+                // (g's slope waits for the terrain's root, made once a's terrain is built too:
+                // docs/readiness.md decision 2.)
                 "unit 6/22/17",
-                "slope-hi 6/22/16,6/22/17",
                 "terrain-hi 6/27/16,6/27/17,6/28/16,6/28/17",
                 "trees 6/22/16,6/22/17,6/28/16,6/28/17"
             ]
@@ -8687,11 +8709,19 @@ pub(crate) mod tests {
         // Every line names every step of its stage, its items in the table's order.
         assert_eq!(
             line(&l, "terrain").steps,
-            ["terrain-water", "pyramids-fill", "terrain-hi", "terrain-deep", "terrain-lo", "polar-terrain"]
+            [
+                "terrain-water",
+                "pyramids-fill",
+                "terrain-hi",
+                "terrain-deep",
+                "terrain-lo",
+                "terrain-root",
+                "polar-terrain"
+            ]
         );
         assert_eq!(
             line(&l, "terrain").items.iter().map(|i| i.step.as_str()).collect::<Vec<_>>(),
-            ["terrain-hi", "terrain-deep", "terrain-lo"]
+            ["terrain-hi", "terrain-deep", "terrain-lo", "terrain-root"]
         );
         // Terrain, slope, the heritage sites and the area done.
         for step in ["heritage-sites", "terrain-hi", "terrain-lo", "unit", "slope-hi", "slope-lo", "trees", "trees-lo"]
@@ -8744,7 +8774,7 @@ pub(crate) mod tests {
         assert!(roads.counts()[0].starts_with(&format!("{} run", roads.left.unwrap())), "{:?}", roads.counts());
         assert_eq!(
             line(&l, "terrain").counts(),
-            [format!("{pieces} of {pieces} z6 tiles"), "1 of 1 z3 tiles".to_string()],
+            [format!("{pieces} of {pieces} z6 tiles"), "1 of 1 z3 tiles".to_string(), "1 of 1 runs".to_string()],
             "a done stage still says its counts"
         );
         assert_eq!(line(&l, "publish").left, Some(1));

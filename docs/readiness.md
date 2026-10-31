@@ -236,10 +236,13 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      code versions. `steps::key_lines` assembles §4's lines from them (an output by
      `steps::output_names`, a whole step's by its write-set, a mid by `steps::mid_logical`),
      `steps::derived_key` hashes them, `steps::none_key` gives a "none" target's. A step with no
-     versions declared isn't derived yet. `rekey::REBUILT` lists the steps whose records go.
+     versions declared isn't derived yet.
      Tests: `a_key_names_exactly_its_reads` and `scheme_2_pins_what_scheme_1_did` (each manifest
      entry and input changed alone moves a target's scheme-1 key just when it moves its scheme-2
-     key, for every derived step outside `REBUILT`), both over every derived step.
+     key), both over every derived step. It holds for every derived step, the terrain family
+     too: scheme 1 as this code makes it already keys on #832's coverage cut (step 2), so no
+     step's scheme-2 lines name an input its scheme-1 key doesn't pin, and which records go at
+     the switch needs no list: those scheme 1 itself no longer finds current (§6 step 3d).
    - **3b (built): every step keyed from a step's own inputs declared so**: the pass's world steps,
      heritage-sites, the terrain and slope family, tree cover, depth, the polar caps, the roads,
      the landmarks, the 3D buildings, rail, timetables-todo, and from the publishing chain the road
@@ -269,7 +272,15 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
        lakefill (its source's pin, the plan's) and names-todo (the map's sequence served). The
        pass's own and upkeep's (osm-pass, pass-sets, regions-extract, buildings, inputs, gc, redo,
        backup) are keyed in agent::plan, outside this derivation.
-   - 3c: the terrain root in the terrain stage. 3d: the rekey and its measurement. 3e: the flip.
+   - **3c (built): decision 2.** terrain-root is the terrain stage's (its row and the checklist's
+     terrain line): planned in `terrain_work` once its readiness (it reads every terrain-lo,
+     whole) says so, first of the regions-done slope's work; left, and so waited for, while
+     stale. slope-lo and slope-root read it (`Grain::Read`: its content), slope-hi and slope-deep
+     wait for it (`Grain::Tiles`: the root tiles they read are their slope tiles' lines). The
+     publishing chain keeps the slope's root alone (`root_held`). So all slope waits until all
+     terrain-lo is done, as the decision accepted: a region's slope no longer comes with it while
+     another region's terrain is left.
+   - 3d: the rekey and its measurement. 3e: the flip.
 4. The scheme-1 rekey adapter is deleted once no record is scheme 1 (one catalogue after).
 
 ## 7. Tests

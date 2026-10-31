@@ -974,6 +974,20 @@ pub const TABLE: [Step; 59] = [
             w_terrain_lo,
         )
     },
+    // (Built once all terrain-lo is done, in the terrain stage: slope reads it, waiting for it,
+    // docs/readiness.md decision 2.)
+    Step {
+        versions: &[("terrain-root", || 1.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
+        reads: &[All { step: "terrain-lo", grain: Outputs }],
+        ..step(
+            "terrain",
+            Pack,
+            World,
+            "terrain-root",
+            "Builds the world-level terrain from the z3 tiles' zoomed-out packs.",
+            w_terrain_root,
+        )
+    },
     // (Slope's memory from the tiles each job holds: crate::slope_pack::deep_peak_mb, peak_mb,
     // lo_peak_mb; slope-deep's and slope-hi's with the coverage their process reads added by the
     // agent, crate::coverage::Coverage::read_peak_mb.)
@@ -981,7 +995,7 @@ pub const TABLE: [Step; 59] = [
         mem_mb: crate::slope_pack::deep_peak_mb(),
         shared: true,
         versions: &[("slope-deep", || super::build::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
-        reads: &[Of { step: "terrain-deep", of: sd_deep, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-hi", of: sd_hi, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-lo", of: sd_lo, grain: Grain::Tiles(idents::nothing) }],
+        reads: &[Of { step: "terrain-deep", of: sd_deep, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-hi", of: sd_hi, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-lo", of: sd_lo, grain: Grain::Tiles(idents::nothing) }, All { step: "terrain-root", grain: Grain::Tiles(idents::nothing) }],
         ..step(
             "slope",
             Pack,
@@ -996,7 +1010,7 @@ pub const TABLE: [Step; 59] = [
         mem_mb: crate::slope_pack::peak_mb(),
         shared: true,
         versions: &[("slope-hi", || super::build::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
-        reads: &[Of { step: "terrain-hi", of: own, grain: Outputs }, Of { step: "terrain-hi", of: sh_hi, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-lo", of: sh_lo, grain: Grain::Tiles(idents::nothing) }, Of { step: "slope-deep", of: sh_deep, grain: Grain::Read(idents::deep_mids) }],
+        reads: &[Of { step: "terrain-hi", of: own, grain: Outputs }, Of { step: "terrain-hi", of: sh_hi, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-lo", of: sh_lo, grain: Grain::Tiles(idents::nothing) }, Of { step: "slope-deep", of: sh_deep, grain: Grain::Read(idents::deep_mids) }, All { step: "terrain-root", grain: Grain::Tiles(idents::nothing) }],
         ..step(
             "slope",
             Pack,
@@ -1010,7 +1024,7 @@ pub const TABLE: [Step; 59] = [
         cost_v: 1,
         mem_mb: crate::slope_pack::lo_peak_mb(),
         versions: &[("slope-lo", || super::build::SLOPE_LO_V.to_string()), ("slope", || super::build::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
-        reads: &[Of { step: "slope-hi", of: z6_of_z3, grain: Grain::Read(idents::slope_mids) }, Of { step: "terrain-lo", of: sl_lo, grain: Outputs }, In { name: "terrain-root", of: idents::terrain_root }],
+        reads: &[Of { step: "slope-hi", of: z6_of_z3, grain: Grain::Read(idents::slope_mids) }, Of { step: "terrain-lo", of: sl_lo, grain: Outputs }, All { step: "terrain-root", grain: Grain::Read(idents::terrain_root) }],
         ..step(
             "slope",
             Pack,
@@ -1198,20 +1212,8 @@ pub const TABLE: [Step; 59] = [
         reads: &[In { name: "ferries-reads", of: idents::ferries_reads }],
         ..step("finish", Pack, World, "ferries", "Maps the world's ferries.", w_ferries) },
     Step {
-        versions: &[("terrain-root", || 1.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
-        reads: &[All { step: "terrain-lo", grain: Outputs }],
-        ..step(
-            "finish",
-            Pack,
-            World,
-            "terrain-root",
-            "Builds the world-level terrain from the z3 tiles' zoomed-out packs.",
-            w_terrain_root,
-        )
-    },
-    Step {
         versions: &[("slope-root", || 1.to_string()), ("shade-codec", || crate::shade_codec::version())],
-        reads: &[All { step: "slope-lo", grain: Outputs }, In { name: "terrain-root", of: idents::terrain_root }],
+        reads: &[All { step: "slope-lo", grain: Outputs }, All { step: "terrain-root", grain: Grain::Read(idents::terrain_root) }],
         ..step(
             "finish",
             Pack,
@@ -2696,6 +2698,7 @@ mod tests {
                 "terrain-hi",
                 "terrain-deep",
                 "terrain-lo",
+                "terrain-root",
                 "slope-deep",
                 "slope-hi",
                 "slope-lo",
@@ -2714,7 +2717,6 @@ mod tests {
                 "roadunits",
                 "stations",
                 "ferries",
-                "terrain-root",
                 "slope-root",
                 "rail-feeds",
                 "rail",

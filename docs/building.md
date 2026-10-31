@@ -445,7 +445,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
        `maplog: the map at N is catalogue N`, with no `maplog: MISMATCH`.
 4. **Four chains:**
    - **Roads** (the publishing chain, `build::publish_chain`): a prune of map tiles no z6 tile is near,
-     pack (the map tiles), the road → z6 tiles index, lo, stations, ferries, terrain and slope roots,
+     pack (the map tiles), the road → z6 tiles index, lo, stations, ferries, the slope root (the terrain's is the terrain stage's),
      its first stale step at a time.
    - **Rail service**, from the start: `rail-feeds`, then `rail` (docs/steps.md §10).
    - **Landmarks**, from the start, each step once what it reads is built
