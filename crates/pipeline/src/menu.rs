@@ -25,7 +25,22 @@ pub fn status(home: &Path, lead: serde_json::Value, now: u64) -> serde_json::Val
         _ => {
             let lead_fresh = lead["beat"].as_u64().is_some_and(|b| now.saturating_sub(b) < 600);
             match &helper {
-                Some(h) if !lead_fresh => (h.clone(), true, true),
+                // (A member plans nothing, so says no checklist nor regions (task #871 step 6):
+                // the lead's last word on them, which its status's beat dates.)
+                Some(h) if !lead_fresh => {
+                    let mut h = h.clone();
+                    for k in ["checklist", "regions", "built", "bad_recipes"] {
+                        let empty = h.get(k).is_none_or(|v| {
+                            v.is_null()
+                                || v.as_array().is_some_and(Vec::is_empty)
+                                || v.as_object().is_some_and(|o| o.is_empty())
+                        });
+                        if let (true, Some(v), Some(o)) = (empty, lead.get(k), h.as_object_mut()) {
+                            o.insert(k.into(), v.clone());
+                        }
+                    }
+                    (h, true, true)
+                }
                 _ => (lead, false, false),
             }
         }
@@ -83,9 +98,12 @@ mod tests {
         assert_eq!((body["status"]["host"].as_str(), body["local"].as_bool()), (Some("lead"), Some(false)));
         assert_eq!(body["status"]["helpers"][0]["host"], "member");
         // Not for ten minutes: this member's own, as this Mac's.
-        let body = status(home.path(), serde_json::json!({ "host": "lead", "beat": now - 3 * 86_400 }), now);
+        let lead = serde_json::json!({ "host": "lead", "beat": now - 3 * 86_400, "checklist": [{"step": "x"}] });
+        let body = status(home.path(), lead, now);
         assert_eq!((body["status"]["host"].as_str(), body["local"].as_bool()), (Some("member"), Some(true)));
         assert!(body["status"]["helpers"].is_null() && body.get("offline").is_none(), "{body}");
+        // (A member says no checklist: the lead's last.)
+        assert_eq!(body["status"]["checklist"][0]["step"], "x");
     }
 
     #[test]
