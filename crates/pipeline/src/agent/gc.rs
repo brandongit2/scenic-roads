@@ -346,7 +346,6 @@ pub fn verify_pending(
 /// the job's proxy when it has one (crate::budget::SANDBOX, as crate::osmpass's), its host last.
 fn nas_ssh() -> Vec<String> {
     let mut a: Vec<String> = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20"].map(String::from).into();
-    #[cfg(not(target_os = "wasi"))]
     if let Some(p) = std::env::var(crate::budget::PROXY_ENV).ok().and_then(|u| crate::osmpass::proxy_addr(&u)) {
         a.extend(["-o".into(), format!("ProxyCommand=/usr/bin/nc -X connect -x {p} %h %p")]);
     }

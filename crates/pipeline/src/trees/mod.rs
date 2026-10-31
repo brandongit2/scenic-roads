@@ -13,8 +13,8 @@
 //! A block runs on its own (`block`, so a worker can be given one: tasks of it are planned): what it
 //! reads comes from a `Source` (a folder, or URLs read through `crate::fetch`, whose mirror can hold
 //! just the byte ranges the block reads); it gives its zoom 8–12 tiles and its zoom-8 values, from
-//! which `assemble` makes the z3 tile's archives. `z3` does both, its blocks on rayon's threads (in
-//! WebAssembly one after another), and the archives are the same bytes either way, and as
+//! which `assemble` makes the z3 tile's archives. `z3` does both, its blocks on rayon's threads, and the
+//! archives are the same bytes at any thread count, and as
 //! `assemble` writes them.
 //!
 //! The build makes the layers a z6 tile at a time (a z6 tile, `z6`: its blocks' zoom 9–12 tiles, and
@@ -631,8 +631,8 @@ pub fn assemble(blocks: &[PathBuf], out: &Path, said: &(dyn Fn(u64, u64) + Sync)
     w.finish()
 }
 
-/// Runs `f` on each of `n` items in rayon's current pool (the job's, as `--workers` sized it; in
-/// WebAssembly, or with one thread, in turn), giving `sink` their results in order, `done` told of
+/// Runs `f` on each of `n` items in rayon's current pool (the job's, as `--workers` sized it; with
+/// one thread, in turn), giving `sink` their results in order, `done` told of
 /// each as it finishes: at most `2 ×` threads are under way or waiting to be written at once. The
 /// items are the pool's tasks, so their own parallel work stays in the pool too, within the cores
 /// the job was given. The thread calling it (one of the pool's) writes the results in order and,

@@ -115,8 +115,8 @@ away from home: https://map.brandontsang.net (Devices). It publishes the app (`s
 ~/projets/scenic-roads && tools/app/publish.sh'`, docs/building.md, App publishing), its tests
 run on the test Mac (`SCENIC_TEST_HOST`, default `m6`: itself, so locally; `tools/app/remote-tests.sh`). Its toolchain: brew's mise
 and rustup (`/opt/homebrew/bin`, `~/.cargo/bin`, which publish.sh puts on the PATH itself) and,
-from `mise install` in the checkout, everything mise.toml and rust-toolchain.toml pin (Rust with
-its wasm32-wasip1 target, the wasi-sdk, Node, pnpm, uv, cargo-nextest, CMake); Xcode for swiftc
+from `mise install` in the checkout, everything mise.toml and rust-toolchain.toml pin (Rust,
+Node, pnpm, uv, cargo-nextest, CMake); Xcode for swiftc
 and codesign.
 
 **A new (headless) Mac**, in this order:

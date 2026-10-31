@@ -179,7 +179,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
     z12 tiles with HRDEM, some 3DEP): 86,773 tiles in 27 min with 12.6 GB fetched.
   - **Stored** (crate::terrain_codec; the owner's, 24 Oct): every terrain tile, at every zoom, is
     Terrarium RGB as lossless WebP (libwebp 1.6.0, `cwebp -lossless -z 6 -exact`, no metadata:
-    crates/webpenc, the same bytes on every Mac and in the WebAssembly build, its golden hashes;
+    crates/webpenc, the same bytes on every Mac, its golden hashes;
     libwebp's combined Shannon entropy, its hottest function, replaced by webpenc's own of the same
     integer sums, task #888),
     heights rounded first to 1 cm at the place's native zoom and in the deep levels, to 10 cm on the
@@ -273,7 +273,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
     target's NAS weight (`bytes`; `coord::cost_version` 3).
   - Lossless WebP by `pipeline::webp`.
   - `trees --block`, `--blocks` and `--assemble` run blocks alone; a row of a z6 tile's blocks is a
-    task (`treeblock`, docs/workers.md §3), the same bytes natively and in WebAssembly.
+    task (`treeblock`, docs/workers.md §3), the same bytes at any thread count.
 - **Area overlays** (the heritage and designated areas' outlines): `docs/phase5.md`. The `overlays` job runs after marks (it needs the World
   Heritage dots' ids).
 - **3D buildings:** `docs/buildings3d.md`. Every building in the coverage from the Overture release,

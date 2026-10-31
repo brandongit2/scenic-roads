@@ -633,7 +633,7 @@ mod tests {
         let mut h = History::load(None);
         // (Hours of a day ago: kept, as the last week's are.)
         let t = (now_s() / 3600 - 24) * 3600;
-        // The lead's job over the hour's end, a worker's lease within the first, a page's task.
+        // The lead's job over the hour's end, a worker's lease within the first, a worker's task.
         h.add(Event { step: Some("unit".into()), ..ev("start", t + 1800, "m4") });
         h.add(Event {
             step: Some("unit".into()),

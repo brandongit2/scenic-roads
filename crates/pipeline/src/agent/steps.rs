@@ -2466,8 +2466,6 @@ mod tests {
             ]
         );
         assert_eq!(TASKS.map(|t| t.name), ["tail", "terrainsub", "treeblock", "bldtile"]);
-        let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&'static str>>();
-        assert_eq!(set(&TASKS.map(|t| t.name)), set(&crate::coord::PAGE_TASKS), "the page's tasks are the tasks");
     }
 
     fn entry(step: &str, changes: &[(&str, bool)]) -> Entry {

@@ -181,8 +181,7 @@ impl Tasks {
 
     /// The task to give `worker` (who does `can`, and can spare `mem_mb`): the oldest offered that
     /// fits. Never one of a kind it's measured slower at than the jobs' own runs: the job would run
-    /// it at once anyway and end it, and the worker's work be thrown away (a page 8× slower at tails
-    /// was given one, 8 Oct, and saw it "fail" as the job took it back). Measured again after the
+    /// it at once anyway and end it, and the worker's work be thrown away. Measured again after the
     /// coordinator restarts (paces are kept in memory).
     pub fn pick(&self, worker: &str, can: &[String], mem_mb: u64) -> Option<u64> {
         let slow = |kind: &str| self.paces.get(&(worker.to_string(), kind.to_string())).is_some_and(|&p| !beats(p));
@@ -294,8 +293,8 @@ impl Tasks {
         self.fail_how(lease, worker, why, oom_mb, false)
     }
 
-    /// `fail`; `interrupted`: given back, not failed (the page reloaded or closed, or killed in the
-    /// background): offered again to any worker, this one too.
+    /// `fail`; `interrupted`: given back, not failed (it couldn't start on the worker, or the
+    /// worker stopped): offered again to any worker, this one too.
     pub fn fail_how(
         &mut self,
         lease: u64,
@@ -454,19 +453,19 @@ mod tests {
         assert_eq!((ts.typical_mb("tail"), ts.typical_mb("bldtile")), (Some(3000), None));
         // Who can spare 1 GB gets the small one; who can spare 4 GB the oldest.
         assert_eq!(ts.pick("phone", &can, 1000), Some(small));
-        assert_eq!(ts.pick("ipad", &can, 4000), Some(big));
-        assert_eq!(ts.pick("ipad", &["unit".to_string()], 4000), None);
+        assert_eq!(ts.pick("m1", &can, 4000), Some(big));
+        assert_eq!(ts.pick("m1", &["unit".to_string()], 4000), None);
         // Measured slower than the jobs at tails: given none (they'd be run here at once, its work
         // thrown away); measured faster, or not yet: as before.
-        ts.paces.insert(("ipad".into(), "tail".into()), 7.8);
-        assert_eq!(ts.pick("ipad", &can, 4000), None);
-        ts.paces.insert(("ipad".into(), "tail".into()), 0.5);
-        assert_eq!(ts.pick("ipad", &can, 4000), Some(big));
-        ts.paces.remove(&("ipad".to_string(), "tail".to_string()));
+        ts.paces.insert(("m1".into(), "tail".into()), 7.8);
+        assert_eq!(ts.pick("m1", &can, 4000), None);
+        ts.paces.insert(("m1".into(), "tail".into()), 0.5);
+        assert_eq!(ts.pick("m1", &can, 4000), Some(big));
+        ts.paces.remove(&("m1".to_string(), "tail".to_string()));
         ts.by_id.get_mut(&small).unwrap().state = State::Leased { lease: 1, worker: "phone".into() };
         // Only its inputs, only to its worker, nothing outside its folder.
         assert_eq!(ts.input(1, "phone", "u/a.bin").map(|x| x.1), Some(3));
-        assert!(ts.input(1, "ipad", "u/a.bin").is_none());
+        assert!(ts.input(1, "m1", "u/a.bin").is_none());
         assert!(ts.input(1, "phone", "u/b.bin").is_none());
         assert!(ts.upload(1, "phone", "../x").is_none() && ts.upload(1, "phone", "/etc/x").is_none());
         // Done only with every output whole.
@@ -496,10 +495,10 @@ mod tests {
         assert!(!up.exists());
         // Out of memory: offered again to who spares more; a failure: not to that worker again, and
         // after two workers, failed.
-        ts.by_id.get_mut(&big).unwrap().state = State::Leased { lease: 2, worker: "ipad".into() };
-        ts.fail(2, "ipad", "oom", Some(3600));
+        ts.by_id.get_mut(&big).unwrap().state = State::Leased { lease: 2, worker: "m1".into() };
+        ts.fail(2, "m1", "oom", Some(3600));
         assert_eq!(ts.by_id[&big].mem_mb, 4500);
-        assert_eq!(ts.pick("ipad", &can, 4000), None);
+        assert_eq!(ts.pick("m1", &can, 4000), None);
         assert_eq!(ts.pick("mac", &can, 8000), Some(big));
         ts.by_id.get_mut(&big).unwrap().state = State::Leased { lease: 3, worker: "mac".into() };
         ts.lapsed(3);
@@ -508,12 +507,12 @@ mod tests {
         ts.fail(4, "mac2", "boom", None);
         assert!(matches!(ts.by_id[&big].state, State::Failed { .. }));
         assert!(ts.withdraw(big));
-        // Given back (the page reloaded, or killed in the background): offered again, to it too, its
+        // Given back (it couldn't start on the worker): offered again, to it too, its
         // memory as it was.
         let back = offer(&mut ts, &root, 700, t0);
-        ts.by_id.get_mut(&back).unwrap().state = State::Leased { lease: 6, worker: "ipad".into() };
-        ts.fail_how(6, "ipad", "the page was reloaded or closed", None, true);
-        assert_eq!((ts.pick("ipad", &can, 1000), ts.by_id[&back].mem_mb), (Some(back), 700));
+        ts.by_id.get_mut(&back).unwrap().state = State::Leased { lease: 6, worker: "m1".into() };
+        ts.fail_how(6, "m1", "it couldn't start", None, true);
+        assert_eq!((ts.pick("m1", &can, 1000), ts.by_id[&back].mem_mb), (Some(back), 700));
         ts.by_id.remove(&back);
         // A job's tasks go with it.
         let a = offer(&mut ts, &root, 100, t0);
@@ -537,20 +536,20 @@ mod tests {
         // Leased by a worker not measured, run by the job: kept, its files the coordinator's, no
         // longer the job's.
         let id = offer(&mut ts, &job("j1"), 100, t0);
-        ts.by_id.get_mut(&id).unwrap().state = State::Leased { lease: 1, worker: "ipad".into() };
+        ts.by_id.get_mut(&id).unwrap().state = State::Leased { lease: 1, worker: "m1".into() };
         assert!(ts.measure(id, 40.0));
         assert!(!d.path().join("j1").exists());
-        assert_eq!(ts.input(1, "ipad", "u/a.bin").map(|x| x.1), Some(3));
+        assert_eq!(ts.input(1, "m1", "u/a.bin").map(|x| x.1), Some(3));
         assert!(ts.close_owner(9).is_empty());
         // It fails: closed, its files gone.
-        assert_eq!(ts.fail(1, "ipad", "no", None), None);
+        assert_eq!(ts.fail(1, "m1", "no", None), None);
         assert!(ts.by_id.is_empty() && !d.path().join("tasks").join(format!("{id}-in")).exists());
         // Measured: not kept; one that goes quiet: closed.
-        ts.note_pace("ipad", "tail", 80.0, 40.0);
-        ts.note_pace("ipad", "tail", 40.0, 40.0);
-        assert_eq!(ts.pace("ipad", "tail"), Some(1.5));
+        ts.note_pace("m1", "tail", 80.0, 40.0);
+        ts.note_pace("m1", "tail", 40.0, 40.0);
+        assert_eq!(ts.pace("m1", "tail"), Some(1.5));
         let id = offer(&mut ts, &job("j2"), 100, t0);
-        ts.by_id.get_mut(&id).unwrap().state = State::Leased { lease: 2, worker: "ipad".into() };
+        ts.by_id.get_mut(&id).unwrap().state = State::Leased { lease: 2, worker: "m1".into() };
         assert!(!ts.measure(id, 40.0));
         ts.by_id.get_mut(&id).unwrap().state = State::Leased { lease: 3, worker: "phone".into() };
         assert!(ts.measure(id, 40.0));

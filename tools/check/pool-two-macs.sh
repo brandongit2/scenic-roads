@@ -77,8 +77,9 @@
 #                                                   <date>, noted now (as its Mac's agent notes a
 #                                                   pass stopped there mid-stage)
 #   pool-two-macs.sh brokers <folder> [off]         state/pool/brokers in the scratch folder: each
-#                                                   member brokers its own jobs' tasks, pages call
-#                                                   the members directly (`off`: the switch removed)
+#                                                   member brokers its own jobs' tasks, members'
+#                                                   pages read each other directly (`off`: the
+#                                                   switch removed)
 #   pool-two-macs.sh placement <folder> [off]       state/pool/placement in the scratch folder:
 #                                                   members' asks and tasks placed by how crucial
 #                                                   and by measured speed, jobs offering ahead
@@ -87,12 +88,6 @@
 #                                                   coordinator or broker (SCENIC_COORD) before it
 #                                                   sleeps, and notes the task's state as it ends
 #                                                   (<dir>/v/app/task-<step>-<pid>)
-#   pool-two-macs.sh page <base> <origin> <file>    a page (curl, its Origin <origin>): asks <base>
-#                                                   where work is, then each broker it names for a
-#                                                   task (its lease and broker kept in <file>), a
-#                                                   broker that doesn't answer in 8 s passed over
-#   pool-two-macs.sh page-done <origin> <file>      that page beats its lease and hands its task
-#                                                   back, where it took it
 #   pool-two-macs.sh publish <folder>               after `root`: a region done that the map hasn't
 #                                                   (the agent's test `seed_a_scratch_publish`, from
 #                                                   this repository), so the lead publishes it, its
@@ -125,7 +120,7 @@
 # complete by the records, the M1's file dropping it; the lead never starts the pass.
 #
 set -euo pipefail
-usage="usage: tools/check/pool-two-macs.sh root|region|publish|app|run|older|newer|newest|jobs|outside|fill|extra|wiki|upstream|resume|brokers|placement|task|page|page-done|planet|progress|stop … (see the top of this file)"
+usage="usage: tools/check/pool-two-macs.sh root|region|publish|app|run|older|newer|newest|jobs|outside|fill|extra|wiki|upstream|resume|brokers|placement|task|planet|progress|stop … (see the top of this file)"
 case ${1:-} in
   -h|--help) print -r -- $usage; exit 0 ;;
   ""|-*) print -ru2 -- "pool-two-macs.sh: unexpected ${1:-end}"$'\n'"$usage"; exit 2 ;;
@@ -328,25 +323,6 @@ EOF
     d=${2:?its folder}
     if [[ ${3:-} == off ]]; then rm -f $d/v/app/job-task; else : > $d/v/app/job-task; fi
     ;;
-  page)
-    base=${2:?the member of the page} origin=${3:?its origin} f=${4:?its lease file}
-    ask='{"worker":"page two-macs","kind":"web","can":["tail"],"mem_mb":1000,"cores":2}'
-    w=$(/usr/bin/curl -sS -m 8 -X POST -H "Origin: $origin" -H 'Content-Type: application/json' -H 'X-Worker: page two-macs' -d '{"can":["tail"],"mem_mb":1000}' $base/work/where)
-    print "where: $w"
-    for b in $(print -r -- $w | /usr/bin/python3 -c 'import json,sys; [print(b["base"]) for b in json.load(sys.stdin)["brokers"]]'); do
-      g=$(/usr/bin/curl -sS -m 8 -D $f.h -X POST -H "Origin: $origin" -H 'Content-Type: application/json' -H 'X-Worker: page two-macs' -d $ask $b/work/ask) || { print "$b: no answer in 8 s, passed over"; continue; }
-      print "$b: $(grep -i '^access-control-allow-origin' $f.h | tr -d '\r') $g"
-      [[ $g == *'"lease"'* ]] || continue
-      print -r -- "$b $(print -r -- $g | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["lease"])')" > $f
-      break
-    done
-    ;;
-  page-done)
-    origin=${2:?its origin} f=${3:?its lease file}
-    read b lease < $f
-    print "beat at $b: $(/usr/bin/curl -sS -m 8 -X POST -H "Origin: $origin" -H 'Content-Type: application/json' -H 'X-Worker: page two-macs' -d "{\"worker\":\"page two-macs\",\"lease\":$lease}" $b/work/beat)"
-    print "done at $b: $(/usr/bin/curl -sS -m 8 -o /dev/null -w '%{http_code}' -X POST -H "Origin: $origin" -H 'Content-Type: application/json' -H 'X-Worker: page two-macs' -d "{\"worker\":\"page two-macs\",\"lease\":$lease,\"outputs\":[],\"secs\":1,\"peak_mb\":10}" $b/work/done)"
-    ;;
   resume)
     r=${2:?the scratch folder}
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
@@ -379,5 +355,5 @@ EOF
     touch $d/v/app/stop
     [[ -s $d/agent.pid ]] && kill $(<$d/agent.pid) 2>/dev/null || true
     ;;
-  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, fill, extra, wiki, upstream, resume, brokers, placement, task, page, page-done, planet, progress or stop"; exit 2 ;;
+  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, fill, extra, wiki, upstream, resume, brokers, placement, task, planet, progress or stop"; exit 2 ;;
 esac

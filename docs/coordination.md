@@ -158,7 +158,7 @@ All on the lead's coordinator, the build's key as today, sent only to tailnet ad
 | `POST /pool/hold`, `GET/POST /pool/settings` | any Mac's agent, for the owner's CLI and menu | the new state |
 | `POST /pool/budget/take`, `/pool/lease/answers` | a job's proxy, via its agent | tokens or a wait / the lease |
 | `GET /pool/view`, `/pool/view/forecast-input`, `/pool/brief` | each Mac's pageview, CLI | the documents |
-| `/work/*` | jobs and pages | unchanged |
+| `/work/*` | jobs and the build page | unchanged |
 
 ### 5.2 Timing
 
@@ -247,7 +247,7 @@ tailnet is §7.3's case.
 | a member can't reach the lead, both have the NAS | §7.1 for that member alone: it finishes its jobs and waits; the lead marks its leases `held_by_away` and grants their targets to no one. No NAS fallback: the mailboxes and journal are gone (§9). |
 | the lead can't reach the NAS, members reach it | coordination goes on (the store is local); NAS-needing jobs of every Mac stall on the share as today; merges wait (records can't be saved: hand-offs stay taken, acks wait), catalogues and GC wait. The status says "the lead has lost the NAS". |
 | a member can't reach the NAS, reaches the lead | as away (§7.2): local work only, its NAS jobs paused per today's rules. |
-| two members can't reach each other, both reach the lead | nothing changes: members don't talk to each other for coordination (pages still find brokers, pool.md §8, which is task traffic, not coordination). |
+| two members can't reach each other, both reach the lead | nothing changes: members don't talk to each other for coordination (a member's page reads the others straight, pool.md §8: not coordination). |
 | the lead hears a member but the member doesn't hear the answers (one-way) | the member's posts are taken but it sees failures: it re-sends (deduplicated) and starts nothing new; its leases stay live by its beats. Seen as "reached by the lead, not reaching it" (`Beat::reach`, today's). |
 
 There is never a second lead to disagree with, so no split can make two grants of one target.

@@ -188,7 +188,7 @@ fn run(shared: Weak<Mutex<Shared>>, k: Arc<Keep>, nas: Arc<dyn Nas + Send + Sync
     }
 }
 
-#[cfg(all(test, not(target_os = "wasi")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::coord::{client, start_for_test, Ask, Offer, PoolState};

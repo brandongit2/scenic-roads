@@ -1,6 +1,6 @@
 //! A z8 tile of `bldtiles T` as a task (docs/buildings3d.md §3.6, docs/workers.md §3): its files cut
-//! from T's and its neighbours' work files where the job runs, the program `bldtile` (natively, or
-//! as WebAssembly in a page) making the z8 tile's tiles from them, and the job taking them into T's
+//! from T's and its neighbours' work files where the job runs, the program `bldtile` making the z8
+//! tile's tiles from them, and the job taking them into T's
 //! pack in the z8 tile's turn.
 //!
 //! A task's folder (`u/` on a worker; docs/formats.md):
@@ -17,9 +17,8 @@
 //! What the program writes there: `area.tiles` (an RDTILES archive of the z8 tile's z14 tiles, as
 //! `job::z8_tiles` makes them), `area.json` (its `job::Summary`), `area.field` (an RDTILES
 //! archive of its field's tiles, levels 14–9) and `area.mid` (its level-8 planes, `field::write_mid`;
-//! none without a building). The job's own run of a z8 tile
-//! (one no worker finished, or a worker's result checked) writes the same two files the same way,
-//! from the whole work files: a worker's are compared with them byte for byte.
+//! none without a building). The job's own run of a z8 tile (one no worker finished) writes the
+//! same files the same way, from the whole work files.
 
 use super::field;
 use super::job::{self, AddTile, Summary};
@@ -60,8 +59,8 @@ pub struct Cut {
 }
 
 impl Cut {
-    /// A task's predicted memory (MB): its files three times over (a page holds them, the program
-    /// reads them in, and room as much again), and the model of `bldtiles` for a z8 tile of its
+    /// A task's predicted memory (MB): its files three times over (the worker holds them, the
+    /// program reads them in, and room as much again), and the model of `bldtiles` for a z8 tile of its
     /// records (`crate::agent::bldtiles_peak`, the field's cells in flight with it).
     pub fn mem_mb(&self) -> u64 {
         (self.bytes >> 20) * 3 + crate::agent::bldtiles_peak(self.records * 5 / 2)
@@ -306,7 +305,8 @@ pub fn inputs_of(root: &Path) -> Result<BTreeMap<String, u64>> {
 }
 
 /// Whether two z8 tiles' results are the same bytes (every file, `MID` there in both or neither).
-pub fn same_files(a: &Path, b: &Path) -> bool {
+#[cfg(test)]
+fn same_files(a: &Path, b: &Path) -> bool {
     OUTPUTS.iter().all(|f| match (std::fs::read(a.join(f)), std::fs::read(b.join(f))) {
         (Ok(x), Ok(y)) => x == y,
         (Err(x), Err(y)) => {
@@ -326,9 +326,7 @@ pub fn results_dir(scratch: &Path, a: TileId) -> PathBuf {
 /// settled in their turn. Nothing waits on a worker longer than this Mac would take: a z8 tile no one
 /// took is given a moment, then taken back and run here; one a worker holds is waited on while the
 /// worker will be back with it before this Mac's run would end (crate::offload::Patience: its
-/// buildings at the pace of the z8 tiles made here), then raced here; a worker's result is taken, or
-/// (the coordinator says when) checked against this Mac's run byte for byte, a difference marking
-/// the worker bad.
+/// buildings at the pace of the z8 tiles made here), then raced here; a worker's result is taken.
 pub struct Offers<'a> {
     offload: Option<&'a crate::offload::Offload>,
     t: TileId,
@@ -483,37 +481,12 @@ impl<'a> Offers<'a> {
             }
             Ok(())
         };
-        let mut same = |st: &serde_json::Value, _: std::time::SystemTime| -> Result<bool> {
-            let same = theirs(st).is_some_and(|d| same_files(&d, &mine));
-            if !same {
-                eprintln!(
-                    "bldtiles {}: z8 tile {}: a worker's tiles differ from this Mac's",
-                    self.t.slash(),
-                    a.slash()
-                );
-            }
-            Ok(same)
-        };
-        let Some(how) = o.settle_with(
-            task,
-            wait,
-            crate::offload::Patience { here_s: self.here_s(i) },
-            &mut || here(),
-            &mut take,
-            &mut same,
-        )?
+        let Some(how) =
+            o.settle_with(task, wait, crate::offload::Patience { here_s: self.here_s(i) }, &mut || here(), &mut take)?
         else {
             return Ok(());
         };
-        let how = match how {
-            crate::offload::Settled::Remote(w) => format!("by {w}"),
-            crate::offload::Settled::Here(None) => "here".into(),
-            crate::offload::Settled::Here(Some((w, true))) => format!("here, and by {w} the same"),
-            crate::offload::Settled::Here(Some((w, false))) => {
-                format!("here: {w}'s differed, and it gets no more work")
-            }
-        };
-        eprintln!("bldtiles {}: z8 tile {} made {how}", self.t.slash(), a.slash());
+        eprintln!("bldtiles {}: z8 tile {} made {}", self.t.slash(), a.slash(), how.how());
         self.out.remove(&i);
         self.records.remove(&i);
         self.ready.insert(i, mine);
@@ -727,7 +700,7 @@ mod tests {
 
     /// A worker in this process: asks, fetches the task's files, runs the program's code over them,
     /// sends back what it wrote (`spoil`: its tiles spoilt first), done.
-    fn worker_runs(m1: &crate::coord::client::Client, spoil: bool, dir: &Path) -> Option<serde_json::Value> {
+    fn worker_runs(m1: &crate::coord::client::Client, dir: &Path) -> Option<serde_json::Value> {
         let ask =
             crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
         let g = m1.ask(&ask).unwrap()?;
@@ -745,11 +718,7 @@ mod tests {
         run(&u, a).unwrap();
         let mut outputs = Vec::new();
         for f in OUTPUTS {
-            let Ok(mut b) = std::fs::read(u.join(f)) else { continue };
-            if spoil && f == TILES {
-                let n = b.len();
-                b[n / 2] ^= 1;
-            }
+            let Ok(b) = std::fs::read(u.join(f)) else { continue };
             m1.put_bytes(&format!("/work/out/{}/u/{f}", g.lease), &b).unwrap();
             outputs.push(crate::coord::task::Output { path: format!("u/{f}"), size: b.len() as u64 });
         }
@@ -779,13 +748,13 @@ mod tests {
         assert!(offers.out.is_empty());
         // A worker that takes them asks (nothing yet), and is counted.
         let m1 = crate::coord::client::Client::at(vec![url], c.contact.token.clone(), "m1");
-        assert!(worker_runs(&m1, false, &d.path().join("m1")).is_none());
+        assert!(worker_runs(&m1, &d.path().join("m1")).is_none());
         offers.top_up(&files, &cov, &z8s, 0).unwrap();
         // The far end's z8 tile offered (one worker: one out), never the one under way.
         assert_eq!(offers.out.keys().copied().collect::<Vec<_>>(), [1]);
-        let task = worker_runs(&m1, false, &d.path().join("m1")).unwrap();
+        let task = worker_runs(&m1, &d.path().join("m1")).unwrap();
         assert_eq!(task["unit"], "8/131/88");
-        // Before z8 tile 0 runs: the finished one settled (a first result: checked here, the same).
+        // Before z8 tile 0 runs: the finished one settled (the worker's result taken).
         offers.top_up(&files, &cov, &z8s, 0).unwrap();
         assert!(offers.out.is_empty());
         let dir = offers.result(&files, &cov, &z8s, 1).unwrap().unwrap();
@@ -798,27 +767,26 @@ mod tests {
         assert!(offers.result(&files, &cov, &z8s, 0).unwrap().is_none(), "z8 tile 0 runs here");
         {
             let s = c.shared.lock().unwrap();
-            assert_eq!(s.workers["m1"].checked, 1);
-            assert!(!s.workers["m1"].bad);
             // Its cost learned under its kind and z8 tile.
             assert_eq!(s.costs["bldtile 8/131/88"].peak_mb, 300);
         }
-        // Offered again (another job), with the cost learned; a spoilt result: checked, run here,
-        // and the worker gets no more work. (Its pace forgotten first: measured slower than this
-        // Mac's run on its first z8 tile, it would be given none, coord::task::Tasks::pick.)
+        // Offered again (another job), with the cost learned, and taken again. (Its pace forgotten
+        // first: measured slower than this Mac's run on its first z8 tile, it would be given none,
+        // coord::task::Tasks::pick.)
         c.shared.lock().unwrap().tasks.paces.clear();
         let mut offers = Offers::new(Some(&o), &scratch, t, z8s.len(), &[]);
         offers.top_up(&files, &cov, &z8s, 0).unwrap();
         assert_eq!(offers.out.len(), 1);
         assert_eq!(c.shared.lock().unwrap().tasks.by_id.values().next().unwrap().mem_mb, 330);
-        worker_runs(&m1, true, &d.path().join("m1")).unwrap();
+        worker_runs(&m1, &d.path().join("m1")).unwrap();
         let dir = offers.result(&files, &cov, &z8s, 1).unwrap().unwrap();
         let mut again: Tiles = Vec::new();
         take_z8(&dir, a8, &mut collect(&mut again)).unwrap();
-        assert_eq!(again, want, "this Mac's");
-        assert!(c.shared.lock().unwrap().workers["m1"].bad);
-        // A task no one took (a worker asking, sparing too little for it): taken back and run here
-        // at once. (What it would take here: its buildings at the pace of those made here.)
+        assert_eq!(again, want, "the worker's");
+        // A task no one took (a worker asking, sparing too little for it; the first measured slower
+        // than this Mac): taken back and run here at once. (What it would take here: its buildings
+        // at the pace of those made here.)
+        c.shared.lock().unwrap().tasks.paces.insert(("m1".into(), KIND.into()), 2.0);
         let m2 =
             crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m2");
         m2.ask(&crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 10, ..Default::default() })

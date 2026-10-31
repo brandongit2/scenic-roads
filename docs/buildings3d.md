@@ -222,31 +222,29 @@ docs/formats.md has the bytes. In brief:
   6/x/y", "bldtiles 6/x/y"); first guesses (`agent::bld_peak`): 0.3 GB + 160 B a row read for
   `bldprep`, 0.25 GB + 280 B a building of the largest z8 tile (taken as two fifths of the rows) for
   `bldtiles`.
-- **Pages** (docs/workers.md §3, `pipeline::bld::task`): under the agent, a `bldtiles` job offers
+- **Tasks** (docs/workers.md §3, `pipeline::bld::task`): under the agent, a `bldtiles` job offers
   some of each tile's z8 tiles as tasks of kind `bldtile` while workers that take them are around
   (one per worker, three at once, from the far end of the tile's list). The task's files, cut on the
   lead: the blocks of T's and its neighbours' work files the z8 tile reads, the coverage's shapes that
-  can answer for its points, T's heritage points. The program `bldtile` (`/work/prog/bldtile.wasm`
-  in a page, the app's `bldtile` on a Mac via `scenic run-task`) writes the z8 tile's z14 tiles, field
+  can answer for its points, T's heritage points. The program `bldtile` (the app's
+  `bldtile`, on a Mac via `scenic run-task`) writes the z8 tile's z14 tiles, field
   levels 14–9, level-8 planes and summary; the job puts them into the pack in the z8 tile's turn. In
   its turn, a z8 tile not taken waits 30 s for a faster worker, then is made here; one out is waited
-  for while the worker's pace says it'll beat the job, else raced. A worker's first three results,
-  then one in eight, are checked byte for byte against the job's own run; a difference marks the
-  worker bad. Memory first guessed from its files and the model above; a worker's measure replaces
-  it (`bldtile 8/x/y`). Z8 tiles larger than a page can hold go to a Mac.
-- `bldprep` isn't a task: pages can't reach the NAS's parquet.
+  for while the worker's pace says it'll beat the job, else raced. Memory first guessed from its
+  files and the model above; a worker's measure replaces it (`bldtile 8/x/y`).
+- `bldprep` isn't a task: it reads the NAS's parquet.
 - An app that predates these steps drops their records; `Keys` keeps records it doesn't know
   (`other`).
 
 ### 3.7 Determinism
 
-Same inputs, same bytes, on any machine and in WebAssembly (docs/building.md §2): parquet decoded by the
+Same inputs, same bytes, on any machine (docs/building.md §2): parquet decoded by the
 pinned parquet crate, every derived number computed in Rust (E7 by
 `(v * 1e7).round()`, Mercator by `det`, f64 in a fixed order); heights as integer decimetres; a
 median of an even count takes the lower middle; ties by id; records by (z14 tile, id), features by
 (Morton, id); field sums in i64 fixed point (order-independent); gzip by `flate2`, zstd, at fixed
-levels. The unit tests build on one thread and several; `tools/check/bldtile-same.mjs` checks a
-task made natively and as WebAssembly against the whole-tile build.
+levels. The unit tests build on one thread and several, and a task's z8 tile against the
+whole-tile build.
 
 ## 4. The map
 

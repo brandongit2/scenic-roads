@@ -4,8 +4,8 @@ Every Mac runs the same agent (`scenic agent`). One of them, the **lead**, plans
 merges results into the build's records and publishes; the others are **members**. The lead is
 fixed: the Mac mini, the member `state/build/lead-member.json` declares (§6.1, task #881). No other
 Mac ever leads: there is no election, handover or takeover. With the mini gone, the members finish
-the jobs they hold, hand them off to the journal, and wait for it. Browser pages are workers too
-(§8, workers.md). The pool's code is `crate::pool` (the declaration, terms, records, journal, the
+the jobs they hold, hand them off to the journal, and wait for it. The Macs' agents are the only
+workers (§8, workers.md): the build page shows the build and takes the owner's asks. The pool's code is `crate::pool` (the declaration, terms, records, journal, the
 driver) and `crate::agent::pool` (the agent's side of it). It is always on.
 
 The records' readers read the term's snapshot; the lead writes today's files too only while a
@@ -1418,28 +1418,23 @@ the plan's work (pois, slope-hi, trees and depth done the next day, forecast day
 on the lead's own clock (catalog, redo, inputs: a tenth of the targets done) placed nowhere; a
 running job's time left capped, not measured.
 
-## 8. Tasks, and the pages as workers
+## 8. Tasks
 
 A job is a step's run over targets on a Mac with the NAS. A **task** is a pure piece a running job
 offers: programs over a folder of files, giving files back (kinds and protocol: workers.md §3, §5).
-Any worker that can run its programs takes it: a page or a member's idle slot.
+Any member's idle slot takes it (`scenic run-task`). Pages take none (#875: their asks are refused,
+workers.md §5).
 
 - **Brokers** (`crate::agent::brokers`, `crate::coord::brokers`, behind `state/pool/brokers`): each
   member's agent runs a coordinator of its own for its jobs' tasks (`become_broker`, on the pool's
-  port; jobs given its address as `SCENIC_COORD`). Its heartbeat's `broker` gives its addresses and
-  tasks waiting by kind. A task lives as long as its job, whoever leads.
-- **Finding work:** every member answers `/work/where` with the brokers whose work fits, most
-  waiting first. A page leases from that broker directly (`/work/ask`, `/work/in`, `/work/net`,
-  `/work/out`, `/work/done`); the lead isn't on a task's path.
+  port; jobs given its address as `SCENIC_COORD`). Its heartbeat's `broker` gives its addresses. A
+  task lives as long as its job, whoever leads.
 - **Cross-member calls:** members allow each other's page origins (CORS, preflight for
-  `Authorization`, `X-Worker`, `Range`, `PUT`): their addresses, and the public names a proxy on
-  one serves its page under (its broker's `pages`, from `~/.config/scenic/names`: the M6's
-  https://map.brandontsang.net/build). HTTPS needs `tailscale serve` on each Mac (§14).
-  Chrome's Local Network Access may still block calls to another member; the page's own member is
-  the sure path.
-- **One page, any member:** the page loads from any member and moves to the next that answers when
-  its own goes away. The agents' token is the pool's (`state/coord/token`).
-- **Trust:** a worker found wrong is not given more work (workers.md §5).
+  `Content-Type`): their addresses, and the public names a proxy on one serves its page under (its
+  broker's `pages`, from `~/.config/scenic/names`: the M6's https://map.brandontsang.net/build), so
+  a member's page reads the others' live charts and settings (docs/pipeline.md §5). HTTPS needs
+  `tailscale serve` on each Mac (§14). Chrome's Local Network Access may still block calls to
+  another member. The agents' token is the pool's (`state/coord/token`).
 
 ## 9. The pool's API
 
@@ -1519,8 +1514,8 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   `Coordinator::view`, in its pool step: `pool_lead_files`): `{at, view}`, the view what the
   worker page's `/work/swarm` takes from the coordinator's memory: the pause, each lease (worker,
   step, targets' count, progress, `frac`, when granted, its last beat and when it lapses), each
-  worker (page or member: label, kind, memory, cores, done/failed/bad, visible, `can`, `fit`, when
-  last seen, its paces), the tasks by state and `task_mb`. Times are unix seconds, so it is the
+  worker (label, kind, memory, cores, done/failed, `can`, `fit`, when last seen), the tasks by
+  state. Times are unix seconds, so it is the
   same until something changes. Written as a whole (create and rename) when it changed, at most
   every 15 s (`pool::VIEW_EVERY`), and at once in a new term. Each time is taken from one
   anchor (an `Instant` and the wall clock read together, taken again only when they drift apart
@@ -2161,5 +2156,5 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
   every connection to the tailnet address there, whatever name it asks (it can't share the port by
   name). Caddy serves the build page under `/build` too (`/build/work/`), and the page asks its own
   member under that path; its broker address stays the 8444 one (a broker's address is a root:
-  the pages call `/work/…` on it).
+  the members' pages call `/work/…` on it).
 - **Work order:** every slot from the front of the plan, in contiguous runs.

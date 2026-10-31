@@ -988,10 +988,10 @@ impl TileSet<'_> {
     /// to a quarter of the memo, so none is let go before its items are worked; the earliest item
     /// not yet worked always has its tiles fetched, whatever that holds. The first failed fetch
     /// stops the fetching (its requests' retries too: crate::fetch::cancellable) and is the error.
-    /// (WebAssembly, or a single tile: none ahead; the work fetches them.)
+    /// (A single tile: none ahead; the work fetches it.)
     fn rolling<T: Send>(&self, need: &[Vec<(i64, i64)>], work: impl Fn(usize) -> Result<T> + Sync) -> Result<Vec<T>> {
         let n_items = need.len();
-        if cfg!(target_arch = "wasm32") || need.iter().map(Vec::len).sum::<usize>() < 2 {
+        if need.iter().map(Vec::len).sum::<usize>() < 2 {
             return (0..n_items).into_par_iter().map(&work).collect();
         }
         // (The tiles in the order the items first read them; by item its tiles' places in that
@@ -1528,11 +1528,11 @@ impl Reader<'_, '_> {
     }
 
     /// What to read ahead of sampling `parts` in turn (`read_ahead`): a GeoTIFF dataset's blocks,
-    /// natively, where they're fetched (not the store's: those are read on the NAS as sampled); None
+    /// where they're fetched (not the store's: those are read on the NAS as sampled); None
     /// otherwise (a pyramid fetches its tiles ahead itself).
     fn ahead(&self, parts: &[&[u32]], lon: &[f64], lat: &[f64]) -> Result<Option<Ahead>> {
         match self {
-            Reader::Geo(g, xy) if g.store.is_none() && !cfg!(target_arch = "wasm32") => {
+            Reader::Geo(g, xy) if g.store.is_none() => {
                 let (x, y) = native(xy, lon, lat);
                 Ok(Some(g.blocks_ahead(parts, x, y)?))
             }

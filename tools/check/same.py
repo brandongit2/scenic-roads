@@ -1,21 +1,19 @@
-"""Every Rust step of a unit, from the snapshots `scenic-build unit-snap` took, run three ways and
-compared byte for byte: natively on 1 thread, natively on many, and as WebAssembly under Node's
-WASI (docs/building.md §2, Determinism; docs/workers.md). The Python steps are left out.
+"""Every Rust step of a unit, from the snapshots `scenic-build unit-snap` took, run two ways and
+compared byte for byte: natively on 1 thread, and natively on many (docs/building.md §2,
+Determinism). The Python steps are left out.
 
-    python3 tools/check/same.py <unit-snap --out dir> [--bin target/release]
-        [--wasm target/wasm32-wasip1/release] [--threads 14] [--only step]
+    python3 tools/check/same.py <unit-snap --out dir> [--bin target/release] [--threads 14] [--only step]
 
-The WebAssembly builds come from tools/app/wasm.sh. Exits 1 if any step's outputs differ.
+Exits 1 if any step's outputs differ.
 """
-import hashlib, json, os, re, shutil, subprocess, sys, time
+import hashlib, os, re, shutil, subprocess, sys, time
 
 def arg(name, default):
     return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else default
 
 out = sys.argv[1]
 snap, units = os.path.join(out, "snap"), os.path.join(out, "units")
-here = os.path.dirname(os.path.abspath(__file__))
-bin_dir, wasm_dir = arg("--bin", "target/release"), arg("--wasm", "target/wasm32-wasip1/release")
+bin_dir = arg("--bin", "target/release")
 threads, only = arg("--threads", "14"), arg("--only", None)
 folder = os.path.join(units, os.listdir(units)[0])
 work = os.path.join(out, "same")
@@ -44,18 +42,15 @@ for name in sorted(os.listdir(snap)):
     args = [l[4:] for l in lines if l.startswith("arg ")]
     env = dict(l[4:].split("=", 1) for l in lines if l.startswith("env "))
     got, secs = {}, {}
-    for kind in ["native 1", f"native {threads}", "wasm"]:
+    for kind in ["native 1", f"native {threads}"]:
         w = os.path.join(work, kind.replace(" ", ""))
         shutil.rmtree(w, ignore_errors=True)
         subprocess.run(["cp", "-c", "-R", os.path.join(snap, name), w], check=True)
         a = [x.replace(folder, w) for x in args]
         e = {k: v.replace(folder, w) for k, v in env.items()}
-        e["RAYON_NUM_THREADS"] = kind.split()[1] if kind.startswith("native") else "1"
+        e["RAYON_NUM_THREADS"] = kind.split()[1]
         t = time.time()
-        if kind.startswith("native"):
-            r = subprocess.run(["nice", "-n", "19", os.path.join(bin_dir, prog), *a], env={**os.environ, **e}, capture_output=True, text=True)
-        else:
-            r = subprocess.run(["nice", "-n", "19", "node", os.path.join(here, "wasi-run.mjs"), os.path.join(wasm_dir, prog + ".wasm"), json.dumps(e), *a], capture_output=True, text=True)
+        r = subprocess.run(["nice", "-n", "19", os.path.join(bin_dir, prog), *a], env={**os.environ, **e}, capture_output=True, text=True)
         secs[kind] = round(time.time() - t, 1)
         if r.returncode != 0:
             print(f"{m.group(2)}: {kind} failed: {(r.stderr or r.stdout)[-400:]}")

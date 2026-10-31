@@ -508,7 +508,7 @@ fn parse_tiff(at: &dyn Fn(u64, usize) -> Result<Vec<u8>>) -> Result<Strips> {
 }
 
 /// A TIFF's strips, read from its file as they're wanted (positionally: never the whole file, up to
-/// 1.2 GB, which in WebAssembly would all be memory).
+/// 1.2 GB).
 struct Tiff {
     file: File,
     len: u64,
@@ -824,7 +824,7 @@ fn canopy(dir: &Path) -> Result<()> {
     let change = GridChange::load(&cdir, "canopy", &grid.tiles);
     let prev = scache::Prev::load(&cdir, "canopy");
     // (The last run's outputs: each opened only when it's the size the cache says, and let go once
-    // used, as in WebAssembly an open file is read whole into memory.)
+    // used.)
     let sized = |name: &str, len: usize| std::fs::metadata(dir.join(name)).is_ok_and(|m| m.len() == len as u64);
     let old_near = (!prev.is_empty() && sized("near.i8", prev.len() * NEAR_AZ))
         .then(|| Array::<i8>::open(&dir.join("near.i8")).ok())

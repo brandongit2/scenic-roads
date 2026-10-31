@@ -1,8 +1,7 @@
 //! Deterministic maths. The transcendental functions come from one implementation (`libm`, a port
-//! of musl's) on every target, so the build's outputs are the same bytes on a Mac and in a web
-//! worker's WebAssembly (docs/workers.md). The platforms' own libraries differ in the last bit:
-//! Apple's and wasi-libc's `sin`, `ln` and `cos` gave different eye heights for 17 of 581,231 road
-//! samples in the pilot.
+//! of musl's) on every target, so the build's outputs are the same bytes on every machine
+//! (docs/workers.md). The platforms' own libraries differ in the last bit: Apple's and wasi-libc's
+//! `sin`, `ln` and `cos` gave different eye heights for 17 of 581,231 road samples in the pilot.
 //!
 //! The methods are named `d…` because `f64`'s own methods would shadow a trait's of the same name.
 //! Exact operations (`sqrt`, `mul_add`, rounding, `powi`, `to_radians`) need nothing: they give the

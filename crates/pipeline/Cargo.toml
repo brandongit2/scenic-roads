@@ -10,7 +10,6 @@ store = { path = "../store" }
 names = { path = "../names" }
 sha2 = "0.10"
 blake3 = "1"
-clap.workspace = true
 serde = { version = "1", features = ["derive"] }
 zstd = "0.13"
 anyhow.workspace = true
@@ -22,8 +21,7 @@ indicatif = "0.18"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
 png = "0.18"
-# The terrain's tiles (crate::terrain_codec): lossless WebP through libwebp (not crate::webp, the tree cover's own encoder), natively and in the
-# WebAssembly build alike (terrainsub makes terrain tiles).
+# The terrain's tiles (crate::terrain_codec): lossless WebP through libwebp (not crate::webp, the tree cover's own encoder).
 webpenc = { path = "../webpenc" }
 # The depth's tiles read back (crate::depth::fall), as roadcore reads the terrain's.
 image-webp = "0.2"
@@ -36,10 +34,6 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 i_overlay = { version = "=9.0.0", default-features = false }
 # (Names compared as the heritage chain does: crate::heritage_layers.)
 unicode-normalization = "0.1"
-
-# (WebAssembly has no sockets, and ring's C doesn't build for it: there the programs read what they
-# need from their inputs, docs/workers.md.)
-[target.'cfg(not(target_os = "wasi"))'.dependencies]
 clap = { workspace = true, features = ["help", "usage", "error-context", "suggestions"] }
 # Pinned: coord::client's idle transport uses ureq's unversioned::transport API (no semver promise).
 ureq = "=3.4.2"
@@ -70,10 +64,6 @@ arrow-array = "60"
 md-5 = "0.10"
 # (parquet's byte buffers, for a reader of the fetched spans of a file: crate::bld::overture::Spans.)
 bytes = "1"
-
-[target.'cfg(target_os = "wasi")'.dependencies]
-# Pinned: coord::client's idle transport uses ureq's unversioned::transport API (no semver promise).
-ureq = { version = "=3.4.2", default-features = false }
 
 [dev-dependencies]
 store = { path = "../store", features = ["testkit"] }

@@ -377,9 +377,9 @@ thread_local! {
 }
 
 /// The process's CPU time so far (user + system, its own threads' and its finished children's),
-/// microseconds. None where there's no `getrusage` (WebAssembly).
+/// microseconds. None where there's no `getrusage`.
 pub fn cpu_us() -> Option<u64> {
-    #[cfg(all(unix, not(target_os = "wasi")))]
+    #[cfg(unix)]
     {
         let tv = |t: libc::timeval| t.tv_sec as u64 * 1_000_000 + t.tv_usec as u64;
         let mut total = 0;
@@ -393,7 +393,7 @@ pub fn cpu_us() -> Option<u64> {
         }
         Some(total)
     }
-    #[cfg(not(all(unix, not(target_os = "wasi"))))]
+    #[cfg(not(unix))]
     {
         None
     }
@@ -433,7 +433,7 @@ static LAST_MEM: AtomicU64 = AtomicU64::new(0);
 const MEM_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Starts the thread that samples the job's memory (`crate::sys::group_footprint`) into every open
-/// span while the run is timed; none where it can't be read (WebAssembly, elsewhere than macOS).
+/// span while the run is timed; none where it can't be read (elsewhere than macOS).
 fn sample_memory() {
     static ON: std::sync::Once = std::sync::Once::new();
     let Some(now) = crate::sys::group_footprint() else { return };

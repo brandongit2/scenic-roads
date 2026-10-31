@@ -289,9 +289,9 @@ mod tests {
         }
         // A copy under way: an old folder that got a file a moment ago, deep inside.
         let live = app.join("20261008-0100-abc1234.tmp");
-        std::fs::create_dir_all(live.join("wasm")).unwrap();
-        std::fs::write(live.join("wasm/tile.wasm"), b"x").unwrap();
-        age(&live.join("wasm"), 7200);
+        std::fs::create_dir_all(live.join("dem")).unwrap();
+        std::fs::write(live.join("dem/step.py"), b"x").unwrap();
+        age(&live.join("dem"), 7200);
         age(&live, 7200);
         // An installed version and the `current.tmp` link are no copies.
         let inst = app.join("20261001-0000-0000000");
@@ -301,7 +301,7 @@ mod tests {
 
         remove_stale_copies(app, STALE_COPY);
         assert!(!old.exists());
-        assert!(live.join("wasm/tile.wasm").exists());
+        assert!(live.join("dem/step.py").exists());
         assert!(inst.exists());
         assert!(std::fs::symlink_metadata(app.join("current.tmp")).is_ok());
     }

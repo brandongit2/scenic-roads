@@ -18,8 +18,9 @@
 //! this Mac's disk, so the agent restarting (a new app) is a pause to every worker, nothing more.
 //!
 //! Workers find it in `state/coordinator.json` on the NAS: its addresses (Tailscale's first, then
-//! the LAN's) and the token the Macs' agents carry. A web page helps with no key: for its own tasks
-//! and pausing the build, nothing more, under a page's name. It answers this Mac, its LAN and the
+//! the LAN's) and the token the Macs' agents carry. The build page asks with no key: it reads the
+//! build and takes the owner's asks (pausing, settings), never work (pages stopped helping, #875:
+//! `NO_PAGE_HELPERS`). It answers this Mac, its LAN and the
 //! tailnet only, also through a proxy on this Mac from those alone (crate::net::reached), a request
 //! naming this Mac and from no web page elsewhere (crate::net::ours, from_the_page); a running job's
 //! (`/task/…`) from this Mac itself, through no proxy (crate::net::own).
@@ -27,11 +28,9 @@
 pub mod brokers;
 pub mod client;
 pub mod history;
-pub mod hosts;
 pub mod inbox;
 pub mod keep;
 pub mod lease;
-#[cfg(not(target_os = "wasi"))]
 pub mod maproutes;
 pub mod sched;
 pub mod task;
@@ -70,19 +69,16 @@ pub fn lapse_why(l: &Lease) -> String {
         TTL.as_secs() / 60
     )
 }
-/// How long a worker counts as looking for work after its last ask (a page with a slot idle asks
-/// every 15–20 s; an agent's idle slot every few seconds): a task's `takers`.
+/// How long a worker counts as looking for work after its last ask (an agent's idle slot asks
+/// every few seconds): a task's `takers`.
 const ASKING: Duration = Duration::from_secs(30);
 /// The most of what a worker says it's doing (its progress, a failure's why) kept: characters.
 const WHAT_MAX: usize = 200;
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 const WHY_MAX: usize = 3000;
-/// The most pages (by name) a day's workers hold: a new one past it is refused.
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
-const PAGES_MAX: usize = 32;
-/// The most memory (MB) a page's task can say it took: a page's WebAssembly addresses 4 GB.
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
-const DEVICE_MB: u64 = 4096;
+/// What a build page left open from before its helpers were removed (30 Oct, #875) is told when it
+/// asks for work, beats for a task or hands one back: refused, never an error to retry on (its
+/// next version, which its service worker loads, asks for none).
+pub const NO_PAGE_HELPERS: &str = "pages no longer help with the build: reload this page";
 
 /// How workers reach the coordinator: `state/coordinator.json` on the NAS.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -175,11 +171,6 @@ pub fn unit_peak(costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 
         .unwrap_or_else(|| (piece >> 20).saturating_mul(10).max(3700))
 }
 
-/// The kinds of task a page may take: a z6 tile's tail, a 3D buildings' z8 tile (`bld::task::KIND`),
-/// a row of a tree cover z6 tile's z8 blocks (`trees::task::KIND`), a terrain z6 tile's z8 subtrees
-/// (`terrain_task::KIND`).
-pub const PAGE_TASKS: [&str; 4] = ["tail", crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND];
-
 /// What a task of `kind` for `unit` (its spec's) costs is kept under: "tail 6/x/y", "bldtile 8/x/y",
 /// "treeblock 8/x/y" (a row's first block), "terrainsub 8/x/y" (a group's first subtree).
 pub fn task_cost_key(kind: &str, unit: &str) -> String {
@@ -235,7 +226,7 @@ pub struct Offer {
 /// A worker, as its requests describe it.
 #[derive(Clone, Debug, Serialize)]
 pub struct Worker {
-    /// "native" (an agent) or "web" (a page).
+    /// "native": an agent (the only kind since pages stopped helping, #875).
     pub kind: String,
     pub label: String,
     /// The work it does (the shared steps it builds: crate::agent::steps::SHARED; "tail", "bldtile": tasks),
@@ -245,9 +236,6 @@ pub struct Worker {
     pub cores: u32,
     /// The app it runs (an agent's: crate::agent::app_version), when it says.
     pub app: Option<String>,
-    /// A page: whether it was in front when it last asked (an iPhone or iPad stops one that isn't).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub visible: Option<bool>,
     /// Its Mac's capacity, as its last ask said (an older agent's: none).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cap: Option<Capacity>,
@@ -266,10 +254,6 @@ pub struct Worker {
     pub what: String,
     pub done: u32,
     pub failed: u32,
-    /// Its results a job checked against its own run, and whether one differed (it then gets
-    /// nothing more: determinism makes any difference a fault).
-    pub checked: u32,
-    pub bad: bool,
 }
 
 /// What the request handlers and the agent share.
@@ -303,7 +287,7 @@ pub struct Shared {
     pub told: Option<u64>,
     /// The app the newer of the readers' switches was recorded on (the regions', the elevation
     /// datasets': crate::inputs::regions::read::switch_app), as the lead's agent last read it: no
-    /// work for an older app (a page's being this Mac's), whatever else it matches.
+    /// work for an older app, whatever else it matches.
     pub min_app: Option<String>,
     /// The pool's member this coordinator is (its agent's), while it leads: every answer says so,
     /// with its term (`POOL_MEMBER`, `POOL_TERM`), so a member tells its lead's coordinator from
@@ -339,7 +323,7 @@ pub struct Shared {
     pub refused: BTreeMap<String, (u64, String)>,
     /// Tasks brokered by every member (docs/pool.md §8; crate::agent::brokers): the members and
     /// their brokers, as the agent last read their heartbeats. None: the switch off, the
-    /// coordinator as it was (no `/work/where`, no page from elsewhere, a take-up's leases in place
+    /// coordinator as it was (no page from elsewhere, a take-up's leases in place
     /// of its own).
     pub brokers: Option<brokers::Brokers>,
     /// Where the token, leases, costs and journal are kept.
@@ -395,7 +379,6 @@ pub struct Shared {
 /// How long a target waits on the NAS budget before the status says so (s).
 pub const NAS_WAIT_SAY_S: u64 = 30 * 60;
 
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 impl Shared {
     /// Each member's fresh capacity (`Coordinator::capacities`): `me`'s own first.
     fn capacities(&self, me: &str) -> Vec<(String, Capacity)> {
@@ -592,21 +575,17 @@ impl Shared {
         ids.sort_by_key(|t| (t.offered, t.id));
         // (The others around and asking, once an ask: each task then by its kind and memory.)
         // (Each by its own last ask, as `placed_start`'s: an agent on another app than this one's
-        // gets nothing; a page asks with none.)
+        // gets nothing.)
         let around: Vec<(&String, &Ask)> = self
             .workers
             .iter()
             .filter(|(n, w)| {
                 *n != &a.worker
-                    && !w.bad
                     && now.duration_since(w.seen) < AROUND
                     && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)
             })
             .filter_map(|(n, w)| {
-                w.ask
-                    .as_ref()
-                    .filter(|x| x.kind != "native" || x.app.as_ref().is_none_or(|v| *v == self.app))
-                    .map(|x| (n, x))
+                w.ask.as_ref().filter(|x| x.app.as_ref().is_none_or(|v| *v == self.app)).map(|x| (n, x))
             })
             .collect();
         ids.into_iter()
@@ -653,14 +632,13 @@ impl Shared {
 
     /// Marks `worker`'s request (what it said, and itself as `a` describes it). A worker first
     /// heard from: the history says so, and those not heard from for a day, holding nothing, go.
-    /// How many workers could take task `t` now: around, asking for work lately (`ASKING`), not
-    /// found wrong, doing its kind, sparing its memory, and not ones it failed on.
+    /// How many workers could take task `t` now: around, asking for work lately (`ASKING`), doing
+    /// its kind, sparing its memory, and not ones it failed on.
     /// Each with its pace at the kind (None: not measured) and whether a job may wait for it to take
     /// one while its pace isn't measured (once an hour: task::EXPLORE_EVERY).
     fn takers(&self, t: &task::Task, now: Instant) -> Vec<serde_json::Value> {
         let fits = |(n, w): &(&String, &Worker)| {
-            !w.bad
-                && now.duration_since(w.seen) < AROUND
+            now.duration_since(w.seen) < AROUND
                 && w.asked.is_some_and(|a| now.duration_since(a) < ASKING)
                 && w.can.contains(&t.kind)
                 && w.mem_mb >= t.mem_mb
@@ -694,7 +672,6 @@ impl Shared {
             mem_mb: 0,
             cores: 0,
             app: None,
-            visible: None,
             cap: None,
             ask: None,
             old: false,
@@ -703,14 +680,12 @@ impl Shared {
             what: String::new(),
             done: 0,
             failed: 0,
-            checked: 0,
-            bad: false,
         });
         w.seen = now;
         w.what = what.chars().take(WHAT_MAX).collect();
         if let Some(a) = a {
-            (w.kind, w.can, w.mem_mb, w.cores, w.app, w.visible) =
-                (a.kind.clone(), a.can.clone(), a.mem_mb, a.cores, a.app.clone(), a.visible);
+            (w.kind, w.can, w.mem_mb, w.cores, w.app) =
+                (a.kind.clone(), a.can.clone(), a.mem_mb, a.cores, a.app.clone());
             w.cap = a.cap.clone();
             w.old = a.cap.is_none();
             w.ask = Some(a.clone());
@@ -746,18 +721,15 @@ pub struct Coordinator {
     pub contact: Contact,
     /// What this agent's jobs carry to offer tasks (`/task/…`), never published.
     pub job_token: String,
-    #[cfg_attr(target_os = "wasi", allow(dead_code))]
     port: u16,
     /// This Mac's name: its own jobs' leases are held under it.
     me: String,
-    /// The NAS's project folder while the agent has it, for tasks' reads where the data lies
-    /// (`/work/net/…/nas/…`).
+    /// The NAS's project folder while the agent has it, for its NAS probe (`nas_prober`).
     root: Arc<Mutex<Option<store::nasfs::NasRoot>>>,
     /// Set when it stops (`stop`, or dropped): its listener woken (`wake`) and closed, its port free
     /// once `stop` returns (a member that took the lead in its process starts one; one that lost it
     /// stops it): `closed` hears from its thread as its listener is gone.
     stopped: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(not(target_os = "wasi"))]
     wake: Arc<tokio::sync::Notify>,
     closed: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     /// The requests' `route` calls under way (each holds it read) and whether it has stopped: `stop`
@@ -781,13 +753,6 @@ impl Drop for Coordinator {
     }
 }
 
-// (The data servers a task may read through the coordinator, `/work/net/…/web/…`: crate::coord::hosts,
-// derived from the accepted declarations.)
-
-/// What of the NAS a task may read through the coordinator (`/work/net/…/nas/…`): the sources the
-/// steps read (canopy squares, GLO-30, the tree cover's rasters, raw terrain).
-pub const NAS_PATHS: [&str; 1] = ["sources/"];
-
 /// A request for work.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ask {
@@ -804,12 +769,9 @@ pub struct Ask {
     pub mem_mb: u64,
     #[serde(default)]
     pub cores: u32,
-    /// The app it runs (an agent's, crate::agent::app_version; a page's is the coordinator's own).
+    /// The app it runs (an agent's, crate::agent::app_version).
     #[serde(default)]
     pub app: Option<String>,
-    /// A page: whether it's in front (an iPhone or iPad stops one that isn't).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub visible: Option<bool>,
     /// The most memory its Mac's jobs may hold together (MB: crate::agent::memguard::jobs_limit_mb), for
     /// the lead's reckoning of the most any Mac in the pool has (an older worker says none).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -820,7 +782,7 @@ pub struct Ask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_mb: Option<u64>,
     /// Its whole Mac's capacity now (Ask v2, `Capacity`); the fields above still filled for an
-    /// older coordinator, which ignores this. None: an older agent, or a page.
+    /// older coordinator, which ignores this. None: an older agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap: Option<Capacity>,
     /// The jobs it would start now (its free slots). The lead grants up to that many at once
@@ -986,7 +948,6 @@ pub struct NasMount {
 }
 
 /// How often the prober reads the NAS's mount (`NasMount`): its free space moves slowly.
-#[cfg(not(target_os = "wasi"))]
 const MOUNT_EVERY_S: u64 = 60;
 
 impl NasMount {
@@ -1075,14 +1036,14 @@ pub struct Beat {
     pub lease: u64,
     #[serde(default)]
     pub progress: Option<String>,
-    /// How far it is (0–1), when it says (a page's slot).
+    /// How far it is (0–1), when it says.
     #[serde(default)]
     pub frac: Option<f64>,
     /// What its job is doing now (crate::agent::jobs::Live), when it says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<crate::agent::jobs::Live>,
     /// The slot of its Mac running the job (crate::coord::lease::Lease::slot), when it says (an
-    /// older app or a page doesn't).
+    /// older app doesn't).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<u32>,
 }
@@ -1154,37 +1115,12 @@ pub struct Fail {
 }
 
 impl Coordinator {
-    /// Starts answering on `port` (not in WebAssembly, where nothing listens), keeping its state in
-    /// `dir`; `wasm`: the folder of the programs' WebAssembly builds a page fetches; `app`: the app
-    /// this Mac's agent runs, the one an agent asking for work must run too.
-    #[cfg(target_os = "wasi")]
-    pub fn start(_dir: &Path, _wasm: Option<PathBuf>, _port: u16, _me: &str, _app: &str) -> Result<Coordinator> {
-        anyhow::bail!("no coordinator in WebAssembly")
-    }
-
-    #[cfg(target_os = "wasi")]
-    pub fn start_on(
-        _dir: &Path,
-        _wasm: Option<PathBuf>,
-        _listener: std::net::TcpListener,
-        _me: &str,
-        _app: &str,
-    ) -> Result<Coordinator> {
-        anyhow::bail!("no coordinator in WebAssembly")
-    }
-
-    #[cfg(target_os = "wasi")]
-    pub fn viewer(_listener: std::net::TcpListener, _me: &str, _app: &str) -> Result<Coordinator> {
-        anyhow::bail!("no coordinator in WebAssembly")
-    }
-
     /// A viewer alone, from birth, answering on `listener` (docs/pool.md §10): the page and its
     /// views (`/work/swarm`, `/work/history`, `/work/steps`, from a pageview once it's given one;
     /// `/work/live`, from the live store),
     /// every other call refused. No state of a coordinator's: nothing loaded nor kept (its token,
     /// the one thing it makes, in a scratch folder of its own, emptied as it starts), no history,
     /// no background loop, no page address written.
-    #[cfg(not(target_os = "wasi"))]
     pub fn viewer(listener: std::net::TcpListener, me: &str, app: &str) -> Result<Coordinator> {
         let dir = std::env::temp_dir().join(format!(
             "scenic-viewer-{}-{}",
@@ -1203,38 +1139,30 @@ impl Coordinator {
                 }
             }
         }
-        Coordinator::start_with(&dir, None, listener, me, app, true)
+        Coordinator::start_with(&dir, listener, me, app, true)
     }
 
-    #[cfg(not(target_os = "wasi"))]
-    pub fn start(dir: &Path, wasm: Option<PathBuf>, port: u16, me: &str, app: &str) -> Result<Coordinator> {
+    /// Starts answering on `port`, keeping its state in `dir`; `app`: the app this Mac's agent
+    /// runs, the one an agent asking for work must run too.
+    pub fn start(dir: &Path, port: u16, me: &str, app: &str) -> Result<Coordinator> {
         // (Listening first: a port in use writes nothing of its state. A coordinator this process
         // stopped has let its port go as its `stop` returned; another process's is no reason to
         // wait, and isn't waited for.)
         let listener = anyhow::Context::with_context(store::spawn::listen((crate::coord::LISTEN, port)), || {
             format!("listen on port {port}")
         })?;
-        Coordinator::start_on(dir, wasm, listener, me, app)
+        Coordinator::start_on(dir, listener, me, app)
     }
 
     /// `start`, answering on `listener`, already listening (a test's, on a port it held from the
     /// start: no other can take it between).
-    #[cfg(not(target_os = "wasi"))]
-    pub fn start_on(
-        dir: &Path,
-        wasm: Option<PathBuf>,
-        listener: std::net::TcpListener,
-        me: &str,
-        app: &str,
-    ) -> Result<Coordinator> {
-        Coordinator::start_with(dir, wasm, listener, me, app, false)
+    pub fn start_on(dir: &Path, listener: std::net::TcpListener, me: &str, app: &str) -> Result<Coordinator> {
+        Coordinator::start_with(dir, listener, me, app, false)
     }
 
     /// `start_on`, or a viewer alone (`viewer`).
-    #[cfg(not(target_os = "wasi"))]
     fn start_with(
         dir: &Path,
-        wasm: Option<PathBuf>,
         listener: std::net::TcpListener,
         me: &str,
         app: &str,
@@ -1389,9 +1317,6 @@ impl Coordinator {
             token: token.clone(),
             job_token: job_token.clone(),
             journal: dir.join("journal"),
-            wasm,
-            root: root.clone(),
-            remote: Default::default(),
             routes: routes.clone(),
             cors: cors.clone(),
         };
@@ -1440,7 +1365,6 @@ impl Coordinator {
         self.stopped.store(true, std::sync::atomic::Ordering::Relaxed);
         self.shared.lock().unwrap().keep.stop();
         *self.routes.write().unwrap_or_else(|e| e.into_inner()) = true;
-        #[cfg(not(target_os = "wasi"))]
         self.wake.notify_one();
         if let Some(rx) = self.closed.lock().unwrap().take() {
             // (Its thread gone already, its listener with it: the sender dropped.)
@@ -1455,8 +1379,7 @@ impl Coordinator {
 
     /// Writes the build page's address for this Mac's status bar (tools/status): over HTTPS when
     /// `tailscale serve` proxies the coordinator (a secure context, where the page may keep the
-    /// screen on), else its first address. (No key in it: a device that's to help asks this Mac.)
-    #[cfg(not(target_os = "wasi"))]
+    /// screen on), else its first address. (No key in it.)
     fn write_page(&self) {
         let Some(base) = http::served_https(self.port).or_else(|| self.contact.urls.first().map(|u| format!("{u}/")))
         else {
@@ -1473,7 +1396,8 @@ impl Coordinator {
         }
     }
 
-    /// The NAS's project folder as the agent has it now (None: away), for tasks' reads.
+    /// The NAS's project folder as the agent has it now (None: away), for its NAS probe
+    /// (`nas_prober`).
     pub fn set_root(&self, root: Option<&store::nasfs::NasRoot>) {
         *self.root.lock().unwrap() = root.cloned();
     }
@@ -1486,11 +1410,9 @@ impl Coordinator {
     /// Publishes how to reach it on the NAS, when what's there differs (written whole), and the
     /// worker page's address here (it moves to HTTPS once `tailscale serve` proxies the coordinator).
     pub fn publish(&self, root: &store::nasfs::NasRoot) -> Result<()> {
-        #[cfg(not(target_os = "wasi"))]
         self.write_page();
         // (With the page's HTTPS address as it is now: `tailscale serve` may come or go.)
         let mut contact = self.contact.clone();
-        #[cfg(not(target_os = "wasi"))]
         {
             contact.page = http::served_https(self.port).map(|b| format!("{b}work/"));
         }
@@ -2195,8 +2117,7 @@ impl Coordinator {
         let mb = s.tasks.typical_mb("tail").unwrap_or(0);
         let now = s.now();
         s.workers.iter().any(|(n, w)| {
-            !w.bad
-                && now.saturating_duration_since(w.seen) < AROUND
+            now.saturating_duration_since(w.seen) < AROUND
                 && w.can.iter().any(|c| c == "tail")
                 && w.mem_mb >= mb
                 && s.tasks.pace(n, "tail").is_some_and(task::beats)
@@ -2407,7 +2328,7 @@ impl Coordinator {
     pub fn load_pool_state(&self, p: &PoolState) -> Result<usize> {
         let mut s = self.shared.lock().unwrap();
         let (now, unix) = (s.now(), unix_now());
-        // (A broker's own tasks' leases kept: its pages go on with them, docs/pool.md §8. One whose
+        // (A broker's own tasks' leases kept: its workers go on with them, docs/pool.md §8. One whose
         // id a restored lease has is lapsed, its task offered again.)
         let kept = if s.brokers.is_some() { s.leases.tasks() } else { Vec::new() };
         let n = s.leases.restore(&p.leases, now)?;
@@ -2485,28 +2406,8 @@ impl Coordinator {
         self.shared.lock().unwrap().brokers = b;
     }
 
-    /// The tasks its jobs offer, for its Mac's heartbeat: those waiting for a worker by kind (how
-    /// many, the least memory one takes), and how many a worker holds.
-    pub fn brokered(&self) -> (BTreeMap<String, brokers::Waiting>, u32) {
-        let s = self.shared.lock().unwrap();
-        let mut waiting: BTreeMap<String, brokers::Waiting> = BTreeMap::new();
-        let mut out = 0;
-        for t in s.tasks.by_id.values() {
-            match t.state {
-                task::State::Offered => {
-                    let w = waiting.entry(t.kind.clone()).or_insert(brokers::Waiting { n: 0, mb: u64::MAX });
-                    w.n += 1;
-                    w.mb = w.mb.min(t.mem_mb);
-                }
-                task::State::Leased { .. } => out += 1,
-                _ => {}
-            }
-        }
-        (waiting, out)
-    }
-
     /// A coordinator kept on as its Mac's broker alone (docs/pool.md §8): a lead's that no longer
-    /// leads (its tasks, and the pages holding them, going on), or a member's started for its own
+    /// leads (its tasks, and the workers holding them, going on), or a member's started for its own
     /// jobs' tasks. Nothing of the plan offered nor held: the jobs' leases are the lead's (handed
     /// over with the term), the asks its.
     pub fn become_broker(&self) {
@@ -2613,7 +2514,6 @@ pub struct PoolState {
 
 /// The owner's cancel (crate::control::Cancel) taken up in `s`: `Coordinator::cancel`, and the
 /// `/work/cancel` of a member's agent.
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn cancel_in(s: &mut Shared, c: &crate::control::Cancel) -> Vec<(u64, String, String)> {
     let now = s.now();
     let hits: Vec<Lease> = s
@@ -2654,14 +2554,12 @@ fn cancel_in(s: &mut Shared, c: &crate::control::Cancel) -> Vec<(u64, String, St
 /// two may differ (a step changed with its key, or without it), and the result would be recorded
 /// under a key that says it's current. No list of what changed: any other app waits. `ours` empty
 /// (tests): any.
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn app_ok(theirs: Option<&str>, ours: &str) -> bool {
     ours.is_empty() || theirs == Some(ours)
 }
 
 /// Whether app `a` was published after app `b` (both published: `20261005-1508-84142d3`, its UTC
 /// publish time first); false when either isn't.
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn app_newer(a: &str, b: &str) -> bool {
     // (By bytes: a version is a worker's to say, and slicing a string mid-character would panic with
     // the coordinator's lock held.)
@@ -2673,7 +2571,6 @@ fn app_newer(a: &str, b: &str) -> bool {
 
 /// An app version (`20261005-1508-84142d3`: its UTC publish time, then its commit) in words: "5 Oct
 /// 15:08 UTC"; as it is when it isn't one.
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn app_when(v: &str) -> String {
     let p: Vec<&str> = v.split('-').collect();
     let month = |m: &str| {
@@ -2699,7 +2596,6 @@ fn app_when(v: &str) -> String {
 /// over the owner's target (nas::Loop); off, the limits are let go. A probe that fails leaves them.
 /// The probes are kept on the NAS (`nas::PROBES_FILE`) and read once it's known (the day's best
 /// outlive a restart and a change of lead).
-#[cfg(not(target_os = "wasi"))]
 fn nas_prober(
     shared: Arc<Mutex<Shared>>,
     root: Arc<Mutex<Option<store::nasfs::NasRoot>>>,
@@ -2867,7 +2763,6 @@ fn nas_prober(
 }
 
 /// How often the lead reads what its timings log gained (`phase_sharer`).
-#[cfg(not(target_os = "wasi"))]
 const SHARES_EVERY_S: u64 = 60;
 
 /// Keeps `into` to each step's phase shares over its last runs in the timings log at `log`, and
@@ -2875,7 +2770,6 @@ const SHARES_EVERY_S: u64 = 60;
 /// `SHARES_EVERY_S` as it grows (crate::timings::LogTail: its size first, then only what was
 /// added; the ranges summed again each time, as they move on), never under the pool's lock; till
 /// the coordinator stops.
-#[cfg(not(target_os = "wasi"))]
 fn phase_sharer(
     log: PathBuf,
     into: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>>,
@@ -2927,7 +2821,6 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
 /// on the NAS is named as packing names one for its shard. (Of any shard: a job packs every loose
 /// tile in the helper's cache, an earlier job's left there too, a job stopped before it packed:
 /// tiles of the NAS's own, whatever job fetched them.)
-#[cfg(not(target_os = "wasi"))]
 fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result<()> {
     // (Its lease's targets, or some of them: a job paused at a safe point hands off what it did.)
     match &h.done {
@@ -3242,7 +3135,6 @@ fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
 /// The raw tiles' archives of a hand-off not taken, each well named for its shard, journaled on their
 /// own (crate::handoff::RAW_AGAIN) for the next merge to name: they're on the NAS, and unnamed they'd
 /// go two days later, their tiles fetched again.
-#[cfg(not(target_os = "wasi"))]
 fn raw_again(journal: &Path, h: Option<&Handoff>) {
     let raw: Vec<(String, crate::rawpack::Pack)> = h
         .into_iter()
@@ -3298,8 +3190,8 @@ fn view_of(s: &Shared) -> serde_json::Value {
         .workers
         .iter()
         .map(|(n, w)| {
-            let fit = w.ask.as_ref().filter(|a| a.kind == "native").map(|a| s.fit(a, now)).unwrap_or_default();
-            serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "checked": w.checked, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "cap": w.cap, "fit": fit, "seen": unix_of(w.seen), "tail_pace": s.tasks.pace(n, "tail"), "paces": PAGE_TASKS.iter().map(|k| (k.to_string(), s.tasks.pace(n, k))).collect::<BTreeMap<String, Option<f64>>>() })
+            let fit = w.ask.as_ref().map(|a| s.fit(a, now)).unwrap_or_default();
+            serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "app": w.app, "can": w.can, "cap": w.cap, "fit": fit, "seen": unix_of(w.seen) })
         })
         .collect();
     let mut tasks: BTreeMap<&str, usize> = BTreeMap::new();
@@ -3312,8 +3204,7 @@ fn view_of(s: &Shared) -> serde_json::Value {
         };
         *tasks.entry(st).or_default() += 1;
     }
-    let task_mb: BTreeMap<&str, Option<u64>> = PAGE_TASKS.iter().map(|k| (*k, s.tasks.typical_mb(k))).collect();
-    serde_json::json!({ "pause": s.paused, "leases": leases, "workers": workers, "tasks": tasks, "task_mb": task_mb })
+    serde_json::json!({ "pause": s.paused, "leases": leases, "workers": workers, "tasks": tasks })
 }
 
 /// A view's leases and workers (`view_of`, or the lead's `view.json` read on another Mac) as the
@@ -3383,21 +3274,18 @@ fn unix_of(t: Instant) -> u64 {
 }
 
 /// Seconds since the epoch.
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 /// How far ahead of this Mac's clock an agent's ask to pause may say it was made (the Macs' clocks
 /// differ a little): later, it's taken as made a minute from now.
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 const AHEAD_S: u64 = 60;
 
 /// Who's asking a request, as `http::gate` found: this Mac itself (`local`: from loopback, through
 /// no proxy), with the build's own key (`owner`: the Macs' agents, this Mac's menu bar and
-/// `scenic`), or a page (no key: its own tasks and pausing alone); and from where
+/// `scenic`), or a page (no key: the owner's asks alone); and from where
 /// (crate::net::source).
-#[cfg(not(target_os = "wasi"))]
 #[derive(Clone, Debug, Default)]
 struct Caller {
     local: bool,
@@ -3405,21 +3293,8 @@ struct Caller {
     from: String,
 }
 
-/// A page's name among the workers: what it says, after "page " (never an agent's name, so a page
-/// can't take or hand back another's leases), plain (`plain`), 100 characters at most.
-#[cfg(not(target_os = "wasi"))]
-fn page_name(n: &str) -> String {
-    let n = plain(n, 100);
-    if n.starts_with("page ") {
-        n
-    } else {
-        format!("page {n}")
-    }
-}
-
-/// What a page says of itself, as shown: no control or direction characters (a name that reads
+/// What a request says, as shown: no control or direction characters (a name that reads
 /// backwards), `max` characters at most, trimmed.
-#[cfg(not(target_os = "wasi"))]
 fn plain(s: &str, max: usize) -> String {
     let bidi =
         |c: char| matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}');
@@ -3427,7 +3302,6 @@ fn plain(s: &str, max: usize) -> String {
 }
 
 /// What a request asks of the shared state (JSON in, JSON out): (status, body).
-#[cfg(not(target_os = "wasi"))]
 fn route(
     path: &str,
     body: &[u8],
@@ -3445,60 +3319,30 @@ fn route(
         }
     }
     let ok = serde_json::json!({ "ok": true });
-    // (A page works under a page's name, whatever it says: never an agent's, `page_name`.)
-    let own_name = |n: &str| caller.page.then(|| page_name(n));
-    let not_mine = || -> Result<(u16, serde_json::Value)> {
-        Ok((403, serde_json::json!({ "error": "a page helps with a page's tasks alone" })))
-    };
     match path {
         "/work/ask" => {
-            let mut a: Ask = serde_json::from_slice(body)?;
+            let a: Ask = serde_json::from_slice(body)?;
             anyhow::ensure!(!a.worker.is_empty() && a.worker.len() <= 120, "a worker needs a name");
-            // (A page: a page's tasks, the tails, the 3D buildings' z8 tiles and tree cover's rows, under a
-            // page's name.)
-            if let Some(n) = own_name(&a.worker) {
-                if a.kind != "web" || a.can.iter().any(|c| !PAGE_TASKS.contains(&c.as_str())) {
-                    return not_mine();
-                }
-                a.worker = n;
-                a.label = a.label.map(|l| plain(&l, 80));
-            }
             let mut s = shared.lock().unwrap();
-            // (Pages at once a day at most, by name: a page that names itself anew at every ask
-            // can't fill the history or the workers.)
-            if caller.page
-                && !s.workers.contains_key(&a.worker)
-                && s.workers.keys().filter(|n| n.starts_with("page ")).count() >= PAGES_MAX
-            {
-                return Ok((
-                    429,
-                    serde_json::json!({ "error": "too many pages have helped today: ask again tomorrow, or as one of them" }),
-                ));
-            }
             // The pool's lead not fresh: nothing now (docs/pool.md §6.5).
             if let Some(why) = s.moving_now(wall_now()) {
                 s.seen(&a.worker, format!("waiting: {why}"), None, now);
-                return Ok(if a.kind == "native" {
-                    (409, serde_json::json!({ "error": format!("the lead is moving ({why}); ask again in a moment") }))
-                } else {
-                    (204, serde_json::Value::Null)
-                });
+                return Ok((
+                    409,
+                    serde_json::json!({ "error": format!("the lead is moving ({why}); ask again in a moment") }),
+                ));
             }
-            // The build paused: nothing (an agent told why, and the pause; a page, nothing now).
+            // The build paused: nothing (an agent told why, and the pause).
             if let Some(p) = s.paused.clone() {
                 s.seen(&a.worker, format!("waiting: {}", p.why()), None, now);
-                return Ok(if a.kind == "native" {
-                    (409, serde_json::json!({ "error": p.why(), "pause": p }))
-                } else {
-                    (204, serde_json::Value::Null)
-                });
+                return Ok((409, serde_json::json!({ "error": p.why(), "pause": p })));
             }
             // An agent on another app than this one's waits until the two run the same (its updater
             // run, or this Mac's: an agent switches between jobs, a lead re-asserting on its new app;
             // or the lead handed to a Mac on the newer): its work would be built with other code than
             // the keys it records say. (Before it's seen as a worker that does tasks: a `unit` job's
             // tails would wait for it.) Jobs it runs already go on.
-            if a.kind == "native" && !app_ok(a.app.as_deref(), &s.app) {
+            if !app_ok(a.app.as_deref(), &s.app) {
                 let theirs = a.app.as_deref().map_or("an older one".to_string(), app_when);
                 let why = if a.app.as_deref().is_some_and(|t| app_newer(t, &s.app)) {
                     format!("on the app of {theirs}, the lead on {}'s: it builds once the lead runs the same (its updater, or the lead handed to a Mac on the newer)", app_when(&s.app))
@@ -3512,23 +3356,16 @@ fn route(
                 return Ok((409, serde_json::json!({ "error": why })));
             }
             // Nor one older than the app a readers' switch was recorded on (its keys and code are
-            // from before it: crate::inputs::regions::read::needed_app); a page runs this Mac's.
+            // from before it: crate::inputs::regions::read::needed_app).
             if let Some(min) = s.min_app.clone() {
-                let theirs = if a.kind == "native" { a.app.clone().unwrap_or_default() } else { s.app.clone() };
+                let theirs = a.app.clone().unwrap_or_default();
                 if !crate::pool::term::app_at_least(&theirs, &min) {
                     let why = format!("on the app of {}, older than the one the readers' switch was recorded on ({}): it builds once it runs that one or newer", if theirs.is_empty() { "an older one".to_string() } else { app_when(&theirs) }, app_when(&min));
                     s.seen(&a.worker, why.clone(), None, now);
-                    return Ok(if a.kind == "native" {
-                        (409, serde_json::json!({ "error": why }))
-                    } else {
-                        (204, serde_json::Value::Null)
-                    });
+                    return Ok((409, serde_json::json!({ "error": why })));
                 }
             }
             s.seen(&a.worker, format!("asked for {}", a.can.join(" or ")), Some(&a), now);
-            if s.workers[&a.worker].bad {
-                return Ok((204, serde_json::Value::Null));
-            }
             // The work only it can do first: a worker that mounts the NAS does a job of the plan (the
             // most work for what it fetches), the earliest step it can (what later steps wait on),
             // then a task; any other, a task.
@@ -3615,23 +3452,8 @@ fn route(
             }
             Ok((204, serde_json::Value::Null))
         }
-        "/work/where" => {
-            // Where work that fits a page waits (docs/pool.md §8): the brokers to ask, most waiting
-            // first, the lead's address and every member's, from the members' heartbeats.
-            let a: brokers::Ask = serde_json::from_slice(body)?;
-            let s = shared.lock().unwrap();
-            Ok(match &s.brokers {
-                Some(b) => (200, brokers::answer(b, &a)),
-                None => {
-                    (404, serde_json::json!({ "error": "tasks aren't brokered by every member (state/pool/brokers)" }))
-                }
-            })
-        }
         "/work/beat" => {
             let mut b: Beat = serde_json::from_slice(body)?;
-            if let Some(n) = own_name(&b.worker) {
-                b.worker = n;
-            }
             b.progress = b.progress.map(|p| p.chars().take(WHAT_MAX).collect());
             if let Some(l) = &mut b.live {
                 for s in [&mut l.phase, &mut l.target].into_iter().flatten() {
@@ -3903,10 +3725,6 @@ fn route(
         }
         "/work/done" => {
             let mut d: Done = serde_json::from_slice(body)?;
-            // (A page's measures as a page's can be: its memory, its time.)
-            if let Some(n) = own_name(&d.worker) {
-                (d.worker, d.peak_mb, d.secs) = (n, d.peak_mb.min(DEVICE_MB), d.secs.clamp(0.0, 86400.0));
-            }
             // Its timings kept, whatever became of its lease (by who ran it, as the lease says).
             if let Some(t) = d.timings.take() {
                 let dir = shared.lock().unwrap().dir.clone();
@@ -3922,8 +3740,6 @@ fn route(
                 return Ok((410, serde_json::json!({ "error": "that lease is gone" })));
             };
             match &l.work {
-                // (A page hands back tasks alone.)
-                Work::Job { .. } if caller.page => return not_mine(),
                 Work::Job { step, targets } => {
                     let h = d.handoff.unwrap_or_default();
                     // (Its member wrote it to the pool's journal itself, which the lead's merge
@@ -4070,9 +3886,6 @@ fn route(
         }
         "/work/fail" => {
             let mut f: Fail = serde_json::from_slice(body)?;
-            if let Some(n) = own_name(&f.worker) {
-                (f.worker, f.oom_mb) = (n, f.oom_mb.map(|m| m.min(DEVICE_MB)));
-            }
             f.error = f.error.chars().take(WHY_MAX).collect();
             let mut s = shared.lock().unwrap();
             let Some(l) = s.leases.finish(f.lease, &f.worker, now) else {
@@ -4224,12 +4037,10 @@ fn route(
             let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             // The history's last number (the page asks `/work/history` for what's after the one it
             // has) and the last day by the hour.
-            // (What a task of each kind takes, typically: whether a page can take the tails the
-            // schedule shows it.)
             let (leases, workers) = ages(&view, unix);
             Ok((
                 200,
-                serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": view["tasks"], "task_mb": view["task_mb"], "seq": s.history.seq(), "rates": s.history.rates(unix, 24), "app": s.app, "epoch": format!("coordinator {}", s.lead_name) }),
+                serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": view["tasks"], "seq": s.history.seq(), "rates": s.history.rates(unix, 24), "app": s.app, "epoch": format!("coordinator {}", s.lead_name) }),
             ))
         }
         "/work/history" => {
@@ -4355,9 +4166,6 @@ fn route(
             // its own. Its number answered, and the last lease granted before it (`after`: its job's
             // lease is later, so `scenic redo --run` knows its merge from an earlier job's). (Never a
             // page's: the gate lets only the key through.)
-            if caller.page {
-                return not_mine();
-            }
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let targets: Vec<String> = b["targets"]
                 .as_array()
@@ -4426,11 +4234,8 @@ fn route(
                 .and_then(|v| v["kind"].as_str().map(str::to_string))
                 .unwrap_or_default();
             let s = shared.lock().unwrap();
-            let around: Vec<&Worker> = s
-                .workers
-                .values()
-                .filter(|w| !w.bad && now.duration_since(w.seen) < AROUND && w.can.contains(&kind))
-                .collect();
+            let around: Vec<&Worker> =
+                s.workers.values().filter(|w| now.duration_since(w.seen) < AROUND && w.can.contains(&kind)).collect();
             Ok((
                 200,
                 serde_json::json!({ "workers": around.len(), "mem_mb": around.iter().map(|w| w.mem_mb).max().unwrap_or(0) }),
@@ -4457,10 +4262,7 @@ fn route(
                             serde_json::json!({ "state": "leased", "worker": worker, "age_s": l.map(|l| now.duration_since(l.granted).as_secs_f64()), "frac": l.and_then(|l| l.frac), "pace": s.tasks.pace(worker, &t.kind) })
                         }
                         task::State::Done { worker, outputs, removed, secs, peak_mb } => {
-                            // A worker's first results are all checked, then one in eight.
-                            let w = s.workers.get(worker);
-                            let check = w.is_none_or(|w| w.checked < 3) || id % 8 == 0;
-                            serde_json::json!({ "state": "done", "worker": worker, "out": t.out, "outputs": outputs, "removed": removed, "secs": secs, "peak_mb": peak_mb, "check": check })
+                            serde_json::json!({ "state": "done", "worker": worker, "out": t.out, "outputs": outputs, "removed": removed, "secs": secs, "peak_mb": peak_mb })
                         }
                         task::State::Failed { why } => serde_json::json!({ "state": "failed", "why": why }),
                     };
@@ -4485,10 +4287,9 @@ fn route(
                     Ok((200, serde_json::json!({ "workers": names })))
                 }
                 Some("close") => {
-                    // With the job's check of the result, if it made one, and its own run's time (or
-                    // what it takes it to be): the worker's pace.
+                    // With the job's own run's time (or what it takes it to be): the worker's pace.
                     let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
-                    let (checked, here_s) = (b["checked"].as_bool(), b["here_s"].as_f64());
+                    let here_s = b["here_s"].as_f64();
                     if let (Some(here_s), Some(t)) = (here_s, s.tasks.by_id.get(&id)) {
                         let kind = t.kind.clone();
                         s.tasks.note_here(&kind, here_s);
@@ -4503,17 +4304,6 @@ fn route(
                     if here_s.is_some_and(|h| s.tasks.measure(id, h)) {
                         return Ok((200, serde_json::json!({ "ok": true, "measuring": true })));
                     }
-                    if let (Some(c), Some(task::State::Done { worker, .. })) =
-                        (checked, s.tasks.by_id.get(&id).map(|t| t.state.clone()))
-                    {
-                        if let Some(w) = s.workers.get_mut(&worker) {
-                            w.checked += 1;
-                            if !c {
-                                w.bad = true;
-                                eprintln!("coordinator: {worker}'s result for task {id} differs from this Mac's: it gets no more work");
-                            }
-                        }
-                    }
                     if let Some(l) = s.tasks.close(id) {
                         s.leases.cancel(l);
                     }
@@ -4526,9 +4316,8 @@ fn route(
     }
 }
 
-/// The HTTP side (not in WebAssembly): axum, on a runtime of its own. Every request is bounded in
+/// The HTTP side: axum, on a runtime of its own. Every request is bounded in
 /// time and size, a slow or stalled one holds a task (not a thread), and files stream both ways.
-#[cfg(not(target_os = "wasi"))]
 mod http {
     use super::*;
     use axum::body::Body;
@@ -4541,13 +4330,11 @@ mod http {
     use std::net::SocketAddr;
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
-    /// The web worker page (docs/workers.md §7), built in: (path under /work/, type, contents). An
-    /// app to install (its manifest, service worker and icons: docs/workers.md, The page as an app).
+    /// The build page (docs/workers.md §7), built in: (path under /work/, type, contents). An app to
+    /// install (its manifest, service worker and icons: docs/workers.md §7, The page as an app).
     const PAGE: &[(&str, &str, &[u8])] = &[
         ("", "text/html; charset=utf-8", include_bytes!("../../../../web/work/index.html")),
         ("index.html", "text/html; charset=utf-8", include_bytes!("../../../../web/work/index.html")),
-        ("worker.js", "text/javascript", include_bytes!("../../../../web/work/worker.js")),
-        ("runtime.js", "text/javascript", include_bytes!("../../../../web/work/runtime.js")),
         // The build at a glance, both pages': its script and styles.
         ("dash.js", "text/javascript", include_bytes!("../../../../web/work/dash.js")),
         ("pool.js", "text/javascript", include_bytes!("../../../../web/work/pool.js")),
@@ -4586,36 +4373,6 @@ mod http {
             include_bytes!("../../../../web/work/icons/icon-maskable-512.png"),
         ),
         ("icons/apple-touch-icon.png", "image/png", include_bytes!("../../../../web/work/icons/apple-touch-icon.png")),
-        (
-            "vendor/browser_wasi_shim/index.js",
-            "text/javascript",
-            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/index.js"),
-        ),
-        (
-            "vendor/browser_wasi_shim/wasi.js",
-            "text/javascript",
-            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/wasi.js"),
-        ),
-        (
-            "vendor/browser_wasi_shim/wasi_defs.js",
-            "text/javascript",
-            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/wasi_defs.js"),
-        ),
-        (
-            "vendor/browser_wasi_shim/fd.js",
-            "text/javascript",
-            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fd.js"),
-        ),
-        (
-            "vendor/browser_wasi_shim/fs_mem.js",
-            "text/javascript",
-            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fs_mem.js"),
-        ),
-        (
-            "vendor/browser_wasi_shim/debug.js",
-            "text/javascript",
-            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/debug.js"),
-        ),
     ];
 
     /// The page's version: its files' hash, in its service worker (sw.js's VERSION), so a new
@@ -4648,56 +4405,12 @@ mod http {
         pub token: String,
         pub job_token: String,
         pub journal: PathBuf,
-        pub wasm: Option<PathBuf>,
-        /// The NAS's project folder (Coordinator::set_root), and the data servers' files opened for
-        /// tasks (`net`).
-        pub root: Arc<Mutex<Option<store::nasfs::NasRoot>>>,
-        pub remote: Arc<Remote>,
         /// Held read by each request's `route`, true once the coordinator has stopped
         /// (Coordinator::stop): then none runs.
         pub routes: Arc<std::sync::RwLock<bool>>,
         /// The origins whose pages may call it from elsewhere (Coordinator::set_brokers).
         pub cors: Arc<std::sync::RwLock<Option<BTreeSet<String>>>>,
     }
-
-    /// The data servers' files opened for tasks, kept (the most recent `REMOTE_FILES`), each with
-    /// the block cache crate::fetch keeps for it (16 MB at most): a task reads a file a block at a
-    /// time. Fetched over HTTPS only, following no redirect: a task names only the servers
-    /// the declarations' hosts allow (hosts), and a redirect would take the fetch elsewhere.
-    #[derive(Default)]
-    pub struct Remote {
-        files: Mutex<std::collections::VecDeque<(String, Option<Arc<dyn store::range::RangeRead>>)>>,
-    }
-
-    impl Remote {
-        /// `url`'s file (None: the server has none), opened once.
-        fn open(&self, url: &str) -> Result<Option<Arc<dyn store::range::RangeRead>>> {
-            if let Some((_, f)) = self.files.lock().unwrap().iter().find(|(u, _)| u == url) {
-                return Ok(f.clone());
-            }
-            use crate::fetch::Fetch;
-            let fetch = crate::fetch::Fetcher::strict();
-            // (A small file a server won't read in ranges, a map tile: whole.)
-            let f = match fetch.open(url) {
-                Ok(f) => f,
-                Err(e) => match fetch.get(url) {
-                    Ok(b) => b.map(|b| Arc::new(b) as Arc<dyn store::range::RangeRead>),
-                    Err(_) => return Err(e),
-                },
-            };
-            let mut files = self.files.lock().unwrap();
-            files.push_back((url.to_string(), f.clone()));
-            while files.len() > REMOTE_FILES {
-                files.pop_front();
-            }
-            Ok(f)
-        }
-    }
-
-    /// The data servers' files kept open for tasks (`Remote`): a few hundred MB of blocks at most.
-    const REMOTE_FILES: usize = 24;
-    /// The most of a file one request reads (a page reads 1 MB blocks).
-    const RANGE_MAX: u64 = 8 << 20;
 
     pub use crate::net::{allowed, random, served_https, urls};
 
@@ -4737,10 +4450,9 @@ mod http {
             // (Relative redirects: a proxy may serve the page under a path, tools/caddy's /build.)
             .route("/work", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "work/")]) }))
             .route("/work/", get(|| page(Url(String::new()))))
-            // (The watching page's old address: the page is the dashboard now, helping opt-in.)
+            // (The watching page's old address: the page is the dashboard now.)
             .route("/work/{*file}", get(page))
             .route("/work/ask", any(json))
-            .route("/work/where", any(json))
             .route("/work/beat", any(json))
             .route("/work/pause", any(json))
             .route("/work/inputs", any(json))
@@ -4765,9 +4477,7 @@ mod http {
             .route("/work/redo", any(json))
             .route("/pool/mail", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
-            .route("/work/net/{lease}/{*path}", get(net))
             .route("/work/out/{lease}/{*path}", put(output))
-            .route("/work/prog/{name}", get(prog))
             .route("/task/{*rest}", any(json));
         // (The map's, answered from memory: maproutes.)
         let shared = ctx.shared.clone();
@@ -4943,8 +4653,8 @@ mod http {
     /// request naming this Mac and from no web page elsewhere (crate::net::ours, from_the_page: DNS
     /// rebinding, a site's requests through a browser that reaches here). Then: the page and what
     /// its dashboard reads, anyone's; the Macs' agents' requests, with the build's key; a page's,
-    /// with no key, for its own tasks (its asks, beats, hand-backs and failures, its tasks' files
-    /// and the programs, under a page's name: `page_name`) and pausing the build alone; and a job's
+    /// with no key, for the owner's asks alone (pausing, settings; never work: `NO_PAGE_HELPERS`,
+    /// `page_work`); and a job's
     /// (`/task/…`), with its own key, from this Mac itself (crate::net::own: `tailscale serve` hands
     /// the tailnet's requests over from loopback). A key that isn't one is refused (401), so an
     /// agent with an old one reads the new one. Who it is goes on to the request (`Caller`).
@@ -5035,40 +4745,33 @@ mod http {
         if key.is_some() {
             return error(StatusCode::UNAUTHORIZED, "not the build's key");
         }
-        // A page: its own tasks, and pausing.
-        let files = ["/work/in/", "/work/net/", "/work/out/"].iter().any(|p| path.starts_with(p));
-        let theirs = match *req.method() {
-            Method::POST => matches!(
-                path.as_str(),
-                "/work/ask"
-                    | "/work/where"
-                    | "/work/beat"
-                    | "/work/done"
-                    | "/work/fail"
-                    | "/work/pause"
-                    | "/work/inputs"
-                    | "/work/act"
-                    | "/work/settings"
-                    | "/work/hold"
-                    | "/work/quit"
-            ),
-            Method::GET => (files && !path.starts_with("/work/out/")) || path.starts_with("/work/prog/"),
-            Method::PUT => path.starts_with("/work/out/"),
-            _ => false,
-        };
-        if !theirs {
-            return error(StatusCode::FORBIDDEN, "a page helps with a page's tasks alone");
+        // A page left open from before its helpers were removed, asking for work: told so (a beat,
+        // its lease not held: the page stops that task), never an error it retries at once.
+        if page_work(&path) {
+            return if path == "/work/beat" {
+                (
+                    StatusCode::OK,
+                    [(header::CACHE_CONTROL, "no-store")],
+                    Json(serde_json::json!({ "ok": false, "error": super::NO_PAGE_HELPERS })),
+                )
+                    .into_response()
+            } else {
+                error(StatusCode::FORBIDDEN, super::NO_PAGE_HELPERS)
+            };
         }
-        // (Its tasks' files under a page's name, as its JSON requests are: `route`.)
-        if files {
-            match axum::http::HeaderValue::from_str(&super::page_name(&worker(req.headers()))) {
-                Ok(v) => {
-                    req.headers_mut().insert("x-worker", v);
-                }
-                Err(_) => return error(StatusCode::FORBIDDEN, "a page's name that can't be said"),
-            }
+        // A page: the owner's asks.
+        let theirs = req.method() == Method::POST && owners_asks;
+        if !theirs {
+            return error(StatusCode::FORBIDDEN, "a page reads the build and takes the owner's asks alone");
         }
         next.run(req).await
+    }
+
+    /// Whether `path` is one a page once worked through (its asks, beats, hand-backs and failures,
+    /// its tasks' files and the programs' WebAssembly builds).
+    pub(super) fn page_work(path: &str) -> bool {
+        matches!(path, "/work/ask" | "/work/beat" | "/work/done" | "/work/fail")
+            || ["/work/in/", "/work/net/", "/work/out/", "/work/prog/"].iter().any(|p| path.starts_with(p))
     }
 
     /// A request's page when it's one of the pool's members' (its `Origin` one of their addresses,
@@ -5214,17 +4917,6 @@ mod http {
         resp
     }
 
-    /// A program's WebAssembly build.
-    async fn prog(State(c): State<Ctx>, Url(name): Url<String>) -> Response {
-        let ok = name
-            .strip_suffix(".wasm")
-            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c == '-'));
-        match c.wasm.as_ref().filter(|_| ok) {
-            Some(d) => send_file(&d.join(&name), "application/wasm", None, None).await,
-            None => error(StatusCode::NOT_FOUND, format!("no {name}")),
-        }
-    }
-
     /// A task's input, to the worker holding it.
     async fn input(State(c): State<Ctx>, Url((lease, path)): Url<(u64, String)>, h: HeaderMap) -> Response {
         let found = c.shared.lock().unwrap().tasks.input(lease, &worker(&h), &path);
@@ -5239,138 +4931,6 @@ mod http {
                 .await
             }
             None => error(StatusCode::NOT_FOUND, "not an input of that lease"),
-        }
-    }
-
-    /// What a task reads where it lies (docs/workers.md §3, Read where they lie), for the worker
-    /// holding its lease: `nas/<path>` the build's data on the NAS (under `NAS_PATHS`), `web/<host>/
-    /// <path>` a data server's file (one the accepted declarations name: hosts, over HTTPS). `?probe`: what's there
-    /// ({kind, size}; 404 when nothing is); `?list`: a NAS folder's entries; else its bytes, a range
-    /// at a time.
-    async fn net(
-        State(c): State<Ctx>,
-        Url((lease, path)): Url<(u64, String)>,
-        q: axum::extract::RawQuery,
-        h: HeaderMap,
-    ) -> Response {
-        if c.shared.lock().unwrap().tasks.by_lease(lease, &worker(&h)).is_none() {
-            return error(StatusCode::GONE, "that lease is gone");
-        }
-        let query = q.0.unwrap_or_default();
-        let range = h.get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_string);
-        if let Some(rel) = path.strip_prefix("nas/") {
-            let Some(rel) = task::safe(rel).filter(|r| {
-                NAS_PATHS
-                    .iter()
-                    .any(|n| r.to_string_lossy().starts_with(n) || n.trim_end_matches('/') == r.to_string_lossy())
-            }) else {
-                return error(StatusCode::FORBIDDEN, "not what a task reads");
-            };
-            let Some(root) = c.root.lock().unwrap().clone() else {
-                return error(StatusCode::SERVICE_UNAVAILABLE, "the NAS isn't here now");
-            };
-            // (Served through tokio's files, a range streamed: tests/nas_access.rs.)
-            let p = root.join(rel.to_string_lossy()).unchecked_path();
-            // (Not there, or the NAS not answering: a task fails rather than take the second for
-            // the first, as Taiwan's elevations would, from GLO-30.)
-            let meta = match tokio::fs::metadata(&p).await {
-                Ok(m) => m,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return error(StatusCode::NOT_FOUND, "nothing there")
-                }
-                Err(e) => return error(StatusCode::SERVICE_UNAVAILABLE, format!("the NAS didn't answer: {e}")),
-            };
-            return match query.as_str() {
-                "probe" => Json(if meta.is_dir() {
-                    serde_json::json!({ "kind": "dir" })
-                } else {
-                    serde_json::json!({ "kind": "file", "size": meta.len() })
-                })
-                .into_response(),
-                "list" => {
-                    // (A listing read in part, the NAS not answering, is an error, never fewer
-                    // entries: Taiwan's MOI DTM files listed as none would be GLO-30's elevations.
-                    // An entry gone since it was listed is just gone.)
-                    let listed = (|| -> std::io::Result<Vec<(String, &str, u64)>> {
-                        let mut entries = Vec::new();
-                        for e in std::fs::read_dir(&p)? {
-                            let e = e?;
-                            let m = match e.metadata() {
-                                Ok(m) => m,
-                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                                Err(e) => return Err(e),
-                            };
-                            entries.push((
-                                e.file_name().to_string_lossy().into_owned(),
-                                if m.is_dir() { "dir" } else { "file" },
-                                m.len(),
-                            ));
-                        }
-                        entries.sort();
-                        Ok(entries)
-                    })();
-                    match listed {
-                        Ok(entries) => Json(serde_json::json!({ "entries": entries })).into_response(),
-                        Err(e) => error(StatusCode::SERVICE_UNAVAILABLE, format!("the NAS didn't list it: {e}")),
-                    }
-                }
-                _ => send_file(&p, "application/octet-stream", None, range.as_deref()).await,
-            };
-        }
-        let Some((host, rest)) = path.strip_prefix("web/").and_then(|r| r.split_once('/')) else {
-            return error(StatusCode::NOT_FOUND, "nas/… or web/<host>/…");
-        };
-        let Some(root) = c.root.lock().unwrap().clone() else {
-            return error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "the NAS isn't here now (the declarations name the servers)",
-            );
-        };
-        let hosts = match tokio::task::spawn_blocking(move || hosts::now(&root)).await {
-            Ok(Ok(h)) => h,
-            Ok(Err(e)) => return error(StatusCode::SERVICE_UNAVAILABLE, format!("the declarations' hosts: {e:#}")),
-            Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")),
-        };
-        if !hosts.contains(host) {
-            return error(StatusCode::FORBIDDEN, "not a data server a task reads");
-        }
-        let url = format!("https://{host}/{rest}");
-        let remote = c.remote.clone();
-        let read = tokio::task::spawn_blocking(move || -> Result<Response> {
-            let Some(f) = remote.open(&url)? else { return Ok(error(StatusCode::NOT_FOUND, "the server has none")) };
-            let len = f.len().map_err(|e| anyhow::anyhow!("{e}"))?;
-            if query == "probe" {
-                return Ok(Json(serde_json::json!({ "kind": "file", "size": len })).into_response());
-            }
-            let (a, b) = match range.as_deref().and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.split_once('-')) {
-                Some((a, b)) => (
-                    a.parse::<u64>()?,
-                    if b.is_empty() { len.saturating_sub(1) } else { b.parse::<u64>()?.min(len.saturating_sub(1)) },
-                ),
-                None => (0, len.saturating_sub(1)),
-            };
-            anyhow::ensure!(
-                a <= b && b < len && b - a < RANGE_MAX,
-                "a range of at most {} MB in the file",
-                RANGE_MAX >> 20
-            );
-            let bytes = f.read_at(a, (b - a + 1) as usize).map_err(|e| anyhow::anyhow!("{e}"))?;
-            let mut resp = (
-                StatusCode::PARTIAL_CONTENT,
-                [(header::CONTENT_TYPE, "application/octet-stream"), (header::CACHE_CONTROL, "no-store")],
-                bytes,
-            )
-                .into_response();
-            if let Ok(v) = format!("bytes {a}-{b}/{len}").parse() {
-                resp.headers_mut().insert(header::CONTENT_RANGE, v);
-            }
-            Ok(resp)
-        })
-        .await;
-        match read {
-            Ok(Ok(r)) => r,
-            Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, format!("{e:#}")),
-            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
         }
     }
 
@@ -5497,10 +5057,10 @@ fn test_listener() -> (std::net::TcpListener, u16) {
 #[cfg(test)]
 pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Coordinator, u16) {
     let (listener, port) = test_listener();
-    (Coordinator::start_on(dir, None, listener, me, app).unwrap(), port)
+    (Coordinator::start_on(dir, listener, me, app).unwrap(), port)
 }
 
-#[cfg(all(test, not(target_os = "wasi")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -5610,7 +5170,7 @@ mod tests {
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         w.ask(&ask(4096)).unwrap();
         c.stop();
-        let next = Coordinator::start(&dir, None, port, "m4", "").unwrap();
+        let next = Coordinator::start(&dir, port, "m4", "").unwrap();
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], next.contact.token.clone(), "m1");
         w.ask(&ask(4096)).unwrap();
     }
@@ -6034,7 +5594,7 @@ mod tests {
         assert!(serde_json::from_value::<Done>(body).unwrap().timings.is_none());
         let body = serde_json::json!({ "worker": "m1", "lease": 999, "timings": { "kind": 5 } });
         assert!(serde_json::from_value::<Done>(body).unwrap().timings.is_none());
-        // A page's, as web/work/worker.js writes it (no CPU time).
+        // One with no CPU time and its phases' classes, as an older record has them.
         let page = serde_json::json!({ "v": 1, "kind": "task tail", "id": "task 7", "start": 1, "wall_s": 9.5, "ok": true, "untimed_s": 0.5, "overhead_s": 0, "phases": [{ "name": "fetching its files from the coordinator", "class": "net", "wall_s": 2.0, "n": 1, "bytes": 1000, "files": 3 }, { "name": "sampling the elevations (elev)", "class": "mixed", "wall_s": 7.0, "n": 1, "bytes": 0, "files": 0 }] });
         let d: Done =
             serde_json::from_value(serde_json::json!({ "worker": "ipad", "lease": 999, "timings": page })).unwrap();
@@ -6156,7 +5716,7 @@ mod tests {
         c.offer_units("2026-09-28", units.clone());
         let g = w.ask(&ask(4096)).unwrap().unwrap();
         // Paused (from a helper's menu, passed on by its agent): no work; an agent's told why and the
-        // pause, a page nothing; a worker's beat hears it; no lease lapses meanwhile.
+        // pause; a worker's beat hears it; no lease lapses meanwhile.
         let p = Pause::new(Mode::Drain, "the menu bar on m1");
         w.set_pause(Some(&p), p.at).unwrap();
         // (An ask from before it, held by a Mac that couldn't reach this one: passed over.)
@@ -6165,8 +5725,6 @@ mod tests {
         let e = w.ask(&ask(4096)).unwrap_err();
         let r = e.downcast_ref::<client::Refused>().unwrap();
         assert!(r.why.contains("paused") && r.pause.as_ref().is_some_and(|p| p.mode == Mode::Drain));
-        let page = client::Client::at(w.urls(), c.contact.token.clone(), "ipad");
-        assert!(page.ask(&Ask { kind: "web".into(), can: vec!["tail".into()], ..ask(1024) }).unwrap().is_none());
         assert!(w.beat_paused(g.lease, None).unwrap().1.is_some());
         assert!(c.expire().is_empty());
         // A restart keeps it.
@@ -9172,18 +8730,18 @@ mod tests {
         assert!(ts.iter().all(|t| !s.pick_every(&one(t), &a1, now).is_empty()));
     }
 
-    /// Placement on: a task of a kind a page is measured slower at than this Mac goes to it only
-    /// while the head start it was offered with covers the page's run (its pace, with the margin,
+    /// Placement on: a task of a kind a worker is measured slower at than this Mac goes to it only
+    /// while the head start it was offered with covers the worker's run (its pace, with the margin,
     /// times this Mac's measured time at the kind); one not offered ahead, never; off, as before
     /// (never).
     #[test]
-    fn placement_a_slower_page_gets_a_task_only_with_a_head_start_that_covers_it() {
-        let (d, c, page) = start();
+    fn placement_a_slower_worker_gets_a_task_only_with_a_head_start_that_covers_it() {
+        let (d, c, m1) = start();
         let clock = store::clock::Virtual::new();
         c.shared.lock().unwrap().clock = clock.clone();
         let ask = Ask {
             worker: "m1".into(),
-            kind: "page".into(),
+            kind: "native".into(),
             can: vec!["terrainsub".into()],
             mem_mb: 4096,
             ..Default::default()
@@ -9214,7 +8772,7 @@ mod tests {
             s.tasks.paces.insert(("m1".into(), "terrainsub".into()), 4.0);
             s.tasks.note_here("terrainsub", 10.0);
         }
-        let took = |c: &Coordinator| match page.ask(&ask).unwrap().map(|g| g.work) {
+        let took = |c: &Coordinator| match m1.ask(&ask).unwrap().map(|g| g.work) {
             Some(Granted::Task { id, .. }) => {
                 c.shared.lock().unwrap().tasks.close(id);
                 Some(id)
@@ -9622,7 +9180,7 @@ mod tests {
         // not the worker's.)
         assert!(
             !sw.contains("__PAGE__")
-                && sw.contains(r#"const PAGE = ["/work/","/work/index.html","/work/worker.js""#)
+                && sw.contains(r#"const PAGE = ["/work/","/work/index.html","/work/dash.js""#)
                 && !sw.contains(r#""/work/sw.js""#)
         );
         let icon = get("/work/icons/icon-192.png");
@@ -10100,9 +9658,15 @@ mod tests {
         assert!(c.take_inputs_asks().is_empty());
     }
 
+    /// Task #876: pages no longer help with the build. A page left open from before (its asks,
+    /// beats, hand-backs and failures, its tasks' files and the programs) is told so with no key,
+    /// whatever it asks for and whatever name it gives: never a task (one offered stays offered, no
+    /// worker is added), a beat answered `ok: false` (it stops that task) and the rest refused
+    /// with `NO_PAGE_HELPERS` (never an error it retries at once); the owner's asks (pausing)
+    /// still go through without a key, the agents' with theirs.
     #[test]
-    fn a_page_helps_with_no_key_as_a_page_and_with_a_pages_tasks_alone() {
-        let (_d, c, w) = start();
+    fn the_coordinator_never_offers_a_page_a_task_and_tells_an_old_page_so() {
+        let (d, c, w) = start();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let token = c.contact.token.clone();
         // A JSON request as a page makes it: the answer's status and body.
@@ -10110,43 +9674,66 @@ mod tests {
             let (code, _, v) = send(&addr, "POST", path, key, &[], &body);
             (code, v)
         };
-        let asks = |worker: &str, kind: &str, can: &[&str]| serde_json::json!({ "worker": worker, "kind": kind, "can": can, "mem_mb": 1000, "cores": 4, "label": "Safari on iPad\u{202e}" });
-        // A page's tasks, the tails: yes; an agent's work: no.
-        assert_eq!(page("/work/ask", None, asks("ipad01", "web", &["tail"])).0 / 100, 2);
-        assert_eq!(page("/work/ask", None, asks("ipad01", "native", &["unit"])).0, 403);
-        assert_eq!(page("/work/ask", None, asks("ipad01", "web", &["unit"])).0, 403);
-        // Whatever name it gives, it works under a page's: another's leases and files aren't its own.
-        assert_eq!(page("/work/ask", None, asks("m4", "web", &["tail"])).0 / 100, 2);
-        let lease = c.hold("unit", &[("6/1/1".to_string(), "k".to_string())]).unwrap();
-        assert_eq!(
-            page(
-                "/work/beat",
-                None,
-                serde_json::json!({ "worker": "m4", "lease": lease, "progress": "x".repeat(10_000) })
-            )
-            .1["ok"],
-            false
-        );
-        assert_eq!(
-            page("/work/fail", None, serde_json::json!({ "worker": "m4", "lease": lease, "error": "x" })).0,
-            410
-        );
-        assert!(c.renew(lease, None), "the lead's own lease, untouched");
-        assert_eq!(send(&addr, "GET", "/work/in/1/a", None, &[("X-Worker", "m4")], &serde_json::json!({})).0, 404);
-        {
-            let s = c.shared.lock().unwrap();
-            let names: Vec<&String> = s.workers.keys().collect();
-            assert_eq!(names, ["page ipad01", "page m4"]);
-            let w = &s.workers["page ipad01"];
-            assert!(
-                w.label == "Safari on iPad" && w.what.chars().count() <= WHAT_MAX,
-                "{:?} {}",
-                w.label,
-                w.what.len()
-            );
+        let root = d.path().join("job");
+        std::fs::create_dir_all(root.join("u")).unwrap();
+        std::fs::write(root.join("u/in.bin"), b"input").unwrap();
+        let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
+        let offer = task::Offer {
+            owner: 42,
+            kind: "tail".into(),
+            spec: serde_json::json!({ "unit": "6/1/1" }),
+            root,
+            inputs: [("u/in.bin".to_string(), 5)].into(),
+            mem_mb: 100,
+            ahead: None,
+        };
+        let id =
+            job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap().1["id"].as_u64().unwrap();
+        // An old page's ask, as it made it (and an empty key, which is none): refused, said why.
+        let old = serde_json::json!({ "worker": "Safari on iPad ab12cd", "kind": "web", "label": "Safari on iPad", "can": ["tail", "bldtile", "treeblock", "terrainsub"], "mem_mb": 3000, "cores": 4, "visible": true });
+        for key in [None, Some("")] {
+            let (code, b) = page("/work/ask", key, old.clone());
+            assert_eq!((code, b["error"].as_str()), (403, Some(NO_PAGE_HELPERS)), "{b}");
         }
-        // (An empty key is none: a page.)
-        assert_eq!(send(&addr, "POST", "/work/ask", Some(""), &[], &asks("ipad01", "web", &["tail"])).0 / 100, 2);
+        // Whatever it says it is.
+        let native = serde_json::json!({ "worker": "m4", "kind": "native", "can": ["unit", "tail"], "mem_mb": 3000, "cores": 4 });
+        assert_eq!(page("/work/ask", None, native).1["error"], NO_PAGE_HELPERS);
+        // A beat for a lease it held: not held (it stops that task), the lead's own untouched.
+        let lease = c.hold("unit", &[("6/1/1".to_string(), "k".to_string())]).unwrap();
+        let (code, b) =
+            page("/work/beat", None, serde_json::json!({ "worker": "m4", "lease": lease, "progress": "x" }));
+        assert_eq!((code, b["ok"].as_bool(), b["error"].as_str()), (200, Some(false), Some(NO_PAGE_HELPERS)));
+        for path in ["/work/done", "/work/fail"] {
+            let (code, b) = page(path, None, serde_json::json!({ "worker": "m4", "lease": lease, "error": "x" }));
+            assert_eq!((code, b["error"].as_str()), (403, Some(NO_PAGE_HELPERS)), "{path}: {b}");
+        }
+        assert!(c.renew(lease, None), "the lead's own lease, untouched");
+        // Its tasks' files and the programs' WebAssembly builds: none.
+        for (method, path) in [
+            ("GET", "/work/in/1/u/in.bin"),
+            ("GET", "/work/net/1/nas/sources/x"),
+            ("PUT", "/work/out/1/u/out.bin"),
+            ("GET", "/work/prog/tile.wasm"),
+        ] {
+            let (code, _, b) = send(&addr, method, path, None, &[("X-Worker", "page m4")], &serde_json::json!({}));
+            assert_eq!((code, b["error"].as_str()), (403, Some(NO_PAGE_HELPERS)), "{method} {path}: {b}");
+        }
+        // Nothing given, no one added: the task waits for an agent.
+        assert_eq!(job.post_json(&format!("/task/{id}"), &serde_json::json!({})).unwrap().1["state"], "offered");
+        assert!(c.shared.lock().unwrap().workers.keys().all(|n| !n.contains("Safari") && !n.starts_with("page ")));
+        // An agent, with the build's key, takes it.
+        let m1 = client::Client::at(w.urls().to_vec(), token.clone(), "m1");
+        let g = m1
+            .ask(&Ask {
+                worker: "m1".into(),
+                kind: "native".into(),
+                can: vec!["tail".into()],
+                mem_mb: 1000,
+                ..Default::default()
+            })
+            .unwrap()
+            .unwrap();
+        assert!(matches!(g.work, Granted::Task { id: t, .. } if t == id));
         // Not the agents' own requests, and not a job's.
         assert_eq!(page("/work/status", None, serde_json::json!({})).0, 403);
         assert_eq!(page("/task/workers", None, serde_json::json!({})).0, 401);
@@ -10170,104 +9757,6 @@ mod tests {
             200
         );
         assert!(c.shared.lock().unwrap().paused.is_none());
-        // Pages that name themselves anew at every ask: a day's few, then refused (as one already
-        // known, still answered).
-        let known = c.shared.lock().unwrap().workers.keys().filter(|n| n.starts_with("page ")).count();
-        for i in known..PAGES_MAX {
-            assert_eq!(page("/work/ask", None, asks(&format!("p{i}"), "web", &["tail"])).0 / 100, 2, "{i}");
-        }
-        assert_eq!(page("/work/ask", None, asks("one-too-many", "web", &["tail"])).0, 429);
-        assert_eq!(page("/work/ask", None, asks("ipad01", "web", &["tail"])).0 / 100, 2);
-    }
-
-    #[test]
-    fn a_task_reads_the_nas_where_it_lies() {
-        let (d, c, w) = start();
-        let (job_root, nas) = (d.path().join("job"), d.path().join("nas"));
-        std::fs::create_dir_all(job_root.join("u")).unwrap();
-        std::fs::write(job_root.join("u/in.bin"), b"input").unwrap();
-        std::fs::create_dir_all(nas.join("sources/canopy")).unwrap();
-        std::fs::create_dir_all(nas.join("state/build")).unwrap();
-        let square: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
-        std::fs::write(nas.join("sources/canopy/sq.tif"), &square).unwrap();
-        std::fs::write(nas.join("state/build/manifest.json"), b"{}").unwrap();
-        let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
-        let offer = task::Offer {
-            owner: 42,
-            kind: "tail".into(),
-            spec: serde_json::json!({ "unit": "6/1/1" }),
-            root: job_root.clone(),
-            inputs: [("u/in.bin".to_string(), 5)].into(),
-            mem_mb: 100,
-            ahead: None,
-        };
-        job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap();
-        let ipad = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "ipad");
-        let g = ipad
-            .ask(&Ask {
-                worker: "ipad".into(),
-                kind: "web".into(),
-                can: vec!["tail".into()],
-                mem_mb: 1000,
-                cores: 4,
-                ..Default::default()
-            })
-            .unwrap()
-            .unwrap();
-        // (A request as the page makes it: its token, who it is, a range.)
-        let addr = w.urls()[0].trim_start_matches("http://").to_string();
-        let get = |path: &str, who: &str, range: Option<&str>| -> (u16, Vec<u8>) {
-            use std::io::{Read, Write};
-            let mut s = std::net::TcpStream::connect(&addr).unwrap();
-            let range = range.map(|r| format!("Range: bytes={r}\r\n")).unwrap_or_default();
-            write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\nX-Worker: {who}\r\n{range}Connection: close\r\n\r\n", c.contact.token).unwrap();
-            let mut b = Vec::new();
-            s.read_to_end(&mut b).unwrap();
-            let end = b.windows(4).position(|x| x == b"\r\n\r\n").unwrap();
-            let head = String::from_utf8_lossy(&b[..end]).to_string();
-            let code: u16 = head.split(' ').nth(1).unwrap().parse().unwrap();
-            let body = b[end + 4..].to_vec();
-            // (Chunked or not: the tests' bodies are small, whole.)
-            let body = if head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
-                let t = String::from_utf8_lossy(&body).to_string();
-                let (n, rest) = t.split_once("\r\n").unwrap();
-                rest.as_bytes()[..usize::from_str_radix(n.trim(), 16).unwrap()].to_vec()
-            } else {
-                body
-            };
-            (code, body)
-        };
-        let base = format!("/work/net/{}", g.lease);
-        // Before the agent says where the NAS is: not there.
-        assert_eq!(get(&format!("{base}/nas/sources/canopy/sq.tif?probe"), "ipad", None).0, 503);
-        c.set_root(Some(&store::nasfs::NasRoot::local_for_test(&nas)));
-        let json = |b: &[u8]| serde_json::from_slice::<serde_json::Value>(b).unwrap();
-        let (code, b) = get(&format!("{base}/nas/sources/canopy/sq.tif?probe"), "ipad", None);
-        assert_eq!((code, json(&b)), (200, serde_json::json!({ "kind": "file", "size": 3000 })));
-        assert_eq!(
-            json(&get(&format!("{base}/nas/sources/canopy?probe"), "ipad", None).1),
-            serde_json::json!({ "kind": "dir" })
-        );
-        assert_eq!(
-            json(&get(&format!("{base}/nas/sources/canopy?list"), "ipad", None).1)["entries"],
-            serde_json::json!([["sq.tif", "file", 3000]])
-        );
-        // A folder that can't be read (as the NAS not answering): an error, not an empty listing.
-        let locked = nas.join("sources/canopy/locked");
-        std::fs::create_dir_all(&locked).unwrap();
-        std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
-        let (code, _) = get(&format!("{base}/nas/sources/canopy/locked?list"), "ipad", None);
-        std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        assert_eq!(code, 503);
-        // A range of it, as a program reads it.
-        let (code, b) = get(&format!("{base}/nas/sources/canopy/sq.tif"), "ipad", Some("1000-1099"));
-        assert_eq!((code, b), (206, square[1000..1100].to_vec()));
-        // Nothing else of the NAS, nothing that isn't there, nothing for another worker, no other server.
-        assert_eq!(get(&format!("{base}/nas/state/build/manifest.json?probe"), "ipad", None).0, 403);
-        assert_eq!(get(&format!("{base}/nas/sources/../state/build/manifest.json"), "ipad", None).0, 403);
-        assert_eq!(get(&format!("{base}/nas/sources/canopy/none.tif?probe"), "ipad", None).0, 404);
-        assert_eq!(get(&format!("{base}/nas/sources/canopy/sq.tif?probe"), "phone", None).0, 410);
-        assert_eq!(get(&format!("{base}/web/example.com/x.tif?probe"), "ipad", None).0, 403);
     }
 
     /// A task given back (it couldn't start on the worker, #703) is "task-back" in the history, its
@@ -10335,17 +9824,17 @@ mod tests {
         let id =
             job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap().1["id"].as_u64().unwrap();
         // A worker that spares too little gets nothing; one that spares enough, the task.
-        let web = |mem| Ask {
+        let native = |mem| Ask {
             worker: "ipad".into(),
-            kind: "web".into(),
+            kind: "native".into(),
             can: vec!["tail".into()],
             mem_mb: mem,
             cores: 4,
             ..Default::default()
         };
         let ipad = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "ipad");
-        assert!(ipad.ask(&web(500)).unwrap().is_none());
-        let g = ipad.ask(&web(1000)).unwrap().unwrap();
+        assert!(ipad.ask(&native(500)).unwrap().is_none());
+        let g = ipad.ask(&native(1000)).unwrap().unwrap();
         let Granted::Task { id: tid, .. } = g.work else { panic!() };
         assert_eq!(tid, id);
         assert_eq!(job.post_json(&format!("/task/{id}"), &serde_json::json!({})).unwrap().1["state"], "leased");
@@ -10366,23 +9855,11 @@ mod tests {
         );
         let st = job.post_json(&format!("/task/{id}"), &serde_json::json!({})).unwrap().1;
         assert_eq!(st["state"], "done");
-        assert_eq!(st["check"], true, "a worker's first results are checked");
         let out = PathBuf::from(st["out"].as_str().unwrap());
         assert_eq!(std::fs::read(out.join("u/out.bin")).unwrap(), b"output!");
-        // The job's check found it different: the worker gets nothing more.
-        job.post_json(&format!("/task/{id}/close"), &serde_json::json!({ "checked": false })).unwrap();
+        // The job took it: its folder goes.
+        job.post_json(&format!("/task/{id}/close"), &serde_json::json!({})).unwrap();
         assert!(!out.exists());
-        let id2 = job
-            .post_json("/task/offer", &serde_json::to_value(&task::Offer { mem_mb: 100, ..offer.clone() }).unwrap())
-            .unwrap()
-            .1["id"]
-            .as_u64()
-            .unwrap();
-        assert!(ipad.ask(&web(1000)).unwrap().is_none());
-        assert_eq!(
-            job.post_json(&format!("/task/{id2}/withdraw"), &serde_json::json!({})).unwrap().1["withdrawn"],
-            true
-        );
         // What a worker measured for the z6 tile replaces the guess, more or less: 300 MB and a tenth.
         let id3 = job
             .post_json("/task/offer", &serde_json::to_value(&task::Offer { mem_mb: 5000, ..offer }).unwrap())
@@ -10391,7 +9868,7 @@ mod tests {
             .as_u64()
             .unwrap();
         let phone = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "phone");
-        let g = phone.ask(&Ask { worker: "phone".into(), ..web(500) }).unwrap().unwrap();
+        let g = phone.ask(&Ask { worker: "phone".into(), ..native(500) }).unwrap().unwrap();
         let Granted::Task { id: tid, mem_mb, .. } = g.work else { panic!() };
         assert_eq!((tid, mem_mb), (id3, 330));
     }
@@ -10627,21 +10104,20 @@ mod tests {
         assert_eq!(post(serde_json::json!({ "raw": true }))["at"], 5);
     }
 
-    /// Tasks brokered by every member (docs/pool.md §8): a page from another member's address takes
-    /// a task this Mac's job offered, straight from this Mac's coordinator (its broker), with CORS:
-    /// the preflight answered for `Authorization`, `X-Worker`, `Range` and `PUT` (and a private
-    /// network's ask), every answer allowed to that page. Switched off, the same page is refused as
-    /// before, its preflight unanswered.
+    /// The pool's members' pages (docs/pool.md §8): a page from another member's address reads this
+    /// Mac with CORS, the preflight answered for `Content-Type` (and a private network's ask), every answer allowed to that page; one left open from before pages
+    /// stopped helping (#876) is told so with CORS too, so it reads why. Switched off, the same page
+    /// is refused as before, its preflight unanswered.
     #[test]
-    fn a_members_page_takes_a_brokers_task_with_cors_and_off_is_refused() {
-        let (d, c, w) = start();
+    fn a_members_page_reads_with_cors_is_told_pages_no_longer_help_and_off_is_refused() {
+        let (_d, c, w) = start();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let page = "http://100.93.150.29:8090";
         let preflight = |method: &str, headers: &str| {
             raw(
                 &addr,
                 "OPTIONS",
-                "/work/ask",
+                "/work/swarm",
                 &[
                     ("Origin", page),
                     ("Access-Control-Request-Method", method),
@@ -10663,9 +10139,8 @@ mod tests {
             )
         };
         // Off: refused, the preflight not answered for it.
-        assert_eq!(status(&post("/work/ask", &ask)), 403);
-        assert_eq!(header_of(&preflight("POST", "content-type,x-worker"), "access-control-allow-origin"), None);
-        assert_eq!(status(&post("/work/where", "{}")), 403);
+        assert_eq!(status(&post("/work/swarm", "{}")), 403);
+        assert_eq!(header_of(&preflight("POST", "content-type"), "access-control-allow-origin"), None);
         // On: the members' addresses told (this Mac's own among them).
         let own = brokers::Broker { urls: c.contact.urls.clone(), ..Default::default() };
         let m1 = brokers::Peer {
@@ -10675,29 +10150,7 @@ mod tests {
             broker: Some(brokers::Broker { urls: vec![page.into()], ..Default::default() }),
         };
         c.set_brokers(Some(brokers::Brokers::new(vec![m1], &own)));
-        let root = d.path().join("job");
-        std::fs::create_dir_all(root.join("u")).unwrap();
-        std::fs::write(root.join("u/in.bin"), b"input").unwrap();
-        let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
-        let offer = task::Offer {
-            owner: 42,
-            kind: "tail".into(),
-            spec: serde_json::json!({ "unit": "6/1/1" }),
-            root: root.clone(),
-            inputs: [("u/in.bin".to_string(), 5)].into(),
-            mem_mb: 800,
-            ahead: None,
-        };
-        let id =
-            job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap().1["id"].as_u64().unwrap();
-        // Its heartbeat's counts: one waiting, none out.
-        let (waiting, out) = c.brokered();
-        assert_eq!((waiting.get("tail").copied(), out), (Some(brokers::Waiting { n: 1, mb: 800 }), 0));
-        for (method, headers) in [
-            ("POST", "content-type,x-worker"),
-            ("GET", "x-worker,range"),
-            ("PUT", "authorization,x-worker,content-type"),
-        ] {
+        for (method, headers) in [("POST", "content-type"), ("GET", "content-type")] {
             let r = preflight(method, headers);
             assert_eq!(status(&r), 204, "{r}");
             assert_eq!(header_of(&r, "access-control-allow-origin"), Some(page));
@@ -10709,7 +10162,7 @@ mod tests {
         let evil = raw(
             &addr,
             "OPTIONS",
-            "/work/ask",
+            "/work/swarm",
             &[("Origin", "https://evil.example"), ("Access-Control-Request-Method", "POST")],
             b"",
         );
@@ -10718,50 +10171,24 @@ mod tests {
             status(&raw(
                 &addr,
                 "POST",
-                "/work/ask",
+                "/work/swarm",
                 &[("Origin", "https://evil.example"), ("Content-Type", "application/json")],
-                ask.as_bytes()
+                b"{}"
             )),
             403
         );
-        // Where work waits: this Mac's broker, the one with work that fits.
-        let r = post("/work/where", &serde_json::json!({ "can": ["tail"], "mem_mb": 1000 }).to_string());
-        assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(page)));
-        // The task, taken by the page, its input fetched, its output sent, done: each answer allowed.
+        // The build at a glance: allowed to it.
+        let r = post("/work/swarm", "{}");
+        assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(page)), "{r}");
+        // No one to find work at (pages stopped helping, #876): `/work/where` is gone.
+        assert_eq!(status(&post("/work/where", "{}")), 403);
+        // An old page asking for work: told why, and allowed to read it.
         let r = post("/work/ask", &ask);
-        assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(page)), "{r}");
-        let g: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-        assert_eq!(g["id"].as_u64(), Some(id));
-        let lease = g["lease"].as_u64().unwrap();
-        let r = raw(
-            &addr,
-            "GET",
-            &format!("/work/in/{lease}/u/in.bin"),
-            &[("Origin", page), ("X-Worker", "ipad"), ("Range", "bytes=0-4")],
-            b"",
-        );
-        assert!(matches!(status(&r), 200 | 206) && r.ends_with("input"), "{r}");
-        assert_eq!(header_of(&r, "access-control-allow-origin"), Some(page));
-        let r = raw(
-            &addr,
-            "PUT",
-            &format!("/work/out/{lease}/u/out.bin"),
-            &[("Origin", page), ("X-Worker", "ipad"), ("Content-Type", "application/octet-stream")],
-            b"output!",
-        );
-        assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(page)), "{r}");
-        assert_eq!(c.brokered().1, 1, "one out");
-        let r = post("/work/done", &serde_json::json!({ "worker": "ipad", "lease": lease, "outputs": [{ "path": "u/out.bin", "size": 7 }], "secs": 2.0, "peak_mb": 300 }).to_string());
-        assert_eq!(status(&r), 200, "{r}");
-        let st = job.post_json(&format!("/task/{id}"), &serde_json::json!({})).unwrap().1;
-        assert_eq!(st["state"], "done");
-        assert_eq!(std::fs::read(PathBuf::from(st["out"].as_str().unwrap()).join("u/out.bin")).unwrap(), b"output!");
+        assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (403, Some(page)), "{r}");
+        assert!(r.contains(NO_PAGE_HELPERS), "{r}");
         // Off again: refused as before.
         c.set_brokers(None);
-        assert_eq!(status(&post("/work/ask", &ask)), 403);
-        assert_eq!(status(&post("/work/where", "{}")), 403);
-        // (Asked from this Mac's own page, off: none to tell.)
-        assert_eq!(send(&addr, "POST", "/work/where", None, &[], &serde_json::json!({})).0, 404);
+        assert_eq!(status(&post("/work/swarm", "{}")), 403);
     }
 
     /// A broker that takes the lead keeps its own tasks' leases as it takes up the term's jobs'
@@ -10792,7 +10219,7 @@ mod tests {
             let g = page
                 .ask(&Ask {
                     worker: "ipad".into(),
-                    kind: "web".into(),
+                    kind: "native".into(),
                     can: vec!["tail".into()],
                     mem_mb: 1000,
                     cores: 4,

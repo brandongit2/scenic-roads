@@ -853,14 +853,13 @@ fn status(places: &cli::Places) -> Result<()> {
             println!("Map data: catalogue {} of {}, {} units", cat.n, cat.created, cat.units.len());
         }
     }
-    // Other workers, and where a device's browser joins in (docs/workers.md §7).
+    // Other workers.
     for w in &st.workers {
         println!(
-            "Worker: {} — {}{}{}",
+            "Worker: {} — {}{}",
             w.label,
             w.what,
-            if w.done > 0 { format!(", {} done", w.done) } else { String::new() },
-            if w.bad { ", stopped: a result differed" } else { "" }
+            if w.done > 0 { format!(", {} done", w.done) } else { String::new() }
         );
     }
     // (The lead's own record of it is over HTTPS once `tailscale serve` proxies the coordinator.)

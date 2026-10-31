@@ -1873,16 +1873,7 @@ pub const BUDGET: Duration = Duration::from_secs(EVERY.as_secs() / 4);
 /// wait for idle threads indefinitely.
 const BACKSTOP: u32 = 8;
 
-/// The calling thread's CPU time so far (in the browser's build, which has no such clock, the
-/// wall time since the first call: a page's forecast runs alone in its worker).
-#[cfg(target_family = "wasm")]
-fn thread_cpu() -> Duration {
-    static T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    T0.get_or_init(Instant::now).elapsed()
-}
-
 /// The calling thread's CPU time so far.
-#[cfg(not(target_family = "wasm"))]
 fn thread_cpu() -> Duration {
     let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: writes only `t`.

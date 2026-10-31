@@ -1,9 +1,7 @@
 # The Rust both Macs build with, and the only place its version, target and components are declared:
 # every cargo (rust-analyzer, a plain shell, an agent) reads this through rustup, and mise reads it as
-# Rust's version file (mise.toml), so `mise install` installs rustup and exactly this toolchain. The
-# WebAssembly target is the web workers' builds' (tools/app/wasm.sh). Changing the version moves both
-# Macs to it on their next `mise install`.
+# Rust's version file (mise.toml), so `mise install` installs rustup and exactly this toolchain.
+# Changing the version moves both Macs to it on their next `mise install`.
 [toolchain]
 channel = "1.98.1"
-targets = ["wasm32-wasip1"]
 components = ["clippy", "rustfmt"]

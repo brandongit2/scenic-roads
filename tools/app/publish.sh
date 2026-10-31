@@ -109,7 +109,7 @@ git -C $snap checkout -q --detach --force $head
 git -C $snap clean -qfdx -e /target -e /web/node_modules
 cd $snap
 mise trust -q 2>/dev/null || true
-# Rust (rust-toolchain.toml's), and the wasi-sdk, Node, pnpm and cargo-nextest at mise.toml's versions, installed
+# Rust (rust-toolchain.toml's), and Node, pnpm and cargo-nextest at mise.toml's versions, installed
 # here when this Mac lacks one (a version pinned since this Mac last published).
 mise install -q || { echo "mise install failed"; exit 1; }
 eval "$(mise env -s zsh)"
@@ -196,8 +196,6 @@ if (( tests_ok != 0 )); then
   echo "tests failed; their whole output: $tests_log"
   exit $tests_ok
 fi
-# The programs' WebAssembly builds, which the coordinator serves to web workers (docs/workers.md).
-zsh tools/app/wasm.sh >/dev/null || { echo "WebAssembly build failed"; exit 1; }
 # The build folder kept small (task #660): cargo never deletes what it built, so each change of the
 # dependencies or a profile left every workspace crate's old build behind (the mini's target/ grew
 # by ~35 GB a day, to 127 GB). What these builds use is read at each publish, so only an entry a
@@ -254,8 +252,6 @@ cp -X target/release/server target/release/scenic target/release/scenic-build ta
    target/release/tile target/release/scenic-metrics target/release/elev target/release/areaflags \
    target/release/landcover target/release/railfreq target/release/trees target/release/bldtile \
    target/release/terrainsub $dest.tmp/
-mkdir -p $dest.tmp/wasm
-cp -X target/wasm32-wasip1/release/{extract,tile,scenic-metrics,areaflags,elev,landcover,trees,bldtile,terrainsub}.wasm $dest.tmp/wasm/
 mkdir -p $dest.tmp/dem
 git ls-files dem | while read f; do cp -X "$f" "$dest.tmp/$f"; done
 cp -RX "$sb/Scenic.app" "$dest.tmp/"  # (Scenic.app, signed above)

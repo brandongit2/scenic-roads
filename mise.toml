@@ -1,9 +1,8 @@
 # The build's tools, installed by `mise install` (tools/app/*.sh put them on the PATH with `mise env`).
 #
-# Rust has no version here: rust-toolchain.toml declares it (version, target, components), which every
+# Rust has no version here: rust-toolchain.toml declares it (version, components), which every
 # cargo honours, and mise reads it as Rust's version file (the setting below), installing rustup and
-# that toolchain with its target and components. The wasi-sdk is the C compiler and libc for the
-# WebAssembly build of zstd (tools/app/wasm.sh). Node builds the web app (web/; its packages: `pnpm install --frozen-lockfile` there).
+# that toolchain with its components. Node builds the web app (web/; its packages: `pnpm install --frozen-lockfile` there).
 #
 # Python has no version here either: dem/.python-version declares it, which uv honours (the agent's
 # Python steps run `uv run` in the app's copy of dem/, wherever they run) and mise reads (below).
@@ -13,7 +12,6 @@
 node = "24.20.0"
 pnpm = "11.21.0"
 uv = "0.12.9"
-"github:WebAssembly/wasi-sdk" = "wasi-sdk-33"
 "aqua:nextest-rs/nextest/cargo-nextest" = "0.9.146"
 cmake = "4.4.4"
 

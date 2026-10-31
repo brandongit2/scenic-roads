@@ -51,8 +51,7 @@ refuses runs it can't read (`$c test`, `cargo --config alias.…`, `cargo -C`, `
 Run `tools/dev/check.sh` in your worktree after your last commit, and report only after it prints
 PASS. It runs what publish would refuse your work on: `cargo fmt --check`, publish's clippy line
 (`-D clippy::disallowed_methods`: processes only through `store::spawn`), `tools/app/guards.sh`,
-`tools/app/wasm.sh` when a crate the wasm build compiles changed (an unguarded `crate::net` fails
-there), when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every `web/test/*.test.{ts,mjs}` and
+when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every `web/test/*.test.{ts,mjs}` and
 `tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build (after `tools/dev/web-deps.sh`, which gives a fresh worktree its `web/node_modules`: `pnpm install --frozen-lockfile --offline` from this Mac's shared pnpm store, only when node_modules is missing or not a finished install of this lockfile (its `node_modules/.web-deps-lock` stamp); a package the store lacks is an error naming the one online install that fills it; publish.sh runs it with `--online`), `node --test` of tools/taskboard/test when
 tools/taskboard changed (#672), `tools/app/test/shell.zsh` (publish.sh's shell
 steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, the Swift build and self-test when tools/status changed,
@@ -74,8 +73,7 @@ commits beyond main from finishing until its HEAD passed, and the PM runs
 
 Every cargo run inside `.claude/worktrees/` goes through sccache (brew), set by the untracked
 `.claude/worktrees/.cargo/config.toml` (cargo reads config from each parent folder), so the main
-checkout and publish.sh's tree are untouched. Third-party crates (debug, clippy's check builds, the
-release wasm32 build) come from one cache shared by all worktrees, ~/Library/Caches/scenic-sccache,
+checkout and publish.sh's tree are untouched. Third-party crates (debug, clippy's check builds) come from one cache shared by all worktrees, ~/Library/Caches/scenic-sccache,
 capped at 10 GB by sccache; workspace crates still build incrementally per worktree (sccache passes
 incremental builds through). `sccache --show-stats` shows hits. tools/dev/seed-target.sh still
 clones main's compiled third-party crates into a new worktree (one cp per folder, ~7 s);
@@ -117,7 +115,7 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   `SCENIC_CHECK_LOCAL=1` (also `SCENIC_TESTS_LOCAL=1`).
 - Disk on the test Mac: a key unused 3 days goes; past 60 GB in all the least recently used go; never a
   locked key. The sweep drops a removed worktree's key (`remote-tests.sh --drop <key>`).
-fmt, clippy, guards, wasm, web, swift and python stay on this Mac.
+fmt, clippy, guards, web, swift and python stay on this Mac.
 
 ## A test that can't flake (#662, 25 Oct)
 

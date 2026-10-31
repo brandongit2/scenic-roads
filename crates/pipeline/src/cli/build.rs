@@ -46,7 +46,6 @@ const STEPS: &[Step] = &[
     s("trailends", "[--pass d]", "the pass's hiking routes' ends", &[], PASS, 0),
     s("unit", "[U …] [--pass d] [--layers-root r] [--regions dir] [--cache-dir dir] [--buildings dir]", "base(U) from the pass's extracts: default every z6 tile whose extract meets the coverage", &[], &["--pass", "--layers-root", "--regions", "--cache-dir", "--buildings"], ANY),
     s("unit-snap", "U --out d --cache c [--carry] [--pass d] [--regions dir]", "unit U's folder built from the records into d, nothing written to the NAS, snapshotted around each step's program", &["--carry"], &["--out", "--cache", "--pass", "--regions"], 1),
-    s("tail-spec", "U --root <nas project folder>", "unit U's tail as a task gives it a worker (tools/check/tail.mjs); the accepted declarations read for its data servers, nothing written", &[], &[], 1),
     s("pois", "[U …] [--pass d] [--regions dir]", "the units' landmark candidates", &[], PASS_REGIONS, ANY),
     s("summits", "[--pass d] [--cache dir]", "the world's summits", &[], &["--pass", "--cache"], 0),
     s("peaks", "[U …] [--pass d] [--cache dir] [--coarse-threads n]", "the units' peaks", &[], &["--pass", "--cache", "--coarse-threads"], ANY),

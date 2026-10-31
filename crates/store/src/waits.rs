@@ -138,15 +138,7 @@ fn reread(change: Option<(u64, Instant)>) {
     }
 }
 
-/// The process's CPU time (ns: user and system, all its threads); 0 in the wasm build (no
-/// process clock there: no time with computing counted).
-#[cfg(target_family = "wasm")]
-fn cpu_ns() -> u64 {
-    0
-}
-
 /// The process's CPU time (ns: user and system, all its threads).
-#[cfg(not(target_family = "wasm"))]
 fn cpu_ns() -> u64 {
     let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: a valid timespec to write to.

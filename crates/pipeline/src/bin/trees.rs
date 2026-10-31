@@ -59,7 +59,7 @@ fn need<'a, T>(v: &'a Option<T>, k: &str) -> Result<&'a T> {
 }
 
 fn run(a: &Trees) -> Result<()> {
-    // (Threads as many as said, else rayon's; in WebAssembly, none can be made: this one. A job its
+    // (Threads as many as said, else rayon's. A job its
     // agent paces (pipeline::inputs::pace's file named) gets a pool as wide as pace allows, its
     // blocks under permits: as many at once as the agent says now, its grant at least.)
     let mut pool = rayon::ThreadPoolBuilder::new();

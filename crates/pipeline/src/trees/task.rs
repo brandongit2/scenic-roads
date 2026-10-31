@@ -1,6 +1,6 @@
 //! A row of a tree cover z6 tile's zoom-8 blocks as a task (kind `treeblock`; docs/workers.md §3,
 //! docs/steps.md §2, Trees): the blocks of one z6 tile in one zoom-8 row, made together by the
-//! `trees` program (`--blocks`, natively or as WebAssembly in a page). A row's blocks read the same
+//! `trees` program (`--blocks`). A row's blocks read the same
 //! canopy rows (a canopy square's strips are rows of its whole 10° width), so one worker reads each
 //! strip once for all of them.
 //!
@@ -167,10 +167,10 @@ pub fn spec(
 }
 
 /// A row's predicted memory on a worker (MB), until a worker measures it (the coordinator's
-/// `treeblock 8/x/y`): its program's as WebAssembly (measured 141–160 MB for a block, 233 for
-/// three, 365–505 for four, the most where they meet four canopy squares: 120 MB and 100 a block,
-/// with room), the blocks' archives it writes, which a page holds (3–14 MB a block: 20), and a
-/// page's 64 MB of squares' blocks read where they lie.
+/// `treeblock 8/x/y`): its program's (measured 141–160 MB for a block, 233 for three, 365–505 for
+/// four, the most where they meet four canopy squares: 120 MB and 100 a block, with room), the
+/// blocks' archives it writes (3–14 MB a block: 20), and 64 MB of squares' blocks read where they
+/// lie.
 pub fn mem_mb(blocks: usize) -> u64 {
     120 + 120 * blocks as u64 + 64
 }
@@ -207,7 +207,8 @@ fn block_files() -> Vec<String> {
 
 /// Whether two rows' results (folders of `block_dir`s) are the same bytes, every file of every
 /// block.
-pub fn same_rows(a: &Path, b: &Path, row: &[(u32, u32)]) -> bool {
+#[cfg(test)]
+fn same_rows(a: &Path, b: &Path, row: &[(u32, u32)]) -> bool {
     row.iter().all(|&at| block_files().iter().all(|f| matches!((std::fs::read(block_dir(a, at).join(f)), std::fs::read(block_dir(b, at).join(f))), (Ok(x), Ok(y)) if x == y)))
 }
 
@@ -221,8 +222,7 @@ pub type Here<'a> = &'a (dyn Fn(&[(u32, u32)], &Path) -> Result<()> + Sync);
 /// the far end (its last rows) when the run begins, one per worker that takes them around, at most
 /// `MOST`, never every row; each settled when the run comes to its first block, waiting for no
 /// worker longer than this Mac would take (`Patience`: its blocks at the pace of the blocks made
-/// here so far, as many at once as there are threads), its result taken, or checked against this
-/// Mac's run of the row (the same function) byte for byte, a difference marking the worker bad.
+/// here so far, as many at once as there are threads), its result taken.
 pub struct Offers<'a> {
     offload: Option<&'a Offload>,
     piece: (u32, u32),
@@ -369,15 +369,8 @@ impl<'a> Offers<'a> {
             }
             Ok(())
         };
-        let mut same = |st: &serde_json::Value, _: std::time::SystemTime| -> Result<bool> {
-            let same = theirs(st).is_some_and(|d| same_rows(&d, &mine, &row));
-            if !same {
-                eprintln!("{what}: a worker's tiles differ from this Mac's");
-            }
-            Ok(same)
-        };
         let p = Patience { here_s: self.here_s(row.len()) };
-        let how = match o.settle_with(&task, true, p, &mut || run_here(), &mut take, &mut same) {
+        let how = match o.settle_with(&task, true, p, &mut || run_here(), &mut take) {
             Ok(Some(h)) => h,
             Ok(None) => unreachable!("a task waited on is settled"),
             Err(e) => {
@@ -385,16 +378,10 @@ impl<'a> Offers<'a> {
                 eprintln!("{what}: its task can't be settled ({e:#}); made here");
                 run_here()?;
                 std::fs::remove_dir_all(&task.root).ok();
-                Settled::Here(None)
+                Settled::Here
             }
         };
-        let how = match how {
-            Settled::Remote(w) => format!("by {w}"),
-            Settled::Here(None) => "here".into(),
-            Settled::Here(Some((w, true))) => format!("here, and by {w} the same"),
-            Settled::Here(Some((w, false))) => format!("here: {w}'s differed, and it gets no more work"),
-        };
-        eprintln!("{what} made {how}");
+        eprintln!("{what} made {}", how.how());
         Ok(())
     }
 }
@@ -509,7 +496,7 @@ mod tests {
 
     /// A worker on the clock: a second from now (the job's first moment of waiting) it asks for a
     /// row and, given one, runs the program's code over it as `trees --blocks` does (its squares in
-    /// `sq`), sends what it wrote (`spoil`: a tile spoilt first), done; or, `hold`, holds it and
+    /// `sq`), sends what it wrote, done; or, `hold`, holds it and
     /// never says. The task it was given, once it was.
     fn worker(
         clock: &store::clock::Virtual,
@@ -518,7 +505,6 @@ mod tests {
         name: &str,
         sq: PathBuf,
         home: PathBuf,
-        spoil: bool,
         hold: bool,
     ) -> Arc<Mutex<Option<serde_json::Value>>> {
         let m = Client::at(vec![url.to_string()], token.to_string(), name);
@@ -566,11 +552,7 @@ mod tests {
             let mut outputs = Vec::new();
             for &b in &row {
                 for f in block_files() {
-                    let mut bytes = std::fs::read(block_dir(&u, b).join(&f)).unwrap();
-                    if spoil && f == TOPS && b == row[0] {
-                        let n = bytes.len();
-                        bytes[n / 2] ^= 1;
-                    }
+                    let bytes = std::fs::read(block_dir(&u, b).join(&f)).unwrap();
                     let path = format!("u/{}-{}-{}/{f}", ZBLOCK, b.0, b.1);
                     m.put_bytes(&format!("/work/out/{}/{path}", g.lease), &bytes).unwrap();
                     outputs.push(crate::coord::task::Output { path, size: bytes.len() as u64 });
@@ -598,20 +580,16 @@ mod tests {
         assert!(same_piece(&p.join("alone"), &p.join("none")));
         assert!(c.shared.lock().unwrap().tasks.by_id.is_empty());
 
-        // A worker measured fast (a fifth of this Mac's time), its results trusted: its row (the
-        // last, never both) waited for and taken, the same z6 tile.
+        // A worker measured fast (a fifth of this Mac's time): its row (the last, never both)
+        // waited for and taken, the same z6 tile.
         let m1 = Client::at(vec![url.clone()], tok.clone(), "m1");
         assert!(m1.ask(&ask).unwrap().is_none());
-        {
-            let mut s = c.shared.lock().unwrap();
-            s.tasks.paces.insert(("m1".into(), KIND.into()), 0.2);
-            s.workers.get_mut("m1").unwrap().checked = 3;
-        }
+        c.shared.lock().unwrap().tasks.paces.insert(("m1".into(), KIND.into()), 0.2);
         // (Waited on until it's back, here and below: this is the exchange, not the waiting rule.)
         let patient = Offload::at(url.clone(), c.job_token.clone(), &p.join("job-patient"))
             .waiting(crate::offload::Waiting::UntilDone)
             .clock(clock.clone());
-        let w = worker(&clock, &url, &tok, "m1", sq.path().into(), p.join("m1"), false, false);
+        let w = worker(&clock, &url, &tok, "m1", sq.path().into(), p.join("m1"), false);
         piece(p, sq.path(), "taken", Some(&patient));
         let task = w.lock().unwrap().take().expect("it was given the row");
         assert_eq!((task["unit"].as_str(), task["blocks"].as_str()), (Some("8/132/89"), Some("8/132/89,8/133/89")));
@@ -619,25 +597,9 @@ mod tests {
         assert!(same_piece(&p.join("alone"), &p.join("taken")));
         {
             let s = c.shared.lock().unwrap();
-            assert_eq!((s.workers["m1"].checked, s.workers["m1"].bad), (3, false), "taken, not checked");
             assert_eq!(s.costs["treeblock 8/132/89"].peak_mb, 400, "its cost under its kind and first block");
             assert!(s.tasks.by_id.is_empty());
         }
-
-        // Its first results checked (the coordinator says): a spoilt one is found, the row made
-        // here, the worker gets no more work.
-        // (Measured fast again, as above: its pace as the test says, whatever its first row was
-        // measured at.)
-        {
-            let mut s = c.shared.lock().unwrap();
-            s.tasks.paces.insert(("m1".into(), KIND.into()), 0.2);
-            s.workers.get_mut("m1").unwrap().checked = 0;
-        }
-        let w = worker(&clock, &url, &tok, "m1", sq.path().into(), p.join("m1b"), true, false);
-        piece(p, sq.path(), "spoilt", Some(&patient));
-        assert!(w.lock().unwrap().is_some(), "it was given the row");
-        assert!(same_piece(&p.join("alone"), &p.join("spoilt")));
-        assert!(c.shared.lock().unwrap().workers["m1"].bad);
     }
 
     #[test]
@@ -651,7 +613,7 @@ mod tests {
         let tok = c.contact.token.clone();
         let ask =
             crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
-        // A page measured slower than this Mac, asking: never given the row, never waited for.
+        // A worker measured slower than this Mac, asking: never given the row, never waited for.
         let slow = Client::at(vec![url.clone()], tok.clone(), "slow");
         assert!(slow.ask(&ask).unwrap().is_none());
         c.shared.lock().unwrap().tasks.paces.insert(("slow".into(), KIND.into()), 2.0);
@@ -665,7 +627,7 @@ mod tests {
         // worker to finish, to measure it.
         let new = Client::at(vec![url.clone()], tok.clone(), "new");
         assert!(new.ask(&ask).unwrap().is_none());
-        let w = worker(&clock, &url, &tok, "new", sq.path().into(), p.join("new"), false, true);
+        let w = worker(&clock, &url, &tok, "new", sq.path().into(), p.join("new"), true);
         piece(p, sq.path(), "held", Some(&o));
         assert!(w.lock().unwrap().is_some(), "it took the row");
         assert_eq!(

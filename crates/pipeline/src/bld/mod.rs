@@ -18,14 +18,11 @@
 //! (The design's `buildings T` step is `bldtiles` here: `buildings` is the roadside buildings' job,
 //! crate::buildtiles, in scenic-build and the agent.)
 
-#[cfg(not(target_os = "wasi"))]
 pub mod fetch;
 pub mod field;
 pub mod fill;
-#[cfg(not(target_os = "wasi"))]
 pub mod ghsl;
 pub mod job;
-#[cfg(not(target_os = "wasi"))]
 pub mod overture;
 pub mod prep;
 pub mod sources;

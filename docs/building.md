@@ -254,7 +254,7 @@ from the first (`edit_held`).
   (`coord/history.jsonl`): jobs, leases, tasks, map tiles planned, catalogues, pauses, workers,
   agents, conditions, cache clears and freeings. Summed by the hour for the worker page, and the
   forecast's measure of members' pace and of publishing's time.
-- **Timings** (`pipeline::timings`; `dem/timings.py`; a page's task in `web/work/worker.js`): every
+- **Timings** (`pipeline::timings`; `dem/timings.py`): every
   job's run is broken into named phases, each with wall time, CPU time (`getrusage`), its wall time
   split by measured waits (task #870: NAS, network, local disk, other work, the rest computing;
   the Python twin measures its own the same way; pages still declare a class), spans, bytes and files. One
@@ -330,10 +330,9 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   that's open).
 - **The same app** (docs/pool.md §6.1): a member on another app than the lead's gets nothing (409,
   why in words), since its work would be recorded under keys another app's code made. Its jobs under
-  way go on. A page's tasks run the coordinator's own WebAssembly; their results are checked (the
-  first three, then one in eight: docs/workers.md §5).
+  way go on.
 - **The contact:** `state/coordinator.json`, the coordinator's addresses and the agents' token
-  (pages need none: docs/workers.md §7), removed when the agent stops.
+  (the build page needs none: docs/workers.md §7), removed when the agent stops.
 - **Leases:** ten minutes on the coordinator's clock, renewed by a beat each minute (those the lead's running jobs hold never lapse: docs/pool.md §7.6); a lapsed lease's
   work is offered again, its "lapse" in the history saying why (no word from its worker for ten
   minutes: `coord::lapse_why`). A member's job that fails saying nothing goes to the lead with a
@@ -505,7 +504,7 @@ available. Until work is done, the map serves the last catalogue.
     `scenic inputs` print the units' states; the build page shows a banner
     per held unit.
 
-**Determinism:** the same inputs give the same bytes, on any machine and in WebAssembly: sorted
+**Determinism:** the same inputs give the same bytes, on any machine: sorted
 outputs, no hash-map order, reductions independent of thread count, and every transcendental
 function from one implementation (the `det` crate, over `libm`). Checked per step by hand and by
 `tools/check/`; planned: a "build twice, compare hashes" test per step.

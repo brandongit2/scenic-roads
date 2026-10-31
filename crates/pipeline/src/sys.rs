@@ -1,6 +1,4 @@
-//! The operating system's processes, signals and locks, for the agent and the steps' runner: macOS
-//! has them; WASI (the WebAssembly programs workers run, docs/workers.md) has none, and there each
-//! of these fails (or finds nothing), which only the agent would notice: it never runs there.
+//! The operating system's processes, signals and locks, for the agent and the steps' runner (macOS's).
 //! (I/O that differs by platform is `store::sys`.)
 
 use std::fs::File;

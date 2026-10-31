@@ -8,8 +8,6 @@
 #             -D clippy::disallowed_methods (processes only through store::spawn; clippy.toml)
 #   guards    tools/app/guards.sh, its fmt and two tests left to the fmt and tests parts
 #             (SCENIC_GUARDS_IN_CHECK=1: tools/dev/affected-tests.sh runs both whenever their files change)
-#   wasm      tools/app/wasm.sh, when a crate the wasm build compiles changed (det, roadcore,
-#             pipeline, store, names)
 #   web       tools/dev/web-deps.sh (web/node_modules from pnpm's store, when missing or stale), node --test of web/test/*.test.{ts,mjs} and tools/check/*.test.mjs (by glob), pnpm
 #             typecheck and vite build (to a scratch folder), when web/ or a tools/check test changed
 #   taskboard node --test tools/taskboard/test/*.test.mjs, when tools/taskboard changed
@@ -69,8 +67,6 @@ skip() { summary+="skip  $1  ($2)" }
 part fmt zsh -c 'cargo fmt --check && cargo fmt --check --manifest-path tools/bldfield/Cargo.toml'
 part clippy cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods
 part guards env SCENIC_GUARDS_IN_CHECK=1 tools/app/guards.sh
-if has 'crates/(det|roadcore|pipeline|store|names)/*' || has Cargo.lock; then part wasm tools/app/wasm.sh
-else skip wasm "no wasm crate changed"; fi
 if has 'web/*' || has 'tools/check/*.test.mjs'; then
   webtests=( web/test/*.test.(ts|mjs)(N) tools/check/*.test.mjs(N) )
   part web zsh -c "tools/dev/web-deps.sh && node --experimental-transform-types --no-warnings --test ${(j: :)${(@q)webtests}} && cd web && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir"

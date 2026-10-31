@@ -1541,13 +1541,10 @@ impl Run {
             return;
         };
         let now = Instant::now();
-        let (waiting, out) = c.brokered();
         let own = crate::coord::brokers::Broker {
             urls: c.contact.urls.clone(),
             https: self.cx.broker_https.clone(),
             pages: super::proxy_pages(),
-            waiting,
-            out,
         };
         if brokers::due(self.side.broker.as_ref(), &own, self.broker_told.map(|t| now.saturating_duration_since(t))) {
             self.side.broker = Some(own.clone());

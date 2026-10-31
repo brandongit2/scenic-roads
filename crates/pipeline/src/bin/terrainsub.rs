@@ -1,5 +1,5 @@
 //! A terrain piece's z8 subtrees made from a task's file (`pipeline::terrain_task`): the program a
-//! `terrainsub` task runs, natively or as WebAssembly in a page. The group's tiles (dir/hi.sect) and
+//! `terrainsub` task runs. The group's tiles (dir/hi.sect) and
 //! its mid's part (dir/mid.sect), made from what the file holds alone (its raw tiles, water and
 //! GLO-30's windows): no NAS, no network. Its command line: pipeline::cli::progs::Terrainsub.
 
@@ -13,7 +13,7 @@ fn main() -> Result<()> {
 }
 
 fn run(Terrainsub { input, out, workers }: &Terrainsub) -> Result<()> {
-    // (Threads as many as said, else rayon's; in WebAssembly, none can be made: this one.)
+    // (Threads as many as said, else rayon's.)
     let mut pool = rayon::ThreadPoolBuilder::new();
     if let Some(w) = workers {
         pool = pool.num_threads((*w).max(1));

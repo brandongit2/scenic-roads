@@ -482,7 +482,7 @@ mod tests {
         let mut l = Leases::new(Duration::from_secs(600));
         let a = l.grant("m1", job(&[("6/1/1", "k1"), ("6/1/2", "k2")]), t0);
         let b = l.grant("m4", job(&[("6/2/2", "k3")]), t0);
-        let t = l.grant("ipad", Work::Task { id: 7 }, t0);
+        let t = l.grant("m2", Work::Task { id: 7 }, t0);
         assert_eq!(l.held("unit", t0), ["6/1/1", "6/1/2", "6/2/2"].map(String::from).into());
         assert!(l.held("pack", t0).is_empty());
         // Renewed by its own worker only.
@@ -499,7 +499,7 @@ mod tests {
         // Saved and read back: the job's lease, live again for a whole ttl; ids go on.
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("leases.json");
-        l.grant("ipad", Work::Task { id: 8 }, t2);
+        l.grant("m2", Work::Task { id: 8 }, t2);
         l.save(&p).unwrap();
         let t3 = t2 + Duration::from_secs(5000);
         let mut back = Leases::load(&p, Duration::from_secs(600), t3);
@@ -523,7 +523,7 @@ mod tests {
         let mut a = Leases::new(Duration::from_secs(600));
         a.term = 4;
         let id = a.grant("m1", job(&[("6/1/1", "k1")]), t0);
-        a.grant("ipad", Work::Task { id: 1 }, t0);
+        a.grant("m2", Work::Task { id: 1 }, t0);
         let l = a.of(id).unwrap().clone();
         assert_eq!(l.term, 4);
         assert!(l.granted_at > 1_700_000_000);

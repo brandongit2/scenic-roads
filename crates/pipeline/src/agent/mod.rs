@@ -778,7 +778,6 @@ pub struct WorkerView {
     pub mem_mb: u64,
     pub done: u32,
     pub failed: u32,
-    pub bad: bool,
 }
 
 /// A helper's job's timings' record, in its outbox folder (`SCENIC_TIMINGS`).
@@ -4425,7 +4424,7 @@ impl Agent {
         self.seed_answers(root.as_ref());
 
         nasread::phase("the coordinator's contact");
-        // The coordinator: where the NAS is (tasks read it where it lies), how to reach it on the NAS
+        // The coordinator: where the NAS is (its NAS probe), how to reach it on the NAS
         // (looked at every five minutes: it may have been deleted, or this Mac's addresses changed),
         // and leases whose workers went quiet dropped.
         if let Some(c) = &self.coord {
@@ -4764,7 +4763,6 @@ impl Agent {
                             mem_mb: w.mem_mb,
                             done: w.done,
                             failed: w.failed,
-                            bad: w.bad,
                         })
                         .collect()
                 })
@@ -4984,7 +4982,6 @@ impl Agent {
             }
             if ok && step == "catalog" {
                 // (This Mac's map server adopts it now.)
-                #[cfg(not(target_os = "wasi"))]
                 crate::net::catalogue_written();
                 let ready = self.ready.borrow().clone();
                 let (n, data) = (cat_stats.as_ref().map(|c| c.n), cat_stats.and_then(|c| serde_json::to_value(c).ok()));
@@ -11512,8 +11509,8 @@ fn make_coordinator_on(
     #[cfg(not(test))]
     let held: Option<std::net::TcpListener> = None;
     let started = match held {
-        Some(l) => crate::coord::Coordinator::start_on(&o.home.join("coord"), Some(o.bin.join("wasm")), l, host, app),
-        None => crate::coord::Coordinator::start(&o.home.join("coord"), Some(o.bin.join("wasm")), port, host, app),
+        Some(l) => crate::coord::Coordinator::start_on(&o.home.join("coord"), l, host, app),
+        None => crate::coord::Coordinator::start(&o.home.join("coord"), port, host, app),
     };
     match started {
         Ok(c) => {
@@ -11574,27 +11571,21 @@ fn broker_port() -> u16 {
 }
 
 /// A port's address over HTTPS, when `tailscale serve` proxies it (crate::net::served_https); none
-/// in a unit test (no Mac's own Tailscale decides it) nor in WebAssembly.
-#[cfg(not(any(test, target_os = "wasi")))]
+/// in a unit test (no Mac's own Tailscale decides it).
+#[cfg(not(test))]
 fn served_https(port: u16) -> Option<String> {
     crate::net::served_https(port)
 }
 
-#[cfg(any(test, target_os = "wasi"))]
+#[cfg(test)]
 fn served_https(_port: u16) -> Option<String> {
     None
 }
 
 /// The origins a proxy on this Mac serves its pages under (crate::net::names, "https://<name>"):
-/// its broker's `pages`. None in WebAssembly.
-#[cfg(not(target_os = "wasi"))]
+/// its broker's `pages`.
 fn proxy_pages() -> Vec<String> {
     crate::net::names().iter().map(|n| format!("https://{n}")).collect()
-}
-
-#[cfg(target_os = "wasi")]
-fn proxy_pages() -> Vec<String> {
-    Vec::new()
 }
 
 /// The app versions the programs `cmds` start are in (`<apps>/<version>/<program>`), the apps'
@@ -18119,13 +18110,13 @@ mod pool_tests {
 
     /// Tasks brokered by every member (`state/pool/brokers`, crate::agent::brokers), two agents in
     /// one process, a part changing in its process: the member runs a broker and gives its job its
-    /// address; its heartbeat says a task waits there, and the lead answers a page's "where is
-    /// work" with it; a page from the lead's address takes it straight from the member's broker,
+    /// address; its heartbeat says where it is, and it answers a page from the lead's address
+    /// (CORS); a worker takes the member's task straight from the member's broker,
     /// and the lead's own task from the lead. The lead handed to the member: its broker becomes its
-    /// coordinator, the old lead's coordinator its broker, and neither page's task is dropped (both
-    /// beat and hand back where they were taken). Off: the old lead's broker stops.
+    /// coordinator, the old lead's coordinator its broker, and neither task is dropped (both beat
+    /// and hand back where they were taken). Off: the old lead's broker stops.
     #[test]
-    fn brokers_a_members_task_is_taken_by_a_page_from_it_and_a_move_of_the_lead_drops_no_task() {
+    fn brokers_a_members_task_is_taken_from_it_and_a_move_of_the_lead_drops_no_task() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let bport = free_port();
@@ -18197,8 +18188,8 @@ mod pool_tests {
             job.post_json("/task/offer", &serde_json::to_value(&o).unwrap()).unwrap().1["id"].as_u64().unwrap()
         };
         // (The agents themselves, slower at a tail than the job's own run: neither takes these
-        // tasks while the heartbeats are awaited below, however many steps that takes; a page
-        // must.)
+        // tasks while the heartbeats are awaited below, however many steps that takes; the
+        // worker below must.)
         for co in [m.broker.as_ref().unwrap(), lead.coord.as_ref().unwrap()] {
             let mut s = co.shared.lock().unwrap();
             for w in [&lead.host, &m.host] {
@@ -18214,10 +18205,7 @@ mod pool_tests {
         };
         let told = |a: &Agent, who: &str| {
             a.coord.as_ref().or(a.broker.as_ref()).unwrap().shared.lock().unwrap().brokers.as_ref().is_some_and(|b| {
-                b.peers.iter().any(|p| {
-                    p.member == who
-                        && p.broker.as_ref().is_some_and(|b| b.waiting.get("tail").is_some_and(|w| w.n == 1))
-                })
+                b.peers.iter().any(|p| p.member == who && p.broker.as_ref().is_some_and(|b| !b.urls.is_empty()))
             })
         };
         let end = Instant::now() + WATCHDOG;
@@ -18227,40 +18215,27 @@ mod pool_tests {
             assert!(Instant::now() < end, "the brokers' heartbeats not read");
             std::thread::sleep(Duration::from_millis(250));
         }
-        // A page from the lead's address: where is work? The member's broker and the lead's.
+        // A page from the lead's address reads the member's broker, with CORS.
         let page_origin = crate::coord::brokers::origin(&lead.coord.as_ref().unwrap().contact.urls[0]).unwrap();
+        let (code, _, acao) = http_post(bport, "/work/swarm", &[("Origin", &page_origin)], "{}");
+        assert_eq!((code, acao.as_deref()), (200, Some(page_origin.as_str())));
+        // A worker (another Mac's agent, with the pool's key) takes the member's task from the
+        // member's broker, and the lead's from the lead.
+        let (mkey, lkey) =
+            (m.broker.as_ref().unwrap().contact.token.clone(), lead.coord.as_ref().unwrap().contact.token.clone());
         let call = |port: u16, path: &str, body: serde_json::Value| -> (u16, serde_json::Value, Option<String>) {
-            let b = body.to_string();
-            let (code, json, acao) = http_post(port, path, &[("Origin", &page_origin), ("X-Worker", "ipad")], &b);
-            (code, json, acao)
+            let key = format!("Bearer {}", if port == bport { &mkey } else { &lkey });
+            http_post(port, path, &[("Authorization", &key), ("X-Worker", "w9")], &body.to_string())
         };
-        let (code, w, _) = call(lport, "/work/where", serde_json::json!({ "can": ["tail"], "mem_mb": 1000 }));
-        assert_eq!(code, 200);
-        let at: Vec<&str> = w["brokers"].as_array().unwrap().iter().map(|b| b["base"].as_str().unwrap()).collect();
-        let base_of = |c: &crate::coord::Coordinator| {
-            crate::coord::brokers::base(
-                &crate::coord::brokers::Broker { urls: c.contact.urls.clone(), ..Default::default() },
-                false,
-            )
-            .unwrap()
+        let ask = |c: &crate::coord::Coordinator| {
+            let app = c.shared.lock().unwrap().app.clone();
+            serde_json::json!({ "worker": "w9", "kind": "native", "app": app, "can": ["tail"], "mem_mb": 1000, "cores": 4 })
         };
-        assert!(
-            at.contains(&base_of(m.broker.as_ref().unwrap()).as_str())
-                && at.contains(&base_of(lead.coord.as_ref().unwrap()).as_str()),
-            "{w}"
-        );
-        assert_eq!(
-            w["lead"].as_str(),
-            crate::coord::brokers::origin(&lead.coord.as_ref().unwrap().contact.urls[0]).as_deref()
-        );
-        // The page takes the member's task from the member's broker (another Mac's page: CORS),
-        // and the lead's from the lead.
-        let ask = serde_json::json!({ "worker": "ipad", "kind": "web", "can": ["tail"], "mem_mb": 1000, "cores": 4 });
-        let (code, g, acao) = call(bport, "/work/ask", ask.clone());
-        assert_eq!((code, g["id"].as_u64(), acao.as_deref()), (200, Some(mt), Some(page_origin.as_str())));
+        let (code, g, _) = call(bport, "/work/ask", ask(m.broker.as_ref().unwrap()));
+        assert_eq!((code, g["id"].as_u64()), (200, Some(mt)), "{g}");
         let ml = g["lease"].as_u64().unwrap();
-        let (code, g, _) = call(lport, "/work/ask", ask);
-        assert_eq!((code, g["id"].as_u64()), (200, Some(lt)));
+        let (code, g, _) = call(lport, "/work/ask", ask(lead.coord.as_ref().unwrap()));
+        assert_eq!((code, g["id"].as_u64()), (200, Some(lt)), "{g}");
         let ll = g["lease"].as_u64().unwrap();
         // The lead handed to the member, in their processes.
         move_lead(&r, &im);
@@ -18275,18 +18250,18 @@ mod pool_tests {
         // The member's broker is its coordinator now, the old lead's coordinator its broker.
         assert!(m.broker.is_none() && m.coord.as_ref().unwrap().port() == bport);
         assert_eq!(lead.broker.as_ref().map(|b| b.port()), Some(lport));
-        // Neither task dropped: each page's lease beats and hands back where it was taken.
+        // Neither task dropped: each worker's lease beats and hands back where it was taken.
         for (port, lease, id) in [(bport, ml, mt), (lport, ll, lt)] {
-            let (code, b, _) = call(port, "/work/beat", serde_json::json!({ "worker": "ipad", "lease": lease }));
+            let (code, b, _) = call(port, "/work/beat", serde_json::json!({ "worker": "w9", "lease": lease }));
             assert_eq!((code, b["ok"].as_bool()), (200, Some(true)), "task {id}'s lease at {port}");
             let (code, _, _) = call(
                 port,
                 "/work/done",
-                serde_json::json!({ "worker": "ipad", "lease": lease, "outputs": [], "secs": 1.0, "peak_mb": 100 }),
+                serde_json::json!({ "worker": "w9", "lease": lease, "outputs": [], "secs": 1.0, "peak_mb": 100 }),
             );
             assert_eq!(code, 200, "task {id} handed back at {port}");
         }
-        assert_eq!(lead.broker.as_ref().unwrap().brokered().1, 0);
+        assert_eq!(lead.broker.as_ref().unwrap().leases_out(), 0);
         // The member's job (granted in term 1) had its broker's address, and ends through it, the
         // new lead.
         std::fs::write(&gate, b"").unwrap();
@@ -18314,7 +18289,7 @@ mod pool_tests {
         assert!(lead.broker.is_none() && lead.pooled().unwrap().side.broker.is_none());
         assert!(m.coord.as_ref().unwrap().shared.lock().unwrap().brokers.is_none());
         // (Another Mac's page: this test's lead is on loopback, whose pages this Mac always answers.)
-        assert_eq!(http_post(bport, "/work/where", &[("Origin", "http://m4.local:8090")], "{}").0, 403);
+        assert_eq!(http_post(bport, "/work/swarm", &[("Origin", "http://m4.local:8090")], "{}").0, 403);
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
         TEST_BROKER_PORT.with(|p| p.set(None));

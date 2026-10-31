@@ -682,14 +682,14 @@ A job's run, a JSON object, `pipeline::timings::RunRec`:
 
 ```
 {v: 1, kind, id, host, start, wall_s, cpu_s, threads, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …]}
-phase: {name, class (only before task #870, and a page's), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0), cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
+phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0), cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
 ```
 
 - `kind`: the job's step (`unit`, `peaks`, `gc`, `backup`, `osm-pass`), or `task <kind>` (`task
   tail`, `task bldtile`, `task treeblock`, `task terrainsub`). `id`: the agent's job id
-  (`SCENIC_JOB_ID`, "unit 6/32/24"; a page's task "task <lease>"). `host`: the Mac or page. `start`:
+  (`SCENIC_JOB_ID`, "unit 6/32/24"). `host`: the Mac. `start`:
   unix seconds.
-- `cpu_s`: user + system, the process's and its finished children's (none on a page). `threads`:
+- `cpu_s`: user + system, the process's and its finished children's. `threads`:
   RAYON_NUM_THREADS. `ok`: ended without error (a pause isn't). `untimed_s`: `wall_s` less the
   top-level non-`background` phases. `overhead_s`: the timing's own cost.
 - `gaps` (`{after, before, wall_s, n}`): where `untimed_s` lies, the main thread's spans between
@@ -1016,9 +1016,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     `state/journal/rejected/<day>/<term>-<n>.why`.
   - `state/pool/members/<id>.json`: a heartbeat `{member, host, app, beat, leads, handing_to: {to,
     term, offer, since, stage}, ready_for, stood_down, addresses, members, conds: {home, ac, battery,
-    able}}` (with brokers on, `broker: {urls, https, waiting: {<kind>: {n, mb}}, out}`).
+    able}}` (with brokers on, `broker: {urls, https, pages}`).
   - Switches (present or `on` in it: on; `off` or missing: off, unless said): `memory-guard` (missing: on; §7.2), `resume`
-    (§7.2, §7.4), `brokers` (§8; every coordinator answers `POST /work/where`), `placement` (§7.2:
+    (§7.2, §7.4), `brokers` (§8; the members' pages allowed to call each other, CORS), `placement` (§7.2:
     jobs get `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `delta-catalog` and `near-slope`
     (docs/building.md §2, Publishing's switches), all under `state/pool/`.
   - A member's ask carries `disk_mb` (free disk less the owner's room target and its jobs'

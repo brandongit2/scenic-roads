@@ -720,7 +720,6 @@ impl Prepped {
 }
 
 /// Row groups read at once.
-#[cfg(not(target_os = "wasi"))]
 const JOBS: usize = 4;
 
 /// Tile `t`'s records from the release's downloaded files under `root` (`sources/overture/<release>/`:
@@ -728,7 +727,6 @@ const JOBS: usize = 4;
 /// `PART_MARGIN_DEG`, so an outline in T finds its parts) and GHSL's tiles in `ghsl`
 /// (crate::bld::sources::ghsl_dir: the windows under T, first). A listed file whose footer isn't
 /// the downloaded one's fails where it meets T.
-#[cfg(not(target_os = "wasi"))]
 pub fn read(
     root: &store::nasfs::NasRoot,
     release: &str,
@@ -887,7 +885,6 @@ fn frames_unpiece(p: &[u8]) -> Result<Vec<Option<Frame>>> {
 /// Runs `bldprep T`: tile `t`'s records read (`read`: the declared sources' release and GHSL's
 /// folder, crate::inputs::sources), the normalized file written and uploaded as `work/bld/6-x-y`
 /// (or, when T has no building, the one it had dropped). Its counts.
-#[cfg(not(target_os = "wasi"))]
 pub fn run(out: &mut crate::out::Out, t: TileId) -> Result<Stats> {
     use crate::timings::phase;
     let (release, ghsl, _) = super::sources::declared(&crate::inputs::sources::read(out.root(), &out.manifest)?)?;

@@ -1024,14 +1024,13 @@ impl Sched {
         Pick { lease, step: o.step.clone(), targets: pick, threads, disk_mb, job: o.job.clone() }
     }
 
-    /// A member around on an older app (its last ask said no capacity, `Ask::cap`; an agent's,
-    /// not a page's), the first by name; None when every one reports the new app. While there's
+    /// A member around on an older app (its last ask said no capacity, `Ask::cap`), the first by name; None when every one reports the new app. While there's
     /// one, every ask is granted one job (`pack`) and the old wire is still written
     /// (`crate::agent::Status::all_new`).
     pub(super) fn old_member(&self, now: Instant) -> Option<String> {
         self.workers
             .iter()
-            .filter(|(_, w)| w.kind == "native" && !w.bad && now.saturating_duration_since(w.seen) < AROUND)
+            .filter(|(_, w)| w.kind == "native" && now.saturating_duration_since(w.seen) < AROUND)
             .find(|(_, w)| w.ask.is_some() && w.old)
             .map(|(n, _)| n.clone())
     }
@@ -1375,7 +1374,6 @@ impl Sched {
                 .iter()
                 .filter(|(n, w)| {
                     *n != &a.worker
-                        && !w.bad
                         && w.kind == "native"
                         && now.duration_since(w.seen) < AROUND
                         && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)
@@ -1497,13 +1495,12 @@ pub struct Leased {
     pub threads: u32,
 }
 
-/// A worker's last ask (`State::workers`): the ask, whether it ran an older app (`Worker::old`) or
-/// was found wrong (`Worker::bad`), and the ages of its last request and ask.
+/// A worker's last ask (`State::workers`): the ask, whether it ran an older app (`Worker::old`),
+/// and the ages of its last request and ask.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Asked {
     pub ask: Ask,
     pub old: bool,
-    pub bad: bool,
     pub seen_s: u64,
     pub asked_s: Option<u64>,
 }
@@ -1534,13 +1531,7 @@ impl Sched {
                 .workers
                 .values()
                 .filter_map(|w| {
-                    Some(Asked {
-                        ask: w.ask.clone()?,
-                        old: w.old,
-                        bad: w.bad,
-                        seen_s: age(w.seen),
-                        asked_s: w.asked.map(age),
-                    })
+                    Some(Asked { ask: w.ask.clone()?, old: w.old, seen_s: age(w.seen), asked_s: w.asked.map(age) })
                 })
                 .collect(),
             costs: self.costs.clone(),
@@ -1600,7 +1591,6 @@ impl Sched {
                         mem_mb: a.mem_mb,
                         cores: a.cores,
                         app: a.app.clone(),
-                        visible: a.visible,
                         cap: a.cap.clone(),
                         ask: Some(a.clone()),
                         old: w.old,
@@ -1609,8 +1599,6 @@ impl Sched {
                         what: String::new(),
                         done: 0,
                         failed: 0,
-                        checked: 0,
-                        bad: w.bad,
                     },
                 )
             })

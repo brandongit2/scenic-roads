@@ -61,7 +61,7 @@ pub struct Chunk {
     pub id: FileId,
 }
 
-/// A file's inode (0 where there's none to tell: WebAssembly).
+/// A file's inode (0 where there's none to tell).
 fn ino(m: &std::fs::Metadata) -> u64 {
     #[cfg(unix)]
     return std::os::unix::fs::MetadataExt::ino(m);

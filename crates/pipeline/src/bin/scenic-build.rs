@@ -16,8 +16,7 @@
 //!                                default every z6 tile whose extract meets the coverage
 //!   unit-snap U --out d --cache c [--carry]  z6 tile U's folder built from the records into d, nothing
 //!                                written to the NAS, snapshotted around each step's program (for
-//!                                tools/check/same.py and tail.mjs)
-//!   tail-spec U --root R         z6 tile U's tail as a task gives it a worker, its data servers by --root's declarations (tools/check/tail.mjs)
+//!                                tools/check/same.py)
 //!   roadunits                    the road → z6 tiles index from the z6 tiles' road ids
 //!   terrain-hi [T …] [--regions dir] [--pass d] [--raw dir] [--expect-same T,…]  the terrain from
 //!                                the elevation pool (AWS's raw tiles cached in --raw) and the
@@ -245,17 +244,6 @@ fn inputs_step(out: &mut Out, args: &[String]) -> Result<()> {
 fn step_main(args: &[String], step: &str) -> Result<()> {
     let args: Vec<String> = args.to_vec();
     let step = step.to_string();
-    // tail-spec U --root R: z6 tile U's tail as a task gives it a worker (its steps, where its places lie, the
-    // data servers it may read), for tools/check/tail.mjs; nothing written.
-    if step == "tail-spec" {
-        let u = positional(&args).first().and_then(|s| TileId::parse(s)).context("tail-spec U")?;
-        // (The data servers as the accepted declarations under --root name them: crate::coord::hosts.)
-        let root =
-            store::nasfs::NasRoot::from_arg(opt(&args, "--root").context("tail-spec U --root <nas project folder>")?);
-        let spec = serde_json::json!({ "runs": pipeline::unit::tail(u, true, true), "places": pipeline::offload::places(), "web_hosts": pipeline::coord::hosts::now(&root)? });
-        println!("{spec}");
-        return Ok(());
-    }
     if step == "pyenv" {
         // pyenv [--dem dir]: the Python environment of dem/'s lock file, made if it's missing
         // (pipeline::pyenv; tools/app/install.sh runs it); its folder printed.
@@ -3985,7 +3973,7 @@ fn canopy_files(b: [f64; 4]) -> Vec<String> {
 /// it, from the build's records, writing nothing to the NAS: what it keeps goes under <dir>/shared,
 /// and the folder is copied before and after
 /// each of its steps' programs into <dir>/snap (pipeline::unit::Tools::snap) for
-/// tools/check/same.py and tail.mjs. `--cache` holds the canopy
+/// tools/check/same.py. `--cache` holds the canopy
 /// files (`chm10/`), as the agent's cache does; the step programs are this binary's neighbours.
 /// `--carry`: its scenic results from its last run restored first (a copy of the NAS's), as a
 /// rebuild's are.
@@ -4688,15 +4676,7 @@ fn settle_tails(
                 let (mut b, _) = waiting.remove(i).unwrap();
                 pipeline::costin::add_to(&mut b.sizes, read);
                 b.peak = b.peak.max(pipeline::unit::take_peak());
-                let how = match how {
-                    pipeline::offload::Settled::Remote(w) => format!("by {w}"),
-                    pipeline::offload::Settled::Here(None) => "here".into(),
-                    pipeline::offload::Settled::Here(Some((w, true))) => format!("here, and by {w} the same"),
-                    pipeline::offload::Settled::Here(Some((w, false))) => {
-                        format!("here: {w}'s differed, and it gets no more work")
-                    }
-                };
-                commit_unit(out, date, b, &how)?;
+                commit_unit(out, date, b, &how.how())?;
             }
         }
     }

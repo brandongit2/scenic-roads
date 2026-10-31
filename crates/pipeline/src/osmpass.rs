@@ -169,12 +169,6 @@ fn tags_filter(src: &Input, o: &Path, exprs: &[&str], scratch: &Path, what: &str
 fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool) -> Result<()>) -> Result<()> {
     match src {
         Input::Local(p) => run(p, true),
-        #[cfg(target_os = "wasi")]
-        Input::Nas(p) => {
-            let _ = (dir, reads);
-            bail!("{}: no streaming off the NAS here", p.display())
-        }
-        #[cfg(not(target_os = "wasi"))]
         Input::Nas(p) => {
             let remote =
                 store::nas::on_nas(p).with_context(|| format!("{} isn't on the NAS's mounted share", p.display()))?;
@@ -188,7 +182,6 @@ fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool)
 /// The ciphers `ssh` prefers for the planet's stream, in order: AES-GCM (hardware-accelerated on
 /// both ends: 25 -> 59 MB/s for 1 GiB from the NAS on the Mac mini, task #554); ssh uses the first
 /// the server also offers, so a server without it falls to the next.
-#[cfg(not(target_os = "wasi"))]
 const STREAM_CIPHERS: &str = "aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr";
 
 /// How long an `ssh` to the NAS may take to start: to connect (ConnectTimeout, 20 s) and then to
@@ -196,12 +189,10 @@ const STREAM_CIPHERS: &str = "aes128-gcm@openssh.com,chacha20-poly1305@openssh.c
 /// locked, unbounded (ConnectTimeout doesn't cover it); a working one starts within seconds. The
 /// call past it is stopped and fails `TimedOut`, as a NAS call past its deadline does
 /// (`agent::nasread`): the job fails and is tried again later.
-#[cfg(not(target_os = "wasi"))]
 pub(crate) const SSH_START: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Runs `f` with `pid` (a child not yet waited for: the caller waits after) stopped (SIGTERM) if
 /// `f` hasn't called its argument ("started") within `bound`, or returned; and whether it was.
-#[cfg(not(target_os = "wasi"))]
 pub(crate) fn watched<T>(pid: u32, bound: std::time::Duration, f: impl FnOnce(&dyn Fn()) -> T) -> (T, bool) {
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     std::thread::scope(|s| {
@@ -223,7 +214,6 @@ pub(crate) fn watched<T>(pid: u32, bound: std::time::Duration, f: impl FnOnce(&d
 
 /// `ssh` (a command line, its host last) runs `true` within `SSH_START`: authenticated, and its
 /// shared connection opened when it makes one (ControlMaster), for the calls after to take.
-#[cfg(not(target_os = "wasi"))]
 pub(crate) fn ssh_opened(ssh: &[&str]) -> Result<()> {
     let mut probe = store::spawn::command(ssh[0]);
     probe.args(&ssh[1..]).arg("true").stdin(std::process::Stdio::null());
@@ -245,7 +235,6 @@ pub(crate) fn ssh_opened(ssh: &[&str]) -> Result<()> {
 }
 
 /// The error for an `ssh` to the NAS stopped by `watched`.
-#[cfg(not(target_os = "wasi"))]
 pub(crate) fn ssh_stalled(what: &str, bound: std::time::Duration) -> anyhow::Error {
     anyhow::Error::new(std::io::Error::new(
         std::io::ErrorKind::TimedOut,
@@ -260,7 +249,6 @@ pub(crate) fn ssh_stalled(what: &str, bound: std::time::Duration) -> anyhow::Err
 /// `ssh` to the NAS in batch mode (no prompts), through the job's proxy when it has one (a job
 /// under the budgets' sandbox, crate::budget::SANDBOX, connects only to this Mac: the proxy
 /// tunnels the connection, `CONNECT`, unmetered).
-#[cfg(not(target_os = "wasi"))]
 fn ssh() -> Command {
     let mut c = store::spawn::command("ssh");
     c.args(["-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", "-o", "ConnectTimeout=20"]);
@@ -272,7 +260,6 @@ fn ssh() -> Command {
 }
 
 /// The proxy's `host:port` from its URL (`http://127.0.0.1:<port>`).
-#[cfg(not(target_os = "wasi"))]
 pub(crate) fn proxy_addr(url: &str) -> Option<String> {
     let a = url.strip_prefix("http://")?.trim_end_matches('/');
     a.contains(':').then(|| a.to_string())
@@ -287,7 +274,6 @@ pub(crate) fn proxy_addr(url: &str) -> Option<String> {
 /// length (its size taken over SSH first): a short `cat` that exits 0 fails. `reads`: how many
 /// reads `run` makes, for progress (0: none said, the caller says its own). Each `ssh` is bounded
 /// by `start` (`SSH_START`): the size's call whole, each `cat` to its first byte. Returns the bytes read off the NAS. In `dir`, made afresh.
-#[cfg(not(target_os = "wasi"))]
 pub fn streamed(
     ssh: &(dyn Fn() -> Command + Sync),
     start: std::time::Duration,

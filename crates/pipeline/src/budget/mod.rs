@@ -32,11 +32,8 @@
 
 pub mod nas;
 pub mod net;
-#[cfg(not(target_os = "wasi"))]
 pub mod proxy;
-#[cfg(not(target_os = "wasi"))]
 pub mod snmp;
-#[cfg(not(target_os = "wasi"))]
 pub use proxy::Proxy;
 
 /// The budgets as the status shows them (`scenic status`, the agent's `budgets`): the proxy's
@@ -55,30 +52,6 @@ pub struct View {
     pub away: Option<String>,
 }
 
-/// No proxy where there are no sockets (WebAssembly's build of the agent never runs jobs).
-#[cfg(target_os = "wasi")]
-pub struct Proxy;
-
-#[cfg(target_os = "wasi")]
-impl Proxy {
-    pub fn view(&self) -> View {
-        View::default()
-    }
-    pub fn env_for(&self, _tag: &str) -> Vec<(String, String)> {
-        Vec::new()
-    }
-    pub fn url(&self) -> String {
-        String::new()
-    }
-    pub fn port(&self) -> u16 {
-        0
-    }
-    pub fn set_members(&self, _n: usize) {}
-    pub fn net(&self) -> Option<Arc<net::Net>> {
-        None
-    }
-}
-
 /// The two-Mac test's (tools/check/pool-two-macs.sh): every host the proxy opens a connection to is
 /// this address on the Mac (`127.0.0.1:<port>`), so the fake jobs' requests to Wikimedia are
 /// metered by the real budget and reach no one.
@@ -90,38 +63,24 @@ thread_local! {
     pub static TEST_RESOLVE: std::cell::RefCell<Option<proxy::Resolve>> = const { std::cell::RefCell::new(None) };
 }
 
-/// proxy::listen (none in WebAssembly).
+/// proxy::listen.
 pub fn listen(port: u16) -> std::io::Result<std::net::TcpListener> {
-    #[cfg(not(target_os = "wasi"))]
-    return proxy::listen(port);
-    #[cfg(target_os = "wasi")]
-    {
-        let _ = port;
-        Err(std::io::Error::other("no proxy in WebAssembly"))
-    }
+    proxy::listen(port)
 }
 
 /// The agent's proxy, taking from the pool's budget on the NAS's project folder `root` as `me`,
 /// serving `listener` (proxy::listen's).
 pub fn start_proxy(root: &store::nasfs::NasRoot, me: &str, listener: std::net::TcpListener) -> anyhow::Result<Proxy> {
-    #[cfg(not(target_os = "wasi"))]
-    {
-        let to: Option<std::net::SocketAddr> = std::env::var(TEST_PROXY_TO)
-            .ok()
-            .and_then(|a| a.parse().ok())
-            .filter(|a: &std::net::SocketAddr| a.ip().is_loopback());
-        let resolve: Option<proxy::Resolve> = to.map(|a| Arc::new(move |_: &str, _: u16| Some(a)) as proxy::Resolve);
-        #[cfg(test)]
-        let resolve = resolve.or_else(|| TEST_RESOLVE.with(|r| r.borrow().clone()));
-        // (Its NAS reads never retried: they run under the budgets' lock, which every job's
-        // request waits on; store::nasfs::NasRoot::no_retry.)
-        Proxy::start_listening(Arc::new(Budget::new(&root.no_retry(), me, Arc::new(SysClock))), resolve, listener)
-    }
-    #[cfg(target_os = "wasi")]
-    {
-        let _ = (root, me, listener);
-        anyhow::bail!("no proxy in WebAssembly")
-    }
+    let to: Option<std::net::SocketAddr> = std::env::var(TEST_PROXY_TO)
+        .ok()
+        .and_then(|a| a.parse().ok())
+        .filter(|a: &std::net::SocketAddr| a.ip().is_loopback());
+    let resolve: Option<proxy::Resolve> = to.map(|a| Arc::new(move |_: &str, _: u16| Some(a)) as proxy::Resolve);
+    #[cfg(test)]
+    let resolve = resolve.or_else(|| TEST_RESOLVE.with(|r| r.borrow().clone()));
+    // (Its NAS reads never retried: they run under the budgets' lock, which every job's
+    // request waits on; store::nasfs::NasRoot::no_retry.)
+    Proxy::start_listening(Arc::new(Budget::new(&root.no_retry(), me, Arc::new(SysClock))), resolve, listener)
 }
 
 use std::collections::BTreeMap;
@@ -150,7 +109,6 @@ pub const PROXY_ENV: &str = "SCENIC_BUDGETS";
 /// (`/hold`), so the budget holds every process and Mac that long (`HOLD_DEFAULT_S` when it says
 /// none). Whether a proxy was told (false: not metered, nothing to tell, the budgets off, or the
 /// proxy didn't answer: the step's own wait is all).
-#[cfg(not(target_os = "wasi"))]
 pub fn seen(url: &str, status: u16, retry_after: Option<&str>) -> bool {
     let host = url.split("://").nth(1).unwrap_or(url).split(['/', '?', ':']).next().unwrap_or("");
     if class_of(host).is_none() || (status != 429 && retry_after.is_none_or(|r| r.trim().is_empty())) {
@@ -164,20 +122,11 @@ pub fn seen(url: &str, status: u16, retry_after: Option<&str>) -> bool {
 /// A process's request to `url` is asked again (crate::fetch's retries): told to its proxy, which
 /// counts it for the host (crate::budget::net); false when there's none (not a job).
 pub fn retried(url: &str) -> bool {
-    #[cfg(not(target_os = "wasi"))]
-    {
-        let host = url.split("://").nth(1).unwrap_or(url).split(['/', '?', ':']).next().unwrap_or("");
-        tell(&format!("/retry?host={host}"))
-    }
-    #[cfg(target_os = "wasi")]
-    {
-        let _ = url;
-        false
-    }
+    let host = url.split("://").nth(1).unwrap_or(url).split(['/', '?', ':']).next().unwrap_or("");
+    tell(&format!("/retry?host={host}"))
 }
 
 /// `path` posted to this process's proxy (`PROXY_ENV`), straight (not through itself).
-#[cfg(not(target_os = "wasi"))]
 fn tell(path: &str) -> bool {
     let Ok(proxy) = std::env::var(PROXY_ENV) else { return false };
     let agent: ureq::Agent = ureq::Agent::config_builder()

@@ -1,6 +1,5 @@
 //! The step programs' command lines: what a unit's tail runs (extract, elev, tile, scenic-metrics,
-//! areaflags, landcover), the tasks' programs (trees, bldtile, terrainsub, also as WebAssembly in
-//! a page), the rail step's railfreq, and the tools run by hand (lakefill, coastcheck,
+//! areaflags, landcover), the tasks' programs (trees, bldtile, terrainsub), the rail step's railfreq, and the tools run by hand (lakefill, coastcheck,
 //! terrain). Each binary in src/bin/ of the same name parses with its own.
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -195,7 +194,7 @@ pub struct Trees {
 }
 
 /// A z8 tile's 3D buildings tiles from its task folder (pipeline::bld::task; docs/buildings3d.md
-/// §3.6): a bldtiles job's task, natively or as WebAssembly in a page. Writes area.tiles and
+/// §3.6): a bldtiles job's task. Writes area.tiles and
 /// area.json in the folder
 #[derive(Parser, Debug)]
 #[command(name = "bldtile")]
@@ -211,7 +210,7 @@ pub struct Bldtile {
 }
 
 /// A terrain piece's z8 subtrees made from a task's file (pipeline::terrain_task): a terrainsub
-/// task, natively or as WebAssembly in a page. Writes the group's tiles (dir/hi.sect) and its
+/// task. Writes the group's tiles (dir/hi.sect) and its
 /// mid's part (dir/mid.sect), from what the file holds alone
 #[derive(Parser, Debug)]
 #[command(name = "terrainsub")]

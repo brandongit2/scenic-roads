@@ -111,8 +111,6 @@ struct Status: Decodable {
     let checklist: [Step]?
     /// Other Macs helping, building tiles (agents from 2026-10-04 on).
     let helpers: [Helper]?
-    /// Every worker the coordinator heard from lately: helpers and web pages (agents from 2026-10-05 on).
-    let workers: [Worker]?
     /// The build's pause, while it's paused (agents from 2026-10-05 on).
     let pause: PauseInfo?
     /// The regions (their names), and when the build will be done and the map next updated (the
@@ -428,16 +426,6 @@ struct PauseInfo: Decodable {
     let mode: String
     let by: String
     let at: Int
-}
-
-/// A worker, as the lead's coordinator knows it (docs/workers.md).
-struct Worker: Decodable {
-    let name: String
-    let label: String
-    let kind: String
-    let what: String
-    let done: Int
-    let bad: Bool
 }
 
 /// A helper on another Mac, as the main agent last read its status (`here`: this Mac's own, fresh).
@@ -844,11 +832,6 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     for (host, stuck) in lead + freshHelpers(r).map({ ($0.host, loopStuck(age: $0.loop_age_s, limit: $0.loop_stuck_s, phase: $0.loop_phase, beat: $0.beat, now: r.now)) }) {
         if let t = stuck { out.append(Line(text: "\(host): \(t)", style: .plain)) }
     }
-    // Web pages working for the build (the helpers are above).
-    for w in (s.workers ?? []) where w.kind == "web" {
-        let done = w.done > 0 ? " · \(w.done) done" : ""
-        out.append(Line(text: w.bad ? "\(w.label): stopped (a result differed)" : "\(w.label): \(clip(w.what, 60))\(done)", style: .small))
-    }
     let power = s.conditions.ac ? "Mains power" : "Battery\(s.conditions.battery.map { " \($0)%" } ?? "")"
     out.append(Line(text: "\(power) · NAS \(!s.conditions.nas ? "not reachable" : s.conditions.home == false ? "through Tailscale" : "reachable")", style: .small))
     out.append(Line(text: "\(s.host) · \(r.local ? "this Mac" : "via the NAS") · heard from \(duration(r.now - s.beat)) ago", style: .small))
@@ -1177,7 +1160,7 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
             return
         }
         let conf = WKWebViewConfiguration()
-        // Not shared with Safari, nor kept on disk: no "helping" kept beyond the app's run.
+        // Not shared with Safari, nor kept on disk.
         conf.websiteDataStore = .nonPersistent()
         // The page's height, as it changes, for the panel's.
         let measure = "new ResizeObserver(() => webkit.messageHandlers.size.postMessage(Math.ceil(document.body.getBoundingClientRect().height))).observe(document.body);"

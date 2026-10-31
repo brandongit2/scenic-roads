@@ -48,7 +48,7 @@ out=$(zsh -euo pipefail -c "source ${(q)lib}; x=\$(found $tmp/missing -type f); 
 [[ $out == '[]' ]] && ok "found missing folder" || no "found missing folder" "$out"
 
 # prune_target: a stand-in target/ with old and fresh entries, a profile without deps/
-# (target/tmp, which ended the 25 Oct publishes) and a WebAssembly triple.
+# (target/tmp, which ended the 25 Oct publishes) and a target triple.
 t=$tmp/target
 old() { mkdir -p ${1:h}; print x > $1; touch -t 202601010000 $1 }  # read and written long ago
 new() { mkdir -p ${1:h}; print x > $1 }
@@ -59,11 +59,11 @@ old $t/release/build/mixed-2/out/a; new $t/release/build/mixed-2/out/b
 old $t/debug/.fingerprint/gone-3/x
 new $t/debug/incremental/kept-4/x
 mkdir -p $t/tmp/scratch
-old $t/wasm32-wasip1/release/deps/old.wasm
-new $t/wasm32-wasip1/release/deps/new.wasm
+old $t/aarch64-apple-darwin/release/deps/libold2.rlib
+new $t/aarch64-apple-darwin/release/deps/libnew2.rlib
 out=$(zsh -euo pipefail -c "source ${(q)lib}; prune_target ${(q)t}; echo done" 2>&1); rc=$?
-gone=($t/release/deps/libold.rlib $t/release/build/oldcrate-1 $t/debug/.fingerprint/gone-3 $t/wasm32-wasip1/release/deps/old.wasm)
-kept=($t/release/deps/libnew.rlib $t/release/build/mixed-2/out/a $t/debug/incremental/kept-4 $t/tmp/scratch $t/wasm32-wasip1/release/deps/new.wasm)
+gone=($t/release/deps/libold.rlib $t/release/build/oldcrate-1 $t/debug/.fingerprint/gone-3 $t/aarch64-apple-darwin/release/deps/libold2.rlib)
+kept=($t/release/deps/libnew.rlib $t/release/build/mixed-2/out/a $t/debug/incremental/kept-4 $t/tmp/scratch $t/aarch64-apple-darwin/release/deps/libnew2.rlib)
 left=(${^gone}(N)); lost=(); for f in $kept; do [[ -e $f ]] || lost+=($f); done
 if (( rc )) || [[ $out != *$'\n'done ]]; then no prune_target "ended early (exit $rc): $out"
 elif (( $#left )); then no prune_target "kept old: $left"

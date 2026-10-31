@@ -160,8 +160,7 @@ pub struct Tools {
     pub declared: Option<crate::inputs::sources::Sources>,
     /// Where to keep a copy of the folder before and after each of the steps' programs, with the
     /// command that ran it (`<n> <step> before|after` and `….cmd`): `scenic-build unit-snap`, for
-    /// running the steps again elsewhere (natively at other thread counts, as WebAssembly) and
-    /// comparing bytes (tools/check/same.py). Copies are APFS clones: no space until they differ.
+    /// running the steps again elsewhere (natively at other thread counts) and comparing bytes (tools/check/same.py). Copies are APFS clones: no space until they differ.
     pub snap: Option<PathBuf>,
 }
 
@@ -641,8 +640,7 @@ pub fn ahead_carry(dir: &Path) -> PathBuf {
     dir.with_file_name(format!("{name}-carry"))
 }
 
-/// One program a task runs (docs/workers.md §3): its name (the build's `bin/<prog>`, or
-/// `<prog>.wasm` in a web worker), its arguments and environment, in which `{dir}` is the z6 tile's
+/// One program a task runs (docs/workers.md §3): its name (the build's `bin/<prog>`), its arguments and environment, in which `{dir}` is the z6 tile's
 /// folder, `{cache}` the canopy cache, `{scache}` the folder's scenic cache, `{buildings}` its
 /// roadside buildings, `{store}` the NAS's canopy store to download into, and what's read where it
 /// lies: `{sources}` the NAS's sources, `{chm}` its canopy squares, `{net}`
@@ -726,13 +724,12 @@ pub fn canopy_stored(dir: &Path, sources: &Path) -> bool {
 
 /// The tail of z6 tile `u`'s build: its elevations, its clean-up and grade, then its road samples,
 /// canopy, views, buildings (with `buildings`) and flags. Every program is Rust, and gives the same
-/// bytes natively and as WebAssembly (tools/check/same.py, tail.mjs), so any worker can run it. The
-/// data the elevations and canopy read is read where it lies: the DEM servers' files and the NAS's
-/// (`{net}`, `{sources}`, `{chm}`: a browser's through the coordinator, a Mac's as this
-/// Mac reads them).
+/// bytes at any thread count (tools/check/same.py), so any worker can run it. The data the
+/// elevations and canopy read is read where it lies: the DEM servers' files and the NAS's (`{net}`,
+/// `{sources}`, `{chm}`, as each Mac reads them).
 pub fn tail(u: TileId, buildings: bool, store: bool) -> Vec<Run> {
     // What each step reads of the z6 tile's folder, earlier steps' outputs too: a task sends what's
-    // there when it starts (traced in WebAssembly, the outputs compared: tools/check/tail.mjs).
+    // there when it starts.
     let mine = |names: &[&str]| {
         names
             .iter()

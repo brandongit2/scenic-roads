@@ -4,8 +4,7 @@
 //!
 //! `Fetcher` reads, in turn: a mirror folder (`<dir>/<host>/<path>`: a file, or the byte ranges of
 //! one, a caller supplied, listed in `<path>.ranges`; `<path>.none` for one the server doesn't
-//! have), then the network: natively HTTP, with the build's User-Agent, retries and a block cache;
-//! WebAssembly has none (docs/workers.md), so there a task's caller supplies what it reads. It can
+//! have), then the network: HTTP, with the build's User-Agent, retries and a block cache. It can
 //! record what it fetched into a mirror folder, for a later run, or a worker, to read instead.
 //! What it fetches is published data (`Kind::Data`): no robots.txt is read.
 //!
@@ -82,13 +81,10 @@ pub fn exit_with(r: Result<()>) -> std::process::ExitCode {
 pub const DOWN_ENV: &str = "SCENIC_FETCH_DOWN";
 pub const DOWN_S: u64 = 30 * 60;
 
-// (WebAssembly has no network: crate::fetch::net is native only, and so these.)
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn down_dir() -> Option<PathBuf> {
     std::env::var_os(DOWN_ENV).filter(|d| !d.is_empty()).map(PathBuf::from)
 }
 
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn down_note(dir: Option<&Path>, url: &str) -> Option<PathBuf> {
     // (Its host and port: two servers of one host are told apart. `host_port`, the ':' a '_'.)
     let auth = url.split("://").nth(1).unwrap_or(url).split(['/', '?', '#']).next().unwrap_or("");
@@ -99,7 +95,6 @@ fn down_note(dir: Option<&Path>, url: &str) -> Option<PathBuf> {
 }
 
 /// An error at once when `url`'s host gave no answer less than `DOWN_S` ago (its note in `dir`).
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn down_check(dir: Option<&Path>, url: &str) -> Result<()> {
     let Some(p) = down_note(dir, url) else { return Ok(()) };
     let Ok(age) = std::fs::metadata(&p).and_then(|m| m.modified()).map(|t| t.elapsed().unwrap_or_default()) else {
@@ -138,7 +133,6 @@ pub fn cancellable<R>(flag: &Arc<std::sync::atomic::AtomicBool>, f: impl FnOnce(
 }
 
 /// An error when this thread's reader stopped (`cancellable`).
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn cancelled(url: &str) -> Result<()> {
     if CANCEL.with(|c| c.borrow().as_ref().is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))) {
         bail!("{url}: given up (its reader stopped)");
@@ -149,7 +143,6 @@ fn cancelled(url: &str) -> Result<()> {
 /// A retry's wait of `secs` (each `second` long: a real second but in tests), in slices, ending
 /// early in an error when this thread's reader stops; then the host's note checked again
 /// (`down_check`: another request may have found it down).
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn retry_wait(dir: Option<&Path>, url: &str, secs: u64, clock: &dyn store::clock::Clock) -> Result<()> {
     // (Counted by the job's proxy, for its host: crate::budget::net.)
     crate::budget::retried(url);
@@ -166,7 +159,6 @@ fn retry_wait(dir: Option<&Path>, url: &str, secs: u64, clock: &dyn store::clock
 }
 
 /// Notes in `dir` that `url`'s host gave no answer (`why`), for `down_check`.
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn note_down(dir: Option<&Path>, url: &str, why: &str) {
     if let Some(p) = down_note(dir, url) {
         if let Some(d) = p.parent() {
@@ -176,7 +168,7 @@ fn note_down(dir: Option<&Path>, url: &str, why: &str) {
     }
 }
 
-#[cfg(all(test, not(target_os = "wasi")))]
+#[cfg(test)]
 #[test]
 fn a_host_that_gave_no_answer_is_not_asked_again_for_a_while() {
     let d = tempfile::tempdir().unwrap();
@@ -378,7 +370,6 @@ struct Remote {
     url: String,
     len: u64,
     local: Option<Local>,
-    #[cfg(not(target_os = "wasi"))]
     online: Option<net::Online>,
 }
 
@@ -405,7 +396,6 @@ impl RangeRead for Remote {
                 return Ok(b);
             }
         }
-        #[cfg(not(target_os = "wasi"))]
         if let Some(o) = &self.online {
             return o.read(&self.url, self.len, off, len);
         }
@@ -419,28 +409,14 @@ impl RangeRead for Remote {
 /// Mirror folders, then the network (natively).
 pub struct Fetcher {
     mirror: Option<PathBuf>,
-    #[cfg(not(target_os = "wasi"))]
     net: Option<(net::Net, Option<PathBuf>)>,
 }
 
 impl Fetcher {
     /// A fetcher reading `mirror` first, then (natively, when `online`) the network, recording
-    /// what that fetched into `record`. (WebAssembly has no network.)
+    /// what that fetched into `record`.
     pub fn new(mirror: Option<PathBuf>, record: Option<PathBuf>, online: bool) -> Fetcher {
-        #[cfg(target_os = "wasi")]
-        let _ = (record, online);
-        Fetcher {
-            mirror,
-            #[cfg(not(target_os = "wasi"))]
-            net: online.then(|| (net::Net::new(), record)),
-        }
-    }
-
-    /// A fetcher reading the network alone over HTTPS, following no redirect: the coordinator's,
-    /// for tasks' reads of the data servers it allows (none of them redirects).
-    #[cfg(not(target_os = "wasi"))]
-    pub fn strict() -> Fetcher {
-        Fetcher { mirror: None, net: Some((net::Net::strict(), None)) }
+        Fetcher { mirror, net: online.then(|| (net::Net::new(), record)) }
     }
 
     /// From SCENIC_FETCH_MIRROR, SCENIC_FETCH_RECORD and SCENIC_FETCH_OFFLINE.
@@ -461,20 +437,13 @@ impl Fetch for Fetcher {
                 None => {}
             }
         }
-        #[cfg(not(target_os = "wasi"))]
         if let Some((n, record)) = &self.net {
             if local.as_ref().is_none_or(|l| l.have.is_some()) {
                 return n.open(url, local, record.as_deref());
             }
         }
         match local {
-            Some(l) => Ok(Some(Arc::new(Remote {
-                url: url.to_string(),
-                len: l.len,
-                local: Some(l),
-                #[cfg(not(target_os = "wasi"))]
-                online: None,
-            }))),
+            Some(l) => Ok(Some(Arc::new(Remote { url: url.to_string(), len: l.len, local: Some(l), online: None }))),
             None => bail!("{url}: not supplied, and there's no network here"),
         }
     }
@@ -504,7 +473,6 @@ impl Fetcher {
                 _ => {}
             }
         }
-        #[cfg(not(target_os = "wasi"))]
         if let Some((n, record)) = &self.net {
             return n.get_recorded(url, record.as_deref(), deadline);
         }
@@ -599,17 +567,10 @@ impl Fetch for MapFetch {
     }
 }
 
-/// The bytes this process has fetched over the network so far (none in WebAssembly, where a page
-/// reads through the coordinator): a phase counts the difference across it.
+/// The bytes this process has fetched over the network so far: a phase counts the difference
+/// across it.
 pub fn fetched_bytes() -> u64 {
-    #[cfg(not(target_os = "wasi"))]
-    {
-        net::FETCHED.load(std::sync::atomic::Ordering::Relaxed)
-    }
-    #[cfg(target_os = "wasi")]
-    {
-        0
-    }
+    net::FETCHED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Requests to one host this process has in flight at most, whichever readers ask (the
@@ -620,7 +581,6 @@ pub fn fetched_bytes() -> u64 {
 /// asks one host 64 at once at most.
 pub const HOST_REQUESTS: usize = 16;
 
-#[cfg(not(target_os = "wasi"))]
 mod net {
     //! HTTP: range requests with retries (as the Python steps' GDAL did: 10 retries, from 2 s,
     //! doubling), small files whole (as their GSI fetch did: 8 tries, 2 s more each time); and
@@ -969,18 +929,6 @@ mod net {
         #[cfg(test)]
         pub fn with_clock(self, clock: Arc<dyn store::clock::Clock>) -> Net {
             Net { clock, ..self }
-        }
-
-        /// HTTPS only, and no redirect followed (one comes back as an answer, which isn't a file:
-        /// an error).
-        pub fn strict() -> Net {
-            Net {
-                agent: Self::config().https_only(true).max_redirects(0).build().into(),
-                down: down_dir(),
-                clock: store::clock::real(),
-                proxy: local_proxy(),
-                draining: crate::control::draining_lately,
-            }
         }
 
         fn config() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
@@ -1377,7 +1325,6 @@ mod tests {
     }
 
     /// A server on this Mac answering every request 503, and its URL.
-    #[cfg(not(target_os = "wasi"))]
     fn always_busy() -> String {
         use std::io::{Read, Write};
         let l = store::spawn::listen("127.0.0.1:0").unwrap();
@@ -1395,7 +1342,6 @@ mod tests {
     /// Task #426 review: a tile's limits are the head's wait and a body's rate, not a cap on the
     /// whole request: a body of 40 KB coming at 20 KB/s, two seconds, is fetched whole with the
     /// head given 1 s and the body 10 KB/s or more, where a 1 s cap in all failed it.
-    #[cfg(not(target_os = "wasi"))]
     #[test]
     fn a_slow_but_steady_body_is_fetched_within_a_tiles_limits() {
         use std::io::{Read, Write};
@@ -1434,7 +1380,6 @@ mod tests {
     /// Task #426 re-review: a host that takes the connection and never answers (each attempt's
     /// head past its wait) is noted down, as one giving no answer: only a body past its time is
     /// late without being down. (Its eight tries' waits, 56 s, on a virtual clock.)
-    #[cfg(not(target_os = "wasi"))]
     #[test]
     fn a_host_silent_after_connecting_is_noted_down_within_a_tiles_limits() {
         // (Never accepted: the system's backlog takes the connections, and nothing answers.)
@@ -1453,7 +1398,6 @@ mod tests {
     /// Task #397 follow-up: a range read waiting out its retries ends at once when its reader
     /// stops (`cancellable`), and when another request notes its host down meanwhile
     /// (`down_check` before each attempt), not after its retries (minutes).
-    #[cfg(not(target_os = "wasi"))]
     #[test]
     fn a_retrying_read_ends_when_its_reader_stops_or_its_host_is_noted_down() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -1492,7 +1436,6 @@ mod tests {
 
     /// Task #397: a host's requests in flight are capped (`HOST_REQUESTS`), another host's not
     /// held up by them, and a slot given back lets a waiting request go.
-    #[cfg(not(target_os = "wasi"))]
     #[test]
     fn a_hosts_requests_at_once_are_capped() {
         use super::net::{HostSlot, HOST_REQUESTS};

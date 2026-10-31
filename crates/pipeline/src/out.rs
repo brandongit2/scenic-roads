@@ -182,7 +182,7 @@ fn hashes_of(p: &Path) -> Result<(String, String)> {
             break;
         }
         let chunk = &buf[..n];
-        // (In turn where there are no threads: the WebAssembly builds.)
+        // (In turn where no thread can be made.)
         let threaded = std::thread::scope(|s| {
             let other = std::thread::Builder::new().spawn_scoped(s, || sha.update(chunk));
             b3.update(chunk);
@@ -440,7 +440,7 @@ impl Out {
                 }
             });
             if spawned.is_err() {
-                // (No threads: the WebAssembly builds. Uploaded now.)
+                // (No thread could be made: uploaded now.)
                 self.put_file(logical, ext, local)?;
                 return Ok(());
             }
@@ -813,7 +813,6 @@ pub fn verify(
     }
     // (A first call, bounded: it authenticates, which may wait on the SSH agent unbounded
     // (osmpass::SSH_START), and opens the shared connection the hashes' calls then take.)
-    #[cfg(not(target_os = "wasi"))]
     crate::osmpass::ssh_opened(ssh)?;
     let mut cmd = store::spawn::command(ssh[0]);
     cmd.args(&ssh[1..]);

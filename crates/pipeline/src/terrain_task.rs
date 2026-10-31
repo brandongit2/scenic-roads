@@ -416,7 +416,8 @@ pub fn read_hi(path: &Path, piece: &str, subtrees: &str, raw: &BTreeSet<(u8, u32
 }
 
 /// Whether two runs' tiles and mids are the same bytes (the mids' values bit for bit).
-pub fn same(a: &(Vec<Made>, Mid), b: &(Vec<Made>, Mid)) -> bool {
+#[cfg(test)]
+fn same(a: &(Vec<Made>, Mid), b: &(Vec<Made>, Mid)) -> bool {
     let bits = |m: &Mid| {
         (
             m.quads.iter().map(|(k, v)| (*k, v.iter().map(|f| f.to_bits()).collect::<Vec<_>>())).collect::<Vec<_>>(),
@@ -443,7 +444,7 @@ pub fn spec(group: &[(u32, u32)], version: &str, input: u64) -> serde_json::Valu
 }
 
 /// A group's predicted memory on a worker (MB), until a worker measures it (the coordinator's
-/// `terrainsub 8/x/y`): its file twice (the page holds it, and the program reads its sections), and
+/// `terrainsub 8/x/y`): its file twice (the worker holds it, and the program reads its sections), and
 /// its levels' tiles as the run holds them, a level at a time (each its raw tile, its elevations
 /// three times over, its water and AWS's z9 tile over it: ~1.3 MB at most), with room.
 pub fn mem_mb(input: u64, levels: &Levels) -> u64 {
@@ -466,8 +467,7 @@ pub type Here<'a> = &'a dyn Fn(Levels) -> Result<(Vec<Made>, Mid)>;
 /// end (its last groups of at most `MOST_SUBTREES` subtrees) when the run begins, one per worker
 /// that takes them around, at most `MOST`, never every group; the run makes the others (`rest`),
 /// then settles each, waiting for no worker longer than this Mac would take (`Patience`: its tiles
-/// at the pace of the run's here), its result taken, or checked against this Mac's run of the group
-/// byte for byte, a difference marking the worker bad.
+/// at the pace of the run's here), its result taken.
 pub struct Offers<'a> {
     offload: Option<&'a Offload>,
     piece: (u32, u32),
@@ -628,18 +628,8 @@ impl<'a> Offers<'a> {
             }
             Ok(())
         };
-        let mut same_ = |st: &serde_json::Value, _: std::time::SystemTime| -> Result<bool> {
-            let s = match (theirs(st), got.borrow().as_ref()) {
-                (Ok(t), Some(m)) => same(&t, m),
-                _ => false,
-            };
-            if !s {
-                eprintln!("{what}: a worker's tiles differ from this Mac's");
-            }
-            Ok(s)
-        };
         let p = Patience { here_s: self.here_s(count(&o.levels)) };
-        let how = match off.settle_with(&o.task, true, p, &mut run_here, &mut take, &mut same_) {
+        let how = match off.settle_with(&o.task, true, p, &mut run_here, &mut take) {
             Ok(Some(h)) => h,
             Ok(None) => unreachable!("a task waited on is settled"),
             Err(e) => {
@@ -647,16 +637,10 @@ impl<'a> Offers<'a> {
                 eprintln!("{what}: its task can't be settled ({e:#}); made here");
                 std::fs::remove_dir_all(&o.task.root).ok();
                 *got.borrow_mut() = Some(here(o.levels.clone())?);
-                Settled::Here(None)
+                Settled::Here
             }
         };
-        let how = match how {
-            Settled::Remote(w) => format!("by {w}"),
-            Settled::Here(None) => "here".into(),
-            Settled::Here(Some((w, true))) => format!("here, and by {w} the same"),
-            Settled::Here(Some((w, false))) => format!("here: {w}'s differed, and it gets no more work"),
-        };
-        eprintln!("{what} made {how}");
+        eprintln!("{what} made {}", how.how());
         let r = got.into_inner();
         match r {
             Some(r) => Ok(r),
@@ -1079,14 +1063,8 @@ mod tests {
     }
 
     /// A worker in a thread: asks until it's given a task (each 0.2 s, up to 20 s), runs it as the
-    /// program `terrainsub` does, sends what it wrote (`spoil`: a tile spoilt first), done.
-    fn worker(
-        url: &str,
-        token: &str,
-        name: &str,
-        home: PathBuf,
-        spoil: bool,
-    ) -> std::thread::JoinHandle<Option<serde_json::Value>> {
+    /// program `terrainsub` does, sends what it wrote, done.
+    fn worker(url: &str, token: &str, name: &str, home: PathBuf) -> std::thread::JoinHandle<Option<serde_json::Value>> {
         let m = Client::at(vec![url.to_string()], token.to_string(), name);
         std::thread::spawn(move || {
             let ask =
@@ -1115,11 +1093,7 @@ mod tests {
                 .collect();
             assert_eq!(args[0], "--in");
             let inp = Inputs::open(Path::new(&args[1])).unwrap();
-            let (mut hi, mid) = inp.make().unwrap();
-            if spoil {
-                let n = hi[0].3.len();
-                hi[0].3[n / 2] ^= 1;
-            }
+            let (hi, mid) = inp.make().unwrap();
             write_hi(&u.join(HI), &inp.meta.piece, &inp.meta.subtrees, &hi).unwrap();
             crate::terrain_pack::write_mid(&u.join(MID), inp.piece().unwrap(), &mid).unwrap();
             let mut outputs = Vec::new();
@@ -1162,21 +1136,15 @@ mod tests {
         assert_eq!(piece(p, "none", t, &cov, &raw, &src, Some(&o)), alone);
         assert!(c.shared.lock().unwrap().tasks.by_id.is_empty());
 
-        // A worker measured fast, its results trusted: its group (the last) waited for and taken,
-        // the same z6 tile.
+        // A worker measured fast: its group (the last) waited for and taken, the same z6 tile.
         let m1 = Client::at(vec![url.clone()], tok.clone(), "m1");
         assert!(m1.ask(&ask).unwrap().is_none());
-        let fast = || {
-            let mut s = c.shared.lock().unwrap();
-            s.tasks.paces.insert(("m1".into(), KIND.into()), 0.2);
-            s.workers.get_mut("m1").unwrap().checked = 3;
-        };
-        fast();
+        c.shared.lock().unwrap().tasks.paces.insert(("m1".into(), KIND.into()), 0.2);
         // (Waited on until it's back: this is the exchange, not the waiting rule, and the worker is
         // a thread of this test.)
         let patient = Offload::at(url.clone(), c.job_token.clone(), &p.join("job-patient"))
             .waiting(crate::offload::Waiting::UntilDone);
-        let w = worker(&url, &tok, "m1", p.join("m1"), false);
+        let w = worker(&url, &tok, "m1", p.join("m1"));
         assert_eq!(piece(p, "taken", t, &cov, &raw, &src, Some(&patient)), alone);
         let task = w.join().unwrap().unwrap();
         let last = groups(&levels, Some(&water)).unwrap().into_iter().rev().find(|g| g.len() <= MOST_SUBTREES).unwrap();
@@ -1184,19 +1152,9 @@ mod tests {
         assert_eq!(task["runs"][0]["prog"], "terrainsub");
         {
             let s = c.shared.lock().unwrap();
-            assert_eq!((s.workers["m1"].checked, s.workers["m1"].bad), (3, false), "taken, not checked");
             assert_eq!(s.costs[&format!("{KIND} {}", task["unit"].as_str().unwrap())].peak_mb, 300);
             assert!(s.tasks.by_id.is_empty());
         }
-
-        // Its first results checked: a spoilt one is found, the group made here, the worker gets
-        // no more work.
-        fast();
-        c.shared.lock().unwrap().workers.get_mut("m1").unwrap().checked = 0;
-        let w = worker(&url, &tok, "m1", p.join("m1b"), true);
-        assert_eq!(piece(p, "spoilt", t, &cov, &raw, &src, Some(&patient)), alone);
-        w.join().unwrap().unwrap();
-        assert!(c.shared.lock().unwrap().workers["m1"].bad);
     }
     /// By hand, read-only (gap 11): over every z6 tile near the live coverage (`TT_ROOT`: the
     /// NAS's project folder, read only, as `scenic-build terrain-same` reads it), the lakes keyed by
@@ -1257,12 +1215,9 @@ mod tests {
     /// again in a scratch root over the NAS (`TT_ROOT`: its terrain hi packs' and mids' folders its
     /// own, the rest read only; `TT_SCRATCH`, `TT_RAW` the raw tiles' cache), expecting the same as
     /// the manifest has them (hi pack and mid), some of each z6 tile's subtrees made by another worker
-    /// through a coordinator listening on `TT_PORT` (its WebAssembly programs from `TT_WASM`):
-    /// `TT_WORKER=native`, a thread running each task as `scenic run-task` does (the programs in
-    /// `TT_BIN`); `page`, a page that opens `http://127.0.0.1:<port>/work/` (waited for). The first
-    /// z6 tile's group is checked against this Mac's run (as a worker's first results are), the
-    /// others' taken (the worker's pace and checks set so: this is the exchange, not the waiting
-    /// rule). Each group's worker, time and peak memory said.
+    /// through a coordinator listening on `TT_PORT`: a thread running each task as `scenic run-task`
+    /// does (the programs in `TT_BIN`). Its results are taken (the worker's pace set so: this is
+    /// the exchange, not the waiting rule). Each group's worker, time and peak memory said.
     #[test]
     #[ignore]
     fn live_pieces_with_a_worker() {
@@ -1279,20 +1234,12 @@ mod tests {
         );
         let water = crate::terrain_pack::open_water(&out).unwrap();
         let src = Sources { water: Some(&water), deeper: None };
-        let c = crate::coord::Coordinator::start(
-            &scratch.join("coord"),
-            Some(PathBuf::from(env("TT_WASM"))),
-            port,
-            "m4",
-            "",
-        )
-        .unwrap();
+        let c = crate::coord::Coordinator::start(&scratch.join("coord"), port, "m4", "").unwrap();
         let url = format!("http://127.0.0.1:{port}");
         let off = Offload::at(url.clone(), c.job_token.clone(), &scratch.join("offload"))
             .waiting(crate::offload::Waiting::UntilDone);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let native = env("TT_WORKER") == "native";
-        let w = native.then(|| {
+        let w = {
             let (m, bin, dir, stop) = (
                 Client::at(vec![url.clone()], c.contact.token.clone(), "m1"),
                 PathBuf::from(env("TT_BIN")),
@@ -1324,8 +1271,8 @@ mod tests {
                     m.done(&done).unwrap();
                 }
             })
-        });
-        // (A page: waited for, up to ten minutes.)
+        };
+        // (The worker: waited for, up to ten minutes.)
         let began = std::time::Instant::now();
         let who = loop {
             let found = c
@@ -1347,15 +1294,11 @@ mod tests {
             .split(',')
             .map(|p| crate::legacy::TileId::parse(p).filter(|u| u.z == 6).map(|u| (u.x, u.y)).unwrap())
             .collect();
-        for (k, &t) in pieces.iter().enumerate() {
+        for &t in &pieces {
             let (hi_l, mid_l) = (format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1));
             let (hi_was, mid_was) = (out.get(&hi_l).map(str::to_string), out.get(&mid_l).map(str::to_string));
             assert!(hi_was.is_some() && mid_was.is_some(), "6/{}/{}: no hi pack or mid in the manifest", t.0, t.1);
-            {
-                let mut s = c.shared.lock().unwrap();
-                s.tasks.paces.insert((who.clone(), KIND.into()), 0.2);
-                s.workers.get_mut(&who).unwrap().checked = if k == 0 { 0 } else { 3 };
-            }
+            c.shared.lock().unwrap().tasks.paces.insert((who.clone(), KIND.into()), 0.2);
             let t0 = std::time::Instant::now();
             out.remove(&mid_l);
             crate::terrain_pack::build_piece_with(&mut out, &raw, t, &cov, &src, true, &|_, _, _| {}, Some(&off))
@@ -1369,12 +1312,17 @@ mod tests {
                 .filter(|(k, _)| k.starts_with(KIND))
                 .map(|(k, v)| format!("{k}: {} MB", v.peak_mb))
                 .collect();
-            println!("6/{}/{}: the same hi pack ({}) and mid ({}) in {:.1} s; {who}: done {}, checked {}, bad {}; costs {costs:?}", t.0, t.1, hi_was.unwrap(), mid_was.unwrap(), t0.elapsed().as_secs_f64(), s.workers[&who].done, s.workers[&who].checked, s.workers[&who].bad);
-            assert!(!s.workers[&who].bad);
+            println!(
+                "6/{}/{}: the same hi pack ({}) and mid ({}) in {:.1} s; {who}: done {}; costs {costs:?}",
+                t.0,
+                t.1,
+                hi_was.unwrap(),
+                mid_was.unwrap(),
+                t0.elapsed().as_secs_f64(),
+                s.workers[&who].done
+            );
         }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(w) = w {
-            w.join().unwrap();
-        }
+        w.join().unwrap();
     }
 }

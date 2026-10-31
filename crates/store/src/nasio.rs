@@ -484,7 +484,7 @@ fn running(pid: i32) -> bool {
         let alive = unsafe { libc::kill(pid, 0) } == 0;
         alive || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
-    // (No processes to fold: the wasm build's.)
+    // (No processes to fold.)
     #[cfg(not(unix))]
     {
         let _ = pid;

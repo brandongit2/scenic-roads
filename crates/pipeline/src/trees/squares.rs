@@ -225,7 +225,6 @@ fn fetch_once(store: &Path, kept: &Path, url: Option<&str>, coming: &dyn Fn(f64)
 /// S3's 403 for a key that isn't there), so it says twice, a moment apart. Anything else (writing
 /// the file on the NAS too) is tried six times, then fails. `coming` is told how much has come
 /// (0–1), at most once a second.
-#[cfg(not(target_os = "wasi"))]
 fn download(url: Option<&str>, path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
     use std::io::{Read, Write};
     let Some(url) = url else {
@@ -324,14 +323,6 @@ fn download(url: Option<&str>, path: &Path, coming: &dyn Fn(f64)) -> Result<()> 
     bail!("download failed: {url}: {last}")
 }
 
-#[cfg(target_os = "wasi")]
-fn download(url: Option<&str>, path: &Path, _coming: &dyn Fn(f64)) -> Result<()> {
-    match url {
-        None => std::fs::write(path, b"").with_context(|| path.display().to_string()),
-        Some(u) => bail!("{u}: not in the cache, and there's no network here"),
-    }
-}
-
 /// Whether leaf-type square `p` was made whole (tagged so; NALCMS's always are), not only over some
 /// regions, and is whole on the disk.
 pub fn complete(p: &Path) -> bool {
@@ -350,8 +341,7 @@ pub fn complete(p: &Path) -> bool {
 /// The leaf-type squares among `sqs` (top, left) that `dir` lacks whole, made in this process
 /// (crate::leaftype, its NALCMS GeoTIFF kept in `dir`'s parent; `leaf` the declared sources), which
 /// says how far it is: inside the European source's box from it, inside the North American's from
-/// it, none elsewhere (no source). With none to make, nothing is asked. (WebAssembly has no
-/// network: there a square to make is an error.)
+/// it, none elsewhere (no source). With none to make, nothing is asked.
 pub fn leaf_types(sqs: &[(i32, i32)], dir: &Path, leaf: &LeafSources) -> Result<()> {
     let meets = |b: [f64; 4], top: i32, left: i32| {
         (left as f64) < b[2] && (left + 10) as f64 > b[0] && ((top - 10) as f64) < b[3] && top as f64 > b[1]
@@ -366,8 +356,5 @@ pub fn leaf_types(sqs: &[(i32, i32)], dir: &Path, leaf: &LeafSources) -> Result<
     if to_make == 0 {
         return Ok(());
     }
-    #[cfg(not(target_os = "wasi"))]
-    return crate::leaftype::make(sqs, dir, leaf);
-    #[cfg(target_os = "wasi")]
-    bail!("{to_make} leaf-type squares to make, and there's no network here")
+    crate::leaftype::make(sqs, dir, leaf)
 }
