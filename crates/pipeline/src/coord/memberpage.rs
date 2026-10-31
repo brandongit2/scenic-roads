@@ -176,21 +176,21 @@ mod tests {
             assert_eq!(answer(p, false, file), Answer::Here, "{p}");
         }
         let lead = PageAt::Lead {
-            urls: vec!["http://100.71.2.3:8090".into(), "http://mini.local:8090".into()],
+            urls: vec!["http://100.71.2.3:18091".into(), "http://mini.local:18091".into()],
             https: Some("https://mini.tail.ts.net/work/".into()),
         };
         let at = |host: &str, proxied: bool| location(&lead, "/work/?view&mac=m1", proxied, host).unwrap();
         // (Each device sent the way it came: the tailnet, the LAN (a phone without Tailscale), this
         // Mac itself, `tailscale serve`.)
-        assert_eq!(at("100.80.0.1:8090", false), "http://100.71.2.3:8090/work/?view&mac=m1");
-        assert_eq!(at("m1.tail.ts.net:8090", false), "http://100.71.2.3:8090/work/?view&mac=m1");
-        assert_eq!(at("m1.local:8090", false), "http://mini.local:8090/work/?view&mac=m1");
-        assert_eq!(at("192.168.1.20:8090", false), "http://mini.local:8090/work/?view&mac=m1");
-        assert_eq!(at("127.0.0.1:8090", false), "http://100.71.2.3:8090/work/?view&mac=m1");
+        assert_eq!(at("100.80.0.1:18091", false), "http://100.71.2.3:18091/work/?view&mac=m1");
+        assert_eq!(at("m1.tail.ts.net:18091", false), "http://100.71.2.3:18091/work/?view&mac=m1");
+        assert_eq!(at("m1.local:18091", false), "http://mini.local:18091/work/?view&mac=m1");
+        assert_eq!(at("192.168.1.20:18091", false), "http://mini.local:18091/work/?view&mac=m1");
+        assert_eq!(at("127.0.0.1:18091", false), "http://100.71.2.3:18091/work/?view&mac=m1");
         assert_eq!(at("m1.tail.ts.net", true), "https://mini.tail.ts.net/work/?view&mac=m1");
         // (A lead with one address: that one, whichever way.)
-        let one = PageAt::Lead { urls: vec!["http://100.71.2.3:8090".into()], https: None };
-        assert_eq!(location(&one, "/work/", true, "m1.local").unwrap(), "http://100.71.2.3:8090/work/");
+        let one = PageAt::Lead { urls: vec!["http://100.71.2.3:18091".into()], https: None };
+        assert_eq!(location(&one, "/work/", true, "m1.local").unwrap(), "http://100.71.2.3:18091/work/");
         assert!(location(&PageAt::default(), "/work/", false, "x").is_none());
     }
 
