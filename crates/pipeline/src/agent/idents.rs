@@ -64,7 +64,7 @@ pub fn pass_outlines(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 }
 
 /// The languages input's accepted index (docs/inputs.md §6.2), required.
-pub fn languages(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+pub fn language_table(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     required(x, [crate::inputs::logical(crate::inputs::languages::UNIT)])
 }
 

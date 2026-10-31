@@ -841,7 +841,7 @@ pub const TABLE: [Step; 59] = [
     },
     Step {
         versions: &[("spoken", || names::spoken::RULES.to_string())],
-        reads: &[All { step: "outlines", grain: Grain::Read(idents::pass_outlines) }, In { name: "languages", of: idents::languages }],
+        reads: &[All { step: "outlines", grain: Grain::Read(idents::pass_outlines) }, In { name: "language-table", of: idents::language_table }],
         ..step(
             "pass",
             Derive,
