@@ -170,7 +170,7 @@ pub struct Step {
     pub reads: &'static [Read],
     /// The code its targets' bytes depend on, each named (docs/readiness.md §2): its own version
     /// first, then codecs and borrowed code. The key's `v` lines (`key_lines`); empty for a step
-    /// whose key isn't derived from its reads yet (scheme 1's, `build::legacy_keys`).
+    /// whose key isn't derived from its reads (`derived`).
     pub versions: &'static [(&'static str, fn() -> String)],
     /// The way it runs now, as far as its memory and time go (crate::coord::cost_version): a cost
     /// measured another way says nothing of what a run takes now. Bumped with a change that moves
@@ -355,20 +355,20 @@ fn whole_left(step: &str, view: &dyn View) -> bool {
 
 /// The key derivation's scheme (docs/readiness.md §4, §6): 1 gave the hand-made keys (now
 /// crate::agent::rekey::scheme1's, to re-key their records); 2, the lines of the declared reads.
-pub const KEY_SCHEME: u32 = 1;
+pub const KEY_SCHEME: u32 = 2;
 
-/// Target `t`'s key of `step` (docs/readiness.md §4) under `KEY_SCHEME`: under 2 its
-/// `derived_key` (a "none" target's is `none_key`); None while it can't be worked out, or for a
-/// step whose key isn't derived (`derived`).
+/// Target `t`'s key of `step` (docs/readiness.md §4): its `derived_key` (a "none" target's is
+/// `none_key`); None while it can't be worked out, or for a step whose key isn't derived
+/// (`derived`).
 pub fn key(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<String> {
-    if KEY_SCHEME == 1 {
-        return super::build::step_keys(step, x)?.into_iter().find(|(u, _)| u == t).map(|(_, k)| k);
-    }
     derived_key(step, t, x)
 }
 
-/// Whether `step`'s keys are derived from its declared reads (it declares its versions): not
-/// those keyed on the whole plan (`build::KEYS_FROM_THE_PLAN`), nor the pass's and upkeep's own.
+/// Whether `step`'s keys are derived from its declared reads (it declares its versions). Not
+/// derived: those keyed on the whole plan's state (pack(T) and lo: their owners, by every base
+/// pack's reach; prune: no key; the catalogue: what's ready to list; lakefill: its source's pin,
+/// the plan's; names-todo: the map's sequence served) and the pass's and upkeep's own (keyed in
+/// agent::plan).
 pub fn derived(step: &str) -> bool {
     row(step).is_some_and(|r| !r.versions.is_empty())
 }

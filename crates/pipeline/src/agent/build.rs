@@ -2882,9 +2882,8 @@ impl PassCtx {
 /// Target `t` of `step`'s key under `x.scheme`, from what its family's enumeration
 /// worked out under scheme 1 (`k1`, kept until step 4: crate::agent::rekey::scheme1): under 2, a
 /// "none" target's `steps::none_key`, any other's `steps::derived_key` (`UNKNOWN` while that can't
-/// be worked out, or while `k1` is); a step whose key isn't derived (no versions declared:
-/// `KEYS_FROM_THE_PLAN`, the pass's and upkeep's own) keeps `k1`. The one way an enumeration keys
-/// its targets.
+/// be worked out, or while `k1` is); a step whose key isn't derived (`steps::derived`) keeps
+/// `k1`. The one way an enumeration keys its targets.
 pub fn key_now(step: &str, t: &str, k1: String, x: &KeyCtx) -> String {
     if x.scheme == 1 || k1 == UNKNOWN || !super::steps::derived(step) {
         return k1;
@@ -2907,15 +2906,11 @@ pub fn key_now_opt(step: &str, t: &str, k1: Option<String>, x: &KeyCtx) -> Optio
     Some(key_now(step, t, k1?, x)).filter(|k| k != UNKNOWN)
 }
 
-/// The steps whose keys scheme 1 doesn't derive from a step's own inputs (crate::agent::steps::key):
-/// they're keyed on the whole plan's state (the publishing chain's, the catalogue's, the pass's,
-/// upkeep's). Scheme 2 (docs/readiness.md §6, step 3) declares them.
-pub const KEYS_FROM_THE_PLAN: [&str; 6] = ["pack", "lo", "prune", store::catalogue::NAME, "lakefill", "names-todo"];
-
 /// Every target of `step` with its key under `x.scheme`, as the planner's enumerations key them
 /// (`key_now`; a target whose key can't be worked out now left out); None for a step whose key
-/// isn't derived (`KEYS_FROM_THE_PLAN`, the pass's and upkeep's own). Scheme 1's
-/// (`KeyCtx::scheme_1`) is crate::agent::rekey::scheme1's.
+/// isn't derived (`steps::derived`). Scheme 1's (`KeyCtx::scheme_1`) is
+/// crate::agent::rekey::scheme1's.
+
 pub fn step_keys(step: &str, x: &KeyCtx) -> Option<Vec<(String, String)>> {
     let none = Keys::default();
     let (cov, date, m, inputs) = (x.cov, x.date, x.m, x.inputs);
@@ -6189,9 +6184,15 @@ pub(crate) mod tests {
             for (t, k) in &w.targets {
                 let Some(u) = TileId::parse(t) else { continue };
                 let (l, none) = match step {
-                    "terrain-hi" if u.z == 6 => (crate::terrain_pack::mid_logical(u.x, u.y), none_piece_key(step, t)),
-                    "slope-hi" if u.z == 6 => (crate::slope_pack::mid_logical(u.x, u.y), none_piece_key(step, t)),
-                    "slope-deep" => (crate::slope_pack::deep_mid_logical(u.x, u.y), none_deep_key(step, t)),
+                    "terrain-hi" if u.z == 6 => {
+                        (crate::terrain_pack::mid_logical(u.x, u.y), crate::agent::steps::none_key(step, t).unwrap())
+                    }
+                    "slope-hi" if u.z == 6 => {
+                        (crate::slope_pack::mid_logical(u.x, u.y), crate::agent::steps::none_key(step, t).unwrap())
+                    }
+                    "slope-deep" => {
+                        (crate::slope_pack::deep_mid_logical(u.x, u.y), crate::agent::steps::none_key(step, t).unwrap())
+                    }
                     _ => continue,
                 };
                 if *k == none {
@@ -6208,7 +6209,7 @@ pub(crate) mod tests {
             for (t, k) in &w.targets {
                 let Some(u) = TileId::parse(t).filter(|u| u.z == 6) else { continue };
                 let l = crate::treepacks::mid_logical(u.x, u.y);
-                if *k == crate::treepacks::none_piece_key(t) {
+                if *k == crate::agent::steps::none_key("trees", t).unwrap() {
                     m.remove(&l);
                 } else {
                     m.insert(l.clone(), format!("{l}.{k}.sect"));
@@ -6226,11 +6227,14 @@ pub(crate) mod tests {
         for (t, k) in &w.targets {
             let Some(u) = TileId::parse(t) else { continue };
             let (l, none) = match u.z {
-                6 => (format!("layers/{layer}/hi/{}", u.dash()), none_piece_key(step, t)),
+                6 => (format!("layers/{layer}/hi/{}", u.dash()), crate::agent::steps::none_key(step, t).unwrap()),
                 z if z == crate::terrain_deep::PACK_Z => {
-                    (format!("layers/{layer}/deep/{}", u.dash()), none_deep_key(step, t))
+                    (format!("layers/{layer}/deep/{}", u.dash()), crate::agent::steps::none_key(step, t).unwrap())
                 }
-                _ => (format!("layers/{layer}/lo/{}", u.dash()), none_lo_key(layer, t)),
+                _ => (
+                    format!("layers/{layer}/lo/{}", u.dash()),
+                    crate::agent::steps::none_key(&format!("{layer}-lo"), t).unwrap(),
+                ),
             };
             if *k == none {
                 // (A "none" z6 tile's hi pack `did` dropped.)
@@ -6664,22 +6668,28 @@ pub(crate) mod tests {
             None,
             &tiles_for(&m),
         ));
-        assert_eq!(tt.terrain_lo_none, vec![("3/5/2".to_string(), none_lo_key("terrain", "3/5/2"))]);
-        assert_eq!(tt.slope_lo_none, vec![("3/5/2".to_string(), none_lo_key("slope", "3/5/2"))]);
+        assert_eq!(
+            tt.terrain_lo_none,
+            vec![("3/5/2".to_string(), crate::agent::steps::none_key("terrain-lo", "3/5/2").unwrap())]
+        );
+        assert_eq!(
+            tt.slope_lo_none,
+            vec![("3/5/2".to_string(), crate::agent::steps::none_key("slope-lo", "3/5/2").unwrap())]
+        );
         assert!(!tt.terrain_lo.iter().any(|(q, _)| q == "3/5/2"));
         assert!(!pieces.contains(&(24, 23)) && !pieces.contains(&(40, 20)));
         assert_eq!(
             tt.terrain_none,
             vec![
-                ("6/24/23".to_string(), none_piece_key("terrain-hi", "6/24/23")),
-                ("6/40/20".to_string(), none_piece_key("terrain-hi", "6/40/20"))
+                ("6/24/23".to_string(), crate::agent::steps::none_key("terrain-hi", "6/24/23").unwrap()),
+                ("6/40/20".to_string(), crate::agent::steps::none_key("terrain-hi", "6/40/20").unwrap())
             ]
         );
         assert_eq!(
             tt.slope_none,
             vec![
-                ("6/24/23".to_string(), none_piece_key("slope-hi", "6/24/23")),
-                ("6/40/20".to_string(), none_piece_key("slope-hi", "6/40/20"))
+                ("6/24/23".to_string(), crate::agent::steps::none_key("slope-hi", "6/24/23").unwrap()),
+                ("6/40/20".to_string(), crate::agent::steps::none_key("slope-hi", "6/40/20").unwrap())
             ]
         );
         assert!(!tt.terrain.iter().any(|(t, _)| t == "6/24/23" || t == "6/40/20"), "not pieces");
@@ -6772,34 +6782,14 @@ pub(crate) mod tests {
         // A z6 tile making no hi tile (crate::terrain_pack::makes_hi): keyed apart from one that does.
         let d = tempfile::tempdir().unwrap();
         let near = crate::terrain_pack::tests::near_without_hi(d.path());
-        let tt = terrain_slope_targets(&crate::agent::build::KeyCtx::new(
-            &near,
-            "d",
-            &BTreeMap::new(),
-            &std::collections::BTreeMap::new(),
-            None,
-            &TerrainTiles::new(None),
-        ));
-        let fp = piece_coverage(&near, (21, 18));
-        let k = tt.terrain.iter().find(|(t, _)| t == "6/21/18").unwrap().1.clone();
-        // (The pool's datasets, then what it reads of the fine datasets: here none.)
-        let sources = format!(
-            "{}\n{}",
-            super::super::tiles::TEST_SOURCES,
-            crate::terrain_deep::piece_key_lines(&[], &near, (21, 18))
-        );
-        assert_eq!(k, piece_key_made((21, 18), &fp, &sources, "-", false));
-        assert_ne!(
-            k,
-            terrain_piece_key((21, 18), &fp, &sources, "-"),
-            "a record from before its hi pack was dropped isn't current"
-        );
-        let fp = piece_coverage(&near, (22, 18));
-        assert_eq!(
-            tt.terrain.iter().find(|(t, _)| t == "6/22/18").unwrap().1,
-            terrain_piece_key((22, 18), &fp, &sources, "-"),
-            "one making hi tiles: keyed as before"
-        );
+        let (e, tiles) = (BTreeMap::new(), TerrainTiles::new(None));
+        let x = KeyCtx::new(&near, "d", &e, &e, None, &tiles);
+        let tt = terrain_slope_targets(&x);
+        let key = |t: &str| tt.terrain.iter().find(|(u, _)| u == t).unwrap().1.clone();
+        let lines = |t: &str| crate::agent::steps::key_lines("terrain-hi", t, &x).unwrap();
+        assert_eq!(Some(key("6/21/18")), crate::agent::steps::key("terrain-hi", "6/21/18", &x));
+        assert!(lines("6/21/18").contains(&"in makes-hi no hi tiles".to_string()), "{:?}", lines("6/21/18"));
+        assert!(!lines("6/22/18").iter().any(|l| l.starts_with("in makes-hi")), "one making hi tiles");
     }
 
     /// Every step of the plan done as its job does it (`did`, `terrain_did`), a z6 tile's candidates in
@@ -6858,17 +6848,17 @@ pub(crate) mod tests {
         }
     }
 
-    /// Docs/readiness.md §6, step 1: every key the plan offers a target under is crate::agent::steps::key's,
-    /// byte for byte, but the steps keyed on the whole plan (`KEYS_FROM_THE_PLAN`). The steps whose
-    /// keys it checked.
+    /// Docs/readiness.md §7: every key the plan offers a target under is crate::agent::steps::key's
+    /// with the full context (a "none" target's, `steps::none_key`), byte for byte, for every step
+    /// whose keys are derived (`steps::derived`). The steps whose keys it checked.
     fn keys_are_derived(p: &Plan, x: &KeyCtx) -> BTreeSet<String> {
         let mut seen = BTreeSet::new();
-        for w in &p.work {
-            if KEYS_FROM_THE_PLAN.contains(&w.step.as_str()) {
-                continue;
-            }
+        for w in p.work.iter().filter(|w| crate::agent::steps::derived(&w.step)) {
             for (t, k) in &w.targets {
-                let derived = crate::agent::steps::key(&w.step, t, x);
+                let derived = match crate::agent::steps::none_key(&w.step, t) {
+                    Some(n) if n == *k => Some(n),
+                    _ => crate::agent::steps::key(&w.step, t, x),
+                };
                 assert_eq!(derived.as_deref(), Some(k.as_str()), "{} {t}: the derived key", w.step);
             }
             seen.insert(w.step.clone());
@@ -6876,11 +6866,28 @@ pub(crate) mod tests {
         seen
     }
 
-    /// Scheme 1's bytes (docs/readiness.md §7, deleted at scheme 2): from nothing to built, every
-    /// target the plan offers (and so records) is keyed as crate::agent::steps::key derives it, for
-    /// every step it offers but those keyed on the whole plan.
+    /// The pass's steps (`PASS_STEPS`) are keyed alike in `PassCtx`'s context and with the coverage,
+    /// the reaches, the terrain packs and the planner's inputs, in every fixture build: their keys
+    /// read none of those.
     #[test]
-    fn scheme_1_bytes() {
+    fn the_pass_steps_read_no_coverage() {
+        let cx = PassCtx::default();
+        for f in fixtures() {
+            let tiles = (f.tiles)(&f.m);
+            let full = KeyCtx::new(&f.c, "d", &f.m, &f.inputs, f.reach.as_ref(), &tiles);
+            for s in PASS_STEPS {
+                assert!(crate::agent::steps::derived(s), "{s}");
+                let lines = |x: &KeyCtx| crate::agent::steps::key_lines(s, s, x);
+                assert_eq!(lines(&cx.ctx("d", &f.m)), lines(&full), "{} {s}", f.name);
+            }
+        }
+    }
+
+    /// From nothing to built, every target the plan offers (and so records) is keyed as
+    /// crate::agent::steps::key derives it (`keys_are_derived`), for every step it offers whose keys
+    /// are derived.
+    #[test]
+    fn offered_keys_are_derived() {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
@@ -6891,7 +6898,7 @@ pub(crate) mod tests {
         let mut done = Keys::default();
         run_all(&c, &reach(), &mut m, &mut done);
         let seen = KEYS_SEEN.with(|s| s.borrow().clone());
-        eprintln!("scheme 1: every offered key derived byte for byte, of {seen:?}");
+        eprintln!("every offered key derived byte for byte, of {seen:?}");
         for s in
             ["heritage-sites", "terrain-hi", "terrain-lo", "slope-hi", "slope-lo", "unit", "pois", "peaks", "items"]
         {
@@ -7258,11 +7265,8 @@ pub(crate) mod tests {
                 way: Default::default(),
             },
         );
-        let old = |parts: &[&str]| store::naming::hash16(parts.join("|").as_bytes());
-        let tv = format!("trees {}", crate::treepacks::TREES_V);
-        let lv = format!("trees-lo {}", crate::treepacks::TREES_LO_V);
-        let piece = ("6/40/20".to_string(), old(&[&tv, "6/40/20", "none"]));
-        let lo = ("3/5/2".to_string(), old(&[&lv, &tv, "3/5/2", "none"]));
+        let none = |s: &str, t: &str| (t.to_string(), crate::agent::steps::none_key(s, t).unwrap());
+        let (piece, lo) = (none("trees", "6/40/20"), none("trees-lo", "3/5/2"));
         let offered =
             |s: &str| p.work.iter().filter(|w| w.step == s).flat_map(|w| w.targets.clone()).collect::<Vec<_>>();
         assert!(offered("trees").contains(&piece), "{:?}", offered("trees"));
@@ -7630,11 +7634,7 @@ pub(crate) mod tests {
             for l in &ls {
                 h.changes.insert(l.to_string(), None);
             }
-            let k = if step.ends_with("-lo") {
-                none_lo_key(step.trim_end_matches("-lo"), t)
-            } else {
-                none_piece_key(step, t)
-            };
+            let k = crate::agent::steps::none_key(step, t).unwrap();
             h.done = Some((step.to_string(), vec![(t.to_string(), k)]));
             let e = Entry {
                 member: "m-0000000000000001".into(),
@@ -7812,7 +7812,7 @@ pub(crate) mod tests {
         let p = plan(&m, &done, &[]);
         let gone = of(&p, "terrain-deep");
         assert_eq!(gone.len(), deep.len());
-        assert!(gone.iter().all(|(t, k)| *k == none_deep_key("terrain-deep", t)));
+        assert!(gone.iter().all(|(t, k)| *k == crate::agent::steps::none_key("terrain-deep", t).unwrap()));
         assert!(gone.iter().all(|(t, k)| is_none_key("terrain-deep", t, k)));
         terrain_did(&mut m, &mut done, &Work { step: "terrain-deep".into(), targets: gone });
         assert!(!m.keys().any(|l| crate::terrain_deep::pack_tile(l).is_some()), "the deep packs dropped");
@@ -8792,14 +8792,16 @@ pub(crate) mod tests {
             "work/heritage/d/areas/6-28-16.9090909090909090.jsonl".into(),
         );
         assert_ne!(key(&m), k0, "its own tile's areas");
-        // And the terrain packs its roads' heights read: a deep pack over it, not one far away.
+        // And of the terrain its roads' heights read, the deep tiles where its ways lie
+        // (`unit_deep_tiles`), not whole packs: neither a deep pack far away nor one over its box
+        // that none of its ways meets.
         let k1 = key(&m);
         m.insert(crate::terrain_deep::pack_logical(0, 0), "layers/terrain/deep/10-0-0.aa".into());
         assert_eq!(key(&m), k1, "a deep pack far away");
         let b = crate::stage::tile_box_grown(6, 28, 16, crate::stage::MARGIN_KM);
         let (x, y) = crate::stage::tiles_in(crate::terrain_deep::PACK_Z, b)[0];
         m.insert(crate::terrain_deep::pack_logical(x, y), "layers/terrain/deep/x.bb".into());
-        assert_ne!(key(&m), k1, "a deep pack over it");
+        assert_eq!(key(&m), k1, "a deep pack over it where no way lies");
     }
 
     /// A terrain target's key names the elevation pool's datasets meeting it, and only those: a
@@ -8999,7 +9001,7 @@ pub(crate) mod tests {
         let key = |k: KeyedSources| {
             let mut t = tiles_for(&m);
             t.hold_keyed(&m[&crate::inputs::logical(crate::inputs::sources::UNIT)], k);
-            let tt = crate::treepacks::targets_with(&c, &m, t.keyed(&m).and_then(|k| k.trees.as_deref()));
+            let tt = trees_targets(&KeyCtx::new(&c, "d", &m, &BTreeMap::new(), None, &t));
             (
                 super::unit_keys(&crate::agent::build::KeyCtx::new(
                     &c,
@@ -9029,7 +9031,7 @@ pub(crate) mod tests {
                 .1,
             "as staged: the key as it was"
         );
-        assert_eq!(t0, crate::treepacks::targets(&c, &m).pieces[0].1);
+        assert_eq!(t0, trees_targets(&KeyCtx::new(&c, "d", &m, &BTreeMap::new(), None, &tiles_for(&m))).pieces[0].1);
         let (u1, t1) = key(KeyedSources {
             unit: Some("source esa-worldcover k".into()),
             trees: Some("source meta-canopy k".into()),
@@ -9544,7 +9546,7 @@ pub(crate) mod tests {
         };
         let ts = |v: &[(String, String)]| v.iter().map(|t| t.0.clone()).collect::<Vec<_>>();
         // Iceland's regions: z3 tile 3/3/2's z6 tiles 6/28/16, 6/28/17 and 6/29/16.
-        let tt = crate::treepacks::targets(&c, &m);
+        let tt = trees_targets(&KeyCtx::new(&c, "d", &m, &BTreeMap::new(), None, &tiles_for(&m)));
         assert_eq!(
             (
                 tt.pieces.iter().map(|p| p.0.as_str()).collect::<Vec<_>>(),
@@ -9580,7 +9582,7 @@ pub(crate) mod tests {
         // One mid made: the assembly's key names it, so it's stale, and the other z6 tiles' mids are
         // made for it (with the z3 tile's work, no longer idle work); then it runs.
         did(&mut m, &mut done, &Work { step: "trees".into(), targets: vec![w.backfill[0].clone()] });
-        let tt = crate::treepacks::targets(&c, &m);
+        let tt = trees_targets(&KeyCtx::new(&c, "d", &m, &BTreeMap::new(), None, &tiles_for(&m)));
         let w = tree_work(&tt, &m, &done);
         assert_eq!(
             (ts(&w.pieces), w.lo.len(), w.backfill.len()),
@@ -9598,15 +9600,18 @@ pub(crate) mod tests {
             "{wh:?}"
         );
         did(&mut m, &mut done, &Work { step: "trees".into(), targets: w.pieces.clone() });
-        let w = tree_work(&crate::treepacks::targets(&c, &m), &m, &done);
+        let w = tree_work(&trees_targets(&KeyCtx::new(&c, "d", &m, &BTreeMap::new(), None, &tiles_for(&m))), &m, &done);
         assert_eq!((w.pieces.len(), ts(&w.lo)), (0, vec!["3/3/2".to_string()]));
         did(&mut m, &mut done, &Work { step: "trees-lo".into(), targets: w.lo.clone() });
-        assert_eq!(tree_work(&crate::treepacks::targets(&c, &m), &m, &done), TreeWork::default());
+        assert_eq!(
+            tree_work(&trees_targets(&KeyCtx::new(&c, "d", &m, &BTreeMap::new(), None, &tiles_for(&m))), &m, &done),
+            TreeWork::default()
+        );
         // A z6 tile made again (its coverage changed) and another without its mid: both, then the
         // assembly.
         done.trees.insert("6/28/16".into(), "0000000000000000".into());
         m.remove(&crate::treepacks::mid_logical(29, 16));
-        let tt = crate::treepacks::targets(&c, &m);
+        let tt = trees_targets(&KeyCtx::new(&c, "d", &m, &BTreeMap::new(), None, &tiles_for(&m)));
         let w = tree_work(&tt, &m, &done);
         assert_eq!(
             (ts(&w.pieces), w.lo.len(), w.backfill.len()),
@@ -9633,7 +9638,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         m.insert("layers/trees-cover/lo/3-3-2".into(), "layers/trees-cover/lo/3-3-2.1111111111111111.pack".into());
-        let tt = crate::treepacks::targets(&far, &m);
+        let tt = trees_targets(&KeyCtx::new(&far, "d", &m, &BTreeMap::new(), None, &tiles_for(&m)));
         let w = tree_work(&tt, &m, &done);
         let none: Vec<&(String, String, bool)> = tt.pieces.iter().filter(|p| p.2).collect();
         assert_eq!(none.len(), 2, "6/28/16 and 6/28/17 have mids; 6/29/16 none");
@@ -12511,7 +12516,9 @@ pub(crate) mod tests {
             )),
             Some(k.clone())
         );
-        assert_eq!(k, h(&[&format!("outlines {OUTLINES_V}"), "2026-09-28", "s1", "previous -"]));
+        let cx = crate::agent::build::PassCtx::default();
+        assert_eq!(Some(k), crate::agent::steps::key("outlines", "outlines", &cx.ctx("2026-09-28", &m)));
+
         // The rest waits for it while the pass has none, else until it has failed OUTLINES_HOLDS times.
         assert!(
             outlines_hold(false, 99)

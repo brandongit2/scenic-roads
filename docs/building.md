@@ -45,12 +45,15 @@ from the first (`edit_held`).
   every input the new key names is pinned by the old key's; else it's built again. Every reader
   re-keys records as it reads them (`agent::rekey::as_read`: the plan, the status, the checklist,
   the regions' state, `--expect-same`, `scenic-build p5-check`), a record a job saved always
-  winning. The one old scheme kept is tree cover's before its z6 tiles (`rekey::v1`);
-  `scenic-build p5-check trees` says what it would do, reading only. Z6 tiles re-keyed so have no
-  mid: it's made in idle time, expected the same (Order). The switch to keys derived from the
-  steps' declared reads (docs/readiness.md §6 step 3, `rekey::scheme_2`) re-keys every record
-  current under the hand-made keys, no derived key pinning an input its hand-made one didn't;
+  winning. The old schemes kept are tree cover's before its z6 tiles (`rekey::v1`;
+  `scenic-build p5-check trees` says what it would do, reading only; z6 tiles re-keyed so have no
+  mid: it's made in idle time, expected the same, Order) and the hand-made keys before the keys
+  derived from the steps' declared reads (`rekey::scheme1`, docs/readiness.md §6 step 3): every
+  record current under the hand-made keys is re-keyed to its derived key (`rekey::scheme_2`), no
+  derived key pinning an input its hand-made one didn't, with the planner's context
+  (`build::KeyCtx`; the pass's steps in a `build::PassCtx`, before there's a coverage);
   `scenic-build rekey-check` says what it would do, reading only.
+
 - **A job** is one step over a run of stale targets: as many as fit a quarter of an hour by their
   measured times (`coord::JOB_S`), a step kept to the lead in one job, so a failure or a new app
   costs one run.

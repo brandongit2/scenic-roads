@@ -208,11 +208,10 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
    - Decision 2 (the terrain root a waited read) is not in step 1: the root is made in the
      publishing chain, behind the map tiles and the low zooms' cadence, so slope waiting for it
      would wait for that chain. It lands with scheme 2, the root moved to the terrain stage.
-   - `steps::key` (`KEY_SCHEME = 1`) gives each step's key through `build::legacy_keys`, which
-     calls the `*_key` functions and target lists the planner uses (kept until step 3), not lines
-     assembled from the reads (they carry no identities yet). `build::KEYS_FROM_THE_PLAN` lists
-     the steps keyed on the whole plan's state (pack, lo, prune, roadunits, stations, ferries,
-     the catalogue, lakefill, names-todo), not derived until scheme 2.
+   - `steps::key` (`KEY_SCHEME = 1`) gave each step's key through the `*_key` functions and
+     target lists the planner used, not lines assembled from the reads (they carried no
+     identities yet); the steps keyed on the whole plan's state (pack, lo, prune, roadunits,
+     stations, ferries, the catalogue, lakefill, names-todo) weren't derived.
    - Cut: `build::waits`, `build::wait_note`, the hand-written wait strings, `steps::Reads`,
      `steps::reads_of`, `Step::after`, `TerrainWork::is_left`'s step match, `Plan::terrain_built`,
      `forecast::chain_deps`, `UNITS_NEED`, the `reads_terrain` group, the held-chain guard.
@@ -221,8 +220,8 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
    input, declared by terrain-hi, terrain-deep and pyramids-fill, and the elevation covers read
    their outlines (`dem::declared::cover_read`). It changes every terrain-hi, terrain-deep and
    pyramids-fill key, so it ships only with step 3.
-3. **Flip to scheme 2 with #862.** In one commit: `KEY_SCHEME = 2`, the legacy adapters and every
-   `*_key` deleted, and a `rekey` scheme (agent/rekey.rs, docs/building.md §2): a record current
+3. **Flip to scheme 2 with #862. Built (task #879; not published: its publish starts #862's
+   rebuild).** `KEY_SCHEME = 2`, and a `rekey` scheme (agent/rekey.rs, docs/building.md §2): a record current
    under scheme 1 is recorded under its scheme-2 key when its scheme-2 lines name no input the
    scheme-1 key didn't pin. That's every step outside the terrain family. The terrain family's
    records go, and they are #862's planned rebuild. The cascade then follows by content names: a
@@ -267,7 +266,8 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
        reads without reading what they name (the dots are an input); a z6 tile's roads wait for
        the reaches, which they read through `ways`; a slope tile's terrain-lo and -hi tiles are
        named once, on one read.
-     - Still keyed on the whole plan's state, so in `KEYS_FROM_THE_PLAN`: pack(T) and lo (their
+     - Still keyed on the whole plan's state, so not derived: pack(T) and lo (their
+
        owners, by every base pack's reach), prune (no key), the catalogue (what's ready to list),
        lakefill (its source's pin, the plan's) and names-todo (the map's sequence served). The
        pass's own and upkeep's (osm-pass, pass-sets, regions-extract, buildings, inputs, gc, redo,
@@ -311,8 +311,46 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      to make either way. What the terrain rebuild then re-keys follows by content names: an
      assembly's mids, a slope tile's terrain tiles and a z6 tile's roads' staged tiles by XXH3,
      those reading the hi and deep packs whole (a z6 tile's roads' heights) by the packs' content.
-   - 3e: the flip.
-4. The scheme-1 rekey adapter is deleted once no record is scheme 1 (one catalogue after).
+   - **3e (built): the flip.** `KEY_SCHEME = 2`. Every enumeration of targets (terrain and slope's
+     `terrain_slope_targets`, `pyramids_targets`, `trees_targets`, `depth_targets`,
+     `polar_targets`, `bld_targets`, `unit_keys`, `pois_keys`, `peaks_keys`, the world steps'
+     `*_work` and `*_key`) takes a `build::KeyCtx` (the coverage, the pass, the manifest, the
+     planner's inputs, the reaches, the terrain packs) and keys each target through one helper,
+     `build::key_now`: a "none" target's `steps::none_key`, any other's `steps::derived_key`
+     (`UNKNOWN` while it can't be worked out). They still work out the scheme-1 key first (which
+     targets, which are "none", which unknown come with it) under `KeyCtx::scheme` 1, which is
+     what the rekey's adapter reads: `rekey::scheme1::keys` (`build::step_keys` under scheme 1)
+     and `rekey::scheme1::is_none_key`. `build::is_none_key` knows either scheme's.
+     - Every reader of the records re-keys them with the same context (`rekey::as_read`, a
+       `KeyCtx`: the plan, the checklist, the regions' counts, `--expect-same` (its step's alone,
+       `as_read_of`), `scenic-build rekey-check`); `agent::key_inputs` is the planner's inputs they
+       all read (the checklist and the regions' counts now read the feeds and spacing too). The
+       pass's worldwide steps (`build::PASS_STEPS`: outlines, regions-land, trailends, reach,
+       labels, spoken, water, summits) are planned before there's a coverage, so they're keyed in
+       a `build::PassCtx` (no coverage, reaches, terrain packs or inputs: none of their keys reads
+       them, `the_pass_steps_read_no_coverage`) and their records re-keyed so
+       (`rekey::pass_as_read`), the reach's alone in `current_reach`. timetables-todo reads the
+       coverage: it's planned after the plan's re-keyed records.
+     - `rekey::scheme_2` keys a step's records under scheme 1 only while one isn't its key now
+       (`build::step_keys`, the planner's keys; `Scheme2Step::current` counts those that are). A
+       re-keyed record is re-keyed in memory by each reader and saved under its new key only when
+       its target is built again, so a step whose records were re-keyed is keyed under both
+       schemes at each read until then.
+     - Not derived (`steps::derived`: no versions declared): pack(T) and lo (their owners, by
+       every base pack's reach: `pack_lo_targets` over the whole plan; deriving them would take
+       the owners as a per-plan memo in the `KeyCtx`), prune (no key), the catalogue (what's ready
+       to list), lakefill (its source's pin, the plan's) and names-todo (the map's sequence
+       served).
+     - Tests: `build::tests::offered_keys_are_derived` (every key the plan offers is
+       `steps::key`'s, a "none" target's `steps::none_key`), `the_pass_steps_read_no_coverage`;
+       the tests that keyed targets by hand key them by `steps::key`, `none_key` or the
+       planner's enumerations.
+     - Measured after the flip (`scenic-build rekey-check`, see 3d): the same records go.
+4. The scheme-1 rekey adapter (`rekey::scheme1`, `KeyCtx::scheme`, the enumerations' scheme-1
+   keys and every `*_key` they call) is deleted once no record is scheme 1. Records re-keyed in
+   memory are saved under their scheme-2 keys only by their targets' next runs, so that needs
+   either every such target built again or the lead recording them (a restore-like job, as
+   crate::agent::restore's: `scenic redo`'s "<step> <target> <from>" records).
 
 ## 7. Tests
 
@@ -332,9 +370,9 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
 - `steps::tests::a_run_reads_only_what_it_declares`: per-target steps run on fixtures under the
   store's read log; each logical file read is named by a declared read. (This is the direction
   nothing checks today.)
-- `scheme_1_bytes` (built, in `build::tests`; every `run_all` plan and the depth, polar and 3D
-  buildings chains' tests check each offered key against `steps::key`; step 1 only, deleted at
-  step 3) and
+- `offered_keys_are_derived` (built, in `build::tests`; every `run_all`
+  plan and the depth, polar and 3D buildings chains' tests check each offered key against
+  `steps::key`, a "none" target's against `steps::none_key`) and
   `rekey::tests::scheme_2_keeps_what_reads_nothing_new`.
 
 ## 8. What gets deleted

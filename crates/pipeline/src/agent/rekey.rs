@@ -941,32 +941,29 @@ mod tests {
         let mut tf = tiles_for(&mf);
         tf.hold_water(&format!("{l}.cccccccccccccccc.json"), w.clone());
         let idx = tf.water_idx(&mf, &w.pin).unwrap();
-        let key = |t: &str, from: &str| build::water_key(Some(&w.pin), Some(idx), t, from).unwrap();
+        // (Each target's key lines with the water it reads from the fill's digests: the jobs read
+        // the water under the fill's pin.)
+        let e = BTreeMap::new();
+        let x = build::KeyCtx::new(&c, "d", &ma, &e, None, &ta);
         let after: BTreeMap<String, String> = before
             .keys()
             .map(|t| {
                 let u = TileId::parse(t).unwrap();
-                let k = if u.z == 6 {
-                    let fp = build::piece_coverage(&c, (u.x, u.y));
-                    let ds = tf.terrain_datasets(&mf, crate::stage::tile_box_grown(6, u.x, u.y, 0.0)).unwrap();
-                    // (And what its deep levels read: crate::terrain_deep.)
-                    let deep = crate::terrain_deep::piece_key_lines(&tf.fine(&mf).unwrap(), &c, (u.x, u.y));
-                    let ds = format!("{ds}\n{deep}");
-                    build::terrain_piece_key((u.x, u.y), &fp, &ds, &key(t, &build::piece_water_from(&fp)))
-                } else {
-                    let mids: Vec<String> =
-                        build::coverage_tiles(&c)[&(u.x, u.y)].iter().map(|(x, y)| format!("6/{x}/{y}=-")).collect();
-                    build::terrain_lo_key(
-                        (u.x, u.y),
-                        &key(t, crate::terrain_water::AREA_FROM),
-                        &tf.terrain_datasets(&mf, crate::stage::tile_box_grown(3, u.x, u.y, 0.0)).unwrap(),
-                        &mids,
-                    )
+                let (step, from) = match u.z {
+                    6 => ("terrain-hi", build::piece_water_from(&build::piece_coverage(&c, (u.x, u.y)))),
+                    _ => ("terrain-lo", crate::terrain_water::AREA_FROM.to_string()),
                 };
-                (t.clone(), k)
+                let water = build::water_key(Some(&w.pin), Some(idx), t, &from).unwrap();
+                let lines: Vec<String> = crate::agent::steps::key_lines(step, t, &x)
+                    .unwrap()
+                    .into_iter()
+                    .map(|l| if l.starts_with("in water ") { format!("in water {water}") } else { l })
+                    .collect();
+                (t.clone(), store::naming::hash16(lines.join("\n").as_bytes()))
             })
             .collect();
         let changed: Vec<&String> = before.keys().filter(|t| before[*t] != after[*t]).collect();
+
         // The z6 tile under the fill and its z3 tile's assembly (its z6–8 tiles), nothing else.
         assert_eq!(changed, [&format!("3/{}/{}", f.0 >> 3, f.1 >> 3), &format!("6/{}/{}", f.0, f.1)]);
     }

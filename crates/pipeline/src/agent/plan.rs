@@ -2816,9 +2816,9 @@ impl Planner {
         build::fold(&items, &next, &notes)
     }
 
-    /// `f` (build::region_states, build::region_steps) over the coverage, the regions', the pass,
-    /// the manifest, the records as every reader reads them (`as_built_keys`), the reaches and the
-    /// terrain packs' indexes, on a thread of its own named `name` (the loop gives it what it holds
+    /// `f` (build::region_states, build::region_steps) over the keying context (the coverage, the
+    /// pass, the manifest, the planner's inputs, the reaches, the terrain packs' indexes), the regions' and
+    /// the records as every reader reads them (agent::rekey::as_read), on a thread of its own named `name` (the loop gives it what it holds
     /// already, and a copy of the indexes), with how long it took. None before the first pass or
     /// while the coverage can't be read.
     #[allow(clippy::type_complexity)]
