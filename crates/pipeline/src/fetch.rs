@@ -612,9 +612,13 @@ pub fn fetched_bytes() -> u64 {
     }
 }
 
-/// Requests to one host this process has in flight at most (`net::HOST_REQUESTS`).
-#[cfg(not(target_os = "wasi"))]
-pub use net::HOST_REQUESTS;
+/// Requests to one host this process has in flight at most, whichever readers ask (the
+/// elevation sampler's pool, its reading ahead, a pyramid's tile fetches): what one step asks
+/// of a server at once stays bounded however many threads read. A request holds its slot
+/// through its retries' waits. Modest, as the hosts read live are free services that publish no
+/// limit (GSI's cyberjapandata.gsi.go.jp among them, task #665 review): a pool of four jobs
+/// asks one host 64 at once at most.
+pub const HOST_REQUESTS: usize = 16;
 
 #[cfg(not(target_os = "wasi"))]
 mod net {
@@ -792,13 +796,7 @@ mod net {
         }
     }
 
-    /// Requests to one host this process has in flight at most, whichever readers ask (the
-    /// elevation sampler's pool, its reading ahead, a pyramid's tile fetches): what one step asks
-    /// of a server at once stays bounded however many threads read. A request holds its slot
-    /// through its retries' waits. Modest, as the hosts read live are free services that publish no
-    /// limit (GSI's cyberjapandata.gsi.go.jp among them, task #665 review): a pool of four jobs
-    /// asks one host 64 at once at most.
-    pub const HOST_REQUESTS: usize = 16;
+    pub use super::HOST_REQUESTS;
 
     /// The requests in flight by host.
     static HOSTS: std::sync::LazyLock<(Mutex<HashMap<String, usize>>, std::sync::Condvar)> =

@@ -9,7 +9,7 @@
 //! each Mac may run now, and the slots the lead's ramp grows to later, `Machine::from_s`), takes
 //! from the front of the plan's order the first work that it may run (a member never the lead's own
 //! steps) and that fits its Mac's room beside what the Mac runs, as the coordinator packs an ask
-//! (`MacRoom`: its whole memory and its cores at the packed share each; a step not measured by its provisional need, one of it at a time;
+//! (`MacRoom`: its whole memory and its cores, a thread each where no run said its threads; a step not measured by its provisional need, one of it at a time;
 //! a job an ask while a member runs an older app); the pages' lane (`helper`) the far end of the
 //! first shared step it can do (terrain's near end). Each lane starts with its slot's job under
 //! way. The trains' and the landmarks' chains run from the start, each step once what it reads is
@@ -3112,7 +3112,8 @@ mod tests {
 
     #[test]
     fn a_macs_slots_share_its_room_as_the_coordinator_packs() {
-        // (Task #383 review) a member of 8 cores (jobs packed at 2 each) and 8 GB, four slots;
+        // (Task #383 review) a member of 8 cores (jobs packed at a thread each, task #896: their runs
+        // said no threads) and 8 GB, four slots;
         // z6 tiles of 3 GB: two at once by memory, not four.
         let units: Vec<String> = (0..8).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
@@ -3133,11 +3134,11 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(most(&sim), 2, "8 GB of 3 GB jobs");
-        // By cores: 1 GB jobs on 8 cores at 2 each, four at once; on 4 cores, two.
+        // By cores: 1 GB jobs at a thread each, four at once (its slots) on 8 cores; on 2 cores, two.
         let small = |step: &str, t: &str| Cost { peak_mb: 1000, ..cost(step, t) };
         inp.costs = cost_table(&regions, &small);
         assert_eq!(most(&run(&inp, &|c| c.secs, far())), 4);
-        inp.macs.insert("m1".into(), MacRoom { mem_mb: 8000, cores: 4 });
+        inp.macs.insert("m1".into(), MacRoom { mem_mb: 8000, cores: 2 });
         assert_eq!(most(&run(&inp, &|c| c.secs, far())), 2);
         // A step never measured: its first job alone on its Mac, nothing beside it (task #499);
         // once it ends its measure packs the rest as above.
@@ -3151,7 +3152,7 @@ mod tests {
             .iter()
             .filter(|i| i.by.is_some_and(|m| m > 0))
             .all(|i| i.from >= first.end - 1e-9 || std::ptr::eq(i, first)));
-        assert_eq!(most(&sim), 2, "on its 4 cores, as above");
+        assert_eq!(most(&sim), 2, "on its 2 cores, as above");
     }
 
     #[test]
