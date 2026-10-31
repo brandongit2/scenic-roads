@@ -513,7 +513,7 @@ async function run() {
       const week = await js(rows);
       check("time: the week's rows follow the range", week.length >= six.length && JSON.stringify(week) !== JSON.stringify(six), week.slice(0, 6).join(", "));
       await shot("chrome-time-7d");
-      const at = await js(`(() => { const p = [...document.querySelectorAll(".stages .tb-part")].find((e) => e.querySelector(".tb-l")); if (!p) return null; p.scrollIntoView({ block: "center" }); const r = p.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+      const at = await js(`(() => { const p = [...document.querySelectorAll(".stages .tb-part")].find((e) => [...e.querySelectorAll(".tb-l")].some((l) => l.getClientRects().length)); if (!p) return null; p.scrollIntoView({ block: "center" }); const r = p.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
       if (at) {
         if (PHONE) await tap(at[0], at[1]);
         else await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at[0], y: at[1] });
@@ -725,14 +725,15 @@ async function run() {
       // The Jobs tab's cards: a step's (hovered by a mouse on a desktop, pinned by a tap on a phone),
       // then a job's in the schedule: the map cards' layout and width (#794: head, stat tiles, rows, a foot; a world map of its tiles); ≤ 50svh, off the pointer's line (#627).
       await show("jobs");
-      const card = async (sel, where = "", point = null) => {
+      // (`keep`: a phone's pinned card left open for the caller to read and shoot, then close.)
+      const card = async (sel, where = "", point = null, keep = false) => {
         const p = point || (sel && (await at(sel, where)));
         if (!p) return null;
         if (PHONE) await tap(p[0], p[1]);
         else await mouse(p[0], p[1]);
         await until(`[...document.querySelectorAll(".card-tip")].some((e) => e.getClientRects().length && !e.hidden)`, 2000);
         const r = await js(`(() => { const t = [...document.querySelectorAll(".card-tip")].find((e) => e.getClientRects().length && !e.hidden); if (!t) return null; const b = t.getBoundingClientRect(), m = t.querySelector(".tc-map"); return { wide: !!t.querySelector(".tc-head.wide"), parts: [".tc-sw", ".tc-kick", ".tc-title", ".cstats", ".ckv", ".tc-foot"].filter((s) => !t.querySelector(s)), title: t.querySelector(".tc-title")?.textContent, kick: t.querySelector(".tc-kick")?.textContent, w: Math.round(b.width), top: b.top, bottom: b.bottom, h: b.height, max: innerHeight / 2, map: m ? Math.round(m.getBoundingClientRect().width) : 0 }; })()`);
-        if (PHONE) await js(`document.querySelector(".card-tip.pinned .x")?.click()`);
+        if (PHONE && !keep) await js(`document.querySelector(".card-tip.pinned .x")?.click()`);
         return { ...(r || { none: true }), y: p[1] };
       };
       const wide = Math.min(560, WIDTH - 16);
@@ -766,7 +767,7 @@ async function run() {
       const nNext = await js(`${next}.length`);
       // (A drop looked for further: its run may sit behind a lane of many jobs.)
       for (let k = 0; k < Math.min(nNext, 200) && ((!nc && k < 40) || !dc); k++) {
-        const c = await card(null, "", await js(`(() => { document.querySelector(".panel:not([hidden]) .sched .lanewrap").scrollIntoView({ block: "center" }); const s = ${next}[${k}]; return s ? [s.x, s.y] : null; })()`));
+        const c = await card(null, "", await js(`(() => { document.querySelector(".panel:not([hidden]) .sched .lanewrap").scrollIntoView({ block: "center" }); const s = ${next}[${k}]; return s ? [s.x, s.y] : null; })()`), true);
         // (#837) A drop to come (forecast::Lane::drop: a run of drops, packs dropped, nothing
         // built): its own kicker and a "does" row, shot as it shows (chrome-drop-to-come.png).
         if (!dc && c && !c.none && /drop to come/.test(c.kick || "")) {
@@ -781,7 +782,8 @@ async function run() {
           const { data } = await page.send("Page.captureScreenshot", { format: "png", clip: { x: b[0], y: b[1], width: b[2], height: b[3], scale: 1 } });
           writeFileSync(join(OUT, "chrome-job-to-come.png"), Buffer.from(data, "base64"));
         }
-        if (!PHONE) await mouse(2, 2);
+        if (PHONE) await js(`document.querySelector(".card-tip.pinned .x")?.click()`);
+        else await mouse(2, 2);
       }
       if (!nNext) console.log("INFO jobs card: no job to come in the forecast (the live build's state)");
       else check("jobs card: a job to come names its targets, a world map of them (#834)", !!nc && steps.has(String(nc.title).split(/[ :]/)[0]) && nc.title.includes("/"), nc ? `${nc.kick} / ${nc.title}, map ${nc.map} px` : `none of ${Math.min(nNext, 40)} jobs to come shows a map of its tiles`);

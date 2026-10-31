@@ -1465,7 +1465,7 @@ const mbText = (mb) => (mb >= 1024 ? `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)
 // A step's row: "time breakdown", then a bar of its time in the range's runs by phase (the lead's
 // `phase_times`: phaseBreakdown), each phase as wide as its share, split into its measured segments
 // (phaseSplit: the NAS, the network, the disk, other work, computing) and labelled where it has
-// room, its card on hover (`phaseCard`); under a segment, a thin strip per kind that ran alongside
+// room (fitPartLabels), its card on hover (`phaseCard`); under a segment, a thin strip per kind that ran alongside
 // it (task #891: its `with`, in that kind's colour, as long as their time at once, from its left;
 // extra, not in the sum), naming it on hover; null when no run of it ended in the range.
 function timeRow(m, step) {
@@ -1473,19 +1473,30 @@ function timeRow(m, step) {
   const b = phaseBreakdown(m.a.phase_times, step, range);
   if (!b || !b.wall) return null;
   const bar = h("div", "tb-bar");
-  const part = (w, segs, label, key, build) => {
+  const part = (w, segs, name, share, key, build) => {
     const el = h("span", { class: "tb-part", style: { flexGrow: String(w) } },
       ...segs.map((x) => h("i", { class: "tb-seg", style: { flexGrow: String(x.s), background: x.colour } },
         ...(x.with || []).map((y, j) => withCard(h("b", { class: "tb-with", style: { width: `${(y.s / x.s * 100).toFixed(1)}%`, bottom: `${j * 3}px`, background: WAIT_COLOURS[y.key] } }),
           `${key} w ${x.key} ${y.key}`, () => cardBody(`${y.label} for ${dur(y.s)}`, [["Inside", `${x.label}: ${pct(y.s / x.s)} of its ${dur(x.s)}`],
             ["How", ALONGSIDE_RULE]]))))),
-      w / b.wall >= 0.08 ? h("span", "tb-l", label) : null);
+      h("span", { class: "tb-l", "data-full": `${name} ${share}`, "data-short": share }));
     withCard(el, key, build);
     bar.append(el);
   };
-  b.parts.forEach((p, i) => part(p.wall, phaseSplit(p).map((x) => ({ ...x, colour: WAIT_COLOURS[x.key] })), `${p.name} ${pct(p.wall / b.wall)}`, `pt ${step} ${i}`, () => phaseCard(step, b, p, range)));
-  if (b.untimed > 0) part(b.untimed, [{ s: 1, colour: "var(--line)" }], `in no phase ${pct(b.untimed / b.wall)}`, `pt ${step} untimed`, () => phaseCard(step, b, null, range));
+  b.parts.forEach((p, i) => part(p.wall, phaseSplit(p).map((x) => ({ ...x, colour: WAIT_COLOURS[x.key] })), p.name, pct(p.wall / b.wall), `pt ${step} ${i}`, () => phaseCard(step, b, p, range)));
+  if (b.untimed > 0) part(b.untimed, [{ s: 1, colour: "var(--line)" }], "in no phase", pct(b.untimed / b.wall), `pt ${step} untimed`, () => phaseCard(step, b, null, range));
+  new ResizeObserver(() => fitPartLabels(bar)).observe(bar);
   return h("div", "tb", h("span", { class: "tb-k", title: `${plural(b.runs, "job")} that ended in the last ${rangeWords(range)}` }, "time breakdown"), bar);
+}
+// Each part's label as much as fits its width, never cut off (the owner's "not cut off"): its name
+// and share, else its share alone, else none; the card says it all. Measured again as the bar resizes.
+function fitPartLabels(bar) {
+  for (const l of bar.querySelectorAll(".tb-l")) {
+    l.style.display = "";
+    l.textContent = l.dataset.full;
+    if (l.scrollWidth > l.clientWidth) l.textContent = l.dataset.short;
+    if (l.scrollWidth > l.clientWidth) l.style.display = "none";
+  }
 }
 // A phase's card: its share of the step's time in the range, the time summed and a job's, the jobs,
 // its time by measured segment (phaseSplit: each one's share of the phase and its time, a key
