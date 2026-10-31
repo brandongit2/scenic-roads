@@ -682,6 +682,17 @@ pub fn split(runs: &[Run]) -> (&[Run], &[Run]) {
     runs.split_at(i)
 }
 
+/// `split`, for a z6 tile resumed: the runs any worker may run that an earlier run of it kept as
+/// pieces (`tail_piece`: run here before it paused) stay here, taken as kept (`run_tail_kept`),
+/// never offered nor run again: a worker is sent the folder as it is at the first step not yet
+/// run, as a run here takes it up, not one whose steps already ran over it (each step again, over
+/// what it wrote the first time: the scenic steps' kept results among it; task #903).
+pub fn split_kept<'a>(runs: &'a [Run], pieces: &crate::resume_log::Pieces) -> (&'a [Run], &'a [Run]) {
+    let (here, anywhere) = split(runs);
+    let kept = (0..anywhere.len()).take_while(|i| pieces.kept(tail_piece(here.len() + i)).is_some()).count();
+    runs.split_at(here.len() + kept)
+}
+
 /// The steps through `what` kept here: neither it nor those before go to another worker.
 pub fn keep_here(runs: &mut [Run], what: &str) {
     if let Some(i) = runs.iter().position(|r| r.what == what) {

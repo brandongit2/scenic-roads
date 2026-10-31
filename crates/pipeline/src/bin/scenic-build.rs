@@ -4443,7 +4443,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         if !tools.sources.as_deref().is_some_and(|s| pipeline::unit::canopy_stored(&dir, s)) {
             pipeline::unit::keep_here(&mut runs, "scoring the scenery (canopy)");
         }
-        let (here, anywhere) = pipeline::unit::split(&runs);
+        // (Resumed: the steps any worker may run that its last run already ran here are taken as
+        // kept, the rest offered: pipeline::unit::split_kept.)
+        let (here, anywhere) = pipeline::unit::split_kept(&runs, &pieces);
         if rep.kept_ways > 0 {
             match pipeline::unit::run_tail_kept(here, 0, &dir, &dirs, &tools, &mut pieces) {
                 Ok(()) => {}

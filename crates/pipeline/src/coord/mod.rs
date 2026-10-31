@@ -4941,7 +4941,9 @@ mod http {
     async fn input(State(c): State<Ctx>, Url((lease, path)): Url<(u64, String)>, h: HeaderMap) -> Response {
         let found = c.shared.lock().unwrap().tasks.input(lease, &worker(&h), &path);
         match found {
-            Some((file, size)) => {
+            // (The task ended: the job ran it itself, or the job ended. Its worker stops there.)
+            None => error(StatusCode::GONE, "that lease is gone"),
+            Some(Some((file, size))) => {
                 send_file(
                     &file,
                     "application/octet-stream",
@@ -4950,7 +4952,7 @@ mod http {
                 )
                 .await
             }
-            None => error(StatusCode::NOT_FOUND, "not an input of that lease"),
+            Some(None) => error(StatusCode::NOT_FOUND, "not an input of that lease"),
         }
     }
 

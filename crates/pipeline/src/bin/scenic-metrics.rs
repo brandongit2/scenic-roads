@@ -569,7 +569,7 @@ fn decode_rows(
     }
     parts.into_par_iter().try_for_each(|(si, first, dst)| -> Result<()> {
         let &(off, len) = st.strips.get(si).with_context(|| format!("strip {si} isn't listed"))?;
-        let src = read(off, len).with_context(|| format!("strip {si} runs past the file's end"))?;
+        let src = read(off, len).with_context(|| format!("strip {si}"))?;
         let mut dec = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
         let raw = dec.decode(&src).map_err(|e| anyhow::anyhow!("strip {si}: {e:?}"))?;
         // (Its wanted rows whole, all columns: a strip that decodes short is damaged.)
@@ -615,26 +615,46 @@ impl<'a> Layer<'a> {
         f: fn(u16) -> u8,
     ) -> Result<Option<Layer<'a>>> {
         let mut taken = 0;
+        if read_only {
+            // (Read where it lies: a moment's outage of the share ridden out, `where_it_lies`.)
+            let tiff = where_it_lies(&path, || match fetch_file(agent, None, &path, None, true)? {
+                Some(file) => canopy_tiff(file).map(Some),
+                None => Ok(None),
+            })?;
+            return Ok(tiff.map(|tiff| Layer { agent, url, path, store, read_only, f, tiff, taken }));
+        }
         loop {
             let Some(file) = fetch_file(agent, url.as_deref(), &path, store.as_deref(), read_only)? else {
                 return Ok(None);
             };
             match canopy_tiff(file) {
                 Ok(tiff) => return Ok(Some(Layer { agent, url, path, store, read_only, f, tiff, taken })),
-                Err(e) => damaged(&path, store.as_deref(), read_only, &mut taken, e)?,
+                Err(e) => damaged(&path, store.as_deref(), &mut taken, e)?,
             }
         }
     }
 
     /// Window `w` of the layer.
     fn read(&mut self, w: Window) -> Result<Vec<u8>> {
+        if self.read_only {
+            // (Read where it lies, the file opened again for each try after the first: an SMB
+            // session dropped leaves the open file failing, ENXIO, till it's opened again.)
+            let (f, mut first) = (self.f, true);
+            let tiff = &mut self.tiff;
+            return where_it_lies(&self.path, || {
+                if !std::mem::take(&mut first) {
+                    *tiff = canopy_tiff(File::open(&self.path)?)?;
+                }
+                tiff.read(w, f)
+            });
+        }
         let mut got = self.tiff.read(w, self.f);
         loop {
             let e = match got {
                 Ok(v) => return Ok(v),
                 Err(e) => e,
             };
-            damaged(&self.path, self.store.as_deref(), self.read_only, &mut self.taken, e)?;
+            damaged(&self.path, self.store.as_deref(), &mut self.taken, e)?;
             // (Bands before this one have used the square: found missing now, it can't be passed over.)
             let file = fetch_file(self.agent, self.url.as_deref(), &self.path, self.store.as_deref(), self.read_only)?
                 .with_context(|| format!("{}: Meta has none there now", self.path.display()))?;
@@ -656,13 +676,30 @@ fn canopy_tiff(file: File) -> Result<Tiff> {
     Ok(t)
 }
 
+/// `f()` over canopy file `path` read where it lies (on the NAS: a task's worker, which doesn't
+/// download one), natively tried again while it fails as the share does for a moment
+/// (store::retry, task #656: ~3.5 min; the agent remounts a share that's gone); else its error,
+/// marked read where it lies. (A Mac taking a task whose share dropped failed the canopy step,
+/// which its lead then ran itself from its own copies: task #903. A page reads through the
+/// coordinator, whose answers say what's gone: tried once.)
+fn where_it_lies<T>(path: &Path, f: impl FnMut() -> Result<T>) -> Result<T> {
+    #[cfg(not(target_family = "wasm"))]
+    let r = store::retry::any(
+        &format!("canopy: {}", path.display()),
+        Some(path),
+        &store::retry::waits(),
+        store::retry::transient,
+        f,
+    );
+    #[cfg(target_family = "wasm")]
+    let r = { f }();
+    r.with_context(|| format!("{} (read where it lies)", path.display()))
+}
+
 /// After error `e` reading canopy file `path`: this Mac's copy is deleted so it's taken again, the
-/// second time the NAS's too; the third time, the error. One read where it lies (`read_only`): the
-/// error at once (it's the NAS's copy, which the lead takes again if it's damaged).
-fn damaged(path: &Path, store: Option<&Path>, read_only: bool, taken: &mut usize, e: anyhow::Error) -> Result<()> {
-    if read_only {
-        return Err(e.context(format!("{} (read where it lies)", path.display())));
-    }
+/// second time the NAS's too; the third time, the error. (One read where it lies is never taken
+/// again: `where_it_lies`; the lead takes the NAS's copy again if it's damaged.)
+fn damaged(path: &Path, store: Option<&Path>, taken: &mut usize, e: anyhow::Error) -> Result<()> {
     if *taken == 2 {
         return Err(e.context(format!("{} (taken again twice)", path.display())));
     }

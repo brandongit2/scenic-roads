@@ -2,8 +2,11 @@
 //! through the lead's coordinator (crate::coord) while the job prepares its next z6 tiles. The
 //! steps that read the caches (the canopy files) run here, where the data is; those that read only
 //! the z6 tile's folder (`Run::reads`) may run anywhere: the files they read are cloned into the task's
-//! own folder (copy-on-write: instant, and the job may go on in the z6 tile's), the coordinator serves
-//! them to the worker that takes the task, and takes back what it wrote.
+//! own folder (copy-on-write: instant, and the job may go on in the z6 tile's), the coordinator clones
+//! them again into its own (crate::coord::task::Tasks::offer: they stay readable until the task
+//! ends there, whatever the job does with its folders meanwhile), serves them to the worker that
+//! takes the task, and takes back what it wrote. A task that ends while its worker still fetches
+//! (the job ran it itself) answers it 410: that lease is gone.
 //!
 //! Nothing waits on a worker slower than this Mac: each worker's pace at each kind of task is
 //! measured (the coordinator's: its time over this Mac's for the same task). When the job needs a
@@ -285,7 +288,8 @@ impl Offload {
                     }
                     let dst = root.join(&rel);
                     std::fs::create_dir_all(dst.parent().unwrap())?;
-                    clone(&src, &dst)?;
+                    crate::coord::task::clone(&src, &dst)
+                        .with_context(|| format!("clone {} to {}", src.display(), dst.display()))?;
                     inputs.insert(rel, std::fs::metadata(&dst)?.len());
                 }
             }
@@ -675,29 +679,6 @@ fn matching(pat: &str, dir: &Path, bdir: Option<&Path>) -> Result<Vec<(String, P
     }
     out.sort();
     Ok(out)
-}
-
-/// A copy-on-write clone of `src` (APFS), else a copy; a link stays a link (to the same file: the
-/// coordinator serves it from there).
-fn clone(src: &Path, dst: &Path) -> Result<()> {
-    #[cfg(unix)]
-    if std::fs::symlink_metadata(src)?.file_type().is_symlink() {
-        let to = std::fs::read_link(src)?;
-        let to = if to.is_relative() { src.parent().unwrap().join(to) } else { to };
-        std::os::unix::fs::symlink(to, dst)?;
-        return Ok(());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let (s, d) =
-            (std::ffi::CString::new(src.as_os_str().as_bytes())?, std::ffi::CString::new(dst.as_os_str().as_bytes())?);
-        if unsafe { libc::clonefile(s.as_ptr(), d.as_ptr(), 0) } == 0 {
-            return Ok(());
-        }
-    }
-    store::sys::copy_data(src, dst).with_context(|| format!("copy {} to {}", src.display(), dst.display()))?;
-    Ok(())
 }
 
 /// A finished task's outputs (`u/<path>`) in the z6 tile's folder.
@@ -1110,6 +1091,7 @@ mod tests {
         assert!(names("{dir}/missing.bin").is_empty());
         assert!(matching("{cache}/chm10/x", &dir, None).is_err());
         // A clone has the same bytes; outputs placed back only inside the folder.
+        let clone = crate::coord::task::clone;
         clone(&dir.join("samples.bin"), &d.path().join("c.bin")).unwrap();
         assert_eq!(std::fs::read(d.path().join("c.bin")).unwrap(), b"samples.bin");
         // A link: matched, and linked again to the same file.
@@ -1120,5 +1102,139 @@ mod tests {
         assert_eq!(std::fs::read(d.path().join("l.f32")).unwrap(), b"grid.idx");
         assert_eq!(place(&dir, "u/near.i8"), Some(dir.join("near.i8")));
         assert!(place(&dir, "u/../x").is_none() && place(&dir, "b/x").is_none());
+    }
+
+    /// Task #903: a z6 tile's tail offered to a member runs to the same folder as one run here, its
+    /// parent job paused after its preparing and after a step it ran here, and resumed: the step
+    /// kept isn't offered again (its steps aren't idempotent, as the scenic steps over their own
+    /// kept results aren't). Its inputs stay readable while the lease is out, the job's own copy of
+    /// them gone; once the job has closed the task, its lease is gone (410), not an input missing.
+    #[test]
+    fn a_tail_offered_after_a_pause_and_resume_runs_to_the_same_folder_as_here() {
+        use crate::resume_log::{Pieces, STOP_AFTER};
+        use crate::unit::{run_tail_kept, split_kept, PREPARE};
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // Each step appends a line counting those before: run twice, it leaves another folder.
+        std::fs::write(
+            bin.join("step"),
+            "#!/bin/sh
+echo \"$2 $(($(wc -l < \"$1/out.txt\")))\" >> \"$1/out.txt\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = crate::unit::Tools {
+            bin: bin.clone(),
+            cache: d.path().join("cache"),
+            buildings: None,
+            sources: None,
+            shared: None,
+            chm: None,
+            stores_read_only: false,
+            snap: None,
+            elevation: None,
+            declared: None,
+        };
+        let runs: Vec<Run> = (0..3)
+            .map(|k| Run {
+                what: format!("step {k}"),
+                prog: "step".into(),
+                args: vec!["{dir}".into(), k.to_string()],
+                env: Vec::new(),
+                reads: vec!["{dir}/out.txt".into()],
+            })
+            .collect();
+        let prepare = |dir: &Path, pieces: &mut Pieces| {
+            pieces.folder_piece(PREPARE, &[dir], || {
+                std::fs::create_dir_all(dir)?;
+                std::fs::write(dir.join("out.txt"), b"")?;
+                Ok(Vec::new())
+            })
+        };
+        // Run here, never paused.
+        let fresh = d.path().join("fresh");
+        let mut none = Pieces::none();
+        prepare(&fresh, &mut none).unwrap();
+        run_tail_kept(&runs, 0, &fresh, &[&fresh], &tools, &mut none).unwrap();
+        // The job: paused after its preparing, then (no one taking its tail) after its first step
+        // run here; resumed, the rest offered.
+        let (dir, scratch) = (d.path().join("unit"), d.path().join("scratch"));
+        let open = || Pieces::open(&scratch, (6, 1, 2), "unit", "a", true);
+        let mut p = open();
+        STOP_AFTER.set(Some(1));
+        assert!(crate::control::is_paused(&prepare(&dir, &mut p).unwrap_err()));
+        let mut p = open();
+        assert!(p.folders_as_kept(&[&dir]));
+        prepare(&dir, &mut p).unwrap();
+        let (here, anywhere) = split_kept(&runs, &p);
+        assert_eq!((here.len(), anywhere.len()), (0, 3));
+        STOP_AFTER.set(Some(1));
+        assert!(crate::control::is_paused(&run_tail_kept(anywhere, 0, &dir, &[&dir], &tools, &mut p).unwrap_err()));
+        STOP_AFTER.set(None);
+        let mut p = open();
+        assert!(p.folders_as_kept(&[&dir]));
+        prepare(&dir, &mut p).unwrap();
+        let (here, anywhere) = split_kept(&runs, &p);
+        assert_eq!((here.len(), anywhere.len()), (1, 2), "the step run before its pause stays here, as kept");
+        run_tail_kept(here, 0, &dir, &[&dir], &tools, &mut p).unwrap();
+        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        let url = format!("http://127.0.0.1:{port}");
+        let o = Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job"));
+        let t = o.offer(TileId::parse("6/1/2").unwrap(), &dir, None, anywhere).unwrap();
+        // The job's own copy of its inputs gone (it took the task back, a job after it emptied its
+        // scratch): the lease's stay.
+        std::fs::remove_dir_all(&t.root).unwrap();
+        let m4 = Client::at(vec![url], c.contact.token.clone(), "m4");
+        let ask =
+            crate::coord::Ask { kind: "native".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
+        let g = m4.ask(&ask).unwrap().unwrap();
+        let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
+        let r = run_task(&m4, g.lease, &task, &d.path().join("m4"), &bin, None).unwrap();
+        let done = crate::coord::Done {
+            lease: g.lease,
+            outputs: serde_json::from_value(r["outputs"].clone()).unwrap(),
+            removed: serde_json::from_value(r["removed"].clone()).unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(m4.done(&done).unwrap(), crate::coord::client::Handed::Taken);
+        // A worker's first result is checked against this Mac's own run of its steps: the same.
+        let s = o
+            .settle(&t, &dir, false, Patience { here_s: None }, &mut || crate::unit::run_tail(anywhere, &dir, &tools))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(s, Settled::Here(Some((ref w, true))) if w == "m4"));
+        let read = |d: &Path| std::fs::read_to_string(d.join("out.txt")).unwrap();
+        assert_eq!(read(&dir), read(&fresh));
+        assert_eq!(read(&dir), "0 0\n1 1\n2 2\n");
+        // Closed: its lease is gone, said so to a worker still fetching.
+        let e = m4.get_bytes(&format!("/work/in/{}/u/out.txt", g.lease)).unwrap_err();
+        assert!(format!("{e:#}").contains("410"), "{e:#}");
+        assert!(c.shared.lock().unwrap().tasks.by_id.is_empty());
+    }
+
+    /// Task #903: an input that isn't there as the job offers it is refused at the offer (never
+    /// offered for a worker to find missing); one that is is served from the coordinator's own copy.
+    #[test]
+    fn a_task_is_offered_only_with_inputs_it_can_serve() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        let o = Offload::at(format!("http://127.0.0.1:{port}"), c.job_token.clone(), &d.path().join("job"));
+        let root = o.task_root("a");
+        std::fs::create_dir_all(root.join("u")).unwrap();
+        std::fs::write(root.join("u/x"), b"x").unwrap();
+        let offer = |inputs: &[(&str, u64)]| {
+            let inputs = inputs.iter().map(|(p, n)| (p.to_string(), *n)).collect();
+            o.offer_spec("tail", serde_json::json!({ "unit": "6/1/1" }), &root, inputs, 100)
+        };
+        assert!(offer(&[("u/x", 1), ("u/missing", 1)]).is_err());
+        assert!(offer(&[("u/x", 2)]).is_err(), "not the size offered");
+        assert!(c.shared.lock().unwrap().tasks.by_id.is_empty());
+        let t = offer(&[("u/x", 1)]).unwrap();
+        let s = c.shared.lock().unwrap();
+        let root_there = &s.tasks.by_id[&t.id].root;
+        assert_ne!(root_there, &root);
+        assert_eq!(std::fs::read(root_there.join("u/x")).unwrap(), b"x");
     }
 }

@@ -743,7 +743,8 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   resumed run takes them only while its folders are as the last piece left them, else starts the
   tile afresh; a pause there ends the job as a pause before a tile does (its tails out with
   workers settled first). Its longest gap is its longest program (its preparing, or `elev`); a
-  tail out with a worker keeps none. The folder pieces are `Pieces::folder_piece` (the digest
+  tail out with a worker keeps none. Resumed, the programs its last run kept are taken as kept,
+  not offered to a worker again (`unit::split_kept`). The folder pieces are `Pieces::folder_piece` (the digest
   `resume_log::folder_digest`), whose last kept `Pieces::folders_as_kept` checks. A `pois` z6 tile keeps its extract's candidates (one
   program, no safe point inside it). Every job's timings record
   says how often it reached a safe point and the longest it went without one (`safe_points`,

@@ -39,6 +39,8 @@ pub struct Task {
     /// What the worker is given: the programs to run, the files to fetch.
     pub spec: serde_json::Value,
     /// Where its files are on this Mac, and which (path relative to it → size): only these are served.
+    /// The coordinator's own copy of them (`Tasks::offer`), not the job's: they stay as they were
+    /// offered until the task ends here, whatever the job does with its folders meanwhile.
     pub root: PathBuf,
     pub inputs: BTreeMap<String, u64>,
     /// Its predicted peak memory on a worker (MB): its programs' and its files'.
@@ -79,8 +81,8 @@ pub struct Offer {
 pub struct Tasks {
     next: u64,
     pub by_id: BTreeMap<u64, Task>,
-    /// Where uploads go: a folder per task (on the same disk as the jobs' folders, so taking them is
-    /// a rename).
+    /// Where uploads go, and each task's inputs (`<id>-in`, `Tasks::offer`): a folder per task (on
+    /// the same disk as the jobs' folders, so taking uploads is a rename and taking inputs a clone).
     dir: PathBuf,
     /// The memory of the last tasks offered of each kind (MB, at most `RECENT`): what one takes,
     /// typically (`typical_mb`).
@@ -137,10 +139,22 @@ impl Tasks {
         }
     }
 
-    /// Takes a job's offer; its id.
-    pub fn offer(&mut self, o: Offer, now: Instant) -> std::io::Result<u64> {
+    /// Takes a job's offer; its id. Its inputs are cloned into this coordinator's folder for it
+    /// (`<id>-in`, copy-on-write: instant) and served from there till it's closed: a lease's inputs
+    /// stay readable until the lease ends, whatever the job does with its own folders meanwhile
+    /// (it ran the task itself and removed them, it ended, or a job after it emptied its scratch:
+    /// task #903). One that isn't there as offered (missing, another size) is refused: a task is
+    /// never offered with an input it can't serve.
+    pub fn offer(&mut self, mut o: Offer, now: Instant) -> std::io::Result<u64> {
         let id = self.next;
         self.next += 1;
+        let root = self.dir.join(format!("{id}-in"));
+        std::fs::remove_dir_all(&root).ok();
+        if let Err(e) = take_inputs(&o.root, &root, &o.inputs) {
+            std::fs::remove_dir_all(&root).ok();
+            return Err(e);
+        }
+        o.root = root;
         let out = self.dir.join(id.to_string());
         std::fs::create_dir_all(&out)?;
         let recent = self.recent_mb.entry(o.kind.clone()).or_default();
@@ -249,11 +263,12 @@ impl Tasks {
             .find(|t| matches!(&t.state, State::Leased { lease: l, worker: w } if *l == lease && w == worker))
     }
 
-    /// An input of the task leased as `lease`: its file here and size, when the task reads it.
-    pub fn input(&mut self, lease: u64, worker: &str, path: &str) -> Option<(PathBuf, u64)> {
+    /// An input of the task leased as `lease`: its file here and size, when the task reads it
+    /// (Some(None): it doesn't). None: no such lease of that worker's (the task ended: the job ran
+    /// it itself, or it ended).
+    pub fn input(&mut self, lease: u64, worker: &str, path: &str) -> Option<Option<(PathBuf, u64)>> {
         let t = self.by_lease(lease, worker)?;
-        let size = *t.inputs.get(path)?;
-        Some((t.root.join(safe(path)?), size))
+        Some(t.inputs.get(path).and_then(|&size| Some((t.root.join(safe(path)?), size))))
     }
 
     /// Where an upload for the task leased as `lease` goes.
@@ -358,10 +373,7 @@ impl Tasks {
     pub fn close(&mut self, id: u64) -> Option<u64> {
         let t = self.by_id.remove(&id)?;
         std::fs::remove_dir_all(&t.out).ok();
-        // (One kept to measure its worker: its files moved here, `measure`.)
-        if t.measuring.is_some() {
-            std::fs::remove_dir_all(&t.root).ok();
-        }
+        std::fs::remove_dir_all(&t.root).ok();
         match t.state {
             State::Leased { lease, .. } => Some(lease),
             _ => None,
@@ -396,21 +408,15 @@ impl Tasks {
     }
 
     /// The job ran task `id` itself (in `here_s`) while its worker, whose pace at its kind isn't
-    /// measured, still holds it: kept for that worker to finish, its files moved into this
-    /// coordinator's folder (the job removes its own) and no longer the job's, so its time is
-    /// measured. Whether it was kept.
+    /// measured, still holds it: kept for that worker to finish, no longer the job's (its files are
+    /// this coordinator's own: `offer`), so its time is measured. Whether it was kept.
     pub fn measure(&mut self, id: u64, here_s: f64) -> bool {
         let Some(t) = self.by_id.get_mut(&id) else { return false };
         let State::Leased { worker, .. } = &t.state else { return false };
         if self.paces.contains_key(&(worker.clone(), t.kind.clone())) || !(here_s > 0.0) {
             return false;
         }
-        let root = self.dir.join(format!("{id}-in"));
-        std::fs::remove_dir_all(&root).ok();
-        if std::fs::rename(&t.root, &root).is_err() {
-            return false;
-        }
-        (t.root, t.owner, t.measuring) = (root, 0, Some(here_s));
+        (t.owner, t.measuring) = (0, Some(here_s));
         true
     }
 
@@ -419,6 +425,46 @@ impl Tasks {
         let ids: Vec<u64> = self.by_id.values().filter(|t| t.owner == owner).map(|t| t.id).collect();
         ids.into_iter().filter_map(|id| self.close(id)).collect()
     }
+}
+
+/// Task inputs `inputs` (path → size) of folder `from`, cloned into `to` (`clone`): each there, at
+/// its size, else the error.
+fn take_inputs(from: &Path, to: &Path, inputs: &BTreeMap<String, u64>) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    for (p, &n) in inputs {
+        let rel =
+            safe(p).ok_or_else(|| Error::new(ErrorKind::InvalidInput, format!("an input outside its folder: {p}")))?;
+        let dst = to.join(rel);
+        std::fs::create_dir_all(dst.parent().unwrap_or(to))?;
+        clone(&from.join(rel), &dst).map_err(|e| Error::new(e.kind(), format!("input {p}: {e}")))?;
+        let len = std::fs::metadata(&dst)?.len();
+        if len != n {
+            return Err(Error::new(ErrorKind::InvalidData, format!("input {p}: {len} bytes, offered as {n}")));
+        }
+    }
+    Ok(())
+}
+
+/// A copy-on-write clone of `src` at `dst` (APFS: instant), else a copy; a link stays a link (to
+/// the same file, served from there: a z6 tile's roadside buildings are links to the NAS's).
+pub fn clone(src: &Path, dst: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if std::fs::symlink_metadata(src)?.file_type().is_symlink() {
+        let to = std::fs::read_link(src)?;
+        let to = if to.is_relative() { src.parent().unwrap_or(Path::new(".")).join(to) } else { to };
+        return std::os::unix::fs::symlink(to, dst);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(std::io::Error::other);
+        let (s, d) = (c(src)?, c(dst)?);
+        // SAFETY: two NUL-terminated paths that outlive the call; clonefile only reads them.
+        if unsafe { libc::clonefile(s.as_ptr(), d.as_ptr(), 0) } == 0 {
+            return Ok(());
+        }
+    }
+    store::sys::copy_data(src, dst).map(|_| ())
 }
 
 #[cfg(test)]
@@ -464,9 +510,9 @@ mod tests {
         ts.paces.remove(&("m1".to_string(), "tail".to_string()));
         ts.by_id.get_mut(&small).unwrap().state = State::Leased { lease: 1, worker: "phone".into() };
         // Only its inputs, only to its worker, nothing outside its folder.
-        assert_eq!(ts.input(1, "phone", "u/a.bin").map(|x| x.1), Some(3));
-        assert!(ts.input(1, "m1", "u/a.bin").is_none());
-        assert!(ts.input(1, "phone", "u/b.bin").is_none());
+        assert_eq!(ts.input(1, "phone", "u/a.bin").flatten().map(|x| x.1), Some(3));
+        assert!(ts.input(1, "m1", "u/a.bin").is_none(), "not its lease");
+        assert_eq!(ts.input(1, "phone", "u/b.bin"), Some(None), "not an input");
         assert!(ts.upload(1, "phone", "../x").is_none() && ts.upload(1, "phone", "/etc/x").is_none());
         // Done only with every output whole.
         let up = ts.upload(1, "phone", "u/out.bin").unwrap();
@@ -533,13 +579,13 @@ mod tests {
             std::fs::write(root.join("u/a.bin"), b"abc").unwrap();
             root
         };
-        // Leased by a worker not measured, run by the job: kept, its files the coordinator's, no
-        // longer the job's.
+        // Leased by a worker not measured, run by the job: kept, no longer the job's; its files the
+        // coordinator's, the job's own removed.
         let id = offer(&mut ts, &job("j1"), 100, t0);
         ts.by_id.get_mut(&id).unwrap().state = State::Leased { lease: 1, worker: "m1".into() };
         assert!(ts.measure(id, 40.0));
-        assert!(!d.path().join("j1").exists());
-        assert_eq!(ts.input(1, "m1", "u/a.bin").map(|x| x.1), Some(3));
+        std::fs::remove_dir_all(d.path().join("j1")).unwrap();
+        assert_eq!(ts.input(1, "m1", "u/a.bin").flatten().map(|x| x.1), Some(3));
         assert!(ts.close_owner(9).is_empty());
         // It fails: closed, its files gone.
         assert_eq!(ts.fail(1, "m1", "no", None), None);
