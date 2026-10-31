@@ -340,30 +340,11 @@ pub fn unit_tiles(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(vec![super::build::unit_terrain(u, r, x.m, x.tiles).ok()?])
 }
 
-/// The terrain hi packs a z6 tile's roads' heights read whole (`build::terrain_packs`: those of
-/// its box's z6 tiles, "-" for one not made).
-pub fn unit_hi_packs(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    let u = TileId::parse(t)?;
-    Some(named(
-        x,
-        crate::stage::tiles_in(6, unit_box(u)).into_iter().map(|(a, b)| format!("layers/terrain/hi/6-{a}-{b}")),
-    ))
-}
-
-/// The terrain deep packs a z6 tile's roads' heights read whole (`build::terrain_packs`: its box's
-/// made ones).
-pub fn unit_deep_packs(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    let u = TileId::parse(t)?;
-    let z = crate::terrain_deep::PACK_Z;
-    Some(
-        crate::stage::tiles_in(z, unit_box(u))
-            .into_iter()
-            .filter_map(|(a, b)| {
-                let l = crate::terrain_deep::pack_logical(a, b);
-                x.m.get(&l).map(|c| format!("{l}={c}"))
-            })
-            .collect(),
-    )
+/// The deep tiles a z6 tile's roads' heights can read, by content (`build::unit_deep_tiles`);
+/// None while a pack's index can't be read.
+pub fn unit_deep_tiles(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    let (u, r, _) = unit_of(t, x)?;
+    super::build::unit_deep_tiles(u, r, x.m, x.tiles).ok()
 }
 
 /// The pass's heritage slices (sites and areas) of the z6 tiles over a z6 tile's box, as the

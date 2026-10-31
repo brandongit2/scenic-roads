@@ -234,12 +234,12 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      `Grain` (`Outputs`, or `Read(f)`: what the run reads inside them), `Read::Input` an identity
      function (`Ident`, in agent/idents.rs, the runs' own code), and `Step::versions` the named
      code versions. `steps::key_lines` assembles §4's lines from them (an output by
-     `steps::output_names`, a whole step's by its write-set, a mid by `steps::mid_logical`),
+     `steps::output_names`, a whole step's by its write-set, a mid by its `Read::Mids` identity),
      `steps::derived_key` hashes them, `steps::none_key` gives a "none" target's. A step with no
      versions declared isn't derived yet.
-     Tests: `a_key_names_exactly_its_reads` and `scheme_2_pins_what_scheme_1_did` (each manifest
-     entry and input changed alone moves a target's scheme-1 key just when it moves its scheme-2
-     key), both over every derived step. It holds for every derived step, the terrain family
+     Tests: `a_key_names_exactly_its_reads` and `scheme_2_pins_no_input_scheme_1_didnt` (each manifest
+     entry and input changed alone moves a target's scheme-2 key only when it moves its scheme-1
+     key: a scheme-2 key may pin less, never more), both over every derived step. It holds for every derived step, the terrain family
      too: scheme 1 as this code makes it already keys on #832's coverage cut (step 2), so no
      step's scheme-2 lines name an input its scheme-1 key doesn't pin, and which records go at
      the switch needs no list: those scheme 1 itself no longer finds current (§6 step 3d).
@@ -284,6 +284,15 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      nothing of the root and doesn't wait for it, so a region's slope still comes with it while
      another region's terrain is left (#909's per-region order). The publishing chain keeps the
      slope's root alone (`root_held`).
+   - **A z6 tile's roads keyed on the terrain tiles they read (built).** Scheme 1 named the hi
+     and deep packs over a z6 tile's box whole, so a terrain pack made again re-keyed every z6 tile
+     reading any of it, however little of it changed. Its roads' heights read, of the terrain, the
+     tiles staged over its box to z12 (`unit_terrain_tiles`, already in its key by XXH3) and the
+     deep tiles under its ways' points and their neighbours within a pixel
+     (crate::road_terrain::deep_tiles); its key now names those deep tiles by XXH3
+     (`build::unit_deep_tiles`: the deep packs' tiles over its box that, grown by a pixel, meet
+     where its ways lie, `reached_of`) and no pack whole. Narrower than scheme 1, which the rekey
+     allows (`scheme_2_pins_no_input_scheme_1_didnt` checks only that direction).
    - **3d (built): the rekey, and what it would do now.** `rekey::scheme_2` records each record
      current under scheme 1 (its scheme-1 key for its target, "none" ones too) under its scheme-2
      key; one scheme 1 doesn't find current is kept as it is, and built again; one whose key can't

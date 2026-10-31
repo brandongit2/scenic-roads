@@ -195,8 +195,8 @@ fn set_record(keys: &mut Keys, step: &str, t: &str, k: String) {
 /// The switch to scheme 2 (docs/readiness.md §6 step 3): for each step whose keys it derives (a
 /// version declared), each record current under scheme 1 now (`scheme_1`: its key for the target,
 /// "none" ones too) is recorded under its scheme-2 key (`steps::derived_key`, `steps::none_key`).
-/// Every scheme-2 key pins exactly what its scheme-1 key does
-/// (`build::tests::scheme_2_pins_what_scheme_1_did`), so a record current under one is current
+/// No scheme-2 key pins an input its scheme-1 key doesn't
+/// (`build::tests::scheme_2_pins_no_input_scheme_1_didnt`), so a record current under one is current
 /// under the other, and no list says which steps are rebuilt: those whose records scheme 1 no
 /// longer finds current (`Scheme2Step::stale`) are. Run again, it changes nothing: a record already
 /// under scheme 2 isn't scheme 1's.

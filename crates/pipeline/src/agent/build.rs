@@ -793,6 +793,21 @@ pub fn unit_terrain_tiles(
             }
         }
     }
+    for s in &reached_of(r) {
+        let [x0, x1, y0, y1] = crate::stage::tile_range(4, s.bbox());
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                if s.meets(tile_deg(4, x, y)) {
+                    walk.visit(s, 4, x, y, None)?;
+                }
+            }
+        }
+    }
+    Ok(walk.out.into_iter().collect())
+}
+
+/// Where z6 tile reach `r`'s own ways' points lie (`Reached`): its owned box, its long ways' segments.
+fn reached_of(r: &Reach) -> Vec<Reached> {
     let deg = |v: i32| v as f64 * 1e-7;
     let mut reached: Vec<Reached> = Vec::new();
     if let Some(o) = r.owned {
@@ -806,17 +821,49 @@ pub fn unit_terrain_tiles(
             _ => reached.extend(p.windows(2).map(|s| Reached::Seg(s[0], s[1]))),
         }
     }
-    for s in &reached {
-        let [x0, x1, y0, y1] = crate::stage::tile_range(4, s.bbox());
-        for x in x0..=x1 {
-            for y in y0..=y1 {
-                if s.meets(tile_deg(4, x, y)) {
-                    walk.visit(s, 4, x, y, None)?;
+    reached
+}
+
+/// The deep tiles (z13–16) z6 tile `u`'s roads' heights can read (crate::road_terrain::deep_tiles:
+/// a vertex's at its cell's finer zoom, and its neighbours' within a pixel of their edge), by
+/// content: those of the deep packs over its box whose tile, grown by a pixel, meets where its
+/// ways' points lie (`reached_of`); kept by `tiles` with the reach and those packs' content names.
+pub fn unit_deep_tiles(
+    u: TileId,
+    r: &Reach,
+    m: &BTreeMap<String, String>,
+    tiles: &TerrainTiles,
+) -> Result<Vec<String>, Unread> {
+    let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
+    let pz = crate::terrain_deep::PACK_Z;
+    let packs: Vec<(u32, u32)> = crate::stage::tiles_in(pz, b)
+        .into_iter()
+        .filter(|&(x, y)| m.contains_key(&crate::terrain_deep::pack_logical(x, y)))
+        .collect();
+    let from = format!(
+        "{}\n{}",
+        serde_json::to_string(r).unwrap_or_default(),
+        packs.iter().map(|&(x, y)| m[&crate::terrain_deep::pack_logical(x, y)].as_str()).collect::<Vec<_>>().join(",")
+    );
+    let v = tiles.memo(&format!("unit deep {}", u.slash()), &store::naming::hash16(from.as_bytes()), || {
+        let reached = reached_of(r);
+        let mut read = tiles.reader(m);
+        let mut out = Vec::new();
+        for p in packs {
+            for (z, x, y) in read.deep_in(p)? {
+                let t = tile_deg(z, x, y);
+                let (dx, dy) = ((t[2] - t[0]) / 256.0, (t[3] - t[1]) / 256.0);
+                let g = [t[0] - dx, t[1] - dy, t[2] + dx, t[3] + dy];
+                if reached.iter().any(|s| s.meets(g)) {
+                    if let Some(h) = read.hash(z, x, y)? {
+                        out.push(format!("{z}/{x}/{y} {h:016x}"));
+                    }
                 }
             }
         }
-    }
-    Ok(walk.out.into_iter().collect())
+        Ok(out.join("\n"))
+    })?;
+    Ok(v.lines().map(str::to_string).collect())
 }
 
 /// How far a tile's box is grown when tested against where a z6 tile's points are (degrees, ~11 cm):
@@ -6760,12 +6807,13 @@ pub(crate) mod tests {
 
     /// The rekey's ground (docs/readiness.md §6 step 3, crate::agent::rekey): for every step scheme
     /// 2 derives, the scheme-2 key names no input the scheme-1 key (as this code makes it, #832's
-    /// coverage cut in) didn't pin, and pins every one it did: in each fixture build, each manifest
-    /// entry and input changed alone changes a target's scheme-1 key just when it changes its
-    /// scheme-2 key. So a record current under scheme 1 is current under scheme 2, and the records
-    /// that go at the switch are those scheme 1 itself no longer finds current: no list of steps.
+    /// coverage cut in) didn't pin: in each fixture build, each manifest entry and input changed
+    /// alone changes a target's scheme-2 key only when it changes its scheme-1 key. (It may pin
+    /// less: a z6 tile's roads keyed on the deep tiles they read, not whole packs.) So a record
+    /// current under scheme 1 is current under scheme 2, and the records that go at the switch are
+    /// those scheme 1 itself no longer finds current: no list of steps.
     #[test]
-    fn scheme_2_pins_what_scheme_1_did() {
+    fn scheme_2_pins_no_input_scheme_1_didnt() {
         for f in fixtures() {
             for step in derived_steps() {
                 let base = f.keys(step, &f.m, &f.inputs);
@@ -6776,9 +6824,8 @@ pub(crate) mod tests {
                     let after = f.keys(step, &m2, &i2);
                     for (t, (k1, k2)) in &base {
                         let (a1, a2) = after.get(t).map_or((None, None), |k| (k.0.clone(), k.1.clone()));
-                        assert_eq!(
-                            &a1 != k1,
-                            &a2 != k2,
+                        assert!(
+                            &a2 == k2 || &a1 != k1,
                             "{} {step} {t}: {what} changed: scheme 1 {k1:?} → {a1:?}, scheme 2 {k2:?} → {a2:?}",
                             f.name
                         );
