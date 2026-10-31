@@ -54,8 +54,42 @@ pub fn zip_logical(id: &str) -> String {
     format!("sources/rail/gtfs/{id}")
 }
 
-/// A stop-pair record (crate::gtfs::railcount): f32 lon_a, lat_a, lon_b, lat_b, u8 mode, f32 trains.
+/// A stop-pair record's size (`Pair`).
 pub const PAIR: usize = 21;
+
+/// A stop-pair record (crate::gtfs::railcount writes them, railfreq reads them): f32 lon_a, lat_a,
+/// lon_b, lat_b, u8 mode, f32 trains, little-endian.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pair {
+    /// Stop A's and stop B's lon, lat.
+    pub a: [f32; 2],
+    pub b: [f32; 2],
+    /// The mode in its low 5 bits, `BEYOND_A`, `BEYOND_B`, and 0x80: `trains` a lower bound.
+    pub mode: u8,
+    pub trains: f32,
+}
+
+impl Pair {
+    /// Record `r` (`PAIR` bytes).
+    pub fn read(r: &[u8]) -> Pair {
+        let f = |i: usize| f32::from_le_bytes(r[i..i + 4].try_into().unwrap());
+        Pair { a: [f(0), f(4)], b: [f(8), f(12)], mode: r[16], trains: f(17) }
+    }
+
+    /// The records of `b`, in order.
+    pub fn all(b: &[u8]) -> impl Iterator<Item = Pair> + '_ {
+        b.chunks_exact(PAIR).map(Pair::read)
+    }
+
+    /// Appends its record to `out`.
+    pub fn write(&self, out: &mut Vec<u8>) {
+        for x in [self.a[0], self.a[1], self.b[0], self.b[1]] {
+            out.extend(x.to_le_bytes());
+        }
+        out.push(self.mode);
+        out.extend(self.trains.to_le_bytes());
+    }
+}
 /// Mode bits: stop A, stop B beyond the coverage.
 pub const BEYOND_A: u8 = 0x20;
 pub const BEYOND_B: u8 = 0x40;
@@ -66,19 +100,17 @@ pub const BEYOND_B: u8 = 0x40;
 pub fn mark_beyond(pairs: &[u8], cov: &Coverage) -> (Vec<u8>, usize) {
     let mut out = Vec::with_capacity(pairs.len());
     let mut beyond = 0;
-    let e7 = |b: &[u8]| (f32::from_le_bytes(b[..4].try_into().unwrap()) as f64 * 1e7).round() as i32;
-    for r in pairs.chunks_exact(PAIR) {
-        let out_a = !cov.contains([e7(&r[0..]), e7(&r[4..])]);
-        let out_b = !cov.contains([e7(&r[8..]), e7(&r[12..])]);
+    let e7 = |p: [f32; 2]| p.map(|v| (v as f64 * 1e7).round() as i32);
+    for mut r in Pair::all(pairs) {
+        let out_a = !cov.contains(e7(r.a));
+        let out_b = !cov.contains(e7(r.b));
         if out_a && out_b {
             continue;
         }
         beyond += (out_a || out_b) as usize;
-        let mode =
-            (r[16] & !(BEYOND_A | BEYOND_B)) | if out_a { BEYOND_A } else { 0 } | if out_b { BEYOND_B } else { 0 };
-        out.extend_from_slice(&r[..16]);
-        out.push(mode);
-        out.extend_from_slice(&r[17..PAIR]);
+        r.mode =
+            (r.mode & !(BEYOND_A | BEYOND_B)) | if out_a { BEYOND_A } else { 0 } | if out_b { BEYOND_B } else { 0 };
+        r.write(&mut out);
     }
     (out, beyond)
 }
@@ -481,6 +513,22 @@ mod tests {
         // Marked again (a coverage that grew): the marks follow the coverage.
         let (again, _) = mark_beyond(&kept, &cov);
         assert_eq!(again, kept);
+    }
+
+    /// Task #852: a record read and written again is the same bytes, a NaN's bits too.
+    #[test]
+    fn a_pair_record_reads_and_writes_the_same_bytes() {
+        let mut r: Vec<u8> = Vec::new();
+        for x in [2.35f32, 48.85, -0.1, f32::from_bits(0x7fc0_0001)] {
+            r.extend(x.to_le_bytes());
+        }
+        r.push(0x80 | BEYOND_B | 3);
+        r.extend(12.5f32.to_le_bytes());
+        let mut again = Vec::new();
+        for p in Pair::all(&r) {
+            p.write(&mut again);
+        }
+        assert_eq!(again, r);
     }
 
     #[test]

@@ -604,11 +604,8 @@ impl Counted {
     pub fn pairs(&self) -> (Vec<u8>, usize) {
         let mut out = Vec::with_capacity((self.pairs.len() + self.weekly.len()) * crate::rail::PAIR);
         let mut put = |v: &[f64; 4], m: u8, n: f64| {
-            for x in v {
-                out.extend((*x as f32).to_le_bytes());
-            }
-            out.push(m);
-            out.extend((n as f32).to_le_bytes());
+            let p = |i: usize| [v[i] as f32, v[i + 1] as f32];
+            crate::rail::Pair { a: p(0), b: p(2), mode: m, trains: n as f32 }.write(&mut out);
         };
         for (v, m, n) in &self.pairs.items {
             put(v, *m, *n);

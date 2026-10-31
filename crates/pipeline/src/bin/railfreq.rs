@@ -127,15 +127,14 @@ fn main() -> Result<()> {
     let mut pairs: Vec<Pair> = Vec::new();
     for p in &files {
         let b = std::fs::read(p)?;
-        for r in b.chunks_exact(21) {
-            let f = |i: usize| f32::from_le_bytes(r[i..i + 4].try_into().unwrap()) as f64;
+        for r in pipeline::rail::Pair::all(&b) {
             pairs.push(Pair {
-                a: [f(0), f(4)],
-                b: [f(8), f(12)],
-                mode: r[16] & 0x1f,
-                n: f(17) as f32,
-                lower: r[16] & 0x80 != 0,
-                beyond: (r[16] >> 5) & 3,
+                a: r.a.map(f64::from),
+                b: r.b.map(f64::from),
+                mode: r.mode & 0x1f,
+                n: r.trains,
+                lower: r.mode & 0x80 != 0,
+                beyond: (r.mode >> 5) & 3,
             });
         }
     }

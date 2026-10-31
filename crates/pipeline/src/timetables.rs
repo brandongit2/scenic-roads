@@ -136,10 +136,7 @@ type Key = [u32; 4];
 
 /// The positions of a pairs file's records (rail::PAIR bytes each).
 pub fn pair_keys(pairs: &[u8]) -> HashSet<Key> {
-    pairs
-        .chunks_exact(crate::rail::PAIR)
-        .map(|r| [0, 4, 8, 12].map(|i| u32::from_le_bytes(r[i..i + 4].try_into().unwrap())))
-        .collect()
+    crate::rail::Pair::all(pairs).map(|r| [r.a[0], r.a[1], r.b[0], r.b[1]].map(f32::to_bits)).collect()
 }
 
 /// railfreq's `rail-miss.bin`.
