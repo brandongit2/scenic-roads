@@ -3191,7 +3191,10 @@ fn view_of(s: &Shared) -> serde_json::Value {
         .iter()
         .map(|(n, w)| {
             let fit = w.ask.as_ref().map(|a| s.fit(a, now)).unwrap_or_default();
-            serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "app": w.app, "can": w.can, "cap": w.cap, "fit": fit, "seen": unix_of(w.seen) })
+            // (`bad`, always false since results are no longer compared (task #876): the menu bar
+            // app before it needs the field to read the workers at all. Remove it in the next
+            // version.)
+            serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "bad": false, "app": w.app, "can": w.can, "cap": w.cap, "fit": fit, "seen": unix_of(w.seen) })
         })
         .collect();
     let mut tasks: BTreeMap<&str, usize> = BTreeMap::new();

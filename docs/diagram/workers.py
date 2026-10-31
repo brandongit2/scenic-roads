@@ -57,12 +57,11 @@ def build(check=False):
     fr.append(f'<rect class="st-box group" x="{bx}" y="{top}" width="{bw}" height="{bh:.1f}" rx="9"/>')
     fr.append(tx('st-t', bx + 14, top + 25, 'The lead (the M4 today, 48 GB) · any member can lead', bw - 28))
 
-    # The workers: a device's page (tasks), the M1 (jobs, and tasks when no job fits it).
+    # The workers: a device's page (watching), the M1 (jobs, and tasks when no job fits it).
     wx, ww = 1148, W - 16 - 1148
     page = box(wx, top, ww, 'Any device · the build page', ['/work/ on the lead: anyone on its LAN or the',
-                                                            'tailnet sees the build; a tab helps, no key:',
-                                                            'a z6 tile’s last steps, tree cover’s rows of',
-                                                            'blocks, 3D buildings’ z8 tiles (WebAssembly)'])
+                                                            'tailnet sees the build and pauses it, no key;',
+                                                            'a page does no work'])
     m1 = box(wx, page[1] + page[3] + 22, ww, 'The M1 (16 GB) · a member', ['takes every shared step’s (⇄) jobs that fit',
                                                                          'the memory its owner gives the build (scenic',
                                                                          'memory) and its disk, the zoomed-out',
@@ -103,8 +102,7 @@ def build(check=False):
             'daily, when the NAS is quiet (or after waiting a day). The lead plans every step a region at a time, runs its own steps and any shared one, packed by '
             'measured memory, disk and cores, merges the journal into the records and publishes each z6 tile’s map tiles as it’s built. '
             'Its coordinator, on port 8090, grants every job on ten-minute leases renewed each minute: jobs to the M1, a member that '
-            'takes the shared steps that fit the memory its owner gives the build, and tasks to any worker, a device’s build page too, '
-            'with no key; a worker’s first three tasks, then one in eight, are checked. Who leads is the owner’s call: the lead is '
+            'takes the shared steps that fit the memory its owner gives the build, and tasks to the Macs’ agents. Who leads is the owner’s call: the lead is '
             'handed over by hand, and moves by itself only on low battery, a silent heartbeat, the NAS lost or a stand-down. Planned: '
             'the journal’s GC, retiring the mailboxes, resuming beyond the OSM pass.')
     marker = ('<marker id="wm-a" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">'

@@ -103,7 +103,7 @@ Common rules:
   cores and its app, with the workers' token. A NAS-mounting worker gets a job first, then a task.
   An agent on a different app than the lead's gets 409 until they match (docs/building.md §2, The
   same app). A page's ask, beat, hand-back or failure, its tasks' files and the programs'
-  WebAssembly (all without a key: what a page left open from before #875 still asks) are refused
+  WebAssembly (all without a key: what a page left open from before #876 still asks) are refused
   with "pages no longer help with the build: reload this page" (`coord::NO_PAGE_HELPERS`; a
   beat answered `ok: false`, so it stops that task); its service worker loads the new page.
 - **Pausing** (docs/building.md §2, Pausing): the coordinator holds `pause.json`; asks are refused, beats carry
