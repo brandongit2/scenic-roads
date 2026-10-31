@@ -385,6 +385,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "codecs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "crc32fast",
+ "det",
+ "flate2",
+ "image-webp",
+ "indicatif",
+ "memmap2 0.9.11",
+ "names",
+ "osmpbf",
+ "rayon",
+ "roadcore",
+ "serde",
+ "serde_json",
+ "store",
+ "tempfile",
+ "webpenc",
+ "xxhash-rust",
+ "zstd 0.13.3",
+]
+
+[[package]]
 name = "compression-codecs"
 version = "0.4.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1242,6 +1267,7 @@ dependencies = [
  "bytemuck",
  "bytes",
  "clap",
+ "codecs",
  "crc32fast",
  "det",
  "flate2",
@@ -1253,11 +1279,9 @@ dependencies = [
  "hyper-util",
  "i_overlay",
  "image-webp",
- "indicatif",
  "libc",
  "libz-sys",
  "md-5",
- "memmap2 0.9.11",
  "names",
  "osmpbf",
  "parquet",

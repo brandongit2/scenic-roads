@@ -1,0 +1,30 @@
+[package]
+name = "codecs"
+version = "0.1.0"
+edition = "2021"
+description = "The build's file formats with no build state: tile codecs, packs, the tiling, vector tiles, marks, extents (docs/crates.md, step 2)"
+
+[dependencies]
+det = { path = "../det" }
+roadcore = { path = "../roadcore" }
+store = { path = "../store" }
+names = { path = "../names" }
+serde = { version = "1", features = ["derive"] }
+zstd = "0.13"
+osmpbf = "0.3"
+anyhow.workspace = true
+rayon.workspace = true
+memmap2.workspace = true
+bytemuck.workspace = true
+indicatif = "0.18"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
+# The terrain's tiles (crate::terrain_codec): lossless WebP through libwebp (not crate::webp, the tree cover's own encoder).
+webpenc = { path = "../webpenc" }
+image-webp = "0.2"
+crc32fast = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[dev-dependencies]
+store = { path = "../store", features = ["testkit"] }
+tempfile = "3"

@@ -1,6 +1,6 @@
 # The pipeline's crates (task #916)
 
-**Status: Planned.** Step 1 (`crates/pyport`) is built; every later step below is planned.
+**Status: Planned.** Steps 1 (`crates/pyport`) and 2 (`crates/codecs`) are built; every later step below is planned.
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and 15 binaries. A crate is rustc's unit: an edit anywhere recompiles all of it, little of it
@@ -61,9 +61,10 @@ names, webpenc as now).
 
 1. **pyport** (built, step 1): pyjson, pytext, pynumpy, tpsimplify. Python's behaviour ported for
    byte-identical outputs. ~1.8k lines, no pipeline dependency.
-2. **codecs** (formats with no build state): terrain_codec, shade_codec, webp, whole, watercov,
-   terrain_water, vtgen, chain, marks, stations, trailends, extents, areaflags, tiling (with the
-   root's `morton`), summary, legacy, hipack, basepack, basepart. ~12k lines.
+2. **codecs** (built, step 2; formats with no build state): terrain_codec, shade_codec, webp,
+   whole, watercov, terrain_water, vtgen, chain, marks, stations, trailends, extents, areaflags,
+   tiling (with the root's `morton` and progress bars), summary, legacy, hipack, basepack,
+   basepart. ~8.8k lines (31 Oct 2026), no pipeline dependency.
 3. **jobrt** (a job's runtime): sys, budget, net, phase_names, pyenv, control, timings,
    resume_log, cli, the job side of agent::jobs, the room primitives of agent::room, the
    resume constants, nasread's NAS reading, `DRAIN_GRACE`, an `Offload` trait. ~12k lines.
@@ -116,7 +117,7 @@ temporary: the list in lib.rs is the record of what still goes through them.
 | railfreq | 0.9k | rail | roads |
 | trees, landcover | 0.2k | trees, landcover, fetch | trees |
 | bldtile | 0.03k | bld, dem | bld |
-| areaflags | 0.01k | areaflags | codecs |
+| areaflags | 0.01k | areaflags, cli | jobrt |
 
 A binary moves only with a step that moves its whole set of modules, and keeps its name (scripts
 run binaries by name from the shared target dir). #917 later merges the small tools into
@@ -130,8 +131,10 @@ agent/rekey.rs; #856: crates/server; #882 step 4: coord; #914) move only after t
 
 1. **pyport** (built): move pyjson, pytext, pynumpy, tpsimplify into `crates/pyport`; pipeline
    re-exports them. No other file changes.
-2. **codecs**: the acyclic leaves of §2.2 (the crate root's `morton` and progress bars move with
-   tiling). Re-exported; touches no paused file.
+2. **codecs** (built): the acyclic leaves of §2.2 (modgraph.py, rerun 31 Oct 2026: none names a
+   module outside the set but tiling the root's `count_bar`), into `crates/codecs`, with the root's
+   `morton`, progress bars and `ProgressRead`; pipeline re-exports them. `areaflags::is_clockwise`
+   became `pub` (trees::mask uses it). None is a file a paused branch changes.
 3. **jobrt**: move the agent's constants and job-side primitives down (agent/jobs.rs,
    agent/room.rs, agent/resume.rs split: the part a step calls goes down, the agent's policy
    stays), then control, timings, sys, budget, resume_log, cli, net. Cuts the control → agent
@@ -165,9 +168,17 @@ timings.rs.
 | test, leaf edit | 41 s, 1.29 GB | 52 s, 1.29 GB |
 | test, core edit | 54 s, 1.09 GB | 45 s, 1.36 GB |
 
+After step 2, 31 Oct 2026 23:46 UTC, rustc 1.98.1, `cargo build --workspace --bins` (dev) from a
+built target dir; "codecs edit": one line appended to codecs' hipack.rs, "core edit": to timings.rs:
+
+| run | after step 2 |
+|---|---|
+| dev, codecs edit | 37 s, 1.60 GB (load 29-35) |
+| dev, core edit | 33 s, 1.50 GB (load 35-38) |
+
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the
 timings: an edit in a crate recompiles every crate that depends on it, so moving a *leaf* module
-down (step 1's pyjson) does not spare the pipeline's recompile after an edit to it. The gains come
+down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile after an edit to it. The gains come
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
