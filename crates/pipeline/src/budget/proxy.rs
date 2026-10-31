@@ -1194,23 +1194,29 @@ mod tests {
     }
 
     /// A host here that echoes each connection until its client ends it, on one thread of its
-    /// own (an event loop), so the threads counted are the proxy's.
+    /// own (an event loop, its connections taken on another), so the threads counted are the proxy's.
     fn upstream_one_thread() -> SocketAddr {
         let l = store::spawn::listen("127.0.0.1:0").unwrap();
         l.set_nonblocking(true).unwrap();
         let addr = l.local_addr().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_io().build().unwrap();
+        let h = rt.handle().clone();
+        std::thread::spawn(move || rt.block_on(std::future::pending::<()>()));
+        // (Taken here, served on the loop's thread.)
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_io().build().unwrap();
-            rt.block_on(async move {
-                let l = tokio::net::TcpListener::from_std(l).unwrap();
-                loop {
-                    let Ok((mut s, _)) = l.accept().await else { continue };
-                    tokio::spawn(async move {
-                        let (mut r, mut w) = s.split();
-                        let _ = tokio::io::copy(&mut r, &mut w).await;
-                    });
+            use std::os::fd::AsRawFd;
+            loop {
+                if !readable(l.as_raw_fd(), -1) {
+                    continue;
                 }
-            });
+                let Ok((s, _)) = store::spawn::accept(&l) else { continue };
+                h.spawn(async move {
+                    s.set_nonblocking(true).unwrap();
+                    let mut s = Conn::from_std(s).unwrap();
+                    let (mut r, mut w) = s.split();
+                    let _ = tokio::io::copy(&mut r, &mut w).await;
+                });
+            }
         });
         addr
     }
@@ -1293,18 +1299,12 @@ mod tests {
         first.read_exact(&mut head).unwrap();
         let addr = p.addr;
         let next = std::thread::spawn(move || tunnel(&addr, "s3.amazonaws.com", b"next"));
-        while p.counts.waited.load(Ordering::Relaxed) == 0 {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        store::testkit::eventually("the next waits its turn", || p.counts.waited.load(Ordering::Relaxed) > 0);
         drop(first);
         assert_eq!(next.join().unwrap(), b"next");
         assert_eq!(p.counts.refused.load(Ordering::Relaxed), 0);
         // (Its slot let go of as its task ends, just after its client saw the end.)
-        let t = Instant::now();
-        while slots(&p.ctx).live > 0 || slots(&p.ctx).clients > 0 {
-            assert!(t.elapsed() < Duration::from_secs(10), "a slot still held");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        store::testkit::eventually("no slot held", || slots(&p.ctx).live == 0 && slots(&p.ctx).clients == 0);
         let v = p.net.view();
         assert_eq!(v["hosts"]["s3.amazonaws.com"]["open"].as_u64(), Some(0), "{v}");
         assert_eq!(v["hosts"]["s3.amazonaws.com"]["conns"].as_u64(), Some(2), "{v}");
