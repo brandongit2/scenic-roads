@@ -240,8 +240,36 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      Tests: `a_key_names_exactly_its_reads` and `scheme_2_pins_what_scheme_1_did` (each manifest
      entry and input changed alone moves a target's scheme-1 key just when it moves its scheme-2
      key, for every derived step outside `REBUILT`), both over every derived step.
-   - 3b: every step declared so, a family at a time. 3c: the terrain root in the terrain stage.
-     3d: the rekey and its measurement. 3e: the flip.
+   - **3b (built): every step keyed from a step's own inputs declared so**: the pass's world steps,
+     heritage-sites, the terrain and slope family, tree cover, depth, the polar caps, the roads,
+     the landmarks, the 3D buildings, rail, timetables-todo, and from the publishing chain the road
+     index, rail stops and ferries (their keys moved out of `publish_chain` into
+     `build::roadunits_key` and `transit_key`). Both tests pass over six fixture builds (the
+     plans run to the end; with a water source; with a pyramid read tile by tile; with a fine
+     dataset past the base's zoom; at a pole; with depth sources), and every derived step is keyed
+     in one of them. What it changed:
+     - **Readiness passes waits on.** A target waits while a target it reads waits (`held`), and a
+       step read whole while anything a target of it reads is left (`whole_left`), so a step
+       declares only what its run reads. Step 1's waits standing for a read's own reads went (the
+       peaks' for the trailends and the spacing, the items', the marks' and the overlays' for the
+       chain's earlier steps, summits' and peaks' for all terrain-hi, depth-root's for depth).
+       Only a mid made again for a target whose packs stay passes nothing on (`held` reads
+       through a view where `mid_left` is `left`), and a `Grain::Tiles` read (`passes_on`)
+       neither: the tiles it names may not change when what it reads is made again (a unit
+       doesn't wait for the terrain-hi a terrain-lo assembly it reads tiles of waits for).
+     - `Grain::Tiles(f)` beside `Grain::Read(f)`: the terrain tiles a slope tile or a z6 tile's
+       roads read by XXH3 (`build::slope_tile_lines`, `build::unit_terrain`). A `Read::Mids` names
+       its mids by an `Ident` (those of the z6 tiles near the coverage, as the assembly takes them).
+     - Reads whose lines are another read's (`idents::nothing`): the overlays wait for the marks'
+       reads without reading what they name (the dots are an input); a z6 tile's roads wait for
+       the reaches, which they read through `ways`; a slope tile's terrain-lo and -hi tiles are
+       named once, on one read.
+     - Still keyed on the whole plan's state, so in `KEYS_FROM_THE_PLAN`: pack(T) and lo (their
+       owners, by every base pack's reach), prune (no key), the catalogue (what's ready to list),
+       lakefill (its source's pin, the plan's) and names-todo (the map's sequence served). The
+       pass's own and upkeep's (osm-pass, pass-sets, regions-extract, buildings, inputs, gc, redo,
+       backup) are keyed in agent::plan, outside this derivation.
+   - 3c: the terrain root in the terrain stage. 3d: the rekey and its measurement. 3e: the flip.
 4. The scheme-1 rekey adapter is deleted once no record is scheme 1 (one catalogue after).
 
 ## 7. Tests
