@@ -281,7 +281,7 @@ instead of the agent's fields, and does its NAS calls through **nas**. Its gates
 4. **Grants follow the plan they came from.** A `Grant` carries its plan's number; the lead
    grants no target cancelled after that plan began (`coord::lease::Cancelled`), and **jobs**
    drops a grant no newer than a cancel of the same target it saw, as a second guard.
-5. **A part change stops beats first.** When this Mac's part changes (lead → member, or a restart),
+5. **A part change stops beats first.** When this Mac's term changes (the lead losing it before its restart into its role, docs/roles.md §1),
    **beat** is told first and writes no more shared status under the old part (pool.md §7.6's rule,
    today enforced by clearing `BEATING`).
 6. **Shutdown order:** control stops taking asks; jobs hand over or stop; plan, pool stop (60 s

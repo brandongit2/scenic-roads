@@ -319,8 +319,10 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   (pool.md §6.1, task #881). It plans, runs a coordinator (`pipeline::coord`, port 8090) from which
   every other worker asks for work, and merges the journal into the records. Restarting or waking,
   it makes the next term naming itself (`state/build/terms/`) and goes on with its leases. No other
-  Mac leads: with the mini gone, the members finish their jobs and wait (pool.md §6.3). A process
-  changes part in place when the owner moves the declaration (docs/pool.md §7.6).
+  Mac leads: with the mini gone, the members finish their jobs and wait (pool.md §6.3). Each Mac
+  reads its role once as its agent starts (`pool::term::role`, docs/roles.md §1) and builds that
+  role's parts; when the owner moves the declaration, the agent restarts into its new role at once,
+  its jobs handed over to the next process.
 - **What's offered** (crate::agent::every): every step to every member except the lead's own
   (`LEAD_ONLY`: catalogues, prune, `bld-fetch`, the OSM pass, GC, backup, input checks, …), the steps
   that keep the pass's answers, and the worldwide steps. The steps table (`agent::steps`, docs/pool.md

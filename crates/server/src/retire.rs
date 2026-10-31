@@ -5,10 +5,11 @@
 //!
 //! The live map must never go down for a file gone missing, so a server retires only when it's
 //! sure it isn't the map's Mac (`retires`): no name in `~/.config/scenic/names` (the file there
-//! and without one, or not there; one that can't be read is no answer), and the pool's declared
-//! lead (`state/build/lead-member.json`) read and naming another member than this Mac's own (its
-//! member file read). Anything unknown keeps it serving.
+//! and without one, or not there; one that can't be read is no answer), and this Mac's role
+//! (`pipeline::pool::term::role`, the agent's own: the declared lead, `state/build/lead-member.json`,
+//! against this Mac's member file) a member's. An unknown role keeps it serving.
 
+use pipeline::pool::term::Role;
 use std::path::{Path, PathBuf};
 
 pub const LABEL: &str = "local.scenic.server";
@@ -22,25 +23,22 @@ fn names_none(names: &std::io::Result<String>) -> bool {
     }
 }
 
-/// Whether the server on this Mac retires: `names` is the names file's read, `lead` the declared
-/// lead's member id (None: unread), `me` this Mac's member id (None: unread).
-pub fn retires(names: &std::io::Result<String>, lead: Option<&str>, me: Option<&str>) -> bool {
-    names_none(names) && matches!((lead, me), (Some(l), Some(m)) if l != m)
+/// Whether the server on this Mac retires: `names` is the names file's read, `role` this Mac's.
+pub fn retires(names: &std::io::Result<String>, role: Role) -> bool {
+    names_none(names) && role == Role::Member
 }
 
-/// `retires` for this Mac: its names file in `user_home`, its member id in `home/agent`, the lead
-/// declared on the NAS (no NAS, or no declaration read: it stays).
+/// `retires` for this Mac: its names file in `user_home`, its role by its member id in
+/// `home/agent` and the lead declared on the NAS (no NAS: unknown, it stays).
 pub fn this_mac_retires(home: &Path, user_home: &Path) -> bool {
     let names = std::fs::read_to_string(user_home.join(pipeline::net::NAMES));
     if !names_none(&names) {
         return false;
     }
     let me = pipeline::pool::read_member_id(&home.join("agent"));
-    let lead = me.as_ref().and_then(|_| {
-        let r = store::nasfs::NasRoot::find(false)?;
-        pipeline::pool::term::declared(&r).ok().flatten().map(|d| d.member)
-    });
-    retires(&names, lead.as_deref(), me.as_deref())
+    let role =
+        store::nasfs::NasRoot::find(false).map_or(Role::Unknown, |r| pipeline::pool::term::role(&r, me.as_deref()));
+    retires(&names, role)
 }
 
 /// What retiring removes: the server's run file in the app's folder (`home`) and its LaunchAgent
@@ -95,17 +93,26 @@ mod tests {
         let gone = || Err(Error::from(ErrorKind::NotFound));
         let named: std::io::Result<String> = Ok("# Written by tools/caddy/install.sh\nmap.example.net\n".into());
         let empty: std::io::Result<String> = Ok("# Written by tools/caddy/install.sh\n\n".into());
+        // The role as the agent reads it (the shared function): a declaration on a NAS, two Macs.
+        let d = tempfile::tempdir().unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(d.path());
+        let lead = pipeline::pool::Member { id: "m-000000000000000a".into(), host: "mini".into(), app: "x".into() };
+        let role = |me: Option<&str>| pipeline::pool::term::role(&nas, me);
+        assert_eq!(role(Some(&lead.id)), Role::Unknown, "none declared yet");
+        pipeline::pool::term::declare(&nas, &lead, 1).unwrap();
+        let (other, mine) = (role(Some("m-000000000000000b")), role(Some(&lead.id)));
+        assert_eq!((other, mine), (Role::Member, Role::Lead));
         // A member that isn't the declared lead, without a name: it retires.
-        assert!(retires(&gone(), Some("m-lead"), Some("m-other")));
-        assert!(retires(&empty, Some("m-lead"), Some("m-other")), "comments alone");
+        assert!(retires(&gone(), other));
+        assert!(retires(&empty, other), "comments alone");
         // A name: it serves, whatever the lead.
-        assert!(!retires(&named, Some("m-lead"), Some("m-other")));
+        assert!(!retires(&named, other));
         // The declared lead serves with its names file gone.
-        assert!(!retires(&gone(), Some("m-lead"), Some("m-lead")));
-        // An unreadable names file, an unread lead or member id: no answer, it serves.
-        assert!(!retires(&Err(Error::from(ErrorKind::PermissionDenied)), Some("m-lead"), Some("m-other")));
-        assert!(!retires(&gone(), None, Some("m-other")));
-        assert!(!retires(&gone(), Some("m-lead"), None));
+        assert!(!retires(&gone(), mine));
+        // An unreadable names file, an unknown role (no member file, no NAS): no answer, it serves.
+        assert!(!retires(&Err(Error::from(ErrorKind::PermissionDenied)), other));
+        assert!(!retires(&gone(), role(None)));
+        assert!(!retires(&gone(), Role::Unknown));
     }
 
     #[test]

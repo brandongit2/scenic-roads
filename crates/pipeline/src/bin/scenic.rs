@@ -1375,7 +1375,6 @@ fn main() -> Result<()> {
                 bin,
                 dry_run,
                 once,
-                helper: false,
             };
             eprintln!(
                 "agent: started (app {}, root {})",

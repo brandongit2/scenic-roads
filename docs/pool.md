@@ -1217,7 +1217,7 @@ time says the agent is alive. The beat is the only writer of either copy (the NA
 thread of its own that takes the newest body each time, under the deadline above), so no beat
 lands over a newer one (each a whole file put in place: a temporary file and a rename, one create a
 beat, so about one every 10 s a Mac, far under what SMB takes; written in place, a reader could
-read it half-written); once this Mac's part changed (§7.6) it writes no shared beat (a body still
+read it half-written); once this Mac's term changed (it no longer leads, before its restart) it writes no shared beat (a body still
 waiting for the old path is dropped) until the
 loop composes one under the new part, so a former lead never rewrites `state/status.json` over
 the new lead's. A heartbeat goes out of touch when the beat itself stops (ten minutes,
@@ -2106,7 +2106,7 @@ finished, from a log in its scratch folder on its Mac (§7.2, Resuming; crate::r
 Still behind switches under `state/pool/` (a file; off while missing unless noted):
 `resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2),
 `memory-guard` (on while missing). A new switch is made only once every
-member's heartbeat shows the app that has it. A part changing in its process (§7.6) is no longer
+member's heartbeat shows the app that has it. A role is read as the agent starts (docs/roles.md §1) and is no longer
 switched: `state/pool/slots` isn't read, but stays `on` on the NAS while an older app may read it
 (one reading it missing or `off` restarts to change part). The old files `state/pool/enabled` and
 `state/pool/budgets` are no longer read either.

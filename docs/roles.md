@@ -1,6 +1,6 @@
 # Roles: the mini serves, the laptops work
 
-**Planned (task #882; nothing here is built yet).** Until each step below lands, docs/pool.md,
+**Planned (task #882); built: step 1 of §5.** Until each step below lands, docs/pool.md,
 docs/agent-parts.md and the code are what is true. It builds on #881 (the Mac mini is the fixed
 lead), #874 (the map server runs on the mini alone), #871 (the agent in parts: planning on the lead
 only; steps 6–7 take the checklist and regions out of a member's status), #883 (the map log on the
@@ -136,11 +136,14 @@ the lead writes in the home and requires it in the list or in a kept list.
 
 Each step ships alone and keeps the build running; each ends with its tests.
 
-1. **The role** (§1): `pool::term::role`, used by `Agent::new` and `retire::retires`; parts built
+1. *Built.* **The role** (§1): `pool::term::role`, used by `Agent::new` and `retire::retires`; parts built
    by role; `o.helper` derived from it, then removed. A changed declaration restarts the agent.
    Tests: `role_reads_the_declared_lead`, `an_unknown_role_starts_the_members_parts`,
    `a_changed_declaration_restarts_into_the_new_role`; the server's retire tests on the shared
-   function.
+   function. As built: `Options::helper` is gone (the CLI's `--helper` stays accepted and ignored);
+   a role change, or the lead losing its term, restarts at once (`role_restart`), its jobs handed
+   over; the coordinator is built from the role, and the in-process promotion, demotion and the
+   coordinator kept on as a broker are deleted. An unknown role learnt a member's is taken in place.
 2. **The regions' states and the checklist off members** (after #871 6–7): no `region-states`
    thread, no checklist phase, no `TerrainTiles` on a member; `pack-idx/` removed there.
    Tests: `a_member_never_counts_the_regions` (the two-agents harness: the member's round makes no

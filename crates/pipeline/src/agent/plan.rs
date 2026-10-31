@@ -770,7 +770,7 @@ impl Planner {
     }
 
     pub(super) fn job_slots(&self) -> usize {
-        lead_slots(self.o.helper, self.inp.ramp_held, &self.inp.mem.ramp)
+        lead_slots(false, self.inp.ramp_held, &self.inp.mem.ramp)
     }
 
     pub(super) fn resume_on(&self) -> bool {
@@ -1180,7 +1180,7 @@ impl Planner {
         }
         // The owner's redos (`scenic redo`, crate::agent::redo), the lead's: a job each, which forgets
         // its targets' records.
-        if self.coord.is_some() && !self.o.helper {
+        if self.coord.is_some() {
             out.extend(self.redo_jobs(root));
         }
         if self.due("gc", Duration::from_secs(86400)) {
@@ -1991,7 +1991,7 @@ impl Planner {
         self.take_forecast();
         let stale =
             self.forecast.borrow().as_ref().is_none_or(|f| now_s().saturating_sub(f.at) >= forecast::EVERY.as_secs());
-        if !self.o.helper && stale && self.forecasting.borrow().is_none() {
+        if stale && self.forecasting.borrow().is_none() {
             // (What can't be listed now: the regions' work after a new pass, or while the z6 tiles wait.)
             let blind = match newer {
                 Some(d) => Some(format!("a new OpenStreetMap pass (the planet of {d}) comes first; the regions' work is known once it's done")),
@@ -3195,7 +3195,7 @@ impl Planner {
                 checking.extend(w.targets.iter().filter_map(|t| t.0.strip_prefix("inputs/").map(str::to_string)));
             }
         }
-        if let (Some((_, watch)), false) = (&self.inputs.watch, self.o.helper) {
+        if let Some((_, watch)) = &self.inputs.watch {
             let s = |p: &Path| p.to_string_lossy().into_owned();
             for unit in &units {
                 let Some(checks) = crate::inputs::checks(unit) else { continue };
@@ -3292,48 +3292,41 @@ impl Planner {
         }
         // The regions' extract, when their check holds files waiting for ids it lacks (its held
         // report's `needs`, of the current pass): a job extracting them with those it has.
-        if !self.o.helper {
-            if let Some(job) = self.extract_job(root, manifest, keys) {
-                jobs.push(job);
-            }
+        if let Some(job) = self.extract_job(root, manifest, keys) {
+            jobs.push(job);
         }
         // A unit off the gate whose records were asked to be forgotten (`scenic inputs test off
         // --forget`): a job that removes them from the records.
-        if !self.o.helper {
-            let s = |p: &Path| p.to_string_lossy().into_owned();
-            for unit in self.inputs.forget.borrow().iter() {
-                let named = [
-                    crate::inputs::logical(unit),
-                    crate::inputs::held_logical(unit),
-                    crate::inputs::listed_logical(unit),
-                ]
-                .iter()
-                .any(|l| manifest.contains_key(l));
-                if units.contains(&unit.as_str()) || !named || !crate::inputs::valid_unit(unit) {
-                    continue;
-                }
-                let cmd = vec![
-                    s(&self.o.bin.join("scenic-build")),
-                    "inputs".into(),
-                    "--root".into(),
-                    jobs::root_arg(root),
-                    "--scratch".into(),
-                    s(&self.o.home.join("scratch").join("inputs")),
-                    unit.clone(),
-                    "--forget".into(),
-                ];
-                jobs.push(JobSpec {
-                    id: format!("inputs {unit} forget"),
-                    what: format!("Forgetting {unit}'s records"),
-                    cmd,
-                    needs: Needs { nas: true },
-                    restart_after_sleep: true,
-                    record: Some(build::Work {
-                        step: "inputs".into(),
-                        targets: vec![(format!("inputs/{unit}"), "forget".into())],
-                    }),
-                });
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        for unit in self.inputs.forget.borrow().iter() {
+            let named =
+                [crate::inputs::logical(unit), crate::inputs::held_logical(unit), crate::inputs::listed_logical(unit)]
+                    .iter()
+                    .any(|l| manifest.contains_key(l));
+            if units.contains(&unit.as_str()) || !named || !crate::inputs::valid_unit(unit) {
+                continue;
             }
+            let cmd = vec![
+                s(&self.o.bin.join("scenic-build")),
+                "inputs".into(),
+                "--root".into(),
+                jobs::root_arg(root),
+                "--scratch".into(),
+                s(&self.o.home.join("scratch").join("inputs")),
+                unit.clone(),
+                "--forget".into(),
+            ];
+            jobs.push(JobSpec {
+                id: format!("inputs {unit} forget"),
+                what: format!("Forgetting {unit}'s records"),
+                cmd,
+                needs: Needs { nas: true },
+                restart_after_sleep: true,
+                record: Some(build::Work {
+                    step: "inputs".into(),
+                    targets: vec![(format!("inputs/{unit}"), "forget".into())],
+                }),
+            });
         }
         let accepted = self.inputs.watch.as_ref().map(|(_, w)| w.accepted()).unwrap_or_default();
         *self.inputs.view.borrow_mut() =
