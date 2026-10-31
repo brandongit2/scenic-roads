@@ -1199,12 +1199,12 @@ echo \"$2 $(($(wc -l < \"$1/out.txt\")))\" >> \"$1/out.txt\"\n",
             ..Default::default()
         };
         assert_eq!(m4.done(&done).unwrap(), crate::coord::client::Handed::Taken);
-        // A worker's first result is checked against this Mac's own run of its steps: the same.
+        // The worker's result, used: its outputs placed in the folder, as a run here would leave it.
         let s = o
             .settle(&t, &dir, false, Patience { here_s: None }, &mut || crate::unit::run_tail(anywhere, &dir, &tools))
             .unwrap()
             .unwrap();
-        assert!(matches!(s, Settled::Here(Some((ref w, true))) if w == "m4"));
+        assert!(matches!(s, Settled::Remote(ref w) if w == "m4"));
         let read = |d: &Path| std::fs::read_to_string(d.join("out.txt")).unwrap();
         assert_eq!(read(&dir), read(&fresh));
         assert_eq!(read(&dir), "0 0\n1 1\n2 2\n");
