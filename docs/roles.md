@@ -57,7 +57,7 @@ thread spent ~10 % serialising mail (`Side::save_mail`).
 | Grants, beats, hand-offs, outbox (`helper_grants`, `send_outbox`, `tell_owed`) | yes, NAS + HTTP | small | **keep**, moving to HTTP under #878 |
 | The member's broker (tasks of its own jobs, `/work/*` for its jobs) | yes, a whole `Coordinator` made `become_broker` | 5 `coordinator` threads | **keep, slimmed**: a broker type of its own (§3.2) |
 | The broker's phase shares (`phase-shares` thread: the timings log read every 60 s) | yes | a thread; 4.5 MB log (the M1's is a stale lead copy) | **drop** on members |
-| The budgets' proxy and relays | yes | 1 + up to ~180 threads, one per job connection | **keep** (jobs need it); since #908 its connections share a few threads (§6) |
+| The budgets' proxy and relays | yes | 1 + up to ~180 threads, one per job connection (before #908) | **keep** (jobs need it); since #908 its connections share a few threads (§6) |
 | Live store (`live`, `live-nas`, `live-sampler`: this Mac's measures) | yes | 21 MB file | **keep**; the lead's page reads it over HTTP |
 | NAS mount, heal, NAS read/write pools (`nas`, `nas-read-*`, `nas-write-*`, `nas-switch-*`, `nas-probe`) | yes | 13 threads | **keep** (jobs read and write the NAS); the switch pool goes with #878 step 5 |
 | Pool step (`pool` thread: mail, beat, hold on the NAS) | yes | ~10 % of a core at the sample | **keep** until #878 steps 3–6 replace it with HTTP |

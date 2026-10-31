@@ -31,9 +31,9 @@ const HEAD_MAX: usize = 64 << 10;
 /// How long a connection out may take to open.
 const CONNECT_WAIT: Duration = Duration::from_secs(30);
 
-/// The proxy's bounds: a client's head within `head`, a connection idle (nothing either way) for
-/// `idle` ended (a query's tunnel charged as it ends), and at most `conns` connections out served at
-/// once. One more waits its turn (first come, first served) for one of them to end, up to `wait`
+/// The proxy's bounds: a client's head within `head`, a connection idle (nothing either way, or a
+/// write its reader takes nothing of) for `idle` ended (a query's tunnel charged as it ends), and
+/// at most `conns` connections out served at once. One more waits its turn (first come, first served) for one of them to end, up to `wait`
 /// (its client sees only a slow answer), and is answered 503 when it runs out; a hold told never
 /// waits. At most twice `conns` clients at once in all: one more is answered 503 as it's taken.
 /// (A terrain job keeps 64 tiles in flight, each its own tunnel: 512 serve eight such jobs at
@@ -253,14 +253,17 @@ const TAKERS: usize = 4;
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(IO_THREADS)
-            .max_blocking_threads(BLOCKING_THREADS)
-            .thread_name("budgets-io")
-            .enable_io()
-            .enable_time()
-            .build()
-            .expect("the budgets' proxy: its event loop")
+        // (Its kqueue made and marked close-on-exec while no child is being started: store::spawn.)
+        store::spawn::sockets(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(IO_THREADS)
+                .max_blocking_threads(BLOCKING_THREADS)
+                .thread_name("budgets-io")
+                .enable_io()
+                .enable_time()
+                .build()
+                .expect("the budgets' proxy: its event loop")
+        })
     })
 }
 
@@ -413,10 +416,13 @@ async fn read_some(s: &Conn, buf: &mut [u8], idle: Duration) -> io::Result<usize
     .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "idle")))
 }
 
-/// `b` written to `s` whole, as fast as its reader takes it.
-async fn write_all(s: &Conn, mut b: &[u8]) -> io::Result<()> {
+/// `b` written to `s` whole, as fast as its reader takes it, waiting at most `idle` for it to take
+/// any (a client that stops reading never holds its connection out for good).
+async fn write_all(s: &Conn, mut b: &[u8], idle: Duration) -> io::Result<()> {
     while !b.is_empty() {
-        s.writable().await?;
+        tokio::time::timeout(idle, s.writable())
+            .await
+            .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "idle")))?;
         match s.try_write(b) {
             Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
             Ok(n) => b = &b[n..],
@@ -480,8 +486,8 @@ fn answer_text(status: &str, body: &str) -> String {
     )
 }
 
-async fn answer(s: &Conn, status: &str, body: &str) -> io::Result<()> {
-    write_all(s, answer_text(status, body).as_bytes()).await
+async fn answer(s: &Conn, idle: Duration, status: &str, body: &str) -> io::Result<()> {
+    write_all(s, answer_text(status, body).as_bytes(), idle).await
 }
 
 /// `host:port` split, the port `default` when it's missing (an IPv6 address in brackets).
@@ -547,7 +553,7 @@ async fn open_out(s: &Conn, ctx: &Ctx, host: &str, port: u16, h: &Arc<Host>, t0:
         }
         Err(e) => {
             ctx.net.ended(host, (0, 0), t0.elapsed().as_millis() as u64, Outcome::Unreached);
-            let _ = answer(s, "502 Bad Gateway", &format!("{host}:{port}: {e}\n")).await;
+            let _ = answer(s, ctx.limits.idle, "502 Bad Gateway", &format!("{host}:{port}: {e}\n")).await;
             None
         }
     }
@@ -567,7 +573,7 @@ impl Drop for Open {
 async fn refuse_for(s: &Conn, ctx: &Ctx, host: &str) -> io::Result<()> {
     ctx.net.ended(host, (0, 0), 0, Outcome::Refused);
     ctx.counts.refused.fetch_add(1, Ordering::Relaxed);
-    answer(s, "503 Service Unavailable", TOO_MANY).await?;
+    answer(s, ctx.limits.idle, "503 Service Unavailable", TOO_MANY).await?;
     shutdown(s, Shutdown::Write);
     Ok(())
 }
@@ -589,15 +595,15 @@ async fn handle(s: Conn, ctx: &Arc<Ctx>) -> io::Result<()> {
     // (From here on a connection idle `limits.idle` ends.)
     if head.method.eq_ignore_ascii_case("CONNECT") {
         let Some((host, port)) = host_port(&head.target, 443) else {
-            return answer(&s, "400 Bad Request", "CONNECT host:port\n").await;
+            return answer(&s, ctx.limits.idle, "400 Bad Request", "CONNECT host:port\n").await;
         };
         let Some(_slot) = slot(ctx).await else { return refuse_for(&s, ctx, &host).await };
         let (class, h) = meter(&host, budget, net).await?;
         let (began, t0) = (budget.now_ms(), Instant::now());
         let Some((up, _open)) = open_out(&s, ctx, &host, port, &h, t0).await else { return Ok(()) };
         // (HTTP/1.0: macOS's nc, the ssh tunnel's ProxyCommand (osmpass::streamed), takes no other.)
-        write_all(&s, b"HTTP/1.0 200 Connection established\r\n\r\n").await?;
-        write_all(&up, &head.rest).await?;
+        write_all(&s, b"HTTP/1.0 200 Connection established\r\n\r\n", ctx.limits.idle).await?;
+        write_all(&up, &head.rest, ctx.limits.idle).await?;
         let sent = head.rest.len() as u64;
         h.bytes_out.fetch_add(sent, Ordering::Relaxed);
         let job = job_of(&head, net);
@@ -612,18 +618,23 @@ async fn handle(s: Conn, ctx: &Arc<Ctx>) -> io::Result<()> {
     if head.target.starts_with('/') {
         if let Some(q) = head.target.strip_prefix("/retry") {
             net.host(param(q, "host").unwrap_or("?")).retries.fetch_add(1, Ordering::Relaxed);
-            return answer(&s, "200 OK", "counted\n").await;
+            return answer(&s, ctx.limits.idle, "200 OK", "counted\n").await;
         }
         if let Some(q) = head.target.strip_prefix("/robots") {
             let (Some(host), Some(state)) = (param(q, "host"), param(q, "state").and_then(Robots::parse)) else {
-                return answer(&s, "400 Bad Request", "/robots?host=<host>&state=<unchecked, allowed or disallowed>\n")
-                    .await;
+                return answer(
+                    &s,
+                    ctx.limits.idle,
+                    "400 Bad Request",
+                    "/robots?host=<host>&state=<unchecked, allowed or disallowed>\n",
+                )
+                .await;
             };
             let t = param(q, "t").and_then(|v| v.parse::<u64>().ok());
             if !net.robots(host, state, t) {
-                return answer(&s, "400 Bad Request", "a host's name (and room for it)\n").await;
+                return answer(&s, ctx.limits.idle, "400 Bad Request", "a host's name (and room for it)\n").await;
             }
-            return answer(&s, "200 OK", "told\n").await;
+            return answer(&s, ctx.limits.idle, "200 OK", "told\n").await;
         }
         if let Some(q) = head.target.strip_prefix("/hold") {
             let secs = param(q, "s")
@@ -644,19 +655,27 @@ async fn handle(s: Conn, ctx: &Arc<Ctx>) -> io::Result<()> {
                     Err(_) => ctx.holding.store(false, Ordering::SeqCst),
                 }
             }
-            return answer(&s, "200 OK", "held\n").await;
+            return answer(&s, ctx.limits.idle, "200 OK", "held\n").await;
         }
-        return answer(&s, "404 Not Found", "a proxy: CONNECT, an absolute URL, /hold, /retry or /robots\n").await;
+        return answer(
+            &s,
+            ctx.limits.idle,
+            "404 Not Found",
+            "a proxy: CONNECT, an absolute URL, /hold, /retry or /robots\n",
+        )
+        .await;
     }
     // A plain HTTP request by its absolute URL: passed on, its connection closed after it.
     let Some(after) = head.target.strip_prefix("http://") else {
-        return answer(&s, "400 Bad Request", "only http:// URLs, or CONNECT\n").await;
+        return answer(&s, ctx.limits.idle, "400 Bad Request", "only http:// URLs, or CONNECT\n").await;
     };
     let (hp, path) = match after.find('/') {
         Some(i) => (&after[..i], &after[i..]),
         None => (after, "/"),
     };
-    let Some((host, port)) = host_port(hp, 80) else { return answer(&s, "400 Bad Request", "bad host\n").await };
+    let Some((host, port)) = host_port(hp, 80) else {
+        return answer(&s, ctx.limits.idle, "400 Bad Request", "bad host\n").await;
+    };
     let Some(_slot) = slot(ctx).await else { return refuse_for(&s, ctx, &host).await };
     let (class, h) = meter(&host, budget, net).await?;
     let (began, t0) = (budget.now_ms(), Instant::now());
@@ -671,8 +690,8 @@ async fn handle(s: Conn, ctx: &Arc<Ctx>) -> io::Result<()> {
         out.push_str("\r\n");
     }
     out.push_str("Connection: close\r\n\r\n");
-    write_all(&up, out.as_bytes()).await?;
-    write_all(&up, &head.rest).await?;
+    write_all(&up, out.as_bytes(), ctx.limits.idle).await?;
+    write_all(&up, &head.rest, ctx.limits.idle).await?;
     let sent = (out.len() + head.rest.len()) as u64;
     h.bytes_out.fetch_add(sent, Ordering::Relaxed);
     let job = job_of(&head, net);
@@ -693,7 +712,7 @@ fn charge(budget: &Budget, class: Option<Class>, began: u64) {
 
 /// Copies `r` to `w` until `r` ends (or `stop` is told), each chunk's bytes added to `n` (and its
 /// job's `j`) as it's written, a read waiting at most `idle`: the bytes copied, and whether it ended
-/// with no error. A write waits for `w`'s reader as long as it takes (the back-pressure).
+/// with no error. A write waits for `w`'s reader (the back-pressure), up to `idle` for it to take any.
 async fn copy_counted(
     r: &Conn,
     w: &Conn,
@@ -713,7 +732,7 @@ async fn copy_counted(
             },
             () = stop.notified() => return (all, true),
         };
-        if write_all(w, &buf[..k]).await.is_err() {
+        if write_all(w, &buf[..k], idle).await.is_err() {
             return (all, false);
         }
         all += k as u64;
@@ -1062,6 +1081,41 @@ mod tests {
         assert!(sent > 0 && sent < 200, "{sent}");
         assert!(p.net.view()["hosts"]["s3.amazonaws.com"]["in"].as_u64().unwrap() > got * 2);
         assert!(p.net.job("job9").is_none());
+    }
+
+    /// Task #908 review: a client that sends but stops reading (its host's answer backed up into
+    /// the proxy) is ended once its writes have waited `idle`, and its connection out given to the
+    /// next, waiting its turn.
+    #[test]
+    fn a_client_that_stops_reading_lets_go_of_its_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(StepClock::at(T0));
+        let up = upstream(Arc::new(|| {}));
+        let p = proxy_within(
+            &store::nasfs::NasRoot::local_for_test(dir.path()),
+            &clock,
+            &up,
+            Limits {
+                head: Duration::from_secs(60),
+                idle: Duration::from_millis(300),
+                conns: 1,
+                wait: Duration::from_secs(60),
+            },
+        );
+        let mut stuck = TcpStream::connect(p.addr).unwrap();
+        write!(stuck, "CONNECT s3.amazonaws.com:443 HTTP/1.1\r\n\r\n").unwrap();
+        let mut head = [0u8; 39];
+        stuck.read_exact(&mut head).unwrap();
+        // (Sent until the echo backs up into it, never read; it errs once the proxy ends it.)
+        let w = stuck.try_clone().unwrap();
+        let sender = std::thread::spawn(move || {
+            let mut w = w;
+            let b = vec![1u8; 1 << 20];
+            while w.write_all(&b).is_ok() {}
+        });
+        assert_eq!(tunnel(&p.addr, "s3.amazonaws.com", b"next\n"), b"next\n");
+        assert_eq!(p.counts.waited.load(Ordering::Relaxed), 1);
+        sender.join().unwrap();
     }
 
     /// Task #516: each host's bytes, requests and connections as they're relayed (a tunnel's, a
