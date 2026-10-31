@@ -703,8 +703,9 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   version and the tile (`none_deep_key`).
 - **Drops:** a target under any of these "none" keys (`agent::build::is_none_key`) drops its packs
   and reads nothing; its run notes a `drops` measure (`needs::DROPS`, docs/pool.md §7.7) so it is
-  sized as a drop, never as its step's build, and the plan runs every step's drops first of the
-  terrain and slope work (`Plan::drops`), the forecast and build page showing them as drops.
+  sized as a drop, never as its step's build (each through scenic-build's `run_drop`), and the plan
+  runs every step's drops first of the terrain, slope and tree cover work (`Plan::drops`), the
+  forecast and build page showing them as drops.
 - **terrain-lo (an assembly):** its z6 tiles' mids by content ("-" for a z6 tile without one) and the
   digest of its z6–8 water; `TERRAIN_LO_V` and the codec. "none" likewise (`none_lo_key`).
 - **slope-hi (a z6 tile):** `SLOPE_V` and the codec (`shade_codec::version`: the encoding, libwebp's
@@ -723,8 +724,10 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   **polar-root (a pole):** `polar::ROOT_V`, both codecs', the pole, the datasets meeting the root's
   latitudes, the blocks built, and every block pack of its layers by logical and content name.
 - **trees (a z6 tile):** the coverage inside the tile; `TREES_V` changes with any change to the bytes
-  a z6 tile writes.
-- **trees-lo:** its z6 tiles' mids; `TREES_LO_V`.
+  a z6 tile writes. A z6 tile the coverage has left, with tree hi packs or a mid still named, is
+  keyed on the version and the tile (`treepacks::none_piece_key`): a drop.
+- **trees-lo:** its z6 tiles' mids; `TREES_LO_V`. A z3 tile with no z6 tile the coverage meets, and
+  tree lo packs still named: "none" likewise (`treepacks::none_lo_key`), a drop.
 - **heritage-sites:** the pass, its areas set (the protected and Indigenous areas), the registers meeting the cover (their `keyed`
   digests), the matches' accepted version, the coverage.
 - **unit** (a z6 tile): its extract, the pass's road values, the coverage as its ways meet it, the versions of the

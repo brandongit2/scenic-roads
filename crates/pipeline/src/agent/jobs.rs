@@ -12,6 +12,39 @@
 //! the next one takes them over (`adopt`).
 
 use crate::sys::Signal;
+
+/// A job's id: its step (a task's kind for a leased task, crate::agent::steps::TASKS), then what
+/// it's for ("unit 6/31/20", "terrain-hi 3/4/2 3/4/3", "osm-pass 2026-10-01", "tail 6/1/1"); a job
+/// of no targets its step alone ("gc"). Written by its `Display`, read back by `parse` alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JobId<'a> {
+    pub step: &'a str,
+    pub rest: Option<&'a str>,
+}
+
+impl<'a> JobId<'a> {
+    pub fn parse(id: &'a str) -> Self {
+        match id.split_once(' ') {
+            Some((step, rest)) => JobId { step, rest: Some(rest) },
+            None => JobId { step: id, rest: None },
+        }
+    }
+
+    /// What it's for: its rest, or for a job of its step alone, its step again (GC's cost key:
+    /// "gc gc").
+    pub fn target(&self) -> &'a str {
+        self.rest.unwrap_or(self.step)
+    }
+}
+
+impl std::fmt::Display for JobId<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.rest {
+            Some(r) => write!(f, "{} {r}", self.step),
+            None => f.write_str(self.step),
+        }
+    }
+}
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::File;

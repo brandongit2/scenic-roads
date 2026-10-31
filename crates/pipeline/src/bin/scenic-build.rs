@@ -866,6 +866,17 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             }
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
             for (k, &u) in ts.iter().enumerate() {
+                // (A z6 tile the coverage has left: its "none" target, a drop.)
+                if u.z == 6 && !cov.meets_rect(pipeline::hipack::tile_bounds(6, u.x, u.y)) {
+                    anyhow::ensure!(
+                        !same.contains(&u.slash()),
+                        "{}: the coverage has left it, so it can't be made as it is",
+                        u.slash()
+                    );
+                    let n = run_drop("trees", &u.slash(), || pipeline::treepacks::drop_piece(&mut out, u))?;
+                    eprintln!("trees {}: the coverage has left it; {n} files dropped", u.slash());
+                    continue;
+                }
                 pipeline::control::safe_point("trees");
                 pipeline::agent::jobs::part(2 * k, &names);
                 let t = cost_start("trees", &u.slash());
@@ -901,8 +912,14 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 .map(|t| TileId::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}")))
                 .collect::<Result<_>>()?;
             for (k, &q) in qs.iter().enumerate() {
-                pipeline::control::safe_point("trees-lo");
                 pipeline::agent::jobs::report(k as u64, qs.len() as u64, "z3 tiles");
+                // (A z3 tile with no z6 tile the coverage meets: its "none" assembly, a drop.)
+                if pipeline::treepacks::targets(&cov, &out.manifest).pieces_of(&q.slash()).next().is_none() {
+                    let n = run_drop("trees-lo", &q.slash(), || pipeline::treepacks::drop_lo(&mut out, q))?;
+                    eprintln!("trees-lo {}: no z6 tile; {n} lo packs dropped", q.slash());
+                    continue;
+                }
+                pipeline::control::safe_point("trees-lo");
                 let t = cost_start("trees-lo", &q.slash());
                 pipeline::treepacks::build_lo(&mut out, &cov, q, &scratch, workers)?;
                 pipeline::control::done("trees-lo", &q.slash());

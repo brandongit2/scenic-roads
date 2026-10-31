@@ -70,7 +70,7 @@ pub mod tiles;
 
 use anyhow::{Context, Result};
 use cond::{Conditions, SleepWatch};
-use jobs::{now_s, JobSpec, Needs, Running};
+use jobs::{now_s, JobId, JobSpec, Needs, Running};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -322,8 +322,8 @@ fn is_duty(id: &str) -> bool {
 /// The cost key a job of no targets of its own is measured by (the OSM pass's `osm-pass <date>`, GC's
 /// `gc gc`): its id's step and the rest of its id, or its id again.
 fn own_cost_key(id: &str) -> String {
-    let (s, t) = id.split_once(' ').unwrap_or((id, id));
-    crate::coord::cost_key(s, t)
+    let j = JobId::parse(id);
+    crate::coord::cost_key(j.step, j.target())
 }
 
 /// Why the lead's catalogue waits while its pool's records don't reflect the journal (`Gates::publish`).
@@ -342,10 +342,7 @@ fn offered_job(spec: &JobSpec) -> bool {
 fn own_targets(spec: &JobSpec) -> Vec<(String, String)> {
     match spec.record.as_ref().filter(|w| !w.targets.is_empty()) {
         Some(w) => w.targets.clone(),
-        None => {
-            let (_, t) = spec.id.split_once(' ').unwrap_or((spec.id.as_str(), spec.id.as_str()));
-            vec![(t.to_string(), String::new())]
-        }
+        None => vec![(JobId::parse(&spec.id).target().to_string(), String::new())],
     }
 }
 
@@ -535,19 +532,12 @@ impl Tell {
 /// How long an end owed to the lead is tried (s): as long as its lease lasts unrenewed.
 const OWED_S: u64 = crate::coord::TTL.as_secs();
 
-/// The free space a member's job of `step` needs: a terrain run's as on the lead (its shard's
-/// archives copied here and merged); a task's ("tail": a z6 tile's last steps, its files fetched from
-/// the coordinator; "bldtile": a 3D buildings' z8 tile, its blocks) 5 GB, but tree cover's row of
-/// z8 blocks ("treeblock": it reads the squares where they lie, and writes ~80 MB) and a terrain
-/// z6 tile's z8 subtrees ("terrainsub": a file of tens of MB, and their tiles) 1 GB; the others none
-/// of their own: their grant's measured disk is reserved for them (`reservation`), and the owner's
-/// room target stays free past it, with no fixed reserve (task #421).
+/// The free space a member's job of `step` needs: a task's its kind's (crate::agent::steps::Task's
+/// `disk`); a step's none of its own: their grant's measured disk is reserved for them
+/// (`reservation`), and the owner's room target stays free past it, with no fixed reserve (task
+/// #421).
 fn helper_need(step: &str) -> u64 {
-    match step {
-        "tail" | "bldtile" => 5 << 30,
-        "treeblock" | "terrainsub" => 1 << 30,
-        _ => 0,
-    }
+    steps::task(step).map_or(0, |t| t.disk)
 }
 
 /// Of the work a helper could ask for (`can`), what starts beside a running job (`try_start_said`):
@@ -557,23 +547,7 @@ fn room_beside(can: Vec<String>, free: u64, held: u64) -> Vec<String> {
     can.into_iter().filter(|s| free >= held.saturating_add(helper_need(s))).collect()
 }
 
-/// A granted task's kind, from its spec's first run (crate::coord::Granted::Task carries no kind
-/// of its own): "bldtile", "treeblock", "terrainsub", else "tail".
-fn grant_task_kind(task: &serde_json::Value) -> &'static str {
-    let run = &task["runs"][0];
-    if run["prog"] == crate::bld::task::KIND {
-        crate::bld::task::KIND
-    } else if run["what"] == crate::trees::task::KIND {
-        crate::trees::task::KIND
-    } else if run["what"] == crate::terrain_task::KIND {
-        crate::terrain_task::KIND
-    } else {
-        "tail"
-    }
-}
-
-/// What a granted task of `kind` does, for the status ("bldtile: z8 tile 8/4/5", "tail 6/1/1"):
-/// `task_kind` reads its kind back from it.
+/// What a granted task of `kind` does, for the status ("bldtile: z8 tile 8/4/5", "tail 6/1/1").
 fn task_what(kind: &str, task: &serde_json::Value, unit: &str) -> String {
     match kind {
         crate::bld::task::KIND => format!("{kind}: z8 tile {unit}"),
@@ -583,14 +557,15 @@ fn task_what(kind: &str, task: &serde_json::Value, unit: &str) -> String {
     }
 }
 
-/// A task's kind from its spec's `what` (`task_what`; a JobSpec, kept over a hand-over, has no
-/// kind of its own): "tail", the most room, for any other.
+/// A leased task's kind: its job id's step (`JobId`, "<kind> <unit>"); "tail", the most room, for
+/// an id naming no kind (a job adopted from an agent before task #849, "task <lease>").
 fn task_kind(spec: &JobSpec) -> &str {
-    spec.what
-        .split_once(": ")
-        .map(|(k, _)| k)
-        .filter(|k| [crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND].contains(k))
-        .unwrap_or("tail")
+    let step = JobId::parse(&spec.id).step;
+    if steps::task(step).is_some() {
+        step
+    } else {
+        "tail"
+    }
 }
 
 /// The work a helper asks for (the shared steps, and "tail", "bldtile", "treeblock" and "terrainsub" for tasks): what its disk has free for
@@ -602,7 +577,7 @@ fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
     steps::SHARED
         .iter()
         .copied()
-        .chain(["tail", crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND])
+        .chain(steps::TASKS.iter().map(|t| t.name))
         .filter(|s| free.saturating_add(cheap) >= floor.saturating_add(helper_need(s) + room::margin(helper_need(s))))
         .map(str::to_string)
         .collect()
@@ -657,7 +632,8 @@ fn tile_of(s: &str) -> Option<(u32, u32, u32)> {
 /// The archive shards (`archive_shard`) a terrain job's target reads (`terrain_reads`'s rule);
 /// none for any other step's.
 pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
-    let Some((s, t)) = id.split_once(' ').map(|(s, t)| (steps::current(s), t)) else { return BTreeSet::new() };
+    let j = JobId::parse(id);
+    let (s, Some(t)) = (steps::current(j.step), j.rest) else { return BTreeSet::new() };
     let Some((z, x, y)) = tile_of(t) else { return BTreeSet::new() };
     match (s, z) {
         ("terrain-deep", z) if z == crate::terrain_deep::PACK_Z as u32 => crate::terrain_deep::base_want((x, y))
@@ -2544,7 +2520,7 @@ impl Agent {
                     },
                 ))
             }
-            crate::coord::Grant { lease, work: crate::coord::Granted::Task { id, task, .. }, .. } => {
+            crate::coord::Grant { lease, work: crate::coord::Granted::Task { task, task_kind, .. }, .. } => {
                 // A task (a z6 tile's tail, or a 3D buildings' z8 tile, for the lead's job), run here
                 // by `scenic run-task` over its files fetched from the coordinator, reading the NAS's
                 // data where it lies (only reading it: crate::unit::Tools::stores_read_only).
@@ -2579,11 +2555,14 @@ impl Agent {
                 ];
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
                 self.slots[k].lease = Some(Held::Leased { lease, dir });
-                let what = task_what(grant_task_kind(&task), &task, &unit);
+                // (Its kind as the coordinator sent it; an older lead's grant names none: its
+                // spec's, crate::offload::task_kind, until every lead sends it.)
+                let kind = if task_kind.is_empty() { crate::offload::task_kind(&task) } else { task_kind };
+                let what = task_what(&kind, &task, &unit);
                 Some((
                     k,
                     JobSpec {
-                        id: format!("task {id}"),
+                        id: JobId { step: &kind, rest: Some(&unit) }.to_string(),
                         what,
                         cmd,
                         needs: Needs { nas: true },
@@ -3541,8 +3520,9 @@ impl Agent {
             h.add(&w.step, &w.targets.into_iter().map(|t| t.0).collect::<Vec<_>>());
         }
         for r in self.slots.iter().filter_map(|s| s.running.as_ref()) {
-            if let Some((s, t)) = r.spec.id.split_once(' ').filter(|(s, _)| steps::current(s).starts_with("terrain-")) {
-                h.add(s, &[t.to_string()]);
+            let j = JobId::parse(&r.spec.id);
+            if let Some(t) = j.rest.filter(|_| steps::current(j.step).starts_with("terrain-")) {
+                h.add(j.step, &[t.to_string()]);
             }
             if let Some(st) = step_of(&r.spec.id) {
                 h.add(&st, &[]);
@@ -5020,8 +5000,8 @@ impl Agent {
         // already, `guard_holds`.)
         let limit = self.jobs_limit(self.total_mb());
         if let (None, Some(co), true) = (spec.record.as_ref(), self.coord.as_ref(), self.guard_stops() && limit > 0) {
-            let (step, rest) = spec.id.split_once(' ').unwrap_or((spec.id.as_str(), spec.id.as_str()));
-            if let Some(f) = co.holding_floor(step, rest).filter(|f| f.mb > limit) {
+            let j = JobId::parse(&spec.id);
+            if let Some(f) = co.holding_floor(j.step, j.target()).filter(|f| f.mb > limit) {
                 return Some(format!("needs about {:.1} GB, past this Mac's limit of {:.1} GB, and no other Mac runs it: for the owner to see to (`scenic pool floors --clear` once it's fixed)", f.mb as f64 / 1024.0, limit as f64 / 1024.0));
             }
         }
@@ -5178,8 +5158,9 @@ impl Agent {
                     .map(|w| w.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
                     .unwrap_or_default(),
             );
-            if let Some((s, t)) = id.split_once(' ').filter(|(s, _)| steps::current(s).starts_with("terrain-")) {
-                hints.add(s, &[t.to_string()]);
+            let j = JobId::parse(&id);
+            if let Some(t) = j.rest.filter(|_| steps::current(j.step).starts_with("terrain-")) {
+                hints.add(j.step, &[t.to_string()]);
             }
             // (Its own scratch, kept from a give-back, its own again before room is made: never
             // room-making's, the OSM pass's above all.)
@@ -8677,9 +8658,10 @@ fn room_past(target: u64, goal: u64) -> String {
     }
 }
 
-/// A job's step: its id's first word ("unit 6/31/20": "unit").
+/// A job's step: its id's first word ("unit 6/31/20": "unit", a leased task's its kind: "tail
+/// 6/1/1": "tail"; `JobId`).
 pub fn step_of(id: &str) -> Option<String> {
-    id.split(' ').next().filter(|s| !s.is_empty()).map(str::to_string)
+    Some(JobId::parse(id).step).filter(|s| !s.is_empty()).map(str::to_string)
 }
 
 /// What job `spec`'s own lease is held again for: its record, or for a job of none (buildings)
@@ -9802,14 +9784,14 @@ mod tests {
         let all = |tasks: &[&'static str]| [&steps::SHARED[..], tasks].concat();
         // The shared steps need no room of their own (their grant's measured disk is reserved
         // for them, and no fixed reserve: task #421); the tasks theirs and their margin.
-        assert_eq!(helper_steps(gb(20), gb(10), 0), all(&["tail", "bldtile", "treeblock", "terrainsub"]));
-        assert_eq!(helper_steps(gb(10), gb(5), 0), all(&["tail", "bldtile", "treeblock", "terrainsub"]));
+        assert_eq!(helper_steps(gb(20), gb(10), 0), all(&["tail", "terrainsub", "treeblock", "bldtile"]));
+        assert_eq!(helper_steps(gb(10), gb(5), 0), all(&["tail", "terrainsub", "treeblock", "bldtile"]));
         // (Tree cover's rows and terrain's subtrees need 1 GB.)
-        assert_eq!(helper_steps(gb(3), gb(2), 0), all(&["treeblock", "terrainsub"]));
+        assert_eq!(helper_steps(gb(3), gb(2), 0), all(&["terrainsub", "treeblock"]));
         assert_eq!(helper_steps(gb(1), 0, 0), all(&[]));
         // The owner's disk room target stays free past them: 70 GB free with a 60 GB target leaves
         // room for every one; with a 69 GB target, the shared steps alone; past what's free, none.
-        assert_eq!(helper_steps(gb(70), 0, gb(60)), all(&["tail", "bldtile", "treeblock", "terrainsub"]));
+        assert_eq!(helper_steps(gb(70), 0, gb(60)), all(&["tail", "terrainsub", "treeblock", "bldtile"]));
         assert_eq!(helper_steps(gb(70), 0, gb(69)), all(&[]));
         assert!(helper_steps(gb(70), 0, gb(71)).is_empty());
     }
@@ -9831,30 +9813,28 @@ mod tests {
     /// for 5 GB though asked for with 1 GB, given back).
     #[test]
     fn a_task_needs_its_kinds_room() {
-        let spec = |what: &str| JobSpec {
-            id: "task 3".into(),
-            what: what.into(),
+        // (A task's job named by its kind, as `take_grant` names it: "<kind> <unit>", task #905.)
+        let spec = |kind: &str, unit: &str| JobSpec {
+            id: JobId { step: kind, rest: Some(unit) }.to_string(),
+            what: String::new(),
             cmd: Vec::new(),
             needs: Needs { nas: true },
             restart_after_sleep: false,
             record: None,
         };
-        // (Its kind read back from what `take_grant` says of it, each kind's.)
-        let tasks = [
-            serde_json::json!({ "unit": "6/1/2", "subtrees": "8/1/2", "runs": [{ "what": crate::terrain_task::KIND }] }),
-            serde_json::json!({ "unit": "6/1/3", "blocks": "3", "runs": [{ "what": crate::trees::task::KIND }] }),
-            serde_json::json!({ "unit": "8/4/5", "runs": [{ "prog": crate::bld::task::KIND }] }),
-            serde_json::json!({ "unit": "6/1/1", "runs": [{ "prog": "roads" }] }),
-        ];
-        let kinds: Vec<_> = tasks
+        let want = [crate::terrain_task::KIND, crate::trees::task::KIND, crate::bld::task::KIND, "tail"];
+        let kinds: Vec<_> = want
             .iter()
-            .map(|t| {
-                let what = task_what(grant_task_kind(t), t, t["unit"].as_str().unwrap());
-                (task_kind(&spec(&what)).to_string(), helper_need(task_kind(&spec(&what))) >> 30)
+            .map(|k| {
+                let s = spec(k, "6/1/2");
+                assert_eq!(step_of(&s.id).as_deref(), Some(*k), "the Machines tab's step");
+                (task_kind(&s).to_string(), helper_need(task_kind(&s)) >> 30)
             })
             .collect();
-        let want = [crate::terrain_task::KIND, crate::trees::task::KIND, crate::bld::task::KIND, "tail"];
         assert_eq!(kinds, want.iter().zip([1, 1, 5, 5]).map(|(k, n)| (k.to_string(), n)).collect::<Vec<_>>());
+        // A job adopted from an agent before #849, "task <lease>": a tail's room, the most.
+        let old = JobSpec { id: "task 3".into(), ..spec("tail", "") };
+        assert_eq!((task_kind(&old), helper_need(task_kind(&old)) >> 30), ("tail", 5));
     }
 
     /// The slow-plan fake (docs/agent-parts.md §7): a plan that sleeps first, as long as asked.

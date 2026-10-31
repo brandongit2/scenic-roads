@@ -1587,12 +1587,15 @@ pub fn none_piece_key(step: &str, t: &str) -> String {
 }
 
 /// Whether `key` is target `t` of `step`'s "none" key (`none_piece_key`, `none_lo_key`,
-/// `none_deep_key`): a drop, its run dropping its packs and reading nothing (crate::needs::DROPS).
+/// `none_deep_key`, crate::treepacks::none_piece_key and none_lo_key): a drop, its run dropping its
+/// packs and reading nothing (scenic-build's `run_drop`, crate::needs::DROPS).
 pub fn is_none_key(step: &str, t: &str, key: &str) -> bool {
     match step {
         "terrain-hi" | "slope-hi" => key == none_piece_key(step, t),
         "terrain-lo" | "slope-lo" => key == none_lo_key(step.trim_end_matches("-lo"), t),
         "terrain-deep" | "slope-deep" => key == none_deep_key(step, t),
+        "trees" => key == crate::treepacks::none_piece_key(t),
+        "trees-lo" => key == crate::treepacks::none_lo_key(t),
         _ => false,
     }
 }
@@ -2588,8 +2591,8 @@ pub struct Plan {
     /// it can start now: what the forecast schedules (crate::agent::forecast).
     pub regions: Vec<RegionLeft>,
     /// The drops left, (step, target), of every step with "none" targets (`is_none_key`: terrain-hi,
-    /// slope-hi, terrain-lo, slope-lo, terrain-deep, slope-deep), runnable now, first of the
-    /// terrain and slope work: the forecast's first items, shown as drops.
+    /// slope-hi, terrain-lo, slope-lo, terrain-deep, slope-deep, trees, trees-lo), runnable now,
+    /// first of the terrain, slope and tree cover work: the forecast's first items, shown as drops.
     pub drops: Vec<(String, String)>,
     /// The catalogue planned goes out with the low zooms made (`low_gate`: they were due, and
     /// nothing's left of the publishing chain, or no lo pack is stale), noted so once made
@@ -2846,7 +2849,7 @@ pub fn plan(
         terrain, terrain_lo, terrain_deep, slope, slope_lo, slope_deep, terrain_left, slope_left, ..
     } = tw.clone();
     // The drops, every step's targets offered under its "none" key (`is_none_key`: packs of tiles no
-    // target any more, dropped, nothing read): first of all the terrain and slope work, each a
+    // target any more, dropped, nothing read): first of all the terrain, slope and tree cover work, each a
     // second or two where a build takes minutes, waiting on nothing (`terrain_work` lists them
     // runnable); what reads their tiles waits on them as before.
     let mut drops: Vec<(String, String)> = Vec::new();
@@ -2872,6 +2875,8 @@ pub fn plan(
         lo_held: trees_lo_held,
         unmid: trees_unmid,
     } = tree_work(&tt, m, done);
+    let trees = split("trees", trees);
+    let trees_lo = split("trees-lo", trees_lo);
     let mut held_steps: Vec<(String, String)> = tw.held.iter().map(|(s, w)| (s.to_string(), w.clone())).collect();
     held_steps.extend(trees_lo_held.map(|n| ("trees-lo".to_string(), n)));
     // What's left of the steps the rest wait for (crate::agent::steps::View): every target the
@@ -5812,7 +5817,7 @@ pub(crate) mod tests {
             for (t, k) in &w.targets {
                 let Some(u) = TileId::parse(t).filter(|u| u.z == 6) else { continue };
                 let l = crate::treepacks::mid_logical(u.x, u.y);
-                if *k == store::naming::hash16(format!("trees {}|{t}|none", crate::treepacks::TREES_V).as_bytes()) {
+                if *k == crate::treepacks::none_piece_key(t) {
                     m.remove(&l);
                 } else {
                     m.insert(l.clone(), format!("{l}.{k}.sect"));
@@ -6315,6 +6320,54 @@ pub(crate) mod tests {
         let w = bld_work(&c, &m, &Keys::default(), &inputs, &|_| (0, (0, 0, 0, 0)));
         let p = Plan { work: w, ..Default::default() };
         assert!(keys_are_derived(&p, &x).contains("bldprep"));
+    }
+
+    /// Tree cover's "none" targets are drops, as terrain's and slope's are (task #849): a z6 tile
+    /// and a z3 tile the coverage has left, with tree packs still named, are offered first under
+    /// their "none" keys, byte for byte as before (the trees' own key form, "|"-joined), and listed
+    /// in the plan's drops; every key offered is still steps::key's.
+    #[test]
+    fn tree_covers_left_packs_are_drops() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        for l in ["layers/trees-cover/hi/6-40-20", "layers/trees-cover/lo/3-5-2"] {
+            m.insert(l.into(), format!("{l}.2222222222222222.pack"));
+        }
+        let (inputs, tiles) = (spaced(&BTreeMap::new()), tiles_for(&m));
+        let p = super::plan(
+            &c,
+            "d",
+            &m,
+            &Keys::default(),
+            &inputs,
+            None,
+            &tiles,
+            Publish {
+                each: &c.by_region(),
+                on_map: &BTreeMap::new(),
+                served: &BTreeMap::new(),
+                since_catalogue: None,
+                held_for: None,
+                held: false,
+                way: Default::default(),
+            },
+        );
+        let old = |parts: &[&str]| store::naming::hash16(parts.join("|").as_bytes());
+        let tv = format!("trees {}", crate::treepacks::TREES_V);
+        let lv = format!("trees-lo {}", crate::treepacks::TREES_LO_V);
+        let piece = ("6/40/20".to_string(), old(&[&tv, "6/40/20", "none"]));
+        let lo = ("3/5/2".to_string(), old(&[&lv, &tv, "3/5/2", "none"]));
+        let offered =
+            |s: &str| p.work.iter().filter(|w| w.step == s).flat_map(|w| w.targets.clone()).collect::<Vec<_>>();
+        assert!(offered("trees").contains(&piece), "{:?}", offered("trees"));
+        assert!(offered("trees-lo").contains(&lo), "{:?}", offered("trees-lo"));
+        assert!(is_none_key("trees", &piece.0, &piece.1) && is_none_key("trees-lo", &lo.0, &lo.1));
+        for d in [("trees", "6/40/20"), ("trees-lo", "3/5/2")] {
+            assert!(p.drops.contains(&(d.0.to_string(), d.1.to_string())), "{d:?} in {:?}", p.drops);
+        }
+        let x = KeyCtx { cov: &c, date: "d", m: &m, inputs: &inputs, reach: None, tiles: &tiles };
+        let seen = keys_are_derived(&p, &x);
+        assert!(seen.contains("trees") && seen.contains("trees-lo"), "{seen:?}");
     }
 
     /// `keys_are_derived` of a chain's work `w` on `m` (no reach, no inputs but `inputs`).

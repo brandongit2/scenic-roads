@@ -25,7 +25,10 @@ tasks for any worker, `docs/workers.md`.
 
 ## 2. A step's row
 
-Every row has the same fields; nothing about a step is kept anywhere else.
+Every row has the same fields. Still kept outside the table (docs/consistency-report.md F15,
+open): the lead's steps (`every::LEAD_ONLY`), the worldwide targets (`every::names_target`), the
+NAS-reading, quiet and halo steps (`coord::sched::NAS_STEPS`, `budget::nas::QUIET_STEPS`,
+`needs::HALO_STEPS`) and the resumable ones (`resume::RESUMABLE`).
 
 | Field | Meaning | Values |
 |---|---|---|
@@ -36,6 +39,7 @@ Every row has the same fields; nothing about a step is kept anywhere else.
 | `stage` | its stage | `pass`, `sites`, `terrain`, `slope`, `trees`, `depth`, `roads`, `tiles`, `finish`, `trains`, `landmarks`, `buildings`, `publish`, `upkeep` |
 | `place` | which Mac runs it: derived from the pool's rules (`agent::every::offered`), not kept | `any` (any member whose measured room fits), `lead` |
 | `reads` | what one target reads of other tiled steps' targets, and the waiting note said while one is left (`steps::Reads`, task #864): the planner offers a target once none it reads is left, the forecast's waits and `after` arrows and the page's notes derive from it alike. Declared for terrain-lo, slope-deep, slope-hi, slope-lo, trees-lo and unit (the roads: the terrain packs over their tile + 30 km; each checked against its key's inputs where its key names them); a world step's waits are its own plan's. Planned (task #879, docs/readiness.md): every step's waits and key derived from one declaration | slope-deep `10/x/y`: terrain-deep of it and its edge neighbours, their z6 terrain-hi and z3 terrain-lo |
+| `cost_v` | the way it runs now, as far as its memory and time go (`coord::cost_version`): costs measured under an older one count for nothing; never a build key | `unit` 3, `terrain-hi` 7, else 0 |
 | resources | its first guess of memory until measured, whether members take it and at what rank (`shared`), a whole-build run alone (`alone`), whether it keeps the pass's answers (`answered`), its write-set (`writes`). The rest is measured, not kept: each target's memory, disk, cores, time and NAS rate by the step's model (`needs::Book`), targets per job (`coord::JOB_S`), and whether a job runs with others on a Mac (packing, by those measures) | pool.md §7.2, §7.7 |
 
 Stages, steps, tasks, jobs, targets, parts and phases have no display names: each is said by the

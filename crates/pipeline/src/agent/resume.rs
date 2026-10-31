@@ -73,7 +73,7 @@ pub const RESUME_ENV: &str = crate::osmpass::RESUME_ENV;
 
 /// Whether `job` (an agent's job id, `<step> <target>`) is of a resumable step.
 pub fn resumable(job: &str) -> bool {
-    job.split(' ').next().is_some_and(|s| RESUMABLE.contains(&s))
+    RESUMABLE.contains(&super::jobs::JobId::parse(job).step)
 }
 
 /// A member's progress file: the jobs whose progress is on its Mac's disk.

@@ -167,6 +167,10 @@ pub struct Step {
     /// planner, the forecast, the page and `scenic status` all answer readiness per target from it
     /// (`readiness`, `read_targets`). Empty: it reads no other step's targets.
     pub reads: &'static [Read],
+    /// The way it runs now, as far as its memory and time go (crate::coord::cost_version): a cost
+    /// measured another way says nothing of what a run takes now. Bumped with a change that moves
+    /// them; never a build key.
+    pub cost_v: u32,
 }
 
 /// One thing a target's run reads (docs/readiness.md §2).
@@ -600,6 +604,7 @@ const fn step(
         writes,
         records_only: false,
         reads: &[],
+        cost_v: 0,
     }
 }
 
@@ -790,6 +795,7 @@ pub const TABLE: [Step; 59] = [
     // it, crate::terrain_deep::peak_mb; with the coverage its process reads,
     // crate::coverage::Coverage::read_peak_mb. Until a z6 tile's own run says.)
     Step {
+        cost_v: 7,
         shared: Some(0),
         ..step(
             "terrain",
@@ -818,6 +824,7 @@ pub const TABLE: [Step; 59] = [
     // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its z6 tiles' z9 means, up to 4 MB a
     // z6 tile, and half a GB besides.)
     Step {
+        cost_v: 2,
         reads: R_TERRAIN_LO,
         mem_mb: 1200,
         ..step(
@@ -846,6 +853,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
+        cost_v: 4,
         reads: R_SLOPE_HI,
         mem_mb: crate::slope_pack::peak_mb(),
         shared: Some(3),
@@ -859,6 +867,7 @@ pub const TABLE: [Step; 59] = [
         )
     },
     Step {
+        cost_v: 1,
         reads: R_SLOPE_LO,
         mem_mb: crate::slope_pack::lo_peak_mb(),
         ..step(
@@ -913,12 +922,16 @@ pub const TABLE: [Step; 59] = [
     // a leaf-type square holds it whole and four chunks' source windows: 2.3 GB at most for six
     // NALCMS squares, 0.8 GB for two of the EEA's, task #580, 2026-10-23. A first guess only: each
     // target's measured peak replaces it.)
+    // (Cost version 3: the canopy rows read where they lie and counted, its blocks paced, task #606:
+    // 2's copied whole squares uncounted, so its NAS weight was its uploads alone.)
     Step {
+        cost_v: 3,
         mem_mb: 2500,
         shared: Some(4),
         ..step("trees", Pack, Z6, "trees", "Maps a tile's tree cover, height and leaf type.", w_trees)
     },
     Step {
+        cost_v: 1,
         reads: R_TREES_LO,
         mem_mb: 500,
         ..step(
@@ -933,7 +946,11 @@ pub const TABLE: [Step; 59] = [
     // (Depth: a block's arrays and distance fields, ~0.3 GB; the sources' blocks read, 0.5 GB at
     // most; the tiles made, kept as PNG; the water of a level's tiles, 0.13 GB at most. Until a
     // target's own run says.)
+    // (Cost version 2: composed only at a grid's own zoom, the coarser levels the means of the finer,
+    // and the floor's shading's assembly made in depth-lo, task #804; 1: a grid lined up with no
+    // overview sampled from one askew, task #433.)
     Step {
+        cost_v: 2,
         mem_mb: 2500,
         shared: Some(10),
         ..step(
@@ -948,6 +965,7 @@ pub const TABLE: [Step; 59] = [
     // (A z3 tile's assembly: its composing, ~2 GB, then its floor's shading, from what that holds
     // (crate::depth::build::lo_peak_mb).)
     Step {
+        cost_v: 2,
         reads: R_DEPTH_LO,
         mem_mb: crate::depth::build::lo_peak_mb(),
         ..step(
@@ -972,7 +990,13 @@ pub const TABLE: [Step; 59] = [
         )
     },
     // (A z6 tile's most its jobs took here, 8.4 GB, 2026-10-05; offered by its extract's size.)
+    // (Cost version: a z6 tile's measure its job's processes together, as the memory guard measures a
+    // job; 0 was its programs' most, one at a time; 2: its processes started without malloc's large
+    // cache, store::spawn::NO_LARGE_CACHE, where 1's measures counted 6–7 GB of freed blocks; 3: its
+    // elevations sampled in batches, crate::dem::generic::BATCH, where 2's sampled a z6 tile's
+    // vertices at once: 16 GB for the densest.)
     Step {
+        cost_v: 3,
         reads: R_UNIT,
         mem_mb: 8600,
         shared: Some(5),
@@ -1077,7 +1101,10 @@ pub const TABLE: [Step; 59] = [
             w_items,
         )
     },
+    // (Cost version 1: the World Heritage outlines clipped from the pass's `whs` set, not the filtered
+    // planet; 0's floor, 21.9 GB, no run with its memory timed came near: 6.4 GB, the clip's 4 GB.)
     Step {
+        cost_v: 1,
         reads: R_HERITAGE,
         mem_mb: 6144,
         answered: true,
@@ -1110,7 +1137,10 @@ pub const TABLE: [Step; 59] = [
     // (The coverage read, its outlines indexed (GEOS), the release's footers read, in one process:
     // 4.7 GB at its peak on the Mac mini, 23 Oct, task #579, the coverage most of it; the downloads
     // stream.)
+    // (Cost version 1: the coverage asked by distance, never grown, task #493: 0's floors, 43 GB from
+    // buffering the regions' outlines, no run since came near: 0.2 GB.)
     Step {
+        cost_v: 1,
         mem_mb: 5632,
         ..step(
             "buildings",
@@ -1251,17 +1281,29 @@ pub struct Task {
     pub does: &'static str,
     /// The step whose jobs offer it.
     pub step: &'static str,
+    /// The free disk a member's job of it needs (bytes; crate::agent's `helper_need`).
+    pub disk: u64,
 }
 
 pub const TASKS: [Task; 4] = [
+    // (A z6 tile's last steps, its files fetched from the coordinator: 5 GB.)
     Task {
         name: "tail",
         does: "A tile's last steps (its scenic metrics), offered as the lead builds its roads.",
         step: "unit",
+        disk: 5 << 30,
     },
-    Task { name: crate::terrain_task::KIND, does: "A group of a terrain tile's z8 subtrees.", step: "terrain-hi" },
-    Task { name: crate::trees::task::KIND, does: "A row of a tree cover tile's blocks.", step: "trees" },
-    Task { name: crate::bld::task::KIND, does: "A z8 tile of a 3D buildings tile.", step: "bldtiles" },
+    // (A file of tens of MB, and their tiles: 1 GB.)
+    Task {
+        name: crate::terrain_task::KIND,
+        does: "A group of a terrain tile's z8 subtrees.",
+        step: "terrain-hi",
+        disk: 1 << 30,
+    },
+    // (It reads the squares where they lie, and writes ~80 MB: 1 GB.)
+    Task { name: crate::trees::task::KIND, does: "A row of a tree cover tile's blocks.", step: "trees", disk: 1 << 30 },
+    // (A 3D buildings' z8 tile, its blocks: 5 GB.)
+    Task { name: crate::bld::task::KIND, does: "A z8 tile of a 3D buildings tile.", step: "bldtiles", disk: 5 << 30 },
 ];
 
 /// The row of `step` (by its name now: `current`); None for one the table doesn't know (a task's

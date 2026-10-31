@@ -98,7 +98,7 @@ pub struct Input<'a> {
     pub before: Vec<Job>,
     /// The regions' work left, in the order they're built (build::Plan::regions).
     pub regions: Cow<'a, [RegionLeft]>,
-    /// The drops (build::Plan::drops: z10 tiles no deep target any more, their packs dropped),
+    /// The drops (build::Plan::drops: targets of the "none" keys, their packs dropped),
     /// each at its drop's cost: first of the regions' work, waiting on nothing, shown as drops
     /// (`Lane::drop`). A region whose terrain they're in waits on them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3609,7 +3609,7 @@ mod tests {
             // did on 21 Oct) would leave the backtest's run every target of it cold.)
             let mut costs: BTreeMap<String, crate::coord::Cost> = get(&v, "costs");
             for (k, c) in costs.iter_mut() {
-                c.v = crate::coord::cost_version(k.split_once(' ').map_or("unit", |s| s.0));
+                c.v = crate::coord::cost_version(crate::agent::memguard::step_of_key(k));
             }
             let leases: Vec<Lease> = serde_json::from_value(v["leases"]["leases"].clone()).unwrap_or_default();
             let running: Vec<_> = jobs.iter().filter(|j| j.3 <= t0 && t0 < j.4).collect();
@@ -3706,7 +3706,7 @@ mod tests {
             let peak = |step: &str| {
                 let v: Vec<u64> = costs
                     .iter()
-                    .filter(|(k, c)| k.split_once(' ').map_or("unit", |s| s.0) == step && c.peak_mb > 0)
+                    .filter(|(k, c)| crate::agent::memguard::step_of_key(k) == step && c.peak_mb > 0)
                     .map(|(_, c)| c.peak_mb)
                     .collect();
                 v.iter().sum::<u64>() / v.len().max(1) as u64
@@ -3717,7 +3717,7 @@ mod tests {
             let each = |step: &str| {
                 let v: Vec<f64> = costs
                     .iter()
-                    .filter(|(k, _)| k.split_once(' ').map_or("unit", |s| s.0) == step)
+                    .filter(|(k, _)| crate::agent::memguard::step_of_key(k) == step)
                     .map(|(_, c)| at_lead(c))
                     .collect();
                 if v.is_empty() {

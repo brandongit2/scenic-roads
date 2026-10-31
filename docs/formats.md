@@ -687,7 +687,7 @@ phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_
 
 - `kind`: the job's step (`unit`, `peaks`, `gc`, `backup`, `osm-pass`), or `task <kind>` (`task
   tail`, `task bldtile`, `task treeblock`, `task terrainsub`). `id`: the agent's job id
-  (`SCENIC_JOB_ID`, "unit 6/32/24"). `host`: the Mac. `start`:
+  (`SCENIC_JOB_ID`, "unit 6/32/24"; a leased task's "<kind> <unit>", "tail 6/32/24", task #849). `host`: the Mac. `start`:
   unix seconds.
 - `cpu_s`: user + system, the process's and its finished children's. `threads`:
   RAYON_NUM_THREADS. `ok`: ended without error (a pause isn't). `untimed_s`: `wall_s` less the

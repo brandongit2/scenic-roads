@@ -120,45 +120,18 @@ fn is_zero64(v: &u64) -> bool {
     *v == 0
 }
 
-/// The way a step runs now, as far as its memory and time go: a cost measured another way says
-/// nothing of what a run takes now (terrain 2 and slope 2: each z6 tile's pack written as it's made,
-/// where they held their whole z3 tile's; tree cover 2: a z6 tile a run (a z6 tile), where 1 was a z3
-/// tile's whole run with the trees program, a band of a block's rows at a time on each thread, and
-/// before that trees.py's workers each held a block's every zoom-12 value, 12 to 36 GB together;
-/// its assemblies 1; terrain 3 and slope 3: a z6 tile a run (a z6 tile), their assemblies 1; terrain
-/// 4: a z6 tile's tiles made a group of z8 subtrees at a time, where 3 held all its z12 tiles' at once,
-/// 7 GB at its 90th percentile; 5: its deep levels too, z13–16 where a fine dataset is, a z8 tile's
-/// blocks read ahead and kept, task #633; terrain-hi 6 and slope-hi 4: named so, their deep levels
-/// their own steps', terrain-deep and slope-deep, task #639; terrain-hi 7 and terrain-lo 2: the
-/// pool's base tiles sampled up to 4 chunks at once, crate::terrain_base::sampling_mb, where one at
-/// a time took 0.2–0.7 GB less, task #695).
+/// The way a step runs now, as far as its memory and time go (its row's `cost_v`,
+/// crate::agent::steps::Step): a cost measured another way says nothing of what a run takes now
+/// (terrain 2 and slope 2: each z6 tile's pack written as it's made, where they held their whole z3
+/// tile's; tree cover 2: a z6 tile a run, where 1 was a z3 tile's whole run with the trees program,
+/// and before that trees.py's workers each held a block's every zoom-12 value, 12 to 36 GB
+/// together; terrain 3 and slope 3: a z6 tile a run, their assemblies 1; terrain 4: a z6 tile's
+/// tiles made a group of z8 subtrees at a time; 5: its deep levels too, task #633; terrain-hi 6 and
+/// slope-hi 4: named so, their deep levels their own steps', task #639; terrain-hi 7 and terrain-lo
+/// 2: the pool's base tiles sampled up to 4 chunks at once, crate::terrain_base::sampling_mb, task
+/// #695). A task's kind, or a step the table doesn't know: 0.
 pub fn cost_version(step: &str) -> u32 {
-    match crate::agent::steps::current(step) {
-        "terrain-hi" => 7,
-        "slope-hi" => 4,
-        // (3: the canopy rows read where they lie and counted, its blocks paced, task #606: 2's
-        // copied whole squares uncounted, so its NAS weight was its uploads alone.)
-        "trees" => 3,
-        // (A z6 tile's measure its job's processes together, as the memory guard measures a job; 0
-        // was its programs' most, one at a time; 2: its processes started without malloc's large
-        // cache, store::spawn::NO_LARGE_CACHE, where 1's measures counted 6–7 GB of freed blocks;
-        // 3: its elevations sampled in batches, crate::dem::generic::BATCH, where 2's sampled a
-        // z6 tile's vertices at once: 16 GB for the densest.)
-        "unit" => 3,
-        // (1: the World Heritage outlines clipped from the pass's `whs` set, not the filtered
-        // planet; 0's floor, 21.9 GB, no run with its memory timed came near: 6.4 GB, the clip's 4 GB.)
-        "heritage" => 1,
-        // (1: the coverage asked by distance, never grown, task #493: 0's floors, 43 GB from
-        // buffering the regions' outlines, no run since came near: 0.2 GB.)
-        "bld-fetch" => 1,
-        "terrain-lo" => 2,
-        "trees-lo" | "slope-lo" => 1,
-        // (2: composed only at a grid's own zoom, the coarser levels the means of the finer, and
-        // the floor's shading's assembly made in depth-lo, task #804; 1: a grid lined up with no
-        // overview sampled from one askew, task #433.)
-        "depth" | "depth-lo" => 2,
-        _ => 0,
-    }
+    crate::agent::steps::row(step).map_or(0, |s| s.cost_v)
 }
 
 /// A z6 tile's predicted peak memory (MB): what it took last time, else about ten times its extract (the
@@ -174,16 +147,44 @@ pub fn unit_peak(costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 
 /// What a task of `kind` for `unit` (its spec's) costs is kept under: "tail 6/x/y", "bldtile 8/x/y",
 /// "treeblock 8/x/y" (a row's first block), "terrainsub 8/x/y" (a group's first subtree).
 pub fn task_cost_key(kind: &str, unit: &str) -> String {
-    format!("{kind} {unit}")
+    CostKey { step: kind, target: unit }.to_string()
 }
 
-/// What a job of `step` for `target` costs is kept under: a z6 tile's by its target alone (as before
-/// other steps were offered), another step's as "<step> <target>".
+/// What a job of `step` for `target` costs is kept under (`CostKey`): a z6 tile's by its target
+/// alone (as before other steps were offered), another step's as "<step> <target>".
 pub fn cost_key(step: &str, target: &str) -> String {
-    if step == "unit" {
-        target.to_string()
-    } else {
-        format!("{step} {target}")
+    CostKey { step, target }.to_string()
+}
+
+/// A cost key: the step (or task kind) and target a cost is kept under, written as `cost_key` and
+/// `task_cost_key` write it, and read back by `parse` alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CostKey<'a> {
+    pub step: &'a str,
+    pub target: &'a str,
+}
+
+impl<'a> CostKey<'a> {
+    /// `key` read back: "<step> <target>", or a z6 tile alone, unit's. Any other key without a
+    /// space is a step's own, of no target: never unit's.
+    pub fn parse(key: &'a str) -> Self {
+        match key.split_once(' ') {
+            Some((step, target)) => CostKey { step, target },
+            None if crate::legacy::TileId::parse(key).is_some_and(|u| u.z == 6) => {
+                CostKey { step: "unit", target: key }
+            }
+            None => CostKey { step: key, target: "" },
+        }
+    }
+}
+
+impl std::fmt::Display for CostKey<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.step == "unit" {
+            f.write_str(self.target)
+        } else {
+            write!(f, "{} {}", self.step, self.target)
+        }
     }
 }
 
@@ -1034,8 +1035,15 @@ pub enum Granted {
     /// A job of the plan: its step, targets with keys, and the pass they're built from (the
     /// worker's own view of the NAS may lag).
     Job { step: String, targets: Vec<(String, String)>, pass: String },
-    /// A task: what to run and fetch (task::Task::spec), and its predicted memory.
-    Task { id: u64, task: serde_json::Value, mem_mb: u64 },
+    /// A task: what to run and fetch (task::Task::spec), its kind (task::Task::kind,
+    /// crate::agent::steps::TASKS; an older lead's grant: none) and its predicted memory.
+    Task {
+        id: u64,
+        task: serde_json::Value,
+        #[serde(default)]
+        task_kind: String,
+        mem_mb: u64,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3460,7 +3468,7 @@ fn route(
                     lease,
                     term: 0,
                     ttl_s: TTL.as_secs(),
-                    work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb },
+                    work: Granted::Task { id, task: t.spec.clone(), task_kind: t.kind.clone(), mem_mb: t.mem_mb },
                     more: Vec::new(),
                     threads: 0,
                     disk_mb: 0,

@@ -2229,7 +2229,7 @@ impl Planner {
         // pyramids-fill z6 tile with nothing to fetch says nothing of one fetching for hours, task #830.)
         let mut sums: BTreeMap<String, (f64, f64)> = BTreeMap::new();
         for (k, c) in &costs {
-            let step = k.split_once(' ').map_or("unit", |(s, _)| s);
+            let step = memguard::step_of_key(k);
             if c.v < crate::coord::cost_version(step) {
                 continue;
             }

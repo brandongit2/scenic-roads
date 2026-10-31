@@ -1089,7 +1089,7 @@ never correctness, politeness or work.
 
 **One model per step** (`pipeline::needs::Book`: `need(step, target, threads, guess)`, and `mem`
 alone for the picks): only what was measured the way the step runs now counts
-(`coord::cost_version`); a run or floor of an older way of it (a z6 tile's before v3, its elevations sampled whole; the heritage job's before v1, its clip of the filtered planet, whose 21.9 GB floor no run since 20 Oct came near: 6.4 GB) is neither a
+(`coord::cost_version`, the steps table's `cost_v`); a run or floor of an older way of it (a z6 tile's before v3, its elevations sampled whole; the heritage job's before v1, its clip of the filtered planet, whose 21.9 GB floor no run since 20 Oct came near: 6.4 GB) is neither a
 target's memory or time measure, nor a fit's run, nor part of a prior (disk floors, `disks.json`, carry no version and always count). A target's memory, disk and time are its own
 run's (memory never below its floor; a floor alone counts as its measure); else base + k × size
 fitted over the step's measured runs (least squares raised to cover every run, × 1.1, capped at the
@@ -1118,7 +1118,7 @@ measured itself is sized by its step's drops (`Book::drop_need`: their mean time
 percentile of their memory), before any of its step's ran by every step's drops (a drop of any
 step reads the manifest alone), and before any drop at all by its step's model, as a build: one
 job, after which it is measured (no figure is typed in for it). The scheduler marks them as
-offered (`Sched::drops`); the plan puts every step's drops first of the terrain and slope work
+offered (`Sched::drops`); the plan puts every step's drops first of the terrain, slope and tree cover work
 (`Plan::drops`), the forecast lists them first as runs of their own (`Lane::drop`, never merged
 with a build's run), shown "drop to come" on the build page. A drop never runs under a job that
 reads what it drops: what reads its tile waits for it as before (the z3 tiles with a none target
@@ -1605,7 +1605,8 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   `timings::count`; the page says "I/O"), over its last 10 runs that ended well
   (`timings::SHARES_RUNS`; the bytes' mean over the runs that counted any), largest by time first.
   The lead's status carries them as `phase_shares`, by step id (the steps table's; a leased task's
-  runs, timed as "task <step>", are its step's: `timings::step_of`):
+  runs, timed as "task <kind>", are its kind's: `timings::step_of`; its job's id names its kind too,
+  "<kind> <unit>", so the Machines tab shows it, task #849):
   `{"<step>": {"runs": n, "phases": [{"name", "class", "wall", "bytes"}]}}`, `wall` and `bytes`
   fractions 0–1 (`timings::PhaseShares`); a step with no good run in the log is absent. A phase
   missing from a run counts 0 there; the rest of a run's time is in no phase. Every Mac's page shows

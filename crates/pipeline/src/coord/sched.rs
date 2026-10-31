@@ -244,7 +244,7 @@ pub const SETTLE: Duration = Duration::from_secs(60);
 
 /// The steps that read the NAS as they go: one none of whose runs measured its rate weighs the NAS
 /// budget's whole (`NasWeigher`), and one running may load it unseen (`nas_unknown_running`).
-pub(super) const NAS_STEPS: &[&str] = &["unit", "elev", "pack", "lo"];
+pub(super) const NAS_STEPS: &[&str] = &["unit", "pack", "lo"];
 
 /// How long a job offered runs, at most, by its targets' measured
 /// times (s): a quarter of an hour (docs/pool.md §7.7, batch). Its first target is taken whatever

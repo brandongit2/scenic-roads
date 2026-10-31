@@ -214,12 +214,9 @@ impl From<FloorRead> for Floor {
     }
 }
 
-/// The step of a cost key (crate::coord::cost_key): a z6 tile's is its target alone.
+/// The step of a cost key (crate::coord::CostKey): a z6 tile's is its target alone.
 pub fn step_of_key(key: &str) -> &str {
-    match key.split_once(' ') {
-        Some((s, _)) => s,
-        None => "unit",
-    }
+    crate::coord::CostKey::parse(key).step
 }
 
 /// A running job as the guard watches it.
@@ -1055,6 +1052,8 @@ mod tests {
         };
         assert_eq!(w.floors(&[]), [("water water".to_string(), Floor { mb: 33000, alone: true, v: 0 })]);
         assert_eq!((step_of_key("6/1/1"), step_of_key("terrain 6/1/1")), ("unit", "terrain"));
+        // (A key of no space that isn't a z6 tile is no z6 tile's: task #849.)
+        assert_eq!((step_of_key("gc"), step_of_key("3/1/1")), ("gc", "3/1/1"));
     }
 
     #[test]

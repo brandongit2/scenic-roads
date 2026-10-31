@@ -71,6 +71,23 @@ pub fn z3_of(piece: &str) -> Option<String> {
     TileId::parse(piece).filter(|u| u.z == 6).map(|u| format!("3/{}/{}", u.x >> 3, u.y >> 3))
 }
 
+/// A tree cover target's key, of its parts.
+fn key(parts: &[&str]) -> String {
+    store::naming::hash16(parts.join("|").as_bytes())
+}
+
+/// The key of a z6 tile ("6/x/y") the coverage has left, with tree hi packs or a mid still named:
+/// its run drops them (`drop_piece`), reading nothing (crate::agent::build::is_none_key).
+pub fn none_piece_key(t: &str) -> String {
+    key(&[&format!("trees {TREES_V}"), t, "none"])
+}
+
+/// The key of an assembly of a z3 tile ("3/x/y") with no z6 tile the coverage meets, and tree lo
+/// packs still named: its run drops them (`drop_lo`), reading nothing.
+pub fn none_lo_key(q: &str) -> String {
+    key(&[&format!("trees-lo {TREES_LO_V}"), &format!("trees {TREES_V}"), q, "none"])
+}
+
 /// The tree cover's targets (`Targets`) for the coverage and the build manifest `m`.
 pub fn targets(cov: &Coverage, m: &BTreeMap<String, String>) -> Targets {
     targets_with(cov, m, None)
@@ -80,7 +97,6 @@ pub fn targets(cov: &Coverage, m: &BTreeMap<String, String>) -> Targets {
 /// staged (`sources`: crate::inputs::sources::trees_extra; None while they are, the keys as they
 /// were).
 pub fn targets_with(cov: &Coverage, m: &BTreeMap<String, String>, sources: Option<&str>) -> Targets {
-    let key = |parts: &[&str]| store::naming::hash16(parts.join("|").as_bytes());
     // The z6 tiles the coverage meets, by z3 tile (none in a z3 tile it doesn't meet).
     let mut met: BTreeSet<(u32, u32, u32, u32)> = BTreeSet::new();
     for qx in 0..8u32 {
@@ -122,7 +138,7 @@ pub fn targets_with(cov: &Coverage, m: &BTreeMap<String, String>, sources: Optio
         let t = format!("6/{x}/{y}");
         let none = !met.contains(&(qx, qy, x, y));
         let k = match (none, sources) {
-            (true, _) => key(&[&format!("trees {TREES_V}"), &t, "none"]),
+            (true, _) => none_piece_key(&t),
             (false, None) => {
                 key(&[&format!("trees {TREES_V}"), &t, &cov.fingerprint(crate::hipack::tile_bounds(6, x, y))])
             }
@@ -148,7 +164,7 @@ pub fn targets_with(cov: &Coverage, m: &BTreeMap<String, String>, sources: Optio
                 .collect();
             key(&[&head[0], &head[1], &head[2], &mids.join(",")])
         } else {
-            key(&[&head[0], &head[1], &head[2], "none"])
+            none_lo_key(&q)
         };
         out.lo.push((q, k, !z3s.contains(&(qx, qy))));
     }
@@ -338,7 +354,7 @@ fn drop_layer_packs(out: &mut Out, q: TileId, layer: &str, made: &crate::layers:
 }
 
 /// Makes z6 tile `t`'s tree cover (a z6 tile) and uploads it: its hi packs and its mid (`put_piece`),
-/// dropping those it no longer makes; all of them when the coverage has left it. `expect_same`: a
+/// dropping those it no longer makes (one the coverage has left is a drop: `drop_piece`). `expect_same`: a
 /// z6 tile made again as it is (its mid backfilled), whose packs must come out as the manifest has
 /// them (`put_piece`). `writing` is told when it begins writing.
 #[allow(clippy::too_many_arguments)]
@@ -355,12 +371,11 @@ pub fn build_piece(
     anyhow::ensure!(t.z == 6, "a piece is a z6 tile, not {}", t.slash());
     // (A z6 tile of the coverage, as `targets` has it, has a mid, made with no block if no ring's box
     // meets one; one the coverage has left, none.)
-    if !cov.meets_rect(crate::hipack::tile_bounds(6, t.x, t.y)) {
-        anyhow::ensure!(!expect_same, "6/{}/{}: the coverage has left it, so it can't be made as it is", t.x, t.y);
-        let n = drop_piece(out, t)?;
-        eprintln!("trees {}: the coverage has left it; {n} files dropped", t.slash());
-        return Ok(());
-    }
+    anyhow::ensure!(
+        cov.meets_rect(crate::hipack::tile_bounds(6, t.x, t.y)),
+        "{}: the coverage has left it, so it can't be made: its run drops it (drop_piece)",
+        t.slash()
+    );
     let dir = fresh(cov, t, scratch, true)?.context("a piece's scratch folder")?;
     // (Its scratch removed whatever the run's end, as `build_with`'s.)
     let r = (|| {
@@ -502,8 +517,8 @@ fn put_made(out: &mut Out, made: Made, same: Option<&str>) -> Result<()> {
     out.save()
 }
 
-/// Drops z6 tile `t`'s hi packs and mid; how many.
-fn drop_piece(out: &mut Out, t: TileId) -> Result<usize> {
+/// Drops z6 tile `t`'s hi packs and mid (a "none" z6 tile's run: `none_piece_key`); how many.
+pub fn drop_piece(out: &mut Out, t: TileId) -> Result<usize> {
     let all: Vec<String> =
         LAYERS.iter().map(|l| format!("layers/{l}/hi/{}", t.dash())).chain([mid_logical(t.x, t.y)]).collect();
     let gone: Vec<&String> = all.iter().filter(|l| out.get(l).is_some()).collect();
@@ -514,25 +529,27 @@ fn drop_piece(out: &mut Out, t: TileId) -> Result<usize> {
     Ok(gone.len())
 }
 
+/// Drops z3 tile `q`'s tree lo packs (a "none" assembly's run: `none_lo_key`); how many.
+pub fn drop_lo(out: &mut Out, q: TileId) -> Result<usize> {
+    let gone: Vec<String> =
+        LAYERS.iter().map(|l| format!("layers/{l}/lo/{}", q.dash())).filter(|l| out.get(l).is_some()).collect();
+    for l in &gone {
+        out.remove(l);
+    }
+    out.save()?;
+    Ok(gone.len())
+}
+
 /// Makes z3 tile `q`'s zoomed-out tree cover (an assembly: its lo packs, zoom 4–8) from its z6 tiles'
 /// mids (`targets`: the z6 tiles of it the coverage meets, each with its mid in the manifest), and
-/// uploads it (`put_lo`); with no z6 tile in it, drops its lo packs. `workers`: the trees program's
+/// uploads it (`put_lo`); one with no z6 tile in it is a drop (`drop_lo`). `workers`: the trees program's
 /// threads.
 pub fn build_lo(out: &mut Out, cov: &Coverage, q: TileId, scratch: &Path, workers: usize) -> Result<()> {
     anyhow::ensure!(q.z == 3, "an assembly is a z3 tile's, not {}", q.slash());
     let tt = targets(cov, &out.manifest);
     let z3 = q.slash();
     let pieces: Vec<&(String, String, bool)> = tt.pieces_of(&z3).collect();
-    if pieces.is_empty() {
-        let gone: Vec<String> =
-            LAYERS.iter().map(|l| format!("layers/{l}/lo/{}", q.dash())).filter(|l| out.get(l).is_some()).collect();
-        for l in &gone {
-            out.remove(l);
-        }
-        out.save()?;
-        eprintln!("trees-lo {}: no piece; {} lo packs dropped", q.slash(), gone.len());
-        return Ok(());
-    }
+    anyhow::ensure!(!pieces.is_empty(), "{z3}: no z6 tile of it is the coverage's: its run drops it (drop_lo)");
     let mut args: Vec<std::ffi::OsString> = Vec::new();
     for (t, _, _) in &pieces {
         let u = TileId::parse(t).context("a piece")?;
@@ -754,13 +771,14 @@ mod tests {
             d.path(),
         )
         .unwrap();
-        build_piece(&mut parts, &gone, t, sq.path(), &d.path().join("s"), 1, false, &|| {}).unwrap();
+        assert!(build_piece(&mut parts, &gone, t, sq.path(), &d.path().join("s"), 1, false, &|| {}).is_err());
+        assert!(drop_piece(&mut parts, t).unwrap() > 0);
         assert!(
             LAYERS.iter().all(|l| parts.get(&format!("layers/{l}/hi/6-33-22")).is_none()) && parts.get(&mid).is_none()
         );
         assert!(
             build_piece(&mut parts, &gone, pieces[0], sq.path(), &d.path().join("s"), 1, true, &|| {}).is_err(),
-            "not as it is: it's gone"
+            "it's gone"
         );
     }
 
