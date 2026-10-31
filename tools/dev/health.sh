@@ -13,7 +13,7 @@ date +%s > .claude/health-stamp
 print "== health $(date '+%F %T')"
 df -h / | awk 'NR==2{print "disk: "$4" free of "$2}'
 print "NAS: $([[ -d /Volumes/personal/projects/scenic-roads/catalog ]] && echo mounted || echo NOT MOUNTED)"
-curl -s -m 10 localhost:7311/api/build | python3 -c '
+~/Library/Application\ Support/scenic/app/current/scenic menu 2>/dev/null | python3 -c '
 import json,sys,time
 try: d=json.load(sys.stdin); s=d["status"]
 except Exception as e: print("BUILD STATUS UNREADABLE:",e); sys.exit()

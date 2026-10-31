@@ -202,7 +202,7 @@ from the first (`edit_held`).
   doesn't wait. No
   other socket may bind beside the proxy (no `SO_REUSEPORT`). A port that can't be had is tried
   again by the agent's loop, and if it still can't be, the jobs taken over are stopped as
-  interrupted, their targets given back; and the map server's updater keeps its app's folder
+  interrupted, their targets given back; and the updater's pruning keeps its app's folder
   (`job_apps` in the status). (scenic-build runs its steps' programs from that folder, `app/current`
   followed as it starts, so an app installed while it runs changes none of them.) Its end is read from the status file: a pause's 75 counts as paused;
   a group gone with no status (killed while no agent tended it) is interrupted, not failed. A
@@ -279,7 +279,7 @@ from the first (`edit_held`).
   stale: their owners whose base pack or road values differ from the served catalogue's), leased and
   done; and catalogue n written (`catalog`: its `n`, its job's time, delta or whole, the files listed
   and stat'ed, its phases once written, from the catalogue's own `catalog-stats:` log line). On the
-  NAS, each Mac's map server appends to `state/publish/<host>.jsonl` its adoption of each catalogue
+  NAS, the map server (the Mac mini's) appends to `state/publish/<host>.jsonl` its adoption of each catalogue
   and its mirror's sync of it (begun, and through everything wanted). The Mac writing a catalogue
   tells its own server at once (`/api/catalog/refresh`); the others look every 10 s while a build
   runs (docs/macs.md). `scenic timings publish [--last N]` joins them: a z6 tile is in the first catalogue begun
@@ -291,8 +291,8 @@ from the first (`edit_held`).
 always on. Every Mac's agent is a member; one leads each term. A process not in the pool (no NAS at
 start, or its member lock held) starts nothing new. `scenic pool [status]` shows it, and `scenic
 status` labels the Mac by its part: "lead, coordinator", "member", or "not in the pool: waiting to
-join (why)" (`Status::role`, `out_of_pool`). Every Mac serves its own map; the phone, the iPad and
-devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md, Devices).
+join (why)" (`Status::role`, `out_of_pool`). The map is served by the M6 alone (always on;
+https://map.brandontsang.net, docs/macs.md, Devices; task #874).
 - **Joining after an update** (task #423): the agent before may still hold the member lock while it
   drains, so a new agent tries the lock each second for up to two minutes as it starts
   (`JOIN_WAIT`), and joins as it starts once the lock is let go. Still held past that, it starts
@@ -398,7 +398,7 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
      (`publishing`), the worker page and `scenic status`, and logged when it changes. Beside it the
      status's `published` (`agent::Published`): the last catalogue (number, when, with the low zooms
      or map tiles only), the map tiles being drawn by Mac (pack's targets leased), and the catalogue
-     each Mac's map server last adopted (`pubtimes`' servers' log). The worker page's Publishing
+     the map server last adopted (`pubtimes`' servers' log). The worker page's Publishing
      card and `scenic status` say these in the same words, with the cadenced publishes next (the
      forecast's `publishes`); `scenic status` and the menu bar say a region
      still building as "x of y tiles, on the map as they come", and when all of it is.
@@ -422,7 +422,7 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
        every Mac's server reads deltas. Held catalogues are always whole.
      - `near-slope`: a done region's slope and tree cover are the z6 tiles near it
        (`Publishing::near`), not every stale z6 tile around; it's recorded built with those.
-     - `map-serve` (read by the declared lead's map server, `crates/server/src/maplog.rs`): it
+     - `map-serve` (read by the map server, `crates/server/src/maplog.rs`): it
        serves the map it follows from the lead's log rather than the catalogues (docs/maplog.md §8,
        step 3); off, it follows and checks it only. Switch on after three publishes in a row logged
        `maplog: the map at N is catalogue N`, with no `maplog: MISMATCH`.
@@ -480,8 +480,8 @@ available. Until work is done, the map serves the last catalogue.
   `scenic steps` (the steps table: docs/pipeline.md), `scenic clean [--deep]`, `scenic room` (Room on the
   disk, above), `scenic nas-room` (the NAS reserve, above), `scenic memory` (the build's memory: docs/pool.md §7.1).
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
-- **The menu bar item** asks the local server (`/api/build`): this Mac's agent's status, else the
-  NAS's copy. An agent not heard from for ten minutes (the status's `out_of_touch_s`, the pool's
+- **The menu bar item** runs `scenic menu` (`pipeline::menu`, every 5 s, 10 s at most): this Mac's
+  agent's status, else the NAS's copy. An agent not heard from for ten minutes (the status's `out_of_touch_s`, the pool's
   `OUT_OF_TOUCH_S`) shows as out of touch. The menu prints what the agent says (task #846): each
   Mac's state (`verdict`), this Mac's pause's stage (`hold`) and the checklist's counts; it lists
   every running job, slot by slot. A Mac whose loop hasn't finished a round for longer than its
@@ -495,9 +495,9 @@ available. Until work is done, the map serves the last catalogue.
     so ("The build's agent isn't running on this Mac"); with it on another app than the menu bar's
     (the swarm answer's `app`), the footer says so. From it, as from any page on this Mac, a job
     can be cancelled and a failed target tried again (docs/pool.md §11).
-  - **Its menu** (right-click, or "⋯"): the state, downloads and caches; Pause/Resume Building; the
-    lead items (docs/pool.md §11); Clear the Build's Caches; Clear Caches Deeply; Open the Build Log; Open
-    the Map; Copy the Map's Address; Open/Copy the Build Page.
+  - **Its menu** (right-click, or "⋯"): the state and caches; Pause/Resume Building; the
+    lead items (docs/pool.md §11); Clear the Build's Caches; Clear Caches Deeply; Open the Build
+    Log; Show the Scenic Window; Quit. Nothing of the map server's (task #874).
   - Its timers run in the run loop's common modes, so it updates while a menu is open
     (`scenic-status --menu-proof`).
   - **The input check** (docs/inputs.md §4.7): a held input badges the icon, its menu has a line per

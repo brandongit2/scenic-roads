@@ -33,7 +33,7 @@ const SECS = Number(args.secs ?? 5);
 const RUNS = String(args.runs ?? 'pan,pinch,orbit,hover').split(',');
 /** The camera's least height over the ground under it and over the highest ground in view (m, as drawn). */
 const CLEAR_M = Number(args['clear-m'] ?? 200);
-const URL = String(args.url ?? 'http://localhost:7311/');
+const URL = String(args.url ?? 'https://map.brandontsang.net/');
 
 // ---- CDP plumbing --------------------------------------------------------------------------
 const target = await (await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: 'PUT' })).json();

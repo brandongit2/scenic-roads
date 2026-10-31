@@ -202,7 +202,7 @@ of the lead's, between restarts and sleeps.
 - **Acknowledgements are per term** (`journal::Mine`): each loop a member tells the current lead of
   its entries that lead hasn't acknowledged. A lead acknowledges an entry once a saved snapshot
   names it.
-- **Readers** (the jobs' `Out`, the agent's plan and status, GC, the map server, the CLI and the
+- **Readers** (the jobs' `Out`, the agent's plan and status, GC, the Mac mini's map server, the CLI and the
   checks) read the current term's snapshot (`Records::now`, `out::records_now`: `Records::newest`,
   falling back to an earlier term's; before any term, today's files `manifest.json`, `jobs.json`,
   `pending.json` and `sizes.json`, which a Mac's own jobs write without a pool; no term found once

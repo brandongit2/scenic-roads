@@ -1,8 +1,8 @@
 # The user's surface
 
 **The map is always there.**
-- A launcher (`tools/launcher`, a LaunchAgent) keeps the server running on both Macs; an idle server
-  loads nothing. The user opens `http://localhost:7311`.
+- A launcher (`tools/launcher`, a LaunchAgent) keeps the server running on the Mac mini; an idle
+  server loads nothing. The user opens https://map.brandontsang.net (docs/macs.md, Devices).
 - Zoomed out, every road is drawn at every zoom. The water zoomed out looks as full detail rendered
   and shrunk would: an island or lake smaller than a pixel is as faint as its share of the pixel,
   never exaggerated nor dropped, with the coastal shading full detail gives it (docs/steps.md §4).
@@ -14,8 +14,8 @@
   no job running; with one, the app asks "Finish This Job First" (nothing new taken, the app quits
   when it ends) or "Stop Now" (the job given back, its work kept on disk); a logout, restart or
   shutdown takes Stop Now without asking. The lead quitting hands nothing over: the build waits for
-  it, the members finishing their jobs (`control::Quit`; the lead is fixed, docs/pool.md §6). The map server stays a service of its own: Scenic's window and menu show it
-  and start or stop it when asked, never on opening or quitting. On an update Scenic copies the
+  it, the members finishing their jobs (`control::Quit`; the lead is fixed, docs/pool.md §6). The map server is no part of Scenic: a service of its own on the Mac mini
+  alone (task #874). On an update Scenic copies the
   installed version's Scenic.app over itself and quits; a helper it starts (the new bundle's
   binary, `--reopen`) waits for it to end, then opens the new app (without its window) after a
   second, checks that it runs, and retries, backing off, for about two minutes (an `open` sent

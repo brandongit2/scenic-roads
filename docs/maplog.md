@@ -36,7 +36,7 @@ what step 6 changes:
 shadow's writer keeps: the map, the batches it appended or replayed at its open (64 MB of them at
 most; a `since` older than those, or past the head, is told to reset), the cursors heard (saved with
 the log's snapshot) and the snapshot made once per `seq`; no NAS, no disk. A long poll looks each
-50 ms whether a batch came. The map server on the declared lead (the Mac mini) follows it
+50 ms whether a batch came. The map server (on the Mac mini alone, task #874) follows it
 (`crates/server/src/maplog.rs`, docs/macs.md): batches applied in place to its own map (no reader holds it), the catalogue made of
 it handed over whole; the NAS's snapshot with the lead away; its map kept in
 `~/Library/Caches/scenic/map/`. Where it departs from §5 and §6.1:
@@ -47,11 +47,10 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
   served only while `state/pool/map-serve` is on (docs/building.md §2). Serving, the newer of the
   map's catalogue and the catalogues' is served, and never an older one than served (a lead away,
   or restored behind the map held, never takes a server back), but for the switch turned off.
-- **Only on the declared lead until #874:** the server still runs inside every Mac's app, and the
-  map costs it about 0.5 GB resident (catalogue 818's NAS snapshot: 0.76 GB at its decode, about
+- **Wherever the server runs:** the Mac mini alone since #874, so no gate of its own. The map
+  costs it about 0.5 GB resident (catalogue 818's NAS snapshot: 0.76 GB at its decode, about
   1.1 GB with the catalogue made of it and the one before still held, 1.45 GB while the map is
-  saved), so the server follows the log only on the Mac whose host is
-  `state/build/lead-member.json`'s; the other Macs read the catalogues alone.
+  saved).
 - **Switching on:** each check logs `maplog: the map at N is catalogue N`; switch on after that
   line for at least three publishes in a row, none with `maplog: MISMATCH`, one of them across a
   lead restart.

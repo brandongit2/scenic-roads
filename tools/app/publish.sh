@@ -1,8 +1,9 @@
 #!/bin/zsh
 # Publish the app (docs/building.md §2, App publishing): build the server and the web app, run the
 # tests, smoke-test the new server on a spare port against the NAS's current catalogue, then copy it
-# to the NAS (app/<version>/) and point app/current.json at it. Both Macs' servers pick it up within
-# five minutes and restart into it when their map is idle.
+# to the NAS (app/<version>/) and point app/current.json at it. Every Mac's agent copies it within
+# five minutes (pipeline::appupdate) and restarts into it by its update drain; the Mac mini's map
+# server, the only one, restarts into it once the map has been idle a minute.
 #
 #   tools/app/publish.sh              build, test, publish
 #   tools/app/publish.sh --rollback   point app/current.json back at the previous version
@@ -231,7 +232,7 @@ sb=$(mktemp -d)
 # with it). Signed here before the copy: codesign refuses files on the NAS.
 codesign -s "$sign_id" -i local.scenic.server --force target/release/server
 codesign -s "$sign_id" -i local.scenic.agent --force target/release/scenic
-# Scenic.app (tools/status: the menu bar item, the build service, the map server's controls), built
+# Scenic.app (tools/status: the menu bar item and the build service), built
 # and signed on this Mac (codesign refuses a bundle on the NAS, whose SMB share adds Finder info),
 # then copied without extended attributes (none to keep as AppleDouble files). Each Mac's copy in
 # /Applications replaces itself with it.

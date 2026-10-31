@@ -1,7 +1,9 @@
 #!/bin/zsh
 # Install the published app on this Mac (once; after that it updates itself): copy app/<current
 # version>/ from the NAS, point ~/Library/Application Support/scenic/app/current at it, set up the
-# map server (its run file; its launchd job started), and copy Scenic.app to /Applications.
+# map server on the Mac that serves the map (the Mac mini: the one tools/caddy/install.sh gave the
+# map's name, ~/.config/scenic/names; its run file, its launchd job started; on any other Mac an
+# old one is removed), and copy Scenic.app to /Applications.
 # Opening Scenic then starts this Mac's build service (its agent, a member of the pool:
 # docs/pool.md), which it registers as its own login item; Scenic replaces itself on each update.
 # The menu bar item's and the agent's login items from before Scenic was an app
@@ -63,17 +65,24 @@ fi
 PATH="${uv:h}:$PATH" "$HOME_S/app/$version/scenic-build" pyenv --dem "$HOME_S/app/$version/dem" >/dev/null
 # -h: replace the link itself, not something inside the folder it points to.
 ln -sfh "$version" "$HOME_S/app/current"
-# The map server: a service of its own (Scenic shows it, and starts or stops it when asked): its
-# run file, its job restarted, or loaded if it was stopped (Scenic's Stop unloads it).
-# The mirror's reserve (the free space downloads leave) is the Regions panel's setting, kept in the
-# app's folder (reserve.json; 30 GB unless set), not the run file's.
-printf '%s\n' "$HOME_S/app/current/server" --web "$HOME_S/app/current/web" --fonts "$HOME_S/app/current/fonts" > "$HOME_S/run/server"
+# The map server, a launchd service of its own on the map's Mac alone (crates/server/src/retire.rs
+# says which: a name in ~/.config/scenic/names): its run file, its job restarted, or loaded. On
+# another Mac, one from before #874 is unloaded and removed (a server started there retires itself
+# too, deleting what it kept). The mirror's reserve is the Regions panel's setting (reserve.json).
 server_plist="$HOME/Library/LaunchAgents/local.scenic.server.plist"
-if launchctl print gui/$uid/local.scenic.server >/dev/null 2>&1; then
-  launchctl kickstart -k gui/$uid/local.scenic.server
+if grep -Eqv '^[[:space:]]*(#|$)' "$HOME/.config/scenic/names" 2>/dev/null; then
+  printf '%s\n' "$HOME_S/app/current/server" --web "$HOME_S/app/current/web" --fonts "$HOME_S/app/current/fonts" > "$HOME_S/run/server"
+  if launchctl print gui/$uid/local.scenic.server >/dev/null 2>&1; then
+    launchctl kickstart -k gui/$uid/local.scenic.server
+  else
+    make_plist server Interactive
+    launchctl bootstrap gui/$uid "$server_plist"
+  fi
+  map_said="the map is at http://localhost:7311"
 else
-  make_plist server Interactive
-  launchctl bootstrap gui/$uid "$server_plist"
+  launchctl bootout gui/$uid/local.scenic.server 2>/dev/null || true
+  rm -f "$server_plist" "$HOME_S/run/server"
+  map_said="the map is the Mac mini's: https://map.brandontsang.net"
 fi
 # A running Scenic ended before it's replaced or removed (SIGTERM: it quits without asking, its build
 # service left as it is).
@@ -110,4 +119,4 @@ done
 rm -rf /Applications/Scenic.app
 ditto "$HOME_S/app/current/Scenic.app" /Applications/Scenic.app
 open /Applications/Scenic.app
-echo "installed $version; Scenic is open (its build service starting); the map is at http://localhost:7311"
+echo "installed $version; Scenic is open (its build service starting); $map_said"

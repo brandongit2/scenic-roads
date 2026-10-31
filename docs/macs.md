@@ -1,6 +1,6 @@
 # Macs
 
-Each Mac's agent, server and mirror, and the devices the map opens on. The pool itself is `docs/pool.md`; tasks for any worker, `docs/workers.md`.
+Each Mac's agent, the map server and its mirror (on the Mac mini alone), and the devices the map opens on. The pool itself is `docs/pool.md`; tasks for any worker, `docs/workers.md`.
 
 **Each Mac's agent.** Every Mac runs the agent (`scenic agent`, set up by `tools/app/install.sh`), a
 member of the pool (docs/building.md §2, The pool): the Mac mini's leads (the declared lead,
@@ -85,7 +85,11 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     stages' timings (`unit-stages.json`), what a z6 tile kept that isn't on the NAS yet, and the
     coverage as last read (`coverage/<hash16>.cov`, by the regions' accepted version).
   - Nothing is deleted through a link, nor anything in the NAS's project folder.
-- **Its own map** is served from the NAS and what it has downloaded (Mirror).
+- **No map server** (task #874): the map is the Mac mini's (Devices). An installed server started
+  on any other Mac retires itself (`crates/server/src/retire.rs`): it deletes what only it kept
+  there (`mirror/`, `idx/`, `downloads.json`, `reserve.json`, `map-page`, `accepted/`, `names/`,
+  `region-areas.json`, `run/server`, `server-app`, `~/Library/Caches/scenic/map`), removes its
+  LaunchAgent (`local.scenic.server`) and unloads it.
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free) and copies the planet to
   the SSD when there's room, else reads it from the NAS.
 - **What a z6 tile keeps for its later runs** is on the NAS (`cache/`), shared by every Mac: its canopy
@@ -127,15 +131,17 @@ and codesign.
    yes), since the build's `ssh` runs in batch mode and refuses an unknown host. Check:
    `ssh -o BatchMode=yes brandontsang@fishandchips.local ls /volume1/personal/projects/scenic-roads`.
    The share `/Volumes/personal` is `/volume1/personal` on the NAS.
-6. `tools/app/install.sh` (it also creates the map server's LaunchAgent), then open Scenic.app once.
-7. Allow `scenic` and `server` through the firewall (pool.md §6.8).
+6. `tools/app/install.sh`, then open Scenic.app once. On the map's Mac (the one
+   `tools/caddy/install.sh` gave the map's name: a name in `~/.config/scenic/names`) it also creates
+   the map server's LaunchAgent; on any other it removes one.
+7. Allow `scenic` (and on the map's Mac `server`) through the firewall (pool.md §6.8).
 8. `scenic memory` says the build's memory (total − 4 GB unless set); the room target is the
    owner's choice.
 
 **App Macs (both laptops).**
 - **The launcher** (`tools/launcher/launcher.c`) runs the command in `~/Library/Application
   Support/scenic/run/<name>` and restarts it when it exits: `bin/scenic-launcher server` (the map
-  server's LaunchAgent), and Scenic.app's own copy running `agent` (the build service; there an
+  server's LaunchAgent, on the Mac mini alone), and Scenic.app's own copy running `agent` (the build service; there an
   agent exiting with `QUIT_EXIT` ends it cleanly, so launchd leaves it stopped). macOS's Local
   Network privacy counts the agent as the app's launcher (its launchd program), not as the app
   (the app's own entry stays undecided while the agent connects): the launcher carries an embedded
@@ -156,12 +162,17 @@ and codesign.
   constraint, the next, 30 s later, takes); `sandbox.sh clean <dir>`. A server started
   any other way (such as the desktop app's preview) waits on macOS's network-volume prompt; test
   servers run from the shell.
-- **The updater** checks the NAS's `app/current.json` every five minutes, copies a newer app locally
-  checking every file's SHA-256, and restarts into it when the map is idle. It keeps the current
-  version, its own, the agent's and one to roll back to.
+- **The updater** (`pipeline::appupdate`): every Mac's agent checks the NAS's `app/current.json`
+  every five minutes, copies a newer app locally checking every file's SHA-256, points
+  `app/current` at it and restarts into it by its update drain; on the Mac mini the map server
+  checks too (so the map updates with the agent stopped), one check at a time (`app/update.lock`),
+  and restarts into the new version once the map has been idle a minute. Pruning keeps the current
+  version, the checker's, the agent's and its jobs', the map server's (`server-app`) and one to roll
+  back to.
 - The app reads the current and the previous form of every file kind.
 
-**Server.**
+**Server** (the Mac mini alone: a plain LaunchAgent, `local.scenic.server`, no window or menu;
+installed by `tools/app/install.sh`, updated by the updater).
 - **Finding the NAS:** `getfsstat(MNT_NOWAIT)`, never `statfs`. At home (`fishandchips.local`
   answers on 445) it mounts the share with `osascript` and the Keychain, at most every five minutes,
   by the LAN name when the Keychain has it, else the bare (Tailscale) name. `nsmb.conf` makes it a
@@ -245,15 +256,14 @@ and codesign.
   index rebuilt later.
 - **Offline start:** the last catalogue and the pack indexes read so far stay local.
 - **In use** means any request in the last ten minutes except the status polls (`/api/catalog`,
-  `/api/ping`, `/api/build`, `/api/downloads`) and the search's `poll=1`. It checks for a newer
+  `/api/ping`, `/api/downloads`) and the search's `poll=1`. It checks for a newer
   catalogue every 10 s while the lead's heartbeat (`state/status.json`, read at most every 30 s)
   says a build runs, else every 30 s in use and every 10 minutes otherwise; each check is one
   listing of `catalog/`. On the lead's Mac the agent also POSTs `/api/catalog/refresh` (this Mac's
   own requests alone) after writing a catalogue, so it is adopted at once. A mirror's copy stopped by a
   new catalogue resumes under it (copies are kept by content name).
-- **The map's log** (docs/maplog.md §8, step 3; `crates/server/src/maplog.rs`): beside the catalogues,
-  on the declared lead alone (its host `state/build/lead-member.json`'s, the Mac mini; the map
-  takes ~0.5–1.5 GB, until #874 moves the server there) a thread follows the lead's log over HTTP (`GET /map/changes`, a 30-s long poll, its cursor
+- **The map's log** (docs/maplog.md §8, step 3; `crates/server/src/maplog.rs`): beside the catalogues
+  (the map takes ~0.5–1.5 GB) a thread follows the lead's log over HTTP (`GET /map/changes`, a 30-s long poll, its cursor
   `server/<host>`), applying each answer's batches to its own map (checked by their digest) and the
   lead's snapshot on a reset; with the lead away, the NAS's newest `map/<seq>.json.zst` when it
   holds none or an older one. Its map is kept in `~/Library/Caches/scenic/map/current.json.zst`
@@ -270,7 +280,7 @@ and codesign.
   the languages spoken there and the spoken-languages raster (docs/names.md). The basemap's come from the
   catalogue, so its 304s read nothing.
 
-**Mirror, per Mac** (`store::mirror`, `store::pieces`, `crates/server/src/downloads.rs`).
+**Mirror, the Mac mini's** (`store::mirror`, `store::pieces`, `crates/server/src/downloads.rs`).
 - **Only what's downloaded.** The map reads a file from the Mac when it's there, else from the NAS.
   What's downloaded is this Mac's alone (`downloads.json` in its home).
 - **The World, zoomed out:** the build's worldwide files (`global/`: only those a step makes, the
@@ -338,11 +348,11 @@ and codesign.
   only under an exclusive lock taken without waiting, so a file a job holds stays until a later
   sync.
 - **Pack indexes** are cached as they're read (`idx/`), for offline starts.
-- `/api/downloads` gives the panel its state; the menu bar says what's downloaded.
+- `/api/downloads` gives the panel its state.
 
-**Devices: an iPhone, an iPad.** Any Mac's map opens on them over the tailnet; the address they keep
-is the M6's (always on): **https://map.brandontsang.net**. Each Mac keeps its own map server for
-itself.
+**Devices: an iPhone, an iPad, the other Macs.** The map is the M6's (always on), over the
+tailnet: **https://map.brandontsang.net**, or `tailscale serve`'s
+`https://mac-mini-de-brandon.<tailnet>.ts.net:8443`. No other Mac runs a map server (task #874).
 - **map.brandontsang.net** (`tools/caddy`): its DNS record (Cloudflare, DNS only) is the M6's
   Tailscale address, so only the tailnet reaches it. Caddy on the M6 (`brew install caddy`; the
   LaunchAgent `local.scenic.caddy` from `tools/caddy/install.sh`, log
@@ -363,8 +373,8 @@ itself.
   An `Origin` must be the map's own page or this Mac's; CORS only to this Mac's own pages.
 - **The address** is `<home>/map-page` (`crates/server/src/remote.rs`): the first name in
   `~/.config/scenic/names` (https), else HTTPS where `tailscale serve --bg --https=8443
-  http://127.0.0.1:7311` proxies the server, else the tailnet address. The menu's Copy the Map's
-  Address and `scenic status` give it. Only a proxy that says so (`X-Forwarded-For`) keeps its
+  http://127.0.0.1:7311` proxies the server, else the tailnet address. `scenic status` on the
+  mini gives it. Only a proxy that says so (`X-Forwarded-For`) keeps its
   requests from passing for this Mac's own.
 - **An app** (`web/public/manifest.webmanifest`): Add to Home Screen. Its service worker
   (`web/public/sw.js`, HTTPS only, never on localhost) keeps the page, its scripts and the catalogue's

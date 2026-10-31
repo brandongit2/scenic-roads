@@ -32,7 +32,7 @@
 #   gate-two-macs.sh menu-accept <dir> <unit> <id>…  the menu bar item's Accept: its ask file in this
 #                                               Mac's agent's folder, as the item writes it (or run
 #                                               the item itself: SCENIC_HOME=<dir> scenic-status,
-#                                               with a map server on <dir> for its /api/build)
+#                                               its status from <dir>/app/current/scenic menu)
 #   gate-two-macs.sh lead <folder> <member>     the lead moved: the scratch folder's declaration
 #                                               (state/build/lead-member.json) names <member>
 #
