@@ -1584,12 +1584,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   as `POST /pool/view` answers, docs/coordination.md step 4): the lead's status, its coordinator's view, the pause (on the lead the
   answer's is its coordinator's own), the Macs' addresses, and the forecast's input and the regions
   when their time changed; with the lead down, the last view is kept and the answer says its age
-  (`view_age_s`) and since when the lead isn't reached (`view_unreached`). With a lead that doesn't
-  serve it (an older app's 404) or none known, the older path: the lead's `state/status.json`, the
-  term's `view.json`, `forecast-input.json` and `regions.json` (again only when their time
-  changes), `state/build/pause.json` (also alone each second between the full reads; its absence is
-  no pause) and each member's heartbeat (the lead's status's `beats`, an older app's from
-  `state/pool/members/<id>.json`), read on the NAS. Another thread reads, every 12 s at most, by
+  (`view_age_s`) and since when the lead isn't reached (`view_unreached`). Another thread reads, every 12 s at most, by
   known name (no listing), what each member's history
   file of the last 7 days (today's and the six before: `pageview::DAYS`) gained since the offset
   it last read to (whole lines, 4 MiB of a file a read at most, `CHUNK_MAX`, the rest the next
@@ -1601,7 +1596,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   `cat` of the same files took 4.6 s), its peak memory about 20 MB; each read after it 0.13–0.15 s;
   `/work/history` with all 9 719 events about 1.9 MB of JSON, made in ~20 ms. The reads are off
   the answers' path, so a page waits only on its first (the 503s above). The agent's loop hands it only what it
-  holds already (the term and the members' ids from the pool's driver, this Mac's app): no NAS
+  holds already (the members' ids from the pool's driver, this Mac's app): no NAS
   read on the loop, and this Mac's lanes worked out only while a page asks. Every read is done
   before the pageview's state is locked, and the results swapped in after, so a slow NAS never
   holds up an answer. The history is merged by time, writer and number, and numbered by this Mac

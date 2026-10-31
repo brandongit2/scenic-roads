@@ -5106,10 +5106,11 @@ mod http {
             return None;
         }
         let proxied = req.headers().contains_key("x-forwarded-host");
+        let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
         let pq = req.uri().path_and_query().map_or(path, |p| p.as_str());
         let pq =
             if pq == "/work" || pq.starts_with("/work?") { pq.replacen("/work", "/work/", 1) } else { pq.to_string() };
-        if let Some(to) = memberpage::location(&at, &pq, proxied) {
+        if let Some(to) = memberpage::location(&at, &pq, proxied, host) {
             return Some(
                 (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, to), (header::CACHE_CONTROL, "no-store".into())])
                     .into_response(),
@@ -10116,7 +10117,7 @@ mod tests {
         let (_d, b, w) = start_broker();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let lead = super::memberpage::PageAt::Lead {
-            url: "http://100.64.0.6:8090".into(),
+            urls: vec!["http://100.64.0.6:8090".into()],
             https: Some("https://mini.tail1.ts.net/work/".into()),
         };
         b.set_page_at(lead);
@@ -10174,7 +10175,7 @@ mod tests {
         let (code, _, v) = send(&addr, "POST", "/work/swarm", None, &[], &serde_json::json!({}));
         assert_eq!(code, 503, "{v}");
         // (The lead back: the redirect again.)
-        b.set_page_at(super::memberpage::PageAt::Lead { url: "http://100.64.0.6:8090".into(), https: None });
+        b.set_page_at(super::memberpage::PageAt::Lead { urls: vec!["http://100.64.0.6:8090".into()], https: None });
         assert!(get("/work/").starts_with("HTTP/1.1 307"));
     }
 
@@ -10291,7 +10292,7 @@ mod tests {
         let get = || send(&addr, "GET", "/work/", None, &[], &serde_json::json!({}));
         assert_eq!(get().0, 200, "the lead not known: its own page");
         assert_eq!(ask("/work/swarm", None), 503);
-        v.set_page_at(super::memberpage::PageAt::Lead { url: "http://100.64.0.6:8090".into(), https: None });
+        v.set_page_at(super::memberpage::PageAt::Lead { urls: vec!["http://100.64.0.6:8090".into()], https: None });
         assert_eq!(get(), (307, "http://100.64.0.6:8090/work/".into(), serde_json::Value::Null));
         assert_eq!(ask("/work/steps", None), 307);
         let far = |path: &str| {
@@ -10346,7 +10347,12 @@ mod tests {
         let pv = crate::agent::pageview::PageView::new();
         pv.set_inputs(crate::agent::pageview::Inputs { root: Some(nas.clone()), ..Default::default() });
         pv.touch();
-        assert!(pv.tick(&crate::agent::pageview::NasFiles(nas.clone()), unix_now()));
+        assert!(crate::agent::pageview::tests::read(
+            &pv,
+            &root,
+            &crate::agent::pageview::NasFiles(nas.clone()),
+            unix_now()
+        ));
         c.set_pageview(pv);
         let pause = || send(&addr, "POST", "/work/swarm", None, &[], &serde_json::json!({})).2["pause"].clone();
         assert!(pause().is_null());
@@ -10848,7 +10854,6 @@ mod tests {
         let pv = crate::agent::pageview::PageView::new();
         pv.set_inputs(crate::agent::pageview::Inputs {
             root: Some(nas.clone()),
-            term: 7,
             members: vec!["m-lead".into()],
             ..Default::default()
         });
@@ -10874,7 +10879,7 @@ mod tests {
         };
         let ev = serde_json::to_string(&done).unwrap() + "\n";
         put(&format!("state/coord/history/{day}/m-lead.jsonl"), ev.as_bytes());
-        assert!(pv.tick(&crate::agent::pageview::NasFiles(nas.clone()), now));
+        assert!(crate::agent::pageview::tests::read(&pv, &root, &crate::agent::pageview::NasFiles(nas.clone()), now));
         let a = ask();
         let n = pv.history(0, 10).unwrap()["events"][0]["seq"].as_u64().unwrap();
         assert_ne!(n, 40);
@@ -10904,7 +10909,6 @@ mod tests {
         let pv = crate::agent::pageview::PageView::new();
         pv.set_inputs(crate::agent::pageview::Inputs {
             root: Some(nas.clone()),
-            term: 7,
             members: vec!["m-a".into(), "m-b".into()],
             ..Default::default()
         });
@@ -10912,7 +10916,7 @@ mod tests {
         c.set_pageview(pv.clone());
         // (Before the pageview's first run: the coordinator's.)
         assert_eq!(post(serde_json::json!({ "at": now }))["at"], 5);
-        assert!(pv.tick(&crate::agent::pageview::NasFiles(nas.clone()), now));
+        assert!(crate::agent::pageview::tests::read(&pv, &root, &crate::agent::pageview::NasFiles(nas.clone()), now));
         crate::agent::pageview::tests::settle(&pv);
         let sw = pv.swarm().unwrap();
         let at = sw["agent"]["forecast"]["at"].as_u64().unwrap();

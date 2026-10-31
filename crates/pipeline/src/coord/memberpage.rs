@@ -1,6 +1,7 @@
 //! The build page on a member's port (docs/roles.md §3.3): the page is the lead's alone. A
 //! member's broker answers the page and its data and asks, from a page of its own origin (or none:
-//! a browser's address bar, the menu bar's web view), with a 307 to the lead's same path and query,
+//! a browser's address bar, the menu bar's web view), with a 307 to the lead's same path and query
+//! at its address of the same network as the one asked (`location`),
 //! while the lead answers its beats and says it serves its members' pages (`beats::PAGE`). Without
 //! such a lead (none known, not answering, or an older app's) it answers `/work/` with a small page
 //! of its own: this Mac's status, from its `helper.json`, and since when the lead isn't reached.
@@ -14,9 +15,10 @@ use std::path::Path;
 /// Where the build page a member's port is asked for is.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PageAt {
-    /// The lead's, at its coordinator's addresses (`url`: its first, the tailnet's first; `https`:
-    /// its HTTPS page when `tailscale serve` proxies it, `Contact::page`).
-    Lead { url: String, https: Option<String> },
+    /// The lead's, at its coordinator's addresses (`urls`: its contact's, the tailnet's then its
+    /// LAN name, crate::net::urls; `https`: its HTTPS page when `tailscale serve` proxies it,
+    /// `Contact::page`).
+    Lead { urls: Vec<String>, https: Option<String> },
     /// The lead not reached since `since` (unix s; None: not since this agent started), `lead` its
     /// name when known: this Mac's own page.
     Away { lead: Option<String>, since: Option<u64> },
@@ -58,15 +60,34 @@ pub fn answer(path: &str, get: bool, page_file: impl Fn(&str) -> bool) -> Answer
     }
 }
 
-/// The lead's address for `path_and_query` (`proxied`: asked through `tailscale serve`, so its
-/// HTTPS page when it has one).
-pub fn location(lead: &PageAt, path_and_query: &str, proxied: bool) -> Option<String> {
-    let PageAt::Lead { url, https } = lead else { return None };
+/// The lead's address for `path_and_query`, as reached the way this request reached this Mac
+/// (`host`, its `Host`), so the device that asked can open it (any device, the owner's rule): asked
+/// through `tailscale serve` (`proxied`), its HTTPS page when it has one; at a tailnet address
+/// (100.64.0.0/10) or name (`.ts.net`), its tailnet address; at a LAN address or `.local` name
+/// (a device on the LAN, perhaps without Tailscale), its LAN name; else (this Mac itself, the menu
+/// bar's web view) its first.
+pub fn location(lead: &PageAt, path_and_query: &str, proxied: bool, host: &str) -> Option<String> {
+    let PageAt::Lead { urls, https } = lead else { return None };
+    let name = host.rsplit_once(':').filter(|(h, p)| !h.ends_with(']') || p.is_empty()).map_or(host, |(h, _)| h);
+    let name = name.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    let ip = name.parse::<std::net::IpAddr>().ok();
+    let tailnet = |u: &str| u.split("://").nth(1).and_then(|a| a.split(':').next()).is_some_and(is_tailnet);
+    let lan = |u: &str| u.split("://").nth(1).and_then(|a| a.split(':').next()).is_some_and(|h| h.ends_with(".local"));
+    let pick = |f: &dyn Fn(&str) -> bool| urls.iter().find(|u| f(u)).cloned();
     let base = match https.as_deref().filter(|_| proxied) {
-        Some(h) => h.strip_suffix("work/").unwrap_or(h),
-        None => url.as_str(),
+        Some(h) => h.strip_suffix("work/").unwrap_or(h).to_string(),
+        None if is_tailnet(&name) || name.ends_with(".ts.net") => pick(&tailnet).or_else(|| urls.first().cloned())?,
+        None if name.ends_with(".local") || ip.is_some_and(|ip| !ip.is_loopback()) => {
+            pick(&lan).or_else(|| urls.first().cloned())?
+        }
+        None => urls.first()?.clone(),
     };
     Some(format!("{}/{}", base.trim_end_matches('/'), path_and_query.trim_start_matches('/')))
+}
+
+/// Whether `host` is a tailnet address (100.64.0.0/10).
+fn is_tailnet(host: &str) -> bool {
+    host.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]))
 }
 
 /// This Mac's own page (`home`: its agent's folder, its `helper.json`), the lead away.
@@ -154,11 +175,23 @@ mod tests {
         for p in ["/work/live", "/work/ask", "/work/beat", "/task/x"] {
             assert_eq!(answer(p, false, file), Answer::Here, "{p}");
         }
-        let lead =
-            PageAt::Lead { url: "http://100.1.2.3:8090".into(), https: Some("https://mini.tail.ts.net/work/".into()) };
-        assert_eq!(location(&lead, "/work/?view&mac=m1", false).unwrap(), "http://100.1.2.3:8090/work/?view&mac=m1");
-        assert_eq!(location(&lead, "/work/dash.js", true).unwrap(), "https://mini.tail.ts.net/work/dash.js");
-        assert!(location(&PageAt::default(), "/work/", false).is_none());
+        let lead = PageAt::Lead {
+            urls: vec!["http://100.71.2.3:8090".into(), "http://mini.local:8090".into()],
+            https: Some("https://mini.tail.ts.net/work/".into()),
+        };
+        let at = |host: &str, proxied: bool| location(&lead, "/work/?view&mac=m1", proxied, host).unwrap();
+        // (Each device sent the way it came: the tailnet, the LAN (a phone without Tailscale), this
+        // Mac itself, `tailscale serve`.)
+        assert_eq!(at("100.80.0.1:8090", false), "http://100.71.2.3:8090/work/?view&mac=m1");
+        assert_eq!(at("m1.tail.ts.net:8090", false), "http://100.71.2.3:8090/work/?view&mac=m1");
+        assert_eq!(at("m1.local:8090", false), "http://mini.local:8090/work/?view&mac=m1");
+        assert_eq!(at("192.168.1.20:8090", false), "http://mini.local:8090/work/?view&mac=m1");
+        assert_eq!(at("127.0.0.1:8090", false), "http://100.71.2.3:8090/work/?view&mac=m1");
+        assert_eq!(at("m1.tail.ts.net", true), "https://mini.tail.ts.net/work/?view&mac=m1");
+        // (A lead with one address: that one, whichever way.)
+        let one = PageAt::Lead { urls: vec!["http://100.71.2.3:8090".into()], https: None };
+        assert_eq!(location(&one, "/work/", true, "m1.local").unwrap(), "http://100.71.2.3:8090/work/");
+        assert!(location(&PageAt::default(), "/work/", false, "x").is_none());
     }
 
     #[test]

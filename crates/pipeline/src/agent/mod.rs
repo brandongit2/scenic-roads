@@ -7559,11 +7559,10 @@ impl Agent {
                 self.page_acts = acts;
             }
         }
-        // (The members' ids and the term, as the run holds them: no NAS read here. Their hosts are
+        // (The members' ids, as the run holds them: no NAS read here. Their hosts are
         // the pageview's to read, as it reads, while a page asks.)
         let Some(p) = self.pool_seen.as_ref().filter(|_| self.pool.is_some()) else { return };
         let members: Vec<String> = p.members.clone();
-        let term = p.gates.term;
         // (This Mac's lanes, only while a page asks: each slot's done targets are a read.)
         let own = if self.pageview.wanted(now_s()) {
             (0..self.slots.len())
@@ -7576,7 +7575,6 @@ impl Agent {
         let lead: std::sync::Arc<dyn pageview::Lead> = coord;
         self.pageview.set_inputs(pageview::Inputs {
             root: Some(root.clone()),
-            term,
             members,
             app: self.app.clone(),
             own,
@@ -7620,15 +7618,15 @@ impl Agent {
     }
 
     /// Where a member's port sends the build page at `now` (crate::coord::memberpage): the lead's
-    /// coordinator's first address (and its HTTPS page) while the lead answers this Mac's beats
+    /// coordinator's addresses (and its HTTPS page) while the lead answers this Mac's beats
     /// saying it serves its members' pages (crate::coord::beats::PAGE); else this Mac's own page,
     /// with the lead's name and since when it last answered so.
     fn page_at(&self, now: u64) -> crate::coord::memberpage::PageAt {
         use crate::coord::memberpage::PageAt;
         let served = self.beats.as_ref().map_or(Err(None), |b| b.lead_page(now));
-        let url = self.client.as_ref().and_then(|c| Some((c.urls().first()?.clone(), c.page())));
+        let url = self.client.as_ref().map(|c| (c.urls(), c.page())).filter(|(u, _)| !u.is_empty());
         match (served, url) {
-            (Ok(()), Some((url, https))) => PageAt::Lead { url, https },
+            (Ok(()), Some((urls, https))) => PageAt::Lead { urls, https },
             (served, _) => PageAt::Away {
                 lead: self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()?.lead.as_ref()).map(|l| l.host.clone()),
                 since: served.err().flatten(),

@@ -108,9 +108,12 @@ The page is the lead's alone (built, step 4: `coord::memberpage`). A member's po
 or with tasks brokered by every member off a viewer alone) answers `/work/`, the page's files and
 its data and asks (`/work/swarm`, `/work/history`, `/work/catalogs`, `/work/built`,
 `/work/regions`, `/work/pause`, `/work/act`, `/work/settings`, ...) from a page of its own origin
-or none (an address typed, the menu bar's web view) with a 307 to the lead's same path and query:
-the lead's coordinator's first address (its contact's, the tailnet's first), or its HTTPS page
-when the request came through `tailscale serve`. Answered there still: `/work/live` and
+or none (an address typed, the menu bar's web view) with a 307 to the lead's same path and query,
+at the lead's address of the network the request came by (`memberpage::location`), so any device
+that reached the member reaches the lead: its HTTPS page when the request came through
+`tailscale serve`; its tailnet address for a request to a tailnet address or `.ts.net` name; its
+LAN name (`<host>.local`) for one to a LAN address or `.local` name (a device without Tailscale);
+else (this Mac itself, the menu bar's web view) its first. Answered there still: `/work/live` and
 `/work/settings` asked by the lead's page from its origin (CORS), the jobs' calls (their key), and
 `sw.js` (an installed page updates its worker from its own origin; the worker follows a redirect
 at once, never answering from what it kept). The build's own asks (pause, inputs, cancel and
@@ -193,7 +196,9 @@ Each step ships alone and keeps the build running; each ends with its tests.
    page's views (pageview, Catalogues, built tiles) only beside its coordinator; a member's port is
    told where the page is each loop (`Agent::member_page`). Cut: `coord::Pages`, a member's page
    asks passed on by its agent (`set_forward`, `retry_blocked`), the Catalogues map's member
-   source (`cataloguesview::Lead`), the popover's keep-warm ask.
+   source (`cataloguesview::Lead`), the popover's keep-warm ask; in review, the pageview's ways a
+   member's page had: the lead's view by HTTP (`pageview::ByHttp`) and the older apps' path (the
+   lead's files read on the NAS: `nas_lead_files`, `refresh_pause`, `by_lead`).
 5. **The menu without the NAS** (§3.4), after #878 step 3: the beat's answer saved as
    `lead-view.json`; `scenic menu` reads it. Tests: `menu_reads_the_lead_from_the_beat`,
    `menu_works_with_the_nas_hung` (slow-NAS fake).

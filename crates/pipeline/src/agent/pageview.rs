@@ -1,23 +1,19 @@
-//! The build page's data on this Mac (docs/pool.md §10, task #409): in the pool, every Mac's port
-//! 8090 answers `/work/swarm` and `/work/history` the same way, from the lead's view and the
+//! The build page's data on the lead (docs/pool.md §10, task #409; the page is the lead's alone,
+//! docs/roles.md §3.3): `/work/swarm` and `/work/history` from its coordinator's view and the
 //! members' history files.
 //!
 //! While a page has asked in the last `ASKED_FOR_S`, a thread of the agent (`spawn`) asks the
-//! lead's view every `LEAD_EVERY` (`tick_lead`; `POST /pool/view`, docs/coordination.md step 4: the
-//! lead's own pageview asks its coordinator in process, `Lead`): its status, its coordinator's
-//! view, the pause, the Macs' addresses (each member's broker: where a page reads its
-//! `/work/live`), and the forecast's input and the page's regions when their time changed. A lead
-//! that can't be asked leaves the last view, said with its age. Another thread reads the NAS
+//! view of the lead's coordinator, in process, every `LEAD_EVERY` (`tick_lead`, `Lead`): its
+//! status, its coordinator's view, the pause, the Macs' addresses (each member's broker: where a
+//! page reads its `/work/live`), and the forecast's input and the page's regions when their time
+//! changed. A view that can't be had leaves the last one, said with its age. Another thread reads the NAS
 //! (`tick`), every `EVERY` at most, by known name (never a folder listing): what the members'
 //! history files of the last `DAYS` days (`state/coord/history/<day>/<member>.jsonl`) gained since
 //! the last read (from the offset read up to; from the start again when a file is now shorter; a
 //! day older than yesterday once read, not again), `CHUNK_MAX` of a file a read at most, the week's
-//! events kept (`data` dropped: the page doesn't show it), `history::KEEP_MAX` at most; and, while
-//! the lead doesn't serve its view (an older app's 404, or none known: the older apps' path, gone
-//! with step 4's gate), the lead's files there (`nas_lead_files`: `state/status.json`, the term's
-//! `view.json`, `forecast-input.json` and `regions.json`, `state/build/pause.json`, an older
-//! member's heartbeat). Every read is done before its state's lock is taken, so a slow NAS or lead
-//! never holds up an answer. It keeps one snapshot: those, the history merged and numbered here
+//! events kept (`data` dropped: the page doesn't show it), `history::KEEP_MAX` at most. Every read
+//! is done before its state's lock is taken, so a slow NAS never holds up an answer. It keeps one
+//! snapshot: the view, the history merged and numbered here
 //! (`epoch` names the numbering), and the forecast run here (`forecast::Record::forecast`) with its
 //! time brought to now, this Mac's own lanes as its slots are now (`Inputs::own`, worked out as the
 //! lead works out its own: forecast::SlotJob). The forecast runs on a thread of its own (`Runs`,
@@ -28,7 +24,7 @@ use super::forecast::{Forecast, Record, SlotJob, ToCome};
 use crate::coord::history::{self, Event, History, DAYS};
 use crate::coord::ViewAsk;
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -42,21 +38,21 @@ pub const EVERY: Duration = Duration::from_secs(12);
 /// step 4).
 pub const LEAD_EVERY: Duration = Duration::from_secs(2);
 
-/// Where the lead's view is asked (`/pool/view`, crate::coord::ViewAsk): its coordinator here (the
-/// lead's own page), else its address (`ByHttp`).
+/// Where the lead's view is asked (crate::coord::ViewAsk): its coordinator, in process (the page is
+/// the lead's alone, docs/roles.md §3.3); a test's fake.
 pub trait Lead: Send + Sync {
-    /// The view's answer to `ask`; None from a lead that doesn't serve it (an older app's: 404).
-    fn view(&self, ask: &ViewAsk) -> anyhow::Result<Option<Value>>;
+    /// The view's answer to `ask`.
+    fn view(&self, ask: &ViewAsk) -> anyhow::Result<Value>;
 }
 
 impl Lead for crate::coord::Coordinator {
-    fn view(&self, ask: &ViewAsk) -> anyhow::Result<Option<Value>> {
-        Ok(Some(self.pool_view(ask)))
+    fn view(&self, ask: &ViewAsk) -> anyhow::Result<Value> {
+        Ok(self.pool_view(ask))
     }
 }
 
-/// Where the lead's view is asked (`Inputs::lead`); None, the NAS's files are read (the older apps'
-/// path). Told apart by which `Lead` it is.
+/// Where the lead's view is asked (`Inputs::lead`); None, nowhere (no snapshot: the page's data
+/// answered by the coordinator from its memory). Told apart by which `Lead` it is.
 #[derive(Clone, Default)]
 pub struct LeadAt(pub Option<Arc<dyn Lead>>);
 
@@ -75,29 +71,13 @@ impl std::fmt::Debug for LeadAt {
     }
 }
 
-/// The lead at its address, with the build's key (a member's).
-pub struct ByHttp(pub crate::coord::client::Client);
-
-impl Lead for ByHttp {
-    fn view(&self, ask: &ViewAsk) -> anyhow::Result<Option<Value>> {
-        match self.0.post_json("/pool/view", &serde_json::to_value(ask)?)? {
-            (200, v) => Ok(Some(v)),
-            (404, _) => Ok(None),
-            (c, v) => anyhow::bail!("/pool/view: {c} {v}"),
-        }
-    }
-}
 /// A member's status older than this (s) isn't shown (as the lead's own `helpers` takes them).
 const HELPER_FRESH_S: u64 = 600;
 /// The most of a history file taken in a read (bytes); the rest is read the next time.
 pub const CHUNK_MAX: u64 = 4 << 20;
 
-/// Where the files are read: the NAS (`NasFiles`), or a test's.
+/// Where the history's files are read: the NAS (`NasFiles`), or a test's.
 pub trait Source {
-    /// The file at `path` (relative to the project's root) whole; None when it can't be read.
-    fn read(&self, path: &str) -> Option<Vec<u8>>;
-    /// Its time last changed.
-    fn mtime(&self, path: &str) -> Option<SystemTime>;
     /// What it holds from byte `offset` on, and where that is: from the start (0) when it's now
     /// shorter than `offset` (made again); and which file it is (`FileId`).
     fn read_from(&self, path: &str, offset: u64) -> Option<Chunk>;
@@ -136,13 +116,6 @@ fn head_of(b: &[u8]) -> Vec<u8> {
 pub struct NasFiles(pub store::nasfs::NasRoot);
 
 impl Source for NasFiles {
-    fn read(&self, path: &str) -> Option<Vec<u8>> {
-        super::nasread::read(&self.0.join(path)).ok()
-    }
-    fn mtime(&self, path: &str) -> Option<SystemTime> {
-        let p = self.0.join(path);
-        super::nasread::with(&p.clone(), move || p.metadata()?.modified()).ok()
-    }
     fn read_from(&self, path: &str, offset: u64) -> Option<Chunk> {
         let p = self.0.join(path);
         super::nasread::with(&p.clone(), move || {
@@ -163,19 +136,17 @@ impl Source for NasFiles {
 }
 
 /// What the agent tells it, each loop, from what it holds (no NAS read): the project's root, the
-/// current term, the members' ids as the pool's driver knows them, this Mac's app, and its own
+/// members' ids as the pool's driver knows them, this Mac's app, and its own
 /// lanes now (only while a page asks: `PageView::wanted`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Inputs {
     pub root: Option<store::nasfs::NasRoot>,
-    pub term: u64,
     pub members: Vec<String>,
     pub app: String,
     pub own: Vec<OwnLane>,
     /// Where this Mac keeps the last run's waits across a restart (a local file: `KEEP_WAITS_S`).
     pub keep: Option<std::path::PathBuf>,
-    /// Where the lead's view is asked: the lead's coordinator here, or the lead's address on a
-    /// member.
+    /// Where the lead's view is asked: the lead's coordinator here.
     pub lead: LeadAt,
 }
 
@@ -201,7 +172,7 @@ struct Snap {
     helpers: Vec<Value>,
     /// Each member's addresses, from its heartbeat's broker: where a page reads its `/work/live`.
     macs: Vec<Value>,
-    /// When the lead made it (unix s; None: read from the NAS's files).
+    /// When the lead made it (unix s).
     at: Option<u64>,
 }
 
@@ -282,9 +253,6 @@ struct State {
     last: Option<Instant>,
     /// History chunks of CHUNK_MAX passed over for holding no line's end.
     skipped: u64,
-    /// Whether the lead's view is asked of it (it answered `/pool/view`); else its files are read
-    /// on the NAS (the older apps' path).
-    by_lead: bool,
     /// When the lead was last asked.
     lead_last: Option<Instant>,
     /// Since when (unix s) and why the lead can't be asked: the last view kept meanwhile.
@@ -340,39 +308,21 @@ impl PageView {
     /// What the agent tells it (`Inputs`).
     pub fn set_inputs(&self, i: Inputs) {
         let mut cur = self.inputs.lock().unwrap();
-        let no_lead = i.lead.0.is_none();
         if *cur != i {
             *cur = i;
-        }
-        drop(cur);
-        // (No lead to ask any more: the NAS's files read again at the next read, not the last
-        // view kept with nothing to replace it.)
-        let mut st = self.state.lock().unwrap();
-        if no_lead && st.by_lead {
-            (st.by_lead, st.last) = (false, None);
         }
     }
 
     /// The NAS's reads, when a page asked lately and `EVERY` has passed (the first at once): the
-    /// history's files, and the lead's files while its view isn't asked of it (`by_lead`: an older
-    /// lead's, or none known); true when it read.
+    /// history's files; true when it read.
     pub fn tick(&self, src: &dyn Source, now: u64) -> bool {
         if !self.wanted(now) {
             return false;
         }
-        let (last, by_lead) = {
-            let st = self.state.lock().unwrap();
-            (st.last, st.by_lead)
-        };
-        if last.is_some_and(|t| t.elapsed() < EVERY) {
-            if !by_lead {
-                // (Between the full reads, the pause alone, one small file: a press of Pause or
-                // Resume shows within a second or two, not at the next full read.)
-                self.refresh_pause(src);
-            }
+        if self.state.lock().unwrap().last.is_some_and(|t| t.elapsed() < EVERY) {
             return false;
         }
-        self.refresh(src, now, !by_lead);
+        self.refresh(src, now);
         true
     }
 
@@ -392,9 +342,8 @@ impl PageView {
     }
 
     /// Asks the lead for its view (`Lead::view`) with what it has, and takes it in: its status,
-    /// view, pause, Macs, and the forecast's input and regions when they changed. A lead that
-    /// doesn't serve it: the NAS's files from the next read on. One that can't be asked: the last
-    /// view kept, said with its age (`lead_failed`).
+    /// view, pause, Macs, and the forecast's input and regions when they changed. One that can't be
+    /// asked: the last view kept, said with its age (`lead_failed`).
     fn ask_lead(&self, lead: &dyn Lead, now: u64) {
         let ask = {
             let st = self.state.lock().unwrap();
@@ -407,15 +356,7 @@ impl PageView {
         let mut st = self.state.lock().unwrap();
         st.lead_last = Some(Instant::now());
         let v = match got {
-            Ok(Some(v)) => v,
-            Ok(None) => {
-                if st.by_lead {
-                    eprintln!("pageview: the lead doesn't serve its view: its files read on the NAS");
-                    st.last = None;
-                }
-                st.by_lead = false;
-                return;
-            }
+            Ok(v) => v,
             Err(e) => {
                 if st.lead_failed.is_none() {
                     eprintln!("pageview: the lead's view: {e:#}");
@@ -424,7 +365,6 @@ impl PageView {
                 return;
             }
         };
-        st.by_lead = true;
         st.lead_failed = None;
         let at = |k: &str| v[k].as_u64().map(|ms| SystemTime::UNIX_EPOCH + Duration::from_millis(ms));
         match (at("forecast_at"), v.get("forecast_input")) {
@@ -457,28 +397,11 @@ impl PageView {
         self.forecast_run(record.as_ref(), now, &own);
     }
 
-    /// Reads `state/build/pause.json` alone (without the state's lock) into the snapshot, if there
-    /// is one; a file not there is no pause (the lead removes it when the build goes on).
-    fn refresh_pause(&self, src: &dyn Source) {
-        let pause = src
-            .read("state/build/pause.json")
-            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-            .unwrap_or(Value::Null);
-        if let Some(s) = self.state.lock().unwrap().snap.as_mut() {
-            s.pause = pause;
-        }
-    }
-
-    /// Reads the files (without the state's lock: what it needs of it taken first) and makes the
-    /// snapshot (under it, briefly): the history's, and with `nas` the lead's files too (the older
-    /// apps' path: a lead that doesn't serve `/pool/view`).
-    fn refresh(&self, src: &dyn Source, now: u64, nas: bool) {
+    /// Reads the history's files (without the state's lock: what it needs of it taken first) and
+    /// takes them in (under it, briefly).
+    fn refresh(&self, src: &dyn Source, now: u64) {
         let inp = self.inputs.lock().unwrap().clone();
-        let (offsets, had, had_regions) = {
-            let st = self.state.lock().unwrap();
-            (st.offsets.clone(), st.record.clone(), st.regions.clone())
-        };
-        let lead_files = nas.then(|| nas_lead_files(src, &inp, now, had, had_regions));
+        let offsets = self.state.lock().unwrap().offsets.clone();
         // The history: what each member's files of the last DAYS days gained.
         let mut new: Vec<(u64, String, u64, Event)> = Vec::new();
         let mut read_to: BTreeMap<String, (u64, FileId, bool)> = BTreeMap::new();
@@ -545,10 +468,6 @@ impl PageView {
             if skipped > 0 {
                 st.skipped += skipped;
                 eprintln!("pageview: {} history chunks passed over without a line's end", st.skipped);
-            }
-            // (Not over the lead's own view, taken meanwhile.)
-            if let Some((snap, record, regions)) = lead_files.filter(|_| !st.by_lead) {
-                (st.snap, st.record, st.regions) = (Some(snap), record, regions);
             }
             if st.history.is_none() {
                 st.epoch = format!("view {} {}", std::process::id(), now);
@@ -648,59 +567,6 @@ impl PageView {
     }
 }
 
-/// The lead's files on the NAS, as the older apps' leads write them (docs/coordination.md step 4's
-/// gate, deleted with it): its status, its coordinator's view, the pause, each member's heartbeat
-/// (the status's `beats`, else its NAS file), the forecast's input and the regions (each read again
-/// only when its file's time changed, `had` and `had_regions` the last).
-type Kept<T> = Option<(SystemTime, Arc<T>)>;
-
-fn nas_lead_files(
-    src: &dyn Source,
-    inp: &Inputs,
-    now: u64,
-    had: Kept<Record<'static>>,
-    had_regions: Kept<Value>,
-) -> (Snap, Kept<Record<'static>>, Kept<Value>) {
-    let json = |p: &str| src.read(p).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-    let status = json("state/status.json").unwrap_or(Value::Null);
-    let view = json(&super::pool::view_path(inp.term)).map_or(Value::Null, |v| v["view"].clone());
-    let pause = json("state/build/pause.json").unwrap_or(Value::Null);
-    let mut beats: Vec<Value> = status["beats"].as_array().cloned().unwrap_or_default();
-    let heard: BTreeSet<String> = beats.iter().filter_map(|b| b["member"].as_str().map(str::to_string)).collect();
-    beats.extend(
-        inp.members
-            .iter()
-            .filter(|m| !heard.contains(*m))
-            .filter_map(|m| json(&format!("state/pool/members/{m}.json"))),
-    );
-    let macs: Vec<Value> = beats.iter().filter_map(mac_of).collect();
-    let helpers = helpers_of(&status, now);
-    // The forecast's input, again only when its file changed.
-    let fpath = super::pool::forecast_input_path(inp.term);
-    let record = match src.mtime(&fpath) {
-        Some(t) if had.as_ref().is_none_or(|r| r.0 != t) => match src.read(&fpath).map(|b| Record::from_bytes(&b)) {
-            Some(Ok(r)) => Some((t, Arc::new(r))),
-            Some(Err(e)) => {
-                eprintln!("pageview: the forecast's input: {e:#}");
-                had
-            }
-            None => had,
-        },
-        Some(_) => had,
-        None => None,
-    };
-    // The regions, again only when their file changed.
-    let rpath = super::pool::regions_path(inp.term);
-    let regions = match src.mtime(&rpath) {
-        Some(t) if had_regions.as_ref().is_none_or(|r| r.0 != t) => {
-            json(&rpath).map(|v| (t, Arc::new(v))).or(had_regions)
-        }
-        Some(_) => had_regions,
-        None => None,
-    };
-    (Snap { status, view, pause, helpers, macs, at: None }, record, regions)
-}
-
 /// The members' statuses fresh (`HELPER_FRESH_S`) from the lead's status's `helpers`, trimmed of
 /// what the page doesn't show.
 fn helpers_of(status: &Value, now: u64) -> Vec<Value> {
@@ -757,14 +623,6 @@ fn answer(s: &Snap, forecast: Option<&Forecast>, h: Option<&History>, epoch: &st
         // (How old the lead's view is: it's kept while the lead can't be asked.)
         "view_age_s": s.at.map(|at| now.saturating_sub(at)),
     })
-}
-
-/// A member's host and addresses (`{host, urls, https}`: its broker's, HTTP then HTTPS) from its
-/// heartbeat; None without a host or a broker (an app before the brokers, or their switch off).
-fn mac_of(beat: &Value) -> Option<Value> {
-    let host = beat["host"].as_str()?;
-    let b: crate::coord::brokers::Broker = serde_json::from_value(beat.get("broker")?.clone()).ok()?;
-    Some(serde_json::json!({ "host": host, "urls": b.urls, "https": b.https }))
 }
 
 impl PageView {
@@ -924,14 +782,6 @@ pub(crate) mod tests {
     struct Dir(PathBuf, AtomicUsize);
 
     impl Source for Dir {
-        fn read(&self, p: &str) -> Option<Vec<u8>> {
-            self.1.fetch_add(1, Ordering::Relaxed);
-            local(&store::nasfs::NasRoot::local_for_test(&self.0), p)
-        }
-        fn mtime(&self, p: &str) -> Option<SystemTime> {
-            self.1.fetch_add(1, Ordering::Relaxed);
-            std::fs::metadata(self.0.join(p)).and_then(|m| m.modified()).ok()
-        }
         fn read_from(&self, p: &str, offset: u64) -> Option<Chunk> {
             self.1.fetch_add(1, Ordering::Relaxed);
             let b = local(&store::nasfs::NasRoot::local_for_test(&self.0), p)?;
@@ -940,6 +790,60 @@ pub(crate) mod tests {
             let to = b.len().min(from as usize + CHUNK_MAX as usize);
             Some(Chunk { from, bytes: b[from as usize..to].to_vec(), id: (ino, head_of(&b)) })
         }
+    }
+
+    /// The lead's view as a test's files hold it (term 7's, as `fixture` writes them), in its
+    /// coordinator's shape (crate::coord::Coordinator::pool_view).
+    pub(crate) struct Files(pub PathBuf);
+
+    impl Lead for Files {
+        fn view(&self, _: &ViewAsk) -> anyhow::Result<Value> {
+            let raw = |p: &str| std::fs::read(self.0.join(p)).ok();
+            let json = |p: &str| raw(p).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+            let status = json("state/status.json").unwrap_or(Value::Null);
+            let macs: Vec<Value> = status["beats"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|b| {
+                    let br = b.get("broker")?;
+                    Some(serde_json::json!({ "host": b["host"], "urls": br["urls"], "https": br["https"] }))
+                })
+                .collect();
+            let mut v = serde_json::json!({
+                "status": status,
+                "view": json(&super::super::pool::view_path(7)).map_or(Value::Null, |v| v["view"].clone()),
+                "pause": json("state/build/pause.json").unwrap_or(Value::Null),
+                "macs": macs,
+                "at": now_s(),
+            });
+            let at = |p: &str| std::fs::metadata(self.0.join(p)).and_then(|m| m.modified()).ok().map(ms_of);
+            let fpath = super::super::pool::forecast_input_path(7);
+            if let (Some(t), Some(Ok(r))) = (at(&fpath), raw(&fpath).map(|b| Record::from_bytes(&b))) {
+                v["forecast_at"] = t.into();
+                v["forecast_input"] = serde_json::to_value(r)?;
+            }
+            let rpath = super::super::pool::regions_path(7);
+            if let (Some(t), Some(r)) = (at(&rpath), json(&rpath)) {
+                v["regions_at"] = t.into();
+                v["regions"] = r;
+            }
+            Ok(v)
+        }
+    }
+
+    /// A read as the agent's two threads make it: the history's files (`tick`), then the lead's
+    /// view (from `root`'s files, `Files`) while a page asks; whether the history was read.
+    pub(crate) fn read(pv: &PageView, root: &std::path::Path, src: &dyn Source, now: u64) -> bool {
+        let read = pv.tick(src, now);
+        if pv.wanted(now) {
+            pv.ask_lead(&Files(root.into()), now);
+        }
+        read
+    }
+
+    fn rd(pv: &PageView, src: &Dir, now: u64) -> bool {
+        read(pv, &src.0, src, now)
     }
 
     fn put(root: &store::nasfs::NasRoot, p: &str, b: &[u8]) {
@@ -1022,7 +926,6 @@ pub(crate) mod tests {
     fn inputs(app: &str) -> Inputs {
         Inputs {
             root: None,
-            term: 7,
             members: vec!["m-a".into(), "m-b".into()],
             app: app.into(),
             own: Vec::new(),
@@ -1045,7 +948,7 @@ pub(crate) mod tests {
         assert!(pv.tocome(None).is_none());
         pv.touch_at(now);
         let src = Dir(d.path().into(), AtomicUsize::new(0));
-        pv.tick(&src, now);
+        rd(&pv, &src, now);
         settle(&pv);
         let a = pv.swarm().unwrap();
         let at = a["agent"]["forecast"]["at"].as_u64().unwrap();
@@ -1056,7 +959,7 @@ pub(crate) mod tests {
         // (Another run 30 s on: the swarm's is the new one; the one read before still answered.)
         pv.forecast.lock().unwrap().of = None;
         pv.state.lock().unwrap().last = None;
-        pv.tick(&src, now + 30);
+        rd(&pv, &src, now + 30);
         settle(&pv);
         let at2 = pv.swarm().unwrap()["agent"]["forecast"]["at"].as_u64().unwrap();
         assert_eq!(at2, now + 30);
@@ -1073,7 +976,7 @@ pub(crate) mod tests {
         let pv = PageView::default();
         pv.set_inputs(inputs("1.2.3"));
         pv.touch_at(now);
-        assert!(pv.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now));
+        assert!(rd(&pv, &Dir(d.path().into(), AtomicUsize::new(0)), now));
         settle(&pv);
         let a = pv.swarm().unwrap();
         assert_eq!(a["app"], "1.2.3");
@@ -1098,39 +1001,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_regions_are_the_leads_read_again_only_when_their_file_changes() {
-        let d = tempfile::tempdir().unwrap();
-        let now = now_s();
-        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
-        let src = Dir(d.path().into(), AtomicUsize::new(0));
-        let pv = PageView::default();
-        pv.set_inputs(inputs(""));
-        pv.touch_at(now);
-        pv.tick(&src, now);
-        assert!(pv.regions().is_none(), "none written yet");
-        let path = d.path().join(super::super::pool::regions_path(7));
-        put(
-            &store::nasfs::NasRoot::local_for_test(d.path()),
-            &super::super::pool::regions_path(7),
-            br#"{"catalog":3,"regions":[{"id":"a"}]}"#,
-        );
-        pv.state.lock().unwrap().last = None;
-        pv.tick(&src, now);
-        assert_eq!(pv.regions().unwrap()["catalog"], 3);
-        // (The same time, other bytes: not read again; a new time: read.)
-        let t = std::fs::metadata(&path).unwrap().modified().unwrap();
-        std::fs::write(&path, br#"{"catalog":4,"regions":[]}"#).unwrap();
-        std::fs::File::options().write(true).open(&path).unwrap().set_modified(t).unwrap();
-        pv.state.lock().unwrap().last = None;
-        pv.tick(&src, now);
-        assert_eq!(pv.regions().unwrap()["catalog"], 3);
-        std::fs::File::options().write(true).open(&path).unwrap().set_modified(t + Duration::from_secs(5)).unwrap();
-        pv.state.lock().unwrap().last = None;
-        pv.tick(&src, now);
-        assert_eq!(pv.regions().unwrap()["catalog"], 4);
-    }
-
-    #[test]
     fn the_history_is_merged_by_time_writer_and_number_its_cursor_rising() {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
@@ -1139,7 +1009,7 @@ pub(crate) mod tests {
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
-        pv.tick(&src, now);
+        rd(&pv, &src, now);
         let h = pv.history(0, 100).unwrap();
         let kinds: Vec<&str> = h["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["start", "lease", "done"], "by time, across the writers");
@@ -1154,7 +1024,7 @@ pub(crate) mod tests {
         text += r#"{"seq":11,"t":"#;
         std::fs::write(&p, &text).unwrap();
         pv.state.lock().unwrap().last = None;
-        pv.tick(&src, now);
+        rd(&pv, &src, now);
         let h = pv.history(3, 100).unwrap();
         let evs = h["events"].as_array().unwrap();
         assert_eq!((evs.len(), evs[0]["kind"].as_str(), evs[0]["seq"].as_u64()), (1, Some("fail"), Some(4)));
@@ -1162,25 +1032,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_members_answer_is_the_leads_but_for_its_own_lanes() {
-        let d = tempfile::tempdir().unwrap();
+    fn the_forecast_has_this_macs_own_lanes_as_they_are_now() {
         let now = now_s();
-        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
-        let (lead, member) = (PageView::default(), PageView::default());
-        lead.set_inputs(inputs("1.2.3"));
-        member.set_inputs(inputs("1.2.3"));
-        for pv in [&lead, &member] {
-            pv.touch_at(now);
-            pv.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now);
-            settle(pv);
-        }
-        let strip = |mut a: Value| {
-            a["now"] = Value::Null;
-            a["epoch"] = Value::Null;
-            a["agent"]["forecast"]["at"] = Value::Null;
-            a
-        };
-        assert_eq!(strip(lead.swarm().unwrap()), strip(member.swarm().unwrap()));
         // This Mac's own lane as its slot is now (as the lead works its own out): its machine's
         // lane's work moves (and what the others take with it).
         let rec = record(now);
@@ -1207,46 +1060,19 @@ pub(crate) mod tests {
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
-        assert!(!pv.tick(&src, now));
+        assert!(!rd(&pv, &src, now));
         assert_eq!(src.1.load(Ordering::Relaxed), 0);
         // Asked: read once, not again within `EVERY`; a minute after the last ask, not at all.
         pv.touch_at(now);
-        assert!(pv.tick(&src, now) && !pv.tick(&src, now));
+        assert!(rd(&pv, &src, now) && !rd(&pv, &src, now));
         let n = src.1.load(Ordering::Relaxed);
         pv.state.lock().unwrap().last = None;
-        assert!(!pv.tick(&src, now + ASKED_FOR_S));
+        assert!(!rd(&pv, &src, now + ASKED_FOR_S));
         assert_eq!(src.1.load(Ordering::Relaxed), n);
-        // (The forecast's input read again only when its file changed.)
+        // (Asked again: the history's files read again.)
         pv.touch_at(now);
-        assert!(pv.tick(&src, now));
-        // (n: the full read and the pause's one read between.)
-        assert_eq!(src.1.load(Ordering::Relaxed) - n, n - 2, "all but the forecast's input");
-    }
-
-    #[test]
-    fn the_pause_follows_its_file_between_full_reads_and_a_resume_is_no_pause() {
-        // (Task #673) a press of Pause shows within a tick, not a full read; Resume (the file
-        // removed) isn't the stale view's pause.
-        let d = tempfile::tempdir().unwrap();
-        let now = now_s();
-        let r = store::nasfs::NasRoot::local_for_test(d.path());
-        fixture(&r, now);
-        let src = Dir(d.path().into(), AtomicUsize::new(0));
-        let pv = PageView::default();
-        pv.set_inputs(inputs(""));
-        pv.touch_at(now);
-        assert!(pv.tick(&src, now));
-        assert!(pv.swarm().unwrap()["pause"].is_null());
-        put(&r, "state/build/pause.json", br#"{"mode":"drain","by":"me","at":1}"#);
-        assert!(!pv.tick(&src, now), "not a full read");
-        assert_eq!(pv.swarm().unwrap()["pause"]["mode"], "drain");
-        // The view still says paused (as before the lead wrote it again): the file's absence wins.
-        let mut v: Value = serde_json::from_slice(&local(&r, "state/coord/term/7/view.json").unwrap()).unwrap();
-        v["view"]["pause"] = serde_json::json!({ "mode": "drain", "by": "me", "at": 1 });
-        put(&r, "state/coord/term/7/view.json", v.to_string().as_bytes());
-        std::fs::remove_file(d.path().join("state/build/pause.json")).unwrap();
-        pv.tick(&src, now);
-        assert!(pv.swarm().unwrap()["pause"].is_null());
+        assert!(rd(&pv, &src, now));
+        assert_eq!(src.1.load(Ordering::Relaxed) - n, n);
     }
 
     #[test]
@@ -1259,19 +1085,19 @@ pub(crate) mod tests {
         let first = PageView::default();
         first.set_inputs(inputs(""));
         assert!(first.swarm().is_none() && first.history(0, 10).is_none(), "nothing before the first read");
-        first.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now);
+        rd(&first, &Dir(d.path().into(), AtomicUsize::new(0)), now);
         let a = first.swarm().unwrap();
         let again = PageView::default();
         again.set_inputs(inputs(""));
         again.touch_at(now);
-        again.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now + 1);
+        rd(&again, &Dir(d.path().into(), AtomicUsize::new(0)), now + 1);
         let b = again.swarm().unwrap();
         assert!(a["epoch"].as_str().is_some_and(|e| !e.is_empty()));
         assert_ne!(a["epoch"], b["epoch"]);
         assert_eq!(first.history(0, 10).unwrap()["epoch"], a["epoch"]);
         // (Its own numbering stays its own across reads.)
         first.state.lock().unwrap().last = None;
-        first.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now);
+        rd(&first, &Dir(d.path().into(), AtomicUsize::new(0)), now);
         assert_eq!(first.swarm().unwrap()["epoch"], a["epoch"]);
     }
 
@@ -1279,14 +1105,8 @@ pub(crate) mod tests {
     struct Slow(Dir, Mutex<std::sync::mpsc::Receiver<()>>);
 
     impl Source for Slow {
-        fn read(&self, p: &str) -> Option<Vec<u8>> {
-            self.1.lock().unwrap().recv().ok();
-            self.0.read(p)
-        }
-        fn mtime(&self, p: &str) -> Option<SystemTime> {
-            self.0.mtime(p)
-        }
         fn read_from(&self, p: &str, offset: u64) -> Option<Chunk> {
+            self.1.lock().unwrap().recv().ok();
             self.0.read_from(p, offset)
         }
     }
@@ -1299,7 +1119,7 @@ pub(crate) mod tests {
         let pv = Arc::new(PageView::default());
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
-        pv.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now);
+        rd(&pv, &Dir(d.path().into(), AtomicUsize::new(0)), now);
         // A second read, stuck on its first file: the answers go on from the snapshot meanwhile.
         let (go, wait) = std::sync::mpsc::channel::<()>();
         pv.state.lock().unwrap().last = None;
@@ -1336,7 +1156,7 @@ pub(crate) mod tests {
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
-        pv.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now);
+        rd(&pv, &Dir(d.path().into(), AtomicUsize::new(0)), now);
         let h = pv.history(0, 10).unwrap();
         let of = |k: &str| h["events"].as_array().unwrap().iter().find(|e| e["kind"] == k).unwrap().clone();
         let n = h["events"].as_array().unwrap().iter().find(|e| e["step"] == "unit").unwrap()["seq"].as_u64().unwrap();
@@ -1357,12 +1177,12 @@ pub(crate) mod tests {
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
-        pv.tick(&src, now);
+        rd(&pv, &src, now);
         let day = crate::pool::journal::day(now).unwrap();
         let line = serde_json::to_string(&Event { seq: 1, t: now - 5, ..Event::new("catalog") }).unwrap() + "\n";
         std::fs::write(d.path().join(format!("state/coord/history/{day}/m-a.jsonl")), line).unwrap();
         pv.state.lock().unwrap().last = None;
-        pv.tick(&src, now);
+        rd(&pv, &src, now);
         let h = pv.history(3, 10).unwrap();
         assert_eq!(h["events"][0]["kind"], "catalog");
     }
@@ -1378,7 +1198,7 @@ pub(crate) mod tests {
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
-        pv.tick(&src, now);
+        rd(&pv, &src, now);
         let day = crate::pool::journal::day(now).unwrap();
         let p = d.path().join(format!("state/coord/history/{day}/m-a.jsonl"));
         let ev =
@@ -1392,7 +1212,7 @@ pub(crate) mod tests {
         std::fs::write(&tmp, text).unwrap();
         std::fs::rename(&tmp, &p).unwrap();
         pv.state.lock().unwrap().last = None;
-        pv.tick(&src, now);
+        rd(&pv, &src, now);
         let h = pv.history(3, 10).unwrap();
         let kinds: Vec<&str> = h["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["catalog", "pause", "resume"], "the old second not again");
@@ -1434,7 +1254,7 @@ pub(crate) mod tests {
             let pv = PageView::default();
             pv.set_inputs(inputs(""));
             pv.touch_at(now);
-            pv.tick(&src, now);
+            rd(&pv, &src, now);
             let h = pv.history(0, 1000).unwrap();
             let evs = h["events"].as_array().unwrap();
             let notes: Vec<&str> = evs.iter().filter_map(|e| e["note"].as_str()).collect();
@@ -1445,10 +1265,9 @@ pub(crate) mod tests {
             // yesterday's are, and m-b's missing files are tried again.)
             let first = src.1.load(Ordering::Relaxed);
             pv.state.lock().unwrap().last = None;
-            pv.tick(&src, now);
+            rd(&pv, &src, now);
             let history = 2 * 2 + 5; // (today's and yesterday's of both; m-b's five missing old days)
-            let others = 6; // (the lead's files, m-b's heartbeat on the NAS: m-a's and the statuses are the lead's status's)
-            assert_eq!(src.1.load(Ordering::Relaxed) - first, history + others, "at {now}");
+            assert_eq!(src.1.load(Ordering::Relaxed) - first, history, "at {now}: the history's files alone");
         }
     }
 
@@ -1478,7 +1297,7 @@ pub(crate) mod tests {
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
-        pv.tick(&src, now);
+        rd(&pv, &src, now);
         let h = pv.history(0, usize::MAX).unwrap();
         let evs = h["events"].as_array().unwrap();
         assert_eq!(evs.len(), history::KEEP_MAX);
@@ -1486,7 +1305,7 @@ pub(crate) mod tests {
         assert!(pv.state.lock().unwrap().taken.len() <= history::KEEP_MAX);
         // (Read again with nothing new: none added.)
         pv.state.lock().unwrap().last = None;
-        pv.tick(&src, now);
+        rd(&pv, &src, now);
         assert_eq!(pv.history(0, 1).unwrap()["seq"].as_u64(), Some(history::KEEP_MAX as u64));
     }
 
@@ -1507,7 +1326,7 @@ pub(crate) mod tests {
         pv.touch_at(now);
         for _ in 0..3 {
             pv.state.lock().unwrap().last = None;
-            pv.tick(&src, now);
+            rd(&pv, &src, now);
         }
         assert_eq!(pv.state.lock().unwrap().skipped, 1);
         let h = pv.history(0, 10).unwrap();
@@ -1534,7 +1353,7 @@ pub(crate) mod tests {
         let first = PageView::default();
         first.set_inputs(with_keep(Some(keep.clone())));
         first.touch_at(now);
-        first.tick(&src, now);
+        rd(&first, &src, now);
         settle(&first);
         assert!(keep.exists(), "the run's waits kept");
         // (A depth job finishes; the agent restarts.)
@@ -1552,7 +1371,7 @@ pub(crate) mod tests {
             let pv = PageView::default();
             pv.set_inputs(with_keep(keep));
             pv.touch_at(now + 10);
-            pv.tick(&src, now + 10);
+            rd(&pv, &src, now + 10);
             settle(&pv);
             let a = pv.tocome(None).unwrap();
             let runs = a["runs"].as_array().unwrap();
@@ -1565,32 +1384,31 @@ pub(crate) mod tests {
     }
 
     /// A lead's coordinator (`crate::coord::start_for_test` in `d/coord`), its agent's status beside
-    /// it, its page's files handed to it; a member's pageview asking it at its address.
-    fn lead_and_member(d: &std::path::Path, now: u64) -> (crate::coord::Coordinator, PageView) {
-        let (c, port) = crate::coord::start_for_test(&d.join("coord"), "m4", "1.2.3");
+    /// it, its page's files handed to it; its pageview asking it in process.
+    fn lead_and_view(d: &std::path::Path, now: u64) -> (Arc<crate::coord::Coordinator>, PageView) {
+        let (c, _) = crate::coord::start_for_test(&d.join("coord"), "m4", "1.2.3");
         let status = serde_json::json!({ "host": "m4", "beat": now, "helpers": [{ "host": "m1", "beat": now }] });
         std::fs::write(d.join("status.json"), status.to_string()).unwrap();
         c.set_page_forecast(&record(now).bytes().unwrap());
         c.set_page_regions(Arc::new(serde_json::json!({ "catalog": 3 })));
-        let w =
-            crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        let c = Arc::new(c);
         let pv = PageView::default();
         pv.set_inputs(Inputs {
             root: Some(store::nasfs::NasRoot::local_for_test(&d.join("nas"))),
-            lead: LeadAt(Some(Arc::new(ByHttp(w)))),
+            lead: LeadAt(Some(c.clone())),
             ..inputs("1.2.3")
         });
         (c, pv)
     }
 
-    /// docs/coordination.md step 4: a member's page has the lead's view by HTTP (its status, view,
-    /// pause, forecast and regions) while every NAS call hangs: the NAS's reads (the history's)
+    /// docs/coordination.md step 4: the page has the lead's view (its status, view, pause, forecast
+    /// and regions) while every NAS call hangs: the NAS's reads (the history's)
     /// wait on their own thread, the view asked again and again meanwhile.
     #[test]
-    fn the_page_on_a_member_shows_the_lead_s_view_with_the_nas_hung() {
+    fn the_page_shows_the_lead_s_view_with_the_nas_hung() {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        let (c, pv) = lead_and_member(d.path(), now);
+        let (c, pv) = lead_and_view(d.path(), now);
         let pv = Arc::new(pv);
         pv.touch_at(now);
         let hung = super::super::nasread::fake::hang(&d.path().join("nas"));
@@ -1628,11 +1446,11 @@ pub(crate) mod tests {
         assert!(c.pool_view(&ViewAsk::default()).get("forecast_input").is_some());
     }
 
-    /// A lead as a test sets it: its answer (None: an older app's 404), or down (`Err`).
-    struct Fake(Result<Option<Value>, &'static str>);
+    /// A lead as a test sets it: its answer, or none to be had (`Err`).
+    struct Fake(Result<Value, &'static str>);
 
     impl Lead for Fake {
-        fn view(&self, _: &ViewAsk) -> anyhow::Result<Option<Value>> {
+        fn view(&self, _: &ViewAsk) -> anyhow::Result<Value> {
             self.0.clone().map_err(|e| anyhow::anyhow!("{e}"))
         }
     }
@@ -1648,10 +1466,10 @@ pub(crate) mod tests {
     fn a_page_asking_with_the_lead_down_gets_the_last_view_with_its_age() {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        let (c, _) = lead_and_member(d.path(), now);
+        let (c, _) = lead_and_view(d.path(), now);
         let view = c.pool_view(&ViewAsk::default());
         let pv = PageView::default();
-        ask_of(&pv, Fake(Ok(Some(view))));
+        ask_of(&pv, Fake(Ok(view)));
         pv.touch_at(now);
         assert!(pv.tick_lead(now));
         assert!(pv.swarm().unwrap()["view_unreached"].is_null());
@@ -1663,47 +1481,9 @@ pub(crate) mod tests {
         assert_eq!(a["view_unreached"]["since"], now + 20);
         assert!(a["view_unreached"]["why"].as_str().unwrap().contains("refused"));
         assert!(a["view_age_s"].as_u64().is_some());
-        // (Not the NAS's files meanwhile: the view stays the lead's.)
-        assert!(pv.state.lock().unwrap().by_lead);
-        ask_of(&pv, Fake(Ok(Some(c.pool_view(&ViewAsk::default())))));
+        ask_of(&pv, Fake(Ok(c.pool_view(&ViewAsk::default()))));
         pv.state.lock().unwrap().lead_last = None;
         pv.tick_lead(now + 30);
         assert!(pv.swarm().unwrap()["view_unreached"].is_null());
-    }
-
-    /// Mixed versions (docs/coordination.md step 4's gate): a lead on an older app (`/pool/view`
-    /// 404) has its files read on the NAS, as before; a lead that serves its view has its files
-    /// left unread.
-    #[test]
-    fn an_older_lead_s_files_are_read_on_the_nas() {
-        let d = tempfile::tempdir().unwrap();
-        let now = now_s();
-        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
-        let pv = PageView::default();
-        ask_of(&pv, Fake(Ok(None)));
-        pv.touch_at(now);
-        let src = Dir(d.path().into(), AtomicUsize::new(0));
-        assert!(pv.tick_lead(now));
-        assert!(pv.tick(&src, now));
-        let a = pv.swarm().unwrap();
-        assert_eq!(a["tasks"]["done"], 3, "the NAS's view.json");
-        assert!(a["view_age_s"].is_null());
-        // (Its lead updated: the view by HTTP, the NAS's lead files no longer read.)
-        let (c, _) = lead_and_member(&d.path().join("lead"), now);
-        ask_of(&pv, Fake(Ok(Some(c.pool_view(&ViewAsk::default())))));
-        pv.state.lock().unwrap().lead_last = None;
-        assert!(pv.tick_lead(now));
-        pv.state.lock().unwrap().last = None;
-        let before = src.1.load(Ordering::Relaxed);
-        assert!(pv.tick(&src, now));
-        let a = pv.swarm().unwrap();
-        assert_eq!(a["tasks"]["done"], Value::Null, "the lead's own view: no tasks done");
-        assert_eq!(a["agent"]["host"], "m4");
-        // (Only the history's files read: its two members' over the week.)
-        assert_eq!(src.1.load(Ordering::Relaxed) - before, 2 * DAYS as usize);
-        // (No lead known any more: the NAS's files read again at once, not the last view kept.)
-        pv.set_inputs(inputs("1.2.3"));
-        assert!(pv.tick(&src, now));
-        assert_eq!(pv.swarm().unwrap()["tasks"]["done"], 3, "the NAS's view.json again");
     }
 }
