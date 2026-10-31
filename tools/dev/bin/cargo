@@ -56,5 +56,8 @@ for p in json.load(sys.stdin)["packages"]:
   done
   print -r -- $top > $t/.scenic-built-by
 fi
+# The checkout's tools (cmake for crates/geos-src) by PATH, not by mise's shims: build scripts run in
+# the shared folder, outside the repo, where a shim finds no mise.toml.
+whence mise >/dev/null && eval "$(mise env -C $top -s zsh 2>/dev/null)" 2>/dev/null
 export CARGO_TARGET_DIR=$t SCENIC_CARGO_SHARED=1
 exec $real "$@"
