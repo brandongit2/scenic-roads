@@ -47,8 +47,10 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   uploads have (`save_upto`); at a safe point with the build pausing, the target uploading is
   landed and noted done, then the job stops. Its cost line counts its own uploads' bytes. A put,
   set or removal of a name still uploading waits for that upload first. An upload that fails
-  transiently is tried again after 2, 5 and 15 s; one that fails or doesn't land within a minute
-  and a second per 2 MB fails the job, the target not noted done, and every later save with it.
+  transiently is tried again after 2, 5 and 15 s. An upload has no limit on its whole time: one
+  that fails, or moves no byte (hashed, written to the share past the client's cache, or read
+  back) for two minutes (`out::UPLOAD_STALL`), fails the job, the target not noted done, and every
+  later save with it; a slow share that still moves lands.
 - **Catalogues** list every file the map reads, with the coverage they were built for and the credits
   of their sources. Readers take the highest that decodes.
 - **The build manifest** lists everything built; **job keys** say what each output was made from.

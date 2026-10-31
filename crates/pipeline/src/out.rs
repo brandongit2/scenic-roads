@@ -54,22 +54,42 @@ pub struct Out {
 /// The uploads put off (`Out::put_file_later`): sent to a thread of their own that makes them in
 /// turn while the job goes on, their results back in the same order. Each is named in the manifest
 /// only once it has landed (`Out::settle`), so a save never names a file that isn't on the NAS.
-#[derive(Default)]
 struct Later {
     to: Option<std::sync::mpsc::Sender<Upload>>,
     /// (In a mutex: an `Out` is shared by reference between threads.)
     back: Option<std::sync::Mutex<std::sync::mpsc::Receiver<Result<Landed>>>>,
+    /// The bytes their thread has moved (store::naming's `count_here_into`): `settle` tells a
+    /// moving upload from a stuck one by it, never blocking on the NAS itself.
+    moved: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// The clock `settle` waits on (a test's virtual one).
+    clock: std::sync::Arc<dyn store::clock::Clock>,
     /// The uploads sent and those landed (taken back): `Mark`s count them.
     sent: u64,
     landed: u64,
-    /// Each sent upload's size and logical name not yet landed, in order (its deadline; a name in
-    /// flight, which `put_file`, `set` and `remove` settle first).
+    /// Each sent upload's size and logical name not yet landed, in order (said when it stalls; a
+    /// name in flight, which `put_file`, `set` and `remove` settle first).
     sizes: std::collections::VecDeque<(u64, String)>,
     /// The bytes copied by uploads landed and not yet claimed (`claim_written`), by their order
     /// sent: the target that put them off claims them for its cost line.
     unclaimed: Vec<(u64, u64)>,
     /// The first upload that failed or didn't land: every later save fails with it.
     failed: Option<String>,
+}
+
+impl Default for Later {
+    fn default() -> Self {
+        Later {
+            to: None,
+            back: None,
+            moved: Default::default(),
+            clock: store::clock::real(),
+            sent: 0,
+            landed: 0,
+            sizes: Default::default(),
+            unclaimed: Vec::new(),
+            failed: None,
+        }
+    }
 }
 
 /// An upload put off.
@@ -95,13 +115,26 @@ struct Landed {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mark(u64);
 
-/// How long a put-off upload may take before the job fails: a minute, and a second for each
-/// 2 MB (a file is read twice here and once on the NAS; a share answering at a few MB/s still
-/// lands well inside it). An upload stuck in the kernel no longer holds the job forever: its
-/// thread is left to it, and the job fails (its retry takes over).
-pub fn upload_deadline(bytes: u64) -> std::time::Duration {
-    std::time::Duration::from_secs(60 + (bytes >> 21))
-}
+/// How long the uploads put off may go with no byte moved (hashed here, written to the share or
+/// read back from it: store::naming's `count_moved`, counted by their thread) before the job
+/// fails, the share taken as stuck: its thread is left to it, and the job's retry takes over. Not
+/// a limit on an upload's whole time: a busy share with several Macs writing is slow but moves, and
+/// lands. Two minutes: a moving upload's longest silence is one chunk written past the client's
+/// cache (4 MB: a share at 50 KB/s still moves one inside it) or its retries' waits
+/// (`UPLOAD_WAITS`, held under it below).
+const UPLOAD_STALL: std::time::Duration = std::time::Duration::from_secs(120);
+
+const _: () = {
+    let (mut i, mut s) = (0, 0);
+    while i < UPLOAD_WAITS.len() {
+        s += UPLOAD_WAITS[i].as_millis();
+        i += 1;
+    }
+    assert!(s < UPLOAD_STALL.as_millis(), "an upload's retry waits alone would read as a stall");
+};
+
+/// How often `settle` looks at the uploads while it waits for them (what it may land late by).
+const UPLOAD_LOOK: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The waits before a put-off upload that failed transiently is tried again (an SMB moment of
 /// ENOENT, EIO or a reset connection): its file is content-named, so a retry lands the same file.
@@ -432,7 +465,9 @@ impl Out {
         if self.later.to.is_none() {
             let (to, rx) = std::sync::mpsc::channel::<Upload>();
             let (tx, back) = std::sync::mpsc::channel::<Result<Landed>>();
+            let moved = self.later.moved.clone();
             let spawned = std::thread::Builder::new().name("uploads".into()).spawn(move || {
+                store::naming::count_here_into(moved);
                 for u in rx {
                     if tx.send(upload_retrying(&u.root, &u.logical, &u.ext, &u.local, UPLOAD_WAITS)).is_err() {
                         return;
@@ -469,9 +504,9 @@ impl Out {
         Mark(self.later.sent)
     }
 
-    /// Waits for the uploads put off up to `upto` to land, each within its deadline
-    /// (`upload_deadline`), and takes them into the records. The first that failed, or didn't land
-    /// in time, fails this (and the job: what it put off isn't named).
+    /// Waits for the uploads put off up to `upto` to land, as long as their thread moves bytes
+    /// (`UPLOAD_STALL`), and takes them into the records. The first that failed, or moved nothing
+    /// for `UPLOAD_STALL`, fails this (and the job: what it put off isn't named).
     fn settle(&mut self, upto: Mark) -> Result<()> {
         if let Some(f) = &self.later.failed {
             bail!("an upload put off failed earlier: {f}");
@@ -480,30 +515,46 @@ impl Out {
             return Ok(());
         }
         let _p = crate::timings::phase("waiting for the uploads put off to land");
+        let clock = self.later.clock.clone();
+        let counted = self.later.moved.clone();
+        let moved = || counted.load(std::sync::atomic::Ordering::Relaxed);
+        // (The bytes moved when last seen to change, and when.)
+        let mut seen = (moved(), clock.now());
         while self.later.landed < upto.0 {
-            let size = self.later.sizes.front().map_or(0, |s| s.0);
-            let deadline = upload_deadline(size);
-            let got = self.later.back.as_ref().expect("an upload sent").lock().unwrap().recv_timeout(deadline);
-            let l = match got {
-                Ok(Ok(l)) => l,
-                Ok(Err(e)) => {
-                    let e = e.context("an upload put off failed");
-                    self.later.failed = Some(format!("{e:#}"));
-                    return Err(e);
+            let got = loop {
+                match self.later.back.as_ref().expect("an upload sent").lock().unwrap().try_recv() {
+                    Ok(r) => break Some(r),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break None,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let (m, now) = (moved(), clock.now());
+                if m != seen.0 {
+                    seen = (m, now);
+                } else if now.duration_since(seen.1) >= UPLOAD_STALL {
+                    let size = self.later.sizes.front().map_or(0, |s| s.0);
                     let e = anyhow::anyhow!(
-                        "an upload put off ({size} bytes) didn't land in {} s (the NAS's share stuck?)",
-                        deadline.as_secs()
+                        "an upload put off ({size} bytes) moved no byte in {} s (the NAS's share stuck?)",
+                        UPLOAD_STALL.as_secs()
                     );
                     self.later.failed = Some(format!("{e:#}"));
                     return Err(e);
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                clock.sleep(UPLOAD_LOOK);
+            };
+            let l = match got {
+                Some(Ok(l)) => l,
+                Some(Err(e)) => {
+                    let e = e.context("an upload put off failed");
+                    self.later.failed = Some(format!("{e:#}"));
+                    return Err(e);
+                }
+                None => {
                     self.later.failed = Some("the uploads' thread is gone".into());
                     bail!("the uploads' thread is gone");
                 }
             };
+            // (One landed is progress too.)
+            seen = (moved(), clock.now());
             self.later.sizes.pop_front();
             let seq = self.later.landed;
             self.later.landed += 1;
@@ -1030,9 +1081,68 @@ mod tests {
         // Outside the step's outputs: refused at once, as `put_file` is.
         let mut job = Out::open(&store::nasfs::NasRoot::local_for_test(&later), &d.path().join("s3"), "pack").unwrap();
         assert!(job.put_file_later("base/6-1-5", "base", &file("b5", b"five")).is_err());
-        // Each a minute, and a second each 2 MB.
-        assert_eq!(upload_deadline(0).as_secs(), 60);
-        assert_eq!(upload_deadline(1 << 30).as_secs(), 60 + 512);
+    }
+
+    /// A job whose uploads put off are a test's (`tx`: their results; `moved`: the bytes their
+    /// thread moved), waited on by `clock`: one sent.
+    fn fake_uploads(
+        d: &Path,
+        clock: Arc<store::clock::Virtual>,
+    ) -> (Out, std::sync::mpsc::Sender<Result<Landed>>, Arc<std::sync::atomic::AtomicU64>) {
+        let mut c = Out::open(&store::nasfs::NasRoot::local_for_test(&d.join("nas")), &d.join("s"), "pack").unwrap();
+        let (tx, back) = std::sync::mpsc::channel();
+        c.later.back = Some(std::sync::Mutex::new(back));
+        c.later.clock = clock;
+        c.later.sent = 1;
+        c.later.sizes.push_back((400 << 20, "base/6-1-1".into()));
+        let moved = c.later.moved.clone();
+        (c, tx, moved)
+    }
+
+    use std::sync::Arc;
+
+    /// Task #911: an upload on a busy share, slow but moving, lands however long it takes (here
+    /// 9 min for 400 MB, a byte every 100 s: far under the old 1.6 MB/s floor).
+    #[test]
+    fn a_slow_but_moving_upload_lands() {
+        let d = tempfile::tempdir().unwrap();
+        let clock = store::clock::Virtual::new();
+        let (mut c, tx, moved) = fake_uploads(d.path(), clock.clone());
+        for k in 1..=5 {
+            let m = moved.clone();
+            clock.at(UPLOAD_STALL * k * 5 / 6, move || {
+                m.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+        }
+        let landed = Landed {
+            logical: "base/6-1-1".into(),
+            name: "base/6-1-1.0123456789abcdef.base".into(),
+            sha: None,
+            size: 400 << 20,
+            ms: 0,
+        };
+        clock.at(UPLOAD_STALL * 9 / 2, move || tx.send(Ok(landed)).unwrap());
+        c.settle(c.mark()).unwrap();
+        assert!(clock.elapsed() >= UPLOAD_STALL * 9 / 2);
+        assert_eq!(c.get("base/6-1-1"), Some("base/6-1-1.0123456789abcdef.base"));
+    }
+
+    /// Task #911: an upload that stops moving fails once `UPLOAD_STALL` passes with no byte moved
+    /// (counted from the last), and every later save with it.
+    #[test]
+    fn a_stalled_upload_fails_within_the_stall_window() {
+        let d = tempfile::tempdir().unwrap();
+        let clock = store::clock::Virtual::new();
+        let (mut c, _tx, moved) = fake_uploads(d.path(), clock.clone());
+        let last = UPLOAD_STALL / 2;
+        clock.at(last, move || {
+            moved.fetch_add(1 << 20, std::sync::atomic::Ordering::Relaxed);
+        });
+        let e = c.settle(c.mark()).unwrap_err();
+        assert!(format!("{e:#}").contains(&format!("moved no byte in {} s", UPLOAD_STALL.as_secs())), "{e:#}");
+        let t = clock.elapsed();
+        assert!(t >= last + UPLOAD_STALL && t <= last + UPLOAD_STALL + UPLOAD_LOOK, "{t:?}");
+        assert!(c.save().is_err());
     }
 
     /// Task #449: a file the records already name under its logical name is looked at once: there

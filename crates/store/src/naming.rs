@@ -25,8 +25,27 @@ pub fn moved() -> u64 {
 }
 
 /// Counts `n` bytes moved (`MOVED`): the callers' own streamed reads too (an upload's checksum).
+/// Also into this thread's own count, if it has one (`count_here_into`).
 pub fn count_moved(n: usize) {
     MOVED.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+    HERE.with(|h| {
+        if let Some(c) = &*h.borrow() {
+            c.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+}
+
+thread_local! {
+    /// This thread's own count of bytes moved (`count_here_into`).
+    static HERE: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicU64>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// From now on, the bytes this thread moves (`count_moved`) are counted into `to` as well: what a
+/// thread waiting on its uploads tells moving from stuck by (pipeline's `Out::settle`); `MOVED`
+/// counts every other thread's too.
+pub fn count_here_into(to: std::sync::Arc<std::sync::atomic::AtomicU64>) {
+    HERE.with(|h| *h.borrow_mut() = Some(to));
 }
 
 /// BLAKE3 of `bytes`, first 16 hex digits.
@@ -211,6 +230,10 @@ fn present(dest: &Path, size: u64) -> Result<bool> {
 
 fn write_tmp(tmp: &Path, src: Source<'_>) -> io::Result<()> {
     let mut out = OpenOptions::new().write(true).create(true).truncate(true).open(tmp)?;
+    // (Past the client's cache: a write returns once its bytes went to the share, so the bytes
+    // counted moved are the share's and the closing sync has no backlog to flush unseen: an
+    // upload's progress is judged by them, pipeline's `Out::settle`.)
+    no_cache(&out);
     match src {
         Source::Bytes(b) => out.write_all(b)?,
         Source::File(p) => {
