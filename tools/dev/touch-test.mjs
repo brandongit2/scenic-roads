@@ -302,8 +302,12 @@ async function run() {
       await js(`document.getElementById("mappane").scrollTo(0, 0); window.scrollTo(0, 0)`);
       await shot("chrome-nosolo");
       // (The catalogues read: the age controls' marks.)
-      // (Read oldest first: waited for until a mark is in the range or the reading's done, 3 min at most.)
-      await until(`document.querySelectorAll("#mappane .cat-tl g.mk").length > 0 || /catalogues? kept/.test(document.querySelector(".cat-status")?.textContent || "") && !/reading/.test(document.querySelector(".cat-status").textContent)`, 180000);
+      // (Read oldest first, the agent's first read after it starts taking minutes: waited for
+      // until the reading's done, 10 min at most. Not until a first mark (#901): the first ones
+      // read sit at the timeline's left edge, where no label fits, so the labels' check below
+      // found none while the reading went on, after a publish restarted the agent.)
+      const catsRead = `/catalogues? kept/.test(document.querySelector(".cat-status")?.textContent || "") && !/reading/.test(document.querySelector(".cat-status").textContent)`;
+      await until(catsRead, 600000);
       const marks = await js(`document.querySelectorAll("#mappane .cat-tl g.mk").length`);
       check("ages: the timeline marks the catalogues in its span", marks > 0, `${marks} marks; ${await js(`document.querySelector(".cat-status")?.textContent`)}`);
       // (The step with the most tiles built that the legend names: its published tiles painted.)
@@ -338,7 +342,7 @@ async function run() {
       await shot("chrome-solo");
       { const { data } = await page.send("Page.captureScreenshot", { format: "png" }); writeFileSync(join(OUT, "chrome-solo-view.png"), Buffer.from(data, "base64")); }
       const lbls = await js(`(() => { const r = [...document.querySelectorAll("#mappane .cat-tl .lbl")].map((e) => { const b = e.getBoundingClientRect(); return [b.left, b.right, e.textContent]; }).sort((p, q) => p[0] - q[0]); const bad = r.filter((v, i) => i && v[0] < r[i - 1][1]).map((v) => v[2]); return [r.length, bad, r.filter((v) => !/^\\d+ · /.test(v[2])).length]; })()`);
-      check("ages: mark labels name number and time, never overlap", lbls[0] > 0 && !lbls[1].length && !lbls[2], `${lbls[0]} labels; overlapping ${lbls[1].join(", ")}; number alone ${lbls[2]}`);
+      check("ages: mark labels name number and time, never overlap", lbls[0] > 0 && !lbls[1].length && !lbls[2], `${lbls[0]} labels; overlapping ${lbls[1].join(", ")}; number alone ${lbls[2]}; ${await js(`document.querySelector(".cat-status")?.textContent`)}`);
       const wide = await js(`[document.scrollingElement.scrollWidth, document.documentElement.clientWidth]`);
       check("map: no horizontal scroll", wide[0] <= wide[1], `${wide[0]} in ${wide[1]}`);
       // (The mark with the most tiles in the range, hovered by a mouse: its tiles lit over the solo.)
