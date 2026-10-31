@@ -363,7 +363,7 @@ pub struct Report {
 
 /// Z6 tile (`x`, `y`)'s slope hi pack in the manifest (z9–12).
 pub fn hi_logical(x: u32, y: u32) -> String {
-    format!("layers/slope/hi/6-{x}-{y}")
+    crate::layers::hi_logical("slope", x, y)
 }
 
 /// Deep pack (`x`, `y`)'s logical name (a z10 tile: its z13–16 tiles).
@@ -382,7 +382,7 @@ pub fn deep_tile(l: &str) -> Option<(u32, u32)> {
 /// z10 tiles' slope-deep targets': `drop_deep`.)
 pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> Result<usize> {
     let gone = vec![hi_logical(t.0, t.1), mid_logical(t.0, t.1)];
-    let n = crate::terrain_pack::drop_named(out, &gone);
+    let n = crate::layers::drop(out, &gone);
     out.save()?;
     Ok(n)
 }
@@ -390,7 +390,7 @@ pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> Result<usize> {
 /// Drops z3 tile `q`'s slope lo pack from the manifest (a "none" assembly: the coverage has left
 /// the z3 tile), saving it; how many it had.
 pub fn drop_lo(out: &mut Out, q: (u32, u32)) -> Result<usize> {
-    let n = crate::terrain_pack::drop_named(out, &[format!("layers/slope/lo/3-{}-{}", q.0, q.1)]);
+    let n = crate::layers::drop(out, &[crate::layers::lo_logical("slope", q.0, q.1)]);
     out.save()?;
     Ok(n)
 }
@@ -398,7 +398,7 @@ pub fn drop_lo(out: &mut Out, q: (u32, u32)) -> Result<usize> {
 /// Z6 tile (`x`, `y`)'s slope mid in the manifest: its z6–8 tiles as made (`build_piece`), which its
 /// z3 tile's assembly reads (`build_lo`).
 pub fn mid_logical(x: u32, y: u32) -> String {
-    format!("work/slope-mid/6-{x}-{y}")
+    crate::layers::mid_logical("slope", x, y)
 }
 
 /// The mid's format.
@@ -847,7 +847,7 @@ pub fn build_piece_later(
     match pack {
         Some(p) => out.put_file_later(&p.logical, "pack", &p.local)?,
         None => {
-            crate::terrain_pack::drop_named(out, &[hl]);
+            crate::layers::drop(out, &[hl]);
         }
     }
     out.put_file_later(&ml, "sect", &mid)?;
@@ -901,7 +901,7 @@ pub fn build_deep(out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + S
             rep.deep_packs = 1;
             out.put_file(&p.logical, "pack", &p.local)?;
         }
-        None => rep.deep_dropped = crate::terrain_pack::drop_named(out, &[deep_logical(t.0, t.1)]),
+        None => rep.deep_dropped = crate::layers::drop(out, &[deep_logical(t.0, t.1)]),
     }
     out.put_file(&ml, "sect", &path)?;
     drop(up);
@@ -912,7 +912,7 @@ pub fn build_deep(out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + S
 /// Z10 tile `t` no slope-deep target any more: its deep pack and deep mid dropped (not saved); how
 /// many.
 pub fn drop_deep(out: &mut Out, t: (u32, u32)) -> usize {
-    crate::terrain_pack::drop_named(out, &[deep_logical(t.0, t.1), deep_mid_logical(t.0, t.1)])
+    crate::layers::drop(out, &[deep_logical(t.0, t.1), deep_mid_logical(t.0, t.1)])
 }
 
 /// Z10 tile (`x`, `y`)'s slope deep mid in the manifest (`DeepMid`): what its z6 tile's slope-hi run
@@ -1040,36 +1040,13 @@ fn read_mids(out: &Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<BTreeMap<(u3
             todo.push((t, c.to_string()));
         }
     }
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let got: Mutex<BTreeMap<(u32, u32), Vec<Made>>> = Mutex::new(BTreeMap::new());
-    let failed: Mutex<Option<anyhow::Error>> = Mutex::new(None);
-    std::thread::scope(|s| {
-        for _ in 0..MIDS_AT_ONCE.min(todo.len()) {
-            s.spawn(|| loop {
-                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if i >= todo.len() || failed.lock().unwrap().is_some() {
-                    return;
-                }
-                let (t, c) = &todo[i];
-                let r = read_mid(&out.path(c)).and_then(|(of, tiles)| {
-                    anyhow::ensure!(of == *t, "{c} is 6/{}/{}'s mid", of.0, of.1);
-                    Ok(tiles)
-                });
-                match r {
-                    Ok(tiles) => {
-                        got.lock().unwrap().insert(*t, tiles);
-                    }
-                    Err(e) => {
-                        failed.lock().unwrap().get_or_insert(e);
-                    }
-                }
-            });
-        }
-    });
-    match failed.into_inner().unwrap() {
-        Some(e) => Err(e),
-        None => Ok(got.into_inner().unwrap()),
-    }
+    let got = crate::layers::read_each(todo.len(), MIDS_AT_ONCE, |i| {
+        let (t, c) = &todo[i];
+        let (of, tiles) = read_mid(&out.path(c))?;
+        anyhow::ensure!(of == *t, "{c} is 6/{}/{}'s mid", of.0, of.1);
+        Ok((*t, tiles))
+    })?;
+    Ok(got.into_iter().collect())
 }
 
 /// Makes z3 tile `q`'s zoomed-out slope (an assembly: its lo pack, z3–8) from its z6 tiles' mids (`ts`:
@@ -1087,12 +1064,12 @@ pub fn build_lo(
 /// What z3 tile `q`'s zoomed-out slope reads besides its z6 tiles' mids `ts`: the terrain's lo
 /// packs of it and around it and its root, and its slope lo pack as it is (a `job_id`'s inputs).
 fn lo_inputs(out: &Out, q: (u32, u32), ts: &[(u32, u32)]) -> String {
-    let mut ls = vec!["layers/terrain/root/0-0-0".to_string(), format!("layers/slope/lo/3-{}-{}", q.0, q.1)];
+    let mut ls = vec![crate::layers::root_logical("terrain"), crate::layers::lo_logical("slope", q.0, q.1)];
     for dy in -1i64..=1 {
         for dx in -1i64..=1 {
             let (x, y) = (q.0 as i64 + dx, q.1 as i64 + dy);
             if (0..8).contains(&x) && (0..8).contains(&y) {
-                ls.push(format!("layers/terrain/lo/3-{x}-{y}"));
+                ls.push(crate::layers::lo_logical("terrain", x as u32, y as u32));
             }
         }
     }
@@ -1145,7 +1122,7 @@ pub fn build_lo_keeping(
     });
     let enc = crate::shade_codec::ENCODING;
     if crate::layers::write_pack(out, "slope", enc, false, "lo", (3, q.0, q.1), &mut it)?.is_none() {
-        crate::terrain_pack::drop_named(out, &[format!("layers/slope/lo/3-{}-{}", q.0, q.1)]);
+        crate::layers::drop(out, &[crate::layers::lo_logical("slope", q.0, q.1)]);
     }
     drop(up);
     out.save()?;
@@ -1791,7 +1768,7 @@ mod tests {
                     Some(l) => l.split(',').map(xy).collect(),
                     None => (0..64)
                         .map(|k| (t.0 * 8 + k % 8, t.1 * 8 + k / 8))
-                        .filter(|&(x, y)| out.get(&format!("layers/terrain/hi/6-{x}-{y}")).is_some())
+                        .filter(|&(x, y)| out.get(&crate::layers::hi_logical("terrain", x, y)).is_some())
                         .collect(),
                 };
                 let mut mids = BTreeMap::new();

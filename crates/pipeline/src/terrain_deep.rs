@@ -1249,7 +1249,7 @@ pub(crate) fn build_target_kept(
         let _p = crate::timings::phase("uploading its deep pack");
         out.put_file(&p.logical, "pack", &p.local)?;
     }
-    rep.dropped = crate::terrain_pack::drop_named(out, &gone);
+    rep.dropped = crate::layers::drop(out, &gone);
     std::fs::remove_file(crate::resume_log::path(&out.scratch, (PACK_Z, t.0, t.1))).ok();
     Ok(rep)
 }
@@ -1258,7 +1258,7 @@ pub(crate) fn build_target_kept(
 /// pack and a retired one there dropped (not saved); how many.
 pub fn drop_target(out: &mut Out, t: (u32, u32)) -> usize {
     let gone = named_under(&out.manifest, PACK_Z, t.0, t.1);
-    crate::terrain_pack::drop_named(out, &gone)
+    crate::layers::drop(out, &gone)
 }
 
 /// Z10 tile `t`'s deep tiles (`FIRST_Z` to `MAX_Z`) of its base tiles (each place's finest base zoom

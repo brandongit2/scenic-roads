@@ -62,11 +62,11 @@ pub const PIECE_Z: u8 = 6;
 pub const WATER_Z: u8 = 14;
 
 pub fn hi_logical(layer: &str, x: u32, y: u32) -> String {
-    format!("layers/{layer}/hi/6-{x}-{y}")
+    crate::layers::hi_logical(layer, x, y)
 }
 
 pub fn lo_logical(layer: &str, x: u32, y: u32) -> String {
-    format!("layers/{layer}/lo/3-{x}-{y}")
+    crate::layers::lo_logical(layer, x, y)
 }
 
 /// A tile's water polygons as the depth reads them (`WaterSource::depth_polys`, the rivers too): the
@@ -622,8 +622,9 @@ fn put_pack(
             out.put_file(&p.logical, "pack", &p.local)?;
             std::fs::remove_file(&p.local).ok();
         }
-        None if out.get(&logical).is_some() => out.remove(&logical),
-        None => {}
+        None => {
+            crate::layers::drop(out, &[logical]);
+        }
     }
     Ok(())
 }

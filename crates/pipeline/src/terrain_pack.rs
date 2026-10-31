@@ -321,14 +321,14 @@ impl ManifestTiles {
     pub fn logical(layer: &str, z: u8, x: u32, y: u32) -> String {
         let deep = crate::terrain_deep::PACK_Z;
         match z {
-            0..=2 => format!("layers/{layer}/root/0-0-0"),
-            3..=8 => format!("layers/{layer}/lo/3-{}-{}", x >> (z - 3), y >> (z - 3)),
+            0..=2 => crate::layers::root_logical(layer),
+            3..=8 => crate::layers::lo_logical(layer, x >> (z - 3), y >> (z - 3)),
             // (The terrain's deep levels and their shading, by z10 tile: crate::terrain_deep,
             // crate::slope_pack.)
             _ if (layer == "terrain" || layer == "slope") && z >= crate::terrain_deep::FIRST_Z => {
-                format!("layers/{layer}/deep/{deep}-{}-{}", x >> (z - deep), y >> (z - deep))
+                crate::layers::deep_logical(layer, x >> (z - deep), y >> (z - deep))
             }
-            _ => format!("layers/{layer}/hi/6-{}-{}", x >> (z - 6), y >> (z - 6)),
+            _ => crate::layers::hi_logical(layer, x >> (z - 6), y >> (z - 6)),
         }
     }
 
@@ -1127,7 +1127,7 @@ pub struct Mid {
 
 /// Z6 tile (`x`, `y`)'s terrain mid in the manifest (`Mid`).
 pub fn mid_logical(x: u32, y: u32) -> String {
-    format!("work/terrain-mid/6-{x}-{y}")
+    crate::layers::mid_logical("terrain", x, y)
 }
 
 /// The mid's format.
@@ -1824,8 +1824,8 @@ impl<'a> Bases<'a> {
 /// docs/regions.md, Shrinking), saving it; how many it had. (Its deep packs are their terrain-deep
 /// targets': crate::terrain_deep.)
 pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> anyhow::Result<usize> {
-    let gone = vec![format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1)];
-    let n = drop_named(out, &gone);
+    let gone = vec![crate::layers::hi_logical("terrain", t.0, t.1), mid_logical(t.0, t.1)];
+    let n = crate::layers::drop(out, &gone);
     out.save()?;
     Ok(n)
 }
@@ -1833,18 +1833,9 @@ pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> anyhow::Result<usize> {
 /// Drops z3 tile `q`'s terrain lo pack from the manifest (a "none" assembly: the coverage has left
 /// the z3 tile, docs/regions.md, Shrinking), saving it; how many it had.
 pub fn drop_lo(out: &mut Out, q: (u32, u32)) -> anyhow::Result<usize> {
-    let n = drop_named(out, &[format!("layers/terrain/lo/3-{}-{}", q.0, q.1)]);
+    let n = crate::layers::drop(out, &[crate::layers::lo_logical("terrain", q.0, q.1)]);
     out.save()?;
     Ok(n)
-}
-
-/// Drops those of `logicals` the manifest names (not saved); how many.
-pub(crate) fn drop_named(out: &mut Out, logicals: &[String]) -> usize {
-    let gone: Vec<&String> = logicals.iter().filter(|l| out.get(l).is_some()).collect();
-    for l in &gone {
-        out.remove(l);
-    }
-    gone.len()
 }
 
 /// A z3 tile's levels (z3 tile `q`'s), z8 → z3, the whole of it.
@@ -1938,7 +1929,7 @@ pub fn build_q_with(
             )?
             .is_none()
             {
-                drop_named(out, &[format!("layers/terrain/hi/6-{}-{}", t.0, t.1)]);
+                crate::layers::drop(out, &[crate::layers::hi_logical("terrain", t.0, t.1)]);
             }
             mids.push((t, mid));
         }
@@ -1948,7 +1939,7 @@ pub fn build_q_with(
         for x in q.0 * 8..(q.0 + 1) * 8 {
             for y in q.1 * 8..(q.1 + 1) * 8 {
                 if !near_coverage(cov, 6, x, y, 20.0) {
-                    drop_named(out, &[format!("layers/terrain/hi/6-{x}-{y}")]);
+                    crate::layers::drop(out, &[crate::layers::hi_logical("terrain", x, y)]);
                 }
             }
         }
@@ -1968,7 +1959,7 @@ pub fn build_q_with(
     if crate::layers::write_pack(out, "terrain", crate::terrain_codec::ENCODING, false, "lo", (3, q.0, q.1), &mut it)?
         .is_none()
     {
-        drop_named(out, &[format!("layers/terrain/lo/3-{}-{}", q.0, q.1)]);
+        crate::layers::drop(out, &[crate::layers::lo_logical("terrain", q.0, q.1)]);
     }
     drop(up);
     out.save()?;
@@ -2137,7 +2128,7 @@ pub(crate) fn build_piece_kept(
     let mid_path = out.scratch_file(&format!("{ml}.sect"));
     write_mid(&mid_path, t, &mid)?;
     std::fs::remove_file(crate::resume_log::path(&out.scratch, (6, t.0, t.1))).ok();
-    let hl = format!("layers/terrain/hi/6-{}-{}", t.0, t.1);
+    let hl = crate::layers::hi_logical("terrain", t.0, t.1);
     if expect_same {
         let made = pack.as_ref().map(|p| p.content_name()).transpose()?;
         let mut differ: Vec<String> = Vec::new();
@@ -2165,7 +2156,7 @@ pub(crate) fn build_piece_kept(
     match pack {
         Some(p) => out.put_file_later(&p.logical, "pack", &p.local)?,
         None => {
-            drop_named(out, &[hl]);
+            crate::layers::drop(out, &[hl]);
         }
     }
     out.put_file_later(&ml, "sect", &mid_path)?;
@@ -2195,7 +2186,7 @@ pub fn build_lo(
     if crate::layers::write_pack(out, "terrain", crate::terrain_codec::ENCODING, false, "lo", (3, q.0, q.1), &mut it)?
         .is_none()
     {
-        drop_named(out, &[format!("layers/terrain/lo/3-{}-{}", q.0, q.1)]);
+        crate::layers::drop(out, &[crate::layers::lo_logical("terrain", q.0, q.1)]);
     }
     drop(up);
     out.save()?;
@@ -2225,27 +2216,12 @@ pub fn make_lo(
         paths.push((t, c.to_string(), out.path(c)));
     }
     p.count(0, paths.len() as u64);
-    // (MID_READERS at once: each a few MB, mostly waiting on the NAS. Kept in `ts`'s order, which
-    // `lo` takes the lakes' levels by.)
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let mids: Vec<((u32, u32), Mid)> = std::thread::scope(|s| {
-        let read = || -> anyhow::Result<Vec<(usize, Mid)>> {
-            let mut got = Vec::new();
-            loop {
-                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some((t, c, path)) = paths.get(i) else { return Ok(got) };
-                let (of, mid) = read_mid(path)?;
-                anyhow::ensure!(of == *t, "{c} is 6/{}/{}'s mid", of.0, of.1);
-                got.push((i, mid));
-            }
-        };
-        let ws: Vec<_> = (0..MID_READERS.min(paths.len())).map(|_| s.spawn(read)).collect();
-        let mut all: Vec<(usize, Mid)> = Vec::with_capacity(paths.len());
-        for w in ws {
-            all.extend(w.join().unwrap_or_else(|e| std::panic::resume_unwind(e))?);
-        }
-        all.sort_by_key(|m| m.0);
-        anyhow::Ok(all.into_iter().map(|(i, m)| (paths[i].0, m)).collect())
+    // (Kept in `ts`'s order, which `lo` takes the lakes' levels by.)
+    let mids: Vec<((u32, u32), Mid)> = crate::layers::read_each(paths.len(), MID_READERS, |i| {
+        let (t, c, path) = &paths[i];
+        let (of, mid) = read_mid(path)?;
+        anyhow::ensure!(of == *t, "{c} is 6/{}/{}'s mid", of.0, of.1);
+        Ok((*t, mid))
     })?;
     drop(p);
     let mk = Maker::new(raw, src);
@@ -2419,7 +2395,7 @@ pub(crate) mod tests {
             build_piece(&mut o, &raw, t, &cov, &src, false, &|_, _, _| {}).unwrap();
         }
         let before = o.manifest.clone();
-        let lo = format!("layers/terrain/lo/3-{}-{}", q.0, q.1);
+        let lo = crate::layers::lo_logical("terrain", q.0, q.1);
         let mut paused = 0;
         for left in 0.. {
             let mut o = open("lo");
@@ -3526,7 +3502,7 @@ pub(crate) mod tests {
         build_piece(&mut parts, &raw, t, &cov, &src, true, &|_, _, _| {}).unwrap();
         assert_eq!(parts.manifest, before);
         // A hi pack that isn't what the manifest has: refused, nothing uploaded.
-        let hi = format!("layers/terrain/hi/6-{}-{}", t.0, t.1);
+        let hi = crate::layers::hi_logical("terrain", t.0, t.1);
         parts.manifest.insert(hi.clone(), format!("{hi}.0000000000000000.pack"));
         parts.remove(&ml);
         let e = build_piece(&mut parts, &raw, t, &cov, &src, true, &|_, _, _| {}).unwrap_err().to_string();

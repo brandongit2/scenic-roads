@@ -19,6 +19,77 @@ pub fn pack_of(z: u8, x: u32, y: u32) -> (&'static str, u8, u32, u32) {
     }
 }
 
+/// Layer `layer`'s root pack's logical name (z0–2).
+pub fn root_logical(layer: &str) -> String {
+    format!("layers/{layer}/root/0-0-0")
+}
+
+/// Layer `layer`'s lo pack of z3 tile (`x`, `y`) (z3–8): its logical name.
+pub fn lo_logical(layer: &str, x: u32, y: u32) -> String {
+    format!("layers/{layer}/lo/3-{x}-{y}")
+}
+
+/// Layer `layer`'s hi pack of z6 tile (`x`, `y`) (z9–14): its logical name.
+pub fn hi_logical(layer: &str, x: u32, y: u32) -> String {
+    format!("layers/{layer}/hi/6-{x}-{y}")
+}
+
+/// Layer `layer`'s deep pack of z10 tile (`x`, `y`) (crate::terrain_deep::PACK_Z): its logical name.
+pub fn deep_logical(layer: &str, x: u32, y: u32) -> String {
+    format!("layers/{layer}/deep/{}-{x}-{y}", crate::terrain_deep::PACK_Z)
+}
+
+/// Step `step`'s mid of z6 tile (`x`, `y`) (what its lo levels are made from): its logical name.
+pub fn mid_logical(step: &str, x: u32, y: u32) -> String {
+    format!("work/{step}-mid/6-{x}-{y}")
+}
+
+/// Drops those of `logicals` the manifest names (not saved): a target the coverage has left, its
+/// packs and mids; how many it had.
+pub fn drop(out: &mut Out, logicals: &[String]) -> usize {
+    let gone: Vec<&String> = logicals.iter().filter(|l| out.get(l).is_some()).collect();
+    for l in &gone {
+        out.remove(l);
+    }
+    gone.len()
+}
+
+/// `read(i)` for each `i` below `n`, `at_once` at a time (a z3 tile's mids: each a few MB, mostly
+/// waiting on the NAS), in `i`'s order; the first failure fails it, and no more are started.
+pub fn read_each<T: Send>(n: usize, at_once: usize, read: impl Fn(usize) -> Result<T> + Sync) -> Result<Vec<T>> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failed = std::sync::atomic::AtomicBool::new(false);
+    let got: Vec<Result<Vec<(usize, T)>>> = std::thread::scope(|s| {
+        let ws: Vec<_> = (0..at_once.min(n))
+            .map(|_| {
+                s.spawn(|| {
+                    let mut got = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if i >= n || failed.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Ok(got);
+                        }
+                        match read(i) {
+                            Ok(v) => got.push((i, v)),
+                            Err(e) => {
+                                failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                                return Err(e);
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+        ws.into_iter().map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+    });
+    let mut all = Vec::with_capacity(n);
+    for g in got {
+        all.extend(g?);
+    }
+    all.sort_by_key(|m| m.0);
+    Ok(all.into_iter().map(|m| m.1).collect())
+}
+
 /// A layer's packs as the catalogue lists them.
 #[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LayerOut {
@@ -322,6 +393,31 @@ pub fn split_grid(out: &mut Out, dir: &std::path::Path, var: &str) -> Result<Lay
     }
     out.save()?;
     Ok(lo)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Task #852: the names the layers formatted by hand before, the same.
+    #[test]
+    fn logical_names_as_they_were() {
+        assert_eq!(root_logical("terrain"), "layers/terrain/root/0-0-0");
+        assert_eq!(lo_logical("slope", 2, 5), "layers/slope/lo/3-2-5");
+        assert_eq!(hi_logical("trees-cover", 31, 20), "layers/trees-cover/hi/6-31-20");
+        let deep = format!("layers/terrain/deep/{}-500-300", crate::terrain_deep::PACK_Z);
+        assert_eq!(deep_logical("terrain", 500, 300), deep);
+        assert_eq!(mid_logical("terrain", 31, 20), "work/terrain-mid/6-31-20");
+        assert_eq!(mid_logical("bldfield", 1, 2), "work/bldfield-mid/6-1-2");
+    }
+
+    /// `read_each` keeps the order and fails at a failure.
+    #[test]
+    fn read_each_in_order_and_failing() {
+        assert_eq!(read_each(50, 8, |i| Ok(i * 2)).unwrap(), (0..50).map(|i| i * 2).collect::<Vec<_>>());
+        assert!(read_each(50, 8, |i| if i == 17 { anyhow::bail!("no") } else { Ok(i) }).is_err());
+        assert!(read_each(0, 8, Ok).unwrap().is_empty());
+    }
 }
 
 /// Task #449's measure, by hand on real data (release; nothing without its variables): the live build's landmark

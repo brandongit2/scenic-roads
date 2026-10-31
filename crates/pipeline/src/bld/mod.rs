@@ -99,7 +99,7 @@ pub fn work_logical(x: u32, y: u32) -> String {
 
 /// The logical name of z6 tile T's hi pack.
 pub fn pack_logical(x: u32, y: u32) -> String {
-    format!("layers/{LAYER}/hi/6-{x}-{y}")
+    crate::layers::hi_logical(LAYER, x, y)
 }
 
 #[cfg(test)]

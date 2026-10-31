@@ -1045,7 +1045,7 @@ mod tests {
             .install(|| build_piece_with(&mut out, raw, t, cov, src, false, &|_, _, _| {}, offload))
             .unwrap();
         (
-            out.get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)).map(str::to_string),
+            out.get(&crate::layers::hi_logical("terrain", t.0, t.1)).map(str::to_string),
             out.get(&mid_logical(t.0, t.1)).map(|c| {
                 let (_, m) = read_mid(&out.path(c)).unwrap();
                 format!(
@@ -1295,7 +1295,7 @@ mod tests {
             .map(|p| crate::legacy::TileId::parse(p).filter(|u| u.z == 6).map(|u| (u.x, u.y)).unwrap())
             .collect();
         for &t in &pieces {
-            let (hi_l, mid_l) = (format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1));
+            let (hi_l, mid_l) = (crate::layers::hi_logical("terrain", t.0, t.1), mid_logical(t.0, t.1));
             let (hi_was, mid_was) = (out.get(&hi_l).map(str::to_string), out.get(&mid_l).map(str::to_string));
             assert!(hi_was.is_some() && mid_was.is_some(), "6/{}/{}: no hi pack or mid in the manifest", t.0, t.1);
             c.shared.lock().unwrap().tasks.paces.insert((who.clone(), KIND.into()), 0.2);

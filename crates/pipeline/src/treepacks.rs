@@ -41,7 +41,7 @@ pub fn leaf_dir(root: &store::nasfs::NasRoot) -> store::nasfs::NasPath {
 
 /// Z6 tile (`x`, `y`)'s mid in the manifest (crate::trees::MID).
 pub fn mid_logical(x: u32, y: u32) -> String {
-    format!("work/trees-mid/6-{x}-{y}")
+    crate::layers::mid_logical("trees", x, y)
 }
 
 /// Tree cover's targets, each with its key, done or not.
@@ -334,13 +334,13 @@ fn drop_packs(out: &mut Out, q: TileId, made: &crate::layers::LayerOut) -> Resul
 /// have; how many.
 fn drop_layer_packs(out: &mut Out, q: TileId, layer: &str, made: &crate::layers::LayerOut) -> Result<usize> {
     let mut gone = Vec::new();
-    let lo = format!("layers/{layer}/lo/{}", q.dash());
+    let lo = crate::layers::lo_logical(layer, q.x, q.y);
     if !made.lo.contains_key(&q.slash()) && out.get(&lo).is_some() {
         gone.push(lo);
     }
     for x in q.x * 8..(q.x + 1) * 8 {
         for y in q.y * 8..(q.y + 1) * 8 {
-            let hi = format!("layers/{layer}/hi/6-{x}-{y}");
+            let hi = crate::layers::hi_logical(layer, x, y);
             if !made.hi.contains_key(&format!("6/{x}/{y}")) && out.get(&hi).is_some() {
                 gone.push(hi);
             }
@@ -461,7 +461,7 @@ pub fn put_piece(out: &mut Out, t: TileId, dir: &Path, expect_same: bool) -> Res
             (6, t.x, t.y),
             &mut tiles.into_iter(),
         )?;
-        made.push((format!("layers/{layer}/hi/{}", t.dash()), p.map(|p| p.local)));
+        made.push((crate::layers::hi_logical(layer, t.x, t.y), p.map(|p| p.local)));
     }
     let mid = out.scratch_file(&format!("{}.sect", mid_logical(t.x, t.y)));
     std::fs::copy(dir.join(crate::trees::MID), &mid).with_context(|| format!("{}'s mid", t.slash()))?;
@@ -472,7 +472,7 @@ pub fn put_piece(out: &mut Out, t: TileId, dir: &Path, expect_same: bool) -> Res
     eprintln!(
         "trees {}: {} hi packs and its mid",
         t.slash(),
-        LAYERS.iter().filter(|l| out.get(&format!("layers/{l}/hi/{}", t.dash())).is_some()).count()
+        LAYERS.iter().filter(|l| out.get(&crate::layers::hi_logical(l, t.x, t.y)).is_some()).count()
     );
     Ok(())
 }
@@ -520,24 +520,18 @@ fn put_made(out: &mut Out, made: Made, same: Option<&str>) -> Result<()> {
 /// Drops z6 tile `t`'s hi packs and mid (a "none" z6 tile's run: `none_piece_key`); how many.
 pub fn drop_piece(out: &mut Out, t: TileId) -> Result<usize> {
     let all: Vec<String> =
-        LAYERS.iter().map(|l| format!("layers/{l}/hi/{}", t.dash())).chain([mid_logical(t.x, t.y)]).collect();
-    let gone: Vec<&String> = all.iter().filter(|l| out.get(l).is_some()).collect();
-    for l in &gone {
-        out.remove(l);
-    }
+        LAYERS.iter().map(|l| crate::layers::hi_logical(l, t.x, t.y)).chain([mid_logical(t.x, t.y)]).collect();
+    let n = crate::layers::drop(out, &all);
     out.save()?;
-    Ok(gone.len())
+    Ok(n)
 }
 
 /// Drops z3 tile `q`'s tree lo packs (a "none" assembly's run: `none_lo_key`); how many.
 pub fn drop_lo(out: &mut Out, q: TileId) -> Result<usize> {
-    let gone: Vec<String> =
-        LAYERS.iter().map(|l| format!("layers/{l}/lo/{}", q.dash())).filter(|l| out.get(l).is_some()).collect();
-    for l in &gone {
-        out.remove(l);
-    }
+    let all: Vec<String> = LAYERS.iter().map(|l| crate::layers::lo_logical(l, q.x, q.y)).collect();
+    let n = crate::layers::drop(out, &all);
     out.save()?;
-    Ok(gone.len())
+    Ok(n)
 }
 
 /// Makes z3 tile `q`'s zoomed-out tree cover (an assembly: its lo packs, zoom 4–8) from its z6 tiles'
@@ -600,7 +594,7 @@ pub fn put_lo(out: &mut Out, q: TileId, dir: &Path, expect_same: bool) -> Result
             (3, q.x, q.y),
             &mut tiles.into_iter(),
         )?;
-        made.push((format!("layers/{layer}/lo/{}", q.dash()), p.map(|p| p.local)));
+        made.push((crate::layers::lo_logical(layer, q.x, q.y), p.map(|p| p.local)));
     }
     let what = format!("assembly {}", q.slash());
     drop(p);
@@ -608,7 +602,7 @@ pub fn put_lo(out: &mut Out, q: TileId, dir: &Path, expect_same: bool) -> Result
     eprintln!(
         "trees-lo {}: {} lo packs",
         q.slash(),
-        LAYERS.iter().filter(|l| out.get(&format!("layers/{l}/lo/{}", q.dash())).is_some()).count()
+        LAYERS.iter().filter(|l| out.get(&crate::layers::lo_logical(l, q.x, q.y)).is_some()).count()
     );
     Ok(())
 }
@@ -755,7 +749,7 @@ mod tests {
         put_lo(&mut parts, q, &d.path().join("lo"), true).unwrap();
         // A pack that isn't what the manifest has: refused, nothing uploaded.
         run(t, &dir);
-        let hi = format!("layers/trees-cover/hi/{}", t.dash());
+        let hi = crate::layers::hi_logical("trees-cover", t.x, t.y);
         parts.manifest.insert(hi.clone(), "layers/trees-cover/hi/6-33-22.0000000000000000.pack".into());
         parts.remove(&mid);
         let e = put_piece(&mut parts, t, &dir, true).unwrap_err().to_string();
