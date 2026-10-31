@@ -10,8 +10,7 @@
 //! from the front of the plan's order the first work that it may run (a member never the lead's own
 //! steps) and that fits its Mac's room beside what the Mac runs, as the coordinator packs an ask
 //! (`MacRoom`: its whole memory and its cores, a thread each where no run said its threads; a step not measured by its provisional need, one of it at a time;
-//! a job an ask while a member runs an older app); the pages' lane (`helper`) the far end of the
-//! first shared step it can do (terrain's near end). Each lane starts with its slot's job under
+//! a job an ask while a member runs an older app). Each lane starts with its slot's job under
 //! way. The trains' and the landmarks' chains run from the start, each step once what it reads is
 //! built. Publishing goes per z6 tile (docs/building.md §2, Publishing): each map tile of a region
 //! (`RegionLeft::packs`, at its own measured time) is drawn once the z6 tiles that draw it are built,
@@ -29,7 +28,6 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-// The shared steps a helper takes, in its order of preference.
 use super::steps::SHARED;
 
 /// A machine the work is shared among.
@@ -39,8 +37,6 @@ pub struct Machine {
     /// Its speed against the lead's (1), and whether that's measured.
     pub speed: f64,
     pub measured: bool,
-    /// A helper: the shared steps alone, what fits its memory.
-    pub helper: bool,
     /// A lane of any work in the lead's order that fits its memory (and that it may run:
     /// `lead_steps`): the lead's other slots, each member's slots (as the coordinator packs them:
     /// any step offered that fits).
@@ -922,7 +918,7 @@ pub struct StepFc {
     /// Its time at the lead's pace (seconds), and how many of its targets' times are measured.
     pub work_s: u64,
     pub known: usize,
-    /// Whether helpers may do it.
+    /// Whether members take its jobs (a shared step's).
     pub shared: bool,
     pub done_at: Option<u64>,
 }
@@ -1032,7 +1028,7 @@ struct Item {
     /// whole).
     deps: Vec<usize>,
     groups: Vec<usize>,
-    /// Whether a helper may do it (a shared step's, not before the regions').
+    /// Whether members take it (a shared step's, not before the regions').
     shared: bool,
     /// Being built now (its machine free when it's done).
     running: bool,
@@ -1273,19 +1269,15 @@ fn items(inp: &Input) -> Items {
 }
 
 /// The items ready to take (their deps done, not yet taken), each phase's by step in order (an
-/// ask's offers: `offers`), and the shared steps' by step for the pages' lane.
+/// ask's offers: `offers`).
 #[derive(Default)]
 struct Ready {
     phase: [BTreeMap<String, BTreeSet<usize>>; 6],
-    shared: BTreeMap<String, BTreeSet<usize>>,
 }
 
 impl Ready {
     fn insert(&mut self, i: usize, it: &Item, p: usize) {
         self.phase[p].entry(it.step.clone()).or_default().insert(i);
-        if it.shared {
-            self.shared.entry(it.step.clone()).or_default().insert(i);
-        }
     }
 
     fn remove(&mut self, i: usize, it: &Item, p: usize) {
@@ -1298,9 +1290,6 @@ impl Ready {
             }
         };
         drop(&mut self.phase[p]);
-        if it.shared {
-            drop(&mut self.shared);
-        }
     }
 
     /// Phase `p`'s items ready, a step's together, the steps in the order their first comes.
@@ -1358,7 +1347,7 @@ impl Pool {
         if sched.lead_name.is_empty() {
             sched.lead_name = inp.machines.first().map(mac_of).unwrap_or_default();
         }
-        for m in inp.machines.iter().filter(|m| !m.helper) {
+        for m in &inp.machines {
             let g = mac_of(m);
             if pool.asks.contains_key(&g) {
                 continue;
@@ -1666,9 +1655,9 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
         // catalogue doesn't record it built yet, then the regions' (in order), the chains' with none
         // it can do now; after the last z6 tile and terrain, the map tiles left, the slope and tree
         // cover, the chains', then what comes after. Every other lane: the plan's order.
-        let key = (!mac.helper).then(|| (mac_of(mac), m == 0 || mac.lead_steps, mac.equal));
-        let asked = key.as_ref().is_some_and(|k| refused.get(k) == Some(&(changes, t)));
-        let order: Vec<Vec<usize>> = if mac.helper || asked {
+        let key = (mac_of(mac), m == 0 || mac.lead_steps, mac.equal);
+        let asked = refused.get(&key) == Some(&(changes, t));
+        let order: Vec<Vec<usize>> = if asked {
             Vec::new()
         } else if mac.equal {
             PHASES.iter().flat_map(|&p| ready.steps(pi(p))).collect()
@@ -1689,29 +1678,8 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
             [Phase::Publish, Phase::Late, Phase::Chain, Phase::After].iter().flat_map(|&p| ready.steps(pi(p))).collect()
         };
         // What it takes: a job the scheduler grants its Mac (its targets one after another, in
-        // plan order), or for the pages' lane the far end of the first shared step it can do, in
-        // the table's order (terrain-hi's near end: the lead's next z6 tiles
-        // wait on it, as crate::coord picks).
-        let took: Vec<(usize, u32)> = if mac.helper {
-            SHARED
-                .iter()
-                .find_map(|s| {
-                    let set = ready.shared.get(*s)?;
-                    let fits = |&i: &usize| items[i].cost.peak_mb <= mac.mem_mb;
-                    if *s == "terrain-hi" {
-                        set.iter().copied().find(fits)
-                    } else {
-                        set.iter().rev().copied().find(fits)
-                    }
-                })
-                .into_iter()
-                .map(|i| {
-                    jobs += 1;
-                    (i, jobs)
-                })
-                .collect()
-        } else {
-            let key = key.unwrap_or_default();
+        // plan order, as crate::coord picks).
+        let took: Vec<(usize, u32)> = {
             let (g, lead) = (key.0.clone(), key.1);
             let picks = if asked {
                 Vec::new()
@@ -1722,7 +1690,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
                 // (Every member asking, as the live ones do each loop: placement draws among those
                 // asking lately, which aged out as the run's seconds passed.)
                 let idle = |g: &str| {
-                    let on = |k: usize| !inp.machines[k].helper && mac_of(&inp.machines[k]) == g;
+                    let on = |k: usize| mac_of(&inp.machines[k]) == g;
                     (0..free.len()).filter(|&k| on(k) && free[k] <= t + 1e-9).count()
                 };
                 let room = |g: &str| pool.asks[g].cap.as_ref().map_or(0, |c| c.mem_mb);
@@ -1761,7 +1729,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
         if took.is_empty() {
             // (Nothing in flight anywhere: nothing it waits on will change.)
             let next = next_end(&items, &free, &out);
-            free[m] = if mac.helper || !next.is_finite() { next } else { next.min(t + ASK_AGAIN_S) };
+            free[m] = if !next.is_finite() { next } else { next.min(t + ASK_AGAIN_S) };
             continue;
         }
         // Taken: one after another at the machine's pace; the counts kept.
@@ -2516,7 +2484,7 @@ mod tests {
         r.own_terrain_deep = vec!["10/256/352".into(), "10/256/353".into()];
         r.terrain_deep = vec!["10/256/352".into(), "10/256/353".into(), "10/100/252".into()];
         let regions = vec![r];
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         let drop = Cost { secs: 2.0, known: true, peak_mb: 150 };
         inp.drops = vec![
             ("terrain-deep".into(), "10/100/252".into(), drop),
@@ -2535,12 +2503,11 @@ mod tests {
         (t.into(), units.iter().map(|u| u.to_string()).collect())
     }
 
-    fn mac(name: &str, speed: f64, helper: bool) -> Machine {
+    fn mac(name: &str, speed: f64) -> Machine {
         Machine {
             name: name.into(),
             speed,
             measured: true,
-            helper,
             equal: false,
             mem_mb: 6000,
             busy_s: 0.0,
@@ -2594,7 +2561,7 @@ mod tests {
     #[test]
     fn a_released_job_waits_for_its_time_and_the_rest_go_now() {
         let c = Cost { secs: 100.0, known: true, peak_mb: 100 };
-        let mut inp = input(&[], vec![mac("m4", 1.0, false)], &cost);
+        let mut inp = input(&[], vec![mac("m4", 1.0)], &cost);
         inp.after.clear();
         inp.before = vec![("rail".into(), "a".into(), c), ("trains".into(), "b".into(), c)];
         inp.release = vec![Release { step: "rail".into(), target: "a".into(), at: inp.now + 1000, after: Vec::new() }];
@@ -2609,7 +2576,7 @@ mod tests {
         // (Task #409) its input, a target running.
         let regions =
             [region("a", &["6/1/1", "6/1/2"], &["u1", "u2"], &["6/1/1"]), region("b", &["6/2/1"], &["u3", "u4"], &[])];
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
+        let mut inp = input(&regions, vec![mac("m4", 1.0), Machine { speed: 0.5, ..member("m1") }], &cost);
         inp.running.insert(("unit".into(), "u1".into()), 0);
         let mut lead = forecast(&inp);
         lead.each_s.insert("unit".into(), 300.0);
@@ -2650,13 +2617,13 @@ mod tests {
     fn an_equal_lane_takes_only_what_fits_its_memory_and_its_running_targets_are_its_own() {
         let regions = [region("a", &[], &["u1", "u2"], &[])];
         let big = |step: &str, t: &str| Cost { peak_mb: if t == "u2" { 9000 } else { 1000 }, ..cost(step, t) };
-        let inp = input(&regions, vec![mac("m4", 1.0, false)], &big);
+        let inp = input(&regions, vec![mac("m4", 1.0)], &big);
         let mut running = BTreeMap::new();
         running.insert(("unit".to_string(), "u1".to_string()), 1);
-        let small = Machine { busy_s: 300.0, ..mac("m1", 1.0, false) };
+        let small = Machine { busy_s: 300.0, ..mac("m1", 1.0) };
         // (The member's slot a lane of any work that fits, `equal`.)
         let small = Machine { equal: true, lead_steps: true, ..small };
-        let machines = vec![Machine { mem_mb: u64::MAX, ..mac("m4", 1.0, false) }, small];
+        let machines = vec![Machine { mem_mb: u64::MAX, ..mac("m4", 1.0) }, small];
         let f = forecast(&Input { machines, running, ..inp });
         assert!(f.lanes["m1"].iter().all(|l| l.step != "unit" || l.n == 1), "{:?}", f.lanes["m1"]);
         assert!(
@@ -2674,7 +2641,7 @@ mod tests {
         // slot running its job, so the first slot's lane starts with u1 till its end (one job, no
         // other's targets), never with u2 drawn over it.
         let regions = [region("a", &[], &["u1", "u2", "u3"], &[])];
-        let inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        let inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         let slot = |k: usize, busy_s: f64| Machine {
             equal: k > 0,
             lead_steps: true,
@@ -2682,7 +2649,7 @@ mod tests {
             busy_s,
             running: Some(("unit".into(), 1)),
             mac: Some("m4".into()),
-            ..mac(&super::super::slot_worker("m4", k), 1.0, false)
+            ..mac(&super::super::slot_worker("m4", k), 1.0)
         };
         let machines = vec![slot(0, 18_000.0), slot(1, 60.0)];
         // (The second slot's lease first: on the first lane free running its step.)
@@ -2712,7 +2679,7 @@ mod tests {
 
     #[test]
     fn a_tree_cover_assembly_after_its_pieces_and_mids_in_idle_time_last() {
-        // Region a: three tree cover z6 tiles of z3 tile 3/3/2 and its assembly; a helper beside the
+        // Region a: three tree cover z6 tiles of z3 tile 3/3/2 and its assembly; a member beside the
         // lead; and a z6 tile's mid made in idle time.
         let mut a = region("a", &[], &[], &[]);
         a.trees = vec!["6/28/16".into(), "6/28/17".into(), "6/29/16".into()];
@@ -2720,14 +2687,14 @@ mod tests {
         let regions = [a];
         // (Each piece longer than a job's quarter hour: one a job.)
         let long = |step: &str, t: &str| Cost { secs: 1000.0, ..cost(step, t) };
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &long);
+        let mut inp = input(&regions, vec![mac("m4", 1.0), Machine { speed: 0.5, ..member("m1") }], &long);
         inp.idle = vec![("trees".into(), "6/40/20".into(), Cost { secs: 100.0, known: false, peak_mb: 1000 })];
         let sim = run(&inp, &|c| c.secs, far());
         let item = |step: &str, t: &str| sim.items.iter().find(|i| i.step == step && i.target == t).unwrap();
         // The assembly once its z6 tiles are made (the member takes some), by the lead alone.
         let lo = item("trees-lo", "3/3/2");
         assert!(["6/28/16", "6/28/17", "6/29/16"].iter().all(|t| item("trees", t).end <= lo.from + 1e-9));
-        assert!(sim.items.iter().any(|i| i.step == "trees" && i.by == Some(1)), "the helper's pieces");
+        assert!(sim.items.iter().any(|i| i.step == "trees" && i.by == Some(1)), "the member's pieces");
         assert_eq!(lo.by, Some(0));
         // The mid last, after everything else.
         let idle = item("trees", "6/40/20");
@@ -2747,14 +2714,14 @@ mod tests {
         };
         // Out of the jobs before the regions' (as the agent used to leave a running step): not
         // done, but when the Mac is free.
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
+        let mut inp = input(&regions, vec![mac("m4", 1.0), Machine { speed: 0.5, ..member("m1") }], &cost);
         busy(&mut inp);
         inp.running.insert(("labels".into(), "labels".into()), 0);
         let f = forecast(&inp);
         assert_ne!(f.why.as_deref(), Some(NOTHING_LEFT));
         assert_eq!(f.done_at, Some(1_000_000 + 3600));
         // As the agent has it now, a running item of its own: on the schedule, and its step's.
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
+        let mut inp = input(&regions, vec![mac("m4", 1.0), Machine { speed: 0.5, ..member("m1") }], &cost);
         busy(&mut inp);
         inp.before =
             vec![("labels".into(), "labels 2026-09-28".into(), Cost { secs: 2200.0, known: true, peak_mb: 0 })];
@@ -2767,7 +2734,7 @@ mod tests {
         );
         assert_eq!(f.steps.iter().map(|s| (s.step.as_str(), s.left)).collect::<Vec<_>>(), [("labels", 1)]);
         // A daily job (no item): not done until it ends either.
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         busy(&mut inp);
         let f = forecast(&inp);
         assert_eq!((f.why.as_deref(), f.done_at), (None, Some(1_000_000 + 3600)));
@@ -2780,7 +2747,7 @@ mod tests {
     fn a_page_around_takes_each_unit_the_moment_its_job_gives_it() {
         // As below, a worker that takes tails around: each of the two z6 tiles 30 s longer.
         let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])];
-        let f = forecast(&input(&regions, vec![Machine { unit_extra_s: 30.0, ..mac("m4", 1.0, false) }], &cost));
+        let f = forecast(&input(&regions, vec![Machine { unit_extra_s: 30.0, ..mac("m4", 1.0) }], &cost));
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 1460));
     }
 
@@ -2790,7 +2757,7 @@ mod tests {
             packs: vec![tile("6/8/8", &["6/8/8"]), tile("6/8/9", &["6/8/9"])],
             ..region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])
         }];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
         // Terrain 600, two z6 tiles 600, each z6 tile's map tile (100 s, measured per tile) drawn once
         // that z6 tile is built, before the next z6 tile (each tile waits for its own z6 tiles alone): on
         // the map a catalogue's minute after the last. Then its slope (200), then the landmarks (300).
@@ -2833,50 +2800,15 @@ mod tests {
         // One z6 tile stale, five more reading the stale terrain: three of them (0.6) counted too.
         let expected = ["6/9/8", "6/9/9", "6/10/8", "6/10/9", "6/11/8"].map(String::from).to_vec();
         let regions = [RegionLeft { expected, ..region("a", &["3/1/1"], &["6/8/8"], &[]) }];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
         let unit = f.steps.iter().find(|s| s.step == "unit").unwrap();
         assert_eq!((unit.left, unit.work_s), (4, 1200));
         // The region's ready once they're built too: terrain 600, four z6 tiles 1200.
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 1800));
         // None once the terrain's built (none expected).
         let regions = [region("a", &[], &["6/8/8"], &[])];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
         assert_eq!(f.steps.iter().find(|s| s.step == "unit").unwrap().left, 1);
-    }
-
-    #[test]
-    fn a_helper_takes_the_far_end_then_what_it_frees() {
-        let a = RegionLeft {
-            packs: vec![tile("6/8/8", &["6/8/8"]), tile("6/8/7", &["6/8/8"])],
-            ..region("a", &["3/1/1"], &["6/8/8"], &["3/1/1"])
-        };
-        let regions = [a, region("b", &["3/2/2"], &["6/16/16"], &[])];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost));
-        // The M1 takes b's terrain (the far end) at half the pace (1,200 s), then b's z6 tile, its
-        // terrain built (600 s at its pace); the lead a's terrain and z6 tile (900 s), its two map
-        // tiles (200 s), then its slope (200 s), on the map by then. Each region on the map a
-        // catalogue's minute after its last z6 tile and map tiles.
-        assert_eq!(
-            f.next["m1"].iter().map(|n| (n.step.as_str(), n.targets[0].as_str())).collect::<Vec<_>>(),
-            [("terrain-hi", "3/2/2"), ("unit", "6/16/16")]
-        );
-        assert_eq!((f.regions[0].ready_at, f.regions[0].map_at), (Some(1_000_000 + 1300), Some(1_000_000 + 1160)));
-        assert_eq!((f.regions[1].ready_at, f.regions[1].map_at), (Some(1_000_000 + 1800), Some(1_000_000 + 1860)));
-    }
-
-    #[test]
-    fn a_helper_takes_the_next_regions_terrain_not_the_last_ones() {
-        let regions = [
-            region("a", &["3/1/1"], &["6/8/8"], &[]),
-            region("b", &["3/2/2"], &["6/16/16"], &[]),
-            region("c", &["3/3/3"], &["6/24/24"], &[]),
-        ];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost));
-        // The lead takes a's terrain; the M1 b's (whose z6 tiles the lead builds next), not c's.
-        assert_eq!(
-            f.next["m1"].first().map(|n| (n.step.as_str(), n.targets[0].as_str())),
-            Some(("terrain-hi", "3/2/2"))
-        );
     }
 
     #[test]
@@ -2892,7 +2824,7 @@ mod tests {
             packs(region("b", &[], &["6/2/2"], &[]), "6/2/2"),
             packs(region("c", &[], &["6/3/3"], &[]), "6/3/3"),
         ];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
         let on = |k: usize| f.regions[k].map_at.map(|t| t - 1_000_000);
         assert_eq!([on(0), on(1), on(2)], [Some(300 + 100 + 60), Some(800 + 60), Some(1200 + 60)]);
         assert_eq!(
@@ -2902,7 +2834,7 @@ mod tests {
         // A map tile two regions draw: with the first, and the second waits for it.
         let regions =
             [packs(region("a", &[], &["6/1/1"], &[]), "6/1/1"), packs(region("b", &[], &["6/2/2"], &[]), "6/1/1")];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
         assert_eq!(f.steps.iter().find(|s| s.step == "pack").map(|s| s.left), Some(1));
         assert_eq!(f.regions[1].map_at, Some(1_000_000 + 700 + 60));
     }
@@ -2913,7 +2845,7 @@ mod tests {
         // not "in a minute" each time the forecast is made; nor one on the map as it is.
         let regions =
             [region("a", &[], &[], &["3/1/1"]), RegionLeft { on_map: Some(true), ..region("b", &[], &["6/2/2"], &[]) }];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
         assert_eq!((f.regions[0].map_at, f.regions[1].map_at), (None, None));
         assert!(f.regions[0].ready_at.is_some());
     }
@@ -2925,7 +2857,7 @@ mod tests {
         let units: Vec<String> = (0..30).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         inp.cadence = Cadence { since_low: Some(3600), since_marks: Some(600), since_overlays: None };
         let at = |f: &Forecast| f.publishes.iter().map(|p| (p.what.clone(), p.at - 1_000_000)).collect::<Vec<_>>();
         let f = forecast(&inp);
@@ -2935,7 +2867,7 @@ mod tests {
         );
         // Two z6 tiles left (600 s): each once they're built, if sooner.
         let regions = [region("a", &[], &refs[..2], &[])];
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         inp.cadence = Cadence { since_low: Some(3600), since_marks: Some(600), since_overlays: Some(0) };
         assert_eq!(at(&forecast(&inp)), [("low".into(), 600), ("marks".into(), 600), ("overlays".into(), 600)]);
     }
@@ -2943,7 +2875,7 @@ mod tests {
     #[test]
     fn regions_are_built_one_at_a_time() {
         let regions = [region("a", &["3/1/1"], &["6/8/8"], &[]), region("b", &["3/2/2"], &["6/16/16"], &[])];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
         // a's terrain and z6 tile, then b's terrain and z6 tile: a done first.
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 900));
         assert_eq!(f.regions[1].ready_at, Some(1_000_000 + 900 + 900));
@@ -2951,11 +2883,14 @@ mod tests {
     }
 
     #[test]
-    fn a_region_whose_terrain_a_helper_builds_waits_for_it() {
+    fn a_region_whose_terrain_a_member_builds_waits_for_it() {
         // One region: the M1 has its terrain now (900 s left); the lead waits for it.
         let regions = [region("a", &["6/8/8"], &["6/8/8"], &[])];
-        let mut inp =
-            input(&regions, vec![mac("m4", 1.0, false), Machine { busy_s: 900.0, ..mac("m1", 0.5, true) }], &cost);
+        let mut inp = input(
+            &regions,
+            vec![mac("m4", 1.0), Machine { busy_s: 900.0, ..Machine { speed: 0.5, ..member("m1") } }],
+            &cost,
+        );
         inp.running.insert(("terrain-hi".into(), "6/8/8".into()), 1);
         let f = forecast(&inp);
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 900 + 300));
@@ -2966,7 +2901,7 @@ mod tests {
         // (Task #787.) One Mac, one region: its terrain, then its two z6 tiles (they wait on the
         // region's terrain, a set: `Items::groups`), after the reach they wait on too (its own dep).
         let regions = [region("a", &["6/8/8"], &["6/8/8", "6/8/9"], &[])];
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         inp.before = vec![("reach".into(), "reach".into(), Cost { secs: 600.0, known: true, peak_mb: 0 })];
         let f = forecast(&inp);
         let steps: Vec<&str> = f.lanes["m4"].iter().map(|l| l.step.as_str()).collect();
@@ -2985,7 +2920,7 @@ mod tests {
         assert!(!f.runs.deps.contains(&[u, u + 1]), "the z6 tiles don't wait on each other");
         assert!(f.runs.deps.iter().all(|[a, b]| a != b), "never a job on itself");
         // Two Macs: the runs numbered by lane name, so a run on "m1" comes before "m4"'s.
-        let mut two = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 1.0, true)], &cost);
+        let mut two = input(&regions, vec![mac("m4", 1.0), member("m1")], &cost);
         two.before = inp.before.clone();
         let f = forecast(&two);
         let n1 = f.lanes["m1"].len();
@@ -2997,27 +2932,9 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_isnt_stranded_by_a_worldwide_job() {
-        // The lead runs a worldwide job (no item) for an hour; the member takes the terrain at
-        // once (terrain waits for nothing), then the z6 tiles once their region's terrain is built
-        // and the job the z6 tiles need is done: it wakes when the lead is free.
-        let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &[])];
-        let mut inp =
-            input(&regions, vec![Machine { busy_s: 0.0, ..mac("m4", 1.0, false) }, mac("m1", 1.0, true)], &cost);
-        inp.before = vec![("reach".into(), "reach".into(), Cost { secs: 3600.0, known: true, peak_mb: 0 })];
-        let f = forecast(&inp);
-        assert_eq!(f.next["m1"][0].step, "terrain-hi");
-        assert_eq!(f.next["m1"][0].from, 1_000_000);
-        // Both z6 tiles after the hour: one each.
-        let lanes: Vec<&str> = f.lanes["m1"].iter().map(|l| l.step.as_str()).collect();
-        assert_eq!(lanes, ["terrain-hi", "unit"]);
-        assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 3600 + 300));
-    }
-
-    #[test]
     fn nothing_left_is_no_finish_and_a_rebuilt_region_goes_on_the_map_again() {
         let none: [RegionLeft; 0] = [];
-        let mut inp = input(&none, vec![mac("m4", 1.0, false)], &cost);
+        let mut inp = input(&none, vec![mac("m4", 1.0)], &cost);
         inp.after = Vec::new();
         let f = forecast(&inp);
         assert_eq!((f.done_at, f.why.as_deref()), (None, Some("nothing left to build")));
@@ -3029,11 +2946,11 @@ mod tests {
             RegionLeft { on_map: Some(true), ..region("b", &[], &["6/9/8"], &[]) },
             RegionLeft { id: "c".into(), on_map: Some(true), ..Default::default() },
         ];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
         let at = |k: usize| f.regions[k].map_at;
         assert_eq!((at(0), at(1), at(2)), (Some(1_000_000 + 300 + 60), None, None));
         // Work that can't all be listed: no finish, and why.
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         inp.blind = Some("the z6 tiles wait for the pass's reaches".into());
         let f = forecast(&inp);
         assert_eq!((f.done_at, f.why.as_deref()), (None, Some("the z6 tiles wait for the pass's reaches")));
@@ -3041,18 +2958,18 @@ mod tests {
 
     /// A member's slot as the coordinator packs it: any step any Mac may run that fits it.
     fn member(name: &str) -> Machine {
-        Machine { equal: true, lead_steps: false, ..mac(name, 1.0, false) }
+        Machine { equal: true, lead_steps: false, ..mac(name, 1.0) }
     }
 
     #[test]
     fn a_members_slots_take_any_work_offered_to_it_but_the_leads_own() {
-        // (Task #383) the lead's two slots and a member's two: the member's take z6 tiles (no helper's
+        // (Task #383) the lead's two slots and a member's two: the member's take z6 tiles (no
         // far-end rule), never the landmark points (the lead's own step).
         let units: Vec<String> = (0..8).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
-        let lead2 = Machine { equal: true, lead_steps: true, ..mac("m4 #2", 1.0, false) };
-        let inp = input(&regions, vec![mac("m4", 1.0, false), lead2, member("m1"), member("m1 #2")], &cost);
+        let lead2 = Machine { equal: true, lead_steps: true, ..mac("m4 #2", 1.0) };
+        let inp = input(&regions, vec![mac("m4", 1.0), lead2, member("m1"), member("m1 #2")], &cost);
         let f = forecast(&inp);
         let n = |lane: &str, step: &str| f.lanes[lane].iter().filter(|l| l.step == step).map(|l| l.n).sum::<usize>();
         assert_eq!(n("m1", "unit") + n("m1 #2", "unit"), 4, "{:?}", f.lanes);
@@ -3066,10 +2983,10 @@ mod tests {
         let units: Vec<String> = (0..40).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
-        let lead2 = || Machine { equal: true, lead_steps: true, ..mac("m4 #2", 1.0, false) };
-        let mut one = input(&regions, vec![mac("m4", 1.0, false), lead2()], &cost);
+        let lead2 = || Machine { equal: true, lead_steps: true, ..mac("m4 #2", 1.0) };
+        let mut one = input(&regions, vec![mac("m4", 1.0), lead2()], &cost);
         one.after = Vec::new();
-        let mut two = input(&regions, vec![mac("m4", 1.0, false), lead2(), member("m1"), member("m1 #2")], &cost);
+        let mut two = input(&regions, vec![mac("m4", 1.0), lead2(), member("m1"), member("m1 #2")], &cost);
         two.after = Vec::new();
         let left = |i: &Input| (forecast(i).done_at.unwrap() - 1_000_000) as f64;
         let (a, b) = (left(&one), left(&two));
@@ -3091,9 +3008,9 @@ mod tests {
             lead_steps: true,
             busy_s: 2400.0,
             running: Some(("depth".into(), 3)),
-            ..mac("m4 #2", 1.0, false)
+            ..mac("m4 #2", 1.0)
         };
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false), lead2, member("m1")], &cost);
+        let mut inp = input(&regions, vec![mac("m4", 1.0), lead2, member("m1")], &cost);
         inp.chains = vec![("pois".into(), "6/8/0".into(), Cost { secs: 100.0, known: true, peak_mb: 1000 })];
         let f = forecast(&inp);
         let first = &f.lanes["m4 #2"][0];
@@ -3113,7 +3030,7 @@ mod tests {
         let big = |step: &str, t: &str| Cost { peak_mb: 3000, ..cost(step, t) };
         let slot =
             |k: usize| Machine { mac: Some("m1".into()), mem_mb: 8000, ..member(&super::super::slot_worker("m1", k)) };
-        let lead = Machine { busy_s: 1e6, ..mac("m4", 1.0, false) };
+        let lead = Machine { busy_s: 1e6, ..mac("m4", 1.0) };
         let mut inp = input(&regions, vec![lead, slot(0), slot(1), slot(2), slot(3)], &big);
         inp.after = Vec::new();
         inp.macs.insert("m1".into(), MacRoom { mem_mb: 8000, cores: 8 });
@@ -3153,9 +3070,9 @@ mod tests {
         let units: Vec<String> = (0..40).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
-        let lead2 = Machine { equal: true, lead_steps: true, ..mac("m4 #2", 1.0, false) };
-        let lead3 = Machine { equal: true, lead_steps: true, from_s: 3600.0, ..mac("m4 #3", 1.0, false) };
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), lead2, lead3], &cost));
+        let lead2 = Machine { equal: true, lead_steps: true, ..mac("m4 #2", 1.0) };
+        let lead3 = Machine { equal: true, lead_steps: true, from_s: 3600.0, ..mac("m4 #3", 1.0) };
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0), lead2, lead3], &cost));
         assert_eq!(f.lanes["m4 #3"].first().map(|l| l.from), Some(1_000_000 + 3600), "{:?}", f.lanes);
     }
 
@@ -3178,7 +3095,7 @@ mod tests {
             lead_steps: lead,
             mac: Some(host.into()),
             mem_mb: 16_000,
-            ..mac(&super::super::slot_worker(host, k), 1.0, false)
+            ..mac(&super::super::slot_worker(host, k), 1.0)
         };
         let machines: Vec<Machine> =
             (0..4).map(|k| slot("m4", k, true)).chain((0..4).map(|k| slot("m1", k, false))).collect();
@@ -3217,14 +3134,13 @@ mod tests {
             lead_steps: lead,
             mac: Some(host.into()),
             mem_mb: 16_000,
-            ..mac(&super::super::slot_worker(host, k), 1.0, false)
+            ..mac(&super::super::slot_worker(host, k), 1.0)
         };
         let mut machines: Vec<Machine> =
             (0..4).map(|k| slot("m4", k, true)).chain((0..4).map(|k| slot("m1", k, false))).collect();
         // (A member slot busy with a job no item is, for 20 min.)
         machines[5].busy_s = 1200.0;
         machines[5].running = Some(("depth".into(), 1));
-        machines.push(Machine { mem_mb: 4000, ..mac("pages", 1.0, true) });
         let mut inp = input(regions, machines, c);
         inp.macs = [
             ("m4".to_string(), MacRoom { mem_mb: 16_000, cores: 14 }),
@@ -3267,52 +3183,25 @@ mod tests {
         }
     }
 
-    /// The trains' and the landmarks' chains, as the plan lists them.
-    fn chains() -> Vec<Job> {
-        let c = |secs: f64| Cost { secs, known: true, peak_mb: 1000 };
-        vec![
-            ("rail-feeds".into(), "rail-feeds".into(), c(200.0)),
-            ("rail".into(), "rail".into(), c(500.0)),
-            ("pois".into(), "6/8/8".into(), c(100.0)),
-            ("pois".into(), "6/8/9".into(), c(100.0)),
-            ("items".into(), "items".into(), c(1000.0)),
-            ("heritage".into(), "heritage".into(), c(3000.0)),
-            ("marks".into(), "marks".into(), c(300.0)),
-        ]
-    }
-
     #[test]
     fn the_leads_other_slots_build_units_beside_the_first() {
         let units: Vec<String> = (0..8).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
-        let others = Machine { equal: true, mem_mb: 12_000, ..mac("m4 #2", 1.0, false) };
+        let others = Machine { equal: true, mem_mb: 12_000, ..mac("m4 #2", 1.0) };
         // Half the z6 tiles, whoever's at the Mac (the owner's choice: no rule for a Mac in use).
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), others.clone()], &cost));
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0), others.clone()], &cost));
         assert_eq!(
             f.lanes.get("m4 #2").map_or(0, |l| l.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()),
             4
         );
         // The lead's first job two hours from done: its other slots take the z6 tiles from now.
-        let f = forecast(&input(&regions, vec![Machine { busy_s: 7200.0, ..mac("m4", 1.0, false) }, others], &cost));
+        let f = forecast(&input(&regions, vec![Machine { busy_s: 7200.0, ..mac("m4", 1.0) }, others], &cost));
         let lane = &f.lanes["m4 #2"];
         assert_eq!(
             (lane[0].step.as_str(), lane[0].from, lane.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()),
             ("unit", 1_000_000, 8)
         );
-    }
-
-    #[test]
-    fn a_helper_takes_the_candidates_while_the_units_wait() {
-        let regions = [region("a", &["6/8/8"], &["6/8/8", "6/8/9"], &["6/8/8"])];
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
-        (inp.chains, inp.after) = (chains(), Vec::new());
-        let f = forecast(&inp);
-        // While the lead builds the terrain the z6 tiles wait for, the member makes the candidates
-        // (from the far end), 200 s each at its pace, each a job of its own (task #834).
-        let m1 = &f.lanes["m1"][0];
-        assert_eq!((m1.step.as_str(), m1.from, m1.until, m1.n), ("pois", 1_000_000, 1_000_400, 2));
-        assert_eq!(m1.cuts, [[200, 1]]);
     }
 
     /// The guard of task #535: the forecast, fed the coordinator's state as recorded
@@ -3377,7 +3266,7 @@ mod tests {
             equal: k > 0 || !lead,
             lead_steps: lead,
             mac: Some(host.into()),
-            ..mac(&super::super::slot_worker(host, k), 1.0, false)
+            ..mac(&super::super::slot_worker(host, k), 1.0)
         };
         let machines = (0..4).map(|k| slot("m4", k, true)).chain((0..4).map(|k| slot("m1", k, false))).collect();
         let mut inp = input(&regions, machines, &cost);
@@ -4029,7 +3918,7 @@ mod tests {
         let lane = |host: &str, k: usize, busy: f64| Machine {
             busy_s: busy,
             mac: Some(host.into()),
-            ..mac(&super::super::slot_worker(host, k), 1.0, false)
+            ..mac(&super::super::slot_worker(host, k), 1.0)
         };
         let ms = vec![lane("m1", 0, 0.0), lane("m1", 1, 0.0), lane("m1", 2, 50.0), lane("mini", 0, 0.0)];
         let kept = hold_back(ms, &h);
@@ -4102,13 +3991,13 @@ mod tests {
             ..Default::default()
         };
         let regions = [region("r", &["6/1/1", "6/1/2", "6/1/3", "6/1/4"], &["6/9/9"], &[])];
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         inp.now = now - 3600;
         let mut noted = Noted::default();
         noted.note(&inp);
         assert_eq!(noted.cost("terrain-hi", "6/1/1"), Some(600.0));
         // (Later the targets are built: no longer work left, their noted costs stay.)
-        let later = input(&[], vec![mac("m4", 1.0, false)], &cost);
+        let later = input(&[], vec![mac("m4", 1.0)], &cost);
         noted.note(&Input { now, ..later });
         // terrain-hi: three jobs at the lead's pace 300 s a 600 s target (m1 at half the pace in
         // 600 s); one too old; one with a target never noted. unit: one job, too few.
@@ -4124,7 +4013,7 @@ mod tests {
         let p = step_pace(&events, now, &noted, &speed);
         assert_eq!(p, [("terrain-hi".to_string(), 0.5)].into());
         // The run takes it: the terrain at 300 s a target.
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         inp.step_pace = p;
         let f = forecast_by(&inp, far());
         let t = f.placed.iter().find(|p| p.step == "terrain-hi").unwrap();
@@ -4161,7 +4050,7 @@ mod tests {
         let lane = |busy_s: f64, running: Option<(&str, usize)>| Machine {
             busy_s,
             running: running.map(|(s, n)| (s.to_string(), n)),
-            ..mac("m", 1.0, false)
+            ..mac("m", 1.0)
         };
         let mut inp = input(
             &regions,
@@ -4474,7 +4363,7 @@ mod tests {
         let c = |secs: f64| Cost { secs, known: true, peak_mb: 1000 };
         let regions: [RegionLeft; 0] = [];
         let unit = |_: &str, _: &str| c(1.0);
-        let base = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 1.0, false)], &unit);
+        let base = input(&regions, vec![mac("m4", 1.0), mac("m1", 1.0)], &unit);
         let job = |s: &str, t: &str, secs: f64| (s.to_string(), t.to_string(), c(secs));
         let check = |inp: &Input| {
             let its = items(inp);

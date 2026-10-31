@@ -15,7 +15,7 @@
 //!   rules (crate::agent::every), never kept by hand.
 //! - **resources**: the memory a job of it is first guessed to take until a target's own run says,
 //!   whether members take it (the shared steps; which ready job goes first is derived from the
-//!   reads, `rank`, never kept by hand), whether it's the lead's alone (a
+//!   reads, `readers_first`, never kept by hand), whether it's the lead's alone (a
 //!   run alone of the whole build, or one that keeps the pass's answers: crate::agent::every), and
 //!   what it may write (its write-set: the logical names its jobs may add, change or remove in the
 //!   build's manifest). How many targets go in a job is measured, not kept here: as many as fit a
@@ -151,7 +151,7 @@ pub struct Step {
     /// the 3D buildings by their rows: crate::agent's offers.)
     pub mem_mb: u64,
     /// Other members take its jobs (the shared steps). No preference among them is kept here:
-    /// which ready job goes first is derived from the reads (`rank`).
+    /// which ready job goes first is derived from the reads (`readers_first`).
     pub shared: bool,
     /// A run of the whole build's, the lead's alone (not offered to members: crate::agent::every).
     pub alone: bool,
@@ -1539,7 +1539,7 @@ pub fn readers_first<T>(v: Vec<T>, step: impl Fn(&T) -> &str) -> Vec<T> {
 }
 
 /// The shared steps: other members take their jobs (crate::coord leases them), in the table's
-/// order (no preference: which ready job goes first is `rank`'s).
+/// order (no preference: which ready job goes first is derived from the reads, `readers_first`).
 pub const SHARED: [&str; 11] = set_of(Set::Shared);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
 pub const ANSWERED: [&str; 3] = set_of(Set::Answered);

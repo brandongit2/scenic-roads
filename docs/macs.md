@@ -101,8 +101,8 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
 
 **The M1 (16 GB)** is a member: it builds what the lead's coordinator
 gives it (docs/building.md §2, The pool): any shared step's jobs that fit the memory its owner gives the build there
-(`scenic memory`, within the memory guard's limit: docs/pool.md §7.1) and its disk (its room target kept free past each job's measured disk; a task 5 GB, tree cover's rows and terrain's subtrees 1 GB), from the far end of the list (terrain from the
-near end), else z6 tiles' tails (`docs/workers.md`). A z6 tile's predicted peak is the most its job's
+(`scenic memory`, within the memory guard's limit: docs/pool.md §7.1) and its disk (its room target kept free past each job's measured disk; a task 5 GB, tree cover's rows and terrain's subtrees 1 GB), a run from the front of the plan's order
+(docs/pool.md §7.2), else z6 tiles' tails (`docs/workers.md`). A z6 tile's predicted peak is the most its job's
 processes held together last time, else about ten times its extract, never under 3.7 GB nor below its
 floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, the lead's the heartbeat
 (`state/status.json`).

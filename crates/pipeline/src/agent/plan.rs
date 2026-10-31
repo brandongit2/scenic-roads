@@ -1960,7 +1960,7 @@ impl Planner {
             });
         }
         // A step's targets offered together, in plan order (the plan lists a step's work by region:
-        // a helper takes from the far end of all of it). (A step with nothing left: none offered.)
+        // an ask takes a run from its front). (A step with nothing left: none offered.)
         // (A halo step's work, one a halo (`build::by_unit`), offered so: a job of it takes one
         // halo's targets, its base packs opened once, crate::needs::HALO_STEPS.)
         let mut merged: Vec<crate::coord::Offer> = Vec::new();
@@ -2356,7 +2356,6 @@ impl Planner {
             name: self.host.clone(),
             speed: 1.0,
             measured: true,
-            helper: false,
             equal: false,
             mem_mb: u64::MAX,
             busy_s: busy(0, 1.0),
@@ -2386,7 +2385,6 @@ impl Planner {
                 name,
                 speed,
                 measured,
-                helper: false,
                 equal: true,
                 mem_mb: mac_mb,
                 busy_s: if k < self.inp.slots.len() { busy(k, speed) } else { 0.0 },
@@ -2460,7 +2458,6 @@ impl Planner {
                     name,
                     speed,
                     measured,
-                    helper: false,
                     equal: true,
                     mem_mb: mem_all.unwrap_or(6144 * n as u64),
                     busy_s,

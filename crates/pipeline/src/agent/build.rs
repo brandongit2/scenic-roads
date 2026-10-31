@@ -3564,8 +3564,6 @@ fn by_unit(
     (groups.into_iter().map(|g| g.into_iter().filter_map(|i| slots[i].take()).collect()).collect(), units)
 }
 
-/// Where a z6 tile comes in a run of z6 tiles: by the 10° square its tile's centre is in (column, then
-/// row from the north), then by tile.
 /// `targets` of `step` in compact blocks when another step reads several of them for one of its own
 /// (steps::read_together: slope-deep a z10 tile's terrain-deep and its 8 neighbours', an assembly
 /// its z6 tiles), by steps::block_order; else as they are. A job takes a run of its step's targets
@@ -3578,6 +3576,8 @@ pub fn blocks(step: &str, mut targets: Vec<(String, String)>) -> Vec<(String, St
     targets
 }
 
+/// Where a z6 tile comes in a run of z6 tiles: by the 10° square its tile's centre is in (column, then
+/// row from the north), then by tile.
 fn spatial_order(u: TileId) -> (i32, i32, u32, u32) {
     let b = crate::hipack::tile_bounds(u.z, u.x, u.y);
     let (lon, lat) = ((b[0] as f64 + b[2] as f64) / 2.0 * 1e-7, (b[1] as f64 + b[3] as f64) / 2.0 * 1e-7);
