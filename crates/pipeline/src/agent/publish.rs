@@ -104,7 +104,7 @@ fn watches() -> Vec<&'static str> {
 /// to the map, else made of the map once (`catalogue`).
 pub struct Here {
     pub feed: std::sync::Arc<store::map::feed::Feed>,
-    pub gc: std::sync::Arc<super::gcqueue::GcQueue>,
+    pub gc: std::sync::Arc<store::map::gc::GcQueue>,
     head: std::sync::Arc<super::bus::Snap<Option<std::sync::Arc<store::catalogue::Catalogue>>>>,
 }
 

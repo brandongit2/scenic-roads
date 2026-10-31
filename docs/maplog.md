@@ -505,7 +505,7 @@ it) leaves the queue. A file is **due** when:
   by name; leases are clients too, §5.4), and
 - the records and the map still don't name it (checked again at the moment it goes).
 
-Built (step 7, `agent::gcqueue`): the queue is one file of JSON lines in the map log's folder,
+Built (step 7, `store::map::gc`, used by `agent::gcqueue`): the queue is one file of JSON lines in the map log's folder,
 appended and `fsync`ed once per change (a batch, a records save, a deletion), rewritten whole once
 it has grown to four times what it holds; it survives a lead restart. The holders' index is memory
 alone: the map's content names from the log's map at the open and each batch, the records' (the

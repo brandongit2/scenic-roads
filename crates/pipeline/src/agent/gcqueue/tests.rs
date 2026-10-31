@@ -4,6 +4,7 @@ use crate::pool::journal;
 use crate::pool::nas::Mem;
 use crate::pool::records::{self, Records};
 use serde_json::json;
+use store::map::{Batch, Cursor, Map};
 
 const T0: u64 = 1_800_000_000;
 
@@ -39,7 +40,7 @@ fn a_name_freed_and_taken_again_leaves_the_queue() {
     let m1 = map(1, &[("a", "a.1.pack"), ("b", "b.1.pack"), ("c", "c.1.pack")]);
     let q = GcQueue::default();
     q.open(d.path(), &m1, T0).unwrap();
-    q.records(&records(1, &[("c", "c.1.pack")]), T0);
+    super::records(&q, &records(1, &[("c", "c.1.pack")]), T0);
     // (Batch 2 renames a, b and c: their old names freed; c's still the records'.)
     let (b2, m2) = to(&m1, &[("a", "a.2.pack"), ("b", "b.2.pack"), ("c", "c.2.pack")], 2);
     q.batch(&b2, T0 + 10);
@@ -51,7 +52,7 @@ fn a_name_freed_and_taken_again_leaves_the_queue() {
     q.batch(&b3, T0 + 20);
     assert!(q.queued("a.1.pack").is_none());
     // (A records save naming b.1: taken; one dropping c.1: queued now, at the map's seq.)
-    q.records(&records(2, &[("b", "b.1.pack")]), T0 + 30);
+    super::records(&q, &records(2, &[("b", "b.1.pack")]), T0 + 30);
     assert!(q.queued("b.1.pack").is_none());
     assert_eq!(q.queued("c.1.pack"), Some(Queued { seq: 3, at: T0 + 30 }));
     // (a.2 freed by batch 3: queued.)
@@ -89,7 +90,7 @@ fn due_waits_for_every_cursor_the_grace_and_older_leases() {
     };
     // (No records seen yet: a holder unknown, nothing due.)
     assert!(due(&all_past, None, late).is_empty());
-    q.records(&records(1, &[]), T0);
+    super::records(&q, &records(1, &[]), T0);
     assert_eq!(due(&all_past, None, late), vec!["a.1.pack".to_string()]);
     // A cursor still before the batch that freed it holds it…
     let mut behind = all_past.clone();
@@ -105,7 +106,7 @@ fn due_waits_for_every_cursor_the_grace_and_older_leases() {
     assert!(due(&all_past, Some(T0), late).is_empty());
     assert_eq!(due(&all_past, Some(T0 + 1), late).len(), 1);
     // A holder naming it again: not due (a records save takes it off the queue too).
-    q.records(&records(2, &[("a", "a.1.pack")]), late);
+    super::records(&q, &records(2, &[("a", "a.1.pack")]), late);
     assert!(due(&all_past, None, late).is_empty());
 }
 
@@ -135,10 +136,10 @@ fn a_reuse_of_a_deleted_name_is_refused_and_redone() {
     q.open(d.path(), &map(1, &[]), T0).unwrap();
     let name = "base/6-1-1.k0.base";
     // (Deleted while leases up to 2-7 were granted.)
-    q.deleted(&[name.to_string()], T0 + 100, LeaseId { term: 2, n: 7 });
+    q.deleted(&[name.to_string()], T0 + 100, lease(LeaseId { term: 2, n: 7 }));
     let nas = Mem::default();
     let mut r = Records { term: 2, ..Default::default() };
-    let check = |e: &Entry, _: &Records| q.refusal(e).map_or(Ok(()), Err);
+    let check = |e: &Entry, _: &Records| refusal(&q, e).map_or(Ok(()), Err);
     let reused = journal::write(&nas, &entry(5, name)).unwrap();
     let m = records::merge(&nas, &mut r, &[reused.clone()], &check);
     assert_eq!(m.refused.len(), 1, "{m:?}");
@@ -151,11 +152,11 @@ fn a_reuse_of_a_deleted_name_is_refused_and_redone() {
     assert_eq!(m.applied.len(), 1, "{m:?}");
     assert_eq!(r.manifest["base/6-1-1"], name);
     // A name not deleted: no refusal. And the deletion survives a restart.
-    assert!(q.refusal(&entry(3, "base/6-1-1.k1.base")).is_none());
+    assert!(refusal(&q, &entry(3, "base/6-1-1.k1.base")).is_none());
     let back = GcQueue::default();
     back.open(d.path(), &map(1, &[]), T0 + 200).unwrap();
-    assert!(back.refusal(&entry(5, name)).is_some());
-    assert!(back.refusal(&entry(8, name)).is_none());
+    assert!(refusal(&back, &entry(5, name)).is_some());
+    assert!(refusal(&back, &entry(8, name)).is_none());
 }
 
 /// A last line cut short is dropped (and cut off the file); a damaged earlier line is an error.
@@ -165,7 +166,7 @@ fn a_torn_last_line_is_dropped() {
     let m1 = map(1, &[("a", "a.1.pack"), ("b", "b.1.pack")]);
     let q = GcQueue::default();
     q.open(d.path(), &m1, T0).unwrap();
-    q.records(&records(1, &[]), T0);
+    super::records(&q, &records(1, &[]), T0);
     let (b2, m2) = to(&m1, &[("a", "a.2.pack"), ("b", "b.1.pack")], 2);
     q.batch(&b2, T0);
     let p = d.path().join(FILE);

@@ -8323,7 +8323,7 @@ impl Agent {
         if let Some(rec) = run.side.driver().records() {
             // (GC's queue told of the records as saved: what they dropped queued, docs/maplog.md §7.2.)
             if let Some(h) = here.as_ref().filter(|_| saved) {
-                h.gc.records(rec, crate::coord::wall_now());
+                gcqueue::records(&h.gc, rec, crate::coord::wall_now());
             }
             let new: Vec<(String, crate::rawpack::Pack)> =
                 rec.raw.iter().filter(|(_, p)| !run.named_raw.contains(&p.name)).cloned().collect();

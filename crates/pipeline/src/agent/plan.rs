@@ -1107,7 +1107,7 @@ impl Planner {
             Ok(c) => {
                 eprintln!("gc: {}", c.said());
                 let gone: Vec<String> = c.removed.iter().chain(&c.gone).cloned().collect();
-                here.gc.deleted(&gone, now_s(), co.lease_bounds().1);
+                here.gc.deleted(&gone, now_s(), super::gcqueue::lease(co.lease_bounds().1));
             }
             Err(e) => eprintln!("gc: the shadow's check {} can't be read: {e}", check.display()),
         }

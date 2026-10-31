@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 pub mod feed;
+pub mod gc;
 pub mod log;
 
 /// The map's entries, key → value (docs/maplog.md §4.1).
