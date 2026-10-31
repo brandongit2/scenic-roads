@@ -652,7 +652,7 @@ pub fn gunzip_if_gzip(data: &[u8]) -> Result<Cow<'_, [u8]>> {
     Ok(Cow::Owned(out))
 }
 
-/// Gzips a tile (default level).
+/// Gzips a tile (default level, 6): the map's tiles and the build's marks and labels.
 pub fn gzip(data: &[u8]) -> Result<Vec<u8>> {
     let mut e = GzEncoder::new(Vec::with_capacity(data.len() / 3 + 64), Compression::default());
     e.write_all(data)?;
@@ -1044,6 +1044,16 @@ mod tests {
         d.extent = 512;
         let t3 = Tile { layers: vec![d], unknown: vec![] };
         assert!(merge(&[&t1.encode(), &t3.encode()]).is_err());
+    }
+
+    #[test]
+    fn gzip_is_level_6() {
+        // (Task #852: the build's marks and labels gzipped at level 6 by their own helpers before:
+        // the same bytes.)
+        let b: Vec<u8> = (0..200_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let mut e = GzEncoder::new(Vec::new(), Compression::new(6));
+        e.write_all(&b).unwrap();
+        assert_eq!(gzip(&b).unwrap(), e.finish().unwrap());
     }
 
     #[test]

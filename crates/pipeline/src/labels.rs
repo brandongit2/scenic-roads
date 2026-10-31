@@ -48,7 +48,7 @@ use anyhow::{ensure, Context, Result};
 use det::Det;
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::path::Path;
 use std::process::Stdio;
 
@@ -562,12 +562,6 @@ fn encode(points: &[Feature]) -> Vec<u8> {
     out
 }
 
-fn gzip(b: &[u8]) -> Result<Vec<u8>> {
-    let mut e = flate2::write::GzEncoder::new(Vec::with_capacity(b.len() / 2 + 64), flate2::Compression::new(6));
-    e.write_all(b)?;
-    Ok(e.finish()?)
-}
-
 /// Runs osmium with `args`, its progress (`--progress`) said as the stage's under way.
 fn osmium(args: &[&std::ffi::OsStr], what: &str) -> Result<()> {
     let mut c = crate::osmpass::osmium();
@@ -765,7 +759,7 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
                     })
                     .collect();
                 let raw = encode(&feats);
-                Ok((gzip(&raw)?, raw.len()))
+                Ok((names::mvt::gzip(&raw)?, raw.len()))
             })
             .collect::<Result<_>>()?;
         for (&(z, x, y), (gz, raw)) in batch.iter().zip(blobs) {

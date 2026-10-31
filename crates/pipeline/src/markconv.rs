@@ -353,7 +353,7 @@ pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec,
                             .collect(),
                     };
                     let raw = tile.encode();
-                    let gz = gzip(&raw)?;
+                    let gz = names::mvt::gzip(&raw)?;
                     Ok(((x, y), gz, raw.len() as u32))
                 })
                 .collect::<Result<_>>()?;
@@ -402,11 +402,4 @@ pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec,
     }
     out.save()?;
     Ok(Converted { points: all.len(), tiles: ntiles, thinned })
-}
-
-fn gzip(b: &[u8]) -> Result<Vec<u8>> {
-    use std::io::Write;
-    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
-    e.write_all(b)?;
-    Ok(e.finish()?)
 }
