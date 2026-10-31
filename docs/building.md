@@ -252,7 +252,8 @@ from the first (`edit_held`).
   its own measured time; a region is all on the map as it's built now (`map_at`) at its last
   z6 tile's end, plus its map tiles, plus at most a minute for the catalogue (`CATALOGUE_EVERY_S`). The
   whole-map steps go by their cadence (`publishes`): the low zooms, the landmarks and the area
-  overlays each once its cadence has passed since it last went (`LastCatalogue`), or once no z6 tile or
+  overlays each once its cadence has passed since it last went (the low zooms by the map log's mark of their batches, docs/maplog.md §6.5; the
+  others by `LastCatalogue`'s runs), or once no z6 tile or
   terrain is left, whichever comes first (the low zooms may go sooner, half their packs stale).
   Each target takes its last run's time at the lead's pace, else its step's mean, else a first
   guess; each machine at its measured speed (half the lead's until measured). Run three times for

@@ -504,8 +504,8 @@ pub fn spoken_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opt
 }
 
 /// The to-do lists of names to translate and descriptions to write (crate::namestodo), once per
-/// change of what it reads in the catalogue the map serves (`served`: crate::namestodo::inputs_key,
-/// a catalogue of depth or terrain alone changing none of it), accepted version of the translations
+/// change of what it reads of the map (crate::namestodo::inputs_seq: the last batch of the map's
+/// log touching it; a batch of depth or terrain alone touches none of it), accepted version of the translations
 /// and of the descriptions (it reads them: docs/inputs.md §6.3, §6.4), or step version: after each
 /// build that changed names, and after each batch taken in. None while either input has no
 /// accepted version yet.

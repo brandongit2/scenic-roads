@@ -372,9 +372,30 @@ pub const INPUTS: [&str; 17] = [
 /// The agent's key of what `run` reads (crate::agent::build::names_todo_work): the `seq` of the
 /// last batch that touched any of `INPUTS`, by the log's `marks`; None before the log has any. A
 /// batch that changed none of them (most: a depth or terrain tile alone) leaves the lists as they
-/// are, so they aren't made again.
-pub fn inputs_seq(marks: &BTreeMap<String, store::map::Mark>) -> Option<String> {
+/// are, so they aren't made again. A file the map's `NAMING` sections name whose `f/` key no prefix
+/// of `INPUTS` covers (a step naming its outputs otherwise) makes the key the map's own `seq`: the
+/// lists made again at each batch, said, rather than a change of that file missed.
+pub fn inputs_seq(marks: &BTreeMap<String, store::map::Mark>, map: Option<&store::map::Map>) -> Option<String> {
+    if let Some((m, f)) = map.and_then(|m| Some((m, unwatched(m)?))) {
+        eprintln!("names-todo: {f} isn't under the inputs' watches (namestodo::INPUTS): the lists made at every batch");
+        return Some(format!("map {}", m.seq));
+    }
     INPUTS.iter().filter_map(|w| marks.get(*w)).map(|m| m.seq).max().map(|s| format!("map {s}"))
+}
+
+/// The sections of `INPUTS` whose values name files (logical names, each at `f/<name>`).
+const NAMING: [&str; 6] = ["s/global/spoken", "l/labels/hi/", "s/base/", "s/hidata/", "s/markdata/", "s/ovdata/"];
+
+/// The first `f/` key a section of `NAMING` names that no prefix of `INPUTS` covers.
+fn unwatched(map: &store::map::Map) -> Option<String> {
+    NAMING.iter().find_map(|sec| {
+        map.entries()
+            .range::<str, _>((std::ops::Bound::Included(*sec), std::ops::Bound::Unbounded))
+            .take_while(|(k, _)| k.starts_with(sec))
+            .filter_map(|(_, v)| v.as_str())
+            .map(|v| format!("f/{v}"))
+            .find(|f| !INPUTS.iter().any(|w| f.starts_with(w)))
+    })
 }
 
 /// What `run` reads of catalogue `cat`, by content (`INPUTS`, as `run` reads them): the key of its
@@ -1039,7 +1060,7 @@ mod tests {
         .into();
         let mut log = Log::open_watching(d.path(), &INPUTS).unwrap();
         log.seed(Map::new(1, "t1".into(), e.clone())).unwrap();
-        let key = |l: &Log| inputs_seq(l.marks()).unwrap();
+        let key = |l: &Log| inputs_seq(l.marks(), Some(&l.map())).unwrap();
         assert_eq!(key(&log), "map 1");
         let mut seq = 1;
         let mut step = |log: &mut Log, e: &store::map::Entries| {
@@ -1067,7 +1088,13 @@ mod tests {
         let mut log = Log::open_watching(d.path(), &INPUTS).unwrap();
         assert_eq!(key(&log), "map 5");
         log.compact().unwrap();
-        assert_eq!(key(&Log::open_watching(d.path(), &INPUTS).unwrap()), "map 5");
+        let mut log = Log::open_watching(d.path(), &INPUTS).unwrap();
+        assert_eq!(key(&log), "map 5");
+        // A base pack named outside the watched prefixes: made again at every batch, not missed.
+        e.insert("s/base/6/1/2".into(), json!("elsewhere/6-1-2"));
+        assert_eq!(step(&mut log, &e), "map 7");
+        e.insert("l/slope/hi/6/1/2".into(), json!("layers/slope/hi/6-1-2"));
+        assert_eq!(step(&mut log, &e), "map 8");
     }
 
     #[test]

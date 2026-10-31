@@ -78,7 +78,10 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
 - **names-todo** keys on `map <seq>`, the last batch touching any of `namestodo::INPUTS` (the
   sections §6.8 lists, `m/units` and `m/regions`, and their files: `f/base/`, `f/hidata/`,
   `f/markdata/`, `f/ovdata/`, `f/layers/labels/hi/`, `f/global/spoken`, `f/global/roaden/`, by the
-  steps' names for them); `inputs_key` stays the job's own key of its roads' pieces (it reads a
+  steps' names for them). Those file prefixes are checked against the map at each plan: a file one
+  of those sections names outside them (a step renaming its outputs) makes the key the map's own
+  `seq`, said in the log (the lists made each batch, never a change missed). The first plan after
+  the deploy makes the lists once (the key changes from the hash to `map <seq>`); `inputs_key` stays the job's own key of its roads' pieces (it reads a
   catalogue until step 6).
 - **`LastCatalogue`'s `at` and `low_at`** go: when the last catalogue went out is the head batch's
   time; when the low zooms last went out is the last batch whose `why` says `the low zooms`

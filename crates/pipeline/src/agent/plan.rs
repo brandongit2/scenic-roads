@@ -1496,7 +1496,10 @@ impl Planner {
         // (From the translations' and descriptions' accepted versions, which the agent names: the
         // job reads them through the accessor, never the inputs folders.)
         // (Their inputs' key: the last batch of the map's log touching what they read.)
-        let names_key = crate::namestodo::inputs_seq(&self.map_marks());
+        let names_key = crate::namestodo::inputs_seq(
+            &self.map_marks(),
+            self.inp.map.as_ref().and_then(|h| h.feed.map()).as_deref(),
+        );
         // (The steps gated by time: when each last ran, as its recorded key changed.)
         self.note_ran(&keys);
         let (since, idle) = {
