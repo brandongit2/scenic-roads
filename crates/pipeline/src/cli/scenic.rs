@@ -290,12 +290,13 @@ pub struct Pool {
 pub enum PoolCmd {
     /// How the pool stands (the same as `scenic pool`)
     Status,
-    /// A job's progress on a member's Mac given up: the lead runs it wherever it fits from then
+    /// A member's leases released (that Mac is gone for good: its targets go to others), or with a
+    /// job, that job's progress on its Mac given up (the lead runs it wherever it fits from then)
     Release {
-        /// The member (its host name or member id)
+        /// The member (its host name; for a job's progress, or its member id)
         member: String,
         /// The job ("osm-pass 2026-10-01")
-        job: String,
+        job: Option<String>,
     },
     /// The targets' memory floors the lead's coordinator keeps (crate::agent::memguard)
     Floors {

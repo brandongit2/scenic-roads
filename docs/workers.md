@@ -121,7 +121,10 @@ Common rules:
 - **Pausing** (docs/building.md §2, Pausing): the coordinator holds the pause (in its store); asks are refused, beats carry
   it, and no lease lapses while it holds. Work given back for an interruption isn't held against it.
 - **Leases** (`coord::lease`): ten minutes on the coordinator's monotonic clock, renewed by a beat
-  each minute; a lapsed lease's work is offered again.
+  each minute; a lapsed lease's work is offered again. A member whose agent speaks for its leases
+  (`coord::held`, docs/coordination.md §6) holds its jobs' leases until its word instead: its beat
+  to the lead every 10 s lists them, one left out is released, and they go after 12 h unheard or
+  by `scenic pool release <member>`.
 - **Handing back:** a job's saves, done record and costs go back as one hand-off, written by its
   member to the journal and merged by the lead (docs/pool.md §7.3). A task's files go back to the
   broker that offered it; a hand-back for a gone lease is refused (410).

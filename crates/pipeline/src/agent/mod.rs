@@ -500,9 +500,6 @@ impl Tell {
     }
 }
 
-/// How long an end owed to the lead is tried (s): as long as its lease lasts unrenewed.
-const OWED_S: u64 = crate::coord::TTL.as_secs();
-
 /// The free space a member's job of `step` needs: a task's its kind's (crate::agent::steps::Task's
 /// `disk`); a step's none of its own: their grant's measured disk is reserved for them
 /// (`reservation`), and the owner's room target stays free past it, with no fixed reserve (task
@@ -1535,9 +1532,11 @@ pub struct Agent {
     /// Its own jobs' ends owed to the lead: ended while this process led a term it had lost without
     /// its step knowing yet (it froze, a later term made meanwhile), told to the lead through its
     /// client once its part has changed (`end_lease`, `tell_owed`); and a member's ends the lead
-    /// didn't take when they ended (it didn't answer). Each told each loop until `OWED_S` after it
-    /// ended (its lease has lapsed by then).
-    owed: Vec<(u64, Tell)>,
+    /// didn't take when they ended (it didn't answer). Each told each loop until the lead answers:
+    /// its lease is held meanwhile (listed in the beat, `beat_lead`; docs/coordination.md §6).
+    owed: Vec<Tell>,
+    /// When this member last beat to the lead (`beat_lead`).
+    lead_beaten: Option<Instant>,
     /// The folders of the jobs that ended out of the pool, by lease: their hand-offs go to the lead
     /// to journal (`journaled: false`), and each folder goes once the lead answers (`told`).
     unjournaled: BTreeMap<u64, PathBuf>,
@@ -1929,6 +1928,7 @@ impl Agent {
             published: None,
             client: None,
             owed: Vec::new(),
+            lead_beaten: None,
             unjournaled: BTreeMap::new(),
             cheap: None,
             pause,
@@ -2979,7 +2979,7 @@ impl Agent {
                     }
                     if self.coord.is_some() {
                         eprintln!("agent: lease {id} ended as this Mac finds its term lost: told to the lead once it works as a member");
-                        self.owed.push((now_s(), tell));
+                        self.owed.push(tell);
                     } else {
                         self.tell_or_owe(tell);
                     }
@@ -3037,12 +3037,12 @@ impl Agent {
     }
 
     /// Tells the lead a job's end, or owes it (not told: the lead didn't answer, its round failed
-    /// already, or there's no client): told again each loop until `OWED_S` (`tell_owed`), never
+    /// already, or there's no client): told again each loop until the lead answers (`tell_owed`), never
     /// lost to a fast fail.
     fn tell_or_owe(&mut self, tell: Tell) {
         match self.client.as_ref().and_then(|c| tell.tell(c)) {
             Some(refused) => self.told(tell.lease(), refused),
-            None => self.owed.push((now_s(), tell)),
+            None => self.owed.push(tell),
         }
     }
 
@@ -3057,42 +3057,65 @@ impl Agent {
     }
 
     /// The ends owed to the lead (`owed`), told once this process works as a member, through the
-    /// lead's client: each kept until the lead answers, or `OWED_S` after it ended.
+    /// lead's client: each kept until the lead answers (its lease no longer lapses meanwhile: the
+    /// member's beat lists it, `beat_lead`).
     fn tell_owed(&mut self, root: &store::nasfs::NasRoot) {
         if self.owed.is_empty() || self.coord.is_some() {
             return;
         }
-        let now = now_s();
         let owed = std::mem::take(&mut self.owed);
-        // (An end aged out: its lease has lapsed; its folder, if it ended out of the pool, stays
-        // for the next process to hand off as a job it left, no longer waiting on the lead.)
-        let mut aged = Vec::new();
         let Some(c) = self.client(root, &mut Vec::new()) else {
-            let (keep, old): (Vec<_>, Vec<_>) = owed.into_iter().partition(|(at, _)| now.saturating_sub(*at) < OWED_S);
-            self.owed = keep;
-            for (_, t) in old {
-                self.unjournaled.remove(&t.lease());
-            }
+            self.owed = owed;
             return;
         };
         let mut told = Vec::new();
-        let mut left: Vec<(u64, Tell)> = Vec::new();
-        for (at, t) in owed {
-            if let Some(refused) = t.tell(c) {
-                told.push((t.lease(), refused));
-            } else if now.saturating_sub(at) < OWED_S {
-                left.push((at, t));
-            } else {
-                aged.push(t.lease());
+        let mut left = Vec::new();
+        for t in owed {
+            match t.tell(c) {
+                Some(refused) => told.push((t.lease(), refused)),
+                None => left.push(t),
             }
         }
         self.owed = left;
-        for id in aged {
-            self.unjournaled.remove(&id);
-        }
         for (id, refused) in told {
             self.told(id, refused);
         }
+    }
+
+    /// The member's beat to the lead each `held::BEAT_EVERY` (docs/coordination.md §6.1;
+    /// crate::coord::held): the lead's leases it holds, its slots' jobs' and those whose ends it
+    /// owes; a lease it leaves out the lead releases. Its slots whose leases the lead says ended
+    /// beat at once (refused: their jobs stop). An older lead answers 404: nothing changes.
+    fn beat_lead(&mut self) {
+        use crate::coord::held;
+        if self.coord.is_some() || self.lead_beaten.is_some_and(|t| t.elapsed() < held::BEAT_EVERY) {
+            return;
+        }
+        let Some(c) = self.client.as_ref() else { return };
+        self.lead_beaten = Some(Instant::now());
+        let held = self.held_of_lead();
+        let b = held::Beat { member: self.host.clone(), speaks: vec![held::SPEAKS.to_string()], held };
+        match c.pool_beat(&b) {
+            Ok(Some(a)) => {
+                for s in self.slots.iter_mut() {
+                    if matches!(&s.lease, Some(Held::Leased { lease: id, .. } | Held::Pooled { id, own: false, .. }) if a.released.contains(id))
+                    {
+                        s.beaten = None;
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("agent: its beat to the lead: {e:#}"),
+        }
+    }
+
+    /// The lead's leases this member holds: its slots' jobs', and those whose ends it owes.
+    fn held_of_lead(&self) -> BTreeSet<u64> {
+        let slots = self.slots.iter().filter_map(|s| match &s.lease {
+            Some(Held::Leased { lease, .. } | Held::Pooled { id: lease, own: false, .. }) => Some(*lease),
+            _ => None,
+        });
+        slots.chain(self.owed.iter().map(Tell::lease)).collect()
     }
 
     /// Lease `id`'s end answered by the lead: the folder of a job that ended out of the pool, its
@@ -4135,10 +4158,12 @@ impl Agent {
         // what this Mac may do now, as its lead or a member.
         nasread::phase("the pool's step");
         let gates = self.pool_step(root.as_ref(), &c, &mut waiting);
-        // (Ends owed to the lead, once this process works as a member.)
+        // (Ends owed to the lead, once this process works as a member; then its beat, listing the
+        // leases it holds.)
         if let Some(r) = root.as_ref() {
             self.tell_owed(r);
         }
+        self.beat_lead();
         self.lead_awake();
         // (Leading, nothing new starts while the driver says it may not: its view not fresh.
         // Restarting into a new part, nothing either.)
@@ -10593,7 +10618,7 @@ mod tests {
         assert_eq!(
             a.owed
                 .iter()
-                .map(|(_, t)| match t {
+                .map(|t| match t {
                     Tell::Fail { id, .. } | Tell::GiveBack { id, .. } => *id,
                     Tell::Done(d) => d.lease,
                 })
@@ -16842,10 +16867,10 @@ mod pool_tests {
         assert!(a.out_of_pool().is_none() && a.restart_now().is_none());
     }
 
-    /// #423 nit: an end owed past `OWED_S` is dropped with its folder's wait on the lead; the
-    /// folder itself stays, for the next process's hand-off.
+    /// docs/coordination.md §6.1 (task #878 step 2): a member's beat lists its slots' leases and
+    /// those whose ends it owes; the lead hears it speaking for them, and releases one it leaves out.
     #[test]
-    fn an_owed_end_aged_out_no_longer_waits_on_the_lead() {
+    fn a_member_s_beat_lists_its_jobs_and_owed_ends() {
         let d = tempfile::tempdir().unwrap();
         let mut a = test_agent(Options {
             root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
@@ -16856,14 +16881,38 @@ mod pool_tests {
             helper: false,
         })
         .unwrap();
-        let dir = d.path().join("home/pool/jobs/1-9");
-        std::fs::create_dir_all(&dir).unwrap();
-        a.unjournaled.insert(9, dir.clone());
-        a.owed
-            .push((now_s() - OWED_S - 1, Tell::Done(Box::new(crate::coord::Done { lease: 9, ..Default::default() }))));
-        a.tell_owed(&store::nasfs::NasRoot::local_for_test(&d.path().join("nas")));
-        assert!(a.owed.is_empty() && a.unjournaled.is_empty());
-        assert!(dir.is_dir(), "kept for the next process");
+        let (c, port) = crate::coord::start_for_test(&d.path().join("lead"), "lead", "");
+        let (job, owed, lost) = {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            let mut g = |t: &str| {
+                let w = crate::coord::lease::Work::Job { step: "unit".into(), targets: vec![(t.into(), "k".into())] };
+                s.leases.grant(&a.host, w, now)
+            };
+            (g("6/1/1"), g("6/1/2"), g("6/1/3"))
+        };
+        a.slots[0].lease = Some(Held::Leased { lease: job, dir: d.path().join("out") });
+        a.owed.push(Tell::Fail { id: owed, why: "x".into(), floors: Vec::new(), disks: Vec::new(), job_disk: 0 });
+        assert_eq!(a.held_of_lead(), [job, owed].into());
+        a.client = Some(crate::coord::client::Client::at(
+            vec![format!("http://127.0.0.1:{port}")],
+            c.contact.token.clone(),
+            &a.host,
+        ));
+        // (Granted long enough ago: past the grace.)
+        {
+            let clock = store::clock::Virtual::new();
+            clock.advance(crate::coord::held::OMIT_GRACE * 2);
+            c.shared.lock().unwrap().clock = clock;
+        }
+        a.beat_lead();
+        let held = c.held("unit");
+        assert!(held.contains("6/1/1") && held.contains("6/1/2") && !held.contains("6/1/3"), "{held:?}");
+        assert!(c.shared.lock().unwrap().leases.of(lost).is_none());
+        // (Once a `BEAT_EVERY`.)
+        a.slots[0].lease = None;
+        a.beat_lead();
+        assert!(c.held("unit").contains("6/1/1"));
     }
 
     /// #423 follow-up: a passing error opening the member (its pool folder can't be made a moment)
@@ -16947,7 +16996,7 @@ mod pool_tests {
         let cl = a.client.take();
         a.end_lease(0, Outcome::Done, &[("6/12/25".into(), "k".into())], "");
         match a.owed.as_slice() {
-            [(_, Tell::Done(d))] => {
+            [Tell::Done(d)] => {
                 assert!(!d.journaled, "the lead journals it");
                 assert_eq!(
                     d.handoff.as_ref().and_then(|h| h.done.clone()),

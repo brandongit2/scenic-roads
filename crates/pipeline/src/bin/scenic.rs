@@ -1406,10 +1406,23 @@ fn main() -> Result<()> {
             let r = root(&pool.root, false)?;
             match pool.cmd {
                 Some(PoolCmd::Status) | None => println!("{}", agent::pool::status(&r)),
-                Some(PoolCmd::Release { member, job }) => {
+                Some(PoolCmd::Release { member, job: Some(job) }) => {
                     // A job's progress on a member's Mac given up (crate::agent::resume): the lead
                     // runs it wherever it fits from then.
                     println!("{}", agent::resume::release(&r, &member, &job)?);
+                }
+                Some(PoolCmd::Release { member, job: None }) => {
+                    // A member's leases released by the owner (docs/coordination.md §6.1,
+                    // crate::coord::held): its targets go to others.
+                    let c = pipeline::coord::client::Client::from_nas(&r, &store::sys::host_name())?
+                        .context("no lead's coordinator to ask")?;
+                    let (code, v) = c.post_json("/pool/release", &serde_json::json!({ "member": member }))?;
+                    anyhow::ensure!(code == 200, "the lead's coordinator answered {code} (an older app?)");
+                    let gone = v["released"].as_array().cloned().unwrap_or_default();
+                    println!("{member}: {} lease(s) released", gone.len());
+                    for l in gone {
+                        println!("  {}", l.as_str().unwrap_or(""));
+                    }
                 }
                 Some(PoolCmd::Needs { fit: _, costs }) => {
                     // Each step's model of what its jobs need (pipeline::needs): `--fit` prints its

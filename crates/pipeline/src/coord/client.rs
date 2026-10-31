@@ -536,6 +536,15 @@ impl Client {
         ))
     }
 
+    /// The member's beat listing the leases it holds (crate::coord::held, docs/coordination.md
+    /// §6.1); None from a lead that doesn't take it (an older app's: 404).
+    pub fn pool_beat(&self, b: &super::held::Beat) -> Result<Option<super::held::Answer>> {
+        match self.post_json("/pool/beat", &serde_json::to_value(b)?)? {
+            (404, _) => Ok(None),
+            (_, v) => Ok(Some(serde_json::from_value(v)?)),
+        }
+    }
+
     /// Passes on the owner's cancel (crate::control::Cancel) to the lead: the leases it told to stop,
     /// as (lease, worker, what).
     pub fn cancel(&self, c: &crate::control::Cancel) -> Result<Vec<(u64, String, String)>> {

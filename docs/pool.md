@@ -235,7 +235,7 @@ place:
 
 - **A member finishes the jobs it holds.** Each runs on; its hand-off goes to the journal on the
   NAS as it ends (§7.3), and the member keeps telling the lead of it. A renewal or end the lead
-  doesn't answer is retried until its lease lapses (`OWED_S`); the work is in the journal either
+  doesn't answer is retried until it answers (its lease held meanwhile: docs/coordination.md §6); the work is in the journal either
   way, and the lead merges it when it's back.
 - **Then it waits.** It asks the lead for work, and gets none until the lead answers; it makes no
   term, however long (`Driver::step`: only the declared lead makes one).
@@ -295,7 +295,7 @@ grants them nothing. `crate::pool::reachable`, `Run::tend_reach`:
   client's own requests count too. Results go in the heartbeat (`Beat::reach`): reached within
   `REACHED_S` (5 min), or unreachable for `REPORT_S` (2 min) with the cause.
 - One failed request makes the rest of that loop's requests to the lead fail at once
-  (`Client::new_round`); a job's end not taken is retried until its lease lapses (`OWED_S`).
+  (`Client::new_round`); a job's end not taken is retried until the lead answers.
 - Every view says who can't reach whom and what to do (`View::unreached`): wake the Mac, or allow
   `scenic` in System Settings › Network › Firewall. `scenic` is signed ad hoc at a new path per
   version, so that allow lasts until the next update; a lasting one needs a code-signing identity

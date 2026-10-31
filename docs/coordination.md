@@ -1,6 +1,6 @@
 # Pool coordination by HTTP on the lead
 
-**Planned (task #878); step 1 is built, the rest planned.** This doc says how the pool's
+**Planned (task #878); steps 1 and 2 are built, the rest planned.** This doc says how the pool's
 coordination moves off the NAS onto the lead, which holds it on its own disk and serves it over
 HTTP. For the steps not yet built (§8 says which are), docs/pool.md and the code are what is true. It assumes #881 (the Mac mini
 as a fixed lead: no election, no takeover) has landed; where #881 leaves a piece of the
@@ -198,16 +198,31 @@ owner's. **The clock alone never re-grants a target.** Today a lease lapses afte
 the lead can always tell "holder gone" from "holder unreachable" only by hearing from it, so it
 waits to hear.
 
-- **The grant is durable before its answer** (today it isn't held for the write, pool.md §7.5).
+Built (step 2: `crate::coord::held`), but for what is marked planned below. Ahead of step 3's one
+beat, a member's agent posts a small `POST /pool/beat {member, speaks, held}` every 10 s
+(`held::BEAT_EVERY`) while it's a member; the answer is `{epoch, released}` (the leases it listed
+that aren't its on the lead: its jobs stop as their own beats are then refused). The rule holds for a
+member whose beat says it speaks `held-leases` (`held::SPEAKS`), kept in the store
+(`member/<host>`) so a lead's restart keeps it; an older member's leases lapse after `coord::TTL`
+unrenewed as before, and an older lead answers the beat 404, which the member passes over (§8's
+gate). The lead's own jobs' leases are its own slots' as before (`Leases::mine`, §6.3).
+
+- **The grant is durable before its answer** (every JSON post waits for the store, step 1).
   A lead crashing after the `fsync` and before the answer leaves a lease its member never got: the
   member's first beat doesn't list it, so it is released (§4.4).
 - **Renewals are beats.** A reachable member's beat lists the leases it holds; any lease of that
-  member the beat doesn't list is released at once (a crashed job, a restarted agent that lost it).
+  member the beat doesn't list is released at once (a crashed job, a restarted agent that lost it),
+  but one granted within `held::OMIT_GRACE` (30 s: its answer may still be on its way) and not
+  loaded since. The beat lists the member's slots' leases and those whose ends it still owes the
+  lead (told again each loop until answered: `OWED_S`, which dropped them after 10 min, is gone).
   This replaces the lapse for every member the lead hears from, and is faster: seconds, not 10 min.
-- **A member the lead stops hearing from** keeps its leases, marked `held_by_away` after
-  `AWAY_S` (2 min without a beat), shown on the page ("M1: 2 jobs held, not heard from since
-  14:02"). Its targets aren't granted again.
-- **Releasing them** is the owner's call: `scenic pool release <member>` (and the page's button)
+- **A member the lead stops hearing from** keeps its leases (they never lapse), held while away
+  after `AWAY_S` (2 min without a beat): built in the coordinator's status (`/work/status`'s
+  `away`: member, leases, last heard); planned on the page ("M1: 2 jobs held, not heard from since
+  14:02"). Its targets aren't granted again until it's been unheard `held::AWAY_RELEASE_S` (12 h,
+  the PM's decision 1), when they're released.
+- **Releasing them** is the owner's call: `scenic pool release <member>` (`POST /pool/release`;
+  the page's button planned)
   when that Mac is known gone for good. After a release, a hand-off from the old lease is refused
   (lease order: the newer lease set the targets), so even then nothing is merged twice.
 - **A member returning** beats with what it holds; those leases go on (or, if released meanwhile,
@@ -275,7 +290,7 @@ from the same folder).
 | # | Step | Deletes | Tests |
 | --- | --- | --- | --- |
 | 1 (done) | `pool::store` on the lead: snapshot, log, epoch, compaction, backup to the NAS; the coordinator's state moves into it. The handler rule: a scan test that no `coord` handler path reaches `nasread`, `Nas` or `store::whole` | `coord::keep`'s per-term NAS state file and its thread (`BATCH`, `GAP`, `Keep::off`) | `store_recovers_after_a_torn_append`, `store_compaction_crash_between_snapshot_and_log`, `store_restores_from_the_backup`, `coord_handlers_never_touch_the_nas` |
-| 2 | **Leases by the holder's word**: grants durable before the answer; beats list held leases; release on omission; `held_by_away`; `scenic pool release` | the TTL lapse re-grant (`coord::TTL`'s re-grant path; renewals by `/work/beat` become the agent's beat), `OWED_S` | `a_partitioned_member_s_target_is_never_regranted` (network fake drops one member for 3 h; its job finishes; its hand-off merges; no second grant), `a_crash_before_the_answer_releases_the_grant`, `a_restarted_agent_s_lost_job_is_released_in_one_beat` |
+| 2 (done) | **Leases by the holder's word**: grants durable before the answer; beats list held leases; release on omission; `held_by_away`; `scenic pool release` | `OWED_S`; the TTL lapse re-grant for every member speaking `held-leases` (`coord::TTL`'s path stays for an older member until the gate drops it; `/work/beat` still renews and carries a job's progress, the pause and cancels) | `a_partitioned_member_s_target_is_never_regranted` (one member unheard for 3 h on a virtual clock; its job finishes; its end taken; no second grant), `an_away_member_s_leases_go_after_12_h`, `a_crash_before_the_answer_releases_the_grant`, `a_restarted_agent_s_lost_job_is_released_in_one_beat`, `mixed_versions_keep_the_old_rule`, `the_owner_releases_a_member_s_leases` |
 | 3 | **One beat by HTTP** (`POST /pool/beat`), the lead's answers carrying messages, holds, settings' generation and acks | `state/pool/members/`, `state/helpers/`, `state/status.json` writes, `pool::beat`'s NAS read/write and listing, members forgotten by listing (now: no beat for 20 min) | `beats_go_on_while_the_nas_hangs` (slow-NAS fake blocks every call: the lead sees each member's beat every 10 s for 10 min), mixed versions: an old member's NAS heartbeat still read |
 | 4 | **The view by HTTP**: pageview fetches `/pool/view` from the lead | pageview's NAS reads (status, view, forecast-input, regions, pause, heartbeats, the 12-s reader), the lead's writes of `term/<E>/status.json`, `view.json`, `forecast-input.json`, `regions.json`, `pause.json` | `the_page_on_a_member_shows_the_lead_s_view_with_the_nas_hung`; a page asking with the lead down gets the last view with its age |
 | 5 | **Mail, holds and settings by HTTP only**: lead → member messages in beat answers; `/pool/hold`, `/pool/settings`; the CLI posts to its own agent, which posts to the lead | the mailboxes (`state/pool/mail/`), `Mail::posted`'s fallback, `POST_AGAIN`, `inbox.json` (the store takes it), `state/pool/holds/`, every switch file under `state/pool/` and their readers on the Switches pool (switches whose rollout is finished are deleted outright, not moved: today `resume`, `brokers`, `placement`, `memory-guard` per pool.md §12, if each is still on everywhere) | `a_remote_pause_reaches_the_member_in_one_beat`, `settings_survive_a_lead_restart`, `an_ask_while_the_lead_is_down_is_sent_when_it_returns` |

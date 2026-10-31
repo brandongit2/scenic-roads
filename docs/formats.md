@@ -956,7 +956,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     epoch?, set: {key: value}, del: [key]}`; its documents, `pipeline::coord::kept`: `leases`
     (`{next, holds, cancelled}`), `lease/<id>` (`{id, term, granted_at, worker, work, progress,
     …}`), `cost/<key>`, `floor/<key>`, `disk/<key>`, `job_disks`, `fills` and `pause`, each as the
-    files below held them). Read once, into a store not made yet (an agent before the store's), and
+    files below held them; and `member/<host>`, `{speaks: ["held-leases"], at}`, a member as its
+    last beat said, `pipeline::coord::held`). Read once, into a store not made yet (an agent before the store's), and
     no longer written: `leases.json` (`{next, leases: [{id, worker, work, progress}]}`); `costs.json` (`{<cost key>: {peak_mb,
     secs, worker, v, sizes}}`, `sizes` as in `costs.jsonl`, absent before task #235; keys: a z6 tile, `"<step> <target>"`, or `"<kind> <tile>"` for tasks: `tail 6/x/y`,
     `bldtile 8/x/y`, `treeblock 8/x/y`, `terrainsub 8/x/y`); `floors.json` (`{<cost key>: {mb, alone,

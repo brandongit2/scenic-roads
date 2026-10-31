@@ -166,6 +166,10 @@ pub struct Leases {
     cancels: BTreeMap<u64, crate::control::Cancel>,
     /// The targets cancelled while a plan no newer than its `at` was the newest (`Cancelled`).
     cancelled: Vec<Cancelled>,
+    /// The members (hosts, crate::agent::host_of) whose jobs' leases end only by their word
+    /// (docs/coordination.md §6; crate::coord::held): never lapsing, released when their beat leaves
+    /// them out, after 12 h unheard, or by the owner.
+    pub by_word: BTreeSet<String>,
 }
 
 /// What's saved: the next id (ids never repeat across restarts), the jobs' leases and the holds.
@@ -198,6 +202,7 @@ impl Leases {
             mine: BTreeSet::new(),
             cancels: BTreeMap::new(),
             cancelled: Vec::new(),
+            by_word: BTreeSet::new(),
         }
     }
 
@@ -284,7 +289,37 @@ impl Leases {
 
     /// Whether `l` is live at `now`: before its deadline, or one this process's slots run (`mine`).
     fn lasts(&self, l: &Lease, now: Instant) -> bool {
-        l.deadline > now || (!self.me.is_empty() && l.worker == self.me && self.mine.contains(&l.id))
+        l.deadline > now
+            || (!self.me.is_empty() && l.worker == self.me && self.mine.contains(&l.id))
+            || (matches!(l.work, Work::Job { .. }) && self.by_word.contains(crate::agent::host_of(&l.worker)))
+    }
+
+    /// `member`'s beat listing the leases it holds (docs/coordination.md §6.1; crate::coord::held):
+    /// each listed confirmed; each of its jobs' leases it leaves out ended, but one granted within
+    /// `grace` of `now` and not loaded since (its answer may still be on its way). Those ended, and
+    /// those listed that aren't its leases here (ended meanwhile: its jobs stop).
+    pub fn word(
+        &mut self,
+        member: &str,
+        held: &BTreeSet<u64>,
+        now: Instant,
+        grace: Duration,
+    ) -> (Vec<Lease>, Vec<u64>) {
+        let of = |l: &Lease| matches!(l.work, Work::Job { .. }) && crate::agent::host_of(&l.worker) == member;
+        let gone: Vec<u64> = self
+            .by_id
+            .values()
+            .filter(|l| of(l) && !held.contains(&l.id))
+            .filter(|l| l.unconfirmed || now.saturating_duration_since(l.granted) >= grace)
+            .map(|l| l.id)
+            .collect();
+        for id in held {
+            if let Some(l) = self.by_id.get_mut(id).filter(|l| of(l)) {
+                l.unconfirmed = false;
+            }
+        }
+        let unknown = held.iter().filter(|id| !self.by_id.get(id).is_some_and(of)).copied().collect();
+        (self.drop_where(|l| gone.contains(&l.id)), unknown)
     }
 
     /// Every target of `step` held now, by anyone, or until a newer app (`Hold`).
@@ -579,6 +614,35 @@ mod tests {
         assert!(back.finish(a, "m4", t3).is_none());
         assert_eq!(back.drop_where(|x| x.worker == "m1").len(), 2);
         assert!(back.all(t3).is_empty());
+    }
+
+    /// docs/coordination.md §6.1: a member speaking for its leases keeps them beat or not; its beat
+    /// leaving one out ends it (but one granted within the grace, its answer maybe on its way), a
+    /// loaded one at once; one it lists that isn't its is said.
+    #[test]
+    fn leases_end_by_their_members_word() {
+        let t0 = Instant::now();
+        let mut l = Leases::new(Duration::from_secs(600));
+        l.by_word.insert("m1".into());
+        let a = l.grant("m1", job(&[("6/1/1", "k1")]), t0);
+        let b = l.grant("m1 #2", job(&[("6/1/2", "k2")]), t0);
+        let c = l.grant("m4", job(&[("6/1/3", "k3")]), t0);
+        let far = t0 + Duration::from_secs(3600);
+        assert_eq!(l.held("unit", far), ["6/1/1", "6/1/2"].map(String::from).into(), "m1's never lapse; m4's do");
+        let grace = Duration::from_secs(30);
+        let (gone, unknown) = l.word("m1", &[a, c].into(), t0 + Duration::from_secs(5), grace);
+        assert!(gone.is_empty(), "b granted within the grace");
+        assert_eq!(unknown, [c], "not m1's");
+        let (gone, _) = l.word("m1", &[a].into(), far, grace);
+        assert_eq!(gone.iter().map(|x| x.id).collect::<Vec<_>>(), [b]);
+        // Loaded: unconfirmed, left out at once.
+        let (mut kept, each) = l.kept();
+        kept["leases"] = each.into_iter().map(|x| x.1).collect();
+        let mut back = Leases::new(Duration::from_secs(600));
+        back.restore(&kept, far).unwrap();
+        assert!(back.of(a).unwrap().unconfirmed);
+        let (gone, _) = back.word("m1", &BTreeSet::new(), far, grace);
+        assert_eq!(gone.iter().map(|x| x.id).collect::<Vec<_>>(), [a]);
     }
 
     #[test]

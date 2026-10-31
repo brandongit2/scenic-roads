@@ -27,6 +27,7 @@
 
 pub mod brokers;
 pub mod client;
+pub mod held;
 pub mod history;
 pub mod inbox;
 pub mod kept;
@@ -1926,6 +1927,8 @@ impl Coordinator {
         // (None while the build is paused: every lease held, a paused or asleep worker's work not
         // given to another.)
         let now = s.now();
+        // (A member speaking for its leases holds them until its word, or 12 h unheard: `held`.)
+        held::refresh(&mut s);
         if s.paused.is_some() {
             s.leases.hold_all(now);
             return Vec::new();
@@ -2436,7 +2439,18 @@ impl Coordinator {
         s.save_leases();
         s.save_costs();
         keep.pause(s.paused.as_ref(), s.pause_at);
+        held::refresh(&mut s);
         Ok(())
+    }
+
+    /// A member's beat taken as `/pool/beat` takes it (`held::beat`).
+    pub fn member_beat(&self, b: &held::Beat) -> held::Answer {
+        held::beat(&mut self.shared.lock().unwrap(), b)
+    }
+
+    /// The members holding leases while away (`held::away`): member, leases, last heard (unix s).
+    pub fn away(&self) -> Vec<(String, usize, u64)> {
+        held::away(&self.shared.lock().unwrap())
     }
 
     /// Takes up `p`, the term before's state (its own before a restart): its leases over
@@ -3793,6 +3807,22 @@ fn route(
             shared.lock().unwrap().page_acts.push(act);
             Ok((200, ok))
         }
+        "/pool/beat" => {
+            // A member's beat listing the leases it holds (docs/coordination.md §6.1, `held`).
+            let b: held::Beat = serde_json::from_slice(body)?;
+            anyhow::ensure!(!b.member.is_empty() && b.member.len() <= 120, "a beat names its member");
+            let mut s = shared.lock().unwrap();
+            Ok((200, serde_json::to_value(held::beat(&mut s, &b))?))
+        }
+        "/pool/release" => {
+            // The owner's release of a member's leases (`scenic pool release <member>`).
+            let v: serde_json::Value = serde_json::from_slice(body)?;
+            let member = v["member"].as_str().unwrap_or_default();
+            anyhow::ensure!(!member.is_empty(), "a release names its member");
+            let mut s = shared.lock().unwrap();
+            let gone = held::release(&mut s, member);
+            Ok((200, serde_json::json!({ "released": gone.iter().map(|l| l.what()).collect::<Vec<_>>() })))
+        }
         "/pool/mail" => {
             // A member's messages to this Mac's member (docs/pool.md §9): taken only by the member
             // they're to, on its disk before the answer; else refused, sent by mail instead.
@@ -4128,7 +4158,7 @@ fn route(
             }
             Ok((
                 200,
-                serde_json::json!({ "pass": s.pass, "paused": s.paused, "offered": offered, "done": s.done.len(), "leases": leases, "workers": workers, "tasks": tasks }),
+                serde_json::json!({ "pass": s.pass, "paused": s.paused, "offered": offered, "done": s.done.len(), "leases": leases, "workers": workers, "tasks": tasks, "away": held::away(&s) }),
             ))
         }
         "/work/swarm" => {
@@ -4616,6 +4646,8 @@ mod http {
             .route("/work/floors", any(json))
             .route("/work/redo", any(json))
             .route("/pool/mail", any(json))
+            .route("/pool/beat", any(json))
+            .route("/pool/release", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
             .route("/work/out/{lease}/{*path}", put(output))
             .route("/task/{*rest}", any(json));
@@ -5305,6 +5337,145 @@ mod tests {
         assert_eq!(s.keep.store().unwrap().epoch(), epoch + 1);
         // (Nothing of it in the old files: the store holds it.)
         assert!(!d.path().join("leases.json").exists() && !d.path().join("costs.json").exists());
+    }
+
+    /// A beat of member `m` holding `held`, in a speaking app (`held::SPEAKS`).
+    fn word(m: &str, held: &[u64]) -> held::Beat {
+        held::Beat { member: m.into(), speaks: vec![held::SPEAKS.into()], held: held.iter().copied().collect() }
+    }
+
+    fn unit_offer(c: &Coordinator, target: &str) {
+        c.offer("p", vec![Offer { step: "unit".into(), targets: vec![(target.into(), "k".into(), 100)], job: None }]);
+    }
+
+    /// docs/coordination.md §8, step 2: a member cut off from the lead for 3 h (no beat, no
+    /// renewal) keeps its lease: its target goes to no one, its leases shown as held while away;
+    /// back, its beat confirms the lease, its job's beat renews it and its end is taken. After 12 h
+    /// unheard they'd go (`an_away_member_s_leases_go_after_12_h`).
+    #[test]
+    fn a_partitioned_member_s_target_is_never_regranted() {
+        let (_d, c, w) = start();
+        let clock = store::clock::Virtual::new();
+        c.shared.lock().unwrap().clock = clock.clone();
+        measure_units(&c, 1);
+        unit_offer(&c, "6/1/1");
+        let g = w.ask(&ask(8192)).unwrap().expect("granted");
+        assert!(c.member_beat(&word("m1", &[g.lease])).released.is_empty());
+        let other = client::Client::at(w.urls(), c.contact.token.clone(), "m6");
+        for _ in 0..18 {
+            clock.advance(Duration::from_secs(600));
+            assert!(c.expire().is_empty(), "nothing lapses");
+            unit_offer(&c, "6/1/1");
+            assert!(other.ask(&Ask { worker: "m6".into(), ..ask(8192) }).unwrap().is_none(), "never granted again");
+        }
+        assert_eq!(c.away().iter().map(|a| (a.0.as_str(), a.1)).collect::<Vec<_>>(), [("m1", 1)]);
+        assert!(c.member_beat(&word("m1", &[g.lease])).released.is_empty(), "still its");
+        assert!(w.beat(g.lease, None).unwrap(), "its job goes on under it");
+        // Its job ends: the lease by its word, the target free.
+        w.give_back(g.lease, "done").unwrap();
+        assert!(!c.held("unit").contains("6/1/1"));
+        assert!(c.away().is_empty());
+    }
+
+    /// The 30 Oct decision: unheard 12 h, a member's leases go (a repeat costs doubled work only).
+    #[test]
+    fn an_away_member_s_leases_go_after_12_h() {
+        let (_d, c, w) = start();
+        let clock = store::clock::Virtual::new();
+        c.shared.lock().unwrap().clock = clock.clone();
+        measure_units(&c, 1);
+        unit_offer(&c, "6/1/1");
+        let g = w.ask(&ask(8192)).unwrap().expect("granted");
+        c.member_beat(&word("m1", &[g.lease]));
+        clock.advance(Duration::from_secs(held::AWAY_RELEASE_S - 60));
+        assert!(c.expire().is_empty());
+        clock.advance(Duration::from_secs(120));
+        assert_eq!(c.expire().iter().map(|l| l.id).collect::<Vec<_>>(), [g.lease]);
+        // Back after it: the lease is said ended; its jobs stop.
+        assert_eq!(c.member_beat(&word("m1", &[g.lease])).released, [g.lease]);
+    }
+
+    /// The grant on disk, its answer lost to a lead crash: the restarted lead has it, unconfirmed,
+    /// and its member's first beat (which can't list it) releases it at once: offered again.
+    #[test]
+    fn a_crash_before_the_answer_releases_the_grant() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, _) = start_for_test(d.path(), "m4", "");
+        let id = {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            let id = s.leases.grant(
+                "m1",
+                Work::Job { step: "unit".into(), targets: vec![("6/1/1".into(), "k".into())] },
+                now,
+            );
+            s.save_leases();
+            id
+        };
+        c.stop();
+        let (b, _) = start_for_test(d.path(), "m4", "");
+        assert!(b.held("unit").contains("6/1/1"));
+        assert!(b.member_beat(&word("m1", &[])).released.is_empty());
+        assert!(!b.held("unit").contains("6/1/1"), "released in the first beat");
+        assert!(b.shared.lock().unwrap().leases.of(id).is_none());
+    }
+
+    /// A member's agent restarted without its job: its next beat leaves the lease out and the lead
+    /// releases it in that one beat (but a lease granted within `OMIT_GRACE`: its answer may be on
+    /// its way).
+    #[test]
+    fn a_restarted_agent_s_lost_job_is_released_in_one_beat() {
+        let (_d, c, w) = start();
+        let clock = store::clock::Virtual::new();
+        c.shared.lock().unwrap().clock = clock.clone();
+        measure_units(&c, 2);
+        unit_offer(&c, "6/1/1");
+        let g = w.ask(&ask(8192)).unwrap().expect("granted");
+        assert!(c.member_beat(&word("m1", &[])).released.is_empty());
+        assert!(c.held("unit").contains("6/1/1"), "within the grace");
+        c.member_beat(&word("m1", &[g.lease]));
+        clock.advance(held::OMIT_GRACE + Duration::from_secs(10));
+        // The agent restarted: it holds nothing.
+        c.member_beat(&word("m1", &[]));
+        assert!(!c.held("unit").contains("6/1/1"));
+        // (Its old job's beat, if any, is refused: it stops.)
+        assert!(!w.beat(g.lease, None).unwrap());
+    }
+
+    /// Mixed versions (docs/coordination.md §8): a member that doesn't say it speaks for its leases
+    /// keeps the old rule (they lapse after `TTL` unrenewed, and its beat releases nothing); a lead
+    /// that doesn't take the beat answers 404, which a member takes as nothing to do.
+    #[test]
+    fn mixed_versions_keep_the_old_rule() {
+        let (_d, c, w) = start();
+        let clock = store::clock::Virtual::new();
+        c.shared.lock().unwrap().clock = clock.clone();
+        measure_units(&c, 1);
+        unit_offer(&c, "6/1/1");
+        let g = w.ask(&ask(8192)).unwrap().expect("granted");
+        clock.advance(held::OMIT_GRACE * 2);
+        let old = held::Beat { member: "m1".into(), speaks: Vec::new(), held: BTreeSet::new() };
+        assert!(c.member_beat(&old).released.is_empty());
+        assert!(c.held("unit").contains("6/1/1"), "not released by an older member's beat");
+        clock.advance(TTL + Duration::from_secs(60));
+        assert_eq!(c.expire().iter().map(|l| l.id).collect::<Vec<_>>(), [g.lease], "lapsed as before");
+        let (url, _) = client::tests::answering(404);
+        let older_lead = client::Client::at(vec![url], "t".into(), "m1");
+        assert_eq!(older_lead.pool_beat(&word("m1", &[])).unwrap(), None);
+    }
+
+    /// `scenic pool release <member>`: the owner releases an away member's leases.
+    #[test]
+    fn the_owner_releases_a_member_s_leases() {
+        let (_d, c, w) = start();
+        measure_units(&c, 1);
+        unit_offer(&c, "6/1/1");
+        let g = w.ask(&ask(8192)).unwrap().expect("granted");
+        c.member_beat(&word("m1", &[g.lease]));
+        let (code, v) = w.post_json("/pool/release", &serde_json::json!({ "member": "m1" })).unwrap();
+        assert_eq!(code, 200);
+        assert_eq!(v["released"].as_array().map(Vec::len), Some(1));
+        assert!(!c.held("unit").contains("6/1/1"));
     }
 
     use axum::body::Body;

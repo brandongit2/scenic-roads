@@ -11,7 +11,7 @@
 //!   files start read are a store's first fill alone: an agent before the store's); none, it's
 //!   filled from them.
 //!
-//! The members it keeps (`Heard`) are for leases by their holder's word (§6, step 2).
+//! The members it keeps (`Heard`) are for leases by their holder's word (§6, step 2: crate::coord::held).
 
 use super::{Cost, Floor};
 use crate::pool::nas::Nas;
