@@ -851,7 +851,7 @@ fn canopy(dir: &Path) -> Result<()> {
         .unwrap_or(BAND_ROWS);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(1800)))
-        .user_agent("scenic-roads/0.1 (personal offline map)")
+        .user_agent(pipeline::fetch::USER_AGENT)
         .build()
         .into();
 

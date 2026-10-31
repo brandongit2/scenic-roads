@@ -11,23 +11,11 @@ use roadcore::grid::decode_terrain;
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// Raw tiles downloaded at once (each mostly waits on S3).
+/// Raw tiles got at once (each mostly waits on the NAS or S3; S3's requests themselves held to
+/// crate::fetch::HOST_REQUESTS a host).
 const FETCH_THREADS: usize = 64;
 /// A z3 tile's mids read at once (`build_lo`): SMB's throughput wants a few calls in flight.
 const MID_READERS: usize = 8;
-
-/// An HTTP agent for AWS's tiles, keeping a connection for each of the fetching threads (ureq keeps
-/// 3 a host by default: the others would make a new connection, a lookup and a TLS handshake, for
-/// every tile).
-pub fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(60)))
-        .user_agent("scenic-roads/0.1 (personal offline map)")
-        .max_idle_connections(FETCH_THREADS * 2)
-        .max_idle_connections_per_host(FETCH_THREADS * 2)
-        .build()
-        .into()
-}
 
 /// The base's template in tests (nothing fetched: a test goes offline, or has its tiles).
 #[cfg(test)]
@@ -36,27 +24,6 @@ pub const TEST_BASE: &str = "https://tiles.test/{z}/{x}/{y}.png";
 /// Tile `z/x/y`'s URL by template `url`.
 pub fn tile_url(url: &str, z: u8, x: u32, y: u32) -> String {
     url.replace("{z}", &z.to_string()).replace("{x}", &x.to_string()).replace("{y}", &y.to_string())
-}
-
-/// One of the Terrarium pyramid's tiles by URL template `url`; None when it has none (the open sea
-/// at fine zooms) or it can't be fetched.
-pub fn fetch(agent: &ureq::Agent, url: &str, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
-    let url = tile_url(url, z, x, y);
-    crate::fetch::online(&url).ok()?;
-    let _w = store::waits::net();
-    for attempt in 0..5 {
-        match agent.get(&url).call() {
-            Ok(mut r) => {
-                if let Ok(b) = r.body_mut().with_config().limit(20_000_000).read_to_vec() {
-                    return Some(b);
-                }
-            }
-            Err(ureq::Error::StatusCode(404 | 403)) => return None,
-            Err(_) => {}
-        }
-        std::thread::sleep(Duration::from_millis(300 << attempt));
-    }
-    None
 }
 
 /// What the terrain is made from besides its raw tiles (docs/steps.md §2, Terrain): OSM's water
@@ -246,19 +213,22 @@ pub fn finish(p: Prepared, levels: &HashMap<u64, f32>) -> (Option<Vec<u8>>, bool
     }
     let changed = e.iter().zip(&before).any(|(a, b)| !((*a - *b).abs() <= 0.5));
     let out = crate::terrain_codec::encode(&mut e, quantum).ok();
-    let quad = (z >= 1).then(|| {
-        let mut q = vec![0f32; 128 * 128];
-        for j in 0..128 {
-            for i in 0..128 {
-                let (cx, cy) = (i * 2, j * 2);
-                q[j * 128 + i] =
-                    (e[cy * 256 + cx] + e[cy * 256 + cx + 1] + e[(cy + 1) * 256 + cx] + e[(cy + 1) * 256 + cx + 1])
-                        * 0.25;
-            }
-        }
-        q
-    });
+    let quad = (z >= 1).then(|| quad_mean(&e));
     (out, changed, quad)
+}
+
+/// A 256-pixel tile's heights at half the size: each pixel the plain mean of the 2×2 under it
+/// (summed in this order, so a parent's bytes stay as they are).
+fn quad_mean(e: &[f32]) -> Vec<f32> {
+    let mut q = vec![0f32; 128 * 128];
+    for j in 0..128 {
+        for i in 0..128 {
+            let (cx, cy) = (i * 2, j * 2);
+            q[j * 128 + i] =
+                (e[cy * 256 + cx] + e[cy * 256 + cx + 1] + e[(cy + 1) * 256 + cx] + e[(cy + 1) * 256 + cx + 1]) * 0.25;
+        }
+    }
+    q
 }
 
 /// A tile made whole (`prepare`, then `finish` with its lakes' levels from it alone): what a tile
@@ -661,7 +631,6 @@ pub struct RawTiles {
     /// The base's URL template (crate::terrain_sources::Declared::base).
     url: String,
     store: Option<store::nasfs::NasPath>,
-    agent: ureq::Agent,
     /// The store's columns (`<z>/<x>/`) as listed once: over SMB each look is a round trip, and
     /// those, a tile's few, set a terrain job's pace. (The folders here are made as tiles are put:
     /// store::cachefile.)
@@ -689,7 +658,6 @@ impl RawTiles {
             dir: dir.to_path_buf(),
             url: url.to_string(),
             store: None,
-            agent: agent(),
             listed: Default::default(),
             index: Default::default(),
             index_stamp: Default::default(),
@@ -705,7 +673,6 @@ impl RawTiles {
             dir: dir.to_path_buf(),
             url: url.to_string(),
             store: Some(store.clone()),
-            agent: agent(),
             listed: Default::default(),
             index: Default::default(),
             index_stamp: Default::default(),
@@ -1064,7 +1031,7 @@ impl RawTiles {
     /// tile at a time, set the job's pace: 25 a second against 119 here).
     fn fetch(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
         let d = self.dir.join(format!("{z}/{x}"));
-        match fetch_checked(&self.agent, &self.url, z, x, y)? {
+        match fetch_checked(&self.url, z, x, y)? {
             // (Made whole under a name of its own, then named: store::cachefile.)
             Some(b) => {
                 store::cachefile::put(&d.join(format!("{y}.png")), &b)?;
@@ -1102,44 +1069,23 @@ fn nas_whole(p: &store::nasfs::NasPath) -> Option<Vec<u8>> {
     None
 }
 
-/// One of AWS's tiles, whole: None when AWS says it has none (404, or S3's 403), twice, a moment
-/// apart (it's remembered for good); an error when it can't be fetched (so a network failure isn't
-/// remembered as "no tile").
-pub fn fetch_checked(agent: &ureq::Agent, url: &str, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
+/// One of AWS's tiles, whole: None when AWS says it has none (404, or S3's 403) twice, a moment
+/// apart (it's remembered for good); an error when it can't be fetched or isn't a whole PNG (so
+/// a network failure isn't remembered as "no tile"). Fetched by crate::fetch::get: its retries,
+/// its wait for this Mac's agent through a restart.
+fn fetch_checked(url: &str, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
     let url = tile_url(url, z, x, y);
-    crate::fetch::online(&url)?;
-    let mut last = None;
-    let (mut missing, mut busy) = (0, 0);
-    let mut attempt = 0;
-    let _w = store::waits::net();
-    while attempt < 5 {
-        match agent.get(&url).call() {
-            Ok(mut r) => match r.body_mut().with_config().limit(20_000_000).read_to_vec() {
-                Ok(b) if crate::whole::png_whole(&b) => return Ok(Some(b)),
-                Ok(b) => last = Some(anyhow::anyhow!("{url}: not a whole PNG ({} bytes)", b.len())),
-                Err(e) => last = Some(anyhow::anyhow!("{url}: {e}")),
-            },
-            Err(ureq::Error::StatusCode(c @ (404 | 403))) => {
-                missing += 1;
-                if missing == 2 {
-                    return Ok(None);
-                }
-                last = Some(anyhow::anyhow!("{url}: {c}"));
-            }
-            // (The budgets' proxy busy past its wait (its 503; a 502 or a 400 is an attempt): no
-            // attempt spent, a minute's more waits.)
-            Err(ureq::Error::ConnectProxyFailed(m)) if m.contains(" 503/") && busy < 30 => {
-                busy += 1;
-                last = Some(anyhow::anyhow!("{url}: CONNECT proxy failed: {m}"));
-                std::thread::sleep(Duration::from_secs(2));
-                continue;
-            }
-            Err(e) => last = Some(anyhow::anyhow!("{url}: {e}")),
+    let got = match crate::fetch::get(&url)? {
+        None => {
+            std::thread::sleep(Duration::from_secs(2));
+            crate::fetch::get(&url)?
         }
-        std::thread::sleep(Duration::from_millis(if missing > 0 { 2000 } else { 300 << attempt }));
-        attempt += 1;
+        got => got,
+    };
+    match got {
+        Some(b) if !crate::whole::png_whole(&b) => anyhow::bail!("{url}: not a whole PNG ({} bytes)", b.len()),
+        got => Ok(got),
     }
-    Err(last.unwrap_or_else(|| anyhow::anyhow!("{url}: no answer")))
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -2325,16 +2271,7 @@ pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::
             };
             let Some(b) = stored else { continue };
             let Ok(e) = decode_terrain(&b) else { continue };
-            let mut q = vec![0f32; 128 * 128];
-            for j in 0..128 {
-                for i in 0..128 {
-                    let (cx, cy) = (i * 2, j * 2);
-                    q[j * 128 + i] =
-                        (e[cy * 256 + cx] + e[cy * 256 + cx + 1] + e[(cy + 1) * 256 + cx] + e[(cy + 1) * 256 + cx + 1])
-                            * 0.25;
-                }
-            }
-            quads.insert((x, y), q);
+            quads.insert((x, y), quad_mean(&e));
         }
     }
     drop(p);

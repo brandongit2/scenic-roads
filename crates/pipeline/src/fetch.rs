@@ -242,7 +242,7 @@ pub trait Fetch: Send + Sync {
     /// answers for a key that doesn't exist).
     fn open(&self, url: &str) -> Result<Option<Arc<dyn RangeRead>>>;
 
-    /// `url`'s file whole (a small one); None when the server answers 404.
+    /// `url`'s file whole (a small one); None when the server says it has none (404, 403 or 410).
     fn get(&self, url: &str) -> Result<Option<Vec<u8>>>;
 
     /// As `get`, each request over the network held to `within` (and tried again, as a failed
@@ -571,6 +571,15 @@ impl Fetch for MapFetch {
 /// across it.
 pub fn fetched_bytes() -> u64 {
     net::FETCHED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `url`'s small file whole over the network, by this process's one `net::Net` (its retries, its
+/// wait for this Mac's agent's proxy through a restart, its per-host slots); None when the server
+/// says it has none (404, 403 or 410). For a step's own downloads with no mirror (`Fetcher`'s are
+/// the data readers').
+pub fn get(url: &str) -> Result<Option<Vec<u8>>> {
+    static NET: std::sync::LazyLock<net::Net> = std::sync::LazyLock::new(net::Net::new);
+    NET.get_by(url, None)
 }
 
 /// Requests to one host this process has in flight at most, whichever readers ask (the
@@ -1183,7 +1192,8 @@ mod net {
             }
         }
 
-        /// The whole (small) file; None for 404. Other answers are asked again: 8 tries, waiting 2,
+        /// The whole (small) file; None for 404, 403 or 410 (S3's answers for a key that isn't
+        /// there, as `head`). Other answers are asked again: 8 tries, waiting 2,
         /// 4, 6 … s. Each attempt is held to `deadline` when one's given (the agent's own 90 s
         /// in all otherwise): a connection silent past its head's wait, or a body not all in by
         /// its time, is an attempt failed, asked again. A host whose every failure was a body past
@@ -1199,6 +1209,7 @@ mod net {
             // out, or a head that never came, is a host giving no answer: noted down.)
             let late = |e: &ureq::Error| matches!(e, ureq::Error::Timeout(ureq::Timeout::RecvBody));
             let mut attempt = 0u64;
+            let mut busy = 0u32;
             let mut proxy_left = self.proxy_wait();
             while attempt < 8 {
                 if attempt > 0 {
@@ -1230,12 +1241,21 @@ mod net {
                                 last = e.to_string();
                             }
                         },
-                        404 => return Ok(None),
+                        403 | 404 | 410 => return Ok(None),
                         c => {
                             all_late = false;
                             last = format!("status {c}");
                         }
                     },
+                    // (The budgets' proxy busy past its wait (its 503 to the CONNECT; a 502 or a
+                    // 400 is an attempt): no attempt spent, a minute's more waits in all.)
+                    Err(ureq::Error::ConnectProxyFailed(m)) if m.contains(" 503/") && busy < 30 => {
+                        all_late = false;
+                        last = format!("CONNECT proxy failed: {m}");
+                        busy += 1;
+                        attempt -= 1;
+                        self.clock.sleep(Duration::from_secs(2));
+                    }
                     Err(e) => {
                         all_late &= late(&e);
                         last = e.to_string();
@@ -1337,6 +1357,36 @@ mod tests {
             let _ = c.write_all(b"HTTP/1.1 503 Busy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         });
         url
+    }
+
+    /// Task #852: a small file S3 answers 403 or 410 for (a key that isn't there) is none at once,
+    /// as `head` reads it, not an error after eight tries (the terrain's raw tiles come this way).
+    #[test]
+    fn a_small_files_403_or_410_is_none() {
+        use std::io::{Read, Write};
+        for code in ["403 Forbidden", "410 Gone", "404 Not Found"] {
+            let l = store::spawn::listen("127.0.0.1:0").unwrap();
+            let url = format!("http://127.0.0.1:{}/t.png", l.local_addr().unwrap().port());
+            let answer = format!("HTTP/1.1 {code}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            l.set_nonblocking(true).unwrap();
+            std::thread::spawn(move || {
+                let mut c = loop {
+                    match store::spawn::accept(&l) {
+                        Ok((c, _)) => break c,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(2))
+                        }
+                        Err(_) => return,
+                    }
+                };
+                c.set_nonblocking(false).ok();
+                let mut b = [0u8; 4096];
+                let _ = c.read(&mut b);
+                let _ = c.write_all(answer.as_bytes());
+            });
+            let net = net::Net::new().with_down(None).with_clock(store::clock::Virtual::new());
+            assert_eq!(net.get_by(&url, None).unwrap(), None, "{code}");
+        }
     }
 
     /// Task #426 review: a tile's limits are the head's wait and a body's rate, not a cap on the
