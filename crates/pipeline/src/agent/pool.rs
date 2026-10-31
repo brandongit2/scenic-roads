@@ -456,7 +456,7 @@ impl Side {
         &*self.nas
     }
 
-    /// The same, for a thread of its own (the coordinator's state's writer, crate::coord::keep).
+    /// The same, for a thread of its own (the coordinator's store's backup, crate::pool::store::back_up).
     pub fn shared_nas(&self) -> SharedNas {
         self.nas.clone()
     }

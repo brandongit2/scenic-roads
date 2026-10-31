@@ -2388,7 +2388,9 @@ impl Coordinator {
 
     /// Its state as another lead takes it up (`load_pool_state`): the jobs' leases (each with its
     /// term and when it was granted), what each target cost, the workers' failures (when, by this
-    /// Mac's wall clock), the pause. Taken under the lock.
+    /// Mac's wall clock), the pause. Taken under the lock. (The tests' look: a lead takes another's
+    /// up from its store's backup, crate::coord::kept::Loaded::pool_state.)
+    #[cfg(test)]
     pub fn pool_state(&self) -> PoolState {
         pool_state_of(&self.shared.lock().unwrap())
     }
@@ -2583,6 +2585,7 @@ pub struct Measured {
 }
 
 /// `Coordinator::pool_state`, of its state as locked.
+#[cfg(test)]
 fn pool_state_of(s: &Shared) -> PoolState {
     let (now, unix) = (s.now(), unix_now());
     let failed = s

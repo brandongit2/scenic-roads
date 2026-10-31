@@ -178,7 +178,29 @@ impl Store {
     /// in place of whatever is there, its epoch `RESTORE_EPOCHS` past the backup's; then opens it.
     pub fn restore(dir: &Path, backup: &Snapshot) -> Result<Arc<Store>> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-        let snap = Snapshot { epoch: backup.epoch + RESTORE_EPOCHS, member: String::new(), at: 0, ..backup.clone() };
+        // (Its position and epoch past whatever is still in `dir`: a crash after the snapshot's
+        // rename and before the old segments go leaves lines its replay skips, never one applied
+        // over the backup, nor an epoch line taking the epoch back. A log that can't be read goes
+        // before the snapshot is written.)
+        let (mut seq, mut epoch) = (backup.seq, backup.epoch);
+        if let Some(old) =
+            std::fs::read(dir.join(SNAPSHOT)).ok().and_then(|b| serde_json::from_slice::<Snapshot>(&b).ok())
+        {
+            (seq, epoch) = (seq.max(old.seq), epoch.max(old.epoch));
+        }
+        let read = seglog::read::<Line>(dir, "pool store (restored over)", |l| {
+            seq = seq.max(l.seq);
+            epoch = epoch.max(l.epoch.unwrap_or(0));
+            Ok(())
+        });
+        if read.is_err() {
+            for first in seglog::segments(dir)? {
+                std::fs::remove_file(dir.join(seglog::segment_name(first)))?;
+            }
+            seglog::sync_dir(dir)?;
+        }
+        let snap =
+            Snapshot { epoch: epoch + RESTORE_EPOCHS, seq, member: String::new(), at: 0, docs: backup.docs.clone() };
         seglog::write_durable(&dir.join(SNAPSHOT), &serde_json::to_vec(&snap)?)?;
         for first in seglog::segments(dir)? {
             std::fs::remove_file(dir.join(seglog::segment_name(first)))?;
@@ -545,5 +567,41 @@ mod tests {
         let back = Store::restore(&d.path().join("lead"), &b).unwrap();
         assert_eq!(back.snapshot().docs.get("settings/brokers"), Some(&json!("on")));
         assert!(back.epoch() > epoch + RESTORE_EPOCHS);
+    }
+
+    /// A restore over a store still on disk, its log past the backup (or a crash after the
+    /// restore's snapshot and before the old segments went): the old lines never come back over the
+    /// backup's documents, and the epoch stays past every one the old store had.
+    #[test]
+    fn a_restore_over_a_log_past_the_backup_skips_it() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("lead");
+        let s = Store::open(&dir).unwrap();
+        put(&s, "a", json!(1));
+        let backup = s.snapshot();
+        put(&s, "a", json!(2));
+        put(&s, "b", json!(3));
+        s.stop();
+        drop(s);
+        // (Reopened once more: its epoch past the backup's by 2, in the log alone.)
+        let s = Store::open(&dir).unwrap();
+        let old_epoch = s.epoch();
+        s.stop();
+        drop(s);
+        // (The old segments kept, as a crash before their removal would.)
+        let segs: Vec<(u64, Vec<u8>)> = seglog::segments(&dir)
+            .unwrap()
+            .into_iter()
+            .map(|f| (f, std::fs::read(dir.join(seglog::segment_name(f))).unwrap()))
+            .collect();
+        let back = Store::restore(&dir, &backup).unwrap();
+        back.stop();
+        drop(back);
+        for (f, b) in segs {
+            std::fs::write(dir.join(seglog::segment_name(f)), b).unwrap();
+        }
+        let s = Store::open(&dir).unwrap();
+        assert_eq!(s.snapshot().docs, backup.docs);
+        assert!(s.epoch() > old_epoch + RESTORE_EPOCHS, "{} vs {old_epoch}", s.epoch());
     }
 }
