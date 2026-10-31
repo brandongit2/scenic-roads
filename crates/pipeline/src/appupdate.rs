@@ -3,12 +3,16 @@
 //! `app/current.json` names another version, it's copied here (each file checked by its SHA-256)
 //! and `current` is pointed at it; the program that checked restarts into it by its own rule (the
 //! agent by its update drain, the map server once the map has been idle a minute). A copy is
-//! complete before it's used: files go to `<version>.tmp/`, which is renamed.
+//! complete before it's used: files go to a folder of the copier's own, `<version>.<pid>.tmp/`,
+//! which is renamed (a copier that finds the version there already drops its own).
 //!
 //! Every Mac's agent checks (`spawn`, from `scenic agent`); the Mac mini's map server checks too
 //! (crates/server/src/updater.rs), so the map updates while the agent there is stopped. One check
 //! at a time per Mac: each holds `app/update.lock` (taken without waiting; held, the check is
-//! skipped).
+//! skipped). The servers from before #874 don't know the lock: their copies go to
+//! `<version>.tmp/` and their `current` link through `current.tmp`, names this one never uses, so
+//! the two never write one folder or link, and a version a program runs from is never pruned
+//! (`running_versions`).
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -24,10 +28,6 @@ pub struct Current {
     #[serde(default)]
     pub sha256: std::collections::BTreeMap<String, String>,
 }
-
-/// The file the map server keeps its running version in (`<home>/server-app`): the version
-/// pruning keeps for it while it waits for an idle map to restart.
-pub const SERVER_APP: &str = "server-app";
 
 /// How long a `<version>.tmp/` folder goes untouched before it's a leftover: no copy in progress
 /// (an updater's, or `tools/app/install.sh`'s rsync) pauses that long.
@@ -72,7 +72,7 @@ pub fn check(home: &Path, root: &store::nasfs::NasRoot, running: &str) -> Result
     }
     let dest = dir.join(&cur.version);
     if !dest.exists() {
-        let tmp = dir.join(format!("{}.tmp", cur.version));
+        let tmp = dir.join(format!("{}.{}.tmp", cur.version, std::process::id()));
         std::fs::remove_dir_all(&tmp).ok();
         for f in &cur.files {
             if f.contains("..") {
@@ -99,10 +99,17 @@ pub fn check(home: &Path, root: &store::nasfs::NasRoot, running: &str) -> Result
                 std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))?;
             }
         }
-        std::fs::rename(&tmp, &dest)?;
+        // (Another copier, an older server's updater, may have finished first: a rename onto
+        // its full folder fails, and its copy is used.)
+        if let Err(e) = std::fs::rename(&tmp, &dest) {
+            std::fs::remove_dir_all(&tmp).ok();
+            if !dest.is_dir() {
+                return Err(e).with_context(|| format!("app {}: rename its copy", cur.version));
+            }
+        }
     }
-    // Point `current` at it (a new link renamed over the old one).
-    let tmp_link = dir.join("current.tmp");
+    // Point `current` at it (a new link of this copier's own renamed over the old one).
+    let tmp_link = dir.join(format!("current.{}.tmp", std::process::id()));
     std::fs::remove_file(&tmp_link).ok();
     std::os::unix::fs::symlink(&cur.version, &tmp_link)?;
     std::fs::rename(&tmp_link, dir.join("current"))?;
@@ -128,8 +135,9 @@ pub fn spawn(home: PathBuf, root: Option<store::nasfs::NasRoot>) {
         .ok();
 }
 
-/// Removes app versions nothing needs: keeps the current one, the caller's, the map server's
-/// (`SERVER_APP`), the build agent's (its jobs run programs from its folder; `agent/status.json`
+/// Removes app versions nothing needs: keeps the current one, the caller's, those a program on
+/// this Mac runs from (`running_versions`: the map server waiting for an idle map, an older
+/// server), the build agent's (its jobs run programs from its folder; `agent/status.json`
 /// says which, and its `job_apps` those of jobs it took over from an older app's agent), and the
 /// newest other one (to roll back to). Versions are named from their UTC publish time, so they
 /// sort by age. Unfinished copies (`.tmp`) an hour old go too, and the Python environments no
@@ -146,7 +154,7 @@ pub fn prune(home: &Path, current: &str, running: &str) {
         .and_then(|v| v["job_apps"].as_array())
         .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
-    let server = std::fs::read_to_string(home.join(SERVER_APP)).ok().map(|s| s.trim().to_string());
+    let running_here = running_versions(&dir);
     let Ok(rd) = std::fs::read_dir(&dir) else { return };
     let mut versions: Vec<String> = rd
         .flatten()
@@ -157,7 +165,7 @@ pub fn prune(home: &Path, current: &str, running: &str) {
     versions.sort();
     let mut keep: Vec<&str> = vec![current, running];
     keep.extend(agent.as_deref());
-    keep.extend(server.as_deref());
+    keep.extend(running_here.iter().map(String::as_str));
     keep.extend(job_apps.iter().map(String::as_str));
     if let Some(v) = versions.iter().rev().find(|v| !keep.contains(&v.as_str())) {
         keep.push(v);
@@ -172,6 +180,51 @@ pub fn prune(home: &Path, current: &str, running: &str) {
     for n in crate::pyenv::prune(home, crate::pyenv::UNUSED_KEEP) {
         eprintln!("python environment {n}: removed (no version uses it)");
     }
+}
+
+/// The versions in `dir` (`<home>/app/`) a process of this user runs from: each process's
+/// executable's path (the kernel's, links resolved) under `dir/<version>/`.
+pub fn running_versions(dir: &Path) -> Vec<String> {
+    let Ok(dir) = dir.canonicalize() else { return Vec::new() };
+    let mut out: Vec<String> = Vec::new();
+    for path in process_paths() {
+        if let Ok(rest) = path.strip_prefix(&dir) {
+            if let Some(v) = rest.components().next().filter(|_| rest.components().count() > 1) {
+                let v = v.as_os_str().to_string_lossy().into_owned();
+                if !out.contains(&v) {
+                    out.push(v);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every process's executable path that can be read (this user's).
+fn process_paths() -> Vec<PathBuf> {
+    // SAFETY: a null buffer asks for the count; the buffer given after is as long as it says.
+    let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if n <= 0 {
+        return Vec::new();
+    }
+    let mut pids = vec![0 as libc::pid_t; n as usize + 64];
+    let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+    // SAFETY: `pids` holds `bytes` bytes.
+    let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    if n <= 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    for &pid in &pids[..(n as usize).min(pids.len())] {
+        // SAFETY: `buf` holds as many bytes as it's said to.
+        let len = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+        if len > 0 {
+            use std::os::unix::ffi::OsStrExt;
+            out.push(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len as usize])));
+        }
+    }
+    out
 }
 
 /// The newest modification time in a folder's tree (the folder itself included).
@@ -254,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn prune_removes_a_stale_copy_and_keeps_the_servers() {
+    fn prune_removes_a_stale_copy_and_keeps_the_running_ones() {
         let d = tempfile::tempdir().unwrap();
         let app = d.path().join("app");
         for v in ["20261001-0000-aaaaaaa", "20261002-0000-bbbbbbb", "20261003-0000-ccccccc", "20261004-0000-eeeeeee"] {
@@ -265,11 +318,17 @@ mod tests {
         std::fs::write(tmp.join("server"), b"half").unwrap();
         age(&tmp.join("server"), 7200);
         age(&tmp, 7200);
-        // The map server still on the first, waiting for an idle map.
-        std::fs::write(d.path().join(SERVER_APP), "20261001-0000-aaaaaaa\n").unwrap();
+        // A program still running from the first (the map server waiting for an idle map, or an
+        // older server): a copy of `sleep` run from its folder.
+        std::fs::copy("/bin/sleep", app.join("20261001-0000-aaaaaaa/server")).unwrap();
+        let mut child = std::process::Command::new(app.join("20261001-0000-aaaaaaa/server")).arg("30").spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(running_versions(&app), vec!["20261001-0000-aaaaaaa".to_string()]);
         prune(d.path(), "20261004-0000-eeeeeee", "20261004-0000-eeeeeee");
+        child.kill().ok();
+        child.wait().ok();
         assert!(!tmp.exists());
-        assert!(app.join("20261001-0000-aaaaaaa").exists(), "the map server's");
+        assert!(app.join("20261001-0000-aaaaaaa").exists(), "the running one's");
         assert!(!app.join("20261002-0000-bbbbbbb").exists());
         assert!(app.join("20261003-0000-ccccccc").exists(), "the one to roll back to");
     }
@@ -299,6 +358,28 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(home.path().join("app").join(v).join("scenic")).unwrap().permissions().mode();
         assert_eq!(mode & 0o111, 0o111);
+        // No copier's folder or link left behind.
+        let left: Vec<_> = std::fs::read_dir(home.path().join("app"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        // A version an older server's updater copied first: used as it is, this copy dropped.
+        let u = "20261002-0000-uuuuuuu";
+        std::fs::create_dir_all(nas.path().join("app").join(u)).unwrap();
+        std::fs::write(nas.path().join("app").join(u).join("scenic"), b"#!/bin/sh\n").unwrap();
+        let cur_u = serde_json::json!({"version": u, "files": ["scenic"]});
+        std::fs::write(nas.path().join("app/current.json"), cur_u.to_string()).unwrap();
+        std::fs::create_dir_all(home.path().join("app").join(u)).unwrap();
+        std::fs::write(home.path().join("app").join(u).join("scenic"), b"#!/bin/sh\n").unwrap();
+        assert_eq!(check(home.path(), &root, v).unwrap().as_deref(), Some(u));
+        assert_eq!(std::fs::read_link(home.path().join("app/current")).unwrap().to_str(), Some(u));
+        let cur = serde_json::json!({"version": v, "files": ["scenic", "web/index.html"],
+            "sha256": {"scenic": sha(b"#!/bin/sh\n"), "web/index.html": sha(b"x")}});
+        std::fs::write(nas.path().join("app/current.json"), cur.to_string()).unwrap();
+        assert_eq!(check(home.path(), &root, v).unwrap().as_deref(), Some(v));
         // In place: nothing more to do.
         assert_eq!(check(home.path(), &root, "20261001-0000-aaaaaaa").unwrap(), None);
         // A file that doesn't match its SHA-256: refused, `current` left as it was.

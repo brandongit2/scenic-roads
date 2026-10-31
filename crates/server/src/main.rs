@@ -358,9 +358,11 @@ async fn main() -> Result<()> {
     }
     let home = home_arg.clone().unwrap_or_else(data::default_home);
     // (An installed server on a Mac that doesn't serve the map, as every Mac ran one until #874:
-    // retired, its files deleted and its job unloaded.)
+    // retired when it's sure it isn't the map's Mac: its service removed, its offline map left.)
     let user_home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    if home_arg.is_none() && pipeline::appupdate::running_version(&home).is_some() && !retire::the_maps_mac(&user_home)
+    if home_arg.is_none()
+        && pipeline::appupdate::running_version(&home).is_some()
+        && retire::this_mac_retires(&home, &user_home)
     {
         retire::retire(&home, &user_home);
     }

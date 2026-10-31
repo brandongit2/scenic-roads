@@ -78,6 +78,19 @@ pub fn member_id(home: &Path) -> Result<String> {
     member_id_on(home, platform_uuid())
 }
 
+/// This Mac's member id as its file in `home` (the agent's folder) says, made by none: None when
+/// there's none yet, or it can't be read, or it names another Mac.
+pub fn read_member_id(home: &Path) -> Option<String> {
+    let s = std::fs::read_to_string(home.join(ID_FILE)).ok()?;
+    let mut lines = s.lines().map(str::trim);
+    let (id, of) = (lines.next().unwrap_or(""), lines.next().filter(|u| !u.is_empty()));
+    let ours = match (of, platform_uuid()) {
+        (Some(of), Some(mac)) => of == mac,
+        _ => true,
+    };
+    (is_member_id(id) && ours).then(|| id.to_string())
+}
+
 /// `member_id` on the Mac whose hardware UUID is `mac` (None: it can't be read now).
 fn member_id_on(home: &Path, mac: Option<&str>) -> Result<String> {
     let p = home.join(ID_FILE);

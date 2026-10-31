@@ -2,8 +2,8 @@
 //! app (`<home>/app/<version>/`, through `<home>/app/current`, which the launcher runs). Every five
 //! minutes it checks for a newer one (pipeline::appupdate, which the agent runs too, one check at a
 //! time); once `current` names another version than its own, it exits when the map has been idle
-//! a minute, and the launcher starts the new one. Its version is kept in `<home>/server-app`, so
-//! pruning keeps it meanwhile.
+//! a minute, and the launcher starts the new one. Pruning keeps its version meanwhile (it runs
+//! from it: pipeline::appupdate::running_versions).
 
 use crate::data::Data;
 use std::path::{Path, PathBuf};
@@ -57,9 +57,6 @@ impl Updater {
     /// Check for a new app every five minutes; once one is in place, exit when idle for a minute.
     pub fn spawn(self: &Arc<Self>, data: Arc<Data>) {
         let Some(running) = self.running.clone() else { return };
-        if let Err(e) = std::fs::write(self.home.join(pipeline::appupdate::SERVER_APP), format!("{running}\n")) {
-            eprintln!("{}: {e}", pipeline::appupdate::SERVER_APP);
-        }
         let me = self.clone();
         std::thread::Builder::new()
             .name("updater".into())

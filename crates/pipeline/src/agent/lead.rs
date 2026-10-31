@@ -577,18 +577,6 @@ pub fn own_status(home: &Path) -> Option<super::Status> {
     Some(st)
 }
 
-/// This Mac's agent's pool part, the fresher of its status's and its pool's own (`own_status`), if
-/// written within `fresh_s` of `now`, with when it was.
-pub fn own_pool(home: &Path, now: u64, fresh_s: u64) -> Option<(super::PoolView, u64)> {
-    let from_status = own_status_plain(home).and_then(|s| Some((s.pool?, s.beat)));
-    let from_view = super::pool::read_view(home).map(|v| (v.pool, v.beat));
-    [from_status, from_view]
-        .into_iter()
-        .flatten()
-        .max_by_key(|(_, at)| *at)
-        .filter(|(_, at)| now.saturating_sub(*at) < fresh_s)
-}
-
 fn own_status_plain(home: &Path) -> Option<super::Status> {
     ["status.json", "helper.json"]
         .iter()

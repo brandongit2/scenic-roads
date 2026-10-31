@@ -65,12 +65,17 @@ fi
 PATH="${uv:h}:$PATH" "$HOME_S/app/$version/scenic-build" pyenv --dem "$HOME_S/app/$version/dem" >/dev/null
 # -h: replace the link itself, not something inside the folder it points to.
 ln -sfh "$version" "$HOME_S/app/current"
-# The map server, a launchd service of its own on the map's Mac alone (crates/server/src/retire.rs
-# says which: a name in ~/.config/scenic/names): its run file, its job restarted, or loaded. On
-# another Mac, one from before #874 is unloaded and removed (a server started there retires itself
-# too, deleting what it kept). The mirror's reserve is the Regions panel's setting (reserve.json).
+# The map server, a launchd service of its own on the map's Mac alone, the Mac mini: the one
+# tools/caddy/install.sh gave the map's name (~/.config/scenic/names), or the pool's declared lead
+# (state/build/lead-member.json names this Mac's member, agent/member), either one, so a file gone
+# missing on the mini never removes its map. There: its run file, its job restarted, or loaded. On
+# another Mac, one from before #874 is unloaded and removed, its offline map left (a server started
+# there retires itself too: crates/server/src/retire.rs). The mirror's reserve is the Regions
+# panel's setting (reserve.json).
 server_plist="$HOME/Library/LaunchAgents/local.scenic.server.plist"
-if grep -Eqv '^[[:space:]]*(#|$)' "$HOME/.config/scenic/names" 2>/dev/null; then
+lead=$(python3 -c "import json;print(json.load(open('$NAS/state/build/lead-member.json'))['member'])" 2>/dev/null || true)
+me=$(head -n1 "$HOME_S/agent/member" 2>/dev/null || true)
+if grep -Eqv '^[[:space:]]*(#|$)' "$HOME/.config/scenic/names" 2>/dev/null || [[ -n $lead && $lead == "$me" ]]; then
   printf '%s\n' "$HOME_S/app/current/server" --web "$HOME_S/app/current/web" --fonts "$HOME_S/app/current/fonts" > "$HOME_S/run/server"
   if launchctl print gui/$uid/local.scenic.server >/dev/null 2>&1; then
     launchctl kickstart -k gui/$uid/local.scenic.server

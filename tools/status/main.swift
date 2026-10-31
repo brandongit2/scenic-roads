@@ -48,7 +48,14 @@ func fetchReply(timeout: TimeInterval = 10) -> Reply? {
     p.standardOutput = out
     p.standardError = FileHandle.nullDevice
     do { try p.run() } catch { return nil }
-    let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+    // (Ended at the timeout, and killed 2 s later if it's still there: one poll at a time waits
+    // on it, so a hung read never piles them up, and never holds the polls for long.)
+    let pid = p.processIdentifier
+    let killer = DispatchWorkItem {
+        guard p.isRunning else { return }
+        p.terminate()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { if p.isRunning { kill(pid, SIGKILL) } }
+    }
     DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
     let data = out.fileHandleForReading.readDataToEndOfFile()
     p.waitUntilExit()

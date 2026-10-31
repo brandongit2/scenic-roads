@@ -1,7 +1,8 @@
-//! What the menu bar item (tools/status) shows, as `scenic status --menu` prints it: this Mac's own
-//! agent's status when it runs here (written every few seconds), else the lead's heartbeat on the
-//! NAS (`state/status.json`); whether it's this Mac's; for this Mac's, the running job's log; this
-//! Mac's asks and hold; and its agent's view of the pool. (Served by each Mac's map server as
+//! What the menu bar item (tools/status) shows, as `scenic menu` prints it: this Mac's own agent's
+//! status when it runs here (written every few seconds), else the lead's heartbeat on the NAS
+//! (`state/status.json`); whether it's this Mac's; for this Mac's, the running job's log; and this
+//! Mac's hold and its ask (Scenic.app's Reply: tools/status/main.swift). (Scenic reads this Mac's
+//! view of the pool from the agent's own files.) (Served by each Mac's map server as
 //! `/api/build` until #874, when the map server came to run on the Mac mini alone.)
 
 use std::path::Path;
@@ -47,18 +48,11 @@ pub fn status(home: &Path, lead: serde_json::Value, now: u64) -> serde_json::Val
     } else {
         None
     };
-    // This Mac's ask to pause or go on, while its agent hasn't taken it up (crate::control).
-    let asked =
-        crate::control::peek_request(&agent).map(|r| serde_json::json!({ "pause": r.pause.is_some(), "at": r.at }));
-    // This Mac in the pool (docs/pool.md §10, §11), as its own agent says (fresh: its status, or its
-    // pool's own view, written each step of the pool's whatever its loop is doing).
-    let pool = crate::agent::lead::own_pool(&agent, now, 120)
-        .map_or(serde_json::Value::Null, |(p, _)| serde_json::to_value(p).unwrap_or_default());
     // This Mac paused alone (crate::control::Hold, task #224), as its agent keeps it, and its ask
     // while the agent hasn't taken it up.
     let held_here = crate::control::read_hold(&agent).held;
     let hold_asked = agent.join(crate::control::HOLD_REQUEST).exists();
-    serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "pool": pool, "held_here": held_here, "hold_asked": hold_asked})
+    serde_json::json!({"status": status, "local": local, "now": now, "log": log, "held_here": held_here, "hold_asked": hold_asked})
 }
 
 /// The lead's heartbeat (`state/status.json`) as the NAS has it; Null when it can't be read.

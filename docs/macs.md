@@ -86,10 +86,13 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     coverage as last read (`coverage/<hash16>.cov`, by the regions' accepted version).
   - Nothing is deleted through a link, nor anything in the NAS's project folder.
 - **No map server** (task #874): the map is the Mac mini's (Devices). An installed server started
-  on any other Mac retires itself (`crates/server/src/retire.rs`): it deletes what only it kept
-  there (`mirror/`, `idx/`, `downloads.json`, `reserve.json`, `map-page`, `accepted/`, `names/`,
-  `region-areas.json`, `run/server`, `server-app`, `~/Library/Caches/scenic/map`), removes its
-  LaunchAgent (`local.scenic.server`) and unloads it.
+  on any other Mac retires itself (`crates/server/src/retire.rs`): it removes its LaunchAgent
+  (`local.scenic.server`) and its run file (`run/server`), and unloads itself. The Mac's offline map is left as it was (`mirror/`, `idx/`, `downloads.json`,
+  `~/Library/Caches/scenic/map` and the rest of the server's files): nothing deletes it. It retires
+  only when it's sure it isn't the map's Mac: no name in `~/.config/scenic/names` (the file
+  without one, or not there; one it can't read keeps it serving), and the pool's declared lead
+  (`state/build/lead-member.json`) read and naming another member than this Mac's (`agent/member`,
+  read). Without the NAS, or with either unread, it serves.
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free) and copies the planet to
   the SSD when there's room, else reads it from the NAS.
 - **What a z6 tile keeps for its later runs** is on the NAS (`cache/`), shared by every Mac: its canopy
@@ -132,8 +135,9 @@ and codesign.
    `ssh -o BatchMode=yes brandontsang@fishandchips.local ls /volume1/personal/projects/scenic-roads`.
    The share `/Volumes/personal` is `/volume1/personal` on the NAS.
 6. `tools/app/install.sh`, then open Scenic.app once. On the map's Mac (the one
-   `tools/caddy/install.sh` gave the map's name: a name in `~/.config/scenic/names`) it also creates
-   the map server's LaunchAgent; on any other it removes one.
+   `tools/caddy/install.sh` gave the map's name, a name in `~/.config/scenic/names`, or the one
+   `state/build/lead-member.json` declares the lead: either) it also creates the map server's
+   LaunchAgent; on any other it removes one, leaving the Mac's offline map.
 7. Allow `scenic` (and on the map's Mac `server`) through the firewall (pool.md §6.8).
 8. `scenic memory` says the build's memory (total − 4 GB unless set); the room target is the
    owner's choice.
@@ -166,9 +170,12 @@ and codesign.
   every five minutes, copies a newer app locally checking every file's SHA-256, points
   `app/current` at it and restarts into it by its update drain; on the Mac mini the map server
   checks too (so the map updates with the agent stopped), one check at a time (`app/update.lock`),
-  and restarts into the new version once the map has been idle a minute. Pruning keeps the current
-  version, the checker's, the agent's and its jobs', the map server's (`server-app`) and one to roll
-  back to.
+  and restarts into the new version once the map has been idle a minute. Each copier copies into a
+  folder and a link of its own (`<version>.<pid>.tmp`, `current.<pid>.tmp`), so an updater that
+  doesn't know the lock (a server from before #874, during the rollout) never writes into its copy;
+  whichever finishes first is used. Pruning keeps the current version, the checker's, every version
+  a process on the Mac runs from (the map server waiting for an idle map, an older server), the
+  agent's and its jobs', and one to roll back to.
 - The app reads the current and the previous form of every file kind.
 
 **Server** (the Mac mini alone: a plain LaunchAgent, `local.scenic.server`, no window or menu;
