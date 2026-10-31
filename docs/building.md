@@ -214,9 +214,11 @@ from the first (`edit_held`).
   a group gone with no status (killed while no agent tended it) is interrupted, not failed. A
   record an older app wrote, or one with no slot saved, isn't taken over: its job is stopped at
   start when provably ours, as before. A helper's leased job (before the pool) is stopped at the
-  agent's end. The app's quit stops its jobs as before (control::Quit). An adopted job's tasks
-  offered after the restart run on its own Mac (the coordinator's job token is new: its offers are
-  refused, and it runs them itself).
+  agent's end. The app's quit stops its jobs as before (control::Quit). An adopted job offers its
+  tasks through the new coordinator as before: the jobs' token is kept (`agent/coord/jobs-token`,
+  this Mac's alone), and the coordinator holds 127.0.0.1 on its port beside its wildcard listener,
+  so no other process (a test's coordinator) answers its jobs there (#906). A task it offered
+  before the restart is gone with the old coordinator's memory: it runs that one itself.
 - **The heartbeat:** written by the agent's beat (`agent::beat`, docs/agent-parts.md §4.2) on a
   timer of its own, every 10 s whatever the loop waits on, and at once when the loop publishes a
   new view or this Mac's hold changes: locally, and to the NAS (`state/status.json`) by a writer

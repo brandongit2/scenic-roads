@@ -728,7 +728,7 @@ pub const POOL_MEMBER: &str = "x-pool-member";
 pub struct Coordinator {
     pub shared: Arc<Mutex<Shared>>,
     pub contact: Contact,
-    /// What this agent's jobs carry to offer tasks (`/task/…`), never published.
+    /// What this agent's jobs carry to offer tasks (`/task/…`), never published (`http::job_token`).
     pub job_token: String,
     port: u16,
     /// This Mac's name: its own jobs' leases are held under it.
@@ -1174,13 +1174,36 @@ impl Coordinator {
         Coordinator::start_on(dir, listener, me, app)
     }
 
+    /// The loopback address beside a wildcard `listener`, on its port: its jobs' address
+    /// (`SCENIC_COORD`, 127.0.0.1). A wildcard listener leaves it to any process that binds it
+    /// beside (SO_REUSEADDR, as std sets it), which then takes every connection this Mac's jobs
+    /// make and refuses their token (a test's coordinator on the pool's port, #906); held here, no
+    /// other can. None for a listener on one address; taken already, said, and None.
+    fn loopback_beside(listener: &std::net::TcpListener) -> Option<std::net::TcpListener> {
+        let at = listener.local_addr().ok()?;
+        if !at.ip().is_unspecified() {
+            return None;
+        }
+        match store::spawn::listen((std::net::Ipv4Addr::LOCALHOST, at.port())) {
+            Ok(l) => Some(l),
+            Err(e) => {
+                eprintln!(
+                    "coordinator: 127.0.0.1:{} is another process's ({e}): this Mac's jobs reach it, not this coordinator",
+                    at.port()
+                );
+                None
+            }
+        }
+    }
+
     /// `start`, answering on `listener`, already listening (a test's, on a port it held from the
     /// start: no other can take it between).
     pub fn start_on(dir: &Path, listener: std::net::TcpListener, me: &str, app: &str) -> Result<Coordinator> {
         Coordinator::start_with(dir, listener, me, app, false)
     }
 
-    /// `start_on`, or a viewer alone (`viewer`).
+    /// `start_on`, or a viewer alone (`viewer`): a coordinator on a wildcard `listener` answers
+    /// the same on 127.0.0.1 beside it (`loopback_beside`), its jobs' address.
     fn start_with(
         dir: &Path,
         listener: std::net::TcpListener,
@@ -1189,6 +1212,7 @@ impl Coordinator {
         viewer: bool,
     ) -> Result<Coordinator> {
         let port = listener.local_addr()?.port();
+        let loopback = if viewer { None } else { Self::loopback_beside(&listener) };
         if viewer {
             std::fs::create_dir_all(dir)?;
         } else {
@@ -1326,8 +1350,11 @@ impl Coordinator {
             shared.save_leases();
         }
         let shared = Arc::new(Mutex::new(shared));
-        // This agent's jobs' own token (they offer tasks): never published, and gone with them.
-        let job_token = http::random()?;
+        // This agent's jobs' own token (they offer tasks): never published; kept (`jobs-token`), so
+        // a job outlives its coordinator's restart with it (an agent restarted into an update that
+        // took its running jobs over, a member's broker become its lead's coordinator). A viewer's
+        // is its own: it takes no job's offers.
+        let job_token = if viewer { http::random()? } else { http::job_token(dir)? };
         let root = Arc::new(Mutex::new(None));
         let stopped: Arc<std::sync::atomic::AtomicBool> = Default::default();
         let wake: Arc<tokio::sync::Notify> = Default::default();
@@ -1342,7 +1369,7 @@ impl Coordinator {
             routes: routes.clone(),
             cors: cors.clone(),
         };
-        let urls = http::serve(listener, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
+        let urls = http::serve(listener, loopback, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
         let phase_shares: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>> = Default::default();
         let phase_times: Arc<Mutex<Option<Arc<crate::timings::PhaseTimes>>>> = Default::default();
         if !viewer {
@@ -4488,6 +4515,12 @@ mod http {
         crate::net::kept_token(&dir.join("workers-token"))
     }
 
+    /// This Mac's jobs' token (`/task/…`): made once and kept (`jobs-token`, this Mac's alone, never
+    /// published), so a running job's stays good across its agent's restarts and its coordinator's.
+    pub fn job_token(dir: &Path) -> Result<String> {
+        crate::net::kept_token(&dir.join("jobs-token"))
+    }
+
     /// The answers worth gzipping: tower-http's defaults (not under 32 bytes, images, gRPC, event streams),
     /// and not raw bytes (octet-stream: packs, the NAS reads), tar, zip or a part of a file (a range).
     pub(super) fn compressible() -> impl tower_http::compression::predicate::Predicate {
@@ -4505,6 +4538,7 @@ mod http {
     /// Listens on `port`, on a runtime of its own; this Mac's addresses for workers.
     pub fn serve(
         listener: std::net::TcpListener,
+        loopback: Option<std::net::TcpListener>,
         port: u16,
         ctx: Ctx,
         stopped: Arc<std::sync::atomic::AtomicBool>,
@@ -4574,9 +4608,9 @@ mod http {
             .build()?;
         std::thread::Builder::new().name("coordinator".into()).spawn(move || {
             rt.block_on(async move {
-                match crate::net::Listener::new(listener) {
-                    Ok(l) => accept(l, app, stopped, wake).await,
-                    Err(e) => eprintln!("coordinator: its socket: {e}"),
+                match (crate::net::Listener::new(listener), loopback.map(crate::net::Listener::new).transpose()) {
+                    (Ok(l), Ok(lo)) => accept(l, lo, app, stopped, wake).await,
+                    (Err(e), _) | (_, Err(e)) => eprintln!("coordinator: its socket: {e}"),
                 }
             });
             // (Its listener and every connection's socket closed by `accept` as it returned; its
@@ -4615,11 +4649,13 @@ mod http {
     pub(super) const HEADERS_MAX: Duration = Duration::from_secs(20);
     const CONNECTION_MAX: Duration = Duration::from_secs(3 * 3600);
 
-    /// Takes connections: one from elsewhere, or past the cap, is closed before a byte is read;
+    /// Takes connections, on `listener` and its `loopback` beside it when it has one: one from
+    /// elsewhere, or past the cap, is closed before a byte is read;
     /// each is kept alive by TCP (a device gone without a word is noticed), its headers bounded in
     /// time (which closes idle ones too), and its whole life bounded.
     async fn accept(
         listener: crate::net::Listener,
+        loopback: Option<crate::net::Listener>,
         app: Router,
         stopped: Arc<std::sync::atomic::AtomicBool>,
         wake: Arc<tokio::sync::Notify>,
@@ -4643,6 +4679,12 @@ mod http {
             let got = tokio::select! {
                 _ = wake.notified() => continue,
                 got = listener.accept() => got,
+                got = async {
+                    match &loopback {
+                        Some(l) => l.accept().await,
+                        None => std::future::pending().await,
+                    }
+                } => got,
             };
             let (stream, peer) = match got {
                 Ok(x) => x,
@@ -9353,10 +9395,16 @@ mod tests {
         let own = c.hold("unit", &[("6/1/2".into(), "k2".into())]).unwrap();
         let g = w.ask(&Ask { ..ask(4096) }).unwrap().unwrap();
         let token = c.contact.token.clone();
+        let job_token = c.job_token.clone();
         drop(c);
         // (A new port: the old listener's threads live on in this process.)
         let (c2, port) = start_for_test(&d.path().join("coord"), "m4", "");
         assert_eq!(c2.contact.token, token);
+        // A job left running across its agent's restart (taken over) offers through the new one
+        // with the token it was started with (#906).
+        assert_eq!(c2.job_token, job_token);
+        let job = client::Client::at(vec![format!("http://127.0.0.1:{port}")], job_token, "job");
+        assert_eq!(job.post_json("/task/workers", &serde_json::json!({ "kind": "tail" })).unwrap().0, 200);
         let w2 = client::Client::at(vec![format!("http://127.0.0.1:{port}")], token, "m1");
         assert!(w2.beat(g.lease, None).unwrap(), "the helper's lease lives on");
         assert!(!c2.renew(own, None), "this Mac's own ended with its agent");
@@ -9365,6 +9413,26 @@ mod tests {
                 .unwrap(),
             client::Handed::Taken
         );
+    }
+
+    /// A coordinator on every address holds its jobs' loopback address too: no process binds
+    /// 127.0.0.1 on its port beside it (a test's coordinator once did, on the mini, and took the
+    /// lead's jobs' requests, refusing their token: #906); its jobs reach it there.
+    #[test]
+    fn a_wildcard_coordinator_holds_its_jobs_loopback() {
+        let d = tempfile::tempdir().unwrap();
+        let l = store::spawn::listen(("0.0.0.0", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let c = Coordinator::start_on(&d.path().join("coord"), l, "m4", "").unwrap();
+        let taken = port_free(port).unwrap_err();
+        assert_eq!(taken.kind(), std::io::ErrorKind::AddrInUse, "{taken}");
+        let job = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.job_token.clone(), "job");
+        assert_eq!(job.post_json("/task/workers", &serde_json::json!({ "kind": "tail" })).unwrap().0, 200);
+        c.stop();
+        // (Both let go as it stops: the next coordinator listens on the port again.)
+        let again = store::spawn::listen(("0.0.0.0", port)).unwrap();
+        port_free(port).unwrap();
+        store::spawn::sockets(|| drop(again));
     }
 
     /// A request as a browser, a page or a proxy sends it, straight to `addr`: `headers` over the

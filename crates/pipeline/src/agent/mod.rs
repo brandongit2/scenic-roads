@@ -1346,12 +1346,17 @@ pub(crate) fn stopping() -> bool {
 }
 
 /// The coordinator's port: `crate::coord::PORT`, or another for a test agent beside the real one
-/// (`SCENIC_COORD_PORT`; a unit test's own, `TEST_PORT`).
+/// (`SCENIC_COORD_PORT`; a unit test's own, `TEST_PORT`, else any free port).
 fn coord_port() -> u16 {
     #[cfg(test)]
     if let Some(p) = TEST_PORT.with(|p| p.get()) {
         return p;
     }
+    // (A unit test without one of its own: any free port, never the pool's. Its 127.0.0.1:8090
+    // beside a running agent's wildcard listener took that lead's jobs' requests, #906.)
+    #[cfg(test)]
+    return 0;
+    #[cfg(not(test))]
     std::env::var("SCENIC_COORD_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(crate::coord::PORT)
 }
 
@@ -10195,8 +10200,10 @@ mod tests {
         assert!(a.set_hold(Some(crate::control::Hold::new("the menu bar on m1")), now_s()));
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let mut waiting = Vec::new();
-        assert!(!a.try_start_said(0, waiting_job("unit 6/1/2"), &c, None, &mut waiting));
-        assert!(a.slots[0].running.is_none(), "nothing started");
+        // (A free slot: the step's coordinator may have granted this Mac a duty in the first.)
+        let k = (0..a.slots.len()).find(|&k| a.slots[k].running.is_none()).expect("a free slot");
+        assert!(!a.try_start_said(k, waiting_job("unit 6/1/2"), &c, None, &mut waiting));
+        assert!(a.slots[k].running.is_none(), "nothing started");
         assert!(waiting.iter().any(|w| w.why.contains("paused")), "{waiting:?}");
     }
 
