@@ -1,0 +1,144 @@
+# The pipeline's crates (task #916)
+
+**Status: Planned.** Step 1 (`crates/pyport`) is built; every later step below is planned.
+
+The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
+and 15 binaries. A crate is rustc's unit: an edit anywhere recompiles all of it, little of it
+compiles in parallel, and one compile of it peaked at 9.3 GB on the owner's 16 GB M1 (31 Oct
+2026). This plan splits it along its seams, one step at a time, each step shipping alone with the
+build green and every binary's behaviour unchanged.
+
+## 1. The module graph
+
+`tools/dev/modgraph.py` derives it from the sources: for each top-level module of
+`crates/pipeline/src` (a file `x.rs` and/or folder `x/`), the other top-level modules its code
+names by `crate::<m>` (also inside `use crate::{…}` groups) or, in a binary, `pipeline::<m>`; then
+the cycles (strongly connected components). `--dot` prints Graphviz. Rerun it rather than trusting
+numbers copied here.
+
+What it showed on 31 Oct 2026 (main at 3cba2d2a):
+
+- **One cycle of 60 modules, ~203k lines** (of ~244k): agent, coord, pool, needs, inputs, out,
+  control, timings, resume_log, coverage, localread, osmpass, dem, fetch, geotiff, every terrain
+  and slope module, depth, polar, lakefill, water, trees, treepacks, leaftype, landcover, bld,
+  buildtiles, unit, reach, candidates, rail, gtfs, ferries, timetables, ovconv, markconv, layers,
+  heritage, heritage_layers, interest, peaks, summits, namestodo, answers, pubtimes, offload,
+  handoff, rawpack, pyramids, stage, road_terrain, rules, areafiles, costin, cli.
+- **Outside it** (acyclic, no edge back into the cycle): areaflags, budget, chain, extents, marks,
+  net, phase_names, pyenv, pyjson, pynumpy, pytext, tpsimplify, scache, shade_codec, stations,
+  summary, sys, terr, terrain_codec, terrain_water, trailends, vtgen, watercov, webp, whole, legacy
+  (→ summary), view (→ scache), buildings, elev, tiling (→ the crate root's `morton`/bars);
+  basepack, basepart, hipack (→ legacy, tiling); and the users of the cycle that nothing in it uses
+  back (areadetails, filterprops, heritagedetails, heritagewd, items, labels, marksjob, menu,
+  pageviews, railfeeds, whsshapes, wikiask, appupdate…).
+
+The cycle is held together by a few thin edges from low-level code up to `agent`, `pool`,
+`inputs` and `control`, not by the steps' logic. The ones that matter most:
+
+| edge | what it uses | cut by |
+|---|---|---|
+| control → agent | `agent::DRAIN_GRACE` (one const) | the const moves down beside `control` |
+| timings → control | pause and safe-gap bookkeeping (`gaps_begin`, `safe_gaps`, `SAFE_GAP_BOUND_S`) | `timings` and `control` move down together |
+| resume_log → agent | `agent::resume::{RESUME_ENV, HOLD_S}` | the constants move down (the runtime crate) |
+| localread, osmpass → agent::room | `job_target`, `free_past`, `MAX_TARGET` | the disk-room primitives move down; the agent's room policy stays up |
+| osmpass, layers, … → agent::jobs | progress reporting (`stage`, `report`, `part`, `within`, `run_watched`, `each_line`) | the job side of `agent::jobs` moves down (runtime crate) |
+| coverage, dem → agent::recipes | the `Recipe` type | the type moves down to the store layer |
+| out → agent::steps | `steps::writes` (each step's write set, checked on every save) | a registry the agent fills at start (a `fn` the out layer calls), or the write-set table moved down; after #879, which edits `agent/steps.rs` |
+| out → pool::records | `Records::now`, `Brief::now` | callers name `pool::records` directly; out's two wrappers go |
+| out → inputs | `in_inputs_folder`, the gate | the inputs folder's path predicates move down to the store layer |
+| fetch → control | `draining_lately` | `control` sits below `fetch` (runtime crate) |
+| terrain_task, trees, offload → coord | offloading a step's parts to other Macs | a trait in the runtime crate (`Offload`), implemented by coord; the step names only the trait |
+
+## 2. Proposed crates
+
+Bottom to top; a crate depends only on those above it in this list (and on det, roadcore, store,
+names, webpenc as now).
+
+1. **pyport** (built, step 1): pyjson, pytext, pynumpy, tpsimplify. Python's behaviour ported for
+   byte-identical outputs. ~1.8k lines, no pipeline dependency.
+2. **codecs** (formats with no build state): terrain_codec, shade_codec, webp, whole, watercov,
+   terrain_water, vtgen, chain, marks, stations, trailends, extents, areaflags, tiling (with the
+   root's `morton`), summary, legacy, hipack, basepack, basepart. ~12k lines.
+3. **jobrt** (a job's runtime): sys, budget, net, phase_names, pyenv, control, timings,
+   resume_log, cli, the job side of agent::jobs, the room primitives of agent::room, the
+   resume constants, nasread's NAS reading, `DRAIN_GRACE`, an `Offload` trait. ~12k lines.
+4. **buildstore** (the build's files: the NAS/store layer above `store`): out, handoff, rawpack,
+   localread, costin, coverage, outlines, the `Recipe` type, the inputs folder's predicates,
+   fetch, geotiff. ~12k lines.
+5. **inputs** (the declared inputs): inputs (21.9k lines), dem, rules, osmpass, areafiles. Its
+   edges up to agent (23) and pool (7) are cut as in §1 first; ~33k lines.
+6. Step families, side by side (each compiles in parallel with the others):
+   - **terrain**: terrain_base, terrain_deep, terrain_pack, terrain_resume, terrain_task,
+     pyramids, stage, road_terrain, slope_pack, depth, polar, lakefill, water, peaks, summits,
+     layers. ~25k lines. (terrain_pack ↔ terrain_deep ↔ stage stay one crate.)
+   - **roads**: unit, reach, candidates, buildtiles, elev, rail, timetables. ~5k lines.
+   - **trees**: trees, treepacks, leaftype, landcover. ~7k lines.
+   - **names** (heritage, places, transit): heritage*, interest, items, labels, wikiask, pageviews,
+     areadetails, whsshapes, filterprops, ferries, gtfs, railfeeds, ovconv, markconv, marksjob,
+     namestodo. ~17k lines.
+   - **bld**: bld (3D buildings). ~9k lines.
+7. **coordination**: coord, pool, needs, pubtimes, answers, offload, menu, appupdate (coord ↔ pool
+   ↔ agent are one cycle today; they split after the steps are out). ~33k lines.
+8. **pipeline** (the agent, kept under this name so `cargo run -p pipeline --bin …` and the
+   server's dependency stay): agent (66k lines; later split by its own seams, docs/agent-parts.md)
+   and the binaries. The map server's shared parts (scache, view, terr, buildings, used by
+   scenic-metrics and crates/server) join **codecs** or a small **mapview** crate.
+
+Each moved module stays reachable at its old path by a `pub use` in `pipeline`'s lib.rs until the
+paused branches touching its users have landed; a later step per crate rewrites the paths
+(`crate::pyjson` → `pyport::pyjson`) and drops the re-export. The re-exports are therefore
+temporary: the list in lib.rs is the record of what still goes through them.
+
+## 3. The binaries
+
+| binary | lines | uses | moves with |
+|---|---|---|---|
+| scenic | 1.9k | agent, coord, control, pool, budget | pipeline (top) |
+| scenic-build | 7.3k | everything | pipeline (top) |
+| scenic-metrics | 1.4k | scache, view, terr, whole, trees, unit, control | pipeline (top; uses trees and unit) |
+| scenic-polar | 0.1k | polar, dem, resume_log | terrain |
+| terrainsub | 0.04k | terrain_task, terrain_pack | terrain |
+| coastcheck | 0.5k | lakefill, water, watercov, osmpass | terrain |
+| lakefill | 0.4k | lakefill, water, inputs | terrain |
+| extract | 1.6k | candidates, elev, trailends, dem | roads |
+| elev, tile | 0.06k | elev, road_terrain | roads |
+| railfreq | 0.9k | rail | roads |
+| trees, landcover | 0.2k | trees, landcover, fetch | trees |
+| bldtile | 0.03k | bld, dem | bld |
+| areaflags | 0.01k | areaflags | codecs |
+
+A binary moves only with a step that moves its whole set of modules, and keeps its name (scripts
+run binaries by name from the shared target dir). #917 later merges the small tools into
+subcommands of `scenic-build`; that changes this table, not the crate plan.
+
+## 4. Steps
+
+Each step ships alone: build, clippy and the affected tests green, no behaviour change, the
+binaries' names unchanged. Files paused branches edit (#879: agent/steps.rs, agent/build.rs,
+agent/rekey.rs; #856: crates/server; #882 step 4: coord; #914) move only after those land.
+
+1. **pyport** (built): move pyjson, pytext, pynumpy, tpsimplify into `crates/pyport`; pipeline
+   re-exports them. No other file changes.
+2. **codecs**: the acyclic leaves of §2.2 (the crate root's `morton` and progress bars move with
+   tiling). Re-exported; touches no paused file.
+3. **jobrt**: move the agent's constants and job-side primitives down (agent/jobs.rs,
+   agent/room.rs, agent/resume.rs split: the part a step calls goes down, the agent's policy
+   stays), then control, timings, sys, budget, resume_log, cli, net. Cuts the control → agent
+   edge and most step → agent edges. Needs #879 merged (agent/ edits).
+4. **buildstore**: `Recipe` and the inputs folder's predicates down; out's write-set check behind a
+   registry the agent fills; out's `pool::records` wrappers removed. Needs #879 (agent/steps.rs).
+5. **inputs** and the step families (one step each: names, trees, bld, roads, terrain), each after
+   rerunning modgraph.py shows it leaves no edge back into what remains above.
+6. **coordination**, after #882 lands.
+7. Path rewrites: per crate, `crate::x` → `<crate>::x`, and the re-exports dropped.
+
+## 5. Measurements
+
+Dated measurements, not targets; rerun `tools/dev/modgraph.py` and the commands below for current
+figures. Taken on the M1 (MacBook Pro, 16 GB, other agents building beside: the load average is
+given), main's Cargo.toml profiles, a fresh target dir, third-party crates from the shared sccache
+(so "clean" is the workspace crates' compile plus the cache's hits), `/usr/bin/time -l` (peak RSS:
+the largest process, rustc). "Leaf edit": one line appended to pyjson.rs; "core edit": to
+timings.rs.
+
+MEASUREMENTS

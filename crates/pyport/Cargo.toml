@@ -1,0 +1,10 @@
+[package]
+name = "pyport"
+version = "0.1.0"
+edition = "2021"
+description = "Python's and its libraries' behaviour, ported so the steps ported from Python make the same bytes: json, text tests, numpy's arithmetic, GEOS's topology-preserving simplifier (docs/crates.md)"
+
+[dependencies]
+anyhow.workspace = true
+serde_json = "1"
+unicode-normalization = "0.1"

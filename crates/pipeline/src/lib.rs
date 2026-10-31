@@ -61,10 +61,7 @@ pub mod polar;
 pub mod pool;
 pub mod pubtimes;
 pub mod pyenv;
-pub mod pyjson;
-pub mod pynumpy;
 pub mod pyramids;
-pub mod pytext;
 pub mod rail;
 pub mod railfeeds;
 pub mod rawpack;
@@ -91,7 +88,6 @@ pub mod terrain_water;
 pub mod tiling;
 pub mod timetables;
 pub mod timings;
-pub mod tpsimplify;
 pub mod trailends;
 pub mod treepacks;
 pub mod trees;
@@ -104,6 +100,9 @@ pub mod webp;
 pub mod whole;
 pub mod whsshapes;
 pub mod wikiask;
+
+// Moved to their own crate (task #916 step 1, docs/crates.md), kept at their old paths.
+pub use pyport::{pyjson, pynumpy, pytext, tpsimplify};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::Read;

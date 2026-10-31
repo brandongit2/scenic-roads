@@ -1262,6 +1262,7 @@ dependencies = [
  "osmpbf",
  "parquet",
  "png",
+ "pyport",
  "rayon",
  "roadcore",
  "serde",
@@ -1366,6 +1367,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "pyport"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "unicode-normalization",
 ]
 
 [[package]]

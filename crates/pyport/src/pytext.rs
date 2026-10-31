@@ -1,6 +1,6 @@
 //! Python's text tests as the steps ported from it need them, so their outputs stay the bytes the
 //! Python made: `str.strip`, `float(str)`, `\w`, and whether a name's English truly differs from it
-//! (crate::labels, crate::heritage_layers).
+//! (pipeline::labels, pipeline::heritage_layers).
 
 use unicode_normalization::char::is_combining_mark;
 use unicode_normalization::UnicodeNormalization;
