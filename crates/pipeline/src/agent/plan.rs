@@ -43,6 +43,8 @@ pub(super) enum Msg {
 #[derive(Clone, Default)]
 pub(super) struct Inputs {
     pub root: Option<NasRoot>,
+    /// The members' beats this Mac hears by HTTP (crate::coord::beats): their statuses, the machines.
+    pub beats: Option<std::sync::Arc<crate::coord::beats::Beats>>,
     pub conditions: Conditions,
     pub mac: cond::Mac,
     pub mem: Memory,
@@ -2238,7 +2240,7 @@ impl Planner {
         // Each worker's speed against the lead's, from the history (half until it's measured):
         // every one that measured a cost or did shared work, asleep or not (its costs are put at the
         // lead's pace by it); the members heard from lately are the machines.
-        let helpers: Vec<Status> = helpers(root, &self.host);
+        let helpers: Vec<Status> = helpers(root, &self.host, self.inp.beats.as_deref());
         let mut names: BTreeSet<String> = helpers.iter().map(|h| h.host.clone()).collect();
         names.extend(costs.values().filter_map(|c| c.worker.clone()));
         names.extend(

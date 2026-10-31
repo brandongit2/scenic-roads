@@ -233,6 +233,11 @@ pub struct Heartbeat {
     /// to a lead that says so. Left out by apps before it: their mail goes by mailbox alone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mail_http: bool,
+    /// Its app beats to the lead by HTTP with this heartbeat (crate::coord::beats): its NAS copy
+    /// stops once the lead says no member reads it. Left out by apps before it, whose NAS copies
+    /// the lead keeps reading, writing its own there for them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub beat_http: bool,
 }
 
 /// A member's conditions, as its heartbeat says them (§10, §11).
@@ -297,6 +302,9 @@ pub struct Side {
     mail_dirty: BTreeSet<String>,
     /// What members posted it by HTTP (crate::coord::inbox, its coordinator's when it leads).
     inbox: Arc<crate::coord::inbox::Inbox>,
+    /// The members' beats heard by HTTP (crate::coord::beats): its coordinator's when it leads, the
+    /// lead's answers' else; its own heartbeat for its agent's beat.
+    http: Arc<crate::coord::beats::Beats>,
     /// How it posts to the lead, the lead's coordinator's addresses and key as its contact on the
     /// NAS says (`Cx::lead_urls`, `lead_token`), and until when it sends each member by mailbox
     /// alone (a post failed).
@@ -415,6 +423,7 @@ impl Side {
             mail_written: Vec::new(),
             mail_dirty: BTreeSet::new(),
             inbox: Arc::new(crate::coord::inbox::Inbox::open(&dir.join("inbox.json"))),
+            http: Arc::default(),
             courier: http_courier(),
             lead_contact: Default::default(),
             post_off: BTreeMap::new(),
@@ -466,6 +475,11 @@ impl Side {
         self.inbox.clone()
     }
 
+    /// The members' beats it hears by HTTP (its coordinator's while it leads: `Coordinator::set_beats`).
+    pub fn http_beats(&self) -> Arc<crate::coord::beats::Beats> {
+        self.http.clone()
+    }
+
     /// The members it knows.
     pub fn members(&self) -> &BTreeSet<String> {
         &self.members
@@ -499,19 +513,26 @@ impl Side {
     /// A listing of the heartbeats taken in at `now` (`names` the files found): the members found
     /// known, those missed `FORGET_AFTER` forgotten; members.json written.
     fn take_members(&mut self, names: &[String], now: Instant) {
-        let found: BTreeSet<String> = names
+        let mut found: BTreeSet<String> = names
             .iter()
             .filter_map(|n| n.strip_suffix(".json"))
             .filter(|m| crate::pool::is_member_id(m))
             .map(str::to_string)
             .collect();
-        let gone =
-            forget(&mut self.members, &mut self.missed, &found, &self.me.id, self.beat.is_some(), now, FORGET_AFTER);
+        // (Those heard by HTTP within `beats::FORGET_S` are found too, and this one when its own
+        // isn't on the NAS by design: a member is forgotten once it hasn't beaten for 20 min.)
+        found.extend(self.http.fresh(self.now()).into_iter().map(|h| h.beat.pool.member));
+        let by_http = !self.http.nas_too();
+        if by_http {
+            found.insert(self.me.id.clone());
+        }
+        let written = self.beat.is_some() || by_http;
+        let gone = forget(&mut self.members, &mut self.missed, &found, &self.me.id, written, now, FORGET_AFTER);
         let before = self.forgotten.clone();
         self.forgotten.retain(|m| !found.contains(m));
         for m in gone {
             eprintln!(
-                "pool: member {m} forgotten: its heartbeat not on the NAS for {} min",
+                "pool: member {m} forgotten: not heard from (its beat, or its heartbeat on the NAS) for {} min",
                 FORGET_AFTER.as_secs() / 60
             );
             // (Its mail not sent: nobody reads it.)
@@ -546,10 +567,11 @@ impl Side {
         self.read_heartbeat(m).ok().flatten()
     }
 
-    /// Member `m`'s heartbeat: none when there's none (or it doesn't parse), an error when the NAS
-    /// couldn't be read.
+    /// Member `m`'s heartbeat: as heard by HTTP (crate::coord::beats), else the NAS's (a member on
+    /// an older app, or a lead before the beats); none when there's none (or it doesn't parse), an
+    /// error when the NAS couldn't be read.
     pub fn read_heartbeat(&self, m: &str) -> Result<Option<Heartbeat>> {
-        Ok(self.nas.read(&crate::pool::beat::path(m))?.and_then(|b| serde_json::from_slice(&b).ok()))
+        heartbeat_of(&self.http, &*self.nas, m, self.now())
     }
 
     /// This Mac's wall clock, as its steps read it.
@@ -848,8 +870,20 @@ impl Side {
             conds: self.conds,
             broker: self.broker.clone(),
             mail_http: true,
+            beat_http: true,
         };
         if hb.pool.member.is_empty() {
+            return;
+        }
+        // (Its agent's beat sends it to the lead, stamped as sent: crate::agent::beat. On the NAS
+        // only while a member on an older app reads it there.)
+        let mut own = hb.clone();
+        own.pool.beat = self.now();
+        own.pool.reach = self.reach.clone();
+        self.http.set_own(own);
+        if !self.http.nas_too() {
+            // (Written at once should a member on an older app turn up.)
+            self.beat = None;
             return;
         }
         // (The reports' times alone changed: written with the next beat due, not at once.)
@@ -923,6 +957,14 @@ impl Side {
             self.making = Some(Making { what: Kind::Members, thread });
         }
     }
+}
+
+/// Member `m`'s heartbeat at `now`: as `beats` heard it by HTTP, else the NAS's.
+fn heartbeat_of(beats: &crate::coord::beats::Beats, nas: &dyn Nas, m: &str, now: u64) -> Result<Option<Heartbeat>> {
+    if let Some(h) = beats.get(m, now) {
+        return Ok(Some(h));
+    }
+    Ok(nas.read(&crate::pool::beat::path(m))?.and_then(|b| serde_json::from_slice(&b).ok()))
 }
 
 /// A listing of the heartbeats that found the members `found` at `now`, taken into `members`: those
@@ -1631,6 +1673,11 @@ impl Run {
             // (A read failing, the NAS away: the last round's kept whole, for the budgets.)
             let read: Result<Vec<Option<Heartbeat>>> = ids.iter().map(|id| self.side.read_heartbeat(id)).collect();
             if let Ok(read) = read {
+                // (Leading, its own heartbeat and statuses go on the NAS too while a member on an
+                // older app in touch reads them there: crate::coord::beats.)
+                if self.cx.coord.is_some() {
+                    self.side.http.set_nas_too(crate::coord::beats::old_in_touch(read.iter().flatten(), &me, now));
+                }
                 self.side.readers_ready = read.iter().all(|h| h.as_ref().is_some_and(|h| h.pool.reads_records));
                 self.side.beats = read.into_iter().flatten().filter(|h| !h.shadow).map(|h| h.pool).collect();
                 self.side.beats_at = Some(now);
@@ -1731,6 +1778,11 @@ impl Run {
         // lead's coordinator as its contact says.)
         if let Some(co) = &self.cx.coord {
             co.set_inbox(Some(self.side.inbox()));
+            co.set_beats(Some(self.side.http_beats()));
+        }
+        // (The members heard by HTTP known at once: their mail read, their messages sent.)
+        for h in self.side.http.fresh(self.side.now()) {
+            self.side.know(&h.beat.pool.member);
         }
         self.side.lead_contact = (self.cx.lead_urls.clone(), self.cx.lead_token.clone());
         let give = Give {
@@ -1745,15 +1797,12 @@ impl Run {
         // held: `check_from`. Its member's app read from its heartbeat, only for such an entry.)
         let (nas, lead_app, me) =
             (self.side.nas.clone(), self.side.member().app.clone(), self.side.member().id.clone());
+        let (beats, now) = (self.side.http_beats(), self.side.now());
         let app_of = |m: &str| -> Option<String> {
             if m == me {
                 return Some(lead_app.clone());
             }
-            nas.read(&crate::pool::beat::path(m))
-                .ok()
-                .flatten()
-                .and_then(|b| serde_json::from_slice::<Heartbeat>(&b).ok())
-                .map(|h| h.pool.app)
+            heartbeat_of(&beats, &*nas, m, now).ok().flatten().map(|h| h.pool.app)
         };
         let lead_of = |term: u64| -> Option<String> {
             crate::pool::term::read(nas.as_ref(), term).ok().flatten().map(|t| t.member)
@@ -2137,25 +2186,15 @@ pub fn append_history(
     Ok(())
 }
 
-/// The agents' statuses on the NAS: the lead's (`state/status.json`) and the members'
-/// (`state/helpers/<host>.json`), by file name.
+/// The agents' statuses: the lead's (`state/status.json`), then the members' as the lead has them
+/// (its `helpers`: their beats, crate::coord::beats), each with where it's from.
 fn statuses(root: &store::nasfs::NasRoot) -> Vec<(String, super::Status)> {
-    let mut out = Vec::new();
     let read = |p: &store::nasfs::NasPath| p.read().ok().and_then(|b| serde_json::from_slice::<super::Status>(&b).ok());
-    if let Some(s) = read(&root.join("state/status.json")) {
-        out.push(("state/status.json".to_string(), s));
-    }
-    if let Ok(rd) = root.join("state/helpers").read_dir() {
-        let mut ps: Vec<store::nasfs::NasPath> =
-            rd.into_iter().map(|e| e.path).filter(|p| p.extension() == Some("json")).collect();
-        ps.sort();
-        for p in ps {
-            if let Some(s) = read(&p) {
-                out.push((format!("state/helpers/{}", p.file_name().unwrap()), s));
-            }
-        }
-    }
-    out
+    let Some(mut lead) = read(&root.join("state/status.json")) else { return Vec::new() };
+    let members = std::mem::take(&mut lead.helpers);
+    std::iter::once(("state/status.json".to_string(), lead))
+        .chain(members.into_iter().map(|h| ("the lead's view".to_string(), h)))
+        .collect()
 }
 
 /// `scenic pool status`: the terms, the agents as their statuses say.
@@ -2389,6 +2428,54 @@ mod tests {
         assert!(gone.is_empty());
     }
 
+    /// docs/coordination.md §8, step 3, mixed versions: a member on an older app heartbeats on the
+    /// NAS alone, a newer one by its beat alone. The lead reads each where it is, knows both, keeps
+    /// its own heartbeat on the NAS while the older one is in touch (`old_in_touch`), and stops
+    /// once it isn't; a member heard by HTTP is forgotten once it hasn't beaten for 20 min.
+    #[test]
+    fn mixed_versions_an_old_member_s_nas_heartbeat_still_read() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let mut s = side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
+        let now = s.now();
+        let me = s.member().id.clone();
+        let hb = |m: &str, http: bool| Heartbeat {
+            pool: Beat { member: m.into(), host: format!("{m}-host"), beat: now, ..Default::default() },
+            beat_http: http,
+            ..Default::default()
+        };
+        // (PH, older: its heartbeat on the NAS. B, newer: its beat to the lead, nothing on the NAS.)
+        std::fs::create_dir_all(r.join(MEMBERS)).unwrap();
+        std::fs::write(r.join(crate::pool::beat::path(PH)), serde_json::to_vec(&hb(PH, false)).unwrap()).unwrap();
+        s.http_beats().heard(hb(B, true), Some(serde_json::json!({"host": "B-host"})), now);
+        assert!(!s.read_heartbeat(PH).unwrap().unwrap().beat_http, "the NAS's");
+        assert!(s.read_heartbeat(B).unwrap().unwrap().beat_http, "the beat's");
+        let read: Vec<Heartbeat> = [PH, B].iter().filter_map(|m| s.read_heartbeat(m).unwrap()).collect();
+        assert!(crate::coord::beats::old_in_touch(&read, &me, now));
+        assert!(!crate::coord::beats::old_in_touch(&read[1..], &me, now));
+        // Both known, by the NAS's listing and by the beat.
+        let t0 = Instant::now();
+        s.take_members(&[format!("{PH}.json"), format!("{me}.json")], t0);
+        assert!(s.members().contains(PH) && s.members().contains(B));
+        // Its own heartbeat on the NAS while the older member reads it; then by the beat alone.
+        let own = r.join(crate::pool::beat::path(&me));
+        s.step(Give::default(), &any);
+        assert!(own.exists() && s.http_beats().own().is_some_and(|h| h.beat_http));
+        std::fs::remove_file(&own).unwrap();
+        s.http_beats().set_nas_too(false);
+        s.step(Give::default(), &any);
+        assert!(!own.exists(), "no NAS copy");
+        s.http_beats().set_nas_too(true);
+        s.step(Give::default(), &any);
+        assert!(own.exists(), "written again at once for an older member");
+        // B silent for `FORGET_S`: missed by the listings from then, forgotten after `FORGET_AFTER`.
+        s.http_beats().heard(hb(B, true), None, now.saturating_sub(crate::coord::beats::FORGET_S));
+        s.take_members(&[format!("{PH}.json"), format!("{me}.json")], t0);
+        assert!(s.members().contains(B));
+        s.take_members(&[format!("{PH}.json"), format!("{me}.json")], t0 + FORGET_AFTER);
+        assert!(!s.members().contains(B) && s.members().contains(PH));
+    }
+
     #[test]
     fn the_budgets_count_the_members_heard_lately() {
         let d = tempfile::tempdir().unwrap();
@@ -2462,6 +2549,7 @@ mod tests {
             conds: Some(Conds { home: true, ac: false, battery: Some(54), held: false }),
             broker: None,
             mail_http: true,
+            beat_http: true,
         };
         let b = serde_json::to_vec(&new).unwrap();
         // An older app reads the newer's: its fields, the conditions passed over.
@@ -2481,7 +2569,7 @@ mod tests {
         );
         // A newer app reads the older's: no conditions ("conditions unknown" in the views).
         let back: Heartbeat = serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
-        assert_eq!(back, Heartbeat { conds: None, mail_http: false, ..new.clone() });
+        assert_eq!(back, Heartbeat { conds: None, mail_http: false, beat_http: false, ..new.clone() });
         assert!(crate::agent::lead::state_of(&back, 1000, None).starts_with("conditions unknown"));
         // And its own, back as written.
         assert_eq!(serde_json::from_slice::<Heartbeat>(&b).unwrap(), new);

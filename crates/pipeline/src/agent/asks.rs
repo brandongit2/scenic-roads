@@ -553,6 +553,7 @@ mod tests {
             status: st,
             local: local.clone(),
             shared: None,
+            lead: None,
             hold_at: 0,
             at: std::time::Instant::now(),
         });

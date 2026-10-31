@@ -1222,8 +1222,10 @@ read it half-written); once this Mac's term changed (it no longer leads, before 
 waiting for the old path is dropped) until the
 loop composes one under the new part, so a former lead never rewrites `state/status.json` over
 the new lead's. A heartbeat goes out of touch when the beat itself stops (ten minutes,
-`OUT_OF_TOUCH_S`, served as the status's `out_of_touch_s`). (The pool's heartbeat,
-`state/pool/members/<id>.json`, is kept by the pool's own thread, §6.7.)
+`OUT_OF_TOUCH_S`, served as the status's `out_of_touch_s`). (The pool's heartbeat is kept by the
+pool's own thread, §6.7.) A member's beat goes to the lead too (`POST /pool/beat`, its own
+poster thread: docs/coordination.md step 3), and its NAS copies (`state/helpers/<host>.json`, the
+pool heartbeat) only while a member on an older app is in touch.
 
 The NAS's mount and probe are the agent's **nas** part's (crate::agent::nas, docs/agent-parts.md
 §4.3): on a thread of its own, each look (find, mount every 5 min at most, probe) on a worker
@@ -1233,7 +1235,8 @@ under a 5-min deadline (`nasread::with_big`).
 
 Still under no deadline (planned): the manifest read through `out::read_record` outside the
 planner's keys; the regions'
-held report (`inputs::read_report`); the helpers' listing (`state/helpers`); the coordinator's
+held report (`inputs::read_report`); the helpers' listing (`state/helpers`, while a member on an
+older app is in touch); the coordinator's
 contact published and removed; GC's reads of the journal and records;
 the caches' clears; and every NAS call of the coordinator's and the jobs' own. Those of the plan
 (the records, the held report, the helpers, the plan's digest) hang the plan's thread alone: its
@@ -1537,10 +1540,13 @@ planned: `/pool/status` in place of reading heartbeats for the view.
 
 ## 10. Seeing the pool
 
-- **Heartbeat**, `state/pool/members/<id>.json` (its own writer): label, app, resources, conditions
+- **Heartbeat** (its own writer): label, app, resources, conditions
   (`conds`: home, power, battery, paused), slots' jobs, tasks, addresses (`broker`), reach (§6.8),
-  term led. Written when it changes, at least every two minutes. Listed every two
-  minutes; a member missing from listings for twenty minutes is forgotten.
+  term led. Sent in each member's beat to the lead every 10 s (`POST /pool/beat`, docs/coordination.md
+  step 3), which answers with the others' (its own among them); a member not heard for twenty
+  minutes is forgotten. On the NAS (`state/pool/members/<id>.json`, written when it changes, at least
+  every two minutes; listed every two minutes) only while a member on an older app is in touch
+  (`crate::coord::beats`), whose heartbeat is read there.
 - **Build status**, written by the lead per term (`state/build/term/<E>/status.json`): the
   checklist (a line per stage with an item per step: docs/pipeline.md §4), forecast, regions,
   waits, what publishing does, publishing as it stands (`published`: the last catalogue and its
@@ -1572,8 +1578,8 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   coordinator answers from its memory, as before. A thread of the agent reads only while a page
   has asked in the last 60 s, every 12 s at most, by known name (no listing): the lead's
   `state/status.json`, the term's `view.json`, its `forecast-input.json` (again only when its
-  time changes), `state/build/pause.json` (also alone each second between the full reads; its absence is no pause, never the view's; on the lead the answer's pause is its coordinator's own, which the NAS copy follows only at the agent's next loop), the term's `regions.json` (again only when its time changes), each member's heartbeat (`state/pool/members/<id>.json`,
-  for its host) and own status (`state/helpers/<host>.json`), and what each member's history
+  time changes), `state/build/pause.json` (also alone each second between the full reads; its absence is no pause, never the view's; on the lead the answer's pause is its coordinator's own, which the NAS copy follows only at the agent's next loop), the term's `regions.json` (again only when its time changes), each member's heartbeat (for its host and broker: the lead's status's `beats`, a member on an older
+  app's from `state/pool/members/<id>.json`) and own status (the lead's status's `helpers`), and what each member's history
   file of the last 7 days (today's and the six before: `pageview::DAYS`) gained since the offset
   it last read to (whole lines, 4 MiB of a file a read at most, `CHUNK_MAX`, the rest the next
   time; a whole 4 MiB without a line's end passed over, counted and logged; from the start again when the file is now shorter than that). A day before yesterday

@@ -1022,7 +1022,10 @@ class, id) within a tile. The client sends the id with the clicked point.
     name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] | null, raw: [[shard,
     {name, bytes}], …]}`, named `<ns>-<pid>.json` in write order; `<folder>.merged` holds the last
     merged; `.bad` one set aside unparsed.
-  - `state/helpers/<host>.json`: a member's status while not leading.
+  - `state/helpers/<host>.json`: a member's status while not leading, written only while a member
+    on an app before #878 step 3 is in touch (docs/coordination.md step 3: the status rides in the
+    beat, the lead's `state/status.json` lists the members' as `helpers` and their heartbeats as
+    `beats`).
 - **The pool** (docs/pool.md):
   - `state/build/terms/<E>.json`: term E, create-new, `{term, member, host, app, since, how, from,
     seq}`; `state/build/lead.json` a copy of the newest (a hint).
@@ -1039,7 +1042,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     `state/journal/rejected/<day>/<term>-<n>.why`.
   - `state/pool/members/<id>.json`: a heartbeat `{member, host, app, beat, leads, handing_to: {to,
     term, offer, since, stage}, ready_for, stood_down, addresses, members, conds: {home, ac, battery,
-    able}}` (with brokers on, `broker: {urls, https, pages}`).
+    able}}` (with brokers on, `broker: {urls, https, pages}`; `beat_http`: its app beats it to the
+    lead by HTTP). Since #878 step 3 written only while a member on an older app is in touch; else
+    it rides in `POST /pool/beat` (docs/coordination.md).
   - Switches (present or `on` in it: on; `off` or missing: off, unless said): `memory-guard` (missing: on; §7.2), `resume`
     (§7.2, §7.4), `brokers` (§8; the members' pages allowed to call each other, CORS), `placement` (§7.2:
     jobs get `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `delta-catalog` and `near-slope`

@@ -894,10 +894,15 @@ pub struct Status {
     /// (crate::coord::Coordinator::nas_view).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nas: Option<crate::coord::NasView>,
-    /// Helpers on other Macs building now (`state/helpers/<host>.json`, fresh within ten minutes):
-    /// their own status, with their job.
+    /// The members building now, fresh within ten minutes (the lead's: their beats,
+    /// crate::coord::beats; a member's on an older app, its `state/helpers/<host>.json`): their
+    /// own status, with their job.
     #[serde(default)]
     pub helpers: Vec<Status>,
+    /// The members' heartbeats as the lead hears them by HTTP, its own among them (the lead's: every
+    /// Mac's page reads them here, docs/coordination.md step 3, until step 4 serves the view).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub beats: Vec<pool::Heartbeat>,
     /// The build's pause (crate::control), while it's paused, as this agent knows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause: Option<crate::control::Pause>,
@@ -1572,10 +1577,11 @@ pub struct Agent {
     /// its step knowing yet (it froze, a later term made meanwhile), told to the lead through its
     /// client once its part has changed (`end_lease`, `tell_owed`); and a member's ends the lead
     /// didn't take when they ended (it didn't answer). Each told each loop until the lead answers:
-    /// its lease is held meanwhile (listed in the beat, `beat_lead`; docs/coordination.md §6).
+    /// its lease is held meanwhile (listed in the beat, `to_lead`; docs/coordination.md §6).
     owed: Vec<Tell>,
-    /// When this member last beat to the lead (`beat_lead`).
-    lead_beaten: Option<Instant>,
+    /// The members' beats its pool side hears by HTTP (crate::coord::beats; None out of the pool):
+    /// what its beat sends the lead and the lead answers.
+    beats: Option<std::sync::Arc<crate::coord::beats::Beats>>,
     /// The folders of the jobs that ended out of the pool, by lease: their hand-offs go to the lead
     /// to journal (`journaled: false`), and each folder goes once the lead answers (`told`).
     unjournaled: BTreeMap<u64, PathBuf>,
@@ -1983,7 +1989,7 @@ impl Agent {
             published: None,
             client: None,
             owed: Vec::new(),
-            lead_beaten: None,
+            beats: run.as_ref().map(|r| r.side.http_beats()),
             unjournaled: BTreeMap::new(),
             cheap: None,
             pause,
@@ -3112,7 +3118,7 @@ impl Agent {
 
     /// The ends owed to the lead (`owed`), told once this process works as a member, through the
     /// lead's client: each kept until the lead answers (its lease no longer lapses meanwhile: the
-    /// member's beat lists it, `beat_lead`).
+    /// member's beat lists it, `to_lead`).
     fn tell_owed(&mut self, root: &store::nasfs::NasRoot) {
         if self.owed.is_empty() || self.coord.is_some() {
             return;
@@ -3136,30 +3142,34 @@ impl Agent {
         }
     }
 
-    /// The member's beat to the lead each `held::BEAT_EVERY` (docs/coordination.md §6.1;
-    /// crate::coord::held): the lead's leases it holds, its slots' jobs' and those whose ends it
-    /// owes; a lease it leaves out the lead releases. Its slots whose leases the lead says ended
-    /// beat at once (refused: their jobs stop). An older lead answers 404: nothing changes.
-    fn beat_lead(&mut self) {
-        use crate::coord::held;
-        if self.coord.is_some() || self.lead_beaten.is_some_and(|t| t.elapsed() < held::BEAT_EVERY) {
-            return;
+    /// What this member's beat sends the lead (docs/coordination.md §6.1, step 3; crate::agent::beat
+    /// posts it from its own thread every `beat::EVERY`, whatever the loop waits on): the lead's
+    /// leases it holds, its slots' jobs' and those whose ends it owes (a lease it leaves out the
+    /// lead releases), with its heartbeat and status. None leading, out of the pool, or before the
+    /// lead's contact is known.
+    fn to_lead(&self) -> Option<beat::ToLead> {
+        if self.coord.is_some() {
+            return None;
         }
-        let Some(c) = self.client.as_ref() else { return };
-        self.lead_beaten = Some(Instant::now());
-        let held = self.held_of_lead();
-        let b = held::Beat { member: self.host.clone(), speaks: vec![held::SPEAKS.to_string()], held };
-        match c.pool_beat(&b) {
-            Ok(Some(a)) => {
-                for s in self.slots.iter_mut() {
-                    if matches!(&s.lease, Some(Held::Leased { lease: id, .. } | Held::Pooled { id, own: false, .. }) if a.released.contains(id))
-                    {
-                        s.beaten = None;
-                    }
-                }
+        let (c, beats) = (self.client.as_ref()?, self.beats.clone()?);
+        Some(beat::ToLead {
+            urls: c.urls(),
+            token: c.token(),
+            member: self.host.clone(),
+            held: self.held_of_lead(),
+            beats,
+        })
+    }
+
+    /// The leases the lead answered this member's beats it doesn't hold: their slots beat at once
+    /// (refused: their jobs stop).
+    fn lead_released(&mut self) {
+        let Some(released) = self.beats.as_ref().map(|b| b.take_released()) else { return };
+        for s in self.slots.iter_mut() {
+            if matches!(&s.lease, Some(Held::Leased { lease: id, .. } | Held::Pooled { id, .. }) if released.contains(id))
+            {
+                s.beaten = None;
             }
-            Ok(None) => {}
-            Err(e) => eprintln!("agent: its beat to the lead: {e:#}"),
         }
     }
 
@@ -4223,12 +4233,12 @@ impl Agent {
         // what this Mac may do now, as its lead or a member.
         nasread::phase("the pool's step");
         let gates = self.pool_step(root.as_ref(), &c, &mut waiting);
-        // (Ends owed to the lead, once this process works as a member; then its beat, listing the
-        // leases it holds.)
+        // (Ends owed to the lead, once this process works as a member; then what the lead answered
+        // its beats.)
         if let Some(r) = root.as_ref() {
             self.tell_owed(r);
         }
-        self.beat_lead();
+        self.lead_released();
         self.lead_awake();
         // (Leading, nothing new starts while the driver says it may not: its view not fresh.
         // Restarting into a new part, nothing either.)
@@ -4422,7 +4432,11 @@ impl Agent {
         let mut checklist = view.checklist.clone();
         // (Read each loop: a helper's status changes between plans.)
         let helpers: Vec<Status> = match (&root, self.is_member()) {
-            (Some(r), false) => helpers(r, &self.host),
+            (Some(r), false) => helpers(r, &self.host, self.beats.as_deref()),
+            _ => Vec::new(),
+        };
+        let beats = match (&self.beats, self.is_member()) {
+            (Some(b), false) => b.members(now_s(), ""),
             _ => Vec::new(),
         };
         self.note_helpers_caches(&helpers);
@@ -4450,6 +4464,7 @@ impl Agent {
             built,
             checklist,
             helpers,
+            beats,
             capacity,
             packing: self.coord.as_ref().map(|c| c.refusals()).unwrap_or_default(),
             nas_share: self.coord.as_ref().map(|c| c.nas_shares()).unwrap_or_default(),
@@ -4518,11 +4533,14 @@ impl Agent {
             return Ok(ended);
         }
         // A helper's own status, never the heartbeat (the Macs' status bars show the main agent's,
-        // and its helpers'), here and on the NAS.
+        // and its helpers'), here; to the lead in its beat, and on the NAS only while a member on
+        // an older app reads it there (crate::coord::beats). The lead's on the NAS, every Mac's page
+        // reading it until step 4 of docs/coordination.md serves the view.
         let (local, shared) = if self.is_member() {
-            ("helper.json".to_string(), format!("state/helpers/{}.json", self.host))
+            let nas = self.beats.as_ref().is_none_or(|b| b.nas_too());
+            ("helper.json".to_string(), nas.then(|| format!("state/helpers/{}.json", self.host)))
         } else {
-            ("status.json".to_string(), "state/status.json".to_string())
+            ("status.json".to_string(), Some("state/status.json".to_string()))
         };
         // Published for the beat, which writes it (crate::agent::beat): at once, and every 10 s
         // after with its time and the hold as they are then. (Not a dry run's on the NAS, in a home
@@ -4531,7 +4549,8 @@ impl Agent {
         self.beat.publish(beat::LoopView {
             status,
             local: self.o.home.join(&local),
-            shared: root.as_ref().filter(|_| !self.o.dry_run).map(|r| r.join(&shared)),
+            shared: root.as_ref().filter(|_| !self.o.dry_run).zip(shared).map(|(r, s)| r.join(&s)),
+            lead: self.to_lead(),
             hold_at,
             at: Instant::now(),
         });
@@ -4610,6 +4629,7 @@ impl Agent {
         };
         plan::Inputs {
             root: root.cloned(),
+            beats: self.beats.clone(),
             conditions: *c,
             mac: self.mac,
             mem: self.mem.clone(),
@@ -9099,18 +9119,33 @@ fn expect_same(w: &build::Work, done: &build::Keys) -> Vec<String> {
 /// The helpers building now: `state/helpers/<host>.json` beaten within ten minutes, but `lead`'s
 /// own. That one is from while it was a member and goes stale by itself for up to ten minutes after
 /// it takes the lead (task #816: the forecast listed its slots twice, as the lead's and as a
-/// member's, and `forecast::runs_of` numbered past the lanes).
-fn helpers(root: &store::nasfs::NasRoot, lead: &str) -> Vec<Status> {
-    let Ok(rd) = root.join("state/helpers").read_dir() else { return Vec::new() };
-    let mut out: Vec<Status> = rd
+/// member's, and `forecast::runs_of` numbered past the lanes). Their beats' statuses as `beats`
+/// heard them (crate::coord::beats); `state/helpers/<host>.json` for a host not heard so, while a
+/// member on an older app is in touch (`Beats::nas_too`), or with no beats (outside the pool).
+fn helpers(root: &store::nasfs::NasRoot, lead: &str, beats: Option<&crate::coord::beats::Beats>) -> Vec<Status> {
+    let now = now_s();
+    let mut out: BTreeMap<String, Status> = beats
+        .map(|b| b.fresh(now))
+        .unwrap_or_default()
         .into_iter()
-        .filter(|e| e.path.extension() == Some("json"))
-        .filter_map(|e| e.path.read().ok().and_then(|b| serde_json::from_slice::<Status>(&b).ok()))
-        .filter(|h| h.host != lead && now_s().saturating_sub(h.beat) < 600)
-        .map(|h| Status { regions: Vec::new(), checklist: Vec::new(), built: BTreeMap::new(), recent: Vec::new(), ..h })
+        .filter_map(|h| serde_json::from_value::<Status>(h.status?).ok())
+        .map(|s| (s.host.clone(), s))
         .collect();
-    out.sort_by(|a, b| a.host.cmp(&b.host));
-    out
+    if beats.is_none_or(|b| b.nas_too()) {
+        if let Ok(rd) = root.join("state/helpers").read_dir() {
+            let nas = rd
+                .into_iter()
+                .filter(|e| e.path.extension() == Some("json"))
+                .filter_map(|e| e.path.read().ok().and_then(|b| serde_json::from_slice::<Status>(&b).ok()));
+            for s in nas {
+                out.entry(s.host.clone()).or_insert(s);
+            }
+        }
+    }
+    out.into_values()
+        .filter(|h| h.host != lead && now.saturating_sub(h.beat) < 600)
+        .map(|h| Status { regions: Vec::new(), checklist: Vec::new(), built: BTreeMap::new(), recent: Vec::new(), ..h })
+        .collect()
 }
 
 /// The map's catalogue as the status says it (`CatalogueSeen`): its `seq` and its batch's time.
@@ -16645,14 +16680,31 @@ mod pool_tests {
             clock.advance(crate::coord::held::OMIT_GRACE * 2);
             c.shared.lock().unwrap().clock = clock;
         }
-        a.beat_lead();
+        // (Its beat, in line: the handle isn't spawned; its pool side's registry, the test's agent
+        // not in a pool.)
+        a.beats = Some(std::sync::Arc::default());
+        let beat = |a: &mut Agent| {
+            let lead = a.to_lead();
+            assert!(lead.is_some(), "a member in the pool with the lead's contact beats to it");
+            a.beat.publish(beat::LoopView {
+                status: Status { host: a.host.clone(), beat: now_s(), ..Default::default() },
+                local: d.path().join("status.json"),
+                shared: None,
+                lead,
+                hold_at: 0,
+                at: Instant::now(),
+            });
+        };
+        beat(&mut a);
         let held = c.held("unit");
         assert!(held.contains("6/1/1") && held.contains("6/1/2") && !held.contains("6/1/3"), "{held:?}");
         assert!(c.shared.lock().unwrap().leases.of(lost).is_none());
-        // (Once a `BEAT_EVERY`.)
-        a.slots[0].lease = None;
-        a.beat_lead();
-        assert!(c.held("unit").contains("6/1/1"));
+        // The lead's answer reaches the loop: a slot whose lease it says ended beats at once.
+        a.slots[0].lease = Some(Held::Leased { lease: lost, dir: d.path().join("out2") });
+        a.slots[0].beaten = Some(Instant::now());
+        beat(&mut a);
+        a.lead_released();
+        assert!(a.slots[0].beaten.is_none());
     }
 
     /// #423 follow-up: a passing error opening the member (its pool folder can't be made a moment)

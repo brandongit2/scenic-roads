@@ -1,6 +1,6 @@
 # Pool coordination by HTTP on the lead
 
-**Planned (task #878); steps 1 and 2 are built, the rest planned.** This doc says how the pool's
+**Planned (task #878); steps 1, 2 and 3 are built, the rest planned.** This doc says how the pool's
 coordination moves off the NAS onto the lead, which holds it on its own disk and serves it over
 HTTP. For the steps not yet built (§8 says which are), docs/pool.md and the code are what is true. It assumes #881 (the Mac mini
 as a fixed lead: no election, no takeover) has landed; where #881 leaves a piece of the
@@ -106,7 +106,10 @@ never "beating" in one and "out of touch" in the other.
 - The state: keyed JSON documents (`crate::coord::kept` names them) and the epoch. Built (step
   1): the jobs' leases (id, holder, step, targets, granted; the next id, the holds and cancels),
   the coordinator's measures (costs, floors, disks, jobs' disks, caches' fills) and the pause.
-  Planned, with the steps that move them: each member's last beat and sequence high-water, the
+  Built in memory, not in the store (step 3, `crate::coord::beats`): each member's last beat
+  (heartbeat and status; a lead's restart hears every member again within a beat). Planned, with
+  the steps that move them: the members' beats in the snapshot for the page after a restart (step
+  4), each member's sequence high-water, the
   queued messages to each member, hand-offs taken and not yet in a saved records snapshot,
   refusals, holds and settings, the workers' failures, the answers lease, and the records' last
   saved `seq`.
@@ -199,10 +202,12 @@ owner's. **The clock alone never re-grants a target.** Today a lease lapses afte
 the lead can always tell "holder gone" from "holder unreachable" only by hearing from it, so it
 waits to hear.
 
-Built (step 2: `crate::coord::held`), but for what is marked planned below. Ahead of step 3's one
-beat, a member's agent posts a small `POST /pool/beat {member, speaks, held}` every 10 s
-(`held::BEAT_EVERY`) while it's a member; the answer is `{epoch, released}` (the leases it listed
-that aren't its on the lead: its jobs stop as their own beats are then refused). The rule holds for a
+Built (step 2: `crate::coord::held`; step 3: one beat), but for what is marked planned below. A
+member's agent posts `POST /pool/beat {member, speaks, held, heartbeat, status}` every 10 s
+(`agent::beat::EVERY`) while it's a member, from its beat's own poster thread, whatever its loop
+waits on; the answer is `{epoch, released, speaks, nas_too, members}` (the leases it listed
+that aren't its on the lead: its jobs stop as their own beats are then refused; the rest, step 3's,
+§8). The rule holds for a
 member whose beat says it speaks `held-leases` (`held::SPEAKS`), kept in the store
 (`member/<host>`) so a lead's restart keeps it; an older member's leases lapse after `coord::TTL`
 unrenewed as before, and an older lead answers the beat 404, which the member passes over (§8's
@@ -292,7 +297,7 @@ from the same folder).
 | --- | --- | --- | --- |
 | 1 (done) | `pool::store` on the lead: snapshot, log, epoch, compaction, backup to the NAS; the coordinator's state moves into it. The handler rule: a scan test that no `coord` handler path reaches `nasread`, `Nas` or `store::whole` | `coord::keep`'s per-term NAS state file and its thread (`BATCH`, `GAP`, `Keep::off`) | `store_recovers_after_a_torn_append`, `store_compaction_crash_between_snapshot_and_log`, `store_restores_from_the_backup`, `coord_handlers_never_touch_the_nas` |
 | 2 (done) | **Leases by the holder's word**: grants durable before the answer; beats list held leases; release on omission; `held_by_away`; `scenic pool release` | `OWED_S`; the TTL lapse re-grant for every member speaking `held-leases` (`coord::TTL`'s path stays for an older member until the gate drops it; `/work/beat` still renews and carries a job's progress, the pause and cancels) | `a_partitioned_member_s_target_is_never_regranted` (one member unheard for 3 h on a virtual clock; its job finishes; its end taken; no second grant), `an_away_member_s_leases_go_after_12_h`, `a_crash_before_the_answer_releases_the_grant`, `a_restarted_agent_s_lost_job_is_released_in_one_beat`, `mixed_versions_keep_the_old_rule`, `the_owner_releases_a_member_s_leases` |
-| 3 | **One beat by HTTP** (`POST /pool/beat`), the lead's answers carrying messages, holds, settings' generation and acks | `state/pool/members/`, `state/helpers/`, `state/status.json` writes, `pool::beat`'s NAS read/write and listing, members forgotten by listing (now: no beat for 20 min) | `beats_go_on_while_the_nas_hangs` (slow-NAS fake blocks every call: the lead sees each member's beat every 10 s for 10 min), mixed versions: an old member's NAS heartbeat still read |
+| 3 (done) | **One beat by HTTP** (`POST /pool/beat`), the lead's answers carrying messages, holds, settings' generation and acks. Built: the beat carries the member's pool heartbeat (`agent::pool::Heartbeat`, with `beat_http`) and its agent's status (its plan's parts left out), posted by `agent::beat`'s own poster thread every `EVERY` (10 s), so a loop held on the NAS doesn't stop it; the lead keeps each member's last in memory (`crate::coord::beats`) and answers with the others' heartbeats, its own among them (`members`: the members' brokers and the lead's reached without the NAS), `speaks: ["beat"]` and `nas_too`. Every reader of a member's heartbeat (`Side::read_heartbeat`: reach, brokers, budgets, the merge's app check, mail) and of the members' statuses (the lead's `helpers`, the forecast's machines, `scenic pool status`, every Mac's page through the lead's `state/status.json` `helpers` and `beats`) reads the beats first. Members are known from their beats and forgotten after 20 min without one (`beats::FORGET_S`). **The gate:** a member writes `state/pool/members/<id>.json` and `state/helpers/<host>.json` only while its lead doesn't speak `beat` (an older lead's 404, or a step-2 lead's answer) or says `nas_too`; the lead says it, and writes its own NAS heartbeat, while a member in touch heartbeats on the NAS without `beat_http` (`beats::old_in_touch`). Planned: messages, holds and the settings' generation in the answer (step 5), acks (step 6); the members' beats in the store's snapshot (step 4); the lead's `state/status.json` stays until step 4 serves the view (the pages read it); the older apps' path (the members' listing and NAS reads, `old_in_touch`, writes under `nas_too`) deleted one release after every member speaks `beat` for a day (the #642 gate) | `state/pool/members/`, `state/helpers/` and the members' `state/status.json` writes once gated (above); the page's and `scenic pool status`'s reads of `state/helpers/`; `pool::beat`'s NAS read for a member heard by its beat; forgetting by listing alone (now: no beat for 20 min); the loop's own beat (`beat_lead`, `lead_beaten`, `held::BEAT_EVERY`) | `beats_go_on_while_the_nas_hangs` (the slow-NAS fake blocks every write of the status's NAS copy: the lead hears each of two members' 60 beats, and each hears the other), `mixed_versions_an_old_member_s_nas_heartbeat_still_read`, `the_nas_copies_stop_only_by_a_lead_that_takes_beats`, `the_lead_answers_each_member_with_the_others` |
 | 4 | **The view by HTTP**: pageview fetches `/pool/view` from the lead | pageview's NAS reads (status, view, forecast-input, regions, pause, heartbeats, the 12-s reader), the lead's writes of `term/<E>/status.json`, `view.json`, `forecast-input.json`, `regions.json`, `pause.json` | `the_page_on_a_member_shows_the_lead_s_view_with_the_nas_hung`; a page asking with the lead down gets the last view with its age |
 | 5 | **Mail, holds and settings by HTTP only**: lead → member messages in beat answers; `/pool/hold`, `/pool/settings`; the CLI posts to its own agent, which posts to the lead | the mailboxes (`state/pool/mail/`), `Mail::posted`'s fallback, `POST_AGAIN`, `inbox.json` (the store takes it), `state/pool/holds/`, every switch file under `state/pool/` and their readers on the Switches pool (switches whose rollout is finished are deleted outright, not moved: today `resume`, `brokers`, `placement`, `memory-guard` per pool.md §12, if each is still on everywhere) | `a_remote_pause_reaches_the_member_in_one_beat`, `settings_survive_a_lead_restart`, `an_ask_while_the_lead_is_down_is_sent_when_it_returns` |
 | 6 | **Hand-offs by HTTP**: `POST /pool/handoff`; the lead merges from the store; acks only once a records snapshot naming them is saved | `state/journal/` (writes, listings, `MOVED_ON_S`, the hour's wait, `SWEEP_S`), `journal_gc` and its marker and fence (`gc.json`, `Beat::fenced`, `scenic pool journal-gc`, `ALERT_S`), `Tell`/`TELL_AGAIN` (the beat lists unacked keys), `caught_up`'s day listings | `a_hand_off_posted_twice_merges_once`, `a_lead_killed_after_taking_before_saving_loses_nothing` (the member re-posts on the new epoch), `hand_offs_merge_with_the_nas_slow` (records save waits, acks wait, nothing lost) |

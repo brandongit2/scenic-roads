@@ -7,9 +7,10 @@
 //! coordinator's view (`state/coord/term/<E>/view.json`), its forecast's input
 //! (`state/build/term/<E>/forecast-input.json`, read again only when its time changes), its
 //! regions for the page (`state/build/term/<E>/regions.json`, the same), the
-//! pause (`state/build/pause.json`), each member's heartbeat (`state/pool/members/<id>.json`, the
-//! members as the pool's driver knows them: its host) and own status
-//! (`state/helpers/<host>.json`), and what the members' history files of the last `DAYS` days
+//! pause (`state/build/pause.json`), each member's heartbeat (its host and broker: the lead's status
+//! has those it hears by their beats, docs/coordination.md step 3; a member on an older app's from
+//! `state/pool/members/<id>.json`, the members as the pool's driver knows them) and own status (the
+//! lead's status's `helpers`), and what the members' history files of the last `DAYS` days
 //! (`state/coord/history/<day>/<member>.jsonl`) gained since the last read (from the offset read
 //! up to; from the start again when a file is now shorter; a day older than yesterday once read,
 //! not again), `CHUNK_MAX` of a file a read at most, the week's events kept (`data` dropped: the
@@ -24,7 +25,7 @@
 use super::forecast::{Forecast, Record, SlotJob, ToCome};
 use crate::coord::history::{self, Event, History, DAYS};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -319,14 +320,23 @@ impl PageView {
         let status = json("state/status.json").unwrap_or(Value::Null);
         let view = json(&super::pool::view_path(inp.term)).map_or(Value::Null, |v| v["view"].clone());
         let pause = json("state/build/pause.json").unwrap_or(Value::Null);
-        // (Each member's host and addresses, from its heartbeat; then its own status.)
-        let beats: Vec<Value> =
-            inp.members.iter().filter_map(|m| json(&format!("state/pool/members/{m}.json"))).collect();
+        // (Each member's host and addresses, from its heartbeat as the lead's status has it, by
+        // their beats; a member on an older app's from the NAS. Their statuses, the lead's
+        // `helpers`: docs/coordination.md step 3.)
+        let mut beats: Vec<Value> = status["beats"].as_array().cloned().unwrap_or_default();
+        let heard: BTreeSet<String> = beats.iter().filter_map(|b| b["member"].as_str().map(str::to_string)).collect();
+        beats.extend(
+            inp.members
+                .iter()
+                .filter(|m| !heard.contains(*m))
+                .filter_map(|m| json(&format!("state/pool/members/{m}.json"))),
+        );
         let macs: Vec<Value> = beats.iter().filter_map(mac_of).collect();
-        let helpers: Vec<Value> = beats
-            .iter()
-            .filter_map(|b| b["host"].as_str().map(str::to_string))
-            .filter_map(|h| json(&format!("state/helpers/{h}.json")))
+        let helpers: Vec<Value> = status["helpers"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
             .filter(|h| now.saturating_sub(h["beat"].as_u64().unwrap_or(0)) < HELPER_FRESH_S)
             .map(|mut h| {
                 if let Some(o) = h.as_object_mut() {
@@ -775,7 +785,6 @@ pub(crate) mod tests {
     /// of a day, a member's status.
     /// (Also coord's tests': `/work/tocome` from a pageview.)
     pub(crate) fn fixture(root: &store::nasfs::NasRoot, now: u64) {
-        put(root, "state/status.json", br#"{"host":"m4","beat":1,"forecast":null,"helpers":[]}"#);
         let view = serde_json::json!({ "at": now, "view": {
             "pause": null,
             "leases": [{ "id": 1, "worker": "m1", "what": "Roads", "step": "unit", "n": 2, "granted": now - 100, "progress": null, "frac": 0.5, "beat": now - 10, "lapses": now + 290 }],
@@ -793,13 +802,15 @@ pub(crate) mod tests {
             (ev(1, now - 50, "start") + &ev(2, now - 20, "done")).as_bytes(),
         );
         put(root, &format!("state/coord/history/{day}/m-b.jsonl"), ev(9, now - 30, "lease").as_bytes());
-        put(
-            root,
-            "state/pool/members/m-a.json",
-            br#"{"member":"m-a","host":"m1","broker":{"urls":["http://100.1.1.1:8090"],"https":"https://m1.t.ts.net/"}}"#,
-        );
+        // (m-a heard by its beat: its heartbeat and status in the lead's; m-b, on an older app, on
+        // the NAS.)
+        let status = serde_json::json!({
+            "host": "m4", "beat": 1, "forecast": null,
+            "helpers": [{ "host": "m1", "beat": now, "regions": [1] }],
+            "beats": [{ "member": "m-a", "host": "m1", "broker": { "urls": ["http://100.1.1.1:8090"], "https": "https://m1.t.ts.net/" } }],
+        });
+        put(root, "state/status.json", status.to_string().as_bytes());
         put(root, "state/pool/members/m-b.json", br#"{"member":"m-b","host":"gone"}"#);
-        put(root, "state/helpers/m1.json", format!(r#"{{"host":"m1","beat":{now},"regions":[1]}}"#).as_bytes());
     }
 
     /// The forecast run off the reads (`Runs`), waited for.
@@ -1234,7 +1245,7 @@ pub(crate) mod tests {
             pv.state.lock().unwrap().last = None;
             pv.tick(&src, now);
             let history = 2 * 2 + 5; // (today's and yesterday's of both; m-b's five missing old days)
-            let others = 9; // (the lead's files, the beats and the members' statuses; not the forecast's input)
+            let others = 6; // (the lead's files, m-b's heartbeat on the NAS: m-a's and the statuses are the lead's status's)
             assert_eq!(src.1.load(Ordering::Relaxed) - first, history + others, "at {now}");
         }
     }

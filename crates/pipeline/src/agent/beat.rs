@@ -13,10 +13,17 @@
 //! last: no beat lands over a newer one. The
 //! status says how old the loop's part of it is (`Status::loop_age_s`): the heartbeat's time says
 //! the agent is alive, that age whether its loop is slow.
+//!
+//! A member's beat goes to the lead too (`ToLead`, docs/coordination.md step 3: `POST /pool/beat`
+//! with the leases it holds, its pool heartbeat and its status), by a poster thread of its own
+//! that takes the newest each time it's free: a hung share holds neither it nor the lead's view of
+//! this Mac. The lead's answer goes to the pool's registry (crate::coord::beats::Beats::answered).
 
 use super::bus::{BeatMsg, Snap};
 use super::{nasread, now_s, write_beat, write_replace, Status};
 use crate::control::HoldState;
+use crate::coord::beats::Beats;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::Arc;
@@ -45,12 +52,80 @@ pub struct LoopView {
     /// The NAS's, when the NAS is up and this agent writes it (none in a dry run, or past a part
     /// change until the loop composes again).
     pub shared: Option<NasPath>,
+    /// A member's beat to the lead (None leading, or the lead's contact not known yet).
+    pub lead: Option<ToLead>,
     /// The hold's `at` as the loop said it: a later going on is "resuming" until the loop sees it.
     pub hold_at: u64,
     pub at: Instant,
 }
 
+/// What a member's beat sends the lead's coordinator, and where its answer goes.
+#[derive(Clone)]
+pub struct ToLead {
+    /// The lead's coordinator's addresses and key (crate::coord::client::Client's contact).
+    pub urls: Vec<String>,
+    pub token: String,
+    /// This Mac's worker name (the leases' holder).
+    pub member: String,
+    /// The lead's leases it holds.
+    pub held: BTreeSet<u64>,
+    /// Its pool heartbeat (`Beats::own`) and where the answer goes.
+    pub beats: Arc<Beats>,
+}
+
+impl ToLead {
+    /// The beat as it goes now, with `status` (its plan's parts left out: the lead's page reads
+    /// the lead's), its heartbeat stamped now.
+    fn body(&self, status: &Status) -> crate::coord::held::Beat {
+        use crate::coord::{beats, held};
+        let status = Status {
+            regions: Vec::new(),
+            checklist: Vec::new(),
+            built: Default::default(),
+            recent: Vec::new(),
+            ..status.clone()
+        };
+        let heartbeat = self.beats.own().map(|mut h| {
+            h.pool.beat = status.beat;
+            h
+        });
+        held::Beat {
+            member: self.member.clone(),
+            speaks: vec![held::SPEAKS.to_string(), beats::SPEAKS.to_string()],
+            held: self.held.clone(),
+            heartbeat,
+            status: serde_json::to_value(&status).ok(),
+        }
+    }
+
+    /// Posts `b` to the lead; its answer to the registry (an older lead's 404: the NAS copies go
+    /// on). Whether it failed.
+    fn post(&self, b: &crate::coord::held::Beat, failing: bool) -> bool {
+        let c = crate::coord::client::Client::at(self.urls.clone(), self.token.clone(), &self.member);
+        match c.pool_beat(b) {
+            Ok(Some(a)) => {
+                self.beats.answered(&a, now_s());
+                false
+            }
+            Ok(None) => {
+                self.beats.set_nas_too(true);
+                false
+            }
+            Err(e) => {
+                if !failing {
+                    eprintln!("agent: its beat to the lead: {e:#}");
+                }
+                true
+            }
+        }
+    }
+}
+
 type Mailbox = Arc<Snap<Option<(NasPath, Vec<u8>)>>>;
+type LeadBox = Arc<Snap<Option<(ToLead, crate::coord::held::Beat)>>>;
+
+/// How the shared copy is written (`write_beat`; a test's slow NAS).
+pub type NasWrite = Arc<dyn Fn(&NasPath, Vec<u8>) -> anyhow::Result<()> + Send + Sync>;
 
 /// The beat's own state.
 pub struct Beat {
@@ -59,7 +134,12 @@ pub struct Beat {
     hold: Arc<Snap<HoldState>>,
     /// The shared copy's writer, once the beat runs on its thread (else written in line).
     nas: Option<(Mailbox, SyncSender<()>)>,
+    /// How it writes the shared copy.
+    write_nas: NasWrite,
+    /// The lead's poster, once the beat runs on its thread (else posted in line).
+    poster: Option<(LeadBox, SyncSender<()>)>,
     failing: bool,
+    lead_failing: bool,
     /// A loop older than this is stuck (`LOOP_STUCK`; a test's shorter).
     stuck_after: Duration,
     /// The lead's plan, when one runs here: a plan running long is a stuck loop too.
@@ -70,7 +150,7 @@ pub struct Beat {
 
 impl Beat {
     /// The status as the snapshots say now, stamped now; None before the loop's first.
-    pub fn compose(&self) -> Option<(Status, PathBuf, Option<NasPath>)> {
+    pub fn compose(&self) -> Option<(Status, PathBuf, Option<NasPath>, Option<ToLead>)> {
         let v = self.view.get();
         let v = v.as_ref().as_ref()?;
         let hold = self.hold.get();
@@ -91,15 +171,26 @@ impl Beat {
         status.loop_age_s = Some(age);
         status.loop_stuck_s = Some(stuck);
         status.loop_phase = phase.filter(|_| age > stuck);
-        Some((status, v.local.clone(), v.shared.clone()))
+        Some((status, v.local.clone(), v.shared.clone(), v.lead.clone()))
     }
 
-    /// One beat written: here, and to the NAS (on its writer, or in line).
+    /// One beat written: here, to the lead (on its poster, or in line), and to the NAS (on its
+    /// writer, or in line).
     pub fn write(&mut self) {
-        let Some((status, local, shared)) = self.compose() else { return };
+        let Some((status, local, shared, lead)) = self.compose() else { return };
         let Ok(body) = serde_json::to_vec_pretty(&status) else { return };
         if let Err(e) = write_replace(&local, &body) {
             eprintln!("agent: heartbeat: {}: {e:#}", local.display());
+        }
+        if let Some(to) = lead {
+            let b = to.body(&status);
+            match &self.poster {
+                Some((post, wake)) => {
+                    post.set(Some((to, b)));
+                    wake.try_send(()).ok();
+                }
+                None => self.lead_failing = to.post(&b, self.lead_failing),
+            }
         }
         let Some(p) = shared else { return };
         match &self.nas {
@@ -108,7 +199,7 @@ impl Beat {
                 wake.try_send(()).ok();
             }
             None => {
-                let r = write_beat(&p, body);
+                let r = (self.write_nas)(&p, body);
                 self.failing = said(r, self.failing);
             }
         }
@@ -145,7 +236,10 @@ impl Handle {
             view: view.clone(),
             hold,
             nas: None,
+            write_nas: Arc::new(write_beat),
+            poster: None,
             failing: false,
+            lead_failing: false,
             stuck_after: LOOP_STUCK,
             plan: None,
             every: EVERY,
@@ -169,6 +263,14 @@ impl Handle {
         }
     }
 
+    /// The shared copy written by `w` (before `spawn`): a test's slow NAS.
+    #[cfg(test)]
+    pub fn write_nas_by(&mut self, w: NasWrite) {
+        if let Some((b, _)) = self.inline.as_mut() {
+            b.write_nas = w;
+        }
+    }
+
     /// Where to tell it a state changed (`BeatMsg::Changed`).
     pub fn sender(&self) -> Sender<BeatMsg> {
         self.tx.clone()
@@ -185,7 +287,7 @@ impl Handle {
         let Some((mut beat, rx)) = self.inline.take() else { return };
         let mail: Mailbox = Snap::new(None);
         let (wake, woken) = mpsc::sync_channel::<()>(1);
-        let (m, view) = (mail.clone(), beat.view.clone());
+        let (m, view, write_nas) = (mail.clone(), beat.view.clone(), beat.write_nas.clone());
         let nas = std::thread::Builder::new().name("beat-nas".into()).spawn(move || {
             let mut failing = false;
             while woken.recv().is_ok() {
@@ -195,11 +297,25 @@ impl Handle {
                 if view.get().as_ref().as_ref().and_then(|v| v.shared.as_ref()) != Some(&p) {
                     continue;
                 }
-                failing = said(write_beat(&p, body), failing);
+                failing = said(write_nas(&p, body), failing);
             }
         });
         if nas.is_ok() {
             beat.nas = Some((mail, wake));
+        }
+        let post: LeadBox = Snap::new(None);
+        let (wake, woken) = mpsc::sync_channel::<()>(1);
+        let p = post.clone();
+        let poster = std::thread::Builder::new().name("beat-lead".into()).spawn(move || {
+            let mut failing = false;
+            while woken.recv().is_ok() {
+                // (The newest each time: a beat posted late is never older than one before.)
+                let Some((to, b)) = p.get().as_ref().clone() else { continue };
+                failing = to.post(&b, failing);
+            }
+        });
+        if poster.is_ok() {
+            beat.poster = Some((post, wake));
         }
         let spawned = std::thread::Builder::new().name("beat".into()).spawn(move || {
             let every = beat.every;
@@ -272,6 +388,7 @@ mod tests {
             status: Status { host: "m1".into(), beat: 1, ..Default::default() },
             local,
             shared,
+            lead: None,
             hold_at: 0,
             at: Instant::now(),
         }
@@ -279,6 +396,74 @@ mod tests {
 
     fn said(p: &std::path::Path) -> Status {
         serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap()
+    }
+
+    /// docs/coordination.md §8, step 3: the slow-NAS fake blocks every write of the shared copy
+    /// until released; two members' beats reach the lead all the while, each of 60 (ten minutes'
+    /// at `EVERY`; the timer off, each beat a change's, so none is the timer's doing), and each
+    /// member hears the other from the lead's answers.
+    #[test]
+    fn beats_go_on_while_the_nas_hangs() {
+        use crate::agent::pool::Heartbeat;
+        // (The slow NAS: every write waits until the share answers.)
+        let answers = store::testkit::Signal::new();
+        let a = answers.clone();
+        let hung: NasWrite = Arc::new(move |_, _| {
+            a.wait("the share answers");
+            Ok(())
+        });
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = crate::coord::start_for_test(&d.path().join("lead"), "lead", "");
+        let at_lead = Arc::new(Beats::default());
+        c.set_beats(Some(at_lead.clone()));
+        let mut members: Vec<(Handle, Arc<Beats>, String)> = ["m-000000000000000a", "m-000000000000000b"]
+            .into_iter()
+            .map(|id| {
+                let mut h = Handle::new(d.path().join(id), Snap::new(HoldState::default()));
+                h.never_tick();
+                h.write_nas_by(hung.clone());
+                h.spawn();
+                let beats = Arc::new(Beats::default());
+                beats.set_own(Heartbeat {
+                    pool: crate::pool::Beat { member: id.into(), host: id.into(), ..Default::default() },
+                    beat_http: true,
+                    ..Default::default()
+                });
+                (h, beats, id.to_string())
+            })
+            .collect();
+        for i in 1..=60 {
+            for (h, beats, id) in &mut members {
+                std::fs::create_dir_all(d.path().join(&*id)).unwrap();
+                h.publish(LoopView {
+                    status: Status { host: id.clone(), beat: 1, ..Default::default() },
+                    local: d.path().join(&*id).join("status.json"),
+                    shared: Some(NasPath::local_for_test(&d.path().join("nas").join(&*id))),
+                    lead: Some(ToLead {
+                        urls: vec![format!("http://127.0.0.1:{port}")],
+                        token: c.contact.token.clone(),
+                        member: id.clone(),
+                        held: Default::default(),
+                        beats: beats.clone(),
+                    }),
+                    hold_at: 0,
+                    at: Instant::now(),
+                });
+            }
+            for (_, _, id) in &members {
+                store::testkit::eventually("the lead hears each beat", || {
+                    at_lead.fresh(now_s()).iter().any(|x| x.beat.pool.member == *id && x.n >= i)
+                });
+            }
+        }
+        assert!(!answers.is_set(), "the NAS hung throughout");
+        let (a, b) = (&members[0], &members[1]);
+        assert!(a.1.get(&b.2, now_s()).is_some() && b.1.get(&a.2, now_s()).is_some());
+        assert!(at_lead
+            .fresh(now_s())
+            .iter()
+            .all(|x| x.status.as_ref().is_some_and(|s| s["host"] == x.beat.pool.member)));
+        answers.set();
     }
 
     /// In line: each publish written here and on the NAS, saying the hold as control has it, and

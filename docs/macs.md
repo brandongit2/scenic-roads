@@ -104,8 +104,8 @@ gives it (docs/building.md §2, The pool): any shared step's jobs that fit the m
 (`scenic memory`, within the memory guard's limit: docs/pool.md §7.1) and its disk (its room target kept free past each job's measured disk; a task 5 GB, tree cover's rows and terrain's subtrees 1 GB), a run from the front of the plan's order
 (docs/pool.md §7.2), else z6 tiles' tails (`docs/workers.md`). A z6 tile's predicted peak is the most its job's
 processes held together last time, else about ten times its extract, never under 3.7 GB nor below its
-floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, the lead's the heartbeat
-(`state/status.json`).
+floor (docs/pool.md §7.2). A member's status goes to the lead in its beat (docs/coordination.md step 3), the lead listing
+the members' in its own (`state/status.json`, `helpers`).
 
 **The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: the pool's lead, fixed
 (docs/pool.md §6, task #881), with room for more at once (build memory 28 GB by default). It also hosts the task board

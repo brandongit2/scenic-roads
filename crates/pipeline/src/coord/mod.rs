@@ -25,6 +25,7 @@
 //! naming this Mac and from no web page elsewhere (crate::net::ours, from_the_page); a running job's
 //! (`/task/…`) from this Mac itself, through no proxy (crate::net::own).
 
+pub mod beats;
 pub mod brokers;
 pub mod client;
 pub mod held;
@@ -311,6 +312,9 @@ pub struct Shared {
     /// Where the members' messages to this Mac's member go (`/pool/mail`, `inbox`): its agent's
     /// (`Coordinator::set_inbox`); None, refused (the member sends by mail).
     pub inbox: Option<std::sync::Arc<inbox::Inbox>>,
+    /// The members' beats its agent's pool side hears by HTTP (`/pool/beat`, crate::coord::beats):
+    /// its (`Coordinator::set_beats`); None, the beats' heartbeats and statuses not taken.
+    pub beats: Option<std::sync::Arc<beats::Beats>>,
     /// The build page's acceptances of the gate's warnings (`/work/inputs`), for the agent to write
     /// (crate::inputs::apply_ask).
     pub inputs_asks: Vec<crate::inputs::Ask>,
@@ -1318,6 +1322,7 @@ impl Coordinator {
             min_app: None,
             pool_member: None,
             inbox: None,
+            beats: None,
             inputs_asks: Vec::new(),
             redo_asks: Vec::new(),
             nas_failures: 0,
@@ -2204,6 +2209,11 @@ impl Coordinator {
     /// has lost the NAS: its answers then say no term (a member's reach counts no answer of it).
     pub fn set_member(&self, member: Option<&str>) {
         self.shared.lock().unwrap().pool_member = member.map(str::to_string);
+    }
+
+    /// Where the members' beats go (`Shared::beats`).
+    pub fn set_beats(&self, beats: Option<std::sync::Arc<beats::Beats>>) {
+        self.shared.lock().unwrap().beats = beats;
     }
 
     /// Where the members' messages to its member go (`Shared::inbox`).
@@ -5343,7 +5353,12 @@ mod tests {
 
     /// A beat of member `m` holding `held`, in a speaking app (`held::SPEAKS`).
     fn word(m: &str, held: &[u64]) -> held::Beat {
-        held::Beat { member: m.into(), speaks: vec![held::SPEAKS.into()], held: held.iter().copied().collect() }
+        held::Beat {
+            member: m.into(),
+            speaks: vec![held::SPEAKS.into()],
+            held: held.iter().copied().collect(),
+            ..Default::default()
+        }
     }
 
     fn unit_offer(c: &Coordinator, target: &str) {
@@ -5456,7 +5471,7 @@ mod tests {
         unit_offer(&c, "6/1/1");
         let g = w.ask(&ask(8192)).unwrap().expect("granted");
         clock.advance(held::OMIT_GRACE * 2);
-        let old = held::Beat { member: "m1".into(), speaks: Vec::new(), held: BTreeSet::new() };
+        let old = held::Beat { member: "m1".into(), ..Default::default() };
         assert!(c.member_beat(&old).released.is_empty());
         assert!(c.held("unit").contains("6/1/1"), "not released by an older member's beat");
         clock.advance(TTL + Duration::from_secs(60));
