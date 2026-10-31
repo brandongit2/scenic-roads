@@ -9709,7 +9709,7 @@ mod tests {
             (serde_json::Value::Null, serde_json::json!(["Alpha"]))
         );
         assert_eq!(v["regions"][0]["bytes"], serde_json::Value::Null);
-        // A catalogue recording it over z6 tile 6/40/31, whose base pack weighs 777 bytes.
+        // A map recording it over z6 tile 6/40/31, whose base pack weighs 777 bytes.
         let mut c = store::catalogue::Catalogue::new(1);
         c.base.insert("6/40/31".into(), "base/6-40-31".into());
         let f = store::catalogue::FileRef {
@@ -9721,7 +9721,9 @@ mod tests {
         c.files.insert("base/6-40-31".into(), f);
         c.coverage = serde_json::json!({ "regions": [{ "id": "a", "name": "Alpha", "outline": ["osm:5"],
             "shapes": { "osm:5": [[[[50.0, 0.5], [50.1, 0.5], [50.1, 0.6], [50.0, 0.6], [50.0, 0.5]]]] } }] });
-        store::catalogue::write(&root.join("catalog"), &c).unwrap();
+        // (The map as a lead without its log reads it: the NAS's snapshot, docs/maplog.md §5.2.)
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        store::map::write_nas_snapshot(&nas, &store::map::Map::of(&c).unwrap()).unwrap();
         ag.planner().regions_view(&store::nasfs::NasRoot::local_for_test(root), &a, &recipes);
         settle(&mut ag);
         let v = ag.planner().regions_view.borrow().as_ref().unwrap().1.clone();
