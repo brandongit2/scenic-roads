@@ -264,6 +264,9 @@ pub struct Shared {
     /// The pass, and the plan's work a worker that mounts the NAS may do, a step at a time in plan
     /// order. A worker's come from the far end; this Mac's own jobs take the near end.
     pub pass: String,
+    /// The number of the lead's plan the offers came from (crate::agent::plan::PlanView::n): each
+    /// grant carries it (`Grant::plan`).
+    pub plan: u64,
     /// A resumable job offered to the one worker whose Mac holds its progress (its name, and the
     /// job as an offer: its step, its target and key, `offer_resume`; crate::agent::resume), to
     /// no other, whatever pass is offered.
@@ -554,6 +557,7 @@ impl Shared {
                 threads: p.threads,
                 disk_mb: p.disk_mb,
                 job: p.job,
+                plan: self.plan,
             }
         });
         let mut first = grants.next()?;
@@ -1018,6 +1022,10 @@ pub struct Grant {
     /// The lead's own planned job granted (`Offer::job`: its id), to the lead's own agent alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
+    /// The number of the lead's plan its work was offered by (`Shared::plan`): a cancel taken after
+    /// that plan drops it (docs/agent-parts.md §5.4). 0: an older lead's, or no plan.
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub plan: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1262,6 +1270,7 @@ impl Coordinator {
                 drop_needs: Default::default(),
             },
             pass: String::new(),
+            plan: 0,
             resume: None,
             tasks: task::Tasks::new(dir.join("tasks")),
             paused,
@@ -1555,6 +1564,11 @@ impl Coordinator {
             w.ask.cap = s.own_cap.clone();
         }
         st
+    }
+
+    /// The number of the plan the next offers come from (`Grant::plan`).
+    pub fn set_plan(&self, n: u64) {
+        self.shared.lock().unwrap().plan = n;
     }
 
     /// The plan's work, in plan order, and its pass: the steps offered to every member, and the
@@ -3408,6 +3422,7 @@ fn route(
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
                         more: Vec::new(),
                         job: None,
+                        plan: s.plan,
                     };
                     return Ok((200, serde_json::to_value(g)?));
                 }
@@ -3437,6 +3452,7 @@ fn route(
                 let lease = s.leases.grant(&a.worker, Work::Task { id }, now);
                 // (Its id taken for good: kept, so no lease after a restart has it.)
                 s.save_leases();
+                let plan = s.plan;
                 let t = s.tasks.by_id.get_mut(&id).unwrap();
                 t.state = task::State::Leased { lease, worker: a.worker.clone() };
                 t.leased_at = Some(now);
@@ -3449,6 +3465,7 @@ fn route(
                     threads: 0,
                     disk_mb: 0,
                     job: None,
+                    plan,
                 };
                 eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
                 return Ok((200, serde_json::to_value(g)?));

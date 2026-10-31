@@ -27,9 +27,14 @@ use store::nasfs::NasPath;
 pub const EVERY: Duration = Duration::from_secs(10);
 /// How long after a change the beat waits for more before it writes.
 pub const DEBOUNCE: Duration = Duration::from_millis(200);
-/// A loop that hasn't finished a round in this long is stuck: the status says it (`Status::loop_stuck_s`,
-/// task #899) and the loop's watchdog (nasread::watch) logs a stall by it.
+/// A round not finished, or a plan running, this long is stuck: the status says it
+/// (`Status::loop_stuck_s`, task #899), and the plan's own log and sample go by it
+/// (crate::agent::plan::Handle::stalled).
 pub const LOOP_STUCK: Duration = Duration::from_secs(300);
+
+/// A plan running, as the beat reads it (crate::agent::plan::Handle::running): since when (s since
+/// the epoch) and its phase.
+pub type PlanRunning = Arc<dyn Fn() -> Option<(u64, &'static str)> + Send + Sync>;
 
 /// What the loop last composed: its status, where it goes, the hold it said, and when.
 #[derive(Clone)]
@@ -57,6 +62,8 @@ pub struct Beat {
     failing: bool,
     /// A loop older than this is stuck (`LOOP_STUCK`; a test's shorter).
     stuck_after: Duration,
+    /// The lead's plan, when one runs here: a plan running long is a stuck loop too.
+    plan: Option<PlanRunning>,
 }
 
 impl Beat {
@@ -69,11 +76,19 @@ impl Beat {
         let asked = crate::control::peek_hold_request(&self.home);
         status.say(asked.as_ref(), &hold, hold.held.is_none() && hold.at > v.hold_at);
         status.beat = now_s();
-        let age = v.at.elapsed().as_secs();
+        // (The older of the round's view and a plan running: either stuck is the loop stuck, in
+        // that part's phase.)
+        let round = (v.at.elapsed().as_secs(), super::nasread::phase_now().map(str::to_string));
+        let plan = self
+            .plan
+            .as_ref()
+            .and_then(|f| f())
+            .map(|(since, p)| (status.beat.saturating_sub(since), Some(format!("the plan: {p}"))));
+        let (age, phase) = plan.filter(|p| p.0 > round.0).unwrap_or(round);
         let stuck = self.stuck_after.as_secs();
         status.loop_age_s = Some(age);
         status.loop_stuck_s = Some(stuck);
-        status.loop_phase = (age > stuck).then(super::nasread::phase_now).flatten().map(|(p, _)| p.to_string());
+        status.loop_phase = phase.filter(|_| age > stuck);
         Some((status, v.local.clone(), v.shared.clone()))
     }
 
@@ -123,8 +138,17 @@ impl Handle {
     pub fn new(home: PathBuf, hold: Arc<Snap<HoldState>>) -> Handle {
         let view = Snap::new(None);
         let (tx, rx) = mpsc::channel();
-        let beat = Beat { home, view: view.clone(), hold, nas: None, failing: false, stuck_after: LOOP_STUCK };
+        let beat =
+            Beat { home, view: view.clone(), hold, nas: None, failing: false, stuck_after: LOOP_STUCK, plan: None };
         Handle { view, tx, inline: Some((beat, rx)) }
+    }
+
+    /// The lead's plan read with each beat (before `spawn`): a plan running past the threshold is
+    /// said as a stuck loop, in its phase.
+    pub fn watch_plan(&mut self, f: PlanRunning) {
+        if let Some((b, _)) = self.inline.as_mut() {
+            b.plan = Some(f);
+        }
     }
 
     /// Where to tell it a state changed (`BeatMsg::Changed`).
@@ -260,7 +284,7 @@ mod tests {
         assert!(local.exists() && !shared.exists());
     }
 
-    /// A loop past the watchdog's threshold: the beat says the threshold, and the phase it's in.
+    /// A loop past the stuck threshold: the beat says the threshold, and the phase it's in.
     #[test]
     fn a_beat_says_a_stuck_loops_phase() {
         let d = tempfile::tempdir().unwrap();
@@ -276,5 +300,24 @@ mod tests {
         b.changed();
         let s = said(&local);
         assert!(s.loop_age_s.unwrap() > 0 && s.loop_stuck_s == Some(0) && s.loop_phase.is_some(), "{s:?}");
+    }
+
+    /// A plan running long, the round going on: the loop stuck, in the plan's phase.
+    #[test]
+    fn a_beat_says_a_stuck_plans_phase() {
+        let d = tempfile::tempdir().unwrap();
+        let local = d.path().join("status.json");
+        let mut b = Handle::new(d.path().into(), Snap::new(HoldState::default()));
+        let since = now_s().saturating_sub(LOOP_STUCK.as_secs() + 60);
+        b.watch_plan(Arc::new(move || Some((since, "the regions' counts"))));
+        b.publish(view(local.clone(), None));
+        let s = said(&local);
+        assert!(s.loop_age_s.unwrap() > LOOP_STUCK.as_secs(), "{s:?}");
+        assert_eq!(s.loop_phase.as_deref(), Some("the plan: the regions' counts"));
+        // (No plan running: the round's fresh view, nothing stuck.)
+        b.watch_plan(Arc::new(|| None));
+        b.changed();
+        let s = said(&local);
+        assert_eq!((s.loop_age_s, s.loop_phase), (Some(0), None));
     }
 }

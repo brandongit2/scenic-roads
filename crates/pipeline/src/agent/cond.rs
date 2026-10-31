@@ -45,6 +45,12 @@ pub enum Mac {
     Fixed { ac: bool, battery: Option<u8>, idle_s: u64, home: bool, mem_gb: f64, mem_free_pct: u8 },
 }
 
+impl Default for Mac {
+    fn default() -> Mac {
+        Mac::Real
+    }
+}
+
 impl Mac {
     /// A test's Mac: on mains, at home, in use, 16 GB with three quarters free.
     pub const TEST: Mac = Mac::Fixed { ac: true, battery: None, idle_s: 0, home: true, mem_gb: 16.0, mem_free_pct: 75 };

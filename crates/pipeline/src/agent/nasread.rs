@@ -13,10 +13,10 @@
 //! stuck threads never pile up past a pool's size. A healthy share answers well inside the
 //! deadline: the result is the call's own, as before.
 //!
-//! And the loop's watchdog (`watch`): a round not finished in `beat::LOOP_STUCK` is logged with the
-//! phase of the round it's in (`phase`), kept in the agent's folder for `scenic status`, and the
-//! agent sampled once a stall into that folder (the last few samples kept). The heartbeat is not
-//! the loop's: it beats on a timer of its own (crate::agent::beat).
+//! A plan running past `beat::LOOP_STUCK` (the one stall threshold the agent's parts are held to)
+//! is logged with its phase and the process sampled (crate::agent::plan); the round's phases are
+//! named (`phase`), one taking `SLOW_PHASE` or more logged as it ends. The heartbeat is not the
+//! round's: it beats on a timer of its own (crate::agent::beat).
 
 use crate::pool::nas::{Created, Nas};
 use std::collections::BTreeSet;
@@ -459,248 +459,33 @@ pub fn probe(p: &NasPath) -> Option<Duration> {
     r.ok().flatten()
 }
 
-/// The watchdog's file in the agent's folder while its loop is stalled (`Stall`).
-pub const STALL_FILE: &str = "loop-stall.json";
-/// The agent sampled (`sample <pid> SAMPLE_SECS`) as a stall begins, in the agent's folder: one file
-/// a stall, `sample_name`d by when it began; the last `SAMPLES_KEPT` stay (`prune_samples`).
-pub const STALL_SAMPLE: &str = "loop-stall-sample";
-/// How long the sampler samples the process (its symbolication, after, takes longer on a big, busy one).
-const SAMPLE_SECS: u32 = 5;
-/// How many stalls' samples stay in the agent's folder.
-const SAMPLES_KEPT: usize = 5;
-/// The agent's start given this much more before it's a stall (its first round opens the pool).
-pub const STALL_GRACE: Duration = Duration::from_secs(300);
 /// A phase of a round that takes this long or longer is logged by name as it ends (`phase`).
 pub const SLOW_PHASE: Duration = Duration::from_secs(10);
 
-/// When the agent's loop last finished a round, or the agent started (s since the epoch).
-pub static ROUND_AT: AtomicU64 = AtomicU64::new(0);
-/// Set as the agent's loop ends: the watchdog stops.
-pub static WATCH_DONE: AtomicBool = AtomicBool::new(false);
-/// The loop's phase in progress (`phase`): its name, and when it began (s since the epoch, and
-/// as an instant).
-static PHASE: Mutex<Option<(&'static str, u64, std::time::Instant)>> = Mutex::new(None);
+/// The round's phase in progress (`phase`): its name, and when it began.
+static PHASE: Mutex<Option<(&'static str, std::time::Instant)>> = Mutex::new(None);
 
 /// The loop's wait between rounds (up to 20 s, as planned): a phase, never logged as slow.
 pub const WAIT: &str = "the wait between rounds";
 
-/// The loop enters phase `name` (the one before it ends): the watchdog names it in a stall, and
-/// the one that ends is logged if it took `SLOW_PHASE` or more (but `WAIT`). A mutex held only to
-/// swap the phase, by the loop ~20 times a round and the watchdog every 15 s.
+/// The round enters phase `name` (the one before it ends): the one that ends is logged if it took
+/// `SLOW_PHASE` or more (but `WAIT`). A mutex held only to swap the phase, ~20 times a round.
 pub fn phase(name: &'static str) {
-    let was =
-        PHASE.lock().unwrap_or_else(|e| e.into_inner()).replace((name, super::now_s(), std::time::Instant::now()));
-    if let Some((was, _, t)) = was.filter(|w| w.0 != WAIT && w.2.elapsed() >= SLOW_PHASE) {
+    let was = PHASE.lock().unwrap_or_else(|e| e.into_inner()).replace((name, std::time::Instant::now()));
+    if let Some((was, t)) = was.filter(|w| w.0 != WAIT && w.1.elapsed() >= SLOW_PHASE) {
         eprintln!("agent: {} the loop's phase \"{was}\" took {} s", clock(super::now_s()), t.elapsed().as_secs());
     }
 }
 
-/// The loop's phase in progress, and when it began (s since the epoch).
-pub fn phase_now() -> Option<(&'static str, u64)> {
-    PHASE.lock().unwrap_or_else(|e| e.into_inner()).map(|(n, at, _)| (n, at))
+/// The round's phase in progress (`phase`), for the heartbeat's word on a stuck round.
+pub fn phase_now() -> Option<&'static str> {
+    PHASE.lock().unwrap_or_else(|e| e.into_inner()).map(|(n, _)| n)
 }
 
 /// `s` (s since the epoch) as the time of day in UTC, for the log: 14:03:59Z.
 pub fn clock(s: u64) -> String {
     let d = s % 86400;
     format!("{:02}:{:02}:{:02}Z", d / 3600, d / 60 % 60, d % 60)
-}
-
-/// The loop stalled, as the watchdog saw it.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Stall {
-    /// When the loop last finished a round (s since the epoch).
-    pub round_at: u64,
-    /// When the watchdog last looked (s since the epoch).
-    pub seen_at: u64,
-    /// The round's phase in progress (`phase`), and since when (s since the epoch).
-    #[serde(default)]
-    pub phase: String,
-    #[serde(default)]
-    pub phase_at: u64,
-}
-
-/// The agent's watchdog, started before the agent opens anything on the NAS (`round_at` set to
-/// now): a thread that looks every `every` (`Watchdog::look`) at when the loop last finished a
-/// round (`round_at`, stored by the loop). It ends once `done` is set.
-pub fn watch(
-    round_at: &'static AtomicU64,
-    done: &'static AtomicBool,
-    home: PathBuf,
-    after: Duration,
-    grace: Duration,
-    every: Duration,
-    sample: Option<PathBuf>,
-) -> std::thread::JoinHandle<()> {
-    let start = super::now_s();
-    round_at.store(start, Ordering::SeqCst);
-    done.store(false, Ordering::SeqCst);
-    std::thread::Builder::new()
-        .name("loop-watchdog".into())
-        .spawn(move || {
-            let mut dog = Watchdog::new(home, start, after, grace, sample);
-            while !done.load(Ordering::SeqCst) {
-                dog.look(super::now_s(), round_at.load(Ordering::SeqCst));
-                std::thread::sleep(every);
-            }
-            std::fs::remove_file(&dog.file).ok();
-        })
-        .expect("spawn the loop's watchdog")
-}
-
-/// What the watchdog keeps between looks.
-pub struct Watchdog {
-    home: PathBuf,
-    file: PathBuf,
-    start: u64,
-    after: Duration,
-    grace: Duration,
-    sample: Option<PathBuf>,
-    /// The round the stall is in: when the one before it finished.
-    stalled: Option<u64>,
-}
-
-impl Watchdog {
-    pub fn new(home: PathBuf, start: u64, after: Duration, grace: Duration, sample: Option<PathBuf>) -> Watchdog {
-        let file = home.join(STALL_FILE);
-        std::fs::remove_file(&file).ok();
-        Watchdog { home, file, start, after, grace, sample, stalled: None }
-    }
-
-    /// A look at `now` (s since the epoch), the loop's last round finished at `round_at`. Past
-    /// `after` (the start given `grace` more: a slow start isn't a stall), the stall is logged once
-    /// with its phase (`phase`), the process sampled once into a `sample_name` file in `home` (with `sample`, the
-    /// sampler's path), and `STALL_FILE` in `home` (this Mac's disk, never the NAS) kept up to date,
-    /// removed when the loop goes on (its real length logged then).
-    pub fn look(&mut self, now: u64, round_at: u64) {
-        let at = round_at;
-        let limit = if at == self.start { self.after + self.grace } else { self.after };
-        let (phase, phase_at) = phase_now().map_or((String::new(), 0), |(n, t)| (n.to_string(), t));
-        if now.saturating_sub(at) >= limit.as_secs() {
-            if self.stalled.is_none() {
-                eprintln!(
-                    "agent: {} the loop hasn't finished a round in {} s; stalled in \"{phase}\" ({} s so far)",
-                    clock(now),
-                    now.saturating_sub(at),
-                    now.saturating_sub(phase_at)
-                );
-                if let Some(s) = &self.sample {
-                    sample_self(s, &self.home, now);
-                }
-            }
-            self.stalled = Some(at);
-            if let Ok(b) = serde_json::to_vec(&Stall { round_at: at, seen_at: now, phase, phase_at }) {
-                std::fs::write(&self.file, b).ok();
-            }
-        } else if let Some(from) = self.stalled.take() {
-            eprintln!("agent: {} the loop goes on again: that round took {} s", clock(now), at.saturating_sub(from));
-            std::fs::remove_file(&self.file).ok();
-        }
-    }
-}
-
-/// The sample file of a stall seen at `now` (s since the epoch): `loop-stall-sample-<UTC date>-<time>.txt`,
-/// so names sort by time.
-fn sample_name(now: u64) -> String {
-    // (Days since the epoch to a civil date: Hinnant's algorithm.)
-    let z = (now / 86400) as i64 + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z.rem_euclid(146097);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    let d = now % 86400;
-    format!("{STALL_SAMPLE}-{year:04}{month:02}{day:02}-{:02}{:02}{:02}Z.txt", d / 3600, d / 60 % 60, d % 60)
-}
-
-/// The oldest samples in `home` removed past the newest `keep`, and the single file the sampler
-/// wrote before samples were timestamped.
-fn prune_samples(home: &Path, keep: usize) {
-    std::fs::remove_file(home.join(format!("{STALL_SAMPLE}.txt"))).ok();
-    let Ok(rd) = std::fs::read_dir(home) else { return };
-    let prefix = format!("{STALL_SAMPLE}-");
-    let mut names: Vec<String> = rd
-        .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|n| n.starts_with(&prefix) && n.ends_with(".txt"))
-        .collect();
-    names.sort();
-    for n in &names[..names.len().saturating_sub(keep)] {
-        std::fs::remove_file(home.join(n)).ok();
-    }
-}
-
-/// This process sampled by `sampler` for `SAMPLE_SECS` into a new file in `home` (`sample_name` of
-/// `now`), off the watchdog's thread (waited for there, so it leaves no zombie). Never two at once:
-/// while one runs (or hangs, until it's killed at `SAMPLE_LIMIT`), another stall's isn't started.
-/// `sample` writes its file only once done, so a sampler killed at the limit leaves nothing (an
-/// empty or missing file is removed). Its outcome and the file's path are logged.
-fn sample_self(sampler: &Path, home: &Path, now: u64) {
-    static SAMPLING: AtomicBool = AtomicBool::new(false);
-    if SAMPLING.swap(true, Ordering::SeqCst) {
-        eprintln!("agent: the stalled loop not sampled: the last stall's sampler still runs");
-        return;
-    }
-    let out = home.join(sample_name(now));
-    let child = store::spawn::spawn(
-        store::spawn::command(sampler)
-            .args([std::process::id().to_string(), SAMPLE_SECS.to_string(), "-mayDie".into(), "-file".into()])
-            .arg(&out)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null()),
-    );
-    match child {
-        Ok(mut c) => {
-            let home = home.to_path_buf();
-            std::thread::spawn(move || {
-                let t = std::time::Instant::now();
-                let st = loop {
-                    match c.try_wait() {
-                        Ok(None) if t.elapsed() < SAMPLE_LIMIT => std::thread::sleep(Duration::from_millis(250)),
-                        Ok(None) => {
-                            c.kill().ok();
-                            break c.wait().map(|_| None);
-                        }
-                        r => break r,
-                    }
-                };
-                let kept = std::fs::metadata(&out).is_ok_and(|m| m.len() > 0);
-                let file = format!("file {}: {}", out.display(), if kept { "kept" } else { "nothing written" });
-                match st {
-                    Ok(Some(st)) if st.success() => eprintln!("agent: the stalled loop sampled into {}", out.display()),
-                    Ok(Some(st)) => eprintln!("agent: sampling the stalled loop: {st} ({file})"),
-                    Ok(None) => eprintln!(
-                        "agent: sampling the stalled loop: killed after {} s ({file})",
-                        SAMPLE_LIMIT.as_secs()
-                    ),
-                    Err(e) => eprintln!("agent: sampling the stalled loop: {e}"),
-                }
-                if !kept {
-                    std::fs::remove_file(&out).ok();
-                }
-                prune_samples(&home, SAMPLES_KEPT);
-                SAMPLING.store(false, Ordering::SeqCst);
-            });
-        }
-        Err(e) => {
-            eprintln!("agent: sampling the stalled loop ({}): {e}", sampler.display());
-            SAMPLING.store(false, Ordering::SeqCst);
-        }
-    }
-}
-
-/// A sampler still running this long after it started (it samples for `SAMPLE_SECS`, then
-/// symbolicates: on the lead's idle agent that took 0.3 s past the 3 s sampled; a stalled, loaded
-/// one needed more than the 60 s it was once given) is killed.
-const SAMPLE_LIMIT: Duration = Duration::from_secs(300);
-
-/// The loop's stall as its watchdog last wrote it in `home`, if it's current (seen within a minute).
-pub fn stall(home: &Path) -> Option<Stall> {
-    let s: Stall = serde_json::from_slice(&std::fs::read(home.join(STALL_FILE)).ok()?).ok()?;
-    (super::now_s().saturating_sub(s.seen_at) < 60).then_some(s)
 }
 
 #[cfg(test)]
@@ -942,82 +727,5 @@ pub(crate) mod tests {
         assert_eq!(present_or_missing(Err(io::ErrorKind::NotFound.into())), Some(None));
         assert_eq!(present_or_missing(Err(io::ErrorKind::TimedOut.into())), None);
         assert_eq!(present_or_missing(Err(io::ErrorKind::PermissionDenied.into())), None);
-    }
-
-    /// A round past `beat::LOOP_STUCK` flagged a stall, with its round and when it was seen.
-    #[test]
-    fn a_stuck_loop_is_flagged_a_stall() {
-        let d = tempfile::tempdir().unwrap();
-        let t0 = 1_700_000_000;
-        let mut dog = Watchdog::new(d.path().into(), t0 - 3600, crate::agent::beat::LOOP_STUCK, STALL_GRACE, None);
-        let now = t0 + crate::agent::beat::LOOP_STUCK.as_secs() + 15;
-        dog.look(now, t0);
-        let s: Stall = serde_json::from_slice(&std::fs::read(d.path().join(STALL_FILE)).unwrap()).unwrap();
-        assert_eq!((s.round_at, s.seen_at), (t0, now));
-        dog.look(now + 15, now + 10);
-        assert!(!d.path().join(STALL_FILE).exists());
-    }
-
-    fn samples(d: &Path) -> Vec<String> {
-        let mut v: Vec<String> = std::fs::read_dir(d)
-            .unwrap()
-            .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .filter(|n| n.starts_with(STALL_SAMPLE))
-            .collect();
-        v.sort();
-        v
-    }
-
-    #[test]
-    fn samples_are_named_by_time_and_only_the_newest_kept() {
-        assert_eq!(sample_name(0), "loop-stall-sample-19700101-000000Z.txt");
-        assert_eq!(sample_name(951_782_400 + 86399), "loop-stall-sample-20000229-235959Z.txt");
-        let d = tempfile::tempdir().unwrap();
-        std::fs::write(d.path().join("loop-stall-sample.txt"), "old").unwrap();
-        std::fs::write(d.path().join("loop-stall.json"), "{}").unwrap();
-        for i in 0..7u64 {
-            std::fs::write(d.path().join(sample_name(1_700_000_000 + i * 1000)), "s").unwrap();
-        }
-        prune_samples(d.path(), 3);
-        let left = samples(d.path());
-        assert_eq!(left.len(), 3, "{left:?}");
-        assert_eq!(left[2], sample_name(1_700_006_000));
-        assert_eq!(left[0], sample_name(1_700_004_000));
-        assert!(d.path().join("loop-stall.json").exists());
-    }
-
-    #[test]
-    fn the_watchdog_flags_a_stalled_loop_and_clears_it() {
-        static AT: AtomicU64 = AtomicU64::new(0);
-        static DONE: AtomicBool = AtomicBool::new(false);
-        let d = tempfile::tempdir().unwrap();
-        // (A sampler that writes its arguments: sampled once, as the stall begins.)
-        let sampler = d.path().join("sampler");
-        std::fs::write(&sampler, "#!/bin/sh\necho \"$@\" > \"$5\"\n").unwrap();
-        std::fs::set_permissions(&sampler, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        phase("a test's phase");
-        let t = watch(
-            &AT,
-            &DONE,
-            d.path().into(),
-            Duration::from_secs(1),
-            Duration::ZERO,
-            Duration::from_millis(50),
-            Some(sampler),
-        );
-        store::testkit::eventually("the stall flagged", || stall(d.path()).is_some());
-        // (Another test's loop may have entered a phase of its own since.)
-        assert!(!stall(d.path()).unwrap().phase.is_empty());
-        store::testkit::eventually("the agent sampled", || {
-            samples(d.path()).first().is_some_and(|f| {
-                std::fs::read_to_string(d.path().join(f))
-                    .is_ok_and(|s| s.starts_with(&format!("{} {SAMPLE_SECS} -mayDie -file", std::process::id())))
-            })
-        });
-        // (A round just now, a little ahead so a second ticking over meanwhile doesn't count.)
-        AT.store(crate::agent::now_s() + 60, Ordering::SeqCst);
-        store::testkit::eventually("the stall cleared", || stall(d.path()).is_none());
-        DONE.store(true, Ordering::SeqCst);
-        t.join().unwrap();
     }
 }

@@ -23,7 +23,7 @@ const LEFT: &[(&str, usize)] = &[
     ("jobs.rs", 2),
     ("live.rs", 6),
     ("memguard.rs", 1),
-    ("mod.rs", 3),
+    ("mod.rs", 2),
     ("pageview.rs", 4),
     ("pool.rs", 1),
     ("settings.rs", 1),
