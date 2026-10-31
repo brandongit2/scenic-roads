@@ -146,12 +146,12 @@ Common rules:
   paused alone, its menu saying so with Resume This Mac, the same ask file as `scenic resume
   --here` (`hold-request.json`); the Jobs tab's schedule chips a paused, out-of-touch or
   on-battery Mac's lanes) shows the build to anyone the Mac answers, with no key: in the
-  pool every Mac's agent serves it, the same, from its own read of the build's state (docs/pool.md
-  §10; a Mac with neither a coordinator nor a broker from a viewer that answers nothing else). It
+  pool the lead serves it (docs/pool.md §10); a member's port sends it there with a 307, or shows a
+  small page of its own while the lead isn't reached (docs/roles.md §3.3). It
   runs none of the build's work. A page on any device the Mac answers may pause the build, ask about the lead (`/work/lead`, docs/pool.md §11), accept a
   held unit's warnings (`/work/inputs`), cancel a job and try a failed target again (`/work/act`),
-  and change the owner's settings (`/work/settings`, below); on a Mac not leading, its agent passes
-  them on. None needs a key or a page of the Mac's own first (the owner, 21 Oct). `/work/?view`
+  and change the owner's settings (`/work/settings`, below), each at the lead (a Mac's own settings
+  at its own port). None needs a key or a page of the Mac's own first (the owner, 21 Oct). `/work/?view`
   only watches: the same tabbed page, in the popover's fixed 780 pt width (no
   horizontal scroll on any tab; checked 2026-10-23), its height the page's up to 900 pt, scrolling
   inside beyond that.
@@ -159,7 +159,7 @@ Common rules:
   each Mac's in-use share (cores kept free while it's used), build memory (GB for the
   build's jobs together) and disk room target (GB kept free), and the pool's NAS
   reserve (GB kept free on the NAS; not shown while no Mac on the page reaches the NAS). Each Mac's `POST /work/settings`
-  (its coordinator, broker or viewer; a member's page reaches the others' through CORS) with `{}` reads them; with
+  (its coordinator, broker or viewer; the lead's page reaches the others' through CORS) with `{}` reads them; with
   `in_use` (cores), `memory`, `room` or `nas_room` (GB), each a
   number or `"off"`, sets them through the same functions as `scenic in-use`, `scenic memory`,
   `scenic room` and `scenic nas-room`

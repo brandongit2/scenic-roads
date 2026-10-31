@@ -33,6 +33,15 @@ pub const SPEAKS: &str = "beat";
 /// (`Coordinator::page_on_nas`) while a member heard doesn't say it.
 pub const VIEW: &str = "view";
 
+/// What a lead's answer says it serves: its members' build pages (docs/roles.md §3.3). A member's
+/// port redirects its page to a lead saying it, heard within `PAGE_AWAY_S`; else (an older lead,
+/// or none answering) it shows its own (crate::coord::memberpage).
+pub const PAGE: &str = "page";
+
+/// A lead whose last answer is older than this (s) is taken for not reachable by a member's page:
+/// three of its beats (crate::agent::beat::EVERY, 10 s) missed.
+pub const PAGE_AWAY_S: u64 = 35;
+
 /// A member not heard from this long is forgotten (s): as the listing forgets one
 /// (crate::agent::pool::FORGET_AFTER).
 pub const FORGET_S: u64 = crate::agent::pool::FORGET_AFTER.as_secs();
@@ -55,6 +64,8 @@ struct Inner {
     nas_too: bool,
     lead_takes: bool,
     released: Vec<u64>,
+    /// When the lead last answered (unix s), and whether that answer said `PAGE`.
+    lead_answered: Option<(u64, bool)>,
 }
 
 /// The registry, shared by a member's pool side, its agent's beat and (on the lead) its coordinator.
@@ -78,6 +89,7 @@ impl Default for Beats {
                 nas_too: true,
                 lead_takes: false,
                 released: Vec::new(),
+                lead_answered: None,
             }),
         }
     }
@@ -149,6 +161,7 @@ impl Beats {
         self.set_nas_too(!takes || a.nas_too);
         let mut g = self.inner.lock().unwrap();
         g.lead_takes = takes;
+        g.lead_answered = Some((now, a.speaks.iter().any(|w| w == PAGE)));
         if takes {
             let before = std::mem::take(&mut g.heard);
             for h in &a.members {
@@ -164,10 +177,23 @@ impl Beats {
         self.inner.lock().unwrap().lead_takes
     }
 
+    /// Whether the lead serves this member's page at `now` (`Ok`: it answered within `PAGE_AWAY_S`,
+    /// saying `PAGE`), else since when it last answered (None: not since this process started; an
+    /// older lead's answers count as none: it doesn't serve the page).
+    pub fn lead_page(&self, now: u64) -> Result<(), Option<u64>> {
+        match self.inner.lock().unwrap().lead_answered {
+            Some((at, true)) if now.saturating_sub(at) < PAGE_AWAY_S => Ok(()),
+            Some((at, true)) => Err(Some(at)),
+            _ => Err(None),
+        }
+    }
+
     /// An older lead's 404: it takes neither the beat nor its leases' word; the NAS copies go on.
     pub fn lead_older(&self) {
         self.set_nas_too(true);
-        self.inner.lock().unwrap().lead_takes = false;
+        let mut g = self.inner.lock().unwrap();
+        g.lead_takes = false;
+        g.lead_answered = None;
     }
 
     /// The leases the lead said this member doesn't hold, since last taken.
@@ -239,5 +265,20 @@ mod tests {
         assert!(old_in_touch([&old, &new], "m-me", 1100));
         assert!(!old_in_touch([&new], "m-me", 1100));
         assert!(!old_in_touch([&old], "m-me", 1000 + crate::pool::beat::OUT_OF_TOUCH_S + 1), "out of touch");
+    }
+
+    /// A member's page goes to a lead that says it serves it, while it answers; an older lead's
+    /// answer (no `PAGE`) or its 404 never.
+    #[test]
+    fn a_members_page_goes_only_to_a_lead_that_serves_it() {
+        let b = Beats::default();
+        assert_eq!(b.lead_page(10), Err(None));
+        b.answered(&Answer { speaks: vec![SPEAKS.into()], ..Default::default() }, 10);
+        assert_eq!(b.lead_page(10), Err(None), "an older lead");
+        b.answered(&Answer { speaks: vec![SPEAKS.into(), PAGE.into()], ..Default::default() }, 20);
+        assert_eq!(b.lead_page(20 + PAGE_AWAY_S - 1), Ok(()));
+        assert_eq!(b.lead_page(20 + PAGE_AWAY_S), Err(Some(20)), "not answering");
+        b.lead_older();
+        assert_eq!(b.lead_page(21), Err(None));
     }
 }

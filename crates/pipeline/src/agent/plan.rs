@@ -68,8 +68,6 @@ pub(super) struct Inputs {
     pub resume_now: u64,
     pub ramp_held: bool,
     pub ramp_trouble: Option<String>,
-    pub broker: Option<crate::coord::Broker>,
-    pub viewer: Option<std::sync::Arc<crate::coord::Coordinator>>,
     /// This Mac's coordinator as the round has it (made or stopped as its part changes).
     pub coord: Option<std::sync::Arc<crate::coord::Coordinator>>,
     /// Whether a job ended since the last round (the checklist and counts again).
@@ -3191,11 +3189,8 @@ impl Planner {
             return;
         }
         let mut asks = crate::inputs::take_asks(&self.o.home);
-        for c in [&self.coord, &self.inp.viewer].into_iter().flatten() {
+        if let Some(c) = &self.coord {
             asks.extend(c.take_inputs_asks());
-        }
-        if let Some(b) = &self.inp.broker {
-            asks.extend(crate::coord::Pages::take_inputs_asks(b));
         }
         if asks.is_empty() {
             return;

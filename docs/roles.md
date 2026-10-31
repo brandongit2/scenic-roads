@@ -99,20 +99,36 @@ term 0 and its member, so a member still asking that Mac as the lead after a cha
 the contact again (an older member too: it compares the term). Its API is its own, not the
 coordinator's: its addresses and jobs' token, its member, its jobs' tasks closed and leases lapsed,
 its pause, placement and the members' brokers (`coord::Brokering` is what the run's steps tell,
-the lead's coordinator or a member's broker). The page data it still serves (`coord::Pages`, the
-same on the lead's coordinator and a viewer) goes with step 4. The lead's coordinator stays as it is.
+the lead's coordinator or a member's broker). Of the page it serves only what the lead's page asks
+of this Mac (`/work/live`, `/work/settings`; step 4, §3.3). The lead's coordinator stays as it is.
 
 ### 3.3 The build page
 
-The page is the lead's alone. A member's port answers `/work/` and the page's data calls
-(`/work/swarm`, `/work/history`, `/work/catalogs`, `/work/built`, `/work/regions`, ...) with a
-307 to the lead's same path (the lead's contact, from the pool's view of the declared lead,
-tailnet address first). Its own `/work/live` and the jobs' calls stay. The menu bar's popover
-loads the lead's page directly (its URL from `scenic menu`'s answer), with `?view&mac=<host>` so
-the page opens on this Mac. Its keep-warm ask goes: the lead keeps its own readers warm.
+The page is the lead's alone (built, step 4: `coord::memberpage`). A member's port (its broker,
+or with tasks brokered by every member off a viewer alone) answers `/work/`, the page's files and
+its data and asks (`/work/swarm`, `/work/history`, `/work/catalogs`, `/work/built`,
+`/work/regions`, `/work/pause`, `/work/act`, `/work/settings`, ...) from a page of its own origin
+or none (an address typed, the menu bar's web view) with a 307 to the lead's same path and query:
+the lead's coordinator's first address (its contact's, the tailnet's first), or its HTTPS page
+when the request came through `tailscale serve`. Answered there still: `/work/live` and
+`/work/settings` asked by the lead's page from its origin (CORS), the jobs' calls (their key), and
+`sw.js` (an installed page updates its worker from its own origin; the worker follows a redirect
+at once, never answering from what it kept). The build's own asks (pause, inputs, cancel and
+retry) are refused there from any other origin: the lead's page sends them to the lead.
 
-With the lead unreachable, the member's port answers the page with a small local page: this
-Mac's own status (from `helper.json`) and "the lead (Mac mini) isn't reachable since <time>".
+It redirects only to a lead that serves the page: the lead's beat answer says `page`
+(`beats::PAGE`), heard within 35 s (`beats::PAGE_AWAY_S`, three beats). An older lead, none
+known, or one not answering: the member's port answers `/work/` with a small page of its own,
+this Mac's status (from `helper.json`: its jobs, what it waits on) and "The lead (<name>) isn't
+reachable since <time>", refreshed every 10 s, and the page's data calls 503.
+
+The menu bar's popover loads this Mac's own port with `?view&mac=<host>` (its own status's
+`host`); the 307 takes it to the lead's page, which opens on this Mac (named in its title, its
+card first in the Machines tab), and with the lead down this Mac's own page shows. (Planned was
+the lead's URL from `scenic menu`'s answer; the port's redirect gives the same page and the
+lead-down page from one rule.) Its keep-warm ask is gone: the app's version check reads this
+Mac's own status (`app`). Per-Mac controls act on the chosen Mac as before: its hold through the
+lead (by member id), its settings at its own port (CORS).
 
 ### 3.4 The menu bar
 
@@ -168,10 +184,16 @@ Each step ships alone and keeps the build running; each ends with its tests.
    with the old lead's Mac's broker. As built: a broker says term 0, which an older member's
    client also takes as not the lead's; an older member's broker (a coordinator made a broker)
    and a newer one answer jobs' and pages' task calls alike.
-4. **The page on the lead** (§3.3): the 307s, the menu bar loading the lead's page, the local
+4. *Built.* **The page on the lead** (§3.3): the 307s, the menu bar loading the lead's page, the local
    unreachable page; pageview, cataloguesview, builtview and region steps built on the lead alone.
    Tests: `a_members_page_redirects_to_the_lead`, `a_members_page_with_the_lead_down_shows_its_own`,
-   the Swift self-test for the popover's URL; the touch test on the lead's page with `mac=`.
+   `a_viewer_shows_the_leads_page_does_nothing_else_and_keeps_nothing`,
+   `a_members_page_goes_only_to_a_lead_that_serves_it` (beats), `memberpage`'s own, the Swift
+   self-test for the popover's URL; the touch test's `--mac`. As built: the agent builds the
+   page's views (pageview, Catalogues, built tiles) only beside its coordinator; a member's port is
+   told where the page is each loop (`Agent::member_page`). Cut: `coord::Pages`, a member's page
+   asks passed on by its agent (`set_forward`, `retry_blocked`), the Catalogues map's member
+   source (`cataloguesview::Lead`), the popover's keep-warm ask.
 5. **The menu without the NAS** (§3.4), after #878 step 3: the beat's answer saved as
    `lead-view.json`; `scenic menu` reads it. Tests: `menu_reads_the_lead_from_the_beat`,
    `menu_works_with_the_nas_hung` (slow-NAS fake).

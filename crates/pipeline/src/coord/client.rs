@@ -302,6 +302,11 @@ impl Client {
         self.contact.lock().unwrap().token.clone()
     }
 
+    /// Its build page over HTTPS, when its contact says one (`Contact::page`).
+    pub fn page(&self) -> Option<String> {
+        self.contact.lock().unwrap().page.clone()
+    }
+
     /// Times file transfers by `files` instead (tests: short limits, a simulated clock).
     pub fn with_files(mut self, files: Files) -> Client {
         self.files = files;

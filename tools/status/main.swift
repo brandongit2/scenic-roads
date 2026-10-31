@@ -240,6 +240,8 @@ struct Replay: Decodable {
 /// helper's `helper.json`), for its build caches.
 struct Own: Decodable {
     let host: String
+    /// The app its agent runs (the status's `app`).
+    let app: String?
     let beat: Int
     let caches: Caches?
     /// This Mac in the pool, while it's on (crates/pipeline/src/agent/mod.rs PoolView).
@@ -248,17 +250,18 @@ struct Own: Decodable {
     let hold: HoldStage?
     let out_of_touch_s: Int?
 
-    init(host: String, beat: Int, caches: Caches?, pool: OwnPool?, hold: HoldStage?, out_of_touch_s: Int?) {
-        (self.host, self.beat, self.caches, self.pool, self.hold, self.out_of_touch_s) = (host, beat, caches, pool, hold, out_of_touch_s)
+    init(host: String, app: String? = nil, beat: Int, caches: Caches?, pool: OwnPool?, hold: HoldStage?, out_of_touch_s: Int?) {
+        (self.host, self.app, self.beat, self.caches, self.pool, self.hold, self.out_of_touch_s) = (host, app, beat, caches, pool, hold, out_of_touch_s)
     }
 
-    private enum CodingKeys: String, CodingKey { case host, beat, caches, pool, hold, out_of_touch_s }
+    private enum CodingKeys: String, CodingKey { case host, app, beat, caches, pool, hold, out_of_touch_s }
 
     /// The pool part read on its own: one this app can't read (an agent of another app's, a
     /// rollout) leaves it out, not the whole status.
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         host = try c.decode(String.self, forKey: .host)
+        app = try c.decodeIfPresent(String.self, forKey: .app)
         beat = try c.decode(Int.self, forKey: .beat)
         caches = try c.decodeIfPresent(Caches.self, forKey: .caches)
         pool = try? c.decodeIfPresent(OwnPool.self, forKey: .pool)
@@ -1016,9 +1019,11 @@ final class Flipped: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// The panel: the build page in a popover under the icon (docs/building.md §2, Status). This Mac's own
-/// agent's page (`Panel.page`, its port 8090: every Mac's agent serves it, from its own read of the
-/// build's state, docs/pool.md §10) with `?view`, so it only ever watches (web/work/index.html), in
+/// The panel: the build page in a popover under the icon (docs/building.md §2, Status). The lead's
+/// page, asked of this Mac's own agent's port (`Panel.page`, 8090: on a member it answers with a
+/// redirect to the lead's, or, the lead not reached, a small page of this Mac's own: docs/roles.md
+/// §3.3) with `?view&mac=<this Mac>` (`viewURL`), so it only ever watches and opens on this Mac
+/// (web/work/index.html), in
 /// a web view of its own that keeps nothing (no stored data: never a page that helps); made as the
 /// popover first opens and kept for the next opening (#408), its polling stopped while closed. Its
 /// height is the page's, within 900 pt and the screen; its links out of the page open in the
@@ -1029,7 +1034,20 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     static let footerHeight: CGFloat = 30
     /// This Mac's agent's build page (a sandbox's own: Info.plist's ScenicPage).
     static let page = info["ScenicPage"] as? String ?? "http://127.0.0.1:8090/work/"
-    static var viewURL: URL { URL(string: page + "?view")! }
+    /// The page's address: `page` with `?view`, and `&mac=<host>` once this Mac's agent said its
+    /// name (its own status's `host`).
+    static func viewURL(_ page: String, mac: String?) -> URL {
+        var c = URLComponents(string: page)!
+        c.queryItems = [URLQueryItem(name: "view", value: nil)] + (mac.map { [URLQueryItem(name: "mac", value: $0)] } ?? [])
+        return c.url!
+    }
+    /// Whether `u` is the build page's own, on any Mac (the lead's, after this Mac's port sent it
+    /// there): its `/work` path over HTTP or HTTPS. Anything else opens in the browser.
+    static func inPage(_ u: URL) -> Bool {
+        ["http", "https"].contains(u.scheme ?? "") && (u.path == "/work" || u.path.hasPrefix("/work/"))
+    }
+    /// This Mac's name as its agent says it (its status's `host`): the page's `mac=`.
+    var mac: String?
     let popover = NSPopover()
     let menu: () -> NSMenu
     var web: WKWebView?
@@ -1040,7 +1058,7 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     var outside: Any?
     /// The status as last polled: the footer's line.
     var line = ""
-    /// The agent's app, when it isn't this one's (the swarm answer's `app`): said in the footer.
+    /// The agent's app, when it isn't this one's (its own status's `app`): said in the footer.
     var otherApp: String?
     /// The content: clear, so the popover's own translucent material shows through, the same
     /// under the body and the arrow.
@@ -1108,7 +1126,6 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         applyAppearance()
         popover.contentViewController?.view.window?.makeKey()
         load()
-        checkApp()
     }
 
     func close() {
@@ -1154,7 +1171,7 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     /// else a web view made for it.
     func load() {
         setDown(nil)
-        let url = Panel.viewURL
+        let url = Panel.viewURL(Panel.page, mac: mac)
         if let w = web {
             w.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
             return
@@ -1191,28 +1208,16 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         w.load(URLRequest(url: url))
     }
 
-    /// How often the app asks /work/swarm in the background: under the agent's 60 s ASKED_FOR_S.
-    static let keepWarmS: TimeInterval = 50
-
-    /// The agent's app against this one's: the swarm answer's `app` (an agent from #409 on), a
-    /// notice in the footer when they differ. Also the background ask that keeps this Mac's page
-    /// view reading (`keepWarmS`); a 503 (not read yet) or no answer changes nothing here.
-    func checkApp() {
-        guard let u = URL(string: Panel.page + "swarm") else { return }
-        var req = URLRequest(url: u)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = Data("{}".utf8)
-        req.timeoutInterval = 5
-        URLSession.shared.dataTask(with: req) { data, resp, _ in
-            guard (resp as? HTTPURLResponse)?.statusCode == 200, let d = data,
-                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let app = o["app"] as? String else { return }
-            let mine = bundleVersion(Bundle.main.bundleURL)
-            DispatchQueue.main.async {
-                self.otherApp = (mine != nil && app != mine) ? app : nil
-                self.showState()
-            }
-        }.resume()
+    /// This Mac's agent as its own status says (`own`, polled): its name for the page's `mac=`, and
+    /// its app against this one's, a notice in the footer when they differ.
+    func setOwn(_ own: Own?) {
+        mac = own?.host ?? mac
+        let mine = bundleVersion(Bundle.main.bundleURL)
+        let other = own?.app.flatMap { mine != nil && $0 != mine ? $0 : nil }
+        if other != otherApp {
+            otherApp = other
+            showState()
+        }
     }
 
     /// `--show panel`: once the page has loaded, whether it scrolls sideways at the panel's width.
@@ -1270,7 +1275,6 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     @objc func reloadPage() {
         reload.title = "Reload"
         if let w = web, down == nil { w.reload() } else { load() }
-        checkApp()
     }
 
     @objc func showMenu(_ sender: NSButton) {
@@ -1309,14 +1313,12 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     /// The page's own addresses stay in it; any other (the map, another site) opens in the browser.
     func webView(_ w: WKWebView, decidePolicyFor a: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let u = a.request.url else { return decisionHandler(.allow) }
-        let base = Panel.viewURL
-        let inPage = u.scheme == base.scheme && u.host?.lowercased() == base.host?.lowercased() && u.port == base.port && u.path.hasPrefix("/work")
-        if inPage || ["about", "blob", "data"].contains(u.scheme ?? "") {
+        if Panel.inPage(u) || ["about", "blob", "data"].contains(u.scheme ?? "") {
             decisionHandler(.allow)
             return
         }
         decisionHandler(.cancel)
-        NSLog("scenic-status: %@ isn't the build page's (%@): in the browser", u.absoluteString, base.absoluteString)
+        NSLog("scenic-status: %@ isn't the build page's: in the browser", u.absoluteString)
         if a.targetFrame?.isMainFrame ?? true { NSWorkspace.shared.open(u) }
     }
 
@@ -1393,7 +1395,7 @@ func ownStatus() -> Own? {
     let dir = home.appendingPathComponent("agent")
     guard let own = ["status.json", "helper.json"].compactMap({ (try? Data(contentsOf: dir.appendingPathComponent($0))).flatMap { try? JSONDecoder().decode(Own.self, from: $0) } }).max(by: { $0.beat < $1.beat }) else { return nil }
     if let v = (try? Data(contentsOf: dir.appendingPathComponent("pool/view.json"))).flatMap({ try? JSONDecoder().decode(PoolFile.self, from: $0) }), v.beat > own.beat {
-        return Own(host: own.host, beat: own.beat, caches: own.caches, pool: v.pool, hold: own.hold, out_of_touch_s: own.out_of_touch_s)
+        return Own(host: own.host, app: own.app, beat: own.beat, caches: own.caches, pool: v.pool, hold: own.hold, out_of_touch_s: own.out_of_touch_s)
     }
     return own
 }
@@ -1516,12 +1518,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         poll()
         every(5) { [weak self] in self?.poll() }
         every(60) { [weak self] in self?.updateIfReplaced() }
-        // (This Mac's page view reads the build's state only while asked within the last minute,
-        // pageview.rs ASKED_FOR_S: asked every `keepWarmS`, its snapshot stays fresh and the panel
-        // has the build the moment it opens. The NAS cost is the agent's own 12 s read loop, kept
-        // going while this app runs.)
-        panel.checkApp()
-        every(Panel.keepWarmS) { [weak self] in self?.panel.checkApp() }
         if proof { menuProof() }
         if let what = showAtStart {
             after(2) {
@@ -1714,6 +1710,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self.polling = false
                 self.reply = r
                 self.own = ownStatus()
+                self.panel.setOwn(self.own)
                 self.notifyChanges()
                 self.show()
             }

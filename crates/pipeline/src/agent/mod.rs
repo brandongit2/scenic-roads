@@ -1519,26 +1519,22 @@ pub struct Agent {
     /// A member's broker (crate::coord::Broker): its own jobs' tasks alone (the lead's are its
     /// coordinator's, `coord`), and when one last failed to start.
     broker: Option<crate::coord::Broker>,
-    /// The page's data read from the NAS (crate::agent::pageview), served on this Mac's port by its
-    /// coordinator, its broker, or with neither a viewer alone (`viewer`; tried again five minutes
-    /// after it failed).
+    /// The page's data (crate::agent::pageview), served by the lead's coordinator alone
+    /// (docs/roles.md §3.3).
     pageview: std::sync::Arc<pageview::PageView>,
     /// The build page's Catalogues map (crate::agent::cataloguesview): made once the NAS's root is
     /// known, read only while a page asks.
     catalogues_view: Option<std::sync::Arc<cataloguesview::CataloguesView>>,
-    /// Whether the Catalogues map follows this Mac's own log (the lead's) or the lead's routes.
-    catalogues_lead: Option<bool>,
     /// The build page's map's finished tiles (crate::agent::builtview): made with `catalogues_view`.
     built_view: Option<std::sync::Arc<builtview::BuiltView>>,
     pageview_reading: bool,
-    /// Where the pageview asks the lead's view (`pageview::Lead`), and what it was made of: this
-    /// Mac's own coordinator (`Some(None)`), the lead's addresses and key, or none known.
-    pageview_lead: Option<(Option<Option<(Vec<String>, String)>>, pageview::LeadAt)>,
     /// This Mac's live store (crate::agent::live), kept in its folder and answered on its port's
     /// `/work/live`: made as the loop starts, on a real Mac with the agent's lock alone.
     live: Option<std::sync::Arc<live::Store>>,
     /// The pages' cancel and retry asks waiting for the pool's run (a tick held it).
     page_acts: Vec<crate::pool::driver::Act>,
+    /// A member's port with no broker (tasks brokered by every member off): a viewer alone, which
+    /// sends the build page to the lead (`member_page`), and when one last failed to start.
     viewer: Option<std::sync::Arc<crate::coord::Coordinator>>,
     viewer_failed: Option<Instant>,
     broker_failed: Option<Instant>,
@@ -1966,10 +1962,8 @@ impl Agent {
             broker: None,
             pageview: pageview::PageView::new(),
             catalogues_view: None,
-            catalogues_lead: None,
             built_view: None,
             pageview_reading: false,
-            pageview_lead: None,
             live: None,
             page_acts: Vec::new(),
             viewer: None,
@@ -4273,8 +4267,11 @@ impl Agent {
             c.set_root(root.as_ref());
         }
         // (Where the owner's settings lie, for the build page's `/work/settings`, whichever serves it.)
-        for c in self.servers() {
+        for c in self.coord.iter().chain(&self.viewer) {
             c.set_settings(&self.o.home, root.as_ref());
+        }
+        if let Some(b) = &self.broker {
+            b.set_settings(&self.o.home, root.as_ref());
         }
         // (In the pool, only while this Mac leads: a lead that stepped down takes its contact off,
         // so members find the new lead's.)
@@ -4660,8 +4657,6 @@ impl Agent {
             resume_now: self.resume_now(),
             ramp_held: self.ramp_held,
             ramp_trouble: self.ramp_trouble.clone(),
-            broker: self.broker.clone(),
-            viewer: self.viewer.clone(),
             coord: self.coord.clone(),
             ended,
             map: self.maplog.started(),
@@ -4676,10 +4671,7 @@ impl Agent {
         if self.o.dry_run {
             return;
         }
-        let mut asks = crate::inputs::take_asks(&self.o.home);
-        for c in self.not_lead_servers() {
-            asks.extend(c.take_inputs_asks());
-        }
+        let asks = crate::inputs::take_asks(&self.o.home);
         if asks.is_empty() {
             return;
         }
@@ -7479,133 +7471,77 @@ impl Agent {
                 l.set_net(n);
             }
         }
-        for c in self.servers() {
+        for c in self.coord.iter().chain(&self.viewer) {
             if !c.has_live() {
                 c.set_live(l.clone());
             }
+        }
+        if let Some(b) = self.broker.as_ref().filter(|b| !b.has_live()) {
+            b.set_live(l.clone());
         }
         let building = self.running_jobs() > 0 || self.coord.as_ref().is_some_and(|c| c.leases_out() > 0);
         l.set_nas(root.filter(|_| building));
         l.set_root(root);
     }
 
-    /// The page on this Mac's port (crate::agent::pageview), each loop: a viewer alone started when
-    /// neither a coordinator nor a broker answers there; each serving it from this Mac's read of the
-    /// NAS; that read told the term, the members, this app and this Mac's lanes now. In the pool
-    /// alone (out of it, the coordinator answers from its memory, as before).
+    /// The build page, each loop (docs/roles.md §3.3): the lead's alone. On the lead, its
+    /// coordinator serves it from this Mac's views (crate::agent::pageview, cataloguesview,
+    /// builtview), the pageview told the term, the members, this app and this Mac's lanes now, and
+    /// its pages' asks taken. On a member, its port (its broker, else a viewer alone started there)
+    /// told where the page is (`member_page`).
     fn tend_pageview(&mut self, root: &store::nasfs::NasRoot) {
         if self.o.dry_run {
             return;
         }
-        // (The Catalogues map, in the pool or out of it: the map's log followed, the lead's in
-        // process, else its routes; asked each loop, so it misses no batch.)
-        let lead = self.keeps_publishing();
-        let source: std::sync::Arc<dyn cataloguesview::Source> = if lead {
-            self.maplog.here(&self.o.home).feed.clone()
-        } else {
-            std::sync::Arc::new(cataloguesview::Lead::new(root, &self.host))
-        };
+        self.member_page();
+        let Some(coord) = self.coord.clone().filter(|_| self.keeps_publishing()) else { return };
+        // (The Catalogues map: the map's log followed, the lead's in process; asked each loop, so it
+        // misses no batch.)
+        let here = self.maplog.here(&self.o.home);
         let keep = self.o.home.join(cataloguesview::KEPT);
         let cv = self
             .catalogues_view
-            .get_or_insert_with(|| cataloguesview::CataloguesView::new(source.clone(), Some(keep)))
+            .get_or_insert_with(|| cataloguesview::CataloguesView::new(here.feed.clone(), Some(keep)))
             .clone();
-        if self.catalogues_lead != Some(lead) {
-            cv.set_source(source);
-            self.catalogues_lead = Some(lead);
-        }
         cv.wake();
-        for c in self.servers() {
-            if !c.has_catalogues() {
-                c.set_catalogues(cv.clone());
-            }
+        if !coord.has_catalogues() {
+            coord.set_catalogues(cv.clone());
         }
         // (The map's log, which the servers follow: the lead's coordinator answers it.)
-        if lead {
-            let here = self.maplog.here(&self.o.home);
-            if let Some(c) = self.coord.as_ref().filter(|c| !c.has_maplog()) {
-                c.set_maplog(here.feed.clone());
-            }
-            // (Each map server's adoption of a newer map, its cursor moved: in the history, for
-            // publishing's times, crate::pubtimes.)
-            for (host, s) in adopted(&here.feed.cursors()) {
-                if self.adoptions.get(&host) != Some(&s.n) {
-                    let e = crate::coord::history::Event {
-                        t: s.at,
-                        worker: Some(host.clone()),
-                        n: Some(s.n),
-                        ..crate::coord::history::Event::new(crate::pubtimes::ADOPT)
-                    };
-                    self.note(e);
-                    self.adoptions.insert(host, s.n);
-                }
+        if !coord.has_maplog() {
+            coord.set_maplog(here.feed.clone());
+        }
+        // (Each map server's adoption of a newer map, its cursor moved: in the history, for
+        // publishing's times, crate::pubtimes.)
+        for (host, s) in adopted(&here.feed.cursors()) {
+            if self.adoptions.get(&host) != Some(&s.n) {
+                let e = crate::coord::history::Event {
+                    t: s.at,
+                    worker: Some(host.clone()),
+                    n: Some(s.n),
+                    ..crate::coord::history::Event::new(crate::pubtimes::ADOPT)
+                };
+                self.note(e);
+                self.adoptions.insert(host, s.n);
             }
         }
         // (The map's finished tiles, the same: the build's keys on the NAS.)
         let bv = self.built_view.get_or_insert_with(|| builtview::BuiltView::new(root, Some(cv.clone()))).clone();
-        for c in self.servers() {
-            if !c.has_built() {
-                c.set_built(bv.clone());
-            }
+        if !coord.has_built() {
+            coord.set_built(bv);
         }
-        if self._lock.is_none() {
-            return;
+        if !coord.has_pageview() {
+            coord.set_pageview(self.pageview.clone());
         }
-        let now = Instant::now();
-        if self.coord.is_none()
-            && self.broker.is_none()
-            && self.viewer.is_none()
-            && brokers::stale(self.viewer_failed, now, brokers::HTTPS_EVERY)
-        {
-            let made = self.pool.is_some().then(|| make_viewer(&self.app, &self.host));
-            match made {
-                Some(Some(v)) => {
-                    eprintln!("agent: this Mac shows the build page at {}", v.contact.urls.join(", "));
-                    self.viewer = Some(std::sync::Arc::new(v));
-                }
-                Some(None) => self.viewer_failed = Some(now),
-                None => {}
-            }
-        }
-        for c in self.servers() {
-            if !c.has_pageview() {
-                c.set_pageview(self.pageview.clone());
-            }
-        }
-        // (A page's pause on a Mac not leading: this agent's to pass on, as its menu's.)
-        let lead = self.coord.is_some();
-        for c in self.not_lead_servers() {
-            c.set_forward((!lead).then(|| self.o.home.clone()));
-        }
-        if let Some(c) = &self.coord {
-            c.set_forward(None);
-        }
-        // The pages' cancel and retry asks: to the pool's step (acted on leading, else passed on
-        // to the lead: crate::pool::driver::Act); out of the pool, acted on here.
+        // The pages' cancel and retry asks: to the pool's step (acted on leading:
+        // crate::pool::driver::Act); out of the pool, acted on here.
         // (While a tick holds the run: kept for the next loop.)
         let mut acts = std::mem::take(&mut self.page_acts);
-        acts.extend(self.servers().flat_map(|c| c.take_page_acts()));
-        // (A retry: this Mac's own back-off for the target forgotten at once, a member's too; the
-        // lead forgets its own and the coordinator's.)
+        acts.extend(coord.take_page_acts());
+        // (A retry: this Mac's own back-off for the target forgotten at once.)
         for a in &acts {
             if let crate::pool::driver::Act::Retry(r) = a {
                 self.guard_backoff.retain(|id, _| !id.split(' ').any(|w| w == r.target));
-            }
-        }
-        // (Why a member's retry can't be mailed to the lead now: said to its page at once.)
-        if !lead {
-            // (Not known now, a tick holding the run: the last word kept, never cleared.)
-            let seen = match self.pool.as_ref().map(pool::try_lock) {
-                Some(Some(run)) => Some((
-                    run.side.driver().current().lead.as_ref().map(|t| t.app.clone()),
-                    run.side.member().app.clone(),
-                )),
-                _ => None,
-            };
-            if let Some(blocked) = retry_blocked(seen.as_ref().map(|(l, me)| (l.as_deref(), me.as_str()))) {
-                for c in self.not_lead_servers() {
-                    c.set_retry_blocked(blocked.clone());
-                }
             }
         }
         if !acts.is_empty() {
@@ -7636,23 +7572,8 @@ impl Agent {
         } else {
             Vec::new()
         };
-        // (The lead's view asked of its coordinator, here on the lead, else at its address; made
-        // again only when that changed. None known yet: the NAS's files, docs/coordination.md step 4.)
-        let at = match (&self.coord, &self.client) {
-            (Some(_), _) => Some(None),
-            (None, Some(c)) => Some(Some((c.urls(), c.token()))),
-            (None, None) => None,
-        };
-        if self.pageview_lead.as_ref().map(|l| &l.0) != Some(&at) {
-            let lead: Option<std::sync::Arc<dyn pageview::Lead>> = match (&at, &self.coord) {
-                (Some(None), Some(c)) => Some(c.clone()),
-                (Some(Some((urls, token))), _) => Some(std::sync::Arc::new(pageview::ByHttp(
-                    crate::coord::client::Client::at(urls.clone(), token.clone(), &self.host),
-                ))),
-                _ => None,
-            };
-            self.pageview_lead = Some((at, pageview::LeadAt(lead)));
-        }
+        // (The lead's view: its own coordinator's, in process.)
+        let lead: std::sync::Arc<dyn pageview::Lead> = coord;
         self.pageview.set_inputs(pageview::Inputs {
             root: Some(root.clone()),
             term,
@@ -7660,11 +7581,58 @@ impl Agent {
             app: self.app.clone(),
             own,
             keep: Some(self.o.home.join("pageview-waits.json")),
-            lead: self.pageview_lead.as_ref().map(|l| l.1.clone()).unwrap_or_default(),
+            lead: pageview::LeadAt(Some(lead)),
         });
         if !self.pageview_reading {
             pageview::spawn(self.pageview.clone());
             self.pageview_reading = true;
+        }
+    }
+
+    /// A member's port, each loop (docs/roles.md §3.3): with neither a coordinator nor a broker
+    /// answering there (in the pool), a viewer alone started (tried again five minutes after it
+    /// failed); whichever answers told where the build page is (`page_at`).
+    fn member_page(&mut self) {
+        if self.coord.is_some() || self._lock.is_none() {
+            return;
+        }
+        let now = Instant::now();
+        if self.broker.is_none()
+            && self.viewer.is_none()
+            && self.pool.is_some()
+            && brokers::stale(self.viewer_failed, now, brokers::HTTPS_EVERY)
+        {
+            match make_viewer(&self.app, &self.host) {
+                Some(v) => {
+                    eprintln!("agent: this Mac's port shows the lead's build page at {}", v.contact.urls.join(", "));
+                    self.viewer = Some(std::sync::Arc::new(v));
+                }
+                None => self.viewer_failed = Some(now),
+            }
+        }
+        let at = self.page_at(now_s());
+        if let Some(b) = &self.broker {
+            b.set_page_at(at.clone());
+        }
+        if let Some(v) = &self.viewer {
+            v.set_page_at(at);
+        }
+    }
+
+    /// Where a member's port sends the build page at `now` (crate::coord::memberpage): the lead's
+    /// coordinator's first address (and its HTTPS page) while the lead answers this Mac's beats
+    /// saying it serves its members' pages (crate::coord::beats::PAGE); else this Mac's own page,
+    /// with the lead's name and since when it last answered so.
+    fn page_at(&self, now: u64) -> crate::coord::memberpage::PageAt {
+        use crate::coord::memberpage::PageAt;
+        let served = self.beats.as_ref().map_or(Err(None), |b| b.lead_page(now));
+        let url = self.client.as_ref().and_then(|c| Some((c.urls().first()?.clone(), c.page())));
+        match (served, url) {
+            (Ok(()), Some((url, https))) => PageAt::Lead { url, https },
+            (served, _) => PageAt::Away {
+                lead: self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()?.lead.as_ref()).map(|l| l.host.clone()),
+                since: served.err().flatten(),
+            },
         }
     }
 
@@ -7703,18 +7671,6 @@ impl Agent {
         if let Some(v) = self.viewer.take() {
             v.stop();
         }
-    }
-
-    /// This Mac's servers of the build page: its coordinator, its broker, its viewer (one at a
-    /// time, in the pool).
-    fn servers(&self) -> impl Iterator<Item = &dyn crate::coord::Pages> {
-        self.coord.as_deref().map(|c| c as &dyn crate::coord::Pages).into_iter().chain(self.not_lead_servers())
-    }
-
-    /// Its broker and its viewer: a page's asks there are its agent's to pass on.
-    fn not_lead_servers(&self) -> impl Iterator<Item = &dyn crate::coord::Pages> {
-        let b = self.broker.as_ref().map(|b| b as &dyn crate::coord::Pages);
-        b.into_iter().chain(self.viewer.as_deref().map(|v| v as &dyn crate::coord::Pages))
     }
 
     /// The coordinator brokering this Mac's tasks, for the run's steps (`Cx::broker`): the lead's,
@@ -9040,22 +8996,8 @@ fn make_broker(o: &Options, run: &pool::Run, app: &str, host: &str) -> Option<cr
     started.map_err(|e| eprintln!("agent: no broker ({e:#})")).ok()
 }
 
-/// Why a member's page's retry can't be mailed to the lead now, from `seen` (the lead's app, None
-/// with no lead; this Mac's app): Some(None) it can, Some(Some(why)) it can't; None, not known
-/// now (the pool's run held by a tick, or out of the pool): the last word stands.
-fn retry_blocked(seen: Option<(Option<&str>, &str)>) -> Option<Option<String>> {
-    let (lead, me) = seen?;
-    Some(match lead {
-        None => Some("no lead now".to_string()),
-        Some(app) if app != me => {
-            Some(format!("the lead runs app {app}, this Mac {me}: try again on the lead's own page"))
-        }
-        Some(_) => None,
-    })
-}
-
-/// A viewer alone on this Mac's coordinator port (crate::coord::Coordinator::viewer): the page and
-/// its views, nothing kept; None when it can't listen.
+/// A viewer alone on this Mac's coordinator port (crate::coord::Coordinator::viewer): a member's
+/// port with no broker, the lead's page sent there; None when it can't listen.
 fn make_viewer(app: &str, host: &str) -> Option<crate::coord::Coordinator> {
     let port = coord_port();
     #[cfg(test)]
@@ -16284,24 +16226,6 @@ mod pool_tests {
         assert!(lead.hold().held.is_none() && crate::control::read_hold(&lead.o.home).held.is_none());
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
-    }
-
-    #[test]
-    fn a_retry_blocked_stays_so_while_the_run_cant_be_read() {
-        // (Task #409 follow-up) a tick holding the pool's run says nothing new: the last word
-        // stands, so the page's retry is still answered 409; once read, it's said again.
-        assert_eq!(retry_blocked(Some((None, "b34"))), Some(Some("no lead now".into())));
-        assert!(retry_blocked(Some((Some("b33"), "b34"))).is_some_and(|w| w.is_some_and(|w| w.contains("b33"))));
-        assert_eq!(retry_blocked(Some((Some("b34"), "b34"))), Some(None));
-        assert_eq!(retry_blocked(None), None, "not known: nothing set");
-        let (c, _port) = crate::coord::start_for_test(&tempfile::tempdir().unwrap().path().join("coord"), "m1", "b34");
-        for seen in [Some((None, "b34")), None] {
-            if let Some(b) = retry_blocked(seen) {
-                c.set_retry_blocked(b);
-            }
-            assert!(c.shared.lock().unwrap().retry_blocked.is_some(), "{seen:?}");
-        }
-        c.stop();
     }
 
     #[test]

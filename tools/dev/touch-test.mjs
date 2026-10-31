@@ -48,6 +48,9 @@
 //                     AGE s ago, in PHASE, past a threshold (`loop_stuck_s`) of 300 s (task #899:
 //                     an agent before it says no threshold); the Machines tab's lead card then
 //                     checked for its chip, the Overview for its alert (chrome-loop-stuck)
+//   --mac NAME        the page opened as the menu bar's panel on Mac NAME opens it (`?view&mac=NAME`,
+//                     docs/roles.md §3.3): its title names NAME and the Machines tab shows NAME's card
+//                     first (when the build has it)
 //   --only-map        only the map's checks (its solo, its age controls) and screenshots
 //   --solo STEP       the step the map's checks solo (default: the one with the most tiles built)
 //   --zoom-on X,Y     the map then zoomed in on world point X,Y (Web Mercator 0–1000; Ontario and
@@ -113,6 +116,7 @@ const SCHEME = arg("--scheme", null);
 const PAUSE_LAG = +arg("--pause-lag", 3000);
 const fake = { pause: null, posts: 0 }; // (the page's Pause as this server keeps it)
 const ONLY_MAP = process.argv.includes("--only-map");
+const MAC = arg("--mac", null);
 const PHASE_TIMES = arg("--phase-times", null);
 const OVER_BOUND = arg("--over-bound", null)?.split(":") ?? null;
 const LOOP_STUCK = arg("--loop-stuck", null)?.split(/:(.*)/s) ?? null;
@@ -284,8 +288,18 @@ async function run() {
     const still = () => until(`!${MAP}?.dataset.fading`, 5000);
 
     await page.send("Page.addScriptToEvaluateOnNewDocument", { source: stub() });
-    await page.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/work/?view#overview` });
+    await page.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/work/?view${MAC ? `&mac=${encodeURIComponent(MAC)}` : ""}#overview` });
     await until(`!!document.querySelector('.panel[data-tab="overview"]')?.children.length && !!${MAP}?.width`, 20000);
+
+    // `?mac=` (the menu bar's panel on a member, sent to the lead's page): the page opens on it.
+    if (MAC) {
+      await show("machines");
+      await until(`!!document.querySelector(".machines")?.children.length`, 10000);
+      const [title, first, all] = await js(`(() => { const cards = [...document.querySelectorAll(".machines > *")].map((c) => c.textContent); return [document.getElementById("title").textContent, cards[0] || "", cards.join(" | ")]; })()`);
+      check(`mac=: the page opens on ${MAC}`, title.endsWith(` · ${MAC}`) && (!all.includes(MAC) || first.includes(MAC)), `title "${title}", first card "${first.slice(0, 40)}"`);
+      await shot("chrome-mac");
+      await show("overview");
+    }
 
     // The map (#685): in its own panel, no tabs over it, no fade setting, published tiles off at
     // first; a step's legend item solos it while hovered (a mouse) and holds it on a click or tap,

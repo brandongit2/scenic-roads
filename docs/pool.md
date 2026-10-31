@@ -1576,12 +1576,12 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   targets, 24 lanes); about 2 MB for a whole rebuild's. Every time and speed in it is made
   finite before it's written (`Record::clamp`). Handed to the lead's coordinator for `/pool/view`
   (on the NAS only under the gate above). Read by each Mac's page data (below).
-- **The page's data on every Mac** (`agent::pageview`, task #409): in the pool, each Mac's port
-  8090 answers `/work/swarm` and `/work/history` the same JSON on every Mac (`/work/steps` is the
-  steps table, the same everywhere); out of the pool the coordinator answers from its memory, as
-  before. While a page has asked in the last 60 s, a thread of the agent asks the lead's view
-  every 2 s (`POST /pool/view`, docs/coordination.md step 4: the lead's own pageview its
-  coordinator in process): the lead's status, its coordinator's view, the pause (on the lead the
+- **The page's data on the lead** (`agent::pageview`, task #409; the lead's alone since #882 step 4,
+  docs/roles.md §3.3: a member's port sends the page there): in the pool, the lead's port 8090
+  answers `/work/swarm` and `/work/history` from its pageview (`/work/steps` is the steps table);
+  out of the pool the coordinator answers from its memory, as before. While a page has asked in
+  the last 60 s, a thread of the agent asks the lead's view every 2 s (its coordinator in process,
+  as `POST /pool/view` answers, docs/coordination.md step 4): the lead's status, its coordinator's view, the pause (on the lead the
   answer's is its coordinator's own), the Macs' addresses, and the forecast's input and the regions
   when their time changed; with the lead down, the last view is kept and the answer says its age
   (`view_age_s`) and since when the lead isn't reached (`view_unreached`). With a lead that doesn't
@@ -1611,8 +1611,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   ("since you last looked" goes by the events' time, so it outlives a restart). Until its first
   read a Mac answers 503 (never its memory's views: another numbering), and the page says it's
   reading the build's state (quietly, not as an error) and asks again every 2 s, saying it as an
-  error only after a minute of 503s (`sums.js` `notRead`; a 503 from `/work/history` alone waits for the next 10 s poll; no retry while the page is hidden). The menu bar app asks `/work/swarm`
-  every 50 s while it runs, so this Mac keeps reading and its panel has the build when it opens. The forecast is run here from the input, its time brought
+  error only after a minute of 503s (`sums.js` `notRead`; a 503 from `/work/history` alone waits for the next 10 s poll; no retry while the page is hidden). The forecast is run here from the input, its time brought
   to now and this Mac's own lanes as its slots are now, worked out as the lead works out its own
   (`forecast::SlotJob`: its own estimate, or its targets left at its speed, a minute at least; its
   running job too); a target missing from the cost table is a bug, logged once. It runs on a
@@ -1620,15 +1619,15 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   answer carries the last one done. Times are given
   the page as ages (`coord::ages`). The answer carries the app serving it (`app`). With a lead on
   an app from before these records (no `view.json`, no `forecast-input.json`), the answer has no
-  leases, workers nor tasks, and the forecast is the one in the lead's status. A Mac with neither
-  a coordinator nor a broker serves the page from a viewer (`Coordinator::viewer`): the page and
-  its views, and the pages' asks (§11, and the settings: docs/workers.md §7), passed to its
-  agent, every other call refused (its key's too); no
-  state folder of the agent's (its token alone, in a scratch folder removed as it stops, a dead
-  process's as the next starts), no history, no background loop. The usual Origin rules hold. A
-  history file written again in its place (its inode or first line changed) is read from its
-  start, the events taken in already passed over. The menu bar's panel loads this Mac's own page
-  alone (docs/building.md §2, Status).
+  leases, workers nor tasks, and the forecast is the one in the lead's status. A member with
+  neither a coordinator nor a broker answers its port from a viewer (`Coordinator::viewer`): the
+  page sent to the lead as a broker sends it (docs/roles.md §3.3), its live store, settings and
+  hold, every other call refused (its key's too); no state folder of the agent's (its token alone,
+  in a scratch folder removed as it stops, a dead process's as the next starts), no history, no
+  background loop. The usual Origin rules hold. A history file written again in its place (its
+  inode or first line changed) is read from its start, the events taken in already passed over.
+  The menu bar's panel loads its own port with `?view&mac=<host>`, which sends it to the lead's
+  page (docs/building.md §2, Status).
 - **Phase shares** (task #511): for each step, its top-level phases' mean share of a run's wall
   time and of the bytes its phases counted as read or written (local disk, NAS and internet alike:
   `timings::count`; the page says "I/O"), over its last 10 runs that ended well
@@ -1771,7 +1770,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   lane's runs in order); `jobs`, how many jobs each run is (its `Lane::cuts` and one), the jobs
   numbered in turn in the runs' order; and `deps`, [a, b] when an item of job b waits on one of
   job a (task #879: its declared reads, `steps::read_targets`, a release's; a set it reads whole by
-  the job of the set's item ending last), each pair once; and `after` (task #797), for each job (in the jobs' order) the history's event numbers of the finished jobs its items waited on (per step the last such job over the job's items, sorted, a few numbers a job: the `WaitsBasis` lookup the forecast's thread already makes for the history's waits, `Waits::by_job`; none for an item new since the last forecast), with the `epoch` they're numbered in: the coordinator's (`coordinator <lead>`, the status's) out of the pool; in it, each Mac's pageview's (§10), worked out there by the same lookup from its own run's items and the history it took in (its waits kept apart from its history, whose events' `after` stay the writers' renumbered: `History::waits_basis_from`; kept on its Mac's disk, `<agent home>/pageview-waits.json`, written whole (`store::whole::write`) every 5 minutes at most, each number as its writer and its number there, and read back for its first run after a start (task #863), so that run's `after` names the jobs finished since they were kept; none when no file is there, it doesn't read, or it was kept over a day before). A member's page reads its own Mac's history (another numbering) and the lead's answer, asked with `{"raw": true}`: the lead then answers `after` as its coordinator wrote it, with `by`, the member name its numbers are under; the page gives them to its own Mac's port as `{"renumber": {"by", "after"}}`, which answers `{epoch, after}` through its own pageview's `renumber` (its numbering and epoch; a job it hasn't taken in, dropped; `epoch` null before its first read, and the page then draws no arrows from finished jobs). Measured on the 26 Oct 20:15
+  the job of the set's item ending last), each pair once; and `after` (task #797), for each job (in the jobs' order) the history's event numbers of the finished jobs its items waited on (per step the last such job over the job's items, sorted, a few numbers a job: the `WaitsBasis` lookup the forecast's thread already makes for the history's waits, `Waits::by_job`; none for an item new since the last forecast), with the `epoch` they're numbered in: the coordinator's (`coordinator <lead>`, the status's) out of the pool; in it, each Mac's pageview's (§10), worked out there by the same lookup from its own run's items and the history it took in (its waits kept apart from its history, whose events' `after` stay the writers' renumbered: `History::waits_basis_from`; kept on its Mac's disk, `<agent home>/pageview-waits.json`, written whole (`store::whole::write`) every 5 minutes at most, each number as its writer and its number there, and read back for its first run after a start (task #863), so that run's `after` names the jobs finished since they were kept; none when no file is there, it doesn't read, or it was kept over a day before). (A member's page read its own Mac's history (another numbering) and the lead's answer, asked with `{"raw": true}`; since #882 step 4 every page is the lead's, so this path serves only the lead's own page's asks of itself): the lead then answers `after` as its coordinator wrote it, with `by`, the member name its numbers are under; the page gives them to its own Mac's port as `{"renumber": {"by", "after"}}`, which answers `{epoch, after}` through its own pageview's `renumber` (its numbering and epoch; a job it hasn't taken in, dropped; `epoch` null before its first read, and the page then draws no arrows from finished jobs). Measured on the 26 Oct 20:15
   record (31,132 items, 850 runs): `macs` 642 KB, `runs` 366 KB, `deps` 117 KB (12,046 pairs);
   ~275 KB gzipped whole, and sent gzipped to a client that sends `Accept-Encoding: gzip` (the agent gzips every answer of 32 bytes or more except images, event streams, raw bytes (octet-stream, tar, zip) and parts of a file). In the pool (task #836) every Mac's port, the lead's too, answers from
   its own pageview (§10, `PageView::tocome`): the tiles and runs of the very forecast run its

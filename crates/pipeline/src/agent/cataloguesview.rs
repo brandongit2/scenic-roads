@@ -307,41 +307,6 @@ impl Source for store::map::feed::Feed {
     }
 }
 
-/// The lead's `/map/` routes, asked from a member (its contact on the NAS, crate::coord::client).
-pub struct Lead {
-    root: store::nasfs::NasRoot,
-    worker: String,
-    client: Arc<Snap<Option<Arc<crate::coord::client::Client>>>>,
-}
-
-impl Lead {
-    pub fn new(root: &store::nasfs::NasRoot, host: &str) -> Lead {
-        Lead { root: root.short_retry(), worker: format!("page {host}"), client: Snap::new(None) }
-    }
-
-    fn get(&self, path: &str) -> anyhow::Result<Vec<u8>> {
-        let c = match &*self.client.get() {
-            Some(c) => c.clone(),
-            None => {
-                let made = crate::coord::client::Client::from_nas(&self.root, &self.worker)?;
-                let c = Arc::new(made.ok_or_else(|| anyhow::anyhow!("no lead's coordinator"))?);
-                self.client.set(Some(c.clone()));
-                c
-            }
-        };
-        c.get_bytes(path)
-    }
-}
-
-impl Source for Lead {
-    fn changes(&self, since: u64) -> anyhow::Result<Answer> {
-        Ok(serde_json::from_slice(&self.get(&format!("/map/changes?since={since}"))?)?)
-    }
-    fn map(&self) -> anyhow::Result<Arc<Map>> {
-        Ok(Arc::new(store::map::Snapshot::decode(&self.get("/map/snapshot")?)?.0))
-    }
-}
-
 /// What the view shows (`answer`, `names`), as its reader last made it.
 #[derive(Default)]
 struct Shown {

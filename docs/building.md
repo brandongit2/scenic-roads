@@ -505,12 +505,13 @@ available. Until work is done, the map serves the last catalogue.
   agent's stuck threshold (the status's `loop_age_s`, counted on from its `beat`, past its `loop_stuck_s`, `beat::LOOP_STUCK`,
   task #899) gets a line "<Mac>: loop stuck 6 min, in <phase>" (`loop_phase`, the loop's phase
   then); its status still beats on its own timer, so it isn't out of touch.
-  - **Its panel:** a click opens this Mac's own agent's build page in a popover
-    (`http://127.0.0.1:8090/work/?view`: every Mac's agent serves it from its own read of the
-    build's state, docs/pool.md §10), in a web view that keeps nothing, kept for the next opening
-    and quiet while closed, 900 pt tall at most. With this Mac's agent not answering, one line says
-    so ("The build's agent isn't running on this Mac"); with it on another app than the menu bar's
-    (the swarm answer's `app`), the footer says so. From it, as from any page on this Mac, a job
+  - **Its panel:** a click opens the build page in a popover, asked of this Mac's own agent's port
+    (`http://127.0.0.1:8090/work/?view&mac=<this Mac>`: on a member it redirects to the lead's
+    page, which opens on this Mac, or with the lead not reached shows a small page of this Mac's
+    own, docs/roles.md §3.3), in a web view that keeps nothing, kept for the next opening and quiet
+    while closed, 900 pt tall at most. With this Mac's agent not answering, one line says so ("The
+    build's agent isn't running on this Mac"); with it on another app than the menu bar's (its own
+    status's `app`), the footer says so. From it, as from any page on this Mac, a job
     can be cancelled and a failed target tried again (docs/pool.md §11).
   - **Its menu** (right-click, or "⋯"): the state and caches; Pause/Resume Building; the
     lead items (docs/pool.md §11); Clear the Build's Caches; Clear Caches Deeply; Open the Build

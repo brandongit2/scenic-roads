@@ -2,7 +2,9 @@
 // as this version installs, and come from the lead whenever it answers well within WAIT_MS (a
 // newly published app's page at once), else as kept: a Mac that doesn't (asleep, away, or its
 // agent restarting: tailscale serve answers 502) is taken for away for AWAY_MS, what was kept used
-// at once meanwhile. Everything else (every request to the coordinator) isn't touched.
+// at once meanwhile. Everything else (every request to the coordinator) isn't touched. A redirect
+// (a member's port sends the page to the lead's, docs/roles.md §3.3) is followed at once, never
+// answered from what was kept.
 //
 // VERSION is the page's own (the coordinator's hash of its files) and PAGE their addresses (the
 // coordinator's list): a new version is a new worker, which takes over; the page then reloads into
@@ -56,7 +58,7 @@ async function page(e, key) {
   // mix; a file missing from the install is kept as it first comes.)
   const kept = await cache.match(key);
   const net = fetch(e.request).then(async (r) => {
-    if (r.ok) {
+    if (r.ok && !r.redirected) {
       awayUntil = 0;
       if (!kept) await put(cache, key, r.clone());
     }
@@ -67,7 +69,7 @@ async function page(e, key) {
   if (Date.now() < awayUntil) return kept;
   const late = new Promise((done) => setTimeout(() => done(null), WAIT_MS));
   const r = await Promise.race([net.catch(() => null), late]);
-  if (r && r.ok) return r;
+  if (r && (r.ok || r.type === "opaqueredirect")) return r;
   awayUntil = Date.now() + AWAY_MS;
   return kept;
 }

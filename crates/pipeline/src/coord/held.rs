@@ -106,7 +106,7 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
             beats.heard(h, b.status.clone(), unix);
             a.members = beats.members(unix, &id);
         }
-        a.speaks = vec![super::beats::SPEAKS.to_string()];
+        a.speaks = vec![super::beats::SPEAKS.to_string(), super::beats::PAGE.to_string()];
         a.nas_too = beats.nas_too();
     }
     if b.speaks.iter().any(|w| w == SPEAKS) {

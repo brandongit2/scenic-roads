@@ -35,10 +35,11 @@ pub mod inbox;
 pub mod kept;
 pub mod lease;
 pub mod maproutes;
+pub mod memberpage;
 pub mod sched;
 pub mod task;
 
-pub use broker::{Broker, Brokering, Pages};
+pub use broker::{Broker, Brokering};
 
 use crate::agent::memguard::Floor;
 use crate::handoff::Handoff;
@@ -382,16 +383,17 @@ pub struct Shared {
     /// Each Mac's tiles to come in the lead's last forecast (crate::agent::forecast::ToCome):
     /// `/work/tocome`. None: this Mac made none (a member's: the page asks the lead).
     pub tocome: Option<Arc<crate::agent::forecast::ToCome>>,
-    /// A viewer alone (`Coordinator::viewer`): the page and its views, nothing else (but this
-    /// Mac's own page's asks, passed to its agent).
+    /// A viewer alone (`Coordinator::viewer`): a member's port with no broker (tasks brokered by
+    /// every member off): its page (`page_at`), its live store and settings, nothing else.
     pub viewer: bool,
     /// A member's broker (`Broker`): the tasks of its Mac's own jobs alone. Its answers say term 0
     /// and its member (`http::stamp`): no term's lead, so a member that kept its way here after a
     /// change of lead reads the lead's contact again.
     pub broker: bool,
-    /// Not the lead's (a member's broker, a viewer): a page's pause is this Mac's agent's to pass
-    /// on (crate::control::request in its folder, `set_forward`), not this one's to set.
-    pub forward: Option<PathBuf>,
+    /// Not the lead's (a member's broker, a viewer): where the build page is (the lead's, or this
+    /// Mac's own page while the lead isn't reached: crate::coord::memberpage), as its agent last
+    /// told (`set_page_at`).
+    pub page_at: memberpage::PageAt,
     /// This Mac's agent's folder and the NAS's project folder (None: away), where the owner's
     /// settings lie (`/work/settings`, crate::agent::settings; `set_settings`). None: not said yet.
     pub settings: Option<(PathBuf, Option<store::nasfs::NasRoot>)>,
@@ -399,11 +401,8 @@ pub struct Shared {
     /// (`HOLD_WAIT`; a test's, long enough that only an answer ends it).
     pub hold_wait: Duration,
     /// The build pages' asks to cancel a job or try a target again (`/work/act`), for this Mac's
-    /// agent to act on, leading, or to pass on to the lead (crate::pool::driver::Act).
+    /// agent to act on (crate::pool::driver::Act).
     pub page_acts: Vec<crate::pool::driver::Act>,
-    /// Not the lead's: why a page's retry can't be passed on to the lead now (none leads, or it runs
-    /// another app: crate::pool::driver's `Act`), as its agent last saw; None: it can.
-    pub retry_blocked: Option<String>,
     /// Its state in the pool's store on this Mac's disk (`kept`, docs/coordination.md §4; task
     /// #878): told of each change saved, opened by `Coordinator::start_on`.
     pub keep: Arc<kept::Kept>,
@@ -1148,10 +1147,9 @@ pub struct Fail {
 }
 
 impl Coordinator {
-    /// A viewer alone, from birth, answering on `listener` (docs/pool.md §10): the page and its
-    /// views (`/work/swarm`, `/work/history`, `/work/steps`, from a pageview once it's given one;
-    /// `/work/live`, from the live store),
-    /// every other call refused. No state of a coordinator's: nothing loaded nor kept (its token,
+    /// A viewer alone, from birth, answering on `listener`: a member's port with no broker
+    /// (docs/roles.md §3.3): the page sent to the lead, or this Mac's own (`page_at`); `/work/live`,
+    /// from the live store; this Mac's settings and hold; every other call refused. No state of a coordinator's: nothing loaded nor kept (its token,
     /// the one thing it makes, in a scratch folder of its own, emptied as it starts), no history,
     /// no background loop, no page address written.
     pub fn viewer(listener: std::net::TcpListener, me: &str, app: &str) -> Result<Coordinator> {
@@ -1375,11 +1373,10 @@ impl Coordinator {
             tocome: None,
             viewer,
             broker: mode == Mode::Broker,
-            forward: None,
+            page_at: Default::default(),
             settings: None,
             hold_wait: HOLD_WAIT,
             page_acts: Vec::new(),
-            retry_blocked: None,
             keep: Default::default(),
             own_cap: None,
             dir: dir.to_path_buf(),
@@ -2358,14 +2355,10 @@ impl Coordinator {
         std::mem::take(&mut self.shared.lock().unwrap().page_acts)
     }
 
-    /// Not the lead's: why a page's retry can't reach the lead now (`Shared::retry_blocked`).
-    pub fn set_retry_blocked(&self, why: Option<String>) {
-        self.shared.lock().unwrap().retry_blocked = why;
-    }
-
-    /// Not the lead's: a page's pause goes to this Mac's agent (its folder `home`) to pass on.
-    pub fn set_forward(&self, home: Option<PathBuf>) {
-        self.shared.lock().unwrap().forward = home;
+    /// Not the lead's (a member's broker, a viewer): where the build page is
+    /// (crate::coord::memberpage), as its agent knows the lead now.
+    pub fn set_page_at(&self, at: memberpage::PageAt) {
+        self.shared.lock().unwrap().page_at = at;
     }
 
     /// Where the owner's settings lie (`Shared::settings`): this Mac's agent's folder `home`, the
@@ -3801,12 +3794,6 @@ fn route(
             if let (Some(p), true) = (pause.as_mut(), caller.page) {
                 p.by = format!("the build page ({})", caller.from);
             }
-            // (Not the lead's: this Mac's agent passes it on, as its menu's.)
-            let forward = shared.lock().unwrap().forward.clone();
-            if let (Some(home), true) = (forward, caller.page) {
-                crate::control::request(&home, pause)?;
-                return Ok((200, ok));
-            }
             set_pause(&mut shared.lock().unwrap(), pause, at);
             Ok((200, ok))
         }
@@ -3910,7 +3897,7 @@ fn route(
         "/work/act" => {
             // A build page's ask (docs/pool.md §11): cancel a job
             // (`{"cancel": {"target": …, "step": …}}`) or try a failed target again now
-            // (`{"retry": {…}}`), for its agent: acted on leading, else passed on to the lead.
+            // (`{"retry": {…}}`), for its agent to act on (the lead's: a member's port sends its page here).
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let by = format!("the build page ({})", caller.from);
             let one = |v: &serde_json::Value| -> Result<(String, Option<String>)> {
@@ -3935,25 +3922,6 @@ fn route(
                 }
                 _ => anyhow::bail!("{{\"cancel\": {{\"target\": …}}}} or {{\"retry\": {{\"target\": …}}}}"),
             };
-            // Not the lead's: a cancel through this Mac's agent's own cancel asks (as `scenic job
-            // cancel`: it tells the lead, whatever app the lead runs); a retry mailed to the lead,
-            // refused now when it can't be (`retry_blocked`).
-            let (forward, blocked) = {
-                let s = shared.lock().unwrap();
-                (s.forward.clone(), s.retry_blocked.clone())
-            };
-            match (&act, forward) {
-                (crate::pool::driver::Act::Cancel(c), Some(home)) => {
-                    crate::control::request_cancel(&home, c)?;
-                    return Ok((200, ok));
-                }
-                (crate::pool::driver::Act::Retry(_), Some(_)) => {
-                    if let Some(why) = blocked {
-                        return Ok((409, serde_json::json!({ "error": format!("can't ask the lead: {why}") })));
-                    }
-                }
-                _ => {}
-            }
             shared.lock().unwrap().page_acts.push(act);
             Ok((200, ok))
         }
@@ -4322,17 +4290,15 @@ fn route(
         "/work/swarm" => {
             // (In the pool, from this Mac's pageview, the lead's view: the same on every Mac; none yet, not
             // ready. Never the memory's meanwhile: its numbering isn't the read's.)
-            // (The pause, on the lead (nothing to forward: its pages' asks are set here), from its
-            // memory: its NAS mirror waits for the agent's next loop, many seconds on a busy lead.)
+            // (The pause, from the lead's memory: its NAS mirror waits for the agent's next loop,
+            // many seconds on a busy lead.)
             let (pv, own) = {
                 let s = shared.lock().unwrap();
-                (s.pageview.clone().filter(|p| p.active()), s.forward.is_none().then(|| s.paused.clone()))
+                (s.pageview.clone().filter(|p| p.active()), s.paused.clone())
             };
             if let Some(p) = pv {
                 return Ok(p.swarm().map_or_else(not_ready, |mut a| {
-                    if let Some(own) = own {
-                        a["pause"] = serde_json::to_value(own).unwrap_or_default();
-                    }
+                    a["pause"] = serde_json::to_value(own).unwrap_or_default();
                     (200, a)
                 }));
             }
@@ -5034,11 +5000,20 @@ mod http {
         if req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).is_some_and(|h| !crate::net::ours(h)) {
             return error(StatusCode::FORBIDDEN, "not this lead's address");
         }
-        if !crate::net::from_the_page(req.headers()) && member_page(&c, req.headers()).is_none() {
+        let own_page = crate::net::from_the_page(req.headers());
+        if !own_page && member_page(&c, req.headers()).is_none() {
             return error(StatusCode::FORBIDDEN, "not from the build page");
         }
         let path = req.uri().path().to_string();
         let key = bearer(req.headers()).map(str::to_string);
+        // (Not the lead's, a member's port: the page is the lead's, docs/roles.md §3.3. A page of
+        // its own origin (or none: an address typed, the menu bar's web view) sent there; the lead's
+        // page asking this Mac's `/work/live` and `/work/settings` from its origin answered here.)
+        if key.is_none() && own_page {
+            if let Some(r) = elsewhere(&c, &req, &path) {
+                return r;
+            }
+        }
         let owner = key.as_deref().is_some_and(|k| crate::net::same(k, &c.token));
         let job = key.as_deref().is_some_and(|k| crate::net::same(k, &c.job_token));
         req.extensions_mut().insert(Caller { local, page: key.is_none(), from });
@@ -5060,17 +5035,20 @@ mod http {
             return next.run(req).await;
         }
         // (The owner's asks from a build page, on any device that reaches it (the owner, 21 Oct:
-        // no page of this Mac's own first); a viewer's and a member's broker's passed to its agent.)
-        let viewer = c.shared.lock().unwrap().viewer;
-        let owners_asks = matches!(
-            path.as_str(),
-            "/work/pause" | "/work/inputs" | "/work/act" | "/work/settings" | "/work/hold" | "/work/quit"
-        );
+        // no page of this Mac's own first). Not the lead's, a member's port: this Mac's own alone
+        // (its settings, its hold, its quit); the build's (pause, inputs, cancel and retry) are the
+        // lead's page's.)
+        let (viewer, member) = {
+            let s = c.shared.lock().unwrap();
+            (s.viewer, s.viewer || s.broker)
+        };
+        let owners_asks = matches!(path.as_str(), "/work/settings" | "/work/hold" | "/work/quit")
+            || (!member && matches!(path.as_str(), "/work/pause" | "/work/inputs" | "/work/act"));
         if viewer {
             return if key.is_none() && owners_asks && req.method() == Method::POST {
                 next.run(req).await
             } else {
-                error(StatusCode::FORBIDDEN, "this Mac shows the build; it coordinates nothing")
+                error(StatusCode::FORBIDDEN, "this Mac shows the lead's build page; it coordinates nothing")
             };
         }
         // A job's: with its key, from this Mac itself.
@@ -5107,6 +5085,48 @@ mod http {
             return error(StatusCode::FORBIDDEN, "a page reads the build and takes the owner's asks alone");
         }
         next.run(req).await
+    }
+
+    /// What a member's port (a broker, a viewer) answers a keyless request for `path` from a page of
+    /// its own origin (crate::coord::memberpage): the page and its data and asks with a 307 to the
+    /// lead, or, the lead not reached, `/work/` with this Mac's own page and the rest 503; None:
+    /// answered here (the lead's own coordinator, `/work/live`, the page's worker, the jobs').
+    fn elsewhere(c: &Ctx, req: &Request, path: &str) -> Option<Response> {
+        use super::memberpage::{self, Answer, PageAt};
+        let (at, home) = {
+            let s = c.shared.lock().unwrap();
+            if !s.broker && !s.viewer {
+                return None;
+            }
+            (s.page_at.clone(), s.settings.as_ref().map(|(h, _)| h.clone()))
+        };
+        let get = req.method() == Method::GET;
+        let answer = memberpage::answer(path, get, |p| PAGE.iter().any(|(n, _, _)| *n == p));
+        if answer == Answer::Here {
+            return None;
+        }
+        let proxied = req.headers().contains_key("x-forwarded-host");
+        let pq = req.uri().path_and_query().map_or(path, |p| p.as_str());
+        let pq =
+            if pq == "/work" || pq.starts_with("/work?") { pq.replacen("/work", "/work/", 1) } else { pq.to_string() };
+        if let Some(to) = memberpage::location(&at, &pq, proxied) {
+            return Some(
+                (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, to), (header::CACHE_CONTROL, "no-store".into())])
+                    .into_response(),
+            );
+        }
+        let PageAt::Away { lead, since } = at else { return None };
+        Some(match answer {
+            Answer::Page if get => (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store")],
+                memberpage::page(home.as_deref(), lead.as_deref(), since, unix_now()),
+            )
+                .into_response(),
+            _ => {
+                error(StatusCode::SERVICE_UNAVAILABLE, "the build page is the lead's, and the lead isn't reachable now")
+            }
+        })
     }
 
     /// Whether `path` is one a page once worked through (its asks, beats, hand-backs and failures,
@@ -10087,28 +10107,75 @@ mod tests {
         assert_eq!(ask("POST", "/work/pause", Some("0123456789abcdef0123456789abcdef")).0, 401);
     }
 
+    /// docs/roles.md §3.3: a member's port sends its page, the page's data and the owner's asks
+    /// to the lead (307, path and query kept: `?view&mac=`), from an address typed or a page of its
+    /// own origin; the lead's page asking this Mac's `/work/live` and `/work/settings` from its
+    /// origin, and the jobs' calls, are answered here.
     #[test]
-    fn a_members_broker_passes_the_owners_asks_from_any_device_to_its_agent() {
-        // (Task #409 review; #521: from any device) a broker (not the lead's: its agent passes them
-        // on): a page's pause goes to its agent, from this Mac or another device; a retry that
-        // can't reach the lead is answered so.
+    fn a_members_page_redirects_to_the_lead() {
         let (_d, b, w) = start_broker();
-        let c = &*b.c;
-        let home = tempfile::tempdir().unwrap();
-        c.set_forward(Some(home.path().to_path_buf()));
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
-        let far = [("X-Forwarded-For", "100.101.1.2")];
-        let pause = serde_json::json!({ "pause": { "mode": "drain", "by": "x", "at": 0 } });
-        for h in [&far[..], &[]] {
-            assert_eq!(send(&addr, "POST", "/work/pause", None, h, &pause).0, 200);
-            assert!(crate::control::take_request(home.path()).is_some() && c.pause().is_none(), "passed to its agent");
+        let lead = super::memberpage::PageAt::Lead {
+            url: "http://100.64.0.6:8090".into(),
+            https: Some("https://mini.tail1.ts.net/work/".into()),
+        };
+        b.set_page_at(lead);
+        let home = tempfile::tempdir().unwrap();
+        b.set_settings(home.path(), None);
+        let get = |path: &str, h: &[(&str, &str)]| send(&addr, "GET", path, None, h, &serde_json::json!({}));
+        assert_eq!(get("/work/?view&mac=m4", &[]).0, 307);
+        assert_eq!(get("/work/?view&mac=m4", &[]).1, "http://100.64.0.6:8090/work/?view&mac=m4");
+        assert_eq!(get("/work", &[]).1, "http://100.64.0.6:8090/work/");
+        assert_eq!(get("/work/dash.js", &[]).1, "http://100.64.0.6:8090/work/dash.js");
+        // (Through `tailscale serve`: the lead's HTTPS page.)
+        let proxied = [("X-Forwarded-Host", "m4.tail1.ts.net"), ("X-Forwarded-For", "100.101.1.2")];
+        assert_eq!(get("/work/", &proxied).1, "https://mini.tail1.ts.net/work/");
+        // (The page's worker stays: an installed page updates it from here, then follows.)
+        assert_eq!(get("/work/sw.js", &[]).0, 200);
+        let post = |path: &str, h: &[(&str, &str)]| send(&addr, "POST", path, None, h, &serde_json::json!({})).0;
+        for p in ["/work/swarm", "/work/history", "/work/pause", "/work/act", "/work/settings", "/work/hold"] {
+            assert_eq!(post(p, &[]), 307, "{p}");
         }
-        c.set_retry_blocked(Some("no lead now".into()));
-        let (code, _, b) =
-            send(&addr, "POST", "/work/act", None, &far, &serde_json::json!({ "retry": { "target": "6/1/1" } }));
-        assert_eq!(code, 409);
-        assert!(b["error"].as_str().is_some_and(|e| e.contains("no lead now")), "{b}");
-        assert!(c.take_page_acts().is_empty());
+        // The lead's page, from its origin (CORS allows it): this Mac's settings, answered here.
+        let own = brokers::Broker { urls: vec!["http://100.64.0.6:8090".into()], ..Default::default() };
+        b.set_brokers(Some(brokers::Brokers::new(Vec::new(), &own)));
+        assert_eq!(post("/work/settings", &[("Origin", "http://100.64.0.6:8090")]), 200);
+        assert_eq!(post("/work/live", &[]), 503, "answered here: no live store given");
+        // (A job's call, with its key: answered here.)
+        let (code, _, _) = send(&addr, "POST", "/work/beat", Some(b.job_token()), &[], &serde_json::json!({}));
+        assert_ne!(code, 307);
+    }
+
+    /// docs/roles.md §3.3: the lead not reached (or an older lead, not serving its members'
+    /// pages), a member's port shows its own page (this Mac's status, since when the lead isn't
+    /// reached) and answers the page's data 503, never a redirect into a page that isn't there.
+    #[test]
+    fn a_members_page_with_the_lead_down_shows_its_own() {
+        let (_d, b, w) = start_broker();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let home = tempfile::tempdir().unwrap();
+        let st =
+            crate::agent::Status { host: "m4".into(), app: "1.2.3".into(), beat: unix_now(), ..Default::default() };
+        std::fs::write(home.path().join("helper.json"), serde_json::to_vec(&st).unwrap()).unwrap();
+        b.set_settings(home.path(), None);
+        b.set_page_at(super::memberpage::PageAt::Away { lead: Some("mini".into()), since: Some(unix_now() - 600) });
+        let get = |path: &str| {
+            use std::io::{Read, Write};
+            let mut s = std::net::TcpStream::connect(&addr).unwrap();
+            write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
+            let mut b = String::new();
+            s.read_to_string(&mut b).unwrap();
+            b
+        };
+        let page = get("/work/?view&mac=m4");
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(page.contains("The lead (mini) isn't reachable since 10 min ago"), "{page}");
+        assert!(page.contains("m4 <span>app 1.2.3"), "{page}");
+        let (code, _, v) = send(&addr, "POST", "/work/swarm", None, &[], &serde_json::json!({}));
+        assert_eq!(code, 503, "{v}");
+        // (The lead back: the redirect again.)
+        b.set_page_at(super::memberpage::PageAt::Lead { url: "http://100.64.0.6:8090".into(), https: None });
+        assert!(get("/work/").starts_with("HTTP/1.1 307"));
     }
 
     /// Task #871 step 3: this Mac's pause from any device, through its agent's control (answered
@@ -10212,22 +10279,28 @@ mod tests {
     }
 
     #[test]
-    fn a_viewer_shows_the_page_does_nothing_else_and_keeps_nothing() {
-        // (Task #409 review) a Mac with neither a coordinator nor a broker: the page and its views,
-        // every other call refused, its key's or not; nothing written but its token, in its scratch.
+    fn a_viewer_shows_the_leads_page_does_nothing_else_and_keeps_nothing() {
+        // (Task #409 review; docs/roles.md §3.3) a member with no broker (tasks brokered by every
+        // member off): its page the lead's, or its own while the lead isn't reached; its live
+        // store, settings and hold; every other call refused, its key's or not; nothing written
+        // but its token, in its scratch.
         let (listener, port) = test_listener();
         let v = Coordinator::viewer(listener, "m1", "1.2.3").unwrap();
         let addr = format!("127.0.0.1:{port}");
         let ask = |path: &str, key: Option<&str>| send(&addr, "POST", path, key, &[], &serde_json::json!({})).0;
-        assert_eq!(send(&addr, "GET", "/work/", None, &[], &serde_json::json!({})).0, 200);
-        assert_eq!(ask("/work/steps", None), 200);
+        let get = || send(&addr, "GET", "/work/", None, &[], &serde_json::json!({}));
+        assert_eq!(get().0, 200, "the lead not known: its own page");
+        assert_eq!(ask("/work/swarm", None), 503);
+        v.set_page_at(super::memberpage::PageAt::Lead { url: "http://100.64.0.6:8090".into(), https: None });
+        assert_eq!(get(), (307, "http://100.64.0.6:8090/work/".into(), serde_json::Value::Null));
+        assert_eq!(ask("/work/steps", None), 307);
         let far = |path: &str| {
             send(
                 &addr,
                 "POST",
                 path,
                 None,
-                &[("X-Forwarded-For", "100.101.1.2")],
+                &[("X-Forwarded-For", "100.101.1.2"), ("Origin", "http://100.64.0.6:8090")],
                 &serde_json::json!({ "cancel": { "target": "6/1/2" } }),
             )
             .0
@@ -10235,45 +10308,14 @@ mod tests {
         for p in ["/work/pause", "/work/ask", "/work/beat", "/work/status", "/work/act", "/work/inputs"] {
             assert_eq!(ask(p, Some(&v.contact.token)), 403, "{p} with its key");
         }
-        for p in ["/work/ask", "/work/beat", "/work/status"] {
-            assert_eq!(far(p), 403, "{p} from another device");
+        // (The lead's page, from its origin: this Mac's settings alone; the build's asks are the lead's.)
+        let own = brokers::Broker { urls: vec!["http://100.64.0.6:8090".into()], ..Default::default() };
+        v.set_brokers(Some(brokers::Brokers::new(Vec::new(), &own)));
+        for p in ["/work/ask", "/work/beat", "/work/status", "/work/act", "/work/pause", "/work/inputs"] {
+            assert_eq!(far(p), 403, "{p} from the lead's page");
         }
-        // (#521) the owner's asks from any device: a cancel from another device queued for its agent.
-        assert_eq!(far("/work/act"), 200);
-        assert!(v.take_page_acts().len() == 1);
-        for p in ["/work/ask", "/work/beat", "/work/status"] {
-            assert_eq!(ask(p, None), 403, "{p}");
-        }
-        // (Phase 3) this Mac's own page: its pause passed to its agent, as its menu's; its cancel
-        // and retry queued for its agent.
-        let home = tempfile::tempdir().unwrap();
-        v.set_forward(Some(home.path().to_path_buf()));
-        let pause = serde_json::json!({ "pause": { "mode": "drain", "by": "x", "at": 0 } });
-        assert_eq!(send(&addr, "POST", "/work/pause", None, &[], &pause).0, 200);
-        assert!(crate::control::take_request(home.path()).is_some_and(|r| r.pause.is_some()));
-        assert!(v.pause().is_none(), "not the viewer's to set");
-        let act = |b: serde_json::Value| send(&addr, "POST", "/work/act", None, &[], &b).0;
-        assert_eq!(act(serde_json::json!({ "cancel": { "target": "6/1/2", "step": "unit" } })), 200);
-        assert_eq!(act(serde_json::json!({ "retry": { "target": "6/1/3" } })), 200);
-        assert_eq!(act(serde_json::json!({ "both": 1 })), 400);
-        // (Its cancel through its agent's own cancel asks, as `scenic job cancel`; its retry queued
-        // for the agent to mail to the lead.)
-        let cancels = crate::control::peek_cancels(home.path());
-        assert!(
-            matches!(&cancels[..], [c] if c.target == "6/1/2" && c.by.starts_with("the build page")),
-            "{cancels:?}"
-        );
-        let acts = v.take_page_acts();
-        assert!(matches!(&acts[..], [crate::pool::driver::Act::Retry(r)] if r.target == "6/1/3"), "{acts:?}");
-        // In the pool (a pageview told a root), never the memory's views: not ready until it read.
-        let pv = crate::agent::pageview::PageView::new();
-        pv.set_inputs(crate::agent::pageview::Inputs {
-            root: Some(store::nasfs::NasRoot::local_for_test("/nonexistent")),
-            ..Default::default()
-        });
-        v.set_pageview(pv);
-        assert_eq!(ask("/work/swarm", None), 503);
-        assert_eq!(ask("/work/history", None), 503);
+        assert_eq!(far("/work/settings"), 503, "answered here: no folder said yet");
+        assert!(v.take_page_acts().is_empty());
         assert_eq!(v.shared.lock().unwrap().history.seq(), 0, "no history of its own");
         let dir = v.shared.lock().unwrap().dir.clone();
         let mut kept: Vec<String> =
@@ -10293,7 +10335,7 @@ mod tests {
     }
 
     #[test]
-    fn the_leads_page_has_its_pause_from_memory_a_members_from_the_nas() {
+    fn the_leads_page_has_its_pause_from_memory() {
         // (Task #673 review) the lead's NAS mirror waits for its agent's next loop: its own pages
         // see a press at once.
         let (d, c, w) = start();
@@ -10311,9 +10353,6 @@ mod tests {
         let p = crate::control::Pause { mode: crate::control::Mode::Freeze, by: "x".into(), at: 1 };
         c.set_pause(Some(p), 1);
         assert_eq!(pause()["mode"], "freeze", "the lead's own, before its mirror");
-        // A member's (forwarding its pages' asks): the NAS's alone, none there.
-        c.set_forward(Some(d.path().into()));
-        assert!(pause().is_null());
     }
 
     #[test]

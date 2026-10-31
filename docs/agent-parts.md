@@ -81,8 +81,8 @@ listed, and the list only shrinks (a file with fewer fails it too).
 
 **Takes requests** from two sources, both taken up at once:
 
-1. The agent's HTTP endpoint: the coordinator's / broker's / viewer's server already serves
-   `/work/act`, `/work/cancel`, `/work/redo` and `/work/settings`; it gains this Mac's hold and quit
+1. The agent's HTTP endpoint: the coordinator's server already serves `/work/act`, `/work/cancel`,
+   `/work/redo` and `/work/settings` (a member's broker or viewer `/work/settings` alone); it gains this Mac's hold and quit
    and posts each to **control**'s channel instead of writing a file for the loop to read. The menu
    bar and `scenic pause --here` post to it over localhost.
 2. A file watcher (FSEvents on the agent's folder, kqueue fallback) for the file asks

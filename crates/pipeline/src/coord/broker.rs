@@ -1,5 +1,8 @@
 //! A member's broker (docs/roles.md §3.2, docs/pool.md §8): the tasks of its Mac's own jobs, the
-//! `/work/*` calls those jobs and the pages taking their tasks make, and `/work/live`. Not a
+//! `/work/*` calls those jobs and the pages taking their tasks make, and what the lead's build page
+//! asks of this Mac (`/work/live`, `/work/settings`). The page itself is the lead's: asked here, it
+//! is sent there, or this Mac's own is shown while the lead isn't reached (crate::coord::memberpage,
+//! docs/roles.md §3.3). Not a
 //! coordinator: it offers no plan, holds no job's lease (those of a term this Mac once led are
 //! left to the lead as it starts), keeps nothing in the pool's store and runs no phase sharer.
 //! Its answers say term 0 (`Shared::broker`), so a member that still asks this Mac as the lead
@@ -61,7 +64,7 @@ impl Broker {
         self.c.expire()
     }
 
-    /// Its pages paused as the build is (the lead's pause, as this member knows it).
+    /// Its jobs' tasks paused as the build is (the lead's pause, as this member knows it).
     pub fn pause(&self) -> Option<crate::control::Pause> {
         self.c.pause()
     }
@@ -78,6 +81,25 @@ impl Broker {
     /// The members' brokers (CORS: their pages may call it).
     pub fn set_brokers(&self, b: Option<super::brokers::Brokers>) {
         self.c.set_brokers(b)
+    }
+
+    /// Where the build page is, as this Mac's agent last knew the lead (crate::coord::memberpage).
+    pub fn set_page_at(&self, at: super::memberpage::PageAt) {
+        self.c.set_page_at(at)
+    }
+
+    /// Where this Mac's settings lie (`/work/settings`, `/work/hold`; its own page's status).
+    pub fn set_settings(&self, home: &Path, root: Option<&store::nasfs::NasRoot>) {
+        self.c.set_settings(home, root)
+    }
+
+    /// `/work/live` answered from `store` from here on.
+    pub fn set_live(&self, store: Arc<crate::agent::live::Store>) {
+        self.c.set_live(store)
+    }
+
+    pub fn has_live(&self) -> bool {
+        self.c.has_live()
     }
 
     pub fn stop(&self) {
@@ -115,47 +137,6 @@ impl Brokering {
         }
     }
 }
-
-/// The build page's data and asks, served by whichever of this Mac's servers answers its port
-/// (the lead's coordinator, a member's broker, a viewer). A broker serves them only until the
-/// lead serves every page (docs/roles.md §5 step 4); then they leave `Broker`.
-pub trait Pages {
-    fn set_settings(&self, home: &Path, root: Option<&store::nasfs::NasRoot>);
-    fn take_inputs_asks(&self) -> Vec<crate::inputs::Ask>;
-    fn has_live(&self) -> bool;
-    fn set_live(&self, store: Arc<crate::agent::live::Store>);
-    fn has_catalogues(&self) -> bool;
-    fn set_catalogues(&self, cv: Arc<crate::agent::cataloguesview::CataloguesView>);
-    fn has_built(&self) -> bool;
-    fn set_built(&self, bv: Arc<crate::agent::builtview::BuiltView>);
-    fn has_pageview(&self) -> bool;
-    fn set_pageview(&self, pv: Arc<crate::agent::pageview::PageView>);
-    fn set_forward(&self, home: Option<std::path::PathBuf>);
-    fn take_page_acts(&self) -> Vec<crate::pool::driver::Act>;
-    fn set_retry_blocked(&self, why: Option<String>);
-}
-
-macro_rules! pages_by {
-    ($t:ty, $s:ident => $c:expr) => {
-        impl Pages for $t {
-            fn set_settings(&$s, home: &Path, root: Option<&store::nasfs::NasRoot>) { Coordinator::set_settings($c, home, root) }
-            fn take_inputs_asks(&$s) -> Vec<crate::inputs::Ask> { Coordinator::take_inputs_asks($c) }
-            fn has_live(&$s) -> bool { Coordinator::has_live($c) }
-            fn set_live(&$s, store: Arc<crate::agent::live::Store>) { Coordinator::set_live($c, store) }
-            fn has_catalogues(&$s) -> bool { Coordinator::has_catalogues($c) }
-            fn set_catalogues(&$s, cv: Arc<crate::agent::cataloguesview::CataloguesView>) { Coordinator::set_catalogues($c, cv) }
-            fn has_built(&$s) -> bool { Coordinator::has_built($c) }
-            fn set_built(&$s, bv: Arc<crate::agent::builtview::BuiltView>) { Coordinator::set_built($c, bv) }
-            fn has_pageview(&$s) -> bool { Coordinator::has_pageview($c) }
-            fn set_pageview(&$s, pv: Arc<crate::agent::pageview::PageView>) { Coordinator::set_pageview($c, pv) }
-            fn set_forward(&$s, home: Option<std::path::PathBuf>) { Coordinator::set_forward($c, home) }
-            fn take_page_acts(&$s) -> Vec<crate::pool::driver::Act> { Coordinator::take_page_acts($c) }
-            fn set_retry_blocked(&$s, why: Option<String>) { Coordinator::set_retry_blocked($c, why) }
-        }
-    };
-}
-pages_by!(Coordinator, self => self);
-pages_by!(Broker, self => &self.c);
 
 /// A test's broker (its state in `dir`), on a port the test held from the start; and the port.
 #[cfg(test)]
