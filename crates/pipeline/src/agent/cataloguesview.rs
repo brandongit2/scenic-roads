@@ -27,11 +27,12 @@
 //! the batches after the last applied, no more often than `EVERY`; the answer is what's applied so
 //! far, never waiting on it.
 
+use super::bus::Snap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use store::map::feed::Answer;
@@ -310,22 +311,23 @@ impl Source for store::map::feed::Feed {
 pub struct Lead {
     root: store::nasfs::NasRoot,
     worker: String,
-    client: Mutex<Option<Arc<crate::coord::client::Client>>>,
+    client: Arc<Snap<Option<Arc<crate::coord::client::Client>>>>,
 }
 
 impl Lead {
     pub fn new(root: &store::nasfs::NasRoot, host: &str) -> Lead {
-        Lead { root: root.short_retry(), worker: format!("page {host}"), client: Mutex::new(None) }
+        Lead { root: root.short_retry(), worker: format!("page {host}"), client: Snap::new(None) }
     }
 
     fn get(&self, path: &str) -> anyhow::Result<Vec<u8>> {
-        let c = {
-            let mut g = self.client.lock().unwrap();
-            if g.is_none() {
+        let c = match &*self.client.get() {
+            Some(c) => c.clone(),
+            None => {
                 let made = crate::coord::client::Client::from_nas(&self.root, &self.worker)?;
-                *g = Some(Arc::new(made.ok_or_else(|| anyhow::anyhow!("no lead's coordinator"))?));
+                let c = Arc::new(made.ok_or_else(|| anyhow::anyhow!("no lead's coordinator"))?);
+                self.client.set(Some(c.clone()));
+                c
             }
-            g.clone().expect("made above")
         };
         c.get_bytes(path)
     }
@@ -340,22 +342,33 @@ impl Source for Lead {
     }
 }
 
-/// The view: what's applied, its source, and its reader.
+/// What the view shows (`answer`, `names`), as its reader last made it.
+#[derive(Default)]
+struct Shown {
+    entries: Vec<Entry>,
+    latest: Option<u64>,
+    error: Option<String>,
+    /// The `f/` names at `latest` (`names`).
+    names: Arc<HashSet<u64>>,
+}
+
+/// The view: its source, what it shows, and its reader with its state (that thread's alone while it
+/// runs, kept between its runs).
 pub struct CataloguesView {
-    src: Mutex<Arc<dyn Source>>,
+    src: Arc<Snap<Arc<dyn Source>>>,
     /// Where it's kept (None: not kept).
     keep: Option<PathBuf>,
+    shown: Arc<Snap<Shown>>,
     state: Mutex<Option<State>>,
-    error: Mutex<Option<String>>,
-    asked: Mutex<Option<Instant>>,
-    /// The `seq` applied and the `f/` names then (`names`).
-    names: Mutex<Option<(u64, Arc<HashSet<u64>>)>>,
+    /// When the log was last asked (ms since `born`; 0: never).
+    asked: AtomicU64,
+    born: Instant,
     reading: AtomicBool,
 }
 
 impl std::fmt::Debug for CataloguesView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CataloguesView").field("latest", &self.names().map(|n| n.0)).finish()
+        f.debug_struct("CataloguesView").field("latest", &self.shown.get().latest).finish()
     }
 }
 
@@ -388,23 +401,26 @@ fn answer_of(entries: &[Entry], latest: Option<u64>, reading: bool, error: Optio
     serde_json::json!({ "latest": latest, "reading": reading, "error": error, "catalogs": list })
 }
 
+/// What a reset says until the next batch.
+const MISSED: &str = "the log no longer holds the batches after";
+
 impl CataloguesView {
     /// A view of the log `src`, kept at `keep`.
     pub fn new(src: Arc<dyn Source>, keep: Option<PathBuf>) -> Arc<Self> {
         Arc::new(CataloguesView {
-            src: Mutex::new(src),
+            src: Snap::new(src),
             keep,
+            shown: Snap::new(Shown::default()),
             state: Mutex::new(None),
-            error: Mutex::new(None),
-            asked: Mutex::new(None),
-            names: Mutex::new(None),
+            asked: AtomicU64::new(0),
+            born: Instant::now(),
             reading: AtomicBool::new(false),
         })
     }
 
     /// The log read from `src` from now on (this Mac took the lead, or let it go).
     pub fn set_source(&self, src: Arc<dyn Source>) {
-        *self.src.lock().unwrap() = src;
+        self.src.set(src);
     }
 
     /// A page's ask: the reader woken (`wake`); the batches after `after` as applied so far.
@@ -415,7 +431,9 @@ impl CataloguesView {
 
     /// The reader started when it isn't running and the log wasn't asked in the last `EVERY`.
     pub fn wake(self: &Arc<Self>) {
-        let due = self.asked.lock().unwrap().is_none_or(|t| t.elapsed() >= EVERY);
+        let asked = self.asked.load(Ordering::SeqCst);
+        let now = self.born.elapsed().as_millis() as u64 + 1;
+        let due = asked == 0 || now.saturating_sub(asked) >= EVERY.as_millis() as u64;
         if due && !self.reading.swap(true, Ordering::SeqCst) {
             let me = self.clone();
             let started = std::thread::Builder::new().name("catalogues-view".into()).spawn(move || {
@@ -430,15 +448,15 @@ impl CataloguesView {
 
     /// The last batch applied and every `f/` name of the map then (`hash`); None before the first.
     pub fn names(&self) -> Option<(u64, Arc<HashSet<u64>>)> {
-        self.names.lock().unwrap().clone()
+        let s = self.shown.get();
+        s.latest.map(|n| (n, s.names.clone()))
     }
 
     /// The answer now: `catalogs` after `after` (all with none), the last applied (`latest`),
     /// whether the reader is running (`reading`), its last error.
     pub fn answer(&self, after: Option<u64>) -> Value {
-        let g = self.state.lock().unwrap();
-        let (entries, latest) = g.as_ref().map_or((&[][..], None), |s| (&s.kept.entries[..], s.kept.seq));
-        answer_of(entries, latest, self.reading.load(Ordering::SeqCst), self.error.lock().unwrap().as_deref(), after)
+        let s = self.shown.get();
+        answer_of(&s.entries, s.latest, self.reading.load(Ordering::SeqCst), s.error.as_deref(), after)
     }
 
     /// What's kept at `path` as `/work/catalogs` answers it (`scenic catalogs`: this Mac's agent's
@@ -449,13 +467,14 @@ impl CataloguesView {
     }
 
     /// Asks the log for the batches after the last applied (the map whole to start, or when told to
-    /// reset) and applies each in turn; what's kept written when it moved.
+    /// reset) and applies each in turn; what's kept written, and what's shown made again, when it
+    /// moved.
     pub fn refresh(&self) {
-        *self.asked.lock().unwrap() = Some(Instant::now());
-        let src = self.src.lock().unwrap().clone();
-        // (Applied outside the lock: an answer never waits on the log. The state is this thread's
-        // alone while it runs.)
-        let taken = self.state.lock().unwrap().take();
+        self.asked.store(self.born.elapsed().as_millis() as u64 + 1, Ordering::SeqCst);
+        let src = self.src.get();
+        // (The state is this thread's alone while it runs: an answer reads what's shown, never
+        // waiting on the log.)
+        let taken = self.state.lock().unwrap_or_else(|e| e.into_inner()).take();
         let mut st = taken.unwrap_or_else(|| State::of(self.keep.as_deref().map(read_kept).unwrap_or_default()));
         let was = st.kept.seq;
         let mut error = None;
@@ -468,10 +487,7 @@ impl CataloguesView {
                 Some(since) => src.changes(since).and_then(|a| match a.reset {
                     Some(head) => {
                         let m = src.map()?;
-                        error = Some(format!(
-                            "the log no longer holds the batches after {since} (now at {head}): those to {} aren't shown",
-                            m.seq
-                        ));
+                        error = Some(format!("{MISSED} {since} (now at {head}): those to {} aren't shown", m.seq));
                         st.take_map(&m, false);
                         Ok(true)
                     }
@@ -493,6 +509,9 @@ impl CataloguesView {
                 }
             }
         }
+        let shown = self.shown.get();
+        // (A reset's word kept until a batch comes.)
+        let error = error.or_else(|| shown.error.clone().filter(|e| e.starts_with(MISSED) && st.kept.seq == was));
         if st.kept.seq != was {
             if let Some(p) = &self.keep {
                 if let Err(e) = write_kept(p, &st.kept) {
@@ -500,15 +519,15 @@ impl CataloguesView {
                 }
             }
         }
-        if let Some(seq) = st.kept.seq.filter(|s| self.names().is_none_or(|n| n.0 != *s)) {
-            *self.names.lock().unwrap() = Some((seq, Arc::new(st.kept.files.keys().copied().collect())));
+        if st.kept.seq != shown.latest || error != shown.error {
+            let names = if st.kept.seq == shown.latest {
+                shown.names.clone()
+            } else {
+                Arc::new(st.kept.files.keys().copied().collect())
+            };
+            self.shown.set(Shown { entries: st.kept.entries.clone(), latest: st.kept.seq, error, names });
         }
-        let mut e = self.error.lock().unwrap();
-        if error.is_some() || e.as_deref().is_some_and(|e| !e.starts_with("the log no longer")) || st.kept.seq != was {
-            *e = error;
-        }
-        drop(e);
-        *self.state.lock().unwrap() = Some(st);
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(st);
     }
 }
 

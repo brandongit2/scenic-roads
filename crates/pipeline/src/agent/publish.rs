@@ -101,10 +101,15 @@ fn watches() -> Vec<&'static str> {
 /// The lead's map as its agent reads it (docs/maplog.md §6.5): the shadow's feed (the map, its
 /// batches held, the log's marks), and the head's catalogue: the one the shadow last checked equal
 /// to the map, else made of the map once (`catalogue`).
-#[derive(Default)]
 pub struct Here {
     pub feed: std::sync::Arc<store::map::feed::Feed>,
-    head: std::sync::Mutex<Option<std::sync::Arc<store::catalogue::Catalogue>>>,
+    head: std::sync::Arc<super::bus::Snap<Option<std::sync::Arc<store::catalogue::Catalogue>>>>,
+}
+
+impl Default for Here {
+    fn default() -> Here {
+        Here { feed: Default::default(), head: super::bus::Snap::new(None) }
+    }
 }
 
 impl std::fmt::Debug for Here {
@@ -118,14 +123,13 @@ impl Here {
     /// holds no map. Made of the map at most once a `seq`.
     pub fn catalogue(&self) -> Option<std::sync::Arc<store::catalogue::Catalogue>> {
         let map = self.feed.map()?;
-        let mut g = self.head.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(c) = g.as_ref().filter(|c| c.n == map.seq) {
+        if let Some(c) = self.head.get().as_ref().as_ref().filter(|c| c.n == map.seq) {
             return Some(c.clone());
         }
         match map.catalogue() {
             Ok(c) => {
                 let c = std::sync::Arc::new(c);
-                *g = Some(c.clone());
+                self.head.set(Some(c.clone()));
                 Some(c)
             }
             Err(e) => {
@@ -137,13 +141,13 @@ impl Here {
 
     /// The head's catalogue now `cat` (the shadow's, checked equal to the map).
     fn checked(&self, cat: std::sync::Arc<store::catalogue::Catalogue>) {
-        *self.head.lock().unwrap_or_else(|e| e.into_inner()) = Some(cat);
+        self.head.set(Some(cat));
     }
 
     /// The head's catalogue as held, whatever its number: what a catalogue after it is read from
     /// (its deltas alone, store::catalogue::read_n_from).
     fn held(&self) -> Option<std::sync::Arc<store::catalogue::Catalogue>> {
-        self.head.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        (*self.head.get()).clone()
     }
 }
 
