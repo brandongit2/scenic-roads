@@ -179,3 +179,9 @@ pack indexes). Step 4 needs only the lead's contact, which members already have.
    member's URL stays in the address bar, but every answer then crosses the member).
 3. **`Unknown` role** (NAS unread at start): start the member's parts (proposed: a subset, safe),
    or wait for the declaration.
+
+## Decisions (PM, 31 Oct night)
+
+1. The offline map on the laptops is kept until the owner decides; nothing deletes it.
+2. A member's port answers the build page with a 307 redirect to the lead.
+3. With the lead not yet known at start, a member starts its member parts (a subset), and changes role once the declaration is read.
