@@ -1530,9 +1530,9 @@ pub struct Agent {
     /// The build page's map's finished tiles (crate::agent::builtview): made with `catalogues_view`.
     built_view: Option<std::sync::Arc<builtview::BuiltView>>,
     pageview_reading: bool,
-    /// Where the pageview asks the lead's view (`pageview::Lead`) as last told it: this Mac's own
-    /// coordinator (`None` inside), or the lead's addresses and key.
-    pageview_lead: Option<Option<(Vec<String>, String)>>,
+    /// Where the pageview asks the lead's view (`pageview::Lead`), and what it was made of: this
+    /// Mac's own coordinator (`Some(None)`), the lead's addresses and key, or none known.
+    pageview_lead: Option<(Option<Option<(Vec<String>, String)>>, pageview::LeadAt)>,
     /// This Mac's live store (crate::agent::live), kept in its folder and answered on its port's
     /// `/work/live`: made as the loop starts, on a real Mac with the agent's lock alone.
     live: Option<std::sync::Arc<live::Store>>,
@@ -7630,22 +7630,14 @@ impl Agent {
         } else {
             Vec::new()
         };
-        self.pageview.set_inputs(pageview::Inputs {
-            root: Some(root.clone()),
-            term,
-            members,
-            app: self.app.clone(),
-            own,
-            keep: Some(self.o.home.join("pageview-waits.json")),
-        });
-        // (The lead's view asked of its coordinator, here on the lead, else at its address; told
+        // (The lead's view asked of its coordinator, here on the lead, else at its address; made
         // again only when that changed. None known yet: the NAS's files, docs/coordination.md step 4.)
         let at = match (&self.coord, &self.client) {
             (Some(_), _) => Some(None),
             (None, Some(c)) => Some(Some((c.urls(), c.token()))),
             (None, None) => None,
         };
-        if at != self.pageview_lead {
+        if self.pageview_lead.as_ref().map(|l| &l.0) != Some(&at) {
             let lead: Option<std::sync::Arc<dyn pageview::Lead>> = match (&at, &self.coord) {
                 (Some(None), Some(c)) => Some(c.clone()),
                 (Some(Some((urls, token))), _) => Some(std::sync::Arc::new(pageview::ByHttp(
@@ -7653,9 +7645,17 @@ impl Agent {
                 ))),
                 _ => None,
             };
-            self.pageview.set_lead(lead);
-            self.pageview_lead = at;
+            self.pageview_lead = Some((at, pageview::LeadAt(lead)));
         }
+        self.pageview.set_inputs(pageview::Inputs {
+            root: Some(root.clone()),
+            term,
+            members,
+            app: self.app.clone(),
+            own,
+            keep: Some(self.o.home.join("pageview-waits.json")),
+            lead: self.pageview_lead.as_ref().map(|l| l.1.clone()).unwrap_or_default(),
+        });
         if !self.pageview_reading {
             pageview::spawn(self.pageview.clone());
             self.pageview_reading = true;

@@ -55,6 +55,26 @@ impl Lead for crate::coord::Coordinator {
     }
 }
 
+/// Where the lead's view is asked (`Inputs::lead`); None, the NAS's files are read (the older apps'
+/// path). Told apart by which `Lead` it is.
+#[derive(Clone, Default)]
+pub struct LeadAt(pub Option<Arc<dyn Lead>>);
+
+impl PartialEq for LeadAt {
+    fn eq(&self, o: &LeadAt) -> bool {
+        match (&self.0, &o.0) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        }
+    }
+}
+
+impl std::fmt::Debug for LeadAt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "LeadAt(..)" } else { "LeadAt(None)" })
+    }
+}
+
 /// The lead at its address, with the build's key (a member's).
 pub struct ByHttp(pub crate::coord::client::Client);
 
@@ -154,6 +174,9 @@ pub struct Inputs {
     pub own: Vec<OwnLane>,
     /// Where this Mac keeps the last run's waits across a restart (a local file: `KEEP_WAITS_S`).
     pub keep: Option<std::path::PathBuf>,
+    /// Where the lead's view is asked: the lead's coordinator here, or the lead's address on a
+    /// member.
+    pub lead: LeadAt,
 }
 
 /// The last run's waits (its items' dependencies: `history::Waits`) are kept on this Mac's disk this
@@ -275,7 +298,6 @@ pub struct PageView {
     inputs: Mutex<Inputs>,
     state: Mutex<State>,
     forecast: Mutex<Runs>,
-    lead: Mutex<Option<Arc<dyn Lead>>>,
 }
 
 fn now_s() -> u64 {
@@ -323,12 +345,6 @@ impl PageView {
         }
     }
 
-    /// Where the lead's view is asked from (`Lead`): the lead's coordinator here, or the lead's
-    /// address on a member; None, the NAS's files are read (the older apps' path).
-    pub fn set_lead(&self, lead: Option<Arc<dyn Lead>>) {
-        *self.lead.lock().unwrap() = lead;
-    }
-
     /// The NAS's reads, when a page asked lately and `EVERY` has passed (the first at once): the
     /// history's files, and the lead's files while its view isn't asked of it (`by_lead`: an older
     /// lead's, or none known); true when it read.
@@ -359,7 +375,7 @@ impl PageView {
         if !self.wanted(now) {
             return false;
         }
-        let Some(lead) = self.lead.lock().unwrap().clone() else { return false };
+        let Some(lead) = self.inputs.lock().unwrap().lead.0.clone() else { return false };
         if self.state.lock().unwrap().lead_last.is_some_and(|t| t.elapsed() < LEAD_EVERY) {
             return false;
         }
@@ -1003,6 +1019,7 @@ pub(crate) mod tests {
             app: app.into(),
             own: Vec::new(),
             keep: None,
+            lead: LeadAt::default(),
         }
     }
 
@@ -1550,8 +1567,11 @@ pub(crate) mod tests {
         let w =
             crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         let pv = PageView::default();
-        pv.set_inputs(Inputs { root: Some(store::nasfs::NasRoot::local_for_test(&d.join("nas"))), ..inputs("1.2.3") });
-        pv.set_lead(Some(Arc::new(ByHttp(w))));
+        pv.set_inputs(Inputs {
+            root: Some(store::nasfs::NasRoot::local_for_test(&d.join("nas"))),
+            lead: LeadAt(Some(Arc::new(ByHttp(w)))),
+            ..inputs("1.2.3")
+        });
         (c, pv)
     }
 
@@ -1600,16 +1620,18 @@ pub(crate) mod tests {
         assert!(c.pool_view(&ViewAsk::default()).get("forecast_input").is_some());
     }
 
-    /// A lead as a test sets it: its answers, or down.
-    struct Fake(Mutex<anyhow::Result<Option<Value>>>);
+    /// A lead as a test sets it: its answer (None: an older app's 404), or down (`Err`).
+    struct Fake(Result<Option<Value>, &'static str>);
 
     impl Lead for Fake {
         fn view(&self, _: &ViewAsk) -> anyhow::Result<Option<Value>> {
-            match &*self.0.lock().unwrap() {
-                Ok(v) => Ok(v.clone()),
-                Err(e) => Err(anyhow::anyhow!("{e}")),
-            }
+            self.0.clone().map_err(|e| anyhow::anyhow!("{e}"))
         }
+    }
+
+    /// `pv` told to ask `lead`.
+    fn ask_of(pv: &PageView, lead: Fake) {
+        pv.set_inputs(Inputs { lead: LeadAt(Some(Arc::new(lead))), ..inputs("1.2.3") });
     }
 
     /// docs/coordination.md step 4: a page asking with the lead down gets the last view, with its
@@ -1620,14 +1642,12 @@ pub(crate) mod tests {
         let now = now_s();
         let (c, _) = lead_and_member(d.path(), now);
         let view = c.pool_view(&ViewAsk::default());
-        let lead = Arc::new(Fake(Mutex::new(Ok(Some(view)))));
         let pv = PageView::default();
-        pv.set_inputs(inputs("1.2.3"));
-        pv.set_lead(Some(lead.clone()));
+        ask_of(&pv, Fake(Ok(Some(view))));
         pv.touch_at(now);
         assert!(pv.tick_lead(now));
         assert!(pv.swarm().unwrap()["view_unreached"].is_null());
-        *lead.0.lock().unwrap() = Err(anyhow::anyhow!("connection refused"));
+        ask_of(&pv, Fake(Err("connection refused")));
         pv.state.lock().unwrap().lead_last = None;
         pv.tick_lead(now + 20);
         let a = pv.swarm().expect("the last view kept");
@@ -1637,7 +1657,7 @@ pub(crate) mod tests {
         assert!(a["view_age_s"].as_u64().is_some());
         // (Not the NAS's files meanwhile: the view stays the lead's.)
         assert!(pv.state.lock().unwrap().by_lead);
-        *lead.0.lock().unwrap() = Ok(Some(c.pool_view(&ViewAsk::default())));
+        ask_of(&pv, Fake(Ok(Some(c.pool_view(&ViewAsk::default())))));
         pv.state.lock().unwrap().lead_last = None;
         pv.tick_lead(now + 30);
         assert!(pv.swarm().unwrap()["view_unreached"].is_null());
@@ -1651,10 +1671,8 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
         fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
-        let lead = Arc::new(Fake(Mutex::new(Ok(None))));
         let pv = PageView::default();
-        pv.set_inputs(inputs("1.2.3"));
-        pv.set_lead(Some(lead.clone()));
+        ask_of(&pv, Fake(Ok(None)));
         pv.touch_at(now);
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         assert!(pv.tick_lead(now));
@@ -1664,7 +1682,7 @@ pub(crate) mod tests {
         assert!(a["view_age_s"].is_null());
         // (Its lead updated: the view by HTTP, the NAS's lead files no longer read.)
         let (c, _) = lead_and_member(&d.path().join("lead"), now);
-        *lead.0.lock().unwrap() = Ok(Some(c.pool_view(&ViewAsk::default())));
+        ask_of(&pv, Fake(Ok(Some(c.pool_view(&ViewAsk::default())))));
         pv.state.lock().unwrap().lead_last = None;
         assert!(pv.tick_lead(now));
         pv.state.lock().unwrap().last = None;
