@@ -147,6 +147,11 @@ async fn region(s: &S, id: &str, on: bool) -> (StatusCode, Value) {
     call(put_region(State(s.clone()), Path(id.into()), Json(On { on })).await).await
 }
 
+/// The size of a part's files.
+fn file_bytes(p: &Part) -> u64 {
+    p.items.iter().map(|i| if let Item::File { size, .. } = i { *size } else { 0 }).sum()
+}
+
 /// One round of the mirror thread, until it has nothing more to do.
 fn settle(s: &S) {
     let m = s.data.mirror.clone().unwrap();
@@ -176,7 +181,7 @@ async fn downloading_the_world_and_regions() {
     );
     assert_eq!(
         v["regions"]["london"],
-        json!({"name": "London", "bytes": london.files.bytes + piece, "here": 0, "unknown": 0, "on": false, "state": null})
+        json!({"name": "London", "bytes": file_bytes(&london) + piece, "here": 0, "unknown": 0, "on": false, "state": null})
     );
 
     // London downloaded: not the World with it; written to downloads.json; copied by the thread.
@@ -272,16 +277,18 @@ async fn a_macs_downloaded_views_are_removed_and_their_files_go() {
     let asked = s.downloads.asked();
     assert!(asked.world.is_some() && asked.regions.len() == 1);
     let on_disk: Value = serde_json::from_slice(&std::fs::read(home.path().join(FILE)).unwrap()).unwrap();
-    assert_eq!((on_disk["fmt"].as_u64(), on_disk.get("views")), (Some(4), None), "written again without them");
+    assert_eq!((on_disk["fmt"].as_u64(), on_disk.get("views")), (Some(5), None), "written again without them");
     tokio::task::block_in_place(|| settle(&s));
     let m = s.data.mirror.clone().unwrap();
     // The World's and London's stay; the view's files no region needs went.
     let plan = s.downloads.plan(&s.data);
     let gone: Vec<&String> = rotterdam
-        .files
-        .names
+        .items
         .iter()
-        .map(|(n, _)| n)
+        .filter_map(|i| match i {
+            Item::File { name, .. } => Some(name),
+            Item::Piece { .. } => None,
+        })
         .filter(|n| !plan.wanted.items.iter().any(|i| store::mirror::copy_name(i) == n.as_str()))
         // (Base packs and road values stay: this catalogue's hidata can't be read for its owners.)
         .filter(|n| !n.starts_with("base/") && !n.starts_with("global/roads/"))
@@ -313,7 +320,7 @@ fn a_damaged_downloads_file_is_set_aside() {
 }
 
 /// A downloads file of format 3 (and one from before one terrain, task #633, with `fine`) is
-/// written again as format 4: the World's time and each region's terrain detail kept, every download
+/// written again as format 5: the World's time and each region's terrain detail kept, every download
 /// pinned to the catalogue served at the mirror's next round.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_downloads_file_of_format_3_is_upgraded_and_pinned_to_the_catalogue_served() {
@@ -328,7 +335,7 @@ async fn a_downloads_file_of_format_3_is_upgraded_and_pinned_to_the_catalogue_se
     let detail: Vec<Option<Pin>> = a.regions.iter().map(|r| r.detail).collect();
     assert_eq!(detail, [Some(Pin::default()), None]);
     let back: Value = serde_json::from_slice(&std::fs::read(home.path().join(FILE)).unwrap()).unwrap();
-    assert_eq!(back["fmt"], 4);
+    assert_eq!(back["fmt"], 5);
     assert!(back["regions"][0].get("fine").is_none());
     tokio::task::block_in_place(|| settle(&s));
     let a = Downloads::load(home.path()).asked();
@@ -466,7 +473,8 @@ async fn a_new_catalogue_copies_nothing_until_the_download_is_updated() {
     assert_eq!((r["behind"]["gone"].as_u64(), r["behind"]["bytes"].as_u64()), (Some(1), Some(new_bytes)), "{r}");
     assert_eq!(r["behind"]["what"], json!(["lists", "road data", "roads", "terrain"]));
     assert_eq!(s.data.content(roads), Some(old_roads.clone()), "its own older file, here");
-    assert!(s.data.mirror.as_ref().unwrap().catalogue(1).is_some(), "catalogue 1 kept");
+    let on_disk: Value = serde_json::from_slice(&std::fs::read(home.path().join(FILE)).unwrap()).unwrap();
+    assert!(on_disk["lists"]["1"]["regions"]["se"].is_object(), "its own list at 1");
 
     // Update, with one new file missing on the NAS: the rest copied beside the old ones; still at 1,
     // read as before.
@@ -1139,4 +1147,175 @@ async fn a_download_with_nothing_left_to_copy_moves_on_before_the_copies() {
     let v = get(&s).await;
     assert!(v["regions"]["east"].get("behind").is_none(), "{v}");
     assert_eq!(v["regions"]["east"]["state"].as_str(), Some("queued"), "{v}");
+}
+
+/// A small box at the middle of z6 tile (x, y).
+fn in_tile(x: u32, y: u32) -> Vec<[f64; 2]> {
+    let lon = (f64::from(x) + 0.5) / 64.0 * 360.0 - 180.0;
+    let lat = (std::f64::consts::PI * (1.0 - 2.0 * (f64::from(y) + 0.5) / 64.0)).sinh().atan().to_degrees();
+    rect(lon - 0.1, lat - 0.1, lon + 0.1, lat + 0.1)
+}
+
+/// On the recorded chain (store's src/map/testdata: real catalogues 798 to 809, trimmed), for each
+/// catalogue and the next: what an Update of the World, and of a region over each z6 tile the next
+/// one changed, copies and lets go, by the download's own list as downloads.json keeps it, is the
+/// two catalogues' difference.
+#[test]
+fn an_update_s_size_from_its_list_equals_the_two_catalogues_diff() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../store/src/map/testdata");
+    let mut ns = store::catalogue::list(&dir).unwrap();
+    ns.reverse();
+    let cats: Vec<Catalogue> = ns.iter().map(|&n| store::catalogue::read_n(&dir, n).unwrap()).collect();
+    assert!(cats.len() > 2);
+    let bytes = |items: &[&Item]| -> u64 {
+        items.iter().map(|i| if let Item::File { size, .. } = i { *size } else { 0 }).sum()
+    };
+    let (mut changed, mut parts) = (0, 0);
+    for w in cats.windows(2) {
+        let (a, b) = (&w[0], &w[1]);
+        let tiles: BTreeSet<(u32, u32)> = b
+            .files
+            .iter()
+            .filter(|(l, f)| a.content(l) != Some(f.file.as_str()))
+            .filter_map(|(_, f)| tile_of(&Item::File { name: f.file.clone(), size: 0 }))
+            .collect();
+        let at = |c: &Catalogue| At {
+            cat: None,
+            world: Some(world_part(c)),
+            regions: tiles
+                .iter()
+                .map(|&(x, y)| (format!("{x}-{y}"), region_parts(c, "", &[in_tile(x, y)], &Owners::new())))
+                .collect(),
+        };
+        let (old, new) = (at(a), at(b));
+        let kept: ListedAt = serde_json::from_slice(&serde_json::to_vec(&ListedAt::of(&old)).unwrap()).unwrap();
+        let list = kept.at().unwrap();
+        assert!(list.same(&old), "{}: the list as kept", a.n);
+        let pairs = |x: &At| -> Vec<Part> {
+            let mut v = vec![x.world.clone().unwrap()];
+            v.extend(x.regions.values().flat_map(|r| [r.coarse.clone(), r.detail.clone()]));
+            v
+        };
+        for ((l, o), n) in pairs(&list).iter().zip(pairs(&old)).zip(pairs(&new)) {
+            parts += 1;
+            let had: HashSet<&Item> = l.items.iter().collect();
+            let copies: Vec<&Item> = n.items.iter().filter(|i| !had.contains(i)).collect();
+            let goes = l.items.iter().filter(|i| !n.items.contains(i)).count();
+            let diff: Vec<&Item> = n.items.iter().filter(|i| !o.items.contains(i)).collect();
+            assert_eq!(copies, diff, "{} → {}", a.n, b.n);
+            assert_eq!(bytes(&copies), bytes(&diff));
+            assert_eq!(goes, o.items.iter().filter(|i| !n.items.contains(i)).count());
+            changed += usize::from(!copies.is_empty());
+        }
+    }
+    assert!(changed > 0 && parts > changed, "{changed} of {parts} parts changed");
+}
+
+/// A download kept far behind (its catalogue long gone from this Mac, as from any log) says what
+/// changed from its own list, keeps reading its own files, and updates.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_download_behind_the_log_compares_its_list() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = store::nasfs::NasRoot::local_for_test(nas.path());
+    let cat = catalogue(&root);
+    let s = crate::test_state_with(home.path(), &root, true);
+    assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+    let roads = "layers/roads/hi/6-31-21";
+    let old = cat.files[roads].file.clone();
+    let mut c = cat.clone();
+    for n in 2..=5 {
+        let remade = if n == 2 { roads } else { "layers/roads/hi/6-30-21" };
+        c = next_catalogue(&s, nas.path(), &c, n, &[remade]);
+        tokio::task::block_in_place(|| settle(&s));
+    }
+    let m = s.data.mirror.clone().unwrap();
+    assert!(m.catalogue(1).is_none(), "catalogue 1 not kept");
+    for s in [s.clone(), crate::test_state_with(home.path(), &root, true)] {
+        tokio::task::block_in_place(|| settle(&s));
+        assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 1, to: None });
+        let v = get(&s).await;
+        let r = &v["regions"]["london"];
+        assert_eq!((r["state"].as_str(), r["cat"].as_u64()), (Some("done"), Some(1)), "{v}");
+        assert_eq!(
+            (r["behind"]["cat"].as_u64(), r["behind"]["files"].as_u64(), r["behind"]["gone"].as_u64()),
+            (Some(5), Some(1), Some(1)),
+            "{r}"
+        );
+        assert_eq!((r["behind"]["bytes"].as_u64(), &r["behind"]["what"]), (Some(1_234), &json!(["roads"])));
+        assert_eq!(s.data.content(roads), Some(old.clone()), "its own older file");
+    }
+    let s = crate::test_state_with(home.path(), &root, true);
+    assert_eq!(call(post_region_update(State(s.clone()), Path("london".into())).await).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 5, to: None });
+    assert_eq!(s.data.content(roads), Some(c.files[roads].file.clone()));
+    assert!(!s.data.mirror.as_ref().unwrap().has(&old));
+}
+
+/// A downloads file of format 4 (pins, no lists) keeps its pins: each download's list is made from
+/// the catalogue this Mac kept for it (with its ways' owners' base packs), nothing is copied again or
+/// let go, and once listed that catalogue goes like any other.
+#[tokio::test(flavor = "multi_thread")]
+async fn downloads_json_fmt4_migrates() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = nas.path().join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let r = store::nasfs::NasRoot::local_for_test(&root);
+    let mut two = catalogue(&r);
+    put_roads(&root, &mut two);
+    two.n = 2;
+    two.validate().unwrap();
+    store::catalogue::write(&root.join("catalog"), &two).unwrap();
+    let s = crate::test_state_with(home.path(), &r, true);
+    assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+    let far = two.content("base/6-30-21").unwrap().to_string();
+    let m = s.data.mirror.clone().unwrap();
+    assert!(m.has(&far), "way 100's owner's");
+    let here = m.usage();
+    drop((s, m));
+    // As format 4 wrote it, and a new catalogue since.
+    let path = home.path().join(FILE);
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    v.as_object_mut().unwrap().remove("lists");
+    v["fmt"] = json!(4);
+    std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+    let roads = "layers/roads/hi/6-31-21";
+    let mut three = two.clone();
+    three.n = 3;
+    put(&r, &mut three, roads, 1_234);
+    three.validate().unwrap();
+    store::catalogue::write(&root.join("catalog"), &three).unwrap();
+
+    let s = crate::test_state_with(home.path(), &r, true);
+    assert_eq!(s.data.catalogue().n, 3);
+    tokio::task::block_in_place(|| settle(&s));
+    let m = s.data.mirror.clone().unwrap();
+    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 2, to: None }, "kept at 2");
+    assert_eq!(m.usage(), here, "nothing copied or let go");
+    assert!(m.has(&far));
+    let on_disk: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(on_disk["fmt"], 5);
+    assert!(on_disk["lists"]["2"]["regions"]["london"]["coarse"]
+        .as_array()
+        .is_some_and(|l| l.iter().any(|i| i["file"] == json!(far))));
+    assert_eq!(s.data.content(roads), Some(two.files[roads].file.clone()));
+    let v = get(&s).await;
+    assert_eq!(v["regions"]["london"]["behind"]["files"], 1, "{v}");
+
+    // Catalogue 2 goes with the others; London stays at it, by its list.
+    let mut c = three.clone();
+    for n in 4..=6 {
+        c = next_catalogue(&s, &root, &c, n, &["layers/roads/hi/6-30-21"]);
+        tokio::task::block_in_place(|| settle(&s));
+    }
+    assert!(m.catalogue(2).is_none());
+    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 2, to: None });
+    assert!(m.has(&far) && m.usage() == here);
+    let v = get(&s).await;
+    assert_eq!(
+        (v["regions"]["london"]["behind"]["files"].as_u64(), v["regions"]["london"]["cat"].as_u64()),
+        (Some(1), Some(2))
+    );
 }

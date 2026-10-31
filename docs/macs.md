@@ -337,8 +337,10 @@ installed by `tools/app/install.sh`, updated by the updater).
   itself only when that copies nothing (all an update would copy is here: its files are the same in
   the new catalogue, or other downloads brought them; or its catalogue didn't have it yet), or when it has
   nothing whole to keep (not all here when the new catalogue came: the map never mixes a partial
-  download's older files with the NAS's newer ones). The catalogues
-  downloads are at stay in `catalog/` however old. Removing a download deletes what no other
+  download's older files with the NAS's newer ones). Each download keeps its own
+  list of its files at its catalogue (`downloads.json`), so what changed and the size to copy come
+  from its list against the catalogue served, however far behind it is; no older catalogue is kept
+  for it. Removing a download deletes what no other
   download names. Nothing else goes, ever.
 - **Copies:** one file or piece at a time, the World first, then small worldwide files, root and lo
   packs, hi data and road values, base packs, hi packs, buildings, basemap pieces. They run whenever

@@ -14,8 +14,8 @@
 //! mirror/.basemap/<hash16>/<piece>.pmtiles.part   a piece being made, resumed where it stopped
 //! mirror/.basemap/<hash16>/sizes.json             each piece's size, worked out from the archive
 //! idx/<hash16>.idx                  pack indexes (PackIndex::to_bytes), cached as they're read
-//! catalog/<n>.json.zst              the last catalogues adopted, and those a download is at or
-//!                                   updating to (`keep_catalogues`)
+//! catalog/<n>.json.zst              the last catalogues adopted (every older one too until the
+//!                                   downloads have their own lists: `release_catalogues`)
 //! ```
 //!
 //! **What's wanted** (`Wanted`, from the caller: the server's downloads) is a list of files and
@@ -206,10 +206,9 @@ struct State {
     copying: Option<Copying>,
     /// What the last sync did, and when.
     last: Option<(SyncStats, SystemTime)>,
-    /// The catalogues kept in `catalog/` besides the last few (`keep_catalogues`); None until the
-    /// caller first says: none is pruned before then (a catalogue adopted at start mustn't take
-    /// one a download is at).
-    kept: Option<std::collections::BTreeSet<u64>>,
+    /// Whether the catalogues in `catalog/` older than the last few go (`release_catalogues`):
+    /// none does before (a download of before its own list reads the one it's at).
+    released: bool,
 }
 
 /// The local copy of what this Mac has downloaded.
@@ -297,7 +296,7 @@ impl Mirror {
             root,
             reserve: std::sync::atomic::AtomicU64::new(reserve_bytes),
             floor: std::sync::OnceLock::new(),
-            state: Mutex::new(State { files, pieces, sizes, copying: None, last: None, kept: None }),
+            state: Mutex::new(State { files, pieces, sizes, copying: None, last: None, released: false }),
             free_space: Box::new(disk_free),
             on_remove: Mutex::new(None),
         })
@@ -497,30 +496,29 @@ impl Mirror {
         Ok(ix)
     }
 
-    /// Keeps a copy of `cat` in `catalog/` (for starting offline), the last few before it, and those
-    /// `keep_catalogues` names.
+    /// Keeps a copy of `cat` in `catalog/` (for starting offline) and the last few before it (older
+    /// ones too until `release_catalogues`).
     pub fn save_catalogue(&self, cat: &Catalogue) -> Result<()> {
         let dir = self.root.join(crate::catalogue::NAME);
         catalogue::write_copy(&dir, cat)?;
-        if let Some(kept) = self.state().kept.clone() {
-            catalogue::prune(&dir, KEEP_CATALOGUES, &kept)?;
+        if self.state().released {
+            catalogue::prune(&dir, KEEP_CATALOGUES)?;
         }
         Ok(())
     }
 
-    /// Keeps these catalogues in `catalog/` however old (those a download is at or updating to: their
-    /// files are read by them), from now on; others past the last few go now.
-    pub fn keep_catalogues(&self, ns: std::collections::BTreeSet<u64>) -> Result<()> {
-        if self.state().kept.as_ref() == Some(&ns) {
+    /// The downloads keep their own lists (the server's crate::downloads): the catalogues older
+    /// than the last few, kept for downloads of before, go now and from now on.
+    pub fn release_catalogues(&self) -> Result<()> {
+        if self.state().released {
             return Ok(());
         }
-        let dir = self.root.join(crate::catalogue::NAME);
-        catalogue::prune(&dir, KEEP_CATALOGUES, &ns)?;
-        self.state().kept = Some(ns);
+        catalogue::prune(&self.root.join(crate::catalogue::NAME), KEEP_CATALOGUES)?;
+        self.state().released = true;
         Ok(())
     }
 
-    /// Catalogue `n` as kept here (None: it isn't).
+    /// Catalogue `n` as kept here (None: it isn't): a download's of before it kept its own list.
     pub fn catalogue(&self, n: u64) -> Option<Catalogue> {
         let dir = self.root.join(crate::catalogue::NAME);
         catalogue::list(&dir).ok()?.contains(&n).then(|| catalogue::read_n(&dir, n).ok()).flatten()

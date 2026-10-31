@@ -629,14 +629,20 @@ region-areas.json       each accepted region's land and water (km²) and country
                         content name: {"<name>": {land, water, country}} (crates/server/src/regions.rs,
                         `sized`; worked out once per geometry, unused names dropped)
 reserve.json            the mirror's reserve {gb} (crates/server/src/reserve.rs); default 30 GB
-downloads.json          {fmt: 4, world: {at, cat, to?} | null, regions: [{id, name, at, cat, to?,
-                        detail: {cat, to?} | null}]} (crates/server/src/downloads.rs; `at` unix
-                        seconds; `cat` the catalogue a download is at, 0 until the mirror's next
-                        round pins it to the one served; `to` the catalogue an Update is copying;
-                        `detail` its terrain detail, when downloaded). A file of fmt 3 or before
-                        (`world` a time, `detail` or `fine` a flag, fmt 2's `views`) is written again
-                        as fmt 4, each download pinned to the catalogue served; one that doesn't read
-                        is set aside as downloads.json.bad
+downloads.json          {fmt: 5, world: {at, cat, to?} | null, regions: [{id, name, at, cat, to?,
+                        detail: {cat, to?} | null}], lists: {"<cat>": {world?: [item], regions:
+                        {"<id>": {coarse: [item], detail: [item], cover}}}}}
+                        (crates/server/src/downloads.rs; `at` unix seconds; `cat` the catalogue a
+                        download is at, 0 until the mirror's next round pins it to the one served;
+                        `to` the catalogue an Update is copying; `detail` its terrain detail, when
+                        downloaded; `lists` each download's own list at the catalogue served and at
+                        each one a download is at or updating to, an item {file, size} (a content
+                        name) or {archive, piece} (a basemap piece: lo, 6-x-y), `cover` the share
+                        of the region its terrain detail covers, per cent). A file of fmt 4 keeps
+                        its pins, its lists made from the catalogues this Mac kept for it; one of
+                        fmt 3 or before (`world` a time, `detail` or `fine` a flag, fmt 2's `views`)
+                        is written again as fmt 5, each download pinned to the catalogue served; one
+                        that doesn't read is set aside as downloads.json.bad
 map-page                the address to open the map on another device (docs/macs.md, Devices; 0600)
 pool-<id>.lock          the lock of this Mac's member `<id>` (crate::pool::MemberLock)
 ```

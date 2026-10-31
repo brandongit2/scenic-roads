@@ -1,6 +1,6 @@
 # The map and its log
 
-**Planned (task #883), steps 1 to 4 of §8 built.** This doc says how catalogues and GC give way
+**Planned (task #883), steps 1 to 5 of §8 built.** This doc says how catalogues and GC give way
 to one current map of the served files plus an append-only log of its changes, which clients follow
 by cursor, and a GC that runs all the time in small steps it can resume. Until each step of §8
 lands, docs/formats.md (Catalogue, Delta catalogues), docs/storage.md (GC), docs/macs.md (the map
@@ -112,6 +112,18 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
   whole, once a number, while catalogues are held. `regionsview` sums every region once a `seq`,
   not only those the batch's keys touch. No fallback to catalogues in the agent: a lead that doesn't
   answer `/map/changes` leaves a member's Catalogues map as it was, its error said.
+
+**Built (step 5):** each download keeps its own list (§6.2): `downloads.json` (fmt 5) holds, by
+`seq`, each download's content names and sizes and basemap pieces, written for the `seq` served
+while it's served and kept for each `seq` a download is at or updating to
+(`server::downloads::Downloads::keep_lists`). What a download keeps, what changed and what an
+Update copies are its list against its part of the map served. The mirror's `catalog/` keeps the
+last few catalogues only (`Mirror::release_catalogues`, once every download has its list); a file
+of fmt 4 has each list made once from the catalogue the Mac kept for it, with its ways' owners
+known, so nothing is copied again. Where it departs from §6.2: the batches since a download's `seq`
+aren't read (§6.2 says why). The served map's part is still made from the catalogue the server
+holds (a map's, or a catalogue's while it serves those), and a download whose list wasn't written
+before the map moved past it is listed from one of the last catalogues the mirror keeps.
 
 Words: **the map** is the current name → file map (what a catalogue holds today); **the log** is
 its batches of changes, each with a sequence number (`seq`); a **client** is anything that holds a
@@ -349,14 +361,17 @@ files for its logical names, as today. The page's switch to a new map stays keye
 
 ### 6.2 The mirror and offline downloads (`store::mirror`, `server/src/downloads.rs`)
 
-- A download is pinned at a `seq` (`downloads.json`'s `cat`, the same number). Today it keeps the
-  whole catalogue it's at in `catalog/` "however old" to know its files; instead the download keeps
-  its own logical → content list (the keys its region and detail cover), written when it's
-  downloaded or updated. The old whole catalogues on the Mac go.
-- "Out of date, with what changed and the size to copy": the batches since the download's `seq`
-  name exactly the keys that changed; the panel intersects their keys with the download's instead
-  of comparing two whole catalogues. A download behind by more than the log holds compares its list
-  with the current map (one pass over its own keys).
+- A download is pinned at a `seq` (`downloads.json`'s `cat`, the same number). It keeps its own
+  list of content names (each names its logical name) with their sizes, and its basemap pieces, at
+  that `seq` (`downloads.json`'s `lists`, by `seq`): written for every download at the `seq`
+  served while it's served, kept for each `seq` a download is at or updating to. No whole catalogue
+  is kept on the Mac for a download (built, step 5; a file of format 4 has each list made once from
+  the catalogue kept for it, then those go).
+- "Out of date, with what changed and the size to copy": the download's list against what it is in
+  the map served, one pass over its own items, however far behind it is. (Built so rather than
+  from the batches since its `seq`: what an Update copies is the download's part of the map served,
+  which the server works out anyway, and new keys of its region aren't in its old list for a
+  batch to meet; so the batches add nothing, and the server keeps none.)
 - `Data::set_older`/`content` (the download's older files read first) are unchanged: they read the
   download's list.
 - The mirror's sync is a client (`mirror/<host>`): while it copies files of `seq` s from the NAS
@@ -543,7 +558,7 @@ server has spoken the log for a day (the #642 gate, as coordination.md §8).
 | 2 (built, routes moved to 3) | **Dual write, shadow:** the `catalog` step writes the catalogue as now and the lead's agent appends its batch after (the step posting its map is step 6's); the hourly NAS snapshot | — | `the_log_s_map_is_each_catalogue` (the recorded chain: the log's map at each `seq` is that catalogue); `a_catalogue_the_lead_publishes_is_its_map_log_s_in_shadow` (the catalog job's end tended by a lead); `a_batch_of_a_catalogue_is_its_entries_batch` |
 | 3 (built: shadow, `map-serve` to serve; deletions in 6) | **Servers follow the log:** `GET /map/changes`, `/map/snapshot` on the coordinator (from step 2); `store::map::Client` (long poll, saved map, snapshot fallback) in the server and the CLI; the catalogue reader stays as the fallback while the lead doesn't answer `changes` (an older lead) | with step 6: `poll_every`, the server's `catalog/` listing and local `catalog/` copies, `/api/catalog/refresh` and `net::catalogue_written`, `state/publish/<host>.jsonl` and `publish_event` | built: `changes_answers_without_the_nas` (#871's slow-NAS fake blocks every call; the routes answer, a long poll at the batch); `an_old_since_resets`; `a_server_follows_publishes_and_serves_byte_identical_tiles` (within a second each, its NAS without catalogues); `a_lead_restart_mid_poll`; `the_nas_snapshot_is_used_while_the_lead_is_down` (and the catalogues with neither, the saved map at a start away); `in_shadow_the_catalogues_are_served` |
 | 4 (built) | **The agent and the page on the log:** `served()`, `LastCatalogue`, `regionsview`, `builtview`, `cataloguesview`, `pubtimes`, `namestodo::inputs_key` (by prefix `seq`) | `served`'s per-folder cache and `read_n_from` uses, `cataloguesview`'s catalogue reads and hashed names, `publishing.json`'s `at`/`low_at` | `catalogues_view_from_the_log_matches_from_catalogues` (same entries on a recorded run); `names_todo_reruns_exactly_when_its_prefixes_change`; `published_age_is_the_last_batch_touching_the_tile` |
-| 5 | **Downloads by their own lists:** each download keeps its logical → content list; "out of date" from the batches since its `seq` | the Mac's old whole catalogues kept for downloads | `an_update_s_size_from_batches_equals_the_two_catalogues_diff` (on recorded catalogues); `a_download_behind_the_log_compares_its_list`; `downloads_json_fmt4_migrates` |
+| 5 (built) | **Downloads by their own lists:** each download keeps its logical → content list (`downloads.json` fmt 5); "out of date" from its list against the map served (§6.2) | the Mac's old whole catalogues kept for downloads (`Mirror::keep_catalogues`, `prune`'s kept set) | `an_update_s_size_from_its_list_equals_the_two_catalogues_diff` (on recorded catalogues); `a_download_behind_the_log_compares_its_list`; `downloads_json_fmt4_migrates` |
 | 6 | **Catalogues stop** (after the gate: every server on the log a day): the step only posts; `catalog-held/` → `map-held/` | the catalogue writer and reader (`write`, `write_delta*`, `Delta`, `delta.rs`, `chain`, `whole_due`, `MAX_CHAIN`, `keep_read_in`/`kept_dir`, `latest*`, `read_n*`, `list`, `prune`, `next_n`), `state/pool/delta-catalog` and `Switches::delta`, the `catalog-stats:` sizes' look-ups of the last catalogue | `the_step_publishes_with_no_catalog_folder`; `a_held_batch_is_appended_whole_when_the_hold_lifts`; test roots (`lakefill catalog-add`, `coastcheck`, the server's tests) on snapshots |
 | 7 | **GC's queue, shadow:** the lead queues freed names (batches and records saves), leases and clients as holders; the merge's refusal of names deleted under a lease; a dry-run report beside today's GC, which still deletes | — | `a_name_freed_and_taken_again_leaves_the_queue`; `due_waits_for_every_cursor_the_grace_and_older_leases`; `a_reuse_of_a_deleted_name_is_refused_and_redone`; the shadow's due set ⊆ today's GC's deletions on the same day (a check job) |
 | 8 | **GC runs by the queue:** chunks of 200 whenever quiet, resumable; the orphan sweep; today's other sweeps as chunked cursors | `run_once`'s catalogue reading and folder sweep, `remove_unless_touched` and `Out::put_file`'s touch, `TOMB` and `put_back`, the 14-day catalogue window, the `gc` job's daily schedule | `gc_resumes_mid_chunk_after_a_kill` (agent killed between two deletions; next chunk starts at the first not gone, nothing deleted twice or kept forever); `gc_yields_to_the_budget`; `an_orphan_is_queued_only_after_its_age`; `the_queue_rebuilds_after_a_lead_disk_restore` |
@@ -558,8 +573,8 @@ following each publish within a second, from home or away, and GC that keeps up.
 ## 9. What gets deleted
 
 - **On the NAS:** `catalog/`, `catalog-held/`, `state/pool/delta-catalog`, `state/publish/`.
-- **On each Mac:** `catalog/` in the server's home, `~/Library/Caches/scenic/catalogue/`, the whole
-  catalogues kept for downloads.
+- **On each Mac:** `catalog/` in the server's home, `~/Library/Caches/scenic/catalogue/` (the whole
+  catalogues kept for downloads went with step 5).
 - **In `store::catalogue`:** everything but the `Catalogue` type and its parts (`FileRef`, `Layer`,
   `references`, `validate`, the coverage types): `NAME`/`HELD_NAME` as folders, `file_name`,
   `delta_file_name`, `write`, `write_copy`, `write_delta`, `write_delta_of`, `read`, `read_n`,

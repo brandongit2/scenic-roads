@@ -603,26 +603,18 @@ fn saved_catalogues() {
     let home = tempfile::tempdir().unwrap();
     let m = big(home.path());
     assert!(m.saved_catalogue().unwrap().is_none());
-    // (Until the downloads say which they're at, none goes: one adopted at start keeps them.)
+    // (Until the downloads have their own lists, none goes: one of before reads the one it's at.)
     for n in 1..=4 {
         m.save_catalogue(&two_areas(&nas, n, n as u8, 1)).unwrap();
     }
     assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [4, 3, 2, 1]);
-    m.keep_catalogues(Default::default()).unwrap();
+    assert_eq!(m.catalogue(1).unwrap().n, 1);
+    m.release_catalogues().unwrap();
     assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [4, 3, 2]);
+    assert!(m.catalogue(1).is_none());
     m.save_catalogue(&two_areas(&nas, 5, 5, 1)).unwrap();
     assert_eq!(m.saved_catalogue().unwrap().unwrap().n, 5);
     assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [5, 4, 3]);
-    // One a download is at stays however old; let go, it goes.
-    m.keep_catalogues([3].into()).unwrap();
-    for n in 6..=7 {
-        m.save_catalogue(&two_areas(&nas, n, n as u8, 1)).unwrap();
-    }
-    assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [7, 6, 5, 3]);
-    assert_eq!(m.catalogue(3).unwrap().n, 3);
-    assert!(m.catalogue(4).is_none());
-    m.keep_catalogues(Default::default()).unwrap();
-    assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [7, 6, 5]);
 }
 
 #[test]

@@ -30,8 +30,17 @@
 //! catalogue's files for it are the same, or other downloads brought them), or its own catalogue had
 //! none of it (downloaded before it was built); or when it has
 //! nothing whole to keep: not all here at its own catalogue (still copying when the new one came),
-//! whose older files the map never reads (they'd mix with the NAS's, `older`). Catalogues a download
-//! is at or updating to are kept on this Mac (store::mirror::Mirror::keep_catalogues).
+//! whose older files the map never reads (they'd mix with the NAS's, `older`).
+//!
+//! **Its own list** (docs/maplog.md §6.2). Each download keeps what it is at its catalogue: its
+//! files' content names (each names its logical name) and sizes, and its basemap pieces, in
+//! `downloads.json`'s `lists`, by catalogue number (`seq`). The lists of the catalogue served are
+//! written as the mirror plans, for every download (`Downloads::keep_lists`), and those of each
+//! catalogue a download is at or updating to are kept, however old: what it keeps, what changed and
+//! what an Update copies are its list against the catalogue served, one pass over its own items,
+//! however far behind it is. (A file of format 4 had no lists: each is made once from the catalogue
+//! this Mac kept for its download, then those older than the last few go:
+//! store::mirror::Mirror::release_catalogues.)
 //!
 //! **Whole tiles.** No z6 tile is read from two catalogues (a list's ways index their owner's base
 //! pack). A download at the served catalogue moves every tile it has files of there (`Plan::moved`):
@@ -82,9 +91,9 @@ use store::mirror::{Control, Item, Mirror, SyncEnd, Wanted};
 use store::pieces::Piece;
 
 const FILE: &str = "downloads.json";
-/// `downloads.json`'s format: 4 since downloads update only when asked (each its `Pin`); 3 had
-/// `world` as a time and `detail` as a flag.
-const FMT: u32 = 4;
+/// `downloads.json`'s format: 5 since each download keeps its own list (`lists`); 4 since downloads
+/// update only when asked (each its `Pin`); 3 had `world` as a time and `detail` as a flag.
+const FMT: u32 = 5;
 
 /// The catalogue a download is at, and the one an Update is taking it to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,7 +199,6 @@ fn upgrade(mut v: Value) -> Value {
 /// What a download copies: files of a catalogue and pieces of its basemap's archives, in copy order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Part {
-    pub files: Files,
     pub items: Vec<Item>,
 }
 
@@ -209,7 +217,7 @@ impl Part {
         for a in archives {
             items.extend(pieces.iter().map(|&p| Item::Piece { archive: a.clone(), piece: p }));
         }
-        Part { files, items }
+        Part { items }
     }
 
     fn pieces(&self) -> impl Iterator<Item = (&str, Piece)> {
@@ -258,12 +266,117 @@ type Owners = HashMap<(String, String), Arc<BTreeSet<u64>>>;
 /// Every region a catalogue records, what downloading it copies, by id.
 type Regions = BTreeMap<String, RegionParts>;
 
-/// What downloads of one catalogue copy: the World, and every region it records.
+/// What downloads of one catalogue copy: made from the catalogue (`cat`), the World and every region
+/// it records; or kept (`Downloads::keep_lists`), the World when downloaded and the regions
+/// downloaded.
 pub struct At {
-    pub cat: Arc<Catalogue>,
-    pub world: Part,
+    pub cat: Option<Arc<Catalogue>>,
+    pub world: Option<Part>,
     pub regions: Regions,
 }
+
+impl At {
+    /// What the downloads of `asked` keep of it (`cat` none).
+    fn listed(&self, asked: &Asked) -> At {
+        let ids: HashSet<&str> = asked.regions.iter().map(|r| r.id.as_str()).collect();
+        At {
+            cat: None,
+            world: self.world.clone().filter(|_| asked.world.is_some()),
+            regions: self
+                .regions
+                .iter()
+                .filter(|(id, _)| ids.contains(id.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        }
+    }
+
+    /// The same lists.
+    fn same(&self, o: &At) -> bool {
+        self.world == o.world && self.regions == o.regions
+    }
+}
+
+/// An item of a download's list as `downloads.json` keeps it: a file (its content name, which names
+/// its logical name, and size), or a piece of a basemap archive (the archive's content name).
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum Listed {
+    File { file: String, size: u64 },
+    Piece { archive: String, piece: String },
+}
+
+#[derive(Serialize, Deserialize)]
+struct ListedRegion {
+    coarse: Vec<Listed>,
+    detail: Vec<Listed>,
+    cover: f64,
+}
+
+/// The downloads' lists at one catalogue, as `downloads.json` keeps them.
+#[derive(Serialize, Deserialize)]
+struct ListedAt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    world: Option<Vec<Listed>>,
+    #[serde(default)]
+    regions: BTreeMap<String, ListedRegion>,
+}
+
+fn to_listed(p: &Part) -> Vec<Listed> {
+    p.items
+        .iter()
+        .map(|i| match i {
+            Item::File { name, size } => Listed::File { file: name.clone(), size: *size },
+            Item::Piece { archive, piece } => Listed::Piece { archive: archive.clone(), piece: piece.name() },
+        })
+        .collect()
+}
+
+fn from_listed(v: Vec<Listed>) -> Result<Part> {
+    let items = v
+        .into_iter()
+        .map(|l| match l {
+            Listed::File { file, size } => Ok(Item::File { name: file, size }),
+            Listed::Piece { archive, piece } => match Piece::parse(&piece) {
+                Some(piece) => Ok(Item::Piece { archive, piece }),
+                None => bail!("{archive}: no piece {piece}"),
+            },
+        })
+        .collect::<Result<_>>()?;
+    Ok(Part { items })
+}
+
+impl ListedAt {
+    fn of(a: &At) -> ListedAt {
+        ListedAt {
+            world: a.world.as_ref().map(to_listed),
+            regions: a
+                .regions
+                .iter()
+                .map(|(id, r)| {
+                    (
+                        id.clone(),
+                        ListedRegion { coarse: to_listed(&r.coarse), detail: to_listed(&r.detail), cover: r.cover },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn at(self) -> Result<At> {
+        let regions = self
+            .regions
+            .into_iter()
+            .map(|(id, r)| {
+                Ok((id, RegionParts { coarse: from_listed(r.coarse)?, detail: from_listed(r.detail)?, cover: r.cover }))
+            })
+            .collect::<Result<_>>()?;
+        Ok(At { cat: None, world: self.world.map(from_listed).transpose()?, regions })
+    }
+}
+
+/// The lists kept, by catalogue number.
+type Lists = BTreeMap<u64, Arc<At>>;
 
 /// What the mirror copies for the catalogues served and kept, and one set of downloads.
 pub struct Plan {
@@ -299,7 +412,7 @@ impl Plan {
     fn part(&self, w: &Which, n: u64) -> Option<&Part> {
         let at = self.at.get(&self.eff(n))?;
         match w {
-            Which::World => Some(&at.world),
+            Which::World => at.world.as_ref(),
             Which::Region(id) => at.regions.get(id).map(|p| &p.coarse),
             Which::Detail(id) => at.regions.get(id).map(|p| &p.detail),
         }
@@ -344,6 +457,11 @@ impl Plan {
     pub fn now(&self) -> &At {
         &self.at[&self.current]
     }
+
+    /// The catalogue served.
+    fn served(&self) -> &Catalogue {
+        self.now().cat.as_deref().expect("the served catalogue's is made from it")
+    }
 }
 
 /// What a download keeps (`Plan::own`).
@@ -378,6 +496,9 @@ fn tile_of(i: &Item) -> Option<(u32, u32)> {
 pub struct Downloads {
     path: std::path::PathBuf,
     asked: Mutex<Asked>,
+    /// Each download's list at each catalogue one is at or updating to, and at the one served
+    /// (`keep_lists`); written with `asked`, locked after it.
+    lists: Mutex<Lists>,
     /// Bumped at every change of what's asked, and when owners are learned.
     version: AtomicU64,
     plan: Mutex<Option<Arc<Plan>>>,
@@ -394,33 +515,41 @@ pub struct Downloads {
 
 impl Downloads {
     /// The downloads in `home` (none yet: none). A file that doesn't read is set aside as
-    /// `downloads.json.bad`. One of an earlier format is written again as this one (`upgrade`).
+    /// `downloads.json.bad`. One of an earlier format is written again as this one (`upgrade`;
+    /// format 4's pins kept, its lists made by the mirror's next rounds: `keep_lists`).
     pub fn load(home: &std::path::Path) -> Arc<Downloads> {
         let path = home.join(FILE);
-        let read = |b: &[u8]| -> Result<(Asked, bool)> {
-            let v: Value = serde_json::from_slice(b)?;
-            let old = v["fmt"].as_u64().unwrap_or(0) < u64::from(FMT);
-            Ok((serde_json::from_value(if old { upgrade(v) } else { v })?, old))
+        let read = |b: &[u8]| -> Result<(Asked, Lists, bool)> {
+            let mut v: Value = serde_json::from_slice(b)?;
+            let fmt = v["fmt"].as_u64().unwrap_or(0);
+            let listed: BTreeMap<u64, ListedAt> = match v.as_object_mut().and_then(|o| o.remove("lists")) {
+                Some(l) => serde_json::from_value(l)?,
+                None => BTreeMap::new(),
+            };
+            let lists = listed.into_iter().map(|(n, l)| Ok((n, Arc::new(l.at()?)))).collect::<Result<_>>()?;
+            let v = if fmt < 4 { upgrade(v) } else { v };
+            Ok((serde_json::from_value(v)?, lists, fmt < u64::from(FMT)))
         };
-        let (asked, old) = match std::fs::read(&path) {
+        let (asked, lists, old) = match std::fs::read(&path) {
             Ok(b) => match read(&b) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("downloads: {} doesn't read ({e}); set aside as {FILE}.bad", path.display());
                     let _ = std::fs::rename(&path, home.join(format!("{FILE}.bad")));
-                    (Asked::default(), false)
+                    (Asked::default(), Lists::new(), false)
                 }
             },
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     eprintln!("downloads: can't read {}: {e}", path.display());
                 }
-                (Asked::default(), false)
+                (Asked::default(), Lists::new(), false)
             }
         };
         let d = Arc::new(Downloads {
             path,
             asked: Mutex::new(asked.clone()),
+            lists: Mutex::new(lists),
             version: AtomicU64::new(1),
             plan: Mutex::new(None),
             ats: Default::default(),
@@ -446,18 +575,69 @@ impl Downloads {
     /// Changes what's asked with `f` and writes it out (through a temporary file); the mirror
     /// thread is woken. Nothing changes when `f` fails or the file can't be written.
     fn edit<T>(&self, f: impl FnOnce(&mut Asked) -> Result<T>) -> Result<T> {
+        let out = self.write(f, None)?;
+        self.version.fetch_add(1, Ordering::SeqCst);
+        self.poke();
+        Ok(out)
+    }
+
+    /// Writes what's asked, changed by `f`, and the lists (`lists`, else those kept), through a
+    /// temporary file; nothing changes when `f` fails or the file can't be written.
+    fn write<T>(&self, f: impl FnOnce(&mut Asked) -> Result<T>, lists: Option<Lists>) -> Result<T> {
         let mut g = self.asked.lock().unwrap();
+        let mut l = self.lists.lock().unwrap();
         let mut next = g.clone();
         let out = f(&mut next)?;
         next.fmt = FMT;
+        let lists = lists.unwrap_or_else(|| l.clone());
+        let mut v = serde_json::to_value(&next)?;
+        let listed: BTreeMap<u64, ListedAt> = lists.iter().map(|(n, a)| (*n, ListedAt::of(a))).collect();
+        v["lists"] = serde_json::to_value(listed)?;
         let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&next)?).with_context(|| format!("write {}", tmp.display()))?;
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&v)?).with_context(|| format!("write {}", tmp.display()))?;
         std::fs::rename(&tmp, &self.path).with_context(|| format!("rename {}", tmp.display()))?;
         *g = next;
-        self.version.fetch_add(1, Ordering::SeqCst);
-        drop(g);
-        self.poke();
+        *l = lists;
         Ok(out)
+    }
+
+    /// Keeps each download's list at the catalogue served and at each one a download is at or
+    /// updating to (those it has; the others go). The served one's are made again at each plan
+    /// while it's served (a download asked, owners learned: their base packs). One made from a
+    /// catalogue this Mac kept for a download of format 4 only once all owners are known (a list
+    /// missing a base pack here would let it go). Once every download's catalogue has its lists,
+    /// the catalogues kept for them go (`Mirror::release_catalogues`).
+    fn keep_lists(&self, plan: &Plan, owners_known: bool, m: &Mirror) {
+        let held = self.lists.lock().unwrap().clone();
+        let pinned: BTreeSet<u64> =
+            plan.asked.pins().iter().flat_map(|(_, p)| [Some(p.cat), p.to]).flatten().filter(|&n| n > 0).collect();
+        let mut next = Lists::new();
+        for &n in pinned.iter().chain([&plan.current]) {
+            let made = plan.at.get(&n).filter(|a| a.cat.is_some());
+            let remake = n == plan.current || owners_known;
+            match (made, held.get(&n)) {
+                (Some(a), h) if remake => {
+                    let a = a.listed(&plan.asked);
+                    next.insert(n, h.filter(|h| h.same(&a)).cloned().unwrap_or_else(|| Arc::new(a)));
+                }
+                (_, Some(h)) => {
+                    next.insert(n, h.clone());
+                }
+                _ => {}
+            }
+        }
+        let same = next.len() == held.len() && next.iter().all(|(n, a)| held.get(n).is_some_and(|h| Arc::ptr_eq(a, h)));
+        if !same {
+            if let Err(e) = self.write(|_| Ok(()), Some(next.clone())) {
+                eprintln!("downloads: keeping their lists: {e:#}");
+                return;
+            }
+        }
+        if pinned.iter().all(|n| next.contains_key(n)) {
+            if let Err(e) = m.release_catalogues() {
+                eprintln!("mirror: letting the downloads' old catalogues go: {e:#}");
+            }
+        }
     }
 
     /// Wakes the mirror thread for another round (the reserve changed).
@@ -490,15 +670,24 @@ impl Downloads {
         let (changes, owners) = self.owners.lock().unwrap().clone();
         let mut ns: BTreeSet<u64> = asked.pins().iter().flat_map(|(_, p)| [Some(p.cat), p.to]).flatten().collect();
         ns.insert(cur.n);
+        let lists = self.lists.lock().unwrap().clone();
         let at: BTreeMap<u64, Arc<At>> = {
             let mut g = self.ats.lock().unwrap();
-            g.retain(|n, _| ns.contains(n));
+            g.retain(|n, _| ns.contains(n) && (*n == cur.n || !lists.contains_key(n)));
             ns.iter()
                 .filter_map(|&n| {
+                    // (Each download's own lists, but at the catalogue served; made from a
+                    // catalogue this Mac kept otherwise only where none were kept: a download of
+                    // format 4, or one the map moved past before the mirror's round listed it.)
+                    if n != cur.n {
+                        if let Some(a) = lists.get(&n) {
+                            return Some((n, a.clone()));
+                        }
+                    }
                     if let Some((c, a)) = g.get(&n) {
                         // (The served catalogue's again when it was swapped under the same number:
                         // a test's, or a fresh NAS.)
-                        if *c == changes && (n != cur.n || Arc::ptr_eq(&a.cat, &cur)) {
+                        if *c == changes && (n != cur.n || a.cat.as_ref().is_some_and(|c| Arc::ptr_eq(c, &cur))) {
                             return Some((n, a.clone()));
                         }
                     }
@@ -527,7 +716,7 @@ fn at_of(cat: Arc<Catalogue>, owners: &Owners) -> At {
         .iter()
         .map(|r| (r.id.clone(), region_parts(&cat, &r.id, &outer_rings(r), owners)))
         .collect();
-    At { world: world_part(&cat), regions, cat }
+    At { world: Some(world_part(&cat)), regions, cat: Some(cat) }
 }
 
 /// The older files the downloads behind the catalogue served keep, by logical name, for the map to
@@ -546,7 +735,7 @@ fn older(plan: &Plan, m: &Mirror) -> HashMap<String, String> {
         .filter_map(|(w, p)| plan.part(w, p.cat))
         .flat_map(|p| p.items.iter().map(store::mirror::copy_name))
         .collect();
-    let cat = &plan.now().cat;
+    let cat = plan.served();
     let mut out = HashMap::new();
     for (w, p) in plan.asked.pins() {
         if plan.eff(p.cat) == plan.current {
@@ -587,7 +776,8 @@ impl Downloads {
             let ns: BTreeSet<u64> =
                 [plan.eff(asked.pin.cat), plan.current].into_iter().chain(asked.pin.to.map(|t| plan.eff(t))).collect();
             for n in ns {
-                let cat = &plan.at[&n].cat;
+                // (A download's own list needs none: its owners were known when it was made.)
+                let Some(cat) = plan.at.get(&n).and_then(|a| a.cat.as_ref()) else { continue };
                 let Some(r) = crate::regions::recorded(cat).into_iter().find(|d| d.id == asked.id) else { continue };
                 let rings = outer_rings(&r);
                 for t in near(cat, &rings) {
@@ -625,7 +815,8 @@ impl Downloads {
     /// Moves each download's pin on where the plan says (`Plan::eff`, module doc): pinned at last
     /// (none yet, or its catalogue lost: the one served); an Update all here (`Plan::target`): to its
     /// catalogue; behind, with nothing to copy (all an Update would copy here already), or with
-    /// nothing whole to keep (not all it keeps here at its own catalogue): to the one served. Tells the mirror which catalogues to keep. Whether anything moved.
+    /// nothing whole to keep (not all it keeps here at its own catalogue): to the one served.
+    /// Whether anything moved.
     fn advance(&self, plan: &Plan, m: &Mirror) -> bool {
         let cur = plan.current;
         let mut next = plan.asked.clone();
@@ -660,10 +851,6 @@ impl Downloads {
             if p != pin {
                 *next.pin_mut(&w).expect("a pin listed") = p;
             }
-        }
-        let keep: BTreeSet<u64> = next.pins().iter().flat_map(|(_, p)| [Some(p.cat), p.to]).flatten().collect();
-        if let Err(e) = m.keep_catalogues(keep) {
-            eprintln!("mirror: keeping the downloads' catalogues: {e:#}");
         }
         if next == plan.asked {
             return false;
@@ -819,6 +1006,7 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
         return false;
     }
     let owners_known = s.downloads.learn_owners(&s.data, &s.downloads.plan(&s.data));
+    s.downloads.keep_lists(&s.downloads.plan(&s.data), owners_known, m);
     if s.downloads.advance(&s.downloads.plan(&s.data), m) {
         return true;
     }
@@ -833,8 +1021,7 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
     } else {
         let mut w = plan.wanted.clone();
         let mut seen: HashSet<Item> = w.items.iter().cloned().collect();
-        for at in plan.at.values() {
-            let c = &at.cat;
+        for c in plan.at.values().filter_map(|a| a.cat.as_ref()) {
             for f in c.base.values().chain(c.roads.values()).filter_map(|l| c.files.get(l)) {
                 if m.has(&f.file) {
                     w.push(Item::File { name: f.file.clone(), size: f.size }, &mut seen);
@@ -883,7 +1070,12 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
         return true;
     }
     if pool.is_online() {
-        let all = plan.now().world.pieces().chain(plan.now().regions.values().flat_map(|r| r.coarse.pieces()));
+        let all = plan
+            .now()
+            .world
+            .iter()
+            .flat_map(Part::pieces)
+            .chain(plan.now().regions.values().flat_map(|r| r.coarse.pieces()));
         if let Err(e) = size_pieces(m, all, &root, &pool, &changed) {
             eprintln!("mirror: sizing the basemap's pieces: {e:#}");
         }
