@@ -14,7 +14,7 @@ clap = { version = "4.5", default-features = false, features = ["std", "derive",
 # (Help text and errors' context natively only, crates/pipeline/Cargo.toml: the WebAssembly programs
 # a page runs stay small.)
 
-# Tests and debug builds keep only line tables (panics and backtraces still name file and line).
+# Debug builds keep only line tables (panics and backtraces still name file and line); tests none.
 # Full debug info on macOS stays in each build's object files beside the binaries, and they
 # piled up to 38 GB in target/debug by 15 Oct 2026.
 [profile.dev]
