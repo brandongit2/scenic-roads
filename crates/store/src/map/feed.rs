@@ -7,7 +7,7 @@
 //! `Changes` is the wire answer of `GET /map/changes`, which a client (crate::map::Client's users)
 //! parses back: `{"reset": <seq>}`, or `{"head", "more", "batches"}`.
 
-use super::{Batch, Cursor, Map, Snapshot};
+use super::{Batch, Cursor, Map, Mark, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,6 +31,8 @@ struct Inner {
     cursors: BTreeMap<String, Cursor>,
     /// The snapshot last made (`snapshot`), and its `seq`.
     snap: Option<(u64, Arc<Vec<u8>>)>,
+    /// The log's marks (super::log::Log::marks) as its writer last said.
+    marks: BTreeMap<String, Mark>,
 }
 
 /// The lead's map, as its routes answer it.
@@ -86,7 +88,8 @@ impl Feed {
             // (A cursor heard since the snapshot was written kept as heard.)
             kept.entry(k).and_modify(|h| *h = if h.heard >= c.heard { h.clone() } else { c.clone() }).or_insert(c);
         }
-        *g = Inner { map: Some(map), base, cursors: kept, ..Default::default() };
+        let marks = std::mem::take(&mut g.marks);
+        *g = Inner { map: Some(map), base, cursors: kept, marks, ..Default::default() };
         for b in held {
             hold(&mut g, b);
         }
@@ -101,6 +104,16 @@ impl Feed {
         hold(&mut g, b);
         drop(g);
         self.gen.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The log's marks now (its writer's, at each `start` and `push`).
+    pub fn set_marks(&self, marks: BTreeMap<String, Mark>) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).marks = marks;
+    }
+
+    /// The log's marks as last set.
+    pub fn marks(&self) -> BTreeMap<String, Mark> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).marks.clone()
     }
 
     /// Moves on at each change: a long poll answers once it has.
@@ -124,7 +137,9 @@ impl Feed {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let Some(head) = g.map.as_ref().map(|m| m.seq) else { return Changes::NotReady };
         if let Some(c) = client.filter(|c| !c.is_empty() && c.len() <= 120) {
-            g.cursors.insert(c.to_string(), Cursor { seq: since, heard: now });
+            // (When it was first heard at `since`: its adoption of it.)
+            let at = g.cursors.get(c).filter(|k| k.seq == since && k.at > 0).map_or(now, |k| k.at);
+            g.cursors.insert(c.to_string(), Cursor { seq: since, heard: now, at });
         }
         if since > head || since < g.base {
             return Changes::Reset(head);
@@ -226,7 +241,10 @@ mod tests {
         }
         let a = answer(f.changes(3, Some("server/m4"), 77));
         assert_eq!((a.head, a.more, a.batches.iter().map(|b| b.seq).collect::<Vec<_>>()), (5, false, vec![4, 5]));
-        assert_eq!(f.cursors()["server/m4"], Cursor { seq: 3, heard: 77 });
+        assert_eq!(f.cursors()["server/m4"], Cursor { seq: 3, heard: 77, at: 77 });
+        // (Heard again at the same seq: adopted when first heard there.)
+        f.changes(3, Some("server/m4"), 80);
+        assert_eq!(f.cursors()["server/m4"], Cursor { seq: 3, heard: 80, at: 77 });
         // At the head: none. Before the oldest held, or past the head: reset.
         assert!(answer(f.changes(5, None, 0)).batches.is_empty());
         assert_eq!(answer(f.changes(0, None, 0)).reset, Some(5));

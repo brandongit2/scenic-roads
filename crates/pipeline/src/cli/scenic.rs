@@ -255,15 +255,16 @@ pub enum Cmd {
         #[command(flatten)]
         root: Root,
     },
-    /// The catalogues as the build page's Catalogues map reads them (docs/pool.md §10): each one's
-    /// number, time and the map tiles it published, as JSON (what `/work/catalogs` answers). Reads only
+    /// The build page's Catalogues map as this Mac's agent last kept it (docs/pool.md §10): each
+    /// batch of the map's log, its number, time and the map tiles it published, as JSON (what
+    /// `/work/catalogs` answers)
     #[command(name = "catalogs")] // the command keeps its old spelling (task #547)
     Catalogues {
         /// Only those after this catalogue
         #[arg(long, value_name = "N")]
         after: Option<u64>,
         #[command(flatten)]
-        root: Root,
+        home: Home,
     },
     /// The input gate (docs/inputs.md §4): every gate unit, its accepted version, its state, what
     /// holds it, its acceptances (those no check raises any more marked stale)

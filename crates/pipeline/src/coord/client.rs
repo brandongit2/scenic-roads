@@ -309,11 +309,12 @@ impl Client {
     }
 
     fn is_file(path: &str) -> bool {
-        path.starts_with("/work/in/") || path.starts_with("/work/out/")
+        path.starts_with("/work/in/") || path.starts_with("/work/out/") || path == "/map/snapshot"
     }
 
     /// The HTTP client for a request to `path`: a file (a task's input or output, `/work/in/`,
-    /// `/work/out/`) has no limit on its whole time, only on a stall (`Files`); anything else 15 s
+    /// `/work/out/`, the map whole: `/map/snapshot`) has no limit on its whole time, only on a stall
+    /// (`Files`); anything else 15 s
     /// in all, so a lead that doesn't answer (asleep, its agent stopped) holds no worker's loop up
     /// for long.
     /// (A fresh Agent per request: no connection is pooled between requests.)

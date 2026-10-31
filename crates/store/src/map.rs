@@ -303,6 +303,40 @@ impl Batch {
     pub fn is_empty(&self) -> bool {
         self.set.is_empty() && self.del.is_empty()
     }
+
+    /// Whether its `why` says `part`: its parts after the first, each after `WHY_SEP` ("catalogue
+    /// 812; the low zooms").
+    pub fn says(&self, part: &str) -> bool {
+        self.why.split(WHY_SEP).skip(1).any(|p| p == part)
+    }
+
+    /// Whether it sets or deletes a key starting with `prefix`.
+    pub fn touches(&self, prefix: &str) -> bool {
+        let set = self.set.range::<str, _>((std::ops::Bound::Included(prefix), std::ops::Bound::Unbounded)).next();
+        set.is_some_and(|(k, _)| k.starts_with(prefix)) || self.del.iter().any(|k| k.starts_with(prefix))
+    }
+}
+
+/// What separates the parts of a batch's `why` (`Batch::says`).
+pub const WHY_SEP: &str = "; ";
+
+/// A watch of the log (`log::Log::open_watching`) is a key prefix (the last batch setting or deleting
+/// a key under it), or this and a part of a batch's `why` (the last batch saying it).
+pub const WHY: &str = "why:";
+
+/// Whether batch `b` is one watch `w` marks.
+pub fn marks(w: &str, b: &Batch) -> bool {
+    match w.strip_prefix(WHY) {
+        Some(part) => b.says(part),
+        None => b.touches(w),
+    }
+}
+
+/// The last batch a watch marked (docs/maplog.md §6.8): its `seq` and time.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Mark {
+    pub seq: u64,
+    pub at: String,
 }
 
 /// An `f/` entry's content name.
@@ -495,6 +529,9 @@ pub struct Undo {
 pub struct Cursor {
     pub seq: u64,
     pub heard: u64,
+    /// When it was first heard at `seq`: its adoption of it (docs/maplog.md §6.1).
+    #[serde(default)]
+    pub at: u64,
 }
 
 /// The whole map as stored: the lead's snapshot and the NAS's (§4.4, §4.5). Written from the map
@@ -507,11 +544,21 @@ pub struct Snapshot<E = Entries, C = BTreeMap<String, Cursor>> {
     pub entries: E,
     #[serde(default)]
     pub cursors: C,
+    /// The log's watches' marks (`log::Log::marks`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub marks: BTreeMap<String, Mark>,
 }
 
 impl<'a> Snapshot<&'a Entries, &'a BTreeMap<String, Cursor>> {
     pub fn of(m: &'a Map, cursors: &'a BTreeMap<String, Cursor>) -> Self {
-        Snapshot { seq: m.seq, at: m.at.clone(), digest: hex(m.digest), entries: &m.entries, cursors }
+        Snapshot {
+            seq: m.seq,
+            at: m.at.clone(),
+            digest: hex(m.digest),
+            entries: &m.entries,
+            cursors,
+            marks: BTreeMap::new(),
+        }
     }
 
     /// Compact JSON streamed into zstd (level 3: written hourly, read at a start) with its content
@@ -530,13 +577,18 @@ impl<'a> Snapshot<&'a Entries, &'a BTreeMap<String, Cursor>> {
 impl Snapshot {
     /// The map and cursors it holds: an error when it's damaged or its entries aren't its digest.
     pub fn decode(bytes: &[u8]) -> Result<(Map, BTreeMap<String, Cursor>)> {
+        Snapshot::decode_marked(bytes).map(|(m, c, _)| (m, c))
+    }
+
+    /// `decode`, with the marks it holds.
+    pub fn decode_marked(bytes: &[u8]) -> Result<(Map, BTreeMap<String, Cursor>, BTreeMap<String, Mark>)> {
         // (Streamed: the JSON never whole; the frame's checksum checked at its end.)
         let dec = zstd::stream::Decoder::new(bytes).context("the map's snapshot doesn't decompress")?;
         let s: Snapshot = serde_json::from_reader(std::io::BufReader::with_capacity(1 << 16, dec))
             .context("the map's snapshot doesn't decompress or parse")?;
         let m = Map::new(s.seq, s.at, s.entries);
         ensure!(hex(m.digest) == s.digest, "the map's snapshot {} isn't its digest", s.seq);
-        Ok((m, s.cursors))
+        Ok((m, s.cursors, s.marks))
     }
 }
 

@@ -288,8 +288,9 @@ from the first (`edit_held`).
   stale: their owners whose base pack or road values differ from the served catalogue's), leased and
   done; and catalogue n written (`catalog`: its `n`, its job's time, delta or whole, the files listed
   and stat'ed, its phases once written, from the catalogue's own `catalog-stats:` log line). On the
-  NAS, the map server (the Mac mini's) appends to `state/publish/<host>.jsonl` its adoption of each catalogue
-  and its mirror's sync of it (begun, and through everything wanted). The Mac writing a catalogue
+  NAS, the map server (the Mac mini's) appends to `state/publish/<host>.jsonl` its mirror's sync of
+  each catalogue (begun, and through everything wanted). Its adoption of each is its cursor in the
+  map's log moving there (docs/maplog.md §6.1), which the lead notes in the history (`adopt`). The Mac writing a catalogue
   tells its own server at once (`/api/catalog/refresh`); the others look every 10 s while a build
   runs (docs/macs.md). `scenic timings publish [--last N]` joins them: a z6 tile is in the first catalogue begun
   once it was merged and its stale tiles packed; per catalogue and per z6 tile, the hand-off, planned, leased, packed, catalogue, servers
@@ -400,13 +401,14 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
      catalogue (5), listed before the chain's rest (the low zooms, rail stops, ferries, roots), which
      goes out with a later one. Nothing is published before a z6 tile is
      built, while the regions have work left. The lead keeps `publishing.json` in its agent's folder
-     (`build::LastCatalogue`: when its last catalogue went out, the last with the low zooms made, and
-     when a catalogue due was first held back since),
+     (`build::LastCatalogue`: when a catalogue due was first held back since, and the cadenced
+     steps' runs); when its last catalogue went out, and the last with the low zooms made, are the
+     map's log's (its head batch, and its last batch whose `why` says so: docs/maplog.md §6.5),
      and records what publishing does and why (`build::PublishLine`), shown in the build status
      (`publishing`), the worker page and `scenic status`, and logged when it changes. Beside it the
      status's `published` (`agent::Published`): the last catalogue (number, when, with the low zooms
      or map tiles only), the map tiles being drawn by Mac (pack's targets leased), and the catalogue
-     the map server last adopted (`pubtimes`' servers' log). The worker page's Publishing
+     the map server last adopted (its cursor in the map's log). The worker page's Publishing
      card and `scenic status` say these in the same words, with the cadenced publishes next (the
      forecast's `publishes`); `scenic status` and the menu bar say a region
      still building as "x of y tiles, on the map as they come", and when all of it is.
@@ -414,7 +416,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
      terrain's and slope's roots, and with `near-slope` the slope and tree cover assemblies) are
      planned when nothing else is queued (no `unit`, terrain, slope or tree cover z6 tile, 3D buildings or
      depth work), at once; else `build::LOW_EVERY_S` (three hours) after a catalogue last went out
-     with them made (`LastCatalogue::low_at`), when half the roads' lo packs are stale
+     with them made (the map log's last batch saying so, `publish::LOW`), when half the roads' lo packs are stale
      (`build::low_due`), or once everything is built. The gate decides only when; their keys stay
      by content. Zoom ranges don't overlap, so a region new since shows its roads from z9 until the
      low zooms are next made.

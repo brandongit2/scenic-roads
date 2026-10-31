@@ -345,10 +345,40 @@ pub fn spoken_for(root: &store::nasfs::NasRoot, cat: &store::catalogue::Catalogu
     Spoken::from_bytes(&b).with_context(|| format!("read {}", f.file))
 }
 
-/// What `run` reads of catalogue `cat`, by content: the units and the coverage it records, the
-/// languages spoken, the labels' hi packs, the base packs, the units' own-road lists, the hi data,
-/// the landmark points and the area overlays. A catalogue that changed none of them (most do: a
-/// depth or terrain tile alone) leaves the lists as they are, so they aren't made again.
+/// What `run` reads of the map, as the map log's watches (docs/maplog.md §6.8; store::map::marks):
+/// the units and the regions it records, the languages spoken, the labels' hi packs, the base packs,
+/// the units' own-road lists, the hi data, the landmark points and the area overlays, each section's
+/// keys and their files (`f/` and the logical names those sections give, as the steps name them).
+pub const INPUTS: [&str; 17] = [
+    "u/",
+    "m/units",
+    "r/",
+    "m/regions",
+    "s/global/spoken",
+    "f/global/spoken",
+    "l/labels/hi/",
+    "f/layers/labels/hi/",
+    "s/base/",
+    "f/base/",
+    "f/global/roaden/",
+    "s/hidata/",
+    "f/hidata/",
+    "s/markdata/",
+    "f/markdata/",
+    "s/ovdata/",
+    "f/ovdata/",
+];
+
+/// The agent's key of what `run` reads (crate::agent::build::names_todo_work): the `seq` of the
+/// last batch that touched any of `INPUTS`, by the log's `marks`; None before the log has any. A
+/// batch that changed none of them (most: a depth or terrain tile alone) leaves the lists as they
+/// are, so they aren't made again.
+pub fn inputs_seq(marks: &BTreeMap<String, store::map::Mark>) -> Option<String> {
+    INPUTS.iter().filter_map(|w| marks.get(*w)).map(|m| m.seq).max().map(|s| format!("map {s}"))
+}
+
+/// What `run` reads of catalogue `cat`, by content (`INPUTS`, as `run` reads them): the key of its
+/// roads' pieces (crate::resume_log), so a run taken up again goes on only on the same inputs.
 pub fn inputs_key(cat: &store::catalogue::Catalogue) -> String {
     let mut parts: Vec<String> = vec![format!("names-todo inputs {VERSION}")];
     parts.extend(cat.units.iter().cloned());
@@ -989,30 +1019,56 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    /// A measure on real catalogues, reading the NAS alone: `SCENIC_NAMES_KEYS="<root> <last n>"`
-    /// prints each of the last n catalogues' `inputs_key` and how many of them changed it (the runs
-    /// the lists would take).
-    #[test]
-    fn measure_the_catalogues_inputs_keys() {
-        let Ok(m) = std::env::var("SCENIC_NAMES_KEYS") else { return };
-        let (root, last) = m.split_once(' ').unwrap();
-        let dir = std::path::Path::new(root).join("catalog");
-        let mut ns = store::catalogue::list(&dir).unwrap();
-        ns.sort_unstable();
-        let ns = &ns[ns.len().saturating_sub(last.parse().unwrap())..];
-        let (mut prev, mut changed, mut last) = (String::new(), 0, None);
-        for &n in ns {
-            // (From the one before: only its delta applied.)
-            let Ok(cat) = store::catalogue::read_n_from(&dir, n, last.as_ref()) else { continue };
-            let k = super::inputs_key(&cat);
-            changed += usize::from(k != prev);
-            println!("{n} {} {k}", cat.created);
-            prev = k;
-            last = Some(cat);
-        }
-        println!("{} catalogues, {changed} with the names' inputs changed", ns.len());
-    }
     use super::*;
+
+    /// docs/maplog.md §8, step 4: the lists' key moves with a batch touching any of their inputs'
+    /// prefixes (a section's key, or a file of one), and with nothing else; across a reopened log.
+    #[test]
+    fn names_todo_reruns_exactly_when_its_prefixes_change() {
+        use store::map::{log::Log, Map};
+        let d = tempfile::tempdir().unwrap();
+        let f = |file: &str| json!({"file": file, "size": 1, "fmt": 1});
+        let mut e: store::map::Entries = [
+            ("u/6/1/1".to_string(), json!(true)),
+            ("s/base/6/1/1".into(), json!("base/6-1-1")),
+            ("f/base/6-1-1".into(), f("base/6-1-1.a.sect")),
+            ("l/terrain/deep/10/1/1".into(), json!("layers/terrain/deep/10-1-1")),
+            ("f/layers/terrain/deep/10-1-1".into(), f("layers/terrain/deep/10-1-1.a.pack")),
+            ("f/layers/labels/hi/6-1-1".into(), f("layers/labels/hi/6-1-1.a.pack")),
+        ]
+        .into();
+        let mut log = Log::open_watching(d.path(), &INPUTS).unwrap();
+        log.seed(Map::new(1, "t1".into(), e.clone())).unwrap();
+        let key = |l: &Log| inputs_seq(l.marks()).unwrap();
+        assert_eq!(key(&log), "map 1");
+        let mut seq = 1;
+        let mut step = |log: &mut Log, e: &store::map::Entries| {
+            seq += 1;
+            let b = log.map().batch_to(e, seq, &format!("t{seq}"), "", "");
+            log.append(&b).unwrap();
+            key(log)
+        };
+        // A deep terrain pack built again: not an input.
+        e.insert("f/layers/terrain/deep/10-1-1".into(), f("layers/terrain/deep/10-1-1.b.pack"));
+        assert_eq!(step(&mut log, &e), "map 1");
+        // A base pack's file: an input.
+        e.insert("f/base/6-1-1".into(), f("base/6-1-1.b.sect"));
+        assert_eq!(step(&mut log, &e), "map 3");
+        // A labels' pack's file, then a unit dropped: each an input.
+        e.insert("f/layers/labels/hi/6-1-1".into(), f("layers/labels/hi/6-1-1.b.pack"));
+        assert_eq!(step(&mut log, &e), "map 4");
+        e.remove("u/6/1/1");
+        assert_eq!(step(&mut log, &e), "map 5");
+        // A slope tile added: not.
+        e.insert("l/slope/hi/6/1/1".into(), json!("layers/slope/hi/6-1-1"));
+        assert_eq!(step(&mut log, &e), "map 5");
+        // Reopened (from its segments, then from its snapshot): the same key.
+        drop(log);
+        let mut log = Log::open_watching(d.path(), &INPUTS).unwrap();
+        assert_eq!(key(&log), "map 5");
+        log.compact().unwrap();
+        assert_eq!(key(&Log::open_watching(d.path(), &INPUTS).unwrap()), "map 5");
+    }
 
     #[test]
     fn english_or_not() {

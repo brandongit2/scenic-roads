@@ -37,7 +37,7 @@ Where state lives:
 | Z6 tiles' kept state | NAS: `cache/scenic-units/` | none | nothing |
 | A job's progress (the OSM pass's stages, a depth, terrain-hi or terrain-deep target's blocks, scratch) | the Mac running it | scratch folders | the OSM pass's resumed there (§7.2, Resuming), a depth, terrain-hi or terrain-deep target's when it runs there again; the rest redone |
 | The coordinator's state, token, history | NAS: `state/coord/` | `agent/coord/` | loads it (§6.2, §7.5) |
-| The lead's own (its catalogues' record, daily jobs' last runs) | the lead's disk | `agent/publishing.json`, `agent/state.json` | keeps it |
+| The lead's own (its catalogues' record, daily jobs' last runs; the map's log, docs/maplog.md) | the lead's disk | `agent/publishing.json`, `agent/state.json`, `agent/maplog/` | keeps it |
 
 ## 3. What the NAS gives us
 
@@ -1783,33 +1783,33 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   read of the records' brief (a `-root` step's as 0/0/0; worldwide steps', records of steps the app doesn't know (a
   retired step's) and terrain-hi's, slope-hi's and tree cover's old z3 whole-run records left out:
   `agent::builtview`), `dropped` ({step: [z/x/y]}, the targets whose record is a drop's none
-  key: the page leaves out their drop runs' job ends), and, once the agent's catalogue view has read the catalogues, `published`
+  key: the page leaves out their drop runs' job ends), and, once the agent's catalogue view has read the map's log, `published`
   (indexes the same way, for every step whose files are told by name, an empty list when none) and
-  `catalogue`, its number: the targets one of whose published files the latest catalogue's `files`
-  still names (task #866: a drop's null ends it; the page draws no other told tile as published),
+  `catalogue`, the map's `seq`: the targets one of whose published files the map still names as an
+  `f/` entry (task #866: a batch deleting it ends it; the page draws no other told tile as published),
   read by the agent on a
   thread of its own while a page asks, again a minute after the last read at most (~600 KB over
   SMB), the last read kept when the file can't be read now. The page asks each minute while the
   map is drawn.
   Every Mac's port also answers `POST /work/catalogs` (`{"after": n}` optional; no key) for the
-  map's age controls (task #629, `agent::cataloguesview`; the page asks the lead's): every
-  catalogue on the NAS as `{n, t, whole, first?, z3, z6, z3_gone?, z6_gone?, z10?, z10_gone?}`, the
-  tiles as `y * 2^z + x`, with `latest`, `reading` and `error`. A catalogue publishes a z6 tile when
-  a file it names for it (base pack, road values, hi data, landmark points, a layer's hi pack, the
-  deep terrain under it) is new or another than the last catalogue's, a z10 tile by its deep packs
-  alone, a z3 tile by its layers' lo packs and area overlays; `first` marks the oldest kept (it
-  names everything). A file is told by its tile section's stable name and that name's `files` entry
-  (the content-hashed `file`), as a pack built again keeps its name and gets a new file (#833
-  review: until then a rebuilt tile kept the catalogue that first named it). Read only while asked:
-  an ask starts the agent's reader thread when the folder wasn't listed in the last 20 s; it reads
-  the catalogues after the last it read, oldest first (a delta when it changes the last read, else
-  the whole file, streamed from zstd into only the tile sections), through nasread, and the answer
-  is what's read so far. Kept: the entries, each tile file's name hash by its key (about 18 000)
-  and each stable name's file hash (about 23 000), with a copy of the latest's stable names
-  (`/work/built`'s `published`, #866), never a catalogue. Measured 24 Oct on the M4 (372 catalogues, 15–386, 14 whole): the first read
-  35 s (debug build, mostly the NAS) at 34 MB peak; the whole answer 67 KB of JSON (17 KB
-  gzipped), a new catalogue's a few hundred bytes. `scenic catalogs [--after N]` prints the same
-  JSON from the NAS (read only). 503 until the agent has made it.
+  map's age controls (task #629, `agent::cataloguesview`; the page asks the lead's): each batch of
+  the map's log (docs/maplog.md §6.6; its `seq` the catalogue's number) as
+  `{n, t, first?, z3, z6, z3_gone?, z6_gone?, z10?, z10_gone?}`, the tiles as `y * 2^z + x`, with
+  `latest`, `reading` and `error`. A batch publishes a z6 tile when it sets or deletes a key of it
+  in a tile section (base pack, road values, hi data, landmark points, a layer's hi pack, the deep
+  terrain under it) or changes the file (`f/<name>`, its content name) of a name such a key gives,
+  a z10 tile by its deep packs alone, a z3 tile by its layers' lo packs and area overlays (a pack
+  built again keeps its name and gets a new file: #833 review). `first` marks the view's start: with
+  nothing kept, it takes the map whole and names everything it has. The agent follows the log on a
+  thread of its own, each loop and each ask (20 s apart at most): on the lead, its log's feed in
+  process; on a member, the lead's `GET /map/changes` (and `/map/snapshot` to start). Told to reset
+  (the log no longer holds its batches: a new lead's log), it takes the map again and says in
+  `error` that the batches it missed aren't shown. Kept in the agent's folder
+  (`catalogues-view.json.zst`, written when a batch was applied): the entries, each tile section's
+  key with its name's hash, and each `f/` name's hash with its file's (what `/work/built`'s
+  `published` reads, #866), never a catalogue; so a restarted agent goes on from where it was, as
+  deep as it has followed the log. `scenic catalogs [--after N]` prints the same JSON from this
+  Mac's kept file. 503 until the agent has made it.
   The page's own files carry the world's countries' outlines for the same map (`countries.json`,
   Natural Earth 1:50m, the same projection; made by `tools/worldmap/countries.py` from the NAS's
   `sources/basemap/natural_earth_vector.sqlite.zip`, read only) and the large lakes drawn as the sea (`lakes.json`, Natural

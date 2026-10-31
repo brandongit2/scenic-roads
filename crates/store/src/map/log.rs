@@ -3,8 +3,13 @@
 //! line each, appended and `fsync`ed before a batch counts. Opening loads the snapshot and replays
 //! the segments' batches past it; a torn last line (a write cut short: it was never answered) is
 //! dropped. `compact` writes the snapshot again and removes the segments it covers.
+//!
+//! It keeps, for each watch its opener names (a key prefix, or a part of a batch's `why`:
+//! super::marks), the last batch that marked it (docs/maplog.md §6.8), saved with the snapshot and
+//! kept up as batches are replayed and appended: what tells the agent the names' to-do lists' inputs
+//! changed, or when the low zooms last went out, whatever the log still holds.
 
-use super::{Batch, Cursor, Map, Snapshot};
+use super::{Batch, Cursor, Map, Mark, Snapshot};
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -39,6 +44,9 @@ pub struct Log {
     /// answered from until it appends more (`replayed`, taken once).
     base: u64,
     replayed: Vec<Batch>,
+    /// What's watched, and each watch's last mark (`marks`).
+    watch: Vec<String>,
+    marks: BTreeMap<String, Mark>,
 }
 
 /// `fsync` of a folder: the names made, renamed or removed in it durable.
@@ -66,12 +74,25 @@ impl Log {
     /// line of the last segment that doesn't parse is cut off the file (logged); any other line that
     /// doesn't, or a batch that doesn't apply (its digest), is an error.
     pub fn open(dir: &Path) -> Result<Log> {
+        Log::open_watching(dir, &[])
+    }
+
+    /// `open`, its marks kept for `watch` (super::marks): those its snapshot has, else (a prefix
+    /// newly watched) the snapshot's own `seq`, then each batch replayed.
+    pub fn open_watching(dir: &Path, watch: &[&str]) -> Result<Log> {
         fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-        let (mut map, cursors) = match fs::read(dir.join(SNAPSHOT)) {
-            Ok(b) => Snapshot::decode(&b).with_context(|| format!("{}", dir.join(SNAPSHOT).display()))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Map::default(), BTreeMap::new()),
+        let (mut map, cursors, mut marks) = match fs::read(dir.join(SNAPSHOT)) {
+            Ok(b) => Snapshot::decode_marked(&b).with_context(|| format!("{}", dir.join(SNAPSHOT).display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Map::default(), BTreeMap::new(), BTreeMap::new()),
             Err(e) => return Err(e).with_context(|| format!("read {}", dir.join(SNAPSHOT).display())),
         };
+        let watch: Vec<String> = watch.iter().map(|w| w.to_string()).collect();
+        marks.retain(|w, _| watch.contains(w));
+        if !map.is_empty() {
+            for w in watch.iter().filter(|w| !w.starts_with(super::WHY)) {
+                marks.entry(w.clone()).or_insert_with(|| Mark { seq: map.seq, at: map.at.clone() });
+            }
+        }
         let segs = segments(dir)?;
         let mut open = None;
         let (base, mut replayed) = (map.seq, Vec::new());
@@ -95,6 +116,7 @@ impl Log {
                 };
                 if b.seq > map.seq {
                     drop(map.apply_in(&b).with_context(|| format!("{}", path.display()))?);
+                    mark(&watch, &mut marks, &b);
                     replayed.push(b);
                 }
                 batches += 1;
@@ -105,7 +127,12 @@ impl Log {
                 open = Some(Segment { first, file, batches, bytes: at as u64 });
             }
         }
-        Ok(Log { dir: dir.to_owned(), map: Arc::new(map), cursors, open, torn: false, base, replayed })
+        Ok(Log { dir: dir.to_owned(), map: Arc::new(map), cursors, open, torn: false, base, replayed, watch, marks })
+    }
+
+    /// Each watch's last mark (none for a `why` part no batch since its watch began has said).
+    pub fn marks(&self) -> &BTreeMap<String, Mark> {
+        &self.marks
     }
 
     /// The batches replayed at the open and the `seq` they follow (taken: once).
@@ -136,6 +163,9 @@ impl Log {
     /// Starts an empty log at `map` (the first catalogue it's told of): its snapshot.
     pub fn seed(&mut self, map: Map) -> Result<()> {
         ensure!(self.map.is_empty() && self.open.is_none(), "the log holds a map already");
+        for w in self.watch.iter().filter(|w| !w.starts_with(super::WHY)) {
+            self.marks.insert(w.clone(), Mark { seq: map.seq, at: map.at.clone() });
+        }
         self.map = Arc::new(map);
         self.write_snapshot()
     }
@@ -178,11 +208,12 @@ impl Log {
         }
         s.batches += 1;
         s.bytes += line.len() as u64;
+        mark(&self.watch, &mut self.marks, b);
         Ok(self.map.clone())
     }
 
     fn write_snapshot(&self) -> Result<()> {
-        let b = Snapshot::of(&self.map, &self.cursors).encode()?;
+        let b = Snapshot { marks: self.marks.clone(), ..Snapshot::of(&self.map, &self.cursors) }.encode()?;
         let path = self.dir.join(SNAPSHOT);
         let tmp = crate::naming::tmp_path(&path);
         let mut f = File::create(&tmp)?;
@@ -209,6 +240,13 @@ impl Log {
             }
         }
         Ok(())
+    }
+}
+
+/// Batch `b`'s marks of the watches `watch`.
+fn mark(watch: &[String], marks: &mut BTreeMap<String, Mark>, b: &Batch) {
+    for w in watch.iter().filter(|w| super::marks(w, b)) {
+        marks.insert(w.clone(), Mark { seq: b.seq, at: b.at.clone() });
     }
 }
 

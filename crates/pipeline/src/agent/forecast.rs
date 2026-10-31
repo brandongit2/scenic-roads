@@ -690,7 +690,7 @@ impl Record<'_> {
 pub const ZSTD_OVER: usize = 2 << 20;
 
 /// Seconds since each cadenced publish last went out (None: not known, so due now): the low zooms
-/// (build::LastCatalogue::low_at), the landmark points and the area overlays
+/// (the map log's last batch saying so: crate::agent::publish::LOW), the landmark points and the area overlays
 /// (build::LastCatalogue::since).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cadence {

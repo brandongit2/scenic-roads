@@ -80,8 +80,8 @@ their source area's languages, not each language spoken where their things are.
 carried (the landmark and area popups keep the English Wikipedia article's title, `wd.w_en`, as a
 link only).
 
-**To-do** (`pipeline::namestodo`, the `names-todo` job, after a catalogue the map serves that changed
-what it reads (`inputs_key`): at most daily while z6 tiles build, after any such once none's left):
+**To-do** (`pipeline::namestodo`, the `names-todo` job, after a batch of the map's log that changed
+what it reads (`namestodo::INPUTS`, the log's last batch touching them: docs/maplog.md §6.8): at most daily while z6 tiles build, after any such once none's left):
 - **`inputs/translations/todo/<language>.jsonl`:** each name something in the coverage has with no
   English of its own and no line in any language spoken there. Read from labels, roads and rail
   lines (base packs, each way placed once by the ways-here index), and landmarks. Names already in

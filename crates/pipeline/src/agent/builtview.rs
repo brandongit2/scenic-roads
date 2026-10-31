@@ -10,12 +10,12 @@
 //! indexes into the step's list (6,276 of terrain-deep's 7,243 in term 599's brief, 29 Oct: ~50 KB on 247 KB). The keys and the
 //! manifest come from one read of the records' brief.
 //!
-//! And which are published (task #866): a target is published only while the latest catalogue
-//! (crate::agent::cataloguesview `names`) still names one of its published files
-//! (crate::agent::steps::output_names), sent as `published: {step: [i]}` for every step whose files
-//! are told by name (an empty list: none published) with that catalogue's number (`catalogue`), both
-//! left out before the catalogues are read. A removal (a drop's null in a delta) ends a tile's
-//! published life whatever catalogue named it before: Alaska's 4,363 deep packs dropped by
+//! And which are published (task #866): a target is published only while the map (its log as
+//! crate::agent::cataloguesview follows it: `names`, its `f/` names) still names one of its
+//! published files (crate::agent::steps::output_names), sent as `published: {step: [i]}` for every
+//! step whose files are told by name (an empty list: none published) with the map's `seq`
+//! (`catalogue`), both left out before the log is read. A removal (a batch deleting its file) ends a
+//! tile's published life whatever map named it before: Alaska's 4,363 deep packs dropped by
 //! catalogue 756 (29 Oct) had stayed drawn as published, their drop runs' job ends taken as
 //! published once a later catalogue came.
 //!
@@ -305,40 +305,32 @@ mod tests {
         assert_eq!(e["terrain-hi"], [0], "no hi tiles made: listed, nothing to publish");
     }
 
-    /// Task #866: a tile is published only while the latest catalogue names its output; a delta's
-    /// null (a drop) ends it, though an older catalogue kept named it.
+    /// Task #866: a tile is published only while the map names its output; a batch deleting its file
+    /// (a drop) ends it, though an earlier map named it.
     #[test]
     fn published_only_while_the_latest_catalogue_names_it() {
-        use super::super::cataloguesview::{hash, CataloguesView, Source};
-        use std::io::Write;
-        #[derive(Default)]
-        struct Mem(Mutex<BTreeMap<String, Vec<u8>>>);
-        impl Source for Mem {
-            fn list(&self) -> Option<Vec<String>> {
-                Some(self.0.lock().unwrap().keys().cloned().collect())
-            }
-            fn read(&self, name: &str) -> Option<Vec<u8>> {
-                self.0.lock().unwrap().get(name).cloned()
-            }
-        }
-        let zst = |v: &Value| {
-            let mut e = zstd::stream::Encoder::new(vec![], 3).unwrap();
-            e.write_all(&serde_json::to_vec(v).unwrap()).unwrap();
-            e.finish().unwrap()
-        };
+        use super::super::cataloguesview::{hash, CataloguesView};
         let f = |n: &str| serde_json::json!({"file": format!("{n}.aaaa.pack"), "size": 1, "fmt": 1});
         let (deep, fine, hi) = ("layers/terrain/deep/10-1-2", "layers/terrain/fine/10-3-4", "layers/terrain/hi/6-1-2");
-        let c1 = serde_json::json!({"n": 1, "created": "2026-10-29T00:00:00Z",
+        let c1: store::catalogue::Catalogue = serde_json::from_value(serde_json::json!({"n": 1, "fmt": 2,
+            "created": "2026-10-29T00:00:00Z",
             "layers": {"terrain": {"deep": {"10/1/2": deep}, "hi": {"6/1/2": hi}}},
-            "files": {deep: f(deep), fine: f(fine), hi: f(hi)}});
+            "files": {deep: f(deep), fine: f(fine), hi: f(hi)}}))
+        .unwrap();
         // 2: the retired-name pack of 10/3/4 dropped (as catalogue 756 dropped Alaska's), and the
         // hi pack with its tile.
-        let p2 = serde_json::json!({"o": {"created": {"=": "2026-10-29T01:00:00Z"},
-            "layers": {"o": {"terrain": {"o": {"hi": {"o": {"6/1/2": null}}}}}},
-            "files": {"o": {fine: null, hi: null}}}});
-        let mem = Arc::new(Mem::default());
-        mem.0.lock().unwrap().insert("1.json.zst".into(), zst(&c1));
-        let cv = CataloguesView::new(mem.clone());
+        let mut c2 = c1.clone();
+        c2.n = 2;
+        c2.created = "2026-10-29T01:00:00Z".into();
+        c2.layers.get_mut("terrain").unwrap().hi.clear();
+        c2.files.remove(fine);
+        c2.files.remove(hi);
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let here = Arc::new(super::super::publish::Here::default());
+        let mut w = super::super::publish::Writer::new(d.path().join("maplog"), here.clone());
+        w.publish(&root, Arc::new(c1), false, std::time::SystemTime::now());
+        let cv = CataloguesView::new(here.feed.clone(), None);
         assert!(cv.names().is_none(), "nothing read yet");
         cv.refresh();
         let steps: BTreeMap<String, Vec<String>> = [
@@ -353,10 +345,7 @@ mod tests {
         assert_eq!(p["terrain-deep"], [0, 1], "10/5/6 never named");
         assert_eq!(p["terrain-hi"], [0]);
         assert!(!p.contains_key("pack"), "a work step's files aren't told");
-        mem.0
-            .lock()
-            .unwrap()
-            .insert("2.delta.json.zst".into(), zst(&serde_json::json!({"n": 2, "of": 1, "patch": p2})));
+        w.publish(&root, Arc::new(c2), false, std::time::SystemTime::now());
         cv.refresh();
         let (n, names) = cv.names().unwrap();
         assert_eq!(n, 2);

@@ -64,45 +64,116 @@ pub fn held_at(was: Option<u64>, held: bool, due: bool, now: u64) -> Option<u64>
 /// the lead's `catalog` step publishes becomes a batch of the log in the agent's `maplog/`
 /// (store::map::log), `seq` its number; the map then is checked equal to that catalogue, and a
 /// mismatch is logged loudly. The catalogues are written as before. The servers follow the log
-/// through the coordinator's `/map/` routes (step 3), answered from the `feed` it keeps.
+/// through the coordinator's `/map/` routes (step 3), answered from the `feed` it keeps; the agent
+/// reads the map from it too (step 4: `Here`).
 ///
-/// The work (the log opened, a catalogue diffed against the map, checked, the hourly snapshots)
-/// runs on a thread of its own, never in the agent's loop, and can't hold the loop up: `published`
-/// hands the catalogue over a channel of one place and returns. While one waits there untaken, a
-/// newer one isn't queued (the next batch after it spans both): a stalled NAS write never piles
-/// catalogues up in memory. A panic there is logged and the thread goes on, its log opened again
-/// at the next catalogue.
+/// The work (the catalogue read, diffed against the map, checked, the hourly snapshots) runs on a
+/// thread of its own, never in the agent's loop, and can't hold the loop up: `published` hands the
+/// catalogue's number over a channel of one place and returns. While one waits there untaken, a
+/// newer one isn't queued (the next batch after it spans both): a stalled NAS read never piles
+/// catalogues up. A panic there is logged and the thread goes on, its log opened again at the next
+/// catalogue.
 #[derive(Default)]
 pub struct Shadow {
     tx: Option<std::sync::mpsc::SyncSender<Published>>,
-    feed: Option<std::sync::Arc<store::map::feed::Feed>>,
+    here: Option<std::sync::Arc<Here>>,
 }
 
-type Published = (store::nasfs::NasRoot, std::sync::Arc<store::catalogue::Catalogue>);
+/// A catalogue published: the share, its number (None: the newest there), and whether it went out
+/// with the low zooms made.
+type Published = (store::nasfs::NasRoot, Option<u64>, bool);
 
 /// The log's folder in the agent's home.
 pub const MAPLOG: &str = "maplog";
 /// How often the map is written whole: the lead's snapshot and the NAS's (docs/maplog.md §4.4).
 const SNAPSHOT_EVERY_S: u64 = 3600;
+/// What a batch's `why` says of a catalogue made with the low zooms (store::map::Batch::says), and
+/// the log's watch of it: when they last went out (build::Publishing::since_low).
+pub const LOW: &str = "the low zooms";
+pub const LOW_WATCH: &str = "why:the low zooms";
+
+/// What the log watches (store::map::log::Log::open_watching): the low zooms' batches, and the
+/// names' to-do lists' inputs (crate::namestodo::INPUTS).
+fn watches() -> Vec<&'static str> {
+    std::iter::once(LOW_WATCH).chain(crate::namestodo::INPUTS).collect()
+}
+
+/// The lead's map as its agent reads it (docs/maplog.md §6.5): the shadow's feed (the map, its
+/// batches held, the log's marks), and the head's catalogue: the one the shadow last checked equal
+/// to the map, else made of the map once (`catalogue`).
+#[derive(Default)]
+pub struct Here {
+    pub feed: std::sync::Arc<store::map::feed::Feed>,
+    head: std::sync::Mutex<Option<std::sync::Arc<store::catalogue::Catalogue>>>,
+}
+
+impl std::fmt::Debug for Here {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Here({:?})", self.feed)
+    }
+}
+
+impl Here {
+    /// The map now as a catalogue (`n` its `seq`, `created` its batch's time); None while the log
+    /// holds no map. Made of the map at most once a `seq`.
+    pub fn catalogue(&self) -> Option<std::sync::Arc<store::catalogue::Catalogue>> {
+        let map = self.feed.map()?;
+        let mut g = self.head.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = g.as_ref().filter(|c| c.n == map.seq) {
+            return Some(c.clone());
+        }
+        match map.catalogue() {
+            Ok(c) => {
+                let c = std::sync::Arc::new(c);
+                *g = Some(c.clone());
+                Some(c)
+            }
+            Err(e) => {
+                eprintln!("maplog: MISMATCH: the map at {} isn't a catalogue: {e:#}", map.seq);
+                None
+            }
+        }
+    }
+
+    /// The head's catalogue now `cat` (the shadow's, checked equal to the map).
+    fn checked(&self, cat: std::sync::Arc<store::catalogue::Catalogue>) {
+        *self.head.lock().unwrap_or_else(|e| e.into_inner()) = Some(cat);
+    }
+
+    /// The head's catalogue as held, whatever its number: what a catalogue after it is read from
+    /// (its deltas alone, store::catalogue::read_n_from).
+    fn held(&self) -> Option<std::sync::Arc<store::catalogue::Catalogue>> {
+        self.head.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
 
 impl Shadow {
-    /// What the coordinator's `/map/` routes answer from: the thread started (its log in `home`'s
-    /// `maplog/`, opened at once, so a lead started again answers before its next catalogue).
-    pub fn feed(&mut self, home: &std::path::Path) -> std::sync::Arc<store::map::feed::Feed> {
+    /// The map as the agent and the coordinator's `/map/` routes read it: the thread started (its log
+    /// in `home`'s `maplog/`, opened at once, so a lead started again answers before its next
+    /// catalogue).
+    pub fn here(&mut self, home: &std::path::Path) -> std::sync::Arc<Here> {
         self.start(home);
-        self.feed.clone().expect("started")
+        self.here.clone().expect("started")
+    }
+
+    /// `here`, once its thread is started (None before: not the lead, a dry run).
+    pub fn started(&self) -> Option<std::sync::Arc<Here>> {
+        self.tx.as_ref().and(self.here.clone())
     }
 
     fn start(&mut self, home: &std::path::Path) -> &std::sync::mpsc::SyncSender<Published> {
-        let feed = self.feed.get_or_insert_with(store::map::feed::Feed::new).clone();
+        let here = self.here.get_or_insert_with(Default::default).clone();
         self.tx.get_or_insert_with(|| {
             let (tx, rx) = std::sync::mpsc::sync_channel::<Published>(1);
             let dir = home.join(MAPLOG);
             let started = std::thread::Builder::new().name("maplog".into()).spawn(move || {
-                let mut w = Writer::new(dir, feed);
+                let mut w = Writer::new(dir, here);
                 w.open_guarded();
-                for (root, cat) in rx {
-                    w.publish_guarded(&root, &cat, now());
+                for (root, n, low) in rx {
+                    match w.read(&root, n) {
+                        Ok(cat) => w.publish_guarded(&root, cat, low, now()),
+                        Err(e) => eprintln!("maplog: MISMATCH: catalogue {n:?} can't be read: {e:#}; no batch"),
+                    }
                 }
             });
             if let Err(e) = started {
@@ -112,21 +183,16 @@ impl Shadow {
         })
     }
 
-    /// Catalogue `cat`, just published at `root`: its batch, on the shadow's thread (started the
-    /// first time, its log in `home`'s `maplog/`).
-    pub fn published(
-        &mut self,
-        home: &std::path::Path,
-        root: &store::nasfs::NasRoot,
-        cat: std::sync::Arc<store::catalogue::Catalogue>,
-    ) {
-        match self.start(home).try_send((root.clone(), cat)) {
+    /// Catalogue `n` (None: the newest), just published at `root`, with the low zooms made (`low`):
+    /// its batch, on the shadow's thread (started the first time, its log in `home`'s `maplog/`).
+    pub fn published(&mut self, home: &std::path::Path, root: &store::nasfs::NasRoot, n: Option<u64>, low: bool) {
+        match self.start(home).try_send((root.clone(), n, low)) {
             Ok(()) => {}
             Err(std::sync::mpsc::TrySendError::Full(p)) => {
-                eprintln!("maplog: catalogue {} not queued: the shadow is behind (the next batch spans it)", p.1.n)
+                eprintln!("maplog: catalogue {:?} not queued: the shadow is behind (the next batch spans it)", p.1)
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(p)) => {
-                eprintln!("maplog: MISMATCH at catalogue {}: the shadow's thread is gone", p.1.n)
+                eprintln!("maplog: MISMATCH at catalogue {:?}: the shadow's thread is gone", p.1)
             }
         }
     }
@@ -147,29 +213,30 @@ pub(crate) enum Wrote {
     Same,
 }
 
-/// The shadow's writer: the log, opened when its thread starts (or at its first publish), and the
-/// feed the coordinator answers from, told of each batch.
+/// The shadow's writer: the log, opened when its thread starts (or at its first publish), and what
+/// the agent and the coordinator read (`Here`), told of each batch.
 pub(crate) struct Writer {
     dir: std::path::PathBuf,
     log: Option<store::map::log::Log>,
-    feed: std::sync::Arc<store::map::feed::Feed>,
+    here: std::sync::Arc<Here>,
 }
 
 impl Writer {
-    pub(crate) fn new(dir: std::path::PathBuf, feed: std::sync::Arc<store::map::feed::Feed>) -> Writer {
-        Writer { dir, log: None, feed }
+    pub(crate) fn new(dir: std::path::PathBuf, here: std::sync::Arc<Here>) -> Writer {
+        Writer { dir, log: None, here }
     }
 
-    /// The log opened now, its map and the batches it replayed handed to the feed (a log not
-    /// started yet: nothing to hand; it starts at the first catalogue).
+    /// The log opened now, its map, the batches it replayed and its marks handed to the feed (a
+    /// log not started yet: nothing to hand; it starts at the first catalogue).
     fn open(&mut self) -> anyhow::Result<&mut store::map::log::Log> {
         use anyhow::Context;
         if self.log.is_none() {
-            let mut log = store::map::log::Log::open(&self.dir)
+            let mut log = store::map::log::Log::open_watching(&self.dir, &watches())
                 .with_context(|| format!("open the log in {}", self.dir.display()))?;
             if !log.map().is_empty() {
                 let (base, held) = log.replayed();
-                self.feed.start(log.map(), base, &held, log.cursors().clone());
+                self.here.feed.set_marks(log.marks().clone());
+                self.here.feed.start(log.map(), base, &held, log.cursors().clone());
             }
             self.log = Some(log);
         }
@@ -188,57 +255,88 @@ impl Writer {
         }
     }
 
+    /// Catalogue `n` (None: the newest listed) in `root`'s `catalog/`, read from the head's
+    /// catalogue held (its deltas after it alone: store::catalogue::read_n_from), else whole. (The
+    /// catalogue's one read left in the agent, until the step posts its map: docs/maplog.md §8,
+    /// step 6.)
+    fn read(
+        &self,
+        root: &store::nasfs::NasRoot,
+        n: Option<u64>,
+    ) -> anyhow::Result<std::sync::Arc<store::catalogue::Catalogue>> {
+        use anyhow::Context;
+        let dir = root.join(store::catalogue::NAME);
+        let n = match n {
+            Some(n) => n,
+            None => *store::catalogue::list(&dir)?.first().context("no catalogue")?,
+        };
+        let have = self.here.held();
+        Ok(std::sync::Arc::new(store::catalogue::read_n_from(&dir, n, have.as_deref())?))
+    }
+
     /// `publish`, a panic in it logged (the log dropped, opened again from its disk next time).
     fn publish_guarded(
         &mut self,
         root: &store::nasfs::NasRoot,
-        cat: &store::catalogue::Catalogue,
+        cat: std::sync::Arc<store::catalogue::Catalogue>,
+        low: bool,
         now: std::time::SystemTime,
     ) {
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.publish(root, cat, now)));
+        let n = cat.n;
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.publish(root, cat, low, now)));
         if let Err(p) = r {
             let why = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned());
-            eprintln!("maplog: MISMATCH at catalogue {}: the shadow panicked: {}", cat.n, why.unwrap_or_default());
+            eprintln!("maplog: MISMATCH at catalogue {n}: the shadow panicked: {}", why.unwrap_or_default());
             self.log = None;
         }
     }
 
-    /// `cat`'s batch, the map checked against it, and the snapshots when an hour has passed since
-    /// the last (`now`); each failure and mismatch logged loudly.
+    /// `cat`'s batch (made with the low zooms: `low`), the map checked against it, and the snapshots
+    /// when an hour has passed since the last (`now`); each failure and mismatch logged loudly.
     pub(crate) fn publish(
         &mut self,
         root: &store::nasfs::NasRoot,
-        cat: &store::catalogue::Catalogue,
+        cat: std::sync::Arc<store::catalogue::Catalogue>,
+        low: bool,
         now: std::time::SystemTime,
     ) {
-        match self.append(cat) {
+        match self.append(&cat, low) {
             Ok(w) => {
                 eprintln!("maplog: catalogue {} in shadow: {w:?}", cat.n);
+                self.here.checked(cat);
                 self.snapshots(root, now, w == Wrote::Seeded);
             }
             Err(e) => eprintln!("maplog: MISMATCH at catalogue {}: {e:#}", cat.n),
         }
     }
 
-    /// `cat` as a batch of the log (`seq` its number), and the log's map then checked to be it. The
-    /// map held once: the batch is a diff of `cat`'s entries made one at a time (store::map::
-    /// each_entry), applied in place, and the check another pass of them.
-    pub(crate) fn append(&mut self, cat: &store::catalogue::Catalogue) -> anyhow::Result<Wrote> {
+    /// `cat` as a batch of the log (`seq` its number; its `why` saying `LOW` when it went out with the
+    /// low zooms made), and the log's map then checked to be it. The map held once: the batch is a
+    /// diff of `cat`'s entries made one at a time (store::map::each_entry), applied in place, and the
+    /// check another pass of them.
+    pub(crate) fn append(&mut self, cat: &store::catalogue::Catalogue, low: bool) -> anyhow::Result<Wrote> {
         use anyhow::Context;
-        let feed = self.feed.clone();
+        let here = self.here.clone();
         let log = self.open()?;
         let wrote = if log.map().is_empty() {
             log.seed(store::map::Map::of(cat)?)?;
-            feed.start(log.map(), cat.n, &[], log.cursors().clone());
+            here.feed.set_marks(log.marks().clone());
+            here.feed.start(log.map(), cat.n, &[], log.cursors().clone());
             Wrote::Seeded
         } else {
             let seq = log.map().seq;
             anyhow::ensure!(cat.n > seq, "the log is at {seq} already: a catalogue number taken again");
-            let b = log.map().batch_of(cat, &cat.app, &format!("catalogue {}", cat.n))?;
+            let mut why = format!("catalogue {}", cat.n);
+            if low {
+                why = format!("{why}{}{LOW}", store::map::WHY_SEP);
+            }
+            let b = log.map().batch_of(cat, &cat.app, &why)?;
             if b.is_empty() {
                 Wrote::Same
             } else {
-                feed.push(log.append(&b)?, &b);
+                let map = log.append(&b)?;
+                here.feed.set_marks(log.marks().clone());
+                here.feed.push(map, &b);
                 Wrote::Batch(b.set.len(), b.del.len())
             }
         };
@@ -257,7 +355,7 @@ impl Writer {
         if !due {
             return;
         }
-        log.set_cursors(self.feed.cursors());
+        log.set_cursors(self.here.feed.cursors());
         if let Err(e) = log.compact() {
             eprintln!("maplog: compacting the log: {e:#}");
         }
@@ -323,12 +421,15 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let chain = recorded();
-        let mut w = Writer::new(d.path().join(MAPLOG), store::map::feed::Feed::new());
+        let here = std::sync::Arc::new(Here::default());
+        let mut w = Writer::new(d.path().join(MAPLOG), here.clone());
         let t0 = std::time::SystemTime::now();
         for (i, c) in chain.iter().enumerate() {
-            w.publish(&root, c, t0);
+            w.publish(&root, std::sync::Arc::new(c.clone()), false, t0);
             let m = w.log.as_ref().unwrap().map();
             assert_eq!((m.seq, m.catalogue().unwrap()), (c.n, c.clone()));
+            // (What the agent reads: the catalogue checked, not one made again.)
+            assert_eq!(*here.catalogue().unwrap(), *c);
             if i == 0 {
                 // (Started: the NAS's snapshot at once.)
                 assert!(d.path().join(format!("nas/map/{}.json.zst", c.n)).exists());
@@ -341,16 +442,22 @@ mod tests {
         w.snapshots(&root, t0 + std::time::Duration::from_secs(SNAPSHOT_EVERY_S + 5), false);
         assert!(d.path().join(format!("nas/map/{}.json.zst", last.n)).exists());
         // Reopened (an agent restarted), the log goes on from where it was.
-        let mut again = Writer::new(d.path().join(MAPLOG), store::map::feed::Feed::new());
+        let here = std::sync::Arc::new(Here::default());
+        let mut again = Writer::new(d.path().join(MAPLOG), here.clone());
         let mut next = last.clone();
         next.n += 1;
         next.units.push("6/0/0".into());
         next.units.sort();
-        assert_eq!(again.append(&next).unwrap(), Wrote::Batch(1, 0));
+        assert_eq!(again.append(&next, true).unwrap(), Wrote::Batch(1, 0));
+        // (Made of the map: none checked since the open.)
+        assert_eq!(*here.catalogue().unwrap(), next);
+        // The low zooms' batch marked, and the units' (the names' to-do lists' inputs).
+        let marks = here.feed.marks();
+        assert_eq!((marks[LOW_WATCH].seq, marks["u/"].seq), (next.n, next.n));
         // A catalogue number taken again, or one the map doesn't change, writes nothing.
-        assert!(again.append(&next).is_err());
+        assert!(again.append(&next, false).is_err());
         next.n += 1;
-        assert_eq!(again.append(&next).unwrap(), Wrote::Same);
+        assert_eq!(again.append(&next, false).unwrap(), Wrote::Same);
         assert_eq!(again.log.as_ref().unwrap().map().seq, last.n + 1);
     }
 }

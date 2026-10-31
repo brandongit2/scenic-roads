@@ -290,12 +290,12 @@ The Jobs tab's stages are the one exception.
   it); anything else is refused, said under them, the pair kept. Defaults: the left `-48 hours`,
   the right now at render (kept as "now", moving on with the clock, until another time is
   committed there). "Hide tiles outside the date range": unticked, those take the nearer end's
-  colour; ticked, they aren't drawn. Then a timeline across the panel: every catalogue a mark (a
-  tall one written whole), labelled "number · time" (with the date on the first labelled of a
+  colour; ticked, they aren't drawn. Then a timeline across the panel: every catalogue a mark (a batch
+  of the map's log; a tall one the view's start, naming everything the map had), labelled "number · time" (with the date on the first labelled of a
   day) where the label fits (none overlapping, the latest first, the dated ones kept first), the
   range in its middle 80% and the tenth beyond it each side dimmed, a time axis under it (times
   of day up to two days, then days; local time, said once). Hovering a mark (a tap holds it,
-  again lets it go) names the catalogue (number, time, whole or delta, its tiles) and lights its
+  again lets it go) names the catalogue (number, time, its tiles) and lights its
   tiles on the map in magenta, apart from the ramp, solo or not, whatever the hide box: z6 tiles
   filled, z3 outlined. Its data: `/work/catalogs` (docs/pool.md §10), the catalogues after the
   last the page has, every 30 s while the page is seen, every 2 s while the agent is reading. The

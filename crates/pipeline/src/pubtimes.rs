@@ -7,10 +7,13 @@
 //!   first plans at their keys, and the z6 tiles whose change made each stale, `restaled_by`), leased
 //!   ("lease", "start") and done ("end", "done"); and catalogue n written ("catalog": its `n`, its
 //!   job's time, and `CatalogueStats`: delta or whole, the files it stat'ed, its phases).
+//!   And each Mac's map server's adoption of the map at `seq` n ("adopt": `ADOPT`, its `worker` the
+//!   Mac), the lead's note of its cursor in the map's log moving there (docs/maplog.md §6.6).
 //! - **The Macs' map servers' own log on the NAS** (`SERVERS`, a file per Mac appended to: a few
 //!   lines a catalogue, never a file per event; cut to its newer half past `SERVERS_MAX`): each
-//!   server's adoption of catalogue n ("adopt") and its mirror's sync of it, begun ("mirror-start")
-//!   and through everything wanted ("mirror-end"), each once per catalogue and server process.
+//!   server's mirror's sync of catalogue n, begun ("mirror-start") and through everything wanted
+//!   ("mirror-end"), each once per catalogue and server process. (The "adopt" lines the servers
+//!   still write there are passed over: the cursors say it.)
 //!
 //! `chains` joins them, per catalogue and per z6 tile; `scenic timings publish` prints them.
 
@@ -25,6 +28,10 @@ pub const SERVERS: &str = "state/publish";
 /// A Mac's log past this many bytes is cut to its newer half as it's next appended to (a few
 /// hundred bytes a catalogue: months of them).
 pub const SERVERS_MAX: u64 = 512 * 1024;
+
+/// The history's event of a map server's adoption of the map at its `n` (at its `t`; its Mac the
+/// `worker`).
+pub const ADOPT: &str = "adopt";
 
 /// The steps whose runs are counted per catalogue (besides the map tiles').
 pub const COUNTED: [&str; 5] = ["ferries", "stations", "roadunits", "marks", "names-todo"];
@@ -324,8 +331,8 @@ impl PlannedNotes {
         note_planned(&mut self.noted, new);
     }
 
-    /// The served catalogue's z6 tiles (`cat`, as the agent read it: crate::agent's `served`),
-    /// worked out again only for a new catalogue.
+    /// The served catalogue's z6 tiles (`cat`: the map as the plan reads it, crate::agent::plan's
+    /// `map_now`), worked out again only for a new `seq`.
     pub fn served(&mut self, cat: Option<&store::catalogue::Catalogue>) -> BTreeMap<String, String> {
         if let Some(c) = cat.filter(|c| self.served.as_ref().map(|s| s.0) != Some(c.n)) {
             self.served_reads += 1;
@@ -417,8 +424,14 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogueChain>
             merges.push((e.t, n, step, targets));
         }
     }
+    // (The servers' adoptions from the history; their mirrors' syncs from their own log.)
+    let adoptions: Vec<ServerEvent> = ev
+        .iter()
+        .filter(|e| e.kind == ADOPT)
+        .filter_map(|e| Some(ServerEvent { t: e.t, host: e.worker.clone()?, kind: ADOPT.into(), n: e.n?, secs: None }))
+        .collect();
     let mut by_host: BTreeMap<&str, Vec<&ServerEvent>> = BTreeMap::new();
-    for s in servers {
+    for s in servers.iter().filter(|s| s.kind != ADOPT).chain(&adoptions) {
         by_host.entry(s.host.as_str()).or_default().push(s);
     }
     let first_at = |host: &[&ServerEvent], kind: &str, n: u64, after: u64| {
@@ -803,14 +816,24 @@ mod tests {
             catalogue(1400, 20.0, 8, true),
             job("end", 1500, "names-todo", &["names-todo"], None),
         ];
+        // (The servers' adoptions: their cursors in the map's log, as the lead noted them.)
+        let adopt =
+            |t: u64, host: &str, n: u64| Event { t, worker: Some(host.into()), n: Some(n), ..Event::new(ADOPT) };
+        let events: Vec<Event> = events
+            .into_iter()
+            .chain([
+                adopt(1430, "m1", 8),
+                // (The M4 skipped catalogue 8: a later one counts.)
+                adopt(1600, "m4", 9),
+                // (Catalogue 7's, before 8: not its.)
+                adopt(1010, "m4", 7),
+            ])
+            .collect();
         let servers = vec![
-            ServerEvent { t: 1430, host: "m1".into(), kind: "adopt".into(), n: 8, secs: None },
             ServerEvent { t: 1440, host: "m1".into(), kind: "mirror-start".into(), n: 8, secs: None },
             ServerEvent { t: 1540, host: "m1".into(), kind: "mirror-end".into(), n: 8, secs: Some(100.0) },
-            // (The M4 skipped catalogue 8: a later one counts.)
-            ServerEvent { t: 1600, host: "m4".into(), kind: "adopt".into(), n: 9, secs: None },
-            // (Catalogue 7's, before 8: not its.)
-            ServerEvent { t: 1010, host: "m4".into(), kind: "adopt".into(), n: 7, secs: None },
+            // (A server's own "adopt" line: passed over, the cursor says it.)
+            ServerEvent { t: 1405, host: "m4".into(), kind: "adopt".into(), n: 8, secs: None },
         ];
         let (cats, units) = chains(&events, &servers);
         assert_eq!(cats.len(), 2);

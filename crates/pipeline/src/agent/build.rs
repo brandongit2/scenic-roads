@@ -2378,7 +2378,8 @@ pub const LOW_EVERY_S: u64 = 3 * 3600;
 /// How publishing goes, as the switches under `state/pool/` say (crate::agent::publish).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Publishing {
-    /// Seconds since a catalogue last went out with the low zooms made (None: none kept).
+    /// Seconds since a catalogue last went out with the low zooms made: the map log's last batch
+    /// saying so (crate::agent::publish::LOW; None: none in the log).
     pub since_low: Option<u64>,
     /// A done region's slope and tree cover by the z6 tiles near it (`state/pool/near-slope`): the
     /// slope z6 tiles whose z6 tile is within 20 km of it (what its slope reads), the tree cover
@@ -2392,15 +2393,11 @@ pub struct Publishing {
     pub since_overlays: Option<u64>,
 }
 
-/// The lead's record of its catalogues (its folder's `publishing.json`): when the last went out, and
-/// the last that went out with the low zooms made (`Publishing::since_low`).
+/// The lead's record of its catalogues (its folder's `publishing.json`). When the last went out, and
+/// the last with the low zooms made, are the map log's (docs/maplog.md §6.5: its head batch, and its
+/// last batch saying crate::agent::publish::LOW).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LastCatalogue {
-    /// When the last catalogue was made (seconds since the epoch).
-    pub at: u64,
-    /// When the last catalogue made with nothing left of the low zooms (`Plan::low`) was made.
-    #[serde(default)]
-    pub low_at: Option<u64>,
     /// When a catalogue due was first held back since the last (by the map tiles or the road index
     /// to draw, `Plan::catalogue_held`, or their hand-offs waiting to be merged), kept across a
     /// restart or a change of lead: `Publish::held_for` counts from it, toward `CATALOGUE_CAP_S`.
@@ -2473,7 +2470,7 @@ impl LastCatalogue {
 /// Whether the low zooms (the roads' and rails' lo packs, the terrain's and slope's roots, the
 /// near way's assemblies) may be planned now: everything's built (`last`), nothing else is queued
 /// (`queue_empty`), half the lo packs are stale (`half_stale`), or `LOW_EVERY_S` has passed since
-/// they were last made (`since`: `LastCatalogue::low_at`; none known: now). The gate decides only
+/// they were last made (`since`: `Publishing::since_low`; none known: now). The gate decides only
 /// when; their keys stay by content.
 pub fn low_gate(last: bool, queue_empty: bool, half_stale: bool, since: Option<u64>) -> bool {
     last || half_stale || gate_open(queue_empty, since, LOW_EVERY_S)
@@ -2595,8 +2592,8 @@ pub struct Plan {
     /// first of the terrain, slope and tree cover work: the forecast's first items, shown as drops.
     pub drops: Vec<(String, String)>,
     /// The catalogue planned goes out with the low zooms made (`low_gate`: they were due, and
-    /// nothing's left of the publishing chain, or no lo pack is stale), noted so once made
-    /// (`LastCatalogue::low_at`). Without a catalogue planned: the low zooms are made now.
+    /// nothing's left of the publishing chain, or no lo pack is stale), its batch saying so once
+    /// made (crate::agent::publish::LOW). Without a catalogue planned: the low zooms are made now.
     pub low: bool,
     /// A catalogue is due but held back by the map tiles or the road index to draw (`CATALOGUE_GATE`),
     /// short of `CATALOGUE_CAP_S`: the agent counts how long (`Publish::held_for`).

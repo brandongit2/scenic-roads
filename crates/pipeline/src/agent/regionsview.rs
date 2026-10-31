@@ -34,8 +34,8 @@ pub struct Made {
     pub took: std::time::Duration,
 }
 
-/// The page's regions of accepted version `a` (its enabled `regions`) and the served catalogue
-/// `cat` (as the agent read it): its drawn files read in `root`, and the catalogue's sizes unless
+/// The page's regions of accepted version `a` (its enabled `regions`) and the map's catalogue
+/// `cat` (as the plan reads it: crate::agent::plan's `map_now`): its drawn files read in `root`, and the catalogue's sizes unless
 /// `had` has them (its number's). Run off the agent's loop (`Agent::regions_view`); a read that
 /// fails is logged, its part left out.
 pub fn build(

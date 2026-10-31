@@ -266,35 +266,6 @@ fn read_published(home: &Path) -> build::LastCatalogue {
     std::fs::read(home.join(PUBLISHED_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
-/// The map updates' file before task #254 (`map-update.json` in `home`) taken into the record `r`:
-/// when the low zooms were last made (its `low_at`, else its `began` if it made them), when `r` has
-/// none, kept (`PUBLISHED_FILE`); then the file goes. A file that doesn't read is just removed.
-fn take_map_update(home: &Path, mut r: build::LastCatalogue) -> build::LastCatalogue {
-    #[derive(Deserialize)]
-    struct Old {
-        #[serde(default)]
-        began: u64,
-        #[serde(default)]
-        low: Option<bool>,
-        #[serde(default)]
-        low_at: Option<u64>,
-    }
-    let p = home.join("map-update.json");
-    let Ok(b) = std::fs::read(&p) else { return r };
-    if let Ok(old) = serde_json::from_slice::<Old>(&b) {
-        let low_at = old.low_at.or((old.began > 0 && old.low != Some(false)).then_some(old.began));
-        if r.low_at.is_none() && low_at.is_some() {
-            r.low_at = low_at;
-            if let Err(e) = write_published(home, &r) {
-                eprintln!("agent: keeping the low zooms' time from map-update.json: {e:#}");
-                return r;
-            }
-        }
-    }
-    std::fs::remove_file(&p).ok();
-    r
-}
-
 /// Keeps the lead's record of its catalogues in `home` (`PUBLISHED_FILE`).
 fn write_published(home: &Path, r: &build::LastCatalogue) -> Result<()> {
     store::whole::write(&home.join(PUBLISHED_FILE), &serde_json::to_vec(r)?)
@@ -1025,22 +996,17 @@ pub fn host_of(worker: &str) -> &str {
     }
 }
 
-/// The catalogue each Mac's map server last adopted, from the servers' log under `root`
-/// (crate::pubtimes::SERVERS; the last two days'), read within the NAS readers' deadline
-/// (`nasread::with`): `TimedOut` past it.
-fn adopted(root: &store::nasfs::NasRoot) -> std::io::Result<BTreeMap<String, CatalogueSeen>> {
-    let owned = root.clone();
-    let since = now_s().saturating_sub(2 * 86_400);
-    let events =
-        nasread::with(&root.join(crate::pubtimes::SERVERS), move || Ok(crate::pubtimes::read_servers(&owned, since)))?;
-    let mut out: BTreeMap<String, CatalogueSeen> = BTreeMap::new();
-    for e in events {
-        if e.kind == "adopt" && out.get(&e.host).is_none_or(|c| e.n >= c.n) {
-            out.insert(e.host.clone(), CatalogueSeen { n: e.n, at: e.t });
-        }
-    }
-    Ok(out)
+/// The `seq` each Mac's map server last adopted and when (docs/maplog.md §6.1): its cursor in the
+/// map's log (`server/<host>`, store::map::Cursor), as the lead heard it.
+fn adopted(cursors: &BTreeMap<String, store::map::Cursor>) -> BTreeMap<String, CatalogueSeen> {
+    cursors
+        .iter()
+        .filter_map(|(id, c)| Some((id.strip_prefix(SERVER_CURSOR)?.to_string(), CatalogueSeen { n: c.seq, at: c.at })))
+        .collect()
 }
+
+/// A map server's cursor's name in the map's log, before its host (crates/server's maplog).
+pub const SERVER_CURSOR: &str = "server/";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobView {
@@ -1518,6 +1484,8 @@ pub struct Agent {
     /// The build page's Catalogues map (crate::agent::cataloguesview): made once the NAS's root is
     /// known, read only while a page asks.
     catalogues_view: Option<std::sync::Arc<cataloguesview::CataloguesView>>,
+    /// Whether the Catalogues map follows this Mac's own log (the lead's) or the lead's routes.
+    catalogues_lead: Option<bool>,
     /// The build page's map's finished tiles (crate::agent::builtview): made with `catalogues_view`.
     built_view: Option<std::sync::Arc<builtview::BuiltView>>,
     pageview_reading: bool,
@@ -1643,6 +1611,8 @@ pub struct Agent {
     upcoming_ask: (Option<std::thread::JoinHandle<Option<(u64, room::Hints)>>>, Option<Instant>),
     /// The map's log, written in shadow (crate::agent::publish::Shadow).
     maplog: publish::Shadow,
+    /// The `seq` each Mac's map server was last noted adopting (`tend_pageview`).
+    adoptions: BTreeMap<String, u64>,
     /// The pool (docs/pool.md, crate::agent::pool), always on: this Mac's part in it (None while this
     /// process isn't in it: the NAS not reached as it started, or its member's lock held by another
     /// process; it starts nothing then, and restarts into the pool once it can), and why this
@@ -1876,12 +1846,8 @@ impl Agent {
         let jobs_part = slots::Handle::new(o.home.clone(), control.jobs.clone());
         let pause: Option<crate::control::Pause> =
             std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        // (A record that doesn't read: none, the low zooms made with the next catalogue. The map
-        // updates' file, before task #254, goes.)
-        let mut catalogues = read_published(&o.home);
-        if !o.dry_run {
-            catalogues = take_map_update(&o.home, catalogues);
-        }
+        // (A record that doesn't read: none.)
+        let catalogues = read_published(&o.home);
         // **plan** (crate::agent::plan): the lead's, or a dry run's (a member plans nothing).
         let host = test_worker().unwrap_or_else(store::sys::host_name);
         let plan = if o.helper {
@@ -1936,6 +1902,7 @@ impl Agent {
             broker: None,
             pageview: pageview::PageView::new(),
             catalogues_view: None,
+            catalogues_lead: None,
             built_view: None,
             pageview_reading: false,
             live: None,
@@ -1989,6 +1956,7 @@ impl Agent {
             upcoming: Default::default(),
             upcoming_ask: (None, None),
             maplog: Default::default(),
+            adoptions: BTreeMap::new(),
             member_id: run.as_ref().map(|r| r.side.member().id.clone()),
             ticking: run.as_ref().map(|r| r.ticking.clone()),
             publish_gen: Default::default(),
@@ -4577,6 +4545,7 @@ impl Agent {
             viewer: self.viewer.clone(),
             coord: self.coord.clone(),
             ended,
+            map: self.maplog.started(),
         }
     }
 
@@ -4772,14 +4741,11 @@ impl Agent {
                 crate::net::catalogue_written();
                 let ready = self.plan.view.get().ready.clone();
                 let (n, data) = (cat_stats.as_ref().map(|c| c.n), cat_stats.and_then(|c| serde_json::to_value(c).ok()));
-                // (And the map's log, in shadow: crate::agent::publish::Shadow.)
+                // (And the map's log, in shadow: crate::agent::publish::Shadow; its batch says whether
+                // it went out with the low zooms made.)
                 if let Some(root) = root.filter(|_| self.keeps_publishing()) {
-                    match served((&root.join(store::catalogue::NAME)).into())
-                        .filter(|s| n.is_none_or(|n| s.seen.n == n))
-                    {
-                        Some(s) => self.maplog.published(&self.o.home, root, s.cat),
-                        None => eprintln!("maplog: MISMATCH: catalogue {n:?} isn't the newest that reads; no batch"),
-                    }
+                    let low = self.plan.view.get().catalogue_low;
+                    self.maplog.published(&self.o.home, root, n, low);
                 }
                 self.note(crate::coord::history::Event {
                     worker: Some(self.host.clone()),
@@ -4802,9 +4768,9 @@ impl Agent {
             };
             // (The coordinator's record of what's done.)
             let handed = done.clone();
-            // (A catalogue made: noted in the lead's record, with the low zooms if it had them.)
+            // (A catalogue made: the gate's count of one held back starts again.)
             if ok && matches!(step.as_str(), "catalog" | "catalog-held") {
-                self.plan.send(plan::Msg::CatalogueMade(now_s()));
+                self.plan.send(plan::Msg::CatalogueMade);
             }
             self.take_timings(k);
             self.end_lease(k, outcome, &handed, &note);
@@ -7399,24 +7365,48 @@ impl Agent {
         if self.o.dry_run {
             return;
         }
-        // (The Catalogues map, in the pool or out of it: what's on the NAS.)
+        // (The Catalogues map, in the pool or out of it: the map's log followed, the lead's in
+        // process, else its routes; asked each loop, so it misses no batch.)
+        let lead = self.keeps_publishing();
+        let source: std::sync::Arc<dyn cataloguesview::Source> = if lead {
+            self.maplog.here(&self.o.home).feed.clone()
+        } else {
+            std::sync::Arc::new(cataloguesview::Lead::new(root, &self.host))
+        };
+        let keep = self.o.home.join(cataloguesview::KEPT);
         let cv = self
             .catalogues_view
-            .get_or_insert_with(|| {
-                cataloguesview::CataloguesView::new(std::sync::Arc::new(cataloguesview::NasCatalogues(
-                    root.join("catalog"),
-                )))
-            })
+            .get_or_insert_with(|| cataloguesview::CataloguesView::new(source.clone(), Some(keep)))
             .clone();
+        if self.catalogues_lead != Some(lead) {
+            cv.set_source(source);
+            self.catalogues_lead = Some(lead);
+        }
+        cv.wake();
         for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
             if !c.has_catalogues() {
                 c.set_catalogues(cv.clone());
             }
         }
         // (The map's log, which the servers follow: the lead's coordinator answers it.)
-        if self.keeps_publishing() {
+        if lead {
+            let here = self.maplog.here(&self.o.home);
             if let Some(c) = self.coord.as_ref().filter(|c| !c.has_maplog()) {
-                c.set_maplog(self.maplog.feed(&self.o.home));
+                c.set_maplog(here.feed.clone());
+            }
+            // (Each map server's adoption of a newer map, its cursor moved: in the history, for
+            // publishing's times, crate::pubtimes.)
+            for (host, s) in adopted(&here.feed.cursors()) {
+                if self.adoptions.get(&host) != Some(&s.n) {
+                    let e = crate::coord::history::Event {
+                        t: s.at,
+                        worker: Some(host.clone()),
+                        n: Some(s.n),
+                        ..crate::coord::history::Event::new(crate::pubtimes::ADOPT)
+                    };
+                    self.note(e);
+                    self.adoptions.insert(host, s.n);
+                }
             }
         }
         // (The map's finished tiles, the same: the build's keys on the NAS.)
@@ -9038,51 +9028,9 @@ fn helpers(root: &store::nasfs::NasRoot, lead: &str) -> Vec<Status> {
     out
 }
 
-/// The newest catalogue in `dir` that reads, its number and when it went out: what the map's server
-/// serves (a damaged one passed over, as it does), whole (`served`).
-fn served_catalogue(dir: store::nasfs::Loc<'_>) -> Option<CatalogueSeen> {
-    served(dir).map(|s| s.seen)
-}
-
-/// The newest catalogue in `dir` that reads (`served_catalogue`), whole, with what the names' to-do
-/// lists read of it (crate::namestodo::inputs_key).
-#[derive(Clone)]
-struct Served {
-    seen: CatalogueSeen,
-    cat: std::sync::Arc<store::catalogue::Catalogue>,
-    key: String,
-}
-
-/// `served_catalogue`, read once per catalogue file and kept for each folder (the map's, the held
-/// ones'), for the loop, `on_map` and the build page's regions alike: a new one is read from the
-/// last (its new deltas applied, store::catalogue::read_n_from), never again back to a whole one
-/// (task #684: on 26 Oct three readers each read catalogue 464 through 135 deltas from a 9 MB whole
-/// one, the loop stalled 300 s after each catalogue and the regions took 136 s).
-fn served(dir: store::nasfs::Loc<'_>) -> Option<Served> {
-    type Kept = BTreeMap<String, (store::nasfs::Place, std::time::SystemTime, Served)>;
-    static READ: std::sync::Mutex<Kept> = std::sync::Mutex::new(BTreeMap::new());
-    let mut ns = store::catalogue::list(dir).unwrap_or_default();
-    if ns.is_empty() {
-        // (A folder emptied (the held ones, served): its catalogue isn't kept.)
-        READ.lock().unwrap_or_else(|e| e.into_inner()).remove(&dir.display());
-        return None;
-    }
-    ns.sort_unstable();
-    ns.into_iter().rev().find_map(|n| {
-        let path = store::catalogue::path_n(dir, n)?;
-        let t = path.loc().metadata().and_then(|m| m.modified()).ok()?;
-        let mut g = READ.lock().unwrap_or_else(|e| e.into_inner());
-        let kept = g.get(&dir.display());
-        if let Some((_, _, s)) = kept.filter(|(p, at, _)| *p == path && *at == t) {
-            return Some(s.clone());
-        }
-        let have = kept.map(|k| k.2.cat.clone());
-        let cat = std::sync::Arc::new(store::catalogue::read_n_from(dir, n, have.as_deref()).ok()?);
-        let seen = CatalogueSeen { n, at: t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) };
-        let s = Served { seen, key: crate::namestodo::inputs_key(&cat), cat };
-        g.insert(dir.display(), (path, t, s.clone()));
-        Some(s)
-    })
+/// The map's catalogue as the status says it (`CatalogueSeen`): its `seq` and its batch's time.
+fn seen(c: &store::catalogue::Catalogue) -> CatalogueSeen {
+    CatalogueSeen { n: c.n, at: cataloguesview::unix_of(&c.created).unwrap_or(0) }
 }
 
 /// What a step's time here is kept under (`Memory::step_secs`): its name, with the way it runs now
@@ -12226,14 +12174,11 @@ mod tests {
     }
 
     #[test]
-    fn a_catalogue_made_is_noted_with_the_low_zooms_if_it_had_them_and_a_dry_run_keeps_its_own() {
+    fn a_catalogue_held_back_is_noted_until_one_is_made_and_a_dry_run_keeps_its_own() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::create_dir_all(&home).unwrap();
-        // (The map updates' file from before: its low zooms' time kept, the file gone as the agent
-        // starts.)
-        std::fs::write(home.join("map-update.json"), r#"{"began":90,"regions":[],"low":false,"low_at":50}"#).unwrap();
         let mut a = test_agent(Options {
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
@@ -12243,29 +12188,16 @@ mod tests {
             helper: false,
         })
         .unwrap();
-        assert!(!home.join("map-update.json").exists());
-        assert_eq!(
-            *a.planner().catalogues.borrow(),
-            build::LastCatalogue { at: 0, low_at: Some(50), ..Default::default() }
-        );
+        assert_eq!(*a.planner().catalogues.borrow(), build::LastCatalogue::default());
         let file = || -> build::LastCatalogue {
             serde_json::from_slice(&std::fs::read(home.join(PUBLISHED_FILE)).unwrap()).unwrap()
         };
-        // A catalogue planned with the low zooms made: noted so.
-        a.planner().catalogue_low.set(true);
-        a.planner().catalogue_made(100);
-        assert_eq!(file(), build::LastCatalogue { at: 100, low_at: Some(100), ..Default::default() });
-        // One without them (the low zooms later): when they were last made carried.
-        a.planner().catalogue_low.set(false);
-        a.planner().catalogue_made(200);
-        assert_eq!(file(), build::LastCatalogue { at: 200, low_at: Some(100), ..Default::default() });
         // A catalogue held back: when, kept in the file (a restart reads it), until the next is made.
         a.planner().note_held(Some(250));
         assert_eq!(file().held_at, Some(250));
         assert_eq!(read_published(&home).held_at, Some(250));
-        a.planner().catalogue_made(900);
-        a.planner().catalogue_made(200);
-        assert_eq!(file(), build::LastCatalogue { at: 200, low_at: Some(100), ..Default::default() });
+        a.planner().catalogue_made();
+        assert_eq!(file(), build::LastCatalogue::default());
         // A dry run beside it (a second agent on this Mac, planning only): its record its own,
         // never the file.
         let mut dry = test_agent(Options {
@@ -12278,9 +12210,8 @@ mod tests {
         })
         .unwrap();
         assert_eq!(*dry.planner().catalogues.borrow(), file());
-        dry.planner().catalogue_low.set(true);
-        dry.planner().catalogue_made(300);
-        assert_eq!(file(), build::LastCatalogue { at: 200, low_at: Some(100), ..Default::default() });
+        dry.planner().note_held(Some(300));
+        assert_eq!(file(), build::LastCatalogue::default());
         // (A record that doesn't read: none.)
         std::fs::write(home.join(PUBLISHED_FILE), "?").unwrap();
         assert_eq!(read_published(&home), build::LastCatalogue::default());
@@ -12321,32 +12252,22 @@ mod tests {
         .unwrap()
     }
 
-    /// (Task #259 review) each Mac's adopted catalogue from the servers' log, read through the NAS
-    /// readers (`nasread::with`); worker names folded to their Macs.
+    /// Each Mac's adopted `seq`: its map server's cursor in the log, adopted when first heard there
+    /// (docs/maplog.md §6.1); other clients' cursors aren't servers. Worker names folded to their Macs.
     #[test]
-    fn each_macs_adopted_catalogue_is_its_last_adopt() {
-        use crate::pubtimes::{append_server, ServerEvent};
-        let d = tempfile::tempdir().unwrap();
-        let t = now_s() - 100;
-        let ev = |host: &str, kind: &str, n: u64, dt: u64| ServerEvent {
-            t: t + dt,
-            host: host.into(),
-            kind: kind.into(),
-            n,
-            secs: None,
-        };
-        for e in [
-            ev("m4", "adopt", 811, 0),
-            ev("m4", "adopt", 812, 10),
-            ev("m1", "adopt", 811, 5),
-            ev("m1", "mirror-start", 812, 20),
-        ] {
-            append_server(&store::nasfs::NasRoot::local_for_test(d.path()), e).unwrap();
-        }
-        let a = adopted(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap();
-        assert_eq!(a["m4"], CatalogueSeen { n: 812, at: t + 10 });
-        assert_eq!(a["m1"], CatalogueSeen { n: 811, at: t + 5 });
-        assert!(adopted(&store::nasfs::NasRoot::local_for_test(&d.path().join("none"))).unwrap().is_empty());
+    fn each_macs_adopted_catalogue_is_its_servers_cursor() {
+        let feed = store::map::feed::Feed::new();
+        let m = store::map::Map::new(812, "t".into(), [("u/6/0/0".to_string(), serde_json::json!(true))].into());
+        feed.start(std::sync::Arc::new(m), 812, &[], Default::default());
+        feed.changes(811, Some("server/m4"), 100);
+        feed.changes(812, Some("server/m4"), 110);
+        feed.changes(812, Some("server/m4"), 140);
+        feed.changes(811, Some("server/m1"), 105);
+        feed.changes(812, Some("mirror/m1"), 120);
+        let a = adopted(&feed.cursors());
+        assert_eq!(a.len(), 2);
+        assert_eq!(a["m4"], CatalogueSeen { n: 812, at: 110 });
+        assert_eq!(a["m1"], CatalogueSeen { n: 811, at: 105 });
         assert_eq!((host_of("m4 #3"), host_of("m4"), host_of("page #1")), ("m4", "m4", "page #1"));
     }
 
@@ -16247,7 +16168,9 @@ mod pool_tests {
         // (Step 3: the lead's coordinator answers the servers from the shadow's feed.)
         lead.round().unwrap();
         assert!(lead.coord.as_ref().is_some_and(|c| c.has_maplog()), "the map's routes answer");
-        assert_eq!(lead.maplog.feed(&lead.o.home).head(), Some(c.n));
+        assert_eq!(lead.maplog.here(&lead.o.home).feed.head(), Some(c.n));
+        // (Step 4: and the plan reads the map from it, the catalogue checked equal to it.)
+        assert_eq!(*lead.planner().map_now(&root).unwrap(), c);
     }
 
     #[test]

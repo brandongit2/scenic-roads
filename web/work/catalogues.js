@@ -1,8 +1,8 @@
 // The world map's age controls (task #629; top-level since #685; docs/pipeline.md §5): a soloed
 // step's published tiles coloured by when a catalogue last published each, over a range set by a
 // pair of inputs, and a timeline of every catalogue (hovering one lights the tiles it published).
-// Its data: /work/catalogs (crate::agent::cataloguesview), the catalogues after the last one this
-// page has. The sums are apart from the DOM so Node tests them (web/test/catalogues.test.mjs).
+// Its data: /work/catalogs (crate::agent::cataloguesview: the map log's batches, each numbered as
+// its catalogue), the catalogues after the last one this page has. The sums are apart from the DOM so Node tests them (web/test/catalogues.test.mjs).
 import { hhmm, timeTicks } from "./chartmath.js";
 
 // ---- The range's inputs ---------------------------------------------------------------------------
@@ -296,11 +296,11 @@ export function createAges({ call, store, onChange }) {
       el("span", { class: "cat-scale" }, el("span", null, whenText(from)), el("i", { style: `background:${grad}` }), el("span", null, whenText(to))),
       el("span", null, st.hide ? "(the rest hidden)" : "(the rest at the nearer end's colour)"),
       el("span", { class: "lg" }, el("i", { style: `background:${HIGHLIGHT};border-color:${HIGHLIGHT}` }), "a catalogue's tiles, its mark hovered"));
-    status.textContent = error ? `Can't read the catalogues: ${error}` : reading && !cats.length ? "Reading the catalogues on the NAS…" : `${plural(cats.length, "catalogue")} kept on the NAS${latest != null ? `, the last ${latest}` : ""}${reading ? " · reading" : ""} · times local`;
+    status.textContent = error ? `Can't read the catalogues: ${error}` : reading && !cats.length ? "Reading the map's log…" : `${plural(cats.length, "catalogue")} in the map's log${latest != null ? `, the last ${latest}` : ""}${reading ? " · reading" : ""} · times local`;
     drawLine();
   }
-  // The timeline: the range in its centre 80%, the ends dimmed; a mark a catalogue (tall for one
-  // written whole), labelled where its label fits; the time axis under it, its unit (local time)
+  // The timeline: the range in its centre 80%, the ends dimmed; a mark a catalogue (tall for the
+  // view's start, which names everything the map had), labelled where its label fits; the time axis under it, its unit (local time)
   // said once in the status line.
   function drawLine() {
     const W = tlBox.clientWidth;
@@ -330,7 +330,7 @@ export function createAges({ call, store, onChange }) {
       const out = c.t < from || c.t > to;
       const on = c.n === (hovered ?? pinnedN);
       const g = svg("g", { class: `mk${out ? " out" : ""}${on ? " on" : ""}`, "data-n": c.n, "data-k": k });
-      g.append(svg("line", { x1: xs[i], x2: xs[i], y1: c.whole ? 10 : 18, y2: axisY }));
+      g.append(svg("line", { x1: xs[i], x2: xs[i], y1: c.first ? 10 : 18, y2: axisY }));
       if (lab.has(i)) { const t = svg("text", { x: xs[i], y: 8, class: "lbl" }); t.textContent = text[i]; g.append(t); }
       g.append(svg("rect", { x: xs[i] - 5, y: 0, width: 10, height: axisY, class: "hit" }));
       (k ? kids : empties).push(g);
@@ -342,7 +342,7 @@ export function createAges({ call, store, onChange }) {
   const say = (n, e) => {
     const c = cats.find((k) => k.n === n);
     if (!c) { tip.hidden = true; return; }
-    tip.textContent = `Catalogue ${c.n} · ${whenText(c.t)} · ${c.whole ? "whole" : "a delta"} · ${plural((c.z6 || []).length, "z6 tile")}, ${plural((c.z3 || []).length, "z3 tile")} published${c.first ? " (the oldest kept: everything it names)" : ""}`;
+    tip.textContent = `Catalogue ${c.n} · ${whenText(c.t)} · ${plural((c.z6 || []).length, "z6 tile")}, ${plural((c.z3 || []).length, "z3 tile")} published${c.first ? " (the view's start: everything the map named)" : ""}`;
     tip.hidden = false;
     const r = tlBox.getBoundingClientRect();
     tip.style.left = `${Math.max(0, Math.min(r.width - tip.offsetWidth, e.clientX - r.left - tip.offsetWidth / 2))}px`;

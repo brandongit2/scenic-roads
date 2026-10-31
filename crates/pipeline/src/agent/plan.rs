@@ -32,8 +32,8 @@ const STEPS_EVERY: Duration = Duration::from_secs(60);
 pub(super) enum Msg {
     /// Its side as of this round (the newest kept: a burst coalesces).
     Inputs(Box<Inputs>),
-    /// A catalogue made at this time (build::LastCatalogue).
-    CatalogueMade(u64),
+    /// A catalogue made (build::LastCatalogue::held_at).
+    CatalogueMade,
     /// A job done: a gate check or forget it asked for done.
     Done(String),
     Stop,
@@ -72,6 +72,8 @@ pub(super) struct Inputs {
     pub coord: Option<std::sync::Arc<crate::coord::Coordinator>>,
     /// Whether a job ended since the last round (the checklist and counts again).
     pub ended: bool,
+    /// The lead's map, its log's (crate::agent::publish::Here): None until its thread starts.
+    pub map: Option<std::sync::Arc<publish::Here>>,
 }
 
 /// A slot as the plan reads it (`Inputs::slots`): its job, its lane's time left, what it waits on.
@@ -118,6 +120,9 @@ pub(super) struct PlanView {
     pub tiles: Option<std::sync::Arc<tiles::TerrainTiles>>,
     /// Whether the forecast's thread runs (a NAS user: the self-heal waits for it).
     pub forecasting: bool,
+    /// Whether the catalogue last planned has the low zooms made (build::Plan::low): its batch says
+    /// so (crate::agent::publish::LOW) once it's published.
+    pub catalogue_low: bool,
 }
 
 /// What the plan hands **jobs** once each (the lead's pool step writes them to the NAS).
@@ -404,6 +409,9 @@ pub(super) struct Planner {
     pub(super) queued: std::cell::RefCell<Vec<build::Work>>,
     /// The last catalogue's folder and number, and its regions' outline entries by id (`on_map`).
     pub(super) last_catalogue: std::cell::RefCell<Option<((String, u64), BTreeMap<String, Vec<String>>)>>,
+    /// The newest NAS snapshot of the map read (`map_now`, without the lead's log): its `seq`, and its
+    /// catalogue (None: it didn't read).
+    pub(super) nas_map: std::cell::RefCell<Option<(u64, Option<std::sync::Arc<store::catalogue::Catalogue>>)>>,
     /// The regions the last plan would publish as built (build::Plan::ready), for the checklist.
     pub(super) ready: std::cell::RefCell<Vec<String>>,
     /// The last plan's forecast (crate::agent::forecast), for the status.
@@ -436,15 +444,13 @@ pub(super) struct Planner {
     /// The timetables' report as last read (its content name, and what the status shows).
     pub(super) timetables: std::cell::RefCell<Option<(String, crate::timetables::View)>>,
     pub(super) publish_logged: std::cell::RefCell<String>,
+    /// The map's `seq` and when its batch went out (`map_now`), for the status.
     pub(super) catalogue_seen: std::cell::Cell<Option<CatalogueSeen>>,
-    /// The catalogue each Mac's map server last adopted (`adopted`), and when it was read: read
-    /// again when a newer catalogue is seen, else every five minutes.
-    pub(super) adopted: std::cell::RefCell<(u64, Option<u64>, BTreeMap<String, CatalogueSeen>)>,
-    /// The lead's record of its catalogues (build::LastCatalogue, its folder's `publishing.json`): when
-    /// the last went out with the low zooms made.
+    /// The lead's record of its catalogues (build::LastCatalogue, its folder's `publishing.json`):
+    /// when one was first held back, and the gated steps' runs.
     pub(super) catalogues: std::cell::RefCell<build::LastCatalogue>,
     /// Whether the catalogue last planned had the low zooms made (build::Plan::low, nothing left of
-    /// the publishing chain): its catalogue, once made, is noted so (`LastCatalogue::low_at`).
+    /// the publishing chain): its batch, once made, says so (`PlanView::catalogue_low`).
     pub(super) catalogue_low: std::cell::Cell<bool>,
     /// Publishing's switches as last read (crate::agent::publish).
     pub(super) publishing: std::cell::Cell<publish::Switches>,
@@ -509,6 +515,7 @@ impl Planner {
             piece_sizes: Default::default(),
             queued: Default::default(),
             last_catalogue: Default::default(),
+            nas_map: Default::default(),
             ready: Default::default(),
             forecast: Default::default(),
             departed: Default::default(),
@@ -524,7 +531,6 @@ impl Planner {
             timetables: Default::default(),
             publish_logged: Default::default(),
             catalogue_seen: Default::default(),
-            adopted: Default::default(),
             catalogues: std::cell::RefCell::new(catalogues),
             catalogue_low: Default::default(),
             publishing: Default::default(),
@@ -571,7 +577,7 @@ impl Planner {
                 self.coord = i.coord.clone();
                 self.inp = *i;
             }
-            Msg::CatalogueMade(at) => self.catalogue_made(at),
+            Msg::CatalogueMade => self.catalogue_made(),
             Msg::Done(id) => {
                 // (A full check asked for, done; a forget too.)
                 if let Some(unit) = id.strip_prefix("inputs ").and_then(|r| r.strip_suffix(" full")) {
@@ -689,8 +695,7 @@ impl Planner {
 
     /// The view published whole (`PlanView`).
     pub(super) fn publish(&mut self) {
-        let root = self.inp.root.clone();
-        let published = Some(self.published(root.as_ref()));
+        let published = Some(self.published());
         let view = PlanView {
             n: self.n,
             jobs: self.jobs.clone(),
@@ -712,6 +717,7 @@ impl Planner {
             coverage: self.coverage.borrow().clone(),
             tiles: Some(std::sync::Arc::new(self.tiles.borrow().clone())),
             forecasting: self.forecasting.borrow().as_ref().is_some_and(|h| !h.is_finished()),
+            catalogue_low: self.catalogue_low.get(),
         };
         self.view.set(view);
     }
@@ -899,14 +905,12 @@ impl Planner {
         h
     }
 
-    /// A catalogue made at `at`: noted in the lead's record (build::LastCatalogue), with the low zooms
-    /// made if its plan had them (`catalogue_low`).
-    pub(super) fn catalogue_made(&self, at: u64) {
+    /// A catalogue made: the gate's count of it held back starts again (build::LastCatalogue::held_at).
+    /// (When it went out, and with the low zooms or not, is the map log's: `map_now`, `map_marks`.)
+    pub(super) fn catalogue_made(&self) {
         let mut r = self.catalogues.borrow_mut();
-        r.at = at;
-        r.held_at = None;
-        if self.catalogue_low.get() {
-            r.low_at = Some(at);
+        if r.held_at.take().is_none() {
+            return;
         }
         if self.keeps_publishing() {
             if let Err(e) = write_published(&self.o.home, &r) {
@@ -1491,15 +1495,15 @@ impl Planner {
         // After each catalogue the map serves: the names to translate and descriptions to write.
         // (From the translations' and descriptions' accepted versions, which the agent names: the
         // job reads them through the accessor, never the inputs folders.)
-        let served = served((&root.join("catalog")).into());
+        // (Their inputs' key: the last batch of the map's log touching what they read.)
+        let names_key = crate::namestodo::inputs_seq(&self.map_marks());
         // (The steps gated by time: when each last ran, as its recorded key changed.)
         self.note_ran(&keys);
         let (since, idle) = {
             let r = self.catalogues.borrow();
             (r.since("names-todo", now_s()), r.idle)
         };
-        if let Some(w) = build::names_todo_work(served.as_ref().map(|s| s.key.as_str()), &manifest, &keys, since, idle)
-        {
+        if let Some(w) = build::names_todo_work(names_key.as_deref(), &manifest, &keys, since, idle) {
             let n = w.targets[0].1.clone();
             let mut args = Vec::new();
             for unit in [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT] {
@@ -1509,7 +1513,7 @@ impl Planner {
                 ]);
             }
             jobs.push(job(format!("names-todo {n}"), "names-todo", args, Some(w)));
-        } else if served.is_some()
+        } else if names_key.is_some()
             && [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT]
                 .iter()
                 .any(|u| !manifest.contains_key(&crate::inputs::logical(u)))
@@ -1655,18 +1659,12 @@ impl Planner {
                 why: "the 3D buildings' sources' indexes on the NAS can't be read now".into(),
             });
         }
-        // The regions the map's catalogue has (or the held one's, when catalogues are held for review)
-        // and how long ago it went out: what the plan publishes regions by.
-        // (The held ones, once there are any: the first goes by what's served.)
-        let held_dir = root.join("catalog-held");
-        let dir = if held && store::catalogue::list(&held_dir).is_ok_and(|ns| !ns.is_empty()) {
-            held_dir
-        } else {
-            root.join("catalog")
-        };
-        let (on_map, since_publish) = self.on_map((&dir).into(), &recipes);
-        // (The map's: the served catalogue's, held ones aside.)
-        self.catalogue_seen.set(served_catalogue((&root.join("catalog")).into()));
+        // The regions the map has (or the held catalogue's, when catalogues are held for review) and
+        // how long ago it went out: what the plan publishes regions by.
+        let map = self.map_now(root);
+        let (on_map, since_publish) = self.on_map(root, held, map.as_deref(), &recipes);
+        // (The map's, held ones aside.)
+        self.catalogue_seen.set(map.as_deref().map(seen));
         // (Publishing's switches: crate::agent::publish.)
         let sw = publish::Switches::read(root, self.publishing.get());
         if sw != self.publishing.get() {
@@ -1674,17 +1672,15 @@ impl Planner {
         }
         self.publishing.set(sw);
         let way = build::Publishing {
-            since_low: self.catalogues.borrow().low_at.map(|t| now_s().saturating_sub(t)),
+            since_low: self.since_low(now_s()),
             near: sw.near,
             since_marks: self.catalogues.borrow().since("marks", now_s()),
             since_overlays: self.catalogues.borrow().since("overlays", now_s()),
         };
-        // (The served catalogue's z6 tiles, read again only when a newer catalogue is there: the map tiles
-        // to draw grouped by the z6 tile that changed.)
-        let served = {
-            let cat = crate::agent::served((&root.join("catalog")).into()).map(|s| s.cat);
-            self.planned_tiles.borrow_mut().served(cat.as_deref())
-        };
+        // (The map's z6 tiles, read again only at a newer `seq`: the map tiles to draw grouped by the
+        // z6 tile that changed.)
+        let served = self.planned_tiles.borrow_mut().served(map.as_deref());
+        drop(map);
         let mut planned = {
             let tiles = self.terrain_tiles(root, &manifest);
             *self.depth_keep.borrow_mut() = build::depth_kept(cov, &manifest, &tiles, now_s());
@@ -1798,7 +1794,7 @@ impl Planner {
         // crate::pubtimes::PlannedNotes, since the last catalogue, what was noted known again after a
         // restart or a change of lead.)
         if self.keeps_publishing() {
-            let at = self.catalogues.borrow().at;
+            let at = self.catalogue_seen.get().map_or(0, |c| c.at);
             let b = if at > 0 { at } else { self.started };
             let mut notes = self.planned_tiles.borrow_mut();
             // (This coordinator's history read once a catalogue.)
@@ -2133,29 +2129,63 @@ impl Planner {
         jobs
     }
 
-    /// Publishing as it stands (`Published`), the servers' log under `root` read again (within the
-    /// NAS readers' deadline; past it, the last read kept) when a newer catalogue is seen or five
-    /// minutes have passed.
-    pub(super) fn published(&self, root: Option<&store::nasfs::NasRoot>) -> Published {
+    /// Publishing as it stands (`Published`): the map's last batch, whether it went out with the low
+    /// zooms, the map tiles drawing, and each Mac's map server's adoption (its cursor in the log:
+    /// docs/maplog.md §6.1).
+    pub(super) fn published(&self) -> Published {
         let last = self.catalogue_seen.get();
-        let c = self.catalogues.borrow();
         let mut drawing: BTreeMap<String, usize> = BTreeMap::new();
         for (w, k) in self.coord.as_ref().map(|c| c.leased_of("pack")).unwrap_or_default() {
             *drawing.entry(host_of(&w).to_string()).or_default() += k;
         }
-        if let Some(root) = root {
-            let mut a = self.adopted.borrow_mut();
-            let n = last.map(|l| l.n);
-            if a.1 != n || now_s().saturating_sub(a.0) >= 300 {
-                // (Past the deadline: the last read kept, tried again five minutes on.)
-                let read = adopted(root).unwrap_or_else(|_| a.2.clone());
-                *a = (now_s(), n, read);
-            }
+        // (The low zooms' flag of the same batch as `last`: whether its `why` said so.)
+        let low = last.is_some_and(|l| self.map_marks().get(publish::LOW_WATCH).is_some_and(|m| m.seq == l.n));
+        let cursors = self.inp.map.as_ref().map(|h| h.feed.cursors()).unwrap_or_default();
+        Published { last, low, drawing, adopted: adopted(&cursors) }
+    }
+
+    /// The map now as a catalogue (docs/maplog.md §6.5): the lead's log's (`Inputs::map`), else the
+    /// newest NAS snapshot's (`map/<seq>.json.zst`: a lead whose log hasn't started, a dry run; §5.2),
+    /// read once a `seq`, within the NAS readers' deadline. None: neither.
+    pub(super) fn map_now(&self, root: &NasRoot) -> Option<std::sync::Arc<store::catalogue::Catalogue>> {
+        if let Some(c) = self.inp.map.as_ref().and_then(|h| h.catalogue()) {
+            return Some(c);
         }
-        // (The low zooms' flag of the same catalogue as `last`: the one this record noted, not a
-        // newer one served since.)
-        let low = c.at > 0 && c.low_at == Some(c.at) && last.is_some_and(|l| l.at <= c.at);
-        Published { last, low, drawing, adopted: self.adopted.borrow().2.clone() }
+        let dir = root.join(store::map::NAS_DIR);
+        let listed = {
+            let d = dir.clone();
+            nasread::with(&dir, move || d.list()).ok()?
+        };
+        let seq = listed.iter().filter_map(|n| n.strip_suffix(".json.zst")?.parse::<u64>().ok()).max()?;
+        let mut kept = self.nas_map.borrow_mut();
+        if let Some((_, c)) = kept.as_ref().filter(|k| k.0 == seq) {
+            return c.clone();
+        }
+        let read = nasread::read(&dir.join(&store::map::nas_name(seq)))
+            .map_err(anyhow::Error::from)
+            .and_then(|b| store::map::Snapshot::decode(&b))
+            .and_then(|(m, _)| m.catalogue());
+        let cat = match read {
+            Ok(c) => Some(std::sync::Arc::new(c)),
+            Err(e) => {
+                eprintln!("agent: the NAS's map at {seq}: {e:#}");
+                None
+            }
+        };
+        *kept = Some((seq, cat.clone()));
+        cat
+    }
+
+    /// The map log's marks (store::map::log::Log::marks): none without the lead's log.
+    pub(super) fn map_marks(&self) -> BTreeMap<String, store::map::Mark> {
+        self.inp.map.as_ref().map(|h| h.feed.marks()).unwrap_or_default()
+    }
+
+    /// Seconds since a batch last went out with the low zooms made (its `why`: publish::LOW); None
+    /// when the log has none.
+    pub(super) fn since_low(&self, now: u64) -> Option<u64> {
+        let m = self.map_marks().remove(publish::LOW_WATCH)?;
+        Some(now.saturating_sub(super::cataloguesview::unix_of(&m.at)?))
     }
 
     /// The forecast (crate::agent::forecast) of the work left: `before`, the lead's jobs before
@@ -2294,7 +2324,7 @@ impl Planner {
             let c = self.catalogues.borrow();
             let now = now_s();
             forecast::Cadence {
-                since_low: c.low_at.map(|t| now.saturating_sub(t)),
+                since_low: self.since_low(now),
                 since_marks: c.since("marks", now),
                 since_overlays: c.since("overlays", now),
             }
@@ -2884,7 +2914,7 @@ impl Planner {
     }
 
     /// The build page's regions (crate::agent::regionsview), made again when the regions' accepted
-    /// version `a` or the served catalogue (the status's) changes, once each (a failed read isn't
+    /// version `a` or the map's `seq` (the status's: `map_now`) changes, once each (a failed read isn't
     /// tried again until one of them changes), on a thread of its own (`regionsview::build`: the
     /// drawn files, the catalogue's sizes once per catalogue). Given to this Mac's coordinator (the
     /// page out of the pool) once made; the lead's pool step writes them for the others'
@@ -2896,7 +2926,7 @@ impl Planner {
         regions: &[recipes::Recipe],
     ) {
         self.take_regions();
-        let cat = served((&root.join("catalog")).into()).map(|s| s.cat);
+        let cat = self.map_now(root);
         let key: RegionsKey = (a.version.clone(), cat.as_ref().map(|c| c.n));
         if self.regions_making.borrow().is_some() || self.regions_tried.borrow().as_ref() == Some(&key) {
             return;
@@ -2938,37 +2968,57 @@ impl Planner {
         *self.regions_view.borrow_mut() = Some((key, v));
     }
 
-    /// The regions the last catalogue in `dir` has, by id: whether as its recipe is now (same outline
-    /// entries); and how long ago it went out (seconds, by its file's time). Read once per catalogue;
-    /// none (nothing on the map: every region new) when there's none, or it can't be read now.
+    /// The regions the map has (`map`, as `map_now` gives it), or the newest held catalogue's while
+    /// catalogues are held for review (`held`, once `catalog-held/` has one), by id: whether as its
+    /// recipe is now (same outline entries); and how long ago it went out (seconds: its batch's time,
+    /// the held one's file's). Its regions taken once per `seq`; none (nothing on the map: every
+    /// region new) when there's none, or it can't be read now.
     pub(super) fn on_map(
         &self,
-        dir: store::nasfs::Loc<'_>,
+        root: &NasRoot,
+        held: bool,
+        map: Option<&store::catalogue::Catalogue>,
         recipes: &[recipes::Recipe],
     ) -> (BTreeMap<String, bool>, Option<u64>) {
+        let regions_of = |c: &store::catalogue::Catalogue| -> BTreeMap<String, Vec<String>> {
+            c.coverage
+                .get("regions")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|r| {
+                    Some((r["id"].as_str()?.to_string(), serde_json::from_value(r["outline"].clone()).ok()?))
+                })
+                .collect()
+        };
         let mut cached = self.last_catalogue.borrow_mut();
-        // (The newest that reads, read once (`served`): a damaged one is passed over, as the map's
-        // server does, not taken for none.)
         let mut at = None;
-        if let Some(sv) = served(dir) {
-            if cached.as_ref().is_none_or(|c| c.0 != (dir.display(), sv.seen.n)) {
-                let regions: BTreeMap<String, Vec<String>> = sv
-                    .cat
-                    .coverage
-                    .get("regions")
-                    .and_then(serde_json::Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|r| {
-                        Some((r["id"].as_str()?.to_string(), serde_json::from_value(r["outline"].clone()).ok()?))
-                    })
-                    .collect();
-                *cached = Some(((dir.display(), sv.seen.n), regions));
+        // (The held ones, once there are any; until step 6 of docs/maplog.md §8, catalogues: read
+        // whole once each.)
+        let held_dir = root.join("catalog-held");
+        let newest_held =
+            if held { store::catalogue::list(&held_dir).ok().and_then(|ns| ns.first().copied()) } else { None };
+        if let Some(n) = newest_held {
+            let key = ("catalog-held".to_string(), n);
+            if cached.as_ref().is_none_or(|c| c.0 != key) {
+                match store::catalogue::read_n(&held_dir, n) {
+                    Ok(c) => *cached = Some((key.clone(), regions_of(&c))),
+                    Err(e) => eprintln!("agent: held catalogue {n}: {e:#}"),
+                }
             }
-            at = Some(std::time::UNIX_EPOCH + Duration::from_secs(sv.seen.at));
+            if cached.as_ref().is_some_and(|c| c.0 == key) {
+                at = store::catalogue::path_n(&held_dir, n)
+                    .and_then(|p| p.loc().metadata().and_then(|m| m.modified()).ok());
+            }
+        } else if let Some(c) = map {
+            let key = ("map".to_string(), c.n);
+            if cached.as_ref().is_none_or(|k| k.0 != key) {
+                *cached = Some((key, regions_of(c)));
+            }
+            at = Some(std::time::UNIX_EPOCH + Duration::from_secs(seen(c).at));
         }
         // How long ago the last catalogue went out, or one last started (it may have failed): a
-        // time ahead of this Mac's clock (the NAS's) counts as now.
+        // time ahead of this Mac's clock counts as now.
         let now = std::time::SystemTime::now();
         let since = |t: std::time::SystemTime| now.duration_since(t).map_or(0, |d| d.as_secs());
         let started = (self.inp.mem.catalogue_at > 0).then(|| now_s().saturating_sub(self.inp.mem.catalogue_at));

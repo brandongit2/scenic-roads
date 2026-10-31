@@ -647,9 +647,14 @@ The agent's folder, `agent/`:
 timings.jsonl, timings-run.json, timings-run-<k>.json   jobs' timings (below)
 status.json             the lead's status; a member not leading writes helper.json
 state.json, job.json, agent.lock, logs/
-publishing.json         the lead's record of its catalogues {at, low_at, held_at}: when the last
-                        went out, the last with the low zooms made, and when a catalogue due was
-                        first held back since (none: none is) (agent::build::LastCatalogue)
+publishing.json         the lead's record of its catalogues {held_at, ran}: when a catalogue due was
+                        first held back since (none: none is), the cadenced steps' runs
+                        (agent::build::LastCatalogue); when the last went out, and the last with
+                        the low zooms, are the map log's (docs/maplog.md §6.5)
+maplog/                 the lead's map log (docs/maplog.md: snapshot.json.zst with its cursors and
+                        marks, segments of batches)
+catalogues-view.json.zst  the build page's Catalogues map as followed (agent::cataloguesview: its
+                        entries, `seq`, tile keys' and `f/` names' hashes)
 clear-request.json      the owner's ask to clear build caches ({by, at, level: caches | deep}, agent::room::ClearRequest;
                         renamed .taken when taken up)
 room-target.json        the owner's free-disk target {bytes, by, at} (agent::room::Target; none: off)
@@ -1045,9 +1050,10 @@ class, id) within a tile. The client sends the id with the clicked point.
     `state/coord/forecasts/<day>.jsonl.zst` (the lead's forecasts, The forecasts' archive above;
     days older than 7 in `state/coord/forecasts-archive/<YYYY-MM>.tar`).
   - `state/publish/<host>.jsonl` (pipeline::pubtimes): each Mac's map server's lines, appended,
-    `{t, host, kind, n, secs?}`, `kind` one of `adopt` (catalogue n served), `mirror-start` and
-    `mirror-end` (its mirror's sync of catalogue n begun, and through everything wanted, `secs` from
-    the start: each once per server process, so a restarted server says them again). Past 512 KB a
+    `{t, host, kind, n, secs?}`, `kind` one of `adopt` (catalogue n served: written still, read no
+    more; the history's `adopt`, from the server's cursor in the map's log, says it), `mirror-start`
+    and `mirror-end` (its mirror's sync of catalogue n begun, and through everything wanted, `secs`
+    from the start: each once per server process, so a restarted server says them again). Past 512 KB a
     file is written again with its newer half.
   - Leases carry `term` and `granted_at`; `/work/done {…, journaled: true}`; `/work/done` and
     `/work/fail` carry `floors`, `disks` (`[[cost key, MB], …]`) and `job_disk_mb`.

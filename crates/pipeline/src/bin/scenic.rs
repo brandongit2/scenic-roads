@@ -1587,13 +1587,10 @@ fn main() -> Result<()> {
         Some(Cmd::ForecastCheck { from, to, replay, split, json, root: r }) => {
             forecast_check(from, to, replay.then_some(split), json, &r.root)
         }
-        Some(Cmd::Catalogues { after, root: r }) => {
-            use pipeline::agent::cataloguesview::{CataloguesView, NasCatalogues};
-            let v = CataloguesView::new(std::sync::Arc::new(NasCatalogues(
-                root(&r.root, false)?.join(store::catalogue::NAME),
-            )));
-            v.refresh();
-            println!("{}", serde_json::to_string(&v.answer(after))?);
+        Some(Cmd::Catalogues { after, home }) => {
+            use pipeline::agent::cataloguesview::{CataloguesView, KEPT};
+            let kept = home_or_default(&home.home).join(KEPT);
+            println!("{}", serde_json::to_string(&CataloguesView::answer_kept(&kept, after))?);
             Ok(())
         }
     }

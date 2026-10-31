@@ -1,6 +1,6 @@
 # The map and its log
 
-**Planned (task #883), steps 1 to 3 of §8 built.** This doc says how catalogues and GC give way
+**Planned (task #883), steps 1 to 4 of §8 built.** This doc says how catalogues and GC give way
 to one current map of the served files plus an append-only log of its changes, which clients follow
 by cursor, and a GC that runs all the time in small steps it can resume. Until each step of §8
 lands, docs/formats.md (Catalogue, Delta catalogues), docs/storage.md (GC), docs/macs.md (the map
@@ -59,7 +59,56 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
 - **No save at a clean stop** (§5.3): at most every 10 minutes; a start asks the batches since.
 - **The lead's contact** is `state/coordinator.json`, kept on the Mac (`lead.json` in the cache
   folder, the key in it, mode 600) for a start away from the NAS.
-- **The CLI** (`scenic catalogs`) still reads the catalogues; its client comes with step 4.
+- **The CLI** (`scenic catalogs`) reads this Mac's agent's Catalogues map as it keeps it (step 4).
+
+**Built (step 4):** the agent and the build page read the map from the log, not catalogues:
+
+- **The map the plan reads** (`served()` before): `agent::publish::Here`, which the shadow keeps
+  beside its feed: the catalogue it last checked equal to the map, else one made of the map once a
+  `seq` (`Here::catalogue`); the plan's `map_now`. Without the lead's log (a lead whose log hasn't
+  started, a dry run) the newest NAS snapshot, read once a `seq` (§5.2). The status's catalogue is
+  its `seq` and its batch's time; the plan's regions on the map (`on_map`), its map tiles' owners
+  (`pubtimes::PlannedNotes`) and the page's regions (`regionsview`) read that catalogue. `served`'s
+  per-folder cache and its `read_n_from` are gone.
+- **The log's marks** (§6.8): the log store keeps, for each watch the lead opens it with, the last
+  batch that marked it, saved with its snapshot and kept up as batches are replayed and appended
+  (`store::map::log::Log::open_watching`, `marks`; `store::map::marks`). A watch is a key prefix,
+  or `why:` and a part of a batch's `why` (parts after the first, each after `; `). A prefix newly
+  watched starts at the snapshot's `seq`. The feed carries them to the agent.
+- **names-todo** keys on `map <seq>`, the last batch touching any of `namestodo::INPUTS` (the
+  sections §6.8 lists, `m/units` and `m/regions`, and their files: `f/base/`, `f/hidata/`,
+  `f/markdata/`, `f/ovdata/`, `f/layers/labels/hi/`, `f/global/spoken`, `f/global/roaden/`, by the
+  steps' names for them); `inputs_key` stays the job's own key of its roads' pieces (it reads a
+  catalogue until step 6).
+- **`LastCatalogue`'s `at` and `low_at`** go: when the last catalogue went out is the head batch's
+  time; when the low zooms last went out is the last batch whose `why` says `the low zooms`
+  (`publish::LOW`: the shadow writes "catalogue N; the low zooms" when the plan that made it had
+  them, `PlanView::catalogue_low`). A log with no such batch yet says none (the low zooms' gate
+  open, as with no record before). `held_at` and the cadenced steps' runs stay in `publishing.json`.
+  The pre-#254 `map-update.json` migration goes with `low_at`.
+- **The adoptions** (§6.1, §6.6): a cursor keeps when it was first heard at its `seq`
+  (`store::map::Cursor::at`); the status's `adopted` is the `server/<host>` cursors, and the lead
+  notes each one's move in the history (`adopt`, its `worker` the Mac) for `pubtimes`, which no
+  longer reads the servers' `adopt` lines in `state/publish/` (written still until step 6; their
+  mirrors' lines are still read there, until the mirror is a client).
+- **The Catalogues map** (`cataloguesview`, docs/pool.md §10) follows the log, each loop and each
+  ask (20 s apart at most): the lead's feed in process; on a member, the lead's routes (its coordinator
+  client; `/map/snapshot` timed as a file, by stalls). It keeps, in the agent's folder
+  (`catalogues-view.json.zst`), its entries, the `seq` they reach, each tile section's key with its
+  name's hash and each `f/` name's hash with its file's: a batch setting a file again unchanged (its
+  size alone) publishes nothing, as before. It reads no catalogue and keeps no hashed file name per
+  tile key; `whole` goes from its entries. Where it departs from §6.6: a view with nothing kept
+  starts at the map's `seq` with one `first` entry (every tile the map names: what was there before
+  isn't known), and one told to reset (the log no longer holds its batches: a new lead's log, a
+  member away long) takes the map again with no entry for what it missed, said in `error`. Its depth
+  is what it has followed since it began, not the log's (the lead's log keeps an hour of batches on
+  disk). `/work/built`'s `published` reads its `f/` names.
+- **Departures kept for step 6:** the shadow still reads the catalogue just written
+  (`store::catalogue::read_n_from`, from the head's catalogue it holds: its deltas alone), the one
+  catalogue read left in the agent; the plan reads the newest held catalogue (`catalog-held/`)
+  whole, once a number, while catalogues are held. `regionsview` sums every region once a `seq`,
+  not only those the batch's keys touch. No fallback to catalogues in the agent: a lead that doesn't
+  answer `/map/changes` leaves a member's Catalogues map as it was, its error said.
 
 Words: **the map** is the current name → file map (what a catalogue holds today); **the log** is
 its batches of changes, each with a sequence number (`seq`); a **client** is anything that holds a
@@ -490,7 +539,7 @@ server has spoken the log for a day (the #642 gate, as coordination.md §8).
 | 1 (built) | `store::map`: entries ⇄ `Catalogue`, batches, the multiset digest, apply to a copy (in place with an undo while no reader holds the map); the log store's segments, snapshot and replay (`store::map::log`), no routes yet | — | `every_catalogue_round_trips` (each catalogue on a test root, and a recorded real one: entries → `Catalogue` → bytes identical); `batch_between_equals_the_delta` (for consecutive real catalogues, the batch applied gives the delta's result); `incremental_digest_is_the_whole_digest`; `a_torn_last_line_is_dropped`; `replay_after_snapshot_skips_what_it_holds` |
 | 2 (built, routes moved to 3) | **Dual write, shadow:** the `catalog` step writes the catalogue as now and the lead's agent appends its batch after (the step posting its map is step 6's); the hourly NAS snapshot | — | `the_log_s_map_is_each_catalogue` (the recorded chain: the log's map at each `seq` is that catalogue); `a_catalogue_the_lead_publishes_is_its_map_log_s_in_shadow` (the catalog job's end tended by a lead); `a_batch_of_a_catalogue_is_its_entries_batch` |
 | 3 (built: shadow, `map-serve` to serve; deletions in 6) | **Servers follow the log:** `GET /map/changes`, `/map/snapshot` on the coordinator (from step 2); `store::map::Client` (long poll, saved map, snapshot fallback) in the server and the CLI; the catalogue reader stays as the fallback while the lead doesn't answer `changes` (an older lead) | with step 6: `poll_every`, the server's `catalog/` listing and local `catalog/` copies, `/api/catalog/refresh` and `net::catalogue_written`, `state/publish/<host>.jsonl` and `publish_event` | built: `changes_answers_without_the_nas` (#871's slow-NAS fake blocks every call; the routes answer, a long poll at the batch); `an_old_since_resets`; `a_server_follows_publishes_and_serves_byte_identical_tiles` (within a second each, its NAS without catalogues); `a_lead_restart_mid_poll`; `the_nas_snapshot_is_used_while_the_lead_is_down` (and the catalogues with neither, the saved map at a start away); `in_shadow_the_catalogues_are_served` |
-| 4 | **The agent and the page on the log:** `served()`, `LastCatalogue`, `regionsview`, `builtview`, `cataloguesview`, `pubtimes`, `namestodo::inputs_key` (by prefix `seq`) | `served`'s per-folder cache and `read_n_from` uses, `cataloguesview`'s catalogue reads and hashed names, `publishing.json`'s `at`/`low_at` | `catalogues_view_from_the_log_matches_from_catalogues` (same entries on a recorded run); `names_todo_reruns_exactly_when_its_prefixes_change`; `published_age_is_the_last_batch_touching_the_tile` |
+| 4 (built) | **The agent and the page on the log:** `served()`, `LastCatalogue`, `regionsview`, `builtview`, `cataloguesview`, `pubtimes`, `namestodo::inputs_key` (by prefix `seq`) | `served`'s per-folder cache and `read_n_from` uses, `cataloguesview`'s catalogue reads and hashed names, `publishing.json`'s `at`/`low_at` | `catalogues_view_from_the_log_matches_from_catalogues` (same entries on a recorded run); `names_todo_reruns_exactly_when_its_prefixes_change`; `published_age_is_the_last_batch_touching_the_tile` |
 | 5 | **Downloads by their own lists:** each download keeps its logical → content list; "out of date" from the batches since its `seq` | the Mac's old whole catalogues kept for downloads | `an_update_s_size_from_batches_equals_the_two_catalogues_diff` (on recorded catalogues); `a_download_behind_the_log_compares_its_list`; `downloads_json_fmt4_migrates` |
 | 6 | **Catalogues stop** (after the gate: every server on the log a day): the step only posts; `catalog-held/` → `map-held/` | the catalogue writer and reader (`write`, `write_delta*`, `Delta`, `delta.rs`, `chain`, `whole_due`, `MAX_CHAIN`, `keep_read_in`/`kept_dir`, `latest*`, `read_n*`, `list`, `prune`, `next_n`), `state/pool/delta-catalog` and `Switches::delta`, the `catalog-stats:` sizes' look-ups of the last catalogue | `the_step_publishes_with_no_catalog_folder`; `a_held_batch_is_appended_whole_when_the_hold_lifts`; test roots (`lakefill catalog-add`, `coastcheck`, the server's tests) on snapshots |
 | 7 | **GC's queue, shadow:** the lead queues freed names (batches and records saves), leases and clients as holders; the merge's refusal of names deleted under a lease; a dry-run report beside today's GC, which still deletes | — | `a_name_freed_and_taken_again_leaves_the_queue`; `due_waits_for_every_cursor_the_grace_and_older_leases`; `a_reuse_of_a_deleted_name_is_refused_and_redone`; the shadow's due set ⊆ today's GC's deletions on the same day (a check job) |
