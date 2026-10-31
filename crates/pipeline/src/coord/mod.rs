@@ -1178,22 +1178,24 @@ impl Coordinator {
     /// (`SCENIC_COORD`, 127.0.0.1). A wildcard listener leaves it to any process that binds it
     /// beside (SO_REUSEADDR, as std sets it), which then takes every connection this Mac's jobs
     /// make and refuses their token (a test's coordinator on the pool's port, #906); held here, no
-    /// other can. None for a listener on one address; taken already, said, and None.
-    fn loopback_beside(listener: &std::net::TcpListener) -> Option<std::net::TcpListener> {
-        let at = listener.local_addr().ok()?;
+    /// other can. None for a listener on one address. Held by another process already: an error,
+    /// and no coordinator (its jobs would offer to that process), till a later start finds it free.
+    fn loopback_beside(listener: &std::net::TcpListener) -> Result<Option<std::net::TcpListener>> {
+        let at = listener.local_addr()?;
         if !at.ip().is_unspecified() {
-            return None;
+            return Ok(None);
         }
-        match store::spawn::listen((std::net::Ipv4Addr::LOCALHOST, at.port())) {
-            Ok(l) => Some(l),
-            Err(e) => {
-                eprintln!(
-                    "coordinator: 127.0.0.1:{} is another process's ({e}): this Mac's jobs reach it, not this coordinator",
-                    at.port()
-                );
-                None
-            }
-        }
+        let l = anyhow::Context::with_context(
+            store::spawn::listen((std::net::Ipv4Addr::LOCALHOST, at.port())),
+            || {
+                format!(
+                "127.0.0.1:{} is another process's (lsof -nP -iTCP:{} -sTCP:LISTEN): this Mac's jobs would reach it, not this coordinator",
+                at.port(),
+                at.port()
+            )
+            },
+        )?;
+        Ok(Some(l))
     }
 
     /// `start`, answering on `listener`, already listening (a test's, on a port it held from the
@@ -1212,7 +1214,7 @@ impl Coordinator {
         viewer: bool,
     ) -> Result<Coordinator> {
         let port = listener.local_addr()?.port();
-        let loopback = if viewer { None } else { Self::loopback_beside(&listener) };
+        let loopback = if viewer { None } else { Self::loopback_beside(&listener)? };
         if viewer {
             std::fs::create_dir_all(dir)?;
         } else {
@@ -9280,12 +9282,12 @@ mod tests {
 
     #[test]
     fn the_page_is_over_https_where_tailscale_serves_it() {
-        let v = serde_json::json!({ "TCP": { "443": { "HTTPS": true } }, "Web": { "mac.tail1.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:8090" } } } } });
+        let v = serde_json::json!({ "TCP": { "443": { "HTTPS": true } }, "Web": { "mac.tail1.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:8090" } } } } }); // (pool port: not bound)
         assert_eq!(crate::net::https_in(&v, 8090).as_deref(), Some("https://mac.tail1.ts.net/"));
         assert_eq!(crate::net::https_in(&v, 8091), None);
         assert_eq!(crate::net::https_in(&serde_json::json!({}), 8090), None);
         // The map's own port, beside it; one under a path doesn't serve the pages' /api/….
-        let both = serde_json::json!({ "Web": { "mac.tail1.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:8090" }, "/map": { "Proxy": "http://127.0.0.1:8080" } } }, "mac.tail1.ts.net:8443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:18085" } } } } });
+        let both = serde_json::json!({ "Web": { "mac.tail1.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:8090" }, "/map": { "Proxy": "http://127.0.0.1:8080" } } }, "mac.tail1.ts.net:8443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:18085" } } } } }); // (pool port: not bound)
         assert_eq!(crate::net::https_in(&both, 18085).as_deref(), Some("https://mac.tail1.ts.net:8443/"));
         assert_eq!(crate::net::https_in(&both, 8080), None);
     }
@@ -9433,6 +9435,20 @@ mod tests {
         let again = store::spawn::listen(("0.0.0.0", port)).unwrap();
         port_free(port).unwrap();
         store::spawn::sockets(|| drop(again));
+    }
+
+    /// Its jobs' loopback address already another process's: no coordinator (fail-safe), rather
+    /// than one whose jobs offer to that process; nothing of its state written.
+    #[test]
+    fn a_coordinator_whose_loopback_is_taken_does_not_start() {
+        let d = tempfile::tempdir().unwrap();
+        let other = store::spawn::listen(("127.0.0.1", 0)).unwrap();
+        let port = other.local_addr().unwrap().port();
+        let l = store::spawn::listen(("0.0.0.0", port)).unwrap();
+        let e = Coordinator::start_on(&d.path().join("coord"), l, "m4", "").err().expect("refused");
+        assert!(format!("{e:#}").contains(&format!("127.0.0.1:{port} is another process's")), "{e:#}");
+        assert!(!d.path().join("coord").exists());
+        store::spawn::sockets(|| drop(other));
     }
 
     /// A request as a browser, a page or a proxy sends it, straight to `addr`: `headers` over the
@@ -9754,7 +9770,7 @@ mod tests {
                 "/work/swarm",
                 None,
                 &[
-                    ("Host", "127.0.0.1:8090"),
+                    ("Host", "127.0.0.1:8090"), // (pool port: not bound)
                     ("X-Forwarded-Host", "mac.tail1.ts.net"),
                     ("X-Forwarded-For", "100.101.1.2"),
                     ("Origin", "https://mac.tail1.ts.net")

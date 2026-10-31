@@ -284,9 +284,37 @@ pub fn no_child_starting<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-/// A listener on `addr` (an address, not a name to look up), made by `sockets`.
+/// A listener on `addr` (an address, not a name to look up), made by `sockets`. In a test
+/// program, never on a port of the live pool's (`POOL_PORTS`): refused, loudly.
 pub fn listen(addr: impl ToSocketAddrs) -> io::Result<TcpListener> {
-    sockets(|| TcpListener::bind(addr))
+    let addrs: Vec<SocketAddr> = addr.to_socket_addrs()?.collect();
+    if let Some(a) = addrs.iter().find(|a| POOL_PORTS.contains(&a.port())) {
+        assert!(
+            !in_test_program(),
+            "a test listened on {a}, a port of the live pool's (store::spawn::POOL_PORTS): beside a running \
+             agent it takes that agent's connections (#906); listen on port 0"
+        );
+    }
+    sockets(|| TcpListener::bind(&addrs[..]))
+}
+
+/// The ports the live programs listen on, on the Macs whose tests run beside them: the
+/// coordinator and a member's broker (pipeline::coord::PORT), the map's server
+/// (pipeline::net::DEFAULT_PORT), the task board (tools/taskboard, on the Mac mini). No test
+/// listens on one (`listen`); tools/app/guards.sh refuses test code naming one on loopback.
+pub const POOL_PORTS: [u16; 3] = [8090, 7311, 8077];
+
+/// Whether this process is a test harness's program: cargo's and nextest's test binaries are
+/// built into a `deps` folder (target/<profile>/deps/<crate>-<hash>), never a program the agent,
+/// the app or `cargo run` starts.
+pub fn in_test_program() -> bool {
+    static IN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *IN.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().and_then(|d| d.file_name()).map(|n| n == "deps"))
+            .unwrap_or(false)
+    })
 }
 
 /// A connection `listener` has waiting, taken by `sockets`; `listener` doesn't block (an accept
@@ -318,6 +346,21 @@ pub fn could_start() -> bool {
 
 #[cfg(all(test, unix))]
 mod tests {
+
+    /// A test never listens on a port of the live pool's (#906): refused before it binds, on any
+    /// address, so a coordinator under test can't take a running agent's jobs' connections.
+    #[test]
+    fn a_test_cannot_listen_on_a_pool_port() {
+        assert!(super::in_test_program());
+        for port in super::POOL_PORTS {
+            for ip in ["127.0.0.1", "0.0.0.0", "::1"] {
+                let ip: std::net::IpAddr = ip.parse().unwrap();
+                let r = std::panic::catch_unwind(|| super::listen((ip, port)));
+                assert!(r.is_err(), "{ip} {port} not refused");
+            }
+        }
+        super::listen(("127.0.0.1", 0)).unwrap();
+    }
 
     #[test]
     fn programs_are_found_by_absolute_executable_paths_only() {

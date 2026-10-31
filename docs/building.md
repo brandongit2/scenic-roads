@@ -217,7 +217,8 @@ from the first (`edit_held`).
   agent's end. The app's quit stops its jobs as before (control::Quit). An adopted job offers its
   tasks through the new coordinator as before: the jobs' token is kept (`agent/coord/jobs-token`,
   this Mac's alone), and the coordinator holds 127.0.0.1 on its port beside its wildcard listener,
-  so no other process (a test's coordinator) answers its jobs there (#906). A task it offered
+  so no other process (a test's coordinator) answers its jobs there (#906); one that finds it
+  taken doesn't start (no coordinator: `agent: no coordinator`, tried again at the next start). A task it offered
   before the restart is gone with the old coordinator's memory: it runs that one itself.
 - **The heartbeat:** written by the agent's beat (`agent::beat`, docs/agent-parts.md §4.2) on a
   timer of its own, every 10 s whatever the loop waits on, and at once when the loop publishes a

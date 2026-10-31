@@ -148,7 +148,16 @@ through their dev-dependency on store, `features = ["testkit"]`):
   tests in a `cargo test` process run under it meanwhile: a lower cap only closes files sooner).
 - **Hermetic by default:** temp folders (`tempfile::tempdir()`), never the real NAS or app home
   (`agent::is_live_path`); coordinators on loopback ports from `coord::test_port()` (held until the
-  coordinator takes them); no `.local` names (`net::urls` gives 127.0.0.1 in tests).
+  coordinator takes them), or port 0 (the agent's `coord_port()` without a `TEST_PORT`); no
+  `.local` names (`net::urls` gives 127.0.0.1 in tests).
+- **Never a live program's port (#906):** the tests run on the Macs beside the live agent (the
+  mini runs check.sh's remote tests and publish's suite), and a test listening on 127.0.0.1:8090
+  took the agent's jobs' connections. `store::spawn::POOL_PORTS` (the coordinator's 8090, the
+  map's 7311, the task board's 8077): a test program's `store::spawn::listen` on one panics, and
+  `tools/app/guards.sh` refuses test code naming one on a loopback or wildcard address (or
+  `coord::PORT`, `DEFAULT_PORT`) unless the line says `pool port: not bound`. The coordinator and
+  the map's server hold 127.0.0.1 beside their wildcard socket, so no other process takes it; a
+  coordinator that finds it taken doesn't start.
 
 `tools/app/guards.sh` (publish and check.sh) runs `tools/app/test_timing.py`, which refuses what
 these replace: an assert of a short `elapsed()` bound, a fixed sleep then an assert, and (#662) a

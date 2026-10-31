@@ -97,6 +97,11 @@ pub struct Proxy {
 /// go of its lock, and the next binds the port its jobs were told as soon as it holds the lock.
 pub fn listen(port: u16) -> io::Result<TcpListener> {
     use socket2::{Domain, Socket, Type};
+    // (As store::spawn::listen: no test on a live program's port, #906.)
+    assert!(
+        !(store::spawn::POOL_PORTS.contains(&port) && store::spawn::in_test_program()),
+        "a test's budgets proxy on {port}, a port of the live pool's (store::spawn::POOL_PORTS)"
+    );
     store::spawn::sockets(|| {
         let s = Socket::new(Domain::IPV4, Type::STREAM, None)?;
         s.set_reuse_address(true)?;

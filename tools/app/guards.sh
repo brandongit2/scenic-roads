@@ -37,6 +37,38 @@ bad = [t for t in sorted(glob.glob("crates/*/tests/*.rs"))
 for t in bad: print(t + ": reads the repo's files without a `//! scans: <path prefix> …` line (tools/dev/testing.md)")
 sys.exit(1 if bad else 0)
 PY
+# No test reaches a live program's port on this Mac (#906: a unit test's coordinator on 127.0.0.1:8090,
+# beside the mini's agent, took its jobs' connections): test code (Rust test modules and tests/, the
+# node, shell, Swift and Python tests) names none of store::spawn::POOL_PORTS on a loopback or
+# wildcard address, nor coord::PORT or net::DEFAULT_PORT; a line that only pins or quotes one says
+# `pool port: not bound`. (A test's listen on one panics too: store::spawn::listen.)
+python3 - <<'PY' || exit 1
+import glob, re, sys
+pool = re.search(r'POOL_PORTS: \[u16; \d+\] = \[([\d, ]+)\]', open("crates/store/src/spawn.rs").read()).group(1).replace(" ", "").split(",")
+bad_re = re.compile(r"(?:127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[:\"', ]+(?:%s)\b|\bcoord::PORT\b|\bDEFAULT_PORT\b" % "|".join(pool))
+bad = []
+def scan(path, text, first=1):
+    for i, line in enumerate(text.split("\n"), first):
+        if bad_re.search(line) and "pool port: not bound" not in line:
+            bad.append(f"{path}:{i}: {line.strip()}")
+for f in sorted(glob.glob("crates/*/src/**/*.rs", recursive=True)):
+    s = open(f).read()
+    if f.endswith("/tests.rs") or "/tests/" in f:
+        scan(f, s)
+    elif m := re.search(r"^#\[cfg\(test\)\]\s*\nmod tests\b", s, re.M):
+        scan(f, s[m.start():], s[: m.start()].count("\n") + 1)
+tests = set(glob.glob("crates/*/tests/**/*.rs", recursive=True))
+for g in ["web/test/*", "tools/check/*.test.mjs", "tools/taskboard/test/*", "tools/app/test/*", "tools/dev/test/*",
+          "tools/status/test/*", "producers/**/test_*.py", "dem/**/test_*.py"]:
+    tests |= set(glob.glob(g, recursive=True))
+for f in sorted(tests):
+    try:
+        scan(f, open(f).read())
+    except (IsADirectoryError, UnicodeDecodeError):
+        pass
+for b in bad: print(b + "  <- a test naming a live program's port on this Mac (store::spawn::POOL_PORTS): use port 0, or mark a line that only quotes it `pool port: not bound`")
+sys.exit(1 if bad else 0)
+PY
 [[ -n $in_check ]] || cargo test -q -p pipeline --test inputs_accessor --test source_names > $log 2>&1 || {
   sed -n '/^---- /,/^failures:$/p' $log
   echo "a guard failed; the tests' whole output: $log"

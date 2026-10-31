@@ -526,6 +526,16 @@ async fn main() -> Result<()> {
             let svc6 = svc.clone();
             tokio::spawn(async move { axum::serve(l6.tap_io(|_| ()), svc6).await });
         }
+        // 127.0.0.1 held beside the wildcard socket, as the coordinator holds it (#906): otherwise
+        // any process may bind it beside and take this Mac's own requests (the agent's catalogue
+        // refresh, the status app, the dev proxy).
+        match store::spawn::listen((std::net::Ipv4Addr::LOCALHOST, port)).and_then(pipeline::net::Listener::new) {
+            Ok(l4) => {
+                let svc4 = svc.clone();
+                tokio::spawn(async move { axum::serve(l4.tap_io(|_| ()), svc4).await });
+            }
+            Err(e) => anyhow::bail!("127.0.0.1:{port} is another process's ({e}): this Mac's requests would reach it"),
+        }
     }
     axum::serve(listener, svc).await?;
     Ok(())
@@ -1024,7 +1034,7 @@ mod tests {
     #[test]
     fn the_default_port_is_not_8080() {
         // Other tools default to 8080; the docs, the status app, the bench and the dev proxy repeat this number.
-        assert_eq!(pipeline::net::DEFAULT_PORT, 7311);
+        assert_eq!(pipeline::net::DEFAULT_PORT, 7311); // (pool port: not bound)
     }
 
     #[test]
