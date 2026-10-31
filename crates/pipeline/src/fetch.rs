@@ -150,17 +150,17 @@ fn cancelled(url: &str) -> Result<()> {
 /// early in an error when this thread's reader stops; then the host's note checked again
 /// (`down_check`: another request may have found it down).
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
-fn retry_wait(dir: Option<&Path>, url: &str, secs: u64, second: std::time::Duration) -> Result<()> {
+fn retry_wait(dir: Option<&Path>, url: &str, secs: u64, clock: &dyn store::clock::Clock) -> Result<()> {
     // (Counted by the job's proxy, for its host: crate::budget::net.)
     crate::budget::retried(url);
-    let end = std::time::Instant::now() + second * secs as u32;
+    let end = clock.now() + std::time::Duration::from_secs(secs);
     loop {
         cancelled(url)?;
-        let now = std::time::Instant::now();
+        let now = clock.now();
         if now >= end {
             break;
         }
-        std::thread::sleep((end - now).min(std::time::Duration::from_millis(100)));
+        clock.sleep((end - now).min(std::time::Duration::from_millis(100)));
     }
     down_check(dir, url)
 }
@@ -836,8 +836,9 @@ mod net {
         agent: ureq::Agent,
         /// The notes of hosts that gave no answer lately (SCENIC_FETCH_DOWN: super::down_check).
         down: Option<PathBuf>,
-        /// A second of the retries' waits: a real one but in tests (`with_second`).
-        second: Duration,
+        /// The clock the retries and the proxy's wait sleep on: the real one but in tests
+        /// (`with_clock`).
+        clock: Arc<dyn store::clock::Clock>,
         /// This Mac's agent's proxy (`host:port`) that requests go through, when they do
         /// (the job's HTTPS_PROXY, a loopback address: `local_proxy`), for `proxy_back`.
         proxy: Option<String>,
@@ -846,7 +847,7 @@ mod net {
     }
 
     /// How long a request waits for its Mac's agent's proxy to listen again (the agent restarting
-    /// into a new app after a publish) before failing as any other: in the retries' seconds.
+    /// into a new app after a publish) before failing as any other.
     pub(super) const PROXY_WAIT_S: u64 = 5 * 60;
 
     /// The proxy ureq takes from the environment (as `Self::config` does), when it's this Mac's
@@ -887,7 +888,7 @@ mod net {
             Net {
                 agent: Self::config().build().into(),
                 down: down_dir(),
-                second: Duration::from_secs(1),
+                clock: store::clock::real(),
                 proxy: local_proxy(),
                 draining: crate::control::draining_lately,
             }
@@ -932,14 +933,14 @@ mod net {
                 return Ok(false);
             }
             eprintln!("fetch: {url}: this Mac's agent ({addr}) isn't listening; waiting for it");
-            let poll = self.second.min(Duration::from_millis(500));
+            let poll = Duration::from_millis(500);
             while !left.is_zero() {
                 cancelled(url)?;
                 if (self.draining)() {
                     return Ok(false);
                 }
                 let nap = poll.min(*left);
-                std::thread::sleep(nap);
+                self.clock.sleep(nap);
                 *left -= nap;
                 if !refused() {
                     eprintln!("fetch: {url}: this Mac's agent is back; asking again");
@@ -951,7 +952,7 @@ mod net {
 
         /// A request's whole wait for its proxy (`proxy_back`).
         fn proxy_wait(&self) -> Duration {
-            self.second * PROXY_WAIT_S as u32
+            Duration::from_secs(PROXY_WAIT_S)
         }
 
         /// With the notes of hosts that gave no answer in `dir` (super::down_check) in place of
@@ -961,11 +962,11 @@ mod net {
             Net { down: dir, ..self }
         }
 
-        /// With the retries' waits counted in `second`s (a test's few ms): the same tries in
-        /// the same order, without waiting out real seconds.
+        /// With the retries' and the proxy's waits slept on `clock` (a test's virtual one): the
+        /// same tries in the same order, without waiting out real seconds.
         #[cfg(test)]
-        pub fn with_second(self, second: Duration) -> Net {
-            Net { second, ..self }
+        pub fn with_clock(self, clock: Arc<dyn store::clock::Clock>) -> Net {
+            Net { clock, ..self }
         }
 
         /// HTTPS only, and no redirect followed (one comes back as an answer, which isn't a file:
@@ -974,7 +975,7 @@ mod net {
             Net {
                 agent: Self::config().https_only(true).max_redirects(0).build().into(),
                 down: down_dir(),
-                second: Duration::from_secs(1),
+                clock: store::clock::real(),
                 proxy: local_proxy(),
                 draining: crate::control::draining_lately,
             }
@@ -1071,7 +1072,7 @@ mod net {
                 }
                 attempt += 1;
                 if attempt <= 10 {
-                    retry_wait(self.down.as_deref(), url, (2u64 << (attempt - 1)).min(60), self.second)?;
+                    retry_wait(self.down.as_deref(), url, (2u64 << (attempt - 1)).min(60), &*self.clock)?;
                 }
             }
             note_down(self.down.as_deref(), url, &last);
@@ -1145,7 +1146,7 @@ mod net {
             loop {
                 if requests > 0 {
                     let secs = if idle == 0 { 2 } else { (2u64 << (idle - 1)).min(60) };
-                    retry_wait(self.down.as_deref(), url, secs, self.second)?;
+                    retry_wait(self.down.as_deref(), url, secs, &*self.clock)?;
                 }
                 cancelled(url)?;
                 crate::fetch::online(url)?;
@@ -1251,7 +1252,7 @@ mod net {
             let mut proxy_left = self.proxy_wait();
             while attempt < 8 {
                 if attempt > 0 {
-                    retry_wait(self.down.as_deref(), url, 2 * attempt, self.second)?;
+                    retry_wait(self.down.as_deref(), url, 2 * attempt, &*self.clock)?;
                 }
                 attempt += 1;
                 cancelled(url)?;
@@ -1430,7 +1431,7 @@ mod tests {
 
     /// Task #426 re-review: a host that takes the connection and never answers (each attempt's
     /// head past its wait) is noted down, as one giving no answer: only a body past its time is
-    /// late without being down. (Its eight tries' waits, 56 s, in 10 ms seconds.)
+    /// late without being down. (Its eight tries' waits, 56 s, on a virtual clock.)
     #[cfg(not(target_os = "wasi"))]
     #[test]
     fn a_host_silent_after_connecting_is_noted_down_within_a_tiles_limits() {
@@ -1439,8 +1440,7 @@ mod tests {
         let url = format!("http://127.0.0.1:{}/t.png", l.local_addr().unwrap().port());
         let dir = tempfile::tempdir().unwrap();
         let within = Within { head: std::time::Duration::from_millis(200), floor: 10_000, most: 64_000 };
-        let net =
-            net::Net::new().with_down(Some(dir.path().to_path_buf())).with_second(std::time::Duration::from_millis(10));
+        let net = net::Net::new().with_down(Some(dir.path().to_path_buf())).with_clock(store::clock::Virtual::new());
         let e = net.get_by(&url, Some(within)).unwrap_err();
         assert!(is_unreachable(&e), "{e:#}");
         let note = down_note(Some(dir.path()), &url).unwrap();
@@ -1616,8 +1616,8 @@ mod tests {
         // no byte is asked for twice.
         let file = served(data.clone(), "\"v1\"");
         let url = dropping_server(file.clone(), 100_000, 2);
-        // (Its retries' 2 s waits in 10 ms seconds.)
-        let fast = || net::Net::new().with_second(std::time::Duration::from_millis(10));
+        // (Its retries' 2 s waits on a virtual clock.)
+        let fast = || net::Net::new().with_clock(store::clock::Virtual::new());
         let got = fast().range(&url, 1000, 251_000).unwrap();
         assert_eq!(got, data[1000..251_000]);
         assert_eq!(file.lock().unwrap().2, [(1000, 250_999), (101_000, 250_999), (201_000, 250_999)]);
@@ -1718,14 +1718,16 @@ mod tests {
     }
 
     /// (The target on localhost, which tests may ask (`online`); only the proxy answers.
-    /// Its retries' seconds 20 ms: the proxy's wait `PROXY_WAIT_S` is 6 s, the 8 tries' waits
-    /// 1.12 s.)
-    fn through(port: u16) -> net::Net {
-        net::Net::new()
-            .with_second(std::time::Duration::from_millis(20))
-            .with_draining(|| false)
-            .through(&format!("http://127.0.0.1:{port}"))
+    /// Its waits on `clock`, a virtual one: what a request waited is the clock's time, the same
+    /// on an idle Mac or a loaded one (task #901).)
+    fn through(port: u16, clock: &Arc<store::clock::Virtual>) -> net::Net {
+        net::Net::new().with_clock(clock.clone()).with_draining(|| false).through(&format!("http://127.0.0.1:{port}"))
     }
+
+    /// The 8 tries' waits of a small file's request (`get_by`): 2, 4 … 14 s.
+    const TRIES_WAIT: std::time::Duration = std::time::Duration::from_secs(56);
+    /// The proxy's whole wait.
+    const PROXY_WAIT: std::time::Duration = std::time::Duration::from_secs(net::PROXY_WAIT_S);
 
     #[test]
     fn a_request_waits_for_its_agents_proxy_to_come_back() {
@@ -1737,40 +1739,41 @@ mod tests {
         store::testkit::eventually("the stand-in proxy gone", || {
             std::net::TcpStream::connect(("127.0.0.1", port)).is_err()
         });
-        // Back after 3 s: longer than all the tries' waits, within the proxy's wait.
+        // Back after 100 s: longer than all the tries' waits, within the proxy's wait.
+        let back_at = std::time::Duration::from_secs(100);
+        let clock = store::clock::Virtual::new();
         let (a, s2) = (asked.clone(), Arc::new(AtomicBool::new(false)));
         let back = s2.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(3000)); // (sleep ok: the agent's restart, away that long)
+        clock.at(back_at, move || {
             standin_proxy(port, 200, a, back);
         });
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("rec");
         let url = "http://localhost:9/xyz/dem1a_png/15/29247/12276.png";
-        let t = std::time::Instant::now();
-        let got = through(port).get_recorded(url, Some(&rec), None).unwrap();
+        let got = through(port, &clock).get_recorded(url, Some(&rec), None).unwrap();
         assert_eq!(got.as_deref(), Some(&b"tile"[..]));
-        assert!(t.elapsed() >= std::time::Duration::from_millis(2900), "{:?}", t.elapsed());
+        assert!(clock.elapsed() >= back_at, "{:?}", clock.elapsed());
         // Asked once (nothing reached it before), and recorded.
         assert_eq!(asked.load(Ordering::SeqCst), 1);
         assert!(rec.exists());
-        // A range read and a file's head wait as well (the proxy away again, back after 3 s).
+        // A range read and a file's head wait as well (the proxy away again, back after 100 s).
         stop.store(true, Ordering::SeqCst);
         s2.store(true, Ordering::SeqCst);
         store::testkit::eventually("the stand-in proxy gone", || {
             std::net::TcpStream::connect(("127.0.0.1", port)).is_err()
         });
+        let clock = store::clock::Virtual::new();
         let (a, s3) = (asked.clone(), Arc::new(AtomicBool::new(false)));
         let back = s3.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(3000)); // (sleep ok: the agent's restart, away that long)
+        clock.at(back_at, move || {
             standin_proxy(port, 200, a, back);
         });
-        let e = through(port).range(url, 0, 4);
+        let e = through(port, &clock).range(url, 0, 4);
         s3.store(true, Ordering::SeqCst);
         // (The stand-in answers 200 to a range: not a range answer, an error, but one asked of it.)
         let e = e.err().unwrap();
         assert!(!format!("{e:#}").contains("refused"), "{e:#}");
+        assert!(clock.elapsed() >= back_at, "{:?}", clock.elapsed());
         assert_eq!(asked.load(Ordering::SeqCst), 2);
     }
 
@@ -1783,17 +1786,16 @@ mod tests {
             std::net::TcpStream::connect(("127.0.0.1", port)).is_err()
         });
         let url = "http://localhost:9/a.png";
-        let t = std::time::Instant::now();
-        let e = through(port).get_recorded(url, None, None).err().unwrap();
+        let clock = store::clock::Virtual::new();
+        let e = through(port, &clock).get_recorded(url, None, None).err().unwrap();
         assert!(is_unreachable(&e), "{e:#}");
-        // (Waited out once, 6 s, then the tries as before.)
-        assert!(t.elapsed() >= std::time::Duration::from_secs(6), "{:?}", t.elapsed());
-        assert!(t.elapsed() < std::time::Duration::from_secs(60), "{:?}", t.elapsed()); // (bound ok: not a second wait per try)
-                                                                                        // Pausing: no wait at all.
-        let t = std::time::Instant::now();
-        let e = through(port).with_draining(|| true).get_recorded(url, None, None).err().unwrap();
+        // (Waited out once, then the tries as before: not a second wait per try.)
+        assert_eq!(clock.elapsed(), PROXY_WAIT + TRIES_WAIT);
+        // Pausing: no wait for the proxy at all, the tries alone.
+        let clock = store::clock::Virtual::new();
+        let e = through(port, &clock).with_draining(|| true).get_recorded(url, None, None).err().unwrap();
         assert!(is_unreachable(&e), "{e:#}");
-        store::testkit::ended_before(t, std::time::Duration::from_secs(6), "no wait for the proxy");
+        assert_eq!(clock.elapsed(), TRIES_WAIT, "no wait for the proxy");
         assert_eq!(asked.load(Ordering::SeqCst), 0);
     }
 
@@ -1803,12 +1805,12 @@ mod tests {
         let asked = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let port = standin_proxy(0, 502, asked.clone(), stop.clone());
-        let t = std::time::Instant::now();
-        let e = through(port).get_recorded("http://localhost:9/b.png", None, None).err().unwrap();
+        let clock = store::clock::Virtual::new();
+        let e = through(port, &clock).get_recorded("http://localhost:9/b.png", None, None).err().unwrap();
         stop.store(true, Ordering::SeqCst);
         assert!(is_unreachable(&e) && format!("{e:#}").contains("status 502"), "{e:#}");
         assert_eq!(asked.load(Ordering::SeqCst), 8);
-        store::testkit::ended_before(t, std::time::Duration::from_secs(6), "no wait for the proxy");
+        assert_eq!(clock.elapsed(), TRIES_WAIT, "no wait for the proxy");
     }
 
     #[test]
