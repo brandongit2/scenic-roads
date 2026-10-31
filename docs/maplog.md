@@ -1,6 +1,6 @@
 # The map and its log
 
-**Planned (task #883), steps 1 and 2 of §8 built.** This doc says how catalogues and GC give way
+**Planned (task #883), steps 1 to 3 of §8 built.** This doc says how catalogues and GC give way
 to one current map of the served files plus an append-only log of its changes, which clients follow
 by cursor, and a GC that runs all the time in small steps it can resume. Until each step of §8
 lands, docs/formats.md (Catalogue, Delta catalogues), docs/storage.md (GC), docs/macs.md (the map
@@ -15,7 +15,7 @@ it's told of seeds the log. It checks the map equals that catalogue (entry for e
 kept by the batches equal to the catalogue's from scratch) and logs `maplog: MISMATCH` otherwise
 (a panic on the thread too). The lead's snapshot and `map/<seq>.json.zst` are written when the log
 starts and then once an hour while batches come. Where the shadow departs from this doc, which is
-what steps 3 and 6 change:
+what step 6 changes:
 
 - **The batch follows the catalogue,** not the other way round: the step still writes the catalogue
   itself, and the agent diffs the published catalogue against the map, rather than the step posting
@@ -24,10 +24,34 @@ what steps 3 and 6 change:
   skipped (logged), so a stalled NAS write never piles catalogues up in memory; the next batch spans
   it, and `seq` skips its number.
 - **No snapshot at a clean stop** (§4.4): the lead's log replays its segments on a start instead.
-- **Nothing reads the log:** the routes (`GET /map/changes`, `/map/snapshot`) come with step 3.
+- **The log's thread starts with the lead** (`Shadow::feed`, from the agent's loop once its
+  coordinator runs): the log is opened at once and the coordinator answers from it before the next
+  catalogue.
 - **Memory:** the lead holds the map once (about 380 MB for catalogue 798's 82 MB of JSON). A
   catalogue's entries are made one at a time to diff and check it, a batch is applied in place (to
   a copy only while a reader holds the map), and the snapshots are streamed into zstd.
+
+**Built (step 3):** the lead's coordinator answers `GET /map/changes` and `/map/snapshot`
+(`pipeline::coord::maproutes`, with the build's key) from `store::map::feed::Feed`, which the
+shadow's writer keeps: the map, the batches it appended or replayed at its open (64 MB of them at
+most; a `since` older than those, or past the head, is told to reset), the cursors heard (saved with
+the log's snapshot) and the snapshot made once per `seq`; no NAS, no disk. A long poll looks each
+50 ms whether a batch came. Each Mac's map server follows it (`crates/server/src/maplog.rs`,
+docs/macs.md): batches applied in place to its own map (no reader holds it), the catalogue made of
+it handed over whole; the NAS's snapshot with the lead away; its map kept in
+`~/Library/Caches/scenic/map/`. Where it departs from §5 and §6.1:
+
+- **Shadow, then serve:** the catalogues are still read (`refresh_catalogue`, `poll_every`,
+  `/api/catalog/refresh`, `publish_event` stay until step 6, their deletions moved there); the map
+  is checked against each catalogue at the same number (`Map::check_is`, `maplog: MISMATCH`), and
+  served only while `state/pool/map-serve` is on (docs/building.md §2). Serving, the newer of the
+  map's catalogue and the catalogues' is served, so a lead away never takes a server back.
+- **The catalogue is made from the map at each batch** (`Map::catalogue`), as the consumers still
+  read a `Catalogue`; only while serving.
+- **No save at a clean stop** (§5.3): at most every 10 minutes; a start asks the batches since.
+- **The lead's contact** is `state/coordinator.json`, kept on the Mac (`lead.json` in the cache
+  folder, the key in it, mode 600) for a start away from the NAS.
+- **The CLI** (`scenic catalogs`) still reads the catalogues; its client comes with step 4.
 
 Words: **the map** is the current name → file map (what a catalogue holds today); **the log** is
 its batches of changes, each with a sequence number (`seq`); a **client** is anything that holds a
@@ -457,7 +481,7 @@ server has spoken the log for a day (the #642 gate, as coordination.md §8).
 | --- | --- | --- | --- |
 | 1 (built) | `store::map`: entries ⇄ `Catalogue`, batches, the multiset digest, apply to a copy (in place with an undo while no reader holds the map); the log store's segments, snapshot and replay (`store::map::log`), no routes yet | — | `every_catalogue_round_trips` (each catalogue on a test root, and a recorded real one: entries → `Catalogue` → bytes identical); `batch_between_equals_the_delta` (for consecutive real catalogues, the batch applied gives the delta's result); `incremental_digest_is_the_whole_digest`; `a_torn_last_line_is_dropped`; `replay_after_snapshot_skips_what_it_holds` |
 | 2 (built, routes moved to 3) | **Dual write, shadow:** the `catalog` step writes the catalogue as now and the lead's agent appends its batch after (the step posting its map is step 6's); the hourly NAS snapshot | — | `the_log_s_map_is_each_catalogue` (the recorded chain: the log's map at each `seq` is that catalogue); `a_catalogue_the_lead_publishes_is_its_map_log_s_in_shadow` (the catalog job's end tended by a lead); `a_batch_of_a_catalogue_is_its_entries_batch` |
-| 3 | **Servers follow the log:** `GET /map/changes`, `/map/snapshot` on the coordinator (from step 2); `store::map::Client` (long poll, saved map, snapshot fallback) in the server and the CLI; the catalogue reader stays as the fallback while the lead doesn't answer `changes` (an older lead) | `poll_every`, the server's `catalog/` listing and local `catalog/` copies, `/api/catalog/refresh` and `net::catalogue_written`, `state/publish/<host>.jsonl` and `publish_event` | `changes_answers_without_the_nas` (#871's slow-NAS fake blocks every call; the route answers); `an_old_since_resets`; `a_server_follows_a_publish_within_a_second`; `a_server_away_follows_over_the_lead_alone` (NAS absent, lead reachable); `a_batch_is_applied_whole` (a request during apply sees one `seq`); `a_wrong_digest_fetches_the_snapshot`; `a_fresh_server_starts_from_the_nas_snapshot_with_the_lead_down` |
+| 3 (built: shadow, `map-serve` to serve; deletions in 6) | **Servers follow the log:** `GET /map/changes`, `/map/snapshot` on the coordinator (from step 2); `store::map::Client` (long poll, saved map, snapshot fallback) in the server and the CLI; the catalogue reader stays as the fallback while the lead doesn't answer `changes` (an older lead) | with step 6: `poll_every`, the server's `catalog/` listing and local `catalog/` copies, `/api/catalog/refresh` and `net::catalogue_written`, `state/publish/<host>.jsonl` and `publish_event` | built: `changes_answers_without_the_nas` (#871's slow-NAS fake blocks every call; the routes answer, a long poll at the batch); `an_old_since_resets`; `a_server_follows_publishes_and_serves_byte_identical_tiles` (within a second each, its NAS without catalogues); `a_lead_restart_mid_poll`; `the_nas_snapshot_is_used_while_the_lead_is_down` (and the catalogues with neither, the saved map at a start away); `in_shadow_the_catalogues_are_served` |
 | 4 | **The agent and the page on the log:** `served()`, `LastCatalogue`, `regionsview`, `builtview`, `cataloguesview`, `pubtimes`, `namestodo::inputs_key` (by prefix `seq`) | `served`'s per-folder cache and `read_n_from` uses, `cataloguesview`'s catalogue reads and hashed names, `publishing.json`'s `at`/`low_at` | `catalogues_view_from_the_log_matches_from_catalogues` (same entries on a recorded run); `names_todo_reruns_exactly_when_its_prefixes_change`; `published_age_is_the_last_batch_touching_the_tile` |
 | 5 | **Downloads by their own lists:** each download keeps its logical → content list; "out of date" from the batches since its `seq` | the Mac's old whole catalogues kept for downloads | `an_update_s_size_from_batches_equals_the_two_catalogues_diff` (on recorded catalogues); `a_download_behind_the_log_compares_its_list`; `downloads_json_fmt4_migrates` |
 | 6 | **Catalogues stop** (after the gate: every server on the log a day): the step only posts; `catalog-held/` → `map-held/` | the catalogue writer and reader (`write`, `write_delta*`, `Delta`, `delta.rs`, `chain`, `whole_due`, `MAX_CHAIN`, `keep_read_in`/`kept_dir`, `latest*`, `read_n*`, `list`, `prune`, `next_n`), `state/pool/delta-catalog` and `Switches::delta`, the `catalog-stats:` sizes' look-ups of the last catalogue | `the_step_publishes_with_no_catalog_folder`; `a_held_batch_is_appended_whole_when_the_hold_lifts`; test roots (`lakefill catalog-add`, `coastcheck`, the server's tests) on snapshots |

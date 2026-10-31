@@ -422,6 +422,9 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
        every Mac's server reads deltas. Held catalogues are always whole.
      - `near-slope`: a done region's slope and tree cover are the z6 tiles near it
        (`Publishing::near`), not every stale z6 tile around; it's recorded built with those.
+     - `map-serve` (read by each Mac's map server, `crates/server/src/maplog.rs`): the servers serve
+       the map they follow from the lead's log rather than the catalogues (docs/maplog.md §8, step
+       3); off, they follow and check it only. Switch on once their logs show no `maplog: MISMATCH`.
 4. **Four chains:**
    - **Roads** (the publishing chain, `build::publish_chain`): a prune of map tiles no z6 tile is near,
      pack (the map tiles), the road → z6 tiles index, lo, stations, ferries, terrain and slope roots,
