@@ -2299,7 +2299,9 @@ mod tests {
         // checklist counts (build::COUNTED), and those whose names it puts together.
         // (Each source with its trimmed lines joined, as rustfmt breaks a call across lines.)
         let flat = |s: &str| s.lines().map(str::trim).collect::<String>();
-        let (agent, build) = (flat(include_str!("mod.rs")), flat(include_str!("build.rs")));
+        // (The agent's: its round's and its plan's, agent::plan.)
+        let agent = flat(include_str!("mod.rs")) + &flat(include_str!("plan.rs"));
+        let build = flat(include_str!("build.rs"));
         let (agent, build) = (agent.as_str(), build.as_str());
         let mut named = std::collections::BTreeSet::<String>::new();
         let mut take = |src: &str, pat: &str| {
