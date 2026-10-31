@@ -139,6 +139,9 @@ through their dev-dependency on store, `features = ["testkit"]`):
   (a panic included) kills the whole group and reaps it. No fixed head start, no leaked `sleep`.
 - **"It didn't wait": `ended_before(t0, never, what)`**, half of what waiting would take, never
   a fixed "fast" bound.
+- **"It came from the event, not a timer": switch the timer off** (`#[cfg(test)]` hooks such as
+  control's `never_sweep()` and the beat's `never_tick()`), so anything that happens at all was the
+  event's doing and the test needs no "within a second".
 - **Process-wide settings:** pass the value in. Where the code reads an environment variable, a
   test sets it with `EnvVar::set(k, v)` (restored on drop, tests taking turns), and only for a
   variable no other test in that binary reads. A static a test changes is thread-local in test

@@ -56,10 +56,10 @@ pub const PORT: u16 = 8090;
 const LOOPBACK_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub const LISTEN: &str = if cfg!(test) { "127.0.0.1" } else { "0.0.0.0" };
-/// How long a lease lasts without a heartbeat (workers beat every minute).
 /// How long `/work/hold` waits for this Mac's agent to answer (its control takes this Mac's own up
 /// at once) before it says "asked": another member's waits for the agent's next round.
 const HOLD_WAIT: Duration = Duration::from_secs(2);
+/// How long a lease lasts without a heartbeat (workers beat every minute).
 pub const TTL: Duration = Duration::from_secs(600);
 /// How long a worker counts as around after its last request.
 const AROUND: Duration = Duration::from_secs(120);
