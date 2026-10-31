@@ -165,20 +165,19 @@ function model(sw) {
   const regionName = Object.fromEntries((a.regions || []).map((r) => [r.id, r.name]));
   // (Not the lead's own helper file, from while it was a member: it leads now.)
   const helpers = (a.helpers || []).filter((x) => x.beat && now - x.beat < touch && x.host !== a.host);
-  const pages = (sw.workers || []).filter((w) => w.kind === "web" && w.seen_s < 900);
   const leasesOf = (name) => (sw.leases || []).filter((l) => l.worker === name);
-  // Every machine: the lead, its helpers, then the pages (one entry).
+  // Every machine: the lead, then its helpers.
   const macs = [];
   if (a.host) macs.push({ name: a.host, role: "lead", status: a, fresh: fresh(a.beat), colour: MACHINE_COLOURS[0] });
   helpers.forEach((x, i) => macs.push({ name: x.host, role: "helper", status: x, fresh: fresh(x.beat), worker: (sw.workers || []).find((w) => w.name === x.host), colour: MACHINE_COLOURS[(i + 1) % MACHINE_COLOURS.length] }));
-  const colourOf = (name) => macs.find((m) => m.name === name)?.colour || (pages.some((p) => p.name === name) ? "#6cc28a" : "#7b8590");
+  const colourOf = (name) => macs.find((m) => m.name === name)?.colour || "#7b8590";
   const tasks = typeof sw.tasks === "object" && sw.tasks ? sw.tasks : { all: sw.tasks || 0 };
   // (A helper Mac that's stopped reporting (its status ten minutes old): the coordinator's word of
   // it, when it last asked.)
   const gone = (sw.workers || []).filter((w) => w.kind === "native" && w.name !== a.host && !helpers.some((x) => x.host === w.name));
   // The steps under way, on any machine: the lead's jobs, its helpers', the leases.
   const running = new Set([...macs.flatMap((x) => jobsOf(x.status)).map((j) => stepOf(j.id)), ...(sw.leases || []).map((l) => l.step)]);
-  return { sw, a, now, touch, fresh, fc, regionName, helpers, pages, macs, gone, leasesOf, colourOf, tasks, running, lines: a.checklist || [] };
+  return { sw, a, now, touch, fresh, fc, regionName, helpers, macs, gone, leasesOf, colourOf, tasks, running, lines: a.checklist || [] };
 }
 
 const stepOf = (id) => String(id || "").split(" ")[0];
@@ -251,10 +250,6 @@ function alerts(m) {
   }
   // Things to know that hold nothing back (agent::Notice): an info line each, apart from the waits.
   for (const x of a.notices || []) out.push({ cls: "info", text: `${x.what}: ${x.why}`, to: "details" });
-  for (const p of m.pages) {
-    if (p.bad) out.push({ cls: "bad", text: `${p.label}: a result differed; it gets no more work`, to: "machines" });
-    else if (p.visible === false && p.seen_s < 300) out.push({ cls: "warn", text: `${p.label} is in the background (iPhones and iPads stop it)`, to: "machines" });
-  }
   if ((a.bad_recipes || []).length) out.push({ cls: "warn", text: `${plural(a.bad_recipes.length, "region recipe")} doesn't read`, to: "details" });
   for (const v of (a.inputs || []).filter((v) => v.state === "held")) out.push({ cls: (v.findings || []).some((f) => f.level === "error") ? "bad" : "warn", text: `${v.unit}: a change held`, to: "inputs" });
   return out;
@@ -300,7 +295,7 @@ function verdictText(m) {
   } else if (!m.fresh(a.beat)) {
     parts.push(h("b", null, "Out of touch"), ` · the lead last said something ${ago(now, a.beat)} (asleep, off, or its agent stopped)`);
   } else {
-    const working = m.macs.filter((x) => x.fresh && jobsOf(x.status).length).length + m.pages.filter((p) => (sw.leases || []).some((l) => l.worker === p.name)).length;
+    const working = m.macs.filter((x) => x.fresh && jobsOf(x.status).length).length;
     if (!working) parts.push(h("b", null, "Idle"));
   }
   // (The queue's finish, never a share done: a build has no definite start, task #685.)
@@ -361,7 +356,7 @@ function overview(m, md) {
   const kpis = h("div", "kpis",
     kpi("Last catalogue", cat ? `${clock(cat.at)} (${ago(now, cat.at)})` : "–", cat?.n != null ? `catalogue ${cat.n}${cat.kind ? `, ${cat.kind}` : ""}` : null),
     kpi("Next catalogue", nextUpdate ? `≈ ${clock(nextUpdate.at)}` : "–", m.a.publishing?.tiles ? `${plural(m.a.publishing.tiles, "map tile")} to draw` : null),
-    kpi("Machines", h("div", "macs", m.macs.map((x) => h("div", null, x.name, h("span", "small dim", ` · ${doing(x)}`)))), m.pages.length ? `and ${plural(m.pages.length, "page")}` : null),
+    kpi("Machines", h("div", "macs", m.macs.map((x) => h("div", null, x.name, h("span", "small dim", ` · ${doing(x)}`)))), null),
   );
   return h("div", "overview", h("div", "box", left, queue.length ? strip : null, queueLine), kpis);
 }
@@ -903,23 +898,6 @@ function goneCard(w) {
     h("div", "sub", asking ? "It asks the lead for work, but its status on the NAS hasn't been written for ten minutes (can it reach the NAS?)." : "Asleep, off, or its agent stopped; its work goes back to the others once its lease lapses."));
 }
 
-function pagesCard(m) {
-  if (!m.pages.length) return null;
-  const card = h("div", { class: "mc pages", style: { borderLeft: "3px solid #6cc28a" } },
-    h("div", "top", h("span", "name", "Pages"), h("span", "role", "browsers doing tasks"), chip(`${m.pages.length}`, "ok")));
-  for (const p of m.pages) {
-    const leases = m.leasesOf(p.name);
-    const st = p.bad ? chip("stopped", "bad") : p.seen_s > 120 ? chip("away", "") : leases.length ? chip(`${leases.length} running`, "run") : chip("waiting", "");
-    const left = h("div", null, h("div", null, p.label, " ", st, p.visible === false ? chip("in the background", "warn") : null),
-      h("div", "sub", leases.length ? leases.map((l) => `${l.progress || l.step}${l.frac != null ? ` (${Math.round(l.frac * 100)}%)` : ""}`).join(" · ") : p.what));
-    const right = h("div", "sub", `${n(p.done)} done${p.checked ? ` (${n(p.checked)} checked against the lead's)` : ""}${p.failed ? ` · ${p.failed} failed` : ""}${p.mem_mb ? ` · ${n(p.mem_mb)} MB` : ""} · ${dur(p.seen_s)} ago`);
-    card.append(h("div", "pg", left, right));
-  }
-  const t = m.tasks;
-  if (t.offered != null) card.append(h("div", "sub", `Tasks now: ${t.offered || 0} offered, ${t.leased || 0} running, ${t.done || 0} done, ${t.failed || 0} failed${!t.offered && !t.leased ? " — a job offers them as it runs, a few at a time" : ""}`));
-  return card;
-}
-
 // ---- Cards: on hover, pinned on a click ------------------------------------------------------------
 // One card for everything the Jobs tab shows: under a mouse's or trackpad's pointer, a card follows
 // it over anything that has one, never catching the pointer itself (pointer-events none), and goes
@@ -1370,18 +1348,6 @@ function schedule(m) {
       });
       lanes.append(h("div", { class: "ln", title: nm }, `${slotNo(nm, g.host) ?? nm}`), tv.el);
     }
-  }
-  // The pages: a job's tasks (crate::agent::steps::TASKS) as the lead runs the job, when a page is
-  // measured faster than the lead at that kind (crate::offload) and spares what one takes.
-  const own = Object.keys(fcLanes).filter((nm) => isSlotOf(nm, m.a.host)).flatMap((nm) => fcLanes[nm]).sort((p, q) => p.from - q.from);
-  const pace = (p, kind) => (p.paces ? p.paces[kind] : kind === "tail" ? p.tail_pace : null);
-  const fast = (kind) => m.pages.some((p) => (p.mem_mb || 0) >= (m.sw.task_mb?.[kind] || 0) && pace(p, kind) != null && pace(p, kind) * 1.25 < 1);
-  const helps = Object.values(table.steps).filter((t) => t.of && fast(t.id) && own.some((l) => l.step === t.of && l.until > now));
-  if (helps.length) {
-    const who = m.pages.length > 1 ? `Pages (${m.pages.length})` : m.pages[0].label;
-    const tv = trackOf();
-    for (const t of helps) for (const l of own.filter((l) => l.step === t.of && l.until > now)) segment(tv, { ...l, from: Math.max(l.from, now), step: t.id, lane: who, of: t.of }, "next", `g ${t.id} ${l.from}`);
-    lanes.append(h("div", "gh", "Pages"), h("div", "ghr"), h("div", { class: "ln", title: m.pages.map((p) => p.label).join(", ") }, who), tv.el);
   }
   // Each region all on the map as it's built now: a mark at its `map_at` (several at one time, one).
   const outs = {};
@@ -2106,8 +2072,8 @@ function tabs(m, md) {
       part("d-stages", () => section("d-stages", "Stages", m.lines.length ? `${fin} of ${m.lines.length} done · ⇄ any Mac may take it` : "", h("div", "box", stagesList(m)))),
     ],
     machines: () => [
-      part("d-machines", () => section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
-        h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m)))),
+      part("d-machines", () => section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs`,
+        h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard)))),
       part("d-pool", () => poolSection(last.agent, m.now, new Map(m.macs.filter((x) => x.status?.pool?.member).map((x) => [x.status.pool.member, x])), holdAsks(m), askHold) || section("d-pool")),
       part("d-settings", () => settingsSection(ctx.call, last?.macs || [], render, ctx.onError)),
     ],

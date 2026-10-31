@@ -208,8 +208,6 @@ body.dragging-ref { cursor: ns-resize; user-select: none; -webkit-user-select: n
 .mc .cname i { flex: 1; height: 0; min-width: 0; border-top: 1px solid var(--rule); }
 .mc .cname span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .mc .why { margin-top: 5px; font-size: var(--fs-b); color: var(--warn); }
-.pages .pg { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; padding: 5px 0; border-top: 1px solid var(--line); }
-.pages .pg:first-of-type { border-top: 0; }
 
 /* The Jobs tab's schedule: each Mac's name over its slots' lanes; segments in the stages' colours
    (ran: solid; failed: outlined red; running: bright, to the now line; to come: faint, square-cornered);

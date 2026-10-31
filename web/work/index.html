@@ -7,7 +7,7 @@
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f4f6f8" media="(prefers-color-scheme: light)">
-<!-- An app to install: home screen, full screen (manifest, sw.js: docs/workers.md). -->
+<!-- An app to install: home screen, full screen (manifest, sw.js: docs/workers.md §7). -->
 <link rel="manifest" href="manifest.webmanifest" id="manifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -69,7 +69,6 @@
   }
   main { padding: 10px 16px 14px 10px; }
   @media (max-width: 719px) { main { padding: 10px 16px 56px; } }
-  #device { max-width: 760px; }
   /* The header, kept at the top: the title, the build's status and controls, the tabs. */
   body > header { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
   body > header > div { padding: 8px 16px; }
@@ -97,26 +96,12 @@
   #live b { font-weight: 600; color: var(--text); }
   @keyframes blink { 50% { opacity: .35; } }
   @media (prefers-reduced-motion: reduce) { #live.on i { animation: none; } }
-  #device .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
-  #device .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
-  #device .k { color: var(--dim); font-size: var(--fs-s); text-transform: uppercase; letter-spacing: .04em; }
-  #device .v { font-size: var(--fs-l); margin-top: 2px; }
-  #device .slots { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-  #device .slot { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; }
-  #device .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
-  #device .dot.run { background: var(--accent); } #device .dot.ok { background: var(--ok); } #device .dot.bad { background: var(--bad); }
-  #device .bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 4px; overflow: hidden; }
-  #device .bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
-  #log { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; max-height: 40vh; overflow: auto; font: var(--fs-s)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); white-space: pre-wrap; }
-  #log b { color: var(--text); font-weight: 500; } #log .bad { color: var(--bad); }
   .note { color: var(--warn); margin: 0 0 12px; }
   button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 10px; font: inherit; }
   input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; font: inherit; width: 100%; margin: 6px 0; }
   .hint { color: var(--dim); margin: 0 0 12px; }
   h2 { font-size: var(--fs-s); font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 18px 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
   h2 span { text-transform: none; letter-spacing: 0; font-weight: 400; }
-  #device[hidden], #device .slot[hidden] { display: none; }
-  #cap { margin-top: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; font-size: var(--fs-s); }
 </style>
 </head>
 <body>
@@ -130,12 +115,11 @@
 <div id="splitbar" role="separator" aria-orientation="vertical" aria-valuemin="25" aria-valuemax="80" aria-label="The map's share of the width" tabindex="0" title="Drag to share the width · double-click to reset"></div>
 <section id="tabpane">
 <nav id="tabs">
-  <a href="#overview">Overview</a><a href="#jobs">Jobs</a><a href="#machines">Machines</a><a href="#nas">NAS</a><a href="#regions">Regions</a><a href="#inputs">Inputs</a><a href="#activity">Activity</a><a href="#details">Details</a><a href="#device" id="tab-device">This device</a>
+  <a href="#overview">Overview</a><a href="#jobs">Jobs</a><a href="#machines">Machines</a><a href="#nas">NAS</a><a href="#regions">Regions</a><a href="#inputs">Inputs</a><a href="#activity">Activity</a><a href="#details">Details</a>
 </nav>
 <main>
-  <p class="note" id="note" hidden></p>
   <p class="hint" id="hint" hidden></p>
-  <!-- A panel a tab (dash.js fills all but This device's). -->
+  <!-- A panel a tab (dash.js fills them). -->
   <div class="panel" data-tab="overview"></div>
   <div class="panel" data-tab="jobs" hidden></div>
   <div class="panel" data-tab="machines" hidden></div>
@@ -144,21 +128,6 @@
   <div class="panel" data-tab="inputs" hidden></div>
   <div class="panel" data-tab="activity" hidden></div>
   <div class="panel" data-tab="details" hidden></div>
-  <section id="device" class="panel" data-tab="device" hidden>
-  <h2>This device <span><button id="toggle" hidden>Pause</button> <button id="help">Help with this tab</button></span></h2>
-  <p class="hint" id="helphint">Helping runs the build's tasks in this tab while it's open (on an iPhone or an iPad, while it's on screen).</p>
-  <div id="helping" hidden>
-  <div class="grid">
-    <div class="card"><div class="k">Memory to spare</div><div class="v" id="mem">–</div><select id="cap" title="The most this page takes on at once (lowered by itself if the page dies running tasks)"></select></div>
-    <div class="card"><div class="k">Slots</div><div class="v" id="slots-n">–</div></div>
-    <div class="card"><div class="k">Done here</div><div class="v" id="done">0</div></div>
-    <div class="card"><div class="k">Busy for</div><div class="v" id="busy">0 s</div></div>
-  </div>
-  <div class="slots" id="slots"></div>
-  <p class="hint" id="slots-idle"></p>
-  <div id="log"></div>
-  </div>
-  </section>
 </main>
 </section>
 </div>
@@ -168,117 +137,34 @@
 </div></footer>
 <script type="module">
 import { dashboard } from "./dash.js";
-// The build's page (docs/workers.md §7): the whole build at a glance for anyone it answers; and,
-// when this device helps (its owner's choice here, kept), this thread hands
-// out work: it asks the coordinator for tasks that fit the memory this tab can spare, gives each to a
-// slot (a Web Worker running the build's WebAssembly programs), and beats for every lease while its
-// slot works. Nothing here asks what device it is: it learns how much memory a tab may use (§6) and
-// takes on what fits.
+// The build's page (docs/workers.md §7): the whole build at a glance for anyone it answers, and the
+// owner's controls. It reads and asks; it never runs the build's work (pages stopped helping,
+// #875: the Macs' agents do it all).
 //
-// `?view` (the menu bar's panel, tools/status): a viewer only. It never helps, whatever this browser
-// kept or a click asks: "This device" is hidden, no task is asked for, and no other tab's tasks are
-// given back; the page as an app (its service worker) isn't installed either.
+// `?view` (the menu bar's panel, tools/status): a viewer only; the page as an app (its service
+// worker) isn't installed either.
 const $ = (id) => document.getElementById(id);
 const viewer = new URLSearchParams(location.search).has("view");
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+// (What an older page kept here to help with the build: gone with it.)
+try {
+  for (const k of Object.keys(localStorage)) if (k.startsWith("running:") || ["helping", "ceiling", "lowered", "near", "startV", "running", "id", "peers"].includes(k)) localStorage.removeItem(k);
+} catch {}
 
-// Whether this device helps: its owner's choice here, kept (watching at first).
-let helping = !viewer && store.get("helping", false);
 // Where this page's member answers: the path before /work/ ("" straight, "/build" through
-// tools/caddy's proxy), so its own requests go there; another member's go to its address.
+// tools/caddy's proxy), so its requests go there.
 const ROOT = location.pathname.slice(0, location.pathname.lastIndexOf("/work/"));
-// (This browser's id, in its name among the build's workers.)
-const newId = () => { const v = Math.random().toString(36).slice(2, 8); store.set("id", v); return v; };
-let id = store.get("id", null) || newId();
 const label = (() => {
   const ua = navigator.userAgent;
   const browser = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "browser";
   const os = /iPad|Macintosh.*Mobile/.test(ua) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua)) ? "iPad" : /iPhone/.test(ua) ? "iPhone" : /Android/.test(ua) ? "Android" : /Mac OS X/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : "Linux";
   return `${browser} on ${os}`; // (A name to show, nothing more.)
 })();
-let worker = `${label} ${id}`;
-const cores = Math.max(1, (navigator.hardwareConcurrency || 2) - 1);
 
-// How much memory this tab may use (MB): learned, or set here (This device). It starts from what the
-// browser says it has, else 3 GB on an iPad (the owner's choice, 2026-10-05, for their 8 GB iPad
-// Pro: Safari doesn't say, and gives a tab 4 GB or more there), else 1 GB; rises after tasks that
-// came near it succeed, and falls below any task the tab died in. (32-bit WebAssembly can't address
-// more than 4 GB; a browser may allow a program less: the most it lets a memory grow to, tried
-// once.)
-const CAP = (() => {
-  for (let mb = 3800; mb >= 256; mb = Math.floor(mb / 2)) {
-    try { new WebAssembly.Memory({ initial: 1, maximum: mb * 16 }); return mb; } catch {}
-  }
-  return 128;
-})();
-const START = navigator.deviceMemory ? navigator.deviceMemory * 256 : /on iPad$/.test(label) ? 3072 : 1024;
-let ceiling = Math.min(CAP, store.get("ceiling", START));
-// (An iPad's page that had learned less, from a start of 1 GB, takes the new start up once; one a
-// death lowered keeps what it learned.)
-if (/on iPad$/.test(label) && store.get("startV", 0) < 2) {
-  if (!store.get("lowered", false)) ceiling = Math.min(CAP, Math.max(ceiling, START));
-  store.set("ceiling", ceiling);
-  store.set("startV", 2);
-}
-// Each tab's running tasks, noted under a key of its own (`running:<tab>`: tabs never rewrite each
-// other's) with the time (renewed every minute while it lives) and whether it was on screen. A note
-// not renewed for two minutes is a tab that died, and its tasks are given back. One that died on
-// screen took more than this browser lets a tab have: the ceiling comes down. On an iPhone, iPad or
-// Android one that died in the background costs nothing (they empty a hidden tab's memory when they
-// want it, whatever the tab holds); elsewhere a browser only does that to a tab holding too much,
-// so there it counts as on screen. Looked for as the page starts and every minute after: a tab iOS
-// killed is reloaded at once, when its note is still fresh. (Another tab's live note is left alone.
-// A tab reloaded or closed gives its tasks back as it goes, and marks its note gone, so the next
-// page gives them back again, should those not have got through: `pagehide` below.)
-const tab = Math.random().toString(36).slice(2, 10);
-const NOTE = "running:";
-const mobile = /on (iPad|iPhone|Android)$/.test(label);
-function notes() {
-  const out = [];
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith(NOTE)) out.push([k.slice(NOTE.length), JSON.parse(localStorage.getItem(k))]);
-    }
-    // (The notes as an earlier page kept them, all in one.)
-    const old = store.get("running", null);
-    if (old && !Array.isArray(old)) out.push(...Object.entries(old).map(([t, n]) => [t, n]));
-  } catch {}
-  return out;
-}
-function reap() {
-  if (viewer) return false;
-  const [died, hidden, gone] = [[], [], []];
-  for (const [t, n] of notes()) {
-    if (t === tab || !n || (!n.gone && Date.now() - (n.at || 0) <= 120000)) continue;
-    try { localStorage.removeItem(NOTE + t); } catch {}
-    (n.gone ? gone : n.vis === false && mobile ? hidden : died).push(...(n.tasks || []));
-  }
-  try { localStorage.removeItem("running"); } catch {}
-  if (!died.length && !hidden.length && !gone.length) return false;
-  // (Given back again, or for the first time: a lease already given back is gone, and that's all.)
-  for (const t of gone) call("/work/fail", { worker, lease: t.lease, error: "the page was reloaded or closed", interrupted: true }, t.base || "").catch(() => {});
-  for (const t of hidden) call("/work/fail", { worker, lease: t.lease, error: "the page was closed in the background", interrupted: true }, t.base || "").catch(() => {});
-  if (hidden.length) log(`The page was closed in the background with ${hidden.length > 1 ? `${hidden.length} tasks` : "a task"} under way: given back.`);
-  if (!died.length) return false;
-  const total = died.reduce((a, t) => a + (t.mem_mb || 0), 0);
-  ceiling = Math.max(256, Math.min(ceiling, Math.floor(total * 0.7)));
-  store.set("ceiling", ceiling);
-  store.set("lowered", true);
-  log(`<span class="bad">A page died running ${died.length > 1 ? `${died.length} tasks` : "a task"} of ${total} MB: taking on at most ${ceiling} MB now.</span>`);
-  for (const t of died) call("/work/fail", { worker, lease: t.lease, error: "the page died running it", oom_mb: t.mem_mb }, t.base || "").catch(() => {});
-  return true;
-}
-reap();
-let nearMisses = store.get("near", 0);
-
-// A POST of JSON to this page's own member (`base` "", at ROOT), or straight to another member's broker
-// (docs/pool.md §8: its address, with CORS), given up after eight seconds there: a member whose
-// firewall drops connections mustn't hold the page up.
+// A POST of JSON to this page's member (at ROOT).
 const READING = new Set(["/work/swarm", "/work/history", "/work/catalogs"]);
-async function call(path, body, base = "") {
-  const headers = { "Content-Type": "application/json", "X-Worker": worker };
-  const r = await fetch((base || ROOT) + path, { method: "POST", headers, body: JSON.stringify(body), signal: base && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined });
+async function call(path, body) {
+  const r = await fetch(ROOT + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (r.status === 204) return [204, null];
   const text = await r.text();
   // (A 503 from the build at a glance is an answer: this Mac hasn't read the build's state yet,
@@ -287,347 +173,9 @@ async function call(path, body, base = "") {
   return [r.status, text ? JSON.parse(text) : null];
 }
 
-function log(html) {
-  const el = $("log");
-  const line = document.createElement("div");
-  line.innerHTML = `<b>${new Date().toLocaleTimeString([], { hour12: false })}</b> ${html}`;
-  el.prepend(line);
-  while (el.childNodes.length > 300) el.lastChild.remove();
-}
-const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
-
-// Slots: as many as cores, each a Web Worker running one task at a time.
-const slots = [];
-let reserved = 0, done = 0, busyMs = 0, paused = false;
-// (A running WebAssembly program can't be interrupted: a slot whose task is taken back gets a new
-// Web Worker.)
-function spawn(s) {
-  if (s.w) s.w.terminate();
-  s.w = new Worker("worker.js", { type: "module" });
-  s.w.onmessage = (e) => onSlot(s, e.data);
-  s.w.onerror = (e) => { log(`<span class="bad">slot ${s.i + 1}: ${esc(e.message)}</span>`); finish(s, false, { error: e.message }); };
-  s.w.postMessage({ init: { worker } });
-}
-function makeSlot(i) {
-  const s = { i, w: null, lease: null, base: "", task: null, mem: 0, started: 0, state: "idle", detail: "", frac: 0 };
-  spawn(s);
-  const row = document.createElement("div");
-  row.className = "slot";
-  row.innerHTML = `<span class="dot"></span><div><div class="t">idle</div><div class="bar"><i></i></div></div><span class="m"></span>`;
-  $("slots").append(row);
-  s.row = row;
-  slots.push(s);
-  return s;
-}
-
-function show() {
-  $("mem").textContent = `${Math.max(0, ceiling - reserved)} of ${ceiling} MB`;
-  // (Its choices: the usual sizes this browser allows, and what it's at now.)
-  const opts = [...new Set([512, 768, 1024, 1536, 2048, 3072, ceiling])].filter((v) => v <= CAP).sort((a, b) => a - b);
-  if ($("cap").options.length !== opts.length || $("cap").value !== String(ceiling)) {
-    $("cap").replaceChildren(...opts.map((v) => { const o = document.createElement("option"); o.value = String(v); o.textContent = `at most ${v >= 1024 ? `${Number((v / 1024).toFixed(1))} GB` : `${v} MB`}`; o.selected = v === ceiling; return o; }));
-  }
-  $("done").textContent = `${done}`;
-  $("busy").textContent = busyMs < 120000 ? `${Math.round(busyMs / 1000)} s` : `${Math.round(busyMs / 60000)} min`;
-  for (const s of slots) {
-    s.row.querySelector(".dot").className = `dot ${s.state === "run" ? "run" : s.state === "bad" ? "bad" : s.state === "ok" ? "ok" : ""}`;
-    s.row.querySelector(".t").textContent = s.detail || "idle";
-    s.row.querySelector(".m").textContent = s.mem ? `${s.mem} MB` : "";
-    s.row.querySelector(".bar > i").style.width = `${Math.round(s.frac * 100)}%`;
-    // (An idle slot is a line below, not a row: a Mac's page has a dozen.)
-    s.row.hidden = !s.lease && s.state !== "bad";
-  }
-  const idle = slots.filter((s) => s.row.hidden).length;
-  $("slots-idle").textContent = idle ? `${idle === slots.length ? "Every slot" : `${idle} of ${slots.length} slots`} idle${paused ? " (paused)" : ", waiting for work"}` : "";
-}
-
-// This tab's running tasks, kept (with the time, and whether it's on screen) so a page loaded after
-// this one dies can give them back, and lower its ceiling if it died on screen. (Not once it's
-// leaving: its note then says so, `pagehide`.)
-let leaving = false;
-const leased = () => slots.filter((s) => s.lease).map((s) => ({ lease: s.lease, mem_mb: s.mem, base: s.base || "" }));
-function remember() {
-  if (!helping || leaving) return;
-  const r = leased();
-  try {
-    if (r.length) localStorage.setItem(NOTE + tab, JSON.stringify({ at: Date.now(), vis: document.visibilityState === "visible", tasks: r }));
-    else localStorage.removeItem(NOTE + tab);
-  } catch {}
-}
-// (Noted as it goes behind, before iOS freezes it, and as it comes back.)
-document.addEventListener("visibilitychange", remember);
-// Reloaded or closed (not frozen in the background, nor killed: neither says so): its tasks given
-// back at once, so they go out again without a wait, and not held against this browser; its note
-// marked gone, so the next page gives them back again in case these didn't get through (the
-// network away, the coordinator restarting).
-window.addEventListener("pagehide", () => {
-  if (!helping) return;
-  const r = leased();
-  for (const t of r) {
-    try {
-      fetch((t.base || ROOT) + "/work/fail", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json", "X-Worker": worker }, body: JSON.stringify({ worker, lease: t.lease, error: "the page was reloaded or closed", interrupted: true }) }).catch(() => {});
-    } catch {}
-  }
-  try {
-    if (r.length) localStorage.setItem(NOTE + tab, JSON.stringify({ at: Date.now(), vis: false, gone: true, tasks: r }));
-    else localStorage.removeItem(NOTE + tab);
-  } catch {}
-  leaving = true;
-});
-// Back from the browser's back-forward cache (its leases given back as it went): its slots cleared
-// and their programs stopped, as when a task's taken back; then it asks again.
-window.addEventListener("pageshow", (e) => {
-  if (!e.persisted || !helping) return;
-  leaving = false;
-  for (const s of slots) {
-    if (!s.lease) continue;
-    spawn(s);
-    reserved -= s.mem;
-    Object.assign(s, { lease: null, task: null, mem: 0, state: "idle", detail: "", frac: 0 });
-  }
-  try { localStorage.removeItem(NOTE + tab); } catch {}
-  show();
-  fill();
-});
-
-function onSlot(s, m) {
-  if (m.state) { s.detail = m.state; if (m.frac !== undefined) s.frac = m.frac; show(); }
-  if (m.done !== undefined) finish(s, m.ok, m);
-}
-
-function finish(s, ok, m = {}) {
-  if (!s.lease) return;
-  const ms = performance.now() - s.started;
-  busyMs += ms;
-  if (ok) {
-    done++;
-    // A task that came near the ceiling and succeeded: room to spare, perhaps; after three, more.
-    if (m.peak_mb && m.peak_mb > 0.6 * ceiling) {
-      nearMisses++;
-      if (nearMisses >= 3 && ceiling < CAP) { ceiling = Math.min(CAP, Math.round(ceiling * 1.25)); nearMisses = 0; store.set("ceiling", ceiling); log(`Tasks near ${m.peak_mb} MB succeed: taking on up to ${ceiling} MB.`); }
-      store.set("near", nearMisses);
-    }
-    log(`${esc(s.task.unit || s.task.kind)} done in ${(ms / 1000).toFixed(0)} s (${m.peak_mb || "?"} MB at most)`);
-  } else if (m.error === "taken back") {
-    // (The job ran it itself and ended it, or gave it to another worker: not this device's failure.)
-    log(`${esc(s.task?.unit || "task")}: taken back (the lead finished it first)`);
-  } else if (m.error) {
-    log(`<span class="bad">${esc(s.task?.unit || "task")} failed: ${esc(m.error)}</span>`);
-  }
-  const back = m.error === "taken back";
-  reserved -= s.mem;
-  Object.assign(s, { lease: null, task: null, mem: 0, state: ok || back ? "ok" : "bad", detail: ok || back ? "idle" : `failed: ${m.error || ""}`.slice(0, 120), frac: 0 });
-  remember();
-  show();
-  setTimeout(fill, 100);
-}
-
-// ---- Tasks brokered by every member (docs/pool.md §8) -------------------------------------------
-// With the pool's brokers on, each member brokers its own jobs' tasks: this page asks its own
-// member first, then the members `/work/where` names (most waiting first), straight at their
-// addresses (CORS; over HTTPS when this page is). A member that doesn't answer (asleep, gone, or its
-// firewall dropping the connection) is passed over for two minutes. The build at a glance and the
-// lead's controls come from the lead's address when it answers, else from this page's member.
-// When this page's own member stops answering, the page moves to the next member that does (once no
-// task it took elsewhere is running). Off (`/work/where` refused): as before, its own member alone.
-const CAN = ["tail", "bldtile", "treeblock", "terrainsub"];
-const AWAY_MS = 120000;
-const away = new Map();
-let peers = store.get("peers", null), peersAt = -Infinity, ownFails = 0, moveTo = null;
-// (The member a page moved from, passed over for a while: it didn't answer.)
-{
-  const q = new URLSearchParams(location.search);
-  const from = q.get("from");
-  if (from) {
-    away.set(from, Date.now() + AWAY_MS);
-    q.delete("from");
-    history.replaceState(null, "", location.pathname + (q.size ? `?${q}` : ""));
-  }
-}
-const hostOf = (base) => { try { return new URL(base).host; } catch { return base; } };
-const reachable = (base) => base && base !== location.origin && !(away.get(base) > Date.now());
-function unreachable(base, e) {
-  if (!(away.get(base) > Date.now())) log(`<span class="bad">${esc(hostOf(base))} doesn't answer (${esc(e.message)}): passed over for two minutes</span>`);
-  away.set(base, Date.now() + AWAY_MS);
-}
-// A call to this page's own member, its failures counted: the third in a row, with another member
-// that answers, moves the page there.
-async function own(f) {
-  try {
-    const r = await f();
-    ownFails = 0;
-    return r;
-  } catch (e) {
-    if (e instanceof TypeError && ++ownFails >= 3) failover();
-    throw e;
-  }
-}
-async function where(free) {
-  if (performance.now() - peersAt < 15000) return peers;
-  peersAt = performance.now();
-  try {
-    const [code, w] = await call("/work/where", { can: CAN, mem_mb: free, https: location.protocol === "https:" });
-    peers = code === 200 ? w : null;
-  } catch { /* (Its own member away: the members kept from before.) */ }
-  store.set("peers", peers && { members: peers.members, lead: peers.lead, own: peers.own });
-  return peers;
-}
-async function elsewhere(ask, free) {
-  const w = await where(free);
-  for (const b of w?.brokers || []) {
-    if (!reachable(b.base)) continue;
-    try {
-      const [code, g] = await call("/work/ask", ask, b.base);
-      if (code === 200 && g) return [code, g, b.base];
-    } catch (e) { unreachable(b.base, e); }
-  }
-  return [204, null, ""];
-}
-async function failover() {
-  if (moveTo) return;
-  for (const m of peers?.members || []) {
-    if (!reachable(m)) continue;
-    try {
-      await call("/work/where", { can: CAN, mem_mb: 0, https: location.protocol === "https:" }, m);
-      moveTo = m;
-      log(`This page's member doesn't answer: moving to ${esc(hostOf(m))}${slots.some((s) => s.lease && s.base) ? " once the tasks taken elsewhere finish" : ""}.`);
-      fill();
-      return;
-    } catch (e) { unreachable(m, e); }
-  }
-}
-// The dashboard's calls: the build at a glance and the lead's controls at the lead's address when
-// it answers (the lead knows the whole build), else this page's member's.
-const LEADS = new Set(["/work/swarm", "/work/history", "/work/catalogs", "/work/pause", "/work/inputs"]);
-async function dashCall(path, body) {
-  const lead = peers?.lead;
-  if (LEADS.has(path) && reachable(lead)) {
-    try { return await call(path, body, lead); } catch (e) { unreachable(lead, e); }
-  }
-  return own(() => call(path, body));
-}
-
-// Asks for work while a slot is idle and memory is free; the coordinator picks what fits. (A new
-// version installed: none asked for; reloaded into it once every slot is idle.)
-let asking = false, lastNone = -Infinity, update = false;
-async function fill() {
-  if (moveTo && slots.every((s) => !s.lease || !s.base)) {
-    // (The member it leaves named, so the next page passes over it a while too.)
-    const q = new URLSearchParams(location.search);
-    q.set("from", peers?.own || location.origin);
-    location.href = `${moveTo}/work/?${q}`;
-    return;
-  }
-  if (update && slots.every((s) => !s.lease)) {
-    try { sessionStorage.setItem("paused", paused ? "1" : ""); } catch {}
-    location.reload();
-    return;
-  }
-  if (!helping || asking || paused || update) return;
-  const idle = slots.find((s) => !s.lease);
-  const free = ceiling - reserved;
-  if (!idle || free < 200 || performance.now() - lastNone < 15000) return;
-  asking = true;
-  try {
-    const ask = { worker, kind: "web", label, can: CAN, mem_mb: free, cores, visible: document.visibilityState === "visible" };
-    let [code, g] = await own(() => call("/work/ask", ask));
-    let base = "";
-    // (None here: the brokers whose work fits, most waiting first, straight: docs/pool.md §8.)
-    if (code === 204 || !g) [code, g, base] = await elsewhere(ask, free);
-    if (code === 204 || !g) { lastNone = performance.now(); $("state").textContent = "waiting for work"; return; }
-    if (base) log(`${esc(g.task.unit || g.task.kind)}: taken from ${esc(hostOf(base))}`);
-    Object.assign(idle, { lease: g.lease, base, task: g.task, mem: g.mem_mb, started: performance.now(), state: "run", detail: `${g.task.unit}: fetching`, frac: 0 });
-    reserved += g.mem_mb;
-    remember();
-    $("state").textContent = "working";
-    idle.w.postMessage({ run: { lease: g.lease, task: g.task, mem_mb: g.mem_mb, base: base || ROOT } });
-    show();
-  } catch (e) {
-    lastNone = performance.now();
-    $("state").textContent = `can't reach the coordinator (${e.message})`;
-  } finally {
-    asking = false;
-    setTimeout(fill, 50);
-  }
-}
-setInterval(fill, 5000);
-
-// Heartbeats for every lease, every minute; a lease the coordinator no longer holds is stopped
-// (its task went to another worker, or the job took it back).
-setInterval(async () => {
-  remember();
-  if (reap()) show();
-  for (const s of slots) {
-    if (!s.lease) continue;
-    // (The answer for this lease: by the time it comes, the slot may have finished and taken another.)
-    const lease = s.lease;
-    try {
-      const [, r] = await call("/work/beat", { worker, lease, progress: s.detail, frac: s.frac }, s.base || "");
-      if (r && r.ok === false && s.lease === lease) {
-        log(`${esc(s.task.unit)}: taken back (another worker or the lead has it)`);
-        spawn(s);
-        reserved -= s.mem;
-        Object.assign(s, { lease: null, task: null, mem: 0, state: "idle", detail: "", frac: 0 });
-        remember();
-        show();
-      }
-    } catch {}
-  }
-}, 60000);
-
-// Keeping the screen on (where the browser allows it: a secure context).
-let lock = null;
-async function wake() {
-  if (!helping || !("wakeLock" in navigator) || document.visibilityState !== "visible") return;
-  try { lock = await navigator.wakeLock.request("screen"); } catch {}
-}
-document.addEventListener("visibilitychange", wake);
-// Helping, as this device's owner asks (and kept): its slots, a Web Worker a core, made then. Stopping
-// gives back what it has under way at once (another worker takes it) and stops its programs.
-function startHelping() {
-  if (viewer) return;
-  helping = true;
-  store.set("helping", true);
-  $("helping").hidden = false;
-  $("toggle").hidden = false;
-  $("helphint").hidden = true;
-  $("help").textContent = "Stop helping";
-  if (!slots.length) for (let i = 0; i < cores; i++) makeSlot(i);
-  $("slots-n").textContent = `${slots.length}`;
-  if (!window.isSecureContext) {
-    $("note").hidden = false;
-    $("note").textContent = "Not a secure context: this browser won't keep the screen on for the page, so set the device to stay awake while it works.";
-  }
-  $("state").textContent = paused ? "paused (running tasks finish)" : "working";
-  wake();
-  reap();
-  show();
-  fill();
-}
-function stopHelping() {
-  for (const s of slots) {
-    if (s.lease) call("/work/fail", { worker, lease: s.lease, error: "this device stopped helping", interrupted: true }, s.base || "").catch(() => {});
-    s.w?.terminate();
-    s.row.remove();
-  }
-  slots.length = 0;
-  reserved = 0;
-  try { localStorage.removeItem(NOTE + tab); } catch {}
-  helping = false;
-  store.set("helping", false);
-  $("helping").hidden = true;
-  $("toggle").hidden = true;
-  $("helphint").hidden = false;
-  $("help").textContent = "Help with this tab";
-  $("state").textContent = buildState;
-  if (lock) { lock.release().catch(() => {}); lock = null; }
-}
-$("help").onclick = () => (helping ? stopHelping() : startHelping());
-if (viewer) { $("device").removeAttribute("data-tab"); $("tab-device").remove(); }
-
-// The page as an app (sw.js, manifest.webmanifest): kept for when the lead doesn't answer, its
-// programs kept by version. A new version taking over (a newly published app): reloaded into it
-// once no task is running. (A first install takes over too: that's no reason to reload.)
+// The page as an app (sw.js, manifest.webmanifest): kept for when its Mac doesn't answer. A new
+// version taking over (a newly published app): reloaded into it. (A first install takes over too:
+// that's no reason to reload.)
 if (!viewer && "serviceWorker" in navigator && window.isSecureContext) {
   let had = !!navigator.serviceWorker.controller;
   // (Asked about whenever the page comes back to the front, and every half hour: an installed app
@@ -636,15 +184,10 @@ if (!viewer && "serviceWorker" in navigator && window.isSecureContext) {
     const check = () => reg.update().catch(() => {});
     document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && check());
     setInterval(check, 30 * 60000);
-  }, (e) => log(`<span class="bad">couldn't install the page as an app: ${esc(e.message)}</span>`));
+  }, (e) => console.error(`couldn't install the page as an app: ${e.message}`));
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!had) { had = true; return; }
-    if (update) return;
-    // (Not helping, or nothing running: nothing to wait for.)
-    if (!helping || slots.every((s) => !s.lease)) { location.reload(); return; }
-    update = true;
-    log("A new version of the page is ready: reloading once the tasks running finish.");
-    fill();
+    location.reload();
   });
 }
 // Installing it: the browser's own prompt where it offers one, else (Safari on an iPhone or iPad)
@@ -659,22 +202,6 @@ if (!standalone && window.isSecureContext && ios) {
   $("hint").hidden = false;
   $("hint").textContent = "To keep it on your home screen as an app: Share, then Add to Home Screen.";
 }
-
-const setPaused = (v) => { paused = v; $("toggle").textContent = paused ? "Resume" : "Pause"; if (helping) $("state").textContent = paused ? "paused (running tasks finish)" : "working"; if (!paused) fill(); };
-$("toggle").onclick = () => setPaused(!paused);
-// Its ceiling, set here (this browser's own: kept, and learned from again, down after a death, up
-// after near misses).
-$("cap").onchange = (e) => {
-  ceiling = Math.min(CAP, Number(e.target.value));
-  nearMisses = 0;
-  store.set("ceiling", ceiling);
-  store.set("near", 0);
-  log(`Taking on at most ${ceiling} MB now (set here).`);
-  show();
-  fill();
-};
-// (Paused before the reload into a new version: still paused.)
-try { if (sessionStorage.getItem("paused") === "1") setPaused(true); sessionStorage.removeItem("paused"); } catch {}
 
 // ---- Tabs, by the address's #hash (kept in it: a link or a reload opens the same tab) -------------
 const panels = Object.fromEntries([...document.querySelectorAll(".panel[data-tab]")].map((el) => [el.dataset.tab, el]));
@@ -733,17 +260,13 @@ setInterval(liveDot, 5000);
 liveDot();
 
 // ---- The whole build at a glance (dash.js) -------------------------------------------------------
-let buildState = "";
 dashboard({
-  head: $("status"), mapPane: $("mappane"), tabsEl: $("tabpane"), panels, call: dashCall, label, store,
+  head: $("status"), mapPane: $("mappane"), tabsEl: $("tabpane"), panels, call, label, store,
   onAnswer: () => { answeredAt = Date.now(); liveDot(); },
-  // (The header says how the build goes; while this device helps, how its own work goes.)
-  onState: (st) => { buildState = st; if (!helping) $("state").textContent = st; },
-  onError: (m) => log(`<span class="bad">${esc(m)}</span>`),
+  // (The header says how the build goes.)
+  onState: (st) => { $("state").textContent = st; },
+  onError: (m) => console.error(m),
 });
-// (Helping, as kept.)
-if (helping) startHelping();
-show();
 </script>
 </body>
 </html>

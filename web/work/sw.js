@@ -1,21 +1,18 @@
-// The worker page's service worker (docs/workers.md, The page as an app). The page's files are kept
+// The build page's service worker (docs/workers.md §7, The page as an app). The page's files are kept
 // as this version installs, and come from the lead whenever it answers well within WAIT_MS (a
 // newly published app's page at once), else as kept: a Mac that doesn't (asleep, away, or its
 // agent restarting: tailscale serve answers 502) is taken for away for AWAY_MS, what was kept used
-// at once meanwhile. The programs' WebAssembly is kept by version (its address's ?v=), so the page
-// starts again without fetching megabytes a program, and only each program's newest version is
-// kept. Everything else (a task's files, every request to the coordinator) isn't touched.
+// at once meanwhile. Everything else (every request to the coordinator) isn't touched.
 //
 // VERSION is the page's own (the coordinator's hash of its files) and PAGE their addresses (the
 // coordinator's list): a new version is a new worker, which takes over; the page then reloads into
-// it once no task is running.
+// it.
 // ROOT: the path before /work/ where this worker was found ("" straight, "/build" through
 // tools/caddy's proxy); the coordinator's list names the page's files under /work/.
 const VERSION = "__VERSION__";
 const ROOT = self.location.pathname.slice(0, self.location.pathname.lastIndexOf("/work/"));
 const PAGE = __PAGE__.map((p) => ROOT + p);
 const SHELL = `shell-${VERSION}`;
-const PROGS = "progs";
 const WAIT_MS = 4000;
 const AWAY_MS = 60000;
 
@@ -34,7 +31,8 @@ self.addEventListener("install", (e) => {
 self.addEventListener("activate", (e) => {
   e.waitUntil((async () => {
     for (const k of await caches.keys()) {
-      if (k.startsWith("shell-") && k !== SHELL) await caches.delete(k);
+      // (And the programs' WebAssembly an older page kept to help with the build: "progs".)
+      if ((k.startsWith("shell-") && k !== SHELL) || k === "progs") await caches.delete(k);
     }
     await self.clients.claim();
   })());
@@ -44,8 +42,7 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== self.location.origin) return;
   const p = url.pathname === `${ROOT}/work` ? `${ROOT}/work/` : url.pathname;
-  if (p.startsWith(`${ROOT}/work/prog/`)) e.respondWith(program(e.request, url));
-  else if (PAGE.includes(p)) e.respondWith(page(e, p));
+  if (PAGE.includes(p)) e.respondWith(page(e, p));
 });
 
 let awayUntil = 0;
@@ -73,27 +70,6 @@ async function page(e, key) {
   if (r && r.ok) return r;
   awayUntil = Date.now() + AWAY_MS;
   return kept;
-}
-
-// A program's WebAssembly: as kept for its version, else fetched and kept,
-// its other versions dropped.
-async function program(req, url) {
-  const cache = await caches.open(PROGS);
-  const kept = await cache.match(url.href);
-  if (kept) return kept;
-  const r = await fetch(req);
-  if (r.ok) {
-    try {
-      for (const k of await cache.keys()) {
-        const u = new URL(k.url);
-        if (u.pathname === url.pathname && u.href !== url.href) await cache.delete(k);
-      }
-    } catch {
-      /* the others go next time */
-    }
-    await put(cache, url.href, r.clone());
-  }
-  return r;
 }
 
 // A cache write that may fail (the device's storage full) without failing the answer.

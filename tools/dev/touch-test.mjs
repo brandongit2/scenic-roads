@@ -55,9 +55,9 @@
 //
 // The page comes from a read-only server on its own port (8097): web/work as /work/, and only the
 // reading calls forwarded to this Mac's agent (127.0.0.1:8090); everything else is refused, so the
-// page can't lease work, act or set a setting. Its Pause is the test's own (#673): /work/pause is
+// page can't act or set a setting. Its Pause is the test's own (#673): /work/pause is
 // answered here, never forwarded, and /work/swarm's `pause` is this server's (none until a press;
-// then PAUSE_LAG ms after it, as the build takes seconds to say so), so the pool is never paused. The page opens as `?view` (never helps).
+// then PAUSE_LAG ms after it, as the build takes seconds to say so), so the pool is never paused. The page opens as `?view`.
 // (Other Macs' /work/settings and /work/live the page asks straight; it only reads them.) A setting
 // the page sets (the limits' drags and editor, #612) never leaves it: the page's fetch is wrapped
 // before its scripts run, a POST to any /work/settings with a setting in its body recorded in
@@ -529,6 +529,9 @@ async function run() {
       check("time: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }
 
+    // Pages don't help with the build (#875): no This device tab, no Help with this tab, no card
+    // of pages doing tasks.
+    check("no page helpers", await js(`!document.querySelector("#tab-device, #help, #device, .mc.pages")`));
     // Each tab: no sideways scroll, no console errors, screenshots.
     let machineW = null;
     for (const tab of TABS) {
