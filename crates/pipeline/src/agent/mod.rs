@@ -1515,9 +1515,9 @@ pub struct Agent {
     /// Tasks brokered by every member (crate::agent::brokers, `state/pool/brokers`), as the switch
     /// was last read: it acts only in the pool (`brokers_on`).
     brokers: bool,
-    /// A member's broker: its coordinator for its own jobs' tasks alone (the lead's are its
+    /// A member's broker (crate::coord::Broker): its own jobs' tasks alone (the lead's are its
     /// coordinator's, `coord`), and when one last failed to start.
-    broker: Option<std::sync::Arc<crate::coord::Coordinator>>,
+    broker: Option<crate::coord::Broker>,
     /// The page's data read from the NAS (crate::agent::pageview), served on this Mac's port by its
     /// coordinator, its broker, or with neither a viewer alone (`viewer`; tried again five minutes
     /// after it failed).
@@ -2067,9 +2067,10 @@ impl Agent {
         root: &store::nasfs::NasRoot,
         waiting: &mut Vec<Waiting>,
     ) -> Option<&crate::coord::client::Client> {
-        // (A coordinator that last answered as an earlier term's lead than the pool's view: the
-        // lead before a change of lead, kept on as its Mac's broker, which answers every ask with nothing
-        // and never fails a request, so the contact was never read again. Task #815: the M4,
+        // (A coordinator that last answered as an earlier term's lead than the pool's view, or as a
+        // broker (term 0, crate::coord::Broker): the lead before a change of lead, its Mac's broker
+        // now answering on its port, every ask with nothing, never failing a request, so the
+        // contact was never read again. Task #815: the M4,
         // paused through a change of lead, got no job for hours. Its contact read again. By the term,
         // not the member alone: a view lagging the term, the new lead's answer is kept, not read
         // again at every ask until the view catches up.)
@@ -4271,7 +4272,7 @@ impl Agent {
             c.set_root(root.as_ref());
         }
         // (Where the owner's settings lie, for the build page's `/work/settings`, whichever serves it.)
-        for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
+        for c in self.servers() {
             c.set_settings(&self.o.home, root.as_ref());
         }
         // (In the pool, only while this Mac leads: a lead that stepped down takes its contact off,
@@ -4658,7 +4659,7 @@ impl Agent {
             resume_now: self.resume_now(),
             ramp_held: self.ramp_held,
             ramp_trouble: self.ramp_trouble.clone(),
-            broker: self.broker.clone(),
+            broker: self.broker.as_ref().map(|b| b.server().clone()),
             viewer: self.viewer.clone(),
             coord: self.coord.clone(),
             ended,
@@ -4675,7 +4676,7 @@ impl Agent {
             return;
         }
         let mut asks = crate::inputs::take_asks(&self.o.home);
-        for c in [&self.broker, &self.viewer].into_iter().flatten() {
+        for c in self.not_lead_servers() {
             asks.extend(c.take_inputs_asks());
         }
         if asks.is_empty() {
@@ -7412,24 +7413,25 @@ impl Agent {
         {
             self.stop_viewer();
             let tried = match self.pool.as_ref().map(pool::try_lock) {
-                Some(Some(run)) => Some(make_coordinator_on(&self.o, Some(&run), &self.app, &self.host, broker_port())),
+                Some(Some(run)) => Some(
+                    make_broker(&self.o, &run, &self.app, &self.host).inspect(|b| b.set_member(Some(&run.side.member().id))),
+                ),
                 _ => None,
             };
             if let Some(made) = tried {
                 match made {
                     Some(b) => {
-                        b.become_broker();
                         eprintln!(
                             "agent: this Mac's broker started at {}: its jobs' tasks are offered there",
                             b.contact.urls.join(", ")
                         );
-                        self.broker = Some(std::sync::Arc::new(b));
+                        self.broker = Some(b);
                     }
                     None => self.broker_failed = Some(now),
                 }
             }
         }
-        let Some(c) = self.coord.as_ref().or(self.broker.as_ref()) else { return };
+        let Some(c) = self.coord.as_ref().or(self.broker.as_ref().map(crate::coord::Broker::server)) else { return };
         if let Some(b) = &self.broker {
             for l in b.expire() {
                 eprintln!(
@@ -7473,7 +7475,7 @@ impl Agent {
                 l.set_net(n);
             }
         }
-        for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
+        for c in self.servers() {
             if !c.has_live() {
                 c.set_live(l.clone());
             }
@@ -7509,7 +7511,7 @@ impl Agent {
             self.catalogues_lead = Some(lead);
         }
         cv.wake();
-        for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
+        for c in self.servers() {
             if !c.has_catalogues() {
                 c.set_catalogues(cv.clone());
             }
@@ -7537,7 +7539,7 @@ impl Agent {
         }
         // (The map's finished tiles, the same: the build's keys on the NAS.)
         let bv = self.built_view.get_or_insert_with(|| builtview::BuiltView::new(root, Some(cv.clone()))).clone();
-        for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
+        for c in self.servers() {
             if !c.has_built() {
                 c.set_built(bv.clone());
             }
@@ -7561,14 +7563,14 @@ impl Agent {
                 None => {}
             }
         }
-        for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
+        for c in self.servers() {
             if !c.has_pageview() {
                 c.set_pageview(self.pageview.clone());
             }
         }
         // (A page's pause on a Mac not leading: this agent's to pass on, as its menu's.)
         let lead = self.coord.is_some();
-        for c in [&self.broker, &self.viewer].into_iter().flatten() {
+        for c in self.not_lead_servers() {
             c.set_forward((!lead).then(|| self.o.home.clone()));
         }
         if let Some(c) = &self.coord {
@@ -7578,7 +7580,7 @@ impl Agent {
         // to the lead: crate::pool::driver::Act); out of the pool, acted on here.
         // (While a tick holds the run: kept for the next loop.)
         let mut acts = std::mem::take(&mut self.page_acts);
-        acts.extend([&self.coord, &self.broker, &self.viewer].into_iter().flatten().flat_map(|c| c.take_page_acts()));
+        acts.extend(self.servers().flat_map(|c| c.take_page_acts()));
         // (A retry: this Mac's own back-off for the target forgotten at once, a member's too; the
         // lead forgets its own and the coordinator's.)
         for a in &acts {
@@ -7597,7 +7599,7 @@ impl Agent {
                 _ => None,
             };
             if let Some(blocked) = retry_blocked(seen.as_ref().map(|(l, me)| (l.as_deref(), me.as_str()))) {
-                for c in [&self.broker, &self.viewer].into_iter().flatten() {
+                for c in self.not_lead_servers() {
                     c.set_retry_blocked(blocked.clone());
                 }
             }
@@ -7699,10 +7701,20 @@ impl Agent {
         }
     }
 
+    /// This Mac's servers: its coordinator, its broker, its viewer (one at a time, in the pool).
+    fn servers(&self) -> impl Iterator<Item = &std::sync::Arc<crate::coord::Coordinator>> {
+        [self.coord.as_ref()].into_iter().flatten().chain(self.not_lead_servers())
+    }
+
+    /// Its broker and its viewer: a page's asks there are its agent's to pass on.
+    fn not_lead_servers(&self) -> impl Iterator<Item = &std::sync::Arc<crate::coord::Coordinator>> {
+        [self.broker.as_ref().map(crate::coord::Broker::server), self.viewer.as_ref()].into_iter().flatten()
+    }
+
     /// The coordinator brokering this Mac's tasks, for the run's steps (`Cx::broker`): the lead's,
     /// or a member's broker; None with tasks brokered by every member off.
     fn brokering(&self) -> Option<std::sync::Arc<crate::coord::Coordinator>> {
-        self.brokers_on().then(|| self.coord.clone().or_else(|| self.broker.clone())).flatten()
+        self.brokers_on().then(|| self.coord.clone().or_else(|| self.broker.as_ref().map(|b| b.server().clone()))).flatten()
     }
 
     /// The newest complete pass: by the merged records with resuming on (docs/pool.md §7.4), else
@@ -8968,17 +8980,7 @@ fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
 /// (its token copied from the pool first: the same on every lead); None when it can't start (this
 /// Mac then builds alone, or, a member that took the lead in its process, restarts into it).
 fn make_coordinator(o: &Options, run: Option<&pool::Run>, app: &str, host: &str) -> Option<crate::coord::Coordinator> {
-    make_coordinator_on(o, run, app, host, coord_port())
-}
-
-/// `make_coordinator`, on `port` (a member's broker's: `broker_port`).
-fn make_coordinator_on(
-    o: &Options,
-    run: Option<&pool::Run>,
-    app: &str,
-    host: &str,
-    port: u16,
-) -> Option<crate::coord::Coordinator> {
+    let port = coord_port();
     if let Some(r) = run {
         if let Err(e) = pool::seed(r.side.nas(), &o.home.join("coord")) {
             eprintln!("agent: the pool's token: {e:#}");
@@ -9003,6 +9005,24 @@ fn make_coordinator_on(
             None
         }
     }
+}
+
+/// A member's broker (crate::coord::Broker) on `broker_port`, in the coordinator's folder, its
+/// token the pool's (copied first, as the lead's coordinator's); None when it can't start.
+fn make_broker(o: &Options, run: &pool::Run, app: &str, host: &str) -> Option<crate::coord::Broker> {
+    if let Err(e) = pool::seed(run.side.nas(), &o.home.join("coord")) {
+        eprintln!("agent: the pool's token: {e:#}");
+    }
+    let port = broker_port();
+    #[cfg(test)]
+    let held = crate::coord::take_test_listener(port);
+    #[cfg(not(test))]
+    let held: Option<std::net::TcpListener> = None;
+    let started = match held {
+        Some(l) => crate::coord::Broker::start_on(&o.home.join("coord"), l, host, app),
+        None => crate::coord::Broker::start(&o.home.join("coord"), port, host, app),
+    };
+    started.map_err(|e| eprintln!("agent: no broker ({e:#})")).ok()
 }
 
 /// Why a member's page's retry can't be mailed to the lead now, from `seen` (the lead's app, None
@@ -15553,7 +15573,7 @@ mod pool_tests {
         // (The agents themselves, slower at a tail than the job's own run: neither takes these
         // tasks while the heartbeats are awaited below, however many steps that takes; the
         // worker below must.)
-        for co in [m.broker.as_ref().unwrap(), lead.coord.as_ref().unwrap()] {
+        for co in [m.broker.as_ref().unwrap().server(), lead.coord.as_ref().unwrap()] {
             let mut s = co.shared.lock().unwrap();
             for w in [&lead.host, &m.host] {
                 s.tasks.paces.insert((w.clone(), "tail".into()), 10.0);
@@ -15567,7 +15587,7 @@ mod pool_tests {
             a.round().unwrap();
         };
         let told = |a: &Agent, who: &str| {
-            a.coord.as_ref().or(a.broker.as_ref()).unwrap().shared.lock().unwrap().brokers.as_ref().is_some_and(|b| {
+            a.coord.as_ref().or(a.broker.as_ref().map(crate::coord::Broker::server)).unwrap().shared.lock().unwrap().brokers.as_ref().is_some_and(|b| {
                 b.peers.iter().any(|p| p.member == who && p.broker.as_ref().is_some_and(|b| !b.urls.is_empty()))
             })
         };
@@ -16858,9 +16878,9 @@ mod pool_tests {
     }
 
     /// Task #815: a member paused (or away) through a change of lead kept its way to the old lead's
-    /// coordinator, kept on there as a broker, which answers its asks with nothing and never fails
-    /// a request: resumed, it got no job until the lead came back to that Mac. The answer's member
-    /// isn't the term's lead: the contact is read again, and the new lead grants it work.
+    /// Mac, where its broker now answers, granting nothing and never failing a request: resumed, it
+    /// got no job until the lead came back to that Mac. The broker's answer says term 0 (task #882
+    /// step 3): the contact is read again, and the new lead grants it work.
     #[test]
     fn a_member_asking_the_old_lead_after_a_change_of_lead_asks_the_new_one() {
         let d = tempfile::tempdir().unwrap();
@@ -16897,9 +16917,12 @@ mod pool_tests {
         ));
         let ask =
             crate::coord::Ask { kind: "native".into(), can: vec!["unit".into()], mem_mb: 64_000, ..Default::default() };
-        // The change of lead, this member held meanwhile: the old lead a broker, term 539's lead (the M1)
+        // The change of lead, this member held meanwhile: the mini restarted as a member (docs/roles.md
+        // §1), its broker on the same port and token (crate::coord::Broker), term 539's lead (the M1)
         // publishing its contact.
-        old.become_broker();
+        drop(old);
+        let old = crate::coord::Broker::start(&d.path().join("old"), old_port, "mini", "").unwrap();
+        old.set_member(Some("m-mini"));
         let (new, new_port) = crate::coord::start_for_test(&d.path().join("new"), "m1", "");
         (new.set_term(539), new.set_member(Some("m-m1")));
         new.publish(&root).unwrap();

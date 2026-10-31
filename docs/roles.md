@@ -90,10 +90,14 @@ jobs, waiting lines, caches, memory, ramp, budgets, hold, app.
 
 ### 3.2 The member's broker
 
-Today a member's broker is the whole `Coordinator` with its plan, leases, keep, phase shares and
-page state emptied (`become_broker`). It becomes `coord::Broker`: the tasks of this Mac's own jobs
-and the `/work/*` calls those jobs make, plus `/work/live` for the lead's page. No phase-sharer,
-no keep, no page data. The lead's coordinator stays as it is.
+A member's broker is `coord::Broker` (built, step 3): the tasks of this Mac's own jobs and the
+`/work/*` calls those jobs make, plus `/work/live` for the lead's page. It runs on the
+coordinator's server and folder (one at a time on a Mac; the jobs' token kept there, so a job
+outlives a change of role), started as a broker: no phase sharer, nothing kept in the pool's store,
+no job lease (those of a term the Mac once led are left to the lead as it starts). Its answers say
+term 0 and its member, so a member still asking that Mac as the lead after a change of lead reads
+the contact again (an older member too: it compares the term). The page data it still serves goes
+with step 4. The lead's coordinator stays as it is.
 
 ### 3.3 The build page
 
@@ -154,8 +158,13 @@ Each step ships alone and keeps the build running; each ends with its tests.
    which step 1 ends. Also: a member's `as_read` reads nothing (the plan's view first), and a job's
    `--expect-same` reads the brief under the NAS's deadline. The idle footprint was not measured: the
    harness has no regions' data to fill one.
-3. **The member's broker** (§3.2): `coord::Broker`; `become_broker` and the member's phase sharer
-   deleted. Tests: the brokers' task tests moved to `Broker`; `a_member_runs_no_phase_sharer`.
+3. *Built.* **The member's broker** (§3.2): `coord::Broker`; `become_broker` and the member's phase sharer
+   deleted. Tests: the brokers' task tests moved to `Broker` (`a_task_goes_out_and_comes_back`,
+   `a_task_given_back_is_not_a_failure`, `a_members_broker_passes_the_owners_asks_from_any_device_to_its_agent`);
+   `a_member_runs_no_phase_sharer`; `a_member_asking_the_old_lead_after_a_change_of_lead_asks_the_new_one`
+   with the old lead's Mac's broker. As built: a broker says term 0, which an older member's
+   client also takes as not the lead's; an older member's broker (a coordinator made a broker)
+   and a newer one answer jobs' and pages' task calls alike.
 4. **The page on the lead** (§3.3): the 307s, the menu bar loading the lead's page, the local
    unreachable page; pageview, cataloguesview, builtview and region steps built on the lead alone.
    Tests: `a_members_page_redirects_to_the_lead`, `a_members_page_with_the_lead_down_shows_its_own`,

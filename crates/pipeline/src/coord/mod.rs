@@ -26,6 +26,7 @@
 //! (`/task/…`) from this Mac itself, through no proxy (crate::net::own).
 
 pub mod beats;
+pub mod broker;
 pub mod brokers;
 pub mod client;
 pub mod held;
@@ -36,6 +37,8 @@ pub mod lease;
 pub mod maproutes;
 pub mod sched;
 pub mod task;
+
+pub use broker::Broker;
 
 use crate::agent::memguard::Floor;
 use crate::handoff::Handoff;
@@ -382,6 +385,10 @@ pub struct Shared {
     /// A viewer alone (`Coordinator::viewer`): the page and its views, nothing else (but this
     /// Mac's own page's asks, passed to its agent).
     pub viewer: bool,
+    /// A member's broker (`Broker`): the tasks of its Mac's own jobs alone. Its answers say term 0
+    /// and its member (`http::stamp`): no term's lead, so a member that kept its way here after a
+    /// change of lead reads the lead's contact again.
+    pub broker: bool,
     /// Not the lead's (a member's broker, a viewer): a page's pause is this Mac's agent's to pass
     /// on (crate::control::request in its folder, `set_forward`), not this one's to set.
     pub forward: Option<PathBuf>,
@@ -737,12 +744,29 @@ pub struct Coordinator {
     /// The origins whose pages may call it from elsewhere (CORS: the members' addresses, while
     /// tasks are brokered by every member; None: none, as before).
     cors: Arc<std::sync::RwLock<Option<BTreeSet<String>>>>,
-    /// Each step's phase shares over its last runs (crate::timings::PhaseShares), kept by their
-    /// own thread (`phase_sharer`), apart from the pool's lock.
-    phase_shares: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>>,
-    /// Each step's time by phase over the page's chart ranges (crate::timings::PhaseTimes), kept
-    /// by the same thread.
-    phase_times: Arc<Mutex<Option<Arc<crate::timings::PhaseTimes>>>>,
+    /// The lead's phase shares and times, kept by their own thread (`phase_sharer`); None for a
+    /// member's broker or a viewer, which run none.
+    phases: Option<Phases>,
+}
+
+/// Each step's phase shares over its last runs (crate::timings::PhaseShares) and its time by phase
+/// over the page's chart ranges (crate::timings::PhaseTimes), kept by `phase_sharer`, apart from
+/// the pool's lock.
+#[derive(Default)]
+struct Phases {
+    shares: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>>,
+    times: Arc<Mutex<Option<Arc<crate::timings::PhaseTimes>>>>,
+}
+
+/// What a coordinator started as (`Coordinator::start_with`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// The lead's (or a coordinator out of the pool): everything.
+    Lead,
+    /// A member's broker (`Broker`): its jobs' tasks; no store kept, no phase sharer.
+    Broker,
+    /// A viewer alone (`Coordinator::viewer`).
+    Viewer,
 }
 
 impl Drop for Coordinator {
@@ -1148,7 +1172,7 @@ impl Coordinator {
                 }
             }
         }
-        Coordinator::start_with(&dir, listener, me, app, true)
+        Coordinator::start_with(&dir, listener, me, app, Mode::Viewer)
     }
 
     /// Starts answering on `port`, keeping its state in `dir`; `app`: the app this Mac's agent
@@ -1204,20 +1228,22 @@ impl Coordinator {
     /// `start`, answering on `listener`, already listening (a test's, on a port it held from the
     /// start: no other can take it between).
     pub fn start_on(dir: &Path, listener: std::net::TcpListener, me: &str, app: &str) -> Result<Coordinator> {
-        let c = Coordinator::start_with(dir, listener, me, app, false)?;
+        let c = Coordinator::start_with(dir, listener, me, app, Mode::Lead)?;
         c.open_store()?;
         Ok(c)
     }
 
-    /// `start_on`, or a viewer alone (`viewer`): a coordinator on a wildcard `listener` answers
-    /// the same on 127.0.0.1 beside it (`loopback_beside`), its jobs' address.
+    /// `start_on`, a member's broker (`Broker`) or a viewer alone (`viewer`): a coordinator on a
+    /// wildcard `listener` answers the same on 127.0.0.1 beside it (`loopback_beside`), its jobs'
+    /// address.
     fn start_with(
         dir: &Path,
         listener: std::net::TcpListener,
         me: &str,
         app: &str,
-        viewer: bool,
+        mode: Mode,
     ) -> Result<Coordinator> {
+        let viewer = mode == Mode::Viewer;
         let port = listener.local_addr()?.port();
         let loopback = if viewer { None } else { Self::loopback_beside(&listener)? };
         if viewer {
@@ -1235,6 +1261,14 @@ impl Coordinator {
         // This Mac's own: its jobs ended with the agent that ran them.
         for l in leases.drop_where(|l| l.worker == me) {
             eprintln!("coordinator: {}'s lease ended with the agent before this one", l.what());
+        }
+        // (A broker's folder is its Mac's coordinator's: the jobs' leases of a term it led are the
+        // lead's now, taken up from the store there.)
+        if mode == Mode::Broker {
+            let gone = leases.drop_where(|l| matches!(l.work, Work::Job { .. }));
+            if !gone.is_empty() {
+                eprintln!("coordinator: a broker: {} job lease(s) of a term this Mac led left to the lead", gone.len());
+            }
         }
         let costs = std::fs::read(dir.join("costs.json"))
             .ok()
@@ -1346,6 +1380,7 @@ impl Coordinator {
             region_steps_asked: None,
             tocome: None,
             viewer,
+            broker: mode == Mode::Broker,
             forward: None,
             settings: None,
             hold_wait: HOLD_WAIT,
@@ -1380,12 +1415,14 @@ impl Coordinator {
             cors: cors.clone(),
         };
         let urls = http::serve(listener, loopback, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
-        let phase_shares: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>> = Default::default();
-        let phase_times: Arc<Mutex<Option<Arc<crate::timings::PhaseTimes>>>> = Default::default();
         if !viewer {
             nas_prober(shared.clone(), root.clone(), stopped.clone(), me.to_string());
-            phase_sharer(dir.join("timings.jsonl"), phase_shares.clone(), phase_times.clone(), stopped.clone());
         }
+        let phases = (mode == Mode::Lead).then(|| {
+            let p = Phases::default();
+            phase_sharer(dir.join("timings.jsonl"), p.shares.clone(), p.times.clone(), stopped.clone());
+            p
+        });
         let c = Coordinator {
             shared,
             contact: Contact { urls, token, page: None },
@@ -1398,8 +1435,7 @@ impl Coordinator {
             closed: Mutex::new(Some(closed)),
             routes,
             cors,
-            phase_shares,
-            phase_times,
+            phases,
         };
         if !viewer {
             c.write_page();
@@ -1789,13 +1825,13 @@ impl Coordinator {
     /// Each step's phase shares over its last runs, as its thread last read the build's timings
     /// (`phase_sharer`; empty till then).
     pub fn phase_shares(&self) -> BTreeMap<String, crate::timings::PhaseShares> {
-        self.phase_shares.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.phases.as_ref().map(|p| p.shares.lock().unwrap_or_else(|e| e.into_inner()).clone()).unwrap_or_default()
     }
 
     /// Each step's time by phase over the page's chart ranges, as its thread last summed them
     /// (`phase_sharer`, every minute; None till then).
     pub fn phase_times(&self) -> Option<Arc<crate::timings::PhaseTimes>> {
-        self.phase_times.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.phases.as_ref().and_then(|p| p.times.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
     /// Each worker's share of the NAS budget now: its leased jobs' NAS weights summed, in
@@ -2588,30 +2624,6 @@ impl Coordinator {
     pub fn set_brokers(&self, b: Option<brokers::Brokers>) {
         *self.cors.write().unwrap_or_else(|e| e.into_inner()) = b.as_ref().map(|b| b.origins.clone());
         self.shared.lock().unwrap().brokers = b;
-    }
-
-    /// A coordinator as its Mac's broker alone (docs/pool.md §8): a member's, started for its own
-    /// jobs' tasks (a lead that no longer leads restarts instead: docs/roles.md §1). Nothing of the plan offered nor held: the jobs' leases are the lead's (handed
-    /// over with the term), the asks its.
-    pub fn become_broker(&self) {
-        let mut s = self.shared.lock().unwrap();
-        s.pass.clear();
-        s.set_offers(Vec::new());
-        s.resume = None;
-        s.moving = None;
-        s.told = None;
-        s.inputs_asks.clear();
-        s.redo_asks.clear();
-        s.done.clear();
-        let gone = s.leases.drop_where(|l| matches!(l.work, Work::Job { .. }));
-        if !gone.is_empty() {
-            eprintln!(
-                "coordinator: a broker now: {} job lease{} left to the lead",
-                gone.len(),
-                if gone.len() == 1 { "" } else { "s" }
-            );
-        }
-        s.save_leases();
     }
 
     /// The workers around now (asked within two minutes), for the heartbeat: (name, worker).
@@ -4984,11 +4996,14 @@ mod http {
     /// Every answer says the pool's term and member this coordinator is, while it has them.
     async fn stamp(State(c): State<Ctx>, req: Request, next: Next) -> Response {
         let mut r = next.run(req).await;
-        let (term, member) = {
+        let (term, member, broker) = {
             let s = c.shared.lock().unwrap();
-            (s.leases.term, s.pool_member.clone())
+            (s.leases.term, s.pool_member.clone(), s.broker)
         };
-        if let (true, Some(m)) = (term > 0, member) {
+        // (A member's broker leads no term: it says term 0, so a member asking it as the lead
+        // reads the lead's contact again, as an older one does on a term below the lead's.)
+        let term = if broker { 0 } else { term };
+        if let (true, Some(m)) = (term > 0 || broker, member) {
             if let (Ok(t), Ok(m)) =
                 (axum::http::HeaderValue::from_str(&term.to_string()), axum::http::HeaderValue::from_str(&m))
             {
@@ -5922,6 +5937,14 @@ mod tests {
     fn start() -> (tempfile::TempDir, Coordinator, client::Client) {
         let d = tempfile::tempdir().unwrap();
         let (c, port) = start_for_test(&d.path().join("coord"), "m4", "");
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        (d, c, w)
+    }
+
+    /// `start`, a member's broker.
+    fn start_broker() -> (tempfile::TempDir, Broker, client::Client) {
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = broker::start_for_test(&d.path().join("coord"), "m4", "");
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         (d, c, w)
     }
@@ -10065,7 +10088,7 @@ mod tests {
         // (Task #409 review; #521: from any device) a broker (not the lead's: its agent passes them
         // on): a page's pause goes to its agent, from this Mac or another device; a retry that
         // can't reach the lead is answered so.
-        let (_d, c, w) = start();
+        let (_d, c, w) = start_broker();
         let home = tempfile::tempdir().unwrap();
         c.set_forward(Some(home.path().to_path_buf()));
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
@@ -10513,7 +10536,7 @@ mod tests {
     /// why the note and no `ok: false`; one that failed stays "task-fail".
     #[test]
     fn a_task_given_back_is_not_a_failure() {
-        let (d, c, w) = start();
+        let (d, c, w) = start_broker();
         let root = d.path().join("job");
         std::fs::create_dir_all(&root).unwrap();
         let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
@@ -10556,7 +10579,7 @@ mod tests {
 
     #[test]
     fn a_task_goes_out_and_comes_back() {
-        let (d, c, w) = start();
+        let (d, c, w) = start_broker();
         let root = d.path().join("job");
         std::fs::create_dir_all(root.join("u")).unwrap();
         std::fs::write(root.join("u/in.bin"), b"input").unwrap();
@@ -10943,10 +10966,9 @@ mod tests {
 
     /// A broker that takes the lead keeps its own tasks' leases as it takes up the term's jobs'
     /// (docs/pool.md §8: a handover drops no task); switched off, the term's leases replace them,
-    /// as before. A lead's coordinator that becomes a broker leaves the jobs' leases and offers to
-    /// the new lead.
+    /// as before.
     #[test]
-    fn a_broker_taking_the_lead_keeps_its_tasks_leases_and_a_lead_becoming_one_leaves_its_jobs() {
+    fn a_broker_taking_the_lead_keeps_its_tasks_leases() {
         for on in [true, false] {
             let (d, c, w) = start();
             if on {
@@ -10990,10 +11012,43 @@ mod tests {
             assert_eq!(c.load_pool_state(&other).unwrap(), 1);
             assert_eq!(page.beat(g.lease, None).unwrap(), on, "its task's lease kept only with the switch on");
             assert_eq!(c.held("slope-hi").len(), 1);
-            // No longer leading: a broker, its job lease the new lead's.
-            c.become_broker();
-            assert!(c.held("slope-hi").is_empty());
-            assert_eq!(c.leases_out(), usize::from(on));
         }
+    }
+
+    /// Task #882 step 3: a member's broker runs no phase sharer (the lead's reads the timings log at
+    /// once), holds no job lease of a term its Mac led (its folder the coordinator's), keeps nothing
+    /// in the pool's store, and says term 0 with its member: a member asking it as the lead reads
+    /// the contact again (`agent::Agent::client`), whatever its app.
+    #[test]
+    fn a_member_runs_no_phase_sharer() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("coord");
+        let ask = Ask { kind: "native".into(), can: vec!["slope-hi".into()], mem_mb: 64_000, ..Default::default() };
+        let (lead, _) = start_for_test(&dir, "m4", "");
+        lead.add_timings(&crate::timings::RunRec::default());
+        lead.offer(
+            "2026-10-31",
+            vec![Offer { step: "slope-hi".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], job: None }],
+        );
+        let w = client::Client::at(lead.contact.urls.clone(), lead.contact.token.clone(), "m1");
+        assert!(w.ask(&ask).unwrap().is_some());
+        assert_eq!(lead.held("slope-hi").len(), 1);
+        let end = Instant::now() + Duration::from_secs(10);
+        while lead.phase_times().is_none() {
+            assert!(Instant::now() < end, "the lead's phase sharer never ran");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(lead);
+        // The same Mac, a member now: its broker on the coordinator's folder.
+        let (b, port) = broker::start_for_test(&dir, "m4", "");
+        b.set_member(Some("m-m4"));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(b.phase_times().is_none() && b.phase_shares().is_empty(), "no phase sharer");
+        assert!(b.held("slope-hi").is_empty() && b.leases_out() == 0, "the term's job lease is the lead's");
+        assert!(b.shared.lock().unwrap().keep.store().is_none(), "nothing kept in the pool's store");
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], b.contact.token.clone(), "m1");
+        assert!(w.ask(&ask).unwrap().is_none());
+        let a = w.answered().expect("answered");
+        assert_eq!((a.term, a.member.as_deref()), (Some(0), Some("m-m4")));
     }
 }

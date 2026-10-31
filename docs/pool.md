@@ -1466,8 +1466,8 @@ Any member's idle slot takes it (`scenic run-task`). Pages take none (#875: thei
 workers.md §5).
 
 - **Brokers** (`crate::agent::brokers`, `crate::coord::brokers`, behind `state/pool/brokers`): each
-  member's agent runs a coordinator of its own for its jobs' tasks (`become_broker`, on the pool's
-  port; jobs given its address as `SCENIC_COORD`). Its heartbeat's `broker` gives its addresses. A
+  member's agent runs a broker for its jobs' tasks (`coord::Broker`, docs/roles.md §3.2, on the
+  pool's port; jobs given its address as `SCENIC_COORD`; its answers say term 0). Its heartbeat's `broker` gives its addresses. A
   task lives as long as its job, whoever leads.
 - **Cross-member calls:** members allow each other's page origins (CORS, preflight for
   `Content-Type`): their addresses, and the public names a proxy on one serves its page under (its
