@@ -46,6 +46,7 @@ fn config(url: String, cache: &Path, wait_s: u64) -> Config {
         wait_s,
         retry: Duration::from_millis(50),
         client: "server/test".into(),
+        only_on_the_lead: false,
         stop: Arc::new(AtomicBool::new(false)),
     }
 }
@@ -288,4 +289,53 @@ fn in_shadow_the_catalogues_are_served() {
     b.set_serve_map(true);
     f.hand_on();
     assert_eq!(b.catalogue().n, 2);
+}
+
+/// A lead restored behind the map held (its log at 1, the server's map at 2): the server resets to
+/// its snapshot, yet the catalogue served never steps back; the next batch past it is served.
+#[test]
+fn a_lead_behind_the_map_never_takes_the_server_back() {
+    let (nas, home, cache) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (dir_a, dir_b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (feed, mut log) = (Feed::new(), Log::open(dir_a.path()).unwrap());
+    append(&mut log, &feed, &publish(&[nas.path()], 1));
+    append(&mut log, &feed, &publish(&[nas.path()], 2));
+    let b = data(home.path(), nas.path());
+    b.set_serve_map(true);
+    {
+        let lead = FakeLead::on(0, feed);
+        let mut f = Follower::new(b.clone(), config(lead.url(), cache.path(), 0));
+        assert!(f.round());
+        assert_eq!(b.catalogue().n, 2);
+    }
+    let (feed, mut log) = (Feed::new(), Log::open(dir_b.path()).unwrap());
+    append(&mut log, &feed, &publish(&[nas.path()], 1));
+    let lead = FakeLead::on(0, feed.clone());
+    let mut f = Follower::new(b.clone(), config(lead.url(), cache.path(), 0));
+    f.start();
+    assert_eq!(f.seq(), Some(2));
+    assert!(f.round());
+    assert_eq!((f.seq(), b.catalogue().n), (Some(1), 2), "reset to the lead's map, the served one kept");
+    append(&mut log, &feed, &publish(&[nas.path()], 2));
+    append(&mut log, &feed, &publish(&[nas.path()], 3));
+    assert!(f.round());
+    assert_eq!((f.seq(), b.catalogue().n), (Some(3), 3));
+}
+
+/// On a Mac that isn't the declared lead nothing is followed or held; on the declared lead, it is.
+#[test]
+fn only_the_declared_lead_follows() {
+    let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let b = data(home.path(), nas.path());
+    let lead = |host: &str| {
+        let p = nas.path().join(pipeline::pool::term::LEAD);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, serde_json::json!({ "member": "m-1", "host": host }).to_string()).unwrap();
+    };
+    let mut f = Follower::new(b.clone(), config("http://127.0.0.1:1".into(), home.path(), 0));
+    assert!(!f.on_the_lead(), "no declaration");
+    lead("another-mac");
+    assert!(!f.on_the_lead());
+    lead(crate::data::host());
+    assert!(f.on_the_lead());
 }

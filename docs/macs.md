@@ -252,7 +252,8 @@ and codesign.
   own requests alone) after writing a catalogue, so it is adopted at once. A mirror's copy stopped by a
   new catalogue resumes under it (copies are kept by content name).
 - **The map's log** (docs/maplog.md §8, step 3; `crates/server/src/maplog.rs`): beside the catalogues,
-  a thread follows the lead's log over HTTP (`GET /map/changes`, a 30-s long poll, its cursor
+  on the declared lead alone (its host `state/build/lead-member.json`'s, the Mac mini; the map
+  takes ~0.5–1.5 GB, until #874 moves the server there) a thread follows the lead's log over HTTP (`GET /map/changes`, a 30-s long poll, its cursor
   `server/<host>`), applying each answer's batches to its own map (checked by their digest) and the
   lead's snapshot on a reset; with the lead away, the NAS's newest `map/<seq>.json.zst` when it
   holds none or an older one. Its map is kept in `~/Library/Caches/scenic/map/current.json.zst`
@@ -260,7 +261,9 @@ and codesign.
   at the same number (`maplog: MISMATCH` in the log when they differ). The map is served only while
   `state/pool/map-serve` on the NAS is on (kept on the Mac in that folder's `serve`): then the
   catalogue served is the map's, unless the catalogues give a newer one (a lead away), swapped
-  whole as before.
+  whole as before, and never an older one than served. The lead's contact is kept beside it
+  (`lead.json`, mode 600, the build's key in it, as on the NAS); losing the folder means a cold
+  start (the NAS's snapshot or the catalogues).
 - **URLs and ETags:** data URLs carry a content version (`?v=`): a tile's is its pack's (meta
   `packs`), so a new catalogue re-fetches only the changed packs' tiles; a versioned response is
   `immutable` while current. ETags are content hashes, for named tiles combined with the versions of

@@ -220,7 +220,8 @@ impl Data {
 
     /// The catalogue served picked again: the map's while it's served and no older than the
     /// catalogues' (a lead away, its NAS snapshot older than the catalogue read: the catalogue's),
-    /// else the catalogues'. Swapped whole when its number changes, the generation moved on.
+    /// else the catalogues'. Swapped whole when its number moves on, the generation with it; never
+    /// back to an older one (a lead's snapshot behind the map held), but for the switch turned off.
     fn choose(&self) {
         let read = self.read_catalogue();
         let map = self.from_map.read().unwrap().clone().filter(|m| self.serves_map() && m.n >= read.n);
@@ -229,7 +230,7 @@ impl Data {
             None => (read, "the catalogues"),
         };
         let mut cur = self.cat.write().unwrap();
-        if cur.n != pick.n {
+        if pick.n > cur.n || (pick.n < cur.n && !self.serves_map()) {
             eprintln!("catalogue {} ({} files), from {how}", pick.n, pick.files.len());
             *cur = pick;
             drop(cur);
