@@ -231,3 +231,20 @@ fn a_stuck_read_is_given_up() {
     assert_eq!(slow.unwrap(), 7);
     assert!(watched(stall, "read z", |_| -> Result<()> { anyhow::bail!("gone") }).is_err());
 }
+
+/// Task #896 review: a watched read counts as waiting on the NAS (store::waits), so a job copying
+/// base packs says it waited (`waited_ms`), not that it computed.
+#[test]
+fn a_watched_read_is_a_nas_wait() {
+    store::waits::enable();
+    let nas = || store::waits::totals()[store::waits::On::Nas as usize];
+    let before = nas();
+    watched(BUSY_STALL, "read w", |_| -> Result<()> {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        Ok(())
+    })
+    .unwrap();
+    assert!(nas() - before >= 200_000_000, "{} ns", nas() - before);
+}
+
+const BUSY_STALL: std::time::Duration = std::time::Duration::from_secs(60);

@@ -707,7 +707,10 @@ impl<'a> Book<'a> {
                     // climb never overcommits its Mac (task #888 review).)
                     let busy = ((k * 10.0).round() as u32).max(1);
                     let waited = c.sizes.get("waited_ms").map_or(0, |&w| w.min(ran));
-                    let computing = if waited < ran { k * ran as f64 / (ran - waited) as f64 } else { f64::from(t) };
+                    // (Task #896 review: waits covering its wall time, within a second, leave no
+                    // time it computed in to measure: its busy cores, not every thread, so a run
+                    // its threads all waited through settles at those and one more, never climbs.)
+                    let computing = if ran - waited >= 1000 { k * ran as f64 / (ran - waited) as f64 } else { k };
                     let grant = (computing.min(f64::from(t)) + 0.5) as u32 + 1;
                     let busy = busy.min(t * 10) + grant.saturating_sub(t) * 10;
                     Cores { grant, busy_tenths: Some(busy.min(grant * 10)) }
@@ -998,7 +1001,12 @@ mod tests {
         // (Task #896: 0.3 cores busy of 3 over 1000 s: waits not said, 1; waiting 500 s, 0.6
         // busy while it computed: 2; waiting 900 s, all 3 busy while it computed: it climbs one,
         // counted for its 0.3 and the thread.)
-        for (waited, grant, busy) in [(None, 1, 3), (Some(500_000), 2, 3), (Some(900_000), 4, 13)] {
+        // (Task #896 review: waiting its whole wall time, or all but half a second, on its 3
+        // threads: its 0.3 busy and one more, 1, never a climb.)
+        let all = [(Some(1_000_000), 1, 3), (Some(999_500), 1, 3)];
+        for (waited, grant, busy) in
+            [(None, 1, 3), (Some(500_000), 2, 3), (Some(900_000), 4, 13)].into_iter().chain(all)
+        {
             let mut s = vec![("threads", 3), ("cpu_ms", 300_000)];
             s.extend(waited.map(|w| ("waited_ms", w)));
             costs.insert(cost_key("terrain-hi", "6/48/19"), Cost { v, ..cost(3700, 1000, &s) });

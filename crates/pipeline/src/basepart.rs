@@ -139,6 +139,9 @@ pub fn watched<T: Send + 'static>(
     what: &str,
     f: impl FnOnce(&AtomicU64) -> Result<T> + Send + 'static,
 ) -> Result<T> {
+    // (The caller blocks on the NAS read for as long as this takes: a wait on the NAS, store::waits,
+    // so a job's `waited_ms` counts its base packs' copies, task #896 review.)
+    let _nas = store::waits::nas();
     let progress = Arc::new(AtomicU64::new(0));
     let (tx, rx) = std::sync::mpsc::channel();
     let p = progress.clone();
