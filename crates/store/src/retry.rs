@@ -209,6 +209,20 @@ pub fn any<T>(
     path: Option<&Path>,
     waits: &[Duration],
     again: fn(&io::Error) -> bool,
+    f: impl FnMut() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    any_until(what, path, waits, again, || false, f)
+}
+
+/// `any`, given up the moment `stop()` says so (looked at before each try and through each wait,
+/// at least every `STOP_EVERY`): its last error then, not `Exhausted` (a job pausing stops its
+/// retries at once, task #903: the caller says what the stop means).
+pub fn any_until<T>(
+    what: &str,
+    path: Option<&Path>,
+    waits: &[Duration],
+    again: fn(&io::Error) -> bool,
+    stop: fn() -> bool,
     mut f: impl FnMut() -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     if in_attempt() {
@@ -232,8 +246,17 @@ pub fn any<T>(
         };
         tries += 1;
         let last = tries == waits.len();
+        if stop() {
+            return Err(e);
+        }
         eprintln!("{what}: {e:#}; try {} of {} in {w:?}", tries + 1, waits.len() + 1);
-        std::thread::sleep(w);
+        let until = std::time::Instant::now() + w;
+        while let Some(left) = until.checked_duration_since(std::time::Instant::now()).filter(|d| !d.is_zero()) {
+            std::thread::sleep(left.min(STOP_EVERY));
+            if stop() {
+                return Err(e);
+            }
+        }
         if last {
             if let Some(p) = path {
                 share_check(what, p, w);
@@ -244,6 +267,9 @@ pub fn any<T>(
         r = f();
     }
 }
+
+/// How often `any_until` looks at its stop while it waits.
+const STOP_EVERY: Duration = Duration::from_millis(500);
 
 /// Before an operation's last try on `p`: whether the NAS share is mounted (the kernel's table,
 /// which never blocks) and answers (a stat of its mount point under a deadline). Gone, it's waited
@@ -409,5 +435,28 @@ mod tests {
         assert!(!io_of(&e).is_some_and(|i| transient(&i)), "marked exhausted");
         let e = any("t", None, &ms(2), transient, || -> anyhow::Result<()> { anyhow::bail!("cut short") }).unwrap_err();
         assert_eq!(e.to_string(), "cut short");
+    }
+
+    /// Task #903: a stop ends the retries at once, mid-wait, with the last error (not Exhausted).
+    #[test]
+    fn a_stop_ends_the_waits_at_once() {
+        static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let tries = Cell::new(0);
+        let t = std::time::Instant::now();
+        let e = any_until(
+            "t",
+            None,
+            &[Duration::from_secs(60)],
+            transient,
+            || STOP.load(Ordering::Relaxed),
+            || -> anyhow::Result<()> {
+                tries.set(tries.get() + 1);
+                STOP.store(true, Ordering::Relaxed);
+                Err(io::Error::from_raw_os_error(libc::ENXIO).into())
+            },
+        )
+        .unwrap_err();
+        assert!(t.elapsed() < Duration::from_secs(5) && tries.get() == 1);
+        assert!(io_of(&e).is_some_and(|i| transient(&i)), "not marked exhausted");
     }
 }

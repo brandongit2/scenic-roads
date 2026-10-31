@@ -43,7 +43,8 @@ Four kinds, all with the same spec shape (`unit` (stored: the task's z6 or z8 ti
   While the NAS's store lacks one of a z6 tile's canopy squares (`unit::canopy_stored`), the
   steps through canopy run in the job (`unit::keep_here`), which downloads it. A native worker
   reads the squares on its NAS mount, riding out a moment's outage of the share as a job's NAS
-  reads do (`store::retry`, docs/pool.md §3). The `unit` job clones
+  reads do (`store::retry`, docs/pool.md §3), till the build pauses: then at once, the task given
+  back as paused (`store::retry::any_until`). The `unit` job clones
   the files into the task's folder (copy-on-write) and offers at most three tails at once. A z6
   tile resumed (docs/pool.md §7.2) offers only the steps its last run didn't keep
   (`unit::split_kept`): a worker starts from the folder a run here would take up.
@@ -73,10 +74,12 @@ Common rules:
   write itself limited to 60 s) and each read: the wait for the answer's first byte included. The task's log says each fetched file's size, time and rate; its timings give
   the fetch phase's bytes and rate. Its other requests have 15 s in all. A failed fetch isn't
   resumed: the task fails and its job runs it itself.
-- **Inputs held till the lease ends** (`Tasks::offer`): the coordinator clones a task's inputs
-  into its own folder (`<id>-in`, copy-on-write) when it's offered, refusing an offer whose input
-  isn't there at the size offered, and serves them from there until the task is closed: whatever
-  the job does with its own folders meanwhile. A fetch for a task that has ended (its job ran it
+- **Inputs held till the lease ends** (`coord::task::stage`, `Tasks::offer`): the coordinator
+  clones a task's inputs into its own folder when it's offered (outside its lock; copy-on-write on
+  APFS, its folder and the jobs' both in the agent's home; a full copy elsewhere), refusing an
+  offer whose input isn't there at the size offered, and serves them from `<id>-in` until the
+  task is closed, whatever the job does with its own folders meanwhile; a coordinator starting
+  empties its folder of a run before. A fetch for a task that has ended (its job ran it
   itself and closed it) is answered 410, that lease is gone; 404 is an input the task hasn't.
 - **What comes back:** only files the steps changed (hashes of the inputs tell).
 - **Memory:** predicted from the files (a tail: three times over, at least 300 MB; each kind has

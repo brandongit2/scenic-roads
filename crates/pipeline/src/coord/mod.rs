@@ -4236,7 +4236,7 @@ fn route(
         p if p.starts_with("/task/") && !local => anyhow::bail!("{p} is for this Mac's jobs"),
         "/task/offer" => {
             let mut o: task::Offer = serde_json::from_slice(body)?;
-            let mut s = shared.lock().unwrap();
+            let s = shared.lock().unwrap();
             // What its z6 tile's task took last time (a worker's measure, with some room), in place of
             // the guess.
             if let Some(c) =
@@ -4244,7 +4244,11 @@ fn route(
             {
                 o.mem_mb = c.peak_mb + c.peak_mb / 10;
             }
-            let id = s.tasks.offer(o, now)?;
+            // (Its inputs cloned outside the lock: off APFS, a copy, which takes time.)
+            let dir = s.tasks.dir().to_path_buf();
+            drop(s);
+            let o = task::stage(&dir, o)?;
+            let id = shared.lock().unwrap().tasks.offer(o, now)?;
             Ok((200, serde_json::json!({ "id": id })))
         }
         "/task/workers" => {
@@ -8773,20 +8777,17 @@ mod tests {
         let offer = |ahead: Option<f64>| {
             let mut s = c.shared.lock().unwrap();
             let now = s.now();
-            s.tasks
-                .offer(
-                    task::Offer {
-                        owner: 42,
-                        kind: "terrainsub".into(),
-                        spec: serde_json::json!({}),
-                        root: root.clone(),
-                        inputs: Default::default(),
-                        mem_mb: 100,
-                        ahead,
-                    },
-                    now,
-                )
-                .unwrap()
+            let o = task::Offer {
+                owner: 42,
+                kind: "terrainsub".into(),
+                spec: serde_json::json!({}),
+                root: root.clone(),
+                inputs: Default::default(),
+                mem_mb: 100,
+                ahead,
+            };
+            let o = task::stage(s.tasks.dir(), o).unwrap();
+            s.tasks.offer(o, now).unwrap()
         };
         {
             let mut s = c.shared.lock().unwrap();

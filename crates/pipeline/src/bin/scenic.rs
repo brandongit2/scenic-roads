@@ -1542,6 +1542,11 @@ fn main() -> Result<()> {
                 Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
             };
             store::whole::write(&result, v.to_string().as_bytes())?;
+            // (A step stopped as the build pauses: the task exits as paused, given back by its
+            // agent, not failed.)
+            if r.as_ref().is_err_and(pipeline::control::is_paused) {
+                std::process::exit(pipeline::control::PAUSED_EXIT);
+            }
             r.map(|_| ())
         }
         Some(Cmd::Pause { now, here, member, home }) => pause_resume(true, now, here, member.as_deref(), &home.home),

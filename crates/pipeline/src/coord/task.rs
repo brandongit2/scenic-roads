@@ -139,19 +139,22 @@ impl Tasks {
         }
     }
 
-    /// Takes a job's offer; its id. Its inputs are cloned into this coordinator's folder for it
-    /// (`<id>-in`, copy-on-write: instant) and served from there till it's closed: a lease's inputs
-    /// stay readable until the lease ends, whatever the job does with its own folders meanwhile
-    /// (it ran the task itself and removed them, it ended, or a job after it emptied its scratch:
-    /// task #903). One that isn't there as offered (missing, another size) is refused: a task is
-    /// never offered with an input it can't serve.
-    pub fn offer(&mut self, mut o: Offer, now: Instant) -> std::io::Result<u64> {
+    /// This coordinator's folder for its tasks' uploads and inputs (`stage`).
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Takes a job's offer, its inputs this coordinator's own (`stage`); its id. They're moved to
+    /// `<id>-in` and served from there till it's closed: a lease's inputs stay readable until the
+    /// lease ends, whatever the job does with its own folders meanwhile (it ran the task itself and
+    /// removed them, it ended, or a job after it emptied its scratch: task #903).
+    pub fn offer(&mut self, Staged(mut o): Staged, now: Instant) -> std::io::Result<u64> {
         let id = self.next;
         self.next += 1;
         let root = self.dir.join(format!("{id}-in"));
         std::fs::remove_dir_all(&root).ok();
-        if let Err(e) = take_inputs(&o.root, &root, &o.inputs) {
-            std::fs::remove_dir_all(&root).ok();
+        if let Err(e) = std::fs::rename(&o.root, &root) {
+            std::fs::remove_dir_all(&o.root).ok();
             return Err(e);
         }
         o.root = root;
@@ -427,42 +430,52 @@ impl Tasks {
     }
 }
 
-/// Task inputs `inputs` (path → size) of folder `from`, cloned into `to` (`clone`): each there, at
-/// its size, else the error.
-fn take_inputs(from: &Path, to: &Path, inputs: &BTreeMap<String, u64>) -> std::io::Result<()> {
+/// An offer whose inputs are a coordinator's own (`stage`): what `Tasks::offer` takes.
+pub struct Staged(Offer);
+
+/// Offer `o` with its inputs cloned into a folder of their own in `dir` (a coordinator's
+/// `Tasks::dir`): copy-on-write on APFS, instant and no room taken (the jobs' folders and the
+/// coordinator's are both in the agent's home, one volume); else a full copy, so it's done outside
+/// the coordinator's lock. One that isn't there as offered (missing, another size) is refused: a
+/// task is never offered with an input it can't serve. (One a coordinator stopped before taking:
+/// `Tasks::new` empties `dir`.)
+pub fn stage(dir: &Path, mut o: Offer) -> std::io::Result<Staged> {
     use std::io::{Error, ErrorKind};
-    for (p, &n) in inputs {
-        let rel =
-            safe(p).ok_or_else(|| Error::new(ErrorKind::InvalidInput, format!("an input outside its folder: {p}")))?;
-        let dst = to.join(rel);
-        std::fs::create_dir_all(dst.parent().unwrap_or(to))?;
-        clone(&from.join(rel), &dst).map_err(|e| Error::new(e.kind(), format!("input {p}: {e}")))?;
-        let len = std::fs::metadata(&dst)?.len();
-        if len != n {
-            return Err(Error::new(ErrorKind::InvalidData, format!("input {p}: {len} bytes, offered as {n}")));
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let to = dir.join(format!("in.{}", SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    std::fs::remove_dir_all(&to).ok();
+    let took = (|| {
+        std::fs::create_dir_all(&to)?;
+        for (p, &n) in &o.inputs {
+            let rel = safe(p)
+                .ok_or_else(|| Error::new(ErrorKind::InvalidInput, format!("an input outside its folder: {p}")))?;
+            let dst = to.join(rel);
+            std::fs::create_dir_all(dst.parent().unwrap_or(&to))?;
+            clone(&o.root.join(rel), &dst).map_err(|e| Error::new(e.kind(), format!("input {p}: {e}")))?;
+            let len = std::fs::metadata(&dst)?.len();
+            if len != n {
+                return Err(Error::new(ErrorKind::InvalidData, format!("input {p}: {len} bytes, offered as {n}")));
+            }
         }
+        Ok(())
+    })();
+    if let Err(e) = took {
+        std::fs::remove_dir_all(&to).ok();
+        return Err(e);
     }
-    Ok(())
+    o.root = to;
+    Ok(Staged(o))
 }
 
-/// A copy-on-write clone of `src` at `dst` (APFS: instant), else a copy; a link stays a link (to
-/// the same file, served from there: a z6 tile's roadside buildings are links to the NAS's).
+/// A clone of `src` at `dst` (store::sys::copy_data: copy-on-write where the volume can, else a
+/// copy); a link stays a link (to the same file, served from there: a z6 tile's roadside buildings
+/// are links to the NAS's).
 pub fn clone(src: &Path, dst: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     if std::fs::symlink_metadata(src)?.file_type().is_symlink() {
         let to = std::fs::read_link(src)?;
         let to = if to.is_relative() { src.parent().unwrap_or(Path::new(".")).join(to) } else { to };
         return std::os::unix::fs::symlink(to, dst);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(std::io::Error::other);
-        let (s, d) = (c(src)?, c(dst)?);
-        // SAFETY: two NUL-terminated paths that outlive the call; clonefile only reads them.
-        if unsafe { libc::clonefile(s.as_ptr(), d.as_ptr(), 0) } == 0 {
-            return Ok(());
-        }
     }
     store::sys::copy_data(src, dst).map(|_| ())
 }
@@ -481,6 +494,7 @@ mod tests {
             mem_mb: mem,
             ahead: None,
         };
+        let o = stage(tasks.dir(), o).unwrap();
         tasks.offer(o, now).unwrap()
     }
 

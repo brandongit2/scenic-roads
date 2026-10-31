@@ -480,6 +480,10 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
                 SourceDown(format!("{what}: a server it reads gave no answer ({st}); see {}", log.display())).into()
             );
         }
+        // (It stopped as the build pauses, crate::control::stop_paused: a pause, not a failure.)
+        if st.code() == Some(crate::control::PAUSED_EXIT) && crate::control::draining() {
+            return Err(anyhow::Error::new(crate::control::Paused).context(format!("{what}: paused")));
+        }
         bail!("{what} failed ({st}); see {}", log.display());
     }
     eprintln!("  {what}: {:.0?}, {} MB at most", t.elapsed(), peak >> 20);
