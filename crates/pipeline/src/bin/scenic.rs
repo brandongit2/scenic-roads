@@ -1571,7 +1571,7 @@ fn main() -> Result<()> {
         Some(Cmd::NasTarget { what, root }) => nas_target(what.as_deref(), &root.root),
         Some(Cmd::NasRoom { what, root }) => nas_room(what.as_deref(), &root.root),
         Some(Cmd::Memory { what, places }) => memory(what.as_deref(), &places.home),
-        Some(Cmd::Gc { dry_run, days, depth_keep, root: r }) => {
+        Some(Cmd::Gc { dry_run, days, depth_keep, shadow_due, root: r }) => {
             // (The depth's targets not read: said, and no depth name dropped this run.)
             let keep = depth_keep.as_deref().and_then(|p| {
                 gc::DepthKeep::read(p, now_s())
@@ -1579,7 +1579,9 @@ fn main() -> Result<()> {
                     .ok()
                     .flatten()
             });
-            let r = pipeline::timings::job("gc", || gc::run(&root(&r.root, true)?, days, dry_run, keep.as_ref()))?;
+            let r = pipeline::timings::job("gc", || {
+                gc::run(&root(&r.root, true)?, days, dry_run, keep.as_ref(), shadow_due.as_deref())
+            })?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }

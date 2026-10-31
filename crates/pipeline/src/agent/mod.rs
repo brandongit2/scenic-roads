@@ -41,6 +41,7 @@ pub mod fcarchive;
 pub mod fccheck;
 pub mod forecast;
 pub mod gc;
+pub mod gcqueue;
 pub mod heal;
 pub mod histarchive;
 pub mod jobs;
@@ -8141,6 +8142,7 @@ impl Agent {
         run.conds = Some(pool::Conds { home: c.home, ac: c.ac, battery: c.battery, held: self.hold().held.is_some() });
         run.tend_brokers();
         run.tend_reach();
+        run.gc = if lead { self.maplog.started().map(|h| h.gc.clone()) } else { None };
         let out = run.step();
         // (When its checks ran: the coordinator's grants count from then, not from the tell.)
         let checked = crate::coord::wall_now();
@@ -8314,10 +8316,15 @@ impl Agent {
     fn pool_lead_files(&mut self, root: &store::nasfs::NasRoot, saved: bool) {
         // (The forecast's files the plan handed over, written below.)
         let (fc_bytes, fc_entry) = std::mem::take(&mut self.fc_pending);
+        let here = self.maplog.started();
         let Some(mut guard) = self.pooled() else { return };
         let run = &mut *guard;
         run.keep_today(saved);
         if let Some(rec) = run.side.driver().records() {
+            // (GC's queue told of the records as saved: what they dropped queued, docs/maplog.md §7.2.)
+            if let Some(h) = here.as_ref().filter(|_| saved) {
+                h.gc.records(rec, crate::coord::wall_now());
+            }
             let new: Vec<(String, crate::rawpack::Pack)> =
                 rec.raw.iter().filter(|(_, p)| !run.named_raw.contains(&p.name)).cloned().collect();
             if !new.is_empty() {

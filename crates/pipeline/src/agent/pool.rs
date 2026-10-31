@@ -1241,6 +1241,9 @@ pub struct Run {
     /// The build page's asks for the next step, and this Mac's conditions for its heartbeat.
     pub asks: Vec<driver::Ask>,
     pub conds: Option<Conds>,
+    /// GC's queue, leading (its map's log open): the merge refuses an entry bringing a name deleted
+    /// under its lease (super::gcqueue::GcQueue::refusal, docs/maplog.md §7.4).
+    pub gc: Option<std::sync::Arc<super::gcqueue::GcQueue>>,
     /// The view of the lead and members (crate::agent::lead).
     pub controls: super::lead::Controls,
     /// What a tick needs of the agent (`Cx`), as its loop left it.
@@ -1501,6 +1504,7 @@ impl Run {
             in_touch: None,
             led: BTreeSet::new(),
             asks: Vec::new(),
+            gc: None,
             conds: None,
             controls,
             cx: Cx::default(),
@@ -1810,8 +1814,12 @@ impl Run {
         let lead_of = |term: u64| -> Option<String> {
             crate::pool::term::read(nas.as_ref(), term).ok().flatten().map(|t| t.member)
         };
+        let gc = self.gc.clone();
         let checked = |e: &Entry, r: &Records| {
             by_its_lead(e, &lead_of)?;
+            if let Some(why) = gc.as_ref().and_then(|q| q.refusal(e)) {
+                return Err(why);
+            }
             check_from(e, r, &lead_app, &app_of)
         };
         let out = self.side.step(give, &checked);

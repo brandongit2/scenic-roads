@@ -1091,6 +1091,50 @@ impl Planner {
         keep
     }
 
+    /// GC's queue in shadow (super::gcqueue; docs/maplog.md §8, step 7): the `gc` job's check of its
+    /// due set read back at each plan once written (what that GC removed or found gone marked
+    /// deleted, the newest lease then theirs; its result logged), so a deletion is marked within a
+    /// plan of the job's end. Only by the lead's agent that runs the jobs, its map's log open.
+    pub(super) fn shadow_checked(&self) {
+        use super::gcqueue::{ShadowCheck, SHADOW_CHECK};
+        let (Some(here), Some(co)) = (self.inp.map.as_ref().filter(|_| self.locked && !self.o.dry_run), &self.coord)
+        else {
+            return;
+        };
+        let check = self.o.home.join(super::publish::MAPLOG).join(SHADOW_CHECK);
+        let Ok(b) = std::fs::read(&check) else { return };
+        match serde_json::from_slice::<ShadowCheck>(&b) {
+            Ok(c) => {
+                eprintln!("gc: {}", c.said());
+                let gone: Vec<String> = c.removed.iter().chain(&c.gone).cloned().collect();
+                here.gc.deleted(&gone, now_s(), co.lease_bounds().1);
+            }
+            Err(e) => eprintln!("gc: the shadow's check {} can't be read: {e}", check.display()),
+        }
+        std::fs::remove_file(&check).ok();
+    }
+
+    /// The queue's due set now, written to the map log's folder as the `gc` job is planned, for the
+    /// job to check against what it removes (`--shadow-due`). Its path (None: not the lead's agent
+    /// running the jobs, or not written).
+    pub(super) fn shadow_gc(&self) -> Option<PathBuf> {
+        use super::gcqueue::{Holders, ShadowDue, SHADOW_DUE};
+        let here = self.inp.map.as_ref().filter(|_| self.locked && !self.o.dry_run)?;
+        let (oldest_lease, _) = self.coord.as_ref()?.lease_bounds();
+        let now = now_s();
+        let cursors = here.feed.cursors();
+        let names = here.gc.due(&Holders { cursors: &cursors, oldest_lease, now });
+        let due = ShadowDue { at: now, queued: here.gc.len(), names };
+        let p = self.o.home.join(super::publish::MAPLOG).join(SHADOW_DUE);
+        match store::whole::write(&p, &serde_json::to_vec(&due).unwrap_or_default()) {
+            Ok(()) => Some(p),
+            Err(e) => {
+                eprintln!("gc: the shadow's due set not written: {e:#}");
+                None
+            }
+        }
+    }
+
     pub(super) fn plan_unchecked(
         &self,
         root: &store::nasfs::NasRoot,
@@ -1185,12 +1229,18 @@ impl Planner {
         if self.coord.is_some() {
             out.extend(self.redo_jobs(root));
         }
+        self.shadow_checked();
         if self.due("gc", Duration::from_secs(86400)) {
             let keep = self.keep_depth_targets();
+            let mut cmd =
+                vec![s(&me), "gc".into(), "--root".into(), jobs::root_arg(root), "--depth-keep".into(), s(&keep)];
+            if let Some(due) = self.shadow_gc() {
+                cmd.extend(["--shadow-due".into(), s(&due)]);
+            }
             out.push(JobSpec {
                 id: "gc".into(),
                 what: "gc".into(),
-                cmd: vec![s(&me), "gc".into(), "--root".into(), jobs::root_arg(root), "--depth-keep".into(), s(&keep)],
+                cmd,
                 needs: Needs { nas: true },
                 restart_after_sleep: true,
                 record: None,

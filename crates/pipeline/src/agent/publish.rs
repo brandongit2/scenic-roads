@@ -99,16 +99,18 @@ fn watches() -> Vec<&'static str> {
 }
 
 /// The lead's map as its agent reads it (docs/maplog.md §6.5): the shadow's feed (the map, its
-/// batches held, the log's marks), and the head's catalogue: the one the shadow last checked equal
+/// batches held, the log's marks), GC's queue (told of each batch here, of each records save by the
+/// agent's loop: super::gcqueue), and the head's catalogue: the one the shadow last checked equal
 /// to the map, else made of the map once (`catalogue`).
 pub struct Here {
     pub feed: std::sync::Arc<store::map::feed::Feed>,
+    pub gc: std::sync::Arc<super::gcqueue::GcQueue>,
     head: std::sync::Arc<super::bus::Snap<Option<std::sync::Arc<store::catalogue::Catalogue>>>>,
 }
 
 impl Default for Here {
     fn default() -> Here {
-        Here { feed: Default::default(), head: super::bus::Snap::new(None) }
+        Here { feed: Default::default(), gc: Default::default(), head: super::bus::Snap::new(None) }
     }
 }
 
@@ -206,6 +208,13 @@ fn now() -> std::time::SystemTime {
     std::time::SystemTime::now()
 }
 
+fn unix(t: std::time::SystemTime) -> u64 {
+    t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// The NAS snapshot's cursor among the clients' (docs/maplog.md §5.4): the oldest kept there.
+pub const SNAPSHOT_CLIENT: &str = "snapshot";
+
 /// What a publish did to the log.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Wrote {
@@ -237,6 +246,7 @@ impl Writer {
         if self.log.is_none() {
             let mut log = store::map::log::Log::open_watching(&self.dir, &watches())
                 .with_context(|| format!("open the log in {}", self.dir.display()))?;
+            self.here.gc.open(&self.dir, &log.map(), unix(now())).context("open GC's queue")?;
             if !log.map().is_empty() {
                 let (base, held) = log.replayed();
                 self.here.feed.set_marks(log.marks().clone());
@@ -324,6 +334,7 @@ impl Writer {
         let log = self.open()?;
         let wrote = if log.map().is_empty() {
             log.seed(store::map::Map::of(cat)?)?;
+            here.gc.start(&log.map());
             here.feed.set_marks(log.marks().clone());
             here.feed.start(log.map(), cat.n, &[], log.cursors().clone());
             Wrote::Seeded
@@ -339,6 +350,7 @@ impl Writer {
                 Wrote::Same
             } else {
                 let map = log.append(&b)?;
+                here.gc.batch(&b, unix(now()));
                 here.feed.set_marks(log.marks().clone());
                 here.feed.push(map, &b);
                 Wrote::Batch(b.set.len(), b.del.len())
@@ -365,7 +377,11 @@ impl Writer {
         }
         let map = log.map();
         match store::map::write_nas_snapshot(root, &map) {
-            Ok(()) => eprintln!("maplog: the map at {} written to the NAS", map.seq),
+            Ok(oldest) => {
+                eprintln!("maplog: the map at {} written to the NAS", map.seq);
+                // (A reader may start from the oldest kept: it holds its files, docs/maplog.md §5.4.)
+                self.here.feed.note(SNAPSHOT_CLIENT, oldest, unix(now));
+            }
             Err(e) => eprintln!("maplog: writing the map's snapshot to the NAS: {e:#}"),
         }
     }

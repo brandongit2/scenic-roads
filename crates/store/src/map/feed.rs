@@ -164,6 +164,13 @@ impl Feed {
         Changes::Batches { head, n, body }
     }
 
+    /// Client `client`'s cursor set to `seq`, heard at `now`, by the lead itself: a holder that asks
+    /// no `changes` (the NAS snapshot, `snapshot`, docs/maplog.md §5.4).
+    pub fn note(&self, client: &str, seq: u64, now: u64) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.cursors.insert(client.to_string(), Cursor { seq, heard: now, at: now });
+    }
+
     /// The clients' cursors as last heard (saved with the log's snapshot).
     pub fn cursors(&self) -> BTreeMap<String, Cursor> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).cursors.clone()

@@ -191,6 +191,10 @@ pub enum Cmd {
         /// no target names are dropped
         #[arg(long, value_name = "FILE")]
         depth_keep: Option<PathBuf>,
+        /// GC's queue's due set (shadow; the agent writes it, agent::gcqueue::SHADOW_DUE): checked
+        /// against what this run removes, the check written beside it
+        #[arg(long, value_name = "FILE")]
+        shadow_due: Option<PathBuf>,
         #[command(flatten)]
         root: Root,
     },

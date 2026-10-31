@@ -140,6 +140,15 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
   depth name is dropped that run. That covers the targets the coverage left and those the depth's
   rules no longer make (a z6 tile no source finer than z8 meets). Their files then go by the rule
   above (`layers/` is swept). `scenic gc --dry-run` counts them, writing nothing.
+- **GC's queue, in shadow** (docs/maplog.md §7, §8 step 7): the lead's agent queues each content
+  name the map's log or the records stop naming (`agent::gcqueue`, `agent/maplog/gc.jsonl`) and,
+  as each plan finds GC due, writes the names due by the queue's rules to `agent/maplog/gc-shadow.json`
+  and passes them (`scenic gc --shadow-due`). Nothing is deleted by them: the run checks them
+  against what it removes (each removed, gone already, or kept for its reason: a catalogue of the
+  window, the records or an unmerged entry, too young, not swept), writes the check beside them
+  (`gc-shadow-check.json`) and says it in its report (`shadow`, and a warning when one was kept).
+  The next plan marks what the run removed or found gone deleted in the queue, which the merge
+  refuses for a hand-off whose lease was granted before (§7.4).
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/`, inputs,
   state, app and nas. The packed tile stores (`sources/aws-terrarium/`, `sources/pyramids/`), whose
   archives no manifest names, are kept by their own indexes (macs.md, Downloads), never by GC.

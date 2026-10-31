@@ -340,7 +340,7 @@ pub struct Mark {
 }
 
 /// An `f/` entry's content name.
-fn content_of(v: &Value) -> Option<&str> {
+pub fn content_of(v: &Value) -> Option<&str> {
     v.get("file").and_then(Value::as_str)
 }
 
@@ -598,8 +598,9 @@ pub fn nas_name(seq: u64) -> String {
 }
 
 /// Writes the map whole to the NAS (`map/<seq>.json.zst`, a temporary name renamed into place: §4.4),
-/// then removes all but the newest `NAS_KEPT` there. Once an hour at most (the lead's caller).
-pub fn write_nas_snapshot(root: &NasRoot, m: &Map) -> Result<()> {
+/// then removes all but the newest `NAS_KEPT` there. Once an hour at most (the lead's caller). The
+/// oldest `seq` kept there: a reader may start from it (GC's `snapshot` holder, docs/maplog.md §5.4).
+pub fn write_nas_snapshot(root: &NasRoot, m: &Map) -> Result<u64> {
     let dir = root.join(NAS_DIR);
     let b = Snapshot::of(m, &BTreeMap::new()).encode()?;
     dir.join(nas_name(m.seq)).write_whole_made(&b).with_context(|| format!("write {NAS_DIR}/{}", nas_name(m.seq)))?;
@@ -610,12 +611,13 @@ pub fn write_nas_snapshot(root: &NasRoot, m: &Map) -> Result<()> {
         .filter_map(|n| n.strip_suffix(SUFFIX)?.parse().ok())
         .collect();
     seqs.sort_unstable_by(|a, b| b.cmp(a));
+    let oldest = seqs.iter().take(NAS_KEPT).min().copied().unwrap_or(m.seq).min(m.seq);
     for s in seqs.into_iter().skip(NAS_KEPT) {
         if let Err(e) = dir.join(nas_name(s)).remove_file() {
             eprintln!("maplog: can't remove {NAS_DIR}/{}: {e}", nas_name(s));
         }
     }
-    Ok(())
+    Ok(oldest)
 }
 
 #[cfg(test)]

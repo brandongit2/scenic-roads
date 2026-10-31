@@ -2192,6 +2192,16 @@ impl Coordinator {
         (s.costs.clone(), leased, s.history.since(0, usize::MAX), mem)
     }
 
+    /// For GC's queue (crate::agent::gcqueue, docs/maplog.md §7.2, §7.4): when the oldest live lease
+    /// was granted (None: none live), and the newest lease granted so far (every one before it has a
+    /// smaller id).
+    pub fn lease_bounds(&self) -> (Option<u64>, crate::pool::journal::LeaseId) {
+        let s = self.shared.lock().unwrap();
+        let oldest = s.leases.all(s.now()).iter().map(|l| l.granted_at).min();
+        let newest = crate::pool::journal::LeaseId { term: s.leases.term, n: s.leases.next().saturating_sub(1) };
+        (oldest, newest)
+    }
+
     /// The targets of `steps` leased now, every Mac's.
     pub fn leased_targets(&self, steps: &[&str]) -> Vec<(String, String)> {
         let s = self.shared.lock().unwrap();

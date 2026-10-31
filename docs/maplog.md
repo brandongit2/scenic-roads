@@ -505,6 +505,22 @@ it) leaves the queue. A file is **due** when:
   by name; leases are clients too, §5.4), and
 - the records and the map still don't name it (checked again at the moment it goes).
 
+Built (step 7, `agent::gcqueue`): the queue is one file of JSON lines in the map log's folder,
+appended and `fsync`ed once per change (a batch, a records save, a deletion), rewritten whole once
+it has grown to four times what it holds; it survives a lead restart. The holders' index is memory
+alone: the map's content names from the log's map at the open and each batch, the records' (the
+manifest's and the pending uploads') from each records save the lead's agent makes; nothing is due
+until the records have been seen. The first records seen start the index: what a lead that wasn't
+running missed is the orphan sweep's (§7.5, step 8), as is the queue lost with a lead disk. A hand-off
+taken and not merged isn't indexed: a reused name is either held by a lease granted before it was
+freed (the third rule), or refused at the merge (§7.4). The NAS snapshot is a client (`snapshot`,
+its cursor the oldest of the snapshots kept there). Deletions are kept for the merge's refusal
+`DELETIONS_KEPT_S` (`CURSOR_TTL`). In shadow nothing deletes by the queue: the `gc` job is handed
+the due set and checks it against what it removes that day (storage.md, GC); what it removed or
+found gone is then marked deleted. With today's 14-day catalogue window and `GRACE` of 2 days, the
+check is expected to report due names today's GC keeps for its window ("catalogue", "young"); one
+kept for "records" is a holder the queue missed.
+
 ### 7.3 Running
 
 The `gc` job stops being daily. The lead's agent takes a **chunk** whenever the NAS budget leaves
@@ -524,6 +540,10 @@ was granted: one deleted meanwhile refuses the hand-off's targets, which are lea
 which uploads the file afresh). With §7.2's third rule this can only happen to a name freed before
 the lease, found by the job, and deleted during it: rare, and correct when it happens. The touch
 (an SMB write per reused file, in the upload path) and `remove_unless_touched` go.
+
+Built (step 7): "since the lease was granted" by lease ids, no clocks: each deletion keeps the
+newest lease granted when it was marked, and a hand-off of that lease or an older one bringing the
+name is refused. The touch stays until step 8.
 
 ### 7.5 What the queue can't see: orphans
 
@@ -562,7 +582,7 @@ server has spoken the log for a day (the #642 gate, as coordination.md §8).
 | 4 (built) | **The agent and the page on the log:** `served()`, `LastCatalogue`, `regionsview`, `builtview`, `cataloguesview`, `pubtimes`, `namestodo::inputs_key` (by prefix `seq`) | `served`'s per-folder cache and `read_n_from` uses, `cataloguesview`'s catalogue reads and hashed names, `publishing.json`'s `at`/`low_at` | `catalogues_view_from_the_log_matches_from_catalogues` (same entries on a recorded run); `names_todo_reruns_exactly_when_its_prefixes_change`; `published_age_is_the_last_batch_touching_the_tile` |
 | 5 (built) | **Downloads by their own lists:** each download keeps its logical → content list (`downloads.json` fmt 5); "out of date" from its list against the map served (§6.2) | the Mac's old whole catalogues kept for downloads (`Mirror::keep_catalogues`, `prune`'s kept set) | `an_update_s_size_from_its_list_equals_the_two_catalogues_diff` (on recorded catalogues); `a_download_behind_the_log_compares_its_list`; `downloads_json_fmt4_migrates` |
 | 6 | **Catalogues stop** (after the gate: every server on the log a day): the step only posts; `catalog-held/` → `map-held/` | the catalogue writer and reader (`write`, `write_delta*`, `Delta`, `delta.rs`, `chain`, `whole_due`, `MAX_CHAIN`, `keep_read_in`/`kept_dir`, `latest*`, `read_n*`, `list`, `prune`, `next_n`), `state/pool/delta-catalog` and `Switches::delta`, the `catalog-stats:` sizes' look-ups of the last catalogue | `the_step_publishes_with_no_catalog_folder`; `a_held_batch_is_appended_whole_when_the_hold_lifts`; test roots (`lakefill catalog-add`, `coastcheck`, the server's tests) on snapshots |
-| 7 | **GC's queue, shadow:** the lead queues freed names (batches and records saves), leases and clients as holders; the merge's refusal of names deleted under a lease; a dry-run report beside today's GC, which still deletes | — | `a_name_freed_and_taken_again_leaves_the_queue`; `due_waits_for_every_cursor_the_grace_and_older_leases`; `a_reuse_of_a_deleted_name_is_refused_and_redone`; the shadow's due set ⊆ today's GC's deletions on the same day (a check job) |
+| 7 (built: shadow) | **GC's queue, shadow:** the lead queues freed names (batches and records saves), leases and clients as holders; the merge's refusal of names deleted under a lease; a dry-run report beside today's GC, which still deletes | — | `a_name_freed_and_taken_again_leaves_the_queue`; `due_waits_for_every_cursor_the_grace_and_older_leases`; `a_reuse_of_a_deleted_name_is_refused_and_redone`; the shadow's due set ⊆ today's GC's deletions on the same day (a check job) |
 | 8 | **GC runs by the queue:** chunks of 200 whenever quiet, resumable; the orphan sweep; today's other sweeps as chunked cursors | `run_once`'s catalogue reading and folder sweep, `remove_unless_touched` and `Out::put_file`'s touch, `TOMB` and `put_back`, the 14-day catalogue window, the `gc` job's daily schedule | `gc_resumes_mid_chunk_after_a_kill` (agent killed between two deletions; next chunk starts at the first not gone, nothing deleted twice or kept forever); `gc_yields_to_the_budget`; `an_orphan_is_queued_only_after_its_age`; `the_queue_rebuilds_after_a_lead_disk_restore` |
 | 9 | **The old catalogues go:** one GC pass removes `catalog/` and `catalog-held/` on the NAS (their files are held by the map and records already), and each Mac's server its `catalog/` | the folders | — |
 | 10 | docs: formats.md (Catalogue → the map and its snapshot), storage.md (GC), macs.md (the server's sync, the mirror), building.md (publishing, the switches), pool.md §7.2/§10; this doc folded in | — | — |
