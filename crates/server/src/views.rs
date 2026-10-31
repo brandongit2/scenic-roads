@@ -80,15 +80,20 @@ impl RangeRead for Src {
     }
 }
 
-/// An error unless a section read whole (`what`) has the XXH3 its table gives.
+/// An error unless a section read whole (`what`, naming its file) has the XXH3 its table gives.
+/// A damaged section fails only the requests that need it (each answered 503; nothing of it is
+/// kept, so a read that went wrong in transit is read again by the next), and is logged once per
+/// process.
 pub(crate) fn checked(what: &str, bytes: &[u8], hash: u64) -> Result<(), IoError> {
     if store::naming::xxh3(bytes) == hash {
         return Ok(());
     }
-    Err(IoError::Io(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        format!("{what} is damaged (checksum mismatch)"),
-    )))
+    static LOGGED: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+    let msg = format!("{what} is damaged (checksum mismatch)");
+    if LOGGED.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(what.to_string()) {
+        eprintln!("{msg}");
+    }
+    Err(IoError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, msg)))
 }
 
 /// A section's place in its file (`src`, a bundle's offset added) and its XXH3.
@@ -189,7 +194,7 @@ impl SectView {
                     return Ok(b.clone());
                 }
                 let b = read_aligned(r, p.off, p.len as usize)?;
-                checked(&format!("section {name:?}"), b.bytes(), p.hash)?;
+                checked(&format!("section {name:?} of {}", r.path().display()), b.bytes(), p.hash)?;
                 self.loaded.lock().unwrap().insert(name.to_string(), b.clone());
                 Ok(b)
             }
