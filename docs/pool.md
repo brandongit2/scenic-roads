@@ -1183,23 +1183,23 @@ stuck can't starve another:
 
 A healthy share's calls are unchanged.
 
-A watchdog thread, started before the agent opens anything on the NAS, looks at when the loop last
-finished a round (or the agent started, given five minutes more: a slow start isn't a stall): past
-five minutes it logs the stall with the round's phase in progress (the loop names each phase as it
-enters it, and logs one that took 10 s or more as it ends, but the wait between rounds), has
-`/usr/bin/sample` sample the agent for 5 s into `loop-stall-sample-<UTC date>-<time>Z.txt` in the
-agent's folder (once per stall; the newest five kept; the path logged; never two at once; sampling
-runs off the watchdog's thread, and a sampler still running at 300 s is killed: `sample` writes only once
-done, so that stall has no sample), and keeps `loop-stall.json` (the round's start, the phase
-and since when) in the agent's folder (this Mac's disk), which `scenic status` shows as "this Mac's
-agent loop is stalled"; it's removed when the loop goes on, and the round's real length is logged.
-These lines carry the time of day (UTC).
+The agent is in parts (docs/agent-parts.md, task #871), each on a thread of its own, so no slow
+duty holds another: **control** takes the owner's asks, **beat** writes the heartbeat, **nas** owns
+the mount, **jobs**' thread reaps and cancels, the lead's **plan** plans (crate::agent::plan), and
+the round (`Agent::round`, **jobs**' own: its slots, guards, the pool's step until #878, grants and
+starts) never plans: it grants from the last plan. One stall threshold holds them,
+`nasread::STALL_AFTER` (5 min): a plan running past it is logged with its phase and the agent
+sampled by `/usr/bin/sample` for 5 s into `plan-stall-sample-<UTC date>-<time>Z.txt` in the agent's
+folder (once per plan; the newest five kept; never two at once; a sampler still running at 300 s is
+killed), and the status says "planning has taken N min so far" while it lasts, grants going on from
+the last plan meanwhile. The round names each phase as it enters it and logs one that took 10 s or
+more as it ends, but the wait between rounds. These lines carry the time of day (UTC).
 
 The heartbeat (`state/status.json`, or a helper's file, and its copy in the agent's folder) is not
-the loop's to write: the agent's beat writes it (crate::agent::beat, docs/agent-parts.md §4.2,
-task #871) every 10 s on a timer of its own and at once on a change, from the view the loop last
-published, so a long round (task #795: a plan 94–212 s, the checklist 261 s) or a hung share
-leaves it beating. Its content is as of the loop's last view, with its age (`loop_age_s`); its
+the round's to write: the agent's beat writes it (crate::agent::beat, docs/agent-parts.md §4.2,
+task #871) every 10 s on a timer of its own and at once on a change, from the view the round last
+published, so a long round or a hung share leaves it beating (and the plan and the checklist,
+task #795's 94–212 s and 261 s, are off the round altogether). Its content is as of the loop's last view, with its age (`loop_age_s`); its
 time says the agent is alive. The beat is the only writer of either copy (the NAS's on a writer
 thread of its own that takes the newest body each time, under the deadline above), so no beat
 lands over a newer one (each a whole file put in place: a temporary file and a rename, one create a
@@ -1221,7 +1221,9 @@ Still under no deadline (planned): the manifest read through `out::read_record` 
 planner's keys; the regions'
 held report (`inputs::read_report`); the helpers' listing (`state/helpers`); the coordinator's
 contact published and removed; GC's reads of the journal and records;
-the caches' clears; and every NAS call of the coordinator's and the jobs' own.
+the caches' clears; and every NAS call of the coordinator's and the jobs' own. Those of the plan
+(the records, the held report, the helpers, the plan's digest) hang the plan's thread alone: its
+last plan stays the one granted from.
 
 ### 7.9 The forecasts' archive
 

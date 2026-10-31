@@ -52,12 +52,17 @@ from the first (`edit_held`).
   measured times (`coord::JOB_S`), a step kept to the lead in one job, so a failure or a new app
   costs one run.
 - **Order:** the lead offers its plan in its order through its coordinator, and every Mac's agent,
-  the lead's included, asks it for work (docs/pool.md §7.2). It plans again when what
-  the plan depends on changes (`plan_seen`: the manifest, records, hand-offs, the gate, the pool,
-  the pause, a newer app, switch files, catalogues, leases), at the earliest end of its timed waits
-  (`replan_at`), and otherwise every five minutes (`plan_due`). Planning reads the terrain packs'
-  indexes once each by content name, kept in the agent's `pack-idx/`. On the lead, the journal is
-  merged each loop.
+  the lead's included, asks it for work (docs/pool.md §7.2). The plan is the lead's **plan** part's
+  (`agent::plan`, docs/agent-parts.md §4.4), on a thread of its own: it plans again when a job
+  ends, a gate ask comes, what the plan depends on changes (`Planner::plan_seen`, looked at every
+  5 s: the manifest, records, hand-offs, the gate, the pool, the pause, a newer app, switch files,
+  catalogues, leases), at the earliest end of its timed waits (`replan_at`), and otherwise every
+  five minutes (`why_plan`). Each plan is numbered and published whole; the round grants from the
+  last one at once, each grant carrying its number (`coord::Grant::plan`; 0 from an older lead), so
+  a plan of minutes holds no grant, pause or heartbeat, and a grant from a plan no newer than a
+  cancel of its job or target is dropped. The checklist and the regions' counts are the plan's
+  too. Planning reads the terrain packs' indexes once each by content name, kept in the agent's
+  `pack-idx/`. On the lead, the journal is merged each round.
 - **Jobs at once** (docs/pool.md §7.2, §7.7): every job starts by a grant of the lead's
   coordinator, the lead's own too, packed by their measures: a job beside others only when their
   measured memory, disk and cores fit the Mac's room. Never beside a cold start (a step none of
