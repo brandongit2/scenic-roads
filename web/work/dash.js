@@ -1485,11 +1485,21 @@ function timeRow(m, step) {
   };
   b.parts.forEach((p, i) => part(p.wall, phaseSplit(p).map((x) => ({ ...x, colour: WAIT_COLOURS[x.key] })), p.name, pct(p.wall / b.wall), `pt ${step} ${i}`, () => phaseCard(step, b, p, range)));
   if (b.untimed > 0) part(b.untimed, [{ s: 1, colour: "var(--line)" }], "in no phase", pct(b.untimed / b.wall), `pt ${step} untimed`, () => phaseCard(step, b, null, range));
-  new ResizeObserver(() => fitPartLabels(bar)).observe(bar);
+  LABEL_FIT.observe(bar);
   return h("div", "tb", h("span", { class: "tb-k", title: `${plural(b.runs, "job")} that ended in the last ${rangeWords(range)}` }, "time breakdown"), bar);
 }
 // Each part's label as much as fits its width, never cut off (the owner's "not cut off"): its name
-// and share, else its share alone, else none; the card says it all. Measured again as the bar resizes.
+// and share, else its share alone, else none; the card says it all. Measured again as the bar's width
+// changes (one observer for every bar: a bar off the page is let go, so a rerender leaks none; the
+// labels sit absolute in a fixed-height bar, so fitting them never resizes it: no loop) and once
+// the fonts are in (a fit before then measured the fallback font).
+const LABEL_FIT = new ResizeObserver((es) => {
+  for (const e of es) {
+    if (!e.target.isConnected) LABEL_FIT.unobserve(e.target);
+    else if (e.target.dataset.fitW !== String(e.contentRect.width)) { e.target.dataset.fitW = String(e.contentRect.width); fitPartLabels(e.target); }
+  }
+});
+document.fonts?.ready.then(() => document.querySelectorAll(".tb-bar").forEach(fitPartLabels));
 function fitPartLabels(bar) {
   for (const l of bar.querySelectorAll(".tb-l")) {
     l.style.display = "";
