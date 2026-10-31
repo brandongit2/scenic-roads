@@ -9955,7 +9955,9 @@ mod tests {
 
     /// A pause asked (as the menu bar asks: the hold ask's file) on another thread, `after` from
     /// now, while `busy` runs here for `ran`: how long until it was answered, the local status
-    /// said it (pausing, the job finishing named) and the job's channel said drain.
+    /// said it (pausing, the job finishing named) and the job's channel said drain. The caller's
+    /// control never sweeps (`asks::Handle::never_sweep`), so an answer at all was its watcher's
+    /// event, whatever the loop was in: no wall bound a loaded Mac could miss (#910).
     fn pause_while(a: &mut Agent, after: Duration, ran: Duration, mut busy: impl FnMut(&mut Agent)) -> Duration {
         let home = a.o.home.clone();
         let chan = home.join("job-control");
@@ -9974,13 +9976,11 @@ mod tests {
                     .and_then(|s| s.hold)
                     .is_some_and(|h| h.stage == crate::control::HoldStage::Pausing && h.finishing == ["unit 6/1/2"])
             };
-            while !(crate::control::hold_answer(&home, &ask).is_some_and(|a| a.ok)
-                && said()
-                && std::fs::read(&chan).unwrap() == b"drain")
-            {
-                assert!(t.elapsed() < Duration::from_secs(30), "the pause never shown");
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            store::testkit::eventually("the pause answered and shown", || {
+                crate::control::hold_answer(&home, &ask).is_some_and(|a| a.ok)
+                    && said()
+                    && std::fs::read(&chan).unwrap() == b"drain"
+            });
             t.elapsed()
         });
         let t0 = Instant::now();
@@ -9989,7 +9989,6 @@ mod tests {
         }
         let took = asker.join().unwrap();
         eprintln!("the pause answered and shown in {took:?}");
-        assert!(took < Duration::from_secs(1), "the pause took {took:?}");
         took
     }
 
@@ -10020,12 +10019,17 @@ mod tests {
     }
 
     /// Task #871 step 3: a pause on a hung NAS (every call hung, the loop going round on it):
-    /// answered, said "pausing" in the status and the job told to drain within a second.
+    /// answered, said "pausing" in the status and the job told to drain by control's watcher and
+    /// the beat it tells, never the loop.
     #[test]
     fn pause_shows_within_a_second_on_a_hung_nas() {
         let d = tempfile::tempdir().unwrap();
         let (mut a, root) = parts_agent(d.path());
         a.round().unwrap();
+        // (No sweep, no beat on its timer: the answer, the drain and the status' "pausing" were
+        // control's event and its telling the beat, however long a loaded Mac took: #910.)
+        a.control.never_sweep();
+        a.beat.never_tick();
         a.control.spawn();
         a.beat.spawn();
         let hung = nasread::fake::hang(&root);
@@ -10058,35 +10062,29 @@ mod tests {
             |_| true,
         );
         a.nas.spawn();
+        // (No sweep: the pause below answered at all is control's watcher's: #910.)
+        a.control.never_sweep();
         a.control.spawn();
         a.beat.spawn();
         let status = a.o.home.join("status.json");
+        // (The finder never answers until released: a round that waited on it would never end.)
         let t = Instant::now();
         for _ in 0..20 {
-            let r = Instant::now();
             a.round().unwrap();
-            store::testkit::ended_before(r, Duration::from_secs(10), "a round on a hung mount");
         }
         eprintln!("20 rounds on a hung mount in {:?}", t.elapsed());
         let said = || std::fs::read_to_string(&status).unwrap_or_default();
-        let t = Instant::now();
         store::testkit::eventually("the stuck mount said", || said().contains("the NAS is mounting (stuck since"));
-        store::testkit::ended_before(t, Duration::from_secs(10), "the stuck mount said");
         assert!(a.root().is_none(), "no root while the mount hangs");
-        // A pause goes on: answered at once.
-        let t = Instant::now();
+        // A pause goes on: answered by control while the mount still hangs.
         let ask =
             crate::control::request_hold(&a.o.home, None, Some(crate::control::Hold::new("the menu bar"))).unwrap();
         store::testkit::eventually("the pause answered", || {
             crate::control::hold_answer(&a.o.home, &ask).is_some_and(|x| x.ok)
         });
-        store::testkit::ended_before(t, Duration::from_secs(2), "the pause on a hung mount");
+        assert!(a.root().is_none(), "answered while the mount hangs");
         drop(release);
-        let t = Instant::now();
-        while a.root().is_none() {
-            assert!(t.elapsed() < Duration::from_secs(60), "the root never came back");
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        store::testkit::eventually("the root back", || a.root().is_some());
     }
 
     /// A job of `secs` seconds started in slot `k` (a unit job of target `target`), published.
@@ -10120,17 +10118,13 @@ mod tests {
         let hung = nasread::fake::hang(&root);
         a_real_job(&mut a, 0, "6/1/2", 2);
         let t = Instant::now();
-        loop {
-            match a.control.woken.recv_timeout(Duration::from_secs(30)) {
-                Ok(bus::ControlMsg::Ended) => break,
-                Ok(_) => continue,
-                Err(e) => panic!("the loop never woken for the job's end: {e}"),
-            }
-        }
+        // (No round runs meanwhile: woken for the end at all is the reaper's telling: #910.)
+        store::testkit::wait_for("the loop woken for the job's end", || {
+            a.control.woken.try_recv().ok().filter(|m| *m == bus::ControlMsg::Ended)
+        });
         let woke = t.elapsed();
         eprintln!("a 2-s job's end woke the loop after {woke:?}");
         assert!(woke >= Duration::from_secs(2), "{woke:?}");
-        store::testkit::ended_before(t, Duration::from_secs(6), "the end told (2 s and the reaper's tick)");
         let r = Instant::now();
         while a.slots[0].running.is_some() {
             a.round().unwrap();
@@ -10143,8 +10137,8 @@ mod tests {
     }
 
     /// Task #871 step 5: a cancel asked (as `scenic job cancel` asks: its file) while the loop is
-    /// in a 30-s plan (the slow-plan fake): the job's group stopped within a second, by **jobs**'
-    /// thread; the loop, its plan done, records it as cancelled (not failed) and answers.
+    /// in a 30-s plan (the slow-plan fake): the job's group stopped by **jobs**' thread, no round
+    /// running; the loop, its plan done, records it as cancelled (not failed) and answers.
     #[test]
     fn a_cancel_is_acted_on_within_a_second_while_planning() {
         let d = tempfile::tempdir().unwrap();
@@ -10167,21 +10161,19 @@ mod tests {
                 at: now_s(),
             };
             crate::control::request_cancel(&home, &ask).unwrap();
-            while crate::sys::signal_group(pgid, crate::sys::Signal::Probe) {
-                assert!(t.elapsed() < Duration::from_secs(30), "the job never stopped");
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            let took = t.elapsed();
-            eprintln!("the cancel stopped the job in {took:?}");
-            store::testkit::ended_before(t, Duration::from_secs(2), "the cancel's stop");
-            took
+            store::testkit::eventually("the job stopped", || {
+                !crate::sys::signal_group(pgid, crate::sys::Signal::Probe)
+            });
+            eprintln!("the cancel stopped the job in {:?}", t.elapsed());
         });
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let r = store::nasfs::NasRoot::local_for_test(&root);
         let t = Instant::now();
         a.planner().plan(&r, &c, &mut Vec::new());
         assert!(t.elapsed() >= Duration::from_secs(29), "the plan was slow all along");
-        assert!(asker.join().unwrap() < Duration::from_secs(1));
+        // (No round before this: the job stopped at all was **jobs**' thread's doing, never the
+        // loop's, however long a loaded Mac took: #910.)
+        asker.join().unwrap();
         a.round().unwrap();
         // (Its slot free of it: the round may start another job there.)
         assert!(a.slots[0].running.as_ref().is_none_or(|r| r.pgid != pgid));
@@ -10207,6 +10199,10 @@ mod tests {
         assert!(waiting.iter().any(|w| w.why.contains("paused")), "{waiting:?}");
     }
 
+    /// The slow-plan fake's run in `plan_running_long`: what a grant or a round that waited for the
+    /// plan would take (#910: `ended_before` measures against it, not a "fast" bound).
+    const PLAN_LONG: Duration = Duration::from_secs(180);
+
     /// The last plan, as a test sets it (`jobs`, its own: granted to this Mac alone), offered and
     /// published; then a 3-min plan under way on **plan**'s thread (the slow-plan fake), kicked as
     /// a job's end kicks it. The last plan's number.
@@ -10221,7 +10217,7 @@ mod tests {
         p.jobs = jobs;
         p.offer_plan(&p.jobs.clone());
         p.publish();
-        p.slow_plan = Some(Duration::from_secs(180));
+        p.slow_plan = Some(PLAN_LONG);
         let n = p.n;
         a.plan.spawn();
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
@@ -10252,23 +10248,24 @@ mod tests {
         let mut w = Vec::new();
         let t = Instant::now();
         let first = a.lead_grants(&view.jobs, view.n, &c, &r, &mut w);
-        store::testkit::ended_before(t, Duration::from_secs(4), "a grant while a 3-min plan runs");
+        store::testkit::ended_before(t, PLAN_LONG, "a grant while a 3-min plan runs");
         assert_eq!(first.iter().map(|g| g.2).collect::<Vec<_>>(), [n], "{w:?}");
         let t = Instant::now();
         let second = a.lead_grants(&view.jobs, view.n, &c, &r, &mut w);
-        store::testkit::ended_before(t, Duration::from_secs(4), "a second grant while a 3-min plan runs");
+        store::testkit::ended_before(t, PLAN_LONG, "a second grant while a 3-min plan runs");
         // (The other job waits beside the first's cold start; the first's lease is never granted again.)
         assert!(second.iter().all(|g| g.1.id != first[0].1.id), "a lease granted twice: {second:?}");
         for (k, _, _) in first.into_iter().chain(second) {
             a.end_lease(k, Outcome::Interrupted, &[], "the test");
         }
         // The rounds, granting and starting from the last plan, in moments.
+        a.control.never_sweep();
         a.control.spawn();
         a.beat.spawn();
         for _ in 0..3 {
             let t = Instant::now();
             a.round().unwrap();
-            store::testkit::ended_before(t, Duration::from_secs(10), "a round while a 3-min plan runs");
+            store::testkit::ended_before(t, PLAN_LONG, "a round while a 3-min plan runs");
         }
         // A pause: answered and said within a second, the rounds going on.
         a_job_running(&mut a);
@@ -10304,11 +10301,12 @@ mod tests {
         let t = Instant::now();
         let mut w = Vec::new();
         let got = a.lead_grants(&view.jobs, view.n, &c, &r, &mut w);
-        store::testkit::ended_before(t, Duration::from_secs(4), "a grant on a hung NAS");
+        store::testkit::ended_before(t, nasread::DEADLINE, "a grant on a hung NAS");
         assert_eq!(got.iter().map(|g| g.2).collect::<Vec<_>>(), [n], "{w:?}");
         for (k, _, _) in got {
             a.end_lease(k, Outcome::Interrupted, &[], "the test");
         }
+        a.control.never_sweep();
         a.control.spawn();
         a.beat.spawn();
         a_job_running(&mut a);
@@ -10378,6 +10376,10 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (mut a, root) = parts_agent(d.path());
         a.round().unwrap();
+        // (No sweep, no beat on its timer: the answer, the drain and the status' "pausing" were
+        // control's event and its telling the beat, however long a loaded Mac took: #910.)
+        a.control.never_sweep();
+        a.beat.never_tick();
         a.control.spawn();
         a.beat.spawn();
         a_job_running(&mut a);
@@ -16235,17 +16237,10 @@ mod pool_tests {
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, catalogue, &cond, Some(&root), &mut Vec::new()));
-        let t = std::time::Instant::now();
-        while !lead.tend(0, &cond, Some(&root), 0).unwrap() {
-            assert!(t.elapsed() < Duration::from_secs(30), "the job ends");
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        store::testkit::eventually("the job ends", || lead.tend(0, &cond, Some(&root), 0).unwrap());
         // (On the shadow's own thread: its log seeded at that catalogue, and the NAS's snapshot.)
         let nas_snap = r.join(store::map::NAS_DIR).join(store::map::nas_name(c.n));
-        while !nas_snap.exists() {
-            assert!(t.elapsed() < Duration::from_secs(30), "the shadow writes the map at {}", c.n);
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        store::testkit::eventually(&format!("the shadow writes the map at {}", c.n), || nas_snap.exists());
         let log = store::map::log::Log::open(&d.path().join("l/agent").join(publish::MAPLOG)).unwrap();
         assert_eq!(log.map().seq, c.n);
         log.map().check_is(&c).unwrap();
