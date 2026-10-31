@@ -73,7 +73,7 @@ commits beyond main from finishing until its HEAD passed, and the PM runs
 
 Every agent worktree on a Mac builds into one folder outside the repo, ~/Library/Caches/scenic-target
 (`SCENIC_SHARED_TARGET` overrides), through `tools/dev/bin/cargo`, which Claude Code puts first on
-the PATH of every Bash command (`CLAUDE_ENV_FILE` = tools/dev/agent-env.sh, below) and check.sh puts
+the PATH of every Bash command (`CLAUDE_ENV_FILE` = tools/dev/agent-env.zsh, below) and check.sh puts
 there itself. Third-party crates and unchanged code compile once per Mac, not once per worktree.
 - One cargo at a time in that folder, for the whole command: a second one prints
   `cargo: waiting for the shared build folder … held by: <worktree> pid … cargo <args>` at once and
@@ -194,7 +194,7 @@ checkout it runs in from the top level), so a worktree has its own copy and no p
 - The hooks go in the untracked `.claude/settings.local.json`. Claude Code sets `$CLAUDE_PROJECT_DIR`
   (the session's project folder) for hook commands, so no absolute path is needed:
 ```json
-{"env": {"CLAUDE_ENV_FILE": "<main checkout>/tools/dev/agent-env.sh"},
+{"env": {"CLAUDE_ENV_FILE": "<main checkout>/tools/dev/agent-env.zsh"},
  "hooks": {
   "PreToolUse": [
     {"matcher": "Bash|Agent", "hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/tools/dev/test-guard.sh"}]},

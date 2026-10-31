@@ -2,7 +2,7 @@
 # cargo for agent worktrees (#915): every worktree under .claude/worktrees/ on this Mac builds into
 # one shared folder, ~/Library/Caches/scenic-target (SCENIC_SHARED_TARGET overrides), so third-party
 # crates and unchanged code compile once per Mac, not once per worktree (11-17 GB each before).
-# On the PATH of agents' shells through CLAUDE_ENV_FILE (tools/dev/agent-env.sh) and check.sh.
+# On the PATH of agents' shells through CLAUDE_ENV_FILE (tools/dev/agent-env.zsh) and check.sh.
 #
 # One cargo at a time in that folder, for the whole command: a lock (zsystem flock, an fcntl lock
 # that exec keeps and no child inherits) taken before cargo starts. A second one prints that it is
