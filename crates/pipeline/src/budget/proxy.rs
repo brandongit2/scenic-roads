@@ -15,11 +15,12 @@
 use super::net::{Host, Net, Outcome, Robots};
 use super::{Budget, Class};
 use anyhow::{Context, Result};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::net::TcpStream as Conn;
 
 /// Where a host's connections go (the tests': a metered host answered by a server here); None:
 /// looked up by name.
@@ -65,7 +66,7 @@ pub struct Counts {
     pub refused: AtomicU64,
 }
 
-/// What every connection's thread shares.
+/// What every connection shares.
 struct Ctx {
     budget: Arc<Budget>,
     counts: Arc<Counts>,
@@ -236,6 +237,43 @@ fn readable(fd: i32, ms: i32) -> bool {
     unsafe { libc::poll(&mut p, 1, ms) > 0 }
 }
 
+/// The event loop's threads: every client and its connection out are served on them (task #908:
+/// a thread per connection was 178 of the M4 agent's 265 threads with four jobs).
+const IO_THREADS: usize = 2;
+/// The most threads at once for what blocks (a token waited for, a host's name looked up, its
+/// connection opened), started as needed and let go of after ten idle seconds.
+const BLOCKING_THREADS: usize = 16;
+/// The most connections of a class waiting for its token at once, each on one of those threads; the
+/// rest wait their turn on the event loop (first come, first served), so a hold or a spent window
+/// never takes the threads a host not metered needs to open its connections.
+const TAKERS: usize = 4;
+
+/// The process's proxies' event loop, never stopped (a proxy stopped leaves its connections under
+/// way to end as theirs do).
+fn runtime() -> &'static tokio::runtime::Runtime {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(IO_THREADS)
+            .max_blocking_threads(BLOCKING_THREADS)
+            .thread_name("budgets-io")
+            .enable_io()
+            .enable_time()
+            .build()
+            .expect("the budgets' proxy: its event loop")
+    })
+}
+
+/// The turns to wait for a token of `class` (`TAKERS` at once).
+fn takers(class: Class) -> &'static tokio::sync::Semaphore {
+    static T: [tokio::sync::Semaphore; 2] =
+        [tokio::sync::Semaphore::const_new(TAKERS), tokio::sync::Semaphore::const_new(TAKERS)];
+    &T[match class {
+        Class::Wiki => 0,
+        Class::Query => 1,
+    }]
+}
+
 fn serve(listener: TcpListener, ctx: Arc<Ctx>, stop: Arc<AtomicBool>) {
     use std::os::fd::AsRawFd;
     let fd = listener.as_raw_fd();
@@ -265,14 +303,14 @@ struct Slots {
 #[derive(Default)]
 struct Turn {
     given: AtomicBool,
-    told: std::sync::Condvar,
+    told: tokio::sync::Notify,
 }
 
 fn slots(ctx: &Ctx) -> std::sync::MutexGuard<'_, Slots> {
     ctx.slots.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A client's thread: let go of as it ends, however it ends.
+/// A client being served: let go of as it ends, however it ends.
 struct Client(Arc<Ctx>);
 
 impl Drop for Client {
@@ -283,11 +321,11 @@ impl Drop for Client {
 
 /// One of the `Limits::conns` connections out: as it ends, however it ends (a panic too), given to
 /// the turn first in line, else freed.
-struct Slot<'a>(&'a Ctx);
+struct Slot(Arc<Ctx>);
 
-impl Drop for Slot<'_> {
+impl Drop for Slot {
     fn drop(&mut self) {
-        let mut sl = slots(self.0);
+        let mut sl = slots(&self.0);
         match sl.turns.pop_front() {
             Some(t) => {
                 t.given.store(true, Ordering::SeqCst);
@@ -300,21 +338,23 @@ impl Drop for Slot<'_> {
 
 /// A connection out: at once while fewer than `conns` are open and none waits, else in turn, up
 /// to `wait`; None when the wait runs out.
-fn slot(ctx: &Ctx) -> Option<Slot<'_>> {
+async fn slot(ctx: &Arc<Ctx>) -> Option<Slot> {
+    let t = {
+        let mut sl = slots(ctx);
+        if sl.live < ctx.limits.conns && sl.turns.is_empty() {
+            sl.live += 1;
+            return Some(Slot(ctx.clone()));
+        }
+        ctx.counts.waited.fetch_add(1, Ordering::Relaxed);
+        let t = Arc::new(Turn::default());
+        sl.turns.push_back(t.clone());
+        t
+    };
+    // (A slot given before this waits is kept by `told` till it does.)
+    let _ = tokio::time::timeout(ctx.limits.wait, t.told.notified()).await;
     let mut sl = slots(ctx);
-    if sl.live < ctx.limits.conns && sl.turns.is_empty() {
-        sl.live += 1;
-        return Some(Slot(ctx));
-    }
-    ctx.counts.waited.fetch_add(1, Ordering::Relaxed);
-    let t = Arc::new(Turn::default());
-    sl.turns.push_back(t.clone());
-    let (mut sl, _) = t
-        .told
-        .wait_timeout_while(sl, ctx.limits.wait, |_| !t.given.load(Ordering::SeqCst))
-        .unwrap_or_else(|e| e.into_inner());
     if t.given.load(Ordering::SeqCst) {
-        return Some(Slot(ctx));
+        return Some(Slot(ctx.clone()));
     }
     sl.turns.retain(|x| !Arc::ptr_eq(x, &t));
     None
@@ -324,11 +364,13 @@ fn slot(ctx: &Ctx) -> Option<Slot<'_>> {
 fn refuse(s: &mut TcpStream, ctx: &Ctx) -> io::Result<()> {
     ctx.counts.refused.fetch_add(1, Ordering::Relaxed);
     s.set_nonblocking(true)?;
-    answer(s, "503 Service Unavailable", "too many connections through the proxy at once\n")?;
+    write!(s, "{}", answer_text("503 Service Unavailable", TOO_MANY))?;
     s.shutdown(Shutdown::Write)
 }
 
-/// A client taken: served on a thread of its own while fewer than twice `conns` are.
+const TOO_MANY: &str = "too many connections through the proxy at once\n";
+
+/// A client taken: served on the event loop while fewer than twice `conns` are.
 fn admit(mut s: TcpStream, ctx: &Arc<Ctx>) {
     {
         let mut sl = slots(ctx);
@@ -340,10 +382,10 @@ fn admit(mut s: TcpStream, ctx: &Arc<Ctx>) {
         sl.clients += 1;
     }
     let client = Client(ctx.clone());
-    // (Not spawned: the client dropped, and with it its count.)
-    let _ = std::thread::Builder::new().name("budgets-conn".into()).spawn(move || {
+    runtime().spawn(async move {
         // (A client gone, a host that didn't answer: the client sees it.)
-        let _ = handle(s, &client.0);
+        let Ok(s) = s.set_nonblocking(true).and_then(|()| Conn::from_std(s)) else { return };
+        let _ = handle(s, &client.0).await;
     });
 }
 
@@ -356,7 +398,40 @@ struct Head {
     rest: Vec<u8>,
 }
 
-fn read_head(s: &mut TcpStream) -> io::Result<Head> {
+/// Some bytes read from `s` into `buf`, waiting at most `idle` for them: an error when none came.
+async fn read_some(s: &Conn, buf: &mut [u8], idle: Duration) -> io::Result<usize> {
+    tokio::time::timeout(idle, async {
+        loop {
+            s.readable().await?;
+            match s.try_read(buf) {
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => continue,
+                r => return r,
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "idle")))
+}
+
+/// `b` written to `s` whole, as fast as its reader takes it.
+async fn write_all(s: &Conn, mut b: &[u8]) -> io::Result<()> {
+    while !b.is_empty() {
+        s.writable().await?;
+        match s.try_write(b) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => b = &b[n..],
+            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn shutdown(s: &Conn, how: Shutdown) {
+    let _ = socket2::SockRef::from(s).shutdown(how);
+}
+
+async fn read_head(s: &Conn, limit: Duration) -> io::Result<Head> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     let end = loop {
@@ -366,7 +441,7 @@ fn read_head(s: &mut TcpStream) -> io::Result<Head> {
         if buf.len() > HEAD_MAX {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "head too long"));
         }
-        let n = s.read(&mut chunk)?;
+        let n = read_some(s, &mut chunk, limit).await?;
         if n == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "closed before its head ended"));
         }
@@ -398,12 +473,15 @@ fn job_of(head: &Head, net: &Net) -> Option<Arc<super::net::Job>> {
     })
 }
 
-fn answer(s: &mut TcpStream, status: &str, body: &str) -> io::Result<()> {
-    write!(
-        s,
+fn answer_text(status: &str, body: &str) -> String {
+    format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
+}
+
+async fn answer(s: &Conn, status: &str, body: &str) -> io::Result<()> {
+    write_all(s, answer_text(status, body).as_bytes()).await
 }
 
 /// `host:port` split, the port `default` when it's missing (an IPv6 address in brackets).
@@ -422,42 +500,46 @@ fn host_port(hp: &str, default: u16) -> Option<(String, u16)> {
     }
 }
 
-fn open(host: &str, port: u16, resolve: Option<&Resolve>) -> io::Result<TcpStream> {
-    if let Some(a) = resolve.and_then(|r| r(host, port)) {
-        return TcpStream::connect_timeout(&a, CONNECT_WAIT);
-    }
-    let mut last = io::Error::new(io::ErrorKind::NotFound, format!("{host}: no address"));
-    for a in (host, port).to_socket_addrs()? {
-        match TcpStream::connect_timeout(&a, CONNECT_WAIT) {
-            Ok(s) => return Ok(s),
-            Err(e) => last = e,
+/// A connection to `host` opened (its name looked up first: both block, on a blocking thread).
+async fn open(host: &str, port: u16, resolve: Option<&Resolve>) -> io::Result<Conn> {
+    let (host, resolve) = (host.to_string(), resolve.cloned());
+    let s = tokio::task::spawn_blocking(move || -> io::Result<TcpStream> {
+        if let Some(a) = resolve.and_then(|r| r(&host, port)) {
+            return TcpStream::connect_timeout(&a, CONNECT_WAIT);
         }
-    }
-    Err(last)
+        let mut last = io::Error::new(io::ErrorKind::NotFound, format!("{host}: no address"));
+        for a in (host.as_str(), port).to_socket_addrs()? {
+            match TcpStream::connect_timeout(&a, CONNECT_WAIT) {
+                Ok(s) => return Ok(s),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
+    })
+    .await
+    .map_err(io::Error::other)??;
+    s.set_nonblocking(true)?;
+    Conn::from_std(s)
 }
 
-/// A token for `host`'s connection, when it's metered (its class), and its request counted.
-fn meter(host: &str, budget: &Budget, net: &Net) -> (Option<Class>, Arc<Host>) {
+/// A token for `host`'s connection, when it's metered (its class: waited for in turn, `TAKERS`
+/// at once), and its request counted.
+async fn meter(host: &str, budget: &Arc<Budget>, net: &Net) -> io::Result<(Option<Class>, Arc<Host>)> {
     let class = super::class_of(host);
     if let Some(c) = class {
-        budget.take(c);
+        let _turn = takers(c).acquire().await.map_err(io::Error::other)?;
+        let b = budget.clone();
+        tokio::task::spawn_blocking(move || b.take(c)).await.map_err(io::Error::other)?;
     }
     let h = net.host(host);
     h.requests.fetch_add(1, Ordering::Relaxed);
-    (class, h)
+    Ok((class, h))
 }
 
 /// A connection out to `host` for its client `s`: opened (counted, and open until its `Open` is
 /// dropped), else answered 502 (an event).
-fn open_out(
-    s: &mut TcpStream,
-    ctx: &Ctx,
-    host: &str,
-    port: u16,
-    h: &Arc<Host>,
-    t0: Instant,
-) -> Option<(TcpStream, Open)> {
-    match open(host, port, ctx.resolve.as_ref()).and_then(|u| u.set_read_timeout(Some(ctx.limits.idle)).map(|()| u)) {
+async fn open_out(s: &Conn, ctx: &Ctx, host: &str, port: u16, h: &Arc<Host>, t0: Instant) -> Option<(Conn, Open)> {
+    match open(host, port, ctx.resolve.as_ref()).await {
         Ok(u) => {
             h.conns.fetch_add(1, Ordering::Relaxed);
             h.open.fetch_add(1, Ordering::Relaxed);
@@ -465,7 +547,7 @@ fn open_out(
         }
         Err(e) => {
             ctx.net.ended(host, (0, 0), t0.elapsed().as_millis() as u64, Outcome::Unreached);
-            let _ = answer(s, "502 Bad Gateway", &format!("{host}:{port}: {e}\n"));
+            let _ = answer(s, "502 Bad Gateway", &format!("{host}:{port}: {e}\n")).await;
             None
         }
     }
@@ -482,9 +564,12 @@ impl Drop for Open {
 }
 
 /// No connection out for `host`'s client: answered 503, an event.
-fn refuse_for(s: &mut TcpStream, ctx: &Ctx, host: &str) -> io::Result<()> {
+async fn refuse_for(s: &Conn, ctx: &Ctx, host: &str) -> io::Result<()> {
     ctx.net.ended(host, (0, 0), 0, Outcome::Refused);
-    refuse(s, ctx)
+    ctx.counts.refused.fetch_add(1, Ordering::Relaxed);
+    answer(s, "503 Service Unavailable", TOO_MANY).await?;
+    shutdown(s, Shutdown::Write);
+    Ok(())
 }
 
 /// A query string's value of `key`.
@@ -498,54 +583,47 @@ fn ended(net: &Net, host: &str, b: (u64, u64), sent: u64, t0: Instant, ok: bool)
     net.ended(host, (b.0, b.1 + sent), t0.elapsed().as_millis() as u64, outcome);
 }
 
-fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
-    let (budget, net) = (&*ctx.budget, &*ctx.net);
-    s.set_nonblocking(false)?;
-    s.set_read_timeout(Some(ctx.limits.head))?;
-    let head = read_head(&mut s)?;
-    // (From here on a connection idle that long ends.)
-    s.set_read_timeout(Some(ctx.limits.idle))?;
+async fn handle(s: Conn, ctx: &Arc<Ctx>) -> io::Result<()> {
+    let (budget, net) = (&ctx.budget, &*ctx.net);
+    let head = read_head(&s, ctx.limits.head).await?;
+    // (From here on a connection idle `limits.idle` ends.)
     if head.method.eq_ignore_ascii_case("CONNECT") {
         let Some((host, port)) = host_port(&head.target, 443) else {
-            return answer(&mut s, "400 Bad Request", "CONNECT host:port\n");
+            return answer(&s, "400 Bad Request", "CONNECT host:port\n").await;
         };
-        let Some(_slot) = slot(ctx) else { return refuse_for(&mut s, ctx, &host) };
-        let (class, h) = meter(&host, budget, net);
+        let Some(_slot) = slot(ctx).await else { return refuse_for(&s, ctx, &host).await };
+        let (class, h) = meter(&host, budget, net).await?;
         let (began, t0) = (budget.now_ms(), Instant::now());
-        let Some((up, _open)) = open_out(&mut s, ctx, &host, port, &h, t0) else { return Ok(()) };
+        let Some((up, _open)) = open_out(&s, ctx, &host, port, &h, t0).await else { return Ok(()) };
         // (HTTP/1.0: macOS's nc, the ssh tunnel's ProxyCommand (osmpass::streamed), takes no other.)
-        s.write_all(b"HTTP/1.0 200 Connection established\r\n\r\n")?;
-        let mut up_w = up.try_clone()?;
-        if !head.rest.is_empty() {
-            up_w.write_all(&head.rest)?;
-        }
+        write_all(&s, b"HTTP/1.0 200 Connection established\r\n\r\n").await?;
+        write_all(&up, &head.rest).await?;
         let sent = head.rest.len() as u64;
         h.bytes_out.fetch_add(sent, Ordering::Relaxed);
         let job = job_of(&head, net);
         if let Some(j) = &job {
             j.bytes_out.fetch_add(sent, Ordering::Relaxed);
         }
-        return relay(s, up, &h, job, || charge(budget, class, began), |b, ok| ended(net, &host, b, sent, t0, ok));
+        let done = || charge(budget, class, began);
+        relay(&s, &up, &h, job, ctx.limits.idle, done, |b, ok| ended(net, &host, b, sent, t0, ok)).await;
+        return Ok(());
     }
     // (The proxy's own: a 429 told, a retry told.)
     if head.target.starts_with('/') {
         if let Some(q) = head.target.strip_prefix("/retry") {
             net.host(param(q, "host").unwrap_or("?")).retries.fetch_add(1, Ordering::Relaxed);
-            return answer(&mut s, "200 OK", "counted\n");
+            return answer(&s, "200 OK", "counted\n").await;
         }
         if let Some(q) = head.target.strip_prefix("/robots") {
             let (Some(host), Some(state)) = (param(q, "host"), param(q, "state").and_then(Robots::parse)) else {
-                return answer(
-                    &mut s,
-                    "400 Bad Request",
-                    "/robots?host=<host>&state=<unchecked, allowed or disallowed>\n",
-                );
+                return answer(&s, "400 Bad Request", "/robots?host=<host>&state=<unchecked, allowed or disallowed>\n")
+                    .await;
             };
             let t = param(q, "t").and_then(|v| v.parse::<u64>().ok());
             if !net.robots(host, state, t) {
-                return answer(&mut s, "400 Bad Request", "a host's name (and room for it)\n");
+                return answer(&s, "400 Bad Request", "a host's name (and room for it)\n").await;
             }
-            return answer(&mut s, "200 OK", "told\n");
+            return answer(&s, "200 OK", "told\n").await;
         }
         if let Some(q) = head.target.strip_prefix("/hold") {
             let secs = param(q, "s")
@@ -566,23 +644,23 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
                     Err(_) => ctx.holding.store(false, Ordering::SeqCst),
                 }
             }
-            return answer(&mut s, "200 OK", "held\n");
+            return answer(&s, "200 OK", "held\n").await;
         }
-        return answer(&mut s, "404 Not Found", "a proxy: CONNECT, an absolute URL, /hold, /retry or /robots\n");
+        return answer(&s, "404 Not Found", "a proxy: CONNECT, an absolute URL, /hold, /retry or /robots\n").await;
     }
     // A plain HTTP request by its absolute URL: passed on, its connection closed after it.
     let Some(after) = head.target.strip_prefix("http://") else {
-        return answer(&mut s, "400 Bad Request", "only http:// URLs, or CONNECT\n");
+        return answer(&s, "400 Bad Request", "only http:// URLs, or CONNECT\n").await;
     };
     let (hp, path) = match after.find('/') {
         Some(i) => (&after[..i], &after[i..]),
         None => (after, "/"),
     };
-    let Some((host, port)) = host_port(hp, 80) else { return answer(&mut s, "400 Bad Request", "bad host\n") };
-    let Some(_slot) = slot(ctx) else { return refuse_for(&mut s, ctx, &host) };
-    let (class, h) = meter(&host, budget, net);
+    let Some((host, port)) = host_port(hp, 80) else { return answer(&s, "400 Bad Request", "bad host\n").await };
+    let Some(_slot) = slot(ctx).await else { return refuse_for(&s, ctx, &host).await };
+    let (class, h) = meter(&host, budget, net).await?;
     let (began, t0) = (budget.now_ms(), Instant::now());
-    let Some((mut up, _open)) = open_out(&mut s, ctx, &host, port, &h, t0) else { return Ok(()) };
+    let Some((up, _open)) = open_out(&s, ctx, &host, port, &h, t0).await else { return Ok(()) };
     let mut out = format!("{} {path} {}\r\n", head.method, head.version);
     for h in &head.headers {
         let name = h.split(':').next().unwrap_or_default().trim().to_ascii_lowercase();
@@ -593,15 +671,17 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
         out.push_str("\r\n");
     }
     out.push_str("Connection: close\r\n\r\n");
-    up.write_all(out.as_bytes())?;
-    up.write_all(&head.rest)?;
+    write_all(&up, out.as_bytes()).await?;
+    write_all(&up, &head.rest).await?;
     let sent = (out.len() + head.rest.len()) as u64;
     h.bytes_out.fetch_add(sent, Ordering::Relaxed);
     let job = job_of(&head, net);
     if let Some(j) = &job {
         j.bytes_out.fetch_add(sent, Ordering::Relaxed);
     }
-    relay(s, up, &h, job, || charge(budget, class, began), |b, ok| ended(net, &host, b, sent, t0, ok))
+    let done = || charge(budget, class, began);
+    relay(&s, &up, &h, job, ctx.limits.idle, done, |b, ok| ended(net, &host, b, sent, t0, ok)).await;
+    Ok(())
 }
 
 /// A metered connection begun at `began` (the budget's clock) has ended: its time charged.
@@ -611,19 +691,29 @@ fn charge(budget: &Budget, class: Option<Class>, began: u64) {
     }
 }
 
-/// Copies `r` to `w` until `r` ends, each chunk's bytes added to `n` (and its job's `j`) as it's
-/// written: the bytes copied, and whether it ended with no error.
-fn copy_counted(r: &mut TcpStream, w: &mut TcpStream, n: &AtomicU64, j: Option<&AtomicU64>) -> (u64, bool) {
+/// Copies `r` to `w` until `r` ends (or `stop` is told), each chunk's bytes added to `n` (and its
+/// job's `j`) as it's written, a read waiting at most `idle`: the bytes copied, and whether it ended
+/// with no error. A write waits for `w`'s reader as long as it takes (the back-pressure).
+async fn copy_counted(
+    r: &Conn,
+    w: &Conn,
+    n: &AtomicU64,
+    j: Option<&AtomicU64>,
+    idle: Duration,
+    stop: &tokio::sync::Notify,
+) -> (u64, bool) {
     let mut buf = vec![0u8; 64 << 10];
     let mut all = 0u64;
     loop {
-        let k = match r.read(&mut buf) {
-            Ok(0) => return (all, true),
-            Ok(k) => k,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => return (all, false),
+        let k = tokio::select! {
+            r = read_some(r, &mut buf, idle) => match r {
+                Ok(0) => return (all, true),
+                Ok(k) => k,
+                Err(_) => return (all, false),
+            },
+            () = stop.notified() => return (all, true),
         };
-        if w.write_all(&buf[..k]).is_err() {
+        if write_all(w, &buf[..k]).await.is_err() {
             return (all, false);
         }
         all += k as u64;
@@ -634,38 +724,39 @@ fn copy_counted(r: &mut TcpStream, w: &mut TcpStream, n: &AtomicU64, j: Option<&
     }
 }
 
-/// Copies each way until both have ended (a way idle its read timeout ends: the client's told to
-/// the host as its end; the host's shuts the whole connection), each way's bytes counted to `h` (and
-/// its `job`'s) as they go; `done` run before the client's side is closed (what it does is done before the client
-/// sees its answer end), then `end` told the bytes (in, out) and whether neither way broke.
-fn relay(
-    client: TcpStream,
-    up: TcpStream,
+/// Copies each way until both have ended (a way idle `idle` ends: the client's told to the host as
+/// its end; the host's ends the whole connection), each way's bytes counted to `h` (and its `job`'s)
+/// as they go; `done` run before the client's side is closed (what it does is done before the
+/// client sees its answer end), then `end` told the bytes (in, out) and whether neither way broke.
+async fn relay(
+    client: &Conn,
+    up: &Conn,
     h: &Arc<Host>,
     job: Option<Arc<super::net::Job>>,
+    idle: Duration,
     done: impl FnOnce(),
     end: impl FnOnce((u64, u64), bool),
-) -> io::Result<()> {
-    let (mut c_r, mut u_w) = (client.try_clone()?, up.try_clone()?);
-    let (hu, ju) = (h.clone(), job.clone());
-    let t = std::thread::Builder::new().name("budgets-relay".into()).spawn(move || {
+) {
+    let (stop, never) = (tokio::sync::Notify::new(), tokio::sync::Notify::new());
+    let to_host = async {
         // (The client's side ended, idle or broken: told to the host as its end, whose answer still
-        // comes back; a host that then stays idle too is ended by its own read's timeout.)
-        let r = copy_counted(&mut c_r, &mut u_w, &hu.bytes_out, ju.as_ref().map(|j| &j.bytes_out));
-        let _ = u_w.shutdown(Shutdown::Write);
+        // comes back; a host that then stays idle too is ended by its own read's wait.)
+        let r = copy_counted(client, up, &h.bytes_out, job.as_ref().map(|j| &j.bytes_out), idle, &stop).await;
+        shutdown(up, Shutdown::Write);
         r
-    })?;
-    let (mut u_r, mut c_w) = (up, client);
-    let (got, ok) = copy_counted(&mut u_r, &mut c_w, &h.bytes_in, job.as_ref().map(|j| &j.bytes_in));
-    if !ok {
-        let _ = u_r.shutdown(Shutdown::Both);
-        let _ = c_w.shutdown(Shutdown::Read);
-    }
-    done();
-    let _ = c_w.shutdown(Shutdown::Write);
-    let (sent, sent_ok) = t.join().unwrap_or((0, false));
+    };
+    let to_client = async {
+        let (got, ok) = copy_counted(up, client, &h.bytes_in, job.as_ref().map(|j| &j.bytes_in), idle, &never).await;
+        if !ok {
+            shutdown(up, Shutdown::Both);
+            stop.notify_one();
+        }
+        done();
+        shutdown(client, Shutdown::Write);
+        (got, ok)
+    };
+    let ((sent, sent_ok), (got, ok)) = tokio::join!(to_host, to_client);
     end((got, sent), ok && sent_ok);
-    Ok(())
 }
 
 #[cfg(test)]
@@ -673,6 +764,7 @@ mod tests {
     use super::super::{Clock, Source, StepClock, Token};
     use super::*;
     use std::collections::BTreeMap;
+    use std::io::Read;
 
     const T0: u64 = 1_800_000_000_000;
 
@@ -1080,5 +1172,141 @@ mod tests {
         assert_eq!(tunnel(&a.addr, "s3.amazonaws.com", b"z"), b"z");
         assert_eq!(a.budget.ledger().len(), 1);
         assert_eq!(a.view().other, 2);
+    }
+
+    /// This process's threads and resident bytes (the kernel's count).
+    fn threads_and_rss() -> (i32, u64) {
+        // SAFETY: a plain C struct, zeroes valid.
+        let mut ti: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+        // SAFETY: the struct is ours, its size given.
+        let n = unsafe {
+            libc::proc_pidinfo(
+                std::process::id() as i32,
+                libc::PROC_PIDTASKINFO,
+                0,
+                (&mut ti as *mut libc::proc_taskinfo).cast(),
+                size,
+            )
+        };
+        assert_eq!(n, size, "{}", io::Error::last_os_error());
+        (ti.pti_threadnum, ti.pti_resident_size)
+    }
+
+    /// A host here that echoes each connection until its client ends it, on one thread of its
+    /// own (an event loop), so the threads counted are the proxy's.
+    fn upstream_one_thread() -> SocketAddr {
+        let l = store::spawn::listen("127.0.0.1:0").unwrap();
+        l.set_nonblocking(true).unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_io().build().unwrap();
+            rt.block_on(async move {
+                let l = tokio::net::TcpListener::from_std(l).unwrap();
+                loop {
+                    let Ok((mut s, _)) = l.accept().await else { continue };
+                    tokio::spawn(async move {
+                        let (mut r, mut w) = s.split();
+                        let _ = tokio::io::copy(&mut r, &mut w).await;
+                    });
+                }
+            });
+        });
+        addr
+    }
+
+    /// Task #908: 256 tunnels open at once through two agents' proxies on one budget (eight
+    /// terrain-like jobs' worth, a third of them metered) are served by a bounded number of
+    /// threads; every tunnel's bytes come through; no window is past its tokens.
+    #[test]
+    fn many_connections_take_few_threads_and_the_budget_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(StepClock::at(T0));
+        let up = upstream_one_thread();
+        let mk = |me: &str| {
+            let root = store::nasfs::NasRoot::local_for_test(dir.path());
+            let b = Arc::new(Budget::new(&root, me, clock.clone()).with_ledger());
+            Proxy::start(b, Some(Arc::new(move |_: &str, _: u16| Some(up)))).unwrap()
+        };
+        let (a, b) = (mk("m-a"), mk("m-b"));
+        let (t0, m0) = threads_and_rss();
+        let n = 256;
+        let mut open = Vec::new();
+        for i in 0..n {
+            let p = if i % 2 == 0 { a.addr } else { b.addr };
+            let host = match i % 6 {
+                0 => "query.wikidata.org",
+                1 => "en.wikipedia.org",
+                _ => "s3.amazonaws.com",
+            };
+            let mut s = TcpStream::connect(p).unwrap();
+            write!(s, "CONNECT {host}:443 HTTP/1.1\r\n\r\n").unwrap();
+            open.push(s);
+        }
+        for (i, s) in open.iter_mut().enumerate() {
+            let mut head = [0u8; 39];
+            s.read_exact(&mut head).unwrap();
+            assert!(head.starts_with(b"HTTP/1.0 200"), "{i}: {}", String::from_utf8_lossy(&head));
+            writeln!(s, "tile {i}").unwrap();
+        }
+        for (i, s) in open.iter_mut().enumerate() {
+            let want = format!("tile {i}\n");
+            let mut got = vec![0u8; want.len()];
+            s.read_exact(&mut got).unwrap();
+            assert_eq!(got, want.as_bytes());
+        }
+        let (t1, m1) = threads_and_rss();
+        eprintln!("#908: {n} tunnels open: threads {t0} -> {t1}, resident {} -> {} MB", m0 >> 20, m1 >> 20);
+        assert!(t1 - t0 <= 40, "{n} tunnels took {} threads", t1 - t0);
+        for s in &open {
+            s.shutdown(Shutdown::Write).unwrap();
+        }
+        for mut s in open {
+            let mut rest = Vec::new();
+            s.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty());
+        }
+        let w = per_window(&[a.budget.ledger(), b.budget.ledger()]);
+        assert_eq!(w.values().sum::<u32>(), (0..n).filter(|i| i % 6 < 2).count() as u32);
+        for ((class, win), k) in &w {
+            assert!(*k <= class.rate().tokens, "{class:?} window {win}: {k}");
+        }
+    }
+
+    /// Task #908: a client that drops its tunnel (no end told, just gone) frees its connection out
+    /// for the next in line, and its host's count of those open; once both have ended, no slot is
+    /// held.
+    #[test]
+    fn a_dropped_connection_frees_its_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(StepClock::at(T0));
+        let up = upstream_one_thread();
+        let long = Duration::from_secs(60);
+        let b = Arc::new(
+            Budget::new(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", clock.clone()).with_ledger(),
+        );
+        let limits = Limits { head: long, idle: long, conns: 1, wait: long };
+        let p = Proxy::start_with(b, Some(Arc::new(move |_: &str, _: u16| Some(up))), limits).unwrap();
+        let mut first = TcpStream::connect(p.addr).unwrap();
+        write!(first, "CONNECT s3.amazonaws.com:443 HTTP/1.1\r\n\r\n").unwrap();
+        let mut head = [0u8; 39];
+        first.read_exact(&mut head).unwrap();
+        let addr = p.addr;
+        let next = std::thread::spawn(move || tunnel(&addr, "s3.amazonaws.com", b"next"));
+        while p.counts.waited.load(Ordering::Relaxed) == 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(first);
+        assert_eq!(next.join().unwrap(), b"next");
+        assert_eq!(p.counts.refused.load(Ordering::Relaxed), 0);
+        // (Its slot let go of as its task ends, just after its client saw the end.)
+        let t = Instant::now();
+        while slots(&p.ctx).live > 0 || slots(&p.ctx).clients > 0 {
+            assert!(t.elapsed() < Duration::from_secs(10), "a slot still held");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let v = p.net.view();
+        assert_eq!(v["hosts"]["s3.amazonaws.com"]["open"].as_u64(), Some(0), "{v}");
+        assert_eq!(v["hosts"]["s3.amazonaws.com"]["conns"].as_u64(), Some(2), "{v}");
     }
 }
