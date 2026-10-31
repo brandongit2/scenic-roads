@@ -128,12 +128,8 @@ async fn tile(d: &Arc<Data>, home: &Path) -> (u16, Vec<u8>) {
     (st, axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap().to_vec())
 }
 
-fn until(what: &str, mut ok: impl FnMut() -> bool) {
-    let t = Instant::now();
-    while !ok() {
-        assert!(t.elapsed() < Duration::from_secs(20), "{what}");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+fn until(what: &str, ok: impl FnMut() -> bool) {
+    store::testkit::eventually(what, ok);
 }
 
 /// A server follows a sequence of publishes from the lead's log alone (no catalogue on its NAS)
@@ -172,7 +168,7 @@ async fn a_server_follows_publishes_and_serves_byte_identical_tiles() {
             tokio::task::spawn_blocking(move || until("B follows the publish", || b2.catalogue().n == k))
                 .await
                 .unwrap();
-            assert!(t.elapsed() < Duration::from_secs(1), "followed within a second: {:?}", t.elapsed());
+            store::testkit::ended_before(t, Duration::from_secs(1), "followed within a second");
         } else {
             let b2 = b.clone();
             tokio::task::spawn_blocking(move || until("B takes the lead's map", || b2.catalogue().n == 1))
@@ -213,7 +209,7 @@ fn a_lead_restart_mid_poll() {
     until("B takes the map", || b.catalogue().n == 1);
     // (B's request waiting now: the cursor heard at 1.)
     until("B polls", || feed.cursors().get("server/test").is_some_and(|c| c.seq == 1));
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(Duration::from_millis(200)); // (sleep ok: B mid-poll when the lead stops)
     drop(lead);
     append(&mut log, &feed, &publish(&[nas.path()], 2));
     drop(log);

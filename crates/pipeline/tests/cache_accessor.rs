@@ -172,6 +172,7 @@ fn every_exemption_names_a_function_there() {
 fn every_internet_request_asks_first() {
     const ASKED_ELSEWHERE: &[(&str, &str, &str)] = &[
         ("crates/pipeline/src/coord/client.rs", "*", "the lead's coordinator, on the LAN"),
+        ("crates/server/src/maplog.rs", "get", "the lead's coordinator (the map's log), on the LAN"),
         ("crates/pipeline/src/bin/scenic-metrics.rs", "meta_get", "fetch_file asks before its first"),
     ];
     let root = root();
