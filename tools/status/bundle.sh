@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Builds Scenic.app (tools/status: the menu bar item, the app's window, its build service and the map
-# server's controls) into <folder>: the app (main.swift, service.swift), its launcher (tools/launcher
+# Builds Scenic.app (tools/status: the menu bar item, the app's window and its build service) into
+# <folder>: the app (main.swift, service.swift), its launcher (tools/launcher
 # /launcher.c, which runs the build service), the build service's launchd plist (build-service.plist,
 # registered by the app with SMAppService), the version it's published as (Contents/Resources/
 # version: the app replaces itself when the installed version's differs), signed with <identity>
@@ -10,10 +10,9 @@
 #   tools/status/bundle.sh <folder> <version> <identity> --sandbox <home>
 #
 # --sandbox builds "Scenic Sandbox.app", for testing on a Mac whose Scenic is live: its own bundle id
-# (local.scenic-sandbox.app), build service (local.scenic-sandbox.build) and map server
-# (local.scenic-sandbox.server) labels, its own home in place of ~/Library/Application Support/scenic
-# (its run files, its agent folder, its installed versions), its server's port 17399 (its build
-# page's too: ScenicPage), never added
+# (local.scenic-sandbox.app) and build service (local.scenic-sandbox.build) label, its own home in
+# place of ~/Library/Application Support/scenic (its run files, its agent folder, its installed
+# versions, whose `scenic` answers its status), its build page on port 17399 (ScenicPage), never added
 # to the login items. It never touches the live app, services or home. (tools/status/sandbox.sh)
 set -euo pipefail
 usage="usage: tools/status/bundle.sh <folder> <version> <identity> [--sandbox <home>]"
@@ -52,13 +51,11 @@ if [[ -n $sandbox ]]; then
   plutil -replace CFBundleName -string "$name" "$info"
   plutil -replace CFBundleDisplayName -string "$name" "$info"
   plutil -replace ScenicBuildService -string $label "$info"
-  plutil -replace ScenicServerLabel -string local.scenic-sandbox.server "$info"
   plutil -replace ScenicUpdateFrom -string "$name.app" "$info"
   plutil -replace ScenicOpenAtLogin -bool false "$info"
   plutil -insert ScenicLegacyAgent -string local.scenic-sandbox.agent "$info"
   plutil -insert ScenicHome -string "$sandbox" "$info"
   plutil -insert ScenicRunDir -string "$sandbox/run" "$info"
-  plutil -insert ScenicServer -string http://127.0.0.1:17399 "$info"
   plutil -insert ScenicPage -string http://127.0.0.1:17399/work/ "$info"
   plutil -replace EnvironmentVariables.SCENIC_LAUNCHER_LOG -string "$sandbox/build.log" "$plist"
   plutil -insert EnvironmentVariables.SCENIC_RUN_DIR -string "$sandbox/run" "$plist"

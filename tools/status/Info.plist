@@ -25,11 +25,9 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<!-- What the app manages (tools/status/service.swift); tools/status/bundle.sh's sandbox build
-	     names its own, and adds ScenicHome, ScenicRunDir and ScenicServer. -->
+	     names its own, and adds ScenicHome, ScenicRunDir and ScenicPage. -->
 	<key>ScenicBuildService</key>
 	<string>local.scenic.build</string>
-	<key>ScenicServerLabel</key>
-	<string>local.scenic.server</string>
 	<key>ScenicUpdateFrom</key>
 	<string>Scenic.app</string>
 	<key>ScenicOpenAtLogin</key>

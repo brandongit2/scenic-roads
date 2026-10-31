@@ -1,4 +1,4 @@
-// Scenic as an app (task #194): its build service, the map server's controls, quitting, and the
+// Scenic as an app (task #194): its build service, quitting, and the
 // app replacing itself on an update. The menu bar item and its panel are main.swift's.
 //
 // - The build service (this Mac's agent, `scenic agent`) is the app's own launchd job, registered
@@ -7,9 +7,10 @@
 //   scenic-launcher agent), which runs the installed app's agent from run/agent and starts it
 //   again after a crash or for an update. Opening the app starts it; quitting the app asks it to
 //   quit (crates/pipeline/src/control.rs Quit), and it exits cleanly, so launchd leaves it stopped.
-// - The map server is a launchd service of its own (~/Library/LaunchAgents/local.scenic.server
-//   .plist): the app shows whether it runs and starts or stops it when asked, never by itself.
-// - An update: the server installs each published version under app/<version>; the app, installed
+// - The map server is no part of it: a launchd service of its own on the Mac mini alone
+//   (tools/app/install.sh; docs/macs.md, task #874).
+// - An update: the agent installs each published version under app/<version> (pipeline::appupdate);
+//   the app, installed
 //   at /Applications/Scenic.app, copies the version's Scenic.app over itself and quits, and a
 //   helper (`--reopen`) opens the new one once it has ended, retrying until it runs (the build
 //   service's agent goes on, restarting into the new version by its own update drain). The
@@ -19,9 +20,9 @@
 //   each poll checks again.
 //
 // Info.plist names what the app manages, so a sandboxed copy (tools/status/sandbox.sh) manages its
-// own and never the live services: ScenicBuildService (the job's label), ScenicServerLabel,
-// ScenicHome and ScenicServer (else ~/Library/Application Support/scenic and
-// http://127.0.0.1:7311), ScenicUpdateFrom (the bundle's name inside an installed version),
+// own and never the live services: ScenicBuildService (the job's label), ScenicHome and
+// ScenicStatusCommand (else ~/Library/Application Support/scenic and its app/current/scenic),
+// ScenicUpdateFrom (the bundle's name inside an installed version),
 // ScenicOpenAtLogin (whether the app adds itself to the login items).
 
 import AppKit
@@ -30,7 +31,6 @@ import ServiceManagement
 
 let info = Bundle.main.infoDictionary ?? [:]
 let buildLabel = info["ScenicBuildService"] as? String ?? "local.scenic.build"
-let serverLabel = info["ScenicServerLabel"] as? String ?? "local.scenic.server"
 let updateFrom = info["ScenicUpdateFrom"] as? String ?? "Scenic.app"
 let openAtLogin = info["ScenicOpenAtLogin"] as? Bool ?? true
 /// The agent's login item from before Scenic was an app: while it's there, the Mac hasn't switched
@@ -452,78 +452,24 @@ final class BuildService {
     }
 }
 
-// MARK: the map server
-
-/// The map server: its own launchd job, which the app starts and stops only when asked.
-final class MapServer {
-    var state: JobState = .unloaded
-    var plist: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/\(serverLabel).plist") }
-    var installed: Bool { FileManager.default.fileExists(atPath: plist.path) }
-
-    func refresh() { state = jobState(serverLabel) }
-
-    var said: String {
-        if !installed { return "Map server: not installed (tools/app/install.sh)" }
-        switch state {
-        case .running(let pid): return "Map server: running at \(server.absoluteString) (pid \(pid))"
-        case .stopped: return "Map server: stopped"
-        case .unloaded: return "Map server: stopped (launchd starts it again at the next login, or start it here)"
-        }
-    }
-
-    /// Started: loaded again if it was stopped (`stop` unloads it), else run now.
-    func start() {
-        if jobState(serverLabel) == .unloaded {
-            run("/bin/launchctl", ["bootstrap", domain, plist.path])
-        }
-        run("/bin/launchctl", ["kickstart", "\(domain)/\(serverLabel)"])
-        refresh()
-    }
-
-    /// Stopped: unloaded, as launchd would otherwise start it again (KeepAlive); it loads again at
-    /// the next login, or when started here.
-    func stop() {
-        run("/bin/launchctl", ["bootout", "\(domain)/\(serverLabel)"])
-        refresh()
-    }
-}
-
 // MARK: the app's window
 
 /// The window the app opens to (from Launchpad, Spotlight or /Applications, or again while it runs; not at login): the build
-/// service's state, and the map server's with its controls.
+/// service's state, and its running jobs.
 final class StatusWindow: NSObject, NSWindowDelegate {
     let window: NSWindow
     let build = NSTextField(labelWithString: "")
-    let map = NSTextField(labelWithString: "")
     let job = NSTextField(wrappingLabelWithString: "")
-    let start = NSButton(title: "Start the Map Server", target: nil, action: nil)
-    let stop = NSButton(title: "Stop the Map Server", target: nil, action: nil)
-    let open = NSButton(title: "Open the Map", target: nil, action: nil)
-    var onStart: () -> Void = {}
-    var onStop: () -> Void = {}
 
     override init() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 190), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 100), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
         window.title = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Scenic"
         window.isReleasedWhenClosed = false
         window.delegate = self
-        for b in [start, stop, open] {
-            b.target = self
-            b.bezelStyle = .rounded
-        }
-        start.action = #selector(startServer)
-        stop.action = #selector(stopServer)
-        open.action = #selector(openMap)
         job.textColor = .secondaryLabelColor
         job.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        let buttons = NSStackView(views: [start, stop, open])
-        buttons.spacing = 8
-        let note = NSTextField(wrappingLabelWithString: "The map server is a service of its own: quitting Scenic leaves it as it is.")
-        note.textColor = .secondaryLabelColor
-        note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        let stack = NSStackView(views: [build, job, NSBox.separator(), map, buttons, note])
+        let stack = NSStackView(views: [build, job])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -541,31 +487,15 @@ final class StatusWindow: NSObject, NSWindowDelegate {
         window.center()
     }
 
-    func update(build b: BuildService, map m: MapServer, job j: String?) {
+    func update(build b: BuildService, job j: String?) {
         build.stringValue = b.said
         job.stringValue = j ?? ""
         job.isHidden = j == nil
-        map.stringValue = m.said
-        start.isEnabled = m.installed && !m.state.running
-        stop.isEnabled = m.state.running
-        open.isEnabled = m.state.running
     }
 
     func show() {
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
-    }
-
-    @objc func startServer() { onStart() }
-    @objc func stopServer() { onStop() }
-    @objc func openMap() { NSWorkspace.shared.open(server.deletingLastPathComponent()) }
-}
-
-extension NSBox {
-    static func separator() -> NSBox {
-        let b = NSBox()
-        b.boxType = .separator
-        return b
     }
 }
 

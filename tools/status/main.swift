@@ -4,9 +4,9 @@
 // only), and a right-click, or the panel's "⋯", the menu: the state in a line, this Mac's downloads
 // and build caches, and the controls below; and a notification for every change. Its timers run in
 // the run loop's common modes, so the polls, the icon and the notifications go on while a menu is
-// open. It asks the map's server on this Mac
-// (`/api/build`), which answers with this Mac's own agent's status when the agent runs here and
-// with the heartbeat the agent copies to the NAS otherwise. This Mac's own agent's status, read
+// open. It asks `scenic menu` (crates/pipeline/src/menu.rs, the installed app's), which answers with
+// this Mac's own agent's status when the agent runs here and with the heartbeat the agent copies
+// to the NAS otherwise. This Mac's own agent's status, read
 // from its file, says what its build caches hold, whether they can be cleared now,
 // and the last clears (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
 // that agent to clear what later jobs copy back cheaply from the NAS, Clear Caches Deeply that
@@ -15,14 +15,16 @@
 // lead: no item moves it), each Mac and its state.
 //
 // It's the menu bar item of Scenic.app, the app opened from Launchpad, Spotlight or /Applications
-// (and at login), never in the Dock: opening it starts this Mac's build service, quitting it stops that service, and
-// its window starts and stops the map server, a service of its own (service.swift).
+// (and at login), never in the Dock: opening it starts this Mac's build service, quitting it stops that service
+// (service.swift). The map server is no part of it: it runs on the Mac mini alone, a service of its
+// own (docs/macs.md, Devices; task #874).
 //
 //   tools/status/bundle.sh <folder> [sandbox options]   builds Scenic.app (both files, its launcher
 //                                                        and its build service's launchd plist)
 //   scenic-status --help                    its arguments (`usage` below); an unknown one is refused
 //                                           (exit 2), never the app started
-// SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:7311; else Info.plist's ScenicServer),
+// SCENIC_STATUS_COMMAND overrides the program asked (`<home>/app/current/scenic`; else Info.plist's
+// ScenicStatusCommand), run with `menu`,
 // SCENIC_HOME the app folder (else Info.plist's ScenicHome), SCENIC_STATUS_APPEARANCE (light,
 // dark) the system's appearance.
 
@@ -33,8 +35,27 @@ import UserNotifications
 import ServiceManagement
 import WebKit
 
-let server = URL(string: ProcessInfo.processInfo.environment["SCENIC_STATUS_SERVER"] ?? info["ScenicServer"] as? String ?? "http://127.0.0.1:7311")!
 let home = (ProcessInfo.processInfo.environment["SCENIC_HOME"] ?? info["ScenicHome"] as? String).map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/scenic")
+let statusCommand = ProcessInfo.processInfo.environment["SCENIC_STATUS_COMMAND"] ?? info["ScenicStatusCommand"] as? String ?? home.appendingPathComponent("app/current/scenic").path
+
+/// The status now, as `scenic menu` prints it (nil when it can't be run, fails or says nothing
+/// readable within `timeout` seconds: it reads the NAS, which may hang). Never on the main thread.
+func fetchReply(timeout: TimeInterval = 10) -> Reply? {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: statusCommand)
+    p.arguments = ["menu", "--home", home.appendingPathComponent("agent").path]
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return nil }
+    let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+    DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    killer.cancel()
+    guard p.terminationStatus == 0 else { return nil }
+    return try? JSONDecoder().decode(Reply.self, from: data)
+}
 /// Without a heartbeat for this long, a Mac counts as out of touch (asleep, off, away, or its
 /// agent stuck): the agent's own threshold, served in its status (`out_of_touch_s`, task #846:
 /// crates/pipeline/src/pool/beat.rs OUT_OF_TOUCH_S), this from an agent before it.
@@ -43,14 +64,12 @@ let outOfTouchDefault = 600
 /// The out-of-touch threshold of an answer's status.
 func outOfTouch(_ r: Reply?) -> Int { r?.status?.out_of_touch_s ?? outOfTouchDefault }
 
-// What /api/build answers (the agent's status, crates/pipeline/src/agent/mod.rs Status).
+// What `scenic menu` answers (the agent's status, crates/pipeline/src/agent/mod.rs Status).
 struct Reply: Decodable {
     let status: Status?
     let local: Bool
     let now: Int
     let log: String?
-    /// What this Mac has downloaded for offline use (servers from 2026-10-08 on).
-    let offline: Offline?
     /// This Mac paused alone (crates/pipeline/src/control.rs Hold, task #224), and its ask while
     /// the agent hasn't taken it up (servers from #224 on).
     let held_here: HeldInfo?
@@ -61,35 +80,6 @@ struct Reply: Decodable {
 struct HeldInfo: Decodable {
     let by: String
     let at: Int
-}
-
-/// This Mac's downloads (crates/server/src/downloads.rs `summary`).
-struct Offline: Decodable {
-    let world: Bool
-    /// (Absent from a server of before: none counted, the menu still drawn.)
-    let regions: Int?
-    let bytes: Int
-    let here: Int
-    /// The NAS is reachable from this Mac.
-    let nas: Bool
-}
-
-/// The menu's line on what this Mac can show without the NAS.
-func offlineText(_ o: Offline) -> String {
-    let n = o.regions ?? 0
-    let regions = "\(n) region\(n == 1 ? "" : "s")"
-    if !o.world && n == 0 {
-        return o.nas ? "Nothing downloaded: the map needs the NAS to show anything (Settings → Regions)" : "Away from the NAS with nothing downloaded: the map can't show anything"
-    }
-    var t: String
-    if !o.world {
-        t = "Downloaded: \(regions), not the World: away from the NAS, zoomed out, the map shows nothing"
-    } else {
-        t = "Downloaded: the World, zoomed out"
-        if n > 0 { t += " and \(regions)" }
-    }
-    if o.here < o.bytes { t += o.nas ? " · \(min(99, o.here * 100 / max(1, o.bytes))) % here" : " · \(min(99, o.here * 100 / max(1, o.bytes))) % here, away from the NAS" }
-    return t
 }
 
 struct Status: Decodable {
@@ -662,7 +652,7 @@ func freshHelpers(_ r: Reply) -> [Helper] {
 
 /// The state, with a line saying it.
 func classify(_ r: Reply?) -> (Kind, String) {
-    guard let r = r else { return (.unknown, "The map's server on this Mac isn't answering") }
+    guard let r = r else { return (.unknown, "No status: this Mac's `scenic menu` didn't answer") }
     guard let s = r.status else { return (.unknown, "No word from the lead (is the NAS reachable?)") }
     // A helper building counts as building, whatever the lead is doing.
     let helping = freshHelpers(r).filter { h in h.allJobs.contains { $0.paused == nil } }
@@ -780,7 +770,6 @@ func holdItems(_ r: Reply?, own: Own?) -> [(title: String, held: Bool?, tip: Str
 /// own status).
 func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     var out = [Line(text: line, style: .title)]
-    if let o = r?.offline { out.append(Line(text: offlineText(o), style: .small)) }
     guard let r = r, let s = r.status else { return out }
     // When it'll be done and the map next gets new data (as the worker page and the map say it).
     if let f = s.forecast, r.now - s.beat <= outOfTouch(r) {
@@ -1484,15 +1473,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var own: Own?
     var seenCaches: (cleared: Int, deep: Int, declined: Int)?
     var polling = false
-    /// The app's build service, the map server, and the window (service.swift).
+    /// The app's build service and the window (service.swift).
     let build = BuildService()
-    let mapServer = MapServer()
-    lazy var window: StatusWindow = {
-        let w = StatusWindow()
-        w.onStart = { [weak self] in self?.startServer() }
-        w.onStop = { [weak self] in self?.stopServer() }
-        return w
-    }()
+    lazy var window = StatusWindow()
     /// Quitting goes ahead without asking: the build service stopped as asked, or the app replaced
     /// by an update (the build service left running).
     var mayQuit = false
@@ -1581,7 +1564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    // MARK: the app: its build service, the map server, quitting, updates (service.swift)
+    // MARK: the app: its build service, quitting, updates (service.swift)
 
     /// The app opened: its menu, its build service started, the window (unless opened at login),
     /// and the app among the login items.
@@ -1610,7 +1593,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.mainMenu = menu
         managing = true
         build.start()
-        mapServer.refresh()
         addLoginItem()
         updateWindow()
         // (Not at login, nor reopened after an update.)
@@ -1635,13 +1617,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// Each poll: the build service kept running (or, quitting after its job, the app quits once
-    /// it has stopped), the map server's state, the window.
+    /// it has stopped), the window.
     func tendServices() {
         // (Not in --show and --menu-proof's runs: the services left alone.)
         guard managing else { return }
         recheckSwitchOver()
         build.tend()
-        mapServer.refresh()
         if build.quitting == "finish" && !build.state.running {
             mayQuit = true
             NSApp.terminate(nil)
@@ -1654,7 +1635,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let jobs = runningJobs(serviceRunning: build.state.running)
         var line: String? = jobs.isEmpty ? nil : jobsText(jobs)
         if build.quitting == "finish" { line = "Quitting once this job ends:\n" + (line ?? "") }
-        window.update(build: build, map: mapServer, job: line)
+        window.update(build: build, job: line)
     }
 
     @objc func showWindow() {
@@ -1667,25 +1648,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return true
     }
 
-    @objc func startServer() {
-        mapServer.start()
-        updateWindow()
-        poll()
-    }
-
-    @objc func stopServer() {
-        let a = NSAlert()
-        a.messageText = "Stop the map server?"
-        a.informativeText = "The map stops loading on this Mac and on devices that use it (an iPad) until it's started again here, or at the next login. The build service goes on."
-        a.addButton(withTitle: "Stop the Map Server")
-        a.addButton(withTitle: "Cancel")
-        NSApp.activate()
-        guard a.runModal() == .alertFirstButtonReturn else { return }
-        mapServer.stop()
-        updateWindow()
-    }
-
-    /// A newer version installed (the server put it under app/): this app replaced by it and opened
+    /// A newer version installed (the agent put it under app/: pipeline::appupdate): this app replaced by it and opened
     /// again; the build service left running (its own update drain restarts it into that version).
     func updateIfReplaced() {
         guard build.quitting == nil, let new = newerApp() else { return }
@@ -1750,18 +1713,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.terminate(nil)
     }
 
-    @objc func startServerItem(_ sender: NSMenuItem) { startServer() }
-    @objc func stopServerItem(_ sender: NSMenuItem) { stopServer() }
-
     func poll() {
         tendServices()
         if polling { return }
         polling = true
-        var req = URLRequest(url: server.appendingPathComponent("api/build"))
-        req.timeoutInterval = 4
-        URLSession.shared.dataTask(with: req) { data, resp, _ in
-            let ok = (resp as? HTTPURLResponse)?.statusCode == 200
-            let r = ok ? data.flatMap { try? JSONDecoder().decode(Reply.self, from: $0) } : nil
+        DispatchQueue.global().async {
+            let r = fetchReply()
             DispatchQueue.main.async {
                 if self.proof { print("\(stamp()) poll: \(r.map { classify($0).1 } ?? "no answer")") }
                 self.polling = false
@@ -1770,7 +1727,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self.notifyChanges()
                 self.show()
             }
-        }.resume()
+        }
     }
 
     // MARK: the icon and the menu
@@ -1812,20 +1769,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return menu(kind, line)
     }
 
-    /// The build page's address for another device: the one this Mac's coordinator writes while
-    /// it leads or brokers (HTTPS through Tailscale when it's served so); none otherwise.
-    func pageToShare() -> String? {
-        if let page = try? String(contentsOf: home.appendingPathComponent("agent/coord/page"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !page.isEmpty { return page }
-        return nil
-    }
-
     /// The menu (a right-click on the icon, or the panel's "⋯"): what the page can't say (the state
-    /// in a line, this Mac's downloads and its build caches), then the controls.
+    /// in a line and its build caches), then the controls.
     func menu(_ kind: Kind, _ line: String) -> NSMenu {
         let m = NSMenu()
         m.autoenablesItems = false
         var info = [Line(text: line, style: .title)]
-        if let o = reply?.offline { info.append(Line(text: offlineText(o), style: .small)) }
         if let c = own?.caches { info.append(Line(text: cachesLine(c), style: .small)) }
         if managing && build.refused { info.append(Line(text: BuildService.refusedLine, style: .small)) }
         for l in info {
@@ -1932,47 +1881,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             it.representedObject = log
             m.addItem(it)
         }
-        let map = NSMenuItem(title: "Open the Map", action: #selector(openMap), keyEquivalent: "")
-        map.target = self
-        m.addItem(map)
-        // The map's address for an iPhone or an iPad (this Mac's server writes it): pasted there
-        // (Universal Clipboard), the map opens on the device.
-        if let page = try? String(contentsOf: home.appendingPathComponent("map-page"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !page.isEmpty {
-            let it = NSMenuItem(title: "Copy the Map's Address", action: #selector(copyPage), keyEquivalent: "")
-            it.target = self
-            it.representedObject = page
-            m.addItem(it)
-        }
-        // The build's page (its dashboard, and where a device helps): opened in the browser (the
-        // one the panel shows, else the first address), or pasted on another device (Universal
-        // Clipboard).
-        do { let page = Panel.page
-            let it = NSMenuItem(title: "Open the Build Page in the Browser", action: #selector(openPage), keyEquivalent: "")
-            it.target = self
-            it.representedObject = page
-            m.addItem(it)
-        }
-        if let page = pageToShare() {
-            let it = NSMenuItem(title: "Copy the Build Page's Address", action: #selector(copyPage), keyEquivalent: "")
-            it.target = self
-            it.representedObject = page
-            m.addItem(it)
-        }
-        // The map server (a service of its own: started and stopped only from here or the window),
-        // and quitting.
+        // The window, and quitting.
         if managing {
             m.addItem(.separator())
             if build.blocked != nil {
                 let it = NSMenuItem(title: build.said, action: nil, keyEquivalent: "")
                 it.isEnabled = false
-                m.addItem(it)
-            }
-            if mapServer.installed {
-                let it = mapServer.state.running
-                    ? NSMenuItem(title: "Stop the Map Server…", action: #selector(stopServerItem), keyEquivalent: "")
-                    : NSMenuItem(title: "Start the Map Server", action: #selector(startServerItem), keyEquivalent: "")
-                it.target = self
-                it.toolTip = mapServer.said
                 m.addItem(it)
             }
             let win = NSMenuItem(title: "Show the Scenic Window", action: #selector(showWindow), keyEquivalent: "")
@@ -2138,12 +2052,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         poll()
     }
 
-    @objc func copyPage(_ sender: NSMenuItem) {
-        guard let page = sender.representedObject as? String else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(page, forType: .string)
-    }
-
     @objc func openLog(_ sender: NSMenuItem) {
         if let p = sender.representedObject as? String { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
     }
@@ -2152,10 +2060,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let p = sender.representedObject as? String, let u = URL(string: p) else { return }
         panel.close()
         NSWorkspace.shared.open(u)
-    }
-
-    @objc func openMap(_ sender: NSMenuItem) {
-        NSWorkspace.shared.open(server.deletingLastPathComponent())
     }
 
     // MARK: notifications, for every change
@@ -2258,14 +2162,14 @@ func stamp() -> String {
 
 let usage = """
 usage: scenic-status [option]
-  (none)                     the app: the menu bar item, the build service and the map server's window
+  (none)                     the app: the menu bar item, the build service and its window
   --no-window                the app, its window not opened (an update's reopen)
   --plan                     whether opening it would manage the build service, or why not
-  --services                 the build service's and the map server's state
+  --services                 the build service's state
   --unregister               the build service and the app off the login items
   --print                    the icon, the status's lines and the menu's items now, as text
   --replay a.json b.json …   the notifications a sequence of answers would send (each file
-                             /api/build's answer, with this Mac's agent's own status beside it as
+                             `scenic menu`'s answer, with this Mac's agent's own status beside it as
                              "own", and "clear_asked" while an ask to clear its caches waits), and
                              the caches' item
   --render lines.png         the status's lines drawn as they lay out (dark), for checking
@@ -2343,22 +2247,13 @@ if let i = args.firstIndex(of: "--reopen") {
     // switch-over (a check of the transition guard).
     print(notManaging().map { "manages nothing: \($0)" } ?? "manages the build service (\(buildLabel)) and the login items")
 } else if args.contains("--services") {
-    // The build service's and the map server's state, as the app sees them.
+    // The build service's state, as the app sees it.
     let b = BuildService()
     b.refresh()
-    let m = MapServer()
-    m.refresh()
     print("\(b.said) [\(b.service.status.rawValue)]")
-    print(m.said)
 } else if args.contains("--print") {
     // The status now, as the icon and menu would show it.
-    let done = DispatchSemaphore(value: 0)
-    var r: Reply?
-    URLSession.shared.dataTask(with: server.appendingPathComponent("api/build")) { data, _, _ in
-        r = data.flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
-        done.signal()
-    }.resume()
-    done.wait()
+    let r = fetchReply()
     let (kind, line) = state(r, own: ownStatus())
     print("icon: \(kind.symbol)\(heldInputs(r).isEmpty ? "" : " with a warning badge")")
     for v in heldInputs(r) { print("item: \(inputLine(v))") }
@@ -2373,13 +2268,7 @@ if let i = args.firstIndex(of: "--reopen") {
     }
 } else if let i = args.firstIndex(of: "--render") {
     // The menu bar's icon and the menu's lines as views, stacked as the menu stacks them, drawn into a PNG.
-    let done = DispatchSemaphore(value: 0)
-    var r: Reply?
-    URLSession.shared.dataTask(with: server.appendingPathComponent("api/build")) { data, _, _ in
-        r = data.flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
-        done.signal()
-    }.resume()
-    done.wait()
+    let r = fetchReply()
     _ = NSApplication.shared
     let (kind, line) = state(r, own: ownStatus())
     // (The menu bar's icon first, as the bar draws it: a template image, light on the dark bar.)
@@ -2391,7 +2280,6 @@ if let i = args.firstIndex(of: "--reopen") {
         l.style == .separator ? NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: 11)) : l.style == .bar ? BarView(l.text, fraction: l.fraction) : LineView(l.text, font: fontFor(l.style).0, color: fontFor(l.style).1, wrapAnywhere: l.style == .mono)
     } + holdItems(r, own: ownStatus()).map { hi in LineView(hi.title, font: .menuFont(ofSize: 0), color: hi.held != nil ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false) }
         + (r?.log != nil ? ["Open the Build Log"] : []).map { LineView($0, font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false) }
-        + [LineView("Open the Map", font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false)]
     let height = views.reduce(CGFloat(0)) { $0 + $1.frame.height } + 16
     let canvas = NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: height))
     canvas.appearance = NSAppearance(named: .darkAqua)
