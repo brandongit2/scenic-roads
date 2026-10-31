@@ -7097,7 +7097,7 @@ impl Agent {
     /// target held for a newer app when asked), and the answer written for `scenic job cancel`.
     fn take_cancel(&mut self, ask: crate::control::Cancel, root: Option<&store::nasfs::NasRoot>) {
         // (A grant from a plan no newer than this is dropped: `cancelled_since`.)
-        let n = self.plan_n.max(self.plan.view.get().n);
+        let n = self.plan_n.max(self.plan.newest_n());
         self.cancels_at.insert(ask.target.clone(), n);
         let mut said: Vec<String> = Vec::new();
         let mut here: Vec<(String, u64)> = Vec::new();
@@ -10365,6 +10365,12 @@ mod tests {
         assert_eq!(a.cancelled_since(&spec, n + 1), None);
         assert_eq!(a.cancelled_since(&spec, 0), None, "an older lead's grant: no number");
         assert_eq!(a.cancelled_since(&waiting_job("unit 6/1/3"), n), None);
+        // (Plans are numbered past the time in ms: a lead started again numbers past every plan of
+        // the one before, so a member's cancel noted at an old number drops none of its grants.)
+        let t = std::time::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        assert_eq!(plan::next_n(0, t), 1_800_000_000_000);
+        assert_eq!(plan::next_n(1_800_000_000_500, t), 1_800_000_000_501);
+        assert!(n >= plan::next_n(0, std::time::SystemTime::now() - Duration::from_secs(60)));
     }
 
     /// Task #871 step 6, a mixed rollout: a grant without the plan's number (an older lead's) reads

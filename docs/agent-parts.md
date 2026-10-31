@@ -196,11 +196,15 @@ thread of its own (in line for a single round, a dry run's, the tests'). **jobs*
 its side each round (`plan::Inputs`: a copy of the slots, the memory, the pause, the pool's view,
 the switches; a job's end kicks a plan) and reads its last `PlanView` (numbered `n`). It plans when
 `why_plan` says: kicked (a job's end, a gate ask), none yet, the digest (`plan_seen`, looked at
-every 5 s) changed, a timed wait ended, or the 5-min fallback. The round grants from the last plan
+every 5 s) changed, a timed wait ended, or the 5-min fallback; but no change is taken up sooner
+after a plan ended than that plan took (plans take 10-18 s on the Mac mini and jobs end faster on a
+busy pool: the plan holds half a core at most). The round grants from the last plan
 at once (`Agent::lead_grants`; `may_pack`'s check is the grants' own, `takes_more`), each grant
 carrying the plan's number (`coord::Grant::plan`, serde-defaulted for a mixed rollout); a cancel
-notes the newest plan's number per target (`cancels_at`), and a grant from a plan no newer is
-dropped (§5.4). A plan past `beat::LOOP_STUCK` is logged with its phase and sampled once
+notes the newest plan's number per target (`cancels_at`; a plan is numbered as it starts,
+`Handle::newest_n`), and a grant from a plan no newer is dropped (§5.4). Numbers are at least the
+time in ms (`plan::next_n`), so a lead started again, or another Mac leading, numbers past every
+plan before it and an old cancel drops none of its grants. A plan past `beat::LOOP_STUCK` is logged with its phase and sampled once
 (`plan::Handle::stalled`), and the status says so. The forecast's files for the NAS come back on a
 channel (`plan::Out`) for the lead's pool step. Not done: a plan's errors stay waiting lines (`plan`
 returns jobs, not a result); the pool's own run is still locked by the pool's ops (`pool::try_lock`:

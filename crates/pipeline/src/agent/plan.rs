@@ -141,6 +141,7 @@ pub(super) struct Handle {
     pub out: mpsc::Receiver<Out>,
     stall: std::sync::Arc<Stall>,
     phase: std::sync::Arc<bus::Snap<&'static str>>,
+    running_n: std::sync::Arc<AtomicU64>,
     inline: Option<Box<Planner>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -148,7 +149,7 @@ pub(super) struct Handle {
 impl Handle {
     /// The plan in line (`round` runs it in its place); `spawn` puts it on its thread.
     pub fn new(mut p: Planner) -> Handle {
-        let (view, out, phase) = (p.view.clone(), p.out_rx.take(), p.phase.clone());
+        let (view, out, phase, running_n) = (p.view.clone(), p.out_rx.take(), p.phase.clone(), p.running_n.clone());
         let stall = std::sync::Arc::new(Stall::default());
         Handle {
             tx: None,
@@ -156,6 +157,7 @@ impl Handle {
             out: out.expect("a planner's out"),
             stall,
             phase,
+            running_n,
             inline: Some(Box::new(p)),
             thread: None,
         }
@@ -171,6 +173,7 @@ impl Handle {
             out,
             stall: std::sync::Arc::new(Stall::default()),
             phase,
+            running_n: std::sync::Arc::new(AtomicU64::new(0)),
             inline: None,
             thread: None,
         }
@@ -229,6 +232,12 @@ impl Handle {
         })
     }
 
+    /// The newest plan's number, the one running included (a cancel drops grants from plans no
+    /// newer: a plan started before it may still offer what it cancelled).
+    pub fn newest_n(&self) -> u64 {
+        self.running_n.load(Ordering::SeqCst).max(self.view.get().n)
+    }
+
     /// Whether a plan runs now (a NAS user: the self-heal waits for it).
     pub fn busy(&self) -> bool {
         self.stall.since.load(Ordering::SeqCst) > 0
@@ -276,26 +285,42 @@ impl Handle {
     }
 }
 
+/// The next plan's number after `last`: past it, and at least the time in ms, so a lead started
+/// again (or another Mac taking the lead) numbers past every plan before it, and a member's cancel
+/// noted at an old lead's number never drops a new lead's grants (`Agent::cancelled_since`).
+pub(super) fn next_n(last: u64, now: std::time::SystemTime) -> u64 {
+    let ms = now.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    (last + 1).max(ms)
+}
+
 /// Why a plan is made now, if one is: kicked (`kick`: a job ended, a start held briefly, a gate
 /// ask), none yet, what it depends on changed (`seen` against the last plan's), its timed waits'
 /// earliest end (`at`) came, or `FALLBACK` passed since the last (`age`).
+///
+/// But a change comes no sooner after the last plan ended than that plan took (`took`): on a busy
+/// pool, jobs end faster than a plan is made (10-18 s on the Mac mini, 30 Oct), and planning on
+/// each would keep a core of the lead's busy; so the plan takes half a core at most, the changes
+/// meanwhile taken together (a kick is kept until then: `Planner::look`).
 pub(super) fn why_plan(
     kick: Option<&'static str>,
-    last: Option<(Duration, u64, Option<u64>)>,
+    last: Option<(Duration, Duration, u64, Option<u64>)>,
     seen: u64,
     now: u64,
 ) -> Option<&'static str> {
-    let Some((age, last_seen, at)) = last else { return Some("no plan yet") };
+    let Some((age, took, last_seen, at)) = last else { return Some("no plan yet") };
+    if age >= FALLBACK {
+        return Some("the fallback");
+    }
+    if age < took {
+        return None;
+    }
     if let Some(k) = kick {
         return Some(k);
     }
     if last_seen != seen {
         return Some("what it depends on changed");
     }
-    if at.is_some_and(|t| now >= t) {
-        return Some("a timed wait ended");
-    }
-    (age >= FALLBACK).then_some("the fallback")
+    at.is_some_and(|t| now >= t).then_some("a timed wait ended")
 }
 
 /// The earliest of `at` from `now` on (one at `now` kept: due at once).
@@ -327,10 +352,14 @@ pub(super) struct Planner {
     pub(super) phase: std::sync::Arc<bus::Snap<&'static str>>,
     /// Plan again now, and why (`why_plan`).
     pub(super) kicked: Option<&'static str>,
-    /// The last plan's number, when it was made, its digest, its timed waits' end and why its work
-    /// waits.
+    /// The last plan's number (`next_n`), when it was made, its digest, its timed waits' end and
+    /// why its work waits.
     pub(super) n: u64,
-    pub(super) last: Option<(Instant, u64, Option<u64>)>,
+    /// The number of the plan running now, or the last (**jobs**' cancel reads it:
+    /// `Handle::newest_n`).
+    pub(super) running_n: std::sync::Arc<AtomicU64>,
+    /// (When it ended, how long it took, its digest and its timed waits' end.)
+    pub(super) last: Option<(Instant, Duration, u64, Option<u64>)>,
     pub(super) jobs: Vec<JobSpec>,
     pub(super) waiting: Vec<Waiting>,
     pub(super) regions: (Vec<recipes::Recipe>, Vec<(String, String)>),
@@ -456,6 +485,7 @@ impl Planner {
             phase: bus::Snap::new(""),
             kicked: None,
             n: 0,
+            running_n: std::sync::Arc::new(AtomicU64::new(0)),
             last: None,
             jobs: Vec::new(),
             waiting: Vec::new(),
@@ -568,7 +598,7 @@ impl Planner {
         let Some(root) = self.inp.root.clone() else {
             // (The NAS back: planned at once, whatever the digest.)
             if let Some(l) = self.last.as_mut() {
-                l.1 = 0;
+                l.2 = 0;
             }
             self.publish();
             return;
@@ -582,18 +612,22 @@ impl Planner {
         self.phase("the records' digest");
         let seen = self.plan_seen(&root);
         let now = now_s();
-        let last = self.last.map(|(at, s, t)| (at.elapsed(), s, t));
-        if let Some(why) = why_plan(self.kicked.take(), last, seen, now) {
+        let last = self.last.map(|(at, took, s, t)| (at.elapsed(), took, s, t));
+        if let Some(why) = why_plan(self.kicked, last, seen, now) {
+            self.kicked = None;
             self.phase("the plan");
             let t = Instant::now();
             let mut waiting = Vec::new();
             let c = self.inp.conditions;
+            // (Numbered as it starts: a cancel taken meanwhile drops its grants too.)
+            let n = next_n(self.n, std::time::SystemTime::now());
+            self.running_n.store(n, Ordering::SeqCst);
             let plan = self.plan(&root, &c, &mut waiting);
-            self.n += 1;
+            self.n = n;
             self.offer_plan(&plan);
             self.regions = load_regions(&root);
             let replan_at = self.replan_at(&plan, now_s());
-            self.last = Some((Instant::now(), seen, replan_at));
+            self.last = Some((Instant::now(), t.elapsed(), seen, replan_at));
             if t.elapsed() >= Duration::from_secs(10) {
                 eprintln!("agent: plan {} ({why}) took {} s", self.n, t.elapsed().as_secs());
             }
@@ -3427,7 +3461,7 @@ mod tests {
     #[test]
     fn the_plan_is_made_on_changes() {
         let s = Duration::from_secs;
-        let last = |age: u64, at: Option<u64>| Some((s(age), 7, at));
+        let last = |age: u64, at: Option<u64>| Some((s(age), s(0), 7, at));
         assert_eq!(why_plan(None, None, 7, 1000), Some("no plan yet"));
         assert_eq!(why_plan(Some("a job ended"), last(0, None), 7, 1000), Some("a job ended"));
         // Nothing changed (paused with jobs left, say: the pause is in the digest): not at each
@@ -3440,6 +3474,13 @@ mod tests {
         // A timed wait (a failure's, say) ending at 1100: not before, then.
         assert_eq!(why_plan(None, last(20, Some(1100)), 7, 1099), None);
         assert_eq!(why_plan(None, last(20, Some(1100)), 7, 1100), Some("a timed wait ended"));
+        // A plan that took 15 s: no change taken up sooner than 15 s after it (half a core at most),
+        // then at once; the fallback whatever.
+        let took = |age: u64| Some((s(age), s(15), 7, None));
+        assert_eq!(why_plan(Some("a job ended"), took(14), 8, 1000), None);
+        assert_eq!(why_plan(Some("a job ended"), took(15), 8, 1000), Some("a job ended"));
+        assert_eq!(why_plan(None, took(15), 8, 1000), Some("what it depends on changed"));
+        assert_eq!(why_plan(None, Some((FALLBACK, FALLBACK * 2, 7, None)), 7, 1000), Some("the fallback"));
         assert_eq!(earliest_after([5, 3, 9], 4), Some(5));
         // A wait with under a second left: due the next second, never dropped; one due now kept.
         assert_eq!(ends_in(1000, Duration::from_millis(400)), 1001);

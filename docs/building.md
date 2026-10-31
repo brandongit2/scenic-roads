@@ -57,7 +57,8 @@ from the first (`edit_held`).
   ends, a gate ask comes, what the plan depends on changes (`Planner::plan_seen`, looked at every
   5 s: the manifest, records, hand-offs, the gate, the pool, the pause, a newer app, switch files,
   catalogues, leases), at the earliest end of its timed waits (`replan_at`), and otherwise every
-  five minutes (`why_plan`). Each plan is numbered and published whole; the round grants from the
+  five minutes (`why_plan`), but no sooner after a plan than that plan took. Each plan is numbered
+  (from the time in ms, so past every earlier lead's) and published whole; the round grants from the
   last one at once, each grant carrying its number (`coord::Grant::plan`; 0 from an older lead), so
   a plan of minutes holds no grant, pause or heartbeat, and a grant from a plan no newer than a
   cancel of its job or target is dropped. The checklist and the regions' counts are the plan's
