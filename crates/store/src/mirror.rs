@@ -14,8 +14,6 @@
 //! mirror/.basemap/<hash16>/<piece>.pmtiles.part   a piece being made, resumed where it stopped
 //! mirror/.basemap/<hash16>/sizes.json             each piece's size, worked out from the archive
 //! idx/<hash16>.idx                  pack indexes (PackIndex::to_bytes), cached as they're read
-//! catalog/<n>.json.zst              the last catalogues adopted (every older one too until the
-//!                                   downloads have their own lists: `release_catalogues`)
 //! ```
 //!
 //! **What's wanted** (`Wanted`, from the caller: the server's downloads) is a list of files and
@@ -30,7 +28,7 @@
 //! jobs read this mirror's base packs under a shared lock, crate::cachefile) stays until a later
 //! sync finds it let go.
 
-use crate::catalogue::{self, Catalogue};
+use crate::catalogue::Catalogue;
 use crate::iopool::{IoError, IoPool};
 use crate::naming::{hex16, parse_content_name, replace_file};
 use crate::pack::PackIndex;
@@ -49,8 +47,6 @@ use std::time::{Duration, Instant, SystemTime};
 const CHUNK: u64 = 4 << 20;
 /// Shortest timeout for one read: long enough that a slow link isn't taken for a dead one.
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
-/// Catalogues kept in `catalog/`.
-const KEEP_CATALOGUES: usize = 3;
 /// Age past which a temporary file in `idx/` is left over from an interrupted write.
 const STALE_TMP: Duration = Duration::from_secs(3600);
 const PARTIAL: &str = ".partial";
@@ -206,9 +202,6 @@ struct State {
     copying: Option<Copying>,
     /// What the last sync did, and when.
     last: Option<(SyncStats, SystemTime)>,
-    /// Whether the catalogues in `catalog/` older than the last few go (`release_catalogues`):
-    /// none does before (a download of before its own list reads the one it's at).
-    released: bool,
 }
 
 /// The local copy of what this Mac has downloaded.
@@ -283,7 +276,7 @@ impl Mirror {
     /// Opens (creating as needed) the mirror under `root`, the app's folder. `reserve_bytes` of
     /// the disk stay free (docs/macs.md: the owner's setting in the Regions panel, 30 GB unless set).
     pub fn open(root: PathBuf, reserve_bytes: u64) -> Result<Mirror> {
-        for d in ["mirror", "idx", crate::catalogue::NAME] {
+        for d in ["mirror", "idx"] {
             let p = root.join(d);
             fs::create_dir_all(&p).with_context(|| format!("create {}", p.display()))?;
         }
@@ -296,7 +289,7 @@ impl Mirror {
             root,
             reserve: std::sync::atomic::AtomicU64::new(reserve_bytes),
             floor: std::sync::OnceLock::new(),
-            state: Mutex::new(State { files, pieces, sizes, copying: None, last: None, released: false }),
+            state: Mutex::new(State { files, pieces, sizes, copying: None, last: None }),
             free_space: Box::new(disk_free),
             on_remove: Mutex::new(None),
         })
@@ -494,39 +487,6 @@ impl Mirror {
             eprintln!("mirror: can't keep {}: {e}", p.display());
         }
         Ok(ix)
-    }
-
-    /// Keeps a copy of `cat` in `catalog/` (for starting offline) and the last few before it (older
-    /// ones too until `release_catalogues`).
-    pub fn save_catalogue(&self, cat: &Catalogue) -> Result<()> {
-        let dir = self.root.join(crate::catalogue::NAME);
-        catalogue::write_copy(&dir, cat)?;
-        if self.state().released {
-            catalogue::prune(&dir, KEEP_CATALOGUES)?;
-        }
-        Ok(())
-    }
-
-    /// The downloads keep their own lists (the server's crate::downloads): the catalogues older
-    /// than the last few, kept for downloads of before, go now and from now on.
-    pub fn release_catalogues(&self) -> Result<()> {
-        if self.state().released {
-            return Ok(());
-        }
-        catalogue::prune(&self.root.join(crate::catalogue::NAME), KEEP_CATALOGUES)?;
-        self.state().released = true;
-        Ok(())
-    }
-
-    /// Catalogue `n` as kept here (None: it isn't): a download's of before it kept its own list.
-    pub fn catalogue(&self, n: u64) -> Option<Catalogue> {
-        let dir = self.root.join(crate::catalogue::NAME);
-        catalogue::list(&dir).ok()?.contains(&n).then(|| catalogue::read_n(&dir, n).ok()).flatten()
-    }
-
-    /// The newest catalogue kept here.
-    pub fn saved_catalogue(&self) -> Result<Option<Catalogue>> {
-        catalogue::latest(&self.root.join(crate::catalogue::NAME))
     }
 
     /// Works out the sizes of `wanted` pieces of `archive` (a content name) not known yet, from
@@ -972,26 +932,18 @@ impl Mirror {
         Ok(Some(Copy::Done(plan.size)))
     }
 
-    /// After a sync: drops pack indexes no recent catalogue needs and of no file here (and
+    /// After a sync: drops pack indexes the map served (`cat`) doesn't need and of no file here (and
     /// temporary files an interrupted write left in `idx/`).
     fn tidy(&self, cat: &Catalogue) {
-        let mut recent: HashSet<String> =
+        let mut needed: HashSet<String> =
             cat.files.values().filter_map(|f| parse_content_name(&f.file).map(|c| c.hash16.to_string())).collect();
-        recent.extend(self.state().files.keys().filter_map(|n| parse_content_name(n).map(|c| c.hash16.to_string())));
-        let dir = self.root.join(crate::catalogue::NAME);
-        if let Ok(ns) = catalogue::list(&dir) {
-            if let Some(prev) = ns.into_iter().filter(|&n| n < cat.n).find_map(|n| catalogue::read_n(&dir, n).ok()) {
-                recent.extend(
-                    prev.files.values().filter_map(|f| parse_content_name(&f.file).map(|c| c.hash16.to_string())),
-                );
-            }
-        }
+        needed.extend(self.state().files.keys().filter_map(|n| parse_content_name(n).map(|c| c.hash16.to_string())));
         if let Ok(rd) = fs::read_dir(self.root.join("idx")) {
             for e in rd.flatten() {
                 let name = e.file_name();
                 let Some(name) = name.to_str() else { continue };
                 let stale = match name.strip_suffix(".idx") {
-                    Some(h) => !recent.contains(h),
+                    Some(h) => !needed.contains(h),
                     // A temporary file an hour old belongs to no write in progress.
                     None => {
                         name.ends_with(".tmp")

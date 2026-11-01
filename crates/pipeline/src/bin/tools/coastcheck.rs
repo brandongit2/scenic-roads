@@ -28,11 +28,12 @@ pub fn main(args: Vec<String>) -> Result<()> {
         C::Build { osm, water_polygons, out, index } => build(&osm, &water_polygons, &out, &index),
         C::Serve { store, port } => serve(&store, port),
         C::Stats { store, z, sample, size } => stats(&store, z, sample, size),
-        C::WaterPacks { tiles, catalogue, root } => {
+        C::WaterPacks { tiles, root } => {
             // water-build's tiles as the water layer's packs (pipeline::layers' scopes) in a test
-            // root, and a catalogue one newer than --catalog with them (written into <root>/catalog).
-            // Never the NAS's.
-            let mut cat = store::catalogue::read(&catalogue)?;
+            // root, and its map one newer with them (its `map/<seq>.json.zst`). Never the NAS's.
+            anyhow::ensure!(!root.starts_with("/Volumes"), "a test root, not the NAS's");
+            let nas = store::nasfs::NasRoot::from_arg(&root);
+            let mut cat = store::map::newest_nas(&nas)?.context("no map in the root")?.catalogue()?;
             let mut all: Vec<(u8, u32, u32, PathBuf)> = Vec::new();
             for z in 0..=pipeline::water::STORED_MAXZ {
                 let zd = tiles.join(z.to_string());
@@ -96,8 +97,8 @@ pub fn main(args: Vec<String>) -> Result<()> {
             }
             cat.layers.insert("water".into(), layer);
             cat.n += 1;
-            let p = store::catalogue::write_copy(&root.join(store::catalogue::NAME), &cat)?;
-            eprintln!("coastcheck: {}", p.display());
+            store::map::write_nas_snapshot(&nas, &store::map::Map::of(&cat)?)?;
+            eprintln!("coastcheck: map {} in {}", cat.n, root.display());
             Ok(())
         }
         C::WaterBuild { basemap, only, lakefill, out: dir } => {

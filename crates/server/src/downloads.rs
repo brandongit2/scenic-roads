@@ -38,9 +38,9 @@
 //! written as the mirror plans, for every download (`Downloads::keep_lists`), and those of each
 //! catalogue a download is at or updating to are kept, however old: what it keeps, what changed and
 //! what an Update copies are its list against the catalogue served, one pass over its own items,
-//! however far behind it is. (A file of format 4 had no lists: each is made once from the catalogue
-//! this Mac kept for its download, then those older than the last few go:
-//! store::mirror::Mirror::release_catalogues.)
+//! however far behind it is. No catalogue is kept on this Mac (docs/maplog.md §8, step 6): a
+//! download whose list wasn't kept (a file of format 4, from before lists) reads at the map served,
+//! as one whose catalogue is lost (`Plan::eff`).
 //!
 //! **Whole tiles.** No z6 tile is read from two catalogues (a list's ways index their owner's base
 //! pack). A download at the served catalogue moves every tile it has files of there (`Plan::moved`):
@@ -274,8 +274,8 @@ pub struct At {
     pub world: Option<Part>,
     pub regions: Regions,
     /// A list kept while some of its ways' owners weren't known (their hidata unread): it may lack
-    /// a base pack, so it's made again from its catalogue while that's here, and while it's read
-    /// no base pack goes (`once`), nor the old catalogues (`Mirror::release_catalogues`).
+    /// a base pack, so it's made again from its map while this server holds it, and while it's
+    /// read no base pack goes (`once`).
     pub partial: bool,
 }
 
@@ -612,10 +612,9 @@ impl Downloads {
     /// Keeps each download's list at the catalogue served and at each one a download is at or
     /// updating to (those it has; the others go). The served one's are made again at each plan
     /// while it's served (a download asked, owners learned: their base packs), marked `partial`
-    /// while some owners aren't known, and made again from its catalogue once they are. One made
-    /// from a catalogue this Mac kept for a download of format 4 only once all owners are known. Once every download's catalogue has its lists,
-    /// the catalogues kept for them go (`Mirror::release_catalogues`).
-    fn keep_lists(&self, plan: &Plan, owners_known: bool, m: &Mirror) {
+    /// while some owners aren't known, and made again from its map once they are, while this server
+    /// holds it (`Plan::at`).
+    fn keep_lists(&self, plan: &Plan, owners_known: bool) {
         let held = self.lists.lock().unwrap().clone();
         let pinned: BTreeSet<u64> =
             plan.asked.pins().iter().flat_map(|(_, p)| [Some(p.cat), p.to]).flatten().filter(|&n| n > 0).collect();
@@ -636,14 +635,8 @@ impl Downloads {
         }
         let same = next.len() == held.len() && next.iter().all(|(n, a)| held.get(n).is_some_and(|h| Arc::ptr_eq(a, h)));
         if !same {
-            if let Err(e) = self.write(|_| Ok(()), Some(next.clone())) {
+            if let Err(e) = self.write(|_| Ok(()), Some(next)) {
                 eprintln!("downloads: keeping their lists: {e:#}");
-                return;
-            }
-        }
-        if pinned.iter().all(|n| next.get(n).is_some_and(|a| !a.partial)) {
-            if let Err(e) = m.release_catalogues() {
-                eprintln!("mirror: letting the downloads' old catalogues go: {e:#}");
             }
         }
     }
@@ -684,15 +677,12 @@ impl Downloads {
             g.retain(|n, _| ns.contains(n) && (*n == cur.n || lists.get(n).is_none_or(|a| a.partial)));
             ns.iter()
                 .filter_map(|&n| {
-                    // (Each download's own lists, but at the catalogue served; made from a
-                    // catalogue this Mac kept otherwise only where none were kept: a download of
-                    // format 4, or one the map moved past before the mirror's round listed it.)
-                    if n != cur.n {
-                        // (A partial one only while its catalogue isn't here to make it whole.)
+                    // (Each download's own lists, but at the map served; else what this server made
+                    // of a map while it served it: one the map moved past before the mirror's round
+                    // listed it, a partial list made whole.)
+                    if n != cur.n && !g.contains_key(&n) {
                         if let Some(a) = lists.get(&n) {
-                            if !a.partial || data.mirror.as_ref().is_none_or(|m| m.catalogue(n).is_none()) {
-                                return Some((n, a.clone()));
-                            }
+                            return Some((n, a.clone()));
                         }
                     }
                     if let Some((c, a)) = g.get(&n) {
@@ -702,8 +692,10 @@ impl Downloads {
                             return Some((n, a.clone()));
                         }
                     }
-                    let cat = if n == cur.n { cur.clone() } else { Arc::new(data.mirror.as_ref()?.catalogue(n)?) };
-                    let a = Arc::new(at_of(cat, &owners));
+                    if n != cur.n {
+                        return lists.get(&n).map(|a| (n, a.clone()));
+                    }
+                    let a = Arc::new(at_of(cur.clone(), &owners));
                     g.insert(n, (changes, a.clone()));
                     Some((n, a))
                 })
@@ -1017,8 +1009,8 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
         return false;
     }
     let owners_known = s.downloads.learn_owners(&s.data, &s.downloads.plan(&s.data));
-    s.downloads.keep_lists(&s.downloads.plan(&s.data), owners_known, m);
-    // (A partial list read, its catalogue gone: its owners are as unknown.)
+    s.downloads.keep_lists(&s.downloads.plan(&s.data), owners_known);
+    // (A partial list read, its map gone: its owners are as unknown.)
     let owners_known = owners_known && s.downloads.plan(&s.data).at.values().all(|a| !a.partial);
     if s.downloads.advance(&s.downloads.plan(&s.data), m) {
         return true;

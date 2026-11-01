@@ -125,7 +125,7 @@ pub struct Keys {
     #[serde(default, rename = "catalog")] // the stored key keeps its old spelling (task #547)
     pub catalogue: Option<String>,
     /// The same for the last catalogue held for review (`inputs/hold-catalog`: written to
-    /// catalog-held/, not served).
+    /// the NAS's map-held/, not served).
     #[serde(default, rename = "catalog_held")] // stored key: old spelling
     pub catalogue_held: Option<String>,
     /// Records of steps this app doesn't know (a newer app's), kept as they are when the keys are

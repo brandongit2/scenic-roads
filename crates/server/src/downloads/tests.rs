@@ -90,7 +90,7 @@ fn catalogue(root: &store::nasfs::NasRoot) -> Catalogue {
         {"id": "east", "name": "East", "outline": ["osm:1"], "shapes": {"osm:1": [[rect(-0.06, 51.4, -0.03, 51.6)]]}},
     ]});
     c.validate().unwrap();
-    store::catalogue::write(&root.unchecked_path().join("catalog"), &c).unwrap();
+    store::testkit::map_root(&root.unchecked_path(), &c);
     c
 }
 
@@ -408,8 +408,7 @@ async fn a_new_catalogue_copies_nothing_until_the_download_is_updated() {
     // A region over 31/21 and 32/21 (London to Kent), still building: catalogue 1 has 31/21's files
     // alone; catalogue 2 32/21's too, and 31/21's roads made again.
     let full = catalogue(&root);
-    let dir = nas.path().join("catalog");
-    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(nas.path().join(store::map::NAS_DIR)).unwrap();
     let se = rect(-0.3, 51.4, 0.3, 51.6);
     let coverage = |built: u32| {
         json!({"recorded": true, "regions": [
@@ -427,7 +426,7 @@ async fn a_new_catalogue_copies_nothing_until_the_download_is_updated() {
     }
     first.coverage = coverage(1);
     first.validate().unwrap();
-    store::catalogue::write(&dir, &first).unwrap();
+    store::testkit::map_root(nas.path(), &first);
     let s = crate::test_state_with(home.path(), &root, true);
     assert_eq!(s.data.catalogue().n, 1);
     let m = s.data.mirror.clone().unwrap();
@@ -452,8 +451,8 @@ async fn a_new_catalogue_copies_nothing_until_the_download_is_updated() {
     second.coverage = coverage(2);
     put(&root, &mut second, roads, 25_000);
     second.validate().unwrap();
-    store::catalogue::write(&dir, &second).unwrap();
-    assert!(tokio::task::block_in_place(|| s.data.refresh_catalogue()));
+    store::testkit::map_root(nas.path(), &second);
+    assert!(tokio::task::block_in_place(|| s.data.serve_root_map()));
     assert_eq!(s.data.catalogue().n, 2);
     tokio::task::block_in_place(|| settle(&s));
     let (st, _) = m.last().unwrap();
@@ -538,8 +537,8 @@ async fn a_download_with_nothing_to_copy_moves_on_by_itself() {
     );
     two.coverage = cov;
     two.validate().unwrap();
-    store::catalogue::write(&nas.path().join("catalog"), &two).unwrap();
-    assert!(tokio::task::block_in_place(|| s.data.refresh_catalogue()));
+    store::testkit::map_root(&nas.path(), &two);
+    assert!(tokio::task::block_in_place(|| s.data.serve_root_map()));
     tokio::task::block_in_place(|| settle(&s));
     let pins: Vec<Pin> = s.downloads.asked().regions.iter().map(|r| r.pin).collect();
     assert_eq!(pins, [Pin { cat: 2, to: None }; 2]);
@@ -569,8 +568,8 @@ async fn a_download_partly_here_moves_on_and_mixes_nothing() {
     two.n = 2;
     put(&root, &mut two, roads, 25_000);
     two.validate().unwrap();
-    store::catalogue::write(&nas.path().join("catalog"), &two).unwrap();
-    assert!(tokio::task::block_in_place(|| s.data.refresh_catalogue()));
+    store::testkit::map_root(&nas.path(), &two);
+    assert!(tokio::task::block_in_place(|| s.data.serve_root_map()));
     assert_eq!(s.data.content(roads), Some(two.files[roads].file.clone()), "nothing older read");
     tokio::task::block_in_place(|| settle(&s));
     assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 2, to: None });
@@ -628,7 +627,7 @@ async fn terrain_detail_downloads_with_its_region_and_is_read_from_this_mac() {
     put_deep(&store::nasfs::NasRoot::local_for_test(nas.path()), &mut cat, 511, 340, 100.0);
     cat.n = 2;
     cat.validate().unwrap();
-    store::catalogue::write(&nas.path().join("catalog"), &cat).unwrap();
+    store::testkit::map_root(&nas.path(), &cat);
     let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()), true);
     let detail = |s: &S, on: bool| {
         let s = s.clone();
@@ -715,7 +714,7 @@ async fn a_region_alone_has_what_the_map_reads_zoomed_in() {
     }
     cat.n = 2;
     cat.validate().unwrap();
-    store::catalogue::write(&nas.path().join("catalog"), &cat).unwrap();
+    store::testkit::map_root(&nas.path(), &cat);
     let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()), true);
     assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
     assert!(s.downloads.asked().world.is_none());
@@ -852,7 +851,7 @@ async fn away_a_regions_ways_have_their_info_and_its_roads_are_cut_at_its_edge()
     put_roads(&root, &mut cat);
     cat.n = 2;
     cat.validate().unwrap();
-    store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+    store::testkit::map_root(&root, &cat);
     let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(&root), true);
     let in_london = [-0.15, 51.5];
 
@@ -886,11 +885,29 @@ async fn away_a_regions_ways_have_their_info_and_its_roads_are_cut_at_its_edge()
     assert_eq!(code, StatusCode::OK, "{v}");
     assert_eq!((v["ways"].clone(), v["truncated"].clone()), (json!([100, 101]), json!(true)));
 
-    // Started again away from the NAS: the owners read from this Mac's hidata, nothing goes.
+    // Started again away from the NAS, on the map this Mac kept (crate::maplog's, as a start reads
+    // it): the owners read from this Mac's hidata, nothing goes.
     let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(&root), true);
     if let Some(p) = s.data.pool() {
         p.mark_offline("test");
     }
+    assert_eq!(s.data.catalogue().n, 0, "no map on a NAS that isn't there");
+    let cache = tempfile::tempdir().unwrap();
+    let kept = store::map::Snapshot::of(&store::map::Map::of(&cat).unwrap(), &Default::default()).encode().unwrap();
+    std::fs::write(cache.path().join("current.json.zst"), kept).unwrap();
+    crate::maplog::Follower::new(
+        s.data.clone(),
+        crate::maplog::Config {
+            cache: Some(cache.path().to_owned()),
+            lead: crate::maplog::Lead::At { urls: Vec::new(), token: String::new() },
+            wait_s: 0,
+            retry: std::time::Duration::from_millis(50),
+            client: "server/test".into(),
+            stop: Default::default(),
+        },
+    )
+    .start();
+    assert_eq!(s.data.catalogue().n, 2);
     tokio::task::block_in_place(|| settle(&s));
     assert!(s.data.mirror.clone().unwrap().has(cat.content("base/6-30-21").unwrap()), "kept after a start away");
     let (code, v) = way_call(&s, "way", 100, [-0.25, 51.5]).await;
@@ -908,7 +925,7 @@ async fn a_region_swapped_for_another_keeps_the_others_owners() {
     put_roads(&root, &mut cat);
     cat.n = 2;
     cat.validate().unwrap();
-    store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+    store::testkit::map_root(&root, &cat);
     let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(&root), true);
     let m = s.data.mirror.clone().unwrap();
     let has = |l: &str| m.has(cat.content(l).unwrap());
@@ -933,7 +950,7 @@ async fn at_home_an_unread_hidata_lets_no_owner_go() {
     put_roads(&root, &mut cat);
     cat.n = 2;
     cat.validate().unwrap();
-    store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+    store::testkit::map_root(&root, &cat);
     let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(&root), true);
     assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
@@ -945,15 +962,14 @@ async fn at_home_an_unread_hidata_lets_no_owner_go() {
     let gone = "hidata/6-31-21.0123456789abcdef.sect".to_string();
     cat.files.get_mut("hidata/6-31-21").unwrap().file = gone;
     cat.n = 3;
-    store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+    store::testkit::map_root(&root, &cat);
     let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(&root), true);
     tokio::task::block_in_place(|| settle(&s));
     assert!(s.data.mirror.clone().unwrap().has(&far), "kept while its hidata is unread");
-    // (Its list at 3 is partial while its owners can't be told: made again from catalogue 3 once
-    // they are; until then no base pack goes and no old catalogue.)
+    // (Its list at 3 is partial while its owners can't be told: made again from map 3 once they
+    // are; until then no base pack goes.)
     let j: Value = serde_json::from_slice(&std::fs::read(home.path().join(FILE)).unwrap()).unwrap();
     assert_eq!(j["lists"]["3"]["partial"], json!(true), "{}", j["lists"]);
-    assert!(s.data.mirror.clone().unwrap().catalogue(2).is_some());
 }
 
 /// Two regions sharing z6 tiles (task #796), on the roads fixture at catalogue 2: London (its tile
@@ -976,7 +992,7 @@ async fn two_regions(home: &std::path::Path, nas: &std::path::Path) -> (std::pat
     ]});
     cat.n = 2;
     cat.validate().unwrap();
-    store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+    store::testkit::map_root(&root, &cat);
     let s = crate::test_state_with(home, &r, true);
     for id in ["london", "east"] {
         assert_eq!(region(&s, id, true).await.0, StatusCode::OK);
@@ -999,8 +1015,8 @@ fn next_catalogue(s: &S, root: &std::path::Path, cat: &Catalogue, n: u64, remade
         put(&store::nasfs::NasRoot::local_for_test(root), &mut c, l, 1_234);
     }
     c.validate().unwrap();
-    store::catalogue::write(&root.join("catalog"), &c).unwrap();
-    assert!(tokio::task::block_in_place(|| s.data.refresh_catalogue()));
+    store::testkit::map_root(&root, &c);
+    assert!(tokio::task::block_in_place(|| s.data.serve_root_map()));
     c
 }
 
@@ -1167,10 +1183,7 @@ fn in_tile(x: u32, y: u32) -> Vec<[f64; 2]> {
 /// two catalogues' difference.
 #[test]
 fn an_update_s_size_from_its_list_equals_the_two_catalogues_diff() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../store/src/map/testdata");
-    let mut ns = store::catalogue::list(&dir).unwrap();
-    ns.reverse();
-    let cats: Vec<Catalogue> = ns.iter().map(|&n| store::catalogue::read_n(&dir, n).unwrap()).collect();
+    let cats: Vec<Catalogue> = store::testkit::recorded_chain();
     assert!(cats.len() > 2);
     let bytes = |items: &[&Item]| -> u64 {
         items.iter().map(|i| if let Item::File { size, .. } = i { *size } else { 0 }).sum()
@@ -1217,7 +1230,7 @@ fn an_update_s_size_from_its_list_equals_the_two_catalogues_diff() {
     assert!(changed > 0 && parts > changed, "{changed} of {parts} parts changed");
 }
 
-/// A download kept far behind (its catalogue long gone from this Mac, as from any log) says what
+/// A download kept far behind (its map long gone from this Mac, as from any log) says what
 /// changed from its own list, keeps reading its own files, and updates.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_download_behind_the_log_compares_its_list() {
@@ -1225,12 +1238,12 @@ async fn a_download_behind_the_log_compares_its_list() {
     let nas_root = nas.path().join("project");
     std::fs::create_dir_all(&nas_root).unwrap();
     let root = store::nasfs::NasRoot::local_for_test(&nas_root);
-    // (Its hidata real: its owners known, its list whole, so the old catalogues go.)
+    // (Its hidata real: its owners known, its list whole.)
     let mut cat = catalogue(&root);
     put_roads(&nas_root, &mut cat);
     cat.n = 2;
     cat.validate().unwrap();
-    store::catalogue::write(&nas_root.join("catalog"), &cat).unwrap();
+    store::testkit::map_root(&nas_root, &cat);
     let s = crate::test_state_with(home.path(), &root, true);
     assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
@@ -1242,8 +1255,6 @@ async fn a_download_behind_the_log_compares_its_list() {
         c = next_catalogue(&s, &nas_root, &c, n, &[remade]);
         tokio::task::block_in_place(|| settle(&s));
     }
-    let m = s.data.mirror.clone().unwrap();
-    assert!(m.catalogue(2).is_none(), "catalogue 2 not kept");
     for s in [s.clone(), crate::test_state_with(home.path(), &root, true)] {
         tokio::task::block_in_place(|| settle(&s));
         assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 2, to: None });
@@ -1264,71 +1275,4 @@ async fn a_download_behind_the_log_compares_its_list() {
     assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 6, to: None });
     assert_eq!(s.data.content(roads), Some(c.files[roads].file.clone()));
     assert!(!s.data.mirror.as_ref().unwrap().has(&old));
-}
-
-/// A downloads file of format 4 (pins, no lists) keeps its pins: each download's list is made from
-/// the catalogue this Mac kept for it (with its ways' owners' base packs), nothing is copied again or
-/// let go, and once listed that catalogue goes like any other.
-#[tokio::test(flavor = "multi_thread")]
-async fn downloads_json_fmt4_migrates() {
-    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let root = nas.path().join("project");
-    std::fs::create_dir_all(&root).unwrap();
-    let r = store::nasfs::NasRoot::local_for_test(&root);
-    let mut two = catalogue(&r);
-    put_roads(&root, &mut two);
-    two.n = 2;
-    two.validate().unwrap();
-    store::catalogue::write(&root.join("catalog"), &two).unwrap();
-    let s = crate::test_state_with(home.path(), &r, true);
-    assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
-    tokio::task::block_in_place(|| settle(&s));
-    let far = two.content("base/6-30-21").unwrap().to_string();
-    let m = s.data.mirror.clone().unwrap();
-    assert!(m.has(&far), "way 100's owner's");
-    let here = m.usage();
-    drop((s, m));
-    // As format 4 wrote it, and a new catalogue since.
-    let path = home.path().join(FILE);
-    let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    v.as_object_mut().unwrap().remove("lists");
-    v["fmt"] = json!(4);
-    std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
-    let roads = "layers/roads/hi/6-31-21";
-    let mut three = two.clone();
-    three.n = 3;
-    put(&r, &mut three, roads, 1_234);
-    three.validate().unwrap();
-    store::catalogue::write(&root.join("catalog"), &three).unwrap();
-
-    let s = crate::test_state_with(home.path(), &r, true);
-    assert_eq!(s.data.catalogue().n, 3);
-    tokio::task::block_in_place(|| settle(&s));
-    let m = s.data.mirror.clone().unwrap();
-    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 2, to: None }, "kept at 2");
-    assert_eq!(m.usage(), here, "nothing copied or let go");
-    assert!(m.has(&far));
-    let on_disk: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(on_disk["fmt"], 5);
-    assert!(on_disk["lists"]["2"]["regions"]["london"]["coarse"]
-        .as_array()
-        .is_some_and(|l| l.iter().any(|i| i["file"] == json!(far))));
-    assert_eq!(s.data.content(roads), Some(two.files[roads].file.clone()));
-    let v = get(&s).await;
-    assert_eq!(v["regions"]["london"]["behind"]["files"], 1, "{v}");
-
-    // Catalogue 2 goes with the others; London stays at it, by its list.
-    let mut c = three.clone();
-    for n in 4..=6 {
-        c = next_catalogue(&s, &root, &c, n, &["layers/roads/hi/6-30-21"]);
-        tokio::task::block_in_place(|| settle(&s));
-    }
-    assert!(m.catalogue(2).is_none());
-    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 2, to: None });
-    assert!(m.has(&far) && m.usage() == here);
-    let v = get(&s).await;
-    assert_eq!(
-        (v["regions"]["london"]["behind"]["files"].as_u64(), v["regions"]["london"]["cat"].as_u64()),
-        (Some(1), Some(2))
-    );
 }

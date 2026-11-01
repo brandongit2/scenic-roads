@@ -1,19 +1,16 @@
-//! The server follows the map's log (docs/maplog.md §5, §6.1; §8, step 3): a thread long-polls the
-//! lead's coordinator (`GET /map/changes`, pipeline::coord::maproutes), applies each answer's
-//! batches whole to its own map (each checked by its digest; one that doesn't apply fetches the
-//! snapshot), and hands the result on as one catalogue, swapped whole (`Data::set_from_map`): a
-//! request never reads a torn set. Its requests say its cursor (`client=server/<host>`). It runs
-//! wherever the server runs: the Mac mini alone (#874; crate::retire).
+//! The server follows the map's log (docs/maplog.md §5, §6.1): a thread long-polls the lead's
+//! coordinator (`GET /map/changes`, pipeline::coord::maproutes), applies each answer's batches whole
+//! to its own map (each checked by its digest; one that doesn't apply fetches the snapshot), and
+//! hands the result on as one catalogue, swapped whole (`Data::set_map`): a request never reads a
+//! torn set. Its requests say its cursor (`client=server/<host>`). It runs wherever the server runs:
+//! the Mac mini alone (#874; crate::retire). The map is all it serves: no catalogue is read
+//! (docs/maplog.md §8, step 6).
 //!
-//! With the lead away it keeps the map it holds, asking again each `retry`; holding none (or an
-//! older one than the NAS's), it takes the newest NAS snapshot (`map/<seq>.json.zst`). Neither:
-//! the catalogues are served as before (Data::refresh_catalogue). The map is kept on this Mac
-//! (`current.json.zst` in its cache folder, ~/Library/Caches/scenic/map), written at most every 10
-//! minutes, and read at a start.
-//!
-//! Shadow first, then serve: the map is checked against the catalogue the catalogues give at the
-//! same number (Map::check_is, logged `maplog: MISMATCH` when they differ), and served only while
-//! the switch `state/pool/map-serve` on the NAS is on (kept on this Mac for starts away from it).
+//! The map is kept on this Mac (`current.json.zst` in its cache folder, ~/Library/Caches/scenic/map),
+//! written at most every 10 minutes, and read at a start: a start away from the lead and the NAS
+//! serves it (the offline map). With the lead away it keeps the map it holds, asking again each
+//! `retry`; holding none (or an older one than the NAS's), it takes the newest NAS snapshot
+//! (`map/<seq>.json.zst`).
 
 use crate::data::Data;
 use anyhow::{bail, Context, Result};
@@ -23,17 +20,13 @@ use std::time::{Duration, Instant};
 use store::map::feed::Answer;
 use store::map::{Map, Snapshot};
 
-/// The switch that serves the map (on the NAS), and this Mac's copy of it (in the cache folder).
-pub const SERVE_SWITCH: &str = "state/pool/map-serve";
-const SERVE_KEPT: &str = "serve";
 /// The saved map, and the lead's contact kept for a start away from the NAS.
 const SAVED: &str = "current.json.zst";
 const LEAD_KEPT: &str = "lead.json";
 /// The saved map written at most this often.
 const SAVE_EVERY: Duration = Duration::from_secs(600);
-/// The NAS's snapshots and the switch looked at at most this often.
+/// The NAS's snapshots looked at at most this often.
 const NAS_EVERY: Duration = Duration::from_secs(600);
-const SWITCH_EVERY: Duration = Duration::from_secs(60);
 
 /// Where the lead is.
 #[derive(Clone, Debug)]
@@ -41,6 +34,7 @@ pub enum Lead {
     /// As the NAS says (`state/coordinator.json`), kept on this Mac.
     FromNas,
     /// At fixed addresses (tests).
+    #[cfg_attr(not(test), allow(dead_code))]
     At { urls: Vec<String>, token: String },
 }
 
@@ -74,9 +68,14 @@ impl Config {
     }
 }
 
-/// Follows the log on a thread of its own, for good.
+/// Follows the log on a thread of its own, for good: first, before it returns, the map this Mac
+/// kept, else the NAS's newest snapshot, served.
 pub fn spawn(d: Arc<Data>, cfg: Config) {
-    let f = Follower::new(d, cfg);
+    let mut f = Follower::new(d, cfg);
+    f.start();
+    if f.map.is_none() {
+        f.from_nas();
+    }
     std::thread::Builder::new().name("maplog".into()).spawn(move || f.run()).ok();
 }
 
@@ -94,31 +93,17 @@ pub(crate) struct Follower {
     contact: Option<pipeline::coord::Contact>,
     saved: Option<(u64, Instant)>,
     nas_looked: Option<Instant>,
-    switch_read: Option<Instant>,
-    /// The last number checked against the catalogues, and the map's last handed on.
-    checked: u64,
+    /// The map's last `seq` handed on.
     handed: u64,
     away: bool,
 }
 
 impl Follower {
     pub(crate) fn new(d: Arc<Data>, cfg: Config) -> Follower {
-        Follower {
-            d,
-            cfg,
-            map: None,
-            contact: None,
-            saved: None,
-            nas_looked: None,
-            switch_read: None,
-            checked: 0,
-            handed: 0,
-            away: false,
-        }
+        Follower { d, cfg, map: None, contact: None, saved: None, nas_looked: None, handed: 0, away: false }
     }
 
     fn run(mut self) {
-        self.start();
         while !self.cfg.stop.load(std::sync::atomic::Ordering::SeqCst) {
             if !self.round() {
                 std::thread::sleep(self.cfg.retry);
@@ -126,12 +111,11 @@ impl Follower {
         }
     }
 
-    /// The saved map and the switch as this Mac kept them.
+    /// The map this Mac kept, served.
     pub(crate) fn start(&mut self) {
         let Some(dir) = self.cfg.cache.clone() else { return };
-        if std::fs::read_to_string(dir.join(SERVE_KEPT)).is_ok_and(|s| s.trim() == "on") {
-            self.d.set_serve_map(true);
-        }
+        // (The copy an older server kept of the map-serve switch, gone with it.)
+        std::fs::remove_file(dir.join("serve")).ok();
         match std::fs::read(dir.join(SAVED)) {
             Ok(b) => match Snapshot::decode(&b) {
                 Ok((m, _)) => {
@@ -152,7 +136,6 @@ impl Follower {
     /// One request to the lead and what follows from it; false when the lead didn't answer (wait
     /// `retry` before the next).
     pub(crate) fn round(&mut self) -> bool {
-        self.read_switch();
         let since = self.map.as_ref().map_or(0, |m| m.seq);
         let answered = match self.ask(since) {
             Got::Answer(a) => {
@@ -175,7 +158,6 @@ impl Follower {
                 false
             }
         };
-        self.check();
         self.save();
         answered
     }
@@ -226,22 +208,13 @@ impl Follower {
         }
         self.nas_looked = Some(Instant::now());
         let Some(root) = self.d.nas_root() else { return };
-        let dir = root.join(store::map::NAS_DIR);
-        let Ok(names) = dir.list() else { return };
-        let Some(seq) = names.iter().filter_map(|n| n.strip_suffix(".json.zst")?.parse::<u64>().ok()).max() else {
-            return;
-        };
-        if self.map.as_ref().is_some_and(|m| m.seq >= seq) {
-            return;
-        }
-        let got =
-            dir.join(store::map::nas_name(seq)).read().map_err(anyhow::Error::from).and_then(|b| Snapshot::decode(&b));
-        match got {
-            Ok((m, _)) => {
+        match store::map::newest_nas(&root) {
+            Ok(Some(m)) if self.map.as_ref().is_none_or(|h| h.seq < m.seq) => {
                 eprintln!("maplog: the NAS's map at {} (the lead away)", m.seq);
                 self.adopt(m);
             }
-            Err(e) => eprintln!("maplog: the NAS's map at {seq}: {e:#}"),
+            Ok(_) => {}
+            Err(e) => eprintln!("maplog: the NAS's map: {e:#}"),
         }
     }
 
@@ -250,32 +223,18 @@ impl Follower {
         self.hand_on();
     }
 
-    /// The map's catalogue handed to the server, while the map is served and it moved on.
+    /// The map's catalogue handed to the server, when it moved on.
     fn hand_on(&mut self) {
         let Some(m) = &self.map else { return };
-        if !self.d.serves_map() || m.seq == self.handed {
+        if m.seq == self.handed {
             return;
         }
         match m.catalogue() {
             Ok(c) => {
                 self.handed = m.seq;
-                self.d.set_from_map(Arc::new(c));
+                self.d.set_map(Arc::new(c));
             }
             Err(e) => eprintln!("maplog: MISMATCH: the map at {} isn't a catalogue: {e:#}", m.seq),
-        }
-    }
-
-    /// The map checked against the catalogue the catalogues give, once per number they share.
-    fn check(&mut self) {
-        let Some(m) = &self.map else { return };
-        let c = self.d.read_catalogue();
-        if c.n != m.seq || c.n == self.checked || c.n == 0 {
-            return;
-        }
-        self.checked = c.n;
-        match m.check_is(&c) {
-            Ok(()) => eprintln!("maplog: the map at {} is catalogue {}", m.seq, c.n),
-            Err(e) => eprintln!("maplog: MISMATCH at {}: {e:#}", c.n),
         }
     }
 
@@ -296,30 +255,6 @@ impl Follower {
         match r {
             Ok(()) => self.saved = Some((m.seq, Instant::now())),
             Err(e) => eprintln!("maplog: keeping the map on this Mac: {e:#}"),
-        }
-    }
-
-    /// The switch on the NAS, at most each `SWITCH_EVERY`, kept on this Mac; as it was while it
-    /// can't be read.
-    fn read_switch(&mut self) {
-        if matches!(self.cfg.lead, Lead::At { .. }) || self.switch_read.is_some_and(|t| t.elapsed() < SWITCH_EVERY) {
-            return;
-        }
-        self.switch_read = Some(Instant::now());
-        let Some(root) = self.d.nas_root() else { return };
-        let on = match root.join(SERVE_SWITCH).read() {
-            Ok(b) => String::from_utf8_lossy(&b).trim() != "off",
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(_) => return,
-        };
-        if on != self.d.serves_map() {
-            self.d.set_serve_map(on);
-            if let Some(dir) = &self.cfg.cache {
-                std::fs::create_dir_all(dir).ok();
-                std::fs::write(dir.join(SERVE_KEPT), if on { "on\n" } else { "off\n" }).ok();
-            }
-            self.handed = 0;
-            self.hand_on();
         }
     }
 

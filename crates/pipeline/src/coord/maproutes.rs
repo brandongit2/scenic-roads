@@ -1,5 +1,5 @@
 //! The map's routes on the lead's coordinator (docs/maplog.md §5.1), answered from the feed the
-//! lead's log writer keeps (store::map::feed, crate::agent::publish::Shadow): memory alone, never
+//! lead's log writer keeps (store::map::feed, crate::agent::publish::MapLog): memory alone, never
 //! the NAS or a disk.
 //!
 //! - `GET /map/changes?since=<seq>&client=<id>&wait=<s>`: the batches after `since`, or a reset to

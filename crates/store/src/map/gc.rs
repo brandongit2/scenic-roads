@@ -365,6 +365,20 @@ impl GcQueue {
         None
     }
 
+    /// The map's content names, as the queue holds them (sorted).
+    pub fn map_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.lock().map.iter().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// The names queued, each with when it was freed (sorted by name).
+    pub fn freed(&self) -> Vec<(String, u64)> {
+        let mut v: Vec<(String, u64)> = self.lock().queued.iter().map(|(n, q)| (n.clone(), q.at)).collect();
+        v.sort();
+        v
+    }
+
     /// The names queued, and the oldest one's time freed.
     pub fn len(&self) -> usize {
         self.lock().queued.len()

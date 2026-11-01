@@ -261,26 +261,23 @@ installed by `tools/app/install.sh`, updated by the updater).
   search after the labels or translations change, on three threads, and dropped after half an hour
   unused (its arrays mapped, so the memory goes back). Unreadable packs are passed over and the
   index rebuilt later.
-- **Offline start:** the last catalogue and the pack indexes read so far stay local.
+- **Offline start:** the map kept on the Mac (below) and the pack indexes read so far stay local.
 - **In use** means any request in the last ten minutes except the status polls (`/api/catalog`,
-  `/api/ping`, `/api/downloads`) and the search's `poll=1`. It checks for a newer
-  catalogue every 10 s while the lead's heartbeat (`state/status.json`, read at most every 30 s)
-  says a build runs, else every 30 s in use and every 10 minutes otherwise; each check is one
-  listing of `catalog/`. On the lead's Mac the agent also POSTs `/api/catalog/refresh` (this Mac's
-  own requests alone) after writing a catalogue, so it is adopted at once. A mirror's copy stopped by a
-  new catalogue resumes under it (copies are kept by content name).
-- **The map's log** (docs/maplog.md §8, step 3; `crates/server/src/maplog.rs`): beside the catalogues
-  (the map takes ~0.5–1.5 GB) a thread follows the lead's log over HTTP (`GET /map/changes`, a 30-s long poll, its cursor
-  `server/<host>`), applying each answer's batches to its own map (checked by their digest) and the
-  lead's snapshot on a reset; with the lead away, the NAS's newest `map/<seq>.json.zst` when it
-  holds none or an older one. Its map is kept in `~/Library/Caches/scenic/map/current.json.zst`
-  (at most every 10 minutes) and read at a start. Each catalogue read is checked against the map
-  at the same number (`maplog: MISMATCH` in the log when they differ). The map is served only while
-  `state/pool/map-serve` on the NAS is on (kept on the Mac in that folder's `serve`): then the
-  catalogue served is the map's, unless the catalogues give a newer one (a lead away), swapped
-  whole as before, and never an older one than served. The lead's contact is kept beside it
-  (`lead.json`, mode 600, the build's key in it, as on the NAS); losing the folder means a cold
-  start (the NAS's snapshot or the catalogues).
+  `/api/ping`, `/api/downloads`) and the search's `poll=1`. A mirror's copy stopped by a new map
+  resumes under it (copies are kept by content name). The share is mounted again, while it's away,
+  every 30 s.
+- **The map's log** (docs/maplog.md; `crates/server/src/maplog.rs`): the map served is the lead's
+  log's, nothing else (no catalogue is read). A thread follows the log over HTTP (`GET
+  /map/changes`, a 30-s long poll, its cursor `server/<host>`), applying each answer's batches to
+  its own map (checked by their digest; the map takes ~0.5–1.5 GB) and the lead's snapshot on a
+  reset; with the lead away, the NAS's newest `map/<seq>.json.zst` when it holds none or an older
+  one. Each map is handed to the server as one catalogue, swapped whole, never an older one than
+  served. Its map is kept in `~/Library/Caches/scenic/map/current.json.zst` (at most every 10
+  minutes) and read at a start, before the server answers: a start away from the lead and the NAS
+  serves it (the laptops' offline map, kept: owner's decision, 1 Nov). The lead's contact is kept
+  beside it (`lead.json`, mode 600, the build's key in it, as on the NAS); losing the folder means a
+  cold start (the NAS's snapshot). A server started on a folder laid out as the NAS's (`--root`)
+  serves that folder's newest snapshot.
 - **URLs and ETags:** data URLs carry a content version (`?v=`): a tile's is its pack's (meta
   `packs`), so a new catalogue re-fetches only the changed packs' tiles; a versioned response is
   `immutable` while current. ETags are content hashes, for named tiles combined with the versions of

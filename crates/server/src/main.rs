@@ -329,10 +329,6 @@ async fn main() -> Result<()> {
     let Cli { port, web, fonts, home: home_arg, root, no_mirror, mirror: mirror_root, listen } =
         <Cli as clap::Parser>::parse();
     raise_open_files();
-    // (A catalogue read through deltas kept on this Mac for the next read: store::catalogue::keep_read_in.)
-    if let Some(d) = store::catalogue::kept_dir() {
-        store::catalogue::keep_read_in(d);
-    }
     let home = home_arg.clone().unwrap_or_else(data::default_home);
     // (An installed server on a Mac that doesn't serve the map, as every Mac ran one until #874:
     // retired when it's sure it isn't the map's Mac: its service removed, its offline map left.)
@@ -357,15 +353,17 @@ async fn main() -> Result<()> {
         mirror,
         reserve: reserve::Setting::load(&home).bytes(),
     })?;
-    eprintln!(
-        "catalogue {} · NAS {}",
-        d.catalogue().n,
-        d.nas_root().map(|p| p.display().to_string()).unwrap_or_else(|| "not mounted".into())
-    );
+    // (This Mac's server follows the lead's log, the map it kept served first: a `--root` one serves
+    // that folder's map, read as it opened.)
     if root.is_none() {
         d.spawn_background();
         maplog::spawn(d.clone(), maplog::Config::this_mac());
     }
+    eprintln!(
+        "map {} · NAS {}",
+        d.catalogue().n,
+        d.nas_root().map(|p| p.display().to_string()).unwrap_or_else(|| "not mounted".into())
+    );
     let names = names_live::NamesState::new(&home);
     names.spawn(d.clone());
     let descs = descriptions::Descriptions::new(&home);
@@ -449,7 +447,6 @@ async fn main() -> Result<()> {
         .route("/api/marks/detail/{kind}/{id}", get(marks::detail))
         .route("/api/meta", get(meta_h))
         .route("/api/catalog", get(catalogue_h))
-        .route("/api/catalog/refresh", axum::routing::post(data::refresh_h))
         .route("/api/way/{id}", get(ways::way_h))
         .route("/api/profile/{id}", get(ways::profile_h))
         .route("/api/road/{id}", get(ways::road_h))
@@ -1134,7 +1131,7 @@ mod tests {
         use tower::ServiceExt;
         let nas = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
-        store::catalogue::write_copy(&nas.path().join("catalog"), &roads_catalogue(1, "00000000000000c1")).unwrap();
+        store::testkit::map_root(&nas.path(), &roads_catalogue(1, "00000000000000c1"));
         let s = test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let packs = |s: &S| meta_json(s)["packs"]["roads"].clone();
         let p1 = packs(&s);
@@ -1164,8 +1161,8 @@ mod tests {
         const GOOD: &str = "public, max-age=31536000, immutable";
         assert_eq!(cache(&s, hi1.clone()).await, GOOD);
         // A catalogue that changed the hi pack alone: its old token is no longer cached; the others are.
-        store::catalogue::write_copy(&nas.path().join("catalog"), &roads_catalogue(2, "00000000000000c2")).unwrap();
-        assert!(s.data.refresh_catalogue());
+        store::testkit::map_root(&nas.path(), &roads_catalogue(2, "00000000000000c2"));
+        assert!(s.data.serve_root_map());
         let p2 = packs(&s);
         let hi2 = p2["hi"]["6/8/16"].as_str().unwrap().to_string();
         assert_ne!(hi1, hi2);

@@ -6,7 +6,7 @@
 //!   targets); the map tiles (pack) planned ("planned": `planned_event`, the z6 tiles the lead
 //!   first plans at their keys, and the z6 tiles whose change made each stale, `restaled_by`), leased
 //!   ("lease", "start") and done ("end", "done"); and catalogue n written ("catalog": its `n`, its
-//!   job's time, and `CatalogueStats`: delta or whole, the files it stat'ed, its phases).
+//!   job's time, and `CatalogueStats`: the files it stat'ed, its phases).
 //!   And each Mac's map server's adoption of the map at `seq` n ("adopt": `ADOPT`, its `worker` the
 //!   Mac), the lead's note of its cursor in the map's log moving there (docs/maplog.md §6.6).
 //! - **The Macs' map servers' own log on the NAS** (`SERVERS`, a file per Mac appended to: a few
@@ -130,9 +130,8 @@ impl MirrorMarks {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CatalogueStats {
     pub n: u64,
-    /// Written as a delta over the last (else whole).
-    pub delta: bool,
-    /// The files it listed, and those it looked at on the NAS (stat'ed).
+    /// The files it listed, and those it looked at on the NAS (stat'ed). (A line of before step 6
+    /// of docs/maplog.md §8 says too whether it wrote a delta: passed over.)
     pub files: u64,
     pub stated: u64,
     /// Its phases' wall times, in order (a name from before task #844 read as its new one:
@@ -152,11 +151,11 @@ pub const CATALOGUE_LINE: &str = "catalog-stats: ";
 
 impl CatalogueStats {
     /// Catalogue `n`'s, with the job's phases as timed so far (crate::timings; none untimed).
-    pub fn now(n: u64, delta: bool, files: u64, stated: u64) -> CatalogueStats {
+    pub fn now(n: u64, files: u64, stated: u64) -> CatalogueStats {
         let phases = crate::timings::snapshot(true)
             .map(|r| r.phases.into_iter().map(|p| (p.name, p.wall_s)).collect())
             .unwrap_or_default();
-        CatalogueStats { n, delta, files, stated, phases }
+        CatalogueStats { n, files, stated, phases }
     }
 
     pub fn line(&self) -> String {
@@ -612,9 +611,8 @@ pub fn text(cats: &[CatalogueChain], units: &[UnitChain], last: usize) -> String
     let from = cats.first().map_or(u64::MAX, |c| c.t);
     let units: Vec<&UnitChain> = units.iter().filter(|u| u.catalogue_t.is_some_and(|t| t >= from)).collect();
     for c in cats {
-        let kind = c.stats.as_ref().map_or("?", |s| if s.delta { "delta" } else { "whole" });
         let n = c.n.map_or_else(|| "?".into(), |n| n.to_string());
-        o += &format!("catalogue {n} ({kind}): {} in its job", s(c.secs));
+        o += &format!("catalogue {n}: {} in its job", s(c.secs));
         if let Some(st) = &c.stats {
             o += &format!(", {} of {} files stat'ed", st.stated, st.files);
         }
@@ -658,17 +656,11 @@ pub fn text(cats: &[CatalogueChain], units: &[UnitChain], last: usize) -> String
         "  restaled per unit: {}\n",
         median(units.iter().map(|u| u.restaled as f64).collect()).map_or("-".into(), |m| format!("{m:.1}"))
     );
-    for delta in [true, false] {
-        let of: Vec<&CatalogueStats> =
-            cats.iter().filter_map(|c| c.stats.as_ref()).filter(|s| s.delta == delta).collect();
-        if of.is_empty() {
-            continue;
-        }
-        let secs: Vec<f64> =
-            cats.iter().filter(|c| c.stats.as_ref().is_some_and(|s| s.delta == delta)).filter_map(|c| c.secs).collect();
+    let of: Vec<&CatalogueStats> = cats.iter().filter_map(|c| c.stats.as_ref()).collect();
+    if !of.is_empty() {
+        let secs: Vec<f64> = cats.iter().filter(|c| c.stats.is_some()).filter_map(|c| c.secs).collect();
         o += &format!(
-            "  {} catalogues ({}): {} in the job, {} files stat'ed\n",
-            if delta { "delta" } else { "whole" },
+            "  catalogues ({}): {} in the job, {} files stat'ed\n",
             of.len(),
             s(median(secs)),
             median(of.iter().map(|s| s.stated as f64).collect()).map_or("-".into(), |m| format!("{m:.0}"))
@@ -766,15 +758,15 @@ mod tests {
         }
     }
 
-    /// Catalogue `n` written at `t`, its job `secs` long.
-    fn catalogue(t: u64, secs: f64, n: u64, delta: bool) -> Event {
+    /// Catalogue `n` written at `t`, its job `secs` long, its files' sizes mostly known (`few`
+    /// stat'ed) or each looked at.
+    fn catalogue(t: u64, secs: f64, n: u64, few: bool) -> Event {
         let st = CatalogueStats {
             n,
-            delta,
             files: 1000,
-            stated: if delta { 12 } else { 1000 },
+            stated: if few { 12 } else { 1000 },
             phases: vec![
-                ("checking every file on the NAS".into(), if delta { 1.0 } else { 9.0 }),
+                ("checking every file on the NAS".into(), if few { 1.0 } else { 9.0 }),
                 ("writing the catalog".into(), 2.0),
             ],
         };
@@ -839,7 +831,6 @@ mod tests {
         assert_eq!(cats.len(), 2);
         let c = &cats[1];
         assert_eq!((c.n, c.units, c.tiles), (Some(8), 2, 3));
-        assert!(c.stats.as_ref().unwrap().delta);
         assert_eq!(c.stats.as_ref().unwrap().stated, 12);
         assert_eq!(c.ran, ["ferries", "stations", "names-todo"]);
         assert_eq!(c.adopted, [("m1".to_string(), 30.0), ("m4".into(), 200.0)].into());
@@ -862,10 +853,10 @@ mod tests {
         assert_eq!(stages["servers"], Some(200.0));
         assert_eq!(stages["on every map"], Some(500.0));
         let t = text(&cats, &units, 10);
-        assert!(t.contains("catalogue 8 (delta)"), "{t}");
+        assert!(t.contains("catalogue 8: "), "{t}");
         assert!(t.contains("12 of 1000 files stat'ed"), "{t}");
         assert!(t.contains("unit 6/1/1 (m1)") && t.contains("restaled 2"), "{t}");
-        assert!(t.contains("delta catalogues (1)") && t.contains("whole catalogues (1)"), "{t}");
+        assert!(t.contains("catalogues (2)"), "{t}");
         assert!(t.contains("ferries: ran for 1 of 2"), "{t}");
         assert!(t.contains("m4: adopts after"), "{t}");
         assert!(!text(&cats, &units, 1).contains("catalogue 7"));
@@ -1036,8 +1027,6 @@ mod tests {
         // Just begun: no NAS read.
         assert!(!PlannedNotes::default().begin(t, &[], t + 30));
         // The served catalogue: read once, and again for a newer one.
-        let cats = d.path().join("catalog");
-        std::fs::create_dir_all(&cats).unwrap();
         let cat = |n: u64, base: &str| {
             let mut c = store::catalogue::Catalogue { fmt: 1, n, ..Default::default() };
             c.files.insert(
@@ -1048,16 +1037,13 @@ mod tests {
                 "layers/roads/hi/6-1-1".into(),
                 serde_json::from_value(serde_json::json!({"file": "x", "size": 1})).unwrap(),
             );
-            store::catalogue::write_copy(&cats, &c).unwrap();
+            c
         };
-        let read = |n| store::catalogue::read_n(&cats, n).unwrap();
         assert!(m.served(None).is_empty());
-        cat(1, "b1");
-        assert_eq!(m.served(Some(&read(1))), [("base/6-1-1".to_string(), "b1".to_string())].into());
-        m.served(Some(&read(1)));
+        assert_eq!(m.served(Some(&cat(1, "b1"))), [("base/6-1-1".to_string(), "b1".to_string())].into());
+        m.served(Some(&cat(1, "b1")));
         assert_eq!(m.served_reads, 1);
-        cat(2, "b2");
-        assert_eq!(m.served(Some(&read(2)))["base/6-1-1"], "b2");
+        assert_eq!(m.served(Some(&cat(2, "b2")))["base/6-1-1"], "b2");
         assert_eq!(m.served_reads, 2);
     }
 
@@ -1066,7 +1052,7 @@ mod tests {
         assert_eq!(median(vec![]), None);
         assert_eq!(median(vec![3.0, 1.0, 2.0]), Some(2.0));
         assert_eq!(median(vec![4.0, 1.0, 2.0, 3.0]), Some(2.5));
-        let st = CatalogueStats { n: 5, delta: true, files: 10, stated: 2, phases: vec![("x".into(), 1.5)] };
+        let st = CatalogueStats { n: 5, files: 10, stated: 2, phases: vec![("x".into(), 1.5)] };
         let log = format!("catalogue: something\n{}\npublished /x/5.json\n", st.line());
         assert_eq!(CatalogueStats::from_log(&log), Some(st));
         assert_eq!(CatalogueStats::from_log("nothing"), None);

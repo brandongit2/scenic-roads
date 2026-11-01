@@ -1646,8 +1646,8 @@ pub struct Agent {
     upcoming: std::cell::RefCell<Option<(u64, std::sync::Arc<room::Hints>)>>,
     /// A member's ask for them under way (`ask_upcoming`), and when the last began.
     upcoming_ask: (Option<std::thread::JoinHandle<Option<(u64, room::Hints)>>>, Option<Instant>),
-    /// The map's log, written in shadow (crate::agent::publish::Shadow).
-    maplog: publish::Shadow,
+    /// The map's log, the lead's (crate::agent::publish::MapLog).
+    maplog: publish::MapLog,
     /// The `seq` each Mac's map server was last noted adopting (`tend_pageview`).
     adoptions: BTreeMap<String, u64>,
     /// The pool (docs/pool.md, crate::agent::pool), always on: this Mac's part in it (None while this
@@ -4946,15 +4946,13 @@ impl Agent {
                 *e = 0.7 * *e + 0.3 * each;
             }
             if ok && step == "catalog" {
-                // (This Mac's map server adopts it now.)
-                crate::net::catalogue_written();
                 let ready = self.plan.view.get().ready.clone();
                 let (n, data) = (cat_stats.as_ref().map(|c| c.n), cat_stats.and_then(|c| serde_json::to_value(c).ok()));
-                // (And the map's log, in shadow: crate::agent::publish::Shadow; its batch says whether
-                // it went out with the low zooms made.)
+                // (Its map posted, appended to the map's log: crate::agent::publish::MapLog; its
+                // batch says whether it went out with the low zooms made. A held one posts none.)
                 if let Some(root) = root.filter(|_| self.keeps_publishing()) {
                     let low = self.plan.view.get().catalogue_low;
-                    self.maplog.published(&self.o.home, root, n, low);
+                    self.maplog.published(&self.o.home, root, low);
                 }
                 self.note(crate::coord::history::Event {
                     worker: Some(self.host.clone()),
@@ -7562,7 +7560,7 @@ impl Agent {
         let Some(coord) = self.coord.clone().filter(|_| self.keeps_publishing()) else { return };
         // (The Catalogues map: the map's log followed, the lead's in process; asked each loop, so it
         // misses no batch.)
-        let here = self.maplog.here(&self.o.home);
+        let here = self.maplog.here(&self.o.home, root);
         let keep = self.o.home.join(cataloguesview::KEPT);
         let cv = self
             .catalogues_view
@@ -9573,16 +9571,16 @@ mod tests {
         let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
-        // Publishing's switches and the hold on catalogues.
-        for f in [publish::DELTA_CATALOGUE, publish::NEAR_SLOPE, "inputs/hold-catalog"] {
+        // Publishing's switch and the hold on publishing.
+        for f in [publish::NEAR_SLOPE, "inputs/hold-catalog"] {
             std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
             std::fs::write(root.join(f), "on").unwrap();
             let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
             assert_ne!(now, last, "{f}");
             last = now;
         }
-        // A held catalogue's folder made.
-        std::fs::create_dir_all(root.join("catalog-held")).unwrap();
+        // A held map's folder made.
+        std::fs::create_dir_all(root.join(store::map::HELD_DIR)).unwrap();
         let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
@@ -16024,8 +16022,8 @@ mod pool_tests {
     }
 
     #[test]
-    fn a_catalogue_the_lead_publishes_is_its_map_log_s_in_shadow() {
-        // (docs/maplog.md §8, step 2: the catalog job's end, as the loop tends it.)
+    fn a_map_the_lead_s_step_posts_is_appended_to_its_log() {
+        // (docs/maplog.md §6.7: the catalog job's end, as the loop tends it.)
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let root = store::nasfs::NasRoot::local_for_test(r.clone());
@@ -16041,12 +16039,13 @@ mod pool_tests {
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.round().unwrap();
-        // (What the job publishes, written here: the step's own work isn't the test's.)
-        let mut c = store::catalogue::Catalogue::new(
-            store::catalogue::list(r.join("catalog").as_path()).map_or(0, |ns| ns.into_iter().max().unwrap_or(0)) + 1,
-        );
+        // (What the job posts, written here: the step's own work isn't the test's.)
+        let mut c =
+            store::catalogue::Catalogue::new(lead.maplog.started().and_then(|h| h.feed.head()).unwrap_or(0) + 1);
         c.units = vec!["6/1/1".into(), "6/1/2".into()];
-        store::catalogue::write(&r.join("catalog"), &c).unwrap();
+        let posted = d.path().join("l/agent").join(publish::MAPLOG).join(publish::POSTED);
+        std::fs::create_dir_all(posted.parent().unwrap()).unwrap();
+        std::fs::write(&posted, c.encode().unwrap()).unwrap();
         let catalogue = JobSpec {
             id: "catalog catalog".into(),
             what: "catalog".into(),
@@ -16058,16 +16057,16 @@ mod pool_tests {
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, catalogue, &cond, Some(&root), &mut Vec::new()));
         store::testkit::eventually("the job ends", || lead.tend(0, &cond, Some(&root), 0).unwrap());
-        // (On the shadow's own thread: its log seeded at that catalogue, and the NAS's snapshot.)
+        // (On the log's own thread: its log seeded at that map, and the NAS's snapshot.)
         let nas_snap = r.join(store::map::NAS_DIR).join(store::map::nas_name(c.n));
-        store::testkit::eventually(&format!("the shadow writes the map at {}", c.n), || nas_snap.exists());
+        store::testkit::eventually(&format!("the log writes the map at {}", c.n), || nas_snap.exists());
         let log = store::map::log::Log::open(&d.path().join("l/agent").join(publish::MAPLOG)).unwrap();
         assert_eq!(log.map().seq, c.n);
         log.map().check_is(&c).unwrap();
-        // (Step 3: the lead's coordinator answers the servers from the shadow's feed.)
+        // (Step 3: the lead's coordinator answers the servers from the log's feed.)
         lead.round().unwrap();
         assert!(lead.coord.as_ref().is_some_and(|c| c.has_maplog()), "the map's routes answer");
-        assert_eq!(lead.maplog.here(&lead.o.home).feed.head(), Some(c.n));
+        assert_eq!(lead.maplog.here(&lead.o.home, &root).feed.head(), Some(c.n));
         // (Step 4: and the plan reads the map from it, the catalogue checked equal to it.)
         assert_eq!(*lead.planner().map_now(&root).unwrap(), c);
     }

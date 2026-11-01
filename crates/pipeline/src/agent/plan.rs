@@ -400,8 +400,10 @@ pub(super) struct Planner {
     /// The work the last plan had left (its steps and targets): what room-making lets go last
     /// (`Agent::hints`).
     pub(super) queued: std::cell::RefCell<Vec<build::Work>>,
-    /// The last catalogue's folder and number, and its regions' outline entries by id (`on_map`).
-    pub(super) last_catalogue: std::cell::RefCell<Option<((String, u64), BTreeMap<String, Vec<String>>)>>,
+    /// The last map's folder and number (the map's, or the newest held: `on_map`), its regions'
+    /// outline entries by id and its time (unix seconds).
+    #[allow(clippy::type_complexity)]
+    pub(super) last_catalogue: std::cell::RefCell<Option<((String, u64), (BTreeMap<String, Vec<String>>, u64))>>,
     /// The newest NAS snapshot of the map read (`map_now`, without the lead's log): its `seq`, and its
     /// catalogue (None: it didn't read).
     pub(super) nas_map: std::cell::RefCell<Option<(u64, Option<std::sync::Arc<store::catalogue::Catalogue>>)>>,
@@ -996,10 +998,11 @@ impl Planner {
             serde_json::to_string(&p.gates).unwrap_or_default().hash(&mut h);
         }
         serde_json::to_string(&self.inp.pause).unwrap_or_default().hash(&mut h);
-        // (Publishing's switches, the hold on catalogues, the catalogues' folders.)
-        for f in [publish::DELTA_CATALOGUE, publish::NEAR_SLOPE, "inputs/hold-catalog", "catalog", "catalog-held"] {
+        // (Publishing's switch, the hold on publishing, the held maps' folder, and the map's head.)
+        for f in [publish::NEAR_SLOPE, "inputs/hold-catalog", store::map::HELD_DIR] {
             stat(&mut h, (&root.join(f)).into());
         }
+        self.inp.map.as_ref().and_then(|m| m.feed.head()).hash(&mut h);
         // (The owner's redo asks: one taken or done.)
         stat(&mut h, (&self.o.home.join(redo::ASKS)).into());
         // (The coordinator's leases: one lapsed, given back or taken frees or holds targets.)
@@ -1099,8 +1102,9 @@ impl Planner {
         std::fs::remove_file(&check).ok();
     }
 
-    /// The queue's due set now, written to the map log's folder as the `gc` job is planned, for the
-    /// job to check against what it removes (`--shadow-due`). Its path (None: not the lead's agent
+    /// The queue's due set now, with the map's names and the names it freed (GC's roots besides the
+    /// records), written to the map log's folder as the `gc` job is planned, for the job to keep
+    /// and to check against what it removes (`--shadow-due`). Its path (None: not the lead's agent
     /// running the jobs, or not written).
     pub(super) fn shadow_gc(&self) -> Option<PathBuf> {
         use super::gcqueue::{Holders, ShadowDue, SHADOW_DUE};
@@ -1109,7 +1113,7 @@ impl Planner {
         let now = now_s();
         let cursors = here.feed.cursors();
         let names = here.gc.due(&Holders { cursors: &cursors, oldest_lease, now });
-        let due = ShadowDue { at: now, queued: here.gc.len(), names };
+        let due = ShadowDue { at: now, queued: here.gc.len(), names, map: here.gc.map_names(), freed: here.gc.freed() };
         let p = self.o.home.join(super::publish::MAPLOG).join(SHADOW_DUE);
         match store::whole::write(&p, &serde_json::to_vec(&due).unwrap_or_default()) {
             Ok(()) => Some(p),
@@ -2084,14 +2088,14 @@ impl Planner {
         // targets granted as many as fit a quarter of an hour, `offer_plan`; the pyramids' fill a z6
         // tile, `build::job_of`.)
         for w in plan.into_iter().map(build::job_of) {
-            // Held for review: the catalogue goes to catalog-held/ (no server reads it), once.
+            // Held for review: the map goes to the NAS's map-held/ (no server reads it), once.
             if w.step == "catalog" && held {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
                 if done.catalogue_held.as_deref() == Some(k.as_str()) {
                     waiting.push(Waiting {
                         step: None,
                         what: "publish".into(),
-                        why: "held for review (inputs/hold-catalog); its catalogue is in catalog-held/".into(),
+                        why: "held for review (inputs/hold-catalog); its map is in map-held/".into(),
                     });
                     continue;
                 }
@@ -2151,10 +2155,16 @@ impl Planner {
                     "--building".to_string(),
                     building_arg.clone(),
                 ]);
-                // (Delta catalogues: crate::agent::publish; the step writes a whole one when due.)
-                if self.publishing.get().delta {
-                    extra.push("--delta".into());
-                }
+                // (Its map posted to this agent: crate::agent::publish::POSTED.)
+                extra.extend([
+                    "--post".to_string(),
+                    self.o
+                        .home
+                        .join(super::publish::MAPLOG)
+                        .join(super::publish::POSTED)
+                        .to_string_lossy()
+                        .into_owned(),
+                ]);
             }
             let n = w.targets.len();
             // "Terrain: 3 tiles" (the checklist names the steps alike: crate::agent::steps::said); the
@@ -3003,11 +3013,11 @@ impl Planner {
         *self.regions_view.borrow_mut() = Some((key, v));
     }
 
-    /// The regions the map has (`map`, as `map_now` gives it), or the newest held catalogue's while
-    /// catalogues are held for review (`held`, once `catalog-held/` has one), by id: whether as its
-    /// recipe is now (same outline entries); and how long ago it went out (seconds: its batch's time,
-    /// the held one's file's). Its regions taken once per `seq`; none (nothing on the map: every
-    /// region new) when there's none, or it can't be read now.
+    /// The regions the map has (`map`, as `map_now` gives it), or the newest held map's while
+    /// publishing is held for review (`held`, once `map-held/` has one: store::map::HELD_DIR), by
+    /// id: whether as its recipe is now (same outline entries); and how long ago it went out
+    /// (seconds: its batch's time, the held one's). Its regions taken once per `seq`; none (nothing
+    /// on the map: every region new) when there's none, or it can't be read now.
     pub(super) fn on_map(
         &self,
         root: &NasRoot,
@@ -3028,27 +3038,29 @@ impl Planner {
         };
         let mut cached = self.last_catalogue.borrow_mut();
         let mut at = None;
-        // (The held ones, once there are any; until step 6 of docs/maplog.md §8, catalogues: read
-        // whole once each.)
-        let held_dir = root.join("catalog-held");
+        // (The held maps, once there are any: the newest read whole once.)
+        let held_dir = root.join(store::map::HELD_DIR);
         let newest_held =
-            if held { store::catalogue::list(&held_dir).ok().and_then(|ns| ns.first().copied()) } else { None };
+            if held { store::map::seqs_in(&held_dir).ok().and_then(|ns| ns.first().copied()) } else { None };
         if let Some(n) = newest_held {
-            let key = ("catalog-held".to_string(), n);
+            let key = (store::map::HELD_DIR.to_string(), n);
             if cached.as_ref().is_none_or(|c| c.0 != key) {
-                match store::catalogue::read_n(&held_dir, n) {
-                    Ok(c) => *cached = Some((key.clone(), regions_of(&c))),
-                    Err(e) => eprintln!("agent: held catalogue {n}: {e:#}"),
+                let read = held_dir
+                    .join(store::map::nas_name(n))
+                    .read()
+                    .map_err(anyhow::Error::from)
+                    .and_then(|b| store::map::Snapshot::decode(&b))
+                    .and_then(|(m, _)| m.catalogue());
+                match read {
+                    Ok(c) => *cached = Some((key.clone(), (regions_of(&c), seen(&c).at))),
+                    Err(e) => eprintln!("agent: held map {n}: {e:#}"),
                 }
             }
-            if cached.as_ref().is_some_and(|c| c.0 == key) {
-                at = store::catalogue::path_n(&held_dir, n)
-                    .and_then(|p| p.loc().metadata().and_then(|m| m.modified()).ok());
-            }
+            at = cached.as_ref().filter(|c| c.0 == key).map(|c| std::time::UNIX_EPOCH + Duration::from_secs(c.1 .1));
         } else if let Some(c) = map {
             let key = ("map".to_string(), c.n);
             if cached.as_ref().is_none_or(|k| k.0 != key) {
-                *cached = Some((key, regions_of(c)));
+                *cached = Some((key, (regions_of(c), seen(c).at)));
             }
             at = Some(std::time::UNIX_EPOCH + Duration::from_secs(seen(c).at));
         }
@@ -3064,7 +3076,7 @@ impl Planner {
         if at.is_none() {
             return (BTreeMap::new(), since_publish);
         }
-        let had = &cached.as_ref().unwrap().1;
+        let had = &cached.as_ref().unwrap().1 .0;
         let on_map = had
             .iter()
             .map(|(id, outline)| (id.clone(), recipes.iter().any(|r| &r.id == id && &r.outline == outline)))

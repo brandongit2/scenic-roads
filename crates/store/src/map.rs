@@ -598,24 +598,58 @@ pub fn nas_name(seq: u64) -> String {
     format!("{seq}{SUFFIX}")
 }
 
+/// The NAS folder of the map the `catalog` step would publish while publishing is held for review
+/// (`inputs/hold-catalog`): `map-held/<seq>.json.zst`, a snapshot of it whole, `seq` the batch's it
+/// would be (docs/maplog.md §6.4). No server reads it; lifting the hold publishes the map then.
+pub const HELD_DIR: &str = "map-held";
+
+/// The `seq`s of the snapshots in `dir` (`map/`, `map-held/`), newest first.
+pub fn seqs_in(dir: &crate::nasfs::NasPath) -> Result<Vec<u64>> {
+    let mut seqs: Vec<u64> = match dir.list() {
+        Ok(names) => names.iter().filter_map(|n| n.strip_suffix(SUFFIX)?.parse().ok()).collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
+    };
+    seqs.sort_unstable_by(|a, b| b.cmp(a));
+    Ok(seqs)
+}
+
+/// The newest snapshot in `dir` (`map/` of a NAS or a test root, `map-held/`) that reads (one
+/// damaged or half written is passed over, said); None when there's none.
+pub fn newest_in(dir: &crate::nasfs::NasPath) -> Result<Option<Map>> {
+    for seq in seqs_in(dir)? {
+        let p = dir.join(nas_name(seq));
+        match p.read().map_err(anyhow::Error::from).and_then(|b| Snapshot::decode(&b)) {
+            Ok((m, _)) => return Ok(Some(m)),
+            Err(e) => eprintln!("maplog: {} passed over: {e:#}", p.display()),
+        }
+    }
+    Ok(None)
+}
+
+/// `newest_in` the NAS's `map/` (`root`'s).
+pub fn newest_nas(root: &NasRoot) -> Result<Option<Map>> {
+    newest_in(&root.join(NAS_DIR))
+}
+
 /// Writes the map whole to the NAS (`map/<seq>.json.zst`, a temporary name renamed into place: §4.4),
 /// then removes all but the newest `NAS_KEPT` there. Once an hour at most (the lead's caller). The
 /// oldest `seq` kept there: a reader may start from it (GC's `snapshot` holder, docs/maplog.md §5.4).
 pub fn write_nas_snapshot(root: &NasRoot, m: &Map) -> Result<u64> {
-    let dir = root.join(NAS_DIR);
+    write_snapshot_in(root, NAS_DIR, m)
+}
+
+/// `write_nas_snapshot` into `root`'s folder `name` (`NAS_DIR`, `HELD_DIR`), the newest
+/// `NAS_KEPT` kept there.
+pub fn write_snapshot_in(root: &NasRoot, name: &str, m: &Map) -> Result<u64> {
+    let dir = root.join(name);
     let b = Snapshot::of(m, &BTreeMap::new()).encode()?;
-    dir.join(nas_name(m.seq)).write_whole_made(&b).with_context(|| format!("write {NAS_DIR}/{}", nas_name(m.seq)))?;
-    let mut seqs: Vec<u64> = dir
-        .list()
-        .with_context(|| format!("list {NAS_DIR}"))?
-        .iter()
-        .filter_map(|n| n.strip_suffix(SUFFIX)?.parse().ok())
-        .collect();
-    seqs.sort_unstable_by(|a, b| b.cmp(a));
+    dir.join(nas_name(m.seq)).write_whole_made(&b).with_context(|| format!("write {name}/{}", nas_name(m.seq)))?;
+    let seqs = seqs_in(&dir)?;
     let oldest = seqs.iter().take(NAS_KEPT).min().copied().unwrap_or(m.seq).min(m.seq);
     for s in seqs.into_iter().skip(NAS_KEPT) {
         if let Err(e) = dir.join(nas_name(s)).remove_file() {
-            eprintln!("maplog: can't remove {NAS_DIR}/{}: {e}", nas_name(s));
+            eprintln!("maplog: can't remove {name}/{}: {e}", nas_name(s));
         }
     }
     Ok(oldest)

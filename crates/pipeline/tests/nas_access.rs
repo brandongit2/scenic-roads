@@ -61,7 +61,6 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "unit_snap", 1, "the programs' NAS folder, as their argument"),
     ("crates/pipeline/src/bin/scenic-build.rs", "unit_step", 2, "the programs' NAS folders, as their arguments"),
     // A library or a reader that opens a path itself.
-    ("crates/pipeline/src/bin/scenic-build.rs", "catalogue", 2, "store::catalogue's writer: its own temporary name and read-back"),
     ("crates/pipeline/src/bin/scenic-build.rs", "open_units", 2, "basepart's watched copies read the base packs by path"),
     ("crates/pipeline/src/bin/scenic-build.rs", "pageview_months", 1, "pageviews' store of the months' indexes, read and written by path"),
     ("crates/pipeline/src/bin/scenic-build.rs", "rail_feeds_step", 3, "railfeeds reads the catalogue, the checked list and the keys by path"),
@@ -89,6 +88,9 @@ const FROM_ARG: &[(&str, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "pyramids_arg"),
     ("crates/pipeline/src/bin/scenic-build.rs", "pyramids_fill"),
     ("crates/pipeline/src/bin/tools/polar.rs", "main"),
+    // (`--root <test root>`: its map's snapshot read and written, never the NAS's.)
+    ("crates/pipeline/src/bin/tools/coastcheck.rs", "main"),
+    ("crates/pipeline/src/bin/tools/lakefill.rs", "catalogue_add"),
     ("crates/server/src/main.rs", "main"),
     ("crates/server/src/data.rs", "find_nas"),
     ("crates/pipeline/examples/checklist.rs", "main"),

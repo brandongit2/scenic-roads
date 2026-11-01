@@ -367,7 +367,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        store::catalogue::write_copy(&nas.path().join("catalog"), &cat).unwrap();
+        store::testkit::map_root(&nas.path(), &cat);
         if let Some(a) = archive {
             let p = nas.path().join(&content);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -468,7 +468,7 @@ mod tests {
             logical.into(),
             store::catalogue::FileRef { file: content.clone(), size: archive.len() as u64, ..Default::default() },
         );
-        store::catalogue::write_copy(&nas.path().join("catalog"), &cat).unwrap();
+        store::testkit::map_root(&nas.path(), &cat);
         let home = tempfile::tempdir().unwrap();
         let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()), true);
         // 31/21's piece downloaded; then the NAS's archive gone.
@@ -528,7 +528,7 @@ mod tests {
             "global/railfreq".into(),
             store::catalogue::FileRef { file: content.into(), size: 4, ..Default::default() },
         );
-        store::catalogue::write_copy(&root.join("catalog"), &cat).unwrap();
+        store::testkit::map_root(&root, &cat);
     }
 
     fn headers(etags: Option<&str>) -> HeaderMap {

@@ -590,31 +590,11 @@ fn index_cache() {
     fs::write(&idx, b"junk").unwrap();
     assert_eq!(m.index(&name, || PackIndex::read_from(&body)).unwrap(), a);
     assert!(m.index("not-a-content-name", || PackIndex::read_from(&body)).is_err());
-    // Pack indexes no recent catalogue uses are dropped after a sync.
+    // Pack indexes the map served doesn't use are dropped after a sync.
     sync(&m, &cat, &Wanted::default(), &nas);
     assert!(idx.exists());
     sync(&m, &Catalogue::new(2), &Wanted::default(), &nas);
     assert!(!idx.exists());
-}
-
-#[test]
-fn saved_catalogues() {
-    let nas = nas();
-    let home = tempfile::tempdir().unwrap();
-    let m = big(home.path());
-    assert!(m.saved_catalogue().unwrap().is_none());
-    // (Until the downloads have their own lists, none goes: one of before reads the one it's at.)
-    for n in 1..=4 {
-        m.save_catalogue(&two_areas(&nas, n, n as u8, 1)).unwrap();
-    }
-    assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [4, 3, 2, 1]);
-    assert_eq!(m.catalogue(1).unwrap().n, 1);
-    m.release_catalogues().unwrap();
-    assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [4, 3, 2]);
-    assert!(m.catalogue(1).is_none());
-    m.save_catalogue(&two_areas(&nas, 5, 5, 1)).unwrap();
-    assert_eq!(m.saved_catalogue().unwrap().unwrap().n, 5);
-    assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [5, 4, 3]);
 }
 
 #[test]

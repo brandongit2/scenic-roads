@@ -32,7 +32,8 @@ pub const SHADOW_DUE: &str = "gc-shadow.json";
 /// The `gc` job's check of it, beside it.
 pub const SHADOW_CHECK: &str = "gc-shadow-check.json";
 
-/// The due set handed to the `gc` job, and its check.
+/// The due set handed to the `gc` job, and its check; with what the lead's map holds, GC's roots
+/// besides the records (no catalogue names them since docs/maplog.md §8, step 6).
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShadowDue {
     /// When it was found (unix s).
@@ -40,6 +41,13 @@ pub struct ShadowDue {
     /// The names queued then, and of them the due.
     pub queued: usize,
     pub names: Vec<String>,
+    /// The content names the lead's map names then (GcQueue::map_names).
+    #[serde(default)]
+    pub map: Vec<String>,
+    /// The names queued then, each with when it was freed (unix s): those freed within GC's window
+    /// are kept as the window's maps would have kept them.
+    #[serde(default)]
+    pub freed: Vec<(String, u64)>,
 }
 
 /// The `gc` job's check of the shadow's due set against what it removed (crate::agent::gc).
@@ -53,9 +61,9 @@ pub struct ShadowCheck {
     /// Due and not on the NAS (gone before).
     pub gone: Vec<String>,
     /// Due and kept by today's GC, by its reason. A holder the queue missed (`MISSED`): `records`
-    /// (the manifest, the records or a hand-off not merged name it), `map` (the newest catalogue
-    /// names it). Expected while today's GC keeps its 14-day window: `catalogue` (an older
-    /// catalogue of its window names it), `young` (younger than its window), `not swept` (in no
+    /// (the manifest, the records or a hand-off not merged name it), `map` (the map now names it).
+    /// Expected while today's GC keeps its 14-day window: `window` (freed within it, or an older
+    /// map snapshot on the NAS names it), `young` (younger than its window), `not swept` (in no
     /// folder it sweeps: the queue covers more than its folders).
     pub kept: BTreeMap<String, Vec<String>>,
 }

@@ -437,13 +437,12 @@ pub enum CoastcheckCmd {
         #[arg(long, default_value_t = 512)]
         size: usize,
     },
-    /// water-build's tiles as the water layer's packs in a test root, and a catalogue one newer than
-    /// --catalog with them. Never the NAS's
+    /// water-build's tiles as the water layer's packs in a test root, and its map one newer with
+    /// them. Never the NAS's
     WaterPacks {
         #[arg(long, value_name = "DIR")]
         tiles: PathBuf,
-        #[arg(long = "catalog", value_name = "N.JSON.ZST")] // the flag keeps its old spelling
-        catalogue: PathBuf,
+        /// The test root, its map one newer with them
         #[arg(long, value_name = "DIR")]
         root: PathBuf,
     },

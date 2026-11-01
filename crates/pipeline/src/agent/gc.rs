@@ -1,13 +1,15 @@
 //! Removing replaced files from the NAS (docs/storage.md, GC): every content-named file that
-//! neither the newest catalogue, nor a catalogue of the last `keep_days`, nor the build's manifest
-//! nor (with the pool) its newest records or a journal entry they don't reflect yet (`unmerged`)
-//! references, and that is itself older than `keep_days`; abandoned `.tmp` files; old catalogues.
+//! neither the map (the lead's now, and its snapshots on the NAS), nor a name the lead's GC queue
+//! freed within the last `keep_days`, nor the build's manifest nor (with the pool) its newest
+//! records or a journal entry they don't reflect yet (`unmerged`) references, and that is itself
+//! older than `keep_days`; abandoned `.tmp` files. (Old catalogues aren't read or removed: none is
+//! written since docs/maplog.md §8, step 6; step 9 removes the folder.)
 //! So it runs beside other jobs: a job's files are young, or named by its entry once it's written.
 //!
 //! Deletions go through SMB: on this share they're permanent (no Recycle Bin entry; tested
 //! 2026-10-02), and the M4 can't use SSH unattended (1Password asks each session).
 //!
-//! Only the folders catalogues index are swept (`base/`, `global/`, `layers/`, `hidata/`, …: the
+//! Only the folders the map indexes are swept (`base/`, `global/`, `layers/`, `hidata/`, …: the
 //! first path component of every referenced file), and the sources of passes older than the newest
 //! complete one (`sources/osm/<date>/`, `sources/items/<date>/`): their content-named files by the
 //! same rule, the rest (the planet download) once the newer pass has been complete for `keep_days`.
@@ -23,7 +25,8 @@
 //! checked on the NAS over SSH, last (`verify_pending`).
 //! The newest pass, a planet waiting for its pass, the rest of `sources/` (the packed tile stores,
 //! `aws-terrarium/` and `pyramids/`, among them: kept by their own indexes, crate::rawpack), the
-//! user's folders (the inputs folders), state and the app are never touched. With no readable catalogue nothing is deleted.
+//! user's folders (the inputs folders), state and the app are never touched. With no map (neither a
+//! snapshot on the NAS nor the lead's) nothing is deleted.
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -33,11 +36,10 @@ use store::nasfs::NasPath;
 
 #[derive(Debug, Default, Serialize)]
 pub struct Report {
-    // The JSON keys keep their old spelling (task #547: scripts read `scenic gc`).
+    /// The maps whose files were kept: the NAS's snapshots read, and the lead's map. (The JSON key
+    /// keeps its old spelling, task #547: scripts read `scenic gc`.)
     #[serde(rename = "catalogs_kept")]
     pub catalogues_kept: usize,
-    #[serde(rename = "catalogs_removed")]
-    pub catalogues_removed: usize,
     pub referenced: usize,
     pub files_seen: usize,
     pub removed: usize,
@@ -737,71 +739,43 @@ fn run_once(
     let old = |t: SystemTime| now.duration_since(t).is_ok_and(|d| d > keep);
     let mut rep = Report { dry_run, ..Default::default() };
 
-    // Catalogues: the newest always, and every one of the last `keep_days`.
-    let cat_dir = root.join("catalog");
+    // The maps (docs/maplog.md §8, step 6: no catalogue names a file any more): every snapshot of
+    // the map on the NAS (`map/`, the newest few: the map up to an hour behind and before), and the
+    // lead's map now with the names its queue freed within the window (`due`, the lead's agent's).
     // (Phase names are stored in the job logs and their stats: the old spelling stays, task #547.)
     let read = phase("reading the catalogs");
-    let ns = if cat_dir.exists() { store::catalogue::list(&cat_dir).context("list catalogues")? } else { Vec::new() };
-    // Before the first catalogue there's nothing to keep track of, so nothing is removed.
-    let Some(&latest) = ns.iter().max() else { return Ok(rep) };
+    crate::agent::jobs::stage(0, 2, "steps (reading the maps)");
+    let map_dir = root.join(store::map::NAS_DIR);
+    let seqs = store::map::seqs_in(&map_dir).context("list the map's snapshots")?;
     let mut referenced: BTreeSet<String> = BTreeSet::new();
-    let mut drop_cats: Vec<NasPath> = Vec::new();
-    let nas_file = |p: store::nasfs::Place| match p {
-        store::nasfs::Place::Nas(p) => Some(p),
-        store::nasfs::Place::Local(_) => None,
-    };
-    // (How far it is, for the status: the catalogues read, then the folders swept.)
-    crate::agent::jobs::stage(0, 2, "steps (reading the catalogues)");
-    // (Each catalogue's file, whole or a delta: store::catalogue::path_n.)
-    let mut in_window: BTreeSet<u64> = BTreeSet::new();
-    for &n in &ns {
-        let p = store::catalogue::path_n(&cat_dir, n)
-            .and_then(nas_file)
-            .with_context(|| format!("catalogue {n} gone meanwhile"))?;
-        meta(0, 1, 0);
-        let mtime = p.metadata().and_then(|m| m.modified()).with_context(|| format!("stat {}", p.display()))?;
-        if n == latest || !old(mtime) {
-            in_window.insert(n);
-        }
-    }
-    // A delta kept keeps the catalogues it's read through, back to a whole one (their files aren't
-    // kept for them: only the catalogues in the window are what's served). One that can't be read
-    // stops the sweep.
-    let mut kept_cats = in_window.clone();
-    for &n in &in_window {
-        kept_cats.extend(
-            store::catalogue::chain(&cat_dir, n)
-                .with_context(|| format!("the catalogues catalogue {n} is read through"))?,
-        );
-    }
-    for &n in ns.iter().filter(|n| !kept_cats.contains(n)) {
-        drop_cats.extend(store::catalogue::path_n(&cat_dir, n).and_then(nas_file));
-    }
-    // Read oldest first, each delta applied to the one before when that's just been read (not
-    // its chain read again).
-    let mut prev: Option<store::catalogue::Catalogue> = None;
-    // (The newest catalogue's names: what the map names now, for the shadow's check.)
+    // (What the map names now, for the shadow's check: the lead's, else the newest snapshot's.)
     let mut newest: BTreeSet<String> = BTreeSet::new();
-    for (k, &n) in in_window.iter().enumerate() {
-        crate::agent::jobs::within(k as f64 / in_window.len() as f64);
-        let p = store::catalogue::path_n(&cat_dir, n)
-            .and_then(nas_file)
-            .with_context(|| format!("catalogue {n} gone meanwhile"))?;
-        // A catalogue in the window that can't be read stops the sweep: its files might be in use.
-        let delta = (p.file_name() == Some(store::catalogue::delta_file_name(n).as_str()))
-            .then(|| p.read().ok().and_then(|b| store::catalogue::Delta::decode(&b).ok()))
-            .flatten();
-        let cat = match (delta, &prev) {
-            (Some(d), Some(c)) if c.n == d.of => d.apply(c).with_context(|| format!("read {}", p.display()))?,
-            _ => store::catalogue::read_n(&cat_dir, n).with_context(|| format!("read {}", p.display()))?,
-        };
-        read.count(p.metadata().map(|m| m.len()).unwrap_or(0), 1);
-        referenced.extend(cat.files.values().map(|f| f.file.clone()));
-        if n == latest && due.is_some() {
-            newest = cat.files.values().map(|f| f.file.clone()).collect();
+    for (k, &seq) in seqs.iter().enumerate() {
+        crate::agent::jobs::within(k as f64 / seqs.len() as f64);
+        let p = map_dir.join(store::map::nas_name(seq));
+        meta(0, 1, 0);
+        // A snapshot that can't be read stops the sweep: its files might be in use.
+        let b = p.read().with_context(|| format!("read {}", p.display()))?;
+        read.count(b.len() as u64, 1);
+        let (m, _) = store::map::Snapshot::decode(&b).with_context(|| format!("read {}", p.display()))?;
+        let names: BTreeSet<String> = m.catalogue()?.files.into_values().map(|f| f.file).collect();
+        if k == 0 {
+            newest = names.clone();
         }
+        referenced.extend(names);
         rep.catalogues_kept += 1;
-        prev = Some(cat);
+    }
+    // (A due set naming no map, the lead's log holding none: the snapshots alone.)
+    if let Some(d) = due.filter(|d| !d.map.is_empty()) {
+        newest = d.map.iter().cloned().collect();
+        referenced.extend(d.map.iter().cloned());
+        let since = now.duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_secs()).saturating_sub(keep.as_secs());
+        referenced.extend(d.freed.iter().filter(|(_, at)| *at >= since).map(|(n, _)| n.clone()));
+        rep.catalogues_kept += 1;
+    }
+    // Before the first map there's nothing to keep track of, so nothing is removed.
+    if rep.catalogues_kept == 0 {
+        return Ok(rep);
     }
     // The build's manifest: everything a build has uploaded and may publish next (work in flight,
     // and outputs reused by name). Unreadable, nothing is removed.
@@ -907,7 +881,7 @@ fn run_once(
                         } else if newest.contains(&rel) {
                             "map"
                         } else {
-                            "catalogue"
+                            "window"
                         };
                         c.note(&rel, Some(why));
                     }
@@ -1021,12 +995,6 @@ fn run_once(
     {
         let _p = phase("sweeping removed steps' files");
         sweep_retired_names(root, &referenced, &old, dry_run, &mut rep)?;
-    }
-    // (Stored phase name: old spelling, task #547.)
-    let _p = phase("removing old catalogs");
-    for p in drop_cats {
-        remove(&p, dry_run)?;
-        rep.catalogues_removed += 1;
     }
     Ok(rep)
 }
@@ -1288,7 +1256,7 @@ mod tests {
             "layers/roads/hi/6-1-2".into(),
             store::catalogue::FileRef { file: kept.into(), ..Default::default() },
         );
-        store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+        store::testkit::map_root(root, &cat);
         let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
         assert_eq!((r.removed, r.tmp_removed, r.young), (1, 1, 1));
         assert!(root.join(kept).exists());
@@ -1322,18 +1290,18 @@ mod tests {
         put(rec_kept, 30);
         put(young, 1);
         put(removed, 30);
-        // (Named by an older catalogue of the window: kept for it, expected; by the newest: the map
-        // holds it, a holder the queue missed.)
+        // (Named by an older map snapshot of the window: kept for it, expected; by the newest: the
+        // map holds it, a holder the queue missed.)
         let held = "layers/a/6-1-6.5555555555555555.pack";
         put(held, 30);
         let mut cat = store::catalogue::Catalogue::new(1);
         cat.files
             .insert("layers/a/6-1-1".into(), store::catalogue::FileRef { file: cat_kept.into(), ..Default::default() });
-        store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+        store::testkit::map_root(root, &cat);
         let mut cat = store::catalogue::Catalogue::new(2);
         cat.files
             .insert("layers/a/6-1-6".into(), store::catalogue::FileRef { file: held.into(), ..Default::default() });
-        store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+        store::testkit::map_root(root, &cat);
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(
             root.join("state/build/manifest.json"),
@@ -1344,13 +1312,14 @@ mod tests {
         let due_p = home.path().join(SHADOW_DUE);
         let mut names: Vec<String> = [cat_kept, rec_kept, young, removed, gone, held].map(String::from).to_vec();
         names.sort();
-        fs::write(&due_p, serde_json::to_vec(&ShadowDue { at: 7, queued: 9, names }).unwrap()).unwrap();
+        fs::write(&due_p, serde_json::to_vec(&ShadowDue { at: 7, queued: 9, names, ..Default::default() }).unwrap())
+            .unwrap();
         let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, Some(&due_p)).unwrap();
         let c: ShadowCheck = serde_json::from_slice(&fs::read(home.path().join(SHADOW_CHECK)).unwrap()).unwrap();
         assert_eq!((c.due, c.due_at), (6, 7), "{c:?}");
         assert_eq!(c.removed, vec![removed.to_string()]);
         assert_eq!(c.gone, vec![gone.to_string()], "{c:?}");
-        assert_eq!(c.kept["catalogue"], vec![cat_kept.to_string()]);
+        assert_eq!(c.kept["window"], vec![cat_kept.to_string()]);
         assert_eq!(c.kept["records"], vec![rec_kept.to_string()]);
         assert_eq!(c.kept["young"], vec![young.to_string()]);
         assert_eq!(c.kept["map"], vec![held.to_string()]);
@@ -1377,7 +1346,7 @@ mod tests {
             "layers/a/6-1-2".into(),
             store::catalogue::FileRef { file: "layers/a/6-1-2.0123456789abcdef.pack".into(), ..Default::default() },
         );
-        store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+        store::testkit::map_root(root, &cat);
         crate::costin::begin();
         COUNTING.set(true);
         let r = run_once(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
@@ -1408,69 +1377,59 @@ mod tests {
                 store::catalogue::FileRef { file: rel, ..Default::default() },
             );
         }
-        store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+        store::testkit::map_root(root, &cat);
         YIELD_CHECKS.set(0);
         run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
         // (layers, layers/a and its six folders.)
         assert!(YIELD_CHECKS.get() >= 8, "{}", YIELD_CHECKS.get());
     }
 
+    /// docs/maplog.md §8, step 6: the map keeps its files however old: each of its snapshots on the
+    /// NAS (the newest few), the lead's map now, and the names the lead's queue freed within the
+    /// window; a file only an older map named, and one freed before the window, go.
     #[test]
-    fn keeps_the_newest_catalogue_however_old() {
+    fn the_maps_keep_their_files_however_old() {
+        use super::super::gcqueue::ShadowDue;
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
-        let mk = |n: u64, file: &str| {
-            let p = root.join(file);
+        let file = |n: u64| format!("layers/a/hi/6-1-1.{}.pack", format!("{n}").repeat(16));
+        for n in 1..=7 {
+            let p = root.join(file(n));
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(&p, b"x").unwrap();
             age(&p, 60);
-            let mut cat = store::catalogue::Catalogue::new(n);
-            let logical = file.rsplit_once('.').unwrap().0.rsplit_once('.').unwrap().0;
-            cat.files.insert(logical.into(), store::catalogue::FileRef { file: file.into(), ..Default::default() });
-            let c = store::catalogue::write(&root.join("catalog"), &cat).unwrap();
-            age(&c, 60);
-        };
-        mk(1, "layers/a/hi/6-1-1.1111111111111111.pack");
-        mk(2, "layers/a/hi/6-1-1.2222222222222222.pack");
-        mk(3, "layers/a/hi/6-1-1.3333333333333333.pack");
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
-        assert_eq!((r.catalogues_kept, r.catalogues_removed, r.removed), (1, 2, 2));
-        assert!(root.join("layers/a/hi/6-1-1.3333333333333333.pack").exists());
-        assert_eq!(store::catalogue::latest(&root.join("catalog")).unwrap().unwrap().n, 3);
-        assert_eq!(store::catalogue::next_n(&root.join("catalog")).unwrap(), 4);
-    }
-
-    #[test]
-    fn a_delta_kept_keeps_the_catalogues_its_read_through_and_its_files() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let dir = root.join("catalog");
-        let mut prev: Option<store::catalogue::Catalogue> = None;
-        // 1 whole and old, 2 a delta and old, 3 and 4 deltas in the window (3 over 2, 4 over 3).
-        for (n, old) in [(1, true), (2, true), (3, false), (4, false)] {
-            let file = format!("layers/a/hi/6-1-{n}.{}.pack", format!("{n}").repeat(16));
-            let p = root.join(&file);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"x").unwrap();
-            age(&p, 60);
-            let mut cat = prev.clone().unwrap_or_else(|| store::catalogue::Catalogue::new(1));
-            cat.n = n;
-            cat.files.insert(format!("layers/a/hi/6-1-{n}"), store::catalogue::FileRef { file, ..Default::default() });
-            let c = match &prev {
-                None => store::catalogue::write(&dir, &cat).unwrap(),
-                Some(b) => store::catalogue::write_delta(&dir, b, &cat).unwrap(),
-            };
-            if old {
-                age(&c, 60);
-            }
-            prev = Some(cat);
         }
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
-        // (3 and 4 kept, read; 1 and 2 kept as what 3 is read through, their files not kept for them
-        // but 3's names them all.)
-        assert_eq!((r.catalogues_kept, r.catalogues_removed, r.removed), (2, 0, 0));
-        assert_eq!(store::catalogue::latest(&dir).unwrap().unwrap(), prev.unwrap());
-        assert_eq!(store::catalogue::list(&dir).unwrap(), [4, 3, 2, 1]);
+        for n in 1..=4 {
+            let mut cat = store::catalogue::Catalogue::new(n);
+            cat.files
+                .insert("layers/a/hi/6-1-1".into(), store::catalogue::FileRef { file: file(n), ..Default::default() });
+            store::testkit::map_root(root, &cat);
+        }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let due = ShadowDue {
+            at: now,
+            map: vec![file(5)],
+            freed: vec![(file(6), now - 86400), (file(7), now - 30 * 86400)],
+            ..Default::default()
+        };
+        let home = tempfile::tempdir().unwrap();
+        let due_p = home.path().join(super::super::gcqueue::SHADOW_DUE);
+        fs::write(&due_p, serde_json::to_vec(&due).unwrap()).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, Some(&due_p)).unwrap();
+        // (Snapshots 2 to 4, the newest kept there, and the lead's map.)
+        assert_eq!((r.catalogues_kept, r.removed), (4, 2));
+        for n in 1..=7 {
+            assert_eq!(root.join(file(n)).exists(), ![1, 7].contains(&n), "{n}");
+        }
+        // No map at all (neither a snapshot nor the lead's): nothing removed.
+        let e = tempfile::tempdir().unwrap();
+        let p = e.path().join(file(1));
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, b"x").unwrap();
+        age(&p, 60);
+        let r = run(&store::nasfs::NasRoot::local_for_test(e.path()), 14, false, None, None).unwrap();
+        assert_eq!((r.catalogues_kept, r.removed), (0, 0));
+        assert!(p.exists());
     }
 
     #[test]
@@ -1482,7 +1441,7 @@ mod tests {
         fs::write(root.join(f), b"x").unwrap();
         age(&root.join(f), 60);
         let cat = store::catalogue::Catalogue::new(1);
-        store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+        store::testkit::map_root(root, &cat);
         // Not in the catalogue, old, but the build uploaded it: kept. (A catalogue file elsewhere so
         // `base/` is swept at all.)
         let mut cat2 = store::catalogue::Catalogue::new(2);
@@ -1490,7 +1449,7 @@ mod tests {
             "base/6-1-2".into(),
             store::catalogue::FileRef { file: "base/6-1-2.5555555555555555.sect".into(), ..Default::default() },
         );
-        store::catalogue::write(&root.join("catalog"), &cat2).unwrap();
+        store::testkit::map_root(root, &cat2);
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), format!("{{\"base/6-1-1\": \"{f}\"}}")).unwrap();
         let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
@@ -1518,7 +1477,7 @@ mod tests {
         put("sources/osm/2026-09-28/pieces/6-1-1.4444444444444444.osm.pbf", 25);
         put("sources/osm/2027-03-01/planet.osm.pbf", 1);
         put("sources/registers/legacy.5555555555555555.tar.zst", 300);
-        store::catalogue::write(&root.join("catalog"), &store::catalogue::Catalogue::new(1)).unwrap();
+        store::testkit::map_root(root, &store::catalogue::Catalogue::new(1));
         let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
         assert_eq!(r.retired_removed, 3, "{r:?}");
         assert!(
@@ -1579,7 +1538,7 @@ mod tests {
         put(&format!("{u}/@held.8888888888888888.json"), "{}", 60); // an old report: goes
         put("inputs/_gate-test/a.jsonl", "x", 300); // the inputs folder: never
         put("sources/registers/legacy.9999999999999999.tar.zst", "x", 300); // the rest of sources/: never
-        store::catalogue::write(&root.join("catalog"), &store::catalogue::Catalogue::new(1)).unwrap();
+        store::testkit::map_root(root, &store::catalogue::Catalogue::new(1));
         fs::create_dir_all(root.join("state/build")).unwrap();
         // A nested unit (`timetables/gtfs`'s kind): its index named, its copy kept; an old copy of
         // it gone.
@@ -1697,7 +1656,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+        store::testkit::map_root(root, &cat);
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
         // An entry of a member away three weeks, written, never merged: its change and its upload.
@@ -1823,7 +1782,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+        store::testkit::map_root(root, &cat);
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
         let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
@@ -1888,7 +1847,7 @@ mod tests {
             "sources/terrain-z8-v3".into(),
             store::catalogue::FileRef { file: v3.into(), ..Default::default() },
         );
-        store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+        store::testkit::map_root(root, &cat);
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let r = run(&nas, 14, false, None, None).unwrap();
         assert_eq!(r.retired_dropped, 3, "{:?}", r.warnings);
@@ -1950,7 +1909,7 @@ mod tests {
         // (Uploads never verified: the retired ones leave the pending too, the rest stay.)
         let ppath = root.join("state/build/pending.json");
         fs::write(&ppath, serde_json::json!({ferries: "a", poi: "b", rail: "c"}).to_string()).unwrap();
-        store::catalogue::write(&root.join("catalog"), &store::catalogue::Catalogue::new(1)).unwrap();
+        store::testkit::map_root(root, &store::catalogue::Catalogue::new(1));
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let r = run(&nas, 14, false, None, None).unwrap();
         assert_eq!(r.retired_dropped, 3, "{:?}", r.warnings);
@@ -1981,7 +1940,7 @@ mod tests {
             serde_json::json!({"global/legacy/ferries": ferries}).to_string(),
         )
         .unwrap();
-        store::catalogue::write(&root.join("catalog"), &store::catalogue::Catalogue::new(1)).unwrap();
+        store::testkit::map_root(root, &store::catalogue::Catalogue::new(1));
         let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
         assert_eq!((r.retired_dropped, r.retired_removed, r.removed), (1, 1, 1), "{:?}", r.warnings);
         assert!(!root.join(ferries).exists() && root.join(other).exists());
@@ -2109,7 +2068,7 @@ mod tests {
         let mut cat = store::catalogue::Catalogue::new(1);
         cat.files
             .insert(logical(gone_class), store::catalogue::FileRef { file: gone_class.into(), ..Default::default() });
-        store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+        store::testkit::map_root(root, &cat);
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let mut h = crate::handoff::Handoff::default();
         h.changes.insert(logical(running), Some(running.into()));

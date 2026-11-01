@@ -398,7 +398,7 @@ mod tests {
         for (lg, c, size) in [(hi, &hc, hs), (fine, &fc, fs)] {
             cat.files.insert(lg.into(), store::catalogue::FileRef { file: c.clone(), size, ..Default::default() });
         }
-        store::catalogue::write_copy(&root.unchecked_path().join("catalog"), &cat).unwrap();
+        store::testkit::map_root(&root.unchecked_path(), &cat);
         root.unchecked_path().join(fc)
     }
 
@@ -460,7 +460,7 @@ mod tests {
         for (lg, c, size) in [(hi, &hc, hs), (deep, &dc, ds)] {
             cat.files.insert(lg.into(), store::catalogue::FileRef { file: c.clone(), size, ..Default::default() });
         }
-        store::catalogue::write_copy(&root.path().join("catalog"), &cat).unwrap();
+        store::testkit::map_root(&root.path(), &cat);
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(root.path()));
         let steep = |z: u8, x: u32, y: u32| {
             let b = match s.data.tile("slope", z, x, y) {
@@ -517,7 +517,7 @@ mod tests {
             cat.files.insert(logical, store::catalogue::FileRef { file, size, ..Default::default() });
         }
         cat.layers.insert("slope".into(), l);
-        store::catalogue::write_copy(&root.path().join("catalog"), &cat).unwrap();
+        store::testkit::map_root(&root.path(), &cat);
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(root.path()));
         let get = |z: u8, x: u32, y: u32| {
             let s = s.clone();

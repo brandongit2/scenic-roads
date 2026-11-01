@@ -200,10 +200,6 @@ fn main() -> std::process::ExitCode {
 }
 
 fn build_main(args: Vec<String>) -> Result<()> {
-    // (A catalogue read through deltas kept on this Mac for the next read: store::catalogue::keep_read_in.)
-    if let Some(d) = store::catalogue::kept_dir() {
-        store::catalogue::keep_read_in(d);
-    }
     // (Its command line checked first, pipeline::cli::build: `--help` or a flag the step doesn't
     // take runs nothing. The steps read their flags from the line it checked: `opt`, `positional`.)
     if let Err(e) = pipeline::cli::build::command().try_get_matches_from(&args) {
@@ -494,17 +490,17 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let (pieces, ways) = pipeline::osmpass::patch_ferries(&mut out, &date, &scratch, &near)?;
             eprintln!("patch-ferries: {pieces} pieces of the {date} pass gained {ways} ferry ways");
         }
-        // catalogue [--held] [--ready <ids>] [--delta]: held, it goes to catalog-held/, which
-        // no server reads (a build to compare before it's switched to: inputs/hold-catalog);
+        // catalogue [--held] [--ready <ids>] [--post <file>]: the map built from the records,
+        // posted whole to the lead's agent (`--post`, its agent's: pipeline::agent::publish::POSTED),
+        // which appends its batch to the map's log (docs/maplog.md §6.7); held, it goes to the NAS's
+        // map-held/, which no server reads (a build to compare before it's switched to:
+        // inputs/hold-catalog);
         // `--ready`, the regions it records as built (comma-separated; the agent's plan says which),
         // the others as the last catalogue had them (without it: every region as its recipe is now);
         // `--building`, the regions still building with their z6 tiles built of their total (the
         // plan's), recorded as their recipes are now with that count, unless the last catalogue had
         // them built (with an older outline, or z6 tiles rebuilt: on the map as they were).
-        // `--delta` (the agent's, with state/pool/delta-catalog on): the served catalogue written as
-        // what changed over the last (docs/formats.md, Delta catalogues), each file's size as the
-        // records or the last catalogue have it, not looked at on the NAS, unless a whole one is due
-        // (store::catalogue::whole_due), written whole then, every file looked at.
+        // Each file's size as the records or the map have it, the NAS looked at for the others.
         store::catalogue::NAME => {
             // (`<id>=<outline digest>` each, or a bare id: a region built with the outline it has now.)
             let ready: Option<BTreeMap<String, Option<String>>> = opt(&args, "--ready").map(|v| {
@@ -536,7 +532,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 has("--held"),
                 ready.as_ref(),
                 &building,
-                CatalogueWay { delta: has("--delta") },
+                opt(&args, "--post").map(PathBuf::from).as_deref(),
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs(),
             )
             .map(|st| eprintln!("{}", st.line()))?
@@ -2038,27 +2034,21 @@ fn served_global(l: &str) -> bool {
     l.starts_with("global/") && pipeline::agent::steps::made(l)
 }
 
-/// How a catalogue is written (`--delta`).
-#[derive(Clone, Copy, Default)]
-struct CatalogueWay {
-    /// Served (not held): as a delta over the last, unless there's no whole one to start from or
-    /// one is due (store::catalogue::whole_due: reading the deltas since takes as long as it, or their run is half
-    /// as long as readers go); each
-    /// file's size from the records (crate::out::SIZES) or the last catalogue (by content name: the
-    /// same name, the same bytes), the NAS looked at only for a file neither has.
-    delta: bool,
-}
-
-/// `now`: the catalogue's moment (seconds since the epoch), its `created` and its meta's `built`.
+/// The map built from the records (docs/maplog.md §6.7), as a catalogue: posted whole to `post`
+/// (the lead's agent's `maplog/posted.json.zst`, which appends its batch: pipeline::agent::publish),
+/// or, `held`, written to the NAS's `map-held/` for review. Its number is the map's next; each
+/// file's size the records' or the map's (the same content name, the same bytes), the NAS looked at
+/// for a file neither has. `now`: its moment (seconds since the epoch), its `created` and its meta's
+/// `built`.
 fn catalogue(
     out: &mut Out,
     held: bool,
     ready: Option<&BTreeMap<String, Option<String>>>,
     building: &BTreeMap<String, pipeline::coverage::Tiles>,
-    way: CatalogueWay,
+    post: Option<&Path>,
     now: u64,
 ) -> Result<pipeline::pubtimes::CatalogueStats> {
-    let delta = way.delta && !held;
+    anyhow::ensure!(held || post.is_some(), "a map is published by posting it to the lead's agent (--post)");
     // (Stored phase name: old spelling, task #547.)
     let p = phase("sorting the manifest's files into the catalog's");
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
@@ -2167,13 +2157,17 @@ fn catalogue(
     let units: Vec<String> = base.keys().cloned().collect();
     // The coverage it's built for, drawn from the outlines it lists, and the credits of the sources
     // its data comes from: where the coverage is, and where the z6 tiles' ways are.
-    let dir = out.root().join(if held { store::catalogue::HELD_NAME } else { store::catalogue::NAME });
-    // The last catalogue there, whole (the first held one goes by the served one).
-    let mut last =
-        store::catalogue::latest(&dir).with_context(|| format!("the last catalogue in {}", dir.display()))?;
-    if last.is_none() && held {
-        last = store::catalogue::latest(&out.root().join(store::catalogue::NAME)).context("the last catalogue")?;
-    }
+    // The map now, the lead's (pipeline::agent::publish::map_now); held, the last held one (the
+    // first held one goes by the served one).
+    let map = pipeline::agent::publish::map_now(out.root()).context("the map now")?;
+    let seq = map.as_ref().map_or(0, |m| m.seq);
+    let held_last = if held {
+        store::map::newest_in(&out.root().join(store::map::HELD_DIR)).context("the last held map")?
+    } else {
+        None
+    };
+    let last: Option<store::catalogue::Catalogue> =
+        held_last.or(map).map(|m| m.catalogue()).transpose().context("the map as a catalogue")?;
     bundled(out, last.as_ref(), &layer_bundles, markdata_bundle.as_deref(), &mut layers, &mut markdata)?;
     let regions = catalogue_coverage(out, global.get("outlines").map(String::as_str), ready, building, last.as_ref())?;
     // (The inputs' accepted descriptions' credits beside the table's: pipeline::inputs::credits;
@@ -2220,44 +2214,30 @@ fn catalogue(
         if described.len() == 1 { "" } else { "s" }
     );
     // Only what the map reads: build sources (the planet's extracts, sets and road values) stay out,
-    // or every Mac's mirror would copy them. A file missing on the NAS stops a whole catalogue (a
-    // delta takes its new files' sizes from the records and doesn't look).
+    // or every Mac's mirror would copy them. A file looked at and missing on the NAS stops it.
     let served = |l: &str| served_file(l, &basemap, &global);
     drop(p);
-    // (A delta (`--delta`, served, with a whole catalogue to start from and none due:
-    // store::catalogue::whole_due, weighed here, by the job, so a lead that's never idle writes one
-    // too) lists each file's size as
-    // the records have it (crate::out::SIZES, from its job's hand-off) or the last catalogue does (by
-    // content name: the same name, the same bytes), looking at the NAS only for a file neither has
-    // (one written before the records kept sizes: once, the next catalogue has it from this one). A
-    // whole catalogue looks at every file, its check that each is there and of its recorded size:
-    // made when one is due, or when a delta can't be.)
-    let p = phase("listing the last catalogs and reading the records' sizes");
-    let due = if delta && last.is_some() { store::catalogue::whole_due(&dir)? } else { None };
-    if due == Some(true) {
-        eprintln!("catalogue: a whole catalogue is due (reading the deltas since the last takes as long as it, or their run is long): this one whole");
-    }
-    let as_delta = due == Some(false);
+    // (Each file's size as the records have it (crate::out::SIZES, from its job's hand-off) or the
+    // map does (by content name: the same name, the same bytes), the NAS looked at only for a file
+    // neither has: one written before the records kept sizes, once; the map has it after.)
+    let p = phase("reading the records' sizes");
     let recorded = out.recorded_sizes()?;
     let mut known: BTreeMap<&str, u64> =
         last.iter().flat_map(|c| c.files.values().map(|f| (f.file.as_str(), f.size))).collect();
     known.extend(recorded.iter().map(|(c, n)| (c.as_str(), *n)));
     let all: Vec<(&String, &String)> = out.manifest.iter().filter(|(l, _)| served(l)).collect();
     drop(p);
-    let p = phase(if as_delta { "reading the new files' sizes" } else { "checking every file on the NAS" });
+    let p = phase("reading the new files' sizes");
     let listed: Vec<(&String, &String)> =
-        all.iter().copied().filter(|(_, n)| !as_delta || !known.contains_key(n.as_str())).collect();
-    if as_delta {
-        let from_records = all.iter().filter(|(_, n)| recorded.contains_key(n.as_str())).count();
-        eprintln!(
-            "catalogue: {} of {} files' sizes from the records, {} more from catalogue {}, {} looked at on the NAS",
-            from_records,
-            all.len(),
-            all.len() - listed.len() - from_records,
-            last.as_ref().map_or(0, |c| c.n),
-            listed.len()
-        );
-    }
+        all.iter().copied().filter(|(_, n)| !known.contains_key(n.as_str())).collect();
+    let from_records = all.iter().filter(|(_, n)| recorded.contains_key(n.as_str())).count();
+    eprintln!(
+        "catalogue: {} of {} files' sizes from the records, {} more from the map at {seq}, {} looked at on the NAS",
+        from_records,
+        all.len(),
+        all.len() - listed.len() - from_records,
+        listed.len()
+    );
     // (Many at once: over SMB each look waits a round trip, 5 to 17 ms, and the share answers
     // thirty-odd together about as fast as one; the first missing, in the manifest's order, stops it.)
     let total = listed.len() as u64;
@@ -2282,10 +2262,6 @@ fn catalogue(
     for ((l, n), size) in listed.into_iter().zip(sizes) {
         let size =
             size.into_inner().context("not checked")?.with_context(|| format!("{l}: {n} is missing on the NAS"))?;
-        // (Whole: a file of another size than the records or the last catalogue say is an error.)
-        if let Some(&k) = known.get(n.as_str()) {
-            anyhow::ensure!(size == k, "{l}: {n} is {size} bytes on the NAS, {k} as recorded");
-        }
         files.insert(l.clone(), serde_json::json!({"file": n, "size": size, "fmt": 1}));
         p.count(0, 1);
     }
@@ -2296,8 +2272,8 @@ fn catalogue(
     drop(p);
     // (Phase names are stored in the job logs and their stats: the old spelling stays, task #547.)
     let _p = phase("writing the catalog");
-    dir.create_dir_all()?;
-    let n = store::catalogue::next_n(&dir)?;
+    // (The map's next; held, the next the served map would take.)
+    let n = seq + 1;
     let cat = serde_json::json!({
         "fmt": store::catalogue::FMT,
         "n": n,
@@ -2322,35 +2298,28 @@ fn catalogue(
         "coverage": {"regions": regions, "recorded": true},
     });
     let catalogue: store::catalogue::Catalogue = serde_json::from_value(cat)?;
-    // (As a delta over the last whole-read catalogue, however large: the whole one comes with the
-    // next catalogue, store::catalogue::whole_due.)
-    let as_delta = match last.as_ref().filter(|_| as_delta) {
-        Some(base) => {
-            let d = store::catalogue::Delta::between(base, &catalogue)?;
-            let size = d.encode()?.len() as u64;
-            Some((base, d, size))
+    catalogue.validate().with_context(|| format!("map {n}"))?;
+    match post {
+        Some(to) if !held => {
+            // (Whole, under a temporary name renamed into place: the agent takes it once the job
+            // has ended, crate::agent::publish::MapLog.)
+            let b = catalogue.encode()?;
+            if let Some(dir) = to.parent() {
+                std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+            }
+            store::whole::write(to, &b).with_context(|| format!("post the map to {}", to.display()))?;
+            eprintln!("posted map {n} ({} bytes) to {}", b.len(), to.display());
         }
-        None => None,
-    };
-    let delta_written = as_delta.is_some();
-    let path = match as_delta {
-        Some((base, d, size)) => {
-            eprintln!(
-                "catalogue: {n} as a delta over {} ({size} bytes; changed: {})",
-                base.n,
-                store::catalogue::delta::changed_keys(&d.patch).into_iter().collect::<Vec<_>>().join(", ")
-            );
-            // (Published by store::catalogue's writer, its own temporary name and read-back:
-            // tests/nas_access.rs.)
-            store::catalogue::write_delta_of(&dir.unchecked_path(), base, &catalogue, &d)?
+        _ => {
+            let m = store::map::Map::of(&catalogue)?;
+            store::map::write_snapshot_in(out.root(), store::map::HELD_DIR, &m)?;
+            eprintln!("held map {n} written to {}/{}", store::map::HELD_DIR, store::map::nas_name(n));
         }
-        None => store::catalogue::write(&dir.unchecked_path(), &catalogue)?,
-    };
-    eprintln!("published {}", path.display());
+    }
     // (What it did, for publishing's times (pipeline::pubtimes): its phases once written, the
     // write's whole.)
     drop(_p);
-    Ok(pipeline::pubtimes::CatalogueStats::now(n, delta_written, all.len() as u64, total))
+    Ok(pipeline::pubtimes::CatalogueStats::now(n, all.len() as u64, total))
 }
 
 /// The coverage a catalogue records: the regions built as their recipes are now (`ready`; without it
@@ -3944,11 +3913,10 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let (date, cov, regions) = pass_and_coverage(out, args)?;
     // Global-source layers: as this build's manifest has them now (what the z6 tile keys hash: a
     // terrain job of the same plan is published only with its catalogue, at the end), or another
-    // root's published catalogue (a pilot builds against the real one).
+    // root's published map (a pilot builds against the real one: its newest NAS snapshot).
     let pilot = match opt(args, "--layers-root").map(store::nasfs::NasRoot::from_arg) {
         Some(r) => {
-            let c =
-                store::catalogue::latest(&r.join("catalog"))?.context("no catalogue for the global-source layers")?;
+            let c = store::map::newest_nas(&r)?.context("no map for the global-source layers")?.catalogue()?;
             Some((r, c))
         }
         None => None,
@@ -6735,120 +6703,9 @@ mod tests {
         super::prune_cache(&cache, &std::collections::BTreeSet::new()).unwrap();
         assert!(!used.exists());
     }
-    /// Delta catalogues (`--delta`): written as what changed over the last, read back whole as the
-    /// catalogue written whole would be (its time and app aside), with the sizes of the files the last
-    /// one lists taken from it (one gone from the NAS since isn't looked at; a whole one's check
-    /// would stop on it).
-    #[test]
-    fn a_delta_catalogue_is_the_whole_one_and_takes_the_last_ones_sizes() {
-        let d = tempfile::tempdir().unwrap();
-        let roots = [d.path().join("delta"), d.path().join("whole")];
-        let put = |root: &store::nasfs::NasRoot, logical: &str, bytes: &[u8]| -> String {
-            let name =
-                store::naming::content_name(logical, &format!("{:016x}", bytes.len() * 7 + logical.len()), "pack");
-            root.join(&name).parent().unwrap().create_dir_all().unwrap();
-            root.join(&name).write(bytes).unwrap();
-            let p = root.join("state/build/manifest.json");
-            let mut m: std::collections::BTreeMap<String, String> = pipeline::out::read_record(&p).unwrap();
-            m.insert(logical.into(), name.clone());
-            p.write(serde_json::to_vec(&m).unwrap()).unwrap();
-            name
-        };
-        let run = |root: &store::nasfs::NasRoot, way: super::CatalogueWay| {
-            let mut out = pipeline::out::Out::unbound(root, &root.unchecked_path().join("scratch")).unwrap();
-            super::catalogue(&mut out, false, None, &Default::default(), way, NOW).unwrap();
-        };
-        let delta = super::CatalogueWay { delta: true };
-        let mut gone = String::new();
-        for root in &roots {
-            std::fs::create_dir_all(root.join("state/build")).unwrap();
-            std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
-            // (The regions' accepted version, none in it, as the readers read it.)
-            let mut m = std::collections::BTreeMap::new();
-            pipeline::inputs::regions::accept_fixture(
-                &store::nasfs::NasRoot::local_for_test(root),
-                root.into(),
-                &[],
-                &mut m,
-            );
-            std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
-            put(&store::nasfs::NasRoot::local_for_test(root), "layers/roads/hi/6-1-2", b"one");
-            gone = put(&store::nasfs::NasRoot::local_for_test(root), "layers/roads/lo/3-0-0", b"lo pack");
-            // (Enough files that a change is small beside the whole.)
-            for i in 0..40 {
-                put(
-                    &store::nasfs::NasRoot::local_for_test(root),
-                    &format!("layers/roads/hi/6-2-{i}"),
-                    format!("tile {i}").as_bytes(),
-                );
-            }
-            run(&store::nasfs::NasRoot::local_for_test(root), super::CatalogueWay::default());
-        }
-        // A tile drawn again and one added; the lo pack gone from the NAS (its size from the last).
-        for root in &roots {
-            put(&store::nasfs::NasRoot::local_for_test(root), "layers/roads/hi/6-1-2", b"one again");
-            put(&store::nasfs::NasRoot::local_for_test(root), "layers/roads/hi/6-1-3", b"three");
-        }
-        std::fs::remove_file(roots[0].join(&gone)).unwrap();
-        run(&store::nasfs::NasRoot::local_for_test(&roots[0]), delta);
-        run(&store::nasfs::NasRoot::local_for_test(&roots[1]), super::CatalogueWay::default());
-        assert!(roots[0].join("catalog/2.delta.json.zst").exists() && !roots[0].join("catalog/2.json.zst").exists());
-        let strip = |mut c: store::catalogue::Catalogue| {
-            c.created.clear();
-            c
-        };
-        let (a, b) = (
-            store::catalogue::latest(&roots[0].join("catalog")).unwrap().unwrap(),
-            store::catalogue::latest(&roots[1].join("catalog")).unwrap().unwrap(),
-        );
-        assert_eq!(a.n, 2);
-        assert_eq!(strip(a), strip(b));
-        // Not as a delta: whole, whatever.
-        put(&store::nasfs::NasRoot::local_for_test(&roots[0]), "layers/roads/hi/6-1-4", b"four");
-        std::fs::write(roots[0].join(&gone), b"lo pack").unwrap();
-        run(&store::nasfs::NasRoot::local_for_test(&roots[0]), super::CatalogueWay::default());
-        assert!(roots[0].join("catalog/3.json.zst").exists());
-        // A whole one checks every file: one the last catalogue lists, gone from the NAS, stops it.
-        std::fs::remove_file(roots[0].join(&gone)).unwrap();
-        put(&store::nasfs::NasRoot::local_for_test(&roots[0]), "layers/roads/hi/6-1-5", b"five");
-        {
-            let way = super::CatalogueWay::default();
-            let mut out = pipeline::out::Out::unbound(
-                &store::nasfs::NasRoot::local_for_test(&roots[0]),
-                &roots[0].join("scratch"),
-            )
-            .unwrap();
-            let e = super::catalogue(&mut out, false, None, &Default::default(), way, NOW).unwrap_err();
-            assert!(format!("{e:#}").contains("missing on the NAS"), "{e:#}");
-        }
-        // So much new that the delta is as big as the whole one: a delta still (weighed before it's
-        // made), the files whose sizes came from the last not looked at; the next catalogue, asked
-        // as a delta like every one a busy lead writes, is whole.
-        for i in 0..3000 {
-            put(
-                &store::nasfs::NasRoot::local_for_test(&roots[0]),
-                &format!("layers/roads/hi/6-9-{i}"),
-                format!("new {i}").as_bytes(),
-            );
-        }
-        run(&store::nasfs::NasRoot::local_for_test(&roots[0]), delta);
-        assert!(roots[0].join("catalog/4.delta.json.zst").exists());
-        assert_eq!(store::catalogue::whole_due(&roots[0].join("catalog")).unwrap(), Some(true));
-        // (A whole one looks at every file: the lo pack back on the NAS.)
-        std::fs::write(roots[0].join(&gone), b"lo pack").unwrap();
-        put(&store::nasfs::NasRoot::local_for_test(&roots[0]), "layers/roads/hi/6-9-3000", b"one more");
-        run(&store::nasfs::NasRoot::local_for_test(&roots[0]), delta);
-        assert!(roots[0].join("catalog/5.json.zst").exists() && !roots[0].join("catalog/5.delta.json.zst").exists());
-        assert_eq!(store::catalogue::whole_due(&roots[0].join("catalog")).unwrap(), Some(false));
-    }
-
-    /// A delta catalogue's sizes are the records' (from the files' writers, Out) and the last
-    /// catalogue's: it looks at the NAS only for a file written before sizes were recorded, once,
-    /// and lists the same sizes as a whole catalogue of the same manifest, which looks at every file.
-    #[test]
-    fn a_deltas_sizes_are_the_records_and_equal_a_wholes() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
+    /// A root as the catalogue's tests start it: the regions' accepted version, none in it, in its
+    /// manifest.
+    fn catalogue_root(root: &std::path::Path) {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
         let mut m = std::collections::BTreeMap::new();
@@ -6859,80 +6716,107 @@ mod tests {
             &mut m,
         );
         std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
-        let write = |files: &[(String, Vec<u8>)]| {
-            let mut out =
-                pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch"))
-                    .unwrap();
-            for (l, b) in files {
-                out.put_bytes(l, "pack", b).unwrap();
-            }
-            out.save().unwrap();
-        };
-        let run = |way| {
-            let mut out =
-                pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch"))
-                    .unwrap();
-            super::catalogue(&mut out, false, None, &Default::default(), way, NOW).unwrap()
-        };
-        let delta = super::CatalogueWay { delta: true };
-        // (Enough files that reading the whole catalogue takes far longer than reading a delta: no
-        // whole one due among the next, store::catalogue::whole_due, as measured.)
-        write(&(0..800).map(|i| (format!("layers/roads/hi/6-2-{i}"), vec![b'x'; 10 + i % 40])).collect::<Vec<_>>());
-        let first = run(super::CatalogueWay::default());
-        assert_eq!((first.delta, first.stated), (false, 800));
-        // A file from before the records kept sizes (named in the manifest by hand, none recorded).
-        let old = store::naming::content_name("layers/roads/hi/6-1-1", "00000000000000aa", "pack");
-        std::fs::write(root.join(&old), b"written long ago").unwrap();
-        let p = root.join("state/build/manifest.json");
-        let mut m: std::collections::BTreeMap<String, String> =
-            pipeline::out::read_record(&store::nasfs::NasPath::local_for_test(&p)).unwrap();
-        m.insert("layers/roads/hi/6-1-1".into(), old.clone());
-        std::fs::write(&p, serde_json::to_vec(&m).unwrap()).unwrap();
-        write(&[
-            ("layers/roads/hi/6-1-2".into(), b"new".to_vec()),
-            ("layers/roads/hi/6-2-3".into(), b"redrawn".to_vec()),
-        ]);
-        // The old file alone looked at; the next delta looks at none, even with every file gone.
-        let second = run(delta);
-        assert_eq!((second.delta, second.stated, second.files), (true, 1, 802));
-        write(&[("layers/roads/hi/6-1-3".into(), b"three".to_vec())]);
-        let names: Vec<String> = pipeline::out::read_record::<std::collections::BTreeMap<String, String>>(
-            &store::nasfs::NasPath::local_for_test(&p),
-        )
-        .unwrap()
-        .into_values()
-        .filter(|c| c.starts_with("layers/"))
-        .collect();
-        let kept: Vec<(String, Vec<u8>)> =
-            names.iter().map(|c| (c.clone(), std::fs::read(root.join(c)).unwrap())).collect();
-        for (c, _) in &kept {
-            std::fs::remove_file(root.join(c)).unwrap();
-        }
-        let third = run(delta);
-        assert_eq!((third.delta, third.stated, third.files), (true, 0, 803));
-        let as_delta = store::catalogue::latest(&root.join("catalog")).unwrap().unwrap();
-        // A whole one of the same manifest: every file looked at, the same sizes.
-        for (c, b) in &kept {
-            std::fs::write(root.join(c), b).unwrap();
-        }
-        let whole = run(super::CatalogueWay::default());
-        assert_eq!((whole.delta, whole.stated), (false, 803));
-        let as_whole = store::catalogue::latest(&root.join("catalog")).unwrap().unwrap();
-        assert_eq!(as_delta.files, as_whole.files);
-        // A recorded size the NAS disagrees with stops a whole one.
-        std::fs::write(root.join(&kept[0].0), b"another size altogether").unwrap();
-        let mut out =
-            pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
-        let e = super::catalogue(&mut out, false, None, &Default::default(), super::CatalogueWay::default(), NOW)
-            .unwrap_err();
-        assert!(format!("{e:#}").contains("as recorded"), "{e:#}");
     }
 
-    /// What a catalogue says of itself (pipeline::pubtimes::CatalogueStats): whole, then a delta that
-    /// stat'ed only the new files, its phases taken once written (the write's phase among them).
-    /// Task #449: a layer's bundle is named for every root, lo and hi key its tiles fall in (over
-    /// a pack of before), the markdata's for each tile it holds; a delta takes them from the last
-    /// catalogue naming the same file, without reading it again.
+    /// The step run on `root` (`held`, or posting to `root`'s `posted.json.zst`): what it says of
+    /// itself.
+    fn run_catalogue(root: &std::path::Path, held: bool) -> pipeline::pubtimes::CatalogueStats {
+        let mut out =
+            pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
+        let post = root.join("posted.json.zst");
+        super::catalogue(&mut out, held, None, &Default::default(), Some(&post), NOW).unwrap()
+    }
+
+    /// The map the step posted, published as a lead without its log would serve it (the NAS's
+    /// snapshot, what the next run reads with no coordinator: pipeline::agent::publish::map_now).
+    fn publish_posted(root: &std::path::Path) -> store::catalogue::Catalogue {
+        let p = root.join("posted.json.zst");
+        let c = store::catalogue::Catalogue::decode(&std::fs::read(&p).unwrap()).unwrap();
+        std::fs::remove_file(&p).unwrap();
+        store::testkit::map_root(root, &c);
+        c
+    }
+
+    /// docs/maplog.md §8, step 6: the step posts its map to the lead's agent, which appends it to the
+    /// map's log (its thread, crate::agent::publish::MapLog), and writes no catalogue: no `catalog/`
+    /// folder anywhere. The next map is numbered after it, its sizes the map's and the records'.
+    #[test]
+    fn the_step_publishes_with_no_catalog_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("agent"));
+        catalogue_root(&root);
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let mut out = pipeline::out::Out::unbound(&nas, &root.join("scratch")).unwrap();
+        out.put_bytes("layers/roads/hi/6-1-2", "pack", b"one").unwrap();
+        out.save().unwrap();
+        let post = home.join(pipeline::agent::publish::MAPLOG).join(pipeline::agent::publish::POSTED);
+        let run = || {
+            let mut out = pipeline::out::Out::unbound(&nas, &root.join("scratch")).unwrap();
+            super::catalogue(&mut out, false, None, &Default::default(), Some(&post), NOW).unwrap()
+        };
+        let mut log = pipeline::agent::publish::MapLog::default();
+        let here = log.here(&home, &nas);
+        let first = run();
+        assert!(post.exists(), "posted");
+        log.published(&home, &nas, false);
+        store::testkit::eventually("the map's log takes the post", || here.feed.head() == Some(first.n));
+        let c = here.catalogue().unwrap();
+        assert_eq!((c.n, c.files["layers/roads/hi/6-1-2"].size), (1, 3));
+        // (Its NAS snapshot, at the log's start.)
+        store::testkit::eventually("the map's snapshot", || root.join("map/1.json.zst").exists());
+        let mut out = pipeline::out::Out::unbound(&nas, &root.join("scratch")).unwrap();
+        out.put_bytes("layers/roads/hi/6-1-3", "pack", b"three").unwrap();
+        out.save().unwrap();
+        // (The lead's map read without a coordinator: its NAS snapshot, at 1.)
+        let second = run();
+        assert_eq!((second.n, second.files, second.stated), (2, 2, 0));
+        log.published(&home, &nas, true);
+        store::testkit::eventually("the next batch", || here.feed.head() == Some(2));
+        assert!(here.catalogue().unwrap().files.contains_key("layers/roads/hi/6-1-3"));
+        assert!(!post.exists(), "taken");
+        for dir in [root.join("catalog"), root.join("catalog-held"), home.join("catalog")] {
+            assert!(!dir.exists(), "{}", dir.display());
+        }
+    }
+
+    /// Held for review (inputs/hold-catalog): the step writes the map it would publish whole to the
+    /// NAS's `map-held/`, numbered as the next batch, and posts nothing; the hold lifted, the step's
+    /// next run publishes that map as one batch (made again from the records: the same map).
+    #[test]
+    fn a_held_batch_is_appended_whole_when_the_hold_lifts() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        catalogue_root(root);
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let put = |l: &str, b: &[u8]| {
+            let mut out = pipeline::out::Out::unbound(&nas, &root.join("scratch")).unwrap();
+            out.put_bytes(l, "pack", b).unwrap();
+            out.save().unwrap();
+        };
+        put("layers/roads/hi/6-1-2", b"one");
+        run_catalogue(root, false);
+        let one = publish_posted(root);
+        // Two z6 tiles drawn while held: one map held, numbered 2, nothing posted.
+        put("layers/roads/hi/6-1-3", b"three");
+        put("layers/roads/hi/6-1-4", b"four");
+        let held = run_catalogue(root, true);
+        assert_eq!(held.n, 2);
+        assert!(!root.join("posted.json.zst").exists());
+        let (m, _) = store::map::Snapshot::decode(&std::fs::read(root.join("map-held/2.json.zst")).unwrap()).unwrap();
+        let held_map = m.catalogue().unwrap();
+        assert_eq!(held_map.files.len(), 3);
+        assert_eq!(store::map::newest_nas(&nas).unwrap().unwrap().seq, one.n, "the map served stays");
+        // The hold lifted: the next map is the held one, whole, as one batch over the map served.
+        run_catalogue(root, false);
+        let two = publish_posted(root);
+        assert_eq!(two, held_map);
+        let b = store::map::Map::of(&one).unwrap().batch_of(&two, "", "").unwrap();
+        assert_eq!((b.seq, b.set.keys().filter(|k| k.starts_with("f/")).count()), (2, 2));
+    }
+
+    /// Task #449: a layer's bundle is named for every root, lo and hi key its tiles fall in (over a
+    /// pack of before), the markdata's for each tile it holds; the next map takes them from the map
+    /// naming the same file, without reading it again.
     #[test]
     fn bundles_are_named_for_every_key_they_hold() {
         let d = tempfile::tempdir().unwrap();
@@ -6970,15 +6854,9 @@ mod tests {
         let meta = serde_json::json!({"bundle": "markdata"});
         assert!(pipeline::layers::write_file_bundle(&mut out, pipeline::marks::MARKDATA_BUNDLE, meta, files).unwrap());
         out.save().unwrap();
-        let run = |way| {
-            let mut out =
-                pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch"))
-                    .unwrap();
-            super::catalogue(&mut out, false, None, &Default::default(), way, NOW).unwrap()
-        };
-        run(super::CatalogueWay::default());
+        run_catalogue(root, false);
         let check = || {
-            let c = store::catalogue::latest(&root.join("catalog")).unwrap().unwrap();
+            let c = publish_posted(root);
             c.validate().unwrap();
             let l = &c.layers["ov-whs"];
             assert_eq!(l.root.as_deref(), Some("layers/ov-whs/all"));
@@ -6997,7 +6875,8 @@ mod tests {
             c
         };
         let first = check();
-        // The bundles gone from the NAS: a delta (another file new) names them as the last did.
+        // The bundles gone from the NAS: the next map (another file new) names them as the map did,
+        // its sizes the map's.
         for l in ["layers/ov-whs/all", "markdata/all"] {
             std::fs::remove_file(root.join(first.content(l).unwrap())).unwrap();
         }
@@ -7005,8 +6884,8 @@ mod tests {
             pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
         out.put_bytes("layers/roads/hi/6-1-1", "pack", b"new").unwrap();
         out.save().unwrap();
-        let second = run(super::CatalogueWay { delta: true });
-        assert!(second.delta);
+        let second = run_catalogue(root, false);
+        assert_eq!(second.stated, 0);
         assert_eq!(check().n, 2);
     }
 
@@ -7035,18 +6914,15 @@ mod tests {
         for i in 0..40 {
             put(&format!("layers/roads/hi/6-2-{i}"), format!("tile {i}").as_bytes());
         }
-        let run = |way| {
-            let mut out =
-                pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch"))
-                    .unwrap();
-            super::catalogue(&mut out, false, None, &Default::default(), way, NOW).unwrap()
-        };
-        let first = run(super::CatalogueWay::default());
-        assert_eq!((first.n, first.delta), (1, false));
-        assert_eq!(first.stated, first.files);
+        // (What a catalogue says of itself, pipeline::pubtimes::CatalogueStats: the files it
+        // stat'ed, those neither the records nor the map size, and its phases once written.)
+        let first = run_catalogue(root, false);
+        publish_posted(root);
+        assert_eq!(first.n, 1);
+        assert_eq!(first.stated, first.files, "written by hand: no sizes recorded");
         put("layers/roads/hi/6-1-3", b"three");
-        let second = run(super::CatalogueWay { delta: true });
-        assert_eq!((second.n, second.delta, second.stated, second.files), (2, true, 1, first.files + 1));
+        let second = run_catalogue(root, false);
+        assert_eq!((second.n, second.stated, second.files), (2, 1, first.files + 1));
         let written = second.phases.iter().find(|(p, _)| p == "writing the catalog").expect("the write's phase");
         assert!(written.1 > 0.0, "{:?}", second.phases);
         let line = second.line();

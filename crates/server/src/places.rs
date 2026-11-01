@@ -1284,7 +1284,7 @@ mod tests {
             cat.files.insert(logical, store::catalogue::FileRef { file: content, size: 1, ..Default::default() });
         }
         cat.layers.insert("labels".into(), layer);
-        store::catalogue::write_copy(&nas.join("catalog"), &cat).unwrap();
+        store::testkit::map_root(&nas, &cat);
     }
 
     /// A lo pack (3/4/2) with a zoom-8 tile of Banff and Yokohama, and a hi pack of one of the
@@ -1459,7 +1459,7 @@ mod tests {
         let was = first(&s);
         // A new catalogue, its labels the same (another layer changed): the same places.
         catalogue(nas.path(), 2, &ps, &[]);
-        assert!(s.data.refresh_catalogue());
+        assert!(s.data.serve_root_map());
         assert_eq!(s.data.catalogue().n, 2);
         assert_eq!(ask(&s, "banff", None).await["hits"].as_array().map(Vec::len), Some(1));
         assert!(!s.places.making.load(Ordering::SeqCst), "not made again");
@@ -1470,7 +1470,7 @@ mod tests {
         ps3[1].2 =
             vec![(12, 2050, 1350, labels_tile(&[(3, "Moraine Lake", None, "water", "lake", 5.0, (2048, 2048))]))];
         catalogue(nas.path(), 3, &ps3, &[]);
-        assert!(s.data.refresh_catalogue());
+        assert!(s.data.serve_root_map());
         assert_eq!(ask(&s, "lake louise", None).await["hits"].as_array().map(Vec::len), Some(1), "the old, meanwhile");
         let end = Instant::now() + WATCHDOG;
         while Instant::now() < end {

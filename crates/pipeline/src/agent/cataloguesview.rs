@@ -534,7 +534,7 @@ mod tests {
         }
         fn publish(&mut self, c: &store::catalogue::Catalogue) {
             let root = store::nasfs::NasRoot::local_for_test(self.d.path().join("nas"));
-            self.w.publish(&root, Arc::new(c.clone()), false, std::time::SystemTime::now());
+            self.w.publish(Some(&root), c.clone(), false, std::time::SystemTime::now());
             assert_eq!(self.here.feed.head(), Some(c.n), "catalogue {} in the log", c.n);
         }
         fn source(&self) -> Arc<dyn Source> {
@@ -691,11 +691,7 @@ mod tests {
     /// give, each pair compared by their tile sections' names and those names' files.
     #[test]
     fn catalogues_view_from_the_log_matches_from_catalogues() {
-        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../store/src/map/testdata");
-        let mut ns = store::catalogue::list(dir.as_path()).unwrap();
-        ns.reverse();
-        let chain: Vec<store::catalogue::Catalogue> =
-            ns.into_iter().map(|n| store::catalogue::read_n(dir.as_path(), n).unwrap()).collect();
+        let chain: Vec<store::catalogue::Catalogue> = store::testkit::recorded_chain();
         // (Every tile section's key → (its tiles, its name, that name's file).)
         type Named = BTreeMap<String, (Vec<Tile>, String, Option<String>)>;
         let named = |c: &store::catalogue::Catalogue| -> Named {

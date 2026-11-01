@@ -485,7 +485,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        store::catalogue::write_copy(&nas.path().join("catalog"), &cat).unwrap();
+        store::testkit::map_root(&nas.path(), &cat);
         let home = tempfile::tempdir().unwrap();
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let get = |z, x, y, q: &str| {

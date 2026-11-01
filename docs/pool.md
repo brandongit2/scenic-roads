@@ -882,7 +882,7 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
 - **A redo is a hand-off too:** `scenic redo` (§11) clears targets' keys through a job of the
   lead's whose entry carries only a done record, merged as any, from that term's lead alone.
 - **Sizes ride along:** `Out` records each file it writes with its size, and the hand-off carries
-  them (`Handoff::sizes`); the merge keeps those of the files the entry names, so a delta catalogue
+  them (`Handoff::sizes`); the merge keeps those of the files the entry names, so the `catalog` step
   never looks at them on the NAS. Entries from before carry none.
 - **Lease order holds:** an older lease's entry for targets a newer one set changes nothing.
 - **The journal is a log:** nothing is removed on merge. Its days over a week old are removed by

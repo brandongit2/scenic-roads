@@ -19,8 +19,8 @@
 //! `lakefill all --basemap <pmtiles> --outlines <sect> --source <dir> --declaration <toml> --work <dir>`: all of it, as
 //! the step runs it (`run::all`).
 //!
-//! `lakefill catalog-add --root <test root> --fill <lakefill.<hash>.sect>`: a test root's newest
-//! catalogue again, one newer, with the fill (copied into the root's `work/`) in its files and
+//! `lakefill catalog-add --root <test root> --fill <lakefill.<hash>.sect>`: a test root's newest map
+//! (its `map/<seq>.json.zst`) again, one newer, with the fill (copied into the root) in its files and
 //! `global` as a publish would put it, for a test server to draw. Never the NAS's.
 //!
 //! `lakefill stats --fill <f> --sheets <gap-sheets.csv>`: the fill's lakes and their area (km²) by
@@ -173,9 +173,8 @@ fn declaration(d: &Declaration) -> Result<pipeline::inputs::sources::Source> {
 
 fn catalogue_add(root: &Path, fill: &Path) -> Result<()> {
     anyhow::ensure!(!root.starts_with("/Volumes"), "a test root, not the NAS's");
-    let dir = root.join(store::catalogue::NAME);
-    let n = *store::catalogue::list(&dir)?.first().context("no catalogue in the root")?;
-    let mut cat = store::catalogue::read_n(&dir, n)?;
+    let nas = store::nasfs::NasRoot::from_arg(root);
+    let mut cat = store::map::newest_nas(&nas)?.context("no map in the root")?.catalogue()?;
     let name = fill.file_name().context("a fill file")?.to_string_lossy().into_owned();
     let hash = name.trim_start_matches("lakefill.").trim_end_matches(".sect");
     let logical = format!("{}test", pipeline::lakefill::PREFIX);
@@ -193,8 +192,8 @@ fn catalogue_add(root: &Path, fill: &Path) -> Result<()> {
     );
     cat.global.insert("lakefill".into(), logical);
     cat.n += 1;
-    let p = store::catalogue::write_copy(&dir, &cat)?;
-    eprintln!("lakefill: {} with {content}", p.display());
+    store::map::write_nas_snapshot(&nas, &store::map::Map::of(&cat)?)?;
+    eprintln!("lakefill: map {} with {content}", cat.n);
     Ok(())
 }
 

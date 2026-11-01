@@ -479,19 +479,22 @@ ancestor's neighbours' edges; nearest for classes).
 - **The catalogue's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "notice"}]}`,
   the accepted depth declarations (the credits' depth line and notices, and the footer's water info on hover).
 
-## Catalogue (`catalog/<n>.json.zst`)
+## Catalogue (the map, as its readers take it)
+
+The map (docs/maplog.md: the lead's log of it, `map/<seq>.json.zst` its snapshots on the NAS) is
+read as a catalogue: `store::map::Map::catalogue` makes this value of it (`n` its `seq`, `created`
+its batch's time). The `catalog` step posts the map it builds in this form, zstd with its content
+checksum, to the lead's agent (`maplog/posted.json.zst`, docs/maplog.md §6.7). No catalogue file is
+written or read on the NAS since docs/maplog.md §8, step 6: the old `catalog/` and `catalog-held/`
+folders there are left for step 9 to remove, and nothing reads them.
 
 Spelling: the code and docs say catalogue, but every stored or wire name keeps the old spelling, because the
-NAS holds years of data and the pool runs mixed app versions: the folders `catalog/` and `catalog-held/`, the
-file `inputs/hold-catalog`, `state/pool/delta-catalog`, the steps `catalog` and `catalog-held`, the history
-event kind `catalog`, JSON keys (`catalog`, `catalog_held`, `catalog_t`, `catalog_at`, `catalogs`,
-`catalogs_kept`, `catalogs_removed`), the routes `/api/catalog` and `/work/catalogs` (and the page's
-`catalogs.js`), the commands `scenic catalogs` and `lakefill catalog-add` with the flag `--catalog`, the
-log line prefix `catalog-stats:` and the phase names (scenic-build's "listing the last catalogs and reading the records' sizes", "sorting the manifest's files into the catalog's" and "writing the catalog", gc's "reading the catalogs" and "removing old catalogs", namestodo's "reading the catalog, the languages spoken and the translations"). In Rust they are
+NAS holds years of data and the pool runs mixed app versions: the file `inputs/hold-catalog`, the steps
+`catalog` and `catalog-held`, the history event kind `catalog`, JSON keys (`catalog`, `catalog_held`,
+`catalog_t`, `catalog_at`, `catalogs`, `catalogs_kept`), the routes `/api/catalog` and `/work/catalogs`
+(and the page's `catalogs.js`), the commands `scenic catalogs` and `lakefill catalog-add`, the
+log line prefix `catalog-stats:` and the phase names (scenic-build's "sorting the manifest's files into the catalog's" and "writing the catalog", gc's "reading the catalogs", namestodo's "reading the catalog, the languages spoken and the translations"). In Rust they are
 `store::catalogue::NAME` and `HELD_NAME` or a `serde(rename)`.
-
-zstd with its content checksum; written as `.tmp`, then renamed. Readers take the highest `<n>`
-that decodes and parses, else the next.
 
 ```json
 {
@@ -545,51 +548,12 @@ that decodes and parses, else the next.
   `"water <part>"`, and draws one shape, its land and water together;
   an unreadable entry has no shape. A catalogue with `"credits": []` and no `recorded`: the server
   gives every credit and builds the coverage from the recipes.
-- GC's roots: the newest catalogue, every catalogue of the last 14 days and the build manifest; an
-  unreferenced file goes once also older than 14 days (docs/storage.md). A held catalogue is written to
-  `catalog-held/` (`inputs/hold-catalog`).
-
-### Delta catalogues (`catalog/<n>.delta.json.zst`)
-
-With `state/pool/delta-catalog` on (docs/building.md §2, Publishing's switches), catalogue `n` may be written as a
-patch on an earlier one (`store::catalogue::Delta`), compressed and written as a whole one is; a
-number is used once, whole or as a delta:
-
-```json
-{"fmt": 1, "n": 8, "of": 7, "of_digest": "<32 hex>", "digest": "<32 hex>", "patch": {"o": {"n": {"=": 8}, "files": {"o": {"layers/roads/hi/6-32-21": {"=": {…}}, "base/6-1-1": null}}, "coverage": {"o": {"regions": {"a": {"ids": ["monaco", "andorra"], "set": {"andorra": {"=": {…}}}}}}}}}}
-```
-
-- `digest`: XXH3-128 (hex) of a whole catalogue's JSON as written (maps in key order): `of_digest`
-  the base, `digest` the result.
-- `patch`: `{"=": v}` the value is `v`; `{"o": {key: patch | null}}` an object, each named key
-  patched (null: removed), the rest kept; `{"a": {"ids": [...], "set": {id: patch}}}` an array of
-  objects with distinct string `id`s, in `ids`' order, those in `set` patched (from nothing, if
-  new). The writer takes whichever form is shortest.
-- Readers (`store::catalogue`: `latest`, `latest_nas_from`, `read_n`) take the highest number that
-  reads whole: its chain of deltas back to a whole catalogue applied in turn to one JSON value, the
-  first's `of_digest` checked against the catalogue it starts from, each one's against the one
-  before's `digest`, and the last's `digest` against what they make (one catalogue hashed at each
-  end, not two at each delta: task #895). A chain that doesn't make what it names is passed over as
-  damaged, the delta that went wrong found by bisection and logged.
-- The apps, the agent and the build keep the last two catalogues they made from deltas (highest
-  numbers) in `~/Library/Caches/scenic/catalogue/<n>-<digest>.json.zst`
-  (`store::catalogue::keep_read_in`); a later read whose chain passes through one, by the
-  digests, starts there: after a restart only the deltas since are read. A kept file is used only
-  when it reads as the catalogue its name gives (number and digest; a torn or changed one is written
-  again); each is written under a temporary name of its own and renamed, and a temporary file an
-  hour old is removed. Tests that run the binaries give them their own `HOME`.
-- A delta lists each file's size as the records have it (their sizes, from its job's
-  hand-off) or the last catalogue does, looking at the NAS only for a file neither has (one written
-  before sizes were recorded: once). A whole catalogue looks at every file, and stops on one missing
-  or of another size than recorded.
-- A catalogue is written whole, not as a delta, when there's no whole one to start from, and once
-  reading the deltas since the last whole one (the next too) takes as long as reading that whole
-  one, or their run is half `MAX_CHAIN` (`store::catalogue::whole_due`: both measured by the
-  catalogue job each time it would write a delta, reading the whole one and the newest delta, so a
-  lead that's never idle writes them too; a whole one or newest delta that doesn't read makes one due). Its content is the same either way: a reader gets the
-  same catalogue from the whole one as from the chain.
-- GC also keeps every catalogue a kept delta is read through, back to its whole one. A Mac keeps the
-  catalogues it reads whole, in its own `catalog/`.
+- `files`' sizes: the records' (from each file's job's hand-off) or the map's (the same content
+  name, the same bytes); the step looks at the NAS only for a file neither has.
+- GC's roots: the map (its snapshots on the NAS, the lead's map now), the names the lead's GC queue
+  freed in the last 14 days, and the build manifest; an unreferenced file goes once also older than
+  14 days (docs/storage.md). While publishing is held (`inputs/hold-catalog`), the map the step
+  would publish is written whole to `map-held/<seq>.json.zst` (a snapshot, the newest three kept).
 
 ## On each Mac (`~/Library/Application Support/scenic/`)
 
@@ -609,7 +573,6 @@ mirror/.basemap/<hash16>/  the basemap's pieces (store::pieces): lo.pmtiles (zoo
                         6-<x>-<y>.pmtiles (a z6 tile's 11–14), PMTiles v3 (clustered, gzip'd
                         directories, tiles as stored); sizes.json {piece: bytes}
 idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trailer)
-catalog/<n>.json.zst    the last catalogues read
 accepted/<unit>/        accepted inputs copied from the NAS: @index.json ({"version", "index"}) and
                         each file by content name (pipeline::inputs::served); a sync leaves the
                         other `@` names at its top, the server's own:
@@ -808,9 +771,6 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
 - Drives, rides and rail lines take `approx=1` (zoomed out): answered from hidata's summaries when
   every hidata of the view plus margin has them (drives and rides: windows of at least 2 km); the
   answer says `approx`.
-- `POST /api/catalog/refresh` (this Mac's own requests alone, else 403): follow a newer catalogue on
-  the NAS now; answers `read` (whether the NAS was read) and `n` (the catalogue served after). The
-  build agent's, after writing a catalogue.
 - `/api/catalog`: `n`, `created`, `units` (a count), `layers` (encoding, zooms, version), `coverage`
   (without outlines), `credits`, `online`, `nas`, `held`, `app`, `agent`, `names` (`langs`, `spoken`,
   `warning`, `waiting`), `v`, `marks` (tiles with points, kinds with tiles, totals), `depth` (the
@@ -1053,12 +1013,12 @@ class, id) within a tile. The client sends the id with the clicked point.
     able}}` (with brokers on, `broker: {urls, https, pages}`; `beat_http`: its app beats it to the
     lead by HTTP). Since #878 step 3 written only while a member on an older app is in touch; else
     it rides in `POST /pool/beat` (docs/coordination.md).
-  - Switches (present or `on` in it: on; `off` or missing: off, unless said): `delta-catalog` and
-    `near-slope` (docs/building.md §2, Publishing's switches), under `state/pool/`. `placement`
+  - Switches (present or `on` in it: on; `off` or missing: off, unless said): `near-slope`
+    (docs/building.md §2, Publishing's switch), under `state/pool/`. `placement`
     (§7.2: jobs get `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `nas-budget` and
     `nas-target.json` are the lead's settings (docs/coordination.md step 5), their files written and
     read only while an older app is in the pool; `memory-guard`, `resume` and `brokers` are no
-    longer read (always on).
+    longer read (always on), nor `delta-catalog` (#883 step 6).
   - A member's ask carries `disk_mb` (free disk less the owner's room target and its jobs'
     reservations; no fixed reserve).
   - `state/pool/progress/<member>.json`: `{member, worker, jobs: {"osm-pass <date>": {at, since,

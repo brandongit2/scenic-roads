@@ -204,6 +204,32 @@ impl Drop for EnvVar {
     }
 }
 
+/// The recorded chain of real catalogues (`src/map/testdata`: 798 to 809 of 30 Oct 2026, trimmed),
+/// lowest first.
+pub fn recorded_chain() -> Vec<crate::catalogue::Catalogue> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/map/testdata");
+    let mut ns: Vec<u64> = std::fs::read_dir(&dir)
+        .expect("the recorded chain")
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.strip_suffix(".json.zst")?.parse().ok())
+        .collect();
+    ns.sort_unstable();
+    ns.into_iter()
+        .map(|n| {
+            let b = std::fs::read(dir.join(format!("{n}.json.zst"))).expect("a recorded catalogue");
+            crate::catalogue::Catalogue::decode(&b).expect("a recorded catalogue decodes")
+        })
+        .collect()
+}
+
+/// Writes `cat` as the map of a test root (`root`, laid out as the NAS's project folder): the NAS
+/// snapshot a reader starts from (`map/<seq>.json.zst`, crate::map::write_nas_snapshot; `seq` its
+/// `n`).
+pub fn map_root(root: &std::path::Path, cat: &crate::catalogue::Catalogue) {
+    let m = crate::map::Map::of(cat).expect("a test catalogue is a map");
+    crate::map::write_nas_snapshot(&crate::nasfs::NasRoot::local_for_test(root), &m).expect("the test root's map");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

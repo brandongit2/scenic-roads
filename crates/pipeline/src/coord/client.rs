@@ -678,6 +678,16 @@ impl Client {
         }
     }
 
+    /// `get_bytes`, None when the coordinator answers that it can't now (503: the map's log not
+    /// open yet, docs/maplog.md §5.1).
+    pub fn get_ready(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        match self.request("GET", path, None)? {
+            (200, b) => Ok(Some(b)),
+            (503, _) => Ok(None),
+            (c, b) => bail!("{path}: {c} {}", String::from_utf8_lossy(&b)),
+        }
+    }
+
     /// Sends a file (a task's output).
     pub fn put_bytes(&self, path: &str, data: &[u8]) -> Result<()> {
         match self.request("PUT", path, Some(data))? {

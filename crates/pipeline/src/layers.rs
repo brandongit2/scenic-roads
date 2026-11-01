@@ -425,7 +425,7 @@ mod tests {
 /// root on the NAS (`SCENIC_BUNDLE_SCRATCH`) as the jobs wrote them before (a file per tile, a pack
 /// per key) and as bundles: files made and time, each bundle's members checked byte for byte
 /// against the files they replace; and heritage-sites' slices put again unchanged, looked at on the
-/// NAS (before) and not (now). Writes catalogues of each form (`old/`, `new/`) for a server to compare.
+/// NAS (before) and not (now). Writes the map of each form (`old/`, `new/`) for a server to compare.
 #[cfg(test)]
 mod measure {
     use super::*;
@@ -650,8 +650,8 @@ mod measure {
                 cat.layers.insert(name, serde_json::from_value(serde_json::to_value(&lo).unwrap()).unwrap());
             }
             cat.validate().unwrap();
-            std::fs::remove_dir_all(root.join("catalog")).ok();
-            store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+            std::fs::remove_dir_all(root.join(store::map::NAS_DIR)).ok();
+            store::testkit::map_root(&root, &cat);
         }
 
         // Heritage-sites' slices put again unchanged (a sample): looked at on the NAS, as before

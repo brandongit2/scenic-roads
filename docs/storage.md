@@ -22,8 +22,12 @@ global/        worldwide files: road values per z6 tile, road → z6 tiles, rail
 layers/<layer>/  root, lo and hi packs, or one bundle (all); basemap/world-<date>.<hash>.pmtiles
 work/          build intermediates, not served
 cache/         what z6 tiles keep for later runs, shared by both Macs: scenic-units/
-catalog/       <n>.json.zst (or deltas): every file the map reads, by content name
-catalog-held/  a catalogue kept back for review (while inputs/hold-catalog exists)
+map/           <seq>.json.zst: the map whole (every file it reads, by content name), the lead's
+               hourly snapshot of its log, the newest three (docs/maplog.md §4.4)
+map-held/      <seq>.json.zst: the map the catalog step would publish, kept back for review (while
+               inputs/hold-catalog exists), the newest three
+catalog/, catalog-held/  the catalogues of before docs/maplog.md §8, step 6: read by nothing, left
+               for step 9 to remove
 app/           published app versions; current.json, previous.json
 settings/      profiles.json: the map's settings profiles, shared by every user (crates/server/src/profiles.rs;
                the one file the map's server writes on the NAS)
@@ -64,7 +68,7 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   checked on the NAS itself. GC counts pending files as referenced. GC's daily job drains them
   (`agent::gc`): first every pending upload the build doesn't read (neither a manifest name nor a
   file an accepted inputs' index it names lists: replaced or dropped since) leaves the pending
-  unchecked, its file then kept only as any other is (a catalogue of the window,
+  unchecked, its file then kept only as any other is (the map, a name freed within the window,
   the records, an entry not merged, or its age); then every one it reads is hashed on the NAS over
   SSH (`out::verify`, 200 a call, each call held to a deadline of 3 minutes and a second per 16 MB it hashes: past it the call is stopped (SIGTERM, SIGKILL 10 s later) and the run ends there, said in GC's warnings, the rest left to the next daily run; each call's result saved and a safe point after it, so a run
   stopped midway keeps what it checked; the bytes hashed count as the job's NAS reads, its weight).
@@ -108,10 +112,12 @@ NAS's own planet fetch.
 **GC** runs daily, in the agent, when the NAS is quiet: only beside leased jobs that leave its
 measured weight room (pool.md §7.2, `Limits::fits_quiet`), or, held back 24 hours, as an aged job
 of the lead's own (`QUIET_AGE`); running, it yields to a target held back for the budget.
-- **Roots:** the newest catalogue, every catalogue of the last 14 days, the build manifest, and (with
-  the pool) its newest records and the journal entries they don't reflect yet.
-- An unreferenced content-named file goes once older than 14 days; older catalogues go except the
-  newest; stray `.tmp` files after 2 days.
+- **Roots:** the map (each snapshot of it on the NAS, `map/`, and the lead's map now), the names the
+  lead's GC queue freed in the last 14 days (the window older maps kept: both handed to the job by the
+  lead's agent, `--shadow-due`), the build manifest, and (with the pool) its newest records and the
+  journal entries they don't reflect yet. No map at all (no snapshot, no lead's): nothing removed.
+- An unreferenced content-named file goes once older than 14 days; stray `.tmp` files after 2 days.
+  (The old catalogues aren't read or removed: docs/maplog.md §8, step 9.)
 - Retired passes' sources (`sources/osm/<date>/`, `sources/items/<date>/`) go by the same rule, their
   other files 14 days after the newer pass completed.
 - The input check's checked copies (`sources/inputs/`, inputs.md §4.9) are kept while the manifest,
@@ -127,7 +133,7 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
   below, `agent::steps`): in the pool a hand-off the lead merges into its records in one save, as any
   job's (pool.md §7.3). With nothing left to drop it writes nothing. The files then go by the rule
   above (in each prefix's folder; outside `sources/` by the folder sweep, which lists only that
-  folder when nothing else names a file of its top folder): kept while a catalogue of the window,
+  folder when nothing else names a file of its top folder): kept while the map, a name freed within the window,
   the manifest, the records or an unmerged entry names them. A step whose code is deleted adds its outputs' prefix there, so
   "removed" means its data deleted too; no step may make a name under one.
 - **Depth packs no target names** (task #679): in the same drop, every depth pack (the `depth`,
@@ -146,9 +152,9 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
   and passes them (`scenic gc --shadow-due`). Nothing is deleted by them: the run checks them
   against what it removes (each removed, gone already, or kept for its reason), writes the check beside them
   (`gc-shadow-check.json`) and says it in its report (`shadow`). Names kept for the 14-day window
-  (a catalogue of the window, too young, not swept) are counted only: expected daily. A warning
-  only when one is held, a holder the queue missed: the records, an unmerged entry or the newest
-  catalogue name it.
+  (freed within it or named by an older snapshot, too young, not swept) are counted only: expected
+  daily. A warning only when one is held, a holder the queue missed: the records, an unmerged entry
+  or the map now name it.
   The next plan marks what the run removed or found gone deleted in the queue, which the merge
   refuses for a hand-off whose lease was granted before (§7.4).
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/`, inputs,

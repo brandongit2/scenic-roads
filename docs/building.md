@@ -291,16 +291,15 @@ from the first (`edit_held`).
   first planned at their keys (`planned`: noted once per tile and key, what was noted known again
   from the history after a restart or a change of lead; with, per z6 tile, the tiles its change made
   stale: their owners whose base pack or road values differ from the served catalogue's), leased and
-  done; and catalogue n written (`catalog`: its `n`, its job's time, delta or whole, the files listed
-  and stat'ed, its phases once written, from the catalogue's own `catalog-stats:` log line). On the
-  NAS, the map server (the Mac mini's) appends to `state/publish/<host>.jsonl` its mirror's sync of
-  each catalogue (begun, and through everything wanted). Its adoption of each is its cursor in the
-  map's log moving there (docs/maplog.md §6.1), which the lead notes in the history (`adopt`). The Mac writing a catalogue
-  tells its own server at once (`/api/catalog/refresh`); the others look every 10 s while a build
-  runs (docs/macs.md). `scenic timings publish [--last N]` joins them: a z6 tile is in the first catalogue begun
+  done; and map n published (`catalog`: its `n`, its job's time, the files listed and stat'ed, its
+  phases once written, from the step's own `catalog-stats:` log line). On the NAS, the map server
+  (the Mac mini's) appends to `state/publish/<host>.jsonl` its mirror's sync of each map (begun, and
+  through everything wanted). Its adoption of each is its cursor in the map's log moving there
+  (docs/maplog.md §6.1), which the lead notes in the history (`adopt`); it follows each batch by a
+  long poll (docs/macs.md). `scenic timings publish [--last N]` joins them: a z6 tile is in the first catalogue begun
   once it was merged and its stale tiles packed; per catalogue and per z6 tile, the hand-off, planned, leased, packed, catalogue, servers
   and mirrors, the tiles each z6 tile restaled, which of ferries, stations, roadunits, marks and
-  names-todo ran, and the medians (the catalogues' phases split delta and whole).
+  names-todo ran, and the medians (the catalogues' phases among them).
 
 **The pool** (`docs/pool.md`; `crate::pool`, `crate::agent::pool`; other workers: `docs/workers.md`),
 always on. Every Mac's agent is a member; one leads each term. A process not in the pool (no NAS at
@@ -428,22 +427,10 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
      (`build::low_due`), or once everything is built. The gate decides only when; their keys stay
      by content. Zoom ranges don't overlap, so a region new since shows its roads from z9 until the
      low zooms are next made.
-   - **Publishing's switches** (crate::agent::publish), under `state/pool/`, each off while missing
-     or `off`:
-     - `delta-catalog`: the catalogue job (`scenic-build catalog --delta`) writes what changed over the
-       last (docs/formats.md, Delta catalogues), each file's size from the records
-       (their sizes, which the files' jobs hand off) or the last catalogue: it looks up no
-       file's size on the NAS but a file written before sizes were recorded. The same job writes a whole
-       catalogue instead, which looks at every file, when reading the deltas since the last whole one
-       takes as long as reading it, as measured then, or their run is half `MAX_CHAIN`
-       (`store::catalogue::whole_due`, weighed by each catalogue job, busy lead or not). Readers apply deltas (`store::catalogue::latest_nas_from`). Switch on only once
-       every Mac's server reads deltas. Held catalogues are always whole.
+   - **Publishing's switch** (crate::agent::publish), under `state/pool/`, off while missing or
+     `off`:
      - `near-slope`: a done region's slope and tree cover are the z6 tiles near it
        (`Publishing::near`), not every stale z6 tile around; it's recorded built with those.
-     - `map-serve` (read by the map server, `crates/server/src/maplog.rs`): it
-       serves the map it follows from the lead's log rather than the catalogues (docs/maplog.md §8,
-       step 3); off, it follows and checks it only. Switch on after three publishes in a row logged
-       `maplog: the map at N is catalogue N`, with no `maplog: MISMATCH`.
 4. **Four chains:**
    - **Roads** (the publishing chain, `build::publish_chain`): a prune of map tiles no z6 tile is near,
      pack (the map tiles), the road → z6 tiles index, lo, stations, ferries, the slope root (the terrain's is the terrain stage's),
@@ -479,7 +466,10 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
    whose slope and tree cover are made, and the others as the last catalogue had them; the status
    says why a done region isn't yet ("waiting to be merged", "map tiles to draw", "slope and tree
    cover to make"). A z6 tile's hand-off waiting holds no catalogue: it goes out with a later one.
-   While `inputs/hold-catalog` exists, catalogues go to `catalog-held/`.
+   The catalogue is the map: the step (`scenic-build catalog --post <file>`) builds it from the
+   records, each file's size the records' or the map's, and posts it to the lead's agent, which
+   appends it to the map's log (docs/maplog.md §6.7). While `inputs/hold-catalog` exists, the map it
+   would publish goes to the NAS's `map-held/<seq>.json.zst` instead, and nothing is published.
 6. **Daily:** backup and GC.
 
 **Planned:** stale work after step-version bumps done oldest first in idle time; registers, Overture
