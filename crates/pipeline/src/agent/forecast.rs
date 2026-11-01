@@ -3257,7 +3257,7 @@ mod tests {
                 }
             }
         };
-        take(c.ask_own(&ask(16_000, 14, 4), &Default::default()), "m4");
+        take(c.ask_own(&ask(16_000, 14, 4), &Default::default(), 0), "m4");
         take(m1.ask(&ask(8000, 8, 4)).unwrap(), "m1");
         assert!(!real.is_empty() && real.len() < 8, "the budget holds some back: {real:?}");
         // The forecast: the same z6 tiles, the lead's four slots and the member's, the state fed.

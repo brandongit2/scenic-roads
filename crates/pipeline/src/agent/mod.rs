@@ -2702,7 +2702,7 @@ impl Agent {
             want: if alone { 1 } else { want(self.job_slots(), self.running_jobs()) },
             ..Default::default()
         };
-        let Some(mut g) = co.ask_own(&ask, &skip) else { return Vec::new() };
+        let Some(mut g) = co.ask_own(&ask, &skip, plan) else { return Vec::new() };
         let more = std::mem::take(&mut g.more);
         let mut got = Vec::new();
         for g in std::iter::once(g).chain(more) {

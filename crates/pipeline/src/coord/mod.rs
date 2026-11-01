@@ -1681,10 +1681,13 @@ impl Coordinator {
     /// This Mac's own agent asking for work as any member does (docs/pool.md §7.2): granted by the
     /// same packing (`pack`) and under this Mac's name, the plan's offers in plan order, the lead's
     /// own planned jobs among them (`Offer::job`, granted to it alone: crate::agent::every::grants)
-    /// but those named in `skip` (they can't start now, for a reason of the agent's own). Nothing
-    /// while the build is paused or the lead is moving. Its leases are renewed and ended as this
-    /// Mac's own (`renew`, `finish`).
-    pub fn ask_own(&self, a: &Ask, skip: &BTreeSet<String>) -> Option<Grant> {
+    /// but those named in `skip` (they can't start now, for a reason of the agent's own), and only
+    /// while the offers are plan `plan`'s, the one whose jobs the agent holds: an id names a job
+    /// of one plan alone ("redo rekey" is every plan's save), so a newer plan's job granted to an
+    /// agent still holding the last plan's would run the last one's work, its done record not the
+    /// lease's, and be granted again at once (task #923). Nothing while the build is paused or the
+    /// lead is moving. Its leases are renewed and ended as this Mac's own (`renew`, `finish`).
+    pub fn ask_own(&self, a: &Ask, skip: &BTreeSet<String>, plan: u64) -> Option<Grant> {
         let mut s = self.shared.lock().unwrap();
         let now = s.now();
         if s.paused.is_some() || s.moving_now(wall_now()).is_some() {
@@ -1698,10 +1701,11 @@ impl Coordinator {
         if let Some(w) = s.workers.get_mut(&self.me) {
             w.old = false;
         }
+        let same_plan = s.plan == plan;
         let offers: Vec<Offer> = s
             .offers
             .iter()
-            .filter(|o| a.can.contains(&o.step) && o.job.as_ref().is_none_or(|j| !skip.contains(j)))
+            .filter(|o| a.can.contains(&o.step) && o.job.as_ref().is_none_or(|j| same_plan && !skip.contains(j)))
             .cloned()
             .collect();
         s.pack(&a, &offers, true, now)
@@ -6076,7 +6080,7 @@ mod tests {
         c.shared.lock().unwrap().told = Some(wall_now() - crate::pool::driver::STALL_S - 1);
         let e = w.ask(&ask(4096)).unwrap_err();
         assert!(format!("{e:#}").contains("not stepped"), "{e:#}");
-        assert!(c.ask_own(&ask(4096), &BTreeSet::new()).is_none());
+        assert!(c.ask_own(&ask(4096), &BTreeSet::new(), 0).is_none());
         c.set_moving(None);
         w.ask(&ask(4096)).unwrap();
         // A step's checks, then a hang (a write on the share) before the tell: told as of the
@@ -7757,9 +7761,9 @@ mod tests {
             can: vec!["rail-feeds".into(), "bld-fetch".into()],
             ..every_ask("m4", "rail-feeds", 64_000, 100_000)
         };
-        let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
         assert!(g.more.is_empty(), "one download at a time");
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none());
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none());
     }
 
     /// A job heavier than the whole (its weight capped at the whole) goes while the lead's own jobs
@@ -7848,7 +7852,7 @@ mod tests {
             };
             let held = c.hold("slope-hi", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
             let why = |c: &Coordinator| c.refusals().into_values().collect::<Vec<_>>().join("; ");
-            let g = c.ask_own(&a, &BTreeSet::new());
+            let g = c.ask_own(&a, &BTreeSet::new(), 0);
             let job = format!("{step} {step}");
             if beside {
                 let g = g.expect("beside the slope job");
@@ -7859,7 +7863,7 @@ mod tests {
             assert!(g.is_none(), "drained for {step}");
             assert!(why(&c).contains(&format!("a cold job of {step} waits")), "{}", why(&c));
             c.finish(held, &[]);
-            let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
+            let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
             assert_eq!(g.job.as_deref(), Some(job.as_str()));
         }
     }
@@ -7888,7 +7892,7 @@ mod tests {
                 ..every_ask("m4", "slope-hi", 64_000, 100_000)
             };
             let _held = c.hold("slope-hi", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
-            let g = c.ask_own(&a, &BTreeSet::new());
+            let g = c.ask_own(&a, &BTreeSet::new(), 0);
             let jobs: Vec<String> = g
                 .iter()
                 .flat_map(|g| std::iter::once(g.job.clone()).chain(g.more.iter().map(|m| m.job.clone())))
@@ -7912,9 +7916,42 @@ mod tests {
         };
         c.offer("p", vec![own]);
         let a = Ask { can: vec!["rail".into()], ..every_ask("m4", "rail", 64_000, 100_000) };
-        let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
         c.finish_failed(g.lease, &[]);
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "kept from it an hour");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "kept from it an hour");
+    }
+
+    /// Task #923: the lead's own planned jobs are granted only against the plan whose jobs its agent
+    /// holds (an id, "redo rekey", names every plan's job of it: the last plan's work would run
+    /// under the new one's lease, its done record not the lease's, granted again at once); a
+    /// finished one (its done record its targets, one keyless: a record dropped) isn't granted
+    /// again while its plan's offers stand, in the pool or out.
+    #[test]
+    fn a_finished_job_of_the_leads_own_is_not_granted_again() {
+        for term in [0, 1] {
+            let (_d, c, _w, _clock) = every((0, 0));
+            c.set_term(term);
+            c.set_plan(2);
+            let targets = vec![
+                ("bld-fetch bld-fetch 00000000000000aa".to_string(), "00000000000000bb".to_string()),
+                ("terrain-hi 6/0/17 00000000000000cc".to_string(), String::new()),
+            ];
+            let own = Offer {
+                step: "redo".into(),
+                targets: targets.iter().map(|(t, k)| (t.clone(), k.clone(), 0)).collect(),
+                job: Some("redo rekey".into()),
+            };
+            c.offer("p", vec![own.clone()]);
+            let a = Ask { want: 4, can: vec!["redo".into()], ..every_ask("m4", "redo", 64_000, 100_000) };
+            assert!(c.ask_own(&a, &BTreeSet::new(), 1).is_none(), "term {term}: the agent holds plan 1's jobs");
+            let g = c.ask_own(&a, &BTreeSet::new(), 2).unwrap();
+            assert!(g.more.is_empty(), "term {term}: one grant of it");
+            assert_eq!((g.job.as_deref(), g.plan), (Some("redo rekey"), 2));
+            c.finish(g.lease, &targets);
+            assert!(c.ask_own(&a, &BTreeSet::new(), 2).is_none(), "term {term}: granted again");
+            c.offer("p", vec![own.clone()]);
+            assert!(c.ask_own(&a, &BTreeSet::new(), 2).is_none(), "term {term}: the same plan's offers again");
+        }
     }
 
     /// The NAS budget holds the lead's own jobs whatever its switch says (`nas_own`, probed
@@ -7943,7 +7980,7 @@ mod tests {
     }
 
     fn all_granted_own(c: &Coordinator, a: &Ask) -> Vec<Vec<String>> {
-        let Some(mut g) = c.ask_own(a, &BTreeSet::new()) else { return Vec::new() };
+        let Some(mut g) = c.ask_own(a, &BTreeSet::new(), 0) else { return Vec::new() };
         let more = std::mem::take(&mut g.more);
         std::iter::once(g)
             .chain(more)
@@ -8058,7 +8095,7 @@ mod tests {
             }],
         );
         let a = Ask { can: vec!["rail".into()], ..every_ask("m4", "rail", 64_000, 100_000) };
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "the whole one goes beside the member's small job");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_some(), "the whole one goes beside the member's small job");
     }
 
     /// The lead's own planned jobs aging past the NAS budget (task #396 follow-up): two of 800 of
@@ -8103,15 +8140,15 @@ mod tests {
             let g = s.nas_waits.lock().unwrap();
             g.keys().map(|k| k.1.clone()).collect()
         };
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "beside the member's job, past the whole");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "beside the member's job, past the whole");
         assert_eq!(waits(&c), ["6/1/1", "6/1/2"], "both noted waiting");
         clock.advance(crate::budget::nas::OWN_AGE);
-        let g = c.ask_own(&a, &BTreeSet::new()).expect("aged: one goes");
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).expect("aged: one goes");
         assert!(g.more.is_empty(), "one at a time: {g:?}");
         assert_eq!(waits(&c), ["6/1/2"], "the granted one's wait forgotten");
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "the other, aged too, held: no pile-up");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "the other, aged too, held: no pile-up");
         c.finish(g.lease, &[]);
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "the first ended: the second goes");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_some(), "the first ended: the second goes");
     }
 
     /// Task #552: placement's draw weighs a worker by its measured speed at the target's step
@@ -8284,7 +8321,7 @@ mod tests {
         assert!(one("m1").is_empty());
         clock.advance(Duration::from_secs(1));
         let lead = Ask { want: 1, can: vec!["rail".into()], ..every_ask("m4", "rail", 64_000, 100_000) };
-        assert!(c.ask_own(&lead, &BTreeSet::new()).is_none(), "800 + 300: past the whole");
+        assert!(c.ask_own(&lead, &BTreeSet::new(), 0).is_none(), "800 + 300: past the whole");
         // (Aged, the leases kept alive, the waits passed over again lately.)
         for _ in 0..20 {
             clock.advance(crate::budget::nas::OWN_AGE / 20);
@@ -8293,7 +8330,7 @@ mod tests {
             }
         }
         assert!(one("m1").is_empty());
-        assert!(c.ask_own(&lead, &BTreeSet::new()).is_none());
+        assert!(c.ask_own(&lead, &BTreeSet::new(), 0).is_none());
         // m1's ends: the slope's oldest wait goes (400 + 400).
         w.give_back(lease_of("m1"), "done").unwrap();
         assert_eq!(one("m1").len(), 1, "the oldest wait goes");
@@ -8301,7 +8338,7 @@ mod tests {
         // it, m2's next slope waits (400 + 400 + 300 past the whole), and the lead's rail goes.
         w2.give_back(lease_of("m2"), "done").unwrap();
         assert!(one("m2").is_empty(), "room held for the lead's aged rail");
-        assert!(c.ask_own(&lead, &BTreeSet::new()).is_some(), "the lead's aged rail goes");
+        assert!(c.ask_own(&lead, &BTreeSet::new(), 0).is_some(), "the lead's aged rail goes");
     }
 
     /// Task #603 (23 Oct, the lead: pack 6/20/23 weighing 946 aged beside the M4's terrain of 103,
@@ -8427,16 +8464,16 @@ mod tests {
             g.keys().map(|k| k.0.clone()).collect()
         };
         // Unmeasured: alone only, its wait not noted, whatever the time.
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "cold: beside the member's job, held");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "cold: beside the member's job, held");
         age(crate::budget::nas::OWN_AGE);
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "never aged past it");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "never aged past it");
         assert!(waits(&c).is_empty(), "its wait never noted: it holds no room");
         // Measured: 200 entries listed and 8 files deleted a second (200 + 200 of the NAS), its
         // bytes next to nothing: 400 beside the member's 300.
         let gc = cost("gc", &[("threads", 1), ("bytes", 0), ("listed", 120_000), ("deletes", 4_800)]);
         c.add_costs_by(&[(cost_key("gc", "gc"), gc)], "m4");
         c.add_disks(&[(cost_key("gc", "gc"), 0)]);
-        let g = c.ask_own(&a, &BTreeSet::new()).expect("within the whole beside the member's job");
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).expect("within the whole beside the member's job");
         own.set(Some(g.lease));
         assert_eq!(c.nas_shares().get("m4"), Some(&400), "its metadata work weighed");
         assert_eq!(c.nas_yield("gc", &["gc".into()]), None, "nothing held back for it");
@@ -8455,9 +8492,9 @@ mod tests {
         assert!(matches!(&g2.work, Granted::Job { targets, .. } if targets[0].0 == "6/1/2"));
         members.borrow_mut().push(g2.lease);
         // Beside 800 it waits, however long.
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none());
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none());
         age(crate::budget::nas::OWN_AGE * 3);
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "never urgent");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "never urgent");
     }
 
     /// Task #451 review: an unmeasured clean-up doesn't start beside a cold job (weight 0, its NAS
@@ -8490,9 +8527,9 @@ mod tests {
         let g1 = w.ask(&Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) }).unwrap().expect("slope-hi");
         assert_eq!(c.nas_shares().get("m1"), Some(&0));
         let a = Ask { want: 1, can: vec!["gc".into()], ..every_ask("m4", "gc", 64_000, 100_000) };
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "unmeasured beside a cold job: held");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "unmeasured beside a cold job: held");
         w.give_back(g1.lease, "test").unwrap();
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "alone: goes");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_some(), "alone: goes");
 
         // Measured at 400, beside a member's 700 that never ends: held, until a day has passed.
         let (_d, c, w, clock2) = every((0, 0));
@@ -8532,11 +8569,11 @@ mod tests {
                 assert!(w.beat(g1.lease, None).unwrap());
             }
         };
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "700 + 400: held");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "700 + 400: held");
         age(crate::budget::nas::QUIET_AGE / 2);
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "half a day: still held");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "half a day: still held");
         age(crate::budget::nas::QUIET_AGE / 2);
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "a day held back: it goes as an aged job");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_some(), "a day held back: it goes as an aged job");
     }
 
     /// A whole-weight job of the lead's own goes beside a running job of the lead's own (and a
@@ -8574,9 +8611,9 @@ mod tests {
         };
         let a = |step: &str| Ask { want: 1, can: vec![step.into()], ..every_ask("m4", step, 64_000, 100_000) };
         c.offer("p", vec![own("rail")]);
-        assert!(c.ask_own(&a("rail"), &BTreeSet::new()).is_some(), "the lead's 300 beside the member's 100");
+        assert!(c.ask_own(&a("rail"), &BTreeSet::new(), 0).is_some(), "the lead's 300 beside the member's 100");
         c.offer("p", vec![own("rail"), own("peaks")]);
-        let g = c.ask_own(&a("peaks"), &BTreeSet::new()).expect("the whole one beside the lead's own running");
+        let g = c.ask_own(&a("peaks"), &BTreeSet::new(), 0).expect("the whole one beside the lead's own running");
         assert!(matches!(&g.work, Granted::Job { step, .. } if step == "peaks"), "{g:?}");
     }
 
@@ -8616,10 +8653,10 @@ mod tests {
         let a = Ask { can: vec!["rail".into()], ..every_ask("m4", "rail", 64_000, 100_000) };
         c.shared.lock().unwrap().leases.app = "20261005-1508-84142d3".into();
         c.shared.lock().unwrap().leases.hold_for_update("rail", "6/1/1", "scenic job cancel on m4", 1);
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "held for a newer app");
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "held for a newer app");
         // The lead on a newer app: released.
         c.shared.lock().unwrap().leases.app = "20261005-1613-d05125b".into();
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_some());
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_some());
     }
 
     /// Packing (docs/pool.md §7.2): an ask gets as many jobs as it wants that fit its room together
@@ -8659,7 +8696,7 @@ mod tests {
         // (The lead's own asks (m4, in process), on the new app; the member m1 over HTTP.)
         let own = |c: &Coordinator, want: usize| -> usize {
             let a = Ask { want, ..every_ask("m4", "slope-hi", 64_000, 100_000) };
-            c.ask_own(&a, &BTreeSet::new()).map_or(0, |g| 1 + g.more.len())
+            c.ask_own(&a, &BTreeSet::new(), 0).map_or(0, |g| 1 + g.more.len())
         };
         assert!(c.all_new(), "nobody old around");
         // An older app's ask: no capacity, no want; one job, and it works.
@@ -9200,7 +9237,7 @@ mod tests {
             can: vec!["pyramids-fill".into(), "trees".into()],
             ..every_ask("m4", "pyramids-fill", 64_000, 100_000)
         };
-        let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
         assert!(matches!(&g.work, Granted::Job { step, .. } if step == "pyramids-fill"), "{:?}", g.work);
         assert_eq!(g.threads, 1);
         assert_eq!(g.more.len(), 1, "a measured job beside it");
@@ -9224,11 +9261,11 @@ mod tests {
             ..every_ask("m4", "terrain-hi", 64_000, 100_000)
         };
         c.offer("p", vec![own("terrain-hi", "3/1/1")]);
-        let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
         assert!(matches!(&g.work, Granted::Job { step, .. } if step == "terrain-hi"), "{:?}", g.work);
         assert_eq!(g.threads, 8, "a cold terrain job: the whole Mac");
         c.offer("p", vec![own("redo", "redo 1")]);
-        let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
         assert!(matches!(&g.work, Granted::Job { step, .. } if step == "redo"), "{:?}", g.work);
         assert_eq!(g.threads, 1);
     }
@@ -9276,7 +9313,7 @@ mod tests {
         ran_before(&c, "bld-fetch");
         let a = Ask { want: 11, can: vec!["slope-hi".into()], ..every_ask("m4", "slope-hi", 40_000, 400_000) };
         let _f = c.hold("bld-fetch", &[("6/9/0".into(), "k 6/9/0".into())]).unwrap();
-        let g = c.ask_own(&a, &BTreeSet::new()).expect("beside the cold bld-fetch");
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).expect("beside the cold bld-fetch");
         assert!(1 + g.more.len() >= 2, "{}", 1 + g.more.len());
         // (2) the M4 holding a measured input check; slope not measured the way it runs now:
         // granted beside it.
@@ -9289,7 +9326,7 @@ mod tests {
             vec![Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None }],
         );
         let a = Ask { want: 11, can: vec!["slope-hi".into()], ..every_ask("m4", "slope-hi", 40_000, 400_000) };
-        let g = c.ask_own(&a, &BTreeSet::new()).expect("slope beside the input check");
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).expect("slope beside the input check");
         assert!(matches!(&g.work, Granted::Job { step, .. } if step == "slope-hi"));
     }
 

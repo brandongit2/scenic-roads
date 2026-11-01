@@ -577,7 +577,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 want: if alone { 1 } else { crate::agent::want(slots(0), running[0].len()) },
                 ..Default::default()
             };
-            let Some(mut g) = c.ask_own(&a, &BTreeSet::new()) else { break };
+            let Some(mut g) = c.ask_own(&a, &BTreeSet::new(), 0) else { break };
             let more = std::mem::take(&mut g.more);
             let mut all = true;
             for g in std::iter::once(g).chain(more) {
