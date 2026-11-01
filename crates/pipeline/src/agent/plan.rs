@@ -1223,7 +1223,7 @@ impl Planner {
         // its targets' records.
         if self.coord.is_some() {
             out.extend(self.redo_jobs(root));
-            out.extend(self.rekey_jobs(root));
+            out.extend(self.rekey_jobs());
         }
         self.shadow_checked();
         if self.due("gc", Duration::from_secs(86400)) {
@@ -1286,36 +1286,27 @@ impl Planner {
     }
 
     /// The records the plan read re-keyed to scheme 2, or dropped (rekey::scheme_2), saved so, the
-    /// lead's: a job per step (docs/readiness.md §6 step 4), `scenic-build rekey-check --step`
-    /// listing what it changes (it changes no file), its done record (rekey::record) recording
-    /// them as the lead merges it. None once every record read is scheme 2's.
-    pub(super) fn rekey_jobs(&self, root: &store::nasfs::NasRoot) -> Vec<JobSpec> {
-        let me = self.o.bin.join("scenic-build").to_string_lossy().into_owned();
+    /// lead's: one job for every step's (docs/readiness.md §6 step 4, "redo rekey"), its done
+    /// record (rekey::record, worked out here) recording them as the lead merges it. Its command
+    /// reads nothing (`scenic-build rekey-check --help`: the record is the plan's; a full
+    /// rekey-check is minutes and gigabytes on the lead). None once every record read is scheme 2's.
+    pub(super) fn rekey_jobs(&self) -> Vec<JobSpec> {
         let r = self.rekeyed.borrow();
-        r.iter()
-            .filter_map(|(step, c)| {
-                let record = rekey::record(&r, step)?;
-                Some(JobSpec {
-                    id: format!("{} rekey {step}", redo::STEP),
-                    what: format!(
-                        "Recording {} {step} record(s) under their scheme-2 keys, dropping {}",
-                        c.moved.len(),
-                        c.dropped.len()
-                    ),
-                    cmd: vec![
-                        me.clone(),
-                        "rekey-check".into(),
-                        "--root".into(),
-                        jobs::root_arg(root),
-                        "--step".into(),
-                        step.to_string(),
-                    ],
-                    needs: Needs { nas: true },
-                    restart_after_sleep: true,
-                    record: Some(record),
-                })
-            })
-            .collect()
+        let Some(record) = rekey::record(&r) else { return Vec::new() };
+        let moved: usize = r.values().map(|c| c.moved.len()).sum();
+        let dropped: usize = r.values().map(|c| c.dropped.len()).sum();
+        vec![JobSpec {
+            id: format!("{} rekey", redo::STEP),
+            what: format!("Recording {moved} record(s) under their scheme-2 keys, dropping {dropped}"),
+            cmd: vec![
+                self.o.bin.join("scenic-build").to_string_lossy().into_owned(),
+                "rekey-check".into(),
+                "--help".into(),
+            ],
+            needs: Needs { nas: true },
+            restart_after_sleep: true,
+            record: Some(record),
+        }]
     }
 
     /// The owner's redo asks this Mac's coordinator took (`/work/redo`), kept in its agent's folder

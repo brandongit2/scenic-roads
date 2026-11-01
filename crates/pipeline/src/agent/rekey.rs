@@ -450,21 +450,23 @@ pub fn pass_as_read(keys: &mut Keys, x: &super::build::KeyCtx) -> BTreeMap<&'sta
     scheme_2(keys, x, &|s| super::build::PASS_STEPS.contains(&s), &scheme1::keys)
 }
 
-/// The done record that saves the records `scheme_2` re-keyed (`moved`, by step) under their
-/// scheme-2 keys (docs/readiness.md §6 step 4): a restore's ("<step> <target> <from>" with the key,
-/// crate::agent::redo::restore_target), recorded by the merge only while a record is still `from`
-/// (one built since keeps its own). The lead's job of it (agent::plan's `rekey_jobs`) is the one
-/// writer; once merged, every reader finds those records current and re-keys nothing. None: nothing
-/// to save.
-pub fn record(moved: &BTreeMap<&'static str, Scheme2Step>, step: &str) -> Option<super::build::Work> {
-    let s = moved.get(step).filter(|s| !s.moved.is_empty() || !s.dropped.is_empty())?;
-    let targets = s
-        .moved
+/// The done record that saves the records `scheme_2` re-keyed (`moved`) under their scheme-2 keys
+/// and forgets those it dropped, every step's at once (docs/readiness.md §6 step 4): a restore's
+/// ("<step> <target> <from>" with the key, crate::agent::redo::restore_target; no key for a dropped
+/// one), recorded by the merge only while a record is still `from` (one built since keeps its own).
+/// The lead's one job of it (agent::plan's `rekey_jobs`) is the one writer; once merged, every reader
+/// finds those records current and re-keys nothing. None: nothing to save.
+pub fn record(r: &BTreeMap<&'static str, Scheme2Step>) -> Option<super::build::Work> {
+    let targets: Vec<(String, String)> = r
         .iter()
-        .map(|r| (super::redo::restore_target(step, &r.target, &r.from), r.to.clone()))
-        .chain(s.dropped.iter().map(|(t, k)| (super::redo::restore_target(step, t, k), String::new())))
+        .flat_map(|(step, s)| {
+            s.moved
+                .iter()
+                .map(|m| (super::redo::restore_target(step, &m.target, &m.from), m.to.clone()))
+                .chain(s.dropped.iter().map(|(t, k)| (super::redo::restore_target(step, t, k), String::new())))
+        })
         .collect();
-    Some(super::build::Work { step: super::redo::STEP.into(), targets })
+    (!targets.is_empty()).then(|| super::build::Work { step: super::redo::STEP.into(), targets })
 }
 
 #[cfg(test)]
@@ -621,10 +623,8 @@ mod tests {
             // Saved once by the lead's job (`record`, merged as a restore): the keys every reader
             // re-keyed in memory, the dropped record gone.
             let mut saved = before.clone();
-            for step in r.keys() {
-                if let Some(w) = record(&r, step) {
-                    saved.record(&w.step, &w.targets);
-                }
+            if let Some(w) = record(&r) {
+                saved.record(&w.step, &w.targets);
             }
             assert_eq!(saved, keys, "{}: the save is the re-keying", f.name);
             if let Some((s, t)) = &orphan {

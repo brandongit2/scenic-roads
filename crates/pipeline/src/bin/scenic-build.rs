@@ -2850,10 +2850,8 @@ fn rekey_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
     // what each reader would still re-key, and its time.)
     if args.iter().any(|a| a == "--saved") {
         let mut saved = before.clone();
-        for s in r.keys() {
-            if let Some(w) = rekey::record(&r, s) {
-                saved.record(&w.step, &w.targets);
-            }
+        if let Some(w) = rekey::record(&r) {
+            saved.record(&w.step, &w.targets);
         }
         let t = std::time::Instant::now();
         let again = rekey::scheme_2(&mut saved, &x, &|s| only.as_deref().is_none_or(|o| o == s), &|s, x| {

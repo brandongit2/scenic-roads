@@ -9839,6 +9839,46 @@ mod tests {
         .unwrap()
     }
 
+    /// Task #879 step 4a: what the plan's reading re-keyed to scheme 2 and dropped is one job of the
+    /// lead's ("redo rekey") whose command reads nothing, its done record the plan's: merged, the
+    /// records are under their new keys (one rebuilt since kept), the dropped one gone; the next
+    /// plan's reading moves nothing, and no job is planned.
+    #[test]
+    fn the_scheme_2_save_is_one_job_reading_nothing_and_not_planned_again() {
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(&d.path().join("nas"));
+        let mut a = agent(&root, &d.path().join("home"));
+        let (old, new, gone) = ("00000000000000aa", "00000000000000bb", "00000000000000cc");
+        let mut s = rekey::Scheme2Step::default();
+        s.moved = vec![
+            redo::Restore { target: "6/1/2".into(), from: old.into(), to: new.into() },
+            redo::Restore { target: "6/1/3".into(), from: old.into(), to: new.into() },
+        ];
+        s.dropped = vec![("6/0/17".into(), gone.into())];
+        a.planner().rekeyed.borrow_mut().insert("terrain-hi", s);
+        let jobs = a.planner().rekey_jobs();
+        assert_eq!(jobs.len(), 1);
+        let j = &jobs[0];
+        assert_eq!(j.id, "redo rekey");
+        assert!(j.cmd.ends_with(&["rekey-check".to_string(), "--help".into()]), "{:?}", j.cmd);
+        assert!(!j.cmd.iter().any(|c| c == "--root"), "it reads nothing");
+        let w = j.record.clone().unwrap();
+        let mut keys = build::Keys::default();
+        let m = keys.per_target("terrain-hi").unwrap();
+        m.insert("6/1/2".into(), old.into());
+        m.insert("6/1/3".into(), "00000000000000dd".into()); // (built again since the plan)
+        m.insert("6/0/17".into(), gone.into());
+        keys.record(&w.step, &w.targets);
+        let m = keys.per_target("terrain-hi").unwrap();
+        assert_eq!(m.get("6/1/2").map(String::as_str), Some(new));
+        assert_eq!(m.get("6/1/3").map(String::as_str), Some("00000000000000dd"));
+        assert_eq!(m.get("6/0/17"), None);
+        // (The next plan's reading: nothing moved, no job.)
+        a.planner().rekeyed.borrow_mut().clear();
+        a.planner().rekeyed.borrow_mut().insert("terrain-hi", rekey::Scheme2Step { current: 2, ..Default::default() });
+        assert!(a.planner().rekey_jobs().is_empty());
+    }
+
     /// Task #780: the owner's redo, as the lead's coordinator takes it (`/work/redo`), kept in its
     /// agent's folder (not by a dry run), planned as a job of the `redo` step whose done record
     /// names "<step> <target>", and dropped once that job succeeded; a failure keeps it.

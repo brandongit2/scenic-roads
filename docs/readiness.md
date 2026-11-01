@@ -367,9 +367,10 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      outputs no manifest entry names (`steps::output_named`, the step's declared outputs:
      `Scheme2Step::dropped`; task #920 found such records, deep tiles' "none" drops and tiles left
      by the coverage, kept forever and read as unknown). The plan keeps what its reading did
-     (`Planner::rekeyed`), and the lead runs a job per step with any (`rekey_jobs`, "redo rekey
-     <step>"): `scenic-build rekey-check --step <step>` lists them, changing no file, and its done
-     record (`rekey::record`) is a restore's, "<step> <target> <from>" with the scheme-2 key, or
+     (`Planner::rekeyed`), and the lead runs one job for every step's while any is left (`rekey_jobs`,
+     "redo rekey"), whose command reads nothing (`scenic-build rekey-check --help`: the record is
+     the plan's; a full rekey-check is 17 min and 5.75 GB); its done record (`rekey::record`) is a
+     restore's per record, "<step> <target> <from>" with the scheme-2 key, or
      with no key for a dropped one. The merge (`build::Keys::record`) records each only while its
      record is still `from` (one built since keeps its own), a world step's in the lo keys; it's
      the one writer, the records' normal save. After it, every reader finds those records current
@@ -382,7 +383,8 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      4,449, terrain-hi 519, slope-hi 519, trees 457, bldtiles 455, terrain-lo, slope-lo and unit
      5-6 each, bldfield-lo and trees-lo 3; every dropped record's declared outputs are absent, and
      those of the step's targets are named (terrain-hi and slope-hi 1,788 of 1,789). Test: `rekey::tests::scheme_2_keeps_what_reads_nothing_new`
-     (the save gives the keys the in-memory re-keying does; read again, nothing moves).
+     (the save gives the keys the in-memory re-keying does; read again, nothing moves) and
+     `agent::tests::the_scheme_2_save_is_one_job_reading_nothing_and_not_planned_again`.
      Records of a step that isn't derived (pack, lo) aren't looked at, so none of theirs is dropped.
    - **4b (planned): delete the adapter** once `scenic-build rekey-check` shows nothing re-keyed
      on the live records: `rekey::scheme1`, `KeyCtx::scheme` and `scheme_1`, `rekey::scheme_2` and
