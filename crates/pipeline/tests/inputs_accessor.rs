@@ -75,7 +75,6 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/plan.rs", "region_jobs", "\"inputs/hold-catalog\"", "inputs/hold-catalog and keys.env (not inputs, §2)"),
     ("crates/pipeline/src/agent/plan.rs", "region_jobs", "\"inputs/keys.env can't be read now\"", "inputs/hold-catalog and keys.env (not inputs, §2)"),
     ("crates/pipeline/src/agent/plan.rs", "plan_seen", "\"inputs/hold-catalog\"", "inputs/hold-catalog, a control: only its size and time, for an idle agent's plan digest (task #154)"),
-    ("crates/pipeline/src/agent/plan.rs", "checklist", "\"inputs/hold-catalog\"", "inputs/hold-catalog, a control"),
     ("crates/pipeline/examples/checklist.rs", "main", "\"inputs/hold-catalog\"", "inputs/hold-catalog, a control"),
     ("crates/pipeline/src/agent/plan.rs", "gate_work", "w.step == \"inputs\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the inputs folder"),
     ("crates/pipeline/src/agent/plan.rs", "gate_work", "\"inputs\".into()", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the inputs folder"),
