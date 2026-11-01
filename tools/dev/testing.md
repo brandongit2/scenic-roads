@@ -167,6 +167,11 @@ through their dev-dependency on store, `features = ["testkit"]`):
 - **"It came from the event, not a timer": switch the timer off** (`#[cfg(test)]` hooks such as
   control's `never_sweep()` and the beat's `never_tick()`), so anything that happens at all was the
   event's doing and the test needs no "within a second".
+- **"It measured at least this much": make the thing measured last that long by construction.**
+  A sleep inside a wait is at least the sleep; two waits at once are held open by events (one
+  begins, signals, and ends only when the other has ended), never two sleeps hoped to overlap; CPU
+  time is spun until the process's CPU clock has moved, never for a wall-clock span a loaded Mac
+  may not give it (tools/check/timings_py.py). A load can then only make it longer.
 - **Process-wide settings:** pass the value in. Where the code reads an environment variable, a
   test sets it with `EnvVar::set(k, v)` (restored on drop, tests taking turns), and only for a
   variable no other test in that binary reads. A static a test changes is thread-local in test

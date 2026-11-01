@@ -398,12 +398,11 @@ fn remote_tests_falls_back_when_ssh_hangs() {
         .env("SCENIC_TEST_HOST", "hung-host")
         .env_remove("SCENIC_CHECK_LOCAL")
         .env_remove("SCENIC_TESTS_LOCAL");
-    let t0 = std::time::Instant::now();
+    // Its return at all is the proof (the fake ssh sleeps 10 min); no bound on how long a loaded
+    // Mac took (task #921).
     let o = store::spawn::output(&mut cmd).unwrap();
-    let took = t0.elapsed().as_secs();
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success(), "{out}");
     assert!(out.contains("no fresh ssh connection to hung-host within 20 s"), "{out}");
     assert!(out.lines().any(|l| l == "ran-here"), "{out}");
-    assert!(took < 40, "took {took} s:\n{out}");
 }

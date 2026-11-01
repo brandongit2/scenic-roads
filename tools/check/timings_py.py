@@ -32,19 +32,29 @@ with phase("waiting"):
     with wait("net"):
         time.sleep(0.03)
     # (Task #891: the network beside the NAS, then computing beside the network: each pair's.)
-    t = threading.Thread(target=nas)
+    # Proven by events, not by timing (task #921): the NAS call is in progress before the network's
+    # begins and ends only after it; the network's call is in progress while this thread spins
+    # until the process has 40 ms more CPU time, however long a loaded Mac takes to give it.
+    def held(kind, began, done):
+        with wait(kind):
+            began.set()
+            done.wait()
+    began, done = threading.Event(), threading.Event()
+    t = threading.Thread(target=held, args=("nas", began, done))
     t.start()
+    began.wait()
     with wait("net"):
         time.sleep(0.03)
+    done.set()
     t.join()
-    def net():
-        with wait("net"):
-            time.sleep(0.05)
-    t = threading.Thread(target=net)
+    began, done = threading.Event(), threading.Event()
+    t = threading.Thread(target=held, args=("net", began, done))
     t.start()
-    spin = time.monotonic()
-    while time.monotonic() - spin < 0.04:
+    began.wait()
+    spin = time.process_time()
+    while time.process_time() - spin < 0.04:
         pass
+    done.set()
     t.join()
 with phase("main work"):
     t = threading.Thread(target=lambda: phase("beside").start().end())
