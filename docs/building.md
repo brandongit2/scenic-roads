@@ -40,19 +40,14 @@ from the first (`edit_held`).
 **Scheduler.**
 - **The plan:** every step's targets come with their keys (the records' `keys`, pool.md §6.2); a target is
   stale when its key changed.
-- **A new key scheme** (`agent::rekey`): when a step's keys change what they name, its records are
-  re-keyed rather than built again: a record current under the old scheme gets its new key when
-  every input the new key names is pinned by the old key's; else it's built again. Every reader
-  re-keys records as it reads them (`agent::rekey::as_read`: the plan, the status, the checklist,
-  the regions' state, `--expect-same`, `scenic-build p5-check`), a record a job saved always
-  winning. The old schemes kept are tree cover's before its z6 tiles (`rekey::v1`;
-  `scenic-build p5-check trees` says what it would do, reading only; z6 tiles re-keyed so have no
-  mid: it's made in idle time, expected the same, Order) and the hand-made keys before the keys
-  derived from the steps' declared reads (`rekey::scheme1`, docs/readiness.md §6 step 3): every
-  record current under the hand-made keys is re-keyed to its derived key (`rekey::scheme_2`), no
-  derived key pinning an input its hand-made one didn't, with the planner's context
-  (`build::KeyCtx`; the pass's steps in a `build::PassCtx`, before there's a coverage);
-  `scenic-build rekey-check` says what it would do, reading only.
+- **Keys** are derived from each step's declared reads (docs/readiness.md §4): every enumeration of
+  targets says which targets there are and which are "none" (a target the coverage left, listed to
+  drop its outputs), and keys each through one helper (`build::key_now`: a "none" target's
+  `steps::none_key`, any other's `steps::derived_key`, `UNKNOWN` while that can't be worked out),
+  with the planner's context (`build::KeyCtx`; the pass's steps in a `build::PassCtx`, before
+  there's a coverage). The records are read as saved: no reader re-keys them. A z6 tile recorded
+  without its mid (by an earlier scheme's re-keying) has it made in idle time, expected the same
+  (Order).
 
 - **A job** is one step over a run of stale targets: as many as fit a quarter of an hour by their
   measured times (`coord::JOB_S`), a step kept to the lead in one job, so a failure or a new app

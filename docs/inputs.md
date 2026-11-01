@@ -1327,11 +1327,10 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   AWS's Terrarium tiles (`rank = 2`, `code = 4`, z12) where GLO-30 has none or a void. Terrarium is
   declared EGM2008, which most of its sources are; north of 60°N some are ellipsoidal (10–50 m off),
   but GLO-30 covers that land, so the tiles serve there only in its voids.
-- **Keys:** a z6 tile names the `keyed` digests of the datasets whose coverage meets its ways
-  (`agent::build::unit_key`), and the terrain packs its roads' heights read (`terrain_packs`: the
-  hi packs of the z6 tiles over its grown box and the deep packs of its z10 tiles); a dataset's `keyed` includes its index's content and added files, so
-  adding a tile reruns the z6 tiles it meets. `agent::rekey` keeps what keys made before the
-  declarations need (`dem_rules_meeting`, `pre_elevation_unit_key`).
+- **Keys:** a z6 tile names the `keyed` digests of the datasets whose coverage meets its ways (its
+  `elevation` input, `agent::idents`), and the terrain tiles its roads' heights read
+  (`agent::build::unit_deep_tiles`, by XXH3); a dataset's `keyed` includes its index's content and
+  added files, so adding a tile reruns the z6 tiles it meets.
 - **The switch:** the check records `sources/inputs/elevation/@switched` (the accepted index and the
   published app that recorded it) once a version of the declarations is accepted; a development
   build records none. Until then `elev` and the z6 tile job don't run and the z6 tiles wait (the agent
@@ -1449,7 +1448,7 @@ the roadside buildings' job and the z6 tiles' keys (the release, `buildtiles::re
 
 **Keys.** A key names a declared source only where it named the source in code before: the lake
 fill's key names its zips' pin, and the declaration only once it names other than the code had
-(`Source::key_extra` against `agent::rekey::declared_before::LAKE_FILL`, the staged declaration's
+(`Source::key_extra` against `inputs::sources::declared_before::LAKE_FILL`, the staged declaration's
 digest); the roadside buildings' (the z6 tiles', the buildings job's) and the 3D buildings' (bld-fetch,
 bldprep) keys name the declared release, and the declarations only once they name other than the
 code had (`bld::sources::declared`: `Source::key_part` against `declared_before::BUILDINGS`, and

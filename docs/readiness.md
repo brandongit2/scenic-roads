@@ -1,10 +1,9 @@
 # Readiness and keys from declared reads
 
-**Steps 1 and 2 built (task #879, §6); steps 3–4 Planned.** This doc says how the build derives, from
-one declaration per step, both when a target may run (its readiness) and what it is keyed on (its
-key). Readiness is derived now (§3, as built in §6 step 1); the keys are still today's, reproduced
-byte for byte under scheme 1, and the scheme-2 derivation (§4) is planned. The sections marked
-*today* describe main at 1edf631e, before step 1.
+**Steps 1–4 built (task #879, §6).** This doc says how the build derives, from one declaration per
+step, both when a target may run (its readiness, §3) and what it is keyed on (its key, §4): both
+are derived now, the hand-made keys (scheme 1) and their re-keying deleted (§6 step 4b). The
+sections marked *today* describe main at 1edf631e, before step 1.
 
 ## 1. The problem
 
@@ -297,7 +296,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      current under scheme 1 (its scheme-1 key for its target, "none" ones too) under its scheme-2
      key; one scheme 1 doesn't find current is kept as it is, and built again; one whose key can't
      be worked out now, or no target any more, is kept too. It isn't called until the flip (3e).
-     `scenic-build rekey-check` says what it would do to the records now, reading only. Test:
+     `rekey-check` says what it would do to the records now, reading only. Test:
      `rekey::tests::scheme_2_keeps_what_reads_nothing_new`.
      Measured on the NAS's records (31 Oct, pass 2026-09-28, read only, 16 min, 3.4 GB on the M1):
      every step outside terrain re-keys what scheme 1 finds current. Built again: terrain-water's one
@@ -323,7 +322,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      and `rekey::scheme1::is_none_key`. `build::is_none_key` knows either scheme's.
      - Every reader of the records re-keys them with the same context (`rekey::as_read`, a
        `KeyCtx`: the plan, the checklist, the regions' counts, `--expect-same` (its step's alone,
-       `as_read_of`), `scenic-build rekey-check`); `agent::key_inputs` is the planner's inputs they
+       `as_read_of`), `rekey-check`); `agent::key_inputs` is the planner's inputs they
        all read (the checklist and the regions' counts now read the feeds and spacing too). The
        pass's worldwide steps (`build::PASS_STEPS`: outlines, regions-land, trailends, reach,
        labels, spoken, water, summits) are planned before there's a coverage, so they're keyed in
@@ -349,7 +348,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
        are kept by the coverage's version (`build::bld_tiles`): every target's key lines ask.
        Measured on the NAS's state (1 Nov, the M4, read only): a re-keying 30–70 s (13–15 min
        before these two), a checklist 17 s (18 min before).
-     - Measured after the flip (`scenic-build rekey-check --unknown n`, 1 Nov, with main's
+     - Measured after the flip (`rekey-check --unknown n`, 1 Nov, with main's
        planner run on the same records at once): built again, terrain-water 1, pyramids-fill 20,
        terrain-hi 1,789 and terrain-deep ~6,230 (their keys unknown until that terrain-water run,
        then #832's cut: #862's rebuild), 52 unit z6 tiles and 7 terrain-lo assemblies more than
@@ -361,14 +360,14 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
        now: kept as they are, built by neither.
 4. **Save the re-keyed records, then delete the adapter.** In two parts, the second merged only
    after the first has run on the live records.
-   - **4a (built): the lead saves them once.** `rekey::scheme_2` lists what it re-keyed
+   - **4a (built): the lead saves them once** (its job, the re-keying and `rekey-check` deleted in 4b). `rekey::scheme_2` lists what it re-keyed
      (`Scheme2Step::moved`: target, scheme-1 key, scheme-2 key) and drops the records of no target
      of the step's now (`build::step_keys_all`, the unknown ones too), whose
      outputs no manifest entry names (`steps::output_named`, the step's declared outputs:
      `Scheme2Step::dropped`; task #920 found such records, deep tiles' "none" drops and tiles left
      by the coverage, kept forever and read as unknown). The plan keeps what its reading did
      (`Planner::rekeyed`), and the lead runs one job for every step's while any is left (`rekey_jobs`,
-     "redo rekey"), whose command reads nothing (`scenic-build rekey-check --help`: the record is
+     "redo rekey"), whose command reads nothing (`rekey-check --help`: the record is
      the plan's; a full rekey-check is 17 min and 5.75 GB); its done record (`rekey::record`) is a
      restore's per record, "<step> <target> <from>" with the scheme-2 key, or
      with no key for a dropped one. The merge (`build::Keys::record`) records each only while its
@@ -386,12 +385,39 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      (the save gives the keys the in-memory re-keying does; read again, nothing moves) and
      `agent::tests::the_scheme_2_save_is_one_job_reading_nothing_and_not_planned_again`.
      Records of a step that isn't derived (pack, lo) aren't looked at, so none of theirs is dropped.
-   - **4b (planned): delete the adapter** once `scenic-build rekey-check` shows nothing re-keyed
-     on the live records: `rekey::scheme1`, `KeyCtx::scheme` and `scheme_1`, `rekey::scheme_2` and
-     the readers' calls of it, and the scheme-1 key the enumerations work out first (`key_now`'s
-     `k1`: which targets are "none" or unknown would come from the enumerations themselves) with
-     every `*_key` function only it calls (§8); agent::restore's check ported to scheme-2 keys or
-     deleted. A record scheme 1 finds stale or can't key stays stale either way.
+   - **4b (built): the adapter deleted**, merged once 4a's save is on the live records. Every
+     enumeration lists its targets and says which are "none" (the coverage left them, listed to
+     drop their outputs); `build::key_now(step, t, none, x)` keys each (`steps::none_key` or
+     `steps::derived_key`, `UNKNOWN` while that can't be worked out), so whether a key is known is
+     the derivation's alone; world steps through `steps::derived_key` behind the manifest entries
+     that make them a target. The records are read as saved: no reader re-keys them.
+     Cut: agent/rekey.rs (`scheme_2`, `scheme1`, `Scheme2Step`, `record`, `as_read`, `as_read_of`,
+     `pass_as_read`, and the trees' z3-tile re-keying with it: `rekey`, `v1`, `FileTimes`,
+     `TREES_PROGRAM_SINCE`; `declared_before` moved to `inputs::sources`), `KeyCtx::scheme` and
+     `scheme_1`, `steps::KEY_SCHEME`, `key_now_opt`, `step_keys` and `step_keys_kept`
+     (`step_keys_all` kept in the tests), the planner's `rekeyed` and its "redo rekey" job
+     (`rekey_jobs`), `PlanView`'s coverage and terrain indexes (read only by `--expect-same`'s
+     re-keying), `TerrainTargets::now`, `terrain_slope_targets_made`'s scheme-1 keys, the
+     `*_key_1` functions (outlines, reach, heritage-sites, roadunits, transit, root, items,
+     heritage, marks, overlays, depth-root), `unit_key`, `terrain_packs`, `terrain_piece_key`,
+     `piece_key_made`, `terrain_deep_key`, `pyramids_key`, `terrain_lo_key`, `slope_lo_key`,
+     `slope_lo_terrain`, `slope_piece_key`, `slope_deep_key`, the `none_*_key` trio,
+     `bld_targets_made`, `bld_key`, `depth_targets_made`, `depth_root_key_1`, `polar_targets_made`,
+     treepacks' keys (`targets_with` and its key, `none_piece_key`, `none_lo_key`: tree cover's
+     targets are `treepacks::listed`), and the scenic-build checks of the switches
+     (`rekey-check`, `p5-check`). agent::restore (`terrain-restore-check`, task #832) is deleted,
+     not ported: scheme 2 names a terrain target's coverage by the tiles it makes (#832's cut), so
+     a key no longer moves with outlines that change no sample; with it the redo's restore option,
+     `redo::Restore`, `Ask::restore`, `checked_restore`, `restore_target`, the coordinator's
+     restore asks and `Keys::record`'s "<step> <target> <from>" records. Tests cut:
+     `scheme_2_pins_no_input_scheme_1_didnt` (no scheme 1 to compare), rekey.rs's,
+     `the_scheme_2_save_is_one_job_reading_nothing_and_not_planned_again`,
+     `a_restore_records_its_key_only_over_the_one_checked`, `declared_reads_cover_the_keys`'
+     slope-lo and unit cases (scheme-1 keys; `a_key_names_exactly_its_reads` covers theirs).
+     Measured (1 Nov, the M1 over SMB, the live records read only, the checklist example with one
+     warm copy of the pack indexes): 533 s on main (its readers' re-keying and the scheme-1 keys
+     its enumerations work out), 291 s after 4b; the same checklist but for the live build's
+     progress between the two runs.
 
 ## 7. Tests
 
@@ -423,12 +449,14 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
 - `forecast::chain_deps`, `UNITS_NEED` (both copies), the `reads_terrain` terrain group, the
   held-chain guard and its `offered` inference.
 - `TerrainWork::is_left`'s step match (each step's left set is the generic `View::left`).
-- Every hand-assembled key: `terrain_piece_key`, `piece_key_made`, `terrain_deep_key`,
-  `pyramids_key`, `terrain_lo_key`, `slope_lo_key`, `slope_piece_key`, `slope_deep_key`, the
-  `none_*_key` trio (one `none` derivation), `unit_key`, `peaks_keys`' and `pois_keys`' hashing,
-  `items_key`, `heritage_key`, `marks_key`, `overlays_key`, `heritage_sites_key`, `outlines_key`,
-  `reach_key`, `depth_root_key`, `bld_fetch_key`, `bld_key`, `root_key`, `catalogue_key`. What they
-  gather survives only as `Input` functions shared with the runs.
+- Every hand-assembled key (deleted in step 4b): `terrain_piece_key`, `piece_key_made`,
+  `terrain_deep_key`, `pyramids_key`, `terrain_lo_key`, `slope_lo_key`, `slope_piece_key`,
+  `slope_deep_key`, the `none_*_key` trio (one `none` derivation, `steps::none_key`), `unit_key`,
+  `peaks_keys`' and `pois_keys`' hashing, `bld_key`, and the hashing of `items_key`,
+  `heritage_key`, `marks_key`, `overlays_key`, `heritage_sites_key`, `outlines_key`, `reach_key`,
+  `depth_root_key`, `bld_fetch_key` and `root_key` (each now the derived key behind what makes it
+  a target). What they gathered survives only as `Input` functions shared with the runs.
+  Planned: `catalogue_key` (the catalogue isn't derived yet).
 - `slope_lo_terrain`, `slope_piece_from`, `slope_deep_from`, `unit_terrain_from` as separate memo
   keys (the memo is keyed on the read's `Grain::Outputs` lines, derived).
 - `UNKNOWN` (`Ready::Unknown`).

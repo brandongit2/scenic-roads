@@ -178,8 +178,7 @@ Each step ships alone and keeps the build running; each ends with its tests.
    `start_as_built` call and opens no pack index), and a loop-time test with #871's slow-NAS fake:
    a member's round never waits on the records brief (`a_members_round_never_waits_on_the_records_brief`). As built: the member had none of these since #871
    step 6 (no plan); the M1's were a lead's parts started out of the pool (the old `o.helper` false),
-   which step 1 ends. Also: a member's `as_read` reads nothing (the plan's view first), and a job's
-   `--expect-same` reads the brief under the NAS's deadline. The idle footprint was not measured: the
+   which step 1 ends. Also: a job's `--expect-same` reads the brief under the NAS's deadline. The idle footprint was not measured: the
    harness has no regions' data to fill one.
 3. *Built.* **The member's broker** (§3.2): `coord::Broker`; `become_broker` and the member's phase sharer
    deleted. Tests: the brokers' task tests moved to `Broker` (`a_task_goes_out_and_comes_back`,

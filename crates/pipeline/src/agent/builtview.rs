@@ -263,7 +263,7 @@ mod tests {
         assert!(a.get("published").is_none(), "no catalogues told: not said");
         let mut k = Keys::default();
         k.record("terrain-deep", &[("10/1/2".into(), "k1".into())]);
-        let none = crate::agent::build::none_deep_key("terrain-deep", "10/3/4");
+        let none = crate::agent::steps::none_key("terrain-deep", "10/3/4").unwrap();
         k.record("terrain-deep", &[("10/3/4".into(), none)]);
         assert_eq!(dropped_of(&k), BTreeMap::from([("terrain-deep".to_string(), vec!["10/3/4".to_string()])]));
         assert_eq!(tiles_of(&k)["terrain-deep"], ["10/1/2"], "a drop's record: no tile");
@@ -293,11 +293,10 @@ mod tests {
 
     #[test]
     fn a_drops_record_is_no_tile_built() {
-        use super::super::build::{none_deep_key, none_piece_key, piece_key_made};
+        let none = |s: &str, t: &str| crate::agent::steps::none_key(s, t).unwrap();
         let mut k = Keys::default();
-        let no_hi = piece_key_made((21, 18), "fp", "src", "w", false);
-        k.record("terrain-hi", &[("6/1/2".into(), none_piece_key("terrain-hi", "6/1/2")), ("6/21/18".into(), no_hi)]);
-        k.record("terrain-deep", &[("10/1/2".into(), none_deep_key("terrain-deep", "10/1/2"))]);
+        k.record("terrain-hi", &[("6/1/2".into(), none("terrain-hi", "6/1/2")), ("6/21/18".into(), "k".into())]);
+        k.record("terrain-deep", &[("10/1/2".into(), none("terrain-deep", "10/1/2"))]);
         let steps = tiles_of(&k);
         assert_eq!(steps["terrain-hi"], ["6/21/18"], "the drop's left out: {steps:?}");
         assert!(!steps.contains_key("terrain-deep"), "a deep drop too");

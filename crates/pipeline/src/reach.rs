@@ -108,8 +108,8 @@ pub struct Reach {
     /// The 1° cells (crate::dem::spacing::cell) of the first nodes of its extract's ways, ferries
     /// left out, sorted: where `extract`'s spacing is decided for them (owned or not: the `unit` step
     /// keeps every way touching the coverage). Required, never `serde(default)`: a reach from
-    /// before it would read as no cells, which every spacing agrees on (`rekey::spaced_as_before`
-    /// vacuously true) and its key would name none; it fails to decode instead and is made again.
+    /// before it would read as no cells, which every spacing agrees on, and its key
+    /// would name none; it fails to decode instead and is made again.
     pub cells: Vec<[i32; 2]>,
 }
 

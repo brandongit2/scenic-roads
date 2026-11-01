@@ -15,7 +15,7 @@ use crate::dem::spacing::Fine;
 use crate::legacy::TileId;
 use crate::reach::{Reach, Reaches};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Step versions: bumping one rebuilds that step everywhere (oldest first, when idle).
 /// Terrain-hi 7 (task #639): its deep levels are their terrain-deep targets' (`TERRAIN_DEEP_V`), it
@@ -45,7 +45,7 @@ pub const SLOPE_V: u32 = 2;
 /// flags rasterised per z6 tile.
 /// 4: the roads' own English (`global/roaden/<u>`); a z6 tile left with no ways drops its outputs.
 /// 5: one elevation pool (GLO-30 and the Terrarium tiles among the roads' datasets, FABDEM and MRDEM
-/// gone), so no record from before is re-keyed as current (agent::rekey's older schemes).
+/// gone).
 /// 6: the roads' heights from the finished terrain (crate::road_terrain), spaced at its pixel.
 pub const UNIT_V: u32 = 6;
 /// 3: keyed on the tile's owners alone; hidata of the tile's own ways (here, query parts, rail
@@ -58,8 +58,7 @@ pub const LO_V: u32 = 1;
 /// The keys of the jobs that last succeeded, by step and target ("3/4/2", "6/31/20").
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Keys {
-    /// Terrain-hi's and slope-hi's z6 tiles, per z6 tile ("6/x/y": `terrain_slope_targets`; records
-    /// of their z3 tiles' whole runs, "3/x/y", from before the z6 tiles: agent::rekey). Their steps
+    /// Terrain-hi's and slope-hi's z6 tiles, per z6 tile ("6/x/y": `terrain_slope_targets`). Their steps
     /// were named "terrain" and "slope" before task #639: records under those names are theirs
     /// (crate::agent::steps::RENAMED).
     #[serde(default, alias = "terrain")]
@@ -90,8 +89,7 @@ pub struct Keys {
     pub pack: BTreeMap<String, String>,
     #[serde(default)]
     pub lo: BTreeMap<String, String>,
-    /// The tree cover layers' z6 tiles, per z6 tile ("6/x/y", crate::treepacks::targets; records of
-    /// the z3 tiles' whole runs, "3/x/y", from before the z6 tiles: agent::rekey).
+    /// The tree cover layers' z6 tiles, per z6 tile ("6/x/y", `trees_targets`).
     #[serde(default)]
     pub trees: BTreeMap<String, String>,
     /// Their assemblies, per z3 tile ("3/x/y").
@@ -327,34 +325,12 @@ impl Keys {
             return;
         }
         if step == super::redo::STEP {
-            // ("<step> <target>": a redo, its key forgotten; "<step> <target> <from>" with a key: a
-            // restore, crate::agent::restore or the switch to scheme 2's, recorded under it while
-            // its record is still `from`; with none, forgotten while it is.)
-            for (t, k) in done {
+            // ("<step> <target>": a redo, its key forgotten.)
+            for (t, _) in done {
                 let mut w = t.split(' ');
-                let (Some(s), Some(at), from) = (w.next(), w.next(), w.next()) else { continue };
-                // (A world step's restore, by its name in the lo keys: crate::agent::rekey::record.)
-                let m = if self.per_target(s).is_some() {
-                    self.per_target(s).unwrap()
-                } else if from.is_some() {
-                    &mut self.lo
-                } else {
-                    continue;
-                };
-                match from {
-                    None => {
-                        m.remove(at);
-                    }
-                    Some(f) if m.get(at).map(String::as_str) == Some(f) => {
-                        // (No key: a record of no target whose outputs are gone, dropped:
-                        // crate::agent::rekey::scheme_2.)
-                        if k.is_empty() {
-                            m.remove(at);
-                        } else {
-                            m.insert(at.to_string(), k.clone());
-                        }
-                    }
-                    Some(_) => {}
+                let (Some(s), Some(at)) = (w.next(), w.next()) else { continue };
+                if let Some(m) = self.per_target(s) {
+                    m.remove(at);
                 }
             }
             return;
@@ -424,15 +400,8 @@ pub const OUTLINES_V: u32 = 2;
 /// the previous outlines it may keep a country from (crate::osmpass::previous_outlines), by content
 /// name. None without the set (pass-sets makes it).
 pub fn outlines_key(x: &KeyCtx) -> Option<String> {
-    key_now_opt("outlines", "outlines", outlines_key_1(x.date, x.m), x)
-}
-
-/// `outlines_key` under scheme 1.
-fn outlines_key_1(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
-    let set = m.get(&crate::osmpass::set_name(date, "outlines"))?;
-    let previous = crate::osmpass::previous_outlines(m, date)
-        .map_or("previous -".to_string(), |(d, c)| format!("previous {d} {c}"));
-    Some(h(&[&format!("outlines {OUTLINES_V}"), date, set, &previous]))
+    x.m.get(&crate::osmpass::set_name(x.date, "outlines"))?;
+    world_key("outlines", x)
 }
 
 /// The pass's administrative and ISO 3166 outlines (`sources/osm/<date>/outlines`), once per pass,
@@ -460,9 +429,8 @@ pub fn outlines_hold(made: bool, failures: u32) -> bool {
 pub fn regions_land_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let (date, m) = (x.date, x.m);
     use crate::inputs::regions::land;
-    let set = m.get(&crate::osmpass::set_name(date, "coastline"))?;
-    let k = h(&[&format!("regions-land {}", land::LAND_V), date, set]);
-    let k = key_now_opt("regions-land", "regions-land", Some(k), x)?;
+    m.get(&crate::osmpass::set_name(date, "coastline"))?;
+    let k = world_key("regions-land", x)?;
     (!m.contains_key(&land::logical(date)) || done.lo.get("regions-land").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "regions-land".into(), targets: vec![("regions-land".into(), k)] })
 }
@@ -472,10 +440,8 @@ pub fn regions_land_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 pub const TRAILENDS_V: u32 = 1;
 
 pub fn trailends_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
-    let (date, m) = (x.date, x.m);
-    let set = m.get(&crate::osmpass::set_name(date, "hikes"))?;
-    let k = h(&[&format!("trailends {TRAILENDS_V}"), set]);
-    let k = key_now_opt("trailends", "trailends", Some(k), x)?;
+    x.m.get(&crate::osmpass::set_name(x.date, "hikes"))?;
+    let k = world_key("trailends", x)?;
     (done.lo.get("trailends").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "trailends".into(), targets: vec![("trailends".into(), k)] })
 }
@@ -492,21 +458,9 @@ pub fn reach_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 
 /// The reach job's key: its version and the extracts, by content (an extract cut again changes it).
 pub fn reach_key(x: &KeyCtx) -> Option<String> {
-    key_now_opt("reach", "reach", reach_key_1(x.date, x.m), x)
-}
-
-/// `reach_key` under scheme 1.
-fn reach_key_1(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
-    let prefix = format!("sources/osm/{date}/pieces/");
-    let pieces: Vec<&str> =
-        m.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).map(|(_, c)| c.as_str()).collect();
-    if pieces.is_empty() {
-        return None;
-    }
-    let mut ins = vec![format!("reach {}", crate::reach::REACH_V)];
-    ins.extend(pieces.iter().map(|s| s.to_string()));
-    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-    Some(h(&refs))
+    let prefix = format!("sources/osm/{}/pieces/", x.date);
+    x.m.range(prefix.clone()..).next().filter(|(l, _)| l.starts_with(&prefix))?;
+    world_key("reach", x)
 }
 
 /// The labels by importance, worldwide, once per pass (or labels step version): independent of the
@@ -515,10 +469,8 @@ fn reach_key_1(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
 pub const LABELS_V: u32 = 2;
 
 pub fn labels_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
-    let (date, m) = (x.date, x.m);
-    let set = m.get(&crate::osmpass::set_name(date, "labels"))?;
-    let k = h(&[&format!("labels {LABELS_V}"), set]);
-    let k = key_now_opt("labels", "labels", Some(k), x)?;
+    x.m.get(&crate::osmpass::set_name(x.date, "labels"))?;
+    let k = world_key("labels", x)?;
     (done.lo.get("labels").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "labels".into(), targets: vec![("labels".into(), k)] })
 }
@@ -529,10 +481,9 @@ pub fn labels_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 /// accepted version.
 pub fn spoken_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let (date, m) = (x.date, x.m);
-    let outlines = m.get(&format!("sources/osm/{date}/outlines"))?;
-    let table = m.get(&crate::inputs::logical(crate::inputs::languages::UNIT))?;
-    let k = h(&[names::spoken::RULES, outlines, &format!("table {table}")]);
-    let k = key_now_opt("spoken", "spoken", Some(k), x)?;
+    m.get(&format!("sources/osm/{date}/outlines"))?;
+    m.get(&crate::inputs::logical(crate::inputs::languages::UNIT))?;
+    let k = world_key("spoken", x)?;
     (done.lo.get("spoken").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "spoken".into(), targets: vec![("spoken".into(), k)] })
 }
@@ -568,11 +519,9 @@ pub fn names_todo_work(
 /// (`work/rail/lines`, `work/ferries/lines`: after each rail and ferries run), coverage (it keeps
 /// the ferry lines in it) or step version. None until both extracts are made.
 pub fn timetables_todo_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
-    let (cov, m) = (x.cov, x.m);
-    let rail = m.get(crate::timetables::RAIL_LINES)?;
-    let ferries = m.get(crate::timetables::FERRY_LINES)?;
-    let k = h(&[&format!("timetables-todo {}", crate::timetables::VERSION), rail, ferries, &coverage_all(cov)]);
-    let k = key_now_opt("timetables-todo", "timetables-todo", Some(k), x)?;
+    x.m.get(crate::timetables::RAIL_LINES)?;
+    x.m.get(crate::timetables::FERRY_LINES)?;
+    let k = world_key("timetables-todo", x)?;
     (done.lo.get("timetables-todo").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "timetables-todo".into(), targets: vec![("timetables-todo".into(), k)] })
 }
@@ -623,14 +572,8 @@ pub fn reads_lakefill(step: &str) -> bool {
 /// basemap when the manifest has them (the agent runs it once the lakefill step is done:
 /// `water_waits_for_lakefill`).
 pub fn water_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
-    let (date, m) = (x.date, x.m);
-    let basemap = m.get(&format!("layers/basemap/world-{date}"))?;
-    // (The lakes filled from Canada's own data, when the manifest has them: crate::lakefill.)
-    let k = match m.get(&crate::lakefill::logical(date)) {
-        Some(fill) => h(&[&format!("water {}", crate::water::VERSION), basemap, &format!("lakefill {fill}")]),
-        None => h(&[&format!("water {}", crate::water::VERSION), basemap]),
-    };
-    let k = key_now_opt("water", "water", Some(k), x)?;
+    x.m.get(&format!("layers/basemap/world-{}", x.date))?;
+    let k = world_key("water", x)?;
     (done.lo.get("water").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "water".into(), targets: vec![("water".into(), k)] })
 }
@@ -647,108 +590,23 @@ pub fn spacing_now(m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Fine {
     tiles.elevation(m).ok().flatten().map(|e| Fine::of(&e)).unwrap_or_default()
 }
 
-/// The z6 tiles the coverage builds (`builds`), each with its key (`unit_key`); None for one whose
-/// terrain can't be worked out now (a terrain pack's index unread: agent::tiles), which waits. None
-/// before the pass's reaches are made.
+/// The z6 tiles the coverage builds (`builds`), each with its key (`steps::derived_key`); None for
+/// one whose key can't be worked out now (a terrain pack's index unread: agent::tiles; the declared
+/// elevation datasets or the buildings' release unread), which waits. Which z6 tiles the coverage
+/// builds is told at the coarse spacing while the elevation datasets can't be read. None before the
+/// pass's reaches are made.
 pub fn unit_keys(x: &KeyCtx) -> Vec<(TileId, Option<String>)> {
     let (cov, date, m, reach, tiles) = (x.cov, x.date, x.m, x.reach, x.tiles);
     let mut units = Vec::new();
     let Some(reach) = reach else { return units };
-    // (Without the declared elevation datasets, before the switch or while they can't be read, no
-    // key: the z6 tile waits. Which z6 tiles the coverage builds is then told at the coarse spacing.)
-    // (Nor without the declared buildings source's release.)
-    let elevation = tiles.elevation(m).ok().flatten().zip(tiles.keyed(m));
     let fine = spacing_now(m, tiles);
-    for (l, c) in m.range(format!("sources/osm/{date}/pieces/")..) {
+    for (l, _) in m.range(format!("sources/osm/{date}/pieces/")..) {
         let Some(u) = l.strip_prefix(&format!("sources/osm/{date}/pieces/")).and_then(TileId::parse) else { break };
-        let Some(r) = reach.get(u).filter(|r| r.builds(cov, &fine)) else { continue };
-        let k1 = unit_terrain(u, r, m, tiles)
-            .ok()
-            .zip(elevation.as_ref())
-            .map(|(t, (e, k))| unit_key(cov, date, m, u, c, r, &t, e, &fine, &k.release, k.unit.as_deref()));
-        units.push((u, key_now_opt("unit", &u.slash(), k1, x)));
-    }
-    units
-}
-
-/// Z6 tile `u`'s key (its extract `piece`, its reach `r`): what it reads. Its extract and road values, the
-/// coverage as its ways meet it (`Reach::coverage_key`), the location rules where they go
-/// (`crate::rules`), the `keyed` digests of the declared elevation datasets meeting its ways
-/// (`elevation`: crate::inputs::elevation), which of the cells its ways start in a fine dataset
-/// covers (`fine`, `Fine::of` the same datasets: its spacing, crate::dem::spacing), the terrain packs
-/// its roads' heights read (`terrain_packs`), the roadside buildings' index (of the declared release
-/// `buildings`: crate::buildtiles), the land-cover and canopy declarations where they aren't as
-/// staged (`sources`: crate::inputs::sources::unit_extra), the terrain tiles it reads by their contents (`terrain`: `unit_terrain`'s
-/// digest), and the heritage sites' and areas' slices near it, as the manifest has them, which is
-/// what the `unit` step stages from.
-#[allow(clippy::too_many_arguments)]
-pub fn unit_key(
-    cov: &Coverage,
-    date: &str,
-    m: &BTreeMap<String, String>,
-    u: TileId,
-    piece: &str,
-    r: &Reach,
-    terrain: &str,
-    elevation: &[(crate::dem::declared::Accepted, crate::dem::declared::Cover)],
-    fine: &Fine,
-    buildings: &str,
-    sources: Option<&str>,
-) -> String {
-    let ext = r.extent(u);
-    let deg = |v: i32| v as f64 * 1e-7;
-    let e = format!(
-        "elevation {}",
-        crate::dem::declared::meeting(elevation, [deg(ext[0]), deg(ext[1]), deg(ext[2]), deg(ext[3])]).join(",")
-    );
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let mut inputs = vec![
-        format!("unit {UNIT_V}"),
-        piece.to_string(),
-        get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(),
-        r.coverage_key(cov, u, fine),
-        crate::rules::versions_meeting(ext),
-        e,
-        fine.key(&r.cells),
-    ];
-    // The roadside buildings it reads (crate::buildtiles: the release's tiles near its roads).
-    inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical(buildings))));
-    // (The land cover and canopy it reads, once their declarations aren't as staged.)
-    inputs.extend(sources.map(|s| format!("sources {s}")));
-    // The terrain it reads. Not the analysis grids' packs (grid-class, -canopy, -cover): the z6 tiles
-    // write those where they're missing, so each built z6 tile would change its own key and its
-    // neighbours' (built again, over and over); a grid read from its pack or made afresh is the
-    // same, from fixed datasets (WorldCover, Meta's canopy squares).
-    inputs.push(format!("terrain-tiles {terrain}"));
-    let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
-    // (And the packs its roads' heights read, whole: the hi packs and deep packs over its box,
-    // crate::road_terrain.)
-    inputs.push(format!("terrain-packs {}", terrain_packs(m, b).join(" ")));
-    for (x, y) in crate::stage::tiles_in(6, b) {
-        inputs.push(get(&crate::heritage::pos_logical(date, x, y)).to_string());
-        inputs.push(get(&crate::heritage::areas_logical(date, x, y)).to_string());
-    }
-    let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-    h(&refs)
-}
-
-/// The terrain packs over box `b` (degrees) the roads' heights read (crate::road_terrain): the hi
-/// packs of the z6 tiles it meets and the deep packs of its z10 tiles, each `logical=content`
-/// ("-" for one not made).
-pub fn terrain_packs(m: &BTreeMap<String, String>, b: [f64; 4]) -> Vec<String> {
-    let mut out = Vec::new();
-    for (x, y) in crate::stage::tiles_in(6, b) {
-        let l = format!("layers/terrain/hi/6-{x}-{y}");
-        out.push(format!("{l}={}", m.get(&l).map_or("-", String::as_str)));
-    }
-    let z = crate::terrain_deep::PACK_Z;
-    for (x, y) in crate::stage::tiles_in(z, b) {
-        let l = crate::terrain_deep::pack_logical(x, y);
-        if let Some(c) = m.get(&l) {
-            out.push(format!("{l}={c}"));
+        if reach.get(u).is_some_and(|r| r.builds(cov, &fine)) {
+            units.push((u, super::steps::derived_key("unit", &u.slash(), x)));
         }
     }
-    out
+    units
 }
 
 /// The content names of the packs z6 tile `u`'s staged terrain tiles are in (z0–12 over its tile +
@@ -803,8 +661,8 @@ pub fn terrain_digest(tiles: &[Tile]) -> String {
 ///   its segments are taken), each tile tested grown by `EDGE_DEG`.
 ///
 /// The roads' heights (crate::road_terrain) read the staged tiles too, at every vertex of the ways
-/// staged, buffer ways included: those aren't listed here, but `unit_key` names the hi packs and
-/// deep packs over `b` whole (`terrain_packs`), so any of their tiles changing re-keys it. Nothing
+/// staged, buffer ways included: those aren't listed here, but its key names the deep tiles they
+/// read (`unit_deep_tiles`). Nothing
 /// else a z6 tile makes reads terrain. A tile staged but missing is named by its absence: one
 /// appearing (the coverage grown) changes the list, as does any tile read changing.
 pub fn unit_terrain_tiles(
@@ -1018,40 +876,9 @@ pub const HERITAGE_SITES_V: u32 = 4;
 /// the matches' accepted version and the coverage. None while the registers have no accepted
 /// version, or it can't be read now ("?").
 pub fn heritage_sites_key(x: &KeyCtx) -> Option<String> {
-    key_now_opt("heritage-sites", "heritage-sites", heritage_sites_key_1(x.cov, x.date, x.m, x.inputs), x)
-}
-
-/// `heritage_sites_key` under scheme 1.
-fn heritage_sites_key_1(
-    cov: &Coverage,
-    date: &str,
-    m: &BTreeMap<String, String>,
-    inputs: &BTreeMap<String, String>,
-) -> Option<String> {
-    let set = m.get(&crate::osmpass::set_name(date, "areas"))?;
-    let index = m.get(&crate::inputs::logical(crate::inputs::heritage::UNIT))?;
-    let regs: Vec<String> = match inputs.get("heritage").map(String::as_str) {
-        Some("?") => return None,
-        Some(line) => {
-            let cover = crate::heritage::cover_boxes(cov);
-            crate::heritage::parse_registers(line)
-                .into_iter()
-                .filter(|(_, _, b)| b.is_some_and(|b| crate::heritage::meets(&cover, b)))
-                .map(|(id, keyed, _)| format!("{id} {keyed}"))
-                .collect()
-        }
-        None => vec![format!("index {index}")],
-    };
-    let matches =
-        m.get(&crate::inputs::logical(crate::inputs::heritage_matches::UNIT)).map(String::as_str).unwrap_or("-");
-    Some(h(&[
-        &format!("heritage-sites {HERITAGE_SITES_V}"),
-        date,
-        set,
-        &regs.join(","),
-        &format!("matches {matches}"),
-        &coverage_all(cov),
-    ]))
+    x.m.get(&crate::osmpass::set_name(x.date, "areas"))?;
+    x.m.get(&crate::inputs::logical(crate::inputs::heritage::UNIT))?;
+    world_key("heritage-sites", x)
 }
 
 /// Why the z6 tiles wait when the pass has no heritage sites and the registers have no accepted
@@ -1078,10 +905,8 @@ pub const SUMMITS_V: u32 = 1;
 /// The agent runs it only once no terrain-hi or terrain-lo work is left (its readiness: crate::agent::steps), so
 /// a lo pack still to be made doesn't make it twice.
 pub fn summits_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
-    let (date, m) = (x.date, x.m);
-    let set = m.get(&crate::osmpass::set_name(date, "summits"))?;
-    let k = h(&[&format!("summits {SUMMITS_V}"), set, &crate::peaks::z8::digest(m)]);
-    let k = key_now_opt("summits", "summits", Some(k), x)?;
+    x.m.get(&crate::osmpass::set_name(x.date, "summits"))?;
+    let k = world_key("summits", x)?;
     (done.lo.get("summits").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "summits".into(), targets: vec![("summits".into(), k)] })
 }
@@ -1120,19 +945,11 @@ pub(crate) fn tiles_in_wrapped(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
 /// 30 km of it, across the antimeridian too (its z12).
 pub fn peaks_keys(x: &KeyCtx) -> Vec<(TileId, String)> {
     let (cov, date, m) = (x.cov, x.date, x.m);
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let common = [get(&format!("work/summits/{date}")), &crate::peaks::z8::digest(m)].join(",");
-    let mut out = Vec::new();
-    for (u, _, _) in pois_units(cov, date, m) {
-        let Some(c) = m.get(&format!("work/pois/{}", u.dash())) else { continue };
-        let mut inputs = vec![format!("peaks {PEAKS_V}"), c.clone(), common.clone()];
-        for (tx, ty) in tiles_in_wrapped(6, crate::stage::tile_box_grown(u.z, u.x, u.y, 30.0)) {
-            inputs.push(get(&format!("layers/terrain/hi/6-{tx}-{ty}")).to_string());
-        }
-        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-        out.push((u, key_now("peaks", &u.slash(), h(&refs), x)));
-    }
-    out
+    pois_units(cov, date, m)
+        .into_iter()
+        .filter(|(u, _, _)| m.contains_key(&format!("work/pois/{}", u.dash())))
+        .map(|(u, _, _)| (u, key_now("peaks", &u.slash(), false, x)))
+        .collect()
 }
 
 /// The candidates' version (crate::candidates, extract `--candidates`): bumping it makes every
@@ -1197,26 +1014,20 @@ pub fn pois_units(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> V
 /// pass's hiking-route ends and the spacing its extract reads (crate::dem::spacing, from the
 /// planner's `inputs`). None while the spacing isn't known: the candidates wait.
 pub fn pois_keys(x: &KeyCtx) -> Option<Vec<(TileId, String)>> {
-    let (cov, date, m) = (x.cov, x.date, x.m);
-    let spacing = crate::dem::spacing::key_line(x.inputs)?;
-    let ends = m.get(&format!("work/trailends/{date}")).map(String::as_str).unwrap_or("-");
+    crate::dem::spacing::key_line(x.inputs)?;
     Some(
-        pois_units(cov, date, m)
+        pois_units(x.cov, x.date, x.m)
             .into_iter()
-            .map(|(u, near, c)| {
-                let k = h(&[&format!("pois {POIS_V}"), &c, &cov.fingerprint(near), ends, &spacing]);
-                (u, key_now("pois", &u.slash(), k, x))
-            })
+            .map(|(u, _, _)| (u, key_now("pois", &u.slash(), false, x)))
             .collect(),
     )
 }
 
-/// Tree cover's targets (crate::treepacks::targets_with, the declared sources as the keys name them),
-/// keyed under `x.scheme` (`key_now`).
+/// Tree cover's targets (crate::treepacks::listed), each keyed (`key_now`).
 pub fn trees_targets(x: &KeyCtx) -> crate::treepacks::Targets {
-    let t = crate::treepacks::targets_with(x.cov, x.m, x.tiles.keyed(x.m).and_then(|k| k.trees.as_deref()));
-    let k = |step: &str, v: Vec<(String, String, bool)>| -> Vec<(String, String, bool)> {
-        v.into_iter().map(|(t, k, none)| (t.clone(), key_now(step, &t, k, x), none)).collect()
+    let t = crate::treepacks::listed(x.cov, x.m);
+    let k = |step: &str, v: Vec<(String, bool)>| -> Vec<(String, String, bool)> {
+        v.into_iter().map(|(t, none)| (t.clone(), key_now(step, &t, none, x), none)).collect()
     };
     crate::treepacks::Targets { pieces: k("trees", t.pieces), lo: k("trees-lo", t.lo) }
 }
@@ -1405,26 +1216,23 @@ pub const TERRAIN_LO_V: u32 = 2;
 /// (crate::slope_pack::assemble).
 pub const SLOPE_LO_V: u32 = 3;
 
-/// Terrain's and slope's targets, each with its key, done or not (docs/steps.md §2, Terrain): a
-/// z6 tile per z6 tile near the coverage (`coverage_tiles`), an assembly per z3 tile with z6 tiles.
+/// Terrain's and slope's targets, each with its key (`key_now`: what its declared reads name,
+/// crate::agent::steps), done or not (docs/steps.md §2, Terrain): a z6 tile per z6 tile near the
+/// coverage (`coverage_tiles`), an assembly per z3 tile with z6 tiles. `UNKNOWN` (None for slope's)
+/// while a target's key can't be worked out (its water digest not made, a dataset or a terrain
+/// pack's index unread).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TerrainTargets {
-    /// Terrain's z6 tiles ("6/x/y"): keyed on the terrain's version, the tiles it makes near the
-    /// coverage (`piece_coverage`), the terrain's declared sources and the water it reads
-    /// (`water_key`); `UNKNOWN` while either isn't worked out.
+    /// Terrain's z6 tiles ("6/x/y").
     pub terrain: Vec<(String, String)>,
-    /// Its assemblies ("3/x/y"): keyed on their z6 tiles' mids by content ("-" for one without: it
-    /// can't be assembled until each has one) and the water it reads (`water_key`); `UNKNOWN`
-    /// likewise.
+    /// Its assemblies ("3/x/y").
     pub terrain_lo: Vec<(String, String)>,
-    /// Slope's z6 tiles ("6/x/y"): keyed on the terrain tiles each can read (`slope_piece_key`); None
-    /// while that can't be told (a terrain pack's index unread).
+    /// Slope's z6 tiles ("6/x/y").
     pub slope: Vec<(String, Option<String>)>,
-    /// Its assemblies ("3/x/y"): keyed on their z6 tiles' mids by content and the z3 tile's terrain lo
-    /// pack.
+    /// Its assemblies ("3/x/y").
     pub slope_lo: Vec<(String, String)>,
     /// The z6 tiles ("6/x/y") with a terrain hi pack or mid that the coverage has left (no z6 tile):
-    /// "none" z6 tiles, whose runs drop them (`none_piece_key`). Not in `terrain`: terrain's assembly
+    /// "none" z6 tiles, whose runs drop them. Not in `terrain`: terrain's assembly
     /// doesn't wait for them (it reads no hi pack).
     #[serde(default)]
     pub terrain_none: Vec<(String, String)>,
@@ -1433,26 +1241,22 @@ pub struct TerrainTargets {
     #[serde(default)]
     pub slope_none: Vec<(String, String)>,
     /// The z3 tiles ("3/x/y") with a terrain lo pack that the coverage has left (no z6 tile): "none"
-    /// assemblies, whose runs drop it (`none_lo_key`); the root is then made again (its key names
+    /// assemblies, whose runs drop it; the root is then made again (its key names
     /// the lo packs).
     #[serde(default)]
     pub terrain_lo_none: Vec<(String, String)>,
     /// The same of slope's lo packs.
     #[serde(default)]
     pub slope_lo_none: Vec<(String, String)>,
-    /// Terrain-deep's z10 tiles ("10/x/y": crate::terrain_deep::targets_in), keyed on what they read
-    /// (`terrain_deep_key`); `UNKNOWN` while the water or the pool's datasets a base it reads isn't
-    /// worked out. None while the fine datasets can't be read (the terrain-hi keys are `UNKNOWN`
-    /// then, and every z6 tile waits).
+    /// Terrain-deep's z10 tiles ("10/x/y": crate::terrain_deep::targets_in); none while the fine
+    /// datasets can't be read (the terrain-hi keys are `UNKNOWN` then, and every z6 tile waits).
     #[serde(default)]
     pub terrain_deep: Vec<(String, String)>,
-    /// Slope-deep's, the same z10 tiles, keyed on the terrain tiles each reads (`slope_deep_key`);
-    /// None while that can't be told.
+    /// Slope-deep's, the same z10 tiles.
     #[serde(default)]
     pub slope_deep: Vec<(String, Option<String>)>,
     /// The z10 tiles with a deep pack (a retired one too) and no terrain-deep target, and those with
-    /// a slope deep pack or deep mid and no slope-deep target: "none" targets, whose runs drop them
-    /// (`none_deep_key`).
+    /// a slope deep pack or deep mid and no slope-deep target: "none" targets, whose runs drop them.
     #[serde(default)]
     pub terrain_deep_none: Vec<(String, String)>,
     #[serde(default)]
@@ -1484,7 +1288,6 @@ pub fn terrain_slope_targets(x: &KeyCtx) -> TerrainTargets {
             .join(",")
     };
     let from = h(&[
-        &format!("scheme {}", x.scheme),
         &coverage_all(cov),
         &named("layers/terrain/"),
         &named("layers/slope/"),
@@ -1498,7 +1301,7 @@ pub fn terrain_slope_targets(x: &KeyCtx) -> TerrainTargets {
     ]);
     let made = std::cell::RefCell::new(None);
     let kept = tiles.memo("terrain-targets", &from, || {
-        let t = terrain_slope_targets_made(cov, m, tiles).now(x);
+        let t = terrain_slope_targets_made(x);
         let whole = t.slope.iter().chain(&t.slope_deep).all(|(_, k)| k.is_some())
             && !t.terrain.iter().chain(&t.terrain_lo).chain(&t.terrain_deep).any(|(_, k)| k == UNKNOWN);
         let json = serde_json::to_string(&t).unwrap_or_default();
@@ -1511,89 +1314,31 @@ pub fn terrain_slope_targets(x: &KeyCtx) -> TerrainTargets {
     });
     match (made.into_inner(), kept) {
         (Some(t), _) => t,
-        (None, Ok(json)) => {
-            serde_json::from_str(&json).unwrap_or_else(|_| terrain_slope_targets_made(cov, m, tiles).now(x))
-        }
-        (None, Err(_)) => terrain_slope_targets_made(cov, m, tiles).now(x),
+        (None, Ok(json)) => serde_json::from_str(&json).unwrap_or_else(|_| terrain_slope_targets_made(x)),
+        (None, Err(_)) => terrain_slope_targets_made(x),
     }
 }
 
-impl TerrainTargets {
-    /// Its targets keyed under `x.scheme` (`key_now`), from scheme 1's.
-    pub fn now(self, x: &KeyCtx) -> TerrainTargets {
-        let k = |step: &str, v: Vec<(String, String)>| keyed_now(step, v, x);
-        let o = |step: &str, v: Vec<(String, Option<String>)>| -> Vec<(String, Option<String>)> {
-            v.into_iter().map(|(t, k)| (t.clone(), key_now_opt(step, &t, k, x))).collect()
-        };
-        TerrainTargets {
-            terrain: k("terrain-hi", self.terrain),
-            terrain_lo: k("terrain-lo", self.terrain_lo),
-            slope: o("slope-hi", self.slope),
-            slope_lo: k("slope-lo", self.slope_lo),
-            terrain_none: k("terrain-hi", self.terrain_none),
-            slope_none: k("slope-hi", self.slope_none),
-            terrain_lo_none: k("terrain-lo", self.terrain_lo_none),
-            slope_lo_none: k("slope-lo", self.slope_lo_none),
-            terrain_deep: k("terrain-deep", self.terrain_deep),
-            slope_deep: o("slope-deep", self.slope_deep),
-            terrain_deep_none: k("terrain-deep", self.terrain_deep_none),
-            slope_deep_none: k("slope-deep", self.slope_deep_none),
-            reads_root: self.reads_root,
-        }
-    }
-}
-
-/// `terrain_slope_targets`, worked out.
-pub fn terrain_slope_targets_made(
-    cov: &Coverage,
-    m: &BTreeMap<String, String>,
-    tiles: &TerrainTiles,
-) -> TerrainTargets {
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    // (The water's source: the latest pass's basemap, its digests' file.)
-    let pin = crate::terrain_pack::water_source_pin(m);
-    let idx = pin.as_deref().and_then(|p| tiles.water_idx(m, p));
-    let water = |t: &str, from: &str| water_key(pin.as_deref(), idx, t, from);
-    // (The elevation pool's datasets each target reads: its targets wait while they can't be told.
-    // A z6 tile's, with what it reads of the fine datasets: crate::terrain_deep::piece_key_lines.)
-    let datasets = |z: u8, x: u32, y: u32| tiles.terrain_datasets(m, crate::stage::tile_box_grown(z, x, y, 0.0));
-    let fine = tiles.fine(m);
-    let piece_datasets = |x: u32, y: u32| {
-        let deep = crate::terrain_deep::piece_key_lines(fine.as_deref()?, cov, (x, y));
-        Some(format!("{}\n{deep}", datasets(6, x, y)?))
-    };
+/// `terrain_slope_targets`, worked out: which targets there are, and which are "none" (one the
+/// coverage left, listed to drop its outputs), each keyed (`key_now`).
+pub fn terrain_slope_targets_made(x: &KeyCtx) -> TerrainTargets {
+    let (cov, m, tiles) = (x.cov, x.m, x.tiles);
+    let key = |step: &str, t: &str| key_now(step, t, false, x);
+    let none = |step: &str, t: &str| (t.to_string(), key_now(step, t, true, x));
     let mut out = TerrainTargets::default();
     let near = coverage_tiles(cov);
-    // (Each z6 tile's coverage as it reads it, datasets and water, as its deep targets' keys read
-    // them too: worked out once a z6 tile, not once a target over it.)
-    let mut piece_reads: HashMap<(u32, u32), Option<String>> = HashMap::new();
     for (q, ts) in &near {
         let qs = format!("3/{}/{}", q.0, q.1);
-        let (mut tmids, mut smids) = (Vec::new(), Vec::new());
-        for &(x, y) in ts {
-            let t = format!("6/{x}/{y}");
-            let fp = piece_coverage(cov, (x, y));
-            let hi = crate::terrain_pack::makes_hi(cov, (x, y));
-            let ws = water(&t, &piece_water_from(&fp)).zip(piece_datasets(x, y));
-            piece_reads.insert((x, y), ws.as_ref().map(|(w, s)| format!("{t} {fp} {s} {w}")));
-            out.terrain.push((
-                t.clone(),
-                ws.map_or_else(|| UNKNOWN.to_string(), |(w, s)| piece_key_made((x, y), &fp, &s, &w, hi)),
-            ));
-            out.slope.push((t.clone(), slope_piece_key((x, y), m, tiles).ok()));
-            if reads_root((6, x, y), m, tiles) {
+        for &(tx, ty) in ts {
+            let t = format!("6/{tx}/{ty}");
+            out.terrain.push((t.clone(), key("terrain-hi", &t)));
+            out.slope.push((t.clone(), super::steps::derived_key("slope-hi", &t, x)));
+            if reads_root((6, tx, ty), m, tiles) {
                 out.reads_root.insert(t.clone());
             }
-            tmids.push(format!("{t}={}", get(&crate::terrain_pack::mid_logical(x, y))));
-            smids.push(format!("{t}={}", get(&crate::slope_pack::mid_logical(x, y))));
         }
-        out.terrain_lo.push((
-            qs.clone(),
-            water(&qs, crate::terrain_water::AREA_FROM)
-                .zip(datasets(3, q.0, q.1))
-                .map_or_else(|| UNKNOWN.to_string(), |(w, s)| terrain_lo_key(*q, &w, &s, &tmids)),
-        ));
-        out.slope_lo.push((qs.clone(), slope_lo_key(*q, &smids, &slope_lo_terrain(*q, m))));
+        out.terrain_lo.push((qs.clone(), key("terrain-lo", &qs)));
+        out.slope_lo.push((qs.clone(), key("slope-lo", &qs)));
     }
     // The z6 tiles the coverage has left with a hi pack or a mid still named: "none" z6 tiles.
     let pieces: BTreeSet<(u32, u32)> = near.values().flatten().copied().collect();
@@ -1608,11 +1353,7 @@ pub fn terrain_slope_targets_made(
                     .map(|u| (u.x, u.y)),
             );
         }
-        ts.into_iter()
-            .filter(|t| !pieces.contains(t))
-            .map(|(x, y)| format!("6/{x}/{y}"))
-            .map(|t| (t.clone(), none_piece_key(step, &t)))
-            .collect()
+        ts.into_iter().filter(|t| !pieces.contains(t)).map(|(x, y)| none(step, &format!("6/{x}/{y}"))).collect()
     };
     out.terrain_none = left("terrain-hi", ["layers/terrain/hi/", "work/terrain-mid/"]);
     out.slope_none = left("slope-hi", ["layers/slope/hi/", "work/slope-mid/"]);
@@ -1620,30 +1361,16 @@ pub fn terrain_slope_targets_made(
     // past the base's zoom, keyed on what each reads; none while the fine datasets can't be read
     // (every terrain-hi key is `UNKNOWN` then: the z6 tiles wait).
     let mut deep: BTreeSet<(u32, u32)> = BTreeSet::new();
-    if let Some(sets) = fine.as_deref() {
-        for &(x, y) in &pieces {
-            for t in crate::terrain_deep::targets_in(sets, cov, (x, y)) {
+    if let Some(sets) = tiles.fine(m).as_deref() {
+        for &p in &pieces {
+            for t in crate::terrain_deep::targets_in(sets, cov, p) {
                 deep.insert(t);
                 let ts = format!("{}/{}/{}", crate::terrain_deep::PACK_Z, t.0, t.1);
-                // (The z6 tiles its base is made of, each as its terrain-hi run reads it.)
-                let bases: BTreeSet<(u32, u32)> =
-                    crate::terrain_deep::base_want(t).iter().map(|&(z, x, y)| (x >> (z - 6), y >> (z - 6))).collect();
-                let reads: Option<Vec<String>> = bases
-                    .into_iter()
-                    .filter_map(|p| piece_reads.get(&p))
-                    // (As its terrain-hi key names them, the z10 tiles it rounds as coarser than
-                    // native among them, crate::terrain_pack::Sources::deeper: the base is made so.)
-                    .cloned()
-                    .collect();
-                let key = reads.map_or_else(
-                    || UNKNOWN.to_string(),
-                    |r| terrain_deep_key(t, &crate::terrain_deep::target_key_lines(sets, t), &r),
-                );
-                out.terrain_deep.push((ts.clone(), key));
+                out.terrain_deep.push((ts.clone(), key("terrain-deep", &ts)));
                 if reads_root((crate::terrain_deep::PACK_Z, t.0, t.1), m, tiles) {
                     out.reads_root.insert(ts.clone());
                 }
-                out.slope_deep.push((ts, slope_deep_key(t, m, tiles).ok()));
+                out.slope_deep.push((ts.clone(), super::steps::derived_key("slope-deep", &ts, x)));
             }
         }
     }
@@ -1654,8 +1381,7 @@ pub fn terrain_slope_targets_made(
         }
         ts.into_iter()
             .filter(|t| !deep.contains(t))
-            .map(|(x, y)| format!("{}/{x}/{y}", crate::terrain_deep::PACK_Z))
-            .map(|t| (t.clone(), none_deep_key(step, &t)))
+            .map(|(x, y)| none(step, &format!("{}/{x}/{y}", crate::terrain_deep::PACK_Z)))
             .collect()
     };
     out.terrain_deep_none = deep_left(
@@ -1675,8 +1401,7 @@ pub fn terrain_slope_targets_made(
             .take_while(|(l, _)| l.starts_with(&p))
             .filter_map(|(l, _)| TileId::parse(&l[p.len()..]))
             .filter(|u| u.z == 3 && !near.contains_key(&(u.x, u.y)))
-            .map(|u| format!("3/{}/{}", u.x, u.y))
-            .map(|q| (q.clone(), none_lo_key(layer, &q)))
+            .map(|u| none(&format!("{layer}-lo"), &format!("3/{}/{}", u.x, u.y)))
             .collect()
     };
     out.terrain_lo_none = lo_left("terrain");
@@ -1684,64 +1409,10 @@ pub fn terrain_slope_targets_made(
     out
 }
 
-/// The key of a terrain or slope assembly (of `layer`) of a z3 tile the coverage has left ("3/x/y"),
-/// with a lo pack still named: its run drops it (crate::terrain_pack::drop_lo,
-/// crate::slope_pack::drop_lo).
-pub fn none_lo_key(layer: &str, q: &str) -> String {
-    let v = if layer == "terrain" { TERRAIN_LO_V } else { SLOPE_LO_V };
-    h(&[&format!("{layer}-lo {v}"), q, "none"])
-}
-
-/// The key of a terrain or slope z6 tile (`step`) the coverage has left ("6/x/y"), with a hi pack or a
-/// mid still named: its run drops them (crate::terrain_pack::drop_piece,
-/// crate::slope_pack::drop_piece).
-pub fn none_piece_key(step: &str, t: &str) -> String {
-    let v = if step == "terrain-hi" { TERRAIN_V } else { SLOPE_V };
-    h(&[&format!("{step} {v}"), t, "none"])
-}
-
-/// Whether `key` is target `t` of `step`'s "none" key under either scheme (`steps::none_key`,
-/// crate::agent::rekey::scheme1::is_none_key): a drop, its run dropping its packs and reading
-/// nothing (scenic-build's `run_drop`, crate::needs::DROPS).
+/// Whether `key` is target `t` of `step`'s "none" key (`steps::none_key`): a drop, its run dropping
+/// its packs and reading nothing (scenic-build's `run_drop`, crate::needs::DROPS).
 pub fn is_none_key(step: &str, t: &str, key: &str) -> bool {
-    super::steps::none_key(step, t).as_deref() == Some(key) || super::rekey::scheme1::is_none_key(step, t, key)
-}
-
-/// The key of a terrain-deep or slope-deep z10 tile (`step`, "10/x/y") that's no target any more,
-/// with its packs (or deep mid) still named: its run drops them (crate::terrain_deep::drop_target,
-/// crate::slope_pack::drop_deep).
-pub fn none_deep_key(step: &str, t: &str) -> String {
-    let v = if step == "terrain-deep" { TERRAIN_DEEP_V } else { SLOPE_V };
-    h(&[&format!("{step} {v}"), t, "none"])
-}
-
-/// Terrain-deep z10 tile `t`'s key: its version, terrain-hi's (its base is made by terrain-hi's
-/// code) and the codec, the tile, what it reads of the fine datasets
-/// (crate::terrain_deep::target_key_lines: their code too), and of each z6 tile its base is made
-/// of, what that tile's terrain-hi run reads (`bases`: the coverage as it reads it (`piece_coverage`), the pool's
-/// datasets meeting it with its z10 tiles past the base's zoom, and its water, as `terrain_piece_key`
-/// names them).
-pub fn terrain_deep_key(t: (u32, u32), fine: &str, bases: &[String]) -> String {
-    h(&[
-        &format!("terrain-deep {TERRAIN_DEEP_V}"),
-        &format!("terrain-hi {TERRAIN_V}"),
-        &crate::terrain_codec::version(),
-        &format!("{}/{}/{}", crate::terrain_deep::PACK_Z, t.0, t.1),
-        fine,
-        &bases.join("\n"),
-    ])
-}
-
-/// A terrain z6 tile's key as the targets have it: `terrain_piece_key`, and for a z6 tile that makes no
-/// hi tile (`hi` false: crate::terrain_pack::makes_hi) "no hi tiles" after it, its run dropping any
-/// hi pack an earlier run left (so a record from before that drop isn't current).
-pub fn piece_key_made(t: (u32, u32), fp: &str, sources: &str, water: &str, hi: bool) -> String {
-    let k = terrain_piece_key(t, fp, sources, water);
-    if hi {
-        k
-    } else {
-        h(&[&k, "no hi tiles"])
-    }
+    super::steps::none_key(step, t).as_deref() == Some(key)
 }
 
 /// A terrain target's key while the water it reads isn't worked out (the `terrain-water` job hasn't
@@ -1768,22 +1439,6 @@ pub fn water_key(
         None => Some("-".into()),
         Some(_) => idx?.get(t, from).map(|d| format!("water {TERRAIN_WATER_V} {d}")),
     }
-}
-
-/// Terrain z6 tile `t`'s key (z6 tile (x, y)): the version and the codec
-/// (crate::terrain_codec::version), the coverage as it reads it (`fp`: `piece_coverage`, the tiles it makes), the
-/// elevation pool's datasets meeting it and what its deep levels read (`sources`:
-/// TerrainTiles::terrain_datasets, crate::terrain_deep::piece_key_lines) and the water it reads
-/// (`water_key`).
-pub fn terrain_piece_key(t: (u32, u32), fp: &str, sources: &str, water: &str) -> String {
-    h(&[
-        &format!("terrain-hi {TERRAIN_V}"),
-        &crate::terrain_codec::version(),
-        &format!("6/{}/{}", t.0, t.1),
-        fp,
-        sources,
-        water,
-    ])
 }
 
 /// What the terrain's targets read of the water, as the `terrain-water` job works their digests
@@ -1861,19 +1516,15 @@ pub fn terrain_water_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     if m.contains_key(&crate::terrain_water::idx_logical(&pin)) && idx.is_none() {
         return None;
     }
-    let mut parts = vec![format!("terrain-water {TERRAIN_WATER_V}"), pin];
-    parts.extend(wants.iter().map(|(t, f)| format!("{t} {f}")));
-    let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-    let k = h(&refs);
-    let k = key_now_opt("terrain-water", "terrain-water", Some(k), x)?;
+    let k = world_key("terrain-water", x)?;
     (done.lo.get("terrain-water").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "terrain-water".into(), targets: vec![("terrain-water".into(), k)] })
 }
 
 /// The pyramids-fill step's z6 tiles (crate::pyramids): each near the coverage (`coverage_tiles`)
 /// that a declared pyramid read tile by tile meets (its accepted cover) and that makes hi tiles or has
-/// terrain-deep targets, with its key
-/// (`pyramids_key`); `UNKNOWN` while the water or the fine datasets it reads aren't worked out.
+/// terrain-deep targets, with its key (`key_now`); `UNKNOWN` while the water or the fine datasets it
+/// reads aren't worked out.
 /// None while the declared elevation datasets can't be read now; none without them.
 pub fn pyramids_targets(x: &KeyCtx) -> Option<Vec<(String, String)>> {
     use crate::dem::declared::Data;
@@ -1887,48 +1538,20 @@ pub fn pyramids_targets(x: &KeyCtx) -> Option<Vec<(String, String)>> {
     if pyr.is_empty() {
         return Some(Vec::new());
     }
-    let pin = crate::terrain_pack::water_source_pin(m);
-    let idx = pin.as_deref().and_then(|p| tiles.water_idx(m, p));
     let fine = tiles.fine(m);
     let mut out = Vec::new();
     for &(tx, ty) in coverage_tiles(cov).values().flatten() {
-        let b = crate::stage::tile_box_grown(6, tx, ty, 0.0);
-        let lines = crate::dem::declared::meeting(&pyr, b);
-        if lines.is_empty() {
+        if crate::dem::declared::meeting(&pyr, crate::stage::tile_box_grown(6, tx, ty, 0.0)).is_empty() {
             continue;
         }
-        let t = format!("6/{tx}/{ty}");
-        let fp = piece_coverage(cov, (tx, ty));
-        let water = water_key(pin.as_deref(), idx, &t, &piece_water_from(&fp));
-        let deep = fine.as_deref().map(|f| crate::terrain_deep::targets_in(f, cov, (tx, ty)));
         // (One making no hi tile and no deep target wants nothing: no job.)
-        if !crate::terrain_pack::makes_hi(cov, (tx, ty)) && deep.as_ref().is_some_and(|d| d.is_empty()) {
+        let deep = fine.as_deref().map(|f| crate::terrain_deep::targets_in(f, cov, (tx, ty)));
+        if !crate::terrain_pack::makes_hi(cov, (tx, ty)) && deep.is_some_and(|d| d.is_empty()) {
             continue;
         }
-        let k = match (water, deep) {
-            (Some(w), Some(d)) => pyramids_key((tx, ty), &fp, &lines.join(","), &w, &d),
-            _ => UNKNOWN.to_string(),
-        };
-        out.push((t, k));
+        out.push((format!("6/{tx}/{ty}"), false));
     }
     Some(keyed_now("pyramids-fill", out, x))
-}
-
-/// Pyramids-fill z6 tile `t`'s key: the fill's version (crate::pyramids::V), the tile, and what
-/// crate::pyramids::want reads for it: the coverage as it reads it (`fp`: `piece_coverage`, its terrain-hi levels), the
-/// declared pyramids meeting it (`pyramids`: their lines as the terrain's keys name them, their
-/// templates and covers in them), the water its open sea is read from (`water_key`) and its
-/// terrain-deep targets (`deep`: whose base tiles it takes whole).
-pub fn pyramids_key(t: (u32, u32), fp: &str, pyramids: &str, water: &str, deep: &[(u32, u32)]) -> String {
-    let deep: Vec<String> = deep.iter().map(|(x, y)| format!("{}/{x}/{y}", crate::terrain_deep::PACK_Z)).collect();
-    h(&[
-        &format!("pyramids-fill {}", crate::pyramids::V),
-        &format!("6/{}/{}", t.0, t.1),
-        fp,
-        pyramids,
-        water,
-        &format!("deep {}", deep.join(" ")),
-    ])
 }
 
 /// The pyramids-fill work (the lead's): its z6 tiles whose recorded key isn't their key now (one
@@ -1952,85 +1575,8 @@ pub fn job_of(mut w: Work) -> Work {
     w
 }
 
-/// Terrain's assembly of z3 tile `q`'s key: `mids`, its z6 tiles' as "6/x/y=<content name | ->", in
-/// column then row order; `water`, the water it reads (`water_key`).
-pub fn terrain_lo_key(q: (u32, u32), water: &str, sources: &str, mids: &[String]) -> String {
-    h(&[
-        &format!("terrain-lo {TERRAIN_LO_V}"),
-        &format!("terrain-hi {TERRAIN_V}"),
-        &crate::terrain_codec::version(),
-        &format!("3/{}/{}", q.0, q.1),
-        water,
-        sources,
-        &mids.join(","),
-    ])
-}
-
-/// Slope's assembly of z3 tile `q`'s key: `mids` as `terrain_lo_key`'s; `terrain_lo`, the content
-/// names of the terrain it reads: the z3 tile's lo pack, its edge neighbours' and the root.
-pub fn slope_lo_key(q: (u32, u32), mids: &[String], terrain_lo: &str) -> String {
-    h(&[
-        &format!("slope-lo {SLOPE_LO_V}"),
-        &format!("slope {SLOPE_V}"),
-        &crate::shade_codec::version(),
-        &format!("3/{}/{}", q.0, q.1),
-        &mids.join(","),
-        terrain_lo,
-    ])
-}
-
-/// The terrain a slope-lo z3 tile `q` reads, by content (its key's): its own lo pack, its edge
-/// neighbours' (Horn's border of the tiles it shades itself) and the root (a missing tile's
-/// ancestor).
-pub fn slope_lo_terrain(q: (u32, u32), m: &BTreeMap<String, String>) -> String {
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-").to_string();
-    std::iter::once(q)
-        .chain(edge_neighbours(3, q.0, q.1))
-        .map(|(x, y)| get(&format!("layers/terrain/lo/3-{x}-{y}")))
-        .chain(std::iter::once(get("layers/terrain/root/0-0-0")))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-/// Slope-hi z6 tile `t`'s key (z6 tile (x, y)): the step's version and the codec
-/// (crate::shade_codec::version), its terrain hi pack (which tiles of it there are: what it works
-/// out), its z10 tiles' deep mids by content (their slope-deep runs' parts, which it takes in:
-/// crate::slope_pack::deep_mids_under) and every terrain tile it reads itself, by content
-/// (`slope_reads`, those z10 tiles' subtrees left out). Kept by `tiles` with the packs those can be
-/// in.
-pub fn slope_piece_key(t: (u32, u32), m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Result<String, Unread> {
-    let ts = format!("6/{}/{}", t.0, t.1);
-    let hi = m.get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)).map(String::as_str).unwrap_or("-").to_string();
-    let mids = crate::slope_pack::deep_mids_under(m, t);
-    tiles.memo(&format!("slope-hi {ts}"), &slope_piece_from(t, m), || {
-        let skip: BTreeSet<(u32, u32)> = mids.iter().map(|(f, _)| *f).collect();
-        let reads = slope_reads((6, t.0, t.1), m, tiles, &skip)?;
-        let mut parts = vec![format!("slope-hi {SLOPE_V}"), crate::shade_codec::version(), ts.clone(), hi.clone()];
-        parts.extend(mids.iter().map(|((x, y), c)| format!("{}/{x}/{y}={c}", crate::terrain_deep::PACK_Z)));
-        parts.extend(read_lines(&reads));
-        let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-        Ok(h(&refs))
-    })
-}
-
-/// Slope-deep z10 tile `t`'s key: the step's version and the codec, the tile and every terrain tile
-/// its part of the pyramid reads (`slope_reads`: its terrain deep tiles and those of z11–12 under
-/// it, their ancestors to it, and Horn's border past them), by content. Kept by `tiles` with the
-/// packs those can be in (`slope_deep_from`).
-pub fn slope_deep_key(t: (u32, u32), m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Result<String, Unread> {
-    let z = crate::terrain_deep::PACK_Z;
-    let ts = format!("{z}/{}/{}", t.0, t.1);
-    tiles.memo(&format!("slope-deep {ts}"), &slope_deep_from(t, m), || {
-        let reads = slope_reads((z, t.0, t.1), m, tiles, &BTreeSet::new())?;
-        let mut parts = vec![format!("slope-deep {SLOPE_V}"), crate::shade_codec::version(), ts.clone()];
-        parts.extend(read_lines(&reads));
-        let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-        Ok(h(&refs))
-    })
-}
-
 /// The terrain tiles a slope pyramid of `top` reads (a slope-hi z6 tile's, its z10 tiles' deep
-/// mids' subtrees left out: `slope_piece_key`; a slope-deep z10 tile's: `slope_deep_key`), as
+/// mids' subtrees left out; a slope-deep z10 tile's), as
 /// key lines "z/x/y xxh3" ("-" for one none of its packs has), kept by `tiles` with the packs they
 /// can be in.
 pub fn slope_tile_lines(
@@ -2226,8 +1772,8 @@ pub struct TerrainWork {
     /// The stale terrain-deep and slope-deep targets, "none" ones too, runnable or not.
     pub terrain_deep_left: BTreeSet<String>,
     pub slope_deep_left: BTreeSet<String>,
-    /// The current z6 tiles without a mid nothing else makes (those the re-keying recorded:
-    /// agent::rekey): their mids made in idle time, after all other work, expected the same:
+    /// The current z6 tiles without a mid nothing else makes (recorded without one by an earlier
+    /// re-keying): their mids made in idle time, after all other work, expected the same:
     /// terrain's in z3 tiles whose assembly won't run, slope's all.
     pub backfill: Vec<Work>,
     /// The z3 tiles whose terrain is to be made: a z6 tile stale or wanted for its mid, the assembly
@@ -2467,8 +2013,8 @@ pub struct TreeWork {
     /// The assemblies that can run: stale, every z6 tile of theirs current with its mid (one of
     /// "none", whenever).
     pub lo: Vec<(String, String)>,
-    /// The current z6 tiles without a mid in a z3 tile whose assembly won't run (those the re-keying
-    /// recorded: agent::rekey): their mids made in idle time, after all other work, expected the
+    /// The current z6 tiles without a mid in a z3 tile whose assembly won't run (recorded without one
+    /// by an earlier re-keying): their mids made in idle time, after all other work, expected the
     /// same (docs/building.md §2, Order).
     pub backfill: Vec<(String, String)>,
     /// What a region lacks before it's published: the stale z6 tiles and assemblies, runnable or not.
@@ -2848,13 +2394,9 @@ pub struct KeyCtx<'a> {
     pub inputs: &'a BTreeMap<String, String>,
     pub reach: Option<&'a Reaches>,
     pub tiles: &'a TerrainTiles,
-    /// The key scheme the enumerations key targets under (`key_now`): `steps::KEY_SCHEME`, or 1 for
-    /// the rekey's adapter (crate::agent::rekey::scheme1, until step 4).
-    pub scheme: u32,
 }
 
 impl<'a> KeyCtx<'a> {
-    /// Under `steps::KEY_SCHEME`.
     pub fn new(
         cov: &'a Coverage,
         date: &'a str,
@@ -2863,12 +2405,7 @@ impl<'a> KeyCtx<'a> {
         reach: Option<&'a Reaches>,
         tiles: &'a TerrainTiles,
     ) -> KeyCtx<'a> {
-        KeyCtx { cov, date, m, inputs, reach, tiles, scheme: super::steps::KEY_SCHEME }
-    }
-
-    /// The same, under scheme 1 (crate::agent::rekey::scheme1).
-    pub fn scheme_1(&self) -> KeyCtx<'a> {
-        KeyCtx { scheme: 1, ..*self }
+        KeyCtx { cov, date, m, inputs, reach, tiles }
     }
 }
 
@@ -2893,148 +2430,24 @@ impl PassCtx {
     }
 }
 
-/// Target `t` of `step`'s key under `x.scheme`, from what its family's enumeration
-/// worked out under scheme 1 (`k1`, kept until step 4: crate::agent::rekey::scheme1): under 2, a
-/// "none" target's `steps::none_key`, any other's `steps::derived_key` (`UNKNOWN` while that can't
-/// be worked out, or while `k1` is); a step whose key isn't derived (`steps::derived`) keeps
-/// `k1`. The one way an enumeration keys its targets.
-pub fn key_now(step: &str, t: &str, k1: String, x: &KeyCtx) -> String {
-    if x.scheme == 1 || k1 == UNKNOWN || !super::steps::derived(step) {
-        return k1;
-    }
-    let k = if crate::agent::rekey::scheme1::is_none_key(step, t, &k1) {
-        super::steps::none_key(step, t)
-    } else {
-        super::steps::derived_key(step, t, x)
-    };
+/// Target `t` of `step`'s key (docs/readiness.md §4): a "none" target's (`none`: one the coverage
+/// left, listed to drop its outputs) `steps::none_key`, any other's `steps::derived_key`; `UNKNOWN`
+/// while that can't be worked out. The one way an enumeration keys its targets: which targets there
+/// are, and which are "none", is the enumeration's; whether a key can be worked out, the
+/// derivation's alone.
+pub fn key_now(step: &str, t: &str, none: bool, x: &KeyCtx) -> String {
+    let k = if none { super::steps::none_key(step, t) } else { super::steps::derived_key(step, t, x) };
     k.unwrap_or_else(|| UNKNOWN.to_string())
 }
 
-/// `key_now` of each of `step`'s targets `v` (target, scheme-1 key).
-pub fn keyed_now(step: &str, v: Vec<(String, String)>, x: &KeyCtx) -> Vec<(String, String)> {
-    v.into_iter().map(|(t, k)| (t.clone(), key_now(step, &t, k, x))).collect()
+/// `key_now` of each of `step`'s targets `ts` (target, whether "none").
+pub fn keyed_now(step: &str, ts: Vec<(String, bool)>, x: &KeyCtx) -> Vec<(String, String)> {
+    ts.into_iter().map(|(t, none)| (t.clone(), key_now(step, &t, none, x))).collect()
 }
 
-/// `key_now` of a target whose key may not be worked out now (None stays None, as `UNKNOWN`).
-pub fn key_now_opt(step: &str, t: &str, k1: Option<String>, x: &KeyCtx) -> Option<String> {
-    Some(key_now(step, t, k1?, x)).filter(|k| k != UNKNOWN)
-}
-
-/// Every target of `step` with its key under `x.scheme`, as the planner's enumerations key them
-/// (`key_now`; a target whose key can't be worked out now left out); None for a step whose key
-/// isn't derived (`steps::derived`). Scheme 1's (`KeyCtx::scheme_1`) is
-/// crate::agent::rekey::scheme1's. (Every family's `UNKNOWN` left out here, not by each: a record
-/// re-keyed to it would be current while its key can't be worked out.)
-pub fn step_keys(step: &str, x: &KeyCtx) -> Option<Vec<(String, String)>> {
-    step_keys_kept(step, x, &Default::default())
-}
-
-/// `step_keys`, terrain's and slope's targets worked out once for all six of their steps in `tt`
-/// (a reader of every step's keys, crate::agent::rekey::scheme_2, asks for each: worked out
-/// afresh, they were most of its minutes). `tt` is for `x` alone.
-pub fn step_keys_kept(
-    step: &str,
-    x: &KeyCtx,
-    tt: &std::cell::OnceCell<TerrainTargets>,
-) -> Option<Vec<(String, String)>> {
-    step_keys_all(step, x, tt).map(|v| v.into_iter().filter(|(_, k)| k != UNKNOWN).collect())
-}
-
-/// Every target of `step` with its key under `x.scheme`, `UNKNOWN` for one whose key can't be
-/// worked out now (`step_keys_kept` leaves those out): what the step lists as its targets.
-pub fn step_keys_all(
-    step: &str,
-    x: &KeyCtx,
-    kept: &std::cell::OnceCell<TerrainTargets>,
-) -> Option<Vec<(String, String)>> {
-    let none = Keys::default();
-    let (cov, date, m, inputs) = (x.cov, x.date, x.m, x.inputs);
-    let world = |k: Option<String>| Some(k.map(|k| vec![(step.to_string(), k)]).unwrap_or_default());
-    let of_work = |w: Option<Work>| Some(w.map(|w| w.targets).unwrap_or_default());
-    let tt = || kept.get_or_init(|| terrain_slope_targets(x)).clone();
-    let known = |v: Vec<(String, Option<String>)>| v.into_iter().filter_map(|(t, k)| Some((t, k?))).collect::<Vec<_>>();
-    let tiled = |v: Vec<(TileId, String)>| Some(v.into_iter().map(|(u, k)| (u.slash(), k)).collect());
-    let trees = || trees_targets(x);
-    match super::steps::current(step) {
-        "outlines" => world(outlines_key(x)),
-        "regions-land" => of_work(regions_land_work(x, &none)),
-        "trailends" => of_work(trailends_work(x, &none)),
-        "reach" => world(reach_key(x)),
-        "labels" => of_work(labels_work(x, &none)),
-        "spoken" => of_work(spoken_work(x, &none)),
-        "summits" => of_work(summits_work(x, &none)),
-        "water" => of_work(water_work(x, &none)),
-        "timetables-todo" => of_work(timetables_todo_work(x, &none)),
-        "heritage-sites" => world(heritage_sites_key(x)),
-        "terrain-water" => of_work(terrain_water_work(x, &none)),
-        "pyramids-fill" => pyramids_targets(x),
-        "terrain-hi" => {
-            let t = tt();
-            Some(t.terrain.into_iter().chain(t.terrain_none).collect())
-        }
-        "terrain-lo" => {
-            let t = tt();
-            Some(t.terrain_lo.into_iter().chain(t.terrain_lo_none).collect())
-        }
-        "terrain-deep" => {
-            let t = tt();
-            Some(t.terrain_deep.into_iter().chain(t.terrain_deep_none).collect())
-        }
-        "slope-hi" => {
-            let t = tt();
-            Some(known(t.slope).into_iter().chain(t.slope_none).collect())
-        }
-        "slope-lo" => {
-            let t = tt();
-            Some(t.slope_lo.into_iter().chain(t.slope_lo_none).collect())
-        }
-        "slope-deep" => {
-            let t = tt();
-            Some(known(t.slope_deep).into_iter().chain(t.slope_deep_none).collect())
-        }
-        "trees" => Some(trees().pieces.into_iter().map(|(t, k, _)| (t, k)).collect()),
-        "trees-lo" => Some(trees().lo.into_iter().map(|(t, k, _)| (t, k)).collect()),
-        "unit" => Some(unit_keys(x).into_iter().filter_map(|(u, k)| Some((u.slash(), k?))).collect()),
-        "pois" => tiled(pois_keys(x)?),
-        "peaks" => tiled(peaks_keys(x)),
-        "items" => {
-            let now = current_pois(cov, date, m);
-            world((!now.is_empty()).then(|| items_key(x, &now)))
-        }
-        "heritage" => world(heritage_key(x)),
-        "marks" => {
-            let units: Vec<TileId> = pois_keys(x)?.into_iter().map(|(u, _)| u).collect();
-            world(Some(marks_key(x, &units)))
-        }
-        "overlays" => world(overlays_key(x)),
-        "roadunits" => world(roadunits_key(x)),
-        "stations" | "ferries" => world(transit_key(step, x)),
-        "terrain-root" => world(root_key("terrain", x)),
-        "slope-root" => world(root_key("slope", x)),
-        "depth" => depth_targets(x).map(|d| d.hi),
-        "depth-lo" => depth_targets(x).map(|d| d.lo),
-        "depth-root" => world(depth_root_key(x)),
-        "polar-terrain" => polar_targets(x).map(|p| p.terrain),
-        "polar-slope" => polar_targets(x).map(|p| p.slope),
-        "polar-root" => polar_targets(x).map(|p| p.root),
-        "bld-fetch" => bld_sources(inputs).map(|_| vec![(step.to_string(), bld_fetch_key(x))]),
-
-        "bldprep" => bld_sources(inputs).map(|_| bld_targets(x).prep),
-        "bldtiles" => bld_sources(inputs).map(|_| bld_targets(x).tiles),
-        "bldfield-lo" => bld_sources(inputs).map(|_| bld_targets(x).lo.into_iter().map(|(q, k, _)| (q, k)).collect()),
-        "rail-feeds" | "rail" => {
-            // (The chain's first stale step as if each before it succeeded: rail's once its feeds'
-            // is recorded.)
-            let mut d = Keys::default();
-            let feeds = rail_next(x, &d)??;
-            if step == "rail-feeds" {
-                return Some(feeds.targets);
-            }
-            d.record(&feeds.step, &feeds.targets);
-            of_work(rail_next(x, &d)?)
-        }
-        _ => None,
-    }
+/// A world step's key, its one target named after it: None while it can't be worked out.
+fn world_key(step: &str, x: &KeyCtx) -> Option<String> {
+    super::steps::derived_key(step, step, x)
 }
 
 /// The plan for the coverage `cov`, the pass of `date`, the build manifest `m` (logical → content)
@@ -3866,38 +3279,16 @@ fn rail_chain(x: &KeyCtx, done: &Keys) -> Option<Work> {
 /// - rail reads the feeds' list (each feed's zip by content name, and its day), the static files'
 ///   accepted index (each zip by content), the pass's rail set and the coverage.
 fn rail_next(x: &KeyCtx, done: &Keys) -> Option<Option<Work>> {
-    let (cov, date, m, inputs) = (x.cov, x.date, x.m, x.inputs);
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+    let (date, m) = (x.date, x.m);
     m.get(&crate::inputs::logical(crate::inputs::feeds::UNIT))?;
-    let declared = inputs.get("feeds").map(String::as_str).unwrap_or("-");
-    let keys = inputs.get("keys").map(String::as_str).unwrap_or("");
-    let used = inputs.get("feed-keys").map(String::as_str).unwrap_or("");
-    if keys == "?" || used == "?" || declared == "?" {
-        return None;
-    }
-    // (Of the keys inputs/keys.env holds, those the declarations fetch with.)
-    let used: Vec<&str> = used.split(',').filter(|k| !k.is_empty()).collect();
-    let keys = keys.split(',').filter(|k| used.contains(k)).collect::<Vec<_>>().join(",");
-    let cover = coverage_all(cov);
-    let k = h(&[
-        &format!("rail-feeds {RAIL_FEEDS_V}"),
-        declared,
-        get(crate::rail::CATALOGUE),
-        get(&format!("sources/osm/{date}/outlines")),
-        &cover,
-        &format!("keys {keys}"),
-    ]);
-    let k = key_now_opt("rail-feeds", "rail-feeds", Some(k), x)?;
+    let k = world_key("rail-feeds", x)?;
     if done.lo.get("rail-feeds").map(String::as_str) != Some(k.as_str()) {
         return Some(Some(Work { step: "rail-feeds".into(), targets: vec![("rail-feeds".into(), k)] }));
     }
-    let feeds = m.get(crate::rail::FEEDS)?;
-    let set = m.get(&crate::osmpass::set_name(date, "rail"))?;
-    let statics = m.get(&crate::inputs::logical(crate::inputs::gtfs::UNIT))?;
-    // (The spacing its extract reads: crate::dem::spacing; not known, it waits.)
-    let spacing = crate::dem::spacing::key_line(inputs)?;
-    let k = h(&[&format!("rail {RAIL_V}"), feeds, statics, set, &cover, &spacing]);
-    let k = key_now_opt("rail", "rail", Some(k), x)?;
+    m.get(crate::rail::FEEDS)?;
+    m.get(&crate::osmpass::set_name(date, "rail"))?;
+    m.get(&crate::inputs::logical(crate::inputs::gtfs::UNIT))?;
+    let k = world_key("rail", x)?;
     Some(
         (done.lo.get("rail").map(String::as_str) != Some(k.as_str()))
             .then(|| Work { step: "rail".into(), targets: vec![("rail".into(), k)] }),
@@ -4113,19 +3504,10 @@ fn publish_chain(x: &KeyCtx, done: &Keys, pl: &PackLo, root_held: bool, low: boo
 /// tile built before them: its road values), what the job reads (only those changed since the
 /// index before: `roadunits_reads`); None before any z6 tile's road values are made.
 pub(crate) fn roadunits_key(x: &KeyCtx) -> Option<String> {
-    key_now_opt("roadunits", "roadunits", roadunits_key_1(x.m), x)
-}
-
-/// `roadunits_key` under scheme 1.
-fn roadunits_key_1(m: &BTreeMap<String, String>) -> Option<String> {
-    let roads: Vec<String> = roadunits_reads(m).into_iter().map(|(_, l, c)| format!("{l}={c}")).collect();
-    if roads.is_empty() {
+    if roadunits_reads(x.m).is_empty() {
         return None;
     }
-    let mut ins = vec![format!("roadunits {ROADUNITS_V}")];
-    ins.extend(roads);
-    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-    Some(h(&refs))
+    world_key("roadunits", x)
 }
 
 /// Rail stops' (`stations`) or ferries' key, from the pass's set, once there are z6 tiles (before
@@ -4135,28 +3517,14 @@ fn roadunits_key_1(m: &BTreeMap<String, String>) -> Option<String> {
 /// files: they wait for the list (the zips' content names and days) and the static files' accepted
 /// index rather than be made without them (all ovconv::ferries_job reads).
 pub(crate) fn transit_key(step: &str, x: &KeyCtx) -> Option<String> {
-    key_now_opt(step, step, transit_key_1(step, x.date, x.m), x)
-}
-
-/// `transit_key` under scheme 1.
-fn transit_key_1(step: &str, date: &str, m: &BTreeMap<String, String>) -> Option<String> {
-    let built = crate::ovconv::cover_of(
-        m.range("base/".to_string()..).take_while(|(l, _)| l.starts_with("base/")).map(|(l, _)| l),
-    );
-    if built.is_empty() {
-        return None;
-    }
-    let (v, set) = if step == "stations" { (STATIONS_V, "rail") } else { (FERRIES_V, "ferries") };
-    let set_c = m.get(&crate::osmpass::set_name(date, set))?;
-    let mut ins = vec![format!("{step} {v}"), set_c.clone(), String::new()];
+    let m = x.m;
+    m.range("base/".to_string()..).next().filter(|(l, _)| l.starts_with("base/"))?;
+    m.get(&crate::osmpass::set_name(x.date, if step == "stations" { "rail" } else { "ferries" }))?;
     if step == "ferries" {
-        ins.push(m.get(crate::rail::FERRY_FEEDS)?.clone());
-        ins.push(m.get(&crate::inputs::logical(crate::inputs::gtfs::UNIT))?.clone());
-    } else {
-        ins.extend(built.iter().map(|(x, y)| format!("6/{x}/{y}")));
+        m.get(crate::rail::FERRY_FEEDS)?;
+        m.get(&crate::inputs::logical(crate::inputs::gtfs::UNIT))?;
     }
-    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-    Some(h(&refs))
+    world_key(step, x)
 }
 
 /// What the road → z6 tiles index reads, per z6 tile in `m`: (z6 tile, logical name, content name) of its
@@ -4181,44 +3549,15 @@ pub fn roadunits_reads(m: &BTreeMap<String, String>) -> Vec<(TileId, String, Str
 /// the coverage gone from its z3 tile, makes it again), and the slope's the terrain's root; None
 /// without one.
 pub fn root_key(layer: &str, x: &KeyCtx) -> Option<String> {
-    let step = format!("{layer}-root");
-    key_now_opt(&step, &step, root_key_1(layer, x.m), x)
-}
-
-/// `root_key` under scheme 1.
-fn root_key_1(layer: &str, m: &BTreeMap<String, String>) -> Option<String> {
-    let step = format!("{layer}-root");
     let p = format!("layers/{layer}/lo/");
-    let mut ins = vec![format!("{step} 1")];
-    // (The terrain's raw z0–2 made as every terrain tile is, crate::terrain_codec; the slope's as
-    // every shading tile, crate::shade_codec.)
-    ins.push(if layer == "terrain" { crate::terrain_codec::version() } else { crate::shade_codec::version() });
-    let n = ins.len();
-    ins.extend(m.range(p.clone()..).take_while(|(l, _)| l.starts_with(&p)).map(|(_, c)| c.clone()));
-    if ins.len() == n {
-        return None;
-    }
-    // (The slope's z0–2 tiles its z3 tiles don't cover are its terrain's own shading: the terrain's
-    // root.)
-    if layer == "slope" {
-        ins.push(format!("terrain root {}", m.get("layers/terrain/root/0-0-0").map_or("-", String::as_str)));
-    }
-    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-    Some(h(&refs))
+    x.m.range(p.clone()..).next().filter(|(l, _)| l.starts_with(&p))?;
+    world_key(&format!("{layer}-root"), x)
 }
 
 /// The items' facts and pageviews' key (network; only new items within a pass): the current z6 tiles'
 /// candidates (`current_pois`).
-pub(crate) fn items_key(x: &KeyCtx, pois_now: &[&str]) -> String {
-    key_now("items", "items", items_key_1(x.date, pois_now), x)
-}
-
-/// `items_key` under scheme 1.
-fn items_key_1(date: &str, pois_now: &[&str]) -> String {
-    let mut ins = vec![format!("items {ITEMS_V}"), date.to_string()];
-    ins.extend(pois_now.iter().map(|s| s.to_string()));
-    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-    h(&refs)
+pub(crate) fn items_key(x: &KeyCtx) -> String {
+    key_now("items", "items", false, x)
 }
 
 /// The rest of the heritage chain's key (network), on the pass's heritage sites (the registers'
@@ -4226,89 +3565,28 @@ fn items_key_1(date: &str, pois_now: &[&str]) -> String {
 /// pass's World Heritage sources (its `whs` set, which pass-sets makes for a pass older than it)
 /// are (the marks wait).
 pub(crate) fn heritage_key(x: &KeyCtx) -> Option<String> {
-    key_now_opt("heritage", "heritage", heritage_key_1(x.cov, x.date, x.m), x)
-}
-
-/// `heritage_key` under scheme 1.
-fn heritage_key_1(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Option<String> {
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    if !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) {
-        return None;
-    }
-    let whs = crate::osmpass::set_name(date, "whs");
-    m.get(&whs)?;
-    let mut ins = vec![format!("heritage {HERITAGE_V}"), date.to_string()];
-    for stem in ["heritage", "heritage-areas", "special", "indigenous", "heritage-sources"] {
-        ins.push(get(&crate::heritage::base_logical(date, stem)).to_string());
-    }
-    for l in [crate::osmpass::set_name(date, "named"), crate::osmpass::set_name(date, "areas"), whs] {
-        ins.push(get(&l).to_string());
-    }
-    ins.push(coverage_all(cov));
-    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-    Some(h(&refs))
+    x.m.get(&crate::heritage::base_logical(x.date, "heritage-sources"))?;
+    x.m.get(&crate::osmpass::set_name(x.date, "whs"))?;
+    world_key("heritage", x)
 }
 
 /// The landmark points' key: every current z6 tile's candidates and peaks (`units`: pois_keys), the
 /// items' facts and pageviews, the heritage sites (the files markconv reads: the pass's heritage
 /// job's).
-pub(crate) fn marks_key(x: &KeyCtx, units: &[TileId]) -> String {
-    key_now("marks", "marks", marks_key_1(x.date, x.m, units), x)
-}
-
-/// `marks_key` under scheme 1.
-fn marks_key_1(date: &str, m: &BTreeMap<String, String>, units: &[TileId]) -> String {
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let src = crate::markconv::heritage_source(date);
-    let mut ins = vec![
-        format!("marks {MARKS_V}"),
-        get(&format!("sources/items/{date}/facts")).to_string(),
-        get(&format!("sources/items/{date}/views")).to_string(),
-    ];
-    for stem in ["layer-heritage", "details-heritage", "props-heritage"] {
-        ins.push(get(&format!("{src}/{stem}")).to_string());
-    }
-    for u in units {
-        for p in ["work/pois", "work/peaks"] {
-            ins.push(get(&format!("{p}/{}", u.dash())).to_string());
-        }
-    }
-    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-    h(&refs)
+pub(crate) fn marks_key(x: &KeyCtx) -> String {
+    key_now("marks", "marks", false, x)
 }
 
 /// The area overlays' key: the pass's heritage, with the dots the marks gave the World Heritage
 /// sites, and the built z6 tiles (their hi tiles are where the z6 tiles are); None before the pass's
 /// heritage job has made its outputs.
 pub(crate) fn overlays_key(x: &KeyCtx) -> Option<String> {
-    key_now_opt("overlays", "overlays", overlays_key_1(x.date, x.m), x)
-}
-
-/// `overlays_key` under scheme 1.
-fn overlays_key_1(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let src = crate::markconv::heritage_source(date);
-    if !["layer-heritage", "details-heritage", "props-heritage"].iter().all(|s| m.contains_key(&format!("{src}/{s}"))) {
+    let src = crate::markconv::heritage_source(x.date);
+    if !["layer-heritage", "details-heritage", "props-heritage"].iter().all(|s| x.m.contains_key(&format!("{src}/{s}")))
+    {
         return None;
     }
-    let mut ins = vec![format!("overlays {OVERLAYS_V}"), get(crate::markconv::HERITAGE_DOTS).to_string()];
-    for stem in [
-        "layer-heritage-areas",
-        "layer-indigenous",
-        "layer-special",
-        "layer-whs-shapes",
-        "details-harea",
-        "details-indigenous",
-        "details-special",
-        "details-park",
-        "layer-summary",
-        "heritage-sources",
-    ] {
-        ins.push(get(&format!("{src}/{stem}")).to_string());
-    }
-    ins.extend(m.range("base/".to_string()..).take_while(|(l, _)| l.starts_with("base/")).map(|(l, _)| l.clone()));
-    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-    Some(h(&refs))
+    world_key("overlays", x)
 }
 
 /// The landmarks' chain, a step at a time: candidates, peaks, the items' facts and pageviews, the
@@ -4344,7 +3622,7 @@ fn landmarks_chain(x: &KeyCtx, done: &Keys) -> Option<Work> {
     if pois_now.is_empty() {
         return None;
     }
-    let k = items_key(x, &pois_now);
+    let k = items_key(x);
     if done.lo.get("items").map(String::as_str) != Some(k.as_str()) {
         return Some(Work { step: "items".into(), targets: vec![("items".into(), k)] });
     }
@@ -4356,7 +3634,7 @@ fn landmarks_chain(x: &KeyCtx, done: &Keys) -> Option<Work> {
     if done.lo.get("heritage") != Some(&k) {
         return Some(Work { step: "heritage".into(), targets: vec![("heritage".into(), k)] });
     }
-    let k = marks_key(x, &units.iter().map(|(u, _)| *u).collect::<Vec<_>>());
+    let k = marks_key(x);
     if done.lo.get("marks").map(String::as_str) != Some(k.as_str()) {
         return Some(Work { step: "marks".into(), targets: vec![("marks".into(), k)] });
     }
@@ -4428,7 +3706,7 @@ fn landmarks_work(
     left.set("peaks", stale_peaks.iter().map(|t| t.0.clone()));
     // (The items are left without candidates now: their key reads them.)
     let pois_now = if keyed.is_some() { current_pois(cov, date, m) } else { Vec::new() };
-    let items = (!pois_now.is_empty()).then(|| items_key(x, &pois_now));
+    let items = (!pois_now.is_empty()).then(|| items_key(x));
     let items_stale = items.as_ref().filter(|k| done.lo.get("items") != Some(*k));
     left.world("items", items.is_none() || items_stale.is_some());
     // (With no key for the heritage sites (no registers accepted yet) nothing heritage-related runs,
@@ -4448,7 +3726,7 @@ fn landmarks_work(
     // candidates' run that writes the same files leaves their key as it is.)
     take("items", items_stale.map(|k| ("items".to_string(), k.clone())).into_iter().collect(), left, &mut out);
     take("heritage", heritage_stale.map(|k| ("heritage".to_string(), k)).into_iter().collect(), left, &mut out);
-    let marks_k = marks_key(x, &units.iter().map(|(u, _)| *u).collect::<Vec<_>>());
+    let marks_k = marks_key(x);
     let marks_stale = keyed.is_some() && done.lo.get("marks").map(String::as_str) != Some(marks_k.as_str());
     left.world("marks", marks_stale);
     let overlays = overlays_key(x).filter(|k| done.lo.get("overlays") != Some(k));
@@ -4495,8 +3773,7 @@ fn marks_ready(x: &KeyCtx, done: &Keys) -> bool {
         && summits_work(x, done).is_none()
         && peaks_keys(x).iter().all(|(u, k)| !stale(&done.peaks, &u.slash(), k));
     let pois_now = if peaks_built { current_pois(cov, date, m) } else { Vec::new() };
-    let items_built =
-        !pois_now.is_empty() && done.lo.get("items").map(String::as_str) == Some(items_key(x, &pois_now).as_str());
+    let items_built = !pois_now.is_empty() && done.lo.get("items").map(String::as_str) == Some(items_key(x).as_str());
     items_built
         && heritage_sites_key(x).is_some()
         && heritage_sites_work(x, done).is_none()
@@ -4512,13 +3789,7 @@ pub const BLD_FETCH_V: u32 = 1;
 /// writes (`footers.json.gz`): a release's files never change, so the release names them, and a key
 /// on what the job writes would run it a second time for its own sake.
 pub(crate) fn bld_fetch_key(x: &KeyCtx) -> String {
-    let k = h(&[&format!("bld-fetch {BLD_FETCH_V}"), bld_key(x.inputs), &coverage_all(x.cov)]);
-    key_now("bld-fetch", "bld-fetch", k, x)
-}
-
-/// What the 3D buildings' keys name of the declared sources (`inputs` "bld-key").
-fn bld_key(inputs: &BTreeMap<String, String>) -> &str {
-    inputs.get("bld-key").map_or("-", String::as_str)
+    key_now("bld-fetch", "bld-fetch", false, x)
 }
 
 /// Whether the release's sources are here (`inputs` "bld-release", crate::bld::sources::digests:
@@ -4533,62 +3804,31 @@ pub(crate) fn bld_sources(inputs: &BTreeMap<String, String>) -> Option<bool> {
     }
 }
 
-/// The 3D buildings' targets (docs/buildings3d.md §3.1–3.2), each with its key, done or not.
+/// The 3D buildings' targets (docs/buildings3d.md §3.1–3.2), each with its key (`key_now`), done
+/// or not.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BldTargets {
     /// `bldprep T`: the z6 tiles within 1 km of the coverage (so a tile's neighbours within the
     /// fill's 620 m are prepared too) with a downloaded row group or GHSL tile meeting them
-    /// (`inputs` "bldprep 6/x/y": what it reads, crate::bld::sources). Its key: the version, the
-    /// release and that.
+    /// (`inputs` "bldprep 6/x/y": what it reads, crate::bld::sources).
     pub prep: Vec<(String, String)>,
-    /// `bldtiles T`: the z6 tiles meeting the coverage (its buffers included). Its key: the version,
-    /// the content names of T's and its 8 neighbours' normalized files ("-" none), the coverage's
-    /// shapes over T grown by 1 km in the recipes' order with their countries
-    /// (`Coverage::shapes_key`: which shape a building is in sets its country's fits), and the
-    /// content names of the newest pass's heritage slices of T, its sites and its World Heritage
-    /// components (for the field's heritage lists; "-" none).
+    /// `bldtiles T`: the z6 tiles meeting the coverage (its buffers included).
     pub tiles: Vec<(String, String)>,
-    /// `bldfield-lo Q`: the z3 tiles holding a `bldtiles` target, each with its key (the version,
-    /// Q, and its z6 tiles' mids' content names, "-" none) and its `bldtiles` targets.
+    /// `bldfield-lo Q`: the z3 tiles holding a `bldtiles` target, each with its `bldtiles` targets.
     pub lo: Vec<(String, String, Vec<String>)>,
 }
 
 /// The 3D buildings' targets for the coverage `cov`, the manifest `m` and the sources (`inputs`).
 pub fn bld_targets(x: &KeyCtx) -> BldTargets {
-    let t = bld_targets_made(x.cov, x.m, x.inputs);
-    let k = |step: &str, v: Vec<(String, String)>| keyed_now(step, v, x);
-    BldTargets {
-        prep: k("bldprep", t.prep),
-        tiles: k("bldtiles", t.tiles),
-        lo: t.lo.into_iter().map(|(q, k1, ts)| (q.clone(), key_now("bldfield-lo", &q, k1, x), ts)).collect(),
-    }
-}
-
-/// `bld_targets` under scheme 1.
-fn bld_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>) -> BldTargets {
-    use crate::bld::{field, work_logical, BLDPREP_V, BUILDINGS_V};
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let sources = bld_sources(inputs) == Some(true);
+    let sources = bld_sources(x.inputs) == Some(true);
     let mut out = BldTargets::default();
-    let her = crate::heritage::latest_date(m);
-    for (x, y, shapes) in bld_tiles(cov).iter() {
-        let t = format!("6/{x}/{y}");
-        if let Some(d) = inputs.get(&format!("bldprep {t}")).filter(|_| sources) {
-            out.prep.push((t.clone(), h(&[&format!("bldprep {BLDPREP_V}"), bld_key(inputs), d])));
+    for (tx, ty, shapes) in bld_tiles(x.cov).iter() {
+        let t = format!("6/{tx}/{ty}");
+        if sources && x.inputs.contains_key(&format!("bldprep {t}")) {
+            out.prep.push((t.clone(), key_now("bldprep", &t, false, x)));
         }
-        if let Some(shapes) = shapes {
-            let mut ins = vec![format!("bldtiles {BUILDINGS_V}")];
-            for (nx, ny) in bld_around(*x, *y) {
-                ins.push(match (nx, ny) {
-                    (Some(nx), Some(ny)) => get(&work_logical(nx, ny)).to_string(),
-                    _ => "-".to_string(),
-                });
-            }
-            ins.push(shapes.clone());
-            ins.push(her.as_deref().map_or("-", |d| get(&crate::heritage::pos_logical(d, *x, *y))).to_string());
-            ins.push(her.as_deref().map_or("-", |d| get(&crate::heritage::parts_logical(d, *x, *y))).to_string());
-            let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-            out.tiles.push((t, h(&refs)));
+        if shapes.is_some() {
+            out.tiles.push((t.clone(), key_now("bldtiles", &t, false, x)));
         }
     }
     let mut by_q: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
@@ -4598,14 +3838,8 @@ fn bld_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, inputs: &BTree
         }
     }
     for ((qx, qy), ts) in by_q {
-        let mut ins = vec![format!("bldfield-lo {}", field::LO_V), format!("3/{qx}/{qy}")];
-        for y in qy * 8..qy * 8 + 8 {
-            for x in qx * 8..qx * 8 + 8 {
-                ins.push(get(&field::mid_logical(x, y)).to_string());
-            }
-        }
-        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-        out.lo.push((format!("3/{qx}/{qy}"), h(&refs), ts));
+        let q = format!("3/{qx}/{qy}");
+        out.lo.push((q.clone(), key_now("bldfield-lo", &q, false, x), ts));
     }
     out
 }
@@ -4963,63 +4197,22 @@ pub(crate) fn depth_lo_box(q: (u32, u32)) -> [f64; 4] {
     crate::depth::grids::window_box(3, i64::from(q.0) * 256 - PAD as i64, i64::from(q.1) * 256 - PAD as i64, side, side)
 }
 
-/// The depth's targets with their keys; None while its sources can't be read or there's no water
-/// source (no basemap yet).
-///
-/// - a z6 tile's key: the versions, the z6 tile, the sources it reads (`depth_hi_box_read`), its
-///   water ("depth 6/x/y", `depth_hi_water`);
-/// - an assembly's: the versions, the z3 tile, the sources meeting it with its blocks' margin
-///   (their ids and digests), the water it reads ("depth 3/x/y", `DEPTH_LO_WATER_FROM`) and its z6
-///   tiles' depth hi packs (the three layers, by content: its z8 is made from their z9).
+/// The depth's targets with their keys (`steps::derived_key`; those whose key can't be worked out
+/// now, their water digests not made, in `unknown`); None while its sources can't be read or
+/// there's no water source (no basemap yet).
 pub fn depth_targets(x: &KeyCtx) -> Option<DepthTargets> {
-    let t = depth_targets_made(x.cov, x.m, x.tiles)?;
-    Some(DepthTargets { lo: keyed_now("depth-lo", t.lo, x), hi: keyed_now("depth", t.hi, x), unknown: t.unknown })
-}
-
-/// `depth_targets` under scheme 1.
-fn depth_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Option<DepthTargets> {
-    let sources = tiles.depth(m)?;
-    let pin = crate::terrain_pack::water_source_pin(m)?;
-    let idx = tiles.water_idx(m, &pin);
-    let pins = |bs: &[[f64; 4]]| -> String {
-        sources
-            .iter()
-            .filter(|s| bs.iter().any(|&b| s.meeting(b).next().is_some()))
-            .map(|s| s.pin.as_str())
-            .collect::<Vec<_>>()
-            .join(",")
-    };
-    let (lo, hi) = depth_tiles(cov, &sources);
+    let sources = x.tiles.depth(x.m)?;
+    crate::terrain_pack::water_source_pin(x.m)?;
+    let (lo, hi) = depth_tiles(x.cov, &sources);
     let mut out = DepthTargets::default();
-    for q in lo {
-        let t = format!("3/{}/{}", q.0, q.1);
-        let Some(w) = water_key(Some(&pin), idx, &format!("depth {t}"), DEPTH_LO_WATER_FROM) else {
-            out.unknown.push(("depth-lo", t));
-            continue;
-        };
-        // (Its z6 tiles' hi packs of a layer, by content, those the manifest has.)
-        let his = |layer: &str| -> Vec<String> {
-            (0..64u32)
-                .filter_map(|k| {
-                    let l = crate::depth::build::hi_logical(layer, q.0 * 8 + k % 8, q.1 * 8 + k / 8);
-                    m.get(&l).map(|c| format!("{l}={c}"))
-                })
-                .collect()
-        };
-        let mut ins = vec![depth_versions("depth-lo"), t.clone(), pins(&[depth_lo_box(q)]), w];
-        for layer in [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER] {
-            ins.extend(his(layer));
+    let lo = lo.into_iter().map(|q| ("depth-lo", format!("3/{}/{}", q.0, q.1)));
+    let hi = hi.into_iter().map(|(tx, ty)| ("depth", format!("6/{tx}/{ty}")));
+    for (step, t) in lo.chain(hi) {
+        match super::steps::derived_key(step, &t, x) {
+            Some(k) if step == "depth" => out.hi.push((t, k)),
+            Some(k) => out.lo.push((t, k)),
+            None => out.unknown.push((step, t)),
         }
-        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-        out.lo.push((t.clone(), h(&refs)));
-    }
-    for (x, y) in hi {
-        let t = format!("6/{x}/{y}");
-        let Some(w) = water_key(Some(&pin), idx, &format!("depth {t}"), DEPTH_WATER_FROM) else {
-            out.unknown.push(("depth", t));
-            continue;
-        };
-        out.hi.push((t.clone(), h(&[&depth_versions("depth"), &t, &pins(&depth_hi_box_read((x, y))), &w])));
     }
     Some(out)
 }
@@ -5092,23 +4285,15 @@ fn depth_next(x: &KeyCtx, done: &Keys) -> Option<Work> {
 /// every lo pack of the three layers by content (an assembly made again, or a z3 tile's dropped,
 /// makes it again); None with no lo pack (and no root to drop).
 pub fn depth_root_key(x: &KeyCtx) -> Option<String> {
-    key_now_opt("depth-root", "depth-root", depth_root_key_1(x.m), x)
-}
-
-/// `depth_root_key` under scheme 1.
-fn depth_root_key_1(m: &BTreeMap<String, String>) -> Option<String> {
-    let mut ins = vec![format!("depth-root {}", crate::depth::build::DEPTH_ROOT_V), depth_versions("depth-root")];
-    let n = ins.len();
-    for layer in [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER] {
+    let m = x.m;
+    let lo = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER].iter().any(|layer| {
         let p = format!("layers/{layer}/lo/");
-        ins.extend(m.range(p.clone()..).take_while(|(l, _)| l.starts_with(&p)).map(|(l, c)| format!("{l}={c}")));
-    }
-    let root = format!("layers/{}/root/0-0-0", crate::depth::LAYER);
-    if ins.len() == n && !m.contains_key(&root) {
+        m.range(p.clone()..).next().is_some_and(|(l, _)| l.starts_with(&p))
+    });
+    if !lo && !m.contains_key(&format!("layers/{}/root/0-0-0", crate::depth::LAYER)) {
         return None;
     }
-    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-    Some(h(&refs))
+    world_key("depth-root", x)
 }
 
 /// The depth root's work when it's stale (`depth_root_key`; recorded as the other roots are, in
@@ -5119,16 +4304,10 @@ fn depth_root_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
         .then(|| Work { step: "depth-root".into(), targets: vec![("depth-root".into(), k)] })
 }
 
-/// The polar caps' targets with their keys (crate::polar; docs/polar.md §3), of the poles built
-/// (`polar::POLES`): a block where the coverage meets its latitudes (`roadcore::polar::lat_box`),
-/// and a root per pole with a block. None while the elevation pool's datasets can't be told.
-///
-/// - a block's terrain: its version, the terrain codec's, the block, the pool's datasets meeting
-///   it (by their lines, as the Mercator terrain's keys name them);
-/// - its shading: its version, the shading codec's, the block, the terrain packs of it and its
-///   neighbours (what its border reads), by content;
-/// - a root: its version, both codecs', the pole, the datasets meeting the root's tiles (sampled
-///   past the cap), its blocks and every block pack of its layers, by content.
+/// The polar caps' targets with their keys (`steps::derived_key`; crate::polar; docs/polar.md §3),
+/// of the poles built (`polar::POLES`): a block where the coverage meets its latitudes
+/// (`roadcore::polar::lat_box`), and a root per pole with a block. None while a key can't be worked
+/// out (the elevation pool's datasets can't be told).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PolarTargets {
     pub terrain: Vec<(String, String)>,
@@ -5137,59 +4316,19 @@ pub struct PolarTargets {
 }
 
 pub fn polar_targets(x: &KeyCtx) -> Option<PolarTargets> {
-    let t = polar_targets_made(x.cov, x.m, x.tiles)?;
-    Some(PolarTargets {
-        terrain: keyed_now("polar-terrain", t.terrain, x),
-        slope: keyed_now("polar-slope", t.slope, x),
-        root: keyed_now("polar-root", t.root, x),
-    })
-}
-
-/// `polar_targets` under scheme 1.
-fn polar_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Option<PolarTargets> {
-    use crate::polar::{self as p, BLOCK_Z};
-    let content = |l: String| m.get(&l).map_or("-", String::as_str).to_string();
+    use crate::polar as p;
+    let key = |step: &str, t: String| Some((t.clone(), super::steps::derived_key(step, &t, x)?));
     let mut out = PolarTargets::default();
     for pole in p::POLES {
-        let blocks = p::built(cov, pole);
+        let blocks = p::built(x.cov, pole);
         if blocks.is_empty() {
             continue;
         }
-        let built: BTreeSet<(u32, u32)> = blocks.iter().copied().collect();
         for &b in &blocks {
-            let t = p::target(pole, b);
-            let ds = tiles.terrain_datasets(m, roadcore::polar::lat_box(pole, BLOCK_Z, b.0, b.1))?;
-            let v = format!("polar-terrain {}", p::TERRAIN_V);
-            out.terrain.push((t.clone(), h(&[&v, &crate::terrain_codec::version(), &t, &ds])));
-            let mut ins = vec![format!("polar-slope {}", p::SLOPE_V), crate::shade_codec::version(), t.clone()];
-            ins.extend(
-                p::around(pole, b)
-                    .into_iter()
-                    .filter(|n| built.contains(n))
-                    .map(|n| content(p::block_logical("terrain", pole, n))),
-            );
-            let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-            out.slope.push((t, h(&refs)));
+            out.terrain.push(key("polar-terrain", p::target(pole, b))?);
+            out.slope.push(key("polar-slope", p::target(pole, b))?);
         }
-        let ds = tiles.terrain_datasets(m, roadcore::polar::lat_box(pole, 0, 0, 0))?;
-        let mut ins = vec![
-            format!("polar-root {}", p::ROOT_V),
-            crate::terrain_codec::version(),
-            crate::shade_codec::version(),
-            p::root_target(pole),
-            ds,
-        ];
-        for &b in &blocks {
-            ins.push(p::target(pole, b));
-        }
-        for kind in ["terrain", "slope"] {
-            let pre = format!("layers/{}/polar/", p::layer(kind, pole));
-            ins.extend(
-                m.range(pre.clone()..).take_while(|(l, _)| l.starts_with(&pre)).map(|(l, c)| format!("{l}={c}")),
-            );
-        }
-        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-        out.root.push((p::root_target(pole), h(&refs)));
+        out.root.push(key("polar-root", p::root_target(pole))?);
     }
     Some(out)
 }
@@ -5758,8 +4897,7 @@ pub fn checklist(
     // isn't recorded; none without registers accepted (the heritage chain never runs, nor they).)
     let registers = heritage_sites_key(x).is_some();
     let inputs_built = registers && !sites_left && marks_ready(x, done);
-    let units: Vec<TileId> = pois_keys(x).unwrap_or_default().into_iter().map(|(u, _)| u).collect();
-    let marks_left = registers && (!inputs_built || done.lo.get("marks") != Some(&marks_key(x, &units)));
+    let marks_left = registers && (!inputs_built || done.lo.get("marks") != Some(&marks_key(x)));
     let overlays_left = registers
         && (marks_left
             || !m.contains_key(crate::markconv::HERITAGE_DOTS)
@@ -6299,7 +5437,7 @@ pub(crate) mod tests {
                     (3 * s..4 * s).flat_map(move |x| (2 * s..3 * s).map(move |y| (z, x, y, 7)))
                 }),
             );
-            slope_piece_key((28, 16), &m, &t).unwrap()
+            slope_tile_lines((6, 28, 16), &m, &t).unwrap()
         };
         let k = key(1, 1, 1);
         assert_eq!(key(1, 2, 1), k, "the neighbour's inside: not read");
@@ -6399,11 +5537,10 @@ pub(crate) mod tests {
         .is_empty());
     }
 
-    /// Task #864: each slope step's declared reads (crate::agent::steps::read_targets) are exactly the
-    /// packs its key's inputs name (`slope_deep_from`, `slope_piece_from`, the slope-lo key's
-    /// terrain): every pack near a target is changed in turn, and its key changes just when that
-    /// pack is one of a declared target's (the root aside: read, never waited on). A step reading
-    /// something it doesn't declare fails here.
+    /// Task #864: slope-hi's and slope-deep's declared reads (crate::agent::steps::read_targets) are
+    /// exactly the packs their tile reads' memos are worked out from (`slope_piece_from`,
+    /// `slope_deep_from`): every pack near a target is changed in turn, and its memo's key changes
+    /// just when that pack is one of a declared target's (the root aside: read, never waited on).
     #[test]
     fn declared_reads_cover_the_keys() {
         // (The logical names a declared read stands for, as the slope keys name them.)
@@ -6484,35 +5621,6 @@ pub(crate) mod tests {
             }
         }
         check("slope-hi", "6/24/16", None, c, &|m| slope_piece_from((24, 16), m));
-        // Slope-lo 3/3/2: its terrain (its z6 tiles' mids, its key's other part, are its own targets').
-        let mut c: Vec<String> = Vec::new();
-        for (x, y) in window(3, 3, 2, 2) {
-            c.push(format!("layers/terrain/lo/3-{x}-{y}"));
-        }
-        check("slope-lo", "3/3/2", Some("terrain-lo"), c, &|m| slope_lo_terrain((3, 2), m));
-        // Unit 6/24/16 (its z3 tile's corner, 66.5°N: its 30 km reach two z10 tiles wide) and
-        // 6/33/31 (near the equator): the packs its staged tiles are in and its roads' heights read.
-        for (x6, y6) in [(24u32, 16u32), (33, 31)] {
-            let pz = crate::terrain_deep::PACK_Z;
-            let s = 1u32 << (pz - 6);
-            let mut c: Vec<String> = Vec::new();
-            for (x, y) in window(6, x6, y6, 2) {
-                c.push(format!("layers/terrain/hi/6-{x}-{y}"));
-            }
-            for (x, y) in window(3, x6 >> 3, y6 >> 3, 1) {
-                c.push(format!("layers/terrain/lo/3-{x}-{y}"));
-            }
-            for x in x6 * s - 6..(x6 + 1) * s + 6 {
-                for y in y6 * s - 6..(y6 + 1) * s + 6 {
-                    c.push(crate::terrain_deep::pack_logical(x, y));
-                }
-            }
-            let u = TileId { z: 6, x: x6, y: y6 };
-            let b = crate::stage::tile_box_grown(6, x6, y6, crate::stage::MARGIN_KM);
-            check("unit", &u.slash(), None, c, &|m| {
-                format!("{}\n{}", unit_terrain_from(u, m), terrain_packs(m, b).join(" "))
-            });
-        }
     }
 
     /// Slope reads the terrain's root only where an edge neighbour's ancestor is one of its tiles
@@ -6937,15 +6045,7 @@ pub(crate) mod tests {
         // And the 3D buildings', depth's and the polar caps' chains, as their tests' plans offer them.
         let inputs = bld_inputs(&c, "a");
         let tiles = tiles_for(&m);
-        let x = KeyCtx {
-            cov: &c,
-            date: "d",
-            m: &m,
-            inputs: &inputs,
-            reach: None,
-            tiles: &tiles,
-            scheme: crate::agent::steps::KEY_SCHEME,
-        };
+        let x = KeyCtx { cov: &c, date: "d", m: &m, inputs: &inputs, reach: None, tiles: &tiles };
         let w = bld_work(
             &crate::agent::build::KeyCtx::new(
                 &c,
@@ -6962,6 +6062,103 @@ pub(crate) mod tests {
         assert!(keys_are_derived(&p, &x).contains("bldprep"));
     }
 
+    /// Every target of `step` with its key as the planner's enumerations key it (`key_now`),
+    /// `UNKNOWN` for one whose key can't be worked out now: what the step lists as its targets; None
+    /// for a step whose key isn't derived (`steps::derived`).
+    pub(crate) fn step_keys_all(step: &str, x: &KeyCtx) -> Option<Vec<(String, String)>> {
+        let none = Keys::default();
+        let (cov, date, m, inputs) = (x.cov, x.date, x.m, x.inputs);
+        let world = |k: Option<String>| Some(k.map(|k| vec![(step.to_string(), k)]).unwrap_or_default());
+        let of_work = |w: Option<Work>| Some(w.map(|w| w.targets).unwrap_or_default());
+        let tt = || terrain_slope_targets(x);
+        let known =
+            |v: Vec<(String, Option<String>)>| v.into_iter().filter_map(|(t, k)| Some((t, k?))).collect::<Vec<_>>();
+        let tiled = |v: Vec<(TileId, String)>| Some(v.into_iter().map(|(u, k)| (u.slash(), k)).collect());
+        let trees = || trees_targets(x);
+        match crate::agent::steps::current(step) {
+            "outlines" => world(outlines_key(x)),
+            "regions-land" => of_work(regions_land_work(x, &none)),
+            "trailends" => of_work(trailends_work(x, &none)),
+            "reach" => world(reach_key(x)),
+            "labels" => of_work(labels_work(x, &none)),
+            "spoken" => of_work(spoken_work(x, &none)),
+            "summits" => of_work(summits_work(x, &none)),
+            "water" => of_work(water_work(x, &none)),
+            "timetables-todo" => of_work(timetables_todo_work(x, &none)),
+            "heritage-sites" => world(heritage_sites_key(x)),
+            "terrain-water" => of_work(terrain_water_work(x, &none)),
+            "pyramids-fill" => pyramids_targets(x),
+            "terrain-hi" => {
+                let t = tt();
+                Some(t.terrain.into_iter().chain(t.terrain_none).collect())
+            }
+            "terrain-lo" => {
+                let t = tt();
+                Some(t.terrain_lo.into_iter().chain(t.terrain_lo_none).collect())
+            }
+            "terrain-deep" => {
+                let t = tt();
+                Some(t.terrain_deep.into_iter().chain(t.terrain_deep_none).collect())
+            }
+            "slope-hi" => {
+                let t = tt();
+                Some(known(t.slope).into_iter().chain(t.slope_none).collect())
+            }
+            "slope-lo" => {
+                let t = tt();
+                Some(t.slope_lo.into_iter().chain(t.slope_lo_none).collect())
+            }
+            "slope-deep" => {
+                let t = tt();
+                Some(known(t.slope_deep).into_iter().chain(t.slope_deep_none).collect())
+            }
+            "trees" => Some(trees().pieces.into_iter().map(|(t, k, _)| (t, k)).collect()),
+            "trees-lo" => Some(trees().lo.into_iter().map(|(t, k, _)| (t, k)).collect()),
+            "unit" => Some(super::unit_keys(x).into_iter().filter_map(|(u, k)| Some((u.slash(), k?))).collect()),
+            "pois" => tiled(pois_keys(x)?),
+            "peaks" => tiled(peaks_keys(x)),
+            "items" => {
+                let now = current_pois(cov, date, m);
+                world((!now.is_empty()).then(|| items_key(x)))
+            }
+            "heritage" => world(heritage_key(x)),
+            "marks" => {
+                pois_keys(x)?;
+                world(Some(marks_key(x)))
+            }
+            "overlays" => world(overlays_key(x)),
+            "roadunits" => world(roadunits_key(x)),
+            "stations" | "ferries" => world(transit_key(step, x)),
+            "terrain-root" => world(root_key("terrain", x)),
+            "slope-root" => world(root_key("slope", x)),
+            "depth" => depth_targets(x).map(|d| d.hi),
+            "depth-lo" => depth_targets(x).map(|d| d.lo),
+            "depth-root" => world(depth_root_key(x)),
+            "polar-terrain" => polar_targets(x).map(|p| p.terrain),
+            "polar-slope" => polar_targets(x).map(|p| p.slope),
+            "polar-root" => polar_targets(x).map(|p| p.root),
+            "bld-fetch" => bld_sources(inputs).map(|_| vec![(step.to_string(), bld_fetch_key(x))]),
+
+            "bldprep" => bld_sources(inputs).map(|_| bld_targets(x).prep),
+            "bldtiles" => bld_sources(inputs).map(|_| bld_targets(x).tiles),
+            "bldfield-lo" => {
+                bld_sources(inputs).map(|_| bld_targets(x).lo.into_iter().map(|(q, k, _)| (q, k)).collect())
+            }
+            "rail-feeds" | "rail" => {
+                // (The chain's first stale step as if each before it succeeded: rail's once its feeds'
+                // is recorded.)
+                let mut d = Keys::default();
+                let feeds = rail_next(x, &d)??;
+                if step == "rail-feeds" {
+                    return Some(feeds.targets);
+                }
+                d.record(&feeds.step, &feeds.targets);
+                of_work(rail_next(x, &d)?)
+            }
+            _ => None,
+        }
+    }
+
     /// A build the scheme-2 keys' tests key steps in: the coverage, the manifest, the planner's
     /// inputs, the reaches, and the terrain packs' indexes and declared sources it holds for a
     /// manifest (`tiles`).
@@ -6975,30 +6172,23 @@ pub(crate) mod tests {
     }
 
     impl Fixture {
-        /// Every target's keys of `step` under both schemes (scheme 2's lines too), in this build with
-        /// manifest `m` and `inputs`.
+        /// Every target of `step` whose key is known (`step_keys_all`) with its key lines, in this build with manifest
+        /// `m` and `inputs`.
         fn keys(
             &self,
             step: &str,
             m: &BTreeMap<String, String>,
             inputs: &BTreeMap<String, String>,
-        ) -> BTreeMap<String, (Option<String>, Option<Vec<String>>)> {
+        ) -> BTreeMap<String, Option<Vec<String>>> {
             let tiles = (self.tiles)(m);
-            let x = KeyCtx {
-                cov: &self.c,
-                date: "d",
-                m,
-                inputs,
-                reach: self.reach.as_ref(),
-                tiles: &tiles,
-                scheme: crate::agent::steps::KEY_SCHEME,
-            };
-            crate::agent::rekey::scheme1::keys(step, &x)
+            let x = KeyCtx { cov: &self.c, date: "d", m, inputs, reach: self.reach.as_ref(), tiles: &tiles };
+            step_keys_all(step, &x)
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(t, k)| {
+                .filter(|(_, k)| k != UNKNOWN)
+                .map(|(t, _)| {
                     let lines = crate::agent::steps::key_lines(step, &t, &x);
-                    (t, (Some(k), lines))
+                    (t, lines)
                 })
                 .collect()
         }
@@ -7188,7 +6378,7 @@ pub(crate) mod tests {
     }
 
     /// docs/readiness.md §7: a scheme-2 key names exactly its reads. For each step it derives, keyed
-    /// in some fixture build, every target scheme 1 keys has lines, and changing a manifest entry
+    /// in some fixture build, every target it lists has lines, and changing a manifest entry
     /// changes a target's key just when its key lines name that entry (by its logical name or its
     /// content), or the terrain tiles it reads inside the entry (a `Grain::Tiles` read's lines)
     /// changed.
@@ -7203,17 +6393,17 @@ pub(crate) mod tests {
                     continue;
                 }
                 keyed.insert(step);
-                for (t, (_, lines)) in &base {
+                for (t, lines) in &base {
                     assert!(lines.is_some(), "{} {step} {t}: its scheme-2 key is worked out", f.name);
                 }
                 for (l, m2, _) in f.one_changed().into_iter().filter(|c| !c.0.starts_with("input ")) {
                     let after = f.keys(step, &m2, &f.inputs);
-                    for (t, (_, lines)) in &base {
+                    for (t, lines) in &base {
                         let lines = lines.as_ref().unwrap();
                         let named = lines.iter().any(|s| s.contains(&format!("{l}=")) || s.contains(&f.m[&l]));
                         // (A key that can't be worked out after the change, its input unread: no
                         // key to compare.)
-                        let Some(a) = after.get(t).and_then(|k| k.1.as_ref()) else { continue };
+                        let Some(a) = after.get(t).and_then(|k| k.as_ref()) else { continue };
                         let a = Some(a);
                         let changed = a != Some(lines);
                         // (What changed besides the entry's own line: the tiles read inside it.)
@@ -7233,36 +6423,6 @@ pub(crate) mod tests {
         }
         let unkeyed: Vec<&str> = derived_steps().into_iter().filter(|s| !keyed.contains(s)).collect();
         assert!(unkeyed.is_empty(), "no fixture keys a target of {unkeyed:?}");
-    }
-
-    /// The rekey's ground (docs/readiness.md §6 step 3, crate::agent::rekey): for every step scheme
-    /// 2 derives, the scheme-2 key names no input the scheme-1 key (as this code makes it, #832's
-    /// coverage cut in) didn't pin: in each fixture build, each manifest entry and input changed
-    /// alone changes a target's scheme-2 key only when it changes its scheme-1 key. (It may pin
-    /// less: a z6 tile's roads keyed on the deep tiles they read, not whole packs.) So a record
-    /// current under scheme 1 is current under scheme 2, and the records that go at the switch are
-    /// those scheme 1 itself no longer finds current: no list of steps.
-    #[test]
-    fn scheme_2_pins_no_input_scheme_1_didnt() {
-        for f in fixtures() {
-            for step in derived_steps() {
-                let base = f.keys(step, &f.m, &f.inputs);
-                if base.is_empty() {
-                    continue;
-                }
-                for (what, m2, i2) in f.one_changed() {
-                    let after = f.keys(step, &m2, &i2);
-                    for (t, (k1, k2)) in &base {
-                        let (a1, a2) = after.get(t).map_or((None, None), |k| (k.0.clone(), k.1.clone()));
-                        assert!(
-                            &a2 == k2 || &a1 != k1,
-                            "{} {step} {t}: {what} changed: scheme 1 {k1:?} → {a1:?}, scheme 2 {k2:?} → {a2:?}",
-                            f.name
-                        );
-                    }
-                }
-            }
-        }
     }
 
     /// Tree cover's "none" targets are drops, as terrain's and slope's are (task #849): a z6 tile
@@ -7305,15 +6465,7 @@ pub(crate) mod tests {
         for d in [("trees", "6/40/20"), ("trees-lo", "3/5/2")] {
             assert!(p.drops.contains(&(d.0.to_string(), d.1.to_string())), "{d:?} in {:?}", p.drops);
         }
-        let x = KeyCtx {
-            cov: &c,
-            date: "d",
-            m: &m,
-            inputs: &inputs,
-            reach: None,
-            tiles: &tiles,
-            scheme: crate::agent::steps::KEY_SCHEME,
-        };
+        let x = KeyCtx { cov: &c, date: "d", m: &m, inputs: &inputs, reach: None, tiles: &tiles };
         let seen = keys_are_derived(&p, &x);
         assert!(seen.contains("trees") && seen.contains("trees-lo"), "{seen:?}");
     }
@@ -7326,7 +6478,7 @@ pub(crate) mod tests {
         tiles: &TerrainTiles,
         w: &[Work],
     ) {
-        let x = KeyCtx { cov: c, date: "d", m, inputs, reach: None, tiles, scheme: crate::agent::steps::KEY_SCHEME };
+        let x = KeyCtx { cov: c, date: "d", m, inputs, reach: None, tiles };
         let seen = keys_are_derived(&Plan { work: w.to_vec(), ..Default::default() }, &x);
         assert_eq!(seen.len(), w.iter().map(|w| &w.step).collect::<BTreeSet<_>>().len(), "{seen:?}");
     }
@@ -7359,15 +6511,7 @@ pub(crate) mod tests {
             );
             waits_are_reads(&p);
             let (inputs, tiles) = (spaced(&BTreeMap::new()), tiles_for(m));
-            let x = KeyCtx {
-                cov: c,
-                date: "d",
-                m,
-                inputs: &inputs,
-                reach: Some(reach),
-                tiles: &tiles,
-                scheme: crate::agent::steps::KEY_SCHEME,
-            };
+            let x = KeyCtx { cov: c, date: "d", m, inputs: &inputs, reach: Some(reach), tiles: &tiles };
             let seen = keys_are_derived(&p, &x);
             KEYS_SEEN.with(|s| s.borrow_mut().extend(seen));
             let Some(w) = p.work.into_iter().next() else { return ran };
@@ -7904,23 +7048,6 @@ pub(crate) mod tests {
         // (Far from the coverage: tiles near it now that weren't.)
         let (a, b) = (keys(&plain), keys(&far));
         assert_ne!(a, b, "the tiles it makes changed: its z6 tile's key with them");
-    }
-
-    /// Task #832: a restore's done record ("<step> <target> <from>" with its key) records the target
-    /// under the key while its record is still `from`; one built since keeps its own.
-    #[test]
-    fn a_restore_records_its_key_only_over_the_one_checked() {
-        let mut done = Keys::default();
-        done.record("terrain-hi", &[("6/1/1".into(), "aaaa".into()), ("6/1/2".into(), "bbbb".into())]);
-        let r =
-            |t: &str, from: &str, to: &str| (crate::agent::redo::restore_target("terrain-hi", t, from), to.to_string());
-        done.record(
-            crate::agent::redo::STEP,
-            &[r("6/1/1", "aaaa", "cccc"), r("6/1/2", "xxxx", "dddd"), r("6/1/3", "aaaa", "eeee")],
-        );
-        assert_eq!(done.recorded("terrain-hi", "6/1/1"), Some("cccc"));
-        assert_eq!(done.recorded("terrain-hi", "6/1/2"), Some("bbbb"), "recorded otherwise since: kept");
-        assert_eq!(done.recorded("terrain-hi", "6/1/3"), None, "no record: none made");
     }
 
     /// Task #780: a redo (`scenic redo`, crate::agent::redo) forgets one target's key, so the plan
@@ -8946,11 +8073,6 @@ pub(crate) mod tests {
             Some(ts.len()),
             "its declaration edited"
         );
-        assert_ne!(
-            pyramids_key((28, 17), "fp", "gsi g1", "-", &[]),
-            pyramids_key((28, 17), "fp", "gsi g1", "-", &[(455, 260)]),
-            "its deep targets"
-        );
         let mut unread = TerrainTiles::new(None);
         unread.hold_elevation("another", Vec::new());
         let mut switched = m.clone();
@@ -9460,33 +8582,18 @@ pub(crate) mod tests {
             assert_eq!(item(&l, step).left, Some(1), "{step}");
         }
         let mut d3 = d2.clone();
-        let units: Vec<TileId> = pois_keys(&crate::agent::build::KeyCtx::new(
-            &c,
-            "d",
-            &m,
-            &BTreeMap::new(),
-            None,
-            &crate::agent::tiles::TerrainTiles::default(),
-        ))
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(u, _)| u)
-        .collect();
         d3.record(
             "marks",
             &[(
                 "marks".to_string(),
-                marks_key(
-                    &crate::agent::build::KeyCtx::new(
-                        &crate::coverage::Coverage::default(),
-                        "d",
-                        &m,
-                        &std::collections::BTreeMap::new(),
-                        None,
-                        &crate::agent::tiles::TerrainTiles::default(),
-                    ),
-                    &units,
-                ),
+                marks_key(&crate::agent::build::KeyCtx::new(
+                    &crate::coverage::Coverage::default(),
+                    "d",
+                    &m,
+                    &std::collections::BTreeMap::new(),
+                    None,
+                    &crate::agent::tiles::TerrainTiles::default(),
+                )),
             )],
         );
         if let Some(k) = overlays_key(&crate::agent::build::KeyCtx::new(
@@ -9591,7 +8698,7 @@ pub(crate) mod tests {
             (vec!["6/28/16".to_string(), "6/28/17".into(), "6/29/16".into()], 0, 0)
         );
         assert_eq!(w.stale_lo.iter().collect::<Vec<_>>(), ["3/3/2"]);
-        // Re-keyed without their mids, as agent::rekey records them, the assembly too ("-" for
+        // Recorded without their mids, as an earlier re-keying did, the assembly too ("-" for
         // each mid): nothing stale; their mids made last, in idle time, after the chains.
         for (t, k, _) in &tt.pieces {
             done.trees.insert(t.clone(), k.clone());
@@ -11065,7 +10172,7 @@ pub(crate) mod tests {
         assert!(r.observe(&done, 300));
         assert_eq!(r.since("marks", 400), Some(100));
         assert_eq!(r.since("overlays", 400), None);
-        // Its record dropped (a prune, a rekey): not a run.
+        // Its record dropped (a prune, a redo): not a run.
         done.lo.remove("marks");
         assert!(r.observe(&done, 500));
         assert_eq!(r.since("marks", 600), Some(300));
@@ -12624,15 +11731,7 @@ pub(crate) mod tests {
         let inputs = crate::agent::input_digests(&store::nasfs::NasRoot::local_for_test(&root));
         lap("reading reaches, terrain indexes and input digests", &mut t);
         for round in 1..=2 {
-            let nr = store::nasfs::NasRoot::local_for_test(&root);
-            let times = crate::agent::rekey::FileTimes::new(&nr);
-            let mut k = keys.clone();
-            crate::agent::rekey::as_read(
-                &mut k,
-                &crate::agent::build::KeyCtx::new(&cov, "d", &m, &std::collections::BTreeMap::new(), None, &tiles),
-                &times,
-            );
-            lap(&format!("[{round}] rekey::as_read"), &mut t);
+            let k = keys.clone();
             let dg = |v: String| store::naming::hash16(v.as_bytes());
             let n = dg(format!("{:?}", pois_units(&cov, &date, &m)));
             lap(&format!("[{round}] pois_keys ({n})"), &mut t);
@@ -12668,7 +11767,15 @@ pub(crate) mod tests {
             // after task #894's edge tree and kept answers.)
             let n = dg(format!("{:?}", coverage_tiles(&cov)));
             lap(&format!("[{round}] coverage_tiles ({n})"), &mut t);
-            let n = dg(serde_json::to_string(&terrain_slope_targets_made(&cov, &m, &tiles)).unwrap());
+            let n = dg(serde_json::to_string(&terrain_slope_targets_made(&crate::agent::build::KeyCtx::new(
+                &cov,
+                "d",
+                &m,
+                &std::collections::BTreeMap::new(),
+                None,
+                &tiles,
+            )))
+            .unwrap());
             lap(&format!("[{round}] terrain_slope_targets_made ({n})"), &mut t);
             let n = dg(serde_json::to_string(&terrain_slope_targets(&crate::agent::build::KeyCtx::new(
                 &cov,

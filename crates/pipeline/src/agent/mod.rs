@@ -59,8 +59,6 @@ pub mod publish;
 pub mod recipes;
 pub mod redo;
 pub mod regionsview;
-pub mod rekey;
-pub mod restore;
 pub mod resume;
 pub mod room;
 pub mod settings;
@@ -2842,10 +2840,9 @@ impl Agent {
         cmd.extend(self.step_args(step, pass));
         if matches!(step, "trees" | "terrain-hi" | "slope-hi") {
             // (Under the NAS's deadline: none read, nothing expected the same.)
-            let keys = records_deadlined(root).keys;
             let same = expect_same(
                 &build::Work { step: step.to_string(), targets: targets.to_vec() },
-                &self.as_read(root, step, keys),
+                &records_deadlined(root).keys,
             );
             if !same.is_empty() {
                 cmd.extend(["--expect-same".to_string(), same.join(",")]);
@@ -6924,30 +6921,6 @@ impl Agent {
         })
     }
 
-    /// `keys` as every reader reads them (agent::rekey::as_read), for a job's `--expect-same`, by
-    /// the coverage and terrain packs' indexes the last plan read (`plan::PlanView`); as they are
-    /// when what that reads can't be told now (no plan yet, or the regions' version changed since).
-    fn as_read(&self, root: &store::nasfs::NasRoot, step: &str, mut keys: build::Keys) -> build::Keys {
-        // (The plan's first: a member has none, and reads nothing for it.)
-        let view = self.plan.view.get();
-        let (Some((version, covs)), Some(tiles)) = (view.coverage.as_ref(), view.tiles.as_ref()) else { return keys };
-        let Some(date) = self.latest_pass(root) else { return keys };
-        let (recipes, unread) = load_regions(root);
-        if recipes.is_empty() || !unread.is_empty() {
-            return keys;
-        }
-        let Ok(manifest) = crate::out::read_manifest(root) else { return keys };
-        let now = crate::inputs::regions::read::source(root, &manifest).map(|a| a.version);
-        if now.ok().as_ref() != Some(version) {
-            return keys;
-        }
-        let times = rekey::FileTimes::new(root);
-        let inputs = key_inputs(root, &manifest);
-        let x = build::KeyCtx::new(&covs.all, &date, &manifest, &inputs, None, tiles);
-        rekey::as_read_of(&mut keys, &x, &times, &|s| s == step);
-        keys
-    }
-
     /// The build's pause as this agent knows it, brought up to date: this Mac's ask (its menu,
     /// `scenic pause`, the map: crate::control::Request) passed on, to this Mac's coordinator, or
     /// from a member to the lead's (and this Mac paused or going on meanwhile, while that can't
@@ -8735,8 +8708,7 @@ fn clear_target_scratch(dir: &Path, target: &str) -> Vec<PathBuf> {
 /// fetch with; "feeds": the digest of what of them it reads; "?" while their index can't be read,
 /// and rail-feeds waits) and the declared elevation datasets' spacing, which the rail and
 /// candidates keys name ("?" while it can't be read, and they wait: crate::dem::spacing). Every
-/// reader keying targets reads these (the plan, the checklist, the regions' counts,
-/// `--expect-same`, scenic-build's rekey-check).
+/// reader keying targets reads these (the plan, the checklist, the regions' counts).
 pub fn key_inputs(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut inputs = input_digests(root);
     if let Some(ix) = manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
@@ -9246,8 +9218,8 @@ pub fn read_status(root: Option<&store::nasfs::NasRoot>, home: &Path) -> Option<
 }
 
 /// The targets of `w` made again as they are, expected the same (scenic-build trees, terrain-hi and
-/// slope-hi `--expect-same`): tree cover's, terrain-hi's and slope-hi's z6 tiles the records as read
-/// (`done`: agent::rekey::as_read) have under the key they're built with, their mids made
+/// slope-hi `--expect-same`): tree cover's, terrain-hi's and slope-hi's z6 tiles the records (`done`)
+/// have under the key they're built with, their mids made
 /// (build::TreeWork::backfill, build::TerrainWork::backfill, and those an assembly needs). Any
 /// other step's: none.
 fn expect_same(w: &build::Work, done: &build::Keys) -> Vec<String> {
@@ -9839,46 +9811,6 @@ mod tests {
         .unwrap()
     }
 
-    /// Task #879 step 4a: what the plan's reading re-keyed to scheme 2 and dropped is one job of the
-    /// lead's ("redo rekey") whose command reads nothing, its done record the plan's: merged, the
-    /// records are under their new keys (one rebuilt since kept), the dropped one gone; the next
-    /// plan's reading moves nothing, and no job is planned.
-    #[test]
-    fn the_scheme_2_save_is_one_job_reading_nothing_and_not_planned_again() {
-        let d = tempfile::tempdir().unwrap();
-        let root = store::nasfs::NasRoot::local_for_test(&d.path().join("nas"));
-        let mut a = agent(&root, &d.path().join("home"));
-        let (old, new, gone) = ("00000000000000aa", "00000000000000bb", "00000000000000cc");
-        let mut s = rekey::Scheme2Step::default();
-        s.moved = vec![
-            redo::Restore { target: "6/1/2".into(), from: old.into(), to: new.into() },
-            redo::Restore { target: "6/1/3".into(), from: old.into(), to: new.into() },
-        ];
-        s.dropped = vec![("6/0/17".into(), gone.into())];
-        a.planner().rekeyed.borrow_mut().insert("terrain-hi", s);
-        let jobs = a.planner().rekey_jobs();
-        assert_eq!(jobs.len(), 1);
-        let j = &jobs[0];
-        assert_eq!(j.id, "redo rekey");
-        assert!(j.cmd.ends_with(&["rekey-check".to_string(), "--help".into()]), "{:?}", j.cmd);
-        assert!(!j.cmd.iter().any(|c| c == "--root"), "it reads nothing");
-        let w = j.record.clone().unwrap();
-        let mut keys = build::Keys::default();
-        let m = keys.per_target("terrain-hi").unwrap();
-        m.insert("6/1/2".into(), old.into());
-        m.insert("6/1/3".into(), "00000000000000dd".into()); // (built again since the plan)
-        m.insert("6/0/17".into(), gone.into());
-        keys.record(&w.step, &w.targets);
-        let m = keys.per_target("terrain-hi").unwrap();
-        assert_eq!(m.get("6/1/2").map(String::as_str), Some(new));
-        assert_eq!(m.get("6/1/3").map(String::as_str), Some("00000000000000dd"));
-        assert_eq!(m.get("6/0/17"), None);
-        // (The next plan's reading: nothing moved, no job.)
-        a.planner().rekeyed.borrow_mut().clear();
-        a.planner().rekeyed.borrow_mut().insert("terrain-hi", rekey::Scheme2Step { current: 2, ..Default::default() });
-        assert!(a.planner().rekey_jobs().is_empty());
-    }
-
     /// Task #780: the owner's redo, as the lead's coordinator takes it (`/work/redo`), kept in its
     /// agent's folder (not by a dry run), planned as a job of the `redo` step whose done record
     /// names "<step> <target>", and dropped once that job succeeded; a failure keeps it.
@@ -9930,30 +9862,6 @@ mod tests {
         a.finished(&j.id, &j.what, true, 5, String::new());
         assert!(redo::pending(&home).unwrap().is_empty() && !home.join(redo::ASKS).exists());
         assert!(a.planner().redo_jobs(&root).is_empty());
-        // Task #832: a restore's ask, its job's done record each target with its key, merged as a
-        // record only over the key checked (`build::Keys::record`).
-        let r = |t: &str, f: &str, to: &str| redo::Restore { target: t.into(), from: f.into(), to: to.into() };
-        let restore = vec![
-            r("6/18/22", "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"),
-            r("6/18/23", "cccccccccccccccc", "dddddddddddddddd"),
-        ];
-        let (step, restore) = redo::checked_restore("terrain-hi", &restore).unwrap();
-        assert!(redo::checked_restore("terrain-hi", &[r("6/1/1", "x", "y")]).is_err(), "keys are hex");
-        let ask =
-            redo::Ask { n: 8, step, targets: vec!["6/18/22".into(), "6/18/23".into()], restore, ..Default::default() };
-        co.shared.lock().unwrap().redo_asks.push(ask.clone());
-        a.planner().tend_redo();
-        let jobs = a.planner().redo_jobs(&root);
-        let mut done = build::Keys::default();
-        done.record(
-            "terrain-hi",
-            &[("6/18/22".into(), "aaaaaaaaaaaaaaaa".into()), ("6/18/23".into(), "eeeeeeeeeeeeeeee".into())],
-        );
-        let w = jobs[0].record.clone().unwrap();
-        assert!(jobs[0].what.starts_with("Restoring 2 terrain-hi"), "{}", jobs[0].what);
-        done.record(&w.step, &w.targets);
-        assert_eq!(done.recorded("terrain-hi", "6/18/22"), Some("bbbbbbbbbbbbbbbb"));
-        assert_eq!(done.recorded("terrain-hi", "6/18/23"), Some("eeeeeeeeeeeeeeee"), "built since: its own");
     }
 
     /// Task #679: only the agent that runs the jobs writes GC's depth targets; a planning-only
@@ -13079,7 +12987,6 @@ mod tests {
             .unwrap()
             .targets,
         );
-        keys.record("trees", &rekey::v1::trees_targets(&cov, &m));
         let tiles = {
             let mut t = tiles::TerrainTiles::new(None);
             t.load(root, &m);
@@ -14479,8 +14386,8 @@ mod tests {
             let w = build::Work {
                 step: step.into(),
                 targets: vec![
-                    ("6/40/20".into(), build::none_piece_key(step, "6/40/20")),
-                    ("6/41/20".into(), build::none_piece_key(step, "6/41/20")),
+                    ("6/40/20".into(), crate::agent::steps::none_key(step, "6/40/20").unwrap()),
+                    ("6/41/20".into(), crate::agent::steps::none_key(step, "6/41/20").unwrap()),
                 ],
             };
             assert!(expect_same(&w, &done).is_empty(), "{step}");
@@ -15967,7 +15874,7 @@ mod pool_tests {
         assert!(lead.plan.plans() && !m.plan.plans(), "the member has no plan to count with");
         assert!(!idx.exists(), "no pack index opened");
         let view = m.plan.view.get();
-        assert!(view.built.is_empty() && view.checklist.is_empty() && view.tiles.is_none());
+        assert!(view.built.is_empty() && view.checklist.is_empty());
         let st: Status = serde_json::from_slice(&std::fs::read(m.o.home.join("helper.json")).unwrap()).unwrap();
         assert!(st.regions.is_empty() && st.checklist.is_empty(), "{:?}", st.checklist);
         stop_jobs(&mut lead);

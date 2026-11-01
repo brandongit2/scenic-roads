@@ -12,8 +12,7 @@
 //! - **trees-lo**, an assembly per z3 tile with a z6 tile (`build_lo`): its lo packs (zoom 4–8) from
 //!   its z6 tiles' mids; a z3 tile with lo packs and no z6 tile drops them.
 //!
-//! Together the same packs, byte for byte, as a z3 tile's whole run (`build`: by hand, and for a
-//! lease of the scheme before, agent::rekey::v1::trees_targets).
+//! Together the same packs, byte for byte, as a z3 tile's whole run (`build`, by hand).
 
 use crate::coverage::Coverage;
 use crate::legacy::TileId;
@@ -26,10 +25,8 @@ use std::path::{Path, PathBuf};
 /// writes, its hi packs' or its mid's, pixels or not (every z6 tile and assembly is made again). A
 /// z6 tile made again as it is (`build_piece`'s `expect_same`: its mid backfilled) expects the bytes
 /// its key made, and one that could never match would hold its z3 tile's assembly back for good.
-/// (trees.py's packs, the same pixels in other bytes than the `trees` program's, are made again at
-/// the switch to z6 tiles, by their files' times: agent::rekey::TREES_PROGRAM_SINCE.)
 pub const TREES_V: u32 = 2;
-/// The assemblies' own version (their keys: `targets`), bumped likewise on any change to the bytes
+/// The assemblies' own version (in their keys), bumped likewise on any change to the bytes
 /// of the lo packs an assembly makes from the same mids.
 pub const TREES_LO_V: u32 = 1;
 pub const LAYERS: [&str; 3] = ["trees-cover", "trees-height", "trees-leaf"];
@@ -44,18 +41,33 @@ pub fn mid_logical(x: u32, y: u32) -> String {
     crate::layers::mid_logical("trees", x, y)
 }
 
-/// Tree cover's targets, each with its key, done or not.
+/// Tree cover's targets, each with whether it's "none" (`listed`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Listed {
+    /// The z6 tiles ("6/x/y", none): each z6 tile the coverage meets; and each z6 tile with tree hi
+    /// packs or a mid that the coverage no longer meets, "none", whose run drops them. By z3 tile,
+    /// then column, then row.
+    pub pieces: Vec<(String, bool)>,
+    /// The assemblies ("3/x/y", none): each z3 tile with a z6 tile the coverage meets (assembled
+    /// from those z6 tiles' mids); and each z3 tile with tree lo packs and no such z6 tile, "none",
+    /// whose run drops them.
+    pub lo: Vec<(String, bool)>,
+}
+
+impl Listed {
+    /// The z6 tiles of z3 tile `q` ("3/x/y") the coverage meets.
+    pub fn pieces_of<'a>(&'a self, q: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.pieces.iter().filter(move |p| !p.1 && z3_of(&p.0).as_deref() == Some(q)).map(|p| p.0.as_str())
+    }
+}
+
+/// Tree cover's targets (`Listed`), each with its key (crate::agent::build::trees_targets), done or
+/// not.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Targets {
-    /// The z6 tiles ("6/x/y", key, none): each z6 tile the coverage meets, keyed on the version and
-    /// the coverage there (Meta's canopy and the leaf-type sources are fixed datasets); and each z6
-    /// tile with tree hi packs or a mid that the coverage no longer meets, "none", whose run drops
-    /// them. By z3 tile, then column, then row.
+    /// `Listed::pieces`, (target, key, none).
     pub pieces: Vec<(String, String, bool)>,
-    /// The assemblies ("3/x/y", key, none): each z3 tile with a z6 tile the coverage meets, keyed on
-    /// those z6 tiles' mids by content ("-" for a z6 tile without one: it can't be assembled until each
-    /// has), so a z6 tile made again to the same bytes changes nothing here; and each z3 tile with
-    /// tree lo packs and no such z6 tile, "none", whose run drops them.
+    /// `Listed::lo`, (target, key, none).
     pub lo: Vec<(String, String, bool)>,
 }
 
@@ -71,32 +83,8 @@ pub fn z3_of(piece: &str) -> Option<String> {
     TileId::parse(piece).filter(|u| u.z == 6).map(|u| format!("3/{}/{}", u.x >> 3, u.y >> 3))
 }
 
-/// A tree cover target's key, of its parts.
-fn key(parts: &[&str]) -> String {
-    store::naming::hash16(parts.join("|").as_bytes())
-}
-
-/// The key of a z6 tile ("6/x/y") the coverage has left, with tree hi packs or a mid still named:
-/// its run drops them (`drop_piece`), reading nothing (crate::agent::build::is_none_key).
-pub fn none_piece_key(t: &str) -> String {
-    key(&[&format!("trees {TREES_V}"), t, "none"])
-}
-
-/// The key of an assembly of a z3 tile ("3/x/y") with no z6 tile the coverage meets, and tree lo
-/// packs still named: its run drops them (`drop_lo`), reading nothing.
-pub fn none_lo_key(q: &str) -> String {
-    key(&[&format!("trees-lo {TREES_LO_V}"), &format!("trees {TREES_V}"), q, "none"])
-}
-
-/// The tree cover's targets (`Targets`) for the coverage and the build manifest `m`.
-pub fn targets(cov: &Coverage, m: &BTreeMap<String, String>) -> Targets {
-    targets_with(cov, m, None)
-}
-
-/// `targets`, a z6 tile's key naming the declared canopy and leaf-type sources where they aren't as
-/// staged (`sources`: crate::inputs::sources::trees_extra; None while they are, the keys as they
-/// were).
-pub fn targets_with(cov: &Coverage, m: &BTreeMap<String, String>, sources: Option<&str>) -> Targets {
+/// The tree cover's targets (`Listed`) for the coverage and the build manifest `m`.
+pub fn listed(cov: &Coverage, m: &BTreeMap<String, String>) -> Listed {
     // The z6 tiles the coverage meets, by z3 tile (none in a z3 tile it doesn't meet).
     let mut met: BTreeSet<(u32, u32, u32, u32)> = BTreeSet::new();
     for qx in 0..8u32 {
@@ -133,40 +121,13 @@ pub fn targets_with(cov: &Coverage, m: &BTreeMap<String, String>, sources: Optio
             lo_had.insert((q.x, q.y));
         }
     }
-    let mut out = Targets::default();
+    let mut out = Listed::default();
     for &(qx, qy, x, y) in met.union(&had) {
-        let t = format!("6/{x}/{y}");
-        let none = !met.contains(&(qx, qy, x, y));
-        let k = match (none, sources) {
-            (true, _) => none_piece_key(&t),
-            (false, None) => {
-                key(&[&format!("trees {TREES_V}"), &t, &cov.fingerprint(crate::hipack::tile_bounds(6, x, y))])
-            }
-            (false, Some(s)) => key(&[
-                &format!("trees {TREES_V}"),
-                &t,
-                &cov.fingerprint(crate::hipack::tile_bounds(6, x, y)),
-                &format!("sources {s}"),
-            ]),
-        };
-        out.pieces.push((t, k, none));
+        out.pieces.push((format!("6/{x}/{y}"), !met.contains(&(qx, qy, x, y))));
     }
     let z3s: BTreeSet<(u32, u32)> = met.iter().map(|&(qx, qy, _, _)| (qx, qy)).collect();
     for &(qx, qy) in z3s.union(&lo_had) {
-        let q = format!("3/{qx}/{qy}");
-        let head = [format!("trees-lo {TREES_LO_V}"), format!("trees {TREES_V}"), q.clone()];
-        let k = if z3s.contains(&(qx, qy)) {
-            let mids: Vec<String> = met
-                .range((qx, qy, 0, 0)..=(qx, qy, u32::MAX, u32::MAX))
-                .map(|&(_, _, x, y)| {
-                    format!("6/{x}/{y}={}", m.get(&mid_logical(x, y)).map(String::as_str).unwrap_or("-"))
-                })
-                .collect();
-            key(&[&head[0], &head[1], &head[2], &mids.join(",")])
-        } else {
-            none_lo_key(&q)
-        };
-        out.lo.push((q, k, !z3s.contains(&(qx, qy))));
+        out.lo.push((format!("3/{qx}/{qy}"), !z3s.contains(&(qx, qy))));
     }
     out
 }
@@ -517,7 +478,7 @@ fn put_made(out: &mut Out, made: Made, same: Option<&str>) -> Result<()> {
     out.save()
 }
 
-/// Drops z6 tile `t`'s hi packs and mid (a "none" z6 tile's run: `none_piece_key`); how many.
+/// Drops z6 tile `t`'s hi packs and mid (a "none" z6 tile's run); how many.
 pub fn drop_piece(out: &mut Out, t: TileId) -> Result<usize> {
     let all: Vec<String> =
         LAYERS.iter().map(|l| crate::layers::hi_logical(l, t.x, t.y)).chain([mid_logical(t.x, t.y)]).collect();
@@ -526,7 +487,7 @@ pub fn drop_piece(out: &mut Out, t: TileId) -> Result<usize> {
     Ok(n)
 }
 
-/// Drops z3 tile `q`'s tree lo packs (a "none" assembly's run: `none_lo_key`); how many.
+/// Drops z3 tile `q`'s tree lo packs (a "none" assembly's run); how many.
 pub fn drop_lo(out: &mut Out, q: TileId) -> Result<usize> {
     let all: Vec<String> = LAYERS.iter().map(|l| crate::layers::lo_logical(l, q.x, q.y)).collect();
     let n = crate::layers::drop(out, &all);
@@ -540,12 +501,12 @@ pub fn drop_lo(out: &mut Out, q: TileId) -> Result<usize> {
 /// threads.
 pub fn build_lo(out: &mut Out, cov: &Coverage, q: TileId, scratch: &Path, workers: usize) -> Result<()> {
     anyhow::ensure!(q.z == 3, "an assembly is a z3 tile's, not {}", q.slash());
-    let tt = targets(cov, &out.manifest);
+    let tt = listed(cov, &out.manifest);
     let z3 = q.slash();
-    let pieces: Vec<&(String, String, bool)> = tt.pieces_of(&z3).collect();
+    let pieces: Vec<&str> = tt.pieces_of(&z3).collect();
     anyhow::ensure!(!pieces.is_empty(), "{z3}: no z6 tile of it is the coverage's: its run drops it (drop_lo)");
     let mut args: Vec<std::ffi::OsString> = Vec::new();
-    for (t, _, _) in &pieces {
+    for t in &pieces {
         let u = TileId::parse(t).context("a piece")?;
         let c = out
             .get(&mid_logical(u.x, u.y))
@@ -619,35 +580,25 @@ mod tests {
     }
 
     #[test]
-    fn pieces_and_assemblies_keyed_on_what_they_read() {
+    fn pieces_and_assemblies_listed_by_the_coverage_and_the_packs() {
         // Reykjavik's 20 km circle: z6 tiles 6/28/16 and 6/28/17 (it crosses 64.17° N), in 3/3/2.
         let c = cov("place:-21.9,64.13,20");
         let mut m: BTreeMap<String, String> = BTreeMap::new();
-        let t = targets(&c, &m);
-        let names = |v: &[(String, String, bool)]| {
-            v.iter().map(|p| format!("{}{}", p.0, if p.2 { " none" } else { "" })).collect::<Vec<_>>()
+        let t = listed(&c, &m);
+        let names = |v: &[(String, bool)]| {
+            v.iter().map(|p| format!("{}{}", p.0, if p.1 { " none" } else { "" })).collect::<Vec<_>>()
         };
         assert_eq!(
             (names(&t.pieces), names(&t.lo)),
             (vec!["6/28/16".to_string(), "6/28/17".into()], vec!["3/3/2".to_string()])
         );
         assert_eq!(t.pieces_of("3/3/2").count(), 2);
-        // An extract's key is the coverage in it: grown where it reaches one of them, the other's stays.
-        let wider = targets(&cov("place:-21.9,64.13,21"), &m);
-        assert!(wider.pieces.iter().zip(&t.pieces).all(|(a, b)| a.1 != b.1), "the circle crosses both");
-        // An assembly's key is its z6 tiles' mids, by content: one made, another key; made again to the
-        // same bytes, the same.
-        m.insert(mid_logical(28, 16), "work/trees-mid/6-28-16.1111111111111111.sect".into());
-        let with = targets(&c, &m);
-        assert_eq!(with.pieces, t.pieces, "the pieces' keys don't read the mids");
-        assert_ne!(with.lo[0].1, t.lo[0].1);
-        assert_eq!(targets(&c, &m).lo, with.lo);
         // Packs and a mid where the coverage no longer is (6/33/23, in 3/4/2): a "none" z6 tile, whose
         // run drops them, and a "none" assembly for 3/4/2's lo pack.
         m.insert("layers/trees-leaf/hi/6-33-23".into(), "x".into());
         m.insert(mid_logical(33, 22), "y".into());
         m.insert("layers/trees-cover/lo/3-4-2".into(), "z".into());
-        let t2 = targets(&c, &m);
+        let t2 = listed(&c, &m);
         assert_eq!(names(&t2.pieces), ["6/28/16", "6/28/17", "6/33/22 none", "6/33/23 none"]);
         assert_eq!(names(&t2.lo), ["3/3/2", "3/4/2 none"]);
         assert_eq!(t2.pieces_of("3/4/2").count(), 0);
@@ -714,8 +665,8 @@ mod tests {
         put_z3(&mut whole, q, &d.path().join("z3")).unwrap();
         // The z6 tiles, then the assembly from their mids.
         let mut parts = out("parts");
-        let tt = targets(&c, &parts.manifest);
-        let pieces: Vec<TileId> = tt.pieces_of("3/4/2").map(|p| TileId::parse(&p.0).unwrap()).collect();
+        let tt = listed(&c, &parts.manifest);
+        let pieces: Vec<TileId> = tt.pieces_of("3/4/2").map(|p| TileId::parse(p).unwrap()).collect();
         assert_eq!(pieces.iter().map(|u| u.slash()).collect::<Vec<_>>(), ["6/32/21", "6/32/22", "6/33/21", "6/33/22"]);
         for &t in &pieces {
             let dir = d.path().join(format!("p-{}", t.dash()));
@@ -839,7 +790,7 @@ mod tests {
         let a = crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
         let recipes = crate::inputs::regions::read::recipes(&a).unwrap();
         let cov = Coverage::accepted(&store::nasfs::NasRoot::local_for_test(&root), &a, None).unwrap();
-        let tt = targets(&cov, &m);
+        let tt = listed(&cov, &m);
         eprintln!(
             "pass {date}, {} regions, {} pieces, {} assemblies ({:.0} s)",
             recipes.len(),
@@ -947,7 +898,7 @@ mod tests {
             // The z6 tiles, then their assembly from their mids.
             let mut made: BTreeMap<String, String> = BTreeMap::new();
             let mut mids: Vec<PathBuf> = Vec::new();
-            let pieces: Vec<TileId> = tt.pieces_of(&q.slash()).map(|p| TileId::parse(&p.0).unwrap()).collect();
+            let pieces: Vec<TileId> = tt.pieces_of(&q.slash()).map(|p| TileId::parse(p).unwrap()).collect();
             for &t in &pieces {
                 let d = data.join(format!("{}-piece", t.dash()));
                 run(t, &d);

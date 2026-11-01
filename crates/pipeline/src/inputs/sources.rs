@@ -794,15 +794,15 @@ pub fn read(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -
 
 /// What the units' keys name of the declared sources they read (the land cover, the canopy): each
 /// one's id and `keyed` digest where it isn't as staged (`Source::key_extra` against
-/// agent::rekey::declared_before), together; None while all are, so the keys are as they were.
+/// inputs::sources::declared_before), together; None while all are, so the keys are as they were.
 pub fn unit_extra(s: &Sources) -> Result<Option<String>> {
-    use crate::agent::rekey::declared_before as b;
+    use crate::inputs::sources::declared_before as b;
     extras(s, &[(LAND_COVER, b::LAND_COVER), (CANOPY, b::CANOPY)])
 }
 
 /// The same of tree cover's (the canopy, the leaf types).
 pub fn trees_extra(s: &Sources) -> Result<Option<String>> {
-    use crate::agent::rekey::declared_before as b;
+    use crate::inputs::sources::declared_before as b;
     extras(s, &[(CANOPY, b::CANOPY), (LEAF_EUROPE, b::LEAF_EUROPE), (LEAF_NORTH_AMERICA, b::LEAF_NORTH_AMERICA)])
 }
 
@@ -821,6 +821,30 @@ pub fn accepted(manifest: &BTreeMap<String, String>) -> bool {
 }
 
 /// The staged declarations (producers/sources/), as the inputs folder takes them: path and bytes.
+/// What the steps' keys named of the sources declared in `inputs/sources/` (#145) while they were in
+/// code: the digest (`Source::digest`) of each source's declaration as staged for the switch
+/// (producers/sources/), whose fields are what the code had (each consumer's tests). While the
+/// accepted declaration has that digest a key is what it was (`Source::key_part`, `key_extra`), so
+/// nothing is made again for the move; a declaration that names anything else is a new key.
+pub mod declared_before {
+    /// The lake fill's (canvec-lakes.toml): its key named the zips (their pin, `run::source_pin`),
+    /// not the layer and values the fill keeps.
+    pub const LAKE_FILL: &str = "25eb06ca157bccd7";
+    /// The land cover's (esa-worldcover.toml), the canopy's (meta-canopy.toml, with its index) and
+    /// the leaf types' (eea-leaf-type.toml, nalcms.toml): no key named them in code (the z6 tiles' grids
+    /// and tree cover from fixed datasets); a key names them once they're other than staged.
+    pub const LAND_COVER: &str = "8f325c73404dbb3e";
+    pub const CANOPY: &str = "1b78cff281da155d";
+    pub const LEAF_EUROPE: &str = "fc5221f05e2c6ff7";
+    pub const LEAF_NORTH_AMERICA: &str = "79b40a5faa30a391";
+    /// The buildings' (overture-buildings.toml): the roadside buildings' and the 3D buildings' keys
+    /// named the release alone (2026-09-23.1, then in code).
+    pub const BUILDINGS: &str = "c3a4a3fb72797382";
+    /// The building heights' (ghsl-built-h.toml): the bldprep keys named the GHSL tiles it read (by
+    /// name and size), not where they come from.
+    pub const BUILDING_HEIGHTS: &str = "909a01a4faed972e";
+}
+
 #[cfg(test)]
 pub const STAGED: [(&str, &[u8]); 16] = [
     ("overture-buildings.toml", include_bytes!("../../../../producers/sources/overture-buildings.toml")),
@@ -989,7 +1013,7 @@ mod tests {
     /// once they aren't as staged: nothing as they are, the changed one's id and `keyed` otherwise.
     #[test]
     fn the_units_and_trees_keys_name_their_sources_once_changed() {
-        use crate::agent::rekey::declared_before as b;
+        use crate::inputs::sources::declared_before as b;
         let s = staged();
         for (role, before) in [
             (LAND_COVER, b::LAND_COVER),

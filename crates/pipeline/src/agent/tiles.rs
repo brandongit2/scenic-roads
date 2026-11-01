@@ -142,14 +142,6 @@ impl TerrainTiles {
         n
     }
 
-    /// `load` without the packs: the water digests, the elevation datasets and the fine datasets
-    /// alone, what the terrain's keys read (agent::restore).
-    pub fn load_inputs(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
-        self.load_water(root, m);
-        self.load_elevation(root, m);
-        self.load_fine(root, m);
-    }
-
     /// Holds the declared elevation datasets of the accepted version `m` names, once the build reads
     /// them (one that can't be read now: the z6 tiles' keys wait, tried again with the next load).
     fn load_elevation(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
@@ -407,19 +399,6 @@ impl TerrainTiles {
     /// The water digests `m` names for the water source pinned `pin` (None: none, or not read now).
     pub fn water_idx(&self, m: &BTreeMap<String, String>, pin: &str) -> Option<&crate::terrain_water::WaterIdx> {
         self.water.get(m.get(&crate::terrain_water::idx_logical(pin))?).filter(|w| w.pin == pin)
-    }
-
-    /// The pins of the water sources whose digests `m` names and are held, sorted.
-    pub fn water_pins(&self, m: &BTreeMap<String, String>) -> Vec<String> {
-        let mut v: Vec<String> = m
-            .range(crate::terrain_water::IDX_PREFIX.to_string()..)
-            .take_while(|(l, _)| l.starts_with(crate::terrain_water::IDX_PREFIX))
-            .filter_map(|(_, c)| self.water.get(c))
-            .map(|w| w.pin.clone())
-            .collect();
-        v.sort();
-        v.dedup();
-        v
     }
 
     /// Holds a water source's digests as given, under content name `content` (tests: no file).
@@ -734,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn rekey_check_reads_into_memory_only() {
+    fn an_index_folder_none_reads_into_memory_only() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
         let mut m = BTreeMap::new();

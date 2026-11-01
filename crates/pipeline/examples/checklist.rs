@@ -7,8 +7,7 @@
 //! `<pack-idx copy>`: a copy of an agent's `pack-idx` folder (the terrain packs' indexes are read
 //! from and kept in it; never an agent's own).
 
-use pipeline::agent::build::{checklist, fold, KeyCtx, Keys};
-use pipeline::agent::rekey::{as_read, FileTimes};
+use pipeline::agent::build::{checklist, fold, Keys};
 use pipeline::agent::tiles::TerrainTiles;
 use pipeline::coverage::Coverage;
 use std::collections::BTreeMap;
@@ -23,15 +22,13 @@ fn main() -> anyhow::Result<()> {
     let nr = store::nasfs::NasRoot::from_arg(&root);
     let m = pipeline::out::read_manifest(&nr)?;
     let date = pipeline::osmpass::latest_pass_by(&nr, false).ok_or_else(|| anyhow::anyhow!("no complete pass"))?;
-    let mut keys = Keys::load(&nr);
+    let keys = Keys::load(&nr);
     let a = pipeline::inputs::regions::read::source(&nr, &m)?;
     let cov = Coverage::accepted(&nr, &a, None)?;
     let reach = pipeline::reach::Reaches::load(&nr, &m, &date).ok().flatten();
     let mut tiles = TerrainTiles::new(Some(PathBuf::from(idx)));
     tiles.load(&nr, &m);
     let inputs = pipeline::agent::key_inputs(&nr, &m);
-    let times = FileTimes::new(&nr);
-    as_read(&mut keys, &KeyCtx::new(&cov, &date, &m, &inputs, reach.as_ref(), &tiles), &times);
 
     let (items, next) = checklist(
         &cov,

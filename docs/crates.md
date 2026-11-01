@@ -128,8 +128,8 @@ step moves only with its whole set. Jobs and tasks run a tool by its name (`pipe
 ## 4. Steps
 
 Each step ships alone: build, clippy and the affected tests green, no behaviour change, the
-programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, agent/build.rs,
-agent/rekey.rs; #856: crates/server; #882 step 4: coord; #914) move only after those land.
+programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, agent/build.rs;
+#856: crates/server; #882 step 4: coord; #914) move only after those land.
 
 1. **pyport** (built): move pyjson, pytext, pynumpy, tpsimplify into `crates/pyport`; pipeline
    re-exports them. No other file changes.

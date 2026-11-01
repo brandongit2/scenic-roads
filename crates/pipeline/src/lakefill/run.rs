@@ -338,7 +338,7 @@ impl FillOpts {
 
 /// The lake fill's source as its key names it, under the project root `root` and records `m`: its
 /// zips' pin (`source_pin` of `source_dir`), and the declaration (`Source::key_extra`: nothing while
-/// it names what the code read, agent::rekey::declared_before::LAKE_FILL). Ok(None): its folder holds
+/// it names what the code read, inputs::sources::declared_before::LAKE_FILL). Ok(None): its folder holds
 /// no zip (no fill made); Err: not declared, its declared folder not there (the zips not moved yet,
 /// or the NAS away), or not to be read now: the step and what reads its fill wait.
 pub fn planned_source(
@@ -357,7 +357,7 @@ pub fn planned_source(
         ));
     }
     let pin = source_pin(&dir).map_err(|e| format!("its source's folder can't be read now ({e})"))?;
-    Ok(pin.map(|p| match src.key_extra(crate::agent::rekey::declared_before::LAKE_FILL) {
+    Ok(pin.map(|p| match src.key_extra(crate::inputs::sources::declared_before::LAKE_FILL) {
         Some(x) => format!("{p}\n{x}"),
         None => p,
     }))
@@ -1046,12 +1046,12 @@ mod tests {
             serde_json::to_value(super::super::Rules::default()).unwrap()
         );
         assert_eq!(source_dir(src), "sources/fetched/canvec-lakes");
-        assert_eq!(src.digest(), crate::agent::rekey::declared_before::LAKE_FILL);
-        assert_eq!(src.key_extra(crate::agent::rekey::declared_before::LAKE_FILL), None);
+        assert_eq!(src.digest(), crate::inputs::sources::declared_before::LAKE_FILL);
+        assert_eq!(src.key_extra(crate::inputs::sources::declared_before::LAKE_FILL), None);
         let mut other = src.clone();
         other.data.params.insert("keep".into(), serde_json::json!(["83"]));
         assert_eq!(
-            other.key_extra(crate::agent::rekey::declared_before::LAKE_FILL),
+            other.key_extra(crate::inputs::sources::declared_before::LAKE_FILL),
             Some(format!("source canvec-lakes {}", src.keyed))
         );
     }

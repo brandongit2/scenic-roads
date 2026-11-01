@@ -111,10 +111,6 @@ pub(super) struct PlanView {
     pub queued: Vec<build::Work>,
     pub ready: Vec<String>,
     pub regions_view: Option<(RegionsKey, std::sync::Arc<serde_json::Value>)>,
-    /// The coverage and terrain packs' indexes it planned with: what a job's `--expect-same` reads
-    /// its keys by (`Agent::as_read`).
-    pub coverage: Option<(String, std::sync::Arc<Coverages>)>,
-    pub tiles: Option<std::sync::Arc<tiles::TerrainTiles>>,
     /// Whether the forecast's thread runs (a NAS user: the self-heal waits for it).
     pub forecasting: bool,
     /// Whether the catalogue last planned has the low zooms made (build::Plan::low): its batch says
@@ -389,9 +385,6 @@ pub(super) struct Planner {
     /// The depth's targets as the last plan found them, for GC (`build::depth_kept`; None: not
     /// found then, and no depth pack is dropped).
     pub(super) depth_keep: std::cell::RefCell<Option<gc::DepthKeep>>,
-    /// What the last plan's reading of the records did under scheme 2 (rekey::scheme_2), by step:
-    /// the records it re-keyed or dropped, which `rekey_jobs` saves.
-    pub(super) rekeyed: std::cell::RefCell<BTreeMap<&'static str, rekey::Scheme2Step>>,
     /// The coverage and each region's as last made, with what they were made from (`coverage`).
     pub(super) coverage: std::cell::RefCell<Option<(String, std::sync::Arc<Coverages>)>>,
     /// The coverage being read off the plan (`coverage`), by the accepted version it's of.
@@ -508,7 +501,6 @@ impl Planner {
             reach: Default::default(),
             tiles: std::cell::RefCell::new(tiles),
             depth_keep: Default::default(),
-            rekeyed: Default::default(),
             coverage: Default::default(),
             coverage_making: Default::default(),
             edits: Default::default(),
@@ -715,8 +707,6 @@ impl Planner {
             queued: self.queued.borrow().clone(),
             ready: self.ready.borrow().clone(),
             regions_view: self.regions_view.borrow().clone(),
-            coverage: self.coverage.borrow().clone(),
-            tiles: Some(std::sync::Arc::new(self.tiles.borrow().clone())),
             forecasting: self.forecasting.borrow().as_ref().is_some_and(|h| !h.is_finished()),
             catalogue_low: self.catalogue_low.get(),
         };
@@ -1223,7 +1213,6 @@ impl Planner {
         // its targets' records.
         if self.coord.is_some() {
             out.extend(self.redo_jobs(root));
-            out.extend(self.rekey_jobs());
         }
         self.shadow_checked();
         if self.due("gc", Duration::from_secs(86400)) {
@@ -1270,8 +1259,7 @@ impl Planner {
                 JobSpec {
                     id: redo::job_id(a.n),
                     what: format!(
-                        "{} {} {} target{}' records",
-                        if a.restore.is_empty() { "Forgetting" } else { "Restoring" },
+                        "Forgetting {} {} target{}' records",
                         a.targets.len(),
                         a.step,
                         if a.targets.len() == 1 { "" } else { "s" }
@@ -1283,30 +1271,6 @@ impl Planner {
                 }
             })
             .collect()
-    }
-
-    /// The records the plan read re-keyed to scheme 2, or dropped (rekey::scheme_2), saved so, the
-    /// lead's: one job for every step's (docs/readiness.md §6 step 4, "redo rekey"), its done
-    /// record (rekey::record, worked out here) recording them as the lead merges it. Its command
-    /// reads nothing (`scenic-build rekey-check --help`: the record is the plan's; a full
-    /// rekey-check is minutes and gigabytes on the lead). None once every record read is scheme 2's.
-    pub(super) fn rekey_jobs(&self) -> Vec<JobSpec> {
-        let r = self.rekeyed.borrow();
-        let Some(record) = rekey::record(&r) else { return Vec::new() };
-        let moved: usize = r.values().map(|c| c.moved.len()).sum();
-        let dropped: usize = r.values().map(|c| c.dropped.len()).sum();
-        vec![JobSpec {
-            id: format!("{} rekey", redo::STEP),
-            what: format!("Recording {moved} record(s) under their scheme-2 keys, dropping {dropped}"),
-            cmd: vec![
-                self.o.bin.join("scenic-build").to_string_lossy().into_owned(),
-                "rekey-check".into(),
-                "--help".into(),
-            ],
-            needs: Needs { nas: true },
-            restart_after_sleep: true,
-            record: Some(record),
-        }]
     }
 
     /// The owner's redo asks this Mac's coordinator took (`/work/redo`), kept in its agent's folder
@@ -1362,9 +1326,8 @@ impl Planner {
     ) -> Vec<JobSpec> {
         // (The depth's targets for GC: none until this plan finds them.)
         self.depth_keep.borrow_mut().take();
-        self.rekeyed.borrow_mut().clear();
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
-        let (manifest, mut keys): (BTreeMap<String, String>, build::Keys) = match self.planning_records(root) {
+        let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match self.planning_records(root) {
             Ok(r) => r,
             Err(e) => {
                 waiting.push(Waiting {
@@ -1439,7 +1402,6 @@ impl Planner {
         let pass_cx = build::PassCtx::default();
         if let Some(date) = pass {
             let px = pass_cx.ctx(date, &manifest);
-            self.rekeyed.borrow_mut().extend(rekey::pass_as_read(&mut keys, &px));
             let p = vec!["--pass".to_string(), date.to_string()];
             if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {
                 jobs.push(job(format!("pass-sets {date}"), "pass-sets", p.clone(), None));
@@ -1627,7 +1589,7 @@ impl Planner {
         };
         let cov = &covs.all;
         self.note_timetables(root, &manifest);
-        let mut done = keys;
+        let done = keys;
         let mut inputs = key_inputs(root, &manifest);
         // (The inputs' descriptions' credits, for the catalogue's key: crate::inputs::credits. None
         // yet, no line, so the catalogue's key is as it was. Unreadable now: the last digest read
@@ -1740,16 +1702,6 @@ impl Planner {
         let mut planned = {
             let tiles = self.terrain_tiles(root, &manifest);
             *self.depth_keep.borrow_mut() = build::depth_kept(cov, &manifest, &tiles, now_s());
-            // (The records as re-keyed: what they are once the loop has re-keyed them, as a dry run,
-            // or a loop that couldn't take the build lock, plans too.)
-            let times = rekey::FileTimes::new(root);
-            nasread::phase("the plan: the records re-keyed");
-            let r = rekey::as_read(
-                &mut done,
-                &build::KeyCtx::new(cov, date, &manifest, &inputs, reach.as_deref(), &tiles),
-                &times,
-            );
-            self.rekeyed.borrow_mut().extend(r.scheme_2);
             nasread::phase("the plan: build::plan");
             build::plan(
                 &cov,
@@ -2760,10 +2712,9 @@ impl Planner {
             items.extend(build::checklist_to_come());
             return build::fold(&items, &next, &notes);
         };
-        let crate::pool::records::Brief { manifest, mut keys, .. } = records_deadlined(root);
+        let crate::pool::records::Brief { manifest, keys, .. } = records_deadlined(root);
         let pass_cx = build::PassCtx::default();
         let px = pass_cx.ctx(&date, &manifest);
-        rekey::pass_as_read(&mut keys, &px);
         // Countries the pass couldn't assemble, kept as the previous pass's outlines: said on the
         // pass's line until a pass has them whole (crate::outlines::assemble).
         if let Some(c) = manifest.get(&format!("sources/osm/{date}/outlines")) {
@@ -2816,13 +2767,6 @@ impl Planner {
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         let tiles = self.terrain_tiles(root, &manifest);
         let inputs = key_inputs(root, &manifest);
-        // (As re-keyed: agent::rekey.)
-        let times = rekey::FileTimes::new(root);
-        rekey::as_read(
-            &mut keys,
-            &build::KeyCtx::new(cov, &date, &manifest, &inputs, reach.as_deref(), &tiles),
-            &times,
-        );
 
         let (more, more_next) = build::checklist(
             cov,
@@ -2842,7 +2786,7 @@ impl Planner {
 
     /// `f` (build::region_states, build::region_steps) over the keying context (the coverage, the
     /// pass, the manifest, the planner's inputs, the reaches, the terrain packs' indexes), the regions' and
-    /// the records as every reader reads them (agent::rekey::as_read), on a thread of its own named `name` (the loop gives it what it holds
+    /// the records, on a thread of its own named `name` (the loop gives it what it holds
     /// already, and a copy of the indexes), with how long it took. None before the first pass or
     /// while the coverage can't be read.
     #[allow(clippy::type_complexity)]
@@ -2857,10 +2801,8 @@ impl Planner {
         let root = root.clone();
         let run = move || {
             let t = Instant::now();
-            let mut keys = keys;
             let inputs = key_inputs(&root, &manifest);
             let x = build::KeyCtx::new(&covs.all, &date, &manifest, &inputs, reach.as_deref(), &tiles);
-            rekey::as_read(&mut keys, &x, &rekey::FileTimes::new(&root));
             (f(&x, &covs.each, &keys), t.elapsed())
         };
 
@@ -2920,13 +2862,8 @@ impl Planner {
         keys: &build::Keys,
         date: &str,
     ) -> Result<Option<std::sync::Arc<crate::reach::Reaches>>, crate::reach::LoadError> {
-        // (Its record as read: agent::rekey::pass_as_read, of it alone.)
         let cx = build::PassCtx::default();
-        let px = cx.ctx(date, manifest);
-        let mut reach_rec = build::Keys::default();
-        reach_rec.lo.extend(keys.lo.get("reach").map(|k| ("reach".to_string(), k.clone())));
-        rekey::pass_as_read(&mut reach_rec, &px);
-        if build::reach_work(&px, &reach_rec).is_some() {
+        if build::reach_work(&cx.ctx(date, manifest), keys).is_some() {
             return Ok(None);
         }
         let Some(c) = manifest.get(&crate::reach::logical(date)) else { return Ok(None) };

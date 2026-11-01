@@ -13,7 +13,7 @@
 //! each with the build's fetcher (its User-Agent, its per-host limit), then packed and their
 //! archives handed off as the store's (crate::rawpack::handed_place), the lead naming them in the
 //! store's index as it names AWS's; each z6 tile starts only while the NAS has more room past the
-//! owner's reserve than the most one has put there. Its key (crate::agent::build::pyramids_key)
+//! owner's reserve than the most one has put there. Its key (its declared reads, crate::agent::steps)
 //! follows what `want` reads, so a z6 tile is filled again when that changes (`V` with its code).
 //! Jobs only read the store (`Stored`): a tile it lacks is fetched as before, never written back.
 
@@ -31,7 +31,7 @@ use store::sys::PosIo;
 /// The stored pyramids' folder, under the build's root.
 pub const DIR: &str = "sources/pyramids";
 
-/// The fill's version, in its key (crate::agent::build::pyramids_key): bumped with any change to
+/// The fill's version, in its key: bumped with any change to
 /// which tiles a z6 tile wants (`want`, `deep_bases`) or how they're stored.
 pub const V: u32 = 1;
 

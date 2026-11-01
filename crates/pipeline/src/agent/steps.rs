@@ -353,10 +353,6 @@ fn whole_left(step: &str, view: &dyn View) -> bool {
         })
 }
 
-/// The key derivation's scheme (docs/readiness.md §4, §6): 1 gave the hand-made keys (now
-/// crate::agent::rekey::scheme1's, to re-key their records); 2, the lines of the declared reads.
-pub const KEY_SCHEME: u32 = 2;
-
 /// Target `t`'s key of `step` (docs/readiness.md §4): its `derived_key` (a "none" target's is
 /// `none_key`); None while it can't be worked out, or for a step whose key isn't derived
 /// (`derived`).
@@ -629,13 +625,13 @@ fn sh_deep(t: &str) -> Vec<String> {
     named(pz, at(t, 6).into_iter().flat_map(|(x, y)| (0..s * s).map(move |i| (x * s + i % s, y * s + i / s))))
 }
 
-/// slope-lo 3/x/y: the lo terrain of it and its edge neighbours (`slope_lo_key`'s terrain).
+/// slope-lo 3/x/y: the lo terrain of it and its edge neighbours.
 fn sl_lo(t: &str) -> Vec<String> {
     named(3, at(t, 3).into_iter().flat_map(|(x, y)| with_edges(3, x, y)))
 }
 
 /// unit 6/x/y: the terrain packs over its tile + 30 km (crate::stage::MARGIN_KM) its staged tiles
-/// and its roads' heights read (`build::unit_terrain_from`, `build::terrain_packs`): the lo packs
+/// and its roads' heights read (`build::unit_terrain_from`, `build::unit_deep_tiles`): the lo packs
 /// of z4–8's z3 tiles, the hi packs of its box's z6 tiles (z9–12's), its box's deep packs.
 fn unit_reads(t: &str, z: u8) -> Vec<String> {
     let Some((x, y)) = at(t, 6) else { return Vec::new() };

@@ -23,9 +23,9 @@ pub fn ghsl_dir(version: &str) -> String {
 /// The declared buildings and building-heights sources (crate::inputs::sources) as the 3D
 /// buildings read them: the release, GHSL's folder (`ghsl_dir`), and what the bld-fetch and bldprep
 /// keys name of them: the release while the declarations name what the code had
-/// (agent::rekey::declared_before), else their ids and `keyed` digests too (`Source::key_part`).
+/// (inputs::sources::declared_before), else their ids and `keyed` digests too (`Source::key_part`).
 pub fn declared(s: &crate::inputs::sources::Sources) -> Result<(String, String, String)> {
-    use crate::agent::rekey::declared_before;
+    use crate::inputs::sources::declared_before;
     use crate::inputs::sources::{BUILDINGS, BUILDING_HEIGHTS};
     let (b, g) = (s.role(BUILDINGS)?, s.role(BUILDING_HEIGHTS)?);
     let release = b.version()?.to_string();
@@ -318,9 +318,9 @@ pub(crate) mod tests {
             (b.param_str("s3").unwrap(), b.param_str("region").unwrap()),
             ("s3://overturemaps-us-west-2", "us-west-2")
         );
-        assert_eq!(b.digest(), crate::agent::rekey::declared_before::BUILDINGS);
+        assert_eq!(b.digest(), crate::inputs::sources::declared_before::BUILDINGS);
         let g = s.role(crate::inputs::sources::BUILDING_HEIGHTS).unwrap();
-        assert_eq!(g.digest(), crate::agent::rekey::declared_before::BUILDING_HEIGHTS);
+        assert_eq!(g.digest(), crate::inputs::sources::declared_before::BUILDING_HEIGHTS);
         let folder = "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_BUILT_H_GLOBE_R2023A/GHS_BUILT_H_ANBH_E2018_GLOBE_R2023A_4326_3ss/V1-0/tiles/";
         let (top0, left0, deg) = (89.09958317764332, -180.00791620856731, 10.0);
         assert_eq!(g.index.len(), 346);
@@ -339,7 +339,7 @@ pub(crate) mod tests {
         let mut other = b.clone();
         other.data.version = Some("2026-11-18.0".into());
         assert_eq!(
-            other.key_part(("2026-11-18.0", crate::agent::rekey::declared_before::BUILDINGS)),
+            other.key_part(("2026-11-18.0", crate::inputs::sources::declared_before::BUILDINGS)),
             format!("source overture-buildings {}", b.keyed)
         );
     }
