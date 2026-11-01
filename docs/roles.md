@@ -63,7 +63,7 @@ thread spent ~10 % serialising mail (`Side::save_mail`).
 | Pool step (`pool` thread: mail, beat, hold on the NAS) | yes | ~10 % of a core at the sample | **keep** until #878 steps 3–6 replace it with HTTP |
 | Control, beat, app updater, loop watchdog | yes | small | **keep** |
 | Caches: room target, freeing, clears, `ask_upcoming` (`/work/tocome` from the lead) | yes | cache 4.8 / 55 GB (the work's) | **keep**; already by HTTP |
-| Checklist (`checklist`: records brief, outlines, every 5 min and job end) | yes | the 13–932 s loop phase | **drop** (#871 steps 6–7, merging) |
+| Checklist (`checklist`: records brief, outlines; with each plan, its regions' part the plan's) | yes | the 13–932 s loop phase | **drop** (#871 steps 6–7, merging) |
 | Regions' states (`region-states` thread, `build::region_states`) | yes | the busy core on the M1; 0.7–131 s a run | **drop** on members (#871 steps 6–7 take its output out of the status; this stops computing it) |
 | Terrain pack indexes (`tiles::TerrainTiles`, `agent/pack-idx/`) | yes, for the regions' states | 555 MB each; 358 s of SMB reads on the M1 | **drop** with the regions' states, if no job path reads it (verified in step 2) |
 | Regions loaded for the status (`load_regions` in the member's branch) | yes, each `plan_due` | 24 KB in `helper.json` | **drop** (#871 6–7) |

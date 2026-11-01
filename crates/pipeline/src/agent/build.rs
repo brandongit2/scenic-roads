@@ -2335,6 +2335,8 @@ pub struct Plan {
     /// The steps with work left that is held for other steps' targets, each with what it waits for
     /// (a note in the summits' form): terrain, slope and tree cover's, and the landmarks'.
     pub held: Vec<(String, String)>,
+    /// The regions' steps' checklist as this plan finds them (`checklist`, with the plan's keys).
+    pub checklist: Checklist,
 }
 
 /// A region's work left (`Plan::regions`), as targets.
@@ -2396,6 +2398,30 @@ pub struct KeyCtx<'a> {
     pub inputs: &'a BTreeMap<String, String>,
     pub reach: Option<&'a Reaches>,
     pub tiles: &'a TerrainTiles,
+    /// The keys derived with this context so far (`memo`; None: each worked out every time asked).
+    pub memo: Option<&'a KeyMemo>,
+}
+
+/// The keys derived with one `KeyCtx` (crate::agent::steps::derived_key), by (step, target): a key
+/// reads nothing but its context, which a `KeyCtx` borrows unchanged for as long as it lives, so
+/// one derived once holds for the rest of it. What lets a plan's checklist (`plan`) and its chains
+/// run ahead (`remaining`) reuse the keys the plan already worked out instead of deriving each
+/// again (task #924).
+#[derive(Default)]
+pub struct KeyMemo(std::sync::Mutex<std::collections::HashMap<(String, String), Option<String>>>);
+
+impl KeyMemo {
+    /// Target `t`'s key of `step` as derived before, else `derive`d now and kept (the lock not
+    /// held meanwhile: a key's derivation may derive others).
+    pub fn get_or(&self, step: &str, t: &str, derive: impl FnOnce() -> Option<String>) -> Option<String> {
+        let id = (step.to_string(), t.to_string());
+        if let Some(k) = self.0.lock().unwrap_or_else(|e| e.into_inner()).get(&id) {
+            return k.clone();
+        }
+        let k = derive();
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(id, k.clone());
+        k
+    }
 }
 
 impl<'a> KeyCtx<'a> {
@@ -2407,7 +2433,12 @@ impl<'a> KeyCtx<'a> {
         reach: Option<&'a Reaches>,
         tiles: &'a TerrainTiles,
     ) -> KeyCtx<'a> {
-        KeyCtx { cov, date, m, inputs, reach, tiles }
+        KeyCtx { cov, date, m, inputs, reach, tiles, memo: None }
+    }
+
+    /// This context with its keys kept in `memo` (one memo per context: `KeyMemo`).
+    pub fn memo(self, memo: &'a KeyMemo) -> KeyCtx<'a> {
+        KeyCtx { memo: Some(memo), ..self }
     }
 }
 
@@ -2478,6 +2509,8 @@ fn world_key(step: &str, x: &KeyCtx) -> Option<String> {
 ///   normalized file, then its tiles once it and its neighbours are prepared), listed after the
 ///   other chains, its tiles in the regions' order; it holds no region;
 /// - last, in idle time, the mids of current tree cover z6 tiles without one (`TreeWork::backfill`).
+///
+/// With it, the regions' steps' checklist (`Plan::checklist`), from the same keys.
 #[allow(clippy::too_many_arguments)]
 pub fn plan(
     cov: &Coverage,
@@ -2489,7 +2522,18 @@ pub fn plan(
     tiles: &TerrainTiles,
     updates: Publish,
 ) -> Plan {
-    let x = &KeyCtx::new(cov, date, m, inputs, reach, tiles);
+    // (One memo for the plan and its checklist: the checklist's keys are the plan's, worked out once.)
+    let memo = KeyMemo::default();
+    let x = &KeyCtx::new(cov, date, m, inputs, reach, tiles).memo(&memo);
+    let held = updates.held;
+    let mut p = plan_in(x, done, updates);
+    p.checklist = checklist(x, done, held, &p.ready);
+    p
+}
+
+/// `plan`'s work, worked out with `x`.
+fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
+    let (cov, date, m, inputs, reach, tiles) = (x.cov, x.date, x.m, x.inputs, x.reach, x.tiles);
     let mut work = Vec::new();
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     let push = |work: &mut Vec<Work>, step: &str, targets: Vec<(String, String)>| {
@@ -3177,6 +3221,7 @@ pub fn plan(
         idle: last_now,
         left,
         held: held_steps,
+        checklist: Default::default(),
     }
 }
 
@@ -4752,25 +4797,18 @@ fn chain_items(works: &[Work], steps: &[&str], known: bool) -> Vec<Item> {
         .collect()
 }
 
+/// The regions' steps' checklist: its items, and each stage's jobs to come (`checklist`).
+pub type Checklist = (Vec<Item>, BTreeMap<&'static str, Vec<String>>);
+
 /// The checklist's items and each stage's jobs to come (`next`): the regions' build to the end,
 /// step by step (the pass's own steps are the agent's): the heritage sites, terrain, slope, tree
 /// cover, the roads, the map tiles, the map's finishing, trains a day, the landmarks, the 3D
 /// buildings, publishing.
 /// `held`: the catalogue is held for review (inputs/hold-catalog): publishing is its held copy.
-/// `ready`: the regions a catalogue would record as built now (`Plan::ready`).
-#[allow(clippy::too_many_arguments)]
-pub fn checklist(
-    cov: &Coverage,
-    date: &str,
-    m: &BTreeMap<String, String>,
-    done: &Keys,
-    inputs: &BTreeMap<String, String>,
-    held: bool,
-    reach: Option<&Reaches>,
-    ready: &[String],
-    tiles: &TerrainTiles,
-) -> (Vec<Item>, BTreeMap<&'static str, Vec<String>>) {
-    let x = &KeyCtx::new(cov, date, m, inputs, reach, tiles);
+/// `ready`: the regions a catalogue would record as built now (`Plan::ready`). Made with each plan,
+/// with its keys (`plan`: `x`'s memo).
+pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Checklist {
+    let (date, m, inputs, reach, tiles) = (x.date, x.m, x.inputs, x.reach, x.tiles);
     let count = |all: &[(String, String)], map: &BTreeMap<String, String>| {
         all.iter().filter(|(t, k)| map.get(t) == Some(k)).count()
     };
@@ -5088,7 +5126,9 @@ pub(crate) mod tests {
     fn unit_keys(c: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(TileId, String)> {
         ukeys(c, date, m, Some(&reach()))
     }
-    /// The checklist's lines, folded by stage (as the agent's status has them).
+    /// The checklist's lines as the plan makes them, folded by stage (as the agent's status has
+    /// them); each time checked against the checklist made alone, every key worked out again (no
+    /// memo): the plan's keys are the same.
     fn checklist(
         c: &Coverage,
         date: &str,
@@ -5098,9 +5138,32 @@ pub(crate) mod tests {
         held: bool,
     ) -> Vec<Line> {
         let inputs = &spaced(inputs);
-        let ready = plan_with(c, date, m, done, inputs, &BTreeMap::new(), None).ready;
-        let (items, next) = super::checklist(c, date, m, done, inputs, held, Some(&reach()), &ready, &tiles_for(m));
-        fold(&items, &next, &BTreeMap::new())
+        let (r, tiles, each) = (reach(), tiles_for(m), c.by_region());
+        let p = super::plan(
+            c,
+            date,
+            m,
+            done,
+            inputs,
+            Some(&r),
+            &tiles,
+            Publish {
+                each: &each,
+                on_map: &BTreeMap::new(),
+                served: &BTreeMap::new(),
+                since_catalogue: None,
+                held_for: None,
+                held,
+                way: Default::default(),
+            },
+        );
+        let x = KeyCtx::new(c, date, m, inputs, Some(&r), &tiles);
+        assert_eq!(
+            p.checklist,
+            super::checklist(&x, done, held, &p.ready),
+            "the plan's checklist is the one made alone"
+        );
+        fold(&p.checklist.0, &p.checklist.1, &BTreeMap::new())
     }
 
     /// The indexes of the terrain packs `m` names, each a whole pyramid (a hi pack's z9–12 under
@@ -6047,7 +6110,7 @@ pub(crate) mod tests {
         // And the 3D buildings', depth's and the polar caps' chains, as their tests' plans offer them.
         let inputs = bld_inputs(&c, "a");
         let tiles = tiles_for(&m);
-        let x = KeyCtx { cov: &c, date: "d", m: &m, inputs: &inputs, reach: None, tiles: &tiles };
+        let x = KeyCtx { cov: &c, date: "d", m: &m, inputs: &inputs, reach: None, tiles: &tiles, memo: None };
         let w = bld_work(
             &crate::agent::build::KeyCtx::new(
                 &c,
@@ -6183,7 +6246,8 @@ pub(crate) mod tests {
             inputs: &BTreeMap<String, String>,
         ) -> BTreeMap<String, Option<Vec<String>>> {
             let tiles = (self.tiles)(m);
-            let x = KeyCtx { cov: &self.c, date: "d", m, inputs, reach: self.reach.as_ref(), tiles: &tiles };
+            let x =
+                KeyCtx { cov: &self.c, date: "d", m, inputs, reach: self.reach.as_ref(), tiles: &tiles, memo: None };
             step_keys_all(step, &x)
                 .unwrap_or_default()
                 .into_iter()
@@ -6467,7 +6531,7 @@ pub(crate) mod tests {
         for d in [("trees", "6/40/20"), ("trees-lo", "3/5/2")] {
             assert!(p.drops.contains(&(d.0.to_string(), d.1.to_string())), "{d:?} in {:?}", p.drops);
         }
-        let x = KeyCtx { cov: &c, date: "d", m: &m, inputs: &inputs, reach: None, tiles: &tiles };
+        let x = KeyCtx { cov: &c, date: "d", m: &m, inputs: &inputs, reach: None, tiles: &tiles, memo: None };
         let seen = keys_are_derived(&p, &x);
         assert!(seen.contains("trees") && seen.contains("trees-lo"), "{seen:?}");
     }
@@ -6480,7 +6544,7 @@ pub(crate) mod tests {
         tiles: &TerrainTiles,
         w: &[Work],
     ) {
-        let x = KeyCtx { cov: c, date: "d", m, inputs, reach: None, tiles };
+        let x = KeyCtx { cov: c, date: "d", m, inputs, reach: None, tiles, memo: None };
         let seen = keys_are_derived(&Plan { work: w.to_vec(), ..Default::default() }, &x);
         assert_eq!(seen.len(), w.iter().map(|w| &w.step).collect::<BTreeSet<_>>().len(), "{seen:?}");
     }
@@ -6513,7 +6577,7 @@ pub(crate) mod tests {
             );
             waits_are_reads(&p);
             let (inputs, tiles) = (spaced(&BTreeMap::new()), tiles_for(m));
-            let x = KeyCtx { cov: c, date: "d", m, inputs: &inputs, reach: Some(reach), tiles: &tiles };
+            let x = KeyCtx { cov: c, date: "d", m, inputs: &inputs, reach: Some(reach), tiles: &tiles, memo: None };
             let seen = keys_are_derived(&p, &x);
             KEYS_SEEN.with(|s| s.borrow_mut().extend(seen));
             let Some(w) = p.work.into_iter().next() else { return ran };
@@ -8484,6 +8548,31 @@ pub(crate) mod tests {
             ["peaks: 178 z6 tiles", "items", "heritage"]
         );
         assert_eq!(next_of(&[w("pois", 1), w("marks", 1)]), ["pois: 1 z6 tile", "marks"]);
+    }
+
+    #[test]
+    fn a_key_memo_derives_each_key_once() {
+        let memo = KeyMemo::default();
+        let mut n = 0;
+        let mut ask = |t: &str, k: Option<&str>| {
+            memo.get_or("unit", t, || {
+                n += 1;
+                k.map(str::to_string)
+            })
+        };
+        assert_eq!(ask("6/1/2", Some("a")).as_deref(), Some("a"));
+        assert_eq!(ask("6/1/2", Some("b")).as_deref(), Some("a"), "kept");
+        assert_eq!(ask("6/1/3", None), None);
+        assert_eq!(ask("6/1/3", Some("c")), None, "one that can't be worked out is kept so too");
+        assert_eq!(n, 2);
+        // (Through a context: the same key with the memo as without.)
+        let (c, m, inputs, tiles) = (cov(), BTreeMap::new(), BTreeMap::new(), TerrainTiles::default());
+        let x = KeyCtx::new(&c, "d", &m, &inputs, None, &tiles);
+        let memo = KeyMemo::default();
+        let kept = x.memo(&memo);
+        let k = super::super::steps::derived_key("heritage-sites", "heritage-sites", &x);
+        assert_eq!(super::super::steps::derived_key("heritage-sites", "heritage-sites", &kept), k);
+        assert_eq!(super::super::steps::derived_key("heritage-sites", "heritage-sites", &kept), k);
     }
 
     #[test]
@@ -11794,8 +11883,9 @@ pub(crate) mod tests {
             )))
             .unwrap());
             lap(&format!("[{round}] terrain_slope_targets ({n})"), &mut t);
-            let n =
-                dg(format!("{:?}", super::checklist(&cov, &date, &m, &k, &inputs, false, reach.as_ref(), &[], &tiles)));
+            // (Without the plan's keys: the plan below makes it again with them.)
+            let x = crate::agent::build::KeyCtx::new(&cov, &date, &m, &inputs, reach.as_ref(), &tiles);
+            let n = dg(format!("{:?}", super::checklist(&x, &k, false, &[])));
             lap(&format!("[{round}] checklist ({n})"), &mut t);
             let on_map = BTreeMap::new();
             let p = super::plan(

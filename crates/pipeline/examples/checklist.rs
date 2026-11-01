@@ -7,7 +7,7 @@
 //! `<pack-idx copy>`: a copy of an agent's `pack-idx` folder (the terrain packs' indexes are read
 //! from and kept in it; never an agent's own).
 
-use pipeline::agent::build::{checklist, fold, Keys};
+use pipeline::agent::build::{checklist, fold, KeyCtx, Keys};
 use pipeline::agent::tiles::TerrainTiles;
 use pipeline::coverage::Coverage;
 use std::collections::BTreeMap;
@@ -30,17 +30,8 @@ fn main() -> anyhow::Result<()> {
     tiles.load(&nr, &m);
     let inputs = pipeline::agent::key_inputs(&nr, &m);
 
-    let (items, next) = checklist(
-        &cov,
-        &date,
-        &m,
-        &keys,
-        &inputs,
-        root.join("inputs/hold-catalog").exists(),
-        reach.as_ref(),
-        &[],
-        &tiles,
-    );
+    let x = KeyCtx::new(&cov, &date, &m, &inputs, reach.as_ref(), &tiles);
+    let (items, next) = checklist(&x, &keys, root.join("inputs/hold-catalog").exists(), &[]);
     let lines = fold(&items, &next, &BTreeMap::new());
     std::fs::write(out, serde_json::to_vec_pretty(&lines)?)?;
     eprintln!("{} lines, {} items, written to {out}", lines.len(), items.len());

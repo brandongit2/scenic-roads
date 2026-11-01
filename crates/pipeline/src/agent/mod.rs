@@ -6,7 +6,7 @@
 //! It is in parts, each on a thread of its own (docs/agent-parts.md): **control** (`asks`: the
 //! owner's asks at once), **beat** (`beat`: the heartbeat every 10 s), **nas** (`nas`: the mount,
 //! under deadlines), **jobs**' thread (`slots`: reaps and cancels), the lead's **plan** (`plan`: the
-//! plan on changes, its offers, the gate, the checklist and counts), and the pool's thread
+//! plan on changes, its offers, the gate, the checklist with each plan, the counts), and the pool's thread
 //! (`pool::Ticker`). `run` starts them and goes round **jobs**' own round (`Agent::round`; every
 //! 20 s, at once when a job ends or a part wakes it):
 //! 1. conditions: power, the NAS (as **nas** last saw it), the user's activity, sleep;

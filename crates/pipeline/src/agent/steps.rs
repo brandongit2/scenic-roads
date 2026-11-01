@@ -369,9 +369,14 @@ pub fn derived(step: &str) -> bool {
     row(step).is_some_and(|r| !r.versions.is_empty())
 }
 
-/// Target `t`'s scheme-2 key of `step` (docs/readiness.md §4): `hash16` of its `key_lines`.
+/// Target `t`'s scheme-2 key of `step` (docs/readiness.md §4): `hash16` of its `key_lines`; kept
+/// in the context's memo when it has one (build::KeyMemo).
 pub fn derived_key(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<String> {
-    Some(store::naming::hash16(key_lines(step, t, x)?.join("\n").as_bytes()))
+    let derive = || Some(store::naming::hash16(key_lines(step, t, x)?.join("\n").as_bytes()));
+    match x.memo {
+        Some(memo) => memo.get_or(step, t, derive),
+        None => derive(),
+    }
 }
 
 /// A "none" target's scheme-2 key (one the coverage left, kept to drop its outputs: it reads

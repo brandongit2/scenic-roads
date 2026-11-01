@@ -152,7 +152,8 @@ isn't sized); its counts in words are a noun at a time ("398 of 398 z6 tiles · 
 runs left": `Line::counts`, said the same by the page and the menu bar); then its jobs to come in
 order (`next`), why it waits or which Mac is on it (`note`), and which of its steps any member may
 take (`shared`). `agent::build::fold` makes the lines from the items; the planet's and its
-worldwide steps' items are the agent's own (`Agent::checklist`), the regions' `build::checklist`'s.
+worldwide steps' items are the agent's own (`Planner::checklist`), the regions' `build::checklist`'s, made
+with each plan from the keys it worked out (`build::Plan::checklist`, one `build::KeyMemo`).
 A step with a job running, on any Mac, is never done (`Line::under_way`).
 The landmarks' heritage details, points and overlays are sized as the planner decides them
 (`landmarks_work`, `marks_ready`), not after the chain's candidates, peaks and items: a run left

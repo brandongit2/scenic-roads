@@ -23,7 +23,7 @@ pub(super) const LOOK: Duration = Duration::from_secs(5);
 /// The plan made again at least this often, whatever changed: the fallback for what the digest
 /// doesn't cover (time, disk room, planets newly on the NAS).
 pub(super) const FALLBACK: Duration = Duration::from_secs(300);
-/// The checklist and the regions' states counted again at least this often (a job's end sooner).
+/// The regions' states counted again at least this often (a job's end sooner).
 const COUNT_EVERY: Duration = Duration::from_secs(300);
 /// The regions' steps counted again, while a page asks, at least this often.
 const STEPS_EVERY: Duration = Duration::from_secs(60);
@@ -67,7 +67,7 @@ pub(super) struct Inputs {
     pub ramp_trouble: Option<String>,
     /// This Mac's coordinator as the round has it (made or stopped as its part changes).
     pub coord: Option<std::sync::Arc<crate::coord::Coordinator>>,
-    /// Whether a job ended since the last round (the checklist and counts again).
+    /// Whether a job ended since the last round (a plan, and the regions' states counted, again).
     pub ended: bool,
     /// The lead's map, its log's (crate::agent::publish::Here): None until its thread starts.
     pub map: Option<std::sync::Arc<publish::Here>>,
@@ -361,9 +361,12 @@ pub(super) struct Planner {
     pub(super) jobs: Vec<JobSpec>,
     pub(super) waiting: Vec<Waiting>,
     pub(super) regions: (Vec<recipes::Recipe>, Vec<(String, String)>),
-    /// The checklist, and when it was worked out; how far each region is built, when that count was
-    /// last started and the count under way; the same of the regions' steps for the page.
-    pub(super) progress: Option<(Instant, Vec<build::Line>)>,
+    /// The checklist, made with each plan (`checklist`); the regions' steps' part of it as the plan
+    /// found them (build::Plan::checklist: None while no plan got that far); how far each region
+    /// is built, when that count was last started and the count under way; the same of the
+    /// regions' steps for the page.
+    pub(super) progress: Vec<build::Line>,
+    pub(super) regions_checklist: std::cell::RefCell<Option<build::Checklist>>,
     pub(super) built: BTreeMap<String, build::RegionState>,
     pub(super) built_counted: Option<Instant>,
     pub(super) built_making: Option<std::thread::JoinHandle<(BTreeMap<String, build::RegionState>, Duration)>>,
@@ -491,7 +494,8 @@ impl Planner {
             jobs: Vec::new(),
             waiting: Vec::new(),
             regions: Default::default(),
-            progress: None,
+            progress: Vec::new(),
+            regions_checklist: Default::default(),
             built: BTreeMap::new(),
             built_counted: None,
             built_making: None,
@@ -564,7 +568,6 @@ impl Planner {
             Msg::Inputs(i) => {
                 if i.ended {
                     self.kicked.get_or_insert("a job ended");
-                    self.progress = None;
                     // (Counted again once the count under way is in: the job's targets weren't in it.)
                     self.built_counted = None;
                     self.steps_counted = None;
@@ -593,7 +596,7 @@ impl Planner {
     }
 
     /// A look: the forecast and the build page's regions taken in when done, the gate and the redo
-    /// asks taken up, a plan made when due (`why_plan`), the checklist and counts when due, and
+    /// asks taken up, a plan made when due (`why_plan`) and the checklist with it, the counts when due, and
     /// the view published.
     pub(super) fn look(&mut self) {
         let Some(root) = self.inp.root.clone() else {
@@ -639,23 +642,20 @@ impl Planner {
             }
             self.jobs = plan;
             self.waiting = waiting;
-            // (A new plan: the checklist with it.)
-            self.progress = None;
+            // (A new plan: the checklist with it, its regions' steps the plan's.)
+            self.phase("the checklist");
+            let regions = self.regions.0.clone();
+            self.progress = self.checklist(&root, &regions);
         }
-        self.phase("the checklist and counts");
+        self.phase("the counts");
         self.count(&root);
         self.publish();
         self.phase("");
     }
 
-    /// The checklist (after a plan or a job's end, else every `COUNT_EVERY`), how far each region
-    /// is built (as often, on a thread of its own), and each region's steps for the build page
-    /// (while a page asks, every `STEPS_EVERY`).
+    /// How far each region is built (every `COUNT_EVERY`, a job's end sooner, on a thread of its
+    /// own), and each region's steps for the build page (while a page asks, every `STEPS_EVERY`).
     pub(super) fn count(&mut self, root: &NasRoot) {
-        if self.progress.as_ref().is_none_or(|(t, _)| t.elapsed() >= COUNT_EVERY) {
-            let regions = self.regions.0.clone();
-            self.progress = Some((Instant::now(), self.checklist(root, &regions)));
-        }
         if self.built_making.is_none() && self.built_counted.is_none_or(|t| t.elapsed() >= COUNT_EVERY) {
             self.built_counted = Some(Instant::now());
             self.built_making = self.start_as_built(root, "region-states", build::region_states);
@@ -699,7 +699,7 @@ impl Planner {
             waiting: self.waiting.clone(),
             regions: self.regions.0.clone(),
             bad: self.regions.1.clone(),
-            checklist: self.progress.as_ref().map(|(_, c)| c.clone()).unwrap_or_default(),
+            checklist: self.progress.clone(),
             built: self.built.clone(),
             forecast: self.forecast.borrow().clone(),
             publishing: self.publish_line.borrow().clone(),
@@ -1330,8 +1330,9 @@ impl Planner {
         waiting: &mut Vec<Waiting>,
         held: &mut Holds,
     ) -> Vec<JobSpec> {
-        // (The depth's targets for GC: none until this plan finds them.)
+        // (The depth's targets for GC, and the regions' checklist: none until this plan finds them.)
         self.depth_keep.borrow_mut().take();
+        self.regions_checklist.borrow_mut().take();
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
         let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match self.planning_records(root) {
             Ok(r) => r,
@@ -1729,6 +1730,7 @@ impl Planner {
             )
         };
         nasread::PLAN.enter("its jobs");
+        *self.regions_checklist.borrow_mut() = Some(std::mem::take(&mut planned.checklist));
         self.catalogues.borrow_mut().idle = planned.idle;
         // The steps held for other steps' targets: said, never a silent stall (the summits' own note,
         // below, is the same).
@@ -2705,7 +2707,8 @@ impl Planner {
 
     /// The build to the end (the status's checklist): a line per stage (crate::agent::steps::STAGES)
     /// with an item per step counted: the OSM pass (the planet, read when a newer one is on the
-    /// NAS, and its worldwide steps), then the regions' steps (build::checklist).
+    /// NAS, and its worldwide steps), then the regions' steps (build::checklist, the last plan's:
+    /// `regions_checklist`).
     pub(super) fn checklist(&self, root: &store::nasfs::NasRoot, regions: &[recipes::Recipe]) -> Vec<build::Line> {
         let mut items = Vec::new();
         let mut next: BTreeMap<&str, Vec<String>> = BTreeMap::new();
@@ -2769,30 +2772,12 @@ impl Planner {
             ..Default::default()
         }));
         next.insert("pass", WORLDWIDE_STEPS.iter().zip(left).filter(|(_, l)| *l).map(|(s, _)| s.to_string()).collect());
-        if regions.is_empty() {
-            return build::fold(&items, &next, &notes);
+        // The regions' steps as the plan found them, with its keys (none while no plan got that far:
+        // the coverage unread, say).
+        if let Some((more, more_next)) = self.regions_checklist.borrow().clone().filter(|_| !regions.is_empty()) {
+            items.extend(more);
+            next.extend(more_next);
         }
-        let Ok(covs) = self.coverage(root, &manifest, false) else {
-            return build::fold(&items, &next, &notes);
-        };
-        let cov = &covs.all;
-        let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
-        let tiles = self.terrain_tiles(root, &manifest);
-        let inputs = key_inputs(root, &manifest);
-
-        let (more, more_next) = build::checklist(
-            cov,
-            &date,
-            &manifest,
-            &keys,
-            &inputs,
-            root.join("inputs/hold-catalog").exists(),
-            reach.as_deref(),
-            &self.ready.borrow(),
-            &tiles,
-        );
-        items.extend(more);
-        next.extend(more_next);
         build::fold(&items, &next, &notes)
     }
 
