@@ -5468,7 +5468,7 @@ pub(crate) fn test_port() -> u16 {
 /// Whether this process keeps listeners for `port` (`KEPT`), none of its coordinators on it now.
 #[cfg(test)]
 pub(crate) fn port_kept(port: u16) -> bool {
-    KEPT.lock().unwrap().contains_key(&port)
+    KEPT.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&port)
 }
 
 /// Whether nothing listens on `port`: listened on here, at once let go (std sets SO_REUSEADDR, so
@@ -5485,7 +5485,8 @@ pub(crate) fn port_free(port: u16) -> std::io::Result<()> {
 #[cfg(test)]
 fn test_listener() -> (std::net::TcpListener, u16) {
     static GIVEN: std::sync::Mutex<BTreeSet<u16>> = std::sync::Mutex::new(BTreeSet::new());
-    let mut g = GIVEN.lock().unwrap();
+    // (A test that panicked here poisons it for none of the rest.)
+    let mut g = GIVEN.lock().unwrap_or_else(|e| e.into_inner());
     // (Each turn a port given before: not time, but ports.)
     for _ in 0..1000 {
         let l = store::spawn::listen((crate::coord::LISTEN, 0)).unwrap();

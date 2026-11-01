@@ -15985,32 +15985,40 @@ mod pool_tests {
     }
 
     /// Two agents' tests at once, each turning its viewer into a coordinator and back on its own
-    /// port, while another test (here, this thread) listens on their ports: never had, so neither
-    /// finds its port taken (#914: a viewer let go of its port, another test's took it, and the
-    /// coordinator after it never started, the test waiting out its watchdog).
+    /// port, while another test (here, this thread) listens on their ports each time one has just
+    /// stopped, before the next starts: never had, so neither finds its port taken (#914: a viewer
+    /// let go of its port, another test's took it, and the coordinator after it never started, the
+    /// test waiting out its watchdog). (Each stop told and waited on: no spin of listens, which a
+    /// loaded Mac answered with ENOBUFS.)
     #[test]
     fn two_agents_turning_viewer_to_coordinator_at_once_keep_their_ports() {
         let ports = [crate::coord::test_port(), crate::coord::test_port()];
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (stopped, stops) = std::sync::mpsc::channel::<(u16, std::sync::mpsc::Sender<()>)>();
         let agents: Vec<_> = ports
             .into_iter()
             .map(|port| {
-                let done = done.clone();
+                let stopped = stopped.clone();
                 std::thread::spawn(move || {
                     let d = tempfile::tempdir().unwrap();
+                    let between = |stopped: &std::sync::mpsc::Sender<_>| {
+                        let (go, went) = std::sync::mpsc::channel();
+                        stopped.send((port, go)).unwrap();
+                        went.recv().unwrap();
+                    };
                     for _ in 0..20 {
                         make_viewer(port, "", "m4").unwrap().stop();
+                        between(&stopped);
                         crate::coord::Coordinator::start(&d.path().join("coord"), port, "m4", "").unwrap().stop();
+                        between(&stopped);
                     }
-                    done.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 })
             })
             .collect();
-        while done.load(std::sync::atomic::Ordering::SeqCst) < 2 {
-            for port in ports {
-                let e = crate::coord::port_free(port).unwrap_err();
-                assert_eq!(e.kind(), std::io::ErrorKind::AddrInUse, "{port}: {e}");
-            }
+        drop(stopped);
+        for (port, go) in stops {
+            let e = crate::coord::port_free(port).unwrap_err();
+            assert_eq!(e.kind(), std::io::ErrorKind::AddrInUse, "{port}: {e}");
+            go.send(()).unwrap();
         }
         for a in agents {
             a.join().unwrap();
