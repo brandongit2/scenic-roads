@@ -1535,8 +1535,8 @@ pub struct Agent {
     viewer: Option<std::sync::Arc<crate::coord::Coordinator>>,
     viewer_failed: Option<Instant>,
     broker_failed: Option<Instant>,
-    /// Its address over HTTPS last looked for, and what it was.
-    broker_https: Option<(Instant, Option<String>)>,
+    /// Its address over HTTPS and its LAN addresses last looked for, and what they were.
+    broker_https: Option<(Instant, Option<String>, Vec<String>)>,
     /// This member's progress file as it last wrote it (or read it, as the process began).
     held_progress: Option<resume::Progress>,
     /// The disk guard's room-making for the jobs it froze (when it began): its result decides
@@ -7442,7 +7442,7 @@ impl Agent {
             }
         }
         if brokers::stale(self.broker_https.as_ref().map(|h| h.0), now, brokers::HTTPS_EVERY) {
-            self.broker_https = Some((now, served_https(port)));
+            self.broker_https = Some((now, served_https(port), crate::net::lan_urls(port)));
         }
     }
 
@@ -8072,6 +8072,7 @@ impl Agent {
             lead_answered,
             broker: self.brokering(),
             broker_https: self.broker_https.as_ref().and_then(|h| h.1.clone()),
+            broker_lan: self.broker_https.as_ref().map(|h| h.2.clone()).unwrap_or_default(),
             lead_urls,
             lead_failed,
             lead_token,

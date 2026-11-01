@@ -6,7 +6,7 @@
 //! such a lead (none known, not answering, or an older app's) it answers `/work/` with a small page
 //! of its own: this Mac's status, from its `helper.json`, and since when the lead isn't reached.
 //!
-//! Not redirected: `/work/live` and `/work/settings` asked by the lead's page from its own origin
+//! Not redirected: `/work/live` and `/work/settings` asked by the lead's page from any origin it is served at
 //! (CORS, `Coordinator::set_brokers`), the jobs' calls (a key), and `sw.js` (an installed page's
 //! worker updates from its own origin, then follows the redirects: web/work/sw.js).
 

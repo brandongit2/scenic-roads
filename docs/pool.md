@@ -1472,11 +1472,13 @@ workers.md §5).
 - **Cross-member calls:** members allow each other's page origins (CORS, preflight for
   `Content-Type`): every address a member's page is served at (`coord::brokers::origins_of`, #919),
   from its heartbeat's `broker`: its tailnet address, its LAN name (`<host>.local`, where a member
-  sends a LAN device, docs/roles.md §3.3), its HTTPS page (`tailscale serve`), MagicDNS's names for
-  it over HTTP (that page's name, full and short, at its port), and the public names a proxy on it
-  serves its page under (its broker's `pages`, from `~/.config/scenic/names`, written by
-  tools/caddy/install.sh: the M6's https://map.brandontsang.net/build). Any other origin is
-  refused. So
+  sends a LAN device, docs/roles.md §3.3), its LAN addresses (`lan`, from its interfaces: a LAN
+  device typing one; origins alone, never contacted), its HTTPS page (`tailscale serve`),
+  MagicDNS's names for it over HTTP (that page's name, full and short, at its port), and the public
+  names a proxy on it serves its page under (its broker's `pages`, from `~/.config/scenic/names`,
+  written by tools/caddy/install.sh: the M6's https://map.brandontsang.net/build). A loopback
+  origin (`localhost`) is a Mac's own page only from that Mac: from a member's address it is that
+  member's page opened on itself, allowed; from any other, refused, as is any other origin. So
   a member's page reads the others' live charts and settings (docs/pipeline.md §5). HTTPS needs
   `tailscale serve` on each Mac (§14). Chrome's Local Network Access may still block calls to
   another member. The agents' token is the pool's (`state/coord/token`).

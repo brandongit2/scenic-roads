@@ -1331,9 +1331,10 @@ pub struct Cx {
     pub lead_answered: Option<u64>,
     /// This Mac's broker (docs/pool.md §8, crate::agent::brokers): the lead's coordinator, or a
     /// member's broker; None with tasks brokered by every member off. Its address over HTTPS, when
-    /// `tailscale serve` proxies it.
+    /// `tailscale serve` proxies it. Its LAN addresses (crate::net::lan_urls).
     pub broker: Option<crate::coord::Brokering>,
     pub broker_https: Option<String>,
+    pub broker_lan: Vec<String>,
     /// Where this Mac's client reaches the lead's coordinator (its contact on the NAS), and when a
     /// request of its last reached none of them, and why: what it tries, and a failure it counts
     /// (crate::pool::reachable).
@@ -1593,6 +1594,7 @@ impl Run {
         let own = crate::coord::brokers::Broker {
             urls: c.urls().to_vec(),
             https: self.cx.broker_https.clone(),
+            lan: self.cx.broker_lan.clone(),
             pages: super::proxy_pages(),
         };
         if brokers::due(self.side.broker.as_ref(), &own, self.broker_told.map(|t| now.saturating_duration_since(t))) {

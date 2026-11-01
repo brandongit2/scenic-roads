@@ -18,6 +18,11 @@ pub struct Broker {
     /// Its address over HTTPS, when its owner has `tailscale serve` proxy it ("https://<name>/").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub https: Option<String>,
+    /// Its LAN addresses (crate::net::lan_urls): where a device on the LAN may have opened its page
+    /// by address. Origins of its pages alone, never contacted (any device's on the network to
+    /// claim).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lan: Vec<String>,
     /// The other origins its page is served from: a proxy on it under a public name
     /// (crate::net::names; "https://map.brandontsang.net" on the M6), whose pages may call the
     /// members too. Never a broker's address: the proxy serves the page under a path.
@@ -82,10 +87,11 @@ pub fn tailnet(o: &str) -> bool {
 /// owner's rule: the page works from any device), so a member allows the lead's page however it was
 /// opened. Its addresses (the tailnet's, its LAN name: a member's port sends a LAN device there,
 /// crate::coord::memberpage::location), its HTTPS page (`tailscale serve`), the tailnet's names for
-/// it over HTTP (MagicDNS: the HTTPS page's name, full and short, at each address's port), and its
-/// `pages` (a proxy's public names).
+/// it over HTTP (MagicDNS: the HTTPS page's name, full and short, at each address's port), its LAN
+/// addresses (`lan`: a device on the LAN typing one), and its `pages` (a proxy's public names).
 pub fn origins_of(b: &Broker) -> BTreeSet<String> {
-    let mut out: BTreeSet<String> = b.urls.iter().chain(b.https.iter()).filter_map(|u| origin(u)).collect();
+    let mut out: BTreeSet<String> =
+        b.urls.iter().chain(b.lan.iter()).chain(b.https.iter()).filter_map(|u| origin(u)).collect();
     let ports: BTreeSet<String> = out
         .iter()
         .filter(|o| o.starts_with("http://"))
@@ -103,6 +109,18 @@ pub fn origins_of(b: &Broker) -> BTreeSet<String> {
     }
     out.extend(b.pages.iter().filter_map(|u| page_origin(u)));
     out
+}
+
+/// Whether `ip` is one of a member's addresses (`origins`, `origins_of`'s): a request from that Mac
+/// itself, so a page of its own loopback (localhost: the lead's page opened on the lead) is the
+/// member's page, as it is the lead's own there (crate::net::from_the_page).
+pub fn member_ip(origins: &BTreeSet<String>, ip: std::net::IpAddr) -> bool {
+    let ip = match ip {
+        std::net::IpAddr::V6(v) => v.to_ipv4_mapped().map_or(std::net::IpAddr::V6(v), std::net::IpAddr::V4),
+        v4 => v4,
+    };
+    let at = format!("http://{ip}:");
+    !ip.is_loopback() && origins.iter().any(|o| o.starts_with(&at))
 }
 
 /// A proxy's page origin (`Broker::pages`) when it is "https://<host>" alone, lowercased: no port,
@@ -138,7 +156,10 @@ mod tests {
         assert_eq!(origin("https://Mac.tail1.ts.net/work/"), Some("https://mac.tail1.ts.net".into()));
         assert_eq!(origin("ftp://x"), None);
         assert_eq!(origin("https:///x"), None);
-        let own = broker(&["http://100.70.85.80:8090", "http://m4.local:8090"], Some("https://m4.tail1.ts.net/"));
+        let own = Broker {
+            lan: vec!["http://192.168.1.20:8090".into()],
+            ..broker(&["http://100.70.85.80:8090", "http://m4.local:8090"], Some("https://m4.tail1.ts.net/"))
+        };
         let m1 = Peer {
             member: "m-1".into(),
             host: "m1".into(),
@@ -148,10 +169,11 @@ mod tests {
         let old = Peer { member: "m-2".into(), host: "old".into(), lead: false, broker: None };
         let b = Brokers::new(vec![m1, old], &own);
         // Every address a page is served at: the tailnet's, the LAN's name (where a member sends a
-        // LAN device), the HTTPS page, and MagicDNS's names for it over HTTP.
+        // LAN device), its LAN address, the HTTPS page, and MagicDNS's names for it over HTTP.
         let want: BTreeSet<String> = [
             "http://100.70.85.80:8090",
             "http://m4.local:8090",
+            "http://192.168.1.20:8090",
             "https://m4.tail1.ts.net",
             "http://m4.tail1.ts.net:8090",
             "http://m4:8090",
@@ -163,9 +185,28 @@ mod tests {
         assert_eq!(b.origins, want);
         assert_eq!(origins_of(&broker(&["http://m4.local:8090"], None)), ["http://m4.local:8090".to_string()].into());
         // A foreign page: none of them.
-        for o in ["https://evil.example", "http://m4.local:8091", "http://evil.local:8090", "http://100.70.85.81:8090"]
-        {
+        for o in [
+            "https://evil.example",
+            "http://m4.local:8091",
+            "http://evil.local:8090",
+            "http://100.70.85.81:8090",
+            "http://192.168.1.21:8090",
+            "http://evil:8090",
+            "http://localhost:8090", // pool port: not bound
+        ] {
             assert!(!b.origins.contains(o), "{o}");
+        }
+        // A request from a member's Mac itself (its tailnet or LAN address): its loopback page is
+        // the member's; from any other address, or a loopback one (this Mac's own), not.
+        for (ip, member) in [
+            ("100.93.150.29", true),
+            ("192.168.1.20", true),
+            ("::ffff:100.93.150.29", true),
+            ("100.93.150.30", false),
+            ("192.168.1.2", false),
+            ("127.0.0.1", false),
+        ] {
+            assert_eq!(member_ip(&b.origins, ip.parse().unwrap()), member, "{ip}");
         }
         // An HTTPS name not the tailnet's: no HTTP names made from it.
         let other = broker(&["http://100.1.1.1:8090"], Some("https://x.example.net/"));

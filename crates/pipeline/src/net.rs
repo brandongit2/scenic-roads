@@ -250,19 +250,46 @@ pub fn urls(port: u16) -> Vec<String> {
     if cfg!(test) {
         return vec![format!("http://127.0.0.1:{port}")];
     }
-    let mut out = Vec::new();
-    if let Ok(o) = store::spawn::output(&mut store::spawn::command("/sbin/ifconfig")) {
-        for w in String::from_utf8_lossy(&o.stdout).split_whitespace().collect::<Vec<_>>().windows(2) {
-            let ["inet", a] = w else { continue };
-            let Ok(ip) = a.parse::<std::net::Ipv4Addr>() else { continue };
-            let url = format!("http://{ip}:{port}");
-            if ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]) && !out.contains(&url) {
-                out.push(url);
-            }
+    let mut out: Vec<String> = Vec::new();
+    for ip in inet4().into_iter().filter(|ip| ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1])) {
+        let url = format!("http://{ip}:{port}");
+        if !out.contains(&url) {
+            out.push(url);
         }
     }
     out.push(format!("http://{}.local:{port}", store::sys::host_name()));
     out
+}
+
+/// This Mac's LAN addresses (private IPv4, not the tailnet's) at `port`: where a device on the LAN
+/// may have opened its page by address. Origins alone (crate::coord::brokers::origins_of): a LAN
+/// address is any device's on the network to claim, so never one to send to. None in a unit test.
+pub fn lan_urls(port: u16) -> Vec<String> {
+    if cfg!(test) {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for ip in inet4().into_iter().filter(|ip| ip.is_private()) {
+        let url = format!("http://{ip}:{port}");
+        if !out.contains(&url) {
+            out.push(url);
+        }
+    }
+    out
+}
+
+/// This Mac's IPv4 addresses, as ifconfig lists them.
+fn inet4() -> Vec<std::net::Ipv4Addr> {
+    let Ok(o) = store::spawn::output(&mut store::spawn::command("/sbin/ifconfig")) else { return Vec::new() };
+    let text = String::from_utf8_lossy(&o.stdout);
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words
+        .windows(2)
+        .filter_map(|w| match w {
+            ["inet", a] => a.parse().ok(),
+            _ => None,
+        })
+        .collect()
 }
 
 /// `port`'s address over HTTPS, when `tailscale serve` proxies it ("https://<this Mac's tailnet

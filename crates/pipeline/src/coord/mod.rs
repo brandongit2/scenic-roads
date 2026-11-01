@@ -5080,8 +5080,16 @@ mod http {
         if req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).is_some_and(|h| !crate::net::ours(h)) {
             return error(StatusCode::FORBIDDEN, "not this lead's address");
         }
-        let own_page = crate::net::from_the_page(req.headers());
-        if !own_page && member_page(&c, req.headers()).is_none() {
+        // (A loopback page is this Mac's own only from this Mac: from another, that Mac's: a
+        // member's page opened on itself when the request is from a member's address, `member_page`.)
+        let own_page = crate::net::from_the_page(req.headers())
+            && (crate::net::loopback(ip)
+                || !req
+                    .headers()
+                    .get(header::ORIGIN)
+                    .and_then(|o| o.to_str().ok())
+                    .is_some_and(crate::net::local_origin));
+        if !own_page && member_page(&c, ip, req.headers()).is_none() {
             return error(StatusCode::FORBIDDEN, "not from the build page");
         }
         let path = req.uri().path().to_string();
@@ -5218,12 +5226,15 @@ mod http {
     }
 
     /// A request's page when it's one of the pool's members' (its `Origin` one of their addresses,
-    /// `Coordinator::set_brokers`): tasks brokered by every member, docs/pool.md §8. None: no such
-    /// page, or the switch off.
-    fn member_page(c: &Ctx, h: &HeaderMap) -> Option<HeaderValue> {
+    /// `Coordinator::set_brokers`; or a loopback origin, `peer` a member's address: its page opened
+    /// on that Mac itself, at localhost): tasks brokered by every member, docs/pool.md §8. None: no
+    /// such page, or the switch off.
+    fn member_page(c: &Ctx, peer: std::net::IpAddr, h: &HeaderMap) -> Option<HeaderValue> {
         let o = h.get(header::ORIGIN)?;
         let s = o.to_str().ok()?.to_ascii_lowercase();
-        c.cors.read().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|set| set.contains(&s)).then(|| o.clone())
+        let cors = c.cors.read().unwrap_or_else(|e| e.into_inner());
+        let set = cors.as_ref()?;
+        (set.contains(&s) || (crate::net::local_origin(&s) && super::brokers::member_ip(set, peer))).then(|| o.clone())
     }
 
     /// CORS for the members' pages (docs/pool.md §8), around the gate: a preflight from one
@@ -5231,8 +5242,13 @@ mod http {
     /// and a private network's ask, a browser's for a page calling a LAN or tailnet address), and
     /// every answer to one allowed to it. Any other request, as before: no CORS header, and a
     /// preflight unanswered.
-    async fn cors(State(c): State<Ctx>, req: Request, next: Next) -> Response {
-        let Some(origin) = member_page(&c, req.headers()) else { return next.run(req).await };
+    async fn cors(
+        State(c): State<Ctx>,
+        ConnectInfo(peer): ConnectInfo<SocketAddr>,
+        req: Request,
+        next: Next,
+    ) -> Response {
+        let Some(origin) = member_page(&c, peer.ip(), req.headers()) else { return next.run(req).await };
         let allow = |r: &mut Response| {
             let h = r.headers_mut();
             h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
@@ -10859,16 +10875,18 @@ mod tests {
             broker: Some(brokers::Broker {
                 urls: vec!["http://100.93.150.29:8090".into(), "http://m1.local:8090".into()],
                 https: Some(format!("{page}/")),
+                lan: vec!["http://192.168.1.20:8090".into()],
                 pages: vec!["https://map.example.net".into()],
             }),
         };
         c.set_brokers(Some(brokers::Brokers::new(vec![m1], &own)));
         // Every address its page is served at (#919): its HTTPS page, its tailnet address, its LAN
-        // name, MagicDNS's names over HTTP, a proxy's public name.
+        // name and address, MagicDNS's names over HTTP, a proxy's public name.
         for o in [
             page,
             "http://100.93.150.29:8090",
             "http://m1.local:8090",
+            "http://192.168.1.20:8090",
             "http://m1.t.ts.net:8090",
             "http://m1:8090",
             "https://map.example.net",
