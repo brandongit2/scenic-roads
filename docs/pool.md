@@ -1207,7 +1207,10 @@ sampled by `/usr/bin/sample` for 5 s into `plan-stall-sample-<UTC date>-<time>Z.
 folder (once per plan; the newest five kept; never two at once; a sampler still running at 300 s is
 killed), and the status says "planning has taken N min so far" while it lasts, grants going on from
 the last plan meanwhile. The round names each phase as it enters it and logs one that took 10 s or
-more as it ends, but the wait between rounds. These lines carry the time of day (UTC).
+more as it ends, but the wait between rounds ("the loop's phase \"the grants: the starts\" took 12 s");
+the plan's thread does the same with its own phases ("the plan's phase \"build::plan\" took …"), each
+part's kept apart (`nasread::LOOP`, `nasread::PLAN`), so a plan's phase never ends or stretches the
+round's. These lines carry the time of day (UTC).
 
 The heartbeat (`state/status.json`, or a helper's file, and its copy in the agent's folder) is not
 the round's to write: the agent's beat writes it (crate::agent::beat, docs/agent-parts.md §4.2,

@@ -10155,8 +10155,11 @@ mod tests {
             });
             t.elapsed()
         });
+        // (The rounds go on until the pause is answered and shown, `ran` at least: what answers and
+        // shows it is the rounds, so on a loaded Mac an ask taken late, past `ran`, was never
+        // answered and the asker waited out its watchdog, task #923 review.)
         let t0 = Instant::now();
-        while t0.elapsed() < ran {
+        while t0.elapsed() < ran || !asker.is_finished() {
             busy(a);
         }
         let took = asker.join().unwrap();
