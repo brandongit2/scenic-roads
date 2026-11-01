@@ -658,8 +658,10 @@ async fn versioned_caching(State(s): State<S>, req: axum::extract::Request, next
     let v = version_token(req.uri().query());
     let mut res = next.run(req).await;
     if let Some(v) = v {
-        if res.status().is_success() {
-            let current = res.extensions().get::<cache::NotForGood>().is_none() && s.current_tokens().contains(&v);
+        // What is never cached for good keeps its handler's Cache-Control (`no-cache`, or water's
+        // fallback `no-store`).
+        if res.status().is_success() && res.extensions().get::<cache::NotForGood>().is_none() {
+            let current = s.current_tokens().contains(&v);
             res.headers_mut().insert(header::CACHE_CONTROL, cache::cache_control(current, "no-cache"));
         }
     }

@@ -129,7 +129,7 @@ export type PolarTile = {
   y: number;
   terrain: Uint8ClampedArray | null;
   slope: Uint8ClampedArray | null;
-  /** Not stored (a 404: past the cap or not built), or unreadable. */
+  /** Not stored (a 204: past the cap or not built), or unreadable. */
   failed: boolean;
   /** The last frame it was asked for. */
   used: number;
@@ -188,7 +188,7 @@ export class PolarTiles {
       const gen = this.gen;
       const load = async (kind: TileKind) => {
         const r = await fetch(this.o.url(kind, z, x, y));
-        if (!r.ok) throw new Error(`${r.status}`);
+        if (!r.ok || r.status === 204) throw new Error(`${r.status}`);
         return decode(await r.blob());
       };
       Promise.all([load('terrain'), load('slope')]).then(
