@@ -63,7 +63,8 @@ pub struct ShadowCheck {
     /// Due and kept by today's GC, by its reason. A holder the queue missed (`MISSED`): `records`
     /// (the manifest, the records or a hand-off not merged name it), `map` (the map now names it).
     /// Expected while today's GC keeps its 14-day window: `window` (freed within it, or an older
-    /// map snapshot on the NAS names it), `young` (younger than its window), `not swept` (in no
+    /// map snapshot on the NAS names it), `report-only` (crate::agent::gc::REPORT_ONLY: kept
+    /// until docs/maplog.md §8 step 8), `young` (younger than its window), `not swept` (in no
     /// folder it sweeps: the queue covers more than its folders).
     pub kept: BTreeMap<String, Vec<String>>,
 }

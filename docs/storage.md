@@ -117,7 +117,11 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
   lead's agent, `--shadow-due`), the build manifest, and (with the pool) its newest records and the
   journal entries they don't reflect yet. No map at all (no snapshot, no lead's): nothing removed.
 - An unreferenced content-named file goes once older than 14 days; stray `.tmp` files after 2 days.
-  (The old catalogues aren't read or removed: docs/maplog.md §8, step 9.)
+  (The old catalogues aren't read or removed: docs/maplog.md §8, step 9.) **Until step 8, report
+  only** (`gc::REPORT_ONLY`): in the folders the map indexes such a file is counted
+  (`report_only`, `report_only_bytes`; the shadow's check `report-only`) and kept. The queue knows
+  only what was freed since 31 Oct, so these roots alone would have removed at once 2,575 files
+  (144 GB) the last 14 days' catalogues name (#883 step 6's review, 1 Nov).
 - Retired passes' sources (`sources/osm/<date>/`, `sources/items/<date>/`) go by the same rule, their
   other files 14 days after the newer pass completed.
 - The input check's checked copies (`sources/inputs/`, inputs.md §4.9) are kept while the manifest,

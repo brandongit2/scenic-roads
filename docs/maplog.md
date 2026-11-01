@@ -119,7 +119,9 @@ serves the map alone: the map this Mac kept (`current.json.zst`), else the NAS's
 its start (before it answers), then the lead's batches; a `--root` server or a test reads the root's
 newest snapshot. GC's roots are the map (every snapshot on the NAS, the lead's map now) and the names
 the lead's GC queue freed within its 14 days (`gcqueue::ShadowDue`'s `map` and `freed`, handed to the
-job), besides the records; no map at all, nothing is removed. Where it departs from §6.7: the map is
+job), besides the records; no map at all, nothing is removed. Until step 8 those roots only
+report (`gc::REPORT_ONLY`, docs/storage.md GC): the queue holds frees since 31 Oct alone, and
+the roots would have removed 2,575 files (144 GB) the last 14 days' catalogues name. Where it departs from §6.7: the map is
 posted as a file the job leaves for its agent, not a `POST /map/publish`: the job runs on the lead,
 and the agent takes it when the job ends, which a request would only make sooner. And from §6.1: the
 mirror's `mirror-start`/`mirror-end` lines in `state/publish/<host>.jsonl` stay (`publish_event`, for

@@ -34,6 +34,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 use store::nasfs::NasPath;
 
+/// The map's roots (its snapshots on the NAS, the lead's map, the names its queue freed) report
+/// what the folders the map indexes would lose and remove none of it, until docs/maplog.md §8 step 8.
+/// Review of #883 step 6 (1 Nov): on the live state they'd remove 2,575 files (144 GB) at once that
+/// the catalogues of the last 14 days name, 18,756 more as they age: the queue only knows what was
+/// freed since 31 Oct, and no catalogue window covers the rest.
+pub const REPORT_ONLY: bool = true;
+
+thread_local! {
+    /// `REPORT_ONLY` as this thread's runs follow it (the tests of the removals: off, but the one
+    /// of `REPORT_ONLY` itself).
+    static REPORTS_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(REPORT_ONLY && !cfg!(test)) };
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct Report {
     /// The maps whose files were kept: the NAS's snapshots read, and the lead's map. (The JSON key
@@ -44,6 +57,9 @@ pub struct Report {
     pub files_seen: usize,
     pub removed: usize,
     pub removed_bytes: u64,
+    /// Old, unnamed by the map's roots, and kept: the map's roots report only (`REPORT_ONLY`).
+    pub report_only: usize,
+    pub report_only_bytes: u64,
     pub tmp_removed: usize,
     /// Unreferenced but too young to remove.
     pub young: usize,
@@ -887,6 +903,16 @@ fn run_once(
                     }
                     continue;
                 }
+                // Until docs/maplog.md §8 step 8, the map's roots only report what they'd remove
+                // (`REPORT_ONLY`, `REPORTS_ONLY`): kept, counted, the shadow's check told why.
+                if REPORTS_ONLY.get() && old(mtime) {
+                    rep.report_only += 1;
+                    rep.report_only_bytes += md.len();
+                    if let Some(c) = &mut check {
+                        c.note(&rel, Some("report-only"));
+                    }
+                    continue;
+                }
                 // (Its time looked at again right before it goes: a job reusing it by name touches
                 // it, out::Out::put_file.)
                 // (Gone only if no job reused it by name meanwhile: `remove_unless_touched`.)
@@ -1387,6 +1413,42 @@ mod tests {
     /// docs/maplog.md §8, step 6: the map keeps its files however old: each of its snapshots on the
     /// NAS (the newest few), the lead's map now, and the names the lead's queue freed within the
     /// window; a file only an older map named, and one freed before the window, go.
+    /// Review of #883 step 6: until step 8 the map's roots report what they'd remove and keep it
+    /// (`REPORT_ONLY`); the shadow's check says so, and the lead's queue isn't told it went.
+    #[test]
+    fn the_map_s_roots_report_only_until_step_8() {
+        use super::super::gcqueue::{ShadowCheck, ShadowDue, SHADOW_CHECK, SHADOW_DUE};
+        assert!(REPORT_ONLY);
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let (kept, unnamed) = ("layers/a/hi/6-1-1.1111111111111111.pack", "layers/a/hi/6-1-2.2222222222222222.pack");
+        for f in [kept, unnamed] {
+            let p = root.join(f);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, b"x").unwrap();
+            age(&p, 60);
+        }
+        let mut cat = store::catalogue::Catalogue::new(1);
+        cat.files
+            .insert("layers/a/hi/6-1-1".into(), store::catalogue::FileRef { file: kept.into(), ..Default::default() });
+        store::testkit::map_root(root, &cat);
+        let home = tempfile::tempdir().unwrap();
+        let due_p = home.path().join(SHADOW_DUE);
+        let due = ShadowDue { at: 7, names: vec![unnamed.into()], ..Default::default() };
+        fs::write(&due_p, serde_json::to_vec(&due).unwrap()).unwrap();
+        REPORTS_ONLY.set(true);
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, Some(&due_p));
+        REPORTS_ONLY.set(false);
+        let r = r.unwrap();
+        assert_eq!((r.removed, r.report_only, r.report_only_bytes), (0, 1, 1));
+        assert!(root.join(kept).exists());
+        assert!(root.join(unnamed).exists());
+        let c: ShadowCheck = serde_json::from_slice(&fs::read(home.path().join(SHADOW_CHECK)).unwrap()).unwrap();
+        assert!(c.removed.is_empty(), "{c:?}");
+        assert!(c.gone.is_empty(), "{c:?}");
+        assert_eq!(c.kept["report-only"], vec![unnamed.to_string()]);
+    }
+
     #[test]
     fn the_maps_keep_their_files_however_old() {
         use super::super::gcqueue::ShadowDue;
