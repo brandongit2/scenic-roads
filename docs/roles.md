@@ -114,7 +114,8 @@ that reached the member reaches the lead: its HTTPS page when the request came t
 `tailscale serve`; its tailnet address for a request to a tailnet address or `.ts.net` name; its
 LAN name (`<host>.local`) for one to a LAN address or `.local` name (a device without Tailscale);
 else (this Mac itself, the menu bar's web view) its first. Answered there still: `/work/live` and
-`/work/settings` asked by the lead's page from its origin (CORS), the jobs' calls (their key), and
+`/work/settings` asked by the lead's page from any origin it is served at (CORS, the lead's
+heartbeat's addresses: docs/pool.md §8, Cross-member calls), the jobs' calls (their key), and
 `sw.js` (an installed page updates its worker from its own origin; the worker follows a redirect
 at once, never answering from what it kept). The build's own asks (pause, inputs, cancel and
 retry) are refused there from any other origin: the lead's page sends them to the lead.

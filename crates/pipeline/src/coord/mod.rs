@@ -10856,12 +10856,30 @@ mod tests {
             member: "m-1".into(),
             host: "m1".into(),
             lead: false,
-            broker: Some(brokers::Broker { https: Some(format!("{page}/")), ..Default::default() }),
+            broker: Some(brokers::Broker {
+                urls: vec!["http://100.93.150.29:8090".into(), "http://m1.local:8090".into()],
+                https: Some(format!("{page}/")),
+                pages: vec!["https://map.example.net".into()],
+            }),
         };
         c.set_brokers(Some(brokers::Brokers::new(vec![m1], &own)));
-        let r = post(Some(page));
-        assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(page)), "{r}");
-        assert_eq!(status(&post(Some("https://evil.example"))), 403);
+        // Every address its page is served at (#919): its HTTPS page, its tailnet address, its LAN
+        // name, MagicDNS's names over HTTP, a proxy's public name.
+        for o in [
+            page,
+            "http://100.93.150.29:8090",
+            "http://m1.local:8090",
+            "http://m1.t.ts.net:8090",
+            "http://m1:8090",
+            "https://map.example.net",
+        ] {
+            let r = post(Some(o));
+            assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(o)), "{o}: {r}");
+        }
+        for o in ["https://evil.example", "http://evil.local:8090", "http://m1.local:9999", "http://100.93.150.30:8090"]
+        {
+            assert_eq!(status(&post(Some(o))), 403, "{o}");
+        }
     }
 
     /// `/work/regions` (docs/pool.md §10, Regions) out of the pool, with no key: 200 with `making`

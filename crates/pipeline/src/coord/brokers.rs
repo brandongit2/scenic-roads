@@ -78,16 +78,29 @@ pub fn tailnet(o: &str) -> bool {
             .is_ok_and(|ip| ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]))
 }
 
-/// The origins of a broker's pages: each of its addresses, but its LAN names (`.local`) when it has
-/// a tailnet address (a page calls it there; a LAN name is any device's on the network to claim),
-/// and its `pages`.
+/// The origins of a broker's pages: every address its page is served at (docs/roles.md §3.3, the
+/// owner's rule: the page works from any device), so a member allows the lead's page however it was
+/// opened. Its addresses (the tailnet's, its LAN name: a member's port sends a LAN device there,
+/// crate::coord::memberpage::location), its HTTPS page (`tailscale serve`), the tailnet's names for
+/// it over HTTP (MagicDNS: the HTTPS page's name, full and short, at each address's port), and its
+/// `pages` (a proxy's public names).
 pub fn origins_of(b: &Broker) -> BTreeSet<String> {
-    let all: BTreeSet<String> = b.urls.iter().chain(b.https.iter()).filter_map(|u| origin(u)).collect();
-    let mut out: BTreeSet<String> = if all.iter().any(|o| tailnet(o)) {
-        all.into_iter().filter(|o| !o.ends_with(".local") && !o.contains(".local:")).collect()
-    } else {
-        all
-    };
+    let mut out: BTreeSet<String> = b.urls.iter().chain(b.https.iter()).filter_map(|u| origin(u)).collect();
+    let ports: BTreeSet<String> = out
+        .iter()
+        .filter(|o| o.starts_with("http://"))
+        .filter_map(|o| {
+            o.rsplit_once(':').map(|(_, p)| p.to_string()).filter(|p| p.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect();
+    let ts = b.https.as_deref().and_then(origin).and_then(|o| o.strip_prefix("https://").map(str::to_string));
+    if let Some(name) = ts.filter(|n| n.ends_with(".ts.net")) {
+        let short = name.split('.').next().unwrap_or(&name).to_string();
+        for p in &ports {
+            out.insert(format!("http://{name}:{p}"));
+            out.insert(format!("http://{short}:{p}"));
+        }
+    }
     out.extend(b.pages.iter().filter_map(|u| page_origin(u)));
     out
 }
@@ -120,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn origins_are_the_members_addresses() {
+    fn origins_are_every_address_a_members_page_is_served_at() {
         assert_eq!(origin("http://100.70.85.80:8090"), Some("http://100.70.85.80:8090".into()));
         assert_eq!(origin("https://Mac.tail1.ts.net/work/"), Some("https://mac.tail1.ts.net".into()));
         assert_eq!(origin("ftp://x"), None);
@@ -134,15 +147,29 @@ mod tests {
         };
         let old = Peer { member: "m-2".into(), host: "old".into(), lead: false, broker: None };
         let b = Brokers::new(vec![m1, old], &own);
-        // (The LAN's name left out: a tailnet address is there.)
-        let want: BTreeSet<String> =
-            ["http://100.70.85.80:8090", "https://m4.tail1.ts.net", "http://100.93.150.29:8090"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+        // Every address a page is served at: the tailnet's, the LAN's name (where a member sends a
+        // LAN device), the HTTPS page, and MagicDNS's names for it over HTTP.
+        let want: BTreeSet<String> = [
+            "http://100.70.85.80:8090",
+            "http://m4.local:8090",
+            "https://m4.tail1.ts.net",
+            "http://m4.tail1.ts.net:8090",
+            "http://m4:8090",
+            "http://100.93.150.29:8090",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         assert_eq!(b.origins, want);
-        // With no tailnet address, the LAN's name is the page's.
         assert_eq!(origins_of(&broker(&["http://m4.local:8090"], None)), ["http://m4.local:8090".to_string()].into());
+        // A foreign page: none of them.
+        for o in ["https://evil.example", "http://m4.local:8091", "http://evil.local:8090", "http://100.70.85.81:8090"]
+        {
+            assert!(!b.origins.contains(o), "{o}");
+        }
+        // An HTTPS name not the tailnet's: no HTTP names made from it.
+        let other = broker(&["http://100.1.1.1:8090"], Some("https://x.example.net/"));
+        assert_eq!(origins_of(&other).len(), 2);
         // A proxy's public name for its page: an origin of its pages, never a broker's address.
         let named =
             Broker { pages: vec!["https://Map.Example.net".into()], ..broker(&["http://100.1.1.1:8090"], None) };

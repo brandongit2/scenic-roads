@@ -181,7 +181,7 @@ pub fn http_courier() -> Courier {
 }
 
 /// The addresses mail may be posted to: the tailnet's alone (a LAN's name or address is any
-/// device's on the network to claim, crate::coord::brokers::origins_of).
+/// device's on the network to claim).
 fn mail_urls(urls: &[String]) -> Vec<String> {
     use crate::coord::brokers::{origin, tailnet};
     urls.iter().filter(|u| origin(u).is_some_and(|o| tailnet(&o))).cloned().collect()

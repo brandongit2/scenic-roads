@@ -1470,8 +1470,13 @@ workers.md §5).
   pool's port; jobs given its address as `SCENIC_COORD`; its answers say term 0). Its heartbeat's `broker` gives its addresses. A
   task lives as long as its job, whoever leads.
 - **Cross-member calls:** members allow each other's page origins (CORS, preflight for
-  `Content-Type`): their addresses, and the public names a proxy on one serves its page under (its
-  broker's `pages`, from `~/.config/scenic/names`: the M6's https://map.brandontsang.net/build), so
+  `Content-Type`): every address a member's page is served at (`coord::brokers::origins_of`, #919),
+  from its heartbeat's `broker`: its tailnet address, its LAN name (`<host>.local`, where a member
+  sends a LAN device, docs/roles.md §3.3), its HTTPS page (`tailscale serve`), MagicDNS's names for
+  it over HTTP (that page's name, full and short, at its port), and the public names a proxy on it
+  serves its page under (its broker's `pages`, from `~/.config/scenic/names`, written by
+  tools/caddy/install.sh: the M6's https://map.brandontsang.net/build). Any other origin is
+  refused. So
   a member's page reads the others' live charts and settings (docs/pipeline.md §5). HTTPS needs
   `tailscale serve` on each Mac (§14). Chrome's Local Network Access may still block calls to
   another member. The agents' token is the pool's (`state/coord/token`).
