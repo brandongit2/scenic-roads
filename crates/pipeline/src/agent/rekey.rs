@@ -603,7 +603,8 @@ mod tests {
                 .then(|| (r.name, t.to_string()))
             });
             if let Some((s, t)) = &orphan {
-                keys.per_target(s).unwrap().insert(t.clone(), "a gone target's key".into());
+                keys.per_target(s).unwrap().insert(t.clone(), "0123456789abcdef".into());
+                // (a gone target's key)
             }
             let before = keys.clone();
             let r = scheme_2(&mut keys, &x, &|_| true, &scheme1::keys);
