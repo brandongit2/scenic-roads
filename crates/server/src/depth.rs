@@ -22,9 +22,12 @@ use pipeline::depth::fall::{self, Grid, Kind, Stored};
 use std::sync::{Arc, LazyLock, Mutex};
 
 /// Decoded stored tiles, by layer, tile and catalogue generation (an ancestor serves many children),
-/// under a byte budget. (Tiles made here are kept with the terrain's, crate::terrain::MADE.)
+/// a view's tiles of each of the two layers (cache::VIEW_TILES; an ancestor or none, at most
+/// `fall::TILE`² f32s, ~260 KB, so ~97 MB at most). (Tiles made here are kept with the terrain's,
+/// crate::terrain::MADE.)
 type Decoded = Lru<(&'static str, u8, u32, u32, u64), Stored>;
-static DECODED: LazyLock<Mutex<Decoded>> = LazyLock::new(|| Mutex::new(Lru::bounded(4096, 256 << 20)));
+static DECODED: LazyLock<Mutex<Decoded>> =
+    LazyLock::new(|| Mutex::new(Lru::entries(2 * crate::cache::VIEW_TILES as usize)));
 
 fn gen(s: &crate::AppState) -> u64 {
     s.data.generation.load(std::sync::atomic::Ordering::Relaxed)

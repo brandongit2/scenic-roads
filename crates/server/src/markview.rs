@@ -9,8 +9,10 @@ use pipeline::marks::{self, MarkPt, SummitRec, KINDS};
 use std::ops::Range;
 use std::sync::{Arc, LazyLock, Mutex};
 
-/// Decompressed blocks of `props` and `info`, by (file, section, block).
-static BLOCKS: LazyLock<Mutex<Lru<(String, u8, u32), Arc<Vec<u8>>>>> = LazyLock::new(|| Mutex::new(Lru::new(96 << 20)));
+/// Decompressed blocks of `props` and `info`, by (file, section, block): one block of each section
+/// for every kind in each of a view's z6 tiles (cache::VIEW_TILES; a block is `marks::BLOCK` points).
+static BLOCKS: LazyLock<Mutex<Lru<(String, u8, u32), Arc<Vec<u8>>>>> =
+    LazyLock::new(|| Mutex::new(Lru::entries(crate::cache::VIEW_TILES as usize * KINDS.len() * 2)));
 
 pub struct MarkView {
     pub tile: (u32, u32),

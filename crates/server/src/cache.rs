@@ -31,6 +31,11 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use tokio::sync::OnceCell;
 
+/// The tiles of one view, the unit the per-tile caches below are sized by: a 4K screen at one
+/// pixel a CSS pixel (3840×2160, the largest the app is used on) in 256 px tiles, 15×9, with a ring
+/// of one around it that panning reaches first: 17×11.
+pub const VIEW_TILES: u64 = (3840 / 256 + 2) * (2160_u64.div_ceil(256) + 2);
+
 /// A request for a versioned URL (`v=` in its query).
 pub fn versioned(query: Option<&str>) -> bool {
     query.is_some_and(|q| q.split('&').any(|kv| kv.starts_with("v=")))

@@ -31,11 +31,10 @@ const THREADS: usize = 4;
 /// Shares as bytes, two a pixel (sea, inland): a drawn tile kept.
 type Shares = Arc<Vec<u8>>;
 
-/// Drawn tiles kept, by (z, x, y, what they're made from), the least recently used let go past
-/// `KEPT` tiles' bytes.
-const KEPT: u64 = 192;
+/// Drawn tiles kept, by (z, x, y, what they're made from): one view's (cache::VIEW_TILES), the least
+/// recently used let go.
 static KEPT_TILES: LazyLock<Mutex<Lru<(u8, u32, u32, u64), Shares>>> =
-    LazyLock::new(|| Mutex::new(Lru::new(KEPT * (wt::SIZE * wt::SIZE * 2) as u64)));
+    LazyLock::new(|| Mutex::new(Lru::new(cache::VIEW_TILES * (wt::SIZE * wt::SIZE * 2) as u64)));
 
 fn keep(key: (u8, u32, u32, u64), sh: Shares) {
     let n = sh.len() as u64;
