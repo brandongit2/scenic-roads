@@ -171,7 +171,8 @@ through their dev-dependency on store, `features = ["testkit"]`):
   A sleep inside a wait is at least the sleep; two waits at once are held open by events (one
   begins, signals, and ends only when the other has ended), never two sleeps hoped to overlap; CPU
   time is spun until the process's CPU clock has moved, never for a wall-clock span a loaded Mac
-  may not give it (tools/check/timings_py.py). A load can then only make it longer.
+  may not give it (tools/check/timings_py.py). A load can then only make it longer. "It costs little"
+  is CPU work per call, by this thread's CPU clock (`testkit::thread_cpu_ns`), never a wall-clock loop.
 - **Process-wide settings:** pass the value in. Where the code reads an environment variable, a
   test sets it with `EnvVar::set(k, v)` (restored on drop, tests taking turns), and only for a
   variable no other test in that binary reads. A static a test changes is thread-local in test
