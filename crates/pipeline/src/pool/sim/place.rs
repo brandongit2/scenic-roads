@@ -561,7 +561,6 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 ac: true,
                 nas: true,
                 home: true,
-                guard: true,
                 leases: running[0].iter().map(|j| j.lease).collect(),
                 caches: here(0),
                 ..Default::default()
@@ -629,7 +628,6 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     ac: true,
                     nas: true,
                     home: true,
-                    guard: true,
                     leases: running[k].iter().map(|j| j.lease).collect(),
                     caches: here(k),
                     ..Default::default()

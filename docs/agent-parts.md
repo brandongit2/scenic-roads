@@ -97,8 +97,10 @@ This replaces `asks`' 250-ms poll and the loop's `sync_hold`, `adopt_hold`, `hol
 answers each ask (`control::answer_hold`) as soon as it is applied, and sends `ControlMsg` to
 **jobs** (drain / resume / stop / cancel) and `Changed` to **beat**.
 
-**Another member's hold** (`state/pool/holds/<member>.json`) is read through **nas**'s Switches pool
-by **pool** today, and becomes an HTTP call to the lead with #878 (§6).
+**Another member's hold** goes to the lead (`/pool/hold`, docs/coordination.md step 5), queued on
+this Mac's disk and sent with its beat; this Mac's own comes back in the beat's answer. Its NAS
+file (`state/pool/holds/<member>.json`, read through **nas**'s Switches pool) only while an older
+app is in the pool.
 
 **Failure:** a request it can't parse is answered with the error at once (HTTP 400, or the answer
 file). It never touches the NAS itself, so it can't hang on one. The page and menu see the answer

@@ -555,9 +555,51 @@ pub struct HoldState {
 /// The hold's file in the agent's folder.
 pub const HOLD: &str = "hold.json";
 
-/// A member's hold on the NAS, by member id.
+/// A member's hold on the NAS, by member id: the rollout gate's (crate::coord::asks), read and
+/// written only while an older app may.
 pub fn hold_path(member: &str) -> String {
     format!("state/pool/holds/{member}.json")
+}
+
+/// The owner's settings asks of the pool's lead (`scenic pool set`, crate::coord::asks), one file
+/// each in this folder of the agent's, taken up by its agent (`take_setting_asks`), which sends them
+/// to the lead.
+pub const SETTING_ASKS: &str = "setting-asks";
+
+/// The pool's settings as this Mac's agent last had them from the lead (crate::coord::asks::Settings),
+/// for `scenic pool set` and the menu bar to read without the NAS.
+pub const POOL_SETTINGS: &str = "pool-settings.json";
+
+/// Asks this Mac's agent (its folder `home`) to set one of the pool's settings.
+pub fn request_setting(home: &Path, a: &crate::coord::asks::SettingAsk) -> anyhow::Result<()> {
+    a.check()?;
+    let dir = home.join(SETTING_ASKS);
+    std::fs::create_dir_all(&dir)?;
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    store::whole::write(&dir.join(format!("{ms}-{}.json", a.name)), &serde_json::to_vec(a)?)?;
+    Ok(())
+}
+
+/// The settings asks waiting in `home`, taken in the order asked (each read whole, then removed;
+/// one that doesn't parse dropped).
+pub fn take_setting_asks(home: &Path) -> Vec<crate::coord::asks::SettingAsk> {
+    let Ok(rd) = std::fs::read_dir(home.join(SETTING_ASKS)) else { return Vec::new() };
+    let mut files: Vec<_> =
+        rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+    files.sort();
+    let mut out = Vec::new();
+    for p in files {
+        let a = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        if std::fs::remove_file(&p).is_ok() {
+            out.extend(a);
+        }
+    }
+    out
+}
+
+/// The pool's settings as this Mac's agent last wrote them (`POOL_SETTINGS`).
+pub fn read_pool_settings(home: &Path) -> Option<crate::coord::asks::Settings> {
+    serde_json::from_slice(&std::fs::read(home.join(POOL_SETTINGS)).ok()?).ok()
 }
 
 /// This Mac's hold as its agent keeps it (none, or a file that doesn't parse: going on).

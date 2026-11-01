@@ -10,9 +10,10 @@
 //!   after `GRACE`), then handed to the loop (`Handle::cancels`), which records each as given back,
 //!   tells the lead and answers (`Agent::take_cancel`): a cancel is passed on before its job is
 //!   signalled, so the loop never sees the end before the cancel;
-//! - **another member's hold ask** (`scenic pause --member`, the page's): taken at once, written to
-//!   that member's hold on the NAS (`take_member_hold`), under the pool's lock if free (asked again
-//!   each tick while a step holds it).
+//! - **another member's hold ask** (`scenic pause --member`, the page's): taken at once and queued
+//!   for the lead (`take_member_hold`, crate::coord::asks), or, to a lead that doesn't serve the
+//!   asks (an older app), written to that member's hold on the NAS; under the pool's lock if free
+//!   (asked again each tick while a step holds it).
 //!
 //! What it knows of the jobs is what the loop last published (`JobRef`s, shared with control,
 //! which tells each to drain under a hold). The slots themselves, their starts, guards and
@@ -21,6 +22,7 @@
 
 use super::bus::{ControlMsg, Snap};
 use crate::control::{self, Cancel, HoldAnswer, HoldState};
+use crate::coord::asks::{Ask, HoldAsk};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -245,6 +247,7 @@ pub fn take_member_hold(home: &std::path::Path, m: &Members, set: &mut dyn FnMut
     let Some(req) = control::take_hold_request(home).filter(|r| r.member.is_some()) else { return };
     let what = if req.held.is_some() { "paused" } else { "going on" };
     let me = pooled.as_ref().and_then(|p| p.as_ref()).map(|p| p.side.member().id.clone());
+    let beats = pooled.as_ref().and_then(|p| p.as_ref()).map(|p| p.side.http_beats());
     let target: Result<Option<(String, String)>, String> = match req.member.as_deref() {
         None => Ok(None),
         Some(name) => match pooled.as_ref() {
@@ -276,6 +279,22 @@ pub fn take_member_hold(home: &std::path::Path, m: &Members, set: &mut dyn FnMut
             } else {
                 (false, "a later setting of this Mac's pause stands".to_string())
             }
+        }
+        // (By the lead when it serves the asks (crate::coord::asks): queued, sent with the next beat
+        // (leading: given its coordinator in process), the held member hearing it in its next beat.
+        // On the NAS too while the rollout gate is on: an older member reads it there.)
+        Ok(Some((id, name))) if beats.as_ref().is_some_and(|b| b.lead_asks()) => {
+            let b = beats.as_ref().expect("the lead serves the asks");
+            b.ask(Ask::Hold(HoldAsk { member: id.clone(), held: req.held.clone(), at: req.at }));
+            if b.asks_on_nas() {
+                if let Some(r) = m.nas.get().root.clone() {
+                    let st = HoldState { held: req.held.clone(), at: req.at };
+                    if let Err(e) = super::write_hold(&r.join(control::hold_path(&id)), &st) {
+                        eprintln!("agent: {name}'s pause on the NAS, for an older app: {e:#}");
+                    }
+                }
+            }
+            (true, format!("{name} is {what} (asked of the lead: {name} takes it up with its next beat)"))
         }
         Ok(Some((id, name))) => match m.nas.get().root.clone() {
             None => (false, "the NAS isn't reachable from this Mac".to_string()),

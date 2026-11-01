@@ -7,7 +7,9 @@
 //!   lease), `cost/<key>`, `floor/<key>`, `disk/<key>`, `job_disks`, `fills`, `pause`, and
 //!   `member/<host>` (what a member speaks and when the lead last heard it: `Heard`), and
 //!   `beat/<member>` (its last beat's heartbeat and status, crate::coord::beats: `Beat`, saved each
-//!   `HEARD_SAVE_S` at most, so a lead's restart has the members for the page at once);
+//!   `HEARD_SAVE_S` at most, so a lead's restart has the members for the page at once), and the
+//!   owner's asks (crate::coord::asks: `hold/<member>`, `settings`) and the members' messages to
+//!   the lead (crate::coord::inbox: `inbox/<member>`);
 //! - each save submits what changed since the last (`Mirror`), never the whole state;
 //! - opened by `Coordinator::start_on` after the coordinator's start: a store found is the truth (the
 //!   files start read are a store's first fill alone: an agent before the store's); none, it's
@@ -213,6 +215,12 @@ impl Kept {
     /// The build's pause, as it changed at `at`.
     pub fn pause(&self, pause: Option<&crate::control::Pause>, at: u64) {
         self.submit([("pause".into(), serde_json::json!({ "pause": pause, "at": at }))].into(), Vec::new());
+    }
+
+    /// Document `key` set to `v` (the owner's asks: crate::coord::asks's `hold/<member>`,
+    /// `settings`).
+    pub fn put(&self, key: &str, v: Value) {
+        self.submit([(key.to_string(), v)].into(), Vec::new());
     }
 
     /// `member` heard at `at`, speaking `speaks`: saved when what it speaks changed, or its time by

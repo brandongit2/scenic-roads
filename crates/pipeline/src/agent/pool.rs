@@ -21,13 +21,16 @@
 //!   handed back once, a failed one made again a minute later; and a listing of the members'
 //!   heartbeats the same way, every fifth of the time a heartbeat takes to go out of touch (two
 //!   minutes: nothing lists a folder in the loop).
-//! - **The messages** between members, by mailbox on the NAS (`MAIL`: `<to>/<from>.json`, written
-//!   whole by its sender alone, the last `KEPT` it sent there, each numbered; read by member id,
-//!   never by listing): best effort, as the driver's are (a message lost is told again or made up
-//!   for). Those to the lead go first by HTTP (§9, `post_mail`): its coordinator's `/pool/mail`,
-//!   into its inbox (crate::coord::inbox) on its disk before it answers; the mailbox when that
-//!   fails or the lead's heartbeat doesn't say it takes them (`Heartbeat::mail_http`). A lead reads
-//!   both, each message once by its number.
+//! - **The messages** between a member and the lead, by HTTP (docs/coordination.md step 5), each
+//!   numbered, the sender's last `KEPT` kept in its `mail.json`: to the lead by its coordinator's
+//!   `/pool/mail` (`post_mail`), into its store before it answers, those it hasn't taken posted
+//!   again while it answers the member's beats (none lost while it's down); from the lead in the
+//!   answer to the member's next beat (crate::coord::inbox's `to`), after the number the member
+//!   said it took. Best effort above that, as the driver's are (a message lost is told again or
+//!   made up for). **The rollout gate** (planned for deletion one release after every member says
+//!   `beats::ASKS` for a day): the mailboxes on the NAS (`MAIL`: `<to>/<from>.json`, written whole
+//!   by its sender alone, read by member id) still written to a member, or a lead, that doesn't
+//!   say it, and read while one heard doesn't (`Beats::asks_on_nas`).
 //! - **The heartbeat**: the driver's fields, the members it knows, written each step they change
 //!   and at least every two minutes, stamped as it's written, to `state/pool/members/<id>.json`.
 //! - **The merge's checks** (`check`): what phase 1 checks of an entry.
@@ -67,8 +70,6 @@ const MEMBERS_EVERY: Duration = Duration::from_secs(crate::pool::beat::OUT_OF_TO
 pub const FORGET_AFTER: Duration = Duration::from_secs(2 * crate::pool::beat::OUT_OF_TOUCH_S);
 /// The members forgotten (`Side::forgotten`), in the agent's pool folder: kept across restarts.
 const FORGOTTEN: &str = "forgotten.json";
-/// After a post to the lead failed, its mail goes by mailbox this long before HTTP is tried again.
-const POST_AGAIN: Duration = Duration::from_secs(300);
 /// A failed listing is made again after this.
 const AGAIN: Duration = Duration::from_secs(60);
 /// The heartbeat is written at least this often.
@@ -180,11 +181,13 @@ pub fn http_courier() -> Courier {
     })
 }
 
-/// The addresses mail may be posted to: the tailnet's alone (a LAN's name or address is any
-/// device's on the network to claim).
+/// The addresses mail may be posted to: the tailnet's, and this Mac's own loopback (a lead on the
+/// same Mac); never a LAN's name or address, any device's on the network to claim
+/// (crate::coord::brokers::origins_of).
 fn mail_urls(urls: &[String]) -> Vec<String> {
     use crate::coord::brokers::{origin, tailnet};
-    urls.iter().filter(|u| origin(u).is_some_and(|o| tailnet(&o))).cloned().collect()
+    let ours = |o: &str| tailnet(o) || o.starts_with("http://127.0.0.1:") || o.starts_with("http://[::1]:");
+    urls.iter().filter(|u| origin(u).is_some_and(|o| ours(&o))).cloned().collect()
 }
 
 /// The path of the mailbox `from` sends `to`.
@@ -298,19 +301,18 @@ pub struct Side {
     folders: Vec<PathBuf>,
     mail: Mail,
     mail_written: Vec<u8>,
-    /// The mailboxes posted to and not written since.
+    /// The members sent to and not yet sent it all (posted, queued or written) since.
     mail_dirty: BTreeSet<String>,
-    /// What members posted it by HTTP (crate::coord::inbox, its coordinator's when it leads).
+    /// What members posted it by HTTP, and what it sends them in their beats' answers
+    /// (crate::coord::inbox, its coordinator's when it leads).
     inbox: Arc<crate::coord::inbox::Inbox>,
     /// The members' beats heard by HTTP (crate::coord::beats): its coordinator's when it leads, the
     /// lead's answers' else; its own heartbeat for its agent's beat.
     http: Arc<crate::coord::beats::Beats>,
     /// How it posts to the lead, the lead's coordinator's addresses and key as its contact on the
-    /// NAS says (`Cx::lead_urls`, `lead_token`), and until when it sends each member by mailbox
-    /// alone (a post failed).
+    /// NAS says (`Cx::lead_urls`, `lead_token`).
     pub courier: Courier,
     pub lead_contact: (Vec<String>, String),
-    post_off: BTreeMap<String, Instant>,
     /// The last Tell sent each member, and when.
     told: BTreeMap<String, (Vec<String>, Instant)>,
     /// The members it knows (itself among them), as listed last and heard from since.
@@ -411,6 +413,11 @@ impl Side {
             known.into_iter().filter(|m| crate::pool::is_member_id(m) && !forgotten.contains(m)).collect();
         members.insert(id);
         let driver = Driver::new(me.clone(), saved, lock);
+        // (What it sent before sent again: a lead's queue for its members' beats, a member's posts
+        // the lead hasn't taken. Its asks of the lead an earlier process left, queued again.)
+        let mail_dirty = mail.sent.keys().cloned().collect();
+        let http: Arc<crate::coord::beats::Beats> = Arc::default();
+        http.keep_asks(&dir.join(crate::coord::asks::QUEUE));
         Ok(Some(Side {
             me,
             driver: Some(driver),
@@ -421,12 +428,11 @@ impl Side {
             folders: Vec::new(),
             mail,
             mail_written: Vec::new(),
-            mail_dirty: BTreeSet::new(),
+            mail_dirty,
             inbox: Arc::new(crate::coord::inbox::Inbox::open(&dir.join("inbox.json"))),
-            http: Arc::default(),
+            http,
             courier: http_courier(),
             lead_contact: Default::default(),
-            post_off: BTreeMap::new(),
             told: BTreeMap::new(),
             members,
             members_listed: None,
@@ -703,11 +709,20 @@ impl Side {
         Ok(())
     }
 
-    /// The messages its members sent it since it last read: their mailboxes, by the member ids it
-    /// knows (none listed), and what they posted (its inbox), each once by its number. What it
-    /// read of the inbox dropped from it once its marks are on disk.
+    /// The lead's member, as its driver has it.
+    fn lead(&self) -> Option<String> {
+        self.driver.as_ref().and_then(|d| d.current().lead.as_ref().map(|t| t.member.clone()))
+    }
+
+    /// The messages its members sent it since it last read, each once by its number: what they
+    /// posted (its inbox, leading), the lead's in its last beat answer (a member), and while the
+    /// rollout gate is on (`Beats::asks_on_nas`) their mailboxes, by the member ids it knows (none
+    /// listed). What it read of the inbox dropped from it once its marks are on disk, and the lead
+    /// told the mark in its next beat (`Beats::set_took`).
     fn take_mail(&mut self) -> Vec<(String, Msg)> {
         let mut msgs = Vec::new();
+        let on_nas = self.http.asks_on_nas();
+        let lead = self.lead().filter(|l| *l != self.me.id);
         let mut posted = self.inbox.held();
         posted.retain(|from, _| *from != self.me.id && !self.forgotten.contains(from));
         // (A sender it doesn't know yet: known once its heartbeat is on the NAS, as a listing would
@@ -727,13 +742,18 @@ impl Side {
         let others: Vec<String> = self.members.iter().filter(|m| **m != self.me.id).cloned().collect();
         for from in others {
             let mut got = posted.remove(&from).unwrap_or_default();
-            match self.nas.read(&mail_path(&self.me.id, &from)) {
-                Ok(Some(b)) => match serde_json::from_slice::<RawMailbox>(&b) {
-                    Ok(mb) => got.extend(mb.msgs),
-                    Err(e) => eprintln!("pool: {from}'s mailbox doesn't read: {e}"),
-                },
-                Ok(None) => {}
-                Err(e) => eprintln!("pool: reading {from}'s mail: {e:#}"),
+            if lead.as_ref() == Some(&from) {
+                got.extend(self.http.from_lead());
+            }
+            if on_nas {
+                match self.nas.read(&mail_path(&self.me.id, &from)) {
+                    Ok(Some(b)) => match serde_json::from_slice::<RawMailbox>(&b) {
+                        Ok(mb) => got.extend(mb.msgs),
+                        Err(e) => eprintln!("pool: {from}'s mailbox doesn't read: {e}"),
+                    },
+                    Ok(None) => {}
+                    Err(e) => eprintln!("pool: reading {from}'s mail: {e:#}"),
+                }
             }
             let last = self.mail.read.get(&from).copied().unwrap_or(0);
             let (got, top) = after(got, last);
@@ -745,6 +765,9 @@ impl Side {
         if self.save_mail() {
             let forgotten = &self.forgotten;
             self.inbox.read_up_to(&self.mail.read, |m| !forgotten.contains(m) && !strangers.contains(m));
+            if let Some(l) = lead {
+                self.http.set_took(self.mail.read.get(&l).copied().unwrap_or(0));
+            }
         }
         msgs
     }
@@ -774,13 +797,33 @@ impl Side {
         self.mail_dirty.insert(to.to_string());
     }
 
-    /// Sends what it queued since: to the lead by HTTP (`post_mail`), else, and to the others, by
-    /// mailbox.
+    /// Sends what it queued since: to the lead by HTTP (`post_mail`), kept while it doesn't take
+    /// them (sent with the next, once it answers the member's beats again); leading, into the
+    /// queue its members' beats' answers carry (crate::coord::inbox). By mailbox only past the
+    /// rollout gate: to a lead that doesn't serve `beats::ASKS` and didn't take the post, or to a
+    /// member that doesn't say it.
     fn send_mail(&mut self) {
-        let lead = self.driver.as_ref().and_then(|d| d.current().lead.as_ref().map(|t| t.member.clone()));
+        use crate::coord::beats::ASKS;
+        let lead = self.lead();
+        let leading = lead.as_ref() == Some(&self.me.id);
+        let answering = self.http.lead_answering(self.now());
         for to in std::mem::take(&mut self.mail_dirty) {
-            if lead.as_ref() == Some(&to) && to != self.me.id && self.post_mail(&to) {
-                continue;
+            if lead.as_ref() == Some(&to) && !leading {
+                if self.http.lead_asks() {
+                    if !(answering && self.post_mail(&to)) {
+                        self.mail_dirty.insert(to);
+                    }
+                    continue;
+                }
+                if answering && self.post_mail(&to) {
+                    continue;
+                }
+            } else if leading {
+                let q = self.mail.sent.get(&to).into_iter().flatten();
+                self.inbox.queue(&to, q.filter_map(|(n, m)| Some((*n, serde_json::to_value(m).ok()?))).collect());
+                if self.http.speaks(&to, ASKS) {
+                    continue;
+                }
             }
             let mb = Mailbox { msgs: self.mail.sent.get(&to).cloned().unwrap_or_default() };
             match serde_json::to_vec(&mb)
@@ -800,14 +843,9 @@ impl Side {
     }
 
     /// Posts lead `to` what it sent it that its coordinator hasn't taken (`/pool/mail`): whether
-    /// it took them all. Not tried (false: by mailbox) when the lead's heartbeat doesn't say it
-    /// takes mail so, nor for `POST_AGAIN` after a post failed; tried at its tailnet addresses
-    /// alone (`mail_urls`), its broker's else its contact's.
+    /// it took them all. Not tried (false) when the lead's heartbeat doesn't say it takes mail so;
+    /// tried at its tailnet addresses alone (`mail_urls`), its broker's else its contact's.
     fn post_mail(&mut self, to: &str) -> bool {
-        let now = self.clock.now();
-        if self.post_off.get(to).is_some_and(|t| now < *t) {
-            return false;
-        }
         let Some(hb) = self.heartbeat(to).filter(|h| h.mail_http) else { return false };
         let mut urls = mail_urls(&hb.broker.map(|b| b.urls).unwrap_or_default());
         if urls.is_empty() {
@@ -838,8 +876,7 @@ impl Side {
             Ok((code, v)) => format!("answered {code}: {}", v["error"].as_str().unwrap_or("")),
             Err(e) => format!("{e:#}"),
         };
-        eprintln!("pool: posting mail to {to}: {why} (by mailbox for {} min)", POST_AGAIN.as_secs() / 60);
-        self.post_off.insert(to.to_string(), now + POST_AGAIN);
+        eprintln!("pool: posting mail to {to}: {why} (sent again with the next)");
         false
     }
 
@@ -2460,7 +2497,7 @@ mod tests {
         // (PH, older: its heartbeat on the NAS. B, newer: its beat to the lead, nothing on the NAS.)
         std::fs::create_dir_all(r.join(MEMBERS)).unwrap();
         std::fs::write(r.join(crate::pool::beat::path(PH)), serde_json::to_vec(&hb(PH, false)).unwrap()).unwrap();
-        s.http_beats().heard(hb(B, true), Some(serde_json::json!({"host": "B-host"})), now);
+        s.http_beats().heard(hb(B, true), Vec::new(), Some(serde_json::json!({"host": "B-host"})), now);
         assert!(!s.read_heartbeat(PH).unwrap().unwrap().beat_http, "the NAS's");
         assert!(s.read_heartbeat(B).unwrap().unwrap().beat_http, "the beat's");
         let read: Vec<Heartbeat> = [PH, B].iter().filter_map(|m| s.read_heartbeat(m).unwrap()).collect();
@@ -2482,7 +2519,7 @@ mod tests {
         s.step(Give::default(), &any);
         assert!(own.exists(), "written again at once for an older member");
         // B silent for `FORGET_S`: missed by the listings from then, forgotten after `FORGET_AFTER`.
-        s.http_beats().heard(hb(B, true), None, now.saturating_sub(crate::coord::beats::FORGET_S));
+        s.http_beats().heard(hb(B, true), Vec::new(), None, now.saturating_sub(crate::coord::beats::FORGET_S));
         s.take_members(&[format!("{PH}.json"), format!("{me}.json")], t0);
         assert!(s.members().contains(B));
         s.take_members(&[format!("{PH}.json"), format!("{me}.json")], t0 + FORGET_AFTER);
@@ -2767,7 +2804,7 @@ mod tests {
         })
     }
 
-    /// Lead A with its coordinator (its member's, its inbox), and member B posting to it.
+    /// Lead A with its coordinator (its member's, its inbox, its beats), and member B posting to it.
     struct Mail {
         d: tempfile::TempDir,
         r: PathBuf,
@@ -2788,6 +2825,7 @@ mod tests {
         let (c, port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "");
         c.set_member(Some(&a.member().id));
         c.set_inbox(Some(a.inbox()));
+        c.set_beats(Some(a.http_beats()));
         let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         b.courier = to_loopback(port, posts.clone());
         b.lead_contact = (vec![LEAD_URL.into(), "http://mac-a.local:8090".into()], c.contact.token.clone());
@@ -2795,6 +2833,20 @@ mod tests {
     }
 
     impl Mail {
+        /// B's beat taken by A's coordinator, its answer B's (as its agent's beat posts it).
+        fn beat(&mut self) {
+            use crate::coord::{beats, held};
+            let b = held::Beat {
+                member: "b-host".into(),
+                speaks: [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS].map(str::to_string).to_vec(),
+                heartbeat: self.b.http_beats().own(),
+                took: self.b.http_beats().took(),
+                ..Default::default()
+            };
+            let a = self.c.member_beat(&b);
+            self.b.http_beats().answered(&a, self.b.now());
+        }
+
         /// B's job's entry `n`: B's Tell of it to A sent.
         fn tell(&mut self, n: u64) -> String {
             let (ia, ib) = (self.a.member().id.clone(), self.b.member().id.clone());
@@ -2831,27 +2883,52 @@ mod tests {
         }
     }
 
-    /// Task #642: a member's mail to a lead that takes it by HTTP is posted to its coordinator (no
-    /// mailbox written), taken from its inbox once, and acknowledged; to an old lead (its heartbeat
-    /// not saying so) it goes by mailbox, not tried; and a post an old coordinator refuses (no
-    /// `/pool/mail`: 404) goes by mailbox, HTTP not tried again for `POST_AGAIN`.
+    /// docs/coordination.md step 5: a member's mail to a lead that serves the asks goes by HTTP alone
+    /// (no mailbox written), taken from its store once, and acknowledged; the lead's Ack comes back
+    /// in the answer to the member's next beat (no mailbox either), dropped by the lead once the
+    /// member's beat says it took it.
     #[test]
-    fn a_members_mail_is_posted_to_its_lead_and_by_mailbox_to_an_old_one() {
+    fn a_members_mail_goes_by_http_alone_to_a_lead_that_serves_it() {
         let mut m = mail_pool();
-        let ib = m.b.member().id.clone();
+        let (ia, ib) = (m.a.member().id.clone(), m.b.member().id.clone());
+        m.b.step(Give::default(), &any);
+        m.beat();
         let key = m.tell(5);
         assert_eq!(m.posts(), 1);
         assert!(!m.mailbox(), "posted, no mailbox written");
         assert_eq!(m.a.inbox().held()[&ib].len(), 1);
         Mail::acknowledged(&mut m.a, &ib, &key);
         assert!(m.a.inbox().held().is_empty(), "read, dropped once its mark is on disk");
+        assert!(!m.r.join(mail_path(&ib, &ia)).exists(), "the Ack by the beat alone");
+        m.beat();
+        assert!(!m.b.http_beats().from_lead().is_empty());
+        m.b.step(Give::default(), &any);
+        assert!(m.b.driver().mine().to_tell(1).is_empty(), "acknowledged");
+        m.beat();
+        assert!(m.b.http_beats().from_lead().is_empty(), "the lead dropped what B took");
         // (Review) a post from an id with no heartbeat makes up no member: passed over, dropped.
         let stranger = "m-00000000000000dd";
         m.a.inbox().put(stranger, vec![(1, serde_json::json!({"Leads": 9}))]).unwrap();
         m.a.step(Give::default(), &any);
         assert!(!m.a.members().contains(stranger));
         assert!(m.a.inbox().held().is_empty());
-        // An old lead: its heartbeat says nothing of mail by HTTP.
+        drop(m.c);
+    }
+
+    /// The rollout gate (docs/coordination.md step 5): to a lead that doesn't serve the asks (an
+    /// older app) a member's mail is posted while it answers and its heartbeat says it takes mail
+    /// so, else, and when the post fails, written to its mailbox, which that lead reads.
+    #[test]
+    fn mixed_versions_an_older_lead_gets_its_mail_by_mailbox() {
+        use crate::coord::{beats, held};
+        let mut m = mail_pool();
+        let older = held::Answer { speaks: vec![beats::SPEAKS.into()], ..Default::default() };
+        m.b.http_beats().answered(&older, m.b.now());
+        assert!(!m.b.http_beats().lead_asks() && m.b.http_beats().asks_on_nas());
+        m.tell(5);
+        assert_eq!(m.posts(), 1);
+        assert!(!m.mailbox(), "taken by HTTP");
+        // Its heartbeat says nothing of mail by HTTP: not tried.
         let ia = m.a.member().id.clone();
         let path = m.r.join(crate::pool::beat::path(&ia));
         let mut hb: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -2860,47 +2937,45 @@ mod tests {
         m.tell(6);
         assert_eq!(m.posts(), 1, "not tried");
         assert!(m.mailbox());
-        // One whose coordinator has no `/pool/mail`.
+        // One whose coordinator has no `/pool/mail`: by mailbox.
         let mut m = mail_pool();
+        m.b.http_beats().answered(&older, m.b.now());
         m.b.courier = Arc::new(|_, _, _| Ok((404, serde_json::Value::Null)));
         m.tell(5);
         assert!(m.mailbox());
-        assert!(m.b.post_off.contains_key(&m.a.member().id), "by mailbox for a while");
         drop(m.c);
         drop(m.d);
     }
 
-    /// Task #642: the lead changes while a member posts: the address now answers as another member
-    /// (refused, 409), or no longer answers. Its mail goes by mailbox to the member it was to, which
-    /// reads it as ever; the driver tells the new lead itself.
+    /// docs/coordination.md step 5: the lead changes while a member posts (the address now answers as
+    /// another member: refused, 409), or its coordinator is down: the mail stays queued, no mailbox
+    /// written, and goes once the lead takes it.
     #[test]
-    fn a_lead_changed_mid_post_gets_its_mail_by_mailbox() {
+    fn a_post_refused_stays_queued_until_the_lead_takes_it() {
         let mut m = mail_pool();
         let ib = m.b.member().id.clone();
+        m.b.step(Give::default(), &any);
+        m.beat();
         m.c.set_member(Some("m-00000000000000cc"));
         let key = m.tell(5);
         assert_eq!(m.posts(), 1);
-        assert!(m.mailbox(), "refused: by mailbox");
-        assert!(m.a.inbox().held().is_empty());
-        m.a.know(&ib);
+        assert!(!m.mailbox() && m.a.inbox().held().is_empty(), "refused: kept");
+        m.c.set_member(Some(&m.a.member().id.clone()));
+        m.b.step(Give::default(), &any);
+        assert_eq!(m.posts(), 2);
+        assert_eq!(m.a.inbox().held()[&ib].len(), 1);
         Mail::acknowledged(&mut m.a, &ib, &key);
-        // Its coordinator stopped (a lead gone): the same.
-        let mut m = mail_pool();
-        m.c.stop();
-        let key = m.tell(5);
-        assert!(m.mailbox());
-        let ib = m.b.member().id.clone();
-        m.a.know(&ib);
-        Mail::acknowledged(&mut m.a, &ib, &key);
+        drop(m.c);
     }
 
-    /// Task #642: the lead crashes after its coordinator answered a post, before its agent read it:
-    /// the post is on its disk before the answer, so its next process reads it; and a post whose
-    /// record couldn't be written isn't answered as taken: it goes by mailbox. Nothing lost.
+    /// The lead crashes after its coordinator answered a post, before its agent read it: the post
+    /// is in its store before the answer, so its next process has it. Nothing lost.
     #[test]
     fn a_post_answered_survives_the_leads_crash() {
         let mut m = mail_pool();
         let ib = m.b.member().id.clone();
+        m.b.step(Give::default(), &any);
+        m.beat();
         let key = m.tell(5);
         assert!(!m.mailbox());
         // (Crashed: neither stepped again nor its state written past this.)
@@ -2908,18 +2983,13 @@ mod tests {
         m.c.stop();
         drop(m.a);
         let mut a = side(&store::nasfs::NasRoot::local_for_test(&m.r), &home);
+        let (c, _) = crate::coord::start_for_test(&m.d.path().join("a/coord"), "a", "");
+        c.set_member(Some(&a.member().id));
+        c.set_inbox(Some(a.inbox()));
+        assert_eq!(a.inbox().held()[&ib].len(), 1, "from its store");
+        a.know(&ib);
         Mail::acknowledged(&mut a, &ib, &key);
-        // Its inbox can't be written (a folder where its file goes): refused, by mailbox.
-        let mut m = mail_pool();
-        let inbox = m.d.path().join("a/agent/pool/inbox.json");
-        std::fs::create_dir_all(&inbox).unwrap();
-        let key = m.tell(5);
-        assert_eq!(m.posts(), 1);
-        assert!(m.mailbox());
-        std::fs::remove_dir(&inbox).unwrap();
-        let ib = m.b.member().id.clone();
-        m.a.know(&ib);
-        Mail::acknowledged(&mut m.a, &ib, &key);
+        c.stop();
     }
 
     #[test]

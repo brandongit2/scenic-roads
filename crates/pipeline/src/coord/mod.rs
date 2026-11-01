@@ -25,6 +25,7 @@
 //! naming this Mac and from no web page elsewhere (crate::net::ours, from_the_page); a running job's
 //! (`/task/…`) from this Mac itself, through no proxy (crate::net::own).
 
+pub mod asks;
 pub mod beats;
 pub mod broker;
 pub mod brokers;
@@ -373,8 +374,10 @@ pub struct Shared {
     /// another's (its reach, crate::pool::reachable). None while its Mac has lost the NAS.
     pub pool_member: Option<String>,
     /// Where the members' messages to this Mac's member go (`/pool/mail`, `inbox`): its agent's
-    /// (`Coordinator::set_inbox`); None, refused (the member sends by mail).
+    /// (`Coordinator::set_inbox`); None, refused (the member keeps them queued).
     pub inbox: Option<std::sync::Arc<inbox::Inbox>>,
+    /// The owner's asks it keeps (`/pool/hold`, `/pool/settings`; crate::coord::asks), in its store.
+    pub asks: asks::Lead,
     /// The members' beats its agent's pool side hears by HTTP (`/pool/beat`, crate::coord::beats):
     /// its (`Coordinator::set_beats`); None, the beats' heartbeats and statuses not taken.
     pub beats: Option<std::sync::Arc<beats::Beats>>,
@@ -945,8 +948,6 @@ pub struct Capacity {
     /// The NAS mounted and answering, and by its LAN name (at home).
     pub nas: bool,
     pub home: bool,
-    /// Whether the memory guard stops jobs past the limit.
-    pub guard: bool,
     /// The leases of its running jobs.
     pub leases: Vec<u64>,
     /// Those of its running jobs that only wait on a worker (crate::offload's WAITING_ENV), each
@@ -1422,6 +1423,7 @@ impl Coordinator {
             min_app: None,
             pool_member: None,
             inbox: None,
+            asks: asks::Lead::default(),
             beats: None,
             page: PageFiles::default(),
             inputs_asks: Vec::new(),
@@ -2326,13 +2328,44 @@ impl Coordinator {
     /// Where the members' beats go (`Shared::beats`).
     pub fn set_beats(&self, beats: Option<std::sync::Arc<beats::Beats>>) {
         let mut s = self.shared.lock().unwrap();
+        // (It serves the asks: its own agent's go to it in process, the gate kept as it was.)
+        if let Some(b) = beats.as_ref().filter(|b| !b.lead_asks()) {
+            b.set_asks_on_nas(b.asks_on_nas());
+        }
         s.beats = beats;
         load_beats(&s);
     }
 
-    /// Where the members' messages to its member go (`Shared::inbox`).
+    /// Where the members' messages to its member go (`Shared::inbox`): kept in its store from
+    /// when it has one (`inbox::Inbox::attach`).
     pub fn set_inbox(&self, inbox: Option<std::sync::Arc<inbox::Inbox>>) {
-        self.shared.lock().unwrap().inbox = inbox;
+        let mut s = self.shared.lock().unwrap();
+        if let (Some(i), Some(st)) = (inbox.as_ref(), s.keep.store()) {
+            i.attach(st);
+        }
+        s.inbox = inbox;
+    }
+
+    /// Takes the owner's ask `a` (its own agent's, in process: crate::coord::asks), as
+    /// `/pool/hold` and `/pool/settings` take a member's; on its disk before it returns.
+    pub fn take_ask(&self, a: &asks::Ask) -> Result<()> {
+        let keep = {
+            let mut s = self.shared.lock().unwrap();
+            take_ask(&mut s, a)?;
+            s.keep.clone()
+        };
+        anyhow::ensure!(keep.durable(keep.last()), "the lead's disk didn't take the change in time");
+        Ok(())
+    }
+
+    /// Member `member`'s hold as it keeps it.
+    pub fn hold_of(&self, member: &str) -> Option<crate::control::HoldState> {
+        self.shared.lock().unwrap().asks.holds.get(member).cloned()
+    }
+
+    /// The settings as it keeps them.
+    pub fn pool_settings(&self) -> asks::Settings {
+        self.shared.lock().unwrap().asks.settings.clone()
     }
 
     /// The pool's term the leases it grants now are in (docs/pool.md §7.5; 0: the pool off).
@@ -2598,6 +2631,10 @@ impl Coordinator {
         keep.pause(s.paused.as_ref(), s.pause_at);
         held::refresh(&mut s);
         load_beats(&s);
+        s.asks = asks::Lead::of(&keep.store().map(|st| st.snapshot().docs).unwrap_or_default());
+        if let (Some(i), Some(st)) = (s.inbox.clone(), keep.store()) {
+            i.attach(st);
+        }
         Ok(())
     }
 
@@ -2913,115 +2950,111 @@ fn nas_prober(
                 }
                 // (Probed whatever the switch says: the lead's own jobs are always held to the
                 // budget, `nas_own`; the members' only while it's on, `nas`.)
-                match nas::read_switch(&r) {
-                    None => eprintln!("coordinator: {} can't be read now: the NAS not probed this round", nas::SWITCH),
-                    sw => {
-                        let sw = sw.flatten();
-                        let mut failed = None;
-                        if last.is_none_or(|t| t.elapsed() >= Duration::from_secs(nas::EVERY_S)) {
-                            last = Some(std::time::Instant::now());
-                            match nas::probe(&nas::probe_dir(&r, &me)) {
-                                Ok(p) => {
-                                    eprintln!(
-                                        "coordinator: the NAS probed: {:.1} MB/s, {:.1} creates/s",
-                                        p.bytes_s / 1e6,
-                                        p.creates_s
-                                    );
-                                    probes.add(p);
-                                    // (Not before the kept ones are read: never over them.)
-                                    let saved = if loaded { probes.save(&r.join(nas::PROBES_FILE)) } else { Ok(()) };
-                                    if let Err(e) = saved {
-                                        eprintln!("coordinator: keeping the NAS probes: {e:#}");
-                                    }
-                                    failed = Some(false);
-                                }
-                                Err(e) => {
-                                    eprintln!("coordinator: probing the NAS: {e}");
-                                    failed = Some(true);
-                                }
+                // (The switch as the lead keeps it, crate::coord::asks; the NAS's file taken in by its
+                // agent while an older app may still set it there.)
+                let (sw, target) = {
+                    let s = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    (s.asks.settings.nas_budget(), s.asks.settings.nas_target())
+                };
+                let mut failed = None;
+                if last.is_none_or(|t| t.elapsed() >= Duration::from_secs(nas::EVERY_S)) {
+                    last = Some(std::time::Instant::now());
+                    match nas::probe(&nas::probe_dir(&r, &me)) {
+                        Ok(p) => {
+                            eprintln!(
+                                "coordinator: the NAS probed: {:.1} MB/s, {:.1} creates/s",
+                                p.bytes_s / 1e6,
+                                p.creates_s
+                            );
+                            probes.add(p);
+                            // (Not before the kept ones are read: never over them.)
+                            let saved = if loaded { probes.save(&r.join(nas::PROBES_FILE)) } else { Ok(()) };
+                            if let Err(e) = saved {
+                                eprintln!("coordinator: keeping the NAS probes: {e:#}");
                             }
+                            failed = Some(false);
                         }
-                        // (The NAS's own disk load against the owner's target, read outside the
-                        // lock: up to snmp::TIMEOUT.)
-                        let keys = crate::budget::snmp::read_keys(&r);
-                        // (Keys that are there but unusable: said once, and again when that changes.)
-                        let unusable = match keys {
-                            Err(crate::budget::snmp::NoKeys::Unusable(k)) => Some(k),
-                            _ => None,
-                        };
-                        if unusable != told_unusable {
-                            if let Some(k) = unusable {
-                                eprintln!(
-                                    "coordinator: {k} has whitespace or '#', which net-snmp's conf can't carry: the NAS load gate is off"
-                                );
-                            }
-                            told_unusable = unusable;
+                        Err(e) => {
+                            eprintln!("coordinator: probing the NAS: {e}");
+                            failed = Some(true);
                         }
-                        if keys.as_ref().map_or(true, |k| !session.as_ref().is_some_and(|s| s.is_for(k))) {
-                            session = keys.ok().and_then(|k| {
-                                crate::budget::snmp::Session::new(k)
-                                    .inspect_err(|e| eprintln!("coordinator: no SNMP session: {e}"))
-                                    .ok()
-                            });
-                        }
-                        // (The mount, read outside the lock: statfs can wait on the NAS.)
-                        let mount = if mounted.is_none_or(|t| t.elapsed() >= Duration::from_secs(MOUNT_EVERY_S)) {
-                            mounted = Some(std::time::Instant::now());
-                            // (The share's mount by its statfs: tests/nas_access.rs.)
-                            Some(
-                                store::sys::mount_of(&r.unchecked_path())
-                                    .ok()
-                                    .map(|(f, k, free)| NasMount::of(&f, &k, free)),
-                            )
-                        } else {
-                            None
-                        };
-                        let mut disks = Vec::new();
-                        match session.as_ref().map(|s| s.disk_busy()) {
-                            Some(Ok(busy)) => {
-                                nas_loop.read(&busy, nas::target_pct(nas::read_target(&r).as_ref()));
-                                disks = busy;
-                            }
-                            Some(Err(e)) => {
-                                if nas_loop.load.is_some() {
-                                    eprintln!("coordinator: the NAS's disk load not read ({e}): the gate open");
-                                }
-                                nas_loop.lost();
-                            }
-                            None => nas_loop.lost(),
-                        }
-                        let held = nas_loop.held();
-                        let gate = |l: nas::Limits| nas::Limits { held, ..l };
-                        let own = probes.limits(sw.as_ref().and_then(|w| w.downloads)).map(gate);
-                        let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
-                        s.nas_loop = nas_loop;
-                        s.nas_own = own;
-                        s.nas_probes.clone_from(&probes.0);
-                        // (The live store's NAS series, task #517: this reading's disks, and the
-                        // pool's traffic.)
-                        if let Some(l) = &s.live {
-                            let t = unix_now();
-                            l.record_disks(t, &disks);
-                            let caps = s.capacities(&me);
-                            if let Some(tr) = pool_traffic(&caps) {
-                                l.record_pool(t, &tr);
-                            }
-                            if let Some(c) = pool_calls(&caps) {
-                                l.record_pool_calls(t, &c);
-                            }
-                        }
-                        s.nas_disks = disks;
-                        if let Some(m) = mount {
-                            s.nas_mount = m;
-                        }
-                        match failed {
-                            Some(true) => s.nas_failures = s.nas_failures.saturating_add(1),
-                            Some(false) => s.nas_failures = 0,
-                            None => {}
-                        }
-                        s.nas = sw.and_then(|w| probes.limits(w.downloads)).map(gate);
                     }
                 }
+                // (The NAS's own disk load against the owner's target, read outside the
+                // lock: up to snmp::TIMEOUT.)
+                let keys = crate::budget::snmp::read_keys(&r);
+                // (Keys that are there but unusable: said once, and again when that changes.)
+                let unusable = match keys {
+                    Err(crate::budget::snmp::NoKeys::Unusable(k)) => Some(k),
+                    _ => None,
+                };
+                if unusable != told_unusable {
+                    if let Some(k) = unusable {
+                        eprintln!(
+                                "coordinator: {k} has whitespace or '#', which net-snmp's conf can't carry: the NAS load gate is off"
+                            );
+                    }
+                    told_unusable = unusable;
+                }
+                if keys.as_ref().map_or(true, |k| !session.as_ref().is_some_and(|s| s.is_for(k))) {
+                    session = keys.ok().and_then(|k| {
+                        crate::budget::snmp::Session::new(k)
+                            .inspect_err(|e| eprintln!("coordinator: no SNMP session: {e}"))
+                            .ok()
+                    });
+                }
+                // (The mount, read outside the lock: statfs can wait on the NAS.)
+                let mount = if mounted.is_none_or(|t| t.elapsed() >= Duration::from_secs(MOUNT_EVERY_S)) {
+                    mounted = Some(std::time::Instant::now());
+                    // (The share's mount by its statfs: tests/nas_access.rs.)
+                    Some(store::sys::mount_of(&r.unchecked_path()).ok().map(|(f, k, free)| NasMount::of(&f, &k, free)))
+                } else {
+                    None
+                };
+                let mut disks = Vec::new();
+                match session.as_ref().map(|s| s.disk_busy()) {
+                    Some(Ok(busy)) => {
+                        nas_loop.read(&busy, nas::target_pct(target.as_ref()));
+                        disks = busy;
+                    }
+                    Some(Err(e)) => {
+                        if nas_loop.load.is_some() {
+                            eprintln!("coordinator: the NAS's disk load not read ({e}): the gate open");
+                        }
+                        nas_loop.lost();
+                    }
+                    None => nas_loop.lost(),
+                }
+                let held = nas_loop.held();
+                let gate = |l: nas::Limits| nas::Limits { held, ..l };
+                let own = probes.limits(sw.as_ref().and_then(|w| w.downloads)).map(gate);
+                let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
+                s.nas_loop = nas_loop;
+                s.nas_own = own;
+                s.nas_probes.clone_from(&probes.0);
+                // (The live store's NAS series, task #517: this reading's disks, and the
+                // pool's traffic.)
+                if let Some(l) = &s.live {
+                    let t = unix_now();
+                    l.record_disks(t, &disks);
+                    let caps = s.capacities(&me);
+                    if let Some(tr) = pool_traffic(&caps) {
+                        l.record_pool(t, &tr);
+                    }
+                    if let Some(c) = pool_calls(&caps) {
+                        l.record_pool_calls(t, &c);
+                    }
+                }
+                s.nas_disks = disks;
+                if let Some(m) = mount {
+                    s.nas_mount = m;
+                }
+                match failed {
+                    Some(true) => s.nas_failures = s.nas_failures.saturating_add(1),
+                    Some(false) => s.nas_failures = 0,
+                    None => {}
+                }
+                s.nas = sw.and_then(|w| probes.limits(w.downloads)).map(gate);
             }
             for _ in 0..10 {
                 if stopped.load(std::sync::atomic::Ordering::Relaxed) {
@@ -3505,6 +3538,20 @@ fn unix_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
+/// Takes ask `a` into the lead's asks (`asks::Lead`), its document submitted to its store when it
+/// changed them (a viewer, or a coordinator without its store, refuses: nothing would keep it).
+fn take_ask(s: &mut Shared, a: &asks::Ask) -> Result<()> {
+    anyhow::ensure!(s.keep.store().is_some(), "this coordinator keeps no store: not the lead's");
+    let doc = match a {
+        asks::Ask::Hold(h) => s.asks.hold(h)?.1,
+        asks::Ask::Setting(t) => s.asks.set(t)?,
+    };
+    if let Some((k, v)) = doc {
+        s.keep.put(&k, v);
+    }
+    Ok(())
+}
+
 /// The members' beats its store kept (`kept::Beat`) heard again into its registry, once it has
 /// both: a lead's restart has the members it heard within `beats::FORGET_S` for the page at once
 /// (docs/coordination.md step 4), their next beats replacing them.
@@ -3513,7 +3560,8 @@ fn load_beats(s: &Shared) {
     let unix = held::wall(s);
     for k in s.keep.beats(unix.saturating_sub(beats::FORGET_S)) {
         if b.get(&k.beat.pool.member, unix).is_none() {
-            b.heard(k.beat, k.status, k.at);
+            let speaks = s.keep.member(&k.beat.pool.host).map(|h| h.speaks).unwrap_or_default();
+            b.heard(k.beat, speaks, k.status, k.at);
         }
     }
 }
@@ -4020,9 +4068,27 @@ fn route(
             let gone = held::release(&mut s, member);
             Ok((200, serde_json::json!({ "released": gone.iter().map(|l| l.what()).collect::<Vec<_>>() })))
         }
+        "/pool/hold" => {
+            // Another Mac's pause, or its own, from a member's agent (crate::coord::asks).
+            let a: asks::HoldAsk = serde_json::from_slice(body)?;
+            let mut s = shared.lock().unwrap();
+            take_ask(&mut s, &asks::Ask::Hold(a.clone()))?;
+            Ok((200, serde_json::json!({ "hold": s.asks.holds.get(&a.member) })))
+        }
+        "/pool/settings" => {
+            // A setting set from a member's agent (`{"name", "value", "by", "at"}`), or none asked:
+            // the settings as kept (crate::coord::asks).
+            let v: serde_json::Value = serde_json::from_slice(body)?;
+            let mut s = shared.lock().unwrap();
+            if v.get("name").is_some() {
+                let a: asks::SettingAsk = serde_json::from_value(v)?;
+                take_ask(&mut s, &asks::Ask::Setting(a))?;
+            }
+            Ok((200, serde_json::to_value(&s.asks.settings)?))
+        }
         "/pool/mail" => {
             // A member's messages to this Mac's member (docs/pool.md §9): taken only by the member
-            // they're to, on its disk before the answer; else refused, sent by mail instead.
+            // they're to, into its store and on its disk before the answer; else refused (kept queued).
             let p: inbox::Post = serde_json::from_slice(body)?;
             let (me, inbox) = {
                 let s = shared.lock().unwrap();
@@ -4841,6 +4907,8 @@ mod http {
             .route("/work/floors", any(json))
             .route("/work/redo", any(json))
             .route("/pool/mail", any(json))
+            .route("/pool/hold", any(json))
+            .route("/pool/settings", any(json))
             .route("/pool/beat", any(json))
             .route("/pool/release", any(json))
             .route("/pool/view", any(json))
@@ -5529,8 +5597,8 @@ mod tests {
     /// docs/coordination.md §2, principle 3 (task #878, step 1): the handlers answer from memory and
     /// the store, never the NAS: no `nasread`, NAS handle or whole-file write in `route`, nor in what
     /// it saves through (`save_leases`, `save_costs`, `set_pause`). `/work/settings` alone still
-    /// reaches the NAS's room setting through crate::agent::settings: moved to `/pool/settings` by
-    /// step 5.
+    /// reaches the NAS's room setting through crate::agent::settings (planned: a pool setting once the
+    /// jobs, which read its file, have it from their agent; docs/coordination.md step 5).
     #[test]
     fn coord_handlers_never_touch_the_nas() {
         let src = include_str!("mod.rs");
@@ -6104,7 +6172,7 @@ mod tests {
             (cap.limit_mb, cap.mem_mb, cap.cores_free, cap.disk_mb, cap.reserved_mb, cap.battery, cap.leases.clone()),
             (12_288, 8000, 6, 50_000, 0, Some(54), vec![3, 4])
         );
-        assert!(cap.in_use && !cap.ac && cap.nas && cap.guard);
+        assert!(cap.in_use && !cap.ac && cap.nas);
         let partial: Capacity = serde_json::from_str(r#"{"limit_mb":1}"#).unwrap();
         assert_eq!(partial, Capacity { limit_mb: 1, ..Default::default() });
         // Round trip.
@@ -7849,19 +7917,9 @@ mod tests {
     /// no longer reaches 248 % of it while the lead waits), and the lead's own then share it.
     #[test]
     fn a_missing_switch_holds_the_members_too() {
-        let d = tempfile::tempdir().unwrap();
-        assert_eq!(
-            crate::budget::nas::read_switch(&store::nasfs::NasRoot::local_for_test(d.path())),
-            Some(Some(Default::default())),
-            "missing: on"
-        );
-        std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
-        std::fs::write(d.path().join(crate::budget::nas::SWITCH), "off\n").unwrap();
-        assert_eq!(
-            crate::budget::nas::read_switch(&store::nasfs::NasRoot::local_for_test(d.path())),
-            Some(None),
-            "`off`: off"
-        );
+        let settings = crate::coord::asks::Settings::default();
+        assert_eq!(settings.nas_budget(), Some(Default::default()), "not set: on");
+        assert_eq!(crate::budget::nas::parse("off\n"), None, "`off`: off");
         let (_d, c, w, _clock) = every((0, 0));
         heavy_slope(&c);
         let limits =

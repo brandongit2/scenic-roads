@@ -6,10 +6,11 @@
 //!   waiting on: a share that stalls stalls the loop, not this): each running job's processes'
 //!   physical footprints summed (crate::sys::footprint_of_group), kept per target as the most the
 //!   job held while that target was under way (`Watch::current`).
-//! - **Learned whatever the switch:** what a job held while a target was under way is that target's
+//! - **Learned:** what a job held while a target was under way is that target's
 //!   **floor** (`Floor`: crate::coord's floors), the same kind of figure as a run's own measure (a
 //!   job's processes together, sampled), which takes its place.
-//! - **Guarded, the switch on** (`on`, `SWITCH`): while the jobs on a Mac hold more together than its
+//! - **Guarded** (its switch, `state/pool/memory-guard`, deleted with task #878 step 5: on
+//!   everywhere): while the jobs on a Mac hold more together than its
 //!   limit (`limit_mb`), by measure alone (`decide_by`): when the largest fits alone, another stops
 //!   at its next safe point (the newest, then the least progressed, one at a time while those left
 //!   still pass the limit); the largest, past the limit by itself, stops at once
@@ -21,13 +22,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-/// The switch, on the NAS: `off` in it turns the guard off, `on` on; missing, the guard is as
-/// `DEFAULT` says.
-pub const SWITCH: &str = "state/pool/memory-guard";
-
-/// Whether the guard stops jobs when its switch is missing (the owner's choice: on).
-pub const DEFAULT: bool = true;
 
 /// How often the jobs' memory is sampled.
 pub const EVERY: Duration = Duration::from_secs(5);
@@ -42,20 +36,6 @@ const SWAP_GROWTH: u64 = 1 << 30;
 /// The window swap growth is judged over: recent, so the owner's own use growing swap hours ago
 /// doesn't leave a long job in trouble for good.
 pub const SWAP_WINDOW: Duration = Duration::from_secs(300);
-
-/// The guard as the switch at `root` says: on or off; None when it can't be read now (the share not
-/// answering: the caller keeps what it had).
-pub fn on(root: &store::nasfs::NasRoot) -> Option<bool> {
-    match super::nasread::read_switch(&root.join(SWITCH)) {
-        Ok(s) => Some(match s.trim() {
-            "off" => false,
-            "on" => true,
-            _ => DEFAULT,
-        }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(DEFAULT),
-        Err(_) => None,
-    }
-}
 
 /// The most memory the jobs on a Mac of `total_mb` may hold together (MB): its memory less an eighth
 /// for macOS and the owner's own work, 4 GB at least (42 GB of the M4's 48, 12 of the M1's 16); 0 for
@@ -1243,16 +1223,5 @@ mod tests {
         s.set_test_disk(Some(0), Some(vec![Some(2 * g)]));
         s.tick();
         assert!(s.disk_frozen(0), "no target, the disk full: frozen");
-    }
-
-    #[test]
-    fn the_switch() {
-        let d = tempfile::tempdir().unwrap();
-        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(DEFAULT));
-        std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
-        std::fs::write(d.path().join(SWITCH), "off\n").unwrap();
-        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(false));
-        std::fs::write(d.path().join(SWITCH), "on").unwrap();
-        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(true));
     }
 }

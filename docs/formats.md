@@ -1053,10 +1053,12 @@ class, id) within a tile. The client sends the id with the clicked point.
     able}}` (with brokers on, `broker: {urls, https, pages}`; `beat_http`: its app beats it to the
     lead by HTTP). Since #878 step 3 written only while a member on an older app is in touch; else
     it rides in `POST /pool/beat` (docs/coordination.md).
-  - Switches (present or `on` in it: on; `off` or missing: off, unless said): `memory-guard` (missing: on; §7.2), `resume`
-    (§7.2, §7.4), `brokers` (§8; the members' pages allowed to call each other, CORS), `placement` (§7.2:
-    jobs get `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `delta-catalog` and `near-slope`
-    (docs/building.md §2, Publishing's switches), all under `state/pool/`.
+  - Switches (present or `on` in it: on; `off` or missing: off, unless said): `delta-catalog` and
+    `near-slope` (docs/building.md §2, Publishing's switches), under `state/pool/`. `placement`
+    (§7.2: jobs get `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `nas-budget` and
+    `nas-target.json` are the lead's settings (docs/coordination.md step 5), their files written and
+    read only while an older app is in the pool; `memory-guard`, `resume` and `brokers` are no
+    longer read (always on).
   - A member's ask carries `disk_mb` (free disk less the owner's room target and its jobs'
     reservations; no fixed reserve).
   - `state/pool/progress/<member>.json`: `{member, worker, jobs: {"osm-pass <date>": {at, since,

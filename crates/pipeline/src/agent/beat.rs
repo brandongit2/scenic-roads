@@ -17,7 +17,9 @@
 //! A member's beat goes to the lead too (`ToLead`, docs/coordination.md step 3: `POST /pool/beat`
 //! with the leases it holds, its pool heartbeat and its status), by a poster thread of its own
 //! that takes the newest each time it's free: a hung share holds neither it nor the lead's view of
-//! this Mac. The lead's answer goes to the pool's registry (crate::coord::beats::Beats::answered).
+//! this Mac. The lead's answer goes to the pool's registry (crate::coord::beats::Beats::answered);
+//! once it says the lead serves the owner's asks, the asks queued go next, in order, and the pool's
+//! settings are fetched when their generation moved (`send_asks`, crate::coord::asks).
 
 use super::bus::{BeatMsg, Snap};
 use super::{nasread, now_s, write_beat, write_replace, Status};
@@ -92,11 +94,50 @@ impl ToLead {
         });
         held::Beat {
             member: self.member.clone(),
-            speaks: vec![held::SPEAKS.to_string(), beats::SPEAKS.to_string(), beats::VIEW.to_string()],
+            speaks: [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS].map(str::to_string).to_vec(),
             held: self.held.clone(),
             held_age_s: 0,
             heartbeat,
             status: serde_json::to_value(&status).ok(),
+            took: 0,
+        }
+    }
+
+    /// Its asks queued (crate::coord::asks), sent to a lead that takes them, in order, each off the
+    /// queue once answered 200 (the first not: the rest wait for the next beat); and the settings
+    /// fetched when the lead's generation moved past those it has.
+    fn send_asks(&self, c: &crate::coord::client::Client) {
+        if !self.beats.lead_asks() {
+            return;
+        }
+        for a in self.beats.asks() {
+            let (path, body) = a.post();
+            match c.post_json(path, &body) {
+                Ok((200, _)) => self.beats.asked(&a),
+                Ok((code, v)) => {
+                    eprintln!("agent: its ask of the lead ({path}): answered {code}: {}", v["error"]);
+                    // (One the lead refuses as it is (400) would stop every one after it: dropped.)
+                    if code == 400 {
+                        self.beats.asked(&a);
+                        continue;
+                    }
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("agent: its ask of the lead ({path}): {e:#} (sent again with the next beat)");
+                    return;
+                }
+            }
+        }
+        if self.beats.settings_stale() {
+            match c.post_json("/pool/settings", &serde_json::json!({})) {
+                Ok((200, v)) => match serde_json::from_value(v) {
+                    Ok(s) => self.beats.set_settings(s),
+                    Err(e) => eprintln!("agent: the lead's settings don't read: {e}"),
+                },
+                Ok((code, v)) => eprintln!("agent: the lead's settings: answered {code}: {}", v["error"]),
+                Err(e) => eprintln!("agent: the lead's settings: {e:#}"),
+            }
         }
     }
 
@@ -110,11 +151,16 @@ impl ToLead {
         if !self.beats.lead_takes() && age >= crate::coord::held::OMIT_GRACE / 2 {
             return failing;
         }
-        let b = crate::coord::held::Beat { held_age_s: age.as_secs_f64().ceil() as u64, ..b.clone() };
+        let b = crate::coord::held::Beat {
+            held_age_s: age.as_secs_f64().ceil() as u64,
+            took: self.beats.took(),
+            ..b.clone()
+        };
         let c = crate::coord::client::Client::at(self.urls.clone(), self.token.clone(), &self.member);
         match c.pool_beat(&b) {
             Ok(Some(a)) => {
                 self.beats.answered(&a, now_s());
+                self.send_asks(&c);
                 false
             }
             Ok(None) => {
@@ -534,5 +580,125 @@ mod tests {
         b.changed();
         let s = said(&local);
         assert_eq!((s.loop_age_s, s.loop_phase), (Some(0), None));
+    }
+
+    /// A member's beat to the lead's coordinator at `port`: its own heartbeat as member `id`, its
+    /// registry `beats`.
+    fn member(id: &str, port: u16, token: &str) -> ToLead {
+        let beats = Arc::new(Beats::default());
+        beats.set_own(crate::agent::pool::Heartbeat {
+            pool: crate::pool::Beat { member: id.into(), host: id.into(), ..Default::default() },
+            beat_http: true,
+            ..Default::default()
+        });
+        ToLead {
+            urls: vec![format!("http://127.0.0.1:{port}")],
+            token: token.into(),
+            member: id.into(),
+            held: Default::default(),
+            listed: Instant::now(),
+            beats,
+        }
+    }
+
+    /// One beat of `to` posted, as its poster posts it: whether it failed.
+    fn beat_once(to: &ToLead) -> bool {
+        to.post(&to.body(&Status::default()), false)
+    }
+
+    const X: &str = "m-000000000000000a";
+    const Y: &str = "m-000000000000000b";
+
+    /// docs/coordination.md step 5: Mac Y pauses member X: its agent's ask goes with Y's next beat,
+    /// the lead keeps it, and X has it from the answer to its own next beat, the NAS untouched.
+    #[test]
+    fn a_remote_pause_reaches_the_member_in_one_beat() {
+        use crate::coord::asks::{Ask, HoldAsk};
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = crate::coord::start_for_test(&d.path().join("lead"), "lead", "");
+        c.set_beats(Some(Arc::new(Beats::default())));
+        let token = c.contact.token.clone();
+        let (x, y) = (member(X, port, &token), member(Y, port, &token));
+        assert!(!beat_once(&x) && x.beats.lead_hold().is_none() && x.beats.lead_asks());
+        let held = Some(Hold { by: "scenic pause on Y".into(), at: 100 });
+        y.beats.ask(Ask::Hold(HoldAsk { member: X.into(), held: held.clone(), at: 100 }));
+        assert!(!beat_once(&y));
+        assert!(y.beats.asks().is_empty(), "taken by the lead");
+        assert_eq!(c.hold_of(X).and_then(|h| h.held), held);
+        assert!(!beat_once(&x));
+        assert_eq!(x.beats.lead_hold().map(|h| (h.held, h.at)), Some((held, 100)));
+        // An earlier going-on (its clock behind) doesn't undo it; a later one does.
+        y.beats.ask(Ask::Hold(HoldAsk { member: X.into(), held: None, at: 99 }));
+        beat_once(&y);
+        beat_once(&x);
+        assert!(x.beats.lead_hold().is_some_and(|h| h.held.is_some()));
+        y.beats.ask(Ask::Hold(HoldAsk { member: X.into(), held: None, at: 101 }));
+        beat_once(&y);
+        beat_once(&x);
+        assert_eq!(x.beats.lead_hold().map(|h| (h.held, h.at)), Some((None, 101)));
+        c.stop();
+    }
+
+    /// docs/coordination.md step 5: a setting the lead took is in its store: a restarted lead has it,
+    /// its generation in each beat's answer, and a member fetches it once that moves.
+    #[test]
+    fn settings_survive_a_lead_restart() {
+        use crate::coord::asks::{Ask, SettingAsk, PLACEMENT};
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("lead");
+        let (c, port) = crate::coord::start_for_test(&dir, "lead", "");
+        c.set_beats(Some(Arc::new(Beats::default())));
+        let x = member(X, port, &c.contact.token);
+        x.beats.ask(Ask::Setting(SettingAsk { name: PLACEMENT.into(), value: true.into(), by: "t".into(), at: 5 }));
+        assert!(!beat_once(&x));
+        assert!(c.pool_settings().placement() && x.beats.asks().is_empty());
+        // (Fetched once the generation moved: with the next beat's answer.)
+        beat_once(&x);
+        let s = x.beats.settings().expect("fetched");
+        assert!(s.placement() && !x.beats.settings_stale());
+        c.stop();
+        let (c, port) = crate::coord::start_for_test(&dir, "lead", "");
+        c.set_beats(Some(Arc::new(Beats::default())));
+        assert_eq!(c.pool_settings(), s, "kept across the restart");
+        let x = member(X, port, &c.contact.token);
+        beat_once(&x);
+        beat_once(&x);
+        assert_eq!(x.beats.settings(), Some(s));
+        c.stop();
+    }
+
+    /// docs/coordination.md step 5: the owner's asks while the lead is down stay queued on the member
+    /// (on its disk: a restart of its agent keeps them), and go once the lead answers again.
+    #[test]
+    fn an_ask_while_the_lead_is_down_is_sent_when_it_returns() {
+        use crate::coord::asks::{Ask, HoldAsk, SettingAsk, NAS_TARGET};
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("lead");
+        let (c, port) = crate::coord::start_for_test(&dir, "lead", "");
+        c.set_beats(Some(Arc::new(Beats::default())));
+        let token = c.contact.token.clone();
+        let y = member(Y, port, &token);
+        beat_once(&y);
+        c.stop();
+        let queue = d.path().join("y-asks.json");
+        y.beats.keep_asks(&queue);
+        let hold = Ask::Hold(HoldAsk { member: X.into(), held: Some(Hold { by: "t".into(), at: 7 }), at: 7 });
+        let target = Ask::Setting(SettingAsk { name: NAS_TARGET.into(), value: 70.into(), by: "t".into(), at: 7 });
+        y.beats.ask(hold.clone());
+        y.beats.ask(target.clone());
+        assert!(beat_once(&y), "the lead is down");
+        assert_eq!(y.beats.asks(), [hold.clone(), target.clone()]);
+        // (Its agent restarted meanwhile: the queue read back.)
+        let (c, port) = crate::coord::start_for_test(&dir, "lead", "");
+        c.set_beats(Some(Arc::new(Beats::default())));
+        let y = member(Y, port, &token);
+        y.beats.keep_asks(&queue);
+        assert_eq!(y.beats.asks().len(), 2);
+        let y = ToLead { token: c.contact.token.clone(), ..y };
+        assert!(!beat_once(&y));
+        assert!(y.beats.asks().is_empty());
+        assert!(c.hold_of(X).is_some_and(|h| h.held.is_some()));
+        assert_eq!(c.pool_settings().nas_target().map(|t| t.pct), Some(70));
+        c.stop();
     }
 }

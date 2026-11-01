@@ -1,6 +1,6 @@
 //! Tasks brokered by every member, members' pages talking to members directly (docs/pool.md §8, §9; §12
-//! phase 4's tenth batch), behind the switch `state/pool/brokers` (`SWITCH`; off while missing or
-//! `off` in it: the agent as it was, exactly). It acts only in the pool.
+//! phase 4's tenth batch). It acts only in the pool (its switch, `state/pool/brokers`, deleted with
+//! task #878 step 5: on everywhere; an older app still reads its file).
 //!
 //! - **Each member brokers its own jobs' tasks**: a member's agent runs a coordinator of its own
 //!   (its broker, on the pool's port, crate::coord::PORT) and gives its jobs its address, so their
@@ -21,19 +21,6 @@
 use crate::agent::pool::Heartbeat;
 use crate::coord::brokers::{Broker, Peer};
 use std::time::{Duration, Instant};
-
-/// The switch (`on` in it, or present; `off` in it, or missing: off, the agent as it was).
-pub const SWITCH: &str = "state/pool/brokers";
-
-/// Whether tasks are brokered by every member, as the switch at `root` says; None when it can't
-/// be read now.
-pub fn on(root: &store::nasfs::NasRoot) -> Option<bool> {
-    match super::nasread::read_switch(&root.join(SWITCH)) {
-        Ok(s) => Some(s.trim() != "off"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
-        Err(_) => None,
-    }
-}
 
 /// How often the members' heartbeats are read for their brokers, and a broker's addresses given
 /// to its heartbeat at most.
@@ -82,17 +69,6 @@ pub fn stale(at: Option<Instant>, now: Instant, every: Duration) -> bool {
 mod tests {
     use super::*;
     use crate::pool::beat::Beat;
-
-    #[test]
-    fn the_switch_is_off_while_missing_or_off() {
-        let d = tempfile::tempdir().unwrap();
-        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(false));
-        std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
-        std::fs::write(d.path().join(SWITCH), "off\n").unwrap();
-        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(false));
-        std::fs::write(d.path().join(SWITCH), "").unwrap();
-        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(true));
-    }
 
     fn b(urls: &[&str]) -> Broker {
         Broker { urls: urls.iter().map(|u| u.to_string()).collect(), ..Default::default() }

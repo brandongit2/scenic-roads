@@ -98,7 +98,7 @@ Common rules:
   While a job only waits it writes `SCENIC_WAITING` (`offload::WAITING_ENV`); its agent, the
   lead's or a member's, says so in its capacity and the lead grants the room it doesn't hold, and
   its cores, to a job beside it, which yields when it goes on (docs/pool.md §7.2). An unmeasured worker's raced task is kept for it to finish
-  (`Tasks::measure`, its inputs already the coordinator's) to learn its pace. With placement on (`state/pool/placement`), terrain and
+  (`Tasks::measure`, its inputs already the coordinator's) to learn its pace. With placement on (the pool's setting `placement`), terrain and
   tree cover z6 tiles offer ahead (`terrain_task::offer_ahead`) with a head start a slower worker may use.
 - **Versions:** a task names the job's build.
 - **Determinism:** one maths library (`det`, over `libm`), thread-count-independent reductions, no

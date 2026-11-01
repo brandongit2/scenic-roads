@@ -36,7 +36,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// The switch.
+/// The switch's file: the pool's setting `nas-budget` (crate::coord::asks) as an older app reads
+/// it (the rollout gate's).
 pub const SWITCH: &str = "state/pool/nas-budget";
 /// Where the coordinator's probes are made, under the project folder (a folder per process).
 pub const PROBE_DIR: &str = "state/pool/nas-probe";
@@ -71,36 +72,9 @@ pub struct Target {
     pub at: u64,
 }
 
-/// The target as set under the project folder `root` (None: none set, or unreadable: the default).
-pub fn read_target(root: &store::nasfs::NasRoot) -> Option<Target> {
-    let t: Target = serde_json::from_slice(&root.join(TARGET_FILE).read().ok()?).ok()?;
-    TARGET_RANGE.contains(&t.pct).then_some(t)
-}
-
 /// The target's share (%): the set one's, else `DEFAULT_TARGET_PCT`.
 pub fn target_pct(t: Option<&Target>) -> u32 {
     t.map_or(DEFAULT_TARGET_PCT, |t| t.pct)
-}
-
-/// Sets the target under `root` (None: cleared, the default again).
-pub fn set_target(root: &store::nasfs::NasRoot, pct: Option<u32>, by: &str) -> anyhow::Result<Option<Target>> {
-    let p = root.join(TARGET_FILE);
-    let Some(pct) = pct else {
-        match p.remove_file() {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-            _ => return Ok(None),
-        }
-    };
-    anyhow::ensure!(
-        TARGET_RANGE.contains(&pct),
-        "the NAS target: {}–{} %, not {pct}",
-        TARGET_RANGE.start(),
-        TARGET_RANGE.end()
-    );
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let t = Target { pct, by: by.to_string(), at: now };
-    p.write_whole(serde_json::to_vec(&t)?)?;
-    Ok(Some(t))
 }
 
 /// The gate on the NAS's own disk load (task #534): the busiest disk's busy share, smoothed,
@@ -176,16 +150,6 @@ impl Limits {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Switch {
     pub downloads: Option<usize>,
-}
-
-/// The switch at `root` (None in it: off; missing, on with no download cap); None when it can't
-/// be read now.
-pub fn read_switch(root: &store::nasfs::NasRoot) -> Option<Option<Switch>> {
-    match root.join(SWITCH).read_to_string() {
-        Ok(s) => Some(parse(&s)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Some(Switch::default())),
-        Err(_) => None,
-    }
 }
 
 /// The switch's text: `off` alone, off; else on, with its `downloads <n>` (a line not understood
@@ -655,28 +619,6 @@ mod tests {
         }
         assert!(!held.open(450, 150) && held.open(0, 1000) && held.open(450, 0));
         assert!(open.open(450, 150));
-    }
-
-    /// The owner's target: set, read, bounded and cleared under the project folder.
-    #[test]
-    fn the_target_is_set_read_and_cleared() {
-        let d = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
-        assert_eq!(
-            target_pct(read_target(&store::nasfs::NasRoot::local_for_test(d.path())).as_ref()),
-            DEFAULT_TARGET_PCT
-        );
-        assert!(set_target(&store::nasfs::NasRoot::local_for_test(d.path()), Some(100), "t").is_err(), "never 100 %");
-        let t = set_target(&store::nasfs::NasRoot::local_for_test(d.path()), Some(70), "t").unwrap();
-        assert_eq!(read_target(&store::nasfs::NasRoot::local_for_test(d.path())), t);
-        assert_eq!(target_pct(t.as_ref()), 70);
-        assert_eq!(set_target(&store::nasfs::NasRoot::local_for_test(d.path()), None, "t").unwrap(), None);
-        assert_eq!(read_target(&store::nasfs::NasRoot::local_for_test(d.path())), None);
-        assert_eq!(
-            set_target(&store::nasfs::NasRoot::local_for_test(d.path()), None, "t").unwrap(),
-            None,
-            "cleared twice: fine"
-        );
     }
 
     /// The limits are the best of the last day's probes.

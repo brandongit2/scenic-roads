@@ -397,7 +397,7 @@ fn capacity_line(c: &pipeline::coord::Capacity) -> String {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
     let mut v = vec![
         format!(
-            "memory {} free of the build's {} ({} held{}{})",
+            "memory {} free of the build's {} ({} held{})",
             gb(c.mem_mb),
             gb(if c.build_mb > 0 { c.build_mb } else { c.limit_mb }),
             gb(c.held_mb),
@@ -406,7 +406,6 @@ fn capacity_line(c: &pipeline::coord::Capacity) -> String {
             } else {
                 String::new()
             },
-            if c.guard { "" } else { ", not guarded" }
         ),
         format!("{} of {} cores free", c.cores_free, c.cores),
         if c.free_mb > 0 {
@@ -1006,31 +1005,47 @@ fn in_use(cores_asked: Option<u32>, off: bool, home: &Option<PathBuf>) -> Result
     Ok(())
 }
 
-/// `scenic nas-target [<percent> | off]`: the pool's NAS load target (pipeline::budget::nas::Target),
-/// set in the project folder on the NAS (`state/pool/nas-target.json`), which the lead reads each
-/// 10 s, whichever Mac set it; off: the default; with none, how it stands.
-fn nas_target(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
-    use pipeline::budget::nas;
-    let r = root(root_, true)?;
-    let by = format!("scenic nas-target on {}", store::sys::host_name());
-    let t = match what {
-        Some("off") => nas::set_target(&r, None, &by)?,
-        Some(p) => {
-            let pct: u32 = p
-                .trim_end_matches('%')
-                .parse()
-                .with_context(|| format!("scenic nas-target <percent> | off, not {p}"))?;
-            nas::set_target(&r, Some(pct), &by)?
+/// `scenic pool set [<name> [<value> | off]]` (and `scenic nas-target`, its NAS target's): one of
+/// the pool's settings (pipeline::coord::asks) asked of this Mac's agent (its folder `home`),
+/// which sends it to the lead with its next beat; with none, how they stand as the agent last had
+/// them from the lead (control::POOL_SETTINGS), no NAS read.
+fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> {
+    use pipeline::coord::asks::{self, SettingAsk};
+    if let Some(name) = name {
+        anyhow::ensure!(asks::NAMES.contains(&name), "the pool's settings: {}, not {name}", asks::NAMES.join(", "));
+        if let Some(v) = value {
+            let value: serde_json::Value = match (name, v) {
+                (asks::PLACEMENT, "on") => true.into(),
+                (asks::PLACEMENT, "off") => false.into(),
+                (asks::PLACEMENT, _) => anyhow::bail!("placement: on or off, not {v}"),
+                (asks::NAS_TARGET, "off") => serde_json::Value::Null,
+                (asks::NAS_TARGET, p) => p
+                    .trim_end_matches('%')
+                    .parse::<u64>()
+                    .with_context(|| format!("nas-target: <percent> or off, not {p}"))?
+                    .into(),
+                (_, t) => t.into(),
+            };
+            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let by = format!("scenic pool set on {}", store::sys::host_name());
+            pipeline::control::request_setting(home, &SettingAsk { name: name.to_string(), value, by, at })?;
+            println!("{name}: asked of this Mac's agent, which sends it to the lead with its next beat");
+            return Ok(());
         }
-        None => nas::read_target(&r),
+    }
+    let Some(s) = pipeline::control::read_pool_settings(home) else {
+        println!("The pool's settings: not had from the lead yet (this Mac's agent writes them as it has them)");
+        return Ok(());
     };
-    println!(
-        "NAS target: the budget grants while the NAS's busiest disk is under {} % busy ({})",
-        nas::target_pct(t.as_ref()),
-        match &t {
-            Some(t) => format!("set {} by {}", ago(t.at), t.by),
-            None => "the default".into(),
+    for n in asks::NAMES.iter().filter(|n| name.is_none_or(|m| m == **n)) {
+        match s.values.get(*n).filter(|v| !v.value.is_null()) {
+            Some(v) => println!("{n}: {} (set {} by {})", v.value, ago(v.at), v.by),
+            None => println!("{n}: the default"),
         }
+    }
+    println!(
+        "NAS target: the budget grants while the NAS's busiest disk is under {} % busy",
+        pipeline::budget::nas::target_pct(s.nas_target().as_ref())
     );
     Ok(())
 }
@@ -1401,9 +1416,14 @@ fn main() -> Result<()> {
         Some(Cmd::Pool(pool)) => {
             use cli::PoolCmd;
             // The pool (docs/pool.md): how it stands, and the owner's asks of its lead.
+            if let Some(PoolCmd::Set { name, value, home }) = &pool.cmd {
+                return pool_set(name.as_deref(), value.as_deref(), &home_or_default(&home.home));
+            }
             let r = root(&pool.root, false)?;
             match pool.cmd {
                 Some(PoolCmd::Status) | None => println!("{}", agent::pool::status(&r)),
+                // (Taken above, before the NAS is looked for: it needs none.)
+                Some(PoolCmd::Set { .. }) => {}
                 Some(PoolCmd::Release { member, job: Some(job) }) => {
                     // A job's progress on a member's Mac given up (crate::agent::resume): the lead
                     // runs it wherever it fits from then.
@@ -1568,7 +1588,9 @@ fn main() -> Result<()> {
         Some(Cmd::Clean { yes, deep, home }) => clean(yes, deep, &home.home),
         Some(Cmd::Room { what, places }) => room(what.as_deref(), &places.home),
         Some(Cmd::InUse { cores, off, places }) => in_use(cores, off.is_some(), &places.home),
-        Some(Cmd::NasTarget { what, root }) => nas_target(what.as_deref(), &root.root),
+        Some(Cmd::NasTarget { what, home }) => {
+            pool_set(Some("nas-target"), what.as_deref(), &home_or_default(&home.home))
+        }
         Some(Cmd::NasRoom { what, root }) => nas_room(what.as_deref(), &root.root),
         Some(Cmd::Memory { what, places }) => memory(what.as_deref(), &places.home),
         Some(Cmd::Gc { dry_run, days, depth_keep, shadow_due, root: r }) => {
@@ -1833,10 +1855,7 @@ mod tests {
             ..Default::default()
         };
         let l = capacity_line(&c);
-        assert!(
-            l.starts_with("memory 6.0 GB free of the build's 10.0 GB (0.0 GB held, the limit 12.0 GB, not guarded)"),
-            "{l}"
-        );
+        assert!(l.starts_with("memory 6.0 GB free of the build's 10.0 GB (0.0 GB held, the limit 12.0 GB)"), "{l}");
         assert!(l.contains("disk 38 GB free · 18 GB for jobs (20 GB room target)"), "{l}");
     }
 }

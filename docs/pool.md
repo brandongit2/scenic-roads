@@ -681,7 +681,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   from a median of 10.2 h (p90 15.2 h) to 0.1 h (p90 2.8 h), a tile's lag from its terrain-deep
   to its slope-deep from 9.0 h to 0.1 h, the whole from 16.0 h to 16.2 h (the last terrain job's
   slope after it).
-- **Placement by how crucial** (`crate::agent::placement`, behind `state/pool/placement`): asks are
+- **Placement by how crucial** (`crate::agent::placement`, the pool's setting `placement`, §12): asks are
   tried on steps by their forecast slack (least first); within a step, the targets in the asker's
   last one's z3 tile first (`placement::group`, from just after it in plan order: its jobs read
   the same neighbourhood's inputs, task #552), then from the longest. Each target is drawn among
@@ -701,7 +701,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   model has them. A task offered
   ahead goes to a slower worker only while its head start covers that worker's run. The lead's own
   planned jobs keep plan order.
-- **Resuming** (`crate::agent::resume`, behind `state/pool/resume`): a job interrupted with progress
+- **Resuming** (`crate::agent::resume`, in the pool): a job interrupted with progress
   on a Mac's disk (built for the OSM pass) is offered to that Mac alone for 24 hours from its first
   start, or until `scenic pool release <member> "<job>"`. Progress is in
   `state/pool/progress/<member>.json`, written only by that member. A finished one is held unoffered
@@ -814,7 +814,7 @@ within the Mac's slots (`job_slots`) and room. Only the asking Mac's own leases 
 that uses its cores again is not stopped and nothing yields: it counts its cores again from its
 Mac's next ask once it has used a core-minute, and the Mac is granted nothing more until they fit.
 
-**The memory guard** (`crate::agent::memguard`; `state/pool/memory-guard`, on unless it says `off`):
+**The memory guard** (`crate::agent::memguard`; always on):
 
 - A thread samples each job's processes' footprint every 5 s, per target under way (from
   `started` lines in `SCENIC_COSTS`, else `SCENIC_DONE`), and writes `memory.json` for the status.
@@ -981,8 +981,8 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
 
 ### 7.4 Planning reads only the records
 
-Behind `state/pool/resume`, a pass is complete when its records name `sources/osm/<date>/pass`
-(`crate::osmpass::latest_pass_by`); off, a `pass.*.json` file still says it. A catalogue runs only
+In the pool, a pass is complete when its records name `sources/osm/<date>/pass`
+(`crate::osmpass::latest_pass_by`); out of it, a `pass.*.json` file still says it. A catalogue runs only
 when the lead is caught up. A resuming job is given its member's unacknowledged hand-offs of its
 step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
 
@@ -1094,7 +1094,7 @@ never correctness, politeness or work.
 | jobs on one Mac | a job is granted beside others only if their measured memory, disk and cores fit (packing, §7.2; one only waiting on a worker by what it holds and no cores, §7.2, A job waiting on a worker; one leaving the cores idle by its measures and no cores, §7.2, A job leaving the cores idle), and only while every member reports the new app (§7.1, Mixed versions); a cold start by its provisional need (§7.7) |
 | raw tiles | `store::cachefile`'s locks; packing deletes only tiles no job holds; a job reopens its shard's archives when the index changed (`RawTiles::get`, `refresh_shard`; a shard is the z6 tile, z3 tile or `root` whose archives hold a tile: docs/macs.md) |
 | Wikimedia budget | `crate::budget`: one budget for the pool, enforced at egress. Every job's connections go through its agent's proxy (`crate::budget::proxy`, `HTTPS_PROXY`; its clients served on an event loop of two threads, what blocks (a token waited for, a connection opened) on at most 16 more, at most four waiting for each class's token at once: task #908), the job sandboxed (`sandbox-exec`) to deny any other way out. A metered connection takes a token first: leases are create-new files per slot of a ten-second window (`state/pool/wiki/<class>/<window>-<slot>`). `wiki` four requests a second; `query` (WDQS, QLever) one query per two seconds of query time. A 429 told to the proxy (`POST /hold`, `budget::seen`) holds every Mac. The budget, our User-Agent and the back-off are how the APIs and data downloads it carries are asked politely: they read no robots.txt, which is for crawlers (docs/inputs.md §6.9). The NAS away, each Mac takes the rate divided by known members. Lint: `tests/budgets.rs` |
-| NAS and network budget | `crate::budget::nas`: the lead's own jobs always; the members' too unless `state/pool/nas-budget` says `off` (on while missing). A job's **NAS weight** is its share of the NAS in thousandths: its targets' measured rate (`needs::Book::nas`: `bytes` read, less those of this Mac's own disk (`local`, task #551), plus `wrote`, and `creates`, each over its wall time, a halo step's (`pack`, `lo`) `wrote` alone, its job's read rate (`nas_read` over `nas_secs`: what the job read of the halo's base packs from the NAS and the time that took, on each of its targets; a measure without `nas_secs`, task #396's first, counts no reads) in place of its `bytes` (the halo's base packs' files); its own run's, else its step's 90th percentile of each, its runs of every way it ran; none measured, 0, but a step known to read the NAS (`NAS_STEPS`) weighs the whole, task #499 review), and its metadata work (task #451: `listed`, `stats`, `deletes` from `costin::meta`, the folder entries it listed and the files it statted and deleted (renames counted as deletes), each over its wall time; counted by GC's walks, which note a cost line `gc gc` in their job's costs file, and the inputs step's inputs-folder listing), each over the NAS's limit, added: one combined weight, at most the whole (1000); a job its heaviest target's (a job of no targets of its own, its lease's, its step's). **The limits** are measured: the lead's coordinator probes the NAS every 30 minutes, whatever the switch says (`probe`, 4 streams at once (`STREAMS`, task #534: on 21 Oct one stream measured 5 creates/s and 25 MB/s where four made 41 creates/s and eight 57 MB/s, so a single stream set limits a fifth to a half of the NAS's): in each, 12 files of 4 KB made, then in each one of 16 MB written, synced and read back past the cache; the 48 small files deleted one by one, and a kept folder of its own (`<host>-meta` beside the probe's folders, 48 files, never removed by the stale-folder clean-up) listed and its files statted, measured only once it has gone unwritten 5 minutes so the answers come from the NAS, not this Mac's SMB cache of what it just wrote (missing or young: made, and 0 this probe; a 0 weighs nothing and the day's best is kept), in a folder of its own under `state/pool/nas-probe/<host>-<pid>`, all removed after; as it starts, the coordinator removes its host's folders a stopped process left, never another host's) and takes the best of the last day's probes (a probe under the build's load measures what's left, so it's kept: the day's best passes over it, and dropping it would leave a lead started on a busy NAS no limits). The probes are kept on the NAS beside the pool's state (`state/pool/nas-probes.json`, `nas::PROBES_FILE`: one small file written whole every 30 minutes, by the lead's prober alone) and read once the lead knows the NAS, so a restart, or a new lead on another Mac, keeps the day's best (task #603: on 23 Oct a restart under load cut the limits from 86 MB/s to 66.5 and inflated every weight). **The gate on the NAS's own load** (`nas::Loop`, task #534): every 10 s the lead reads each disk's busy share from the Synology over SNMPv3 (`crate::budget::snmp`, SYNOLOGY-STORAGEIO-MIB `storageIOLA`, the one SNMP reader, for the build page's figures too; its keys `NAS_SNMP_USER` and `NAS_SNMP_AUTH` from the project's `inputs/keys.env` (a value with whitespace or `#` is refused, as net-snmp's conf can't carry it: no usable keys, the gate open; the coordinator logs it once, naming the key, never its value), handed to `snmpget` in a private `snmp.conf` (0600, in a 0700 folder under the temp folder, `SNMPCONFPATH`; made once per lead, removed when its coordinator stops, and a stopped process's folder left behind (`scenic-snmp-<pid>`, pid gone) removed as a new session starts; `~/.snmp` untouched), never on a command line, never logged; a poll killed after 8 s) and smooths the busiest disk's (a new reading weighs 0.3: about half a minute's memory). Once that load is over the target the budget is held, and it reopens only when the load is below the target less 3 points (`nas::BAND`, so a load hovering at the target doesn't open and shut it every reading) (`Limits::held`): a job that weighs anything is granted, the lead's or a member's, only beside leased jobs that weigh nothing (`Limits::open`, on top of every rule above; the lead's own jobs asking to go alone (`pick_own`) count the members' jobs alone as the leased ones, so while held a job of the lead's own may still go beside the lead's other own jobs, as intended: the whole-budget rules bind them by weight as ever; weights and room are the probes' as ever, so a held NAS never admits a job an unheld one refuses), whatever loads the NAS (an outside repack counts); jobs running go on. Held, the lead's waiting lines say so: a line for the NAS ("held by NAS load (91 % > target 85 %)") and each target held back for the budget names it too (`Coordinator::nas_held`, `agent::nas_wait_lines`). With no keys or no answer, the gate is open (the probes' limits alone). **The target** is the owner's, pool-wide: `state/pool/nas-target.json` in the project folder, `{"pct": <30–95>, "by": "<who>", "at": <unix s>}`, set by `scenic nas-target [<percent> | off]` on any Mac (off: the file removed, the default; with none, how it stands); it lives on the NAS, not an agent's folder, because the lead alone enforces it: a member's change reaches the lead at its next read (10 s), and a new lead reads the same file. Missing or unreadable, 85 % (`DEFAULT_TARGET_PCT`): never 100, after #451's stall at a NAS held busy, and above the 65–80 % an outside repack alone kept the disks at on 21 Oct, so the pool still works beside one. `scenic pool nas-probe [--dir <folder>]` runs one. (The NAS's space is apart: the owner's NAS reserve, `scenic nas-room`, docs/building.md.) **Enforced at grant** (`coord`'s `pick_every` and `pick_own`, so `pack` too, the lead's own jobs among them): a member's target is granted only while the weights of every job leased in the pool (the lead's own among them) leave room for its own within the whole (1000), or while no other member's job weighs anything (the lead's own alone never hold it back), or, once it has waited 10 minutes for the budget alone and no leased job weighs the whole, if it weighs the whole itself or more than the leased jobs together (`Limits::fits_job`, `OWN_AGE`: the members' jobs never starve it; it waits for heavier work to end, never for lighter; once it's in the leased jobs outweigh any other, so aged ones don't pile up); the lead's own within the whole, or while nothing leased weighs anything, or, once it has waited 10 minutes for the budget alone, while no leased job weighs the whole and the lead's own leased jobs leave it room within the whole (its every-step targets, `pick_every`: `Limits::fits_own_target`); a planned job of the lead's own (`own_nas_fits`) also, not waiting, once it weighs the whole itself while no leased job weighs the whole (`Limits::fits_own_job`; both `OWN_AGE`, the wait timed from when it was first held back and forgotten once granted: members' small jobs never hold it back for good, and the lead's own aged jobs don't pile up past the budget; the simulator checks each start of the lead's own against the same rule, with the waits as the coordinator kept them); **an aged target holds its room** (`Shared::nas_reserved`, task #444): of the targets held back for the budget alone for 10 minutes or more (and passed over in the last two minutes), the one held back first has its weight kept free: no other job weighing anything is granted, a member's or the lead's, unless the leased jobs, it and that one fit within the whole, so a target weighing less than the whole but more than the room left (depth-lo's) goes as the leased jobs end instead of waiting behind a stream of smaller ones; it never lets the budget past the whole, the reserved target itself aside (by `fits_job`'s, `fits_own_target`'s or `fits_own_job`'s aged path), and the reserved target always has a way in once no leased job weighing the whole runs (task #603: on 23 Oct a pack of 946 aged beside the M4's terrain of 103 could pass no rule, a member's aged path then taking only whole ones and the lead's every-step targets none, and the room held for it stopped every other job for 41-62 minutes); a target is noted waiting only when its asker would take it but for the budget (its measured memory and disk fit, or a cold start it's the one to make), so one no asker can take never holds room; a step's grant restarts the waits of its other aged targets weighing no more than the job granted, weighed by the NAS's own limits whoever asked (task #552: it isn't starved, it just took room; else a step granted target by target holds the reservation for good, each grant handing it to its next target, as 52 units aged an hour did on 22 Oct while every other step and the lead's slots waited); a cold job of its own waits for the lead's jobs to end (§7.2) only when it would fit with the members' jobs alone. **The lead's own jobs are always held to it**, whatever the switch says (the limits probed: `nas_own`); the switch, unless `off`, holds the members' too (`nas`). Switched `off`, the members' jobs are not held and the lead's own are held by their own weights alone (`Shared::nas_room_heaviest`: a member's unheld jobs no longer keep the lead idle). The rest wait for a job to end; a target held back for over 30 minutes is a waiting line in the lead's status (`Coordinator::nas_waits`), once each (`agent::nas_wait_lines`). **The clean-up waits for a quiet NAS** (`QUIET_STEPS`: `gc`; task #451, after GC beside two depth-lo jobs held the NAS at 34 % IO wait and all three stalled): it starts only beside leased jobs weighing nothing, or, its weight measured, within the whole with them (`Limits::fits_quiet`), and the room held for an aged target; unmeasured, also only while no leased job is of a step known to read the NAS (`NAS_STEPS`) or unmeasured for it (`nas_unknown_running`). Its wait isn't noted (it holds no room) until it has been held back 24 hours since it was last granted (`QUIET_AGE`, `Shared::quiet_since`, kept in memory: a new coordinator counts afresh): then it goes as an aged job of the lead's own (`fits_own_job`, its wait noted, its room held). Running, it yields at its next safe point (each folder of its sweeps; `control::draining`, its cost line noted first, ending as paused) when a target held back for the budget `OWN_AGE` doesn't fit beside the leased jobs but would without it (`Coordinator::nas_yield`, asked by the agent each loop). **Downloads:** a job of a fetching step (steps table kind `Fetch`) counts one, capped pool-wide by the switch's `downloads <n>` (no cap without it): the lead's own fetching steps (`bld-fetch`, `rail-feeds`; none is offered to members). Not held to it: tasks |
+| NAS and network budget | `crate::budget::nas`: the lead's own jobs always; the members' too unless the pool's setting `nas-budget` says `off` (on while not set; the lead's, docs/coordination.md step 5). A job's **NAS weight** is its share of the NAS in thousandths: its targets' measured rate (`needs::Book::nas`: `bytes` read, less those of this Mac's own disk (`local`, task #551), plus `wrote`, and `creates`, each over its wall time, a halo step's (`pack`, `lo`) `wrote` alone, its job's read rate (`nas_read` over `nas_secs`: what the job read of the halo's base packs from the NAS and the time that took, on each of its targets; a measure without `nas_secs`, task #396's first, counts no reads) in place of its `bytes` (the halo's base packs' files); its own run's, else its step's 90th percentile of each, its runs of every way it ran; none measured, 0, but a step known to read the NAS (`NAS_STEPS`) weighs the whole, task #499 review), and its metadata work (task #451: `listed`, `stats`, `deletes` from `costin::meta`, the folder entries it listed and the files it statted and deleted (renames counted as deletes), each over its wall time; counted by GC's walks, which note a cost line `gc gc` in their job's costs file, and the inputs step's inputs-folder listing), each over the NAS's limit, added: one combined weight, at most the whole (1000); a job its heaviest target's (a job of no targets of its own, its lease's, its step's). **The limits** are measured: the lead's coordinator probes the NAS every 30 minutes, whatever the switch says (`probe`, 4 streams at once (`STREAMS`, task #534: on 21 Oct one stream measured 5 creates/s and 25 MB/s where four made 41 creates/s and eight 57 MB/s, so a single stream set limits a fifth to a half of the NAS's): in each, 12 files of 4 KB made, then in each one of 16 MB written, synced and read back past the cache; the 48 small files deleted one by one, and a kept folder of its own (`<host>-meta` beside the probe's folders, 48 files, never removed by the stale-folder clean-up) listed and its files statted, measured only once it has gone unwritten 5 minutes so the answers come from the NAS, not this Mac's SMB cache of what it just wrote (missing or young: made, and 0 this probe; a 0 weighs nothing and the day's best is kept), in a folder of its own under `state/pool/nas-probe/<host>-<pid>`, all removed after; as it starts, the coordinator removes its host's folders a stopped process left, never another host's) and takes the best of the last day's probes (a probe under the build's load measures what's left, so it's kept: the day's best passes over it, and dropping it would leave a lead started on a busy NAS no limits). The probes are kept on the NAS beside the pool's state (`state/pool/nas-probes.json`, `nas::PROBES_FILE`: one small file written whole every 30 minutes, by the lead's prober alone) and read once the lead knows the NAS, so a restart, or a new lead on another Mac, keeps the day's best (task #603: on 23 Oct a restart under load cut the limits from 86 MB/s to 66.5 and inflated every weight). **The gate on the NAS's own load** (`nas::Loop`, task #534): every 10 s the lead reads each disk's busy share from the Synology over SNMPv3 (`crate::budget::snmp`, SYNOLOGY-STORAGEIO-MIB `storageIOLA`, the one SNMP reader, for the build page's figures too; its keys `NAS_SNMP_USER` and `NAS_SNMP_AUTH` from the project's `inputs/keys.env` (a value with whitespace or `#` is refused, as net-snmp's conf can't carry it: no usable keys, the gate open; the coordinator logs it once, naming the key, never its value), handed to `snmpget` in a private `snmp.conf` (0600, in a 0700 folder under the temp folder, `SNMPCONFPATH`; made once per lead, removed when its coordinator stops, and a stopped process's folder left behind (`scenic-snmp-<pid>`, pid gone) removed as a new session starts; `~/.snmp` untouched), never on a command line, never logged; a poll killed after 8 s) and smooths the busiest disk's (a new reading weighs 0.3: about half a minute's memory). Once that load is over the target the budget is held, and it reopens only when the load is below the target less 3 points (`nas::BAND`, so a load hovering at the target doesn't open and shut it every reading) (`Limits::held`): a job that weighs anything is granted, the lead's or a member's, only beside leased jobs that weigh nothing (`Limits::open`, on top of every rule above; the lead's own jobs asking to go alone (`pick_own`) count the members' jobs alone as the leased ones, so while held a job of the lead's own may still go beside the lead's other own jobs, as intended: the whole-budget rules bind them by weight as ever; weights and room are the probes' as ever, so a held NAS never admits a job an unheld one refuses), whatever loads the NAS (an outside repack counts); jobs running go on. Held, the lead's waiting lines say so: a line for the NAS ("held by NAS load (91 % > target 85 %)") and each target held back for the budget names it too (`Coordinator::nas_held`, `agent::nas_wait_lines`). With no keys or no answer, the gate is open (the probes' limits alone). **The target** is the owner's, pool-wide: the pool's setting `nas-target` (its share, 30–95, with who set it and when), kept by the lead in its store (docs/coordination.md step 5), set by `scenic nas-target [<percent> | off]` on any Mac (asked of its agent, which sends it to the lead; off: the default; with none, how it stands as the agent last had it); the lead alone enforces it. Not set, 85 % (`DEFAULT_TARGET_PCT`): never 100, after #451's stall at a NAS held busy, and above the 65–80 % an outside repack alone kept the disks at on 21 Oct, so the pool still works beside one. `scenic pool nas-probe [--dir <folder>]` runs one. (The NAS's space is apart: the owner's NAS reserve, `scenic nas-room`, docs/building.md.) **Enforced at grant** (`coord`'s `pick_every` and `pick_own`, so `pack` too, the lead's own jobs among them): a member's target is granted only while the weights of every job leased in the pool (the lead's own among them) leave room for its own within the whole (1000), or while no other member's job weighs anything (the lead's own alone never hold it back), or, once it has waited 10 minutes for the budget alone and no leased job weighs the whole, if it weighs the whole itself or more than the leased jobs together (`Limits::fits_job`, `OWN_AGE`: the members' jobs never starve it; it waits for heavier work to end, never for lighter; once it's in the leased jobs outweigh any other, so aged ones don't pile up); the lead's own within the whole, or while nothing leased weighs anything, or, once it has waited 10 minutes for the budget alone, while no leased job weighs the whole and the lead's own leased jobs leave it room within the whole (its every-step targets, `pick_every`: `Limits::fits_own_target`); a planned job of the lead's own (`own_nas_fits`) also, not waiting, once it weighs the whole itself while no leased job weighs the whole (`Limits::fits_own_job`; both `OWN_AGE`, the wait timed from when it was first held back and forgotten once granted: members' small jobs never hold it back for good, and the lead's own aged jobs don't pile up past the budget; the simulator checks each start of the lead's own against the same rule, with the waits as the coordinator kept them); **an aged target holds its room** (`Shared::nas_reserved`, task #444): of the targets held back for the budget alone for 10 minutes or more (and passed over in the last two minutes), the one held back first has its weight kept free: no other job weighing anything is granted, a member's or the lead's, unless the leased jobs, it and that one fit within the whole, so a target weighing less than the whole but more than the room left (depth-lo's) goes as the leased jobs end instead of waiting behind a stream of smaller ones; it never lets the budget past the whole, the reserved target itself aside (by `fits_job`'s, `fits_own_target`'s or `fits_own_job`'s aged path), and the reserved target always has a way in once no leased job weighing the whole runs (task #603: on 23 Oct a pack of 946 aged beside the M4's terrain of 103 could pass no rule, a member's aged path then taking only whole ones and the lead's every-step targets none, and the room held for it stopped every other job for 41-62 minutes); a target is noted waiting only when its asker would take it but for the budget (its measured memory and disk fit, or a cold start it's the one to make), so one no asker can take never holds room; a step's grant restarts the waits of its other aged targets weighing no more than the job granted, weighed by the NAS's own limits whoever asked (task #552: it isn't starved, it just took room; else a step granted target by target holds the reservation for good, each grant handing it to its next target, as 52 units aged an hour did on 22 Oct while every other step and the lead's slots waited); a cold job of its own waits for the lead's jobs to end (§7.2) only when it would fit with the members' jobs alone. **The lead's own jobs are always held to it**, whatever the switch says (the limits probed: `nas_own`); the switch, unless `off`, holds the members' too (`nas`). Switched `off`, the members' jobs are not held and the lead's own are held by their own weights alone (`Shared::nas_room_heaviest`: a member's unheld jobs no longer keep the lead idle). The rest wait for a job to end; a target held back for over 30 minutes is a waiting line in the lead's status (`Coordinator::nas_waits`), once each (`agent::nas_wait_lines`). **The clean-up waits for a quiet NAS** (`QUIET_STEPS`: `gc`; task #451, after GC beside two depth-lo jobs held the NAS at 34 % IO wait and all three stalled): it starts only beside leased jobs weighing nothing, or, its weight measured, within the whole with them (`Limits::fits_quiet`), and the room held for an aged target; unmeasured, also only while no leased job is of a step known to read the NAS (`NAS_STEPS`) or unmeasured for it (`nas_unknown_running`). Its wait isn't noted (it holds no room) until it has been held back 24 hours since it was last granted (`QUIET_AGE`, `Shared::quiet_since`, kept in memory: a new coordinator counts afresh): then it goes as an aged job of the lead's own (`fits_own_job`, its wait noted, its room held). Running, it yields at its next safe point (each folder of its sweeps; `control::draining`, its cost line noted first, ending as paused) when a target held back for the budget `OWN_AGE` doesn't fit beside the leased jobs but would without it (`Coordinator::nas_yield`, asked by the agent each loop). **Downloads:** a job of a fetching step (steps table kind `Fetch`) counts one, capped pool-wide by the switch's `downloads <n>` (no cap without it): the lead's own fetching steps (`bld-fetch`, `rail-feeds`; none is offered to members). Not held to it: tasks |
 | a pass's answers | `crate::answers`: a lease on the NAS (`state/pool/answers.lease`, renewed every 150 s, lapsing after 10 min) around each sync; on a Mac a reader/writer lock (`answers::Local`) |
 | write-set | `agent::steps::writes`, enforced by `Out` and the merge (§7.3). Raw archives, answers and `bld-fetch`'s sources are outside the manifest, each written whole under its module's names |
 | targets per job | as many as fit a quarter hour of measured time (`coord::JOB_S`), the lead's and a member's alike; a step kept to the lead in one job |
@@ -1180,9 +1180,9 @@ path answers again. The stuck thread is left to its call and stays busy; while e
 pool is busy, a call to it fails at once, so stuck threads never pile up. Three pools, so one kind
 stuck can't starve another:
 
-- **Switches** (two threads): `state/pool/resume`, `placement`, `brokers`, this member's hold
-  (`state/pool/holds/<member>.json`), the memory guard's and
-  publishing's switches. A switch that can't be read keeps its last value.
+- **Switches** (two threads): publishing's switches, and while docs/coordination.md step 5's
+  gate is on (an older app in the pool) `state/pool/placement` and this member's hold
+  (`state/pool/holds/<member>.json`). A switch that can't be read keeps its last value.
 - **Records** (four threads): the members' progress files; the loop's reads of `state/status.json`,
   the manifest (where planning reads it through `nasread`) and the regions' extract (unreadable for
   a reason other than missing: no extract job planned); and the pool's reads, stats and listings
@@ -1465,7 +1465,7 @@ offers: programs over a folder of files, giving files back (kinds and protocol: 
 Any member's idle slot takes it (`scenic run-task`). Pages take none (#875: their asks are refused,
 workers.md §5).
 
-- **Brokers** (`crate::agent::brokers`, `crate::coord::brokers`, behind `state/pool/brokers`): each
+- **Brokers** (`crate::agent::brokers`, `crate::coord::brokers`, in the pool): each
   member's agent runs a broker for its jobs' tasks (`coord::Broker`, docs/roles.md §3.2, on the
   pool's port; jobs given its address as `SCENIC_COORD`; its answers say term 0). Its heartbeat's `broker` gives its addresses. A
   task lives as long as its job, whoever leads.
@@ -1485,65 +1485,58 @@ workers.md §5).
 
 ## 9. The pool's API
 
-Members' messages to the lead go by HTTP to its coordinator (`POST /pool/mail`), else by mailbox
-on the NAS (`state/pool/mail/<to>/<from>.json`, one writer each, read by member id), as all other
-messages between members do (§9.1). Jobs go through the lead's coordinator (`/work/*`), tasks
-through each member's broker (§8), and the worker page's lead asks through `/work/lead`. Every
-member answers on port 8090. A member that can't reach the lead keeps its jobs running and starts
-nothing new. A member's agent passes its owner's job cancels to the lead through `/work/cancel`
-(§11).
+A member's messages to the lead go by HTTP to its coordinator (`POST /pool/mail`), the lead's to a
+member in the answer to that member's next beat (`POST /pool/beat`, docs/coordination.md step 5;
+§9.1). Jobs go through the lead's coordinator (`/work/*`), tasks through each member's broker
+(§8), and the worker page's lead asks through `/work/lead`. Every member answers on port 8090. A
+member that can't reach the lead keeps its jobs running and starts nothing new. A member's agent
+passes its owner's job cancels to the lead through `/work/cancel` (§11), and its owner's other
+asks (another Mac's pause, a pool setting) through `/pool/hold` and `/pool/settings`
+(crate::coord::asks, §11).
 
-### 9.1 Members' mail by HTTP (task #642)
+### 9.1 Members' mail by HTTP (tasks #642, #878)
 
 **What goes by mail** (`crate::pool::driver::Msg`, `crate::agent::pool`): to the lead, a member's
 `Tell` (the keys of its journal entries the lead hasn't acknowledged: tens of bytes a key, sent when
 they change and again every 10 minutes, `TELL_AGAIN`), and the build page's `Cancel` and `Retry`
 passed on (rare). From the lead: `Ack` (keys and the horizon, once per merge). (The apps before
-#881's `Leads`, `Passed` and `HandTo` are read past, as any message an app doesn't know.) A pool of 3 members sends a few
-messages a minute at most; a mailbox holds its sender's last 64 (`KEPT`), each a few hundred bytes.
-Nothing is read back after a lead change: each mailbox is to one member, read by it alone, its read
-marks in its own folder (`mail.json`); a new lead never reads its predecessor's. What depends on
+#881's `Leads`, `Passed` and `HandTo` are read past, as any message an app doesn't know.) Each
+sender numbers its messages and keeps its last 64 to each member (`KEPT`, its `mail.json`); a
+recipient's read marks are in its own folder (`mail.json`), so each is taken once. What depends on
 durability: nothing the driver can't make up. Entries live in the journal, not in the message; a
 `Tell` lost is told again (every 10 minutes, and to each new lead), an `Ack` lost is asked again by
-the next `Tell`. Only the owner's asks passed on are one-shot: a mailbox kept them for the lead's
-next process; the HTTP path keeps that (below).
+the next `Tell`. Only the owner's asks passed on are one-shot: the lead's store keeps them (below).
 
-**The endpoint**: `POST /pool/mail` on the lead's coordinator, JSON
+**To the lead**: `POST /pool/mail` on its coordinator, JSON
 `{"from": <member>, "to": <member>, "msgs": [[<n>, <Msg>], …]}` (at most 64; `crate::coord::inbox`).
 - **Auth**: the build's key (the coordinator's contact token, as every agent request: no page may
   call it, a viewer refuses it). Sent only to the lead's tailnet addresses (`mail_urls`: 100.64/10
   or `.ts.net`; never `.local` or a LAN address, any device's on the network to claim), its
-  heartbeat's broker's, else its contact's. None: by mailbox. The key is the whole build's, not
-  one member's: `from` is what the post says, as a mailbox's path is (any member could write
-  another's on the NAS); the lead takes a sender it doesn't know only once its heartbeat is on the
-  NAS, and drops a post from one without, so no post makes up a member.
+  heartbeat's broker's, else its contact's. The key is the whole build's, not one member's: `from`
+  is what the post says; the lead takes a sender it doesn't know only once its heartbeat is heard,
+  and drops a post from one without, so no post makes up a member.
 - **Taken only by the member it's to**: the coordinator answers 409 unless `to` is its own member
-  (`Shared::pool_member`) and its agent gave it an inbox. A lead that changed mid-send still takes
-  mail to itself, as its mailbox would; an address that now answers as another member refuses it.
-- **Durable before the answer**: the messages are added to the inbox (`inbox.json` in the agent's
-  pool folder, on the lead's own disk, written whole and flushed) before the 200 `{"took": <n>}`.
-  A crash after the answer loses nothing: the next process reads the inbox. A write that fails is
-  an error, never a 200.
-- **Read once**: the lead's agent reads its inbox with its mailboxes, each sender's messages merged
-  and taken in its numbering's order, each number once (a message may come both ways); its marks
-  written, then what it read dropped from the inbox. A forgotten member's dropped.
-- **The member**: each message to the current lead is posted with every earlier one the lead's
-  coordinator hasn't taken (`Mail::posted`), so a mailbox message not read yet rides along too.
-  Anything but a 200 taking them all (unreachable, 404, 409, 5xx, 15 s an address gone by): the mailbox is
-  written as before, and HTTP left alone for 5 minutes (`POST_AGAIN`). A lead changed mid-send is
-  either still the member the message is to (it takes it) or refuses it (mailbox); either way the
-  driver re-tells the new lead.
+  (`Shared::pool_member`) and its agent gave it an inbox.
+- **Durable before the answer**: the messages go into the lead's store (`inbox/<member>`,
+  crate::pool::store) and are on its disk before the 200 `{"took": <n>}`; a crash after the answer
+  loses nothing. (An agent before the store kept them in `inbox.json`: taken into the store once.)
+- **Read once**: the lead's agent reads its inbox, each sender's messages taken in its numbering's
+  order, each number once; its marks written, then what it read dropped from the store.
+- **The member**: each message to the lead is posted with every earlier one its coordinator hasn't
+  taken (`Mail::posted`), while the lead answers the member's beats; anything but a 200 taking them
+  all, they stay queued and go with the next.
 
-**Mixed versions**: each heartbeat says whether its app takes and posts mail so
-(`Heartbeat::mail_http`). A new member and an old lead: the lead's heartbeat doesn't say so, the
-member never posts (and a 404 falls back too). An old member and a new lead: the lead reads its
-mailboxes as ever. Messages from the lead to members stay by mailbox.
+**From the lead**: its agent queues each member's messages (its `mail.json`'s) with its
+coordinator, and each beat's answer carries those after the number the member's beat said it took
+(`took`), which the member's beat says again once its marks are on its disk.
 
-Planned (a later, gated step): **retiring the mailbox.** Once every member's heartbeat in touch says
-`mail_http`, and has for a day, a lead stops reading mailboxes (as #640 and #644 gate on the
-heartbeats); a member then keeps its messages queued while the lead is unreachable rather than
-writing a mailbox. The lead's messages to members go to the members' brokers the same way. Also
-planned: `/pool/status` in place of reading heartbeats for the view.
+**Mixed versions** (the rollout gate, planned for deletion one release after every member says
+`asks` for a day): a member's beat says `asks`, and so does a lead's answer. A lead that doesn't
+(an older app) still reads mailboxes on the NAS (`state/pool/mail/<to>/<from>.json`, one writer
+each, read by member id): a member posts to it while it answers and its heartbeat says
+`mail_http`, else, and when the post fails, writes its mailbox. A lead writes a member's mailbox
+too while that member doesn't say `asks`; mailboxes are read while a member heard doesn't
+(`Answer::asks_on_nas`).
 
 ## 10. Seeing the pool
 
@@ -2079,12 +2072,13 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   --here`, `scenic pause <member>` / `scenic resume <member>` (host name or member id) from another
   Mac, or the menu bar's "Pause This Mac" / "Resume This Mac". The ask goes to this Mac's agent (a
   file in its folder, `hold-request.json`; `scenic pause` prints the agent's answer). A Mac's hold
-  is kept in its agent's folder (`hold.json`, so a restart keeps it) and on the NAS
-  (`state/pool/holds/<member>.json`), where another Mac's ask writes it; each member reads its own
-  every 30 s on the switches' readers, the later setting winning: a Mac's own ask is always later
-  than its setting so far, and another Mac's later than the file it replaces, so the Macs' clocks
-  don't matter, except that a remote ask may lose to a Mac's own ask not yet written there (within
-  a loop). A member whose app is older than the asking Mac's is refused ("too old to pause alone"). A paused Mac's running jobs stop
+  is kept in its agent's folder (`hold.json`, so a restart keeps it) and by the lead
+  (`/pool/hold`, crate::coord::asks, docs/coordination.md step 5): another Mac's ask goes to the
+  lead with that Mac's next beat (queued on its disk until the lead takes it), a Mac's own is told
+  the lead once it's the later, and each member has its own from the answer to its next beat, the
+  later setting winning (a Mac's own ask is always later than its setting so far). While an older
+  app is in the pool (the step's gate) the hold is also written to and read from the NAS
+  (`state/pool/holds/<member>.json`, every 30 s on the switches' readers). A member whose app is older than the asking Mac's is refused ("too old to pause alone"). A paused Mac's running jobs stop
   at their next safe point and are given back (as the build's pause stops them, frozen past the
   grace), it asks for no work and starts none (`Conds::held`), and a lead paused keeps the lead,
   granting the others' work, and runs none of its own.
@@ -2122,15 +2116,19 @@ A depth, terrain-hi or terrain-deep job resumes its target at the block after th
 finished, from a log in its scratch folder on its Mac (§7.2, Resuming; crate::resume_log), with
 `resume` on.
 
-Still behind switches under `state/pool/` (a file; off while missing unless noted):
-`resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2),
-`memory-guard` (on while missing). A new switch is made only once every
-member's heartbeat shows the app that has it. A role is read as the agent starts (docs/roles.md §1) and is no longer
+Always on since #878 step 5: resuming (§7.2, §7.4), brokers (§8) and the memory guard (their
+switch files, `state/pool/resume`, `brokers` and `memory-guard`, stay on the NAS while an older app
+reads them). The pool's settings are the lead's (`/pool/settings`, crate::coord::asks; `scenic pool
+set`): `placement` (§7.2; off while not set), `nas-budget` and `nas-target`; their switch files
+under `state/pool/` are written and read beside only while an older app may (docs/coordination.md
+step 5's gate). A new setting is made only once every member's heartbeat shows the app that has
+it. A role is read as the agent starts (docs/roles.md §1) and is no longer
 switched: `state/pool/slots` isn't read, but stays `on` on the NAS while an older app may read it
 (one reading it missing or `off` restarts to change part). The old files `state/pool/enabled` and
 `state/pool/budgets` are no longer read either.
 
-Planned: pool coordination by HTTP on the lead (docs/coordination.md, #878), which also retires the mailbox (§9.1); resuming the terrain's and the slope's z6 tiles (after #639). Packing a terrain z6 tile's fetched raw
+Planned: the rest of pool coordination by HTTP on the lead (docs/coordination.md, #878), the
+mailboxes' gate dropped with it (§9.1); resuming the terrain's and the slope's z6 tiles (after #639). Packing a terrain z6 tile's fetched raw
 tiles (`pack_raw_with`) stays inside that z6 tile's job.
 
 ## 13. Testing

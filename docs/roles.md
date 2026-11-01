@@ -202,7 +202,10 @@ Each step ships alone and keeps the build running; each ends with its tests.
    lead's files read on the NAS: `nas_lead_files`, `refresh_pause`, `by_lead`).
 5. **The menu without the NAS** (§3.4), after #878 step 3: the beat's answer saved as
    `lead-view.json`; `scenic menu` reads it. Tests: `menu_reads_the_lead_from_the_beat`,
-   `menu_works_with_the_nas_hung` (slow-NAS fake).
+   `menu_works_with_the_nas_hung` (slow-NAS fake). From #878 step 5 it has: the menu's pause asks go to
+   the agent and on to the lead (`/pool/hold`), and the pool's settings as the agent last had them
+   (`pool-settings.json`); it needs the answer's few fields added (`held::Answer`: the pause, the
+   build's one-line state, `all_new`, the lead's contact) and the agent to save it.
 6. **Leftovers** (§3.5). Tests: `member_leftovers_names_every_lead_file`, removal by age.
 7. **Docs**: macs.md (Devices: roles), agent-parts.md (the member's parts), pool.md §10 (the page
    is the lead's), this doc folded in.

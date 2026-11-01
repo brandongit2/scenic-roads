@@ -54,16 +54,13 @@ pub(super) struct Inputs {
     pub total_mb: u64,
     pub jobs_limit: u64,
     pub build_room: u64,
-    pub guard_on: Option<bool>,
     pub guard_backoff: BTreeMap<String, (u64, String)>,
     pub floor_short: Option<(u64, u64, Instant)>,
     pub proxy_up: bool,
     pub pause: Option<crate::control::Pause>,
     pub pool_seen: Option<PoolView>,
     pub member_id: Option<String>,
-    pub resume: bool,
     pub placement: bool,
-    pub brokers: bool,
     pub pooled: bool,
     pub resume_now: u64,
     pub ramp_held: bool,
@@ -765,16 +762,12 @@ impl Planner {
         self.inp.build_room
     }
 
-    pub(super) fn guard_stops(&self) -> bool {
-        self.inp.guard_on.unwrap_or(memguard::DEFAULT)
-    }
-
     pub(super) fn job_slots(&self) -> usize {
         lead_slots(false, self.inp.ramp_held, &self.inp.mem.ramp)
     }
 
     pub(super) fn resume_on(&self) -> bool {
-        self.inp.resume && self.inp.pooled
+        self.inp.pooled
     }
 
     pub(super) fn latest_pass(&self, root: &NasRoot) -> Option<String> {
@@ -866,7 +859,7 @@ impl Planner {
     pub(super) fn guard_holds(&self, works: &[build::Work]) -> GuardHolds {
         let mut h = GuardHolds::default();
         let limit = self.jobs_limit(self.total_mb());
-        let Some(c) = self.coord.as_ref().filter(|_| self.guard_stops() && limit > 0) else { return h };
+        let Some(c) = self.coord.as_ref().filter(|_| limit > 0) else { return h };
         let largest = c.largest_limit().unwrap_or(0).max(limit);
         let gb = |mb: u64| mb as f64 / 1024.0;
         for w in works {
@@ -1019,7 +1012,7 @@ impl Planner {
         self.coord.as_ref().map(|c| c.lease_gen()).hash(&mut h);
         self.newer_app().hash(&mut h);
         // (The pool's switches as this agent holds them.)
-        (self.inp.resume, self.inp.placement, self.inp.brokers, self.inp.guard_on).hash(&mut h);
+        self.inp.placement.hash(&mut h);
         // (Never 0: that's "not read".)
         h.finish() | 1
     }

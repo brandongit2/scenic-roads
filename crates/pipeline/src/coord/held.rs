@@ -51,6 +51,10 @@ pub struct Beat {
     /// Its agent's status (crate::agent::Status), its plan's parts left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<serde_json::Value>,
+    /// The number up to which it took the lead's messages to it (speaking `beats::ASKS`): those
+    /// the lead drops; the answer carries the rest.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub took: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -76,6 +80,20 @@ pub struct Answer {
     /// The other members' heartbeats as the lead hears them, its own among them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<crate::agent::pool::Heartbeat>,
+    /// The lead's messages to this member after the number its beat said it took (`Beat::took`),
+    /// each numbered (crate::pool::driver::Msg as JSON; docs/coordination.md step 5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub msgs: Vec<(u64, serde_json::Value)>,
+    /// This member's pause as the lead keeps it (`/pool/hold`: another Mac's, or its own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<crate::control::HoldState>,
+    /// The settings' generation (`/pool/settings`): a member fetches them when it moves.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub settings_gen: u64,
+    /// A member heard doesn't say `beats::ASKS` (an older app): the NAS's mailboxes, holds and
+    /// switch files go on beside (the rollout gate).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub asks_on_nas: bool,
 }
 
 /// The members whose leases go by their word now: those speaking it, heard within
@@ -103,11 +121,20 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         if let Some(h) = b.heartbeat.clone().filter(|_| b.speaks.iter().any(|w| w == super::beats::SPEAKS)) {
             let id = h.pool.member.clone();
             s.keep.beat(&id, &h, b.status.as_ref(), unix);
-            beats.heard(h, b.status.clone(), unix);
+            beats.heard(h, b.speaks.clone(), b.status.clone(), unix);
             a.members = beats.members(unix, &id);
+            if b.speaks.iter().any(|w| w == super::beats::ASKS) {
+                if let Some(i) = s.inbox.as_ref() {
+                    a.msgs = i.to(&id, b.took);
+                }
+                a.hold = s.asks.holds.get(&id).cloned();
+            }
         }
-        a.speaks = vec![super::beats::SPEAKS.to_string(), super::beats::PAGE.to_string()];
+        a.speaks = [super::beats::SPEAKS, super::beats::PAGE, super::beats::ASKS].map(str::to_string).to_vec();
         a.nas_too = beats.nas_too();
+        a.settings_gen = s.asks.settings.gen;
+        a.asks_on_nas = asks_on_nas(s, &beats, unix);
+        beats.set_asks_on_nas(a.asks_on_nas);
     }
     if b.speaks.iter().any(|w| w == SPEAKS) {
         // (As of when its list was made: a lease granted since isn't in it.)
@@ -118,6 +145,14 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         a.released = released;
     }
     a
+}
+
+/// Whether a member heard within `beats::FORGET_S` of `unix` doesn't say `beats::ASKS`, or one
+/// on an older app heartbeats on the NAS alone (`Beats::nas_too`): the asks' NAS files go on.
+pub fn asks_on_nas(s: &Shared, beats: &super::beats::Beats, unix: u64) -> bool {
+    let since = unix.saturating_sub(super::beats::FORGET_S);
+    beats.nas_too()
+        || s.keep.members().values().any(|h| h.at > since && !h.speaks.iter().any(|w| w == super::beats::ASKS))
 }
 
 /// The owner's release of `member`'s jobs' leases (`scenic pool release`: that Mac is gone for

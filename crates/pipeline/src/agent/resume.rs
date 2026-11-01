@@ -1,6 +1,6 @@
 //! Resuming, and planning from the records alone (docs/pool.md §7.2 Resuming, §7.4; §12 phase 4's
-//! eighth batch), behind the switch `state/pool/resume` (`SWITCH`; off while missing or `off` in
-//! it: the agent as it was, exactly).
+//! eighth batch), in the pool (its switch, `state/pool/resume`, deleted with task #878 step 5: on
+//! everywhere; an older app still reads its file).
 //!
 //! - **A job's progress on its Mac's disk, named on the NAS.** A resumable job (`RESUMABLE`: the
 //!   OSM pass, whose stages its scratch folder marks) noted as it starts and as it ends in its
@@ -33,18 +33,6 @@ use crate::pool::journal::Entry;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
-/// The switch (`on` in it, or present; `off` in it, or missing: off, the agent as it was).
-pub const SWITCH: &str = "state/pool/resume";
-
-/// Whether resuming is on, as the switch at `root` says; None when it can't be read now.
-pub fn on(root: &store::nasfs::NasRoot) -> Option<bool> {
-    match super::nasread::read_switch(&root.join(SWITCH)) {
-        Ok(s) => Some(s.trim() != "off"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
-        Err(_) => None,
-    }
-}
 
 /// The members' progress files' folder.
 pub const DIR: &str = "state/pool/progress";
@@ -424,12 +412,6 @@ mod tests {
             read(&store::nasfs::NasRoot::local_for_test(r), "m-x").is_err(),
             "a file that isn't one is an error, not none"
         );
-        // The switch.
-        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(r)), Some(false));
-        std::fs::write(r.join(SWITCH), "").unwrap();
-        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(r)), Some(true));
-        std::fs::write(r.join(SWITCH), "off\n").unwrap();
-        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(r)), Some(false));
     }
 
     #[test]

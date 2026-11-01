@@ -161,14 +161,14 @@ pub enum Cmd {
         places: Places,
     },
     /// The pool's NAS load target: the busiest disk's busy share the NAS budget grants up to (by
-    /// default 85, 30 to 95), kept on the NAS for the lead; off: the default; with none, how it
-    /// stands
+    /// default 85, 30 to 95), kept by the lead (`scenic pool set nas-target`); off: the default;
+    /// with none, how it stands
     NasTarget {
         /// The target in percent, or off
         #[arg(value_name = "PERCENT|off")]
         what: Option<String>,
         #[command(flatten)]
-        root: Root,
+        home: Home,
     },
     /// The NAS reserve: the free space the NAS keeps past what bld-fetch fetches there, pool-wide,
     /// kept on the NAS; off: none; with none, how it stands
@@ -291,6 +291,17 @@ pub struct Pool {
 pub enum PoolCmd {
     /// How the pool stands (the same as `scenic pool`)
     Status,
+    /// The pool's settings, kept by the lead (docs/coordination.md step 5): one set, asked of this
+    /// Mac's agent, which sends it to the lead; with none, how they stand as it last had them.
+    /// `placement on|off`, `nas-budget <its text>|off`, `nas-target <percent>|off`
+    Set {
+        /// The setting: placement, nas-budget or nas-target
+        name: Option<String>,
+        /// Its value; off: its default (placement off)
+        value: Option<String>,
+        #[command(flatten)]
+        home: Home,
+    },
     /// A member's leases released (that Mac is gone for good: its targets go to others), or with a
     /// job, that job's progress on its Mac given up (the lead runs it wherever it fits from then)
     Release {

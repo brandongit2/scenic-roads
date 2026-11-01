@@ -38,6 +38,13 @@ pub const VIEW: &str = "view";
 /// or none answering) it shows its own (crate::coord::memberpage).
 pub const PAGE: &str = "page";
 
+/// What a member's beat says it speaks, and a lead's answer that it serves (docs/coordination.md
+/// step 5, crate::coord::asks): the lead's messages, this member's hold and the settings'
+/// generation in the answer; its own mail, holds and settings by HTTP alone. While the lead doesn't
+/// say it, or says a member heard doesn't (`asks_on_nas`), the NAS's mailboxes, holds and switch
+/// files go on beside (`Beats::asks_on_nas`).
+pub const ASKS: &str = "asks";
+
 /// A lead whose last answer is older than this (s) is taken for not reachable by a member's page:
 /// three of its beats (crate::agent::beat::EVERY, 10 s) missed.
 pub const PAGE_AWAY_S: u64 = 35;
@@ -56,6 +63,8 @@ pub struct Heard {
     pub at: u64,
     /// Beats heard from it since this process started.
     pub n: u64,
+    /// What its beat said it speaks.
+    pub speaks: Vec<String>,
 }
 
 struct Inner {
@@ -66,6 +75,20 @@ struct Inner {
     released: Vec<u64>,
     /// When the lead last answered (unix s), and whether that answer said `PAGE`.
     lead_answered: Option<(u64, bool)>,
+    /// The asks (`ASKS`): whether the lead serves them, and whether their NAS files go on.
+    lead_asks: bool,
+    asks_on_nas: bool,
+    /// On a member: the lead's messages to it as its last answer carried them, the number up to
+    /// which its pool side took them (its beat says it), its hold as the lead keeps it, the
+    /// settings as last fetched and the generation the lead last said.
+    from_lead: Vec<(u64, serde_json::Value)>,
+    took: u64,
+    hold: Option<crate::control::HoldState>,
+    settings: Option<super::asks::Settings>,
+    settings_gen: u64,
+    /// Its asks not yet answered 200 (`ask`), kept at `queue_at` (crate::coord::asks::QUEUE).
+    queue: Vec<super::asks::Ask>,
+    queue_at: Option<std::path::PathBuf>,
 }
 
 /// The registry, shared by a member's pool side, its agent's beat and (on the lead) its coordinator.
@@ -90,17 +113,31 @@ impl Default for Beats {
                 lead_takes: false,
                 released: Vec::new(),
                 lead_answered: None,
+                lead_asks: false,
+                asks_on_nas: true,
+                from_lead: Vec::new(),
+                took: 0,
+                hold: None,
+                settings: None,
+                settings_gen: 0,
+                queue: Vec::new(),
+                queue_at: None,
             }),
         }
     }
 }
 
 impl Beats {
-    /// Member `h`'s beat heard at `at`, with its status.
-    pub fn heard(&self, h: Heartbeat, status: Option<serde_json::Value>, at: u64) {
+    /// Member `h`'s beat heard at `at`, speaking `speaks`, with its status.
+    pub fn heard(&self, h: Heartbeat, speaks: Vec<String>, status: Option<serde_json::Value>, at: u64) {
         let mut g = self.inner.lock().unwrap();
         let n = g.heard.get(&h.pool.member).map_or(0, |x| x.n) + 1;
-        g.heard.insert(h.pool.member.clone(), Heard { beat: h, status, at, n });
+        g.heard.insert(h.pool.member.clone(), Heard { beat: h, status, at, n, speaks });
+    }
+
+    /// Whether member `id`'s last beat said it speaks `what`.
+    pub fn speaks(&self, id: &str, what: &str) -> bool {
+        self.inner.lock().unwrap().heard.get(id).is_some_and(|x| x.speaks.iter().any(|w| w == what))
     }
 
     /// The members heard within `FORGET_S` of `now`, the others dropped.
@@ -166,10 +203,113 @@ impl Beats {
             let before = std::mem::take(&mut g.heard);
             for h in &a.members {
                 let n = before.get(&h.pool.member).map_or(0, |x| x.n) + 1;
-                g.heard.insert(h.pool.member.clone(), Heard { beat: h.clone(), status: None, at: now, n });
+                g.heard.insert(
+                    h.pool.member.clone(),
+                    Heard { beat: h.clone(), status: None, at: now, n, speaks: Vec::new() },
+                );
             }
         }
         g.released.extend(a.released.iter().copied());
+        g.lead_asks = a.speaks.iter().any(|w| w == ASKS);
+        g.asks_on_nas = !g.lead_asks || a.asks_on_nas;
+        if g.lead_asks {
+            g.from_lead = a.msgs.clone();
+            g.hold = a.hold.clone();
+            g.settings_gen = a.settings_gen;
+        }
+    }
+
+    /// Whether the asks' NAS files go on (the rollout gate, crate::coord::asks): on a member, while
+    /// its lead doesn't serve `ASKS` or says a member heard doesn't speak it; on the lead, while a
+    /// member heard doesn't (`held::asks_on_nas`, said at each beat).
+    pub fn asks_on_nas(&self) -> bool {
+        self.inner.lock().unwrap().asks_on_nas
+    }
+
+    /// The lead's word on the gate (`held::asks_on_nas`; on the lead, which serves `ASKS`).
+    pub fn set_asks_on_nas(&self, on: bool) {
+        let mut g = self.inner.lock().unwrap();
+        g.lead_asks = true;
+        g.asks_on_nas = on;
+    }
+
+    /// Whether the lead serves `ASKS` (its last answer said so).
+    pub fn lead_asks(&self) -> bool {
+        self.inner.lock().unwrap().lead_asks
+    }
+
+    /// Whether the lead answered a beat within `PAGE_AWAY_S` of `now`: worth posting to now.
+    pub fn lead_answering(&self, now: u64) -> bool {
+        self.inner.lock().unwrap().lead_answered.is_some_and(|(at, _)| now.saturating_sub(at) < PAGE_AWAY_S)
+    }
+
+    /// The lead's messages to this member as its last answer carried them, after those taken.
+    pub fn from_lead(&self) -> Vec<(u64, serde_json::Value)> {
+        let g = self.inner.lock().unwrap();
+        g.from_lead.iter().filter(|(n, _)| *n > g.took).cloned().collect()
+    }
+
+    /// The number up to which this member took the lead's messages (its pool side's mark, on its
+    /// disk): its beat says it, and the lead drops them.
+    pub fn set_took(&self, n: u64) {
+        self.inner.lock().unwrap().took = n;
+    }
+
+    pub fn took(&self) -> u64 {
+        self.inner.lock().unwrap().took
+    }
+
+    /// This member's hold as the lead keeps it (its last answer's).
+    pub fn lead_hold(&self) -> Option<crate::control::HoldState> {
+        self.inner.lock().unwrap().hold.clone()
+    }
+
+    /// The settings as last fetched, while the lead serves them.
+    pub fn settings(&self) -> Option<super::asks::Settings> {
+        let g = self.inner.lock().unwrap();
+        g.settings.clone().filter(|_| g.lead_asks)
+    }
+
+    /// Whether the settings fetched are older than the lead's last word (or none fetched yet).
+    pub fn settings_stale(&self) -> bool {
+        let g = self.inner.lock().unwrap();
+        g.lead_asks && g.settings.as_ref().is_none_or(|s| s.gen != g.settings_gen)
+    }
+
+    pub fn set_settings(&self, s: super::asks::Settings) {
+        self.inner.lock().unwrap().settings = Some(s);
+    }
+
+    /// Its asks kept at `path` from now (those an earlier process left read back first).
+    pub fn keep_asks(&self, path: &std::path::Path) {
+        let mut left: Vec<super::asks::Ask> =
+            std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut g = self.inner.lock().unwrap();
+        left.append(&mut g.queue);
+        g.queue = left;
+        g.queue_at = Some(path.to_path_buf());
+        save_queue(&g);
+    }
+
+    /// Queues ask `a` for the lead (on disk, when kept, before it returns).
+    pub fn ask(&self, a: super::asks::Ask) {
+        let mut g = self.inner.lock().unwrap();
+        g.queue.push(a);
+        save_queue(&g);
+    }
+
+    /// The asks queued, in order.
+    pub fn asks(&self) -> Vec<super::asks::Ask> {
+        self.inner.lock().unwrap().queue.clone()
+    }
+
+    /// Ask `a` answered 200: off the queue.
+    pub fn asked(&self, a: &super::asks::Ask) {
+        let mut g = self.inner.lock().unwrap();
+        if let Some(i) = g.queue.iter().position(|x| x == a) {
+            g.queue.remove(i);
+            save_queue(&g);
+        }
     }
 
     /// Whether the lead's last answer said it takes the beat (and so reads `held_age_s`).
@@ -194,11 +334,20 @@ impl Beats {
         let mut g = self.inner.lock().unwrap();
         g.lead_takes = false;
         g.lead_answered = None;
+        (g.lead_asks, g.asks_on_nas) = (false, true);
     }
 
     /// The leases the lead said this member doesn't hold, since last taken.
     pub fn take_released(&self) -> Vec<u64> {
         std::mem::take(&mut self.inner.lock().unwrap().released)
+    }
+}
+
+fn save_queue(g: &Inner) {
+    let Some(p) = g.queue_at.as_ref() else { return };
+    let w = serde_json::to_vec(&g.queue).map_err(anyhow::Error::from).and_then(|b| store::whole::write(p, &b));
+    if let Err(e) = w {
+        eprintln!("pool: its asks of the lead: {e:#}");
     }
 }
 
@@ -229,12 +378,12 @@ mod tests {
     fn the_lead_answers_each_member_with_the_others() {
         let b = Beats::default();
         b.set_own(hb("m-lead", 100, true));
-        b.heard(hb("m-a", 100, true), None, 100);
-        b.heard(hb("m-b", 100, true), None, 100);
+        b.heard(hb("m-a", 100, true), Vec::new(), None, 100);
+        b.heard(hb("m-b", 100, true), Vec::new(), None, 100);
         let ids = |v: Vec<Heartbeat>| v.into_iter().map(|h| h.pool.member).collect::<Vec<_>>();
         assert_eq!(ids(b.members(110, "m-a")), ["m-b", "m-lead"]);
         assert!(b.get("m-a", 110).is_some() && b.get("m-lead", 110).is_some());
-        b.heard(hb("m-b", 100 + FORGET_S, true), None, 100 + FORGET_S);
+        b.heard(hb("m-b", 100 + FORGET_S, true), Vec::new(), None, 100 + FORGET_S);
         assert_eq!(ids(b.members(100 + FORGET_S, "m-x")), ["m-b", "m-lead"], "m-a forgotten");
         assert!(b.get("m-a", 100 + FORGET_S).is_none());
     }
