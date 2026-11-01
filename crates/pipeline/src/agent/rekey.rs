@@ -211,6 +211,8 @@ pub fn scheme_2(
 ) -> BTreeMap<&'static str, Scheme2Step> {
     use super::steps;
     let mut out = BTreeMap::new();
+    // (Terrain's and slope's targets worked out once for their six steps: build::step_keys_kept.)
+    let tt = std::cell::OnceCell::new();
     for row in steps::TABLE.iter().filter(|r| steps::derived(r.name) && which(r.name)) {
         let step = row.name;
         let mut s = Scheme2Step::default();
@@ -221,7 +223,8 @@ pub fn scheme_2(
         if targets.is_empty() {
             continue;
         }
-        let now: BTreeMap<String, String> = super::build::step_keys(step, x).unwrap_or_default().into_iter().collect();
+        let now: BTreeMap<String, String> =
+            super::build::step_keys_kept(step, x, &tt).unwrap_or_default().into_iter().collect();
         let (current, rest): (Vec<_>, Vec<_>) = targets.into_iter().partition(|(t, k)| now.get(t) == Some(k));
         s.current = current.len();
         if !rest.is_empty() {
@@ -399,7 +402,8 @@ pub fn as_read_of(
 ) -> Rekeyed {
     let r = rekey(keys, x.cov, x.m, x.tiles, times);
     if x.scheme == 2 {
-        scheme_2(keys, x, which, &scheme1::keys);
+        let tt = std::cell::OnceCell::new();
+        scheme_2(keys, x, which, &|s, x| super::build::step_keys_kept(s, &x.scheme_1(), &tt));
     }
     r
 }
@@ -562,6 +566,13 @@ mod tests {
                 }
             }
             assert_eq!(r.get(s).map(|c| c.stale), Some(1), "{}: {r:?}", f.name);
+            // (No step's keys name a target whose key can't be worked out: build::step_keys.)
+            for row in steps::TABLE.iter().filter(|r| steps::derived(r.name)) {
+                for x in [&x, &x.scheme_1()] {
+                    let ks = build::step_keys(row.name, x).unwrap_or_default();
+                    assert!(ks.iter().all(|(_, k)| k != build::UNKNOWN), "{} {}", f.name, row.name);
+                }
+            }
             let again = scheme_2(&mut keys.clone(), &x, &|_| true, &scheme1::keys);
             assert!(again.values().all(|c| c.rekeyed == 0), "{}: {again:?}", f.name);
         }

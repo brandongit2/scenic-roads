@@ -345,7 +345,22 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
        `steps::key`'s, a "none" target's `steps::none_key`), `the_pass_steps_read_no_coverage`;
        the tests that keyed targets by hand key them by `steps::key`, `none_key` or the
        planner's enumerations.
-     - Measured after the flip (`scenic-build rekey-check`, see 3d): the same records go.
+     - `build::step_keys` leaves out every target whose key can't be worked out now (`UNKNOWN`),
+       so no record is re-keyed to it; terrain's and slope's targets are worked out once for
+       their six steps per re-keying (`step_keys_kept`), and the 3D buildings' coverage shapes
+       are kept by the coverage's version (`build::bld_tiles`): every target's key lines ask.
+       Measured on the NAS's state (1 Nov, the M4, read only): a re-keying 30–70 s (13–15 min
+       before these two), a checklist 17 s (18 min before).
+     - Measured after the flip (`scenic-build rekey-check --unknown n`, 1 Nov, with main's
+       planner run on the same records at once): built again, terrain-water 1, pyramids-fill 20,
+       terrain-hi 1,789 and terrain-deep ~6,230 (their keys unknown until that terrain-water run,
+       then #832's cut: #862's rebuild), 52 unit z6 tiles and 7 terrain-lo assemblies more than
+       main (their keys name the elevation datasets meeting them, whose regions' cut #832 names
+       by what's in the box, not by the outlines' files); every other record counted "rebuilt" is
+       stale under main's planner too, target for target. "Unknown" outside terrain (slope-hi 537,
+       trees 457, bldtiles 455, bldprep 332, unit 6, the z3 tiles' 3–6) and terrain-hi 537 and
+       terrain-deep ~4,450 of the unknown are records of targets neither scheme (nor main) lists
+       now: kept as they are, built by neither.
 4. The scheme-1 rekey adapter (`rekey::scheme1`, `KeyCtx::scheme`, the enumerations' scheme-1
    keys and every `*_key` they call) is deleted once no record is scheme 1. Records re-keyed in
    memory are saved under their scheme-2 keys only by their targets' next runs, so that needs

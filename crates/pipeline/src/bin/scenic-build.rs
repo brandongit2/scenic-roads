@@ -141,7 +141,7 @@
 //!                                (pipeline::agent::rekey) would do now: each z3 tile re-keyed, or
 //!                                made again as z6 tiles and why, the work left and its time by the
 //!                                last runs (`f`: the coordinator's costs.json). Reads only
-//!   rekey-check [--pass d] [--stale n]  what the switch to key scheme 2 (pipeline::agent::rekey::
+//!   rekey-check [--pass d] [--stale n] [--unknown n]  what the switch to key scheme 2 (pipeline::agent::rekey::
 //!                                scheme_2) does to the records now: per step, those re-keyed, those
 //!                                built again (`n` of them listed) and those unknown. Reads only
 //!
@@ -2751,6 +2751,7 @@ fn rekey_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
     let t0 = std::time::Instant::now();
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
     let list: usize = opt(args, "--stale").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let unknowns: usize = opt(args, "--unknown").and_then(|s| s.parse().ok()).unwrap_or(0);
     let pipeline::pool::records::Brief { manifest: m, keys, .. } = pipeline::out::brief_now(root)?;
     let a = pipeline::inputs::open(root, &m, pipeline::inputs::regions::UNIT)?.context("no regions version")?;
     let cov = pipeline::coverage::Coverage::accepted(root, &a, None)?;
@@ -2762,16 +2763,50 @@ fn rekey_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
     let mut done = keys;
     rekey::rekey(&mut done, &cov, &m, &tiles, &rekey::FileTimes::new(root));
     let x = build::KeyCtx::new(&cov, &date, &m, &inputs, reach.as_ref(), &tiles);
-    let before = done.clone();
+    let mut before = done.clone();
+    let olds: std::cell::RefCell<BTreeMap<String, BTreeMap<String, String>>> = Default::default();
+    let tt = std::cell::OnceCell::new();
     let r = rekey::scheme_2(&mut done, &x, &|_| true, &|s, x| {
         let t = std::time::Instant::now();
-        let k = rekey::scheme1::keys(s, x);
+        let k = build::step_keys_kept(s, &x.scheme_1(), &tt);
         eprintln!("rekey-check: {s}'s scheme-1 keys ({:.0} s)", t.elapsed().as_secs_f64());
+        if unknowns > 0 {
+            olds.borrow_mut().insert(s.to_string(), k.clone().unwrap_or_default().into_iter().collect());
+        }
         k
     });
     println!("{:<16} {:>9} {:>9} {:>9} {:>9}", "step", "current", "re-keyed", "rebuilt", "unknown");
     for (s, c) in &r {
         println!("{s:<16} {:>9} {:>9} {:>9} {:>9}", c.current, c.rekeyed, c.stale, c.unknown);
+    }
+    // (`--unknown n`: n of each step's unknown records with why: no scheme-1 target now, or current
+    // under scheme 1 with a scheme-2 key that can't be worked out now, and the reads that can't.)
+    for (s, _) in r.iter().filter(|(_, c)| unknowns > 0 && c.unknown > 0) {
+        let old = olds.borrow().get(*s).cloned().unwrap_or_default();
+        let now: BTreeMap<String, String> = build::step_keys(s, &x).unwrap_or_default().into_iter().collect();
+        let recs: Vec<(String, String)> = match before.per_target(s) {
+            Some(m) => m.iter().map(|(t, k)| (t.clone(), k.clone())).collect(),
+            None => before.lo.get(*s).map(|k| (s.to_string(), k.clone())).into_iter().collect(),
+        };
+        let mut n = 0;
+        for (t, k) in recs {
+            let why = match (old.get(&t), now.get(&t)) {
+                (None, None) => "no target under either scheme".to_string(),
+                (None, Some(_)) => "no scheme-1 target, a scheme-2 one".to_string(),
+                (Some(o), None) if *o == k => {
+                    format!(
+                        "current under scheme 1, unknown under 2: {:?}",
+                        pipeline::agent::steps::unknown_reads(s, &t, &x)
+                    )
+                }
+                _ => continue,
+            };
+            println!("  unknown: {s} {t}: {why}");
+            n += 1;
+            if n == unknowns {
+                break;
+            }
+        }
     }
     if list > 0 {
         for (s, c) in r.iter().filter(|(_, c)| c.stale > 0) {

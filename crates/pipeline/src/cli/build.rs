@@ -109,7 +109,7 @@ const STEPS: &[Step] = &[
     s("geoid-offsets", "--sources <dir> --from <reference> --at <lon,lat>[;…] [--store <dir>]", "the offsets the elevation step adds to heights in a reference to bring them to EGM2008, by the geoid declarations in a folder. Reads only", &[], &["--sources", "--from", "--at", "--store"], 0),
     s("terrain-restore-check", "--old <term>[,<term>…] [--sample n] [--ask prefix]", "the terrain-hi and terrain-deep targets recorded under an older term's inputs whose runs would sample the same now (agent::restore): how many could be restored, and why the rest stay queued. Reads only (--ask: the restores written to <prefix>.<step>.json, for scenic redo --restore)", &[], &["--old", "--sample", "--ask"], 0),
     s("p5-check", "trees [--pass d] [--costs f]", "what switching tree cover to z6 tiles and assemblies does now. Reads only", &[], &["--pass", "--costs"], 1),
-    s("rekey-check", "[--pass d] [--stale n]", "what the switch to key scheme 2 (agent::rekey::scheme_2) does to the records now: per step, those re-keyed and those built again. Reads only", &[], &["--pass", "--stale"], 0),
+    s("rekey-check", "[--pass d] [--stale n] [--unknown n]", "what the switch to key scheme 2 (agent::rekey::scheme_2) does to the records now: per step, those re-keyed, those built again and those unknown (`--unknown n`: n of each, with why). Reads only", &[], &["--pass", "--stale", "--unknown"], 0),
 ];
 
 /// Values that may start with `-`: a west or south coordinate (`--at -73.5,45.5`, regions-fixture's

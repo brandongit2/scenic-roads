@@ -437,6 +437,27 @@ pub fn key_lines(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<Vec<St
     Some(lines)
 }
 
+/// The reads of target `t` of `step` whose lines can't be worked out now (`key_lines` None), by
+/// what they read: what its scheme-2 key waits for.
+pub fn unknown_reads(step: &str, t: &str, x: &super::build::KeyCtx) -> Vec<String> {
+    let mut out = Vec::new();
+    for r in row(step).map_or(&[][..], |r| r.reads) {
+        let (what, known) = match *r {
+            Read::Targets { step: s, grain: Grain::Read(f) | Grain::Tiles(f), .. } => {
+                (format!("t {s}"), f(t, x).is_some())
+            }
+            Read::Mids { step: s, named, .. } => (format!("mid {s}"), named(t, x).is_some()),
+            Read::Whole { step: s, grain: Grain::Read(f) | Grain::Tiles(f) } => (format!("w {s}"), f(t, x).is_some()),
+            Read::Input { name, of } => (format!("in {name}"), of(t, x).is_some()),
+            _ => continue,
+        };
+        if !known {
+            out.push(what);
+        }
+    }
+    out
+}
+
 /// Target `u` of `step`'s outputs as a key names them: `<logical>=<content>` per one in the
 /// manifest `m` (`output_names`), `-` with none.
 fn outputs_of(step: &str, u: &str, m: &std::collections::BTreeMap<String, String>) -> impl Iterator<Item = String> {

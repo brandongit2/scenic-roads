@@ -2909,14 +2909,29 @@ pub fn key_now_opt(step: &str, t: &str, k1: Option<String>, x: &KeyCtx) -> Optio
 /// Every target of `step` with its key under `x.scheme`, as the planner's enumerations key them
 /// (`key_now`; a target whose key can't be worked out now left out); None for a step whose key
 /// isn't derived (`steps::derived`). Scheme 1's (`KeyCtx::scheme_1`) is
-/// crate::agent::rekey::scheme1's.
-
+/// crate::agent::rekey::scheme1's. (Every family's `UNKNOWN` left out here, not by each: a record
+/// re-keyed to it would be current while its key can't be worked out.)
 pub fn step_keys(step: &str, x: &KeyCtx) -> Option<Vec<(String, String)>> {
+    step_keys_kept(step, x, &Default::default())
+}
+
+/// `step_keys`, terrain's and slope's targets worked out once for all six of their steps in `tt`
+/// (a reader of every step's keys, crate::agent::rekey::scheme_2, asks for each: worked out
+/// afresh, they were most of its minutes). `tt` is for `x` alone.
+pub fn step_keys_kept(
+    step: &str,
+    x: &KeyCtx,
+    tt: &std::cell::OnceCell<TerrainTargets>,
+) -> Option<Vec<(String, String)>> {
+    step_keys_all(step, x, tt).map(|v| v.into_iter().filter(|(_, k)| k != UNKNOWN).collect())
+}
+
+fn step_keys_all(step: &str, x: &KeyCtx, kept: &std::cell::OnceCell<TerrainTargets>) -> Option<Vec<(String, String)>> {
     let none = Keys::default();
     let (cov, date, m, inputs) = (x.cov, x.date, x.m, x.inputs);
     let world = |k: Option<String>| Some(k.map(|k| vec![(step.to_string(), k)]).unwrap_or_default());
     let of_work = |w: Option<Work>| Some(w.map(|w| w.targets).unwrap_or_default());
-    let tt = || terrain_slope_targets(x);
+    let tt = || kept.get_or_init(|| terrain_slope_targets(x)).clone();
     let known = |v: Vec<(String, Option<String>)>| v.into_iter().filter_map(|(t, k)| Some((t, k?))).collect::<Vec<_>>();
     let tiled = |v: Vec<(TileId, String)>| Some(v.into_iter().map(|(u, k)| (u.slash(), k)).collect());
     let trees = || trees_targets(x);
@@ -2935,15 +2950,15 @@ pub fn step_keys(step: &str, x: &KeyCtx) -> Option<Vec<(String, String)>> {
         "pyramids-fill" => pyramids_targets(x),
         "terrain-hi" => {
             let t = tt();
-            Some(t.terrain.into_iter().chain(t.terrain_none).filter(|(_, k)| k != UNKNOWN).collect())
+            Some(t.terrain.into_iter().chain(t.terrain_none).collect())
         }
         "terrain-lo" => {
             let t = tt();
-            Some(t.terrain_lo.into_iter().chain(t.terrain_lo_none).filter(|(_, k)| k != UNKNOWN).collect())
+            Some(t.terrain_lo.into_iter().chain(t.terrain_lo_none).collect())
         }
         "terrain-deep" => {
             let t = tt();
-            Some(t.terrain_deep.into_iter().chain(t.terrain_deep_none).filter(|(_, k)| k != UNKNOWN).collect())
+            Some(t.terrain_deep.into_iter().chain(t.terrain_deep_none).collect())
         }
         "slope-hi" => {
             let t = tt();
@@ -4582,18 +4597,13 @@ fn bld_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, inputs: &BTree
 type BldTiles = std::sync::Arc<Vec<(u32, u32, Option<String>)>>;
 pub(crate) fn bld_tiles(cov: &Coverage) -> BldTiles {
     static KEPT: std::sync::Mutex<Option<(String, BldTiles)>> = std::sync::Mutex::new(None);
-    // (The coverage by what shapes_key and meets_rect read: each shape's outline, buffer and
-    // country, in order.)
-    let mut id = Vec::new();
+    // (The coverage by what shapes_key and meets_rect read: its version (each shape's rings,
+    // buffer and water, without reading the rings' points again: every target's key lines ask,
+    // crate::agent::idents::coverage_shapes) and each shape's country, in order.)
+    let mut id = cov.version().into_bytes();
     for s in &cov.shapes {
-        id.extend_from_slice(s.buffer_m.to_le_bytes().as_slice());
         id.extend_from_slice(s.country.as_bytes());
         id.push(0);
-        for r in s.rings.iter() {
-            id.extend_from_slice(bytemuck::cast_slice(r));
-            id.push(1);
-        }
-        id.push(2);
     }
     let id = store::naming::hash16(&id);
     let mut g = KEPT.lock().unwrap_or_else(|e| e.into_inner());
