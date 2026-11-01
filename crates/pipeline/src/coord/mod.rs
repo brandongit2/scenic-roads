@@ -3485,7 +3485,7 @@ pub struct PageFiles {
 /// they were made (each answered again only when that changed).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewAsk {
-    /// The lead's status's file as last answered: its time written (unix ns).
+    /// The lead's status's file as last answered: its change token (`status_token`).
     #[serde(default)]
     pub status_at: Option<u64>,
     #[serde(default)]
@@ -3531,27 +3531,41 @@ fn pool_view(s: &Shared, ask: &ViewAsk, status: LeadStatus) -> serde_json::Value
     a
 }
 
-/// Its agent's status as `/pool/view` answers it: when its file was written (unix ns; None, no file),
-/// and what it says, read only when that isn't the time asked (`Value::Null` unreadable).
+/// Its agent's status as `/pool/view` answers it: its file's change token (`status_token`; None, no
+/// file or unreadable), and what it says, read only when that isn't the token asked (`Value::Null`
+/// unreadable).
 struct LeadStatus {
     at: Option<u64>,
     v: Option<serde_json::Value>,
 }
 
 /// Its agent's status beside the coordinator's folder (`<home>/status.json`, local disk, hundreds
-/// of kB on the live lead), read before the coordinator's lock is taken, and only when written
-/// since `asked` (its time, unix ns): a page asks every 2 s, the agent writes it every few seconds.
+/// of kB on the live lead), read before the coordinator's lock is taken, and only when its file
+/// changed since `asked` (its `status_token`): a page asks every 2 s, the agent writes it every few
+/// seconds. A file read but not parsed (or gone) answers no token: the next ask reads it again.
 fn status_beside(dir: &std::path::Path, asked: Option<u64>) -> LeadStatus {
     let Some(p) = dir.parent().map(|h| h.join("status.json")) else { return LeadStatus { at: None, v: None } };
-    let at = std::fs::metadata(&p)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos() as u64);
-    let v = (at.is_none() || at != asked).then(|| {
-        std::fs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null)
-    });
-    LeadStatus { at, v }
+    let at = std::fs::metadata(&p).ok().and_then(|m| status_token(&m));
+    if at.is_some() && at == asked {
+        return LeadStatus { at, v: None };
+    }
+    match std::fs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+        Some(v) => LeadStatus { at, v: Some(v) },
+        None => LeadStatus { at: None, v: Some(serde_json::Value::Null) },
+    }
+}
+
+/// A file's change token: its time written (ns), inode, device and length hashed. The agent writes
+/// its status by renaming a new file into place (`store::whole::write`): each write a new inode, so
+/// two writes within the clock's grain (or after a clock set back) still differ. Only compared for
+/// equality, never ordered.
+fn status_token(m: &std::fs::Metadata) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    use std::os::unix::fs::MetadataExt;
+    let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    let mut h = std::hash::DefaultHasher::new();
+    (t, m.ino(), m.dev(), m.len()).hash(&mut h);
+    Some(h.finish())
 }
 
 /// The wall clock in unix ms.
@@ -5904,6 +5918,33 @@ mod tests {
         assert_eq!(heard.len(), 1);
         assert_eq!(heard[0].beat.pool.host, "m1-host");
         assert!(heard[0].status.is_none(), "its status not kept: the next beat brings it");
+        // (An older lead's record, with the status, still loads.)
+        let old = serde_json::json!({ "beat": kept::Beat::default().beat, "status": { "host": "m1" }, "at": 7 });
+        assert_eq!(serde_json::from_value::<kept::Beat>(old).unwrap().at, 7);
+    }
+
+    /// Task #913: the lead's status is answered again whenever its file was written again, even
+    /// with the same bytes within one tick of the clock (each write a new file renamed into place),
+    /// not while it wasn't; an unparsable file answers no token, so the next ask reads it again.
+    #[test]
+    fn the_lead_s_status_is_sent_again_only_once_written_again() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("coord");
+        let p = d.path().join("status.json");
+        assert!(status_beside(&dir, None).at.is_none());
+        store::whole::write(&p, b"{\"host\":\"m4\"}").unwrap();
+        let a = status_beside(&dir, None);
+        assert_eq!(a.v.unwrap()["host"], "m4");
+        let same = status_beside(&dir, a.at);
+        assert!(same.v.is_none() && same.at == a.at, "unchanged: not read");
+        let t = std::fs::metadata(&p).unwrap().modified().unwrap();
+        store::whole::write(&p, b"{\"host\":\"m4\"}").unwrap();
+        std::fs::File::options().write(true).open(&p).unwrap().set_modified(t).unwrap();
+        let b = status_beside(&dir, a.at);
+        assert!(b.at != a.at && b.v.is_some(), "rewritten, its time the same: sent again");
+        std::fs::write(&p, b"{\"host\":").unwrap();
+        let c = status_beside(&dir, b.at);
+        assert!(c.at.is_none() && c.v == Some(serde_json::Value::Null));
     }
 
     /// `scenic pool release <member>`: the owner releases an away member's leases.

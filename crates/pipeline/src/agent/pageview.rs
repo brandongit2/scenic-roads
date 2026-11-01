@@ -167,7 +167,7 @@ pub struct OwnLane {
 #[derive(Clone, Debug, Default)]
 struct Snap {
     status: Value,
-    /// The lead's status's time as answered (`ViewAsk::status_at`): asked again only once it changed.
+    /// The lead's status's change token as answered (`ViewAsk::status_at`): sent again only once it changed.
     status_at: Option<u64>,
     view: Value,
     pause: Value,
