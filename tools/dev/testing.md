@@ -22,9 +22,10 @@ refuses runs it can't read (`$c test`, `cargo --config alias.…`, `cargo -C`, `
   `//! scans: <path prefix> …` line; a change to any file under one (any kind, deleted too) runs
   it whole. guards.sh refuses such a test without the line. (#660 changed agent/room.rs; check
   passed and publish failed on write_sets, which nothing mapped to it.)
-- The tracing is same-crate only: `crate::<mod>`, the parent naming it, children using `super::`,
-  the crate's own binaries, its `tests/`. Users in other crates and items re-exported from a crate
-  root (`pub use`) aren't traced; publish's full run catches those. Python tests (dem/) are outside
+- The tracing goes one level: `crate::<mod>`, the parent naming it, children using `super::`,
+  the crate's own binaries, its `tests/`; other crates' modules naming `<crate>::<mod>`, or
+  `crate::<mod>` where their root re-exports it (`pub use <crate>::…`, #916), and their binaries.
+  Users of those users aren't traced; publish's full run catches them. Python tests (dem/) are outside
   the script.
 - Filters name a module path (`agent::tests::`, `agent::tests::unit_key`), never a bare word: a filter starts with one of the crate's modules, so
   `tests::` or `::` alone counts as a bare word. A single `--test`/`--bin` target may take bare names.
