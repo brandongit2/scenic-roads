@@ -141,9 +141,10 @@
 //!                                (pipeline::agent::rekey) would do now: each z3 tile re-keyed, or
 //!                                made again as z6 tiles and why, the work left and its time by the
 //!                                last runs (`f`: the coordinator's costs.json). Reads only
-//!   rekey-check [--pass d] [--stale n] [--unknown n]  what the switch to key scheme 2 (pipeline::agent::rekey::
+//!   rekey-check [--pass d] [--step s] [--stale n] [--unknown n]  what the switch to key scheme 2 (pipeline::agent::rekey::
 //!                                scheme_2) does to the records now: per step, those re-keyed, those
-//!                                built again (`n` of them listed) and those unknown. Reads only
+//!                                built again (`n` of them listed), those unknown and those dropped (no
+//!                                target, no output named); `s`: that step alone. Reads only
 //!
 //! `--cache` is where base packs are kept locally (copied from the NAS when missing). `--help` (or
 //! `-h`) on any step prints its usage and does nothing; a flag the step doesn't take or an argument
@@ -2765,6 +2766,7 @@ fn rekey_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
     let list: usize = opt(args, "--stale").and_then(|s| s.parse().ok()).unwrap_or(0);
     let unknowns: usize = opt(args, "--unknown").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let only = opt(args, "--step");
     let pipeline::pool::records::Brief { manifest: m, keys, .. } = pipeline::out::brief_now(root)?;
     let a = pipeline::inputs::open(root, &m, pipeline::inputs::regions::UNIT)?.context("no regions version")?;
     let cov = pipeline::coverage::Coverage::accepted(root, &a, None)?;
@@ -2779,7 +2781,7 @@ fn rekey_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
     let mut before = done.clone();
     let olds: std::cell::RefCell<BTreeMap<String, BTreeMap<String, String>>> = Default::default();
     let tt = std::cell::OnceCell::new();
-    let r = rekey::scheme_2(&mut done, &x, &|_| true, &|s, x| {
+    let r = rekey::scheme_2(&mut done, &x, &|s| only.as_deref().is_none_or(|o| o == s), &|s, x| {
         let t = std::time::Instant::now();
         let k = build::step_keys_kept(s, &x.scheme_1(), &tt);
         eprintln!("rekey-check: {s}'s scheme-1 keys ({:.0} s)", t.elapsed().as_secs_f64());
@@ -2788,9 +2790,9 @@ fn rekey_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
         }
         k
     });
-    println!("{:<16} {:>9} {:>9} {:>9} {:>9}", "step", "current", "re-keyed", "rebuilt", "unknown");
+    println!("{:<16} {:>9} {:>9} {:>9} {:>9} {:>9}", "step", "current", "re-keyed", "rebuilt", "unknown", "dropped");
     for (s, c) in &r {
-        println!("{s:<16} {:>9} {:>9} {:>9} {:>9}", c.current, c.rekeyed, c.stale, c.unknown);
+        println!("{s:<16} {:>9} {:>9} {:>9} {:>9} {:>9}", c.current, c.rekeyed, c.stale, c.unknown, c.dropped.len());
     }
     // (`--unknown n`: n of each step's unknown records with why: no scheme-1 target now, or current
     // under scheme 1 with a scheme-2 key that can't be worked out now, and the reads that can't.)

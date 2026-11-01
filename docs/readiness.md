@@ -332,10 +332,8 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
        (`rekey::pass_as_read`), the reach's alone in `current_reach`. timetables-todo reads the
        coverage: it's planned after the plan's re-keyed records.
      - `rekey::scheme_2` keys a step's records under scheme 1 only while one isn't its key now
-       (`build::step_keys`, the planner's keys; `Scheme2Step::current` counts those that are). A
-       re-keyed record is re-keyed in memory by each reader and saved under its new key only when
-       its target is built again, so a step whose records were re-keyed is keyed under both
-       schemes at each read until then.
+       (`build::step_keys`, the planner's keys; `Scheme2Step::current` counts those that are). Each
+       reader re-keys in memory what isn't saved yet (step 4 saves it).
      - Not derived (`steps::derived`: no versions declared): pack(T) and lo (their owners, by
        every base pack's reach: `pack_lo_targets` over the whole plan; deriving them would take
        the owners as a per-plan memo in the `KeyCtx`), prune (no key), the catalogue (what's ready
@@ -361,11 +359,29 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
        trees 457, bldtiles 455, bldprep 332, unit 6, the z3 tiles' 3–6) and terrain-hi 537 and
        terrain-deep ~4,450 of the unknown are records of targets neither scheme (nor main) lists
        now: kept as they are, built by neither.
-4. The scheme-1 rekey adapter (`rekey::scheme1`, `KeyCtx::scheme`, the enumerations' scheme-1
-   keys and every `*_key` they call) is deleted once no record is scheme 1. Records re-keyed in
-   memory are saved under their scheme-2 keys only by their targets' next runs, so that needs
-   either every such target built again or the lead recording them (a restore-like job, as
-   crate::agent::restore's: `scenic redo`'s "<step> <target> <from>" records).
+4. **Save the re-keyed records, then delete the adapter.** In two parts, the second merged only
+   after the first has run on the live records.
+   - **4a (built): the lead saves them once.** `rekey::scheme_2` lists what it re-keyed
+     (`Scheme2Step::moved`: target, scheme-1 key, scheme-2 key) and drops the records of no target
+     of the step's now, under either scheme (`build::step_keys_all`, the unknown ones too), whose
+     outputs no manifest entry names (`steps::output_named`, the step's declared outputs:
+     `Scheme2Step::dropped`; task #920 found such records, deep tiles' "none" drops and tiles left
+     by the coverage, kept forever and read as unknown). The plan keeps what its reading did
+     (`Planner::rekeyed`), and the lead runs a job per step with any (`rekey_jobs`, "redo rekey
+     <step>"): `scenic-build rekey-check --step <step>` lists them, changing no file, and its done
+     record (`rekey::record`) is a restore's, "<step> <target> <from>" with the scheme-2 key, or
+     with no key for a dropped one. The merge (`build::Keys::record`) records each only while its
+     record is still `from` (one built since keeps its own), a world step's in the lo keys; it's
+     the one writer, the records' normal save. After it, every reader finds those records current
+     and re-keys or drops nothing. Test: `rekey::tests::scheme_2_keeps_what_reads_nothing_new`
+     (the save gives the keys the in-memory re-keying does; read again, nothing moves).
+     Records of a step that isn't derived (pack, lo) aren't looked at, so none of theirs is dropped.
+   - **4b (planned): delete the adapter** once `scenic-build rekey-check` shows nothing re-keyed
+     on the live records: `rekey::scheme1`, `KeyCtx::scheme` and `scheme_1`, `rekey::scheme_2` and
+     the readers' calls of it, and the scheme-1 key the enumerations work out first (`key_now`'s
+     `k1`: which targets are "none" or unknown would come from the enumerations themselves) with
+     every `*_key` function only it calls (§8); agent::restore's check ported to scheme-2 keys or
+     deleted. A record scheme 1 finds stale or can't key stays stale either way.
 
 ## 7. Tests
 

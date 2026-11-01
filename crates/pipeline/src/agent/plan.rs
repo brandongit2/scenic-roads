@@ -389,6 +389,9 @@ pub(super) struct Planner {
     /// The depth's targets as the last plan found them, for GC (`build::depth_kept`; None: not
     /// found then, and no depth pack is dropped).
     pub(super) depth_keep: std::cell::RefCell<Option<gc::DepthKeep>>,
+    /// What the last plan's reading of the records did under scheme 2 (rekey::scheme_2), by step:
+    /// the records it re-keyed or dropped, which `rekey_jobs` saves.
+    pub(super) rekeyed: std::cell::RefCell<BTreeMap<&'static str, rekey::Scheme2Step>>,
     /// The coverage and each region's as last made, with what they were made from (`coverage`).
     pub(super) coverage: std::cell::RefCell<Option<(String, std::sync::Arc<Coverages>)>>,
     /// The coverage being read off the plan (`coverage`), by the accepted version it's of.
@@ -505,6 +508,7 @@ impl Planner {
             reach: Default::default(),
             tiles: std::cell::RefCell::new(tiles),
             depth_keep: Default::default(),
+            rekeyed: Default::default(),
             coverage: Default::default(),
             coverage_making: Default::default(),
             edits: Default::default(),
@@ -1219,6 +1223,7 @@ impl Planner {
         // its targets' records.
         if self.coord.is_some() {
             out.extend(self.redo_jobs(root));
+            out.extend(self.rekey_jobs(root));
         }
         self.shadow_checked();
         if self.due("gc", Duration::from_secs(86400)) {
@@ -1280,6 +1285,39 @@ impl Planner {
             .collect()
     }
 
+    /// The records the plan read re-keyed to scheme 2, or dropped (rekey::scheme_2), saved so, the
+    /// lead's: a job per step (docs/readiness.md §6 step 4), `scenic-build rekey-check --step`
+    /// listing what it changes (it changes no file), its done record (rekey::record) recording
+    /// them as the lead merges it. None once every record read is scheme 2's.
+    pub(super) fn rekey_jobs(&self, root: &store::nasfs::NasRoot) -> Vec<JobSpec> {
+        let me = self.o.bin.join("scenic-build").to_string_lossy().into_owned();
+        let r = self.rekeyed.borrow();
+        r.iter()
+            .filter_map(|(step, c)| {
+                let record = rekey::record(&r, step)?;
+                Some(JobSpec {
+                    id: format!("{} rekey {step}", redo::STEP),
+                    what: format!(
+                        "Recording {} {step} record(s) under their scheme-2 keys, dropping {}",
+                        c.moved.len(),
+                        c.dropped.len()
+                    ),
+                    cmd: vec![
+                        me.clone(),
+                        "rekey-check".into(),
+                        "--root".into(),
+                        jobs::root_arg(root),
+                        "--step".into(),
+                        step.to_string(),
+                    ],
+                    needs: Needs { nas: true },
+                    restart_after_sleep: true,
+                    record: Some(record),
+                })
+            })
+            .collect()
+    }
+
     /// The owner's redo asks this Mac's coordinator took (`/work/redo`), kept in its agent's folder
     /// until their jobs are done: not a dry run's.
     pub(super) fn tend_redo(&self) {
@@ -1333,6 +1371,7 @@ impl Planner {
     ) -> Vec<JobSpec> {
         // (The depth's targets for GC: none until this plan finds them.)
         self.depth_keep.borrow_mut().take();
+        self.rekeyed.borrow_mut().clear();
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
         let (manifest, mut keys): (BTreeMap<String, String>, build::Keys) = match self.planning_records(root) {
             Ok(r) => r,
@@ -1409,7 +1448,7 @@ impl Planner {
         let pass_cx = build::PassCtx::default();
         if let Some(date) = pass {
             let px = pass_cx.ctx(date, &manifest);
-            rekey::pass_as_read(&mut keys, &px);
+            self.rekeyed.borrow_mut().extend(rekey::pass_as_read(&mut keys, &px));
             let p = vec!["--pass".to_string(), date.to_string()];
             if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {
                 jobs.push(job(format!("pass-sets {date}"), "pass-sets", p.clone(), None));
@@ -1714,11 +1753,12 @@ impl Planner {
             // or a loop that couldn't take the build lock, plans too.)
             let times = rekey::FileTimes::new(root);
             nasread::phase("the plan: the records re-keyed");
-            rekey::as_read(
+            let r = rekey::as_read(
                 &mut done,
                 &build::KeyCtx::new(cov, date, &manifest, &inputs, reach.as_deref(), &tiles),
                 &times,
             );
+            self.rekeyed.borrow_mut().extend(r.scheme_2);
             nasread::phase("the plan: build::plan");
             build::plan(
                 &cov,

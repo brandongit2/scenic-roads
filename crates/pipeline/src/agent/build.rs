@@ -328,17 +328,31 @@ impl Keys {
         }
         if step == super::redo::STEP {
             // ("<step> <target>": a redo, its key forgotten; "<step> <target> <from>" with a key: a
-            // restore, crate::agent::restore, recorded under it while its record is still `from`.)
+            // restore, crate::agent::restore or the switch to scheme 2's, recorded under it while
+            // its record is still `from`; with none, forgotten while it is.)
             for (t, k) in done {
                 let mut w = t.split(' ');
                 let (Some(s), Some(at), from) = (w.next(), w.next(), w.next()) else { continue };
-                let Some(m) = self.per_target(s) else { continue };
+                // (A world step's restore, by its name in the lo keys: crate::agent::rekey::record.)
+                let m = if self.per_target(s).is_some() {
+                    self.per_target(s).unwrap()
+                } else if from.is_some() {
+                    &mut self.lo
+                } else {
+                    continue;
+                };
                 match from {
                     None => {
                         m.remove(at);
                     }
-                    Some(f) if !k.is_empty() && m.get(at).map(String::as_str) == Some(f) => {
-                        m.insert(at.to_string(), k.clone());
+                    Some(f) if m.get(at).map(String::as_str) == Some(f) => {
+                        // (No key: a record of no target whose outputs are gone, dropped:
+                        // crate::agent::rekey::scheme_2.)
+                        if k.is_empty() {
+                            m.remove(at);
+                        } else {
+                            m.insert(at.to_string(), k.clone());
+                        }
                     }
                     Some(_) => {}
                 }
@@ -2926,7 +2940,13 @@ pub fn step_keys_kept(
     step_keys_all(step, x, tt).map(|v| v.into_iter().filter(|(_, k)| k != UNKNOWN).collect())
 }
 
-fn step_keys_all(step: &str, x: &KeyCtx, kept: &std::cell::OnceCell<TerrainTargets>) -> Option<Vec<(String, String)>> {
+/// Every target of `step` with its key under `x.scheme`, `UNKNOWN` for one whose key can't be
+/// worked out now (`step_keys_kept` leaves those out): what the step lists as its targets.
+pub fn step_keys_all(
+    step: &str,
+    x: &KeyCtx,
+    kept: &std::cell::OnceCell<TerrainTargets>,
+) -> Option<Vec<(String, String)>> {
     let none = Keys::default();
     let (cov, date, m, inputs) = (x.cov, x.date, x.m, x.inputs);
     let world = |k: Option<String>| Some(k.map(|k| vec![(step.to_string(), k)]).unwrap_or_default());

@@ -2,8 +2,9 @@
 //! scheme), so that the change itself rebuilds only what it would make differently. A target whose
 //! recorded key is what the old scheme computes now is current; it's recorded under the new scheme's
 //! key when every input the new key names is pinned by the old key's, and its record goes otherwise
-//! (it's built again). Applied in memory by every reader of the records (`as_read`), never saved: a
-//! record changes only by a job's save; `scenic-build p5-check trees` shows what it would do.
+//! (it's built again). Applied in memory by every reader of the records (`as_read`); a record
+//! changes only by a job's save (the switch to scheme 2's: the lead's job of `record`);
+//! `scenic-build p5-check trees` shows what it would do.
 //!
 //! Tree cover (2026-10-06): a z3 tile's whole run ("3/x/y", `v1::trees_targets`, keyed on the
 //! coverage in the z3 tile) became a z6 tile per z6 tile (keyed on the coverage in it) and an
@@ -90,6 +91,8 @@ pub struct Rekeyed {
     pub trees_dropped: Vec<(String, String)>,
     /// Those whose packs' times can't be read now: kept as they are, for the next pass.
     pub trees_unknown: Vec<(String, String)>,
+    /// What the switch to scheme 2 did to each step's records (`scheme_2`).
+    pub scheme_2: BTreeMap<&'static str, Scheme2Step>,
 }
 
 impl Rekeyed {
@@ -179,6 +182,15 @@ pub struct Scheme2Step {
     /// Records of targets whose key can't be worked out now (an input unread), or that are no
     /// target now: kept as they are (for the next pass; a prune's).
     pub unknown: usize,
+    /// The records re-keyed (`rekeyed` of them), each from its scheme-1 key to its scheme-2 one:
+    /// what the lead records once (`record`), so they're read under scheme 2 from then on.
+    #[serde(skip)]
+    pub moved: Vec<super::redo::Restore>,
+    /// Records of no target of the step's now (under either scheme) whose outputs no manifest
+    /// entry names (`steps::output_named`, from the step's declared outputs): (target, key),
+    /// dropped, and forgotten by the same save (`record`). Removed means deleted.
+    #[serde(skip)]
+    pub dropped: Vec<(String, String)>,
 }
 
 /// The record of target `t` of `step` (a world step's in the `lo` keys).
@@ -223,19 +235,30 @@ pub fn scheme_2(
         if targets.is_empty() {
             continue;
         }
-        let now: BTreeMap<String, String> =
-            super::build::step_keys_kept(step, x, &tt).unwrap_or_default().into_iter().collect();
-        let (current, rest): (Vec<_>, Vec<_>) = targets.into_iter().partition(|(t, k)| now.get(t) == Some(k));
+        let all: BTreeMap<String, String> =
+            super::build::step_keys_all(step, x, &tt).unwrap_or_default().into_iter().collect();
+        let now: BTreeMap<String, &String> =
+            all.iter().filter(|(_, k)| *k != super::build::UNKNOWN).map(|(t, k)| (t.clone(), k)).collect();
+        let (current, rest): (Vec<_>, Vec<_>) = targets.into_iter().partition(|(t, k)| now.get(t) == Some(&k));
         s.current = current.len();
         if !rest.is_empty() {
             let old: BTreeMap<String, String> = scheme_1(step, x).unwrap_or_default().into_iter().collect();
             for (t, k) in rest {
                 match (old.get(&t), now.get(&t)) {
                     (Some(o), Some(n)) if *o == k => {
-                        set_record(keys, step, &t, n.clone());
+                        set_record(keys, step, &t, (*n).clone());
                         s.rekeyed += 1;
+                        s.moved.push(super::redo::Restore { target: t, from: k, to: (*n).clone() });
                     }
                     (Some(o), _) if *o != k => s.stale += 1,
+                    // (No target of the step's, under either scheme, and no output of it named:
+                    // nothing reads the record, nor ever will; it goes.)
+                    (None, _) if !all.contains_key(&t) && steps::output_named(step, &t, x.m) == Some(false) => {
+                        if let Some(m) = keys.per_target(step) {
+                            m.remove(&t);
+                        }
+                        s.dropped.push((t, k));
+                    }
                     _ => s.unknown += 1,
                 }
             }
@@ -400,20 +423,38 @@ pub fn as_read_of(
     times: &dyn Times,
     which: &dyn Fn(&str) -> bool,
 ) -> Rekeyed {
-    let r = rekey(keys, x.cov, x.m, x.tiles, times);
+    let mut r = rekey(keys, x.cov, x.m, x.tiles, times);
     if x.scheme == 2 {
         let tt = std::cell::OnceCell::new();
-        scheme_2(keys, x, which, &|s, x| super::build::step_keys_kept(s, &x.scheme_1(), &tt));
+        r.scheme_2 = scheme_2(keys, x, which, &|s, x| super::build::step_keys_kept(s, &x.scheme_1(), &tt));
     }
     r
 }
 
 /// The pass's steps' records as read before there's a coverage (agent::plan's pass:
 /// `build::PASS_STEPS`, keyed in `build::PassCtx`'s `x`): `as_read`'s for them alone.
-pub fn pass_as_read(keys: &mut Keys, x: &super::build::KeyCtx) {
-    if x.scheme == 2 {
-        scheme_2(keys, x, &|s| super::build::PASS_STEPS.contains(&s), &scheme1::keys);
+pub fn pass_as_read(keys: &mut Keys, x: &super::build::KeyCtx) -> BTreeMap<&'static str, Scheme2Step> {
+    if x.scheme != 2 {
+        return BTreeMap::new();
     }
+    scheme_2(keys, x, &|s| super::build::PASS_STEPS.contains(&s), &scheme1::keys)
+}
+
+/// The done record that saves the records `scheme_2` re-keyed (`moved`, by step) under their
+/// scheme-2 keys (docs/readiness.md §6 step 4): a restore's ("<step> <target> <from>" with the key,
+/// crate::agent::redo::restore_target), recorded by the merge only while a record is still `from`
+/// (one built since keeps its own). The lead's job of it (agent::plan's `rekey_jobs`) is the one
+/// writer; once merged, every reader finds those records current and re-keys nothing. None: nothing
+/// to save.
+pub fn record(moved: &BTreeMap<&'static str, Scheme2Step>, step: &str) -> Option<super::build::Work> {
+    let s = moved.get(step).filter(|s| !s.moved.is_empty() || !s.dropped.is_empty())?;
+    let targets = s
+        .moved
+        .iter()
+        .map(|r| (super::redo::restore_target(step, &r.target, &r.from), r.to.clone()))
+        .chain(s.dropped.iter().map(|(t, k)| (super::redo::restore_target(step, t, k), String::new())))
+        .collect();
+    Some(super::build::Work { step: super::redo::STEP.into(), targets })
 }
 
 #[cfg(test)]
@@ -530,7 +571,8 @@ mod tests {
 
     /// docs/readiness.md §7: at the switch to scheme 2, a record current under scheme 1 is recorded
     /// under its scheme-2 key ("none" ones under theirs), one stale is kept as it is (built again),
-    /// in every fixture build; a second pass re-keys nothing.
+    /// in every fixture build; a record of no target whose outputs no manifest entry names is dropped;
+    /// the lead's save of it (`record`) gives the keys the re-keying did; a second pass re-keys nothing.
     #[test]
     fn scheme_2_keeps_what_reads_nothing_new() {
         use crate::agent::steps;
@@ -549,7 +591,38 @@ mod tests {
                 }
                 keys.record(row.name, &ts);
             }
+            // (A record of no target, its outputs named nowhere: dropped. The first tile step's.)
+            let orphan = steps::TABLE.iter().filter(|r| steps::derived(r.name)).find_map(|r| {
+                let t = if r.name.ends_with("-lo") { "3/7/7" } else { "6/63/63" };
+                (keys.per_target(r.name).is_some()
+                    && steps::output_named(r.name, t, &f.m) == Some(false)
+                    && !build::step_keys_all(r.name, &x, &Default::default())
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|(u, _)| u == t))
+                .then(|| (r.name, t.to_string()))
+            });
+            if let Some((s, t)) = &orphan {
+                keys.per_target(s).unwrap().insert(t.clone(), "a gone target's key".into());
+            }
+            let before = keys.clone();
             let r = scheme_2(&mut keys, &x, &|_| true, &scheme1::keys);
+            // Saved once by the lead's job (`record`, merged as a restore): the keys every reader
+            // re-keyed in memory, the dropped record gone.
+            let mut saved = before.clone();
+            for step in r.keys() {
+                if let Some(w) = record(&r, step) {
+                    saved.record(&w.step, &w.targets);
+                }
+            }
+            assert_eq!(saved, keys, "{}: the save is the re-keying", f.name);
+            if let Some((s, t)) = &orphan {
+                assert_eq!(record_of(&keys, s, t), None, "{}: {s} {t} dropped", f.name);
+                assert_eq!(r[s].dropped.len(), 1, "{}: {s}", f.name);
+            }
+            // Read again after the save, nothing is re-keyed or dropped.
+            let after = scheme_2(&mut saved.clone(), &x, &|_| true, &scheme1::keys);
+            assert!(after.values().all(|c| c.moved.is_empty() && c.dropped.is_empty()), "{}: {after:?}", f.name);
             let (s, t) = stale.unwrap();
             assert_eq!(record_of(&keys, s, &t), Some("an older key"), "{}: a stale record kept", f.name);
             for row in steps::TABLE.iter().filter(|r| steps::derived(r.name)) {
