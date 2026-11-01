@@ -8,6 +8,7 @@
 //! when it last succeeded (`state/build/jobs.json`) isn't run again; an unchanged output keeps its
 //! content name, so what depends on it keeps its key too.
 
+use super::nasread;
 use super::steps::{readiness, ready, Left, Ready, View};
 use super::tiles::{Reader, TerrainTiles, Tile, Unread};
 use crate::coverage::Coverage;
@@ -2526,7 +2527,9 @@ pub fn plan(
     let memo = KeyMemo::default();
     let x = &KeyCtx::new(cov, date, m, inputs, reach, tiles).memo(&memo);
     let held = updates.held;
+    // (Its sections timed as the plan's phases, `nasread::PLAN`: docs/incremental-planning.md §1.)
     let mut p = plan_in(x, done, updates);
+    nasread::PLAN.enter("build::plan: the checklist");
     p.checklist = checklist(x, done, held, &p.ready);
     p
 }
@@ -2534,6 +2537,7 @@ pub fn plan(
 /// `plan`'s work, worked out with `x`.
 fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     let (cov, date, m, inputs, reach, tiles) = (x.cov, x.date, x.m, x.inputs, x.reach, x.tiles);
+    nasread::PLAN.enter("build::plan: the sites, water and pyramids");
     let mut work = Vec::new();
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     let push = |work: &mut Vec<Work>, step: &str, targets: Vec<(String, String)>| {
@@ -2557,6 +2561,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     // Terrain and slope (z6 tiles per z6 tile, then each z3 tile's assembly; slope's once the terrain
     // it reads is built) and the tree cover layers (likewise), what a region needs before it's
     // published.
+    nasread::PLAN.enter("build::plan: the terrain and slope");
     let tw = terrain_work(&terrain_slope_targets(x), x, done);
     let TerrainWork {
         terrain,
@@ -2589,6 +2594,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     let slope_deep = split("slope-deep", slope_deep);
     let slope = split("slope-hi", slope);
     let slope_lo = split("slope-lo", slope_lo);
+    nasread::PLAN.enter("build::plan: the tree cover");
     let tt = trees_targets(x);
     let TreeWork {
         pieces: trees,
@@ -2651,6 +2657,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
         push(&mut work, "slope-lo", slope_lo);
         push(&mut work, "trees", trees);
         push(&mut work, "trees-lo", trees_lo);
+        nasread::PLAN.enter("build::plan: the chains");
         let (cw, lh) = chains(false, &mut left);
         work.extend(cw);
         held_steps.extend(lh);
@@ -2671,6 +2678,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     // may touch its outline), the ones of them not built as the coverage now wants, its z3 tiles (the
     // z3 tiles its slope and tree cover are in) and the terrain z3 tiles it reads (its z3 tiles and those
     // near its z6 tiles).
+    nasread::PLAN.enter("build::plan: the z6 tiles' keys");
     let units = unit_keys(x);
     // (One whose key can't be worked out now is left, and isn't built: `unknown`.)
     let unit_stale: Vec<bool> =
@@ -2708,6 +2716,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
         /// Its slope z6 tiles left whose z6 tile is within 20 km of it (`Publishing::near`).
         slope_near: BTreeSet<String>,
     }
+    nasread::PLAN.enter("build::plan: the regions");
     let fine = spacing_now(m, tiles);
     let regions: Vec<Region> = updates
         .each
@@ -2770,6 +2779,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     };
     // (A z6 tile's map tiles: those its ways meet; stale, or drawn by a hand-off not yet merged.)
     // (pack(T)'s and lo's targets, once for the plan.)
+    nasread::PLAN.enter("build::plan: the map tiles");
     let pl = pack_lo_targets(m, Some(reach));
     let stale_tiles: BTreeSet<&str> =
         pl.0.iter().filter(|(t, k)| stale(&done.pack, t, k)).map(|(t, _)| t.as_str()).collect();
@@ -2826,6 +2836,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     // the downloads and caches one fills serve the next; a z6 tile or a z3 tile two regions share comes
     // with the first. (A z6 tile whose terrain isn't built comes once it is: the plan's made again after
     // each job.)
+    nasread::PLAN.enter("build::plan: the regions' order");
     let mut order: Vec<&Region> = regions.iter().filter(|r| !r.stale.is_empty() || !r.terrain.is_empty()).collect();
     order.sort_by_key(|r| {
         (
@@ -3037,6 +3048,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
         .chain(regions.iter().map(|r| r.id))
         .filter_map(|id| updates.each.iter().find(|(x, _)| x == id).map(|(_, c)| c))
         .collect();
+    nasread::PLAN.enter("build::plan: the chains and publishing");
     let bld = bld_work_in(x, done, &bld_rank(&bld_regions), &mut left);
     let depth = depth_work_in(x, done, &mut left);
     let polar = polar_work_in(x, done, &mut left);
@@ -11907,6 +11919,40 @@ pub(crate) mod tests {
                 },
             );
             lap(&format!("[{round}] plan ({}; keys {})", dg(format!("{p:?}")), dg(format!("{k:?}"))), &mut t);
+            // (Every work's step, target and key, a line each, to `SCENIC_BENCH_PLAN_OUT`.<round>: two
+            // builds' plans diffed.)
+            if let Ok(out) = std::env::var("SCENIC_BENCH_PLAN_OUT") {
+                let lines: Vec<String> = p
+                    .work
+                    .iter()
+                    .chain(&p.backfill)
+                    .flat_map(|w| w.targets.iter().map(move |(t, k)| format!("{}\t{t}\t{k}", w.step)))
+                    .collect();
+                std::fs::write(format!("{out}.{round}"), lines.join("\n") + "\n").unwrap();
+            }
+            // (Every derived key of the plan's work from one context with a key memo, as the plan
+            // derives them, and from a fresh one per target without: the same, on this state.)
+            let memo = KeyMemo::default();
+            let shared = KeyCtx::new(&cov, &date, &m, &inputs, reach.as_ref(), &tiles).memo(&memo);
+            let (mut n, mut differ) = (0, Vec::new());
+            for w in p.work.iter().chain(&p.backfill) {
+                for (t, _) in &w.targets {
+                    let fresh = KeyCtx::new(&cov, &date, &m, &inputs, reach.as_ref(), &tiles);
+                    let (a, b) = (
+                        crate::agent::steps::derived_key(&w.step, t, &shared),
+                        crate::agent::steps::derived_key(&w.step, t, &fresh),
+                    );
+                    n += 1;
+                    if a != b {
+                        differ.push(format!("{} {t}: {a:?} {b:?}", w.step));
+                    }
+                }
+            }
+            lap(
+                &format!("[{round}] {n} keys from one memoized context and fresh ones, {} differ", differ.len()),
+                &mut t,
+            );
+            assert!(differ.is_empty(), "{differ:?}");
             eprintln!("bench: [{round}] the coverage's memos hold {} KB", crate::coverage::memo_bytes() >> 10);
         }
     }

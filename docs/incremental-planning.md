@@ -1,6 +1,6 @@
 # Incremental planning
 
-**Planned (task #880). Nothing here is built yet.** Today every plan round recomputes
+**Planned (task #880); step 0 built, step 1 tried and dropped (§5).** Today every plan round recomputes
 `agent::build::plan` (crates/pipeline/src/agent/build.rs) from scratch; this doc says how it would
 update from what changed instead, and how each step ships alone.
 
@@ -25,17 +25,24 @@ Stall lines ("the plan has run > 300 s, in …") in the same window: 21 in "the 
 counts", 6 in "the plan". So:
 
 - `build::plan` itself is the largest single cost (median 27 s, every plan round).
-- "the checklist and counts" (`Planner::count`, after the plan) is the one that stalls past 5 min;
-  it is not part of `build::plan` and needs its own look (it re-derives per-region progress from the
-  same state, so it gains from the same caches, §3).
+- "the checklist and counts" (`Planner::count`, after the plan) was the one that stalled past 5 min;
+  since #924 the checklist is made inside `build::plan` from the plan's own keys (one `KeyMemo` for
+  both).
 - "its jobs" (turning `Plan` into jobs and waits) is proportional to the plan's size, and shrinks
   only once the plan is handed over as a diff (§5 step 5).
 
-Inside `build::plan` nothing is timed yet. The state it reads: the manifest (37 078 entries on the
-live NAS, 1 Nov), the done keys, the coverage and each region's, the inputs' identities, the
-reaches and the terrain packs' indexes. One suspect to measure first: `steps::key_lines` reads a
-`Read::Whole` with `Grain::Outputs` by scanning the whole manifest (`whole_outputs`) once per
-target, the same lines for every target of the step.
+Since step 0, `build::plan`'s sections are the plan thread's phases (`nasread::PLAN`: "build::plan:
+the sites, water and pyramids", … the terrain and slope, the tree cover, the z6 tiles' keys, the
+regions, the map tiles, the regions' order, the chains and publishing, the checklist), logged like
+the rest when one takes 10 s or more; no live figures for them yet. The state it reads: the
+manifest (37 078 entries on the live NAS, 1 Nov), the done keys, the coverage and each region's,
+the inputs' identities, the reaches and the terrain packs' indexes.
+
+`bench_plan_on_a_real_root` (an ignored test; `SCENIC_BENCH_ROOT`) on a frozen copy of the live
+records (the M4, test profile, 1 Nov, before #924): `build::plan` 200-322 s a run, and
+`terrain_slope_targets` alone, which `build::plan` calls, 199-294 s: the next to look at. The bench
+also writes every work's step, target and key (`SCENIC_BENCH_PLAN_OUT`) and checks each derived key
+of the plan's work from one memoized context against a fresh one per target.
 
 ## 2. What a plan is a function of
 
@@ -91,8 +98,8 @@ The incremental result must be the full plan, byte for byte. As the map log did
 
 | Step | What | Done when |
 |---|---|---|
-| 0 | Time `build::plan`'s sections (keys, terrain work, trees, regions, chains, publish) into the plan's phase lines | the live log names where the 27 s go |
-| 1 | Whole-read lines computed once per step per plan (`KeyCtx` memo) if step 0 shows them; any other per-target rescans found, likewise | a test: keys identical with and without the memo; plan time measured before/after |
+| 0 (built) | Time `build::plan`'s sections (keys, terrain work, trees, regions, chains, publish) into the plan's phase lines | the live log names where the 27 s go |
+| 1 (tried, dropped) | The lines of a step read whole by its outputs (`steps::key_lines`, a scan of the whole manifest per target) worked out once per plan | measured no gain: `build::plan` 311-322 s before, 200-317 s after on the bench (the M4's load varying more than that), every key the same (186 of the plan's work); dropped, #924's `KeyMemo` already removing repeated key work |
 | 2 | Key memo across plans with the derived read sets and reverse index (§3.1-3), invalidated by the manifest/inputs diff between plans; the full plan still runs and is compared (shadow, §4) | shadow clean on the lead; memo size logged |
 | 3 | Target lists and stale sets kept (§3.4-5), coverage/reach/pack changes invalidating them | shadow clean; `build::plan` time logged |
 | 4 | The incremental plan used, the full plan only in shadow every Nth round | owner-visible phase times drop |
