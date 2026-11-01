@@ -2406,20 +2406,20 @@ pub struct KeyCtx<'a> {
 /// reads nothing but its context, which a `KeyCtx` borrows unchanged for as long as it lives, so
 /// one derived once holds for the rest of it. What lets a plan's checklist (`plan`) and its chains
 /// run ahead (`remaining`) reuse the keys the plan already worked out instead of deriving each
-/// again (task #924).
+/// again (task #924). The plan's own, on its thread: never shared.
 #[derive(Default)]
-pub struct KeyMemo(std::sync::Mutex<std::collections::HashMap<(String, String), Option<String>>>);
+pub struct KeyMemo(std::cell::RefCell<std::collections::HashMap<(String, String), Option<String>>>);
 
 impl KeyMemo {
-    /// Target `t`'s key of `step` as derived before, else `derive`d now and kept (the lock not
-    /// held meanwhile: a key's derivation may derive others).
+    /// Target `t`'s key of `step` as derived before, else `derive`d now and kept (not borrowed
+    /// meanwhile: a key's derivation may derive others).
     pub fn get_or(&self, step: &str, t: &str, derive: impl FnOnce() -> Option<String>) -> Option<String> {
         let id = (step.to_string(), t.to_string());
-        if let Some(k) = self.0.lock().unwrap_or_else(|e| e.into_inner()).get(&id) {
+        if let Some(k) = self.0.borrow().get(&id) {
             return k.clone();
         }
         let k = derive();
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(id, k.clone());
+        self.0.borrow_mut().insert(id, k.clone());
         k
     }
 }
