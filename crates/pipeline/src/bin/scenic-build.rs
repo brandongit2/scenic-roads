@@ -2863,8 +2863,7 @@ fn rekey_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
         println!("saved, read again: {left} re-keyed or dropped, {:.1} s", t.elapsed().as_secs_f64());
     }
     for (s, c) in r.iter().filter(|(_, c)| dropped > 0 && !c.dropped.is_empty()) {
-        let all: BTreeMap<String, String> =
-            build::step_keys_all(s, &x, &tt).unwrap_or_default().into_iter().collect();
+        let all: BTreeMap<String, String> = build::step_keys_all(s, &x, &tt).unwrap_or_default().into_iter().collect();
         let (mut named, mut not) = (0, 0);
         for t in done.per_target(s).map(|m| m.keys().cloned().collect::<Vec<_>>()).unwrap_or_default() {
             if all.contains_key(&t) {
