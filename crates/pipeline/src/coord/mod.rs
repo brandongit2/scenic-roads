@@ -1683,7 +1683,7 @@ impl Coordinator {
     /// own planned jobs among them (`Offer::job`, granted to it alone: crate::agent::every::grants)
     /// but those named in `skip` (they can't start now, for a reason of the agent's own), and only
     /// while the offers are plan `plan`'s, the one whose jobs the agent holds: an id names a job
-    /// of one plan alone ("redo rekey" is every plan's save), so a newer plan's job granted to an
+    /// of one plan alone (the same id, a redo's, in each plan, its targets that plan's), so a newer plan's job granted to an
     /// agent still holding the last plan's would run the last one's work, its done record not the
     /// lease's, and be granted again at once (task #923). Nothing while the build is paused or the
     /// lead is moving. Its leases are renewed and ended as this Mac's own (`renew`, `finish`).
@@ -7924,7 +7924,7 @@ mod tests {
     }
 
     /// Task #923: the lead's own planned jobs are granted only against the plan whose jobs its agent
-    /// holds (an id, "redo rekey", names every plan's job of it: the last plan's work would run
+    /// holds (one id, a redo's, names each plan's job of it: the last plan's work would run
     /// under the new one's lease, its done record not the lease's, granted again at once); a
     /// finished one (its done record its targets, one keyless: a record dropped) isn't granted
     /// again while its plan's offers stand, in the pool or out.
@@ -7941,14 +7941,14 @@ mod tests {
             let own = Offer {
                 step: "redo".into(),
                 targets: targets.iter().map(|(t, k)| (t.clone(), k.clone(), 0)).collect(),
-                job: Some("redo rekey".into()),
+                job: Some("redo a-test".into()),
             };
             c.offer("p", vec![own.clone()]);
             let a = Ask { want: 4, can: vec!["redo".into()], ..every_ask("m4", "redo", 64_000, 100_000) };
             assert!(c.ask_own(&a, &BTreeSet::new(), 1).is_none(), "term {term}: the agent holds plan 1's jobs");
             let g = c.ask_own(&a, &BTreeSet::new(), 2).unwrap();
             assert!(g.more.is_empty(), "term {term}: one grant of it");
-            assert_eq!((g.job.as_deref(), g.plan), (Some("redo rekey"), 2));
+            assert_eq!((g.job.as_deref(), g.plan), (Some("redo a-test"), 2));
             c.finish(g.lease, &targets);
             assert!(c.ask_own(&a, &BTreeSet::new(), 2).is_none(), "term {term}: granted again");
             c.offer("p", vec![own.clone()]);
