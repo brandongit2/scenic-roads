@@ -85,6 +85,8 @@ struct Inner {
     took: u64,
     hold: Option<crate::control::HoldState>,
     settings: Option<super::asks::Settings>,
+    /// The settings an earlier process last had (`had_settings`), until the lead's are fetched.
+    had: Option<super::asks::Settings>,
     settings_gen: u64,
     /// Its asks not yet answered 200 (`ask`), kept at `queue_at` (crate::coord::asks::QUEUE).
     queue: Vec<super::asks::Ask>,
@@ -119,6 +121,7 @@ impl Default for Beats {
                 took: 0,
                 hold: None,
                 settings: None,
+                had: None,
                 settings_gen: 0,
                 queue: Vec::new(),
                 queue_at: None,
@@ -276,8 +279,35 @@ impl Beats {
         g.lead_asks && g.settings.as_ref().is_none_or(|s| s.gen != g.settings_gen)
     }
 
+    /// The settings fetched from the lead. One this member had that the lead lacks, or has only
+    /// from earlier (a new lead after a move, a lead whose store was lost), is asked of it again as
+    /// it was (who, when), so the lead's settings are never older than a member's; the lead's
+    /// later-wins rule makes the ask harmless when another Mac set it since.
     pub fn set_settings(&self, s: super::asks::Settings) {
-        self.inner.lock().unwrap().settings = Some(s);
+        let mut g = self.inner.lock().unwrap();
+        let had = g.settings.take().or(g.had.take());
+        let again: Vec<super::asks::Ask> = had
+            .iter()
+            .flat_map(|had| &had.values)
+            .filter(|(name, o)| o.at > 0 && s.values.get(*name).is_none_or(|n| n.at < o.at))
+            .map(|(name, o)| {
+                let (value, by, at) = (o.value.clone(), o.by.clone(), o.at);
+                super::asks::Ask::Setting(super::asks::SettingAsk { name: name.clone(), value, by, at })
+            })
+            .filter(|a| !g.queue.contains(a))
+            .collect();
+        g.settings = Some(s);
+        if !again.is_empty() {
+            eprintln!("pool: {} of the pool's settings the lead lacks, asked of it again", again.len());
+            g.queue.extend(again);
+            save_queue(&g);
+        }
+    }
+
+    /// The settings this member last had (control::POOL_SETTINGS, from an earlier process), so a
+    /// lead that lacks them is told them (`set_settings`).
+    pub fn had_settings(&self, s: Option<super::asks::Settings>) {
+        self.inner.lock().unwrap().had = s;
     }
 
     /// Its asks kept at `path` from now (those an earlier process left read back first).
@@ -363,6 +393,26 @@ pub fn old_in_touch<'a>(beats: impl IntoIterator<Item = &'a Heartbeat>, me: &str
 mod tests {
     use super::super::held::Answer;
     use super::*;
+
+    #[test]
+    fn a_lead_lacking_a_setting_a_member_had_is_asked_it_again() {
+        use super::super::asks::{Ask, Setting, Settings};
+        let set = |at, v: bool| Setting { value: serde_json::Value::Bool(v), by: "t".into(), at };
+        let mut had = Settings { gen: 5, ..Default::default() };
+        had.values.insert("placement".into(), set(10, true));
+        had.values.insert("nas-budget".into(), Setting { value: "off".into(), by: "t".into(), at: 3 });
+        let b = Beats::default();
+        b.had_settings(Some(had));
+        // (A new lead: placement unknown, nas-budget set later on another Mac.)
+        let mut lead = Settings { gen: 1, ..Default::default() };
+        lead.values.insert("nas-budget".into(), Setting { value: "on".into(), by: "u".into(), at: 4 });
+        b.set_settings(lead.clone());
+        let q = b.asks();
+        assert_eq!(q.len(), 1, "{q:?}");
+        assert!(matches!(&q[0], Ask::Setting(a) if a.name == "placement" && a.at == 10));
+        b.set_settings(lead);
+        assert_eq!(b.asks().len(), 1, "queued once");
+    }
 
     fn hb(id: &str, at: u64, http: bool) -> Heartbeat {
         Heartbeat {

@@ -1594,8 +1594,9 @@ pub struct Agent {
     hold_mirrored: Option<u64>,
     hold_read: Option<Instant>,
     hold_me: Option<String>,
-    /// The generation of this Mac's hold last told the lead (`tend_hold`).
-    hold_told: Option<u64>,
+    /// The generation of this Mac's hold last told the lead, and the lead's hold of it then
+    /// (`tend_hold`: told again when the lead's word changes, as after a lead move or a lost store).
+    hold_told: Option<(u64, Option<crate::control::HoldState>)>,
     /// **control** (crate::agent::asks, docs/agent-parts.md §4.1): the owner's asks of this Mac
     /// (its hold, the quit, the settings) taken up at once, on its thread once the agent runs.
     control: asks::Handle,
@@ -4104,10 +4105,11 @@ impl Agent {
                 self.set_hold(h.held.clone(), h.at);
             }
             let (hold, g) = self.control.hold.read();
-            if hold.at > lead.map_or(0, |h| h.at) && self.hold_told != Some(g) {
+            let told = Some((g, lead.clone()));
+            if hold.at > lead.as_ref().map_or(0, |h| h.at) && self.hold_told != told {
                 if let Some(b) = &self.beats {
                     b.ask(Ask::Hold(HoldAsk { member: me.clone(), held: hold.held.clone(), at: hold.at }));
-                    self.hold_told = Some(g);
+                    self.hold_told = told;
                 }
             }
         }

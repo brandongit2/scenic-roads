@@ -64,9 +64,6 @@
 #                                                   start, opens every connection to it
 #                                                   (SCENIC_TEST_PROXY_TO), so nothing reaches
 #                                                   Wikimedia
-#   pool-two-macs.sh resume <folder> [off]          state/pool/resume in the scratch folder:
-#                                                   resuming on a job's Mac, a pass complete by the
-#                                                   records (`off`: the switch removed)
 #   pool-two-macs.sh planet <folder> <date>         a planet of <date> in the scratch folder (a
 #                                                   stand-in file) and Planetiler's jar: an OSM pass
 #                                                   to plan (the fake pass job marks its filter done
@@ -76,10 +73,6 @@
 #                                                   that member's progress file holding the pass of
 #                                                   <date>, noted now (as its Mac's agent notes a
 #                                                   pass stopped there mid-stage)
-#   pool-two-macs.sh brokers <folder> [off]         state/pool/brokers in the scratch folder: each
-#                                                   member brokers its own jobs' tasks, members'
-#                                                   pages read each other directly (`off`: the
-#                                                   switch removed)
 #   pool-two-macs.sh placement <folder> [off]       state/pool/placement in the scratch folder:
 #                                                   members' asks and tasks placed by how crucial
 #                                                   and by measured speed, jobs offering ahead
@@ -113,7 +106,7 @@
 # member's coordinator up in its process and the old lead's port free, the jobs out ending at the
 # new lead.
 #
-# With state/pool/resume on (2026-10-15, `resume`, then `progress` naming the M1's member and host
+# Resuming (always on; 2026-10-15: `progress` naming the M1's member and host
 # once its heartbeat is there, its agent restarted so it reads its file, then `planet`): the lead
 # waits ("its progress is on <host>'s disk … offered to it alone"), the M1 runs the pass in its own
 # scratch folder with its unmerged file (`<scratch>/unmerged-<pid>`), the entry merged, the pass
@@ -309,11 +302,6 @@ EOF
     print -n ${4:?a port} > $d/coord-port
     if [[ -n ${5:-} ]]; then print -n $5 > $d/mem-mb; else rm -f $d/mem-mb; fi
     ;;
-  brokers)
-    r=${2:?the scratch folder}
-    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
-    if [[ ${3:-} == off ]]; then rm -f $r/state/pool/brokers; else mkdir -p $r/state/pool; : > $r/state/pool/brokers; fi
-    ;;
   placement)
     r=${2:?the scratch folder}
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
@@ -322,11 +310,6 @@ EOF
   task)
     d=${2:?its folder}
     if [[ ${3:-} == off ]]; then rm -f $d/v/app/job-task; else : > $d/v/app/job-task; fi
-    ;;
-  resume)
-    r=${2:?the scratch folder}
-    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
-    if [[ ${3:-} == off ]]; then rm -f $r/state/pool/resume; else mkdir -p $r/state/pool; : > $r/state/pool/resume; fi
     ;;
   planet)
     r=${2:?the scratch folder} date=${3:?its date}

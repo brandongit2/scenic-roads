@@ -181,12 +181,12 @@ pub fn http_courier() -> Courier {
     })
 }
 
-/// The addresses mail may be posted to: the tailnet's, and this Mac's own loopback (a lead on the
-/// same Mac); never a LAN's name or address, any device's on the network to claim
-/// (crate::coord::brokers::origins_of).
+/// The addresses mail may be posted to: the tailnet's alone (a LAN's name or address is any
+/// device's on the network to claim, crate::coord::brokers::origins_of). Loopback only in a unit
+/// test, where every Mac's address is (net::urls); a real broker never lists it.
 fn mail_urls(urls: &[String]) -> Vec<String> {
     use crate::coord::brokers::{origin, tailnet};
-    let ours = |o: &str| tailnet(o) || o.starts_with("http://127.0.0.1:") || o.starts_with("http://[::1]:");
+    let ours = |o: &str| tailnet(o) || (cfg!(test) && o.starts_with("http://127.0.0.1:"));
     urls.iter().filter(|u| origin(u).is_some_and(|o| ours(&o))).cloned().collect()
 }
 
@@ -418,6 +418,7 @@ impl Side {
         let mail_dirty = mail.sent.keys().cloned().collect();
         let http: Arc<crate::coord::beats::Beats> = Arc::default();
         http.keep_asks(&dir.join(crate::coord::asks::QUEUE));
+        http.had_settings(crate::control::read_pool_settings(home));
         Ok(Some(Side {
             me,
             driver: Some(driver),

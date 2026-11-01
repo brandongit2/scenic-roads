@@ -173,15 +173,18 @@ impl Lead {
         Lead { holds, settings }
     }
 
-    /// Takes hold ask `a` when it's later than the member's hold kept: the hold as it stands, and
-    /// the document to keep when it changed.
+    /// Takes hold ask `a` when it's no earlier than the member's hold kept and changes it: the hold
+    /// as it stands, and the document to keep when it changed. Times are whole seconds, so two asks
+    /// in one second (a pause and a resume clicked quickly) tie: the one arriving later wins, kept a
+    /// second on so the member, which takes only a later hold, takes it too. (A repeat, an ask sent
+    /// again after a lost answer, changes nothing.)
     pub fn hold(&mut self, a: &HoldAsk) -> Result<(HoldState, Option<(String, Value)>)> {
         ensure!(crate::pool::is_member_id(&a.member), "{:?} isn't a member id", a.member);
         let was = self.holds.get(&a.member).cloned().unwrap_or_default();
-        if a.at <= was.at {
+        if a.at < was.at || (a.held == was.held && was.at > 0) {
             return Ok((was, None));
         }
-        let st = HoldState { held: a.held.clone(), at: a.at };
+        let st = HoldState { held: a.held.clone(), at: a.at.max(was.at + 1) };
         self.holds.insert(a.member.clone(), st.clone());
         let doc = serde_json::to_value(&st)?;
         Ok((st, Some((format!("hold/{}", a.member), doc))))
@@ -210,7 +213,12 @@ mod tests {
         let (st, doc) = l.hold(&HoldAsk { member: M.into(), held: held.clone(), at: 10 }).unwrap();
         assert_eq!((st.held.clone(), doc.is_some()), (held.clone(), true));
         let (st, doc) = l.hold(&HoldAsk { member: M.into(), held: None, at: 9 }).unwrap();
-        assert_eq!((st.held, doc), (held, None), "an earlier ask doesn't undo it");
+        assert_eq!((st.held, doc), (held.clone(), None), "an earlier ask doesn't undo it");
+        let (st, doc) = l.hold(&HoldAsk { member: M.into(), held: held.clone(), at: 10 }).unwrap();
+        assert_eq!((st.at, doc), (10, None), "a repeat changes nothing");
+        let (st, doc) = l.hold(&HoldAsk { member: M.into(), held: None, at: 10 }).unwrap();
+        assert_eq!((st.held, st.at, doc.is_some()), (None, 11, true), "a tie: the later arrival, a second on");
+        l.hold(&HoldAsk { member: M.into(), held: held.clone(), at: 12 }).unwrap();
         assert!(l.hold(&HoldAsk { member: "x".into(), held: None, at: 1 }).is_err());
         let ask = |v: Value, at| SettingAsk { name: PLACEMENT.into(), value: v, by: "t".into(), at };
         assert!(l.set(&ask(Value::Bool(true), 5)).unwrap().is_some());
