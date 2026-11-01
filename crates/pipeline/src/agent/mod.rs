@@ -2662,6 +2662,7 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building".into(), why });
             return Vec::new();
         }
+        nasread::phase("the grants: the lead's ask");
         let mut skip: BTreeSet<String> =
             jobs.iter().filter(|j| !offered_job(j) && self.wait_reason(j, c).is_some()).map(|j| j.id.clone()).collect();
         // (A catalogue while the pool's records don't reflect the journal (`Gates::publish`): not asked
@@ -2702,7 +2703,10 @@ impl Agent {
             want: if alone { 1 } else { want(self.job_slots(), self.running_jobs()) },
             ..Default::default()
         };
+        // (The coordinator's lock waited on here; its packing is `ask_own`'s own phase.)
+        nasread::phase("the grants: the coordinator's lock");
         let Some(mut g) = co.ask_own(&ask, &skip, plan) else { return Vec::new() };
+        nasread::phase("the grants: the leases held in slots");
         let more = std::mem::take(&mut g.more);
         let mut got = Vec::new();
         for g in std::iter::once(g).chain(more) {
@@ -4493,6 +4497,7 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building".into(), why: why.clone() });
         }
         // (The lead's coordinator: targets its NAS budget has held back over half an hour.)
+        nasread::phase("the grants: the NAS budget's waits");
         nas_wait_lines(
             &mut waiting,
             self.coord.as_ref().map(|c| c.nas_waits()).unwrap_or_default(),
@@ -4508,10 +4513,12 @@ impl Agent {
             }
         }
         // The jobs granted, each in its slot (`start_granted`).
+        nasread::phase("the grants: the starts");
         if !newer && self.pause.is_none() && pool_holds.is_none() {
             self.start_granted(granted, &c, root.as_ref(), &mut waiting);
         }
         // A lease for a job that didn't start (room on the disk, say): given back.
+        nasread::phase("the grants: leases not started given back");
         for k in 0..self.slots.len() {
             if self.slots[k].running.is_none() && self.slots[k].lease.is_some() {
                 self.end_lease(k, Outcome::Interrupted, &[], "it couldn't start here");

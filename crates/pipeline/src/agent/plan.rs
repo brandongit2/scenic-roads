@@ -627,6 +627,8 @@ impl Planner {
                 c.plan_started(n);
             }
             let plan = self.plan(&root, &c, &mut waiting);
+            // (Its last phase ended with it, however it returned.)
+            nasread::PLAN.enter("");
             self.n = n;
             self.offer_plan(&plan);
             self.regions = load_regions(&root);
@@ -1706,7 +1708,7 @@ impl Planner {
         let mut planned = {
             let tiles = self.terrain_tiles(root, &manifest);
             *self.depth_keep.borrow_mut() = build::depth_kept(cov, &manifest, &tiles, now_s());
-            nasread::phase("the plan: build::plan");
+            nasread::PLAN.enter("build::plan");
             build::plan(
                 &cov,
                 date,
@@ -1726,7 +1728,7 @@ impl Planner {
                 },
             )
         };
-        nasread::phase("the plan: its jobs");
+        nasread::PLAN.enter("its jobs");
         self.catalogues.borrow_mut().idle = planned.idle;
         // The steps held for other steps' targets: said, never a silent stall (the summits' own note,
         // below, is the same).

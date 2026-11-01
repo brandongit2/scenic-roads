@@ -1689,6 +1689,8 @@ impl Coordinator {
     /// lead is moving. Its leases are renewed and ended as this Mac's own (`renew`, `finish`).
     pub fn ask_own(&self, a: &Ask, skip: &BTreeSet<String>, plan: u64) -> Option<Grant> {
         let mut s = self.shared.lock().unwrap();
+        // (The lock held: what follows is the packing, the agent loop's phase until its next.)
+        crate::agent::nasread::phase("the grants: the coordinator's packing");
         let now = s.now();
         if s.paused.is_some() || s.moving_now(wall_now()).is_some() {
             return None;

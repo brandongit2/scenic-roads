@@ -474,24 +474,56 @@ pub fn probe(p: &NasPath) -> Option<Duration> {
 /// A phase of a round that takes this long or longer is logged by name as it ends (`phase`).
 pub const SLOW_PHASE: Duration = Duration::from_secs(10);
 
-/// The round's phase in progress (`phase`): its name, and when it began.
-static PHASE: Mutex<Option<(&'static str, std::time::Instant)>> = Mutex::new(None);
+/// One part's phases (the loop's, the plan's: each on its own thread): the one in progress, its
+/// name and when it began. Each part its own, so one part's phase never ends or stretches
+/// another's (task #923: the plan thread's phases, in one slot with the loop's, had the loop's
+/// logged as lasting until the plan's next).
+pub struct Phases {
+    who: &'static str,
+    now: Mutex<Option<(&'static str, std::time::Instant)>>,
+}
+
+impl Phases {
+    pub const fn new(who: &'static str) -> Phases {
+        Phases { who, now: Mutex::new(None) }
+    }
+
+    /// The part enters phase `name` ("": none, its work over): the one that ends is logged if it
+    /// took `SLOW_PHASE` or more (but `WAIT`); it, and how long it took. A mutex held only to swap
+    /// the phase.
+    pub fn enter(&self, name: &'static str) -> Option<(&'static str, Duration)> {
+        let next = (!name.is_empty()).then(|| (name, std::time::Instant::now()));
+        let was = std::mem::replace(&mut *self.now.lock().unwrap_or_else(|e| e.into_inner()), next)?;
+        let took = was.1.elapsed();
+        if was.0 != WAIT && took >= SLOW_PHASE {
+            eprintln!("agent: {} {} phase \"{}\" took {} s", clock(super::now_s()), self.who, was.0, took.as_secs());
+        }
+        Some((was.0, took))
+    }
+
+    /// The phase in progress.
+    pub fn now(&self) -> Option<&'static str> {
+        self.now.lock().unwrap_or_else(|e| e.into_inner()).map(|(n, _)| n)
+    }
+}
+
+/// The loop's phases (`phase`).
+pub static LOOP: Phases = Phases::new("the loop's");
+
+/// The plan's phases, on its thread (crate::agent::plan).
+pub static PLAN: Phases = Phases::new("the plan's");
 
 /// The loop's wait between rounds (up to 20 s, as planned): a phase, never logged as slow.
 pub const WAIT: &str = "the wait between rounds";
 
-/// The round enters phase `name` (the one before it ends): the one that ends is logged if it took
-/// `SLOW_PHASE` or more (but `WAIT`). A mutex held only to swap the phase, ~20 times a round.
+/// The loop's round enters phase `name` (`Phases::enter`).
 pub fn phase(name: &'static str) {
-    let was = PHASE.lock().unwrap_or_else(|e| e.into_inner()).replace((name, std::time::Instant::now()));
-    if let Some((was, t)) = was.filter(|w| w.0 != WAIT && w.1.elapsed() >= SLOW_PHASE) {
-        eprintln!("agent: {} the loop's phase \"{was}\" took {} s", clock(super::now_s()), t.elapsed().as_secs());
-    }
+    LOOP.enter(name);
 }
 
-/// The round's phase in progress (`phase`), for the heartbeat's word on a stuck round.
+/// The loop's phase in progress (`phase`), for the heartbeat's word on a stuck round.
 pub fn phase_now() -> Option<&'static str> {
-    PHASE.lock().unwrap_or_else(|e| e.into_inner()).map(|(n, _)| n)
+    LOOP.now()
 }
 
 /// `s` (s since the epoch) as the time of day in UTC, for the log: 14:03:59Z.
@@ -504,6 +536,25 @@ pub fn clock(s: u64) -> String {
 pub(crate) mod tests {
     use super::*;
     use std::time::Instant;
+
+    /// Task #923: the plan's phases, on their thread, neither end nor replace the loop's: the
+    /// loop's phase ends at its own next one, whatever the plan entered meanwhile.
+    #[test]
+    fn the_plans_phases_never_end_the_loops() {
+        let (lp, plan) = (Phases::new("a loop's"), Phases::new("a plan's"));
+        lp.enter("the grants");
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                plan.enter("build::plan");
+                plan.enter("its jobs");
+            });
+        });
+        assert_eq!(lp.now(), Some("the grants"));
+        assert_eq!(lp.enter("the caches").map(|w| w.0), Some("the grants"));
+        assert_eq!(plan.enter("").map(|w| w.0), Some("its jobs"));
+        assert_eq!(plan.now(), None, "its work over: no phase");
+        assert_eq!(plan.enter(""), None);
+    }
 
     #[test]
     fn a_probe_times_a_listing_and_one_that_fails_is_none() {
