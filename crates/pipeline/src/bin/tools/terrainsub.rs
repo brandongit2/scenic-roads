@@ -7,8 +7,8 @@ use anyhow::Result;
 use clap::Parser;
 use pipeline::cli::progs::Terrainsub;
 
-fn main() -> Result<()> {
-    let a = Terrainsub::parse();
+pub fn main(args: Vec<String>) -> Result<()> {
+    let a = Terrainsub::parse_from(args);
     pipeline::timings::job("terrainsub", || run(&a))
 }
 

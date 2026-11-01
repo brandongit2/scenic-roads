@@ -39,7 +39,7 @@ const PASS_REGIONS: &[&str] = &["--pass", "--regions"];
 const STEPS: &[Step] = &[
     s("pack", "[--cache dir] [--mirror dir] [--pass date] [T …]", "road and rail hi packs (z9–14) and hidata of z6 tiles T (default: every tile with ways), opening only T's owner units (by the pass's reaches)", &[], &["--cache", "--mirror", "--pass"], ANY),
     s("lo", "[--cache dir] [--mirror dir] [--pass date] [Q …]", "lo packs (z4–8 road and rail tiles) of z3 tiles Q (default: all), opening only Q's owner units (by the pass's reaches)", &[], &["--cache", "--mirror", "--pass"], ANY),
-    s("osm-pass", "--planet <p> --date <d> [--extract f] [--planetiler f] [--clear dir] …", "the OSM pass (z6 tile extracts, sets, basemap, road values); resumable. --clear: a cache folder cleared first (one per --clear, repeated for more). Keeps free the room target SCENIC_ROOM_TARGET_MB says (the agent sets it); unset, as run by hand, no target", &[], &["--planet", "--date", "--extract", "--planetiler", "--clear"], 0),
+    s("osm-pass", "--planet <p> --date <d> [--planetiler f] [--clear dir] …", "the OSM pass (z6 tile extracts, sets, basemap, road values); resumable. --clear: a cache folder cleared first (one per --clear, repeated for more). Keeps free the room target SCENIC_ROOM_TARGET_MB says (the agent sets it); unset, as run by hand, no target", &[], &["--planet", "--date", "--planetiler", "--clear"], 0),
     s("outlines", "[--pass d]", "the pass's administrative and ISO 3166 outlines from its outline set", &[], PASS, 0),
     s("patch-ferries", "[--pass d] [--near-coverage] [--regions dir]", "the pass's extracts given the standalone ferry ways its filtered planet lacked; run by hand", &["--near-coverage"], PASS_REGIONS, 0),
     s("pass-sets", "[--pass d]", "the pass's sets it lacks in their current filters; copies the filtered planet here only with room past the room target SCENIC_ROOM_TARGET_MB says (the agent sets it); unset, as run by hand, no target", &[], PASS, 0),
@@ -168,7 +168,14 @@ pub fn command() -> Command {
         };
         c = c.subcommand(sc);
     }
-    c
+    // (The programs folded in, each with its own command line: super::TOOLS, src/bin/tools.)
+    let mut t = Command::new("tool")
+        .about("one of the programs folded into scenic-build (jobs and tasks run them), with its own command line")
+        .subcommand_required(true);
+    for n in super::TOOLS {
+        t = t.subcommand(super::tool(n).expect("a tool's command line"));
+    }
+    c.subcommand(t)
 }
 
 /// Whether `step` is one of scenic-build's, and whether it takes arguments (targets).

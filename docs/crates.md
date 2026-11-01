@@ -3,10 +3,11 @@
 **Status: Planned.** Steps 1 (`crates/pyport`) and 2 (`crates/codecs`) are built; every later step below is planned.
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
-and 15 binaries. A crate is rustc's unit: an edit anywhere recompiles all of it, little of it
+and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
+scenic-build's tools). A crate is rustc's unit: an edit anywhere recompiles all of it, little of it
 compiles in parallel, and one compile of it peaked at 9.3 GB on the owner's 16 GB M1 (31 Oct
 2026). This plan splits it along its seams, one step at a time, each step shipping alone with the
-build green and every binary's behaviour unchanged.
+build green and every program's behaviour unchanged.
 
 ## 1. The module graph
 
@@ -103,7 +104,7 @@ temporary: the list in lib.rs is the record of what still goes through them.
 
 ## 3. The binaries
 
-| binary | lines | uses | moves with |
+| program | lines | uses | its code's crate |
 |---|---|---|---|
 | scenic | 1.9k | agent, coord, control, pool, budget | pipeline (top) |
 | scenic-build | 7.3k | everything | pipeline (top) |
@@ -119,14 +120,15 @@ temporary: the list in lib.rs is the record of what still goes through them.
 | bldtile | 0.03k | bld, dem | bld |
 | areaflags | 0.01k | areaflags, cli | jobrt |
 
-A binary moves only with a step that moves its whole set of modules, and keeps its name (scripts
-run binaries by name from the shared target dir). #917 later merges the small tools into
-subcommands of `scenic-build`; that changes this table, not the crate plan.
+Since #917 only `scenic` and `scenic-build` are binaries; the other rows are scenic-build's tools
+(`scenic-build tool <name>`, src/bin/tools/, `pipeline::cli::TOOLS`), linked into it once. A tool's
+file stays with scenic-build; the last column is the crate the modules it uses go to, which a
+step moves only with its whole set. Jobs and tasks run a tool by its name (`pipeline::cli::program`).
 
 ## 4. Steps
 
 Each step ships alone: build, clippy and the affected tests green, no behaviour change, the
-binaries' names unchanged. Files paused branches edit (#879: agent/steps.rs, agent/build.rs,
+programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, agent/build.rs,
 agent/rekey.rs; #856: crates/server; #882 step 4: coord; #914) move only after those land.
 
 1. **pyport** (built): move pyjson, pytext, pynumpy, tpsimplify into `crates/pyport`; pipeline

@@ -120,9 +120,9 @@ fn mode_bits(mode: u8) -> u8 {
     }
 }
 
-fn main() -> Result<()> {
+pub fn main(args: Vec<String>) -> Result<()> {
     let pipeline::cli::progs::Railfreq { build_dir: dir, pairs: files } =
-        <pipeline::cli::progs::Railfreq as clap::Parser>::parse();
+        <pipeline::cli::progs::Railfreq as clap::Parser>::parse_from(args);
     let t0 = std::time::Instant::now();
     let mut pairs: Vec<Pair> = Vec::new();
     for p in &files {

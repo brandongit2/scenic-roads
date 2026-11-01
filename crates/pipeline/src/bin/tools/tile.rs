@@ -6,8 +6,8 @@ use clap::Parser;
 use roadcore::elev;
 use roadcore::{Array, Ways};
 
-fn main() -> Result<()> {
-    let dir = pipeline::cli::progs::Tile::parse().unit_dir;
+pub fn main(args: Vec<String>) -> Result<()> {
+    let dir = pipeline::cli::progs::Tile::parse_from(args).unit_dir;
     let t0 = std::time::Instant::now();
     let wv = Ways::open(&dir)?;
     let raw = Array::<f32>::open(&dir.join("elev.f32"))?;

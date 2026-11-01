@@ -63,6 +63,11 @@ Four kinds, all with the same spec shape (`unit` (stored: the task's z6 or z8 ti
 
 Common rules:
 
+- **Its programs** (a run's `prog`: `trees`, `bldtile`, `terrainsub`, a tail's `elev`, `tile`,
+  `scenic-metrics`) are scenic-build's tools, run by the worker from its own app version's folder as
+  `scenic-build tool <prog> …` (`pipeline::cli::program`; docs/building.md, Programs). A version from
+  before #917 runs its binary of that name, so a task reads the same to either.
+
 - **Read where they lie** (`/net` in a task's places): `{sources}` (the NAS's `sources/`; `{chm}`
   the canopy squares) and `{net}` (the land cover's servers' files, laid out as `crate::fetch`'s
   mirror, `<host>/<path>`). A worker reads its own mount, read-only (`Tools::stores_read_only`,

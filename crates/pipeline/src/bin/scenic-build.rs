@@ -191,8 +191,22 @@ fn positional(args: &[String]) -> Vec<String> {
     pipeline::cli::build::targets(args).1
 }
 
-fn main() -> Result<()> {
+#[path = "tools/mod.rs"]
+mod tools;
+
+fn main() -> std::process::ExitCode {
+    use std::process::Termination;
     let args: Vec<String> = std::env::args().collect();
+    // `scenic-build tool <name> …`: one of the programs folded in (tools; pipeline::cli::TOOLS).
+    if args.get(1).is_some_and(|a| a == "tool") {
+        if let Some(code) = tools::run(&args[2..]) {
+            return code;
+        }
+    }
+    build_main(args).report()
+}
+
+fn build_main(args: Vec<String>) -> Result<()> {
     // (A catalogue read through deltas kept on this Mac for the next read: store::catalogue::keep_read_in.)
     if let Some(d) = store::catalogue::kept_dir() {
         store::catalogue::keep_read_in(d);
@@ -463,9 +477,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "osm-pass" => {
             let planet = PathBuf::from(opt(&args, "--planet").context("--planet <path>")?);
             let date = opt(&args, "--date").context("--date YYYY-MM-DD")?;
-            let extract = PathBuf::from(opt(&args, "--extract").unwrap_or_else(|| "target/release/extract".into()));
             let planetiler = PathBuf::from(opt(&args, "--planetiler").unwrap_or_else(|| "tools/planetiler.jar".into()));
-            pipeline::osmpass::check_tools(&extract, &planetiler)?;
+            pipeline::osmpass::check_tools(&planetiler)?;
             // Room first: caches the pass makes worthless or can refill (the pack cache), through
             // their accessor, which passes over every file another job holds (store::cachefile).
             for dir in pipeline::cli::build::values(&args, "--clear").into_iter().map(PathBuf::from) {
@@ -479,7 +492,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                     );
                 }
             }
-            pipeline::osmpass::run_pass(&mut out, &planet, &date, &scratch, &extract, &planetiler)?
+            pipeline::osmpass::run_pass(&mut out, &planet, &date, &scratch, &own_bin()?, &planetiler)?
         }
         "patch-ferries" => {
             let date = opt(&args, "--pass")
@@ -2987,7 +3000,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         // (The extract program's input, read where it lies: tests/nas_access.rs.)
         .map(|c| out.path(c).unchecked_path())
         .context("no hiking-route ends for the pass (the trailends step)")?;
-    let extract = own_bin()?.join("extract");
+    let bin = own_bin()?;
     std::fs::create_dir_all(scratch)?;
     // (Spaced as the z6 tiles' extract spaces them: pipeline::dem::spacing.)
     let spacing = scratch.join(pipeline::dem::spacing::FILE);
@@ -3027,9 +3040,9 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             pipeline::costin::add("bytes", n);
             drop(p);
             let p = phase("extracting candidates (extract)");
-            let mut c = store::spawn::command(&extract);
+            let mut c = pipeline::cli::program(&bin, "extract");
             c.arg(&dir).arg(&spacing).arg("--candidates").arg("--trailends").arg(&trailends).arg(&local);
-            let o = store::spawn::output(&mut c).with_context(|| format!("run {}", extract.display()))?;
+            let o = store::spawn::output(&mut c).context("run extract")?;
             anyhow::ensure!(
                 o.status.success(),
                 "extract --candidates for {}: {}\n{}",
@@ -6363,7 +6376,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let spacing = scratch.join(pipeline::dem::spacing::FILE);
     pipeline::dem::spacing::Fine::of_records(out.root(), &out.manifest)?.write(&spacing)?;
     std::fs::remove_dir_all(&dir).ok();
-    let st = store::spawn::status(store::spawn::command(bin.join("extract")).arg(&dir).arg(&spacing).arg(&clip))
+    let st = store::spawn::status(pipeline::cli::program(&bin, "extract").arg(&dir).arg(&spacing).arg(&clip))
         .context("run extract")?;
     anyhow::ensure!(st.success(), "extract failed: {st}");
     std::fs::remove_file(&clip).ok();
@@ -6373,7 +6386,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // 4. The trains on them.
     parts.start(4);
     let p = phase("matching the trains onto the tracks (railfreq)");
-    let st = store::spawn::status(store::spawn::command(bin.join("railfreq")).arg(&dir).args(&inputs))
+    let st = store::spawn::status(pipeline::cli::program(&bin, "railfreq").arg(&dir).args(&inputs))
         .context("run railfreq")?;
     anyhow::ensure!(st.success(), "railfreq failed: {st}");
     let ways = roadcore::Ways::open(&dir)?;

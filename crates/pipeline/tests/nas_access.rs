@@ -88,7 +88,7 @@ const FROM_ARG: &[(&str, &str)] = &[
     // (`--pyramids <dir>`, `--into <dir>`: a scratch store of GSI's tiles, task #806.)
     ("crates/pipeline/src/bin/scenic-build.rs", "pyramids_arg"),
     ("crates/pipeline/src/bin/scenic-build.rs", "pyramids_fill"),
-    ("crates/pipeline/src/bin/scenic-polar.rs", "main"),
+    ("crates/pipeline/src/bin/tools/polar.rs", "main"),
     ("crates/server/src/main.rs", "main"),
     ("crates/server/src/data.rs", "find_nas"),
     ("crates/pipeline/examples/checklist.rs", "main"),

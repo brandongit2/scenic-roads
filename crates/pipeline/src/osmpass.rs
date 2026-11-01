@@ -741,11 +741,12 @@ impl UnitLinks {
     }
 }
 
-/// Run `extract` on a extract and work out its z6 tile's chaining inputs.
+/// Run `extract` (of the programs in `bin`: crate::cli::program) on a extract and work out its z6
+/// tile's chaining inputs.
 /// `spacing`: the declared datasets' spacing file (crate::dem::spacing), as the z6 tiles' extract has it.
-pub fn unit_links(extract: &Path, spacing: &Path, piece: &Path, unit: TileId, work: &Path) -> Result<UnitLinks> {
+pub fn unit_links(bin: &Path, spacing: &Path, piece: &Path, unit: TileId, work: &Path) -> Result<UnitLinks> {
     std::fs::create_dir_all(work)?;
-    let mut c = store::spawn::command(extract);
+    let mut c = crate::cli::program(bin, "extract");
     c.arg(work).arg(spacing).arg(piece);
     c.stderr(std::process::Stdio::null());
     run(c, &format!("extract {}", piece.display()))?;
@@ -935,14 +936,7 @@ pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<crate:
 }
 
 /// Run (or resume) the pass for `date` from `planet` (on the NAS).
-pub fn run_pass(
-    out: &mut Out,
-    planet: &Path,
-    date: &str,
-    scratch: &Path,
-    extract_bin: &Path,
-    planetiler: &Path,
-) -> Result<()> {
+pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &Path, planetiler: &Path) -> Result<()> {
     use crate::agent::jobs::{report, stage};
     std::fs::create_dir_all(scratch)?;
     let local_planet = scratch.join("planet.osm.pbf");
@@ -1129,7 +1123,7 @@ pub fn run_pass(
             let lf = links.join(format!("{}.bin", u.dash()));
             if !lf.exists() {
                 let _p = crate::timings::sub("working out how their roads connect (extract)");
-                let ul = unit_links(extract_bin, &spacing, f, u, &work)?;
+                let ul = unit_links(bin, &spacing, f, u, &work)?;
                 eprintln!("roads: {} {} ways, {} pairs", u.slash(), ul.ways.len(), ul.pairs.len());
                 ul.save(&lf)?;
             }
@@ -1168,7 +1162,7 @@ pub fn run_pass(
                     let src =
                         out.path(out.get(&format!("sources/osm/{date}/pieces/{}", unit.dash())).context("piece")?);
                     // (The extract program's input, read where it lies: tests/nas_access.rs.)
-                    unit_links(extract_bin, &spacing, &src.unchecked_path(), unit, &scratch.join("extract-work"))?
+                    unit_links(bin, &spacing, &src.unchecked_path(), unit, &scratch.join("extract-work"))?
                 }
             };
             all.push((unit, ul));
@@ -1479,10 +1473,7 @@ pub fn check_planetiler(jar: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn check_tools(extract_bin: &Path, planetiler: &Path) -> Result<()> {
-    if !extract_bin.exists() {
-        bail!("no extract binary at {}", extract_bin.display());
-    }
+pub fn check_tools(planetiler: &Path) -> Result<()> {
     if !planetiler.exists() {
         bail!("no Planetiler at {}", planetiler.display());
     }

@@ -19,19 +19,6 @@ fn exe(prog: &str) -> &'static str {
     match prog {
         "scenic" => env!("CARGO_BIN_EXE_scenic"),
         "scenic-build" => env!("CARGO_BIN_EXE_scenic-build"),
-        "scenic-metrics" => env!("CARGO_BIN_EXE_scenic-metrics"),
-        "extract" => env!("CARGO_BIN_EXE_extract"),
-        "elev" => env!("CARGO_BIN_EXE_elev"),
-        "tile" => env!("CARGO_BIN_EXE_tile"),
-        "areaflags" => env!("CARGO_BIN_EXE_areaflags"),
-        "landcover" => env!("CARGO_BIN_EXE_landcover"),
-        "railfreq" => env!("CARGO_BIN_EXE_railfreq"),
-        "trees" => env!("CARGO_BIN_EXE_trees"),
-        "bldtile" => env!("CARGO_BIN_EXE_bldtile"),
-        "terrainsub" => env!("CARGO_BIN_EXE_terrainsub"),
-        "lakefill" => env!("CARGO_BIN_EXE_lakefill"),
-        "coastcheck" => env!("CARGO_BIN_EXE_coastcheck"),
-        "scenic-polar" => env!("CARGO_BIN_EXE_scenic-polar"),
         p => panic!("no binary for {p}: add it to exe() and pipeline::cli::PROGRAMS"),
     }
 }
@@ -59,6 +46,24 @@ fn every_binary_has_a_checked_command_line() {
     for p in PROGRAMS {
         assert!(Path::new(exe(p)).exists(), "{p}");
     }
+}
+
+/// Each tool (pipeline::cli::TOOLS) runs as `scenic-build tool <name>` with its own command line,
+/// and every one of them is one of `scenic-build tool`'s commands (the loop below runs them all).
+#[test]
+fn the_tools_run_through_scenic_build() {
+    let c = command("scenic-build").unwrap();
+    let t = c.find_subcommand("tool").unwrap();
+    let mut listed: Vec<&str> = t.get_subcommands().map(|s| s.get_name()).collect();
+    let mut tools = pipeline::cli::TOOLS.to_vec();
+    (listed.sort(), tools.sort());
+    assert_eq!(listed, tools);
+    let s = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let (code, out, err) = run("scenic-build", &s(&["tool", "extract", "--help"]));
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("Usage: extract"), "{out}");
+    let (code, _, err) = run("scenic-build", &s(&["tool", "no-such-tool"]));
+    assert_eq!(code, 2, "{err}");
 }
 
 /// Runs `prog args` in an empty home: its exit code, stdout and stderr; the home left empty.

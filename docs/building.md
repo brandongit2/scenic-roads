@@ -604,9 +604,19 @@ save its password in that file, and delete the .p12. A Mac publishing at its des
 keychain as before.
 The check: `ssh m6 'security unlock-keychain -p "$(<~/.config/scenic/signing-keychain-pass)" ~/Library/Keychains/scenic-signing.keychain-db && cp /usr/bin/true /tmp/t && codesign -s "Scenic Code Signing" -f /tmp/t'`.
 
-**Programs:** `scenic` (the user's command and the agent); `scenic-build` (the build steps);
-`server`; the `unit` job's programs `extract`, `elev`, `areaflags`, `landcover`, `tile`, `scenic-metrics`
-(rail runs `extract` and `railfreq`, tree cover `trees`). The app also carries `dem/` (the Python
+**Programs:** three binaries: `scenic` (the user's command and the agent), `scenic-build` (the
+build steps) and `server`. The programs the steps and tasks run are scenic-build's tools,
+`scenic-build tool <name> …` (`pipeline::cli::TOOLS`, src/bin/tools/): the `unit` job's `extract`,
+`elev`, `areaflags`, `landcover`, `tile`, `scenic-metrics` (rail runs `extract` and `railfreq`, tree
+cover `trees`, the tasks `trees`, `bldtile`, `terrainsub`), and `lakefill`, `coastcheck` and
+`scenic-polar` run by hand. Jobs and tasks name a tool as a program (a task's spec its `prog`), and
+`pipeline::cli::program` runs it from the app version's own folder: through its scenic-build, or,
+in a version from before #917, its binary of that name; so a task offered by one version runs on a
+worker with the other. One binary for them all links the library once (measured on the M1, 1 Nov 2026, release: the
+shipped binaries 112 MB as 13 files, 84 MB as 3; the binaries' phase of a release build, 15 thin-LTO
+links side by side, 17 min, then 5.5 min). `scenic` stays apart: the agent is a launchd program under its own signing
+identifier (`local.scenic.agent`), which Network privacy and the firewall know it by (docs/macs.md);
+`server` is its own crate, signed `local.scenic.server`. The app also carries `dem/` (the Python
 steps), Scenic.app, `web/` and `fonts/`. The Python steps run in one environment per lock file
 (`dem/uv.lock` with `dem/.python-version`), in `~/Library/Application Support/scenic/pyenv/<key>/`
 beside the versions, never inside one, and shared by every version with that lock

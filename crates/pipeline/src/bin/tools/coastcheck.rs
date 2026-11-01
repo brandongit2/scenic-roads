@@ -1,9 +1,9 @@
 //! The shoreline check's reference (tools/coastcheck/README.md): the water at full detail, and its
 //! exact coverage served as raster tiles for the map to draw from the same camera as the app.
 //!
-//!   coastcheck build --osm <the pass's filtered .osm.pbf> --water-polygons <zip> --out <store folder>
+//!   scenic-build tool coastcheck build --osm <the pass's filtered .osm.pbf> --water-polygons <zip> --out <store folder>
 //!                    [--index sparse_mem_array|sparse_file_array,<file>]
-//!   coastcheck serve --store <store folder> [--port 18095]
+//!   scenic-build tool coastcheck serve --store <store folder> [--port 18095]
 //!   coastcheck tile --store <store folder> <z> <x> <y> [--size 512] > tile.png
 //!
 //! `build` reads every water area the basemap draws from the pass's filtered planet (osmium
@@ -23,8 +23,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-fn main() -> Result<()> {
-    match Coastcheck::parse().cmd {
+pub fn main(args: Vec<String>) -> Result<()> {
+    match Coastcheck::parse_from(args).cmd {
         C::Build { osm, water_polygons, out, index } => build(&osm, &water_polygons, &out, &index),
         C::Serve { store, port } => serve(&store, port),
         C::Stats { store, z, sample, size } => stats(&store, z, sample, size),

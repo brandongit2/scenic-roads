@@ -60,7 +60,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/pipeline/src/agent/mod.rs", "osm_pass_cmd", "names the pack cache for the OSM pass to clear (its job clears it through the accessor: store::cachefile::remove_tree)"),
     ("crates/pipeline/src/agent/plan.rs", "region_jobs", "a job's arguments: where its caches are"),
     ("crates/pipeline/src/treepacks.rs", "*", "a test bench's own squares folder"),
-    ("crates/pipeline/src/bin/scenic-metrics.rs", "canopy", "chooses the canopy folder; fetch_file holds each square"),
+    ("crates/pipeline/src/bin/tools/metrics.rs", "canopy", "chooses the canopy folder; fetch_file holds each square"),
     ("crates/pipeline/src/bin/scenic-build.rs", "unit_snap", "the unit's tools' arguments"),
     ("crates/pipeline/src/bin/scenic-build.rs", "unit_step", "the unit's tools' arguments; the squares and packs held as they're copied ahead"),
     ("crates/pipeline/src/bin/scenic-build.rs", "rail_step", "the rail job's own stop pairs (pairs-*.bin), which room-making never deletes"),
@@ -173,7 +173,7 @@ fn every_internet_request_asks_first() {
     const ASKED_ELSEWHERE: &[(&str, &str, &str)] = &[
         ("crates/pipeline/src/coord/client.rs", "*", "the lead's coordinator, on the LAN"),
         ("crates/server/src/maplog.rs", "get", "the lead's coordinator (the map's log), on the LAN"),
-        ("crates/pipeline/src/bin/scenic-metrics.rs", "meta_get", "fetch_file asks before its first"),
+        ("crates/pipeline/src/bin/tools/metrics.rs", "meta_get", "fetch_file asks before its first"),
     ];
     let root = root();
     let mut rs = Vec::new();

@@ -1,12 +1,12 @@
 //! The step programs' command lines: what a unit's tail runs (extract, elev, tile, scenic-metrics,
 //! areaflags, landcover), the tasks' programs (trees, bldtile, terrainsub), the rail step's railfreq, and the tools run by hand (lakefill, coastcheck,
-//! terrain). Each binary in src/bin/ of the same name parses with its own.
+//! terrain). Each runs as `scenic-build tool <name>` (src/bin/tools/, pipeline::cli::TOOLS) and parses with its own.
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 /// Car-accessible public roads (and car ferries) and passenger rail lines from OSM PBF extracts,
-/// densified to a spacing (src/bin/extract.rs)
+/// densified to a spacing (src/bin/tools/extract.rs)
 #[derive(Parser, Debug)]
 #[command(name = "extract")]
 pub struct Extract {

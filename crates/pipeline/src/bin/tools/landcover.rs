@@ -10,8 +10,8 @@ use pipeline::cli::progs::Landcover;
 use pipeline::fetch::Fetcher;
 use pipeline::landcover;
 
-fn main() -> std::process::ExitCode {
-    let a = Landcover::parse();
+pub fn main(args: Vec<String>) -> std::process::ExitCode {
+    let a = Landcover::parse_from(args);
     // (A server that gave no answer: its own exit status, pipeline::fetch::UNREACHABLE_EXIT.)
     pipeline::fetch::exit_with(run(a))
 }

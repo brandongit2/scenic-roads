@@ -855,11 +855,11 @@ fn route_per_way(scenic: &mut Vec<(i64, String)>) {
     scenic.dedup_by_key(|x| x.0);
 }
 
-fn main() -> Result<()> {
+pub fn main(args: Vec<String>) -> Result<()> {
     // (`--candidates`: the landmark candidates' points (poi_kind), for the pois job; `--trailends`:
     // the pass's hiking-route ends (pipeline::trailends), instead of working them out from the input.)
     let pipeline::cli::progs::Extract { out_dir: out, spacing, inputs, rail_rels_only, candidates, trailends } =
-        <pipeline::cli::progs::Extract as clap::Parser>::parse();
+        <pipeline::cli::progs::Extract as clap::Parser>::parse_from(args);
     use pipeline::dem::spacing::{Fine, Spacing, Uniform};
     let spacing: Box<dyn Spacing + Sync> = match spacing.parse::<f64>() {
         Ok(m) => Box::new(Uniform(m)),

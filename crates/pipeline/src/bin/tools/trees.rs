@@ -39,8 +39,8 @@ use pipeline::fetch::Fetcher;
 use pipeline::trees::{self, mask::Shapes, Inputs, Source};
 use std::path::PathBuf;
 
-fn main() -> Result<()> {
-    let a = Trees::parse();
+pub fn main(args: Vec<String>) -> Result<()> {
+    let a = Trees::parse_from(args);
     // (Its phases, for the job's phase that runs it: pipeline::timings.)
     let r = pipeline::timings::job("trees", || run(&a));
     // (Paused at a row kept, task #889: its job takes the exit as the pause's.)

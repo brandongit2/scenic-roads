@@ -569,7 +569,7 @@ pub fn prepare_folder(
     let accepted = crate::dem::declared::accepted(a)?;
     let fine = crate::dem::spacing::Fine::of_accepted(&accepted);
     fine.write(&spacing)?;
-    let mut c = store::spawn::command(tools.bin.join("extract"));
+    let mut c = crate::cli::program(&tools.bin, "extract");
     c.arg(dir).arg(&spacing).arg(piece);
     run_in(c, "extracting the ways (extract)", &log, dir, tools)?;
     let s = stage("cutting to the coverage");
@@ -607,13 +607,13 @@ pub fn prepare_folder(
     let s = stage("staging the heritage inputs");
     (rep.heritage, rep.areas) = heritage(b, dir)?;
     s.end();
-    let mut c = store::spawn::command(tools.bin.join("areaflags"));
+    let mut c = crate::cli::program(&tools.bin, "areaflags");
     c.arg(dir).arg(dir.join("area-shapes.geojsonseq"));
     run_in(c, "flagging the areas (areaflags)", &log, dir, tools)?;
     // Land cover the packs lack (new coverage): the declared land-cover source for those grid tiles
     // only; the rest stays as staged.
     if rep.staged.missing.get("class").copied().unwrap_or(0) > 0 {
-        let mut c = store::spawn::command(tools.bin.join("landcover"));
+        let mut c = crate::cli::program(&tools.bin, "landcover");
         c.arg(dir).arg("--only").arg(dir.join("grid.class.missing.u32"));
         run_in(c, "classifying the land cover (landcover)", &log, dir, tools)?;
     }
@@ -912,7 +912,7 @@ pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
         (!v.contains("{net}")).then_some(v)
     };
     for r in runs {
-        let mut c = store::spawn::command(tools.bin.join(&r.prog));
+        let mut c = crate::cli::program(&tools.bin, &r.prog);
         for a in &r.args {
             c.arg(fill(a).with_context(|| format!("{}: no place for {a}", r.what))?);
         }

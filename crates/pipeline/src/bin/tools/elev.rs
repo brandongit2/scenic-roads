@@ -7,8 +7,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use pipeline::cli::progs::Elev;
 
-fn main() -> Result<()> {
-    let Elev { build_dir: dir } = Elev::parse();
+pub fn main(args: Vec<String>) -> Result<()> {
+    let Elev { build_dir: dir } = Elev::parse_from(args);
     pipeline::timings::job("elev", || -> Result<()> {
         let t = std::time::Instant::now();
         let va = roadcore::Array::<[i32; 2]>::open(&dir.join("verts.bin")).context("verts.bin")?;

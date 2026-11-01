@@ -214,10 +214,10 @@ fn fresh(cov: &Coverage, t: TileId, scratch: &Path, always: bool) -> Result<Opti
     Ok(Some(dir))
 }
 
-/// The trees program (`trees`, beside this one), run with `args`.
+/// The trees program (`trees`, of this program's app version: crate::cli::program), run with `args`.
 fn run_trees(args: &[std::ffi::OsString]) -> Result<()> {
     let prog = "the trees program";
-    let mut c = store::spawn::command(std::env::current_exe()?.parent().context("the programs' folder")?.join("trees"));
+    let mut c = crate::cli::program(std::env::current_exe()?.parent().context("the programs' folder")?, "trees");
     // (Its phase, its own under it: crate::timings.)
     let _p = crate::timings::phase(prog);
     c.args(args);

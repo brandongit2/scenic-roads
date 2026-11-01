@@ -35,8 +35,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI8, AtomicU8, Ordering::Relaxed};
 use std::sync::LazyLock;
 
-fn main() -> std::process::ExitCode {
-    let a = Metrics::parse();
+pub fn main(args: Vec<String>) -> std::process::ExitCode {
+    let a = Metrics::parse_from(args);
     // (A server that gave no answer: its own exit status, pipeline::fetch::UNREACHABLE_EXIT.)
     pipeline::fetch::exit_with(run(a))
 }

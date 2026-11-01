@@ -4,7 +4,7 @@
 use anyhow::Result;
 use clap::Parser;
 
-fn main() -> Result<()> {
-    let a = pipeline::cli::progs::Areaflags::parse();
+pub fn main(args: Vec<String>) -> Result<()> {
+    let a = pipeline::cli::progs::Areaflags::parse_from(args);
     pipeline::areaflags::run(&a.unit_dir, &a.shapes)
 }

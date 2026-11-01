@@ -1,6 +1,7 @@
 //! Canada's lakes missing from OSM, map sheet by map sheet (docs/steps.md §4, "Lakes filled
 //! from Canada's own data"): the `lakefill` step's parts (pipeline::lakefill::run) one at a time,
-//! and checks of a fill. Scratch folders only: the step puts the fill in the build.
+//! and checks of a fill. Scratch folders only: the step puts the fill in the build. Run as
+//! `scenic-build tool lakefill …` (task #917); its commands below by name.
 //!
 //! `lakefill survey <basemap.pmtiles> <outlines.sect> <out.csv>`: every NTS 1:50,000 sheet across
 //! the Canadian regions, with the basemap's z12 water in it (`run::survey`).
@@ -39,8 +40,8 @@ use pipeline::lakefill::{nts, run};
 use pipeline::watercov::Raster;
 use std::path::Path;
 
-fn main() -> Result<()> {
-    match Lakefill::parse().cmd {
+pub fn main(args: Vec<String>) -> Result<()> {
+    match Lakefill::parse_from(args).cmd {
         LakefillCmd::Survey { basemap, outlines, out } => {
             let rows = run::survey(&basemap, &outlines, &|d, n| eprintln!("lakefill: {d}/{n} z5 tiles"))?;
             std::fs::write(out, run::sheets_csv(&rows))?;

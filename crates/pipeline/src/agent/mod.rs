@@ -8540,8 +8540,6 @@ fn osm_pass_cmd(o: &Options, root: &store::nasfs::NasRoot, planet: &NasPath, dat
         s(&planet),
         "--date".into(),
         date.to_string(),
-        "--extract".into(),
-        s(&o.bin.join("extract")),
         "--planetiler".into(),
         s(&jar),
         "--clear".into(),
@@ -9601,7 +9599,11 @@ mod tests {
             runs.extend(spec["runs"].as_array().unwrap().iter().cloned());
         }
         for r in &runs {
-            let cmd: Vec<String> = std::iter::once(format!("/app/{}", r["prog"].as_str().unwrap()))
+            // (As a worker runs it: crate::unit::run_tail.)
+            let c = crate::cli::program(Path::new("/app"), r["prog"].as_str().unwrap());
+            let cmd: Vec<String> = std::iter::once(c.get_program())
+                .chain(c.get_args())
+                .map(|a| a.to_string_lossy().into_owned())
                 .chain(r["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_string()))
                 .collect();
             crate::cli::check_command(&cmd).unwrap_or_else(|| panic!("{cmd:?}: not a program of this crate")).unwrap();

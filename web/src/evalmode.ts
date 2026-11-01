@@ -9,7 +9,7 @@
 // - `capture()`: the map as drawn, each pixel's water coverage (1 − its grey; MapLibre blends the
 //   stored values, so a pixel half covered is mid-grey), and where nothing was drawn (the sky);
 // - `reference(url, ss)`: the same view from the reference, the water's exact coverage at full detail
-//   (`coastcheck serve`'s tiles, crates/pipeline/src/bin/coastcheck.rs), drawn as a raster at
+//   (`coastcheck serve`'s tiles, crates/pipeline/src/bin/tools/coastcheck.rs), drawn as a raster at
 //   `ss` × the pixel ratio (and 3D terrain's drape `ss` × as fine) and box-filtered back down, so
 //   the camera, projection and terrain are MapLibre's own.
 //

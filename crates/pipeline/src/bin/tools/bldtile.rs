@@ -7,8 +7,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use pipeline::cli::progs::Bldtile;
 
-fn main() -> Result<()> {
-    let Bldtile { dir, tile, workers } = Bldtile::parse();
+pub fn main(args: Vec<String>) -> Result<()> {
+    let Bldtile { dir, tile, workers } = Bldtile::parse_from(args);
     let a = pipeline::legacy::TileId::parse(&tile)
         .filter(|u| u.z == 8)
         .with_context(|| format!("not a z8 tile: {tile}"))?;

@@ -69,7 +69,16 @@ def target_of(f):
     c = crate_of(f)
     if not f.startswith("crates/%s/src/" % c): return None
     rel = f[len("crates/%s/src/" % c):]
-    if rel.startswith("bin/"): return (c, "--bin " + rel[4:].split("/")[0].removesuffix(".rs"), None)
+    if rel.startswith("bin/"):
+        b = rel[4:].split("/")[0].removesuffix(".rs")
+        # A folder without main.rs holds a binary's modules, which it declares by
+        # `#[path = "<folder>/…"]` (scenic-build's tools/, #917): that binary's.
+        bdir = "crates/%s/src/bin" % c
+        if "/" in rel[4:] and not os.path.exists("%s/%s/main.rs" % (bdir, b)):
+            for s in sorted(os.listdir(bdir)):
+                if s.endswith(".rs") and re.search(r'#\[path\s*=\s*"%s/' % re.escape(b), read(os.path.join(bdir, s))):
+                    b = s.removesuffix(".rs"); break
+        return (c, "--bin " + b, None)
     parts = rel.removesuffix(".rs").split("/")
     if parts[-1] == "mod": parts = parts[:-1]
     tgt = "--lib" if has_lib(c) else "--bin " + c

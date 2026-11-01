@@ -11,8 +11,8 @@ use pipeline::polar::{self, BLOCK_Z};
 use roadcore::polar::Pole;
 use std::path::{Path, PathBuf};
 
-fn main() -> Result<()> {
-    let a = Polar::parse();
+pub fn main(args: Vec<String>) -> Result<()> {
+    let a = Polar::parse_from(args);
     let pole = Pole::of_letter(&a.pole).context("--pole n or s")?;
     if !(BLOCK_Z..=polar::MAX_Z).contains(&a.max_z) {
         bail!("--max-z is {BLOCK_Z} to {}", polar::MAX_Z);
