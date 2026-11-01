@@ -98,12 +98,12 @@ The incremental result must be the full plan, byte for byte. As the map log did
 
 | Step | What | Done when |
 |---|---|---|
-| 0 (built) | Time `build::plan`'s sections (keys, terrain work, trees, regions, chains, publish) into the plan's phase lines | the live log names where the 27 s go |
-| 1 (tried, dropped) | The lines of a step read whole by its outputs (`steps::key_lines`, a scan of the whole manifest per target) worked out once per plan | measured no gain: `build::plan` 311-322 s before, 200-317 s after on the bench (the M4's load varying more than that), every key the same (186 of the plan's work); dropped, #924's `KeyMemo` already removing repeated key work |
+| 0 (built) | Time `build::plan`'s sections (the ten of §1, `nasread::PLAN`) as the plan thread's phases | the live log names where the 27 s go |
+| 1 (tried, dropped) | The lines of a step read whole by its outputs (`steps::key_lines`, a scan of the whole manifest per target) worked out once per plan | measured no gain (the M4, 1 Nov 2026, before #924): `build::plan` 311-322 s before, 200-317 s after on the bench (the M4's load varying more than that), every key the same (186 of the plan's work); dropped, #924's `KeyMemo` already removing repeated key work |
 | 2 | Key memo across plans with the derived read sets and reverse index (§3.1-3), invalidated by the manifest/inputs diff between plans; the full plan still runs and is compared (shadow, §4) | shadow clean on the lead; memo size logged |
 | 3 | Target lists and stale sets kept (§3.4-5), coverage/reach/pack changes invalidating them | shadow clean; `build::plan` time logged |
 | 4 | The incremental plan used, the full plan only in shadow every Nth round | owner-visible phase times drop |
-| 5 | The plan handed to "its jobs" and the checklist as a diff, so those stop rebuilding from the whole plan | "its jobs" and "the checklist and counts" phase times drop |
+| 5 | The plan handed to "its jobs" as a diff, so it stops rebuilding from the whole plan (the checklist, made inside `build::plan` since #924, follows the plan's keys) | "its jobs" and "build::plan: the checklist" phase times drop |
 
 Each step keeps the full plan as the reference; nothing changes what is built, only how fast the
 same plan is found.
