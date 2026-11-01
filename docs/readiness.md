@@ -375,7 +375,13 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      the one writer, the records' normal save. After it, every reader finds those records current
      and re-keys or drops nothing; scheme 1's keys (the reads' cost) are worked out for a step
      only while one of its records of a target with a key now isn't that key (until its stale
-     records are built again). Test: `rekey::tests::scheme_2_keeps_what_reads_nothing_new`
+     records are built again). Measured on the live records (1 Nov, `rekey-check --saved`, the
+     M1 over SMB): the reading's re-keying 399 s, read again after the save 214 s with nothing
+     re-keyed or dropped; what's left is `scheme_2`'s own scheme-2 enumeration (the planner works
+     the same keys out again), which goes with 4b, not with the save. Dropped then: terrain-deep
+     4,449, terrain-hi 519, slope-hi 519, trees 457, bldtiles 455, terrain-lo, slope-lo and unit
+     5-6 each, bldfield-lo and trees-lo 3; every dropped record's declared outputs are absent, and
+     those of the step's targets are named (terrain-hi and slope-hi 1,788 of 1,789). Test: `rekey::tests::scheme_2_keeps_what_reads_nothing_new`
      (the save gives the keys the in-memory re-keying does; read again, nothing moves).
      Records of a step that isn't derived (pack, lo) aren't looked at, so none of theirs is dropped.
    - **4b (planned): delete the adapter** once `scenic-build rekey-check` shows nothing re-keyed
