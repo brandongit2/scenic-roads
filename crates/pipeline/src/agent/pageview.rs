@@ -167,6 +167,8 @@ pub struct OwnLane {
 #[derive(Clone, Debug, Default)]
 struct Snap {
     status: Value,
+    /// The lead's status's time as answered (`ViewAsk::status_at`): asked again only once it changed.
+    status_at: Option<u64>,
     view: Value,
     pause: Value,
     helpers: Vec<Value>,
@@ -348,6 +350,7 @@ impl PageView {
         let ask = {
             let st = self.state.lock().unwrap();
             ViewAsk {
+                status_at: st.snap.as_ref().and_then(|s| s.status_at),
                 forecast_at: st.record.as_ref().map(|r| ms_of(r.0)),
                 regions_at: st.regions.as_ref().map(|r| ms_of(r.0)),
             }
@@ -380,11 +383,17 @@ impl PageView {
             (Some(t), Some(r)) => st.regions = Some((t, Arc::new(r.clone()))),
             (Some(_), None) => {}
         }
-        let status = v["status"].clone();
+        // (Its status only when it changed since the last answer: the one kept otherwise.)
+        let old = st.snap.take();
+        let status = match v.get("status") {
+            Some(s) => s.clone(),
+            None => old.map_or(Value::Null, |o| o.status),
+        };
         let helpers = helpers_of(&status, now);
         let macs = v["macs"].as_array().cloned().unwrap_or_default();
         st.snap = Some(Snap {
             status,
+            status_at: v["status_at"].as_u64(),
             view: v["view"].clone(),
             pause: v["pause"].clone(),
             helpers,
@@ -1436,14 +1445,24 @@ pub(crate) mod tests {
         assert!(!nas.is_finished(), "the NAS's read still hung");
         drop(hung);
         nas.join().unwrap();
-        // (The forecast's input and the regions sent only when they changed.)
-        let (f, r) = {
+        // (The lead's status, the forecast's input and the regions sent only when they changed; the
+        // page's status the one kept meanwhile.)
+        let (st_at, f, r) = {
             let st = pv.state.lock().unwrap();
-            (st.record.as_ref().map(|r| ms_of(r.0)), st.regions.as_ref().map(|r| ms_of(r.0)))
+            let s = st.snap.as_ref().unwrap();
+            assert!(s.status_at.is_some() && s.status["host"] == "m4");
+            (s.status_at, st.record.as_ref().map(|r| ms_of(r.0)), st.regions.as_ref().map(|r| ms_of(r.0)))
         };
-        let again = c.pool_view(&ViewAsk { forecast_at: f, regions_at: r });
-        assert!(again.get("forecast_input").is_none() && again.get("regions").is_none(), "{again}");
-        assert!(c.pool_view(&ViewAsk::default()).get("forecast_input").is_some());
+        let again = c.pool_view(&ViewAsk { status_at: st_at, forecast_at: f, regions_at: r });
+        assert!(
+            again.get("status").is_none() && again.get("forecast_input").is_none() && again.get("regions").is_none(),
+            "{again}"
+        );
+        assert_eq!(again["status_at"].as_u64(), st_at);
+        pv.ask_lead(&Fake(Ok(again)), now);
+        assert_eq!(pv.swarm().unwrap()["agent"]["host"], "m4", "the status kept");
+        let all = c.pool_view(&ViewAsk::default());
+        assert!(all.get("forecast_input").is_some() && all["status"]["host"] == "m4");
     }
 
     /// A lead as a test sets it: its answer, or none to be had (`Err`).

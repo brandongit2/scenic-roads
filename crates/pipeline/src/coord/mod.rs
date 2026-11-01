@@ -2492,7 +2492,7 @@ impl Coordinator {
     /// `/pool/view`'s answer to `ask`, taken here (the lead's own page: crate::agent::pageview).
     pub fn pool_view(&self, ask: &ViewAsk) -> serde_json::Value {
         let dir = self.shared.lock().unwrap().dir.clone();
-        let status = status_beside(&dir);
+        let status = status_beside(&dir, ask.status_at);
         pool_view(&self.shared.lock().unwrap(), ask, status)
     }
 
@@ -3481,9 +3481,13 @@ pub struct PageFiles {
     pub regions: Option<(u64, Arc<serde_json::Value>)>,
 }
 
-/// What a `/pool/view` asks: the forecast's input and the regions it has, by when they were made.
+/// What a `/pool/view` asks: the lead's status, the forecast's input and the regions it has, by when
+/// they were made (each answered again only when that changed).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewAsk {
+    /// The lead's status's file as last answered: its time written (unix ns).
+    #[serde(default)]
+    pub status_at: Option<u64>,
     #[serde(default)]
     pub forecast_at: Option<u64>,
     #[serde(default)]
@@ -3491,11 +3495,11 @@ pub struct ViewAsk {
 }
 
 /// `/pool/view`'s answer (docs/coordination.md step 4: every Mac's page data from the lead's
-/// memory, no NAS): when, its agent's status (its local copy, as `/work/swarm` takes it), its view
-/// (`view_of`, unix times), the pause, the Macs' addresses (the brokers as its agent read the
-/// members' heartbeats; else the beats heard), its app, and the forecast's input and regions with
-/// their times, each only when the ask's differs.
-fn pool_view(s: &Shared, ask: &ViewAsk, status: serde_json::Value) -> serde_json::Value {
+/// memory, no NAS): when, its view (`view_of`, unix times), the pause, the Macs' addresses (the
+/// brokers as its agent read the members' heartbeats; else the beats heard), its app, and its
+/// agent's status (`status`: its local copy, as `/work/swarm` takes it), the forecast's input and
+/// regions with their times, each only when the ask's differs.
+fn pool_view(s: &Shared, ask: &ViewAsk, status: LeadStatus) -> serde_json::Value {
     let unix = held::wall(s);
     let mac = |host: &str, b: &brokers::Broker| serde_json::json!({ "host": host, "urls": b.urls, "https": b.https });
     let macs: Vec<serde_json::Value> = match (&s.brokers, &s.beats) {
@@ -3507,14 +3511,17 @@ fn pool_view(s: &Shared, ask: &ViewAsk, status: serde_json::Value) -> serde_json
     };
     let mut a = serde_json::json!({
         "at": unix,
-        "status": status,
         "view": view_of(s),
         "pause": s.paused,
         "macs": macs,
         "app": s.app,
+        "status_at": status.at,
         "forecast_at": s.page.forecast.as_ref().map(|f| f.0),
         "regions_at": s.page.regions.as_ref().map(|r| r.0),
     });
+    if let Some(v) = status.v {
+        a["status"] = v;
+    }
     if let Some((_, f)) = s.page.forecast.as_ref().filter(|f| ask.forecast_at != Some(f.0)) {
         a["forecast_input"] = (**f).clone();
     }
@@ -3524,13 +3531,27 @@ fn pool_view(s: &Shared, ask: &ViewAsk, status: serde_json::Value) -> serde_json
     a
 }
 
-/// Its agent's status beside the coordinator's folder (`<home>/status.json`, local disk, a few
-/// kB), read before the coordinator's lock is taken: `Value::Null` when none.
-fn status_beside(dir: &std::path::Path) -> serde_json::Value {
-    dir.parent()
-        .and_then(|h| std::fs::read(h.join("status.json")).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or(serde_json::Value::Null)
+/// Its agent's status as `/pool/view` answers it: when its file was written (unix ns; None, no file),
+/// and what it says, read only when that isn't the time asked (`Value::Null` unreadable).
+struct LeadStatus {
+    at: Option<u64>,
+    v: Option<serde_json::Value>,
+}
+
+/// Its agent's status beside the coordinator's folder (`<home>/status.json`, local disk, hundreds
+/// of kB on the live lead), read before the coordinator's lock is taken, and only when written
+/// since `asked` (its time, unix ns): a page asks every 2 s, the agent writes it every few seconds.
+fn status_beside(dir: &std::path::Path, asked: Option<u64>) -> LeadStatus {
+    let Some(p) = dir.parent().map(|h| h.join("status.json")) else { return LeadStatus { at: None, v: None } };
+    let at = std::fs::metadata(&p)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64);
+    let v = (at.is_none() || at != asked).then(|| {
+        std::fs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null)
+    });
+    LeadStatus { at, v }
 }
 
 /// The wall clock in unix ms.
@@ -3554,14 +3575,14 @@ fn take_ask(s: &mut Shared, a: &asks::Ask) -> Result<()> {
 
 /// The members' beats its store kept (`kept::Beat`) heard again into its registry, once it has
 /// both: a lead's restart has the members it heard within `beats::FORGET_S` for the page at once
-/// (docs/coordination.md step 4), their next beats replacing them.
+/// (docs/coordination.md step 4), their statuses with their next beats.
 fn load_beats(s: &Shared) {
     let Some(b) = &s.beats else { return };
     let unix = held::wall(s);
     for k in s.keep.beats(unix.saturating_sub(beats::FORGET_S)) {
         if b.get(&k.beat.pool.member, unix).is_none() {
             let speaks = s.keep.member(&k.beat.pool.host).map(|h| h.speaks).unwrap_or_default();
-            b.heard(k.beat, speaks, k.status, k.at);
+            b.heard(k.beat, speaks, None, k.at);
         }
     }
 }
@@ -4056,7 +4077,7 @@ fn route(
             // (Its agent's status read off the lock: a busy disk never holds the coordinator.)
             let ask: ViewAsk = serde_json::from_slice(body).unwrap_or_default();
             let dir = shared.lock().unwrap().dir.clone();
-            let status = status_beside(&dir);
+            let status = status_beside(&dir, ask.status_at);
             Ok((200, pool_view(&shared.lock().unwrap(), &ask, status)))
         }
         "/pool/release" => {
@@ -5882,7 +5903,7 @@ mod tests {
         let heard = b.fresh(held::wall(&c.shared.lock().unwrap()));
         assert_eq!(heard.len(), 1);
         assert_eq!(heard[0].beat.pool.host, "m1-host");
-        assert_eq!(heard[0].status.as_ref().unwrap()["host"], "m1-host");
+        assert!(heard[0].status.is_none(), "its status not kept: the next beat brings it");
     }
 
     /// `scenic pool release <member>`: the owner releases an away member's leases.

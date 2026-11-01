@@ -120,7 +120,7 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
     if let Some(beats) = s.beats.clone() {
         if let Some(h) = b.heartbeat.clone().filter(|_| b.speaks.iter().any(|w| w == super::beats::SPEAKS)) {
             let id = h.pool.member.clone();
-            s.keep.beat(&id, &h, b.status.as_ref(), unix);
+            s.keep.beat(&id, &h, unix);
             beats.heard(h, b.speaks.clone(), b.status.clone(), unix);
             a.members = beats.members(unix, &id);
             if b.speaks.iter().any(|w| w == super::beats::ASKS) {

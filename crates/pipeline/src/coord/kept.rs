@@ -35,13 +35,12 @@ pub struct Heard {
     pub at: u64,
 }
 
-/// A member's last beat as kept (`beat/<member>`): its heartbeat, its agent's status, when heard
-/// (unix s).
+/// A member's last beat as kept (`beat/<member>`): what a restarted lead needs before the member's
+/// next beat (within 10 s) — its heartbeat (its broker, its member's name), and when heard (unix s).
+/// Not its agent's status (most of a beat: the next beat brings it).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Beat {
     pub beat: crate::agent::pool::Heartbeat,
-    #[serde(default)]
-    pub status: Option<Value>,
     pub at: u64,
 }
 
@@ -240,7 +239,7 @@ impl Kept {
     }
 
     /// `member`'s beat heard at `at`: saved when it's new or `HEARD_SAVE_S` passed.
-    pub fn beat(&self, member: &str, beat: &crate::agent::pool::Heartbeat, status: Option<&Value>, at: u64) {
+    pub fn beat(&self, member: &str, beat: &crate::agent::pool::Heartbeat, at: u64) {
         if self.store.get().is_none() {
             return;
         }
@@ -250,7 +249,7 @@ impl Kept {
         }
         m.beats.insert(member.to_string(), at);
         drop(m);
-        let b = Beat { beat: beat.clone(), status: status.cloned(), at };
+        let b = Beat { beat: beat.clone(), at };
         if let Ok(v) = serde_json::to_value(&b) {
             self.submit([(format!("beat/{member}"), v)].into(), Vec::new());
         }

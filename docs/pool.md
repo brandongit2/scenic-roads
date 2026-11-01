@@ -1581,9 +1581,9 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   answers `/work/swarm` and `/work/history` from its pageview (`/work/steps` is the steps table);
   out of the pool the coordinator answers from its memory, as before. While a page has asked in
   the last 60 s, a thread of the agent asks the lead's view every 2 s (its coordinator in process,
-  as `POST /pool/view` answers, docs/coordination.md step 4): the lead's status, its coordinator's view, the pause (on the lead the
-  answer's is its coordinator's own), the Macs' addresses, and the forecast's input and the regions
-  when their time changed; with the lead down, the last view is kept and the answer says its age
+  as `POST /pool/view` answers, docs/coordination.md step 4): its coordinator's view, the pause (on the lead the
+  answer's is its coordinator's own), the Macs' addresses, and the lead's status, the forecast's input
+  and the regions when their time changed (the last status kept meanwhile); with the lead down, the last view is kept and the answer says its age
   (`view_age_s`) and since when the lead isn't reached (`view_unreached`). Another thread reads, every 12 s at most, by
   known name (no listing), what each member's history
   file of the last 7 days (today's and the six before: `pageview::DAYS`) gained since the offset
