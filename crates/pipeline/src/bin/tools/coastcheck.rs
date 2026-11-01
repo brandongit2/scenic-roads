@@ -4,7 +4,7 @@
 //!   scenic-build tool coastcheck build --osm <the pass's filtered .osm.pbf> --water-polygons <zip> --out <store folder>
 //!                    [--index sparse_mem_array|sparse_file_array,<file>]
 //!   scenic-build tool coastcheck serve --store <store folder> [--port 18095]
-//!   coastcheck tile --store <store folder> <z> <x> <y> [--size 512] > tile.png
+//!   scenic-build tool coastcheck tile --store <store folder> <z> <x> <y> [--size 512] > tile.png
 //!
 //! `build` reads every water area the basemap draws from the pass's filtered planet (osmium
 //! tags-filter by `watercov::SET_FILTER` into the store folder, then osmium export, its areas

@@ -598,7 +598,7 @@ bin/scenic-launcher     the launcher (never rebuilt)
 run/<name>              what the launcher runs, one argument per line: server, agent (written by
                         Scenic.app when it opens)
 agent/quit-request.json Scenic's ask to quit (control::Quit: finish or now), until the agent exits
-app/<version>/          server, scenic, scenic-build, extract, tile, scenic-metrics, dem/, Scenic.app,
+app/<version>/          server, scenic, scenic-build, dem/, Scenic.app,
                         web/, fonts/ (app/current → the one in use)
 pyenv/<key>/            the Python steps' environment of a lock file (dem/uv.lock + .python-version),
                         shared by the versions with it (pipeline::pyenv); .used: its last use

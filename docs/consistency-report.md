@@ -225,7 +225,7 @@ Ranked by impact: bugs and real drift risk first (High), then likely future drif
   never staged. Buildings already stage from `reach::near_box`; terrain doesn't.
 - **F04:**
   - TPI, relief and the eye floor of every rail sample are off by 1.3 m.
-  - `scenic-metrics.rs:1121` uses `EYE_M` for the same quantity, so the two programs disagree.
+  - `bin/tools/metrics.rs:1121` uses `EYE_M` for the same quantity, so the two programs disagree.
 - **F05:**
   - A store version bump or layout change silently breaks the server.
   - Damaged NAS bytes are served unchecked, though `sect.rs`'s header promises every section read
@@ -484,7 +484,7 @@ Where the oldest code forces old invariants or words onto newer code:
 9. **Signed elevation:** `roadcore/src/elev.rs:62-75` still reads signed `final.i16` from before
    3 Oct, and `bin/tools/tile.rs` still deletes it. `UNIT_V ≥ 2` has made everything `u16` since. (F48)
 10. **indicatif progress bars:** `lib.rs:117-141`, used by the first-week programs (`view.rs`,
-    `elev.rs`, `buildings.rs`, `tiling.rs`, `extract.rs`, `scenic-metrics.rs`). The agent can't read
+    `elev.rs`, `buildings.rs`, `tiling.rs`, `extract.rs`, `metrics.rs`). The agent can't read
     them, so the unit step reports stage-weighted progress only, while newer steps use
     `jobs::report`. (F63)
 11. **A stale header:** `web/src/scenic.ts:2` (28 Sep) says the normalisation "must match
