@@ -180,13 +180,15 @@ pub struct Scheme2Step {
     /// changed with this code, #832's coverage cut; or stale before).
     pub stale: usize,
     /// Records of targets whose key can't be worked out now (an input unread), or that are no
-    /// target now: kept as they are (for the next pass; a prune's).
+    /// target now: kept as they are (for the next pass; a prune's). A step none of whose records
+    /// could be re-keyed (no target with a key now) isn't keyed under scheme 1: its stale ones
+    /// count here too.
     pub unknown: usize,
     /// The records re-keyed (`rekeyed` of them), each from its scheme-1 key to its scheme-2 one:
     /// what the lead records once (`record`), so they're read under scheme 2 from then on.
     #[serde(skip)]
     pub moved: Vec<super::redo::Restore>,
-    /// Records of no target of the step's now (under either scheme) whose outputs no manifest
+    /// Records of no target of the step's now (`build::step_keys_all`, unknown keys too) whose outputs no manifest
     /// entry names (`steps::output_named`, from the step's declared outputs): (target, key),
     /// dropped, and forgotten by the same save (`record`). Removed means deleted.
     #[serde(skip)]
@@ -241,7 +243,21 @@ pub fn scheme_2(
             all.iter().filter(|(_, k)| *k != super::build::UNKNOWN).map(|(t, k)| (t.clone(), k)).collect();
         let (current, rest): (Vec<_>, Vec<_>) = targets.into_iter().partition(|(t, k)| now.get(t) == Some(&k));
         s.current = current.len();
-        if !rest.is_empty() {
+        // (A record of no target of the step's now (scheme 2's list, unknown keys too) whose outputs
+        // no manifest entry names: nothing reads it, nor ever will; it goes, whatever scheme 1 says.)
+        let (gone, rest): (Vec<_>, Vec<_>) = rest
+            .into_iter()
+            .partition(|(t, _)| !all.contains_key(t) && steps::output_named(step, t, x.m) == Some(false));
+        for (t, k) in gone {
+            if let Some(m) = keys.per_target(step) {
+                m.remove(&t);
+            }
+            s.dropped.push((t, k));
+        }
+        // (Scheme 1's keys, costly, worked out only when a record could be re-keyed: one of a
+        // target with a key now. Once the lead's save is merged, only the stale ones are, until
+        // they're built again.)
+        if rest.iter().any(|(t, _)| now.contains_key(t)) {
             let old: BTreeMap<String, String> = scheme_1(step, x).unwrap_or_default().into_iter().collect();
             for (t, k) in rest {
                 match (old.get(&t), now.get(&t)) {
@@ -251,17 +267,11 @@ pub fn scheme_2(
                         s.moved.push(super::redo::Restore { target: t, from: k, to: (*n).clone() });
                     }
                     (Some(o), _) if *o != k => s.stale += 1,
-                    // (No target of the step's, under either scheme, and no output of it named:
-                    // nothing reads the record, nor ever will; it goes.)
-                    (None, _) if !all.contains_key(&t) && steps::output_named(step, &t, x.m) == Some(false) => {
-                        if let Some(m) = keys.per_target(step) {
-                            m.remove(&t);
-                        }
-                        s.dropped.push((t, k));
-                    }
                     _ => s.unknown += 1,
                 }
             }
+        } else {
+            s.unknown += rest.len();
         }
         out.insert(step, s);
     }

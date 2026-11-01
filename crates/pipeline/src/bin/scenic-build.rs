@@ -141,10 +141,11 @@
 //!                                (pipeline::agent::rekey) would do now: each z3 tile re-keyed, or
 //!                                made again as z6 tiles and why, the work left and its time by the
 //!                                last runs (`f`: the coordinator's costs.json). Reads only
-//!   rekey-check [--pass d] [--step s] [--stale n] [--unknown n]  what the switch to key scheme 2 (pipeline::agent::rekey::
+//!   rekey-check [--pass d] [--step s] [--stale n] [--unknown n] [--dropped n] [--saved]  what the switch to key scheme 2 (pipeline::agent::rekey::
 //!                                scheme_2) does to the records now: per step, those re-keyed, those
 //!                                built again (`n` of them listed), those unknown and those dropped (no
-//!                                target, no output named); `s`: that step alone. Reads only
+//!                                target, no output named; `--dropped n`: n listed); `s`: that step
+//!                                alone; `--saved`: read again as the lead's save leaves them. Reads only
 //!
 //! `--cache` is where base packs are kept locally (copied from the NAS when missing). `--help` (or
 //! `-h`) on any step prints its usage and does nothing; a flag the step doesn't take or an argument
@@ -2781,6 +2782,7 @@ fn rekey_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
     let mut before = done.clone();
     let olds: std::cell::RefCell<BTreeMap<String, BTreeMap<String, String>>> = Default::default();
     let tt = std::cell::OnceCell::new();
+    let t2 = std::time::Instant::now();
     let r = rekey::scheme_2(&mut done, &x, &|s| only.as_deref().is_none_or(|o| o == s), &|s, x| {
         let t = std::time::Instant::now();
         let k = build::step_keys_kept(s, &x.scheme_1(), &tt);
@@ -2790,6 +2792,7 @@ fn rekey_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
         }
         k
     });
+    eprintln!("rekey-check: re-keyed as read in {:.1} s", t2.elapsed().as_secs_f64());
     println!("{:<16} {:>9} {:>9} {:>9} {:>9} {:>9}", "step", "current", "re-keyed", "rebuilt", "unknown", "dropped");
     for (s, c) in &r {
         println!("{s:<16} {:>9} {:>9} {:>9} {:>9} {:>9}", c.current, c.rekeyed, c.stale, c.unknown, c.dropped.len());
@@ -2838,6 +2841,44 @@ fn rekey_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
                     }
                 }
             }
+        }
+    }
+    // (`--dropped n`: n of each step's dropped records with the outputs looked for; and, as a check
+    // of the step's declared outputs, how many of its targets' records name theirs.)
+    let dropped: usize = opt(args, "--dropped").and_then(|s| s.parse().ok()).unwrap_or(0);
+    // (`--saved`: the records as the lead's save of these leaves them (rekey::record), read again:
+    // what each reader would still re-key, and its time.)
+    if args.iter().any(|a| a == "--saved") {
+        let mut saved = before.clone();
+        for s in r.keys() {
+            if let Some(w) = rekey::record(&r, s) {
+                saved.record(&w.step, &w.targets);
+            }
+        }
+        let t = std::time::Instant::now();
+        let again = rekey::scheme_2(&mut saved, &x, &|s| only.as_deref().is_none_or(|o| o == s), &|s, x| {
+            build::step_keys_kept(s, &x.scheme_1(), &tt)
+        });
+        let left: usize = again.values().map(|c| c.moved.len() + c.dropped.len()).sum();
+        println!("saved, read again: {left} re-keyed or dropped, {:.1} s", t.elapsed().as_secs_f64());
+    }
+    for (s, c) in r.iter().filter(|(_, c)| dropped > 0 && !c.dropped.is_empty()) {
+        let all: BTreeMap<String, String> =
+            build::step_keys_all(s, &x, &tt).unwrap_or_default().into_iter().collect();
+        let (mut named, mut not) = (0, 0);
+        for t in done.per_target(s).map(|m| m.keys().cloned().collect::<Vec<_>>()).unwrap_or_default() {
+            if all.contains_key(&t) {
+                match pipeline::agent::steps::output_named(s, &t, &m) {
+                    Some(true) => named += 1,
+                    Some(false) => not += 1,
+                    None => {}
+                }
+            }
+        }
+        println!("  {s}: its targets' records: {named} with outputs named, {not} without");
+        for (t, k) in c.dropped.iter().take(dropped) {
+            let names = pipeline::agent::steps::output_names(s, t).unwrap_or_default();
+            println!("  dropped: {s} {t} {k}: none of {names:?}");
         }
     }
     eprintln!(

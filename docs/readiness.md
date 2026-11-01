@@ -363,7 +363,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
    after the first has run on the live records.
    - **4a (built): the lead saves them once.** `rekey::scheme_2` lists what it re-keyed
      (`Scheme2Step::moved`: target, scheme-1 key, scheme-2 key) and drops the records of no target
-     of the step's now, under either scheme (`build::step_keys_all`, the unknown ones too), whose
+     of the step's now (`build::step_keys_all`, the unknown ones too), whose
      outputs no manifest entry names (`steps::output_named`, the step's declared outputs:
      `Scheme2Step::dropped`; task #920 found such records, deep tiles' "none" drops and tiles left
      by the coverage, kept forever and read as unknown). The plan keeps what its reading did
@@ -373,7 +373,9 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      with no key for a dropped one. The merge (`build::Keys::record`) records each only while its
      record is still `from` (one built since keeps its own), a world step's in the lo keys; it's
      the one writer, the records' normal save. After it, every reader finds those records current
-     and re-keys or drops nothing. Test: `rekey::tests::scheme_2_keeps_what_reads_nothing_new`
+     and re-keys or drops nothing; scheme 1's keys (the reads' cost) are worked out for a step
+     only while one of its records of a target with a key now isn't that key (until its stale
+     records are built again). Test: `rekey::tests::scheme_2_keeps_what_reads_nothing_new`
      (the save gives the keys the in-memory re-keying does; read again, nothing moves).
      Records of a step that isn't derived (pack, lo) aren't looked at, so none of theirs is dropped.
    - **4b (planned): delete the adapter** once `scenic-build rekey-check` shows nothing re-keyed
