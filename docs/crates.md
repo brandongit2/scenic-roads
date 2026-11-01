@@ -1,6 +1,7 @@
 # The pipeline's crates (task #916)
 
-**Status: Planned.** Steps 1 (`crates/pyport`) and 2 (`crates/codecs`) are built; every later step below is planned.
+**Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`) and 3 (`crates/jobrt`) are built;
+every later step below is planned.
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -33,16 +34,25 @@ What it showed on 31 Oct 2026 (main at 3cba2d2a):
   back (areadetails, filterprops, heritagedetails, heritagewd, items, labels, marksjob, menu,
   pageviews, railfeeds, whsshapes, wikiask, appupdate…).
 
+Rerun on 1 Nov 2026: on main at 0d42821d (#879 step 4b in), one cycle of 57 modules, ~203k lines
+(and peaks ↔ summits); after step 3, one of 49 modules, ~194k lines: control, timings and
+resume_log moved out, and costin, geotiff, water, heritage_layers and interest, which reached the
+cycle only through them, left it (heritage_layers ↔ interest and peaks ↔ summits are small cycles
+of their own).
+
 The cycle is held together by a few thin edges from low-level code up to `agent`, `pool`,
 `inputs` and `control`, not by the steps' logic. The ones that matter most:
 
 | edge | what it uses | cut by |
 |---|---|---|
-| control → agent | `agent::DRAIN_GRACE` (one const) | the const moves down beside `control` |
-| timings → control | pause and safe-gap bookkeeping (`gaps_begin`, `safe_gaps`, `SAFE_GAP_BOUND_S`) | `timings` and `control` move down together |
-| resume_log → agent | `agent::resume::{RESUME_ENV, HOLD_S}` | the constants move down (the runtime crate) |
-| localread, osmpass → agent::room | `job_target`, `free_past`, `MAX_TARGET` | the disk-room primitives move down; the agent's room policy stays up |
-| osmpass, layers, … → agent::jobs | progress reporting (`stage`, `report`, `part`, `within`, `run_watched`, `each_line`) | the job side of `agent::jobs` moves down (runtime crate) |
+| control → agent | `agent::DRAIN_GRACE` (one const) | built (step 3): the const is control's; the agent uses it from there |
+| control → coord | `coord::asks::{SettingAsk, Settings}` (the asks control queues) | built (step 3): the settings, their names and the ask are jobrt's `settings`; coord::asks re-exports them |
+| timings → control | pause and safe-gap bookkeeping (`gaps_begin`, `safe_gaps`, `SAFE_GAP_BOUND_S`) | built (step 3): `timings` and `control` moved down together |
+| timings → fetch | `fetched_bytes` (the network bytes a phase counts) | built (step 3): the counter is timings'; fetch adds to it and re-exports `fetched_bytes` |
+| resume_log → agent | `agent::resume::{RESUME_ENV, HOLD_S}` | built (step 3): the constants are resume_log's; agent::resume re-exports them, osmpass uses them |
+| resume_log → out | `names(out: &Out, …)` (a manifest's names) | built (step 3): `names` takes a `resume_log::Manifest` (one method, `get`), which out::Out implements |
+| localread, osmpass → agent::room | `job_target`, `free_past`, `MAX_TARGET` | items moved (step 3): jobrt's `room` (with cond's `free_bytes`); agent::room re-exports them. The edge goes once its users name jobrt's path (they move in steps 4-5) |
+| osmpass, layers, … → agent::jobs | progress reporting (`stage`, `report`, `part`, `within`, `run_watched`, `each_line`) | items moved (step 3): jobrt's `jobs` (with the log's reading: `tail`, `said`, `parts`, `error_of`); agent::jobs re-exports them. The edge goes as for room |
 | coverage, dem → agent::recipes | the `Recipe` type | the type moves down to the store layer |
 | out → agent::steps | `steps::writes` (each step's write set, checked on every save) | a registry the agent fills at start (a `fn` the out layer calls), or the write-set table moved down; after #879, which edits `agent/steps.rs` |
 | out → pool::records | `Records::now`, `Brief::now` | callers name `pool::records` directly; out's two wrappers go |
@@ -51,7 +61,7 @@ The cycle is held together by a few thin edges from low-level code up to `agent`
 | fetch, out, outlines → osmpass | osmpass's reading helpers (fetch, out: one reference each; outlines: 2) | the named items move down to buildstore; osmpass (inputs) stays above |
 | dem → terrain_deep, terrain_pack | terrain's tile helpers (7 references) | the helpers move down (codecs or buildstore), or dem joins the terrain family |
 | inputs → lakefill, rail | 2 references to lakefill, 4 to rail, from the input checks | the named items move down beside inputs, or the checks call them through the agent |
-| cli → polar | one reference to polar | it moves down with cli (jobrt) |
+| cli → polar | one reference to polar | it moves down with cli (cli and net stay in pipeline until #883, which edits cli/build.rs, cli/progs.rs and net.rs, lands) |
 | layers → ovconv | one item | layers sits in the terrain family; the item moves down to codecs |
 | terrain_task, trees, offload → coord | offloading a step's parts to other Macs | a trait in the runtime crate (`Offload`), implemented by coord; the step names only the trait |
 
@@ -66,9 +76,14 @@ names, webpenc as now).
    whole, watercov, terrain_water, vtgen, chain, marks, stations, trailends, extents, areaflags,
    tiling (with the root's `morton` and progress bars), summary, legacy, hipack, basepack,
    basepart. ~8.8k lines (31 Oct 2026), no pipeline dependency.
-3. **jobrt** (a job's runtime): sys, budget, net, phase_names, pyenv, control, timings,
-   resume_log, cli, the job side of agent::jobs, the room primitives of agent::room, the
-   resume constants, nasread's NAS reading, `DRAIN_GRACE`, an `Offload` trait. ~12k lines.
+3. **jobrt** (a job's runtime; built, step 3): sys, budget, phase_names, pyenv, control, timings,
+   resume_log, `jobs` (the job side of agent::jobs: its progress lines and its log read back),
+   `room` (the room target a job is told and the free space past it, from agent::room and
+   agent::cond), `settings` (the pool's settings and the ask to set one, from coord::asks), the
+   resume constants, `DRAIN_GRACE`. ~9.6k lines (1 Nov 2026), no pipeline dependency. Planned:
+   cli and net (after #883), nasread's NAS reading (after #923, which edits agent/nasread.rs), and
+   the `Offload` trait with the step families that use it (step 5: terrain_task, trees and offload
+   are its only users).
 4. **buildstore** (the build's files: the NAS/store layer above `store`): out, handoff, rawpack,
    localread, costin, coverage, outlines, the `Recipe` type, the inputs folder's predicates,
    fetch, geotiff. ~12k lines.
@@ -139,10 +154,18 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
    became `pub` (trees::mask uses it); the test helpers pipeline's tests use (whole::testfiles,
    terrain_water::tests) sit behind a `testkit` feature, as store's do. None is a file a paused
    branch changes.
-3. **jobrt**: move the agent's constants and job-side primitives down (agent/jobs.rs,
-   agent/room.rs, agent/resume.rs split: the part a step calls goes down, the agent's policy
-   stays), then control, timings, sys, budget, resume_log, cli, net. Cuts the control → agent
-   edge and most step → agent edges. Needs #879 merged (agent/ edits).
+3. **jobrt** (built): control, timings, sys, budget, resume_log, phase_names, pyenv into
+   `crates/jobrt`, with the job side of agent/jobs.rs (`jobs`), the room primitives of
+   agent/room.rs and agent/cond.rs (`room`), the settings types of coord/asks.rs (`settings`), the
+   resume constants and `DRAIN_GRACE`; pipeline re-exports the modules at their old paths, and
+   agent::jobs, agent::room, agent::cond, agent::resume and coord::asks the items moved out of
+   them. The cuts are §1's table's (control → agent and coord, timings → fetch, resume_log →
+   agent and out); the test hooks other modules' tests use (resume_log::STOP_AFTER,
+   budget::TEST_RESOLVE, timings::reset) sit behind a `testkit` feature. cli and net are left
+   for after #883 (it edits both), nasread's reading for after #923. The step modules still name
+   the moved items through the agent's paths (`crate::agent::jobs::report`), so modgraph.py still
+   shows their edges to agent; those paths are rewritten as each moves (steps 4-5), several being
+   files #883 edits.
 4. **buildstore**: `Recipe` and the inputs folder's predicates down; out's write-set check behind a
    registry the agent fills; out's `pool::records` wrappers removed. Needs #879 (agent/steps.rs).
 5. **inputs** and the step families (one step each, bottom up: terrain, trees, roads, names, bld),
@@ -179,6 +202,17 @@ built target dir; "codecs edit": one line appended to codecs' hipack.rs, "core e
 |---|---|
 | dev, codecs edit | 37 s, 1.60 GB (load 29-35) |
 | dev, core edit | 33 s, 1.50 GB (load 35-38) |
+
+After step 3, 1 Nov 2026 11:41-11:43 UTC, rustc 1.98.1, `cargo build --workspace --bins` (dev)
+from a built target dir (the shared one, tools/dev/bin/cargo), one build at a time; "jobrt edit":
+one line appended to jobrt's timings.rs (the "core edit" above, now in jobrt), "agent edit": to
+agent/jobs.rs, "codecs edit": to hipack.rs:
+
+| run | after step 3 |
+|---|---|
+| dev, jobrt edit | 23 s, 2.43 GB (load 15-17): jobrt, pipeline, server recompiled |
+| dev, agent edit | 18 s, 2.36 GB (load 14-16): pipeline, server |
+| dev, codecs edit | 22 s, 2.36 GB (load 17-21): codecs, pipeline, server |
 
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the

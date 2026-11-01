@@ -36,9 +36,9 @@ use std::collections::BTreeMap;
 
 /// The members' progress files' folder.
 pub const DIR: &str = "state/pool/progress";
-/// How long a job's progress is offered to its Mac alone, from when its job last started or ended
-/// there (§7.2: 24 hours).
-pub const HOLD_S: u64 = 24 * 3600;
+// How long a job's progress is offered to its Mac alone (§7.2: 24 hours), and the variable saying
+// resuming is on: the runtime crate's (task #916 step 3, docs/crates.md), kept at these paths.
+pub use crate::resume_log::{HOLD_S, RESUME_ENV};
 /// A member's progress noted this recently and not finished may be its job running now (a lease
 /// granted less than a loop before a lead was lost isn't in the state the next lead restores): the
 /// lead doesn't run the job itself meanwhile (`running_elsewhere`). Its agent notes it again every
@@ -56,8 +56,6 @@ pub const RESUMABLE: [&str; 1] = ["osm-pass"];
 /// A job's environment: the file of its member's unacknowledged hand-offs for its step
 /// (`unmerged`), which crate::out::Out lays over the snapshot.
 pub const UNMERGED_ENV: &str = "SCENIC_UNMERGED";
-/// A job's environment: a pass is complete by the records (crate::osmpass::latest_pass).
-pub const RESUME_ENV: &str = crate::osmpass::RESUME_ENV;
 
 /// Whether `job` (an agent's job id, `<step> <target>`) is of a resumable step.
 pub fn resumable(job: &str) -> bool {

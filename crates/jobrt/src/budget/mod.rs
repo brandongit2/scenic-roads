@@ -57,7 +57,7 @@ pub struct View {
 /// metered by the real budget and reach no one.
 pub const TEST_PROXY_TO: &str = "SCENIC_TEST_PROXY_TO";
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 thread_local! {
     /// The unit tests' `TEST_PROXY_TO`: where the hosts of the proxies this thread starts are.
     pub static TEST_RESOLVE: std::cell::RefCell<Option<proxy::Resolve>> = const { std::cell::RefCell::new(None) };
@@ -76,7 +76,7 @@ pub fn start_proxy(root: &store::nasfs::NasRoot, me: &str, listener: std::net::T
         .and_then(|a| a.parse().ok())
         .filter(|a: &std::net::SocketAddr| a.ip().is_loopback());
     let resolve: Option<proxy::Resolve> = to.map(|a| Arc::new(move |_: &str, _: u16| Some(a)) as proxy::Resolve);
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testkit"))]
     let resolve = resolve.or_else(|| TEST_RESOLVE.with(|r| r.borrow().clone()));
     // (Its NAS reads never retried: they run under the budgets' lock, which every job's
     // request waits on; store::nasfs::NasRoot::no_retry.)

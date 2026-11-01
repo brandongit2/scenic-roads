@@ -20,7 +20,7 @@ const LEFT: &[(&str, usize)] = &[
     ("build.rs", 1),
     ("builtview.rs", 1),
     ("cataloguesview.rs", 1),
-    ("jobs.rs", 2),
+    ("jobs.rs", 1),
     ("live.rs", 6),
     ("memguard.rs", 1),
     ("mod.rs", 1),

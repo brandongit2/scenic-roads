@@ -77,13 +77,13 @@ struct Reply: Decodable {
     let local: Bool
     let now: Int
     let log: String?
-    /// This Mac paused alone (crates/pipeline/src/control.rs Hold, task #224), and its ask while
+    /// This Mac paused alone (crates/jobrt/src/control.rs Hold, task #224), and its ask while
     /// the agent hasn't taken it up (servers from #224 on).
     let held_here: HeldInfo?
     let hold_asked: Bool?
 }
 
-/// One Mac paused alone (crates/pipeline/src/control.rs Hold): who asked, since when.
+/// One Mac paused alone (crates/jobrt/src/control.rs Hold): who asked, since when.
 struct HeldInfo: Decodable {
     let by: String
     let at: Int
@@ -156,7 +156,7 @@ struct Status: Decodable {
     }
 }
 
-/// A Mac's own pause's stage (crates/pipeline/src/control.rs HoldView): "asked", "pausing" (its
+/// A Mac's own pause's stage (crates/jobrt/src/control.rs HoldView): "asked", "pausing" (its
 /// jobs finishing, by id), "paused", "resuming"; whether it goes to paused; who asked, since when;
 /// the stage in words.
 struct HoldStage: Decodable {
@@ -423,7 +423,7 @@ struct RegionFc: Decodable {
     let map_at: Int?
 }
 
-/// The build's pause (crates/pipeline/src/control.rs Pause): at the next safe point ("drain") or
+/// The build's pause (crates/jobrt/src/control.rs Pause): at the next safe point ("drain") or
 /// at once ("freeze"), who asked, since when.
 struct PauseInfo: Decodable {
     let mode: String
@@ -735,7 +735,7 @@ func progressText(_ p: JobProgress, paused: Bool, now: Int) -> String {
 }
 
 /// The hold ask's file as `scenic pause --here` / `scenic resume --here` write it
-/// (crates/pipeline/src/control.rs request_hold, HoldRequest: no `member` for this Mac). Pinned on
+/// (crates/jobrt/src/control.rs request_hold, HoldRequest: no `member` for this Mac). Pinned on
 /// both sides by tools/status/test/hold-request-*.json (selfTest, control.rs's tests).
 func holdRequestJSON(_ held: Bool, by: String, at: Int) -> Data {
     let h: Any = held ? ["by": by, "at": at] as [String: Any] : NSNull()
@@ -1372,7 +1372,7 @@ struct Seen {
     var held: Set<String> = []
 }
 
-/// This Mac's ask to its agent (crates/pipeline/src/control.rs), while it waits to be taken up: to
+/// This Mac's ask to its agent (crates/jobrt/src/control.rs), while it waits to be taken up: to
 /// pause (true) or go on (false).
 let askFile = "pause-request.json"
 func pendingAsk() -> Bool? {
@@ -1796,7 +1796,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         if !held.isEmpty { m.addItem(.separator()) }
         // The whole build paused (every Mac), or going on: an ask to this Mac's agent, which passes it
-        // on to the lead (crates/pipeline/src/control.rs). Option: at once, frozen where it is.
+        // on to the lead (crates/jobrt/src/control.rs). Option: at once, frozen where it is.
         // (Paused as this Mac knows it: the lead's, or, a helper's own, its own.)
         let ownHelper = reply?.status?.helpers?.first { $0.here == true }
         let pausedHere = reply?.status?.pause != nil || ownHelper?.pause != nil
@@ -1833,7 +1833,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if !h.tip.isEmpty { it.toolTip = h.tip }
             m.addItem(it)
         }
-        // A running job of this Mac's cancelled (`scenic job cancel`, crates/pipeline/src/control.rs
+        // A running job of this Mac's cancelled (`scenic job cancel`, crates/jobrt/src/control.rs
         // Cancel): stopped and given back, not failed, its work under way dropped. Option: held
         // until the lead runs a newer app.
         for j in runningJobs(serviceRunning: build.state.running) {
@@ -1971,7 +1971,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc func resumeHere(_ sender: NSMenuItem) { askHold(false) }
 
     /// Asks this Mac's agent to pause this Mac alone, or let it go on: its ask file
-    /// (crates/pipeline/src/control.rs HoldRequest), written whole, taken up within seconds.
+    /// (crates/jobrt/src/control.rs HoldRequest), written whole, taken up within seconds.
     func askHold(_ held: Bool) {
         let now = Int(Date().timeIntervalSince1970)
         let name = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
@@ -1989,7 +1989,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// Asks this Mac's agent to pause the build (`mode`: "drain" or "freeze") or let it go on (nil):
-    /// its ask file (crates/pipeline/src/control.rs Request), written whole, which the agent takes up
+    /// its ask file (crates/jobrt/src/control.rs Request), written whole, which the agent takes up
     /// within seconds and passes on to the lead.
     func ask(_ mode: String?) {
         let now = Int(Date().timeIntervalSince1970)

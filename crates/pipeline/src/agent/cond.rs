@@ -201,22 +201,9 @@ impl SleepWatch {
     }
 }
 
-/// Free bytes on the volume holding `path`; with `SCENIC_TEST_DISK_EXTRA_MB` set (the two-Mac
-/// test's alone, tools/check/pool-two-macs.sh `extra`: never the real agent's), that many MB more,
-/// so a small disk image the test's agent home is on stands for a larger disk,
-/// its fills landing in the image, never filling the Mac's own disk.
-pub fn free_bytes(path: &std::path::Path) -> Option<u64> {
-    store::sys::disk_free(path).ok().map(|f| f.saturating_add(test_disk_extra_mb() << 20))
-}
-
-/// `SCENIC_TEST_DISK_EXTRA_MB` (0 unset), at most 1 TB: said at the agent's start and in its
-/// status, never silent.
-pub fn test_disk_extra_mb() -> u64 {
-    static EXTRA: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *EXTRA.get_or_init(|| {
-        std::env::var("SCENIC_TEST_DISK_EXTRA_MB").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0).min(1 << 20)
-    })
-}
+// The disk's free bytes as a job and the agent reckon them: the runtime crate's (task #916 step 3,
+// docs/crates.md), kept at these paths.
+pub use jobrt::room::{free_bytes, test_disk_extra_mb};
 
 /// `SCENIC_TEST_MEM_MB` when set: the memory (MB) the agent counts its Mac to have, for its memory
 /// guard's limit and its asks (the two-Mac test's alone, tools/check/pool-two-macs.sh: a limit

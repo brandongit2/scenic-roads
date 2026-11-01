@@ -73,7 +73,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/pipeline/src/agent/room.rs", "nas_free", 1, "the share's free space: its mount's statfs"),
     ("crates/pipeline/src/agent/cond.rs", "resources", 1, "the share's free space: its mount's statfs"),
     ("crates/pipeline/src/coord/mod.rs", "nas_prober", 1, "the share's mount: its statfs"),
-    ("crates/pipeline/src/budget/nas.rs", "probe_dir", 1, "the NAS's speed probe measures raw calls, never counted as the build's NAS work"),
+    ("crates/jobrt/src/budget/nas.rs", "probe_dir", 1, "the NAS's speed probe measures raw calls, never counted as the build's NAS work"),
     ("crates/pipeline/src/agent/live.rs", "add_files", 1, "a note's full path (store::nasio's ring) shown under the root"),
     ("crates/store/src/iopool.rs", "for_root", 1, "the I/O pool's probe: a stat of the root itself, on its own thread"),
 ];

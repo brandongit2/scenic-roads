@@ -10,6 +10,7 @@ store = { path = "../store" }
 names = { path = "../names" }
 pyport = { path = "../pyport" }
 codecs = { path = "../codecs" }
+jobrt = { path = "../jobrt" }
 sha2 = "0.10"
 blake3 = "1"
 serde = { version = "1", features = ["derive"] }
@@ -67,5 +68,6 @@ bytes = "1"
 
 [dev-dependencies]
 codecs = { path = "../codecs", features = ["testkit"] }
+jobrt = { path = "../jobrt", features = ["testkit"] }
 store = { path = "../store", features = ["testkit"] }
 tempfile = "3"

@@ -1264,9 +1264,9 @@ pub fn pass_done(root: &store::nasfs::NasRoot, date: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// A job's environment: a pass is complete when its records say so (`latest_pass`; the agent sets
-/// it with `state/pool/resume` on: crate::agent::resume).
-pub const RESUME_ENV: &str = "SCENIC_RESUME";
+// A job's environment: a pass is complete when its records say so (`latest_pass`; the agent sets
+// it with `state/pool/resume` on: crate::agent::resume).
+use crate::resume_log::RESUME_ENV;
 
 /// The date of the newest complete pass: by the records when the job's agent says so
 /// (`RESUME_ENV`), else by the `pass.*.json` files on the NAS (`latest_pass_by`).

@@ -69,8 +69,8 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/leaftype/mod.rs", "fetch_nalcms", "NALCMS", "the reader of NALCMS's zip, made for its layout (a member streamed out by the declared offset and size): its messages, and its timing phase's name (its key in the timings kept), name what they read"),
     ("crates/pipeline/src/leaftype/mod.rs", "nalcms_centre", "NALCMS", "the reader of NALCMS's GeoTIFF's projection, made for it (the warp is PROJ's Lambert azimuthal equal-area, as GDAL warped it): its messages name what they read"),
     ("crates/pipeline/src/leaftype/mod.rs", "north_america_squares", "\"resampling the NALCMS squares\"", "a timing phase's name, its key in the timings kept (the same phase over time)"),
-    ("crates/pipeline/src/phase_names.rs", "RENAMED", "NALCMS", "phases' names from before task #844, as old timings records hold them (read as the new)"),
-    ("crates/pipeline/src/phase_names.rs", "RENAMED", "CanVec", "phases' names from before task #844, as old timings records hold them (read as the new)"),
+    ("crates/jobrt/src/phase_names.rs", "RENAMED", "NALCMS", "phases' names from before task #844, as old timings records hold them (read as the new)"),
+    ("crates/jobrt/src/phase_names.rs", "RENAMED", "CanVec", "phases' names from before task #844, as old timings records hold them (read as the new)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "lakefill_step", "\"filling the lakes from CanVec's zips\"", "a timing phase's name, its key in the timings kept (the same phase over time)"),
     ("crates/pipeline/src/bld/overture.rs", "row_group", "Overture's columns changed", "the reader of Overture's GeoParquet schema (the `geoparquet` format is its layout): its messages name what they read"),
     ("crates/pipeline/src/bld/overture.rs", "bbox_spans", "Overture's columns changed", "the reader of Overture's GeoParquet schema, as above"),
@@ -78,7 +78,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/bld/fetch.rs", "overture_jobs", "Overture's release", "the lister of Overture's release folders on S3, its layout: its message names what it reads"),
     ("crates/pipeline/src/leaftype/mod.rs", "EEA_SOURCE", "\"Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m", "a made square's tag (its GeoTIFF's `source`), as every square already made says it: a square's tag is how it's known (crate::trees::squares::complete), so it doesn't change with the declaration's wording"),
     // Allowlists by host.
-    ("crates/pipeline/src/budget/mod.rs", "QUERY_DOMAINS", "\"qlever.dev\"", "the polite-use budget is by host (docs/pool.md §7.7): the query services' own limits, which hold for any request to them"),
+    ("crates/jobrt/src/budget/mod.rs", "QUERY_DOMAINS", "\"qlever.dev\"", "the polite-use budget is by host (docs/pool.md §7.7): the query services' own limits, which hold for any request to them"),
     // Links that open a place elsewhere.
     ("web/src/main.ts", "-", "https://www.google.com/maps/", "opens the place in Google Maps"),
     // The Regions list's flags' credits (task #869; made by producers/flags/fetch.py).

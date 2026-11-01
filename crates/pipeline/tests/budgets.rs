@@ -23,10 +23,10 @@ use pipeline::budget::{QUERY_DOMAINS, QUERY_HOSTS, WIKIMEDIA};
 
 /// The files of the jobs' code naming a metered host: how their requests go.
 const ASKS: &[(&str, &str)] = &[
-    ("crates/pipeline/src/budget/mod.rs", "the budget itself: its lists of the metered hosts"),
-    ("crates/pipeline/src/budget/proxy.rs", "the proxy's tests, a metered host answered here"),
-    ("crates/pipeline/src/budget/tests.rs", "the budget's tests"),
-    ("crates/pipeline/src/budget/net.rs", "the page's limit words (limit_of), asking no one"),
+    ("crates/jobrt/src/budget/mod.rs", "the budget itself: its lists of the metered hosts"),
+    ("crates/jobrt/src/budget/proxy.rs", "the proxy's tests, a metered host answered here"),
+    ("crates/jobrt/src/budget/tests.rs", "the budget's tests"),
+    ("crates/jobrt/src/budget/net.rs", "the page's limit words (limit_of), asking no one"),
     ("crates/pipeline/src/agent/jobs.rs", "a test: a sandboxed job's request through the proxy"),
     ("crates/pipeline/src/inputs/sources.rs", "its tests: the staged declarations' URLs, compared, asked of no one"),
     ("crates/pipeline/src/wikiask.rs", "ureq (honours HTTPS_PROXY: Proxy::try_from_env); a 429 told (budget::seen)"),
@@ -47,12 +47,12 @@ const OFF: &[&str] = &[".proxy(None)", "ProxyHandler({})", "--noproxy", "no_prox
 /// The lines turning the proxy off: by file and what the line says, with why.
 const BYPASS: &[(&str, &str, &str)] = &[
     (
-        "crates/pipeline/src/budget/mod.rs",
+        "crates/jobrt/src/budget/mod.rs",
         ".proxy(None)",
         "the hold and the retries told to the proxy itself, on this Mac (budget::seen, budget::retried)",
     ),
     (
-        "crates/pipeline/src/budget/proxy.rs",
+        "crates/jobrt/src/budget/proxy.rs",
         "NO_PROXY",
         "the job's own Mac (its coordinator on 127.0.0.1) direct: the sandbox allows it",
     ),

@@ -172,10 +172,25 @@ impl Waits {
     }
 }
 
+/// The bytes this process has fetched over the network (ranges and whole files: pipeline's
+/// crate::fetch counts them, `fetched`), for a phase's count.
+static FETCHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Counts `n` bytes fetched over the network.
+pub fn fetched(n: usize) {
+    FETCHED.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The bytes this process has fetched over the network so far: a phase counts the difference
+/// across it.
+pub fn fetched_bytes() -> u64 {
+    FETCHED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// store::waits' totals and the NAS's and network's bytes now (a span's ends).
 fn waits_now() -> (store::waits::Totals, u64, u64) {
     use store::nasio::{get, Count};
-    (store::waits::totals(), get(Count::ReadBytes) + get(Count::WroteBytes), crate::fetch::fetched_bytes())
+    (store::waits::totals(), get(Count::ReadBytes) + get(Count::WroteBytes), fetched_bytes())
 }
 
 fn add_waits(a: &mut Option<Waits>, b: Option<Waits>) {
@@ -1700,8 +1715,8 @@ pub fn read_child(p: &Path) -> Vec<PhaseRec> {
 }
 
 /// Resets the run (tests: one process, many runs).
-#[cfg(test)]
-pub(crate) fn reset() {
+#[cfg(any(test, feature = "testkit"))]
+pub fn reset() {
     *run().lock().unwrap() = None;
 }
 

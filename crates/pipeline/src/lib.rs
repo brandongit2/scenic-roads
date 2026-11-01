@@ -4,12 +4,10 @@ pub mod appupdate;
 pub mod areadetails;
 pub mod areafiles;
 pub mod bld;
-pub mod budget;
 pub mod buildings;
 pub mod buildtiles;
 pub mod candidates;
 pub mod cli;
-pub mod control;
 pub mod coord;
 pub mod costin;
 pub mod coverage;
@@ -48,24 +46,20 @@ pub mod outlines;
 pub mod ovconv;
 pub mod pageviews;
 pub mod peaks;
-pub mod phase_names;
 pub mod polar;
 pub mod pool;
 pub mod pubtimes;
-pub mod pyenv;
 pub mod pyramids;
 pub mod rail;
 pub mod railfeeds;
 pub mod rawpack;
 pub mod reach;
-pub mod resume_log;
 pub mod road_terrain;
 pub mod rules;
 pub mod scache;
 pub mod slope_pack;
 pub mod stage;
 pub mod summits;
-pub mod sys;
 pub mod terr;
 pub mod terrain_base;
 pub mod terrain_deep;
@@ -73,7 +67,6 @@ pub mod terrain_pack;
 pub mod terrain_resume;
 pub mod terrain_task;
 pub mod timetables;
-pub mod timings;
 pub mod treepacks;
 pub mod trees;
 pub mod unit;
@@ -90,3 +83,6 @@ pub use codecs::{
     areaflags, basepack, basepart, bytes_bar, chain, count_bar, extents, hipack, legacy, marks, morton, shade_codec,
     stations, summary, terrain_codec, terrain_water, tiling, trailends, vtgen, watercov, webp, whole, ProgressRead,
 };
+
+// Moved to their own crate (task #916 step 3, docs/crates.md), kept at their old paths.
+pub use jobrt::{budget, control, phase_names, pyenv, resume_log, sys, timings};

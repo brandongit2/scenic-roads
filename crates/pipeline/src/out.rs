@@ -229,6 +229,13 @@ fn hashes_of(p: &Path) -> Result<(String, String)> {
     Ok((store::naming::hex16(&b3.finalize()), format!("{:x}", sha.finalize())))
 }
 
+/// The records as a resumed run's identity reads them (crate::resume_log::names).
+impl crate::resume_log::Manifest for Out {
+    fn get(&self, logical: &str) -> Option<&str> {
+        Out::get(self, logical)
+    }
+}
+
 impl Out {
     /// A job of `step`'s: `root`, the NAS project folder (or a local folder standing in for it);
     /// `scratch`, local space. It puts and removes only `step`'s outputs (`for_step`).

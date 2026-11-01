@@ -386,13 +386,18 @@ fn reached_at(at: std::time::Instant) {
     g.points += 1;
 }
 
+/// How long a job asked to stop at its next safe point (the build pausing, the battery low) is given
+/// before it's frozen where it is instead: a z6 tile takes up to ~11 min, a map tile ~10. (The
+/// agent's, pipeline's agent::DRAIN_GRACE.)
+pub const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 /// The longest a job may go without a safe point, in seconds (task #890): the one declared bound
-/// every step is held to. Derived, not typed: a third of the agent's drain grace (crate::agent's
-/// `DRAIN_GRACE`), so a job asked to stop at its next safe point reaches one well before it's
+/// every step is held to. Derived, not typed: a third of the agent's drain grace (`DRAIN_GRACE`),
+/// so a job asked to stop at its next safe point reaches one well before it's
 /// frozen instead, with room for a Mac slower than the one a step's gaps were seen on. A run past
 /// it says so in its log (`over_bound`, crate::timings::finish), so a step that regresses shows;
 /// each step's gaps are measured on every run (`safe_gaps`).
-pub const SAFE_GAP_BOUND_S: u64 = crate::agent::DRAIN_GRACE.as_secs() / 3;
+pub const SAFE_GAP_BOUND_S: u64 = DRAIN_GRACE.as_secs() / 3;
 
 /// What a job's log says when its longest gap between safe points, `gap_s` seconds, is past
 /// `SAFE_GAP_BOUND_S`; None within it.
@@ -571,7 +576,7 @@ pub const SETTING_ASKS: &str = "setting-asks";
 pub const POOL_SETTINGS: &str = "pool-settings.json";
 
 /// Asks this Mac's agent (its folder `home`) to set one of the pool's settings.
-pub fn request_setting(home: &Path, a: &crate::coord::asks::SettingAsk) -> anyhow::Result<()> {
+pub fn request_setting(home: &Path, a: &crate::settings::SettingAsk) -> anyhow::Result<()> {
     a.check()?;
     let dir = home.join(SETTING_ASKS);
     std::fs::create_dir_all(&dir)?;
@@ -582,7 +587,7 @@ pub fn request_setting(home: &Path, a: &crate::coord::asks::SettingAsk) -> anyho
 
 /// The settings asks waiting in `home`, taken in the order asked (each read whole, then removed;
 /// one that doesn't parse dropped).
-pub fn take_setting_asks(home: &Path) -> Vec<crate::coord::asks::SettingAsk> {
+pub fn take_setting_asks(home: &Path) -> Vec<crate::settings::SettingAsk> {
     let Ok(rd) = std::fs::read_dir(home.join(SETTING_ASKS)) else { return Vec::new() };
     let mut files: Vec<_> =
         rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
@@ -598,7 +603,7 @@ pub fn take_setting_asks(home: &Path) -> Vec<crate::coord::asks::SettingAsk> {
 }
 
 /// The pool's settings as this Mac's agent last wrote them (`POOL_SETTINGS`).
-pub fn read_pool_settings(home: &Path) -> Option<crate::coord::asks::Settings> {
+pub fn read_pool_settings(home: &Path) -> Option<crate::settings::Settings> {
     serde_json::from_slice(&std::fs::read(home.join(POOL_SETTINGS)).ok()?).ok()
 }
 

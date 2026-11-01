@@ -3,7 +3,7 @@
 # Sandbox.app" (tools/status/bundle.sh --sandbox) with its own bundle id, launchd labels
 # (local.scenic-sandbox.build, local.scenic-sandbox.page) and home, so the live app, services
 # (local.scenic.*) and ~/Library/Application Support/scenic are never touched. Its build service
-# runs a stand-in agent (it reports a job and quits as the app asks, as crates/pipeline/src/control.rs
+# runs a stand-in agent (it reports a job and quits as the app asks, as crates/jobrt/src/control.rs
 # Quit says), each installed version's `scenic` a stand-in answering `scenic menu`, and a stand-in
 # build page on port 17399 serves the panel (the app's ScenicPage, never this Mac's live agent's
 # port 8090).

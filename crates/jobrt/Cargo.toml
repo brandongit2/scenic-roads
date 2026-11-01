@@ -1,0 +1,26 @@
+[package]
+name = "jobrt"
+version = "0.1.0"
+edition = "2021"
+description = "A job's runtime: control (pause, stop, done), timings, sys, the budgets and their proxy, the resume log, a job's progress lines and room target, the pool's settings (docs/crates.md, step 3)"
+
+[dependencies]
+store = { path = "../store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
+anyhow.workspace = true
+blake3 = "1"
+libc = "0.2"
+# Pinned as pipeline pins it (coord::client's idle transport uses ureq's unversioned::transport API).
+ureq = "=3.4.2"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "fs", "io-util", "sync", "time", "macros"] }
+socket2 = { version = "0.6", features = ["all"] }
+
+[features]
+# Test hooks (resume_log::STOP_AFTER, budget::TEST_RESOLVE, timings::reset) for other crates'
+# tests: their dev-dependency on jobrt turns it on.
+testkit = []
+
+[dev-dependencies]
+store = { path = "../store", features = ["testkit"] }
+tempfile = "3"

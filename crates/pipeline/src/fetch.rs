@@ -567,11 +567,9 @@ impl Fetch for MapFetch {
     }
 }
 
-/// The bytes this process has fetched over the network so far: a phase counts the difference
-/// across it.
-pub fn fetched_bytes() -> u64 {
-    net::FETCHED.load(std::sync::atomic::Ordering::Relaxed)
-}
+// The bytes this process has fetched over the network so far: counted in crate::timings (the
+// runtime crate, task #916 step 3), which a phase's count reads; kept at this path.
+pub use crate::timings::fetched_bytes;
 
 /// `url`'s small file whole over the network, by this process's one `net::Net` (its retries, its
 /// wait for this Mac's agent's proxy through a restart, its per-host slots); None when the server
@@ -697,12 +695,10 @@ mod net {
         }
     }
 
-    /// The bytes this process has fetched over the network (ranges and whole files), for a phase's
-    /// count (`super::fetched_bytes`).
-    pub(super) static FETCHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
+    /// Counts the bytes fetched over the network (ranges and whole files) for a phase's count
+    /// (crate::timings::fetched_bytes).
     fn fetched(n: usize) {
-        FETCHED.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+        crate::timings::fetched(n);
     }
 
     /// A file's network side: the connection pool, the blocks fetched, where they're recorded.

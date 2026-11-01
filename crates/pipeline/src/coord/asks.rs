@@ -23,14 +23,9 @@ use std::collections::BTreeMap;
 /// The member's queue of asks not yet answered 200, in its agent's pool folder.
 pub const QUEUE: &str = "asks.json";
 
-/// The settings the lead keeps (`/pool/settings`), each moved from its switch file under
-/// `state/pool/` (`Setting::file`): placement by how crucial a job is (crate::agent::placement;
-/// a boolean), the NAS's budget (crate::budget::nas's switch: its text) and the NAS's load target
-/// (crate::budget::nas::Target's share, %).
-pub const PLACEMENT: &str = "placement";
-pub const NAS_BUDGET: &str = "nas-budget";
-pub const NAS_TARGET: &str = "nas-target";
-pub const NAMES: [&str; 3] = [PLACEMENT, NAS_BUDGET, NAS_TARGET];
+// The pool's settings, their names and an ask to set one: the runtime crate's (task #916 step 3,
+// docs/crates.md: control queues a Mac's asks), kept at these paths.
+pub use jobrt::settings::{Setting, SettingAsk, Settings, NAMES, NAS_BUDGET, NAS_TARGET, PLACEMENT};
 
 /// A setting's switch file on the NAS (read by older apps; the rollout gate's).
 pub fn file(name: &str) -> Option<&'static str> {
@@ -42,63 +37,6 @@ pub fn file(name: &str) -> Option<&'static str> {
     }
 }
 
-/// A setting as the lead keeps it: its value (null: cleared, its default), who set it, when (unix s).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Setting {
-    #[serde(default)]
-    pub value: Value,
-    #[serde(default)]
-    pub by: String,
-    #[serde(default)]
-    pub at: u64,
-}
-
-/// The settings (the store's `settings`), and their generation: one more at each change.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Settings {
-    #[serde(default)]
-    pub gen: u64,
-    #[serde(default)]
-    pub values: BTreeMap<String, Setting>,
-}
-
-impl Settings {
-    /// Setting `name`'s value, when one is set.
-    pub fn get(&self, name: &str) -> Option<&Value> {
-        self.values.get(name).map(|s| &s.value).filter(|v| !v.is_null())
-    }
-
-    /// Placement, as set (off while not).
-    pub fn placement(&self) -> bool {
-        self.get(PLACEMENT).and_then(Value::as_bool).unwrap_or(false)
-    }
-
-    /// The NAS budget's switch, as set (its text, `budget::nas::parse`; not set: on, no cap).
-    pub fn nas_budget(&self) -> Option<crate::budget::nas::Switch> {
-        match self.get(NAS_BUDGET).and_then(Value::as_str) {
-            Some(t) => crate::budget::nas::parse(t),
-            None => Some(Default::default()),
-        }
-    }
-
-    /// The NAS's load target, as set.
-    pub fn nas_target(&self) -> Option<crate::budget::nas::Target> {
-        let s = self.values.get(NAS_TARGET)?;
-        let pct = s.value.as_u64()? as u32;
-        Some(crate::budget::nas::Target { pct, by: s.by.clone(), at: s.at })
-    }
-
-    /// Takes `a` when it's no earlier than the setting it replaces: whether it changed them.
-    pub fn take(&mut self, a: &SettingAsk) -> bool {
-        if self.values.get(&a.name).is_some_and(|s| s.at > a.at || s.value == a.value) {
-            return false;
-        }
-        self.values.insert(a.name.clone(), Setting { value: a.value.clone(), by: a.by.clone(), at: a.at });
-        self.gen += 1;
-        true
-    }
-}
-
 /// Another Mac's pause set, or lifted (`held` None), as of `at` (`POST /pool/hold`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HoldAsk {
@@ -106,34 +44,6 @@ pub struct HoldAsk {
     #[serde(default)]
     pub held: Option<Hold>,
     pub at: u64,
-}
-
-/// A setting set (`value`), or cleared (null), by `by` at `at` (`POST /pool/settings`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SettingAsk {
-    pub name: String,
-    #[serde(default)]
-    pub value: Value,
-    pub by: String,
-    pub at: u64,
-}
-
-impl SettingAsk {
-    /// Whether the lead takes it: a setting it knows, a value of its kind.
-    pub fn check(&self) -> Result<()> {
-        let ok = match (self.name.as_str(), &self.value) {
-            (_, Value::Null) => NAMES.contains(&self.name.as_str()),
-            (PLACEMENT, Value::Bool(_)) => true,
-            (NAS_BUDGET, Value::String(t)) => t.len() <= 200,
-            (NAS_TARGET, Value::Number(n)) => {
-                n.as_u64().is_some_and(|p| crate::budget::nas::TARGET_RANGE.contains(&(p as u32)))
-            }
-            _ => false,
-        };
-        ensure!(ok, "{}: not a setting the lead takes, or not of its kind ({})", self.name, self.value);
-        ensure!(self.by.len() <= 200, "who set it, in 200 bytes");
-        Ok(())
-    }
 }
 
 /// An ask queued on a member until the lead answers it 200.

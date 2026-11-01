@@ -1,11 +1,12 @@
 //! Every rule that grants a job lives in the scheduler (crate::coord::sched, docs/pool.md §7.2):
 //! the live coordinator and the forecast both call `Sched::pack`, so neither can keep a second copy
-//! that drifts. Outside `#[cfg(test)]` code, no line of the crate's source names a grant rule
+//! that drifts. Outside `#[cfg(test)]` code, no line of the crate's source (or of the runtime crate
+//! below it, crates/jobrt, where the budgets are) names a grant rule
 //! (`RULES`) but in the scheduler itself and where the budget's limits are defined
 //! (crate::budget::nas), or as listed in `EXEMPT` with why; an exemption that no longer matches
 //! fails too, so the list can't go stale.
 //!
-//! scans: crates/pipeline/src
+//! scans: crates/pipeline/src crates/jobrt/src
 
 use std::path::{Path, PathBuf};
 
@@ -29,18 +30,22 @@ const RULES: &[&str] = &[
 ];
 
 /// Where they may be named: the scheduler, and the budget's limits where they're defined.
-const HOME: &[&str] = &["src/coord/sched.rs", "src/budget/nas.rs"];
+const HOME: &[&str] = &["pipeline/src/coord/sched.rs", "jobrt/src/budget/nas.rs"];
 
 /// Lines naming one elsewhere, by file and what the line says, with why.
 const EXEMPT: &[(&str, &str, &str)] = &[
     (
-        "src/coord/mod.rs",
+        "pipeline/src/coord/mod.rs",
         "s.leases.set_threads(lease, ask_cores(&a));",
         "a page's or worker's task (not a job): its threads, the Mac's cores",
     ),
-    ("src/coord/mod.rs", "threads: ask_cores(&a),", "a task's grant (not a job): its threads, the Mac's cores"),
     (
-        "src/pool/sim/place.rs",
+        "pipeline/src/coord/mod.rs",
+        "threads: ask_cores(&a),",
+        "a task's grant (not a job): its threads, the Mac's cores",
+    ),
+    (
+        "pipeline/src/pool/sim/place.rs",
         "if !crate::budget::nas::Limits::fits_job(members, all, heaviest, job.nas, true) {",
         "the simulator's outcome check of a start the scheduler made (task #539), not a grant",
     ),
@@ -70,9 +75,11 @@ fn code(text: &str) -> Vec<&str> {
 
 #[test]
 fn no_grant_rule_lives_outside_the_scheduler() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // (Paths from crates/: this crate's and the runtime crate's sources.)
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut files = Vec::new();
-    sources(&root.join("src"), &mut files);
+    sources(&root.join("pipeline/src"), &mut files);
+    sources(&root.join("jobrt/src"), &mut files);
     let mut found = Vec::new();
     let mut used = vec![false; EXEMPT.len()];
     for f in files {

@@ -27,8 +27,8 @@
 //!   cancelled (the agent clears the target's scratch, `<z>_<x>_<y>.*`); with the slot's step folder
 //!   when room-making deletes a given-back job's; and, a target that never comes back here (made on
 //!   another Mac), as the step's next run here opens its own log: any log in the step's folders
-//!   untouched for crate::agent::resume::HOLD_S (`sweep`).
-//! - **Only with resuming on:** the job's agent says so (crate::agent::resume::RESUME_ENV, with
+//!   untouched for `HOLD_S` (`sweep`).
+//! - **Only with resuming on:** the job's agent says so (`RESUME_ENV`, with
 //!   `state/pool/resume` on); a run without it keeps nothing.
 
 use anyhow::Result;
@@ -36,12 +36,21 @@ use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+/// A job's environment: resuming is on (the agent sets it with `state/pool/resume` on:
+/// pipeline's agent::resume): its blocks are kept here, and a pass is complete when its records say
+/// so (crate::osmpass's `latest_pass`).
+pub const RESUME_ENV: &str = "SCENIC_RESUME";
+
+/// How long a job's progress is offered to its Mac alone, from when its job last started or ended
+/// there (docs/pool.md §7.2: 24 hours; pipeline's agent::resume); a log untouched this long is swept.
+pub const HOLD_S: u64 = 24 * 3600;
+
 /// A block: (z, and two numbers its step names it by: its first tile's column and row, …).
 pub type BlockId = (u8, u32, u32);
 
 /// Whether this job keeps its blocks: its agent turned resuming on.
 pub fn on() -> bool {
-    std::env::var_os(crate::agent::resume::RESUME_ENV).is_some()
+    std::env::var_os(RESUME_ENV).is_some()
 }
 
 /// Target `t` (z, x, y)'s log in scratch folder `scratch`.
@@ -79,13 +88,19 @@ pub fn job_id(kind: &str, versions: &str, target: &str, parts: &[&str]) -> Strin
     id(&v)
 }
 
+/// What a manifest says a logical name is (its content's name), when it names it: the build's
+/// records (pipeline's out::Out).
+pub trait Manifest {
+    fn get(&self, logical: &str) -> Option<&str>;
+}
+
 /// What the manifest names `logicals` (each `<logical>=<content>`, `-` for none), a line each: the
 /// inputs part of a `job_id`.
-pub fn names(out: &crate::out::Out, logicals: impl IntoIterator<Item = String>) -> String {
+pub fn names(out: &(impl Manifest + ?Sized), logicals: impl IntoIterator<Item = String>) -> String {
     logicals.into_iter().map(|l| format!("{}={}", l, out.get(&l).unwrap_or("-"))).collect::<Vec<_>>().join("\n")
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 thread_local! {
     /// Tests: the run stops as a pause stops it (crate::control::Paused) once this many blocks more
     /// are kept.
@@ -114,7 +129,7 @@ impl Log {
         take: &mut dyn FnMut(BlockId, &[u8]) -> Result<()>,
     ) -> Option<Log> {
         let p = path(scratch, t);
-        sweep(scratch, &p, crate::agent::resume::HOLD_S);
+        sweep(scratch, &p, HOLD_S);
         if !p.exists() {
             if let Some(other) = elsewhere(scratch, t) {
                 if let Err(e) = std::fs::create_dir_all(scratch).and_then(|()| std::fs::rename(&other, &p)) {
@@ -175,7 +190,7 @@ impl Log {
             }
         }
         self.done.insert(b);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testkit"))]
         if let Some(n) = STOP_AFTER.get() {
             if n <= 1 {
                 STOP_AFTER.set(None);

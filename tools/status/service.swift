@@ -6,7 +6,7 @@
 //   listed under Scenic in Login Items): launchd runs the app's launcher (Contents/MacOS/
 //   scenic-launcher agent), which runs the installed app's agent from run/agent and starts it
 //   again after a crash or for an update. Opening the app starts it; quitting the app asks it to
-//   quit (crates/pipeline/src/control.rs Quit), and it exits cleanly, so launchd leaves it stopped.
+//   quit (crates/jobrt/src/control.rs Quit), and it exits cleanly, so launchd leaves it stopped.
 // - The map server is no part of it: a launchd service of its own on the Mac mini alone
 //   (tools/app/install.sh; docs/macs.md, task #874).
 // - An update: the agent installs each published version under app/<version> (pipeline::appupdate);
