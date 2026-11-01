@@ -325,10 +325,12 @@ impl Keys {
             return;
         }
         if step == super::redo::STEP {
-            // ("<step> <target>": a redo, its key forgotten.)
+            // ("<step> <target>": a redo, its key forgotten. A third word is a restore's or 4a's
+            // scheme-2 save, "<step> <target> <from>", done before step 4b (docs/readiness.md §4):
+            // a hand-off of one still waiting records nothing, never forgets its target.)
             for (t, _) in done {
                 let mut w = t.split(' ');
-                let (Some(s), Some(at)) = (w.next(), w.next()) else { continue };
+                let (Some(s), Some(at), None) = (w.next(), w.next(), w.next()) else { continue };
                 if let Some(m) = self.per_target(s) {
                     m.remove(at);
                 }
@@ -7080,6 +7082,11 @@ pub(crate) mod tests {
         let t = "6/28/16";
         let key = done.recorded("terrain-hi", t).expect("built").to_string();
         let (m0, keys0) = (m.clone(), done.clone());
+        // (A restore's or the scheme-2 save's done record of before step 4b, a hand-off still
+        // waiting: nothing recorded, nothing forgotten.)
+        let old = [(format!("terrain-hi {t} {key}"), "0123456789abcdef".to_string())];
+        done.record(crate::agent::redo::STEP, &old);
+        assert_eq!(done, keys0, "an old restore's record changes nothing");
         let redo = [(crate::agent::redo::done_target("terrain-hi", t), String::new())];
         done.record(crate::agent::redo::STEP, &redo);
         assert_eq!(done.recorded("terrain-hi", t), None);
