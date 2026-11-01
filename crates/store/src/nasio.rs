@@ -649,13 +649,13 @@ mod tests {
     /// What `set_phase` costs (the timings' every top-level phase opened and ended calls it).
     #[test]
     fn setting_the_phase_is_cheap() {
-        let t = std::time::Instant::now();
+        let t = crate::testkit::thread_cpu_ns();
         for i in 0..100_000 {
             set_phase(if i % 2 == 0 { "records saved\tnas-write" } else { "" });
         }
-        let ns = t.elapsed().as_nanos() / 100_000;
+        let ns = (crate::testkit::thread_cpu_ns() - t) / 100_000;
         eprintln!("set_phase: {ns} ns a call");
-        assert!(ns < 20_000, "{ns} ns a call");
+        assert!(ns < 20_000, "{ns} ns of CPU a call"); // (bound ok: CPU time, not wall)
     }
 
     /// A file's notes are read back from its counts file, the newest `RING` kept, a long path's end
@@ -708,12 +708,12 @@ mod tests {
     #[test]
     fn noting_a_file_is_cheap() {
         let p = Path::new("/Volumes/personal/projects/scenic-roads/terrain/6-4-36.z");
-        let t = std::time::Instant::now();
+        let t = crate::testkit::thread_cpu_ns();
         for i in 0..100_000 {
             note(if i % 2 == 0 { Kind::Read } else { Kind::Wrote }, p, i, 3);
         }
-        let ns = t.elapsed().as_nanos() / 100_000;
+        let ns = (crate::testkit::thread_cpu_ns() - t) / 100_000;
         eprintln!("note: {ns} ns a call");
-        assert!(ns < 20_000, "{ns} ns a call");
+        assert!(ns < 20_000, "{ns} ns of CPU a call"); // (bound ok: CPU time, not wall)
     }
 }

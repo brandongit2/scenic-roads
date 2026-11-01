@@ -678,7 +678,7 @@ mod tests {
         let t = std::time::Instant::now();
         assert!(make_dir(&d.path().join("f/a")).is_err());
         assert!(scratch(&d.path().join("f/a/b.bin")).is_err());
-        assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+        crate::testkit::ended_before(t, std::time::Duration::from_secs(30), "failed without retrying");
     }
 
     #[test]

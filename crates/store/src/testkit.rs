@@ -11,6 +11,7 @@
 //! - [`sh`]: a stand-in child that says when it's set up (`$READY`) and is killed whole, with its
 //!   process group, when the test drops it, panicking or not;
 //! - [`ended_before`]: that code did NOT wait, judged against what waiting would take;
+//! - [`thread_cpu_ns`]: what a call costs, by this thread's CPU time, never the wall clock;
 //! - [`EnvVar`]: an environment variable set for one test, restored when it ends.
 //!
 //! Code whose decisions turn on time takes a [`crate::clock::Clock`]; its tests give it a
@@ -49,6 +50,16 @@ pub fn wait_for<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
         assert!(Instant::now() < end, "never: {what} (in {WATCHDOG:?})");
         std::thread::sleep(POLL);
     }
+}
+
+/// This thread's CPU time in ns: what "it costs little" is measured by (task #921). A loaded Mac
+/// stretches the wall clock a loop takes, not the work it does; the process's clock would count
+/// the other tests' threads.
+pub fn thread_cpu_ns() -> u64 {
+    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: a valid timespec to write to.
+    assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) }, 0);
+    t.tv_sec as u64 * 1_000_000_000 + t.tv_nsec as u64
 }
 
 /// For a test that checks code didn't wait: asserts what began at `t0` ended well before `never`,

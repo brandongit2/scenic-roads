@@ -35,14 +35,21 @@ with phase("waiting"):
     # Proven by events, not by timing (task #921): the NAS call is in progress before the network's
     # begins and ends only after it; the network's call is in progress while this thread spins
     # until the process has 40 ms more CPU time, however long a loaded Mac takes to give it.
+    # Every event's wait bounded (WATCHDOG, as tools/dev/testing.md's): a stuck thread fails the
+    # run, never hangs it.
+    WATCHDOG = 300
+
     def held(kind, began, done):
         with wait(kind):
             began.set()
-            done.wait()
+            assert done.wait(WATCHDOG), "never released"
+
+    def begun(began):
+        assert began.wait(WATCHDOG), "the helper thread never began its wait"
     began, done = threading.Event(), threading.Event()
     t = threading.Thread(target=held, args=("nas", began, done))
     t.start()
-    began.wait()
+    begun(began)
     with wait("net"):
         time.sleep(0.03)
     done.set()
@@ -50,7 +57,7 @@ with phase("waiting"):
     began, done = threading.Event(), threading.Event()
     t = threading.Thread(target=held, args=("net", began, done))
     t.start()
-    began.wait()
+    begun(began)
     spin = time.process_time()
     while time.process_time() - spin < 0.04:
         pass

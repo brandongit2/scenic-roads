@@ -354,14 +354,15 @@ mod tests {
         }
         let t3 = totals();
         assert!((t3[2] - t2[2]) / 1_000_000 >= 10);
-        // The cost: a guard taken and dropped.
+        // The cost: a guard taken and dropped, in this thread's CPU time (task #921: a loaded Mac
+        // stretches the wall clock, not the work done per guard).
         let n = 200_000;
-        let t = Instant::now();
+        let c0 = crate::testkit::thread_cpu_ns();
         for _ in 0..n {
             drop(disk());
         }
-        let each = t.elapsed().as_nanos() as f64 / n as f64;
+        let each = (crate::testkit::thread_cpu_ns() - c0) as f64 / n as f64;
         eprintln!("a guard costs {each:.0} ns");
-        assert!(each < 20_000.0, "{each} ns a guard");
+        assert!(each < 20_000.0, "{each} ns of CPU a guard"); // (bound ok: CPU time, not wall)
     }
 }

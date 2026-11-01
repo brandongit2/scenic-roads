@@ -168,7 +168,9 @@ async fn a_server_follows_publishes_and_serves_byte_identical_tiles() {
             tokio::task::spawn_blocking(move || until("B follows the publish", || b2.catalogue().n == k))
                 .await
                 .unwrap();
-            store::testkit::ended_before(t, Duration::from_secs(1), "followed within a second");
+            // (Task #921: half its long poll's 30 s, the time it had taken without the push; no
+            // "within a second" a loaded Mac can miss.)
+            store::testkit::ended_before(t, Duration::from_secs(30), "followed by the push, not its poll's end");
         } else {
             let b2 = b.clone();
             tokio::task::spawn_blocking(move || until("B takes the lead's map", || b2.catalogue().n == 1))
