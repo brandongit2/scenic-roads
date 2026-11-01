@@ -66,5 +66,6 @@ md-5 = "0.10"
 bytes = "1"
 
 [dev-dependencies]
+codecs = { path = "../codecs", features = ["testkit"] }
 store = { path = "../store", features = ["testkit"] }
 tempfile = "3"

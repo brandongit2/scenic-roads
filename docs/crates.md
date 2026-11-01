@@ -134,7 +134,9 @@ agent/rekey.rs; #856: crates/server; #882 step 4: coord; #914) move only after t
 2. **codecs** (built): the acyclic leaves of §2.2 (modgraph.py, rerun 31 Oct 2026: none names a
    module outside the set but tiling the root's `count_bar`), into `crates/codecs`, with the root's
    `morton`, progress bars and `ProgressRead`; pipeline re-exports them. `areaflags::is_clockwise`
-   became `pub` (trees::mask uses it). None is a file a paused branch changes.
+   became `pub` (trees::mask uses it); the test helpers pipeline's tests use (whole::testfiles,
+   terrain_water::tests) sit behind a `testkit` feature, as store's do. None is a file a paused
+   branch changes.
 3. **jobrt**: move the agent's constants and job-side primitives down (agent/jobs.rs,
    agent/room.rs, agent/resume.rs split: the part a step calls goes down, the agent's policy
    stays), then control, timings, sys, budget, resume_log, cli, net. Cuts the control → agent

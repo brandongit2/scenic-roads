@@ -25,6 +25,11 @@ image-webp = "0.2"
 crc32fast = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
+[features]
+# Test helpers (whole::testfiles, terrain_water::tests) for other crates' tests: their
+# dev-dependency on codecs turns it on.
+testkit = []
+
 [dev-dependencies]
 store = { path = "../store", features = ["testkit"] }
 tempfile = "3"

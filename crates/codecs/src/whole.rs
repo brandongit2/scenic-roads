@@ -158,7 +158,7 @@ pub fn file_whole(p: &Path) -> bool {
 }
 
 /// Small whole files for tests.
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub mod testfiles {
     /// A terrain PNG.
     pub fn png() -> Vec<u8> {

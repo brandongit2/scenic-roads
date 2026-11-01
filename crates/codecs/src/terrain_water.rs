@@ -776,7 +776,7 @@ fn isotonic(y: &[f64], w: &[f64]) -> Vec<f64> {
 
 /// Bit 63 of a lake's key: one of its tile's own (no OSM id: `polys_of_mvt`).
 const OWN: u64 = 1 << 63;
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub const OWN_FOR_TESTS: u64 = OWN;
 
 /// What a from ending so says: its target reads the depth's water (`WaterSource::depth_polys`,
@@ -930,7 +930,7 @@ pub fn tile_water(src: &dyn WaterSource, z: u8, x: u32, y: u32, terrain: bool) -
     Ok((!wt.is_empty()).then(|| Arc::new(wt)))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub mod tests {
     use super::*;
 
