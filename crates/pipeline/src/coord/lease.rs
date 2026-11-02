@@ -23,6 +23,9 @@ pub enum Work {
     Task { id: u64 },
 }
 
+/// How far back a leased job's recent NAS rate looks, at least (`Lease::window`).
+pub const WINDOW: Duration = Duration::from_secs(60);
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Lease {
     pub id: u64,
@@ -47,6 +50,12 @@ pub struct Lease {
     /// memory alone).
     #[serde(skip)]
     pub live: Option<crate::agent::jobs::Live>,
+    /// When `live` was said, and an earlier beat's view `WINDOW` to twice that before it: what its
+    /// job moved lately is the difference (crate::coord::sched's `job_weight`; in memory alone).
+    #[serde(skip)]
+    pub live_at: Option<Instant>,
+    #[serde(skip)]
+    pub window: Option<(Instant, crate::agent::jobs::Live)>,
     /// The threads its job was granted (0: not said): the cores the pool's own work takes on its
     /// Mac, apart from load outside the pool (crate::coord::outside_cores).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
@@ -439,6 +448,8 @@ impl Leases {
                 progress: None,
                 frac: None,
                 live: None,
+                live_at: None,
+                window: None,
                 slot: None,
                 threads: 0,
                 unconfirmed: false,
@@ -490,8 +501,16 @@ impl Leases {
                 if let Some(f) = frac.filter(|f| f.is_finite()) {
                     l.frac = Some(f.clamp(0.0, 1.0));
                 }
-                if live.is_some() {
-                    l.live = live;
+                if let Some(v) = live {
+                    // (The window's start moves to the last view said once that is `WINDOW` past
+                    // it: it spans one to two `WINDOW`s back from the newest.)
+                    if let Some((at, prev)) = l.live_at.zip(l.live.take()) {
+                        if l.window.as_ref().is_none_or(|(w, _)| at.saturating_duration_since(*w) >= WINDOW) {
+                            l.window = Some((at, prev));
+                        }
+                    }
+                    l.live = Some(v);
+                    l.live_at = Some(now);
                 }
                 true
             }
@@ -572,6 +591,44 @@ mod tests {
         assert!(l.get(a, "m1", later).is_some() && l.expire(later).is_empty());
         assert!(l.renew(a, "m1", None, later));
         assert_eq!(l.expire(later + Duration::from_millis(100)).len(), 1);
+    }
+
+    /// Task #925 review: a lease keeps its job's newest live view and one from one to two
+    /// `WINDOW`s before it, so its recent NAS rate is their difference: a job quiet for minutes
+    /// then reading hard shows its hard reads within two minutes, where its mean since its start
+    /// lags. A view not saying all it moved (an older agent's: bytes alone) gives no rate.
+    #[test]
+    fn a_lease_keeps_a_recent_window_of_what_its_job_moved() {
+        let t0 = Instant::now();
+        let mut l = Leases::new(Duration::from_secs(600));
+        let a = l.grant("m1", job(&[("6/1/1", "k")]), t0);
+        let moved = |b: u64| crate::agent::jobs::Live {
+            nas_read: Some(b),
+            nas_wrote: Some(0),
+            nas_creates: Some(0),
+            nas_listed: Some(0),
+            nas_stats: Some(0),
+            nas_deletes: Some(0),
+            ..Default::default()
+        };
+        // (Ten minutes quiet, a beat every 20 s; then 100 MB/s.)
+        let mut b = 0;
+        for s in (20..=900).step_by(20) {
+            if s > 600 {
+                b += 2_000_000_000;
+            }
+            assert!(l.renew_frac(a, "m1", None, None, Some(moved(b)), t0 + Duration::from_secs(s)));
+        }
+        let x = l.get(a, "m1", t0 + Duration::from_secs(900)).unwrap();
+        let (at, live) = (x.live_at.unwrap(), x.live.as_ref().unwrap());
+        let (w, base) = x.window.as_ref().unwrap();
+        let span = at.duration_since(*w);
+        assert!(span >= WINDOW && span < 2 * WINDOW, "{span:?}");
+        let lately = live.nas_rate(Some(base), span.as_secs_f64()).unwrap().bytes_s;
+        let mean = live.nas_rate(None, 900.0).unwrap().bytes_s;
+        assert!((lately - 100e6).abs() < 1.0 && mean < 34e6, "{lately} {mean}");
+        let old = crate::agent::jobs::Live { nas_read: Some(b), nas_wrote: Some(0), ..Default::default() };
+        assert!(old.nas_rate(None, 900.0).is_none());
     }
 
     fn job(ts: &[(&str, &str)]) -> Work {

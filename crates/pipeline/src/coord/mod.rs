@@ -7820,11 +7820,15 @@ mod tests {
         let moved = |secs: u64| crate::agent::jobs::Live {
             nas_read: Some(secs << 20),
             nas_wrote: Some(0),
+            nas_creates: Some(0),
+            nas_listed: Some(0),
+            nas_stats: Some(0),
+            nas_deletes: Some(0),
             ..Default::default()
         };
         for minute in 1..=11u64 {
             clock.advance(Duration::from_secs(60));
-            // (The last beat says nothing it moved, an older agent's: the one before it stands.)
+            // (The last beat says no live view: the one before it stands.)
             let said = (minute != 11).then(|| moved(minute * 60));
             assert!(m1.beat_told(g.lease, None, said, None).unwrap().0);
             let got = granted(&m2, &light);

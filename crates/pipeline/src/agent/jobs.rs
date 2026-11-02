@@ -149,18 +149,36 @@ impl Live {
         }
     }
 
-    /// Its job's mean NAS rate over `ran` (crate::budget::nas::Rate): what it moved over that
-    /// time; None when it says nothing it moved (an older agent's beat, a job without its counts).
-    pub fn nas_rate(&self, ran: std::time::Duration) -> Option<crate::budget::nas::Rate> {
-        let (r, w) = (self.nas_read?, self.nas_wrote?);
-        let s = ran.as_secs_f64().max(1.0);
-        let per = |n: Option<u64>| n.unwrap_or(0) as f64 / s;
+    /// What its job has moved on the NAS since it began: bytes read and written, files made,
+    /// entries listed, files statted and deleted. None unless it says all of them: an older agent's
+    /// beat says its bytes alone, and weighing a job by its bytes alone would miss its files made.
+    pub fn nas_moved(&self) -> Option<[u64; 5]> {
+        Some([
+            self.nas_read? + self.nas_wrote?,
+            self.nas_creates?,
+            self.nas_listed?,
+            self.nas_stats?,
+            self.nas_deletes?,
+        ])
+    }
+
+    /// Its job's mean NAS rate (crate::budget::nas::Rate) over the `secs` since `base` (an earlier
+    /// beat's view of the same job; None: since it began): what it moved over that time; None when
+    /// either says not all it moved (`nas_moved`).
+    pub fn nas_rate(&self, base: Option<&Live>, secs: f64) -> Option<crate::budget::nas::Rate> {
+        let now = self.nas_moved()?;
+        let then = match base {
+            Some(b) => b.nas_moved()?,
+            None => [0; 5],
+        };
+        let s = secs.max(1.0);
+        let per = |i: usize| now[i].saturating_sub(then[i]) as f64 / s;
         Some(crate::budget::nas::Rate {
-            bytes_s: (r + w) as f64 / s,
-            creates_s: per(self.nas_creates),
-            listed_s: per(self.nas_listed),
-            stats_s: per(self.nas_stats),
-            deletes_s: per(self.nas_deletes),
+            bytes_s: per(0),
+            creates_s: per(1),
+            listed_s: per(2),
+            stats_s: per(3),
+            deletes_s: per(4),
         })
     }
 }

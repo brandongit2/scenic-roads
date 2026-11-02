@@ -439,24 +439,41 @@ impl Sched {
 
     /// What leased job `l` weighs of the NAS budget now, and whether it downloads (`job_nas`): its
     /// targets' measured rates, as predicted, until it has run past the time they predict it takes
-    /// its worker (`secs_of`, summed); then its mean rate since it was granted, by what its job has
-    /// moved on the NAS as its worker's last beat said (`Lease::live`). A job running slower than
+    /// its worker (`secs_of`, summed; a target of no known time, `OWN_AGE`); then the greater of its
+    /// mean rate since it was granted and its rate over the last one to two minutes of beats
+    /// (`Lease::window`), by what its job has moved on the NAS as its worker's beats said
+    /// (`Lease::live`; a job quiet early and heavy late is weighed by its heavy stretch within two
+    /// minutes, where its mean would lag; one quiet a moment between heavy stretches keeps its
+    /// mean). A beat not saying all it moved (an older agent's: bytes alone) leaves it weighed by
+    /// its targets. A job running slower than
     /// its targets' runs elsewhere moves their bytes over a longer time: weighed by their rates for
     /// its whole run, one of a step measured at the whole NAS (slope-deep, its targets read in a
-    /// second or two on the mini) kept every other job that reads the NAS from starting while it
+    /// few seconds on the other MacBook) kept every other job that reads the NAS from starting while it
     /// ran for most of an hour on a Mac moving a fraction of that (task #925).
     pub(super) fn job_weight(&self, nw: &NasWeigher, l: &Lease, now: Instant) -> (u32, bool) {
         let Work::Job { step, targets } = &l.work else { return (0, false) };
         let (w, dl) = Self::job_nas(nw, step, targets.iter().map(|t| t.0.as_str()));
-        let Some(moved) = l.live.as_ref().and_then(|v| v.nas_rate(now.saturating_duration_since(l.granted))) else {
-            return (w, dl);
-        };
+        let (Some(live), Some(at)) = (l.live.as_ref(), l.live_at) else { return (w, dl) };
         let names: Vec<&str> =
             if targets.is_empty() { vec![""] } else { targets.iter().map(|t| t.0.as_str()).collect() };
-        let predicted: Option<u64> = names.iter().map(|t| self.secs_of(step, t, &l.worker)).sum();
-        match predicted {
-            Some(p) if now.saturating_duration_since(l.granted).as_secs() > p => (nw.limits.weight(moved), dl),
-            _ => (w, dl),
+        // (No time known for a target: `OWN_AGE`, so an unmeasured job is weighed by what it does
+        // once it has run that long, never by its step's guess for good.)
+        let predicted: u64 = names
+            .iter()
+            .map(|t| self.secs_of(step, t, &l.worker))
+            .sum::<Option<u64>>()
+            .unwrap_or(crate::budget::nas::OWN_AGE.as_secs());
+        if now.saturating_duration_since(l.granted).as_secs() <= predicted {
+            return (w, dl);
+        }
+        let mean = live.nas_rate(None, at.saturating_duration_since(l.granted).as_secs_f64());
+        let lately = l
+            .window
+            .as_ref()
+            .and_then(|(t, base)| live.nas_rate(Some(base), at.saturating_duration_since(*t).as_secs_f64()));
+        match (mean, lately) {
+            (None, _) => (w, dl),
+            (Some(m), r) => (nw.limits.weight(m).max(r.map_or(0, |r| nw.limits.weight(r))), dl),
         }
     }
 

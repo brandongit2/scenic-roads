@@ -277,6 +277,10 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
         crate::agent::jobs::Live {
             nas_read: Some(j.nas_bytes * ran.min(run) / run),
             nas_wrote: Some(0),
+            nas_creates: Some(0),
+            nas_listed: Some(0),
+            nas_stats: Some(0),
+            nas_deletes: Some(0),
             ..Default::default()
         }
     };
