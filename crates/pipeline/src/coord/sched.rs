@@ -437,6 +437,29 @@ impl Sched {
         (w, crate::agent::steps::row(step).is_some_and(|r| r.kind == crate::agent::steps::Kind::Fetch))
     }
 
+    /// What leased job `l` weighs of the NAS budget now, and whether it downloads (`job_nas`): its
+    /// targets' measured rates, as predicted, until it has run past the time they predict it takes
+    /// its worker (`secs_of`, summed); then its mean rate since it was granted, by what its job has
+    /// moved on the NAS as its worker's last beat said (`Lease::live`). A job running slower than
+    /// its targets' runs elsewhere moves their bytes over a longer time: weighed by their rates for
+    /// its whole run, one of a step measured at the whole NAS (slope-deep, its targets read in a
+    /// second or two on the mini) kept every other job that reads the NAS from starting while it
+    /// ran for most of an hour on a Mac moving a fraction of that (task #925).
+    pub(super) fn job_weight(&self, nw: &NasWeigher, l: &Lease, now: Instant) -> (u32, bool) {
+        let Work::Job { step, targets } = &l.work else { return (0, false) };
+        let (w, dl) = Self::job_nas(nw, step, targets.iter().map(|t| t.0.as_str()));
+        let Some(moved) = l.live.as_ref().and_then(|v| v.nas_rate(now.saturating_duration_since(l.granted))) else {
+            return (w, dl);
+        };
+        let names: Vec<&str> =
+            if targets.is_empty() { vec![""] } else { targets.iter().map(|t| t.0.as_str()).collect() };
+        let predicted: Option<u64> = names.iter().map(|t| self.secs_of(step, t, &l.worker)).sum();
+        match predicted {
+            Some(p) if now.saturating_duration_since(l.granted).as_secs() > p => (nw.limits.weight(moved), dl),
+            _ => (w, dl),
+        }
+    }
+
     /// The NAS budget now (docs/pool.md §7.7) for an ask of the lead's own (`lead`) or a member's:
     /// its weigher, the NAS weight of every job leased in the pool together, of the members' among
     /// them (all but the lead's own), and the downloading jobs; None while it's off for the asker
@@ -461,8 +484,8 @@ impl Sched {
             if !members_held && lease.worker != self.lead_name {
                 continue;
             }
-            if let Work::Job { step, targets } = &lease.work {
-                let (jw, d) = Self::job_nas(&nw, step, targets.iter().map(|t| t.0.as_str()));
+            if matches!(lease.work, Work::Job { .. }) {
+                let (jw, d) = self.job_weight(&nw, lease, now);
                 w = w.saturating_add(jw);
                 most[0] = most[0].max(jw);
                 if lease.worker != self.lead_name {

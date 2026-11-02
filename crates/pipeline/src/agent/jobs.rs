@@ -79,7 +79,9 @@ pub struct Needs {
 /// its status and its lease's beat: the phase its main thread has open (crate::timings, said in its
 /// counts file: store::nasio::set_phase) and since when; the target under way (its
 /// costs file: crate::agent::memguard::targets) and since when, and how many of its targets ended;
-/// its NAS bytes read and written (its processes' counts, store::nasio) and its internet bytes in
+/// its NAS bytes read and written, files made and metadata work (its processes' counts,
+/// store::nasio: the lead weighs a job past its predicted time by them, crate::coord::sched's
+/// `job_weight`) and its internet bytes in
 /// and out (the proxy's count of its tag, crate::budget::net), since it began. Each None: not said
 /// (a step that times no phases or notes no costs, a job its agent gave no folder or tag).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -104,6 +106,15 @@ pub struct Live {
     pub nas_read: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nas_wrote: Option<u64>,
+    /// The files it made on the NAS, and its metadata work there (store::nasio's counts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_creates: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_listed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_stats: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_deletes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub net_in: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -129,9 +140,28 @@ impl Live {
             targets,
             nas_read: at(store::nasio::Count::ReadBytes),
             nas_wrote: at(store::nasio::Count::WroteBytes),
+            nas_creates: at(store::nasio::Count::Creates),
+            nas_listed: at(store::nasio::Count::Listed),
+            nas_stats: at(store::nasio::Count::Stats),
+            nas_deletes: at(store::nasio::Count::Deletes),
             net_in: net.map(|n| n.0),
             net_out: net.map(|n| n.1),
         }
+    }
+
+    /// Its job's mean NAS rate over `ran` (crate::budget::nas::Rate): what it moved over that
+    /// time; None when it says nothing it moved (an older agent's beat, a job without its counts).
+    pub fn nas_rate(&self, ran: std::time::Duration) -> Option<crate::budget::nas::Rate> {
+        let (r, w) = (self.nas_read?, self.nas_wrote?);
+        let s = ran.as_secs_f64().max(1.0);
+        let per = |n: Option<u64>| n.unwrap_or(0) as f64 / s;
+        Some(crate::budget::nas::Rate {
+            bytes_s: (r + w) as f64 / s,
+            creates_s: per(self.nas_creates),
+            listed_s: per(self.nas_listed),
+            stats_s: per(self.nas_stats),
+            deletes_s: per(self.nas_deletes),
+        })
     }
 }
 
@@ -799,7 +829,8 @@ mod tests {
     }
 
     /// A job's live view: the phase its counts file says (its name), the target under way
-    /// and the ended ones its costs file says, its NAS and internet bytes; each None when not said.
+    /// and the ended ones its costs file says, its NAS bytes and files made and its internet bytes;
+    /// each None when not said.
     #[test]
     fn a_jobs_live_view_reads_its_phase_target_and_bytes() {
         let d = tempfile::tempdir().unwrap();
@@ -810,6 +841,7 @@ mod tests {
         let mut b = vec![0u8; 18 * 8 + 1];
         b[0] = 9;
         b[2 * 8] = 4;
+        b[3 * 8] = 3;
         b[10 * 8] = 2;
         b[11 * 8..11 * 8 + 8].copy_from_slice(&5_000u64.to_le_bytes());
         b[12 * 8..12 * 8 + 19].copy_from_slice(b"saving records\tdisk");
@@ -827,6 +859,10 @@ mod tests {
                 targets: 3,
                 nas_read: Some(9),
                 nas_wrote: Some(4),
+                nas_creates: Some(3),
+                nas_listed: Some(0),
+                nas_stats: Some(0),
+                nas_deletes: Some(0),
                 net_in: Some(10),
                 net_out: Some(2),
             }

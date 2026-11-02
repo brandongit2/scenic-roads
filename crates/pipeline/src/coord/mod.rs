@@ -1810,7 +1810,15 @@ impl Coordinator {
         if st == step {
             return None;
         }
-        let (w, _) = sched::Sched::job_nas(&nw, step, targets.iter().map(String::as_str));
+        // (Its own lease's weight, as `running` counts it: `Sched::job_weight`.)
+        let mine = s.leases.all(now).into_iter().find(|l| {
+            l.worker == self.me
+                && matches!(&l.work, Work::Job { step: st, targets: ts } if st == step && ts.iter().map(|t| &t.0).eq(targets.iter()))
+        });
+        let (w, _) = match &mine {
+            Some(l) => s.job_weight(&nw, l, now),
+            None => sched::Sched::job_nas(&nw, step, targets.iter().map(String::as_str)),
+        };
         let whole = crate::budget::nas::WHOLE;
         (w > 0 && running.saturating_add(rw) > whole && running.saturating_sub(w).saturating_add(rw) <= whole).then(
             || {
@@ -1912,8 +1920,8 @@ impl Coordinator {
         let Some((nw, _, _, _)) = s.nas_room(now, true) else { return BTreeMap::new() };
         let mut out: BTreeMap<String, u32> = BTreeMap::new();
         for lease in s.leases.all(now) {
-            if let Work::Job { step, targets } = &lease.work {
-                let (w, _) = sched::Sched::job_nas(&nw, step, targets.iter().map(|t| t.0.as_str()));
+            if matches!(lease.work, Work::Job { .. }) {
+                let (w, _) = s.job_weight(&nw, &lease, now);
                 let e = out.entry(lease.worker.clone()).or_default();
                 *e = e.saturating_add(w);
             }
@@ -1929,8 +1937,8 @@ impl Coordinator {
         let Some((nw, _, _, _)) = s.nas_room(now, true) else { return BTreeMap::new() };
         let mut out: BTreeMap<String, u32> = BTreeMap::new();
         for lease in s.leases.all(now) {
-            if let Work::Job { step, targets } = &lease.work {
-                let (w, _) = sched::Sched::job_nas(&nw, step, targets.iter().map(|t| t.0.as_str()));
+            if let Work::Job { step, .. } = &lease.work {
+                let (w, _) = s.job_weight(&nw, &lease, now);
                 let e = out.entry(step.clone()).or_default();
                 *e = (*e).max(w);
             }
@@ -7766,6 +7774,66 @@ mod tests {
         let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
         assert!(g.more.is_empty(), "one download at a time");
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none());
+    }
+
+    /// Task #925: a member's job weighed at the whole NAS by its targets' runs (their reads fast
+    /// where they ran) runs on a Mac that reads slowly. Until it has run the time its targets
+    /// predict, it's weighed by them, and no job that reads the NAS goes beside it; past that time,
+    /// by what its beats say it has moved since it was granted, and the pool's other jobs go beside
+    /// it. A beat that says nothing it moved (an older agent's) leaves it weighed by its targets.
+    #[test]
+    fn a_job_past_its_predicted_time_is_weighed_by_what_it_moved() {
+        let (_d, c, m1, clock) = every((0, 0));
+        let m2 = client::Client::at(m1.urls(), c.contact.token.clone(), "m2");
+        c.set_nas(Some(crate::budget::nas::Limits {
+            bytes_s: 100e6,
+            creates_s: 40.0,
+            downloads: None,
+            ..Default::default()
+        }));
+        // (Ten minutes each on m1: slope-hi's target 200 MB/s of a 100 MB/s NAS, the whole;
+        // terrain-hi's 30 MB/s, 300 thousandths.)
+        let cost = |step: &str, bytes: u64| Cost {
+            peak_mb: 2000,
+            secs: 600,
+            worker: None,
+            v: cost_version(step),
+            sizes: [("threads".to_string(), 1), ("bytes".to_string(), bytes)].into(),
+            ..Default::default()
+        };
+        for (step, t, bytes) in [("slope-hi", "6/1/1", 120_000_000_000), ("terrain-hi", "6/2/1", 18_000_000_000)] {
+            c.add_costs_by(&[(cost_key(step, t), cost(step, bytes))], "m1");
+            c.add_disks(&[(cost_key(step, t), 100)]);
+        }
+        let offer = |step: &str, t: &str| Offer {
+            step: step.into(),
+            targets: vec![(t.into(), format!("k {t}"), 0)],
+            job: None,
+        };
+        c.offer("p", vec![offer("slope-hi", "6/1/1"), offer("terrain-hi", "6/2/1")]);
+        let heavy = every_ask("m1", "slope-hi", 64_000, 100_000);
+        let g = m1.ask(&heavy).unwrap().unwrap();
+        assert!(matches!(&g.work, Granted::Job { targets, .. } if targets[0].0 == "6/1/1"));
+        let light = every_ask("m2", "terrain-hi", 64_000, 100_000);
+        assert!(granted(&m2, &light).is_empty(), "beside a job weighing the whole: waits");
+        // (m1's job reads at 1 MB/s, its beats say.)
+        let moved = |secs: u64| crate::agent::jobs::Live {
+            nas_read: Some(secs << 20),
+            nas_wrote: Some(0),
+            ..Default::default()
+        };
+        for minute in 1..=11u64 {
+            clock.advance(Duration::from_secs(60));
+            // (The last beat says nothing it moved, an older agent's: the one before it stands.)
+            let said = (minute != 11).then(|| moved(minute * 60));
+            assert!(m1.beat_told(g.lease, None, said, None).unwrap().0);
+            let got = granted(&m2, &light);
+            if minute * 60 <= 600 {
+                assert!(got.is_empty(), "within its predicted time ({minute} min): weighed by its targets");
+            } else {
+                assert_eq!(got, ["6/2/1"], "past it: weighed by what it moved");
+            }
+        }
     }
 
     /// A job heavier than the whole (its weight capped at the whole) goes while the lead's own jobs

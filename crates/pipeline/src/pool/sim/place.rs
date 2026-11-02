@@ -95,6 +95,9 @@ pub struct Cfg {
     /// The steps measured before the run (a lead with history): one target of each, and one job
     /// of each that filled its shared cache (its disk and its cache's: `Step::cache_mb`).
     pub known: Vec<&'static str>,
+    /// The steps every target of which was measured before the run, at the lead's pace (a lead
+    /// whose history ran them all on the faster Macs).
+    pub all_known: Vec<&'static str>,
     /// The shared caches every Mac has whole already (on its disk, counted out of its free space).
     pub warm: Vec<&'static str>,
     /// The parts a cache's fill comes in: a job copies one, the rest left for the jobs after it; 0
@@ -103,6 +106,9 @@ pub struct Cfg {
     /// A Mac's cache emptied at a time, the pass the same (its index, simulated s, the cache), as
     /// room-making, the OSM pass's clear or a hand would.
     pub clear: Option<(usize, u64, &'static str)>,
+    /// How many times its step's time a job takes on each Mac named (its way to the NAS slower:
+    /// the same bytes over the longer time, its NAS weight that much less); one not named, once.
+    pub pace: BTreeMap<&'static str, u64>,
 }
 
 /// What a run did.
@@ -140,6 +146,9 @@ pub struct Run {
     pub rest_unreserved: usize,
     /// Jobs granted a cache's reservation (more than their own disk), by Mac.
     pub fills_granted: BTreeMap<&'static str, usize>,
+    /// Each Mac's simulated seconds with a job running, and its longest job's.
+    pub busy_s: Vec<u64>,
+    pub longest_s: Vec<u64>,
 }
 
 /// A loop of an agent (s).
@@ -159,8 +168,10 @@ struct Job {
     /// there fills it).
     fill: u64,
     threads: u32,
-    /// Its NAS weight (its step's true rate by the limits).
+    /// Its NAS weight (its step's true rate on its Mac by the limits), and the bytes it moves there
+    /// over its run (its beats say them as it goes, crate::agent::jobs::Live).
     nas: u32,
+    nas_bytes: u64,
     /// A cold start: none of its step measured when granted (at most one on a Mac).
     cold: bool,
 }
@@ -188,18 +199,19 @@ fn written(j: &Job, t: u64) -> u64 {
     j.disk_mb * t.saturating_sub(j.start).min(run) / run
 }
 
-/// What a run of one target of `s` given `threads` measures, as crate::costin records it: its
-/// memory and time, the threads it was given and the CPU time it took (its step's threads busy, at
+/// What a run of one target of `s` given `threads` on a Mac of pace `pace` (`Cfg::pace`) measures,
+/// as crate::costin records it: its memory and time, the threads it was given and the CPU time it took (its step's threads busy, at
 /// most those given), and what it read and wrote on the NAS, half of `nas_mb` each (a halo step's
 /// reads its `nas_read` over `nas_secs`, its run; its `bytes` its halo's base packs' files, as
 /// crate::needs reads them).
-fn measures(s: &Step, threads: u32) -> Cost {
+fn measures(s: &Step, threads: u32, pace: u64) -> Cost {
+    let secs = s.secs * pace;
     let nas = s.nas_mb << 20;
     let (read, wrote) = (nas / 2, nas - nas / 2);
     let (bytes, nas_read) = if is_halo(s.name) { (s.disk_mb << 20, read) } else { (read, 0) };
     Cost {
         peak_mb: s.mem_mb,
-        secs: s.secs,
+        secs,
         worker: None,
         v: cost_version(s.name),
         sizes: [
@@ -207,7 +219,7 @@ fn measures(s: &Step, threads: u32) -> Cost {
             ("cpu_ms".to_string(), threads.min(s.threads) as u64 * s.secs * 1000),
             ("bytes".to_string(), bytes),
             ("nas_read".to_string(), nas_read),
-            ("nas_secs".to_string(), s.secs),
+            ("nas_secs".to_string(), secs),
             ("wrote".to_string(), wrote),
             ("creates".to_string(), s.creates),
         ]
@@ -234,9 +246,14 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
     // (The steps measured before (`Cfg::known`): one target of each, as a run of it left them.)
     for s in cfg.steps.iter().filter(|s| cfg.known.contains(&s.name)) {
         let tg = target_name(s.name, 0);
-        c.add_costs(&[(cost_key(s.name, &tg), measures(s, s.threads))]);
+        c.add_costs(&[(cost_key(s.name, &tg), measures(s, s.threads, 1))]);
         c.add_disks(&[(cost_key(s.name, &tg), s.disk_mb)]);
         c.add_job_run(s.name, std::slice::from_ref(&tg), s.disk_mb + s.cache_mb);
+    }
+    for s in cfg.steps.iter().filter(|s| cfg.all_known.contains(&s.name)) {
+        let ts: Vec<String> = (0..s.targets).map(|i| target_name(s.name, i)).collect();
+        c.add_costs(&ts.iter().map(|tg| (cost_key(s.name, tg), measures(s, s.threads, 1))).collect::<Vec<_>>());
+        c.add_disks(&ts.iter().map(|tg| (cost_key(s.name, tg), s.disk_mb)).collect::<Vec<_>>());
     }
     let limits = cfg.nas.unwrap_or(crate::budget::nas::Limits {
         bytes_s: 100e6,
@@ -244,12 +261,24 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
         downloads: None,
         ..Default::default()
     });
-    let weight = |s: &Step| {
+    let pace = |k: usize| cfg.pace.get(cfg.macs[k].name).copied().unwrap_or(1).max(1);
+    let weight = |s: &Step, pace: u64| {
+        let secs = (s.secs * pace).max(1) as f64;
         limits.weight(crate::budget::nas::Rate {
-            bytes_s: (s.nas_mb << 20) as f64 / s.secs.max(1) as f64,
-            creates_s: s.creates as f64 / s.secs.max(1) as f64,
+            bytes_s: (s.nas_mb << 20) as f64 / secs,
+            creates_s: s.creates as f64 / secs,
             ..Default::default()
         })
+    };
+    // (What a running job has moved on the NAS since it began, evenly over its run, as its beats
+    // say it.)
+    let live = |j: &Job, t: u64| {
+        let (ran, run) = (t.saturating_sub(j.start), j.end.saturating_sub(j.start).max(1));
+        crate::agent::jobs::Live {
+            nas_read: Some(j.nas_bytes * ran.min(run) / run),
+            nas_wrote: Some(0),
+            ..Default::default()
+        }
     };
     let clients: Vec<Option<client::Client>> = cfg
         .macs
@@ -281,7 +310,9 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
     let mut have: Vec<BTreeMap<&'static str, u64>> =
         cfg.macs.iter().map(|_| cfg.warm.iter().map(|c| (*c, whole(c))).collect()).collect();
     let mut cleared = false;
-    let mut out = Run { most: vec![0; cfg.macs.len()], ran: vec![0; cfg.macs.len()], ..Default::default() };
+    let n = cfg.macs.len();
+    let mut out =
+        Run { most: vec![0; n], ran: vec![0; n], busy_s: vec![0; n], longest_s: vec![0; n], ..Default::default() };
     let limit = |k: usize| memguard::limit_mb(cfg.macs[k].total_mb);
     let mut t = 0u64;
     while done.len() < total {
@@ -302,9 +333,10 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 std::mem::take(&mut running[k]).into_iter().partition(|j| j.end <= t);
             running[k] = left;
             for j in ended {
+                out.longest_s[k] = out.longest_s[k].max(j.end - j.start);
                 let s = steps[j.step.as_str()];
                 let costs: Vec<(String, Cost)> =
-                    j.targets.iter().map(|tg| (cost_key(&j.step, tg), measures(s, j.threads))).collect();
+                    j.targets.iter().map(|tg| (cost_key(&j.step, tg), measures(s, j.threads, pace(k)))).collect();
                 c.add_costs_by(&costs, cfg.macs[k].name);
                 // (A cold cache's fill measured with each target, as the accessors count it; kept on
                 // the Mac after.)
@@ -433,13 +465,14 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 targets: targets.clone(),
                 lease,
                 start: t,
-                end: t + s.secs * targets.len() as u64,
+                end: t + s.secs * pace(k) * targets.len() as u64,
                 mem_mb: s.mem_mb,
                 // (A halo step's: its halo's cache once.)
                 disk_mb: fill + if is_halo(step) { s.disk_mb } else { s.disk_mb * targets.len() as u64 },
                 fill,
                 threads,
-                nas: weight(s),
+                nas: weight(s, pace(k)),
+                nas_bytes: (s.nas_mb << 20) * targets.len() as u64,
                 cold,
             };
             // (Where it may go at all, before whether it fits: a guard's stop excuses none of these.)
@@ -602,7 +635,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
         for k in 1..cfg.macs.len() {
             let w = clients[k].as_ref().unwrap();
             for j in &running[k] {
-                if !w.beat(j.lease, None).map_err(|e| format!("beat: {e:#}"))? {
+                if !w.beat_told(j.lease, None, Some(live(j, t)), None).map_err(|e| format!("beat: {e:#}"))?.0 {
                     return Err(format!("{}'s lease {} lapsed", cfg.macs[k].name, j.lease));
                 }
             }
@@ -683,7 +716,10 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
         }
         // (The lead's own leases kept alive.)
         for j in &running[0] {
-            c.renew(j.lease, None);
+            c.renew_live(j.lease, None, Some(live(j, t)));
+        }
+        for (b, r) in out.busy_s.iter_mut().zip(&running) {
+            *b += if r.is_empty() { 0 } else { TICK };
         }
         clock.advance(Duration::from_secs(TICK));
         t += TICK;
@@ -787,9 +823,11 @@ mod tests {
             in_use: None,
             halo: 6,
             known: Vec::new(),
+            all_known: Vec::new(),
             warm: Vec::new(),
             fill_parts: 1,
             clear: None,
+            pace: BTreeMap::new(),
         }
     }
 
@@ -853,6 +891,42 @@ mod tests {
         assert!(r.most[1] >= 2 && r.most[2] >= 3, "{r:?}");
         assert!(r.most[2] <= 4, "past its cores: {r:?}");
         assert!(r.secs < one.secs, "{} s packed, {} s one a time", r.secs, one.secs);
+    }
+
+    /// Task #925: a member whose way to the NAS is slow (twenty times its steps' time: the M1 on
+    /// 1 Nov) takes a job of a step measured at the whole NAS on the others (`slope`: 24 GB over
+    /// two minutes). Its job weighs that until it has run the time its targets predict, then what
+    /// it moved (a twentieth): the pool's other jobs that read the NAS go beside it, where before
+    /// they waited for its whole run. Every start within the budget by the jobs' true weights.
+    #[test]
+    fn a_slow_members_heavy_job_holds_the_nas_only_for_its_predicted_time() {
+        let mut steps = plan();
+        for s in steps.iter_mut().filter(|s| s.name == "slope") {
+            s.nas_mb = 24_000;
+        }
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+        let mut macs = m4_m1();
+        macs.push(Mac { name: "mini", total_mb: 16_384, cores: 8, disk_mb: 100_000 });
+        let c = Cfg {
+            steps,
+            nas: Some(limits),
+            known: vec!["terrain", "pack", "lo"],
+            all_known: vec!["slope"],
+            pace: [("m1", 20)].into(),
+            ..cfg(macs, 1)
+        };
+        let r = run(&c).unwrap();
+        let mut fast = c.clone();
+        fast.macs.retain(|m| m.name != "m1");
+        let f = run(&fast).unwrap();
+        eprintln!(
+            "t925 sim: slow m1: {} s, turned away {}, ran {:?}, busy {:?}, longest {:?}; without m1: {} s, busy {:?}",
+            r.secs, r.turned_away, r.ran, r.busy_s, r.longest_s, f.secs, f.busy_s
+        );
+        // (Not held while it runs, the others do what they would without it; it ends its longest
+        // job at most that long after.)
+        assert!(r.secs <= f.secs + r.longest_s[1], "{r:?} against {f:?} without it");
     }
 
     /// The NAS budget on (100 MB/s, 40 creates/s): a 48 GB member that packs `pack` jobs by its
