@@ -50,12 +50,13 @@ pub struct Lease {
     /// memory alone).
     #[serde(skip)]
     pub live: Option<crate::agent::jobs::Live>,
-    /// When `live` was said, and an earlier beat's view `WINDOW` to twice that before it: what its
-    /// job moved lately is the difference (crate::coord::sched's `job_weight`; in memory alone).
+    /// When `live` was said, and earlier beats' views back to the newest one said `WINDOW` or more
+    /// before it (its front, once one is): what its job moved lately is the difference
+    /// (`Lease::lately`, crate::coord::sched's `job_weight`; in memory alone).
     #[serde(skip)]
     pub live_at: Option<Instant>,
     #[serde(skip)]
-    pub window: Option<(Instant, crate::agent::jobs::Live)>,
+    pub window: std::collections::VecDeque<(Instant, crate::agent::jobs::Live)>,
     /// The threads its job was granted (0: not said): the cores the pool's own work takes on its
     /// Mac, apart from load outside the pool (crate::coord::outside_cores).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
@@ -76,6 +77,14 @@ fn is_zero_u32(n: &u32) -> bool {
 }
 
 impl Lease {
+    /// Its job's NAS rate over its last `WINDOW` or so of beats: None until a view said `WINDOW`
+    /// before the newest, or when one doesn't say all it moved (crate::agent::jobs::Live::nas_rate).
+    pub fn lately(&self) -> Option<crate::budget::nas::Rate> {
+        let (live, at) = (self.live.as_ref()?, self.live_at?);
+        let (t, base) = self.window.front().filter(|(t, _)| at.saturating_duration_since(*t) >= WINDOW)?;
+        live.nas_rate(Some(base), at.saturating_duration_since(*t).as_secs_f64())
+    }
+
     /// A job lease's targets (none for a task).
     pub fn targets(&self) -> &[(String, String)] {
         match &self.work {
@@ -449,7 +458,7 @@ impl Leases {
                 frac: None,
                 live: None,
                 live_at: None,
-                window: None,
+                window: Default::default(),
                 slot: None,
                 threads: 0,
                 unconfirmed: false,
@@ -502,12 +511,12 @@ impl Leases {
                     l.frac = Some(f.clamp(0.0, 1.0));
                 }
                 if let Some(v) = live {
-                    // (The window's start moves to the last view said once that is `WINDOW` past
-                    // it: it spans one to two `WINDOW`s back from the newest.)
+                    // (Views older than the newest one `WINDOW` back are let go.)
                     if let Some((at, prev)) = l.live_at.zip(l.live.take()) {
-                        if l.window.as_ref().is_none_or(|(w, _)| at.saturating_duration_since(*w) >= WINDOW) {
-                            l.window = Some((at, prev));
-                        }
+                        l.window.push_back((at, prev));
+                    }
+                    while l.window.get(1).is_some_and(|(t, _)| now.saturating_duration_since(*t) >= WINDOW) {
+                        l.window.pop_front();
                     }
                     l.live = Some(v);
                     l.live_at = Some(now);
@@ -620,12 +629,10 @@ mod tests {
             assert!(l.renew_frac(a, "m1", None, None, Some(moved(b)), t0 + Duration::from_secs(s)));
         }
         let x = l.get(a, "m1", t0 + Duration::from_secs(900)).unwrap();
-        let (at, live) = (x.live_at.unwrap(), x.live.as_ref().unwrap());
-        let (w, base) = x.window.as_ref().unwrap();
-        let span = at.duration_since(*w);
+        let span = x.live_at.unwrap().duration_since(x.window.front().unwrap().0);
         assert!(span >= WINDOW && span < 2 * WINDOW, "{span:?}");
-        let lately = live.nas_rate(Some(base), span.as_secs_f64()).unwrap().bytes_s;
-        let mean = live.nas_rate(None, 900.0).unwrap().bytes_s;
+        let lately = x.lately().unwrap().bytes_s;
+        let mean = x.live.as_ref().unwrap().nas_rate(None, 900.0).unwrap().bytes_s;
         assert!((lately - 100e6).abs() < 1.0 && mean < 34e6, "{lately} {mean}");
         let old = crate::agent::jobs::Live { nas_read: Some(b), nas_wrote: Some(0), ..Default::default() };
         assert!(old.nas_rate(None, 900.0).is_none());

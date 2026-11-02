@@ -440,8 +440,8 @@ impl Sched {
     /// What leased job `l` weighs of the NAS budget now, and whether it downloads (`job_nas`): its
     /// targets' measured rates, as predicted, until it has run past the time they predict it takes
     /// its worker (`secs_of`, summed; a target of no known time, `OWN_AGE`); then the greater of its
-    /// mean rate since it was granted and its rate over the last one to two minutes of beats
-    /// (`Lease::window`), by what its job has moved on the NAS as its worker's beats said
+    /// mean rate since it was granted and its rate over its last minute or so of beats
+    /// (`Lease::lately`), by what its job has moved on the NAS as its worker's beats said
     /// (`Lease::live`; a job quiet early and heavy late is weighed by its heavy stretch within two
     /// minutes, where its mean would lag; one quiet a moment between heavy stretches keeps its
     /// mean). A beat not saying all it moved (an older agent's: bytes alone) leaves it weighed by
@@ -467,11 +467,7 @@ impl Sched {
             return (w, dl);
         }
         let mean = live.nas_rate(None, at.saturating_duration_since(l.granted).as_secs_f64());
-        let lately = l
-            .window
-            .as_ref()
-            .and_then(|(t, base)| live.nas_rate(Some(base), at.saturating_duration_since(*t).as_secs_f64()));
-        match (mean, lately) {
+        match (mean, l.lately()) {
             (None, _) => (w, dl),
             (Some(m), r) => (nw.limits.weight(m).max(r.map_or(0, |r| nw.limits.weight(r))), dl),
         }
