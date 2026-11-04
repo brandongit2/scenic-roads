@@ -1,7 +1,7 @@
 //! The in-use share (docs/pool.md §7.1): the cores a Mac's agent keeps free of its jobs for its
 //! owner while they use the Mac (used within five minutes). Set by `scenic in-use` in the agent's
 //! folder, which the agent reads each loop (as the disk room target, crate::agent::room); not set,
-//! the default. (The memory the build's jobs get is crate::agent::buildmem's, whether the owner
+//! the default. (The memory is kept by the memory floor, crate::agent::memfloor, whether the owner
 //! uses the Mac or not.)
 
 use anyhow::Result;
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The share as set: its cores where said, who set it and when (unix seconds). (A file from before
-/// the build's memory (buildmem) may say `mem_mb` too: ignored.)
+/// task #390 may say `mem_mb` too: ignored.)
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Share {

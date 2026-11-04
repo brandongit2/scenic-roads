@@ -140,10 +140,10 @@ pub enum Cmd {
         #[command(flatten)]
         places: Places,
     },
-    /// The memory this Mac gives the build's jobs together, within the memory guard's limit (off:
-    /// the limit); with none, how it stands
+    /// This Mac's memory floor: keep at least this much memory available, whatever runs on it
+    /// (off: its default, an eighth of its memory); with none, how it stands
     Memory {
-        /// The memory in GB, or off
+        /// The floor in GB, or off
         #[arg(value_name = "GB|off")]
         what: Option<String>,
         #[command(flatten)]

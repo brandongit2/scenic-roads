@@ -51,8 +51,8 @@ pub(super) struct Inputs {
     pub slots: Vec<SlotSeen>,
     pub free_set: Option<u64>,
     pub room_floor: u64,
-    pub total_mb: u64,
-    pub jobs_limit: u64,
+    /// The most this Mac's jobs could hold above its memory floor (MB: `Agent::jobs_ceiling`).
+    pub jobs_ceiling: u64,
     pub build_room: u64,
     pub guard_backoff: BTreeMap<String, (u64, String)>,
     pub floor_short: Option<(u64, u64, Instant)>,
@@ -748,12 +748,8 @@ impl Planner {
         floor_words(self.floor())
     }
 
-    pub(super) fn total_mb(&self) -> u64 {
-        self.inp.total_mb
-    }
-
-    pub(super) fn jobs_limit(&self, _total: u64) -> u64 {
-        self.inp.jobs_limit
+    pub(super) fn jobs_ceiling(&self) -> u64 {
+        self.inp.jobs_ceiling
     }
 
     pub(super) fn build_room(&self) -> u64 {
@@ -850,13 +846,13 @@ impl Planner {
     }
 
     /// The targets of the plan's `works` the memory guard holds (its switch on): those whose floor,
-    /// learned alone the way its step runs now, passes this Mac's limit (`here`), and of them those
+    /// learned alone the way its step runs now, passes the most this Mac's jobs could hold above its memory floor (its memory less the floor: `here`), and of them those
     /// past every Mac's in the pool, as the lead knows them (`all`: a step only this Mac runs, this
     /// Mac's limit alone), with why for the status; and those whose floor past it was a batch's
     /// (`alone`: tried again in a job of their own before they're held).
     pub(super) fn guard_holds(&self, works: &[build::Work]) -> GuardHolds {
         let mut h = GuardHolds::default();
-        let limit = self.jobs_limit(self.total_mb());
+        let limit = self.jobs_ceiling();
         let Some(c) = self.coord.as_ref().filter(|_| limit > 0) else { return h };
         let largest = c.largest_limit().unwrap_or(0).max(limit);
         let gb = |mb: u64| mb as f64 / 1024.0;
@@ -885,12 +881,12 @@ impl Planner {
                 // A step only the lead runs: judged against the lead's limit alone; it waits (the
                 // lead is fixed: the lead's memory or the step's is the owner's to see to).
                 let (s, v) = if n_all == 1 { ("", "s") } else { ("s", "") };
-                let remedy = "the lead's build memory (`scenic memory`) or the step's memory, for the owner to see to";
-                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::current(&w.step).into(), why: format!("{n_all} target{s} need{v} about {:.1} GB, past the lead's limit of {:.1} GB; this step runs only on the lead. {remedy} (`scenic pool floors --clear` once it's fixed)", gb(need), gb(limit)) });
+                let remedy = "the lead's memory floor (`scenic memory`) or the step's memory, for the owner to see to";
+                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::current(&w.step).into(), why: format!("{n_all} target{s} need{v} about {:.1} GB, past the {:.1} GB the lead's jobs could hold above its memory floor; this step runs only on the lead. {remedy} (`scenic pool floors --clear` once it's fixed)", gb(need), gb(limit)) });
             } else if n_all > 0 {
                 h.why.push(Waiting { step: Some(w.step.clone()), what: steps::current(&w.step).into(), why: format!("{n_all} target{} need{} about {:.1} GB, more than any Mac in the pool has (the most: {:.1} GB): a step whose memory grows with its target, for the owner to see to (`scenic pool floors --clear` once it's fixed)", if n_all == 1 { "" } else { "s" }, if n_all == 1 { "s" } else { "" }, gb(need), gb(most)) });
             } else if n_here > 0 {
-                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::current(&w.step).into(), why: format!("{n_here} target{} need{} about {:.1} GB, past this Mac's limit of {:.1} GB: left to a Mac with room", if n_here == 1 { "" } else { "s" }, if n_here == 1 { "s" } else { "" }, gb(need), gb(limit)) });
+                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::current(&w.step).into(), why: format!("{n_here} target{} need{} about {:.1} GB, past the {:.1} GB this Mac's jobs could hold above its memory floor: left to a Mac with room", if n_here == 1 { "" } else { "s" }, if n_here == 1 { "s" } else { "" }, gb(need), gb(limit)) });
             }
         }
         h
@@ -2428,8 +2424,8 @@ impl Planner {
         // beside the others (`forecast::MacRoom`).
         let mac_mb = (self.inp.mac.resources(&self.o.home, None, None, None).mem_gb * 1024.0) as u64;
         let mut rooms: BTreeMap<String, forecast::MacRoom> = BTreeMap::new();
-        // (A Mac's room is the memory its owner gives the build's jobs together (`build_room`,
-        // `scenic memory`), as `pack_why` takes an ask's memory: a member's `Ask::mem_mb` is it,
+        // (A Mac's room is the memory its jobs may hold together above its floor and margin now
+        // (`build_room`, memguard::Reading::admit_mb), as `pack_why` takes an ask's memory: a member's `Ask::mem_mb` is it,
         // not a slot's; the coordinator's worker record keeps it (`mem`). This Mac's, its own.)
         rooms.insert(self.host.clone(), forecast::MacRoom { mem_mb: self.build_room(), cores: mac_cores() });
         let mut machines = vec![Machine {
@@ -2503,7 +2499,7 @@ impl Planner {
                 Some(c) => forecast::slot_lanes(job_slots(c.cores as usize), &running),
                 None => running.iter().map(|k| k + 1).max().unwrap_or(1),
             };
-            // (Its room: the memory its owner gives the build's jobs together (`Ask::mem_mb`, as
+            // (Its room: the memory its jobs may hold together above its floor (`Ask::mem_mb`, as
             // `pack_why` counts it), else its capacity's (`build_mb`; an older app's: its memory
             // guard's limit).)
             let mem_all = mem

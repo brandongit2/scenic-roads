@@ -1,12 +1,12 @@
-//! The owner's settings (docs/workers.md §7): this Mac's in-use share (crate::agent::share), build
-//! memory (crate::agent::buildmem) and disk room target (crate::agent::room::Target), and the pool's
+//! The owner's settings (docs/workers.md §7): this Mac's in-use share (crate::agent::share), memory
+//! floor (crate::agent::memfloor) and disk room target (crate::agent::room::Target), and the pool's
 //! NAS reserve (crate::agent::room::NAS_RESERVE).
 //! Each is set through one function here, whoever asks: `scenic in-use`, `scenic memory`, `scenic
 //! room`, `scenic nas-room`, and the build page's
 //! POST /work/settings (crate::coord), which reads them back with `view`. The map server's mirror
 //! reads the room target through `RoomTarget` (its reserve is the larger of the two).
 
-use super::{buildmem, room, share};
+use super::{memfloor, room, share};
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -39,22 +39,22 @@ pub fn set_in_use(home: &Path, cores_asked: Option<u32>, by: &str) -> Result<Opt
     share::set(home, Some(n), by)
 }
 
-/// Sets the build's memory in `home`: `what` in GB (at most this Mac's memory), or "off": the
-/// memory guard's limit alone.
-pub fn set_memory(home: &Path, what: &str, by: &str) -> Result<Option<buildmem::Memory>> {
+/// Sets this Mac's memory floor in `home`, the memory it keeps available: `what` in GB (less than
+/// this Mac's memory), or "off": its default again.
+pub fn set_memory(home: &Path, what: &str, by: &str) -> Result<Option<memfloor::Floor>> {
     if what == "off" {
-        return buildmem::set(home, None, by);
+        return memfloor::set(home, None, by);
     }
-    let gb = gb(what, "the build memory")?;
+    let gb = gb(what, "the memory floor")?;
     let mb = (gb * 1024.0) as u64;
     let total_mb = crate::sys::memsize().map_or(0, |b| b >> 20);
     anyhow::ensure!(
-        total_mb == 0 || mb <= total_mb,
-        "{gb} GB is more than this Mac has ({:.0} GB)",
+        total_mb == 0 || mb < total_mb,
+        "a floor of {gb} GB is all this Mac has or more ({:.0} GB): no job could start",
         total_mb as f64 / 1024.0
     );
     anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
-    buildmem::set(home, Some(mb), by)
+    memfloor::set(home, Some(mb), by)
 }
 
 /// Sets this Mac's disk room target in `home`: `what` in GB (less than its disk holds), or "off".
@@ -88,8 +88,7 @@ pub fn set_nas_room(root: &store::nasfs::NasRoot, what: &str, by: &str) -> Resul
 /// the pool's NAS reserve (under `root`; null while the NAS is away). Sizes in bytes, memory in MB.
 pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Value {
     let total_mb = crate::sys::memsize().map_or(0, |b| b >> 20);
-    let limit = super::memguard::limit_mb(total_mb);
-    let mem = buildmem::read(home);
+    let mem = memfloor::read(home);
     let sh = share::read(home);
     let cores = cores();
     serde_json::json!({
@@ -102,8 +101,8 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
             "at": sh.as_ref().map(|s| s.at),
         },
         "memory": {
-            "mb": buildmem::room_mb(mem.as_ref(), limit),
-            "limit_mb": limit,
+            "mb": memfloor::floor_mb(mem.as_ref(), total_mb),
+            "default_mb": memfloor::default_mb(total_mb),
             "total_mb": total_mb,
             "set": mem.is_some(),
             "by": mem.as_ref().map(|m| m.by.clone()),
@@ -183,6 +182,8 @@ mod tests {
             assert!(set_nas_room(&store::nasfs::NasRoot::local_for_test(h), bad, "t").is_err(), "{bad}");
         }
         assert!(set_memory(h, "1000000", "t").is_err(), "more than this Mac has");
+        let all = (crate::sys::memsize().unwrap() >> 30).to_string();
+        assert!(set_memory(h, &all, "t").is_err(), "all this Mac has: no job could start");
         assert!(set_room(h, "1000000000", "t").is_err(), "more than the disk holds");
         assert_eq!(set_memory(h, "2 GB", "t").unwrap().unwrap().mb, 2048);
         assert_eq!(set_room(h, "1gb", "t").unwrap().unwrap().bytes, 1 << 30);
@@ -191,7 +192,9 @@ mod tests {
         assert_eq!(v["memory"]["set"], true);
         assert_eq!(v["room"]["bytes"], 1u64 << 30);
         assert_eq!(v["nas_room"]["bytes"], 3u64 << 30);
-        assert!(set_memory(h, "off", "t").unwrap().is_none() && buildmem::read(h).is_none());
+        assert!(set_memory(h, "off", "t").unwrap().is_none() && memfloor::read(h).is_none());
+        let v = view(h, None);
+        assert!(v["memory"]["set"] == false && v["memory"]["mb"] == v["memory"]["default_mb"], "{v}");
         assert!(set_room(h, "off", "t").unwrap().is_none() && room::target(h).is_none());
         assert!(
             set_nas_room(&store::nasfs::NasRoot::local_for_test(h), "off", "t").unwrap().is_none()

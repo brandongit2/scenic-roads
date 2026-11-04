@@ -1,22 +1,25 @@
-//! A job far over its memory (docs/pool.md §7.2): macOS swaps rather than kills, so a job holding
-//! more than its Mac has leaves the Mac swapping for as long as it runs, every other job and the
-//! owner's own work with it.
+//! The memory guard (docs/pool.md §7.1–7.2): macOS swaps rather than kills, so a Mac short of
+//! memory swaps for as long as it stays short, every job and the owner's own work with it. The
+//! guard keeps the Mac's memory floor (crate::agent::memfloor) available, whatever takes the rest.
 //!
 //! - **Sampled on a thread of its own** (`Sampler`, every `EVERY`, whatever the agent's loop is
 //!   waiting on: a share that stalls stalls the loop, not this): each running job's processes'
 //!   physical footprints summed (crate::sys::footprint_of_group), kept per target as the most the
-//!   job held while that target was under way (`Watch::current`).
+//!   job held while that target was under way (`Watch::current`); and with them the Mac's memory
+//!   (`Reading`): what is available (crate::sys::memory_available), the swap grown lately, the
+//!   kernel's pressure level, and the margin other processes' swings call for.
 //! - **Learned:** what a job held while a target was under way is that target's
 //!   **floor** (`Floor`: crate::coord's floors), the same kind of figure as a run's own measure (a
 //!   job's processes together, sampled), which takes its place.
-//! - **Guarded** (its switch, `state/pool/memory-guard`, deleted with task #878 step 5: on
-//!   everywhere): while the jobs on a Mac hold more together than its
-//!   limit (`limit_mb`), by measure alone (`decide_by`): when the largest fits alone, another stops
-//!   at its next safe point (the newest, then the least progressed, one at a time while those left
-//!   still pass the limit); the largest, past the limit by itself, stops at once
-//!   only while the Mac is in trouble (`trouble`: the kernel's memory pressure at warning or worse,
-//!   or a GB more swap since the job began; the thread freezes it then, at once, the agent's loop
-//!   stopping it), else at its next safe point too. A Mac whose memory can't be read guards nothing.
+//! - **Guarded:** while the Mac is below its floor (`Reading::below`: its available memory, the
+//!   swap grown lately off, under the floor, or the brake on), jobs are given back by measure
+//!   (`decide_by`, against what the jobs may hold before the Mac is below: `Reading::room_mb`):
+//!   when the largest fits alone, another stops at its next safe point (the newest, then the least
+//!   progressed, one at a time while those left still pass); the largest, past it by itself, stops
+//!   at once only while the brake is on (`Reading::brake`: the kernel's memory pressure at warning
+//!   or worse, or swap grown past what was available above the floor; the thread freezes it then,
+//!   at once, the agent's loop stopping it), else at its next safe point too. A Mac whose memory
+//!   can't be read guards nothing.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,55 +34,156 @@ pub const EVERY: Duration = Duration::from_secs(5);
 /// growth is judged over.
 pub const DISK_EVERY: Duration = Duration::from_secs(60);
 
-/// The swap that, grown within `SWAP_WINDOW`, takes the Mac to be in trouble.
-const SWAP_GROWTH: u64 = 1 << 30;
-/// The window swap growth is judged over: recent, so the owner's own use growing swap hours ago
-/// doesn't leave a long job in trouble for good.
+/// The window the Mac's memory is judged over (`Reading`): the swap grown within it, and other
+/// processes' swing over it (the margin). Recent, so the owner's own use growing swap hours ago
+/// doesn't leave the Mac below its floor for good.
 pub const SWAP_WINDOW: Duration = Duration::from_secs(300);
 
-/// The most memory the jobs on a Mac of `total_mb` may hold together (MB): its memory less an eighth
-/// for macOS and the owner's own work, 4 GB at least (42 GB of the M4's 48, 12 of the M1's 16); 0 for
-/// a Mac whose memory isn't known (the guard then guards nothing).
-pub fn limit_mb(total_mb: u64) -> u64 {
-    total_mb.saturating_sub((total_mb / 8).max(4096))
+/// The Mac's memory as one sample read it (MB), against its floor (crate::agent::memfloor), with
+/// the jobs' memory sampled beside it: what the guard gives back by, and the asks' room
+/// (docs/pool.md §7.1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Reading {
+    /// The memory available (crate::sys::memory_available), and the jobs' memory together.
+    pub avail_mb: u64,
+    pub held_mb: u64,
+    /// The floor in force.
+    pub floor_mb: u64,
+    /// The swap grown within `SWAP_WINDOW`: its use now less the least in the window.
+    pub swap_grown_mb: u64,
+    /// The kernel's memory pressure level (1 normal, 2 warning, 4 critical; 0 unknown).
+    pub pressure: u32,
+    /// The margin new work waits past the floor for (`margin_mb`).
+    pub margin_mb: u64,
 }
 
-/// What the jobs may hold together beside the agent itself (MB): `limit_mb` less the agent's own
-/// measured footprint (`own_mb`, crate::sys::footprint), which the eighth doesn't cover (#619: the
-/// Mac mini's agent held 9.5 GB of its 32 the night it froze); 0 when its memory isn't known.
-pub fn jobs_limit_mb(total_mb: u64, own_mb: u64) -> u64 {
-    limit_mb(total_mb).saturating_sub(own_mb)
+/// The margin new work waits past the floor for (MB): how far the memory other processes hold
+/// (the Mac's less what's available and what the jobs hold: `others`, one a sample) swung over
+/// `SWAP_WINDOW`, its most less its least. A job let in at the floor plus this isn't given back by
+/// the next move of the owner's apps; calm apps, a small margin. None sampled, none.
+pub fn margin_mb(others: impl IntoIterator<Item = u64>) -> u64 {
+    let (lo, hi) = others.into_iter().fold((u64::MAX, 0), |(lo, hi), o| (lo.min(o), hi.max(o)));
+    hi.saturating_sub(lo)
+}
+
+impl Reading {
+    /// The memory available less the swap grown lately (MB): what was pushed to swap in the window
+    /// is memory the Mac didn't have.
+    pub fn usable_mb(&self) -> u64 {
+        self.avail_mb.saturating_sub(self.swap_grown_mb)
+    }
+
+    /// The emergency brake: the kernel's pressure at warning or critical, or swap grown past what
+    /// was available above the floor (`usable_mb` below it for the swap). Below the floor whatever
+    /// the number says: jobs are frozen and given back at once (the agent's `pressure`), none
+    /// starts. Why, in words; None when it's off.
+    pub fn brake(&self) -> Option<String> {
+        let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+        match self.pressure {
+            p if p >= 4 => return Some("macOS's memory pressure is critical".into()),
+            p if p >= 2 => return Some("macOS's memory pressure is at warning".into()),
+            _ => {}
+        }
+        (self.swap_grown_mb > 0 && self.usable_mb() < self.floor_mb).then(|| {
+            format!(
+                "swap grew {} in the last {} min, past the {} available above the floor",
+                gb(self.swap_grown_mb),
+                SWAP_WINDOW.as_secs() / 60,
+                gb(self.avail_mb.saturating_sub(self.floor_mb))
+            )
+        })
+    }
+
+    /// Whether the Mac is below its floor: its usable memory under it, or the brake on.
+    pub fn below(&self) -> bool {
+        self.usable_mb() < self.floor_mb || self.brake().is_some()
+    }
+
+    /// What the jobs may hold together before the Mac is below its floor (MB): what they hold and
+    /// what's available, less the swap grown lately and the floor (the swap off the sum, not off
+    /// what's available alone: what's available stops at nothing, the swap goes on growing); the
+    /// guard gives back past it (`decide_by`). The brake on, a megabyte less than they hold: below
+    /// the floor whatever the number says.
+    pub fn room_mb(&self) -> u64 {
+        let room = (self.avail_mb + self.held_mb).saturating_sub(self.swap_grown_mb + self.floor_mb);
+        if self.brake().is_some() {
+            room.min(self.held_mb.saturating_sub(1))
+        } else {
+            room
+        }
+    }
+
+    /// What the jobs may hold together for a job to start (MB): `room_mb` less the margin, 0 while
+    /// the brake is on. A job starts where this, less every running job's expected peak (or what
+    /// it holds, the larger), fits its own expected peak: available − the running jobs' growth to
+    /// come − its peak ≥ the floor and the margin (crate::coord::sched's `pack`). So new work comes
+    /// back only past the floor plus the margin, and the jobs' growth is reserved before it.
+    pub fn admit_mb(&self) -> u64 {
+        if self.brake().is_some() {
+            return 0;
+        }
+        self.room_mb().saturating_sub(self.margin_mb)
+    }
+
+    /// Why the Mac is below its floor, in words: "the memory brake is on (…)", else "this Mac has
+    /// 4.1 GB available (swap grew 1.0 GB), below its 6.0 GB floor".
+    pub fn short_words(&self) -> String {
+        let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+        match self.brake() {
+            Some(b) => format!("the memory brake is on ({b})"),
+            None => format!(
+                "this Mac has {} available{}, below its {} floor",
+                gb(self.usable_mb()),
+                if self.swap_grown_mb > 0 { format!(" (swap grew {})", gb(self.swap_grown_mb)) } else { String::new() },
+                gb(self.floor_mb)
+            ),
+        }
+    }
+
+    /// Why no job starts here whatever it needs, in words: the brake, or the usable memory under
+    /// the floor plus the margin; None when one may.
+    pub fn held_back(&self) -> Option<String> {
+        let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+        if let Some(b) = self.brake() {
+            return Some(format!("the memory brake: {b}"));
+        }
+        let want = self.floor_mb + self.margin_mb;
+        (self.usable_mb() < want).then(|| {
+            format!(
+                "{} of memory available{}, under the {} floor{}",
+                gb(self.usable_mb()),
+                if self.swap_grown_mb > 0 { format!(" (swap grew {})", gb(self.swap_grown_mb)) } else { String::new() },
+                gb(self.floor_mb),
+                if self.margin_mb > 0 { format!(" and its {} margin", gb(self.margin_mb)) } else { String::new() }
+            )
+        })
+    }
 }
 
 /// What the guard does about the jobs in a Mac's slots, by what each holds now (MB; None: no job in
 /// that slot, or its memory unknown).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Act {
-    /// Nothing: the jobs fit the limit together.
+    /// Nothing: the jobs fit the room together (the Mac at or above its floor).
     Nothing,
-    /// Slot k's job stops at its next safe point: the job beside it fits the limit alone.
+    /// Slot k's job stops at its next safe point: the job beside it fits the room alone.
     Drain(usize),
-    /// Slot k's job holds more than the limit by itself.
+    /// Slot k's job holds more than the room by itself.
     Over(usize),
 }
 
-/// The guard's decision (`Act`) for jobs in slot order, the first slot's drained first among the
-/// others (`decide_by` with each slot's rank its order): two jobs, the one beside the largest.
-pub fn decide(held: &[Option<u64>], limit: u64, draining: &[bool], yields: &[bool]) -> Act {
-    let rank: Vec<u64> = (0..held.len()).map(|k| u64::MAX - k as u64).collect();
-    decide_by(held, limit, draining, yields, &rank)
-}
-
 /// The guard's decision (`Act`), by measure alone, for any number of jobs: nothing while the jobs
-/// together fit `limit`; else the largest when it alone passes it; else, it fitting alone, one other
-/// drained at a time: the one ranked highest (`rank`: the agent ranks the newest job highest, then
-/// the least progressed), not draining yet, and only while the jobs not draining (what's left once
-/// those draining reach their safe points) still pass the limit. A job that `yields` (started beside
-/// one that waited on a worker, which then went on) is the one drained, larger or not, and while it
-/// drains no other is: the job it was started beside isn't stopped for it.
-pub fn decide_by(held: &[Option<u64>], limit: u64, draining: &[bool], yields: &[bool], rank: &[u64]) -> Act {
+/// together fit `room` (what they may hold before the Mac is below its floor, `Reading::room_mb`);
+/// else the largest when it alone passes it; else, it fitting alone, one other drained at a time:
+/// the one ranked highest (`rank`: the agent ranks the newest job highest, then the least
+/// progressed: the work lost least), not draining yet, and only while the jobs not draining (what's
+/// left once those draining reach their safe points) still pass the room. A job that `yields`
+/// (started beside one that waited on a worker, which then went on) is the one drained, larger or
+/// not, and while it drains no other is: the job it was started beside isn't stopped for it.
+pub fn decide_by(held: &[Option<u64>], room: u64, draining: &[bool], yields: &[bool], rank: &[u64]) -> Act {
     let total: u64 = held.iter().flatten().sum();
-    if limit == 0 || total <= limit {
+    if total <= room {
         return Act::Nothing;
     }
     let Some((big, mb)) =
@@ -87,7 +191,7 @@ pub fn decide_by(held: &[Option<u64>], limit: u64, draining: &[bool], yields: &[
     else {
         return Act::Nothing;
     };
-    if mb > limit {
+    if mb > room {
         return Act::Over(big);
     }
     let yielding = |k: usize| yields.get(k).copied().unwrap_or(false) && held[k].is_some();
@@ -95,9 +199,9 @@ pub fn decide_by(held: &[Option<u64>], limit: u64, draining: &[bool], yields: &[
         return if draining.get(k).copied().unwrap_or(false) { Act::Nothing } else { Act::Drain(k) };
     }
     let drains = |k: usize| draining.get(k).copied().unwrap_or(false);
-    // (What stays once the jobs draining stop: within the limit, nothing more drains.)
+    // (What stays once the jobs draining stop: within the room, nothing more drains.)
     let staying: u64 = held.iter().enumerate().filter(|&(k, _)| !drains(k)).filter_map(|(_, m)| *m).sum();
-    if staying <= limit {
+    if staying <= room {
         return Act::Nothing;
     }
     match held
@@ -109,14 +213,6 @@ pub fn decide_by(held: &[Option<u64>], limit: u64, draining: &[bool], yields: &[
         Some((k, _)) => Act::Drain(k),
         None => Act::Nothing,
     }
-}
-
-/// Whether the Mac is in trouble for its memory: the kernel's memory pressure at warning or worse
-/// (`pressure`), or a GB more swap in use (`swap`) than the least in use in the last few minutes
-/// (`swap_low`, over `SWAP_WINDOW`).
-pub fn trouble(pressure: Option<u32>, swap: Option<u64>, swap_low: Option<u64>) -> bool {
-    pressure.is_some_and(|p| p >= 2)
-        || matches!((swap, swap_low), (Some(now), Some(low)) if now >= low.saturating_add(SWAP_GROWTH))
 }
 
 /// The target a job is on, as its costs file says (`SCENIC_COSTS`: a `started` line as each target
@@ -213,7 +309,7 @@ pub struct Watch {
     /// The most it held while each target was under way (MB, by cost key), and what it holds now.
     pub seen: BTreeMap<String, u64>,
     pub held: Option<u64>,
-    /// Whether the guard froze it (the Mac in trouble with it past the limit alone: the agent's loop
+    /// Whether the guard froze it (the brake on with it past the jobs' room alone: the agent's loop
     /// stops it).
     pub frozen: bool,
     /// Where its accessors keep the bytes they've added to the caches (store::cachefile's
@@ -346,17 +442,29 @@ impl Watch {
 #[derive(Default)]
 struct Inner {
     watches: Vec<Option<Watch>>,
-    on: bool,
-    limit_mb: u64,
-    /// As a test sets them: what each slot's job holds (MB), and whether the Mac is in trouble.
+    /// The floor and the Mac's memory (MB; 0 unknown: the guard then guards nothing), as the
+    /// agent's loop last set them.
+    floor_mb: u64,
+    total_mb: u64,
+    /// As a test sets them: what each slot's job holds (MB), and whether the Mac is in trouble (the
+    /// kernel's pressure at warning, else normal).
     held_set: Option<Vec<Option<u64>>>,
     trouble_set: Option<bool>,
+    /// As a test sets them: the memory available and the swap in use (MB); or what a test's Mac has
+    /// available with no job running, less what its jobs hold (the agent's `test_idle_mb`).
+    avail_set: Option<u64>,
+    swap_set: Option<u64>,
+    idle_set: Option<u64>,
     /// As a test sets it: when each slot's job was last busy (`Watch::cpu_mark`).
     busy_set: Option<Vec<Option<std::time::Instant>>>,
     /// What the thread did last (unix seconds, in words), for the agent's loop to say.
     froze: Vec<(u64, String)>,
-    /// The swap in use as each sample read it, over the last `SWAP_WINDOW`.
+    /// The swap in use (MB) and the memory other processes held (`margin_mb`), as each sample read
+    /// them, over the last `SWAP_WINDOW`; and the latest sample's `Reading` (None: the Mac's memory
+    /// unknown).
     swap: std::collections::VecDeque<(std::time::Instant, u64)>,
+    others: std::collections::VecDeque<(std::time::Instant, u64)>,
+    reading: Option<Reading>,
     /// Where each sample is written (`Live`: the agent's folder's `memory.json`), for the status to
     /// show the latest whatever the agent's loop waits on.
     file: Option<PathBuf>,
@@ -374,13 +482,14 @@ struct Inner {
 }
 
 /// The guard's latest sample, written each time by its thread (`LIVE` in the agent's folder): when
-/// (unix seconds), what each slot's job holds (MB), whether the thread froze it, and the limit and
-/// switch as the agent's loop last set them.
+/// (unix seconds), whether it guards (the Mac's memory known), the Mac's memory against its floor
+/// (`Reading`), what each slot's job holds (MB) and whether the thread froze it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Live {
     pub at: u64,
     pub on: bool,
-    pub limit_mb: u64,
+    pub reading: Option<Reading>,
     pub held_mb: Vec<Option<u64>>,
     pub frozen: Vec<bool>,
 }
@@ -409,7 +518,7 @@ pub fn live(home: &Path) -> Option<Live> {
 }
 
 /// The guard's sampler: a thread sampling the watched jobs every `EVERY` (`spawn`; a test calls
-/// `tick` itself), freezing one past the limit alone while the Mac is in trouble.
+/// `tick` itself), freezing one past the jobs' room alone while the brake is on.
 #[derive(Clone, Default)]
 pub struct Sampler {
     inner: Arc<Mutex<Inner>>,
@@ -511,18 +620,40 @@ impl Sampler {
         crate::sys::signal_group(w.pgid, crate::sys::Signal::Cont)
     }
 
-    /// Whether it guards (the switch, as the agent read it) and this Mac's limit (MB; 0: unknown).
-    pub fn set(&self, on: bool, limit_mb: u64) {
+    /// This Mac's floor (crate::agent::memfloor) and memory (MB; 0: unknown, the guard guards
+    /// nothing), as the agent's loop read them.
+    pub fn set(&self, floor_mb: u64, total_mb: u64) {
         if let Ok(mut g) = self.inner.lock() {
-            (g.on, g.limit_mb) = (on, limit_mb);
+            (g.floor_mb, g.total_mb) = (floor_mb, total_mb);
         }
     }
 
-    /// A test's figures: what each slot's job holds (MB), and whether the Mac is in trouble.
+    /// A test's figures: what each slot's job holds (MB), and whether the Mac is in trouble (the
+    /// kernel's pressure at warning; not: normal).
     pub fn set_test(&self, held: Option<Vec<Option<u64>>>, trouble: Option<bool>) {
         if let Ok(mut g) = self.inner.lock() {
             (g.held_set, g.trouble_set) = (held, trouble);
         }
+    }
+
+    /// A test's memory: what's available and the swap in use (MB).
+    pub fn set_test_mem(&self, avail_mb: Option<u64>, swap_mb: Option<u64>) {
+        if let Ok(mut g) = self.inner.lock() {
+            (g.avail_set, g.swap_set) = (avail_mb, swap_mb);
+        }
+    }
+
+    /// A test's Mac: what it has available with no job running (MB), less what its jobs hold.
+    pub fn set_test_idle(&self, idle_mb: Option<u64>) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.idle_set = idle_mb;
+        }
+    }
+
+    /// The Mac's memory against its floor, as the last sample read it (None: its memory unknown,
+    /// or not sampled yet).
+    pub fn reading(&self) -> Option<Reading> {
+        self.inner.lock().ok()?.reading
     }
 
     /// When slot `k`'s job last used a core-minute (`Watch::cpu_mark`); None: not sampled yet, or
@@ -574,8 +705,8 @@ impl Sampler {
     }
 
     /// Freezes slot `k`'s job (SIGSTOP to its group; a test's figures: marked alone), as the thread
-    /// freezes one past the limit alone: the agent's loop, the Mac short of memory with the jobs
-    /// together past the limit. True when it froze it now.
+    /// freezes one past the room alone: the agent's loop, the brake on with the jobs
+    /// together past the room. True when it froze it now.
     pub fn freeze(&self, k: usize) -> bool {
         let Ok(mut g) = self.inner.lock() else { return false };
         let real = g.held_set.is_none();
@@ -599,23 +730,57 @@ impl Sampler {
         crate::sys::signal_group(w.pgid, crate::sys::Signal::Cont)
     }
 
-    /// Whether the Mac is in trouble now (`trouble`: its pressure, or swap grown within the last few
-    /// minutes, as the samples read it).
+    /// Whether the Mac is in trouble now: the memory brake on (`Reading::brake`), as the last sample
+    /// read it (a test's figure, as it set it).
     pub fn in_trouble(&self) -> bool {
-        let Ok(mut g) = self.inner.lock() else { return false };
-        if let Some(t) = g.trouble_set {
-            return t;
+        let Ok(g) = self.inner.lock() else { return false };
+        match g.trouble_set {
+            Some(t) => t,
+            None => g.reading.is_some_and(|r| r.brake().is_some()),
         }
-        let now = crate::sys::swap_used();
-        if let Some(n) = now {
-            g.swap.push_back((std::time::Instant::now(), n));
+    }
+
+    /// The Mac's memory now against its floor, the jobs holding `held_mb` together (`Reading`): the
+    /// memory available, the swap's and other processes' samples kept over `SWAP_WINDOW` for the
+    /// swap grown and the margin. None (and nothing kept) while its memory or the available can't
+    /// be read.
+    fn read_memory(g: &mut Inner, held_mb: u64) -> Option<Reading> {
+        if g.total_mb == 0 {
+            return None;
         }
-        while g.swap.front().is_some_and(|(t, _)| t.elapsed() > SWAP_WINDOW) {
-            g.swap.pop_front();
+        let avail_mb = g
+            .avail_set
+            .or(g.idle_set.map(|i| i.saturating_sub(held_mb)))
+            .or_else(|| crate::sys::memory_available().map(|b| b >> 20))?;
+        let now = std::time::Instant::now();
+        let swap = g.swap_set.or_else(|| crate::sys::swap_used().map(|b| b >> 20));
+        if let Some(n) = swap {
+            g.swap.push_back((now, n));
+        }
+        let others = g.total_mb.saturating_sub(avail_mb).saturating_sub(held_mb);
+        g.others.push_back((now, others));
+        for q in [&mut g.swap, &mut g.others] {
+            while q.front().is_some_and(|(t, _)| now.duration_since(*t) > SWAP_WINDOW) {
+                q.pop_front();
+            }
         }
         let low = g.swap.iter().map(|(_, n)| *n).min();
-        drop(g);
-        trouble(crate::sys::memory_pressure(), now, low)
+        let pressure = match g.trouble_set {
+            Some(true) => 2,
+            Some(false) => 1,
+            None => crate::sys::memory_pressure().unwrap_or(0),
+        };
+        Some(Reading {
+            avail_mb,
+            held_mb,
+            floor_mb: g.floor_mb,
+            swap_grown_mb: match (swap, low) {
+                (Some(n), Some(l)) => n.saturating_sub(l),
+                _ => 0,
+            },
+            pressure,
+            margin_mb: margin_mb(g.others.iter().map(|(_, o)| *o)),
+        })
     }
 
     /// What the thread did since the last call, for the agent's loop to note.
@@ -623,8 +788,9 @@ impl Sampler {
         self.inner.lock().map(|mut g| std::mem::take(&mut g.froze)).unwrap_or_default()
     }
 
-    /// One sample: each watched job's memory, kept against its target under way; a job past the
-    /// limit alone, while the Mac is in trouble, frozen at once (the agent's loop stops it).
+    /// One sample: each watched job's memory, kept against its target under way, and the Mac's
+    /// against its floor (`reading`); a job past the jobs' room alone (`Reading::room_mb`), while
+    /// the brake is on, frozen at once (the agent's loop stops it).
     pub fn tick(&self) {
         let watches: Vec<(usize, i32)> = match self.inner.lock() {
             Ok(g) => g.watches.iter().enumerate().filter_map(|(k, w)| w.as_ref().map(|w| (k, w.pgid))).collect(),
@@ -634,8 +800,6 @@ impl Sampler {
         // (Read outside the lock: the footprints and the files take time.)
         let mut got: Vec<(usize, i32, Option<u64>, Option<String>)> = Vec::new();
         let mut cpu: Vec<(usize, i32, Option<u64>)> = Vec::new();
-        // (Each sample reads the swap too: its window's least, for `in_trouble`.)
-        self.in_trouble();
         for (k, pgid) in watches {
             let held = match &set {
                 Some(v) => v.get(k).copied().flatten(),
@@ -672,30 +836,34 @@ impl Sampler {
                     }
                 }
             }
-            let limit = g.limit_mb;
+            let held_mb: u64 = g.watches.iter().flatten().filter_map(|w| w.held).sum();
+            let reading = Self::read_memory(&mut g, held_mb);
+            g.reading = reading;
             // (Written once the lock is let go: the agent's loop doesn't wait on the write.)
             live = g.file.clone().map(|f| {
                 (
                     f,
                     Live {
                         at: crate::agent::jobs::now_s(),
-                        on: g.on,
-                        limit_mb: limit,
+                        on: reading.is_some(),
+                        reading,
                         held_mb: g.watches.iter().map(|w| w.as_ref().and_then(|w| w.held)).collect(),
                         frozen: g.watches.iter().map(|w| w.as_ref().is_some_and(|w| w.frozen)).collect(),
                     },
                 )
             });
-            if !g.on || limit == 0 {
-                Vec::new()
-            } else {
-                g.watches
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(k, w)| {
-                        w.as_ref().filter(|w| !w.frozen && w.held.is_some_and(|m| m > limit)).map(|_| k)
-                    })
-                    .collect()
+            match reading {
+                Some(r) => {
+                    let room = r.room_mb();
+                    g.watches
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(k, w)| {
+                            w.as_ref().filter(|w| !w.frozen && w.held.is_some_and(|m| m > room)).map(|_| k)
+                        })
+                        .collect()
+                }
+                None => Vec::new(),
             }
         };
         if let Some((f, l)) = live {
@@ -709,16 +877,18 @@ impl Sampler {
                 continue;
             }
             let Ok(mut g) = self.inner.lock() else { return };
-            let (limit, real) = (g.limit_mb, g.held_set.is_none());
+            let (reading, real) = (g.reading.unwrap_or_default(), g.held_set.is_none());
             let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut) else { continue };
             if real {
                 crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
             }
             w.frozen = true;
             let what = format!(
-                "froze slot {k}'s job: it held {:.1} GB, past this Mac's limit of {:.1} GB, the Mac short of memory",
+                "froze slot {k}'s job: it held {:.1} GB with {:.1} GB available against this Mac's {:.1} GB floor, the memory brake on ({})",
                 w.held.unwrap_or(0) as f64 / 1024.0,
-                limit as f64 / 1024.0
+                reading.avail_mb as f64 / 1024.0,
+                reading.floor_mb as f64 / 1024.0,
+                reading.brake().unwrap_or_default()
             );
             eprintln!("agent: memory guard {what}");
             g.froze.push((crate::agent::jobs::now_s(), what));
@@ -862,37 +1032,177 @@ impl Sampler {
     }
 }
 
-/// The guard in the status: its switch, this Mac's limit (0: its memory unknown, guarding nothing),
-/// what the jobs hold now, and what it last did (when, unix seconds, and in words).
+/// The guard in the status (the build page, the menu bar, `scenic status`): whether it guards (the
+/// Mac's memory known; else why not), the Mac's memory against its floor (`Reading`: available,
+/// the floor, the margin, the swap grown, the pressure), whether the floor is the owner's or the
+/// default, what the jobs hold and what's reserved for their growth to come (each running job's
+/// expected peak less what it holds), why no job starts here now (`Reading::held_back`, the brake
+/// among it), what it last did (when, unix seconds, and in words: a job given back and why), and
+/// all that in a line (`words`) the menu bar prints as it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct View {
     pub on: bool,
-    pub limit_mb: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reading: Option<Reading>,
+    pub floor_set: bool,
     pub held_mb: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved_mb: u64,
+    /// What a new job's expected peak may be here now (MB): `Reading::admit_mb` less each running
+    /// job's expected peak or what it holds, the larger (crate::coord::Capacity's `mem_mb`); None
+    /// where the running jobs' peaks aren't known (a sample alone, `Live::words`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_mb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brake: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held_back: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub why_off: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last: Option<(u64, String)>,
+    pub said: String,
+}
+
+impl Live {
+    /// The sample in a line (`words`, from the sample alone: nothing reserved said), a job frozen
+    /// said: "Memory: 9.3 GB available, floor 6.0 GB (default); the jobs hold 12.1 GB; a job
+    /// frozen". `floor_set`: whether the floor is the owner's.
+    pub fn words(&self, floor_set: bool) -> String {
+        let r = self.reading;
+        let v = View {
+            on: self.on,
+            reading: r,
+            floor_set,
+            held_mb: self.held_mb.iter().flatten().sum(),
+            brake: r.and_then(|r| r.brake()),
+            held_back: r.and_then(|r| r.held_back()),
+            why_off: (!self.on).then(|| "this Mac's memory can't be read".into()),
+            ..Default::default()
+        };
+        let frozen = self.frozen.iter().filter(|f| **f).count();
+        match frozen {
+            0 => words(&v),
+            1 => format!("{}; a job frozen", words(&v)),
+            n => format!("{}; {n} jobs frozen", words(&v)),
+        }
+    }
+}
+
+/// The memory in a line: "Memory: 9.3 GB available, floor 6.0 GB (default) + 0.4 GB margin; the
+/// jobs hold 12.1 GB, 3.0 GB more reserved for their growth" and, when no job starts here, why
+/// ("; no new job: …"); the brake first when it's on ("Memory brake: …"). Unknown memory: why.
+pub fn words(v: &View) -> String {
+    let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+    let Some(r) = v.reading.filter(|_| v.on) else {
+        return format!("Memory: not guarded ({})", v.why_off.as_deref().unwrap_or("not sampled yet"));
+    };
+    let mut s = format!(
+        "Memory: {} available, floor {}{}{}",
+        gb(r.avail_mb),
+        gb(r.floor_mb),
+        if v.floor_set { "" } else { " (default)" },
+        if r.margin_mb > 0 { format!(" + {} margin", gb(r.margin_mb)) } else { String::new() }
+    );
+    if v.held_mb > 0 || v.reserved_mb > 0 {
+        s += &format!("; the jobs hold {}", gb(v.held_mb));
+        if v.reserved_mb > 0 {
+            s += &format!(", {} more reserved for their growth", gb(v.reserved_mb));
+        }
+    }
+    match (&v.brake, &v.held_back) {
+        (Some(b), _) => format!("Memory brake: {b}. {s}"),
+        (None, Some(h)) => format!("{s}; no new job: {h}"),
+        (None, None) => match v.new_mb {
+            Some(n) => format!("{s}; {} for a new job", gb(n)),
+            None => s,
+        },
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_limit_is_the_macs_memory_less_an_eighth() {
-        assert_eq!(limit_mb(48 << 10), 42 << 10);
-        assert_eq!(limit_mb(16 << 10), 12 << 10);
-        assert_eq!(limit_mb(64 << 10), 56 << 10);
-        assert_eq!(limit_mb(0), 0, "its memory unknown");
+    /// `decide_by` with each slot's rank its order: of two, the one beside the largest drains.
+    fn decide(held: &[Option<u64>], room: u64, draining: &[bool], yields: &[bool]) -> Act {
+        let rank: Vec<u64> = (0..held.len()).map(|k| u64::MAX - k as u64).collect();
+        decide_by(held, room, draining, yields, &rank)
     }
 
+    const GB: u64 = 1 << 10;
+
+    /// A reading of the M4 (48 GB): `avail` GB available, its jobs holding `held` GB, a 6 GB floor.
+    fn m4(avail: u64, held: u64) -> Reading {
+        Reading { avail_mb: avail * GB, held_mb: held * GB, floor_mb: 6 * GB, pressure: 1, ..Default::default() }
+    }
+
+    /// The jobs' room is what they hold and what's available, less the floor: below the floor, the
+    /// jobs past it; new work only past the floor and the margin, never under the brake.
     #[test]
-    fn the_agents_own_footprint_comes_off_the_jobs_limit() {
-        assert_eq!(jobs_limit_mb(32 << 10, 0), 28 << 10);
-        assert_eq!(jobs_limit_mb(32 << 10, 9 << 10), 19 << 10);
-        assert_eq!(jobs_limit_mb(16 << 10, 20 << 10), 0, "an agent past the limit leaves its jobs nothing");
-        assert_eq!(jobs_limit_mb(0, 1 << 10), 0, "its memory unknown");
+    fn the_room_is_the_available_and_the_held_less_the_floor() {
+        let r = m4(10, 20);
+        assert_eq!((r.room_mb(), r.admit_mb(), r.below(), r.brake()), (24 * GB, 24 * GB, false, None));
+        assert_eq!(r.held_back(), None);
+        // (Other apps grew: 4 GB available, below the 6 GB floor: the jobs past their room by 2 GB.)
+        let r = m4(4, 20);
+        assert!(r.below() && r.room_mb() == 18 * GB && r.held_back().is_some());
+        // (The margin: no new job until the floor and it are available; the room to give back
+        // by is the floor's alone.)
+        let r = Reading { margin_mb: 2 * GB, ..m4(7, 20) };
+        assert_eq!((r.room_mb(), r.admit_mb(), r.below()), (21 * GB, 19 * GB, false));
+        assert_eq!(
+            r.held_back().as_deref(),
+            Some("7.0 GB of memory available, under the 6.0 GB floor and its 2.0 GB margin")
+        );
+        assert_eq!(Reading { margin_mb: 2 * GB, ..m4(8, 20) }.held_back(), None, "at the floor and the margin");
+        // (The swap grown lately comes off what's available.)
+        let r = Reading { swap_grown_mb: 3 * GB, ..m4(8, 20) };
+        assert_eq!((r.usable_mb(), r.room_mb()), (5 * GB, 19 * GB));
+        // (Nothing held, nothing available: no room, nothing given back.)
+        assert_eq!(m4(0, 0).room_mb(), 0);
+        assert_eq!(margin_mb([]), 0);
+        assert_eq!(margin_mb([30 * GB, 28 * GB, 31 * GB]), 3 * GB, "others' swing: its most less its least");
+    }
+
+    /// The brake (the kernel's pressure at warning or critical, or swap grown past what was
+    /// available above the floor) counts as below the floor whatever the number says: the room a
+    /// megabyte under what the jobs hold, no new job.
+    #[test]
+    fn the_brake_is_below_the_floor_whatever_the_number_says() {
+        let r = Reading { pressure: 2, ..m4(20, 10) };
+        assert_eq!(r.brake().as_deref(), Some("macOS's memory pressure is at warning"));
+        assert!(r.below() && r.room_mb() == 10 * GB - 1 && r.admit_mb() == 0);
+        assert_eq!(r.held_back().as_deref(), Some("the memory brake: macOS's memory pressure is at warning"));
+        assert_eq!(
+            Reading { pressure: 4, ..m4(20, 10) }.brake().as_deref(),
+            Some("macOS's memory pressure is critical")
+        );
+        // (Swap grew 3 GB with 8 available: 5 usable, under the floor, so the brake; 1 GB grown
+        // with 8 available: 7 usable, above it, no brake.)
+        let r = Reading { swap_grown_mb: 3 * GB, ..m4(8, 10) };
+        assert_eq!(
+            r.brake().as_deref(),
+            Some("swap grew 3.0 GB in the last 5 min, past the 2.0 GB available above the floor")
+        );
+        assert_eq!(Reading { swap_grown_mb: GB, ..m4(8, 10) }.brake(), None);
+        // (Below the floor by the number alone, no swap grown: given back at safe points, no brake.)
+        assert_eq!(m4(4, 10).brake(), None);
+        // (No job: the room is nothing, and nothing to give back.)
+        assert_eq!(Reading { pressure: 2, ..m4(20, 0) }.room_mb(), 0);
+    }
+
+    /// On 4 Nov at 01:10 the M4's five terrain-deep jobs held 37 GB, under the old 41.9 GB jobs
+    /// limit, while Docker, compiles and the owner's apps took the rest: 0.19 GB of free pages and
+    /// 21 GB swapped. Under the floor the guard gives back.
+    #[test]
+    fn the_fourth_of_november_is_below_the_floor() {
+        let r = Reading { swap_grown_mb: 2 * GB, ..m4(2, 37) };
+        assert!(r.below() && r.brake().is_some());
+        let held = [Some(7 * GB), Some(8 * GB), Some(7 * GB), Some(8 * GB), Some(7 * GB)];
+        let no = [false; 5];
+        // (Below the floor: the newest of them (ranked highest) drains first.)
+        assert_eq!(decide_by(&held, r.room_mb(), &no, &no, &[1, 2, 3, 4, 5]), Act::Drain(4));
     }
 
     #[test]
@@ -906,10 +1216,10 @@ mod tests {
         assert_eq!(decide(&[Some(43 << 10), Some(1 << 10)], l, &[false, true], &[false, false]), Act::Over(0));
         assert_eq!(decide(&[None, Some(50 << 10)], l, &[false, false], &[false, false]), Act::Over(1));
         assert_eq!(decide(&[Some(25 << 10), Some(25 << 10)], l, &[false, false], &[false, false]), Act::Drain(1));
-        // A limit unknown: nothing, however much.
-        assert_eq!(decide(&[Some(50 << 10)], 0, &[false], &[false]), Act::Nothing);
+        // No room at all (the Mac at or under its floor with nothing to spare): the job, alone.
+        assert_eq!(decide(&[Some(50 << 10)], 0, &[false], &[false]), Act::Over(0));
         // A job started beside one that waited on a worker yields when that one goes on, the
-        // larger or not; while it drains, the other isn't drained for it; past the limit alone,
+        // larger or not; while it drains, the other isn't drained for it; past the room alone,
         // either is stopped as any.
         let y = &[false, true];
         assert_eq!(decide(&[Some(10 << 10), Some(35 << 10)], l, &[false, false], y), Act::Drain(1));
@@ -919,7 +1229,7 @@ mod tests {
         assert_eq!(decide(&[Some(43 << 10), Some(1 << 10)], l, &[false, false], y), Act::Over(0));
     }
 
-    /// Several jobs (a member's packed ones, task #240): past the limit together, the largest fitting
+    /// Several jobs (a member's packed ones, task #240): past the room together, the largest fitting
     /// alone, the one ranked highest (the newest, then the least progressed) drains, never the
     /// largest; one at a time, and none more while what stays once those draining stop fits.
     #[test]
@@ -937,7 +1247,7 @@ mod tests {
         assert_eq!(decide_by(&grown, l, &[false, false, true, false], no, &rank), Act::Drain(3));
         // (Every other draining: nothing left to drain, the largest fits alone.)
         assert_eq!(decide_by(&grown, l, &[false, true, true, true], no, &rank), Act::Nothing);
-        // (The largest by itself past the limit: it, whoever is newest.)
+        // (The largest by itself past the room: it, whoever is newest.)
         let over = [Some(1 << 10), Some(13 << 10), Some(1 << 10), None];
         assert_eq!(decide_by(&over, l, no, no, &rank), Act::Over(1));
         // (A job that yields drains first, ranked low or not.)
@@ -960,17 +1270,36 @@ mod tests {
         assert!(s.unwatch(4).is_some() && s.held(4).is_none());
     }
 
+    /// The sampler reads the Mac's memory with its jobs': the swap grown over its window, and the
+    /// margin from other processes' swing (the Mac's less what's available and the jobs hold).
     #[test]
-    fn trouble_is_the_kernels_pressure_or_swap_grown() {
-        // (Floors read as written before they said more: a bare MB.)
+    fn the_sampler_reads_the_swap_grown_and_the_margin() {
+        let s = Sampler::new(1);
+        s.set_test(Some(vec![Some(10 * GB)]), Some(false));
+        s.watch(0, Watch { pgid: 999_999, ..Default::default() });
+        // (Its memory unknown: no reading, nothing guarded.)
+        s.tick();
+        assert_eq!(s.reading(), None);
+        s.set(6 * GB, 48 * GB);
+        s.set_test_mem(Some(20 * GB), Some(4 * GB));
+        s.tick();
+        let r = s.reading().unwrap();
+        assert_eq!((r.avail_mb, r.held_mb, r.floor_mb, r.swap_grown_mb, r.margin_mb), (20 * GB, 10 * GB, 6 * GB, 0, 0));
+        // (Chrome grows 3 GB, then gives 1 back: others went 18, 21, 20 GB; the swap grew 1 GB.)
+        s.set_test_mem(Some(17 * GB), Some(5 * GB));
+        s.tick();
+        s.set_test_mem(Some(18 * GB), Some(5 * GB));
+        s.tick();
+        let r = s.reading().unwrap();
+        assert_eq!((r.swap_grown_mb, r.margin_mb), (GB, 3 * GB));
+        assert!(!s.in_trouble());
+    }
+
+    #[test]
+    fn floors_read_as_written_before_they_said_more() {
         let old: BTreeMap<String, Floor> =
             serde_json::from_str(r#"{"a": 9000, "b": {"mb": 5, "alone": true, "v": 3}}"#).unwrap();
         assert_eq!((old["a"], old["b"]), (Floor { mb: 9000, alone: false, v: 0 }, Floor { mb: 5, alone: true, v: 3 }));
-        assert!(!trouble(Some(1), Some(5 << 30), Some(5 << 30)));
-        assert!(trouble(Some(2), None, None) && trouble(Some(4), None, None));
-        assert!(trouble(Some(1), Some(6 << 30), Some(5 << 30)));
-        assert!(!trouble(Some(1), Some((5 << 30) + (512 << 20)), Some(5 << 30)));
-        assert!(!trouble(None, None, None));
     }
 
     #[test]
@@ -1040,7 +1369,9 @@ mod tests {
     fn the_sampler_keeps_the_most_held_per_target_and_freezes_only_in_trouble() {
         let d = tempfile::tempdir().unwrap();
         let s = Sampler::new(2);
-        s.set(true, 12 << 10);
+        // (A 16 GB Mac, a 2 GB floor, 8 GB available.)
+        s.set(2 << 10, 16 << 10);
+        s.set_test_mem(Some(8 << 10), Some(0));
         s.write_to(d.path().join(LIVE));
         s.watch(
             0,
@@ -1061,14 +1392,18 @@ mod tests {
         // Each sample written for the status, whatever the agent's loop waits on.
         let l = live(d.path()).unwrap();
         assert!(
-            l.on && l.limit_mb == 12 << 10 && l.held_mb == [Some(3000), None] && l.frozen == [false, false],
+            l.on && l.reading.is_some_and(|r| r.floor_mb == 2 << 10 && r.held_mb == 3000)
+                && l.held_mb == [Some(3000), None]
+                && l.frozen == [false, false],
             "{l:?}"
         );
-        // Past the limit alone, the Mac not in trouble: not frozen.
+        // Past the room alone (13 GB held, 1 GB available: 12 GB of room above the floor), the
+        // brake off: not frozen.
+        s.set_test_mem(Some(1 << 10), Some(0));
         s.set_test(Some(vec![Some(13 << 10), None]), Some(false));
         s.tick();
         assert!(!s.frozen(0));
-        // In trouble: frozen, said.
+        // The brake on: frozen, said.
         s.set_test(Some(vec![Some(13 << 10), None]), Some(true));
         s.tick();
         assert!(s.frozen(0) && s.take_froze().len() == 1);
@@ -1090,7 +1425,7 @@ mod tests {
         s.tick();
         let w = s.unwatch(0).unwrap();
         assert!(!w.frozen && w.seen.get("pack 6/1/1").is_none() && w.seen.get("pack 6/1/3") == Some(&100));
-        // Off, or the limit unknown: learning only.
+        // The Mac's memory unknown: learning only.
         s.watch(
             1,
             Watch {
@@ -1101,7 +1436,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        s.set(true, 0);
+        s.set(2 << 10, 0);
         s.set_test(Some(vec![None, Some(50 << 10)]), Some(true));
         s.tick();
         assert!(!s.frozen(1) && s.unwatch(1).unwrap().seen.get("pack 6/2/2") == Some(&(50 << 10)));

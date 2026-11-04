@@ -14,11 +14,13 @@
 //!   (`FILE`) every `SAVE_EVERY` and as the agent stops, read back as it starts. A bucket older than
 //!   its ring's span is never answered.
 //! - **Sampled** on threads of the agent's own (`spawn`), never its loop: every second the load,
-//!   memory free, its pressure, the swap, the memory compressed (`host_statistics64`), macOS's
+//!   memory free (the kernel's percentage), the memory available (crate::sys::memory_available, as
+//!   the memory floor reads it), its pressure, the swap, the memory compressed (`host_statistics64`), macOS's
 //!   thermal state (crate::sys::thermal_state) and the jobs running; the cores busy (all, the efficiency
 //!   cores, the performance ones: `host_processor_info`'s ticks, the efficiency cores the first
 //!   processors, as many as the last perf level's; the performance ones every other); the build's CPU and memory (its jobs' processes' `proc_pid_rusage`)
-//!   and the rest of the Mac's (the cores busy and the memory in use, less the build's); the bytes
+//!   and the rest of the Mac's (the cores busy, and the memory in use (the Mac's less what's
+//!   available), less the build's); the bytes
 //!   written to the Mac's disks (IOKit's block storage drivers' statistics) and by each job, as
 //!   rates; the proxy's bytes in and out and its requests asked, as rates; the sampler's own CPU time. Every 10 s the disk's free space and size. The battery, mains power and the
 //!   owner's idleness as the agent's loop reads them (each round, ~20 s; minutes apart when a round is slow). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
@@ -26,7 +28,7 @@
 //!   a stat would be answered from the SMB client's cache), never two at once.
 //! - **The build's limits** as the agent's loop reads them (each round, as the battery): the cores
 //!   the build may use now (all; while the owner uses the Mac, less those kept for them), the
-//!   memory its jobs may hold together, the owner's disk room target and the jobs' disk
+//!   Mac's memory floor (crate::agent::memfloor), the owner's disk room target and the jobs' disk
 //!   reservations (`record_limits`).
 //! - **Each core's share busy** over the last second, kept apart (not a series) and answered as
 //!   `cores_now`, efficiency cores first.
@@ -88,6 +90,8 @@ const MAGIC_V1: &[u8; 8] = b"SCLIVE01";
 pub const NAS_MS: &str = "nas_ms";
 pub const LOAD: &str = "load1";
 pub const MEM_FREE: &str = "mem_free_pct";
+/// The memory available (GB: crate::sys::memory_available).
+pub const MEM_AVAIL: &str = "mem_avail_gb";
 pub const PRESSURE: &str = "mem_pressure";
 pub const SWAP: &str = "swap_mb";
 /// The memory macOS holds compressed (GB), and its thermal state (0 nominal to 3 critical).
@@ -118,10 +122,10 @@ pub const DISK_SIZE: &str = "disk_size_gb";
 pub const BATTERY: &str = "battery_pct";
 pub const AC: &str = "ac";
 pub const IDLE: &str = "idle_s";
-/// The build's limits (`record_limits`): cores, memory (GB), the disk's room target and the jobs'
+/// The build's limits (`record_limits`): cores, the memory floor (GB), the disk's room target and the jobs'
 /// reservations (GB).
 pub const BUILD_CORES_MAX: &str = "build_cores_max";
-pub const BUILD_MEM_MAX: &str = "build_mem_max_gb";
+pub const MEM_FLOOR: &str = "mem_floor_gb";
 pub const DISK_ROOM: &str = "disk_room_gb";
 pub const DISK_RESERVED: &str = "disk_reserved_gb";
 /// The jobs' NAS traffic (store::nasio::Count's order), per second.
@@ -403,12 +407,11 @@ impl Store {
         self.series.lock().ok()?.get(name)?.latest(now.saturating_sub(fresh_s), now)
     }
 
-    /// The build's limits at `t`, as the agent's loop read them: the cores it may use, the memory
-    /// its jobs may hold together (MB), the owner's disk room target and the jobs' reservations
-    /// (bytes).
-    pub fn record_limits(&self, t: u64, cores: u32, mem_mb: u64, room: u64, reserved: u64) {
+    /// The build's limits at `t`, as the agent's loop read them: the cores it may use, the Mac's
+    /// memory floor (MB), the owner's disk room target and the jobs' reservations (bytes).
+    pub fn record_limits(&self, t: u64, cores: u32, floor_mb: u64, room: u64, reserved: u64) {
         self.record(BUILD_CORES_MAX, t, f64::from(cores));
-        self.record(BUILD_MEM_MAX, t, mem_mb as f64 / 1024.0);
+        self.record(MEM_FLOOR, t, floor_mb as f64 / 1024.0);
         self.record(DISK_ROOM, t, room as f64 / GB);
         self.record(DISK_RESERVED, t, reserved as f64 / GB);
     }
@@ -747,6 +750,8 @@ impl Rates {
         put(LOAD, super::cond::load1());
         let free = crate::sys::memory_free_pct();
         put(MEM_FREE, free.map(f64::from));
+        let avail = crate::sys::memory_available();
+        put(MEM_AVAIL, avail.map(|b| b as f64 / GB));
         put(PRESSURE, crate::sys::memory_pressure().map(f64::from));
         put(SWAP, crate::sys::swap_used().map(|b| (b >> 20) as f64));
         put(COMPRESSED, crate::sys::memory_compressed().map(|b| b as f64 / GB));
@@ -781,8 +786,8 @@ impl Rates {
             put(OTHERS_CORES, Some((all[0] - c).max(0.0)));
         }
         put(BUILD_MEM, b.mem.map(|m| m as f64 / GB));
-        if let (Some(m), Some(total), Some(free)) = (b.mem, crate::sys::memsize(), free) {
-            let used = total as f64 * f64::from(100 - free.min(100)) / 100.0;
+        if let (Some(m), Some(total), Some(avail)) = (b.mem, crate::sys::memsize(), avail) {
+            let used = total.saturating_sub(avail) as f64;
             put(OTHERS_MEM, Some((used - m as f64).max(0.0) / GB));
         }
         for (k, v) in b.writes {
@@ -1144,6 +1149,7 @@ mod tests {
             OTHERS_CORES,
             BUILD_MEM,
             OTHERS_MEM,
+            MEM_AVAIL,
             DISK_WRITE,
         ] {
             assert!(s.latest(n, t0 + 19, 5).is_some(), "{n} not sampled");
@@ -1331,7 +1337,7 @@ mod tests {
         *s.cores_now.lock().unwrap() = vec![0.5, 0.123456];
         let v = s.answer(&Ask { range: Some(60), net: Some(false), ..Default::default() }, t + 1);
         assert_eq!(v["series"][BUILD_CORES_MAX][0][2], 8.0);
-        assert_eq!(v["series"][BUILD_MEM_MAX][0][2], 12.0);
+        assert_eq!(v["series"][MEM_FLOOR][0][2], 12.0);
         assert_eq!(v["series"][DISK_ROOM][0][2], 20.0);
         assert_eq!(v["series"][DISK_RESERVED][0][2], 2.5);
         assert_eq!(v["cores_now"], serde_json::json!([0.5, round(0.123456)]));

@@ -855,8 +855,9 @@ pub struct Ask {
     /// The app it runs (an agent's, crate::agent::app_version).
     #[serde(default)]
     pub app: Option<String>,
-    /// The most memory its Mac's jobs may hold together (MB: crate::agent::memguard::jobs_limit_mb), for
-    /// the lead's reckoning of the most any Mac in the pool has (an older worker says none).
+    /// The most its Mac's jobs could hold together (MB: its memory less its memory floor, nothing
+    /// else on it: crate::agent's `jobs_ceiling`), for the lead's reckoning of the most any Mac in
+    /// the pool has (an older worker says none).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit_mb: Option<u64>,
     /// The disk it has room for a job on (MB: its free space and what its caches can free, less
@@ -874,7 +875,7 @@ pub struct Ask {
     pub want: usize,
 }
 
-/// The memory limit `a`'s Mac says (MB): its capacity's, else the old field (`Ask::limit_mb`, an
+/// The most `a`'s Mac's jobs could hold, as it says (MB): its capacity's, else the old field (`Ask::limit_mb`, an
 /// older agent's, or a newer one's while the pool isn't all on the new app); None when neither says.
 pub fn ask_limit(a: &Ask) -> Option<u64> {
     a.cap.as_ref().map(|c| c.limit_mb).filter(|&l| l > 0).or(a.limit_mb)
@@ -900,6 +901,31 @@ pub fn disk_words(c: &Capacity, for_jobs_mb: u64) -> String {
     format!("{} free · {} for jobs{kept}", gb(c.free_mb), gb(for_jobs_mb))
 }
 
+/// A Mac's memory in words (task #932): what's available against its floor, what's reserved for
+/// its running jobs' growth, and what's left for a new job's peak (`for_new_mb`): "9.3 GB
+/// available · 6.0 GB floor + 0.4 GB margin · 3.0 GB reserved for its jobs' growth · 0.0 GB for a
+/// new job"; an older app's (no floor said), the new job's alone.
+pub fn mem_words(c: &Capacity, for_new_mb: u64) -> String {
+    let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+    if c.mem_floor_mb == 0 {
+        return format!("{} for a new job", gb(for_new_mb));
+    }
+    let mut v = vec![format!("{} available", gb(c.avail_mb))];
+    if c.swap_grown_mb > 0 {
+        v.push(format!("swap grew {}", gb(c.swap_grown_mb)));
+    }
+    v.push(if c.mem_margin_mb > 0 {
+        format!("{} floor + {} margin", gb(c.mem_floor_mb), gb(c.mem_margin_mb))
+    } else {
+        format!("{} floor", gb(c.mem_floor_mb))
+    });
+    if c.mem_reserved_mb > 0 {
+        v.push(format!("{} reserved for its jobs' growth", gb(c.mem_reserved_mb)));
+    }
+    v.push(format!("{} for a new job", gb(for_new_mb)));
+    v.join(" · ")
+}
+
 /// How long a capacity stands (s): older, `Coordinator::capacities` leaves it out.
 pub const CAP_FRESH_S: u64 = 120;
 
@@ -912,17 +938,36 @@ pub const CAP_FRESH_S: u64 = 120;
 pub struct Capacity {
     /// When it was measured (unix s).
     pub at: u64,
-    /// The memory guard's limit: the most its jobs may hold together (MB: memguard::jobs_limit_mb, the agent's own footprint off).
+    /// The most its jobs could hold together (MB: its memory less its memory floor, nothing else on
+    /// it; crate::agent's `jobs_ceiling`).
     pub limit_mb: u64,
-    /// What its running jobs hold now, as the guard's sampler last saw them (MB).
+    /// What its running jobs hold now, as the guard's sampler last saw them (MB), and each one's
+    /// (its lease and what it holds): the lead counts each job at the larger of that and its
+    /// expected peak (`sched::pack`).
     pub held_mb: u64,
-    /// The memory its owner gives the build's jobs together (MB: `scenic memory`, within the
-    /// limit; crate::agent::buildmem::room_mb). 0: an older app's, which doesn't say.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub held_each: Vec<WaitingJob>,
+    /// The memory its jobs may hold together for one to start (MB: what they hold and what's
+    /// available, less its memory floor and margin; none under the brake: crate::agent::memguard's
+    /// `Reading::admit_mb`). 0: an older app's, which doesn't say.
     pub build_mb: u64,
-    /// The build's memory (`build_mb`) less each running job's predicted need (the larger of
-    /// what it holds and its predicted peak: its targets' measured peak on the lead, the
-    /// step's first guess on a member, which has no coordinator's measures) (MB).
+    /// `build_mb` less each running job's predicted need (the larger of what it holds and its
+    /// predicted peak: its targets' measured peak on the lead, the step's first guess on a member,
+    /// which has no coordinator's measures) (MB): what a new job's peak may be.
     pub mem_mb: u64,
+    /// Its memory against its floor (MB, docs/pool.md §7.1; memguard::Reading): what's available
+    /// (crate::sys::memory_available), the floor, the margin new work waits past it for, the swap
+    /// grown lately (off what's available), and what's reserved for its running jobs' growth to
+    /// come (each one's predicted need less what it holds).
+    pub avail_mb: u64,
+    pub mem_floor_mb: u64,
+    pub mem_margin_mb: u64,
+    pub swap_grown_mb: u64,
+    pub mem_reserved_mb: u64,
+    /// Why no job starts on it now whatever it needs (memguard::Reading::held_back: the brake, or
+    /// its memory under the floor and margin); the lead grants it nothing then (`sched::pack`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_held_back: Option<String>,
     /// Its cores, and those free by the last minute's load average.
     pub cores: u32,
     pub cores_free: u32,
@@ -2212,8 +2257,8 @@ impl Coordinator {
         }
     }
 
-    /// The largest memory limit a worker around says its Mac has (crate::agent::memguard::limit_mb:
-    /// an agent asking in the last ten minutes), when any says one.
+    /// The most any worker around says its Mac's jobs could hold (`ask_limit`: its memory less its
+    /// floor; an agent asking in the last ten minutes), when any says one.
     pub fn largest_limit(&self) -> Option<u64> {
         let s = self.shared.lock().unwrap();
         let now = s.now();
@@ -9096,7 +9141,10 @@ mod tests {
         let a = Ask { cap: Some(cap), ..every_ask("m1", "slope-hi", 6144, 0) };
         assert!(w.ask(&a).unwrap().is_none());
         let why = c.refusals().get("m1").cloned().unwrap_or_default();
-        assert!(why.contains("(6.0 GB memory; disk: 21 GB free · 0 GB for jobs (20 GB room target))"), "{why}");
+        assert!(
+            why.contains("(memory: 6.0 GB for a new job; disk: 21 GB free · 0 GB for jobs (20 GB room target))"),
+            "{why}"
+        );
     }
 
     /// A shared cache reserved once per Mac (task #392, crate::needs::CACHES): `depth`'s z6 tiles
@@ -9356,6 +9404,65 @@ mod tests {
         let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
         assert!(matches!(&g.work, Granted::Job { step, .. } if step == "redo"), "{:?}", g.work);
         assert_eq!(g.threads, 1);
+    }
+
+    /// Task #932: the lead packs a Mac by the memory floor's arithmetic, from what its ask says: a
+    /// job starts only where what's available less every running job's growth to come (its
+    /// expected peak less what it holds, or nothing once it holds more) less its own expected peak
+    /// stays at the floor and margin. The ask's memory (`build_mb`: what the jobs may hold above
+    /// the floor and margin) less each running job's expected peak or what it holds, the larger
+    /// (`Capacity::held_each`). A Mac whose memory is under its floor and margin, or under the
+    /// brake (`Capacity::mem_held_back`), is granted nothing, and the refusal says why.
+    #[test]
+    fn packing_reserves_the_running_jobs_growth_and_holds_back_below_the_floor() {
+        // (trees measured at 2 GB a job; a Mac whose jobs may hold 9 GB above its floor.)
+        let ask = |want: usize, held_each: Vec<WaitingJob>| {
+            let held_mb = held_each.iter().map(|h| h.held_mb).sum();
+            Ask {
+                want,
+                cap: Some(Capacity {
+                    at: unix_now(),
+                    cores: 8,
+                    cores_free: 8,
+                    build_mb: 9_000,
+                    held_mb,
+                    held_each,
+                    avail_mb: 9_000 - held_mb,
+                    mem_floor_mb: 2_048,
+                    ..Default::default()
+                }),
+                ..every_ask("m1", "trees", 9_000, 100_000)
+            }
+        };
+        let two = |held: [u64; 2]| {
+            let (_d, c, w, _clock) = every((0, 0));
+            packable(&c, "trees", 6, Some(2));
+            let g = w.ask(&ask(2, Vec::new())).unwrap().unwrap();
+            let leases: Vec<u64> = std::iter::once(g.lease).chain(g.more.iter().map(|m| m.lease)).collect();
+            assert_eq!(leases.len(), 2);
+            let each = leases.iter().zip(held).map(|(&lease, held_mb)| WaitingJob { lease, held_mb }).collect();
+            let got = all_granted(&w, &ask(3, each)).len();
+            (got, c.refusals().get("m1").cloned().unwrap_or_default())
+        };
+        // Both jobs at 1 GB, each with 1 GB to grow: 9 less 2 + 2 leaves 5: two more.
+        assert_eq!(two([1_000, 1_000]).0, 2);
+        // One grown past its 2 GB peak to 4 GB: counted at 4, 9 less 2 + 4 leaves 3: one more, not
+        // the two that what they hold (5 GB) or their peaks (4 GB) alone would leave room for.
+        assert_eq!(two([1_000, 4_000]).0, 1);
+        // Held back (under the floor and margin, or the brake): none, the refusal saying why.
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "trees", 6, Some(2));
+        let mut a = ask(3, Vec::new());
+        a.cap.as_mut().unwrap().mem_held_back = Some("the memory brake: macOS's memory pressure is at warning".into());
+        assert!(all_granted(&w, &a).is_empty());
+        let why = c.refusals().get("m1").cloned().unwrap_or_default();
+        assert!(why.contains("memory: the memory brake: macOS's memory pressure is at warning"), "{why}");
+        // (The room said in words on a refusal: available, the floor, what's reserved.)
+        let c2 = Capacity { avail_mb: 9 << 10, mem_floor_mb: 6 << 10, mem_reserved_mb: 3 << 10, ..Default::default() };
+        assert_eq!(
+            mem_words(&c2, 0),
+            "9.0 GB available · 6.0 GB floor · 3.0 GB reserved for its jobs' growth · 0.0 GB for a new job"
+        );
     }
 
     /// Task #499: the room left is never more than what its Mac's jobs hold now leaves (its memory
@@ -10571,7 +10678,7 @@ mod tests {
         let (code, _, v) = post(serde_json::json!({ "in_use": 0, "memory": "2", "room": 1, "nas_room": "3 GB" }));
         assert_eq!(code, 200, "{v}");
         assert_eq!(crate::agent::share::read(home.path()).unwrap().cores, Some(0));
-        let m = crate::agent::buildmem::read(home.path()).unwrap();
+        let m = crate::agent::memfloor::read(home.path()).unwrap();
         assert!(m.mb == 2048 && m.by == "the build page (100.101.1.2)", "{m:?}");
         assert_eq!(crate::agent::room::target(home.path()).unwrap().bytes, 1 << 30);
         assert_eq!(
@@ -10581,12 +10688,12 @@ mod tests {
         assert_eq!(v["nas_room"]["bytes"], 3u64 << 30);
         assert_eq!(post(serde_json::json!({ "memory": "0.1" })).0, 400);
         assert_eq!(post(serde_json::json!({ "in_use": [1] })).0, 400);
-        assert_eq!(crate::agent::buildmem::read(home.path()).unwrap().mb, 2048);
+        assert_eq!(crate::agent::memfloor::read(home.path()).unwrap().mb, 2048);
         let (code, _, v) =
             post(serde_json::json!({ "in_use": "off", "memory": "off", "room": "off", "nas_room": "off" }));
         assert_eq!(code, 200, "{v}");
         assert!(
-            crate::agent::share::read(home.path()).is_none() && crate::agent::buildmem::read(home.path()).is_none()
+            crate::agent::share::read(home.path()).is_none() && crate::agent::memfloor::read(home.path()).is_none()
         );
         assert!(
             crate::agent::room::target(home.path()).is_none()

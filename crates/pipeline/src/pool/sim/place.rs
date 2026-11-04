@@ -39,7 +39,7 @@
 //! cores (less those a member's in-use share keeps, `Cfg::in_use`). And that the plan finishes.
 
 use crate::agent::every;
-use crate::agent::memguard::{self, Floor};
+use crate::agent::memguard::Floor;
 use crate::coord::{self, client, cost_key, cost_version, Ask, Capacity, Cost, Granted, Offer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -48,7 +48,8 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub struct Mac {
     pub name: &'static str,
-    /// Its memory (MB): its jobs' limit is memguard::limit_mb of it.
+    /// Its memory (MB): its jobs may hold it less its default memory floor (crate::agent::memfloor;
+    /// nothing else runs on a simulated Mac, so all of it is available but what the jobs hold).
     pub total_mb: u64,
     pub cores: u32,
     /// Its disk's free space with no job running (MB).
@@ -317,7 +318,10 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
     let n = cfg.macs.len();
     let mut out =
         Run { most: vec![0; n], ran: vec![0; n], busy_s: vec![0; n], longest_s: vec![0; n], ..Default::default() };
-    let limit = |k: usize| memguard::limit_mb(cfg.macs[k].total_mb);
+    let limit = |k: usize| {
+        let total = cfg.macs[k].total_mb;
+        total - crate::agent::memfloor::default_mb(total)
+    };
     let mut t = 0u64;
     while done.len() < total {
         if t > MAX_S {
@@ -673,7 +677,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     worker: m.name.into(),
                     kind: "native".into(),
                     can: offered_steps.clone(),
-                    // (As the agent asks: the build's memory on its Mac (`Agent::build_room`), all its
+                    // (As the agent asks: what its jobs may hold above its floor (`Agent::build_room`), all its
                     // cores, its free disk now; what its jobs leave free in `cap`.)
                     mem_mb: limit(k),
                     cores: m.cores,
@@ -733,7 +737,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
 }
 
 /// The steps of a build's kinds: two kept to the lead, four offered, one too large for a 16 GB
-/// Mac (terrain); `pack` the NAS-heavy one (about half the NAS a job, by a probe of 100 MB/s and 40
+/// Mac (terrain: past the 14 GB its jobs may hold above its default floor); `pack` the NAS-heavy one (about half the NAS a job, by a probe of 100 MB/s and 40
 /// creates/s).
 pub fn plan() -> Vec<Step> {
     vec![
@@ -752,7 +756,7 @@ pub fn plan() -> Vec<Step> {
             cache_mb: 0,
             name: "terrain",
             targets: 6,
-            mem_mb: 13_000,
+            mem_mb: 14_500,
             disk_mb: 3_000,
             secs: 600,
             threads: 4,

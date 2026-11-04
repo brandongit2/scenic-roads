@@ -14,7 +14,7 @@
 //!   page see "pausing" within a second. The loop sets it too (another Mac's setting read on the
 //!   NAS), through `Handle::set_hold`: control applies every setting, in order;
 //! - the app's ask to quit;
-//! - the owner's settings: the disk room target, the in-use share, the build's memory.
+//! - the owner's settings: the disk room target, the in-use share, the memory floor.
 //!
 //! Each change wakes the loop's wait (`ControlMsg`). Asks that need the jobs or the pool (a cancel,
 //! a hold ask for another member) are told to **jobs**' thread (crate::agent::slots, step 5), which
@@ -22,7 +22,7 @@
 //! the NAS, so it can't hang on one.
 
 use super::bus::{BeatMsg, ControlMsg, Snap};
-use super::{buildmem, room, share};
+use super::{memfloor, room, share};
 use crate::control::{self, HoldAnswer, HoldState, Quit};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -39,13 +39,13 @@ pub struct Settings {
     pub room: Option<room::Target>,
     /// The in-use share (`scenic in-use`).
     pub share: Option<share::Share>,
-    /// The memory given the build here (`scenic memory`, the menu bar).
-    pub memory: Option<buildmem::Memory>,
+    /// The memory floor this Mac keeps available (`scenic memory`, the build page).
+    pub memory: Option<memfloor::Floor>,
 }
 
 impl Settings {
     fn read(home: &Path) -> Settings {
-        Settings { room: room::target(home), share: share::read(home), memory: buildmem::read(home) }
+        Settings { room: room::target(home), share: share::read(home), memory: memfloor::read(home) }
     }
 }
 
@@ -180,10 +180,8 @@ fn said_settings(was: &Settings, now: &Settings) {
     }
     if now.memory.as_ref().map(|m| m.mb) != was.memory.as_ref().map(|m| m.mb) {
         match &now.memory {
-            Some(m) => {
-                eprintln!("agent: the build's memory is {} MB ({}), within the memory guard's limit", m.mb, m.by)
-            }
-            None => eprintln!("agent: the build's memory is the memory guard's limit (none set)"),
+            Some(m) => eprintln!("agent: the memory floor is {} MB kept available ({})", m.mb, m.by),
+            None => eprintln!("agent: the memory floor is this Mac's default (none set; `scenic memory` says it)"),
         }
     }
 }

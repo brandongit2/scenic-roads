@@ -28,9 +28,9 @@
 //!                                       running or not (what they use stays), and starting no job
 //!                                       that would cross it, until it's lowered or off; with none,
 //!                                       how it stands
-//!   scenic memory [<GB> | off]          the memory this Mac gives the build's jobs together
-//!                                       (within the memory guard's limit; off: the limit); with
-//!                                       none, how it stands
+//!   scenic memory [<GB> | off]          this Mac's memory floor: keep at least this much memory
+//!                                       available, whatever runs on it (off: its default, an
+//!                                       eighth of its memory); with none, how it stands
 //!   scenic in-use [--cores <n>] | off   the in-use share: the cores this Mac's agent keeps free
 //!                                       of its jobs while its owner uses it (by default 2); off:
 //!                                       the default; with none, how it stands
@@ -390,23 +390,23 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
     }
 }
 
-/// A member's capacity in a line: "memory 8.8 GB free of the build's 10.0 GB (1.2 GB held, the
-/// limit 12.0 GB) · 6 of 8 cores free · disk 120 GB free · 100 GB for jobs (20 GB room target) · on
-/// power · in use · NAS reachable · leases 12, 14 · 20 s ago".
+/// A member's capacity in a line: "memory 9.3 GB available · 6.0 GB floor · 3.0 GB reserved for its
+/// jobs' growth · 1.2 GB for a new job (8.0 GB held) · 6 of 8 cores free · disk 120 GB free · 100 GB
+/// for jobs (20 GB room target) · on power · in use · NAS reachable · leases 12, 14 · 20 s ago";
+/// no new job, why ("memory: no new job: the memory brake: …").
+fn capacity_line_mem(c: &pipeline::coord::Capacity) -> String {
+    let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+    match &c.mem_held_back {
+        Some(why) => format!("memory: no new job: {why} ({} held)", gb(c.held_mb)),
+        None => format!("memory {} ({} held)", pipeline::coord::mem_words(c, c.mem_mb), gb(c.held_mb)),
+    }
+}
+
+/// `capacity_line_mem` and the rest of a Mac's capacity in a line.
 fn capacity_line(c: &pipeline::coord::Capacity) -> String {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
     let mut v = vec![
-        format!(
-            "memory {} free of the build's {} ({} held{})",
-            gb(c.mem_mb),
-            gb(if c.build_mb > 0 { c.build_mb } else { c.limit_mb }),
-            gb(c.held_mb),
-            if c.build_mb > 0 && c.build_mb < c.limit_mb {
-                format!(", the limit {}", gb(c.limit_mb))
-            } else {
-                String::new()
-            },
-        ),
+        capacity_line_mem(c),
         format!("{} of {} cores free", c.cores_free, c.cores),
         if c.free_mb > 0 {
             format!("disk {}", pipeline::coord::disk_words(c, c.disk_mb))
@@ -687,17 +687,12 @@ fn status(places: &cli::Places) -> Result<()> {
     if now_s().saturating_sub(st.beat) > 600 {
         println!("  (not seen for a while: asleep, away or off; work waits for it)");
     }
-    // The memory guard as its thread last sampled (every 5 s, whatever the agent's loop waits on).
-    if let Some(m) = own_home.as_deref().and_then(agent::memguard::live).filter(|m| now_s().saturating_sub(m.at) < 60) {
-        let held: u64 = m.held_mb.iter().flatten().sum();
-        let frozen = if m.frozen.iter().any(|f| *f) { ", a job frozen past it" } else { "" };
-        println!(
-            "  memory: the jobs hold {:.1} GB of this Mac's limit of {:.1} GB ({}{frozen}, {})",
-            held as f64 / 1024.0,
-            m.limit_mb as f64 / 1024.0,
-            if m.on { "guarded" } else { "not guarded" },
-            ago(m.at)
-        );
+    // The memory guard as its thread last sampled (every 5 s, whatever the agent's loop waits on):
+    // this Mac's memory against its floor.
+    if let Some(home) = own_home.as_deref() {
+        if let Some(m) = agent::memguard::live(home).filter(|m| now_s().saturating_sub(m.at) < 60) {
+            println!("  this Mac: {} ({})", m.words(agent::memfloor::read(home).is_some()), ago(m.at));
+        }
     }
     // Each Mac, the lead (the coordinator) first: its slots, its capacity, its jobs, and why
     // nothing more fits (the same layout as the build page's machines).
@@ -1069,44 +1064,40 @@ fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// `scenic memory [<GB> | off]`: the memory this Mac gives the build's jobs together
-/// (agent::buildmem), set in its agent's folder, which the agent reads each loop; within the memory
-/// guard's limit; off: the limit alone; with none, how it stands.
+/// `scenic memory [<GB> | off]`: this Mac's memory floor (agent::memfloor), the memory it keeps
+/// available whatever runs on it, set in its agent's folder, which the agent reads each loop; off:
+/// its default; with none, how it stands, and the memory as the agent's guard last sampled it.
 fn memory(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
-    use agent::buildmem;
+    use agent::memfloor;
     let home = home_or_default(home);
     let by = format!("scenic memory on {}", store::sys::host_name());
     let total_mb = pipeline::sys::memsize().map_or(0, |b| b >> 20);
-    let limit = agent::memguard::limit_mb(total_mb);
+    // (A build memory left by a release before the floor: replaced, said.)
+    if let Some(said) = memfloor::migrate(&home, total_mb) {
+        println!("{}", said[..1].to_uppercase() + &said[1..]);
+    }
     let set = match what {
         Some(what) => agent::settings::set_memory(&home, what, &by)?,
-        None => buildmem::read(&home),
+        None => memfloor::read(&home),
     };
-    println!("{}", memory_line(set.as_ref(), limit, |t| ago(t)));
+    println!("{}", memory_line(set.as_ref(), total_mb, |t| ago(t)));
+    if let Some(m) = agent::memguard::live(&home).filter(|m| now_s().saturating_sub(m.at) < 60) {
+        println!("{} ({})", m.words(set.is_some()), ago(m.at));
+    }
     Ok(())
 }
 
-/// The build's memory in a line: "Build memory: 10.0 GB for the build's jobs together, set 2 h ago
-/// by scenic memory on m1 (the memory guard's limit, 12.0 GB, stays the ceiling)"; not set, the
-/// limit's.
-fn memory_line(set: Option<&agent::buildmem::Memory>, limit_mb: u64, ago: impl Fn(u64) -> String) -> String {
+/// The memory floor in a line: "Memory floor: keep at least 8.0 GB available on this Mac, set 2 h
+/// ago by scenic memory on m1"; not set, the default's, of the Mac's `total_mb`.
+fn memory_line(set: Option<&agent::memfloor::Floor>, total_mb: u64, ago: impl Fn(u64) -> String) -> String {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
-    let room = agent::buildmem::room_mb(set, limit_mb);
+    let floor = agent::memfloor::floor_mb(set, total_mb);
     match set {
-        Some(m) => format!(
-            "Build memory: {} for the build's jobs together, set {} by {}{}",
-            gb(room),
-            ago(m.at),
-            m.by,
-            match limit_mb {
-                0 => String::new(),
-                l if m.mb > l => format!(" ({} asked, held to the memory guard's limit)", gb(m.mb)),
-                l => format!(" (the memory guard's limit, {}, stays the ceiling)", gb(l)),
-            }
-        ),
+        Some(f) => format!("Memory floor: keep at least {} available on this Mac, set {} by {}", gb(floor), ago(f.at), f.by),
         None => format!(
-            "Build memory: {} for the build's jobs together, the memory guard's limit (`scenic memory <GB>` sets less)",
-            gb(room)
+            "Memory floor: keep at least {} available on this Mac, the default (an eighth of its {}; `scenic memory <GB>` sets another)",
+            gb(floor),
+            gb(total_mb)
         ),
     }
 }
@@ -1790,34 +1781,48 @@ mod tests {
         assert!(l.contains("m1 · not in the pool: waiting to join (its member's lock is held) · 0 jobs"), "{l}");
     }
 
-    /// The build's memory in words (task #390), and a Mac's capacity with it and its disk said
-    /// plainly (task #391).
+    /// The memory floor in words (task #932), and a Mac's capacity with its memory against the floor
+    /// and its disk said plainly (task #391).
     #[test]
-    fn the_build_memory_and_the_disk_are_said_plainly() {
-        let m = agent::buildmem::Memory { mb: 10 << 10, by: "scenic memory on m1".into(), at: 1 };
+    fn the_memory_floor_and_the_disk_are_said_plainly() {
+        let f = agent::memfloor::Floor { mb: 8 << 10, by: "scenic memory on m1".into(), at: 1 };
         let ago = |_| "2 h ago".to_string();
         assert_eq!(
-            memory_line(Some(&m), 12 << 10, ago),
-            "Build memory: 10.0 GB for the build's jobs together, set 2 h ago by scenic memory on m1 (the memory guard's limit, 12.0 GB, stays the ceiling)"
+            memory_line(Some(&f), 16 << 10, ago),
+            "Memory floor: keep at least 8.0 GB available on this Mac, set 2 h ago by scenic memory on m1"
         );
         assert_eq!(
-            memory_line(Some(&m), 8 << 10, ago),
-            "Build memory: 8.0 GB for the build's jobs together, set 2 h ago by scenic memory on m1 (10.0 GB asked, held to the memory guard's limit)"
+            memory_line(None, 48 << 10, ago),
+            "Memory floor: keep at least 6.0 GB available on this Mac, the default (an eighth of its 48.0 GB; `scenic memory <GB>` sets another)"
         );
-        assert!(memory_line(None, 12 << 10, ago)
-            .starts_with("Build memory: 12.0 GB for the build's jobs together, the memory guard's limit"));
         let c = pipeline::coord::Capacity {
-            limit_mb: 12 << 10,
+            limit_mb: 42 << 10,
             build_mb: 10 << 10,
-            mem_mb: 6 << 10,
+            mem_mb: 1 << 10,
+            held_mb: 8 << 10,
+            avail_mb: 9 << 10,
+            mem_floor_mb: 6 << 10,
+            mem_margin_mb: 1 << 9,
+            mem_reserved_mb: 3 << 10,
             free_mb: 39_014,
             disk_mb: 18 << 10,
             target_mb: 20 << 10,
             ..Default::default()
         };
         let l = capacity_line(&c);
-        assert!(l.starts_with("memory 6.0 GB free of the build's 10.0 GB (0.0 GB held, the limit 12.0 GB)"), "{l}");
+        assert!(l.starts_with("memory 9.0 GB available · 6.0 GB floor + 0.5 GB margin · 3.0 GB reserved for its jobs' growth · 1.0 GB for a new job (8.0 GB held)"), "{l}");
         assert!(l.contains("disk 38 GB free · 18 GB for jobs (20 GB room target)"), "{l}");
+        let c = pipeline::coord::Capacity {
+            mem_held_back: Some("the memory brake: macOS's memory pressure is at warning".into()),
+            ..c
+        };
+        assert!(
+            capacity_line(&c).starts_with(
+                "memory: no new job: the memory brake: macOS's memory pressure is at warning (8.0 GB held)"
+            ),
+            "{}",
+            capacity_line(&c)
+        );
     }
 }
 

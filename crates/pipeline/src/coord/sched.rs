@@ -16,7 +16,7 @@
 //! (`State`), so its schedule is the coordinator's by construction.
 
 use super::lease::{Lease, Leases, Work};
-use super::{cost_key, cost_version, disk_words, first_guess, job_secs, Ask, Cost, Measured, Offer, Worker};
+use super::{cost_key, cost_version, disk_words, first_guess, job_secs, mem_words, Ask, Cost, Measured, Offer, Worker};
 use super::{AROUND, ASKING};
 use crate::agent::memguard::Floor;
 use serde::{Deserialize, Serialize};
@@ -756,6 +756,11 @@ impl Sched {
     /// granted fewer jobs than the ask wanted (None: as many as it wanted).
     pub fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<String>) {
         let now = clock.now;
+        // (Its Mac below its memory floor and margin, or the brake on (docs/pool.md §7.1): nothing,
+        // a cold start to a Mac running nothing among it.)
+        if let Some(why) = a.cap.as_ref().and_then(|c| c.mem_held_back.as_ref()) {
+            return (Vec::new(), Some(format!("memory: {why}")));
+        }
         let mine = self.job_leases(&a.worker, now);
         // (A job held: its measure, else its provisional need, `pack_need`; one its Mac says only
         // waits on a worker (`Capacity::waiting`), at what it holds now within that, none of its
@@ -764,6 +769,8 @@ impl Sched {
         // waiting on the network), at its measure but none of its cores.)
         let waits =
             |l: &Lease| a.cap.as_ref().and_then(|c| c.waiting.iter().find(|w| w.lease == l.id)).map(|w| w.held_mb);
+        let holds =
+            |l: &Lease| a.cap.as_ref().and_then(|c| c.held_each.iter().find(|w| w.lease == l.id)).map(|w| w.held_mb);
         let jobs: Vec<(&Lease, String, Vec<String>)> = mine
             .iter()
             .filter_map(|l| match &l.work {
@@ -778,6 +785,9 @@ impl Sched {
                 if let Some(held) = waits(l) {
                     n.m.mem_mb = n.m.mem_mb.min(held);
                     n.waits = true;
+                } else if let Some(held) = holds(l) {
+                    // (Its growth to come reserved: its expected peak, or what it holds past it.)
+                    n.m.mem_mb = n.m.mem_mb.max(held);
                 }
                 n.idle = a.cap.as_ref().is_some_and(|c| c.idle.contains(&l.id));
                 n
@@ -970,8 +980,11 @@ impl Sched {
                         format!("cores: {} of {total} left, a job of {st} takes {}", tenths(cores), tenths(c))
                     }
                     None => format!(
-                        "nothing offered fits the room left ({} memory{}) or is free to take",
-                        gb(room.mem_mb),
+                        "nothing offered fits the room left (memory: {}{}) or is free to take",
+                        match a.cap.as_ref() {
+                            Some(c) => mem_words(c, room.mem_mb),
+                            None => gb(room.mem_mb),
+                        },
                         room.disk_mb
                             .map(|d| match a.cap.as_ref().filter(|c| c.free_mb > 0) {
                                 Some(c) => format!("; disk: {}", disk_words(c, d)),

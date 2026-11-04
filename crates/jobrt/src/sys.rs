@@ -519,8 +519,9 @@ pub fn memory_pressure() -> Option<u32> {
     None
 }
 
-/// The memory available now (%: the kernel's `kern.memorystatus_level`, what `memory_pressure`
-/// prints as its free percentage); None where it can't be read.
+/// The kernel's memory-free percentage (`kern.memorystatus_level`, what `memory_pressure` prints):
+/// the pages neither wired nor compressed, so apps' pages in use count as free; the live store's
+/// pressure row shows it, the memory floor reads `memory_available`. None where it can't be read.
 pub fn memory_free_pct() -> Option<u32> {
     #[cfg(target_os = "macos")]
     {
@@ -540,26 +541,51 @@ pub fn swap_used() -> Option<u64> {
     None
 }
 
+/// The kernel's page counts now (`host_statistics64`'s HOST_VM_INFO64) and its page size (bytes);
+/// None where they can't be read.
+#[cfg(target_os = "macos")]
+fn vm_stats() -> Option<(libc::vm_statistics64, u64)> {
+    // SAFETY: the call fills `v`, `count` its size in ints.
+    let mut v: libc::vm_statistics64 = unsafe { std::mem::zeroed() };
+    let mut count = libc::HOST_VM_INFO64_COUNT;
+    #[allow(deprecated)]
+    let r = unsafe {
+        libc::host_statistics64(
+            libc::mach_host_self(),
+            libc::HOST_VM_INFO64,
+            (&mut v as *mut libc::vm_statistics64).cast(),
+            &mut count,
+        )
+    };
+    // SAFETY: sysconf has no failure that matters here (-1 is caught).
+    let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
+    (r == libc::KERN_SUCCESS).then_some((v, page))
+}
+
 /// The memory macOS holds compressed now (bytes: `host_statistics64`'s compressor pages, what
 /// Activity Monitor calls Compressed); None where it can't be read.
 pub fn memory_compressed() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
-        // SAFETY: the call fills `v`, `count` its size in ints.
-        let mut v: libc::vm_statistics64 = unsafe { std::mem::zeroed() };
-        let mut count = libc::HOST_VM_INFO64_COUNT;
-        #[allow(deprecated)]
-        let r = unsafe {
-            libc::host_statistics64(
-                libc::mach_host_self(),
-                libc::HOST_VM_INFO64,
-                (&mut v as *mut libc::vm_statistics64).cast(),
-                &mut count,
-            )
-        };
-        // SAFETY: sysconf has no failure that matters here (-1 is caught).
-        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
-        (r == libc::KERN_SUCCESS).then(|| u64::from(v.compressor_page_count) * page)
+        vm_stats().map(|(v, page)| u64::from(v.compressor_page_count) * page)
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// The memory available now (bytes): what macOS hands a process without compressing or swapping
+/// anything: its free pages, its file-backed pages (the file cache, dropped at once; a read-ahead's
+/// speculative pages are among them) and its purgeable ones (`host_statistics64`). It is the Mac's
+/// memory less what Activity Monitor calls Memory Used (app memory, wired, compressed). Not
+/// `kern.memorystatus_level` (`memory_free_pct`): that counts every page neither wired nor
+/// compressed, apps' own pages in use too, and read 60 % on the M4 on 4 Nov with 21 GB swapped
+/// (docs/pool.md §7.1). None where it can't be read.
+pub fn memory_available() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        vm_stats().map(|(v, page)| {
+            (u64::from(v.free_count) + u64::from(v.external_page_count) + u64::from(v.purgeable_count)) * page
+        })
     }
     #[cfg(not(target_os = "macos"))]
     None
