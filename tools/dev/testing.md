@@ -76,11 +76,24 @@ Every agent worktree on a Mac builds into one folder outside the repo, ~/Library
 (`SCENIC_SHARED_TARGET` overrides), through `tools/dev/bin/cargo`, which Claude Code puts first on
 the PATH of every Bash command (`CLAUDE_ENV_FILE` = tools/dev/agent-env.zsh, below) and check.sh puts
 there itself. Third-party crates and unchanged code compile once per Mac, not once per worktree.
-- One cargo at a time in that folder, for the whole command: a second one prints
+- One build at a time in that folder: a second cargo prints
   `cargo: waiting for the shared build folder … held by: <worktree> pid … cargo <args>` at once and
   every minute, then `got the shared build folder after N s` (check.sh shows it on its terminal,
   not only in the part's log). On a 16 GB laptop this is the point: two heavy rustc at once
   restarted the M1 (31 Oct). A cargo started by a build under the lock passes through.
+- Programs and tests run outside the lock (#937): `cargo run`, `test` and `bench` build under it
+  with the shim as cargo's target runner, which records each program cargo would start (path,
+  arguments, environment, folder); the lock goes, and they run as cargo would start them, from APFS
+  clones in `<shared folder>/.scenic-runs/<pid>/` (a run's program with the programs beside it), so
+  another worktree's build can't replace them meanwhile. `cargo nextest run` runs its test binaries
+  from such clones too, made as it lists them; the lock goes when its first test starts. Kept under
+  the lock: a test binary naming a program of the shared folder (`env!("CARGO_BIN_EXE_…")`, as
+  pipeline's and server's `tests/cli.rs`), whose path a clone can't change (cargo test runs it
+  first; nextest keeps the lock to the end), doctests (rustdoc compiles and runs them in one go),
+  and programs for another target (wasm32). On 4 Nov a `cargo run --release --example` held the
+  lock 24 minutes while two check.sh runs waited; with a 60 s `cargo run` and two toy checks
+  started 2 s after it, the checks waited 58 and 59 s before and 1 and 0 s after (M4, 4 Nov).
+  A clones folder of a gone process is deleted by the next such run.
 - Correct across worktrees: cargo judges a workspace crate fresh by mtimes, and its artifact names
   don't depend on the checkout's path, so worktree A's build would pass as fresh for worktree B's
   older sources. When the folder's last build (`.scenic-built-by`) came from another worktree, the
@@ -88,8 +101,8 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   incremental state where the code is the same. Test: tools/dev/test/shared-target.zsh (check.sh).
 - Passed straight to cargo: outside `.claude/worktrees/` (the main checkout, publish.sh's tree)
   and commands that never build (fmt, metadata, tree, …).
-- A worktree's own `target/` isn't written: run a built program through `cargo run` (under
-  the lock), never `target/…/<bin>` or a path in the shared folder, which the next worktree's build
+- A worktree's own `target/` isn't written: run a built program through `cargo run` (which runs
+  a clone), never `target/…/<bin>` or a path in the shared folder, which the next worktree's build
   may have replaced. remote-tests.sh builds on the test Mac in its own folder; the shared one is
   never copied there.
 - sccache still wraps rustc inside `.claude/worktrees/` (the untracked

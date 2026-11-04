@@ -19,7 +19,7 @@
 #             here when it can't be reached or SCENIC_CHECK_LOCAL=1)
 #   python    pyflakes on the changed .py files (a deleted one's: the rest of its folder's) and
 #             unittest in their folders' test_*.py, when producers/ or dem/ changed
-# Its cargo is tools/dev/bin/cargo: in an agent worktree, this Mac's shared build folder, one cargo
+# Its cargo is tools/dev/bin/cargo: in an agent worktree, this Mac's shared build folder, one build
 # at a time (#915): a wait for another worktree's build is printed here as it happens (SCENIC_CARGO_SAY).
 # Prints PASS/FAIL/skip per part, with its wall and CPU time on this Mac (tests: the test Mac's too);
 # each part's whole output is kept in ~/Library/Logs/scenic/check-<time>/. A clean checkout whose
