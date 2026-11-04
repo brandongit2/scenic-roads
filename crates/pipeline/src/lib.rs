@@ -37,6 +37,7 @@ pub mod offload;
 pub mod osmpass;
 pub mod out;
 pub mod ovconv;
+pub mod paces;
 pub mod pageviews;
 pub mod peaks;
 pub mod polar;

@@ -1409,6 +1409,7 @@ impl Coordinator {
                 measured_steps: Default::default(),
                 measured_of: Default::default(),
                 drop_needs: Default::default(),
+                paces: Default::default(),
             },
             pass: String::new(),
             plan: 0,
@@ -1817,7 +1818,7 @@ impl Coordinator {
         });
         let (w, _) = match &mine {
             Some(l) => s.job_weight(&nw, l, now),
-            None => sched::Sched::job_nas(&nw, step, targets.iter().map(String::as_str)),
+            None => sched::Sched::job_nas(&nw, step, Some(&self.me), targets.iter().map(String::as_str)),
         };
         let whole = crate::budget::nas::WHOLE;
         (w > 0 && running.saturating_add(rw) > whole && running.saturating_sub(w).saturating_add(rw) <= whole).then(
@@ -1944,6 +1945,17 @@ impl Coordinator {
             }
         }
         out
+    }
+
+    /// Each Mac's pace at each step now (crate::paces, from the build's history): what the
+    /// measures are read at.
+    pub fn set_paces(&self, p: crate::paces::Paces) {
+        self.shared.lock().unwrap().sched.set_paces(p);
+    }
+
+    /// The paces the measures are read at (`set_paces`).
+    pub fn paces(&self) -> crate::paces::Paces {
+        self.shared.lock().unwrap().sched.paces.clone()
     }
 
     /// Placement by how crucial a job is on (`Some`: the forecast's slack and measured speeds) or

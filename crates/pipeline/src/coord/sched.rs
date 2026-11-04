@@ -134,6 +134,10 @@ pub struct Sched {
     pub measured_of: Mutex<(u64, Measures)>,
     /// Each step's drops' need (crate::needs::Book::drop_need) as the measures stood (`rev`).
     pub drop_needs: Mutex<(u64, BTreeMap<String, Option<(u64, u64)>>)>,
+    /// Each Mac's pace at each step against the lead's (crate::paces, task #926; set through
+    /// `set_paces`, which moves `needs_rev`): the measures' times and NAS rates are read at the
+    /// lead's pace by it, and a worker's at its own. Empty: as measured.
+    pub paces: crate::paces::Paces,
 }
 
 /// `Sched::measured_of`'s targets' measures: step → target → `Sched::measures`.
@@ -147,9 +151,13 @@ pub(crate) struct NasWeigher<'a> {
 }
 
 impl NasWeigher<'_> {
-    /// The weight of `target` of `step` (none of its step measured: the whole for a NAS step, else 0).
-    fn weight(&self, step: &str, target: &str) -> u32 {
-        let r = self.book.nas(step, target);
+    /// The weight of `target` of `step` on `worker` (its pace's, `Book::nas_for`; None: at the
+    /// lead's pace), none of its step measured: the whole for a NAS step, else 0.
+    fn weight(&self, step: &str, target: &str, worker: Option<&str>) -> u32 {
+        let r = match worker {
+            Some(w) => self.book.nas_for(step, target, w),
+            None => self.book.nas(step, target),
+        };
         // (A step known to read the NAS (`NAS_STEPS`) none of whose runs noted its rate, in any
         // way it ran: the whole budget, so its first job never overloads the NAS unseen, task #499
         // review; its step's runs of earlier ways count by `nas_prior`.)
@@ -307,7 +315,7 @@ impl Sched {
     /// The measures crate::needs reads (the costs, the floors and the disk floors), its models kept
     /// in `needs` until they change (`needs_rev`; their counts too, for a change made in place).
     pub(super) fn book(&self) -> crate::needs::Book<'_> {
-        crate::needs::Book::kept(&self.costs, &self.floors, &self.disks, &self.needs, self.rev())
+        crate::needs::Book::kept(&self.costs, &self.floors, &self.disks, &self.needs, self.rev()).paced(&self.paces)
     }
 
     /// Where the measures stand: it moves with each cost, floor or disk floor taken or cleared
@@ -392,13 +400,22 @@ impl Sched {
         (mem_mb, m)
     }
 
+    /// Each Mac's pace at each step now (`paces`): the models made again when they changed.
+    pub fn set_paces(&mut self, p: crate::paces::Paces) {
+        if p != self.paces {
+            self.paces = p;
+            self.needs_rev += 1;
+        }
+    }
+
     /// How long `target` of `step` is measured to take `worker` (s): its own run's (`job_secs`), else
-    /// its step's model's (crate::needs: its fit, else the mean of its step's runs); None when
+    /// its step's model's at the worker's pace (crate::needs: its fit, else the mean of its step's
+    /// runs, each at the lead's pace by its Mac's, `paces`); None when
     /// none of its step's has run the way it runs now.
     pub(super) fn secs_of(&self, step: &str, target: &str, worker: &str) -> Option<u64> {
         job_secs(&self.costs, step, target, worker).or_else(|| {
             let b = self.book();
-            self.drop_of(&b, step, target).map(|d| d.0).or_else(|| b.secs(step, target, 0))
+            self.drop_of(&b, step, target).map(|d| d.0).or_else(|| b.secs_for(step, target, 0, Some(worker)))
         })
     }
 
@@ -426,14 +443,23 @@ impl Sched {
         self.leases.live(now).filter(|l| l.worker == worker && matches!(l.work, Work::Job { .. })).cloned().collect()
     }
 
-    /// A job of `step` over `targets`: its NAS weight under `l` (its heaviest target's,
+    /// A job of `step` over `targets` on `worker` (None: at the lead's pace): its NAS weight under `l` (its heaviest target's,
     /// crate::budget::nas; 0 for a target none of whose step's runs measured it; with none, its
     /// step's), and whether it
     /// downloads (its step's kind a fetch, crate::agent::steps::Kind::Fetch).
     /// (`nw` keeps the Book and the steps' percentiles for one placement: `NasWeigher`.)
-    pub(super) fn job_nas<'t>(nw: &NasWeigher, step: &str, targets: impl IntoIterator<Item = &'t str>) -> (u32, bool) {
+    pub(super) fn job_nas<'t>(
+        nw: &NasWeigher,
+        step: &str,
+        worker: Option<&str>,
+        targets: impl IntoIterator<Item = &'t str>,
+    ) -> (u32, bool) {
         // (A job of no targets of its own, the clean-up's lease: its step's measured weight, task #451.)
-        let w = targets.into_iter().map(|t| nw.weight(step, t)).max().unwrap_or_else(|| nw.weight(step, ""));
+        let w = targets
+            .into_iter()
+            .map(|t| nw.weight(step, t, worker))
+            .max()
+            .unwrap_or_else(|| nw.weight(step, "", worker));
         (w, crate::agent::steps::row(step).is_some_and(|r| r.kind == crate::agent::steps::Kind::Fetch))
     }
 
@@ -452,7 +478,7 @@ impl Sched {
     /// ran for most of an hour on a Mac moving a fraction of that (task #925).
     pub(super) fn job_weight(&self, nw: &NasWeigher, l: &Lease, now: Instant) -> (u32, bool) {
         let Work::Job { step, targets } = &l.work else { return (0, false) };
-        let (w, dl) = Self::job_nas(nw, step, targets.iter().map(|t| t.0.as_str()));
+        let (w, dl) = Self::job_nas(nw, step, Some(&l.worker), targets.iter().map(|t| t.0.as_str()));
         let (Some(live), Some(at)) = (l.live.as_ref(), l.live_at) else { return (w, dl) };
         let names: Vec<&str> =
             if targets.is_empty() { vec![""] } else { targets.iter().map(|t| t.0.as_str()).collect() };
@@ -541,7 +567,8 @@ impl Sched {
             }
         };
         held.map(|(st, t)| {
-            let w = nw.weight(&st, &t);
+            // (At the lead's pace: whoever takes it, it holds the room it would there.)
+            let w = nw.weight(&st, &t, None);
             (st, t, w)
         })
     }
@@ -1035,8 +1062,8 @@ impl Sched {
                 .collect();
             if !aged.is_empty() {
                 if let Some((nw, ..)) = self.nas_room(clock.now, true) {
-                    let w = Self::job_nas(&nw, &o.step, ts.iter().map(String::as_str)).0;
-                    for t in aged.into_iter().filter(|t| nw.weight(&o.step, t) <= w) {
+                    let w = Self::job_nas(&nw, &o.step, None, ts.iter().map(String::as_str)).0;
+                    for t in aged.into_iter().filter(|t| nw.weight(&o.step, t, None) <= w) {
                         if let Some(e) = g.get_mut(&(o.step.clone(), t)) {
                             e.0 = clock.now;
                         }
@@ -1124,7 +1151,7 @@ impl Sched {
         }
         .is_some_and(|since| now.duration_since(since) >= crate::budget::nas::OWN_AGE);
         self.nas_room_heaviest(now, true).is_none_or(|(nw, running, members, dl, most)| {
-            let (w, fetch) = Self::job_nas(&nw, &o.step, ts.iter().map(String::as_str));
+            let (w, fetch) = Self::job_nas(&nw, &o.step, Some(&self.lead_name), ts.iter().map(String::as_str));
             let (running, heaviest) = if alone { (members, most[1]) } else { (running, most[0]) };
             if fetch && nw.limits.downloads.is_some_and(|c| dl >= c) {
                 return false;
@@ -1211,7 +1238,7 @@ impl Sched {
         let lead = a.worker == self.lead_name;
         let nas = self.nas_room_heaviest(now, lead);
         let downloads_full = nas.as_ref().is_some_and(|(nw, _, _, dl, _)| {
-            nw.limits.downloads.is_some_and(|c| *dl >= c) && Self::job_nas(nw, &o.step, []).1
+            nw.limits.downloads.is_some_and(|c| *dl >= c) && Self::job_nas(nw, &o.step, None, []).1
         });
         if downloads_full {
             return Vec::new();
@@ -1220,7 +1247,7 @@ impl Sched {
         // lead's own alone: crate::budget::nas::Limits.)
         let nas_fits = |t: &str| {
             nas.as_ref().is_none_or(|(nw, running, members, _, most)| {
-                let w = nw.weight(&o.step, t);
+                let w = nw.weight(&o.step, t, Some(&a.worker));
                 // (The NAS's own load over the owner's target: nothing new that weighs anything
                 // but beside nothing, crate::budget::nas::Loop.)
                 if !nw.limits.open(*running, w) {
@@ -1497,6 +1524,8 @@ pub struct State {
     pub quiet_since: Vec<(String, u64)>,
     /// (worker, step, its last target).
     pub last: Vec<(String, String, String)>,
+    /// Each Mac's pace at each step (`Sched::paces`; code 4 on: a record before it has none).
+    pub paces: crate::paces::Paces,
 }
 
 impl State {
@@ -1595,6 +1624,7 @@ impl Sched {
                 .map(|(s, a)| (s.clone(), age(*a)))
                 .collect(),
             last: self.last.iter().map(|((w, s), t)| (w.clone(), s.clone(), t.clone())).collect(),
+            paces: self.paces.clone(),
         }
     }
 
@@ -1671,6 +1701,7 @@ impl Sched {
             measured_steps: Default::default(),
             measured_of: Default::default(),
             drop_needs: Default::default(),
+            paces: s.paces.clone(),
         };
         sched.set_offers(s.offers.clone());
         sched

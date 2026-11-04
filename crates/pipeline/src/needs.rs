@@ -349,6 +349,10 @@ pub struct Book<'a> {
     pub costs: &'a BTreeMap<String, Cost>,
     pub floors: Option<&'a BTreeMap<String, Floor>>,
     pub disks: Option<&'a BTreeMap<String, u64>>,
+    /// Each Mac's pace at each step (crate::paces, task #926), where known: every run's time and
+    /// NAS rate are put at the lead's pace by its worker's before a model is made of them, and a
+    /// prediction for a worker (`secs_for`, `nas_for`) is the model at its pace. None: as measured.
+    pub paces: Option<&'a crate::paces::Paces>,
     cache: CacheRef<'a>,
     rev: u64,
 }
@@ -502,6 +506,18 @@ fn nas_rate(step: &str, c: &Cost) -> Option<crate::budget::nas::Rate> {
     })
 }
 
+/// Rate `r` of a run `pace` times as long (each of its counts over that time).
+fn per_pace(r: crate::budget::nas::Rate, pace: f64) -> crate::budget::nas::Rate {
+    let d = |x: f64| x / pace.max(1e-6);
+    crate::budget::nas::Rate {
+        bytes_s: d(r.bytes_s),
+        creates_s: d(r.creates_s),
+        listed_s: d(r.listed_s),
+        stats_s: d(r.stats_s),
+        deletes_s: d(r.deletes_s),
+    }
+}
+
 /// The 90th percentile (nearest rank); None with none.
 pub fn p90(mut v: Vec<u64>) -> Option<u64> {
     if v.is_empty() {
@@ -523,7 +539,7 @@ pub const PRIOR_RUNS: usize = 20;
 impl<'a> Book<'a> {
     /// A Book over `costs` alone, keeping its own models.
     pub fn new(costs: &'a BTreeMap<String, Cost>) -> Self {
-        Book { costs, floors: None, disks: None, cache: CacheRef::Own(Cache::default()), rev: 0 }
+        Book { costs, floors: None, disks: None, paces: None, cache: CacheRef::Own(Cache::default()), rev: 0 }
     }
 
     /// A Book over all three, keeping its own models.
@@ -532,7 +548,7 @@ impl<'a> Book<'a> {
         floors: Option<&'a BTreeMap<String, Floor>>,
         disks: Option<&'a BTreeMap<String, u64>>,
     ) -> Self {
-        Book { costs, floors, disks, cache: CacheRef::Own(Cache::default()), rev: 0 }
+        Book { costs, floors, disks, paces: None, cache: CacheRef::Own(Cache::default()), rev: 0 }
     }
 
     /// A Book whose models are kept in `cache` while its owner's change count is `rev`.
@@ -543,7 +559,24 @@ impl<'a> Book<'a> {
         cache: &'a Cache,
         rev: u64,
     ) -> Self {
-        Book { costs, floors: Some(floors), disks: Some(disks), cache: CacheRef::Kept(cache), rev }
+        Book { costs, floors: Some(floors), disks: Some(disks), paces: None, cache: CacheRef::Kept(cache), rev }
+    }
+
+    /// Its times and NAS rates put at the lead's pace by `paces` (its owner's change count, `rev`,
+    /// moves with them: a kept model is of the paces it was made with).
+    pub fn paced(mut self, paces: &'a crate::paces::Paces) -> Self {
+        self.paces = Some(paces);
+        self
+    }
+
+    /// `worker`'s pace at `step` (1: not known, or no paces).
+    fn pace(&self, worker: Option<&str>, step: &str) -> f64 {
+        self.paces.zip(worker).and_then(|(p, w)| p.get(w, step)).unwrap_or(1.0)
+    }
+
+    /// Cost `c`'s time of `step` at the lead's pace (s, rounded).
+    fn lead_secs(&self, step: &str, c: &Cost) -> u64 {
+        (c.secs as f64 / self.pace(c.worker.as_deref(), step)).round() as u64
     }
 
     fn floor(&self, key: &str) -> Option<&Floor> {
@@ -563,7 +596,7 @@ impl<'a> Book<'a> {
             let y = match m {
                 Measure::Mem => c.peak_mb,
                 Measure::Secs if time_weight(step, c).is_none() => continue,
-                Measure::Secs => c.secs,
+                Measure::Secs => self.lead_secs(step, c),
                 Measure::Disk => match self.disks.and_then(|d| d.get(k)) {
                     Some(&d) => d,
                     None => continue,
@@ -636,7 +669,7 @@ impl<'a> Book<'a> {
             }
             Measure::Secs => {
                 // (Each weighed: a PER_WORK step's by the work it did, task #830.)
-                let weighed = |c: &Cost| time_weight(step, c).map(|w| (c.secs, w));
+                let weighed = |c: &Cost| time_weight(step, c).map(|w| (self.lead_secs(step, c), w));
                 let secs: Vec<(u64, f64)> =
                     self.costs.iter().filter(|(k, c)| of(k) && c.v >= v).filter_map(|(_, c)| weighed(c)).collect();
                 // (While its runs the way it runs now are few, they are the quick ones: the first to
@@ -717,14 +750,22 @@ impl<'a> Book<'a> {
     }
 
     /// The wall time (s) a job of `step` for `target` takes: its own run's, else fitted, else its
-    /// step's prior; None when none of its step ran the way it runs now.
+    /// step's prior (at the lead's pace, with `paces`); None when none of its step ran the way it
+    /// runs now.
     pub fn secs(&self, step: &str, target: &str, threads: u32) -> Option<u64> {
+        self.secs_for(step, target, threads, None)
+    }
+
+    /// `secs` on `worker`: its own run's as it ran (wherever that was), else the step's model at the
+    /// worker's pace (`paces`; not known, the lead's).
+    pub fn secs_for(&self, step: &str, target: &str, threads: u32, worker: Option<&str>) -> Option<u64> {
         let key = cost_key(step, target);
         if let Some(c) = self.costs.get(&key).filter(|c| c.v >= cost_version(step)) {
             return Some(c.secs);
         }
         let md = self.model(step, Measure::Secs);
-        self.fitted(&md, &key, threads).or(md.prior)
+        let s = self.fitted(&md, &key, threads).or(md.prior)?;
+        Some((s as f64 * self.pace(worker, step)).round() as u64)
     }
 
     /// What a drop of `step` (`DROPS`) takes, by its step's drops run the way it runs now: their
@@ -752,24 +793,25 @@ impl<'a> Book<'a> {
         Some((secs, p90(runs.iter().map(|c| c.peak_mb).collect()).unwrap_or(0)))
     }
 
-    /// `secs` with its step's prior the 90th percentile of its runs the way it runs now instead of
-    /// their mean: what an update's drain waits for a target under way (crate::agent's
+    /// `secs_for` with its step's prior the 90th percentile of its runs the way it runs now instead
+    /// of their mean: what an update's drain waits for a target under way (crate::agent's
     /// `update_wait`), where a long tail's long jobs must not be cut short.
-    pub fn secs_p90(&self, step: &str, target: &str, threads: u32) -> Option<u64> {
+    pub fn secs_p90(&self, step: &str, target: &str, threads: u32, worker: Option<&str>) -> Option<u64> {
         let key = cost_key(step, target);
         let v = cost_version(step);
         if let Some(c) = self.costs.get(&key).filter(|c| c.v >= v) {
             return Some(c.secs);
         }
         let md = self.model(step, Measure::Secs);
-        self.fitted(&md, &key, threads).or_else(|| {
+        let s = self.fitted(&md, &key, threads).or_else(|| {
             p90(self
                 .costs
                 .iter()
                 .filter(|(k, c)| step_of_key(k) == step && c.v >= v && time_weight(step, c).is_some())
-                .map(|(_, c)| c.secs)
+                .map(|(_, c)| self.lead_secs(step, c))
                 .collect())
-        })
+        })?;
+        Some((s as f64 * self.pace(worker, step)).round() as u64)
     }
 
     /// The cores a job of `step` for `target` takes, as measured (crate::costin's `sizes`): its own
@@ -952,6 +994,15 @@ impl<'a> Book<'a> {
         r
     }
 
+    /// `nas` on `worker`: its own run's as it ran, else its step's 90th percentile at the worker's
+    /// pace (`paces`; a Mac twice as slow moves the same bytes over twice the time).
+    pub fn nas_for(&self, step: &str, target: &str, worker: &str) -> Option<crate::budget::nas::Rate> {
+        if let Some(r) = self.nas_own(step, target) {
+            return Some(r);
+        }
+        self.nas_prior(step).map(|r| per_pace(r, self.pace(Some(worker), step)))
+    }
+
     /// `nas`'s own run's rate alone.
     pub fn nas_own(&self, step: &str, target: &str) -> Option<crate::budget::nas::Rate> {
         self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(step, c))
@@ -975,8 +1026,13 @@ impl<'a> Book<'a> {
 
     /// `nas_prior` worked out: its step's runs' 90th percentile of each rate.
     fn nas_p90(&self, step: &str) -> Option<crate::budget::nas::Rate> {
-        let runs: Vec<crate::budget::nas::Rate> =
-            self.costs.iter().filter(|(k, _)| step_of_key(k) == step).filter_map(|(_, c)| nas_rate(step, c)).collect();
+        // (Each at the lead's pace: its time there shorter or longer by its worker's pace.)
+        let runs: Vec<crate::budget::nas::Rate> = self
+            .costs
+            .iter()
+            .filter(|(k, _)| step_of_key(k) == step)
+            .filter_map(|(_, c)| Some(per_pace(nas_rate(step, c)?, 1.0 / self.pace(c.worker.as_deref(), step))))
+            .collect();
         // (In thousandths of a byte or file a second, for the percentile's integers.)
         let p = |f: fn(&crate::budget::nas::Rate) -> f64| {
             p90(runs.iter().map(|r| (f(r) * 1000.0).ceil() as u64).collect()).map(|x| x as f64 / 1000.0)
@@ -1396,6 +1452,41 @@ mod tests {
         );
     }
 
+    /// Task #926: with each Mac's pace, a step's runs are read at the lead's pace (a slow Mac's
+    /// times and NAS rates no longer drag the step's), and a prediction for a worker is at its
+    /// Mac's pace; its own run as it ran; a Mac not measured at the lead's.
+    #[test]
+    fn a_steps_runs_are_read_at_the_lead_pace_and_predicted_at_each_macs() {
+        let mut costs = BTreeMap::new();
+        // (Ten runs on the lead at 100 s, ten on m1 at 300 s, each reading 300 MB.)
+        for k in 0..20u32 {
+            let (worker, secs) = if k < 10 { ("mini #2", 100) } else { ("m1", 300) };
+            let mut c = cost(1000, secs, &[("bytes", 300_000_000)]);
+            (c.worker, c.v) = (Some(worker.into()), cost_version("slope-hi"));
+            costs.insert(format!("slope-hi 10/{k}/0"), c);
+        }
+        let raw = Book::new(&costs);
+        assert_eq!(raw.secs("slope-hi", "10/99/0", 0), Some(200), "as measured: mixed");
+        let paces = crate::paces::Paces {
+            lead: "mini".into(),
+            steps: [("m1".to_string(), [("slope-hi".to_string(), 3.0)].into())].into(),
+            macs: [("m1".to_string(), 3.0)].into(),
+        };
+        let b = Book::new(&costs).paced(&paces);
+        assert_eq!(b.secs("slope-hi", "10/99/0", 0), Some(100), "at the lead's pace");
+        assert_eq!(b.secs_for("slope-hi", "10/99/0", 0, Some("mini")), Some(100));
+        assert_eq!(b.secs_for("slope-hi", "10/99/0", 0, Some("m1 #2")), Some(300), "at m1's");
+        assert_eq!(b.secs_for("slope-hi", "10/99/0", 0, Some("m4")), Some(100), "not measured: the lead's");
+        assert_eq!(b.secs_for("slope-hi", "10/12/0", 0, Some("mini")), Some(300), "its own run, as it ran");
+        assert_eq!(b.secs_p90("slope-hi", "10/99/0", 0, Some("m1")), Some(300));
+        // (NAS rates: 3 MB/s on the lead, a third of that on m1.)
+        let mb_s = |r: crate::budget::nas::Rate| (r.bytes_s / 1e6).round();
+        assert_eq!(raw.nas("slope-hi", "10/99/0").map(mb_s), Some(3.0), "as measured: the lead's p90");
+        assert_eq!(b.nas_for("slope-hi", "10/99/0", "mini").map(mb_s), Some(3.0));
+        assert_eq!(b.nas_for("slope-hi", "10/99/0", "m1").map(mb_s), Some(1.0), "a third on m1");
+        assert_eq!(b.nas_for("slope-hi", "10/15/0", "mini").map(mb_s), Some(1.0), "its own run, as it ran");
+    }
+
     /// Memory that goes with a tile's area fits; a target never run is predicted by the fit over its
     /// own area, capped at the most a run measured.
     #[test]
@@ -1451,9 +1542,9 @@ mod tests {
         }
         let b = Book::new(&costs);
         assert_eq!(b.secs("peaks", "6/99/1", 0), Some(265));
-        assert_eq!(b.secs_p90("peaks", "6/99/1", 0), Some(1200));
-        assert_eq!(b.secs_p90("peaks", "6/1/1", 0), Some(100), "a measured one its own");
-        assert_eq!(b.secs_p90("pois", "6/1/1", 0), None);
+        assert_eq!(b.secs_p90("peaks", "6/99/1", 0, None), Some(1200));
+        assert_eq!(b.secs_p90("peaks", "6/1/1", 0, None), Some(100), "a measured one its own");
+        assert_eq!(b.secs_p90("pois", "6/1/1", 0, None), None);
     }
 
     /// Task #445: while a step's runs the way it runs now are fewer than `PRIOR_RUNS` (the quick
@@ -1502,7 +1593,7 @@ mod tests {
         let b = Book::new(&costs);
         assert_eq!(b.prior("pyramids-fill", Measure::Secs), None, "not said: before the measure");
         assert_eq!(b.secs("pyramids-fill", "6/55/25", 2), None);
-        assert_eq!(b.secs_p90("pyramids-fill", "6/55/25", 2), None);
+        assert_eq!(b.secs_p90("pyramids-fill", "6/55/25", 2, None), None);
         assert_eq!(b.secs("pyramids-fill", "6/54/26", 2), Some(17), "its own");
         for i in 1..=10u64 {
             costs.insert(format!("pyramids-fill 6/{i}/1"), cost(2900, 20, &[("fetched", 0), ("km2", 300_000)]));
@@ -1514,7 +1605,7 @@ mod tests {
         // ((4950 × 170,612 + 60 × 1,000) / 171,612, rounded up.)
         assert_eq!(b.prior("pyramids-fill", Measure::Secs), Some(4922));
         assert_eq!(b.secs("pyramids-fill", "6/55/25", 2), Some(4922));
-        assert_eq!(b.secs_p90("pyramids-fill", "6/55/25", 2), Some(4950));
+        assert_eq!(b.secs_p90("pyramids-fill", "6/55/25", 2, None), Some(4950));
         // (Every other step's runs count alike.)
         assert_eq!(time_weight("peaks", &cost(1, 1, &[])), Some(1.0));
         assert_eq!(weighted_mean(&[]), None);

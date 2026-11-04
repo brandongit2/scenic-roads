@@ -1554,6 +1554,9 @@ pub struct Agent {
     /// The placement's per-step speeds last worked out and what from (`placement::step_speeds_key`):
     /// the history is read again only when it changed.
     step_speeds: std::cell::RefCell<placement::StepSpeedsKept>,
+    /// What the coordinator's paces (crate::paces) were last worked out from: the history's last
+    /// event's number, and the ten minutes they were for.
+    paces_from: std::cell::Cell<Option<(u64, u64)>>,
     /// The lead's coordinator (crate::coord), and when its contact on the NAS was last checked.
     coord: Option<std::sync::Arc<crate::coord::Coordinator>>,
     published: Option<Instant>,
@@ -1974,6 +1977,7 @@ impl Agent {
             o,
             me,
             step_speeds: Default::default(),
+            paces_from: Default::default(),
             coord,
             published: None,
             client: None,
@@ -7938,6 +7942,16 @@ impl Agent {
         if let Some(c) = &self.coord {
             c.set_capacity(self.last_cond.map(|cond| self.capacity(&cond)));
             c.set_placement(placed.clone());
+            // (Each Mac's pace at each step, from the history: when it has new events, or ten
+            // minutes on, its window moved.)
+            let now = now_s();
+            let (seq, at) = self.paces_from.get().unwrap_or((0, 0));
+            let new = c.history_since(seq);
+            if new.last().is_some() || at != now / 600 || self.paces_from.get().is_none() {
+                let events = if seq == 0 { new } else { c.history_since(0) };
+                self.paces_from.set(Some((events.last().map_or(seq, |e| e.seq), now / 600)));
+                c.set_paces(crate::paces::Paces::of(&events, &self.host, now));
+            }
         }
         // (A member's broker draws its pages' tasks the same way: by their paces at the kind as
         // that broker measured them, its own jobs' tasks against this Mac's runs. It has no
@@ -8486,10 +8500,13 @@ impl Agent {
             (eta as f64, "by its progress's pace")
         } else {
             let costs = self.coord.as_ref().map(|c| c.for_forecast().0).unwrap_or_default();
-            let book = crate::needs::Book::new(&costs);
+            let paces = self.coord.as_ref().map(|c| c.paces()).unwrap_or_default();
+            let book = crate::needs::Book::new(&costs).paced(&paces);
             let own = |step: &str| self.step_secs_here(step);
-            let secs =
-                |step: &str, t: &str| book.secs_p90(step, t, r.threads as u32).map(|s| s as f64).or_else(|| own(step));
+            // (On this Mac: at its pace.)
+            let secs = |step: &str, t: &str| {
+                book.secs_p90(step, t, r.threads as u32, Some(&self.host)).map(|s| s as f64).or_else(|| own(step))
+            };
             let expected = match r.spec.record.as_ref() {
                 Some(w) => {
                     let done = crate::control::read_done(&self.done_path(k), &w.step);
