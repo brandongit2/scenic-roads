@@ -588,9 +588,11 @@ impl Checks for Elevation {
     }
 
     /// 3: heights no geoid chain converts, or converts only in part, found (`el-geoid`). 4: a
-    /// dataset's `regions` cut it to their outlines inside its cells (`Measured::outline`).
+    /// dataset's `regions` cut it to their outlines inside its cells (`Measured::outline`). 5: a
+    /// GeoTIFF dataset's bands and presence (`Measured::bands`, `presence`), one accepted without
+    /// them measured again (`seed`).
     fn version(&self) -> u32 {
-        4
+        5
     }
 
     fn recursive(&self) -> bool {
@@ -834,6 +836,16 @@ impl Checks for Elevation {
             let Some(Ok(mut m)) = e.facts.get("measured").map(|v| serde_json::from_value::<Measured>(v.clone())) else {
                 continue;
             };
+            // (A GeoTIFF dataset with a coverage measured before its presence was (task #929): measured
+            // again, its presence and bands with it; else the terrain's places stay its cells.)
+            let geotiff = e.facts.get("declaration").and_then(|d| d.get("data")).and_then(|d| d.get("format"))
+                == Some(&serde_json::json!("geotiff"));
+            if geotiff
+                && m.presence.is_none()
+                && m.uncut.as_ref().or(m.cover.as_ref()).is_some_and(|c| c.as_slice() != [declared::WORLD].as_slice())
+            {
+                continue;
+            }
             if let Some(u) = m.uncut.take() {
                 m.cover = (u != [declared::WORLD]).then_some(u);
             }
