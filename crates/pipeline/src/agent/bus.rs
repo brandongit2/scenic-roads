@@ -53,7 +53,7 @@ pub enum ControlMsg {
     Hold,
     /// The app asks to quit, or no longer does.
     Quit,
-    /// The owner's settings changed (room target, in-use share, build memory).
+    /// The owner's settings changed (room target, in-use share, memory floor).
     Settings,
     /// A cancel ask waits (`crate::control::CANCEL_REQUESTS`), or a hold ask for another member:
     /// told to **jobs**' thread (crate::agent::slots), which takes them at once; the loop is woken

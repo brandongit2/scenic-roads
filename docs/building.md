@@ -69,9 +69,9 @@ from the first (`edit_held`).
 - **Jobs at once** (docs/pool.md §7.2, §7.7): every job starts by a grant of the lead's
   coordinator, the lead's own too, packed by their measures: a job beside others only when their
   measured memory, disk and cores fit the Mac's room. Never beside a cold start (a step none of
-  whose targets has run), and one job at a time of a step kept to the lead. When the jobs hold more
-  than the Mac's limit, the memory guard stops one beside the largest at its next safe point, or
-  the larger at once (`agent::memguard`). Room is made only while no other job runs. Each slot past
+  whose targets has run), and one job at a time of a step kept to the lead. When the Mac is below its
+  memory floor (docs/pool.md §7.1), the memory guard stops one beside the largest at its next safe
+  point, or under the memory brake freezes one at once (`agent::memguard`). Room is made only while no other job runs. Each slot past
   the first has its own scratch (`scratch-<k>/`), record and threads, and is a worker of its own in
   the history ("<host> #<k>"); the status has every slot's job in `jobs`, each with its slot.
   Several jobs per Mac only while every member reports the new app (its asks carry a capacity):
@@ -230,7 +230,7 @@ from the first (`edit_held`).
   thread of its own under nasread's deadline (a hung share holds neither). The loop publishes what
   it composed each round; the beat stamps it, says the hold as it stands, and how old the loop's
   part is (`loop_age_s`). The owner's asks of the Mac (its pause alone, the app's quit, the room
-  target, in-use share and build memory) are taken up the moment their files change by the
+  target, in-use share and memory floor) are taken up the moment their files change by the
   agent's control (`agent::asks`, §4.1 there), which publishes them for the loop and the beat and
   cuts the loop's wait short; a cancel and another member's pause are taken at once by the jobs'
   own thread (`agent::slots`, §4.5 there: a cancelled job stopped there and then, recorded by the
@@ -486,7 +486,7 @@ available. Until work is done, the map serves the last catalogue.
 **Status.**
 - `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions),
   `scenic steps` (the steps table: docs/pipeline.md), `scenic clean [--deep]`, `scenic room` (Room on the
-  disk, above), `scenic nas-room` (the NAS reserve, above), `scenic memory` (the build's memory: docs/pool.md §7.1).
+  disk, above), `scenic nas-room` (the NAS reserve, above), `scenic memory` (the memory floor, the memory the Mac keeps available: docs/pool.md §7.1).
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
 - **The menu bar item** runs `scenic menu` (`pipeline::menu`, every 5 s, 10 s at most): this Mac's
   agent's status, else the NAS's copy. An agent not heard from for ten minutes (the status's `out_of_touch_s`, the pool's

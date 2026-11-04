@@ -2006,7 +2006,7 @@ impl Planner {
         }
         // (Offered with the plan, in its order: `offer_plan`.)
         *self.offered.borrow_mut() = (date.to_string(), merged);
-        // (Held here: left to a Mac with room. A target whose floor past this Mac's limit was a
+        // (Held here: left to a Mac with room. A target whose floor past this Mac's jobs' ceiling was a
         // batch's: a job of its own, so a floor learned alone holds it, or its measure frees it.)
         let mut alone: Vec<build::Work> = Vec::new();
         for w in plan.iter_mut() {

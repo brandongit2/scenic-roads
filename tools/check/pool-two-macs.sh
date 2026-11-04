@@ -43,7 +43,7 @@
 #                                                   name <worker> (SCENIC_TEST_WORKER: a member
 #                                                   beside the lead on one Mac), its coordinator on
 #                                                   <port> (18091 else), counting its Mac's memory
-#                                                   as <MB> (SCENIC_TEST_MEM_MB: its limit squeezed)
+#                                                   as <MB> (SCENIC_TEST_MEM_MB: its room squeezed)
 #   pool-two-macs.sh extra <dir> <MB>             the agent, from its next start, counts <MB>
 #                                                   more free on its disk than there is
 #                                                   (SCENIC_TEST_DISK_EXTRA_MB; 0: none): with <dir>

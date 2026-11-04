@@ -340,9 +340,12 @@ member on another app than the lead's gets nothing (409) until they match (docs/
 app).
 
 An ask also carries its whole Mac's capacity (`coord::Capacity`, the ask's optional `cap`): the
-memory guard's limit and what the running jobs hold, the build's memory (`build_mb`, §7.1, The
-build's memory) and what's free of it less each running job's predicted need (the larger of what it holds and its predicted peak: its targets' measured peak on the
-lead, the step's first guess on a member), its
+most its jobs could hold (`limit_mb`: its memory less its memory floor), what the running jobs hold
+(together and each, `held_each`), its memory against its floor (§7.1, The memory floor: what's
+available, the floor, the margin, the swap grown, what's reserved for its jobs' growth, and why no
+job may start, `mem_held_back`), what its jobs may hold for one to start (`build_mb`) and what's
+left of it less each running job's predicted need (the larger of what it holds and its predicted
+peak: its targets' measured peak on the lead, the step's first guess on a member), its
 cores and those the last minute's load leaves free, the disk free less the owner's room target
 and its jobs' reservations (`reserved_mb`, below), and the disk's free space and the target
 themselves (`free_mb`, `target_mb`: the build page, `scenic status` and a refusal say the disk as
@@ -526,15 +529,71 @@ its owner (by default 2) while the owner uses the Mac (used within the last five
 clears it, the default again; with nothing, it says how it stands (and says so where the file can't
 be read, the default then in force). The agent reads it each loop, as the disk room target.
 
-**The build's memory** (`crate::agent::buildmem`, task #390): one fixed amount of memory a Mac gives
-its build's jobs together, set per Mac, whether its owner uses it or not. `scenic memory <GB>` or
-the build page's chart sets it in the agent's folder (`build-memory.json`); `scenic memory off`
-clears it; `scenic memory` says how it stands. The agent reads
-it each loop. It is the memory of the Mac's asks (`Ask::mem_mb`, a member's and the lead's own:
-`Agent::build_room`), its capacity's `build_mb`, and so the forecast's (which asks as that Mac's
-last ask did), always within the memory guard's limit (`buildmem::room_mb`: the smaller of
-the two); not set, the limit alone. The build page's Mac card, `scenic status` and the menu bar
-show it.
+**The memory floor** (`crate::agent::memfloor`, `crate::agent::memguard`, task #932): the memory a
+Mac keeps available, whatever runs on it (the build's jobs, its agent, the owner's apps), as the
+disk room target keeps a minimum of free disk. Set per Mac, whether its owner uses it or not:
+`scenic memory <GB>`, the build page's Settings row or the memory chart's line (dragged) set it in
+the agent's folder (`memory-floor.json`); `scenic memory off` clears it; `scenic memory` says how it
+stands and the memory as the guard last sampled it. The agent reads it each loop. Not set, the
+Mac's default, an eighth of its memory (6 GB of the M4's 48, 4 of the Mac mini's 32, 2 of the M1's
+16), shown as the setting's value: on 4 Nov each of the three, busy and compressing, kept a file
+cache of 11–12 % of its memory (the M4 5.4 GB, the Mac mini 3.6, the M1 1.8) that macOS held rather
+than dropped, so a Mac's available memory falls under an eighth once macOS compresses rather than
+drops cache. The floor is taken as set: no cap, reserve or footprint stands behind it (the agent
+counts as any other process).
+
+- **Available** (`sys::memory_available`): the free pages, the file-backed pages (the file cache,
+  dropped at once) and the purgeable ones (`host_statistics64`): the Mac less what Activity Monitor
+  calls Memory Used, so the owner can check it. Never raw free pages (macOS keeps those near zero),
+  and not `kern.memorystatus_level`: that counts every page neither wired nor compressed, apps' own
+  pages in use among them, and read 60 % on the M4 at 01:10 on 4 Nov with 21 GB swapped. Under
+  load (4 GB touched in 1 GB steps on the M4, 4 Nov, `memory_pressure` alongside):
+  `memorystatus_level` fell only as macOS compressed (62 % to 51 %, the 5.5 GB the compressor
+  grew) and stayed there once the 4 GB was freed; free plus file-backed plus purgeable read 5.5–6.6
+  GB throughout, the file cache at what macOS kept (11 % of the Mac) while it compressed other
+  apps' memory instead; the pressure level stayed normal. So past the file cache's floor the
+  available memory stops falling and the brake (below) is what sees the rest: the default floor
+  sits just above that cache.
+- **Reading** (`memguard::Reading`, every 5 s on the sampler's thread, with the jobs' footprints):
+  what's available, what the jobs hold, the floor, the swap grown over the last five minutes
+  (`SWAP_WINDOW`: its use now less the least in the window), the kernel's pressure level, and the
+  margin. The jobs' **room**, what they may hold before the Mac is below its floor, is what they
+  hold and what's available, less the swap grown and the floor (`Reading::room_mb`); the Mac is
+  below its floor when what's available, the swap grown off, is under it, or the brake is on.
+- **Admission, with reservations** (as the disk room reserves running jobs' space): a job starts
+  only where available − (each running job's expected peak less what it holds now, none once it
+  holds more) − the new job's expected peak ≥ the floor and the margin. The Mac's ask says what its
+  jobs may hold for one to start (`Ask::mem_mb`, its capacity's `build_mb`: the room less the
+  margin, `Reading::admit_mb`, none under the brake), what each running job holds
+  (`Capacity::held_each`), and why no job may start whatever it needs (`Capacity::mem_held_back`:
+  the brake, or available under the floor and margin); the lead packs each running job at its
+  expected peak or what it holds, the larger, and a new one at its expected peak (§7.2,
+  `Sched::pack`), the same arithmetic for its own Mac and every member's, from their asks. A Mac held
+  back is granted nothing, a cold start to an empty Mac among it, the refusal saying
+  `memory: <why>`. Terrain-deep starts near 2 GB and grows past 7: its growth is reserved before
+  the next job starts.
+- **Hysteresis**: jobs are given back below the floor; new work only once the Mac is back above the
+  floor plus the margin (`memguard::margin_mb`): how far the memory other processes hold (the Mac's
+  less what's available and what the jobs hold) swung over the last five minutes, its most less its
+  least. Calm apps, a small margin; Chrome swinging 3 GB, 3 GB. No hand-typed figure: a job let in
+  at the floor plus the margin isn't given back by the next move of the same apps.
+- **The brake** (`Reading::brake`): the kernel's pressure at warning or critical, or swap grown in
+  the window past what was available above the floor, counts as below the floor whatever the
+  number says: no job starts, and jobs are frozen and given back (§7.2, The memory guard). The
+  build page shows a "memory brake" chip on the Mac's card while it's on, with why.
+- **Status**: the Mac's card on the build page, the menu bar (under the state line) and `scenic
+  status` (this Mac's, from the guard's sample) say the memory in a line (`memguard::words`):
+  "Memory: 9.3 GB available, floor 6.0 GB (default) + 0.4 GB margin; the jobs hold 12.1 GB, 3.0 GB
+  more reserved for their growth; 1.2 GB for a new job", or why no new job, the brake first when
+  it's on; the capacity table and `scenic status`'s Macs say each Mac's (`coord::mem_words`); a job
+  given back says why (the guard's last word, on the Mac's live block).
+- **Migration**: an agent from task #932 on finds the old `build-memory.json` (a cap on the jobs
+  together, `{"mb", "by", "at"}`), removes it and says so in its log and as the guard's last word
+  ("the build memory setting (the build's jobs held to 24.0 GB together (set by …)) is replaced by
+  the memory floor: this Mac keeps its default floor of 6.0 GB available"); `scenic memory` does the
+  same if it runs first. A cap has no floor it stands for (what the owner's apps hold isn't
+  available memory: the M4's 24 GB cap read as a floor of 48 − 24 would have run nothing with 6.6 GB
+  available), so the Mac keeps its default floor; a floor set already stays.
 
 ### 7.2 Placement: the steps table
 
@@ -636,8 +695,9 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   lease), packed in plan order into the ask's room: each after the first the Mac holds must fit,
   by its measures (memory, disk, and cores: `needs::Book::cores`, §7.1;
   cores not said count as one thread) or a cold start's provisional need (§7.7), within
-  what's left: the ask's memory and disk (the build's memory on its Mac, §7.1, `Agent::build_room`;
-  and its free disk) and its Mac's cores (less the in-use share's
+  what's left: the ask's memory and disk (what its jobs may hold above its memory floor and margin,
+  §7.1, `Agent::build_room`, less each job it holds at its expected peak or what it holds, the
+  larger; and its free disk) and its Mac's cores (less the in-use share's
   while its owner uses it, and less the cores busy outside the pool: those its last minute's load
   average keeps busy (`Capacity::cores_free`, in each ask's capacity) past the threads its
   jobs were granted (`Lease::threads`), an excess of one core counting none (the load average is
@@ -800,10 +860,10 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
 worker for its tail writes `SCENIC_WAITING`; while it exists, on the lead and on a member alike,
 its agent names the job's lease in its capacity with what it holds now (`Capacity::waiting`,
 task #462), and the lead packs that lease at that memory (never above its measure) and none of
-its cores (`Sched::pack`), within the Mac's room and the memory guard's limit as ever; its disk
+its cores (`Sched::pack`), within the Mac's room as ever; its disk
 stays held. Only the asking Mac's own leases count so. A job started beside a waiting one
 **yields** to it (stopped at once, given back, not counted as a failure, no floor learned) when it
-resumes and the jobs no longer fit together (its Mac's memory guard). A restarted agent no longer
+resumes and its Mac is below its memory floor (its Mac's memory guard). A restarted agent no longer
 holds the job's slot, so it names nothing: the lease counts by its measures until it lapses.
 
 **A job leaving the cores idle** (task #665): a running job that has used under a core-minute
@@ -827,26 +887,21 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   #930), and macOS 27's `malloc_zone_pressure_relief` gives none back. The map's server keeps it.
   The cost is speed: each block over 32 KB is mapped afresh, ~3 µs a block and ~50 ms a GB
   allocated (a C loop of malloc, touch, free on the M4, against ~1 ms a GB with the cache).
-- **Limit:** the Mac's memory less an eighth, 4 GB at least, less the agent's own footprint as measured each loop (`memguard::jobs_limit_mb`; the coordinator is told the same). Over it, the largest fitting alone,
-  another job stops at its next safe point (`memguard::decide_by`): one that yields first, else the
-  newest (by its start's minute), then the least progressed, never the largest; one at a time, and none more while the
-  jobs not draining fit the limit. Nothing new starts beside the largest meanwhile (a member asks
-  for nothing). While the Mac is short of memory (pressure warning, or swap growing a GB), no
-  safe point is waited for: the job that would drain is frozen at once (SIGSTOP), then the next
-  while the rest still pass the limit. A frozen one goes on once the Mac is no longer short or the
-  largest job ended, and is stopped (given back) after a minute frozen with the Mac still short,
-  or the 15 minutes a drain gets. The largest alone past the limit stops at once; else that one
-  too stops at a safe point. This holds on every Mac's slots. A drain that finds no safe
-  point in 15 minutes is stopped. A stopped job is given back and kept from that Mac for an hour.
-- **A member's jobs far over what it spared them** (`Agent::over_grant`, task #28): each job a
-  member is granted keeps the memory its ask spared (its `mem_mb`: the build's memory, §7.1). Once its jobs together hold more than half as much again (4 GB more at least,
-  `far_over`), capped at the Mac's limit, the largest stops at once, the Mac short of memory or
-  not; never a job beside it. So a member's jobs past the limit meet this first: the largest stops
-  at once, not at a safe point. Past that mark by itself, or the member's only job, it's given back,
-  not failed (no failure at the lead), and what it held goes with the give-back as an alone floor of
-  its target under way (below), so the lead offers that target only to a Mac that spares that much.
-  Otherwise (only the jobs together past it, or its target under way unknown) it ends as failed: the
-  lead keeps it from that Mac for an hour, doubling, and its floors go as any job's.
+- **Below the floor** (§7.1, The memory floor: the jobs together past their room, what they hold
+  and what's available less the swap grown and the floor): with the largest fitting alone, another
+  job stops at its next safe point (`memguard::decide_by`): one that yields first, else the newest
+  (by its start's minute), then the least progressed (the work lost least), never the largest; one
+  at a time, and none more while the jobs not draining fit the room. Nothing new starts beside the
+  largest meanwhile (a member asks for nothing). The largest alone past the room stops at its next
+  safe point too. Under the brake (§7.1) no safe point is waited for: the job that would drain is
+  frozen at once (SIGSTOP; the largest too once it alone passes the room, the sampler's thread
+  freezing it first), then the next while the rest still pass the room. Freezing is the last
+  resort: it stops a job's growth and lets macOS compress it while its work is kept. A frozen job
+  goes on once the Mac is back (the brake off, available above the floor and the margin), and is
+  stopped (given back) after a minute frozen with the Mac not back, or the 15 minutes a drain gets.
+  This holds on every Mac's slots. A drain that finds no safe point in 15 minutes is stopped. A
+  stopped job is given back and kept from that Mac for an hour. A job holding more than its
+  expected peak is not stopped for that alone: only the floor gives a job back.
 - **An update's drain** (a newer app installed): every job stops at its next safe point; the agent
   restarts once every slot is free, each job given its own
   wait (its target under way's measured time, else its step's fit, else the 90th percentile of
@@ -864,8 +919,9 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
 - **Floors**, learned whatever the switch: the most a target held is its floor
   (`floors.json`, and the pool's state), rising only, tagged with whether it ran alone and the
   step's `cost_version`. A target's predicted memory is never below its floor. A target whose
-  floor exceeds this Mac's limit goes to a Mac with room; past every Mac's, it waits; a lead-only
-  step past the lead's waits, the status saying to see to the lead's build memory or the step's. `scenic pool floors [--clear
+  floor exceeds the most this Mac's jobs could hold (its memory less its memory floor) goes to a Mac
+  with room; past every Mac's, it waits; a lead-only step past the lead's waits, the status saying
+  to see to the lead's memory floor or the step's. `scenic pool floors [--clear
   [<step> [<target>]]]` lists or clears them: the clear is a request to the running lead's coordinator
   (`/work/floors`), which takes them out of its memory, its files and its next state at once (no
   restart), and the command says how many floors and disk floors it cleared. A floor learned before a
@@ -1194,8 +1250,8 @@ holds the lead's asks until they end, then goes before any other work (`own_cold
 runs in the pool at a time (`pick_every`, the lead's `cold_under_way`), so the step is measured
 before it fans out. Its Mac's room left is never more than what its jobs hold now leaves (§7.2,
 `Capacity::held_mb`), so one holding past its provisional need is counted at what it holds as soon
-as the guard samples it; one that grows past the Mac's limit is the memory guard's (§7.2), which
-learns its floor. After one run, the step's other targets are offered by its model (above).
+as the guard samples it; one that grows until its Mac is below its memory floor is the memory
+guard's (§7.2), which learns its floor. After one run, the step's other targets are offered by its model (above).
 **A records-only step** (the steps table's `records_only`: `redo`, whose jobs only change build
 records; task #838) is never a cold start: its job is packed at its declared memory, no disk, one
 thread counted for no cores, so it goes beside any jobs (a long one holding the whole Mac
@@ -1781,8 +1837,8 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   nothing is learned again.
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
   the lead's first, marked coordinator (`scenic status` with its ramp, §7.1); its capacity as the coordinator last
-  heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and
-  free, on the page as bars); a block per
+  heard it (its memory against its floor: available, the floor, reserved for its jobs' growth and
+  left for a new job; cores busy, disk reserved and free, on the page as bars); a block per
   running job numbered by its real slot (`JobView::slot`: slots may be sparse, so a Mac running
   only its fourth slot shows slot 4), (`scenic status`: with that slot's lane's next work); and (`scenic status` alone) why nothing more
   fits: the packing's refusal as its last ask was packed (`Coordinator::refusals`, the status's
@@ -1919,8 +1975,9 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   written in one create and rename on the NAS sampler's thread (never the agent's loop or the
   pool's lock; the folder listed once as the agent starts, then one write a day), kept for good.
   Sampled on the agent's own
-  threads, never its loop: every second the load (`load1`), memory available (`mem_free_pct`,
-  `kern.memorystatus_level`), its pressure (`mem_pressure`: 1, 2, 4) and the swap (`swap_mb`),
+  threads, never its loop: every second the load (`load1`), the kernel's memory-free percentage
+  (`mem_free_pct`, `kern.memorystatus_level`), the memory available (`mem_avail_gb`,
+  `sys::memory_available`, as the memory floor reads it, §7.1), its pressure (`mem_pressure`: 1, 2, 4) and the swap (`swap_mb`),
   and the jobs running (`jobs`); the cores busy in cores' worth (`cores_busy`, and by group
   `cores_busy_e`, `cores_busy_p`: `host_processor_info`'s ticks over the second, the efficiency
   cores the first processors, as many as the last perf level's `logicalcpu` (named Efficiency;
@@ -1931,7 +1988,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   the rest of the Mac (task #515): its jobs' CPU in cores' worth (`build_cores`, their processes'
   `proc_pid_rusage` over the second) and the rest's (`others_cores`: the cores busy less the
   build's), their memory (`build_mem_gb`, the jobs' physical footprints; `others_mem_gb`: the
-  memory in use by `kern.memorystatus_level` less the build's); the bytes written to the Mac's
+  memory in use, the Mac's less what's available, less the build's); the bytes written to the Mac's
   disks (`disk_write_mbs`, MB/s, its block storage drivers' statistics through IOKit, as `iostat`
   reads them) and by each job (`job_write_mbs.<slot>`, its processes' `ri_diskio_byteswritten`);
   a job's first second sets its baseline, and a process's last moment before it ends isn't counted.
@@ -1942,7 +1999,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   shared-memory read). Every 10 s the disk's free space (`disk_free_gb`) and size (`disk_size_gb`); the power (`ac`, `battery_pct`) and
   the owner's idleness (`idle_s`) as each loop reads them, and with them the build's limits (task
   #609): the cores it may use now (`build_cores_max`: all, less those kept for the owner while
-  they use the Mac), the memory its jobs may hold together (`build_mem_max_gb`), the owner's room
+  they use the Mac), the memory floor (`mem_floor_gb`), the owner's room
   target (`disk_room_gb`) and the jobs' disk reservations (`disk_reserved_gb`). An answer's `mac`
   also says the idleness counted away (`away_s`). The NAS's latency (`nas_ms`) every 5 s
   only while a build runs here (a job of this Mac's, or its coordinator's leases out): a listing
@@ -2229,7 +2286,7 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
   slower to the NAS (`Cfg::pace`: its jobs take that many times their step's time, the same bytes
   over it, its NAS weight that much less; task #925). Checked at every start, first where a job may go (no Mac past its slots; lead-only steps
   on the lead, granted as its own jobs; one cold start of a step in the pool at a time, and one on a
-  Mac), then what it takes (past a Mac's memory limit only a cold start, stopped by the guard;
+  Mac), then what it takes (past what a Mac's jobs may hold above its default memory floor only a cold start, stopped by the guard;
   every job at its true NAS weight; never past its disk, every job on it counted whole, so no Mac's disk is over-committed,
   or past its cores with the threads granted); and the plan finishes. A run with an M1 8 GB past
   its room target and 5 GB jobs finishes reserving, and over-commits without (asking with its free

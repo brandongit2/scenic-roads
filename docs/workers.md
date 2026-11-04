@@ -161,8 +161,8 @@ Common rules:
   horizontal scroll on any tab; checked 2026-10-23), its height the page's up to 900 pt, scrolling
   inside beyond that.
 - **The settings** (task #521; `web/work/settings.js`, the Machines tab; `crate::agent::settings`):
-  each Mac's in-use share (cores kept free while it's used), build memory (GB for the
-  build's jobs together) and disk room target (GB kept free), and the pool's NAS
+  each Mac's in-use share (cores kept free while it's used), memory floor (GB kept
+  available on the Mac, docs/pool.md §7.1) and disk room target (GB kept free), and the pool's NAS
   reserve (GB kept free on the NAS; not shown while no Mac on the page reaches the NAS). Each Mac's `POST /work/settings`
   (its coordinator, broker or viewer; the lead's page reaches the others' through CORS) with `{}` reads them; with
   `in_use` (cores), `memory`, `room` or `nas_room` (GB), each a

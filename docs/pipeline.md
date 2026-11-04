@@ -393,8 +393,9 @@ The Jobs tab's stages are the one exception.
   150 px column, its chart beside (the scale's 0, half and top in a 58 px gutter, a 40 px one at the right in every chart, the time under it
   as time ago, limits dashed in the warning's colour, the newest point a dot): CPU use (the build's and the rest's,
   stacked, against the Mac's cores and the cores the build may use now; P and E said), the load
-  (against the cores; what waits for a core said), memory (the build's and the rest's, stacked, in
-  GB, against the build's memory), its pressure (100 % less memory free, the line coloured by
+  (against the cores; what waits for a core said), memory in use (the Mac's less what's available; the build's and the rest's, stacked, in
+  GB, against the memory floor's line: use past it leaves less than the floor available; what's
+  available and the floor said), its pressure (100 % less memory free, the line coloured by
   macOS's level, 50 % and 80 % dashed; the memory compressed said; what the memory guard last did,
   its status's `memory.last`, marked and said while in the range), the swap (GB), the disk's free space (against the room
   target; the disk's size and the jobs' reservations said), its writes, the battery (shaded while on mains), the NAS's answer time with the calls in flight and missed, the
@@ -403,11 +404,11 @@ The Jobs tab's stages are the one exception.
   loop reads (power, idleness, the limits) is said while under 15 min old. Each chart (chart.js):
   at most five times under it, its scale's numbers with the unit once beside them (words for the
   heat and the owner's use), each limit a boxed tag on its dashed line. A settable limit (the
-  build's cores, the build's memory, the room target) is set on its chart, as
+  build's cores, the memory floor, the room target) is set on its chart, as
   the mockup draws: its line or tag dragged up or down (a mouse at once; a touch after a long press
   on the tag) previews the value snapped to whole cores, 1 GB or 5 GB, within what
-  agent/settings.rs takes (cores 1 to the Mac's, memory 1 GB to the Mac's, room 1 GB to under its
-  disk), and sets it on release through POST /work/settings, as the Settings
+  agent/settings.rs takes (cores 1 to the Mac's, the memory floor 1 GB to under the Mac's, room 1 GB
+  to under its disk), and sets it on release through POST /work/settings, as the Settings
   rows do (Escape cancels); its ✎ opens a small editor on the chart (a number, Set, Off, Cancel).
   Each Mac's lines set that Mac's. Set, a line holds the new value till the agent's loop reports it (15
   min at most). The Settings rows stay, for the keyboard. Gaps where the Mac was silent shaded faintly, and a footer with the range, the resolution and how long
@@ -421,7 +422,7 @@ The Jobs tab's stages are the one exception.
   pausing with its jobs named, paused, resuming; the button disabled while asked or resuming, and
   while a press is posted, 60 s at most).
 - **Settings:** `settings.js`, under the pool (the Machines tab): a row per setting (its name, its
-  value, who set it and when, a field with Set and Off) for the in-use share, build memory and disk
+  value, who set it and when, a field with Set and Off) for the in-use share, memory floor and disk
   room target, a block per Mac named by its host (this page's own first; each other Mac's asked at
   its broker's address, as live.js asks `/work/live`), and the pool's NAS reserve once,
   through the first Mac that reaches the NAS (`/work/settings`, workers.md §7); read every 30 s while the

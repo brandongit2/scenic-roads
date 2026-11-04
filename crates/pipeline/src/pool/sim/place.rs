@@ -3,7 +3,7 @@
 //! crate::needs as every placement path reads them, on a clock of the simulator's.
 //!
 //! - **The members** ask the coordinator over HTTP, as their agents do (`client::Client::ask`), with
-//!   what their Mac spares (its memory guard's limit less what its jobs hold, its disk's free space
+//!   what their Mac spares (what its jobs may hold above its default memory floor less what they hold, its disk's free space
 //!   now (past its room target) less its jobs' reservations, its capacity); what they're granted is
 //!   `pack`'s, untouched. Each runs `Cfg::member_slots` jobs (0: the agent's, by its cores), asking
 //!   while a slot is free for as many jobs as it has slots free, running every one granted; a job

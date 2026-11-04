@@ -100,15 +100,15 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
   folders go once it's built.
 
 **The M1 (16 GB)** is a member: it builds what the lead's coordinator
-gives it (docs/building.md §2, The pool): any shared step's jobs that fit the memory its owner gives the build there
-(`scenic memory`, within the memory guard's limit: docs/pool.md §7.1) and its disk (its room target kept free past each job's measured disk; a task 5 GB, tree cover's rows and terrain's subtrees 1 GB), a run from the front of the plan's order
+gives it (docs/building.md §2, The pool): any shared step's jobs that fit the memory it has available above its memory floor
+(`scenic memory`, 2 GB by default, its running jobs' growth reserved: docs/pool.md §7.1) and its disk (its room target kept free past each job's measured disk; a task 5 GB, tree cover's rows and terrain's subtrees 1 GB), a run from the front of the plan's order
 (docs/pool.md §7.2), else z6 tiles' tails (`docs/workers.md`). A z6 tile's predicted peak is the most its job's
 processes held together last time, else about ten times its extract, never under 3.7 GB nor below its
 floor (docs/pool.md §7.2). A member's status goes to the lead in its beat (docs/coordination.md step 3), the lead listing
 the members' in its own (`state/status.json`, `helpers`).
 
 **The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: the pool's lead, fixed
-(docs/pool.md §6, task #881), with room for more at once (build memory 28 GB by default). It also hosts the task board
+(docs/pool.md §6, task #881), with room for more at once (its memory floor 4 GB by default). It also hosts the task board
 (`tools/taskboard`, http://mac-mini-de-brandon:8077, its LaunchAgent and nightly NAS backup from
 `tools/taskboard/launchd/install.sh`) and is the map's address for the phone, the iPad and devices
 away from home: https://map.brandontsang.net (Devices). It publishes the app (`ssh m6 'cd
@@ -139,8 +139,8 @@ and codesign.
    `state/build/lead-member.json` declares the lead: either) it also creates the map server's
    LaunchAgent; on any other it removes one, leaving the Mac's offline map.
 7. Allow `scenic` (and on the map's Mac `server`) through the firewall (pool.md §6.8).
-8. `scenic memory` says the build's memory (total − 4 GB unless set); the room target is the
-   owner's choice.
+8. `scenic memory` says the memory floor, the memory the Mac keeps available (an eighth of its
+   memory unless set); the room target is the owner's choice.
 
 **App Macs (both laptops).**
 - **The launcher** (`tools/launcher/launcher.c`) runs the command in `~/Library/Application

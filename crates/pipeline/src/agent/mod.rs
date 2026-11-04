@@ -2600,7 +2600,8 @@ impl Agent {
     /// (crate::coord::Coordinator::ask_own, docs/pool.md §7.2), each with the slot it goes in: as
     /// many as it has slots free (`want`), packed by the same measures as a member's, the lead's own
     /// planned jobs (`jobs`) among them but those that can't start now for a reason of this agent's
-    /// own (`wait_reason`). It asks with its Mac's room: the memory guard's limit, its disk room
+    /// own (`wait_reason`). It asks with its Mac's room: what its jobs may hold above its memory
+    /// floor (`build_room`), its disk room
     /// (`disk_room`) and capacity; with no job here, for one job, its disk not bounded (the owner's
     /// target is waited on as it starts, room made for it then, the disk guard
     /// behind it: a stale disk floor never holds the build).
@@ -4227,7 +4228,7 @@ impl Agent {
         nasread::phase("this Mac's settings");
         let home = cond::home(home, root.is_some() && self.mac.lan_mounted());
         // The owner's asks and settings as control took them up (crate::agent::asks; in line for
-        // an agent whose parts don't run): the room target, the in-use share, the build's memory.
+        // an agent whose parts don't run): the room target, the in-use share, the memory floor.
         self.control.look();
         let set = self.control.settings.get();
         if set.room.as_ref().map(|t| t.bytes) != self.room_target.as_ref().map(|t| t.bytes) {
@@ -4265,8 +4266,8 @@ impl Agent {
         self.tend_settings(root.as_ref());
 
         nasread::phase("the running jobs");
-        // The running jobs; then what they hold together, against this Mac's limit (the memory
-        // guard: crate::agent::memguard).
+        // The running jobs; then the Mac's memory against its floor (the memory guard:
+        // crate::agent::memguard).
         self.total = self.mac_total_mb();
         self.sampler.set(self.mem_floor_mb(), self.mem_total());
         // The owner's cancels (`scenic job cancel`, the menu bar, the lead's word): those jobs stopped
@@ -11060,9 +11061,10 @@ mod tests {
 
     /// Packing (task #240): a member asks for its slots free and runs every job granted, each in a
     /// slot of its own (its scratch, channel and costs its slot's); an update's drain waits for
-    /// every slot; the memory guard, the jobs together past this Mac's limit (12 GB of 16: the M1),
-    /// drains the newest, never the largest, one at a time and none more while what stays fits;
-    /// one past the limit alone, the Mac short of memory, stopped; the slots shrink as jobs end.
+    /// every slot; the memory guard, the Mac below its memory floor (the jobs past the 12 GB they may
+    /// hold above it), drains the newest, never the largest, one at a time and none more while what
+    /// stays fits; under the brake freezes, and gives back what stays frozen; the slots shrink as
+    /// jobs end.
     #[test]
     fn a_member_with_packing_runs_several_jobs_and_the_guard_drains_the_newest() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
@@ -11465,7 +11467,7 @@ mod tests {
     /// Every job of the lead's by grant (task #244, docs/pool.md §7.2): its plan offered through its
     /// own coordinator, its own steps (not offered to every member) granted to it alone, whole, and
     /// packed by their measures as a member's are: a step never measured alone, nothing beside it; a measured
-    /// job beside another only when both fit this Mac's limit and its disk room; each started in a
+    /// job beside another only when both fit this Mac's room above its memory floor and its disk room; each started in a
     /// slot of its own (its scratch, and its worker in the history, its slot's). A member asking
     /// for the lead's steps gets none; nothing starts here without a grant.
     #[test]
@@ -11566,7 +11568,7 @@ mod tests {
             (crate::coord::cost_key("items", "items"), cost("items", 3072)),
         ]);
         c.add_disks(&[(crate::coord::cost_key("items", "items"), 25 << 10)]);
-        // Heritage first (the plan's order); labels doesn't fit beside it, past this Mac's limit.
+        // Heritage first (the plan's order); labels doesn't fit beside it, past this Mac's room.
         let plan = [job("heritage"), job("labels")];
         assert_eq!(
             lead_start(&mut a, &plan, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w),

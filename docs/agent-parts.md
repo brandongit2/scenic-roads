@@ -41,7 +41,7 @@ they talk only by the named channels and snapshots of §3.
 
 | Part | Owns | Waits on | Period / trigger |
 |---|---|---|---|
-| **control** | this Mac's hold, the quit ask, cancels, retries, redos, the owner's settings (room target, in-use share, build memory) | the agent's HTTP endpoint and a watcher on the agent's folder | each request, at once |
+| **control** | this Mac's hold, the quit ask, cancels, retries, redos, the owner's settings (room target, in-use share, memory floor) | the agent's HTTP endpoint and a watcher on the agent's folder | each request, at once |
 | **beat** | the status document and its writes (local copy, NAS / lead) | a steady timer, and `Changed` events | every 10 s, and at once on a state change |
 | **nas** | the mount, its health (`heal`), the three `nasread` pools | the share, under deadlines | requests from other parts; mount probe every 20 s |
 | **jobs** | the slots, their child processes, leases held, the memory and disk guards | children's exits, control's orders, grants | each child event, and every 2 s |

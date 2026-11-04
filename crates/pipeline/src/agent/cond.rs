@@ -205,9 +205,9 @@ impl SleepWatch {
 // docs/crates.md), kept at these paths.
 pub use jobrt::room::{free_bytes, test_disk_extra_mb};
 
-/// `SCENIC_TEST_MEM_MB` when set: the memory (MB) the agent counts its Mac to have, for its memory
-/// guard's limit and its asks (the two-Mac test's alone, tools/check/pool-two-macs.sh: a limit
-/// squeezed so small jobs pass it). Said at its first read, never silent.
+/// `SCENIC_TEST_MEM_MB` when set: the memory (MB) the agent counts its Mac to have, all of it
+/// available but what its jobs hold, for its memory floor and its asks (the two-Mac test's alone,
+/// tools/check/pool-two-macs.sh: a room squeezed so small jobs pass it). Said at its first read, never silent.
 pub fn test_mem_mb() -> Option<u64> {
     static MEM: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
     *MEM.get_or_init(|| {
