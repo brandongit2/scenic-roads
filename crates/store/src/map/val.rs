@@ -329,6 +329,197 @@ mod tests {
         }
     }
 
+    /// Random JSON texts (#936 review): numbers written every way (signs, zeros, fractions,
+    /// exponents, past u64 and i64, past f64's range), strings with escapes, raw and escaped
+    /// unicode, surrogate pairs and lone halves, keys given twice and out of byte order, nesting,
+    /// whitespace. Read from text, bytes and a reader, and from the `Value`: a `Val` is the bytes
+    /// the `Value` serializes to, or fails where the `Value` does.
+    #[test]
+    fn a_random_value_read_is_its_values_canonical_json() {
+        struct Gen(u64);
+        impl Gen {
+            fn n(&mut self, k: u64) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0 % k
+            }
+            fn pick<'a>(&mut self, xs: &[&'a str]) -> &'a str {
+                xs[self.n(xs.len() as u64) as usize]
+            }
+            fn ws(&mut self, o: &mut String) {
+                o.push_str(self.pick(&["", "", "", " ", "\n\t ", "\r"]));
+            }
+            fn digits(&mut self, o: &mut String, most: u64) {
+                for i in 0..1 + self.n(most) {
+                    o.push((b'0' + self.n(10) as u8 + u8::from(i == 0 && self.n(4) == 0)).min(b'9') as char);
+                }
+            }
+            fn number(&mut self, o: &mut String) {
+                match self.n(8) {
+                    0 => o.push_str(self.pick(&[
+                        "0",
+                        "-0",
+                        "0.0",
+                        "-0.0",
+                        "-0e0",
+                        "9223372036854775807",
+                        "9223372036854775808",
+                        "-9223372036854775808",
+                        "-9223372036854775809",
+                        "18446744073709551615",
+                        "18446744073709551616",
+                        "1e400",
+                        "-1e400",
+                        "1e-400",
+                        "2.2250738585072014e-308",
+                        "4.9e-324",
+                        "1.7976931348623157e308",
+                        "0.1",
+                        "0.30000000000000004",
+                        "123456789012345678901234567890",
+                        "1E2",
+                        "1e+2",
+                        "1.5e-0",
+                        "00",
+                        "01",
+                        "1.",
+                        ".5",
+                        "-",
+                        "1e",
+                        "+1",
+                        "NaN",
+                        "Infinity",
+                    ])),
+                    _ => {
+                        if self.n(3) == 0 {
+                            o.push('-');
+                        }
+                        if self.n(5) == 0 {
+                            o.push('0');
+                        } else {
+                            o.push((b'1' + self.n(9) as u8) as char);
+                            self.digits(o, 22);
+                        }
+                        if self.n(2) == 0 {
+                            o.push('.');
+                            self.digits(o, 20);
+                        }
+                        if self.n(3) == 0 {
+                            o.push_str(self.pick(&["e", "E", "e+", "e-", "E-"]));
+                            self.digits(o, 3);
+                        }
+                    }
+                }
+            }
+            fn string(&mut self, o: &mut String, most: u64) {
+                o.push('"');
+                for _ in 0..self.n(most) {
+                    o.push_str(self.pick(&[
+                        "a",
+                        "b",
+                        "z",
+                        "A",
+                        "_",
+                        "/",
+                        "é",
+                        "ß",
+                        "\u{7f}",
+                        "\u{80}",
+                        "日本",
+                        "😀",
+                        "\\n",
+                        "\\t",
+                        "\\\"",
+                        "\\\\",
+                        "\\/",
+                        "\\b",
+                        "\\f",
+                        "\\r",
+                        "\\u0000",
+                        "\\u001f",
+                        "\\u0020",
+                        "\\u00e9",
+                        "\\u00E9",
+                        "\\u2028",
+                        "\\ud83d\\ude00",
+                        "\\uD83D\\uDE00",
+                        "\\ud800",
+                        "\\udc00",
+                        "\\ud83d",
+                        "\\uffff",
+                        "\\x",
+                        "\\u12",
+                        "\u{1}",
+                        "\t",
+                    ]));
+                }
+                o.push('"');
+            }
+            fn value(&mut self, o: &mut String, depth: u32) {
+                self.ws(o);
+                match if depth > 4 { self.n(4) } else { self.n(7) } {
+                    0 => o.push_str(self.pick(&["true", "false", "null"])),
+                    1 | 2 => self.number(o),
+                    3 => self.string(o, 6),
+                    4 | 5 => {
+                        o.push('{');
+                        for i in 0..self.n(6) {
+                            if i > 0 {
+                                o.push(',');
+                            }
+                            self.ws(o);
+                            self.string(o, 2);
+                            self.ws(o);
+                            o.push(':');
+                            self.value(o, depth + 1);
+                        }
+                        self.ws(o);
+                        o.push('}');
+                    }
+                    _ => {
+                        o.push('[');
+                        for i in 0..self.n(6) {
+                            if i > 0 {
+                                o.push(',');
+                            }
+                            self.value(o, depth + 1);
+                        }
+                        o.push(']');
+                    }
+                }
+                self.ws(o);
+            }
+        }
+        let mut g = Gen(0x9e37_79b9_7f4a_7c15);
+        let (mut good, mut bad) = (0, 0);
+        for _ in 0..200_000 {
+            let mut t = String::new();
+            g.value(&mut t, 0);
+            let want = serde_json::from_str::<Value>(&t).map(|v| serde_json::to_string(&v).unwrap());
+            let got = serde_json::from_str::<Val>(&t).map(|v| v.json().to_string());
+            assert_eq!(got.as_ref().ok(), want.as_ref().ok(), "{t}");
+            let slice = serde_json::from_slice::<Val>(t.as_bytes()).map(|v| v.json().to_string());
+            let reader = serde_json::from_reader::<_, Val>(t.as_bytes()).map(|v| v.json().to_string());
+            assert_eq!((slice.ok(), reader.ok()), (want.as_ref().ok().cloned(), want.as_ref().ok().cloned()), "{t}");
+            match want {
+                Ok(w) => {
+                    good += 1;
+                    let v: Value = serde_json::from_str(&t).unwrap();
+                    let val = Val::from(&v);
+                    assert_eq!(val.json(), w, "{t}");
+                    assert_eq!(serde_json::from_value::<Val>(v.clone()).unwrap(), val, "{t}");
+                    assert_eq!(serde_json::to_string(&val.value()).unwrap(), w, "{t}");
+                    assert_eq!(serde_json::from_str::<Val>(&w).unwrap(), val, "{t}");
+                    assert_eq!(val.as_str().as_deref(), v.as_str(), "{t}");
+                }
+                Err(_) => bad += 1,
+            }
+        }
+        // (Both kinds were made, enough of each to mean something.)
+        assert!(good > 50_000 && bad > 10_000, "{good} read, {bad} refused");
+    }
+
     #[test]
     fn a_region_entry_is_its_values() {
         let r = json!({"id": "alps", "shapes": {"b": [[1.5, 2]], "a": "x"}, "name": "Alps"});

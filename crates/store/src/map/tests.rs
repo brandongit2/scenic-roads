@@ -251,3 +251,17 @@ fn the_recorded_log_is_written_as_it_was() {
     // And back: the catalogue's entries are the map's.
     assert_eq!(entries(&cat).unwrap(), *m.entries());
 }
+
+/// An `f/` entry's content name is its object's `file`, as `v.get("file")` read it of a `Value`:
+/// nothing of a list (a derived struct reads `["x"]` as file "x"), a number, or a non-string file.
+#[test]
+fn a_content_name_is_an_objects_file_only() {
+    let of = |v: Value| content_of(&Val::from(v));
+    assert_eq!(of(json!({"file": "a.1.pack", "size": 2, "fmt": 1})).as_deref(), Some("a.1.pack"));
+    assert_eq!(of(json!({"file": "a\"b"})).as_deref(), Some("a\"b"));
+    assert_eq!(of(json!(["a.1.pack"])), None);
+    assert_eq!(of(json!([["a.1.pack"]])), None);
+    assert_eq!(of(json!({"file": 1})), None);
+    assert_eq!(of(json!({"size": 1})), None);
+    assert_eq!(of(json!("a.1.pack")), None);
+}

@@ -40,7 +40,10 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
 
 - **Wherever the server runs:** the Mac mini alone since #874, so no gate of its own. Its map
   costs what the lead's does (above), and the catalogue made of it at each batch beside it (the
-  one before still held while it's swapped); its resident size hasn't been measured since #936.
+  one before still held while it's swapped). Measured on a copy of its saved map (seq 1457, 51,473
+  entries) through the server's steps in a test (#936's review, not the server process itself):
+  about 0.52 GB with the map and its catalogue held (1.1 GB with `Value`s), 0.89 GB while the next
+  catalogue is made beside it (1.46 GB), 0.91 GB at a save (1.49 GB).
 - **The catalogue is made from the map at each batch** (`Map::catalogue`), as the consumers still
   read a `Catalogue`.
 - **No save at a clean stop** (§5.3): at most every 10 minutes; a start asks the batches since.

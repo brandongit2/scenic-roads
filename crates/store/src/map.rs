@@ -340,13 +340,14 @@ pub struct Mark {
     pub at: String,
 }
 
-/// An `f/` entry's content name.
+/// An `f/` entry's content name: its `file` when it's an object whose `file` is a string.
 pub fn content_of(v: &Val) -> Option<String> {
     #[derive(Deserialize)]
     struct File {
         file: String,
     }
-    v.parse::<File>().ok().map(|f| f.file)
+    // (Objects only: a derived struct also reads a list, `["x"]` as `file` "x".)
+    v.json().starts_with('{').then(|| v.parse::<File>().ok().map(|f| f.file)).flatten()
 }
 
 impl Map {
