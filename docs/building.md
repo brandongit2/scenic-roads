@@ -71,7 +71,7 @@ from the first (`edit_held`).
   measured memory, disk and cores fit the Mac's room. Never beside a cold start (a step none of
   whose targets has run), and one job at a time of a step kept to the lead. When the Mac is below its
   memory floor (docs/pool.md §7.1), the memory guard stops one beside the largest at its next safe
-  point, or under the memory brake freezes one at once (`agent::memguard`). Room is made only while no other job runs. Each slot past
+  point, or while the memory brake acts (critical, or on with the Mac below its floor) freezes one at once (`agent::memguard`). Room is made only while no other job runs. Each slot past
   the first has its own scratch (`scratch-<k>/`), record and threads, and is a worker of its own in
   the history ("<host> #<k>"); the status has every slot's job in `jobs`, each with its slot.
   Several jobs per Mac only while every member reports the new app (its asks carry a capacity):

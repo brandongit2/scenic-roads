@@ -561,7 +561,7 @@ counts as any other process).
   (`SWAP_WINDOW`: its use now less the least in the window), the kernel's pressure level, and the
   margin. The jobs' **room**, what they may hold before the Mac is below its floor, is what they
   hold and what's available, less the swap grown and the floor (`Reading::room_mb`); the Mac is
-  below its floor when what's available, the swap grown off, is under it, or the brake is on.
+  below its floor when what's available, the swap grown off, is under it, or the brake acts.
 - **Admission, with reservations** (as the disk room reserves running jobs' space): a job starts
   only where available − (each running job's expected peak less what it holds now, none once it
   holds more) − the new job's expected peak ≥ the floor and the margin. The Mac's ask says what its

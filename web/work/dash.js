@@ -872,7 +872,7 @@ function machineCard(m, x) {
   const role = x.role === "lead" ? "lead · coordinator" : "member";
   const stuck = x.fresh && loopStuck(st, now);
   const card = h("div", { class: `mc ${x.fresh ? "" : "off"}`, style: { borderLeft: `3px solid ${x.colour}` } },
-    h("div", "top", h("span", "name", x.name), h("span", "role", role), st.app ? chip(`app ${st.app}`) : null, chip(state, cls, said), st.memory?.brake ? chip("memory brake", "bad", `The memory brake is on: ${st.memory.brake}. Below the memory floor whatever the number says: jobs are frozen and given back, none starts.`) : null, stuck ? chip(stuck, "warn", "Its loop hasn't finished a round for longer than its watchdog allows; its status still beats on its own timer") : null, jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
+    h("div", "top", h("span", "name", x.name), h("span", "role", role), st.app ? chip(`app ${st.app}`) : null, chip(state, cls, said), st.memory?.brake ? chip("memory brake", "bad", `The memory brake is on: ${st.memory.brake}. No job starts while it's on; a running job is frozen and given back only while the pressure is critical or the Mac is below its floor.`) : null, stuck ? chip(stuck, "warn", "Its loop hasn't finished a round for longer than its watchdog allows; its status still beats on its own timer") : null, jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
   jobs.forEach((j) => {
     // (Its real slot, slots may be sparse: jobsOf.)
     const b = jobBlock(j, now);
