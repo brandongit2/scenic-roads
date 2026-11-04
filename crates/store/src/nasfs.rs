@@ -553,8 +553,7 @@ impl NasPath {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let held = crate::sys::cached(&p);
-        let n = crate::whole::copy(&p, dst)?;
+        let (n, held) = crate::whole::copy_held(&p, dst)?;
         counted_copy(&p, n, held, t);
         Ok(n)
     }
@@ -565,8 +564,7 @@ impl NasPath {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let held = crate::sys::cached(&p);
-        let n = crate::sys::copy_data(&p, dst)?;
+        let (n, held) = crate::sys::copy_data_held(&p, dst)?;
         counted_copy(&p, n, held, t);
         Ok(n)
     }
@@ -714,8 +712,7 @@ impl NasPath {
         let _w = crate::waits::nas();
         let (p, q) = (self.full(), to.full());
         let t = Instant::now();
-        let held = crate::sys::cached(&p);
-        let n = crate::sys::copy_data(&p, &q)?;
+        let (n, held) = crate::sys::copy_data_held(&p, &q)?;
         counted_copy(&p, n, held, t);
         nasio::wrote(&q, n, ms_since(t));
         Ok(n)
@@ -1025,11 +1022,12 @@ fn counted_read(p: &Path, len: u64, t: Instant) {
 }
 
 /// `counted_read` for a file copied whole of which this Mac's page cache held `held` bytes as the
-/// copy began (crate::sys::cached): those were read here, not from the NAS (nasio's `Local`, so
+/// copy began (crate::sys::resident, asked of the copy's own descriptor; a file of no more than
+/// one copy read isn't asked): those were read here, not from the NAS (nasio's `Local`, so
 /// not in a job's NAS weight, task #939: a slope-deep job copied its z6 tile's 200 MB terrain pack
 /// once a target, every copy after the first answered by the cache in a second or less, and each
 /// target weighed past the whole NAS). Reads into memory (`read` and the like) aren't asked: most
-/// are of small files, where asking would be another open, a round trip of its own.
+/// are of small files, where asking would be a mapping, a round trip of its own.
 fn counted_copy(p: &Path, len: u64, held: u64, t: Instant) {
     let here = held.min(len);
     nasio::opened(p, len, ms_since(t));

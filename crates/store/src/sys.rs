@@ -233,20 +233,43 @@ pub fn set_mode(f: &File, mode: u32) -> io::Result<()> {
 /// writes, when it differs from the folder's: that fails the whole copy.) Within one APFS volume, to
 /// a `dst` not there yet, it's a clone instead (instant, the blocks shared, attributes and all).
 pub fn copy_data(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<u64> {
+    copy_data_as(src.as_ref(), dst.as_ref(), false).map(|c| c.0)
+}
+
+/// `copy_data`, with how many of `src`'s bytes this Mac's page cache held as it was opened
+/// (`resident`): a NAS file's copy counts those as read here (crate::nasfs's copies).
+pub fn copy_data_held(src: &Path, dst: &Path) -> io::Result<(u64, u64)> {
+    copy_data_as(src, dst, true)
+}
+
+/// Each copy's reads and writes (over SMB each is a round trip, so big ones).
+pub(crate) const COPY_BUF: usize = 1 << 20;
+
+fn copy_data_as(src: &Path, dst: &Path, held: bool) -> io::Result<(u64, u64)> {
     use std::io::{Read, Write};
-    let src = src.as_ref();
     // (A file alone, as std::fs::copy: a clone would take a folder whole.)
-    if !std::fs::metadata(src)?.is_file() {
+    let m = std::fs::metadata(src)?;
+    if !m.is_file() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} isn't a file", src.display())));
     }
+    // (Asked of the descriptor the copy reads: no other open of it.)
+    let (r, h) = if held {
+        let f = File::open(src)?;
+        let h = resident(&f, m.len());
+        (Some(f), h)
+    } else {
+        (None, 0)
+    };
     #[cfg(target_os = "macos")]
-    if let Some(n) = clone(src, dst.as_ref()) {
-        return Ok(n);
+    if let Some(n) = clone(src, dst) {
+        return Ok((n, h));
     }
-    let mut r = File::open(src)?;
+    let mut r = match r {
+        Some(f) => f,
+        None => File::open(src)?,
+    };
     let mut w = File::create(dst)?;
-    // (Big reads and writes: over SMB each is a round trip.)
-    let mut buf = vec![0u8; 1 << 20];
+    let mut buf = vec![0u8; COPY_BUF];
     let mut n = 0u64;
     loop {
         let k = match r.read(&mut buf) {
@@ -261,7 +284,7 @@ pub fn copy_data(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<u64
     if let Some(m) = mode(src) {
         set_mode(&w, m).ok();
     }
-    Ok(n)
+    Ok((n, h))
 }
 
 /// An APFS clone of `src` at `dst`, which isn't there yet; None when the volume makes none (another
@@ -284,29 +307,30 @@ fn clone(src: &Path, dst: &Path) -> Option<u64> {
     std::fs::metadata(dst).ok().map(|m| m.len())
 }
 
-/// How many of file `path`'s bytes this Mac's page cache holds now (`mincore` over a mapping of
-/// it): a read of them is answered here, never by the file's server (a NAS file read again while
-/// its pages are kept: on 4 Nov a second copy of a 233 MB terrain pack took 0.05 s, and en0
-/// received 5 MB). 0 when it can't be told (any error, an empty file, another platform). The
-/// mapping is only asked about, never read: no page is brought in, so a share that drops meanwhile
-/// can't fault (crate::range: a NAS file's mapped pages are never touched).
-pub fn cached(path: &Path) -> u64 {
+/// How many of the first `len` bytes of open file `f` (its length as opened) this Mac's page cache
+/// holds now (`mincore` over a mapping of it): a read of them is answered here, never by the file's
+/// server (a NAS file read again while its pages are kept: on 4 Nov a second copy of a 233 MB
+/// terrain pack took 0.05 s, and en0 received 5 MB). 0 when it can't be told (any error, an empty
+/// file, another platform). The mapping is only asked about, never read: no page is brought in, so
+/// a share that drops meanwhile can't fault (crate::range: a NAS file's mapped pages are never
+/// touched). A file of no more than one copy read (`COPY_BUF`) isn't asked, 0: mapping a NAS file
+/// is a round trip of its own (15-19 ms each on the M4 over 150 small files, 4 Nov, twice an
+/// open), as long as reading it, so asking could save no more than it costs.
+pub fn resident(f: &File, len: u64) -> u64 {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
-        let Ok(f) = File::open(path) else { return 0 };
-        let len = match f.metadata() {
-            Ok(m) if m.len() > 0 => m.len(),
-            _ => return 0,
-        };
+        if len <= COPY_BUF as u64 {
+            return 0;
+        }
         let Ok(n) = usize::try_from(len) else { return 0 };
         // SAFETY: sysconf with a valid name.
         let page = match unsafe { libc::sysconf(libc::_SC_PAGESIZE) } {
             p if p > 0 => p as usize,
             _ => return 0,
         };
-        // SAFETY: a read-only shared mapping of `n` bytes of a descriptor we own, unmapped below
-        // and never dereferenced.
+        // SAFETY: a read-only shared mapping of `n` bytes of a descriptor the caller holds open,
+        // unmapped below and never dereferenced.
         let a = unsafe { libc::mmap(std::ptr::null_mut(), n, libc::PROT_READ, libc::MAP_SHARED, f.as_raw_fd(), 0) };
         if a == libc::MAP_FAILED {
             return 0;
@@ -327,7 +351,7 @@ pub fn cached(path: &Path) -> u64 {
     }
     #[cfg(not(unix))]
     {
-        let _ = path;
+        let _ = (f, len);
         0
     }
 }
@@ -391,18 +415,22 @@ mod tests {
     }
 
     /// A file just written and read is in the page cache whole (its last page counting the
-    /// file's bytes alone); an empty or missing one counts none.
+    /// file's bytes alone); one of no more than a copy read isn't asked, so counts none; and a
+    /// copy says what its source's cache held.
     #[cfg(unix)]
     #[test]
-    fn cached_counts_the_bytes_the_page_cache_holds() {
+    fn resident_counts_the_bytes_the_page_cache_holds() {
         let d = tempfile::tempdir().unwrap();
-        let (a, e) = (d.path().join("a"), d.path().join("empty"));
-        std::fs::write(&a, vec![7u8; 3 * 16384 + 5]).unwrap();
+        let (a, small) = (d.path().join("a"), d.path().join("small"));
+        let n = COPY_BUF + 3 * 16384 + 5;
+        std::fs::write(&a, vec![7u8; n]).unwrap();
         std::fs::read(&a).unwrap();
-        assert_eq!(cached(&a), 3 * 16384 + 5);
-        std::fs::write(&e, b"").unwrap();
-        assert_eq!(cached(&e), 0);
-        assert_eq!(cached(&d.path().join("missing")), 0);
+        assert_eq!(resident(&File::open(&a).unwrap(), n as u64), n as u64);
+        std::fs::write(&small, vec![7u8; COPY_BUF]).unwrap();
+        std::fs::read(&small).unwrap();
+        assert_eq!(resident(&File::open(&small).unwrap(), COPY_BUF as u64), 0);
+        assert_eq!(copy_data_held(&a, &d.path().join("b")).unwrap(), (n as u64, n as u64));
+        assert_eq!(copy_data(&a, d.path().join("c")).unwrap(), n as u64);
     }
 
     #[test]

@@ -55,7 +55,7 @@ pub enum Count {
     Stats = 5,
     Deletes = 6,
     /// Bytes read from this Mac's own disk, or from its page cache's copy of a NAS file copied
-    /// whole (crate::nasfs's copies, crate::sys::cached).
+    /// whole (crate::nasfs's copies, crate::sys::resident).
     Local = 7,
     /// GeoTIFFs opened.
     Tiffs = 8,

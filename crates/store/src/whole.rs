@@ -407,10 +407,21 @@ fn swept_hourly(name: &str, folder: bool) -> bool {
 
 /// Copies `src` to `dst`, whole; the bytes copied.
 pub fn copy(src: &Path, dst: &Path) -> Result<u64> {
+    copy_as(src, dst, false).map(|c| c.0)
+}
+
+/// `copy`, with how many of `src`'s bytes this Mac's page cache held as it was opened
+/// (crate::sys::resident): a NAS file's copy counts those as read here (crate::nasfs).
+pub fn copy_held(src: &Path, dst: &Path) -> Result<(u64, u64)> {
+    copy_as(src, dst, true)
+}
+
+fn copy_as(src: &Path, dst: &Path, held: bool) -> Result<(u64, u64)> {
     let tmp = call_tmp_name(dst);
-    let r = (|| -> Result<u64> {
+    let r = (|| -> Result<(u64, u64)> {
         let mut from = std::fs::File::open(src)?;
         let want = from.metadata()?.len();
+        let h = if held { crate::sys::resident(&from, want) } else { 0 };
         let mut to = std::fs::File::create(&tmp)?;
         let n = std::io::copy(&mut from, &mut to)?;
         to.sync_all()?;
@@ -418,7 +429,7 @@ pub fn copy(src: &Path, dst: &Path) -> Result<u64> {
         let got = std::fs::metadata(&tmp)?.len();
         ensure!(n == want && got == want, "{got} of {want} bytes copied");
         rename_or_aside(&tmp, dst)?;
-        Ok(want)
+        Ok((want, h))
     })();
     if r.is_err() {
         std::fs::remove_file(&tmp).ok();
