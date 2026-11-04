@@ -59,6 +59,7 @@ pub mod terrain_deep;
 pub mod terrain_pack;
 pub mod terrain_resume;
 pub mod terrain_task;
+pub mod terrain_zoom;
 pub mod timetables;
 pub mod treepacks;
 pub mod trees;

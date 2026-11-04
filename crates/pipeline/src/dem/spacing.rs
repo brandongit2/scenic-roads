@@ -197,7 +197,14 @@ mod tests {
                     store: false,
                 },
             },
-            measured: Measured { crs: Some(4326), resolution, cover: cover.clone(), uncut: None, outline: None },
+            measured: Measured {
+                crs: Some(4326),
+                resolution,
+                cover: cover.clone(),
+                uncut: None,
+                outline: None,
+                bands: None,
+            },
             keyed: "k".into(),
         };
         (d, Cover::of(cover.as_deref()))

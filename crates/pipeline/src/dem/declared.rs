@@ -294,8 +294,14 @@ pub struct Measured {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crs: Option<u16>,
     /// Metres, its full resolution (the coarsest of its sampled files'; a tile pyramid's at its
-    /// coverage's mid-latitude).
+    /// coverage's mid-latitude): the datasets' order (`order_key`).
     pub resolution: f64,
+    /// Its cell by latitude band, measured per file (a geographic GeoTIFF's: the coarser of its
+    /// two ground spacings, its longitude's at its equatorward edge): its finest zoom there
+    /// (crate::terrain_zoom). None (a pyramid, a projected one, or measured before bands were):
+    /// `resolution` everywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bands: Option<Vec<Band>>,
     /// Where it has data: 1° cells merged into boxes (w, s, e, n); None: the world.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<Vec<[f64; 4]>>,
@@ -305,6 +311,27 @@ pub struct Measured {
     /// Where its `regions`' outlines cut it inside its cells (`scope_outline`); None: not cut so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outline: Option<Outline>,
+}
+
+/// A latitude band's cell (`Measured::bands`): south, north (degrees) and the cell (m), the
+/// coarsest of the band's files'.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Band {
+    pub south: f64,
+    pub north: f64,
+    pub cell: f64,
+}
+
+/// Files' cells by their latitude ranges (south, north, cell m) as bands (`Measured::bands`): one a
+/// range, the coarsest of its files', sorted by south then north.
+pub fn bands_of(files: &[(f64, f64, f64)]) -> Vec<Band> {
+    let mut by: BTreeMap<(i64, i64), f64> = BTreeMap::new();
+    for &(s, n, c) in files {
+        let k = ((s * 1e6).round() as i64, (n * 1e6).round() as i64);
+        let e = by.entry(k).or_insert(c);
+        *e = e.max(c);
+    }
+    by.into_iter().map(|((s, n), cell)| Band { south: s as f64 / 1e6, north: n as f64 / 1e6, cell }).collect()
 }
 
 /// A dataset's coverage cut to its regions' outlines inside its cells (docs/inputs.md §6.8,
@@ -1608,7 +1635,14 @@ encoding = "lerc"
             id: id.into(),
             path: format!("{id}.toml"),
             declaration: decl(heights),
-            measured: Measured { crs: Some(4326), resolution: 10.0, cover: None, uncut: None, outline: None },
+            measured: Measured {
+                crs: Some(4326),
+                resolution: 10.0,
+                cover: None,
+                uncut: None,
+                outline: None,
+                bands: None,
+            },
             keyed: "k".into(),
             convert: None,
         };

@@ -26,10 +26,17 @@ pub fn version() -> String {
     .clone()
 }
 
-/// Heights `e` rounded to `quantum` metres.
+/// Heights `e` rounded to `quantum` metres, ties to even: a coarser level is the 2×2 mean of
+/// stored tiles, which lands on a tie about a quarter of the time, and rounding those away from
+/// zero would lift heights above zero by about a quarter quantum a level (the owner's, 4 Nov).
+/// A tie is told within the f32 heights' own precision (a few of their ulps), since a mean of
+/// stored heights is a tie only to within that.
 pub fn round(e: &mut [f32], quantum: f64) {
     for v in e {
-        *v = ((*v as f64 / quantum).round() * quantum) as f32;
+        let n = *v as f64 / quantum;
+        let near = (v.abs() as f64 * f32::EPSILON as f64 * 4.0 / quantum).max(1e-9);
+        let r = if ((n - n.floor()) - 0.5).abs() <= near { (n.floor() + 0.5).round_ties_even() } else { n.round() };
+        *v = (r * quantum) as f32;
     }
 }
 
@@ -43,6 +50,18 @@ pub fn encode(e: &mut [f32], quantum: f64) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A height half a quantum between two rounds to the even one, either side of zero.
+    #[test]
+    fn ties_round_to_even() {
+        let mut e = vec![0.05f32, 0.15, 0.25, -0.05, -0.15, 1.35, 0.005, 0.015];
+        round(&mut e[..6], COARSER_M);
+        round(&mut e[6..], NATIVE_M);
+        let want = [0.0f32, 0.2, 0.2, 0.0, -0.2, 1.4, 0.0, 0.02];
+        for (a, w) in e.iter().zip(want) {
+            assert!((a - w).abs() < 1e-6, "{e:?}");
+        }
+    }
 
     /// A tile comes back as stored, rounded: to the centimetre at its native zoom, to the
     /// decimetre coarser, each within Terrarium's 1/256 m of that (its f32 arithmetic included).

@@ -159,6 +159,18 @@ fn sample_of(n: usize) -> Vec<usize> {
     v.into_iter().collect()
 }
 
+/// A geographic GeoTIFF's latitudes and cell (south, north, m): the coarser of its ground spacings,
+/// its longitude's at its equatorward edge (`Measured::bands`).
+fn geographic_cell(t: &crate::geotiff::Tiff) -> anyhow::Result<(f64, f64, f64)> {
+    let gt = t.transform(0)?;
+    let h = t.level(0)?.height as f64;
+    let (a, b) = (gt[3], gt[3] + gt[5] * h);
+    let (south, north) = (a.min(b), a.max(b));
+    let equatorward = if south <= 0.0 && north >= 0.0 { 0.0 } else { south.abs().min(north.abs()) };
+    let m = crate::dem::generic::M_PER_DEG;
+    Ok((south, north, (gt[5].abs() * m).max(gt[1].abs() * m * equatorward.to_radians().cos())))
+}
+
 impl Elevation {
     /// What dataset `id` declared as `d` has, read from its data (memoized by `memo_key`).
     fn measure(
@@ -235,6 +247,7 @@ impl Elevation {
                         cover: None,
                         uncut: None,
                         outline: None,
+                        bands: None,
                     });
                 }
                 if territory.is_empty() {
@@ -256,6 +269,7 @@ impl Elevation {
                     cover: Some(declared::cells_to_boxes(&cells)),
                     uncut: None,
                     outline: None,
+                    bands: None,
                 })
             }
             Data::Geotiff { urls, index, files, store } => {
@@ -294,6 +308,8 @@ impl Elevation {
                     sample_of(list.len()).into_iter().filter(|&k| list[k].1.is_some()).collect();
                 picks.extend((0..list.len()).filter(|&k| list[k].1.is_none()));
                 let mut masks: Vec<Mask> = Vec::new();
+                // (Each geographic file's latitudes and cell: the dataset's bands.)
+                let mut files_cells: Vec<(f64, f64, f64)> = Vec::new();
                 for k in picks {
                     let (w, footprint) = &list[k];
                     let src: Arc<dyn store::range::RangeRead> = if w.starts_with("http") && *store {
@@ -335,6 +351,9 @@ impl Elevation {
                     crs = Some(c);
                     resolution =
                         resolution.max(crate::dem::generic::resolution(&t, c, 0).map_err(|e| format!("{w}: {e:#}"))?);
+                    if !crate::dem::proj::projected(c) {
+                        files_cells.push(geographic_cell(&t).map_err(|e| format!("{w}: {e:#}"))?);
+                    }
                     if footprint.is_none() {
                         masks.push(valid_data(&t).map_err(|e| format!("{w}: {e:#}"))?);
                     }
@@ -361,7 +380,8 @@ impl Elevation {
                     }
                     Some(declared::cells_to_boxes(&cells))
                 };
-                Ok(Measured { crs: Some(crs), resolution, cover, uncut: None, outline: None })
+                let bands = (!files_cells.is_empty()).then(|| declared::bands_of(&files_cells));
+                Ok(Measured { crs: Some(crs), resolution, cover, uncut: None, outline: None, bands })
             }
         }
     }
@@ -919,7 +939,7 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
         exclude: Vec::new(),
         data: Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() },
     };
-    let measured = Measured { crs: None, resolution: 150.0, cover: None, uncut: None, outline: None };
+    let measured = Measured { crs: None, resolution: 150.0, cover: None, uncut: None, outline: None, bands: None };
     let entry = |id: &str, d: &Declaration, measured: Measured, keyed: &str| {
         let mut facts = serde_json::Map::new();
         facts.insert("declaration".into(), serde_json::to_value(d).unwrap());
@@ -953,7 +973,7 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
     files.extend([entry(
         "terrarium",
         &base,
-        Measured { crs: None, resolution: 38.0, cover: None, uncut: None, outline: None },
+        Measured { crs: None, resolution: 38.0, cover: None, uncut: None, outline: None, bands: None },
         "t",
     )]);
     let north = Declaration {
@@ -974,6 +994,7 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
             cover: Some(vec![[-148.0, 64.0, -147.0, 66.0]]),
             uncut: None,
             outline: None,
+            bands: None,
         },
         "g",
     )]);

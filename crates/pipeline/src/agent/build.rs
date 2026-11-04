@@ -8205,6 +8205,7 @@ pub(crate) mod tests {
             cover: cover.clone(),
             uncut: None,
             outline: None,
+            bands: None,
         };
         (
             crate::dem::declared::Accepted {
