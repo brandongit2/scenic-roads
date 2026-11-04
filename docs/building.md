@@ -494,7 +494,8 @@ available. Until work is done, the map serves the last catalogue.
   on a member the build in a line as the lead's last beat answer carried it (`agent/lead-view.json`:
   its state, its pause, when the lead answered). An agent or a lead not heard from for ten minutes (the status's `out_of_touch_s`, the pool's
   `OUT_OF_TOUCH_S`) shows as out of touch. The menu prints what the agent says (task #846): each
-  Mac's state (`verdict`), this Mac's pause's stage (`hold`) and the checklist's counts; it lists
+  Mac's state (`verdict`; on the lead the build's, `build`: `Status::build_said`, the line its
+  members are told), this Mac's pause's stage (`hold`) and the checklist's counts; it lists
   every running job, slot by slot. A Mac whose loop hasn't finished a round for longer than its
   agent's stuck threshold (the status's `loop_age_s`, counted on from its `beat`, past its `loop_stuck_s`, `beat::LOOP_STUCK`,
   task #899) gets a line "<Mac>: loop stuck 6 min, in <phase>" (`loop_phase`, the loop's phase

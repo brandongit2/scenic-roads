@@ -820,6 +820,16 @@ func selfTest(_ dir: String) -> Never {
         edit(&d)
         return (try? JSONSerialization.data(withJSONObject: d)).flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
     }
+    // The lead's own: the build as its agent says it (`build`, the line its members are told:
+    // lead-view-said.json's), else (an older agent) its verdict, as above.
+    let leadBuild = (leadView?["lead"] as? [String: Any])?["said"]
+    let withBuild = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }.flatMap { d -> Reply? in
+        var d = d, st = d["status"] as? [String: Any] ?? [:]
+        st["build"] = leadBuild
+        d["status"] = st
+        return (try? JSONSerialization.data(withJSONObject: d)).flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
+    }
+    check("the lead's state: the build as it says it, a member building", leadBuild != nil && classify(withBuild) == (.building, "Building on m1; the lead: Nothing to build"))
     let m = member { _ in }
     check("a member's lead line reads (lead-view-said.json)", m?.lead?.lead?.host == "mini")
     let (mKind, mLine) = classify(m)

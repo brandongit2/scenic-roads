@@ -910,6 +910,10 @@ pub struct Status {
     /// build page show for it, out of touch aside (theirs to tell, by `out_of_touch_s`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<Verdict>,
+    /// The lead's: the build in a line (`Status::build_said`), what its menu bar shows and its
+    /// members' are told (`held::LeadLine::said`). Said again at each beat (crate::agent::beat).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<Verdict>,
     /// A heartbeat older than this (s) is out of touch (crate::pool::beat::OUT_OF_TOUCH_S): the
     /// one threshold every reader uses (task #846).
     #[serde(default)]
@@ -4631,7 +4635,9 @@ impl Agent {
         status.say(crate::control::peek_hold_request(&self.o.home).as_ref(), &hold, false);
         // (The build in a line, for the members' menu bars: in the lead's beat answers.)
         if let Some(c) = &self.coord {
-            c.set_said(&status.host, status.build_said(status.beat));
+            let build = status.build_said(status.beat);
+            c.set_said(&status.host, build.clone());
+            status.build = Some(build);
         }
         self.publish_jobs();
         if self._lock.is_none() {

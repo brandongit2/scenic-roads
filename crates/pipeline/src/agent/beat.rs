@@ -244,6 +244,10 @@ impl Beat {
         let asked = crate::control::peek_hold_request(&self.home);
         status.say(asked.as_ref(), &hold, hold.held.is_none() && hold.at > v.hold_at);
         status.beat = now_s();
+        // (The lead's build in a line, from the verdict just said, its members' beats as of now.)
+        if status.build.is_some() {
+            status.build = Some(status.build_said(status.beat));
+        }
         // (The older of the round's view and a plan running: either stuck is the loop stuck, in
         // that part's phase.)
         let round = (v.at.elapsed().as_secs(), super::nasread::phase_now().map(str::to_string));
@@ -573,6 +577,27 @@ mod tests {
         std::fs::remove_file(&shared).unwrap();
         b.changed();
         assert!(local.exists() && !shared.exists());
+    }
+
+    /// The lead's build in a line (`Status::build`), said again at each beat from the hold as it is
+    /// then, as its verdict is; a member's status has none, and gets none.
+    #[test]
+    fn a_leads_beat_says_its_build_anew() {
+        let d = tempfile::tempdir().unwrap();
+        let (lead, member) = (d.path().join("status.json"), d.path().join("helper.json"));
+        let hold = Snap::new(HoldState::default());
+        let mut b = Handle::new(d.path().into(), hold.clone());
+        let mut v = view(lead.clone(), None);
+        v.status.build = Some(v.status.build_said(v.status.beat));
+        b.publish(v);
+        assert_eq!(said(&lead).build, said(&lead).verdict);
+        hold.set(HoldState { held: Some(Hold::new("a test")), at: 5 });
+        b.changed();
+        let s = said(&lead);
+        assert!(s.build.as_ref().is_some_and(|b| b.state == "paused") && s.build == s.verdict, "{s:?}");
+        let mut m = Handle::new(d.path().into(), hold);
+        m.publish(view(member.clone(), None));
+        assert!(said(&member).build.is_none());
     }
 
     /// A loop past the stuck threshold: the beat says the threshold, and the phase it's in.

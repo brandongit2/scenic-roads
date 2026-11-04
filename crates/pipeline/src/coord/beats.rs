@@ -135,6 +135,9 @@ struct Inner {
 /// The registry, shared by a member's pool side, its agent's beat and (on the lead) its coordinator.
 pub struct Beats {
     inner: Mutex<Inner>,
+    /// Held while the lead's line is written to its file (`save_lead_view`), apart from `inner`:
+    /// a slow disk never holds up the beats.
+    lead_view_write: Mutex<()>,
 }
 
 impl std::fmt::Debug for Beats {
@@ -170,6 +173,7 @@ impl Default for Beats {
                 lead_view: LeadView::default(),
                 lead_view_at: None,
             }),
+            lead_view_write: Mutex::new(()),
         }
     }
 }
@@ -267,12 +271,35 @@ impl Beats {
         g.lead_handoffs = Some(a.speaks.iter().any(|w| w == HANDOFF));
         g.merged.extend(a.merged.iter().cloned());
         g.lead_view = LeadView { at: now, lead: a.lead.clone() };
-        save_lead_view(&g);
+        drop(g);
+        self.save_lead_view();
     }
 
     /// The lead's line as its last answer carried it, and when (`LEAD_VIEW`).
     pub fn lead_view(&self) -> LeadView {
         self.inner.lock().unwrap().lead_view.clone()
+    }
+
+    /// The lead's line as it is now, written where it's kept (`keep_lead_view`), outside the
+    /// registry's lock (one writer at a time, each writing the latest), and not synced: it's the
+    /// menu bar's view, said again at the next answer, and a sync of the disk every beat would cost
+    /// a busy Mac's builds what the menu never needs.
+    fn save_lead_view(&self) {
+        let _w = self.lead_view_write.lock().unwrap();
+        let (view, at) = {
+            let g = self.inner.lock().unwrap();
+            (g.lead_view.clone(), g.lead_view_at.clone())
+        };
+        let Some(p) = at else { return };
+        let tmp = store::whole::tmp_name(&p);
+        let w = serde_json::to_vec(&view)
+            .map_err(std::io::Error::from)
+            .and_then(|b| std::fs::write(&tmp, b))
+            .and_then(|()| store::whole::rename_over(&tmp, &p));
+        if let Err(e) = w {
+            std::fs::remove_file(&tmp).ok();
+            eprintln!("pool: the lead's line for the menu bar, {}: {e}", p.display());
+        }
     }
 
     /// The lead's line kept at `path` from now (`LEAD_VIEW` in the agent's folder), at each answer.
@@ -468,7 +495,8 @@ impl Beats {
         (g.lead_asks, g.asks_on_nas) = (false, true);
         g.lead_handoffs = Some(false);
         g.lead_view = LeadView { at: now, lead: None };
-        save_lead_view(&g);
+        drop(g);
+        self.save_lead_view();
     }
 
     /// The leases the lead said this member doesn't hold, since last taken.
@@ -482,14 +510,6 @@ fn save_queue(g: &Inner) {
     let w = serde_json::to_vec(&g.queue).map_err(anyhow::Error::from).and_then(|b| store::whole::write(p, &b));
     if let Err(e) = w {
         eprintln!("pool: its asks of the lead: {e:#}");
-    }
-}
-
-fn save_lead_view(g: &Inner) {
-    let Some(p) = g.lead_view_at.as_ref() else { return };
-    let w = serde_json::to_vec(&g.lead_view).map_err(anyhow::Error::from).and_then(|b| store::whole::write(p, &b));
-    if let Err(e) = w {
-        eprintln!("pool: the lead's line for the menu bar: {e:#}");
     }
 }
 

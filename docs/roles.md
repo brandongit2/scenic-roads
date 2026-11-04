@@ -141,9 +141,11 @@ status (the fresher of `status.json` and `helper.json`: a file left from a part 
 before is the staler), and on a member the lead's line, which the beat's answer carries
 (`held::Answer::lead`, `LeadLine`: the lead's Mac and app, the build in a line, the build's pause,
 `all_new`) and the member's beat poster keeps in `agent/lead-view.json` at each answer, with when
-the lead answered (`beats::LeadView`; an older lead's 404 counts as an answer with no line). The
-build in a line is the lead's agent's (`Status::build_said`, handed its coordinator each loop:
-`Coordinator::set_said`): its own verdict, or while it builds nothing and the build isn't paused,
+the lead answered (`beats::LeadView`; an older lead's 404 counts as an answer with no line;
+written outside the registry's lock and not synced: a slow disk never holds up the beats, and a
+line lost to a crash is said again at the next answer). The build in a line is the lead's agent's
+(`Status::build_said`, handed its coordinator each loop: `Coordinator::set_said`, and kept in its
+own status as `build`, said again at each beat): its own verdict, or while it builds nothing and the build isn't paused,
 "Building on <member>; the lead: …" for a member in touch with a job running; the pause and
 `all_new` are the coordinator's at each answer. The lead's contact isn't in it: the member reaches
 the lead by the contact it has, and the menu needs only the lead's name. A member's agent takes
@@ -153,7 +155,8 @@ NAS read in the menu path.
 The menu bar (tools/status) shows on a member its own state while it builds, else the lead's
 line, or "Lead (<name>) out of touch since <time>" when the lead hasn't answered for the
 out-of-touch threshold, and its own agent out of touch as this Mac's; the build's pause from the
-lead's line. A member's menu no longer shows the lead's checklist, forecast, regions or the other
+lead's line. The lead's menu shows its status's `build`, the same line (an older agent's: its
+verdict): the rule is Rust's alone. A member's menu no longer shows the lead's checklist, forecast, regions or the other
 Macs' jobs (the popover's page, the lead's, has them); the pool's lines from this Mac's agent's
 view stay.
 

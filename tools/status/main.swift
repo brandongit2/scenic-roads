@@ -163,6 +163,9 @@ struct Status: Decodable {
     /// prints them, working none of them out.
     let hold: HoldStage?
     let verdict: Verdict?
+    /// The lead's: the build in a line, a member building counting as building (Status::build_said,
+    /// the line its members are told); none from an older agent.
+    let build: Verdict?
     let out_of_touch_s: Int?
     /// This Mac paused alone (task #224): what an agent before #846 says of its hold.
     let held: HeldInfo?
@@ -703,8 +706,8 @@ func kindOf(_ state: String) -> Kind {
 }
 
 /// The state, with a line saying it: this Mac's own while it builds; on a member, else, the build
-/// as its lead last said it (docs/roles.md §3.4); on the lead, its own word, a member building
-/// counting as building.
+/// as its lead last said it (docs/roles.md §3.4); on the lead, the build as it says it
+/// (`Status.build`: its members' lines say the same), else (an older agent) its own word.
 func classify(_ r: Reply?) -> (Kind, String) {
     guard let r = r else { return (.unknown, "No status: this Mac's `scenic menu` didn't answer") }
     guard let s = r.status else { return (.unknown, "No status from this Mac's agent (is it running?)") }
@@ -718,11 +721,8 @@ func classify(_ r: Reply?) -> (Kind, String) {
         guard let l = lv.lead else { return (kind, clip(v.said)) }
         return (kindOf(l.said.state), clip(l.said.said))
     }
-    // A member building counts as building, whatever the lead is doing.
-    if kind != .building, s.pause == nil, let h = freshHelpers(r).first(where: { h in h.allJobs.contains { $0.paused == nil } }) {
-        return (.building, clip("Building on \(h.host); the lead: \(v.said)"))
-    }
-    return (kind, clip(v.said))
+    let b = s.build ?? v
+    return (kindOf(b.state), clip(b.said))
 }
 
 /// The state with a line saying it, this Mac's agent's view of the pool considered: no lead for an
