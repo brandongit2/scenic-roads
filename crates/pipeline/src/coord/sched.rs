@@ -163,6 +163,53 @@ impl NasWeigher<'_> {
         // review; its step's runs of earlier ways count by `nas_prior`.)
         r.map_or(if NAS_STEPS.contains(&step) { crate::budget::nas::WHOLE } else { 0 }, |r| self.limits.weight(r))
     }
+
+    /// Target `target` added to job `j` (`JobLoad`): its weight, and its rate over the time it lasts
+    /// (crate::needs::Book::nas_load).
+    fn add(&self, j: &mut JobLoad, step: &str, target: &str, worker: Option<&str>) {
+        j.heaviest = j.heaviest.max(self.weight(step, target, worker));
+        match self.book.nas_load(step, target, worker) {
+            Some((r, Some(s))) => {
+                j.moved.bytes_s += r.bytes_s * s;
+                j.moved.creates_s += r.creates_s * s;
+                j.moved.listed_s += r.listed_s * s;
+                j.moved.stats_s += r.stats_s * s;
+                j.moved.deletes_s += r.deletes_s * s;
+                j.secs += s;
+            }
+            _ => j.untimed = true,
+        }
+    }
+
+    /// The weight of job `j`: what its targets move over their times together, as a job runs them
+    /// one after another (task #939: weighed by its heaviest target, a slope-deep job of 52 targets
+    /// on the M4, 4 Nov, weighed the whole NAS for its 32 minutes, its targets of a second or two
+    /// each measured past the NAS's rate, while it moved 12 MB/s, a seventh of the NAS, over its
+    /// run); one with a target of no measured rate or no known time, its heaviest target's.
+    fn job(&self, j: &JobLoad) -> u32 {
+        if j.untimed || j.secs <= 0.0 {
+            return j.heaviest;
+        }
+        let per = |x: f64| x / j.secs;
+        self.limits.weight(crate::budget::nas::Rate {
+            bytes_s: per(j.moved.bytes_s),
+            creates_s: per(j.moved.creates_s),
+            listed_s: per(j.moved.listed_s),
+            stats_s: per(j.moved.stats_s),
+            deletes_s: per(j.moved.deletes_s),
+        })
+    }
+}
+
+/// A job's NAS load as its targets are added (`NasWeigher::add`, `NasWeigher::job`): what they
+/// move (each rate times its time, summed) and their time, their heaviest weight, and whether
+/// one's rate or time isn't known.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct JobLoad {
+    moved: crate::budget::nas::Rate,
+    secs: f64,
+    heaviest: u32,
+    untimed: bool,
 }
 
 /// A wait that holds the NAS budget's room (`Sched::nas_reserved`): since when, its step and target.
@@ -443,9 +490,9 @@ impl Sched {
         self.leases.live(now).filter(|l| l.worker == worker && matches!(l.work, Work::Job { .. })).cloned().collect()
     }
 
-    /// A job of `step` over `targets` on `worker` (None: at the lead's pace): its NAS weight under `l` (its heaviest target's,
-    /// crate::budget::nas; 0 for a target none of whose step's runs measured it; with none, its
-    /// step's), and whether it
+    /// A job of `step` over `targets` on `worker` (None: at the lead's pace): its NAS weight under `l` (its targets' moves
+    /// over their times together, `NasWeigher::job`, crate::budget::nas; 0 for a target none of whose step's runs measured
+    /// it; with none, its step's), and whether it
     /// downloads (its step's kind a fetch, crate::agent::steps::Kind::Fetch).
     /// (`nw` keeps the Book and the steps' percentiles for one placement: `NasWeigher`.)
     pub(super) fn job_nas<'t>(
@@ -454,12 +501,14 @@ impl Sched {
         worker: Option<&str>,
         targets: impl IntoIterator<Item = &'t str>,
     ) -> (u32, bool) {
+        let mut j = JobLoad::default();
+        let mut any = false;
+        for t in targets {
+            nw.add(&mut j, step, t, worker);
+            any = true;
+        }
         // (A job of no targets of its own, the clean-up's lease: its step's measured weight, task #451.)
-        let w = targets
-            .into_iter()
-            .map(|t| nw.weight(step, t, worker))
-            .max()
-            .unwrap_or_else(|| nw.weight(step, "", worker));
+        let w = if any { nw.job(&j) } else { nw.weight(step, "", worker) };
         (w, crate::agent::steps::row(step).is_some_and(|r| r.kind == crate::agent::steps::Kind::Fetch))
     }
 
@@ -1257,10 +1306,13 @@ impl Sched {
             return Vec::new();
         }
         // (The lead's own asks held within the whole, or alone; a member's past it beside the
-        // lead's own alone: crate::budget::nas::Limits.)
-        let nas_fits = |t: &str| {
+        // lead's own alone: crate::budget::nas::Limits. Weighed as the job it would make: `t` added
+        // to the targets picked before it, `with`, task #939.)
+        let nas_fits = |t: &str, with: &JobLoad| {
             nas.as_ref().is_none_or(|(nw, running, members, _, most)| {
-                let w = nw.weight(&o.step, t, Some(&a.worker));
+                let mut j = *with;
+                nw.add(&mut j, &o.step, t, Some(&a.worker));
+                let w = nw.job(&j);
                 // (The NAS's own load over the owner's target: nothing new that weighs anything
                 // but beside nothing, crate::budget::nas::Loop.)
                 if !nw.limits.open(*running, w) {
@@ -1297,7 +1349,7 @@ impl Sched {
                     // its measure before the step fans out.)
                     None => held.is_empty() && self.cold_fits(&o.step, std::slice::from_ref(t), a, now),
                 }
-                && (nas_fits(t) || {
+                && (nas_fits(t, &JobLoad::default()) || {
                     self.nas_wait(&o.step, t, now);
                     false
                 })
@@ -1319,19 +1371,27 @@ impl Sched {
         let Some(m0) = self.measured(&o.step, &first.0) else { return vec![(first.0.clone(), first.1.clone())] };
         let mut pick = vec![(first.0.clone(), first.1.clone())];
         let (mut secs, mut disk) = (self.secs_of(&o.step, &first.0, &a.worker), m0.disk_mb);
+        let mut load = JobLoad::default();
+        let add = |load: &mut JobLoad, t: &str| {
+            if let Some((nw, ..)) = &nas {
+                nw.add(load, &o.step, t, Some(&a.worker));
+            }
+        };
+        add(&mut load, &first.0);
         for (t, k, _) in &o.targets[start + 1..] {
             let (Some(s), Some(m)) = (secs, self.measured(&o.step, t)) else { break };
             let Some(more) = self.secs_of(&o.step, t, &a.worker) else { break };
             if pick.len() >= JOB_MAX
                 || !open(t, k)
                 || !fits(&m)
-                || !nas_fits(t)
+                || !nas_fits(t, &load)
                 || s + more > JOB_S
                 || a.disk_mb.is_some_and(|d| crate::needs::batch_disk(&o.step, [disk, m.disk_mb]).max(job_disk) > d)
             {
                 break;
             }
             pick.push((t.clone(), k.clone()));
+            add(&mut load, t);
             (secs, disk) = (Some(s + more), crate::needs::batch_disk(&o.step, [disk, m.disk_mb]));
         }
         pick

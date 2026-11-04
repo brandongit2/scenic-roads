@@ -7861,6 +7861,50 @@ mod tests {
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none());
     }
 
+    /// Task #939: a job of several targets is weighed by what they move over their times together,
+    /// as it runs them one after another, not by its heaviest: slope-deep's targets of a second
+    /// (each a 200 MB copy, at twice the NAS's rate) between targets of two minutes at a tenth of it
+    /// made every job of it weigh the whole NAS, and one ran at a time in the pool. A target joins a
+    /// batch only while the job it makes fits.
+    #[test]
+    fn a_job_of_several_targets_is_weighed_by_its_moves_over_their_times() {
+        let (_d, c, m1, _clock) = every((0, 0));
+        let m2 = client::Client::at(m1.urls(), c.contact.token.clone(), "m2");
+        c.set_nas(Some(crate::budget::nas::Limits {
+            bytes_s: 100e6,
+            creates_s: 40.0,
+            downloads: None,
+            ..Default::default()
+        }));
+        // (Measured on m1: the even targets 120 s reading 1.2 GB, 10 MB/s, 100 thousandths; the odd
+        // ones a second reading 200 MB, 200 MB/s, the whole.)
+        let ts: Vec<String> = (0..26).map(|i| format!("10/0/{i}")).collect();
+        for (i, t) in ts.iter().enumerate() {
+            let (secs, bytes) = if i % 2 == 0 { (120, 1_200_000_000) } else { (1, 200_000_000) };
+            let sizes = [("threads".to_string(), 1), ("bytes".to_string(), bytes)].into();
+            let cost =
+                Cost { peak_mb: 2000, secs, worker: None, v: cost_version("slope-deep"), sizes, ..Default::default() };
+            c.add_costs_by(&[(cost_key("slope-deep", t), cost)], "m1");
+            c.add_disks(&[(cost_key("slope-deep", t), 100)]);
+        }
+        c.offer(
+            "p",
+            vec![Offer {
+                step: "slope-deep".into(),
+                targets: ts.iter().map(|t| (t.clone(), format!("k {t}"), 0)).collect(),
+                job: None,
+            }],
+        );
+        let ask = |w: &str| every_ask(w, "slope-deep", 64_000, 100_000);
+        // (Within a quarter of an hour: seven of 120 s and seven of 1 s, 847 s.)
+        assert_eq!(granted(&m1, &ask("m1")), ts[..14]);
+        // (9.8 GB over 847 s: 11.6 MB/s, 116 thousandths, where its heaviest weighs the whole.)
+        assert_eq!(c.nas_step_weights().get("slope-deep"), Some(&116));
+        // m2's job goes beside it (weighed by its heaviest, it waited for m1's to end): as many as
+        // fit its quarter of an hour, m1's runs counted twice their time on another Mac.
+        assert_eq!(granted(&m2, &ask("m2")), ts[14..20]);
+    }
+
     /// Task #925: a member's job weighed at the whole NAS by its targets' runs (their reads fast
     /// where they ran) runs on a Mac that reads slowly. Until it has run the time its targets
     /// predict, it's weighed by them, and no job that reads the NAS goes beside it; past that time,

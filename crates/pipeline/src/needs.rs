@@ -485,8 +485,9 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
 /// own: `nas_read` over `nas_secs` (the job's reads and the time they took, the same on each of its
 /// targets), beside what it writes over the longer of its own time and `nas_secs`; a measure without `nas_secs` (task #396's
 /// first, b38: a share of the job's reads over the target's own time, often 0 s, so every job
-/// weighed the whole NAS) counts its writes alone.
-fn nas_rate(step: &str, c: &Cost) -> Option<crate::budget::nas::Rate> {
+/// weighed the whole NAS) counts its writes alone. With the time (s) it is over: a job's rate is its
+/// targets' moves over their times together (`Book::nas_load`).
+fn nas_rate(step: &str, c: &Cost) -> Option<(crate::budget::nas::Rate, f64)> {
     let g = |k: &str| c.sizes.get(k).copied().unwrap_or(0) as f64;
     // (A halo step's writes are spread over its job's time too, not over its own write phase:
     // pack's `secs` is that phase's 0-1 s, which weighed a pack at the whole NAS, 25 Oct.)
@@ -497,12 +498,15 @@ fn nas_rate(step: &str, c: &Cost) -> Option<crate::budget::nas::Rate> {
     } else {
         (g("bytes") - g("local")).max(0.0) / secs
     };
-    (c.v >= cost_version(step) && c.sizes.contains_key("bytes")).then(|| crate::budget::nas::Rate {
-        bytes_s: read_s + g("wrote") / secs,
-        creates_s: g("creates") / secs,
-        listed_s: g("listed") / secs,
-        stats_s: g("stats") / secs,
-        deletes_s: g("deletes") / secs,
+    (c.v >= cost_version(step) && c.sizes.contains_key("bytes")).then(|| {
+        let r = crate::budget::nas::Rate {
+            bytes_s: read_s + g("wrote") / secs,
+            creates_s: g("creates") / secs,
+            listed_s: g("listed") / secs,
+            stats_s: g("stats") / secs,
+            deletes_s: g("deletes") / secs,
+        };
+        (r, secs)
     })
 }
 
@@ -516,6 +520,22 @@ fn per_pace(r: crate::budget::nas::Rate, pace: f64) -> crate::budget::nas::Rate 
         stats_s: d(r.stats_s),
         deletes_s: d(r.deletes_s),
     }
+}
+
+/// The 90th percentile of values `v` each weighed by its time (nearest rank: the least value at or
+/// under which 90 % of their time is); None with none, or no time.
+fn p90_by_time(mut v: Vec<(f64, f64)>) -> Option<f64> {
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let all: f64 = v.iter().map(|x| x.1).sum();
+    let mut at = 0.0;
+    // (Within a millionth of the whole, so equal times give the nearest rank `p90` gives.)
+    v.into_iter()
+        .find(|x| {
+            at += x.1;
+            at >= 0.9 * all * (1.0 - 1e-6)
+        })
+        .filter(|_| all > 0.0)
+        .map(|x| x.0)
 }
 
 /// The 90th percentile (nearest rank); None with none.
@@ -1005,7 +1025,27 @@ impl<'a> Book<'a> {
 
     /// `nas`'s own run's rate alone.
     pub fn nas_own(&self, step: &str, target: &str) -> Option<crate::budget::nas::Rate> {
-        self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(step, c))
+        self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(step, c)).map(|r| r.0)
+    }
+
+    /// `nas_for` on `worker` (None: `nas`, at the lead's pace), with the time it lasts (s): its own
+    /// run's, as it ran, else its time as `secs_for` predicts it there (None: not known). A job runs
+    /// its targets one after another, so it moves their bytes over their times together: what
+    /// crate::coord::sched weighs a job of several by (task #939).
+    pub fn nas_load(
+        &self,
+        step: &str,
+        target: &str,
+        worker: Option<&str>,
+    ) -> Option<(crate::budget::nas::Rate, Option<f64>)> {
+        if let Some((r, secs)) = self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(step, c)) {
+            return Some((r, Some(secs)));
+        }
+        let r = match worker {
+            Some(w) => self.nas_for(step, target, w)?,
+            None => self.nas(step, target)?,
+        };
+        Some((r, self.secs_for(step, target, 0, worker).map(|s| s.max(1) as f64)))
     }
 
     /// `nas`'s step's 90th percentile alone: kept with the models while the measures stand (the
@@ -1024,19 +1064,25 @@ impl<'a> Book<'a> {
         r
     }
 
-    /// `nas_prior` worked out: its step's runs' 90th percentile of each rate.
+    /// `nas_prior` worked out: its step's runs' 90th percentile of each rate, each run weighed by
+    /// its time: the rate its step's jobs keep the NAS under for 90 % of the time they run (task
+    /// #939: of slope-deep's 4,254 runs on 4 Nov, 3,379 copied a 200 MB pack in a second or so,
+    /// mostly from this Mac's cache, between runs of a minute or more at 10 MB/s; taken run by run,
+    /// its 90th percentile was 248 MB/s, three times the NAS, where its runs moved 19 MB/s over
+    /// their time together).
     fn nas_p90(&self, step: &str) -> Option<crate::budget::nas::Rate> {
         // (Each at the lead's pace: its time there shorter or longer by its worker's pace.)
-        let runs: Vec<crate::budget::nas::Rate> = self
+        let runs: Vec<(crate::budget::nas::Rate, f64)> = self
             .costs
             .iter()
             .filter(|(k, _)| step_of_key(k) == step)
-            .filter_map(|(_, c)| Some(per_pace(nas_rate(step, c)?, 1.0 / self.pace(c.worker.as_deref(), step))))
+            .filter_map(|(_, c)| {
+                let (r, secs) = nas_rate(step, c)?;
+                let pace = self.pace(c.worker.as_deref(), step);
+                Some((per_pace(r, 1.0 / pace), secs / pace))
+            })
             .collect();
-        // (In thousandths of a byte or file a second, for the percentile's integers.)
-        let p = |f: fn(&crate::budget::nas::Rate) -> f64| {
-            p90(runs.iter().map(|r| (f(r) * 1000.0).ceil() as u64).collect()).map(|x| x as f64 / 1000.0)
-        };
+        let p = |f: fn(&crate::budget::nas::Rate) -> f64| p90_by_time(runs.iter().map(|(r, s)| (f(r), *s)).collect());
         Some(crate::budget::nas::Rate {
             bytes_s: p(|r| r.bytes_s)?,
             creates_s: p(|r| r.creates_s)?,
@@ -1389,6 +1435,34 @@ mod tests {
         let v = cost_version("depth");
         costs.insert(cost_key("depth", "6/1/1"), Cost { v, ..cost(100, 10, &[("bytes", 1000), ("local", 800)]) });
         assert_eq!(Book::new(&costs).nas("depth", "6/1/1").map(|r| r.bytes_s), Some(20.0));
+    }
+
+    /// Task #939: a step's 90th percentile weighs each run by its time, so many runs of a second
+    /// at a high rate don't make the rate its jobs keep for minutes; a target's load is its rate
+    /// with the time it lasts, its own run's, else its time as predicted.
+    #[test]
+    fn a_steps_nas_percentile_weighs_each_run_by_its_time() {
+        let now = |c: Cost| Cost { v: cost_version("slope-deep"), ..c };
+        let mut costs = BTreeMap::new();
+        // (Eight runs of a second at 200 MB/s, two of 70 s at 10 MB/s: 148 s in all, 140 of them
+        // at 10 MB/s.)
+        for i in 0..8 {
+            costs.insert(cost_key("slope-deep", &format!("10/0/{i}")), now(cost(100, 1, &[("bytes", 200_000_000)])));
+        }
+        for i in 8..10 {
+            costs.insert(cost_key("slope-deep", &format!("10/0/{i}")), now(cost(100, 70, &[("bytes", 700_000_000)])));
+        }
+        let b = Book::new(&costs);
+        assert_eq!(b.nas_prior("slope-deep").map(|r| r.bytes_s), Some(10e6), "run by run it was 200 MB/s");
+        // (Its own run's rate and time; a target not run, the step's rate over its predicted time.)
+        let own = b.nas_load("slope-deep", "10/0/9", None).unwrap();
+        assert_eq!((own.0.bytes_s, own.1), (10e6, Some(70.0)));
+        let other = b.nas_load("slope-deep", "10/9/9", None).unwrap();
+        assert_eq!(other.0.bytes_s, 10e6);
+        assert_eq!(other.1, b.secs_for("slope-deep", "10/9/9", 0, None).map(|s| s as f64));
+        // (Equal times: the nearest rank `p90` gives.)
+        assert_eq!(p90_by_time((1..=11).map(|i| (i as f64, 1.0)).collect()), Some(10.0));
+        assert_eq!(p90_by_time(Vec::new()), None);
     }
 
     /// A halo step's NAS rate (task #260: `pack`): its job's reads over the time they took (task
