@@ -424,9 +424,13 @@ struct Slot {
     hand_saved: Option<(Hand, Option<String>)>,
 }
 
-/// How long the memory guard keeps a job frozen for the Mac's pressure before it stops it, the Mac
-/// still short of memory (`Agent::pressure`).
-const PRESSURE_HOLD: Duration = Duration::from_secs(60);
+/// How long the memory guard keeps a job frozen under the brake before it gives it back, the brake
+/// still acting (`Agent::pressure`; docs/pool.md §7.2): a minute, twelve of the sampler's readings
+/// (memguard::EVERY), enough for a freeze that stopped the fall to show in them, and short beside
+/// the window the swap grown counts in (memguard::SWAP_WINDOW). Past it with the brake no longer
+/// acting but the Mac not back above its floor and margin, the job stays frozen up to the time a
+/// pause gives a safe point (`Agent::grace`).
+const PRESSURE_HOLD: Duration = Duration::from_secs(memguard::EVERY.as_secs() * 12);
 
 /// An agent's slots (`Agent::slots`): `SLOTS` of them fresh, more as a member's packed jobs take
 /// them.
@@ -5633,7 +5637,7 @@ impl Agent {
     /// off, under the floor: the jobs together past their room, `Reading::room_mb`), another job
     /// than the largest stops at its next safe point when the largest fits alone (the newest, then
     /// the least progressed, one at a time: memguard::decide_by, `guard_ranks`; and nothing starts
-    /// beside the largest until it ends); under the brake (`Reading::brake`) one is frozen at once
+    /// beside the largest until it ends); while the brake acts (`Reading::acts`) one is frozen at once
     /// instead (`pressure`; the largest too once it alone passes the room), then the next while
     /// what's left still passes, each given back if the Mac isn't back within `PRESSURE_HOLD`; the
     /// largest, past the room alone with the brake off, stops at its next safe point; a job
@@ -5736,13 +5740,16 @@ impl Agent {
     /// wait on a safe point, the top-ranked job (memguard::decide_by, those frozen already counted
     /// as gone; the largest too once it alone passes the room, the sampler's thread freezing it
     /// first) is frozen at once: freezing, the last resort, stops its growth and lets macOS compress
-    /// it while its work is kept. It goes on once the Mac is back (the brake off and its memory above
-    /// the floor and margin, `Reading::held_back`, as new work waits for); else it's stopped (given
-    /// back, as the guard stops one) once frozen `PRESSURE_HOLD`, or the time a pause gives a safe
-    /// point; then the next, if what's left still passes. None: nothing for it to do (the brake off
-    /// and nothing frozen); else whether it stopped a job.
+    /// it while its work is kept. Only while the brake acts (`Reading::acts`: the pressure critical,
+    /// or the brake on with the Mac below its floor by the numbers): the pressure at warning alone
+    /// holds new work and freezes nothing. A frozen job goes on once the Mac is back (the brake off
+    /// and its memory above the floor and margin, `Reading::held_back`, as new work waits for);
+    /// it's stopped (given back, as the guard stops one) once frozen `PRESSURE_HOLD` with the brake
+    /// still acting, else (between the two) once frozen the time a pause gives a safe point; then
+    /// the next, if what's left still passes. None: nothing for it to do (the brake not acting and
+    /// nothing frozen); else whether it stopped a job.
     fn pressure(&mut self, held: &[Option<u64>], r: &memguard::Reading) -> Option<bool> {
-        let trouble = self.sampler.in_trouble();
+        let trouble = r.acts();
         let back = !trouble && r.held_back().is_none();
         let id_of = |a: &Self, k: usize| a.slots[k].running.as_ref().map(|r| r.spec.id.clone());
         // (One the sampler's thread froze, past the room alone under the brake: held from now as
@@ -5775,7 +5782,7 @@ impl Agent {
                 self.guard_last = Some((now_s(), format!("{mine} goes on: {why}")));
                 continue;
             }
-            if at.elapsed() >= PRESSURE_HOLD || at.elapsed() >= self.grace {
+            if (trouble && at.elapsed() >= PRESSURE_HOLD) || at.elapsed() >= self.grace {
                 let why = format!(
                     "stopped by the memory guard: it held {:.1} GB, frozen {} s{}, the Mac not back above its floor: {}",
                     held.get(k).copied().flatten().unwrap_or(0) as f64 / 1024.0,
@@ -5814,7 +5821,7 @@ impl Agent {
         self.sampler.freeze(k);
         let total: u64 = held.iter().flatten().sum();
         let whom = big.as_deref().map_or(String::new(), |b| format!(" for {b}"));
-        let why = format!("{}, with the jobs here holding {:.1} GB together: frozen{whom}, given back in {} s unless the Mac is back above its floor", r.short_words(), total as f64 / 1024.0, PRESSURE_HOLD.as_secs());
+        let why = format!("{}, with the jobs here holding {:.1} GB together: frozen{whom}, given back in {} s if the brake still acts then, going on once the Mac is back above its floor and margin", r.short_words(), total as f64 / 1024.0, PRESSURE_HOLD.as_secs());
         eprintln!("agent: memory guard: {mine} {why}");
         self.guard_last = Some((now_s(), format!("{mine} {why}")));
         let big = big.unwrap_or_else(|| mine.clone());
@@ -12141,6 +12148,11 @@ mod tests {
         assert!(a.sampler.frozen(1) && a.slots[1].pressure_frozen.is_some());
         assert!(!tick(&mut a, vec![None, Some(4 << 10)], false));
         assert!(!a.sampler.frozen(1) && a.slots[1].pressure_frozen.is_none() && a.slots[1].running.is_some());
+        // (Task #932 review: the pressure at warning with the Mac above its floor (4 GB held, 10
+        // available): no new work, nothing frozen, whatever how long it lasts.)
+        assert!(!tick(&mut a, vec![None, Some(4 << 10)], true));
+        assert!(!tick(&mut a, vec![None, Some(4 << 10)], true));
+        assert!(!a.sampler.frozen(1) && a.slots[1].pressure_frozen.is_none() && a.build_room() == 0);
         // Frozen again beside a new largest; within the minute it's held, then stopped.
         assert!(a.try_start(
             0,

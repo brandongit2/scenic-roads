@@ -75,9 +75,9 @@ impl Reading {
     }
 
     /// The emergency brake: the kernel's pressure at warning or critical, or swap grown past what
-    /// was available above the floor (`usable_mb` below it for the swap). Below the floor whatever
-    /// the number says: jobs are frozen and given back at once (the agent's `pressure`), none
-    /// starts. Why, in words; None when it's off.
+    /// was available above the floor (`usable_mb` below it for the swap). While it's on no job
+    /// starts, whatever the number says; it freezes jobs only with evidence (`acts`). Why, in
+    /// words; None when it's off.
     pub fn brake(&self) -> Option<String> {
         let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
         match self.pressure {
@@ -95,19 +95,29 @@ impl Reading {
         })
     }
 
-    /// Whether the Mac is below its floor: its usable memory under it, or the brake on.
+    /// Whether the brake acts on the running jobs (freezes one at once, gives it back if the Mac
+    /// isn't back: the agent's `pressure`): the kernel's pressure critical, or the brake on with
+    /// the Mac below its floor by the numbers (its usable memory under it: the swap grown among
+    /// them). The pressure at warning alone only holds new work: macOS sits at warning for long
+    /// stretches while it compresses, and a job frozen for it, then given back each minute, would
+    /// lose work the Mac had room for.
+    pub fn acts(&self) -> bool {
+        self.pressure >= 4 || (self.brake().is_some() && self.usable_mb() < self.floor_mb)
+    }
+
+    /// Whether the Mac is below its floor: its usable memory under it, or the brake acting.
     pub fn below(&self) -> bool {
-        self.usable_mb() < self.floor_mb || self.brake().is_some()
+        self.usable_mb() < self.floor_mb || self.acts()
     }
 
     /// What the jobs may hold together before the Mac is below its floor (MB): what they hold and
     /// what's available, less the swap grown lately and the floor (the swap off the sum, not off
     /// what's available alone: what's available stops at nothing, the swap goes on growing); the
-    /// guard gives back past it (`decide_by`). The brake on, a megabyte less than they hold: below
-    /// the floor whatever the number says.
+    /// guard gives back past it (`decide_by`). The brake acting (`acts`), a megabyte less than they
+    /// hold: below the floor whatever the number says.
     pub fn room_mb(&self) -> u64 {
         let room = (self.avail_mb + self.held_mb).saturating_sub(self.swap_grown_mb + self.floor_mb);
-        if self.brake().is_some() {
+        if self.acts() {
             room.min(self.held_mb.saturating_sub(1))
         } else {
             room
@@ -730,8 +740,13 @@ impl Sampler {
         crate::sys::signal_group(w.pgid, crate::sys::Signal::Cont)
     }
 
+    /// Whether the brake acts now (`Reading::acts`), as the last sample read it.
+    pub fn acting(&self) -> bool {
+        self.inner.lock().ok().and_then(|g| g.reading).is_some_and(|r| r.acts())
+    }
+
     /// Whether the Mac is in trouble now: the memory brake on (`Reading::brake`), as the last sample
-    /// read it (a test's figure, as it set it).
+    /// read it (a test's figure, as it set it: its pressure at warning, a test Mac's reading's).
     pub fn in_trouble(&self) -> bool {
         let Ok(g) = self.inner.lock() else { return false };
         match g.trouble_set {
@@ -873,7 +888,7 @@ impl Sampler {
         }
         self.tick_disk();
         for k in over {
-            if !self.in_trouble() {
+            if !self.acting() {
                 continue;
             }
             let Ok(mut g) = self.inner.lock() else { return };
@@ -1166,18 +1181,25 @@ mod tests {
     }
 
     /// The brake (the kernel's pressure at warning or critical, or swap grown past what was
-    /// available above the floor) counts as below the floor whatever the number says: the room a
-    /// megabyte under what the jobs hold, no new job.
+    /// available above the floor) holds new work whatever the number says; it acts on the running
+    /// jobs (the room a megabyte under what they hold) only with evidence: the pressure critical,
+    /// or the Mac below its floor by the numbers. Warning alone, with room, freezes nothing (task
+    /// #932 review: macOS sits at warning for long stretches while it compresses).
     #[test]
-    fn the_brake_is_below_the_floor_whatever_the_number_says() {
+    fn the_brake_holds_new_work_and_acts_on_jobs_only_with_evidence() {
         let r = Reading { pressure: 2, ..m4(20, 10) };
         assert_eq!(r.brake().as_deref(), Some("macOS's memory pressure is at warning"));
-        assert!(r.below() && r.room_mb() == 10 * GB - 1 && r.admit_mb() == 0);
+        assert!(!r.acts() && !r.below() && r.room_mb() == 24 * GB && r.admit_mb() == 0);
         assert_eq!(r.held_back().as_deref(), Some("the memory brake: macOS's memory pressure is at warning"));
-        assert_eq!(
-            Reading { pressure: 4, ..m4(20, 10) }.brake().as_deref(),
-            Some("macOS's memory pressure is critical")
-        );
+        // (Warning with the Mac below its floor by the numbers: it acts.)
+        let r = Reading { pressure: 2, ..m4(4, 10) };
+        assert!(r.acts() && r.below() && r.room_mb() == 8 * GB);
+        let r = Reading { pressure: 2, ..m4(4, 20) };
+        assert!(r.acts() && r.room_mb() == 18 * GB);
+        // (Critical: it acts whatever the number says.)
+        let r = Reading { pressure: 4, ..m4(20, 10) };
+        assert_eq!(r.brake().as_deref(), Some("macOS's memory pressure is critical"));
+        assert!(r.acts() && r.below() && r.room_mb() == 10 * GB - 1 && r.admit_mb() == 0);
         // (Swap grew 3 GB with 8 available: 5 usable, under the floor, so the brake; 1 GB grown
         // with 8 available: 7 usable, above it, no brake.)
         let r = Reading { swap_grown_mb: 3 * GB, ..m4(8, 10) };
@@ -1185,11 +1207,12 @@ mod tests {
             r.brake().as_deref(),
             Some("swap grew 3.0 GB in the last 5 min, past the 2.0 GB available above the floor")
         );
+        assert!(r.acts(), "swap grown past the floor's room is below it by the numbers");
         assert_eq!(Reading { swap_grown_mb: GB, ..m4(8, 10) }.brake(), None);
         // (Below the floor by the number alone, no swap grown: given back at safe points, no brake.)
         assert_eq!(m4(4, 10).brake(), None);
         // (No job: the room is nothing, and nothing to give back.)
-        assert_eq!(Reading { pressure: 2, ..m4(20, 0) }.room_mb(), 0);
+        assert_eq!(Reading { pressure: 4, ..m4(20, 0) }.room_mb(), 0);
     }
 
     /// On 4 Nov at 01:10 the M4's five terrain-deep jobs held 37 GB, under the old 41.9 GB jobs
@@ -1197,7 +1220,20 @@ mod tests {
     /// 21 GB swapped. Under the floor the guard gives back.
     #[test]
     fn the_fourth_of_november_is_below_the_floor() {
+        // (Admission first (task #932 review), terrain-deep's expected peak 7.5 GB a job: with
+        // Docker's 8 GB, the wired memory and the owner's apps holding 16 GB and no job, 32 GB
+        // available; the floor of 6 leaves 26 for the jobs' peaks together: three start, not five.)
+        let peak = 7680;
+        let admitted = (0..5u64).take_while(|&n| m4(32, 0).admit_mb().saturating_sub(n * peak) >= peak).count();
+        assert_eq!(admitted, 3);
+        // (Three grown to their peaks: 32 − 22.5 = 9.5 GB available, above the floor; compiles
+        // taking 4 GB more leave 5.5, below it: the newest drains before any swap has grown.)
+        let r = Reading { avail_mb: 32 * GB - 3 * peak - 4 * GB, held_mb: 3 * peak, ..m4(0, 0) };
+        assert!(r.below() && !r.acts() && r.swap_grown_mb == 0);
+        assert_eq!(decide_by(&[Some(peak); 3], r.room_mb(), &[false; 3], &[false; 3], &[1, 2, 3]), Act::Drain(2));
+        // (The night as it went, five jobs at 37 GB and swap growing: the brake acts.)
         let r = Reading { swap_grown_mb: 2 * GB, ..m4(2, 37) };
+        assert!(r.acts());
         assert!(r.below() && r.brake().is_some());
         let held = [Some(7 * GB), Some(8 * GB), Some(7 * GB), Some(8 * GB), Some(7 * GB)];
         let no = [false; 5];

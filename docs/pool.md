@@ -544,7 +544,9 @@ counts as any other process).
 
 - **Available** (`sys::memory_available`): the free pages, the file-backed pages (the file cache,
   dropped at once) and the purgeable ones (`host_statistics64`): the Mac less what Activity Monitor
-  calls Memory Used, so the owner can check it. Never raw free pages (macOS keeps those near zero),
+  calls Memory Used, so the owner can check it. A read-ahead's speculative pages are in both the
+  kernel's free count and its file-backed count (file-backed + anonymous = active + inactive +
+  speculative, to the page), so they come off the free, as `vm_stat` prints it. Never raw free pages (macOS keeps those near zero),
   and not `kern.memorystatus_level`: that counts every page neither wired nor compressed, apps' own
   pages in use among them, and read 60 % on the M4 at 01:10 on 4 Nov with 21 GB swapped. Under
   load (4 GB touched in 1 GB steps on the M4, 4 Nov, `memory_pressure` alongside):
@@ -578,9 +580,14 @@ counts as any other process).
   least. Calm apps, a small margin; Chrome swinging 3 GB, 3 GB. No hand-typed figure: a job let in
   at the floor plus the margin isn't given back by the next move of the same apps.
 - **The brake** (`Reading::brake`): the kernel's pressure at warning or critical, or swap grown in
-  the window past what was available above the floor, counts as below the floor whatever the
-  number says: no job starts, and jobs are frozen and given back (§7.2, The memory guard). The
-  build page shows a "memory brake" chip on the Mac's card while it's on, with why.
+  the window past what was available above the floor: no job starts whatever the number says. It
+  acts on the running jobs (`Reading::acts`: frozen and given back, §7.2, The memory guard) only
+  with evidence: the pressure critical, or the Mac below its floor by the numbers (what's
+  available, the swap grown off, under the floor: swap grown past the floor's room is that). The
+  pressure at warning alone holds new work and freezes nothing: macOS sits at warning for long
+  stretches while it compresses, and a job frozen for it and given back each minute would lose work
+  the Mac had room for. The build page shows a "memory brake" chip on the Mac's card while it's on,
+  with why.
 - **Status**: the Mac's card on the build page, the menu bar (under the state line) and `scenic
   status` (this Mac's, from the guard's sample) say the memory in a line (`memguard::words`):
   "Memory: 9.3 GB available, floor 6.0 GB (default) + 0.4 GB margin; the jobs hold 12.1 GB, 3.0 GB
@@ -893,12 +900,17 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   (by its start's minute), then the least progressed (the work lost least), never the largest; one
   at a time, and none more while the jobs not draining fit the room. Nothing new starts beside the
   largest meanwhile (a member asks for nothing). The largest alone past the room stops at its next
-  safe point too. Under the brake (§7.1) no safe point is waited for: the job that would drain is
+  safe point too. While the brake acts (§7.1: critical, or on with the Mac below its floor by the
+  numbers) no safe point is waited for: the job that would drain is
   frozen at once (SIGSTOP; the largest too once it alone passes the room, the sampler's thread
   freezing it first), then the next while the rest still pass the room. Freezing is the last
   resort: it stops a job's growth and lets macOS compress it while its work is kept. A frozen job
   goes on once the Mac is back (the brake off, available above the floor and the margin), and is
-  stopped (given back) after a minute frozen with the Mac not back, or the 15 minutes a drain gets.
+  stopped (given back) after a minute frozen with the brake still acting (`PRESSURE_HOLD`: twelve of
+  the sampler's 5 s readings, enough for a freeze that stopped the fall to show in them, short
+  beside the five minutes the swap grown counts over), or after the 15 minutes a drain gets with
+  the Mac between the two (the brake no longer acting, not yet back): that band is the freeze's
+  hysteresis, so a job isn't let go and frozen again on each sample.
   This holds on every Mac's slots. A drain that finds no safe point in 15 minutes is stopped. A
   stopped job is given back and kept from that Mac for an hour. A job holding more than its
   expected peak is not stopped for that alone: only the floor gives a job back.
