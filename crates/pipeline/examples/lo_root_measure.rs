@@ -27,9 +27,15 @@ fn main() -> anyhow::Result<()> {
     let sets = pipeline::terrain_zoom::Declared::read(&nas, &m)?.map(|d| d.sets).unwrap_or_default();
     let water = pipeline::terrain_pack::open_water(&out)?;
     let url = pipeline::terrain_base::terrarium_template(&nas, &m)?;
-    let rt = pipeline::terrain_pack::RawTiles::with_store(std::path::Path::new(raw), &nas.join("sources/aws-terrarium"), &url);
+    let rt = pipeline::terrain_pack::RawTiles::with_store(
+        std::path::Path::new(raw),
+        &nas.join("sources/aws-terrarium"),
+        &url,
+    );
     println!("start: {} MB", mb());
-    for (what, b) in [("root", pipeline::terrain_base::tiles_box(0, &[(0, 0)])), ("lo", pipeline::terrain_base::tiles_box(3, &[q]))] {
+    for (what, b) in
+        [("root", pipeline::terrain_base::tiles_box(0, &[(0, 0)])), ("lo", pipeline::terrain_base::tiles_box(3, &[q]))]
+    {
         let pool = pipeline::terrain_base::Pool::read(&nas, &m, b)?;
         let relief = pool.relief();
         let none = |_: u32, _: u32| false;
