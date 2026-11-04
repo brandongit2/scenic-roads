@@ -2502,24 +2502,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// A lake across two z6 tiles' edge (lon 11.25°, 6/33 and 6/34) and the sea north of it, in every
-    /// zoom's tiles from z6 (as the basemap draws them).
-    fn lake_across(z: u8, x: u32, y: u32) -> Vec<crate::terrain_water::Poly> {
-        use crate::terrain_water::{Kind, Poly};
-        if z < 6 {
-            return Vec::new();
-        }
-        let n = (1u64 << z) as f64 * 256.0;
-        let px = |lon: f64| (lon + 180.0) / 360.0 * n - x as f64 * 256.0;
-        let py = |lat: f64| (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n - y as f64 * 256.0;
-        let rect = |kind, id, w: f64, s: f64, e: f64, nn: f64| Poly {
-            kind,
-            id,
-            rings: vec![vec![[px(w), py(nn)], [px(e), py(nn)], [px(e), py(s)], [px(w), py(s)]]],
-        };
-        vec![rect(Kind::Lake, 5, 11.0, 70.42, 11.5, 70.5), rect(Kind::Sea, 0, 10.9, 70.56, 11.6, 70.6)]
-    }
-
     /// A coverage near z6 tile 6/21/18 (its grown box meets it) whose z9–12 tiles none come near
     /// (each grown by less in longitude, at its own latitude): a small circle east of the tile's
     /// south-east corner, as the build's coverage left 6/21/18.
