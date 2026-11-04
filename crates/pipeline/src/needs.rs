@@ -10,6 +10,12 @@
 //!
 //! - **Measured**: the target's own run, never below its floor (crate::agent::memguard::Floor); a
 //!   floor alone counts as its measure.
+//! - **Near** (memory, a tile target; task #931): the most its nearest measured targets of the step
+//!   took (`Near`: `NEAR_RUNS` within `NEAR_RINGS` rings of tiles), × `MARGIN`, where that's judged
+//!   good on the step's own measures (each predicted from the others) and erred less than its best
+//!   good fit over a size the target has. What a target holds is its place's, whichever Mac runs it
+//!   (terrain-deep's neighbouring tiles differ by a median 6–8 % run on two Macs, no Mac's the
+//!   higher by more than 2 %, and 2 % run on one, measured on the lead's runs of 15 Oct – 4 Nov).
 //! - **Fit**: base + k × size (+ c × threads when the runs differ in threads), fitted per step over
 //!   its measured runs by least squares and raised to cover every one of them (an upper envelope),
 //!   times `MARGIN`, capped at the most a run it was made from measured (a target past the sizes it
@@ -130,6 +136,8 @@ pub fn cache_of(step: &str) -> Option<&'static str> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum From {
     Measured,
+    /// Its nearest measured targets' (`Near`).
+    Near,
     Fit,
     /// The caller's guess for a `GUESS_FIRST` step that has measures (so not a cold start).
     Guess,
@@ -209,11 +217,106 @@ impl Fit {
     }
 }
 
-/// A step's model of one measure, as made from its runs: its fits (best first) and its prior.
+/// A step's model of one measure, as made from its runs: its fits (best first), its prior, and
+/// (memory alone) its measures by place.
 #[derive(Clone, Debug, Default)]
 struct Model {
     fits: Vec<Fit>,
     prior: Option<u64>,
+    near: Option<std::sync::Arc<Near>>,
+}
+
+/// The nearest measured targets a target's memory is read from (`Near`): the rings of tiles
+/// around it are taken outward until they hold this many, or `NEAR_RINGS` are taken.
+pub const NEAR_RUNS: usize = 5;
+/// The most rings of tiles around a target its nearest measured targets are looked for in.
+/// (`NEAR_RUNS` and this were chosen on the lead's terrain-deep runs of 15 Oct – 4 Nov, each target
+/// predicted from those done before its grant (`backtest_mem_on_the_leads_measures`): 1 target
+/// within 4 rings missed 9.3 % of the targets by any amount and 3.3 % by over a GB, 5 within 8 4.8
+/// % and 1.9 %, 8 within 8 4.1 % and 1.5 % but reserved 1.28× their memory where 5 reserved 1.25×;
+/// the step's prior then: 19.2 %, 5.8 % and 1.52×.)
+pub const NEAR_RINGS: i64 = 8;
+
+/// A step's memory by place (task #931): each tile target measured the way the step runs now (its
+/// run's peak, or its floor, the larger) by its tile. A target not measured takes the most of its
+/// nearest measured ones (`NEAR_RUNS` within `NEAR_RINGS` rings of tiles at its zoom) × `MARGIN`:
+/// what a target holds is its place's (the sources it reads there), so its neighbours' runs say
+/// it where the step's prior can't (terrain-deep's: 3 GB where no fine dataset is dense, past 9
+/// GB over dense lidar; its prior, 7.8 GB, reserved twice a sparse target's memory and gave a dense
+/// one back). Judged on its own measures as a fit is (each predicted from the others, leave one out):
+/// used where good (`good`), and better than the step's best good fit (`Book::mem`).
+#[derive(Debug, Default)]
+pub struct Near {
+    at: std::collections::HashMap<(u8, u32, u32), u64>,
+    /// Its measures predicted, and of those: the share predicted under, the median error.
+    pub runs: usize,
+    pub miss: f64,
+    pub err: f64,
+    /// Each target's prediction as worked out (`of`): the picks weigh every target offered.
+    memo: Mutex<std::collections::HashMap<(u8, u32, u32), Option<u64>>>,
+}
+
+impl Near {
+    /// Of the measures `at` (tile → MB), judged.
+    fn of_measures(at: std::collections::HashMap<(u8, u32, u32), u64>) -> Near {
+        let mut n = Near { at, ..Default::default() };
+        let (mut errs, mut miss) = (Vec::new(), 0usize);
+        // (Each from the measured tiles before it, row by row (north first, then west), as a plan
+        // reaches a place from one side: its neighbours all round would flatter it.)
+        for (&t, &y) in &n.at {
+            let Some(p) = n.nearest_by(t, |dx, dy| dy < 0 || (dy == 0 && dx < 0)) else { continue };
+            if p < y as f64 {
+                miss += 1;
+            }
+            errs.push((p - y as f64).abs() / (y as f64).max(1.0));
+        }
+        errs.sort_by(f64::total_cmp);
+        n.runs = errs.len();
+        n.miss = if errs.is_empty() { 0.0 } else { miss as f64 / errs.len() as f64 };
+        n.err = errs.get(errs.len() / 2).copied().unwrap_or(f64::INFINITY);
+        n
+    }
+
+    pub fn good(&self) -> bool {
+        self.runs >= MIN_RUNS && self.miss <= MAX_MISS && self.err <= MAX_ERR
+    }
+
+    /// The most measured among tile `t`'s nearest measured tiles but itself, × `MARGIN` (MB);
+    /// None with none within `NEAR_RINGS`. Columns wrap around the antimeridian.
+    fn nearest(&self, t: (u8, u32, u32)) -> Option<f64> {
+        self.nearest_by(t, |_, _| true)
+    }
+
+    /// `nearest`, of the tiles at the offsets `keep` keeps alone.
+    fn nearest_by(&self, t: (u8, u32, u32), keep: impl Fn(i64, i64) -> bool) -> Option<f64> {
+        let (z, x, y) = t;
+        let n = 1i64 << z.min(30);
+        let at = |dx: i64, dy: i64| {
+            let (a, b) = ((x as i64 + dx).rem_euclid(n), y as i64 + dy);
+            (0..n).contains(&b).then(|| self.at.get(&(z, a as u32, b as u32)).copied()).flatten()
+        };
+        let (mut got, mut most) = (0usize, 0u64);
+        for r in 1..=NEAR_RINGS.min(n) {
+            // (Ring r: its top and bottom rows, then its sides between.)
+            let ring = (-r..=r).flat_map(|d| [(d, -r), (d, r)]).chain((-r + 1..r).flat_map(|d| [(-r, d), (r, d)]));
+            for m in ring.filter(|&(dx, dy)| keep(dx, dy)).filter_map(|(dx, dy)| at(dx, dy)) {
+                got += 1;
+                most = most.max(m);
+            }
+            if got >= NEAR_RUNS {
+                break;
+            }
+        }
+        (got > 0).then(|| most as f64 * MARGIN)
+    }
+
+    /// `key`'s prediction (MB): its tile's `nearest`; None for a key that isn't a tile's, or with
+    /// none near.
+    fn of(&self, key: &str) -> Option<u64> {
+        let t = tile(key)?;
+        let mut g = self.memo.lock().unwrap_or_else(|e| e.into_inner());
+        *g.entry(t).or_insert_with(|| self.nearest(t).map(|p| p.ceil() as u64))
+    }
 }
 
 /// A job's cores as its runs measured them (`Book::cores`): the threads it is granted (`grant`),
@@ -656,7 +759,8 @@ impl<'a> Book<'a> {
         names.dedup();
         let mut fits: Vec<Fit> = names.into_iter().filter_map(|s| judge(&runs, s)).collect();
         fits.sort_by(|a, b| b.good().cmp(&a.good()).then(a.err.total_cmp(&b.err)).then(a.size.cmp(&b.size)));
-        let md = Model { fits, prior: self.prior_of(step, m) };
+        let near = (m == Measure::Mem).then(|| std::sync::Arc::new(Near::of_measures(self.places(step))));
+        let md = Model { fits, prior: self.prior_of(step, m), near };
         cache.0.lock().unwrap_or_else(|e| e.into_inner()).1.insert(key, md.clone());
         md
     }
@@ -670,6 +774,31 @@ impl<'a> Book<'a> {
     /// (memory: their floors among them; disk: its disk floors); time, the `mean` of its runs.
     pub fn prior(&self, step: &str, m: Measure) -> Option<u64> {
         self.model(step, m).prior
+    }
+
+    /// The step's tile targets' memory measured the way it runs now, by tile (MB): each one's run,
+    /// or its floor, the larger, as its prior counts them (a drop's measures say nothing of its builds).
+    fn places(&self, step: &str) -> std::collections::HashMap<(u8, u32, u32), u64> {
+        let v = cost_version(step);
+        let mut at = std::collections::HashMap::new();
+        let runs = self
+            .costs
+            .iter()
+            .filter(|(k, c)| step_of_key(k) == step && c.v >= v && !is_drop(c))
+            .map(|(k, c)| (k, c.peak_mb));
+        let floors = self
+            .floors
+            .into_iter()
+            .flatten()
+            .filter(|(k, f)| step_of_key(k) == step && f.v >= v && !self.costs.get(*k).is_some_and(is_drop))
+            .map(|(k, f)| (k, f.mb));
+        for (k, mb) in runs.chain(floors).filter(|(_, mb)| *mb > 0) {
+            if let Some(t) = tile(k) {
+                let e = at.entry(t).or_insert(0);
+                *e = (*e).max(mb);
+            }
+        }
+        at
     }
 
     fn prior_of(&self, step: &str, m: Measure) -> Option<u64> {
@@ -719,13 +848,18 @@ impl<'a> Book<'a> {
 
     /// The fitted `m` of `target` of `step` (None: no good fit over a size it has).
     fn fitted(&self, md: &Model, key: &str, threads: u32) -> Option<u64> {
+        self.fitted_by(md, key, threads).map(|(p, _)| p)
+    }
+
+    /// `fitted`, with the fit's held-out median error.
+    fn fitted_by(&self, md: &Model, key: &str, threads: u32) -> Option<(u64, f64)> {
         if !md.fits.iter().any(Fit::good) {
             return None;
         }
         // (Its sizes: as its own earlier run measured them, else its area.)
         let sizes = sizes_of(key, self.costs.get(key));
         let t = (threads > 0).then_some(threads as f64);
-        md.fits.iter().filter(|f| f.good()).find_map(|f| sizes.get(&f.size).map(|&x| f.at(x, t).ceil() as u64))
+        md.fits.iter().filter(|f| f.good()).find_map(|f| sizes.get(&f.size).map(|&x| (f.at(x, t).ceil() as u64, f.err)))
     }
 
     /// The memory (MB) a job of `step` for `target` needs, and where it came from: `need`'s, alone
@@ -740,11 +874,16 @@ impl<'a> Book<'a> {
             return (f, From::Measured);
         }
         let md = self.model(step, Measure::Mem);
-        match (self.fitted(&md, &key, threads), md.prior) {
-            (Some(p), _) => (p, From::Fit),
-            (None, Some(_)) if guess > 0 && GUESS_FIRST.contains(&step) => (guess, From::Guess),
-            (None, Some(p)) => (p, From::Prior),
-            (None, None) => (guess, From::Table),
+        // (By its place where that's judged good, unless a good fit over a size it has erred less
+        // on the runs held out.)
+        let near = md.near.as_ref().filter(|n| n.good()).and_then(|n| Some((n.of(&key)?, n.err)));
+        let fit = self.fitted_by(&md, &key, threads);
+        match (near, fit, md.prior) {
+            (Some((p, e)), f, _) if f.is_none_or(|f| e <= f.1) => (p, From::Near),
+            (_, Some((p, _)), _) => (p, From::Fit),
+            (None, None, Some(_)) if guess > 0 && GUESS_FIRST.contains(&step) => (guess, From::Guess),
+            (_, None, Some(p)) => (p, From::Prior),
+            (_, None, None) => (guess, From::Table),
         }
     }
 
@@ -1168,13 +1307,28 @@ pub fn fit_table(book: &Book) -> String {
                     )
                 }
             }
+            // (Memory by place, `Near`: each measure predicted from its nearest others.)
+            if let Some(nr) = book.model(s, m).near.filter(|nr| nr.runs > 0) {
+                out += &format!(
+                    "{:<14} {:<7} {:>5}  {:<10} {:>6.1}% {:>6.1}% {:>8}  {}its {NEAR_RUNS} nearest within {NEAR_RINGS} rings × {MARGIN}\n",
+                    s,
+                    m.name(),
+                    nr.runs,
+                    "place",
+                    nr.miss * 100.0,
+                    nr.err * 100.0,
+                    max_err,
+                    if nr.good() { "" } else { "poor: " },
+                );
+            }
             if !fits.first().is_some_and(Fit::good) {
                 poor.entry(s).or_default().push(m.name());
             }
         }
     }
     out += &format!("\nheld out: {FOLDS} folds; poor past {:.0}% missed or {:.0}% median error, or under {MIN_RUNS} runs; a fit's prediction is its envelope × {MARGIN}; capped at its runs' most; prior err: the step's prior (memory and disk its runs' 90th percentile, time their mean) taken as each run's (median)\n", MAX_MISS * 100.0, MAX_ERR * 100.0);
-    out += "steps that don't fit (they take their prior; units and candidates their piece's guess first):\n";
+    out += "memory by place: a tile target not measured takes its nearest measured ones' most where that's good (and erred less than a good fit)\n";
+    out += "steps that don't fit (they take their prior, or their memory by place where good; units and candidates their piece's guess before the prior):\n";
     for (s, ms) in &poor {
         out += &format!("  {s}: {}\n", ms.join(", "));
     }
@@ -1792,6 +1946,199 @@ mod tests {
         costs.insert("peaks 6/1/2".into(), cost(5000, 5, &[]));
         assert_eq!(Book::kept(&costs, &f, &d, &cache, 1).prior("peaks", Measure::Mem), Some(1000), "kept");
         assert_eq!(Book::kept(&costs, &f, &d, &cache, 2).prior("peaks", Measure::Mem), Some(5000));
+    }
+
+    /// Task #931: a terrain-deep target's memory is its place's (3 GB where its fine data is sparse,
+    /// 9 over dense lidar). One not measured takes its nearest measured ones' most, × `MARGIN`, not
+    /// the step's 90th percentile, which reserved twice a sparse one's memory and too little for a
+    /// dense one; the nearest are the measured ones closest, rings out to `NEAR_RINGS`.
+    #[test]
+    fn a_target_not_measured_takes_its_places_memory() {
+        let v = cost_version("terrain-deep");
+        let mut costs = BTreeMap::new();
+        // (A 20 × 20 block: dense east of column 310, sparse west of it.)
+        for x in 300..320u32 {
+            for y in 350..370u32 {
+                let mb = if x >= 310 { 9000 + (x + y) as u64 % 7 * 100 } else { 3000 + (x * y) as u64 % 5 * 50 };
+                costs.insert(format!("terrain-deep 10/{x}/{y}"), Cost { v, ..cost(mb, 300, &[("tiffs", 3)]) });
+            }
+        }
+        // (Not measured: one deep in each half, one at the edge.)
+        for t in ["10/303/360", "10/315/360", "10/310/360"] {
+            costs.remove(&format!("terrain-deep {t}"));
+        }
+        let b = Book::new(&costs);
+        let nr = b.model("terrain-deep", Measure::Mem).near.unwrap();
+        assert!(nr.good() && nr.runs > 300, "{nr:?}");
+        let prior = b.prior("terrain-deep", Measure::Mem).unwrap();
+        let (sparse, from) = b.mem("terrain-deep", "10/303/360", 2, 0);
+        assert_eq!(from, From::Near);
+        assert!(sparse <= (3200.0 * MARGIN).ceil() as u64 && sparse >= 3000, "{sparse} (the prior {prior})");
+        let (dense, _) = b.mem("terrain-deep", "10/315/360", 2, 0);
+        assert!(dense >= 9000 && dense <= (9600.0 * MARGIN).ceil() as u64, "{dense}");
+        // (At the edge its nearest include the dense side: the most, not the mean.)
+        assert!(b.mem("terrain-deep", "10/310/360", 2, 0).0 >= 9000);
+        // (Measured, its own.)
+        let own = costs["terrain-deep 10/301/360"].peak_mb;
+        assert_eq!(b.mem("terrain-deep", "10/301/360", 2, 0), (own, From::Measured));
+        // (Far from any measured target: the prior.)
+        assert_eq!(b.mem("terrain-deep", "10/100/100", 2, 0), (prior, From::Prior));
+        // (A floor counts as its tile's measure: a sparse target's neighbour seen holding 12 GB.)
+        let floors = BTreeMap::from([("terrain-deep 10/303/361".to_string(), Floor { mb: 12_000, alone: true, v })]);
+        let b = Book::with(&costs, Some(&floors), None);
+        assert!(b.mem("terrain-deep", "10/303/360", 2, 0).0 >= 12_000);
+    }
+
+    /// Where the memory isn't its place's (the same spread, the tiles shuffled), the nearest
+    /// predict poorly, held out, and the step's prior stands.
+    #[test]
+    fn memory_by_place_is_used_only_where_it_predicts() {
+        let v = cost_version("terrain-deep");
+        let mut costs = BTreeMap::new();
+        let mut r = 7u64;
+        for x in 300..320u32 {
+            for y in 350..370u32 {
+                r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let mb = if (r >> 33) % 2 == 0 { 3000 } else { 9000 };
+                costs.insert(format!("terrain-deep 10/{x}/{y}"), Cost { v, ..cost(mb, 300, &[]) });
+            }
+        }
+        costs.remove("terrain-deep 10/305/360");
+        let b = Book::new(&costs);
+        let nr = b.model("terrain-deep", Measure::Mem).near.unwrap();
+        assert!(!nr.good(), "{nr:?}");
+        assert_eq!(b.mem("terrain-deep", "10/305/360", 2, 0).1, From::Prior);
+    }
+
+    /// The nearest wrap around the antimeridian, and stop at the poles.
+    #[test]
+    fn the_nearest_wrap_around_the_antimeridian() {
+        let at = std::collections::HashMap::from([((10u8, 1023u32, 5u32), 4000u64), ((10, 512, 0), 2000)]);
+        let n = Near { at, ..Default::default() };
+        assert_eq!(n.nearest((10, 0, 5)), Some(4000.0 * MARGIN));
+        assert_eq!(n.nearest((10, 510, 0)), Some(2000.0 * MARGIN));
+        assert_eq!(n.nearest((10, 500, 500)), None);
+    }
+
+    /// By hand (task #931): each tile target the lead measured, predicted as its coordinator would
+    /// have at its grant, from the runs known before it (none of the floors: they carry no time):
+    /// as `Book::mem` predicts now (by place where good), and by its fit or prior alone (before
+    /// task #931). `SCENIC_MEM_BACKTEST=<folder>` holding `store/` (a copy of the lead's coordinator
+    /// store, Application Support/scenic/agent/coord/store) and `history.jsonl` (its
+    /// coord/history.jsonl). Prints per step how often each missed (predicted under what the target
+    /// took, and by over a GB) and what it reserved against what the targets took; holds
+    /// terrain-deep's misses and reservation under the fit's or prior's. Without the folder it
+    /// prints that it skipped and checks nothing.
+    #[test]
+    fn backtest_mem_on_the_leads_measures() {
+        use crate::coord::history::Event;
+        let Ok(dir) = std::env::var("SCENIC_MEM_BACKTEST") else {
+            eprintln!("memory backtest skipped: SCENIC_MEM_BACKTEST unset (no bound checked)");
+            return;
+        };
+        let dir = std::path::Path::new(&dir);
+        let store = crate::pool::store::Store::open(&dir.join("store")).unwrap();
+        let loaded = crate::coord::kept::Loaded::of(&store.snapshot().docs);
+        store.stop();
+        let text = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();
+        let events: Vec<Event> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+        // (Each target's grant: its last lease before its first run that ended well, known from
+        // then: a member's done, or the end of the lead's own job its start named it in.)
+        let mut leases: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+        let mut known: BTreeMap<String, u64> = BTreeMap::new();
+        let mut started: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+        for e in &events {
+            let Some(step) = e.step.as_deref() else { continue };
+            let keys = |ts: &[String]| ts.iter().map(|t| cost_key(step, t)).collect::<Vec<_>>();
+            match e.kind.as_str() {
+                "lease" => keys(&e.targets).into_iter().for_each(|k| leases.entry(k).or_default().push(e.t)),
+                "start" => {
+                    started.insert(e.worker.clone().unwrap_or_default(), (step.to_string(), e.targets.clone()));
+                }
+                "done" | "end" if e.ok == Some(true) => {
+                    let ts = match (e.targets.is_empty(), started.get(e.worker.as_deref().unwrap_or(""))) {
+                        (true, Some((s, ts))) if s == step => ts.clone(),
+                        _ => e.targets.clone(),
+                    };
+                    for k in keys(&ts) {
+                        known.entry(k).or_insert(e.t);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // (Tile targets, measured the way their step runs now; not a GUESS_FIRST step's, whose
+        // caller's guess (its extract's) the history doesn't keep.)
+        let tiled = |k: &str| tile(k).is_some() && !GUESS_FIRST.contains(&step_of_key(k));
+        let costs: Vec<(&String, &Cost)> = loaded
+            .costs
+            .iter()
+            .filter(|(k, c)| tiled(k) && c.v >= cost_version(step_of_key(k)) && !is_drop(c) && known.contains_key(*k))
+            .collect();
+        let mut asked: Vec<(u64, &String)> = costs
+            .iter()
+            .filter_map(|(k, _)| leases.get(*k)?.iter().filter(|&&g| g <= known[*k]).max().map(|&g| (g, *k)))
+            .collect();
+        asked.sort();
+        let mut by_known: Vec<(u64, &String, &Cost)> = costs.iter().map(|(k, c)| (known[*k], *k, *c)).collect();
+        by_known.sort_by_key(|&(t, k, _)| (t, k));
+        // (Per step: targets; missed and by over a GB, MB predicted: now's, then the fit's or
+        // prior's; MB taken; where now's came from.)
+        #[derive(Default, Debug)]
+        struct Tally {
+            n: usize,
+            miss: [usize; 2],
+            big: [usize; 2],
+            pred: [f64; 2],
+            took: f64,
+            from: BTreeMap<String, usize>,
+        }
+        let mut tally: BTreeMap<String, Tally> = BTreeMap::new();
+        let mut book: BTreeMap<String, Cost> = BTreeMap::new();
+        let mut next = 0;
+        // (An hour's grants at a time, from the runs known as it began.)
+        for hour in asked.chunk_by(|a, b| a.0 / 3600 == b.0 / 3600) {
+            let from = hour[0].0 / 3600 * 3600;
+            while next < by_known.len() && by_known[next].0 < from {
+                book.insert(by_known[next].1.clone(), by_known[next].2.clone());
+                next += 1;
+            }
+            let b = Book::new(&book);
+            for (_, k) in hour {
+                let step = step_of_key(k);
+                let target = k.rsplit(' ').next().unwrap_or_default();
+                let took = loaded.costs[*k].peak_mb as f64;
+                let (now, from_now) = b.mem(step, target, 0, 0);
+                let md = b.model(step, Measure::Mem);
+                let Some(before) = b.fitted(&md, k, 0).or(md.prior) else { continue };
+                let t = tally.entry(step.to_string()).or_default();
+                t.n += 1;
+                t.took += took;
+                *t.from.entry(format!("{from_now:?}")).or_default() += 1;
+                for (i, p) in [now as f64, before as f64].into_iter().enumerate() {
+                    t.miss[i] += usize::from(p < took);
+                    t.big[i] += usize::from(took - p > 1024.0);
+                    t.pred[i] += p;
+                }
+            }
+        }
+        let pc = |a: usize, n: usize| a as f64 * 100.0 / n.max(1) as f64;
+        for (s, t) in &tally {
+            eprintln!(
+                "{s:<14} {:>6} targets: missed {:>5.1} % (by over a GB {:>4.1} %), reserved {:.2}× | before: {:>5.1} % ({:>4.1} %), {:.2}× | {:?}",
+                t.n,
+                pc(t.miss[0], t.n),
+                pc(t.big[0], t.n),
+                t.pred[0] / t.took,
+                pc(t.miss[1], t.n),
+                pc(t.big[1], t.n),
+                t.pred[1] / t.took,
+                t.from
+            );
+        }
+        if let Some(t) = tally.get("terrain-deep") {
+            assert!(t.miss[0] < t.miss[1] && t.big[0] < t.big[1] && t.pred[0] < t.pred[1], "{t:?}");
+        }
     }
 
     #[test]
