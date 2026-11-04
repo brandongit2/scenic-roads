@@ -481,7 +481,7 @@ mod tests {
                 code: 5,
                 resolution: 5.0,
                 cover: None,
-                source: Source::Tiles { url: T.into(), zoom: 15, encoding: "gsi-png".into() },
+                source: Source::Tiles { url: T.into(), zoom: 15, encoding: "gsi-png".into(), every_zoom: false },
                 convert: None,
                 outline: None,
             }],

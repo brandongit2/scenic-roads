@@ -447,7 +447,7 @@ pub fn pyramids(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let e = x.tiles.elevation(x.m).ok()??;
     let pyr: Vec<_> = e
         .iter()
-        .filter(|(a, _)| matches!(&a.declaration.data, Data::Tiles { encoding, .. } if encoding != "terrarium"))
+        .filter(|(a, _)| matches!(&a.declaration.data, Data::Tiles { every_zoom: false, .. }))
         .cloned()
         .collect();
     Some(crate::dem::declared::meeting(&pyr, crate::stage::tile_box_grown(6, u.x, u.y, 0.0)))

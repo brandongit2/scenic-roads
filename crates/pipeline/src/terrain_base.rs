@@ -143,12 +143,12 @@ impl Pool {
         Pool { plan, terrarium, store, area, local: None, pyramids: None }
     }
 
-    /// The pool of the datasets published at every zoom alone (crate::terrain_zoom::Set::every_zoom:
-    /// the Terrarium encoding's), each read at the tile's own zoom: the coarse relief outside every
+    /// The pool of the datasets published at every zoom alone (their declarations' `every_zoom`:
+    /// crate::terrain_zoom::Set::every_zoom), each read at the tile's own zoom: the coarse relief outside every
     /// region (crate::terrain_pack::Fill::Relief), one of its tiles a tile, never a GeoTIFF's area.
     pub fn relief(&self) -> Pool {
         let mut plan = self.plan.clone();
-        plan.datasets.retain(|d| matches!(&d.source, Source::Tiles { encoding, .. } if encoding == "terrarium"));
+        plan.datasets.retain(|d| matches!(&d.source, Source::Tiles { every_zoom: true, .. }));
         Pool {
             plan,
             terrarium: self.terrarium.clone(),
@@ -175,7 +175,7 @@ impl Pool {
                     *read_resolution = Some(half);
                     d.resolution = d.resolution.max(half);
                 }
-                Source::Tiles { zoom, encoding, .. } if encoding == "terrarium" && *zoom > z as u32 => {
+                Source::Tiles { zoom, every_zoom: true, .. } if *zoom > z as u32 => {
                     *zoom = z as u32;
                     d.resolution = d.resolution.max(tile_resolution(z as u32, lat));
                 }
@@ -221,11 +221,11 @@ impl Pool {
     }
 }
 
-/// Whether dataset `d` is a tile pyramid read tile by tile over the network at its one zoom: any
-/// but Terrarium's (read through `RawTiles`, at every zoom). GSI's z15 layers: 64 requests a z12
-/// tile each.
+/// Whether dataset `d` is a tile pyramid read tile by tile over the network at its one zoom: one
+/// not declared published at every zoom (`every_zoom`). GSI's z15 layers: 64 requests a z12 tile
+/// each.
 pub(crate) fn by_tile(d: &crate::dem::declared::Dataset) -> bool {
-    matches!(&d.source, Source::Tiles { encoding, .. } if encoding != "terrarium")
+    matches!(&d.source, Source::Tiles { every_zoom: false, .. })
 }
 
 /// The first zoom whose tiles read the pool at their own z6 tile's middle latitude (`row_mid`), not
@@ -332,6 +332,9 @@ pub struct Tiles<'a> {
     water: Option<&'a dyn WaterSource>,
     at_sea: &'a [OnceLock<Plan>],
     held: Mutex<HashMap<(u8, u32, u32), Option<Vec<u8>>>>,
+    /// By tile sampled, the codes (a bit each) of the datasets its pixels came from
+    /// (crate::terrain_pack::RawSource::codes), until asked for.
+    codes: Mutex<HashMap<(u8, u32, u32), u32>>,
     /// Whether the build is pausing (crate::control::draining_lately; a test's own): checked before each
     /// sampling, a chunk or a tile, which then stops with crate::control::Paused.
     draining: &'a (dyn Fn() -> bool + Sync),
@@ -348,6 +351,7 @@ impl<'a> Tiles<'a> {
             water: None,
             at_sea: &[],
             held: Mutex::new(HashMap::new()),
+            codes: Mutex::new(HashMap::new()),
             draining: &crate::control::draining_lately,
         }
     }
@@ -453,18 +457,27 @@ impl<'a> Tiles<'a> {
             Some(w) if self.plan(k).datasets.iter().any(by_tile) => open_sea(w, z, ts)?,
             _ => Vec::new(),
         };
-        let elev = if sea.iter().any(|&b| b) {
+        let (elev, src): (Vec<f32>, Vec<u8>) = if sea.iter().any(|&b| b) {
             let pick = |at_sea: bool, v: &[f64]| -> Vec<f64> {
                 v.iter().zip(&sea).filter(|p| *p.1 == at_sea).map(|p| *p.0).collect()
             };
-            let ashore = s.sample(&pick(false, &lon), &pick(false, &lat), &|_| {})?.elev;
-            let afloat =
-                self.sampler(k + self.at_sea.len())?.sample(&pick(true, &lon), &pick(true, &lat), &|_| {})?.elev;
-            let (mut a, mut b) = (ashore.into_iter(), afloat.into_iter());
-            sea.iter().map(|&at| if at { b.next() } else { a.next() }.expect("a height a point")).collect()
+            let ashore = s.sample(&pick(false, &lon), &pick(false, &lat), &|_| {})?;
+            let afloat = self.sampler(k + self.at_sea.len())?.sample(&pick(true, &lon), &pick(true, &lat), &|_| {})?;
+            let (mut a, mut b) = (ashore.elev.into_iter().zip(ashore.src), afloat.elev.into_iter().zip(afloat.src));
+            sea.iter().map(|&at| if at { b.next() } else { a.next() }.expect("a height a point")).unzip()
         } else {
-            s.sample(&lon, &lat, &|_| {})?.elev
+            let got = s.sample(&lon, &lat, &|_| {})?;
+            (got.elev, got.src)
         };
+        // (By tile, the codes of the datasets its pixels came from: `codes`.)
+        {
+            let per = 256 * 256 * K * K;
+            let mut c = self.codes.lock().unwrap();
+            for (t, &(x, y)) in ts.iter().enumerate() {
+                let m = src[t * per..(t + 1) * per].iter().filter(|&&v| v != 0).fold(0u32, |m, &v| m | 1 << (v & 31));
+                c.insert((z, x, y), m);
+            }
+        }
         let per = 256 * 256;
         let mut out = Vec::with_capacity(ts.len());
         for t in 0..ts.len() {
@@ -547,6 +560,10 @@ pub fn points(z: u8, ts: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
 }
 
 impl RawSource for Tiles<'_> {
+    fn codes(&self, z: u8, x: u32, y: u32) -> u32 {
+        self.codes.lock().unwrap().remove(&(z, x, y)).unwrap_or(0)
+    }
+
     fn get(&self, z: u8, x: u32, y: u32) -> Result<(Option<Vec<u8>>, bool)> {
         if let Some(t) = self.held.lock().unwrap().remove(&(z, x, y)) {
             return Ok((t, false));
@@ -648,6 +665,7 @@ mod tests {
                         url: crate::terrain_pack::TEST_BASE.into(),
                         zoom: 12,
                         encoding: "terrarium".into(),
+                        every_zoom: true,
                     },
                     convert: None,
                     outline: None,
@@ -826,6 +844,7 @@ mod tests {
                         url: "https://g.test/{z}/{x}/{y}.png".into(),
                         zoom: 14,
                         encoding: "gsi-png".into(),
+                        every_zoom: false,
                     },
                     convert: None,
                     outline: None,
@@ -898,8 +917,16 @@ mod tests {
                     8.0,
                     Source::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![], masks: vec![] },
                 ),
-                ds("t", 38.0, Source::Tiles { url: "u".into(), zoom: 12, encoding: "terrarium".into() }),
-                ds("g", 5.0, Source::Tiles { url: "v".into(), zoom: 15, encoding: "gsi-png".into() }),
+                ds(
+                    "t",
+                    38.0,
+                    Source::Tiles { url: "u".into(), zoom: 12, encoding: "terrarium".into(), every_zoom: true },
+                ),
+                ds(
+                    "g",
+                    5.0,
+                    Source::Tiles { url: "v".into(), zoom: 15, encoding: "gsi-png".into(), every_zoom: false },
+                ),
             ],
         };
         let pool = Pool::of(plan, store::nasfs::NasPath::local_for_test("/s"), [0.0, -1.0, 1.0, 1.0]);

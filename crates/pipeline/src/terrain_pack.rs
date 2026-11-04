@@ -98,15 +98,42 @@ pub fn native_of(fill: &(dyn Fn(u8, u32, u32) -> Fill + Sync), z: u8, x: u32, y:
 /// left void (their means go there: `prepare`); none where every quarter is its children's. So a
 /// tile coarser than its place's finest zoom never samples the pool, and outside every region
 /// only the relief's one tile is read.
+///
+/// Past z12 (the deep band, crate::terrain_deep) a tile is the place's finest only where some of its
+/// pixels came from a dataset reaching its zoom (`reaching`, crate::terrain_zoom::codes_reaching):
+/// one that would only upsample a coarser dataset isn't kept (`keep`), and its parent takes that
+/// quarter from its own sample (`built`).
 pub struct Fills<'a> {
     pub pool: &'a dyn RawSource,
     pub relief: &'a dyn RawSource,
     pub fill: &'a (dyn Fn(u8, u32, u32) -> Fill + Sync),
+    pub reaching: &'a (dyn Fn(u8, u32, u32) -> u32 + Sync),
+    built: Mutex<std::collections::HashSet<(u8, u32, u32)>>,
+    kept: Mutex<HashMap<(u8, u32, u32), bool>>,
 }
 
-impl Fills<'_> {
+impl<'a> Fills<'a> {
+    pub fn new(
+        pool: &'a dyn RawSource,
+        relief: &'a dyn RawSource,
+        fill: &'a (dyn Fn(u8, u32, u32) -> Fill + Sync),
+        reaching: &'a (dyn Fn(u8, u32, u32) -> u32 + Sync),
+    ) -> Self {
+        Fills { pool, relief, fill, reaching, built: Default::default(), kept: Default::default() }
+    }
+
     fn quarters(&self, z: u8, x: u32, y: u32) -> [Fill; 4] {
-        std::array::from_fn(|k| (self.fill)(z + 1, 2 * x + (k as u32 & 1), 2 * y + (k as u32 >> 1)))
+        let built = self.built.lock().unwrap();
+        std::array::from_fn(|k| {
+            let c = (2 * x + (k as u32 & 1), 2 * y + (k as u32 >> 1));
+            match (self.fill)(z + 1, c.0, c.1) {
+                // (A child the run hasn't built: none of its datasets has data there.)
+                Fill::Child if z + 1 > crate::terrain_deep::FIRST_Z && !built.contains(&(z + 1, c.0, c.1)) => {
+                    Fill::Sample
+                }
+                f => f,
+            }
+        })
     }
 }
 
@@ -122,6 +149,10 @@ impl RawSource for Fills<'_> {
         };
         let (sample, a) = take(Fill::Sample, self.pool)?;
         let (relief, b) = take(Fill::Relief, self.relief)?;
+        if z >= crate::terrain_deep::FIRST_Z {
+            let fine = sample.is_some() && self.pool.codes(z, x, y) & (self.reaching)(z, x, y) != 0;
+            self.kept.lock().unwrap().insert((z, x, y), fine || relief.is_some());
+        }
         if sample.is_none() && relief.is_none() {
             return Ok((None, a || b));
         }
@@ -164,6 +195,14 @@ impl RawSource for Fills<'_> {
             + self.relief.prefetch_counted(z, &relief, threads, &none)?;
         done.fetch_add(tiles.len() as u64, std::sync::atomic::Ordering::Relaxed);
         Ok(n)
+    }
+
+    fn built(&self, z: u8, tiles: &[(u32, u32)]) {
+        self.built.lock().unwrap().extend(tiles.iter().map(|&(x, y)| (z, x, y)));
+    }
+
+    fn keep(&self, z: u8, x: u32, y: u32) -> bool {
+        self.kept.lock().unwrap().remove(&(z, x, y)).unwrap_or(true)
     }
 }
 
@@ -227,6 +266,18 @@ pub trait RawSource: Sync {
         threads: usize,
         done: &std::sync::atomic::AtomicU64,
     ) -> anyhow::Result<usize>;
+    /// The tiles of zoom `z` built (a level's, or what it starts from: its children's means), so a
+    /// quarter whose child isn't among them is the tile's own sample (`Fills`).
+    fn built(&self, _z: u8, _tiles: &[(u32, u32)]) {}
+    /// Whether tile `z/x/y` as read is kept where none of its children is (`Fills::keep`).
+    fn keep(&self, _z: u8, _x: u32, _y: u32) -> bool {
+        true
+    }
+    /// The codes (a bit each, crate::dem::declared::Declaration::code) of the datasets tile
+    /// `z/x/y`'s pixels came from as sampled, once (all: not told).
+    fn codes(&self, _z: u8, _x: u32, _y: u32) -> u32 {
+        u32::MAX
+    }
 }
 
 impl RawSource for RawTiles {
@@ -1419,6 +1470,10 @@ impl<'a> Maker<'a> {
             return Ok((outs, nq));
         }
         let todo: Vec<usize> = (0..blocks.len()).filter(|&bi| !kept.blocks.contains_key(&key(&blocks[bi]))).collect();
+        // (What this level starts from: its children's means, the tiles built under it.)
+        let mut under: Vec<(u32, u32)> = quads.keys().copied().collect();
+        under.sort_unstable();
+        self.raw.built(z + 1, &under);
         let p = sub("sampling the terrain pool into raw tiles");
         // (Nothing kept: the level's tiles in their order, as a run without a log reads them.)
         let want: Vec<(u32, u32)> = if todo.len() == blocks.len() {
@@ -1450,7 +1505,9 @@ impl<'a> Maker<'a> {
             let prepared: Vec<anyhow::Result<Option<(u32, u32, Prepared)>>> = block
                 .par_iter()
                 .map(|&(x, y)| {
-                    let p = prepare(self.get(z, x, y)?, z, x, y, quads, src)?;
+                    let raw = self.get(z, x, y)?;
+                    let kids = (0..4u32).any(|k| quads.contains_key(&(x * 2 + (k & 1), y * 2 + (k >> 1))));
+                    let p = prepare(raw.filter(|_| kids || self.raw.keep(z, x, y)), z, x, y, quads, src)?;
                     if !p.decoded {
                         self.processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return Ok(None);
@@ -2666,7 +2723,8 @@ pub(crate) mod tests {
         let t = crate::terrain_zoom::tile_at(10.5, 45.5, 6);
         let (pool, relief) = (Const::new(100.0), Const::new(7.0));
         let fill = fill_of(&cov, &sets, &|_, _| false);
-        let raw = Fills { pool: &pool, relief: &relief, fill: &fill };
+        let reaching = |z: u8, x: u32, y: u32| crate::terrain_zoom::codes_reaching(&sets, z, x, y);
+        let raw = Fills::new(&pool, &relief, &fill, &reaching);
         let native = |z: u8, x: u32, y: u32| native_of(&fill, z, x, y);
         let src = Sources { native: Some(&native), sets: &sets, ..Default::default() };
         // (The z6 tile 20 km off the region: its tiles near it, no z12.)
@@ -2719,6 +2777,28 @@ pub(crate) mod tests {
         assert!(pool.asked.lock().unwrap().is_empty());
         let r = relief.asked.lock().unwrap().clone();
         assert!(r.iter().all(|a| a.0 <= 2) && r.len() <= 21, "{r:?}");
+    }
+
+    /// Past z12 a tile none of whose pixels came from a dataset reaching its zoom isn't kept, and a
+    /// quarter whose child the run didn't build is its tile's own sample (the depth's rule).
+    #[test]
+    fn a_deep_tile_only_upsampling_a_coarser_dataset_isnt_kept() {
+        let (pool, relief) = (Const::new(100.0), Const::new(7.0));
+        let child = |_: u8, _: u32, _: u32| Fill::Child;
+        let none = |_: u8, _: u32, _: u32| 0u32;
+        let some = |_: u8, _: u32, _: u32| 1u32;
+        let z = crate::terrain_deep::FIRST_Z + 1;
+        let f = Fills::new(&pool, &relief, &child, &none);
+        // (No child built: every quarter the tile's own sample, and with no dataset reaching it, not kept.)
+        assert!(f.get(z, 10, 10).unwrap().0.is_some() && !f.keep(z, 10, 10));
+        let f = Fills::new(&pool, &relief, &child, &some);
+        assert!(f.get(z, 10, 10).unwrap().0.is_some() && f.keep(z, 10, 10));
+        // (Its children built: none of it read.)
+        f.built(z + 1, &[(20, 20), (21, 20), (20, 21), (21, 21)]);
+        assert!(f.get(z, 10, 10).unwrap().0.is_none());
+        // (At z12 and coarser, kept as read.)
+        let f = Fills::new(&pool, &relief, &|_, _, _| Fill::Sample, &none);
+        assert!(f.get(12, 10, 10).unwrap().0.is_some() && f.keep(12, 10, 10));
     }
 
     /// Carried unrounded within a job and rounded ties to even once as stored, a chained pyramid's

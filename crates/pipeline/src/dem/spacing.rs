@@ -1,7 +1,7 @@
 //! How densely `extract` puts points along a way (docs/inputs.md §6.8, Densification): as far
 //! apart as the finished terrain's pixels where the way starts (the roads take their heights from
 //! it: crate::road_terrain), never closer than `FLOOR_M`. The terrain's finest zoom at a point is
-//! its place's (crate::terrain_zoom: the finest of the declared datasets meeting it there, up to the
+//! its place's (crate::terrain_zoom: the finest of the declared datasets with data there, up to the
 //! first holding it whole, each by its cell); its pixel there is the spacing. The datasets' cells
 //! and coverages are those the input check measured (`facts.measured`); no source or area is named
 //! here.
@@ -66,13 +66,29 @@ impl Fine {
         let mut rows: Vec<u8> = vec![0; 180];
         for (d, c) in ds {
             let detail = crate::terrain_zoom::Detail::of(d);
+            let c_has = |cell: &(i32, i32)| c.cells.contains(cell);
             if c.world {
                 for (r, z) in rows.iter_mut().enumerate() {
                     *z = detail.zoom_at(poleward(r as i32 - 90)).min(crate::terrain_zoom::DEEPEST);
                 }
                 break;
             }
-            for &(x, y) in &c.cells {
+            // (Where its files really have data, its presence measured: the cells its tiles there
+            // meet inside; else its coverage's cells.)
+            let mine: std::collections::BTreeSet<(i32, i32)> = match &d.measured.presence {
+                Some(p) => p
+                    .iter()
+                    .flat_map(|t| {
+                        let b = crate::stage::tile_box_grown(crate::terrain_deep::PACK_Z, t[0], t[1], 0.0);
+                        let (x0, x1) = (b[0].floor() as i32, (b[2].ceil() as i32 - 1).max(b[0].floor() as i32));
+                        let (y0, y1) = (b[1].floor() as i32, (b[3].ceil() as i32 - 1).max(b[1].floor() as i32));
+                        (x0..=x1).flat_map(move |x| (y0..=y1).map(move |y| (x, y)))
+                    })
+                    .filter(|c| c_has(c))
+                    .collect(),
+                None => c.cells.iter().copied().collect(),
+            };
+            for &(x, y) in &mine {
                 let z = detail.zoom_at(poleward(y)).min(crate::terrain_zoom::DEEPEST);
                 let e = cells.entry([x, y]).or_insert(z);
                 *e = (*e).max(z);
@@ -218,6 +234,7 @@ mod tests {
                 uncut: None,
                 outline: None,
                 bands: None,
+                presence: None,
             },
             keyed: "k".into(),
         };

@@ -49,7 +49,7 @@ fn tiles_blend_across_their_edges() {
         code,
         resolution: tile_resolution(z, 0.0),
         cover: None,
-        source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into() },
+        source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into(), every_zoom: true },
         outline: None,
     };
     let plan = Plan {
@@ -236,7 +236,7 @@ fn sampling_says_increasing_fractions_to_one_per_chunk() {
         code,
         resolution: tile_resolution(z, 0.0),
         cover: None,
-        source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into() },
+        source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into(), every_zoom: true },
         outline: None,
     };
     let plan = Plan {
@@ -419,6 +419,7 @@ fn a_runs_tiles_are_fetched_once_and_together_and_the_heights_are_the_same() {
             url: format!("https://{host}/{{z}}/{{x}}/{{y}}.png"),
             zoom: z,
             encoding: "terrarium".into(),
+            every_zoom: true,
         },
         outline: None,
     };
@@ -536,7 +537,7 @@ fn heights_are_converted_before_the_blend() {
         code,
         resolution: tile_resolution(z, 0.0),
         cover: None,
-        source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into() },
+        source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into(), every_zoom: true },
         outline: None,
     };
     let plan = Plan {

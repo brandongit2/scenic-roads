@@ -2459,7 +2459,8 @@ fn with_fills<R>(
     let src = pipeline::terrain_pack::Sources { water: Some(water), native: Some(&native), sets };
     pool.with_tiles(raw, src.water, |tiles| {
         relief.with_tiles(raw, src.water, |rt| {
-            let fills = pipeline::terrain_pack::Fills { pool: tiles, relief: rt, fill: &fill };
+            let reaching = |z: u8, x: u32, y: u32| pipeline::terrain_zoom::codes_reaching(sets, z, x, y);
+            let fills = pipeline::terrain_pack::Fills::new(tiles, rt, &fill, &reaching);
             f(&fills, &src)
         })
     })??

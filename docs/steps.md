@@ -55,8 +55,10 @@ What each step does, in detail. The steps as one table (names, chains, the check
     datasets meeting it (docs/inputs.md §6.8), never typed: a dataset's finest zoom at a latitude is
     the finest whose pixels are no finer than its cell there (`CELL_FACTOR` 1, the owner's), its cell
     its latitude band's (`Measured::bands`, measured per file by the input check), else its
-    resolution; a tile pyramid's, its declared zoom. A place's sources are the datasets meeting it
-    in their declared order (rank, then resolution) up to the first holding it whole; its finest
+    resolution; a tile pyramid's, its declared zoom. A place's sources are the datasets with data
+    under it (their measured presence, by z10 tile: `Measured::presence`; one not measured so, its
+    coverage's cells) in their declared order (rank, then resolution) up to the first holding it
+    whole; its finest
     zoom is the finest of theirs at the tile's poleward edge, at most z16 (`DEEPEST`: the deepest
     the map stores). The polar caps take the same rule on their grid's pixel (`polar::finest`).
   - **The rule** (`terrain_pack::Fill`), quarter by quarter of every tile at every zoom, by the child
@@ -66,7 +68,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
     |---|---|---|
     | built (inside a region: within 20 km of the coverage, and no finer than its place's finest zoom) | the child's 2×2 means, of its heights before rounding | every zoom below a place's finest: z0–2 from the lo packs' z3, z3–8 from the z6 tiles' mids, z9–11 in a z6 tile's run, z12 from its z10 tiles' deep mids, z13–15 in a z10 tile's run |
     | past its place's finest zoom (inside a region) | sampled from the pool at this zoom | the place's finest zoom: z12 or z11 where only a worldwide dataset is, z13–16 where a finer one is (a quarter of a coarser band whose finer data has a gap, too) |
-    | outside every region | the relief: the datasets published at every zoom (`terrain_zoom::relief`, the Terrarium encoding's) read at this zoom, one tile a tile | z0–8, and z9–12 past a region's 20 km |
+    | outside every region | the relief: the datasets published at every zoom (their declarations' `every_zoom`: `terrain_zoom::relief`) read at this zoom, one tile a tile | z0–8, and z9–12 past a region's 20 km |
 
     A tile with no quarter to sample reads nothing from the pool; one with no quarter at all isn't
     stored. Where a dataset has a gap (its voids, its edge), the next in the declared order fills it
@@ -81,7 +83,12 @@ What each step does, in detail. The steps as one table (names, chains, the check
     - **terrain-deep**, a run per z10 tile whose places reach past z12 (`terrain_deep::levels`, near
       the coverage): its tiles z13–16 by the rule, its deep pack, and its mid
       (`work/terrain-deep-mid/10-x-y`: its z13 tiles' means before rounding and its lakes' levels).
-      A z10 tile, not its z6 tile: up to 5,440 tiles and GBs of a fine dataset's reads each.
+      A z10 tile, not its z6 tile: up to 5,440 tiles and GBs of a fine dataset's reads each. A tile
+      of the band is kept only where some of its pixels came from a dataset reaching its zoom
+      (`terrain_zoom::codes_reaching`, the sampler's sources by pixel); one that would only upsample
+      a coarser dataset isn't, and its parent's quarter there is its own sample: so the next
+      dataset's zoom holds there, as the depth's rule (§3, #804). The band is the long part of a
+      rebuild: of the ~40 Mac-days estimated for a whole terrain rebuild, most are its targets.
     - **terrain-hi**, a run per z6 tile near the coverage (`build_piece`): its z9–12 by the rule, its
       z12 tiles' quarters over its z10 tiles' deep mids (and its lakes' levels from them first), its
       hi pack, and its mid (`work/terrain-mid/6-x-y`: its z9 tiles' means and its lakes' levels). It
@@ -103,7 +110,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
     (crate::dem::generic), so the roads and the terrain use one dataset at every point. A sampled
     tile is sampled at 2 × 2 points a pixel (their mean), each dataset read at the tile's detail or
     its own, the coarser: a GeoTIFF at its overview nearest half a pixel (at most its full
-    resolution), a Terrarium pyramid at the tile's zoom up to its own, another pyramid at its own
+    resolution), a pyramid declared published at every zoom (`every_zoom`) at the tile's zoom up to its own, another pyramid at its own
     and only from z9 on (below, the next dataset serves: a z8 tile would read 16,384 of a z15
     pyramid's tiles over the network, task #704), and never in the open sea: a pixel wholly sea in
     the terrain's water, with those around it, is flattened to 0 m whatever it reads, so its points

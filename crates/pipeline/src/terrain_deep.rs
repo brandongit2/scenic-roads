@@ -287,6 +287,8 @@ mod tests {
             detail: Detail::Raster { bands: Vec::new(), all: cell },
             cut: None,
             every_zoom: false,
+            code: 1,
+            presence: None,
         }
     }
 

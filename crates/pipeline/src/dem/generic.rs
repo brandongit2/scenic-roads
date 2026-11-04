@@ -1503,7 +1503,7 @@ enum Set<'a> {
 impl<'a> Set<'a> {
     fn new(ds: &'a Dataset, o: &'a Opts<'a>, cache: &Arc<Mutex<BlockCache>>, memo: &Arc<TileMemo>) -> Result<Set<'a>> {
         Ok(match &ds.source {
-            Source::Tiles { url, zoom, encoding } => Set::Tiles(TileSet {
+            Source::Tiles { url, zoom, encoding, .. } => Set::Tiles(TileSet {
                 url,
                 zoom: *zoom,
                 encoding,

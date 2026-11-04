@@ -171,6 +171,98 @@ fn geographic_cell(t: &crate::geotiff::Tiff) -> anyhow::Result<(f64, f64, f64)> 
     Ok((south, north, (gt[5].abs() * m).max(gt[1].abs() * m * equatorward.to_radians().cos())))
 }
 
+/// The tiles of the deep packs' zoom (crate::terrain_deep::PACK_Z) where a dataset's files really
+/// have data (`Measured::presence`), sorted: of its coverage's cells (`cover`), each tile one of whose
+/// points (no further apart than half the finest of its files' features: a footprint, or a pixel of
+/// its valid-data mask) is in a file's data. A file whose index footprint is narrower than such a
+/// tile is taken by its footprint; any other is read (its coarsest overview's valid pixels, as the
+/// coverage reads a file without one: `valid_data`).
+pub fn presence_of(
+    crs: u16,
+    files: &[(String, Option<[f64; 4]>)],
+    cover: &[[f64; 4]],
+    open: &dyn Fn(&str) -> std::result::Result<crate::geotiff::Tiff, String>,
+) -> std::result::Result<Vec<[u32; 2]>, String> {
+    use crate::terrain_deep::PACK_Z;
+    let projected = crate::dem::proj::projected(crs);
+    let atlas = if projected { crate::dem::proj::Projection::of(crs) } else { None };
+    let native = |lon: f64, lat: f64| atlas.as_ref().map_or((lon, lat), |a| a.project(lon, lat));
+    // (A tile's side in the files' units: metres at the equator, the widest, or degrees.)
+    let side = if projected {
+        crate::dem::generic::tile_resolution(PACK_Z as u32, 0.0) * 256.0
+    } else {
+        360.0 / (1u64 << PACK_Z) as f64
+    };
+    let masks: Vec<Mask> = files
+        .iter()
+        .map(|(w, fp)| match fp {
+            Some(b) if (b[2] - b[0]).max(b[3] - b[1]) < side => {
+                Ok(Mask { gt: [b[0], b[2] - b[0], 0.0, b[3], 0.0, b[1] - b[3]], w: 1, h: 1, valid: vec![true] })
+            }
+            _ => valid_data(&open(w)?).map_err(|e| format!("{w}: {e:#}")),
+        })
+        .collect::<std::result::Result<_, String>>()?;
+    let bounds: Vec<[f64; 4]> = masks
+        .iter()
+        .map(|m| {
+            let (a, b) = (m.gt[0] + m.gt[1] * m.w as f64, m.gt[3] + m.gt[5] * m.h as f64);
+            [m.gt[0].min(a), m.gt[3].min(b), m.gt[0].max(a), m.gt[3].max(b)]
+        })
+        .collect();
+    let mut tiles: BTreeSet<(u32, u32)> = BTreeSet::new();
+    for c in cover {
+        let n = (1u64 << PACK_Z) as f64;
+        let (x0, y1) = crate::dem::proj::mercator_tile(c[0], c[1].clamp(-85.0, 85.0), PACK_Z as u32);
+        let (x1, y0) = crate::dem::proj::mercator_tile(c[2], c[3].clamp(-85.0, 85.0), PACK_Z as u32);
+        for x in x0.floor() as i64..x1.ceil().min(n) as i64 {
+            for y in y0.floor().max(0.0) as i64..y1.ceil().min(n) as i64 {
+                tiles.insert((x.rem_euclid(n as i64) as u32, y as u32));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (x, y) in tiles {
+        let b = crate::stage::tile_box_grown(PACK_Z, x, y, 0.0);
+        // (Its box in the files' units, from points along its edges.)
+        let mut nb = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        for k in 0..=8 {
+            let f = k as f64 / 8.0;
+            for (lon, lat) in [
+                (b[0] + f * (b[2] - b[0]), b[1]),
+                (b[0] + f * (b[2] - b[0]), b[3]),
+                (b[0], b[1] + f * (b[3] - b[1])),
+                (b[2], b[1] + f * (b[3] - b[1])),
+            ] {
+                let (px, py) = native(lon, lat);
+                nb = [nb[0].min(px), nb[1].min(py), nb[2].max(px), nb[3].max(py)];
+            }
+        }
+        let near: Vec<usize> = (0..masks.len())
+            .filter(|&i| bounds[i][0] < nb[2] && nb[0] < bounds[i][2] && bounds[i][1] < nb[3] && nb[1] < bounds[i][3])
+            .collect();
+        if near.is_empty() {
+            continue;
+        }
+        let feature = near
+            .iter()
+            .map(|&i| masks[i].gt[1].abs().min((bounds[i][2] - bounds[i][0]).max(bounds[i][3] - bounds[i][1])))
+            .fold(f64::INFINITY, f64::min);
+        let k = ((2.0 * (nb[2] - nb[0]).max(nb[3] - nb[1]) / feature).ceil() as usize).max(2);
+        let hit = (0..k).any(|j| {
+            (0..k).any(|i| {
+                let lon = b[0] + (i as f64 + 0.5) / k as f64 * (b[2] - b[0]);
+                let lat = b[1] + (j as f64 + 0.5) / k as f64 * (b[3] - b[1]);
+                let (px, py) = native(lon, lat);
+                near.iter().any(|&m| masks[m].holds(px, py))
+            })
+        });
+        if hit {
+            out.push([x, y]);
+        }
+    }
+    Ok(out)
+}
+
 impl Elevation {
     /// What dataset `id` declared as `d` has, read from its data (memoized by `memo_key`).
     fn measure(
@@ -238,7 +330,7 @@ impl Elevation {
     ) -> std::result::Result<Measured, String> {
         let world = territory == ["world"];
         match &d.data {
-            Data::Tiles { zoom, url, encoding } => {
+            Data::Tiles { zoom, url, encoding, .. } => {
                 if world {
                     self.tile_size(url, *zoom, encoding, &[[-1.0, -1.0, 1.0, 1.0]])?;
                     return Ok(Measured {
@@ -248,6 +340,7 @@ impl Elevation {
                         uncut: None,
                         outline: None,
                         bands: None,
+                        presence: None,
                     });
                 }
                 if territory.is_empty() {
@@ -270,6 +363,7 @@ impl Elevation {
                     uncut: None,
                     outline: None,
                     bands: None,
+                    presence: None,
                 })
             }
             Data::Geotiff { urls, index, files, store } => {
@@ -307,11 +401,8 @@ impl Elevation {
                 let mut picks: BTreeSet<usize> =
                     sample_of(list.len()).into_iter().filter(|&k| list[k].1.is_some()).collect();
                 picks.extend((0..list.len()).filter(|&k| list[k].1.is_none()));
-                let mut masks: Vec<Mask> = Vec::new();
-                // (Each geographic file's latitudes and cell: the dataset's bands.)
-                let mut files_cells: Vec<(f64, f64, f64)> = Vec::new();
-                for k in picks {
-                    let (w, footprint) = &list[k];
+                // (A file opened: from the store, the network or the version's folder.)
+                let open = |w: &str| -> std::result::Result<crate::geotiff::Tiff, String> {
                     let src: Arc<dyn store::range::RangeRead> = if w.starts_with("http") && *store {
                         let dir = self
                             .store
@@ -331,6 +422,14 @@ impl Elevation {
                     };
                     let t = crate::geotiff::Tiff::open(src)
                         .map_err(|e| format!("{w}: its header can't be read ({e:#})"))?;
+                    Ok(t)
+                };
+                let mut masks: Vec<Mask> = Vec::new();
+                // (Each geographic file's latitudes and cell: the dataset's bands.)
+                let mut files_cells: Vec<(f64, f64, f64)> = Vec::new();
+                for k in picks {
+                    let (w, footprint) = &list[k];
+                    let t = open(w)?;
                     let keys = t.geo_keys();
                     let c = keys
                         .short(crate::geotiff::key::PROJECTED_CS_TYPE)
@@ -381,7 +480,12 @@ impl Elevation {
                     Some(declared::cells_to_boxes(&cells))
                 };
                 let bands = (!files_cells.is_empty()).then(|| declared::bands_of(&files_cells));
-                Ok(Measured { crs: Some(crs), resolution, cover, uncut: None, outline: None, bands })
+                // (Where it really has data, by deep-pack tile: crate::terrain_zoom's places.)
+                let presence = match &cover {
+                    Some(c) => Some(presence_of(crs, &list, c, &open)?),
+                    None => None,
+                };
+                Ok(Measured { crs: Some(crs), resolution, cover, uncut: None, outline: None, bands, presence })
             }
         }
     }
@@ -937,9 +1041,15 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
         code: 4,
         regions: None,
         exclude: Vec::new(),
-        data: Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() },
+        data: Data::Tiles {
+            url: "https://e.org/{z}/{x}/{y}.png".into(),
+            zoom: 10,
+            encoding: "terrarium".into(),
+            every_zoom: true,
+        },
     };
-    let measured = Measured { crs: None, resolution: 150.0, cover: None, uncut: None, outline: None, bands: None };
+    let measured =
+        Measured { crs: None, resolution: 150.0, cover: None, uncut: None, outline: None, bands: None, presence: None };
     let entry = |id: &str, d: &Declaration, measured: Measured, keyed: &str| {
         let mut facts = serde_json::Map::new();
         facts.insert("declaration".into(), serde_json::to_value(d).unwrap());
@@ -968,12 +1078,13 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
             url: "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png".into(),
             zoom: 12,
             encoding: "terrarium".into(),
+            every_zoom: true,
         },
     };
     files.extend([entry(
         "terrarium",
         &base,
-        Measured { crs: None, resolution: 38.0, cover: None, uncut: None, outline: None, bands: None },
+        Measured { crs: None, resolution: 38.0, cover: None, uncut: None, outline: None, bands: None, presence: None },
         "t",
     )]);
     let north = Declaration {
@@ -995,6 +1106,7 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
             uncut: None,
             outline: None,
             bands: None,
+            presence: None,
         },
         "g",
     )]);

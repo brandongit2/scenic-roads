@@ -32,7 +32,7 @@ use std::sync::Arc;
 /// the grid's pixel (crate::terrain_zoom::Detail::polar_zoom), never coarser than a block's.
 pub fn finest(sets: &[crate::terrain_zoom::Set], pole: Pole) -> u8 {
     let b = polar::lat_box(pole, 0, 0, 0);
-    let s = crate::terrain_zoom::sources(sets, b);
+    let s = crate::terrain_zoom::sources_in(sets, b);
     s.iter().map(|s| s.detail.polar_zoom(polar::CAP_LAT)).max().unwrap_or(BLOCK_Z).max(BLOCK_Z)
 }
 

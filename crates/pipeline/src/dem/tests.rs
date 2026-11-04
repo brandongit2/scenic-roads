@@ -331,7 +331,12 @@ fn declared_plan() -> declared::Plan {
         code,
         resolution: generic::tile_resolution(zoom, 35.0),
         cover: Some(vec![[122.0, 20.0, 154.0, 47.0]]),
-        source: Source::Tiles { url: format!("{GSI}/{layer}/{{z}}/{{x}}/{{y}}.png"), zoom, encoding: "gsi-png".into() },
+        source: Source::Tiles {
+            url: format!("{GSI}/{layer}/{{z}}/{{x}}/{{y}}.png"),
+            zoom,
+            encoding: "gsi-png".into(),
+            every_zoom: false,
+        },
         outline: None,
     };
     let canada = Some([-70.0, 44.0, -63.0, 48.0]);

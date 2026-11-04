@@ -105,10 +105,37 @@ pub struct Set {
     /// Where its `regions` cut its coverage: what was measured (`Measured::uncut`, for
     /// declared::cut_note); None: not cut.
     pub cut: Option<declared::Measured>,
-    /// A pyramid published at every zoom to its declared one (the Terrarium encoding's, as
-    /// crate::terrain_base reads it): what the coarse relief outside every region is read from
+    /// A pyramid published at every zoom to its declared one (its declaration's `every_zoom`, which
+    /// the input check validates): what the coarse relief outside every region is read from
     /// (`relief`), one tile a tile.
     pub every_zoom: bool,
+    /// The source byte its heights carry (`code`): what a sampled pixel says it came from.
+    pub code: u8,
+    /// Where its files really have data (`Measured::presence`), by the deep packs' tile and every
+    /// coarser tile over one; None: its coverage's cells alone.
+    pub presence: Option<std::sync::Arc<Presence>>,
+}
+
+/// A dataset's presence (`Measured::presence`): its tiles at the deep packs' zoom
+/// (crate::terrain_deep::PACK_Z) with data, and each coarser zoom's tiles over one.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Presence {
+    by_zoom: Vec<std::collections::HashSet<(u32, u32)>>,
+}
+
+impl Presence {
+    pub fn of(tiles: &[[u32; 2]]) -> Presence {
+        let pz = crate::terrain_deep::PACK_Z;
+        let by_zoom = (0..=pz).map(|z| tiles.iter().map(|t| (t[0] >> (pz - z), t[1] >> (pz - z))).collect()).collect();
+        Presence { by_zoom }
+    }
+
+    /// Whether tile `z/x/y` has data under it (past the deep packs' zoom: its tile there has).
+    pub fn has(&self, z: u8, x: u32, y: u32) -> bool {
+        let pz = crate::terrain_deep::PACK_Z;
+        let (z, x, y) = if z > pz { (pz, x >> (z - pz), y >> (z - pz)) } else { (z, x, y) };
+        self.by_zoom[z as usize].contains(&(x, y))
+    }
 }
 
 /// Datasets `ds` (in their order: declared::accepted), as `Set`s, their regions' outlines read
@@ -128,7 +155,9 @@ pub fn sets(ds: &[Accepted], read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<V
                 cover: Cover { outline, ..Cover::of(d.measured.cover.as_deref()) },
                 detail: Detail::of(d),
                 cut: d.measured.uncut.is_some().then(|| d.measured.clone()),
-                every_zoom: matches!(&d.declaration.data, Data::Tiles { encoding, .. } if encoding == "terrarium"),
+                every_zoom: matches!(&d.declaration.data, Data::Tiles { every_zoom: true, .. }),
+                code: d.declaration.code,
+                presence: d.measured.presence.as_deref().map(|p| std::sync::Arc::new(Presence::of(p))),
             })
         })
         .collect()
@@ -175,26 +204,44 @@ pub fn poleward(b: [f64; 4]) -> f64 {
 
 /// Of `sets`, those a place in box `b` (w, s, e, n) may read, in their order: each meeting it, up
 /// to the first holding it whole (`Cover::contains_box`).
-pub fn sources(sets: &[Set], b: [f64; 4]) -> Vec<&Set> {
+pub fn sources_in(sets: &[Set], b: [f64; 4]) -> Vec<&Set> {
+    sources_where(sets, b, &|_| true)
+}
+
+/// Of `sets`, those tile `z/x/y` may read: as `sources_in` its box, each with data under it where
+/// its presence is measured (`Set::presence`), so a dataset whose cells merely meet the tile, or whose
+/// files have no data there, is none of its sources.
+pub fn sources(sets: &[Set], z: u8, x: u32, y: u32) -> Vec<&Set> {
+    let b = crate::stage::tile_box_grown(z, x, y, 0.0);
+    sources_where(sets, b, &|s| s.presence.as_ref().is_none_or(|p| p.has(z, x, y)))
+}
+
+fn sources_where<'a>(sets: &'a [Set], b: [f64; 4], has: &dyn Fn(&Set) -> bool) -> Vec<&'a Set> {
     let mut out = Vec::new();
     for s in sets {
-        if !s.cover.meets(b) {
+        if !s.cover.meets(b) || !has(s) {
             continue;
         }
         out.push(s);
-        if s.cover.contains_box(b) == Some(true) {
+        if s.cover.contains_box(b) == Some(true) && s.presence.is_none() {
             break;
         }
     }
     out
 }
 
+/// The codes (`Set::code`, a bit each) of tile `z/x/y`'s sources reaching its zoom: a pixel from
+/// one of them is data at the tile's own detail (crate::terrain_pack::Fills::keep).
+pub fn codes_reaching(sets: &[Set], z: u8, x: u32, y: u32) -> u32 {
+    let lat = poleward(crate::stage::tile_box_grown(z, x, y, 0.0));
+    sources(sets, z, x, y).iter().filter(|s| s.detail.zoom_at(lat) >= z).fold(0, |m, s| m | 1 << (s.code & 31))
+}
+
 /// Tile `z/x/y`'s finest zoom: its sources' finest at its poleward edge (`sources`), at most
 /// `DEEPEST`; 0 with none.
 pub fn finest(sets: &[Set], z: u8, x: u32, y: u32) -> u8 {
-    let b = crate::stage::tile_box_grown(z, x, y, 0.0);
-    let lat = poleward(b);
-    sources(sets, b).iter().map(|s| s.detail.zoom_at(lat)).max().unwrap_or(0).min(DEEPEST)
+    let lat = poleward(crate::stage::tile_box_grown(z, x, y, 0.0));
+    sources(sets, z, x, y).iter().map(|s| s.detail.zoom_at(lat)).max().unwrap_or(0).min(DEEPEST)
 }
 
 /// What tile `z/x/y`'s key names of its sources: each one's line, where its regions cut it
@@ -202,7 +249,7 @@ pub fn finest(sets: &[Set], z: u8, x: u32, y: u32) -> u8 {
 pub fn key_lines(sets: &[Set], z: u8, x: u32, y: u32) -> Vec<String> {
     let b = crate::stage::tile_box_grown(z, x, y, 0.0);
     let lat = poleward(b);
-    sources(sets, b)
+    sources(sets, z, x, y)
         .into_iter()
         .map(|s| {
             let cut = s.cut.as_ref().and_then(|m| declared::cut_note(m, &s.cover, b));
@@ -242,6 +289,8 @@ pub fn test_world(z: u8) -> Vec<Set> {
         detail: Detail::Pyramid(z),
         cut: None,
         every_zoom: true,
+        code: 1,
+        presence: None,
     }]
 }
 
@@ -292,7 +341,38 @@ mod tests {
     }
 
     fn set(id: &str, cover: Option<Vec<[f64; 4]>>, detail: Detail) -> Set {
-        Set { id: id.into(), line: id.into(), cover: Cover::of(cover.as_deref()), detail, cut: None, every_zoom: false }
+        Set {
+            id: id.into(),
+            line: id.into(),
+            cover: Cover::of(cover.as_deref()),
+            detail,
+            cut: None,
+            every_zoom: false,
+            code: 1,
+            presence: None,
+        }
+    }
+
+    /// A dataset whose presence is measured is a place's source only where it has data: not where
+    /// its cells merely meet the tile (task #929).
+    #[test]
+    fn a_dataset_is_a_source_only_where_it_has_data() {
+        let (x, y) = tile_at(-74.5, 45.5, crate::terrain_deep::PACK_Z);
+        let mut fine = set("a", Some(vec![[-75.0, 45.0, -74.0, 46.0]]), raster(1.0));
+        fine.presence = Some(std::sync::Arc::new(Presence::of(&[[x, y]])));
+        let mut world = set("b", None, raster(30.0));
+        world.code = 3;
+        let sets = vec![fine, world];
+        let ids = |z: u8, x: u32, y: u32| sources(&sets, z, x, y).iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(12, x * 4 + 1, y * 4 + 2), ["a", "b"], "a tile under it");
+        assert_eq!(ids(6, x >> 4, y >> 4), ["a", "b"], "one over it");
+        assert_eq!(ids(12, x * 4 + 4, y * 4), ["b"], "its cell's, not its data's");
+        assert_eq!(
+            finest(&sets, 12, x * 4 + 4, y * 4),
+            raster(30.0).zoom_at(poleward(crate::stage::tile_box_grown(12, x * 4 + 4, y * 4, 0.0)))
+        );
+        assert_ne!(codes_reaching(&sets, 14, x * 16, y * 16) & 2, 0, "a reaches z14 there");
+        assert_eq!(codes_reaching(&sets, 14, x * 16 + 16, y * 16), 0, "nothing past its data");
     }
 
     #[test]
@@ -303,12 +383,12 @@ mod tests {
         let sets = vec![fine, world, after];
         // (A tile inside the fine one's cell, and one past it.)
         let (x, y) = tile_at(-74.5, 45.5, 12);
-        let s = sources(&sets, crate::stage::tile_box_grown(12, x, y, 0.0));
+        let s = sources(&sets, 12, x, y);
         assert_eq!(s.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["a"], "the fine one holds it whole");
         assert_eq!(finest(&sets, 12, x, y), DEEPEST, "1 m data, to the deepest zoom stored");
         let (x, y) = tile_at(10.0, 0.5, 12);
         let b = crate::stage::tile_box_grown(12, x, y, 0.0);
-        let s = sources(&sets, b);
+        let s = sources(&sets, 12, x, y);
         assert_eq!(s.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b"], "the pyramid after it is hidden");
         assert_eq!(finest(&sets, 12, x, y), raster(30.0).zoom_at(poleward(b)));
     }

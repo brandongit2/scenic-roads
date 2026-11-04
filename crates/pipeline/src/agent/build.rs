@@ -1542,7 +1542,7 @@ pub fn pyramids_targets(x: &KeyCtx) -> Option<Vec<(String, String)>> {
     let Some(e) = tiles.elevation(m).ok()? else { return Some(Vec::new()) };
     let pyr: Vec<_> = e
         .iter()
-        .filter(|(a, _)| matches!(&a.declaration.data, Data::Tiles { encoding, .. } if encoding != "terrarium"))
+        .filter(|(a, _)| matches!(&a.declaration.data, Data::Tiles { every_zoom: false, .. }))
         .cloned()
         .collect();
     if pyr.is_empty() {
@@ -6377,6 +6377,7 @@ pub(crate) mod tests {
                 url: "https://g.org/{z}/{x}/{y}.png".into(),
                 zoom: 15,
                 encoding: "gsi-png".into(),
+                every_zoom: false,
             };
             let mut t = TerrainTiles::new(None);
             t.hold_elevation(&index, vec![(a, cover), dataset("world", "w1", None)]);
@@ -6432,6 +6433,8 @@ pub(crate) mod tests {
                     detail: crate::terrain_zoom::Detail::Pyramid(14),
                     cut: None,
                     every_zoom: false,
+                    code: 1,
+                    presence: None,
                 }],
             );
             t
@@ -6959,6 +6962,8 @@ pub(crate) mod tests {
             detail: Detail::Pyramid(14),
             cut: None,
             every_zoom: false,
+            code: 1,
+            presence: None,
         };
         let none = with(crate::terrain_zoom::test_world(12));
         assert!(!none.is_empty() && none.iter().all(|(_, k)| k != UNKNOWN));
@@ -6984,6 +6989,8 @@ pub(crate) mod tests {
             detail: Detail::Pyramid(14),
             cut: None,
             every_zoom: false,
+            code: 1,
+            presence: None,
         };
         let tiles = |m: &BTreeMap<String, String>, sets: &[FineSet]| {
             let mut t = tiles_for(m);
@@ -8119,6 +8126,7 @@ pub(crate) mod tests {
                 url: "https://g.org/{z}/{x}/{y}.png".into(),
                 zoom: 15,
                 encoding: "gsi-png".into(),
+                every_zoom: false,
             };
             (a, cover)
         };
@@ -8228,6 +8236,7 @@ pub(crate) mod tests {
                 url: "https://e.org/{z}/{x}/{y}.png".into(),
                 zoom: 10,
                 encoding: "terrarium".into(),
+                every_zoom: true,
             },
         };
         let measured = crate::dem::declared::Measured {
@@ -8237,6 +8246,7 @@ pub(crate) mod tests {
             uncut: None,
             outline: None,
             bands: None,
+            presence: None,
         };
         (
             crate::dem::declared::Accepted {

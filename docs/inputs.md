@@ -1195,6 +1195,7 @@ the same declarations.
 | `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL, a tile index (GeoJSON footprints with each file's `url` or `file`, and optionally its fill mask's URL, `mask`; made by `producers/elevation/indexes.py`), or files added by glob |
 | `[data] store` | bool | the files (and fill masks) read from `sources/fetched/<dataset>/` alone, by their URLs' last part (after a `#`, the member's name); never fetched by a build: a file the store lacks is an error naming it, one noted `<name>.none` has no data. Filled once by `scenic-build store-fetch <id> --index <its index>` (crate::dem::store_fetch: every file of the index and its mask the store lacks, as published, by the build's fetcher: its User-Agent, 429 and 5xx answers waited out; each checked a whole GeoTIFF under a temporary name, then renamed; restartable) |
 | `[data] encoding`, `url`, `zoom` | | for `tiles`: `terrarium`, `terrain-rgb`, `gsi-png`; the URL template; the zoom |
+| `[data] every_zoom` | | for `tiles`, optional (default false): the pyramid is published at every zoom to `zoom`, so the terrain reads it at a tile's own zoom and takes the coarse relief outside every region from it alone (crate::terrain_zoom::relief); else it's read at `zoom` only, tile by tile |
 
 ```toml
 name = "NRCan HRDEM, 2 m lidar mosaic"
@@ -1217,7 +1218,14 @@ ground spacings, its longitude's at its equatorward edge, the coarsest of a band
 pyramid or a projected GeoTIFF, whose `resolution` holds everywhere), which sets the terrain's finest
 zoom there (crate::terrain_zoom), and its coverage (`cover`): the 1° cells its data meets, merged into boxes. Index
 files meet by footprint; other files by where they have valid data at their coarsest overview, so a
-file's empty margins cover nothing. A tile pyramid's resolution comes from its zoom at its coverage's
+file's empty margins cover nothing. And where its files really have data (`presence`, a GeoTIFF's
+not holding the world: crate::inputs::elevation::presence_of): the z10 tiles of its cells (the
+deep packs' zoom) one of whose points, no further apart than half the finest feature of the files
+there, lies in a file's data, each file narrower than such a tile by its index footprint and every
+other by its coarsest overview's valid pixels, every file of the dataset read so. The terrain's
+finest zoom and the roads' spacing count a dataset only where it has data so
+(crate::terrain_zoom::sources: a tile its cells merely touch, or whose files hold no data there,
+isn't one of its places); measured once a version, a version measured before it counts its cells. A tile pyramid's resolution comes from its zoom at its coverage's
 mid-latitude, and a tile is read to check it's 256 px (`generic::TILE_PX`). The coverage is also the
 credits' extent (§4.8).
 
