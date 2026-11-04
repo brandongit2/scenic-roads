@@ -179,6 +179,24 @@ sleep 1  # (absence: five of the shim's looks)
 free && fail "the lock was let go with cli (CARGO_BIN_EXE_toy) in the run"
 : > $s/go4; wait $held || fail "nextest with cli: $(cat $s/nx.out)"
 
+# This shim and another checkout's both on the PATH (check.sh puts its own before the main checkout's):
+# neither is taken for the real cargo, so a command passed straight through (version) and the
+# shim's own metadata (the last build another worktree's) end (4 Nov: they exec'd each other for
+# ever; #941: a metadata under the lock waited on it).
+mkdir -p $s/main/tools/dev/bin; cp $sh $s/main/tools/dev/bin/cargo
+tree() { local c; for c in $(pgrep -P $1); do tree $c; done; print $1 }  # tree <pid>: it and its descendants
+within() {  # within <secs> <command>…: its status, or fails (its processes killed) when it outlasts <secs>
+  local secs=$1; shift; "$@" & local p=$! i
+  for (( i = 0; i < secs * 10; i++ )); do kill -0 $p 2>/dev/null || { wait $p; return }; sleep 0.1; done
+  local t; for (( i = 0; i < 50; i++ )); do t=( $(tree $p) ); kill $t 2>/dev/null || break; sleep 0.1; done
+  fail "still running after $secs s: $*"
+}
+print other > $s/shared/.scenic-built-by
+both=${sh:h}:$s/main/tools/dev/bin:$PATH
+PATH=$both within 60 at a version || fail "version with two shims: $(cat $s/err)"
+PATH=$both within 120 at a build -q || fail "build with two shims: $(cat $s/err)"
+[[ $(cat $s/shared/.scenic-built-by) == $w/a ]] || fail "two shims: built-by not recorded"
+
 # Outside .claude/worktrees: plain cargo, the shared folder untouched.
 mkdir -p $s/plain/src; : > $s/plain/.git; cp $w/a/Cargo.toml $s/plain/; cp -R $w/a/src $s/plain/
 (cd $s/plain && $sh build -q) || fail "plain build"
