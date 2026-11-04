@@ -7834,6 +7834,9 @@ mod tests {
         heavy(&c, "slope-hi");
         assert_eq!(all_granted(&w, &a), [["6/1/1"], ["6/1/2"]], "on: two halves of the NAS");
         assert!(all_granted(&w, &a).is_empty(), "the NAS full: queued");
+        // (Its refusal says the NAS budget, not the room alone: task #931.)
+        let why = c.refusals().remove("m1").unwrap_or_default();
+        assert!(why.starts_with("the NAS budget: 4 targets it would take wait"), "{why}");
         let (_d, c, w, _clock) = every((0, 0));
         c.set_nas(Some(limits));
         heavy(&c, "slope-hi");

@@ -656,6 +656,11 @@ impl Sched {
     }
 
     /// Notes `target` of `step` passed over for the NAS budget alone now.
+    /// How many targets were passed over for the NAS budget alone at `now` (`nas_wait`).
+    pub(super) fn nas_waits_at(&self, now: Instant) -> usize {
+        self.nas_waits.lock().unwrap_or_else(|e| e.into_inner()).values().filter(|w| w.1 == now).count()
+    }
+
     pub(super) fn nas_wait(&self, step: &str, target: &str, now: Instant) {
         let mut g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
         let e = g.entry((step.to_string(), target.to_string())).and_modify(|e| e.1 = now).or_insert((now, now));
@@ -1029,7 +1034,18 @@ impl Sched {
                         format!("cores: {} of {total} left, a job of {st} takes {}", tenths(cores), tenths(c))
                     }
                     None => format!(
-                        "nothing offered fits the room left (memory: {}{}) or is free to take",
+                        "{}nothing offered fits the room left (memory: {}{}) or is free to take",
+                        // (Targets it would take passed over for the NAS budget alone in this
+                        // answer (`nas_wait`): said first, so a wait for the NAS doesn't read as
+                        // one for memory (task #931: on 4 Nov every slope-deep job weighed the
+                        // whole NAS, and the Macs idle beside one said only the room left).)
+                        match self.nas_waits_at(now) {
+                            0 => String::new(),
+                            n => format!(
+                                "the NAS budget: {n} target{} it would take wait for the NAS's room; ",
+                                if n == 1 { "" } else { "s" }
+                            ),
+                        },
                         match a.cap.as_ref() {
                             Some(c) => mem_words(c, room.mem_mb),
                             None => gb(room.mem_mb),
