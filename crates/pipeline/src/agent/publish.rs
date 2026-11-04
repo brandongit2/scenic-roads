@@ -105,11 +105,12 @@ fn watches() -> Vec<&'static str> {
 /// The lead's map as its agent reads it (docs/maplog.md §6.5): the log's feed (the map, its batches
 /// held, the log's marks), GC's queue (told of each batch here, of each records save by the agent's
 /// loop: super::gcqueue), and the head's catalogue: the one posted and checked equal to the map,
-/// else made of the map once (`catalogue`).
+/// else made of the map (`catalogue`), kept only while one is held (#930: 367 MB beside the map's
+/// own 660 MB on 4 Nov, made again in 0.1 s).
 pub struct Here {
     pub feed: std::sync::Arc<store::map::feed::Feed>,
     pub gc: std::sync::Arc<store::map::gc::GcQueue>,
-    head: std::sync::Arc<super::bus::Snap<Option<std::sync::Arc<store::catalogue::Catalogue>>>>,
+    head: std::sync::Arc<super::bus::Snap<Option<std::sync::Weak<store::catalogue::Catalogue>>>>,
 }
 
 impl Default for Here {
@@ -126,16 +127,16 @@ impl std::fmt::Debug for Here {
 
 impl Here {
     /// The map now as a catalogue (`n` its `seq`, `created` its batch's time); None while the log
-    /// holds no map. Made of the map at most once a `seq`.
+    /// holds no map. Made of the map once a `seq` while one made is held, else again.
     pub fn catalogue(&self) -> Option<std::sync::Arc<store::catalogue::Catalogue>> {
         let map = self.feed.map()?;
-        if let Some(c) = self.head.get().as_ref().as_ref().filter(|c| c.n == map.seq) {
-            return Some(c.clone());
+        if let Some(c) = self.head.get().as_ref().as_ref().and_then(std::sync::Weak::upgrade).filter(|c| c.n == map.seq) {
+            return Some(c);
         }
         match map.catalogue() {
             Ok(c) => {
                 let c = std::sync::Arc::new(c);
-                self.head.set(Some(c.clone()));
+                self.head.set(Some(std::sync::Arc::downgrade(&c)));
                 Some(c)
             }
             Err(e) => {
@@ -147,7 +148,7 @@ impl Here {
 
     /// The head's catalogue now `cat` (the one posted, checked equal to the map).
     fn checked(&self, cat: std::sync::Arc<store::catalogue::Catalogue>) {
-        self.head.set(Some(cat));
+        self.head.set(Some(std::sync::Arc::downgrade(&cat)));
     }
 }
 
