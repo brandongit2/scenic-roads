@@ -136,7 +136,7 @@ fn read_sites(path: &Path) -> Result<Vec<[i32; 2]>> {
 /// Writes shapes as a task's coverage (RDSECT: meta `{"fmt": 1, "shapes": [{source, country,
 /// buffer_m, rings: [vertices a ring]}]}`, section `verts` the rings' vertices, E7).
 fn write_coverage(path: &Path, shapes: &[&Shape]) -> Result<()> {
-    let meta: Vec<serde_json::Value> = shapes.iter().map(|s| serde_json::json!({ "source": s.source, "country": s.country, "buffer_m": s.buffer_m, "rings": s.rings.iter().map(Vec::len).collect::<Vec<_>>() })).collect();
+    let meta: Vec<serde_json::Value> = shapes.iter().map(|s| serde_json::json!({ "source": s.source, "country": s.country, "buffer_m": s.buffer_m, "rings": s.rings.iter().map(<[_]>::len).collect::<Vec<_>>() })).collect();
     let mut w = store::sect::SectWriter::create(path, serde_json::json!({ "fmt": 1, "shapes": meta }))?;
     let verts: Vec<[i32; 2]> = shapes.iter().flat_map(|s| s.rings.iter().flatten().copied()).collect();
     w.add_pod("verts", &verts)?;

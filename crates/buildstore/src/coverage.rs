@@ -1,12 +1,12 @@
 //! Coverage (docs/regions.md): the union of the regions' outlines. A feature is built if it touches
 //! the coverage (for a way: any vertex inside, as Geofabrik does).
 //!
-//! Each outline becomes a [`Shape`]: its rings, a buffer (1 km for `osm:` outlines, so piers and
-//! coastal roads on a boundary that follows the coastline are in), and a cell grid over its bounding
-//! box. Every cell knows whether its centre is inside and which edges cross it (or pass within the
-//! buffer), so a point test reads one cell: the centre's state, flipped by each of the cell's edges
-//! crossing the segment from the centre to the point, then the buffer's distance to the cell's
-//! edges. Building a grid costs one pass over the edges plus a scanline per row. A box test (which
+//! Each outline becomes a [`Shape`]: its rings (flat, [`Rings`]), a buffer (1 km for `osm:` outlines,
+//! so piers and coastal roads on a boundary that follows the coastline are in), and a cell grid over
+//! its bounding box. Every cell knows whether its centre is inside and which edges cross it (or pass
+//! within the buffer), so a point test reads one cell: the centre's state, flipped by each of the
+//! cell's edges crossing the segment from the centre to the point, then the buffer's distance to the
+//! cell's edges. Building a grid costs one pass over the edges plus a scanline per row. A box test (which
 //! edges meet a box: `Shape::meets_rect`, `covers_rect`, `fingerprint`) reads the shape's edge tree
 //! instead (`EdgeTree`: boxes of runs of edges along the rings), only where its boxes meet the box.
 //! What a whole coverage's tiles are is kept by its version ([`Kept`]).
@@ -36,7 +36,7 @@ pub struct Shape {
     pub source: String,
     /// Shared by its clones, as `grid` and `memo` are: a region's coverage holds the whole
     /// coverage's shapes, so the outlines (GBs for the world's) aren't held twice (#619).
-    pub rings: std::sync::Arc<Vec<Vec<[i32; 2]>>>,
+    pub rings: std::sync::Arc<Rings>,
     pub buffer_m: f64,
     /// Bounding box grown by the buffer (E7).
     pub bbox: [i32; 4],
@@ -146,6 +146,76 @@ impl Drop for Memo {
     }
 }
 
+/// A shape's rings, flat (task #935: a Vec a ring was 2 M heap blocks for the world's outlines):
+/// every ring's points one after another, each ring closed (its first point again after its last),
+/// ring `r` at `points[starts[r]..starts[r + 1]]`, its closing point the last of those (a ring of no
+/// points holds none). An edge is a point and the next (`Rings::edge`), named by where the first is.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rings {
+    points: Vec<[i32; 2]>,
+    starts: Vec<u32>,
+}
+
+impl Rings {
+    pub fn new(rings: &[Vec<[i32; 2]>]) -> Rings {
+        let mut points = Vec::with_capacity(rings.iter().map(|r| r.len() + usize::from(!r.is_empty())).sum());
+        let mut starts = Vec::with_capacity(rings.len() + 1);
+        starts.push(0);
+        for r in rings {
+            points.extend_from_slice(r);
+            points.extend(r.first().copied());
+            starts.push(u32::try_from(points.len()).expect("a shape of over 4 billion points"));
+        }
+        Rings { points, starts }
+    }
+
+    /// How many rings.
+    pub fn len(&self) -> usize {
+        self.starts.len().saturating_sub(1)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Ring `r`'s points (not closed again).
+    pub fn ring(&self, r: usize) -> &[[i32; 2]] {
+        let e = self.edges(r);
+        &self.points[e.start as usize..e.end as usize]
+    }
+
+    /// The rings' points, ring after ring.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &[[i32; 2]]> + DoubleEndedIterator + Clone + '_ {
+        (0..self.len()).map(|r| self.ring(r))
+    }
+
+    /// The rings as a Vec a ring.
+    pub fn to_vec(&self) -> Vec<Vec<[i32; 2]>> {
+        self.iter().map(<[_]>::to_vec).collect()
+    }
+
+    /// Ring `r`'s edges (`edge`), in order along it.
+    fn edges(&self, r: usize) -> std::ops::Range<u32> {
+        let (s, e) = (self.starts[r], self.starts[r + 1]);
+        s..e.saturating_sub(1).max(s)
+    }
+
+    /// Edge `g`: its point and the next along its ring.
+    fn edge(&self, g: u32) -> ([i32; 2], [i32; 2]) {
+        (self.points[g as usize], self.points[g as usize + 1])
+    }
+
+    /// The bytes it holds.
+    fn bytes(&self) -> u64 {
+        (self.points.capacity() * 8 + self.starts.capacity() * 4) as u64
+    }
+}
+
+/// A bit a cell: whether cell `c`'s is set.
+fn bit(bits: &[u64], c: usize) -> bool {
+    bits[c / 64] >> (c % 64) & 1 == 1
+}
+
 #[derive(Clone, PartialEq)]
 struct Grid {
     x0: f64,
@@ -155,23 +225,26 @@ struct Grid {
     ch: f64,
     nx: usize,
     ny: usize,
-    /// Per cell: the centre inside?
-    centre: Vec<bool>,
-    /// Per cell: edges (ring, index of first point) crossing it or within the buffer of it, cell
-    /// `c`'s at `edges[starts[c]..starts[c + 1]]` (`Grid::edges`). (One list, not a list a cell:
-    /// a cell's empty list was 24 B, most of a shape's million cells empty; lead memory, 25 Oct:
-    /// 6.4 GB of the agent's 17.)
+    /// A bit a cell (`bit`): the centre inside?
+    centre: Vec<u64>,
+    /// A bit a cell: whether any edge crosses it or passes within the buffer of it (a listed cell);
+    /// `rank[w]`, the listed cells before word `w`.
+    listed: Vec<u64>,
+    rank: Vec<u32>,
+    /// The edges (`Rings::edge`) crossing each listed cell or within the buffer of it, the listed
+    /// cells' lists one after another in cell order, the `k`th listed cell's at
+    /// `edges[starts[k]..starts[k + 1]]` (`Grid::edges`). (Starts of listed cells alone, task #935:
+    /// one a cell was 1 GB of the world's coverage, 96% of its cells listing nothing.)
     starts: Vec<u32>,
-    edges: Vec<(u32, u32)>,
+    edges: Vec<u32>,
 }
 
 impl Shape {
     pub fn new(source: String, rings: Vec<Vec<[i32; 2]>>, buffer_m: f64) -> Shape {
+        let rings = Rings::new(&rings);
         let mut bb = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
-        for r in &rings {
-            for p in r {
-                bb = [bb[0].min(p[0]), bb[1].min(p[1]), bb[2].max(p[0]), bb[3].max(p[1])];
-            }
+        for p in &rings.points {
+            bb = [bb[0].min(p[0]), bb[1].min(p[1]), bb[2].max(p[0]), bb[3].max(p[1])];
         }
         // The buffer in E7 units: latitude at the box's widest point.
         let lat = (bb[1].unsigned_abs().max(bb[3].unsigned_abs()) as f64 * 1e-7).min(85.0);
@@ -200,7 +273,13 @@ impl Shape {
     /// once: what keys made of the whole coverage read (pipeline::agent::build::coverage_all), every
     /// loop (task #894: hashing every point of the world's outlines each time was seconds).
     pub fn rings_digest(&self) -> &str {
-        self.rings_digest.get_or_init(|| store::naming::hash16(bytemuck::cast_slice(&self.rings.concat())))
+        self.rings_digest.get_or_init(|| {
+            let mut h = blake3::Hasher::new();
+            for r in self.rings.iter() {
+                h.update(bytemuck::cast_slice(r));
+            }
+            store::naming::hex16(&h.finalize())
+        })
     }
 
     /// Its rings' digest (`rings_digest`) and where each ring ends (the digest is of the points
@@ -237,10 +316,9 @@ impl Shape {
         let (cx, cy) = (c % g.nx, c / g.nx);
         let centre = [(g.x0 + (cx as f64 + 0.5) * g.cw) as i64, (g.y0 + (cy as f64 + 0.5) * g.ch) as i64];
         let pp = [p[0] as i64, p[1] as i64];
-        let mut ins = g.centre[c];
-        for &(r, i) in g.edges(c) {
-            let ring = &self.rings[r as usize];
-            let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
+        let mut ins = bit(&g.centre, c);
+        for &e in g.edges(c) {
+            let (a, b) = self.rings.edge(e);
             if segments_cross(centre, pp, [a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64]) {
                 ins = !ins;
             }
@@ -291,9 +369,8 @@ impl Shape {
         let (g, c) = (&self.grid, self.cell(p));
         let kx = M_PER_E7 * (p[1] as f64 * 1e-7).to_radians().dcos();
         let lim = self.buffer_m * self.buffer_m;
-        g.edges(c).iter().any(|&(r, i)| {
-            let ring = &self.rings[r as usize];
-            let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
+        g.edges(c).iter().any(|&e| {
+            let (a, b) = self.rings.edge(e);
             dist2_m(p, a, b, kx) <= lim
         })
     }
@@ -347,26 +424,22 @@ impl Shape {
     }
 
     /// The ring edges meeting the box `rg` (w, s, e, n, E7, edges included), sorted, each once per
-    /// place in the rings as its lesser end
-    /// then its other (direction doesn't matter to which points are inside); an edge the rings
-    /// hold twice stays twice, since under even–odd the two cancel.
+    /// place in the rings (`edges_meeting`) as its lesser end then its other (direction doesn't
+    /// matter to which points are inside); an edge the rings hold twice stays twice, since under
+    /// even–odd the two cancel.
     pub fn edges_in(&self, rg: [i64; 4]) -> Vec<[i32; 4]> {
-        let mut by_place: std::collections::BTreeMap<(u32, u32), [i32; 4]> = std::collections::BTreeMap::new();
-        self.edges_meeting(rg, &mut |at, a, b| {
-            by_place.insert(
-                at,
-                if (a[0], a[1]) <= (b[0], b[1]) { [a[0], a[1], b[0], b[1]] } else { [b[0], b[1], a[0], a[1]] },
-            );
+        let mut edges: Vec<[i32; 4]> = Vec::new();
+        self.edges_meeting(rg, &mut |_, a, b| {
+            edges.push(if (a[0], a[1]) <= (b[0], b[1]) { [a[0], a[1], b[0], b[1]] } else { [b[0], b[1], a[0], a[1]] });
             false
         });
-        let mut edges: Vec<[i32; 4]> = by_place.into_values().collect();
         edges.sort_unstable();
         edges
     }
 
-    /// Calls `f` with each ring edge meeting the box `rg`, with its place (ring, index), once each
+    /// Calls `f` with each ring edge meeting the box `rg`, with its place (`Rings::edge`), once each
     /// (by the edge tree, `EdgeTree`), until it returns true; whether one did.
-    fn edges_meeting(&self, rg: [i64; 4], f: &mut dyn FnMut((u32, u32), [i32; 2], [i32; 2]) -> bool) -> bool {
+    fn edges_meeting(&self, rg: [i64; 4], f: &mut dyn FnMut(u32, [i32; 2], [i32; 2]) -> bool) -> bool {
         self.tree.meeting(&self.rings, rg, f)
     }
 
@@ -481,59 +554,67 @@ fn segments_cross(p1: [i64; 2], p2: [i64; 2], q1: [i64; 2], q2: [i64; 2]) -> boo
 }
 
 impl Grid {
-    fn build(rings: &[Vec<[i32; 2]>], bbox: [i32; 4], buf_e7: f64) -> Grid {
+    fn build(rings: &Rings, bbox: [i32; 4], buf_e7: f64) -> Grid {
         // About 1,024 cells along the longer side, never smaller than twice the buffer.
         let (w, h) = ((bbox[2] as f64 - bbox[0] as f64).max(1.0), (bbox[3] as f64 - bbox[1] as f64).max(1.0));
         let cell = (w.max(h) / 1024.0).max(2.0 * buf_e7).max(100.0);
         let (nx, ny) = (((w / cell).ceil() as usize).clamp(1, 4096), ((h / cell).ceil() as usize).clamp(1, 4096));
         let (cw, ch) = (w / nx as f64, h / ny as f64);
         let (x0, y0) = (bbox[0] as f64, bbox[1] as f64);
+        let cells = nx * ny;
+        let all_edges = || (0..rings.len()).flat_map(|r| rings.edges(r));
         // Every cell each edge's box (grown by the buffer) touches: a superset, fine for the
         // crossing test and needed for the buffer. Counted, then listed in place.
-        let each = |f: &mut dyn FnMut(usize, u32, u32)| {
-            for (ri, r) in rings.iter().enumerate() {
-                for i in 0..r.len() {
-                    let (a, b) = (r[i], r[(i + 1) % r.len()]);
-                    if a == b {
-                        continue;
-                    }
-                    let cx0 = ((((a[0].min(b[0]) as f64 - buf_e7) - x0) / cw).floor().max(0.0) as usize).min(nx - 1);
-                    let cx1 = ((((a[0].max(b[0]) as f64 + buf_e7) - x0) / cw).floor().max(0.0) as usize).min(nx - 1);
-                    let cy0 = ((((a[1].min(b[1]) as f64 - buf_e7) - y0) / ch).floor().max(0.0) as usize).min(ny - 1);
-                    let cy1 = ((((a[1].max(b[1]) as f64 + buf_e7) - y0) / ch).floor().max(0.0) as usize).min(ny - 1);
-                    for cy in cy0..=cy1 {
-                        for cx in cx0..=cx1 {
-                            f(cy * nx + cx, ri as u32, i as u32);
-                        }
+        let each = |f: &mut dyn FnMut(usize, u32)| {
+            for e in all_edges() {
+                let (a, b) = rings.edge(e);
+                if a == b {
+                    continue;
+                }
+                let cx0 = ((((a[0].min(b[0]) as f64 - buf_e7) - x0) / cw).floor().max(0.0) as usize).min(nx - 1);
+                let cx1 = ((((a[0].max(b[0]) as f64 + buf_e7) - x0) / cw).floor().max(0.0) as usize).min(nx - 1);
+                let cy0 = ((((a[1].min(b[1]) as f64 - buf_e7) - y0) / ch).floor().max(0.0) as usize).min(ny - 1);
+                let cy1 = ((((a[1].max(b[1]) as f64 + buf_e7) - y0) / ch).floor().max(0.0) as usize).min(ny - 1);
+                for cy in cy0..=cy1 {
+                    for cx in cx0..=cx1 {
+                        f(cy * nx + cx, e);
                     }
                 }
             }
         };
-        let mut starts: Vec<u32> = vec![0; nx * ny + 1];
-        each(&mut |c, _, _| starts[c + 1] += 1);
-        for c in 0..nx * ny {
+        // (A start a cell while it's made, the listed cells' kept.)
+        let mut at: Vec<u32> = vec![0; cells + 1];
+        each(&mut |c, _| at[c + 1] += 1);
+        for c in 0..cells {
             // (Past u32's 4 billion entries the starts would wrap: refused, not read wrong.)
-            starts[c + 1] = starts[c + 1].checked_add(starts[c]).expect("a shape's grid over 4 billion edge entries");
+            at[c + 1] = at[c + 1].checked_add(at[c]).expect("a shape's grid over 4 billion edge entries");
         }
-        let mut edges: Vec<(u32, u32)> = vec![(0, 0); starts[nx * ny] as usize];
-        let mut at: Vec<u32> = starts[..nx * ny].to_vec();
-        each(&mut |c, ri, i| {
-            edges[at[c] as usize] = (ri, i);
+        let mut listed = vec![0u64; cells.div_ceil(64)];
+        let mut starts = Vec::new();
+        for c in 0..cells {
+            if at[c + 1] > at[c] {
+                listed[c / 64] |= 1 << (c % 64);
+                starts.push(at[c]);
+            }
+        }
+        starts.push(at[cells]);
+        let mut edges: Vec<u32> = vec![0; at[cells] as usize];
+        each(&mut |c, e| {
+            edges[at[c] as usize] = e;
             at[c] += 1;
         });
+        drop(at);
         // Each row's centres: crossings of the row's centre line, sorted, give the parity.
-        let mut centre = vec![false; nx * ny];
+        let mut centre = vec![0u64; cells.div_ceil(64)];
         let mut xs: Vec<f64> = Vec::new();
         for cy in 0..ny {
             let y = y0 + (cy as f64 + 0.5) * ch;
             xs.clear();
-            for r in rings {
-                for i in 0..r.len() {
-                    let (a, b) = (r[i], r[(i + 1) % r.len()]);
-                    let (ay, by) = (a[1] as f64, b[1] as f64);
-                    if (ay > y) != (by > y) {
-                        xs.push(a[0] as f64 + (y - ay) * (b[0] as f64 - a[0] as f64) / (by - ay));
-                    }
+            for e in all_edges() {
+                let (a, b) = rings.edge(e);
+                let (ay, by) = (a[1] as f64, b[1] as f64);
+                if (ay > y) != (by > y) {
+                    xs.push(a[0] as f64 + (y - ay) * (b[0] as f64 - a[0] as f64) / (by - ay));
                 }
             }
             xs.sort_by(f64::total_cmp);
@@ -543,16 +624,46 @@ impl Grid {
                 while k < xs.len() && xs[k] < x {
                     k += 1;
                 }
-                centre[cy * nx + cx] = k % 2 == 1;
+                if k % 2 == 1 {
+                    let c = cy * nx + cx;
+                    centre[c / 64] |= 1 << (c % 64);
+                }
             }
         }
-        Grid { x0, y0, cw, ch, nx, ny, centre, starts, edges }
+        let rank = rank_of(&listed);
+        Grid { x0, y0, cw, ch, nx, ny, centre, listed, rank, starts, edges }
     }
 
     /// Cell `c`'s edges.
-    fn edges(&self, c: usize) -> &[(u32, u32)] {
-        &self.edges[self.starts[c] as usize..self.starts[c + 1] as usize]
+    fn edges(&self, c: usize) -> &[u32] {
+        let (word, b) = (self.listed[c / 64], c % 64);
+        if word >> b & 1 == 0 {
+            return &[];
+        }
+        let k = self.rank[c / 64] as usize + (word & ((1u64 << b) - 1)).count_ones() as usize;
+        &self.edges[self.starts[k] as usize..self.starts[k + 1] as usize]
     }
+
+    /// The bytes it holds.
+    fn bytes(&self) -> u64 {
+        (self.centre.capacity() * 8
+            + self.listed.capacity() * 8
+            + self.rank.capacity() * 4
+            + self.starts.capacity() * 4
+            + self.edges.capacity() * 4) as u64
+    }
+}
+
+/// Of a bit a cell, the bits set before each word.
+fn rank_of(bits: &[u64]) -> Vec<u32> {
+    let mut n = 0u32;
+    bits.iter()
+        .map(|w| {
+            let before = n;
+            n += w.count_ones();
+            before
+        })
+        .collect()
 }
 
 /// A shape's edges by place, for the boxes they meet (`Shape::edges_meeting`: `meets_rect`,
@@ -562,8 +673,10 @@ impl Grid {
 /// tile on a long coast read cells of thousands of edges, minutes a loop on the world's coverage,
 /// task #894.) Made from the rings when a shape is (`Shape::new`, `from_kept`): about a byte an edge.
 struct EdgeTree {
-    /// Each run: its ring, its first edge, its edges (≤ RUN), in the order of `levels[0]`.
-    runs: Vec<(u32, u32, u32)>,
+    /// Each run, in the order of `levels[0]`: its first edge (`Rings::edge`) and how many (≤ RUN,
+    /// along its ring).
+    first: Vec<u32>,
+    count: Vec<u8>,
     /// Boxes (w, s, e, n, E7): `levels[0]` the runs', `levels[k][i]` the box of
     /// `levels[k - 1][i * FAN..(i + 1) * FAN]`; the last level has FAN boxes at most.
     levels: Vec<Vec<[i32; 4]>>,
@@ -573,17 +686,18 @@ impl EdgeTree {
     const RUN: usize = 16;
     const FAN: usize = 8;
 
-    fn build(rings: &[Vec<[i32; 2]>]) -> EdgeTree {
-        let mut runs: Vec<((u32, u32, u32), [i32; 4])> = Vec::new();
-        for (ri, r) in rings.iter().enumerate() {
-            for start in (0..r.len()).step_by(Self::RUN) {
-                let n = Self::RUN.min(r.len() - start);
+    fn build(rings: &Rings) -> EdgeTree {
+        let mut runs: Vec<(u32, u8, [i32; 4])> = Vec::new();
+        for r in 0..rings.len() {
+            let e = rings.edges(r);
+            for first in e.clone().step_by(Self::RUN) {
+                let n = (Self::RUN as u32).min(e.end - first);
                 let mut b = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
-                for i in start..=start + n {
-                    let p = r[i % r.len()];
+                // (Its edges' points, the last one's second too.)
+                for p in &rings.points[first as usize..=(first + n) as usize] {
                     b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
                 }
-                runs.push(((ri as u32, start as u32, n as u32), b));
+                runs.push((first, n as u8, b));
             }
         }
         // Near runs together (by their centres' Morton order), so the boxes above them are tight.
@@ -598,8 +712,8 @@ impl EdgeTree {
             };
             spread(c(b[0], b[2])) | (spread(c(b[1], b[3])) << 1)
         };
-        runs.sort_by_key(|(at, b)| (morton(b), *at));
-        let mut levels = vec![runs.iter().map(|&(_, b)| b).collect::<Vec<_>>()];
+        runs.sort_by_key(|&(first, _, b)| (morton(&b), first));
+        let mut levels = vec![runs.iter().map(|&(_, _, b)| b).collect::<Vec<_>>()];
         while levels.last().unwrap().len() > Self::FAN {
             let up = levels
                 .last()
@@ -613,22 +727,27 @@ impl EdgeTree {
                 .collect();
             levels.push(up);
         }
-        EdgeTree { runs: runs.into_iter().map(|(at, _)| at).collect(), levels }
+        EdgeTree { first: runs.iter().map(|r| r.0).collect(), count: runs.iter().map(|r| r.1).collect(), levels }
     }
 
-    /// The bytes it holds, about.
+    /// The bytes it holds.
     fn bytes(&self) -> u64 {
-        (self.runs.len() * 12 + self.levels.iter().map(|l| l.len() * 16).sum::<usize>()) as u64
+        (self.first.capacity() * 4
+            + self.count.capacity()
+            + self.levels.capacity() * 24
+            + self.levels.iter().map(|l| l.capacity() * 16).sum::<usize>()) as u64
+    }
+
+    /// The bytes building one of `rings` holds besides: its runs with their boxes, before they're
+    /// split.
+    fn building_bytes(rings: &Rings) -> u64 {
+        let runs: u64 = (0..rings.len()).map(|r| (rings.edges(r).len() as u64).div_ceil(Self::RUN as u64)).sum();
+        runs * std::mem::size_of::<(u32, u8, [i32; 4])>() as u64
     }
 
     /// `Shape::edges_meeting` of `rings` (the rings it was made from): each edge (not of a
     /// point twice) meeting `rg` once, until `f` returns true; whether it did.
-    fn meeting(
-        &self,
-        rings: &[Vec<[i32; 2]>],
-        rg: [i64; 4],
-        f: &mut dyn FnMut((u32, u32), [i32; 2], [i32; 2]) -> bool,
-    ) -> bool {
+    fn meeting(&self, rings: &Rings, rg: [i64; 4], f: &mut dyn FnMut(u32, [i32; 2], [i32; 2]) -> bool) -> bool {
         let meets =
             |b: &[i32; 4]| b[0] as i64 <= rg[2] && b[2] as i64 >= rg[0] && b[1] as i64 <= rg[3] && b[3] as i64 >= rg[1];
         let top = self.levels.len() - 1;
@@ -642,13 +761,10 @@ impl EdgeTree {
                 stack.extend((i * Self::FAN..((i + 1) * Self::FAN).min(below)).rev().map(|j| (k - 1, j)));
                 continue;
             }
-            let (ri, start, n) = self.runs[i];
-            let ring = &rings[ri as usize];
-            for e in start..start + n {
-                let (a, b) = (ring[e as usize], ring[(e as usize + 1) % ring.len()]);
-                if a != b
-                    && segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg)
-                    && f((ri, e), a, b)
+            let first = self.first[i];
+            for e in first..first + self.count[i] as u32 {
+                let (a, b) = rings.edge(e);
+                if a != b && segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) && f(e, a, b)
                 {
                     return true;
                 }
@@ -750,23 +866,24 @@ impl Coverage {
     }
 
     /// The memory a step's process takes to read this coverage (MB; `coverage_of` in scenic-build,
-    /// through `pipeline::inputs::regions::read::accepted_coverage`), worked out from the coverage itself: every shape's rings (8 B a
-    /// point), its grid (`Grid`: per cell a bool and its edges' 4 B start, 8 B an entry), its edge tree
-    /// (`EdgeTree::bytes`), the
-    /// kept file's stream buffer and one shape's cells in passing (`from_kept`, `write_kept`: read
-    /// and written as a stream, task #807), and the memos' cap (`MEMO_CAP`). A job's memory bound
-    /// adds it to what its step holds besides (the agent's `guess` and `peak`, task #639).
+    /// through `pipeline::inputs::regions::read::accepted_coverage`), worked out from the coverage
+    /// itself: every shape's rings (`Rings`), grid (`Grid`) and edge tree (`EdgeTree`) as held, the
+    /// kept file's stream buffer and what reading one shape holds in passing (`from_kept`: read as a
+    /// stream, task #807; its closing points marked, and its edge tree's runs as they're made), and
+    /// the memos' cap (`MEMO_CAP`). A job's memory bound adds it to what its step holds besides (the
+    /// agent's `guess` and `peak`, task #639).
     pub fn read_peak_mb(&self) -> u64 {
         let mut bytes = MEMO_CAP as u64 + (1 << 20);
         let mut passing = 0u64;
         for list in [&self.shapes, &self.depth_only] {
             for sh in list {
-                let points: u64 = sh.rings.iter().map(|r| r.len() as u64).sum();
-                let g = &sh.grid;
-                let rings = points * 8 + sh.rings.len() as u64 * 24;
-                let grid = (g.nx * g.ny) as u64 * 5 + 4 + g.edges.len() as u64 * 8 + sh.tree.bytes();
-                passing = passing.max((g.nx * g.ny) as u64);
-                bytes += rings + grid + sh.source.len() as u64 + sh.country.len() as u64;
+                passing =
+                    passing.max((sh.rings.points.len() as u64).div_ceil(64) * 8 + EdgeTree::building_bytes(&sh.rings));
+                bytes += sh.rings.bytes()
+                    + sh.grid.bytes()
+                    + sh.tree.bytes()
+                    + sh.source.len() as u64
+                    + sh.country.len() as u64;
             }
         }
         bytes += passing;
@@ -828,12 +945,13 @@ pub fn fixture_circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
 /// `pipeline::inputs::regions::read::accepted_coverage` keeps the coverage it reads.
 pub const CACHE_ENV: &str = "SCENIC_CACHE";
 
-const KEPT_MAGIC: &[u8; 8] = b"RDCOV005";
+const KEPT_MAGIC: &[u8; 8] = b"RDCOV006";
 
-/// The coverage's shapes as kept (`pipeline::inputs::regions::read::accepted_coverage`): their source, country, buffer, whether
-/// water, rings, box and grid (task #807: the grids made again from the rings were 14 s of CPU a
+/// The coverage's shapes as kept (`pipeline::inputs::regions::read::accepted_coverage`): their
+/// source, country, buffer, whether water, rings (`Rings`), box and grid (`Grid`, its rank aside:
+/// worked out again), as held (task #807: the grids made again from the rings were 14 s of CPU a
 /// job). Written and read as a stream (`write_kept`, `from_kept`), never whole in memory: the file
-/// is about as large as the coverage itself (1.84 GB, 27 Oct).
+/// is about as large as the coverage itself.
 #[cfg(any(test, feature = "testkit"))]
 pub fn kept_bytes(c: &Coverage) -> Vec<u8> {
     let mut b = Vec::new();
@@ -854,32 +972,32 @@ pub fn write_kept(c: &Coverage, w: &mut dyn std::io::Write) -> std::io::Result<(
             }
             w.write_all(&sh.buffer_m.to_le_bytes())?;
             w.write_all(&[sh.water as u8])?;
-            n(w, sh.rings.len())?;
-            for r in sh.rings.iter() {
-                n(w, r.len())?;
-                w.write_all(bytemuck::cast_slice(r))?;
-            }
+            let r = &sh.rings;
+            n(w, r.starts.len())?;
+            w.write_all(bytemuck::cast_slice(&r.starts))?;
+            n(w, r.points.len())?;
+            w.write_all(bytemuck::cast_slice(&r.points))?;
             w.write_all(bytemuck::cast_slice(&sh.bbox))?;
             let g = &sh.grid;
             for v in [g.x0, g.y0, g.cw, g.ch] {
                 w.write_all(&v.to_le_bytes())?;
             }
-            for v in [g.nx, g.ny, g.edges.len()] {
-                n(w, v)?;
-            }
-            w.write_all(&g.centre.iter().map(|&c| c as u8).collect::<Vec<u8>>())?;
+            n(w, g.nx)?;
+            n(w, g.ny)?;
+            w.write_all(bytemuck::cast_slice(&g.centre))?;
+            w.write_all(bytemuck::cast_slice(&g.listed))?;
+            n(w, g.starts.len())?;
             w.write_all(bytemuck::cast_slice(&g.starts))?;
-            for &(ri, i) in &g.edges {
-                w.write_all(&ri.to_le_bytes())?;
-                w.write_all(&i.to_le_bytes())?;
-            }
+            n(w, g.edges.len())?;
+            w.write_all(bytemuck::cast_slice(&g.edges))?;
         }
     }
     Ok(())
 }
 
 /// `kept_bytes` read back from `r` as a stream: the shapes as `Shape::new` made them, their grids
-/// read, not made; None when they don't read (cut short, bytes past the end, another format).
+/// read, not made; None when they don't read (cut short, bytes past the end, another format, or
+/// what's read isn't a shape's: a ring not closed, a grid's cells naming edges not there).
 pub fn from_kept(r: &mut dyn std::io::Read) -> Option<Coverage> {
     // (A length read is checked against the bytes left only by reading them: an absurd one fails
     // its allocation's try_reserve rather than aborting.)
@@ -906,6 +1024,10 @@ pub fn from_kept(r: &mut dyn std::io::Read) -> Option<Coverage> {
         let len = n(r)?;
         String::from_utf8(take(r, len)?).ok()
     }
+    /// Whether bits past the first `cells` of `bits` (its last word's) are clear.
+    fn clear_past(bits: &[u64], cells: usize) -> bool {
+        cells % 64 == 0 || bits.last().is_none_or(|w| w >> (cells % 64) == 0)
+    }
     if take(r, 8)? != KEPT_MAGIC {
         return None;
     }
@@ -916,25 +1038,50 @@ pub fn from_kept(r: &mut dyn std::io::Read) -> Option<Coverage> {
             let country = text(r)?;
             let buffer_m = f(r)?;
             let water = take(r, 1)?[0] != 0;
-            let mut rings = Vec::new();
-            for _ in 0..n(r)? {
-                let len = n(r)?;
-                rings.push(pod::<[i32; 2]>(r, len)?);
+            let len = n(r)?;
+            let starts = pod::<u32>(r, len)?;
+            let len = n(r)?;
+            let points = pod::<[i32; 2]>(r, len)?;
+            // Each ring closed (a ring of one point is two), from the first point to the last; the
+            // closing points marked, as no edge's first.
+            let mut closing = vec![0u64; points.len().div_ceil(64)];
+            if starts.first() != Some(&0) || starts.last().map(|&e| e as usize) != Some(points.len()) {
+                return None;
             }
+            for w in starts.windows(2) {
+                let (s, e) = (w[0] as usize, w[1] as usize);
+                if e < s || e - s == 1 || (e > s && points[e - 1] != points[s]) {
+                    return None;
+                }
+                if e > s {
+                    closing[(e - 1) / 64] |= 1 << ((e - 1) % 64);
+                }
+            }
+            let rings = Rings { points, starts };
             let bbox: [i32; 4] = pod::<[i32; 4]>(r, 1)?[0];
             let (x0, y0, cw, ch) = (f(r)?, f(r)?, f(r)?, f(r)?);
-            let (nx, ny, ne) = (n(r)?, n(r)?, n(r)?);
-            let cells = nx.checked_mul(ny)?;
-            let centre = take(r, cells)?.into_iter().map(|c| c != 0).collect();
-            let starts = pod::<u32>(r, cells.checked_add(1)?)?;
-            let edges: Vec<(u32, u32)> = pod::<[u32; 2]>(r, ne)?.into_iter().map(|[a, b]| (a, b)).collect();
-            if starts.last().copied() != Some(ne as u32)
-                || starts.windows(2).any(|w| w[0] > w[1])
-                || edges.iter().any(|&(ri, i)| rings.get(ri as usize).is_none_or(|ring| i as usize >= ring.len()))
+            let (nx, ny) = (n(r)?, n(r)?);
+            let cells = nx.checked_mul(ny).filter(|&c| c > 0)?;
+            let centre = pod::<u64>(r, cells.div_ceil(64))?;
+            let listed = pod::<u64>(r, cells.div_ceil(64))?;
+            let len = n(r)?;
+            let starts = pod::<u32>(r, len)?;
+            let len = n(r)?;
+            let edges = pod::<u32>(r, len)?;
+            let rank = rank_of(&listed);
+            let count = rank.last().zip(listed.last()).map_or(0, |(&k, w)| k as usize + w.count_ones() as usize);
+            if !clear_past(&centre, cells)
+                || !clear_past(&listed, cells)
+                || starts.len() != count + 1
+                || starts.first() != Some(&0)
+                || starts.last().map(|&e| e as usize) != Some(edges.len())
+                || starts.windows(2).any(|w| w[0] >= w[1])
+                || edges.iter().any(|&e| e as usize >= rings.points.len() || bit(&closing, e as usize))
             {
                 return None;
             }
-            let grid = Grid { x0, y0, cw, ch, nx, ny, centre, starts, edges };
+            drop(closing);
+            let grid = Grid { x0, y0, cw, ch, nx, ny, centre, listed, rank, starts, edges };
             let tree = EdgeTree::build(&rings);
             shapes.push(Shape {
                 source,
@@ -1186,7 +1333,7 @@ pub fn inside_plain(rings: &[Vec<[i32; 2]>], p: [i32; 2]) -> bool {
 pub mod testkit {
     use super::*;
 
-    pub(crate) fn edges_by_cells(s: &Shape, rg: [i64; 4]) -> Vec<(u32, u32)> {
+    pub(crate) fn edges_by_cells(s: &Shape, rg: [i64; 4]) -> Vec<u32> {
         let g = &s.grid;
         let cell = |v: f64, v0: f64, size: f64, n: usize| (((v - v0) / size).floor().max(0.0) as usize).min(n - 1);
         let (cx0, cx1) = (cell(rg[0] as f64, g.x0, g.cw, g.nx), cell(rg[2] as f64, g.x0, g.cw, g.nx));
@@ -1194,11 +1341,10 @@ pub mod testkit {
         let mut out = std::collections::BTreeSet::new();
         for cy in cy0..=cy1 {
             for cx in cx0..=cx1 {
-                for &(ri, i) in g.edges(cy * g.nx + cx) {
-                    let ring = &s.rings[ri as usize];
-                    let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
+                for &e in g.edges(cy * g.nx + cx) {
+                    let (a, b) = s.rings.edge(e);
                     if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) {
-                        out.insert((ri, i));
+                        out.insert(e);
                     }
                 }
             }
@@ -1206,7 +1352,7 @@ pub mod testkit {
         out.into_iter().collect()
     }
 
-    pub(crate) fn edges_by_tree(s: &Shape, rg: [i64; 4]) -> Vec<(u32, u32)> {
+    pub(crate) fn edges_by_tree(s: &Shape, rg: [i64; 4]) -> Vec<u32> {
         let mut out = Vec::new();
         s.edges_meeting(rg, &mut |at, _, _| {
             out.push(at);
@@ -1253,9 +1399,10 @@ mod tests {
         vec![outer, hole]
     }
 
-    /// The grid's one edge list with per-cell starts holds, cell by cell, the edges the list a
-    /// cell held (lead memory, 25 Oct), in the same order: random rings, with and without a
-    /// buffer, a shape of one cell and the empty shape.
+    /// The grid's one edge list with its listed cells' starts holds, cell by cell, the edges the
+    /// list a cell held (lead memory, 25 Oct), in the same order, each by its place in the flat
+    /// rings (task #935): random rings, with and without a buffer, a shape of one cell and the
+    /// empty shape.
     #[test]
     fn grid_cells_list_the_edges_a_list_a_cell_did() {
         let mut seed = 777u64;
@@ -1292,11 +1439,7 @@ mod tests {
             let lat = (bb[1].unsigned_abs().max(bb[3].unsigned_abs()) as f64 * 1e-7).min(85.0);
             let be = ((buffer_m / (M_PER_E7 * lat.to_radians().dcos())).ceil() as i32)
                 .max((buffer_m / M_PER_E7).ceil() as i32) as f64;
-            assert_eq!(g.starts.len(), g.nx * g.ny + 1, "case {n}");
-            assert_eq!(g.starts[0], 0, "case {n}");
-            assert_eq!(*g.starts.last().unwrap() as usize, g.edges.len(), "case {n}");
-            assert!(g.starts.windows(2).all(|w| w[0] <= w[1]), "case {n}");
-            let mut old: Vec<Vec<(u32, u32)>> = vec![Vec::new(); g.nx * g.ny];
+            let mut old: Vec<Vec<u32>> = vec![Vec::new(); g.nx * g.ny];
             for (ri, r) in rings.iter().enumerate() {
                 for i in 0..r.len() {
                     let (a, b) = (r[i], r[(i + 1) % r.len()]);
@@ -1314,13 +1457,23 @@ mod tests {
                     );
                     for cy in cy0..=cy1 {
                         for cx in cx0..=cx1 {
-                            old[cy * g.nx + cx].push((ri as u32, i as u32));
+                            old[cy * g.nx + cx].push(s.rings.starts[ri] + i as u32);
                         }
                     }
                 }
             }
             for (c, e) in old.iter().enumerate() {
                 assert_eq!(g.edges(c), &e[..], "case {n}, cell {c}");
+                assert_eq!(bit(&g.listed, c), !e.is_empty(), "case {n}, cell {c}");
+            }
+            assert_eq!(g.starts.len(), old.iter().filter(|e| !e.is_empty()).count() + 1, "case {n}");
+            assert_eq!(g.edges, old.concat(), "case {n}");
+            // Each edge its ring's: from its point to the next, the last back to the first.
+            for (ri, r) in rings.iter().enumerate() {
+                assert_eq!(s.rings.ring(ri), &r[..]);
+                for i in 0..r.len() {
+                    assert_eq!(s.rings.edge(s.rings.starts[ri] + i as u32), (r[i], r[(i + 1) % r.len()]));
+                }
             }
         }
     }
@@ -1736,6 +1889,29 @@ mod tests {
         assert!(!back.meets_rect(r(1.4)) && back.meets_rect_depth(r(1.4)));
     }
 
+    /// A kept coverage that isn't a coverage's is not read: an edge from a ring's closing point (to
+    /// the next ring's first), a ring not closed, a listed cell of no edges.
+    #[test]
+    fn a_kept_coverage_not_a_coverages_is_not_read() {
+        let sq = |x: f64| vec![e7(x, 0.0), e7(x + 1.0, 0.0), e7(x + 1.0, 1.0), e7(x, 1.0)];
+        let good = Coverage { shapes: vec![Shape::new("a".into(), vec![sq(0.0), sq(2.0)], 0.0)], ..Default::default() };
+        let back = from_kept(&mut &kept_bytes(&good)[..]).unwrap();
+        assert!(back.shapes[0].rings == good.shapes[0].rings && back.shapes[0].grid == good.shapes[0].grid);
+        let broken = |f: &dyn Fn(&mut Shape)| {
+            let mut c = good.clone();
+            f(&mut c.shapes[0]);
+            from_kept(&mut &kept_bytes(&c)[..]).is_none()
+        };
+        assert!(broken(&|s| *std::sync::Arc::make_mut(&mut s.grid).edges.last_mut().unwrap() = 4));
+        assert!(broken(&|s| std::sync::Arc::make_mut(&mut s.rings).points[4] = e7(5.0, 5.0)));
+        assert!(broken(&|s| {
+            let g = std::sync::Arc::make_mut(&mut s.grid);
+            let c = (0..g.nx * g.ny).find(|&c| !bit(&g.listed, c)).unwrap();
+            g.listed[c / 64] |= 1 << (c % 64);
+        }));
+        assert!(!broken(&|_| ()));
+    }
+
     /// A coverage's read bound (`Coverage::read_peak_mb`, task #639) covers what reading it holds, on
     /// a real-shaped one: a coast of 300,000 points over a country's box with the coasts' buffer,
     /// many small outlines besides, read back from its kept bytes.
@@ -1759,14 +1935,24 @@ mod tests {
         for (a, b) in made.shapes.iter().zip(&c.shapes) {
             assert!(a.grid == b.grid && a.bbox == b.bbox && a.rings == b.rings && a.source == b.source);
         }
-        // Cut short anywhere, or an edge naming no ring's point: not read.
+        // Cut short anywhere: not read.
         let k = kept_bytes(&made);
         assert!(from_kept(&mut &k[..k.len() - 1]).is_none());
-        let points: u64 = c.shapes.iter().flat_map(|s| s.rings.iter()).map(|r| r.len() as u64).sum();
-        let entries: u64 = c.shapes.iter().map(|s| s.grid.edges.len() as u64).sum();
-        let cells: u64 = c.shapes.iter().map(|s| (s.grid.nx * s.grid.ny) as u64).sum();
-        // Held at once while it's read (as a stream): the rings, every grid, the memos.
-        let held = points * 8 + cells * 5 + entries * 8 + MEMO_CAP as u64;
+        // Held at once while it's read (as a stream): the rings (each closed, and where each
+        // begins), every grid (two bits a cell, where each word's listed cells begin, where each
+        // listed cell's edges begin, and theirs), the memos.
+        let (mut held, mut points, mut entries) = (MEMO_CAP as u64, 0, 0);
+        for s in &c.shapes {
+            let rings: Vec<&[[i32; 2]]> = s.rings.iter().collect();
+            points += rings.iter().map(|r| r.len() as u64).sum::<u64>();
+            held += rings.iter().map(|r| (r.len() as u64 + 1) * 8 + 4).sum::<u64>() + 4;
+            let g = &s.grid;
+            let cells = g.nx * g.ny;
+            let listed = (0..cells).filter(|&c| !g.edges(c).is_empty()).count() as u64;
+            let e: u64 = (0..cells).map(|c| g.edges(c).len() as u64).sum();
+            entries += e;
+            held += cells.div_ceil(64) as u64 * 20 + (listed + 1) * 4 + e * 4;
+        }
         let mb = c.read_peak_mb();
         assert!(mb << 20 >= held, "{mb} MB under {held} B");
         assert!(entries > points, "the coast's buffer lists its edges in several cells");
