@@ -319,10 +319,10 @@ pub fn assemble(
     out: &Path,
     previous: Option<(store::nasfs::Loc<'_>, &str)>,
 ) -> Result<Summary> {
-    use crate::timings::sub;
+    use jobrt::timings::sub;
     std::fs::create_dir_all(work)?;
     let rels_opl = work.join("outlines-relations.opl");
-    // (Each program and stage its sub-phase, with the memory it held: crate::timings.)
+    // (Each program and stage its sub-phase, with the memory it held: jobrt::timings.)
     let p = sub("listing the relations (osmium cat)");
     osmium(
         store::spawn::command("osmium")
@@ -506,7 +506,7 @@ fn dist_m(a: [i32; 2], b: [i32; 2]) -> f64 {
 /// its own to).
 /// The widest gap closed with them. Refused: a node where more than two way ends meet (which way
 /// a ring takes there is a guess that can make it cross itself).
-pub(crate) fn rings_of(
+pub fn rings_of(
     ways: &[Vec<(u64, [i32; 2])>],
     segments: &mut Vec<([i32; 2], [i32; 2])>,
 ) -> Result<(Vec<Vec<[i32; 2]>>, f64)> {
@@ -593,7 +593,7 @@ pub(crate) fn rings_of(
 }
 
 /// The segments of `ways`.
-pub(crate) fn segments_of<'a>(ways: impl IntoIterator<Item = &'a Vec<(u64, [i32; 2])>>) -> Vec<([i32; 2], [i32; 2])> {
+pub fn segments_of<'a>(ways: impl IntoIterator<Item = &'a Vec<(u64, [i32; 2])>>) -> Vec<([i32; 2], [i32; 2])> {
     ways.into_iter().flat_map(|w| w.windows(2).map(|s| (s[0].1, s[1].1))).collect()
 }
 
@@ -648,7 +648,7 @@ fn nest(outers: Vec<Vec<[i32; 2]>>, inners: Vec<Vec<[i32; 2]>>) -> Result<Vec<Ve
 }
 
 /// Reading osmium's OPL: the set's relations and the repaired ones' ways and nodes.
-pub(crate) mod opl {
+pub mod opl {
     use super::Tags;
     use anyhow::{Context, Result};
     use std::collections::HashMap;
@@ -1233,34 +1233,6 @@ fn territory_code(iso: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A measure on real data, reading the NAS alone: `SCENIC_OUTLINES_MEASURE="<root> <date> <out
-    /// file>"` assembles the pass's outline set as the outlines step does (the previous pass's file
-    /// for its repairs) into `<out file>`, a local file, and prints its phases with the memory each
-    /// held (crate::timings). Unset, nothing.
-    #[test]
-    fn measure_a_real_assembly() {
-        let Ok(m) = std::env::var("SCENIC_OUTLINES_MEASURE") else { return };
-        let a: Vec<&str> = m.split_whitespace().collect();
-        let scratch = tempfile::tempdir().unwrap();
-        let out =
-            crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(Path::new(a[0])), scratch.path()).unwrap();
-        let set = out.path(out.get(&crate::osmpass::set_name(a[1], "outlines")).unwrap());
-        let previous =
-            crate::osmpass::previous_outlines(&out.manifest, a[1]).map(|(d, c)| (out.path(c), d.to_string()));
-        crate::timings::start("outlines");
-        let p = crate::timings::phase("assembling");
-        let s = assemble(
-            &set.unchecked_path(),
-            &scratch.path().join("work"),
-            Path::new(a[2]),
-            previous.as_ref().map(|(p, d)| (p.into(), d.as_str())),
-        )
-        .unwrap();
-        drop(p);
-        println!("{} outlines, {} points", s.outlines, s.points);
-        print!("{}", crate::timings::table(&crate::timings::snapshot(true).unwrap()));
-    }
 
     const SQUARE_WITH_HOLE: &str = r#"{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]]},"properties":{"@type":"relation","@id":7,"boundary":"administrative","admin_level":"4","name":"Carré","name:en":"Square","ISO3166-2":"XX-SQ"}}"#;
 

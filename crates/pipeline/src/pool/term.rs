@@ -11,8 +11,9 @@ use super::Member;
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// The folder of the terms.
-pub const DIR: &str = "state/build/terms";
+/// The folder of the terms (the build's files' crate's: once it's there, no step saves the records,
+/// buildstore::out::check_writer).
+pub const DIR: &str = buildstore::out::TERMS;
 /// The lead's hint: the term it made or took up, for old apps and to save a listing.
 pub const HINT: &str = "state/build/lead.json";
 /// The declaration of the lead (`Declared`): which member leads, for good.

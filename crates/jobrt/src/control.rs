@@ -300,6 +300,20 @@ pub fn draining() -> bool {
     std::env::var_os(CONTROL_ENV).and_then(|p| std::fs::read(p).ok()).is_some_and(|b| b.starts_with(b"drain"))
 }
 
+static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Marks this process (the agent) as asked to stop: its SIGTERM or SIGINT handler, or its loop
+/// ending. Async-signal-safe (an atomic store).
+pub fn ask_stop() {
+    STOPPING.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether this process (the agent) has been asked to stop (`ask_stop`): long work between its
+/// loops (making room, merging raw tiles' archives) ends early for it. Never, in a job.
+pub fn stopping() -> bool {
+    STOPPING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// `draining`, read at most once a second (a stale answer for no longer): for checks made on every
 /// sampling call (crate::terrain_base::Tiles), which a file read each would slow.
 pub fn draining_lately() -> bool {

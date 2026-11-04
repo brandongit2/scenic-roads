@@ -810,7 +810,7 @@ impl Planner {
         &self,
         root: &store::nasfs::NasRoot,
     ) -> Result<(BTreeMap<String, String>, build::Keys)> {
-        let r = crate::out::brief_now(root)?;
+        let r = crate::pool::records::Brief::now(root)?;
         Ok((r.manifest, r.keys.with_waiting(&self.handoff_bases(root))?))
     }
 
@@ -2919,7 +2919,8 @@ impl Planner {
         let fresh = if making.as_ref().is_none_or(|(v, h)| *v != a.version && h.is_finished()) {
             let (root, cache, a, v) = (root.long_retry(), self.o.home.join("cache"), a.clone(), a.version.clone());
             let run = std::thread::Builder::new().name("coverage".into()).spawn(move || {
-                let all = crate::coverage::Coverage::accepted(&root, &a, Some(&cache)).map_err(|e| format!("{e:#}"))?;
+                let all = crate::inputs::regions::read::accepted_coverage(&root, &a, Some(&cache))
+                    .map_err(|e| format!("{e:#}"))?;
                 Ok(Coverages { each: all.by_region(), all })
             });
             *making = Some((v, run.map_err(|e| format!("the coverage's thread: {e}"))?));

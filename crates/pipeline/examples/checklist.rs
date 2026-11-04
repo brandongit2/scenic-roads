@@ -9,7 +9,6 @@
 
 use pipeline::agent::build::{checklist, fold, KeyCtx, Keys};
 use pipeline::agent::tiles::TerrainTiles;
-use pipeline::coverage::Coverage;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -24,7 +23,7 @@ fn main() -> anyhow::Result<()> {
     let date = pipeline::osmpass::latest_pass_by(&nr, false).ok_or_else(|| anyhow::anyhow!("no complete pass"))?;
     let keys = Keys::load(&nr);
     let a = pipeline::inputs::regions::read::source(&nr, &m)?;
-    let cov = Coverage::accepted(&nr, &a, None)?;
+    let cov = pipeline::inputs::regions::read::accepted_coverage(&nr, &a, None)?;
     let reach = pipeline::reach::Reaches::load(&nr, &m, &date).ok().flatten();
     let mut tiles = TerrainTiles::new(Some(PathBuf::from(idx)));
     tiles.load(&nr, &m);

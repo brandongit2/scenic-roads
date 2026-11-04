@@ -755,13 +755,14 @@ impl Checks for Elevation {
                 Ok(Some(a)) => {
                     let index = manifest.get(&crate::inputs::logical(crate::inputs::regions::UNIT)).cloned();
                     let cache = std::env::var_os(crate::coverage::CACHE_ENV).map(std::path::PathBuf::from);
-                    let read = crate::coverage::Coverage::accepted(root, &a, cache.as_deref()).and_then(|c| {
-                        let named = crate::inputs::regions::read::enabled(&a)?
-                            .into_iter()
-                            .filter_map(|l| Some((l.recipe.id, l.stored?.geometry)))
-                            .collect();
-                        Ok((c, named))
-                    });
+                    let read =
+                        crate::inputs::regions::read::accepted_coverage(root, &a, cache.as_deref()).and_then(|c| {
+                            let named = crate::inputs::regions::read::enabled(&a)?
+                                .into_iter()
+                                .filter_map(|l| Some((l.recipe.id, l.stored?.geometry)))
+                                .collect();
+                            Ok((c, named))
+                        });
                     match read {
                         Ok((c, named)) => (Some(c), named, index),
                         Err(e) => {

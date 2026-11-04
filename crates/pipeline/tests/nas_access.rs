@@ -68,7 +68,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/pipeline/src/inputs/regions/data.rs", "read", 1, "GDAL and the shapefile reader read the datasets by path"),
     ("crates/pipeline/src/namestodo.rs", "translation_files", 1, "the names crate's tables read their files by path"),
     // A raw path for what isn't a file's read or write.
-    ("crates/pipeline/src/out.rs", "file", 1, "a local lock file named after the root's real path"),
+    ("crates/buildstore/src/out.rs", "file", 1, "a local lock file named after the root's real path"),
     ("crates/pipeline/src/agent/room.rs", "ours", 1, "a local cache file's real path against the root's"),
     ("crates/pipeline/src/agent/room.rs", "nas_free", 1, "the share's free space: its mount's statfs"),
     ("crates/pipeline/src/agent/cond.rs", "resources", 1, "the share's free space: its mount's statfs"),

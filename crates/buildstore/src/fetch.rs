@@ -59,7 +59,7 @@ pub fn is_unreachable(e: &anyhow::Error) -> bool {
 }
 
 /// A program's exit status when a server it needs gave no answer (EX_UNAVAILABLE): the unit job
-/// sets that z6 tile aside and goes on with its others (crate::unit::SourceDown).
+/// sets that z6 tile aside and goes on with its others (pipeline::unit::SourceDown).
 pub const UNREACHABLE_EXIT: u8 = 69;
 
 /// A program's end: its error printed as `main`'s would be, its status `UNREACHABLE_EXIT` when a
@@ -144,8 +144,8 @@ fn cancelled(url: &str) -> Result<()> {
 /// early in an error when this thread's reader stops; then the host's note checked again
 /// (`down_check`: another request may have found it down).
 fn retry_wait(dir: Option<&Path>, url: &str, secs: u64, clock: &dyn store::clock::Clock) -> Result<()> {
-    // (Counted by the job's proxy, for its host: crate::budget::net.)
-    crate::budget::retried(url);
+    // (Counted by the job's proxy, for its host: jobrt::budget::net.)
+    jobrt::budget::retried(url);
     let end = clock.now() + std::time::Duration::from_secs(secs);
     loop {
         cancelled(url)?;
@@ -209,9 +209,10 @@ fn offline_refuses_the_internet_not_this_mac() {
     }
 }
 
-/// (The unit tests' process is offline from its start, whichever test runs first: none reaches the
-/// internet.)
-static OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(cfg!(test));
+/// (A test build's process is offline from its start, whichever test runs first: none reaches the
+/// internet. Also other crates' test builds, through `testkit`: pipeline's unit tests were.)
+static OFFLINE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(cfg!(any(test, feature = "testkit")));
 
 /// No network for the rest of this process (`online`): a test's.
 pub fn go_offline() {
@@ -223,7 +224,7 @@ pub const USER_AGENT: &str = "scenic-roads/0.1 (personal offline map)";
 
 /// What a fetched source is (docs/inputs.md §6.9), which decides whether its host's robots.txt is
 /// read first: robots.txt is for crawlers, so only a page's is. An API or a data download follows
-/// its provider's usage policy instead: `USER_AGENT`, the pool's rate limits (crate::budget), a
+/// its provider's usage policy instead: `USER_AGENT`, the pool's rate limits (jobrt::budget), a
 /// back-off on 429, the credit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -567,9 +568,9 @@ impl Fetch for MapFetch {
     }
 }
 
-// The bytes this process has fetched over the network so far: counted in crate::timings (the
+// The bytes this process has fetched over the network so far: counted in jobrt::timings (the
 // runtime crate, task #916 step 3), which a phase's count reads; kept at this path.
-pub use crate::timings::fetched_bytes;
+pub use jobrt::timings::fetched_bytes;
 
 /// `url`'s small file whole over the network, by this process's one `net::Net` (its retries, its
 /// wait for this Mac's agent's proxy through a restart, its per-host slots); None when the server
@@ -696,9 +697,9 @@ mod net {
     }
 
     /// Counts the bytes fetched over the network (ranges and whole files) for a phase's count
-    /// (crate::timings::fetched_bytes).
+    /// (jobrt::timings::fetched_bytes).
     fn fetched(n: usize) {
-        crate::timings::fetched(n);
+        jobrt::timings::fetched(n);
     }
 
     /// A file's network side: the connection pool, the blocks fetched, where they're recorded.
@@ -884,7 +885,7 @@ mod net {
                 down: down_dir(),
                 clock: store::clock::real(),
                 proxy: local_proxy(),
-                draining: crate::control::draining_lately,
+                draining: jobrt::control::draining_lately,
             }
         }
 
@@ -892,7 +893,7 @@ mod net {
         #[cfg(test)]
         pub fn through(self, url: &str) -> Net {
             let agent = Self::config().proxy(Some(ureq::Proxy::new(url).unwrap())).build().into();
-            Net { agent, proxy: crate::osmpass::proxy_addr(url), ..self }
+            Net { agent, proxy: crate::nasssh::proxy_addr(url), ..self }
         }
 
         /// With `draining` in place of `control::draining`.
@@ -1392,8 +1393,8 @@ mod tests {
     /// Every producer script that fetches (producers/, dem/: urllib, curl, producers/depth/grid.py's
     /// helpers) declares what it fetches, kinds of `Kind` (`FETCHES = "api, data"`; a shell
     /// script's `# FETCHES: data`), and one that fetches pages reads robots.txt and tells its proxy
-    /// what it found (`/robots`: crate::budget::net::Robots, the Activity tab's column). (The declarations'
-    /// `kind` is crate::inputs::sources::parse's.)
+    /// what it found (`/robots`: jobrt::budget::net::Robots, the Activity tab's column). (The declarations'
+    /// `kind` is pipeline::inputs::sources::parse's.)
     #[test]
     fn every_fetching_script_declares_its_kinds() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

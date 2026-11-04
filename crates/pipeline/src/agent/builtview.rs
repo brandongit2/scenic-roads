@@ -202,7 +202,7 @@ impl BuiltView {
 
     /// Reads the keys and the manifest (the last read kept when they can't be read now).
     pub fn refresh(&self) {
-        let got = crate::out::brief_now(&self.root).map(|b| {
+        let got = crate::pool::records::Brief::now(&self.root).map(|b| {
             let steps = tiles_of(&b.keys);
             let empty = empty_of(&steps, &b.manifest);
             (steps, empty, dropped_of(&b.keys))

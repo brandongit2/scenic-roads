@@ -1,5 +1,5 @@
 //! A target's input measures, for its done line in the job's costs file (`SCENIC_COSTS`;
-//! crate::coord::Cost's `sizes`): what the step already counts as it reads, noted here as it goes
+//! pipeline::coord::Cost's `sizes`): what the step already counts as it reads, noted here as it goes
 //! and taken as the target's cost is noted. No pass over data is made just to count.
 //!
 //! Keys (docs/formats.md, costs.jsonl): `bytes` (always: what the store's readers read for the
@@ -10,15 +10,15 @@
 //! `paused_ms` (the time its process was stopped over it, where it was: `stopped_ms`), `waited_ms`
 //! (the wall time over it in which the process waited on the NAS, the network, the disk or other
 //! work, store::waits by its wall clock, where the job's run is timed: `waited`; task #896, what
-//! crate::needs::Book::cores reads the cores it computed on from), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
+//! pipeline::needs::Book::cores reads the cores it computed on from), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
 //! the base packs met), `nas_read` and `nas_secs` (pack, lo: the bytes the job read of the base packs
 //! from the NAS and the seconds that took, the same on each of its targets), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
 //! (the target's area: terrain, slope, trees and their assemblies, the z6 tiles' elevations), `fetched`
-//! (pyramids-fill: the tiles it asked of the network, what weighs its time, crate::needs::PER_WORK), and,
+//! (pyramids-fill: the tiles it asked of the network, what weighs its time, pipeline::needs::PER_WORK), and,
 //! where the job wrote to the NAS through its `Out` (crate::out), `wrote` (the bytes of the files
 //! it made there) and `creates` (how many), and its NAS metadata work (`meta`: `listed`, `stats`,
 //! `deletes`, task #451): with `bytes`, the target's NAS weight
-//! (crate::needs::Book::nas, crate::budget::nas).
+//! (pipeline::needs::Book::nas, jobrt::budget::nas).
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -27,7 +27,7 @@ use store::nasio::Count;
 struct State {
     /// This process's counts (store::nasio) as the target began.
     at: store::nasio::Counts,
-    /// The process's CPU time as the target began (µs: crate::timings::cpu_us), and the time it had
+    /// The process's CPU time as the target began (µs: jobrt::timings::cpu_us), and the time it had
     /// been stopped (ms: `stopped_ms`).
     cpu_at: Option<u64>,
     stopped_at: u64,
@@ -45,7 +45,7 @@ static STATE: Mutex<State> = Mutex::new(State {
 });
 
 /// The wall time this process has waited on anything so far (ns: store::waits' kinds together, by
-/// its wall clock); None while store::waits isn't measuring (a run not timed, crate::timings::start).
+/// its wall clock); None while store::waits isn't measuring (a run not timed, jobrt::timings::start).
 fn waited() -> Option<u64> {
     store::waits::enabled().then(|| store::waits::totals()[..store::waits::KINDS].iter().sum())
 }
@@ -71,7 +71,7 @@ fn grew(at: &store::nasio::Counts, now: &store::nasio::Counts) -> (u64, u64, u64
 pub fn begin() {
     let mut s = state();
     s.at = store::nasio::own();
-    s.cpu_at = crate::timings::cpu_us();
+    s.cpu_at = jobrt::timings::cpu_us();
     s.stopped_at = stopped_ms();
     s.waited_at = waited();
     s.m.clear();
@@ -153,7 +153,7 @@ pub fn wrote(path: &store::nasfs::NasPath, bytes: u64, ms: u64) {
 }
 
 /// Counts NAS metadata work (task #451): `listed` folder entries listed, `stats` files statted,
-/// `deletes` files deleted, for its weight beside its bytes and creates (crate::budget::nas). (This
+/// `deletes` files deleted, for its weight beside its bytes and creates (jobrt::budget::nas). (This
 /// process's NAS counts, store::nasio's, are store::nasfs's: each listing, stat and remove counts
 /// there.) A walk that only lists, stats and removes (GC's)
 /// reads and writes next to nothing.
@@ -186,7 +186,7 @@ pub fn take() -> BTreeMap<String, u64> {
         m.insert("tiffs".into(), tiffs);
     }
     m.insert("threads".into(), threads() as u64);
-    if let (Some(a), Some(b)) = (s.cpu_at, crate::timings::cpu_us()) {
+    if let (Some(a), Some(b)) = (s.cpu_at, jobrt::timings::cpu_us()) {
         m.insert("cpu_ms".into(), b.saturating_sub(a) / 1000);
     }
     let paused = stopped_ms().saturating_sub(s.stopped_at);
@@ -214,12 +214,12 @@ pub struct Taken {
 
 /// Runs `f` (a z6 tile's tail steps run here after its measures were taken, before the next z6 tile
 /// begins) and gives back what it read, the GeoTIFFs it opened and the CPU it took: its programs'
-/// own (their counts added to this process's as each ends: crate::unit's `run`; their CPU as each
+/// own (their counts added to this process's as each ends: pipeline::unit's `run`; their CPU as each
 /// is waited for) among them. (Reads and CPU on other threads meanwhile are counted too.)
 pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
-    let (at, c0, p0, w0) = (store::nasio::own(), crate::timings::cpu_us(), stopped_ms(), waited());
+    let (at, c0, p0, w0) = (store::nasio::own(), jobrt::timings::cpu_us(), stopped_ms(), waited());
     let v = f();
-    let cpu_ms = match (c0, crate::timings::cpu_us()) {
+    let cpu_ms = match (c0, jobrt::timings::cpu_us()) {
         (Some(a), Some(b)) => Some(b.saturating_sub(a) / 1000),
         _ => None,
     };
@@ -229,7 +229,7 @@ pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
 }
 
 /// Adds measures taken by `measured` to a target's: its CPU and time stopped too, so a z6 tile's `cpu_ms` counts its
-/// tail's programs run after its measures were taken (crate::needs::Book::cores reads it over the
+/// tail's programs run after its measures were taken (pipeline::needs::Book::cores reads it over the
 /// target's whole time, the tail's included).
 pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {
     *m.entry("bytes".into()).or_default() += t.bytes;
@@ -264,8 +264,8 @@ pub fn tile_km2(z: u8, _x: u32, y: u32) -> u64 {
 }
 
 /// The tests that read the measures, one at a time (they share this process's).
-#[cfg(test)]
-pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(any(test, feature = "testkit"))]
+pub static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 mod tests {

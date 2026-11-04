@@ -39,7 +39,7 @@ fn writes_records(l: &str, c: &str) -> bool {
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/coord/mod.rs", "raw_again", "crate::handoff::write(&journal.join(crate::handoff::RAW_AGAIN)", "a hand-off not taken: its raw tiles' archives alone, kept for the next merge to name (outside the manifest)"),
     ("crates/pipeline/src/coord/mod.rs", "route", "crate::handoff::write(&journal.join(folder(&d.worker)), &h)", "the coordinator journaling a helper's hand-off (its job's Out wrote it) while its pool is off: the merge's path"),
-    ("crates/pipeline/src/rawpack.rs", "finish_with", "^crate::handoff::write(&dir,&crate::handoff::Handoff { raw:", "a job's raw tiles' archives, named by their area (crate::rawpack::named_for, which the merge checks), outside the manifest"),
+    ("crates/buildstore/src/rawpack.rs", "finish_with", "^crate::handoff::write(&dir,&crate::handoff::Handoff { raw:", "a job's raw tiles' archives, named by their area (crate::rawpack::named_for, which the merge checks), outside the manifest"),
     ("crates/pipeline/src/agent/pool.rs", "write_today", "nas.write_whole(\"state/build/manifest.json\"", "the lead writing today's files from its merged records, while a member's older app reads them (docs/pool.md §6.2)"),
     ("crates/pipeline/src/agent/plan.rs", "plan_seen", "\"state/build/manifest.json\"", "reads only the manifest's and the jobs' records' size and time (an idle agent's plan digest, task #154)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "step_main", "\"state/build/manifest.json\"", "regions-fixture: a scratch folder's records for a two-Mac procedure, never the project folder's"),
@@ -65,7 +65,9 @@ fn scan() -> (Vec<String>, Vec<String>) {
     for f in rs {
         let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
         // (The writer itself; and test code in files of its own, `#[cfg(test)] mod sim` or `tests`.)
-        if rel == "crates/pipeline/src/out.rs" || rel == "crates/pipeline/src/pool/sim.rs" || rel.ends_with("/tests.rs")
+        if rel == "crates/buildstore/src/out.rs"
+            || rel == "crates/pipeline/src/pool/sim.rs"
+            || rel.ends_with("/tests.rs")
         {
             continue;
         }

@@ -261,7 +261,7 @@ pub fn drop_names(
     depth: Option<&DepthKeep>,
     dry_run: bool,
 ) -> Result<Dropped> {
-    let crate::pool::records::Records { pending, manifest, .. } = crate::out::records_now(root)?;
+    let crate::pool::records::Records { pending, manifest, .. } = crate::pool::records::Records::now(root)?;
     let names: Vec<&String> = manifest.keys().filter(|l| dropped(l, depth)).collect();
     let kept: BTreeMap<String, String> =
         manifest.iter().filter(|(l, _)| !dropped(l, depth)).map(|(l, c)| (l.clone(), c.clone())).collect();
@@ -312,7 +312,7 @@ pub fn verify_pending(
     nas_root: &str,
     dry_run: bool,
 ) -> Result<Verified> {
-    let crate::pool::records::Records { pending, manifest, sizes, .. } = crate::out::records_now(root)?;
+    let crate::pool::records::Records { pending, manifest, sizes, .. } = crate::pool::records::Records::now(root)?;
     let named = read_by(root, &manifest)?;
     let todo: Vec<(&String, &String)> = pending.iter().filter(|(c, _)| named.contains(*c)).collect();
     let mut v = Verified::default();
@@ -370,7 +370,7 @@ pub fn verify_pending(
 /// the job's proxy when it has one (crate::budget::SANDBOX, as crate::osmpass's), its host last.
 fn nas_ssh() -> Vec<String> {
     let mut a: Vec<String> = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20"].map(String::from).into();
-    if let Some(p) = std::env::var(crate::budget::PROXY_ENV).ok().and_then(|u| crate::osmpass::proxy_addr(&u)) {
+    if let Some(p) = std::env::var(crate::budget::PROXY_ENV).ok().and_then(|u| buildstore::nasssh::proxy_addr(&u)) {
         a.extend(["-o".into(), format!("ProxyCommand=/usr/bin/nc -X connect -x {p} %h %p")]);
     }
     a.push(store::nas::SSH.into());

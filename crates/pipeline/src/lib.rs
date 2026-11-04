@@ -9,17 +9,12 @@ pub mod buildtiles;
 pub mod candidates;
 pub mod cli;
 pub mod coord;
-pub mod costin;
-pub mod coverage;
 pub mod dem;
 pub mod depth;
 pub mod elev;
 pub mod ferries;
-pub mod fetch;
 pub mod filterprops;
-pub mod geotiff;
 pub mod gtfs;
-pub mod handoff;
 pub mod heritage;
 pub mod heritage_layers;
 pub mod heritagedetails;
@@ -32,7 +27,6 @@ pub mod lakefill;
 pub mod landcover;
 pub mod layers;
 pub mod leaftype;
-pub mod localread;
 pub mod markconv;
 pub mod marksjob;
 pub mod menu;
@@ -42,7 +36,6 @@ pub mod net;
 pub mod offload;
 pub mod osmpass;
 pub mod out;
-pub mod outlines;
 pub mod ovconv;
 pub mod pageviews;
 pub mod peaks;
@@ -52,7 +45,6 @@ pub mod pubtimes;
 pub mod pyramids;
 pub mod rail;
 pub mod railfeeds;
-pub mod rawpack;
 pub mod reach;
 pub mod road_terrain;
 pub mod rules;
@@ -86,3 +78,7 @@ pub use codecs::{
 
 // Moved to their own crate (task #916 step 3, docs/crates.md), kept at their old paths.
 pub use jobrt::{budget, control, phase_names, pyenv, resume_log, sys, timings};
+
+// Moved to their own crate (task #916 step 4, docs/crates.md), kept at their old paths. (out is
+// pipeline's own: its `Out` gives buildstore's the records and write sets from above.)
+pub use buildstore::{costin, coverage, fetch, geotiff, handoff, localread, outlines, rawpack};

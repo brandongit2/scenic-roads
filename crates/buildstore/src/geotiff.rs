@@ -320,7 +320,7 @@ impl BlockCache {
 /// values and its tile arrays lie within a few KB of each other, in one or two clusters (the first
 /// image's at the file's start, the overviews' after its data: the depth sources' grids, 20 Oct
 /// 2026, their headers 24–38 reads each), so a window at each cluster serves the whole header.
-pub(crate) const HEADER_WINDOW: usize = 32 << 10;
+pub const HEADER_WINDOW: usize = 32 << 10;
 /// How many windows a header's read keeps (its clusters; one past that goes).
 const HEADER_WINDOWS: usize = 8;
 /// The most bytes of tile or strip arrays (offsets and counts) a file keeps: an array within it is
@@ -1238,7 +1238,7 @@ fn fp_acc(row: &mut [u8], bps: usize, stride: usize, tmp: &mut Vec<u8>) {
 }
 
 /// The floating-point predictor's encoding of a row of little-endian samples (`fp_acc` undoes it).
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 fn fp_diff(row: &mut [u8], bps: usize, stride: usize, tmp: &mut Vec<u8>) {
     let wc = row.len() / bps;
     tmp.clear();
@@ -1255,7 +1255,7 @@ fn fp_diff(row: &mut [u8], bps: usize, stride: usize, tmp: &mut Vec<u8>) {
 }
 
 /// GeoKeys for a geographic CRS by its EPSG code (as GDAL writes them for WGS 84).
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 fn geographic_keys(epsg: u16) -> (Vec<u16>, Vec<f64>, String) {
     let mut keys: Vec<[u16; 4]> =
         vec![[key::MODEL_TYPE, 0, 1, 2], [key::RASTER_TYPE, 0, 1, 1], [key::GEOGRAPHIC_TYPE, 0, 1, epsg]];
@@ -1279,7 +1279,7 @@ fn geographic_keys(epsg: u16) -> (Vec<u16>, Vec<f64>, String) {
 }
 
 /// GDAL's nodata tag text for `v`.
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 fn nodata_text(v: f64) -> String {
     if v.is_nan() {
         "nan".into()
@@ -1298,7 +1298,7 @@ fn nodata_text(v: f64) -> String {
 /// `tile`-pixel square tiles (edges filled with the nodata value, or 0), Deflate with the
 /// floating-point predictor; north-up geotransform `gt` in geographic CRS `epsg`, and GDAL's
 /// nodata tag. (The tests' rasters.)
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub fn write_f32(
     width: u32,
     height: u32,
@@ -1421,8 +1421,8 @@ pub fn write_f32(
     Ok(out)
 }
 
-#[cfg(test)]
-pub(crate) mod testtiff {
+#[cfg(any(test, feature = "testkit"))]
+pub mod testtiff {
     //! TIFFs of every layout the reader takes, for tests.
     use super::*;
     use std::io::Write;
@@ -1787,7 +1787,7 @@ mod tests {
         data[6] = -9999.0;
         let gt = [-2.000138888888889, 0.0002777777777777778, 0.0, 48.00013888888889, 0.0, -0.0002777777777777778];
         let b = write_f32(w, h, &data, 512, gt, 4326, Some(-9999.0)).unwrap();
-        assert!(crate::whole::tiff_bytes_whole(&b));
+        assert!(codecs::whole::tiff_bytes_whole(&b));
         let t = open(b);
         let got = t.read_window(0, 0, 0, w, h).unwrap();
         assert!(got.iter().zip(&data).all(|(a, b)| a.to_bits() == b.to_bits()));

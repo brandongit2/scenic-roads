@@ -841,7 +841,8 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
     );
     assert!(read::tree(&a.index).regions.contains(&"b".to_string()));
     assert_eq!(read::recipes(&a).unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a", "c"]);
-    let cov = Coverage::accepted(&store::nasfs::NasRoot::local_for_test(root), &a, None).unwrap();
+    let cov = crate::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(root), &a, None)
+        .unwrap();
     let b_box = [10_200_000, 2_000_000, 19_800_000, 8_000_000];
     assert!(cov.contains([5_000_000, 5_000_000]) && !cov.contains([15_000_000, 5_000_000]));
     assert!(!cov.meets_rect(b_box));
@@ -874,7 +875,8 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
     let t = read::tree(&e.index);
     assert!(t.regions.contains(&"b".to_string()) && t.regions.contains(&"c".to_string()));
     assert_eq!(read::recipes(&e).unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a"]);
-    let ce = Coverage::accepted(&store::nasfs::NasRoot::local_for_test(root), &e, None).unwrap();
+    let ce = crate::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(root), &e, None)
+        .unwrap();
     assert!(ce.contains([5_000_000, 5_000_000]));
     assert!(ce.by_region().iter().all(|(id, _)| id.starts_with("a")));
     let named = |id: &str| Recipe { id: id.into(), name: id.into(), outline: vec![] };
@@ -899,7 +901,8 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
     assert_ne!(a2.version, a.version);
     assert_eq!(a2.index.files["b.toml"].keyed, a.index.files["b.toml"].keyed, "the same geometry");
     assert_eq!(read::recipes(&a2).unwrap().len(), 3);
-    let cov2 = Coverage::accepted(&store::nasfs::NasRoot::local_for_test(root), &a2, None).unwrap();
+    let cov2 = crate::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(root), &a2, None)
+        .unwrap();
     assert!(cov2.contains([15_000_000, 5_000_000]) && cov2.meets_rect(b_box));
     assert_ne!(cov2.fingerprint(b_box), off_print);
     // A box b doesn't reach keeps its key.
@@ -920,7 +923,9 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
     .unwrap();
     assert_eq!(read::recipes(&a3).unwrap().len(), 2);
     assert_eq!(
-        Coverage::accepted(&store::nasfs::NasRoot::local_for_test(root), &a3, None).unwrap().fingerprint(b_box),
+        crate::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(root), &a3, None)
+            .unwrap()
+            .fingerprint(b_box),
         off_print
     );
 }

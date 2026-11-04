@@ -11,6 +11,7 @@ names = { path = "../names" }
 pyport = { path = "../pyport" }
 codecs = { path = "../codecs" }
 jobrt = { path = "../jobrt" }
+buildstore = { path = "../buildstore" }
 sha2 = "0.10"
 blake3 = "1"
 serde = { version = "1", features = ["derive"] }
@@ -67,6 +68,7 @@ md-5 = "0.10"
 bytes = "1"
 
 [dev-dependencies]
+buildstore = { path = "../buildstore", features = ["testkit"] }
 codecs = { path = "../codecs", features = ["testkit"] }
 jobrt = { path = "../jobrt", features = ["testkit"] }
 store = { path = "../store", features = ["testkit"] }

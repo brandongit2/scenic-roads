@@ -148,7 +148,7 @@ impl Keys {
     /// The keys for planning and recording: none when there are none yet, an error when they can't
     /// be read now (so a job isn't started again, nor the keys written back, from empty ones).
     pub fn load_strict(root: &store::nasfs::NasRoot) -> anyhow::Result<Keys> {
-        Ok(crate::out::brief_now(root)?.keys)
+        Ok(crate::pool::records::Brief::now(root)?.keys)
     }
 
     /// The keys with the done records of the hand-offs waiting under each of `bases` on top (the
@@ -11783,7 +11783,7 @@ pub(crate) mod tests {
         let nr = store::nasfs::NasRoot::local_for_test(std::path::Path::new(&root));
         let m: BTreeMap<String, String> = crate::out::read_record(&nr.join("state/build/manifest.json")).unwrap();
         let a = crate::inputs::regions::read::source(&nr, &m).unwrap();
-        let cov = Coverage::accepted(&nr, &a, None).unwrap();
+        let cov = crate::inputs::regions::read::accepted_coverage(&nr, &a, None).unwrap();
         let wide = |b: [i32; 4]| [b[0] as i64, b[1] as i64, b[2] as i64, b[3] as i64];
         let mut boxes: Vec<[i64; 4]> = Vec::new();
         for x in 0..64u32 {
@@ -11803,7 +11803,7 @@ pub(crate) mod tests {
         }
         let mut n = 0;
         for sh in cov.shapes.iter().chain(&cov.depth_only) {
-            n += crate::coverage::tests::tree_agrees(sh, boxes.iter().copied());
+            n += crate::coverage::testkit::tree_agrees(sh, boxes.iter().copied());
         }
         eprintln!("the edge tree agreed on {n} boxes of {} shapes", cov.shapes.len() + cov.depth_only.len());
     }
@@ -11829,7 +11829,9 @@ pub(crate) mod tests {
         let keys = Keys::load(&store::nasfs::NasRoot::local_for_test(&root));
         let a = crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
         lap("reading records", &mut t);
-        let cov = Coverage::accepted(&store::nasfs::NasRoot::local_for_test(&root), &a, None).unwrap();
+        let cov =
+            crate::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(&root), &a, None)
+                .unwrap();
         let each = cov.by_region();
         lap(&format!("making the coverage ({} shapes, {} regions)", cov.shapes.len(), each.len()), &mut t);
         let reach =

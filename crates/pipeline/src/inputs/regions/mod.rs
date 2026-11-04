@@ -12,7 +12,7 @@
 //! build's is held with its file unchanged (`Checks::holds_unchanged`), keeping its accepted
 //! geometry.
 //!
-//! The readers (crate::inputs::regions::read): `Coverage::accepted` and the regions as accepted,
+//! The readers (crate::inputs::regions::read): `accepted_coverage` and the regions as accepted,
 //! and, until the migration's proof (§6.1.10), the inputs folder's recipes as before.
 
 pub mod data;

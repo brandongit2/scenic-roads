@@ -264,6 +264,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "buildstore"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "bytemuck",
+ "codecs",
+ "det",
+ "flate2",
+ "jobrt",
+ "libc",
+ "names",
+ "rayon",
+ "roadcore",
+ "serde",
+ "serde_json",
+ "sha2",
+ "store",
+ "tempfile",
+ "ureq",
+ "weezl",
+ "zstd 0.13.3",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1280,6 +1305,7 @@ dependencies = [
  "arrow-array",
  "axum",
  "blake3",
+ "buildstore",
  "bytemuck",
  "bytes",
  "clap",

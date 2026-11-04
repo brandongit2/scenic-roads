@@ -53,9 +53,9 @@ pub const REFRESH_S: u64 = crate::coord::TTL.as_secs() / 2;
 /// and a rail-feeds run's zips are planned: their jobs are a shared step's, offered by target, and
 /// start their targets afresh.)
 pub const RESUMABLE: [&str; 1] = ["osm-pass"];
-/// A job's environment: the file of its member's unacknowledged hand-offs for its step
-/// (`unmerged`), which crate::out::Out lays over the snapshot.
-pub const UNMERGED_ENV: &str = "SCENIC_UNMERGED";
+// A job's environment: the file of its member's unacknowledged hand-offs for its step (`unmerged`),
+// which crate::out::Out lays over the snapshot: the build's files' crate's (task #916 step 4).
+pub use buildstore::out::UNMERGED_ENV;
 
 /// Whether `job` (an agent's job id, `<step> <target>`) is of a resumable step.
 pub fn resumable(job: &str) -> bool {

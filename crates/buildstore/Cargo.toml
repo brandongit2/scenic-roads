@@ -1,0 +1,41 @@
+[package]
+name = "buildstore"
+version = "0.1.0"
+edition = "2021"
+description = "The build's files above store: outputs and the manifest, hand-offs, raw archives, local copies, cost inputs, the coverage and outlines, fetches, GeoTIFF (docs/crates.md, step 4)"
+
+[dependencies]
+det = { path = "../det" }
+roadcore = { path = "../roadcore" }
+store = { path = "../store" }
+names = { path = "../names" }
+codecs = { path = "../codecs" }
+jobrt = { path = "../jobrt" }
+sha2 = "0.10"
+blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
+zstd = "0.13"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+weezl = "0.2"
+anyhow.workspace = true
+rayon.workspace = true
+bytemuck.workspace = true
+libc = "0.2"
+# Pinned as pipeline pins it (coord::client's idle transport uses ureq's unversioned::transport API).
+ureq = "=3.4.2"
+
+[features]
+# Test helpers (costin::TEST_LOCK, coverage's fixtures and testkit::tree_agrees, geotiff::testtiff
+# and write_f32, Out::handing_off) for other crates' tests: their dev-dependency on buildstore
+# turns it on. It also gives their test builds this crate's test-time behaviour (fetch offline
+# from the start, out's short upload retries and verify deadlines), as pipeline's unit tests had
+# while these modules were pipeline's. (A release build never has it: resolver 2 turns on a
+# dev-dependency's features only in builds of tests.)
+testkit = []
+
+[dev-dependencies]
+codecs = { path = "../codecs", features = ["testkit"] }
+jobrt = { path = "../jobrt", features = ["testkit"] }
+store = { path = "../store", features = ["testkit"] }
+tempfile = "3"

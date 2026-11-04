@@ -56,11 +56,12 @@ pub mod placement;
 pub mod plan;
 pub mod pool;
 pub mod publish;
-pub mod recipes;
 pub mod redo;
 pub mod regionsview;
 pub mod resume;
 pub mod room;
+// A region as the build reads it: the build's files' crate's (task #916 step 4), kept at this path.
+pub use buildstore::recipes;
 pub mod settings;
 pub mod share;
 pub mod slots;
@@ -243,12 +244,12 @@ fn role_name(r: Role) -> &'static str {
     }
 }
 
-/// The build's records' manifest and keys as a reader has them now (crate::out::brief_now), read
+/// The build's records' manifest and keys as a reader has them now (crate::pool::records::Brief::now), read
 /// within `nasread::DEADLINE` (a call on the briefs' folder, `BRIEFS`): none (empty ones) when they
 /// can't be read now.
 fn records_deadlined(root: &store::nasfs::NasRoot) -> crate::pool::records::Brief {
     let r = root.clone();
-    nasread::with(&root.join(BRIEFS), move || crate::out::brief_now(&r).map_err(std::io::Error::other))
+    nasread::with(&root.join(BRIEFS), move || crate::pool::records::Brief::now(&r).map_err(std::io::Error::other))
         .unwrap_or_default()
 }
 
@@ -1334,17 +1335,13 @@ fn caches_here(cache: &Path) -> BTreeMap<String, crate::coord::CacheHere> {
     BTreeMap::from([(crate::localread::CACHE.to_string(), crate::coord::CacheHere { have_mb })])
 }
 
-static STOP: AtomicBool = AtomicBool::new(false);
-
 extern "C" fn on_signal(_: i32) {
-    STOP.store(true, Ordering::SeqCst);
+    jobrt::control::ask_stop();
 }
 
-/// Whether the agent has been asked to stop (SIGTERM, SIGINT): long work between loops (making
-/// room) ends early for it.
-pub(crate) fn stopping() -> bool {
-    STOP.load(Ordering::SeqCst)
-}
+// Whether the agent has been asked to stop (SIGTERM, SIGINT): the job runtime's flag (task #916
+// step 4: rawpack, below, reads it too).
+pub(crate) use jobrt::control::stopping;
 
 /// The coordinator's port: `crate::coord::PORT`, or another for a test agent beside the real one
 /// (`SCENIC_COORD_PORT`). A unit test's agent: one of its own (crate::coord::test_port): never the
@@ -1809,7 +1806,7 @@ impl Agent {
                             Ok(Some(s)) => break Some(s),
                             // (A passing error, its folder unreadable a moment: tried again within
                             // the wait as a lock held is; past it, the start fails as before.)
-                            Err(e) if Instant::now() < until && !STOP.load(Ordering::SeqCst) => {
+                            Err(e) if Instant::now() < until && !stopping() => {
                                 // (Said once: a lasting error isn't logged each second.)
                                 if !said_err {
                                     eprintln!(
@@ -1821,7 +1818,7 @@ impl Agent {
                                 std::thread::sleep(JOIN_TRY);
                             }
                             Err(e) => return Err(e),
-                            Ok(None) if Instant::now() < until && !STOP.load(Ordering::SeqCst) => {
+                            Ok(None) if Instant::now() < until && !stopping() => {
                                 if !said {
                                     eprintln!(
                                         "agent: this Mac's member's lock is held by another process; trying it again for up to {} s",
@@ -3669,7 +3666,7 @@ impl Agent {
             // (Each job's slot with its record as it changes: a restart or a crash leaves what the
             // next agent takes it over by.)
             self.save_hands();
-            if self.o.once || STOP.load(Ordering::SeqCst) {
+            if self.o.once || stopping() {
                 break;
             }
             // The app quits (crate::control::Quit): "now", its jobs stopped and given back at once;
@@ -3706,10 +3703,10 @@ impl Agent {
             nasread::phase(nasread::WAIT);
             let until = Instant::now() + Duration::from_secs(20); // (bound ok: the wait between rounds, cut short by every part)
             while let Some(left) = until.checked_duration_since(Instant::now()) {
-                if STOP.load(Ordering::SeqCst) {
+                if stopping() {
                     break;
                 }
-                // (bound ok: the STOP flag looked at each second)
+                // (bound ok: the stop flag (`stopping`) looked at each second)
                 if self.control.woken.recv_timeout(Duration::from_secs(1).min(left)).is_ok() {
                     while self.control.woken.try_recv().is_ok() {}
                     break;
@@ -3742,7 +3739,7 @@ impl Agent {
         // and never named goes a day later), and a clear's ask stays aside (`room::CLEAR_TAKEN`).
         // The next agent frees again as needed, or takes the ask up again.
         if let Some(t) = self.caches_task.take() {
-            STOP.store(true, Ordering::SeqCst);
+            jobrt::control::ask_stop();
             let waited = Instant::now();
             while !t.thread.is_finished() && waited.elapsed() < Duration::from_secs(60) {
                 std::thread::sleep(Duration::from_millis(200));
@@ -13048,7 +13045,7 @@ mod tests {
         );
         let m: BTreeMap<String, String> =
             serde_json::from_slice(&std::fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
-        let cov = crate::coverage::Coverage::accepted(
+        let cov = crate::inputs::regions::read::accepted_coverage(
             &store::nasfs::NasRoot::local_for_test(&root),
             &crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap(),
             None,
@@ -14987,7 +14984,7 @@ mod pool_tests {
         until(&mut a, |a| a.mem.last_ok.contains_key("gc"));
         assert!(a.pooled().unwrap().gates.term >= 2);
         assert!(r.join("state/build/terms/2.json").exists());
-        let m = crate::out::records_now(&store::nasfs::NasRoot::local_for_test(&r)).unwrap().pending;
+        let m = crate::pool::records::Records::now(&store::nasfs::NasRoot::local_for_test(&r)).unwrap().pending;
         assert!(m.contains_key("work/gc.0123456789abcdef.json"), "{m:?}");
         stop_jobs(&mut a);
     }

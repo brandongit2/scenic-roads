@@ -2,7 +2,7 @@
 //! the basemap (`layers/basemap/world-<date>.<hash>.pmtiles`, the depth's, the terrain's, the lakes'
 //! and the water's water), the depth sources' packs (`sources/fetched/<id>/<z6 tile>.<hash>.tar`),
 //! and the stored elevation datasets' GeoTIFFs (`sources/fetched/<id>/<name>.tif`, task #689:
-//! crate::dem::generic::stored) a terrain job reads half or more of (crate::dem::generic::COPY_SHARE).
+//! pipeline::dem::generic::stored) a terrain job reads half or more of (pipeline::dem::generic::COPY_SHARE).
 //! A random 64 KB read of the NAS waits ~40 ms on its disks' seeks, the Mac's own SSD's 0.2 ms: a
 //! file read in thousands of ranges is copied once, whole, in one sequential read, and read here.
 //!
@@ -11,13 +11,13 @@
 //! written once (store-fetch; one cut short is deleted and fetched again), so its copy is read only
 //! while its length is the NAS file's (`path_sized`: one that isn't is deleted). Kept between jobs, so the targets after share them; held while a
 //! job reads them, and otherwise freed by room-making, the least recently used first
-//! (crate::agent::room::toward). A copy is made only when the disk has room for it past the
+//! (pipeline::agent::room::toward). A copy is made only when the disk has room for it past the
 //! owner's room target; short of it (a laptop), or with no cache named (a job run by
 //! hand, a test), the NAS's file is read in place, as before. The copies' reads count as the local
 //! disk's (store::nasio's `Local`, crate::costin's `local`), so the NAS's weight of a run that
-//! reads them is what it copied (crate::needs::nas_rate); the copies are one shared cache a Mac
-//! fills once (crate::needs::CACHES: `CACHE`), reserved only on a Mac with room for it
-//! (crate::coord's `missing`). One process copies a file at a time (`making`, and across processes a
+//! reads them is what it copied (pipeline::needs::nas_rate); the copies are one shared cache a Mac
+//! fills once (pipeline::needs::CACHES: `CACHE`), reserved only on a Mac with room for it
+//! (pipeline::coord's `missing`). One process copies a file at a time (`making`, and across processes a
 //! lock file in the cache's `copying/`): another wanting it waits, then reads that copy.
 //!
 //! (A copy room-making frees between jobs is copied again by the next job that reads it: with the
@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use store::nasfs::{NasPath, Place};
 
-/// The shared cache's name (crate::needs::CACHES).
+/// The shared cache's name (pipeline::needs::CACHES).
 pub const CACHE: &str = "whole copies";
 
 /// This Mac's copies of the NAS's files under `root`.
@@ -46,11 +46,11 @@ pub struct Local {
 }
 
 impl Local {
-    /// The agent's cache (`SCENIC_CACHE`) and room target (crate::agent::room::job_target) for the
+    /// The agent's cache (`SCENIC_CACHE`) and room target (jobrt::room::job_target) for the
     /// NAS's files under `root`; None without a cache (a job run by hand, a test): the NAS read.
     pub fn from_env(root: &store::nasfs::NasRoot) -> Option<Local> {
         let cache = std::env::var_os(crate::coverage::CACHE_ENV)?;
-        Some(Local::new(root, Path::new(&cache), crate::agent::room::job_target()))
+        Some(Local::new(root, Path::new(&cache), jobrt::room::job_target()))
     }
 
     pub fn new(root: &store::nasfs::NasRoot, cache: &Path, target: u64) -> Local {
@@ -112,16 +112,16 @@ impl Local {
         }
         let Some(len) = len.or_else(|| p.metadata().ok().map(|m| m.len())) else { return nas() };
         if std::fs::create_dir_all(self.blobs.dir()).is_err()
-            || crate::agent::room::free_past(self.blobs.dir(), self.target) < len
+            || jobrt::room::free_past(self.blobs.dir(), self.target) < len
         {
             return nas();
         }
-        let _p = crate::timings::phase("making whole local copies");
+        let _p = jobrt::timings::phase("making whole local copies");
         let t = std::time::Instant::now();
         match self.blobs.get(&self.root, &content) {
             Ok(l) => {
                 p.count_read(len, t.elapsed().as_millis() as u64);
-                crate::timings::count(len, 1);
+                jobrt::timings::count(len, 1);
                 eprintln!("{content}: copied here ({} MB in {:.1} s)", len >> 20, t.elapsed().as_secs_f64());
                 Place::Local(l)
             }
@@ -174,7 +174,7 @@ pub fn path(local: Option<&Local>, p: &NasPath) -> Place {
 }
 
 /// The bytes this Mac's cache folder `cache` holds of the shared cache (what a Mac holds of it:
-/// crate::agent's `caches_here`): the basemaps' copies (`blobs/layers/basemap*`) and the depth
+/// pipeline::agent's `caches_here`): the basemaps' copies (`blobs/layers/basemap*`) and the depth
 /// sources' packs' (`blobs/sources/fetched/<id>/*.tar`). The stored GeoTIFFs' copies (`.tif`, the
 /// terrain's) are not the shared cache's: each terrain job's disk counts those it makes.
 pub fn held(cache: &Path) -> u64 {
@@ -211,7 +211,7 @@ mod tests {
             Place::Local(l) => l,
             Place::Nas(n) => n.unchecked_path(),
         };
-        let full = Local::new(&nr, &cache, crate::agent::room::MAX_TARGET);
+        let full = Local::new(&nr, &cache, jobrt::room::MAX_TARGET);
         assert_eq!(at(full.path(&nr.join(name))), nas.join(name));
         assert_eq!(held(&cache), 0);
         let l = Local::new(&store::nasfs::NasRoot::local_for_test(&nas), &cache, 0);

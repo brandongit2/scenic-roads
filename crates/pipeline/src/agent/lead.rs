@@ -932,7 +932,7 @@ mod tests {
             });
             let root = a.root.clone();
             let mf = root.join("state/build/manifest.json").unchecked_path();
-            let read = |a: &Mac| crate::out::records_now(&a.root).unwrap();
+            let read = |a: &Mac| crate::pool::records::Records::now(&a.root).unwrap();
             let rec = a.run.side.driver().records().unwrap().clone();
             assert_eq!((read(&a).term, read(&a).seq), (rec.term, rec.seq), "this app's readers: the term's snapshot");
             // Both Macs on this app: today's files written no more.

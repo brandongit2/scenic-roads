@@ -961,7 +961,7 @@ pub fn cover_read(d: &Accepted, read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Resul
 
 /// Coverage `cover` (1° cells merged into boxes; None: the world) cut to the cells meeting one of
 /// map regions `regions` in coverage `cov` (its shapes' sources are "<region id>: <from>",
-/// crate::coverage::Coverage::accepted); the ids no region of `cov` has, beside.
+/// crate::inputs::regions::read::accepted_coverage); the ids no region of `cov` has, beside.
 pub fn scope_cover(
     cover: Option<&[[f64; 4]]>,
     regions: &[String],

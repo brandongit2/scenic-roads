@@ -789,7 +789,9 @@ mod tests {
         let date = crate::osmpass::latest_pass(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         let a = crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
         let recipes = crate::inputs::regions::read::recipes(&a).unwrap();
-        let cov = Coverage::accepted(&store::nasfs::NasRoot::local_for_test(&root), &a, None).unwrap();
+        let cov =
+            crate::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(&root), &a, None)
+                .unwrap();
         let tt = listed(&cov, &m);
         eprintln!(
             "pass {date}, {} regions, {} pieces, {} assemblies ({:.0} s)",

@@ -10,6 +10,7 @@ use crate::hipack::{grow, tile_bounds};
 use crate::legacy::TileId;
 use crate::out::Out;
 use anyhow::{bail, ensure, Context, Result};
+use buildstore::nasssh::{proxy_addr, ssh_stalled, watched, SSH_START};
 use rayon::prelude::*;
 use roadcore::{class, flag, Ways};
 use std::collections::BTreeMap;
@@ -184,68 +185,6 @@ fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool)
 /// the server also offers, so a server without it falls to the next.
 const STREAM_CIPHERS: &str = "aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr";
 
-/// How long an `ssh` to the NAS may take to start: to connect (ConnectTimeout, 20 s) and then to
-/// authenticate, its key from the SSH agent, 1Password's, which waits for an approval while it's
-/// locked, unbounded (ConnectTimeout doesn't cover it); a working one starts within seconds. The
-/// call past it is stopped and fails `TimedOut`, as a NAS call past its deadline does
-/// (`agent::nasread`): the job fails and is tried again later.
-pub(crate) const SSH_START: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// Runs `f` with `pid` (a child not yet waited for: the caller waits after) stopped (SIGTERM) if
-/// `f` hasn't called its argument ("started") within `bound`, or returned; and whether it was.
-pub(crate) fn watched<T>(pid: u32, bound: std::time::Duration, f: impl FnOnce(&dyn Fn()) -> T) -> (T, bool) {
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
-    std::thread::scope(|s| {
-        let dog = s.spawn(move || {
-            let fire = rx.recv_timeout(bound) == Err(std::sync::mpsc::RecvTimeoutError::Timeout);
-            if fire {
-                // SAFETY: a plain signal to the caller's unreaped child.
-                unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-            }
-            fire
-        });
-        let got = f(&|| {
-            let _ = tx.send(());
-        });
-        drop(tx);
-        (got, dog.join().unwrap_or(false))
-    })
-}
-
-/// `ssh` (a command line, its host last) runs `true` within `SSH_START`: authenticated, and its
-/// shared connection opened when it makes one (ControlMaster), for the calls after to take.
-pub(crate) fn ssh_opened(ssh: &[&str]) -> Result<()> {
-    let mut probe = store::spawn::command(ssh[0]);
-    probe.args(&ssh[1..]).arg("true").stdin(std::process::Stdio::null());
-    let mut child = store::spawn::spawn(&mut probe).context("ssh to the NAS")?;
-    let pid = child.id();
-    let ((), stalled) = watched(pid, SSH_START, |_| {
-        // (Its end awaited, the child left to `wait` below: its PID stays its own till then.)
-        // SAFETY: a zeroed siginfo_t, written by waitid.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
-    });
-    let st = child.wait()?;
-    // (One that ended well just as the bound fired stands: the signal met a finished child.)
-    if stalled && !st.success() {
-        return Err(ssh_stalled("its first call", SSH_START));
-    }
-    ensure!(st.success(), "ssh to the NAS failed: {st}");
-    Ok(())
-}
-
-/// The error for an `ssh` to the NAS stopped by `watched`.
-pub(crate) fn ssh_stalled(what: &str, bound: std::time::Duration) -> anyhow::Error {
-    anyhow::Error::new(std::io::Error::new(
-        std::io::ErrorKind::TimedOut,
-        format!(
-            "ssh {} ({what}) didn't start within {} s: stopped (connecting, or its SSH agent waiting for an approval: 1Password locked?)",
-            store::nas::SSH,
-            bound.as_secs()
-        ),
-    ))
-}
-
 /// `ssh` to the NAS in batch mode (no prompts), through the job's proxy when it has one (a job
 /// under the budgets' sandbox, crate::budget::SANDBOX, connects only to this Mac: the proxy
 /// tunnels the connection, `CONNECT`, unmetered).
@@ -257,12 +196,6 @@ fn ssh() -> Command {
         c.arg("-o").arg(format!("ProxyCommand=/usr/bin/nc -X connect -x {p} %h %p"));
     }
     c
-}
-
-/// The proxy's `host:port` from its URL (`http://127.0.0.1:<port>`).
-pub(crate) fn proxy_addr(url: &str) -> Option<String> {
-    let a = url.strip_prefix("http://")?.trim_end_matches('/');
-    a.contains(':').then(|| a.to_string())
 }
 
 /// Runs `run` on a path that reads as `remote` (a file on the NAS) streamed over SSH
@@ -1483,6 +1416,33 @@ pub fn check_tools(planetiler: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A measure on real data, reading the NAS alone: `SCENIC_OUTLINES_MEASURE="<root> <date> <out
+    /// file>"` assembles the pass's outline set as the outlines step does (the previous pass's file
+    /// for its repairs) into `<out file>`, a local file, and prints its phases with the memory each
+    /// held (crate::timings). Unset, nothing.
+    #[test]
+    fn measure_a_real_assembly() {
+        let Ok(m) = std::env::var("SCENIC_OUTLINES_MEASURE") else { return };
+        let a: Vec<&str> = m.split_whitespace().collect();
+        let scratch = tempfile::tempdir().unwrap();
+        let out =
+            crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(Path::new(a[0])), scratch.path()).unwrap();
+        let set = out.path(out.get(&set_name(a[1], "outlines")).unwrap());
+        let previous = previous_outlines(&out.manifest, a[1]).map(|(d, c)| (out.path(c), d.to_string()));
+        crate::timings::start("outlines");
+        let p = crate::timings::phase("assembling");
+        let s = crate::outlines::assemble(
+            &set.unchecked_path(),
+            &scratch.path().join("work"),
+            Path::new(a[2]),
+            previous.as_ref().map(|(p, d)| (p.into(), d.as_str())),
+        )
+        .unwrap();
+        drop(p);
+        println!("{} outlines, {} points", s.outlines, s.points);
+        print!("{}", crate::timings::table(&crate::timings::snapshot(true).unwrap()));
+    }
 
     /// Task #890: a copy paused at each 1 % safe point and resumed each time appends only the rest,
     /// the same bytes as the source; a finished copy resumed appends nothing.

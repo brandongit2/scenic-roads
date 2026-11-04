@@ -2,7 +2,7 @@
 //! unverified uploads and the job keys); each saves its changes to a folder of its own instead
 //! (crate::out::Out, with `SCENIC_HANDOFF`: its lease's folder), named in the order written (each
 //! after the last), and its agent hands them to the pool's journal as the job ends
-//! (crate::agent::pool), whose lead merges them into its records. The folders of hand-offs from
+//! (pipeline::agent::pool), whose lead merges them into its records. The folders of hand-offs from
 //! before the pool (a lead's coordinator's journal on its disk) are drained into the journal the
 //! same way, a folder's in order, its last drained marked (`<folder>.merged`, so one that couldn't
 //! be removed isn't drained again); one that can't be parsed (it was written whole, so it's damaged)
@@ -34,7 +34,7 @@ pub struct Handoff {
     pub done: Option<(String, Vec<(String, String)>)>,
     /// AWS's raw terrain tiles the job fetched, packed into archives it put on the NAS (terrain,
     /// peaks: crate::rawpack, a member's own way), and a stored pyramid's (pyramids-fill,
-    /// crate::pyramids): (shard, archive) for the lead to name in the store's index, which it alone
+    /// pipeline::pyramids): (shard, archive) for the lead to name in the store's index, which it alone
     /// writes; a pyramid's shard after its store's folder (crate::rawpack::handed_place).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub raw: Vec<(String, crate::rawpack::Pack)>,
@@ -63,7 +63,7 @@ impl Handoff {
 }
 
 /// The folder, under a base, of raw tiles' archives to name (`Handoff::raw` alone): a merge's that
-/// couldn't be named then, and those of a hand-off the coordinator didn't take (crate::coord).
+/// couldn't be named then, and those of a hand-off the coordinator didn't take (pipeline::coord).
 pub const RAW_AGAIN: &str = "raw-tiles";
 
 /// The last hand-off of host folder `dir` merged (its name), if any; an error when it can't be read
@@ -135,7 +135,7 @@ pub fn write(dir: &Path, h: &Handoff) -> Result<()> {
 }
 
 /// Every hand-off waiting under `base` (the coordinator's journal of hand-offs received over HTTP,
-/// crate::coord, kept on this Mac's disk), a folder's in order, with its path; an error when a
+/// pipeline::coord, kept on this Mac's disk), a folder's in order, with its path; an error when a
 /// listing, a marker or a hand-off can't be read now. One that can't be parsed is set aside; its
 /// folder's done records after it in this look are dropped (their z6 tiles are built again), as its
 /// job's saves may be lost with it.

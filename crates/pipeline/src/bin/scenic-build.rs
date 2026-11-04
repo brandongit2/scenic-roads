@@ -4862,7 +4862,7 @@ fn coverage_of(out: &Out, args: &[String]) -> Result<pipeline::coverage::Coverag
 /// The regions' coverage as a step reads it (pipeline::inputs::regions::read), with the regions'
 /// count: `--regions <dir>`, a scratch folder of region files, through the check's own code in
 /// memory; else the accepted version, kept with its grids in this Mac's cache where the agent names
-/// one (`SCENIC_CACHE`: Coverage::accepted).
+/// one (`SCENIC_CACHE`: accepted_coverage).
 fn regions_coverage(out: &Out, args: &[String]) -> Result<(pipeline::coverage::Coverage, usize)> {
     use pipeline::inputs::regions::read;
     if let Some(dir) = opt(args, "--regions").map(PathBuf::from) {
@@ -4870,7 +4870,7 @@ fn regions_coverage(out: &Out, args: &[String]) -> Result<(pipeline::coverage::C
     }
     let src = read::source(out.root(), &out.manifest)?;
     let cache = std::env::var_os(pipeline::coverage::CACHE_ENV).map(PathBuf::from);
-    let cov = pipeline::coverage::Coverage::accepted(out.root(), &src, cache.as_deref())?;
+    let cov = pipeline::inputs::regions::read::accepted_coverage(out.root(), &src, cache.as_deref())?;
     let n = cov.by_region().len();
     Ok((cov, n))
 }

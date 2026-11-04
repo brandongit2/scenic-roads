@@ -1,5 +1,5 @@
 //! AWS's raw terrain tiles on the NAS, packed (docs/macs.md, Downloads), in archives grouped the
-//! way the terrain's packs are (crate::terrain_pack::build_q), so a job copies the archives of what
+//! way the terrain's packs are (pipeline::terrain_pack::build_q), so a job copies the archives of what
 //! it makes and no more. A tile's *shard* (`shard`) is where its archives are kept: z9–12 by their
 //! z6 tile (`6-<x>-<y>`), z3–8 by their z3 tile (`3-<x>-<y>`), z0–2 together (`root`). Each archive is roadcore::archive's RDTILES1 (an empty entry for
 //! a tile AWS doesn't have), content-named (`<shard>.<hash16>.tiles`) in
@@ -52,7 +52,7 @@ const GROUP: u64 = 1 << 30;
 pub type Progress<'a> = &'a (dyn Fn(&str, u64, u64) + Sync);
 
 /// The archives' metadata: AWS's raw tiles' (`Packer::new`); a stored pyramid's says its own
-/// (`Packer::for_pyramid`, crate::pyramids).
+/// (`Packer::for_pyramid`, pipeline::pyramids).
 const META: &str = r#"{"kind":"aws-terrarium raw tiles"}"#;
 
 /// The shard a tile is packed in, as the terrain is: its z6 tile's for z9–12, its z3 tile's for
@@ -313,7 +313,7 @@ impl Packer {
         Packer::open(dir, store, root, std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from))
     }
 
-    /// `new`, for a stored pyramid's store (crate::pyramids, its `folder`): its archives saying
+    /// `new`, for a stored pyramid's store (pipeline::pyramids, its `folder`): its archives saying
     /// `meta`, handed off to `handoff` (a job's, `SCENIC_HANDOFF`) as that store's
     /// (`handed_place`); None, the index changed here.
     pub fn for_pyramid(
@@ -499,7 +499,7 @@ impl Packer {
         }
         for (i, shard) in touched.iter().enumerate() {
             // (The agent asked to stop: the rest are merged when they next have new tiles.)
-            if crate::agent::stopping() {
+            if jobrt::control::stopping() {
                 break;
             }
             progress("shards", i as u64, touched.len() as u64);
@@ -768,7 +768,7 @@ impl Packer {
 /// answer for now is in `Named::again`, kept on the lead's records); how many were new
 /// to it. One its shard names already, or that the index lists as merged away, is passed over
 /// unread, and the index saved only when it changed: a restarted lead names again those its records
-/// still hold (named, not yet taken off them: crate::pool::driver::Heard::named_raw). The caller
+/// still hold (named, not yet taken off them: pipeline::pool::driver::Heard::named_raw). The caller
 /// holds the build lock (merging the hand-offs).
 pub fn name_handed(
     store: &store::nasfs::NasPath,
@@ -873,18 +873,21 @@ fn shard_of_key(key: u64) -> String {
     shard((key >> 58) as u8, ((key >> 29) & m) as u32, (key & m) as u32)
 }
 
+/// The stored pyramids' folder, under the build's root (pipeline::pyramids::DIR).
+pub const PYRAMIDS: &str = "sources/pyramids";
+
 /// A hand-off's archive's place (crate::handoff::Handoff::raw): `<shard>`, AWS's raw tiles' store
-/// (`sources/aws-terrarium`); `<folder>/<shard>`, a stored pyramid's (crate::pyramids::DIR under
-/// the root, its `folder`). The store under `root` and the shard.
+/// (`sources/aws-terrarium`); `<folder>/<shard>`, a stored pyramid's (`PYRAMIDS` under the root,
+/// its `folder`). The store under `root` and the shard.
 pub fn handed_place(root: &store::nasfs::NasRoot, a: &str) -> (store::nasfs::NasPath, String) {
     match a.split_once('/') {
-        Some((f, s)) => (root.join(crate::pyramids::DIR).join(f), s.to_string()),
+        Some((f, s)) => (root.join(PYRAMIDS).join(f), s.to_string()),
         None => (root.join("sources/aws-terrarium"), a.to_string()),
     }
 }
 
 /// `a`'s shard past its pyramid's folder (`handed_place`), when that folder is one
-/// crate::pyramids::folder could name.
+/// pipeline::pyramids::folder could name.
 fn bare_shard(a: &str) -> Option<&str> {
     match a.split_once('/') {
         None => Some(a),
@@ -1016,7 +1019,7 @@ fn pack_local_to(
     for (i, (path, z, x, y, has)) in loose.into_iter().enumerate() {
         // (The agent asked to stop: what's put up is named; the rest, and every loose tile, waits
         // for the next run. A tile at a time: a GB of archives at most goes up in between.)
-        anyhow::ensure!(!crate::agent::stopping(), "the agent is stopping");
+        anyhow::ensure!(!jobrt::control::stopping(), "the agent is stopping");
         // (Every few seconds: a flush puts a GB of archives on the NAS in between.)
         if said.elapsed() >= std::time::Duration::from_secs(5) {
             progress("raw tiles", i as u64, n);
@@ -1025,7 +1028,7 @@ fn pack_local_to(
         let png = if has {
             // (Gone meanwhile: room-making's, or another packer's.)
             let Some(b) = store::cachefile::read(&path)? else { continue };
-            if !crate::whole::png_whole(&b) {
+            if !codecs::whole::png_whole(&b) {
                 eprintln!("rawpack: {} isn't whole: deleted, not packed", path.display());
                 store::cachefile::discard(&path);
                 continue;
@@ -1087,7 +1090,7 @@ pub fn pack_tar(
             r.other += 1;
             continue;
         };
-        if has && !crate::whole::png_whole(&data) {
+        if has && !codecs::whole::png_whole(&data) {
             eprintln!("rawpack: {name} on the NAS isn't whole: left out");
             r.broken += 1;
             continue;
@@ -1323,7 +1326,7 @@ mod tests {
     use super::*;
 
     fn png() -> Vec<u8> {
-        crate::whole::testfiles::png()
+        codecs::whole::testfiles::png()
     }
 
     /// A NAS (its store) and a cache, with the build's folder.
@@ -2227,7 +2230,7 @@ mod tests {
     fn once_the_pool_has_begun_only_a_jobs_hand_off_packs() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
-        std::fs::create_dir_all(root.join(crate::pool::term::DIR)).unwrap();
+        std::fs::create_dir_all(root.join(crate::out::TERMS)).unwrap();
         put(&dir, "12/2048/1365.png", &png(), 120);
         assert!(pack_local(
             &dir,

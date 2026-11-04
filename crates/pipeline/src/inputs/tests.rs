@@ -694,13 +694,6 @@ fn copies_are_named_by_their_path_and_content() {
         Some("sources/inputs/x/README.0123456789abcdef.bin")
     );
     assert!(copy_name("x", "a\\b.json", "0123456789abcdef").is_none());
-    assert!(
-        in_inputs_folder("inputs/regions/a.toml")
-            && in_inputs_folder("translations/x.jsonl")
-            && in_inputs_folder("descriptions")
-            && !in_inputs_folder("sources/inputs/x/a.0123456789abcdef.toml")
-            && !in_inputs_folder("inputsx/a")
-    );
 }
 
 /// The job end to end, on a folder standing in for the NAS: the files stored content-named, the
@@ -800,7 +793,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     let e =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.path("inputs/_gate-test/a.jsonl"))).unwrap_err();
     let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
-    assert!(msg.contains("tests.rs") && msg.contains("crate::inputs::open"), "{msg}");
+    assert!(msg.contains("tests.rs") && msg.contains("inputs::open"), "{msg}");
     assert_eq!(out.path("sources/inputs/x"), store::nasfs::NasPath::local_for_test(root.join("sources/inputs/x")));
 }
 

@@ -1,5 +1,5 @@
 //! A region as the build reads it: its `id`, `name` and `outline`, from the regions' accepted
-//! version (crate::inputs::regions::read; docs/inputs.md §6.1.3, the region file).
+//! version (pipeline::inputs::regions::read; docs/inputs.md §6.1.3, the region file).
 
 use serde::{Deserialize, Serialize};
 

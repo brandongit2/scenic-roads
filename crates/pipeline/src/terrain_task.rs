@@ -1208,7 +1208,7 @@ mod tests {
     fn live_coverage(out: &Out) -> Coverage {
         let root = out.root();
         let a = crate::inputs::regions::read::source(root, &out.manifest).unwrap();
-        Coverage::accepted(root, &a, None).unwrap()
+        crate::inputs::regions::read::accepted_coverage(root, &a, None).unwrap()
     }
 
     /// By hand, on the build's own data (docs/workers.md §3): z6 tiles `TT_PIECES` ("6/x/y,…") made

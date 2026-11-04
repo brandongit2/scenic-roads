@@ -14,16 +14,16 @@
 //! A catalogue records the coverage it was built for, simplified for drawing ([`DrawnRegion`]), so
 //! the map draws it from the catalogue rather than from the recipes.
 
-#[cfg(test)]
-use crate::agent::recipes::Recipe;
 use crate::outlines::inside;
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 use crate::outlines::Outlines;
+#[cfg(any(test, feature = "testkit"))]
+use crate::recipes::Recipe;
 use anyhow::{bail, Context, Result};
 use det::Det;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 use std::path::Path;
 
 /// Metres per E7 unit of latitude (and of longitude at the equator).
@@ -90,7 +90,7 @@ impl Default for Memo {
 /// The bytes all shapes' memos hold at most, together: past it, every memo is emptied (each as it
 /// next answers). Measured on the build's coverage (2026-10-15: 122 shapes, a plan, the checklist
 /// and the regions' progress, worked out twice): 13 MB (`memo_bytes`, the bench in
-/// crate::agent::build's tests); this leaves room for a coverage about five times as big before
+/// pipeline::agent::build's tests); this leaves room for a coverage about five times as big before
 /// the memos start again, and is little to a Mac.
 pub const MEMO_CAP: usize = 64 << 20;
 
@@ -197,7 +197,7 @@ impl Shape {
     }
 
     /// A digest of its rings (`store::naming::hash16` of their points, ring after ring), worked out
-    /// once: what keys made of the whole coverage read (crate::agent::build::coverage_all), every
+    /// once: what keys made of the whole coverage read (pipeline::agent::build::coverage_all), every
     /// loop (task #894: hashing every point of the world's outlines each time was seconds).
     pub fn rings_digest(&self) -> &str {
         self.rings_digest.get_or_init(|| store::naming::hash16(bytemuck::cast_slice(&self.rings.concat())))
@@ -674,9 +674,9 @@ pub struct Coverage {
 /// checklist's minutes). Kept for the last `KEPT_VERSIONS` versions (a region's coverage is one).
 #[derive(Default)]
 pub struct Kept {
-    /// crate::agent::build::coverage_tiles.
+    /// pipeline::agent::build::coverage_tiles.
     pub tiles: std::sync::OnceLock<BTreeMap<(u32, u32), Vec<(u32, u32)>>>,
-    /// crate::terrain_pack::makes_hi, by z6 tile.
+    /// pipeline::terrain_pack::makes_hi, by z6 tile.
     pub makes_hi: std::sync::Mutex<std::collections::HashMap<(u32, u32), bool>>,
 }
 
@@ -723,7 +723,7 @@ impl Coverage {
     }
 
     /// A digest of what the coverage holds (every shape's source, rings, buffer, country and
-    /// water): part of a resumed run's identity (crate::resume_log::job_id), task #889.
+    /// water): part of a resumed run's identity (jobrt::resume_log::job_id), task #889.
     pub fn digest(&self) -> String {
         let mut h = blake3::Hasher::new();
         for (k, list) in [&self.shapes, &self.depth_only].into_iter().enumerate() {
@@ -750,7 +750,7 @@ impl Coverage {
     }
 
     /// The memory a step's process takes to read this coverage (MB; `coverage_of` in scenic-build,
-    /// through `Coverage::accepted`), worked out from the coverage itself: every shape's rings (8 B a
+    /// through `pipeline::inputs::regions::read::accepted_coverage`), worked out from the coverage itself: every shape's rings (8 B a
     /// point), its grid (`Grid`: per cell a bool and its edges' 4 B start, 8 B an entry), its edge tree
     /// (`EdgeTree::bytes`), the
     /// kept file's stream buffer and one shape's cells in passing (`from_kept`, `write_kept`: read
@@ -825,24 +825,24 @@ pub fn fixture_circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
 }
 
 /// The environment variable the agent names its jobs' cache folder in (`<home>/cache`), where
-/// `Coverage::accepted` keeps the coverage it reads.
+/// `pipeline::inputs::regions::read::accepted_coverage` keeps the coverage it reads.
 pub const CACHE_ENV: &str = "SCENIC_CACHE";
 
 const KEPT_MAGIC: &[u8; 8] = b"RDCOV005";
 
-/// The coverage's shapes as kept (`Coverage::accepted`): their source, country, buffer, whether
+/// The coverage's shapes as kept (`pipeline::inputs::regions::read::accepted_coverage`): their source, country, buffer, whether
 /// water, rings, box and grid (task #807: the grids made again from the rings were 14 s of CPU a
 /// job). Written and read as a stream (`write_kept`, `from_kept`), never whole in memory: the file
 /// is about as large as the coverage itself (1.84 GB, 27 Oct).
-#[cfg(test)]
-pub(crate) fn kept_bytes(c: &Coverage) -> Vec<u8> {
+#[cfg(any(test, feature = "testkit"))]
+pub fn kept_bytes(c: &Coverage) -> Vec<u8> {
     let mut b = Vec::new();
     write_kept(c, &mut b).unwrap();
     b
 }
 
 /// `kept_bytes` written to `w`.
-pub(crate) fn write_kept(c: &Coverage, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+pub fn write_kept(c: &Coverage, w: &mut dyn std::io::Write) -> std::io::Result<()> {
     let n = |w: &mut dyn std::io::Write, v: usize| w.write_all(&(v as u64).to_le_bytes());
     w.write_all(KEPT_MAGIC)?;
     for list in [&c.shapes, &c.depth_only] {
@@ -880,7 +880,7 @@ pub(crate) fn write_kept(c: &Coverage, w: &mut dyn std::io::Write) -> std::io::R
 
 /// `kept_bytes` read back from `r` as a stream: the shapes as `Shape::new` made them, their grids
 /// read, not made; None when they don't read (cut short, bytes past the end, another format).
-pub(crate) fn from_kept(r: &mut dyn std::io::Read) -> Option<Coverage> {
+pub fn from_kept(r: &mut dyn std::io::Read) -> Option<Coverage> {
     // (A length read is checked against the bytes left only by reading them: an absurd one fails
     // its allocation's try_reserve rather than aborting.)
     fn take(r: &mut dyn std::io::Read, n: usize) -> Option<Vec<u8>> {
@@ -960,8 +960,8 @@ impl Coverage {
     /// A coverage for the tests, from fixtures as regions name them (`<id>: <entry>`): `place:<lon>,
     /// <lat>,<km>`, a circle of the 64 points the old `place:` parts had, and `poly:<file>`, a
     /// `.poly` in `dir` (a square, mostly). Never the app's: its regions are the accepted version's
-    /// (`Coverage::accepted`).
-    #[cfg(test)]
+    /// (`pipeline::inputs::regions::read::accepted_coverage`).
+    #[cfg(any(test, feature = "testkit"))]
     pub fn fixture(recipes: &[Recipe], _outlines: Option<&Outlines>, dir: &Path) -> Result<Coverage> {
         let mut shapes = Vec::new();
         for r in recipes {
@@ -984,7 +984,7 @@ impl Coverage {
         Ok(Coverage { shapes, ..Default::default() })
     }
 
-    /// Each region's own coverage (its shapes, as `Coverage::accepted` made them for it: "<id>: <from>"),
+    /// Each region's own coverage (its shapes, as `pipeline::inputs::regions::read::accepted_coverage` made them for it: "<id>: <from>"),
     /// in the order its first shape comes: no outline read again.
     pub fn by_region(&self) -> Vec<(String, Coverage)> {
         let mut out: Vec<(String, Coverage)> = Vec::new();
@@ -1150,7 +1150,7 @@ impl DrawnRegion {
 /// How far a drawn outline may stray from its file's: about a pixel when the whole outline fills a
 /// screen, within the pass's own range for the panel (1 km for countries, 60 m for the smallest
 /// z3 tiles).
-pub(crate) fn draw_tolerance_m(rings: &[Vec<[i32; 2]>]) -> f64 {
+pub fn draw_tolerance_m(rings: &[Vec<[i32; 2]>]) -> f64 {
     let mut bb = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
     for p in rings.iter().flatten() {
         bb = [bb[0].min(p[0]), bb[1].min(p[1]), bb[2].max(p[0]), bb[3].max(p[1])];
@@ -1165,7 +1165,7 @@ pub(crate) fn draw_tolerance_m(rings: &[Vec<[i32; 2]>]) -> f64 {
 }
 
 /// A ring in degrees to 5 decimals, closed as GeoJSON has it.
-pub(crate) fn ring_degrees(r: &[[i32; 2]]) -> Vec<[f64; 2]> {
+pub fn ring_degrees(r: &[[i32; 2]]) -> Vec<[f64; 2]> {
     let d = |v: i32| (v as f64 / 100.0).round() / 1e5;
     let mut out: Vec<[f64; 2]> = r.iter().map(|p| [d(p[0]), d(p[1])]).collect();
     if out.len() > 1 && out.first() != out.last() {
@@ -1180,8 +1180,59 @@ pub fn inside_plain(rings: &[Vec<[i32; 2]>], p: [i32; 2]) -> bool {
     inside(&r, p)
 }
 
+/// The edge tree's check against the grid's cells, for tests here and in other crates (pipeline's
+/// agent::build).
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit {
+    use super::*;
+
+    pub(crate) fn edges_by_cells(s: &Shape, rg: [i64; 4]) -> Vec<(u32, u32)> {
+        let g = &s.grid;
+        let cell = |v: f64, v0: f64, size: f64, n: usize| (((v - v0) / size).floor().max(0.0) as usize).min(n - 1);
+        let (cx0, cx1) = (cell(rg[0] as f64, g.x0, g.cw, g.nx), cell(rg[2] as f64, g.x0, g.cw, g.nx));
+        let (cy0, cy1) = (cell(rg[1] as f64, g.y0, g.ch, g.ny), cell(rg[3] as f64, g.y0, g.ch, g.ny));
+        let mut out = std::collections::BTreeSet::new();
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                for &(ri, i) in g.edges(cy * g.nx + cx) {
+                    let ring = &s.rings[ri as usize];
+                    let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
+                    if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) {
+                        out.insert((ri, i));
+                    }
+                }
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    pub(crate) fn edges_by_tree(s: &Shape, rg: [i64; 4]) -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        s.edges_meeting(rg, &mut |at, _, _| {
+            out.push(at);
+            false
+        });
+        let n = out.len();
+        out.sort_unstable();
+        out.dedup();
+        assert_eq!(out.len(), n, "each edge once");
+        out
+    }
+
+    /// Of `boxes`, each meets the same edges of `s` by the edge tree as by the grid's cells.
+    pub fn tree_agrees(s: &Shape, boxes: impl Iterator<Item = [i64; 4]>) -> usize {
+        let mut n = 0;
+        for rg in boxes {
+            assert_eq!(edges_by_tree(s, rg), edges_by_cells(s, rg), "{}: box {rg:?}", s.source);
+            n += 1;
+        }
+        n
+    }
+}
+
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
+    use super::testkit::*;
     use super::*;
 
     fn e7(x: f64, y: f64) -> [i32; 2] {
@@ -1360,49 +1411,6 @@ pub(crate) mod tests {
 
     /// The edges meeting the box `rg` by the grid's cells, each edge of each cell read (how
     /// `edges_meeting` worked before the edge tree, task #894), each place once, sorted.
-    fn edges_by_cells(s: &Shape, rg: [i64; 4]) -> Vec<(u32, u32)> {
-        let g = &s.grid;
-        let cell = |v: f64, v0: f64, size: f64, n: usize| (((v - v0) / size).floor().max(0.0) as usize).min(n - 1);
-        let (cx0, cx1) = (cell(rg[0] as f64, g.x0, g.cw, g.nx), cell(rg[2] as f64, g.x0, g.cw, g.nx));
-        let (cy0, cy1) = (cell(rg[1] as f64, g.y0, g.ch, g.ny), cell(rg[3] as f64, g.y0, g.ch, g.ny));
-        let mut out = std::collections::BTreeSet::new();
-        for cy in cy0..=cy1 {
-            for cx in cx0..=cx1 {
-                for &(ri, i) in g.edges(cy * g.nx + cx) {
-                    let ring = &s.rings[ri as usize];
-                    let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
-                    if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) {
-                        out.insert((ri, i));
-                    }
-                }
-            }
-        }
-        out.into_iter().collect()
-    }
-
-    fn edges_by_tree(s: &Shape, rg: [i64; 4]) -> Vec<(u32, u32)> {
-        let mut out = Vec::new();
-        s.edges_meeting(rg, &mut |at, _, _| {
-            out.push(at);
-            false
-        });
-        let n = out.len();
-        out.sort_unstable();
-        out.dedup();
-        assert_eq!(out.len(), n, "each edge once");
-        out
-    }
-
-    /// Of `boxes`, each meets the same edges of `s` by the edge tree as by the grid's cells.
-    pub(crate) fn tree_agrees(s: &Shape, boxes: impl Iterator<Item = [i64; 4]>) -> usize {
-        let mut n = 0;
-        for rg in boxes {
-            assert_eq!(edges_by_tree(s, rg), edges_by_cells(s, rg), "{}: box {rg:?}", s.source);
-            n += 1;
-        }
-        n
-    }
-
     #[test]
     fn the_edge_tree_meets_the_edges_the_grid_cells_do() {
         // A jagged ring of many points (several runs, several levels), a hole, a ring of one point

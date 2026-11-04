@@ -29,7 +29,7 @@ use store::range::RangeRead;
 use store::sys::PosIo;
 
 /// The stored pyramids' folder, under the build's root.
-pub const DIR: &str = "sources/pyramids";
+pub const DIR: &str = crate::rawpack::PYRAMIDS;
 
 /// The fill's version, in its key: bumped with any change to
 /// which tiles a z6 tile wants (`want`, `deep_bases`) or how they're stored.

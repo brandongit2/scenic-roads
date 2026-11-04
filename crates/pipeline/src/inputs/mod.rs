@@ -76,9 +76,9 @@ pub const TEST_FLAG: &str = "state/inputs/gate-test";
 /// Where the owner's acceptances are kept, a folder per unit, a file per finding id.
 pub const ACCEPTED: &str = "state/inputs/accepted";
 
-/// The folders that hold the inputs folders (`inputs/`, and the request–fulfil inputs' folders until
-/// they move under it, #137): nothing but the gate and `open` reads under them (§7.1).
-pub const DROP_ROOTS: [&str; 3] = ["inputs", "translations", "descriptions"];
+// The inputs folders and the predicate `Out::path` refuses by: the build's files' crate's (task
+// #916 step 4, docs/crates.md), kept at these paths.
+pub use buildstore::inputs_folder::{in_inputs_folder, DROP_ROOTS};
 
 /// A file is taken only once its size and time have held this long (seconds): one being written
 /// isn't checked half-written.
@@ -178,13 +178,6 @@ pub fn record_of(logical: &str) -> Option<(&str, &str)> {
 /// The unit of one of a unit's records' logical names (`record_of`).
 pub fn unit_of(logical: &str) -> Option<&str> {
     record_of(logical).map(|(u, _)| u)
-}
-
-/// Whether `rel` (a path relative to the NAS project folder) lies in an inputs folder: what the NAS root
-/// the steps get refuses (crate::out::Out::path).
-pub fn in_inputs_folder(rel: &str) -> bool {
-    let rel = rel.trim_start_matches("./");
-    DROP_ROOTS.iter().any(|d| rel == *d || rel.strip_prefix(d).is_some_and(|r| r.starts_with('/')))
 }
 
 /// Unit `unit`'s inputs folder. Only the gate lists and reads it (§7.1).

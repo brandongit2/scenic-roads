@@ -1,6 +1,6 @@
 //! How the build reads the regions (docs/inputs.md §4.6, §6.1.4, §6.1.10): from the accepted version
 //! alone, the regions listed by the index (each region file's `facts`: its id, name and outline
-//! entries), the coverage made from their stored geometry (`Coverage::accepted`), the catalogue's
+//! entries), the coverage made from their stored geometry (`accepted_coverage`), the catalogue's
 //! drawn regions from their drawn files, and the Regions list's tree from the index's paths.
 
 use super::stored::{Drawn, Geometry};
@@ -264,53 +264,48 @@ pub fn coverage_of(geoms: &[Geometry]) -> Coverage {
     Coverage { shapes, depth_only }
 }
 
-impl Coverage {
-    /// The coverage of the regions' accepted version (§6.1.4): its enabled regions' stored geometry
-    /// (a disabled region is no coverage). Where there's
-    /// a `cache` (this Mac's), kept there by the version (`coverage/<hash>.cov`): the geometry
-    /// files are read once per version and Mac.
-    pub fn accepted(root: &store::nasfs::NasRoot, a: &Accepted, cache: Option<&Path>) -> Result<Coverage> {
-        let made = || -> Result<Coverage> {
-            let l = enabled(a)?;
-            let names: Vec<String> = l.iter().filter_map(|x| Some(x.stored.as_ref()?.geometry.clone())).collect();
-            let geoms: Vec<Geometry> = read_all(root, &names)?
-                .iter()
-                .zip(&names)
-                .map(|(b, n)| Geometry::decode(b).with_context(|| n.clone()))
-                .collect::<Result<_>>()?;
-            anyhow::ensure!(!geoms.is_empty(), "no regions in {}", a.version);
-            Ok(coverage_of(&geoms))
-        };
-        let Some(dir) = cache.map(|c| c.join("coverage")) else { return made() };
-        let at = dir.join(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
-        // (Read and written as a stream, never whole in memory: the file holds the grids, about the
-        // coverage's own size, task #807.)
-        match store::cachefile::read_streamed(&at, &mut |r| crate::coverage::from_kept(r)) {
-            Ok(Some(Some(c))) => return Ok(c),
-            // (Another format's: made again in its place, not read past forever.)
-            Ok(Some(None)) => drop(store::cachefile::try_remove(&at)),
-            _ => {}
-        }
-        let c = made()?;
-        let written = store::cachefile::create(&at, &mut |t| {
-            use std::io::Write;
-            let mut w = std::io::BufWriter::with_capacity(
-                1 << 20,
-                std::fs::File::options().write(true).truncate(true).open(t)?,
-            );
-            crate::coverage::write_kept(&c, &mut w)?;
-            w.flush()
-        });
-        if written.is_ok() {
-            store::cachefile::release(&at);
-            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                if e.path() != at {
-                    store::cachefile::try_remove(&e.path());
-                }
+/// The coverage of the regions' accepted version (§6.1.4): its enabled regions' stored geometry (a
+/// disabled region is no coverage). Where there's a `cache` (this Mac's), kept there by the version
+/// (`coverage/<hash>.cov`): the geometry files are read once per version and Mac.
+pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Option<&Path>) -> Result<Coverage> {
+    let made = || -> Result<Coverage> {
+        let l = enabled(a)?;
+        let names: Vec<String> = l.iter().filter_map(|x| Some(x.stored.as_ref()?.geometry.clone())).collect();
+        let geoms: Vec<Geometry> = read_all(root, &names)?
+            .iter()
+            .zip(&names)
+            .map(|(b, n)| Geometry::decode(b).with_context(|| n.clone()))
+            .collect::<Result<_>>()?;
+        anyhow::ensure!(!geoms.is_empty(), "no regions in {}", a.version);
+        Ok(coverage_of(&geoms))
+    };
+    let Some(dir) = cache.map(|c| c.join("coverage")) else { return made() };
+    let at = dir.join(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
+    // (Read and written as a stream, never whole in memory: the file holds the grids, about the
+    // coverage's own size, task #807.)
+    match store::cachefile::read_streamed(&at, &mut |r| crate::coverage::from_kept(r)) {
+        Ok(Some(Some(c))) => return Ok(c),
+        // (Another format's: made again in its place, not read past forever.)
+        Ok(Some(None)) => drop(store::cachefile::try_remove(&at)),
+        _ => {}
+    }
+    let c = made()?;
+    let written = store::cachefile::create(&at, &mut |t| {
+        use std::io::Write;
+        let mut w =
+            std::io::BufWriter::with_capacity(1 << 20, std::fs::File::options().write(true).truncate(true).open(t)?);
+        crate::coverage::write_kept(&c, &mut w)?;
+        w.flush()
+    });
+    if written.is_ok() {
+        store::cachefile::release(&at);
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            if e.path() != at {
+                store::cachefile::try_remove(&e.path());
             }
         }
-        Ok(c)
     }
+    Ok(c)
 }
 
 /// The drawn regions of `regions` (as `recipes` lists them) from the accepted version's drawn
