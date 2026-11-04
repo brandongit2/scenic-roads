@@ -486,6 +486,7 @@ pub fn by_lease(keys: &mut [String]) {
 /// (`today` as it says: a stale read of today's files pairs a manifest of one version with keys of
 /// another); `own` in place of a read for the term they're of (a lead re-asserting has its own; an
 /// earlier try of this take-up, its save failed, has its records numbered on). Numbered as `t`'s, on from a snapshot of `t`'s own, from 0 otherwise.
+/// Refused (`Older`) when what it finds is older than `saved` (term, seq): its lead's last save.
 pub fn start(
     nas: &dyn Nas,
     t: &Term,
@@ -513,8 +514,8 @@ pub fn start(
     // step 6.)
     if let Some((term, seq)) = saved.filter(|s| (r.term, r.seq) < *s) {
         return Err(Older(format!(
-            "the newest records read are term {}'s at {}, older than term {term}'s at {seq} it saved last \
-             (a stale read: tried again)",
+            "the newest records read are term {}'s at {}, older than term {term}'s at {seq}, which its lead \
+             saved (a stale read: tried again)",
             r.term, r.seq
         ))
         .into());

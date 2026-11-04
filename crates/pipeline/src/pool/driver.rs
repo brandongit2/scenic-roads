@@ -56,8 +56,8 @@
 //! writing its jobs' entries and merging others' (crate::pool::journal). What it leaves to the
 //! agent can't break §4's invariants: granting and the coordinator, the merge's checks (`Check`,
 //! passed to every step), the duties, the heartbeat's other fields, the messages' transport, and
-//! persisting `Saved` (its state between processes, naming its member: its entries, kept whole
-//! until written, then until a horizon passes their day) after every step that changed it,
+//! persisting `Saved` (its state between processes, naming its member: its jobs' hand-offs, kept
+//! until a lead's saved records name them) after every step that changed it,
 //! **before acting on that step's `Out`** (a take-up's grants, its messages): a crash between would
 //! restart from a state that doesn't know the term it took up. **A job's hand-off is kept until a
 //! `Saved` from a step it was handed to is on the agent's disk**: before that, a crash loses it. A
@@ -359,8 +359,8 @@ pub struct Saved {
     /// written yet.
     #[serde(default)]
     pub member: String,
-    /// Its journal entries: kept whole until written, then (their keys, with the term whose lead
-    /// acknowledged each) until a horizon passes their day.
+    /// Its jobs' hand-offs, kept until a lead's saved records name them (whole, or by key once
+    /// written to the journal for an older lead).
     pub mine: Mine,
     /// The highest term it knew of (its view never goes back, a stale read at its start
     /// notwithstanding), and the highest it led.
@@ -976,7 +976,37 @@ impl Driver {
         // only once it has stayed so for `STALE_S` awake, no stale read of them, or of today's
         // files, left.)
         let today = self.first_unread.is_some_and(|at| io.awake().saturating_sub(at) >= STALE_S);
-        let saved = self.saved.records.filter(|_| self.known);
+        // (A term made after another member's: the owner moved the lead. That member saves and
+        // acknowledges until it finds this term, read after each save (`lead_step`), and its last
+        // save may read stale a while: the records are read `STALE_S` after this term was made, so
+        // that what it acknowledged, on no member's disk now, is in them. docs/coordination.md
+        // step 6.)
+        if t.from >= 1 {
+            let before = match term::read(io, t.from) {
+                Ok(b) => b,
+                Err(e) => {
+                    return out.events.push(Event::Waits {
+                        what: "take up",
+                        why: format!("term {}: the term before it: {e:#}", t.term),
+                    })
+                }
+            };
+            let now = io.now();
+            if before.as_ref().is_none_or(|b| b.member != self.me.id) && now >= t.since && now - t.since < STALE_S {
+                let host = before.map_or_else(|| format!("term {}'s lead", t.from), |b| b.host);
+                return out.events.push(Event::Waits {
+                    what: "take up",
+                    why: format!(
+                        "term {} follows {host}'s: its records are read once {host}'s last save can't read \
+                         stale, in {} s",
+                        t.term,
+                        STALE_S - (now - t.since)
+                    ),
+                });
+            }
+        }
+        // (Nor from records older than those it saved last, or than its term led's: a stale read.)
+        let saved = self.saved.records.or((self.saved.led > 0).then_some((self.saved.led, 0))).filter(|_| self.known);
         let mut r = match records::start(io, t, own.as_ref(), today, saved) {
             Ok(r) => {
                 self.first_unread = None;
@@ -1234,6 +1264,29 @@ impl Driver {
                     acks.entry(from.clone()).or_default().push(k.clone());
                 }
             }
+            let named: Vec<String> = whole.into_keys().filter(|k| l.records.handles(k)).collect();
+            // (Only while no later term exists, as read after the save: the owner moved the lead,
+            // the next lead may have read its records before this save, and what's acknowledged is
+            // on no member's disk then. Its take-up waits `STALE_S` after making its term, so a save
+            // this read follows is in what it reads (`take_up`). Not acknowledged now: next step,
+            // while it still leads; else its members keep them for the next lead.)
+            if !acks.is_empty() || !named.is_empty() {
+                match term::next(io, e) {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        return out.events.push(Event::Waits {
+                            what: "acknowledge hand-offs",
+                            why: format!("term {} was made after its save: its lead has them", e + 1),
+                        })
+                    }
+                    Err(err) => {
+                        return out.events.push(Event::Failed {
+                            what: "acknowledge hand-offs",
+                            why: format!("whether term {} was made after its save: {err:#}", e + 1),
+                        })
+                    }
+                }
+            }
             for (to, keys) in acks {
                 for k in &keys {
                     l.told.remove(k);
@@ -1244,7 +1297,6 @@ impl Driver {
                     out.send.push((to, Msg::Ack { term: e, keys, horizon: String::new() }));
                 }
             }
-            let named: Vec<String> = whole.into_keys().filter(|k| l.records.handles(k)).collect();
             self.saved.mine.acked_all(&named);
             out.merged = named;
         }
@@ -1573,11 +1625,14 @@ mod tests {
         assert_eq!(step(&mut b, &ib, able()).leads, None);
         ia.wall.set(ib.now());
         let o = step(&mut a, &ia, able());
-        assert_eq!(o.leads, Some(3), "{:?}", o.events);
         assert!(o
             .events
             .iter()
             .any(|e| matches!(e, Event::Made { term: 3, how } if how == "the declared lead, after MacBook-Air")));
+        // (Taken up once B's last save can't read stale.)
+        ia.pass(STALE_S);
+        let o = step(&mut a, &ia, able());
+        assert_eq!(o.leads, Some(3), "{:?}", o.events);
     }
 
     #[test]
@@ -1633,6 +1688,9 @@ mod tests {
             o.events
         );
         ib.pass(20);
+        let o = step(&mut b, &ib, able());
+        assert_eq!(o.leads, None, "waits `STALE_S` after its term is made: {:?}", o.events);
+        ib.pass(STALE_S);
         let o = step(&mut b, &ib, able());
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
         assert_eq!(b.records().unwrap().keys.recorded("unit", "6-1-1"), Some("k1"), "from A's records");
@@ -1800,6 +1858,138 @@ mod tests {
         let o = step(&mut b, &ia, able());
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
         assert!(b.records().unwrap().handles(&key));
+    }
+
+    /// A Mac whose reads of `stale` paths answer as they were (their bytes; None: not there), and
+    /// whose first whole write of a path holding `before.0` runs `before.1` first.
+    struct Racing<'a> {
+        mac: &'a Mac<'a>,
+        stale: BTreeMap<String, Option<Vec<u8>>>,
+        before: std::cell::RefCell<Option<(String, Box<dyn FnOnce() + 'a>)>>,
+    }
+
+    impl Nas for Racing<'_> {
+        fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
+            self.mac.create_new(path, bytes)
+        }
+        fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
+            let hit = self.before.borrow().as_ref().is_some_and(|(p, _)| path.contains(p.as_str()));
+            if hit {
+                let (_, f) = self.before.borrow_mut().take().unwrap();
+                f();
+            }
+            self.mac.write_whole(path, bytes)
+        }
+        fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            match self.stale.get(path) {
+                Some(b) => Ok(b.clone()),
+                None => self.mac.read(path),
+            }
+        }
+        fn exists(&self, path: &str) -> Result<bool> {
+            match self.stale.get(path) {
+                Some(b) => Ok(b.is_some()),
+                None => self.mac.exists(path),
+            }
+        }
+        fn list(&self, dir: &str) -> Result<Vec<String>> {
+            self.mac.list(dir)
+        }
+        fn remove(&self, path: &str) -> Result<()> {
+            self.mac.remove(path)
+        }
+    }
+
+    impl Io for Racing<'_> {
+        fn now(&self) -> u64 {
+            self.mac.now()
+        }
+        fn awake(&self) -> u64 {
+            self.mac.awake()
+        }
+    }
+
+    #[test]
+    fn a_lead_moved_mid_step_acknowledges_nothing() {
+        // (Task #878 step 6 review) The owner moves the lead to B while A's step merges a hand-off:
+        // B makes term 2 before A's save lands. A, finding term 2 after its save, acknowledges
+        // nothing (its member keeps it, for B); B takes up only `STALE_S` after making its term,
+        // from A's last save.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let http = || Heard { http_only: true, ..able() };
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, http()).leads, Some(1));
+        let b = std::cell::RefCell::new(Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default()));
+        step(&mut b.borrow_mut(), &ib, http());
+        let e = entry(B, 1, 5, "6-1-5");
+        let key = e.key().unwrap();
+        ia.pass(20);
+        ib.wall.set(ia.now());
+        let race = Racing {
+            mac: &ia,
+            stale: BTreeMap::new(),
+            before: std::cell::RefCell::new(Some((
+                records::path(1),
+                Box::new(|| {
+                    declare(&mem, B);
+                    let o = step(&mut b.borrow_mut(), &ib, http());
+                    assert_eq!(o.leads, None, "{:?}", o.events);
+                    assert!(o
+                        .events
+                        .iter()
+                        .any(|e| matches!(e, Event::Waits { what: "take up", why } if why.contains("follows"))));
+                }),
+            ))),
+        };
+        let o = a.step(&race, Heard { handed: vec![e], ..http() }, &any);
+        assert!(mem.exists(&term::path(2)).unwrap() && Records::load(&mem, 1).unwrap().unwrap().handles(&key));
+        assert!(o.merged.is_empty(), "nothing acknowledged: {:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::Waits { what: "acknowledge hand-offs", .. })));
+        drop(race);
+        ia.pass(20);
+        assert_eq!(step(&mut a, &ia, http()).leads, None, "A steps down");
+        let mut b = b.into_inner();
+        ib.pass(STALE_S - 30);
+        assert_eq!(step(&mut b, &ib, http()).leads, None);
+        ib.pass(30);
+        let o = step(&mut b, &ib, http());
+        assert_eq!(o.leads, Some(2), "{:?}", o.events);
+        assert!(b.records().unwrap().handles(&key), "A's last save");
+    }
+
+    #[test]
+    fn a_moved_lead_s_last_acknowledgement_is_in_the_next_lead_s_records() {
+        // (Task #878 step 6 review) B has made term 2; A's reads of the declaration and of term 2
+        // are stale, so it merges, saves and acknowledges a hand-off (its member drops it). B, taking
+        // up `STALE_S` after its term was made, reads that save: nothing lost.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let http = || Heard { http_only: true, ..able() };
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, http()).leads, Some(1));
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
+        step(&mut b, &ib, http());
+        let was = mem.read(term::LEAD).unwrap();
+        declare(&mem, B);
+        ib.pass(20);
+        assert_eq!(step(&mut b, &ib, http()).leads, None, "waits");
+        let e = entry(B, 1, 5, "6-1-5");
+        let key = e.key().unwrap();
+        ia.wall.set(ib.now());
+        let stale = Racing {
+            mac: &ia,
+            stale: [(term::LEAD.to_string(), was), (term::path(2), None)].into(),
+            before: Default::default(),
+        };
+        let o = a.step(&stale, Heard { handed: vec![e], ..http() }, &any);
+        assert_eq!(o.merged, std::slice::from_ref(&key), "acknowledged, stale: {:?}", o.events);
+        ib.pass(STALE_S);
+        let o = step(&mut b, &ib, http());
+        assert_eq!(o.leads, Some(2), "{:?}", o.events);
+        assert!(b.records().unwrap().handles(&key), "in B's records");
     }
 
     #[test]

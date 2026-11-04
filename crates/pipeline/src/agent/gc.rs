@@ -41,6 +41,12 @@ use store::nasfs::NasPath;
 /// freed since 31 Oct, and no catalogue window covers the rest.
 pub const REPORT_ONLY: bool = true;
 
+// (Task #878 step 6 review) A hand-off posted by HTTP and not merged yet is in the lead's store or
+// on its member's disk, not in the journal `unmerged` reads: its files are kept only by `keep_days`.
+// Before the map's roots remove anything, GC keeps what those hand-offs name (the lead's store's,
+// and what its members' beats list).
+const _: () = assert!(REPORT_ONLY, "GC must keep the files of hand-offs not merged before the map's roots remove");
+
 thread_local! {
     /// `REPORT_ONLY` as this thread's runs follow it (the tests of the removals: off, but the one
     /// of `REPORT_ONLY` itself).

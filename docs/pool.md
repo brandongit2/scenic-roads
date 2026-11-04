@@ -113,8 +113,9 @@ Checked by the simulator (§13):
 1. Only the declared lead makes terms (no member ever does), and one process of it at a time (the
    member lock, §5); terms are made with create-new.
 2. The term never goes back; a lead checks `terms/<E+1>.json` before acting.
-3. No accepted hand-off is lost: its member keeps it until a saved snapshot names it, and a lead
-   never takes up from records older than those it saved (§7.3); a journal entry (the rollout
+3. No accepted hand-off is lost: its member keeps it until a saved snapshot names it, a lead
+   never takes up from records older than those it saved, nor a moved lead before its
+   predecessor's last acknowledged save can be read (§6.2, §7.3); a journal entry (the rollout
    gate's) stays in the journal, which a lead taking up its next term replays.
 4. Each records snapshot is one file written whole.
 5. A late write of an earlier term's goes to its own term's files, which no one reads once a later
@@ -157,8 +158,9 @@ Checked by the simulator (§13):
   term can move the lead. No member id is named in code.
 - **Moving the lead** (the mini replaced) is the owner's edit of that file, by hand, naming the new
   Mac's member id (`scenic pool status` lists them): at its next step the old lead steps down
-  ("another member is the declared lead"), the new one makes the next term from the old one's
-  records ("the declared lead, after …"), its coordinator loading the term before's state with its
+  ("another member is the declared lead"), the new one makes the next term ("the declared lead,
+  after …") and takes it up from the old one's records `STALE_S` (10 min) later, once the old one's
+  last save can't read stale (§6.2), its coordinator loading the term before's state with its
   leases (§7.5). Nothing in the app does it.
 
 **A term** is `state/build/terms/<E>.json`, made once with create-new (`crate::pool::term`): a run
@@ -196,7 +198,11 @@ of the lead's, between restarts and sleeps.
   snapshot is `term/1/first.json` (`records::first`, `term::bootstrap`).
 - **Taking up term E+1** (`records::start`): from the lead's own records (a re-assertion), else the
   newest snapshot found walking down the terms (a stale read fails and is retried; never from
-  records older than those its lead saved last, `Saved::records`, §7.3). It merges what members
+  records older than those its lead saved last, `Saved::records`, or than the term it led last,
+  §7.3). A term made after another member's (the owner moved the lead) is taken up only `STALE_S`
+  (10 min) after it was made, and a lead acknowledges a hand-off only while a stat after its save
+  finds no later term: so whatever the old lead acknowledged, which no member keeps any more, is in
+  the records its successor reads. It merges what members
   posted it and its own jobs' hand-offs; while a member writes the journal (§7.3's gate) it also
   replays every journal entry its records don't name, in (term, lease) order. It is **caught up**
   (`caught_up`) once every hand-off posted, told or listed is merged and saved, and, while the
