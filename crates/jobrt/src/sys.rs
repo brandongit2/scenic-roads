@@ -574,9 +574,12 @@ pub fn memory_compressed() -> Option<u64> {
 }
 
 /// The memory available now (bytes): what macOS hands a process without compressing or swapping
-/// anything: its free pages, its file-backed pages (the file cache, dropped at once; a read-ahead's
-/// speculative pages are among them) and its purgeable ones (`host_statistics64`). It is the Mac's
-/// memory less what Activity Monitor calls Memory Used (app memory, wired, compressed). Not
+/// anything: its free pages, its file-backed pages (the file cache, dropped at once) and its
+/// purgeable ones (`host_statistics64`). A read-ahead's speculative pages are counted once: the
+/// kernel's `free_count` includes them and so does `external_page_count` (file-backed + anonymous
+/// = active + inactive + speculative, to the page; `vm_stat` prints free less speculative), so
+/// they come off the free. It is the Mac's memory less what Activity Monitor calls Memory Used
+/// (app memory, wired, compressed). Not
 /// `kern.memorystatus_level` (`memory_free_pct`): that counts every page neither wired nor
 /// compressed, apps' own pages in use too, and read 60 % on the M4 on 4 Nov with 21 GB swapped
 /// (docs/pool.md §7.1). None where it can't be read.
@@ -584,7 +587,8 @@ pub fn memory_available() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
         vm_stats().map(|(v, page)| {
-            (u64::from(v.free_count) + u64::from(v.external_page_count) + u64::from(v.purgeable_count)) * page
+            let free = u64::from(v.free_count).saturating_sub(u64::from(v.speculative_count));
+            (free + u64::from(v.external_page_count) + u64::from(v.purgeable_count)) * page
         })
     }
     #[cfg(not(target_os = "macos"))]
@@ -910,6 +914,18 @@ mod tests {
         // (Task #609: the compressed memory, under the Mac's; the thermal state, one of four.)
         assert!(memory_compressed().is_some_and(|c| c < mem), "{:?}", memory_compressed());
         assert!(thermal_state().is_some_and(|t| t <= 3), "{:?}", thermal_state());
+        // (Task #932 review: the speculative pages are file-backed (file-backed + anonymous =
+        // active + inactive + speculative, within the pages that move between the counts' reads)
+        // and in the kernel's free count too, so the available counts them once, and stays within
+        // the Mac less its wired and compressor pages.)
+        let (v, page) = vm_stats().expect("host_statistics64");
+        let queued = u64::from(v.active_count) + u64::from(v.inactive_count) + u64::from(v.speculative_count);
+        let typed = u64::from(v.external_page_count) + u64::from(v.internal_page_count);
+        assert!(queued.abs_diff(typed) <= queued / 100, "{queued} {typed}");
+        assert!(v.free_count >= v.speculative_count, "{} {}", v.free_count, v.speculative_count);
+        let avail = memory_available().expect("available");
+        let used = (u64::from(v.wire_count) + u64::from(v.compressor_page_count)) * page;
+        assert!(avail <= mem.saturating_sub(used) + (64 << 20), "{avail} {mem} {used}");
     }
 
     #[test]
