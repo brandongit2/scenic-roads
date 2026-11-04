@@ -4,10 +4,20 @@
 # crates and unchanged code compile once per Mac, not once per worktree (11-17 GB each before).
 # On the PATH of agents' shells through CLAUDE_ENV_FILE (tools/dev/agent-env.zsh) and check.sh.
 #
-# One cargo at a time in that folder, for the whole command: a lock (zsystem flock, an fcntl lock
-# that exec keeps and no child inherits) taken before cargo starts. A second one prints that it is
-# waiting, for whom, and again every minute (also to $SCENIC_CARGO_SAY: check.sh's terminal). This is the point on a 16 GB laptop: two heavy rustc at
+# One build at a time in that folder: a lock (zsystem flock, an fcntl lock) taken before cargo
+# starts. A second one prints that it is waiting, for whom, and again every minute (also to
+# $SCENIC_CARGO_SAY: check.sh's terminal). This is the point on a 16 GB laptop: two heavy rustc at
 # once restarted the M1 (31 Oct). (Cargo's own build-folder lock would serialize only the compile.)
+#
+# Programs run outside the lock (#937): `cargo run`, `test` and `bench` build under it with this
+# script as cargo's target runner, which only records each program cargo would start (its path,
+# arguments, environment and folder); the lock goes, then they run from APFS clones in
+# $t/.scenic-runs/<pid>/, so another worktree's build can't replace them under a run. `cargo
+# nextest run` gets the runner too: it clones each test binary as nextest lists it (still under
+# the lock) and runs the clone; the lock goes when the first test starts. A test binary that names
+# a program of the shared folder (a CARGO_BIN_EXE_* path, compiled in) runs under the lock: that
+# path can't be redirected to a clone. A program for another target than this Mac's (wasm32) has
+# no runner of ours: cargo runs it under the lock, as before.
 #
 # Correctness: cargo judges a workspace crate fresh by mtimes, and a crate's artifact names don't
 # depend on the checkout's path, so a build of worktree A would pass as fresh for worktree B's older
@@ -16,25 +26,62 @@
 # rustc for them again, whose incremental state (checked by content hashes) reuses what is the same.
 # Third-party crates are untouched: their names hash their version, source and features.
 #
-# Passed straight to cargo: outside .claude/worktrees/, inside a cargo this shim started
-# (SCENIC_CARGO_SHARED set: a build script's cargo), and commands that never build.
+# Passed straight to cargo: outside .claude/worktrees/, inside a cargo this shim started under the
+# lock (SCENIC_CARGO_SHARED set: a build script's cargo), and commands that never build.
 setopt extendedglob
+zmodload zsh/system
 self=${0:A}
+
+# --- As cargo's target runner (set below): `cargo --scenic-record|--scenic-nextest <dir> <program>
+# <args>…`. (Cargo's DYLD_FALLBACK_LIBRARY_PATH never reaches it: macOS drops DYLD_* when it starts
+# /bin/zsh. The workspace's programs load only the system's libraries: otool -L.)
+clone() {  # clone <program> <dir>: an APFS clone of it in <dir> (made once, atomically), printed
+  local c=$2/${1:t}
+  [[ -e $c ]] || { cp -c $1 $c.$$ && mv -f $c.$$ $c } || return 1
+  print -r -- $c
+}
+pinned() {  # pinned <test binary>: does it name a program of its profile's folder (CARGO_BIN_EXE_*)?
+  local up=${1:h}; [[ ${up:t} == deps ]] && up=${up:h}
+  local progs=( $up/*(N.x) )
+  # (The folder alone first: one string is searched faster than the list, and most binaries lack it.)
+  (( $#progs )) && LC_ALL=C grep -qaF -- $up/ $1 && print -rl -- $progs | LC_ALL=C grep -qaFf /dev/stdin $1
+}
+if [[ ${1:-} == --scenic-(record|nextest) ]]; then
+  mode=${1#--scenic-} dir=$2; shift 2
+  # Not built in the shared folder (rustdoc's doctests, in a temp folder): run it now.
+  [[ $1 == ${CARGO_TARGET_DIR:-/nonexistent}/* ]] || exec "$@"
+  if [[ $mode == record ]]; then  # cargo run/test/bench: one record a program, in cargo's order
+    n=( $dir/*.cwd(N) ); n=$dir/$(( $#n + 1000 ))  # (sortable names: cargo starts them one by one)
+    print -rN -- "$@" > $n.argv && env -0 > $n.env && print -rn -- $PWD > $n.cwd || exit 1
+    exit 0
+  fi
+  # nextest: it lists every binary (`--list`) before it runs any test, so every one is cloned and
+  # checked under the lock; the first test run tells the shim to let it go.
+  c=$(clone $1 $dir/bin) || exit 1
+  if (( ${@[(I)--list]} )); then pinned $1 && : >> $dir/pinned
+  else
+    : >> $dir/started
+    [[ -e $dir/pinned ]] || unset SCENIC_CARGO_SHARED  # (outside the lock: a cargo it starts takes it)
+  fi
+  shift; exec $c "$@"
+fi
+
 real=
 for c in $(whence -ap cargo); do [[ ${c:A} == $self ]] || { real=$c; break; }; done
 [[ -n $real ]] || { print -u2 "cargo (tools/dev/bin): no other cargo on the PATH"; exit 127; }
 top=$PWD; while [[ $top != / && ! -e $top/.git ]]; do top=${top:h}; done  # the checkout (a worktree's .git is a file)
 [[ -z ${SCENIC_CARGO_SHARED:-} && $top == */.claude/worktrees/* ]] || exec $real "$@"
-sub=
-for a in "$@"; do [[ $a == [+-]* ]] || { sub=$a; break; }; done
+args=( "$@" ); si=0
+for (( i = 1; i <= $#args; i++ )); do [[ $args[i] == [+-]* ]] || { si=$i; break; }; done
+sub=${args[si]:-}
 case $sub in
   ''|fmt|metadata|locate-project|pkgid|tree|help|verify-project|read-manifest|search|version) exec $real "$@" ;;
 esac
 t=${SCENIC_SHARED_TARGET:-$HOME/Library/Caches/scenic-target}
 mkdir -p $t || exit 1
-zmodload zsh/system
 lock=$t/.scenic-lock
 : >> $lock || exit 1
+# (-e: the lock stays held across exec, for the commands cargo runs whole under it.)
 if ! zsystem flock -e -t 0 -f fd $lock 2>/dev/null; then
   start=$SECONDS
   say() { print -u2 -r -- "$1"; [[ -n ${SCENIC_CARGO_SAY:-} ]] && print -r -- "    $1" >> $SCENIC_CARGO_SAY 2>/dev/null; }
@@ -60,4 +107,91 @@ fi
 # the shared folder, outside the repo, where a shim finds no mise.toml.
 whence mise >/dev/null && eval "$(mise env -C $top -s zsh 2>/dev/null)" 2>/dev/null
 export CARGO_TARGET_DIR=$t SCENIC_CARGO_SHARED=1
-exec $real "$@"
+
+# Which commands run programs: run, test, bench (and their aliases), nextest's run.
+ri=0
+case $sub in
+  run|r|test|t|bench) ri=$si ;;
+  nextest) for (( i = si + 1; i <= $#args; i++ )); do [[ $args[i] == [+-]* ]] || break; done
+           [[ ${args[i]:-} == (run|r) ]] && ri=$i ;;
+esac
+(( ri )) || exec $real "$@"
+host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')
+[[ -n $host ]] || exec $real "$@"
+# This run's clones, in the shared folder (an APFS clone is a copy only on the same volume). Those
+# of runs whose process is gone go first (a program exec'd below leaves its folder behind).
+runs=$t/.scenic-runs
+for d in $runs/<->(N/); do kill -0 ${d:t} 2>/dev/null || rm -rf $d; done
+r=$runs/$$; rm -rf $r; mkdir -p $r/bin || exit 1
+mode=record; [[ $sub == nextest ]] && mode=nextest
+args=( "${(@)args[1,ri]}" --config "target.$host.runner = [\"$self\", \"--scenic-$mode\", \"$r\"]" "${(@)args[ri+1,-1]}" )
+unlock() { zsystem flock -u $fd }
+
+if [[ $mode == nextest ]]; then
+  # Nextest builds, lists every binary (each cloned by the runner), then runs tests from the clones.
+  zmodload zsh/zselect
+  $real "${args[@]}" <&0 & child=$!
+  while kill -0 $child 2>/dev/null && [[ ! -e $r/started ]]; do zselect -t 20; done
+  [[ -e $r/pinned ]] || unlock  # (a binary naming the shared folder's programs: the lock to the end)
+  wait $child; rc=$?
+  rm -rf $r
+  exit $rc
+fi
+
+$real "${args[@]}"; rc=$?
+recs=( $r/*.cwd(N) ); recs=( ${recs%.cwd} )
+if (( ! $#recs )); then rm -rf $r; exit $rc; fi
+# As cargo: stop at the first failure unless --no-fail-fast; -q: no "Running" lines. (Only the
+# options before `--`: after it they are the programs'.)
+own=( "${(@)args[1,${args[(i)--]}-1]}" )
+nff=${own[(I)--no-fail-fast]} quiet=$(( ${own[(I)-q]} + ${own[(I)--quiet]} ))
+readz() { local x; reply=(); while IFS= read -r -d '' x; do reply+=( "$x" ); done < $1 }
+prog() {  # prog <record> <clone> <keep SCENIC_CARGO_SHARED>: the program as cargo would start it
+  local args vars
+  readz $1.argv; args=( "${reply[@]}" )
+  readz $1.env; vars=( "${reply[@]}" )
+  # (Outside the lock a cargo it starts must take the lock again.)
+  (( $3 )) || vars=( ${vars:#SCENIC_CARGO_SHARED=*} )
+  cd -- "$(<$1.cwd)" || return 1
+  exec /usr/bin/env -i "${vars[@]}" $2 "${(@)args[2,-1]}"
+}
+exe() { readz $1.argv; print -r -- $reply[1] }
+started() { (( quiet )) || print -u2 -r -- "     Running ${$(exe $1)#$t/}$2" }
+failed() { print -u2 -r -- "error: test failed: ${$(exe $1)#$t/} (exit $2)" }
+# Clones first, under the lock: a run's program with the programs beside it (which it may start from
+# its own folder). A test binary naming the shared folder's programs runs now, under the lock.
+typeset -A cl; first=0; later=()
+for rec in $recs; do
+  x=$(exe $rec)
+  if [[ $sub == (run|r) ]]; then
+    for p in ${x:h}/*(N.x); do [[ $p == $x ]] || clone $p $r/bin >/dev/null; done
+  fi
+  cl[$rec]=$(clone $x $r/bin) || { print -u2 "cargo: could not clone $x into $r/bin"; rm -rf $r; exit 1; }
+  if [[ $sub != (run|r) ]] && pinned $x; then
+    started $rec " (under the build lock: it names the shared folder's programs)"
+    ( prog $rec $cl[$rec] 1 ); x=$?
+    if (( x )); then
+      failed $rec $x; (( first )) || first=$x
+      (( nff )) || { rm -rf $r; exit $x; }
+    fi
+  else later+=( $rec ); fi
+done
+unlock
+for (( i = 1; i <= $#later; i++ )); do
+  rec=$later[i]
+  started $rec
+  # The last one replaces this shell, so signals reach it as they reach cargo run's program (its
+  # clone stays until the next run here sweeps it); not when an earlier failure decides the status.
+  if (( i == $#later && ! first && ! rc )); then
+    for p in $r/bin/*(N); do [[ $sub == (run|r) || $p == $cl[$rec] ]] || rm -f $p; done
+    prog $rec $cl[$rec] 0; exit 1
+  fi
+  ( prog $rec $cl[$rec] 0 ); x=$?
+  if (( x )); then
+    failed $rec $x; (( first )) || first=$x
+    (( nff )) || break
+  fi
+done
+rm -rf $r
+(( first )) && exit $first
+exit $rc
