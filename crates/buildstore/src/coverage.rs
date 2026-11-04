@@ -1050,7 +1050,7 @@ pub fn from_kept(r: &mut dyn std::io::Read) -> Option<Coverage> {
             }
             for w in starts.windows(2) {
                 let (s, e) = (w[0] as usize, w[1] as usize);
-                if e < s || e - s == 1 || (e > s && points[e - 1] != points[s]) {
+                if e < s || e > points.len() || e - s == 1 || (e > s && points[e - 1] != points[s]) {
                     return None;
                 }
                 if e > s {
@@ -1890,7 +1890,8 @@ mod tests {
     }
 
     /// A kept coverage that isn't a coverage's is not read: an edge from a ring's closing point (to
-    /// the next ring's first), a ring not closed, a listed cell of no edges.
+    /// the next ring's first), a ring not closed, a ring ending past the points, a listed cell of no
+    /// edges.
     #[test]
     fn a_kept_coverage_not_a_coverages_is_not_read() {
         let sq = |x: f64| vec![e7(x, 0.0), e7(x + 1.0, 0.0), e7(x + 1.0, 1.0), e7(x, 1.0)];
@@ -1904,6 +1905,8 @@ mod tests {
         };
         assert!(broken(&|s| *std::sync::Arc::make_mut(&mut s.grid).edges.last_mut().unwrap() = 4));
         assert!(broken(&|s| std::sync::Arc::make_mut(&mut s.rings).points[4] = e7(5.0, 5.0)));
+        // (A ring's end past the points, the next ring's before it: refused, not read past them.)
+        assert!(broken(&|s| std::sync::Arc::make_mut(&mut s.rings).starts[1] = 20));
         assert!(broken(&|s| {
             let g = std::sync::Arc::make_mut(&mut s.grid);
             let c = (0..g.nx * g.ny).find(|&c| !bit(&g.listed, c)).unwrap();
