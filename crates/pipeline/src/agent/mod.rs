@@ -12561,7 +12561,7 @@ mod tests {
     #[test]
     fn each_macs_adopted_catalogue_is_its_servers_cursor() {
         let feed = store::map::feed::Feed::new();
-        let m = store::map::Map::new(812, "t".into(), [("u/6/0/0".to_string(), serde_json::json!(true))].into());
+        let m = store::map::Map::new(812, "t".into(), [("u/6/0/0".to_string(), serde_json::json!(true).into())].into());
         feed.start(std::sync::Arc::new(m), 812, &[], Default::default());
         feed.changes(811, Some("server/m4"), 100);
         feed.changes(812, Some("server/m4"), 110);

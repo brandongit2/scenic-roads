@@ -17,9 +17,16 @@ Where it departs from this doc:
 - **The log's thread starts with the lead** (`MapLog::here`, from the agent's loop once its
   coordinator runs): the log is opened at once and the coordinator answers from it before the next
   publish.
-- **Memory:** the lead holds the map once (about 380 MB for catalogue 798's 82 MB of JSON). A
-  posted map's entries are made one at a time to diff and check it, a batch is applied in place (to
-  a copy only while a reader holds the map), and the snapshots are streamed into zstd.
+- **Memory:** the lead holds the map once, each entry's value as its canonical JSON
+  (`store::map::Val`, the bytes its hash is over: §4.3), parsed only where it's read. #936,
+  measured on the lead's log of 4 Nov (seq 1484, 52,089 entries, 80 MB of JSON of which the 223
+  regions are 76 MB): the map holds 85 MB (691 MB as `serde_json::Value`s); a snapshot's decode
+  peaks at 89 MB (734 MB), the log's open at 194 MB (978 MB), and a batch
+  setting a 27 MB region is parsed and applied in place at 54 MB (403 MB). A batch's values are
+  shared with the map it's applied to. The catalogue made of it (`Map::catalogue`) is 376 MB as
+  before, parsed from the values in about 0.3 s (0.1 s when it cloned them). A posted map's entries
+  are made one at a time to diff and check it, a batch is applied in place (to a copy only while a
+  reader holds the map), and the snapshots are streamed into zstd.
 
 **Built (step 3):** the lead's coordinator answers `GET /map/changes` and `/map/snapshot`
 (`pipeline::coord::maproutes`, with the build's key) from `store::map::feed::Feed`, which the
@@ -31,10 +38,9 @@ the log's snapshot) and the snapshot made once per `seq`; no NAS, no disk. A lon
 it handed over whole; the NAS's snapshot with the lead away; its map kept in
 `~/Library/Caches/scenic/map/`. Where it departs from §5 and §6.1:
 
-- **Wherever the server runs:** the Mac mini alone since #874, so no gate of its own. The map
-  costs it about 0.5 GB resident (catalogue 818's NAS snapshot: 0.76 GB at its decode, about
-  1.1 GB with the catalogue made of it and the one before still held, 1.45 GB while the map is
-  saved).
+- **Wherever the server runs:** the Mac mini alone since #874, so no gate of its own. Its map
+  costs what the lead's does (above), and the catalogue made of it at each batch beside it (the
+  one before still held while it's swapped); its resident size hasn't been measured since #936.
 - **The catalogue is made from the map at each batch** (`Map::catalogue`), as the consumers still
   read a `Catalogue`.
 - **No save at a clean stop** (§5.3): at most every 10 minutes; a start asks the batches since.

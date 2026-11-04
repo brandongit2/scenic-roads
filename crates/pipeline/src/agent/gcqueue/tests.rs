@@ -10,7 +10,7 @@ const T0: u64 = 1_800_000_000;
 
 /// A map at `seq` naming each of `files` (logical `<l>` → content `<l>.<k>.pack`).
 fn map(seq: u64, files: &[(&str, &str)]) -> Map {
-    let e = files.iter().map(|(l, c)| (format!("f/{l}"), json!({ "file": c, "size": 1, "fmt": 1 }))).collect();
+    let e = files.iter().map(|(l, c)| (format!("f/{l}"), json!({ "file": c, "size": 1, "fmt": 1 }).into())).collect();
     Map::new(seq, format!("t{seq}"), e)
 }
 

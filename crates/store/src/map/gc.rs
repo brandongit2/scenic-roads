@@ -104,7 +104,6 @@ impl Inner {
             .iter()
             .filter(|(k, _)| k.starts_with("f/"))
             .filter_map(|(_, v)| super::content_of(v))
-            .map(str::to_string)
             .collect();
         self.map_seq = map.seq;
     }
@@ -274,9 +273,9 @@ impl GcQueue {
         let mut g = self.lock();
         g.map_seq = b.seq;
         for (k, v) in &b.set {
-            if let Some(n) = super::content_of(v).filter(|_| k.starts_with("f/")) {
-                g.map.insert(n.to_string());
-                g.take(n);
+            if let Some(n) = k.starts_with("f/").then(|| super::content_of(v)).flatten() {
+                g.take(&n);
+                g.map.insert(n);
             }
         }
         for n in &b.freed {

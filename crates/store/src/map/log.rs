@@ -175,7 +175,7 @@ mod tests {
     use std::io::Write;
 
     fn map_at(seq: u64, n: usize) -> Map {
-        let e = (0..n).map(|i| (format!("u/6/{i}/0"), json!(true))).collect();
+        let e = (0..n).map(|i| (format!("u/6/{i}/0"), json!(true).into())).collect();
         Map::new(seq, format!("t{seq}"), e)
     }
 
@@ -185,7 +185,7 @@ mod tests {
         let mut out = Vec::new();
         for s in start.seq + 1..=k {
             let mut next = m.entries().clone();
-            next.insert(format!("u/7/{s}/0"), json!(true));
+            next.insert(format!("u/7/{s}/0"), json!(true).into());
             let b = m.batch_to(&next, s, &format!("t{s}"), "", "");
             m = m.apply(&b).unwrap();
             out.push(b);

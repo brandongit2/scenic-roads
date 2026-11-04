@@ -213,9 +213,9 @@ impl State {
         let mut ch = Change::default();
         for (k, v) in m.entries() {
             if let Some(name) = k.strip_prefix("f/") {
-                self.kept.files.insert(hash(name), hash(file_of(v)));
+                self.kept.files.insert(hash(name), hash(&file_of(v)));
             } else if let Some(name) = v.as_str() {
-                self.link(k, name, &mut ch);
+                self.link(k, &name, &mut ch);
             }
         }
         self.kept.entries = entries;
@@ -242,13 +242,13 @@ impl State {
         for (k, v) in &b.set {
             match k.strip_prefix("f/") {
                 Some(name) => {
-                    let (nh, fh) = (hash(name), hash(file_of(v)));
+                    let (nh, fh) = (hash(name), hash(&file_of(v)));
                     if self.kept.files.insert(nh, fh) != Some(fh) {
                         refiled.insert(nh);
                     }
                 }
                 None => match v.as_str() {
-                    Some(name) => self.link(k, name, &mut ch),
+                    Some(name) => self.link(k, &name, &mut ch),
                     None => self.unlink(k, &mut ch),
                 },
             }
@@ -263,8 +263,8 @@ impl State {
 }
 
 /// An `f/` entry's file (its content name).
-fn file_of(v: &Value) -> &str {
-    v.get("file").and_then(Value::as_str).unwrap_or_default()
+fn file_of(v: &store::map::Val) -> String {
+    store::map::content_of(v).unwrap_or_default()
 }
 
 fn entry(n: u64, t: u64, first: bool, ch: Change) -> Entry {

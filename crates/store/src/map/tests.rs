@@ -210,3 +210,44 @@ fn a_snapshot_reads_back_and_the_nas_keeps_three() {
     b.digest = hex(0);
     assert!(Snapshot::decode(&b.encode().unwrap()).is_err());
 }
+
+/// The recorded log (`src/map/testdata/log`): the lead's map of 4 Nov 2026 at 1469 (the NAS's
+/// snapshot, its entries sampled and its regions' lists cut to three items each) with the lead's
+/// cursors and marks, and its batches 1470 to 1484 (their regions cut alike, their digests the
+/// sampled map's), all written by the code before #936, whose values were `serde_json::Value`s,
+/// with what that code wrote of the map at 1484: its snapshot and its catalogue. Read and written
+/// again, each is the bytes it was.
+#[test]
+fn the_recorded_log_is_written_as_it_was() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/map/testdata/log");
+    let d = tempfile::tempdir().unwrap();
+    for f in ["snapshot.json.zst", "1470.jsonl"] {
+        std::fs::copy(src.join(f), d.path().join(f)).unwrap();
+    }
+    // Each batch's line (the log's, and what `/map/changes` answers), parsed and written again.
+    let seg = std::fs::read(src.join("1470.jsonl")).unwrap();
+    let lines: Vec<&[u8]> = seg.split(|c| *c == b'\n').filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 15);
+    for l in &lines {
+        let b: Batch = serde_json::from_slice(l).unwrap();
+        assert!(serde_json::to_vec(&b).unwrap() == *l, "batch {} isn't the bytes it was", b.seq);
+    }
+    // The snapshot read (its digest checked) and the batches replayed (each one's checked).
+    let (at, cursors, marks) = Snapshot::decode_marked(&std::fs::read(src.join("snapshot.json.zst")).unwrap()).unwrap();
+    assert_eq!((at.seq, cursors.is_empty(), marks.is_empty()), (1469, false, false));
+    for kind in ["f/", "l/", "s/", "u/", "r/", "m/"] {
+        assert!(at.entries().keys().any(|k| k.starts_with(kind)), "no {kind} entry");
+    }
+    let log = log::Log::open(d.path()).unwrap();
+    let m = log.map();
+    assert_eq!(m.seq, 1484);
+    assert!(m.digest_holds());
+    // Written: the snapshot and the catalogue the code before wrote of it.
+    let snap = Snapshot { marks, ..Snapshot::of(&m, &cursors) }.encode().unwrap();
+    assert!(snap == std::fs::read(src.join("expect-1484.json.zst")).unwrap(), "the snapshot isn't the bytes it was");
+    let cat = m.catalogue().unwrap();
+    let want = zstd::decode_all(&std::fs::read(src.join("expect-1484.catalogue.json.zst")).unwrap()[..]).unwrap();
+    assert!(serde_json::to_vec(&cat).unwrap() == want, "the catalogue isn't the bytes it was");
+    // And back: the catalogue's entries are the map's.
+    assert_eq!(entries(&cat).unwrap(), *m.entries());
+}

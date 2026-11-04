@@ -17,9 +17,12 @@ use std::io::Write;
 pub mod feed;
 pub mod gc;
 pub mod log;
+mod val;
 
-/// The map's entries, key → value (docs/maplog.md §4.1).
-pub type Entries = BTreeMap<String, Value>;
+pub use val::Val;
+
+/// The map's entries, key → value (docs/maplog.md §4.1), each value its canonical JSON (`Val`).
+pub type Entries = BTreeMap<String, Val>;
 
 /// A layer's sections kept as entries of their own (`l/<layer>/<section>/<tile>`), not in its head.
 const LAYER_SECTIONS: [&str; 5] = ["lo", "hi", "deep", "native_zoom", "polar"];
@@ -29,14 +32,14 @@ pub const NAS_DIR: &str = "map";
 pub const NAS_KEPT: usize = 3;
 const SUFFIX: &str = ".json.zst";
 
-/// One entry's hash: XXH3-128 over its key, a zero byte and its value's canonical JSON (serde_json's
-/// maps are sorted: the same value, the same bytes).
-pub fn entry_hash(key: &str, v: &Value) -> u128 {
-    let mut b = Vec::with_capacity(key.len() + 64);
-    b.extend_from_slice(key.as_bytes());
-    b.push(0);
-    serde_json::to_writer(&mut b, v).expect("a JSON value always serializes");
-    xxhash_rust::xxh3::xxh3_128(&b)
+/// One entry's hash: XXH3-128 over its key, a zero byte and its value's canonical JSON (`Val`:
+/// serde_json's maps are sorted, so the same value, the same bytes).
+pub fn entry_hash(key: &str, v: &Val) -> u128 {
+    let mut h = xxhash_rust::xxh3::Xxh3::new();
+    h.update(key.as_bytes());
+    h.update(&[0]);
+    h.update(v.json().as_bytes());
+    h.digest128()
 }
 
 /// The digest of a whole set of entries, from scratch: the sum of their hashes modulo 2^128 (§4.3).
@@ -66,9 +69,9 @@ pub fn entries(cat: &Catalogue) -> Result<Entries> {
 
 /// `entries` one at a time, never all at once (each made, handed to `f`, dropped): how the lead
 /// diffs a catalogue against the map while holding the map once. In no particular order.
-pub fn each_entry(cat: &Catalogue, f: &mut dyn FnMut(&str, Value) -> Result<()>) -> Result<()> {
+pub fn each_entry(cat: &Catalogue, f: &mut dyn FnMut(&str, Val) -> Result<()>) -> Result<()> {
     for (l, r) in &cat.files {
-        f(&format!("f/{l}"), serde_json::to_value(r)?)?;
+        f(&format!("f/{l}"), serde_json::to_value(r)?.into())?;
     }
     for (name, layer) in &cat.layers {
         ensure!(!name.contains('/') && !name.is_empty(), "layer {name:?}: a layer's name can't be empty or hold a /");
@@ -86,47 +89,47 @@ pub fn each_entry(cat: &Catalogue, f: &mut dyn FnMut(&str, Value) -> Result<()>)
         for s in LAYER_SECTIONS {
             o.remove(s);
         }
-        f(&format!("l/{name}"), head)?;
+        f(&format!("l/{name}"), head.into())?;
         for (s, m) in [("lo", &layer.lo), ("hi", &layer.hi), ("deep", &layer.deep), ("polar", &layer.polar)] {
             for (t, v) in m {
-                f(&format!("l/{name}/{s}/{t}"), Value::from(v.as_str()))?;
+                f(&format!("l/{name}/{s}/{t}"), Value::from(v.as_str()).into())?;
             }
         }
         for (t, z) in &layer.native_zoom {
-            f(&format!("l/{name}/native_zoom/{t}"), Value::from(*z))?;
+            f(&format!("l/{name}/native_zoom/{t}"), Value::from(*z).into())?;
         }
     }
     for (s, m) in sections(cat) {
         for (k, v) in m {
-            f(&format!("s/{s}/{k}"), Value::from(v.as_str()))?;
+            f(&format!("s/{s}/{k}"), Value::from(v.as_str()).into())?;
         }
     }
     // (Sorted and each once, as catalogues write them: one entry each; else kept whole.)
     if cat.units.windows(2).all(|w| w[0] < w[1]) {
         for u in &cat.units {
-            f(&format!("u/{u}"), Value::Bool(true))?;
+            f(&format!("u/{u}"), Value::Bool(true).into())?;
         }
     } else {
-        f("m/units", serde_json::to_value(&cat.units)?)?;
+        f("m/units", serde_json::to_value(&cat.units)?.into())?;
     }
-    f("m/fmt", Value::from(cat.fmt))?;
+    f("m/fmt", Value::from(cat.fmt).into())?;
     if !cat.app.is_empty() {
-        f("m/app", Value::from(cat.app.as_str()))?;
+        f("m/app", Value::from(cat.app.as_str()).into())?;
     }
     if !cat.basemap.is_empty() {
-        f("m/basemap", serde_json::to_value(&cat.basemap)?)?;
+        f("m/basemap", serde_json::to_value(&cat.basemap)?.into())?;
     }
     for (k, v) in [("meta", &cat.meta), ("credits", &cat.credits)] {
         if !v.is_null() {
-            f(&format!("m/{k}"), v.clone())?;
+            f(&format!("m/{k}"), v.into())?;
         }
     }
     if !cat.dem_labels.is_empty() {
-        f("m/dem_labels", serde_json::to_value(&cat.dem_labels)?)?;
+        f("m/dem_labels", serde_json::to_value(&cat.dem_labels)?.into())?;
     }
     coverage_entries(&cat.coverage, f)?;
     for (k, v) in &cat.extra {
-        f(&format!("m/extra/{k}"), v.clone())?;
+        f(&format!("m/extra/{k}"), v.into())?;
     }
     Ok(())
 }
@@ -146,7 +149,7 @@ fn sections(cat: &Catalogue) -> [(&'static str, &BTreeMap<String, String>); 6] {
 /// The coverage: each region an entry `r/<id>` with its place in the order (`{"i", "region"}`), and
 /// the rest of it in `m/coverage`, `m/regions` saying how many regions there are. A coverage whose
 /// regions aren't a list of objects with distinct ids stays whole in `m/coverage`.
-fn coverage_entries(cov: &Value, f: &mut dyn FnMut(&str, Value) -> Result<()>) -> Result<()> {
+fn coverage_entries(cov: &Value, f: &mut dyn FnMut(&str, Val) -> Result<()>) -> Result<()> {
     if cov.is_null() {
         return Ok(());
     }
@@ -156,34 +159,33 @@ fn coverage_entries(cov: &Value, f: &mut dyn FnMut(&str, Value) -> Result<()>) -
         ids.len() == rs.len()
     });
     let (Some(rs), Some(o)) = (split, cov.as_object()) else {
-        return f("m/coverage", cov.clone());
+        return f("m/coverage", cov.into());
     };
     for (i, r) in rs.iter().enumerate() {
         let id = r.get("id").and_then(Value::as_str).expect("checked above");
-        f(&format!("r/{id}"), serde_json::json!({"i": i, "region": r}))?;
+        f(&format!("r/{id}"), Val::region(i, r))?;
     }
     let rest = o.iter().filter(|(k, _)| *k != "regions").map(|(k, v)| (k.clone(), v.clone())).collect();
-    f("m/coverage", Value::Object(rest))?;
-    f("m/regions", Value::from(rs.len()))
+    f("m/coverage", Value::Object(rest).into())?;
+    f("m/regions", Value::from(rs.len()).into())
 }
 
 /// The catalogue entries make, numbered `n` and made at `created` (§4.1): `entries`' inverse.
 pub fn catalogue(e: &Entries, n: u64, created: &str) -> Result<Catalogue> {
     let mut c = Catalogue { n, created: created.to_string(), ..Default::default() };
-    let mut layer_parts: Vec<(&str, &str, &str, &Value)> = Vec::new();
+    let mut layer_parts: Vec<(&str, &str, &str, &Val)> = Vec::new();
     let mut regions: Vec<(u64, Value)> = Vec::new();
     let (mut cov, mut n_regions) = (None, None);
-    let s = |v: &Value, k: &str| v.as_str().map(str::to_string).with_context(|| format!("{k}: not a name"));
+    let s = |v: &Val, k: &str| v.as_str().map(String::from).with_context(|| format!("{k}: not a name"));
     for (k, v) in e {
         let (kind, rest) = k.split_once('/').with_context(|| format!("entry {k:?} has no kind"))?;
         match kind {
             "f" => {
-                c.files.insert(rest.into(), serde_json::from_value::<FileRef>(v.clone()).with_context(|| k.clone())?);
+                c.files.insert(rest.into(), v.parse::<FileRef>().with_context(|| k.clone())?);
             }
             "l" => match rest.split_once('/') {
                 None => {
-                    c.layers
-                        .insert(rest.into(), serde_json::from_value::<Layer>(v.clone()).with_context(|| k.clone())?);
+                    c.layers.insert(rest.into(), v.parse::<Layer>().with_context(|| k.clone())?);
                 }
                 Some((name, sec)) => {
                     let (sec, tile) = sec.split_once('/').with_context(|| format!("entry {k:?}: no tile"))?;
@@ -205,22 +207,23 @@ pub fn catalogue(e: &Entries, n: u64, created: &str) -> Result<Catalogue> {
             }
             "u" => c.units.push(rest.into()),
             "r" => {
-                let i = v.get("i").and_then(Value::as_u64).with_context(|| format!("entry {k:?}: no place"))?;
-                regions.push((i, v.get("region").cloned().unwrap_or_default()));
+                let mut r = v.value();
+                let i = r.get("i").and_then(Value::as_u64).with_context(|| format!("entry {k:?}: no place"))?;
+                regions.push((i, r.get_mut("region").map(Value::take).unwrap_or_default()));
             }
             "m" => match rest {
-                "fmt" => c.fmt = serde_json::from_value(v.clone()).context("m/fmt")?,
+                "fmt" => c.fmt = v.parse().context("m/fmt")?,
                 "app" => c.app = s(v, k)?,
-                "basemap" => c.basemap = serde_json::from_value(v.clone()).context("m/basemap")?,
-                "meta" => c.meta = v.clone(),
-                "credits" => c.credits = v.clone(),
-                "dem_labels" => c.dem_labels = serde_json::from_value(v.clone()).context("m/dem_labels")?,
-                "units" => c.units = serde_json::from_value(v.clone()).context("m/units")?,
-                "coverage" => cov = Some(v.clone()),
-                "regions" => n_regions = Some(v.as_u64().context("m/regions")? as usize),
+                "basemap" => c.basemap = v.parse().context("m/basemap")?,
+                "meta" => c.meta = v.value(),
+                "credits" => c.credits = v.value(),
+                "dem_labels" => c.dem_labels = v.parse().context("m/dem_labels")?,
+                "units" => c.units = v.parse().context("m/units")?,
+                "coverage" => cov = Some(v.value()),
+                "regions" => n_regions = Some(v.parse::<u64>().context("m/regions")? as usize),
                 _ => match rest.strip_prefix("extra/") {
                     Some(x) => {
-                        c.extra.insert(x.into(), v.clone());
+                        c.extra.insert(x.into(), v.value());
                     }
                     None => bail!("entry {k:?}: no such field"),
                 },
@@ -236,10 +239,7 @@ pub fn catalogue(e: &Entries, n: u64, created: &str) -> Result<Catalogue> {
             "deep" => &mut l.deep,
             "polar" => &mut l.polar,
             "native_zoom" => {
-                let z = v
-                    .as_u64()
-                    .and_then(|z| u8::try_from(z).ok())
-                    .with_context(|| format!("{name}'s zoom of {tile}"))?;
+                let z = v.parse::<u8>().with_context(|| format!("{name}'s zoom of {tile}"))?;
                 l.native_zoom.insert(tile.into(), z);
                 continue;
             }
@@ -341,8 +341,12 @@ pub struct Mark {
 }
 
 /// An `f/` entry's content name.
-pub fn content_of(v: &Value) -> Option<&str> {
-    v.get("file").and_then(Value::as_str)
+pub fn content_of(v: &Val) -> Option<String> {
+    #[derive(Deserialize)]
+    struct File {
+        file: String,
+    }
+    v.parse::<File>().ok().map(|f| f.file)
 }
 
 impl Map {
@@ -377,7 +381,7 @@ impl Map {
 
     /// The batch from this map to `next`, numbered `seq`, made at `at`.
     pub fn batch_to(&self, next: &Entries, seq: u64, at: &str, app: &str, why: &str) -> Batch {
-        let source = |f: &mut dyn FnMut(&str, Value) -> Result<()>| next.iter().try_for_each(|(k, v)| f(k, v.clone()));
+        let source = |f: &mut dyn FnMut(&str, Val) -> Result<()>| next.iter().try_for_each(|(k, v)| f(k, v.clone()));
         self.diff(source, seq, at, app, why).expect("a map's entries are each once")
     }
 
@@ -390,7 +394,7 @@ impl Map {
     /// The batch from this map to the entries `source` hands its callback (each key once).
     fn diff(
         &self,
-        source: impl FnOnce(&mut dyn FnMut(&str, Value) -> Result<()>) -> Result<()>,
+        source: impl FnOnce(&mut dyn FnMut(&str, Val) -> Result<()>) -> Result<()>,
         seq: u64,
         at: &str,
         app: &str,
@@ -409,8 +413,10 @@ impl Map {
                     return Ok(());
                 }
                 d = d.wrapping_sub(entry_hash(k, o));
-                if let Some(f) = content_of(o).filter(|f| k.starts_with("f/") && content_of(&v) != Some(f)) {
-                    freed.push(f.to_string());
+                if let Some(f) = k.starts_with("f/").then(|| content_of(o)).flatten() {
+                    if content_of(&v).as_ref() != Some(&f) {
+                        freed.push(f);
+                    }
                 }
             }
             d = d.wrapping_add(entry_hash(k, &v));
@@ -420,8 +426,8 @@ impl Map {
         let mut del = Vec::new();
         for (k, o) in self.entries.iter().filter(|(k, _)| !kept.contains(k.as_str())) {
             d = d.wrapping_sub(entry_hash(k, o));
-            if let Some(f) = content_of(o).filter(|_| k.starts_with("f/")) {
-                freed.push(f.to_string());
+            if let Some(f) = k.starts_with("f/").then(|| content_of(o)).flatten() {
+                freed.push(f);
             }
             del.push(k.clone());
         }
@@ -473,7 +479,7 @@ impl Map {
         }
     }
 
-    fn apply_entries(&mut self, b: &Batch, want: u128, was: &mut Vec<(String, Option<Value>)>) -> Result<()> {
+    fn apply_entries(&mut self, b: &Batch, want: u128, was: &mut Vec<(String, Option<Val>)>) -> Result<()> {
         for k in &b.del {
             let o =
                 self.entries.remove(k).with_context(|| format!("batch {} deletes {k}, which isn't there", b.seq))?;
@@ -521,7 +527,7 @@ pub struct Undo {
     seq: u64,
     at: String,
     digest: u128,
-    was: Vec<(String, Option<Value>)>,
+    was: Vec<(String, Option<Val>)>,
 }
 
 /// A client's cursor (§5.4): the last `seq` it applied and when it was heard (seconds since 1970).

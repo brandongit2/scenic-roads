@@ -214,12 +214,12 @@ mod tests {
     use serde_json::json;
 
     fn chain(k: u64) -> (Map, Vec<Batch>) {
-        let start = Map::new(1, "t1".into(), [("u/6/0/0".to_string(), json!(true))].into());
+        let start = Map::new(1, "t1".into(), [("u/6/0/0".to_string(), json!(true).into())].into());
         let mut m = start.clone();
         let mut out = Vec::new();
         for s in 2..=k {
             let mut next = m.entries().clone();
-            next.insert(format!("u/7/{s}/0"), json!(true));
+            next.insert(format!("u/7/{s}/0"), json!(true).into());
             let b = m.batch_to(&next, s, &format!("t{s}"), "", "");
             m = m.apply(&b).unwrap();
             out.push(b);

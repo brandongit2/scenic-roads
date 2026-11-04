@@ -1048,12 +1048,12 @@ mod tests {
     fn names_todo_reruns_exactly_when_its_prefixes_change() {
         use store::map::{log::Log, Map};
         let d = tempfile::tempdir().unwrap();
-        let f = |file: &str| json!({"file": file, "size": 1, "fmt": 1});
+        let f = |file: &str| store::map::Val::from(json!({"file": file, "size": 1, "fmt": 1}));
         let mut e: store::map::Entries = [
-            ("u/6/1/1".to_string(), json!(true)),
-            ("s/base/6/1/1".into(), json!("base/6-1-1")),
+            ("u/6/1/1".to_string(), json!(true).into()),
+            ("s/base/6/1/1".into(), json!("base/6-1-1").into()),
             ("f/base/6-1-1".into(), f("base/6-1-1.a.sect")),
-            ("l/terrain/deep/10/1/1".into(), json!("layers/terrain/deep/10-1-1")),
+            ("l/terrain/deep/10/1/1".into(), json!("layers/terrain/deep/10-1-1").into()),
             ("f/layers/terrain/deep/10-1-1".into(), f("layers/terrain/deep/10-1-1.a.pack")),
             ("f/layers/labels/hi/6-1-1".into(), f("layers/labels/hi/6-1-1.a.pack")),
         ]
@@ -1081,7 +1081,7 @@ mod tests {
         e.remove("u/6/1/1");
         assert_eq!(step(&mut log, &e), "map 5");
         // A slope tile added: not.
-        e.insert("l/slope/hi/6/1/1".into(), json!("layers/slope/hi/6-1-1"));
+        e.insert("l/slope/hi/6/1/1".into(), json!("layers/slope/hi/6-1-1").into());
         assert_eq!(step(&mut log, &e), "map 5");
         // Reopened (from its segments, then from its snapshot): the same key.
         drop(log);
@@ -1091,9 +1091,9 @@ mod tests {
         let mut log = Log::open_watching(d.path(), &INPUTS).unwrap();
         assert_eq!(key(&log), "map 5");
         // A base pack named outside the watched prefixes: made again at every batch, not missed.
-        e.insert("s/base/6/1/2".into(), json!("elsewhere/6-1-2"));
+        e.insert("s/base/6/1/2".into(), json!("elsewhere/6-1-2").into());
         assert_eq!(step(&mut log, &e), "map 7");
-        e.insert("l/slope/hi/6/1/2".into(), json!("layers/slope/hi/6-1-2"));
+        e.insert("l/slope/hi/6/1/2".into(), json!("layers/slope/hi/6-1-2").into());
         assert_eq!(step(&mut log, &e), "map 8");
     }
 
