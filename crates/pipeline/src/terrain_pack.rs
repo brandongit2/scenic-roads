@@ -156,7 +156,9 @@ impl RawSource for Fills<'_> {
                     let reach = (self.reaching)(z, x, y);
                     from.iter().any(|d| reach.contains(d))
                 });
-            self.kept.lock().unwrap().insert((z, x, y), fine || relief.is_some());
+            // (The relief, read at its own declared zoom, never reaches the band: a deep tile of it
+            // and of coarser samples is an upsampling, kept only where it has children.)
+            self.kept.lock().unwrap().insert((z, x, y), fine);
         }
         if sample.is_none() && relief.is_none() {
             return Ok((None, a || b));
@@ -2818,6 +2820,11 @@ pub(crate) mod tests {
         // (At z12 and coarser, kept as read.)
         let f = Fills::new(&pool, &relief, &|_, _, _| Fill::Sample, &none);
         assert!(f.get(12, 10, 10).unwrap().0.is_some() && f.keep(12, 10, 10));
+        // (A deep tile whose quarters are the relief's, past the region's 20 km, and samples of
+        // nothing reaching it: not kept, the relief alone never reaching the band.)
+        let edge = |_: u8, x: u32, _: u32| if x % 2 == 0 { Fill::Relief } else { Fill::Sample };
+        let f = Fills::new(&pool, &relief, &edge, &none);
+        assert!(f.get(z, 10, 10).unwrap().0.is_some() && !f.keep(z, 10, 10));
     }
 
     /// Carried unrounded within a job and rounded ties to even once as stored, a chained pyramid's
