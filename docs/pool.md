@@ -1390,7 +1390,8 @@ stays.)
   input mostly as what changed since the ones before it: measured on terms 668-671's four inputs
   (31 Oct 10:05-13:20, 46.6 MB of JSON, 3.8 MB as the terms' files held them; `fcinputs`'
   `recorded_frame_size`), one frame of 0.97 MB: about 23 MB a day. A frame that fails is tried
-  again after an hour (the inputs waiting past 64 MB of JSON dropped, oldest first, said); the
+  again after an hour (the inputs waiting past 64 MB of JSON dropped, oldest first, said; one
+  whose write landed after its deadline is then there twice, read once); the
   frame waiting when the agent stops is lost (an hour at most), as the forecasts' batch is.
 - **Kept:** 7 days (`fcinputs::KEEP_S`, the span `forecast-check` reads by default,
   `fccheck::SPAN_S`): the daily `gc` job removes the days before it (8 day files, about 190 MB).

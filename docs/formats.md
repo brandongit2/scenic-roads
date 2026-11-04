@@ -744,7 +744,9 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   holds it (below, Forecast input), uncompressed inside the frame.
 - A frame is written with long-distance matching over a 64 MB window (`fcarchive::encoder`), so an
   input after the first in its frame is stored mostly as what changed since the ones before it.
-  A reader decodes a frame whole to read one of its inputs (`fcinputs::Input::record`).
+  A reader decodes a frame whole to read one of its inputs (`fcinputs::Input::record`). A frame
+  tried again after its write passed the NAS's deadline may be there twice; a reader keeps the
+  first input at each time.
 - An input at most every 15 minutes (`fcinputs::EVERY_S`); days before the backtest's default span
   (7 days, `fcinputs::KEEP_S`) are removed by the daily `gc` job.
 
@@ -1055,7 +1057,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     `state/coord/history/<day>/<member>.jsonl` (history events, terms' as `kind: term`; days older than 7 are
     `state/coord/history-archive/<day>.tar`, a ustar of `<day>/<member>.jsonl`);
     `state/coord/forecasts/<day>.jsonl.zst` (the lead's forecasts, The forecasts' archive above;
-    days older than 7 in `state/coord/forecasts-archive/<YYYY-MM>.tar`).
+    days older than 7 in `state/coord/forecasts-archive/<YYYY-MM>.tar`);
+    `state/coord/forecast-inputs/<day>.jsonl.zst` (the lead's forecast inputs, The forecast
+    inputs' archive above; days before the last 7 removed).
   - `state/publish/<host>.jsonl` (pipeline::pubtimes): each Mac's map server's lines, appended,
     `{t, host, kind, n, secs?}`, `kind` one of `adopt` (catalogue n served: written still, read no
     more; the history's `adopt`, from the server's cursor in the map's log, says it), `mirror-start`

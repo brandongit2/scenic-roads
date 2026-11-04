@@ -1621,7 +1621,9 @@ pub struct Agent {
     /// newest plan's number seen (the lead's own, a member's in its grants), and each cancelled
     /// target's or job's plan number when it was cancelled: a grant from a plan no newer is dropped.
     plan: plan::Handle,
-    fc_pending: (Option<Vec<u8>>, Option<fcarchive::Entry>),
+    /// (The input's bytes with their own forecast's time: a later forecast's bytes that didn't
+    /// serialize leave the earlier's, so the entry's time isn't theirs.)
+    fc_pending: (Option<(Vec<u8>, u64)>, Option<fcarchive::Entry>),
     plan_n: u64,
     cancels_at: BTreeMap<String, u64>,
     /// This Mac's tiles to come in the lead's last forecast, as cache hints (room::Hints::of_tocome,
@@ -4662,8 +4664,8 @@ impl Agent {
             self.plan.send(plan::Msg::Inputs(Box::new(inputs)));
             self.plan.look_inline();
             while let Ok(plan::Out::Forecast(bytes, entry)) = self.plan.out.try_recv() {
-                if bytes.is_some() {
-                    self.fc_pending.0 = bytes;
+                if let Some(b) = bytes {
+                    self.fc_pending.0 = Some((b, entry.at));
                 }
                 self.fc_pending.1 = Some(entry);
             }
@@ -8401,7 +8403,7 @@ impl Agent {
                 run.regions_handed = Some(key.clone());
             }
         }
-        if let Some(b) = &fc_bytes {
+        if let Some((b, _)) = &fc_bytes {
             co.set_page_forecast(b);
         }
         if co.page_on_nas() {
@@ -8434,7 +8436,7 @@ impl Agent {
                 }
             }
             // The forecast's input, each time the forecast's made (at most each minute).
-            if let Some(b) = &fc_bytes {
+            if let Some((b, _)) = &fc_bytes {
                 if let Err(e) = run.side.nas().write_whole(&pool::forecast_input_path(term), b) {
                     eprintln!("agent: the forecast's input of term {term}: {e:#}");
                 }
@@ -8443,9 +8445,10 @@ impl Agent {
             (run.view_written, run.regions_written) = (None, None);
         }
         // Into the forecasts' archive (fcarchive) with its input (fcinputs): handed to its thread,
-        // which writes in batches.
+        // which writes in batches. (The input at its own forecast's time: an older one than the
+        // entry's when the entry's bytes didn't serialize.)
         if let Some(e) = fc_entry {
-            let input = fc_bytes.map(|bytes| fcinputs::Given { term, at: e.at, bytes });
+            let input = fc_bytes.map(|(bytes, at)| fcinputs::Given { term, at, bytes });
             let a = self.fc_archiver.get_or_init(|| {
                 fcarchive::Archiver::start(root.clone())
                     .map_err(|e| eprintln!("agent: the forecasts' archive's thread: {e}"))

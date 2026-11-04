@@ -249,8 +249,10 @@ impl Input {
     }
 }
 
-/// The archived inputs made from `from` until `to` (unix s), by time. A line that doesn't read is
-/// skipped, said (a damaged frame: `fcarchive::frames_of`).
+/// The archived inputs made from `from` until `to` (unix s), by time, one a time: a frame tried
+/// again after its write passed `nasread`'s deadline may be there twice (the first write landed
+/// after all), and the first read is kept. A line that doesn't read is skipped, said (a damaged
+/// frame: `fcarchive::frames_of`).
 pub fn read(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
     let mut out = Vec::new();
     for d in (from / 86_400..=to / 86_400).filter_map(|d| journal::day(d * 86_400)) {
@@ -269,6 +271,7 @@ pub fn read(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
         });
     }
     out.sort_by_key(|i| i.at);
+    out.dedup_by_key(|i| i.at);
     out
 }
 
@@ -375,6 +378,8 @@ mod tests {
             assert!(json_len(&g.bytes).unwrap() > 0);
         }
         fcarchive::append_frame(day_path(&root(&d), &day), frame(&[&gs[0], &gs[1]]).unwrap()).unwrap();
+        fcarchive::append_frame(day_path(&root(&d), &day), frame(&[&given(2, &rec(NOW + 120, 1))]).unwrap()).unwrap();
+        // The second frame again (a retry whose first write landed): read once.
         fcarchive::append_frame(day_path(&root(&d), &day), frame(&[&given(2, &rec(NOW + 120, 1))]).unwrap()).unwrap();
         let got = read(&root(&d), NOW, NOW + 600);
         assert_eq!(got.len(), 3);
