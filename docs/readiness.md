@@ -141,8 +141,8 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 |---|---|---|---|
 | terrain-water | water pin + each target's reads | `in water-pin`, `in water-wants` | same inputs |
 | pyramids-fill | `pyramids::V`, tile, coverage 20 km fingerprint, pyramids' lines, water, deep targets | versions; `in coverage:piece`, `in pyramids`, `in water`, `Targets terrain-deep` (identity: the target list, `in deep-targets`) | changes: #832's `piece_coverage` |
-| terrain-hi | `TERRAIN_V`, codec, coverage 20 km rings, datasets, deep key lines, water, "no hi tiles" | versions; `in coverage:piece`, `in datasets:terrain`, `in deep-lines`, `in water`, `in makes-hi` | changes: #832 (coverage cut, datasets' outlines) |
-| terrain-deep | versions, tile, fine lines, each base z6 tile's terrain-hi inputs | versions (incl. `terrain-hi`); `in fine-lines`; for each base z6 tile the same `in` lines as its terrain-hi | changes: #832, via its bases. Its bases' *inputs*, not their outputs (no wait), stay: terrain-deep builds its base itself |
+| terrain-hi | `TERRAIN_V`, codec, its built tiles, datasets, sources' zooms, water, "no hi tiles", its z10 tiles' deep mids | versions; `in coverage:piece`, `in datasets:terrain`, `in zoom-lines`, `in water`, `in makes-hi`, `Targets terrain-deep` (its 16 z10 tiles, `Grain::Read`: their deep mids) | task #929: the one pyramid's rule; its z12 tiles over a deep target are its deep mid's means, so it waits for those targets alone |
+| terrain-deep | versions, tile, its band's tiles, datasets, sources' zooms, water | versions (incl. `terrain-hi`: its code's); `in coverage:piece`, `in datasets:terrain`, `in zoom-lines`, `in water` | task #929: no base made from terrain-hi's inputs; it reads no built tile |
 | terrain-lo | versions, codec, water, sources, z6 mids | `Targets terrain-hi` (mids), `in water`, `in datasets:terrain` | same inputs. The `sources` line is undocumented today; the doc table gains it |
 | slope-hi | `SLOPE_V`, codec, hi pack, deep mids, tiles read | `Targets terrain-hi` and `terrain-lo` `Grain::Tiles`, `Targets slope-deep` (mids), `terrain-root` (decision 2) | changes: the root becomes a declared read (today keyed, not waited) |
 | slope-deep | `SLOPE_V`, codec, tiles read | `Targets terrain-deep`/`terrain-hi`/`terrain-lo` `Grain::Tiles`, `terrain-root` (decision 2) | changes: root a declared read |
@@ -247,7 +247,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      index, rail stops and ferries (their keys moved out of `publish_chain` into
      `build::roadunits_key` and `transit_key`). Both tests pass over six fixture builds (the
      plans run to the end; with a water source; with a pyramid read tile by tile; with a fine
-     dataset past the base's zoom; at a pole; with depth sources), and every derived step is keyed
+     dataset past z12; at a pole; with depth sources), and every derived step is keyed
      in one of them. What it changed:
      - **Readiness passes waits on.** A target waits while a target it reads waits (`held`), and a
        step read whole while anything a target of it reads is left (`whole_left`), so a step

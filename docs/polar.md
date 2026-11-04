@@ -19,12 +19,14 @@ tiles, on the pole's polar stereographic grid.
   (`dem::proj::Projection::Polar`).
 - **Tiles:** a quadtree over the square ±2^20 m around each pole (`HALF`). Tiles are 256 px, and
   (z, x, y) counts columns from −x and rows from +y, like the Mercator tiles. z0 is 8,192 m a
-  pixel; z9 is 16 m (`pixel_m`).
-- **Finest zoom: z9** (the owner's, 25 Oct). That is 16 m on the grid, about 16.5 m on the ground
-  (the scale is 0.97 at the poles): GLO-30's 30 m cell's half, the Mercator terrain's rule.
+  pixel; z8 is 32 m, z9 16 m (`pixel_m`).
+- **Finest zoom: the Mercator terrain's rule** (`polar::finest`, crate::terrain_zoom): the finest
+  whose pixels on the grid are no finer than the cell of a dataset meeting the cap. For the
+  declared datasets now (GLO-30's 30.9 m, REMA's 32 m) that is z8, 32 m on the grid (about 33 m on
+  the ground: the scale is 0.97 at the poles).
 - **Cap:** the tiles meeting the disc out to 85.0° (`CAP_LAT`, `cap_tiles`): a ring of about 5 km
   past the seam, for Horn's border. A parent meets the disc whenever a child does, so each zoom's
-  tiles are the parents of the next zoom's. The south cap has 76 z4 tiles and 55,856 z9 tiles.
+  tiles are the parents of the next zoom's. The south cap has 76 z4 tiles.
 - **Blocks:** a z4 tile of the grid (131 km a side) is a block (`polar::BLOCK_Z`): a step's target
   and a pack's root. A block's latitudes (`roadcore::polar::lat_box`, every longitude from its
   nearest point to the pole to its farthest corner) are what it is asked about: the coverage, the
@@ -36,7 +38,7 @@ tiles, on the pole's polar stereographic grid.
   in the same order, blended alike, each pixel the mean of 2 × 2 samples, GeoTIFFs read at the
   overview nearest half a pixel. The tile pyramids are left out: a Web Mercator pyramid has nothing
   past 85.05°. Below zero is clamped to 0. Stored as Terrarium in lossless WebP (`terrain_codec`),
-  rounded to 1 cm at z9 and 10 cm coarser. No water mask past 85° (the Arctic is sea level, drawn
+  rounded to 1 cm at the finest zoom and 10 cm coarser. No water mask past 85° (the Arctic is sea level, drawn
   in the water colour) and no lake or ice-shelf flattening.
 - **The datasets past the caps' edge:** GLO-30 everywhere south of 85° S (nothing north of 85° N,
   which is all sea), then REMA near the South Pole (below).
@@ -61,14 +63,13 @@ tiles, on the pole's polar stereographic grid.
   data along an edge. Near the pole, where the meridians converge, these drew as dashed pits along
   every meridian. A pixel with no sample with data in a gap up to 3 pixels wide takes its
   neighbours' mean (`polar::close_gaps`, `GAP_PX`); wider voids stay sea level.
-- **File edges in the overviews:** the levels coarser than z9 read GLO-30's overviews, which hold
-  0 along their files' edges where the full resolution has none; a pixel's mean leaves out a
-  sample at exactly 0 where another has data (`polar::pixel_mean`), else these drew as pits of a
-  quarter or half the height along the one-degree lines (measured in the root's z3 past the built
-  blocks, 26 Oct).
-- **Shading:** one precomputed pyramid, as `slope_pack` makes it: at z9 Horn's method on the grid
-  (a pixel's ground size the grid's ÷ the scale at its latitude), each coarser pixel the plain mean
-  of its four children, or Horn's on its own level's terrain where there are none (past the cap).
+- **Coarser levels:** each its children's 2×2 means, nothing sampled; a quarter with no child
+  (past the cap, or a block not built) is sea level, since no dataset is published at every zoom on
+  this grid to give a relief there. A pixel's mean of its samples leaves out one at exactly 0 where
+  another has data (`polar::pixel_mean`: GLO-30's overviews hold 0 along their files' edges).
+- **Shading:** one precomputed pyramid, as `slope_pack` makes it: at the finest zoom Horn's method
+  on the grid (a pixel's ground size the grid's ÷ the scale at its latitude), each coarser pixel the
+  plain mean of its four children, flat where there are none.
   Stored as `shade-webp`. Its directions are the grid's (east = +x, south = −y); a renderer turns
   them to the ground's by longitude (`roadcore::polar::east_north`). Nothing is computed from heights
   at render time.
@@ -227,13 +228,11 @@ Memory: 0.3–0.9 GB a terrain job as measured (its `mem_mb`, 4,096, is the firs
    pool's datasets meeting each target's box (`declared::meeting`, unexpanded tile boxes); REMA's
    cells reach 86° S and the Mercator tiles' last row ends at 85.05° S, so no Mercator terrain,
    slope, deep, lo, root or road (`unit`) key changes, nor peaks and summits (they read the
-   terrain packs' z8). The fine datasets and the roads' spacing don't change: REMA's 32 m isn't
-   finer than the base (GLO-30's 30.9 m, `terrain_deep::base_resolution`). Tested by
+   terrain packs' z8). The roads' spacing doesn't change: GLO-30 holds the world before REMA, so
+   REMA is no place's source for its finest zoom (crate::terrain_zoom::sources). Tested by
    `polar::tests::rema_south_of_87_meets_no_mercator_tile`. Two side effects, neither a re-key: a
    terrain run under way when the index switches restarts its resume state
-   (`terrain_resume::inputs`), and the agent works its terrain targets out again once. Keep it so:
-   REMA's 2 m or 10 m mosaics (rank above 0, finer than the base) would lower the base resolution
-   and re-key every terrain target.
+   (`terrain_resume::inputs`), and the agent works its terrain targets out again once.
 4. **Members take the polar blocks (open; recommended later):** `polar-terrain` and `polar-slope` are
    offered to the pool's members like the other per-tile steps, but aren't in the shared set (the
    forecast's and the hand-off checks' per-target accounting). Add them if the cap's hours matter.

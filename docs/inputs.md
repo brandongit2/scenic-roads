@@ -1211,7 +1211,11 @@ index = "hrdem-tiles.geojson"
 **Read from the data at check time** (`facts.measured`, beside the parsed `facts.declaration`): a
 GeoTIFF dataset's CRS and resolution (headers by range request: an index's first, last and seven
 files between, or every file without an index; one CRS the app projects, the coarsest of those
-files' full resolutions, at which every dataset is read) and its coverage (`cover`): the 1° cells its data meets, merged into boxes. Index
+files' full resolutions, at which every dataset is read, and the datasets' order) and its cell by
+latitude band (`bands`, a geographic GeoTIFF's: each file read's latitudes and the coarser of its two
+ground spacings, its longitude's at its equatorward edge, the coarsest of a band's files; none for a
+pyramid or a projected GeoTIFF, whose `resolution` holds everywhere), which sets the terrain's finest
+zoom there (crate::terrain_zoom), and its coverage (`cover`): the 1° cells its data meets, merged into boxes. Index
 files meet by footprint; other files by where they have valid data at their coarsest overview, so a
 file's empty margins cover nothing. A tile pyramid's resolution comes from its zoom at its coverage's
 mid-latitude, and a tile is read to check it's 256 px (`generic::TILE_PX`). The coverage is also the
@@ -1350,9 +1354,9 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   NAS, no server). A z6 tile waits for the stale terrain targets under
   its box, the fine ones (z8) as well.
 - **Densification** (crate::dem::spacing, `extract`): a way's points are put as far apart as the
-  terrain's pixel in the 1° cell of the way's first node (the finest zoom stored there: the fine
-  zoom where a dataset finer than the base has data, by its measured `resolution` and `cover`, else
-  the base's, `terrain_pack::max_zoom_at`), never closer than 4 m (`FLOOR_M`); ferries not at all. A cell
+  terrain's pixel in the 1° cell of the way's first node (the finest zoom stored there: its place's,
+  crate::terrain_zoom, by the datasets' measured cells (`bands`, else `resolution`) and `cover`),
+  never closer than 4 m (`FLOOR_M`); ferries not at all. A cell
   is the point's degrees floored: its west and south edges are its own. The z6 tile job writes the
   fine cells into the z6 tile's folder (`spacing.json`), which `extract` reads; the reach tests the
   z6 tiles' long ways at the same spacing (`reach::LongWay::touches`). The other steps' `extract` runs
@@ -1384,18 +1388,18 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   values where nothing lies beneath (docs/polar.md §2). EPSG:3031 (and 3413) are projected by
   `roadcore::polar` (`dem::proj::Projection::Polar`).
 
-**The 3D terrain** reads the same pool (crate::terrain_base; docs/steps.md §2, Terrain): its base
-tiles are sampled from these datasets in this order, blended as the roads' are, so the roads and
-the terrain use one dataset at every point; the Terrarium tiles through the NAS's archive of them
-(`sources/aws-terrarium/`, docs/macs.md). A dataset finer than the worldwide ones (rank above 0)
-takes the terrain past z12 to its native zoom there (the terrain-deep step's deep levels, a z10
-tile a target: crate::terrain_deep), every dataset read at its full resolution; the roads' heights
-are read from the finished terrain (above).
+**The 3D terrain** reads the same pool (crate::terrain_base; docs/steps.md §2, Terrain): a tile at
+its place's finest zoom is sampled from these datasets in this order, blended as the roads' are, so
+the roads and the terrain use one dataset at every point; the Terrarium tiles through the NAS's
+archive of them (`sources/aws-terrarium/`, docs/macs.md). Each place's finest zoom is the finest of
+the datasets meeting it there, by their cells (`bands`; crate::terrain_zoom), past z12 in the
+terrain-deep step (a z10 tile a target: crate::terrain_deep); every dataset is read at most at its
+own detail, the next in the order filling its gaps. The roads' heights are read from the finished
+terrain (above).
 - **Keys:** a terrain target names the datasets meeting it by their lines, as the roads' keys do
-  (`agent::tiles::TerrainTiles::terrain_datasets`); a terrain-hi z6 tile its z10 tiles past the
-  base's zoom (and, north of 67°, the fine datasets its deep z12 reads: `terrain_deep::piece_key_lines`);
-  a terrain-deep z10 tile the fine datasets it reads with the zoom each reaches
-  (`terrain_deep::target_key_lines`) and what the z6 tiles of its base read; while they can't be read
+  (`agent::tiles::TerrainTiles::terrain_datasets`), and each place's sources there with the zoom each
+  reaches (`terrain_zoom::key_lines`); a terrain-deep z10 tile likewise
+  (`terrain_deep::target_key_lines`); while they can't be read
   its key is unknown and the terrain waits.
 
 ### 6.9 The remaining sources
