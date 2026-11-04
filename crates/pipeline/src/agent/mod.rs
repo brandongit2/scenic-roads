@@ -7944,18 +7944,21 @@ impl Agent {
             c.set_capacity(self.last_cond.map(|cond| self.capacity(&cond)));
             c.set_placement(placed.clone());
             // (Each Mac's pace at each step, from the history's runs it reads (kept here, the new
-            // events alone fetched each loop): when one came, or ten minutes on, its window moved.)
+            // events alone taken each loop, read in the shared history: no copy of it, #930): when
+            // one came, or ten minutes on, its window moved.)
             let now = now_s();
             let mut kept = self.paces_from.borrow_mut();
             let (seq, at, runs) = &mut *kept;
-            let new = c.history_since(*seq);
-            *seq = new.last().map_or(*seq, |e| e.seq);
+            let all = c.history();
+            let from = *seq;
+            let new = all.iter().filter(|e| e.seq > from);
+            *seq = all.last().map_or(*seq, |e| e.seq.max(*seq));
             // (A run come and one gone in the same loop leave the count as it was: each is a change.)
             let had = runs.len();
             runs.retain(|e| e.t + crate::paces::PACE_S > now);
             let gone = runs.len() != had;
             let had = runs.len();
-            runs.extend(new.into_iter().filter(crate::paces::reads));
+            runs.extend(new.filter(|e| crate::paces::reads(e)).cloned());
             if gone || runs.len() != had || *at != now / 600 {
                 *at = now / 600;
                 c.set_paces(crate::paces::Paces::of(runs, &self.host, now));

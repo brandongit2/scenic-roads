@@ -825,6 +825,8 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   The agent, started by launchd with it, starts itself again in its place without it as it starts
   (`store::spawn::without_large_cache`): the lead's held 1.5 GB of freed blocks after 18 h (3 Nov,
   #930), and macOS 27's `malloc_zone_pressure_relief` gives none back. The map's server keeps it.
+  The cost is speed: each block over 32 KB is mapped afresh, ~3 µs a block and ~50 ms a GB
+  allocated (a C loop of malloc, touch, free on the M4, against ~1 ms a GB with the cache).
 - **Limit:** the Mac's memory less an eighth, 4 GB at least, less the agent's own footprint as measured each loop (`memguard::jobs_limit_mb`; the coordinator is told the same). Over it, the largest fitting alone,
   another job stops at its next safe point (`memguard::decide_by`): one that yields first, else the
   newest (by its start's minute), then the least progressed, never the largest; one at a time, and none more while the

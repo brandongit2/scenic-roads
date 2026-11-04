@@ -45,8 +45,9 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
 **Built (step 4):** the agent and the build page read the map from the log, not catalogues:
 
 - **The map the plan reads** (`served()` before): `agent::publish::Here`, which the shadow keeps
-  beside its feed: the catalogue it last checked equal to the map, else one made of the map once a
-  `seq` (`Here::catalogue`); the plan's `map_now`. Without the lead's log (a lead whose log hasn't
+  beside its feed: the catalogue it last checked equal to the map, else one made of the map
+  (`Here::catalogue`), kept only while a reader holds it (#930: ~370 MB, made again in ~0.1 s, so a
+  plan may make it twice); the plan's `map_now`. Without the lead's log (a lead whose log hasn't
   started, a dry run) the newest NAS snapshot, read once a `seq` (§5.2). The status's catalogue is
   its `seq` and its batch's time; the plan's regions on the map (`on_map`), its map tiles' owners
   (`pubtimes::PlannedNotes`) and the page's regions (`regionsview`) read that catalogue. `served`'s
