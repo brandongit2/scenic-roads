@@ -231,7 +231,8 @@ struct Model {
 pub const NEAR_RUNS: usize = 5;
 /// The most rings of tiles around a target its nearest measured targets are looked for in.
 /// (`NEAR_RUNS` and this were chosen on the lead's terrain-deep runs of 15 Oct – 4 Nov, each target
-/// predicted from those done before its grant (`backtest_mem_on_the_leads_measures`): 1 target
+/// predicted from those done before its grant's hour (`backtest_mem_on_the_leads_measures` as it
+/// first replayed, an hour at a time): 1 target
 /// within 4 rings missed 9.3 % of the targets by any amount and 3.3 % by over a GB, 5 within 8 4.8
 /// % and 1.9 %, 8 within 8 4.1 % and 1.5 % but reserved 1.28× their memory where 5 reserved 1.25×;
 /// the step's prior then: 19.2 %, 5.8 % and 1.52×.)
@@ -282,7 +283,8 @@ impl Near {
     }
 
     /// The most measured among tile `t`'s nearest measured tiles but itself, × `MARGIN` (MB);
-    /// None with none within `NEAR_RINGS`. Columns wrap around the antimeridian.
+    /// None with none within `NEAR_RINGS`. Columns wrap around the antimeridian, each tile counted
+    /// once however few columns its zoom has.
     fn nearest(&self, t: (u8, u32, u32)) -> Option<f64> {
         self.nearest_by(t, |_, _| true)
     }
@@ -291,9 +293,14 @@ impl Near {
     fn nearest_by(&self, t: (u8, u32, u32), keep: impl Fn(i64, i64) -> bool) -> Option<f64> {
         let (z, x, y) = t;
         let n = 1i64 << z.min(30);
+        // (A column offset counts in (-n/2, n/2] alone: at a low zoom a ring's far columns wrap
+        // onto nearer ones, or the tile's own (task #931 review: at z3, ring 8's did, and judged a
+        // measure by its own value).)
         let at = |dx: i64, dy: i64| {
             let (a, b) = ((x as i64 + dx).rem_euclid(n), y as i64 + dy);
-            (0..n).contains(&b).then(|| self.at.get(&(z, a as u32, b as u32)).copied()).flatten()
+            (-n < 2 * dx && 2 * dx <= n && (0..n).contains(&b))
+                .then(|| self.at.get(&(z, a as u32, b as u32)).copied())
+                .flatten()
         };
         let (mut got, mut most) = (0usize, 0u64);
         for r in 1..=NEAR_RINGS.min(n) {
@@ -759,7 +766,10 @@ impl<'a> Book<'a> {
         names.dedup();
         let mut fits: Vec<Fit> = names.into_iter().filter_map(|s| judge(&runs, s)).collect();
         fits.sort_by(|a, b| b.good().cmp(&a.good()).then(a.err.total_cmp(&b.err)).then(a.size.cmp(&b.size)));
-        let near = (m == Measure::Mem).then(|| std::sync::Arc::new(Near::of_measures(self.places(step))));
+        // (Not a `GUESS_FIRST` step's: its guess scales with its piece, and no backtest has weighed
+        // its place against that guess, which the history doesn't keep.)
+        let near = (m == Measure::Mem && !GUESS_FIRST.contains(&step))
+            .then(|| std::sync::Arc::new(Near::of_measures(self.places(step))));
         let md = Model { fits, prior: self.prior_of(step, m), near };
         cache.0.lock().unwrap_or_else(|e| e.into_inner()).1.insert(key, md.clone());
         md
@@ -2018,6 +2028,32 @@ mod tests {
         assert_eq!(n.nearest((10, 0, 5)), Some(4000.0 * MARGIN));
         assert_eq!(n.nearest((10, 510, 0)), Some(2000.0 * MARGIN));
         assert_eq!(n.nearest((10, 500, 500)), None);
+        // (z3: eight columns. Its own tile isn't its neighbour, and the one beside it is counted
+        // once, on ring 1, not again where ring 7's columns wrap onto it.)
+        let at = std::collections::HashMap::from([((3u8, 2u32, 4u32), 9000u64), ((3, 3, 4), 1000)]);
+        let n = Near { at, ..Default::default() };
+        assert_eq!(n.nearest((3, 2, 4)), Some(1000.0 * MARGIN));
+        assert_eq!(n.nearest_by((3, 2, 4), |dx, dy| dx != 1 || dy != 0), None, "its own tile isn't its neighbour");
+        let n = Near::of_measures(n.at);
+        assert_eq!(n.runs, 1, "{n:?}");
+    }
+
+    /// A `GUESS_FIRST` step keeps its piece's guess before its prior: its place is weighed by no
+    /// backtest.
+    #[test]
+    fn a_guess_first_step_keeps_its_guess() {
+        let v = cost_version("unit");
+        let mut costs = BTreeMap::new();
+        for x in 10..30u32 {
+            for y in 10..30u32 {
+                let mb = if (x * 7 + y * 13) % 3 == 0 { 9000 } else { 3000 };
+                costs.insert(format!("6/{x}/{y}"), Cost { v, ..cost(mb, 300, &[]) });
+            }
+        }
+        costs.remove("6/20/20");
+        let b = Book::new(&costs);
+        assert!(b.model("unit", Measure::Mem).near.is_none());
+        assert_ne!(b.mem("unit", "6/20/20", 0, 5000).1, From::Near);
     }
 
     /// By hand (task #931): each tile target the lead measured, predicted as its coordinator would
@@ -2096,9 +2132,13 @@ mod tests {
         let mut tally: BTreeMap<String, Tally> = BTreeMap::new();
         let mut book: BTreeMap<String, Cost> = BTreeMap::new();
         let mut next = 0;
-        // (An hour's grants at a time, from the runs known as it began.)
-        for hour in asked.chunk_by(|a, b| a.0 / 3600 == b.0 / 3600) {
-            let from = hour[0].0 / 3600 * 3600;
+        // (A minute's grants at a time, from the runs known as it began: a coordinator knows a run
+        // as it ends. Task #931 review: by the hour, a target granted late in it was predicted
+        // without the neighbours that ended earlier in it, which a batch's next target has; so
+        // replayed, terrain-hi missed 8.1 % by place against 5.0 % by its prior, by the minute 4.3
+        // % against 4.9 %.)
+        for hour in asked.chunk_by(|a, b| a.0 / 60 == b.0 / 60) {
+            let from = hour[0].0 / 60 * 60;
             while next < by_known.len() && by_known[next].0 < from {
                 book.insert(by_known[next].1.clone(), by_known[next].2.clone());
                 next += 1;
