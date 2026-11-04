@@ -3,9 +3,9 @@
 //! index (store::pack), never from the tile. Each index is read once by its pack's content name (two
 //! range reads: `PackIndex::read_from`) and kept in the agent's folder, `pack-idx/<hash16>.idx`
 //! (`PackIndex::to_bytes`): a content-named pack never changes, so a kept index is never stale. Not
-//! in `cache/`, which the caches' trims and clears empty: the build's ~530 terrain indexes are ~45 MB,
-//! and half a minute's reading over SMB. A kept index whose pack the manifest no longer names goes
-//! once it's been untouched for `KEEP_GONE`.
+//! in `cache/`, which the caches' trims and clears empty: the ~5,200 terrain packs the manifest
+//! named on 4 Nov have 700 MB of indexes kept, 260 MB held, read over SMB a few at a time. A kept
+//! index whose pack the manifest no longer names goes once it's been untouched for `KEEP_GONE`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -37,8 +37,7 @@ type Found<'a> = Result<Option<&'a [(u64, u64)]>, Unread>;
 
 /// The terrain packs' indexes the agent holds, by content name. (Cloned for a count off the
 /// agent's loop, the regions' states and steps, plan::Planner::start_as_built: the indexes and the
-/// memo shared by the copies, not copied; the build's 5,165 packs' indexes were 260 MB on 4 Nov,
-/// task #930.)
+/// memo shared by the copies, not copied: task #930.)
 #[derive(Clone, Default)]
 pub struct TerrainTiles {
     /// Each pack's tiles.
