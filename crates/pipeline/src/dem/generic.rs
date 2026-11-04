@@ -330,11 +330,6 @@ struct GeoSet<'a> {
     read_resolution: Option<f64>,
     store: Option<store::nasfs::NasPath>,
     o: &'a Opts<'a>,
-    /// By file: the open file and the level read (None: the server has none).
-    opened: Mutex<HashMap<usize, Option<(Arc<Tiff>, usize)>>>,
-    /// By file: its fill mask's cell in the memo shared by every sampler of the run
-    /// (`TileMemo::masks`), looked up once.
-    opened_masks: Vec<std::sync::OnceLock<Arc<MaskCell>>>,
     memo: Arc<TileMemo>,
     /// The files by where their footprints lie, for a plan of many (`FileGrid`).
     grid: Option<FileGrid>,
@@ -383,6 +378,12 @@ impl Mask {
             }
         }
         Ok(Mask { gt, width: img.width, height: img.height, block_w: img.block_w, block_h: img.block_h, across, voids })
+    }
+
+    /// The bytes its bits hold.
+    fn bytes(&self) -> usize {
+        self.voids.iter().flatten().map(|b| b.len() * 8).sum::<usize>()
+            + self.voids.len() * std::mem::size_of::<Option<Box<[u64]>>>()
     }
 
     fn masked(&self, x: f64, y: f64) -> bool {
@@ -516,19 +517,34 @@ impl GeoSet<'_> {
     /// File `k`'s fill mask, read once (None: it has none).
     fn mask(&self, k: usize) -> Result<Option<Arc<Mask>>> {
         let Some(Some(url)) = self.masks.get(k) else { return Ok(None) };
-        self.opened_masks[k]
-            .get_or_init(|| self.memo.masks.lock().unwrap().entry(format!("{} {url}", self.id)).or_default().clone())
-            .get_or_init(|| {
-                (|| -> Result<Option<Arc<Mask>>> {
-                    let (t, _) = self
-                        .source(url, |_| Ok((0, 1.0)))?
-                        .with_context(|| format!("{}: its fill mask {url} isn't on the server", self.id))?;
-                    Ok(Some(Arc::new(Mask::of(t).with_context(|| url.clone())?)))
-                })()
-                .map_err(|e| format!("{e:#}"))
-            })
-            .clone()
-            .map_err(anyhow::Error::msg)
+        let key = format!("{} {url}", self.id);
+        let cell = {
+            let mut memo = self.memo.masks.lock().unwrap();
+            match memo.get(&key).cloned() {
+                Some(c) => c,
+                None => {
+                    let c: Arc<MaskCell> = Default::default();
+                    memo.put(key.clone(), c.clone(), 0);
+                    c
+                }
+            }
+        };
+        let fresh = cell.get().is_none();
+        let got = cell.get_or_init(|| {
+            (|| -> Result<Option<Arc<Mask>>> {
+                let (t, _) = self
+                    .source(url, |_| Ok((0, 1.0)))?
+                    .with_context(|| format!("{}: its fill mask {url} isn't on the server", self.id))?;
+                Ok(Some(Arc::new(Mask::of(t).with_context(|| url.clone())?)))
+            })()
+            .map_err(|e| format!("{e:#}"))
+        });
+        if fresh {
+            // (Its bits' bytes, now they're read: what both holds weigh it.)
+            let w = got.as_ref().ok().and_then(|m| m.as_ref()).map_or(0, |m| m.bytes());
+            self.memo.masks.lock().unwrap().weigh(&key, w);
+        }
+        got.clone().map_err(anyhow::Error::msg)
     }
 
     /// Whether file `k` has voids by its fill mask anywhere (a mask with none counts as none).
@@ -543,7 +559,8 @@ impl GeoSet<'_> {
     }
 
     fn open(&self, k: usize) -> Result<Option<(Arc<Tiff>, usize)>> {
-        if let Some(t) = self.opened.lock().unwrap().get(&k) {
+        let key = (self.id.to_string(), k);
+        if let Some(t) = self.memo.opened.lock().unwrap().get(&key) {
             return Ok(t.clone());
         }
         let url = &self.files[k].0;
@@ -560,7 +577,7 @@ impl GeoSet<'_> {
                 Some((Arc::new(t.with_shared_cache(id, self.cache.clone())), level))
             }
         };
-        self.opened.lock().unwrap().insert(k, t.clone());
+        self.memo.opened.lock().unwrap().put(key, t.clone(), OPEN_BYTES);
         Ok(t)
     }
 
@@ -884,9 +901,78 @@ pub(crate) struct TileMemo {
     cap: usize,
     inner: Mutex<MemoIn>,
     /// The fill masks read, by dataset and URL: each read once however many samplers share the
-    /// memo (a pole's levels, a base's), its bits held once (at most 2 MiB for a GLO-30 mask:
-    /// 16 blocks of 1024², a bit a pixel, only blocks holding a void).
-    masks: Mutex<HashMap<String, Arc<MaskCell>>>,
+    /// memo (a pole's levels), its bits held once (at most 2 MiB for a GLO-30 mask: 16 blocks of
+    /// 1024², a bit a pixel, only blocks holding a void); those most recently read within the memo's
+    /// own budget (`cap`), each weighed by its bits.
+    masks: Mutex<Lru<String, Arc<MaskCell>>>,
+    /// The files open, by dataset and file (the server has none: None), with the level read:
+    /// those most recently read within the memo's budget (`cap`), each weighed at what it may hold
+    /// (`OPEN_BYTES`), shared by every sampler of the run, so a run's memory is its working set's.
+    opened: Mutex<Lru<(String, usize), Option<(Arc<Tiff>, usize)>>>,
+}
+
+/// What an open file holds at most (`TileMemo::opened`'s weight): its tile arrays kept
+/// (crate::geotiff::STRILES_KEPT; its header's windows are within it, a level read whole is held
+/// under the process's own bound, SPANNED_MAX).
+const OPEN_BYTES: usize = crate::geotiff::STRILES_KEPT as usize;
+
+/// A map keeping its most recently asked for entries within a budget of bytes (each entry's weight,
+/// `put`, `weigh`), the least recently asked for let go first: what a run holds is its working
+/// set's, not every file it has read (task #929: kept for the run's length, terrain-root's z3 tiles
+/// opened GLO-30's files by the thousand and grew 1.3–2.7 GB a z3 tile, `examples/pool_memory`).
+/// An entry let go while in use lives on with its users (an `Arc`'s); the one just put is never let
+/// go, so an entry past the budget alone is still held while it's used.
+pub(crate) struct Lru<K, V> {
+    map: HashMap<K, (V, u64, usize)>,
+    now: u64,
+    bytes: usize,
+    budget: usize,
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V> Lru<K, V> {
+    /// Within `budget` bytes.
+    pub(crate) fn new(budget: usize) -> Self {
+        Lru { map: HashMap::new(), now: 0, bytes: 0, budget }
+    }
+
+    pub(crate) fn get(&mut self, k: &K) -> Option<&V> {
+        self.now += 1;
+        let now = self.now;
+        self.map.get_mut(k).map(|e| {
+            e.1 = now;
+            &e.0
+        })
+    }
+
+    /// `k`'s entry put, of `weight` bytes.
+    pub(crate) fn put(&mut self, k: K, v: V, weight: usize) {
+        self.now += 1;
+        if let Some(old) = self.map.insert(k.clone(), (v, self.now, weight)) {
+            self.bytes -= old.2;
+        }
+        self.bytes += weight;
+        self.trim(&k);
+    }
+
+    /// `k`'s weight now `weight` bytes (known once it's made), if it's still held.
+    pub(crate) fn weigh(&mut self, k: &K, weight: usize) {
+        if let Some(e) = self.map.get_mut(k) {
+            self.bytes = self.bytes - e.2 + weight;
+            e.2 = weight;
+            self.trim(k);
+        }
+    }
+
+    fn trim(&mut self, keep: &K) {
+        while self.bytes > self.budget && self.map.len() > 1 {
+            let Some(old) = self.map.iter().filter(|e| e.0 != keep).min_by_key(|e| e.1 .1).map(|e| e.0.clone()) else {
+                return;
+            };
+            if let Some(e) = self.map.remove(&old) {
+                self.bytes -= e.2;
+            }
+        }
+    }
 }
 
 /// A fill mask, read once (None: it has none; Err: why it couldn't be).
@@ -902,8 +988,15 @@ struct MemoIn {
     bytes: usize,
 }
 
-/// What a run's tile memo keeps at most.
+/// What a run's tile memo keeps at most: its tiles, and as much again in each of its files open and
+/// fill masks (`TileMemo`).
 pub const TILE_MEMO_BYTES: usize = 512 << 20;
+
+/// The most memory (MB) a run's samplers hold besides their points in flight: the decoded blocks
+/// (`CACHE_BYTES`) and the memo's tiles, files open and fill masks (`TILE_MEMO_BYTES` each).
+pub const fn samplers_mb() -> u64 {
+    ((CACHE_BYTES + 3 * TILE_MEMO_BYTES) >> 20) as u64
+}
 
 /// How many tiles are fetched at once ahead of their sampling (natively, whatever the threads
 /// sampling: task #665, where 3 threads fetching a tile each at a time held GSI's to 2 a second): kept in
@@ -923,7 +1016,12 @@ pub const TILE_WITHIN: crate::fetch::Within =
 
 impl TileMemo {
     pub(crate) fn new(cap: usize) -> TileMemo {
-        TileMemo { cap, inner: Mutex::new(MemoIn::default()), masks: Default::default() }
+        TileMemo {
+            cap,
+            inner: Mutex::new(MemoIn::default()),
+            masks: Mutex::new(Lru::new(cap)),
+            opened: Mutex::new(Lru::new(cap)),
+        }
     }
 
     /// `url`'s file, fetched by `fetch` unless kept.
@@ -1427,8 +1525,6 @@ impl<'a> Set<'a> {
                     read_resolution: *read_resolution,
                     store,
                     o,
-                    opened: Mutex::new(HashMap::new()),
-                    opened_masks: (0..files.len()).map(|_| std::sync::OnceLock::new()).collect(),
                     memo: memo.clone(),
                     grid: (files.len() > FileGrid::FROM).then(|| FileGrid::of(files)),
                     clean: (0..files.len()).map(|_| Clean::default()).collect(),
