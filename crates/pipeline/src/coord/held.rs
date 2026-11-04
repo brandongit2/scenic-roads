@@ -55,6 +55,11 @@ pub struct Beat {
     /// the lead drops; the answer carries the rest.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub took: u64,
+    /// Its jobs' hand-offs it keeps whole that the lead hasn't acknowledged, by key (speaking
+    /// `beats::HANDOFF`, crate::coord::handoffs): the answer says which are merged and which the
+    /// lead lacks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub handoffs: Vec<String>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -94,6 +99,12 @@ pub struct Answer {
     /// switch files go on beside (the rollout gate).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub asks_on_nas: bool,
+    /// Of the hand-offs its beat listed (`Beat::handoffs`): those in a records snapshot the lead
+    /// saved (the member drops them), and those the lead lacks (the member posts them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merged: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lacks: Vec<String>,
 }
 
 /// The members whose leases go by their word now: those speaking it, heard within
@@ -129,8 +140,14 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
                 }
                 a.hold = s.asks.holds.get(&id).cloned();
             }
+            if let Some(h) = s.handoffs.as_ref().filter(|_| b.speaks.iter().any(|w| w == super::beats::HANDOFF)) {
+                (a.merged, a.lacks) = h.answer(&id, &b.handoffs);
+            }
         }
         a.speaks = [super::beats::SPEAKS, super::beats::PAGE, super::beats::ASKS].map(str::to_string).to_vec();
+        if s.handoffs.is_some() {
+            a.speaks.push(super::beats::HANDOFF.to_string());
+        }
         a.nas_too = beats.nas_too();
         a.settings_gen = s.asks.settings.gen;
         a.asks_on_nas = asks_on_nas(s, &beats, unix);

@@ -30,6 +30,7 @@ pub mod beats;
 pub mod broker;
 pub mod brokers;
 pub mod client;
+pub mod handoffs;
 pub mod held;
 pub mod history;
 pub mod inbox;
@@ -376,6 +377,9 @@ pub struct Shared {
     /// Where the members' messages to this Mac's member go (`/pool/mail`, `inbox`): its agent's
     /// (`Coordinator::set_inbox`); None, refused (the member keeps them queued).
     pub inbox: Option<std::sync::Arc<inbox::Inbox>>,
+    /// Where the members' hand-offs go (`/pool/handoff`, crate::coord::handoffs): its agent's
+    /// (`Coordinator::set_handoffs`); None, refused (the member keeps them).
+    pub handoffs: Option<std::sync::Arc<handoffs::Handoffs>>,
     /// The owner's asks it keeps (`/pool/hold`, `/pool/settings`; crate::coord::asks), in its store.
     pub asks: asks::Lead,
     /// The members' beats its agent's pool side hears by HTTP (`/pool/beat`, crate::coord::beats):
@@ -1469,6 +1473,7 @@ impl Coordinator {
             min_app: None,
             pool_member: None,
             inbox: None,
+            handoffs: None,
             asks: asks::Lead::default(),
             beats: None,
             page: PageFiles::default(),
@@ -2412,6 +2417,15 @@ impl Coordinator {
             i.attach(st);
         }
         s.inbox = inbox;
+    }
+
+    /// Where the members' hand-offs go (`Shared::handoffs`): kept in its store from when it has one.
+    pub fn set_handoffs(&self, h: Option<std::sync::Arc<handoffs::Handoffs>>) {
+        let mut s = self.shared.lock().unwrap();
+        if let (Some(h), Some(st)) = (h.as_ref(), s.keep.store()) {
+            h.attach(st);
+        }
+        s.handoffs = h;
     }
 
     /// Takes the owner's ask `a` (its own agent's, in process: crate::coord::asks), as
@@ -4210,6 +4224,17 @@ fn route(
                 _ => Ok((409, serde_json::json!({ "error": "not this member's mail" }))),
             }
         }
+        "/pool/handoff" => {
+            // A member's job's hand-off (docs/coordination.md step 6, crate::coord::handoffs): into
+            // its store, on its disk before the answer; refused while its agent hasn't attached it.
+            let e: crate::pool::Entry =
+                serde_json::from_value(serde_json::from_slice::<serde_json::Value>(body)?["entry"].take())?;
+            let h = shared.lock().unwrap().handoffs.clone();
+            match h {
+                Some(h) => Ok((200, serde_json::json!({ "taken": h.put(e)? }))),
+                None => Ok((409, serde_json::json!({ "error": "this coordinator takes no hand-offs" }))),
+            }
+        }
         "/work/inputs" => {
             // The build page's Accept and Accept All on a held unit's banner (docs/inputs.md §4.5):
             // `{"unit": <unit>, "accept": [<finding id>…]}` or `{"unit": <unit>, "all": true}`,
@@ -5005,6 +5030,7 @@ mod http {
             .route("/work/floors", any(json))
             .route("/work/redo", any(json))
             .route("/pool/mail", any(json))
+            .route("/pool/handoff", any(json))
             .route("/pool/hold", any(json))
             .route("/pool/settings", any(json))
             .route("/pool/beat", any(json))

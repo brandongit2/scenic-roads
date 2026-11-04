@@ -306,6 +306,9 @@ pub struct Side {
     /// What members posted it by HTTP, and what it sends them in their beats' answers
     /// (crate::coord::inbox, its coordinator's when it leads).
     inbox: Arc<crate::coord::inbox::Inbox>,
+    /// The members' hand-offs posted it by HTTP (crate::coord::handoffs): its coordinator's when it
+    /// leads.
+    handoffs: Arc<crate::coord::handoffs::Handoffs>,
     /// The members' beats heard by HTTP (crate::coord::beats): its coordinator's when it leads, the
     /// lead's answers' else; its own heartbeat for its agent's beat.
     http: Arc<crate::coord::beats::Beats>,
@@ -431,6 +434,7 @@ impl Side {
             mail_written: Vec::new(),
             mail_dirty,
             inbox: Arc::new(crate::coord::inbox::Inbox::open(&dir.join("inbox.json"))),
+            handoffs: Arc::default(),
             http,
             courier: http_courier(),
             lead_contact: Default::default(),
@@ -480,6 +484,11 @@ impl Side {
     /// What members posted it (its coordinator's while it leads: `Coordinator::set_inbox`).
     pub fn inbox(&self) -> Arc<crate::coord::inbox::Inbox> {
         self.inbox.clone()
+    }
+
+    /// The hand-offs members posted it (its coordinator's while it leads: `Coordinator::set_handoffs`).
+    pub fn handoffs(&self) -> Arc<crate::coord::handoffs::Handoffs> {
+        self.handoffs.clone()
     }
 
     /// The members' beats it hears by HTTP (its coordinator's while it leads: `Coordinator::set_beats`).
@@ -647,6 +656,7 @@ impl Side {
         let msgs = self.take_mail();
         let (entries, folders): (Vec<Entry>, Vec<Option<PathBuf>>) = give.entries.into_iter().unzip();
         self.folders.extend(folders.into_iter().flatten());
+        let now = self.now();
         let heard = Heard {
             msgs,
             asks: give.asks,
@@ -654,6 +664,10 @@ impl Side {
             listed: self.made.pop_front(),
             reassert: give.reassert,
             named_raw: give.named_raw,
+            handed: self.handoffs.taken(),
+            merged: self.http.take_merged(),
+            route: self.http.handoff_route(),
+            http_only: !self.http.journal_on(now),
         };
         self.conds = give.conds;
         let io = Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead };
@@ -677,6 +691,10 @@ impl Side {
             self.asked.extend(out.list.clone());
             return out;
         }
+        // (Its hand-offs kept whole for its beat to list and post; those posted it, merged and
+        // saved, acknowledged: both only now that the state saying so is on disk.)
+        self.http.set_handoffs(self.driver().mine().unwritten_entries().cloned().collect());
+        self.handoffs.merged(&out.merged);
         if let Some(t) = self.driver().current().lead.clone() {
             self.heard_of(&t.member);
         }
@@ -1790,7 +1808,7 @@ impl Run {
             gates: self.gates.clone(),
             members: self.side.members().iter().cloned().collect(),
             heard: self.side.heard_lately(),
-            unacked: self.side.driver().mine().to_tell(self.gates.term).len(),
+            unacked: self.side.driver().mine().unacked(),
             restart: self.restart.clone(),
             lead: self.controls.view.clone(),
         }
@@ -1826,6 +1844,7 @@ impl Run {
         if let Some(co) = &self.cx.coord {
             co.set_inbox(Some(self.side.inbox()));
             co.set_beats(Some(self.side.http_beats()));
+            co.set_handoffs(Some(self.side.handoffs()));
         }
         // (The members heard by HTTP known at once: their mail read, their messages sent.)
         for h in self.side.http.fresh(self.side.now()) {
@@ -2330,7 +2349,10 @@ mod tests {
     }
 
     fn side(root: &store::nasfs::NasRoot, home: &Path) -> Side {
-        let nas: SharedNas = Arc::new(root.clone());
+        side_over(Arc::new(root.clone()), home)
+    }
+
+    fn side_over(nas: SharedNas, home: &Path) -> Side {
         // (Its clocks virtual: time passes as the test says, `ahead`, however slowly a busy Mac
         // steps it.)
         let mut s = Side::open(home, &home.join("pool"), home.parent().unwrap(), "development", nas)
@@ -2762,8 +2784,10 @@ mod tests {
         let (ia, ib) = (a.member().id.clone(), b.member().id.clone());
         let lead = until(&mut a, || Give::default(), |o| o.caught_up);
         assert_eq!(lead.leads, Some(1));
-        // B's job's hand-off, in its folder: written to the journal, told to A by mail; the folder
-        // removed once B's saved state holds it.
+        // B's job's hand-off, in its folder: written to the journal (its lead's answer says nothing
+        // of hand-offs: an app before step 6), told to A by mail; the folder removed once B's saved
+        // state holds it.
+        b.http_beats().answered(&crate::coord::held::Answer::default(), b.now());
         let folder = d.path().join("b/agent/pool/jobs/1-5");
         std::fs::create_dir_all(&folder).unwrap();
         let e = unit_entry(&ib, LeaseId { term: 1, n: 5 }, "6/1/2", "k2");
@@ -2787,7 +2811,7 @@ mod tests {
         assert!(out.send.iter().any(|(to, m)| *to == ib && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))));
         assert_eq!(a.driver().records().unwrap().keys.recorded("unit", "6/1/2"), Some("k2"));
         b.step(Give::default(), &any);
-        assert!(b.driver().mine().to_tell(1).is_empty(), "acknowledged");
+        assert!(b.driver().mine().unacked() == 0, "acknowledged");
     }
 
     /// The lead's tailnet address as its contact says it, in the mail tests: posts to it reach
@@ -2812,14 +2836,20 @@ mod tests {
         a: Side,
         b: Side,
         c: crate::coord::Coordinator,
+        port: u16,
         posts: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     fn mail_pool() -> Mail {
+        mail_pool_over(|n| n)
+    }
+
+    /// `mail_pool`, A's NAS as `over` makes it of the share's.
+    fn mail_pool_over(over: impl FnOnce(SharedNas) -> SharedNas) -> Mail {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let (mut a, mut b) = (
-            side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("a/agent")),
+            side_over(over(Arc::new(store::nasfs::NasRoot::local_for_test(&r))), &d.path().join("a/agent")),
             side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("b/agent")),
         );
         assert_eq!(until(&mut a, || Give::default(), |o| o.caught_up).leads, Some(1));
@@ -2830,22 +2860,70 @@ mod tests {
         let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         b.courier = to_loopback(port, posts.clone());
         b.lead_contact = (vec![LEAD_URL.into(), "http://mac-a.local:8090".into()], c.contact.token.clone());
-        Mail { d, r, a, b, c, posts }
+        Mail { d, r, a, b, c, port, posts }
     }
 
     impl Mail {
-        /// B's beat taken by A's coordinator, its answer B's (as its agent's beat posts it).
-        fn beat(&mut self) {
+        /// B's beat taken by A's coordinator, its answer B's, and the hand-offs it says it lacks
+        /// posted (as B's agent's beat does).
+        fn beat(&mut self) -> crate::coord::held::Answer {
             use crate::coord::{beats, held};
             let b = held::Beat {
                 member: "b-host".into(),
-                speaks: [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS].map(str::to_string).to_vec(),
+                speaks: [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF]
+                    .map(str::to_string)
+                    .to_vec(),
                 heartbeat: self.b.http_beats().own(),
                 took: self.b.http_beats().took(),
+                handoffs: self.b.http_beats().handoff_keys(),
                 ..Default::default()
             };
             let a = self.c.member_beat(&b);
             self.b.http_beats().answered(&a, self.b.now());
+            for e in self.b.http_beats().handoffs_of(&a.lacks) {
+                self.post(&e);
+            }
+            a
+        }
+
+        /// Hand-off `e` posted to A's coordinator by HTTP: taken.
+        fn post(&self, e: &Entry) {
+            let c = crate::coord::client::Client::at(
+                vec![format!("http://127.0.0.1:{}", self.port)],
+                self.c.contact.token.clone(),
+                "b-host",
+            );
+            let (code, v) = c.post_json("/pool/handoff", &serde_json::json!({ "entry": e })).unwrap();
+            assert_eq!((code, v["taken"].as_str()), (200, e.key().as_deref()), "{v}");
+        }
+
+        /// A's coordinator takes hand-offs (as its agent's step makes it), and B's beat hears so.
+        fn by_http(&mut self) {
+            self.c.set_handoffs(Some(self.a.handoffs()));
+            self.b.step(Give::default(), &any);
+            self.beat();
+            assert_eq!(self.b.http_beats().handoff_route(), driver::Route::Http);
+        }
+
+        /// B's job's hand-off `n`, handed to its step: kept whole, neither written nor told.
+        fn hand_off(&mut self, n: u64) -> Entry {
+            let ib = self.b.member().id.clone();
+            let e = unit_entry(&ib, LeaseId { term: 1, n }, &format!("6/1/{n}"), &format!("k{n}"));
+            let out = self.b.step(Give { entries: vec![(e.clone(), None)], ..Default::default() }, &any);
+            let key = e.key().unwrap();
+            assert!(out.send.is_empty() && !self.r.join(journal::path(&key)).exists(), "{:?}", out.send);
+            assert_eq!(self.b.http_beats().handoff_keys(), [key]);
+            e
+        }
+
+        /// A steps until it acknowledges `key` (in a saved snapshot), then B's beat hears it and B
+        /// drops it.
+        fn merged(&mut self, key: &str) {
+            until(&mut self.a, || Give::default(), |o| o.merged.iter().any(|k| k == key));
+            assert!(self.a.driver().records().unwrap().handles(key));
+            assert_eq!(self.beat().merged, [key.to_string()]);
+            self.b.step(Give::default(), &any);
+            assert_eq!(self.b.driver().mine().unacked(), 0, "dropped once merged");
         }
 
         /// B's job's entry `n`: B's Tell of it to A sent.
@@ -2904,7 +2982,7 @@ mod tests {
         m.beat();
         assert!(!m.b.http_beats().from_lead().is_empty());
         m.b.step(Give::default(), &any);
-        assert!(m.b.driver().mine().to_tell(1).is_empty(), "acknowledged");
+        assert!(m.b.driver().mine().unacked() == 0, "acknowledged");
         m.beat();
         assert!(m.b.http_beats().from_lead().is_empty(), "the lead dropped what B took");
         // (Review) a post from an id with no heartbeat makes up no member: passed over, dropped.
@@ -2991,6 +3069,187 @@ mod tests {
         a.know(&ib);
         Mail::acknowledged(&mut a, &ib, &key);
         c.stop();
+    }
+
+    /// docs/coordination.md step 6: a hand-off posted twice (an answer lost), and once more after
+    /// it's merged, is merged once.
+    #[test]
+    fn a_hand_off_posted_twice_merges_once() {
+        let mut m = mail_pool();
+        m.by_http();
+        let e = m.hand_off(5);
+        let key = e.key().unwrap();
+        assert_eq!(m.beat().lacks, [key.clone()], "listed, lacked: posted");
+        m.post(&e);
+        assert_eq!(m.a.handoffs().taken().len(), 1);
+        let applied = std::cell::Cell::new(0);
+        until(
+            &mut m.a,
+            || Give::default(),
+            |o| {
+                let n =
+                    o.events.iter().filter(|e| matches!(e, Event::Merged { applied, .. } if applied.contains(&key)));
+                applied.set(applied.get() + n.count());
+                !o.merged.is_empty()
+            },
+        );
+        assert_eq!(applied.get(), 1);
+        assert!(m.a.handoffs().taken().is_empty(), "out of the store");
+        assert_eq!(m.beat().merged, [key.clone()]);
+        m.b.step(Give::default(), &any);
+        assert_eq!(m.b.driver().mine().unacked(), 0);
+        m.beat();
+        // Posted again late (a post held up in the network): taken, passed over, acknowledged.
+        m.post(&e);
+        let out = m.a.step(Give::default(), &any);
+        assert_eq!(out.merged, [key]);
+        assert!(!out.events.iter().any(|e| matches!(e, Event::Merged { .. })), "{:?}", out.events);
+        assert!(m.a.handoffs().taken().is_empty());
+        drop(m.c);
+    }
+
+    /// docs/coordination.md step 6: the lead is killed after its coordinator took a hand-off and
+    /// before its agent merged it: its next process has it from its store. Its store lost too (a
+    /// new disk), the member's beat to the new epoch finds the lead lacks what it keeps, and posts
+    /// it again. Nothing lost.
+    #[test]
+    fn a_lead_killed_after_taking_before_saving_loses_nothing() {
+        let mut m = mail_pool();
+        m.by_http();
+        let epoch = m.beat().epoch;
+        let e = m.hand_off(5);
+        let key = e.key().unwrap();
+        m.beat();
+        assert_eq!(m.a.handoffs().taken().len(), 1, "taken, on its disk before the answer");
+        // (Killed: neither stepped again nor its state written past this.)
+        let restart = |m: &mut Mail, lose_store: bool| {
+            let home = m.d.path().join("a/agent");
+            m.c.stop();
+            let nas = m.a.shared_nas();
+            // (Its process gone, its member's lock let go: a side elsewhere in its place first.)
+            m.a = side_over(nas.clone(), &m.d.path().join("x/agent"));
+            if lose_store {
+                std::fs::remove_dir_all(m.d.path().join("a/coord")).unwrap();
+            }
+            m.a = side_over(nas, &home);
+            let (c, port) = crate::coord::start_for_test(&m.d.path().join("a/coord"), "a", "");
+            c.set_member(Some(&m.a.member().id));
+            c.set_beats(Some(m.a.http_beats()));
+            c.set_handoffs(Some(m.a.handoffs()));
+            (m.c, m.port) = (c, port);
+        };
+        restart(&mut m, false);
+        assert_eq!(m.a.handoffs().taken().len(), 1, "from its store");
+        let a = m.beat();
+        assert!(a.epoch > epoch && a.lacks.is_empty(), "{a:?}");
+        m.merged(&key);
+        // Its store lost: posted again on the new epoch.
+        let e = m.hand_off(6);
+        let key = e.key().unwrap();
+        m.beat();
+        restart(&mut m, true);
+        assert!(m.a.handoffs().taken().is_empty());
+        assert_eq!(m.beat().lacks, [key.clone()], "lacked: posted again");
+        assert_eq!(m.a.handoffs().taken().len(), 1);
+        m.merged(&key);
+        m.c.stop();
+    }
+
+    /// A NAS whose writes of the records fail while `slow` (under nasread's deadline a hung share
+    /// fails rather than waits).
+    struct SlowRecords {
+        nas: SharedNas,
+        slow: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Nas for SlowRecords {
+        fn create_new(&self, p: &str, b: &[u8]) -> Result<Created> {
+            self.nas.create_new(p, b)
+        }
+        fn write_whole(&self, p: &str, b: &[u8]) -> Result<()> {
+            anyhow::ensure!(
+                !(p.starts_with("state/build/") && self.slow.load(std::sync::atomic::Ordering::SeqCst)),
+                "timed out: the NAS is slow"
+            );
+            self.nas.write_whole(p, b)
+        }
+        fn read(&self, p: &str) -> Result<Option<Vec<u8>>> {
+            self.nas.read(p)
+        }
+        fn exists(&self, p: &str) -> Result<bool> {
+            self.nas.exists(p)
+        }
+        fn list(&self, dir: &str) -> Result<Vec<String>> {
+            self.nas.list(dir)
+        }
+        fn remove(&self, p: &str) -> Result<()> {
+            self.nas.remove(p)
+        }
+    }
+
+    /// docs/coordination.md step 6: with the NAS slow the lead takes hand-offs as fast as ever (its
+    /// handler never touches the NAS); its records' save waits, and so do the acknowledgements;
+    /// the NAS back, they're saved and acknowledged. Nothing lost.
+    #[test]
+    fn hand_offs_merge_with_the_nas_slow() {
+        let slow = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s2 = slow.clone();
+        let mut m = mail_pool_over(move |nas| Arc::new(SlowRecords { nas, slow: s2 }));
+        m.by_http();
+        let e = m.hand_off(5);
+        let key = e.key().unwrap();
+        slow.store(true, std::sync::atomic::Ordering::SeqCst);
+        let t = Instant::now();
+        m.beat();
+        assert!(t.elapsed() < Duration::from_secs(5), "taken at once: {:?}", t.elapsed());
+        assert_eq!(m.a.handoffs().taken().len(), 1);
+        for _ in 0..3 {
+            let o = m.a.step(Give::default(), &any);
+            assert!(o.merged.is_empty() && !o.caught_up, "{:?}", o.events);
+            assert!(o.events.iter().any(|e| matches!(e, Event::Failed { what: "save the records", .. })));
+            assert!(m.beat().merged.is_empty(), "no ack before the save");
+        }
+        m.b.step(Give::default(), &any);
+        assert_eq!(m.b.driver().mine().unacked(), 1, "kept");
+        assert_eq!(m.a.handoffs().taken().len(), 1, "kept");
+        slow.store(false, std::sync::atomic::Ordering::SeqCst);
+        m.merged(&key);
+        drop(m.c);
+    }
+
+    /// The rollout gate (docs/coordination.md step 6): a member on an app before it writes its
+    /// hand-offs to the journal and tells the lead by mail; the lead still merges them, and lists
+    /// the journal while such a member is heard (none once every member says it posts them).
+    #[test]
+    fn mixed_versions_an_older_member_s_journal_hand_off_is_merged() {
+        use crate::coord::{beats, held};
+        let mut m = mail_pool();
+        m.c.set_handoffs(Some(m.a.handoffs()));
+        let ib = m.b.member().id.clone();
+        m.b.step(Give::default(), &any);
+        // (B as an older app: its beat says nothing of hand-offs, nor do the answers it reads.)
+        let old = held::Beat {
+            member: "b-host".into(),
+            speaks: [held::SPEAKS, beats::SPEAKS, beats::ASKS].map(str::to_string).to_vec(),
+            heartbeat: m.b.http_beats().own(),
+            ..Default::default()
+        };
+        let a = m.c.member_beat(&old);
+        assert!(a.speaks.iter().any(|w| w == beats::HANDOFF), "this lead takes them");
+        m.b.http_beats()
+            .answered(&held::Answer { speaks: vec![beats::SPEAKS.into(), beats::ASKS.into()], ..a }, m.b.now());
+        assert!(m.a.http_beats().journal_on(m.a.now()), "the gate open");
+        let key = m.tell(5);
+        assert!(m.r.join(journal::path(&key)).exists());
+        Mail::acknowledged(&mut m.a, &ib, &key);
+        // B on this app (and no member heartbeating on the NAS alone, as the lead's reading of
+        // them says, `tend_reach`): the gate shut.
+        m.beat();
+        m.a.http_beats().set_nas_too(false);
+        assert!(!m.a.http_beats().journal_on(m.a.now()));
+        let o = until(&mut m.a, || Give::default(), |o| o.caught_up);
+        assert!(o.list.is_none());
+        drop(m.c);
     }
 
     #[test]

@@ -112,10 +112,6 @@ pub struct View {
     /// icon and the build page show it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alert: Option<String>,
-    /// The term's lead can't take it up: the journal GC's marker refuses its records (§7.3), for so
-    /// long by its clock (s), and why. An alert once `ALERT_S` (a stale read passes sooner).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fenced: Option<(u64, String)>,
     /// Who can't reach whom (docs/pool.md §6.8), each in words with what the owner can do: "m1's
     /// coordinator is unreachable from m4: connection timed out (…)".
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -350,10 +346,6 @@ fn view(run: &Run) -> View {
         }
         _ => None,
     };
-    let fenced = lead_beat
-        .as_ref()
-        .filter(|h| !h.pool.out_of_touch(now))
-        .and_then(|h| h.pool.fenced.as_ref().map(|f| (h.pool.beat.saturating_sub(f.since), f.why.clone())));
     let unreached = members
         .iter()
         .flat_map(|m| reachable::unreached(&pool_beats, &m.member, now).into_iter().map(move |(b, r)| (m, b, r)))
@@ -382,7 +374,6 @@ fn view(run: &Run) -> View {
         members,
         no_lead,
         alert: None,
-        fenced,
         unreached,
         change: run.controls.kept.change.clone(),
     }
@@ -392,20 +383,6 @@ fn view(run: &Run) -> View {
 /// since this Mac first saw no lead in this term (`kept.no_lead`), whichever is earlier; with why,
 /// and what to do: the lead is fixed, so it's the lead Mac to see to (no other Mac takes over).
 pub fn alert(v: &mut View, kept: &mut Kept, now: u64) {
-    // (A lead that can't take its term up for the journal GC's marker: no lead all the same; the
-    // marker lifted is the way on.)
-    if let (Some((for_s, why)), Some(l)) = (&v.fenced, &v.lead) {
-        if *for_s >= ALERT_S {
-            v.alert = Some(format!(
-                "No lead for {}: {} can't take up term {}: {why}. Nothing builds until it can: run `scenic pool \
-                 journal-gc` on any Mac to see why and whether it's safe to lift (docs/pool.md §7.3).",
-                span(*for_s),
-                l.host,
-                v.term
-            ));
-            return;
-        }
-    }
     let Some(why) = v.no_lead.clone() else {
         kept.no_lead = None;
         v.alert = None;
@@ -598,13 +575,6 @@ fn ago(now: u64, t: u64) -> String {
 /// The view in words, a line each, for `scenic lead` and `scenic status` (at the reader's `now`).
 pub fn said(v: &View, now: u64) -> Vec<String> {
     let mut out = Vec::new();
-    if let (Some((for_s, why)), Some(l)) = (&v.fenced, &v.lead) {
-        out.push(
-            v.alert
-                .clone()
-                .unwrap_or_else(|| format!("{} can't take up term {} for {}: {why}", l.host, v.term, span(*for_s))),
-        );
-    }
     match (&v.lead, &v.no_lead) {
         (_, Some(why)) => out.push(v.alert.clone().unwrap_or_else(|| format!("No lead: {why}"))),
         (Some(l), None) => out.push(format!(
@@ -678,35 +648,6 @@ mod tests {
     }
 
     const HOME: Conds = Conds { home: true, ac: true, battery: Some(90), held: false };
-
-    #[test]
-    fn a_lead_fenced_by_the_journal_gcs_marker_for_an_hour_is_an_alert_saying_what_to_do() {
-        // (Task #651) The lead's heartbeat says its take-ups are refused by the marker: a stale
-        // read passes within the hour, so a line in `scenic lead` until then; then the alert, which
-        // every view (the build page, the menu bar) shows.
-        let mut kept = Kept::default();
-        let why = "the journal GC's marker (state/journal/gc.json) can't be parsed (EOF)";
-        let mut v = View {
-            term: 9,
-            lead: Some(LeadOf { term: 9, member: "m-a".into(), host: "Mac-mini".into(), ..Default::default() }),
-            fenced: Some((ALERT_S - 1, why.into())),
-            ..Default::default()
-        };
-        alert(&mut v, &mut kept, 5000);
-        assert_eq!(v.alert, None);
-        assert!(
-            said(&v, 5000)[0].starts_with("Mac-mini can't take up term 9 for 59 min: the journal GC"),
-            "{:?}",
-            said(&v, 5000)
-        );
-        v.fenced = Some((2 * 3600, why.into()));
-        alert(&mut v, &mut kept, 5000);
-        assert_eq!(
-            v.alert.as_deref(),
-            Some("No lead for 2 h: Mac-mini can't take up term 9: the journal GC's marker (state/journal/gc.json) can't be parsed (EOF). Nothing builds until it can: run `scenic pool journal-gc` on any Mac to see why and whether it's safe to lift (docs/pool.md §7.3).")
-        );
-        assert_eq!(said(&v, 5000)[0], v.alert.clone().unwrap());
-    }
 
     #[test]
     fn the_alert_counts_from_the_first_sight_of_no_lead_or_the_leads_last_beat() {

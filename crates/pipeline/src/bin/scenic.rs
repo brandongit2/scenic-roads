@@ -1422,16 +1422,6 @@ fn main() -> Result<()> {
                         print!("{}", pipeline::timings::peak_text(&holders));
                     }
                 }
-                Some(PoolCmd::JournalGc { repair }) => {
-                    // The journal GC's marker against the newest records (crate::pool::journal_gc::check).
-                    let nas = r.clone();
-                    println!(
-                        "{}",
-                        pipeline::pool::journal_gc::check(&nas, now_s(), repair, &|| {
-                            std::thread::sleep(std::time::Duration::from_secs(pipeline::pool::journal_gc::REREAD_S))
-                        })?
-                    );
-                }
                 Some(PoolCmd::NasProbe { dir }) => {
                     // The NAS budget's probe once (pipeline::budget::nas), in `--dir <folder>` (made,
                     // then removed with what it holds), else a folder of its own under the project

@@ -81,10 +81,6 @@ pub struct Records {
     /// lease for one of them, merged later, changes nothing.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub last: BTreeMap<String, BTreeMap<String, LeaseId>>,
-    /// The day (YYYY-MM-DD) before which the journal's entries are forgotten (`forget`):
-    /// GC removed them, every snapshot since naming them. Empty: none.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub horizon: String,
 }
 
 /// The path of term `term`'s snapshot.
@@ -276,11 +272,6 @@ impl Records {
         self.reflected.contains(key) || self.rejected.contains_key(key)
     }
 
-    /// Whether journal entry `key` is of a day they've forgotten (`forget`).
-    pub fn forgot(&self, key: &str) -> bool {
-        !self.horizon.is_empty() && key < self.horizon.as_str()
-    }
-
     /// Applies journal entry `e`, under key `key`, as crate::handoff's merge did: its manifest
     /// changes, its uploads pending and checked, its done record in the keys, its raw archives to
     /// name; and names it. Passed over (named, nothing applied: false) when a later lease's entry
@@ -326,21 +317,6 @@ impl Records {
     /// Names journal entry `key` refused, with why.
     pub fn refuse(&mut self, key: &str, why: &str) {
         self.rejected.insert(key.to_string(), why.to_string());
-    }
-
-    /// Forgets journal entries `keys`, of the days before `day` (YYYY-MM-DD), once GC has removed
-    /// them from the journal (crate::pool::journal_gc: every records a take-up may start from name
-    /// them): none is listed again, and one told again is answered as merged
-    /// (`Merged::forgotten`), the horizon kept. Entries of those days not among them (written
-    /// late, merged since) are kept named, for the next GC.
-    pub fn forget<'a>(&mut self, keys: impl IntoIterator<Item = &'a String>, day: &str) {
-        for k in keys {
-            self.reflected.remove(k);
-            self.rejected.remove(k);
-        }
-        if day > self.horizon.as_str() {
-            self.horizon = day.to_string();
-        }
     }
 }
 
@@ -403,8 +379,6 @@ pub struct Merged {
     pub overtaken: Vec<String>,
     /// Refused, with why: their refusals to note once the records naming them are saved.
     pub refused: Vec<(String, String)>,
-    /// Of days the records have forgotten, and not in the journal: merged long ago, to acknowledge.
-    pub forgotten: Vec<String>,
     /// Read and not whole (being written, not seen yet, cut short, or removed): to merge later.
     pub waiting: Vec<String>,
     /// Not read: the reading stopped (`merge_while`); to merge later.
@@ -425,8 +399,7 @@ pub type MergedJob = (String, String, String, Vec<String>);
 /// Merges the journal entries `keys` the records don't name yet: each read, checked and applied,
 /// or refused, in (term, lease) order: this lead's check decides, whatever another lead's refusal
 /// (crate::pool::journal::refusal). Nothing is written: the caller saves the records, then notes
-/// the refusals (crate::pool::journal::note_refusal) and acknowledges what the saved records name,
-/// and the forgotten.
+/// the refusals (crate::pool::journal::note_refusal) and acknowledges what the saved records name.
 pub fn merge(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check) -> Merged {
     merge_while(nas, r, keys, check, &|| true)
 }
@@ -436,17 +409,22 @@ pub fn merge(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check) -> M
 /// keys not read are left in `Merged::unread`, to merge later; give the oldest leases first, as
 /// `by_lease` orders them, so the order of what's applied holds across merges too.
 pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check, more: &dyn Fn() -> bool) -> Merged {
+    merge_from(&|k| journal::read(nas, k), r, keys, check, more)
+}
+
+/// `merge_while`, each entry as `read` has it: the journal's (`journal::read`), or a hand-off the
+/// lead holds whole (posted by HTTP, docs/coordination.md step 6; its own jobs').
+pub fn merge_from(
+    read_one: &dyn Fn(&str) -> Result<journal::Read>,
+    r: &mut Records,
+    keys: &[String],
+    check: Check,
+    more: &dyn Fn() -> bool,
+) -> Merged {
     let mut out = Merged::default();
     let mut read: BTreeMap<(LeaseId, String), Entry> = BTreeMap::new();
     let mut seen = BTreeSet::new();
     let mut stopped = false;
-    let marker = std::cell::OnceCell::new();
-    let removed = |k: &String| {
-        marker
-            .get_or_init(|| super::journal_gc::read(nas).ok().flatten())
-            .as_ref()
-            .is_some_and(|m: &super::journal_gc::Marker| m.removed(k))
-    };
     for k in keys {
         if r.handles(k) || !seen.insert(k.as_str()) {
             continue;
@@ -456,7 +434,7 @@ pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check
             out.unread.push(k.clone());
             continue;
         }
-        match journal::read(nas, k) {
+        match read_one(k) {
             Ok(journal::Read::Entry(e)) => {
                 read.insert((e.lease, k.clone()), e);
             }
@@ -464,9 +442,6 @@ pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check
                 r.refuse(k, &why);
                 out.refused.push((k.clone(), why));
             }
-            // (Only one the journal's GC removed: one written late into a forgotten day and not
-            // seen yet, a stale read's, waits; acknowledged forgotten, it'd be lost.)
-            Ok(journal::Read::Missing) if r.forgot(k) && removed(k) => out.forgotten.push(k.clone()),
             Ok(journal::Read::Short | journal::Read::Missing) => out.waiting.push(k.clone()),
             Err(_) => out.failed.push(k.clone()),
         }
@@ -511,7 +486,13 @@ pub fn by_lease(keys: &mut [String]) {
 /// (`today` as it says: a stale read of today's files pairs a manifest of one version with keys of
 /// another); `own` in place of a read for the term they're of (a lead re-asserting has its own; an
 /// earlier try of this take-up, its save failed, has its records numbered on). Numbered as `t`'s, on from a snapshot of `t`'s own, from 0 otherwise.
-pub fn start(nas: &dyn Nas, t: &Term, own: Option<&Records>, today: bool) -> Result<Records> {
+pub fn start(
+    nas: &dyn Nas,
+    t: &Term,
+    own: Option<&Records>,
+    today: bool,
+    saved: Option<(u64, u64)>,
+) -> Result<Records> {
     let mut base = None;
     let mut f = t.term;
     while f >= 1 {
@@ -527,14 +508,35 @@ pub fn start(nas: &dyn Nas, t: &Term, own: Option<&Records>, today: bool) -> Res
         f -= 1;
     }
     let Some(mut r) = base else { bail!("no records to take term {} up from", t.term) };
-    // (Not from records missing an entry the journal's GC removes or removed: §7.3.)
-    super::journal_gc::fence(nas, &r)?;
+    // (Never from records older than those its lead last saved: a stale read's, or one of a term
+    // before. What their saves acknowledged is on no member's disk any more: docs/coordination.md
+    // step 6.)
+    if let Some((term, seq)) = saved.filter(|s| (r.term, r.seq) < *s) {
+        return Err(Older(format!(
+            "the newest records read are term {}'s at {}, older than term {term}'s at {seq} it saved last \
+             (a stale read: tried again)",
+            r.term, r.seq
+        ))
+        .into());
+    }
     if r.term != t.term {
         r.term = t.term;
         r.seq = 0;
     }
     Ok(r)
 }
+
+/// `start`'s error when the records it reads are older than those its lead saved last.
+#[derive(Debug)]
+pub struct Older(pub String);
+
+impl std::fmt::Display for Older {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Older {}
 
 /// What taking up a term gave.
 #[derive(Clone, Debug)]
@@ -559,7 +561,7 @@ pub fn take_up(
     check: Check,
     today: bool,
 ) -> Result<TakenUp> {
-    let mut r = start(nas, t, own.as_ref(), today)?;
+    let mut r = start(nas, t, own.as_ref(), today, None)?;
     let merged = merge(nas, &mut r, keys, check);
     if let Err(e) = r.save(nas) {
         *own = Some(r);
@@ -711,10 +713,6 @@ mod tests {
         assert!(!r.manifest.contains_key("base/6-1-3") && r.handles(&bad.key().unwrap()) && r.pending.len() == 2);
         // Told again: nothing more.
         assert_eq!(merge(&nas, &mut r, &keys, &check), Merged::default());
-        // The days GC removed, forgotten.
-        r.refuse("2026-10-05/2-1", "no such step");
-        r.forget(&["2026-10-05/2-1".to_string()], "2026-10-06");
-        assert!(!r.handles("2026-10-05/2-1") && r.handles(&a.key().unwrap()) && r.handles(&bad.key().unwrap()));
     }
 
     #[test]
@@ -870,45 +868,6 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_of_a_forgotten_day_told_again_is_answered() {
-        // A member back after more than a week tells of an entry whose day GC removed and the
-        // records forgot. (Review M8: it waited forever, and a lead that settles only with nothing
-        // waiting never handed over.)
-        let nas = Mem::default();
-        let mut r = Records { term: 4, ..Default::default() };
-        let x = journal::write(&nas, &built(4, 1, "6-1-1", "k1")).unwrap();
-        merge(&nas, &mut r, std::slice::from_ref(&x), &any);
-        nas.remove(&journal::path(&x)).unwrap();
-        r.forget(std::slice::from_ref(&x), "2026-10-14");
-        assert_eq!(r.horizon, "2026-10-14");
-        // No marker naming it: it may be one written late and read stale, so it waits.
-        let m = merge(&nas, &mut r, std::slice::from_ref(&x), &any);
-        assert_eq!((m.forgotten.len(), m.waiting.clone()), (0, vec![x.clone()]));
-        let g = super::super::journal_gc::Marker {
-            horizon: "2026-10-14".into(),
-            keys: [x.clone()].into(),
-            done: true,
-            ..Default::default()
-        };
-        nas.write_whole(super::super::journal_gc::PATH, &serde_json::to_vec(&g).unwrap()).unwrap();
-        let m = merge(&nas, &mut r, std::slice::from_ref(&x), &any);
-        assert_eq!((m.forgotten.clone(), m.waiting.len()), (vec![x.clone()], 0));
-        // (Task #644 review) One of the same forgotten day the marker doesn't name, missing from a
-        // read (written late, not seen yet): waits, never acknowledged as merged.
-        let late = format!("{}/9-9", x.split('/').next().unwrap());
-        let m = merge(&nas, &mut r, std::slice::from_ref(&late), &any);
-        assert_eq!((m.forgotten.len(), m.waiting.clone()), (0, vec![late]));
-        // One of a forgotten day that's in the journal (written late) is merged as any; an earlier
-        // horizon doesn't move it back.
-        let y = journal::write(&nas, &built(4, 2, "6-1-2", "k2")).unwrap();
-        r.forget(&[], "2026-10-01");
-        assert_eq!(
-            (merge(&nas, &mut r, std::slice::from_ref(&y), &any).applied, r.horizon.as_str()),
-            (vec![y], "2026-10-14")
-        );
-    }
-
-    #[test]
     fn a_new_lead_takes_up_from_the_term_before_and_replays_what_it_lacks() {
         let nas = Mem::default();
         let a = lead("20261005-2202-61eb22c");
@@ -1039,36 +998,6 @@ mod tests {
         let up2 = up(&nas, &t2, Some(own), &any).unwrap();
         assert_eq!(up2.records.keys.unit.get("6-1-4").map(String::as_str), Some("k4"));
         assert_eq!((up2.records.term, up2.records.seq), (2, 1));
-    }
-
-    #[test]
-    fn an_entry_a_stale_lead_acknowledged_reaches_the_next_lead_by_its_member() {
-        // Term 2 taken over and taken up (the journal listed); then an entry is written, and term
-        // 1's lead, not knowing of term 2 yet, merges it, saves and acknowledges it. Term 2's
-        // records lack it, and no take-up will list the journal again: its member tells term 2's
-        // lead of it, as of every entry term 2's lead hasn't acknowledged.
-        let nas = Mem::default();
-        let (a, b) = (
-            lead("development"),
-            Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() },
-        );
-        let t1 = term::bootstrap(&nas, &a, DAY).unwrap().unwrap();
-        let mut r1 = up(&nas, &t1, None, &any).unwrap().records;
-        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over by MacBook-Air", DAY + 700)
-            .unwrap()
-            .unwrap();
-        let mut r2 = up(&nas, &t2, None, &any).unwrap().records;
-        let mut mine = journal::Mine::default();
-        let x = journal::write(&nas, &built(1, 9, "6-1-1", "k9")).unwrap();
-        mine.wrote(&x);
-        merge(&nas, &mut r1, std::slice::from_ref(&x), &any);
-        r1.save(&nas).unwrap();
-        mine.acked(&x, 1);
-        assert!(!r2.handles(&x));
-        // Told once only, it would be lost; told to the lead of the term its member knows now:
-        assert_eq!(mine.to_tell(2), std::slice::from_ref(&x));
-        assert_eq!(merge(&nas, &mut r2, &mine.to_tell(2), &any).applied, std::slice::from_ref(&x));
-        assert_eq!(r2.keys.unit.get("6-1-1").map(String::as_str), Some("k9"));
     }
 
     #[test]
@@ -1235,7 +1164,7 @@ mod tests {
         assert_eq!(Records::newest(&nas, 1, false).unwrap(), Some(r.clone()), "its lead's");
         let b = Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() };
         let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over", DAY + 60).unwrap().unwrap();
-        assert!(start(&nas, &t2, None, false).unwrap().handles(&e.key().unwrap()), "term 2 from its lead's too");
+        assert!(start(&nas, &t2, None, false, None).unwrap().handles(&e.key().unwrap()), "term 2 from its lead's too");
     }
 
     #[test]

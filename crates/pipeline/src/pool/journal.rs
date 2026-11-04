@@ -1,3 +1,8 @@
+//! The jobs' hand-offs as entries (`Entry`, keyed `<day>/<term>-<n>`), what a member keeps of them
+//! until acknowledged (`Mine`), and the journal they go to for a lead on an app before
+//! docs/coordination.md step 6 (the rollout gate, deleted with it: a lead on this app is posted them
+//! by HTTP, crate::coord::handoffs).
+//!
 //! The journal (docs/pool.md §7.3): every job's hand-off, written by the member whose job made it
 //! straight to the NAS, `state/journal/<day>/<term>-<n>.json`, written whole (a temporary name,
 //! renamed: a reader never sees it half written) by that member alone, named after the job's
@@ -20,7 +25,7 @@ use super::nas::{short, Created, Nas};
 use crate::handoff::Handoff;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -201,31 +206,50 @@ pub fn refusal(nas: &dyn Nas, key: &str) -> Result<Option<String>> {
     Ok(nas.read(&format!("{REJECTED}/{key}.why"))?.map(|w| String::from_utf8_lossy(&w).trim().to_string()))
 }
 
-/// A member's own journal entries, kept in the agent's local folder: those not written yet, whole
-/// (so a try after midnight writes them under the key their first try had), and those written,
-/// each with the term whose lead acknowledged it (applied, passed over or refused). Each loop the
-/// member writes what's unwritten and tells the lead of the term it knows is current of every entry
-/// that lead hasn't acknowledged, so after a change of lead it tells the new one of them all: the
-/// new lead answers at once for those its records name, and merges the others.
+/// A member's own hand-offs, kept in the agent's local folder until a lead's saved records name
+/// them (applied, passed over or refused): those not in the journal, whole (`unwritten`: so a try
+/// after midnight keeps the key its first try had), and those written to it (`told`). A lead that
+/// takes hand-offs by HTTP (docs/coordination.md step 6) is posted the whole ones and acknowledges
+/// them in its beats' answers; an older one is written them and told of them by mail (`to_tell`)
+/// until it acknowledges them (`Msg::Ack`). Each is dropped once acknowledged: a lead's take-up
+/// never starts from records older than those it last saved (crate::pool::driver::Saved::records).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Mine {
-    entries: BTreeMap<String, Option<u64>>,
+    /// (Its name as an app before step 6 kept it, the acknowledged among them: those are dropped as
+    /// it's read.)
+    #[serde(default, rename = "entries", deserialize_with = "unacked")]
+    told: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     unwritten: BTreeMap<String, Entry>,
 }
 
+/// The written entries not yet acknowledged, as kept now (a list) or by an app before step 6 (each
+/// with the term whose lead acknowledged it: those acknowledged dropped).
+fn unacked<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<BTreeSet<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Was {
+        Keys(BTreeSet<String>),
+        Acks(BTreeMap<String, Option<u64>>),
+    }
+    Ok(match Was::deserialize(d)? {
+        Was::Keys(k) => k,
+        Was::Acks(m) => m.into_iter().filter(|(_, t)| t.is_none()).map(|(k, _)| k).collect(),
+    })
+}
+
 impl Mine {
-    /// Keeps job's hand-off `e` to write (`write`): its key, fixed now. An error when its time
-    /// isn't a day.
+    /// Keeps job's hand-off `e` whole: its key, fixed now. An error when its time isn't a day.
     pub fn add(&mut self, e: Entry) -> Result<String> {
         let key = e.key().with_context(|| format!("lease {}'s entry: its time {} isn't a day", e.lease, e.at))?;
-        if !self.entries.contains_key(&key) {
+        if !self.told.contains(&key) {
             self.unwritten.insert(key.clone(), e);
         }
         Ok(key)
     }
 
-    /// Writes the entries not written yet: those that couldn't be, with why (kept, to try again).
+    /// Writes the entries kept whole to the journal (an older lead's): those that couldn't be, with
+    /// why (kept, to try again).
     pub fn write(&mut self, nas: &dyn Nas) -> Vec<(String, anyhow::Error)> {
         self.write_while(nas, &|| true)
     }
@@ -239,7 +263,9 @@ impl Mine {
                 continue;
             }
             match write(nas, &e) {
-                Ok(_) => self.wrote(&k),
+                Ok(_) => {
+                    self.told.insert(k);
+                }
                 Err(err) => {
                     failed.push((k.clone(), err));
                     self.unwritten.insert(k, e);
@@ -249,44 +275,41 @@ impl Mine {
         failed
     }
 
-    /// The entries kept and not written yet, by key.
+    /// The entries kept whole (not in the journal), by key.
     pub fn unwritten(&self) -> impl Iterator<Item = &String> {
         self.unwritten.keys()
     }
 
-    /// The entries kept and not written yet, themselves.
+    /// The entries kept whole, themselves.
     pub fn unwritten_entries(&self) -> impl Iterator<Item = &Entry> {
         self.unwritten.values()
     }
 
-    /// Its hand-offs not written yet, alone: what another member id (this Mac's member file lost)
-    /// keeps of them, the same bytes whoever writes them.
+    /// Its hand-offs kept whole, alone: what another member id (this Mac's member file lost) keeps
+    /// of them, the same bytes whoever hands them on.
     pub fn unwritten_only(self) -> Mine {
-        Mine { entries: BTreeMap::new(), unwritten: self.unwritten }
+        Mine { told: BTreeSet::new(), unwritten: self.unwritten }
     }
 
-    /// Notes entry `key` written.
-    pub fn wrote(&mut self, key: &str) {
-        self.entries.entry(key.to_string()).or_insert(None);
+    /// Notes entry `key` acknowledged: a lead's saved records name it. Dropped.
+    pub fn acked(&mut self, key: &str) {
+        self.told.remove(key);
+        self.unwritten.remove(key);
     }
 
-    /// Notes entry `key` acknowledged by the lead of `term`.
-    pub fn acked(&mut self, key: &str, term: u64) {
-        if let Some(t) = self.entries.get_mut(key) {
-            *t = Some(t.map_or(term, |was| was.max(term)));
-        }
+    /// Notes entries `keys` acknowledged (`acked`).
+    pub fn acked_all(&mut self, keys: &[String]) {
+        keys.iter().for_each(|k| self.acked(k));
     }
 
-    /// The entries to tell the lead of `term` of: those it hasn't acknowledged.
-    pub fn to_tell(&self, term: u64) -> Vec<String> {
-        self.entries.iter().filter(|(_, t)| **t != Some(term)).map(|(k, _)| k.clone()).collect()
+    /// The entries in the journal to tell the lead of: none acknowledged yet.
+    pub fn to_tell(&self) -> Vec<String> {
+        self.told.iter().cloned().collect()
     }
 
-    /// Forgets the entries of the days before `day` (YYYY-MM-DD) a lead acknowledged: GC removed
-    /// those days from the journal, every snapshot since naming them. One not acknowledged yet is
-    /// kept, told until it is (written late, into a day GC had removed, it's in no snapshot).
-    pub fn forget_before(&mut self, day: &str) {
-        self.entries.retain(|k, t| k.as_str() >= day || t.is_none());
+    /// How many it keeps that no lead has acknowledged, whole or written.
+    pub fn unacked(&self) -> usize {
+        self.told.len() + self.unwritten.len()
     }
 }
 
@@ -380,24 +403,25 @@ mod tests {
     }
 
     #[test]
-    fn a_member_tells_each_new_lead_of_what_it_wrote() {
+    fn a_member_tells_of_what_it_wrote_until_acknowledged() {
+        let nas = Mem::default();
         let mut m = Mine::default();
-        m.wrote("2026-10-05/3-1");
-        m.wrote("2026-10-06/3-2");
-        assert_eq!(m.to_tell(3), ["2026-10-05/3-1", "2026-10-06/3-2"]);
-        m.acked("2026-10-05/3-1", 3);
-        m.acked("2026-10-06/9-9", 3);
-        assert_eq!(m.to_tell(3), ["2026-10-06/3-2"]);
-        // A new lead: told of them all again; an older lead's late answer counts for nothing.
-        m.acked("2026-10-06/3-2", 3);
-        assert_eq!(m.to_tell(4), ["2026-10-05/3-1", "2026-10-06/3-2"]);
-        m.acked("2026-10-05/3-1", 4);
-        m.acked("2026-10-05/3-1", 3);
-        assert_eq!(m.to_tell(4), ["2026-10-06/3-2"]);
-        // The days GC removed: what a lead acknowledged forgotten; one not yet, kept.
-        m.wrote("2026-10-04/3-0");
-        m.forget_before("2026-10-06");
-        assert_eq!(m.to_tell(5), ["2026-10-04/3-0", "2026-10-06/3-2"]);
+        let (a, b) = (entry(3, 1, 1_791_200_000), entry(3, 2, 1_791_300_000));
+        let (ka, kb) = (m.add(a).unwrap(), m.add(b.clone()).unwrap());
+        assert!(m.to_tell().is_empty() && m.unacked() == 2, "kept whole");
+        assert!(m.write(&nas).is_empty());
+        assert_eq!(m.to_tell(), [ka.clone(), kb.clone()]);
+        m.acked(&ka);
+        m.acked("2026-10-06/9-9");
+        assert_eq!((m.to_tell(), m.unacked()), (vec![kb.clone()], 1), "dropped once acknowledged");
+        // Handed again (its folder not removed before a crash): not kept whole again while told.
+        m.add(b).unwrap();
+        assert_eq!(m.unwritten().count(), 0);
+        // An app before step 6 kept each with the term that acknowledged it: those dropped.
+        let old: Mine = serde_json::from_str(r#"{"entries": {"2026-10-05/3-1": 3, "2026-10-06/3-2": null}}"#).unwrap();
+        assert_eq!(old.to_tell(), ["2026-10-06/3-2"]);
+        let again: Mine = serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(again.to_tell(), ["2026-10-06/3-2"]);
     }
 
     #[test]
@@ -502,13 +526,13 @@ mod tests {
         let e = entry(4, 30, 1_791_331_199);
         let key = mine.add(e.clone()).unwrap();
         assert_eq!(key, "2026-10-06/4-30");
-        assert!(mine.to_tell(4).is_empty(), "not told before it's written");
+        assert!(mine.to_tell().is_empty(), "not told before it's written");
         let saved: Mine = serde_json::from_slice(&serde_json::to_vec(&mine).unwrap()).unwrap();
         assert_eq!(saved.unwritten().collect::<Vec<_>>(), [&key], "kept whole in the agent's folder");
         let mut mine = saved;
         assert!(mine.write(&nas).is_empty());
         assert_eq!(list(&nas, None).unwrap(), std::slice::from_ref(&key));
-        assert_eq!(mine.to_tell(4), std::slice::from_ref(&key));
+        assert_eq!(mine.to_tell(), std::slice::from_ref(&key));
         assert_eq!(mine.unwritten().count(), 0);
         // Added again: nothing more.
         mine.add(e).unwrap();

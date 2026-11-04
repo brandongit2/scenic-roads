@@ -47,7 +47,6 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/pool/records.rs", "TODAY", "\"state/build/manifest.json\"", "today's files, term 1's first snapshot made from them"),
     ("crates/pipeline/src/pool/journal.rs", "DIR", "\"state/journal\"", "the journal's own module: its folder"),
     ("crates/pipeline/src/pool/journal.rs", "REJECTED", "\"state/journal/rejected\"", "the journal's own module: the refusals' notes"),
-    ("crates/pipeline/src/pool/journal_gc.rs", "PATH", "\"state/journal/gc.json\"", "the journal's GC's own fence marker (written by the lead alone, through its NAS): the entries to remove, never a record or a step's output"),
     ("crates/pipeline/src/agent/pool.rs", "entry_of", "Handoff::default()", "a pooled job's entry: the hand-offs its job's Out wrote, gathered for the journal"),
     ("crates/pipeline/src/agent/resume.rs", "unmerged", "-> Handoff {", "its signature: the member's unacknowledged entries laid together for its job's Out to read (never handed off)"),
     ("crates/pipeline/src/agent/resume.rs", "unmerged", "Handoff::default()", "a resumable job's member's unacknowledged entries laid together, for its Out to read over the snapshot (never handed off: its own saves are)"),

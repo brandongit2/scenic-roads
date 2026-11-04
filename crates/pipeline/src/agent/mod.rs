@@ -7925,7 +7925,7 @@ impl Agent {
         let mine = run.side.driver().mine();
         let mut es: Vec<crate::pool::journal::Entry> = mine.unwritten_entries().cloned().collect();
         es.extend(run.entries.iter().map(|(e, _)| e.clone()));
-        es.extend(resume::unacked(run.side.nas(), step, &mine.to_tell(run.gates.term)));
+        es.extend(resume::unacked(run.side.nas(), step, &mine.to_tell()));
         Ok(resume::unmerged(step, &es))
     }
 
@@ -15185,7 +15185,7 @@ mod pool_tests {
                 .contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())),
             "{env}"
         );
-        // Its entry in the journal, told to the lead by mail; the lead, knowing the member, merges it.
+        // Its entry posted to the lead by its beat (docs/coordination.md step 6); the lead merges it.
         lead.pooled().unwrap().side.know(&im);
         lead.seen_pool();
         until(&mut lead, |l| {
@@ -15202,9 +15202,9 @@ mod pool_tests {
             Some("layers/slope/lo/3-2-2.0123456789abcdef.pack")
         );
         let key = rec.reflected.iter().find(|k| k.contains("/1-")).cloned().unwrap();
-        assert!(r.join(crate::pool::journal::path(&key)).exists());
-        // Acknowledged: the member tells it no more.
-        until(&mut m, |m| m.pooled().unwrap().side.driver().mine().to_tell(1).is_empty());
+        assert!(!r.join(crate::pool::journal::path(&key)).exists(), "not by the journal");
+        // Acknowledged: the member keeps it no more.
+        until(&mut m, |m| m.pooled().unwrap().side.driver().mine().unacked() == 0);
         // The lead's coordinator ended the lease, its target kept out of offers until the plan shows
         // it built; its own jobs hold none of it meanwhile.
         assert!(lead.coord.as_ref().unwrap().held("slope-hi").is_empty());

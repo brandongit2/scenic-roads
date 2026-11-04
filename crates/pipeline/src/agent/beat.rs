@@ -19,7 +19,9 @@
 //! that takes the newest each time it's free: a hung share holds neither it nor the lead's view of
 //! this Mac. The lead's answer goes to the pool's registry (crate::coord::beats::Beats::answered);
 //! once it says the lead serves the owner's asks, the asks queued go next, in order, and the pool's
-//! settings are fetched when their generation moved (`send_asks`, crate::coord::asks).
+//! settings are fetched when their generation moved (`send_asks`, crate::coord::asks). The beat
+//! lists the jobs' hand-offs this member keeps whole for a lead that takes them by HTTP, and those
+//! the answer says the lead lacks are posted next (`send_handoffs`, crate::coord::handoffs).
 
 use super::bus::{BeatMsg, Snap};
 use super::{nasread, now_s, write_beat, write_replace, Status};
@@ -94,12 +96,38 @@ impl ToLead {
         });
         held::Beat {
             member: self.member.clone(),
-            speaks: [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS].map(str::to_string).to_vec(),
+            speaks: [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF]
+                .map(str::to_string)
+                .to_vec(),
             held: self.held.clone(),
             held_age_s: 0,
             heartbeat,
             status: serde_json::to_value(&status).ok(),
             took: 0,
+            handoffs: Vec::new(),
+        }
+    }
+
+    /// The hand-offs the lead's answer says it lacks (`lacks`), posted to it whole
+    /// (`POST /pool/handoff`), each until one isn't answered 200: the rest wait for the next beat,
+    /// which lists them again. One the lead refuses as it is (400) is said; its next beat lists it
+    /// again (a hand-off is kept until the lead's records name it).
+    fn send_handoffs(&self, c: &crate::coord::client::Client, lacks: &[String]) {
+        for e in self.beats.handoffs_of(lacks) {
+            match c.post_json("/pool/handoff", &serde_json::json!({ "entry": e })) {
+                Ok((200, _)) => {}
+                Ok((code, v)) => {
+                    eprintln!(
+                        "agent: posting lease {}'s hand-off to the lead: answered {code}: {}",
+                        e.lease, v["error"]
+                    );
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("agent: posting a hand-off to the lead: {e:#} (posted again after the next beat)");
+                    return;
+                }
+            }
         }
     }
 
@@ -154,6 +182,7 @@ impl ToLead {
         let b = crate::coord::held::Beat {
             held_age_s: age.as_secs_f64().ceil() as u64,
             took: self.beats.took(),
+            handoffs: self.beats.handoff_keys(),
             ..b.clone()
         };
         let c = crate::coord::client::Client::at(self.urls.clone(), self.token.clone(), &self.member);
@@ -161,6 +190,7 @@ impl ToLead {
             Ok(Some(a)) => {
                 self.beats.answered(&a, now_s());
                 self.send_asks(&c);
+                self.send_handoffs(&c, &a.lacks);
                 false
             }
             Ok(None) => {

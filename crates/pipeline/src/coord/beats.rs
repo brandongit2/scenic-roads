@@ -45,6 +45,13 @@ pub const PAGE: &str = "page";
 /// files go on beside (`Beats::asks_on_nas`).
 pub const ASKS: &str = "asks";
 
+/// What a member's beat says it speaks, and a lead's answer that it takes (docs/coordination.md
+/// step 6, crate::coord::handoffs): its jobs' hand-offs posted by HTTP (`POST /pool/handoff`), its
+/// beat listing those it keeps, the answer saying which are merged and which the lead lacks. A
+/// member whose lead doesn't say it writes them to the journal (crate::pool::driver::Route); the
+/// lead lists the journal while a member heard doesn't say it (`journal_on`).
+pub const HANDOFF: &str = "handoff";
+
 /// A lead whose last answer is older than this (s) is taken for not reachable by a member's page:
 /// three of its beats (crate::agent::beat::EVERY, 10 s) missed.
 pub const PAGE_AWAY_S: u64 = 35;
@@ -91,6 +98,13 @@ struct Inner {
     /// Its asks not yet answered 200 (`ask`), kept at `queue_at` (crate::coord::asks::QUEUE).
     queue: Vec<super::asks::Ask>,
     queue_at: Option<std::path::PathBuf>,
+    /// On a member: whether its lead takes hand-offs by HTTP (`HANDOFF`; None: not answered since
+    /// this process started); its hand-offs kept whole, as its pool side last saved them (its beat
+    /// lists them, posting those the lead lacks); those the lead's answers said merged, for the
+    /// pool side to drop.
+    lead_handoffs: Option<bool>,
+    handoffs: Vec<crate::pool::Entry>,
+    merged: Vec<String>,
 }
 
 /// The registry, shared by a member's pool side, its agent's beat and (on the lead) its coordinator.
@@ -125,6 +139,9 @@ impl Default for Beats {
                 settings_gen: 0,
                 queue: Vec::new(),
                 queue_at: None,
+                lead_handoffs: None,
+                handoffs: Vec::new(),
+                merged: Vec::new(),
             }),
         }
     }
@@ -220,6 +237,50 @@ impl Beats {
             g.hold = a.hold.clone();
             g.settings_gen = a.settings_gen;
         }
+        g.lead_handoffs = Some(a.speaks.iter().any(|w| w == HANDOFF));
+        g.merged.extend(a.merged.iter().cloned());
+    }
+
+    /// How this member's hand-offs go to its lead, as its last answer said.
+    pub fn handoff_route(&self) -> crate::pool::driver::Route {
+        use crate::pool::driver::Route;
+        match self.inner.lock().unwrap().lead_handoffs {
+            Some(true) => Route::Http,
+            Some(false) => Route::Journal,
+            None => Route::Wait,
+        }
+    }
+
+    /// Its hand-offs kept whole, as its pool side saved them last: what its beat lists.
+    pub fn set_handoffs(&self, h: Vec<crate::pool::Entry>) {
+        self.inner.lock().unwrap().handoffs = h;
+    }
+
+    /// The keys of its hand-offs kept whole, while its lead takes them by HTTP.
+    pub fn handoff_keys(&self) -> Vec<String> {
+        let g = self.inner.lock().unwrap();
+        if g.lead_handoffs != Some(true) {
+            return Vec::new();
+        }
+        g.handoffs.iter().filter_map(crate::pool::Entry::key).collect()
+    }
+
+    /// Its hand-offs kept whole with keys `keys` (those the lead lacks).
+    pub fn handoffs_of(&self, keys: &[String]) -> Vec<crate::pool::Entry> {
+        let g = self.inner.lock().unwrap();
+        g.handoffs.iter().filter(|e| e.key().is_some_and(|k| keys.contains(&k))).cloned().collect()
+    }
+
+    /// Those the lead's answers said merged since last taken.
+    pub fn take_merged(&self) -> Vec<String> {
+        std::mem::take(&mut self.inner.lock().unwrap().merged)
+    }
+
+    /// On the lead: whether a member heard within `FORGET_S` of `now` doesn't say `HANDOFF`, or one
+    /// on an older app heartbeats on the NAS alone (`nas_too`): it writes the journal, which the
+    /// lead lists (the rollout gate of docs/coordination.md step 6).
+    pub fn journal_on(&self, now: u64) -> bool {
+        self.nas_too() || self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == HANDOFF))
     }
 
     /// Whether the asks' NAS files go on (the rollout gate, crate::coord::asks): on a member, while
@@ -365,6 +426,7 @@ impl Beats {
         g.lead_takes = false;
         g.lead_answered = None;
         (g.lead_asks, g.asks_on_nas) = (false, true);
+        g.lead_handoffs = Some(false);
     }
 
     /// The leases the lead said this member doesn't hold, since last taken.

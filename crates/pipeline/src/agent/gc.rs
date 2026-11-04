@@ -89,9 +89,6 @@ pub struct Report {
     pub tombs: usize,
     /// Days of the history packed into `state/coord/history-archive/<day>.tar` this run.
     pub history_days_archived: usize,
-    /// The pool's journal entries removed this run (crate::pool::journal_gc), or marked to remove.
-    pub journal_removed: usize,
-    pub journal_marked: usize,
     /// Days of the forecasts' archive packed into `state/coord/forecasts-archive/<YYYY-MM>.tar`.
     pub forecast_days_archived: usize,
     /// GC's queue's due set (shadow, crate::agent::gcqueue) checked against this run's removals, in
@@ -432,9 +429,6 @@ pub fn unmerged(root: &store::nasfs::NasRoot, now: u64) -> Result<Unmerged> {
     u.files.extend(r.manifest.values().cloned());
     u.records = r.manifest.iter().map(|(l, c)| (l.clone(), c.clone())).collect();
     u.files.extend(r.pending.keys().cloned());
-    // (Not records missing an entry the journal's GC removed or removes: a stale read's.)
-    crate::pool::journal_gc::fence(&nas, &r)?;
-    // (Every day: one before the horizon holds only entries written late, not merged yet.)
     for key in journal::list(&nas, None).context("the journal")? {
         if r.reflected.contains(&key) || r.rejected.contains_key(&key) {
             continue;
@@ -684,23 +678,6 @@ pub fn run(
                 rep.warnings.extend(h.warnings);
             }
             Err(e) => rep.warnings.push(format!("history not archived: {e:#}")),
-        }
-        // The pool's journal's old days (task #644); a failure is said, never fails GC.
-        // On unless the owner's switch says off (journal_gc::SWITCH).
-        let nas = root.clone();
-        if !dry_run && root.join(crate::pool::journal::DIR).exists() && crate::pool::journal_gc::enabled(&nas) {
-            let rmdir = |d: &str| {
-                root.join(d).remove_dir().ok();
-            };
-            match crate::pool::journal_gc::run(&nas, crate::agent::jobs::now_s(), &yield_point, &rmdir) {
-                Ok(j) => {
-                    meta(j.listed, 0, j.removed as u64);
-                    rep.journal_removed = j.removed;
-                    rep.journal_marked = j.marked;
-                    rep.warnings.extend(j.waits.into_iter().map(|w| format!("journal: {w}")));
-                }
-                Err(e) => rep.warnings.push(format!("journal not collected: {e:#}")),
-            }
         }
         // The forecasts' archive's old days, one tar a month, kept for good (task #621).
         match super::fcarchive::pack(root, crate::agent::jobs::now_s(), dry_run, &yield_point) {
@@ -1776,8 +1753,7 @@ mod tests {
         rec.rejected.insert(damaged_key, "damaged".into());
         rec.save(&nas).unwrap();
         let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
-        // (The journal's GC marks the old entries, refused or merged: its own note, said.)
-        assert!(r.removed == 1 && r.warnings.iter().all(|w| w.starts_with("journal: marked")), "{r:?}");
+        assert!(r.removed == 1 && r.warnings.is_empty(), "{r:?}");
         // No term led (its term not readable whole): no one refuses. An entry unreadable from today
         // still fails GC; one whose day is over `PASS_OVER_S` past (ten days here, the days far
         // from the bound) is passed over, said as a warning, the sweep going on.
@@ -1788,9 +1764,7 @@ mod tests {
         assert!(e.contains("1-8") && root.join(c).exists(), "{e}");
         fs::remove_file(&young).unwrap();
         entry_at(&format!("{}/1-7", journal::day(now - 10 * 86400).unwrap()), b"{\"member\": ");
-        let mut r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
-        // (The journal's GC waits for a lead: its own note.)
-        r.warnings.retain(|w| !w.starts_with("journal: "));
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
         assert!(
             r.removed == 1
                 && r.warnings.len() == 1

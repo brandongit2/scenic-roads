@@ -37,27 +37,12 @@ pub struct Beat {
     /// the lead's coordinator and the other members' brokers. Written by the agent, not the driver.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reach: Vec<super::reachable::Reach>,
-    /// Its app keeps the journal's GC fence (crate::pool::journal_gc::FENCE; 0: an app from before,
-    /// which takes up from whatever records it reads): no entry is removed while one doesn't.
-    pub journal: u32,
-    /// Its take-ups of the term naming it refused by the journal GC's marker (docs/pool.md §7.3):
-    /// since when, and why.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fenced: Option<Fenced>,
     /// Its app's readers read the build's records from the term's snapshot (§6.2:
     /// crate::pool::records::Records::now), not today's files: the lead stops writing those once
     /// every member's heartbeat says so (crate::agent::pool::Run::keep_today). Left out by apps
     /// before it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub reads_records: bool,
-}
-
-/// Take-ups refused by the journal GC's marker (crate::pool::journal_gc::Fenced).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Fenced {
-    /// The first refused, by the member's clock.
-    pub since: u64,
-    pub why: String,
 }
 
 /// The path of member `member`'s heartbeat.

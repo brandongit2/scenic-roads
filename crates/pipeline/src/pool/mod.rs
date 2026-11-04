@@ -8,8 +8,9 @@
 //!   with create-new (§6.1): term 1, then its re-assertions;
 //! - `records`: the build's records in one snapshot per term (§6.2), term 1's first made from
 //!   today's three files; the merge of journal entries into them, and taking up a term;
-//! - `journal`: the jobs' hand-offs, written by their members straight to the NAS as a log the lead
-//!   merges (§7.3), and what a member keeps telling the lead until it's acknowledged;
+//! - `journal`: the jobs' hand-offs as entries keyed by lease, what a member keeps until its lead's
+//!   saved records name them (posted by HTTP, crate::coord::handoffs: docs/coordination.md step 6),
+//!   and the NAS's journal an older lead reads them from (§7.3; the rollout gate);
 //! - `beat`: the fields of a member's heartbeat the protocol reads and writes (§10);
 //! - `driver`: what a member is in the pool and does as that, one step per loop of the agent's,
 //!   through an I/O trait (the NAS's operations and the clocks): the declared lead taking up its
@@ -33,7 +34,6 @@
 pub mod beat;
 pub mod driver;
 pub mod journal;
-pub mod journal_gc;
 pub mod nas;
 pub mod reachable;
 pub mod records;
