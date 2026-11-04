@@ -1,7 +1,7 @@
 //! What measuring where the fine datasets really have data (`Measured::presence`, task #929) removes
 //! from the terrain's band past z12, on the build's real records (read only): each GeoTIFF dataset's
 //! presence worked out as the input check does (pipeline::inputs::elevation::presence_of, its files
-//! from its index in `inputs/elevation/`), then the terrain-deep targets and their tiles with and
+//! from its index in the accepted version), then the terrain-deep targets and their tiles with and
 //! without it. Under a footprint guard.
 //!
 //! usage: presence_impact <root> <max MB>
@@ -24,8 +24,7 @@ fn main() -> anyhow::Result<()> {
         let Data::Geotiff { index: Some(i), store, .. } = &d.declaration.data else { continue };
         let Some(cover) = d.measured.cover.clone() else { continue };
         let t0 = std::time::Instant::now();
-        let ix = pipeline::dem::declared::parse_index(&nas.join(&format!("inputs/elevation/{i}")).read()?)
-            .map_err(anyhow::Error::msg)?;
+        let ix = pipeline::dem::declared::parse_index(&declared.elevation.read(i)?).map_err(anyhow::Error::msg)?;
         let files: Vec<(String, Option<[f64; 4]>)> = ix
             .files
             .into_iter()
