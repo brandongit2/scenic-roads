@@ -85,8 +85,12 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   with the shim as cargo's target runner, which records each program cargo would start (path,
   arguments, environment, folder); the lock goes, and they run as cargo would start them, from APFS
   clones in `<shared folder>/.scenic-runs/<pid>/` (a run's program with the programs beside it), so
-  another worktree's build can't replace them meanwhile. `cargo nextest run` runs its test binaries
-  from such clones too, made as it lists them; the lock goes when its first test starts. Kept under
+  another worktree's build can't replace them meanwhile; the `CARGO_BIN_EXE_*` cargo and nextest
+  set as a test runs name clones too. `cargo nextest run` runs its test binaries from such clones,
+  made as it lists them; the lock goes when its first test starts. A signal to the shim (a `kill` of
+  the pid `ps` shows as cargo) goes on to the cargo or program it waits for, and the shim keeps the
+  lock until that is gone (the build scripts and rustc of a killed cargo still run on, as they
+  would from a plain cargo killed by its pid). Kept under
   the lock: a test binary naming a program of the shared folder (`env!("CARGO_BIN_EXE_…")`, as
   pipeline's and server's `tests/cli.rs`), whose path a clone can't change (cargo test runs it
   first; nextest keeps the lock to the end), doctests (rustdoc compiles and runs them in one go),

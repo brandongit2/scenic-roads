@@ -78,6 +78,17 @@ fn starts_the_program() {
 }
 EOF
   print '#[test]\nfn plain() {}' > $w/$x/tests/plain.rs
+  # Cargo sets CARGO_BIN_EXE_* as it runs a test too: they name clones (a name with a - included,
+  # which zsh would drop from its environment).
+  print 'fn main() { println!("two"); }' > $w/$x/src/bin/two-words.rs
+  cat > $w/$x/tests/binexe.rs <<'EOF2'
+#[test]
+fn names_a_clone() {
+    let p = std::env::var("CARGO_BIN_EXE_two-words").expect("CARGO_BIN_EXE_two-words");
+    assert!(p.contains("/.scenic-runs/"), "not a clone: {p}");
+    assert_eq!(std::process::Command::new(&p).output().unwrap().stdout, b"two\n");
+}
+EOF2
 done
 touch -t 202601010000 $w/b/src/main.rs $w/b/Cargo.toml
 export SCENIC_SHARED_TARGET=$s/shared
@@ -135,6 +146,7 @@ free || fail "the lock is held while the tests run"
 at a test || fail "a's tests: $(cat $s/err)"
 grep -q 'Running debug/deps/cli-[0-9a-f]* (under the build lock' $s/err || fail "cli not under the lock: $(cat $s/err)"
 grep -q 'Running debug/deps/plain-[0-9a-f]*$' $s/err || fail "plain not run outside the lock: $(cat $s/err)"
+grep -q 'Running debug/deps/binexe-[0-9a-f]*$' $s/err || fail "binexe not run outside the lock: $(cat $s/err)"
 grep -q 'Doc-tests toy' $s/err || fail "no doctests: $(cat $s/err)"
 # A failure: stops there with the test's status, unless --no-fail-fast.
 TOY_FAIL=1 at a test --lib --test plain; rc=$?
@@ -143,6 +155,15 @@ grep -q 'error: test failed: debug/deps/toy-' $s/err || fail "no failure line: $
 grep -q 'Running debug/deps/plain-' $s/err && fail "ran on after a failure: $(cat $s/err)"
 TOY_FAIL=1 at a test --no-fail-fast --lib --test plain; rc=$?
 (( rc == 101 )) && grep -q 'Running debug/deps/plain-' $s/err || fail "--no-fail-fast: $rc, $(cat $s/err)"
+
+# A TERM to the shim reaches the program it runs, and the shim outlives it (it held the lock).
+(cd $w/a && TOY_HOLD=$s/go5 exec $sh test -q --lib --test plain > $s/term.out 2>&1) & held=$!
+started $s/go5 $s/term.out
+p=$(pgrep -f "/.scenic-runs/$held/bin/toy-") || fail "no test program of $held"
+kill -TERM $held; wait $held; rc=$?
+(( rc == 143 )) || fail "a TERM'd shim exited $rc: $(cat $s/term.out)"
+kill -0 $p 2>/dev/null && { kill $p; fail "the test program outlived the shim"; }
+grep -q 'Running debug/deps/plain-' $s/term.out && fail "ran on after a TERM: $(cat $s/term.out)"
 
 # cargo nextest run: the clones run once nextest starts testing, the lock let go then (kept when a
 # binary names the shared folder's programs).
