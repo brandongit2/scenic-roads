@@ -1,0 +1,52 @@
+//! Terrain-root's and an assembly's time and peak footprint by the rule (task #929), on the build's
+//! real records, writing nothing but the Terrarium tiles' local cache: the root from the lo packs'
+//! z3 tiles and the relief (pipeline::terrain_pack::make_root), then z3 tile `q`'s z8 → z3 with no
+//! z6 tile's mid (every quarter the relief's: an assembly's most reading), under a footprint guard.
+//!
+//! usage: cargo run -p pipeline --example lo_root_measure -- <root> <raw cache dir> <max MB> <3/x/y>
+
+fn mb() -> u64 {
+    jobrt::sys::footprint().unwrap_or(0) / 1_000_000
+}
+
+fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let [_, root, raw, max, q] = args.as_slice() else {
+        anyhow::bail!("usage: lo_root_measure <root> <raw cache dir> <max MB> <3/x/y>")
+    };
+    jobrt::sys::footprint_guard("lo_root_measure", max.parse()?);
+    let q: Vec<u32> = q.split('/').map(|v| v.parse()).collect::<Result<_, _>>()?;
+    anyhow::ensure!(q.len() == 3 && q[0] == 3, "a z3 tile");
+    let q = (q[1], q[2]);
+    let nas = store::nasfs::NasRoot::from_arg(root);
+    let scratch = std::path::Path::new(raw).join("scratch");
+    let out = pipeline::out::Out::unbound(&nas, &scratch)?;
+    let m = out.manifest.clone();
+    let src = pipeline::inputs::regions::read::source(&nas, &m)?;
+    let cov = pipeline::inputs::regions::read::accepted_coverage(&nas, &src, None)?;
+    let sets = pipeline::terrain_zoom::Declared::read(&nas, &m)?.map(|d| d.sets).unwrap_or_default();
+    let water = pipeline::terrain_pack::open_water(&out)?;
+    let url = pipeline::terrain_base::terrarium_template(&nas, &m)?;
+    let rt = pipeline::terrain_pack::RawTiles::with_store(std::path::Path::new(raw), &nas.join("sources/aws-terrarium"), &url);
+    println!("start: {} MB", mb());
+    for (what, b) in [("root", pipeline::terrain_base::tiles_box(0, &[(0, 0)])), ("lo", pipeline::terrain_base::tiles_box(3, &[q]))] {
+        let pool = pipeline::terrain_base::Pool::read(&nas, &m, b)?;
+        let relief = pool.relief();
+        let none = |_: u32, _: u32| false;
+        let fill = pipeline::terrain_pack::fill_of(&cov, &sets, &none);
+        let native = |z: u8, x: u32, y: u32| pipeline::terrain_pack::native_of(&fill, z, x, y);
+        let s = pipeline::terrain_pack::Sources { water: Some(&water), native: Some(&native), sets: &sets };
+        let t0 = std::time::Instant::now();
+        let n = pool.with_tiles(&rt, s.water, |tiles| {
+            relief.with_tiles(&rt, s.water, |rel| -> anyhow::Result<usize> {
+                let fills = pipeline::terrain_pack::Fills { pool: tiles, relief: rel, fill: &fill };
+                Ok(match what {
+                    "root" => pipeline::terrain_pack::make_root(&out, &fills, &s)?.len(),
+                    _ => pipeline::terrain_pack::make_lo_from(&fills, &s, q, &[])?.len(),
+                })
+            })
+        })???;
+        println!("{what}: {n} tiles in {:.1} s, footprint {} MB", t0.elapsed().as_secs_f64(), mb());
+    }
+    Ok(())
+}
