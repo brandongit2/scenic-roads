@@ -84,7 +84,8 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
 - Programs and tests run outside the lock (#937): `cargo run`, `test` and `bench` build under it
   with the shim as cargo's target runner, which records each program cargo would start (path,
   arguments, environment, folder); the lock goes, and they run as cargo would start them, from APFS
-  clones in `<shared folder>/.scenic-runs/<pid>/` (a run's program with the programs beside it), so
+  clones in `<shared folder>/.scenic-runs/<pid>/bin/<its folder's name>/` (a run's program with
+  the programs beside it; a test's in `deps`, as `store::spawn::in_test_program` reads it), so
   another worktree's build can't replace them meanwhile; the `CARGO_BIN_EXE_*` cargo and nextest
   set as a test runs name clones too. `cargo nextest run` runs its test binaries from such clones,
   made as it lists them; the lock goes when its first test starts. A signal to the shim (a `kill` of

@@ -58,6 +58,8 @@ mod tests {
         assert_eq!(std::env::var("CARGO_PKG_NAME").unwrap(), "toy");
         let exe = std::env::current_exe().unwrap();
         assert!(exe.to_string_lossy().contains("/.scenic-runs/"), "not a clone: {}", exe.display());
+        // (In a folder named `deps`, as store::spawn::in_test_program reads it.)
+        assert_eq!(exe.parent().and_then(|d| d.file_name()).unwrap(), "deps", "{}", exe.display());
         // (TOY_LOCKED: run while the lock is held, where a cargo it started must pass through.)
         let locked = std::env::var("TOY_LOCKED").is_ok();
         assert_eq!(std::env::var("SCENIC_CARGO_SHARED").is_ok(), locked, "SCENIC_CARGO_SHARED");
@@ -127,13 +129,13 @@ grep -q waiting $s/err && fail "b waited for a's program: $(cat $s/err)"
 : > $s/go1; wait $held || fail "a's program: $(cat $s/run.err)"
 out=( ${(f)"$(<$s/run.out)"} )
 [[ $out[1] == a ]] || fail "a's program after b's build ran ${out[1]} (b's build replaced it)"
-[[ $out[2] == "exe $s/shared/.scenic-runs/"<->/bin/toy ]] || fail "not run from a clone: $out[2]"
+[[ $out[2] == "exe $s/shared/.scenic-runs/"<->/bin/debug/toy ]] || fail "not run from a clone: $out[2]"
 [[ $out[3] == 'helper true' ]] || fail "the programs beside it weren't cloned: $out[3]"
 [[ $out[4] == 'shared None' ]] || fail "SCENIC_CARGO_SHARED outside the lock: $out[4]"
 [[ $out[5] == "cwd ${w:A}/a/src/sub" ]] || fail "not in the caller's folder: $out[5]"
 [[ $out[6] == 'arg "x y"' && $out[7] == 'arg ""' ]] || fail "arguments: $out[6,7]"
 # (The program replaced the shim, so its clones stay until the next run sweeps them.)
-d=${${out[2]#exe }:h:h}; [[ -d $d ]] || fail "no clones folder $d"
+d=${${out[2]#exe }:h:h:h}; [[ -d $d ]] || fail "no clones folder $d"
 [[ $(cd $w/a && $sh run -q -- 'exit' 2>/dev/null) == a$'\n''arg "exit"' ]] || fail "a second run"
 [[ ! -e $d ]] || fail "the first run's clones were not swept: $d"
 
@@ -159,7 +161,7 @@ TOY_FAIL=1 at a test --no-fail-fast --lib --test plain; rc=$?
 # A TERM to the shim reaches the program it runs, and the shim outlives it (it held the lock).
 (cd $w/a && TOY_HOLD=$s/go5 exec $sh test -q --lib --test plain > $s/term.out 2>&1) & held=$!
 started $s/go5 $s/term.out
-p=$(pgrep -f "/.scenic-runs/$held/bin/toy-") || fail "no test program of $held"
+p=$(pgrep -f "/.scenic-runs/$held/bin/deps/toy-") || fail "no test program of $held"
 kill -TERM $held; wait $held; rc=$?
 (( rc == 143 )) || fail "a TERM'd shim exited $rc: $(cat $s/term.out)"
 kill -0 $p 2>/dev/null && { kill $p; fail "the test program outlived the shim"; }

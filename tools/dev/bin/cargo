@@ -40,7 +40,10 @@ self=${0:A}
 # when it starts /bin/sh. The workspace's programs load only the system's libraries: otool -L.)
 readz() { local x; reply=(); while IFS= read -r -d '' x; do reply+=( "$x" ); done < $1 }
 clone() {  # clone <program> <dir>: an APFS clone of it in <dir> (made once, atomically), printed
-  local c=$2/${1:t}
+  # (In a folder named as its own is, so a test binary's clone is still in `deps`, which
+  # store::spawn::in_test_program reads: in bin/ alone, a test could listen on a live pool port.)
+  local c=$2/${1:h:t}/${1:t}
+  mkdir -p ${c:h} || return 1
   [[ -e $c ]] || { cp -c $1 $c.$$ && mv -f $c.$$ $c } || return 1
   print -r -- $c
 }
@@ -78,7 +81,9 @@ if [[ ${1:-} == --scenic-(record|nextest) ]]; then
 fi
 
 real=
-for c in $(whence -ap cargo); do [[ ${c:A} == $self ]] || { real=$c; break; }; done
+# (Not another checkout's shim either: with the main checkout's and a worktree's both on the PATH, a
+# command passed straight through had each exec the other for ever, 4 Nov.)
+for c in $(whence -ap cargo); do [[ ${c:A} == ($self|*/tools/dev/bin/cargo) ]] || { real=$c; break; }; done
 [[ -n $real ]] || { print -u2 "cargo (tools/dev/bin): no other cargo on the PATH"; exit 127; }
 top=$PWD; while [[ $top != / && ! -e $top/.git ]]; do top=${top:h}; done  # the checkout (a worktree's .git is a file)
 [[ -z ${SCENIC_CARGO_SHARED:-} && $top == */.claude/worktrees/* ]] || exec $real "$@"
@@ -222,7 +227,7 @@ for (( i = 1; i <= $#later; i++ )); do
   if (( i == $#later && ! first && ! rc )); then
     if [[ $sub != (run|r) ]]; then
       readz $rec.env; keep=( $cl[$rec] ${${(M)reply:#CARGO_BIN_EXE_*}#*=} )
-      for p in $r/bin/*(N); do (( $keep[(Ie)$p] )) || rm -f $p; done
+      for p in $r/bin/*/*(N); do (( $keep[(Ie)$p] )) || rm -f $p; done
     fi
     prog $rec $cl[$rec] 0; exit 1
   fi
