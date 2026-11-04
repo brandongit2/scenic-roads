@@ -2431,12 +2431,20 @@ fn base_pool(out: &Out, z: u8, ts: &[(u32, u32)]) -> Result<pipeline::terrain_ba
 }
 
 /// The declared elevation datasets (pipeline::terrain_zoom), read once a job: each place's finest
-/// zoom; none accepted, none.
+/// zoom; none accepted, none. Some accepted and none declared published at every zoom
+/// (`[data] every_zoom`) is an error: the relief outside every region would have nothing to read,
+/// and its tiles would be sea level (an accepted version from before the field: its Terrarium
+/// pyramid declared so first, docs/inputs.md §6.8).
 fn zoom_sets(out: &Out) -> Result<Vec<pipeline::terrain_zoom::Set>> {
     let p = phase("reading the declared elevation datasets");
     let d = pipeline::terrain_zoom::Declared::read(out.root(), &out.manifest)?;
     drop(p);
-    Ok(d.map(|d| d.sets).unwrap_or_default())
+    let sets = d.map(|d| d.sets).unwrap_or_default();
+    anyhow::ensure!(
+        sets.is_empty() || !pipeline::terrain_zoom::relief(&sets).is_empty(),
+        "no accepted elevation dataset is declared published at every zoom (`[data] every_zoom = true`): the relief outside every region would be none"
+    );
+    Ok(sets)
 }
 
 /// `f` given the terrain's tiles by the rule (pipeline::terrain_pack::Fills) over `pool` and its

@@ -1195,7 +1195,7 @@ the same declarations.
 | `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL, a tile index (GeoJSON footprints with each file's `url` or `file`, and optionally its fill mask's URL, `mask`; made by `producers/elevation/indexes.py`), or files added by glob |
 | `[data] store` | bool | the files (and fill masks) read from `sources/fetched/<dataset>/` alone, by their URLs' last part (after a `#`, the member's name); never fetched by a build: a file the store lacks is an error naming it, one noted `<name>.none` has no data. Filled once by `scenic-build store-fetch <id> --index <its index>` (crate::dem::store_fetch: every file of the index and its mask the store lacks, as published, by the build's fetcher: its User-Agent, 429 and 5xx answers waited out; each checked a whole GeoTIFF under a temporary name, then renamed; restartable) |
 | `[data] encoding`, `url`, `zoom` | | for `tiles`: `terrarium`, `terrain-rgb`, `gsi-png`; the URL template; the zoom |
-| `[data] every_zoom` | | for `tiles`, optional (default false): the pyramid is published at every zoom to `zoom`, so the terrain reads it at a tile's own zoom and takes the coarse relief outside every region from it alone (crate::terrain_zoom::relief); else it's read at `zoom` only, tile by tile |
+| `[data] every_zoom` | | for `tiles`, optional (default false): the pyramid is published at every zoom to `zoom`, so the terrain reads it at a tile's own zoom and takes the coarse relief outside every region from it alone (crate::terrain_zoom::relief); else it's read at `zoom` only, tile by tile. A terrain job with datasets accepted and none of them so declared fails, saying so (the relief would be sea level) |
 
 ```toml
 name = "NRCan HRDEM, 2 m lidar mosaic"
