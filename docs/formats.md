@@ -730,6 +730,24 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
 - A forecast the same as the last written (docs/pool.md §7.9) isn't written. Days older than 7 go
   into `state/coord/forecasts-archive/<YYYY-MM>.tar`, a ustar of `<day>.jsonl.zst`, kept for good.
 
+## The forecast inputs' archive (`state/coord/forecast-inputs/<day>.jsonl.zst`; pipeline::agent::fcinputs, docs/pool.md §7.9)
+
+A day's file (UTC) is zstd frames appended one after another (read as the forecasts' archive's
+are: a damaged frame skipped to the next frame's magic number), each frame lines, a line an input:
+
+```
+{"term": <E>, "at": <unix s>, "record": <forecast::Record>}
+```
+
+- `term`: the lead's term when it made the forecast; `at`: the forecast's time (the record's
+  `input.now`); `record`: the forecast's whole input, as `state/build/term/<E>/forecast-input.json`
+  holds it (below, Forecast input), uncompressed inside the frame.
+- A frame is written with long-distance matching over a 64 MB window (`fcarchive::encoder`), so an
+  input after the first in its frame is stored mostly as what changed since the ones before it.
+  A reader decodes a frame whole to read one of its inputs (`fcinputs::Input::record`).
+- An input at most every 15 minutes (`fcinputs::EVERY_S`); days before the backtest's default span
+  (7 days, `fcinputs::KEEP_S`) are removed by the daily `gc` job.
+
 ## Server API
 
 - **Tiles:** `/tiles/{roads,rails,terrain,slope,labels,water,base,buildings,buildings-field,depth,depth-class,depth-shade}/{z}/{x}/{y}`,

@@ -1371,8 +1371,33 @@ the targets each placed to end in its first 6 h against the targets the jobs tha
 by step, summed. As text, a table in
 minutes; `--json`, the same in seconds.
 
-**The backtest** (`--replay`, `fccheck::backtest`): each term's forecast input made in the span
-(`state/build/term/<E>/forecast-input.json`, its last forecast's whole input: §10) is rerun twice,
+**The forecast inputs' archive** (`agent::fcinputs`, task #933; the record in docs/formats.md, The
+forecast inputs' archive): what the backtest (below) reruns, the forecast's whole input
+(`forecast::Record`, §10) by term and time, on a write path of its own. (Before it the backtest read
+the terms' `state/build/term/<E>/forecast-input.json`, which the lead writes only while a member
+reads the page's files on the NAS, docs/coordination.md step 4's gate: none has since 31 Oct
+13:35 UTC, term 673. The inputs between then and the archive weren't kept anywhere, so that gap
+stays.)
+
+- **What:** an input at most every 15 minutes (`fcinputs::EVERY_S`, the shortest horizon the check
+  reports, `fccheck::HORIZONS`): the first forecast's after it. A replay costs ~9 s an input on
+  the M4 (below), so the forecast a minute the lead makes would be more than a backtest can rerun.
+- **Where:** `state/coord/forecast-inputs/<day>.jsonl.zst`, one file a day (UTC). Handed over with
+  the forecast's entry to the forecasts' archive's thread (above: never waiting, nothing on the
+  NAS under the pool's lock or in a coordinator's handler), which appends a frame of the inputs
+  waiting once they hold 64 MB of JSON (the frame's window, `fcinputs::FRAME_RAW`) or the oldest
+  has waited an hour (4 inputs): one append an hour. The frame's long-distance matching stores an
+  input mostly as what changed since the ones before it: measured on terms 668-671's four inputs
+  (31 Oct 10:05-13:20, 46.6 MB of JSON, 3.8 MB as the terms' files held them; `fcinputs`'
+  `recorded_frame_size`), one frame of 0.97 MB: about 23 MB a day. A frame that fails is tried
+  again after an hour (the inputs waiting past 64 MB of JSON dropped, oldest first, said); the
+  frame waiting when the agent stops is lost (an hour at most), as the forecasts' batch is.
+- **Kept:** 7 days (`fcinputs::KEEP_S`, the span `forecast-check` reads by default,
+  `fccheck::SPAN_S`): the daily `gc` job removes the days before it (8 day files, about 190 MB).
+
+**The backtest** (`--replay`, `fccheck::backtest`): each forecast input made in the span (the
+archive's, and the terms' at times it hasn't: `fccheck::inputs`), read one at a time as it's rerun,
+is rerun twice,
 as the code before made it (old) and as the code is (new), each archived as the lead archives its
 forecasts (`Entry::of`) and checked as above (`fccheck::replay`). Both: the costs noted from the
 inputs before it and its own (`forecast::Noted`), each step's pace from the history before it
@@ -1383,10 +1408,10 @@ step read from the history (code 3, below). Code 3 (old): no Mac's pace (a recor
 Code 4 (new): each Mac's pace at each step read from the history (`fccheck::repace`, code 4
 below). The inputs from `--split` (default a day before the last) are the test
 set, scored apart from those before it (train): what the model was chosen on is never what it's
-scored on. A term records only its last forecast's input, so the replay has one input a term (81
-over 24-27 Oct), not one a minute. A run takes ~12 min on the M4 (each input's three runs, twice,
-each to `forecast::BUDGET`). Run it on a copy of `state/coord` and `state/build/term`
-(`--root`), or on the NAS (reads only).
+scored on. The terms' files held a term's last input alone (81 over 24-27 Oct: a run took ~12 min
+on the M4, each input's three runs, twice, each to `forecast::BUDGET`); the archive holds 96 a
+day. Run it on a copy of `state/coord` and `state/build/term` (`--root`), or on the NAS (reads
+only).
 
 **What the archive showed** (24 Oct 00:00 to 27 Oct 18:40 UTC: 1,175 forecasts, all code 1, held
 to 2,082 jobs; 303,000 (forecast, job) samples). Changes to the run since #621 (25 Oct: its budget; 26 Oct:
@@ -1692,10 +1717,11 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   what the lead adds to its answer (each step's time a target, the slots waiting on a tail), so `Record::forecast` gives the lead's forecast on
   any Mac. Written as a whole in the lead's next pool step each time it makes the forecast (at
   most once a minute); zstd-compressed when its JSON is over 2 MiB (`forecast::ZSTD_OVER`; a
-  reader tells by zstd's magic number). About 70 KB with today's work left (88 regions, ~500
-  targets, 24 lanes); about 2 MB for a whole rebuild's. Every time and speed in it is made
+  reader tells by zstd's magic number). The last ones written (31 Oct 2026, terms 664-673):
+  10.6-11.8 MB of JSON, 0.84-0.98 MB compressed. Every time and speed in it is made
   finite before it's written (`Record::clamp`). Handed to the lead's coordinator for `/pool/view`
-  (on the NAS only under the gate above). Read by each Mac's page data (below).
+  (on the NAS only under the gate above) and to the forecast inputs' archive (§7.9, its own path,
+  not gated). Read by each Mac's page data (below).
 - **The page's data on the lead** (`agent::pageview`, task #409; the lead's alone since #882 step 4,
   docs/roles.md §3.3: a member's port sends the page there): in the pool, the lead's port 8090
   answers `/work/swarm` and `/work/history` from its pageview (`/work/steps` is the steps table);
