@@ -360,8 +360,9 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   docs/coordination.md §4); the workers' token and accepted devices are the pool's
   (`state/coord/`); the history is each writer's own file per day (`state/coord/history/`; days older than a week one tar each in `state/coord/history-archive/`, docs/pool.md §7.5).
 - **Every job hands off:** under a lease `<term>-<id>` it saves into `agent/pool/jobs/<term>-<id>/`
-  (`SCENIC_HANDOFF`, `pipeline::handoff`), then as an entry to the journal
-  (`state/journal/<day>/<term>-<id>.json`) with its done record and costs. The lead merges entries
+  (`SCENIC_HANDOFF`, `pipeline::handoff`), then as an entry (its done record and costs) kept by its
+  member and posted to the lead by HTTP (docs/coordination.md step 6; to the journal,
+  `state/journal/<day>/<term>-<id>.json`, for a lead on an older app). The lead merges entries
   into its term's records all or nothing, checking each against its step's write-set
   (`agent::steps::writes`) and, for a shared step, the files it saved. Readers read its
   term's snapshot (docs/pool.md §6.2); it writes today's files (`manifest.json`, `jobs.json`,

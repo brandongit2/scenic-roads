@@ -998,8 +998,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/build/terms/<E>.json`: term E, create-new, `{term, member, host, app, since, how, from,
     seq}`; `state/build/lead.json` a copy of the newest (a hint).
   - `state/build/term/1/first.json` and `state/build/term/<E>/records.json` (`{term, seq, manifest,
-    keys, pending, sizes, raw, reflected, rejected, last: {step: {target: lease}}, horizon,
-    handed}`; `sizes`: content name → bytes of the files the manifest names, as their jobs wrote
+    keys, pending, sizes, raw, reflected, rejected, last: {step: {target: lease}}}`; `sizes`: content name → bytes of the files the manifest names, as their jobs wrote
     them); readers read these (`Records::now`). `state/build/term/<E>/brief.json` (E ≥ 2): `{term,
     seq, manifest, keys}` of its term's last snapshot, written after it, read by readers of those
     alone (`Brief::now`). The lead also writes `manifest.json`, `jobs.json`,
@@ -1007,7 +1006,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     (`Beat::reads_records` not in its heartbeat, docs/pool.md §6.2).
   - `state/journal/<day>/<term>-<n>.json`: a job's entry `{member, lease, step, handoff, at}`
     (`handoff.sizes`: the bytes of each file it wrote, by content name; none in older entries);
-    `state/journal/rejected/<day>/<term>-<n>.why`.
+    `state/journal/rejected/<day>/<term>-<n>.why`. Since #878 step 6 written only by a member whose
+    lead doesn't take hand-offs by HTTP (the same entry posted whole, `POST /pool/handoff`, kept in
+    the lead's store as `handoff/<day>/<term>-<n>` until merged: docs/coordination.md).
   - `state/pool/members/<id>.json`: a heartbeat `{member, host, app, beat, leads, handing_to: {to,
     term, offer, since, stage}, ready_for, stood_down, addresses, members, conds: {home, ac, battery,
     able}}` (with brokers on, `broker: {urls, https, pages}`; `beat_http`: its app beats it to the
