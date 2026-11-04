@@ -88,12 +88,10 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   incremental state where the code is the same. Test: tools/dev/test/shared-target.zsh (check.sh).
 - Passed straight to cargo: outside `.claude/worktrees/` (the main checkout, publish.sh's tree)
   and commands that never build (fmt, metadata, tree, …).
-- A worktree's own `target/` is no longer written: run a built program through `cargo run` (under
+- A worktree's own `target/` isn't written: run a built program through `cargo run` (under
   the lock), never `target/…/<bin>` or a path in the shared folder, which the next worktree's build
   may have replaced. remote-tests.sh builds on the test Mac in its own folder; the shared one is
   never copied there.
-- tools/dev/seed-target.sh is a no-op kept until `.claude/settings.local.json` drops its
-  PreToolUse hook entry; then delete it.
 - sccache still wraps rustc inside `.claude/worktrees/` (the untracked
   `.claude/worktrees/.cargo/config.toml`, #439; ~/Library/Caches/scenic-sccache, 10 GB cap): it
   refills third-party crates after a sweep. tools/dev/sweep-targets.sh empties it when free disk is

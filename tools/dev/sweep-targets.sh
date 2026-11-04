@@ -14,7 +14,7 @@
 # Never touched: a worktree a cargo or rustc process runs in; one with any file modified in the last
 # hour; one listed in .claude/sweep-keep (one agent id per line).
 # Agent worktrees build into this Mac's shared folder (tools/dev/bin/cargo, #915); a worktree's own
-# target/ is left from before, or from a cargo run without tools/dev/bin on the PATH.
+# target/ comes only from a cargo run without tools/dev/bin on the PATH.
 # The agents' compile cache (sccache) is emptied when free disk is below 20 GB (end of this file).
 setopt extendedglob
 usage="usage: tools/dev/sweep-targets.sh [--dry-run]"
