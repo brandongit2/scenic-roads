@@ -82,3 +82,22 @@ pub use jobrt::{budget, control, phase_names, pyenv, resume_log, sys, timings};
 // Moved to their own crate (task #916 step 4, docs/crates.md), kept at their old paths. (out is
 // pipeline's own: its `Out` gives buildstore's the records and write sets from above.)
 pub use buildstore::{costin, coverage, fetch, geotiff, handoff, localread, outlines, rawpack};
+
+/// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), before
+/// any test runs, as it was while fetch was pipeline's: run by the loader as the test binary starts
+/// (an initializer section's entry). Only in `cfg(test)`, this crate's own unit tests: its
+/// binaries, examples and integration tests link the library without it and reach the network
+/// (tests/test_mode.rs). A test-time behaviour never rides on a feature (buildstore's `testkit`).
+#[cfg(test)]
+#[used]
+#[cfg_attr(target_os = "macos", link_section = "__DATA,__mod_init_func")]
+#[cfg_attr(not(target_os = "macos"), link_section = ".init_array")]
+static TEST_START: extern "C" fn() = {
+    extern "C" fn start() {
+        buildstore::fetch::go_offline();
+    }
+    start
+};
+
+#[cfg(test)]
+mod test_start;

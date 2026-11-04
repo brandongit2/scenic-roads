@@ -28,10 +28,9 @@ ureq = "=3.4.2"
 [features]
 # Test helpers (costin::TEST_LOCK, coverage's fixtures and testkit::tree_agrees, geotiff::testtiff
 # and write_f32, Out::handing_off) for other crates' tests: their dev-dependency on buildstore
-# turns it on. It also gives their test builds this crate's test-time behaviour (fetch offline
-# from the start, out's short upload retries and verify deadlines), as pipeline's unit tests had
-# while these modules were pipeline's. (A release build never has it: resolver 2 turns on a
-# dev-dependency's features only in builds of tests.)
+# turns it on. Helpers only, never behaviour: a dev-dependency's features reach examples and
+# test-built binaries too. What differs in a test comes from the caller's own `cfg!(test)`
+# (out::Above::TESTING; fetch's offline start, set by pipeline's unit tests' TEST_START).
 testkit = []
 
 [dev-dependencies]

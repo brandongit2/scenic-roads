@@ -335,7 +335,7 @@ pub fn verify_pending(
     for chunk in todo.chunks(VERIFY_CHUNK) {
         let batch: BTreeMap<String, String> = chunk.iter().map(|(c, h)| ((*c).clone(), (*h).clone())).collect();
         let n = bytes(chunk);
-        let (ok, bad) = match crate::out::verify(ssh, nas_root, &batch, n) {
+        let (ok, bad) = match crate::out::verify::<crate::out::Pipeline>(ssh, nas_root, &batch, n) {
             Ok(r) => r,
             // (Stopped past its deadline: what the batches before it checked is saved already; the
             // rest stays pending for the next run.)

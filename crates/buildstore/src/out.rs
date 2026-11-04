@@ -26,6 +26,11 @@ use store::nasfs::NasPath;
 
 /// What an `Out` reads that's above this crate (pipeline::out::Pipeline's).
 pub trait Above {
+    /// Whether this is a test build of the binding's own crate (`cfg!(test)` there; never a
+    /// feature's: an example, a binary or another crate's test built with this one's dev-dependencies
+    /// is no test of it): an `Out`'s retries wait 1 ms (`upload_waits`), and `verify`'s floor and
+    /// grace are short (`verify_deadline`).
+    const TESTING: bool;
     /// The build's records under `root` as a reader has them now (pipeline::pool::records::Records::now:
     /// the current term's snapshot; before the pool, today's files).
     fn records(root: &store::nasfs::NasRoot) -> Result<Recorded>;
@@ -157,13 +162,14 @@ pub struct Mark(u64);
 /// a limit on an upload's whole time: a busy share with several Macs writing is slow but moves, and
 /// lands. Two minutes: a moving upload's longest silence is one chunk written past the client's
 /// cache (4 MB: a share at 50 KB/s still moves one inside it) or its retries' waits
-/// (`UPLOAD_WAITS`, held under it below).
+/// (`upload_waits`, held under it below).
 const UPLOAD_STALL: std::time::Duration = std::time::Duration::from_secs(120);
 
 const _: () = {
     let (mut i, mut s) = (0, 0);
-    while i < UPLOAD_WAITS.len() {
-        s += UPLOAD_WAITS[i].as_millis();
+    let waits = upload_waits(false);
+    while i < waits.len() {
+        s += waits[i].as_millis();
         i += 1;
     }
     assert!(s < UPLOAD_STALL.as_millis(), "an upload's retry waits alone would read as a stall");
@@ -174,11 +180,17 @@ const UPLOAD_LOOK: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The waits before a put-off upload that failed transiently is tried again (an SMB moment of
 /// ENOENT, EIO or a reset connection): its file is content-named, so a retry lands the same file.
-const UPLOAD_WAITS: &[std::time::Duration] = if cfg!(any(test, feature = "testkit")) {
-    &[std::time::Duration::from_millis(1)]
-} else {
-    &[std::time::Duration::from_secs(2), std::time::Duration::from_secs(5), std::time::Duration::from_secs(15)]
-};
+/// A millisecond in a test (`Above::TESTING`).
+const fn upload_waits(testing: bool) -> &'static [std::time::Duration] {
+    const TEST: &[std::time::Duration] = &[std::time::Duration::from_millis(1)];
+    const REAL: &[std::time::Duration] =
+        &[std::time::Duration::from_secs(2), std::time::Duration::from_secs(5), std::time::Duration::from_secs(15)];
+    if testing {
+        TEST
+    } else {
+        REAL
+    }
+}
 
 /// The records' sizes of the files the manifest names (content name → bytes, compact JSON), kept
 /// beside the manifest by its writer (`Out::save_held`; in the pool its lead, from its records):
@@ -494,7 +506,10 @@ impl<A: Above> Out<A> {
             let spawned = std::thread::Builder::new().name("uploads".into()).spawn(move || {
                 store::naming::count_here_into(moved);
                 for u in rx {
-                    if tx.send(upload_retrying(&u.root, &u.logical, &u.ext, &u.local, UPLOAD_WAITS)).is_err() {
+                    if tx
+                        .send(upload_retrying(&u.root, &u.logical, &u.ext, &u.local, upload_waits(A::TESTING)))
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -817,17 +832,20 @@ impl<A: Above> Out<A> {
 /// How long one hashing call (`verify`) may take: three minutes (the call's own authentication, and a
 /// NAS busy with others' reads), and a second for each 16 MB it hashes (the NAS's disks and CPU
 /// give far more; this is the rate it would have to fall below to be stopped). Its floor and
-/// grace are short in a test.
-pub fn verify_deadline(bytes: u64) -> std::time::Duration {
-    std::time::Duration::from_secs(if cfg!(any(test, feature = "testkit")) { 1 } else { 180 } + (bytes >> 24))
+/// grace are short in a test (`testing`: `Above::TESTING`).
+pub fn verify_deadline(bytes: u64, testing: bool) -> std::time::Duration {
+    std::time::Duration::from_secs(if testing { 1 } else { 180 } + (bytes >> 24))
 }
 
-/// How long a call past its deadline has to end after SIGTERM before it's killed.
-const VERIFY_GRACE: std::time::Duration = if cfg!(any(test, feature = "testkit")) {
-    std::time::Duration::from_millis(300)
-} else {
-    std::time::Duration::from_secs(10)
-};
+/// How long a call past its deadline has to end after SIGTERM before it's killed (`testing`:
+/// `Above::TESTING`).
+fn verify_grace(testing: bool) -> std::time::Duration {
+    if testing {
+        std::time::Duration::from_millis(300)
+    } else {
+        std::time::Duration::from_secs(10)
+    }
+}
 
 /// `store::spawn::output` held to `deadline`: past it the child (and the group it leads) gets
 /// SIGTERM, and SIGKILL when it hasn't ended `grace` later; the error is `TimedOut`. Nothing else is
@@ -881,7 +899,8 @@ fn output_within(
 /// there over SSH (`ssh` runs a command on the NAS; `nas_root` is the project folder as the NAS sees
 /// it). The names that match, and those that don't or aren't there; nothing is removed or written
 /// (GC's job takes the matching ones out of the records' pending: pipeline::agent::gc::verify_pending).
-pub fn verify(
+/// Its deadline and grace are `A`'s (`Above::TESTING`).
+pub fn verify<A: Above>(
     ssh: &[&str],
     nas_root: &str,
     uploads: &BTreeMap<String, String>,
@@ -900,8 +919,8 @@ pub fn verify(
     cmd.arg(format!("cd '{nas_root}' && {{ sha256sum {} 2>/dev/null; true; }}", quoted.join(" ")));
     // (The call itself bounded too: its authentication, outside the probe's, may stall on the SSH
     // agent again, and a `sha256sum` on the NAS may hang; past `verify_deadline` it is stopped.)
-    let deadline = verify_deadline(bytes);
-    let out = output_within(&mut cmd, deadline, VERIFY_GRACE).map_err(|e| {
+    let deadline = verify_deadline(bytes, A::TESTING);
+    let out = output_within(&mut cmd, deadline, verify_grace(A::TESTING)).map_err(|e| {
         if e.kind() == std::io::ErrorKind::TimedOut {
             anyhow::Error::new(e)
                 .context(format!("ssh to the NAS hashing {bytes} bytes: over {} s", deadline.as_secs()))
@@ -1036,6 +1055,8 @@ mod tests {
     enum Test {}
 
     impl Above for Test {
+        const TESTING: bool = true;
+
         fn records(root: &store::nasfs::NasRoot) -> Result<Recorded> {
             Ok(Recorded {
                 pending: read_record(&root.join("state/build/pending.json"))?,

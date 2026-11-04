@@ -209,10 +209,10 @@ fn offline_refuses_the_internet_not_this_mac() {
     }
 }
 
-/// (A test build's process is offline from its start, whichever test runs first: none reaches the
-/// internet. Also other crates' test builds, through `testkit`: pipeline's unit tests were.)
-static OFFLINE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(cfg!(any(test, feature = "testkit")));
+/// (This crate's unit tests' process is offline from its start, whichever test runs first: none
+/// reaches the internet. Another crate's unit tests say so as their process starts: pipeline's
+/// `TEST_START`. Never a feature's: an example built with a crate's dev-dependencies is no test.)
+static OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(cfg!(test));
 
 /// No network for the rest of this process (`online`): a test's.
 pub fn go_offline() {

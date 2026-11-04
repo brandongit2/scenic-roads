@@ -42,7 +42,7 @@ of their own).
 
 Rerun on 4 Nov 2026 on main at 86626025: still one cycle of 49 modules, ~194k lines. After step 4,
 one of 43 modules, ~184k lines: out, handoff, rawpack, localread, coverage and outlines (in it),
-costin and geotiff (outside it) moved out, with fetch. pipeline keeps an `out` of 61 lines (the
+costin and geotiff (outside it) moved out, with fetch. pipeline keeps an `out` of 68 lines (the
 `Out` its code names, binding buildstore's to the pool's records and the steps table), which is in
 the cycle (→ agent, pool).
 
@@ -188,10 +188,15 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
    cuts are §1's table's. `out` was planned behind a registry the agent fills for the write sets;
    `Out` also reads the pool's records itself (every open, and `recorded_sizes`), and a registry
    would have to be filled in every process and test that opens one, so `Out` is generic over an
-   `Above` (records and write sets) instead, and pipeline's `out::Out` is `Out<Pipeline>`: its 144
+   `Above` (records and write sets) instead, and pipeline's `out::Out` is `Out<Pipeline>`: its
    callers unchanged. The test helpers other crates' tests use (`Out::handing_off`,
    coverage's fixtures and `testkit::tree_agrees`, geotiff's `testtiff` and `write_f32`,
-   `costin::TEST_LOCK`) sit behind a `testkit` feature. Out's tests run in buildstore with an
+   `costin::TEST_LOCK`) sit behind a `testkit` feature, helpers only: a dev-dependency's features
+   reach examples and test-built binaries too, so no behaviour rides on one. What differs in a
+   test comes from the caller's own `cfg!(test)`: `Above::TESTING` (Out's retry waits, verify's
+   deadline and grace; `Pipeline`'s is pipeline's `cfg!(test)`), and fetch's offline start, which
+   pipeline's unit tests set as their process starts (lib.rs `TEST_START`); tests/test_mode.rs
+   checks a build with the dev-dependencies has none of it. Out's tests run in buildstore with an
    `Above` of their own (today's files, two steps' write sets); pipeline's out keeps one test of
    the binding. One line in a file #929 edits: `pyramids::DIR` names `rawpack::PYRAMIDS`.
 5. **inputs** and the step families (one step each, bottom up: terrain, trees, roads, names, bld),

@@ -16,6 +16,10 @@ pub type Out = buildstore::out::Out<Pipeline>;
 pub enum Pipeline {}
 
 impl Above for Pipeline {
+    /// Pipeline's unit tests alone: never its binaries, examples or integration tests, whose
+    /// library is built without `cfg(test)`.
+    const TESTING: bool = cfg!(test);
+
     /// The build's records under `root` as a reader has them now (crate::pool::records::Records::now),
     /// the parts an `Out` reads.
     fn records(root: &NasRoot) -> Result<Recorded> {
