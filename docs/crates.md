@@ -1,7 +1,7 @@
 # The pipeline's crates (task #916)
 
-**Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`) and 3 (`crates/jobrt`) are built;
-every later step below is planned.
+**Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`) and 4
+(`crates/buildstore`) are built; every later step below is planned.
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -40,6 +40,12 @@ resume_log moved out, and costin, geotiff, water, heritage_layers and interest, 
 cycle only through them, left it (heritage_layers ↔ interest and peaks ↔ summits are small cycles
 of their own).
 
+Rerun on 4 Nov 2026 on main at 86626025: still one cycle of 49 modules, ~194k lines. After step 4,
+one of 43 modules, ~184k lines: out, handoff, rawpack, localread, coverage and outlines (in it),
+costin and geotiff (outside it) moved out, with fetch. pipeline keeps an `out` of 61 lines (the
+`Out` its code names, binding buildstore's to the pool's records and the steps table), which is in
+the cycle (→ agent, pool).
+
 The cycle is held together by a few thin edges from low-level code up to `agent`, `pool`,
 `inputs` and `control`, not by the steps' logic. The ones that matter most:
 
@@ -53,12 +59,16 @@ The cycle is held together by a few thin edges from low-level code up to `agent`
 | resume_log → out | `names(out: &Out, …)` (a manifest's names) | built (step 3): `names` takes a `resume_log::Manifest` (one method, `get`), which out::Out implements |
 | localread, osmpass → agent::room | `job_target`, `free_past`, `MAX_TARGET` | items moved (step 3): jobrt's `room` (with cond's `free_bytes`); agent::room re-exports them. The edge goes once its users name jobrt's path (they move in steps 4-5) |
 | osmpass, layers, … → agent::jobs | progress reporting (`stage`, `report`, `part`, `within`, `run_watched`, `each_line`) | items moved (step 3): jobrt's `jobs` (with the log's reading: `tail`, `said`, `parts`, `error_of`); agent::jobs re-exports them. The edge goes as for room |
-| coverage, dem → agent::recipes | the `Recipe` type | the type moves down to the store layer |
-| out → agent::steps | `steps::writes` (each step's write set, checked on every save) | a registry the agent fills at start (a `fn` the out layer calls), or the write-set table moved down; after #879, which edits `agent/steps.rs` |
-| out → pool::records | `Records::now`, `Brief::now` | callers name `pool::records` directly; out's two wrappers go |
-| out → inputs | `in_inputs_folder`, the gate | the inputs folder's path predicates move down to the store layer |
-| fetch → control | `draining_lately` | `control` sits below `fetch` (runtime crate) |
-| fetch, out, outlines → osmpass | osmpass's reading helpers (fetch, out: one reference each; outlines: 2) | the named items move down to buildstore; osmpass (inputs) stays above |
+| coverage, dem → agent::recipes | the `Recipe` type | built (step 4): agent/recipes.rs is buildstore's `recipes`; agent::recipes re-exports it |
+| out → agent::steps | `steps::writes` (each step's write set, checked on every save) | built (step 4): buildstore's `Out<A: Above>` asks `A::writes`; pipeline's `out::Out` is `Out<Pipeline>`, whose `writes` is `agent::steps::writes` |
+| out → pool::records | out's two wrappers (`records_now`, `brief_now`), and `Out` itself: it opens from `Records::now`'s manifest and pending, and a catalogue's sizes are its (`recorded_sizes`) | built (step 4): the wrappers are gone (their callers name `pool::records`); `Out` reads the records by `A::records`, `Pipeline`'s from `Records::now`. `read_manifest` stays in pipeline's `out` |
+| out → inputs | `in_inputs_folder` | built (step 4): it and `DROP_ROOTS` are buildstore's `inputs_folder`; inputs re-exports both |
+| out → pool::term, agent::resume | `term::DIR` (whether the pool has begun), `UNMERGED_ENV` | built (step 4): `out::TERMS` and `out::UNMERGED_ENV`; `pool::term::DIR` is `out::TERMS`, agent::resume re-exports the other |
+| fetch → control | `draining_lately` | built (step 3): `control` is jobrt's |
+| fetch, out, outlines → osmpass | osmpass's ssh helpers (out: `ssh_opened`; fetch: `proxy_addr`, in a test) and its set names (outlines: a measuring test) | built (step 4): `SSH_START`, `watched`, `ssh_opened`, `ssh_stalled` and `proxy_addr` are buildstore's `nasssh`, osmpass and agent::gc use them from there; the measuring test is osmpass's |
+| rawpack → agent, pyramids | `agent::stopping` (the agent asked to stop), `pyramids::DIR` | built (step 4): the stop flag is jobrt's `control::{ask_stop, stopping}` (agent::stopping re-exports it); the folder is `rawpack::PYRAMIDS`, which `pyramids::DIR` names |
+| localread → agent::room | `job_target`, `free_past`, `MAX_TARGET` | built (step 4): localread names jobrt's `room` |
+| inputs → coverage | `impl Coverage { fn accepted }` in inputs::regions::read, an inherent impl that can't stay once `Coverage` is another crate's | built (step 4): `inputs::regions::read::accepted_coverage`, its callers renamed |
 | dem → terrain_deep, terrain_pack | terrain's tile helpers (7 references) | the helpers move down (codecs or buildstore), or dem joins the terrain family |
 | inputs → lakefill, rail | 2 references to lakefill, 4 to rail, from the input checks | the named items move down beside inputs, or the checks call them through the agent |
 | cli → polar | one reference to polar | it moves down with cli (cli and net stay in pipeline until #883, which edits cli/build.rs, cli/progs.rs and net.rs, lands) |
@@ -84,9 +94,15 @@ names, webpenc as now).
    cli and net (after #883), nasread's NAS reading (after #923, which edits agent/nasread.rs), and
    the `Offload` trait with the step families that use it (step 5: terrain_task, trees and offload
    are its only users).
-4. **buildstore** (the build's files: the NAS/store layer above `store`): out, handoff, rawpack,
-   localread, costin, coverage, outlines, the `Recipe` type, the inputs folder's predicates,
-   fetch, geotiff. ~12k lines.
+4. **buildstore** (the build's files: the NAS/store layer above `store`; built, step 4): out,
+   handoff, rawpack, localread, costin, coverage, outlines, fetch, geotiff, `recipes` (the
+   `Recipe` type), `inputs_folder` (the inputs folders' predicate), `nasssh` (a bounded `ssh` to
+   the NAS, from osmpass). ~12.4k lines (4 Nov 2026), no pipeline dependency. Its `Out` is generic
+   over what it reads from above (`out::Above`: the records and the write sets), so its methods
+   compile in pipeline, where `Pipeline` is named. Planned: the records' reading
+   (pool::records' `Records::now`, `Brief::now`, pool::term's `current`) down here, before step 5:
+   a step family's crate below pipeline can't name `Pipeline`, so its code and tests can't open
+   an `Out` until then.
 5. **inputs** (the declared inputs): inputs (21.9k lines), dem, rules, osmpass, areafiles. Its
    edges up to agent (23) and pool (7) are cut as in §1 first; ~33k lines.
 6. Step families. They are not independent today: modgraph.py shows trees → terrain (treepacks →
@@ -166,8 +182,18 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
    the moved items through the agent's paths (`crate::agent::jobs::report`), so modgraph.py still
    shows their edges to agent; those paths are rewritten as each moves (steps 4-5), several being
    files #883 edits.
-4. **buildstore**: `Recipe` and the inputs folder's predicates down; out's write-set check behind a
-   registry the agent fills; out's `pool::records` wrappers removed. Needs #879 (agent/steps.rs).
+4. **buildstore** (built): out, handoff, rawpack, localread, costin, coverage, outlines, fetch,
+   geotiff into `crates/buildstore`, with agent/recipes.rs (`recipes`), `inputs_folder` (from
+   inputs) and `nasssh` (from osmpass); pipeline re-exports the modules at their old paths. The
+   cuts are §1's table's. `out` was planned behind a registry the agent fills for the write sets;
+   `Out` also reads the pool's records itself (every open, and `recorded_sizes`), and a registry
+   would have to be filled in every process and test that opens one, so `Out` is generic over an
+   `Above` (records and write sets) instead, and pipeline's `out::Out` is `Out<Pipeline>`: its 144
+   callers unchanged. The test helpers other crates' tests use (`Out::handing_off`,
+   coverage's fixtures and `testkit::tree_agrees`, geotiff's `testtiff` and `write_f32`,
+   `costin::TEST_LOCK`) sit behind a `testkit` feature. Out's tests run in buildstore with an
+   `Above` of their own (today's files, two steps' write sets); pipeline's out keeps one test of
+   the binding. One line in a file #929 edits: `pyramids::DIR` names `rawpack::PYRAMIDS`.
 5. **inputs** and the step families (one step each, bottom up: terrain, trees, roads, names, bld),
    each after rerunning modgraph.py shows it leaves no edge back into what remains above; the
    cross-family edges of §2.6 are cut where cheap so families compile in parallel.
@@ -213,6 +239,20 @@ agent/jobs.rs, "codecs edit": to hipack.rs:
 | dev, jobrt edit | 23 s, 2.43 GB (load 15-17): jobrt, pipeline, server recompiled |
 | dev, agent edit | 18 s, 2.36 GB (load 14-16): pipeline, server |
 | dev, codecs edit | 22 s, 2.36 GB (load 17-21): codecs, pipeline, server |
+
+After step 4, 4 Nov 2026 06:54-06:56 UTC, on the M4 (48 GB, 14 cores; the pool's jobs and other
+agents beside), rustc 1.98.1, `cargo build --workspace --bins` (dev). "Clean": a fresh target
+folder, third-party crates from sccache, the shared folder's lock held so no other cargo ran beside
+it. The edits: one comment line appended to buildstore's geotiff.rs, agent/jobs.rs, jobrt's
+timings.rs, codecs' hipack.rs, each built from a built tree (the shared folder):
+
+| run | after step 4 |
+|---|---|
+| dev, clean | 81 s, 4.33 GB (load 16-32) |
+| dev, buildstore edit | 8 s, 2.28 GB (load 20): buildstore, pipeline, server recompiled |
+| dev, agent edit | 7 s, 2.28 GB (load 20): pipeline, server |
+| dev, jobrt edit | 7 s, 2.28 GB (load 20): jobrt, buildstore, pipeline, server |
+| dev, codecs edit | 7 s, 2.28 GB (load 19): codecs, buildstore, pipeline, server |
 
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the

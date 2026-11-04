@@ -10,7 +10,7 @@ instead of bypassing the gate.
 
 from pathlib import Path
 
-# The folders that hold the inputs folders (pipeline::inputs::DROP_ROOTS).
+# The folders that hold the inputs folders (buildstore::inputs_folder::DROP_ROOTS).
 DROP_ROOTS = ("inputs", "translations", "descriptions")
 
 

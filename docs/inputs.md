@@ -428,7 +428,7 @@ treats it like any other region: it is parsed, resolved, held and stored the sam
 may name it (`region:`, `land:`, `group:`, `rest`, nearest-coast splits, hand-outs), and with
 `cover = "earth"` it counts toward covering the Earth once. Its stored geometry is the same either
 way. The index records it (`facts.disabled`, set only when true). The readers leave it out
-(crate::inputs::regions::read: `recipes`, `enabled`, `Coverage::accepted`), so it is in no coverage,
+(crate::inputs::regions::read: `recipes`, `enabled`, `accepted_coverage`), so it is in no coverage,
 unit, map tile, catalogue or download, and it adds nothing to any forecast or size. The regions'
 extract (§6.1.6) still fetches the relations and ways a disabled region names, because the check
 needs them. Enabling or disabling a region changes only the index, which makes a new version. The
@@ -644,7 +644,7 @@ resolved to nothing (a `hand_out_all` region, every stretch handed out) is store
 facts name neither, and the readers list it (the Regions list shows it) but leave it out of the
 regions built, the coverage and the drawing (no area to cover).
 
-**Reading:** `Coverage::accepted(root, accepted, cache)` (crate::inputs::regions::read) builds the
+**Reading:** `accepted_coverage(root, accepted, cache)` (crate::inputs::regions::read) builds the
 coverage from the stored shapes, regions in id order, shapes in stored order. The agent passes its
 cache folder: the coverage is kept there by the accepted version (`coverage/<hash16>.cov`, the
 others deleted: the shapes with their grids, task #807, so a read makes nothing again), so each Mac
@@ -773,7 +773,7 @@ region file takes it out with the next version.
 
 #### 6.1.10 The switch
 
-Every reader reads `Coverage::accepted`, and only once the records hold
+Every reader reads `accepted_coverage`, and only once the records hold
 `sources/inputs/regions/@switched` (crate::inputs::regions::read `switched`); without it the readers
 refuse, saying to do the migration's runbook first. The switch records the app it was made on, and
 no Mac on an older app builds. Catalogues record their regions' shapes inline

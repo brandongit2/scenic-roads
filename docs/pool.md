@@ -203,7 +203,7 @@ of the lead's, between restarts and sleeps.
   its entries that lead hasn't acknowledged. A lead acknowledges an entry once a saved snapshot
   names it.
 - **Readers** (the jobs' `Out`, the agent's plan and status, GC, the Mac mini's map server, the CLI and the
-  checks) read the current term's snapshot (`Records::now`, `out::records_now`: `Records::newest`,
+  checks) read the current term's snapshot (`Records::now`: `Records::newest`,
   falling back to an earlier term's; before any term, today's files `manifest.json`, `jobs.json`,
   `pending.json` and `sizes.json`, which a Mac's own jobs write without a pool; no term found once
   term 1's first snapshot is there, a stale read, is an error, never today's files). Readers of the
