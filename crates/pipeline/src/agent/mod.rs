@@ -7950,10 +7950,13 @@ impl Agent {
             let (seq, at, runs) = &mut *kept;
             let new = c.history_since(*seq);
             *seq = new.last().map_or(*seq, |e| e.seq);
-            let before = runs.len();
-            runs.extend(new.into_iter().filter(crate::paces::reads));
+            // (A run come and one gone in the same loop leave the count as it was: each is a change.)
+            let had = runs.len();
             runs.retain(|e| e.t + crate::paces::PACE_S > now);
-            if runs.len() != before || *at != now / 600 {
+            let gone = runs.len() != had;
+            let had = runs.len();
+            runs.extend(new.into_iter().filter(crate::paces::reads));
+            if gone || runs.len() != had || *at != now / 600 {
                 *at = now / 600;
                 c.set_paces(crate::paces::Paces::of(runs, &self.host, now));
             }

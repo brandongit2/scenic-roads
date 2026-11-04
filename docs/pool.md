@@ -1538,7 +1538,8 @@ less late, and every step of note at the p90 (terrain-lo's and unit's medians a 
 the nearest hour's medians are 8-11 min worse. On train the p90 and bias are better, the
 median 36 min worse, and the near term (under an hour) and 4-12 h worse at the p90 (what
 moves them there isn't known). Paces from pairs are near the lead's where pairs are few
-(drawn toward 1), so code 4 moves the forecast only where the same targets showed a Mac's pace.
+(drawn toward 1), but code 4 moves every lane whose Mac's speed wasn't 1: with paces worked out, no
+lane runs at its speed any more, and a Mac of few or no pairs runs at about the lead's pace.
 
 ## 8. Tasks
 
