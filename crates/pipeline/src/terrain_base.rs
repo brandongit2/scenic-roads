@@ -332,9 +332,9 @@ pub struct Tiles<'a> {
     water: Option<&'a dyn WaterSource>,
     at_sea: &'a [OnceLock<Plan>],
     held: Mutex<HashMap<(u8, u32, u32), Option<Vec<u8>>>>,
-    /// By tile sampled, the codes (a bit each) of the datasets its pixels came from
-    /// (crate::terrain_pack::RawSource::codes), until asked for.
-    codes: Mutex<HashMap<(u8, u32, u32), u32>>,
+    /// By tile sampled, the datasets its pixels came from (their ids, sorted:
+    /// crate::terrain_pack::RawSource::from), until asked for.
+    from: Mutex<HashMap<(u8, u32, u32), Vec<String>>>,
     /// Whether the build is pausing (crate::control::draining_lately; a test's own): checked before each
     /// sampling, a chunk or a tile, which then stops with crate::control::Paused.
     draining: &'a (dyn Fn() -> bool + Sync),
@@ -351,7 +351,7 @@ impl<'a> Tiles<'a> {
             water: None,
             at_sea: &[],
             held: Mutex::new(HashMap::new()),
-            codes: Mutex::new(HashMap::new()),
+            from: Mutex::new(HashMap::new()),
             draining: &crate::control::draining_lately,
         }
     }
@@ -457,25 +457,34 @@ impl<'a> Tiles<'a> {
             Some(w) if self.plan(k).datasets.iter().any(by_tile) => open_sea(w, z, ts)?,
             _ => Vec::new(),
         };
-        let (elev, src): (Vec<f32>, Vec<u8>) = if sea.iter().any(|&b| b) {
+        // (Each point's height and its first dataset's id, by the plan it was sampled with: the
+        // open sea's by the plan without the pyramids read tile by tile.)
+        fn id_of(p: &Plan, f: u16) -> Option<&str> {
+            p.datasets.get(f as usize).map(|d| d.id.as_str())
+        }
+        let (elev, ids): (Vec<f32>, Vec<Option<&str>>) = if sea.iter().any(|&b| b) {
             let pick = |at_sea: bool, v: &[f64]| -> Vec<f64> {
                 v.iter().zip(&sea).filter(|p| *p.1 == at_sea).map(|p| *p.0).collect()
             };
             let ashore = s.sample(&pick(false, &lon), &pick(false, &lat), &|_| {})?;
             let afloat = self.sampler(k + self.at_sea.len())?.sample(&pick(true, &lon), &pick(true, &lat), &|_| {})?;
-            let (mut a, mut b) = (ashore.elev.into_iter().zip(ashore.src), afloat.elev.into_iter().zip(afloat.src));
+            let (pa, pb) = (self.plan(k), self.plan(k + self.at_sea.len()));
+            let mut a = ashore.elev.into_iter().zip(ashore.first.into_iter().map(|f| id_of(pa, f)));
+            let mut b = afloat.elev.into_iter().zip(afloat.first.into_iter().map(|f| id_of(pb, f)));
             sea.iter().map(|&at| if at { b.next() } else { a.next() }.expect("a height a point")).unzip()
         } else {
             let got = s.sample(&lon, &lat, &|_| {})?;
-            (got.elev, got.src)
+            let p = self.plan(k);
+            (got.elev, got.first.into_iter().map(|f| id_of(p, f)).collect())
         };
-        // (By tile, the codes of the datasets its pixels came from: `codes`.)
+        // (By tile, the datasets its pixels came from: `from`.)
         {
             let per = 256 * 256 * K * K;
-            let mut c = self.codes.lock().unwrap();
+            let mut c = self.from.lock().unwrap();
             for (t, &(x, y)) in ts.iter().enumerate() {
-                let m = src[t * per..(t + 1) * per].iter().filter(|&&v| v != 0).fold(0u32, |m, &v| m | 1 << (v & 31));
-                c.insert((z, x, y), m);
+                let set: std::collections::BTreeSet<&str> =
+                    ids[t * per..(t + 1) * per].iter().flatten().copied().collect();
+                c.insert((z, x, y), set.into_iter().map(str::to_string).collect());
             }
         }
         let per = 256 * 256;
@@ -560,8 +569,8 @@ pub fn points(z: u8, ts: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
 }
 
 impl RawSource for Tiles<'_> {
-    fn codes(&self, z: u8, x: u32, y: u32) -> u32 {
-        self.codes.lock().unwrap().remove(&(z, x, y)).unwrap_or(0)
+    fn from(&self, z: u8, x: u32, y: u32) -> Option<Vec<String>> {
+        Some(self.from.lock().unwrap().remove(&(z, x, y)).unwrap_or_default())
     }
 
     fn get(&self, z: u8, x: u32, y: u32) -> Result<(Option<Vec<u8>>, bool)> {

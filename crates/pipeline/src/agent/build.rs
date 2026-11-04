@@ -6433,7 +6433,6 @@ pub(crate) mod tests {
                     detail: crate::terrain_zoom::Detail::Pyramid(14),
                     cut: None,
                     every_zoom: false,
-                    code: 1,
                     presence: None,
                 }],
             );
@@ -6962,7 +6961,6 @@ pub(crate) mod tests {
             detail: Detail::Pyramid(14),
             cut: None,
             every_zoom: false,
-            code: 1,
             presence: None,
         };
         let none = with(crate::terrain_zoom::test_world(12));
@@ -6989,7 +6987,6 @@ pub(crate) mod tests {
             detail: Detail::Pyramid(14),
             cut: None,
             every_zoom: false,
-            code: 1,
             presence: None,
         };
         let tiles = |m: &BTreeMap<String, String>, sets: &[FineSet]| {

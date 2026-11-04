@@ -99,6 +99,9 @@ pub struct Sampled {
     pub elev: Vec<f32>,
     /// The first dataset's code (0: none).
     pub src: Vec<u8>,
+    /// The first dataset's place in the plan (`u16::MAX`: none): which dataset, where codes are
+    /// shared (HRDEM's 1 m and 2 m alike).
+    pub first: Vec<u16>,
     /// Whether the height is a blend (within a band of the first dataset's invalid area).
     pub blended: Vec<bool>,
     /// Heights left in their dataset's reference: no declared geoid source has a value there.
@@ -2037,7 +2040,14 @@ impl<'a> Sampler<'a> {
         fetched(&p, since);
         drop(p);
         mono.say(1.0);
-        let mut out = Sampled { elev: a, src: vec![0; n], blended: vec![false; n], unconverted, unconverted_seam: 0 };
+        let mut out = Sampled {
+            elev: a,
+            src: vec![0; n],
+            first: Vec::new(),
+            blended: vec![false; n],
+            unconverted,
+            unconverted_seam: 0,
+        };
         out.unconverted_seam = (out.elev.par_iter_mut(), out.src.par_iter_mut(), out.blended.par_iter_mut())
             .into_par_iter()
             .enumerate()
@@ -2063,6 +2073,7 @@ impl<'a> Sampler<'a> {
             out.unconverted_seam
         );
         }
+        out.first = first;
         Ok(out)
     }
 }
@@ -2103,6 +2114,9 @@ impl Sampler<'_> {
             for (i, v) in now {
                 got.elev[i] = v;
                 got.src[i] = ds.code;
+                if let Some(f) = got.first.get_mut(i) {
+                    *f = k as u16;
+                }
                 filled += 1;
             }
         }

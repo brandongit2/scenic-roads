@@ -100,14 +100,14 @@ pub fn native_of(fill: &(dyn Fn(u8, u32, u32) -> Fill + Sync), z: u8, x: u32, y:
 /// only the relief's one tile is read.
 ///
 /// Past z12 (the deep band, crate::terrain_deep) a tile is the place's finest only where some of its
-/// pixels came from a dataset reaching its zoom (`reaching`, crate::terrain_zoom::codes_reaching):
+/// pixels came from a dataset reaching its zoom (`reaching`, crate::terrain_zoom::reaching):
 /// one that would only upsample a coarser dataset isn't kept (`keep`), and its parent takes that
 /// quarter from its own sample (`built`).
 pub struct Fills<'a> {
     pub pool: &'a dyn RawSource,
     pub relief: &'a dyn RawSource,
     pub fill: &'a (dyn Fn(u8, u32, u32) -> Fill + Sync),
-    pub reaching: &'a (dyn Fn(u8, u32, u32) -> u32 + Sync),
+    pub reaching: &'a (dyn Fn(u8, u32, u32) -> Vec<String> + Sync),
     built: Mutex<std::collections::HashSet<(u8, u32, u32)>>,
     kept: Mutex<HashMap<(u8, u32, u32), bool>>,
 }
@@ -117,7 +117,7 @@ impl<'a> Fills<'a> {
         pool: &'a dyn RawSource,
         relief: &'a dyn RawSource,
         fill: &'a (dyn Fn(u8, u32, u32) -> Fill + Sync),
-        reaching: &'a (dyn Fn(u8, u32, u32) -> u32 + Sync),
+        reaching: &'a (dyn Fn(u8, u32, u32) -> Vec<String> + Sync),
     ) -> Self {
         Fills { pool, relief, fill, reaching, built: Default::default(), kept: Default::default() }
     }
@@ -150,7 +150,12 @@ impl RawSource for Fills<'_> {
         let (sample, a) = take(Fill::Sample, self.pool)?;
         let (relief, b) = take(Fill::Relief, self.relief)?;
         if z >= crate::terrain_deep::FIRST_Z {
-            let fine = sample.is_some() && self.pool.codes(z, x, y) & (self.reaching)(z, x, y) != 0;
+            // (By dataset, not code: datasets share codes, HRDEM's 1 m and 2 m alike.)
+            let fine = sample.is_some()
+                && self.pool.from(z, x, y).is_none_or(|from| {
+                    let reach = (self.reaching)(z, x, y);
+                    from.iter().any(|d| reach.contains(d))
+                });
             self.kept.lock().unwrap().insert((z, x, y), fine || relief.is_some());
         }
         if sample.is_none() && relief.is_none() {
@@ -273,10 +278,10 @@ pub trait RawSource: Sync {
     fn keep(&self, _z: u8, _x: u32, _y: u32) -> bool {
         true
     }
-    /// The codes (a bit each, crate::dem::declared::Declaration::code) of the datasets tile
-    /// `z/x/y`'s pixels came from as sampled, once (all: not told).
-    fn codes(&self, _z: u8, _x: u32, _y: u32) -> u32 {
-        u32::MAX
+    /// The datasets (their ids) tile `z/x/y`'s pixels came from as sampled, once (None: not told,
+    /// as from every one).
+    fn from(&self, _z: u8, _x: u32, _y: u32) -> Option<Vec<String>> {
+        None
     }
 }
 
@@ -2677,11 +2682,17 @@ pub(crate) mod tests {
     struct Const {
         h: f32,
         asked: Mutex<Vec<(u8, u32, u32)>>,
+        /// The datasets its tiles say they came from (`RawSource::from`); None: not told.
+        from: Option<Vec<String>>,
     }
 
     impl Const {
         fn new(h: f32) -> Self {
-            Const { h, asked: Mutex::new(Vec::new()) }
+            Const { h, asked: Mutex::new(Vec::new()), from: None }
+        }
+
+        fn from(h: f32, ids: &[&str]) -> Self {
+            Const { from: Some(ids.iter().map(|s| s.to_string()).collect()), ..Const::new(h) }
         }
     }
 
@@ -2689,6 +2700,9 @@ pub(crate) mod tests {
         fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
             self.asked.lock().unwrap().push((z, x, y));
             Ok((Some(roadcore::grid::encode_terrain_png(&vec![self.h; 65536], 256, 256)?), false))
+        }
+        fn from(&self, _z: u8, _x: u32, _y: u32) -> Option<Vec<String>> {
+            self.from.clone()
         }
         fn prefetch_counted(
             &self,
@@ -2723,7 +2737,7 @@ pub(crate) mod tests {
         let t = crate::terrain_zoom::tile_at(10.5, 45.5, 6);
         let (pool, relief) = (Const::new(100.0), Const::new(7.0));
         let fill = fill_of(&cov, &sets, &|_, _| false);
-        let reaching = |z: u8, x: u32, y: u32| crate::terrain_zoom::codes_reaching(&sets, z, x, y);
+        let reaching = |z: u8, x: u32, y: u32| crate::terrain_zoom::reaching(&sets, z, x, y);
         let raw = Fills::new(&pool, &relief, &fill, &reaching);
         let native = |z: u8, x: u32, y: u32| native_of(&fill, z, x, y);
         let src = Sources { native: Some(&native), sets: &sets, ..Default::default() };
@@ -2780,17 +2794,22 @@ pub(crate) mod tests {
     }
 
     /// Past z12 a tile none of whose pixels came from a dataset reaching its zoom isn't kept, and a
-    /// quarter whose child the run didn't build is its tile's own sample (the depth's rule).
+    /// quarter whose child the run didn't build is its tile's own sample (the depth's rule). Told by
+    /// dataset, not code (task #929 review: HRDEM's 1 m and 2 m share theirs, so a tile of the 2 m
+    /// alone was kept at z16 where the 1 m reaches it).
     #[test]
     fn a_deep_tile_only_upsampling_a_coarser_dataset_isnt_kept() {
-        let (pool, relief) = (Const::new(100.0), Const::new(7.0));
+        let (pool, relief) = (Const::from(100.0, &["hrdem"]), Const::new(7.0));
         let child = |_: u8, _: u32, _: u32| Fill::Child;
-        let none = |_: u8, _: u32, _: u32| 0u32;
-        let some = |_: u8, _: u32, _: u32| 1u32;
+        let none = |_: u8, _: u32, _: u32| Vec::<String>::new();
+        let other = |_: u8, _: u32, _: u32| vec!["hrdem-1m".to_string()];
+        let some = |_: u8, _: u32, _: u32| vec!["hrdem-1m".to_string(), "hrdem".to_string()];
         let z = crate::terrain_deep::FIRST_Z + 1;
         let f = Fills::new(&pool, &relief, &child, &none);
         // (No child built: every quarter the tile's own sample, and with no dataset reaching it, not kept.)
         assert!(f.get(z, 10, 10).unwrap().0.is_some() && !f.keep(z, 10, 10));
+        let f = Fills::new(&pool, &relief, &child, &other);
+        assert!(f.get(z, 10, 10).unwrap().0.is_some() && !f.keep(z, 10, 10), "another dataset reaches it, not its own");
         let f = Fills::new(&pool, &relief, &child, &some);
         assert!(f.get(z, 10, 10).unwrap().0.is_some() && f.keep(z, 10, 10));
         // (Its children built: none of it read.)

@@ -50,7 +50,7 @@ fn main() -> anyhow::Result<()> {
         let t0 = std::time::Instant::now();
         let n = pool.with_tiles(&rt, s.water, |tiles| {
             relief.with_tiles(&rt, s.water, |rel| -> anyhow::Result<usize> {
-                let reaching = |z: u8, x: u32, y: u32| pipeline::terrain_zoom::codes_reaching(&sets, z, x, y);
+                let reaching = |z: u8, x: u32, y: u32| pipeline::terrain_zoom::reaching(&sets, z, x, y);
                 let fills = pipeline::terrain_pack::Fills::new(tiles, rel, &fill, &reaching);
                 Ok(match what {
                     "root" => pipeline::terrain_pack::make_root(&out, &fills, &s)?.len(),
