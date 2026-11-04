@@ -228,7 +228,7 @@ pub enum Cmd {
     /// The archived forecasts held to what happened (docs/pool.md §7.9): each job's forecast start
     /// and end against the history's, by step, Mac, horizon and code version (bias, median and
     /// 90th percentile of the absolute error), how often jobs ran in the order and on the Mac and
-    /// slot forecast. With --replay, the backtest: the terms' recorded forecast inputs rerun with
+    /// slot forecast. With --replay, the backtest: the lead's recorded forecast inputs rerun with
     /// the forecast as the code before made it and as it is, both held to the history. Reads only
     ForecastCheck {
         /// From (UTC): unix seconds, YYYY-MM-DD, YYYY-MM-DDTHH:MM, or back from now (12h, 3d);
@@ -238,8 +238,9 @@ pub enum Cmd {
         /// To (the same forms; default now)
         #[arg(long, value_name = "TIME")]
         to: Option<String>,
-        /// The backtest: each term's forecast input (state/build/term/*/forecast-input.json) made
-        /// in the span, rerun old and new
+        /// The backtest: the lead's forecast inputs archived in the span
+        /// (state/coord/forecast-inputs; before it the terms'
+        /// state/build/term/*/forecast-input.json), rerun old and new
         #[arg(long)]
         replay: bool,
         /// With --replay: the test set's start (the same forms; default a day before the last

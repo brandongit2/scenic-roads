@@ -14,6 +14,8 @@
 //!   magic number (`entries_of`).
 //!   A batch goes once `BATCH` entries wait or the oldest has waited `FLUSH`: a few appends an hour,
 //!   never a file a forecast. A batch not yet written when the agent stops is lost (`FLUSH` at most).
+//!   The same thread archives each forecast's input, handed over with its entry, in frames of
+//!   their own (crate::agent::fcinputs).
 //! - A forecast whose schedule and inputs are those of the last one written (`Entry::key`: its
 //!   times in `GRAIN`-long buckets, so two times either side of a bucket's edge differ: a repeat is
 //!   sometimes written, never a changed forecast skipped; the measured NAS rates and the Macs' passing conditions left out) is not
@@ -295,15 +297,22 @@ fn round(x: f64, by: f64) -> f64 {
 /// ~170 KB at live scale, the next much the same).
 pub fn compress(b: &[u8]) -> io::Result<Vec<u8>> {
     use std::io::Write;
-    let mut z = zstd::stream::write::Encoder::new(Vec::new(), LEVEL)?;
-    z.long_distance_matching(true)?;
-    z.window_log(WINDOW_LOG)?;
+    let mut z = encoder()?;
     z.write_all(b)?;
     z.finish()
 }
 
+/// A frame's encoder as `compress`'s: long-distance matching over a `WINDOW_LOG` window, so a line
+/// can refer to the lines before it in its frame.
+pub(crate) fn encoder() -> io::Result<zstd::stream::write::Encoder<'static, Vec<u8>>> {
+    let mut z = zstd::stream::write::Encoder::new(Vec::new(), LEVEL)?;
+    z.long_distance_matching(true)?;
+    z.window_log(WINDOW_LOG)?;
+    Ok(z)
+}
+
 /// `compress`'s window: 64 MB (a reader's default limit is 128 MB).
-const WINDOW_LOG: u32 = 26;
+pub(crate) const WINDOW_LOG: u32 = 26;
 
 /// A day's file.
 pub fn day_path(root: &store::nasfs::NasRoot, day: &str) -> store::nasfs::NasPath {
@@ -318,8 +327,11 @@ pub fn append(root: &store::nasfs::NasRoot, day: &str, entries: &[Entry]) -> Res
         b.extend(serde_json::to_vec(e)?);
         b.push(b'\n');
     }
-    let z = compress(&b)?;
-    let p = day_path(root, day);
+    append_frame(day_path(root, day), compress(&b)?)
+}
+
+/// Frame `z` appended to the file at `p` (its folder made): one write, within `nasread`'s deadline.
+pub(crate) fn append_frame(p: store::nasfs::NasPath, z: Vec<u8>) -> Result<()> {
     let q = p.clone();
     nasread::write(&p, move || {
         use std::io::Write;
@@ -334,22 +346,25 @@ pub fn append(root: &store::nasfs::NasRoot, day: &str, entries: &[Entry]) -> Res
 /// over those like the last written (`Entry::key`) and appends the rest in batches (`BATCH`,
 /// `FLUSH`).
 pub struct Archiver {
-    tx: mpsc::SyncSender<Entry>,
+    tx: mpsc::SyncSender<(Entry, Option<super::fcinputs::Given>)>,
 }
 
 impl Archiver {
     /// Its thread started, writing under `root`.
     pub fn start(root: store::nasfs::NasRoot) -> io::Result<Archiver> {
-        let (tx, rx) = mpsc::sync_channel::<Entry>(CHANNEL);
-        std::thread::Builder::new()
-            .name("forecast-archive".into())
-            .spawn(move || Batcher::new(root.long_retry()).run(rx))?;
+        let (tx, rx) = mpsc::sync_channel(CHANNEL);
+        let root = root.long_retry();
+        std::thread::Builder::new().name("forecast-archive".into()).spawn(move || {
+            let inputs = super::fcinputs::Batch::new(root.clone());
+            Batcher::new(root).run(rx, inputs)
+        })?;
         Ok(Archiver { tx })
     }
 
-    /// `e` handed to the thread, never waiting: dropped (said) while the thread is behind.
-    pub fn send(&self, e: Entry) {
-        if let Err(mpsc::TrySendError::Full(_)) = self.tx.try_send(e) {
+    /// `e` handed to the thread with its forecast's input (crate::agent::fcinputs), never
+    /// waiting: dropped (said) while the thread is behind.
+    pub fn send(&self, e: Entry, input: Option<super::fcinputs::Given>) {
+        if let Err(mpsc::TrySendError::Full(_)) = self.tx.try_send((e, input)) {
             eprintln!("agent: the forecasts' archive is behind (the NAS): a forecast not archived");
         }
     }
@@ -368,19 +383,30 @@ impl Batcher {
         Batcher { root, last: None, pending: Vec::new(), since: None }
     }
 
-    fn run(mut self, rx: mpsc::Receiver<Entry>) {
+    /// The entries and the inputs (`inputs`, batched apart: crate::agent::fcinputs) taken until
+    /// the agent lets go of its `Archiver`, then what waits written.
+    fn run(mut self, rx: mpsc::Receiver<(Entry, Option<super::fcinputs::Given>)>, mut inputs: super::fcinputs::Batch) {
         loop {
-            let wait = self.since.map_or(FLUSH, |s| FLUSH.saturating_sub(s.elapsed()));
+            let wait = self.since.map_or(FLUSH, |s| FLUSH.saturating_sub(s.elapsed())).min(inputs.wait());
             match rx.recv_timeout(wait) {
-                Ok(e) => self.take(e),
+                Ok((e, input)) => {
+                    if let Some(i) = input {
+                        inputs.take(i);
+                    }
+                    self.take(e);
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     self.flush();
+                    inputs.flush();
                     return;
                 }
             }
             if self.pending.len() >= BATCH || self.since.is_some_and(|s| s.elapsed() >= FLUSH) {
                 self.flush();
+            }
+            if inputs.due() {
+                inputs.flush();
             }
         }
     }
@@ -423,29 +449,46 @@ impl Batcher {
 /// zstd's frame magic number, little-endian on disk.
 const MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
-/// The entries of a file's bytes (zstd frames of lines), frame by frame: a frame that doesn't read
-/// (cut short by a stopped write, or two Macs' appends crossed over SMB) is skipped, said, and
-/// reading resumes at the next frame's magic number after its start.
+/// The entries of a file's bytes (zstd frames of lines: `frames_of`).
 pub fn entries_of(b: &[u8], what: &str) -> Vec<Entry> {
     let mut out = Vec::new();
+    frames_of(b, what, |_, v| {
+        for l in lines(&v) {
+            match serde_json::from_slice::<Entry>(l) {
+                Ok(e) => out.push(e),
+                Err(e) => eprintln!("{what}: a line not read: {e}"),
+            }
+        }
+    });
+    out
+}
+
+/// A frame's lines, blank ones left out.
+pub(crate) fn lines(v: &[u8]) -> impl Iterator<Item = &[u8]> {
+    v.split(|c| *c == b'\n').filter(|l| !l.iter().all(u8::is_ascii_whitespace))
+}
+
+/// One frame as `encoder` wrote it, decoded.
+pub(crate) fn decode(frame: &[u8]) -> io::Result<Vec<u8>> {
+    let mut d = zstd::stream::read::Decoder::new(frame)?.single_frame();
+    d.window_log_max(WINDOW_LOG)?;
+    let mut v = Vec::new();
+    io::Read::read_to_end(&mut d, &mut v)?;
+    Ok(v)
+}
+
+/// A file's zstd frames in order, each handed to `each` as written and decoded: a frame that
+/// doesn't read (cut short by a stopped write, or two Macs' appends crossed over SMB) is skipped,
+/// said, and reading resumes at the next frame's magic number after its start.
+pub(crate) fn frames_of(b: &[u8], what: &str, mut each: impl FnMut(&[u8], Vec<u8>)) {
     let mut at = 0;
     while at < b.len() {
         let rest = &b[at..];
-        let frame = zstd::zstd_safe::find_frame_compressed_size(rest).ok().and_then(|n| {
-            let mut d = zstd::stream::read::Decoder::new(&rest[..n]).ok()?.single_frame();
-            d.window_log_max(WINDOW_LOG).ok()?;
-            let mut v = Vec::new();
-            io::Read::read_to_end(&mut d, &mut v).ok()?;
-            Some((n, v))
-        });
+        let frame =
+            zstd::zstd_safe::find_frame_compressed_size(rest).ok().and_then(|n| Some((n, decode(&rest[..n]).ok()?)));
         match frame {
             Some((n, v)) => {
-                for l in v.split(|c| *c == b'\n').filter(|l| !l.iter().all(u8::is_ascii_whitespace)) {
-                    match serde_json::from_slice::<Entry>(l) {
-                        Ok(e) => out.push(e),
-                        Err(e) => eprintln!("{what}: a line not read: {e}"),
-                    }
-                }
+                each(&rest[..n], v);
                 at += n.max(1);
             }
             None => {
@@ -461,7 +504,6 @@ pub fn entries_of(b: &[u8], what: &str) -> Vec<Entry> {
             }
         }
     }
-    out
 }
 
 /// The archived forecasts made from `from` until `to` (unix s): the days' files and the months'

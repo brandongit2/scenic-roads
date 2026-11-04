@@ -14,11 +14,16 @@
 //! absolute error.
 
 use super::fcarchive::Entry;
-use super::forecast::{self, Record};
+use super::fcinputs::Input;
+use super::forecast;
 use crate::coord::history::Event;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt::Write;
+
+/// The span a check reads by default (s back from now): the forecasts' archive and the forecast
+/// inputs' (the days it keeps: crate::agent::fcinputs::KEEP_S).
+pub const SPAN_S: u64 = 7 * 86_400;
 
 /// A job done, as the history says it: its slot (the history's worker), its Mac.
 #[derive(Clone, Debug, PartialEq)]
@@ -321,25 +326,28 @@ pub fn dedup(mut events: Vec<Event>) -> Vec<Event> {
     events
 }
 
-/// The terms' forecast inputs (state/build/term/<E>/forecast-input.json, each term's last: docs/pool.md
-/// §10) made from `from` to `to`, in time order. One that doesn't read is skipped, said.
-pub fn records(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Record<'static>> {
-    let mut out: Vec<Record<'static>> = Vec::new();
+/// The forecast inputs made from `from` to `to`, in time order: the archive's (crate::agent::fcinputs),
+/// and the terms' (`state/build/term/<E>/forecast-input.json`, each term's last: docs/pool.md §10,
+/// written before the archive while a member read the page's files on the NAS) at times it hasn't.
+/// One that doesn't read is skipped, said.
+pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
+    let mut out = super::fcinputs::read(root, from, to);
+    let archived: std::collections::BTreeSet<u64> = out.iter().map(|i| i.at).collect();
     for t in root.join("state/build/term").read_dir().unwrap_or_default() {
-        let p = t.path.join("forecast-input.json");
-        let Ok(b) = p.read() else { continue };
-        match Record::from_bytes(&b) {
-            Ok(r) if (from..to).contains(&r.input.now) => out.push(r),
+        let Some(term) = t.path.file_name().and_then(|n| n.parse().ok()) else { continue };
+        let Ok(b) = t.path.join("forecast-input.json").read() else { continue };
+        match Input::of_bytes(term, b) {
+            Ok(i) if (from..to).contains(&i.at) && !archived.contains(&i.at) => out.push(i),
             Ok(_) => {}
             Err(e) => eprintln!("forecast-check: {}: {e}", t.path.file_name().unwrap_or("?")),
         }
     }
-    out.sort_by_key(|r| r.input.now);
+    out.sort_by_key(|i| i.at);
     out
 }
 
-/// `records` rerun (in time order) and archived as the lead archives its forecasts (`Entry::of`),
-/// as forecast code `code` made them (2 to 4, the code now): each step's pace
+/// `inputs` rerun (in time order, each read as it comes: one that doesn't read is skipped, said)
+/// and archived as the lead archives its forecasts (`Entry::of`), as forecast code `code` made them (2 to 4, the code now): each step's pace
 /// (`forecast::step_pace`) from the history before it and the costs the records before it (and
 /// it) noted, its workers' speeds its lanes' with their Mac's hold (`Held::util`, code 2's) taken
 /// off, and each lane's job under way held to its step's longest of late (`forecast::cap_busy`; a
@@ -349,11 +357,17 @@ pub fn records(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Record<'
 /// history. Code 4 also each Mac's pace at each step from the history (crate::paces: the
 /// scheduler's, its costs and its lanes' times by it, `repace`); before it, none. All keep the
 /// record's lanes.
-pub fn replay(records: &[Record<'static>], events: &[Event], code: u32) -> Vec<Entry> {
+pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
     let mut noted = forecast::Noted::default();
     let mut out = Vec::new();
-    for r in records {
-        let mut r = r.clone();
+    for i in inputs {
+        let mut r = match i.record() {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("forecast-check: the input of term {} at {}: {e:#}", i.term, i.at);
+                continue;
+            }
+        };
         let inp = &mut r.input;
         inp.step_pace.clear();
         noted.note(inp);
@@ -433,7 +447,7 @@ fn repace(inp: &mut forecast::Input, events: &[Event]) {
     }
 }
 
-/// The backtest's answer: the records before `split` (train) and from it (test), each replayed
+/// The backtest's answer: the inputs before `split` (train) and from it (test), each replayed
 /// old and new and checked against the history's jobs that ended from the record on.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Backtest {
@@ -442,9 +456,9 @@ pub struct Backtest {
     pub test: [Report; 2],
 }
 
-/// The backtest of `records` (`replay`, old and new) against `events`, over `from`..`to`.
-pub fn backtest(records: &[Record<'static>], events: &[Event], from: u64, to: u64, split: u64) -> Backtest {
-    let run = |code: u32| replay(records, events, code);
+/// The backtest of `inputs` (`replay`, old and new) against `events`, over `from`..`to`.
+pub fn backtest(inputs: &[Input], events: &[Event], from: u64, to: u64, split: u64) -> Backtest {
+    let run = |code: u32| replay(inputs, events, code);
     let (old, new) = std::thread::scope(|s| {
         let o = s.spawn(|| run(forecast::VERSION - 1));
         let n = run(forecast::VERSION);
@@ -795,7 +809,7 @@ mod tests {
     /// since an earlier record noted their costs, and is archived as code `VERSION`.
     #[test]
     fn the_replay_runs_old_and_new_on_the_records() {
-        use super::super::forecast::{Cadence, Cost, Input, Machine};
+        use super::super::forecast::{Cadence, Cost, Input, Machine, Record};
         let rec = |now: u64, targets: std::ops::Range<u32>| {
             let c = Cost { secs: 600.0, known: true, peak_mb: 100 };
             Record {
@@ -835,7 +849,10 @@ mod tests {
         // record's left at 20,000.
         let es: Vec<Event> =
             (0..3).map(|i| ev(11_000 + i, "end", "m4", None, "depth", &[&format!("6/1/{i}")], Some(300.0))).collect();
-        let records = vec![rec(10_000, 0..3), rec(20_000, 3..5)];
+        let records: Vec<super::super::fcinputs::Input> = [rec(10_000, 0..3), rec(20_000, 3..5)]
+            .iter()
+            .map(|r| super::super::fcinputs::Input::of_bytes(1, r.bytes().unwrap()).unwrap())
+            .collect();
         let span = |es: &[Entry]| {
             let p = es[1].placed();
             (es[1].code, p[0].until - p[0].from)

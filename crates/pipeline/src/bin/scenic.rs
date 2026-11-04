@@ -1818,7 +1818,7 @@ mod tests {
 
 /// `scenic forecast-check`: the archived forecasts made from `from` to `to` held to the history's
 /// jobs that ended then (agent::fccheck); with `replay` (its test set's start, if said), the
-/// backtest of the terms' forecast inputs made then.
+/// backtest of the forecast inputs made then (agent::fcinputs, and the terms' from before it).
 fn forecast_check(
     from: Option<String>,
     to: Option<String>,
@@ -1835,18 +1835,18 @@ fn forecast_check(
             None => Ok(or),
         }
     };
-    let (from, to) = (at(&from, now.saturating_sub(7 * 86_400))?, at(&to, now)?);
+    let (from, to) = (at(&from, now.saturating_sub(fccheck::SPAN_S))?, at(&to, now)?);
     anyhow::ensure!(from < to, "--from is not before --to");
     let root = root(r, false)?;
     // (A day before `from` too: what each step's pace reads.)
     let days = now.saturating_sub(from) / 86_400 + 2;
     let events = fccheck::dedup(pipeline::pubtimes::load_history(Some(&root), None, days));
     if let Some(split) = replay {
-        let records = fccheck::records(&root, from, to);
-        anyhow::ensure!(!records.is_empty(), "no forecast input recorded in the span");
-        let last = records.iter().map(|r| r.input.now).max().unwrap_or(to);
+        let inputs = fccheck::inputs(&root, from, to);
+        anyhow::ensure!(!inputs.is_empty(), "no forecast input recorded in the span");
+        let last = inputs.iter().map(|i| i.at).max().unwrap_or(to);
         let split = at(&split, last.saturating_sub(86_400))?;
-        let b = fccheck::backtest(&records, &events, from, to, split);
+        let b = fccheck::backtest(&inputs, &events, from, to, split);
         if json {
             println!("{}", serde_json::to_string_pretty(&b)?);
         } else {

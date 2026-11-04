@@ -97,6 +97,8 @@ pub struct Report {
     pub history_days_archived: usize,
     /// Days of the forecasts' archive packed into `state/coord/forecasts-archive/<YYYY-MM>.tar`.
     pub forecast_days_archived: usize,
+    /// Days of the forecast inputs' archive removed (crate::agent::fcinputs::KEEP_S), or counted.
+    pub forecast_input_days_removed: usize,
     /// GC's queue's due set (shadow, crate::agent::gcqueue) checked against this run's removals, in
     /// words; the check itself, written beside the due set for the lead's agent.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -693,6 +695,14 @@ pub fn run(
                 rep.warnings.extend(h.warnings);
             }
             Err(e) => rep.warnings.push(format!("forecasts not archived: {e:#}")),
+        }
+        // The forecast inputs' archive's days before the backtest's span (task #933).
+        match super::fcinputs::prune(root, crate::agent::jobs::now_s(), dry_run) {
+            Ok(h) => {
+                meta(h.listed, h.stats, h.files_removed as u64);
+                rep.forecast_input_days_removed = h.files_removed;
+            }
+            Err(e) => rep.warnings.push(format!("forecast inputs not pruned: {e:#}")),
         }
         // The uploads still pending checked on the NAS itself, last (the longest, hashing on the
         // NAS); a failure is said, never fails GC. Not a project folder on the NAS's share (a

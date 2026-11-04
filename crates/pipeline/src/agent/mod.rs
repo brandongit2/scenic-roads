@@ -38,6 +38,7 @@ pub mod cond;
 pub mod every;
 pub mod fcarchive;
 pub mod fccheck;
+pub mod fcinputs;
 pub mod forecast;
 pub mod gc;
 pub mod gcqueue;
@@ -8433,23 +8434,25 @@ impl Agent {
                 }
             }
             // The forecast's input, each time the forecast's made (at most each minute).
-            if let Some(b) = fc_bytes {
-                if let Err(e) = run.side.nas().write_whole(&pool::forecast_input_path(term), &b) {
+            if let Some(b) = &fc_bytes {
+                if let Err(e) = run.side.nas().write_whole(&pool::forecast_input_path(term), b) {
                     eprintln!("agent: the forecast's input of term {term}: {e:#}");
                 }
             }
         } else {
             (run.view_written, run.regions_written) = (None, None);
         }
-        // Into the forecasts' archive (fcarchive): handed to its thread, which writes in batches.
+        // Into the forecasts' archive (fcarchive) with its input (fcinputs): handed to its thread,
+        // which writes in batches.
         if let Some(e) = fc_entry {
+            let input = fc_bytes.map(|bytes| fcinputs::Given { term, at: e.at, bytes });
             let a = self.fc_archiver.get_or_init(|| {
                 fcarchive::Archiver::start(root.clone())
                     .map_err(|e| eprintln!("agent: the forecasts' archive's thread: {e}"))
                     .ok()
             });
             if let Some(a) = a {
-                a.send(e);
+                a.send(e, input);
             }
         }
         let events = co.history_since(run.history_seq);
