@@ -130,7 +130,8 @@ impl Here {
     /// holds no map. Made of the map once a `seq` while one made is held, else again.
     pub fn catalogue(&self) -> Option<std::sync::Arc<store::catalogue::Catalogue>> {
         let map = self.feed.map()?;
-        if let Some(c) = self.head.get().as_ref().as_ref().and_then(std::sync::Weak::upgrade).filter(|c| c.n == map.seq) {
+        if let Some(c) = self.head.get().as_ref().as_ref().and_then(std::sync::Weak::upgrade).filter(|c| c.n == map.seq)
+        {
             return Some(c);
         }
         match map.catalogue() {

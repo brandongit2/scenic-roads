@@ -2260,12 +2260,8 @@ impl Coordinator {
     /// the memory each worker spares (MB).
     pub fn for_forecast(
         &self,
-    ) -> (
-        BTreeMap<String, Cost>,
-        Vec<(String, String, Vec<String>, u64, bool)>,
-        history::Events,
-        BTreeMap<String, u64>,
-    ) {
+    ) -> (BTreeMap<String, Cost>, Vec<(String, String, Vec<String>, u64, bool)>, history::Events, BTreeMap<String, u64>)
+    {
         let mut s = self.shared.lock().unwrap();
         let now = s.now();
         // (Each with how long ago it was granted; its worker the slot running it when said

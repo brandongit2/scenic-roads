@@ -850,7 +850,15 @@ mod tests {
         let kept = Kept::of(tiles);
         assert!(matches!(&kept, Kept::Tiles(t) if t.len() == 4));
         assert_eq!(kept.text(), tiles);
-        for other in ["", "abc", "6/1/1 00000000000000FF", "06/1/1 00000000000000ff", "6/1/1 ff", "1/2/0 00000000000000ff", "6/1/1 00000000000000ff\n"] {
+        for other in [
+            "",
+            "abc",
+            "6/1/1 00000000000000FF",
+            "06/1/1 00000000000000ff",
+            "6/1/1 ff",
+            "1/2/0 00000000000000ff",
+            "6/1/1 00000000000000ff\n",
+        ] {
             let kept = Kept::of(other);
             assert!(matches!(kept, Kept::Text(_)), "{other:?}");
             assert_eq!(kept.text(), other);

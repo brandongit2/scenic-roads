@@ -701,7 +701,10 @@ impl Sources {
     /// Sources from declarations read elsewhere (a scratch check's: `regions-check --declarations`),
     /// one a role (those of the `MANY` roles left out).
     pub fn of(v: Vec<Source>) -> Sources {
-        Sources { by_role: std::sync::Arc::new(v.into_iter().map(|s| (s.data.role.clone(), s)).collect()), many: Default::default() }
+        Sources {
+            by_role: std::sync::Arc::new(v.into_iter().map(|s| (s.data.role.clone(), s)).collect()),
+            many: Default::default(),
+        }
     }
 
     /// The declarations (`<id>.toml`) in folder `dir`, as sources.
