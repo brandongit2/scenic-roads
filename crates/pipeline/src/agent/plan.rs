@@ -2424,7 +2424,7 @@ impl Planner {
         // beside the others (`forecast::MacRoom`).
         let mac_mb = (self.inp.mac.resources(&self.o.home, None, None, None).mem_gb * 1024.0) as u64;
         let mut rooms: BTreeMap<String, forecast::MacRoom> = BTreeMap::new();
-        // (A Mac's room is the memory its jobs may hold together above its floor and margin now
+        // (A Mac's room is the memory its jobs may hold together above its floor now
         // (`build_room`, memguard::Reading::admit_mb), as `pack_why` takes an ask's memory: a member's `Ask::mem_mb` is it,
         // not a slot's; the coordinator's worker record keeps it (`mem`). This Mac's, its own.)
         rooms.insert(self.host.clone(), forecast::MacRoom { mem_mb: self.build_room(), cores: mac_cores() });

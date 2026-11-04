@@ -546,8 +546,8 @@ stands and the memory as the guard last sampled it. The agent reads it each loop
 Mac's default, an eighth of its memory (6 GB of the M4's 48, 4 of the Mac mini's 32, 2 of the M1's
 16), shown as the setting's value: on 4 Nov each of the three, busy and compressing, kept a file
 cache of 11–12 % of its memory (the M4 5.4 GB, the Mac mini 3.6, the M1 1.8) that macOS held rather
-than dropped, so a Mac's available memory falls under an eighth once macOS compresses rather than
-drops cache. The floor is taken as set: no cap, reserve or footprint stands behind it (the agent
+than dropped, and often more (below, *Past two fifths*), so a Mac's available memory falls near an
+eighth once macOS compresses rather than drops cache. The floor is taken as set: no cap, reserve or footprint stands behind it (the agent
 counts as any other process).
 
 - **Available** (`sys::memory_available`, `sys::Pages::available`; task #945): what macOS hands
@@ -563,10 +563,11 @@ counts as any other process).
   - *By compressing:* idle app memory macOS compresses cheaply counted as used made a 32 GB Mac
     mini at normal pressure show 6.2 GB available. The kernel's pressure follows its compressor:
     on the three Macs' live series (the 10 s ring, 2–4 Nov, the compressor's share of the memory
-    not wired from `kern.memorystatus_level` and the compressor's pages) each went to warning once
-    the compressor held 48–50 % of the memory not wired and back to normal under 39–41 %, and was
-    never in warning a whole bucket under 39.8 % (the kernel's warning line on the pages not
-    compressed, its way back at 1.2 times that). So the compressor may grow to two fifths of it
+    not wired from `kern.memorystatus_level` and the compressor's pages) each went to warning
+    most often once the compressor held 48–50 % of the memory not wired (174 entries: 16–33 % of
+    each Mac's under 48 %, 6 under 40 %, as low as 31 %) and back to normal most often under
+    39–41 %, and was never in warning a whole bucket under 39.8 % (the kernel's warning line on the
+    pages not compressed, its way back at 1.2 times that). So the compressor may grow to two fifths of it
     (`sys::COMPRESSOR_NORMAL`) with the pressure normal; each page more holds what it holds now
     (its pages stored over its pages, the ratio), freeing ratio − 1. What it compresses is the
     inactive anonymous memory: the inactive queue less every file-backed page not speculative
@@ -577,9 +578,15 @@ counts as any other process).
     3.4 (5.1 idle at 3.0), the M1 3.0 and 1.3 (2.1 idle at 2.4); 3 GB of incompressible memory
     touched on the M4 then (in 512 MB steps, its jobs running) left the pressure normal and the
     compressor's share at 29 %. Shown as said: "10.3 GB available (3.5 GB by compressing)".
-  - The default floor sits under what macOS keeps: once compression is spent (the compressor at
-    two fifths) the available is the file cache macOS held on 4 Nov, 11–12 % of each Mac, under an
-    eighth, so a Mac at its default floor gives back as compression runs out.
+  - *Past two fifths*, compression spent, the available is what's left at no cost: chiefly the
+    file cache macOS keeps rather than drops while it compresses. On the M4's 10 s series of 4 Nov
+    (06:50 on, the hours the available was recorded), with the compressor at 40–48 % of the memory
+    not wired, 5.3 GB at the 10th percentile and 7.5 at the median; at 48 % and past, 5.2 and 6.4;
+    the M1's few such buckets 2.7–3.3 GB. So the floor gives back there only where it sits above
+    that cache: the M4's default 6 GB less than half the time, its owner's 4 GB rarely (3.4 GB the
+    least), the M1's 2 GB not once. Past two fifths it is the brake (the pressure at warning
+    holding new work, swap grown past the floor's room freezing and giving back) that stands
+    between the jobs and swap, not the floor.
 - **Reading** (`memguard::Reading`, every 5 s on the sampler's thread, with the jobs' footprints):
   what's available and what compressing frees among it, what the jobs hold, the floor, the swap
   grown over the last five minutes (`SWAP_WINDOW`: its use now less the least in the window), the

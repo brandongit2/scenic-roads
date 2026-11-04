@@ -1328,6 +1328,17 @@ mod tests {
         assert!(at_default.below() && !at_default.acts());
         let two = [Some(peak), Some(peak)];
         assert_eq!(decide_by(&two, at_default.room_mb(), &[false; 2], &[false; 2], &[1, 2]), Act::Drain(1));
+        // (But past two fifths the M4's series kept more cache than the model's 5.4 GB: 6.4 GB at
+        // the median at warning. There even the default floor isn't reached: nothing given back by
+        // it, no job started; the brake (the pressure at warning, swap grown past the floor's room)
+        // is what acts.)
+        let kept = Reading {
+            held_mb: 2 * peak,
+            floor_mb: 6 * GB,
+            ..mac(0.0, 6.4, 15.0 + 8.2 + 4.0 + 4.0 - 9.1 - 1.0, 0.0, 12.8, 22.9)
+        };
+        assert!(kept.compress_mb == 0 && !kept.below() && admits(&kept, 2) == 0, "{kept:?}");
+        assert!(Reading { pressure: 2, swap_grown_mb: GB, ..kept }.acts(), "swap grown past the floor's room");
         // 01:10 as it was, five jobs at 37 GB: the compressor 23.1 GB of 39.8, past two fifths, so
         // compression counts nothing (0.2 GB free, the 5.4 kept); the pressure at warning: no job
         // starts; the swap grown 3.6 GB leaves 2.0 usable, under the floor: the brake acts, the

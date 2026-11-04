@@ -579,8 +579,9 @@ pub fn memory_compressed() -> Option<u64> {
 /// under two fifths (its warning-to-normal line, 1.2 × the normal-to-warning one on the pages not
 /// compressed). Measured on the three Macs' live series (the 10 s ring, 2–4 Nov, every bucket the
 /// pressure held one level, the compressor's share as `kern.memorystatus_level` and the
-/// compressor's pages give it): into warning at 48–50 %, back to normal at 39–41 %, never in
-/// warning a whole bucket under 39.8 % (docs/pool.md §7.1). Compression the available counts
+/// compressor's pages give it): into warning most often at 48–50 % (6 of 174 entries under 40 %,
+/// as low as 31 %), back to normal most often at 39–41 %, never in warning a whole bucket under
+/// 39.8 % (docs/pool.md §7.1). Compression the available counts
 /// (`Pages::available`) stops at this line, so memory taken by compressing leaves the pressure
 /// normal, and a Mac past it counts none.
 pub const COMPRESSOR_NORMAL: (u64, u64) = (2, 5);
