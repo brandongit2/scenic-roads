@@ -326,14 +326,21 @@ fn watch(home: &Path, tx: &Sender<In>, sweep: Duration) {
     // sweep.)
     #[cfg(target_os = "macos")]
     let mut kq: Option<Kqueue> = None;
-    while tx.send(In::Look).is_ok() {
+    loop {
+        #[cfg(target_os = "macos")]
+        if kq.as_ref().is_none_or(|k| k.stale()) {
+            kq = None;
+            std::fs::create_dir_all(&cancels).ok();
+            kq = Kqueue::on(&[home, &cancels]);
+        }
+        // (Armed, then the look: a change before the arming is the look's, one after it wakes the
+        // kqueue. Looked first, a change between the look and the arming was seen by neither, and
+        // waited for the sweep: #944.)
+        if tx.send(In::Look).is_err() {
+            return;
+        }
         #[cfg(target_os = "macos")]
         {
-            if kq.as_ref().is_none_or(|k| k.stale()) {
-                kq = None;
-                std::fs::create_dir_all(&cancels).ok();
-                kq = Kqueue::on(&[home, &cancels]);
-            }
             if let Some(k) = &kq {
                 k.wait(sweep);
                 continue;
@@ -549,6 +556,30 @@ pub(crate) mod tests {
         assert!(k.stale(), "made again");
         let k = Kqueue::on(&[&a, &b]).unwrap();
         assert!(!k.stale() && k.fds.len() == 2);
+    }
+
+    /// Task #944: a change made the moment control has the watcher's look still wakes it. The
+    /// watcher asked its look and then armed its kqueue, so a file written in between (control's
+    /// look done, finding nothing; a loaded Mac's watcher not yet armed) was never seen without a
+    /// sweep: `a_hold_ask_is_taken_up_at_once` waited out its watchdog. Armed first, then the look:
+    /// a change before the arming is the look's, one after it the kqueue's. No sweep here.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_change_once_the_look_is_asked_wakes_the_watcher() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().to_path_buf();
+        let (tx, rx) = mpsc::channel();
+        let h = home.clone();
+        let w = std::thread::spawn(move || watch(&h, &tx, Duration::from_secs(365 * 86_400)));
+        // (The watcher's first look, taken up as control would: nothing there yet.)
+        assert!(matches!(rx.recv().unwrap(), In::Look));
+        std::fs::write(home.join(control::HOLD_REQUEST), b"{}").unwrap();
+        let woken = rx.recv_timeout(store::testkit::WATCHDOG);
+        assert!(matches!(woken, Ok(In::Look)), "the change after the look never woke the watcher");
+        // (Its next send fails once the receiver is gone: woken once more, it ends.)
+        drop(rx);
+        std::fs::write(home.join("end"), b"").unwrap();
+        w.join().unwrap();
     }
 
     /// Task #846, #871 step 3: this Mac's own pause ask taken up at once, by control's watcher on
