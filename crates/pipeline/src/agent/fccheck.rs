@@ -339,14 +339,16 @@ pub fn records(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Record<'
 }
 
 /// `records` rerun (in time order) and archived as the lead archives its forecasts (`Entry::of`),
-/// as forecast code `code` made them (2 or 3, the code now): each step's pace
+/// as forecast code `code` made them (2 to 4, the code now): each step's pace
 /// (`forecast::step_pace`) from the history before it and the costs the records before it (and
 /// it) noted, its workers' speeds its lanes' with their Mac's hold (`Held::util`, code 2's) taken
 /// off, and each lane's job under way held to its step's longest of late (`forecast::cap_busy`; a
 /// record holds its lanes' `busy_s` capped already). Code 2 runs each lane at its recorded speed
 /// (a code 2 record's slowed by its Mac's hold); code 3 at its speed with the hold taken off, the
 /// build's pause (`forecast::paused`) and each Mac's time by step (`forecast::took`) read from the
-/// history. Both keep the record's lanes.
+/// history. Code 4 also each Mac's pace at each step from the history (crate::paces: the
+/// scheduler's, its costs and its lanes' times by it, `repace`); before it, none. All keep the
+/// record's lanes.
 pub fn replay(records: &[Record<'static>], events: &[Event], code: u32) -> Vec<Entry> {
     let mut noted = forecast::Noted::default();
     let mut out = Vec::new();
@@ -369,7 +371,14 @@ pub fn replay(records: &[Record<'static>], events: &[Event], code: u32) -> Vec<E
             inp.paused = forecast::paused(events, inp.now);
             inp.took = forecast::took(events, inp.now, &inp.macs_named());
         }
-        let speed = |w: &str| speeds.get(w).copied().unwrap_or(1.0);
+        if code >= 4 {
+            repace(inp, events);
+        } else if let Some(st) = inp.sched.as_mut() {
+            st.paces = Default::default();
+        }
+        let paces = inp.sched.as_ref().map(|s| s.paces.clone()).unwrap_or_default();
+        let speed =
+            |w: &str, step: &str| paces.get(w, step).map_or_else(|| speeds.get(w).copied().unwrap_or(1.0), |p| 1.0 / p);
         inp.step_pace = forecast::step_pace(events, inp.now, &noted, &speed);
         let longest = forecast::longest_jobs(events, inp.now);
         forecast::cap_busy(inp, &longest);
@@ -379,6 +388,44 @@ pub fn replay(records: &[Record<'static>], events: &[Event], code: u32) -> Vec<E
         out.push(e);
     }
     out
+}
+
+/// Record input `inp` as code 4 makes it (task #926): each Mac's pace at each step from `events`
+/// to its time (crate::paces, against its first lane's Mac, the lead), the scheduler's; and its
+/// shared steps' costs put at the lead's pace by it as the lead does (`forecast::at_lead`,
+/// `step_sums`), from the scheduler's measures: a measured target's by its own, one not measured
+/// by its step's mean. A cost its record doesn't hold the measures of (no scheduler, a step none
+/// of whose targets it holds) stays as recorded, as does a Mac's whose pace isn't known (taken
+/// at its lane's recorded speed, as the record made it).
+fn repace(inp: &mut forecast::Input, events: &[Event]) {
+    let Some(lead) = inp.machines.first().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())) else { return };
+    let Some(st) = inp.sched.as_mut() else { return };
+    st.paces = crate::paces::Paces::of(events, &lead, inp.now);
+    let speeds: BTreeMap<String, f64> = inp.machines.iter().map(|m| (m.name.clone(), m.speed)).collect();
+    let speed = |w: Option<&str>| w.and_then(|w| speeds.get(w)).copied().unwrap_or(1.0);
+    let at = |c: &crate::coord::Cost, step: &str| forecast::at_lead(c, step, &st.paces, &speed);
+    let sums = forecast::step_sums(&st.costs, &at);
+    let costs = &st.costs;
+    let put = |step: &str, target: &str, c: &mut forecast::Cost| match costs.get(&crate::coord::cost_key(step, target))
+    {
+        Some(m) if c.known => c.secs = at(m, step),
+        None if !c.known => {
+            if let Some(s) = sums.get(step).filter(|s| s.1 > 0.0) {
+                c.secs = s.0 / s.1;
+            }
+        }
+        _ => {}
+    };
+    for (step, ts) in inp.costs.iter_mut() {
+        for (t, c) in ts.iter_mut() {
+            put(step, t, c);
+        }
+    }
+    for (step, t, c) in inp.chains.iter_mut().chain(inp.after.iter_mut()).chain(inp.idle.iter_mut()) {
+        if super::steps::SHARED.contains(&step.as_str()) {
+            put(step, t, c);
+        }
+    }
 }
 
 /// The backtest's answer: the records before `split` (train) and from it (test), each replayed

@@ -2310,23 +2310,18 @@ impl Planner {
         let mut speeds = forecast::speeds(&events, &self.host, &names, 0.5);
         speeds.extend(forecast::speeds(&events, &self.host, &own_names, 0.8));
         // (A time measured on a member, at the lead's pace; one measured here or by a page, as it is.)
-        let pace = |worker: Option<&String>| worker.and_then(|w| speeds.get(w)).map_or(1.0, |s| s.0);
+        let pace = |worker: Option<&str>| worker.and_then(|w| speeds.get(w)).map_or(1.0, |s| s.0);
+        // (Each Mac's pace at each step, the coordinator's (crate::paces, task #926): a time put at
+        // the lead's pace by its Mac's pace at its step; a Mac it doesn't know, by its speed.)
+        let paces = self.coord.as_ref().map(|c| c.paces()).unwrap_or_default();
+        let at_lead = |c: &crate::coord::Cost, step: &str| forecast::at_lead(c, step, &paces, &pace);
         // Each shared step's mean of the targets measured (a z6 tile's are kept by its target alone);
         // else what its jobs here took a target; else a first guess.
         // (Each measured the way its step runs now: crate::coord::cost_version. A z3 tile's tree
         // cover isn't a z6 tile's.)
         // (A step whose time is the work its target finds, crate::needs::PER_WORK, weighed by it: a
         // pyramids-fill z6 tile with nothing to fetch says nothing of one fetching for hours, task #830.)
-        let mut sums: BTreeMap<String, (f64, f64)> = BTreeMap::new();
-        for (k, c) in &costs {
-            let step = memguard::step_of_key(k);
-            if c.v < crate::coord::cost_version(step) {
-                continue;
-            }
-            let Some(w) = crate::needs::time_weight(step, c) else { continue };
-            let e = sums.entry(step.to_string()).or_default();
-            (e.0, e.1) = (e.0 + c.secs as f64 * pace(c.worker.as_ref()) * w, e.1 + w);
-        }
+        let sums = forecast::step_sums(&costs, &at_lead);
         let own_secs = |step: &str| self.step_secs_here(step).unwrap_or_else(|| first_secs(step));
         let per =
             |step: &str| -> f64 { sums.get(step).filter(|s| s.1 > 0.0).map_or_else(|| own_secs(step), |s| s.0 / s.1) };
@@ -2336,9 +2331,7 @@ impl Planner {
         let need_mb = |step: &str, t: &str| book.need(step, t, 0, peak(step, t)).mem_mb;
         let cost = |step: &str, t: &str| -> Cost {
             match costs.get(&crate::coord::cost_key(step, t)) {
-                Some(c) => {
-                    Cost { secs: c.secs as f64 * pace(c.worker.as_ref()), known: true, peak_mb: need_mb(step, t) }
-                }
+                Some(c) => Cost { secs: at_lead(c, step), known: true, peak_mb: need_mb(step, t) },
                 None => Cost { secs: per(step), known: false, peak_mb: need_mb(step, t) },
             }
         };
@@ -2618,7 +2611,9 @@ impl Planner {
         // targets, at the lead's pace by their worker's speed.)
         let mut noted = self.noted.borrow_mut();
         noted.note(&inp);
-        inp.step_pace = forecast::step_pace(&events, inp.now, &noted, &|w| pace(Some(&w.to_string())));
+        inp.step_pace = forecast::step_pace(&events, inp.now, &noted, &|w, step| {
+            paces.get(w, step).map_or_else(|| pace(Some(w)), |p| 1.0 / p)
+        });
         drop(noted);
         // (Each lane's job under way held to its step's longest of late.)
         forecast::cap_busy(&mut inp, &forecast::longest_jobs(&events, now_s()));
