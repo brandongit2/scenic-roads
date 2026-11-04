@@ -688,19 +688,20 @@ impl Source {
     }
 }
 
-/// The accepted sources, by role.
+/// The accepted sources, by role. Shared by its copies (`open`'s cache hands one out on every
+/// read, the lead's plan reads it several times a pass: 134 MB copied each, task #930).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sources {
-    by_role: BTreeMap<String, Source>,
+    by_role: std::sync::Arc<BTreeMap<String, Source>>,
     /// The sources of the roles any number take (`MANY`), by role, in id order.
-    many: BTreeMap<String, Vec<Source>>,
+    many: std::sync::Arc<BTreeMap<String, Vec<Source>>>,
 }
 
 impl Sources {
     /// Sources from declarations read elsewhere (a scratch check's: `regions-check --declarations`),
     /// one a role (those of the `MANY` roles left out).
     pub fn of(v: Vec<Source>) -> Sources {
-        Sources { by_role: v.into_iter().map(|s| (s.data.role.clone(), s)).collect(), many: BTreeMap::new() }
+        Sources { by_role: std::sync::Arc::new(v.into_iter().map(|s| (s.data.role.clone(), s)).collect()), many: Default::default() }
     }
 
     /// The declarations (`<id>.toml`) in folder `dir`, as sources.
@@ -758,7 +759,7 @@ pub fn of(a: &super::Accepted) -> Result<Sources> {
             by_role.insert(role, src);
         }
     }
-    Ok(Sources { by_role, many })
+    Ok(Sources { by_role: by_role.into(), many: many.into() })
 }
 
 /// The last accepted version read, by its index's content name (which names its content: the agent
@@ -1025,11 +1026,11 @@ mod tests {
         }
         assert_eq!((unit_extra(&s).unwrap(), trees_extra(&s).unwrap()), (None, None));
         let mut changed = s.clone();
-        let lc = changed.by_role.get_mut(LAND_COVER).unwrap();
+        let lc = std::sync::Arc::make_mut(&mut changed.by_role).get_mut(LAND_COVER).unwrap();
         lc.data.params.insert("legend".into(), serde_json::json!({ "trees": [10] }));
         let want = format!("source esa-worldcover {}", lc.keyed);
         assert_eq!((unit_extra(&changed).unwrap(), trees_extra(&changed).unwrap()), (Some(want), None));
-        let leaf = changed.by_role.get_mut(LEAF_EUROPE).unwrap();
+        let leaf = std::sync::Arc::make_mut(&mut changed.by_role).get_mut(LEAF_EUROPE).unwrap();
         leaf.data.url = Some("https://example.org/other".into());
         let want = format!("source eea-leaf-type {}", leaf.keyed);
         assert_eq!(trees_extra(&changed).unwrap(), Some(want));
