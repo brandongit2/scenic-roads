@@ -40,32 +40,36 @@ def segments(t):
     return [s for s in out if s.strip()]
 def tokens(seg):
     """The words of a command segment, as the shell reads them, minus its redirections: an unquoted
-    >, >>, <, <<, <<<, >&, <&, &>, &>>, >| with an fd number before it (2>) and its target (a word, or
-    the fd after >&), with or without a space before the target, are dropped; quoted text never is."""
-    out, cur, has, q, i, skip = [], [], False, None, 0, False
+    >, >>, <, <<, <<<, <>, >&, <&, &>, &>>, and zsh's >| >! >>| >>! &>| &>! &>>| &>>!, with an fd
+    number before it (2>, unquoted) and its target (a word, or the fd after >& when it's the whole
+    word: 2>&1, >&-), with or without a space before the target, are dropped; quoted text never is.
+    A backslash-newline joins lines, as in the shell."""
+    out, cur, has, lit, q, i, skip = [], [], False, True, None, 0, False   # lit: no quote or \ in the word
     def end():
-        nonlocal cur, has, skip
+        nonlocal cur, has, lit, skip
         if has:
             if skip: skip = False
             else: out.append("".join(cur))
-        cur, has = [], False
+        cur, has, lit = [], False, True
     while i < len(seg):
         ch = seg[i]
         if q:
             if ch == q: q = None
+            elif ch == "\\" and q == '"' and seg[i + 1:i + 2] == "\n": i += 1
             elif ch == "\\" and q == '"' and seg[i + 1:i + 2] in ('"', "\\", "$", "`"): i += 1; cur.append(seg[i])
             else: cur.append(ch)
-        elif ch == "\\" and i + 1 < len(seg): i += 1; cur.append(seg[i]); has = True
-        elif ch in "'\"": q = ch; has = True
+        elif ch == "\\" and seg[i + 1:i + 2] == "\n": i += 1   # a line continuation
+        elif ch == "\\" and i + 1 < len(seg): i += 1; cur.append(seg[i]); has, lit = True, False
+        elif ch in "'\"": q = ch; has, lit = True, False
         elif ch.isspace(): end()
         elif ch == "#" and not has: break   # a comment
         elif ch in "<>" or (ch == "&" and seg[i + 1:i + 2] == ">"):
-            if has and "".join(cur).isdigit(): cur, has = [], False   # the fd number: 2>
+            if has and lit and "".join(cur).isdigit(): cur, has = [], False   # the fd number: 2> ("2"> is a word)
             else: end()
-            m = re.compile(r"&>>?|>>|<<<|<<-?|[<>]&|>\||[<>]").match(seg, i)
+            m = re.compile(r"&>>?[|!]?|>>[|!]?|<<<|<<-?|<>|[<>]&|>[|!]|[<>]").match(seg, i)
             i = m.end() - 1
-            if m.group().endswith("&"):   # >&1, >&-: the target is an fd; >&file: a word
-                f = re.compile(r"\d+-?|-").match(seg, i + 1)
+            if m.group().endswith("&"):   # >&1, >&-: the target is an fd; >&file, >&1x: a word
+                f = re.compile(r"(\d+-?|-)(?=[\s;&|()<>]|$)").match(seg, i + 1)
                 if f: i = f.end() - 1
                 else: skip = True
             else: skip = True

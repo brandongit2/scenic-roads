@@ -27,7 +27,7 @@ check() {  # expectation (ok | a text the refusal has), command
   if (( bad )); then print "FAIL ($1): $2\n  $out"; fail=1; else print "ok ($1): $2"; fi
 }
 f="$mod::x"
-for r in '> /p/log' '>/p/log' '>> /p/log' '>>/p/log' '2> /p/log' '2>/p/log' '2>>/p/log' '&> /p/log' '&>/p/log' '&>> /p/log' '>& /p/log' '>&/p/log' '< /p/in' '</p/in' '> "/p/my log"' "> '/p/my log'" '>"/p/my log"' '2>&1' '> /p/log 2>&1' '1>&2 >/p/log' '>| /p/log' '<<< x'; do
+for r in '> /p/log' '>/p/log' '>> /p/log' '>>/p/log' '2> /p/log' '2>/p/log' '2>>/p/log' '&> /p/log' '&>/p/log' '&>> /p/log' '>& /p/log' '>&/p/log' '< /p/in' '</p/in' '> "/p/my log"' "> '/p/my log'" '>"/p/my log"' '2>&1' '> /p/log 2>&1' '1>&2 >/p/log' '>| /p/log' '<<< x' '>! /p/log' '>>|/p/log' '&>>! /p/log' '<> /p/f' '2>&-' '>&2x'; do
   check ok "cargo test -p pipeline $r -- $f"
   check ok "cargo test -p pipeline -- $f $r"
   check "isn't a module path" "cargo test -p pipeline $r -- bare"
@@ -51,6 +51,11 @@ check "--release" "cargo test -p pipeline --release > /p/log 2>&1"
 check "--release" "cargo test -p pipeline --release -- $f 2>&1 | tee /p/log"
 check ok "cargo test -p pipeline --release -- $f > /p/log 2>&1 #perf"
 check "isn't a module path" "cargo test -p pipeline -- '>x'"   # quoted: an argument, not a redirect
+check "isn't a module path" "cargo test -p pipeline -- $f '2'>/p/log"   # a quoted 2 is an argument, not the fd
+check "isn't a module path" "cargo test -p pipeline -- $f \\2>/p/log"
+check ok "cargo test -p pipeline -- $f 2>&1--release"   # >& to the file 1--release, not fd 1 and a flag
+check ok $'cargo test -p pipeline \\\n  -- '"$f > /p/log"   # a line continuation is no word
+check "--release" $'cargo test -p pipeline \\\n  --release -- '$f
 check "isn't a module path" "cargo test -p pipeline -- bare"
 check "No full test suites" "cargo test -p pipeline"
 check "--release" "cargo test -p pipeline --release -- $f"
