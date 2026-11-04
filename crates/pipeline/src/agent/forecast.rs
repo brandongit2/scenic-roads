@@ -3413,7 +3413,7 @@ mod tests {
             return;
         };
         let root = std::path::Path::new(&root);
-        // (Each Mac's room as it asks: its build memory and cores.)
+        // (Each Mac's room as it asked then: the memory its jobs could hold, and its cores.)
         let room = |h: &str| match h {
             "Brandons-MacBook-Pro" => (36_000, 14),
             "Mac-mini-de-Brandon" => (26_000, 12),

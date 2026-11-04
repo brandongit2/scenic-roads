@@ -1049,49 +1049,49 @@ async function limitChecks({ js, at, touch, tap, page, check, shot, PHONE }) {
   const own = `[...document.querySelectorAll('.panel[data-tab="machines"] .live')].find((b) => b.querySelector(".reftag.set"))`;
   const tagSel = (word) => `[...${own}.querySelectorAll(".reftag.set")].find((t) => t.title.includes(${JSON.stringify(word)}))`;
   let ready = false;
-  for (let t = 0; t < 40 && !ready; t++) { ready = await js(`!!(${own} && ${tagSel("build memory")})`); if (!ready) await sleep(250); }
-  if (!ready) { check("machines: the build memory's limit drags on a long press", false, "no settable memory line on this Mac's charts"); return; }
+  for (let t = 0; t < 40 && !ready; t++) { ready = await js(`!!(${own} && ${tagSel("memory floor")})`); if (!ready) await sleep(250); }
+  if (!ready) { check("machines: the memory floor's line drags on a long press", false, "no settable memory line on this Mac's charts"); return; }
   const posted = () => js("window.__posted.length");
   const where = (word) => js(`(() => { const t = ${tagSel(word)}; t.scrollIntoView({ block: "center" }); const r = t.firstChild.getBoundingClientRect(); return [r.left + Math.min(12, r.width / 2), r.top + r.height / 2]; })()`);
   const press = async (x, y, dy, escape) => {
     await touch("touchStart", [[x, y]]); await sleep(650);
     for (let i = 1; i <= 8; i++) { await touch("touchMove", [[x, y + (dy * i) / 8]]); await sleep(30); }
-    const preview = await js(`${tagSel("build memory")}?.classList.contains("live")`);
+    const preview = await js(`${tagSel("memory floor")}?.classList.contains("live")`);
     if (escape) await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
     await touch("touchEnd", []); await sleep(500);
     return preview;
   };
   if (PHONE) {
     let n0 = await posted();
-    const [x, y] = await where("build memory");
+    const [x, y] = await where("memory floor");
     const pv = await press(x, y, 25, true);
     check("machines: Escape gives up a limit's drag", pv && (await posted()) === n0, `previewed ${pv}, ${(await posted()) - n0} sent`);
     const scroll0 = await js("scrollY");
-    const [x2, y2] = await where("build memory");
+    const [x2, y2] = await where("memory floor");
     const pv2 = await press(x2, y2, 25, false);
     const last = await js("window.__posted.at(-1)");
-    check("machines: the build memory's limit drags on a long press and sets on release", pv2 && (await posted()) === n0 + 1 && last && Object.keys(last.body).join() === "memory" && Number.isInteger(last.body.memory),
+    check("machines: the memory floor's line drags on a long press and sets on release", pv2 && (await posted()) === n0 + 1 && last && Object.keys(last.body).join() === "memory" && Number.isInteger(last.body.memory),
       `previewed ${pv2}, sent ${JSON.stringify(last?.body)}`);
     check("machines: a limit's drag doesn't scroll the page", Math.abs((await js("scrollY")) - scroll0) <= 2);
   } else {
     const n0 = await posted();
     // (A mouse on the line itself where the plot shows it left of its tag (past the scale's
     // gutter), else on the tag's words; either at once, no long press.)
-    const box = await js(`(() => { const t = ${tagSel("build memory")}; const c = t.parentNode.querySelector("canvas"); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(), q = t.getBoundingClientRect(), w = t.firstChild.getBoundingClientRect(); return [r.left + 60, q.top, q.left, w.left + 12, w.top + w.height / 2]; })()`);
+    const box = await js(`(() => { const t = ${tagSel("memory floor")}; const c = t.parentNode.querySelector("canvas"); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(), q = t.getBoundingClientRect(), w = t.firstChild.getBoundingClientRect(); return [r.left + 60, q.top, q.left, w.left + 12, w.top + w.height / 2]; })()`);
     let held = 0;
     const mouse = (type, x, y) => { held = type === "mousePressed" ? 1 : type === "mouseReleased" ? 0 : held; return page.send("Input.dispatchMouseEvent", { type, x, y, button: type === "mouseMoved" && !held ? "none" : "left", buttons: held, clickCount: type === "mouseMoved" ? 0 : 1 }); };
     let line = null;
-    if (box[2] - box[0] > 6) for (let dy = -6; dy <= 26 && !line; dy++) { await mouse("mouseMoved", box[0], box[1] + dy); if (await js(`${tagSel("build memory")}.parentNode.querySelector("canvas").style.cursor === "ns-resize"`)) line = [box[0], box[1] + dy]; }
+    if (box[2] - box[0] > 6) for (let dy = -6; dy <= 26 && !line; dy++) { await mouse("mouseMoved", box[0], box[1] + dy); if (await js(`${tagSel("memory floor")}.parentNode.querySelector("canvas").style.cursor === "ns-resize"`)) line = [box[0], box[1] + dy]; }
     const by = line ? "line" : "tag";
     line ||= [box[3], box[4]];
     await mouse("mouseMoved", line[0], line[1]); await mouse("mousePressed", line[0], line[1]);
     for (let i = 1; i <= 6; i++) { await mouse("mouseMoved", line[0], line[1] - 4 * i); await sleep(30); }
     await mouse("mouseReleased", line[0], line[1] - 24); await sleep(500);
     const last = await js("window.__posted.at(-1)");
-    check("machines: a mouse drags the build memory's limit and sets it on release", (await posted()) === n0 + 1 && last && "memory" in last.body, `by its ${by}, sent ${JSON.stringify(last?.body)}`);
+    check("machines: a mouse drags the memory floor's line and sets it on release", (await posted()) === n0 + 1 && last && "memory" in last.body, `by its ${by}, sent ${JSON.stringify(last?.body)}`);
   }
   // The ✎: the editor opens on the chart; Cancel closes it, Set sends the number typed.
-  const penAt = () => js(`(() => { const t = ${tagSel("disk room")} || ${tagSel("build memory")}; t.scrollIntoView({ block: "center" }); const r = t.querySelector(".pen").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, t.title]; })()`);
+  const penAt = () => js(`(() => { const t = ${tagSel("disk room")} || ${tagSel("memory floor")}; t.scrollIntoView({ block: "center" }); const r = t.querySelector(".pen").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, t.title]; })()`);
   const pen = await penAt();
   const n1 = await posted();
   await tap(pen[0], pen[1]);
