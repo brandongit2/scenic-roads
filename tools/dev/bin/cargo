@@ -115,7 +115,7 @@ t=${SCENIC_SHARED_TARGET:-$HOME/Library/Caches/scenic-target}
 mkdir -p $t || exit 1
 lock=$t/.scenic-lock holder=$t/.scenic-holder holds=$t/.scenic-holds
 : >> $lock || exit 1
-me="${top:t} pid $$ since $(date '+%T'): cargo $*"
+me="${top:t} pid $$: cargo $*"
 say() { print -u2 -r -- "$1"; [[ -n ${SCENIC_CARGO_SAY:-} ]] && print -r -- "    $1" >> $SCENIC_CARGO_SAY 2>/dev/null; }
 # The lock in arrival order. fcntl doesn't queue: zsh's flock -t tries again each second, so a cargo
 # waiting an hour lost to each newer one that tried at the right moment (4 Nov). Each cargo takes a
@@ -131,8 +131,13 @@ take() {
   integer waited
   mkdir -p $q && : >> $q/.lock && print -r -- $me > $q/.new.$$ || return 1
   zsystem flock -f tfd $q/.new.$$ && zsystem flock -f x $q/.lock || return 1
-  for f in $q/.new.<->(N); do kill -0 ${f##*.} 2>/dev/null || rm -f $f; done  # (a cargo gone as it took one)
-  n=$(( $(cat $q/.next 2>/dev/null) + 1 )); print -r -- $n > $q/.next; ticket=$q/$n
+  for f in $q/.(new|next).<->(N); do kill -0 ${f##*.} 2>/dev/null || rm -f $f; done  # (a cargo gone as it took one)
+  # (Past the last ticket too, and .next replaced whole: a .next emptied by a cargo killed as it
+  # wrote it restarted at 1, ahead of the line, and a sweep of a gone 1 could hit the new one.)
+  local -a e; e=( $q/<->(Nn) ); integer last=${${e[-1]:-0}:t}
+  n=; [[ -r $q/.next ]] && n=$(<$q/.next); [[ $n == <-> ]] || n=0
+  (( n = (n > last ? n : last) + 1 )); ticket=$q/$n
+  print -r -- $n > $q/.next.$$ && mv -f $q/.next.$$ $q/.next
   mv -f $q/.new.$$ $ticket; zsystem flock -u $x
   holdtimes
   while :; do
@@ -194,7 +199,7 @@ report() {  # report <holder line> <its age, s>
 }
 fd=0 took=0
 take || exit 1
-print -r -- $me > $holder; took=$EPOCHSECONDS
+took=$EPOCHSECONDS; print -r -- "${me/: cargo/ since $(strftime %T $took): cargo}" > $holder  # (since it holds, not since it waited)
 release() {  # lets the lock go (once), its holder line removed and its hold's time kept
   (( fd )) || return 0
   rm -f $holder
@@ -238,6 +243,16 @@ waitchild() {  # the child's status, once it is gone (a trapped signal ends a wa
 }
 stopped() { (( sig )) && { rm -rf $r; exit $(( $1 ? $1 : 128 + sig )) } }
 whole() { spawn realcargo "$@"; waitchild; rc=$?; stopped $rc; exit $rc }  # cargo, the lock to its end
+
+# A whole `cargo clean` deletes the shared folder itself, its lock and queue with it: every waiter
+# then gave up, and a cargo starting meanwhile made a new lock to take while the clean still ran (two
+# at once). So the shim empties the folder itself, its .scenic-* files kept (.scenic-runs: programs
+# running from their clones). A clean of part (a package, profile, target, the docs) or of another
+# folder, or a dry run, is cargo's.
+if [[ $sub == clean ]] && (( ! ${own[(I)(-p*|--package(|=*)|--workspace|-r|--release|--profile(|=*)|--target(|=*)|--target-dir(|=*)|--doc|-n|--dry-run)]} )); then
+  print -u2 -r -- "cargo clean (tools/dev/bin): emptying the shared build folder $t, every worktree's build (its .scenic-* files kept)"
+  rm -rf -- $t/(^.scenic-*)(DN); exit
+fi
 
 # Which commands run programs: run, test, bench (and their aliases), nextest's run.
 ri=0

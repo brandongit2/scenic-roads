@@ -4,7 +4,7 @@
 # for the first, saying so, and programs and tests run outside the lock, from clones, with cargo's
 # environment and folder; what builds nothing passes the lock, waiters get it in arrival order, and
 # a long hold is reported. Run by check.sh when tools/dev/bin or this file changes.
-zmodload zsh/system
+zmodload zsh/system; zmodload -F zsh/stat b:zstat
 sh=${0:A:h:h}/bin/cargo
 s=$(mktemp -d); trap 'rm -rf $s' EXIT
 w=$s/.claude/worktrees; mkdir -p $w
@@ -162,7 +162,7 @@ TOY_FAIL=1 at a test --no-fail-fast --lib --test plain; rc=$?
 # A TERM or INT to the shim reaches the program it runs, and the shim outlives it (it held the
 # lock). (The shim as a terminal starts it: INT not ignored, as this script's & would.)
 for sig in TERM INT; do
-  rm -f $s/go5*
+  rm -f $s/go5*(N)
   (trap - INT; cd $w/a && TOY_HOLD=$s/go5 exec $sh test -q --lib --test plain > $s/term.out 2>&1) & held=$!
   started $s/go5 $s/term.out
   p=$(pgrep -f "/.scenic-runs/$held/bin/deps/toy-") || fail "no test program of $held"
@@ -215,7 +215,7 @@ hold() {  # hold <file>: holds the build lock as "cargo" pid <its pid>, until <f
   rm -f $1 $1.held
   ( zsystem flock -f fd $s/shared/.scenic-lock
     print -r -- "test pid $sysparams[pid] since now: cargo build" > $s/shared/.scenic-holder; : > $1.held
-    while [[ ! -e $1 ]]; do sleep 0.1; done ) & holding=$!
+    while [[ ! -e $1 && -d $s ]]; do sleep 0.1; done ) & holding=$!  # (and ends with the test)
   until [[ -e $1.held ]]; do sleep 0.05; done
 }
 until_in() {  # until_in <file> <pattern>: waits (1 min at most) for a line of <file> to match
@@ -257,6 +257,22 @@ grep -q "the folder has been held [0-9]* s (9 holds in 10 of the last 1 took ≤
 grep -qE "^ +$holding [0-9.]+% cpu, .*cpu time: " $s/report.err || fail "the holder's process not shown: $(cat $s/report.err)"
 : > $s/let3; wait $holding; wait $waiting || fail "the reported waiter: $(cat $s/report.err)"
 (( $(wc -l < $s/shared/.scenic-holds) == 2 )) || fail "the hold not recorded: $(cat $s/shared/.scenic-holds)"
+# Tickets are numbered past the last one, whatever .next says (emptied: a cargo killed as it wrote
+# it). A whole cargo clean empties the folder but keeps the lock and queue: a cargo waiting behind
+# it still gets the lock, the same file (cargo's own clean deleted the folder, the lock with it).
+hold $s/let4; rm -f $TOY_ORDER; : > $q/.next; : > $q/40
+zstat -A ino +inode $s/shared/.scenic-lock
+(cd $w/a && exec $sh clean 2>$s/clean.err) & cleaning=$!
+until_in $s/clean.err 'place 1 in line'
+[[ -e $q/41 ]] || fail "not numbered past the last ticket: $(ls -a $q)"
+waiter after; until_in $s/after.err 'place 2 in line'
+: > $s/let4; wait $holding
+wait $cleaning || fail "the clean: $(cat $s/clean.err)"
+wait $waiting || fail "the build after a clean: $(cat $s/after.err)"
+[[ $(<$TOY_ORDER) == after ]] || fail "after a clean: $(<$TOY_ORDER)"
+[[ ! -e $s/shared/debug ]] || fail "the clean left debug/: $(ls -a $s/shared)"
+zstat -A ino2 +inode $s/shared/.scenic-lock && (( ino2[1] == ino[1] )) || fail "the clean replaced the lock"
+[[ -e $s/shared/.scenic-holds ]] || fail "the clean deleted the holds"
 unset TOY_ORDER
 
 # Outside .claude/worktrees: plain cargo, the shared folder untouched.

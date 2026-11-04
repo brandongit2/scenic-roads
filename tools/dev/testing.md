@@ -88,6 +88,12 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   first live ticket tries the build lock (every 0.2 s). A ticket whose lock can be taken is a gone
   cargo's (killed, even by `kill -9`) and is deleted by the next waiter, so it holds no one up. A
   cargo of an older shim (another worktree not yet on this one) doesn't queue and can still jump in.
+  A waiter stopped (`kill -STOP`, Ctrl-Z) holds its ticket and so everyone behind it.
+- A whole `cargo clean` in a worktree empties the shared folder, every worktree's build, but keeps
+  its `.scenic-*` files (the lock, the queue, the holds, `.scenic-runs`): cargo's own deleted the
+  folder, and with it the lock its waiters wait on (they gave up, and a cargo starting meanwhile
+  made a new lock, building beside the clean). `clean -p`, `--workspace`, `--release`, `--profile`, `--target`,
+  `--doc`, `--target-dir` and `--dry-run` are cargo's.
 - A long hold is reported, never killed (#941): each cargo letting go appends its hold's seconds to
   `<shared folder>/.scenic-holds` (the last 100). Once the holder has held the folder longer than
   nine holds in ten of those (from the first line when none are recorded), and again each time its
