@@ -2256,16 +2256,17 @@ impl Coordinator {
     }
 
     /// What the forecast reads (crate::agent::forecast): what each target cost, the jobs leased now
-    /// (worker, step, targets), the history kept, and the memory each worker spares (MB).
+    /// (worker, step, targets), the history kept (shared, not copied: history::History::all), and
+    /// the memory each worker spares (MB).
     pub fn for_forecast(
         &self,
     ) -> (
         BTreeMap<String, Cost>,
         Vec<(String, String, Vec<String>, u64, bool)>,
-        Vec<history::Event>,
+        history::Events,
         BTreeMap<String, u64>,
     ) {
-        let s = self.shared.lock().unwrap();
+        let mut s = self.shared.lock().unwrap();
         let now = s.now();
         // (Each with how long ago it was granted; its worker the slot running it when said
         // (`Lease::slot`, crate::agent::slot_worker; then true), else its Mac.)
@@ -2285,7 +2286,7 @@ impl Coordinator {
             })
             .collect();
         let mem = s.workers.iter().map(|(n, w)| (n.clone(), w.mem_mb)).collect();
-        (s.costs.clone(), leased, s.history.since(0, usize::MAX), mem)
+        (s.costs.clone(), leased, s.history.all(), mem)
     }
 
     /// For GC's queue (crate::agent::gcqueue, docs/maplog.md §7.2, §7.4): when the oldest live lease
@@ -2742,6 +2743,11 @@ impl Coordinator {
     /// The history's events after number `seq` (the pool's history per writer: docs/pool.md §7.5).
     pub fn history_since(&self, seq: u64) -> Vec<history::Event> {
         self.shared.lock().unwrap().history.since(seq, usize::MAX)
+    }
+
+    /// Every event the history keeps, shared rather than copied (history::History::all).
+    pub fn history(&self) -> history::Events {
+        self.shared.lock().unwrap().history.all()
     }
 
     /// Its port.

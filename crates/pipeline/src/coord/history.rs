@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 /// The days of history the page reads (today's and the six before), kept in the day folders
 /// `state/coord/history/<day>/`; older days are packed one tar a day (crate::agent::histarchive).
 pub const DAYS: u64 = 7;
-/// How long events are kept (seconds), and the most kept (a week of a busy build is a few thousand).
+/// How long events are kept (seconds), and the most kept (the lead's week to 4 Nov had 62,500,
+/// held ~75 MB in memory: the count bounds a busy week).
 pub const KEEP_S: u64 = DAYS * 86400;
 pub const KEEP_MAX: usize = 50_000;
 
@@ -84,11 +85,28 @@ impl Event {
     }
 }
 
+/// The events kept as `History::all` hands them out: the history as it was then, oldest first,
+/// read as a slice; a later event doesn't change it.
+#[derive(Clone, Debug, Default)]
+pub struct Events(std::sync::Arc<VecDeque<Event>>);
+
+impl std::ops::Deref for Events {
+    type Target = [Event];
+    fn deref(&self) -> &[Event] {
+        // (`History::all` made them one run, and a shared deque is never changed in place.)
+        let (run, rest) = self.0.as_slices();
+        debug_assert!(rest.is_empty());
+        run
+    }
+}
+
 /// The events kept, the last week's, in order.
 #[derive(Debug)]
 pub struct History {
     path: Option<PathBuf>,
-    events: VecDeque<Event>,
+    /// Shared with the copies `all` hands out: one is copied only when an event comes while
+    /// another holds the last.
+    events: std::sync::Arc<VecDeque<Event>>,
     seq: u64,
     /// Lines in the file: rewritten with what's kept once it holds twice as many.
     lines: usize,
@@ -364,7 +382,7 @@ impl History {
     pub fn load(path: Option<&Path>) -> History {
         let mut h = History {
             path: path.map(Path::to_path_buf),
-            events: VecDeque::new(),
+            events: Default::default(),
             seq: 0,
             lines: 0,
             built: HashMap::new(),
@@ -373,17 +391,18 @@ impl History {
         };
         let Some(text) = path.and_then(|p| std::fs::read_to_string(p).ok()) else { return h };
         let from = now_s().saturating_sub(KEEP_S);
+        let events = std::sync::Arc::make_mut(&mut h.events);
         for l in text.lines() {
             h.lines += 1;
             // (A line cut short by a crash is passed over.)
             let Ok(e) = serde_json::from_str::<Event>(l) else { continue };
             h.seq = h.seq.max(e.seq);
             if e.t >= from {
-                h.events.push_back(e);
+                events.push_back(e);
             }
         }
-        while h.events.len() > KEEP_MAX {
-            h.events.pop_front();
+        while events.len() > KEEP_MAX {
+            events.pop_front();
         }
         let ends: Vec<Event> = h.events.iter().filter(|e| finished(e)).cloned().collect();
         for e in &ends {
@@ -465,10 +484,11 @@ impl History {
             }
             self.lines += 1;
         }
-        self.events.push_back(e);
+        let events = std::sync::Arc::make_mut(&mut self.events);
+        events.push_back(e);
         let from = now.saturating_sub(KEEP_S);
-        while self.events.front().is_some_and(|e| e.t < from) || self.events.len() > KEEP_MAX {
-            self.events.pop_front();
+        while events.front().is_some_and(|e| e.t < from) || events.len() > KEEP_MAX {
+            events.pop_front();
         }
         if self.lines > 2 * self.events.len() + 1000 {
             let first = self.events.front().map_or(0, |e| e.seq);
@@ -506,6 +526,18 @@ impl History {
         self.events.iter().filter(|e| e.seq > seq).take(max).cloned().collect()
     }
 
+    /// Every event kept, oldest first, shared rather than copied (`Events`): what the forecast and
+    /// placement read on nearly every pass of the lead's loop, where a copy was ~75 MB of a
+    /// week's events (#930).
+    pub fn all(&mut self) -> Events {
+        // (Laid out in one run for the slice; only an event since the last call moved it, and a
+        // copy is made only when another still holds the last.)
+        if !self.events.as_slices().1.is_empty() {
+            std::sync::Arc::make_mut(&mut self.events).make_contiguous();
+        }
+        Events(self.events.clone())
+    }
+
     /// The last `hours` hours to `now`, an hour a row (`Rates`): each worker's targets finished
     /// (the lead's jobs' at their end, a worker's at its hand-off, a task at its end) and the
     /// seconds it was busy (a job from its start to its end, a lease from its grant to its end, a
@@ -520,7 +552,7 @@ impl History {
         let mut started: BTreeMap<String, u64> = BTreeMap::new();
         let mut leased: BTreeMap<u64, (String, u64)> = BTreeMap::new();
         let mut pause_from: Option<u64> = None;
-        for e in &self.events {
+        for e in self.events.iter() {
             let w = e.worker.clone().unwrap_or_default();
             match e.kind.as_str() {
                 "start" => {
@@ -635,6 +667,30 @@ mod tests {
         old.add(Event { t: now_s() - KEEP_S - 10, ..Event::new("agent") });
         old.add(Event::new("agent"));
         assert_eq!(old.since(0, 10).len(), 1);
+    }
+
+    /// What `all` hands out is shared, not copied, while no event comes; an event after doesn't
+    /// change it; and it reads in order as one slice after the oldest have gone (task #930).
+    #[test]
+    fn every_event_is_handed_out_shared() {
+        let mut h = History::load(None);
+        let now = now_s();
+        for t in 0..4 {
+            h.add_at(Event { t: now - KEEP_S + 10 + t, ..Event::new("lease") }, now);
+        }
+        let a = h.all();
+        assert!(std::sync::Arc::ptr_eq(&a.0, &h.all().0), "no event since: the same events, not a copy");
+        // (The oldest let go as time passes, the newest added at the end: the deque wraps.)
+        for t in 4..10 {
+            h.add_at(Event { t: now + t, ..Event::new("lease") }, now + 12);
+        }
+        assert_eq!(a.iter().map(|e| e.seq).collect::<Vec<_>>(), [1, 2, 3, 4], "as it was handed out");
+        let b = h.all();
+        assert_eq!(b.iter().map(|e| e.seq).collect::<Vec<_>>(), (3..=10).collect::<Vec<_>>());
+        drop(a);
+        h.add_at(Event { t: now + 20, ..Event::new("lease") }, now + 30);
+        assert_eq!(b.len(), 8, "held: unchanged by the event after");
+        assert_eq!(h.all().iter().map(|e| e.seq).collect::<Vec<_>>(), (5..=11).collect::<Vec<_>>());
     }
 
     #[test]

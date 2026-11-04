@@ -7423,7 +7423,7 @@ impl Agent {
         let mut p = view.forecast.as_ref().map(placement::Placement::from_forecast).unwrap_or_default();
         if let Some(c) = &self.coord {
             let names: Vec<String> = c.workers().into_iter().map(|(n, _)| n).filter(|n| *n != self.host).collect();
-            let events = c.for_forecast().2;
+            let events = c.history();
             p.speed = placement::measured_speeds(&events, &self.host, &names);
             let key = placement::step_speeds_key(&events, &self.host, &names);
             let mut kept = self.step_speeds.borrow_mut();

@@ -1840,7 +1840,7 @@ impl Planner {
             let mut notes = self.planned_tiles.borrow_mut();
             // (This coordinator's history read once a catalogue.)
             if notes.began() != b {
-                let own = self.coord.as_ref().map(|c| c.history_since(0)).unwrap_or_default();
+                let own = self.coord.as_ref().map(|c| c.history()).unwrap_or_default();
                 if notes.begin(b, &own, now_s()) {
                     notes.seed_from_nas(root.clone());
                 }
