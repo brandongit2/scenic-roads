@@ -2467,7 +2467,14 @@ impl Planner {
                 measured,
                 equal: true,
                 mem_mb: mac_mb,
-                busy_s: if k < self.inp.slots.len() { busy(k, speed) } else { 0.0 },
+                // (With each Mac's pace, the lead's slots are all at the lead's: crate::paces.)
+                busy_s: if k >= self.inp.slots.len() {
+                    0.0
+                } else if paces.known() {
+                    busy(k, 1.0)
+                } else {
+                    busy(k, speed)
+                },
                 unit_extra_s,
                 lead_steps: true,
                 running: running_of(k),
@@ -2515,13 +2522,22 @@ impl Planner {
                 let name = slot_worker(&h.host, k);
                 let (speed, measured) =
                     speeds.get(&name).or_else(|| speeds.get(&h.host)).copied().unwrap_or((0.5, false));
+                // (A time at the lead's pace at its Mac's at the step (crate::paces: a Mac without
+                // one the lead's), else at its speed.)
+                let at_its = |step: &str, secs: f64| {
+                    if paces.known() {
+                        secs * paces.get(&name, step)
+                    } else {
+                        secs / speed.max(0.1)
+                    }
+                };
                 // (Its lease's targets at its pace, less the time since it took them, if longer
                 // than its job's own estimate.)
                 let lease_left = leased
                     .iter()
                     .filter(|l| l.0 == name)
                     .map(|(_, step, ts, age, _)| {
-                        ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64
+                        at_its(step, ts.iter().map(|t| cost(step, t).secs).sum::<f64>()) - *age as f64
                     })
                     .fold(0.0, f64::max);
                 let job = jobs.iter().find(|j| j.slot == Some(k));
@@ -2530,7 +2546,7 @@ impl Planner {
                     j.progress
                         .as_ref()
                         .and_then(|p| p.eta_s)
-                        .map_or_else(|| per(&step_of(&j.id)) / speed.max(0.1), |e| e as f64)
+                        .map_or_else(|| at_its(&step_of(&j.id), per(&step_of(&j.id))), |e| e as f64)
                 });
                 let busy_s = eta.map_or(0.0, |e| forecast::busy_s(e, lease_left));
                 let targets = leased.iter().find(|l| l.0 == name).map_or(1, |l| l.2.len().max(1));
@@ -2612,7 +2628,11 @@ impl Planner {
         let mut noted = self.noted.borrow_mut();
         noted.note(&inp);
         inp.step_pace = forecast::step_pace(&events, inp.now, &noted, &|w, step| {
-            paces.get(w, step).map_or_else(|| pace(Some(w)), |p| 1.0 / p)
+            if paces.known() {
+                1.0 / paces.get(w, step)
+            } else {
+                pace(Some(w))
+            }
         });
         drop(noted);
         // (Each lane's job under way held to its step's longest of late.)

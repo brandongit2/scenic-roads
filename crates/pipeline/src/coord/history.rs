@@ -71,6 +71,11 @@ pub struct Event {
     /// task #791 have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub after: Vec<u64>,
+    /// The way its step ran (crate::coord::cost_version, the lead's code's), on an "end" or "done"
+    /// of a step: two runs of a target compare (crate::paces) only when it's the same. Events
+    /// before task #926 have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v: Option<u32>,
 }
 
 impl Event {
@@ -441,6 +446,9 @@ impl History {
         }
         if matches!(e.kind.as_str(), "start" | "lease") && e.after.is_empty() {
             e.after = self.after(e.step.as_deref().unwrap_or(""), &e.targets);
+        }
+        if matches!(e.kind.as_str(), "end" | "done") && e.v.is_none() {
+            e.v = e.step.as_deref().map(crate::coord::cost_version);
         }
         if finished(&e) {
             self.note_built(&e);

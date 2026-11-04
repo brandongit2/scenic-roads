@@ -571,7 +571,7 @@ impl<'a> Book<'a> {
 
     /// `worker`'s pace at `step` (1: not known, or no paces).
     fn pace(&self, worker: Option<&str>, step: &str) -> f64 {
-        self.paces.zip(worker).and_then(|(p, w)| p.get(w, step)).unwrap_or(1.0)
+        self.paces.zip(worker).map_or(1.0, |(p, w)| p.get(w, step))
     }
 
     /// Cost `c`'s time of `step` at the lead's pace (s, rounded).

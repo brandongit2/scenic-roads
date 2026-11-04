@@ -1143,26 +1143,36 @@ changes. The coordinator's picks (`pick`, `pick_every`, `measured`, `secs_of`, `
 and the forecast all read it. `scenic pool needs --fit` prints each step's fits and their held-out
 errors (memory, wall time, disk) beside the prior's, and lists the steps that don't fit.
 
-**Each Mac's pace** (`crate::paces`, task #926): the Macs run a step at different paces (the
-mini's fast NAS link, the M1's fewer cores), and a step's model mixed their runs as they came, so a
-step mostly run on a slow Mac sized a fast one's jobs by its times and NAS rates. Each Mac's pace at
-each step is measured from the build's history: over its jobs done well in the last 3 days
-(`PACE_S`), its mean log time a target less the lead's (who ran 3 of the step at least,
-`LEAD_JOBS`), drawn toward its pace over all its steps by 3 jobs' weight (`PRIOR_JOBS`), and that
-toward the lead's (1) the same way, so a Mac of few jobs at a step is taken at its pace elsewhere;
-a Mac with no job beside the lead's is not measured. The lead works them out from its history when
-it has new events or every 10 minutes (`Coordinator::set_paces`, in the scheduler's state, so the
-forecast's run has them). The step's model reads every run's time (its prior, its fits,
-`secs_p90`) and NAS rate at the lead's pace by its Mac's, and its prediction for a worker is at
-that worker's Mac's pace (`Book::secs_for`, `nas_for`; the scheduler's `secs_of`: a job's targets
-counted to the quarter hour, a leased job's predicted time); a Mac not measured is taken at the
-lead's. A target's own run is still taken as it ran, on whichever Mac (`job_secs`: another worker's
-counted at twice its time). Measured on 4 Nov (the store's 36,342 costs and the week's 11,427 jobs):
-the M4 ran the same targets as the mini at 1.39 times its time at terrain-deep, 2.2 at terrain-hi,
-2.9 at pack and 4.6 at pois (the targets each ran, as a job of its own, on both); the M1 at 1.27 at terrain-deep and 1.87 at terrain-hi.
-The cost book can't show it (one cost a target, of whichever Mac ran it last: its terrain-deep
-had the M4 at 9.3 times the mini's geometric mean, by which targets each had); the history's time a target
-came within 1.3 times of the same-target ratios over nine steps and Macs.
+**Each Mac's pace** (`crate::paces`, task #926): the Macs run a step at different paces, and a
+step's model mixed their runs as they came, so a step mostly run on a slow Mac sized a fast one's
+jobs by its times and NAS rates. Each Mac's pace at each step is measured on the same targets: a
+pair is a target of the step done well as a job of its own on the Mac and on the lead, the step run
+the same way (`Event::v`, the cost version the lead stamps on each end and done) and both in the
+last 5 days (`PACE_S`); its ratio the Mac's time over the lead's (the lead's run nearest in time).
+A Mac's pace at a step is the median of its pairs' log ratios, drawn toward its pace over its steps
+(the median of its steps' medians, drawn toward the lead's 1 by their count) by 10 pairs' weight
+(`PRIOR_PAIRS`). A Mac with no pair is at the lead's pace, in the cost book, the scheduler, the
+forecast's lanes and costs and the plan's lanes alike. The same target, each side a job of one
+target, takes out what a Mac was given: its targets' size (placement sends the M4 the
+memory-heavy terrain-deep tiles) and its jobs' size (which `secs_of` sets by the pace: a pace from
+per-target means over its jobs would feed back on itself). Per-target means did move with them: the
+M4's terrain-deep read 4.49 times the mini's over a day, 1.26 over a week, where its same targets
+took 1.39 day after day. A pair's runs keep what loaded the Mac then (its owner's builds); the
+forecast's hold on each Mac (`held_back`) and its steps of late (`took`) carry what held it back
+lately. **The window and the weight** were picked by a held-out test: the history of 8 Oct to 4 Nov
+(19,137 jobs, 1,973 pairs), each day's pairs scored against the paces of the window before it,
+for windows of 1 to 28 days and weights of 0 to 30 pairs: the mean |log error| was 0.932 with no
+pace, 0.834 at 5 days and 10 (the best of the windows the lead's history holds, 7 days; 0.833 at
+14), 1.018 at 3 days and none. The same test on each target's share of every job (21,705 pairs)
+gained less (1.000 to 0.920), and depends on the jobs' size. Pairs are few: on 4 Nov, over 5 days,
+the M4 had 19 (pack 8, unit 5, terrain-deep 5), its paces 1.11 to 1.46, the M1 3. The lead works
+the paces out from its history's runs of one target (`paces::reads`, kept by the agent, only the
+new events read each loop) when one comes or every 10 minutes (`Coordinator::set_paces`, in the
+scheduler's state, so the forecast's run has them). The step's model reads every run's time (its
+prior, its fits, `secs_p90`) and NAS rate at the lead's pace by its Mac's, and its prediction for a
+worker is at that worker's Mac's pace (`Book::secs_for`, `nas_for`; the scheduler's `secs_of`: a
+job's targets counted to the quarter hour, a leased job's predicted time). A target's own run is
+still taken as it ran, on whichever Mac (`job_secs`: another worker's counted at twice its time).
 
 **A cold start** (no target of its step measured; task #499) is packed by its *provisional need*:
 the most its step declares (the steps table's `mem_mb`) or it was offered with, times 3/2
@@ -1485,12 +1495,13 @@ running job's time left capped, not measured.
 
 **What changed (code 4, task #926).** A lane ran every step at its Mac's one speed (`speeds`: the
 median over the shared steps of its time a target against the lead's), and a measured cost was put
-at the lead's pace by that speed; but a Mac's pace differs by step (on 4 Nov, over 3 days, the M4
-against the mini: 0.56 at slope-hi, 1.59 at slope-deep, 3.65 at terrain-deep; the M1 0.83 to
-1.41). Each Mac's pace at each step (Each Mac's pace, §7.7: in the scheduler's state, so in the
-record) now puts each measured cost at the lead's pace (`forecast::at_lead`, each step's mean by
-`step_sums`), and a lane takes an item at its Mac's pace at the item's step (`Input::lane_secs`);
-a Mac without one, at its speed as before. Each step's pace (code 2's) reads a job's time at the
+at the lead's pace by that speed; but a Mac's pace differs by step (the same targets on the M4
+against the mini over the week to 4 Nov: 1.39 at terrain-deep, 2.2 at terrain-hi, 4.6 at pois).
+Each Mac's pace at each step (Each Mac's pace, §7.7: in the scheduler's state, so in the record)
+now puts each measured cost at the lead's pace (`forecast::at_lead`, each step's mean by
+`step_sums`), a lane takes an item at its Mac's pace at the item's step (`Input::lane_secs`), and
+a member's lane's job under way is timed at it; a Mac without one is at the lead's pace, the lead's
+other slots too (with no paces at all, a record before code 4, each at its speed as before). Each step's pace (code 2's) reads a job's time at the
 lead's pace by its Mac's pace at the step too. The replay of a record before it works the paces
 out from the history at the record's time and puts the record's shared steps' costs at the lead's
 pace by them from the record's own measures (`repace`: a measured target's own, one not measured
@@ -1502,33 +1513,32 @@ the absolute error:
 
 | | test old | test new | train old | train new |
 |---|---|---|---|---|
-| end, all | 540 / 3,010 | 525 / 3,329 | 572 / 2,183 | 558 / 2,019 |
-| end bias | +998 | +1,311 | +260 | +185 |
-| start, all | 440 / 2,853 | 441 / 3,140 | 593 / 2,120 | 574 / 1,947 |
-| end < 15 min | 44 / 455 | 37 / 458 | 45 / 292 | 54 / 505 |
-| end 15 min-1 h | 65 / 501 | 73 / 467 | 198 / 663 | 239 / 847 |
-| end 1-4 h | 183 / 587 | 194 / 613 | 279 / 859 | 310 / 951 |
-| end 4-12 h | 242 / 582 | 215 / 574 | 424 / 1,228 | 432 / 1,337 |
-| end 12 h + | 1,386 / 3,917 | 1,474 / 4,519 | 1,064 / 2,630 | 912 / 2,533 |
-| end, terrain-deep | 443 / 1,501 | 416 / 1,569 | 447 / 1,960 | 465 / 1,693 |
-| end, depth | 288 / 796 | 262 / 739 | 631 / 1,303 | 606 / 1,227 |
-| end, pack | 310 / 2,305 | 374 / 2,424 | 454 / 1,982 | 440 / 1,567 |
-| end, unit | 238 / 1,905 | 249 / 2,415 | 417 / 1,556 | 403 / 1,217 |
-| end, slope-deep | 2,633 / 5,395 | 2,716 / 5,030 | 1,867 / 3,017 | 1,556 / 3,426 |
-| end, slope-hi | 2,499 / 3,355 | 2,380 / 3,007 | 1,646 / 2,420 | 1,346 / 2,740 |
-| end, terrain-lo | 317 / 2,145 | 410 / 2,539 | 1,158 / 2,149 | 983 / 1,785 |
-| end, pois | 296 / 476 | 308 / 1,459 | 292 / 825 | 316 / 941 |
-| placed in 6 h / done | 43,685 / 39,021 | 38,610 / 39,021 | 93,865 / 43,358 | 101,923 / 43,358 |
-| same Mac / slot | 43 / 16 % | 50 / 22 % | 46 / 13 % | 53 / 18 % |
-| in order (all / within 4 h) | 62 / 74 % | 63 / 73 % | 70 / 67 % | 69 / 66 % |
+| end, all | 540 / 3,010 | 397 / 2,591 | 572 / 2,183 | 608 / 2,077 |
+| end bias | +998 | +766 | +260 | +221 |
+| start, all | 440 / 2,853 | 366 / 2,505 | 593 / 2,120 | 628 / 2,027 |
+| end < 15 min | 44 / 455 | 52 / 460 | 45 / 292 | 59 / 647 |
+| end 15 min-1 h | 65 / 501 | 76 / 504 | 198 / 663 | 196 / 995 |
+| end 1-4 h | 183 / 587 | 184 / 573 | 279 / 859 | 297 / 887 |
+| end 4-12 h | 242 / 582 | 234 / 563 | 424 / 1,228 | 424 / 1,392 |
+| end 12 h + | 1,386 / 3,917 | 1,214 / 3,880 | 1,064 / 2,630 | 1,122 / 2,495 |
+| end, terrain-deep | 443 / 1,501 | 283 / 1,001 | 447 / 1,960 | 473 / 1,771 |
+| end, depth | 288 / 796 | 273 / 780 | 631 / 1,303 | 625 / 1,427 |
+| end, pack | 310 / 2,305 | 301 / 1,498 | 454 / 1,982 | 448 / 1,774 |
+| end, unit | 238 / 1,905 | 253 / 1,451 | 417 / 1,556 | 403 / 1,445 |
+| end, slope-deep | 2,633 / 5,395 | 2,208 / 4,414 | 1,867 / 3,017 | 1,891 / 3,066 |
+| end, slope-hi | 2,499 / 3,355 | 1,725 / 2,596 | 1,646 / 2,420 | 1,526 / 2,560 |
+| end, terrain-lo | 317 / 2,145 | 331 / 1,951 | 1,158 / 2,149 | 1,199 / 2,269 |
+| end, pois | 296 / 476 | 250 / 422 | 292 / 825 | 316 / 1,072 |
+| placed in 6 h / done | 43,685 / 39,021 | 52,061 / 39,021 | 93,865 / 43,358 | 96,778 / 43,358 |
+| same Mac / slot | 43 / 16 % | 44 / 16 % | 46 / 13 % | 48 / 15 % |
+| in order (all / within 4 h) | 62 / 74 % | 62 / 72 % | 70 / 67 % | 70 / 66 % |
 
-Work goes where it went more often (the right Mac 7 points more on both sets, the right slot 5-6),
-and the medians are a little better overall on both; train's p90 too. The test's p90 and bias are
-worse: the M4 measured slow at most steps in those days (its own builds beside the pool's), its
-lanes now take longer and the work they took in the replay is later still in a forecast already
-late (+998 min). Where a Mac has few jobs of a step its pace is drawn toward its pace over all its
-steps, weighed by jobs, so the M4's terrain-deep (889 jobs at 3.65) sets its pace at steps it ran
-little of (pois, terrain-lo: their test p90s the worst moved).
+On the test set the whole end error is better (median 143 min less, p90 419), its bias 232 min
+less late, and every step of note at the p90 (terrain-lo's and unit's medians a little worse);
+the nearest hour's medians are 8-11 min worse. On train the p90 and bias are better, the
+median 36 min worse, and the near term (under an hour) and 4-12 h worse at the p90 (what
+moves them there isn't known). Paces from pairs are near the lead's where pairs are few
+(drawn toward 1), so code 4 moves the forecast only where the same targets showed a Mac's pace.
 
 ## 8. Tasks
 

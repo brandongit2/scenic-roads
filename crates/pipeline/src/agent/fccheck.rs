@@ -377,8 +377,13 @@ pub fn replay(records: &[Record<'static>], events: &[Event], code: u32) -> Vec<E
             st.paces = Default::default();
         }
         let paces = inp.sched.as_ref().map(|s| s.paces.clone()).unwrap_or_default();
-        let speed =
-            |w: &str, step: &str| paces.get(w, step).map_or_else(|| speeds.get(w).copied().unwrap_or(1.0), |p| 1.0 / p);
+        let speed = |w: &str, step: &str| {
+            if paces.known() {
+                1.0 / paces.get(w, step)
+            } else {
+                speeds.get(w).copied().unwrap_or(1.0)
+            }
+        };
         inp.step_pace = forecast::step_pace(events, inp.now, &noted, &speed);
         let longest = forecast::longest_jobs(events, inp.now);
         forecast::cap_busy(inp, &longest);

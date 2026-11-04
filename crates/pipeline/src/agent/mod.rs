@@ -1554,9 +1554,10 @@ pub struct Agent {
     /// The placement's per-step speeds last worked out and what from (`placement::step_speeds_key`):
     /// the history is read again only when it changed.
     step_speeds: std::cell::RefCell<placement::StepSpeedsKept>,
-    /// What the coordinator's paces (crate::paces) were last worked out from: the history's last
-    /// event's number, and the ten minutes they were for.
-    paces_from: std::cell::Cell<Option<(u64, u64)>>,
+    /// What the coordinator's paces (crate::paces) are worked out from: the history's last event
+    /// read, the ten minutes they were last worked out for, and the runs they read
+    /// (crate::paces::reads) of their window.
+    paces_from: std::cell::RefCell<(u64, u64, Vec<crate::coord::history::Event>)>,
     /// The lead's coordinator (crate::coord), and when its contact on the NAS was last checked.
     coord: Option<std::sync::Arc<crate::coord::Coordinator>>,
     published: Option<Instant>,
@@ -7942,15 +7943,19 @@ impl Agent {
         if let Some(c) = &self.coord {
             c.set_capacity(self.last_cond.map(|cond| self.capacity(&cond)));
             c.set_placement(placed.clone());
-            // (Each Mac's pace at each step, from the history: when it has new events, or ten
-            // minutes on, its window moved.)
+            // (Each Mac's pace at each step, from the history's runs it reads (kept here, the new
+            // events alone fetched each loop): when one came, or ten minutes on, its window moved.)
             let now = now_s();
-            let (seq, at) = self.paces_from.get().unwrap_or((0, 0));
-            let new = c.history_since(seq);
-            if new.last().is_some() || at != now / 600 || self.paces_from.get().is_none() {
-                let events = if seq == 0 { new } else { c.history_since(0) };
-                self.paces_from.set(Some((events.last().map_or(seq, |e| e.seq), now / 600)));
-                c.set_paces(crate::paces::Paces::of(&events, &self.host, now));
+            let mut kept = self.paces_from.borrow_mut();
+            let (seq, at, runs) = &mut *kept;
+            let new = c.history_since(*seq);
+            *seq = new.last().map_or(*seq, |e| e.seq);
+            let before = runs.len();
+            runs.extend(new.into_iter().filter(crate::paces::reads));
+            runs.retain(|e| e.t + crate::paces::PACE_S > now);
+            if runs.len() != before || *at != now / 600 {
+                *at = now / 600;
+                c.set_paces(crate::paces::Paces::of(runs, &self.host, now));
             }
         }
         // (A member's broker draws its pages' tasks the same way: by their paces at the kind as
