@@ -311,7 +311,8 @@ struct Own: Decodable {
 }
 
 /// This Mac's memory against its floor (crates/pipeline/src/agent/memguard.rs View, task #932): its
-/// line as the agent words it (available, the floor and margin, what's reserved, why no job starts),
+/// line as the agent words it (available, what compressing frees among it, the floor, what's
+/// reserved, why no job starts: the brake, the floor, a give-back's cool-down),
 /// the menu printing it as said; and the memory brake, when it's on.
 struct OwnMemory: Decodable {
     let said: String

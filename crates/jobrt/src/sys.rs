@@ -573,26 +573,118 @@ pub fn memory_compressed() -> Option<u64> {
     None
 }
 
-/// The memory available now (bytes): what macOS hands a process without compressing or swapping
-/// anything: its free pages, its file-backed pages (the file cache, dropped at once) and its
-/// purgeable ones (`host_statistics64`). A read-ahead's speculative pages are counted once: the
-/// kernel's `free_count` includes them and so does `external_page_count` (file-backed + anonymous
-/// = active + inactive + speculative, to the page; `vm_stat` prints free less speculative), so
-/// they come off the free. It is the Mac's memory less what Activity Monitor calls Memory Used
-/// (app memory, wired, compressed). Not
-/// `kern.memorystatus_level` (`memory_free_pct`): that counts every page neither wired nor
-/// compressed, apps' own pages in use too, and read 60 % on the M4 on 4 Nov with 21 GB swapped
-/// (docs/pool.md §7.1). None where it can't be read.
-pub fn memory_available() -> Option<u64> {
+/// The compressor's share of the memory not wired (the kernel's AVAILABLE_MEMORY: active, inactive,
+/// free and compressor pages) under which macOS's memory pressure is normal: two fifths. The
+/// kernel goes to warning once the compressor holds half of it and back to normal once it holds
+/// under two fifths (its warning-to-normal line, 1.2 × the normal-to-warning one on the pages not
+/// compressed). Measured on the three Macs' live series (the 10 s ring, 2–4 Nov, every bucket the
+/// pressure held one level, the compressor's share as `kern.memorystatus_level` and the
+/// compressor's pages give it): into warning at 48–50 %, back to normal at 39–41 %, never in
+/// warning a whole bucket under 39.8 % (docs/pool.md §7.1). Compression the available counts
+/// (`Pages::available`) stops at this line, so memory taken by compressing leaves the pressure
+/// normal, and a Mac past it counts none.
+pub const COMPRESSOR_NORMAL: (u64, u64) = (2, 5);
+
+/// The kernel's page counts the available memory is reckoned from (`Pages::available`; pages):
+/// `host_statistics64`'s HOST_VM_INFO64, a test's Mac as it sets them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pages {
+    /// Free (the kernel's count, a read-ahead's speculative pages among them), speculative,
+    /// file-backed (`external_page_count`, the speculative among them), purgeable.
+    pub free: u64,
+    pub speculative: u64,
+    pub file: u64,
+    pub purgeable: u64,
+    /// The active and inactive queues (file-backed and anonymous both).
+    pub active: u64,
+    pub inactive: u64,
+    /// The pages the compressor occupies, and the pages it holds compressed in them.
+    pub compressor: u64,
+    pub stored: u64,
+}
+
+/// The memory available (`Pages::available`; pages or bytes, as reckoned): what macOS hands out
+/// without a cost (`cheap`), and what it frees by compressing other processes' idle memory with
+/// the pressure left normal (`compressible`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Available {
+    pub cheap: u64,
+    pub compressible: u64,
+}
+
+impl Available {
+    /// Both together.
+    pub fn total(&self) -> u64 {
+        self.cheap + self.compressible
+    }
+}
+
+impl Pages {
+    /// The memory available (pages).
+    ///
+    /// - **Cheap:** the free pages, the file-backed ones (the file cache, dropped at once) and the
+    ///   purgeable ones. A read-ahead's speculative pages are counted once: the kernel's free count
+    ///   includes them and so does the file-backed (file-backed + anonymous = active + inactive +
+    ///   speculative, to the page; `vm_stat` prints free less speculative), so they come off the
+    ///   free. It is the Mac's memory less what Activity Monitor calls Memory Used (app memory,
+    ///   wired, compressed).
+    /// - **Compressible:** what macOS frees by compressing other processes' idle memory before its
+    ///   pressure leaves normal. Its inactive anonymous pages (the inactive queue less every
+    ///   file-backed page not speculative and the purgeable: the least they can be, as the kernel
+    ///   doesn't split the queue) compressed at the ratio its compressor holds now (`stored` over
+    ///   `compressor`) free 1 − 1/ratio of themselves; the compressor may grow only to
+    ///   `COMPRESSOR_NORMAL` of the memory not wired, each page more of it freeing ratio − 1. The
+    ///   less of the two. A compressor holding nothing has no ratio measured: none counted.
+    pub fn available(&self) -> Available {
+        let cheap = self.free.saturating_sub(self.speculative) + self.file + self.purgeable;
+        if self.compressor == 0 || self.stored <= self.compressor {
+            return Available { cheap, compressible: 0 };
+        }
+        let idle_anon =
+            self.inactive.saturating_sub(self.file.saturating_sub(self.speculative)).saturating_sub(self.purgeable);
+        // (Compressing x pages at ratio r = stored / compressor frees x (1 − 1/r) = x (stored −
+        // compressor) / stored.)
+        let by_idle = idle_anon as u128 * (self.stored - self.compressor) as u128 / self.stored as u128;
+        let unwired = self.active + self.inactive + self.free + self.compressor;
+        let (n, d) = COMPRESSOR_NORMAL;
+        let room = (unwired * n / d).saturating_sub(self.compressor);
+        // (Each page the compressor grows by holds r: frees r − 1 = (stored − compressor) / compressor.)
+        let by_room = room as u128 * (self.stored - self.compressor) as u128 / self.compressor as u128;
+        Available { cheap, compressible: by_idle.min(by_room) as u64 }
+    }
+}
+
+/// The kernel's page counts now (`Pages`) and its page size (bytes); None where they can't be read.
+pub fn memory_pages() -> Option<(Pages, u64)> {
     #[cfg(target_os = "macos")]
     {
         vm_stats().map(|(v, page)| {
-            let free = u64::from(v.free_count).saturating_sub(u64::from(v.speculative_count));
-            (free + u64::from(v.external_page_count) + u64::from(v.purgeable_count)) * page
+            let p = Pages {
+                free: u64::from(v.free_count),
+                speculative: u64::from(v.speculative_count),
+                file: u64::from(v.external_page_count),
+                purgeable: u64::from(v.purgeable_count),
+                active: u64::from(v.active_count),
+                inactive: u64::from(v.inactive_count),
+                compressor: u64::from(v.compressor_page_count),
+                stored: v.total_uncompressed_pages_in_compressor,
+            };
+            (p, page)
         })
     }
     #[cfg(not(target_os = "macos"))]
     None
+}
+
+/// The memory available now (bytes, `Pages::available`): what macOS hands a process at no cost,
+/// and what it frees by compressing other processes' idle memory with its pressure left normal.
+/// Not `kern.memorystatus_level` (`memory_free_pct`): that counts every page neither wired nor
+/// compressed, apps' own pages in use too, and read 60 % on the M4 on 4 Nov with 21 GB swapped
+/// (docs/pool.md §7.1). None where it can't be read.
+pub fn memory_available() -> Option<Available> {
+    let (p, page) = memory_pages()?;
+    let a = p.available();
+    Some(Available { cheap: a.cheap * page, compressible: a.compressible * page })
 }
 
 /// macOS's thermal state now, ProcessInfo.thermalState's four levels: 0 nominal, 1 fair, 2
@@ -900,6 +992,81 @@ pub fn group_peak() -> u64 {
     GROUP_PEAK.lock().map_or(now, |g| g.1.max(now))
 }
 
+/// The available memory's reckoning, on the three Macs' pages as read at 14:39 on 4 Nov (task #945;
+/// `vm_stat`, the pressure normal on each), whatever Mac the test runs on.
+#[cfg(test)]
+mod available {
+    use super::*;
+
+    const GB: f64 = (1u64 << 30) as f64;
+
+    /// `vm_stat`'s counts (its free less speculative, as it prints it), in 16 KB pages: the
+    /// available's two parts (MB).
+    fn mb(
+        free: u64,
+        active: u64,
+        inactive: u64,
+        spec: u64,
+        purgeable: u64,
+        file: u64,
+        stored: u64,
+        occupied: u64,
+    ) -> (u64, u64) {
+        let p = Pages {
+            free: free + spec,
+            speculative: spec,
+            file,
+            purgeable,
+            active,
+            inactive,
+            compressor: occupied,
+            stored,
+        };
+        let a = p.available();
+        ((a.cheap * 16384) >> 20, (a.compressible * 16384) >> 20)
+    }
+
+    #[test]
+    fn the_three_macs_count_their_idle_memory_compressed() {
+        // The M4 (48 GB): 6.8 GB cheap; 8.0 GB of idle anonymous pages at the compressor's 1.79
+        // would free 3.5 GB, and its 12.2 GB compressor is 4.4 GB short of two fifths of the 41.4
+        // GB not wired, which frees as much: 3.5 GB more (6.8 → 10.3 GB).
+        assert_eq!(mb(17421, 951169, 949068, 1136, 10128, 418053, 1427478, 796577), (6962, 3583));
+        // The Mac mini (32 GB): 6.1 GB cheap; 5.1 GB idle at 3.0 frees 3.4 (the compressor's room
+        // would free 14.6): 9.6 GB.
+        assert_eq!(mb(13048, 683239, 725414, 518, 4896, 384266, 464897, 154627), (6284, 3511));
+        // The M1 (16 GB): 3.0 GB cheap; 2.1 GB idle at 2.43 frees 1.3 (its room 3.8): 4.3 GB.
+        assert_eq!(mb(9393, 326665, 325945, 417, 6514, 180159, 367013, 151175), (3063, 1283));
+    }
+
+    #[test]
+    fn compression_stops_at_the_pressures_normal_line() {
+        // (The M4 at 01:10 on 4 Nov: the compressor 23 GB of the 39.7 GB not wired, past two
+        // fifths: nothing more counted, whatever is idle.)
+        let page = |g: f64| (g * GB / 16384.0) as u64;
+        let night = Pages {
+            free: page(0.2),
+            file: page(1.0),
+            active: page(9.0),
+            inactive: page(6.5),
+            compressor: page(23.0),
+            stored: page(41.0),
+            ..Default::default()
+        };
+        assert_eq!(night.available().compressible, 0);
+        // (Just under the line, what's left of the room limits it; an empty compressor, no ratio
+        // measured, counts none; nothing idle, none.)
+        let under = Pages { compressor: page(10.0), stored: page(18.0), ..night };
+        let a = under.available();
+        let unwired = under.active + under.inactive + under.free + under.compressor;
+        let room = (unwired * 2 / 5 - under.compressor) as u128 * (under.stored - under.compressor) as u128
+            / under.compressor as u128;
+        assert!(a.compressible > 0 && a.compressible as u128 == room, "{a:?} {room}");
+        assert_eq!(Pages { compressor: 0, stored: 0, ..under }.available().compressible, 0);
+        assert_eq!(Pages { inactive: page(1.0), ..under }.available().compressible, 0, "the idle all file-backed");
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
@@ -925,7 +1092,10 @@ mod tests {
         assert!(v.free_count >= v.speculative_count, "{} {}", v.free_count, v.speculative_count);
         let avail = memory_available().expect("available");
         let used = (u64::from(v.wire_count) + u64::from(v.compressor_page_count)) * page;
-        assert!(avail <= mem.saturating_sub(used) + (64 << 20), "{avail} {mem} {used}");
+        assert!(avail.cheap <= mem.saturating_sub(used) + (64 << 20), "{avail:?} {mem} {used}");
+        // (Task #945: what compressing frees comes out of the apps' memory in use, never more than
+        // the anonymous pages.)
+        assert!(avail.compressible <= u64::from(v.internal_page_count) * page, "{avail:?}");
     }
 
     #[test]
@@ -955,8 +1125,8 @@ mod tests {
         let mut c = store::spawn::spawn(store::spawn::command("/usr/bin/python3").args(["-c", "import sys; b = bytearray(200 << 20); b[::4096] = b'x' * len(b[::4096]); print(1, flush=True); sys.stdin.read()"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped())).unwrap();
         let mut line = String::new();
         std::io::BufRead::read_line(&mut std::io::BufReader::new(c.stdout.as_mut().unwrap()), &mut line).unwrap();
+        // (group_peak counts the group as it is now beside the peak sampled: no wait for a sample.)
         reset_group_peak();
-        std::thread::sleep(std::time::Duration::from_millis(600));
         let with = group_peak();
         drop(c.stdin.take());
         c.wait().unwrap();

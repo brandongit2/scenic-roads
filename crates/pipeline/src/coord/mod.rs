@@ -908,24 +908,25 @@ pub fn disk_words(c: &Capacity, for_jobs_mb: u64) -> String {
     format!("{} free · {} for jobs{kept}", gb(c.free_mb), gb(for_jobs_mb))
 }
 
-/// A Mac's memory in words (task #932): what's available against its floor, what's reserved for
-/// its running jobs' growth, and what's left for a new job's peak (`for_new_mb`): "9.3 GB
-/// available · 6.0 GB floor + 0.4 GB margin · 3.0 GB reserved for its jobs' growth · 0.0 GB for a
-/// new job"; an older app's (no floor said), the new job's alone.
+/// A Mac's memory in words (task #932): what's available against its floor (what compressing
+/// frees among it, task #945), what's reserved for its running jobs' growth, and what's left for a
+/// new job's peak (`for_new_mb`): "9.3 GB available (3.4 GB by compressing) · 6.0 GB floor · 3.0 GB
+/// reserved for its jobs' growth · 0.0 GB for a new job"; an older app's (no floor said), the new
+/// job's alone.
 pub fn mem_words(c: &Capacity, for_new_mb: u64) -> String {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
     if c.mem_floor_mb == 0 {
         return format!("{} for a new job", gb(for_new_mb));
     }
-    let mut v = vec![format!("{} available", gb(c.avail_mb))];
+    let mut v = vec![if c.mem_compress_mb > 0 {
+        format!("{} available ({} by compressing)", gb(c.avail_mb), gb(c.mem_compress_mb))
+    } else {
+        format!("{} available", gb(c.avail_mb))
+    }];
     if c.swap_grown_mb > 0 {
         v.push(format!("swap grew {}", gb(c.swap_grown_mb)));
     }
-    v.push(if c.mem_margin_mb > 0 {
-        format!("{} floor + {} margin", gb(c.mem_floor_mb), gb(c.mem_margin_mb))
-    } else {
-        format!("{} floor", gb(c.mem_floor_mb))
-    });
+    v.push(format!("{} floor", gb(c.mem_floor_mb)));
     if c.mem_reserved_mb > 0 {
         v.push(format!("{} reserved for its jobs' growth", gb(c.mem_reserved_mb)));
     }
@@ -955,24 +956,26 @@ pub struct Capacity {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub held_each: Vec<WaitingJob>,
     /// The memory its jobs may hold together for one to start (MB: what they hold and what's
-    /// available, less its memory floor and margin; none under the brake: crate::agent::memguard's
-    /// `Reading::admit_mb`). 0: an older app's, which doesn't say.
+    /// available, less its memory floor; none under the brake, the floor or a give-back's
+    /// cool-down: crate::agent::memguard's `Reading::admit_mb`). 0: an older app's, which doesn't
+    /// say.
     pub build_mb: u64,
     /// `build_mb` less each running job's predicted need (the larger of what it holds and its
     /// predicted peak: its targets' measured peak on the lead, the step's first guess on a member,
     /// which has no coordinator's measures) (MB): what a new job's peak may be.
     pub mem_mb: u64,
     /// Its memory against its floor (MB, docs/pool.md §7.1; memguard::Reading): what's available
-    /// (crate::sys::memory_available), the floor, the margin new work waits past it for, the swap
+    /// (crate::sys::memory_available) and what compressing frees among it, the floor, the swap
     /// grown lately (off what's available), and what's reserved for its running jobs' growth to
     /// come (each one's predicted need less what it holds).
     pub avail_mb: u64,
+    pub mem_compress_mb: u64,
     pub mem_floor_mb: u64,
-    pub mem_margin_mb: u64,
     pub swap_grown_mb: u64,
     pub mem_reserved_mb: u64,
-    /// Why no job starts on it now whatever it needs (memguard::Reading::held_back: the brake, or
-    /// its memory under the floor and margin); the lead grants it nothing then (`sched::pack`).
+    /// Why no job starts on it now whatever it needs (memguard::Reading::held_back: the brake, its
+    /// memory under the floor, a give-back's cool-down); the lead grants it nothing then
+    /// (`sched::pack`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mem_held_back: Option<String>,
     /// Its cores, and those free by the last minute's load average.
@@ -9492,10 +9495,10 @@ mod tests {
     /// Task #932: the lead packs a Mac by the memory floor's arithmetic, from what its ask says: a
     /// job starts only where what's available less every running job's growth to come (its
     /// expected peak less what it holds, or nothing once it holds more) less its own expected peak
-    /// stays at the floor and margin. The ask's memory (`build_mb`: what the jobs may hold above
-    /// the floor and margin) less each running job's expected peak or what it holds, the larger
-    /// (`Capacity::held_each`). A Mac whose memory is under its floor and margin, or under the
-    /// brake (`Capacity::mem_held_back`), is granted nothing, and the refusal says why.
+    /// stays at the floor. The ask's memory (`build_mb`: what the jobs may hold above the floor)
+    /// less each running job's expected peak or what it holds, the larger (`Capacity::held_each`).
+    /// A Mac whose memory is under its floor, under the brake or cooling down after a give-back
+    /// (`Capacity::mem_held_back`), is granted nothing, and the refusal says why.
     #[test]
     fn packing_reserves_the_running_jobs_growth_and_holds_back_below_the_floor() {
         // (trees measured at 2 GB a job; a Mac whose jobs may hold 9 GB above its floor.)
@@ -9532,7 +9535,8 @@ mod tests {
         // One grown past its 2 GB peak to 4 GB: counted at 4, 9 less 2 + 4 leaves 3: one more, not
         // the two that what they hold (5 GB) or their peaks (4 GB) alone would leave room for.
         assert_eq!(two([1_000, 4_000]).0, 1);
-        // Held back (under the floor and margin, or the brake): none, the refusal saying why.
+        // Held back (under the floor, the brake, a give-back's cool-down): none, the refusal saying
+        // why.
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "trees", 6, Some(2));
         let mut a = ask(3, Vec::new());

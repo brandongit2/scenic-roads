@@ -15,7 +15,7 @@
 //!   its ring's span is never answered.
 //! - **Sampled** on threads of the agent's own (`spawn`), never its loop: every second the load,
 //!   memory free (the kernel's percentage), the memory available (crate::sys::memory_available, as
-//!   the memory floor reads it), its pressure, the swap, the memory compressed (`host_statistics64`), macOS's
+//!   the memory floor reads it) and what compressing frees among it, its pressure, the swap, the memory compressed (`host_statistics64`), macOS's
 //!   thermal state (crate::sys::thermal_state) and the jobs running; the cores busy (all, the efficiency
 //!   cores, the performance ones: `host_processor_info`'s ticks, the efficiency cores the first
 //!   processors, as many as the last perf level's; the performance ones every other); the build's CPU and memory (its jobs' processes' `proc_pid_rusage`)
@@ -90,8 +90,10 @@ const MAGIC_V1: &[u8; 8] = b"SCLIVE01";
 pub const NAS_MS: &str = "nas_ms";
 pub const LOAD: &str = "load1";
 pub const MEM_FREE: &str = "mem_free_pct";
-/// The memory available (GB: crate::sys::memory_available).
+/// The memory available (GB: crate::sys::memory_available), and what compressing idle memory frees
+/// among it (its `compressible`).
 pub const MEM_AVAIL: &str = "mem_avail_gb";
+pub const MEM_COMPRESSIBLE: &str = "mem_compressible_gb";
 pub const PRESSURE: &str = "mem_pressure";
 pub const SWAP: &str = "swap_mb";
 /// The memory macOS holds compressed (GB), and its thermal state (0 nominal to 3 critical).
@@ -751,7 +753,9 @@ impl Rates {
         let free = crate::sys::memory_free_pct();
         put(MEM_FREE, free.map(f64::from));
         let avail = crate::sys::memory_available();
-        put(MEM_AVAIL, avail.map(|b| b as f64 / GB));
+        put(MEM_AVAIL, avail.map(|a| a.total() as f64 / GB));
+        put(MEM_COMPRESSIBLE, avail.map(|a| a.compressible as f64 / GB));
+        let avail = avail.map(|a| a.total());
         put(PRESSURE, crate::sys::memory_pressure().map(f64::from));
         put(SWAP, crate::sys::swap_used().map(|b| (b >> 20) as f64));
         put(COMPRESSED, crate::sys::memory_compressed().map(|b| b as f64 / GB));
@@ -1150,6 +1154,7 @@ mod tests {
             BUILD_MEM,
             OTHERS_MEM,
             MEM_AVAIL,
+            MEM_COMPRESSIBLE,
             DISK_WRITE,
         ] {
             assert!(s.latest(n, t0 + 19, 5).is_some(), "{n} not sampled");

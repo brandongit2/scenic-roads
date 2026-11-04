@@ -350,8 +350,8 @@ app).
 An ask also carries its whole Mac's capacity (`coord::Capacity`, the ask's optional `cap`): the
 most its jobs could hold (`limit_mb`: its memory less its memory floor), what the running jobs hold
 (together and each, `held_each`), its memory against its floor (§7.1, The memory floor: what's
-available, the floor, the margin, the swap grown, what's reserved for its jobs' growth, and why no
-job may start, `mem_held_back`), what its jobs may hold for one to start (`build_mb`) and what's
+available and what compressing frees among it, the floor, the swap grown, what's reserved for its
+jobs' growth, and why no job may start, `mem_held_back`), what its jobs may hold for one to start (`build_mb`) and what's
 left of it less each running job's predicted need (the larger of what it holds and its predicted
 peak: its targets' measured peak on the lead, the step's first guess on a member), its
 cores and those the last minute's load leaves free, the disk free less the owner's room target
@@ -550,58 +550,93 @@ than dropped, so a Mac's available memory falls under an eighth once macOS compr
 drops cache. The floor is taken as set: no cap, reserve or footprint stands behind it (the agent
 counts as any other process).
 
-- **Available** (`sys::memory_available`): the free pages, the file-backed pages (the file cache,
-  dropped at once) and the purgeable ones (`host_statistics64`): the Mac less what Activity Monitor
-  calls Memory Used, so the owner can check it. A read-ahead's speculative pages are in both the
-  kernel's free count and its file-backed count (file-backed + anonymous = active + inactive +
-  speculative, to the page), so they come off the free, as `vm_stat` prints it. Never raw free pages (macOS keeps those near zero),
-  and not `kern.memorystatus_level`: that counts every page neither wired nor compressed, apps' own
-  pages in use among them, and read 60 % on the M4 at 01:10 on 4 Nov with 21 GB swapped. Under
-  load (4 GB touched in 1 GB steps on the M4, 4 Nov, `memory_pressure` alongside):
-  `memorystatus_level` fell only as macOS compressed (62 % to 51 %, the 5.5 GB the compressor
-  grew) and stayed there once the 4 GB was freed; free plus file-backed plus purgeable read 5.5–6.6
-  GB throughout, the file cache at what macOS kept (11 % of the Mac) while it compressed other
-  apps' memory instead; the pressure level stayed normal. So past the file cache's floor the
-  available memory stops falling and the brake (below) is what sees the rest: the default floor
-  sits just above that cache.
+- **Available** (`sys::memory_available`, `sys::Pages::available`; task #945): what macOS hands
+  out at no cost, and what it frees by compressing other processes' idle memory with its pressure
+  left normal.
+  - *At no cost:* the free pages, the file-backed pages (the file cache, dropped at once) and the
+    purgeable ones (`host_statistics64`): the Mac less what Activity Monitor calls Memory Used. A
+    read-ahead's speculative pages are in both the kernel's free count and its file-backed count
+    (file-backed + anonymous = active + inactive + speculative, to the page), so they come off the
+    free, as `vm_stat` prints it. Never raw free pages (macOS keeps those near zero), and not
+    `kern.memorystatus_level`: that counts every page neither wired nor compressed, apps' own pages
+    in use among them, and read 60 % on the M4 at 01:10 on 4 Nov with 21 GB swapped.
+  - *By compressing:* idle app memory macOS compresses cheaply counted as used made a 32 GB Mac
+    mini at normal pressure show 6.2 GB available. The kernel's pressure follows its compressor:
+    on the three Macs' live series (the 10 s ring, 2–4 Nov, the compressor's share of the memory
+    not wired from `kern.memorystatus_level` and the compressor's pages) each went to warning once
+    the compressor held 48–50 % of the memory not wired and back to normal under 39–41 %, and was
+    never in warning a whole bucket under 39.8 % (the kernel's warning line on the pages not
+    compressed, its way back at 1.2 times that). So the compressor may grow to two fifths of it
+    (`sys::COMPRESSOR_NORMAL`) with the pressure normal; each page more holds what it holds now
+    (its pages stored over its pages, the ratio), freeing ratio − 1. What it compresses is the
+    inactive anonymous memory: the inactive queue less every file-backed page not speculative
+    and the purgeable (the least it can be: the kernel doesn't split the queue), which frees
+    1 − 1/ratio of itself. Counted: the less of the two; none while the compressor holds nothing
+    (no ratio measured) or past two fifths. Read at 14:39 on 4 Nov, the pressure normal on each:
+    the M4 6.8 GB at no cost and 3.5 by compressing (8.0 GB idle at 1.79), the Mac mini 6.1 and
+    3.4 (5.1 idle at 3.0), the M1 3.0 and 1.3 (2.1 idle at 2.4); 3 GB of incompressible memory
+    touched on the M4 then (in 512 MB steps, its jobs running) left the pressure normal and the
+    compressor's share at 29 %. Shown as said: "10.3 GB available (3.5 GB by compressing)".
+  - The default floor sits under what macOS keeps: once compression is spent (the compressor at
+    two fifths) the available is the file cache macOS held on 4 Nov, 11–12 % of each Mac, under an
+    eighth, so a Mac at its default floor gives back as compression runs out.
 - **Reading** (`memguard::Reading`, every 5 s on the sampler's thread, with the jobs' footprints):
-  what's available, what the jobs hold, the floor, the swap grown over the last five minutes
-  (`SWAP_WINDOW`: its use now less the least in the window), the kernel's pressure level, and the
-  margin. The jobs' **room**, what they may hold before the Mac is below its floor, is what they
-  hold and what's available, less the swap grown and the floor (`Reading::room_mb`); the Mac is
-  below its floor when what's available, the swap grown off, is under it, or the brake acts.
-- **Admission, with reservations** (as the disk room reserves running jobs' space): a job starts
-  only where available − (each running job's expected peak less what it holds now, none once it
-  holds more) − the new job's expected peak ≥ the floor and the margin. The Mac's ask says what its
-  jobs may hold for one to start (`Ask::mem_mb`, its capacity's `build_mb`: the room less the
-  margin, `Reading::admit_mb`, none under the brake), what each running job holds
-  (`Capacity::held_each`), and why no job may start whatever it needs (`Capacity::mem_held_back`:
-  the brake, or available under the floor and margin); the lead packs each running job at its
-  expected peak or what it holds, the larger, and a new one at its expected peak (§7.2,
-  `Sched::pack`), the same arithmetic for its own Mac and every member's, from their asks. A Mac held
-  back is granted nothing, a cold start to an empty Mac among it, the refusal saying
-  `memory: <why>`. Terrain-deep starts near 2 GB and grows past 7: its growth is reserved before
-  the next job starts.
-- **Hysteresis**: jobs are given back below the floor; new work only once the Mac is back above the
-  floor plus the margin (`memguard::margin_mb`): how far the memory other processes hold (the Mac's
-  less what's available and what the jobs hold) swung over the last five minutes, its most less its
-  least. Calm apps, a small margin; Chrome swinging 3 GB, 3 GB. No hand-typed figure: a job let in
-  at the floor plus the margin isn't given back by the next move of the same apps.
-- **The brake** (`Reading::brake`): the kernel's pressure at warning or critical, or swap grown in
-  the window past what was available above the floor: no job starts whatever the number says. It
-  acts on the running jobs (`Reading::acts`: frozen and given back, §7.2, The memory guard) only
-  with evidence: the pressure critical, or the Mac below its floor by the numbers (what's
-  available, the swap grown off, under the floor: swap grown past the floor's room is that). The
-  pressure at warning alone holds new work and freezes nothing: macOS sits at warning for long
-  stretches while it compresses, and a job frozen for it and given back each minute would lose work
-  the Mac had room for. The build page shows a "memory brake" chip on the Mac's card while it's on,
-  with why.
+  what's available and what compressing frees among it, what the jobs hold, the floor, the swap
+  grown over the last five minutes (`SWAP_WINDOW`: its use now less the least in the window), the
+  kernel's pressure level, and a give-back's cool-down. The jobs' **room**, what they may hold
+  before the Mac is below its floor, is what they hold and what's available, less the swap grown
+  and the floor (`Reading::room_mb`); the Mac is below its floor when what's available, the swap
+  grown off, is under it, or the brake acts.
+- **Admission, with reservations** (as the disk room reserves running jobs' space): the floor is
+  the only memory setting. A job starts only where available − (each running job's expected peak
+  less what it holds now, none once it holds more) − the new job's expected peak ≥ the floor. The
+  Mac's ask says what its jobs may hold for one to start (`Ask::mem_mb`, its capacity's
+  `build_mb`: the room, `Reading::admit_mb`, none while no job may start), what each running job
+  holds (`Capacity::held_each`), and why no job may start whatever it needs
+  (`Capacity::mem_held_back`: the brake, available under the floor, or a give-back's cool-down);
+  the lead packs each running job at its expected peak or what it holds, the larger, and a new
+  one at its expected peak (§7.2, `Sched::pack`), the same arithmetic for its own Mac and every
+  member's, from their asks. A Mac held back is granted nothing, a cold start to an empty Mac
+  among it, the refusal saying `memory: <why>`. Terrain-deep starts near 2 GB and grows past 7:
+  its growth is reserved before the next job starts.
+- **Give-back**: below the floor, at safe points, the work lost least first (§7.2, The memory
+  guard).
+- **Cool-down** (`Reading::cooling`, the agent's `cool_down`): a job the memory guard gives back
+  (drained to its safe point, stopped, or yielding) holds new work off its Mac until what's
+  available (the swap grown off) is back past the floor and that job's peak (what it held or its
+  expected peak, the larger), or `memguard::COOL_WAIT` has passed, whichever comes first; a later
+  give-back starts it again. The wait is the swap window, five minutes, so the swap a give-back's
+  shortage grew has left the reading new work is let in by; it outlasts most outside swings (on
+  the M4's 10 s ring, the 7.8 h of 4 Nov since the available was recorded, other processes' rises
+  of 2 GB or more fell back within 60 s at the median, 190 s at the 90th percentile). A job given
+  back because the Mac fell below its floor isn't followed at once by a smaller one the same fall
+  would give back too; said as "a job was given back: no new job until 13.0 GB is available (the
+  6.0 GB floor and its 7.0 GB peak; 10.0 GB now), or for 5 min more".
+- **The brake** (`Reading::brake`), the safety net behind the count of compressible memory: the
+  kernel's pressure at warning or critical, or swap grown in the window past what was available
+  above the floor: no job starts whatever the number says. It acts on the running jobs
+  (`Reading::acts`: frozen and given back, §7.2, The memory guard) only with evidence: the
+  pressure critical, or the Mac below its floor by the numbers (what's available, the swap grown
+  off, under the floor: swap grown past the floor's room is that). The pressure at warning alone
+  holds new work and freezes nothing: macOS sits at warning for long stretches while it
+  compresses, and a job frozen for it and given back each minute would lose work the Mac had room
+  for. The build page shows a "memory brake" chip on the Mac's card while it's on, with why.
+- **Replayed** (task #945): on the M4's night of 4 Nov (00:07–01:18, the 10 s ring) the compressor
+  went from 11 % of the memory not wired to 40 % in two and a half minutes as four jobs started at
+  once, and the pressure to warning 25 s later; of the 268 buckets at warning or critical, 4 had
+  the compressor under two fifths (the turns), so compression counts nothing while a Mac is in
+  trouble, and admission, give-back and the brake go by the available at no cost there
+  (`memguard`'s `the_fourth_of_november_replayed`). A quiet 12 minutes on each Mac (14:40 on 4
+  Nov, 5 s samples, the pressure normal throughout): every sample had room for a slope-deep job
+  (2.2 GB) on each, 3.6 on average on the M4, 3.2 on the Mac mini, 1.6 on the M1, the running
+  jobs' growth left out.
 - **Status**: the Mac's card on the build page, the menu bar (under the state line) and `scenic
   status` (this Mac's, from the guard's sample) say the memory in a line (`memguard::words`):
-  "Memory: 9.3 GB available, floor 6.0 GB (default) + 0.4 GB margin; the jobs hold 12.1 GB, 3.0 GB
-  more reserved for their growth; 1.2 GB for a new job", or why no new job, the brake first when
-  it's on; the capacity table and `scenic status`'s Macs say each Mac's (`coord::mem_words`); a job
-  given back says why (the guard's last word, on the Mac's live block).
+  "Memory: 9.3 GB available (3.4 GB by compressing), floor 6.0 GB (default); the jobs hold 12.1
+  GB, 3.0 GB more reserved for their growth; 1.2 GB for a new job", or why no new job, the brake
+  first when it's on; the capacity table and `scenic status`'s Macs say each Mac's
+  (`coord::mem_words`); a job given back says why (the guard's last word, on the Mac's live
+  block).
 - **Migration**: an agent from task #932 on finds the old `build-memory.json` (a cap on the jobs
   together, `{"mb", "by", "at"}`), removes it and says so in its log and as the guard's last word
   ("the build memory setting (the build's jobs held to 24.0 GB together (set by …)) is replaced by
@@ -710,7 +745,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   lease), packed in plan order into the ask's room: each after the first the Mac holds must fit,
   by its measures (memory, disk, and cores: `needs::Book::cores`, §7.1;
   cores not said count as one thread) or a cold start's provisional need (§7.7), within
-  what's left: the ask's memory and disk (what its jobs may hold above its memory floor and margin,
+  what's left: the ask's memory and disk (what its jobs may hold above its memory floor,
   §7.1, `Agent::build_room`, less each job it holds at its expected peak or what it holds, the
   larger; and its free disk) and its Mac's cores (less the in-use share's
   while its owner uses it, and less the cores busy outside the pool: those its last minute's load
@@ -913,7 +948,7 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   frozen at once (SIGSTOP; the largest too once it alone passes the room, the sampler's thread
   freezing it first), then the next while the rest still pass the room. Freezing is the last
   resort: it stops a job's growth and lets macOS compress it while its work is kept. A frozen job
-  goes on once the Mac is back (the brake off, available above the floor and the margin), and is
+  goes on once the Mac is back (the brake off, available at or above the floor), and is
   stopped (given back) after a minute frozen with the brake still acting (`PRESSURE_HOLD`: twelve of
   the sampler's 5 s readings, enough for a freeze that stopped the fall to show in them, short
   beside the five minutes the swap grown counts over), or after the 15 minutes a drain gets with
@@ -1999,7 +2034,8 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   Sampled on the agent's own
   threads, never its loop: every second the load (`load1`), the kernel's memory-free percentage
   (`mem_free_pct`, `kern.memorystatus_level`), the memory available (`mem_avail_gb`,
-  `sys::memory_available`, as the memory floor reads it, §7.1), its pressure (`mem_pressure`: 1, 2, 4) and the swap (`swap_mb`),
+  `sys::memory_available`, as the memory floor reads it, §7.1; what compressing frees among it,
+  `mem_compressible_gb`), its pressure (`mem_pressure`: 1, 2, 4) and the swap (`swap_mb`),
   and the jobs running (`jobs`); the cores busy in cores' worth (`cores_busy`, and by group
   `cores_busy_e`, `cores_busy_p`: `host_processor_info`'s ticks over the second, the efficiency
   cores the first processors, as many as the last perf level's `logicalcpu` (named Efficiency;

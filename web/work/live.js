@@ -19,7 +19,7 @@ const EVERY_MS = 1500;
 // How old a reading of the agent's loop (power, idleness, limits) may be and still be said.
 const LOOP_FRESH_S = 900;
 const SERIES = ["nas_read_mbs", "nas_write_mbs", "net_in_mbs", "net_out_mbs", "nas_files_s", "nas_creates_s", "net_req_s", "build_cores", "others_cores", "cores_busy", "cores_busy_e", "cores_busy_p", "load1",
-  "mem_free_pct", "mem_avail_gb", "mem_pressure", "mem_compressed_gb", "thermal", "swap_mb", "build_mem_gb", "others_mem_gb", "disk_free_gb", "disk_size_gb", "disk_write_mbs", "battery_pct", "ac", "idle_s",
+  "mem_free_pct", "mem_avail_gb", "mem_compressible_gb", "mem_pressure", "mem_compressed_gb", "thermal", "swap_mb", "build_mem_gb", "others_mem_gb", "disk_free_gb", "disk_size_gb", "disk_write_mbs", "battery_pct", "ac", "idle_s",
   "build_cores_max", "mem_floor_gb", "disk_room_gb", "disk_reserved_gb", "nas_ms", "nas_calls", "nas_missed", "jobs",
   // (The lead's alone, summed over the pool; missing from the others' answers: nas.js.)
   "pool_nas_read_mbs", "pool_nas_write_mbs", "pool_nas_files_s", "pool_nas_creates_s", "pool_nas_listed_s", "pool_nas_stats_s",
@@ -306,8 +306,8 @@ function paint(host) {
   const line = held("memory", memGb && floor != null ? memGb - floor : null, s.mem_floor_gb);
   draw(b.mem.c, { ...base, unit: "GB", stacked: true, max: memGb || undefined, refs: line != null ? [{ v: line, label: `floor: ${fmt(memGb - line, "GB")} kept available`, edit: edit("memory", { title: "Memory floor", note: `The memory ${host} keeps available whatever runs on it: jobs start only above it and are given back below it. Off: its default.`, unit: "GB", min: 1, max: Math.floor(memGb || 1) - 1, step: 1, label: (v) => `floor: ${fmt(memGb - v, "GB")} kept available`, body: (v) => (v === "off" ? v : memGb - v) }) }] : [],
     series: [{ points: s.build_mem_gb, colour: acc, label: "build", unit: "GB" }, { points: s.others_mem_gb, colour: dim, label: "other", unit: "GB" }] });
-  const avail = at("mem_avail_gb");
-  words(b.mem.v, avail == null ? ["not measured"] : [`${memGb ? `${fmt(memGb - avail, "GB")} of ${fmt(memGb, "GB")} used · ` : ""}${fmt(avail, "GB")} available`,
+  const avail = at("mem_avail_gb"), byComp = at("mem_compressible_gb");
+  words(b.mem.v, avail == null ? ["not measured"] : [`${memGb ? `${fmt(memGb - avail, "GB")} of ${fmt(memGb, "GB")} used · ` : ""}${fmt(avail, "GB")} available${byComp ? ` (${fmt(byComp, "GB")} by compressing)` : ""}`,
     [acc, `build's jobs ${fmt(at("build_mem_gb"), "GB")}`], [dim, `other apps ${fmt(at("others_mem_gb"), "GB")}`], floor != null ? `floor ${fmt(floor, "GB")}` : ""], floor != null && avail < floor ? "warn" : "");
   const free = at("mem_free_pct");
 

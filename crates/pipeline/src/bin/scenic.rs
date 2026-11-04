@@ -1788,8 +1788,8 @@ mod tests {
             mem_mb: 1 << 10,
             held_mb: 8 << 10,
             avail_mb: 9 << 10,
+            mem_compress_mb: 3 << 9,
             mem_floor_mb: 6 << 10,
-            mem_margin_mb: 1 << 9,
             mem_reserved_mb: 3 << 10,
             free_mb: 39_014,
             disk_mb: 18 << 10,
@@ -1797,7 +1797,7 @@ mod tests {
             ..Default::default()
         };
         let l = capacity_line(&c);
-        assert!(l.starts_with("memory 9.0 GB available · 6.0 GB floor + 0.5 GB margin · 3.0 GB reserved for its jobs' growth · 1.0 GB for a new job (8.0 GB held)"), "{l}");
+        assert!(l.starts_with("memory 9.0 GB available (1.5 GB by compressing) · 6.0 GB floor · 3.0 GB reserved for its jobs' growth · 1.0 GB for a new job (8.0 GB held)"), "{l}");
         assert!(l.contains("disk 38 GB free · 18 GB for jobs (20 GB room target)"), "{l}");
         let c = pipeline::coord::Capacity {
             mem_held_back: Some("the memory brake: macOS's memory pressure is at warning".into()),

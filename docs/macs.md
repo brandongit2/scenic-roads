@@ -140,7 +140,9 @@ and codesign.
    LaunchAgent; on any other it removes one, leaving the Mac's offline map.
 7. Allow `scenic` (and on the map's Mac `server`) through the firewall (pool.md §6.8).
 8. `scenic memory` says the memory floor, the memory the Mac keeps available (an eighth of its
-   memory unless set); the room target is the owner's choice.
+   memory unless set; available counts what macOS frees by compressing idle memory with its
+   pressure normal, docs/pool.md §7.1), the only memory setting; the room target is the owner's
+   choice.
 
 **App Macs (both laptops).**
 - **The launcher** (`tools/launcher/launcher.c`) runs the command in `~/Library/Application

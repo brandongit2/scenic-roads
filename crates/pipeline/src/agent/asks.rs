@@ -494,6 +494,7 @@ pub(crate) mod tests {
         let r = crate::agent::memguard::Reading {
             avail_mb: 5 << 10,
             held_mb: 9 << 10,
+            compress_mb: 1 << 10,
             floor_mb: 6 << 10,
             pressure: 2,
             ..Default::default()

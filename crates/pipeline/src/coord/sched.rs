@@ -810,8 +810,8 @@ impl Sched {
     /// granted fewer jobs than the ask wanted (None: as many as it wanted).
     pub fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<String>) {
         let now = clock.now;
-        // (Its Mac below its memory floor and margin, or the brake on (docs/pool.md §7.1): nothing,
-        // a cold start to a Mac running nothing among it.)
+        // (Its Mac below its memory floor, the brake on or a give-back cooling it down (docs/pool.md
+        // §7.1): nothing, a cold start to a Mac running nothing among it.)
         if let Some(why) = a.cap.as_ref().and_then(|c| c.mem_held_back.as_ref()) {
             return (Vec::new(), Some(format!("memory: {why}")));
         }

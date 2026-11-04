@@ -75,8 +75,9 @@
   unregistered and removed, the two login items as before), then `tools/app/publish.sh --rollback`
   if the version itself is to go.
 - `scenic status` and the menu bar item (Scenic's) show the build's state, and this Mac's memory against its
-  floor in a line (what's available, the floor, what's reserved for its jobs, why no job starts; the
-  memory brake first while it's on: docs/pool.md §7.1). A click
+  floor in a line (what's available and what compressing frees among it, the floor, what's reserved
+  for its jobs, why no job starts: the brake, the floor, a give-back's cool-down; the memory brake
+  first while it's on: docs/pool.md §7.1). A click
   opens the build page in a popover; the menu pauses and resumes the build, hands over the lead,
   sets the disk room and clears the Mac's build caches (`scenic clean`). It notifies on every change.
 - Every program checks its command line first (docs/building.md, "Command lines"): `--help`/`-h`

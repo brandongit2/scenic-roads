@@ -888,9 +888,9 @@ function machineCard(m, x) {
     card.append(h("div", "job", h("div", "what dim", st.hold ? st.hold.said : m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
     for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${waitName(w)}: ${w.why}` : w.why));
   }
-  // (Its memory against its floor (task #932): available, the floor and margin, what's reserved for
-  // its jobs' growth, why no job starts; what the guard last did is said on the live block's
-  // pressure row.)
+  // (Its memory against its floor (task #932): available (what compressing frees among it, #945),
+  // the floor, what's reserved for its jobs' growth, why no job starts; what the guard last did is
+  // said on the live block's pressure row.)
   if (st.memory?.said) card.append(h("div", { class: `sub ${st.memory.brake ? "bad" : st.memory.held_back ? "warn" : ""}`, title: "The memory floor: the memory this Mac keeps available (scenic memory, the Settings tab)" }, st.memory.said));
   card.append(...[x.role === "helper" ? fitText(x.worker, x.name) : null, liveBlock(x.name, st.memory?.last)].filter(Boolean));
   return card;
@@ -1904,7 +1904,7 @@ function details(m) {
   // Each member's capacity as the lead's coordinator last heard it (coord::Capacity: the lead's own first).
   const caps = a.capacity || [];
   const gb = (mb) => `${n(Math.round(mb / 102.4) / 10)} GB`;
-  if (caps.length) box.append(h("h3", null, "Capacity per Mac"), tbl(["Mac", "Memory", "Cores free", "Disk free", "Power", "Use", "NAS", "Leases", "Said"], caps.map(([name, c]) => [name, c.mem_floor_mb ? `${gb(c.avail_mb)} available · floor ${gb(c.mem_floor_mb)}${c.mem_margin_mb ? ` + ${gb(c.mem_margin_mb)}` : ""} · ${gb(c.mem_reserved_mb || 0)} reserved · ${c.mem_held_back ? `none for a new job: ${c.mem_held_back}` : `${gb(c.mem_mb)} for a new job`} (${gb(c.held_mb)} held)` : `${gb(c.mem_mb)} free (${gb(c.held_mb)} held)`, `${n(c.cores_free)} of ${n(c.cores)}`, gb(c.disk_mb), c.ac ? "mains" : `battery${c.battery != null ? ` ${c.battery} %` : ""}`, c.in_use ? "in use" : "idle", !c.nas ? "not reachable" : c.home ? "reachable" : "Tailscale", (c.leases || []).join(", "), ago(now, c.at)])));
+  if (caps.length) box.append(h("h3", null, "Capacity per Mac"), tbl(["Mac", "Memory", "Cores free", "Disk free", "Power", "Use", "NAS", "Leases", "Said"], caps.map(([name, c]) => [name, c.mem_floor_mb ? `${gb(c.avail_mb)} available${c.mem_compress_mb ? ` (${gb(c.mem_compress_mb)} by compressing)` : ""} · floor ${gb(c.mem_floor_mb)} · ${gb(c.mem_reserved_mb || 0)} reserved · ${c.mem_held_back ? `none for a new job: ${c.mem_held_back}` : `${gb(c.mem_mb)} for a new job`} (${gb(c.held_mb)} held)` : `${gb(c.mem_mb)} free (${gb(c.held_mb)} held)`, `${n(c.cores_free)} of ${n(c.cores)}`, gb(c.disk_mb), c.ac ? "mains" : `battery${c.battery != null ? ` ${c.battery} %` : ""}`, c.in_use ? "in use" : "idle", !c.nas ? "not reachable" : c.home ? "reachable" : "Tailscale", (c.leases || []).join(", "), ago(now, c.at)])));
   const workers = (sw.workers || []).filter((w) => w.seen_s < 3600);
   if (workers.length) box.append(h("h3", null, "Workers heard from"), tbl(["Name", "Kind", "Doing", "Spares", "Done", "Failed", "Seen"], workers.map((w) => [w.label || w.name, w.kind, (w.what || "").slice(0, 80), w.mem_mb ? `${n(w.mem_mb)} MB` : "", n(w.done), n(w.failed), `${dur(w.seen_s)} ago`])));
   // The steps table itself: every step the same row (docs/pipeline.md), with where its runs' time

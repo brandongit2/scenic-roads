@@ -429,8 +429,8 @@ struct Slot {
 /// still acting (`Agent::pressure`; docs/pool.md §7.2): a minute, twelve of the sampler's readings
 /// (memguard::EVERY), enough for a freeze that stopped the fall to show in them, and short beside
 /// the window the swap grown counts in (memguard::SWAP_WINDOW). Past it with the brake no longer
-/// acting but the Mac not back above its floor and margin, the job stays frozen up to the time a
-/// pause gives a safe point (`Agent::grace`).
+/// acting but the Mac not back above its floor, the job stays frozen up to the time a pause gives a
+/// safe point (`Agent::grace`).
 const PRESSURE_HOLD: Duration = Duration::from_secs(memguard::EVERY.as_secs() * 12);
 
 /// An agent's slots (`Agent::slots`): `SLOTS` of them fresh, more as a member's packed jobs take
@@ -1486,6 +1486,9 @@ pub struct Agent {
     /// each slot's job holds as a test sets it (MB).
     guard_hold: Option<(usize, String)>,
     guard_last: Option<(u64, String)>,
+    /// A give-back's cool-down (memguard::Reading::cooling, `cool_down`): the given-back job's peak
+    /// (MB), when the cool-down ends at the latest (unix s), and the job.
+    mem_cool: Option<(u64, u64, String)>,
     /// The guard's sampler (its thread started by `run`), this Mac's memory as read this loop (MB;
     /// 0: unknown), and the jobs it stopped, kept from this Mac until when (unix seconds), and why.
     sampler: memguard::Sampler,
@@ -1953,6 +1956,7 @@ impl Agent {
             toward_goal: Default::default(),
             mem_set: None,
             guard_hold: None,
+            mem_cool: None,
             guard_last: None,
             sampler: memguard::Sampler::new(SLOTS),
             total: 0,
@@ -4982,6 +4986,10 @@ impl Agent {
             if ok && matches!(step.as_str(), "catalog" | "catalog-held") {
                 self.plan.send(plan::Msg::CatalogueMade);
             }
+            // (Given back by the memory guard's drain, at its safe point: the cool-down.)
+            if self.slots[k].mem_drain.is_some() {
+                self.cool_down(k);
+            }
             self.take_timings(k);
             self.end_lease(k, outcome, &handed, &note);
             self.finished(&id, &what, ok || paused, secs, note);
@@ -5482,7 +5490,7 @@ impl Agent {
 
     /// This Mac's whole capacity now (crate::coord::Capacity), for its asks and, leading, its own
     /// coordinator: its memory against its floor (`mem_reading`: what's available, the floor, the
-    /// margin, the swap grown, the brake), the memory a job may start in (`build_room`: what the
+    /// swap grown, the brake, a give-back's cool-down), the memory a job may start in (`build_room`: what the
     /// jobs may hold together, `Reading::admit_mb`) and that less each running job's expected need
     /// (the larger of what it holds and `spec_peak`: its targets' measured peak on the lead, the
     /// step's first guess on a member), what of that is reserved for their growth to come, and the
@@ -5535,7 +5543,7 @@ impl Agent {
             mem_mb: build_mb.saturating_sub(need),
             avail_mb: r.map_or(0, |r| r.avail_mb),
             mem_floor_mb: r.map_or(0, |r| r.floor_mb),
-            mem_margin_mb: r.map_or(0, |r| r.margin_mb),
+            mem_compress_mb: r.map_or(0, |r| r.compress_mb),
             swap_grown_mb: r.map_or(0, |r| r.swap_grown_mb),
             mem_reserved_mb: need.saturating_sub(held_mb),
             mem_held_back: match r {
@@ -5570,7 +5578,8 @@ impl Agent {
     }
 
     /// The memory this Mac's jobs may hold together for a job to start (MB: `Reading::admit_mb`,
-    /// what they hold and what's available less the floor and the margin, none under the brake);
+    /// what they hold and what's available less the floor; none under the brake, the floor or a
+    /// give-back's cool-down);
     /// its memory unknown, none. Its asks' memory (a member's, the lead's own) and the forecast's
     /// room: the lead packs each job's expected peak into it (crate::coord::sched's `pack`).
     fn build_room(&self) -> u64 {
@@ -5592,12 +5601,14 @@ impl Agent {
     /// This Mac's memory against its floor (memguard::Reading). A Mac of a test's (`mem_set`, a
     /// fixed Mac's, `SCENIC_TEST_MEM_MB`'s): what's available with no job running less what the
     /// jobs hold, its pressure the sampler's test figure; else the sampler's last sample. The floor
-    /// as read this loop either way. None while its memory is unknown or not sampled yet.
+    /// as read this loop and the give-back's cool-down (`mem_cool`: the floor and the job's peak)
+    /// either way. None while its memory is unknown or not sampled yet.
     fn mem_reading(&self) -> Option<memguard::Reading> {
         if self.mem_total() == 0 {
             return None;
         }
         let floor_mb = self.mem_floor_mb();
+        let (cool_mb, cool_until) = self.mem_cool.as_ref().map_or((0, 0), |(peak, until, _)| (floor_mb + peak, *until));
         match self.test_idle_mb() {
             Some(idle) => {
                 let held_mb: u64 = (0..self.slots.len()).filter_map(|k| self.held_mb(k)).sum();
@@ -5606,11 +5617,29 @@ impl Agent {
                     held_mb,
                     floor_mb,
                     pressure: if self.sampler.in_trouble() { 2 } else { 1 },
+                    cool_mb,
+                    cool_until,
                     ..Default::default()
                 })
             }
-            None => self.sampler.reading().map(|r| memguard::Reading { floor_mb, ..r }),
+            None => self.sampler.reading().map(|r| memguard::Reading { floor_mb, cool_mb, cool_until, ..r }),
         }
+    }
+
+    /// A give-back's cool-down (memguard::Reading::cooling), slot `k`'s job given back by the memory
+    /// guard: no new job here until the floor and its peak (what it held, or its expected peak, the
+    /// larger) are available, for memguard::COOL_WAIT at most. A later give-back starts it again.
+    fn cool_down(&mut self, k: usize) {
+        let Some(r) = self.slots[k].running.as_ref() else { return };
+        let peak = self.held_mb(k).unwrap_or(0).max(self.spec_peak(&r.spec));
+        let id = r.spec.id.clone();
+        eprintln!(
+            "agent: memory guard: no new job here for up to {} min, until {:.1} GB is available (the floor and {id}'s {:.1} GB peak)",
+            memguard::COOL_WAIT.as_secs() / 60,
+            (self.mem_floor_mb() + peak) as f64 / 1024.0,
+            peak as f64 / 1024.0
+        );
+        self.mem_cool = Some((peak, now_s() + memguard::COOL_WAIT.as_secs(), id));
     }
 
     /// What a test's Mac has available with no job running (MB): `mem_set`'s; a fixed Mac's, its
@@ -5684,6 +5713,14 @@ impl Agent {
         if let Some(last) = self.sampler.take_froze().pop() {
             self.guard_last = Some(last);
         }
+        // (A give-back's cool-down over: what's available back past the floor and the job's peak,
+        // or its wait passed.)
+        if let Some((_, _, id)) = self.mem_cool.clone().filter(|_| self.mem_reading().is_some_and(|r| !r.cooling())) {
+            eprintln!("agent: memory guard: new work may start here again ({id}'s give-back cooled down)");
+            self.mem_cool = None;
+        }
+        let (cool_mb, cool_until) = self.mem_reading().map_or((0, 0), |r| (r.cool_mb, r.cool_until));
+        self.sampler.set_cool(cool_mb, cool_until);
         let Some(r) = self.mem_reading() else {
             for k in 0..self.slots.len() {
                 if self.sampler.thaw(k) {
@@ -5776,14 +5813,14 @@ impl Agent {
     /// it while its work is kept. Only while the brake acts (`Reading::acts`: the pressure critical,
     /// or the brake on with the Mac below its floor by the numbers): the pressure at warning alone
     /// holds new work and freezes nothing. A frozen job goes on once the Mac is back (the brake off
-    /// and its memory above the floor and margin, `Reading::held_back`, as new work waits for);
+    /// and its memory, the swap grown off, at or above the floor);
     /// it's stopped (given back, as the guard stops one) once frozen `PRESSURE_HOLD` with the brake
     /// still acting, else (between the two) once frozen the time a pause gives a safe point; then
     /// the next, if what's left still passes. None: nothing for it to do (the brake not acting and
     /// nothing frozen); else whether it stopped a job.
     fn pressure(&mut self, held: &[Option<u64>], r: &memguard::Reading) -> Option<bool> {
         let trouble = r.acts();
-        let back = !trouble && r.held_back().is_none();
+        let back = !trouble && r.brake().is_none() && r.usable_mb() >= r.floor_mb;
         let id_of = |a: &Self, k: usize| a.slots[k].running.as_ref().map(|r| r.spec.id.clone());
         // (One the sampler's thread froze, past the room alone under the brake: held from now as
         // one frozen here.)
@@ -5810,7 +5847,7 @@ impl Agent {
                     continue;
                 }
                 self.sampler.thaw(k);
-                let why = "the brake off, the Mac back above its memory floor and margin";
+                let why = "the brake off, the Mac back above its memory floor";
                 eprintln!("agent: memory guard: {mine} goes on: {why}");
                 self.guard_last = Some((now_s(), format!("{mine} goes on: {why}")));
                 continue;
@@ -5854,7 +5891,7 @@ impl Agent {
         self.sampler.freeze(k);
         let total: u64 = held.iter().flatten().sum();
         let whom = big.as_deref().map_or(String::new(), |b| format!(" for {b}"));
-        let why = format!("{}, with the jobs here holding {:.1} GB together: frozen{whom}, given back in {} s if the brake still acts then, going on once the Mac is back above its floor and margin", r.short_words(), total as f64 / 1024.0, PRESSURE_HOLD.as_secs());
+        let why = format!("{}, with the jobs here holding {:.1} GB together: frozen{whom}, given back in {} s if the brake still acts then, going on once the Mac is back above its floor", r.short_words(), total as f64 / 1024.0, PRESSURE_HOLD.as_secs());
         eprintln!("agent: memory guard: {mine} {why}");
         self.guard_last = Some((now_s(), format!("{mine} {why}")));
         let big = big.unwrap_or_else(|| mine.clone());
@@ -5875,6 +5912,7 @@ impl Agent {
     fn yield_stop(&mut self, k: usize, why: &str) -> bool {
         self.sampler.thaw(k);
         self.sampler.thaw_disk(k);
+        self.cool_down(k);
         let Some(r) = self.slots[k].running.as_mut() else { return false };
         let (id, scratch) = (r.spec.id.clone(), scratch_of(&r.spec));
         eprintln!("agent: memory guard: {id} {why}");
@@ -5909,6 +5947,9 @@ impl Agent {
         // (Frozen by the sampler: let go on first, so it can take its termination.)
         self.sampler.thaw(k);
         self.sampler.thaw_disk(k);
+        if what == "memory guard" {
+            self.cool_down(k);
+        }
         let Some(r) = self.slots[k].running.as_mut() else { return false };
         let id = r.spec.id.clone();
         let scratch = scratch_of(&r.spec);
@@ -12372,6 +12413,26 @@ mod tests {
                     .is_some_and(|(_, w)| w.contains("terrain-hi 6/1/1 stopped by the memory guard: it held 15.0 GB")),
             "{v:?}"
         );
+        // (Task #945: the give-back cools the Mac down: 14 GB available, above the 2 GB floor, but
+        // short of it and the job's 15 GB peak: no new job, the ask saying why, until 17 GB is
+        // available or the wait is over.)
+        assert!(a.mem_cool.as_ref().is_some_and(|(peak, _, id)| *peak == 15 << 10 && id == "terrain-hi 6/1/1"));
+        // (The pressure back to normal.)
+        a.sampler.set_test(Some(vec![None, None]), Some(false));
+        let cap = a.capacity(&cond);
+        assert_eq!(cap.build_mb, 0);
+        assert!(
+            cap.mem_held_back.as_deref().is_some_and(|h| h.starts_with("a job was given back: no new job until 17.0 GB is available (the 2.0 GB floor and its 15.0 GB peak; 14.0 GB now)")),
+            "{cap:?}"
+        );
+        assert!(!a.guard() && a.mem_cool.is_some());
+        a.sampler.tick();
+        assert!(a.sampler.reading().is_some_and(|r| r.cool_mb == 17 << 10), "{:?}", a.sampler.reading());
+        // (The wait over: new work again, the sampler's reading told.)
+        a.mem_cool.as_mut().unwrap().1 = now_s();
+        assert!(!a.guard() && a.mem_cool.is_none() && a.build_room() == 12 << 10);
+        a.sampler.tick();
+        assert_eq!(a.sampler.reading().map(|r| r.cool_mb), Some(0));
         // A batch's floor past the limit: the target tried again in a job of its own, not held.
         let works = vec![build::Work {
             step: "terrain-hi".into(),

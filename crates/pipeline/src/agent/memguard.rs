@@ -6,8 +6,9 @@
 //!   waiting on: a share that stalls stalls the loop, not this): each running job's processes'
 //!   physical footprints summed (crate::sys::footprint_of_group), kept per target as the most the
 //!   job held while that target was under way (`Watch::current`); and with them the Mac's memory
-//!   (`Reading`): what is available (crate::sys::memory_available), the swap grown lately, the
-//!   kernel's pressure level, and the margin other processes' swings call for.
+//!   (`Reading`): what is available (crate::sys::memory_available: what macOS hands out at no
+//!   cost, and what it frees by compressing idle memory with its pressure left normal), the swap
+//!   grown lately, and the kernel's pressure level.
 //! - **Learned:** what a job held while a target was under way is that target's
 //!   **floor** (`Floor`: crate::coord's floors), the same kind of figure as a run's own measure (a
 //!   job's processes together, sampled), which takes its place.
@@ -20,6 +21,8 @@
 //!   or worse, or swap grown past what was available above the floor; the thread freezes it then,
 //!   at once, the agent's loop stopping it), else at its next safe point too. A Mac whose memory
 //!   can't be read guards nothing.
+//! - **Cooled down:** a job given back holds new work off the Mac (`Reading::cooling`) until what's
+//!   available is back past the floor and that job's peak, or `COOL_WAIT` has passed.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -34,10 +37,16 @@ pub const EVERY: Duration = Duration::from_secs(5);
 /// growth is judged over.
 pub const DISK_EVERY: Duration = Duration::from_secs(60);
 
-/// The window the Mac's memory is judged over (`Reading`): the swap grown within it, and other
-/// processes' swing over it (the margin). Recent, so the owner's own use growing swap hours ago
-/// doesn't leave the Mac below its floor for good.
+/// The window the swap grown is judged over (`Reading`). Recent, so the owner's own use growing
+/// swap hours ago doesn't leave the Mac below its floor for good.
 pub const SWAP_WINDOW: Duration = Duration::from_secs(300);
+
+/// The longest a give-back's cool-down holds new work off the Mac (`Reading::cooling`): the swap
+/// window, so the swap a give-back's shortage grew has left the reading new work is let in by. It
+/// outlasts most outside swings: on the M4's live series (the 10 s ring, the 7.8 h of 4 Nov since
+/// the available was recorded), other processes' rises of 2 GB or more fell back within 60 s at
+/// the median and 190 s at the 90th percentile (docs/pool.md §7.1).
+pub const COOL_WAIT: Duration = SWAP_WINDOW;
 
 /// The Mac's memory as one sample read it (MB), against its floor (crate::agent::memfloor), with
 /// the jobs' memory sampled beside it: what the guard gives back by, and the asks' room
@@ -48,23 +57,19 @@ pub struct Reading {
     /// The memory available (crate::sys::memory_available), and the jobs' memory together.
     pub avail_mb: u64,
     pub held_mb: u64,
+    /// Of `avail_mb`, what macOS frees by compressing idle memory with its pressure left normal
+    /// (crate::sys::Available's `compressible`).
+    pub compress_mb: u64,
     /// The floor in force.
     pub floor_mb: u64,
     /// The swap grown within `SWAP_WINDOW`: its use now less the least in the window.
     pub swap_grown_mb: u64,
     /// The kernel's memory pressure level (1 normal, 2 warning, 4 critical; 0 unknown).
     pub pressure: u32,
-    /// The margin new work waits past the floor for (`margin_mb`).
-    pub margin_mb: u64,
-}
-
-/// The margin new work waits past the floor for (MB): how far the memory other processes hold
-/// (the Mac's less what's available and what the jobs hold: `others`, one a sample) swung over
-/// `SWAP_WINDOW`, its most less its least. A job let in at the floor plus this isn't given back by
-/// the next move of the owner's apps; calm apps, a small margin. None sampled, none.
-pub fn margin_mb(others: impl IntoIterator<Item = u64>) -> u64 {
-    let (lo, hi) = others.into_iter().fold((u64::MAX, 0), |(lo, hi), o| (lo.min(o), hi.max(o)));
-    hi.saturating_sub(lo)
+    /// A give-back's cool-down (crate::agent's `mem_cool`): the memory available it waits for (MB:
+    /// the floor and the given-back job's peak) and when it ends at the latest (unix s); 0, none.
+    pub cool_mb: u64,
+    pub cool_until: u64,
 }
 
 impl Reading {
@@ -124,16 +129,25 @@ impl Reading {
         }
     }
 
-    /// What the jobs may hold together for a job to start (MB): `room_mb` less the margin, 0 while
-    /// the brake is on. A job starts where this, less every running job's expected peak (or what
-    /// it holds, the larger), fits its own expected peak: available − the running jobs' growth to
-    /// come − its peak ≥ the floor and the margin (crate::coord::sched's `pack`). So new work comes
-    /// back only past the floor plus the margin, and the jobs' growth is reserved before it.
+    /// What the jobs may hold together for a job to start (MB): `room_mb`, 0 while no job may start
+    /// whatever it needs (`held_back`: the brake, the Mac under its floor, a give-back's
+    /// cool-down). A job starts where this, less every running job's expected peak (or what it
+    /// holds, the larger), fits its own expected peak: available − the running jobs' growth to
+    /// come − its peak ≥ the floor (crate::coord::sched's `pack`). The floor is the only figure:
+    /// the jobs' growth is reserved before a new job, and nothing past it.
     pub fn admit_mb(&self) -> u64 {
-        if self.brake().is_some() {
+        if self.held_back().is_some() {
             return 0;
         }
-        self.room_mb().saturating_sub(self.margin_mb)
+        self.room_mb()
+    }
+
+    /// Whether a give-back's cool-down holds new work off the Mac: one began (`cool_mb`), what's
+    /// available (the swap grown off) still short of the floor and the given-back job's peak, and
+    /// `cool_until` not passed. A job given back because the Mac fell below its floor isn't
+    /// followed at once by a smaller one the same fall would give back too.
+    pub fn cooling(&self) -> bool {
+        self.cool_mb > 0 && self.usable_mb() < self.cool_mb && crate::agent::jobs::now_s() < self.cool_until
     }
 
     /// Why the Mac is below its floor, in words: "the memory brake is on (…)", else "this Mac has
@@ -151,21 +165,30 @@ impl Reading {
         }
     }
 
-    /// Why no job starts here whatever it needs, in words: the brake, or the usable memory under
-    /// the floor plus the margin; None when one may.
+    /// Why no job starts here whatever it needs, in words: the brake, the usable memory under the
+    /// floor, or a give-back's cool-down (`cooling`); None when one may.
     pub fn held_back(&self) -> Option<String> {
         let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
         if let Some(b) = self.brake() {
             return Some(format!("the memory brake: {b}"));
         }
-        let want = self.floor_mb + self.margin_mb;
-        (self.usable_mb() < want).then(|| {
-            format!(
-                "{} of memory available{}, under the {} floor{}",
+        if self.usable_mb() < self.floor_mb {
+            return Some(format!(
+                "{} of memory available{}, under the {} floor",
                 gb(self.usable_mb()),
                 if self.swap_grown_mb > 0 { format!(" (swap grew {})", gb(self.swap_grown_mb)) } else { String::new() },
+                gb(self.floor_mb)
+            ));
+        }
+        self.cooling().then(|| {
+            let left = self.cool_until.saturating_sub(crate::agent::jobs::now_s());
+            format!(
+                "a job was given back: no new job until {} is available (the {} floor and its {} peak; {} now), or for {} min more",
+                gb(self.cool_mb),
                 gb(self.floor_mb),
-                if self.margin_mb > 0 { format!(" and its {} margin", gb(self.margin_mb)) } else { String::new() }
+                gb(self.cool_mb.saturating_sub(self.floor_mb)),
+                gb(self.usable_mb()),
+                left.div_ceil(60)
             )
         })
     }
@@ -469,12 +492,12 @@ struct Inner {
     busy_set: Option<Vec<Option<std::time::Instant>>>,
     /// What the thread did last (unix seconds, in words), for the agent's loop to say.
     froze: Vec<(u64, String)>,
-    /// The swap in use (MB) and the memory other processes held (`margin_mb`), as each sample read
-    /// them, over the last `SWAP_WINDOW`; and the latest sample's `Reading` (None: the Mac's memory
-    /// unknown).
+    /// The swap in use (MB) as each sample read it over the last `SWAP_WINDOW`; and the latest
+    /// sample's `Reading` (None: the Mac's memory unknown).
     swap: std::collections::VecDeque<(std::time::Instant, u64)>,
-    others: std::collections::VecDeque<(std::time::Instant, u64)>,
     reading: Option<Reading>,
+    /// A give-back's cool-down as the agent's loop last set it (`Reading::cool_mb`, `cool_until`).
+    cool: (u64, u64),
     /// Where each sample is written (`Live`: the agent's folder's `memory.json`), for the status to
     /// show the latest whatever the agent's loop waits on.
     file: Option<PathBuf>,
@@ -638,6 +661,14 @@ impl Sampler {
         }
     }
 
+    /// A give-back's cool-down (`Reading::cool_mb`, `cool_until`; (0, 0) none), as the agent's loop
+    /// keeps it, for each sample's reading.
+    pub fn set_cool(&self, cool_mb: u64, until: u64) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.cool = (cool_mb, until);
+        }
+    }
+
     /// A test's figures: what each slot's job holds (MB), and whether the Mac is in trouble (the
     /// kernel's pressure at warning; not: normal).
     pub fn set_test(&self, held: Option<Vec<Option<u64>>>, trouble: Option<bool>) {
@@ -756,28 +787,25 @@ impl Sampler {
     }
 
     /// The Mac's memory now against its floor, the jobs holding `held_mb` together (`Reading`): the
-    /// memory available, the swap's and other processes' samples kept over `SWAP_WINDOW` for the
-    /// swap grown and the margin. None (and nothing kept) while its memory or the available can't
-    /// be read.
+    /// memory available (what compressing frees among it), the swap's samples kept over
+    /// `SWAP_WINDOW` for the swap grown. None (and nothing kept) while its memory or the available
+    /// can't be read.
     fn read_memory(g: &mut Inner, held_mb: u64) -> Option<Reading> {
         if g.total_mb == 0 {
             return None;
         }
-        let avail_mb = g
-            .avail_set
-            .or(g.idle_set.map(|i| i.saturating_sub(held_mb)))
-            .or_else(|| crate::sys::memory_available().map(|b| b >> 20))?;
+        let set = g.avail_set.or(g.idle_set.map(|i| i.saturating_sub(held_mb)));
+        let (avail_mb, compress_mb) = match set {
+            Some(mb) => (mb, 0),
+            None => crate::sys::memory_available().map(|a| (a.total() >> 20, a.compressible >> 20))?,
+        };
         let now = std::time::Instant::now();
         let swap = g.swap_set.or_else(|| crate::sys::swap_used().map(|b| b >> 20));
         if let Some(n) = swap {
             g.swap.push_back((now, n));
         }
-        let others = g.total_mb.saturating_sub(avail_mb).saturating_sub(held_mb);
-        g.others.push_back((now, others));
-        for q in [&mut g.swap, &mut g.others] {
-            while q.front().is_some_and(|(t, _)| now.duration_since(*t) > SWAP_WINDOW) {
-                q.pop_front();
-            }
+        while g.swap.front().is_some_and(|(t, _)| now.duration_since(*t) > SWAP_WINDOW) {
+            g.swap.pop_front();
         }
         let low = g.swap.iter().map(|(_, n)| *n).min();
         let pressure = match g.trouble_set {
@@ -788,13 +816,15 @@ impl Sampler {
         Some(Reading {
             avail_mb,
             held_mb,
+            compress_mb,
             floor_mb: g.floor_mb,
             swap_grown_mb: match (swap, low) {
                 (Some(n), Some(l)) => n.saturating_sub(l),
                 _ => 0,
             },
             pressure,
-            margin_mb: margin_mb(g.others.iter().map(|(_, o)| *o)),
+            cool_mb: g.cool.0,
+            cool_until: g.cool.1,
         })
     }
 
@@ -1049,10 +1079,10 @@ impl Sampler {
 
 /// The guard in the status (the build page, the menu bar, `scenic status`): whether it guards (the
 /// Mac's memory known; else why not), the Mac's memory against its floor (`Reading`: available,
-/// the floor, the margin, the swap grown, the pressure), whether the floor is the owner's or the
+/// what compressing frees among it, the floor, the swap grown, the pressure), whether the floor is the owner's or the
 /// default, what the jobs hold and what's reserved for their growth to come (each running job's
-/// expected peak less what it holds), why no job starts here now (`Reading::held_back`, the brake
-/// among it), what it last did (when, unix seconds, and in words: a job given back and why), and
+/// expected peak less what it holds), why no job starts here now (`Reading::held_back`: the brake,
+/// the floor, a give-back's cool-down), what it last did (when, unix seconds, and in words: a job given back and why), and
 /// all that in a line (`words`) the menu bar prints as it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -1104,8 +1134,9 @@ impl Live {
     }
 }
 
-/// The memory in a line: "Memory: 9.3 GB available, floor 6.0 GB (default) + 0.4 GB margin; the
-/// jobs hold 12.1 GB, 3.0 GB more reserved for their growth" and, when no job starts here, why
+/// The memory in a line: "Memory: 9.3 GB available (3.4 GB by compressing), floor 6.0 GB
+/// (default); the jobs hold 12.1 GB, 3.0 GB more reserved for their growth" and, when no job
+/// starts here, why
 /// ("; no new job: …"); the brake first when it's on ("Memory brake: …"). Unknown memory: why.
 pub fn words(v: &View) -> String {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
@@ -1113,11 +1144,11 @@ pub fn words(v: &View) -> String {
         return format!("Memory: not guarded ({})", v.why_off.as_deref().unwrap_or("not sampled yet"));
     };
     let mut s = format!(
-        "Memory: {} available, floor {}{}{}",
+        "Memory: {} available{}, floor {}{}",
         gb(r.avail_mb),
+        if r.compress_mb > 0 { format!(" ({} by compressing)", gb(r.compress_mb)) } else { String::new() },
         gb(r.floor_mb),
-        if v.floor_set { "" } else { " (default)" },
-        if r.margin_mb > 0 { format!(" + {} margin", gb(r.margin_mb)) } else { String::new() }
+        if v.floor_set { "" } else { " (default)" }
     );
     if v.held_mb > 0 || v.reserved_mb > 0 {
         s += &format!("; the jobs hold {}", gb(v.held_mb));
@@ -1153,31 +1184,52 @@ mod tests {
     }
 
     /// The jobs' room is what they hold and what's available, less the floor: below the floor, the
-    /// jobs past it; new work only past the floor and the margin, never under the brake.
+    /// jobs past it. New work by the floor alone (task #945: no margin): a job starts once its peak
+    /// and the running jobs' growth fit above it, never under the brake.
     #[test]
     fn the_room_is_the_available_and_the_held_less_the_floor() {
         let r = m4(10, 20);
         assert_eq!((r.room_mb(), r.admit_mb(), r.below(), r.brake()), (24 * GB, 24 * GB, false, None));
         assert_eq!(r.held_back(), None);
-        // (Other apps grew: 4 GB available, below the 6 GB floor: the jobs past their room by 2 GB.)
+        // (Other apps grew: 4 GB available, below the 6 GB floor: the jobs past their room by 2 GB,
+        // and no new job.)
         let r = m4(4, 20);
-        assert!(r.below() && r.room_mb() == 18 * GB && r.held_back().is_some());
-        // (The margin: no new job until the floor and it are available; the room to give back
-        // by is the floor's alone.)
-        let r = Reading { margin_mb: 2 * GB, ..m4(7, 20) };
-        assert_eq!((r.room_mb(), r.admit_mb(), r.below()), (21 * GB, 19 * GB, false));
-        assert_eq!(
-            r.held_back().as_deref(),
-            Some("7.0 GB of memory available, under the 6.0 GB floor and its 2.0 GB margin")
-        );
-        assert_eq!(Reading { margin_mb: 2 * GB, ..m4(8, 20) }.held_back(), None, "at the floor and the margin");
+        assert!(r.below() && r.room_mb() == 18 * GB && r.admit_mb() == 0);
+        assert_eq!(r.held_back().as_deref(), Some("4.0 GB of memory available, under the 6.0 GB floor"));
+        // (At the floor: new work, as much as is above it; the floor taken as set, nothing past it.)
+        let r = m4(6, 20);
+        assert_eq!((r.held_back(), r.admit_mb(), r.below()), (None, 20 * GB, false));
         // (The swap grown lately comes off what's available.)
         let r = Reading { swap_grown_mb: 3 * GB, ..m4(8, 20) };
         assert_eq!((r.usable_mb(), r.room_mb()), (5 * GB, 19 * GB));
         // (Nothing held, nothing available: no room, nothing given back.)
         assert_eq!(m4(0, 0).room_mb(), 0);
-        assert_eq!(margin_mb([]), 0);
-        assert_eq!(margin_mb([30 * GB, 28 * GB, 31 * GB]), 3 * GB, "others' swing: its most less its least");
+    }
+
+    /// A give-back's cool-down (task #945): no new work until what's available is back past the
+    /// floor and the given-back job's peak, or `COOL_WAIT` has passed, whichever comes first; it
+    /// gives nothing back itself.
+    #[test]
+    fn a_give_back_cools_the_mac_down_until_its_peak_is_back_or_the_wait_is_over() {
+        let now = crate::agent::jobs::now_s();
+        let cool = |avail: u64, until: u64| Reading { cool_mb: 6 * GB + 7 * GB, cool_until: until, ..m4(avail, 10) };
+        // (A 7 GB job given back with a 6 GB floor: 10 GB available is above the floor, but short
+        // of 13: held.)
+        let r = cool(10, now + COOL_WAIT.as_secs());
+        assert!(r.cooling() && !r.below() && r.admit_mb() == 0);
+        assert_eq!(
+            r.held_back().as_deref(),
+            Some("a job was given back: no new job until 13.0 GB is available (the 6.0 GB floor and its 7.0 GB peak; 10.0 GB now), or for 5 min more")
+        );
+        // (Back past the floor and its peak: over.)
+        let r = cool(13, now + COOL_WAIT.as_secs());
+        assert!(!r.cooling() && r.held_back().is_none() && r.admit_mb() == 17 * GB);
+        // (The wait over, short of it still: over too.)
+        let r = cool(10, now);
+        assert!(!r.cooling() && r.admit_mb() == 14 * GB);
+        // (The swap grown counts off what's available for it too.)
+        assert!(Reading { swap_grown_mb: GB, ..cool(13, now + 60) }.cooling());
+        assert_eq!(COOL_WAIT, SWAP_WINDOW);
     }
 
     /// The brake (the kernel's pressure at warning or critical, or swap grown past what was
@@ -1215,37 +1267,101 @@ mod tests {
         assert_eq!(Reading { pressure: 4, ..m4(20, 0) }.room_mb(), 0);
     }
 
-    /// On 4 Nov at 01:10 the M4's five terrain-deep jobs held 37 GB, under the old 41.9 GB jobs
-    /// limit, while Docker, compiles and the owner's apps took the rest: 0.19 GB of free pages and
-    /// 21 GB swapped. Under the floor the guard gives back.
+    /// The M4's night of 4 Nov replayed under the floor alone and the compressible memory counted
+    /// (task #945). Recorded (the 10 s ring): at 00:07:30 one terrain-deep job held 3.2 GB, the
+    /// kernel's level 75 % and its compressor 4.4 GB (40.4 GB not wired); four more started at
+    /// 00:07:40 under the old jobs cap, the compressor reached two fifths of the unwired at 00:10:05
+    /// and the pressure warning at 00:10:30; at 01:10 five held 37 GB, the compressor 23.1 GB of
+    /// 39.8, the swap growing 3.6 GB in 90 s. The pages between those figures are a model (Docker's
+    /// VM 8.2 GB and 4 GB of the owner's apps in use, 6 GB of them idle, the 5.4 GB file cache macOS
+    /// kept, the compressor's ratio the M4's 1.79 read on 4 Nov), 7.5 GB a terrain-deep job's peak,
+    /// the owner's 4 GB floor.
     #[test]
-    fn the_fourth_of_november_is_below_the_floor() {
-        // (Admission first (task #932 review), terrain-deep's expected peak 7.5 GB a job: with
-        // Docker's 8 GB, the wired memory and the owner's apps holding 16 GB and no job, 32 GB
-        // available; the floor of 6 leaves 26 for the jobs' peaks together: three start, not five.)
+    fn the_fourth_of_november_replayed() {
+        let page = |gb: f64| (gb * (1u64 << 30) as f64 / 16384.0).round() as u64;
+        // (Memory, in GB: free, file cache, active and idle anonymous, the compressor and the GB
+        // it holds.)
+        let mac = |free: f64, file: f64, active: f64, idle: f64, comp: f64, stored: f64| -> Reading {
+            let p = crate::sys::Pages {
+                free: page(free),
+                file: page(file),
+                active: page(active),
+                inactive: page(idle + file),
+                compressor: page(comp),
+                stored: page(stored),
+                ..Default::default()
+            };
+            let a = p.available();
+            let mb = |pages: u64| pages * 16384 >> 20;
+            Reading {
+                avail_mb: mb(a.total()),
+                compress_mb: mb(a.compressible),
+                floor_mb: 4 * GB,
+                pressure: 1,
+                ..Default::default()
+            }
+        };
         let peak = 7680;
-        let admitted = (0..5u64).take_while(|&n| m4(32, 0).admit_mb().saturating_sub(n * peak) >= peak).count();
-        assert_eq!(admitted, 3);
-        // (Three grown to their peaks: 32 − 22.5 = 9.5 GB available, above the floor; compiles
-        // taking 4 GB more leave 5.5, below it: the newest drains before any swap has grown.)
-        let r = Reading { avail_mb: 32 * GB - 3 * peak - 4 * GB, held_mb: 3 * peak, ..m4(0, 0) };
-        assert!(r.below() && !r.acts() && r.swap_grown_mb == 0);
-        assert_eq!(decide_by(&[Some(peak); 3], r.room_mb(), &[false; 3], &[false; 3], &[1, 2, 3]), Act::Drain(2));
-        // (The night as it went, five jobs at 37 GB and swap growing: the brake acts.)
-        let r = Reading { swap_grown_mb: 2 * GB, ..m4(2, 37) };
-        assert!(r.acts());
-        assert!(r.below() && r.brake().is_some());
+        // (How many jobs a reading lets start with `running` jobs at their peaks, as `pack` does.)
+        let admits = |r: &Reading, running: u64| {
+            (0..8u64).take_while(|&n| r.admit_mb().saturating_sub((running + n) * peak) >= peak).count()
+        };
+        // 00:07:30: 9.2 GB free and 5.4 of cache, 2.6 more by compressing the 6 GB idle: 17.2 GB
+        // available; the job's growth (4.3) and the floor leave room for one more, not four.
+        let r = Reading { held_mb: 3277, ..mac(9.2, 5.4, 3.2 + 8.2 + 4.0, 6.0, 4.4, 4.4 * 1.79) };
+        assert_eq!(r.compress_mb / 100, 27, "{r:?}");
+        assert_eq!(admits(&r, 1), 1);
+        // (Without the compressible memory, the floor alone, none: 14.6 − 4.3 − 4 < 7.5.)
+        assert_eq!(admits(&Reading { avail_mb: r.avail_mb - r.compress_mb, compress_mb: 0, ..r }, 1), 0);
+        // Both at their peaks (15 GB): the idle 6 GB compressed (the compressor 7.7 GB, 19 % of the
+        // unwired: the pressure normal), the cache kept: 5.4 GB available, above the floor, room for
+        // no third.
+        let r = Reading { held_mb: 2 * peak, ..mac(0.0, 5.4, 15.0 + 8.2 + 4.0, 0.1, 7.7, 13.8) };
+        assert!(!r.below() && r.held_back().is_none() && admits(&r, 2) == 0, "{r:?}");
+        // (The compiles' 4 GB more met by compressing the jobs' and Docker's: the compressor 12.8 GB,
+        // under two fifths, nothing more counted; still above the owner's 4 GB floor, so nothing
+        // given back, nothing started. A Mac at its default floor, 6 GB, is below it: the newest
+        // drains before the pressure leaves normal.)
+        let r = Reading { held_mb: 2 * peak, ..mac(0.0, 5.4, 15.0 + 8.2 + 4.0 + 4.0 - 9.1, 0.0, 12.8, 22.9) };
+        assert!(r.compress_mb == 0 && !r.below() && admits(&r, 2) == 0, "{r:?}");
+        let at_default = Reading { floor_mb: 6 * GB, ..r };
+        assert!(at_default.below() && !at_default.acts());
+        let two = [Some(peak), Some(peak)];
+        assert_eq!(decide_by(&two, at_default.room_mb(), &[false; 2], &[false; 2], &[1, 2]), Act::Drain(1));
+        // 01:10 as it was, five jobs at 37 GB: the compressor 23.1 GB of 39.8, past two fifths, so
+        // compression counts nothing (0.2 GB free, the 5.4 kept); the pressure at warning: no job
+        // starts; the swap grown 3.6 GB leaves 2.0 usable, under the floor: the brake acts, the
+        // newest frozen at once and given back if the Mac isn't back within the minute.
+        let r = Reading {
+            held_mb: 37 * GB,
+            pressure: 2,
+            swap_grown_mb: 3686,
+            ..mac(0.2, 5.4, 39.8 - 23.1 - 0.2 - 5.4, 0.0, 23.1, 23.1 * 1.79)
+        };
+        assert_eq!(r.compress_mb, 0, "{r:?}");
+        assert!(r.brake().is_some() && r.acts() && r.below() && r.admit_mb() == 0, "{r:?}");
         let held = [Some(7 * GB), Some(8 * GB), Some(7 * GB), Some(8 * GB), Some(7 * GB)];
-        let no = [false; 5];
-        // (Below the floor: the newest of them (ranked highest) drains first.)
-        assert_eq!(decide_by(&held, r.room_mb(), &no, &no, &[1, 2, 3, 4, 5]), Act::Drain(4));
+        assert_eq!(decide_by(&held, r.room_mb(), &[false; 5], &[false; 5], &[1, 2, 3, 4, 5]), Act::Drain(4));
+        // (Given back, the 7 GB job's cool-down: the Mac back above its floor holds new work until
+        // 11 GB is available, or five minutes.)
+        let now = crate::agent::jobs::now_s();
+        let after = Reading {
+            held_mb: 30 * GB,
+            pressure: 1,
+            swap_grown_mb: 0,
+            avail_mb: 6 * GB,
+            cool_mb: 4 * GB + 7 * GB,
+            cool_until: now + COOL_WAIT.as_secs(),
+            ..r
+        };
+        assert!(!after.below() && after.cooling() && after.admit_mb() == 0);
     }
 
     /// Another process grows (Chrome, Docker's VM) while the jobs hold steady: the Mac falls below
     /// its floor, the newest job is given back; once it's gone the Mac is above the floor again, but
-    /// no new job starts while the other process's swing (the margin) could take it back under.
+    /// the give-back's cool-down holds new work until the floor and that job's peak are available.
     #[test]
-    fn another_process_growing_gives_a_job_back_and_holds_new_work_past_its_swing() {
+    fn another_process_growing_gives_a_job_back_and_cools_the_mac_down() {
         let s = Sampler::new(2);
         s.set(6 * GB, 48 * GB);
         for k in 0..2 {
@@ -1268,20 +1384,24 @@ mod tests {
         assert!(r.below() && r.brake().is_none(), "{r:?}");
         assert_eq!(r.short_words(), "this Mac has 4.0 GB available, below its 6.0 GB floor");
         assert_eq!(decide_by(&[Some(5 * GB), Some(3 * GB)], r.room_mb(), &no, &no, &rank), Act::Drain(1));
-        // (It ends: 7 GB available, above the floor, so nothing more is given back; but the other
-        // process swung 6 GB in the window, so no new job starts until 12 GB are available.)
+        // (It ends, given back at 3 GB: 7 GB available, above the floor, so nothing more is given
+        // back; the cool-down (the agent's, set on the sampler) holds new work until 9 GB, the
+        // floor and its 3 GB, are available.)
         s.unwatch(1);
+        s.set_cool(9 * GB, crate::agent::jobs::now_s() + COOL_WAIT.as_secs());
         s.set_test(Some(vec![Some(5 * GB), None]), Some(false));
         s.set_test_mem(Some(7 * GB), Some(0));
         s.tick();
         let r = s.reading().unwrap();
-        assert!(!r.below() && r.margin_mb == 6 * GB, "{r:?}");
+        assert!(!r.below() && r.cooling(), "{r:?}");
         assert_eq!(decide_by(&[Some(5 * GB), None], r.room_mb(), &no, &no, &rank), Act::Nothing);
-        assert_eq!(
-            r.held_back().as_deref(),
-            Some("7.0 GB of memory available, under the 6.0 GB floor and its 6.0 GB margin")
-        );
+        assert!(r.held_back().is_some_and(|h| h.starts_with("a job was given back: no new job until 9.0 GB")));
         assert_eq!(r.admit_mb(), 0);
+        // (The other process gives 2 GB back: 9 GB available, the cool-down over, 8 GB of room.)
+        s.set_test_mem(Some(9 * GB), Some(0));
+        s.tick();
+        let r = s.reading().unwrap();
+        assert!(!r.cooling() && r.held_back().is_none() && r.admit_mb() == 8 * GB, "{r:?}");
     }
 
     #[test]
@@ -1350,9 +1470,9 @@ mod tests {
     }
 
     /// The sampler reads the Mac's memory with its jobs': the swap grown over its window, and the
-    /// margin from other processes' swing (the Mac's less what's available and the jobs hold).
+    /// cool-down the agent set; a real Mac's available, what compressing frees among it.
     #[test]
-    fn the_sampler_reads_the_swap_grown_and_the_margin() {
+    fn the_sampler_reads_the_swap_grown_and_the_cool_down() {
         let s = Sampler::new(1);
         s.set_test(Some(vec![Some(10 * GB)]), Some(false));
         s.watch(0, Watch { pgid: 999_999, ..Default::default() });
@@ -1363,15 +1483,21 @@ mod tests {
         s.set_test_mem(Some(20 * GB), Some(4 * GB));
         s.tick();
         let r = s.reading().unwrap();
-        assert_eq!((r.avail_mb, r.held_mb, r.floor_mb, r.swap_grown_mb, r.margin_mb), (20 * GB, 10 * GB, 6 * GB, 0, 0));
-        // (Chrome grows 3 GB, then gives 1 back: others went 18, 21, 20 GB; the swap grew 1 GB.)
+        assert_eq!((r.avail_mb, r.held_mb, r.floor_mb, r.swap_grown_mb, r.cool_mb), (20 * GB, 10 * GB, 6 * GB, 0, 0));
+        // (The swap grew 1 GB; a cool-down set.)
+        s.set_cool(14 * GB, 99);
         s.set_test_mem(Some(17 * GB), Some(5 * GB));
         s.tick();
-        s.set_test_mem(Some(18 * GB), Some(5 * GB));
-        s.tick();
         let r = s.reading().unwrap();
-        assert_eq!((r.swap_grown_mb, r.margin_mb), (GB, 3 * GB));
+        assert_eq!((r.swap_grown_mb, r.cool_mb, r.cool_until), (GB, 14 * GB, 99));
         assert!(!s.in_trouble());
+        // (This Mac's own memory: its available, what compressing frees part of it.)
+        if cfg!(target_os = "macos") {
+            s.set_test_mem(None, None);
+            s.tick();
+            let r = s.reading().unwrap();
+            assert!(r.avail_mb > 0 && r.compress_mb <= r.avail_mb, "{r:?}");
+        }
     }
 
     #[test]
