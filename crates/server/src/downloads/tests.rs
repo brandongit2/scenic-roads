@@ -583,7 +583,7 @@ fn put_deep(root: &store::nasfs::NasRoot, cat: &mut Catalogue, x: u32, y: u32, h
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("p.pack");
     let mut w = store::pack::PackWriter::create(&path, json!({"layer": "terrain"}), false).unwrap();
-    let b = pipeline::terrain_deep::encode(&mut vec![h; 65536]).unwrap();
+    let b = pipeline::terrain_codec::encode(&mut vec![h; 65536], pipeline::terrain_codec::NATIVE_M).unwrap();
     w.add(13, x * 8, y * 8, &b, b.len() as u32).unwrap();
     w.finish().unwrap();
     let logical = format!("layers/terrain/deep/10-{x}-{y}");

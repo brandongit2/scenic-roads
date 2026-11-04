@@ -45,9 +45,9 @@ pub fn offer_ahead() -> bool {
 }
 /// A group of more subtrees than this isn't offered (its memory, and the z6 tile's run waiting on it).
 pub const MOST_SUBTREES: usize = 2;
-/// The files' format (2: no GLO-30 windows: the raw tiles are the pool's, crate::terrain_base; 3:
-/// the z10 tiles deeper than the base, `Meta::deeper`).
-const FMT: u64 = 3;
+/// The files' format (4: the raw tiles by the rule, crate::terrain_pack::Fills, and the tiles at
+/// their place's finest zoom, `Meta::native`).
+const FMT: u64 = 4;
 
 /// A z6 tile's levels, or a part of them: (zoom, its tiles), z12 → z9.
 pub type Levels = Vec<(u8, Vec<(u32, u32)>)>;
@@ -219,9 +219,9 @@ pub struct Meta {
     pub levels: Levels,
     /// Whether the job's run has the water (crate::terrain_pack::Sources).
     pub water: bool,
-    /// The z10 tiles of its z6 tile whose native zoom is past the base's
-    /// (crate::terrain_pack::Sources::deeper: its tiles there rounded as coarser than native).
-    pub deeper: Vec<(u32, u32)>,
+    /// Its tiles at their place's finest zoom (crate::terrain_pack::Sources::native: rounded to
+    /// the centimetre).
+    pub native: Vec<(u8, u32, u32)>,
 }
 
 /// What `cut` wrote: the file's bytes, its tiles, the raw tiles in it, and the tiles a run of it
@@ -262,10 +262,7 @@ pub fn cut(
         subtrees: subtrees_arg(group),
         levels: levels.clone(),
         water: src.water.is_some(),
-        deeper: src
-            .deeper
-            .map(|d| d.iter().copied().filter(|&(x, y)| (x >> 4, y >> 4) == piece).collect())
-            .unwrap_or_default(),
+        native: tiles.iter().copied().filter(|&(z, x, y)| src.native.is_some_and(|n| n(z, x, y))).collect(),
     };
     let mut w = store::sect::SectWriter::create(path, serde_json::to_value(&meta)?)?;
     let mut n_raw = 0;
@@ -277,6 +274,16 @@ pub fn cut(
             n_raw += 1;
             if own.contains(&(z, x, y)) {
                 made.insert((z, x, y));
+            }
+        }
+    }
+    // (A tile with no raw tile is made from its children where one is: `prepare`.)
+    let mut zs: Vec<u8> = levels.iter().map(|l| l.0).collect();
+    zs.sort_unstable_by(|a, b| b.cmp(a));
+    for z in zs {
+        for &(tz, x, y) in tiles.iter().filter(|t| t.0 == z) {
+            if (0..4u32).any(|k| made.contains(&(tz + 1, 2 * x + (k & 1), 2 * y + (k >> 1)))) {
+                made.insert((tz, x, y));
             }
         }
     }
@@ -328,8 +335,9 @@ impl Inputs {
     /// The group's tiles made (crate::terrain_pack::make_piece over its levels, with the sources
     /// the job's run has): its tiles, sorted, and its mid's part.
     pub fn make(&self) -> Result<(Vec<Made>, Mid)> {
-        let deeper: std::collections::BTreeSet<(u32, u32)> = self.meta.deeper.iter().copied().collect();
-        let src = Sources { water: self.meta.water.then_some(self as &dyn WaterSource), deeper: Some(&deeper) };
+        let native: std::collections::BTreeSet<(u8, u32, u32)> = self.meta.native.iter().copied().collect();
+        let is = |z: u8, x: u32, y: u32| native.contains(&(z, x, y));
+        let src = Sources { water: self.meta.water.then_some(self as &dyn WaterSource), native: Some(&is), sets: &[] };
         crate::terrain_pack::make_piece(self, &src, self.meta.levels.clone())
     }
 }
@@ -750,102 +758,6 @@ mod tests {
         )
     }
 
-    /// Raw tiles with the pool's shortcut (crate::terrain_base::Tiles): a tile whose four children
-    /// were read with data isn't read, a flat tile stands for it (its four quarters are its
-    /// children's, so the bytes don't show it; the tiles read do).
-    struct Shortcut<'a> {
-        inner: &'a RawTiles,
-        with: std::sync::Mutex<std::collections::HashSet<(u8, u32, u32)>>,
-        flat: Vec<u8>,
-        stood: std::sync::atomic::AtomicUsize,
-        read: std::sync::Mutex<BTreeSet<(u8, u32, u32)>>,
-    }
-    impl<'a> Shortcut<'a> {
-        fn new(inner: &'a RawTiles) -> Self {
-            let flat = roadcore::grid::encode_terrain_png(&vec![1000f32; 65536], 256, 256).unwrap();
-            Shortcut { inner, with: Default::default(), flat, stood: Default::default(), read: Default::default() }
-        }
-    }
-    impl RawSource for Shortcut<'_> {
-        fn made_before(&self, z: u8, tiles: &[(u32, u32)]) {
-            self.with.lock().unwrap().extend(tiles.iter().map(|&(x, y)| (z, x, y)));
-        }
-        fn get(&self, z: u8, x: u32, y: u32) -> Result<(Option<Vec<u8>>, bool)> {
-            let covered = {
-                let w = self.with.lock().unwrap();
-                (0..4u32).all(|k| w.contains(&(z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))))
-            };
-            let got = if covered {
-                self.stood.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(self.flat.clone())
-            } else {
-                self.read.lock().unwrap().insert((z, x, y));
-                self.inner.get(z, x, y)?.0
-            };
-            if got.is_some() {
-                self.with.lock().unwrap().insert((z, x, y));
-            }
-            Ok((got, false))
-        }
-        fn prefetch_counted(
-            &self,
-            z: u8,
-            tiles: &[(u32, u32)],
-            threads: usize,
-            done: &std::sync::atomic::AtomicU64,
-        ) -> Result<usize> {
-            self.inner.prefetch_counted(z, tiles, threads, done)
-        }
-    }
-
-    /// With the pool's shortcut (`Shortcut`), a z6 tile stopped after each of its blocks and level
-    /// ends makes the same packs, and reads no tile its first run didn't: a resumed run takes the
-    /// tiles kept as read with data (`RawSource::made_before`), so a tile over four of them isn't
-    /// sampled, as when they were read.
-    #[test]
-    fn a_z6_tile_resumed_takes_the_pools_shortcut_as_its_first_run() {
-        use crate::resume_log::STOP_AFTER;
-        let d = tempfile::tempdir().unwrap();
-        let (t, cov, inner) = north_piece(d.path());
-        let src = Sources::default();
-        #[allow(clippy::type_complexity)]
-        let run =
-            |name: &str, stop: Option<usize>| -> (Option<Vec<(String, String)>>, usize, BTreeSet<(u8, u32, u32)>) {
-                let raw = Shortcut::new(&inner);
-                let root = d.path().join(name);
-                let scratch = d.path().join(format!("{name}-scratch"));
-                let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
-                STOP_AFTER.set(stop);
-                let r = crate::terrain_pack::build_piece_keeping(&mut out, &raw, t, &cov, &src);
-                STOP_AFTER.set(None);
-                let stood = raw.stood.load(std::sync::atomic::Ordering::Relaxed);
-                let read = raw.read.into_inner().unwrap();
-                if let Err(e) = r {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
-                    return (None, stood, read);
-                }
-                let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
-                let packs = out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/")).collect();
-                (Some(packs), stood, read)
-            };
-        let (fresh, stood, first) = run("fresh", None);
-        let fresh = fresh.unwrap();
-        assert!(stood > 0, "the shortcut taken");
-        let mut stops = 0;
-        for stop in 1.. {
-            let name = format!("stop-{stop}");
-            if run(&name, Some(stop)).0.is_some() {
-                break;
-            }
-            let (packs, _, read) = run(&name, None);
-            assert_eq!(packs.as_ref(), Some(&fresh), "stopped after {stop}");
-            let extra: Vec<_> = read.difference(&first).collect();
-            assert!(extra.is_empty(), "stopped after {stop}, read again: {extra:?}");
-            stops = stop;
-        }
-        assert!(stops >= 2, "{stops}");
-    }
-
     /// Paused mid-sampling (task #705: crate::control::Paused, between the pool's chunks), a z6 tile
     /// saves nothing, its blocks made so far kept in its log; resumed, the packs of a run never
     /// paused.
@@ -854,7 +766,7 @@ mod tests {
         use crate::terrain_pack::tests::{files_under, PauseAfter};
         let d = tempfile::tempdir().unwrap();
         let (t, cov, raw) = north_piece(d.path());
-        let src = Sources::default();
+        let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
         let saved = |root: &Path, scratch: &Path| -> Vec<(String, String)> {
             let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(root), scratch).unwrap();
             out.manifest
@@ -895,7 +807,7 @@ mod tests {
         use crate::resume_log::STOP_AFTER;
         let d = tempfile::tempdir().unwrap();
         let (t, cov, raw) = north_piece(d.path());
-        let levels = piece_levels(&cov, t);
+        let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
         let subs = groups(&levels, None).unwrap();
         let water = Across { a: subs[0][0], b: subs[1][0] };
         // (Its packs and mid as saved, their content names the bytes' digests; None when stopped.)
@@ -920,8 +832,8 @@ mod tests {
                     .collect(),
             )
         };
-        let with = Sources { water: Some(&water), deeper: None };
-        let without = Sources::default();
+        let with = Sources { water: Some(&water), sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
+        let without = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
         let fresh = run("fresh", &with, None).unwrap();
         assert_eq!(fresh.len(), 2, "{fresh:?}");
         // Stopped after each of its blocks and level ends in turn, then resumed: the same bytes.
@@ -934,7 +846,7 @@ mod tests {
             assert_eq!(run(&name, &with, None).as_ref(), Some(&fresh), "stopped after {stop}");
             kept = stop;
         }
-        assert_eq!(kept, 7, "its blocks and level ends, but the last");
+        assert_eq!(kept, 11, "its blocks and level ends (z12–9), but the last");
         // Stopped twice, the second time further on.
         assert!(run("twice", &with, Some(2)).is_none() && run("twice", &with, Some(3)).is_none());
         assert_eq!(run("twice", &with, None).as_ref(), Some(&fresh), "stopped twice");
@@ -949,7 +861,7 @@ mod tests {
     fn a_groups_tiles_made_from_its_file_are_the_pieces_bytes() {
         let d = tempfile::tempdir().unwrap();
         let (t, cov, raw) = north_piece(d.path());
-        let levels = piece_levels(&cov, t);
+        let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
         let subs = groups(&levels, None).unwrap();
         assert_eq!(subs, [vec![(136, 56)], vec![(136, 57)], vec![(137, 56)], vec![(137, 57)]]);
         // Two subtrees side by side (in a column, or a row): a lake across their edge.
@@ -960,7 +872,7 @@ mod tests {
             .find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1))
             .unwrap();
         let water = Across { a, b };
-        let src = Sources { water: Some(&water), deeper: None };
+        let src = Sources { water: Some(&water), sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
         let gs = groups(&levels, Some(&water)).unwrap();
         assert_eq!(gs.len(), subs.len() - 1, "the lake's two subtrees in one group");
         let joint = gs.iter().find(|g| g.contains(&a)).unwrap();
@@ -1114,7 +1026,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path();
         let (t, cov, raw) = north_piece(p);
-        let levels = piece_levels(&cov, t);
+        let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
         let subs = groups(&levels, None).unwrap();
         let (a, b) = subs
             .iter()
@@ -1123,7 +1035,7 @@ mod tests {
             .find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1))
             .unwrap();
         let water = Across { a, b };
-        let src = Sources { water: Some(&water), deeper: None };
+        let src = Sources { water: Some(&water), sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
         let alone = piece(p, "alone", t, &cov, &raw, &src, None);
         assert!(alone.0.is_some() && alone.1.is_some());
         let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");
@@ -1172,7 +1084,7 @@ mod tests {
         let pieces: Vec<(u32, u32)> = crate::agent::build::coverage_tiles(&cov).into_values().flatten().collect();
         let (mut n_tiles, mut own, mut moved) = (0usize, 0usize, 0usize);
         for (k, &t) in pieces.iter().enumerate() {
-            for (z, tiles) in piece_levels(&cov, t) {
+            for (z, tiles) in piece_levels(&cov, &crate::terrain_zoom::test_world(12), t) {
                 n_tiles += tiles.len();
                 let ids: Vec<Vec<u64>> = tiles
                     .par_iter()
@@ -1232,7 +1144,7 @@ mod tests {
                 .unwrap(),
         );
         let water = crate::terrain_pack::open_water(&out).unwrap();
-        let src = Sources { water: Some(&water), deeper: None };
+        let src = Sources { water: Some(&water), sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
         let (c, port) = crate::coord::start_for_test(&scratch.join("coord"), "m4", "");
         let url = format!("http://127.0.0.1:{port}");
         let off = Offload::at(url.clone(), c.job_token.clone(), &scratch.join("offload"))

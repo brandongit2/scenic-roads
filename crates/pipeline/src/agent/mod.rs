@@ -583,12 +583,10 @@ fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
         .collect()
 }
 
-/// Whether `p` is an archive copy a terrain job's target (`id`: "terrain-hi 3/x/y", a z3 tile's
-/// whole run; "terrain-hi 6/x/y", a z6 tile; "terrain-deep 10/x/y", a z10 tile's deep levels;
-/// "terrain-lo 3/x/y", an assembly; an older app's "terrain …" as terrain-hi's) reads at once: a z3
-/// tile's run its shard's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), a z6 tile its z6
-/// tile's, a deep target those of the z6 tiles its base is made of
-/// (crate::terrain_deep::base_want), an assembly its z3 tile's (crate::rawpack's shards).
+/// Whether `p` is an archive copy a terrain job's target (`id`: "terrain-hi 6/x/y", a z6 tile;
+/// "terrain-deep 10/x/y", a z10 tile's band past z12; "terrain-lo 3/x/y", an assembly; an older
+/// app's "terrain …" as terrain-hi's) reads at once: a z6 tile its z6 tile's (`6-x-y.…`), a deep
+/// target its z6 tile's, an assembly its z3 tile's (crate::rawpack's shards).
 /// How often a member asks the lead for its tiles to come (`Agent::ask_upcoming`): the lead makes
 /// a forecast each `forecast::EVERY`, and the order of a Mac's next jobs moves little in minutes;
 /// an answer is every Mac's (29 Oct's forecast: 5,397 jobs, ~0.5 MB).
@@ -636,13 +634,10 @@ pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
     let (s, Some(t)) = (steps::current(j.step), j.rest) else { return BTreeSet::new() };
     let Some((z, x, y)) = tile_of(t) else { return BTreeSet::new() };
     match (s, z) {
-        ("terrain-deep", z) if z == crate::terrain_deep::PACK_Z as u32 => crate::terrain_deep::base_want((x, y))
-            .iter()
-            .map(|&(bz, bx, by)| (6, bx >> (bz - 6), by >> (bz - 6)))
-            .collect(),
-        ("terrain-hi", 3) => std::iter::once((3, x, y))
-            .chain((0..8).flat_map(|i| (0..8).map(move |j| (6, x * 8 + i, y * 8 + j))))
-            .collect(),
+        ("terrain-deep", z) if z == crate::terrain_deep::PACK_Z as u32 => {
+            let k = crate::terrain_deep::PACK_Z as u32 - 6;
+            BTreeSet::from([(6, x >> k, y >> k)])
+        }
         ("terrain-hi", 6) => BTreeSet::from([(6, x, y)]),
         ("terrain-lo", 3) => BTreeSet::from([(3, x, y)]),
         _ => BTreeSet::new(),
@@ -683,15 +678,13 @@ pub const fn bldtiles_peak(rows: u64) -> u64 {
     1800 + rows * 2 / 5 * 1100 / (1 << 20)
 }
 
-/// The memory a terrain-hi run of a z3 tile of `z6` tiles near the coverage is expected to take
-/// (MB), before one has said: a z6 tile's levels at a time (crate::terrain_pack::piece_peak_mb), each
-/// further z6 tile's quarters (~20 MB) and the z3 tile's zoomed-out tiles (z3–8, 1,365 at ~270 KB);
-/// with `deep` (a fine dataset meets it north of 67°, where its deep z12 goes in its hi pack:
-/// crate::terrain_deep::reaches_hi), those levels' bound besides (crate::terrain_deep::peak_mb). (A
-/// z6 tile: one z6 tile, `terrain_peak(1, …)`.)
-fn terrain_peak(z6: usize, deep: bool) -> u64 {
-    let deep = if deep { crate::terrain_deep::peak_mb() } else { 0 };
-    crate::terrain_pack::piece_peak_mb() + 1365 * 270 / 1024 + (z6 as u64).saturating_sub(1) * 20 + deep
+/// The memory a terrain-hi run of `z6` tiles is expected to take (MB), before one has said: a z6
+/// tile's levels at a time (crate::terrain_pack::piece_peak_mb), and each z6 tile's quarters (~20 MB)
+/// and its z10 tiles' deep mids taken in (`DEEP_MIDS_MB`).
+fn terrain_peak(z6: usize) -> u64 {
+    crate::terrain_pack::piece_peak_mb()
+        + (z6 as u64).saturating_sub(1) * 20
+        + z6 as u64 * crate::terrain_pack::DEEP_MIDS_MB
 }
 
 /// Whether `spec`'s job is paced (crate::inputs::pace, `Agent::tend_threads`): an input check (the
@@ -9803,20 +9796,14 @@ mod tests {
     #[test]
     fn a_terrain_run_reads_its_own_shards_archives() {
         let packs = Path::new("/c/aws-terrarium/packs");
-        for (name, ours) in [
-            ("3-1-2.0123456789abcdef.tiles", true),
-            ("6-8-16.0123456789abcdef.tiles", true),
-            ("6-15-23.0123456789abcdef.tiles", true),
-            ("6-16-16.0123456789abcdef.tiles", false),
-            ("3-1-3.0123456789abcdef.tiles", false),
-            ("root.0123456789abcdef.tiles", false),
-        ] {
-            assert_eq!(terrain_reads("terrain-hi 3/1/2", &packs.join(name)), ours, "{name}");
+        // (A z10 tile's band past z12: its z6 tile's.)
+        for (name, ours) in [("6-8-16.0123456789abcdef.tiles", true), ("6-8-17.0123456789abcdef.tiles", false)] {
+            assert_eq!(terrain_reads("terrain-deep 10/128/256", &packs.join(name)), ours, "{name}");
         }
         // Not a terrain run's, or not an archive copy.
         assert!(!terrain_reads("unit 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles")));
         assert!(!terrain_reads("terrain-root terrain-root", &packs.join("root.0123456789abcdef.tiles")));
-        assert!(!terrain_reads("terrain-hi 3/1/2", Path::new("/c/aws-terrarium/12/2048/1500.png")));
+        assert!(!terrain_reads("terrain-hi 6/8/16", Path::new("/c/aws-terrarium/12/2048/1500.png")));
         // A z6 tile its z6 tile's; an assembly its z3 tile's.
         assert!(
             terrain_reads("terrain-hi 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles"))

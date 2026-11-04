@@ -983,12 +983,11 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             );
             let raw = raw_tiles(&out, &raw_dir)?;
             let water = pipeline::terrain_pack::open_water(&out)?;
-            let deeper = piece_deeper(&out, (t.x, t.y))?;
-            let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: Some(&deeper) };
+            let sets = zoom_sets(&out)?;
             let pool = base_pool(&out, 6, &[(t.x, t.y)])?;
-            let levels = pipeline::terrain_pack::piece_levels(&cov, (t.x, t.y));
+            let levels = pipeline::terrain_pack::piece_levels(&cov, &sets, (t.x, t.y));
             let t0 = std::time::Instant::now();
-            let groups = pipeline::terrain_task::groups(&levels, src.water)?;
+            let groups = pipeline::terrain_task::groups(&levels, Some(&water))?;
             println!(
                 "{}",
                 serde_json::json!({ "piece": t.slash(), "tiles": levels.iter().map(|(_, v)| v.len()).sum::<usize>(), "groups": groups.iter().map(|g| pipeline::terrain_task::subtrees_arg(g)).collect::<Vec<_>>(), "secs": t0.elapsed().as_secs_f64() })
@@ -1000,9 +999,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 let lv = pipeline::terrain_task::levels_of(&levels, &g.iter().copied().collect(), true);
                 let path = dir.join(format!("{}-{}", g[0].0, g[0].1)).join("u").join(pipeline::terrain_task::INPUT);
                 let t0 = std::time::Instant::now();
-                let c = pool.with_tiles(&raw, src.water, |tiles| {
-                    pipeline::terrain_task::cut((t.x, t.y), g, &lv, tiles, &src, &path)
-                })??;
+                let c = with_fills(&raw, &pool, &water, &cov, &sets, &|_, _| false, |tiles, src| {
+                    pipeline::terrain_task::cut((t.x, t.y), g, &lv, tiles, src, &path)
+                })?;
                 println!(
                     "{}",
                     serde_json::json!({ "group": pipeline::terrain_task::subtrees_arg(g), "tiles": c.tiles, "made": c.made.len(), "raw": c.raw, "bytes": c.bytes, "mem_mb": pipeline::terrain_task::mem_mb(c.bytes, &lv), "secs": t0.elapsed().as_secs_f64() })
@@ -1038,25 +1037,22 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 let [(q, ts)]: [(TileId, Vec<(u32, u32)>); 1] =
                     z3s_named(&cov, &args, "terrain-same")?.try_into().ok().context("terrain-same <3/x/y>")?;
                 anyhow::ensure!(!ts.is_empty(), "{} has no z6 tile near the coverage", q.slash());
-                let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: None };
+                let sets = zoom_sets(&out)?;
                 let pool = base_pool(&out, 3, &[(q.x, q.y)])?;
-                let (lo, _) = pool.with_tiles(&raw, src.water, |tiles| {
-                    pipeline::terrain_pack::make_lo(&out, tiles, (q.x, q.y), &ts, &src, &|_, _, _| {})
-                })??;
+                let (lo, _) = with_fills(&raw, &pool, &water, &cov, &sets, &|_, _| false, |tiles, src| {
+                    pipeline::terrain_pack::make_lo(&out, tiles, (q.x, q.y), &ts, src, &|_, _, _| {})
+                })?;
                 (lo, None)
             } else {
-                let deeper = piece_deeper(&out, (t.x, t.y))?;
-                let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: Some(&deeper) };
+                let sets = zoom_sets(&out)?;
+                let deep = pipeline::terrain_deep::read_mids(&out, (t.x, t.y))?;
+                let keys = |x: u32, y: u32| deep.quads.contains_key(&(x, y));
                 let mut pool = base_pool(&out, 6, &[(t.x, t.y)])?;
                 pyramids_arg(&mut pool, &args);
-                let levels = pipeline::terrain_pack::piece_levels(&cov, (t.x, t.y));
-                let (hi, mid) = pool.with_tiles(&raw, src.water, |tiles| {
-                    if whole {
-                        pipeline::terrain_pack::make_piece_whole(tiles, &src, levels)
-                    } else {
-                        pipeline::terrain_pack::make_piece(tiles, &src, levels)
-                    }
-                })??;
+                let levels = pipeline::terrain_pack::piece_levels(&cov, &sets, (t.x, t.y));
+                let (hi, mid) = with_fills(&raw, &pool, &water, &cov, &sets, &keys, |tiles, src| {
+                    pipeline::terrain_pack::make_piece_from(tiles, src, levels, deep.clone(), !whole)
+                })?;
                 (hi, Some(mid))
             };
             let secs = t0.elapsed().as_secs_f64();
@@ -1090,91 +1086,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             println!("{said}");
             return Ok(());
         }
-        "terrain-deep-same" => {
-            // terrain-deep-same [10/x/y …] [--of 6/x/y] [--list] [--raw dir] [--pass d] [--regions dir]
-            // [--hashes file]: terrain-deep targets (those named, and every one of z6 tile --of, or
-            // with `--list` only listed:
-            // pipeline::terrain_deep::targets_in) made as their job makes them (their base from the
-            // pool and the water, pipeline::terrain_pack::Bases; then their deep tiles), their deep
-            // packs written in the scratch folder only and let go; each one's content name said
-            // beside the manifest's, with its times; `--hashes`, each deep tile's digest by tile, for
-            // comparing builds. It only reads the NAS (AWS's raw tiles copied to this Mac's cache, as
-            // a terrain run does).
-            use pipeline::terrain_deep as td;
-            let cov = coverage_of(&out, &args)?;
-            let fine = td::Fine::read(out.root(), &out.manifest)?.context("no elevation version is accepted")?;
-            let mut ts: Vec<(u32, u32)> = positional(&args)
-                .iter()
-                .map(|t| {
-                    TileId::parse(t)
-                        .filter(|u| u.z == td::PACK_Z)
-                        .map(|u| (u.x, u.y))
-                        .with_context(|| format!("not a z{} tile: {t}", td::PACK_Z))
-                })
-                .collect::<Result<_>>()?;
-            if let Some(p) = opt(&args, "--of") {
-                let u = TileId::parse(&p).filter(|u| u.z == 6).with_context(|| format!("not a z6 tile: {p}"))?;
-                ts.extend(td::targets_in(&fine.sets, &cov, (u.x, u.y)));
-            }
-            anyhow::ensure!(!ts.is_empty(), "terrain-deep-same <10/x/y …> | --of 6/x/y");
-            if flag(&args, "--list") {
-                for t in &ts {
-                    println!("{}/{}/{}", td::PACK_Z, t.0, t.1);
-                }
-                return Ok(());
-            }
-            let raw_dir = PathBuf::from(
-                opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
-            );
-            let raw = raw_tiles(&out, &raw_dir)?;
-            let water = pipeline::terrain_pack::open_water(&out)?;
-            let pieces: BTreeSet<(u32, u32)> = ts
-                .iter()
-                .flat_map(|&t| td::base_want(t).into_iter().map(|(z, x, y)| (x >> (z - 6), y >> (z - 6))))
-                .collect();
-            let deeper: BTreeSet<(u32, u32)> = pieces.iter().flat_map(|&p| td::deeper(&fine.sets, p)).collect();
-            let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: Some(&deeper) };
-            let net = pipeline::fetch::Fetcher::from_env();
-            let mut pool = base_pool(&out, 6, &pieces.iter().copied().collect::<Vec<_>>())?;
-            pyramids_arg(&mut pool, &args);
-            let stored = pool.stored(&net);
-            let fetch: &dyn pipeline::fetch::Fetch = stored.as_ref().map_or(&net, |s| s);
-            let mut lines = String::new();
-            pool.with_tiles(&raw, src.water, |tiles| -> Result<()> {
-                let bases = pipeline::terrain_pack::Bases::new(tiles, &src, &cov);
-                for &t in &ts {
-                    let t0 = std::time::Instant::now();
-                    let (mut base_secs, mut base_tiles) = (0.0, 0);
-                    let mut base_of = |data: &[(u8, u32, u32)]| {
-                        let b0 = std::time::Instant::now();
-                        let base = td::target_base(&bases, t, Some(data))?;
-                        (base_secs, base_tiles) = (b0.elapsed().as_secs_f64(), base.len());
-                        Ok(base)
-                    };
-                    let (r, pack) = td::make(&out, t, &mut base_of, Some(&water), &fine, fetch, None)?;
-                    let mut made = None;
-                    if let Some(p) = pack {
-                        made = Some(p.content_name()?);
-                        let f = store::range::PlainFile::open(&p.local)?;
-                        let idx = store::pack::PackIndex::read_from(&f)?;
-                        for e in &idx.entries {
-                            let (z, x, y) = e.zxy();
-                            lines += &format!("{z}/{x}/{y} {}\n", store::naming::hash16(&idx.read_blob(&f, e)?));
-                        }
-                        std::fs::remove_file(&p.local).ok();
-                    }
-                    println!(
-                        "{}",
-                        serde_json::json!({ "target": format!("{}/{}/{}", td::PACK_Z, t.0, t.1), "base_tiles": base_tiles, "base_secs": base_secs, "secs": t0.elapsed().as_secs_f64(), "tiles": r.tiles, "with_data": r.with_data, "pack": made, "pack_manifest": out.get(&td::pack_logical(t.0, t.1)), "fetched_bytes": pipeline::fetch::fetched_bytes() })
-                    );
-                }
-                Ok(())
-            })??;
-            if let Some(f) = opt(&args, "--hashes") {
-                std::fs::write(f, lines)?;
-            }
-            return Ok(());
-        }
         "prune" => prune_step(&mut out, &args)?,
         "stations" => {
             // stations --pass <date> [--geojson file]: the pass's rail set's stops as the stations' tiles.
@@ -1206,19 +1117,23 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             eprintln!("timetables-todo: {} rail and {} ferry lines with no timetable ({:.0} km), {} routes matching nothing on the map", r.rail, r.ferry, r.km, r.unmatched);
         }
         "terrain-root" => {
+            // terrain-root: the root pack (z0–2) from the lo packs' z3 tiles, a quarter outside
+            // every region the relief's (pipeline::terrain_pack::build_root).
+            let cov = coverage_of(&out, &args)?;
             let raw_dir = PathBuf::from(
                 opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
             );
-            let p = phase("opening the raw tiles and the terrain's sources");
+            let p = phase("opening the relief's tiles and the terrain's sources");
             let raw = raw_tiles(&out, &raw_dir)?;
             let water = pipeline::terrain_pack::open_water(&out)?;
+            let sets = zoom_sets(&out)?;
             let pool = base_pool(&out, 0, &[(0, 0)])?;
             drop(p);
-            let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: None };
             // (Paused mid-sampling: nothing of it put.)
-            let n = pool
-                .with_tiles(&raw, src.water, |tiles| pipeline::terrain_pack::build_root(&mut out, tiles, &src))?
-                .map_err(|e| pipeline::control::stop_if_paused("terrain-root", e))?;
+            let n = with_fills(&raw, &pool, &water, &cov, &sets, &|_, _| false, |tiles, src| {
+                pipeline::terrain_pack::build_root(&mut out, tiles, src)
+            })
+            .map_err(|e| pipeline::control::stop_if_paused("terrain-root", e))?;
             eprintln!("terrain root: {n} tiles");
             pack_raw(&out, &raw_dir);
         }
@@ -1991,8 +1906,9 @@ fn layer_zooms(layer: &str, root: bool) -> Option<(u8, u8)> {
         pipeline::depth::LAYER | pipeline::depth::CLASS_LAYER | pipeline::depth::SHADE_LAYER => {
             (if root { pipeline::depth::build::ROOT.0 } else { pipeline::depth::ZOOMS.0 }, pipeline::depth::ZOOMS.1)
         }
-        // The polar caps: z0–3 in the root, z4–9 in the blocks (pipeline::polar).
-        l if l.starts_with("polar-") => (0, pipeline::polar::MAX_Z),
+        // The polar caps: z0–3 in the root, z4 to the cap's finest in the blocks (pipeline::polar),
+        // the deepest the map stores at most.
+        l if l.starts_with("polar-") => (0, pipeline::terrain_zoom::DEEPEST),
         _ => return None,
     })
 }
@@ -2082,7 +1998,7 @@ fn catalogue(
                     "root" => (0, 2),
                     "lo" => (3, 8),
                     "deep" => (pipeline::terrain_deep::FIRST_Z, pipeline::terrain_deep::MAX_Z),
-                    "polar" => (pipeline::polar::BLOCK_Z, pipeline::polar::MAX_Z),
+                    "polar" => (pipeline::polar::BLOCK_Z, pipeline::terrain_zoom::DEEPEST),
                     _ => (9, 14),
                 };
                 layers.entry(layer.to_string()).or_insert_with(|| LayerOut::new(enc)).add(
@@ -2123,7 +2039,8 @@ fn catalogue(
     // (The terrain's native zoom by deep pack, where it has them, and so its maxzoom:
     // pipeline::terrain_deep.)
     if let Some(x) = layers.get_mut("terrain").filter(|x| !x.deep.is_empty()) {
-        let sets = pipeline::terrain_deep::Fine::read(out.root(), &out.manifest)?.map(|f| f.sets).unwrap_or_default();
+        let sets =
+            pipeline::terrain_zoom::Declared::read(out.root(), &out.manifest)?.map(|f| f.sets).unwrap_or_default();
         x.native_zoom = x
             .deep
             .keys()
@@ -2133,6 +2050,12 @@ fn catalogue(
             })
             .collect();
         x.maxzoom = x.native_zoom.values().copied().fold(x.maxzoom, u8::max);
+    }
+    // (The polar caps' to their finest zoom: pipeline::polar::finest.)
+    for (l, x) in layers.iter_mut().filter(|(l, _)| l.starts_with("polar-")) {
+        let pole =
+            roadcore::polar::Pole::of_letter(l.rsplit('-').next().unwrap_or("")).context("a polar layer's pole")?;
+        x.maxzoom = pipeline::polar::finest_now(out, pole)?;
     }
     // (The terrain's shading goes as deep: pipeline::slope_pack.)
     let deepest = layers.get("terrain").map(|x| x.maxzoom);
@@ -2514,6 +2437,41 @@ fn base_pool(out: &Out, z: u8, ts: &[(u32, u32)]) -> Result<pipeline::terrain_ba
     pipeline::terrain_base::Pool::read(out.root(), &out.manifest, pipeline::terrain_base::tiles_box(z, ts))
 }
 
+/// The declared elevation datasets (pipeline::terrain_zoom), read once a job: each place's finest
+/// zoom; none accepted, none.
+fn zoom_sets(out: &Out) -> Result<Vec<pipeline::terrain_zoom::Set>> {
+    let p = phase("reading the declared elevation datasets");
+    let d = pipeline::terrain_zoom::Declared::read(out.root(), &out.manifest)?;
+    drop(p);
+    Ok(d.map(|d| d.sets).unwrap_or_default())
+}
+
+/// `f` given the terrain's tiles by the rule (pipeline::terrain_pack::Fills) over `pool` and its
+/// relief (`Pool::relief`), the Terrarium tiles read through `raw`, and its sources: the water,
+/// which tiles are native, and `sets` (each place's finest zoom); `deep`, whether a z13 tile is
+/// one the z6 tiles' runs take in from their z10 tiles' deep mids.
+#[allow(clippy::too_many_arguments)]
+fn with_fills<R>(
+    raw: &pipeline::terrain_pack::RawTiles,
+    pool: &pipeline::terrain_base::Pool,
+    water: &dyn pipeline::terrain_water::WaterSource,
+    cov: &pipeline::coverage::Coverage,
+    sets: &[pipeline::terrain_zoom::Set],
+    deep: &(dyn Fn(u32, u32) -> bool + Sync),
+    f: impl FnOnce(&dyn pipeline::terrain_pack::RawSource, &pipeline::terrain_pack::Sources) -> Result<R>,
+) -> Result<R> {
+    let relief = pool.relief();
+    let fill = pipeline::terrain_pack::fill_of(cov, sets, deep);
+    let native = |z: u8, x: u32, y: u32| pipeline::terrain_pack::native_of(&fill, z, x, y);
+    let src = pipeline::terrain_pack::Sources { water: Some(water), native: Some(&native), sets };
+    pool.with_tiles(raw, src.water, |tiles| {
+        relief.with_tiles(raw, src.water, |rt| {
+            let fills = pipeline::terrain_pack::Fills { pool: tiles, relief: rt, fill: &fill };
+            f(&fills, &src)
+        })
+    })??
+}
+
 /// `--pyramids <dir>`: the stored pyramids (pipeline::pyramids) read from that folder (a scratch
 /// store's), not the root's; `--pyramids none`, not read (every tile fetched, as before them).
 fn pyramids_arg(pool: &mut pipeline::terrain_base::Pool, args: &[String]) {
@@ -2552,7 +2510,7 @@ fn pyramids_fill(out: &Out, args: &[String]) -> Result<bool> {
     let ts = z6_tiles(args, "pyramids-fill")?;
     let cov = coverage_of(out, args)?;
     let water = pipeline::terrain_pack::open_water(out)?;
-    let fine = pipeline::terrain_deep::Fine::read(out.root(), &out.manifest)?;
+    let sets = zoom_sets(out)?;
     let net = pipeline::fetch::Fetcher::from_env();
     let cache = out.scratch.join("pyramids");
     // (A job's archives handed off for the lead to name; a scratch store's index changed here.)
@@ -2575,8 +2533,8 @@ fn pyramids_fill(out: &Out, args: &[String]) -> Result<bool> {
         let c = cost_start("pyramids-fill", &u.slash());
         let t = (u.x, u.y);
         let pool = base_pool(out, 6, &[t])?;
-        let levels = pipeline::terrain_pack::piece_levels(&cov, t);
-        let deep = fine.as_ref().map_or(Vec::new(), |f| py::deep_bases(&f.sets, &cov, t));
+        let levels = pipeline::terrain_pack::piece_levels(&cov, &sets, t);
+        let deep = py::deep_bases(&sets, &cov, t);
         let want = py::want(&pool.plan, &water, &levels, &deep)?;
         let before = pipeline::fetch::fetched_bytes();
         // (How far the z6 tile's fill is, in its part: the tiles asked of GSI of those to fetch.)
@@ -5260,34 +5218,21 @@ fn terrain_pieces(
     );
     let raw = raw_tiles(out, &raw_dir)?;
     let water = pipeline::terrain_pack::open_water(out)?;
-    // (The datasets finer than the worldwide ones, read once a job as the pool is: where its z6
-    // tiles go past the base's zoom, pipeline::terrain_deep.)
-    let p = phase("reading the fine datasets' declarations");
-    let fine = pipeline::terrain_deep::Fine::read(out.root(), &out.manifest)?;
-    drop(p);
-    let deeper: BTreeSet<(u32, u32)> = match &fine {
-        Some(f) => ts.iter().flat_map(|t| pipeline::terrain_deep::deeper(&f.sets, (t.x, t.y))).collect(),
-        None => BTreeSet::new(),
-    };
-    let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: Some(&deeper) };
-    let fetch = pipeline::fetch::Fetcher::from_env();
-    let deep = pipeline::terrain_deep::Deep { fine: fine.as_ref(), cov, fetch: &fetch };
+    let sets = zoom_sets(out)?;
+    // (Each z6 tile's z10 tiles' deep mids, read as it begins: its z12 tiles' quarters there.)
+    let deep: std::sync::Mutex<std::collections::HashSet<(u32, u32)>> = Default::default();
+    let has = |x: u32, y: u32| deep.lock().unwrap().contains(&(x, y));
     let pool = base_pool(out, 6, &ts.iter().map(|t| (t.x, t.y)).collect::<Vec<_>>())?;
-    pool.with_tiles(&raw, src.water, |tiles| terrain_pieces_from(out, cov, ts, same, tiles, &src, &deep))??;
+    with_fills(&raw, &pool, &water, cov, &sets, &has, |tiles, src| {
+        terrain_pieces_from(out, cov, ts, same, tiles, src, &deep)
+    })?;
     pack_raw_with(out, &raw_dir, &|what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what));
     Ok(())
 }
 
-/// The z10 tiles of z6 tile `t` past the base's zoom (pipeline::terrain_deep::deeper), of the
-/// accepted elevation datasets now: its tiles there rounded as coarser than native.
-fn piece_deeper(out: &Out, t: (u32, u32)) -> Result<BTreeSet<(u32, u32)>> {
-    Ok(pipeline::terrain_deep::Fine::read(out.root(), &out.manifest)?
-        .map(|f| pipeline::terrain_deep::deeper(&f.sets, t))
-        .unwrap_or_default())
-}
-
-/// `terrain_pieces`' z6 tiles made from the base's tiles `raw`, the water `src` and the fine
-/// datasets `deep`.
+/// `terrain_pieces`' z6 tiles made from the tiles `raw` gives by the rule and the sources `src`, each
+/// taking in its z10 tiles' deep mids (pipeline::terrain_deep::read_mids; their z13 tiles set in
+/// `deep` while it's made, which `raw` reads); a z6 tile with some offers none of its subtrees.
 fn terrain_pieces_from(
     out: &mut Out,
     cov: &pipeline::coverage::Coverage,
@@ -5295,7 +5240,7 @@ fn terrain_pieces_from(
     same: &BTreeSet<String>,
     raw: &dyn pipeline::terrain_pack::RawSource,
     src: &pipeline::terrain_pack::Sources,
-    deep: &pipeline::terrain_deep::Deep,
+    deep: &std::sync::Mutex<std::collections::HashSet<(u32, u32)>>,
 ) -> Result<()> {
     let n = ts.len();
     let mut names: Vec<String> =
@@ -5308,11 +5253,14 @@ fn terrain_pieces_from(
     // (Each z6 tile's offered as it begins; offering ahead (`offer_ahead`), the next's then too, its
     // head start the extract under way's tiles.)
     let offload = pipeline::offload::Offload::from_env(&out.scratch);
+    let takes: Vec<bool> =
+        ts.iter().map(|t| !pipeline::terrain_deep::mids_under(&out.manifest, (t.x, t.y)).is_empty()).collect();
     let offer_after = |t: &TileId, before: usize| {
+        let k = ts.iter().position(|u| u == t).unwrap_or(0);
         pipeline::terrain_task::Offers::offer_after(
-            offload.as_ref(),
+            offload.as_ref().filter(|_| !takes[k]),
             (t.x, t.y),
-            &pipeline::terrain_pack::piece_levels(cov, (t.x, t.y)),
+            &pipeline::terrain_pack::piece_levels(cov, src.sets, (t.x, t.y)),
             raw,
             src,
             before,
@@ -5333,9 +5281,11 @@ fn terrain_pieces_from(
         };
         if offer_ahead {
             let before: usize =
-                pipeline::terrain_pack::piece_levels(cov, (t.x, t.y)).iter().map(|(_, l)| l.len()).sum();
+                pipeline::terrain_pack::piece_levels(cov, src.sets, (t.x, t.y)).iter().map(|(_, l)| l.len()).sum();
             ahead = ts.get(k + 1).map(|n| offer_after(n, before));
         }
+        let mids = pipeline::terrain_deep::read_mids(out, (t.x, t.y))?;
+        *deep.lock().unwrap() = mids.quads.keys().copied().collect();
         let r = landing
             .after(out, |out| {
                 pipeline::terrain_pack::build_piece_later(
@@ -5347,7 +5297,7 @@ fn terrain_pieces_from(
                     same.contains(&t.slash()),
                     &say,
                     offers,
-                    Some(deep),
+                    mids,
                 )
             })
             // (Paused mid-sampling: the z6 tile before landed (`after`), its blocks kept in its resume log.)
@@ -5361,12 +5311,11 @@ fn terrain_pieces_from(
     Ok(())
 }
 
-/// terrain-deep <10/x/y …> [--regions dir] [--pass d] [--raw dir]: each z10 tile's deep levels
-/// (z13–16 where a fine dataset is finer than the base: its deep pack, pipeline::terrain_deep::make),
-/// from the base it blends into and fills from, made from the elevation pool and the water by the
-/// terrain-hi run's own code (pipeline::terrain_pack::Bases), never read from built tiles; a z10 tile
-/// with no deep level now has its deep pack (and a retired fine pack) dropped. Then the raw tiles AWS
-/// gave packed onto the NAS.
+/// terrain-deep <10/x/y …> [--regions dir] [--pass d] [--raw dir]: each z10 tile's band past z12
+/// (pipeline::terrain_deep: its tiles by the rule, each place's finest zoom sampled from the pool,
+/// the coarser from them): its deep pack and its mid, which its z6 tile's terrain-hi run takes in;
+/// a z10 tile with none now has its deep pack, mid (and a retired fine pack) dropped. Then the
+/// Terrarium tiles AWS gave packed onto the NAS.
 fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     use pipeline::terrain_deep as td;
     const STEP: &str = "terrain-deep";
@@ -5378,21 +5327,20 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
         .collect::<Result<_>>()?;
     anyhow::ensure!(!ts.is_empty(), "{STEP} <{}/x/y …>", td::PACK_Z);
     let cov = coverage_of(out, args)?;
-    let p = phase("reading the fine datasets' declarations");
-    let fine = td::Fine::read(out.root(), &out.manifest)?;
-    drop(p);
+    let sets = zoom_sets(out)?;
     // (Those no target now first: their packs dropped, nothing read, each a drop (`run_drop`).)
-    let (ts, gone): (Vec<TileId>, Vec<TileId>) =
-        ts.into_iter().partition(|t| fine.as_ref().is_some_and(|f| td::is_target(&f.sets, &cov, (t.x, t.y))));
+    let (ts, gone): (Vec<TileId>, Vec<TileId>) = ts.into_iter().partition(|t| td::is_target(&sets, &cov, (t.x, t.y)));
     for t in &gone {
         let n = run_drop(STEP, &t.slash(), || {
             let n = td::drop_target(out, (t.x, t.y));
             out.save()?;
             Ok(n)
         })?;
-        eprintln!("{STEP} {}: no deep level there; {n} packs dropped", t.slash());
+        eprintln!("{STEP} {}: no place there past z12; {n} files dropped", t.slash());
     }
-    let Some(fine) = fine.filter(|_| !ts.is_empty()) else { return Ok(()) };
+    if ts.is_empty() {
+        return Ok(());
+    }
     let raw_dir = PathBuf::from(
         opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
     );
@@ -5400,54 +5348,34 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     let p = phase("opening the basemap's water");
     let water = pipeline::terrain_pack::open_water(out)?;
     drop(p);
-    // (The z6 tiles its base reads, their z10 tiles past the base's zoom as their runs have them.)
-    let pieces: BTreeSet<(u32, u32)> = ts
-        .iter()
-        .flat_map(|t| td::base_want((t.x, t.y)).into_iter().map(|(z, x, y)| (x >> (z - 6), y >> (z - 6))))
-        .collect();
-    let deeper: BTreeSet<(u32, u32)> = pieces.iter().flat_map(|&p| td::deeper(&fine.sets, p)).collect();
-    let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: Some(&deeper) };
-    let net = pipeline::fetch::Fetcher::from_env();
-    let pool = base_pool(out, 6, &pieces.iter().copied().collect::<Vec<_>>())?;
-    let stored = pool.stored(&net);
-    let fetch: &dyn pipeline::fetch::Fetch = stored.as_ref().map_or(&net, |s| s);
-    let mut names: Vec<String> = ts.iter().map(|t| format!("Making {}'s deep terrain", t.slash())).collect();
+    let mut names: Vec<String> = ts.iter().map(|t| format!("Making {}'s terrain past z12", t.slash())).collect();
     names.push("Packing the new raw tiles onto the NAS".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    pool.with_tiles(&raw, src.water, |tiles| -> Result<()> {
-        let bases = pipeline::terrain_pack::Bases::new(tiles, &src, &cov);
+    let pool = base_pool(out, td::PACK_Z, &ts.iter().map(|t| (t.x, t.y)).collect::<Vec<_>>())?;
+    with_fills(&raw, &pool, &water, &cov, &sets, &|_, _| false, |tiles, src| -> Result<()> {
         for (k, t) in ts.iter().enumerate() {
             pipeline::control::safe_point(STEP);
             pipeline::agent::jobs::part(k, &names);
             let c = cost_start(STEP, &t.slash());
             let fetched = pipeline::fetch::fetched_bytes();
-            // (Paused mid-sampling: nothing of it put, its base tiles made kept in its resume log.)
-            let r = td::build_target(out, (t.x, t.y), &bases, Some(&water), &fine, fetch)
+            let levels = td::levels(&cov, &sets, (t.x, t.y));
+            // (Paused mid-sampling: nothing of it put, its blocks made kept in its resume log.)
+            let r = td::build_target(out, (t.x, t.y), levels, tiles, src, pipeline::resume_log::on())
                 .map_err(|e| pipeline::control::stop_if_paused(STEP, e))?;
             out.save()?;
             eprintln!(
-                "{STEP} {}: {} of {} base tiles with finer data, {} tiles, {} MB; {} dropped; {} MB fetched",
+                "{STEP} {}: {} tiles, {} MB; {} dropped; {} MB fetched",
                 t.slash(),
-                r.with_data,
-                r.base_tiles,
                 r.tiles,
                 r.bytes >> 20,
                 r.dropped,
                 (pipeline::fetch::fetched_bytes() - fetched) >> 20
             );
-            // (Recorded done all the same: the build page shows it built, nothing to publish, #839.)
-            if r.packs == 0 {
-                eprintln!(
-                    "{STEP} {}: nothing stored, no pack: {}",
-                    t.slash(),
-                    if r.with_data == 0 { "no fine data in any of its base tiles" } else { "no deep tile made" }
-                );
-            }
             pipeline::control::done(STEP, &t.slash());
             note_cost(STEP, &t.slash(), c);
         }
         Ok(())
-    })??;
+    })?;
     pipeline::control::safe_point(STEP);
     pipeline::agent::jobs::part(names.len() - 1, &names);
     pack_raw_with(out, &raw_dir, &|what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what));
@@ -5497,7 +5425,7 @@ fn water_idx_of(
     };
     // (The depth's targets' too, once its sources are declared: pipeline::depth. Declarations that
     // can't be read now leave the depth out, never the terrain's digests.)
-    let mut reads = pipeline::agent::build::water_reads(cov);
+    let mut reads = pipeline::agent::build::water_reads(cov, &zoom_sets(out)?);
     let depth = pipeline::depth::grids::declared(out.root(), &out.manifest).unwrap_or_else(|e| {
         eprintln!("terrain-water: the depth's targets left out: its declarations can't be read ({e:#})");
         Vec::new()
@@ -5525,7 +5453,7 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
     );
     let raw = raw_tiles(out, &raw_dir)?;
     let water = pipeline::terrain_pack::open_water(out)?;
-    let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: None };
+    let sets = zoom_sets(out)?;
     let mut names: Vec<String> =
         qs.iter().map(|(q, _)| format!("Assembling {}'s zoomed-out terrain", q.slash())).collect();
     names.push("Packing the new raw tiles onto the NAS".into());
@@ -5537,11 +5465,10 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
         let c = cost_start("terrain-lo", &q.slash());
         let pool = base_pool(out, 3, &[(q.x, q.y)])?;
         // (Paused mid-sampling: nothing of it put.)
-        let r = pool
-            .with_tiles(&raw, src.water, |tiles| {
-                pipeline::terrain_pack::build_lo(out, tiles, (q.x, q.y), ts, &src, &say)
-            })?
-            .map_err(|e| pipeline::control::stop_if_paused("terrain-lo", e))?;
+        let r = with_fills(&raw, &pool, &water, &cov, &sets, &|_, _| false, |tiles, src| {
+            pipeline::terrain_pack::build_lo(out, tiles, (q.x, q.y), ts, src, &say)
+        })
+        .map_err(|e| pipeline::control::stop_if_paused("terrain-lo", e))?;
         eprintln!("terrain-lo {}: {r:?} ({:.0?})", q.slash(), c.elapsed());
         pipeline::control::done("terrain-lo", &q.slash());
         note_cost("terrain-lo", &q.slash(), c);
@@ -5701,55 +5628,8 @@ fn slope_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
 
 fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
-    if let Some((ts, same)) = pieces_named(&cov, args)? {
-        return terrain_pieces(out, args, &cov, &ts, &same);
-    }
-    let by_q = terrain_targets(&cov, args)?;
-    eprintln!("terrain-hi: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
-    // AWS's raw tiles: this Mac's cache, filled from the NAS's store.
-    let raw_dir = PathBuf::from(
-        opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
-    );
-    let raw = raw_tiles(out, &raw_dir)?;
-    // The pass's basemap's water (docs/steps.md §2, Terrain).
-    let water = pipeline::terrain_pack::open_water(out)?;
-    let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: None };
-    // Its parts, for the status (agent::jobs::part): each z3 tile's tiles fetched and shaded, then its
-    // terrain written; then the raw tiles AWS gave packed onto the NAS. Each says how far it is.
-    let n = by_q.len();
-    let of = |k: usize| if n > 1 { format!(" ({} of {n})", k + 1) } else { String::new() };
-    let mut names: Vec<String> = Vec::new();
-    for k in 0..n {
-        names.push(format!("Fetching, shading and writing the z3 tile's terrain tiles{}", of(k)));
-        names.push(format!("Writing the z3 tile's zoomed-out terrain to the NAS{}", of(k)));
-    }
-    names.push("Packing the new raw tiles onto the NAS".into());
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    let say = |what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what);
-    for (k, (q, list)) in by_q.into_iter().enumerate() {
-        pipeline::control::safe_point("terrain-hi");
-        pipeline::agent::jobs::part(2 * k, &names);
-        let writing = std::sync::atomic::AtomicBool::new(false);
-        let t = cost_start("terrain-hi", &format!("3/{}/{}", q.0, q.1));
-        let pool = base_pool(out, 3, &[q])?;
-        let r = pool.with_tiles(&raw, src.water, |tiles| {
-            pipeline::terrain_pack::build_q_with(out, tiles, q, &list, &cov, &src, &|what, done, total| {
-                if what == "packs" && !writing.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    pipeline::agent::jobs::part(2 * k + 1, &names);
-                }
-                say(what, done, total);
-            })
-        })??;
-        eprintln!("terrain-hi 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
-        pipeline::control::done("terrain-hi", &format!("3/{}/{}", q.0, q.1));
-        note_cost("terrain-hi", &format!("3/{}/{}", q.0, q.1), t);
-    }
-    // (The z3 tiles are written: with the build pausing, the raw tiles wait in the cache for the next
-    // job, which packs them.)
-    pipeline::control::safe_point("terrain-hi");
-    pipeline::agent::jobs::part(names.len() - 1, &names);
-    pack_raw_with(out, &raw_dir, &say);
-    Ok(())
+    let (ts, same) = pieces_named(&cov, args)?.context("terrain-hi <6/x/y …>: its z6 tiles")?;
+    terrain_pieces(out, args, &cov, &ts, &same)
 }
 
 fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
@@ -5798,15 +5678,15 @@ fn slope_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
         .collect::<Result<_>>()?;
     anyhow::ensure!(!ts.is_empty(), "{STEP} <{}/x/y …>", td::PACK_Z);
     let cov = coverage_of(out, args)?;
-    let p = phase("reading the fine datasets' declarations");
-    let fine = td::Fine::read(out.root(), &out.manifest)?;
+    let p = phase("reading the declared datasets");
+    let sets = zoom_sets(out)?;
     drop(p);
     let names: Vec<String> = ts.iter().map(|t| format!("Working out {}'s deep slope", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     for (k, t) in ts.iter().enumerate() {
         pipeline::control::safe_point(STEP);
         pipeline::agent::jobs::part(k, &names);
-        if !fine.as_ref().is_some_and(|f| td::is_target(&f.sets, &cov, (t.x, t.y))) {
+        if !td::is_target(&sets, &cov, (t.x, t.y)) {
             let n = run_drop(STEP, &t.slash(), || {
                 let n = pipeline::slope_pack::drop_deep(out, (t.x, t.y));
                 out.save()?;

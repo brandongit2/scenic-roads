@@ -1925,13 +1925,6 @@ impl Planner {
         } else {
             BTreeMap::new()
         };
-        // (And whether it makes deep levels for its hi pack, north of 67°,
-        // crate::terrain_deep::reaches_hi: while the fine datasets can't be read, taken as made.)
-        let fine = self.tiles.borrow().fine(&manifest);
-        let deep = |t: &str| match (&fine, crate::legacy::TileId::parse(t)) {
-            (Some(f), Some(u)) => crate::terrain_deep::reaches_hi(f, u.z, u.x, u.y),
-            _ => true,
-        };
         // (The memory guard's holds: a target past every Mac's limit offered to none, one past this
         // Mac's built only by a Mac with room.)
         let holds = self.guard_holds(&plan);
@@ -1979,8 +1972,7 @@ impl Planner {
             let guess = |t: &str| match w.step.as_str() {
                 "unit" | "pois" => size(t),
                 "terrain-hi" => {
-                    terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }, deep(t))
-                        + cov_read
+                    terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }) + cov_read
                 }
                 s @ ("terrain-deep" | "slope-deep" | "slope-hi") => first_peak(s) + cov_read,
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
@@ -2036,16 +2028,10 @@ impl Planner {
                 .into_iter()
                 .map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len()))
                 .collect();
-            let fine = self.tiles.borrow().fine(&manifest);
-            let deep = |t: &str| match (&fine, crate::legacy::TileId::parse(t)) {
-                (Some(f), Some(u)) => crate::terrain_deep::reaches(f, u.z, u.x, u.y),
-                _ => true,
-            };
             let peak = |step: &str, t: &str| match step {
                 "unit" | "pois" => crate::coord::unit_peak(&BTreeMap::new(), t, size(t)),
                 "terrain-hi" => {
-                    terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }, deep(t))
-                        + cov_read
+                    terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }) + cov_read
                 }
                 s @ ("terrain-deep" | "slope-deep" | "slope-hi") => first_peak(s) + cov_read,
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),

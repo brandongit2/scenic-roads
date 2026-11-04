@@ -134,6 +134,40 @@ pub fn sets(ds: &[Accepted], read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<V
         .collect()
 }
 
+/// The declared datasets as a run reads them: the accepted elevation version (their files, by its
+/// index), the declared geoid sources converting their heights, and the sets.
+#[derive(Clone, Debug)]
+pub struct Declared {
+    pub elevation: crate::inputs::Accepted,
+    pub geoid: Vec<crate::inputs::sources::Source>,
+    pub sets: Vec<Set>,
+}
+
+impl Declared {
+    /// The datasets of the accepted versions `m` names under `root`, their heights converted by the
+    /// accepted geoid sources (if any); None without an accepted elevation version.
+    pub fn read(
+        root: &store::nasfs::NasRoot,
+        m: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Option<Declared>> {
+        let Some(a) = crate::inputs::open(root, m, crate::inputs::elevation::UNIT)? else { return Ok(None) };
+        let geoid = match crate::inputs::sources::open(root, m)? {
+            Some(s) => s.many(crate::inputs::sources::GEOID).to_vec(),
+            None => Vec::new(),
+        };
+        Ok(Some(Declared::of(a, geoid)?))
+    }
+
+    /// Of accepted version `a`, converted by `geoid`.
+    pub fn of(a: crate::inputs::Accepted, geoid: Vec<crate::inputs::sources::Source>) -> Result<Declared> {
+        let mut ds = declared::accepted(&a)?;
+        // (Said by the roads' own plans: crate::dem::declared::plan_converted.)
+        let _ = declared::convert(&mut ds, &geoid);
+        let sets = sets(&ds, &|n| Ok(a.root().join(n).read()?))?;
+        Ok(Declared { elevation: a, geoid, sets })
+    }
+}
+
 /// The poleward latitude of a box (where a raster's pixels, in Web Mercator, are finest).
 pub fn poleward(b: [f64; 4]) -> f64 {
     b[1].abs().max(b[3].abs())
@@ -183,6 +217,32 @@ pub fn key_lines(sets: &[Set], z: u8, x: u32, y: u32) -> Vec<String> {
 /// Of `sets`, those published at every zoom (`Set::every_zoom`): the relief outside every region.
 pub fn relief(sets: &[Set]) -> Vec<&Set> {
     sets.iter().filter(|s| s.every_zoom).collect()
+}
+
+/// `test_world(12)`, held for the process (tests' `Sources`).
+#[cfg(test)]
+pub fn test_world_ref() -> &'static [Set] {
+    static W: std::sync::OnceLock<Vec<Set>> = std::sync::OnceLock::new();
+    W.get_or_init(|| test_world(12))
+}
+
+/// A tile's column and row at zoom `z` of point `lon`, `lat` (tests).
+#[cfg(test)]
+pub fn tile_at(lon: f64, lat: f64, z: u8) -> (u32, u32) {
+    crate::bld::tile_of(roadcore::merc(lon, lat), z)
+}
+
+/// One dataset holding the world, a pyramid of zoom `z` (tests: every place's finest zoom `z`).
+#[cfg(test)]
+pub fn test_world(z: u8) -> Vec<Set> {
+    vec![Set {
+        id: "world".into(),
+        line: "world".into(),
+        cover: Cover::of(None),
+        detail: Detail::Pyramid(z),
+        cut: None,
+        every_zoom: true,
+    }]
 }
 
 #[cfg(test)]
@@ -242,10 +302,11 @@ mod tests {
         let after = set("c", None, Detail::Pyramid(12));
         let sets = vec![fine, world, after];
         // (A tile inside the fine one's cell, and one past it.)
-        let (x, y) = crate::bld::tile_of((-74.5, 45.5), 12);
-        assert_eq!(sources(&sets, crate::stage::tile_box_grown(12, x, y, 0.0)).len(), 2);
+        let (x, y) = tile_at(-74.5, 45.5, 12);
+        let s = sources(&sets, crate::stage::tile_box_grown(12, x, y, 0.0));
+        assert_eq!(s.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["a"], "the fine one holds it whole");
         assert_eq!(finest(&sets, 12, x, y), DEEPEST, "1 m data, to the deepest zoom stored");
-        let (x, y) = crate::bld::tile_of((10.0, 0.5), 12);
+        let (x, y) = tile_at(10.0, 0.5, 12);
         let b = crate::stage::tile_box_grown(12, x, y, 0.0);
         let s = sources(&sets, b);
         assert_eq!(s.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b"], "the pyramid after it is hidden");

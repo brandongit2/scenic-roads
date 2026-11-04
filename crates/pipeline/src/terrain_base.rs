@@ -1,5 +1,6 @@
-//! The terrain's base tiles (z0–12) from the elevation pool (docs/steps.md §2, Terrain; docs/inputs.md
-//! §6.8): every tile sampled from the same datasets, in the same order and blended at their edges
+//! The terrain's sampled tiles from the elevation pool (docs/steps.md §2, Terrain; docs/inputs.md
+//! §6.8): a tile at its place's finest zoom (crate::terrain_zoom), and the relief outside every
+//! region (`Pool::relief`). Every tile sampled from the same datasets, in the same order and blended at their edges
 //! the same way, as the roads' elevations (crate::dem::generic), so the roads and the terrain use
 //! one dataset at every point. Each pixel is the mean of 2 × 2 samples over it (`K`), each dataset
 //! read at the level's detail: a GeoTIFF at its overview nearest half a pixel, a Terrarium pyramid at the level's own zoom (AWS's publishes every zoom),
@@ -29,8 +30,8 @@ use store::range::RangeRead;
 
 /// Samples a side over a pixel.
 pub const K: usize = 2;
-/// The finest zoom of the base (crate::terrain_pack::max_zoom_at's at the equator).
-pub const MAX_Z: u8 = 12;
+/// The finest zoom a plan is made for: the deepest the map stores.
+const MAX_Z: u8 = crate::terrain_zoom::DEEPEST;
 /// Tiles in flight at once while a level is sampled (`Tiles::prefetch_counted`): the memory
 /// `sampling_mb` declares (in crate::terrain_pack::piece_peak_mb, and what terrain-hi 7's and
 /// terrain-lo 2's runs measured, crate::coord::cost_version), shared among the chunks sampled at
@@ -140,6 +141,22 @@ impl Pool {
             _ => None,
         });
         Pool { plan, terrarium, store, area, local: None, pyramids: None }
+    }
+
+    /// The pool of the datasets published at every zoom alone (crate::terrain_zoom::Set::every_zoom:
+    /// the Terrarium encoding's), each read at the tile's own zoom: the coarse relief outside every
+    /// region (crate::terrain_pack::Fill::Relief), one of its tiles a tile, never a GeoTIFF's area.
+    pub fn relief(&self) -> Pool {
+        let mut plan = self.plan.clone();
+        plan.datasets.retain(|d| matches!(&d.source, Source::Tiles { encoding, .. } if encoding == "terrarium"));
+        Pool {
+            plan,
+            terrarium: self.terrarium.clone(),
+            store: self.store.clone(),
+            area: self.area,
+            local: None,
+            pyramids: None,
+        }
     }
 
     /// The plan read at zoom `z` over latitude `lat` (`Pool`'s rule). Below `ROW_Z` (the z3 tiles'
@@ -315,16 +332,10 @@ pub struct Tiles<'a> {
     water: Option<&'a dyn WaterSource>,
     at_sea: &'a [OnceLock<Plan>],
     held: Mutex<HashMap<(u8, u32, u32), Option<Vec<u8>>>>,
-    /// The tiles sampled with data: a tile whose four children all are one is made from them alone
-    /// (crate::terrain_pack::prepare's quarters), so it isn't sampled (`FLAT` stands for it).
-    with_data: Mutex<std::collections::HashSet<(u8, u32, u32)>>,
     /// Whether the build is pausing (crate::control::draining_lately; a test's own): checked before each
     /// sampling, a chunk or a tile, which then stops with crate::control::Paused.
     draining: &'a (dyn Fn() -> bool + Sync),
 }
-
-/// A tile at sea level: what stands for a tile made from its four children alone.
-static FLAT: OnceLock<Vec<u8>> = OnceLock::new();
 
 impl<'a> Tiles<'a> {
     fn new(plans: &'a [Plan], o: &'a Opts<'a>) -> Tiles<'a> {
@@ -337,7 +348,6 @@ impl<'a> Tiles<'a> {
             water: None,
             at_sea: &[],
             held: Mutex::new(HashMap::new()),
-            with_data: Mutex::new(Default::default()),
             draining: &crate::control::draining_lately,
         }
     }
@@ -406,37 +416,16 @@ impl<'a> Tiles<'a> {
             .map_err(|e| anyhow::anyhow!("the terrain's datasets (plan {k}): {e}"))
     }
 
-    /// Tiles `ts` of zoom `z` sampled: each its Terrarium PNG, None where no dataset has data; one
-    /// whose four children were sampled with data, `FLAT` (made from them alone).
+    /// Tiles `ts` of zoom `z` sampled: each its Terrarium PNG, None where no dataset has data.
     pub fn sample(&self, z: u8, ts: &[(u32, u32)]) -> Result<Vec<Option<Vec<u8>>>> {
-        let covered = |&(x, y): &(u32, u32)| {
-            let w = self.with_data.lock().unwrap();
-            (0..4u32).all(|k| w.contains(&(z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))))
-        };
-        let (skip, todo): (Vec<(u32, u32)>, Vec<(u32, u32)>) = ts.iter().partition(|t| covered(t));
-        let mut made: HashMap<(u32, u32), Option<Vec<u8>>> = HashMap::new();
-        if !skip.is_empty() {
-            let flat = FLAT.get_or_init(|| roadcore::grid::encode_terrain_png(&vec![0f32; 65536], 256, 256).unwrap());
-            made.extend(skip.iter().map(|&t| (t, Some(flat.clone()))));
+        if ts.is_empty() {
+            return Ok(Vec::new());
         }
-        if !todo.is_empty() {
-            // (Between chunks: a level's sampling runs for hours, and a pause waits for no more
-            // than the chunks under way, task #705; counted in the job's measure, task #889.)
-            crate::control::reached();
-            crate::control::pause_point(self.draining)?;
-            made.extend(todo.iter().copied().zip(self.sample_all(z, &todo)?));
-        }
-        let mut w = self.with_data.lock().unwrap();
-        Ok(ts
-            .iter()
-            .map(|t| {
-                let m = made.remove(t).flatten();
-                if m.is_some() {
-                    w.insert((z, t.0, t.1));
-                }
-                m
-            })
-            .collect())
+        // (Between chunks: a level's sampling runs for hours, and a pause waits for no more than
+        // the chunks under way, task #705; counted in the job's measure, task #889.)
+        crate::control::reached();
+        crate::control::pause_point(self.draining)?;
+        self.sample_all(z, ts)
     }
 
     /// Tiles `ts` of zoom `z` sampled, every one: by their plans (`slot`), in their order.
@@ -558,11 +547,6 @@ pub fn points(z: u8, ts: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
 }
 
 impl RawSource for Tiles<'_> {
-    fn made_before(&self, z: u8, tiles: &[(u32, u32)]) {
-        // (A tile whose four children have data isn't sampled, as when they were sampled here.)
-        self.with_data.lock().unwrap().extend(tiles.iter().map(|&(x, y)| (z, x, y)));
-    }
-
     fn get(&self, z: u8, x: u32, y: u32) -> Result<(Option<Vec<u8>>, bool)> {
         if let Some(t) = self.held.lock().unwrap().remove(&(z, x, y)) {
             return Ok((t, false));
@@ -572,8 +556,7 @@ impl RawSource for Tiles<'_> {
 
     // (Its chunks `at_once` at a time, the first to fail stopping the rest, as one that finds the
     // build pausing does (crate::control::Paused, from `sample`). A chunk's reads mostly wait on the NAS, one at a time left a
-    // job's threads idle, task #695. The same bytes: a tile's sampling reads only the level below's
-    // `with_data`, which a level's own tiles never add to.)
+    // job's threads idle, task #695. The same bytes: a tile's sampling reads nothing of another's.)
     fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
         // (As many at once as the job's threads: each chunk's own work, its points and their means,
         // is on its thread, outside the job's pool; its sampler's passes on the pool, task #888.)
@@ -881,25 +864,6 @@ mod tests {
         // Without the water, the sea's tiles are asked for: the east column's fails.
         let plain = Tiles::new(&plans, &o);
         assert!(plain.sample(z, &[(x, y)]).is_err(), "the unsupplied tiles asked for");
-    }
-
-    /// A tile whose four children were sampled with data isn't sampled: they make it.
-    #[test]
-    fn a_tile_over_four_children_with_data_isnt_sampled() {
-        // (A plan no sampler can open: sampling would fail.)
-        let plans = vec![Plan { fmt: 1, version: "t".into(), tag: "t".into(), datasets: Vec::new() }; 13];
-        let net = crate::fetch::MapFetch::default();
-        let o = Opts { fetch: &net, store: None, local: None };
-        let t = Tiles::new(&plans, &o);
-        for k in 0..4u32 {
-            t.with_data.lock().unwrap().insert((10, 2 * 5 + (k & 1), 2 * 7 + (k >> 1)));
-        }
-        let got = t.sample(9, &[(5, 7)]).unwrap();
-        assert_eq!(got[0].as_deref(), FLAT.get().map(Vec::as_slice));
-        assert!(t.with_data.lock().unwrap().contains(&(9, 5, 7)), "itself with data, for the level above");
-        // Three of four: sampled (here, nothing: no dataset).
-        t.with_data.lock().unwrap().remove(&(10, 10, 14));
-        assert_eq!(t.sample(9, &[(5, 7)]).unwrap()[0], None);
     }
 
     #[test]

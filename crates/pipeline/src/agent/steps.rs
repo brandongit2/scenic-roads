@@ -956,14 +956,15 @@ pub const TABLE: [Step; 59] = [
         )
     },
     // (Its memory offered by target, the agent's terrain_peak: a z6 tile's levels' bound,
-    // crate::terrain_pack::piece_peak_mb, and its deep z12's north of 67° where a fine dataset meets
-    // it, crate::terrain_deep::peak_mb; with the coverage its process reads,
-    // crate::coverage::Coverage::read_peak_mb. Until a z6 tile's own run says.)
+    // crate::terrain_pack::piece_peak_mb, and its z10 tiles' deep mids taken in,
+    // crate::terrain_pack::DEEP_MIDS_MB; with the coverage its process reads,
+    // crate::coverage::Coverage::read_peak_mb. Until a z6 tile's own run says. It waits for its z10
+    // tiles' terrain-deep targets alone: their mids are its z12 tiles' quarters there.)
     Step {
         cost_v: 7,
         shared: true,
         versions: &[("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
-        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "deep-lines", of: idents::deep_lines }, In { name: "water", of: idents::water }, In { name: "makes-hi", of: idents::makes_hi }],
+        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "water", of: idents::water }, In { name: "makes-hi", of: idents::makes_hi }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Read(idents::terrain_deep_mids) }],
         ..step(
             "terrain",
             Pack,
@@ -973,20 +974,20 @@ pub const TABLE: [Step; 59] = [
             w_terrain_hi,
         )
     },
-    // (Its memory from the code's bounds: its base made as a z6 tile's run at most, then its deep
-    // tiles, crate::terrain_deep::target_peak_mb; the agent adds the coverage its process reads,
-    // crate::coverage::Coverage::read_peak_mb. Until a target's own run says.)
+    // (Its memory from the code's bounds, crate::terrain_deep::target_peak_mb; the agent adds the
+    // coverage its process reads, crate::coverage::Coverage::read_peak_mb. Until a target's own run
+    // says.)
     Step {
         mem_mb: crate::terrain_deep::target_peak_mb(),
         shared: true,
         versions: &[("terrain-deep", || super::build::TERRAIN_DEEP_V.to_string()), ("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
-        reads: &[In { name: "fine-lines", of: idents::fine_lines }, In { name: "deep-bases", of: idents::deep_bases }],
+        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "water", of: idents::water }],
         ..step(
             "terrain",
             Pack,
             Z10,
             "terrain-deep",
-            "Builds a z10 tile's terrain past the base's zoom (z13–16) where a declared elevation dataset has the detail, from the base made as the tiles' terrain is.",
+            "Builds a z10 tile's terrain past z12 (z13–16) where a declared elevation dataset has the detail, and its mid for its z6 tile.",
             w_terrain_deep,
         )
     },
@@ -1851,7 +1852,9 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
             .is_some_and(|t| l == crate::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
         // (A z10 tile's deep pack, a retired one too; slope's and its deep mid.)
         "terrain-deep" => tile.is_some_and(|t| {
-            t.z == crate::terrain_deep::PACK_Z && crate::terrain_deep::pack_tile(l) == Some((t.x, t.y))
+            t.z == crate::terrain_deep::PACK_Z
+                && (crate::terrain_deep::pack_tile(l) == Some((t.x, t.y))
+                    || crate::terrain_deep::mid_tile(l) == Some((t.x, t.y)))
         }),
         "slope-deep" => tile.is_some_and(|t| {
             t.z == crate::terrain_deep::PACK_Z
@@ -2076,7 +2079,7 @@ fn w_terrain_hi(l: &str, _: bool) -> bool {
 
 /// A z10 tile's deep pack (crate::terrain_deep), and the retired fine pack there it drops.
 fn w_terrain_deep(l: &str, _: bool) -> bool {
-    crate::terrain_deep::pack_tile(l).is_some()
+    crate::terrain_deep::pack_tile(l).is_some() || crate::terrain_deep::mid_tile(l).is_some()
 }
 
 fn w_terrain_lo(l: &str, _: bool) -> bool {

@@ -19,28 +19,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Step versions: bumping one rebuilds that step everywhere (oldest first, when idle).
-/// Terrain-hi 7 (task #639): its deep levels are their terrain-deep targets' (`TERRAIN_DEEP_V`), it
-/// keeps those of z12 north of 67° (crate::terrain_deep::hi_levels); its tiles of z9–12 read the
-/// elevation pool at their own z6 row's latitude, whatever else its job makes
-/// (crate::terrain_base::row_mid). 6: one terrain (task #633): a z6 tile's run makes its deep levels too, z13–16 where a
-/// fine dataset is (crate::terrain_deep: what they read in its key), every level stored as lossless
-/// WebP rounded to the centimetre at its place's native zoom, the decimetre coarser
-/// (crate::terrain_codec: its version in the key). 5: the elevation pool's base tiles
-/// (crate::terrain_base: the datasets meeting a target in its key), each coarser level from the
-/// finer, the water flattened from the pass's basemap (the digest of what each target reads of it in
-/// the key: `water_key`; docs/steps.md §2, Terrain). Not bumped for task #807's geoid lattice
-/// (crate::dem::geoid::Grids::offsets): a pixel changes by one quantum at most, so tiles of before
-/// and after may stand side by side; `terrain-same` reports a content name differing from the
-/// manifest's until its tile is next built.
-pub const TERRAIN_V: u32 = 7;
-/// Terrain-deep 1 (task #639): a z10 tile's deep levels a target of their own, from the base made as
-/// terrain-hi makes it (crate::terrain_pack::Bases, `TERRAIN_V` in its key), the ring of base pixels
-/// past a z6 tile's edge its neighbour's own.
-pub const TERRAIN_DEEP_V: u32 = 1;
-/// Slope 2: the shading pyramid (task #632): each pixel's mean steepness and direction
-/// (roadcore::shade), every level stored, z12 and the deep levels too (crate::slope_pack), as
-/// lossless WebP (crate::shade_codec: its version in the key).
-pub const SLOPE_V: u32 = 2;
+/// Terrain-hi 8 (task #929): the one pyramid's rule (docs/steps.md §2, Terrain): a tile is sampled
+/// only at its place's finest zoom (crate::terrain_zoom, derived from the declared datasets), each
+/// coarser one its children's means of their heights before rounding (rounded ties to even, as
+/// stored), its z12 tiles' quarters from its z10 tiles' deep mids, outside every region the relief.
+pub const TERRAIN_V: u32 = 8;
+/// Terrain-deep 2 (task #929): a z10 tile's band past z12 by the same rule, its mid for its z6 tile.
+pub const TERRAIN_DEEP_V: u32 = 2;
+/// Slope 3 (task #929): the terrain it shades follows the one pyramid's rule (`TERRAIN_V` 8); the
+/// shading pyramid (crate::slope_pack) as before, lossless WebP (crate::shade_codec: its version in
+/// the key).
+pub const SLOPE_V: u32 = 3;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
 /// 3: heritage sites and area flags from the pass's heritage-sites job (crate::heritage), the
 /// flags rasterised per z6 tile.
@@ -1210,9 +1199,9 @@ pub fn region_steps(
 }
 
 /// The assemblies' versions (their keys): bumped on any change to the bytes of the lo packs an
-/// assembly makes from the same z6 tiles' mids. Terrain's 2: lossless WebP, to the decimetre
-/// (crate::terrain_codec, its version in the key).
-pub const TERRAIN_LO_V: u32 = 2;
+/// assembly makes from the same z6 tiles' mids. Terrain's 3 (task #929): z3–8 from the mids alone,
+/// a quarter outside every region the relief's (crate::terrain_pack::Fill).
+pub const TERRAIN_LO_V: u32 = 3;
 /// Slope's 3: the shading pyramid (`SLOPE_V` 2), lossless WebP (crate::shade_codec, its version in
 /// the key). 2: an assembly's z6 tiles that aren't its z6 tiles' made from their terrain, never kept
 /// from the lo pack as an earlier run stored them, and their z7–8 tiles not kept
@@ -1297,6 +1286,7 @@ pub fn terrain_slope_targets(x: &KeyCtx) -> TerrainTargets {
         &named("work/terrain-mid/"),
         &named("work/slope-mid/"),
         &named(crate::slope_pack::DEEP_MID_PREFIX),
+        &named(crate::terrain_deep::MID_PREFIX),
         &named(crate::terrain_water::IDX_PREFIX),
         &crate::terrain_pack::water_source_pin(m).unwrap_or_default(),
         m.get(&crate::inputs::logical(crate::inputs::elevation::UNIT)).map_or("-", String::as_str),
@@ -1364,7 +1354,7 @@ pub fn terrain_slope_targets_made(x: &KeyCtx) -> TerrainTargets {
     // past the base's zoom, keyed on what each reads; none while the fine datasets can't be read
     // (every terrain-hi key is `UNKNOWN` then: the z6 tiles wait).
     let mut deep: BTreeSet<(u32, u32)> = BTreeSet::new();
-    if let Some(sets) = tiles.fine(m).as_deref() {
+    if let Some(sets) = tiles.zoom_sets(m).as_deref() {
         for &p in &pieces {
             for t in crate::terrain_deep::targets_in(sets, cov, p) {
                 deep.insert(t);
@@ -1389,8 +1379,8 @@ pub fn terrain_slope_targets_made(x: &KeyCtx) -> TerrainTargets {
     };
     out.terrain_deep_none = deep_left(
         "terrain-deep",
-        &crate::terrain_deep::pack_tile,
-        &[crate::terrain_deep::PREFIX, crate::terrain_deep::RETIRED],
+        &|l| crate::terrain_deep::pack_tile(l).or_else(|| crate::terrain_deep::mid_tile(l)),
+        &[crate::terrain_deep::PREFIX, crate::terrain_deep::RETIRED, crate::terrain_deep::MID_PREFIX],
     );
     out.slope_deep_none = deep_left(
         "slope-deep",
@@ -1446,15 +1436,36 @@ pub fn water_key(
 
 /// What the terrain's targets read of the water, as the `terrain-water` job works their digests
 /// out (crate::terrain_water::WaterIdx): each z6 tile ("6/x/y") with `piece_water_from`, each assembly ("3/x/y") with AREA_FROM.
-pub fn water_wants(cov: &Coverage) -> Vec<(String, String)> {
+pub fn water_wants(cov: &Coverage, sets: &[crate::terrain_zoom::Set]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (q, ts) in &coverage_tiles(cov) {
         for &(x, y) in ts {
-            out.push((format!("6/{x}/{y}"), piece_water_from(&piece_coverage(cov, (x, y)))));
+            out.push((format!("6/{x}/{y}"), piece_water_from(&piece_coverage(cov, sets, (x, y)))));
+            for (a, b) in crate::terrain_deep::targets_in(sets, cov, (x, y)) {
+                out.push((
+                    format!("{}/{a}/{b}", crate::terrain_deep::PACK_Z),
+                    piece_water_from(&deep_coverage(cov, sets, (a, b))),
+                ));
+            }
         }
         out.push((format!("3/{}/{}", q.0, q.1), crate::terrain_water::AREA_FROM.to_string()));
     }
     out
+}
+
+/// What a terrain-deep z10 tile's run reads of the coverage, as its keys name it: the tiles of its
+/// levels (crate::terrain_deep::levels), digested.
+pub fn deep_coverage(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> String {
+    levels_digest(&crate::terrain_deep::levels(cov, sets, t))
+}
+
+/// Levels' tiles (z, then each column and row), as a key names them.
+fn levels_digest(levels: &[(u8, Vec<(u32, u32)>)]) -> String {
+    let lines: Vec<String> = levels
+        .iter()
+        .map(|(z, ts)| format!("{z}:{}", ts.iter().map(|(x, y)| format!("{x},{y}")).collect::<Vec<_>>().join(" ")))
+        .collect();
+    format!("tiles {}", store::naming::hash16(lines.join("\n").as_bytes()))
 }
 
 /// A z6 tile's water reads' from (`WaterIdx`): the coverage as it reads it (`fp`, `piece_coverage`): its
@@ -1469,28 +1480,24 @@ pub fn piece_water_from(fp: &str) -> String {
 /// moved, an islet dropped or added, that leaves the same tiles near it changes nothing the run
 /// reads, so it rebuilds nothing. Its deep levels' reads of it are crate::terrain_deep's
 /// (`piece_key_lines`, `targets_in`: near the coverage by tile too).
-pub fn piece_coverage(cov: &Coverage, t: (u32, u32)) -> String {
-    let lines: Vec<String> = crate::terrain_pack::piece_levels(cov, t)
-        .into_iter()
-        .map(|(z, ts)| format!("{z}:{}", ts.iter().map(|(x, y)| format!("{x},{y}")).collect::<Vec<_>>().join(" ")))
-        .collect();
-    format!("tiles {}", store::naming::hash16(lines.join("\n").as_bytes()))
+pub fn piece_coverage(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> String {
+    levels_digest(&crate::terrain_pack::piece_levels(cov, sets, t))
 }
 
 /// `water_wants` with the tiles each reads: a z6 tile's z9–12 (crate::terrain_pack::piece_levels),
 /// an assembly's z6–8 (crate::terrain_water::z3_tiles).
-pub fn water_reads(cov: &Coverage) -> Vec<crate::terrain_water::Reads> {
-    water_wants(cov)
+pub fn water_reads(cov: &Coverage, sets: &[crate::terrain_zoom::Set]) -> Vec<crate::terrain_water::Reads> {
+    let flat = |lv: Vec<(u8, Vec<(u32, u32)>)>| -> Vec<(u8, u32, u32)> {
+        lv.into_iter().flat_map(|(z, ts)| ts.into_iter().map(move |(x, y)| (z, x, y))).collect()
+    };
+    water_wants(cov, sets)
         .into_iter()
         .map(|(t, from)| {
             let u = TileId::parse(&t).unwrap();
-            let tiles = if u.z == 6 {
-                crate::terrain_pack::piece_levels(cov, (u.x, u.y))
-                    .into_iter()
-                    .flat_map(|(z, ts)| ts.into_iter().map(move |(x, y)| (z, x, y)))
-                    .collect()
-            } else {
-                crate::terrain_water::z3_tiles((u.x, u.y))
+            let tiles = match u.z {
+                6 => flat(crate::terrain_pack::piece_levels(cov, sets, (u.x, u.y))),
+                z if z == crate::terrain_deep::PACK_Z => flat(crate::terrain_deep::levels(cov, sets, (u.x, u.y))),
+                _ => crate::terrain_water::z3_tiles((u.x, u.y)),
             };
             (t, from, tiles)
         })
@@ -1504,7 +1511,8 @@ pub fn water_reads(cov: &Coverage) -> Vec<crate::terrain_water::Reads> {
 pub fn terrain_water_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let (cov, m, tiles) = (x.cov, x.m, x.tiles);
     let pin = crate::terrain_pack::water_source_pin(m)?;
-    let mut wants = water_wants(cov);
+    let sets = tiles.zoom_sets(m)?;
+    let mut wants = water_wants(cov, &sets);
     // (The depth's targets' too, once its sources are read: crate::depth.)
     if let Some(d) = tiles.depth(m) {
         wants.extend(depth_water_reads(cov, &d).into_iter().map(|(t, f, _)| (t, f)));
@@ -1541,15 +1549,16 @@ pub fn pyramids_targets(x: &KeyCtx) -> Option<Vec<(String, String)>> {
     if pyr.is_empty() {
         return Some(Vec::new());
     }
-    let fine = tiles.fine(m);
+    let sets = tiles.zoom_sets(m)?;
     let mut out = Vec::new();
     for &(tx, ty) in coverage_tiles(cov).values().flatten() {
         if crate::dem::declared::meeting(&pyr, crate::stage::tile_box_grown(6, tx, ty, 0.0)).is_empty() {
             continue;
         }
         // (One making no hi tile and no deep target wants nothing: no job.)
-        let deep = fine.as_deref().map(|f| crate::terrain_deep::targets_in(f, cov, (tx, ty)));
-        if !crate::terrain_pack::makes_hi(cov, (tx, ty)) && deep.is_some_and(|d| d.is_empty()) {
+        if !crate::terrain_pack::makes_hi(cov, &sets, (tx, ty))
+            && crate::terrain_deep::targets_in(&sets, cov, (tx, ty)).is_empty()
+        {
             continue;
         }
         out.push((format!("6/{tx}/{ty}"), false));
@@ -1883,6 +1892,20 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
         .collect();
     w.terrain_left = changing;
     w.terrain_left.extend(w.terrain_deep_left.iter().filter_map(|t| z3_of(t)));
+    // (A z6 tile over a deep target waits for it: its z12 tiles there are its deep mid's means, its
+    // declared read (task #929). A "none" z6 tile reads nothing.)
+    w.left.set("terrain-deep", w.terrain_deep_left.iter().cloned());
+    let mut hi_held: Vec<String> = Vec::new();
+    w.terrain.retain(|(t, k)| {
+        let ok = is_none_key("terrain-hi", t, k) || ready("terrain-hi", t, &w.left);
+        if !ok {
+            hi_held.push(t.clone());
+        }
+        ok
+    });
+    if let Some(n) = held_note("terrain-hi", hi_held.iter().map(String::as_str), &w.left) {
+        w.held.push(("terrain-hi", n));
+    }
     if !idle.is_empty() {
         w.backfill.push(Work { step: "terrain-hi".into(), targets: idle });
     }
@@ -4839,7 +4862,7 @@ pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Check
     // (A slope target whose key can't be told now isn't done; the deep levels' are known once the
     // fine datasets are read.)
     out.push(sized("terrain-hi", &ts.terrain, &done.terrain_hi, true));
-    out.push(sized("terrain-deep", &ts.terrain_deep, &done.terrain_deep, tiles.fine(m).is_some()));
+    out.push(sized("terrain-deep", &ts.terrain_deep, &done.terrain_deep, tiles.zoom_sets(m).is_some()));
     out.push(sized("terrain-lo", &ts.terrain_lo, &done.terrain_lo, true));
     // (The terrain's root, made in the terrain stage once its assemblies are: one target.)
     let root: Vec<(String, String)> =
@@ -5481,12 +5504,20 @@ pub(crate) mod tests {
                     crate::agent::steps::none_key(&format!("{layer}-lo"), t).unwrap(),
                 ),
             };
+            // (A terrain-deep target's mid, which its z6 tile's terrain-hi takes in.)
+            let mid = (step == "terrain-deep").then(|| crate::terrain_deep::mid_logical(u.x, u.y));
             if *k == none {
                 // (A "none" z6 tile's hi pack `did` dropped.)
                 m.remove(&l);
+                if let Some(mid) = &mid {
+                    m.remove(mid);
+                }
                 continue;
             }
             m.insert(l.clone(), format!("{l}.{k}.pack"));
+            if let Some(mid) = mid {
+                m.insert(mid.clone(), format!("{mid}.{k}.sect"));
+            }
         }
     }
 
@@ -6393,14 +6424,15 @@ pub(crate) mod tests {
         // (A fine dataset past the base's zoom everywhere: terrain-deep and slope-deep targets.)
         let deep = |m: &BTreeMap<String, String>| {
             let mut t = tiles_for(m);
-            t.hold_fine(
+            t.hold_zoom_sets(
                 m,
-                vec![crate::terrain_deep::FineSet {
+                vec![crate::terrain_zoom::Set {
                     id: "lidar".into(),
                     line: "lidar k".into(),
                     cover: crate::dem::declared::Cover::of(None),
-                    detail: crate::terrain_deep::Detail::Pyramid(14),
+                    detail: crate::terrain_zoom::Detail::Pyramid(14),
                     cut: None,
+                    every_zoom: false,
                 }],
             );
             t
@@ -6904,13 +6936,13 @@ pub(crate) mod tests {
     /// meeting it re-keys it (its run makes them with its terrain), one far from it doesn't.
     #[test]
     fn a_terrain_key_names_its_deep_levels() {
-        use crate::terrain_deep::{Detail, FineSet};
+        use crate::terrain_zoom::{Detail, Set as FineSet};
         let c = cov();
         let m: BTreeMap<String, String> =
             [(crate::inputs::logical(crate::inputs::elevation::UNIT), "elevation-index".to_string())].into();
         let with = |sets: Vec<FineSet>| {
             let mut t = TerrainTiles::new(None);
-            t.hold_fine(&m, sets);
+            t.hold_zoom_sets(&m, sets);
             terrain_slope_targets(&crate::agent::build::KeyCtx::new(
                 &c,
                 "d",
@@ -6927,21 +6959,23 @@ pub(crate) mod tests {
             cover: crate::dem::declared::Cover::of(cover.as_deref()),
             detail: Detail::Pyramid(14),
             cut: None,
+            every_zoom: false,
         };
-        let none = with(Vec::new());
+        let none = with(crate::terrain_zoom::test_world(12));
         assert!(!none.is_empty() && none.iter().all(|(_, k)| k != UNKNOWN));
         let here = with(vec![lidar(None)]);
         assert!(none.iter().zip(&here).all(|(a, b)| a.0 == b.0 && a.1 != b.1), "re-keyed where it meets");
-        assert_eq!(with(vec![lidar(Some(vec![[100.0, -10.0, 101.0, -9.0]]))]), none, "not where it doesn't");
+        let far = vec![lidar(Some(vec![[100.0, -10.0, 101.0, -9.0]])), crate::terrain_zoom::test_world(12).remove(0)];
+        assert_eq!(with(far), none, "not where it doesn't");
     }
 
-    /// The deep levels (task #639): a terrain-deep target per z10 tile a fine dataset goes past the
-    /// base's zoom in, keyed on what it reads, never a built tile: it runs from the start, beside the
-    /// terrain-hi z6 tiles. The z6 tiles whose roads read it wait for it, slope-deep for it, slope-hi
-    /// for slope-deep; once no dataset is fine, its "none" targets drop the packs.
+    /// The deep levels: a terrain-deep target per z10 tile whose places reach past z12, keyed on what
+    /// it reads, never a built tile: it runs from the start; the terrain-hi z6 tile over it waits for
+    /// it (task #929, B), slope-deep for it, slope-hi for slope-deep; once no place reaches past
+    /// z12, its "none" targets drop the packs.
     #[test]
     fn the_deep_levels_run_from_the_start_and_what_reads_them_waits() {
-        use crate::terrain_deep::{Detail, FineSet};
+        use crate::terrain_zoom::{Detail, Set as FineSet};
         let (c, reach, mut m, mut done) = three();
         let each = c.by_region();
         let lidar = FineSet {
@@ -6950,10 +6984,11 @@ pub(crate) mod tests {
             cover: crate::dem::declared::Cover::of(None),
             detail: Detail::Pyramid(14),
             cut: None,
+            every_zoom: false,
         };
         let tiles = |m: &BTreeMap<String, String>, sets: &[FineSet]| {
             let mut t = tiles_for(m);
-            t.hold_fine(m, sets.to_vec());
+            t.hold_zoom_sets(m, sets.to_vec());
             t
         };
         let plan = |m: &BTreeMap<String, String>, done: &Keys, sets: &[FineSet]| {
@@ -6980,17 +7015,27 @@ pub(crate) mod tests {
             p.work.iter().filter(|w| w.step == step).flat_map(|w| w.targets.clone()).collect()
         };
         let sets = vec![lidar];
-        assert_eq!(of(&plan(&m, &done, &[]), "unit").len(), 4);
-        // Its terrain-hi z6 tiles made again (their keys name the z10 tiles past the base's zoom),
-        // the deep targets beside them from the start.
+        let world = crate::terrain_zoom::test_world(12);
+        assert_eq!(of(&plan(&m, &done, &world), "unit").len(), 4);
+        // The deep targets from the start; a terrain-hi z6 tile over one waits for it (its z12
+        // tiles there its deep mid's means), the others don't (task #929, B).
         let p = plan(&m, &done, &sets);
         let deep = of(&p, "terrain-deep");
         assert!(!deep.is_empty() && deep.iter().all(|(t, _)| t.starts_with("10/")), "{deep:?}");
-        // (Task #864: a z6 tile waits only for the terrain it reads; 6/31/16 reads none of the
-        // targets made again, the other three do.)
-        let unit_targets = |p: &Plan| -> Vec<String> { of(p, "unit").into_iter().map(|t| t.0).collect() };
-        assert!(!of(&p, "terrain-hi").is_empty());
-        assert_eq!(unit_targets(&p), ["6/31/16"]);
+        let k = crate::terrain_deep::PACK_Z - 6;
+        let under = |t: &str, d: &str| {
+            let (a, b) = (TileId::parse(t).unwrap(), TileId::parse(d).unwrap());
+            (b.x >> k, b.y >> k) == (a.x, a.y)
+        };
+        assert!(
+            of(&p, "terrain-hi").iter().all(|(t, _)| !deep.iter().any(|(d, _)| under(t, d))),
+            "a terrain-hi z6 tile waits for its z10 tiles' terrain-deep"
+        );
+        terrain_did(&mut m, &mut done, &Work { step: "terrain-deep".into(), targets: deep.clone() });
+        assert!(deep.iter().all(|(d, _)| {
+            let u = TileId::parse(d).unwrap();
+            m.contains_key(&crate::terrain_deep::mid_logical(u.x, u.y))
+        }));
         for step in ["terrain-hi", "terrain-lo", "terrain-root"] {
             loop {
                 let w = of(&plan(&m, &done, &sets), step);
@@ -7000,21 +7045,7 @@ pub(crate) mod tests {
                 terrain_did(&mut m, &mut done, &Work { step: step.into(), targets: w });
             }
         }
-        // The roads wait for the deep levels under them; the slope for them too.
-        let p = plan(&m, &done, &sets);
-        // (Those reading none of the deep targets go now: 6/30/16 and 6/31/16.)
-        let reads_deep =
-            |u: &str| reads_of("unit", u).iter().any(|(s, t)| *s == "terrain-deep" && deep.iter().any(|d| d.0 == *t));
-        assert!(
-            unit_targets(&p).iter().all(|u| !reads_deep(u)) && ["6/28/16", "6/29/16"].iter().all(|u| reads_deep(u))
-        );
-        assert!(
-            unit_targets(&p) == ["6/31/16", "6/30/16"]
-                && of(&p, "slope-deep").is_empty()
-                && of(&p, "slope-hi").is_empty()
-        );
-        assert_eq!(of(&p, "terrain-deep"), deep, "its deep targets as they were: what they read hasn't changed");
-        terrain_did(&mut m, &mut done, &Work { step: "terrain-deep".into(), targets: deep.clone() });
+        assert_eq!(of(&plan(&m, &done, &sets), "terrain-deep"), Vec::new(), "its deep targets as they were");
         let p = plan(&m, &done, &sets);
         assert_eq!(of(&p, "unit").len(), 4);
         let sdeep = of(&p, "slope-deep");
@@ -7060,8 +7091,8 @@ pub(crate) mod tests {
             p.regions.iter().any(|r| r.terrain_deep.iter().any(|t| dropped("terrain-deep").contains(t))),
             "a region waits on them"
         );
-        // No dataset fine any more: the deep packs and deep mids go with "none" targets.
-        let p = plan(&m, &done, &[]);
+        // No dataset past z12 any more: the deep packs and deep mids go with "none" targets.
+        let p = plan(&m, &done, &world);
         let gone = of(&p, "terrain-deep");
         assert_eq!(gone.len(), deep.len());
         assert!(gone.iter().all(|(t, k)| *k == crate::agent::steps::none_key("terrain-deep", t).unwrap()));
@@ -7121,7 +7152,8 @@ pub(crate) mod tests {
             near.fingerprint(grown_e7(6, t.0, t.1, 20.0)),
             "the rings near it differ"
         );
-        assert_eq!(piece_coverage(&plain, t), piece_coverage(&near, t));
+        let world = crate::terrain_zoom::test_world(12);
+        assert_eq!(piece_coverage(&plain, &world, t), piece_coverage(&near, &world, t));
         assert_eq!(keys(&plain), keys(&near), "no terrain key moves");
         // (Far from the coverage: tiles near it now that weren't.)
         let (a, b) = (keys(&plain), keys(&far));

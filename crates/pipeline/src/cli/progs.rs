@@ -238,9 +238,9 @@ pub struct Polar {
     /// The pole: n (EPSG:3413) or s (EPSG:3031)
     #[arg(long, value_name = "n|s")]
     pub pole: String,
-    /// The finest zoom (pipeline::polar::MAX_Z at most)
-    #[arg(long, value_name = "Z", default_value_t = pipeline_max_z())]
-    pub max_z: u8,
+    /// The finest zoom (default: the cap's, pipeline::polar::finest, from the declared datasets)
+    #[arg(long, value_name = "Z")]
+    pub max_z: Option<u8>,
     /// The output folder (and its scratch/)
     #[arg(long, value_name = "DIR")]
     pub out: PathBuf,
@@ -250,10 +250,6 @@ pub struct Polar {
     /// Threads (default: rayon's)
     #[arg(long, value_name = "N")]
     pub workers: Option<usize>,
-}
-
-fn pipeline_max_z() -> u8 {
-    crate::polar::MAX_Z
 }
 
 /// Canada's lakes missing from OSM, sheet by sheet: the lakefill step's parts (pipeline::lakefill::run)

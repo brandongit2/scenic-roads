@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 const TS: usize = 256;
-/// The hi packs' finest zoom (the base terrain's: crate::terrain_pack::max_zoom_at).
+/// The hi packs' last zoom (their band's: the deep packs hold z13 on, crate::terrain_deep).
 pub const HI_MAX: u8 = 12;
 /// Decoded terrain tiles kept (256 KB each): a slope tile reads its own and its four neighbours',
 /// which the depth-first build reaches close together.

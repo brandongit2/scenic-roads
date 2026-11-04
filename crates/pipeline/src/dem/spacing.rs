@@ -1,12 +1,10 @@
 //! How densely `extract` puts points along a way (docs/inputs.md §6.8, Densification): as far
 //! apart as the finished terrain's pixels where the way starts (the roads take their heights from
 //! it: crate::road_terrain), never closer than `FLOOR_M`. The terrain's finest zoom at a point is
-//! the finest a dataset finer than the base takes it to there (crate::terrain_deep: its `zoom_for`
-//! of the dataset's full resolution, at most `MAX_Z`), else the base's (z12, coarser at high
-//! latitudes: crate::terrain_pack::max_zoom_at); its pixel there is the spacing: 20–38 m where
-//! GLO-30 alone is, ~7 m over USGS 3DEP's 10 m, `FLOOR_M` over the lidar. The datasets'
-//! resolutions and coverages are those the input check measured (`facts.measured`); no source or
-//! area is named here.
+//! its place's (crate::terrain_zoom: the finest of the declared datasets meeting it there, up to the
+//! first holding it whole, each by its cell); its pixel there is the spacing. The datasets' cells
+//! and coverages are those the input check measured (`facts.measured`); no source or area is named
+//! here.
 //!
 //! A cell is the point's degrees floored (west, south corner), half-open: a point on a cell's west
 //! or south edge is in that cell alone. A unit's key names, of the cells holding its ways' first
@@ -49,39 +47,39 @@ pub fn spacing_at(z: u8, lat: f64) -> f64 {
     super::generic::tile_resolution(z as u32, lat).max(FLOOR_M)
 }
 
-/// Where the terrain goes past its base: each 1° cell a dataset finer than the base has data in,
-/// with the finest zoom one takes the terrain to there (at the cell's poleward edge, as
-/// crate::terrain_deep reckons a tile's).
+/// The terrain's finest zoom by place (crate::terrain_zoom, at the poleward edge as a tile's is
+/// reckoned): by 1° latitude row (`rows`, south to north from −90°), that of the first dataset
+/// holding the world; and each 1° cell where a dataset before it meets the place and takes it
+/// finer (`cells`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Fine {
     pub cells: Vec<([i32; 2], u8)>,
+    #[serde(default)]
+    pub rows: Vec<u8>,
 }
 
 impl Fine {
     /// From the declared datasets with their coverages (agent::tiles::Elevation).
     pub fn of(ds: &[(Accepted, Cover)]) -> Fine {
-        let accepted: Vec<Accepted> = ds.iter().map(|(d, _)| d.clone()).collect();
-        let base = crate::terrain_deep::base_resolution(&accepted);
+        let poleward = |y: i32| (y as f64).abs().max((y as f64 + 1.0).abs());
         let mut cells: BTreeMap<[i32; 2], u8> = BTreeMap::new();
+        let mut rows: Vec<u8> = vec![0; 180];
         for (d, c) in ds {
-            let full = crate::terrain_deep::full_resolution(d);
-            if !(full < base * crate::terrain_deep::FINER) || c.world {
-                continue;
-            }
-            let pyramid = match &d.declaration.data {
-                super::declared::Data::Tiles { zoom, .. } => Some((*zoom).min(crate::terrain_deep::MAX_Z as u32) as u8),
-                super::declared::Data::Geotiff { .. } => None,
-            };
-            for &(x, y) in &c.cells {
-                let poleward = (y as f64).abs().max((y as f64 + 1.0).abs());
-                let z = pyramid.unwrap_or_else(|| crate::terrain_deep::zoom_for(full, poleward));
-                if z > crate::terrain_pack::max_zoom_at(poleward) {
-                    let e = cells.entry([x, y]).or_insert(z);
-                    *e = (*e).max(z);
+            let detail = crate::terrain_zoom::Detail::of(d);
+            if c.world {
+                for (r, z) in rows.iter_mut().enumerate() {
+                    *z = detail.zoom_at(poleward(r as i32 - 90)).min(crate::terrain_zoom::DEEPEST);
                 }
+                break;
+            }
+            for &(x, y) in &c.cells {
+                let z = detail.zoom_at(poleward(y)).min(crate::terrain_zoom::DEEPEST);
+                let e = cells.entry([x, y]).or_insert(z);
+                *e = (*e).max(z);
             }
         }
-        Fine { cells: cells.into_iter().collect() }
+        let f = Fine { cells: Vec::new(), rows };
+        Fine { cells: cells.into_iter().filter(|(c, z)| *z > f.row_zoom(c[1])).collect(), rows: f.rows }
     }
 
     /// From the declared datasets (`declared::accepted`).
@@ -96,12 +94,28 @@ impl Fine {
         self.cells.binary_search_by(|e| e.0.cmp(&c)).ok().map(|i| self.cells[i].1)
     }
 
+    /// The terrain's finest zoom in 1° cell `c`: its finer zoom, else its row's.
+    pub fn zoom_in(&self, c: [i32; 2]) -> u8 {
+        self.zoom(c).unwrap_or_else(|| self.row_zoom(c[1]))
+    }
+
+    /// The finest zoom of 1° latitude row `y` (its south edge, degrees) where no finer cell is.
+    pub fn row_zoom(&self, y: i32) -> u8 {
+        self.rows.get((y + 90).clamp(0, 179) as usize).copied().unwrap_or(0)
+    }
+
     /// What decides the spacing of ways whose first nodes are in `cells`, for a key: the finer
     /// zoom each of them has.
     pub fn key(&self, cells: &[[i32; 2]]) -> String {
         let fine: Vec<String> =
             cells.iter().filter_map(|&c| self.zoom(c).map(|z| format!("{},{} {z}", c[0], c[1]))).collect();
-        format!("spacing {} floor {FLOOR_M}", store::naming::hash16(fine.join(" ").as_bytes()))
+        let rows: std::collections::BTreeSet<i32> = cells.iter().map(|c| c[1]).collect();
+        let rows: Vec<String> = rows.into_iter().map(|y| format!("{y} {}", self.row_zoom(y))).collect();
+        format!(
+            "spacing {} rows {} floor {FLOOR_M}",
+            store::naming::hash16(fine.join(" ").as_bytes()),
+            store::naming::hash16(rows.join(" ").as_bytes())
+        )
     }
 
     /// From the declared datasets' accepted version the records name (`m`): an error before the
@@ -121,7 +135,8 @@ impl Fine {
     /// don't divide by cells (the links, rail and candidates) name in their keys.
     pub fn digest(&self) -> String {
         let cells: Vec<String> = self.cells.iter().map(|(c, z)| format!("{},{} {z}", c[0], c[1])).collect();
-        store::naming::hash16(format!("floor {FLOOR_M}|{}", cells.join(" ")).as_bytes())
+        let rows: Vec<String> = self.rows.iter().map(u8::to_string).collect();
+        store::naming::hash16(format!("floor {FLOOR_M}|{}|{}", cells.join(" "), rows.join(" ")).as_bytes())
     }
 
     pub fn write(&self, path: &Path) -> Result<()> {
@@ -168,8 +183,7 @@ pub fn key_line(inputs: &std::collections::BTreeMap<String, String>) -> Option<S
 impl Spacing for Fine {
     fn at(&self, p: [i32; 2]) -> f64 {
         let lat = p[1] as f64 * 1e-7;
-        let z = self.zoom(cell(p)).unwrap_or_else(|| crate::terrain_pack::max_zoom_at(lat));
-        spacing_at(z, lat)
+        spacing_at(self.zoom_in(cell(p)), lat)
     }
 }
 
@@ -217,20 +231,24 @@ mod tests {
             ds("ned", 10.3, None, Some(vec![[-100.0, 40.0, -99.0, 41.0]])),
             ds("glo30", 30.9, Some(1), None),
         ]);
-        assert_eq!(f.cells, vec![([-124, 48], 16), ([-123, 48], 16), ([-100, 40], 14)]);
+        // (Each cell's zoom its dataset's by the one rule, at its poleward edge: crate::terrain_zoom.)
+        let z = |cell: f64, lat: f64| crate::terrain_zoom::zoom_for(cell, lat);
+        let (lidar, ned) = (z(2.0, 49.0), z(10.3, 41.0));
+        assert_eq!(f.cells, vec![([-124, 48], lidar), ([-123, 48], lidar), ([-100, 40], ned)]);
         let e7 = |x: f64, y: f64| [(x * 1e7).round() as i32, (y * 1e7).round() as i32];
-        // (The lidar's z16 pixels are finer than the floor; 3DEP's z14 ~7 m; elsewhere z12's.)
-        assert_eq!(f.at(e7(-123.5, 48.5)), FLOOR_M);
-        assert!((f.at(e7(-99.5, 40.5)) - spacing_at(14, 40.5)).abs() < 1e-9 && f.at(e7(-99.5, 40.5)) > 7.0);
+        assert!((f.at(e7(-123.5, 48.5)) - spacing_at(lidar, 48.5).max(FLOOR_M)).abs() < 1e-9);
+        assert!((f.at(e7(-99.5, 40.5)) - spacing_at(ned, 40.5)).abs() < 1e-9);
+        // Elsewhere the worldwide dataset's zoom by row.
         let base = f.at(e7(10.5, 45.5));
-        assert!((base - spacing_at(12, 45.5)).abs() < 1e-9 && base > 26.0 && base < 28.0, "{base}");
+        assert!((base - spacing_at(z(30.9, 46.0), 45.5)).abs() < 1e-9, "{base}");
         // (A cell's west and south edges are its own; its east edge the next cell's.)
-        assert!(f.at(e7(-122.0, 48.5)) > 20.0);
-        assert_eq!(f.at(e7(-124.0, 48.0)), FLOOR_M);
-        // At high latitudes the base's zoom is coarser: z11's pixel past 67°.
-        assert!((f.at(e7(10.0, 70.5)) - spacing_at(11, 70.5)).abs() < 1e-9);
+        assert!((f.at(e7(-122.0, 48.5)) - spacing_at(z(30.9, 49.0), 48.5)).abs() < 1e-9);
+        assert!((f.at(e7(-124.0, 48.0)) - f.at(e7(-123.5, 48.5))).abs() < 1.0);
+        // At high latitudes its pixels are finer, so its zoom coarser.
+        assert!((f.at(e7(10.0, 70.5)) - spacing_at(z(30.9, 71.0), 70.5)).abs() < 1e-9);
+        assert!(z(30.9, 71.0) < z(30.9, 46.0));
         assert_eq!(cell(e7(-0.5, -0.5)), [-1, -1]);
-        // No dataset finer than the base: the base everywhere.
+        // One dataset holding the world alone: no finer cell.
         assert!(Fine::of(&[ds("glo30", 30.9, Some(1), None)]).cells.is_empty());
     }
 

@@ -212,9 +212,8 @@ impl Fetch for Stored<'_> {
 /// dataset's cover: terrain-hi's making `levels` (crate::terrain_pack::piece_levels: z9–12, the
 /// zooms the pool reads them at, crate::terrain_base::ROW_Z), the native tile under each pixel that
 /// isn't open sea in `water` (crate::terrain_base::open_sea, which spares those pixels the
-/// pyramids); and terrain-deep's, every native tile under its base tiles `deep`
-/// (crate::terrain_deep::base_want under each target): its presence grids read the whole of each,
-/// the sea too (the 404s over the sea most of what a deep run asked for that the store lacked).
+/// pyramids); and terrain-deep's, every native tile under the z12 tiles `deep` of each target
+/// (`deep_bases`), the sea too.
 pub fn want(
     plan: &Plan,
     water: &dyn crate::terrain_water::WaterSource,
@@ -274,21 +273,18 @@ pub fn want(
     Ok(out)
 }
 
-/// Z6 tile `t`'s terrain-deep targets' base tiles (crate::terrain_deep::targets_in, base_want), each
-/// under its own target: what `want` takes as `deep`.
+/// Z6 tile `t`'s terrain-deep targets' z12 tiles (crate::terrain_deep::targets_in), each whole: the
+/// native tiles under them are what those targets' deep tiles may read: what `want` takes as `deep`.
 pub fn deep_bases(
-    sets: &[crate::terrain_deep::FineSet],
+    sets: &[crate::terrain_zoom::Set],
     cov: &crate::coverage::Coverage,
     t: (u32, u32),
 ) -> Vec<(u8, u32, u32)> {
     use crate::terrain_deep as td;
+    let k = 12 - td::PACK_Z;
     td::targets_in(sets, cov, t)
         .into_iter()
-        .flat_map(|g| {
-            td::base_want(g)
-                .into_iter()
-                .filter(move |&(z, x, y)| z >= td::PACK_Z && (x >> (z - td::PACK_Z), y >> (z - td::PACK_Z)) == g)
-        })
+        .flat_map(|g| (0..1u32 << (2 * k)).map(move |i| (12, (g.0 << k) + i % (1 << k), (g.1 << k) + i / (1 << k))))
         .collect()
 }
 

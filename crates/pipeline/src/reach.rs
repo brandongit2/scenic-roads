@@ -507,7 +507,7 @@ mod tests {
         .unwrap();
         let half = 30.0 / (111_195.0 * 50.5f64.to_radians().cos());
         let road = LongWay { owned: true, ferry: false, verts: vec![e7(0.5 - half, 50.5), e7(0.5 + half, 50.5)] };
-        let fine = Fine { cells: vec![([0, 50], 16)] };
+        let fine = Fine { cells: vec![([0, 50], 16)], ..Default::default() };
         assert_eq!(fine.at(road.verts[0]), FLOOR_M);
         assert!(road.touches(&small, &fine));
         assert!(!road.touches(&small, &Fine::default()));
