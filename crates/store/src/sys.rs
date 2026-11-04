@@ -284,6 +284,54 @@ fn clone(src: &Path, dst: &Path) -> Option<u64> {
     std::fs::metadata(dst).ok().map(|m| m.len())
 }
 
+/// How many of file `path`'s bytes this Mac's page cache holds now (`mincore` over a mapping of
+/// it): a read of them is answered here, never by the file's server (a NAS file read again while
+/// its pages are kept: on 4 Nov a second copy of a 233 MB terrain pack took 0.05 s, and en0
+/// received 5 MB). 0 when it can't be told (any error, an empty file, another platform). The
+/// mapping is only asked about, never read: no page is brought in, so a share that drops meanwhile
+/// can't fault (crate::range: a NAS file's mapped pages are never touched).
+pub fn cached(path: &Path) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let Ok(f) = File::open(path) else { return 0 };
+        let len = match f.metadata() {
+            Ok(m) if m.len() > 0 => m.len(),
+            _ => return 0,
+        };
+        let Ok(n) = usize::try_from(len) else { return 0 };
+        // SAFETY: sysconf with a valid name.
+        let page = match unsafe { libc::sysconf(libc::_SC_PAGESIZE) } {
+            p if p > 0 => p as usize,
+            _ => return 0,
+        };
+        // SAFETY: a read-only shared mapping of `n` bytes of a descriptor we own, unmapped below
+        // and never dereferenced.
+        let a = unsafe { libc::mmap(std::ptr::null_mut(), n, libc::PROT_READ, libc::MAP_SHARED, f.as_raw_fd(), 0) };
+        if a == libc::MAP_FAILED {
+            return 0;
+        }
+        let mut v = vec![0u8; n.div_ceil(page)];
+        // SAFETY: `a` maps `n` bytes; `v` has a byte for each of its pages.
+        let ok = unsafe { libc::mincore(a, n, v.as_mut_ptr().cast()) } == 0;
+        // SAFETY: the mapping made above, `n` bytes long.
+        unsafe { libc::munmap(a, n) };
+        if !ok {
+            return 0;
+        }
+        // (The last page counts its bytes in the file alone.)
+        let pages = v.iter().filter(|&&b| b & 1 != 0).count() as u64;
+        let last = v.last().is_some_and(|&b| b & 1 != 0);
+        let tail = (page as u64 - len % page as u64) % page as u64;
+        (pages * page as u64).saturating_sub(if last { tail } else { 0 }).min(len)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        0
+    }
+}
+
 /// Whether an error means the network or the share itself is gone (what a soft mount returns once
 /// it gives up), as opposed to a problem with one file.
 pub fn is_disconnect(e: &io::Error) -> bool {
@@ -340,6 +388,21 @@ mod tests {
         assert_eq!(&b, b"2ab5");
         assert!(disk_free(d.path()).unwrap() > 0);
         assert!(hostname().is_some());
+    }
+
+    /// A file just written and read is in the page cache whole (its last page counting the
+    /// file's bytes alone); an empty or missing one counts none.
+    #[cfg(unix)]
+    #[test]
+    fn cached_counts_the_bytes_the_page_cache_holds() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, e) = (d.path().join("a"), d.path().join("empty"));
+        std::fs::write(&a, vec![7u8; 3 * 16384 + 5]).unwrap();
+        std::fs::read(&a).unwrap();
+        assert_eq!(cached(&a), 3 * 16384 + 5);
+        std::fs::write(&e, b"").unwrap();
+        assert_eq!(cached(&e), 0);
+        assert_eq!(cached(&d.path().join("missing")), 0);
     }
 
     #[test]

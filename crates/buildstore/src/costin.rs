@@ -5,7 +5,8 @@
 //! Keys (docs/formats.md, costs.jsonl): `bytes` (always: what the store's readers read for the
 //! target, store::nasio's `ReadBytes` and `Local`, its programs' added as each ends, plus the inputs a step opens itself and notes with `add`),
 //! `local` (of `bytes`, those read from this Mac's own disk, store::nasio's `Local`: a whole
-//! local copy's reads, task #551; not the NAS's, so not in its NAS weight),
+//! local copy's reads, task #551, and the part of a NAS file copied whole that this Mac's page
+//! cache held, task #939; not the NAS's, so not in its NAS weight),
 //! `threads` (always), `cpu_ms` (the CPU time its process took over it, where it can be read),
 //! `paused_ms` (the time its process was stopped over it, where it was: `stopped_ms`), `waited_ms`
 //! (the wall time over it in which the process waited on the NAS, the network, the disk or other

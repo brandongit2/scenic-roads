@@ -2,7 +2,8 @@
 //! build's `Out` through pipeline::costin::wrote, the metadata walks costin::meta notes: bytes read
 //! and written, files opened for reading, files made, folder entries listed, files statted and
 //! deleted), and beside it the bytes read from this Mac's own disk (`Local`: crate::range's mapped
-//! and local files, crate::cachefile's reads) and the GeoTIFFs opened. The one per-process counter
+//! and local files, crate::cachefile's reads, and the part of a NAS file copied whole that this
+//! Mac's page cache held, crate::nasfs) and the GeoTIFFs opened. The one per-process counter
 //! set: a build target's input measures (pipeline::costin) are its deltas.
 //!
 //! A job's processes count into files of their own on the agent's disk, so the agent sees a job's
@@ -53,7 +54,8 @@ pub enum Count {
     Listed = 4,
     Stats = 5,
     Deletes = 6,
-    /// Bytes read from this Mac's own disk.
+    /// Bytes read from this Mac's own disk, or from its page cache's copy of a NAS file copied
+    /// whole (crate::nasfs's copies, crate::sys::cached).
     Local = 7,
     /// GeoTIFFs opened.
     Tiffs = 8,

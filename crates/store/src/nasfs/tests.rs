@@ -129,6 +129,25 @@ fn every_operation_is_counted() {
     assert!(d(Count::Deletes) >= 1);
 }
 
+/// A file copied whole while this Mac's page cache holds it (one just written) counts as read
+/// here (`Local`), not from the NAS, task #939; the copy's file is counted as opened all the same.
+#[cfg(unix)]
+#[test]
+fn a_copy_the_page_cache_answers_is_read_here() {
+    let (d, r) = root();
+    let n = 3 << 20;
+    r.join("p.pack").write(vec![5u8; n]).unwrap();
+    std::fs::read(d.path().join("p.pack")).unwrap();
+    let to = d.path().join("copies");
+    std::fs::create_dir_all(&to).unwrap();
+    let at = nasio::own();
+    let grew = |c: Count| nasio::own()[c as usize] - at[c as usize];
+    assert_eq!(r.join("p.pack").copy_data_to_local(&to.join("a")).unwrap(), n as u64);
+    assert_eq!(r.join("p.pack").copy_to_local(&to.join("b")).unwrap(), n as u64);
+    assert!(grew(Count::Local) >= 2 * n as u64, "{} local", grew(Count::Local));
+    assert!(grew(Count::Files) >= 2);
+}
+
 /// A read the share fails for a moment is tried again; one that is missing fails at once.
 #[test]
 fn reads_ride_out_a_transient_error_and_missing_is_missing() {

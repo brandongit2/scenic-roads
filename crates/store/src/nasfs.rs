@@ -548,24 +548,26 @@ impl NasPath {
     }
 
     /// Copies it to local file `dst`, whole (crate::whole::copy: a temporary name, renamed). The
-    /// bytes copied, counted as a file read.
+    /// bytes copied, counted as a file read (`counted_copy`: what this Mac's cache held, not the NAS's).
     pub fn copy_to_local(&self, dst: &Path) -> Result<u64> {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
+        let held = crate::sys::cached(&p);
         let n = crate::whole::copy(&p, dst)?;
-        counted_read(&p, n, t);
+        counted_copy(&p, n, held, t);
         Ok(n)
     }
 
     /// Copies it to local file `dst` (crate::sys::copy_data: its bytes and mode, no temporary name).
-    /// Counted as a file read.
+    /// Counted as a file read (`counted_copy`: what this Mac's cache held, not the NAS's).
     pub fn copy_data_to_local(&self, dst: &Path) -> io::Result<u64> {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
+        let held = crate::sys::cached(&p);
         let n = crate::sys::copy_data(&p, dst)?;
-        counted_read(&p, n, t);
+        counted_copy(&p, n, held, t);
         Ok(n)
     }
 
@@ -706,13 +708,15 @@ impl NasPath {
         Ok(n)
     }
 
-    /// Copies it to `to` on the NAS (crate::sys::copy_data). Counted as a read and a file made.
+    /// Copies it to `to` on the NAS (crate::sys::copy_data). Counted as a read (`counted_copy`)
+    /// and a file made.
     pub fn copy_data_to(&self, to: &NasPath) -> io::Result<u64> {
         let _w = crate::waits::nas();
         let (p, q) = (self.full(), to.full());
         let t = Instant::now();
+        let held = crate::sys::cached(&p);
         let n = crate::sys::copy_data(&p, &q)?;
-        counted_read(&p, n, t);
+        counted_copy(&p, n, held, t);
         nasio::wrote(&q, n, ms_since(t));
         Ok(n)
     }
@@ -1018,6 +1022,19 @@ impl std::fmt::Display for Shown {
 fn counted_read(p: &Path, len: u64, t: Instant) {
     nasio::opened(p, len, ms_since(t));
     nasio::read(len);
+}
+
+/// `counted_read` for a file copied whole of which this Mac's page cache held `held` bytes as the
+/// copy began (crate::sys::cached): those were read here, not from the NAS (nasio's `Local`, so
+/// not in a job's NAS weight, task #939: a slope-deep job copied its z6 tile's 200 MB terrain pack
+/// once a target, every copy after the first answered by the cache in a second or less, and each
+/// target weighed past the whole NAS). Reads into memory (`read` and the like) aren't asked: most
+/// are of small files, where asking would be another open, a round trip of its own.
+fn counted_copy(p: &Path, len: u64, held: u64, t: Instant) {
+    let here = held.min(len);
+    nasio::opened(p, len, ms_since(t));
+    nasio::read(len - here);
+    nasio::add(nasio::Count::Local, here);
 }
 
 /// An open NAS file: reads through it are counted as they go; one written is counted as made, with
