@@ -935,6 +935,10 @@ mod tests {
             for _ in 0..3 {
                 assert_eq!(b.go().leads, None, "B never leads");
             }
+            // (A makes term 3, and takes it up once B's last save can't read stale: `STALE_S`.)
+            until(&mut [&mut a, &mut b], |m| m[1].run.side.driver().current().term == 3);
+            assert_eq!(a.go().leads, None, "waits");
+            pass_all(&mut [&mut b, &mut a], crate::pool::driver::STALE_S);
             until(&mut [&mut a, &mut b], |m| m[0].run.side.driver().leads() == Some(3));
             let t3 = b.run.side.driver().current().lead.clone().unwrap();
             assert_eq!((t3.member.as_str(), t3.how.as_str()), (ia.as_str(), "the declared lead, after b"));
