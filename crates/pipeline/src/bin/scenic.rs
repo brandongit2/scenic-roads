@@ -1339,6 +1339,11 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Lead(a)) => lead(&a),
         Some(Cmd::Agent { once, dry_run, places }) => {
+            // (Started again, in its place, without malloc's cache of freed large blocks, as its
+            // jobs are: store::spawn::without_large_cache, task #930.)
+            if let Err(e) = store::spawn::without_large_cache() {
+                eprintln!("agent: WARNING: can't start again without malloc's large cache ({e}): what it frees of large blocks stays in its footprint");
+            }
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             let o = Options {
                 home: home_or_default(&places.home),

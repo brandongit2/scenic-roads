@@ -820,9 +820,11 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   `started` lines in `SCENIC_COSTS`, else `SCENIC_DONE`), and writes `memory.json` for the status.
 - Every child started through `store::spawn` (the agent's jobs, their programs) is started without
   macOS malloc's cache of freed large blocks (`MallocLargeCache=0`, an undocumented libmalloc
-  setting, `store::spawn::NO_LARGE_CACHE`; their children inherit it; the agent and server, started
-  by launchd, keep it): with it, freed blocks stay in a
+  setting, `store::spawn::NO_LARGE_CACHE`; their children inherit it): with it, freed blocks stay in a
   process's footprint, and a dense z6 tile's scenic-build held 6–7 GB of them while its programs ran.
+  The agent, started by launchd with it, starts itself again in its place without it as it starts
+  (`store::spawn::without_large_cache`): the lead's held 1.5 GB of freed blocks after 18 h (3 Nov,
+  #930), and macOS 27's `malloc_zone_pressure_relief` gives none back. The map's server keeps it.
 - **Limit:** the Mac's memory less an eighth, 4 GB at least, less the agent's own footprint as measured each loop (`memguard::jobs_limit_mb`; the coordinator is told the same). Over it, the largest fitting alone,
   another job stops at its next safe point (`memguard::decide_by`): one that yields first, else the
   newest (by its start's minute), then the least progressed, never the largest; one at a time, and none more while the

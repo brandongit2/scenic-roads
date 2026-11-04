@@ -209,6 +209,27 @@ pub fn command_in(program: impl AsRef<OsStr>, path: &OsStr) -> Command {
 /// programs ran (measured on unit 6/17/24 and four other dense units). Its children inherit it.
 pub const NO_LARGE_CACHE: (&str, &str) = ("MallocLargeCache", "0");
 
+/// This process started again in its own place (exec: the same pid, program, arguments and
+/// environment) without macOS malloc's cache of freed large blocks (`NO_LARGE_CACHE`), unless it
+/// runs so already, for a process that lives long and frees large blocks as it goes (the agent:
+/// what it freed stayed in its footprint, 1.5 GB of the lead's after 18 h on 3 Nov, task #930;
+/// `malloc_zone_pressure_relief` gives none of it back on macOS 27). libmalloc reads the setting as
+/// the process starts, so it can't be set from within. Called before any thread starts or file
+/// opens. Returns only when it runs so already (Ok) or the exec failed (Err: it runs on as it is).
+pub fn without_large_cache() -> io::Result<()> {
+    if std::env::var_os(NO_LARGE_CACHE.0).is_some_and(|v| v == NO_LARGE_CACHE.1) {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let exe = std::env::current_exe()?;
+        Err(command(&exe).args(std::env::args_os().skip(1)).exec())
+    }
+    #[cfg(not(unix))]
+    Ok(())
+}
+
 /// `program`'s path: a name without a folder, the first executable file of that name in `path`'s
 /// absolute folders; else as given. (An empty or relative entry is passed over, never taken as
 /// the current folder: a program is started by an absolute path.)
@@ -413,6 +434,41 @@ mod tests {
     fn children_run_without_the_large_cache() {
         let o = output(command("/bin/sh").args(["-c", "/usr/bin/printenv MallocLargeCache"])).unwrap();
         assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), NO_LARGE_CACHE.1);
+    }
+
+    /// A process started with the large cache starts itself again without it, in its own place
+    /// (the same pid), its arguments kept; one started without it goes on (task #930).
+    #[test]
+    fn a_process_starts_itself_again_without_the_large_cache() {
+        const CHILD: &str = "SCENIC_TEST_WITHOUT_LARGE_CACHE";
+        if std::env::var_os(CHILD).is_some() {
+            use std::io::Write;
+            println!("before {} {:?}", std::process::id(), std::env::var(NO_LARGE_CACHE.0).ok());
+            std::io::stdout().flush().unwrap();
+            without_large_cache().unwrap();
+            println!("after {} {:?}", std::process::id(), std::env::var(NO_LARGE_CACHE.0).ok());
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let name = "spawn::tests::a_process_starts_itself_again_without_the_large_cache";
+        let mut c = command(&exe);
+        c.args([name, "--exact", "--nocapture", "--test-threads=1"]).env(CHILD, "1").env_remove(NO_LARGE_CACHE.0);
+        let o = output(&mut c).unwrap();
+        let out = String::from_utf8_lossy(&o.stdout);
+        // (Each after the harness's "test … ... " where it starts a line.)
+        let lines: Vec<&str> =
+            out.lines().filter_map(|l| l.find("before ").or_else(|| l.find("after ")).map(|i| &l[i..])).collect();
+        let pid = lines.first().and_then(|l| l.split(' ').nth(1)).unwrap_or("?").to_string();
+        assert_eq!(
+            lines,
+            [
+                format!("before {pid} None"),
+                format!("before {pid} Some({:?})", NO_LARGE_CACHE.1),
+                format!("after {pid} Some({:?})", NO_LARGE_CACHE.1)
+            ],
+            "{out}"
+        );
+        assert!(o.status.success(), "{out}");
     }
 
     /// Whether a child started by `spawn` holds descriptor `fd` (its `/dev/fd`).
