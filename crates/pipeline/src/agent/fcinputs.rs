@@ -57,11 +57,13 @@ pub struct Batch {
     pending: Vec<(Given, u64)>,
     since: Option<Instant>,
     failed: Option<Instant>,
+    /// `FLUSH` (a test's shorter).
+    flush_after: Duration,
 }
 
 impl Batch {
     pub fn new(root: store::nasfs::NasRoot) -> Batch {
-        Batch { root, last: None, pending: Vec::new(), since: None, failed: None }
+        Batch { root, last: None, pending: Vec::new(), since: None, failed: None, flush_after: FLUSH }
     }
 
     /// `g` kept unless one was taken within `EVERY_S` before it (or its bytes don't read).
@@ -95,14 +97,14 @@ impl Batch {
     /// The time until it's due (`FLUSH` with none waiting).
     pub fn wait(&self) -> Duration {
         let from = self.since.max(self.failed);
-        from.map_or(FLUSH, |t| FLUSH.saturating_sub(t.elapsed()))
+        from.map_or(self.flush_after, |t| self.flush_after.saturating_sub(t.elapsed()))
     }
 
     /// Whether its frame is to be written now.
     pub fn due(&self) -> bool {
         !self.pending.is_empty()
-            && self.failed.is_none_or(|t| t.elapsed() >= FLUSH)
-            && (self.raw() >= FRAME_RAW || self.since.is_some_and(|t| t.elapsed() >= FLUSH))
+            && self.failed.is_none_or(|t| t.elapsed() >= self.flush_after)
+            && (self.raw() >= FRAME_RAW || self.since.is_some_and(|t| t.elapsed() >= self.flush_after))
     }
 
     /// The inputs waiting appended, a frame a day's; those not written kept for the next.
@@ -399,8 +401,7 @@ mod tests {
         assert!(b.wait() > Duration::from_secs(EVERY_S));
         // Its folder back: written once due.
         std::fs::remove_file(d.path().join(DIR)).unwrap();
-        b.failed = Some(Instant::now() - FLUSH);
-        b.since = Some(Instant::now() - FLUSH);
+        b.flush_after = Duration::ZERO;
         assert!(b.due());
         b.flush();
         assert!(b.pending.is_empty() && b.failed.is_none());
