@@ -11717,7 +11717,13 @@ mod tests {
         );
         assert!(a.slots[1].running.is_some());
         std::fs::remove_file(a.waiting_path(0)).unwrap();
+        // (The pressure at warning with the Mac above its floor: no new work, but it isn't stopped
+        // for that alone (task #932 review); below its floor (7 and 6 GB, past the 12 GB room),
+        // it is, at once.)
         a.sampler.set_test(Some(vec![Some(3 << 10), Some(3 << 10)]), Some(true));
+        a.sampler.tick();
+        assert!(!a.guard() && a.slots[1].running.is_some());
+        a.sampler.set_test(Some(vec![Some(7 << 10), Some(6 << 10)]), Some(true));
         a.sampler.tick();
         assert!(a.guard() && a.slots[1].running.is_none());
         // Its mark tied to the job it yields to: a job in the second slot marked for a job no
