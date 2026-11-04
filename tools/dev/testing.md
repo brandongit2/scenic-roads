@@ -91,8 +91,8 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
 - A long hold is reported, never killed (#941): each cargo letting go appends its hold's seconds to
   `<shared folder>/.scenic-holds` (the last 100). Once the holder has held the folder longer than
   nine holds in ten of those (from the first line when none are recorded), and again each time its
-  hold doubles, the waiting line adds `cargo: the folder has been held N s (…): <holder>`, then
-  the holder's process tree (pid, `%cpu`, CPU time, command) and `using CPU: N%` or `using no CPU:
+  hold doubles, the waiting line adds `cargo: the folder has been held N s (…); its holder, pid
+  P:`, then the holder's process tree (pid, `%cpu`, CPU time, command) and `using CPU: N%` or `using no CPU:
   it may be stuck`. Third-party crates compile in sccache's server, outside that tree. A stuck
   holder is for whoever owns it to kill (by its pid: the shim passes the signal on).
 - Programs and tests run outside the lock (#937): `cargo run`, `test` and `bench` build under it

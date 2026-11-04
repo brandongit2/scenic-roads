@@ -253,7 +253,7 @@ waiter next; until_in $s/next.err 'place 1 in line'
 print '0 build' > $s/shared/.scenic-holds
 hold $s/let3
 waiter report; until_in $s/report.err 'using (no )?CPU'
-grep -q "the folder has been held [0-9]* s (9 holds in 10 of the last 1 took ≤ 0 s): test pid $holding " $s/report.err || fail "no report line: $(cat $s/report.err)"
+grep -q "the folder has been held [0-9]* s (9 holds in 10 of the last 1 took ≤ 0 s); its holder, pid $holding:\$" $s/report.err || fail "no report line: $(cat $s/report.err)"
 grep -qE "^ +$holding [0-9.]+% cpu, .*cpu time: " $s/report.err || fail "the holder's process not shown: $(cat $s/report.err)"
 : > $s/let3; wait $holding; wait $waiting || fail "the reported waiter: $(cat $s/report.err)"
 (( $(wc -l < $s/shared/.scenic-holds) == 2 )) || fail "the hold not recorded: $(cat $s/shared/.scenic-holds)"

@@ -174,10 +174,11 @@ holdtimes() {
 report() {  # report <holder line> <its age, s>
   local p pid ppid c tm rest ind; local -A kids desc; local -F sum=0
   local of="no holds recorded yet"; (( nholds )) && of="9 holds in 10 of the last $nholds took ≤ $thr s"
-  say "cargo: the folder has been held $2 s ($of): $1"
   [[ $1 =~ ' pid ([0-9]+) ' ]] && p=$match[1]
+  # (The holder's line is the waiting line's, just before.)
+  say "cargo: the folder has been held $2 s ($of); its holder, pid ${p:-(none)}:"
   if [[ -z $p ]] || ! kill -0 $p 2>/dev/null; then
-    say "  its pid ${p:-(none)} is gone: what holds the lock didn't say who it is"; return
+    say "  is gone: what holds the lock didn't say who it is"; return
   fi
   ps -A -o pid=,ppid=,%cpu=,time=,command= | while read -r pid ppid c tm rest; do
     kids[$ppid]+=" $pid"; desc[$pid]="$c% cpu, $tm cpu time: $rest"
