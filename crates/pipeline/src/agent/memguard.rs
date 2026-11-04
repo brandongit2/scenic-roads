@@ -1205,6 +1205,49 @@ mod tests {
         assert_eq!(decide_by(&held, r.room_mb(), &no, &no, &[1, 2, 3, 4, 5]), Act::Drain(4));
     }
 
+    /// Another process grows (Chrome, Docker's VM) while the jobs hold steady: the Mac falls below
+    /// its floor, the newest job is given back; once it's gone the Mac is above the floor again, but
+    /// no new job starts while the other process's swing (the margin) could take it back under.
+    #[test]
+    fn another_process_growing_gives_a_job_back_and_holds_new_work_past_its_swing() {
+        let s = Sampler::new(2);
+        s.set(6 * GB, 48 * GB);
+        for k in 0..2 {
+            s.watch(k, Watch { pgid: 999_990 + k as i32, ..Default::default() });
+        }
+        let no = [false; 2];
+        let rank = [1, 2];
+        // (The jobs hold 5 and 3 GB; 10 GB available: 12 GB of room, nothing to do.)
+        s.set_test(Some(vec![Some(5 * GB), Some(3 * GB)]), Some(false));
+        s.set_test_mem(Some(10 * GB), Some(0));
+        s.tick();
+        let r = s.reading().unwrap();
+        assert!(!r.below() && r.held_back().is_none());
+        assert_eq!(decide_by(&[Some(5 * GB), Some(3 * GB)], r.room_mb(), &no, &no, &rank), Act::Nothing);
+        // (Another process takes 6 GB: 4 available, under the 6 GB floor; the jobs past their
+        // room, 6 GB: the newest is given back at its next safe point, not the largest.)
+        s.set_test_mem(Some(4 * GB), Some(0));
+        s.tick();
+        let r = s.reading().unwrap();
+        assert!(r.below() && r.brake().is_none(), "{r:?}");
+        assert_eq!(r.short_words(), "this Mac has 4.0 GB available, below its 6.0 GB floor");
+        assert_eq!(decide_by(&[Some(5 * GB), Some(3 * GB)], r.room_mb(), &no, &no, &rank), Act::Drain(1));
+        // (It ends: 7 GB available, above the floor, so nothing more is given back; but the other
+        // process swung 6 GB in the window, so no new job starts until 12 GB are available.)
+        s.unwatch(1);
+        s.set_test(Some(vec![Some(5 * GB), None]), Some(false));
+        s.set_test_mem(Some(7 * GB), Some(0));
+        s.tick();
+        let r = s.reading().unwrap();
+        assert!(!r.below() && r.margin_mb == 6 * GB, "{r:?}");
+        assert_eq!(decide_by(&[Some(5 * GB), None], r.room_mb(), &no, &no, &rank), Act::Nothing);
+        assert_eq!(
+            r.held_back().as_deref(),
+            Some("7.0 GB of memory available, under the 6.0 GB floor and its 6.0 GB margin")
+        );
+        assert_eq!(r.admit_mb(), 0);
+    }
+
     #[test]
     fn decisions_by_measure_alone() {
         let l = 42 << 10;
