@@ -392,7 +392,8 @@ pub fn near_coverage(cov: &Coverage, z: u8, x: u32, y: u32, km: f64) -> bool {
 pub struct ManifestTiles {
     layer: String,
     /// The layer's packs as the manifest named them when it was made (logical → file): its own,
-    /// so the job may write packs while it reads (slope_pack::build_q_with).
+    /// so the job may write packs while it reads (a slope run writing its own while it reads the
+    /// terrain's).
     files: HashMap<String, store::nasfs::NasPath>,
     open: Mutex<HashMap<String, Option<std::sync::Arc<OpenPack>>>>,
     /// Where a pack read tile by tile throughout is copied whole and read from then on
@@ -1871,7 +1872,7 @@ fn saying<T>(
 /// which its z3 tile's assembly reads (`build_lo`). A z6 tile the coverage has left (not near it: no
 /// z6 tile) has its hi pack and mid dropped instead (`drop_piece`). `expect_same`: a z6 tile made again
 /// as it is (its mid made), whose hi pack must come out as the manifest has it (none where it has
-/// none), else an error and nothing uploaded. Says how far it is as `build_q_with` does.
+/// none), else an error and nothing uploaded. Says how far it is (`saying`: its tiles, then "packs").
 #[allow(clippy::too_many_arguments)]
 pub fn build_piece(
     out: &mut Out,
@@ -2061,7 +2062,7 @@ pub(crate) fn build_piece_kept(
 /// Makes z3 tile `q`'s zoomed-out terrain (an assembly: its levels z8 → z3, the whole of it) from
 /// its z6 tiles' mids (`ts`: its z6 tiles near the coverage, in column then row order, each with its
 /// mid in the manifest), and uploads its lo pack (none when it made no tile: the manifest's then
-/// dropped). Says how far it is as `build_q_with` does.
+/// dropped). Says how far it is (`saying`: its tiles, then "packs").
 pub fn build_lo(
     out: &mut Out,
     raw: &dyn RawSource,

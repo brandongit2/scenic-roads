@@ -18,24 +18,17 @@
 //!                                written to the NAS, snapshotted around each step's program (for
 //!                                tools/check/same.py)
 //!   roadunits                    the road → z6 tiles index from the z6 tiles' road ids
-//!   terrain-hi [T …] [--regions dir] [--pass d] [--raw dir] [--expect-same T,…]  the terrain from
-//!                                the elevation pool (AWS's raw tiles cached in --raw) and the
-//!                                basemap's water: of z6 tiles T near the coverage (z6 tiles: each
-//!                                one's hi pack, z9–12, its deep z12 north of 67° among them, and
-//!                                its mid; --expect-same, those made again as the manifest has them,
-//!                                else it fails, uploading nothing), or of z3 tiles' whole (default:
-//!                                all of them; by hand, and a lease of the scheme before extracts);
-//!                                --z6 tiles-of Q,…: every z6 tile of z3 tiles Q
-//!   terrain-deep <10/x/y …> [--raw dir]  z10 tiles' deep levels (deep packs, z13–16, where a
-//!                                declared elevation dataset is finer than the base), from the
-//!                                base made from the elevation pool and the water as terrain-hi
-//!                                makes it; one with none now has its deep pack dropped
+//!   terrain-hi [T …] [--regions dir] [--pass d] [--raw dir] [--expect-same T,…]  the terrain of
+//!                                z6 tiles T (or --pieces-of Q,…: every z6 tile of z3 tiles Q) by
+//!                                the one pyramid's rule (pipeline::terrain_pack): each one's hi
+//!                                pack, z9–12, its z10 tiles' deep mids taken in, and its mid;
+//!                                --expect-same, those made again as the manifest has them, else it
+//!                                fails, uploading nothing
+//!   terrain-deep <10/x/y …> [--raw dir]  z10 tiles' terrain past z12 (deep packs, z13–16) by the
+//!                                same rule, and their mids; one with none now has its deep pack
+//!                                and mid dropped
 //!   terrain-lo <Q …> [--raw dir]  z3 tiles Q's zoomed-out terrain (lo packs, z3–8) from their
-//!                                z6 tiles' mids
-//!   terrain-deep-same [10/x/y …] [--of 6/x/y] [--hashes file]  deep targets made as their jobs
-//!                                make them, their packs in the scratch folder only, their content
-//!                                names beside the manifest's and their times (nothing written to
-//!                                the NAS); --hashes, each deep tile's digest
+//!                                z6 tiles' mids and the relief
 //!   slope-hi [T …] [--regions dir] [--expect-same T,…]  the shading from the terrain packs: of z6
 //!                                tiles T (each one's hi pack, z9–12, its z10 tiles' deep mids taken
 //!                                in, and its mid), or of z3 tiles' whole, their deep levels, z6

@@ -1478,8 +1478,7 @@ pub fn piece_water_from(fp: &str) -> String {
 /// of its levels it makes (crate::terrain_pack::piece_levels, each z9–12 tile within 20 km of
 /// it), digested. Not the coverage's rings near it (`Coverage::fingerprint`): a region's outline
 /// moved, an islet dropped or added, that leaves the same tiles near it changes nothing the run
-/// reads, so it rebuilds nothing. Its deep levels' reads of it are crate::terrain_deep's
-/// (`piece_key_lines`, `targets_in`: near the coverage by tile too).
+/// reads, so it rebuilds nothing. A terrain-deep target's are its levels' (`deep_coverage`).
 pub fn piece_coverage(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> String {
     levels_digest(&crate::terrain_pack::piece_levels(cov, sets, t))
 }

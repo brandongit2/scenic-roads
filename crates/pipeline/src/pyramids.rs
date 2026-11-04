@@ -9,7 +9,7 @@
 //! host and path, so a layer moved to another URL is stored afresh). Filled by the pool's
 //! `pyramids-fill` step, the lead's (task #810), by z6 tile (`fill`): a z6 tile's tiles (`want`,
 //! those its terrain-hi run reads: the native tiles under the pixels of its z9–12 tiles that aren't
-//! open sea; and its terrain-deep targets', all under their base tiles, `deep_bases`), fetched once
+//! open sea; and its terrain-deep targets', all under their z12 tiles, `deep_bases`), fetched once
 //! each with the build's fetcher (its User-Agent, its per-host limit), then packed and their
 //! archives handed off as the store's (crate::rawpack::handed_place), the lead naming them in the
 //! store's index as it names AWS's; each z6 tile starts only while the NAS has more room past the
@@ -32,8 +32,9 @@ use store::sys::PosIo;
 pub const DIR: &str = crate::rawpack::PYRAMIDS;
 
 /// The fill's version, in its key: bumped with any change to
-/// which tiles a z6 tile wants (`want`, `deep_bases`) or how they're stored.
-pub const V: u32 = 1;
+/// which tiles a z6 tile wants (`want`, `deep_bases`) or how they're stored (2: a deep target's
+/// z12 tiles, task #929).
+pub const V: u32 = 2;
 
 /// The archives' metadata (crate::rawpack::Packer::for_pyramid).
 const META: &str = r#"{"kind":"elevation pyramid tiles"}"#;
