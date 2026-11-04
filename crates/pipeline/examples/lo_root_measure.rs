@@ -1,7 +1,12 @@
 //! Terrain-root's and an assembly's time and peak footprint by the rule (task #929), on the build's
 //! real records, writing nothing but the Terrarium tiles' local cache: the root from the lo packs'
 //! z3 tiles and the relief (pipeline::terrain_pack::make_root), then z3 tile `q`'s z8 → z3 with no
-//! z6 tile's mid (every quarter the relief's: an assembly's most reading), under a footprint guard.
+//! z6 tile's mid (its quarters outside every region the relief's, an assembly's most reading), under
+//! a footprint guard. Its count of the assembly's tiles is not an assembly's: a quarter inside a
+//! region is its children's and, with no mid given, void (a tile of only those is none), and the
+//! relief has no tile over the deep sea (heights under crate::dem::sample::NODATA_BELOW are none,
+//! as the lo packs before it had none there). 3/2/2, 4 Nov: 511 of 1,365, against 1,204 in its lo
+//! pack (749 of its tiles wholly in regions; 161 of those wholly outside them absent there too).
 //!
 //! usage: cargo run -p pipeline --example lo_root_measure -- <root> <raw cache dir> <max MB> <3/x/y>
 
