@@ -1,5 +1,5 @@
 // The owner's settings on the build page (the Machines tab; docs/workers.md §7): this page's Mac's
-// in-use share, build memory and disk room target, a block per Mac, each set on that
+// in-use share, memory floor and disk room target, a block per Mac, each set on that
 // Mac, and the pool's NAS reserve. Read and set through
 // `/work/settings`, which sets each through the same function as its `scenic` command
 // (`scenic in-use`, `memory`, `room`, `nas-room`). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
@@ -166,10 +166,10 @@ export function macRows(s) {
       note: `kept free of the build's jobs while the Mac is used${s.in_use.set ? by(s.in_use) : ` (the default, ${s.in_use.default})`}`,
       input: { min: 0, max: s.in_use.of - 1, step: 1, placeholder: "cores", offTitle: "Back to the default" },
     })),
-    guarded("memory", "Build memory", () => ({
+    guarded("memory", "Memory floor", () => ({
       now: gb(s.memory.mb * 2 ** 20),
-      note: `for the build's jobs together, of ${gb(s.memory.total_mb * 2 ** 20)}${s.memory.set ? by(s.memory) : " (the memory guard's limit)"}`,
-      input: { min: 1, max: Math.floor(s.memory.total_mb / 1024) || null, step: 0.5, placeholder: "GB", offTitle: "The memory guard's limit alone" },
+      note: `kept available on ${s.mac || "this Mac"} whatever runs on it, of ${gb(s.memory.total_mb * 2 ** 20)}: jobs start only above it and are given back below it${s.memory.set ? by(s.memory) : " (the default, an eighth)"}`,
+      input: { min: 1, max: s.memory.total_mb ? Math.ceil(s.memory.total_mb / 1024) - 1 : null, step: 0.5, placeholder: "GB", offTitle: `Back to the default (${gb(s.memory.default_mb * 2 ** 20)})` },
     })),
     guarded("room", "Disk room target", () => ({
       now: s.room.bytes ? gb(s.room.bytes) : "off",

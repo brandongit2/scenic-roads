@@ -7,7 +7,7 @@
 // (the jobs' NAS reads and writes, the internet in and out, each with a second line on its own scale:
 // files opened, files made, the proxy's requests a second), then a chart a measure: CPU use (the
 // build's and the rest's, stacked, against its cores and the build's limit), the load, memory (the
-// build's and the rest's against the build's limit), its pressure, the swap, the disk's free space
+// build's and the rest's in use against the memory floor: past the line the Mac is below it), its pressure, the swap, the disk's free space
 // (against the room target) and writes, the battery (shaded on mains), the NAS's answer time and
 // calls, its heat (macOS's thermal state), and whether the owner is using it; and a footer saying the range, its resolution and how
 // long the Mac was silent in it (the charts' gaps). A measure missing is said so, never zero.
@@ -19,8 +19,8 @@ const EVERY_MS = 1500;
 // How old a reading of the agent's loop (power, idleness, limits) may be and still be said.
 const LOOP_FRESH_S = 900;
 const SERIES = ["nas_read_mbs", "nas_write_mbs", "net_in_mbs", "net_out_mbs", "nas_files_s", "nas_creates_s", "net_req_s", "build_cores", "others_cores", "cores_busy", "cores_busy_e", "cores_busy_p", "load1",
-  "mem_free_pct", "mem_pressure", "mem_compressed_gb", "thermal", "swap_mb", "build_mem_gb", "others_mem_gb", "disk_free_gb", "disk_size_gb", "disk_write_mbs", "battery_pct", "ac", "idle_s",
-  "build_cores_max", "build_mem_max_gb", "disk_room_gb", "disk_reserved_gb", "nas_ms", "nas_calls", "nas_missed", "jobs",
+  "mem_free_pct", "mem_avail_gb", "mem_pressure", "mem_compressed_gb", "thermal", "swap_mb", "build_mem_gb", "others_mem_gb", "disk_free_gb", "disk_size_gb", "disk_write_mbs", "battery_pct", "ac", "idle_s",
+  "build_cores_max", "mem_floor_gb", "disk_room_gb", "disk_reserved_gb", "nas_ms", "nas_calls", "nas_missed", "jobs",
   // (The lead's alone, summed over the pool; missing from the others' answers: nas.js.)
   "pool_nas_read_mbs", "pool_nas_write_mbs", "pool_nas_files_s", "pool_nas_creates_s", "pool_nas_listed_s", "pool_nas_stats_s",
   "pool_nas_calls", "pool_nas_missed", "pool_nas_threads", "nas_disk_busy_pct"];
@@ -174,7 +174,7 @@ function build() {
     root, said, body, bars, nowV, ioRows,
     cpu: row(vit, "cpu use", "Cores busy, summed over every core, stacked: the build's jobs (blue) and everything else (grey). Dashed: the Mac's cores, and the cores the build may use now (fewer while the owner uses the Mac)."),
     load: row(vit, "CPU load", "Threads ready to run, averaged over a minute. Above the dashed line (the core count), work waits for a core."),
-    mem: row(vit, "memory", "RAM in use, stacked: the build's jobs (blue) and every other process (grey). Dashed: the memory the build's jobs may hold together."),
+    mem: row(vit, "memory", "RAM in use (the Mac's less what's available: free pages, the file cache and purgeable memory), stacked: the build's jobs (blue) and every other process (grey). Dashed: the memory floor, the memory kept available; use past it puts the Mac below the floor, and the build gives jobs back."),
     press: row(vit, "memory pressure", "100 % less macOS's memory-free percentage (kern.memorystatus_level); the line's colour is macOS's pressure level. Dashed: 50 % and 80 %."),
     swap: row(vit, "swap used", "Memory macOS has written out to disk. Rising swap means jobs slow down."),
     disk: row(vit, "disk free", "Free space on the Mac's disk. Dashed: the owner's room target; below it the disk guard freezes the fastest-growing job."),
@@ -300,13 +300,16 @@ function paint(host) {
   draw(b.load.c, { ...base, unit: "", least: n ? 2 * n : 0, refs: n ? [{ v: n, label: `${n} cores` }] : [], series: [{ points: s.load1, colour: n && load > n ? warn : acc, label: "load" }] });
   words(b.load.v, load == null ? ["not measured"] : [`load ${fmt(load)}`, n ? (load > n ? `${fmt(load - n)} waiting for a core` : "no queue") : ""], n && load > 2 * n ? "warn" : "");
 
-  // Memory: the build's and the rest's (GB), stacked, against the Mac's and the build's limit.
-  const memGb = mac.mem_gb, memLim = held("memory", loop("build_mem_max_gb"), s.build_mem_max_gb);
-  draw(b.mem.c, { ...base, unit: "GB", stacked: true, max: memGb || undefined, refs: memLim != null ? [{ v: memLim, label: `build's memory: ${fmt(memLim, "GB")}`, edit: edit("memory", { title: "Build memory", note: `The memory ${host} gives the build's jobs together. Off: the memory guard's limit alone.`, unit: "GB", min: 1, max: Math.floor(memGb || 1), step: 1, label: (v) => `build's memory: ${fmt(v, "GB")}` }) }] : [],
+  // Memory in use: the build's and the rest's (GB), stacked, against the Mac's memory less its
+  // floor (the line: use past it leaves less than the floor available); dragged, it sets the floor.
+  const memGb = mac.mem_gb, floor = loop("mem_floor_gb");
+  const line = held("memory", memGb && floor != null ? memGb - floor : null, s.mem_floor_gb);
+  draw(b.mem.c, { ...base, unit: "GB", stacked: true, max: memGb || undefined, refs: line != null ? [{ v: line, label: `floor: ${fmt(memGb - line, "GB")} kept available`, edit: edit("memory", { title: "Memory floor", note: `The memory ${host} keeps available whatever runs on it: jobs start only above it and are given back below it. Off: its default.`, unit: "GB", min: 1, max: Math.floor(memGb || 1) - 1, step: 1, label: (v) => `floor: ${fmt(memGb - v, "GB")} kept available`, body: (v) => (v === "off" ? v : memGb - v) }) }] : [],
     series: [{ points: s.build_mem_gb, colour: acc, label: "build", unit: "GB" }, { points: s.others_mem_gb, colour: dim, label: "other", unit: "GB" }] });
+  const avail = at("mem_avail_gb");
+  words(b.mem.v, avail == null ? ["not measured"] : [`${memGb ? `${fmt(memGb - avail, "GB")} of ${fmt(memGb, "GB")} used · ` : ""}${fmt(avail, "GB")} available`,
+    [acc, `build's jobs ${fmt(at("build_mem_gb"), "GB")}`], [dim, `other apps ${fmt(at("others_mem_gb"), "GB")}`], floor != null ? `floor ${fmt(floor, "GB")}` : ""], floor != null && avail < floor ? "warn" : "");
   const free = at("mem_free_pct");
-  words(b.mem.v, free == null ? ["not measured"] : [`${memGb ? fmt(memGb * (100 - free) / 100, "GB") : fmt(100 - free, "%")}${memGb ? ` of ${fmt(memGb, "GB")}` : ""} used`,
-    [acc, `build's jobs ${fmt(at("build_mem_gb"), "GB")}`], [dim, `other apps ${fmt(at("others_mem_gb"), "GB")}`], memGb ? `free ${fmt(memGb * free / 100, "GB")}` : ""]);
 
   // Pressure: 100 % less memory free, coloured by macOS's level then.
   const used = (s.mem_free_pct || []).map((p) => [p[0], 100 - p[3], 100 - p[2], 100 - p[1]]);

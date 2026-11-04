@@ -102,6 +102,24 @@
     "loop_age_s": 400,
     "loop_phase": "the pool's round",
     "loop_stuck_s": 300,
+    "memory": {
+      "brake": "macOS's memory pressure is at warning",
+      "floor_set": false,
+      "held_back": "the memory brake: macOS's memory pressure is at warning",
+      "held_mb": 9216,
+      "new_mb": 0,
+      "on": true,
+      "reading": {
+        "avail_mb": 5120,
+        "floor_mb": 6144,
+        "held_mb": 9216,
+        "margin_mb": 0,
+        "pressure": 2,
+        "swap_grown_mb": 0
+      },
+      "reserved_mb": 2048,
+      "said": "Memory brake: macOS's memory pressure is at warning. Memory: 5.0 GB available, floor 6.0 GB (default); the jobs hold 9.0 GB, 2.0 GB more reserved for their growth"
+    },
     "out_of_touch_s": 600,
     "pid": 0,
     "recent": [],

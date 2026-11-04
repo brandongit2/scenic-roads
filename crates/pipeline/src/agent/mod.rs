@@ -939,8 +939,8 @@ pub struct Status {
     /// This Mac in the pool, while it's on (docs/pool.md §12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<PoolView>,
-    /// The memory guard (crate::agent::memguard): its switch, this Mac's limit, what the jobs hold
-    /// now, what it last did.
+    /// The memory guard (crate::agent::memguard::View): this Mac's memory against its floor, what
+    /// the jobs hold and have reserved, why no job starts, the brake, what it last did, in a line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<memguard::View>,
     /// The lead's slots' ramp (docs/pool.md §7.1): the slots it may run, why they're held, and

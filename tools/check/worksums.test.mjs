@@ -360,7 +360,7 @@ test('regions: a virtual list\'s window', () => {
 
 test('settings: an answer lacking a setting shows "not set" for it alone, the others as said', async () => {
   const { macRows, poolRows } = await import('../../web/work/settings.js');
-  const live = { mac: 'm1', in_use: { cores: 2, of: 10, set: false, default: 2 }, memory: { mb: 10240, total_mb: 16384, set: true, by: 'x' }, room: { bytes: null, free: null, disk: null } };
+  const live = { mac: 'm1', in_use: { cores: 2, of: 10, set: false, default: 2 }, memory: { mb: 10240, default_mb: 2048, total_mb: 16384, set: true, by: 'x' }, room: { bytes: null, free: null, disk: null } };
   assert.deepEqual(macRows(live).map((r) => r.now), ['2 of 10 cores', '10.0 GB', 'off']);
   assert.ok(macRows(live).every((r) => r.input));
   const rows = macRows({ mac: 'm1', memory: live.memory });

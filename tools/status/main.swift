@@ -10,7 +10,8 @@
 // from its file, says what its build caches hold, whether they can be cleared now,
 // and the last clears (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
 // that agent to clear what later jobs copy back cheaply from the NAS, Clear Caches Deeply that
-// and what's costly to make again, at any moment. (The disk room target and the build's memory are set on the build page.) With
+// and what's costly to make again, at any moment; and this Mac's memory against its floor, as its agent says it (the brake
+// first when it's on). (The disk room target and the memory floor are set on the build page.) With
 // the pool on (docs/pool.md §11), its agent's view of the pool: who leads (the Mac mini, the fixed
 // lead: no item moves it), each Mac and its state.
 //
@@ -249,12 +250,14 @@ struct Own: Decodable {
     /// This Mac's own pause's stage and the out-of-touch threshold (task #846).
     let hold: HoldStage?
     let out_of_touch_s: Int?
+    /// This Mac's memory against its floor, as its agent says it (task #932).
+    let memory: OwnMemory?
 
-    init(host: String, app: String? = nil, beat: Int, caches: Caches?, pool: OwnPool?, hold: HoldStage?, out_of_touch_s: Int?) {
-        (self.host, self.app, self.beat, self.caches, self.pool, self.hold, self.out_of_touch_s) = (host, app, beat, caches, pool, hold, out_of_touch_s)
+    init(host: String, app: String? = nil, beat: Int, caches: Caches?, pool: OwnPool?, hold: HoldStage?, out_of_touch_s: Int?, memory: OwnMemory? = nil) {
+        (self.host, self.app, self.beat, self.caches, self.pool, self.hold, self.out_of_touch_s, self.memory) = (host, app, beat, caches, pool, hold, out_of_touch_s, memory)
     }
 
-    private enum CodingKeys: String, CodingKey { case host, app, beat, caches, pool, hold, out_of_touch_s }
+    private enum CodingKeys: String, CodingKey { case host, app, beat, caches, pool, hold, out_of_touch_s, memory }
 
     /// The pool part read on its own: one this app can't read (an agent of another app's, a
     /// rollout) leaves it out, not the whole status.
@@ -267,7 +270,16 @@ struct Own: Decodable {
         pool = try? c.decodeIfPresent(OwnPool.self, forKey: .pool)
         hold = try c.decodeIfPresent(HoldStage.self, forKey: .hold)
         out_of_touch_s = try c.decodeIfPresent(Int.self, forKey: .out_of_touch_s)
+        memory = try? c.decodeIfPresent(OwnMemory.self, forKey: .memory)
     }
+}
+
+/// This Mac's memory against its floor (crates/pipeline/src/agent/memguard.rs View, task #932): its
+/// line as the agent words it (available, the floor and margin, what's reserved, why no job starts),
+/// the menu printing it as said; and the memory brake, when it's on.
+struct OwnMemory: Decodable {
+    let said: String
+    let brake: String?
 }
 
 /// This Mac in the pool: its member, and the pool as the controls show it (docs/pool.md §10, §11;
@@ -1395,7 +1407,7 @@ func ownStatus() -> Own? {
     let dir = home.appendingPathComponent("agent")
     guard let own = ["status.json", "helper.json"].compactMap({ (try? Data(contentsOf: dir.appendingPathComponent($0))).flatMap { try? JSONDecoder().decode(Own.self, from: $0) } }).max(by: { $0.beat < $1.beat }) else { return nil }
     if let v = (try? Data(contentsOf: dir.appendingPathComponent("pool/view.json"))).flatMap({ try? JSONDecoder().decode(PoolFile.self, from: $0) }), v.beat > own.beat {
-        return Own(host: own.host, app: own.app, beat: own.beat, caches: own.caches, pool: v.pool, hold: own.hold, out_of_touch_s: own.out_of_touch_s)
+        return Own(host: own.host, app: own.app, beat: own.beat, caches: own.caches, pool: v.pool, hold: own.hold, out_of_touch_s: own.out_of_touch_s, memory: own.memory)
     }
     return own
 }
@@ -1762,6 +1774,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let m = NSMenu()
         m.autoenablesItems = false
         var info = [Line(text: line, style: .title)]
+        // (This Mac's memory against its floor, the brake first when it's on: task #932.)
+        if let mem = own?.memory { info.append(Line(text: mem.said, style: mem.brake != nil ? .plain : .small)) }
         if let c = own?.caches { info.append(Line(text: cachesLine(c), style: .small)) }
         if managing && build.refused { info.append(Line(text: BuildService.refusedLine, style: .small)) }
         for l in info {

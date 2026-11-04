@@ -872,7 +872,7 @@ function machineCard(m, x) {
   const role = x.role === "lead" ? "lead · coordinator" : "member";
   const stuck = x.fresh && loopStuck(st, now);
   const card = h("div", { class: `mc ${x.fresh ? "" : "off"}`, style: { borderLeft: `3px solid ${x.colour}` } },
-    h("div", "top", h("span", "name", x.name), h("span", "role", role), st.app ? chip(`app ${st.app}`) : null, chip(state, cls, said), stuck ? chip(stuck, "warn", "Its loop hasn't finished a round for longer than its watchdog allows; its status still beats on its own timer") : null, jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
+    h("div", "top", h("span", "name", x.name), h("span", "role", role), st.app ? chip(`app ${st.app}`) : null, chip(state, cls, said), st.memory?.brake ? chip("memory brake", "bad", `The memory brake is on: ${st.memory.brake}. Below the memory floor whatever the number says: jobs are frozen and given back, none starts.`) : null, stuck ? chip(stuck, "warn", "Its loop hasn't finished a round for longer than its watchdog allows; its status still beats on its own timer") : null, jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
   jobs.forEach((j) => {
     // (Its real slot, slots may be sparse: jobsOf.)
     const b = jobBlock(j, now);
@@ -888,6 +888,10 @@ function machineCard(m, x) {
     card.append(h("div", "job", h("div", "what dim", st.hold ? st.hold.said : m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
     for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${waitName(w)}: ${w.why}` : w.why));
   }
+  // (Its memory against its floor (task #932): available, the floor and margin, what's reserved for
+  // its jobs' growth, why no job starts; what the guard last did is said on the live block's
+  // pressure row.)
+  if (st.memory?.said) card.append(h("div", { class: `sub ${st.memory.brake ? "bad" : st.memory.held_back ? "warn" : ""}`, title: "The memory floor: the memory this Mac keeps available (scenic memory, the Settings tab)" }, st.memory.said));
   card.append(...[x.role === "helper" ? fitText(x.worker, x.name) : null, liveBlock(x.name, st.memory?.last)].filter(Boolean));
   return card;
 }
@@ -1900,7 +1904,7 @@ function details(m) {
   // Each member's capacity as the lead's coordinator last heard it (coord::Capacity: the lead's own first).
   const caps = a.capacity || [];
   const gb = (mb) => `${n(Math.round(mb / 102.4) / 10)} GB`;
-  if (caps.length) box.append(h("h3", null, "Capacity per Mac"), tbl(["Mac", "Memory free", "Cores free", "Disk free", "Power", "Use", "NAS", "Leases", "Said"], caps.map(([name, c]) => [name, `${gb(c.mem_mb)} of ${gb(c.limit_mb)} (${gb(c.held_mb)} held)`, `${n(c.cores_free)} of ${n(c.cores)}`, gb(c.disk_mb), c.ac ? "mains" : `battery${c.battery != null ? ` ${c.battery} %` : ""}`, c.in_use ? "in use" : "idle", !c.nas ? "not reachable" : c.home ? "reachable" : "Tailscale", (c.leases || []).join(", "), ago(now, c.at)])));
+  if (caps.length) box.append(h("h3", null, "Capacity per Mac"), tbl(["Mac", "Memory", "Cores free", "Disk free", "Power", "Use", "NAS", "Leases", "Said"], caps.map(([name, c]) => [name, c.mem_floor_mb ? `${gb(c.avail_mb)} available · floor ${gb(c.mem_floor_mb)}${c.mem_margin_mb ? ` + ${gb(c.mem_margin_mb)}` : ""} · ${gb(c.mem_reserved_mb || 0)} reserved · ${c.mem_held_back ? `none for a new job: ${c.mem_held_back}` : `${gb(c.mem_mb)} for a new job`} (${gb(c.held_mb)} held)` : `${gb(c.mem_mb)} free (${gb(c.held_mb)} held)`, `${n(c.cores_free)} of ${n(c.cores)}`, gb(c.disk_mb), c.ac ? "mains" : `battery${c.battery != null ? ` ${c.battery} %` : ""}`, c.in_use ? "in use" : "idle", !c.nas ? "not reachable" : c.home ? "reachable" : "Tailscale", (c.leases || []).join(", "), ago(now, c.at)])));
   const workers = (sw.workers || []).filter((w) => w.seen_s < 3600);
   if (workers.length) box.append(h("h3", null, "Workers heard from"), tbl(["Name", "Kind", "Doing", "Spares", "Done", "Failed", "Seen"], workers.map((w) => [w.label || w.name, w.kind, (w.what || "").slice(0, 80), w.mem_mb ? `${n(w.mem_mb)} MB` : "", n(w.done), n(w.failed), `${dur(w.seen_s)} ago`])));
   // The steps table itself: every step the same row (docs/pipeline.md), with where its runs' time

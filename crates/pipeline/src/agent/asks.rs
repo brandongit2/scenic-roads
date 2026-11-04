@@ -490,6 +490,26 @@ mod tests {
         st.loop_age_s = Some(crate::agent::beat::LOOP_STUCK.as_secs() + 100);
         st.loop_stuck_s = Some(crate::agent::beat::LOOP_STUCK.as_secs());
         st.loop_phase = Some("the pool's round".into());
+        // (Its memory under the brake, as the menu bar prints it: task #932.)
+        let r = crate::agent::memguard::Reading {
+            avail_mb: 5 << 10,
+            held_mb: 9 << 10,
+            floor_mb: 6 << 10,
+            pressure: 2,
+            ..Default::default()
+        };
+        let mut m = crate::agent::memguard::View {
+            on: true,
+            reading: Some(r),
+            held_mb: r.held_mb,
+            reserved_mb: 2 << 10,
+            new_mb: Some(0),
+            brake: r.brake(),
+            held_back: r.held_back(),
+            ..Default::default()
+        };
+        m.said = crate::agent::memguard::words(&m);
+        st.memory = Some(m);
         st
     }
 

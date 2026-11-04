@@ -768,6 +768,7 @@ func selfTest(_ dir: String) -> Never {
     let said = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
     let ownSaid = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap { d in (try? JSONSerialization.jsonObject(with: d) as? [String: Any])?["status"] }.flatMap { try? JSONSerialization.data(withJSONObject: $0) }.flatMap { try? JSONDecoder().decode(Own.self, from: $0) }
     check("the agent's status reads (status-said.json)", said?.status != nil && ownSaid?.hold != nil)
+    check("this Mac's memory said as its agent says it, the brake first (task #932)", ownSaid?.memory?.brake != nil && ownSaid?.memory?.said.hasPrefix("Memory brake: macOS's memory pressure is at warning.") == true)
     check("out of touch: the agent's threshold", outOfTouch(said) == 600 && outOfTouch(nil) == outOfTouchDefault)
     let (kind, line) = classify(said)
     check("the lead's state: its verdict, printed", kind == .paused && line.hasPrefix("Pausing: 3 jobs"))
