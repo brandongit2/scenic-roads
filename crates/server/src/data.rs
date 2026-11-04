@@ -606,7 +606,7 @@ impl Data {
         Ok(Src::Local(m))
     }
 
-    /// The lead's heartbeat (pipeline::menu::LEAD_STATUS on the NAS), as it wrote it: Null when
+    /// The lead's heartbeat (pipeline::agent::LEAD_STATUS on the NAS), as it wrote it: Null when
     /// there's none or the NAS is away. Read at most every 30 s.
     pub fn lead_status(&self) -> serde_json::Value {
         let mut g = self.lead.lock().unwrap();
@@ -617,7 +617,7 @@ impl Data {
         }
         let v = match (self.nas_root(), self.pool()) {
             (Some(root), Some(pool)) if pool.is_online() => pool
-                .read_all(&root.join(pipeline::menu::LEAD_STATUS))
+                .read_all(&root.join(pipeline::agent::LEAD_STATUS))
                 .ok()
                 .and_then(|b| serde_json::from_slice(&b).ok())
                 .unwrap_or(serde_json::Value::Null),

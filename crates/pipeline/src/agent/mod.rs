@@ -785,6 +785,9 @@ fn read_costs(p: &Path) -> Vec<(String, crate::coord::Cost)> {
         .collect()
 }
 
+/// The lead's heartbeat on the NAS (`Status`), relative to the project folder.
+pub const LEAD_STATUS: &str = "state/status.json";
+
 /// The heartbeat (`state/status.json`), what the app's status bar and `scenic status` show.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Status {
@@ -1161,6 +1164,26 @@ impl Status {
             return v("waiting", format!("Waiting: {}", w.what));
         }
         v("idle", "Nothing to build".into())
+    }
+
+    /// The build in a line, as the lead tells its members' menu bars at `now` (docs/roles.md §3.4,
+    /// `held::LeadLine`): its own verdict (`say` first), but while it builds nothing and the build
+    /// isn't paused, a member in touch with a job running says the build is building.
+    pub fn build_said(&self, now: u64) -> Verdict {
+        let own = self.verdict.clone().unwrap_or_else(|| self.verdict_of());
+        if own.state == "building" || self.pause.is_some() {
+            return own;
+        }
+        let building = self.helpers.iter().find(|h| {
+            now.saturating_sub(h.beat) <= crate::pool::beat::OUT_OF_TOUCH_S
+                && h.jobs().iter().any(|j| j.paused.is_none())
+        });
+        match building {
+            Some(h) => {
+                Verdict { state: "building".into(), said: format!("Building on {}; the lead: {}", h.host, own.said) }
+            }
+            None => own,
+        }
     }
 
     /// Sets its jobs (`views`, each with its slot), and the old fields too unless `all_new`.
@@ -1596,8 +1619,6 @@ pub struct Agent {
     /// A count's result from its thread, by when it began: taken in only if no count began since
     /// (a clear's or a freeing's).
     cache_sized: (std::sync::mpsc::Sender<(Instant, room::Sizes)>, std::sync::mpsc::Receiver<(Instant, room::Sizes)>),
-    /// The lead's heartbeat's `Status::all_new` as a member last read it, and when (`all_new`).
-    lead_all_new: Option<(Instant, bool)>,
     /// A clear, a freeing toward the room target or room-making under way.
     caches_task: Option<CachesTask>,
     /// The lead's: the pass's answers this Mac has sent to the NAS as the agent starts
@@ -1984,7 +2005,6 @@ impl Agent {
             hold_told: None,
             cache_size: Default::default(),
             cache_sized: std::sync::mpsc::channel(),
-            lead_all_new: None,
             caches_task: None,
             answers_seed: None,
             answers_seeded: false,
@@ -2361,7 +2381,7 @@ impl Agent {
             return Vec::new();
         }
         // (The old field for the limit only while a member of the pool is on an older app: its capacity says it.)
-        let all_new = self.all_new(Some(root));
+        let all_new = self.all_new();
         let ask = crate::coord::Ask {
             kind: "native".into(),
             label: Some(format!("{} (helper)", self.host)),
@@ -4528,7 +4548,7 @@ impl Agent {
         annotate(&mut checklist, &now_steps, &helpers, &waiting);
         let checklist: Vec<build::Line> = checklist.into_iter().map(build::Line::said).collect();
         let views: Vec<JobView> = (0..self.slots.len()).filter_map(|k| self.job_view(k)).collect();
-        let all_new = self.all_new(root.as_ref());
+        let all_new = self.all_new();
         let capacity = self.coord.as_ref().map(|c| c.capacities()).unwrap_or_default();
         let mut status = Status {
             host: self.host.clone(),
@@ -4609,6 +4629,10 @@ impl Agent {
         status.set_jobs(views, all_new);
         let hold = self.hold();
         status.say(crate::control::peek_hold_request(&self.o.home).as_ref(), &hold, false);
+        // (The build in a line, for the members' menu bars: in the lead's beat answers.)
+        if let Some(c) = &self.coord {
+            c.set_said(&status.host, status.build_said(status.beat));
+        }
         self.publish_jobs();
         if self._lock.is_none() {
             // Another agent writes the heartbeat; this one only reports.
@@ -4623,7 +4647,7 @@ impl Agent {
             let nas = self.beats.as_ref().is_none_or(|b| b.nas_too());
             ("helper.json".to_string(), nas.then(|| format!("state/helpers/{}.json", self.host)))
         } else {
-            ("status.json".to_string(), Some("state/status.json".to_string()))
+            ("status.json".to_string(), Some(LEAD_STATUS.to_string()))
         };
         // Published for the beat, which writes it (crate::agent::beat): at once, and every 10 s
         // after with its time and the hold as they are then. (Not a dry run's on the NAS, in a home
@@ -6118,22 +6142,17 @@ impl Agent {
     }
 
     /// Whether every member of the pool reports the new app (`Status::all_new`): the lead's
-    /// coordinator's word (`Coordinator::all_new`); a member's, its lead's heartbeat's as last
-    /// read (once a minute: `lead_all_new`; an older lead's says no). No coordinator and no pool: true.
-    fn all_new(&mut self, root: Option<&store::nasfs::NasRoot>) -> bool {
+    /// coordinator's word (`Coordinator::all_new`); a member's, its lead's last beat answer's
+    /// (`held::LeadLine::all_new`; an older lead's, or none yet, says no). No coordinator and no
+    /// pool: true.
+    fn all_new(&self) -> bool {
         if let Some(c) = self.coord.as_ref() {
             return c.all_new();
         }
         if self.leads() {
             return true;
         }
-        let stale = self.lead_all_new.is_none_or(|(at, _)| at.elapsed() >= Duration::from_secs(60));
-        if let (Some(root), true) = (root, stale) {
-            let st: Option<Status> =
-                nasread::read(&root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-            self.lead_all_new = Some((Instant::now(), st.is_some_and(|s| s.all_new)));
-        }
-        self.lead_all_new.is_some_and(|(_, n)| n)
+        self.beats.as_ref().and_then(|b| b.lead_view().lead).is_some_and(|l| l.all_new)
     }
 
     /// Slot `k`'s job for the status: its parts (the last it said), its progress, and from its pace

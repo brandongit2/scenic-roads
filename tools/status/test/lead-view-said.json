@@ -1,0 +1,17 @@
+{
+  "at": 1700000025,
+  "lead": {
+    "all_new": true,
+    "app": "2026-10-30",
+    "host": "mini",
+    "pause": {
+      "at": 1700000010,
+      "by": "the build page",
+      "mode": "drain"
+    },
+    "said": {
+      "said": "Building on m1; the lead: Nothing to build",
+      "state": "building"
+    }
+  }
+}

@@ -13,12 +13,14 @@ date +%s > .claude/health-stamp
 print "== health $(date '+%F %T')"
 df -h / | awk 'NR==2{print "disk: "$4" free of "$2}'
 print "NAS: $([[ -d /Volumes/personal/projects/scenic-roads/catalog ]] && echo mounted || echo NOT MOUNTED)"
-~/Library/Application\ Support/scenic/app/current/scenic menu 2>/dev/null | python3 -c '
+# (The lead's heartbeat on the NAS: `scenic menu` answers with this Mac's own status alone since
+# docs/roles.md step 5.)
+cat /Volumes/personal/projects/scenic-roads/state/status.json 2>/dev/null | python3 -c '
 import json,sys,time
-try: d=json.load(sys.stdin); s=d["status"]
+try: s=json.load(sys.stdin)
 except Exception as e: print("BUILD STATUS UNREADABLE:",e); sys.exit()
 now=time.time()
-print("status from: %s (the lead view when this Mac does not lead), app %s" % (s.get("host"), s.get("app")))
+print("status from: %s (the lead heartbeat on the NAS), app %s" % (s.get("host"), s.get("app")))
 c=s.get("catalog") or {}
 age=(now-c.get("at",now))/3600
 print("catalogue: %s made %.1f h ago" % (c.get("n"), age)+("  <-- STALE (>6 h)" if age>6 else ""))
@@ -34,7 +36,7 @@ if r:
   bad=[x["id"] for x in r[:20] if not x.get("ok")]
   if bad: print("FAILED recently:",bad)
 for w in s.get("waiting") or []: print("WAIT:",w.get("what"),"|",(w.get("why") or "")[:200])
-p=d.get("pool") or s.get("pool") or {}
+p=s.get("pool") or {}
 for m in (p.get("lead") or {}).get("members",[]):
   beat=(now-m.get("beat",now))/60
   print("member %s: %s %s, beat %.0f min ago" % (m.get("host"), m.get("app"), m.get("state"), beat)+("  <-- SILENT" if beat>10 else ""))

@@ -809,6 +809,30 @@ func selfTest(_ dir: String) -> Never {
     let oldPrinted = lines(old, oldLine).map(\.text)
     check("an older agent's loop never said stuck", !oldPrinted.contains { $0.contains("loop stuck") })
     check("an older lead's counts from its older fields", oldPrinted.contains { $0.contains("roads: 1,234 of 2,000 z6 tiles") } && oldPrinted.contains { $0.contains("outlines: done") } && oldPrinted.contains { $0.contains("unit: 1,234 of 2,000 z6 tiles") })
+    // A member's answer (docs/roles.md §3.4: crates/pipeline/src/menu.rs, its `lead` pinned by
+    // lead-view-said.json, which menu.rs's test writes): its own status, and the build as its lead
+    // last said it, heard 5 s before; the lead heard an hour ago, or not yet; this Mac's agent
+    // out of touch.
+    let leadView = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("lead-view-said.json"))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+    func member(_ edit: (inout [String: Any]) -> Void) -> Reply? {
+        guard let lv = leadView, var d = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) else { return nil }
+        d["lead"] = lv
+        edit(&d)
+        return (try? JSONSerialization.data(withJSONObject: d)).flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
+    }
+    let m = member { _ in }
+    check("a member's lead line reads (lead-view-said.json)", m?.lead?.lead?.host == "mini")
+    let (mKind, mLine) = classify(m)
+    check("a member not building: the build as its lead says it", mKind == .building && mLine == "Building on m1; the lead: Nothing to build")
+    check("a member: the build's pause is its lead's", buildPause(m)?.by == "the build page")
+    let mPrinted = lines(m, mLine, own: ownSaid).map(\.text)
+    check("a member's lines: the lead's, and this Mac's own", mPrinted.contains { $0.hasPrefix("The lead (mini): Building on m1") && $0.hasSuffix("5\u{00A0}s ago") } && mPrinted.contains { $0.hasPrefix("From the build page, ") } && mPrinted.contains { $0.hasPrefix("m1 (this Mac) · heard from") })
+    let away = member { d in var lv = d["lead"] as? [String: Any] ?? [:]; lv["at"] = (lv["at"] as? Int ?? 0) - 3600; d["lead"] = lv }
+    check("a member's lead not heard for an hour: out of touch, by name", classify(away).0 == .outOfTouch && classify(away).1.hasPrefix("Lead (mini) out of touch since "))
+    check("a member's lead not heard yet", classify(member { d in d["lead"] = ["at": 0] }) == (.unknown, "No word from the lead yet"))
+    check("an older lead's answer (no line): this Mac's own word", classify(member { d in d["lead"] = ["at": d["now"] as? Int ?? 0] }).1.hasPrefix("Pausing: 3 jobs") && buildPause(member { d in d["lead"] = ["at": 1] }) == nil)
+    let stale = member { d in d["now"] = (d["now"] as? Int ?? 0) + 3600 }
+    check("this Mac's agent out of touch, said as this Mac's", classify(stale).0 == .outOfTouch && classify(stale).1.hasPrefix("This Mac's agent out of touch since "))
     // The reopen helper. A fake system: the old process ends after `exitAfter` polls; each open
     // succeeds from attempt `worksFrom` on (earlier ones go to the old process, as procNotFound did,
     // or to a stray copy until it's ended, `stray`); the app runs from the check after a

@@ -1,6 +1,6 @@
 # Roles: the mini serves, the laptops work
 
-**Planned (task #882); built: steps 1–2 of §5.** Until each step below lands, docs/pool.md,
+**Planned (task #882); built: steps 1–5 of §5.** Until each step below lands, docs/pool.md,
 docs/agent-parts.md and the code are what is true. It builds on #881 (the Mac mini is the fixed
 lead), #874 (the map server runs on the mini alone), #871 (the agent in parts: planning on the lead
 only; steps 6–7 take the checklist and regions out of a member's status), #883 (the map log on the
@@ -136,10 +136,26 @@ lead (by member id), its settings at its own port (CORS).
 
 ### 3.4 The menu bar
 
-`scenic menu` keeps reading this Mac's own `helper.json` (local, fresh). The build-wide line (the
-lead's progress, the pause) comes from the beat's answer, which the agent keeps in
-`agent/lead-view.json` (#878 step 3 gives the beat an answer; this adds a few fields: the pause,
-the build's one-line state, `all_new`, the lead's contact). No NAS read in the menu path.
+Built (step 5). `scenic menu` (`pipeline::menu`) reads this Mac's disk alone: its own agent's
+status (the fresher of `status.json` and `helper.json`: a file left from a part this Mac had
+before is the staler), and on a member the lead's line, which the beat's answer carries
+(`held::Answer::lead`, `LeadLine`: the lead's Mac and app, the build in a line, the build's pause,
+`all_new`) and the member's beat poster keeps in `agent/lead-view.json` at each answer, with when
+the lead answered (`beats::LeadView`; an older lead's 404 counts as an answer with no line). The
+build in a line is the lead's agent's (`Status::build_said`, handed its coordinator each loop:
+`Coordinator::set_said`): its own verdict, or while it builds nothing and the build isn't paused,
+"Building on <member>; the lead: …" for a member in touch with a job running; the pause and
+`all_new` are the coordinator's at each answer. The lead's contact isn't in it: the member reaches
+the lead by the contact it has, and the menu needs only the lead's name. A member's agent takes
+`all_new` from the same line (it read the lead's `state/status.json` on the NAS each minute). No
+NAS read in the menu path.
+
+The menu bar (tools/status) shows on a member its own state while it builds, else the lead's
+line, or "Lead (<name>) out of touch since <time>" when the lead hasn't answered for the
+out-of-touch threshold, and its own agent out of touch as this Mac's; the build's pause from the
+lead's line. A member's menu no longer shows the lead's checklist, forecast, regions or the other
+Macs' jobs (the popover's page, the lead's, has them); the pool's lines from this Mac's agent's
+view stay.
 
 ### 3.5 Leftovers
 
@@ -154,7 +170,7 @@ the lead writes in the home and requires it in the list or in a kept list.
 | --- | --- | --- |
 | Work | `/work/ask`, `/work/beat`, NAS mail and journal | unchanged; #878 steps 2, 3, 6 |
 | Its jobs to come (caches) | `/work/tocome` | unchanged |
-| `all_new`, the pause, the build's state line, the lead's contact | NAS `state/status.json`, `pause.json` | the `POST /pool/beat` answer (#878 step 3, with the fields above) |
+| `all_new`, the pause, the build's state line | the `POST /pool/beat` answer (`held::LeadLine`, built: step 5) | the same |
 | Holds and settings | NAS files | `/pool/hold`, `/pool/settings` (#878 step 5) |
 | The build page | its own NAS readers | a 307 to the lead (§3.3) |
 | The records brief (jobs' `Out`) | NAS snapshot | `GET /pool/brief` (#878's later step, decision 2) |
@@ -199,18 +215,28 @@ Each step ships alone and keeps the build running; each ends with its tests.
    source (`cataloguesview::Lead`), the popover's keep-warm ask; in review, the pageview's ways a
    member's page had: the lead's view by HTTP (`pageview::ByHttp`) and the older apps' path (the
    lead's files read on the NAS: `nas_lead_files`, `refresh_pause`, `by_lead`).
-5. **The menu without the NAS** (§3.4), after #878 step 3: the beat's answer saved as
+5. *Built.* **The menu without the NAS** (§3.4), after #878 step 3: the beat's answer saved as
    `lead-view.json`; `scenic menu` reads it. Tests: `menu_reads_the_lead_from_the_beat`,
-   `menu_works_with_the_nas_hung` (slow-NAS fake). From #878 step 5 it has: the menu's pause asks go to
-   the agent and on to the lead (`/pool/hold`), and the pool's settings as the agent last had them
-   (`pool-settings.json`); it needs the answer's few fields added (`held::Answer`: the pause, the
-   build's one-line state, `all_new`, the lead's contact) and the agent to save it.
+   `menu_works_with_the_nas_hung` (slow-NAS fake: the member's NAS copy hangs while its menu shows
+   its jobs and the lead's newest line), `the_menu_bars_lead_line_is_scenics` (the line pinned
+   both sides by tools/status/test/lead-view-said.json, the Swift self-test's member checks),
+   `the_build_said_counts_a_member_building`, `the_leads_menu_shows_its_own_status`. From #878
+   step 5 it had: the menu's pause asks go to the agent and on to the lead (`/pool/hold`), and the
+   pool's settings as the agent last had them (`pool-settings.json`). As built: the lead's contact
+   left out (§3.4). Cut: `menu::lead_heartbeat` and `scenic menu`'s NAS read (every 5 s, on every
+   Mac), its `--root`, the lead's status shown in a member's menu with the member put in its
+   `helpers` (`here`), a member's own status standing in for a lead unheard with the lead's last
+   checklist copied in, the reply's "via the NAS" (`local`, still written for a menu bar before
+   this step), the agent's `lead_all_new` read of the NAS; `LEAD_STATUS` moved to
+   `crate::agent` (the server reads it). Also fixed: `scenic menu`'s log path took the old
+   `job` field, which an all-new pool no longer writes (no Open the Build Log); now the first of
+   `jobs`. tools/dev/health.sh reads the lead's heartbeat on the NAS itself.
 6. **Leftovers** (§3.5). Tests: `member_leftovers_names_every_lead_file`, removal by age.
 7. **Docs**: macs.md (Devices: roles), agent-parts.md (the member's parts), pool.md §10 (the page
    is the lead's), this doc folded in.
 
 Steps 1–3 need nothing from #878 and cut the measured cost (the busy core, the loop stalls, the
-pack indexes). Step 4 needs only the lead's contact, which members already have. Step 5 waits for
+pack indexes). Step 4 needs only the lead's contact, which members already have. Step 5 needed
 #878 step 3.
 
 ## 6. Out of scope, noted

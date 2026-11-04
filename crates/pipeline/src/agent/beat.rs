@@ -194,7 +194,7 @@ impl ToLead {
                 false
             }
             Ok(None) => {
-                self.beats.lead_older();
+                self.beats.lead_older(now_s());
                 false
             }
             Err(e) => {

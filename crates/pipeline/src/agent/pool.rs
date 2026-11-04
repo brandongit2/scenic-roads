@@ -422,6 +422,7 @@ impl Side {
         let http: Arc<crate::coord::beats::Beats> = Arc::default();
         http.keep_asks(&dir.join(crate::coord::asks::QUEUE));
         http.had_settings(crate::control::read_pool_settings(home));
+        http.keep_lead_view(&home.join(crate::coord::beats::LEAD_VIEW));
         Ok(Some(Side {
             me,
             driver: Some(driver),

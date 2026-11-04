@@ -489,8 +489,10 @@ available. Until work is done, the map serves the last catalogue.
   `scenic steps` (the steps table: docs/pipeline.md), `scenic clean [--deep]`, `scenic room` (Room on the
   disk, above), `scenic nas-room` (the NAS reserve, above), `scenic memory` (the memory floor, the memory the Mac keeps available: docs/pool.md §7.1).
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
-- **The menu bar item** runs `scenic menu` (`pipeline::menu`, every 5 s, 10 s at most): this Mac's
-  agent's status, else the NAS's copy. An agent not heard from for ten minutes (the status's `out_of_touch_s`, the pool's
+- **The menu bar item** runs `scenic menu` (`pipeline::menu`, every 5 s, 10 s at most), which
+  reads this Mac's disk alone, never the NAS (docs/roles.md §3.4): this Mac's agent's status, and
+  on a member the build in a line as the lead's last beat answer carried it (`agent/lead-view.json`:
+  its state, its pause, when the lead answered). An agent or a lead not heard from for ten minutes (the status's `out_of_touch_s`, the pool's
   `OUT_OF_TOUCH_S`) shows as out of touch. The menu prints what the agent says (task #846): each
   Mac's state (`verdict`), this Mac's pause's stage (`hold`) and the checklist's counts; it lists
   every running job, slot by slot. A Mac whose loop hasn't finished a round for longer than its

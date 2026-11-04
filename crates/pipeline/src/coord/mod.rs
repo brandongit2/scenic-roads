@@ -382,6 +382,9 @@ pub struct Shared {
     pub handoffs: Option<std::sync::Arc<handoffs::Handoffs>>,
     /// The owner's asks it keeps (`/pool/hold`, `/pool/settings`; crate::coord::asks), in its store.
     pub asks: asks::Lead,
+    /// Its Mac's name and the build in a line as its agent last said them (`Coordinator::set_said`):
+    /// each beat's answer carries them to the members' menu bars (`held::Answer::lead`).
+    pub said: Option<(String, crate::agent::Verdict)>,
     /// The members' beats its agent's pool side hears by HTTP (`/pool/beat`, crate::coord::beats):
     /// its (`Coordinator::set_beats`); None, the beats' heartbeats and statuses not taken.
     pub beats: Option<std::sync::Arc<beats::Beats>>,
@@ -1475,6 +1478,7 @@ impl Coordinator {
             inbox: None,
             handoffs: None,
             asks: asks::Lead::default(),
+            said: None,
             beats: None,
             page: PageFiles::default(),
             inputs_asks: Vec::new(),
@@ -2040,6 +2044,12 @@ impl Coordinator {
     /// workers told. Kept on disk.
     pub fn set_pause(&self, pause: Option<crate::control::Pause>, at: u64) {
         set_pause(&mut self.shared.lock().unwrap(), pause, at);
+    }
+
+    /// The build in a line as its agent says it on `host` (crate::agent::Status::build_said), for
+    /// the members' menu bars (docs/roles.md §3.4): in each beat's answer from now.
+    pub fn set_said(&self, host: &str, said: crate::agent::Verdict) {
+        self.shared.lock().unwrap().said = Some((host.to_string(), said));
     }
 
     /// The build's pause, while it's paused.

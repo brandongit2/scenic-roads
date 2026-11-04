@@ -1321,11 +1321,8 @@ fn main() -> Result<()> {
     match cli.cmd {
         None => status(&cli.status),
         Some(Cmd::Status(places)) => status(&places),
-        Some(Cmd::Menu(places)) => {
-            // (`--home` here is the app's folder's agent folder, as everywhere: its parent read.)
-            let home = places.home.as_ref().and_then(|h| h.parent().map(Path::to_path_buf)).unwrap_or_else(app_home);
-            let root = root(&places.root, false).ok().map(|r| r.short_retry());
-            println!("{}", pipeline::menu::status(&home, pipeline::menu::lead_heartbeat(root.as_ref()), now_s()));
+        Some(Cmd::Menu(h)) => {
+            println!("{}", pipeline::menu::status(&home_or_default(&h.home), now_s()));
             Ok(())
         }
         Some(Cmd::Lead(a)) => lead(&a),

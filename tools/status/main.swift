@@ -4,9 +4,9 @@
 // only), and a right-click, or the panel's "⋯", the menu: the state in a line, this Mac's downloads
 // and build caches, and the controls below; and a notification for every change. Its timers run in
 // the run loop's common modes, so the polls, the icon and the notifications go on while a menu is
-// open. It asks `scenic menu` (crates/pipeline/src/menu.rs, the installed app's), which answers with
-// this Mac's own agent's status when the agent runs here and with the heartbeat the agent copies
-// to the NAS otherwise. This Mac's own agent's status, read
+// open. It asks `scenic menu` (crates/pipeline/src/menu.rs, the installed app's), which answers
+// from this Mac's disk alone, never the NAS (docs/roles.md §3.4): this Mac's own agent's status,
+// and on a member the lead's line as the lead's last beat answer carried it. This Mac's own agent's status, read
 // from its file, says what its build caches hold, whether they can be cleared now,
 // and the last clears (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
 // that agent to clear what later jobs copy back cheaply from the NAS, Clear Caches Deeply that
@@ -40,7 +40,7 @@ let home = (ProcessInfo.processInfo.environment["SCENIC_HOME"] ?? info["ScenicHo
 let statusCommand = ProcessInfo.processInfo.environment["SCENIC_STATUS_COMMAND"] ?? info["ScenicStatusCommand"] as? String ?? home.appendingPathComponent("app/current/scenic").path
 
 /// The status now, as `scenic menu` prints it (nil when it can't be run, fails or says nothing
-/// readable within `timeout` seconds: it reads the NAS, which may hang). Never on the main thread.
+/// readable within `timeout` seconds: a disk or a process start held up). Never on the main thread.
 func fetchReply(timeout: TimeInterval = 10) -> Reply? {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: statusCommand)
@@ -72,16 +72,49 @@ let outOfTouchDefault = 600
 /// The out-of-touch threshold of an answer's status.
 func outOfTouch(_ r: Reply?) -> Int { r?.status?.out_of_touch_s ?? outOfTouchDefault }
 
-// What `scenic menu` answers (the agent's status, crates/pipeline/src/agent/mod.rs Status).
+// What `scenic menu` answers (crates/pipeline/src/menu.rs): this Mac's agent's status
+// (crates/pipeline/src/agent/mod.rs Status), and on a member its lead's line.
 struct Reply: Decodable {
     let status: Status?
-    let local: Bool
     let now: Int
     let log: String?
     /// This Mac paused alone (crates/jobrt/src/control.rs Hold, task #224), and its ask while
     /// the agent hasn't taken it up (servers from #224 on).
     let held_here: HeldInfo?
     let hold_asked: Bool?
+    /// A member's: the lead's line as the lead's last beat answer carried it (docs/roles.md §3.4;
+    /// none on the lead, and from a `scenic menu` before it).
+    let lead: LeadView?
+}
+
+/// The lead's line as this member last heard it (crates/pipeline/src/coord/beats.rs LeadView):
+/// when the lead last answered its beat (0: not yet), and its line (none from an older lead).
+struct LeadView: Decodable {
+    let at: Int
+    let lead: LeadLine?
+}
+
+/// The build in a line, from the lead (crates/pipeline/src/coord/held.rs LeadLine): its Mac, its
+/// app, the build's state as it says it, the build's pause.
+struct LeadLine: Decodable {
+    let host: String
+    let app: String
+    let said: Verdict
+    let pause: PauseInfo?
+}
+
+/// The build's pause: the lead's word on a member, else (the lead, or no line heard) this Mac's
+/// status's.
+func buildPause(_ r: Reply?) -> PauseInfo? {
+    if let l = r?.lead?.lead { return l.pause }
+    return r?.status?.pause
+}
+
+/// Who leads and when it was last heard from: on a member its lead's last answer (host unknown
+/// before one), else this Mac (the lead) and its own beat.
+func leadHeard(_ r: Reply) -> (host: String?, at: Int)? {
+    if let l = r.lead { return (l.lead?.host, l.at) }
+    return r.status.map { ($0.host, $0.beat) }
 }
 
 /// One Mac paused alone (crates/jobrt/src/control.rs Hold): who asked, since when.
@@ -443,7 +476,7 @@ struct PauseInfo: Decodable {
     let at: Int
 }
 
-/// A helper on another Mac, as the main agent last read its status (`here`: this Mac's own, fresh).
+/// A member, as the lead's agent last heard its status (the lead's status's `helpers`).
 struct Helper: Decodable {
     let host: String
     let beat: Int
@@ -452,8 +485,6 @@ struct Helper: Decodable {
     let job: Job?
     /// Its running jobs, every slot's (an older agent's: its first).
     var allJobs: [Job] { jobs ?? (job.map { [$0] } ?? []) }
-    let pause: PauseInfo?
-    let here: Bool?
     /// Its loop's round's age, the threshold past which it's stuck, the phase it's in: `loopStuck`.
     let loop_age_s: Int?
     let loop_stuck_s: Int?
@@ -660,27 +691,37 @@ func freshHelpers(_ r: Reply) -> [Helper] {
     (r.status?.helpers ?? []).filter { r.now - $0.beat <= outOfTouch(r) }
 }
 
-/// The state, with a line saying it.
+/// The icon's kind for a state as an agent words it (task #846).
+func kindOf(_ state: String) -> Kind {
+    switch state {
+    case "building": return .building
+    case "asked", "pausing", "paused", "stopping", "frozen", "resuming": return .paused
+    case "failed": return .problem
+    case "waiting": return .waiting
+    default: return .idle
+    }
+}
+
+/// The state, with a line saying it: this Mac's own while it builds; on a member, else, the build
+/// as its lead last said it (docs/roles.md §3.4); on the lead, its own word, a member building
+/// counting as building.
 func classify(_ r: Reply?) -> (Kind, String) {
     guard let r = r else { return (.unknown, "No status: this Mac's `scenic menu` didn't answer") }
-    guard let s = r.status else { return (.unknown, "No word from the lead (is the NAS reachable?)") }
-    // A helper building counts as building, whatever the lead is doing.
-    let helping = freshHelpers(r).filter { h in h.allJobs.contains { $0.paused == nil } }
-    if r.now - s.beat > outOfTouch(r) {
-        if let h = helping.first { return (.building, clip("Building on \(h.host); lead out of touch since \(clock(s.beat))")) }
-        return (.outOfTouch, "Lead out of touch since \(clock(s.beat))")
-    }
-    // The lead's state as its agent says it (task #846).
+    guard let s = r.status else { return (.unknown, "No status from this Mac's agent (is it running?)") }
+    if r.now - s.beat > outOfTouch(r) { return (.outOfTouch, "This Mac's agent out of touch since \(clock(s.beat))") }
     let v = s.said
-    let kind: Kind
-    switch v.state {
-    case "building": kind = .building
-    case "asked", "pausing", "paused", "stopping", "frozen", "resuming": kind = .paused
-    case "failed": kind = .problem
-    case "waiting": kind = .waiting
-    default: kind = .idle
+    let kind = kindOf(v.state)
+    if let lv = r.lead {
+        if kind == .building { return (kind, clip(v.said)) }
+        guard lv.at > 0 else { return (.unknown, "No word from the lead yet") }
+        if r.now - lv.at > outOfTouch(r) { return (.outOfTouch, clip("Lead\(lv.lead.map { " (\($0.host))" } ?? "") out of touch since \(clock(lv.at))")) }
+        guard let l = lv.lead else { return (kind, clip(v.said)) }
+        return (kindOf(l.said.state), clip(l.said.said))
     }
-    if kind != .building, s.pause == nil, let h = helping.first { return (.building, clip("Building on \(h.host); the lead: \(v.said)")) }
+    // A member building counts as building, whatever the lead is doing.
+    if kind != .building, s.pause == nil, let h = freshHelpers(r).first(where: { h in h.allJobs.contains { $0.paused == nil } }) {
+        return (.building, clip("Building on \(h.host); the lead: \(v.said)"))
+    }
     return (kind, clip(v.said))
 }
 
@@ -792,7 +833,11 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
             out.append(Line(text: "Next on the map ≈ \(soon(next.at)): \(which)", style: .small))
         }
     }
-    if let p = s.pause {
+    // (A member's: the build as its lead last said it, and when.)
+    if let lv = r.lead, let l = lv.lead {
+        out.append(Line(text: "The lead (\(l.host)): \(l.said.said) · heard from \(duration(r.now - lv.at)) ago", style: .small))
+    }
+    if let p = buildPause(r) {
         let how = p.mode == "freeze" ? "every Mac's job frozen where it was" : "every Mac's job stops at its next safe point"
         out.append(Line(text: "From \(p.by), \(clock(p.at)): \(how); nothing new starts until it's resumed", style: .small))
     }
@@ -841,15 +886,15 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
             if let p = j.paused { out.append(Line(text: "\(h.host): \(p)", style: .small)) } else if j.pausing != nil { out.append(Line(text: "\(h.host): stopping at its next safe point", style: .small)) }
         }
     }
-    // A Mac's loop stuck (task #899), the lead's and each helper's.
-    // (The lead's only while it's heard from: an out-of-touch lead's said once, above.)
-    let lead = r.now - s.beat <= outOfTouch(r) ? [(s.host, loopStuck(age: s.loop_age_s, limit: s.loop_stuck_s, phase: s.loop_phase, beat: s.beat, now: r.now))] : []
-    for (host, stuck) in lead + freshHelpers(r).map({ ($0.host, loopStuck(age: $0.loop_age_s, limit: $0.loop_stuck_s, phase: $0.loop_phase, beat: $0.beat, now: r.now)) }) {
+    // A Mac's loop stuck (task #899), this Mac's and (on the lead) each helper's.
+    // (This Mac's only while it's heard from: an out-of-touch agent's said once, above.)
+    let here = r.now - s.beat <= outOfTouch(r) ? [(s.host, loopStuck(age: s.loop_age_s, limit: s.loop_stuck_s, phase: s.loop_phase, beat: s.beat, now: r.now))] : []
+    for (host, stuck) in here + freshHelpers(r).map({ ($0.host, loopStuck(age: $0.loop_age_s, limit: $0.loop_stuck_s, phase: $0.loop_phase, beat: $0.beat, now: r.now)) }) {
         if let t = stuck { out.append(Line(text: "\(host): \(t)", style: .plain)) }
     }
     let power = s.conditions.ac ? "Mains power" : "Battery\(s.conditions.battery.map { " \($0)%" } ?? "")"
     out.append(Line(text: "\(power) · NAS \(!s.conditions.nas ? "not reachable" : s.conditions.home == false ? "through Tailscale" : "reachable")", style: .small))
-    out.append(Line(text: "\(s.host) · \(r.local ? "this Mac" : "via the NAS") · heard from \(duration(r.now - s.beat)) ago", style: .small))
+    out.append(Line(text: "\(s.host) (this Mac) · heard from \(duration(r.now - s.beat)) ago", style: .small))
     if let app = s.app { out.append(Line(text: "App \(app)", style: .small)) }
     // This Mac's build caches: what a clear would free, and the last clear.
     if let c = own?.caches { out.append(Line(text: cachesLine(c), style: .small)) }
@@ -1811,9 +1856,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if !held.isEmpty { m.addItem(.separator()) }
         // The whole build paused (every Mac), or going on: an ask to this Mac's agent, which passes it
         // on to the lead (crates/jobrt/src/control.rs). Option: at once, frozen where it is.
-        // (Paused as this Mac knows it: the lead's, or, a helper's own, its own.)
-        let ownHelper = reply?.status?.helpers?.first { $0.here == true }
-        let pausedHere = reply?.status?.pause != nil || ownHelper?.pause != nil
+        // (Paused as this Mac knows it: a member's, from its lead's line; the lead's, its own.)
+        let pausedHere = buildPause(reply) != nil
         let asked = pendingAsk()
         if let a = asked {
             let it = NSMenuItem(title: a ? "Pausing… (asked; the lead takes it up within seconds)" : "Resuming… (asked)", action: nil, keyEquivalent: "")
@@ -2073,7 +2117,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // (A unit held stays so for the notifications while it's checked again, its report gone
         // but the check not over: taken in only once its state is ok.)
         let rechecking = Set((s.inputs ?? []).filter { $0.state == "checking" }.map(\.unit)).intersection(seen?.held ?? [])
-        let now = Seen(job: s.firstJob?.id, paused: s.firstJob?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch(r), buildPaused: s.pause != nil, held: Set(held.map(\.unit)).union(rechecking))
+        // (The lead heard from: a member's lead by its last answer, none yet counting as heard; the
+        // lead, this Mac's own agent.)
+        let lead = leadHeard(r)
+        let pause = buildPause(r)
+        let now = Seen(job: s.firstJob?.id, paused: s.firstJob?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: lead.map { $0.at > 0 && r.now - $0.at > outOfTouch(r) } ?? false, buildPaused: pause != nil, held: Set(held.map(\.unit)).union(rechecking))
         defer { seen = now }
         // The first answer only sets what changes are measured from.
         guard let was = seen else { return }
@@ -2085,10 +2133,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             post("Input taken in: \(u)", "Its held change passed the gate")
         }
         if now.buildPaused != was.buildPaused {
-            post(now.buildPaused ? "Build paused" : "Build going on", s.pause.map { "From \($0.by)" } ?? "Picking up where it stopped")
+            post(now.buildPaused ? "Build paused" : "Build going on", pause.map { "From \($0.by)" } ?? "Picking up where it stopped")
         }
-        if now.outOfTouch != was.outOfTouch {
-            post(now.outOfTouch ? "Lead out of touch" : "Lead back", now.outOfTouch ? "Not heard from since \(clock(s.beat))" : s.host)
+        if now.outOfTouch != was.outOfTouch, let l = lead {
+            post(now.outOfTouch ? "Lead out of touch" : "Lead back", now.outOfTouch ? "Not heard from since \(clock(l.at))" : l.host ?? "")
         }
         for d in s.recent.filter({ $0.ended > was.lastEnded }).sorted(by: { $0.ended < $1.ended }) {
             if d.ok {

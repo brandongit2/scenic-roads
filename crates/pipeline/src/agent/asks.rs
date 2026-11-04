@@ -428,7 +428,7 @@ impl Drop for Kqueue {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::Status;
     use super::*;
     use crate::control::{Hold, HoldStage};

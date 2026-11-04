@@ -105,6 +105,25 @@ pub struct Answer {
     pub merged: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lacks: Vec<String>,
+    /// The build in a line as the lead says it (docs/roles.md §3.4): what a member's menu bar shows
+    /// of the build, kept by the member (`beats::LEAD_VIEW`). Left out by a lead before it, and
+    /// until its agent first says its line (`Coordinator::set_said`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<LeadLine>,
+}
+
+/// The build in a line, from the lead (`Answer::lead`): its Mac, its app, the build's state as its
+/// agent says it (`agent::Status::build_said`), the build's pause, and whether every member is on
+/// the new app (`Coordinator::all_new`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LeadLine {
+    pub host: String,
+    pub app: String,
+    pub said: crate::agent::Verdict,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause: Option<crate::control::Pause>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all_new: bool,
 }
 
 /// The members whose leases go by their word now: those speaking it, heard within
@@ -149,6 +168,7 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
             a.speaks.push(super::beats::HANDOFF.to_string());
         }
         a.nas_too = beats.nas_too();
+        a.lead = lead_line(s);
         a.settings_gen = s.asks.settings.gen;
         a.asks_on_nas = asks_on_nas(s, &beats, unix);
         beats.set_asks_on_nas(a.asks_on_nas);
@@ -162,6 +182,13 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         a.released = released;
     }
     a
+}
+
+/// The lead's line for its members' menu bars (`Answer::lead`): None until its agent says it.
+fn lead_line(s: &Shared) -> Option<LeadLine> {
+    let (host, said) = s.said.clone()?;
+    let all_new = s.old_member(s.now()).is_none();
+    Some(LeadLine { host, app: s.app.clone(), said, pause: s.paused.clone(), all_new })
 }
 
 /// Whether a member heard within `beats::FORGET_S` of `unix` doesn't say `beats::ASKS`, or one

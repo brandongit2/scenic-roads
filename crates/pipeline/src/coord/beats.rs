@@ -60,6 +60,27 @@ pub const PAGE_AWAY_S: u64 = 35;
 /// (crate::agent::pool::FORGET_AFTER).
 pub const FORGET_S: u64 = crate::agent::pool::FORGET_AFTER.as_secs();
 
+/// Where a member keeps its lead's last answer's line, in its agent's folder (`LeadView`, written
+/// at each answer): what `scenic menu` shows of the build (docs/roles.md §3.4), no NAS read.
+pub const LEAD_VIEW: &str = "lead-view.json";
+
+/// The lead's line as a member last heard it (`LEAD_VIEW`): when the lead last answered its beat
+/// (unix s, this Mac's clock), and its line then (None: a lead before it, or one whose agent
+/// hasn't said it yet).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LeadView {
+    pub at: u64,
+    #[serde(default)]
+    pub lead: Option<super::held::LeadLine>,
+}
+
+impl LeadView {
+    /// The view kept in agent folder `home` (none, or unreadable: None).
+    pub fn read(home: &std::path::Path) -> Option<LeadView> {
+        serde_json::from_slice(&std::fs::read(home.join(LEAD_VIEW)).ok()?).ok()
+    }
+}
+
 /// One member's last beat.
 #[derive(Clone, Debug)]
 pub struct Heard {
@@ -105,6 +126,10 @@ struct Inner {
     lead_handoffs: Option<bool>,
     handoffs: Vec<crate::pool::Entry>,
     merged: Vec<String>,
+    /// On a member: the lead's line as its last answer carried it, and where it's kept
+    /// (`keep_lead_view`: `LEAD_VIEW` in the agent's folder).
+    lead_view: LeadView,
+    lead_view_at: Option<std::path::PathBuf>,
 }
 
 /// The registry, shared by a member's pool side, its agent's beat and (on the lead) its coordinator.
@@ -142,6 +167,8 @@ impl Default for Beats {
                 lead_handoffs: None,
                 handoffs: Vec::new(),
                 merged: Vec::new(),
+                lead_view: LeadView::default(),
+                lead_view_at: None,
             }),
         }
     }
@@ -239,6 +266,18 @@ impl Beats {
         }
         g.lead_handoffs = Some(a.speaks.iter().any(|w| w == HANDOFF));
         g.merged.extend(a.merged.iter().cloned());
+        g.lead_view = LeadView { at: now, lead: a.lead.clone() };
+        save_lead_view(&g);
+    }
+
+    /// The lead's line as its last answer carried it, and when (`LEAD_VIEW`).
+    pub fn lead_view(&self) -> LeadView {
+        self.inner.lock().unwrap().lead_view.clone()
+    }
+
+    /// The lead's line kept at `path` from now (`LEAD_VIEW` in the agent's folder), at each answer.
+    pub fn keep_lead_view(&self, path: &std::path::Path) {
+        self.inner.lock().unwrap().lead_view_at = Some(path.to_path_buf());
     }
 
     /// How this member's hand-offs go to its lead, as its last answer said.
@@ -419,14 +458,17 @@ impl Beats {
         }
     }
 
-    /// An older lead's 404: it takes neither the beat nor its leases' word; the NAS copies go on.
-    pub fn lead_older(&self) {
+    /// An older lead's 404 at `now`: it takes neither the beat nor its leases' word; the NAS copies
+    /// go on. It answered, saying no line.
+    pub fn lead_older(&self, now: u64) {
         self.set_nas_too(true);
         let mut g = self.inner.lock().unwrap();
         g.lead_takes = false;
         g.lead_answered = None;
         (g.lead_asks, g.asks_on_nas) = (false, true);
         g.lead_handoffs = Some(false);
+        g.lead_view = LeadView { at: now, lead: None };
+        save_lead_view(&g);
     }
 
     /// The leases the lead said this member doesn't hold, since last taken.
@@ -440,6 +482,14 @@ fn save_queue(g: &Inner) {
     let w = serde_json::to_vec(&g.queue).map_err(anyhow::Error::from).and_then(|b| store::whole::write(p, &b));
     if let Err(e) = w {
         eprintln!("pool: its asks of the lead: {e:#}");
+    }
+}
+
+fn save_lead_view(g: &Inner) {
+    let Some(p) = g.lead_view_at.as_ref() else { return };
+    let w = serde_json::to_vec(&g.lead_view).map_err(anyhow::Error::from).and_then(|b| store::whole::write(p, &b));
+    if let Err(e) = w {
+        eprintln!("pool: the lead's line for the menu bar: {e:#}");
     }
 }
 
@@ -539,7 +589,7 @@ mod tests {
         b.answered(&Answer { speaks: vec![SPEAKS.into(), PAGE.into()], ..Default::default() }, 20);
         assert_eq!(b.lead_page(20 + PAGE_AWAY_S - 1), Ok(()));
         assert_eq!(b.lead_page(20 + PAGE_AWAY_S), Err(Some(20)), "not answering");
-        b.lead_older();
+        b.lead_older(21);
         assert_eq!(b.lead_page(21), Err(None));
     }
 }
