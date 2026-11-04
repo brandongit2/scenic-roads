@@ -1265,3 +1265,57 @@ fn membership_asks_a_nan_point_alone() {
     assert_eq!(m, each);
     assert!(!m[3] && m[0] && m[7]);
 }
+
+/// Task #929 review: samplers sharing a run's memo (a terrain run's, one a level: crate::terrain_base)
+/// each read a file at their own level. The files open are kept by dataset and file across them
+/// (`TileMemo::opened`); keyed without the detail read, a coarse level's sampler took the file as
+/// a finer one had opened it, at that one's overview.
+#[test]
+fn samplers_sharing_a_memo_read_each_file_at_their_own_level() {
+    use super::super::declared::{Dataset, Plan, Source};
+    use crate::geotiff::testtiff::{make_images, Opts as TOpts};
+    let d = tempfile::tempdir().unwrap();
+    let dir = d.path().join("sources/fetched/glo");
+    std::fs::create_dir_all(&dir).unwrap();
+    // (A tile of 64 pixels of 0.001° with two overviews, each level's heights its own: 10 m a level.)
+    let gt = [10.0, 0.001, 0.0, 46.0, 0.0, -0.001];
+    let (dem, _) = make_images(
+        &[(64, 64), (32, 32), (16, 16)],
+        TOpts { tile: Some(16), ..TOpts::default() },
+        gt,
+        None,
+        &|k, _, _, _| 100.0 + 10.0 * k as f64,
+    );
+    std::fs::write(dir.join("T_DEM.tif"), dem).unwrap();
+    let plan = |read_resolution: Option<f64>| Plan {
+        fmt: 1,
+        version: "t".into(),
+        tag: "1".into(),
+        datasets: vec![Dataset {
+            convert: None,
+            outline: None,
+            id: "glo".into(),
+            code: 3,
+            resolution: 78.0,
+            cover: None,
+            source: Source::Geotiff {
+                crs: 4326,
+                read_resolution,
+                store: true,
+                files: vec![("https://e.org/T_DEM.tif".into(), Some([10.0, 46.0 - 0.064, 10.064, 46.0]))],
+                masks: vec![None],
+            },
+        }],
+    };
+    let (lon, lat) = (vec![10.03], vec![45.97]);
+    let f = crate::fetch::MapFetch::default();
+    let root = store::nasfs::NasRoot::local_for_test(d.path());
+    let o = Opts { fetch: &f, store: Some(root.join("sources/fetched")), local: None };
+    let (fine, coarse) = (plan(None), plan(Some(400.0)));
+    let alone = Sampler::new(&coarse, &o).unwrap().sample(&lon, &lat, &|_| {}).unwrap().elev[0];
+    assert_eq!(alone, 120.0, "the coarsest overview, alone");
+    let first = Sampler::new(&fine, &o).unwrap();
+    assert_eq!(first.sample(&lon, &lat, &|_| {}).unwrap().elev[0], 100.0);
+    let shared = Sampler::sharing(&coarse, &o, &first).unwrap();
+    assert_eq!(shared.sample(&lon, &lat, &|_| {}).unwrap().elev[0], alone, "its own level, the memo shared");
+}

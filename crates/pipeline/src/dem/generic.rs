@@ -559,7 +559,9 @@ impl GeoSet<'_> {
     }
 
     fn open(&self, k: usize) -> Result<Option<(Arc<Tiff>, usize)>> {
-        let key = (self.id.to_string(), k);
+        // (By its URL and the detail read: samplers sharing the memo, a level each, read their own
+        // overview of it, and their plans' file lists needn't agree.)
+        let key = (format!("{} {}", self.id, self.files[k].0), self.read_resolution.map(f64::to_bits));
         if let Some(t) = self.memo.opened.lock().unwrap().get(&key) {
             return Ok(t.clone());
         }
@@ -905,10 +907,11 @@ pub(crate) struct TileMemo {
     /// 1024², a bit a pixel, only blocks holding a void); those most recently read within the memo's
     /// own budget (`cap`), each weighed by its bits.
     masks: Mutex<Lru<String, Arc<MaskCell>>>,
-    /// The files open, by dataset and file (the server has none: None), with the level read:
+    /// The files open, by dataset, file and the detail read (`read_resolution`; the server has none:
+    /// None), with the level read:
     /// those most recently read within the memo's budget (`cap`), each weighed at what it may hold
     /// (`OPEN_BYTES`), shared by every sampler of the run, so a run's memory is its working set's.
-    opened: Mutex<Lru<(String, usize), Option<(Arc<Tiff>, usize)>>>,
+    opened: Mutex<Lru<(String, Option<u64>), Option<(Arc<Tiff>, usize)>>>,
 }
 
 /// What an open file holds at most (`TileMemo::opened`'s weight): its tile arrays kept
