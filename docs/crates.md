@@ -253,6 +253,7 @@ timings.rs, codecs' hipack.rs, each built from a built tree (the shared folder):
 | dev, agent edit | 7 s, 2.28 GB (load 20): pipeline, server |
 | dev, jobrt edit | 7 s, 2.28 GB (load 20): jobrt, buildstore, pipeline, server |
 | dev, codecs edit | 7 s, 2.28 GB (load 19): codecs, buildstore, pipeline, server |
+| tools/dev/check.sh at cfd2b6ab (07:00 UTC) | fmt 2 s, clippy 27 s, guards 2 s, tests 451 s (run here: the M4 is the test Mac; its affected set is most of pipeline's tests); largest process 5.6 GB |
 
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the
