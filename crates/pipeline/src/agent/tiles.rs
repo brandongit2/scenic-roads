@@ -29,14 +29,16 @@ impl std::fmt::Display for Unread {
 /// for a fortnight: its pack may be named again).
 const KEEP_GONE: Duration = Duration::from_secs(14 * 86400);
 
-/// A pack's tiles as held: (tile key, XXH3), sorted by key.
-type Held = Vec<(u64, u64)>;
+/// A pack's tiles as held: (tile key, XXH3), sorted by key; shared by the copies (`TerrainTiles`).
+type Held = std::sync::Arc<[(u64, u64)]>;
 
 /// The tiles of the pack a manifest names for a tile: none when it names none.
 type Found<'a> = Result<Option<&'a [(u64, u64)]>, Unread>;
 
-/// The terrain packs' indexes the agent holds, by content name. (Cloned for a count off the agent's
-/// loop: the regions' states and steps, Agent::start_as_built; ~45 MB of indexes.)
+/// The terrain packs' indexes the agent holds, by content name. (Cloned for a count off the
+/// agent's loop, the regions' states and steps, plan::Planner::start_as_built: the indexes and the
+/// memo shared by the copies, not copied; the build's 5,165 packs' indexes were 260 MB on 4 Nov,
+/// task #930.)
 #[derive(Clone, Default)]
 pub struct TerrainTiles {
     /// Each pack's tiles.
@@ -48,7 +50,7 @@ pub struct TerrainTiles {
     /// Values worked out from the tiles, each kept with what it was worked out from (`memo`): a
     /// z6 tile's terrain digest (build::unit_terrain), by z6 tile. Shared by the copies, so a count
     /// off the loop (Agent::start_as_built) and the loop fill and read one.
-    memo: std::sync::Arc<std::sync::Mutex<HashMap<String, (String, String)>>>,
+    memo: std::sync::Arc<std::sync::Mutex<HashMap<String, (String, Kept)>>>,
     /// The terrain's water digests the manifest names (crate::terrain_water::WaterIdx), by content
     /// name: read as the indexes are (kept beside them as `<hash16>.water`), a few KB each.
     water: HashMap<String, crate::terrain_water::WaterIdx>,
@@ -453,15 +455,16 @@ impl TerrainTiles {
     }
 
     /// `make`'s value for `key`, kept with what it was made from (`from`): made again only when that
-    /// changes. A value that can't be made now isn't kept.
+    /// changes. A value that can't be made now isn't kept. (Kept packed when it's lines of tiles:
+    /// `Kept`.)
     pub fn memo(&self, key: &str, from: &str, make: impl FnOnce() -> Result<String, Unread>) -> Result<String, Unread> {
         if let Some((f, v)) = self.memo.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
             if f == from {
-                return Ok(v.clone());
+                return Ok(v.text());
             }
         }
         let v = make()?;
-        self.memo.lock().unwrap_or_else(|e| e.into_inner()).insert(key.to_string(), (from.to_string(), v.clone()));
+        self.memo.lock().unwrap_or_else(|e| e.into_inner()).insert(key.to_string(), (from.to_string(), Kept::of(&v)));
         Ok(v)
     }
 
@@ -472,13 +475,90 @@ impl TerrainTiles {
             tiles.into_iter().map(|(z, x, y, h)| (store::pack::tile_key(z, x, y), h)).collect();
         t.sort_unstable();
         self.unread.remove(content);
-        self.held.insert(content.to_string(), t);
+        self.held.insert(content.to_string(), t.into());
     }
 }
 
 /// An index's tiles, as held (sorted: the index's own order).
 fn compact(ix: &PackIndex) -> Held {
     ix.entries.iter().map(|e| (e.key, e.hash)).collect()
+}
+
+/// A memo's value as kept (`TerrainTiles::memo`). Most of what it keeps are the key lines of the
+/// terrain tiles a target reads (build::unit_deep_tiles, build::slope_tile_lines: "z/x/y xxh3", or
+/// "-" for a tile none of its packs has), hundreds of thousands a z6 tile's: as text they were
+/// 900 MB of the lead's memory on 4 Nov (task #930). Such a value is kept as its tiles, 16 bytes a
+/// line (the tile's key, store::pack::tile_key, and its XXH3), and given back as the same text;
+/// any other as it is.
+enum Kept {
+    Text(Box<str>),
+    Tiles(Box<[(u64, u64)]>),
+}
+
+/// A "-" line's tile key (`Kept::Tiles`): never a tile's, whose zoom (its top six bits) is 29 at
+/// most.
+const NO_TILE: u64 = u64::MAX;
+
+impl Kept {
+    /// `v` as kept: its tiles when every line is one, written again byte for byte (`text`), else
+    /// its text.
+    fn of(v: &str) -> Kept {
+        let mut tiles = Vec::new();
+        let mut again = String::new();
+        for l in v.split('\n') {
+            let Some(t) = parse_line(l) else { return Kept::Text(v.into()) };
+            again.clear();
+            write_line(&mut again, t);
+            if again != l {
+                return Kept::Text(v.into());
+            }
+            tiles.push(t);
+        }
+        Kept::Tiles(tiles.into())
+    }
+
+    /// The value as it was made.
+    fn text(&self) -> String {
+        match self {
+            Kept::Text(s) => s.to_string(),
+            Kept::Tiles(t) => {
+                let mut s = String::with_capacity(t.len() * 32);
+                for (i, &tile) in t.iter().enumerate() {
+                    if i > 0 {
+                        s.push('\n');
+                    }
+                    write_line(&mut s, tile);
+                }
+                s
+            }
+        }
+    }
+}
+
+/// A tile's line, "z/x/y xxh3" (the XXH3 as 16 hex digits) or "-", as its tile's key and XXH3
+/// (`Kept::Tiles`); None for any other line.
+fn parse_line(l: &str) -> Option<(u64, u64)> {
+    if l == "-" {
+        return Some((NO_TILE, 0));
+    }
+    let (zxy, h) = l.split_once(' ')?;
+    let mut it = zxy.split('/');
+    let (z, x, y) = (it.next()?.parse::<u8>().ok()?, it.next()?.parse::<u32>().ok()?, it.next()?.parse::<u32>().ok()?);
+    if it.next().is_some() || h.len() != 16 || !store::pack::valid_tile(z, x, y) {
+        return None;
+    }
+    Some((store::pack::tile_key(z, x, y), u64::from_str_radix(h, 16).ok()?))
+}
+
+/// A tile's line (`parse_line`) onto `s`.
+fn write_line(s: &mut String, (key, h): (u64, u64)) {
+    use std::fmt::Write;
+    if key == NO_TILE {
+        s.push('-');
+    } else {
+        let (z, x, y) = store::pack::tile_zxy(key);
+        let _ = write!(s, "{z}/{x}/{y} {h:016x}");
+    }
 }
 
 /// Where pack `content`'s index is kept under `dir` (None: none is, or it isn't a content name).
@@ -760,5 +840,23 @@ mod tests {
         // One that can't be made now isn't kept.
         assert!(t.memo("6/1/2", "a", || Err(Unread("p: gone".into()))).is_err());
         assert_eq!(t.memo("6/1/2", "a", || make("z")).unwrap(), "z");
+    }
+
+    /// Lines of tiles are kept as tiles, 16 bytes a line, and given back byte for byte; anything
+    /// else, a line that would be written back otherwise among them, as its text (task #930).
+    #[test]
+    fn tile_lines_are_kept_packed_and_given_back_as_made() {
+        let tiles = "13/4100/2900 00000000000000ff\n-\n12/1792/1024 ffffffffffffffff\n0/0/0 0123456789abcdef";
+        let kept = Kept::of(tiles);
+        assert!(matches!(&kept, Kept::Tiles(t) if t.len() == 4));
+        assert_eq!(kept.text(), tiles);
+        for other in ["", "abc", "6/1/1 00000000000000FF", "06/1/1 00000000000000ff", "6/1/1 ff", "1/2/0 00000000000000ff", "6/1/1 00000000000000ff\n"] {
+            let kept = Kept::of(other);
+            assert!(matches!(kept, Kept::Text(_)), "{other:?}");
+            assert_eq!(kept.text(), other);
+        }
+        let t = TerrainTiles::new(None);
+        assert_eq!(t.memo("unit deep 6/1/1", "a", || Ok(tiles.to_string())).unwrap(), tiles);
+        assert_eq!(t.memo("unit deep 6/1/1", "a", || unreachable!()).unwrap(), tiles, "kept, given back whole");
     }
 }
