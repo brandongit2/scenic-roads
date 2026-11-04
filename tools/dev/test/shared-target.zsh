@@ -1,8 +1,9 @@
 #!/bin/zsh
-# tools/dev/bin/cargo (#915, #937) on a toy workspace: two worktrees build into one shared folder,
-# each runs its own code (worktree b's sources older than a's build), a second cargo waits for the
-# first, saying so, and programs and tests run outside the lock, from clones, with cargo's
-# environment and folder. Run by check.sh when tools/dev/bin or this file changes.
+# tools/dev/bin/cargo (#915, #937, #941) on a toy workspace: two worktrees build into one shared
+# folder, each runs its own code (worktree b's sources older than a's build), a second cargo waits
+# for the first, saying so, and programs and tests run outside the lock, from clones, with cargo's
+# environment and folder; what builds nothing passes the lock, waiters get it in arrival order, and
+# a long hold is reported. Run by check.sh when tools/dev/bin or this file changes.
 zmodload zsh/system
 sh=${0:A:h:h}/bin/cargo
 s=$(mktemp -d); trap 'rm -rf $s' EXIT
@@ -158,14 +159,18 @@ grep -q 'Running debug/deps/plain-' $s/err && fail "ran on after a failure: $(ca
 TOY_FAIL=1 at a test --no-fail-fast --lib --test plain; rc=$?
 (( rc == 101 )) && grep -q 'Running debug/deps/plain-' $s/err || fail "--no-fail-fast: $rc, $(cat $s/err)"
 
-# A TERM to the shim reaches the program it runs, and the shim outlives it (it held the lock).
-(cd $w/a && TOY_HOLD=$s/go5 exec $sh test -q --lib --test plain > $s/term.out 2>&1) & held=$!
-started $s/go5 $s/term.out
-p=$(pgrep -f "/.scenic-runs/$held/bin/deps/toy-") || fail "no test program of $held"
-kill -TERM $held; wait $held; rc=$?
-(( rc == 143 )) || fail "a TERM'd shim exited $rc: $(cat $s/term.out)"
-kill -0 $p 2>/dev/null && { kill $p; fail "the test program outlived the shim"; }
-grep -q 'Running debug/deps/plain-' $s/term.out && fail "ran on after a TERM: $(cat $s/term.out)"
+# A TERM or INT to the shim reaches the program it runs, and the shim outlives it (it held the
+# lock). (The shim as a terminal starts it: INT not ignored, as this script's & would.)
+for sig in TERM INT; do
+  rm -f $s/go5*
+  (trap - INT; cd $w/a && TOY_HOLD=$s/go5 exec $sh test -q --lib --test plain > $s/term.out 2>&1) & held=$!
+  started $s/go5 $s/term.out
+  p=$(pgrep -f "/.scenic-runs/$held/bin/deps/toy-") || fail "no test program of $held"
+  kill -$sig $held; wait $held; rc=$?
+  (( rc == 128 + $signals[(Ie)$sig] - 1 )) || fail "a $sig'd shim exited $rc: $(cat $s/term.out)"
+  kill -0 $p 2>/dev/null && { kill $p; fail "the test program outlived the shim ($sig)"; }
+  grep -q 'Running debug/deps/plain-' $s/term.out && fail "ran on after a $sig: $(cat $s/term.out)"
+done
 
 # cargo nextest run: the clones run once nextest starts testing, the lock let go then (kept when a
 # binary names the shared folder's programs).
@@ -196,6 +201,63 @@ both=${sh:h}:$s/main/tools/dev/bin:$PATH
 PATH=$both within 60 at a version || fail "version with two shims: $(cat $s/err)"
 PATH=$both within 120 at a build -q || fail "build with two shims: $(cat $s/err)"
 [[ $(cat $s/shared/.scenic-built-by) == $w/a ]] || fail "two shims: built-by not recorded"
+
+# #941: what builds nothing passes a held lock; the rest wait in arrival order, a gone waiter's
+# ticket holds no one up, and a long hold is reported with what its holder is doing.
+# Every built-in of cargo --list is classed (a cargo-* on the PATH is a plug-in: unknown is locked).
+eval "$(grep -E '^(builds|reads)=' $sh)"
+for c in ${${(f)"$(cargo --list)"}[2,-1]}; do
+  c=${${=c}[1]}; whence -p cargo-$c >/dev/null && continue
+  (( !$builds[(Ie)$c] != !$reads[(Ie)$c] )) || fail "cargo $c is in neither or both of the shim's builds and reads"
+done
+q=$s/shared/.scenic-queue
+hold() {  # hold <file>: holds the build lock as "cargo" pid <its pid>, until <file> exists
+  rm -f $1 $1.held
+  ( zsystem flock -f fd $s/shared/.scenic-lock
+    print -r -- "test pid $sysparams[pid] since now: cargo build" > $s/shared/.scenic-holder; : > $1.held
+    while [[ ! -e $1 ]]; do sleep 0.1; done ) & holding=$!
+  until [[ -e $1.held ]]; do sleep 0.05; done
+}
+until_in() {  # until_in <file> <pattern>: waits (1 min at most) for a line of <file> to match
+  local i; for (( i = 0; i < 600; i++ )); do grep -qE -- $2 $1 2>/dev/null && return 0; sleep 0.1; done
+  fail "never said /$2/: $(cat $1)"
+}
+hold $s/let1
+for c in 'fmt --check' '--color never metadata --no-deps --format-version 1' 'build --help'; do
+  within 60 at a ${=c} >/dev/null; (( $? <= 1 )) || fail "cargo $c behind a held lock: $(cat $s/err)"
+  grep -q waiting $s/err && fail "cargo $c waited for the lock: $(cat $s/err)"
+done
+# The order: a cargo that writes its name (the shim's "real" cargo; the folder already a's).
+mkdir -p $s/fake; print -rl -- '#!/bin/sh' 'echo "$TOY_NAME" >> "$TOY_ORDER"' > $s/fake/cargo; chmod +x $s/fake/cargo
+export TOY_ORDER=$s/order; rm -f $TOY_ORDER
+waiter() {  # waiter <name>: a build behind the lock, its pid in $waiting, its stderr in $s/<name>.err
+  (cd $w/a && TOY_NAME=$1 PATH=$s/fake:$PATH exec $sh build 2>$s/$1.err) & waiting=$!
+}
+pids=()
+for x in 1 2 3; do waiter $x; pids+=( $waiting ); until_in $s/$x.err "place $x in line; held by: test pid $holding "; done
+: > $s/let1; wait $holding
+for x in 1 2 3; do wait $pids[x] || fail "waiter $x: $(cat $s/$x.err)"; done
+[[ $(<$TOY_ORDER) == $'1\n2\n3' ]] || fail "not in arrival order: $(<$TOY_ORDER)"
+grep -q 'got the shared build folder after' $s/3.err || fail "no got line: $(cat $s/3.err)"
+# A waiter killed (no cleanup) leaves its ticket; the next is first in line, and gets the lock.
+hold $s/let2; rm -f $TOY_ORDER
+waiter dead; dead=$waiting; until_in $s/dead.err 'place 1 in line'
+kill -KILL $dead; wait $dead
+gone=( $q/<->(N) ); (( $#gone == 1 )) || fail "no ticket left by the killed waiter: $(ls -a $q)"
+waiter next; until_in $s/next.err 'place 1 in line'
+[[ ! -e $gone[1] ]] || fail "the killed waiter's ticket is still there"
+: > $s/let2; wait $holding; wait $waiting || fail "the waiter after a killed one: $(cat $s/next.err)"
+[[ $(<$TOY_ORDER) == next ]] || fail "after a killed waiter: $(<$TOY_ORDER)"
+# The report: holds of 0 s recorded, so the first waiting line names the holder's pid, its
+# processes and their CPU.
+print '0 build' > $s/shared/.scenic-holds
+hold $s/let3
+waiter report; until_in $s/report.err 'using (no )?CPU'
+grep -q "the folder has been held [0-9]* s (9 holds in 10 of the last 1 took ≤ 0 s): test pid $holding " $s/report.err || fail "no report line: $(cat $s/report.err)"
+grep -qE "^ +$holding [0-9.]+% cpu, .*cpu time: " $s/report.err || fail "the holder's process not shown: $(cat $s/report.err)"
+: > $s/let3; wait $holding; wait $waiting || fail "the reported waiter: $(cat $s/report.err)"
+(( $(wc -l < $s/shared/.scenic-holds) == 2 )) || fail "the hold not recorded: $(cat $s/shared/.scenic-holds)"
+unset TOY_ORDER
 
 # Outside .claude/worktrees: plain cargo, the shared folder untouched.
 mkdir -p $s/plain/src; : > $s/plain/.git; cp $w/a/Cargo.toml $s/plain/; cp -R $w/a/src $s/plain/

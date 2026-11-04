@@ -5,9 +5,11 @@
 # On the PATH of agents' shells through CLAUDE_ENV_FILE (tools/dev/agent-env.zsh) and check.sh.
 #
 # One build at a time in that folder: a lock (zsystem flock, an fcntl lock) taken before cargo
-# starts. A second one prints that it is waiting, for whom, and again every minute (also to
-# $SCENIC_CARGO_SAY: check.sh's terminal). This is the point on a 16 GB laptop: two heavy rustc at
-# once restarted the M1 (31 Oct). (Cargo's own build-folder lock would serialize only the compile.)
+# starts and let go when it ends (cargo runs as this shell's child). This is the point on a 16 GB
+# laptop: two heavy rustc at once restarted the M1 (31 Oct). (Cargo's own build-folder lock would
+# serialize only the compile.) Waiters take the lock in arrival order (take: a ticket queue), and
+# print that they wait, their place and for whom, then every minute (also to $SCENIC_CARGO_SAY:
+# check.sh's terminal); once the hold is longer than most (report), what the holder is doing.
 #
 # Programs run outside the lock (#937): `cargo run`, `test` and `bench` build under it with this
 # script as cargo's target runner, which only records each program cargo would start (its path,
@@ -28,9 +30,9 @@
 # Third-party crates are untouched: their names hash their version, source and features.
 #
 # Passed straight to cargo: outside .claude/worktrees/, inside a cargo this shim started under the
-# lock (SCENIC_CARGO_SHARED set: a build script's cargo), and commands that never build.
+# lock (SCENIC_CARGO_SHARED set: a build script's cargo), and commands that never build (reads).
 setopt extendedglob
-zmodload zsh/system
+zmodload zsh/system zsh/datetime zsh/zselect; zmodload -F zsh/stat b:zstat
 self=${0:A}
 
 # --- As cargo's target runner (set below): `cargo --scenic-record|--scenic-nextest <dir> <env>
@@ -88,24 +90,119 @@ for c in $(whence -ap cargo); do [[ ${c:A} == ($self|*/tools/dev/bin/cargo) ]] |
 top=$PWD; while [[ $top != / && ! -e $top/.git ]]; do top=${top:h}; done  # the checkout (a worktree's .git is a file)
 [[ -z ${SCENIC_CARGO_SHARED:-} && $top == */.claude/worktrees/* ]] || exec $real "$@"
 args=( "$@" ); si=0
-for (( i = 1; i <= $#args; i++ )); do [[ $args[i] == [+-]* ]] || { si=$i; break; }; done
+# The subcommand: the first word neither an option nor the value of a cargo option taking one.
+for (( i = 1; i <= $#args; i++ )); do
+  case $args[i] in
+    --color|--config|-C|-Z|--explain) (( i++ )) ;;
+    [+-]*) ;;
+    *) si=$i; break ;;
+  esac
+done
 sub=${args[si]:-}
-case $sub in
-  ''|fmt|metadata|locate-project|pkgid|tree|help|verify-project|read-manifest|search|version) exec $real "$@" ;;
-esac
+own=( "${(@)args[1,${args[(i)--]}-1]}" )  # cargo's own arguments (after `--`, a program's)
+# Under the lock, what compiles or writes the shared folder: cargo --list's build commands (fetch
+# aside: the registry only), install, package and publish (they build to verify), and the cargo-*
+# that build (clippy, miri, nextest). Passed straight, what reads or edits only manifests, the lock
+# file, the registry or sources (reads), and any command asking for help or a version. A subcommand
+# in neither (another cargo-*, a config's [alias]) is taken as building, saying so.
+# (tools/dev/test/shared-target.zsh checks that every built-in of `cargo --list` is in one.)
+builds=( b bench build c check clean d doc fix install package publish r report run rustc rustdoc t test clippy miri nextest )
+reads=( add config fetch fmt generate-lockfile git-checkout help info init locate-project login logout metadata new owner pkgid read-manifest remove rm search tree uninstall update vendor verify-project version yank )
+asks=${own[(I)(-h|--help|-V|--version)]}
+[[ -z $sub ]] || (( $reads[(Ie)$sub] || asks )) && exec $real "$@"
+(( $builds[(Ie)$sub] )) || print -u2 -r -- "cargo (tools/dev/bin): \`$sub\` isn't known to build or not: run under the shared build folder's lock"
 t=${SCENIC_SHARED_TARGET:-$HOME/Library/Caches/scenic-target}
 mkdir -p $t || exit 1
-lock=$t/.scenic-lock
+lock=$t/.scenic-lock holder=$t/.scenic-holder holds=$t/.scenic-holds
 : >> $lock || exit 1
-# (-e: the lock stays held across exec, for the commands cargo runs whole under it.)
-if ! zsystem flock -e -t 0 -f fd $lock 2>/dev/null; then
-  start=$SECONDS
-  say() { print -u2 -r -- "$1"; [[ -n ${SCENIC_CARGO_SAY:-} ]] && print -r -- "    $1" >> $SCENIC_CARGO_SAY 2>/dev/null; }
-  while say "cargo: waiting for the shared build folder $t ($(( SECONDS - start )) s; held by: $(cat $t/.scenic-holder 2>/dev/null || print unknown))"
-        ! zsystem flock -e -t 60 -f fd $lock 2>/dev/null; do :; done
-  say "cargo: got the shared build folder after $(( SECONDS - start )) s"
-fi
-print -r -- "${top:t} pid $$ since $(date '+%T'): cargo $*" > $t/.scenic-holder
+me="${top:t} pid $$ since $(date '+%T'): cargo $*"
+say() { print -u2 -r -- "$1"; [[ -n ${SCENIC_CARGO_SAY:-} ]] && print -r -- "    $1" >> $SCENIC_CARGO_SAY 2>/dev/null; }
+# The lock in arrival order. fcntl doesn't queue: zsh's flock -t tries again each second, so a cargo
+# waiting an hour lost to each newer one that tried at the right moment (4 Nov). Each cargo takes a
+# ticket, .scenic-queue/<n>, n from .scenic-queue/.next (under .scenic-queue/.lock; never reused,
+# so a sweep of a gone ticket can't hit a new one), holding an fcntl lock on it while it waits: a
+# ticket whose lock can be taken is a gone cargo's, and goes. Only the first live ticket tries the
+# build lock, every tick (0.2 s: a turn passes on within it; a try and a listing of the queue cost
+# nothing beside a build). The waiting line comes at once and every minute (a waiting terminal
+# shows it's alive).
+take() {
+  local q=$t/.scenic-queue tfd x f n ahead said=0 line=0 due=-1 rh h age; local -a m
+  local -F start=$EPOCHREALTIME
+  integer waited
+  mkdir -p $q && : >> $q/.lock && print -r -- $me > $q/.new.$$ || return 1
+  zsystem flock -f tfd $q/.new.$$ && zsystem flock -f x $q/.lock || return 1
+  for f in $q/.new.<->(N); do kill -0 ${f##*.} 2>/dev/null || rm -f $f; done  # (a cargo gone as it took one)
+  n=$(( $(cat $q/.next 2>/dev/null) + 1 )); print -r -- $n > $q/.next; ticket=$q/$n
+  mv -f $q/.new.$$ $ticket; zsystem flock -u $x
+  holdtimes
+  while :; do
+    ahead=0
+    for f in $q/<->(Nn); do [[ $f == $ticket ]] && break; live $f && (( ahead++ )); done
+    (( ! ahead )) && zsystem flock -t 0 -f fd $lock 2>/dev/null && break
+    [[ -e $ticket && -e $lock ]] || { say "cargo: the shared build folder's lock or this cargo's ticket is gone ($ticket)"; return 1 }
+    (( waited = EPOCHREALTIME - start ))
+    if (( waited >= line )); then
+      h=$(cat $holder 2>/dev/null) said=1 line=$(( waited + 60 ))
+      say "cargo: waiting for the shared build folder $t ($waited s; place $(( ahead + 1 )) in line; held by: ${h:-unknown})"
+      [[ $h == $rh ]] || rh=$h due=$thr  # (a new holder: its hold from the start)
+      if [[ -n $h ]] && zstat -A m +mtime $holder 2>/dev/null && (( (age = EPOCHSECONDS - m[1]) >= due )); then
+        report $h $age; due=$(( 2 * age ))
+      fi
+    fi
+    zselect -t 20
+  done
+  rm -f $ticket; zsystem flock -u $tfd
+  (( waited = EPOCHREALTIME - start ))
+  (( said )) && say "cargo: got the shared build folder after $waited s"
+  return 0
+}
+live() {  # live <ticket>: is its cargo still waiting? (A gone cargo's ticket goes.)
+  local y
+  zsystem flock -t 0 -f y $1 2>/dev/null || { [[ -e $1 ]]; return }
+  zsystem flock -u $y; rm -f $1; return 1
+}
+# The report: once the holder has held the folder longer than nine holds in ten of the last 100
+# (.scenic-holds: each hold's seconds, written by the cargo letting go; enough that a few odd holds
+# don't move the tenth longest, few enough to follow the workspace as it grows), and again each
+# time its hold doubles, the waiting line says what it is doing: its pid, command, processes and
+# their CPU. A stuck holder is seen, not killed. (No holds recorded yet: from the first line.)
+holdtimes() {
+  local -a d; d=( ${(on)${${(f)"$(cat $holds 2>/dev/null)"}%% *}} )
+  integer k=$(( (9 * $#d + 9) / 10 ))
+  thr=${d[k]:-0} nholds=$#d
+}
+report() {  # report <holder line> <its age, s>
+  local p pid ppid c tm rest ind; local -A kids desc; local -F sum=0
+  local of="no holds recorded yet"; (( nholds )) && of="9 holds in 10 of the last $nholds took ≤ $thr s"
+  say "cargo: the folder has been held $2 s ($of): $1"
+  [[ $1 =~ ' pid ([0-9]+) ' ]] && p=$match[1]
+  if [[ -z $p ]] || ! kill -0 $p 2>/dev/null; then
+    say "  its pid ${p:-(none)} is gone: what holds the lock didn't say who it is"; return
+  fi
+  ps -A -o pid=,ppid=,%cpu=,time=,command= | while read -r pid ppid c tm rest; do
+    kids[$ppid]+=" $pid"; desc[$pid]="$c% cpu, $tm cpu time: $rest"
+  done
+  ptree() {  # (a rustc line runs to thousands of characters: its first 200 name the crate)
+    printf -v ind '%*s' $(( 2 * $2 + 4 )) ''; say "$ind$1 ${desc[$1][1,200]}"
+    (( sum += ${${desc[$1]%%\%*}:-0} ))
+    local k; for k in ${=kids[$1]}; do ptree $k $(( $2 + 1 )); done
+  }
+  say "  its processes (pid, %cpu, cpu time, command):"; ptree $p 0
+  if (( sum > 0 )); then say "  using CPU: $(printf %.1f $sum)% (ps's %cpu, summed; sccache compiles third-party crates in its own server)"
+  else say "  using no CPU: it may be stuck (the shim doesn't kill it; tools/dev/testing.md)"; fi
+}
+fd=0 took=0
+take || exit 1
+print -r -- $me > $holder; took=$EPOCHSECONDS
+release() {  # lets the lock go (once), its holder line removed and its hold's time kept
+  (( fd )) || return 0
+  rm -f $holder
+  local -a l; l=( ${(f)"$(cat $holds 2>/dev/null)"} "$(( EPOCHSECONDS - took )) $sub" )
+  (( $#l > 100 )) && l=( ${l[-100,-1]} )
+  print -rl -- $l > $holds.$$ && mv -f $holds.$$ $holds
+  zsystem flock -u $fd; fd=0
+}
+trap release EXIT
 if [[ $(cat $t/.scenic-built-by 2>/dev/null) != $top ]]; then
   # The workspace's package and target names (- and _ forms): their fingerprints go.
   names=( ${(f)"$($real metadata --no-deps --format-version 1 --offline 2>/dev/null | python3 -c '
@@ -124,6 +221,23 @@ fi
 whence mise >/dev/null && eval "$(mise env -C $top -s zsh 2>/dev/null)" 2>/dev/null
 export CARGO_TARGET_DIR=$t SCENIC_CARGO_SHARED=1
 
+# Cargo, and each program run here, is a child this shell waits for: a signal to this shell (a kill
+# of the pid ps shows as cargo) goes on to it, and the shell and its lock outlive it. (Killed while
+# its cargo built, the shell let the lock go with that build still running.) A child of a shell
+# without job control starts with SIGINT and SIGQUIT ignored, so a forwarded INT did nothing: spawn
+# gives them back.
+child=0 sig=0 r=
+fwd() { sig=$1; (( child )) && kill -$1 $child 2>/dev/null; (( child )) || { rm -rf $r; exit $(( 128 + $1 )) } }
+trap 'fwd 1' HUP; trap 'fwd 2' INT; trap 'fwd 15' TERM
+spawn() { ( trap - INT QUIT; "$@" ) <&0 & child=$! }  # spawn <function that execs>
+realcargo() { exec $real "$@" }
+waitchild() {  # the child's status, once it is gone (a trapped signal ends a wait early)
+  local s; while :; do wait $child; s=$?; kill -0 $child 2>/dev/null || break; done
+  child=0; return $s
+}
+stopped() { (( sig )) && { rm -rf $r; exit $(( $1 ? $1 : 128 + sig )) } }
+whole() { spawn realcargo "$@"; waitchild; rc=$?; stopped $rc; exit $rc }  # cargo, the lock to its end
+
 # Which commands run programs: run, test, bench (and their aliases), nextest's run.
 ri=0
 case $sub in
@@ -131,9 +245,9 @@ case $sub in
   nextest) for (( i = si + 1; i <= $#args; i++ )); do [[ $args[i] == [+-]* ]] || break; done
            [[ ${args[i]:-} == (run|r) ]] && ri=$i ;;
 esac
-(( ri )) || exec $real "$@"
+(( ri )) || whole "$@"
 host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')
-[[ -n $host ]] || exec $real "$@"
+[[ -n $host ]] || whole "$@"
 # This run's clones, in the shared folder (an APFS clone is a copy only on the same volume). Those
 # of runs whose process is gone go first (a program exec'd below leaves its folder behind).
 runs=$t/.scenic-runs
@@ -143,37 +257,22 @@ mode=record; [[ $sub == nextest ]] && mode=nextest
 # (The runner: /bin/sh writes the environment to a file in $r, then starts this script on it.)
 sh='m=$1 d=$2; shift 2; e=$(/usr/bin/mktemp "$d/env.XXXXXX") && /usr/bin/env -0 > "$e" && exec /bin/zsh "$0" "$m" "$d" "$e" "$@"'
 args=( "${(@)args[1,ri]}" --config "target.$host.runner = [\"/bin/sh\", \"-c\", '$sh', \"$self\", \"--scenic-$mode\", \"$r\"]" "${(@)args[ri+1,-1]}" )
-unlock() { zsystem flock -u $fd }
-# Cargo, and each program run here, is a child this shell waits for: a signal to this shell (a kill
-# of the pid ps shows as cargo) goes on to it, and the shell and its lock outlive it. (Killed while
-# its cargo built, the shell let the lock go with that build still running.)
-child=0 sig=0
-fwd() { sig=$1; (( child )) && kill -$1 $child 2>/dev/null; (( child )) || { rm -rf $r; exit $(( 128 + $1 )) } }
-trap 'fwd 1' HUP; trap 'fwd 2' INT; trap 'fwd 15' TERM
-waitchild() {  # the child's status, once it is gone (a trapped signal ends a wait early)
-  local s; while :; do wait $child; s=$?; kill -0 $child 2>/dev/null || break; done
-  child=0; return $s
-}
-stopped() { (( sig )) && { rm -rf $r; exit $(( $1 ? $1 : 128 + sig )) } }
-
 if [[ $mode == nextest ]]; then
   # Nextest builds, lists every binary (each cloned by the runner), then runs tests from the clones.
-  zmodload zsh/zselect
-  $real "${args[@]}" <&0 & child=$!
+  spawn realcargo "${args[@]}"
   while kill -0 $child 2>/dev/null && [[ ! -e $r/started ]]; do zselect -t 20; done
-  [[ -e $r/pinned ]] || unlock  # (a binary naming the shared folder's programs: the lock to the end)
+  [[ -e $r/pinned ]] || release  # (a binary naming the shared folder's programs: the lock to the end)
   waitchild; rc=$?
   rm -rf $r
   exit $rc
 fi
 
-$real "${args[@]}" <&0 & child=$!; waitchild; rc=$?
+spawn realcargo "${args[@]}"; waitchild; rc=$?
 stopped $rc
 recs=( $r/*.cwd(N) ); recs=( ${recs%.cwd} )
 if (( ! $#recs )); then rm -rf $r; exit $rc; fi
 # As cargo: stop at the first failure unless --no-fail-fast; -q: no "Running" lines. (Only the
 # options before `--`: after it they are the programs'.)
-own=( "${(@)args[1,${args[(i)--]}-1]}" )
 nff=${own[(I)--no-fail-fast]} quiet=$(( ${own[(I)-q]} + ${own[(I)--quiet]} ))
 prog() {  # prog <record> <clone> <keep SCENIC_CARGO_SHARED>: the program as cargo would start it
   local args vars
@@ -193,7 +292,7 @@ binexe() {  # binexe <record>: its CARGO_BIN_EXE_* (cargo sets them as it runs a
   print -rN -- "${vars[@]}" > $1.env
 }
 runprog() {  # runprog <record> <keep SCENIC_CARGO_SHARED>: the program as a child (see fwd), its status
-  ( prog $1 $cl[$1] $2 ) <&0 & child=$!; waitchild
+  spawn prog $1 $cl[$1] $2; waitchild
 }
 exe() { readz $1.argv; print -r -- $reply[1] }
 started() { (( quiet )) || print -u2 -r -- "     Running ${$(exe $1)#$t/}$2" }
@@ -218,7 +317,7 @@ for rec in $recs; do
     fi
   else later+=( $rec ); fi
 done
-unlock
+release
 for (( i = 1; i <= $#later; i++ )); do
   rec=$later[i]
   started $rec

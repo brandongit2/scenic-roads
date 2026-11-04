@@ -77,10 +77,24 @@ Every agent worktree on a Mac builds into one folder outside the repo, ~/Library
 the PATH of every Bash command (`CLAUDE_ENV_FILE` = tools/dev/agent-env.zsh, below) and check.sh puts
 there itself. Third-party crates and unchanged code compile once per Mac, not once per worktree.
 - One build at a time in that folder: a second cargo prints
-  `cargo: waiting for the shared build folder … held by: <worktree> pid … cargo <args>` at once and
-  every minute, then `got the shared build folder after N s` (check.sh shows it on its terminal,
-  not only in the part's log). On a 16 GB laptop this is the point: two heavy rustc at once
-  restarted the M1 (31 Oct). A cargo started by a build under the lock passes through.
+  `cargo: waiting for the shared build folder … (N s; place P in line; held by: <worktree> pid …
+  cargo <args>)` at once and every minute, then `got the shared build folder after N s` (check.sh
+  shows it on its terminal, not only in the part's log). On a 16 GB laptop this is the point: two
+  heavy rustc at once restarted the M1 (31 Oct). A cargo started by a build under the lock passes
+  through. The shim runs cargo as its child and lets the lock go when it ends.
+- First come, first served (#941): fcntl doesn't queue its waiters (zsh's `flock -t` tries once a
+  second), so on 4 Nov a cargo waiting an hour lost to newer ones. Each waiter takes a numbered
+  ticket in `<shared folder>/.scenic-queue/` and holds an fcntl lock on it while it waits; only the
+  first live ticket tries the build lock (every 0.2 s). A ticket whose lock can be taken is a gone
+  cargo's (killed, even by `kill -9`) and is deleted by the next waiter, so it holds no one up. A
+  cargo of an older shim (another worktree not yet on this one) doesn't queue and can still jump in.
+- A long hold is reported, never killed (#941): each cargo letting go appends its hold's seconds to
+  `<shared folder>/.scenic-holds` (the last 100). Once the holder has held the folder longer than
+  nine holds in ten of those (from the first line when none are recorded), and again each time its
+  hold doubles, the waiting line adds `cargo: the folder has been held N s (…): <holder>`, then
+  the holder's process tree (pid, `%cpu`, CPU time, command) and `using CPU: N%` or `using no CPU:
+  it may be stuck`. Third-party crates compile in sccache's server, outside that tree. A stuck
+  holder is for whoever owns it to kill (by its pid: the shim passes the signal on).
 - Programs and tests run outside the lock (#937): `cargo run`, `test` and `bench` build under it
   with the shim as cargo's target runner, which records each program cargo would start (path,
   arguments, environment, folder); the lock goes, and they run as cargo would start them, from APFS
@@ -104,8 +118,14 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   older sources. When the folder's last build (`.scenic-built-by`) came from another worktree, the
   workspace crates' fingerprints are deleted first, under the lock: they compile again, reusing their
   incremental state where the code is the same. Test: tools/dev/test/shared-target.zsh (check.sh).
-- Passed straight to cargo: outside `.claude/worktrees/` (the main checkout, publish.sh's tree)
-  and commands that never build (fmt, metadata, tree, …).
+- Passed straight to cargo: outside `.claude/worktrees/` (the main checkout, publish.sh's tree),
+  commands that never build (the shim's `reads`: fmt, metadata, tree, update, version, …, found
+  after cargo's own options, `--color never fmt` too) and any command asking `-h`/`--help`/`-V`/
+  `--version` (remote-tests.sh's `cargo nextest --version` waited behind builds, 4 Nov). Under the
+  lock: the shim's `builds` (build, check,
+  clippy, test, bench, run, doc, rustc, rustdoc, fix, clean, install, package, publish, report,
+  miri, nextest) and any subcommand in neither list (another `cargo-*`, a config's alias), which
+  says so. shared-target.zsh checks that every built-in of `cargo --list` is in one list.
 - A worktree's own `target/` isn't written: run a built program through `cargo run` (which runs
   a clone), never `target/…/<bin>` or a path in the shared folder, which the next worktree's build
   may have replaced. remote-tests.sh builds on the test Mac in its own folder; the shared one is
