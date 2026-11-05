@@ -304,6 +304,9 @@ grants them nothing. `crate::pool::reachable`, `Run::tend_reach`:
   `REACHED_S` (5 min), or unreachable for `REPORT_S` (2 min) with the cause.
 - One failed request makes the rest of that loop's requests to the lead fail at once
   (`Client::new_round`); a job's end not taken is retried until the lead answers.
+- The client keeps its connections alive (docs/coordination.md §5.2): a request on a kept connection
+  that hears nothing for 2 s connects to the lead anew, so a lead gone asleep is unreached within
+  about 7 s, as a new connection's 5 s would find it.
 - Every view says who can't reach whom and what to do (`View::unreached`): wake the Mac, or allow
   `scenic` in System Settings › Network › Firewall. `scenic` is signed ad hoc at a new path per
   version, so that allow lasts until the next update; a lasting one needs a code-signing identity

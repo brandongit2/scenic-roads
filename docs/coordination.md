@@ -178,9 +178,30 @@ All on the lead's coordinator, the build's key as today, sent only to tailnet ad
 
 ### 5.2 Timing
 
-Each call has a 5-s deadline at the client (the lead answers from memory or a local `fsync`; 5 s
-is already a lead in trouble). A failed call marks the lead unreached for that round
-(`Client::new_round`, today's), and the next beat tries again. Nothing waits 20 s.
+Each call has 5 s to connect and 15 s in all at the client (`crate::coord::client`; a file's
+transfer, `/work/in/`, `/work/out/`, no limit on its whole time, only 60 s with no byte moving). A
+call that gets no answer marks the lead unreached for that round (`Client::new_round`), and the next
+beat tries again.
+
+Connections are kept alive (task #958): each process has one HTTP client, every `Client` sharing
+its pool of connections, at most 4 idle to an address and 64 in all, each let go after 10 s idle;
+the coordinator closes one idle for 20 s (`HEADERS_MAX`, the time a request's headers have), so the
+client always lets go first. A member beating every second holds one connection to the lead, where
+it once opened one a request, each holding its port in TIME_WAIT for 30 s after (a test program's
+many requests ran a busy Mac out of ports). A kept connection gone stale:
+- **closed by the coordinator** (restarted, or closing it just as a request came): ureq finds it
+  closed before taking it, or the request fails before any answer, and goes again at once on a new
+  connection (the coordinator never read it: hyper closes an idle connection, or one shutting
+  down, only between requests; one stopping mid-request has already stopped taking them, and its
+  answer to the repeat is a 503 or none);
+- **its Mac silent** (asleep, off the network, no reset sent): after 2 s with no answer the client
+  connects to the address anew (5 s); taking no connection, the request fails as a new
+  connection's would (unreached, its cause read from it); taking one, the lead is there and slow,
+  and the request waits out its time (as does one on a LAN address after this Mac changed networks:
+  its old connection's answer never comes, and it fails once, at 15 s).
+A connection takes no new request after 3 h (`CONNECTION_MAX`); the one under way is answered, or
+cut once it has had 3 h of its own, as when each request had its own connection. An older member or lead (one connection a request) works with a newer one
+as before: either side may close after an answer.
 
 ### 5.3 What a member keeps
 

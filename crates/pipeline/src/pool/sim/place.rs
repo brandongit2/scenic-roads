@@ -150,6 +150,10 @@ pub struct Run {
     /// Each Mac's simulated seconds with a job running, and its longest job's.
     pub busy_s: Vec<u64>,
     pub longest_s: Vec<u64>,
+    /// The members' beats, asks and give-backs over HTTP, and the connections the coordinator
+    /// took for them.
+    pub calls: u64,
+    pub connections: u64,
 }
 
 /// A loop of an agent (s).
@@ -358,7 +362,10 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 done.extend(j.targets.iter().map(|tg| (j.step.clone(), tg.clone())));
                 match &clients[k] {
                     None => c.finish(j.lease, &j.targets.iter().map(|tg| (tg.clone(), key_of(tg))).collect::<Vec<_>>()),
-                    Some(w) => w.give_back(j.lease, "done").map_err(|e| format!("give back: {e:#}"))?,
+                    Some(w) => {
+                        w.give_back(j.lease, "done").map_err(|e| format!("give back: {e:#}"))?;
+                        out.calls += 1;
+                    }
                 }
                 out.ran[k] += 1;
             }
@@ -643,6 +650,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
         for k in 1..cfg.macs.len() {
             let w = clients[k].as_ref().unwrap();
             for j in &running[k] {
+                out.calls += 1;
                 if !w.beat_told(j.lease, None, Some(live(j, t)), None).map_err(|e| format!("beat: {e:#}"))?.0 {
                     return Err(format!("{}'s lease {} lapsed", cfg.macs[k].name, j.lease));
                 }
@@ -688,6 +696,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     want: crate::agent::want(slots(k), running[k].len()),
                     ..Default::default()
                 };
+                out.calls += 1;
                 let Some(mut g) = w.ask(&a).map_err(|e| format!("ask: {e:#}"))? else {
                     // (Turned away with a measured target it could take open.)
                     let open_measured = cfg.steps.iter().filter(|s| every::offered(s.name)).any(|s| {
@@ -733,6 +742,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
         t += TICK;
     }
     out.secs = t;
+    out.connections = c.connections_taken();
     Ok(out)
 }
 
@@ -1227,5 +1237,16 @@ mod tests {
     fn the_in_use_share_keeps_its_cores_free() {
         let r = run(&Cfg { in_use: Some(4), ..cfg(m4_m1(), 0) }).unwrap();
         assert!(r.ran[1] > 0 && r.most[1] <= 2, "{r:?}");
+    }
+
+    /// A run's members beat, ask and give back hundreds of times over HTTP (task #958): on a few
+    /// kept-alive connections, not one each (whose ports, closed, ran a busy Mac out of them).
+    #[test]
+    fn many_calls_keep_few_connections() {
+        let mut macs = m4_m1();
+        macs.push(Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 });
+        let r = run(&cfg(macs, 0)).unwrap();
+        assert!(r.calls >= 500, "{} calls", r.calls);
+        assert!(r.connections <= 4, "{} connections for {} calls", r.connections, r.calls);
     }
 }
