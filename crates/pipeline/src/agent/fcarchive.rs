@@ -1,7 +1,7 @@
 //! The forecasts' archive (docs/pool.md §7.9, task #621): every forecast the lead makes, kept for
 //! the accuracy work (`scenic forecast-check`, crate::agent::fccheck): its schedule (each target
 //! placed, by lane, from and until when) and what shaped it (each step's time a target, the lanes and
-//! their speeds, each Mac's slots, room, conditions and what held it back, the NAS budget, the
+//! their speeds, each Mac's slots, room and conditions, the NAS budget, the
 //! forecast's code version and the app).
 //!
 //! - One file a day, `state/coord/forecasts/<day>.jsonl.zst`: a forecast an `Entry` a line, the
@@ -27,7 +27,7 @@
 //!   forecast: ~13 KB a forecast compressed, ~4 MB a day at one forecast in 5 minutes, 19 MB at
 //!   one a minute).
 
-use super::forecast::{self, Forecast, Held, MacRoom, Placed, Record};
+use super::forecast::{self, Forecast, MacRoom, Placed, Record};
 use super::{histarchive, nasread};
 use crate::pool::journal;
 use anyhow::{Context, Result};
@@ -86,9 +86,6 @@ pub struct Mac {
     /// Its room when the scheduler had no ask of it (`Input::macs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<MacRoom>,
-    /// What held it back over the last day (`Input::held`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub held: Option<Held>,
     /// Its last ask's capacity (crate::coord::Capacity, a few of its fields: memory and cores free,
     /// its limits, in use, on power, battery, NAS): its conditions. None: no ask recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -170,7 +167,6 @@ impl Entry {
         }
         for (name, m) in macs.iter_mut() {
             m.room = inp.macs.get(name).copied();
-            m.held = inp.held.get(name).cloned();
             m.cond = inp.sched.as_ref().and_then(|s| s.workers.iter().find(|w| &w.ask.worker == name)).and_then(|w| {
                 let cap = serde_json::to_value(w.ask.cap.as_ref()?).ok()?;
                 Some(COND.iter().filter_map(|k| Some((k.to_string(), cap.get(*k)?.clone()))).collect())
@@ -262,17 +258,10 @@ impl Entry {
             .iter()
             .map(|l| (l.name.as_str(), l.mac.as_str(), format!("{:.2}", l.speed), l.measured, &l.running))
             .collect();
-        let macs: Vec<(&str, usize, String, String)> = self
+        let macs: Vec<(&str, usize, String)> = self
             .macs
             .iter()
-            .map(|(n, m)| {
-                (
-                    n.as_str(),
-                    m.slots,
-                    serde_json::to_string(&m.room).unwrap_or_default(),
-                    serde_json::to_string(&m.held).unwrap_or_default(),
-                )
-            })
+            .map(|(n, m)| (n.as_str(), m.slots, serde_json::to_string(&m.room).unwrap_or_default()))
             .collect();
         let each: Vec<(&str, String)> = self.each_s.iter().map(|(k, v)| (k.as_str(), format!("{v:.1}"))).collect();
         (self.code, self.done_at.map(|t| t / GRAIN), &self.why, jobs, lanes, macs, each).hash(&mut h);
@@ -754,12 +743,9 @@ mod tests {
             running: Default::default(),
             macs: [("m".to_string(), MacRoom { mem_mb: 1000, cores: 8 })].into(),
             sched: None,
-            release: vec![],
-            held: Default::default(),
             pace: None,
             step_pace: Default::default(),
             paused: false,
-            took: Default::default(),
         };
         let rec = Record { input: inp, each_s: [("unit".to_string(), 191.23)].into(), waiting: Default::default() };
         let f = Forecast {

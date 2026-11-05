@@ -347,16 +347,14 @@ pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
 }
 
 /// `inputs` rerun (in time order, each read as it comes: one that doesn't read is skipped, said)
-/// and archived as the lead archives its forecasts (`Entry::of`), as forecast code `code` made them (2 to 4, the code now): each step's pace
-/// (`forecast::step_pace`) from the history before it and the costs the records before it (and
-/// it) noted, its workers' speeds its lanes' with their Mac's hold (`Held::util`, code 2's) taken
-/// off, and each lane's job under way held to its step's longest of late (`forecast::cap_busy`; a
-/// record holds its lanes' `busy_s` capped already). Code 2 runs each lane at its recorded speed
-/// (a code 2 record's slowed by its Mac's hold); code 3 at its speed with the hold taken off, the
-/// build's pause (`forecast::paused`) and each Mac's time by step (`forecast::took`) read from the
-/// history. Code 4 also each Mac's pace at each step from the history (crate::paces: the
-/// scheduler's, its costs and its lanes' times by it, `repace`); before it, none. All keep the
-/// record's lanes.
+/// and archived as the lead archives its forecasts (`Entry::of`), as forecast code `code` made them
+/// (3 to the code now): each step's pace (`forecast::step_pace`) from the history before it and the
+/// costs the records before it (and it) noted, each lane's job under way held to its step's
+/// longest of late (`forecast::cap_busy`; a record holds its lanes' `busy_s` capped already), and
+/// the build's pause (`forecast::paused`) read from the history. Code 4 also each Mac's pace at
+/// each step from the history (crate::paces: the scheduler's, its costs and its lanes' times by it,
+/// `repace`); before it, none. All keep the record's lanes (a record before code 3, its lanes
+/// slowed by its Mac's hold of the day before as it was made).
 pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
     let mut noted = forecast::Noted::default();
     let mut out = Vec::new();
@@ -371,26 +369,14 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
         let inp = &mut r.input;
         inp.step_pace.clear();
         noted.note(inp);
-        // (Each lane's speed with its Mac's hold taken off: code 2's, 0 from code 3.)
-        let util = |m: &forecast::Machine| {
-            let mac = m.mac.clone().unwrap_or_else(|| m.name.clone());
-            inp.held.get(&mac).map(|h| h.util).filter(|&u| u > 0.0).unwrap_or(1.0)
-        };
-        let speeds: BTreeMap<String, f64> = inp.machines.iter().map(|m| (m.name.clone(), m.speed / util(m))).collect();
-        if code >= 3 {
-            for m in &mut inp.machines {
-                m.speed = speeds[&m.name];
-            }
-            inp.held = forecast::held_back(events, inp.now);
-            inp.paused = forecast::paused(events, inp.now);
-            inp.took = forecast::took(events, inp.now, &inp.macs_named());
-        }
+        inp.paused = forecast::paused(events, inp.now);
         if code >= 4 {
             repace(inp, events);
         } else if let Some(st) = inp.sched.as_mut() {
             st.paces = Default::default();
         }
         let paces = inp.sched.as_ref().map(|s| s.paces.clone()).unwrap_or_default();
+        let speeds: BTreeMap<String, f64> = inp.machines.iter().map(|m| (m.name.clone(), m.speed)).collect();
         let speed = |w: &str, step: &str| {
             if paces.known() {
                 1.0 / paces.get(w, step)
@@ -938,12 +924,9 @@ mod tests {
                     running: BTreeMap::new(),
                     macs: BTreeMap::new(),
                     sched: None,
-                    release: Vec::new(),
-                    held: Default::default(),
                     pace: None,
                     step_pace: Default::default(),
                     paused: false,
-                    took: Default::default(),
                 },
                 each_s: BTreeMap::new(),
                 waiting: BTreeMap::new(),

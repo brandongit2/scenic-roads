@@ -2560,9 +2560,6 @@ impl Planner {
         if self.hold().held.is_some() {
             machines.retain(|m| m.mac.as_deref() != Some(self.host.as_str()));
         }
-        // (Each Mac held to what held it back over the last day: its lanes and their pace.)
-        let held = forecast::held_back(&events, now_s());
-        let machines = forecast::hold_back(machines, &held);
         // What's being built now, and by which.
         let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
         for k in 0..self.inp.slots.len() {
@@ -2604,15 +2601,10 @@ impl Planner {
             running,
             macs: rooms,
             sched: self.coord.as_ref().map(|c| c.sched_state()),
-            release: Vec::new(),
-            held,
             pace: forecast::pace(&self.curves.borrow(), &events, now_s()),
             step_pace: BTreeMap::new(),
             paused: self.inp.pause.is_some(),
-            took: BTreeMap::new(),
         };
-        // (The time each Mac gave each step over the last day: what its lanes take, and first.)
-        inp.took = forecast::took(&events, inp.now, &inp.macs_named());
         // (Each step's pace: its jobs of late against what the forecasts before them gave their
         // targets, at the lead's pace by their worker's speed.)
         let mut noted = self.noted.borrow_mut();

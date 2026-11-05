@@ -323,12 +323,10 @@ function nextOnMap(m) {
 }
 
 // The live error beside the finish (task #563): how the forecast of an hour or more ago fared
-// against the work done since, and what each Mac was held to over the last day.
+// against the work done since.
 function liveError(fc) {
   const p = fc.pace;
-  const err = p ? `live error (rough, ±50%): the forecast of ${clock(p.since)} did the ${p.real_n} targets done since in ${dur(p.run_s)}, not ${dur(p.real_s)} (${p.error > 0 ? "+" : ""}${Math.round(p.error * 100)}%)` : "live error (rough): not yet measured (a forecast an hour old is needed)";
-  const held = Object.entries(fc.held || {}).map(([mac, x]) => `${mac} ${x.lanes} job${x.lanes > 1 ? "s" : ""} at ${Math.round(x.util * 100)}%`);
-  return held.length ? `${err} · held to the last day's pace: ${held.join(", ")}` : err;
+  return p ? `live error (rough, ±50%): the forecast of ${clock(p.since)} did the ${p.real_n} targets done since in ${dur(p.run_s)}, not ${dur(p.real_s)} (${p.error > 0 ? "+" : ""}${Math.round(p.error * 100)}%)` : "live error (rough): not yet measured (a forecast an hour old is needed)";
 }
 
 // ---- The overview ---------------------------------------------------------------------------------
