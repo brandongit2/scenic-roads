@@ -27,8 +27,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// `NEAR_COVERAGE_KM`), `det`'s maths in the sampling (the geoid's, the rivers' too).
 pub const TERRAIN_V: u32 = 9;
 /// Terrain-deep 2 (task #929): a z10 tile's band past z12 by the same rule, its mid for its z6 tile.
-/// 3 (task #862): as terrain-hi's 9.
-pub const TERRAIN_DEEP_V: u32 = 3;
+/// 3 (task #862): as terrain-hi's 9. 4 (task #942): its lakes across its edges at the levels
+/// terrain-lakes decided once a lake (crate::terrain_lakes).
+pub const TERRAIN_DEEP_V: u32 = 4;
 /// Slope 4 (task #952): a missing deep terrain tile (z13 on) is made from its nearest ancestor
 /// within the deep levels alone, past them its own edge repeated (crate::slope_pack::fallback_floor),
 /// and z10–12 are made by slope-hi from its z10 tiles' z13 quadrants (their deep mids, format 2) and
@@ -68,6 +69,10 @@ pub struct Keys {
     pub terrain_deep: BTreeMap<String, String>,
     #[serde(default)]
     pub slope_deep: BTreeMap<String, String>,
+    /// The levels of the deep targets' lakes across their edges, per z6 tile ("6/x/y":
+    /// `terrain_slope_targets`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub terrain_lakes: BTreeMap<String, String>,
     /// Their assemblies, per z3 tile ("3/x/y").
     #[serde(default)]
     pub terrain_lo: BTreeMap<String, String>,
@@ -189,6 +194,7 @@ impl Keys {
             "terrain-hi" => &mut self.terrain_hi,
             "slope-hi" => &mut self.slope_hi,
             "terrain-deep" => &mut self.terrain_deep,
+            "terrain-lakes" => &mut self.terrain_lakes,
             "slope-deep" => &mut self.slope_deep,
             "terrain-lo" => &mut self.terrain_lo,
             "slope-lo" => &mut self.slope_lo,
@@ -217,6 +223,7 @@ impl Keys {
             "terrain-hi" => &self.terrain_hi,
             "slope-hi" => &self.slope_hi,
             "terrain-deep" => &self.terrain_deep,
+            "terrain-lakes" => &self.terrain_lakes,
             "slope-deep" => &self.slope_deep,
             "terrain-lo" => &self.terrain_lo,
             "slope-lo" => &self.slope_lo,
@@ -1138,6 +1145,16 @@ pub fn region_steps(
                 ),
             );
             s.insert(
+                "terrain-lakes",
+                count(
+                    &mut tt
+                        .terrain_lakes
+                        .iter()
+                        .filter(|t| read.contains(&z3(&t.0)))
+                        .map(|t| !tw.terrain_lakes_left.contains(&t.0)),
+                ),
+            );
+            s.insert(
                 "terrain-deep",
                 count(
                     &mut tt
@@ -1259,6 +1276,13 @@ pub struct TerrainTargets {
     /// Slope-deep's, the same z10 tiles.
     #[serde(default)]
     pub slope_deep: Vec<(String, Option<String>)>,
+    /// Terrain-lakes' z6 tiles ("6/x/y"): those with terrain-deep targets.
+    #[serde(default)]
+    pub terrain_lakes: Vec<(String, String)>,
+    /// The z6 tiles with terrain-lakes' files and no terrain-deep target: "none" targets, whose runs
+    /// drop them.
+    #[serde(default)]
+    pub terrain_lakes_none: Vec<(String, String)>,
     /// The z10 tiles with a deep pack (a retired one too) and no terrain-deep target, and those with
     /// a slope deep pack or deep mid and no slope-deep target: "none" targets, whose runs drop them.
     #[serde(default)]
@@ -1300,6 +1324,7 @@ pub fn terrain_slope_targets(x: &KeyCtx) -> TerrainTargets {
         &named("work/slope-mid/"),
         &named(crate::slope_pack::DEEP_MID_PREFIX),
         &named(crate::terrain_deep::MID_PREFIX),
+        &named(crate::terrain_lakes::PREFIX),
         &named(crate::terrain_water::IDX_PREFIX),
         &crate::terrain_pack::water_source_pin(m).unwrap_or_default(),
         m.get(&crate::inputs::logical(crate::inputs::elevation::UNIT)).map_or("-", String::as_str),
@@ -1309,7 +1334,13 @@ pub fn terrain_slope_targets(x: &KeyCtx) -> TerrainTargets {
     let kept = tiles.memo("terrain-targets", &from, || {
         let t = terrain_slope_targets_made(x);
         let whole = t.slope.iter().chain(&t.slope_deep).all(|(_, k)| k.is_some())
-            && !t.terrain.iter().chain(&t.terrain_lo).chain(&t.terrain_deep).any(|(_, k)| k == UNKNOWN);
+            && !t
+                .terrain
+                .iter()
+                .chain(&t.terrain_lo)
+                .chain(&t.terrain_deep)
+                .chain(&t.terrain_lakes)
+                .any(|(_, k)| k == UNKNOWN);
         let json = serde_json::to_string(&t).unwrap_or_default();
         *made.borrow_mut() = Some(t);
         if whole {
@@ -1369,7 +1400,12 @@ pub fn terrain_slope_targets_made(x: &KeyCtx) -> TerrainTargets {
     let mut deep: BTreeSet<(u32, u32)> = BTreeSet::new();
     if let Some(sets) = tiles.zoom_sets(m).as_deref() {
         for &p in &pieces {
-            for t in crate::terrain_deep::targets_in(sets, cov, p) {
+            let ts = crate::terrain_deep::targets_in(sets, cov, p);
+            if !ts.is_empty() {
+                let t = format!("6/{}/{}", p.0, p.1);
+                out.terrain_lakes.push((t.clone(), key("terrain-lakes", &t)));
+            }
+            for t in ts {
                 deep.insert(t);
                 let ts = format!("{}/{}/{}", crate::terrain_deep::PACK_Z, t.0, t.1);
                 out.terrain_deep.push((ts.clone(), key("terrain-deep", &ts)));
@@ -1392,6 +1428,19 @@ pub fn terrain_slope_targets_made(x: &KeyCtx) -> TerrainTargets {
         &|l| crate::terrain_deep::pack_tile(l).or_else(|| crate::terrain_deep::mid_tile(l)),
         &[crate::terrain_deep::PREFIX, crate::terrain_deep::RETIRED, crate::terrain_deep::MID_PREFIX],
     );
+    // (A z6 tile with lakes' levels named and no deep target now: its run drops them.)
+    let lakes_at: BTreeSet<String> = out.terrain_lakes.iter().map(|(t, _)| t.clone()).collect();
+    let k = crate::terrain_deep::PACK_Z - 6;
+    out.terrain_lakes_none = m
+        .range(crate::terrain_lakes::PREFIX.to_string()..)
+        .take_while(|(l, _)| l.starts_with(crate::terrain_lakes::PREFIX))
+        .filter_map(|(l, _)| crate::terrain_lakes::tile_of(l))
+        .map(|(x, y)| format!("6/{}/{}", x >> k, y >> k))
+        .collect::<BTreeSet<String>>()
+        .into_iter()
+        .filter(|t| !lakes_at.contains(t))
+        .map(|t| none("terrain-lakes", &t))
+        .collect();
     out.slope_deep_none = deep_left(
         "slope-deep",
         &|l| crate::slope_pack::deep_tile(l).or_else(|| crate::slope_pack::deep_mid_tile(l)),
@@ -1793,15 +1842,21 @@ pub struct TerrainWork {
     /// them all), made in the terrain stage so the slope that reads it waits for it
     /// (docs/readiness.md decision 2).
     pub terrain_root: Vec<(String, String)>,
-    /// Terrain-deep's z10 tiles that can run: every stale one whose key is known, from the start
-    /// (its base is made from the pool, not read from built tiles), and the "none" ones not yet run.
+    /// Terrain-lakes' z6 tiles that can run: every stale one whose key is known, from the start
+    /// (it reads no built tiles), and the "none" ones not yet run.
+    pub terrain_lakes: Vec<(String, String)>,
+    /// Terrain-deep's z10 tiles that can run: stale, their key known, their z6 tile's terrain-lakes
+    /// not left (its base is made from the pool, not read from built tiles); and the "none" ones
+    /// not yet run.
     pub terrain_deep: Vec<(String, String)>,
     /// Slope-deep's z10 tiles that can run: stale, their key known, none of the targets they read
     /// left (their own and edge neighbours' terrain-deep, those tiles' z6 terrain-hi and z3
     /// terrain-lo), however much other terrain their z3 tile has left (task #864); and the "none"
     /// ones not yet run, whenever.
     pub slope_deep: Vec<(String, String)>,
-    /// The stale terrain-deep and slope-deep targets, "none" ones too, runnable or not.
+    /// The stale terrain-lakes, terrain-deep and slope-deep targets, "none" ones too, runnable or
+    /// not.
+    pub terrain_lakes_left: BTreeSet<String>,
     pub terrain_deep_left: BTreeSet<String>,
     pub slope_deep_left: BTreeSet<String>,
     /// The current z6 tiles without a mid nothing else makes (recorded without one by an earlier
@@ -1893,8 +1948,25 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
     }
     // (A "none" assembly reads nothing: it runs whenever, its z3 tile left until it has.)
     w.terrain_lo.extend(lo_none);
-    // The deep levels: from the start (their base is made from the pool), each z3 tile with one left
-    // waiting like one with terrain-hi left.
+    // The deep targets' lakes' levels: from the start (they read no built tiles).
+    let lcurrent = |t: &str, k: &str| k != UNKNOWN && done.terrain_lakes.get(t).map(String::as_str) == Some(k);
+    w.terrain_lakes_left = tt
+        .terrain_lakes
+        .iter()
+        .chain(&tt.terrain_lakes_none)
+        .filter(|(t, k)| !lcurrent(t, k))
+        .map(|p| p.0.clone())
+        .collect();
+    w.terrain_lakes = tt
+        .terrain_lakes
+        .iter()
+        .chain(&tt.terrain_lakes_none)
+        .filter(|(t, k)| k != UNKNOWN && !lcurrent(t, k))
+        .cloned()
+        .collect();
+    w.left.set("terrain-lakes", w.terrain_lakes_left.iter().cloned());
+    // The deep levels: each once its z6 tile's lakes' levels are (their base is made from the pool),
+    // each z3 tile with one left waiting like one with terrain-hi left.
     let dcurrent = |t: &str, k: &str| k != UNKNOWN && done.terrain_deep.get(t).map(String::as_str) == Some(k);
     w.terrain_deep_left = tt
         .terrain_deep
@@ -1903,15 +1975,26 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
         .filter(|(t, k)| !dcurrent(t, k))
         .map(|p| p.0.clone())
         .collect();
+    let mut deep_held: Vec<String> = Vec::new();
     w.terrain_deep = tt
         .terrain_deep
         .iter()
         .chain(&tt.terrain_deep_none)
         .filter(|(t, k)| k != UNKNOWN && !dcurrent(t, k))
+        .filter(|(t, k)| {
+            let ok = is_none_key("terrain-deep", t, k) || ready("terrain-deep", t, &w.left);
+            if !ok {
+                deep_held.push(t.clone());
+            }
+            ok
+        })
         .cloned()
         .collect();
+    if let Some(n) = held_note("terrain-deep", deep_held.iter().map(String::as_str), &w.left) {
+        w.held.push(("terrain-deep", n));
+    }
     w.terrain_left = changing;
-    w.terrain_left.extend(w.terrain_deep_left.iter().filter_map(|t| z3_of(t)));
+    w.terrain_left.extend(w.terrain_deep_left.iter().chain(&w.terrain_lakes_left).filter_map(|t| z3_of(t)));
     // (A z6 tile over a deep target waits for it: its z12 tiles there are its deep mid's means, its
     // declared read (task #929). A "none" z6 tile reads nothing.)
     w.left.set("terrain-deep", w.terrain_deep_left.iter().cloned());
@@ -2409,6 +2492,11 @@ pub struct RegionLeft {
     pub terrain_deep: Vec<String>,
     #[serde(default)]
     pub own_terrain_deep: Vec<String>,
+    /// The terrain-lakes z6 tiles of the z3 tiles it reads left to make, and those it makes itself.
+    #[serde(default)]
+    pub terrain_lakes: Vec<String>,
+    #[serde(default)]
+    pub own_terrain_lakes: Vec<String>,
     /// Its z3 tiles' stale slope-deep z10 tiles.
     #[serde(default)]
     pub slope_deep: Vec<String>,
@@ -2610,6 +2698,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
         terrain,
         terrain_lo,
         terrain_root,
+        terrain_lakes,
         terrain_deep,
         slope,
         slope_lo,
@@ -2632,6 +2721,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
         blocks(step, rest)
     };
     let terrain = split("terrain-hi", terrain);
+    let terrain_lakes = split("terrain-lakes", terrain_lakes);
     let terrain_deep = split("terrain-deep", terrain_deep);
     let terrain_lo = split("terrain-lo", terrain_lo);
     let slope_deep = split("slope-deep", slope_deep);
@@ -2692,6 +2782,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     let reach = reach.filter(|_| !waiting);
     let Some(reach) = reach else {
         push(&mut work, "terrain-hi", terrain);
+        push(&mut work, "terrain-lakes", terrain_lakes);
         push(&mut work, "terrain-deep", terrain_deep);
         push(&mut work, "terrain-lo", terrain_lo);
         push(&mut work, "terrain-root", terrain_root);
@@ -2902,6 +2993,12 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
         let t: Vec<(String, String)> =
             terrain.iter().filter(|t| r.terrain.contains(&z3(t)) && listed.insert(t.0.clone())).cloned().collect();
         push(by_region, "terrain-hi", t);
+        let t: Vec<(String, String)> = terrain_lakes
+            .iter()
+            .filter(|t| r.terrain.contains(&z3(t)) && listed.insert(format!("lakes {}", t.0)))
+            .cloned()
+            .collect();
+        push(by_region, "terrain-lakes", t);
         let t: Vec<(String, String)> =
             terrain_deep.iter().filter(|t| r.terrain.contains(&z3(t)) && listed.insert(t.0.clone())).cloned().collect();
         push(by_region, "terrain-deep", t);
@@ -2925,7 +3022,10 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
             ("trees-lo", &trees_lo, true),
         ] {
             // (Only a step reading the region's own work: the rest keep their place after it.)
-            if !["terrain-hi", "terrain-deep", "terrain-lo", "unit"].iter().any(|s| super::steps::reads_from(step, s)) {
+            if !["terrain-hi", "terrain-lakes", "terrain-deep", "terrain-lo", "unit"]
+                .iter()
+                .any(|s| super::steps::reads_from(step, s))
+            {
                 continue;
             }
             let t: Vec<(String, String)> = list
@@ -2963,7 +3063,11 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     let mut claimed_terrain: BTreeSet<String> = BTreeSet::new();
     // (The drops are no region's own: the forecast's first, `Plan::drops`.)
     for (step, t) in &drops {
-        claimed_terrain.insert(if step == "terrain-lo" { format!("lo {t}") } else { t.clone() });
+        claimed_terrain.insert(match step.as_str() {
+            "terrain-lo" => format!("lo {t}"),
+            "terrain-lakes" => format!("lakes {t}"),
+            _ => t.clone(),
+        });
     }
     let mut lefts: Vec<RegionLeft> = Vec::new();
     for r in order.iter().copied().chain(regions.iter().filter(|r| r.stale.is_empty() && r.terrain.is_empty())) {
@@ -2990,6 +3094,14 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
             })
             .cloned()
             .collect();
+        let own_terrain_lakes: Vec<String> = tw
+            .terrain_lakes_left
+            .iter()
+            .filter(|t| {
+                z3_of(t).is_some_and(|q| r.terrain.contains(&q)) && claimed_terrain.insert(format!("lakes {t}"))
+            })
+            .cloned()
+            .collect();
         lefts.push(RegionLeft {
             id: r.id.to_string(),
             on_map: updates.on_map.get(r.id).copied(),
@@ -3006,6 +3118,13 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
                 .cloned()
                 .collect(),
             own_terrain_deep,
+            terrain_lakes: tw
+                .terrain_lakes_left
+                .iter()
+                .filter(|t| z3_of(t).is_some_and(|q| r.terrain.contains(&q)))
+                .cloned()
+                .collect(),
+            own_terrain_lakes,
             slope_deep: tw
                 .slope_deep_left
                 .iter()
@@ -4770,8 +4889,9 @@ pub fn mark_shared(lines: &mut [Line]) {
 
 /// The steps the checklist counts, in order: the regions' build to the end (the pass's own are the
 /// agent's, before them).
-pub const COUNTED: [&str; 35] = [
+pub const COUNTED: [&str; 36] = [
     "heritage-sites",
+    "terrain-lakes",
     "terrain-hi",
     "terrain-deep",
     "terrain-lo",
@@ -4882,6 +5002,7 @@ pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Check
     }
     // (A slope target whose key can't be told now isn't done; the deep levels' are known once the
     // fine datasets are read.)
+    out.push(sized("terrain-lakes", &ts.terrain_lakes, &done.terrain_lakes, tiles.zoom_sets(m).is_some()));
     out.push(sized("terrain-hi", &ts.terrain, &done.terrain_hi, true));
     out.push(sized("terrain-deep", &ts.terrain_deep, &done.terrain_deep, tiles.zoom_sets(m).is_some()));
     out.push(sized("terrain-lo", &ts.terrain_lo, &done.terrain_lo, true));
@@ -6260,6 +6381,10 @@ pub(crate) mod tests {
                 let t = tt();
                 Some(t.terrain_deep.into_iter().chain(t.terrain_deep_none).collect())
             }
+            "terrain-lakes" => {
+                let t = tt();
+                Some(t.terrain_lakes.into_iter().chain(t.terrain_lakes_none).collect())
+            }
             "slope-hi" => {
                 let t = tt();
                 Some(known(t.slope).into_iter().chain(t.slope_none).collect())
@@ -7073,9 +7198,16 @@ pub(crate) mod tests {
         let sets = vec![lidar];
         let world = crate::terrain_zoom::test_world(12);
         assert_eq!(of(&plan(&m, &done, &world), "unit").len(), 4);
-        // The deep targets from the start; a terrain-hi z6 tile over one waits for it (its z12
-        // tiles there its deep mid's means), the others don't (task #929, B).
+        // The deep targets' lakes' levels from the start, the deep targets once their z6 tile's are
+        // made (task #942); a terrain-hi z6 tile over one waits for it (its z12 tiles there its deep
+        // mid's means), the others don't (task #929, B).
         let p = plan(&m, &done, &sets);
+        let lakes = of(&p, "terrain-lakes");
+        assert!(!lakes.is_empty() && lakes.iter().all(|(t, _)| t.starts_with("6/")), "{lakes:?}");
+        assert!(of(&p, "terrain-deep").is_empty(), "the deep targets wait for their lakes' levels");
+        did(&mut m, &mut done, &Work { step: "terrain-lakes".into(), targets: lakes });
+        let p = plan(&m, &done, &sets);
+        assert!(of(&p, "terrain-lakes").is_empty());
         let deep = of(&p, "terrain-deep");
         assert!(!deep.is_empty() && deep.iter().all(|(t, _)| t.starts_with("10/")), "{deep:?}");
         let k = crate::terrain_deep::PACK_Z - 6;
@@ -7129,6 +7261,9 @@ pub(crate) mod tests {
         let b = roadcore::geo::tile_box(u.z, u.x, u.y);
         let cell = [b[0].floor(), b[1].floor(), b[0].floor() + 1.0, b[1].floor() + 1.0];
         let cut = vec![FineSet { cover: crate::dem::declared::Cover::of(Some(&[cell])), ..sets[0].clone() }];
+        // (Its z6 tiles' lakes' levels made again first: their deep targets are others now.)
+        let p = plan(&m, &done, &cut);
+        did(&mut m, &mut done, &Work { step: "terrain-lakes".into(), targets: of(&p, "terrain-lakes") });
         let p = plan(&m, &done, &cut);
         let mixed = of(&p, "terrain-deep");
         let is_drop = |(t, k): &(String, String)| is_none_key("terrain-deep", t, k);
@@ -8747,6 +8882,7 @@ pub(crate) mod tests {
             [
                 "terrain-water",
                 "pyramids-fill",
+                "terrain-lakes",
                 "terrain-hi",
                 "terrain-deep",
                 "terrain-lo",
@@ -8756,7 +8892,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             line(&l, "terrain").items.iter().map(|i| i.step.as_str()).collect::<Vec<_>>(),
-            ["terrain-hi", "terrain-deep", "terrain-lo", "terrain-root"]
+            ["terrain-lakes", "terrain-hi", "terrain-deep", "terrain-lo", "terrain-root"]
         );
         // Terrain, slope, the heritage sites and the area done.
         for step in ["heritage-sites", "terrain-hi", "terrain-lo", "unit", "slope-hi", "slope-lo", "trees", "trees-lo"]

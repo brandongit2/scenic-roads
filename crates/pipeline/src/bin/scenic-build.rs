@@ -24,9 +24,14 @@
 //!                                pack, z9–12, its z10 tiles' deep mids taken in, and its mid;
 //!                                --expect-same, those made again as the manifest has them, else it
 //!                                fails, uploading nothing
+//!   terrain-lakes <6/x/y …> [--raw dir]  the levels of the lakes across the edges of z6 tiles'
+//!                                terrain-deep targets, each decided once from its whole shore
+//!                                (pipeline::terrain_lakes): a file a target; a z6 tile with no
+//!                                target now has its files dropped
 //!   terrain-deep <10/x/y …> [--raw dir]  z10 tiles' terrain past z12 (deep packs, z13–16) by the
-//!                                same rule, and their mids; one with none now has its deep pack
-//!                                and mid dropped
+//!                                same rule, its lakes across its edges at terrain-lakes' levels,
+//!                                and their mids; one with none now has its deep pack and mid
+//!                                dropped
 //!   terrain-lo <Q …> [--raw dir]  z3 tiles Q's zoomed-out terrain (lo packs, z3–8) from their
 //!                                z6 tiles' mids and the relief
 //!   slope-hi [T …] [--regions dir] [--expect-same T,…]  the shading from the terrain packs: of z6
@@ -535,6 +540,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "pois" => pois_step(&mut out, &args, &scratch)?,
         "roadunits" => roadunits(&mut out)?,
         "terrain-hi" => terrain_step(&mut out, &args)?,
+        "terrain-lakes" => terrain_lakes_step(&mut out, &args)?,
         "terrain-deep" => terrain_deep_step(&mut out, &args)?,
         "pyramids-fill" => {
             // (By hand into a scratch store, or its sizes: nothing of the records saved.)
@@ -5313,11 +5319,98 @@ fn terrain_pieces_from(
     Ok(())
 }
 
+/// terrain-lakes <6/x/y …> [--regions dir] [--pass d] [--raw dir]: each z6 tile's terrain-deep
+/// targets' lakes across their edges (pipeline::terrain_lakes), each lake's level decided once from
+/// its whole shore sampled from the pool: a file a target with one, those of targets with none now
+/// dropped; a z6 tile with no target now has its files dropped. Then the Terrarium tiles AWS gave
+/// packed onto the NAS.
+fn terrain_lakes_step(out: &mut Out, args: &[String]) -> Result<()> {
+    use pipeline::terrain_lakes as tl;
+    const STEP: &str = "terrain-lakes";
+    let ts = z6_tiles(args, STEP)?;
+    let cov = coverage_of(out, args)?;
+    let sets = zoom_sets(out)?;
+    let raw_dir = PathBuf::from(
+        opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
+    );
+    let raw = raw_tiles(out, &raw_dir)?;
+    let p = phase("opening the basemap's water");
+    let water = pipeline::terrain_pack::open_water(out)?;
+    drop(p);
+    let src = pipeline::terrain_pack::Sources { water: Some(&water), native: None, sets: &sets };
+    let mut names: Vec<String> = ts.iter().map(|t| format!("Levelling {}'s lakes", t.slash())).collect();
+    names.push("Packing the new raw tiles onto the NAS".into());
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    for (k, t) in ts.iter().enumerate() {
+        pipeline::control::safe_point(STEP);
+        pipeline::agent::jobs::part(k, &names);
+        let targets = pipeline::terrain_deep::targets_in(&sets, &cov, (t.x, t.y));
+        let had = tl::named_under(&out.manifest, (t.x, t.y));
+        if targets.is_empty() {
+            let n = run_drop(STEP, &t.slash(), || {
+                let n = pipeline::layers::drop(out, &had);
+                out.save()?;
+                Ok(n)
+            })?;
+            eprintln!("{STEP} {}: no terrain-deep target; {n} files dropped", t.slash());
+            continue;
+        }
+        let c = cost_start(STEP, &t.slash());
+        let lakes = tl::Lakes::new(&water);
+        let p = phase("finding the lakes across the targets' edges");
+        let across = lakes.across(&targets)?;
+        let want = lakes.to_sample(&across)?;
+        drop(p);
+        let levels = match tl::sample_box(&want) {
+            None => Vec::new(),
+            Some(b) => {
+                let _p = phase("sampling their shores, deciding their levels");
+                let pool = pipeline::terrain_base::Pool::read(out.root(), &out.manifest, b)?;
+                pool.with_tiles(&raw, src.water, |tiles| {
+                    tl::decide(tiles, &src, &across, &want, &|d, n| pipeline::agent::jobs::report(d, n, "tiles"))
+                })?
+                .map_err(|e| pipeline::control::stop_if_paused(STEP, e))?
+            }
+        };
+        let by = tl::by_target(&across, &levels);
+        let _p = phase("writing the targets' levels");
+        let mut gone = had;
+        for (u, l) in &by {
+            let name = tl::logical(*u);
+            gone.retain(|g| *g != name);
+            let local = out.scratch_file(&format!("{name}.json"));
+            if let Some(d) = local.parent() {
+                std::fs::create_dir_all(d)?;
+            }
+            std::fs::write(&local, tl::to_bytes(*u, l))?;
+            out.put_file(&name, "json", &local)?;
+            std::fs::remove_file(&local).ok();
+        }
+        let dropped = pipeline::layers::drop(out, &gone);
+        out.save()?;
+        eprintln!(
+            "{STEP} {}: {} lakes across {} targets' edges, {} shore tiles sampled; {} files, {dropped} dropped",
+            t.slash(),
+            across.lakes.len(),
+            targets.len(),
+            want.len(),
+            by.len()
+        );
+        pipeline::control::done(STEP, &t.slash());
+        note_cost(STEP, &t.slash(), c);
+    }
+    pipeline::control::safe_point(STEP);
+    pipeline::agent::jobs::part(names.len() - 1, &names);
+    pack_raw_with(out, &raw_dir, &|what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what));
+    Ok(())
+}
+
 /// terrain-deep <10/x/y …> [--regions dir] [--pass d] [--raw dir]: each z10 tile's band past z12
 /// (pipeline::terrain_deep: its tiles by the rule, each place's finest zoom sampled from the pool,
 /// the coarser from them): its deep pack and its mid, which its z6 tile's terrain-hi run takes in;
-/// a z10 tile with none now has its deep pack, mid (and a retired fine pack) dropped. Then the
-/// Terrarium tiles AWS gave packed onto the NAS.
+/// a z10 tile with none now has its deep pack, mid (and a retired fine pack) dropped. Its lakes
+/// across its edges at the levels terrain-lakes decided (pipeline::terrain_deep::read_lakes). Then
+/// the Terrarium tiles AWS gave packed onto the NAS.
 fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     use pipeline::terrain_deep as td;
     const STEP: &str = "terrain-deep";
@@ -5362,7 +5455,8 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
             let fetched = pipeline::fetch::fetched_bytes();
             let levels = td::levels(&cov, &sets, (t.x, t.y));
             // (Paused mid-sampling: nothing of it put, its blocks made kept in its resume log.)
-            let r = td::build_target(out, (t.x, t.y), levels, tiles, src, pipeline::resume_log::on())
+            let lakes = td::read_lakes(out, (t.x, t.y))?;
+            let r = td::build_target(out, (t.x, t.y), levels, tiles, src, pipeline::resume_log::on(), lakes)
                 .map_err(|e| pipeline::control::stop_if_paused(STEP, e))?;
             out.save()?;
             eprintln!(

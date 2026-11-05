@@ -90,8 +90,23 @@ makes the same bytes on every Mac.
     10 cm, ties to even (crate::terrain_codec); only reads across jobs (the lo packs' z3 for the
     root) see rounded tiles.
   - **The jobs** (each boundary scheduling's):
+    - **terrain-lakes**, a run per z6 tile with terrain-deep targets (crate::terrain_lakes, task
+      #942): the levels of the lakes across its targets' z10 edges, each decided once for the whole
+      lake, so a lake two targets share sits at one level in both (each from its own tiles, the
+      levels of one lake across z10 edges had stepped a few cm to metres apart at z13–14). A lake
+      across: an OSM lake whose z14 tiles lie in two z10 tiles or more; its tiles, every z14 tile
+      of the z10 tiles it reaches holding it (a z10 tile reached where one of its tiles touches one
+      of the lake's), past the z6 tile too, so the same from any of its targets. Its level: the
+      water's rule below over its z14 tiles with a shore (those it doesn't wholly cover), each sampled
+      from the pool at z14 (the pool's own sample, not the means of finer tiles). A file per target
+      with such a lake (`work/terrain-lakes/10-x-y`, docs/formats.md); its key names the water, the
+      elevation and the coverage's deep targets there whole (a lake goes on past its z6 tile).
+      Seconds to minutes: a few thousand z14 tiles where lakes are many (Ontario's z6 tiles), a
+      large lake's whole shore (Huron, Ontario) in each z6 tile it reaches.
     - **terrain-deep**, a run per z10 tile whose places reach past z12 (`terrain_deep::levels`, near
-      the coverage): its tiles z13–16 by the rule, its deep pack, and its mid
+      the coverage), once its z6 tile's terrain-lakes is made: its tiles z13–16 by the rule, its lakes
+      across its edges at terrain-lakes' levels (its key names its file by content: a lake changed
+      re-keys only the targets it reaches), its deep pack, and its mid
       (`work/terrain-deep-mid/10-x-y`: its z13 tiles' means before rounding and its lakes' levels).
       A z10 tile, not its z6 tile: up to 5,440 tiles and GBs of a fine dataset's reads each. A tile
       of the band is kept only where some of its pixels came from a dataset reaching its zoom
@@ -146,7 +161,9 @@ makes the same bytes on every Mac.
     4 × 4 samples a pixel. The sea goes to 0; each lake, pond, reservoir or dock to its level (the
     10th percentile of its shore's dry pixels, or its source's own lower level); intermittent
     water and pools are left. One level per lake by OSM id across the tiles made
-    together; a lake without one is its tile's alone (`own_key`: never another tile's or feature's). Partly-water pixels are blended.
+    together; a lake without one is its tile's alone (`own_key`: never another tile's or feature's);
+    a lake across deep targets' z10 edges at the level terrain-lakes decided for the whole of it,
+    which the z6 tiles' z9–12 then take from the deep mids. Partly-water pixels are blended.
   - **Rivers levelled** (`terrain_water::rivers`, task #678): in a tile with both river polygons
     (the `water` layer's class `river`) and rivers' courses (the `waterway` layer's class `river`,
     not intermittent, not in tunnels), each course is cut into stations, the river pixels it

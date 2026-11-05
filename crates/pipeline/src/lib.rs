@@ -56,6 +56,7 @@ pub mod summits;
 pub mod terr;
 pub mod terrain_base;
 pub mod terrain_deep;
+pub mod terrain_lakes;
 pub mod terrain_pack;
 pub mod terrain_resume;
 pub mod terrain_task;

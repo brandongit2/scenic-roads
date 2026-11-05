@@ -607,6 +607,7 @@ pub fn cost_table(regions: &[RegionLeft], cost: &dyn Fn(&str, &str) -> Cost) -> 
     };
     for r in regions {
         put("terrain-hi", &mut r.own_terrain.iter());
+        put("terrain-lakes", &mut r.own_terrain_lakes.iter());
         put("terrain-deep", &mut r.own_terrain_deep.iter());
         put("terrain-lo", &mut r.own_terrain_lo.iter());
         put("unit", &mut r.own_units.iter().chain(&r.expected));
@@ -1214,17 +1215,22 @@ fn items(inp: &Input) -> Items {
                 (Vec::new(), Vec::new()),
             );
         }
-        // (The deep levels wait for nothing: their base is made from the pool.)
-        for t in &r.own_terrain_deep {
+        // (The deep targets' lakes' levels wait for nothing; the deep levels for those alone: their
+        // base is made from the pool.)
+        for t in &r.own_terrain_lakes {
             add(
                 &mut out,
                 &mut by_target,
-                "terrain-deep",
+                "terrain-lakes",
                 t,
-                inp.cost("terrain-deep", t),
+                inp.cost("terrain-lakes", t),
                 Phase::Region,
                 (Vec::new(), Vec::new()),
             );
+        }
+        for t in &r.own_terrain_deep {
+            let deps = reads(&by_target, &mut groups, "terrain-deep", t);
+            add(&mut out, &mut by_target, "terrain-deep", t, inp.cost("terrain-deep", t), Phase::Region, deps);
         }
         for q in &r.own_terrain_lo {
             let deps = reads(&by_target, &mut groups, "terrain-lo", q);
@@ -1280,6 +1286,7 @@ fn items(inp: &Input) -> Items {
         let mut mine: Vec<usize> = Vec::new();
         for (step, list) in [
             ("terrain-hi", &r.terrain),
+            ("terrain-lakes", &r.terrain_lakes),
             ("terrain-deep", &r.terrain_deep),
             ("terrain-lo", &r.terrain_lo),
             ("unit", &r.units),

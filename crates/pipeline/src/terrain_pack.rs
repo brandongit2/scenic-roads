@@ -1753,14 +1753,15 @@ pub fn make_piece_from(
 }
 
 /// `make_piece` with its blocks kept as made and an earlier run's taken (`log`): a z10 tile's band
-/// (crate::terrain_deep).
+/// (crate::terrain_deep), its lakes across its edges at the levels `lakes` (crate::terrain_lakes).
 pub fn make_piece_logged(
     raw: &dyn RawSource,
     src: &Sources,
     levels: Vec<(u8, Vec<(u32, u32)>)>,
     log: Option<&mut crate::terrain_resume::HiLog>,
+    lakes: std::collections::BTreeMap<u64, f32>,
 ) -> anyhow::Result<(Vec<Made>, Mid)> {
-    Maker::new(raw, src).piece(levels, true, log, Mid::default())
+    Maker::new(raw, src).piece(levels, true, log, Mid { levels: lakes, ..Mid::default() })
 }
 
 /// `make_piece` with each level's tiles all prepared at once (the way before task #447, which held
@@ -2086,7 +2087,14 @@ pub(crate) fn build_piece_kept(
         let n = mine.iter().map(|(_, t)| t.len()).sum();
         let mut log = keep
             .then(|| {
-                let id = crate::terrain_resume::hi_id(&out.manifest, src, (6, t.0, t.1), &mine, mk.block_up);
+                let id = crate::terrain_resume::hi_id(
+                    &out.manifest,
+                    src,
+                    (6, t.0, t.1),
+                    &mine,
+                    mk.block_up,
+                    &Default::default(),
+                );
                 crate::terrain_resume::HiLog::open(&out.scratch, (6, t.0, t.1), &id)
             })
             .flatten();

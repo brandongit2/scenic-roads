@@ -90,6 +90,7 @@ paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. 
 | `terrain` | `terrain-water` | derive | the world | lead |
 | | `pyramids-fill` | fetch | a z6 tile | lead |
 | | `terrain-hi` | pack | a z6 tile | ⇄ |
+| | `terrain-lakes` | derive | a z6 tile | ⇄ |
 | | `terrain-deep` | pack | a z10 tile | ⇄ |
 | | `terrain-lo` | pack | a z3 tile | ⇄ |
 | | `terrain-root` | pack | the world | lead |

@@ -903,7 +903,11 @@ class, id) within a tile. The client sends the id with the clicked point.
   2, step: "slope-deep", tile, v: SLOPE_V}`; a section `13-<x>-<y>` for each of its z13 tiles (those
   its terrain deep pack's tiles lie in), in (x, y) order: its quadrant at full precision, 128 × 128
   pixels each its steepness and direction's two parts, f32 little-endian, row by row (196,608
-  bytes), empty where it shades nothing); `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
+  bytes), empty where it shades nothing); `work/terrain-lakes/10-x-y` (JSON `{fmt: 1, step:
+  "terrain-lakes", tile: "10/x/y", v, lakes: {<OSM id>: <level, m>}}`: a terrain-deep target's
+  lakes across its z10 tile's edges, each lake's level decided once for the whole lake, its run
+  takes them as known; only for a target with such a lake; `pipeline::terrain_lakes`);
+  `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
   "terrain-water", pin, digests: {target: [from, digest]}}`: per terrain target, what decides its
   tiles and a hash16 over its water tiles' polygons; `pipeline::terrain_water::WaterIdx`).
 - **Other sources:**

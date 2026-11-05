@@ -180,15 +180,21 @@ fn natives(src: &crate::terrain_pack::Sources, levels: &[(u8, Vec<(u32, u32)>)])
 }
 
 /// A terrain-hi run's identity: z6 tile `t`, the levels it makes here `levels` (their tiles), in
-/// blocks `up` levels up, from what `manifest` names (`inputs`) and sources `src`.
+/// blocks `up` levels up, from what `manifest` names (`inputs`), sources `src` and the lakes' levels
+/// it's given (`lakes`: a deep target's, crate::terrain_lakes).
 pub fn hi_id(
     manifest: &BTreeMap<String, String>,
     src: &crate::terrain_pack::Sources,
     t: (u8, u32, u32),
     levels: &[(u8, Vec<(u32, u32)>)],
     up: u8,
+    lakes: &BTreeMap<u64, f32>,
 ) -> String {
     let mut h = blake3::Hasher::new();
+    for (id, l) in lakes {
+        h.update(&id.to_le_bytes());
+        h.update(&l.to_bits().to_le_bytes());
+    }
     for (z, ts) in levels {
         h.update(&[*z]);
         h.update(&(ts.len() as u64).to_le_bytes());

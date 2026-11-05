@@ -615,6 +615,12 @@ fn sh_deep(t: &str) -> Vec<String> {
     named(pz, at(t, 6).into_iter().flat_map(|(x, y)| (0..s * s).map(move |i| (x * s + i % s, y * s + i / s))))
 }
 
+/// terrain-deep 10/x/y: its z6 tile's terrain-lakes (the levels of its lakes across its edges).
+fn td_lakes(t: &str) -> Vec<String> {
+    let pz = crate::terrain_deep::PACK_Z;
+    named(6, at(t, pz).into_iter().map(|(x, y)| (x >> (pz - 6), y >> (pz - 6))))
+}
+
 /// slope-lo 3/x/y: the lo terrain of it and its edge neighbours.
 fn sl_lo(t: &str) -> Vec<String> {
     named(3, at(t, 3).into_iter().flat_map(|(x, y)| with_edges(3, x, y)))
@@ -734,7 +740,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 59] = [
+pub const TABLE: [Step; 60] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -940,6 +946,24 @@ pub const TABLE: [Step; 59] = [
             w_none,
         )
     },
+    // (A z6 tile's terrain-deep targets' lakes across their edges, each one's level decided once
+    // (crate::terrain_lakes): those targets wait for it, each keyed on its own file of it by
+    // content. It reads past its z6 tile where a lake goes on: its key names the water, the
+    // elevation and its targets whole. Its memory from the code's bounds.)
+    Step {
+        mem_mb: crate::terrain_lakes::PEAK_MB,
+        shared: true,
+        versions: &[("terrain-lakes", || crate::terrain_lakes::V.to_string()), ("terrain-hi", || super::build::TERRAIN_V.to_string())],
+        reads: &[In { name: "deep-targets", of: idents::deep_targets }, In { name: "water-source", of: idents::water_source }, In { name: "elevation-all", of: idents::elevation_all }],
+        ..step(
+            "terrain",
+            Derive,
+            Z6,
+            "terrain-lakes",
+            "Decides the levels of the lakes across a tile's terrain-deep targets' edges, once a lake, for those targets.",
+            w_terrain_lakes,
+        )
+    },
     // (Its memory offered by target, the agent's terrain_peak: a z6 tile's levels' bound,
     // crate::terrain_pack::piece_peak_mb, and its z10 tiles' deep mids taken in,
     // crate::terrain_pack::DEEP_MIDS_MB, and the z6 tile before's uploads in flight,
@@ -967,7 +991,7 @@ pub const TABLE: [Step; 59] = [
         mem_mb: crate::terrain_deep::target_peak_mb(),
         shared: true,
         versions: &[("terrain-deep", || super::build::TERRAIN_DEEP_V.to_string()), ("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
-        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "water", of: idents::water }],
+        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "water", of: idents::water }, Of { step: "terrain-lakes", of: td_lakes, grain: Grain::Read(idents::deep_lakes) }],
         ..step(
             "terrain",
             Pack,
@@ -1741,7 +1765,7 @@ pub fn readers_first<T>(v: Vec<T>, step: impl Fn(&T) -> &str) -> Vec<T> {
 
 /// The shared steps: other members take their jobs (crate::coord leases them), in the table's
 /// order (no preference: which ready job goes first is derived from the reads, `readers_first`).
-pub const SHARED: [&str; 11] = set_of(Set::Shared);
+pub const SHARED: [&str; 12] = set_of(Set::Shared);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
 pub const ANSWERED: [&str; 3] = set_of(Set::Answered);
 
@@ -1837,6 +1861,11 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
         }),
         "slope-hi" if tile.is_some_and(|u| u.z == 6) => tile
             .is_some_and(|t| l == crate::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
+        // (Its z10 tiles' lakes' levels.)
+        "terrain-lakes" => tile.is_some_and(|t| {
+            let k = crate::terrain_deep::PACK_Z - 6;
+            t.z == 6 && crate::terrain_lakes::tile_of(l).is_some_and(|f| (f.0 >> k, f.1 >> k) == (t.x, t.y))
+        }),
         // (A z10 tile's deep pack, a retired one too; slope's and its deep mid.)
         "terrain-deep" => tile.is_some_and(|t| {
             t.z == crate::terrain_deep::PACK_Z
@@ -2067,6 +2096,11 @@ fn w_terrain_hi(l: &str, _: bool) -> bool {
 /// A z10 tile's deep pack (crate::terrain_deep), and the retired fine pack there it drops.
 fn w_terrain_deep(l: &str, _: bool) -> bool {
     crate::terrain_deep::pack_tile(l).is_some() || crate::terrain_deep::mid_tile(l).is_some()
+}
+
+/// A z10 tile's lakes' levels (crate::terrain_lakes), its z6 tile's.
+fn w_terrain_lakes(l: &str, _: bool) -> bool {
+    crate::terrain_lakes::tile_of(l).is_some()
 }
 
 fn w_terrain_lo(l: &str, _: bool) -> bool {
@@ -2385,6 +2419,7 @@ mod tests {
         assert_eq!(
             set(&SHARED),
             set(&[
+                "terrain-lakes",
                 "terrain-hi",
                 "terrain-deep",
                 "slope-deep",
@@ -2717,6 +2752,7 @@ mod tests {
                 "heritage-sites",
                 "terrain-water",
                 "pyramids-fill",
+                "terrain-lakes",
                 "terrain-hi",
                 "terrain-deep",
                 "terrain-lo",
