@@ -326,7 +326,6 @@ function setupContours(map: MLMap, density: number) {
 export function applyTerrain(map: MLMap, t: Terrain, floor: boolean) {
   map.setTerrainSurface(t.on && floor ? 'dem' : null);
   map.setTerrain(t.on ? { source: floor ? 'dem-floor' : 'dem', exaggeration: t.exaggeration } : null);
-  fastTerrainCoords(map);
   finerTerrainMesh(map);
   // Hillshade.
   if (map.getLayer('hillshade')) {
@@ -392,31 +391,6 @@ export function applyTerrain(map: MLMap, t: Terrain, floor: boolean) {
   map.setFogRange({ start: f.start, end: Math.max(f.end, f.start + 0.1), opacity: t.sky && t.on ? f.opacity : 0 });
 }
 
-interface CanonicalID {
-  x: number;
-  y: number;
-  z: number;
-  equals(o: CanonicalID): boolean;
-  isChildOf(o: CanonicalID): boolean;
-}
-interface TileID {
-  canonical: CanonicalID;
-  clone(): TileID & { terrainRttPosMatrix32f?: Float32Array };
-}
-interface TerrainTiles {
-  _renderableTilesKeys: string[];
-  _tiles: Record<string, { tileID: TileID }>;
-  _getTerrainCoordsForRegularTile?: (tileID: TileID) => Record<string, TileID>;
-}
-
-/**
- * MapLibre's terrain draping asks, every frame, for each tile of each draped source, which terrain
- * tiles it overlaps (TerrainTileManager._getTerrainCoordsForRegularTile). It copies the tile id and
- * allocates a matrix for every terrain tile before checking whether the two are related at all:
- * tilted, with a hundred terrain tiles in view, that was tens of thousands of allocations a frame and
- * the largest share of the main thread's time. The same result here, the matrices built only for the
- * related tiles (ortho, translate and scale as in gl-matrix).
- */
 /** Mesh points a side of each 3D terrain tile (MapLibre's: 128). */
 const TERRAIN_MESH = 252;
 
@@ -442,64 +416,6 @@ function finerTerrainMesh(map: MLMap) {
   t.meshSize = TERRAIN_MESH;
   for (const k in t._meshCache) t._meshCache[k].destroy();
   t._meshCache = {};
-}
-
-function fastTerrainCoords(map: MLMap) {
-  const tm = (map as unknown as { terrain?: { tileManager?: TerrainTiles } }).terrain?.tileManager;
-  const proto = tm && (Object.getPrototypeOf(tm) as TerrainTiles & { __fastCoords?: boolean });
-  if (!proto || proto.__fastCoords || typeof proto._getTerrainCoordsForRegularTile !== 'function') return;
-  if (!Array.isArray(tm._renderableTilesKeys) || typeof tm._tiles !== 'object') return;
-  const EXTENT = 8192;
-  const ortho = (r: number) => {
-    const m = new Float64Array(16);
-    m[0] = 2 / r;
-    m[5] = -2 / r;
-    m[10] = -2;
-    m[12] = -1;
-    m[13] = 1;
-    m[14] = -1;
-    m[15] = 1;
-    return m;
-  };
-  const translate = (m: Float64Array, x: number, y: number) => {
-    for (let i = 0; i < 4; i++) m[12 + i] += m[i] * x + m[4 + i] * y;
-  };
-  proto._getTerrainCoordsForRegularTile = function (this: TerrainTiles, tileID: TileID) {
-    const coords: Record<string, TileID> = {};
-    const c = tileID.canonical;
-    for (const key of this._renderableTilesKeys) {
-      const t = this._tiles[key].tileID.canonical;
-      let mat: Float64Array;
-      if (t.equals(c)) {
-        mat = ortho(EXTENT);
-      } else if (t.z > c.z && t.isChildOf(c)) {
-        const dz = t.z - c.z;
-        const dx = t.x - ((t.x >> dz) << dz), dy = t.y - ((t.y >> dz) << dz);
-        const size = EXTENT >> dz;
-        mat = ortho(size);
-        translate(mat, -dx * size, -dy * size);
-      } else if (c.z > t.z && c.isChildOf(t)) {
-        const dz = c.z - t.z;
-        const dx = c.x - ((c.x >> dz) << dz), dy = c.y - ((c.y >> dz) << dz);
-        const size = EXTENT >> dz;
-        mat = ortho(EXTENT);
-        translate(mat, dx * size, dy * size);
-        const k = 1 / 2 ** dz;
-        for (let i = 0; i < 4; i++) {
-          mat[i] *= k;
-          mat[4 + i] *= k;
-          mat[8 + i] = 0;
-        }
-      } else {
-        continue;
-      }
-      const coord = tileID.clone();
-      coord.terrainRttPosMatrix32f = new Float32Array(mat);
-      coords[key] = coord;
-    }
-    return coords;
-  };
-  proto.__fastCoords = true;
 }
 
 /**
