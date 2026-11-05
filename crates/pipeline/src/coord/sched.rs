@@ -244,8 +244,7 @@ pub(crate) struct Need {
 /// the whole Mac; only where the step has no use on the Mac (crate::uses, task #947: its timings
 /// say what it keeps busy, honoured or not). `slope-hi` and `slope-deep`: Rust steps
 /// on the rayon pool the agent sizes (`RAYON_NUM_THREADS`, crate::agent::jobs); `terrain-deep`: its
-/// base and deep tiles made on that pool, its reads ahead waiting on the network
-/// (crate::terrain_deep); `terrain-lakes`: its shore tiles sampled and prepared on that pool, a
+/// band past z12 made on that pool, its reads ahead waiting on the network (crate::terrain_deep); `terrain-lakes`: its shore tiles sampled and prepared on that pool, a
 /// chunk at a time (crate::terrain_lakes); `bld-fetch`: its downloads bounded by its `--jobs` (3 by default, at most
 /// 4), waiting on the network; `pyramids-fill`: its fetches a host's requests in flight (crate::fetch::HOST_REQUESTS),
 /// waiting on the network, its own work (whole-PNG checks, packing) a fraction of a core (task #823:

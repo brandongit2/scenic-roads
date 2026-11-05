@@ -969,10 +969,10 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   until merged. A long target resumes at the block after the last it finished when it runs on
   that Mac again, not offered back (crate::resume_log): a depth target (`depth`, `depth-lo`: its
   composing's blocks, crate::depth::resume), a terrain-hi z6 tile (each level's blocks, a z8
-  tile's tiles at z12, then the level's end) and a terrain-deep z10 tile (its base tiles, each
-  with its z13â€“16 subtree; crate::terrain_resume). slope-hi and slope-deep keep none: their
+  tile's tiles at z12, then the level's end) and a terrain-deep z10 tile (its levels' blocks
+  likewise, z16 up to z13; crate::terrain_resume's `HiLog`). slope-hi and slope-deep keep none: their
   targets take minutes at most. A drain also stops these steps mid-target, at **one shared safe
-  point** (task #885): each block (base tile) a resume log keeps is one (`resume_log::Log::keep`
+  point** (task #885): each block a resume log keeps is one (`resume_log::Log::keep`
   calls `control::piece_saved`: the block's record written, nothing of the next begun; a log that
   can't be written makes none, as its work would be lost), and the terrain's sampling of the
   elevation pool checks before each chunk (16 tiles) or tile read alone (terrain-hi, -deep, -lo,
@@ -981,8 +981,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   replaced whole by the agent, `control::tell`, so a read never sees part of one, task #957) and end with `control::Paused`; the
   step (depth and depth-lo too) catches it once its uploads in flight have landed and exits as
   paused, the target unsaved and not noted done, its log kept (a level's sampling not yet in a
-  block is redone). terrain-deep's base tiles not yet begun when it stops aren't (only those under
-  way finish). pyramids-fill stops before each tile it would ask (the fetches under way finish),
+  block is redone). pyramids-fill stops before each tile it would ask (the fetches under way finish),
   what it fetched packed and handed off, the z6 tile not done; its next fill fetches the rest
   (the same tiles' bytes; its store's archives split where it stopped).
   Steps whose target is a run of independent pieces keep each as it's made (`resume_log::Pieces`,
