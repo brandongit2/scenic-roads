@@ -125,6 +125,8 @@ export class RegionsPanel {
   private loadedAt = -Infinity;
   private loadTok = 0;
   private open = false;
+  /** The folders opened this session (not saved: every load starts with them all collapsed). */
+  private openDirs = new Set<string>();
   /** A row hovered (its region's or folder's outline shown). */
   private hovered = false;
 
@@ -132,6 +134,7 @@ export class RegionsPanel {
     // (The switches before #868, "Coverage on the map" and "Regions on the map", gone.)
     prefs.remove('regions.coverage');
     prefs.remove('regions.layer');
+    prefs.removePrefix('regions.folder.'); // (folders' opened state was once kept)
     this.regBox.checked = prefs.load('regions.shown', false);
     this.regBox.addEventListener('change', () => {
       prefs.save('regions.shown', this.regBox.checked);
@@ -324,14 +327,13 @@ export class RegionsPanel {
 
   /** A folder: its heading (sticky under the bar and the folders it's in, `depth` of them) like a
    * region's row, with its flag, its regions' land and water and size, and its button; then its
-   * entries, indented along a line under its triangle. Collapsed until opened (remembered), but
+   * entries, indented along a line under its triangle. Every load starts collapsed; the ones opened stay so through the redraws of a session (openDirs), and
    * open while a search finds something inside it. */
   private folderBox(f: Folder, depth: number, shown: Shown, searching: boolean, list: (f: Folder, depth: number) => HTMLElement[]): HTMLElement {
-    const key = `regions.folder.${f.path}`;
     const forced = searching && shown.open.has(f.path);
-    const box = h('details', { class: 'rg-dir', open: forced || prefs.load(key, false) }) as HTMLDetailsElement;
+    const box = h('details', { class: 'rg-dir', open: forced || this.openDirs.has(f.path) }) as HTMLDetailsElement;
     box.addEventListener('toggle', () => {
-      if (!forced) prefs.save(key, box.open);
+      if (!forced) box.open ? this.openDirs.add(f.path) : this.openDirs.delete(f.path);
     });
     const regs = allIds(f).flatMap((id) => this.byId.get(id) ?? []);
     const sum = (k: 'land_km2' | 'water_km2') => (regs.some((r) => r[k] !== undefined) ? regs.reduce((t, r) => t + (r[k] ?? 0), 0) : undefined);
