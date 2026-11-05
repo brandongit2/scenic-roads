@@ -327,11 +327,16 @@ fn watch(home: &Path, tx: &Sender<In>, sweep: Duration) {
     #[cfg(target_os = "macos")]
     let mut kq: Option<Kqueue> = None;
     loop {
+        // (Checked again once armed: a folder swapped after it was opened, before its watch was
+        // added, says nothing to the watch.)
         #[cfg(target_os = "macos")]
-        if kq.as_ref().is_none_or(|k| k.stale()) {
+        while kq.as_ref().is_none_or(|k| k.stale()) {
             kq = None;
             std::fs::create_dir_all(&cancels).ok();
             kq = Kqueue::on(&[home, &cancels]);
+            if kq.is_none() {
+                break;
+            }
         }
         // (Armed, then the look: a change before the arming is the look's, one after it wakes the
         // kqueue. Looked first, a change between the look and the arming was seen by neither, and
@@ -363,7 +368,7 @@ struct Kqueue {
     kq: i32,
     fds: Vec<i32>,
     /// The folders watched, and each's identity when it was opened.
-    dirs: Vec<(PathBuf, Option<(u64, u64)>)>,
+    dirs: Vec<(PathBuf, (u64, u64))>,
 }
 
 #[cfg(target_os = "macos")]
@@ -384,7 +389,14 @@ impl Kqueue {
                 return None;
             }
             k.fds.push(fd);
-            k.dirs.push((d.to_path_buf(), ident(d)));
+            // (The identity of the folder opened, by its descriptor: by its path, one swapped in
+            // between would be taken for the one watched, and the watch never opened anew.)
+            // SAFETY: a descriptor this owns, a stat buffer of our own.
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            if unsafe { libc::fstat(fd, &mut st) } < 0 {
+                return None;
+            }
+            k.dirs.push((d.to_path_buf(), (st.st_dev as u64, st.st_ino)));
             let ev = libc::kevent {
                 ident: fd as usize,
                 filter: libc::EVFILT_VNODE,
@@ -408,7 +420,7 @@ impl Kqueue {
 
     /// Whether a watched folder is gone or another now has its name.
     fn stale(&self) -> bool {
-        self.dirs.iter().any(|(p, id)| id.is_none() || ident(p) != *id)
+        self.dirs.iter().any(|(p, id)| ident(p) != Some(*id))
     }
 
     /// Until a watched folder changes, or `most` passed.
