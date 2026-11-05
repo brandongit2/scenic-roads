@@ -1008,6 +1008,12 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
     use pipeline::coord::asks::{self, SettingAsk};
     if let Some(name) = name {
         anyhow::ensure!(asks::NAMES.contains(&name), "the pool's settings: {}, not {name}", asks::NAMES.join(", "));
+        if let (asks::BATCH, Some(v)) = (name, value) {
+            let by = format!("scenic pool set on {}", store::sys::host_name());
+            agent::settings::set_batch(home, v, &by)?;
+            println!("{name}: asked of this Mac's agent, which sends it to the lead with its next beat");
+            return Ok(());
+        }
         if let Some(v) = value {
             let value: serde_json::Value = match (name, v) {
                 (asks::PLACEMENT, "on") => true.into(),
@@ -1019,10 +1025,6 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
                     .parse::<u64>()
                     .with_context(|| format!("nas-target: <percent> or off, not {p}"))?
                     .into(),
-                (asks::BATCH, "off") => serde_json::Value::Null,
-                (asks::BATCH, m) => {
-                    m.parse::<u64>().with_context(|| format!("batch-minutes: <minutes> or off, not {m}"))?.into()
-                }
                 (_, t) => t.into(),
             };
             let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());

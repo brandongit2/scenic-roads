@@ -369,9 +369,13 @@ test('settings: an answer lacking a setting shows "not set" for it alone, the ot
   // (The margin without the room's answer: shown and settable, no upper bound.)
   const m = macRows({ sweep_margin: { bytes: 4 * 2 ** 30, default: 10 * 2 ** 30, set: true, by: 'x' } })[3];
   assert.deepEqual([m.now, m.input.max], ['4.0 GB', null]);
-  const pool = poolRows({ nas_room: { bytes: 3 * 2 ** 30, free: null } });
-  assert.deepEqual(pool.map((r) => [r.key, r.now, !!r.input]), [['nas_room', '3.0 GB', true]]);
-  assert.deepEqual(poolRows({ nas_room: { bytes: null } }).map((r) => r.now), ['off']);
+  const pool = poolRows({ nas_room: { bytes: 3 * 2 ** 30, free: null }, batch: { minutes: 15, default: 15, set: false, had: true } });
+  assert.deepEqual(pool.map((r) => [r.key, r.now, !!r.input]), [['nas_room', '3.0 GB', true], ['batch_minutes', '15 min', true]]);
+  assert.deepEqual(poolRows({ nas_room: { bytes: null } }).map((r) => r.now), ['off', 'not set']);
+  // (Task #927 review: a Mac away from the NAS still sets the batch length, which its agent asks of the lead.)
+  const away = poolRows({ mac: 'm1', nas_room: null, batch: { minutes: 20, default: 15, set: true, by: 'the build page', had: true } });
+  assert.deepEqual(away.map((r) => [r.key, r.now, !!r.input]), [['nas_room', 'not here', false], ['batch_minutes', '20 min', true]]);
+  assert.match(away[1].note, /set by the build page/);
 });
 
 test("schedule's view: 12 h each side of now at first, held in the domain, zoomed about the pointer (#787)", () => {

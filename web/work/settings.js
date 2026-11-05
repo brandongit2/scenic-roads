@@ -1,8 +1,8 @@
 // The owner's settings on the build page (the Machines tab; docs/workers.md §7): this page's Mac's
 // in-use share, memory floor, disk room target and dev sweep margin, a block per Mac, each set on
-// that Mac, and the pool's NAS reserve. Read and set through
+// that Mac, and the pool's NAS reserve and batch length. Read and set through
 // `/work/settings`, which sets each through the same function as its `scenic` command
-// (`scenic in-use`, `memory`, `room`, `nas-room`; the sweep's margin has none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
+// (`scenic in-use`, `memory`, `room`, `nas-room`, `pool set batch-minutes`; the sweep's margin has none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
 
 function h(tag, attrs, ...kids) {
   const e = document.createElement(tag);
@@ -103,15 +103,15 @@ export function settingsSection(call, macs, done, onError) {
     if (!s) return h("div", { class: "box settings", "data-host": name }, head, h("div", "setting dim small", st.error ? `can't be read: ${st.error}` : "reading…"));
     return h("div", { class: "box settings", "data-host": name }, head, macRows(s).map((r) => row(put, r)));
   });
-  // (The pool's, kept on the NAS: once, through the first Mac that reaches the NAS.)
+  // (The pool's: once, through the first Mac that reaches the NAS, else the first that answered.)
   const nas = poolMac(list);
   const pool = nas
     ? (() => {
       const [m, st] = nas, put = (body, what) => set(m, st, body, what);
       return h("div", "box settings pool", h("h3", null, "The pool"), poolRows(st.said).map((r) => row(put, r)));
     })()
-    : h("div", "box settings pool", h("h3", null, "The pool"), h("div", "setting dim small", "NAS reserve: no Mac shown here reaches the NAS now"));
-  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve, pool-wide")), blocks, pool);
+    : h("div", "box settings pool", h("h3", null, "The pool"), h("div", "setting dim small", "no Mac shown here has answered yet"));
+  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve and batch length, pool-wide")), blocks, pool);
 }
 
 // Sets `body` on Mac `m` (null: this page's) with its kept state `st`; a refusal said through
@@ -127,8 +127,12 @@ async function set(m, st, body, what) {
   return ok;
 }
 
-// The Mac that sets the pool's settings: the first shown that reaches the NAS ([m, st]).
-const poolMac = (list) => list.map(([m, host]) => [m, kept.get(host) || {}]).find(([, st]) => st.said?.nas_room);
+// The Mac that sets the pool's settings: the first shown that reaches the NAS, else the first
+// that answered (its batch length goes to the lead through its agent) ([m, st]).
+const poolMac = (list) => {
+  const all = list.map(([m, host]) => [m, kept.get(host) || {}]);
+  return all.find(([, st]) => st.said?.nas_room) || all.find(([, st]) => st.said);
+};
 
 /** Sets `body` (one setting, as /work/settings takes it) from a chart's limit (live.js): on Mac
  * `host` (this page's own through its calls), or, for the pool's NAS reserve, through the Mac the
@@ -137,7 +141,7 @@ export async function putSetting(host, body, what) {
   if (!ctx) return false;
   if ("nas_room" in body) {
     const p = poolMac([[null, ownHost || ""], ...ctx.macs.filter((m) => m.host !== ownHost).map((m) => [m, m.host])]);
-    if (!p) { ctx.onError?.(`couldn't set ${what}: no Mac shown here reaches the NAS now`); return false; }
+    if (!p?.[1].said?.nas_room) { ctx.onError?.(`couldn't set ${what}: no Mac shown here reaches the NAS now`); return false; }
     return set(p[0], p[1], body, what);
   }
   const m = host === ownHost ? null : ctx.macs.find((x) => x.host === host);
@@ -184,14 +188,22 @@ export function macRows(s) {
   ];
 }
 
-/** The pool's rows from an answer `s` that reaches the NAS: its `nas_room`. */
+/** The pool's rows from a Mac's answer `s`: its `nas_room` (null: that Mac doesn't reach the NAS
+ * now) and `batch` (as its agent last had it from the lead). */
 export function poolRows(s) {
-  const n = s.nas_room;
+  const n = s.nas_room, b = s.batch;
   return [
-    guarded("nas_room", "NAS reserve", () => ({
-      now: n.bytes ? gb(n.bytes) : "off",
-      note: `kept free on the NAS past what the build writes there${n.free != null ? `, ${gb(n.free)} free now` : ""}${by(n)}`,
-      input: { min: 1, step: 1, placeholder: "GB", offTitle: "No reserve" },
+    n === null
+      ? { key: "nas_room", what: "NAS reserve", now: "not here", note: `${s.mac || "this Mac"} doesn't reach the NAS now`, input: null }
+      : guarded("nas_room", "NAS reserve", () => ({
+        now: n.bytes ? gb(n.bytes) : "off",
+        note: `kept free on the NAS past what the build writes there${n.free != null ? `, ${gb(n.free)} free now` : ""}${by(n)}`,
+        input: { min: 1, step: 1, placeholder: "GB", offTitle: "No reserve" },
+      })),
+    guarded("batch_minutes", "Batch length", () => ({
+      now: `${b.minutes} min`,
+      note: `a shared step's job takes its targets while their measured time on its Mac stays within this${b.set ? by(b) : ` (the default, ${b.default} min)`}${b.had ? "" : "; the lead's setting not had yet"}; a change goes to the lead with ${s.mac || "this Mac"}'s next beat`,
+      input: { min: 1, max: 1440, step: 1, placeholder: "minutes", offTitle: `Back to the default (${b.default} min)` },
     })),
   ];
 }

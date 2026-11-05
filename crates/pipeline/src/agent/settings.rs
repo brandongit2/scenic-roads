@@ -1,8 +1,9 @@
 //! The owner's settings (docs/workers.md §7): this Mac's in-use share (crate::agent::share), memory
-//! floor (crate::agent::memfloor) and disk room target (crate::agent::room::Target), and the pool's
-//! NAS reserve (crate::agent::room::NAS_RESERVE), and the dev sweep's margin (`SWEEP_MARGIN`).
+//! floor (crate::agent::memfloor) and disk room target (crate::agent::room::Target), the pool's
+//! NAS reserve (crate::agent::room::NAS_RESERVE) and batch length (the lead's setting
+//! `batch-minutes`, crate::coord::asks), and the dev sweep's margin (`SWEEP_MARGIN`).
 //! Each is set through one function here, whoever asks: `scenic in-use`, `scenic memory`, `scenic
-//! room`, `scenic nas-room`, and the build page's
+//! room`, `scenic nas-room`, `scenic pool set batch-minutes`, and the build page's
 //! POST /work/settings (crate::coord), which reads them back with `view` (the sweep's margin: the
 //! build page alone). The map server's mirror
 //! reads the room target through `RoomTarget` (its reserve is the larger of the two).
@@ -123,8 +124,45 @@ pub fn set_nas_room(root: &store::nasfs::NasRoot, what: &str, by: &str) -> Resul
     room::set_nas_reserve(root, Some(bytes), by)
 }
 
-/// The settings as they stand, for the build page: this Mac's (in its agent's folder `home`) and
-/// the pool's NAS reserve (under `root`; null while the NAS is away). Sizes in bytes, memory in MB.
+/// Asks the lead to set the pool's batch length (task #927, docs/pool.md §7.7, Batch length): `what`
+/// in minutes (a minute to a day: jobrt::settings::BATCH_RANGE), or "off": its default again
+/// (crate::coord::JOB_S). Asked of this Mac's agent (its folder `home`), which sends it to the lead
+/// with its next beat (crate::control::request_setting), as every pool setting is.
+pub fn set_batch(home: &Path, what: &str, by: &str) -> Result<()> {
+    use crate::coord::asks::{SettingAsk, BATCH};
+    let value = match what.trim() {
+        "off" => serde_json::Value::Null,
+        m => m
+            .parse::<u64>()
+            .ok()
+            .filter(|m| jobrt::settings::BATCH_RANGE.contains(m))
+            .with_context(|| format!("batch-minutes: 1 to 1440 minutes or off, not {what}"))?
+            .into(),
+    };
+    anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
+    let a = SettingAsk { name: BATCH.into(), value, by: by.to_string(), at: super::jobs::now_s() };
+    crate::control::request_setting(home, &a)
+}
+
+/// The pool's batch length as this Mac's agent last had the pool's settings from the lead (in
+/// `home`; `had` false: not yet), in minutes.
+fn batch_view(home: &Path) -> serde_json::Value {
+    let s = crate::control::read_pool_settings(home);
+    let set = s.as_ref().and_then(|s| s.values.get(crate::coord::asks::BATCH)).filter(|v| !v.value.is_null());
+    let default = crate::coord::JOB_S / 60;
+    serde_json::json!({
+        "minutes": s.as_ref().and_then(|s| s.batch_s()).map_or(default, |b| b / 60),
+        "default": default,
+        "set": set.is_some(),
+        "by": set.map(|v| v.by.clone()),
+        "at": set.map(|v| v.at),
+        "had": s.is_some(),
+    })
+}
+
+/// The settings as they stand, for the build page: this Mac's (in its agent's folder `home`), the
+/// pool's NAS reserve (under `root`; null while the NAS is away) and its batch length (as this
+/// Mac's agent last had it from the lead). Sizes in bytes, memory in MB.
 pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Value {
     let total_mb = crate::sys::memsize().map_or(0, |b| b >> 20);
     let mem = memfloor::read(home);
@@ -157,6 +195,7 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
             "at": margin.as_ref().map(|m| m.at),
         },
         "nas_room": root.map(|r| target_view(room::nas_reserve(r), room::nas_free(r).ok(), None)),
+        "batch": batch_view(home),
     })
 }
 
@@ -258,5 +297,38 @@ mod tests {
         let gone = h.join("nope");
         assert!(set_room(&gone, "2", "t").is_err() && set_memory(&gone, "2", "t").is_err());
         assert!(set_sweep_margin(&gone, "2", "t").is_err());
+    }
+
+    /// Task #927 review: the batch length is set from the build page as from `scenic pool set`: an
+    /// ask of this Mac's agent for the lead (1 to 1440 minutes, or off), read back as the agent last
+    /// had the pool's settings, the default until then.
+    #[test]
+    fn the_batch_length_is_asked_of_the_lead_and_read_back() {
+        use crate::coord::asks::BATCH;
+        let d = tempfile::tempdir().unwrap();
+        let h = d.path();
+        let v = view(h, None);
+        assert_eq!((v["batch"]["minutes"].as_u64(), v["batch"]["had"].as_bool()), (Some(15), Some(false)));
+        for bad in ["0", "1441", "ten", "-3"] {
+            assert!(set_batch(h, bad, "t").is_err(), "{bad}");
+        }
+        assert!(set_batch(&h.join("nope"), "20", "t").is_err(), "no agent");
+        let ask = |what: &str| {
+            set_batch(h, what, "the build page").unwrap();
+            let a = crate::control::take_setting_asks(h);
+            assert!(a.len() == 1 && a[0].name == BATCH, "{a:?}");
+            a[0].clone()
+        };
+        assert!(ask("off").value.is_null(), "off: the default again");
+        let asked = [ask(" 20 ")];
+        assert_eq!(asked[0].value, 20);
+        let mut s = crate::coord::asks::Settings::default();
+        assert!(s.take(&asked[0]));
+        std::fs::write(h.join(crate::control::POOL_SETTINGS), serde_json::to_vec(&s).unwrap()).unwrap();
+        let b = &view(h, None)["batch"];
+        assert_eq!(
+            (b["minutes"].as_u64(), b["set"].as_bool(), b["by"].as_str()),
+            (Some(20), Some(true), Some("the build page"))
+        );
     }
 }
