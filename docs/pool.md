@@ -1885,6 +1885,54 @@ moves them there isn't known). Paces from pairs are near the lead's where pairs 
 (drawn toward 1), but code 4 moves every lane whose Mac's speed wasn't 1: with paces worked out, no
 lane runs at its speed any more, and a Mac of few or no pairs runs at about the lead's pace.
 
+**What changed (code 5, task #951).** The owner's spec (4 Nov): on 4 Nov the schedule showed
+almost all of slope-deep left on the M1 while all three Macs ran it. The run had every Mac ask
+with its room as its last ask said (one moment's: a compile's spike, a 10.2 GB margin making the
+M4 look full), and #808's skips gave a Mac none of a step it had done little of over the day
+before, whether it couldn't or wouldn't (the mini, its memory fixed by #931/#935, still got no
+slope-deep). Now (§7.2):
+
+- **Pulled, as live:** a Mac asks only as one of its lanes frees, for a job each of its free lanes,
+  one plan order for every ask; the lead's first lane's order of its own is gone.
+- **Each Mac at its sustained best** from now on: its memory for jobs and its cores not used
+  outside the build, the highest held for 30 minutes over 48 hours (the owner's figures), from its
+  live minute ring, carried in its ask (`Capacity::best`). The replay works it out from the
+  archived inputs' asks before each (`fccheck`'s `Rooms`: each input's room, a run broken where
+  an input was lost), so a run needs three inputs at least.
+- **Gone:** the skips (`took`, `SKIP_SHARE`, `SKIP_KEEP_H`, `SKIP_FOR_S`) and the day before's hold
+  on each Mac's lanes (`held_back`).
+- **Readiness through the plan:** a target the plan holds because an input of it can't be worked
+  out yet waits for what works it out (the slope tiles reading the terrain's root: 5 Nov, slope-hi
+  6/0/48 and 6/15/48 were granted to the M1 while they waited on terrain-root).
+
+**The backtest, before against after** (`forecast-check --replay --from 2026-11-04 --to
+2026-11-05T16:00 --split 2026-11-05T08:00`, M4; the inputs archived since #933: 24 train, 15 test;
+"before" the code at 9baf1315, code 4; "after" code 5; the middle column the new run with each Mac's
+room as it asked, code 4's in the new binary). Minutes; median / p90 of the absolute end error:
+
+| | test before | test code 4 | test after | train before | train after |
+|---|---|---|---|---|---|
+| right Mac | 41 % | 46 % | 43 % | 47 % | 48 % |
+| right slot | 24 % | 29 % | 28 % | 10 % | 39 % |
+| end, all | 74 / 474 | 68 / 459 | 68 / 428 | 351 / 795 | 350 / 791 |
+| end bias | +178 | +168 | +150 | +370 | +369 |
+| start, all | 69 / 456 | 67 / 431 | 67 / 384 | 249 / 730 | 249 / 729 |
+| end, bldtiles | 132 / 400 | 62 / 390 | 57 / 261 | | |
+| end, slope-deep | 173 / 415 | 169 / 409 | 169 / 409 | 345 / 789 | 345 / 789 |
+| end, depth | 594 / 2,679 | 594 / 2,679 | 577 / 2,677 | | |
+
+Better or the same everywhere but the right-Mac rate on the test set, where the sustained best
+gives back 3 of the 5 points pulling gained (46 to 43 %): at its best a Mac takes work the pool
+gave another Mac then. The finish is still late on both sets (+150 and +369 minutes): the run is a
+best case for room, not for time: this task changed where work goes and when it's ready, not how
+long it takes. On train the best room
+changed nothing measurable (its figures are those with each Mac's room as it asked): slope-deep,
+85 % of its samples, fits every Mac's room either way (#931: peaks of 2.2-2.9 GB). The 4 Nov case itself is before the inputs'
+archive (it begins 4 Nov 22:40 UTC), so a test replays it
+(`forecast::tests::each_mac_runs_at_its_sustained_best_room`): the mini's floor lowered at noon,
+its best room follows within the half hour and the run gives it its share of slope-deep then,
+where the skips held it to none for the day.
+
 ## 8. Tasks
 
 A job is a step's run over targets on a Mac with the NAS. A **task** is a pure piece a running job
