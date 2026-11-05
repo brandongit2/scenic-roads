@@ -802,20 +802,25 @@ pub fn in_force() -> Option<usize> {
     Some(IN_FORCE.load(std::sync::atomic::Ordering::Relaxed)).filter(|&n| n > 0)
 }
 
+/// The pool the target under way runs on (`on_grant`; its width, `IN_FORCE`): the last one made,
+/// kept while the grant stands.
+static POOL: std::sync::Mutex<Option<(usize, std::sync::Arc<rayon::ThreadPool>)>> = std::sync::Mutex::new(None);
+
 /// A target's work, `f`, on as many threads as its job is granted as it begins (`granted`): a rayon
 /// pool that wide (the last one kept while the grant stands), the timings' main thread carried onto
 /// the thread running `f` (crate::timings::Main) so its phases are the job's main thread's as before.
 /// The grant is read once, here: a re-grant takes effect at the next target, never inside one, and
-/// a call inside another's `f` runs on that one's pool. Without the file (a hand run, or a step
-/// whose job isn't told), `f` on the job's own pool (RAYON_NUM_THREADS). The thread count changes no
-/// output: every step's work is the same whatever its threads (each Mac runs its own grant).
+/// a call inside another's `f` runs on that one's pool. A thread `f` starts of its own is in no
+/// pool: its parallel work goes on the target's through `on_target_pool`. Without the file (a hand
+/// run, or a step whose job isn't told), `f` on the job's own pool (RAYON_NUM_THREADS). The thread
+/// count changes no output: every step's work is the same whatever its threads (each Mac runs its
+/// own grant).
 pub fn on_grant<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     use std::sync::atomic::Ordering;
     let n = match granted() {
         Some(n) if IN_FORCE.load(Ordering::Relaxed) == 0 => n,
         _ => return f(),
     };
-    static POOL: std::sync::Mutex<Option<(usize, std::sync::Arc<rayon::ThreadPool>)>> = std::sync::Mutex::new(None);
     let pool = {
         let mut g = POOL.lock().unwrap_or_else(|e| e.into_inner());
         match g.as_ref().filter(|(w, _)| *w == n) {
@@ -840,6 +845,25 @@ pub fn on_grant<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     crate::timings::held(n as u32, t0.elapsed().as_secs_f64(), cpu);
     IN_FORCE.store(0, Ordering::Relaxed);
     r
+}
+
+/// Parallel work `f` on the pool of the target under way (`on_grant`) when called on a thread of
+/// no rayon pool while one is (a thread the target started of its own: a reader's, a chunk's), as
+/// the target's own threads' work is: rayon sends a thread outside every pool to the process's
+/// global pool, as wide as the job's grant at its start (RAYON_NUM_THREADS), not its grant now, so
+/// a shrunk job's work there would run on more threads than its Mac counts it for (task #948
+/// review: terrain-deep's deep tiles, made on a thread of its own, and terrain's base sampling's
+/// passes, from its chunks' threads). Elsewhere `f` as it is: on a pool's thread (the target's or
+/// one of its own), or with no target under way.
+pub fn on_target_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    if in_force().is_none() || rayon::current_thread_index().is_some() {
+        return f();
+    }
+    let pool = POOL.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(_, p)| p.clone());
+    match pool {
+        Some(p) => p.install(f),
+        None => f(),
+    }
 }
 
 #[cfg(test)]
@@ -907,6 +931,20 @@ mod tests {
         let names: Vec<(&str, bool)> = r.phases.iter().map(|p| (p.name.as_str(), p.background)).collect();
         assert_eq!(names, [("the job's targets", false), ("after the targets", false)], "{:?}", r.phases);
         assert_eq!(r.phases[0].sub.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["a target's work"]);
+        // A thread the target starts of its own: its parallel work on the target's pool (2 wide),
+        // not the process's global one; outside a target, the global one.
+        std::fs::write(&f, "2").unwrap();
+        let global = rayon::current_num_threads();
+        let own = on_grant(|| {
+            std::thread::scope(|s| {
+                s.spawn(|| (rayon::current_num_threads(), on_target_pool(rayon::current_num_threads))).join().unwrap()
+            })
+        });
+        assert_eq!(own, (global, 2));
+        assert_eq!(
+            std::thread::scope(|s| s.spawn(|| on_target_pool(rayon::current_num_threads)).join().unwrap()),
+            global
+        );
         // (What each held, for its step's use by threads: pipeline::uses.)
         assert_eq!(r.held.iter().map(|h| h.threads).collect::<Vec<_>>(), [1, 3, 5]);
         assert!(r.held.iter().all(|h| h.wall_s > 0.0 && h.wall_s <= r.wall_s), "{:?}", r.held);

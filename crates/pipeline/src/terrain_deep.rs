@@ -1454,15 +1454,19 @@ fn make_tiles(
         // the stop waits only for those under way, task #885.)
         let stop = std::sync::atomic::AtomicBool::new(false);
         let made = std::thread::scope(|s| -> Result<()> {
+            // (On the target's pool, as wide as its job's grant as it began: this thread is in none,
+            // crate::control::on_target_pool.)
             s.spawn(|| {
-                groups[k].par_iter().zip(&with[k]).zip(&todo[k]).filter(|((_, &d), &t)| d && t).for_each_with(
-                    tx,
-                    |tx, ((&(t, zf), _), _)| {
-                        if !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                            tx.send((t, deep_tiles(&samplers, water, &decoded, t, zf, &zs))).ok();
-                        }
-                    },
-                )
+                crate::control::on_target_pool(|| {
+                    groups[k].par_iter().zip(&with[k]).zip(&todo[k]).filter(|((_, &d), &t)| d && t).for_each_with(
+                        tx,
+                        |tx, ((&(t, zf), _), _)| {
+                            if !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                                tx.send((t, deep_tiles(&samplers, water, &decoded, t, zf, &zs))).ok();
+                            }
+                        },
+                    )
+                })
             });
             let r = (|| -> Result<()> {
                 for (t, r) in rx {

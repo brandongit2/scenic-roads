@@ -1436,6 +1436,30 @@ mod tests {
         assert!(out.get(&deep_mid_logical(448, 256)).is_none());
     }
 
+    /// Task #948 review: a target's work runs on its job's grant as it begins (crate::control::
+    /// on_grant: a pool that wide), which a re-grant changes between targets: slope-deep's and
+    /// slope-hi's outputs are the same bytes on 2 threads as on 8.
+    #[test]
+    fn a_z6_tiles_packs_are_the_same_bytes_at_2_threads_and_at_8() {
+        let made = |threads: usize| {
+            let d = tempfile::tempdir().unwrap();
+            let mut out =
+                Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+                    .unwrap();
+            terrain(&mut out, true);
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            pool.install(|| {
+                build_deep(&mut out, (448, 256), &|_, _, _| {}).unwrap();
+                out.save().unwrap();
+                build_piece(&mut out, (28, 16), false, &|_, _, _| {}).unwrap();
+            });
+            out.save().unwrap();
+            let names = [deep_logical(448, 256), deep_mid_logical(448, 256), hi_logical(28, 16), mid_logical(28, 16)];
+            names.map(|n| std::fs::read(out.path(out.get(&n).unwrap()).unchecked_path()).unwrap())
+        };
+        assert!(made(2) == made(8));
+    }
+
     /// The memory bounds are those of the tiles a run holds.
     /// A pyramid's tiles don't depend on its threads' order: made again and again, the same bytes,
     /// and each parent the mean of its children as made, coded once.

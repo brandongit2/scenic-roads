@@ -726,14 +726,16 @@ impl GeoSet<'_> {
         }
         tally.add(sel.len() - groups.values().map(Vec::len).sum::<usize>());
         let groups: Vec<((u32, i64, i64), Vec<Band>)> = groups.into_iter().collect();
-        let got: Vec<Vec<(usize, f64)>> = groups
-            .par_iter()
-            .map(|((k, ..), bands)| {
-                let d = self.distance_group(*k as usize, bands, radius);
-                tally.add(bands.len());
-                d
-            })
-            .collect::<Result<_>>()?;
+        let got: Vec<Vec<(usize, f64)>> = crate::control::on_target_pool(|| {
+            groups
+                .par_iter()
+                .map(|((k, ..), bands)| {
+                    let d = self.distance_group(*k as usize, bands, radius);
+                    tally.add(bands.len());
+                    d
+                })
+                .collect::<Result<_>>()
+        })?;
         for (j, d) in got.into_iter().flatten() {
             out[j] = d;
         }
@@ -992,7 +994,7 @@ impl TileSet<'_> {
     fn rolling<T: Send>(&self, need: &[Vec<(i64, i64)>], work: impl Fn(usize) -> Result<T> + Sync) -> Result<Vec<T>> {
         let n_items = need.len();
         if need.iter().map(Vec::len).sum::<usize>() < 2 {
-            return (0..n_items).into_par_iter().map(&work).collect();
+            return crate::control::on_target_pool(|| (0..n_items).into_par_iter().map(&work).collect());
         }
         // (The tiles in the order the items first read them; by item its tiles' places in that
         // list, and the last of them; by tile, the items reading it.)
@@ -1138,7 +1140,9 @@ impl TileSet<'_> {
                     }
                     std::mem::take(&mut g.ready)
                 };
-                let got: Vec<(usize, T)> = batch.par_iter().map(|&i| work(i).map(|v| (i, v))).collect::<Result<_>>()?;
+                let got: Vec<(usize, T)> = crate::control::on_target_pool(|| {
+                    batch.par_iter().map(|&i| work(i).map(|v| (i, v))).collect::<Result<_>>()
+                })?;
                 let mut g = lock();
                 for (i, v) in got {
                     out[i] = Some(v);
@@ -1497,26 +1501,31 @@ impl Reader<'_, '_> {
         match self {
             Reader::Tiles(t) => {
                 let n = 1i64 << t.zoom;
-                let keys: Vec<i64> = sel
-                    .par_iter()
-                    .map(|&i| {
-                        let (fx, fy) = mercator_tile(lon[i as usize], lat[i as usize], t.zoom);
-                        fx.floor() as i64 * n + fy.floor() as i64
-                    })
-                    .collect();
+                let keys: Vec<i64> = crate::control::on_target_pool(|| {
+                    sel.par_iter()
+                        .map(|&i| {
+                            let (fx, fy) = mercator_tile(lon[i as usize], lat[i as usize], t.zoom);
+                            fx.floor() as i64 * n + fy.floor() as i64
+                        })
+                        .collect()
+                });
                 by_runs(&sel, &keys, |a, b| a == b, |a, b| a.cmp(b))
             }
             Reader::Geo(g, xy) => {
                 let (x, y) = native(xy, lon, lat);
-                let keys: Vec<(usize, f64)> = sel
-                    .par_iter()
-                    .map_init(
-                        || None,
-                        |kept, &i| {
-                            (g.holding(kept, x[i as usize], y[i as usize]).next().unwrap_or(usize::MAX), y[i as usize])
-                        },
-                    )
-                    .collect();
+                let keys: Vec<(usize, f64)> = crate::control::on_target_pool(|| {
+                    sel.par_iter()
+                        .map_init(
+                            || None,
+                            |kept, &i| {
+                                (
+                                    g.holding(kept, x[i as usize], y[i as usize]).next().unwrap_or(usize::MAX),
+                                    y[i as usize],
+                                )
+                            },
+                        )
+                        .collect()
+                });
                 by_runs(
                     &sel,
                     &keys,
@@ -1642,29 +1651,31 @@ fn membership(cover: &Cover, lon: &[f64], lat: &[f64]) -> Vec<bool> {
         out.fill(true);
         return out;
     }
-    out.par_chunks_mut(MEMBER_RUN).enumerate().for_each(|(c, o)| {
-        let at = c * MEMBER_RUN;
-        let (lo, la) = (&lon[at..at + o.len()], &lat[at..at + o.len()]);
-        // (A NaN point makes the box NaN, so the run goes point by point: f64::min would skip it,
-        // and `contains` answers a NaN by cell 0,0, not by the box.)
-        let b = lo.iter().zip(la).fold(
-            [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY],
-            |b, (&x, &y)| {
-                if x.is_nan() || y.is_nan() || b[0].is_nan() {
-                    [f64::NAN; 4]
-                } else {
-                    [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]
-                }
-            },
-        );
-        match cover.contains_box(b) {
-            Some(v) => o.fill(v),
-            None => {
-                for (i, m) in o.iter_mut().enumerate() {
-                    *m = cover.contains(lo[i], la[i]);
+    crate::control::on_target_pool(|| {
+        out.par_chunks_mut(MEMBER_RUN).enumerate().for_each(|(c, o)| {
+            let at = c * MEMBER_RUN;
+            let (lo, la) = (&lon[at..at + o.len()], &lat[at..at + o.len()]);
+            // (A NaN point makes the box NaN, so the run goes point by point: f64::min would skip it,
+            // and `contains` answers a NaN by cell 0,0, not by the box.)
+            let b = lo.iter().zip(la).fold(
+                [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY],
+                |b, (&x, &y)| {
+                    if x.is_nan() || y.is_nan() || b[0].is_nan() {
+                        [f64::NAN; 4]
+                    } else {
+                        [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]
+                    }
+                },
+            );
+            match cover.contains_box(b) {
+                Some(v) => o.fill(v),
+                None => {
+                    for (i, m) in o.iter_mut().enumerate() {
+                        *m = cover.contains(lo[i], la[i]);
+                    }
                 }
             }
-        }
+        })
     });
     out
 }
@@ -1737,10 +1748,12 @@ impl<'a> Sampler<'a> {
             let ks: Vec<usize> = (0..self.sets.len()).filter(|&m| self.sets[m].projected_crs() == Some(crs)).collect();
             let member = |i: usize| ks.iter().any(|&m| held(m, i));
             let p = Projection::of(crs).expect("a projected CRS");
-            let xy = (0..lon.len())
-                .into_par_iter()
-                .map(|i| if member(i) { p.project(lon[i], lat[i]) } else { (f64::NAN, f64::NAN) })
-                .unzip();
+            let xy = crate::control::on_target_pool(|| {
+                (0..lon.len())
+                    .into_par_iter()
+                    .map(|i| if member(i) { p.project(lon[i], lat[i]) } else { (f64::NAN, f64::NAN) })
+                    .unzip()
+            });
             out.insert(crs, Arc::new(xy));
         }
         out
@@ -1761,17 +1774,19 @@ impl<'a> Sampler<'a> {
         let xy = self.projections(lon, lat, &|m, i| covers[m][i]);
         // (The work to say by: points to sample (those some dataset covers), and points to measure (the
         // first dataset covering one is followed by another).)
-        let (to_sample, to_blend) = (0..n)
-            .into_par_iter()
-            .map(|i| {
-                let mut c = (0..covers.len()).filter(|&k| covers[k][i]);
-                match (c.next(), c.next()) {
-                    (None, _) => (0usize, 0usize),
-                    (Some(_), None) => (1, 0),
-                    (Some(_), Some(_)) => (1, 1),
-                }
-            })
-            .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+        let (to_sample, to_blend) = crate::control::on_target_pool(|| {
+            (0..n)
+                .into_par_iter()
+                .map(|i| {
+                    let mut c = (0..covers.len()).filter(|&k| covers[k][i]);
+                    match (c.next(), c.next()) {
+                        (None, _) => (0usize, 0usize),
+                        (Some(_), None) => (1, 0),
+                        (Some(_), Some(_)) => (1, 1),
+                    }
+                })
+                .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+        });
         // (The blends' points counted twice: their distances measured, then their second heights.)
         let total = ((to_sample + 2 * to_blend) as f64).max(1.0);
         let mut a = vec![f32::NAN; n];
@@ -1785,10 +1800,12 @@ impl<'a> Sampler<'a> {
             let p = phase(&format!("sampling {}", ds.id));
             let since = crate::fetch::fetched_bytes();
             let r = self.sets[k].reader(&xy);
-            let sel: Vec<u32> = (0..n as u32)
-                .into_par_iter()
-                .filter(|&i| first[i as usize] == u16::MAX && covers[k][i as usize])
-                .collect();
+            let sel: Vec<u32> = crate::control::on_target_pool(|| {
+                (0..n as u32)
+                    .into_par_iter()
+                    .filter(|&i| first[i as usize] == u16::MAX && covers[k][i as usize])
+                    .collect()
+            });
             // (By tile or file, so a chunk reads each tile once, not once per chunk.)
             let sel = r.in_reading_order(sel, lon, lat);
             if !sel.is_empty() {
@@ -1832,17 +1849,21 @@ impl<'a> Sampler<'a> {
         mono.say(to_sample as f64 / total);
         let mut blended = 0usize;
         for k in 0..plan.datasets.len() {
-            let (sel, radius): (Vec<u32>, Vec<f64>) = (0..n)
-                .into_par_iter()
-                .filter_map(|i| {
-                    if first[i] as usize != k {
-                        return None;
-                    }
-                    let coarsest =
-                        (k + 1..plan.datasets.len()).filter(|&m| covers[m][i]).map(|m| res[m]).fold(0.0f64, f64::max);
-                    (coarsest > 0.0).then(|| (i as u32, 4.0 * coarsest.max(res[k])))
-                })
-                .unzip();
+            let (sel, radius): (Vec<u32>, Vec<f64>) = crate::control::on_target_pool(|| {
+                (0..n)
+                    .into_par_iter()
+                    .filter_map(|i| {
+                        if first[i] as usize != k {
+                            return None;
+                        }
+                        let coarsest = (k + 1..plan.datasets.len())
+                            .filter(|&m| covers[m][i])
+                            .map(|m| res[m])
+                            .fold(0.0f64, f64::max);
+                        (coarsest > 0.0).then(|| (i as u32, 4.0 * coarsest.max(res[k])))
+                    })
+                    .unzip()
+            });
             if sel.is_empty() {
                 continue;
             }
@@ -1861,15 +1882,17 @@ impl<'a> Sampler<'a> {
         let mut b = vec![f32::NAN; n];
         let mut second = vec![u16::MAX; n];
         for (k, r) in readers.iter().enumerate() {
-            let sel: Vec<u32> = (0..n as u32)
-                .into_par_iter()
-                .filter(|&i| {
-                    dist[i as usize].is_finite()
-                        && second[i as usize] == u16::MAX
-                        && (first[i as usize] as usize) < k
-                        && covers[k][i as usize]
-                })
-                .collect();
+            let sel: Vec<u32> = crate::control::on_target_pool(|| {
+                (0..n as u32)
+                    .into_par_iter()
+                    .filter(|&i| {
+                        dist[i as usize].is_finite()
+                            && second[i as usize] == u16::MAX
+                            && (first[i as usize] as usize) < k
+                            && covers[k][i as usize]
+                    })
+                    .collect()
+            });
             if sel.is_empty() {
                 continue;
             }
@@ -1911,8 +1934,9 @@ impl<'a> Sampler<'a> {
         for (k, ds) in plan.datasets.iter().enumerate() {
             let Some(c) = &ds.convert else { continue };
             for (vals, from, firsts) in [(&mut a, &first, true), (&mut b, &second, false)] {
-                let sel: Vec<usize> =
-                    (0..n).into_par_iter().filter(|&i| from[i] as usize == k && vals[i].is_finite()).collect();
+                let sel: Vec<usize> = crate::control::on_target_pool(|| {
+                    (0..n).into_par_iter().filter(|&i| from[i] as usize == k && vals[i].is_finite()).collect()
+                });
                 if sel.is_empty() {
                     continue;
                 }
@@ -1939,25 +1963,27 @@ impl<'a> Sampler<'a> {
         drop(p);
         mono.say(1.0);
         let mut out = Sampled { elev: a, src: vec![0; n], blended: vec![false; n], unconverted, unconverted_seam: 0 };
-        out.unconverted_seam = (out.elev.par_iter_mut(), out.src.par_iter_mut(), out.blended.par_iter_mut())
-            .into_par_iter()
-            .enumerate()
-            .map(|(i, (elev, src, blended))| {
-                if first[i] == u16::MAX {
-                    return 0;
-                }
-                *src = plan.datasets[first[i] as usize].code;
-                if second[i] != u16::MAX {
-                    let band = 4.0 * res[first[i] as usize].max(res[second[i] as usize]);
-                    if dist[i] < band {
-                        *elev = blend(*elev, b[i], dist[i], band);
-                        *blended = true;
-                        return (a_converted[i] && b_kept[i]) as usize;
+        out.unconverted_seam = crate::control::on_target_pool(|| {
+            (out.elev.par_iter_mut(), out.src.par_iter_mut(), out.blended.par_iter_mut())
+                .into_par_iter()
+                .enumerate()
+                .map(|(i, (elev, src, blended))| {
+                    if first[i] == u16::MAX {
+                        return 0;
                     }
-                }
-                0
-            })
-            .sum();
+                    *src = plan.datasets[first[i] as usize].code;
+                    if second[i] != u16::MAX {
+                        let band = 4.0 * res[first[i] as usize].max(res[second[i] as usize]);
+                        if dist[i] < band {
+                            *elev = blend(*elev, b[i], dist[i], band);
+                            *blended = true;
+                            return (a_converted[i] && b_kept[i]) as usize;
+                        }
+                    }
+                    0
+                })
+                .sum::<usize>()
+        });
         if out.unconverted_seam > 0 {
             println!(
             "  {} blended vertices mix references: the first converted, the one beneath without a geoid value there",

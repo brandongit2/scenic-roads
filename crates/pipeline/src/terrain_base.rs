@@ -576,7 +576,9 @@ impl RawSource for Tiles<'_> {
     // `with_data`, which a level's own tiles never add to.)
     fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
         // (As many at once as the job's threads: each chunk's own work, its points and their means,
-        // is on its thread, outside the job's pool; its sampler's passes on the pool, task #888.)
+        // is on its thread, outside the job's pool; its sampler's passes on the pool, task #888: the
+        // target's, as wide as its grant as it began (crate::dem::generic's, through
+        // crate::control::on_target_pool).)
         let at_once = at_once();
         let chunks: Vec<&[(u32, u32)]> = tiles.chunks(chunk_tiles(at_once)).collect();
         let next = std::sync::atomic::AtomicUsize::new(0);
