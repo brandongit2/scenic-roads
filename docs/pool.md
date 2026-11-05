@@ -2543,7 +2543,8 @@ finished, from a log in its scratch folder on its Mac (§7.2, Resuming; crate::r
 Always on since #878 step 5: resuming (§7.2, §7.4), brokers (§8) and the memory guard (their
 switch files, `state/pool/resume`, `brokers` and `memory-guard`, stay on the NAS while an older app
 reads them). The pool's settings are the lead's (`/pool/settings`, crate::coord::asks; `scenic pool
-set`): `placement` (§7.2; off while not set), `nas-budget` and `nas-target`; their switch files
+set`): `placement` (§7.2; off while not set), `nas-budget`, `nas-target` and `overdue-factor` (§10,
+Flags; no switch file, so a lead before it refuses it); the first three's switch files
 under `state/pool/` are written and read beside only while an older app may (docs/coordination.md
 step 5's gate). A new setting is made only once every member's heartbeat shows the app that has
 it. A role is read as the agent starts (docs/roles.md §1) and is no longer

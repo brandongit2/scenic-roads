@@ -166,15 +166,17 @@ Common rules:
   available on the Mac, docs/pool.md §7.1), disk room target (GB kept free) and dev sweep margin
   (GB past the room target at which tools/dev/sweep-targets.sh frees the agents' build caches,
   tools/dev/testing.md), and the pool's NAS reserve (GB kept free on the NAS; "not here" while the
-  pool box's Mac doesn't reach the NAS) and batch length (minutes of measured time a shared step's
-  job is sized to, docs/pool.md §7.7, task #927; as that Mac's agent last had it from the lead, set
-  through any Mac's agent). The pool box is set through the first Mac on the page that reaches the
-  NAS, else the first that answered. Each Mac's `POST /work/settings`
+  pool box's Mac doesn't reach the NAS), batch length (minutes of measured time a shared step's
+  job is sized to, docs/pool.md §7.7, task #927) and overdue factor (the status flags a job past
+  that many times the time it was sized to, docs/pool.md §10, Flags), the latter two as that Mac's
+  agent last had them from the lead, set through any Mac's agent. The pool box is set through the
+  first Mac on the page that reaches the NAS, else the first that answered. Each Mac's `POST /work/settings`
   (its coordinator, broker or viewer; the lead's page reaches the others' through CORS) with `{}` reads them; with
-  `in_use` (cores), `memory`, `room`, `sweep_margin` or `nas_room` (GB), or `batch_minutes`, each a
-  number or `"off"`, sets them through the same functions as `scenic in-use`, `scenic memory`,
-  `scenic room`, `scenic nas-room` and `scenic pool set batch-minutes` (the sweep's margin has no
-  command; the batch length an ask of the agent, sent to the lead with its next beat)
+  `in_use` (cores), `memory`, `room`, `sweep_margin` or `nas_room` (GB), `batch_minutes` or
+  `overdue_factor` (times), each a number or `"off"`, sets them through the same functions as
+  `scenic in-use`, `scenic memory`, `scenic room`, `scenic nas-room` and `scenic pool set
+  batch-minutes|overdue-factor` (the sweep's margin has no command; the pool's two are asks of the
+  agent, sent to the lead with its next beat)
   (the same checks and files; `by` "the build page (<device>)"), and answers with them as they
   stand (`mac`: its host). One ask carrying several is set in order, so a bad one after a good one
   leaves the good one set; the page sends one at a time. A bad value is refused (400) with the check's words. They change only when a person

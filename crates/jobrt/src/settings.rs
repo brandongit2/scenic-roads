@@ -10,16 +10,25 @@ use std::collections::BTreeMap;
 /// The settings the lead keeps (`/pool/settings`), each moved from its switch file under
 /// `state/pool/` (pipeline's coord::asks::file): placement by how crucial a job is (pipeline's
 /// agent::placement; a boolean), the NAS's budget (crate::budget::nas's switch: its text) and the
-/// NAS's load target (crate::budget::nas::Target's share, %); and the batch length (task #927, no
-/// switch file: the minutes of measured time a job of a shared step is sized to, pipeline's
-/// coord::sched::Sched::batch_len).
+/// NAS's load target (crate::budget::nas::Target's share, %); and, with no switch file (an older lead
+/// refuses them): the batch length (task #927: the minutes of measured time a job of a shared step is
+/// sized to, pipeline's coord::sched::Sched::batch_len) and the factor past which a job's time is
+/// flagged (`OVERDUE`).
 pub const PLACEMENT: &str = "placement";
 pub const NAS_BUDGET: &str = "nas-budget";
 pub const NAS_TARGET: &str = "nas-target";
 pub const BATCH: &str = "batch-minutes";
-pub const NAMES: [&str; 4] = [PLACEMENT, NAS_BUDGET, NAS_TARGET, BATCH];
+/// How many times its sized time a job runs before the status flags it (pipeline's agent::flags,
+/// task #953): a number in `OVERDUE_RANGE`; not set, `OVERDUE_DEFAULT`.
+pub const OVERDUE: &str = "overdue-factor";
+pub const NAMES: [&str; 5] = [PLACEMENT, NAS_BUDGET, NAS_TARGET, BATCH, OVERDUE];
 /// The batch lengths the lead takes (minutes): a minute to a day.
 pub const BATCH_RANGE: std::ops::RangeInclusive<u64> = 1..=1440;
+
+/// The overdue factor when none is set: the owner's "about 3x" (4 Nov).
+pub const OVERDUE_DEFAULT: f64 = 3.0;
+/// The factors the lead takes: past the usual time at least, and short of never.
+pub const OVERDUE_RANGE: std::ops::RangeInclusive<f64> = 1.1..=100.0;
 
 /// A setting as the lead keeps it: its value (null: cleared, its default), who set it, when (unix s).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -72,6 +81,14 @@ impl Settings {
         self.get(BATCH).and_then(Value::as_u64).map(|m| m * 60)
     }
 
+    /// The overdue factor, and whether it was set (else `OVERDUE_DEFAULT`).
+    pub fn overdue(&self) -> (f64, bool) {
+        match self.get(OVERDUE).and_then(Value::as_f64).filter(|f| OVERDUE_RANGE.contains(f)) {
+            Some(f) => (f, true),
+            None => (OVERDUE_DEFAULT, false),
+        }
+    }
+
     /// Takes `a` when it's no earlier than the setting it replaces: whether it changed them.
     pub fn take(&mut self, a: &SettingAsk) -> bool {
         if self.values.get(&a.name).is_some_and(|s| s.at > a.at || s.value == a.value) {
@@ -104,6 +121,7 @@ impl SettingAsk {
                 n.as_u64().is_some_and(|p| crate::budget::nas::TARGET_RANGE.contains(&(p as u32)))
             }
             (BATCH, Value::Number(n)) => n.as_u64().is_some_and(|m| BATCH_RANGE.contains(&m)),
+            (OVERDUE, Value::Number(n)) => n.as_f64().is_some_and(|f| OVERDUE_RANGE.contains(&f)),
             _ => false,
         };
         ensure!(ok, "{}: not a setting the lead takes, or not of its kind ({})", self.name, self.value);

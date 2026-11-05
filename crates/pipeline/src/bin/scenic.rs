@@ -1008,9 +1008,12 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
     use pipeline::coord::asks::{self, SettingAsk};
     if let Some(name) = name {
         anyhow::ensure!(asks::NAMES.contains(&name), "the pool's settings: {}, not {name}", asks::NAMES.join(", "));
-        if let (asks::BATCH, Some(v)) = (name, value) {
+        if let (asks::BATCH | asks::OVERDUE, Some(v)) = (name, value) {
             let by = format!("scenic pool set on {}", store::sys::host_name());
-            agent::settings::set_batch(home, v, &by)?;
+            match name {
+                asks::BATCH => agent::settings::set_batch(home, v, &by)?,
+                _ => agent::settings::set_overdue(home, v, &by)?,
+            }
             println!("{name}: asked of this Mac's agent, which sends it to the lead with its next beat");
             return Ok(());
         }
@@ -1052,6 +1055,7 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
         "Batch length: a job of a shared step is sized to {} min of its targets' measured time on its Mac",
         s.batch_s().unwrap_or(pipeline::coord::JOB_S) / 60
     );
+    println!("Overdue: the status flags a job past {}× the time it was sized to", s.overdue().0);
     Ok(())
 }
 

@@ -111,7 +111,7 @@ export function settingsSection(call, macs, done, onError) {
       return h("div", "box settings pool", h("h3", null, "The pool"), poolRows(st.said).map((r) => row(put, r)));
     })()
     : h("div", "box settings pool", h("h3", null, "The pool"), h("div", "setting dim small", "no Mac shown here has answered yet"));
-  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve and batch length, pool-wide")), blocks, pool);
+  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve, batch length and overdue factor, pool-wide")), blocks, pool);
 }
 
 // Sets `body` on Mac `m` (null: this page's) with its kept state `st`; a refusal said through
@@ -189,9 +189,9 @@ export function macRows(s) {
 }
 
 /** The pool's rows from a Mac's answer `s`: its `nas_room` (null: that Mac doesn't reach the NAS
- * now) and `batch` (as its agent last had it from the lead). */
+ * now), `batch` and `overdue` (as its agent last had them from the lead). */
 export function poolRows(s) {
-  const n = s.nas_room, b = s.batch;
+  const n = s.nas_room, b = s.batch, o = s.overdue;
   return [
     n === null
       ? { key: "nas_room", what: "NAS reserve", now: "not here", note: `${s.mac || "this Mac"} doesn't reach the NAS now`, input: null }
@@ -204,6 +204,11 @@ export function poolRows(s) {
       now: `${b.minutes} min`,
       note: `a shared step's job takes its targets while their measured time on its Mac stays within this${b.set ? by(b) : ` (the default, ${b.default} min)`}${b.had ? "" : "; the lead's setting not had yet"}; a change goes to the lead with ${s.mac || "this Mac"}'s next beat`,
       input: { min: 1, max: 1440, step: 1, placeholder: "minutes", offTitle: `Back to the default (${b.default} min)` },
+    })),
+    guarded("overdue_factor", "Overdue factor", () => ({
+      now: `${o.factor}×`,
+      note: `a job running past this many times the time it was sized to is flagged (Alerts, scenic status, the menu bar)${o.set ? by(o) : ` (the default, ${o.default}×)`}${o.had ? "" : "; the lead's setting not had yet"}; a change goes to the lead with ${s.mac || "this Mac"}'s next beat`,
+      input: { min: 1.1, max: 100, step: 0.5, placeholder: "times", offTitle: `Back to the default (${o.default}×)` },
     })),
   ];
 }

@@ -1,9 +1,10 @@
 //! The owner's settings (docs/workers.md §7): this Mac's in-use share (crate::agent::share), memory
 //! floor (crate::agent::memfloor) and disk room target (crate::agent::room::Target), the pool's
-//! NAS reserve (crate::agent::room::NAS_RESERVE) and batch length (the lead's setting
-//! `batch-minutes`, crate::coord::asks), and the dev sweep's margin (`SWEEP_MARGIN`).
-//! Each is set through one function here, whoever asks: `scenic in-use`, `scenic memory`, `scenic
-//! room`, `scenic nas-room`, `scenic pool set batch-minutes`, and the build page's
+//! NAS reserve (crate::agent::room::NAS_RESERVE), batch length and overdue factor (the lead's
+//! settings `batch-minutes` and `overdue-factor`, crate::coord::asks), and the dev sweep's margin
+//! (`SWEEP_MARGIN`). Each is set through one function here, whoever asks: `scenic in-use`, `scenic
+//! memory`, `scenic room`, `scenic nas-room`, `scenic pool set batch-minutes|overdue-factor`, and the
+//! build page's
 //! POST /work/settings (crate::coord), which reads them back with `view` (the sweep's margin: the
 //! build page alone). The map server's mirror
 //! reads the room target through `RoomTarget` (its reserve is the larger of the two).
@@ -160,9 +161,64 @@ fn batch_view(home: &Path) -> serde_json::Value {
     })
 }
 
+/// The overdue factor asked ("3", "3x", "3×"): a number within `asks::OVERDUE_RANGE`, or "off"
+/// (null: the default again), as the pool's setting takes it.
+fn overdue_value(what: &str) -> Result<serde_json::Value> {
+    use crate::coord::asks::OVERDUE_RANGE;
+    if what.trim() == "off" {
+        return Ok(serde_json::Value::Null);
+    }
+    let n = what
+        .trim()
+        .trim_end_matches(['x', '×'])
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|n| OVERDUE_RANGE.contains(n))
+        .with_context(|| {
+        format!(
+            "the overdue factor: a number from {} to {}, or off, not {what}",
+            OVERDUE_RANGE.start(),
+            OVERDUE_RANGE.end()
+        )
+    })?;
+    Ok(n.into())
+}
+
+/// Asks the pool's overdue factor (agent::flags) of this Mac's agent in `home`, which sends it to
+/// the lead with its next beat (as `scenic pool set overdue-factor`): `what` as `overdue_value`
+/// takes it.
+pub fn set_overdue(home: &Path, what: &str, by: &str) -> Result<()> {
+    let value = overdue_value(what)?;
+    anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
+    let ask = crate::coord::asks::SettingAsk {
+        name: crate::coord::asks::OVERDUE.into(),
+        value,
+        by: by.to_string(),
+        at: super::jobs::now_s(),
+    };
+    crate::control::request_setting(home, &ask)
+}
+
+/// The pool's overdue factor as this Mac's agent last had the pool's settings from the lead (in
+/// `home`; `had` false: not yet).
+fn overdue_view(home: &Path) -> serde_json::Value {
+    let s = crate::control::read_pool_settings(home);
+    let (factor, set) = s.as_ref().map_or((crate::coord::asks::OVERDUE_DEFAULT, false), |s| s.overdue());
+    let v = s.as_ref().and_then(|s| s.values.get(crate::coord::asks::OVERDUE)).filter(|_| set);
+    serde_json::json!({
+        "factor": factor,
+        "default": crate::coord::asks::OVERDUE_DEFAULT,
+        "set": set,
+        "by": v.map(|v| v.by.clone()),
+        "at": v.map(|v| v.at),
+        "had": s.is_some(),
+    })
+}
+
 /// The settings as they stand, for the build page: this Mac's (in its agent's folder `home`), the
-/// pool's NAS reserve (under `root`; null while the NAS is away) and its batch length (as this
-/// Mac's agent last had it from the lead). Sizes in bytes, memory in MB.
+/// pool's NAS reserve (under `root`; null while the NAS is away), and its batch length and overdue
+/// factor (as this Mac's agent last had them from the lead). Sizes in bytes, memory in MB.
 pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Value {
     let total_mb = crate::sys::memsize().map_or(0, |b| b >> 20);
     let mem = memfloor::read(home);
@@ -196,6 +252,7 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
         },
         "nas_room": root.map(|r| target_view(room::nas_reserve(r), room::nas_free(r).ok(), None)),
         "batch": batch_view(home),
+        "overdue": overdue_view(home),
     })
 }
 

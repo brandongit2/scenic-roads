@@ -25,7 +25,10 @@ pub const QUEUE: &str = "asks.json";
 
 // The pool's settings, their names and an ask to set one: the runtime crate's (task #916 step 3,
 // docs/crates.md: control queues a Mac's asks), kept at these paths.
-pub use jobrt::settings::{Setting, SettingAsk, Settings, BATCH, NAMES, NAS_BUDGET, NAS_TARGET, PLACEMENT};
+pub use jobrt::settings::{
+    Setting, SettingAsk, Settings, BATCH, NAMES, NAS_BUDGET, NAS_TARGET, OVERDUE, OVERDUE_DEFAULT, OVERDUE_RANGE,
+    PLACEMENT,
+};
 
 /// A setting's switch file on the NAS (read by older apps; the rollout gate's).
 pub fn file(name: &str) -> Option<&'static str> {
@@ -148,6 +151,14 @@ mod tests {
         assert_eq!(l.settings.batch_s(), Some(1200));
         assert!(l.set(&SettingAsk { value: Value::from(0), at: 9, ..b.clone() }).is_err());
         assert!(l.set(&SettingAsk { value: Value::from("20"), at: 9, ..b }).is_err(), "a number");
+        // The overdue factor (task #953): a number past 1, the default until set.
+        assert_eq!(l.settings.overdue(), (OVERDUE_DEFAULT, false));
+        let o = SettingAsk { name: OVERDUE.into(), value: Value::from(4.5), by: "t".into(), at: 9 };
+        assert!(l.set(&o).unwrap().is_some());
+        assert_eq!(l.settings.overdue(), (4.5, true));
+        for bad in [Value::from(1), Value::from(0.5), Value::from(1000), Value::from("3")] {
+            assert!(l.set(&SettingAsk { value: bad.clone(), at: 10, ..o.clone() }).is_err(), "{bad}");
+        }
         // (Read back as the store keeps them.)
         let mut docs = crate::pool::store::Docs::new();
         docs.insert(format!("hold/{M}"), serde_json::to_value(&l.holds[M]).unwrap());

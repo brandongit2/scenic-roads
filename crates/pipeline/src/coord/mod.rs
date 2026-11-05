@@ -4241,10 +4241,11 @@ fn route(
         "/work/settings" => {
             // The owner's settings from the build page (docs/workers.md §7): `{}` reads them;
             // `{"in_use": <cores> | "off"}`, `{"memory": <GB> | "off"}`, `{"room": <GB> | "off"}`,
-            // `{"sweep_margin": <GB> | "off"}` set this Mac's, `{"nas_room": <GB> | "off"}` and
-            // `{"batch_minutes": <minutes> | "off"}` the pool's (the latter asked of the lead with
-            // this Mac's agent's next beat), each through the same function as its `scenic` command
-            // (crate::agent::settings; the sweep's margin has none). Answered with them as they stand.
+            // `{"sweep_margin": <GB> | "off"}` set this Mac's, `{"nas_room": <GB> | "off"}`,
+            // `{"batch_minutes": <minutes> | "off"}` and `{"overdue_factor": <times> | "off"}` the
+            // pool's (the latter two asked of the lead with this Mac's agent's next beat), each through
+            // the same function as its `scenic` command (crate::agent::settings; the sweep's margin has
+            // none). Answered with them as they stand.
             use crate::agent::settings;
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let Some((home, root)) = shared.lock().unwrap().settings.clone() else {
@@ -4285,6 +4286,9 @@ fn route(
             }
             if let Some(v) = said("batch_minutes")? {
                 settings::set_batch(&home, &v, &by)?;
+            }
+            if let Some(v) = said("overdue_factor")? {
+                settings::set_overdue(&home, &v, &by)?;
             }
             let mut v = settings::view(&home, root.as_ref());
             v["mac"] = store::sys::host().into();
