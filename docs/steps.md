@@ -323,6 +323,31 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   shading. Where the two meet (z8 | z9) is where their packs do, as the terrain's, not part of the
   rule. They read only the NAS (the sources' grids, the basemap, the depth's hi packs) and write
   their packs there. The 15″ grid covers the rest of a z3 tile's water.
+- **The lakes' estimates (`lake-depth`, a z6 tile, any Mac; crate::depth::lakes, task #959):** the
+  sources declared `lake-estimate` (docs/inputs.md §6.10: GLOBathy's, the small lakes') are made by
+  the pool, not by a producer: every z6 tile near the coverage (the terrain's, `coverage_tiles`) is
+  a target while one is declared, so a region added gets its lakes' estimates as the pool builds
+  it, and a tile the coverage left has its packs dropped (its "none" key). Each source's grids of
+  the tile are one pack (`work/lake-depth/<id>/6-x-y`, docs/formats.md), none where it has no lake.
+  - **GLOBathy's** (`method = "globathy"`): every HydroLAKES v1.0 lake meeting the tile with
+    GLOBathy's maximum depth (`Dmax_use_m`, by `Hylak_id`), both streamed from the zips in the
+    source's folder, a bowl D = Dmax · (l / L)^0.75 on its outline (l the distance to shore, islands
+    shore, smoothed by L/8 with the land 0; the depth lab's fit), z11, a grid a z8 tile cropped to
+    its data. A lake wider than 1,024 pixels (the Caspian, Ladoga) is shaped at the coarsest zoom
+    holding it within them and scaled up bilinearly inside its outline at z11.
+  - **The small lakes'** (`method = "land-slope"`): a z10 tile at a time, its basemap z14 water
+    and a ring of one tile: lakes and ponds merged by OSM id (those without one where they touch),
+    under 10 ha, not intermittent, not within 3 m of the sea, not a fifth or more under the
+    `outlines` source's HydroLAKES polygons; a lake reaching past the tiles read is skipped. Each
+    one's maximum depth from the mean land slope 30–100 m from its shore (the terrain hi packs'
+    z12, other lakes and land at or below 0.3 m left out) and its largest distance to shore
+    (GEOS's maximum inscribed circle), by the depth lab's fit (validation.md §3), the area rule
+    where the land is flat or missing; the same bowl at z14, a grid a z10 tile.
+  - Its key: the declarations it makes (their versions pin the zips), the basemap whole (a lake
+    goes on past the tile; a new basemap makes them all again, and a depth target only where a
+    pack's bytes changed) and the terrain hi packs of the tile and the 8 around it, which it waits
+    for. A depth target waits for the packs it reads (its tile and ring; an assembly's z6 tiles and
+    the ring its blocks' margin reaches), its key naming them by content.
 - **Reading the sources:** a source's grids are packed by z6 tile (docs/inputs.md §6.10, Packs:
   a tar of whole GeoTIFFs, each read in place by its byte range), so a job opens a pack once and
   reads its grids from it, not a file a grid; a pack is kept open by the job's reader like a grid
@@ -468,10 +493,13 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
      targets).
   2. The producers make the grids on the M4 (`producers/depth/`, `uv run --project producers`) into a
      local folder, packed by z6 tile, each source's packs then copied to `sources/fetched/<id>/`
-     with `tar` over SSH (the NAS's small-file limits; docs/storage.md).
+     with `tar` over SSH (the NAS's small-file limits; docs/storage.md). A `lake-estimate`
+     source has no producer: its files (GLOBathy's zips) are kept in its folder, and the pool's
+     lake-depth step makes its grids.
   3. The declarations (`producers/depth/declarations/`) and the indexes are added to
-     `inputs/sources/`. Once accepted, the terrain-water job works out the depth targets' water
-     digests (once a basemap), then the assemblies run, then the z6 tiles.
+     `inputs/sources/`. Once accepted, the lake-depth targets run (each once its terrain hi packs
+     are made), the terrain-water job works out the depth targets' water digests (once a
+     basemap), then the z6 tiles, then the assemblies.
 
 ## 4. Water (per pass, worldwide)
 
@@ -805,12 +833,17 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   it and a ring, each block reading a ring past it), and its tiles and the ring around them at each
   zoom from z9 to z14 its blocks compose (a grid of that zoom meets the tile with the blocks' 32-px
   margin; z15–16 are drawn from z14's polygons), so a change the basemap shows only at z13–14
-  remakes the z6 tiles whose grids of that zoom reach it, and one at a zoom no grid there is none.
+  remakes the z6 tiles whose grids of that zoom reach it, and one at a zoom no grid there is none;
+  and the lake-depth packs of its tile and the 8 around it by content.
+- **lake-depth (a z6 tile):** `depth::lakes::V`, the pins of the declarations it makes, the water
+  source's pin (the latest basemap and the lake fill, whole) and the terrain hi packs of the tile
+  and the 8 around it by content.
 - **depth-lo (a z3 tile):** the same versions, the tile, the depth sources meeting it with its
   blocks' 32-px margin at z3, the widest (id and digest of declaration and index), the digest of
   its z3–8 water as the depth reads it, rivers included ("depth 3/x/y", worked out by the
-  terrain-water job), and the content names of its z6 tiles' `depth`, `depth-class` and
-  `depth-shade` hi packs (its z8 is made from their z9).
+  terrain-water job), the content names of its z6 tiles' `depth`, `depth-class` and
+  `depth-shade` hi packs (its z8 is made from their z9), and those of the lake-depth packs of its
+  z6 tiles and the ring of z6 tiles around them.
 - **depth-root:** `DEPTH_ROOT_V`, the depth's versions and the content names of every `depth`,
   `depth-class` and `depth-shade` lo pack (recorded with the other roots, by its name).
 - **bldtiles (per z6 tile):** `BUILDINGS_V`, the normalized files of the tile and its 8 neighbours,

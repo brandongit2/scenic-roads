@@ -921,6 +921,12 @@ class, id) within a tile. The client sends the id with the clicked point.
   "terrain-lakes", tile: "10/x/y", v, lakes: {<OSM id>: <level, m>}}`: a terrain-deep target's
   lakes across its z10 tile's edges, each lake's level decided once for the whole lake, its run
   takes them as known; only for a target with such a lake; `pipeline::terrain_lakes`);
+  `work/lake-depth/<source id>/6-x-y` (a tar, ustar with fixed headers: its first member
+  `index.json`, `[{file, zoom, c0, r0, w, h, at: [offset, length]}]`, each grid's zoom, first
+  column and row on that zoom's global pixel grid, size, and its GeoTIFF's place in the tar; then
+  the GeoTIFFs, in the depth grids' standard, docs/inputs.md §6.10: EPSG:3857, float32, NaN for
+  none, Deflate with the floating-point predictor, overviews by averaging; one a source the
+  lake-depth step makes and z6 tile with a lake of it; `pipeline::depth::lakes`);
   `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
   "terrain-water", pin, digests: {target: [from, digest]}}`: per terrain target, what decides its
   tiles and a hash16 over its water tiles' polygons; `pipeline::terrain_water::WaterIdx`).

@@ -1510,9 +1510,10 @@ grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) among them.
 ### 6.10 Depth
 
 **Kind:** source declarations of the `depth` role, any number (crate::inputs::sources `MANY`), in
-`inputs/sources/` beside the others, each with its index of depth grids. Code: crate::depth::grids
-(the build's reading), crate::depth (the steps, docs/steps.md §3). The declarations are staged in
-`producers/depth/declarations/`; the producers that make their grids in `producers/depth/`.
+`inputs/sources/` beside the others, each with its index of depth grids, or made by the pool
+(`format = "lake-estimate"`, below). Code: crate::depth::grids (the build's reading), crate::depth
+(the steps, docs/steps.md §3). The declarations are staged in `producers/depth/declarations/`; the
+producers that make the indexed grids in `producers/depth/`.
 
 **The standard: depth grids** (`format = "depth-grid"`). A source is a set of GeoTIFFs, each on the
 global Web Mercator pixel grid of one zoom (EPSG:3857; its pixels `roadcore::geo::MERC_C` (2π × 6,378,137 m) / 256 / 2^zoom m,
@@ -1546,6 +1547,17 @@ packed hashes would rebuild every depth target at adoption). A producer that cha
 the depth file's `hash` too, or a new key is forced by the declaration's `version`. A feature without `pack`
 is a loose file, read as before. The producers pack as they write the index (`grid.Writer`).
 
+**Made by the pool** (`format = "lake-estimate"`, task #959; crate::depth::lakes): a source whose
+grids the lake-depth step makes (docs/steps.md §3, The lakes' estimates) for every z6 tile near the
+coverage, from what its `params.method` says: `globathy`, GLOBathy's maximum depths on HydroLAKES
+v1.0's outlines, from the zips kept in its folder `sources/fetched/<id>/` (GLOBathy's basic
+parameters, the one holding `(ALL_LAKES).csv`, and `HydroLAKES_polys_v10_shp.zip`); `land-slope`,
+the basemap's small lakes from the land's slope, leaving out the lakes under the HydroLAKES
+polygons of the source `params.outlines` names. It has no index, and names where its files came
+from by `url` or nothing (made from the map's own inputs). Its grids are that step's packs
+(`work/lake-depth/<id>/6-x-y`, docs/formats.md), in this standard. The keys name its declaration
+(its `version` pins the zips: a new copy comes with a new version) and each pack read by content.
+
 **`[data.params]`:** `code` (1–15, the source byte the class tiles carry, one a source), `water`
 (`sea` or `lake`: where it's drawn: a sea source on the sea, a lake source in lakes),
 `label` (the map's name for it), `datum` (what its depths are below, in words), optionally `band_m`
@@ -1559,9 +1571,11 @@ notice its licence asks every map showing its data to carry: shown in full in th
 under a "Depth:" line naming every source's `label` and "Not for navigation."; nothing floats over
 the map).
 
-**Checks** (§6.9's, and): a depth declaration's params (`src-decl`); its index's features each naming
-a `.tif` `file` and a `zoom` 0–18, and a packed one a `.tar` `pack` in the source's folder and a
-range in `at` for each file it names (`src-index`); two of one `code` (`src-role`).
+**Checks** (§6.9's, and): a depth declaration's params (`src-decl`: a `lake-estimate` one with no
+index, a known `method`, and `outlines` for `land-slope`; those two a `lake-estimate` one's alone);
+its index's features each naming a `.tif` `file` and a `zoom` 0–18, and a packed one a `.tar`
+`pack` in the source's folder and a range in `at` for each file it names (`src-index`); two of one
+`code` (`src-role`).
 
 **The sources** (`producers/depth/declarations/`; the owner's decisions of 6 and 17 October 2026):
 
@@ -1572,11 +1586,12 @@ range in `at` for each file it names (`src-index`); two of one `code` (`src-role
 | `nonna-100`, `nonna-10` | CHS's 100 m and 10 m grids (licence accepted; never redistributed; its notice names the owner as the maker) | 3, 4 | sea | `nonna.py`, the keyless coverage service (NONNA-10 a chunk of blocks at a time, where NONNA-100 has water: `chunked.py nonna10`); chart datum → mean water level by CHS's stations (`stations.py chs`) | z10, z13 |
 | `emodnet-dtm` | EMODnet's DTM 2024, MSL version | 5 | sea | `emodnet.py`: its MSL ASCII tiles one at a time (a WGS 84 `.prj` given each), `raster.py`'s produce | gaps only (`datum_exact = false`) |
 | `shom-homonim-100`, `shom-homonim-20` | SHOM's façade and coastal DEMs, MSL versions | 6, 7 | sea | `raster.py`, the low water SHOM's own separation (`--low-raster`) | z10, z13 |
-| `masswildlife-ponds`, `mn-dnr-lakes`, `gblq` | surveyed lakes (Massachusetts, Minnesota, Québec) | 9–11 | lake | `raster.py` (feet or metres, sign as each says) | z16, z15, z16 |
+| `gblq` | surveyed lakes (Québec) | 11 | lake | `raster.py` (metres, positive down) | z16 |
+| `masswildlife-ponds`, `mn-dnr-lakes` | surveyed lakes (Massachusetts, Minnesota): staged, not yet added (no grids made: their rasters are in file geodatabases, MassGIS's `MassWildlifeInlandBathymetry.zip` and the DNR's `water_lake_bathymetry.zip`, which `raster.py`'s GDAL can't read; the depth lab decoded their blocks by hand) | 9, 10 | lake | none yet | z16, z15 |
 | `ncei-crm` | NCEI's Coastal Relief Models, 1″ (the owner's download, `sources/ncei-crm/`; volume 6 absent) | 12 | sea | `ncei.py crm`; volumes 1–5, 7, 8 (EGM2008) → MSL by a datum surface a volume from `ncei.py egm2008`'s table (CO-OPS' stations' MSL − NAVD88, `stations.py noaa`, plus NAVD88 → EGM2008 by the declared geoid grids through `scenic-build geoid-offsets`; a station more than 2 km from the volume's sea left out), land cut by MSL; 9 and 10 on local MSL as they come | z12 |
 | `ncei-greatlakes` | NCEI's Great Lakes bathymetry, 3″ (the owner's download, `sources/ncei-greatlakes/`) | 13 | lake | `ncei.py greatlakes`: from each lake's low water datum (CO-OPS' station datums) to its long-term mean level (GLERL's coordinated lake-wide monthly means, 1918 on), both fetched as it runs | z10 |
-| `globathy` | GLOBathy's maximum depths (CC0) on HydroLAKES v1.0's outlines (CC BY 4.0), every lake of 10 ha and more: estimates | 14 | lake | `globathy.py` (below) | z11; `estimated`, gaps only (`datum_exact = false`): a survey wins |
-| `smalllakes` | the basemap's (OpenStreetMap's, ODbL) lakes and ponds under 10 ha that HydroLAKES lacks, each one's maximum depth estimated from the land's slope around it: estimates | 15 | lake | `smalllakes.py` (below) | z14; `estimated`, gaps only (`datum_exact = false`): a survey and GLOBathy win |
+| `globathy` | GLOBathy's maximum depths (CC0) on HydroLAKES v1.0's outlines (CC BY 4.0), every lake of 10 ha and more: estimates | 14 | lake | the lake-depth step (`lake-estimate`, `method = "globathy"`), from GLOBathy's and HydroLAKES' zips in `sources/fetched/globathy/` | z11; `estimated`, gaps only (`datum_exact = false`): a survey wins |
+| `smalllakes` | the basemap's (OpenStreetMap's, ODbL) lakes and ponds under 10 ha that HydroLAKES lacks, each one's maximum depth estimated from the land's slope around it: estimates | 15 | lake | the lake-depth step (`lake-estimate`, `method = "land-slope"`, `outlines = "globathy"`) | z14; `estimated`, gaps only (`datum_exact = false`): a survey and GLOBathy win |
 
 `rivers = true` is staged for `nonna-100`, `nonna-10` (mean water level by CHS's stations, which
 follow the St. Lawrence up to Montréal: NONNA-100 has values there), `bluetopo` (local mean sea
@@ -1614,35 +1629,11 @@ Public Server Authentication Root R46). `SSL_CERT_FILE`, when set, is used alone
 Every request carries the User-Agent "scenic-roads/0.1 (personal offline map)"; what they fetch
 is APIs and published data, so no robots.txt is read (§6.9).
 
-`globathy.py` (`test_globathy.py`) reads GLOBathy's basic-parameters zip (fetched into `--cache`, or
-`--params`) and the owner's HydroLAKES v1.0 polygons zip (`--hydrolakes`, downloaded by hand), and makes a z11 grid a z8 tile: each lake a bowl
-D = Dmax · (l / L)^0.75 on its outline (l the distance to shore smoothed by L/8, the depth lab's
-fit), several `--box`es a run, each owning the tiles whose north-west corner is in it.
-
-`smalllakes.py` (`test_smalllakes.py`) reads the basemap's z14 water and the z12 terrain from this
-machine's app server (`--server`, default `http://127.0.0.1:7311`; nothing from the internet) and
-the owner's HydroLAKES v1.0 polygons zip (`--hydrolakes`), and makes a z14 grid a z10 tile. Its
-lakes: class lake or pond, merged by OSM id over the z10 tile's z14 tiles and a ring of one more (a
-lake reaching past them is skipped and counted), under 10 ha, not intermittent, not within 3 m of
-the sea, and not a fifth or more covered by a HydroLAKES polygon (GLOBathy's). Each one's maximum
-depth by the depth lab's fit (its validation.md §3): ln Dmax = −3.820 + 0.363 ln S + 1.983 ln L −
-0.1324 (ln L)², ln L held at its peak (L ≈ 1,790 m) beyond it, S the mean land slope 30–100 m from
-the shore (other lakes and terrain at or below 0.3 m left out), L the largest distance to shore;
-under 3 land pixels in the ring or S < 0.003, the area rule Dmax = 3.04 · A^0.228 (A in ha). On the
-lab's 85 measured lakes under 10 ha: median error 48 %, half within ±50 % (the area rule: 53 %).
-Each lake is `globathy.py`'s bowl at z14. Several `--box`es a run, each owning the z10 tiles whose
-north-west corner is in it; the index is written after each box, and a stopped run resumes (the
-tiles finished are listed in `<index>.done`). A failed request is tried again after 2, 4, 8 and 16 s;
-a 404 reads as no tile, the server's answers are logged a box, and a box whose every basemap tile
-was a 404 fails. `smalllakes-run.sh` is the full run, on the M4: its own server instance (own port
-and `--home`, `--root` on the NAS's project folder), one call a z6 tile of the coverage spread over
-3–4 workers, each box's grids tarred over SSH into the NAS's `sources/fetched/smalllakes/` and
-checked there by size, the indexes merged at the end; under `caffeinate`, a box starting only on
-mains power or at 30 % battery or more.
-
 **Keys** (docs/steps.md §12): a depth target names each source meeting it by its id and
 `Source::digest` (its `[data]` and its index's features, their hashes among them), so a new grid
-re-keys the tiles it meets.
+re-keys the tiles it meets; a `lake-estimate` source by its declaration's digest and the
+lake-depth packs it reads by content, so a coverage change re-keys only the targets whose packs
+changed.
 
 **The rollout:** docs/steps.md, Depth.
 

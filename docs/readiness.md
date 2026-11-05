@@ -160,8 +160,9 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | rail-feeds, rail, water, bld-fetch | as §12 | `Input`s, and rail: `Whole rail-feeds` | same |
 | bldprep | `BLDPREP_V`, release, row groups and GHSL tile | `Whole bld-fetch` (one world target), `in release` | same |
 | bldtiles | `BUILDINGS_V`, normalized files of tile + 8 neighbours, shapes | `Targets bldprep` (tile + 8), `in coverage:shapes` | changes: today `after: bldprep` waits on every bldprep; derived waits on 9 |
-| depth | versions, tile, sources in margin, water | versions; `in depth-sources`, `in water:depth` | same |
-| depth-lo | versions, sources, water, z6 hi packs | `Targets depth` (its z6 tiles), `in depth-sources`, `in water:depth` | changes: today `after: depth` waits on every depth tile; derived on its 64 |
+| lake-depth | `depth::lakes::V`, the declarations it makes, the water, the terrain hi packs of its tile and ring | versions; `in lake-sources`, `in water-source`, `Targets terrain-hi` (its tile and the 8 around it) | task #959: the lakes' estimates follow the coverage |
+| depth | versions, tile, sources in margin, water, the lake-depth packs it reads | versions; `in depth-sources`, `in water:depth`, `Targets lake-depth` (its tile and ring, `Grain::Read`: their packs by content) | task #959: it waits for the lake-depth packs it reads |
+| depth-lo | versions, sources, water, z6 hi packs, the lake-depth packs it reads | `Targets depth` (its z6 tiles), `in depth-sources`, `in water:depth`, `Targets lake-depth` (its z6 tiles and their ring, `Grain::Read`) | changes: today `after: depth` waits on every depth tile; derived on its 64 |
 | depth-root | versions, every depth lo pack | `Whole depth-lo` | same (`after: depth` was redundant) |
 | pois | extract spacing, trailends | `in extract`, `Whole trailends` | same |
 | summits | (pass) | `Input`s | same |

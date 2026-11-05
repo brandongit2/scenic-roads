@@ -3,9 +3,10 @@ what = "Depth of Minnesota's surveyed lakes"
 credit = "Minnesota DNR, Fisheries (Division of Fish and Wildlife), Minnesota Geospatial Commons"
 licence = "Minnesota DNR GIS Data License"
 source = "https://gisdata.mn.gov/dataset/water-lake-bathymetry"
+retrieved = "2026-10-06"
 territory = ["US"]
 redistribute = false
-notes = "The statewide zip's DEM (feet below the lake's surface at survey), raster.py at z15. Not for navigation."
+notes = "The statewide water_lake_bathymetry.zip (its file geodatabase's 5 m lake DEM, 2,010 lakes: US survey feet, negative below the lake's surface at its survey, 0 at the shore), from the Minnesota Geospatial Commons; external use under the DNR's general GIS data licence. Its grids at z15. Not for navigation."
 
 [data]
 role = "depth"

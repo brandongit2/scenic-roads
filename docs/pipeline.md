@@ -104,7 +104,8 @@ paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. 
 | `trees` | `trees` | pack | a z6 tile | ⇄ |
 | | `trees-lo` | pack | a z3 tile | ⇄ |
 | | `treeblock` (task) | | a task of `trees` | ⇄ |
-| `depth` | `depth` | pack | a z6 tile | ⇄ |
+| `depth` | `lake-depth` | derive | a z6 tile | ⇄ |
+| | `depth` | pack | a z6 tile | ⇄ |
 | | `depth-lo` | pack | a z3 tile | ⇄ |
 | | `depth-root` | pack | the world | lead |
 | `roads` | `unit` | pack | a z6 tile | ⇄ |
