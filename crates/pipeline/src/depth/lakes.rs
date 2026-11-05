@@ -19,6 +19,7 @@
 //! them as that source's grids (crate::depth::grids::Source::estimated).
 
 use anyhow::{bail, ensure, Context, Result};
+use det::Det;
 use std::collections::{BTreeMap, HashMap};
 
 /// Bumped with any change to the grids made from the same inputs.
@@ -156,14 +157,14 @@ pub fn named(m: &BTreeMap<String, String>) -> impl Iterator<Item = (&str, (u32, 
 pub fn dmax_estimate(s: Option<f64>, l: f64, area_ha: f64) -> (f64, bool) {
     if let Some(s) = s.filter(|s| s.is_finite() && *s >= S_MIN) {
         let (a, c, b, d) = BETA;
-        let mut ln_l = l.max(1.0).ln();
+        let mut ln_l = l.max(1.0).dln();
         if d < 0.0 {
             ln_l = ln_l.min(-b / (2.0 * d));
         }
-        return ((a + c * s.ln() + b * ln_l + d * ln_l * ln_l).exp(), true);
+        return ((a + c * s.dln() + b * ln_l + d * ln_l * ln_l).dexp(), true);
     }
     let (a, b) = AREA_BETA;
-    ((a + b * area_ha.max(1e-3).ln()).exp(), false)
+    ((a + b * area_ha.max(1e-3).dln()).dexp(), false)
 }
 
 /// A polygon's rings (outer first, holes after; either winding) in a zoom's global pixels.
@@ -223,14 +224,14 @@ fn fill_touched(rings: &[Vec<[f64; 2]>], c0: i64, r0: i64, w: usize, h: usize) -
 /// Ground metres a pixel of zoom `z` at global row `r`.
 fn ground_px(z: u8, r: f64) -> f64 {
     let (_, lat) = super::grids::lonlat(z, 0.0, r);
-    super::grids::px(z) * lat.to_radians().cos()
+    super::grids::px(z) * lat.to_radians().dcos()
 }
 
 /// `v` blurred by a Gaussian of `sigma` pixels (scipy's `gaussian_filter`, `mode="constant"`:
 /// nothing past the edges, its kernel 4 σ each side).
 fn gaussian(v: &[f64], w: usize, h: usize, sigma: f64) -> Vec<f64> {
     let r = (4.0 * sigma + 0.5) as i64;
-    let k: Vec<f64> = (-r..=r).map(|i| (-0.5 * (i as f64 / sigma).powi(2)).exp()).collect();
+    let k: Vec<f64> = (-r..=r).map(|i| (-0.5 * (i as f64 / sigma).powi(2)).dexp()).collect();
     let sum: f64 = k.iter().sum();
     let k: Vec<f64> = k.iter().map(|x| x / sum).collect();
     let pass = |src: &[f64], n: usize, m: usize, at: &dyn Fn(usize, usize) -> usize| -> Vec<f64> {
@@ -381,7 +382,7 @@ impl Canvas {
                     let (c, r) = (c0 + i as i64, r0 + j as i64);
                     let f = b.at(self.zoom, c, r);
                     let o = (r - self.r0) as usize * self.w + (c - self.c0) as usize;
-                    self.v[o] = (-dmax * f.clamp(0.0, 1.0).powf(P)) as f32;
+                    self.v[o] = (-dmax * f.clamp(0.0, 1.0).dpowf(P)) as f32;
                 }
             }
         }
@@ -817,7 +818,7 @@ fn land_slope(g: &geos::Geometry, others: &[&geos::Geometry], terrain: &dyn Terr
         } else {
             (at(i, j + 1) - at(i, j - 1)) / (2.0 * gm)
         };
-        gx.hypot(gy)
+        gx.dhypot(gy)
     };
     let (dist, _) = super::edt::nearest(&me, w, h);
     let (mut sum, mut cnt) = (0.0, 0usize);

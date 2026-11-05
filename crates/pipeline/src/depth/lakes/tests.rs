@@ -23,7 +23,7 @@ fn the_labs_table() {
 /// L is held at its peak (~1,790 m) beyond it; flat or missing land takes the area rule.
 #[test]
 fn l_is_held_at_its_peak_and_flat_land_takes_the_area_rule() {
-    let peak = (-BETA.2 / (2.0 * BETA.3)).exp();
+    let peak = (-BETA.2 / (2.0 * BETA.3)).dexp();
     assert!((peak - 1790.0).abs() < 5.0, "{peak}");
     assert_eq!(dmax_estimate(Some(0.05), peak, 1.0), dmax_estimate(Some(0.05), 5000.0, 1.0));
     for s in [None, Some(f64::NAN), Some(0.002)] {
@@ -32,7 +32,7 @@ fn l_is_held_at_its_peak_and_flat_land_takes_the_area_rule() {
         assert!((d - 3.04).abs() < 0.005, "{d}");
     }
     let (d, _) = dmax_estimate(None, 50.0, 5.0);
-    assert!((d - 3.04 * 5f64.powf(0.228)).abs() < 0.01, "{d}");
+    assert!((d - 3.04 * 5f64.dpowf(0.228)).abs() < 0.01, "{d}");
 }
 
 fn square(lon: f64, lat: f64, d: f64) -> Vec<[f64; 2]> {
@@ -253,7 +253,7 @@ struct Plane {
 
 impl Terrain for Plane {
     fn tile(&self, x: u32, _y: u32) -> Result<Option<std::sync::Arc<Vec<f32>>>> {
-        let r = super::super::grids::px(TERRAIN_Z) * 45f64.to_radians().cos();
+        let r = super::super::grids::px(TERRAIN_Z) * 45f64.to_radians().dcos();
         let base = to_pixels(&[vec![[-73.1, 45.0]]], TERRAIN_Z)[0][0][0];
         let mut v = vec![0f32; 256 * 256];
         if !self.flat {
@@ -269,7 +269,7 @@ impl Terrain for Plane {
 /// z14 tile's polygon (in its own pixels) and that tile.
 fn pond(kind: Kind, id: u64, east: f64, side: f64) -> ((u32, u32), Poly) {
     let (lon, lat) = (-73.0, 45.0f64);
-    let per_lon = roadcore::geo::M_PER_DEG * lat.to_radians().cos();
+    let per_lon = roadcore::geo::M_PER_DEG * lat.to_radians().dcos();
     let (w, e) = (lon + east / per_lon, lon + (east + side) / per_lon);
     let n = lat + side / roadcore::geo::M_PER_DEG;
     let r = &to_pixels(&[vec![[w, lat], [e, lat], [e, n], [w, n]]], SMALL_Z)[0];
