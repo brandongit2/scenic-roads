@@ -35,7 +35,10 @@ repo=$PWD
 old=$repo/tools/taskboard new=$repo/tools/devtools
 domain=gui/$(id -u) agents=~/Library/LaunchAgents aside=~/.config/scenic/pre-946
 nas=/Volumes/personal/projects/scenic-roads/state/taskboard
-url=http://127.0.0.1:8077 site=https://map.brandontsang.net
+url=http://127.0.0.1:8077
+# (The name Caddy serves, as tools/caddy/install.sh wrote it: its first line not a comment.)
+name=$(grep -v '^#' ~/.config/scenic/names 2>/dev/null | head -1) || name=
+site=https://$name
 stamp=$(strftime %Y%m%d-%H%M%S $EPOCHSECONDS)
 say() { print -r -- "move-from-taskboard: $*" }
 die() { say "$*"; exit 1 }
@@ -91,7 +94,7 @@ if [[ ${1:-} == --rollback ]]; then
   git archive $rev^ tools/caddy | tar -x -C $aside/caddy --strip-components 2
   $old/launchd/install.sh $node
   answers $n
-  $aside/caddy/install.sh
+  $aside/caddy/install.sh $name
   say "rolled back: the board's server from ${rev:0:8}^ on :8077, Caddy's /task-board (from $aside/caddy)"
   exit 0
 fi
@@ -100,7 +103,8 @@ fi
 [[ ! -e $new/taskboard.db ]] || die "$new/taskboard.db is there already: move it aside first"
 "$node" -e 'require("node:sqlite")' 2>/dev/null || die "$node lacks node:sqlite"
 caddy=$(command -v caddy || echo /opt/homebrew/bin/caddy)
-SCENIC_MAP_NAME=${site#https://} SCENIC_CERT=~/certs/map.crt SCENIC_KEY=~/certs/map.key \
+[[ -n $name ]] || die "no name in ~/.config/scenic/names (tools/caddy/install.sh writes it)"
+SCENIC_MAP_NAME=$name SCENIC_CERT=~/certs/map.crt SCENIC_KEY=~/certs/map.key \
   $caddy validate --config $repo/tools/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || die "the Caddyfile doesn't validate"
 trap '(( $? )) && say "stopped part way: tools/devtools/launchd/move-from-taskboard.sh --rollback puts the old server back"' EXIT
 unload local.scenic.taskboard local.scenic.taskboard-backup
@@ -112,7 +116,7 @@ if [[ -d ${nas:h} ]]; then
 else say "the NAS isn't mounted: no copy there (the old data stays in $old)"; fi
 $new/launchd/install.sh $node
 answers $(items $old/taskboard.db)
-$repo/tools/caddy/install.sh
+$repo/tools/caddy/install.sh $name
 for (( i = 0; i < 50; i++ )); do curl -sf --max-time 2 $site/dev/api/c/meta/status >/dev/null && break; sleep 0.2; done
 curl -sf --max-time 5 $site/dev/api/c/meta/status >/dev/null || die "$site/dev/api/c/meta/status: no answer"
 [[ $(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' $site/task-board/709) == "308 $site/dev/task-board/709" ]] \
