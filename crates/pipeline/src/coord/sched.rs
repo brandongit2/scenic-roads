@@ -272,6 +272,11 @@ impl RoomWait {
         let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
         let mut s =
             format!("room held for a job of {} ({} of memory, {} left", self.step, gb(self.mem_mb), gb(room.mem_mb));
+        // (Its disk too where that's what it's short of: a wait for disk alone read as one for
+        // memory with room to spare.)
+        if let Some(d) = room.disk_mb.filter(|&d| d < self.disk_mb) {
+            s += &format!("; {} of disk, {} left", gb(self.disk_mb), gb(d));
+        }
         if self.cores > 0 {
             s += &format!("; {} cores, {} left", tenths(self.cores), tenths(cores));
         }
