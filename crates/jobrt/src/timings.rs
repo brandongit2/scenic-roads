@@ -288,6 +288,11 @@ pub struct RunRec {
     pub safe_points: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safe_gap_s: Option<f64>,
+    /// The cost version of its step it ran as (pipeline::coord::cost_version), stamped by the lead
+    /// as the record comes in: a step's use counts only its runs of the way it runs now
+    /// (pipeline::uses). None: a record from before the stamp, of no known way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_v: Option<u32>,
 }
 
 /// A run's targets on one thread count (`RunRec::held`): their wall and CPU time summed.
@@ -875,6 +880,7 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
         gaps: Vec::new(),
         safe_points: 0,
         safe_gap_s: None,
+        cost_v: None,
     };
     let sg = crate::control::safe_gaps();
     rec.safe_points = sg.points;

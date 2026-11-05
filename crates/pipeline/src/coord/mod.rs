@@ -3256,8 +3256,11 @@ fn phase_sharer(
 }
 
 /// Keeps `rec` in the coordinator's timings log (written outside its lock), and its run among the
-/// uses' (crate::uses: what a job is granted threads by).
+/// uses' (crate::uses: what a job is granted threads by); stamped with its step's cost version
+/// (`cost_version`, as the lead stamps each end and done: `history::Event::v`), so a run of an
+/// older way of the step stops counting once the version is raised.
 fn keep_timings(shared: &Mutex<Shared>, rec: &crate::timings::RunRec) {
+    let rec = &crate::timings::RunRec { cost_v: rec.cost_v.or(Some(cost_version(&rec.kind))), ..rec.clone() };
     let dir = shared.lock().unwrap().dir.clone();
     if let Err(e) = crate::timings::append(&dir.join("timings.jsonl"), rec) {
         eprintln!("coordinator: keeping a run's timings: {e}");

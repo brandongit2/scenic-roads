@@ -477,8 +477,12 @@ and `threads`, read as the coordinator starts and taken as each job's come in, `
 are grouped by step, Mac (a slot's worker is its Mac's, `paces::mac_of`) and threads, over the runs
 ended well in the window the paces read (`paces::PACE_S`, 5 days, picked by their held-out test;
 the log is cut to its newer half past 16 MB, about 3 days of the lead's on 4 Nov at 5 KB a line, so
-a coordinator started after a cut reads what was kept, and keeps the window's runs from then on);
-each group's busy cores are its CPU time summed over its wall time summed, so a long job weighs as
+a coordinator started after a cut reads what was kept, and keeps the window's runs from then on),
+and only those of the way their step runs now: the lead stamps each record it keeps with its step's
+cost version (`RunRec::cost_v`, `coord::cost_version`), and a run below the step's (or unstamped,
+read as 0) isn't read, as the cost book's rule reads its costs (task #929 review: slope-deep's runs
+before #952 kept their threads busy on z10–12 work it no longer does, terrain-deep's on a base it no
+longer makes); each group's busy cores are its CPU time summed over its wall time summed, so a long job weighs as
 long as it held its threads. The grant (`uses::Uses::cores`) is the most cores any group kept busy,
 rounded up to whole threads, plus one where that group needed every thread it had (its busy cores
 past one fewer, and half its threads at least) and no run there had more: a step its threads hold

@@ -50,7 +50,11 @@
 //!
 //! The runs read are those in the window the paces read (crate::paces::PACE_S, picked by a held-out
 //! test of what a Mac's recent runs say of its next), ended well (a paused run isn't), with their
-//! CPU time and threads said.
+//! CPU time and threads said, and of the way their step runs now: a record's cost version (the
+//! lead's stamp, `RunRec::cost_v`; none before the stamp, read as 0) at least the step's
+//! (crate::coord::cost_version), as the cost book reads its costs. A step whose work changed
+//! wholly (task #929's terrain, #952's slope-deep and slope-hi) is granted by what it does now, not
+//! by the busy cores of its old way.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -127,6 +131,8 @@ struct Line {
     #[serde(default)]
     phases: Vec<Phase>,
     ok: bool,
+    #[serde(default)]
+    cost_v: Option<u32>,
 }
 
 impl Run {
@@ -135,6 +141,10 @@ impl Run {
     fn of_line(l: Line) -> Vec<Run> {
         let (Some(cpu_s), Some(threads)) = (l.cpu_s, l.threads.filter(|&t| t > 0)) else { return Vec::new() };
         if !(l.ok && l.wall_s > 0.0 && cpu_s.is_finite() && l.wall_s.is_finite()) {
+            return Vec::new();
+        }
+        // (Of an older way of its step: its use says nothing of the way it runs now.)
+        if l.cost_v.unwrap_or(0) < crate::coord::cost_version(&l.kind) {
             return Vec::new();
         }
         let part = |threads: u32, cpu_s: f64, wall_s: f64| Run {
@@ -176,6 +186,7 @@ impl Run {
             held: r.held.clone(),
             phases,
             ok: r.ok,
+            cost_v: r.cost_v,
         })
     }
 
@@ -394,6 +405,7 @@ mod tests {
             threads: Some(threads),
             ok: true,
             phases,
+            cost_v: Some(crate::coord::cost_version(step)),
             ..Default::default()
         })
     }
@@ -502,6 +514,7 @@ mod tests {
             ],
             ok: true,
             phases: vec![phase(100.0, 150.0, false, false)],
+            cost_v: Some(crate::coord::cost_version("slope-deep")),
             ..Default::default()
         };
         let runs = Run::of(&rec);
@@ -528,6 +541,7 @@ mod tests {
             cpu_s: cpu,
             threads: Some(4),
             ok,
+            cost_v: Some(crate::coord::cost_version(kind)),
             ..Default::default()
         };
         for r in [
@@ -541,6 +555,40 @@ mod tests {
         let runs = Run::read_log(&p, now);
         assert_eq!(runs, vec![run_at("terrain-deep", "m4", 4, 200.0, now - 100)]);
         assert_eq!(Run::of(&rec("terrain-deep", "m4 #3", now - 200, Some(200.0), true)), [runs[0].clone()]);
+    }
+
+    /// Task #929 review: a run of an older way of its step (its record's cost version below the
+    /// step's, or none: a record from before the stamp) isn't read: slope-deep's runs before #952
+    /// kept 12-55 % of their threads busy on work it no longer does. A step at cost version 0 reads
+    /// a record without the stamp as before. The lead stamps what comes in.
+    #[test]
+    fn a_run_of_an_older_way_of_its_step_isnt_read() {
+        let v = crate::coord::cost_version("slope-deep");
+        assert!(v > 0);
+        let rec = |kind: &str, cost_v: Option<u32>| crate::timings::RunRec {
+            v: 1,
+            kind: kind.into(),
+            host: "m4".into(),
+            start: 1000,
+            wall_s: 100.0,
+            cpu_s: Some(50.0),
+            threads: Some(4),
+            ok: true,
+            cost_v,
+            ..Default::default()
+        };
+        assert!(Run::of(&rec("slope-deep", None)).is_empty());
+        assert!(Run::of(&rec("slope-deep", Some(v - 1))).is_empty());
+        assert_eq!(Run::of(&rec("slope-deep", Some(v))).len(), 1);
+        assert_eq!(crate::coord::cost_version("backup"), 0);
+        assert_eq!(Run::of(&rec("backup", None)).len(), 1);
+        // (Read back from a log alike.)
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("timings.jsonl");
+        for r in [rec("slope-deep", None), rec("slope-deep", Some(v))] {
+            crate::timings::append(&p, &r).unwrap();
+        }
+        assert_eq!(Run::read_log(&p, 1100).len(), 1);
     }
 
     fn run_at(step: &str, mac: &str, threads: u32, cpu_s: f64, end: u64) -> Run {

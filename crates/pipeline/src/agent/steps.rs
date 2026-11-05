@@ -971,7 +971,7 @@ pub const TABLE: [Step; 60] = [
     // crate::coverage::Coverage::read_peak_mb. Until a z6 tile's own run says. It waits for its z10
     // tiles' terrain-deep targets alone: their mids are its z12 tiles' quarters there.)
     Step {
-        cost_v: 7,
+        cost_v: 8,
         shared: true,
         versions: &[("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
         reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "water", of: idents::water }, In { name: "makes-hi", of: idents::makes_hi }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Read(idents::terrain_deep_mids) }],
@@ -988,6 +988,7 @@ pub const TABLE: [Step; 60] = [
     // coverage its process reads, crate::coverage::Coverage::read_peak_mb. Until a target's own run
     // says.)
     Step {
+        cost_v: 1,
         mem_mb: crate::terrain_deep::target_peak_mb(),
         shared: true,
         versions: &[("terrain-deep", || super::build::TERRAIN_DEEP_V.to_string()), ("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
@@ -1004,7 +1005,7 @@ pub const TABLE: [Step; 60] = [
     // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its z6 tiles' z9 means, up to 4 MB a
     // z6 tile, and half a GB besides.)
     Step {
-        cost_v: 2,
+        cost_v: 3,
         mem_mb: 1200,
         versions: &[("terrain-lo", || super::build::TERRAIN_LO_V.to_string()), ("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
         reads: &[Mids { step: "terrain-hi", of: z6_of_z3, named: idents::terrain_mids }, In { name: "water", of: idents::water }, In { name: "datasets:terrain", of: idents::datasets_terrain }],
@@ -1020,6 +1021,7 @@ pub const TABLE: [Step; 60] = [
     // (Built once all terrain-lo is done, in the terrain stage: slope reads it, waiting for it,
     // docs/readiness.md decision 2.)
     Step {
+        cost_v: 1,
         versions: &[("terrain-root", || 1.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
         reads: &[All { step: "terrain-lo", grain: Outputs }],
         ..step(
@@ -1082,6 +1084,7 @@ pub const TABLE: [Step; 60] = [
     // terrain, then its shading, then a pole's root of both. (A block's z9 tiles held whole: its
     // heights and shading, 1 GB, and the pool's cache: 3.4 GB at most measured on the M4, 25 Oct.)
     Step {
+        cost_v: 1,
         mem_mb: 4096,
         versions: &[("polar-terrain", || crate::polar::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
         reads: &[In { name: "datasets:polar", of: idents::datasets_polar }],
@@ -1108,6 +1111,7 @@ pub const TABLE: [Step; 60] = [
         )
     },
     Step {
+        cost_v: 1,
         versions: &[("polar-root", || crate::polar::ROOT_V.to_string()), ("terrain-codec", || crate::terrain_codec::version()), ("shade-codec", || crate::shade_codec::version())],
         reads: &[In { name: "datasets:polar", of: idents::datasets_polar }, In { name: "polar-blocks", of: idents::polar_blocks }, Of { step: "polar-terrain", of: pole_blocks, grain: Grain::Read(idents::polar_terrain_packs) }, Of { step: "polar-slope", of: pole_blocks, grain: Grain::Read(idents::polar_slope_packs) }],
         ..step(

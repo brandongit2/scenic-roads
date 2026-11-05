@@ -675,7 +675,7 @@ deleted only under an exclusive flock taken without waiting.
 A job's run, a JSON object, `pipeline::timings::RunRec`:
 
 ```
-{v: 1, kind, id, host, start, wall_s, cpu_s, threads, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …]}
+{v: 1, kind, id, host, start, wall_s, cpu_s, threads, held, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, cost_v}
 phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0), cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
 ```
 
@@ -686,6 +686,10 @@ phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_
 - `cpu_s`: user + system, the process's and its finished children's. `threads`:
   RAYON_NUM_THREADS. `ok`: ended without error (a pause isn't). `untimed_s`: `wall_s` less the
   top-level non-`background` phases. `overhead_s`: the timing's own cost.
+- `held` (`[{threads, wall_s, cpu_s}]`): what its targets run on their job's grant held, by
+  threads (task #948). `safe_points`, `safe_gap_s`: the safe points it reached and the longest it
+  went without one. `cost_v`: its step's cost version (`coord::cost_version`), stamped by the lead's
+  coordinator as it keeps the record; absent before that (task #929 review), read as 0 by the uses.
 - `gaps` (`{after, before, wall_s, n}`): where `untimed_s` lies, the main thread's spans between
   two top-level phases summed by the phases either side ("the start" and "the end" at the run's
   ends), its eight largest, each 1 ms or more; left out when none (a Python child's record has
