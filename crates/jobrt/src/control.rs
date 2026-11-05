@@ -833,7 +833,11 @@ pub fn on_grant<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     };
     IN_FORCE.store(n, Ordering::Relaxed);
     let main = crate::timings::Main::here();
+    let (t0, cpu0) = (std::time::Instant::now(), crate::timings::cpu_us());
     let r = pool.install(move || main.run(f));
+    // (What it held, for the run's record: its threads' use is read by them, pipeline::uses.)
+    let cpu = cpu0.zip(crate::timings::cpu_us()).map_or(0.0, |(a, b)| b.saturating_sub(a) as f64 / 1e6);
+    crate::timings::held(n as u32, t0.elapsed().as_secs_f64(), cpu);
     IN_FORCE.store(0, Ordering::Relaxed);
     r
 }
@@ -903,6 +907,9 @@ mod tests {
         let names: Vec<(&str, bool)> = r.phases.iter().map(|p| (p.name.as_str(), p.background)).collect();
         assert_eq!(names, [("the job's targets", false), ("after the targets", false)], "{:?}", r.phases);
         assert_eq!(r.phases[0].sub.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["a target's work"]);
+        // (What each held, for its step's use by threads: pipeline::uses.)
+        assert_eq!(r.held.iter().map(|h| h.threads).collect::<Vec<_>>(), [1, 3, 5]);
+        assert!(r.held.iter().all(|h| h.wall_s > 0.0 && h.wall_s <= r.wall_s), "{:?}", r.held);
         // Without the file: the job's own pool.
         std::env::remove_var(THREADS_ENV);
         assert_eq!(on_grant(rayon::current_num_threads), rayon::current_num_threads());

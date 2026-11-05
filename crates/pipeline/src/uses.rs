@@ -21,6 +21,26 @@
 //! paid, and the step holds the fewest threads that kept within a core of the busiest. A run at
 //! more threads than the cut says nothing of it (its use is its batches' as much as its threads').
 //!
+//! **The phases' floor** (task #948). A run's whole CPU over its whole wall hides its parallel
+//! phases: pack draws a few seconds on 3-4 cores (its tiles drawn) inside half an hour of reading
+//! base packs; terrain-lo's sampling keeps 3-5 threads waiting on GLO-30's reads at once (1556 s
+//! of them in a 533 s run, on threads beside its main one) while its CPU says 1. Cut to its whole
+//! run's use, such a step runs those phases on fewer threads, longer: terrain-lo at 1 thread took
+//! 2063 s where at 3 and 6 it took 413-668. So a step on a Mac is granted at least its floor there
+//! (`Uses::floors`): the fewest threads at which its runs, together, are predicted to take no more
+//! than `WALL_SLACK` longer than they did. Each top-level phase of a run's main thread keeps busy
+//! its CPU over its wall, and one overlapped by phases on other threads also as many threads as those
+//! phases' wall summed over the overlapped phases' (the threads waiting beside it); at fewer threads
+//! than a phase keeps it takes that many over them as long (`kept`). Summed over the runs, a long
+//! run weighs as long as it took, and a rare short burst doesn't hold a step's threads. A job's wall
+//! time doesn't blow up to save cores: from the 6-thread run, terrain-lo at 1 thread is predicted
+//! 2151 s (it took 2063). On the M4's timings (9 Oct-4 Nov), the floor holds pack at 2 where its
+//! use cut it to 1 (its runs predicted 1.14 times as long at 1, 1.04 at 2), terrain-lo at 3 (1.35,
+//! 1.03), and trees on the M1 at 2 (1.20, 1.00).
+//!
+//! A run whose targets ran on their job's grant as each began (crate::control::on_grant) says what
+//! each thread count held (`timings::RunRec::held`): its use is read at each (`Run::of`).
+//!
 //! A step none of whose runs on a Mac is in the window has none here: the cost book's rule decides
 //! (crate::needs::Book::cores).
 //!
@@ -31,8 +51,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// A run as the uses read it: when it ended (unix s), its step, its Mac, its threads, CPU and wall time.
-#[derive(Clone, Debug, PartialEq)]
+/// How much longer than they took a step's runs on a Mac may be predicted to take, together, at
+/// fewer threads before those threads count as its floor (`Uses::floors`): a choice, about the
+/// spread of a step's runs' times on one Mac, not a measure of a step.
+pub const WALL_SLACK: f64 = 0.05;
+
+/// A run as the uses read it: when it ended (unix s), its step, its Mac, its threads, CPU and wall
+/// time (a part of it, where its threads changed: `Run::of`); and, on one part of each run, its
+/// whole wall time and its main thread's top-level phases, each its wall time and the threads it
+/// keeps (`phases`, the module's floor).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Run {
     pub end: u64,
     pub step: String,
@@ -40,7 +68,42 @@ pub struct Run {
     pub threads: u32,
     pub cpu_s: f64,
     pub wall_s: f64,
+    pub whole_s: f64,
+    pub phases: Vec<(f64, f64)>,
 }
+
+/// A top-level phase as the floor reads it (crate::timings::PhaseRec's fields).
+#[derive(Clone, Debug, Default, Deserialize)]
+struct Phase {
+    wall_s: f64,
+    #[serde(default)]
+    cpu_s: Option<f64>,
+    #[serde(default)]
+    overlapped: bool,
+    #[serde(default)]
+    background: bool,
+}
+
+/// A run's main-thread top-level phases, each its wall time and the threads it keeps (the module's
+/// floor): its CPU over its wall, and an overlapped one also the threads its run's background
+/// phases' wall summed over the overlapped phases' keeps. None where no phase says its CPU.
+fn kept(phases: &[Phase]) -> Vec<(f64, f64)> {
+    let main: Vec<&Phase> = phases.iter().filter(|p| !p.background && p.wall_s > 0.0).collect();
+    if !main.iter().any(|p| p.cpu_s.is_some()) {
+        return Vec::new();
+    }
+    let beside: f64 = phases.iter().filter(|p| p.background).map(|p| p.wall_s).sum();
+    let over: f64 = main.iter().filter(|p| p.overlapped).map(|p| p.wall_s).sum();
+    main.iter()
+        .map(|p| {
+            let cpu = p.cpu_s.unwrap_or(0.0) / p.wall_s;
+            (p.wall_s, if p.overlapped && over > 0.0 { cpu.max(beside / over) } else { cpu })
+        })
+        .collect()
+}
+
+/// The most threads a floor says (past any Mac's cores: the grant is fitted to them anyway).
+const MOST_FLOOR: u32 = 64;
 
 /// The fields of a timings record (crate::timings::RunRec) a `Run` is read from: a log's line read
 /// for these alone, not its phases.
@@ -55,24 +118,50 @@ struct Line {
     cpu_s: Option<f64>,
     #[serde(default)]
     threads: Option<u32>,
+    #[serde(default)]
+    held: Vec<crate::timings::Held>,
+    #[serde(default)]
+    phases: Vec<Phase>,
     ok: bool,
 }
 
 impl Run {
-    fn of_line(l: Line) -> Option<Run> {
-        let (cpu_s, threads) = (l.cpu_s?, l.threads.filter(|&t| t > 0)?);
-        (l.ok && l.wall_s > 0.0 && cpu_s.is_finite() && l.wall_s.is_finite()).then(|| Run {
+    /// A record's runs: one at its threads, else one at each thread count its targets held
+    /// (`Line::held`) and the rest of it at the threads it started on; each with the run's floor.
+    fn of_line(l: Line) -> Vec<Run> {
+        let (Some(cpu_s), Some(threads)) = (l.cpu_s, l.threads.filter(|&t| t > 0)) else { return Vec::new() };
+        if !(l.ok && l.wall_s > 0.0 && cpu_s.is_finite() && l.wall_s.is_finite()) {
+            return Vec::new();
+        }
+        let part = |threads: u32, cpu_s: f64, wall_s: f64| Run {
             end: l.start + l.wall_s as u64,
-            step: l.kind,
+            step: l.kind.clone(),
             mac: crate::paces::mac_of(&l.host).to_string(),
             threads,
             cpu_s,
-            wall_s: l.wall_s,
-        })
+            wall_s,
+            ..Default::default()
+        };
+        let held: Vec<&crate::timings::Held> = l.held.iter().filter(|h| h.threads > 0 && h.wall_s > 0.0).collect();
+        let (wall, cpu) = held.iter().fold((l.wall_s, cpu_s), |(w, c), h| (w - h.wall_s, c - h.cpu_s));
+        let mut runs: Vec<Run> = held.iter().map(|h| part(h.threads, h.cpu_s, h.wall_s)).collect();
+        if wall > 0.0 {
+            runs.push(part(threads, cpu.max(0.0), wall));
+        }
+        let phases = kept(&l.phases);
+        if let Some(r) = runs.first_mut().filter(|_| !phases.is_empty()) {
+            (r.whole_s, r.phases) = (l.wall_s, phases);
+        }
+        runs
     }
 
-    /// The run a timings record says, where it reads one.
-    pub fn of(r: &crate::timings::RunRec) -> Option<Run> {
+    /// The runs a timings record says.
+    pub fn of(r: &crate::timings::RunRec) -> Vec<Run> {
+        let phases = r
+            .phases
+            .iter()
+            .map(|p| Phase { wall_s: p.wall_s, cpu_s: p.cpu_s, overlapped: p.overlapped, background: p.background })
+            .collect();
         Run::of_line(Line {
             kind: r.kind.clone(),
             host: r.host.clone(),
@@ -80,6 +169,8 @@ impl Run {
             wall_s: r.wall_s,
             cpu_s: r.cpu_s,
             threads: r.threads,
+            held: r.held.clone(),
+            phases,
             ok: r.ok,
         })
     }
@@ -89,7 +180,7 @@ impl Run {
         let Ok(s) = std::fs::read_to_string(p) else { return Vec::new() };
         s.lines()
             .filter_map(|l| serde_json::from_str::<Line>(l).ok())
-            .filter_map(Run::of_line)
+            .flat_map(Run::of_line)
             .filter(|r| in_window(r, now))
             .collect()
     }
@@ -114,29 +205,56 @@ impl Use {
     }
 }
 
-/// Each step's use on each Mac: step → Mac → threads → `Use`.
+/// Each step's use on each Mac: step → Mac → threads → `Use`; and its floor there (`floors`, step
+/// → Mac → threads: the module's), the fewest threads at which its runs' phases, each kept to that
+/// many threads, are predicted to take their runs together no more than `WALL_SLACK` longer.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Uses {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub steps: BTreeMap<String, BTreeMap<String, BTreeMap<u32, Use>>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub floors: BTreeMap<String, BTreeMap<String, u32>>,
 }
 
 impl Uses {
     /// The uses `runs` say.
     pub fn of<'a>(runs: impl IntoIterator<Item = &'a Run>) -> Uses {
+        let runs: Vec<&Run> = runs.into_iter().collect();
         let mut u = Uses::default();
-        for r in runs {
+        for r in &runs {
             let e = u.steps.entry(r.step.clone()).or_default().entry(r.mac.clone()).or_default();
             let p = e.entry(r.threads).or_default();
             p.cpu_s += r.cpu_s;
             p.wall_s += r.wall_s;
         }
+        // (Each step's runs on each Mac with their phases said: their wall summed, and what fewer
+        // threads would add to it, each phase keeping more than `t` taking that many over `t` as
+        // long.)
+        let mut by: BTreeMap<(&str, &str), Vec<&Run>> = BTreeMap::new();
+        for r in runs.iter().filter(|r| !r.phases.is_empty()) {
+            by.entry((r.step.as_str(), r.mac.as_str())).or_default().push(r);
+        }
+        for ((step, mac), rs) in by {
+            let whole: f64 = rs.iter().map(|r| r.whole_s).sum();
+            let more =
+                |t: f64| -> f64 { rs.iter().flat_map(|r| &r.phases).map(|&(w, k)| w * (k / t - 1.0).max(0.0)).sum() };
+            let f = (1..=MOST_FLOOR).find(|&t| more(f64::from(t)) <= whole * WALL_SLACK).unwrap_or(MOST_FLOOR);
+            u.floors.entry(step.to_string()).or_default().insert(mac.to_string(), f);
+        }
         u
     }
 
     /// The cores a job of `step` on `mac` is granted and counts for, by what its runs there kept busy
-    /// (the module's rule): None where none of them is known.
+    /// (the module's rule), never fewer threads than their phases' floor: None where none of them is
+    /// known.
     pub fn cores(&self, step: &str, mac: &str) -> Option<crate::needs::Cores> {
+        let c = self.by_use(step, mac)?;
+        let floor = self.floors.get(step).and_then(|m| m.get(mac)).copied().unwrap_or(0);
+        Some(crate::needs::Cores { grant: c.grant.max(floor), ..c })
+    }
+
+    /// `cores` by the runs' whole use alone (`floors` aside).
+    pub fn by_use(&self, step: &str, mac: &str) -> Option<crate::needs::Cores> {
         let busy: BTreeMap<u32, u32> =
             self.steps.get(step)?.get(mac)?.iter().map(|(&t, u)| (t, u.busy_tenths())).collect();
         let top = *busy.keys().next_back()?;
@@ -164,7 +282,15 @@ mod tests {
     use super::*;
 
     fn run(step: &str, host: &str, threads: u32, cpu_s: f64, wall_s: f64) -> Run {
-        Run { end: 1000, step: step.into(), mac: crate::paces::mac_of(host).into(), threads, cpu_s, wall_s }
+        Run {
+            end: 1000,
+            step: step.into(),
+            mac: crate::paces::mac_of(host).into(),
+            threads,
+            cpu_s,
+            wall_s,
+            ..Default::default()
+        }
     }
 
     fn cores(grant: u32, busy: u32) -> Option<crate::needs::Cores> {
@@ -248,6 +374,131 @@ mod tests {
         assert_eq!(rounds(&|t| 1.0 / (0.5 + 0.5 / f64::from(t))), [2, 2, 2, 2, 2, 2, 2, 2]);
     }
 
+    /// A phase as recorded: its wall, CPU, and on another thread (`background`) or overlapped by one.
+    fn phase(wall_s: f64, cpu_s: f64, overlapped: bool, background: bool) -> crate::timings::PhaseRec {
+        crate::timings::PhaseRec { wall_s, cpu_s: Some(cpu_s), overlapped, background, n: 1, ..Default::default() }
+    }
+
+    fn timed(step: &str, threads: u32, wall_s: f64, cpu_s: f64, phases: Vec<crate::timings::PhaseRec>) -> Vec<Run> {
+        Run::of(&crate::timings::RunRec {
+            v: 1,
+            kind: step.into(),
+            host: "m4".into(),
+            start: 1000,
+            wall_s,
+            cpu_s: Some(cpu_s),
+            threads: Some(threads),
+            ok: true,
+            phases,
+            ..Default::default()
+        })
+    }
+
+    /// Task #948: the phases' floor. pack on the M4 (a run of 4 Nov): half an hour reading base packs
+    /// at a twentieth of a core, its tiles drawn at 3.6 cores for 52 s: its whole use cuts it to 1,
+    /// where its run would take 7 % longer; at 2, 2 %: 2. terrain-lo's 6-thread run (533 s): its z3
+    /// tile's levels 409.5 s overlapped by 2028 s of sampling on other threads (5 at once), its CPU
+    /// 1.2: at 1 thread predicted 2151 s (a 1-thread run took 2063), held at 5. Two 3-thread runs
+    /// keeping 1.8 and 2.2 threads in their overlapped phases (a 668 s one's 648 s overlapped by
+    /// 1180 s, 413 s's 365 s by 785 s): 2; with the 6-thread run, its 5 at once for 410 s weigh: 5.
+    /// A rare short burst among long runs holds nothing.
+    #[test]
+    fn a_step_isnt_cut_below_what_its_parallel_phases_keep() {
+        let pack = timed(
+            "pack",
+            14,
+            1936.0,
+            296.0,
+            vec![
+                phase(1830.6, 73.0, false, false),
+                phase(51.7, 188.5, false, false),
+                phase(12.5, 21.7, false, false),
+                phase(41.2, 12.8, false, false),
+            ],
+        );
+        let u = Uses::of(&pack);
+        assert_eq!(u.by_use("pack", "m4").unwrap().grant, 1, "its whole use");
+        assert_eq!(u.cores("pack", "m4").map(|c| c.grant), Some(2));
+        let lo6 = timed(
+            "terrain-lo",
+            6,
+            533.0,
+            512.0,
+            vec![
+                phase(36.2, 2.0, false, false),
+                phase(409.5, 508.0, true, false),
+                phase(1555.9, 1308.9, true, true),
+                phase(337.5, 284.3, true, true),
+                phase(134.5, 282.8, true, true),
+                phase(18.7, 0.7, false, false),
+            ],
+        );
+        let more: f64 = lo6[0].phases.iter().map(|&(w, k)| w * (k - 1.0).max(0.0)).sum();
+        assert_eq!((533.0 + more).round(), 2151.0, "at 1 thread, from its 6-thread run");
+        assert_eq!(Uses::of(&lo6).cores("terrain-lo", "m4").map(|c| c.grant), Some(5));
+        let lo3a = timed(
+            "terrain-lo",
+            3,
+            668.0,
+            355.0,
+            vec![
+                phase(4.7, 1.1, false, false),
+                phase(647.8, 349.0, true, false),
+                phase(1180.0, 650.0, true, true),
+                phase(2.0, 0.5, false, false),
+            ],
+        );
+        let lo3b = timed(
+            "terrain-lo",
+            3,
+            413.0,
+            445.0,
+            vec![
+                phase(20.3, 1.9, false, false),
+                phase(365.2, 434.2, true, false),
+                phase(785.0, 830.0, true, true),
+                phase(1.2, 0.9, false, false),
+            ],
+        );
+        let three: Vec<Run> = [lo3a.clone(), lo3b.clone()].concat();
+        assert_eq!(Uses::of(&three).floors["terrain-lo"]["m4"], 2);
+        let all: Vec<Run> = [lo6, lo3a, lo3b].concat();
+        assert_eq!(Uses::of(&all).floors["terrain-lo"]["m4"], 5, "the 6-thread run's 5 at once weigh");
+        // A 46 s burst at 7 cores among ten half-hour runs at a twentieth of one: no floor past 1.
+        let mut runs: Vec<Run> =
+            (0..10).flat_map(|_| timed("pack", 2, 1800.0, 90.0, vec![phase(1800.0, 90.0, false, false)])).collect();
+        runs.extend(timed("pack", 14, 46.0, 322.0, vec![phase(46.0, 322.0, false, false)]));
+        assert_eq!(Uses::of(&runs).floors["pack"]["m4"], 1);
+    }
+
+    /// Task #948: a run whose targets ran on their job's grant (`RunRec::held`) is read at each thread
+    /// count it held, the rest at the threads it started on; its phases once.
+    #[test]
+    fn a_run_is_read_at_each_thread_count_it_held() {
+        let rec = crate::timings::RunRec {
+            v: 1,
+            kind: "slope-deep".into(),
+            host: "m4 #2".into(),
+            start: 1000,
+            wall_s: 100.0,
+            cpu_s: Some(150.0),
+            threads: Some(8),
+            held: vec![
+                crate::timings::Held { threads: 8, wall_s: 30.0, cpu_s: 30.0 },
+                crate::timings::Held { threads: 2, wall_s: 60.0, cpu_s: 110.0 },
+            ],
+            ok: true,
+            phases: vec![phase(100.0, 150.0, false, false)],
+            ..Default::default()
+        };
+        let runs = Run::of(&rec);
+        let parts: Vec<(u32, f64, f64)> = runs.iter().map(|r| (r.threads, r.wall_s, r.cpu_s)).collect();
+        assert_eq!(parts, [(8, 30.0, 30.0), (2, 60.0, 110.0), (8, 10.0, 10.0)]);
+        assert_eq!(runs.iter().filter(|r| !r.phases.is_empty()).count(), 1);
+        let u = Uses::of(&runs);
+        assert_eq!(u.steps["slope-deep"]["m4"][&8], Use { cpu_s: 40.0, wall_s: 40.0 });
+    }
+
     /// A timings log's runs: ended well, with CPU and threads said, in the window; a slot's worker
     /// read as its Mac.
     #[test]
@@ -276,10 +527,10 @@ mod tests {
         }
         let runs = Run::read_log(&p, now);
         assert_eq!(runs, vec![run_at("terrain-deep", "m4", 4, 200.0, now - 100)]);
-        assert_eq!(Run::of(&rec("terrain-deep", "m4 #3", now - 200, Some(200.0), true)), Some(runs[0].clone()));
+        assert_eq!(Run::of(&rec("terrain-deep", "m4 #3", now - 200, Some(200.0), true)), [runs[0].clone()]);
     }
 
     fn run_at(step: &str, mac: &str, threads: u32, cpu_s: f64, end: u64) -> Run {
-        Run { end, step: step.into(), mac: mac.into(), threads, cpu_s, wall_s: 100.0 }
+        Run { end, step: step.into(), mac: mac.into(), threads, cpu_s, wall_s: 100.0, ..Default::default() }
     }
 }

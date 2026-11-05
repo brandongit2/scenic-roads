@@ -263,9 +263,14 @@ pub struct RunRec {
     pub wall_s: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_s: Option<f64>,
-    /// Its worker threads (RAYON_NUM_THREADS), where set.
+    /// Its worker threads (RAYON_NUM_THREADS), where set: those it started on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threads: Option<u32>,
+    /// What its targets run on their job's grant held (crate::control::on_grant, task #948): by the
+    /// threads each ran on, their wall and CPU time summed (`held`). The rest of the run held
+    /// `threads`. None said (no target so run): all of it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<Held>,
     pub ok: bool,
     /// The run's time in no phase of its main thread.
     pub untimed_s: f64,
@@ -283,6 +288,24 @@ pub struct RunRec {
     pub safe_points: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safe_gap_s: Option<f64>,
+}
+
+/// A run's targets on one thread count (`RunRec::held`): their wall and CPU time summed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Held {
+    pub threads: u32,
+    pub wall_s: f64,
+    pub cpu_s: f64,
+}
+
+/// A target run on `threads` (crate::control::on_grant) took `wall_s` and `cpu_s`: added to the
+/// run's `held` (no run timed: nothing).
+pub fn held(threads: u32, wall_s: f64, cpu_s: f64) {
+    if let Some(r) = run().lock().unwrap().as_mut() {
+        let h = r.held.entry(threads).or_default();
+        h.0 += wall_s;
+        h.1 += cpu_s;
+    }
 }
 
 /// Untimed time between two of a run's top-level phases on its main thread, summed over the times
@@ -365,6 +388,8 @@ struct Run {
     mark: (Instant, String),
     /// Its gaps so far: (after, before) → (ns, spans).
     gaps: Vec<(String, String, u64, u64)>,
+    /// What its targets on their grant held so far (`held`): threads → (wall s, CPU s).
+    held: std::collections::BTreeMap<u32, (f64, f64)>,
 }
 
 /// Adds a gap of `ns` between `after` and `before` (none under `GAP_MIN_NS`).
@@ -472,6 +497,7 @@ pub fn start(kind: &str) {
             finished: false,
             mark: (Instant::now(), START.to_string()),
             gaps: Vec::new(),
+            held: std::collections::BTreeMap::new(),
         });
         drop(g);
         sample_memory();
@@ -841,6 +867,7 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
         wall_s,
         cpu_s,
         threads: std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()),
+        held: r.held.iter().map(|(&threads, &(wall_s, cpu_s))| Held { threads, wall_s, cpu_s }).collect(),
         ok,
         untimed_s: 0.0,
         overhead_s: r.overhead_ns as f64 / 1e9,

@@ -772,12 +772,15 @@ impl Sched {
         self.uses = crate::uses::Uses::of(&self.use_runs);
     }
 
-    /// A job's timings `rec` come in at `now` (unix s): its run among the uses' (crate::uses), those
-    /// ended before the window let go.
+    /// A job's timings `rec` come in at `now` (unix s): its runs among the uses' (crate::uses: one
+    /// for each thread count it held), those ended before the window let go.
     pub fn add_use(&mut self, rec: &crate::timings::RunRec, now: u64) {
-        let Some(r) = crate::uses::Run::of(rec) else { return };
+        let runs = crate::uses::Run::of(rec);
+        if runs.is_empty() {
+            return;
+        }
         self.use_runs.retain(|r| crate::uses::in_window(r, now));
-        self.use_runs.push(r);
+        self.use_runs.extend(runs);
         self.uses = crate::uses::Uses::of(&self.use_runs);
     }
 
@@ -1166,8 +1169,9 @@ impl Sched {
     /// The threads of each running job of `a`'s Mac that takes a re-grant (docs/pool.md §7.1, Threads
     /// re-granted: its capacity's `threads`, each with the threads its target under way runs on and
     /// what it used on them) decided again by the grant rule (task #947): its own run on its threads
-    /// now as a run of its step on its Mac (crate::uses::Uses::cores of it alone: the cores it keeps
-    /// busy, rounded up, a thread more where it needs every thread), and where that climbs, the more
+    /// now as a run of its step on its Mac, among its step's runs there (crate::uses::Uses::cores:
+    /// a cut a trial their runs at fewer threads decide, never under their phases' floor), and where
+    /// that climbs, the more
     /// of it and the grant a job of its step gets there now (`lease_cores`); within the cores its Mac
     /// has less those the rest of its work counts for and the load outside the pool (`fit_threads`,
     /// a grant's). It **grows** to more where its Mac's memory admits work and covers the extra
@@ -1220,6 +1224,8 @@ impl Sched {
             let settled = l.told.is_none_or(|(_, at)| now.saturating_duration_since(at) >= SETTLE);
             let mut told = None;
             if settled && u.threads > 0 && u.ran_ms >= SETTLE.as_millis() as u64 {
+                // (Its run so far among its step's runs on its Mac, by their rule: a cut a trial
+                // its step's runs at fewer threads decide, never under their phases' floor.)
                 let mac = crate::paces::mac_of(&a.worker);
                 let run = crate::uses::Run {
                     end: 0,
@@ -1228,8 +1234,10 @@ impl Sched {
                     threads: u.threads,
                     cpu_s: u.cpu_ms as f64 / 1000.0,
                     wall_s: u.ran_ms as f64 / 1000.0,
+                    ..Default::default()
                 };
-                let Some(live) = crate::uses::Uses::of([&run]).cores(&step, mac) else { continue };
+                let runs = self.use_runs.iter().filter(|r| r.step == step && r.mac == mac).chain([&run]);
+                let Some(live) = crate::uses::Uses::of(runs).cores(&step, mac) else { continue };
                 let want = if live.grant > u.threads {
                     live.grant.max(self.lease_cores(&a.worker, &step, &ts, total).0)
                 } else {
