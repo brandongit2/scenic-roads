@@ -49,8 +49,9 @@ from the first (`edit_held`).
   without its mid (by an earlier scheme's re-keying) has it made in idle time, expected the same
   (Order).
 
-- **A job** is one step over a run of stale targets: as many as fit a quarter of an hour by their
-  measured times (`coord::JOB_S`), a step kept to the lead in one job, so a failure or a new app
+- **A job** is one step over a run of stale targets: as many as fit the batch length (15 minutes
+  unless the pool's `batch-minutes` says) by their measured times on its Mac (docs/pool.md §7.7,
+  Batch length), a step kept to the lead in one job, so a failure or a new app
   costs one run.
 - **Order:** the lead offers its plan in its order through its coordinator, and every Mac's agent,
   the lead's included, asks it for work (docs/pool.md §7.2). The plan is the lead's **plan** part's

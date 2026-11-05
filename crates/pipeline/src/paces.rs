@@ -56,6 +56,9 @@ pub struct Paces {
     /// Mac → its pace over its steps.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub macs: BTreeMap<String, f64>,
+    /// Mac → step → its jobs' time past their targets' (s; `with_starts`, task #927).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub starts: BTreeMap<String, BTreeMap<String, f64>>,
 }
 
 /// A run of a target, as a job of its own done well: when, its Mac, its time, its step's way.
@@ -68,9 +71,15 @@ struct Run<'a> {
 
 /// Whether event `e` is a run a pace reads: a job of one target done well (its end or done).
 pub fn reads(e: &Event) -> bool {
+    job(e) && e.targets.len() == 1
+}
+
+/// Whether event `e` is a job done well, its worker, step, targets and time said: what a pace
+/// (`reads`) and a job's start (`Paces::with_starts`) are read from.
+pub fn job(e: &Event) -> bool {
     matches!(e.kind.as_str(), "done" | "end")
         && e.ok == Some(true)
-        && e.targets.len() == 1
+        && !e.targets.is_empty()
         && e.worker.is_some()
         && e.step.is_some()
         && e.secs.is_some_and(f64::is_finite)
@@ -118,6 +127,44 @@ impl Paces {
             out.steps.insert(mac.to_string(), each.collect());
         }
         out
+    }
+
+    /// With each Mac's jobs' start at each step (task #927): the median, over its jobs of the step
+    /// done well in the last `PACE_S` at `now` (`job`), of a job's time past its targets' times summed,
+    /// each target's as its cost record `costs` says (crate::coord::Cost: its run's own time) where
+    /// that run was on the job's Mac the way the job ran (`Event::v`, where said), a job one of whose
+    /// targets' record isn't so not counted: the time a job takes besides its targets (its records
+    /// and regions read, its hand-off), which a batch of quick targets is mostly made of (slope-deep's
+    /// 5 to 12 s a job on the lead's history to 5 Nov, its empty targets a second or less each).
+    pub fn with_starts(mut self, events: &[Event], costs: &BTreeMap<String, crate::coord::Cost>, now: u64) -> Paces {
+        let from = now.saturating_sub(PACE_S);
+        let mut by: BTreeMap<(&str, &str), Vec<f64>> = BTreeMap::new();
+        for e in events.iter().filter(|e| e.t > from && e.t <= now && job(e)) {
+            let (Some(w), Some(step), Some(secs)) = (e.worker.as_deref(), e.step.as_deref(), e.secs) else { continue };
+            let mac = mac_of(w);
+            let own: Option<u64> = e
+                .targets
+                .iter()
+                .map(|t| {
+                    let c = costs.get(&crate::coord::cost_key(step, t))?;
+                    let ours = c.worker.as_deref().map(mac_of) == Some(mac) && e.v.is_none_or(|v| v == c.v);
+                    ours.then_some(c.secs)
+                })
+                .sum();
+            if let Some(own) = own {
+                by.entry((mac, step)).or_default().push((secs - own as f64).max(0.0));
+            }
+        }
+        self.starts.clear();
+        for ((mac, step), mut v) in by {
+            self.starts.entry(mac.to_string()).or_default().insert(step.to_string(), round(median(&mut v)));
+        }
+        self
+    }
+
+    /// `worker`'s Mac's jobs' start at `step` (`with_starts`; 0: none measured).
+    pub fn start(&self, worker: &str, step: &str) -> f64 {
+        self.starts.get(mac_of(worker)).and_then(|s| s.get(step)).copied().unwrap_or(0.0)
     }
 
     /// Whether any were worked out (a lead named).
@@ -232,5 +279,43 @@ mod tests {
         assert!(Paces::of(&ev, "mini", 100).macs.is_empty());
         let ev = vec![job(10, "mini", "depth", "8/1/1", 10.0), job(20, "m4", "depth", "8/1/1", 30.0)];
         assert!(Paces::of(&ev, "mini", 100).get("m4", "depth") > 1.0);
+    }
+
+    /// Task #927: a Mac's jobs' start at a step is the median of its jobs' time past their
+    /// targets' own runs (each its cost record, run on that Mac the way the job ran); a job one of
+    /// whose targets' record is another Mac's, or another way's, says nothing of it.
+    #[test]
+    fn a_macs_jobs_start_is_their_time_past_their_targets() {
+        let c = |worker: &str, secs: u64| crate::coord::Cost {
+            secs,
+            worker: Some(worker.into()),
+            v: 1,
+            ..Default::default()
+        };
+        let costs: BTreeMap<String, crate::coord::Cost> = [
+            ("slope-deep 10/0/1", c("m1 #2", 1)),
+            ("slope-deep 10/0/2", c("m1", 2)),
+            ("slope-deep 10/0/3", c("m1", 50)),
+            ("slope-deep 10/0/4", c("m4", 1)),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let many = |t: u64, w: &str, ts: &[&str], secs: f64| Event {
+            targets: ts.iter().map(|x| x.to_string()).collect(),
+            ..job(t, w, "slope-deep", "", secs)
+        };
+        let ev = vec![
+            many(10, "m1", &["10/0/1", "10/0/2"], 13.0),
+            many(20, "m1 #3", &["10/0/3"], 58.0),
+            many(30, "m1", &["10/0/2", "10/0/3"], 62.0),
+            many(40, "m1", &["10/0/1", "10/0/4"], 500.0),
+            Event { v: Some(2), ..many(50, "m1", &["10/0/1"], 500.0) },
+        ];
+        let p = Paces::default().with_starts(&ev, &costs, 100);
+        assert_eq!(p.start("m1 #2", "slope-deep"), 10.0, "of 10, 8 and 10");
+        assert_eq!(p.start("m4", "slope-deep"), 0.0, "none measured");
+        assert_eq!(p.start("m1", "pack"), 0.0);
+        assert!(Paces::default().with_starts(&ev, &costs, 100 + PACE_S + 100).starts.is_empty(), "out of the window");
     }
 }

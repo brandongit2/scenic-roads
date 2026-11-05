@@ -13,7 +13,7 @@
 //! - **By the measures** (crate::coord's `pick_every`): a member offered a target only when its
 //!   measured memory and disk fit what the member spares; a cold start (a step none of whose
 //!   targets has run) only to the member with the most room, the lead's own counted, alone; a job's
-//!   targets as many as fit a quarter of an hour by their measured times (crate::coord::JOB_S); a
+//!   targets as many as fit the batch length by their measured times (crate::coord::sched::Sched::batch_len); a
 //!   contiguous run of the plan, from its front or just after the member's last.
 //! - What another member builds is the lead's coordinator's leases alone.
 //! - **Every job by grant** (`grants`): the lead's own agent asks its coordinator for work as any

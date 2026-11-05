@@ -419,7 +419,7 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
 fn repace(inp: &mut forecast::Input, events: &[Event]) {
     let Some(lead) = inp.machines.first().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())) else { return };
     let Some(st) = inp.sched.as_mut() else { return };
-    st.paces = crate::paces::Paces::of(events, &lead, inp.now);
+    st.paces = crate::paces::Paces::of(events, &lead, inp.now).with_starts(events, &st.costs, inp.now);
     let speeds: BTreeMap<String, f64> = inp.machines.iter().map(|m| (m.name.clone(), m.speed)).collect();
     let speed = |w: Option<&str>| w.and_then(|w| speeds.get(w)).copied().unwrap_or(1.0);
     let at = |c: &crate::coord::Cost, step: &str| forecast::at_lead(c, step, &st.paces, &speed);
@@ -487,9 +487,10 @@ impl Ratio {
 
 /// The history's jobs of the shared steps (`actuals`) that started in `from..to`, each against
 /// the time the scheduler of the input recorded last before its start sizes it to take its worker
-/// (`Sched::batch_secs` on that input's state, with each Mac's pace worked out from `events` to then
-/// as the lead does, crate::paces): its time (its end less its grant) over that, by step and Mac
-/// (task #927). A job of no time sized (a target measured at none) isn't counted.
+/// (`Sched::batch_secs` on that input's state at the threads it'd be granted alone, with each Mac's
+/// pace and jobs' start worked out from `events` to then as the lead does, crate::paces): its time
+/// (its end less its grant) over that, by step and Mac (task #927). A job of no time sized (a target
+/// measured at none) isn't counted.
 pub fn batches(inputs: &[Input], events: &[Event], from: u64, to: u64) -> Vec<Batches> {
     use crate::coord::sched::{Clock, Sched};
     let jobs: Vec<Actual> = actuals(events)
@@ -510,18 +511,25 @@ pub fn batches(inputs: &[Input], events: &[Event], from: u64, to: u64) -> Vec<Ba
         } else {
             st.lead_name.clone()
         };
-        st.paces = crate::paces::Paces::of(events, &lead, i.at);
+        st.paces = crate::paces::Paces::of(events, &lead, i.at).with_starts(events, &st.costs, i.at);
         let s = Sched::from_state(
             &st,
             Clock { now: std::time::Instant::now(), unix: i.at },
             std::time::Duration::from_secs(86_400),
         );
         for a in ours {
-            let Some(sized) = s.batch_secs(&a.step, a.targets.iter().map(String::as_str), &a.worker) else { continue };
+            // (At the threads it'd be granted alone, as `pick_every` sizes it.)
+            let Some(first) = a.targets.first() else { continue };
+            let total = s.workers.get(&a.mac).and_then(|w| w.ask.as_ref()).map_or(0, crate::coord::ask_cores);
+            let threads = s.sizing_threads(&a.worker, &a.step, first, total.max(1));
+            let Some((sized, _)) = s.batch_secs(&a.step, a.targets.iter().map(String::as_str), &a.worker, threads)
+            else {
+                continue;
+            };
             let ratio = a.end.saturating_sub(a.start) as f64 / sized.max(1) as f64;
             let e = by.entry((a.step.clone(), a.mac.clone())).or_default();
             e.0.push(ratio);
-            if sized * 2 >= crate::coord::JOB_S {
+            if sized * 2 >= s.batch_len() {
                 e.1.push(ratio);
             }
         }

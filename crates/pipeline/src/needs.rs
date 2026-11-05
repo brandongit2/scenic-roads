@@ -31,7 +31,7 @@
 //! - **Prior**: memory and disk, the step's targets' measures' 90th percentile (memory: their
 //!   floors among them), so one outlier doesn't hold every other target to its figure, and a heavy
 //!   target's own floor holds it; time, the mean of its targets' runs: the expected time, what a
-//!   job's targets are counted to a quarter hour by and the forecast sums (task #433: by the 90th
+//!   job's targets are counted to the batch length by and the forecast sums (task #433: by the 90th
 //!   percentile a z6 tile was 1151 s against a mean of 363, so every `unit` job carried one z6 tile and
 //!   paid the job's setup for it alone; depth 265 against 131).
 //! - **Table**: the caller's guess, when nothing of the step was measured.
@@ -224,6 +224,37 @@ struct Model {
     fits: Vec<Fit>,
     prior: Option<u64>,
     near: Option<std::sync::Arc<Near>>,
+    /// (Time alone.) The step's runs by their source's time (`BySource`), and the Macs that have
+    /// runs of it (`Book::secs_for`).
+    by_source: Option<std::sync::Arc<BySource>>,
+    macs: std::sync::Arc<std::collections::BTreeSet<String>>,
+}
+
+/// A step's times by what its target's source took (task #927): the source of a target is the same
+/// target of a step it reads (the first of its steps table's reads naming it, `source_secs`: slope-deep's
+/// terrain-deep, slope-hi's terrain-hi), whose run ended before its own could start. Its time there
+/// says what the target holds: on the lead's runs to 5 Nov, a slope-deep target whose terrain-deep
+/// took under 2 s took a median 0 s and a mean 1, one whose terrain-deep took 64-127 s a median 57
+/// and a mean 79 (the log of one's time against the other's: correlation 0.92), where the step's
+/// mean, 25 s, sized a batch of 30 empty targets as 12 minutes and one of 30 full ones as 12 too.
+/// Its runs are grouped by their source's time at the lead's pace, in doubling bins (`bin`); each
+/// bin's runs' times summed, all Macs' at the lead's pace (`all`) and each Mac's as they ran on it
+/// (`own`).
+#[derive(Debug, Default)]
+pub struct BySource {
+    all: BTreeMap<u32, (f64, usize)>,
+    own: BTreeMap<(String, u32), (f64, usize)>,
+}
+
+/// The doubling bin a source's time `secs` falls in: 0 for under a second, 1 under 3 s, 2 under 7,
+/// and so on.
+fn bin(secs: f64) -> u32 {
+    (1.0 + secs.max(0.0)).log2() as u32
+}
+
+/// The mean of a bin's runs where it has `MIN_RUNS` (a fit's fewest).
+fn bin_mean(b: Option<&(f64, usize)>) -> Option<f64> {
+    b.filter(|b| b.1 >= MIN_RUNS).map(|b| b.0 / b.1 as f64)
 }
 
 /// The nearest measured targets a target's memory is read from (`Near`): the rings of tiles
@@ -770,9 +801,71 @@ impl<'a> Book<'a> {
         // its place against that guess, which the history doesn't keep.)
         let near = (m == Measure::Mem && !GUESS_FIRST.contains(&step))
             .then(|| std::sync::Arc::new(Near::of_measures(self.places(step))));
-        let md = Model { fits, prior: self.prior_of(step, m), near };
+        let (by_source, macs) = if m == Measure::Secs { self.by_source(step) } else { Default::default() };
+        let md = Model { fits, prior: self.prior_of(step, m), near, by_source, macs };
         cache.0.lock().unwrap_or_else(|e| e.into_inner()).1.insert(key, md.clone());
         md
+    }
+
+    /// Step `step`'s runs by their source's time (`BySource`; None: none of them has a source run),
+    /// and the Macs that have runs of it, the way it runs now.
+    fn by_source(
+        &self,
+        step: &str,
+    ) -> (Option<std::sync::Arc<BySource>>, std::sync::Arc<std::collections::BTreeSet<String>>) {
+        let v = cost_version(step);
+        let mut by = BySource::default();
+        let mut macs = std::collections::BTreeSet::new();
+        // (Each run's Mac, bin, time as it ran and at the lead's pace, for the judging below.)
+        let mut runs: Vec<(String, u32, f64, f64)> = Vec::new();
+        for (k, c) in self.costs.iter().filter(|(k, c)| step_of_key(k) == step && c.v >= v && !is_drop(c)) {
+            let Some(mac) = c.worker.as_deref().map(crate::paces::mac_of) else { continue };
+            macs.insert(mac.to_string());
+            if time_weight(step, c).is_none() {
+                continue;
+            }
+            let Some(b) = k.get(step.len() + 1..).and_then(|t| self.source_secs(step, t)).map(bin) else { continue };
+            let y = self.lead_secs(step, c) as f64;
+            runs.push((mac.to_string(), b, c.secs as f64, y));
+            let e = by.all.entry(b).or_default();
+            (e.0, e.1) = (e.0 + y, e.1 + 1);
+            let e = by.own.entry((mac.to_string(), b)).or_default();
+            (e.0, e.1) = (e.0 + c.secs as f64, e.1 + 1);
+        }
+        // (Used only where it predicts its own runs better than their mean does, each as `secs_on`
+        // reads it (its Mac's bin, else every Mac's) with the run left out, by the median error a
+        // fit is judged by (`judge`): a source that says nothing of a step's targets, on a step its
+        // Macs run alike, doesn't replace its model.)
+        let (n, sum) = (runs.len() as f64, runs.iter().map(|r| r.3).sum::<f64>());
+        let err = |by_bin: bool| {
+            let out = |a: &(f64, usize), y: f64| (a.1 > MIN_RUNS).then(|| (a.0 - y) / (a.1 - 1) as f64);
+            let mut e: Vec<f64> = runs
+                .iter()
+                .map(|(mac, b, ran, y)| {
+                    let own = by.own.get(&(mac.clone(), *b)).and_then(|a| out(a, *ran)).map(|p| (p, *ran));
+                    let all = || by.all.get(b).and_then(|a| out(a, *y)).map(|p| (p, *y));
+                    let (p, y) = own.or_else(all).filter(|_| by_bin).unwrap_or(((sum - y) / (n - 1.0).max(1.0), *y));
+                    (p - y).abs() / y.max(1.0)
+                })
+                .collect();
+            e.sort_by(f64::total_cmp);
+            e.get(e.len() / 2).copied().unwrap_or(f64::INFINITY)
+        };
+        let good = runs.len() > MIN_RUNS && err(true) < err(false);
+        (good.then(|| std::sync::Arc::new(by)), std::sync::Arc::new(macs))
+    }
+
+    /// The time target `target`'s source took (`BySource`), at the lead's pace (s): the same target's
+    /// run, the way its step runs now, of the first step `step` reads that names it.
+    fn source_secs(&self, step: &str, target: &str) -> Option<f64> {
+        use crate::agent::steps::Read;
+        crate::agent::steps::row(step)?.reads.iter().find_map(|r| match r {
+            Read::Targets { step: src, of, .. } if of(target).iter().any(|t| t == target) => {
+                let c = self.costs.get(&cost_key(src, target)).filter(|c| c.v >= cost_version(src) && !is_drop(c))?;
+                Some(self.lead_secs(src, c) as f64)
+            }
+            _ => None,
+        })
     }
 
     /// The step's fits of `m`, best first (the good ones, then the poor), one per size its runs have.
@@ -834,7 +927,7 @@ impl<'a> Book<'a> {
                 // (While its runs the way it runs now are few, they are the quick ones: the first to
                 // end. Its latest earlier way's mean stands in when larger, so its first jobs aren't sized by
                 // them: depth's first 8 runs at version 1 took 14–34 s but one, and jobs of 64 tiles
-                // ran 90 min against `JOB_S`'s quarter hour.)
+                // ran 90 min against the quarter hour they were sized to.)
                 if secs.len() < PRIOR_RUNS {
                     // (The latest earlier way's runs alone.)
                     let last = self.costs.iter().filter(|(k, c)| of(k) && c.v < v).map(|(_, c)| c.v).max();
@@ -925,16 +1018,53 @@ impl<'a> Book<'a> {
         self.secs_for(step, target, threads, None)
     }
 
-    /// `secs` on `worker`: its own run's as it ran (wherever that was), else the step's model at the
-    /// worker's pace (`paces`; not known, the lead's).
+    /// `secs` on `worker` (`secs_on`'s).
     pub fn secs_for(&self, step: &str, target: &str, threads: u32, worker: Option<&str>) -> Option<u64> {
+        self.secs_on(step, target, threads, worker).map(|s| s.0)
+    }
+
+    /// What target `target` of `step` takes `worker` on `threads` (s; 0: as it ran), and whether by
+    /// its Mac's own runs of the step (task #927, docs/pool.md §7.7, Batch length). None when none
+    /// of its step's ran the way it runs now.
+    /// - **Its Mac has runs of the step** (`by_source`'s `macs`): its own run, on its Mac as it ran,
+    ///   from another Mac at the lead's pace by that one's and at this one's (crate::paces), and on
+    ///   fewer threads than it kept busy, its CPU time over them, the longer; else, with a source
+    ///   run (`BySource`, where it's judged better than the step's mean), the mean of its bin's runs
+    ///   on this Mac where it has `MIN_RUNS` of them; else its step's good fit at this Mac's pace;
+    ///   else its bin's runs on every Mac at this one's pace; else its step's prior at it.
+    /// - **None** (or no worker): as before task #927, said by the second value: its own run as it
+    ///   ran, twice that from another worker (no worker: as it ran); else the model at its pace.
+    pub fn secs_on(&self, step: &str, target: &str, threads: u32, worker: Option<&str>) -> Option<(u64, bool)> {
         let key = cost_key(step, target);
-        if let Some(c) = self.costs.get(&key).filter(|c| c.v >= cost_version(step)) {
-            return Some(c.secs);
-        }
         let md = self.model(step, Measure::Secs);
-        let s = self.fitted(&md, &key, threads).or(md.prior)?;
-        Some((s as f64 * self.pace(worker, step)).round() as u64)
+        let mac = worker.map(crate::paces::mac_of).filter(|m| md.macs.contains(*m));
+        let own = self.costs.get(&key).filter(|c| c.v >= cost_version(step));
+        let Some(mac) = mac else {
+            if let Some(c) = own {
+                let other = worker.is_some_and(|w| c.worker.as_deref() != Some(w));
+                return Some((if other { c.secs * 2 } else { c.secs }, false));
+            }
+            let s = self.fitted(&md, &key, threads).or(md.prior)?;
+            return Some(((s as f64 * self.pace(worker, step)).round() as u64, false));
+        };
+        let pace = self.pace(worker, step);
+        if let Some(c) = own {
+            let ran = c.worker.as_deref().map(crate::paces::mac_of);
+            let at = if ran == Some(mac) { 1.0 } else { pace / self.pace(c.worker.as_deref(), step) };
+            let cpu =
+                c.sizes.get("cpu_ms").filter(|_| threads > 0).map_or(0.0, |&ms| ms as f64 / 1000.0 / threads as f64);
+            return Some((((c.secs as f64).max(cpu) * at).round() as u64, true));
+        }
+        // (Its bin: this Mac's own runs in it, else, after a good fit, every Mac's.)
+        let bin_of = md.by_source.as_ref().zip(self.source_secs(step, target)).map(|(by, src)| (by, bin(src)));
+        let s = bin_of
+            .and_then(|(by, b)| bin_mean(by.own.get(&(mac.to_string(), b))))
+            // (Its fit as `secs` reads it, of no thread count: a fit's thread term is of runs
+            // whose threads followed the load they ran in, not what more threads would do.)
+            .or_else(|| self.fitted(&md, &key, 0).map(|s| s as f64 * pace))
+            .or_else(|| bin_of.and_then(|(by, b)| bin_mean(by.all.get(&b))).map(|s| s * pace))
+            .or_else(|| md.prior.map(|s| s as f64 * pace))?;
+        Some((s.round() as u64, true))
     }
 
     /// What a drop of `step` (`DROPS`) takes, by its step's drops run the way it runs now: their
@@ -1692,7 +1822,8 @@ mod tests {
 
     /// Task #926: with each Mac's pace, a step's runs are read at the lead's pace (a slow Mac's
     /// times and NAS rates no longer drag the step's), and a prediction for a worker is at its
-    /// Mac's pace; its own run as it ran; a Mac not measured at the lead's.
+    /// Mac's pace; a target's own run as it ran on its Mac, at another Mac's pace by the two
+    /// (task #927); a Mac with no pace at the lead's.
     #[test]
     fn a_steps_runs_are_read_at_the_lead_pace_and_predicted_at_each_macs() {
         let mut costs = BTreeMap::new();
@@ -1709,13 +1840,16 @@ mod tests {
             lead: "mini".into(),
             steps: [("m1".to_string(), [("slope-hi".to_string(), 3.0)].into())].into(),
             macs: [("m1".to_string(), 3.0)].into(),
+            ..Default::default()
         };
         let b = Book::new(&costs).paced(&paces);
         assert_eq!(b.secs("slope-hi", "10/99/0", 0), Some(100), "at the lead's pace");
         assert_eq!(b.secs_for("slope-hi", "10/99/0", 0, Some("mini")), Some(100));
         assert_eq!(b.secs_for("slope-hi", "10/99/0", 0, Some("m1 #2")), Some(300), "at m1's");
         assert_eq!(b.secs_for("slope-hi", "10/99/0", 0, Some("m4")), Some(100), "not measured: the lead's");
-        assert_eq!(b.secs_for("slope-hi", "10/12/0", 0, Some("mini")), Some(300), "its own run, as it ran");
+        assert_eq!(b.secs_for("slope-hi", "10/12/0", 0, Some("m1")), Some(300), "its own run, on its Mac as it ran");
+        assert_eq!(b.secs_for("slope-hi", "10/12/0", 0, Some("mini")), Some(100), "m1's run at the lead's pace");
+        assert_eq!(b.secs_for("slope-hi", "10/12/0", 0, Some("m4")), Some(600), "no runs on m4: twice another's");
         assert_eq!(b.secs_p90("slope-hi", "10/99/0", 0, Some("m1")), Some(300));
         // (NAS rates: 3 MB/s on the lead, a third of that on m1.)
         let mb_s = |r: crate::budget::nas::Rate| (r.bytes_s / 1e6).round();
@@ -1755,7 +1889,7 @@ mod tests {
     }
 
     /// A step's time prior is the mean of its runs the way it runs now (the expected time: what a
-    /// job's targets are counted to a quarter hour by), not their 90th percentile (task #433: by
+    /// job's targets are counted to the batch length by), not their 90th percentile (task #433: by
     /// that, every `unit` job carried one z6 tile); its memory prior stays the 90th percentile.
     #[test]
     fn a_steps_time_prior_is_the_mean_of_its_runs() {

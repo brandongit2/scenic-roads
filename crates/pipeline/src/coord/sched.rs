@@ -16,7 +16,7 @@
 //! (`State`), so its schedule is the coordinator's by construction.
 
 use super::lease::{Lease, Leases, Work};
-use super::{cost_key, cost_version, disk_words, first_guess, job_secs, mem_words, Ask, Cost, Measured, Offer, Worker};
+use super::{cost_key, cost_version, disk_words, first_guess, mem_words, Ask, Cost, Measured, Offer, Worker};
 use super::{AROUND, ASKING};
 use crate::agent::memguard::Floor;
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,9 @@ pub struct Pick {
     pub threads: u32,
     pub disk_mb: u64,
     pub job: Option<String>,
+    /// The time it was sized to (s), and whether by its Mac's own runs (`Sched::batch_secs`); None:
+    /// a planned job of the lead's own (`pick_own`), or a target of no time measured.
+    pub sized: Option<(u64, bool)>,
 }
 
 /// What every grant is decided from: the leases out, the plan's offers, the work done and failed,
@@ -142,6 +145,9 @@ pub struct Sched {
     /// step's use on each Mac they say: what a job is granted threads by (`job_cores`).
     pub use_runs: Vec<crate::uses::Run>,
     pub uses: crate::uses::Uses,
+    /// The batch length the pool's setting says (s; `batch-minutes`, crate::coord::asks; 0: not set,
+    /// `JOB_S`): `batch_len`.
+    pub batch_s: u64,
 }
 
 /// `Sched::measured_of`'s targets' measures: step → target → `Sched::measures`.
@@ -332,9 +338,8 @@ pub const SETTLE: Duration = Duration::from_secs(60);
 /// budget's whole (`NasWeigher`), and one running may load it unseen (`nas_unknown_running`).
 pub(super) const NAS_STEPS: &[&str] = &["unit", "pack", "lo"];
 
-/// How long a job offered runs, at most, by its targets' measured
-/// times (s): a quarter of an hour (docs/pool.md §7.7, batch). Its first target is taken whatever
-/// its time.
+/// The batch length while the pool's setting `batch-minutes` isn't set (s; docs/pool.md §7.7, Batch
+/// length): a quarter of an hour, the owner's choice (`Sched::batch_len`).
 pub const JOB_S: u64 = 15 * 60;
 
 /// The most targets a job so offered takes, whatever their times (a step measured at no time).
@@ -486,22 +491,57 @@ impl Sched {
         }
     }
 
-    /// How long `target` of `step` is measured to take `worker` (s): its own run's (`job_secs`), else
-    /// its step's model's at the worker's pace (crate::needs: its fit, else the mean of its step's
-    /// runs, each at the lead's pace by its Mac's, `paces`); None when
-    /// none of its step's has run the way it runs now.
+    /// How long `target` of `step` is measured to take `worker` (s), as it ran its threads
+    /// (`secs_on`).
     pub(super) fn secs_of(&self, step: &str, target: &str, worker: &str) -> Option<u64> {
-        job_secs(&self.costs, step, target, worker).or_else(|| {
-            let b = self.book();
-            self.drop_of(&b, step, target).map(|d| d.0).or_else(|| b.secs_for(step, target, 0, Some(worker)))
-        })
+        self.secs_on(step, target, worker, 0).map(|s| s.0)
     }
 
-    /// How long a job of `step` over `targets` is measured to take `worker` (s): its targets' times
-    /// (`secs_of`) summed; None when one has none. What a job is sized by (`pick_every`), a leased
-    /// job's predicted time (`job_weight`) and the replay's (crate::agent::fccheck::batches).
-    pub fn batch_secs<'t>(&self, step: &str, targets: impl IntoIterator<Item = &'t str>, worker: &str) -> Option<u64> {
-        targets.into_iter().map(|t| self.secs_of(step, t, worker)).sum()
+    /// How long `target` of `step` is measured to take `worker` on `threads` (s; 0: as it ran), and
+    /// whether by its Mac's own runs of the step: a drop its own run hasn't measured, its step's
+    /// drops' (`drop_of`); else crate::needs::Book::secs_on (its own run at the worker's Mac's
+    /// pace, its source's bin of the step's runs, its step's model; a Mac with no runs of the step,
+    /// as before task #927); None when none of its step's has run the way it runs now.
+    pub(super) fn secs_on(&self, step: &str, target: &str, worker: &str, threads: u32) -> Option<(u64, bool)> {
+        let b = self.book();
+        match self.drop_of(&b, step, target) {
+            Some(d) => Some((d.0, true)),
+            None => b.secs_on(step, target, threads, Some(worker)),
+        }
+    }
+
+    /// The threads a job of `step` starting with `first` is sized at on `worker`'s Mac of `total`
+    /// cores: the grant rule's (`lease_cores`) for it alone.
+    pub fn sizing_threads(&self, worker: &str, step: &str, first: &str, total: u32) -> u32 {
+        self.lease_cores(worker, step, &[first.to_string()], total).0
+    }
+
+    /// The batch length (s): the pool's setting `batch-minutes` (`batch_s`), else `JOB_S`.
+    pub fn batch_len(&self) -> u64 {
+        if self.batch_s > 0 {
+            self.batch_s
+        } else {
+            JOB_S
+        }
+    }
+
+    /// How long a job of `step` over `targets` is measured to take `worker` on `threads` (s): its
+    /// Mac's jobs' start at the step (crate::paces::Paces::start) and its targets' times (`secs_on`)
+    /// summed; and whether by its Mac's own runs (every target's). None when a target has none.
+    /// What a job is sized by (`pick_every`, the same sum), a leased job's predicted time
+    /// (`job_weight`) and the replay's (crate::agent::fccheck::batches).
+    pub fn batch_secs<'t>(
+        &self,
+        step: &str,
+        targets: impl IntoIterator<Item = &'t str>,
+        worker: &str,
+        threads: u32,
+    ) -> Option<(u64, bool)> {
+        let start = self.paces.start(worker, step).round() as u64;
+        targets.into_iter().try_fold((start, true), |(s, own), t| {
+            let (x, o) = self.secs_on(step, t, worker, threads)?;
+            Some((s + x, own && o))
+        })
     }
 
     /// What target `target` of `step` takes as a drop (`drops`) its own run hasn't measured: its
@@ -571,8 +611,9 @@ impl Sched {
             if targets.is_empty() { vec![""] } else { targets.iter().map(|t| t.0.as_str()).collect() };
         // (No time known for a target: `OWN_AGE`, so an unmeasured job is weighed by what it does
         // once it has run that long, never by its step's guess for good.)
-        let predicted: u64 =
-            self.batch_secs(step, names.iter().copied(), &l.worker).unwrap_or(crate::budget::nas::OWN_AGE.as_secs());
+        let predicted: u64 = self
+            .batch_secs(step, names.iter().copied(), &l.worker, l.threads)
+            .map_or(crate::budget::nas::OWN_AGE.as_secs(), |s| s.0);
         if now.saturating_duration_since(l.granted).as_secs() <= predicted {
             return (w, dl);
         }
@@ -1408,7 +1449,12 @@ impl Sched {
         drop(kept);
         let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
         let disk_mb = self.job_need(&o.step, &ts).map_or(0, |m| m.disk_mb) + fill;
-        Pick { lease, step: o.step.clone(), targets: pick, threads, disk_mb, job: o.job.clone() }
+        // (What `pick_every` sized it to, as it summed it.)
+        let sized = ts.first().filter(|_| o.job.is_none()).and_then(|first| {
+            let at = self.sizing_threads(&a.worker, &o.step, first, ask_cores(a));
+            self.batch_secs(&o.step, ts.iter().map(String::as_str), &a.worker, at)
+        });
+        Pick { lease, step: o.step.clone(), targets: pick, threads, disk_mb, job: o.job.clone(), sized }
     }
 
     /// A member around on an older app (its last ask said no capacity, `Ask::cap`), the first by name; None when every one reports the new app. While there's
@@ -1538,8 +1584,8 @@ impl Sched {
     /// `o` that `a`'s worker may do now, as a run contiguous in plan order (one held, done, kept from
     /// it after it failed, or past its room ends the run), from the front of the plan, or just after
     /// its last target of the step when that one's open; each measured (memory, disk) within what it
-    /// spares, as many as fit `JOB_S` by their measured times (`secs_of`: one with none ends the job
-    /// after its first), their disk summed (or the most a job of the step took, the larger) within
+    /// spares, as many as fit the batch length (`batch_len`) by their measured times on its Mac at the
+    /// threads it'd be granted with its start (`batch_secs`: one with none ends the job after its first), their disk summed (or the most a job of the step took, the larger) within
     /// its room. A cold start (`measured` None) by its provisional need, one job of its step in the
     /// pool at a time.
     pub(super) fn pick_every(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
@@ -1633,7 +1679,10 @@ impl Sched {
         let first = &o.targets[start];
         let Some(m0) = self.measured(&o.step, &first.0) else { return vec![(first.0.clone(), first.1.clone())] };
         let mut pick = vec![(first.0.clone(), first.1.clone())];
-        let (mut secs, mut disk) = (self.secs_of(&o.step, &first.0, &a.worker), m0.disk_mb);
+        // (Its time as `batch_secs` sums it, target by target, at the threads it'd be granted.)
+        let threads = self.sizing_threads(&a.worker, &o.step, &first.0, ask_cores(a));
+        let (mut secs, mut disk) =
+            (self.batch_secs(&o.step, [first.0.as_str()], &a.worker, threads).map(|s| s.0), m0.disk_mb);
         let mut load = JobLoad::default();
         let add = |load: &mut JobLoad, t: &str| {
             if let Some((nw, ..)) = &nas {
@@ -1643,12 +1692,12 @@ impl Sched {
         add(&mut load, &first.0);
         for (t, k, _) in &o.targets[start + 1..] {
             let (Some(s), Some(m)) = (secs, self.measured(&o.step, t)) else { break };
-            let Some(more) = self.secs_of(&o.step, t, &a.worker) else { break };
+            let Some((more, _)) = self.secs_on(&o.step, t, &a.worker, threads) else { break };
             if pick.len() >= JOB_MAX
                 || !open(t, k)
                 || !fits(&m)
                 || !nas_fits(t, &load)
-                || s + more > JOB_S
+                || s + more > self.batch_len()
                 || a.disk_mb.is_some_and(|d| crate::needs::batch_disk(&o.step, [disk, m.disk_mb]).max(job_disk) > d)
             {
                 break;
@@ -1864,6 +1913,13 @@ pub struct State {
     pub paces: crate::paces::Paces,
     /// Each step's use on each Mac (`Sched::uses`, task #947: a record before it has none).
     pub uses: crate::uses::Uses,
+    /// The batch length set (`Sched::batch_s`, task #927: 0, not set or a record before it).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub batch_s: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl State {
@@ -1966,6 +2022,7 @@ impl Sched {
             last: self.last.iter().map(|((w, s), t)| (w.clone(), s.clone(), t.clone())).collect(),
             paces: self.paces.clone(),
             uses: self.uses.clone(),
+            batch_s: self.batch_s,
         }
     }
 
@@ -2045,6 +2102,7 @@ impl Sched {
             paces: s.paces.clone(),
             use_runs: Vec::new(),
             uses: s.uses.clone(),
+            batch_s: s.batch_s,
         };
         sched.set_offers(s.offers.clone());
         sched

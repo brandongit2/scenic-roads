@@ -19,7 +19,7 @@
 //!   run alone of the whole build, or one that keeps the pass's answers: crate::agent::every), and
 //!   what it may write (its write-set: the logical names its jobs may add, change or remove in the
 //!   build's manifest). How many targets go in a job is measured, not kept here: as many as fit a
-//!   quarter of an hour (crate::coord::JOB_S), a step kept to the lead's in one job.
+//!   batch length (crate::coord::sched::Sched::batch_len), a step kept to the lead's in one job.
 //!
 //! Every human text about a step is templated from its row (its id, `said`, `counted`): the jobs'
 //! names, the checklist, the build page, `scenic status`. The tasks a job offers (`TASKS`) are

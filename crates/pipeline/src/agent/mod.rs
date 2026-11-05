@@ -8186,10 +8186,10 @@ impl Agent {
             runs.retain(|e| e.t + crate::paces::PACE_S > now);
             let gone = runs.len() != had;
             let had = runs.len();
-            runs.extend(new.filter(|e| crate::paces::reads(e)).cloned());
+            runs.extend(new.filter(|e| crate::paces::job(e)).cloned());
             if gone || runs.len() != had || *at != now / 600 {
                 *at = now / 600;
-                c.set_paces(crate::paces::Paces::of(runs, &self.host, now));
+                c.set_paces(crate::paces::Paces::of(runs, &self.host, now), runs, now);
             }
         }
         // (A member's broker draws its pages' tasks the same way: by their paces at the kind as

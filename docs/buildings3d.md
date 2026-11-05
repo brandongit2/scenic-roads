@@ -173,8 +173,8 @@ No `unit` (roads) key reads any of them.
   in the regions' build order. No "bld-release" (or "?") in the inputs: no buildings work.
 - **Jobs:** `bld-fetch` is the lead's, granted to it alone; the buildings steps go to any member
   (docs/pool.md §7.2), a job beside others by their measured memory, disk and cores, never beside a
-  cold start (docs/pool.md §7.7), as many tiles as fit a quarter of an hour by their measured
-  times (`coord::JOB_S`).
+  cold start (docs/pool.md §7.7), as many tiles as fit the batch length by their measured
+  times on its Mac (docs/pool.md §7.7, Batch length).
 - **Publishing:** buildings hold no region's readiness; their packs go out with the next catalogue,
   at most one a minute (docs/building.md §2).
 - **Status:** the checklist's "3D buildings" stage, its steps "Buildings' sources", "Buildings

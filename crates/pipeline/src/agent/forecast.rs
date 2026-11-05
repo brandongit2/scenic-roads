@@ -1362,8 +1362,10 @@ impl Ready {
 }
 
 /// The most targets of a step one ask is offered in the run (`offers`): the scheduler takes a run
-/// from the front of them (`JOB_S` of measured time at most), so the rest change nothing but its
-/// time.
+/// from the front of them (the batch length of measured time at most, `Sched::batch_len`), so the
+/// rest change nothing but its time, except where more than this many fit it: a run of slope-deep's
+/// empty targets, a second or so each, which the coordinator grants up to `JOB_MAX` of. (Offered
+/// that many, the live-scale forecast took three times the CPU, past its bound: task #927.)
 const OFFER_MAX: usize = 64;
 
 /// How long a lane refused work waits before it asks again (s), when nothing ends sooner: an
@@ -3037,6 +3039,7 @@ mod tests {
                 lead: "m4".into(),
                 steps: [("m1".to_string(), [("unit".to_string(), 3.0)].into())].into(),
                 macs: [("m1".to_string(), 1.5)].into(),
+                ..Default::default()
             },
             ..Default::default()
         });
@@ -3381,6 +3384,72 @@ mod tests {
             .filter(|g| g.at as u64 == inp.now)
             .map(|g| (g.mac.clone(), g.targets.clone(), g.threads))
             .collect();
+        assert_eq!(first, real);
+    }
+
+    /// Task #927: the forecast sizes a job as the coordinator does. Fed its recorded state, each
+    /// Mac's first grant is the coordinator's: the batch length the pool's setting says (20
+    /// minutes), a Mac with runs of the step sized by them (m1, 300 s a z6 tile: four), one with
+    /// none as before (the lead, m4: m1's runs counted twice, two).
+    #[test]
+    fn the_forecast_sizes_jobs_as_the_coordinator_does() {
+        use crate::coord::{self, asks, client, cost_version};
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = coord::start_for_test(&d.path().join("coord"), "m4", "");
+        let m1 = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        let batch = asks::SettingAsk { name: asks::BATCH.into(), value: 20.into(), by: "t".into(), at: 1 };
+        c.take_ask(&asks::Ask::Setting(batch)).unwrap();
+        let units: Vec<String> = (0..24).map(|i| format!("6/8/{i}")).collect();
+        for u in &units {
+            let sizes = [("threads".to_string(), 1)].into();
+            let cost = coord::Cost { peak_mb: 1000, secs: 300, v: cost_version("unit"), sizes, ..Default::default() };
+            c.add_costs_by(&[(coord::cost_key("unit", u), cost)], "m1");
+        }
+        let ask = |mem_mb: u64, cores: u32| coord::Ask {
+            kind: "native".into(),
+            can: vec!["unit".into()],
+            mem_mb,
+            cores,
+            disk_mb: Some(100_000),
+            cap: Some(coord::Capacity { cores, cores_free: cores, ..Default::default() }),
+            want: 1,
+            ..Default::default()
+        };
+        assert!(m1.ask(&ask(8000, 8)).unwrap().is_none());
+        c.offer(
+            "p",
+            vec![coord::Offer {
+                step: "unit".into(),
+                targets: units.iter().map(|u| (u.clone(), super::KEY.to_string(), 0)).collect(),
+                job: None,
+            }],
+        );
+        c.set_capacity(ask(16_000, 14).cap);
+        let st: State = serde_json::from_str(&serde_json::to_string(&c.sched_state()).unwrap()).unwrap();
+        assert_eq!(st.batch_s, 1200, "the setting, recorded");
+        let mut real: Vec<(String, Vec<String>)> = Vec::new();
+        for (who, g) in
+            [("m4", c.ask_own(&ask(16_000, 14), &Default::default(), 0)), ("m1", m1.ask(&ask(8000, 8)).unwrap())]
+        {
+            if let Some(coord::Granted::Job { targets, .. }) = g.map(|g| g.work) {
+                real.push((who.to_string(), targets.into_iter().map(|t| t.0).collect()));
+            }
+        }
+        assert_eq!(real.iter().map(|r| r.1.len()).collect::<Vec<_>>(), [2, 4], "{real:?}");
+        let regions = [region("a", &[], &units.iter().map(String::as_str).collect::<Vec<_>>(), &[])];
+        let one = |host: &str, lead: bool| Machine {
+            equal: !lead,
+            lead_steps: lead,
+            mac: Some(host.into()),
+            ..mac(host, 1.0)
+        };
+        let mut inp = input(&regions, vec![one("m4", true), one("m1", false)], &cost);
+        inp.after = Vec::new();
+        inp.macs.insert("m4".into(), MacRoom { mem_mb: 16_000, cores: 14 });
+        inp.sched = Some(st);
+        let f = forecast(&inp);
+        let first: Vec<(String, Vec<String>)> =
+            f.grants.iter().filter(|g| g.at as u64 == inp.now).map(|g| (g.mac.clone(), g.targets.clone())).collect();
         assert_eq!(first, real);
     }
 

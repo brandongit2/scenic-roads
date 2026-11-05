@@ -262,14 +262,6 @@ impl std::fmt::Display for CostKey<'_> {
     }
 }
 
-/// How long `target` of `step` is predicted to take `worker`: its last run's time (twice another
-/// worker's: the members run at about half the lead's pace); None when it hasn't run the way
-/// the step runs now.
-pub fn job_secs(costs: &BTreeMap<String, Cost>, step: &str, target: &str, worker: &str) -> Option<u64> {
-    let c = costs.get(&cost_key(step, target)).filter(|c| c.v >= cost_version(step))?;
-    Some(if c.worker.as_deref() == Some(worker) { c.secs } else { c.secs * 2 })
-}
-
 /// The memory a job of `step` for `target` is predicted to take (MB), by its step's model
 /// (crate::needs, its costs alone; `size` sizes its first guess, `first_guess`).
 pub fn job_peak(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: u64) -> u64 {
@@ -289,13 +281,28 @@ pub fn first_guess(costs: &BTreeMap<String, Cost>, step: &str, target: &str, siz
 
 /// A step's work offered to the workers that mount the NAS: its targets in plan order (target, key,
 /// size: a z6 tile's or candidates' extract bytes, another step's predicted peak memory in MB). A job
-/// takes as many as fit `JOB_S` by their measured times (`pick_every`), but the lead's own planned
+/// takes as many as fit the batch length by their measured times (`pick_every`), but the lead's own planned
 /// job (`job`: its id), granted whole and to the lead alone (crate::agent::every::grants).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Offer {
     pub step: String,
     pub targets: Vec<(String, String, u64)>,
     pub job: Option<String>,
+}
+
+/// How a grant was sized, for its log line (`Shared::pack`): "; sized to N min by its Mac's runs",
+/// or, its Mac having none of the step, by the rule before task #927 (another Mac's run twice).
+fn sized_words(p: &sched::Pick, worker: &str) -> String {
+    match p.sized {
+        Some((s, true)) => format!("; sized to {:.1} min by its Mac's runs", s as f64 / 60.0),
+        Some((s, false)) => format!(
+            "; sized to {:.1} min as before task #927: {} has no runs of {} (another Mac's run counted twice)",
+            s as f64 / 60.0,
+            crate::paces::mac_of(worker),
+            p.step
+        ),
+        None => String::new(),
+    }
 }
 
 /// A worker, as its requests describe it.
@@ -612,6 +619,7 @@ impl Shared {
     /// coordinator's clock), then what a grant does outside it: the leases saved, each grant logged
     /// and in the history, the refusal kept for the status (`refused`). None: no job.
     fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, now: Instant) -> Option<Grant> {
+        self.sched.batch_s = self.asks.settings.batch_s().unwrap_or(0);
         let (picks, why) = self.sched.pack(a, offers, lead, sched::Clock { now, unix: unix_now() });
         match why {
             Some(w) => self.refused.insert(a.worker.clone(), (unix_now(), w)),
@@ -622,17 +630,19 @@ impl Shared {
         }
         let mut grants = picks.into_iter().map(|p| {
             eprintln!(
-                "coordinator: {} took {} {} ({} threads)",
+                "coordinator: {} took {} {} ({} threads{})",
                 a.worker,
                 p.step,
                 p.targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "),
-                p.threads
+                p.threads,
+                sized_words(&p, &a.worker)
             );
             self.history.add(history::Event {
                 worker: Some(a.worker.clone()),
                 lease: Some(p.lease),
                 step: Some(p.step.clone()),
                 targets: p.targets.iter().map(|t| t.0.clone()).collect(),
+                data: p.sized.map(|(s, own)| serde_json::json!({ "sized_s": s, "own": own })),
                 ..history::Event::new("lease")
             });
             Grant {
@@ -1510,6 +1520,7 @@ impl Coordinator {
                 paces: Default::default(),
                 use_runs: Vec::new(),
                 uses: Default::default(),
+                batch_s: 0,
             },
             pass: String::new(),
             plan: 0,
@@ -1829,10 +1840,12 @@ impl Coordinator {
     }
 
     /// The scheduler's state now, as data (`sched::State`): what the forecast runs the scheduler on.
-    /// This Mac's own ask with its capacity (`own_cap`), as a member's carries its.
+    /// This Mac's own ask with its capacity (`own_cap`), as a member's carries its; the batch length
+    /// as set.
     pub fn sched_state(&self) -> sched::State {
         let s = self.shared.lock().unwrap();
         let mut st = s.sched.state(s.now());
+        st.batch_s = s.asks.settings.batch_s().unwrap_or(0);
         for w in st.workers.iter_mut().filter(|w| w.ask.worker == self.me) {
             w.ask.cap = s.own_cap.clone();
         }
@@ -2073,9 +2086,12 @@ impl Coordinator {
     }
 
     /// Each Mac's pace at each step now (crate::paces, from the build's history): what the
-    /// measures are read at.
-    pub fn set_paces(&self, p: crate::paces::Paces) {
-        self.shared.lock().unwrap().sched.set_paces(p);
+    /// measures are read at; with each Mac's jobs' start at each step, from the history's jobs
+    /// `events` and the costs kept (`Paces::with_starts`, task #927).
+    pub fn set_paces(&self, p: crate::paces::Paces, events: &[history::Event], now: u64) {
+        let mut s = self.shared.lock().unwrap();
+        let p = p.with_starts(events, &s.sched.costs, now);
+        s.sched.set_paces(p);
     }
 
     /// The paces the measures are read at (`set_paces`).
@@ -7864,8 +7880,9 @@ mod tests {
     fn measured_offer(c: &Coordinator, step: &str, ts: &[(&str, Option<(u64, u64, u64)>)]) {
         for (t, m) in ts {
             if let Some((mem, disk, secs)) = m {
-                // (Measured on m1: its own pace; another worker's run counts twice its time, job_secs.
-                // Its run's threads said: a serial step's.)
+                // (Measured on m1: its own pace; on a Mac with no runs of the step, another worker's
+                // run counts twice its time, crate::needs::Book::secs_on. Its run's threads said: a
+                // serial step's.)
                 let sizes = [("threads".to_string(), 1)].into();
                 c.add_costs_by(
                     &[(
@@ -8137,6 +8154,116 @@ mod tests {
         // m2's job goes beside it (weighed by its heaviest, it waited for m1's to end): as many as
         // fit its quarter of an hour, m1's runs counted twice their time on another Mac.
         assert_eq!(granted(&m2, &ask("m2")), ts[14..20]);
+    }
+
+    /// Task #927: slope-deep's runs and their sources (terrain-deep's same tiles, each `src` s on the
+    /// lead): `ran` (worker, tiles, s each), the tiles not run offered (`offer`), every source tile
+    /// measured. The scheduler and a fresh offer of `offer` in plan order.
+    fn sized_offer(
+        src: &[(std::ops::Range<u32>, u64)],
+        ran: &[(&str, std::ops::Range<u32>, u64)],
+        offer: std::ops::Range<u32>,
+    ) -> (tempfile::TempDir, Coordinator, Offer) {
+        let (d, c, _w, _clock) = every((0, 0));
+        let cost = |step: &str, secs: u64| Cost {
+            peak_mb: 2000,
+            secs,
+            v: cost_version(step),
+            sizes: [("threads".to_string(), 1)].into(),
+            ..Default::default()
+        };
+        let t = |i: u32| format!("10/0/{i}");
+        for (r, secs) in src {
+            c.add_costs_by(
+                &r.clone().map(|i| (cost_key("terrain-deep", &t(i)), cost("terrain-deep", *secs))).collect::<Vec<_>>(),
+                "m4",
+            );
+        }
+        for (w, r, secs) in ran {
+            c.add_costs_by(
+                &r.clone().map(|i| (cost_key("slope-deep", &t(i)), cost("slope-deep", *secs))).collect::<Vec<_>>(),
+                w,
+            );
+        }
+        let o = Offer {
+            step: "slope-deep".into(),
+            targets: offer.map(|i| (t(i), format!("k {i}"), 0)).collect(),
+            job: None,
+        };
+        c.offer("p", vec![o.clone()]);
+        (d, c, o)
+    }
+
+    /// Task #927: a batch is sized by its Mac's own runs of the step: m1 took 60 s a target of
+    /// slope-deep where m2 took 20, on targets whose terrain-deep took alike, so a target neither
+    /// ran is 60 s on m1 and 20 on m2: a quarter hour is 15 of them on m1, 45 on m2 (where the
+    /// step's mean, 40 s, sized both at 22). Its jobs' start counts too.
+    #[test]
+    fn a_slow_mac_gets_smaller_batches() {
+        let (_d, c, o) = sized_offer(&[(0..200, 100)], &[("m1", 0..20, 60), ("m2 #2", 20..40, 20)], 40..200);
+        let n = |w: &str| {
+            let s = c.shared.lock().unwrap();
+            s.pick_every(&o, &every_ask(w, "slope-deep", 64_000, 1_000_000), s.now()).len()
+        };
+        assert_eq!((n("m1"), n("m2")), (15, 45));
+        let s = c.shared.lock().unwrap();
+        let ts: Vec<&str> = o.targets.iter().take(15).map(|t| t.0.as_str()).collect();
+        assert_eq!(s.batch_secs("slope-deep", ts.iter().copied(), "m1", 0), Some((900, true)), "by m1's own runs");
+        drop(s);
+        // (Its jobs taking 60 s past their targets' runs: a target fewer.)
+        let mut s = c.shared.lock().unwrap();
+        let mut p = s.paces.clone();
+        p.starts.insert("m1".into(), [("slope-deep".to_string(), 60.0)].into());
+        s.set_paces(p);
+        let now = s.now();
+        assert_eq!(s.pick_every(&o, &every_ask("m1", "slope-deep", 64_000, 1_000_000), now).len(), 14);
+    }
+
+    /// Task #927: a target expected to be full counts more than one expected empty: what its
+    /// terrain-deep took says which (its bin of the step's runs on the Mac). m1 took 90 s on the
+    /// targets whose terrain-deep took 100 s and 1 s on those whose took 1: of the ones it hasn't
+    /// run, a quarter hour is 10 full ones, or every empty one offered.
+    #[test]
+    fn full_targets_count_more_than_empty_ones() {
+        let (_d, c, o) = sized_offer(
+            &[(0..20, 100), (20..40, 1), (40..60, 100), (60..100, 1)],
+            &[("m1", 0..20, 90), ("m1", 20..40, 1)],
+            40..100,
+        );
+        let s = c.shared.lock().unwrap();
+        let now = s.now();
+        let a = every_ask("m1", "slope-deep", 64_000, 1_000_000);
+        let full = Offer { targets: o.targets[..20].to_vec(), ..o.clone() };
+        let empty = Offer { targets: o.targets[20..].to_vec(), ..o.clone() };
+        assert_eq!(s.pick_every(&full, &a, now).len(), 10);
+        assert_eq!(s.pick_every(&empty, &a, now).len(), 40);
+        // (A target of no source run: the step's model, its mean, 46 s: 19 of them.)
+        let none =
+            Offer { targets: (200..240).map(|i| (format!("10/0/{i}"), String::new(), 0)).collect(), ..o.clone() };
+        assert_eq!(s.pick_every(&none, &a, now).len(), 19);
+    }
+
+    /// Task #927: a Mac with no runs of the step is sized as before, and says so: a target's own
+    /// run on another Mac counts twice its time, one not run its step's model at the Mac's pace.
+    #[test]
+    fn a_mac_with_no_runs_of_the_step_is_sized_as_before() {
+        let (_d, c, o) = sized_offer(&[(0..100, 100)], &[("m1", 0..30, 60)], 0..100);
+        let s = c.shared.lock().unwrap();
+        let now = s.now();
+        let a = every_ask("m3", "slope-deep", 64_000, 1_000_000);
+        // (m1's runs, 60 s each, twice on m3: 7 in a quarter hour.)
+        assert_eq!(s.pick_every(&o, &a, now).len(), 7);
+        let ts: Vec<&str> = o.targets.iter().take(7).map(|t| t.0.as_str()).collect();
+        assert_eq!(s.batch_secs("slope-deep", ts.iter().copied(), "m3", 0), Some((840, false)), "said: not its own");
+        // (The ones not run: the step's mean, 60 s: 15.)
+        let rest = Offer { targets: o.targets[30..].to_vec(), ..o.clone() };
+        assert_eq!(s.pick_every(&rest, &a, now).len(), 15);
+        // (m1 itself: by its runs, said so; the batch length as the pool sets it.)
+        assert_eq!(s.batch_secs("slope-deep", ts.iter().copied(), "m1", 0), Some((420, true)));
+        drop(s);
+        c.shared.lock().unwrap().sched.batch_s = 1800;
+        let s = c.shared.lock().unwrap();
+        assert_eq!(s.pick_every(&o, &a, now).len(), 15, "half an hour");
     }
 
     /// Task #925: a member's job weighed at the whole NAS by its targets' runs (their reads fast
