@@ -37,7 +37,7 @@ refuses runs it can't read (`$c test`, `cargo --config alias.…`, `cargo -C`, `
 - Full suites run in `tools/app/publish.sh` before a publish, the PM's; and once by the PM on main
   after a merge batch, in the background, before publishing. Publish runs (#848):
   - `cargo nextest run --workspace`: every workspace crate's libraries, binaries and integration
-    tests (det, roadcore, pipeline, server, store, names, pyport, codecs, jobrt, buildstore, webpenc), on the test Mac;
+    tests (det, roadcore, pipeline, server, store, names, pyport, codecs, jobrt, buildstore, landmarks, mapview, webpenc), on the test Mac;
   - then `tools/app/other-tests.zsh`, on the publishing Mac, its parts at once: `node --test` of
     `web/test/*.test.{ts,mjs}` and `tools/check/*.test.mjs` (by glob), `tools/devtools/test/*.test.mjs`,
     `tools/dev/test/devjob.zsh`, the status app's `swiftc` build and `--test tools/status/test`, `tools/app/test/shell.zsh` and

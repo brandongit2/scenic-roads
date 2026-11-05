@@ -1,7 +1,8 @@
 # The pipeline's crates (task #916)
 
-**Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`) and 4
-(`crates/buildstore`) are built; every later step below is planned.
+**Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`), 4
+(`crates/buildstore`), 5a (`crates/landmarks`) and 5b (`crates/mapview`) are built; every later
+step below is planned.
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -45,6 +46,10 @@ one of 43 modules, ~184k lines: out, handoff, rawpack, localread, coverage and o
 costin and geotiff (outside it) moved out, with fetch. pipeline keeps an `out` of 68 lines (the
 `Out` its code names, binding buildstore's to the pool's records and the steps table), which is in
 the cycle (→ agent, pool).
+
+Rerun on 5 Nov 2026 on main at 9baf1315: one cycle of 47 modules, ~188k lines (peaks ↔ summits a
+small one of their own). Steps 5a and 5b moved only modules outside it (heritage_layers ↔ interest,
+a small cycle, went whole into landmarks), so after them it is the same 47 modules.
 
 The cycle is held together by a few thin edges from low-level code up to `agent`, `pool`,
 `inputs` and `control`, not by the steps' logic. The ones that matter most:
@@ -119,14 +124,21 @@ names, webpenc as now).
    - **trees**: trees, treepacks, leaftype, landcover. ~7k lines.
    - **names** (heritage, places, transit): heritage*, interest, items, labels, wikiask, pageviews,
      areadetails, whsshapes, filterprops, ferries, gtfs, railfeeds, ovconv, markconv, marksjob,
-     namestodo. ~17k lines.
+     namestodo. ~17k lines. Its part outside the cycle is built as **landmarks** (step 5a; the
+     crate `names` was taken): wikiask, heritagewd, heritage_layers, heritagedetails, filterprops,
+     interest, items, pageviews, labels, areadetails, whsshapes, ~6.5k lines, on pyport, jobrt and
+     buildstore (and det, roadcore, store, names). Planned: heritage (→ stage, terrain_pack),
+     ferries, gtfs (→ lakefill), railfeeds, ovconv, markconv, marksjob, namestodo, once the
+     families below them are out.
    - **bld**: bld (3D buildings). ~9k lines.
 7. **coordination**: coord, pool, needs, pubtimes, answers, offload, menu, appupdate (coord ↔ pool
    ↔ agent are one cycle today; they split after the steps are out). ~33k lines.
 8. **pipeline** (the agent, kept under this name so `cargo run -p pipeline --bin …` and the
    server's dependency stay): agent (66k lines; later split by its own seams, docs/agent-parts.md)
-   and the binaries. The map server's shared parts (scache, view, terr, buildings, used by
-   scenic-metrics and crates/server) join **codecs** or a small **mapview** crate.
+   and the binaries. The scenic metrics' map-side parts (scache, view, terr, buildings: the
+   scenic-metrics tool's, and unit's scache) are built as **mapview** (step 5b, ~1.3k lines, on
+   codecs, det, roadcore, store). crates/server names none of them; it uses pipeline's inputs,
+   depth, water, coord and others, so it keeps its pipeline dependency.
 
 Each moved module stays reachable at its old path by a `pub use` in `pipeline`'s lib.rs until the
 paused branches touching its users have landed; a later step per crate rewrites the paths
@@ -201,7 +213,19 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
    the binding. One line in a file #929 edits: `pyramids::DIR` names `rawpack::PYRAMIDS`.
 5. **inputs** and the step families (one step each, bottom up: terrain, trees, roads, names, bld),
    each after rerunning modgraph.py shows it leaves no edge back into what remains above; the
-   cross-family edges of §2.6 are cut where cheap so families compile in parallel.
+   cross-family edges of §2.6 are cut where cheap so families compile in parallel. Built so far,
+   the parts outside the cycle:
+   - 5a, **landmarks** (built): wikiask, heritagewd, heritage_layers, heritagedetails,
+     filterprops, interest, items, pageviews, labels, areadetails, whsshapes into
+     `crates/landmarks`; pipeline re-exports them. Cuts: `osmpass::osmium` is jobrt::sys's
+     (osmpass re-exports it), `rail::day_of` jobrt::timings'. Their unit tests start offline as
+     pipeline's do (lib.rs `TEST_START`, checked by `test_start`). unicode-normalization went with
+     them (pipeline had no other user).
+   - 5b, **mapview** (built): scache, view, terr, buildings into `crates/mapview`; pipeline
+     re-exports them. Cut: terr's `z9_block` (no caller).
+   Next: the records' reading and the write sets below pipeline (§2.4: inputs names
+   `crate::out::Out` 31 times, and `Out<Pipeline>` can't be named below pipeline), then inputs
+   (which also needs cli, after #883).
 6. **coordination**, after #882 lands.
 7. Path rewrites: per crate, `crate::x` → `<crate>::x`, and the re-exports dropped.
 
@@ -259,6 +283,31 @@ timings.rs, codecs' hipack.rs, each built from a built tree (the shared folder):
 | dev, jobrt edit | 7 s, 2.28 GB (load 20): jobrt, buildstore, pipeline, server |
 | dev, codecs edit | 7 s, 2.28 GB (load 19): codecs, buildstore, pipeline, server |
 | tools/dev/check.sh at cfd2b6ab (07:00 UTC) | fmt 2 s, clippy 27 s, guards 2 s, tests 451 s (run here: the M4 is the test Mac; its affected set is most of pipeline's tests); largest process 5.6 GB |
+
+Before and after steps 5a-5b, 5 Nov 2026 15:50-16:10 UTC, on the M4 (the pool's jobs and a publish's
+tests beside), rustc 1.98.1, `cargo build --workspace --bins --timings` (dev), main at 9baf1315
+against the branch, each tree in a folder of its own on the M4 with a fresh target folder (third-party
+crates from sccache). Memory: this build's rustc processes alone (their arguments name its target
+folder), sampled every 0.3 s: the largest one's RSS (always pipeline's) and all of them at once.
+The edits: one comment line appended to wikiask.rs (landmarks after), scache.rs (mapview after) and
+agent/jobs.rs, each built from the tree the clean build left:
+
+| run | before (9baf1315) | after (5a-5b) |
+|---|---|---|
+| dev, clean | 77 s, 3.93 GB (load 134) | 93 s, 3.90 GB (load 60) |
+| dev, wikiask edit | 6.8 s, 2.13 GB: pipeline, server | 15.2 s, 2.03 GB: landmarks 0.5 s, pipeline 10.4 s, server |
+| dev, scache edit | 6.8 s, 2.05 GB: pipeline, server | 10.6 s, 1.95 GB: mapview 0.2 s, pipeline 8.3 s, server |
+| dev, agent edit | 6.8 s, 2.04 GB: pipeline, server | 6.5 s, 1.93 GB: pipeline, server |
+
+`--timings` of the clean builds: the workspace's crates take 62 s of compile in either, and run
+almost one at a time (0.86 crates at once on average before, 0.69 after, over the span from the
+first to the last): pipeline's lib is 38 s before and 36 s after, the binaries and server's 4-8 s
+after it, every other workspace crate under 2.1 s. So far the split moves leaves out from under
+pipeline, and pipeline's compile is still the build's critical path. An edit in a moved leaf now
+costs more: its crate compiles, then pipeline again with a dependency changed, which reuses less of
+its incremental state (10.4 s against 5.1 s for an edit inside it). The gain needs the big middle
+(inputs, the step families, coordination) out of pipeline, so an edit there leaves the agent alone
+and the families compile side by side.
 
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the
