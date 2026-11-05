@@ -391,6 +391,42 @@ thread_local! {
     static STACK: RefCell<Vec<Arc<Open>>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The run's main thread's part, taken on it (`here`) to go on another thread for a while (`run`):
+/// a target's work on its job's grant now (crate::control::on_grant runs it on a pool's thread). Its
+/// open phases and its being the main thread go with it, and come back as `run` returns, so the
+/// phases opened meanwhile are the main thread's (not `background`), nested as they would have been.
+pub struct Main {
+    stack: Option<Vec<Arc<Open>>>,
+}
+
+impl Main {
+    /// This thread's part when it's the run's main thread (else nothing goes).
+    pub fn here() -> Main {
+        let main = run().lock().unwrap().as_ref().map(|r| r.main);
+        let me = std::thread::current().id();
+        Main { stack: (main == Some(me)).then(|| STACK.with(|s| s.borrow().clone())) }
+    }
+
+    /// `f` on this thread as the run's main thread, then the main thread given back.
+    pub fn run<R>(self, f: impl FnOnce() -> R) -> R {
+        let Some(stack) = self.stack else { return f() };
+        let me = std::thread::current().id();
+        let was = run().lock().unwrap().as_mut().map(|r| std::mem::replace(&mut r.main, me));
+        let had = STACK.with(|s| std::mem::replace(&mut *s.borrow_mut(), stack));
+        struct Back(Option<std::thread::ThreadId>, Vec<Arc<Open>>);
+        impl Drop for Back {
+            fn drop(&mut self) {
+                STACK.with(|s| *s.borrow_mut() = std::mem::take(&mut self.1));
+                if let (Some(was), Some(r)) = (self.0, run().lock().unwrap().as_mut()) {
+                    r.main = was;
+                }
+            }
+        }
+        let _back = Back(was, had);
+        f()
+    }
+}
+
 /// The process's CPU time so far (user + system, its own threads' and its finished children's),
 /// microseconds. None where there's no `getrusage`.
 pub fn cpu_us() -> Option<u64> {

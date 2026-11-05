@@ -2430,7 +2430,13 @@ fn note_started(key: &str) {
     WRITTEN_AT_START.store(store::cachefile::written(), std::sync::atomic::Ordering::Relaxed);
     pipeline::costin::begin();
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
-    let line = serde_json::json!({ "unit": key, "started": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) });
+    let mut line = serde_json::json!({ "unit": key, "started": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) });
+    // (The threads it runs on, where it takes its job's grant as it begins (pipeline::control::
+    // on_grant): what the agent tells its lead the job runs with now, so a re-grant of fewer is
+    // counted once a target takes it up (pipeline::agent::memguard::in_force).)
+    if let Some(n) = pipeline::control::in_force() {
+        line["threads"] = n.into();
+    }
     let r = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -5326,34 +5332,37 @@ fn terrain_pieces_from(
     for (k, t) in ts.iter().enumerate() {
         landing.safe_point(out, "terrain-hi")?;
         pipeline::agent::jobs::part(k, &names);
-        let c = cost_start("terrain-hi", &t.slash());
-        let offers = match ahead.take() {
-            Some(o) => o,
-            None => offer(t),
-        };
-        if offer_ahead {
-            let before: usize =
-                pipeline::terrain_pack::piece_levels(cov, (t.x, t.y)).iter().map(|(_, l)| l.len()).sum();
-            ahead = ts.get(k + 1).map(|n| offer_after(n, before));
-        }
-        let r = landing
-            .after(out, |out| {
-                pipeline::terrain_pack::build_piece_later(
-                    out,
-                    raw,
-                    (t.x, t.y),
-                    cov,
-                    src,
-                    same.contains(&t.slash()),
-                    &say,
-                    offers,
-                    Some(deep),
-                )
-            })
-            // (Paused mid-sampling: the z6 tile before landed (`after`), its blocks kept in its resume log.)
-            .map_err(|e| pipeline::control::stop_if_paused("terrain-hi", e))?;
-        let said = format!("terrain-hi {} ({} of {n}): {r:?}", t.slash(), k + 1);
-        landing.then(out, "terrain-hi", &t.slash(), said, c)?;
+        // (On its job's grant as it begins: pipeline::control::on_grant.)
+        pipeline::control::on_grant(|| -> Result<()> {
+            let c = cost_start("terrain-hi", &t.slash());
+            let offers = match ahead.take() {
+                Some(o) => o,
+                None => offer(t),
+            };
+            if offer_ahead {
+                let before: usize =
+                    pipeline::terrain_pack::piece_levels(cov, (t.x, t.y)).iter().map(|(_, l)| l.len()).sum();
+                ahead = ts.get(k + 1).map(|n| offer_after(n, before));
+            }
+            let r = landing
+                .after(out, |out| {
+                    pipeline::terrain_pack::build_piece_later(
+                        out,
+                        raw,
+                        (t.x, t.y),
+                        cov,
+                        src,
+                        same.contains(&t.slash()),
+                        &say,
+                        offers,
+                        Some(deep),
+                    )
+                })
+                // (Paused mid-sampling: the z6 tile before landed (`after`), its blocks kept in its resume log.)
+                .map_err(|e| pipeline::control::stop_if_paused("terrain-hi", e))?;
+            let said = format!("terrain-hi {} ({} of {n}): {r:?}", t.slash(), k + 1);
+            landing.then(out, "terrain-hi", &t.slash(), said, c)
+        })?;
     }
     landing.land(out)?;
     pipeline::control::safe_point("terrain-hi");
@@ -5419,6 +5428,8 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
         for (k, t) in ts.iter().enumerate() {
             pipeline::control::safe_point(STEP);
             pipeline::agent::jobs::part(k, &names);
+            // (On its job's grant as it begins: pipeline::control::on_grant.)
+            pipeline::control::on_grant(|| -> Result<()> {
             let c = cost_start(STEP, &t.slash());
             let fetched = pipeline::fetch::fetched_bytes();
             // (Paused mid-sampling: nothing of it put, its base tiles made kept in its resume log.)
@@ -5445,6 +5456,8 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
             }
             pipeline::control::done(STEP, &t.slash());
             note_cost(STEP, &t.slash(), c);
+            Ok(())
+            })?;
         }
         Ok(())
     })??;
@@ -5574,13 +5587,19 @@ fn slope_pieces(
             eprintln!("slope-hi {}: the coverage has left it; {n} files dropped", t.slash());
             continue;
         }
-        let c = cost_start("slope-hi", &t.slash());
-        let r = landing.after(out, |out| {
-            pipeline::slope_pack::build_piece_later(out, (t.x, t.y), same.contains(&t.slash()), &|what, done, total| {
-                pipeline::agent::jobs::report(done, total, what)
-            })
+        // (On its job's grant as it begins: pipeline::control::on_grant.)
+        pipeline::control::on_grant(|| -> Result<()> {
+            let c = cost_start("slope-hi", &t.slash());
+            let r = landing.after(out, |out| {
+                pipeline::slope_pack::build_piece_later(
+                    out,
+                    (t.x, t.y),
+                    same.contains(&t.slash()),
+                    &|what, done, total| pipeline::agent::jobs::report(done, total, what),
+                )
+            })?;
+            landing.then(out, "slope-hi", &t.slash(), format!("slope-hi {}: {r:?}", t.slash()), c)
         })?;
-        landing.then(out, "slope-hi", &t.slash(), format!("slope-hi {}: {r:?}", t.slash()), c)?;
     }
     landing.land(out)
 }
@@ -5815,15 +5834,19 @@ fn slope_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
             eprintln!("{STEP} {}: no deep level there; {n} files dropped", t.slash());
             continue;
         }
-        let c = cost_start(STEP, &t.slash());
-        let r = pipeline::slope_pack::build_deep(out, (t.x, t.y), &|what, done, total| {
-            pipeline::agent::jobs::report(done, total, what)
+        // (On its job's grant as it begins: a re-grant takes the next target, pipeline::control::on_grant.)
+        pipeline::control::on_grant(|| -> Result<()> {
+            let c = cost_start(STEP, &t.slash());
+            let r = pipeline::slope_pack::build_deep(out, (t.x, t.y), &|what, done, total| {
+                pipeline::agent::jobs::report(done, total, what)
+            })?;
+            out.save()?;
+            out.claim_into_costin();
+            eprintln!("{STEP} {}: {r:?}", t.slash());
+            pipeline::control::done(STEP, &t.slash());
+            note_cost(STEP, &t.slash(), c);
+            Ok(())
         })?;
-        out.save()?;
-        out.claim_into_costin();
-        eprintln!("{STEP} {}: {r:?}", t.slash());
-        pipeline::control::done(STEP, &t.slash());
-        note_cost(STEP, &t.slash(), c);
     }
     Ok(())
 }

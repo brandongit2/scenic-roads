@@ -34,6 +34,8 @@ struct State {
     stopped_at: u64,
     /// The process's time waiting as the target began (ns: `waited`).
     waited_at: Option<u64>,
+    /// The threads the target runs on (`threads` as it began; 0: not begun).
+    threads: usize,
     m: BTreeMap<String, u64>,
 }
 
@@ -42,6 +44,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     cpu_at: None,
     stopped_at: 0,
     waited_at: None,
+    threads: 0,
     m: BTreeMap::new(),
 });
 
@@ -75,6 +78,7 @@ pub fn begin() {
     s.cpu_at = jobrt::timings::cpu_us();
     s.stopped_at = stopped_ms();
     s.waited_at = waited();
+    s.threads = threads();
     s.m.clear();
 }
 
@@ -186,7 +190,7 @@ pub fn take() -> BTreeMap<String, u64> {
     if tiffs > 0 || m.contains_key("km2") {
         m.insert("tiffs".into(), tiffs);
     }
-    m.insert("threads".into(), threads() as u64);
+    m.insert("threads".into(), if s.threads > 0 { s.threads } else { threads() } as u64);
     if let (Some(a), Some(b)) = (s.cpu_at, jobrt::timings::cpu_us()) {
         m.insert("cpu_ms".into(), b.saturating_sub(a) / 1000);
     }
@@ -251,9 +255,12 @@ pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {
     }
 }
 
-/// The threads a step's job may use: as the agent sets them (`RAYON_NUM_THREADS`), else the pool's.
+/// The threads a step's target runs on: its job's grant as the target began (jobrt::control::on_grant),
+/// else as the agent set them at the job's start (`RAYON_NUM_THREADS`), else the pool's.
 pub fn threads() -> usize {
-    std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or_else(rayon::current_num_threads)
+    jobrt::control::in_force()
+        .or_else(|| std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()))
+        .unwrap_or_else(rayon::current_num_threads)
 }
 
 /// A tile's area in km² (a sphere of the Earth's mean radius, 6371 km).

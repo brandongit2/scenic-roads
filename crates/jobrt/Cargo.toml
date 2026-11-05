@@ -9,6 +9,7 @@ store = { path = "../store" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
 anyhow.workspace = true
+rayon.workspace = true
 blake3 = "1"
 libc = "0.2"
 # Pinned as pipeline pins it (coord::client's idle transport uses ureq's unversioned::transport API).

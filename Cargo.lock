@@ -1009,6 +1009,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "libc",
+ "rayon",
  "serde",
  "serde_json",
  "socket2",

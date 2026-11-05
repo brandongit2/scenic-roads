@@ -781,9 +781,126 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// The file a running job's agent keeps its grant in (docs/pool.md §7.1, Threads re-granted): the
+/// threads it may use now, a number, rewritten when its lead re-decides them. A job reads it as each
+/// target begins (`on_grant`); a paced one (pipeline::inputs::pace) every second.
+pub const THREADS_ENV: &str = "SCENIC_THREADS_FILE";
+
+/// The threads the job is granted now (`THREADS_ENV`'s number, one at least); None without the file
+/// or a number in it (a hand run's).
+pub fn granted() -> Option<usize> {
+    let f = std::env::var_os(THREADS_ENV)?;
+    std::fs::read_to_string(f).ok()?.trim().parse::<usize>().ok().map(|n| n.max(1))
+}
+
+/// The threads the target under way runs on (`on_grant`); 0 outside one.
+static IN_FORCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The threads the target under way runs on, as `on_grant` read them as it began; None outside one
+/// (its cost line then says none: crate's caller, scenic-build's `note_started`).
+pub fn in_force() -> Option<usize> {
+    Some(IN_FORCE.load(std::sync::atomic::Ordering::Relaxed)).filter(|&n| n > 0)
+}
+
+/// A target's work, `f`, on as many threads as its job is granted as it begins (`granted`): a rayon
+/// pool that wide (the last one kept while the grant stands), the timings' main thread carried onto
+/// the thread running `f` (crate::timings::Main) so its phases are the job's main thread's as before.
+/// The grant is read once, here: a re-grant takes effect at the next target, never inside one, and
+/// a call inside another's `f` runs on that one's pool. Without the file (a hand run, or a step
+/// whose job isn't told), `f` on the job's own pool (RAYON_NUM_THREADS). The thread count changes no
+/// output: every step's work is the same whatever its threads (each Mac runs its own grant).
+pub fn on_grant<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    use std::sync::atomic::Ordering;
+    let n = match granted() {
+        Some(n) if IN_FORCE.load(Ordering::Relaxed) == 0 => n,
+        _ => return f(),
+    };
+    static POOL: std::sync::Mutex<Option<(usize, std::sync::Arc<rayon::ThreadPool>)>> = std::sync::Mutex::new(None);
+    let pool = {
+        let mut g = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_ref().filter(|(w, _)| *w == n) {
+            Some((_, p)) => p.clone(),
+            None => match rayon::ThreadPoolBuilder::new().num_threads(n).build() {
+                Ok(p) => {
+                    let p = std::sync::Arc::new(p);
+                    *g = Some((n, p.clone()));
+                    p
+                }
+                // (No pool to be had: the job's own, as before.)
+                Err(_) => return f(),
+            },
+        }
+    };
+    IN_FORCE.store(n, Ordering::Relaxed);
+    let main = crate::timings::Main::here();
+    let r = pool.install(move || main.run(f));
+    IN_FORCE.store(0, Ordering::Relaxed);
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task #948: a target runs on its job's grant as it began (a re-grant written meanwhile, fewer
+    /// or more, changes nothing under way: a call inside runs on the same pool), and the next target
+    /// takes it (a shrink at the safe point between them, then a grow); the thread count changes no
+    /// result; the timings' main thread goes with the target's work and comes back. Without the
+    /// file, the job's own pool. (In a process of its own: the file's variable and the timed run
+    /// are the process's.)
+    #[test]
+    fn a_target_runs_on_its_grant_as_it_began_and_a_regrant_takes_the_next() {
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let out = store::spawn::output(
+                store::spawn::command(std::env::current_exe().unwrap())
+                    .args(["--exact", "control::tests::a_target_runs_on_its_grant_as_it_began_and_a_regrant_takes_the_next"])
+                    .env(ALONE, "1"),
+            )
+            .unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success() && said.contains(" 1 passed"), "{said}{}", String::from_utf8_lossy(&out.stderr));
+            return;
+        }
+        use rayon::prelude::*;
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("threads");
+        std::fs::write(&f, "3\n").unwrap();
+        std::env::set_var(THREADS_ENV, &f);
+        crate::timings::reset();
+        crate::timings::start("test");
+        let sum = || (0..100_000u64).into_par_iter().map(|i| i * i % 7919).sum::<u64>();
+        let serial: u64 = (0..100_000u64).map(|i| i * i % 7919).sum();
+        let outer = crate::timings::phase("the job's targets");
+        // A target begins on 3; its grant lowered to 1 while it runs: it stays on 3 to its end.
+        let (began, inner, ended, said, s) = on_grant(|| {
+            let _p = crate::timings::phase("a target's work");
+            let began = rayon::current_num_threads();
+            std::fs::write(&f, "1").unwrap();
+            let inner = on_grant(rayon::current_num_threads);
+            (began, inner, rayon::current_num_threads(), in_force(), sum())
+        });
+        assert_eq!((began, inner, ended, said, s), (3, 3, 3, Some(3), serial));
+        assert_eq!(in_force(), None, "between targets");
+        // The next target: on the 1 (the shrink taken at the safe point); then 5 (a grow).
+        assert_eq!(on_grant(|| (rayon::current_num_threads(), sum())), (1, serial));
+        std::fs::write(&f, "5").unwrap();
+        assert_eq!(on_grant(|| (rayon::current_num_threads(), sum())), (5, serial));
+        drop(outer);
+        {
+            let _after = crate::timings::phase("after the targets");
+        }
+        // (The target's phase the main thread's, under the one open as it began; the main thread
+        // its own again after.)
+        let r = crate::timings::snapshot(true).unwrap();
+        let names: Vec<(&str, bool)> = r.phases.iter().map(|p| (p.name.as_str(), p.background)).collect();
+        assert_eq!(names, [("the job's targets", false), ("after the targets", false)], "{:?}", r.phases);
+        assert_eq!(r.phases[0].sub.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["a target's work"]);
+        // Without the file: the job's own pool.
+        std::env::remove_var(THREADS_ENV);
+        assert_eq!(on_grant(rayon::current_num_threads), rayon::current_num_threads());
+        assert_eq!(on_grant(in_force), None);
+    }
 
     /// A run past the bound on its gaps says so; one within it, nothing.
     #[test]

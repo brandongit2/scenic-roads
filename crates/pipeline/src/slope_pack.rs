@@ -272,24 +272,25 @@ pub struct Pyramid<'a> {
 /// The levels under a pyramid's tile whose children are made in parallel: 64 subtrees below them.
 pub const PAR_LEVELS: u8 = 3;
 
-/// The most threads a pyramid's build uses (`pool`): the job's (RAYON_NUM_THREADS) up to this.
+/// The most threads a pyramid's build uses (`on_pool`): its target's up to this.
 pub const THREADS: usize = 16;
 
-/// The pool a pyramid's build runs on: the job's threads, at most `THREADS`.
-fn pool() -> &'static rayon::ThreadPool {
+/// A pyramid's build on the threads its target runs on (its job's grant now:
+/// crate::control::on_grant), at most `THREADS`: past them, on a pool `THREADS` wide. (Not a pool
+/// made at the job's first target and kept: a re-grant is taken at the next target, task #948.)
+fn on_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    if rayon::current_num_threads() <= THREADS {
+        return f();
+    }
     static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
-    POOL.get_or_init(|| {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(rayon::current_num_threads().clamp(1, THREADS))
-            .build()
-            .expect("a pyramid's thread pool")
-    })
+    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(THREADS).build().expect("a pyramid's thread pool"))
+        .install(f)
 }
 
 impl Pyramid<'_> {
     /// Tile (z, x, y) and those under it among `tiles` (none past `MAX_Z`); its quadrant.
     pub fn tile(&self, z: u8, x: u32, y: u32) -> Option<Vec<Px>> {
-        pool().install(|| self.node(z, x, y, z + PAR_LEVELS))
+        on_pool(|| self.node(z, x, y, z + PAR_LEVELS))
     }
 
     /// `tile`: its children in parallel above zoom `par_until`, one after another from it.
@@ -322,7 +323,7 @@ impl Pyramid<'_> {
 
 /// The most memory (bytes) a pyramid's build holds working, beyond the tiles it stores (`out`) and
 /// what `own` keeps, from its bounds: a call's tile `top`, its tiles to `bottom`. Each thread of
-/// `pool` (at most `THREADS`; the calling thread waits) works on one chain at a time below the parallel
+/// `on_pool` (at most `THREADS`) works on one chain at a time below the parallel
 /// levels (`PAR_LEVELS`), each tile of it holding its children's quadrants (4), and one tile's
 /// making (`MAKING`); the tiles of the parallel levels are each made once, each holding its
 /// children's quadrants while it waits.
