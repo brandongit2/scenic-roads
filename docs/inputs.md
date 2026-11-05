@@ -1551,8 +1551,9 @@ is a loose file, read as before. The producers pack as they write the index (`gr
 `label` (the map's name for it), `datum` (what its depths are below, in words), optionally `band_m`
 (ground metres it's feathered in over where it ends in the water), `intertidal` (its positive values
 are drying heights), `datum_exact` (false: not corrected to the others' datum, so it fills gaps only,
-hard-edged), `rivers` (its depths are below the water's own surface wherever it has them, not a
-fixed level's: drawn in the basemap's rivers and lakes too), `estimated` (every cell an estimate:
+hard-edged), `rivers` (drawn in the basemap's rivers too: its depths there are below the river's own
+surface, not a fixed level's), `lakes` (drawn in the basemap's lakes too: its depths there are
+below the lake's own surface), `estimated` (every cell an estimate:
 classed so, painted after every survey and filling only what none has) and `notice` (a
 notice its licence asks every map showing its data to carry: shown in full in the map's © Credits,
 under a "Depth:" line naming every source's `label` and "Not for navigation."; nothing floats over
@@ -1581,9 +1582,12 @@ range in `at` for each file it names (`src-index`); two of one `code` (`src-role
 follow the St. Lawrence up to Montréal: NONNA-100 has values there), `bluetopo` (local mean sea
 level by VDatum, which covers only the tidal reaches) and the SHOM grids (mean sea level, in the
 estuaries' tidal reaches). The others' depths inland are heights on a fixed level (GEBCO, CRM,
-EMODnet) or a lake's own, so they stay out of rivers (and a sea source out of lakes). In a lake, a
-`rivers` source is a survey on the lake's own surface (NONNA in the St. Lawrence's fluvial lakes,
-Lac Saint-Louis and Lac Saint-Pierre among them), so it wins over GLOBathy's estimated bowl.
+EMODnet) or a lake's own, so they stay out of rivers. `lakes = true` is staged for `nonna-100` and
+`nonna-10` alone: their stations' mean water level is the lake's own surface where CHS charts a
+lake (the St. Lawrence's fluvial lakes, Lac Saint-Louis and Lac Saint-Pierre among them; the Great
+Lakes, its level within a metre of GLERL's means), so a survey there wins over GLOBathy's
+estimated bowl. BlueTopo's and SHOM's mean sea level isn't a lake's surface (their topo-bathymetry
+gives a coastal pond's bed as a height above the sea), so they stay out of lakes.
 
 A chunked run (`chunked.py`) fetches a chunk, produces it, packs it, tars its packs over SSH into the NAS's
 `sources/fetched/<id>/`, compares each file's size there and deletes the chunk here; each chunk's

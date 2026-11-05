@@ -3,8 +3,8 @@
 //! flattens it (crate::terrain_water).
 //!
 //! 1. Each source is sampled onto the block (crate::depth::grids): depth, the zoom of the grid each
-//!    pixel is from, its chart low water. A sea source is drawn on the sea, a lake source in lakes,
-//!    and a source whose depths are below the water's own surface in rivers and lakes too
+//!    pixel is from, its chart low water. A sea source is drawn on the sea (and in rivers and lakes
+//!    where declared so: its depths there below their own surface), a lake source in lakes
 //!    (`Source::drawn_in`).
 //! 2. Surveys are painted coarse to fine, then the estimates, which only fill what no survey has (a
 //!    survey beats an estimate wherever both cover water). A pixel past its source's zoom shows the
@@ -15,10 +15,9 @@
 //!    across a source whose datum isn't corrected to the others', which only fills gaps).
 //! 3. The water decides the shore: positive values stay as drying heights only where an intertidal
 //!    source gives them (else 0, and at most `DRY_MAX`); water with no data near data is filled,
-//!    falling linearly to 0 at the shore, from data of the same water body within `GAP_M`; the land
-//!    keeps a `BLEED_PX` band of the nearest water's value (≥ 0), class `C_NONE`, which the map
-//!    doesn't draw (it reaches from the water's own data: web/src/depthgrid.ts); a lake with no data
-//!    of its own stays empty.
+//!    falling linearly to 0 at the shore, from data within `GAP_M` reached through the same water
+//!    body (never across a dike or a spit); a lake with no data of its own stays empty. The land has
+//!    no depth (the map reaches past the water's data itself: web/src/depthgrid.ts).
 //! 4. A pixel above its chart's low water (an intertidal source's, in the sea) dries at low tide.
 //! 5. A tile is kept when one of its water pixels is a source's data of the tile's zoom (the
 //!    source painted there, not one feathered in under half nor a gap filled from it), so no tile
@@ -37,8 +36,6 @@ use det::Det;
 pub const PAD: usize = 32;
 /// A block's tiles a side.
 pub const BLOCK: u32 = 8;
-/// The land's band of the nearest water's value (pixels).
-pub const BLEED_PX: f32 = 3.0;
 /// Drying heights above this (m) are land.
 pub const DRY_MAX: f32 = 20.0;
 /// How far water without data is filled from data (ground metres).
@@ -280,22 +277,13 @@ pub fn compose(
         let _p = crate::timings::sub("filling gaps");
         fill(&mut c, &mut k, water, w, h, gpx);
     }
-    let (dl, near) = nearest(&water.water, w, h);
-    for i in 0..n {
-        if water.water[i] {
-            continue;
-        }
-        let j = near[i] as usize;
-        c[i] = if dl[i] <= BLEED_PX && j < n && c[j].is_finite() { c[j].max(0.0) } else { f32::NAN };
-        k[i] = C_NONE;
-    }
     let mut out = Composed { depth: vec![NODATA; n], class: vec![C_NONE; n], zoom: zz, water: water.water.clone() };
     for i in 0..n {
-        if c[i].is_finite() {
-            out.depth[i] = c[i];
-        }
         if !water.water[i] {
             continue;
+        }
+        if c[i].is_finite() {
+            out.depth[i] = c[i];
         }
         let dries = water.lake[i] == 0
             && !water.is_river(i)
@@ -310,30 +298,69 @@ pub fn compose(
     Ok(Some(out))
 }
 
-/// Water without data near data: filled from the nearest data of the same water body, falling
-/// linearly to 0 at the shore, within `GAP_M`; a lake with no data of its own stays empty (a river
-/// is filled from a river's data alone).
+/// Water without data near data: filled from the nearest data reached through the same water body
+/// (a gap across a dike, a spit or another body's shore from data is never filled from it: the
+/// Bassin de La Prairie beside the Seaway, task #963), falling linearly to 0 at the shore, within
+/// `GAP_M`; a lake with no data of its own stays empty (a river is filled from a river's data alone).
 fn fill(c: &mut [f32], k: &mut [u8], water: &Water, w: usize, h: usize, gpx: f32) {
+    use std::cmp::Reverse;
     let n = w * h;
     let g = (GAP_M / gpx).clamp(2.0, (4 * PAD) as f32);
-    let valid: Vec<bool> = (0..n).map(|i| c[i].is_finite() && water.water[i]).collect();
-    let (dv, iv) = nearest(&valid, w, h);
     let land: Vec<bool> = water.water.iter().map(|x| !x).collect();
     let (dl, _) = nearest(&land, w, h);
-    let lakes_with: std::collections::HashSet<u32> =
-        (0..n).filter(|&i| valid[i] && water.lake[i] > 0).map(|i| water.lake[i]).collect();
+    let gap: Vec<bool> = (0..n).map(|i| water.water[i] && !c[i].is_finite() && dl[i] <= g).collect();
+    let same = |i: usize, j: usize| water.lake[j] == water.lake[i] && water.is_river(j) == water.is_river(i);
+    // (Dijkstra over the gaps, 8-connected, from the data beside them: each gap's distance through
+    // its body's water to its nearest data, and which it is; ties go to the lower index.)
+    let mut dv = vec![f32::INFINITY; n];
+    let mut iv = vec![u32::MAX; n];
+    let mut heap = std::collections::BinaryHeap::new();
+    let steps = |i: usize| {
+        let (x, y) = ((i % w) as i64, (i / w) as i64);
+        [
+            (-1i64, 0i64, 1f32),
+            (1, 0, 1.0),
+            (0, -1, 1.0),
+            (0, 1, 1.0),
+            (-1, -1, std::f32::consts::SQRT_2),
+            (1, -1, std::f32::consts::SQRT_2),
+            (-1, 1, std::f32::consts::SQRT_2),
+            (1, 1, std::f32::consts::SQRT_2),
+        ]
+        .into_iter()
+        .filter_map(move |(dx, dy, cost)| {
+            let (nx, ny) = (x + dx, y + dy);
+            (nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h)
+                .then(|| (ny as usize * w + nx as usize, cost))
+        })
+    };
     for i in 0..n {
-        if !water.water[i] || c[i].is_finite() || dv[i] > g || dl[i] > g {
+        if water.water[i] && c[i].is_finite() && steps(i).any(|(j, _)| gap[j] && same(i, j)) {
+            dv[i] = 0.0;
+            iv[i] = i as u32;
+            heap.push(Reverse((0u32, i as u32)));
+        }
+    }
+    while let Some(Reverse((bits, i))) = heap.pop() {
+        let (d, i) = (f32::from_bits(bits), i as usize);
+        if d > dv[i] {
+            continue;
+        }
+        for (j, cost) in steps(i) {
+            let nd = d + cost;
+            if nd <= g && nd < dv[j] && gap[j] && same(i, j) {
+                dv[j] = nd;
+                iv[j] = iv[i];
+                // (Non-negative floats order as their bits.)
+                heap.push(Reverse((nd.to_bits(), j as u32)));
+            }
+        }
+    }
+    for i in 0..n {
+        if !gap[i] || iv[i] == u32::MAX {
             continue;
         }
         let j = iv[i] as usize;
-        if j >= n
-            || water.lake[j] != water.lake[i]
-            || water.is_river(j) != water.is_river(i)
-            || (water.lake[i] > 0 && !lakes_with.contains(&water.lake[i]))
-        {
-            continue;
-        }
         // (dl: to the nearest land pixel's centre, where the depth is 0.)
         let t = dl[i] / (dl[i] + dv[i]).max(1e-6);
         c[i] = c[j] * t;
@@ -368,4 +395,41 @@ pub fn tiles(b: Block, c: &Composed) -> Vec<(u32, u32, Vec<f32>, Vec<u8>)> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Task #963: a gap is filled only from data reached through its own water body: the sea beyond
+    /// a dike (a land column) and a lake beside the data's water stay empty, the sea's own gap
+    /// between the data and the dike is filled, falling to the shore.
+    #[test]
+    fn a_gap_is_filled_through_its_own_water_alone() {
+        // 12 × 5: x 0–1 data, 2–5 the sea without, 6 the dike, 7–9 the sea beyond, 10–11 a lake.
+        let (w, h) = (12, 5);
+        let mut water = Water::land(w * h);
+        let mut c = vec![f32::NAN; w * h];
+        let mut k = vec![C_NONE; w * h];
+        for y in 1..h - 1 {
+            for x in (0..w).filter(|&x| x != 6) {
+                let i = y * w + x;
+                water.water[i] = true;
+                water.lake[i] = u32::from(x >= 10);
+                if x < 2 {
+                    c[i] = -10.0;
+                    k[i] = C_NATIVE;
+                }
+            }
+        }
+        fill(&mut c, &mut k, &water, w, h, 1.0);
+        let at = |x: usize| (c[2 * w + x], k[2 * w + x]);
+        for x in 2..6 {
+            let (v, cl) = at(x);
+            assert!(cl == C_FILLED && v < 0.0 && v > -10.0, "the sea's own gap at {x}: {v} {cl}");
+        }
+        for x in (7..10).chain(10..12) {
+            assert!(at(x).0.is_nan() && at(x).1 == C_NONE, "across the dike or in the lake at {x}: {:?}", at(x));
+        }
+    }
 }

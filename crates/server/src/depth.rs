@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn the_floor_is_the_surface_less_the_depth_on_the_water_alone() {
         // A lake at 120 m, 8 m deep; the land beside it (class none) keeps its height even where
-        // the depth's band reaches it.
+        // a depth is stored on it.
         let mut e = vec![120.0, 120.0, 135.0, 140.0];
         let d = vec![-8.0, pipeline::depth::NODATA, 0.5, -3.0];
         let c = vec![

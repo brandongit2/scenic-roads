@@ -95,10 +95,6 @@ pub const PACK_PROPS: [&str; 2] = ["pack", "at"];
 /// keys as one without them.
 pub const UNREAD_PROPS: [&str; 1] = ["zoom_file"];
 
-/// What the pin of a source below the water's own surface ends with: it's drawn in lakes too (task
-/// #963), so the depth targets it meets, and only those, are made again.
-pub const OWN_SURFACE_PIN: &str = " +lakes";
-
 /// A depth source, as its declaration and index say.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Source {
@@ -113,17 +109,18 @@ pub struct Source {
     pub intertidal: bool,
     /// On the others' datum (false: it fills gaps only, hard-edged).
     pub datum_exact: bool,
-    /// Its depths are below the water's own surface wherever it has them (a river's, a lake's), not a
-    /// fixed level's: drawn in rivers and lakes too (the declaration's `rivers`).
-    pub own_surface: bool,
+    /// Drawn in rivers too: its depths there are below the river's own surface, not a fixed level's.
+    pub rivers: bool,
+    /// A sea source drawn in lakes too: its depths there are below the lake's own surface (a mean
+    /// water level from stations on it), not the sea's (task #963).
+    pub lakes: bool,
     /// Its every cell an estimate (class `C_ESTIMATED`), not a measurement.
     pub estimated: bool,
     pub label: String,
     pub datum: String,
     pub notice: Option<String>,
     pub grids: Vec<Grid>,
-    /// What keys name of it: its id and the digest of its declaration and index (and
-    /// `OWN_SURFACE_PIN` for one below the water's own surface).
+    /// What keys name of it: its id and the digest of its declaration and index.
     pub pin: String,
 }
 
@@ -180,7 +177,6 @@ impl Source {
                 packed,
             });
         }
-        let own_surface = p.get("rivers").and_then(|v| v.as_bool()).unwrap_or(false);
         // (Coarse first: a finer grid's cells win where grids overlap.)
         grids.sort_by(|a, b| a.zoom.cmp(&b.zoom).then(a.file.cmp(&b.file)));
         Ok(Source {
@@ -190,24 +186,25 @@ impl Source {
             band_m: p.get("band_m").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
             intertidal: p.get("intertidal").and_then(|v| v.as_bool()).unwrap_or(false),
             datum_exact: p.get("datum_exact").and_then(|v| v.as_bool()).unwrap_or(true),
-            own_surface,
+            rivers: p.get("rivers").and_then(|v| v.as_bool()).unwrap_or(false),
+            lakes: p.get("lakes").and_then(|v| v.as_bool()).unwrap_or(false),
             estimated: p.get("estimated").and_then(|v| v.as_bool()).unwrap_or(false),
             label: s.param_str("label")?.to_string(),
             datum: s.param_str("datum")?.to_string(),
             notice: p.get("notice").and_then(|v| v.as_str()).map(str::to_string),
             grids,
-            pin: format!("{} {}{}", s.id, unpacked_digest(s), if own_surface { OWN_SURFACE_PIN } else { "" }),
+            pin: format!("{} {}", s.id, unpacked_digest(s)),
         })
     }
 
     /// Whether it's drawn in a pixel of a river (`river`), else of a lake (`lake`), else of the sea:
-    /// a source whose depths are below the water's own surface in rivers and lakes as on the sea, a
-    /// lake source in lakes, a sea source on the sea.
+    /// in a river a source declared `rivers`, in a lake a lake source or one declared `lakes`, on
+    /// the sea a sea source.
     pub fn drawn_in(&self, river: bool, lake: bool) -> bool {
         if river {
-            self.own_surface
+            self.rivers
         } else if lake {
-            self.lake || self.own_surface
+            self.lake || self.lakes
         } else {
             !self.lake
         }
@@ -1006,17 +1003,20 @@ pub(crate) mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
-    /// Where a source is drawn (task #963): a sea source on the sea, a lake source in lakes, one
-    /// below the water's own surface everywhere.
+    /// Where a source is drawn (task #963): a sea source on the sea, in rivers and lakes only as
+    /// declared; a lake source in lakes.
     #[test]
     fn a_source_is_drawn_in_its_waters() {
         let mut s = source(Vec::new());
         // (river, lake): a river's pixel, a lake's, the sea's.
         let at = |s: &Source| [s.drawn_in(true, false), s.drawn_in(false, true), s.drawn_in(false, false)];
         assert_eq!(at(&s), [false, false, true], "a sea source");
-        s.own_surface = true;
-        assert_eq!(at(&s), [true, true, true], "below the water's own surface");
-        s.own_surface = false;
+        s.rivers = true;
+        assert_eq!(at(&s), [true, false, true], "declared `rivers` (BlueTopo's mean sea level: not a lake's)");
+        s.lakes = true;
+        assert_eq!(at(&s), [true, true, true], "declared `lakes` too (NONNA's mean water level)");
+        s.rivers = false;
+        s.lakes = false;
         s.lake = true;
         assert_eq!(at(&s), [false, true, false], "a lake source");
     }
@@ -1140,7 +1140,8 @@ pub(crate) mod tests {
             band_m: 0.0,
             intertidal: false,
             datum_exact: true,
-            own_surface: false,
+            rivers: false,
+            lakes: false,
             estimated: false,
             label: "T".into(),
             datum: "MSL".into(),
@@ -1507,16 +1508,6 @@ pub(crate) mod tests {
         assert_eq!(loose.pin, src(r#","zoom_file":"a.zoom.tif""#).pin, "an unread property keys as without");
         assert_eq!(src(r#","hash":"9999""#).pin == loose.pin, false, "the grid's own change changes the pin");
         let g = &packed.grids[0];
-        // (Task #963: a source below the water's own surface is drawn in lakes too, its pin so
-        // marked; the others' pins are as they were.)
-        assert!(!loose.own_surface && !loose.pin.ends_with(OWN_SURFACE_PIN));
-        let own = {
-            let d = crate::inputs::sources::parse(format!("{decl}rivers = true\n").as_bytes()).unwrap();
-            let index = crate::inputs::sources::parse_index(idx("").as_bytes()).unwrap();
-            let s = crate::inputs::sources::Source { id: "s".into(), data: d.data, keyed: "k".into(), index };
-            Source::from_declared(&store::nasfs::NasRoot::local_for_test(Path::new("/r")), &s).unwrap()
-        };
-        assert!(own.own_surface && own.pin.ends_with(OWN_SURFACE_PIN));
         assert_eq!(g.file, store::nasfs::NasPath::local_for_test(Path::new("/r/sources/fetched/s/a.tif")));
         let p = g.packed.as_ref().unwrap();
         assert_eq!(p.pack.unchecked_path(), Path::new("/r/sources/fetched/s/6-1-2.00ff.tar"));

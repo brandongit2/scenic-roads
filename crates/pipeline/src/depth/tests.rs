@@ -72,7 +72,8 @@ fn sources_deep(dir: &Path, deep: f32) -> Vec<Source> {
             band_m: 2000.0,
             intertidal: false,
             datum_exact: true,
-            own_surface: false,
+            rivers: false,
+            lakes: false,
             estimated: false,
             label: format!("S{code}"),
             datum: "MSL".into(),
@@ -410,7 +411,7 @@ fn a_river_meeting_the_sea_or_a_lake_changes_nothing_without_a_value() {
 fn a_river_takes_the_sources_drawn_in_rivers() {
     let d = tempfile::tempdir().unwrap();
     let mut srcs = sources(d.path());
-    srcs[0].own_surface = true;
+    srcs[0].rivers = true;
     let (out, _) =
         packs(&srcs, &WithMore { river: true, narrow: false }, &store::nasfs::NasRoot::local_for_test(d.path()));
     let q = (3, T.0 >> 3, T.1 >> 3);
@@ -449,9 +450,9 @@ fn an_estimated_source_is_classed_so() {
     assert_eq!(class_at(&c, px, py), C_ESTIMATED | (3 << 4));
 }
 
-/// Task #963: a survey beats an estimate wherever both cover water. A source below the water's own
-/// surface (NONNA's mean water level) is drawn in a lake too, and an estimate there, however fine,
-/// only fills what it lacks; without it, the estimate is the lake's depth.
+/// Task #963: a survey beats an estimate wherever both cover water. A sea source declared `lakes`
+/// (NONNA's mean water level) is drawn in a lake too, and an estimate there, however fine, only
+/// fills what it lacks; without it, the estimate is the lake's depth.
 #[test]
 fn a_survey_beats_an_estimate_in_a_lake() {
     let d = tempfile::tempdir().unwrap();
@@ -466,7 +467,7 @@ fn a_survey_beats_an_estimate_in_a_lake() {
     let (out, _) = packs(&srcs, &Fixture, &store::nasfs::NasRoot::local_for_test(&d.path().join("a")));
     let (v, k) = lake_z8(&out);
     assert!((-3.1..=-1.9).contains(&v) && k == C_ESTIMATED | (3 << 4), "the estimate alone: {v} {k}");
-    srcs[0].own_surface = true;
+    srcs[0].lakes = true;
     let (out, _) = packs(&srcs, &Fixture, &store::nasfs::NasRoot::local_for_test(&d.path().join("b")));
     let (v, k) = lake_z8(&out);
     assert!((v + 50.0).abs() < 0.6 && k == C_NATIVE | (1 << 4), "the survey: {v} {k}");

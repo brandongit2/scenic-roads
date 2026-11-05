@@ -230,18 +230,29 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
 }
 
 /// The fields of a depth source's `params` (docs/inputs.md §6.10, crate::depth::sources).
-pub const DEPTH_PARAMS: [&str; 10] =
-    ["code", "water", "label", "datum", "band_m", "intertidal", "datum_exact", "rivers", "estimated", "notice"];
+pub const DEPTH_PARAMS: [&str; 11] = [
+    "code",
+    "water",
+    "label",
+    "datum",
+    "band_m",
+    "intertidal",
+    "datum_exact",
+    "rivers",
+    "lakes",
+    "estimated",
+    "notice",
+];
 
 /// What's wrong with a depth source's `[data]` (docs/inputs.md §6.10): an index (its depth grids),
 /// and its params: `code` (1–15, the source byte the class tiles carry), `water` (`sea` or `lake`:
 /// where it's drawn), `label` (a short name for the map's popup), `datum` (what its depths are
 /// below, in words), and optionally `band_m` (the ground metres it's feathered in over, ≥ 0),
 /// `intertidal` (its positive values are drying heights), `datum_exact` (false: its datum isn't
-/// corrected to the others', so it fills gaps only, hard-edged), `rivers` (its depths are below the
-/// water's own surface: drawn in rivers and lakes too), `estimated` (every cell an estimate, filling
-/// only what no survey has) and `notice`
-/// (a notice its licence asks every map showing it to carry).
+/// corrected to the others', so it fills gaps only, hard-edged), `rivers` (drawn in rivers too: its
+/// depths are below a river's own surface there), `lakes` (drawn in lakes too: its depths there are
+/// below the lake's own surface), `estimated` (every cell an estimate, filling only what no survey
+/// has) and `notice` (a notice its licence asks every map showing it to carry).
 fn depth_params(d: &Data) -> Vec<String> {
     let mut why = Vec::new();
     let p = &d.params;
@@ -262,7 +273,7 @@ fn depth_params(d: &Data) -> Vec<String> {
     if p.get("band_m").is_some_and(|v| !v.as_f64().is_some_and(|b| b >= 0.0)) {
         why.push("`params.band_m` isn't a number ≥ 0".into());
     }
-    for k in ["intertidal", "datum_exact", "rivers", "estimated"] {
+    for k in ["intertidal", "datum_exact", "rivers", "lakes", "estimated"] {
         if p.get(k).is_some_and(|v| !v.is_boolean()) {
             why.push(format!("`params.{k}` isn't true or false"));
         }
