@@ -546,8 +546,14 @@ impl Folder {
 }
 
 /// GLOBathy's grids of z6 tile `t`: each HydroLAKES lake `lakes` with a maximum depth in `dmax`
-/// painted as its bowl into the z8 tiles of `t` it meets (a grid each, cropped to its data).
-pub fn globathy_grids(lakes: &[(u64, Rings)], dmax: &HashMap<u64, f64>, t: (u32, u32)) -> Vec<Canvas> {
+/// painted as its bowl into the z8 tiles of `t` it meets (a grid each, cropped to its data), each
+/// given to `sink` as it's made.
+pub fn globathy_grids(
+    lakes: &[(u64, Rings)],
+    dmax: &HashMap<u64, f64>,
+    t: (u32, u32),
+    sink: &mut dyn FnMut(Canvas) -> Result<()>,
+) -> Result<()> {
     let (z, pz) = Method::Globathy.zooms();
     let px: Vec<(f64, Rings, [f64; 4])> = lakes
         .iter()
@@ -562,7 +568,6 @@ pub fn globathy_grids(lakes: &[(u64, Rings)], dmax: &HashMap<u64, f64>, t: (u32,
         .collect();
     let mut bowls: HashMap<usize, Option<Bowl>> = HashMap::new();
     let k = pz - 6;
-    let mut out = Vec::new();
     for ty in t.1 << k..(t.1 + 1) << k {
         for tx in t.0 << k..(t.0 + 1) << k {
             let mut c = Canvas::tile(z, pz, tx, ty);
@@ -575,10 +580,12 @@ pub fn globathy_grids(lakes: &[(u64, Rings)], dmax: &HashMap<u64, f64>, t: (u32,
                     c.paint(rings, b, *d);
                 }
             }
-            out.extend(c.cropped());
+            if let Some(c) = c.cropped() {
+                sink(c)?;
+            }
         }
     }
-    out
+    Ok(())
 }
 
 // ---- the small lakes -----------------------------------------------------------------------------
@@ -993,20 +1000,21 @@ pub fn small_lakes(
 }
 
 /// The small lakes' grids of z6 tile `t`, a z10 tile at a time (`small_lakes`, `small_grid`): its
-/// z14 tiles and a ring of one read from `water`, HydroLAKES' lakes `hl` (lon/lat) left out;
-/// `progress` told each z10 tile done.
+/// z14 tiles and a ring of one read from `water`, HydroLAKES' lakes `hl` (lon/lat) left out; each
+/// grid given to `sink` as it's made (64 MB of floats each: a z6 tile has 256), `progress` told
+/// each z10 tile done.
 pub fn small_grids(
     water: &dyn crate::terrain_water::WaterSource,
     hl: &[(u64, Rings)],
     terrain: &dyn Terrain,
     t: (u32, u32),
     counts: &mut Counts,
+    sink: &mut dyn FnMut(Canvas) -> Result<()>,
     progress: &dyn Fn(u64, u64),
-) -> Result<Vec<Canvas>> {
+) -> Result<()> {
     let hl: Vec<geos::Geometry> = hl.iter().filter_map(|(_, r)| polygon(&to_pixels(r, SMALL_Z)).ok()).collect();
     let (k, f) = (10 - 6, 1u32 << (SMALL_Z - 10));
     let n = 1i64 << SMALL_Z;
-    let mut out = Vec::new();
     let pieces: Vec<(u32, u32)> =
         (t.1 << k..(t.1 + 1) << k).flat_map(|y| (t.0 << k..(t.0 + 1) << k).map(move |x| (x, y))).collect();
     for (i, &(px, py)) in pieces.iter().enumerate() {
@@ -1022,10 +1030,12 @@ pub fn small_grids(
         let read: Vec<((u32, u32), Vec<crate::terrain_water::Poly>)> =
             tiles.iter().zip(polys).map(|(&(_, x, y), p)| ((x, y), p)).collect();
         let lakes = small_lakes(&read, &hl, terrain, (px, py), counts)?;
-        out.extend(small_grid(&lakes, (px, py)));
+        if let Some(c) = small_grid(&lakes, (px, py)) {
+            sink(c)?;
+        }
         progress(i as u64 + 1, pieces.len() as u64);
     }
-    Ok(out)
+    Ok(())
 }
 
 /// The small lakes' grid of z10 tile `t`: each lake's bowl (each part of it its own, to the same
@@ -1060,39 +1070,62 @@ pub struct Packed {
 /// The pack's first member, its index.
 pub const INDEX: &str = "index.json";
 
-/// A pack of source `id`'s `grids`: a tar (ustar, its headers fixed: crate::agent::histarchive's)
-/// whose first member, `INDEX`, lists them (`Packed`), each grid then a GeoTIFF
-/// (buildstore::geotiff::write_f32_mercator), in order.
-pub fn pack(id: &str, grids: &[Canvas]) -> Result<Vec<u8>> {
-    let mut files: Vec<(String, Vec<u8>, &Canvas)> = Vec::with_capacity(grids.len());
-    for g in grids {
-        let name = format!("{id}-{}-{}-{}.tif", g.zoom, g.c0, g.r0);
-        files.push((name, crate::geotiff::write_f32_mercator(g.zoom, g.c0, g.r0, g.w as u32, g.h as u32, &g.v)?, g));
+/// A grid encoded for its pack, as made (its floats not kept: `globathy_grids`' and `small_grids`'
+/// sinks): its file's name, zoom, first column and row, size, and its GeoTIFF
+/// (buildstore::geotiff::write_f32_mercator).
+pub struct Tif {
+    pub file: String,
+    pub zoom: u8,
+    pub c0: i64,
+    pub r0: i64,
+    pub w: u32,
+    pub h: u32,
+    pub bytes: Vec<u8>,
+}
+
+impl Tif {
+    /// Source `id`'s grid `g`.
+    pub fn of(id: &str, g: &Canvas) -> Result<Tif> {
+        let (w, h) = (g.w as u32, g.h as u32);
+        Ok(Tif {
+            file: format!("{id}-{}-{}-{}.tif", g.zoom, g.c0, g.r0),
+            zoom: g.zoom,
+            c0: g.c0,
+            r0: g.r0,
+            w,
+            h,
+            bytes: crate::geotiff::write_f32_mercator(g.zoom, g.c0, g.r0, w, h, &g.v)?,
+        })
     }
+}
+
+/// A pack of `grids`: a tar (ustar, its headers fixed: crate::agent::histarchive's) whose first
+/// member, `INDEX`, lists them (`Packed`), each grid then its GeoTIFF, in order.
+pub fn pack(grids: &[Tif]) -> Result<Vec<u8>> {
     // (The index's own length sets where the grids start: found by trying, as it settles.)
     let mut index_len = 0usize;
     loop {
         let mut at = 512 + index_len.div_ceil(512) * 512;
-        let list: Vec<Packed> = files
+        let list: Vec<Packed> = grids
             .iter()
-            .map(|(name, b, g)| {
+            .map(|g| {
                 let p = Packed {
-                    file: name.clone(),
+                    file: g.file.clone(),
                     zoom: g.zoom,
                     c0: g.c0,
                     r0: g.r0,
-                    w: g.w as u32,
-                    h: g.h as u32,
-                    at: [at as u64 + 512, b.len() as u64],
+                    w: g.w,
+                    h: g.h,
+                    at: [at as u64 + 512, g.bytes.len() as u64],
                 };
-                at += 512 + b.len().div_ceil(512) * 512;
+                at += 512 + g.bytes.len().div_ceil(512) * 512;
                 p
             })
             .collect();
         let index = serde_json::to_vec(&list)?;
         if index.len().div_ceil(512) == index_len.div_ceil(512) && index_len > 0 {
             let mut members = vec![(INDEX.to_string(), index)];
-            members.extend(files.into_iter().map(|(n, b, _)| (n, b)));
+            members.extend(grids.iter().map(|g| (g.file.clone(), g.bytes.clone())));
             return crate::agent::histarchive::build(&members);
         }
         index_len = index.len();

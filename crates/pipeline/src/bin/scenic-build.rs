@@ -4986,7 +4986,13 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
                 }
                 let hl = &lakes[folder];
                 let mut counts = lk::Counts::new();
-                let grids = match m {
+                // (Each grid encoded as it's made: a z6 tile's floats would be gigabytes.)
+                let mut grids: Vec<lk::Tif> = Vec::new();
+                let mut sink = |g: lk::Canvas| -> Result<()> {
+                    grids.push(lk::Tif::of(id, &g)?);
+                    Ok(())
+                };
+                match m {
                     Method::Globathy => {
                         let ids = hl.iter().map(|(h, _)| *h).collect();
                         let dmax = {
@@ -4995,21 +5001,21 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
                         };
                         let _p = phase("shaping the lakes' bowls");
                         counts.insert("lakes with a maximum depth", dmax.len() as u64);
-                        lk::globathy_grids(hl, &dmax, (t.x, t.y))
+                        lk::globathy_grids(hl, &dmax, (t.x, t.y), &mut sink)?;
                     }
                     Method::LandSlope { .. } => {
                         let _p = phase("estimating the small lakes");
                         let water = water.as_ref().context("no basemap water")?;
                         let terrain = lk::HiPacks::new(out.root(), &out.manifest);
-                        lk::small_grids(water, hl, &terrain, (t.x, t.y), &mut counts, &|d, n| {
+                        lk::small_grids(water, hl, &terrain, (t.x, t.y), &mut counts, &mut sink, &|d, n| {
                             pipeline::agent::jobs::report(d, n, "z10 tiles")
-                        })?
+                        })?;
                     }
-                };
+                }
                 let name = lk::logical(id, (t.x, t.y));
                 if !grids.is_empty() {
                     let _p = phase("packing the grids");
-                    let bytes = lk::pack(id, &grids)?;
+                    let bytes = lk::pack(&grids)?;
                     out.put_bytes(&name, "tar", &bytes)?;
                     gone.retain(|g| *g != name);
                 }
