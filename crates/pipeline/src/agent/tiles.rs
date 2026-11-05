@@ -71,6 +71,80 @@ pub struct TerrainTiles {
     /// conversions as the roads': the accepted elevation and sources indexes' content names, and
     /// the sets (None: they can't be read now; the terrain's z6 tiles wait: their keys name them).
     sets: Option<(String, Option<std::sync::Arc<Vec<crate::terrain_zoom::Set>>>)>,
+    /// The terrain-deep targets and their levels' digests worked out so far (`deep`), by the
+    /// coverage's version and the declared sets they were worked out of, the latest `DEEP_KEPT`.
+    /// Shared by the copies, as `memo` is.
+    deep: std::sync::Arc<std::sync::Mutex<Vec<DeepKept>>>,
+}
+
+/// What `TerrainTiles::deep` keeps for a coverage version and the declared sets: the coverage's
+/// version (`Coverage::version`), the sets (held, so told apart by their pointer), the answers.
+type DeepKept = (String, std::sync::Arc<Vec<crate::terrain_zoom::Set>>, std::sync::Arc<DeepMemo>);
+
+/// The coverage versions `TerrainTiles::deep` keeps answers of: the whole coverage's, and a few
+/// regions' (their progress asks each its own). A version's answers are a few MB at most: an
+/// entry per z10 tile asked (a digest for a target), one per z6 tile.
+const DEEP_KEPT: usize = 16;
+
+/// The terrain-deep answers worked out of one coverage version and the declared sets (`Deep`).
+#[derive(Default)]
+pub struct DeepMemo {
+    /// By z10 tile: whether it's a target (crate::terrain_deep::is_target) and its levels' digest
+    /// (`Deep::coverage`; None: it has no levels).
+    tiles: std::sync::Mutex<HashMap<(u32, u32), (bool, Option<std::sync::Arc<str>>)>>,
+    /// By z6 tile: its targets (crate::terrain_deep::targets_in).
+    targets: std::sync::Mutex<HashMap<(u32, u32), std::sync::Arc<[(u32, u32)]>>>,
+}
+
+/// The terrain-deep targets and the coverage their keys name, of a coverage and the declared sets:
+/// each z10 tile's levels (crate::terrain_deep::levels, a polygon test on each of its z11–16
+/// tiles: ~85% of a plan's time, worked out per target and twice a plan, before task #965) worked
+/// out once for both and kept (`TerrainTiles::deep`).
+pub struct Deep<'a> {
+    pub cov: &'a crate::coverage::Coverage,
+    pub sets: std::sync::Arc<Vec<crate::terrain_zoom::Set>>,
+    memo: std::sync::Arc<DeepMemo>,
+}
+
+impl<'a> Deep<'a> {
+    /// Kept for as long as it lives (a job's: no agent's `TerrainTiles`).
+    pub fn new(cov: &'a crate::coverage::Coverage, sets: std::sync::Arc<Vec<crate::terrain_zoom::Set>>) -> Deep<'a> {
+        Deep { cov, sets, memo: Default::default() }
+    }
+
+    /// Z10 tile `t`'s answers, worked out once.
+    fn tile(&self, t: (u32, u32)) -> (bool, Option<std::sync::Arc<str>>) {
+        if let Some(v) = self.memo.tiles.lock().unwrap_or_else(|e| e.into_inner()).get(&t) {
+            return v.clone();
+        }
+        let lv = crate::terrain_deep::levels(self.cov, &self.sets, t);
+        let v = (
+            crate::terrain_deep::is_target_with(&self.sets, t, &lv),
+            (!lv.is_empty()).then(|| super::build::levels_digest(&lv).into()),
+        );
+        self.memo.tiles.lock().unwrap_or_else(|e| e.into_inner()).insert(t, v.clone());
+        v
+    }
+
+    /// The terrain-deep targets under z6 tile `t` (crate::terrain_deep::targets_in).
+    pub fn targets_in(&self, t: (u32, u32)) -> std::sync::Arc<[(u32, u32)]> {
+        if let Some(v) = self.memo.targets.lock().unwrap_or_else(|e| e.into_inner()).get(&t) {
+            return v.clone();
+        }
+        let v: std::sync::Arc<[(u32, u32)]> =
+            crate::terrain_deep::targets_under(&self.sets, t, |u| self.tile(u).0).into();
+        self.memo.targets.lock().unwrap_or_else(|e| e.into_inner()).insert(t, v.clone());
+        v
+    }
+
+    /// What a terrain-deep z10 tile `t`'s run reads of the coverage, as its keys name it: the tiles
+    /// of its levels (crate::terrain_deep::levels), digested (build::levels_digest).
+    pub fn coverage(&self, t: (u32, u32)) -> String {
+        match self.tile(t).1 {
+            Some(d) => d.to_string(),
+            None => super::build::levels_digest(&[]),
+        }
+    }
 }
 
 /// What the z6 tiles' and tree cover's keys name of the declared sources: the buildings source's
@@ -265,6 +339,32 @@ impl TerrainTiles {
             None => Some(std::sync::Arc::new(crate::terrain_zoom::test_world(12))),
             _ => None,
         }
+    }
+
+    /// The terrain-deep targets and their levels' digests of coverage `cov` and the declared sets
+    /// of the versions `m` names (`zoom_sets`), kept by both: worked out once for every plan and
+    /// key that asks while neither changes; None while the sets can't be read now.
+    pub fn deep<'a>(&self, m: &BTreeMap<String, String>, cov: &'a crate::coverage::Coverage) -> Option<Deep<'a>> {
+        let sets = self.zoom_sets(m)?;
+        let v = cov.version();
+        let mut all = self.deep.lock().unwrap_or_else(|e| e.into_inner());
+        let memo = match all.iter().position(|(c, s, _)| *c == v && std::sync::Arc::ptr_eq(s, &sets)) {
+            Some(i) => {
+                let e = all.remove(i);
+                let memo = e.2.clone();
+                all.push(e);
+                memo
+            }
+            None => {
+                if all.len() >= DEEP_KEPT {
+                    all.remove(0);
+                }
+                let memo = std::sync::Arc::new(DeepMemo::default());
+                all.push((v, sets.clone(), memo.clone()));
+                memo
+            }
+        };
+        Some(Deep { cov, sets, memo })
     }
 
     /// Holds `f` as the declared sets of the versions `m` names (tests).
@@ -671,6 +771,46 @@ mod tests {
     use super::*;
     use serde_json::json;
     use store::pack::PackWriter;
+
+    /// Task #965: the terrain-deep targets and their levels' digests as `deep` keeps them are the
+    /// plain functions' (crate::terrain_deep::targets_in, build::levels_digest of its levels),
+    /// worked out once for the copies and every plan while the coverage and the sets stay, again
+    /// when the sets change.
+    #[test]
+    fn deep_answers_are_the_plain_ones_kept_by_coverage_and_sets() {
+        let d = tempfile::tempdir().unwrap();
+        let cov = crate::coverage::Coverage::fixture(
+            &[crate::agent::recipes::Recipe {
+                id: "r".into(),
+                name: "R".into(),
+                outline: vec!["place:10.5,45.5,5".into()],
+            }],
+            None,
+            d.path(),
+        )
+        .unwrap();
+        let m = BTreeMap::new();
+        let mut tiles = TerrainTiles::default();
+        tiles.hold_zoom_sets(&m, crate::terrain_zoom::test_world(14));
+        let sets = tiles.zoom_sets(&m).unwrap();
+        let t6 = crate::terrain_zoom::tile_at(10.5, 45.5, 6);
+        let plain = crate::terrain_deep::targets_in(&sets, &cov, t6);
+        assert!(!plain.is_empty());
+        let copy = tiles.clone();
+        let dp = copy.deep(&m, &cov).unwrap();
+        assert_eq!(dp.targets_in(t6).to_vec(), plain);
+        for &t in plain.iter().chain([&(0, 0)]) {
+            let digest = super::super::build::levels_digest(&crate::terrain_deep::levels(&cov, &sets, t));
+            assert_eq!(dp.coverage(t), digest, "{t:?}");
+        }
+        // (Kept: the same answers' memo for the original and a later plan.)
+        assert!(std::sync::Arc::ptr_eq(&tiles.deep(&m, &cov).unwrap().memo, &dp.memo));
+        // New sets: worked out again.
+        tiles.hold_zoom_sets(&m, crate::terrain_zoom::test_world(12));
+        let dn = tiles.deep(&m, &cov).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&dn.memo, &dp.memo));
+        assert!(dn.targets_in(t6).is_empty(), "z12 everywhere: no deep target");
+    }
 
     /// A terrain pack of `tiles` (each tile's bytes: its z/x/y and `salt`) at its content name under
     /// `root`, as the manifest names it.

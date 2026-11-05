@@ -78,7 +78,12 @@ pub fn levels(
 
 /// Whether z10 tile `t` is a terrain-deep target: it has tiles of the band (`levels`).
 pub fn is_target(sets: &[crate::terrain_zoom::Set], cov: &crate::coverage::Coverage, t: (u32, u32)) -> bool {
-    native_zoom(sets, t) >= FIRST_Z && levels(cov, sets, t).iter().any(|(_, ts)| !ts.is_empty())
+    is_target_with(sets, t, &levels(cov, sets, t))
+}
+
+/// `is_target`, given z10 tile `t`'s `levels`.
+pub fn is_target_with(sets: &[crate::terrain_zoom::Set], t: (u32, u32), levels: &[(u8, Vec<(u32, u32)>)]) -> bool {
+    native_zoom(sets, t) >= FIRST_Z && levels.iter().any(|(_, ts)| !ts.is_empty())
 }
 
 /// The terrain-deep targets under z6 tile `t` (`is_target`).
@@ -87,13 +92,23 @@ pub fn targets_in(
     cov: &crate::coverage::Coverage,
     t: (u32, u32),
 ) -> Vec<(u32, u32)> {
+    targets_under(sets, t, |u| is_target(sets, cov, u))
+}
+
+/// `targets_in`, each z10 tile under z6 tile `t` told by `is_target` (the agent's, kept:
+/// agent::tiles::Deep).
+pub fn targets_under(
+    sets: &[crate::terrain_zoom::Set],
+    t: (u32, u32),
+    is_target: impl Fn((u32, u32)) -> bool,
+) -> Vec<(u32, u32)> {
     let k = PACK_Z - 6;
     if crate::terrain_zoom::finest(sets, 6, t.0, t.1) < FIRST_Z {
         return Vec::new();
     }
     (t.0 << k..(t.0 + 1) << k)
         .flat_map(|x| (t.1 << k..(t.1 + 1) << k).map(move |y| (x, y)))
-        .filter(|&u| is_target(sets, cov, u))
+        .filter(|&u| is_target(u))
         .collect()
 }
 

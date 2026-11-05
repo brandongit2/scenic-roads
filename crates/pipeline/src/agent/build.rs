@@ -10,7 +10,7 @@
 
 use super::nasread;
 use super::steps::{readiness, ready, Left, Ready, View};
-use super::tiles::{Reader, TerrainTiles, Tile, Unread};
+use super::tiles::{Deep, Reader, TerrainTiles, Tile, Unread};
 use crate::coverage::Coverage;
 use crate::dem::spacing::Fine;
 use crate::legacy::TileId;
@@ -1305,6 +1305,14 @@ pub fn z3_of(piece: &str) -> Option<String> {
 /// Terrain's and slope's targets (`TerrainTargets`) for the coverage and the build manifest `m`;
 /// `tiles`, the terrain packs' indexes the slope z6 tiles' keys read.
 pub fn terrain_slope_targets(x: &KeyCtx) -> TerrainTargets {
+    match x.memo {
+        Some(memo) => memo.1.get_or_init(|| terrain_slope_targets_kept(x)).clone(),
+        None => terrain_slope_targets_kept(x),
+    }
+}
+
+/// `terrain_slope_targets`, kept by `x.tiles` while every key is told.
+fn terrain_slope_targets_kept(x: &KeyCtx) -> TerrainTargets {
     let (cov, m, tiles) = (x.cov, x.m, x.tiles);
     // (Kept by `tiles` with what they're worked out from: the coverage's shapes, the terrain packs
     // and the mids by content, the basemap. A plan works them out again only when one changes; not
@@ -1398,14 +1406,14 @@ pub fn terrain_slope_targets_made(x: &KeyCtx) -> TerrainTargets {
     // past the base's zoom, keyed on what each reads; none while the fine datasets can't be read
     // (every terrain-hi key is `UNKNOWN` then: the z6 tiles wait).
     let mut deep: BTreeSet<(u32, u32)> = BTreeSet::new();
-    if let Some(sets) = tiles.zoom_sets(m).as_deref() {
+    if let Some(d) = tiles.deep(m, cov) {
         for &p in &pieces {
-            let ts = crate::terrain_deep::targets_in(sets, cov, p);
+            let ts = d.targets_in(p);
             if !ts.is_empty() {
                 let t = format!("6/{}/{}", p.0, p.1);
                 out.terrain_lakes.push((t.clone(), key("terrain-lakes", &t)));
             }
-            for t in ts {
+            for &t in ts.iter() {
                 deep.insert(t);
                 let ts = format!("{}/{}/{}", crate::terrain_deep::PACK_Z, t.0, t.1);
                 out.terrain_deep.push((ts.clone(), key("terrain-deep", &ts)));
@@ -1495,16 +1503,14 @@ pub fn water_key(
 
 /// What the terrain's targets read of the water, as the `terrain-water` job works their digests
 /// out (crate::terrain_water::WaterIdx): each z6 tile ("6/x/y") with `piece_water_from`, each assembly ("3/x/y") with AREA_FROM.
-pub fn water_wants(cov: &Coverage, sets: &[crate::terrain_zoom::Set]) -> Vec<(String, String)> {
+pub fn water_wants(d: &Deep) -> Vec<(String, String)> {
+    let (cov, sets) = (d.cov, d.sets.as_slice());
     let mut out = Vec::new();
     for (q, ts) in &coverage_tiles(cov) {
         for &(x, y) in ts {
             out.push((format!("6/{x}/{y}"), piece_water_from(&piece_coverage(cov, sets, (x, y)))));
-            for (a, b) in crate::terrain_deep::targets_in(sets, cov, (x, y)) {
-                out.push((
-                    format!("{}/{a}/{b}", crate::terrain_deep::PACK_Z),
-                    piece_water_from(&deep_coverage(cov, sets, (a, b))),
-                ));
+            for &(a, b) in d.targets_in((x, y)).iter() {
+                out.push((format!("{}/{a}/{b}", crate::terrain_deep::PACK_Z), piece_water_from(&d.coverage((a, b)))));
             }
         }
         out.push((format!("3/{}/{}", q.0, q.1), crate::terrain_water::AREA_FROM.to_string()));
@@ -1512,14 +1518,10 @@ pub fn water_wants(cov: &Coverage, sets: &[crate::terrain_zoom::Set]) -> Vec<(St
     out
 }
 
-/// What a terrain-deep z10 tile's run reads of the coverage, as its keys name it: the tiles of its
-/// levels (crate::terrain_deep::levels), digested.
-pub fn deep_coverage(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> String {
-    levels_digest(&crate::terrain_deep::levels(cov, sets, t))
-}
-
-/// Levels' tiles (z, then each column and row), as a key names them.
-fn levels_digest(levels: &[(u8, Vec<(u32, u32)>)]) -> String {
+/// Levels' tiles (z, then each column and row), as a key names them: a terrain-deep z10 tile's run
+/// reads of the coverage the tiles of its levels (crate::terrain_deep::levels), digested
+/// (`Deep::coverage`).
+pub(crate) fn levels_digest(levels: &[(u8, Vec<(u32, u32)>)]) -> String {
     let lines: Vec<String> = levels
         .iter()
         .map(|(z, ts)| format!("{z}:{}", ts.iter().map(|(x, y)| format!("{x},{y}")).collect::<Vec<_>>().join(" ")))
@@ -1537,18 +1539,19 @@ pub fn piece_water_from(fp: &str) -> String {
 /// of its levels it makes (crate::terrain_pack::piece_levels, each z9–12 tile within 20 km of
 /// it), digested. Not the coverage's rings near it (`Coverage::fingerprint`): a region's outline
 /// moved, an islet dropped or added, that leaves the same tiles near it changes nothing the run
-/// reads, so it rebuilds nothing. A terrain-deep target's are its levels' (`deep_coverage`).
+/// reads, so it rebuilds nothing. A terrain-deep target's are its levels' (`Deep::coverage`).
 pub fn piece_coverage(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> String {
     levels_digest(&crate::terrain_pack::piece_levels(cov, sets, t))
 }
 
 /// `water_wants` with the tiles each reads: a z6 tile's z9–12 (crate::terrain_pack::piece_levels),
 /// an assembly's z6–8 (crate::terrain_water::z3_tiles).
-pub fn water_reads(cov: &Coverage, sets: &[crate::terrain_zoom::Set]) -> Vec<crate::terrain_water::Reads> {
+pub fn water_reads(d: &Deep) -> Vec<crate::terrain_water::Reads> {
+    let (cov, sets) = (d.cov, d.sets.as_slice());
     let flat = |lv: Vec<(u8, Vec<(u32, u32)>)>| -> Vec<(u8, u32, u32)> {
         lv.into_iter().flat_map(|(z, ts)| ts.into_iter().map(move |(x, y)| (z, x, y))).collect()
     };
-    water_wants(cov, sets)
+    water_wants(d)
         .into_iter()
         .map(|(t, from)| {
             let u = TileId::parse(&t).unwrap();
@@ -1569,8 +1572,7 @@ pub fn water_reads(cov: &Coverage, sets: &[crate::terrain_zoom::Set]) -> Vec<cra
 pub fn terrain_water_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let (cov, m, tiles) = (x.cov, x.m, x.tiles);
     let pin = crate::terrain_pack::water_source_pin(m)?;
-    let sets = tiles.zoom_sets(m)?;
-    let mut wants = water_wants(cov, &sets);
+    let mut wants = water_wants(&tiles.deep(m, cov)?);
     // (The depth's targets' too, once its sources are read: crate::depth.)
     if let Some(d) = tiles.depth(m) {
         wants.extend(depth_water_reads(cov, &d).into_iter().map(|(t, f, _)| (t, f)));
@@ -1607,16 +1609,14 @@ pub fn pyramids_targets(x: &KeyCtx) -> Option<Vec<(String, String)>> {
     if pyr.is_empty() {
         return Some(Vec::new());
     }
-    let sets = tiles.zoom_sets(m)?;
+    let deep = tiles.deep(m, cov)?;
     let mut out = Vec::new();
     for &(tx, ty) in coverage_tiles(cov).values().flatten() {
         if crate::dem::declared::meeting(&pyr, roadcore::geo::tile_box(6, tx, ty)).is_empty() {
             continue;
         }
         // (One making no hi tile and no deep target wants nothing: no job.)
-        if !crate::terrain_pack::makes_hi(cov, &sets, (tx, ty))
-            && crate::terrain_deep::targets_in(&sets, cov, (tx, ty)).is_empty()
-        {
+        if !crate::terrain_pack::makes_hi(cov, &deep.sets, (tx, ty)) && deep.targets_in((tx, ty)).is_empty() {
             continue;
         }
         out.push((format!("6/{tx}/{ty}"), false));
@@ -2543,9 +2543,14 @@ pub struct KeyCtx<'a> {
 /// reads nothing but its context, which a `KeyCtx` borrows unchanged for as long as it lives, so
 /// one derived once holds for the rest of it. What lets a plan's checklist (`plan`) and its chains
 /// run ahead (`remaining`) reuse the keys the plan already worked out instead of deriving each
-/// again (task #924). The plan's own, on its thread: never shared.
+/// again (task #924); and the terrain's and slope's targets (`terrain_slope_targets`), which
+/// `TerrainTiles` keeps only once every key is told (mid-rebuild, the checklist had worked them out
+/// again: task #965). The plan's own, on its thread: never shared.
 #[derive(Default)]
-pub struct KeyMemo(std::cell::RefCell<std::collections::HashMap<(String, String), Option<String>>>);
+pub struct KeyMemo(
+    std::cell::RefCell<std::collections::HashMap<(String, String), Option<String>>>,
+    std::cell::OnceCell<TerrainTargets>,
+);
 
 impl KeyMemo {
     /// Target `t`'s key of `step` as derived before, else `derive`d now and kept (not borrowed

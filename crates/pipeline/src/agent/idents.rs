@@ -228,14 +228,13 @@ pub fn bld_sources(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 }
 
 /// What a terrain z6 tile's run reads of the coverage (task #832, `build::piece_coverage`: the
-/// tiles of its levels it makes); a terrain-deep z10 tile's, its levels' (`build::deep_coverage`).
+/// tiles of its levels it makes); a terrain-deep z10 tile's, its levels' (`tiles::Deep::coverage`).
 /// None while the declared datasets can't be read.
 pub fn coverage_piece(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    let sets = x.tiles.zoom_sets(x.m)?;
     Some(vec![match u.z {
-        6 => super::build::piece_coverage(x.cov, &sets, (u.x, u.y)),
-        z if z == crate::terrain_deep::PACK_Z => super::build::deep_coverage(x.cov, &sets, (u.x, u.y)),
+        6 => super::build::piece_coverage(x.cov, &x.tiles.zoom_sets(x.m)?, (u.x, u.y)),
+        z if z == crate::terrain_deep::PACK_Z => x.tiles.deep(x.m, x.cov)?.coverage((u.x, u.y)),
         _ => return None,
     }])
 }
@@ -372,7 +371,7 @@ pub fn water_pin(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// `build::depth_water_reads` once the depth's sources are read): what the terrain-water job
 /// digests, "<target> <from>" each.
 pub fn water_wants(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    let mut wants = super::build::water_wants(x.cov, &x.tiles.zoom_sets(x.m)?);
+    let mut wants = super::build::water_wants(&x.tiles.deep(x.m, x.cov)?);
     if let Some(d) = x.tiles.depth(x.m) {
         wants.extend(super::build::depth_water_reads(x.cov, &d).into_iter().map(|(t, f, _)| (t, f)));
         wants.sort();
@@ -391,7 +390,7 @@ pub fn water(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let from = match u.z {
         6 => super::build::piece_water_from(&super::build::piece_coverage(x.cov, &x.tiles.zoom_sets(x.m)?, (u.x, u.y))),
         z if z == crate::terrain_deep::PACK_Z => {
-            super::build::piece_water_from(&super::build::deep_coverage(x.cov, &x.tiles.zoom_sets(x.m)?, (u.x, u.y)))
+            super::build::piece_water_from(&x.tiles.deep(x.m, x.cov)?.coverage((u.x, u.y)))
         }
         _ => crate::terrain_water::AREA_FROM.to_string(),
     };
@@ -458,12 +457,7 @@ pub fn pyramids(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 pub fn deep_targets(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
     let z = crate::terrain_deep::PACK_Z;
-    Some(
-        crate::terrain_deep::targets_in(x.tiles.zoom_sets(x.m)?.as_slice(), x.cov, (u.x, u.y))
-            .into_iter()
-            .map(|(a, b)| format!("{z}/{a}/{b}"))
-            .collect(),
-    )
+    Some(x.tiles.deep(x.m, x.cov)?.targets_in((u.x, u.y)).iter().map(|(a, b)| format!("{z}/{a}/{b}")).collect())
 }
 
 /// The terrain's water source (crate::terrain_pack::water_source_pin), "-" without one (no lake
