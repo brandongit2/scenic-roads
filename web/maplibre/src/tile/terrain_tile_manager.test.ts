@@ -117,7 +117,7 @@ describe('TerrainTileManager', () => {
         test('drapeDetail multiplies the textures\' texels, within MAX_TEXTURE_SIZE and the drapes\' budget (Scenic Roads)', () => {
             const manager = new TerrainTileManager(style.tileManagers.terrain);
             const context = {maxTextureSize: 1024};
-            manager.tileManager.map = {painter: {pixelRatio: 1, context}, _stillIn: () => 0} as any;
+            manager.tileManager.map = {painter: {pixelRatio: 1, context}} as any;
             const transform = new MercatorTransform();
             transform.resize(512, 512);
             transform.setCenter(new LngLat(-46, -6));
@@ -143,10 +143,6 @@ describe('TerrainTileManager', () => {
                 expect(Math.max(...sizes())).toBeLessThanOrEqual(maxTextureSize);
                 expect(sizes().every(s => s >= manager.minRttSize)).toBe(true);
             }
-            // until the camera has been still for the map's refineDelay: the sizes without drapeDetail
-            manager.tileManager.map._stillIn = () => 100;
-            manager.update(transform, null);
-            expect(sizes()).toEqual(Array(n).fill(manager.tileSize));
         });
 
         test('with pacedDrapes, a tile leaving the cover with its textures is kept as a stand-in, and taken back with them if the cover returns (Scenic Roads)', () => {
@@ -230,6 +226,54 @@ describe('TerrainTileManager', () => {
                 const result = tsc.getTerrainCoords(testTile);
                 expect(result[terrainRenderableTile.key]).toBeTruthy();
                 expect(result[terrainNonRenderableTile.key]).toBeFalsy();
+            });
+
+            test('an answer is kept while the cover stays the same, and worked out again when it changes (Scenic Roads)', () => {
+                const manager = new TerrainTileManager(style.tileManagers.terrain);
+                manager.tileManager.map = {painter: {releaseRTT: vi.fn()}} as any;
+                const transform = new MercatorTransform();
+                transform.resize(512, 512);
+                transform.setCenter(new LngLat(-46, -6));
+                transform.setZoom(8);
+                manager.update(transform, null);
+                const {z, x, y} = manager.getRenderableTiles()[0].tileID.canonical;
+                const fine = new OverscaledTileID(z + 3, 0, z + 3, x * 8 + 5, y * 8 + 2);
+                const coarse = new OverscaledTileID(z - 2, 0, z - 2, x >> 2, y >> 2);
+                const overlapping = (id: OverscaledTileID) => manager._renderableTilesKeys.filter(k => {
+                    const d = manager._tiles[k].tileID.canonical;
+                    return d.equals(id.canonical) || d.isChildOf(id.canonical) || id.canonical.isChildOf(d);
+                }).sort();
+                const first = manager.getTerrainCoords(fine);
+                expect(Object.keys(first).sort()).toEqual(overlapping(fine));
+                expect(Object.keys(first)).toHaveLength(1);
+                expect(Object.keys(manager.getTerrainCoords(coarse)).sort()).toEqual(overlapping(coarse));
+                expect(manager.update(transform, null)).toBe(false);
+                expect(manager.getTerrainCoords(fine)).toBe(first);
+                transform.setZoom(9);
+                manager.update(transform, null);
+                const again = manager.getTerrainCoords(fine);
+                expect(again).not.toBe(first);
+                expect(Object.keys(again).sort()).toEqual(overlapping(fine));
+                expect(Object.keys(manager.getTerrainCoords(coarse)).sort()).toEqual(overlapping(coarse));
+            });
+
+            test('a new cover keeps the answers over which no tile came or went (Scenic Roads)', () => {
+                const a = new OverscaledTileID(3, 0, 3, 1, 1), b = new OverscaledTileID(3, 0, 3, 6, 6);
+                const bKids = b.children(22);
+                const set = (ids: OverscaledTileID[]) => {
+                    tsc._tiles = Object.fromEntries(ids.map(id => [id.key, new Tile(id, 256)]));
+                    tsc._renderableTilesKeys = ids.map(id => id.key);
+                    tsc._coverVersion++;
+                };
+                set([a, b]);
+                const underA = new OverscaledTileID(5, 0, 5, 4, 5), underB = new OverscaledTileID(5, 0, 5, 25, 25);
+                const keptA = tsc.getTerrainCoords(underA), keptB = tsc.getTerrainCoords(underB);
+                // (b splits into its children)
+                set([a, ...bKids]);
+                expect(tsc.getTerrainCoords(underA)).toBe(keptA);
+                const again = tsc.getTerrainCoords(underB);
+                expect(again).not.toBe(keptB);
+                expect(Object.keys(again)).toEqual([bKids.find(k => underB.canonical.isChildOf(k.canonical)).key]);
             });
         });
 

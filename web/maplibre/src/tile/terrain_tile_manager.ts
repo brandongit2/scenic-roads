@@ -12,7 +12,7 @@ import type {Terrain} from '../render/terrain.ts';
 import type {CanonicalTileRange} from '../source/image_source.ts';
 import type {Source} from '../source/source.ts';
 import type {TileManager} from './tile_manager.ts';
-import type {OverscaledTileID} from './tile_id.ts';
+import type {CanonicalTileID, OverscaledTileID} from './tile_id.ts';
 import type {ITransform} from '../geo/transform_interface.ts';
 
 /**
@@ -107,8 +107,21 @@ export class TerrainTileManager extends Evented {
      * screen's pixels, a 4K view's drapes outgrew what Chrome would allocate on the M4, and tiles came out black.)
      */
     drapeExtra: number = 2;
-    /** Scenic Roads: _drapeDetails's last answer, and the drapes and sources' finer tiles it was for. */
-    _drapeDetailMemo: {offsets: unknown[]; drapes: string; detail: (id: OverscaledTileID) => number} | null = null;
+    /** Scenic Roads: _drapeDetails's last answer, and the cover and sources' finer tiles it was for. */
+    _drapeDetailMemo: {offsets: unknown[]; version: number; detail: (id: OverscaledTileID) => number} | null = null;
+    /** Scenic Roads: the cover's revision, bumped whenever its set of tiles changes (update). */
+    _coverVersion: number = 0;
+    /**
+     * Scenic Roads: getTerrainCoords' answers for regular tiles (by key) under the cover
+     * `_coverVersion`, the cover's tiles, and those by canonical tile and under each of their ancestors.
+     */
+    _coordsCache: {
+        version: number;
+        drapes: Map<string, CanonicalTileID>;
+        drapesAt: Map<string, string[]>;
+        drapesUnder: Map<string, string[]>;
+        coords: Map<string, {canonical: CanonicalTileID; coords: Record<string, OverscaledTileID>}>;
+    } | null = null;
     drapeBudgetTexels(screenPx: number, todayTexels: number): number {
         return todayTexels + screenPx * this.drapeExtra;
     }
@@ -208,15 +221,23 @@ export class TerrainTileManager extends Evented {
                 changed = true;
             }
         }
+        // free unused tiles
+        for (const key in this._tiles) {
+            if (!keys[key]) {
+                // Scenic Roads: kept as a stand-in a frame (pacedDrapes, standInFrames)
+                const tile = this._tiles[key];
+                if (this.pacedDrapes && this.standInFrames > 0 && tile.rttObjects.length) this._retired[key] = tile;
+                else tile.releaseRTT(this.tileManager.map.painter);
+                delete this._tiles[key];
+                changed = true;
+            }
+        }
+        if (changed) this._coverVersion++;
         // Scenic Roads: each tile's texture size by its footprint (footprintSizing), drapeDetail
-        // times the texels, then within drapeBudgetTexels
-        // (the sizes they would have without drapeDetail while the camera moves and until it has been
-        // still for the map's refineDelay, so redraws while moving stay as cheap as before; then
-        // they grow, a tile a frame: RenderToTexture's paced redraws. The draped sources' finer tiles
-        // come on the same clock: TileManager._refineCover.)
-        const map = this.tileManager.map;
-        const still = this.drapeDetail > 1 && (!map || map._stillIn() === 0);
-        const tileDetail = still ? this._drapeDetails() : null;
+        // times the texels where a draped source's tiles are finer (_drapeDetails), then within
+        // drapeBudgetTexels. (A texture whose size changes is drawn again as a zoom change's is:
+        // kept while moving, then a tile a frame: RenderToTexture.)
+        const tileDetail = this.drapeDetail > 1 ? this._drapeDetails() : null;
         const camera = sizing ? cameraMercatorCoordinate(transform) : null;
         const focal = sizing ? focalLengthPx(transform, pixelRatio) : 0;
         const perMeter = sizing ? mercatorZfromAltitude(1, transform.center.lat) : 0;
@@ -258,17 +279,6 @@ export class TerrainTileManager extends Evented {
             texels -= tile.rttTargetSize ** 2 * 3 / 4;
             tile.rttTargetSize /= 2;
         }
-        // free unused tiles
-        for (const key in this._tiles) {
-            if (!keys[key]) {
-                // Scenic Roads: kept as a stand-in a frame (pacedDrapes, standInFrames)
-                const tile = this._tiles[key];
-                if (this.pacedDrapes && this.standInFrames > 0 && tile.rttObjects.length) this._retired[key] = tile;
-                else tile.releaseRTT(this.tileManager.map.painter);
-                delete this._tiles[key];
-                changed = true;
-            }
-        }
         return changed;
     }
 
@@ -276,16 +286,15 @@ export class TerrainTileManager extends Evented {
      * Scenic Roads: each drape tile's detail, at most drapeDetail: 2 to the most zooms by which a
      * draped source's tiles over it are finer than the screen's (TileManager._detailOffset), 1
      * where there are none, so a texture grows only where what is drawn into it is finer. Without a
-     * style (tests), drapeDetail everywhere. Worked out again only when the drapes or a source's
-     * finer tiles change (at rest the map may draw every frame).
+     * style (tests), drapeDetail everywhere. Worked out again only when the cover (`_coverVersion`)
+     * or a source's finer tiles change; a frame looks each tile up.
      */
     _drapeDetails(): (id: OverscaledTileID) => number {
         const managers = this.tileManager.map?.style?.tileManagers;
         if (!managers) return () => this.drapeDetail;
         const offsets = Object.values(managers).map(m => m._detailOffset);
-        const drapes = this._renderableTilesKeys.join();
         const memo = this._drapeDetailMemo;
-        if (memo?.drapes === drapes && memo.offsets.length === offsets.length && memo.offsets.every((o, i) => o === offsets[i])) return memo.detail;
+        if (memo?.version === this._coverVersion && memo.offsets.length === offsets.length && memo.offsets.every((o, i) => o === offsets[i])) return memo.detail;
         const byDrape: Record<string, number> = {};
         for (const finer of offsets) {
             for (const {id, offset} of finer?.values() ?? []) {
@@ -296,13 +305,15 @@ export class TerrainTileManager extends Evented {
             }
         }
         const keys = Object.keys(byDrape);
-        const detail = (id: OverscaledTileID) => {
-            let off = byDrape[id.key];
+        const byKey: Record<string, number> = {};
+        for (const key of this._renderableTilesKeys) {
+            let off = byDrape[key];
             // (a drape tile finer than the source's tile: its ancestor's)
-            if (off === undefined) for (const key of keys) if (id.isChildOf(this._tiles[key].tileID)) off = Math.max(off ?? 0, byDrape[key]);
-            return Math.min(this.drapeDetail, 2 ** (off ?? 0));
-        };
-        this._drapeDetailMemo = {offsets, drapes, detail};
+            if (off === undefined) for (const k of keys) if (this._tiles[key].tileID.isChildOf(this._tiles[k].tileID)) off = Math.max(off ?? 0, byDrape[k]);
+            byKey[key] = Math.min(this.drapeDetail, 2 ** (off ?? 0));
+        }
+        const detail = (id: OverscaledTileID) => byKey[id.key] ?? 1;
+        this._drapeDetailMemo = {offsets, version: this._coverVersion, detail};
         return detail;
     }
 
@@ -413,8 +424,17 @@ export class TerrainTileManager extends Evented {
      * @returns the tiles that were found
      */
     _getTerrainCoordsForRegularTile(tileID: OverscaledTileID): Record<string, OverscaledTileID> {
+        // Scenic Roads: an answer kept while the cover's tiles over it stay the same (`_coordsCache`;
+        // not to be changed by the caller), the cover's tiles looked up by the tile's own and its
+        // ancestors' canonical ids and under them. Upstream went over every tile of the cover for
+        // each tile asked, a copy and a matrix each: 336 slope tiles over 37 drapes took 8 ms a frame.
+        let cache = this._coordsCache;
+        if (cache?.version !== this._coverVersion) cache = this._coordsCache = this._coverIndex(cache);
+        const known = cache.coords.get(tileID.key);
+        if (known) return known.coords;
         const coords: Record<string, OverscaledTileID> = {};
-        for (const key of this._renderableTilesKeys) {
+        const {z, x, y} = tileID.canonical;
+        const place = (key: string) => {
             const terrainTileID = this._tiles[key].tileID;
             const coord = tileID.clone();
             const mat = createMat4f64();
@@ -427,7 +447,7 @@ export class TerrainTileManager extends Evented {
                 const size = EXTENT >> dz;
                 mat4.ortho(mat, 0, size, size, 0, 0, 1); // Note: we are using `size` instead of `EXTENT` here
                 mat4.translate(mat, mat, [-dx * size, -dy * size, 0]);
-            } else if (tileID.canonical.isChildOf(terrainTileID.canonical)) {
+            } else {
                 const dz = tileID.canonical.z - terrainTileID.canonical.z;
                 const dx = tileID.canonical.x - (tileID.canonical.x >> dz << dz);
                 const dy = tileID.canonical.y - (tileID.canonical.y >> dz << dz);
@@ -435,13 +455,47 @@ export class TerrainTileManager extends Evented {
                 mat4.ortho(mat, 0, EXTENT, EXTENT, 0, 0, 1);
                 mat4.translate(mat, mat, [dx * size, dy * size, 0]);
                 mat4.scale(mat, mat, [1 / (2 ** dz), 1 / (2 ** dz), 0]);
-            } else {
-                continue;
             }
             coord.terrainRttPosMatrix32f = new Float32Array(mat);
             coords[key] = coord;
+        };
+        for (let pz = z; pz >= 0; pz--) {
+            for (const key of cache.drapesAt.get(`${pz}/${x >> (z - pz)}/${y >> (z - pz)}`) ?? []) place(key);
         }
+        for (const key of cache.drapesUnder.get(`${z}/${x}/${y}`) ?? []) place(key);
+        cache.coords.set(tileID.key, {canonical: tileID.canonical, coords});
         return coords;
+    }
+
+    /**
+     * Scenic Roads: the cover's tiles by canonical id and under each of their ancestors', for
+     * getTerrainCoords; of the last cover's answers (`last`), those over which no tile came or went.
+     */
+    _coverIndex(last: TerrainTileManager['_coordsCache']): NonNullable<TerrainTileManager['_coordsCache']> {
+        const drapes = new globalThis.Map<string, CanonicalTileID>();
+        for (const key of this._renderableTilesKeys) drapes.set(key, this._tiles[key].tileID.canonical);
+        const coords: NonNullable<TerrainTileManager['_coordsCache']>['coords'] = new globalThis.Map();
+        if (last) {
+            const changed: CanonicalTileID[] = [];
+            for (const [key, c] of drapes) if (!last.drapes.has(key)) changed.push(c);
+            for (const [key, c] of last.drapes) if (!drapes.has(key)) changed.push(c);
+            for (const [key, held] of last.coords) {
+                const c = held.canonical;
+                if (!changed.some(d => d.equals(c) || d.isChildOf(c) || c.isChildOf(d))) coords.set(key, held);
+            }
+        }
+        const drapesAt = new globalThis.Map<string, string[]>(), drapesUnder = new globalThis.Map<string, string[]>();
+        const add = (m: globalThis.Map<string, string[]>, k: string, key: string) => {
+            const list = m.get(k);
+            if (list) list.push(key);
+            else m.set(k, [key]);
+        };
+        for (const key of this._renderableTilesKeys) {
+            const {z, x, y} = this._tiles[key].tileID.canonical;
+            add(drapesAt, `${z}/${x}/${y}`, key);
+            for (let pz = z - 1; pz >= 0; pz--) add(drapesUnder, `${pz}/${x >> (z - pz)}/${y >> (z - pz)}`, key);
+        }
+        return {version: this._coverVersion, drapes, drapesAt, drapesUnder, coords};
     }
 
     /**

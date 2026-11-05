@@ -1,7 +1,7 @@
 import {Color} from '@maplibre/maplibre-gl-style-spec';
 import {drawTerrain} from './draw/draw_terrain.ts';
 import {ImageSource} from '../source/image_source.ts';
-import {RTT_DIFFERENCES, RTTFingerprint, type RTTDifference} from './rtt_fingerprint.ts';
+import {RTT_DIFFERENCES, RTTFingerprint, tileKeysOf, type RTTDifference} from './rtt_fingerprint.ts';
 
 import {isCustomStyleLayer} from '../style/style_layer/custom_style_layer.ts';
 
@@ -65,6 +65,17 @@ export class RenderToTexture {
      * then tile key. A tile whose stored fingerprint differs has stale textures.
      */
     _rttFingerprints: Record<string, Record<string, RTTFingerprint>>;
+    /**
+     * Scenic Roads: by draped source, the tiles in view it was worked out for and the terrain's
+     * cover (`TerrainTileManager._coverVersion`), each terrain tile's source tiles and their keys
+     * (`tileKeysOf`): kept while both stay the same, so a frame's work over them is a comparison.
+     */
+    _sourceTiles: Map<string, {
+        visible: OverscaledTileID[];
+        coverVersion: number;
+        coordsAscending: {[_: string]: OverscaledTileID[]};
+        tileKeys: {[_: string]: string};
+    }> = new Map();
     /**
      * store for render-stacks
      * a render stack is a set of layers which should be rendered into one texture
@@ -167,8 +178,7 @@ export class RenderToTexture {
      * source tiles under them are re-rendered one per frame too, `needsFollowUpFrame` bringing in the rest.
      * Textures whose visible layer set changed (a layer entered or left its zoom range) are kept while the zoom
      * is changing and then all re-rendered in the same frame, since a tile-by-tile change would show; a source
-     * data change re-renders immediately. (Scenic Roads: a texture drawn with a source's tiles finer than
-     * the screen's is kept till the camera is still, whatever source tiles it would have now.)
+     * data change re-renders immediately.
      */
     prepareForRender(style: Style, zoom: number): void {
         const zoomChanged = zoom !== this._lastPrepareZoom;
@@ -201,30 +211,42 @@ export class RenderToTexture {
 
         this._coordsAscending = {};
         this._rttFingerprints = {};
+        const coverVersion = this.terrain.tileManager._coverVersion;
+        const sourceTiles: typeof this._sourceTiles = new Map();
         for (const sourceId of rttSourceIds) {
             const tileManager = style.tileManagers[sourceId];
             if (!tileManager) continue;
 
-            this._coordsAscending[sourceId] = {};
-            const coordsAscending = this._coordsAscending[sourceId];
             const source = tileManager.getSource();
             const terrainTileRanges = source instanceof ImageSource ? source.terrainTileRanges : null;
-            for (const tileID of tileManager.getVisibleCoordinates()) {
-                const keys = this.terrain.tileManager.getTerrainCoords(tileID, terrainTileRanges);
-                for (const key in keys) {
-                    coordsAscending[key] ||= [];
-                    coordsAscending[key].push(keys[key]);
+            const visible = tileManager.getVisibleCoordinates();
+            // Scenic Roads: the terrain tiles' source tiles and their keys kept while the source's
+            // tiles in view (the same tile objects) and the terrain's cover stay the same; an image
+            // source's worked out each frame (its ranges may change with them).
+            let held = this._sourceTiles.get(sourceId);
+            if (terrainTileRanges || held?.coverVersion !== coverVersion || held.visible.length !== visible.length || held.visible.some((id, i) => id !== visible[i])) {
+                const coordsAscending: {[_: string]: OverscaledTileID[]} = {};
+                for (const tileID of visible) {
+                    const keys = this.terrain.tileManager.getTerrainCoords(tileID, terrainTileRanges);
+                    for (const key in keys) {
+                        coordsAscending[key] ||= [];
+                        coordsAscending[key].push(keys[key]);
+                    }
                 }
+                const tileKeys: {[_: string]: string} = {};
+                for (const key in coordsAscending) tileKeys[key] = tileKeysOf(coordsAscending[key]);
+                held = {visible, coverVersion, coordsAscending, tileKeys};
             }
+            sourceTiles.set(sourceId, held);
+            this._coordsAscending[sourceId] = held.coordsAscending;
 
             this._rttFingerprints[sourceId] = {};
             const fingerprints = this._rttFingerprints[sourceId];
             const revision = stateSourceIds.has(sourceId) ? tileManager.getState().revision : 0;
-            const finer = tileManager._detailOffset;
-            for (const key in coordsAscending)
-                fingerprints[key] = new RTTFingerprint(coordsAscending[key], revision, zoom, visibleLayerIds,
-                    finer?.size > 0 && coordsAscending[key].some(c => finer.has(c.key)));
+            for (const key in held.tileKeys)
+                fingerprints[key] = new RTTFingerprint(held.tileKeys[key], revision, zoom, visibleLayerIds);
         }
+        this._sourceTiles = sourceTiles;
 
         // Scenic Roads: a custom layer's drape is drawn again when its revision changes (and, as the
         // sources' are, when the zoom or the visible layers do).
@@ -234,7 +256,7 @@ export class RenderToTexture {
             const fingerprints = this._rttFingerprints[customDrapeKey(layer)] = {};
             const revision = layer.implementation.drapeRevision ?? 0;
             for (const tile of this._renderableTiles)
-                fingerprints[tile.tileID.key] = new RTTFingerprint([tile.tileID], revision, zoom, visibleLayerIds);
+                fingerprints[tile.tileID.key] = new RTTFingerprint(tile.tileID.key, revision, zoom, visibleLayerIds);
         }
 
         // check tiles to render
@@ -263,13 +285,8 @@ export class RenderToTexture {
             if (!tm._retired[key]) tm._dirtyRTT.delete(key); // (Scenic Roads: a retired tile keeps its mark)
         }
         let staleTileReleased = false;
-        // (Scenic Roads: till the camera has been still for the map's refineDelay, a source with
-        // `scenic:detail` covers the screen at its own zoom: a texture drawn at the last rest with its
-        // finer tiles is kept, not drawn coarser now and finer again once still; TileManager._refineCover)
-        const map = tm.tileManager.map;
-        const unsettled = !!map && map._stillIn() > 0;
         for (const tile of this._renderableTiles) {
-            const difference = this._textureDifference(tile, unsettled);
+            const difference = this._textureDifference(tile);
             if (difference === 'none') continue;
             if ((difference === 'zoom' && moving) || (difference === 'visibleLayers' && zoomChanged)) {
                 this.needsFollowUpFrame = true;
@@ -288,23 +305,18 @@ export class RenderToTexture {
      * The most severe difference, over the sources rendered to texture, between the tile's cached textures
      * and what this frame would render into them.
      */
-    _textureDifference(tile: Tile, unsettled: boolean = false): RTTDifference {
+    _textureDifference(tile: Tile): RTTDifference {
         let worst: RTTDifference = 'none';
         // Scenic Roads: a texture coarser than the tile's footprint wants, or more than twice as fine
         // (TerrainTileManager.footprintSizing), is drawn again as a zoom change's is: kept while
         // moving, then one tile a frame (the factor of two keeps a size from flickering).
-        // (Scenic Roads: till the camera is still, a texture drawn with a source's finer tiles is kept
-        // whatever its size and source tiles, TerrainTileManager giving only the size without them:
-        // one drawn meanwhile holds none of them)
-        const kept = unsettled && Object.values(tile.rttFingerprint).some(f => f?.finer);
         const held = tile.rttObjects.find(o => o);
         const want = tile.rttTargetSize ?? this.rttSize;
-        if (held && (held.size < want || (held.size > 2 * want && !kept))) worst = 'zoom';
+        if (held && (held.size < want || held.size > 2 * want)) worst = 'zoom';
         for (const source in this._rttFingerprints) {
             const frameFingerprint = this._rttFingerprints[source][tile.tileID.key];
             if (!frameFingerprint) continue;
             const difference = frameFingerprint.difference(tile.rttFingerprint[source]);
-            if (difference === 'sourceTiles' && kept) continue;
             if (RTT_DIFFERENCES.indexOf(difference) > RTT_DIFFERENCES.indexOf(worst)) worst = difference;
         }
         return worst;

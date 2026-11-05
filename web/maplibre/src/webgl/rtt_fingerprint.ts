@@ -12,6 +12,14 @@ export const RTT_DIFFERENCES = ['none', 'zoom', 'sourceTiles', 'visibleLayers', 
 export type RTTDifference = typeof RTT_DIFFERENCES[number];
 
 /**
+ * The source tiles under a render-to-texture tile as a fingerprint holds them: their keys, sorted
+ * (Scenic Roads: worked out once while they stay the same, RenderToTexture.prepareForRender).
+ *
+ * @internal
+ */
+export const tileKeysOf = (coords: OverscaledTileID[]): string => coords.map(c => c.key).sort().join();
+
+/**
  * Immutable value describing the state a render-to-texture tile's textures were rendered from: the source
  * tiles drawn into them, the source data revision, the map zoom (zoom-dependent style properties are
  * evaluated then) and the ids of the layers visible at that zoom.
@@ -23,18 +31,13 @@ export class RTTFingerprint {
     private readonly _revision: number;
     private readonly _zoom: number;
     private readonly _visibleLayerIds: string;
-    /**
-     * Scenic Roads: drawn with some of a source's tiles finer than the screen's (`scenic:detail`,
-     * TileManager._detailOffset): RenderToTexture keeps such a texture till the camera is still.
-     */
-    readonly finer: boolean;
 
-    constructor(coords: OverscaledTileID[], revision: number, zoom: number, visibleLayerIds: string, finer: boolean = false) {
-        this._tileKeys = coords.map(c => c.key).sort().join();
+    /** `tileKeys`: the source tiles' keys (tileKeysOf). */
+    constructor(tileKeys: string, revision: number, zoom: number, visibleLayerIds: string) {
+        this._tileKeys = tileKeys;
         this._revision = revision;
         this._zoom = zoom;
         this._visibleLayerIds = visibleLayerIds;
-        this.finer = finer;
     }
 
     /**
