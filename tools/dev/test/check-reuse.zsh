@@ -183,6 +183,22 @@ s() { w crates/a/src/lib.rs '#[derive(Embed)] #[folder = "../../web/dist"] struc
 m() { print 2 >> web/dist/i.html }
 fresh "a folder a macro attribute names" s m 'cargo test -p a --lib -- t' run run
 
+# -- affected-tests.sh --nextest: check.sh's tests lines as one nextest run (#969), a lib's unit
+# tests built only for the packages asking for them
+w crates/b/src/main.rs 'fn main() {}'; w crates/c/src/lib.rs ''; w crates/c/tests/scan.rs ''
+nextest() {  # nextest <want, lines joined by |> <cargo test lines...>
+  local want=$1 out; shift
+  print -l -- "$@" > $tmp/nx
+  out=$(zsh $here/../affected-tests.sh --nextest $tmp/nx 2>&1)
+  out=${out//cargo nextest run --no-fail-fast --hide-progress-bar --no-tests=warn /}
+  if [[ ${(j:|:)${(f)out}} == $want ]]; then ok "--nextest: $want"; else bad "--nextest wanted $want; got:"; print -r -- $out | sed 's/^/    /'; fi
+}
+nextest "-p a -p b --lib --bin b -E '(binary_id(=a) & (test(~tests::x))) | (binary_id(=b::bin/b) & (test(~m::) | test(~n::)))'" \
+  'cargo test -p a --lib -- tests::x' 'cargo test -p b --bin b -- n:: m::'
+nextest "-p a --lib -E '(binary_id(=a) & (test(~t::)))'|-p c -p b --bin b --test scan -E 'binary_id(=c::scan) | binary_id(=b::bin/b)'" \
+  'cargo test -p a --lib -- t::' 'cargo test -p c --test scan' 'cargo test -p b --bin b'
+nextest "-p a --lib --test scan -E 'binary_id(=a::scan) | binary_id(=a)'" 'cargo test -p a --test scan' 'cargo test -p a --lib -- tests::' 'cargo test -p a --lib'
+
 # -- merge-ok.sh says what a pass reused, and refuses one reusing an unrecorded pass
 mkdir -p tools/dev; cp $here/../merge-ok.sh tools/dev/; N=$(git rev-parse HEAD)
 merge() {  # merge <want status> <text it says> <check-passed lines...>

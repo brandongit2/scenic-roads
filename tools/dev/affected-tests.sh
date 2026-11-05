@@ -14,10 +14,12 @@
 # Lines starting with # explain; the others are the commands. No command for doc-only or non-Rust
 # changes. A `#[path]` module's file maps to its declared module (dem/generic_tests.rs → dem::generic::tests).
 # tools/dev/test-guard.sh holds agents' cargo test to this set.
-usage="usage: tools/dev/affected-tests.sh [<commit> | <a>..<b>]"
+#   tools/dev/affected-tests.sh --nextest <file>  reads such `cargo test` lines from the file and
+#                                          prints the `cargo nextest run` lines running the same tests (#969, below)
+usage="usage: tools/dev/affected-tests.sh [<commit> | <a>..<b> | --nextest <file>]"
 case $#:${1:-} in
   1:-h|1:--help) print -r -- $usage; exit 0 ;;
-  0:|1:[^-]*) ;;
+  0:|1:[^-]*|2:--nextest) ;;
   *) print -ru2 -- "affected-tests.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
 esac
 exec python3 - "$@" <<'PY'
@@ -30,6 +32,61 @@ def git(*a):
     return r.stdout
 root = git("rev-parse", "--show-toplevel").strip()
 os.chdir(root)
+
+def crate_targets(c):
+    """The crate's test targets as cargo's defaults lay them out ("--lib", "--bin <b>", "--test <t>")."""
+    d, out = "crates/%s" % c, set()
+    if os.path.exists(d + "/src/lib.rs"): out.add("--lib")
+    if os.path.exists(d + "/src/main.rs"): out.add("--bin " + c)
+    for p in glob.glob(d + "/src/bin/*.rs"): out.add("--bin " + os.path.basename(p)[:-3])
+    for p in glob.glob(d + "/src/bin/*/main.rs"): out.add("--bin " + os.path.basename(os.path.dirname(p)))
+    for p in glob.glob(d + "/tests/*.rs"): out.add("--test " + os.path.basename(p)[:-3])
+    return out
+
+if args[:1] == ["--nextest"]:
+    # #969: the `cargo test` lines (affected-tests.sh's, or check-reuse.py's subset) as one
+    # `cargo nextest run`: one cargo build of every package together, where each line built its own
+    # with its own feature set (resolver 2 unifies features over the packages of one run: a line of
+    # `-p server` compiled store, codecs, buildstore and pipeline again, ~170 s on the M4), and one
+    # pool of test processes across every binary (cargo test ran each binary's tests after the last).
+    # A filterset gives each line's binary its own filters (cargo test's filters match by substring,
+    # nextest's `test(~…)` too). Cargo builds every selected target kind in every selected package:
+    # a package that would get a target it didn't ask for (its lib's unit tests, an integration test
+    # of the same name) goes to a run of its own, as before.
+    units = OrderedDict()   # (crate, target) -> filters, None = the whole target
+    for line in open(args[1], encoding="utf-8").read().splitlines():
+        t = line.split()
+        if not t or t[0].startswith("#"): continue
+        if t[:3] != ["cargo", "test", "-p"] or len(t) < 5: sys.exit("affected-tests.sh --nextest: can't read %r" % line)
+        c, i, tgts = t[3], 4, []
+        while i < len(t) and t[i] != "--":
+            if t[i] == "--lib": tgts.append("--lib"); i += 1
+            elif t[i] in ("--bin", "--test") and i + 1 < len(t): tgts.append(t[i] + " " + t[i + 1]); i += 2
+            else: sys.exit("affected-tests.sh --nextest: can't read %r" % line)
+        flt = t[i + 1:] if i < len(t) else None
+        if flt is not None and (not flt or any(x.startswith("-") or re.search(r"""[()|&'"\s]""", x) for x in flt)):
+            sys.exit("affected-tests.sh --nextest: can't read %r" % line)
+        for g in tgts:
+            old = units.get((c, g), [])
+            units[(c, g)] = None if flt is None or old is None else old + flt
+    def bid(c, g):   # nextest's binary id
+        return c if g == "--lib" else "%s::bin/%s" % (c, g[6:]) if g.startswith("--bin ") else "%s::%s" % (c, g[7:])
+    pkgs = list(OrderedDict.fromkeys(c for c, _ in units))
+    lib = lambda c: "--lib" in crate_targets(c)
+    wants = lambda c: (c, "--lib") in units
+    # (Only a lib's unit tests are worth a run of their own: an integration test or binary of the
+    # same name built too costs a link; a second build, the packages' features again.)
+    apart = [c for c in pkgs if lib(c) and not wants(c)] if any(map(wants, pkgs)) else []
+    groups = [[c for c in pkgs if c not in apart and (lib(c) or not apart)], [c for c in pkgs if c in apart or (apart and not lib(c))]]
+    for group in filter(None, groups):
+        tg = sorted({g for (c, g) in units if c in group}, key=lambda g: (g != "--lib", g))
+        expr = " | ".join(
+            "binary_id(=%s)" % bid(c, g) if fs is None else
+            "(binary_id(=%s) & (%s))" % (bid(c, g), " | ".join("test(~%s)" % f for f in sorted(set(fs))))
+            for (c, g), fs in units.items() if c in group)
+        print("cargo nextest run --no-fail-fast --hide-progress-bar --no-tests=warn %s %s -E '%s'" % (
+            " ".join("-p " + c for c in group), " ".join(tg), expr))
+    sys.exit()
 if not args:
     base = git("merge-base", "main", "HEAD").strip()
     changed = git("diff", "--name-only", base).split() + git("ls-files", "--others", "--exclude-standard").split()

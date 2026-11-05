@@ -20,8 +20,8 @@
 #   sweep     tools/dev/test/sweep-targets.zsh (the sweep's room, on a fake disk), when the sweep, its
 #             test or the settings holding its default margin changed
 #   swift     swiftc of tools/status/main.swift (publish's line) and its --test (arguments, reopen, launchd), when tools/status changed
-#   tests     each command tools/dev/affected-tests.sh prints, run on the test Mac (tools/app/remote-tests.sh;
-#             here when it can't be reached or SCENIC_CHECK_LOCAL=1)
+#   tests     the tests tools/dev/affected-tests.sh prints, as one `cargo nextest run` (its --nextest),
+#             run on the test Mac (tools/app/remote-tests.sh; here when it can't be reached or SCENIC_CHECK_LOCAL=1)
 #   python    pyflakes on the changed .py files (a deleted one's: the rest of its folder's) and
 #             unittest in their folders' test_*.py, when producers/ or dem/ changed
 # Its cargo is tools/dev/bin/cargo: in an agent worktree, this Mac's shared build folder, one build
@@ -153,13 +153,26 @@ else
     print -r -- "tests: the rest reused from ${from[tests]:0:7}: ${why[tests]}"
     reused+=" reused tests=${from[tests]}/partial"; tests=( $again )
   elif (( ${#tests} )); then notreused tests; fi
-  if (( ${#tests} )) && [[ -x $rt ]]; then
+  # (Run as one `cargo nextest run`, #969: affected-tests.sh --nextest. One build of every package
+  # together, each line's own had compiled the shared crates again under its own features; one pool
+  # of tests across the binaries; every failure, not the first command's. Saved in tests-nextest.)
+  if (( ${#tests} )); then
+    print -lr -- $tests > $logs/tests-run
+    nx=( ${(f)"$(${0:A:h}/affected-tests.sh --nextest $logs/tests-run)"} ) || nx=()
+    print -lr -- $nx > $logs/tests-nextest
+    run='cargo nextest --version >/dev/null 2>&1 || { mise install -q; eval "$(mise env -s zsh)"; }; rc=0'
+    for l in $nx; do run+="; $l || rc=\$?"; done
+    run+='; exit $rc'
+  fi
+  if (( ${#tests} )) && (( ! ${#nx} )); then
+    summary+="FAIL  tests  (affected-tests.sh --nextest couldn't read $logs/tests-run)"; print "tests ... FAIL"; failed=1
+  elif (( ${#tests} )) && [[ -x $rt ]]; then
     key=${root:t}; [[ $root == */.claude/worktrees/* ]] || key=main-checkout
-    part tests $rt $key $root "set -e; ${(j:; :)tests}"
+    part tests $rt $key $root $run
     # (The test Mac's own wall and CPU, which this Mac's time of the part doesn't count.)
     r=$(grep -h '^remote-tests: the run took' $logs/tests.log | tail -1)
     [[ -n $r ]] && summary[-1]+="  [${r#remote-tests: }]"
-  elif (( ${#tests} )); then part --parse cargo,tests tests zsh -c "set -e; ${(j:; :)tests}"
+  elif (( ${#tests} )); then part --parse cargo,tests tests zsh -c $run
   else skip tests "no affected Rust tests"; fi
   [[ $reused == *" reused tests="* ]] && summary[-1]+="  (only these; the rest reused from ${from[tests]:0:7})"
 fi

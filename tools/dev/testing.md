@@ -58,7 +58,14 @@ tools/devtools or the build page's timeline modules it serves changed (#672), `t
 dev jobs' recorder changed (#946), `tools/app/test/shell.zsh` (publish.sh's shell
 steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, the Swift build and self-test when tools/status changed,
 the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ or dem/ Python
-changed. guards.sh runs there without its own fmt check and its two tests (inputs_accessor,
+changed. The tests run as one `cargo nextest run` (#969; `affected-tests.sh --nextest <file>`
+turns the `cargo test` lines into it, saved in the log folder's `tests-nextest`): one build of
+every package together, where each line's own cargo had compiled the shared crates again under its
+own feature set (resolver 2 unifies features over a run's packages: a `-p server` line rebuilt
+store, codecs, buildstore and pipeline, ~170 s on the M4); one pool of test processes across the
+binaries, each line's filters on its own binary (a filterset); and every failure, not the first
+line's. A package with a lib whose unit tests no line asks for goes to a second run, not to build
+them for nothing. Each test is its own process, as in publish's suite. guards.sh runs there without its own fmt check and its two tests (inputs_accessor,
 source_names: scan tests of crates/ and dem/, run by the tests part whenever a file they read
 changed; #887: they had built the pipeline's tests on this Mac, ~5 min, beside the test Mac's run).
 Tests build without debug info (`debug = false` in Cargo.toml's `[profile.test]`, #918), every run alike: check.sh's, publish's and an agent's own.
