@@ -6678,15 +6678,25 @@ pub(crate) mod tests {
         // (An assembly made: the depth's root has a pack to read.)
         let lo = crate::depth::build::lo_logical(crate::depth::LAYER, 3, 2);
         dm.insert(lo.clone(), format!("{lo}.7e7e7e7e7e7e7e7e.pack"));
+        // (A source the lake-depth step makes, one pack of it made, in a z6 tile of the fine source's.)
+        let lakes = crate::depth::lakes::logical("globathy", (28, 16));
+        dm.insert(lakes.clone(), format!("{lakes}.7b7b7b7b7b7b7b7b.tar"));
+        let mut sources = depth_sources();
+        let mut est = sources[1].clone();
+        (est.id, est.code, est.lake, est.estimated, est.grids, est.pin) =
+            ("globathy".into(), 14, true, true, Vec::new(), "globathy g".into());
+        est.made = Some(crate::depth::lakes::Method::Globathy);
+        sources.push(est);
+        let held =
+            crate::depth::grids::with_estimates(sources.clone(), &store::nasfs::NasRoot::local_for_test("/r"), &dm);
         let pin = crate::terrain_pack::water_source_pin(&dm).unwrap();
-        let mut idx =
-            crate::terrain_water::make_idx(&Sea, None, &depth_water_reads(&c, &depth_sources()), &|_, _| {}).unwrap();
+        let mut idx = crate::terrain_water::make_idx(&Sea, None, &depth_water_reads(&c, &held), &|_, _| {}).unwrap();
         idx.pin = pin.clone();
         let name = format!("{}.0202020202020202.json", crate::terrain_water::idx_logical(&pin));
         dm.insert(crate::terrain_water::idx_logical(&pin), name.clone());
-        let depth = move |_: &BTreeMap<String, String>| {
+        let depth = move |m: &BTreeMap<String, String>| {
             let mut t = TerrainTiles::new(None);
-            t.hold_depth("sources/inputs/sources/@index.7d7d7d7d7d7d7d7d.json", depth_sources());
+            t.hold_depth_in(m, sources.clone());
             t.hold_water(&name, idx.clone());
             t
         };
