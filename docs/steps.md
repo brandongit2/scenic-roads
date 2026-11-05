@@ -180,7 +180,10 @@ makes the same bytes on every Mac.
     pixels already lie within 1 m of its profile (all but a tenth: 3DEP's hydro-flattening) keeps
     its pixels, as do river pixels no course reaches and rivers drawn only as lines. Each tile's
     rivers are levelled from that tile alone, so a river crossing tiles may step a little at their
-    edge. Tiles without both are as before, byte for byte.
+    edge. Tiles without both are as before, byte for byte. Nothing else levels a river: where this
+    rule leaves it as its source has it (a survey's hydro-flattened flats stepping down a river, a
+    border between datasets across it), it keeps the source's heights, artefacts included (the
+    owner's, task #960).
   - **Below zero** is clamped to 0 after the water. Planned: polders keeping their depth.
   - **Stored** (crate::terrain_codec; the owner's, 24 Oct): every terrain tile, at every zoom, is
     Terrarium RGB as lossless WebP (libwebp 1.6.0, `cwebp -lossless -z 6 -exact`, no metadata:
