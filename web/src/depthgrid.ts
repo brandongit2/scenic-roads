@@ -1,12 +1,32 @@
-// The depth worker's 256-px grids (depth.worker.ts) for a zoom the server doesn't store: above the
-// layer's least zoom, from the tiles of that zoom under it (coarsen); past its greatest, from its
-// ancestor of that zoom (refine). Kept apart from the worker so the tests can run them
-// (web/test/depthgrid.test.ts).
+// The depth's zooms (depthZooms: which the server stores, which the map asks for) and the worker's
+// 256-px grids above the least stored (coarsen, depth.worker.ts). Kept apart from depth.ts and the
+// worker so the tests can run them (web/test/depthgrid.test.ts).
 
 /** Depth at or over this (m) is none. */
 export const NODATA_MIN = 9000;
 /** The depth a grid holds where it has none. */
 export const SENTINEL = 12000;
+
+/** The catalogue's depth layers' zooms; the server answers 404 outside them. */
+export interface DepthZooms {
+  /** The least stored (0 once depth-root has built the root packs, else 3): the worker makes the coarser. */
+  least: number;
+  /** The map's deepest relief and contour tile: one before the greatest stored, a map tile z being
+   * made from the server's z + 1 (#429: a hard-coded 16 asked for z17, every one a 404, and the
+   * depth vanished from map zoom 15.5). MapLibre scales it up past that. */
+  tiles: number;
+  /** The floor's shading's greatest (its 256-px tiles straight from the server). */
+  shade: number;
+}
+
+/** The zooms of the catalogue's `layers` (null: no depth). */
+export function depthZooms(layers: Record<string, unknown> | undefined): DepthZooms | null {
+  if (!layers || !('depth' in layers) || !('depth-class' in layers)) return null;
+  type Z = { minzoom?: number; maxzoom?: number } | undefined;
+  const zs = (['depth', 'depth-class'] as const).map((k) => layers[k] as Z);
+  const shade = (layers['depth-shade'] as Z)?.maxzoom ?? 16;
+  return { least: Math.max(...zs.map((l) => l?.minzoom ?? 0)), tiles: Math.min(...zs.map((l) => l?.maxzoom ?? 16)) - 1, shade };
+}
 
 /** A server tile's depth (m) and class bytes, 256 × 256; null where the layer has nothing. */
 export type Grid = { d: Float32Array; k: Uint8Array } | null;
@@ -39,40 +59,5 @@ export function coarsen(parts: Grid[], f: number): Grid {
         k[o] = cls;
       }
   });
-  return { d, k };
-}
-
-/**
- * Part (`qx`, `qy`) of an ancestor `g` cut into f × f, scaled up f times: depth bilinear between
- * the ancestor's pixel centres where all four have data, else the nearest pixel's (so a lake's
- * depth never blends into none at its shore); classes the nearest pixel's (as the server makes a
- * tile past its zooms from its ancestor, docs/formats.md, Depth).
- */
-export function refine(g: Grid, f: number, qx: number, qy: number): Grid {
-  if (!g) return null;
-  const s = 256 / f;
-  const d = new Float32Array(256 * 256), k = new Uint8Array(256 * 256);
-  const at = (p: number) => {
-    // The ancestor's coordinate of output pixel p's centre, clamped to its pixel centres.
-    const u = Math.min(255, Math.max(0, p));
-    const a = Math.min(254, Math.floor(u));
-    return [a, u - a] as const;
-  };
-  for (let r = 0; r < 256; r++) {
-    const vy = qy * s + (r + 0.5) / f - 0.5;
-    const [y0, ty] = at(vy);
-    const ny = Math.min(255, Math.max(0, Math.floor(qy * s + (r + 0.5) / f)));
-    for (let c = 0; c < 256; c++) {
-      const vx = qx * s + (c + 0.5) / f - 0.5;
-      const [x0, tx] = at(vx);
-      const nx = Math.min(255, Math.max(0, Math.floor(qx * s + (c + 0.5) / f)));
-      const near = ny * 256 + nx, o = r * 256 + c;
-      k[o] = g.k[near];
-      const i00 = y0 * 256 + x0, a = g.d[i00], b = g.d[i00 + 1], e = g.d[i00 + 256], h = g.d[i00 + 257];
-      d[o] = a < NODATA_MIN && b < NODATA_MIN && e < NODATA_MIN && h < NODATA_MIN
-        ? (a * (1 - tx) + b * tx) * (1 - ty) + (e * (1 - tx) + h * tx) * ty
-        : g.d[near];
-    }
-  }
   return { d, k };
 }

@@ -456,8 +456,8 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
 Three layers of 256-px tiles in packs like the terrain's: `root/0-0-0` (z0–2, the means of the lo
 packs' z3), `lo/3-x-y` (z3–8) and `hi/6-x-y` (z9–16, only where a source has grids finer than z8);
 the catalogue's zooms 0–16 once the root packs
-exist, 3–16 before (the app makes the zooms outside them, web/src/depthgrid.ts: z0–2 from z3, and past z16, which its
-z16 map tiles and its footer at z16 and over read, from z16 scaled up). A tile is stored where one of its water pixels is a
+exist, 3–16 before (the app makes z0–2 from z3, web/src/depthgrid.ts; its map tiles, each made from the
+zoom below, stop at z15, and MapLibre scales them up past it). A tile is stored where one of its water pixels is a
 source's own data of its zoom, or where a finer stored tile lies under it (each pixel then the mean
 of the four beneath it with data); never finer than the sources under it (steps.md §3). A missing
 one is its nearest stored ancestor scaled up (bilinear for depth and its shading, with the depth
