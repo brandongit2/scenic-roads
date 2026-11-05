@@ -1910,20 +1910,20 @@ fixed too):
 **The backtest, before against after** (`forecast-check --replay --from 2026-11-04 --to
 2026-11-05T16:00 --split 2026-11-05T08:00`, M4, release build so no run is cut at its budget; the
 inputs archived since #933: 24 train, 15 test; code 4 the run with each Mac's room as it asked and
-the record's lanes; code 5 each Mac at its sustained best on its slots). Minutes; median / p90 of the
-absolute end error:
+the record's lanes; code 5 each Mac at its sustained best on its slots; both packing with the room
+held for a big job, #965's `Sched::pack`). Minutes; median / p90 of the absolute end error:
 
 | | test, code 4 | test, code 5 | train, code 4 | train, code 5 |
 |---|---|---|---|---|
-| right Mac | 45 % | 44 % | 49 % | 47 % |
-| end, all | 64 / 428 | 49 / 101 | 119 / 419 | 157 / 423 |
-| end bias | +141 | +9 | -128 | -188 |
-| end, slope-deep | 49 / 168 | 14 / 64 | 120 / 417 | 157 / 423 |
-| end, bldtiles | 63 / 390 | 57 / 125 | | |
-| end, depth | 594 / 2,679 | 25 / 457 | | |
+| right Mac | 44 % | 48 % | 49 % | 47 % |
+| end, all | 65 / 358 | 52 / 113 | 119 / 417 | 156 / 421 |
+| end bias | +139 | +17 | -128 | -187 |
+| end, slope-deep | 49 / 168 | 14 / 62 | 120 / 416 | 157 / 421 |
+| end, bldtiles | 91 / 307 | 56 / 107 | | |
+| end, depth | 596 / 2,679 | 184 / 532 | | |
 
-On the test set code 5 is better everywhere but the right Mac (a point down). On train it is
-early (-188 min): a best case, each Mac on all its slots at its best room, where that night's pool
+On the test set code 5 is better everywhere, the right Mac too. On train it is
+early (-187 min): a best case, each Mac on all its slots at its best room, where that night's pool
 ran about one job a Mac (the M4's cores taken by test builds, the M1's memory at 3-5 GB). The 4 Nov
 case itself is before the inputs' archive (it begins 4 Nov 22:40 UTC), so a test replays it
 (`forecast::tests::each_mac_runs_at_its_sustained_best_room`): the mini's floor lowered at noon,
