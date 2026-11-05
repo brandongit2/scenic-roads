@@ -22,6 +22,12 @@
 # code and Caddyfile from the commit before #946 (git archive: the board's to tools/taskboard, an
 # ignored folder; Caddy's to ~/.config/scenic/pre-946/caddy, run from there); their install.sh run.
 set -euo pipefail
+usage="usage: tools/devtools/launchd/move-from-taskboard.sh [--rollback]"
+case $#:${1:-} in
+  1:-h|1:--help) print -r -- $usage; exit 0 ;;
+  0:|1:--rollback) ;;
+  *) print -ru2 -- "move-from-taskboard.sh: unexpected ${1:-}"$'\n'"$usage"; exit 2 ;;
+esac
 zmodload zsh/datetime
 path=(/opt/homebrew/bin $path)  # (mise and caddy over ssh, whose PATH is the system's)
 cd ${0:A:h}/../../..
@@ -90,7 +96,6 @@ if [[ ${1:-} == --rollback ]]; then
   exit 0
 fi
 
-[[ $# == 0 ]] || die "usage: tools/devtools/launchd/move-from-taskboard.sh [--rollback]"
 [[ -f $old/taskboard.db ]] || die "no $old/taskboard.db (moved already?)"
 [[ ! -e $new/taskboard.db ]] || die "$new/taskboard.db is there already: move it aside first"
 "$node" -e 'require("node:sqlite")' 2>/dev/null || die "$node lacks node:sqlite"
