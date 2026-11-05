@@ -3,7 +3,7 @@ import { LAND_COLOUR } from './basecolours';
 import { ver, version } from './api';
 import type { TerrainAreas } from './packs';
 import { hostFor } from './hosts';
-import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type LineKind, type LineWeights } from './state';
+import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type LineKind, type LineWeights, type WaterLook } from './state';
 
 // Base style: terrain (hillshade, tint, 3D mesh source), context layers from the self-built
 // Planetiler tiles, designation / stop overlays (GeoJSON, loaded on demand) and labels.
@@ -230,9 +230,37 @@ export const WATER_MAXZOOM = 18;
 /** The shading's texels a side for the screen's (the slope source; the drapes sized to hold them). */
 export const SHADE_DETAIL = 4;
 
-/** The whitewater's colour by the steepness under the water (%): none on level water and gentle
- * reaches, then toward foam. */
-const WHITEWATER = ['interpolate', ['linear'], ['elevation'], 0, 'rgba(0,0,0,0)', 8, 'rgba(0,0,0,0)', 50, 'rgba(206,224,236,0.8)'];
+/** The whitewater by the steepness under the water (%): none up to its start, then toward its
+ * colour at full (Settings → Map → Water; AppState.water). */
+const whitewaterRamp = (w: WaterLook) => {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(w.foamColour.slice(i, i + 2), 16));
+  return ['interpolate', ['linear'], ['elevation'], w.foamFrom, `rgba(${r},${g},${b},0)`, w.foamTo, `rgba(${r},${g},${b},${w.foam})`] as unknown as ExpressionSpecification;
+};
+
+/** The whitewater layer: the slope layer's steepness drawn as the water tiles' coverage (our
+ * MapLibre's `scenic:mask`), where the water covers at least `foamCover` of a pixel. */
+const whitewaterLayer = (w: WaterLook, visibility: 'visible' | 'none' = 'visible'): LayerSpecification => ({
+  id: 'whitewater',
+  type: 'color-relief',
+  source: 'slope',
+  metadata: { 'scenic:mask': 'water', 'scenic:mask-cover': w.foamCover },
+  layout: { visibility },
+  paint: { 'color-relief-color': whitewaterRamp(w), 'color-relief-opacity': 1 },
+});
+
+/** The whitewater as `w` has it: a new least coverage is the layer's metadata, so the layer is
+ * added again (in its place, as shown); else its colours. */
+export function applyWhitewater(map: import('maplibre-gl').Map, w: WaterLook) {
+  const l = map.getLayer('whitewater');
+  if (!l) return;
+  if ((l.metadata as Record<string, unknown> | undefined)?.['scenic:mask-cover'] !== w.foamCover) {
+    const vis = map.getLayoutProperty('whitewater', 'visibility') === 'none' ? 'none' : 'visible';
+    map.removeLayer('whitewater');
+    map.addLayer(whitewaterLayer(w, vis), 'hillshade');
+  } else {
+    map.setPaintProperty('whitewater', 'color-relief-color', whitewaterRamp(w));
+  }
+}
 
 /** What's drawn on the water (the depth's colour and floor shading, the coastal shading) goes
  * under this layer: over the water, under the whitewater and the hill-shading over it. */
@@ -446,7 +474,7 @@ const LANDMARK_LABEL_IDS = new Set(Object.values(LANDMARK_LABELS));
  * landmark names alone (set with their dots). */
 export const overlayLabelScale = (f: number) => (id: string) => (LANDMARK_LABEL_IDS.has(id) ? NaN : OVERLAY_IDS.has(id) ? f : 1);
 
-export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DENSITY, waterTiles = false, terrainAreas?: TerrainAreas): StyleSpecification {
+export function baseStyle(water: WaterLook, labelTiles = false, density: LabelDensity = DEFAULT_DENSITY, waterTiles = false, terrainAreas?: TerrainAreas): StyleSpecification {
   WATER_TILES = waterTiles;
   const base = hostFor('base');
   const tiles = Object.fromEntries(versionedTiles().map((t) => [t.source, t.url]));
@@ -600,13 +628,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       // Whitewater: the water paled toward foam as the terrain beneath it steepens (the slope
       // layer's steepness, drawn as the water tiles' coverage: our MapLibre's `scenic:mask`), so
       // rapids, cascades and falls show wherever the terrain has them. Lakes and the sea are level.
-      ...(waterTiles ? [{
-        id: 'whitewater',
-        type: 'color-relief',
-        source: 'slope',
-        metadata: { 'scenic:mask': 'water' },
-        paint: { 'color-relief-color': WHITEWATER as unknown as ExpressionSpecification, 'color-relief-opacity': 1 },
-      } as LayerSpecification] : []),
+      ...(waterTiles ? [whitewaterLayer(water)] : []),
       // The terrain's shading, over the land and the water alike: level water (lakes, the sea) has
       // none, so it shows as its colour; water on a slope shows the slope.
       {

@@ -101,6 +101,7 @@ const changes: [string, (s: AppState) => void][] = [
   ['depth', (s) => (s.depth = { ...s.depth, on: !s.depth.on, max: 900 })],
   ['buildings', (s) => (s.buildings = { ...s.buildings, on: !s.buildings.on })],
   ['water', (s) => (s.water = { ...s.water, colour: '#123456' })],
+  ['whitewater', (s) => (s.water = { ...s.water, foam: 0.5, foamFrom: 12, foamTo: 120, foamCover: 0.6, foamColour: '#e0f0ff' })],
   ['land', (s) => (s.land = '#202020')],
   ['globe', (s) => (s.globe = !s.globe)],
   ['occlude', (s) => (s.occlude = !s.occlude)],
@@ -127,6 +128,16 @@ for (const b of [base.s, defaults]) {
     }
     assert.ok([...params(h).keys()].length > 1, `${what}: nothing in ${h}`);
   }
+}
+
+// A link's water from before the whitewater (ten fields) keeps the whitewater's defaults; a full
+// steepness at or under the start is moved past it.
+{
+  const old = fromHash('#map=5/46/-71&wa=123456,1,28,0.22,1.8,4f7fa8,0.25,0,0.35,0');
+  assert.equal(old.water.colour, '#123456');
+  for (const k of ['foam', 'foamFrom', 'foamTo', 'foamCover', 'foamColour'] as const) assert.equal(old.water[k], defaults.water[k]);
+  const w = fromHash('#map=5/46/-71&wa=123456,1,28,0.22,1.8,4f7fa8,0.25,0,0.35,0,0.8,30,10,0.75,cee0ec').water;
+  assert.deepEqual([w.foamFrom, w.foamTo], [30, 31]);
 }
 
 // Older links: no profile, each setting where it differs from the defaults, the palette in p=.

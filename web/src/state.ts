@@ -179,6 +179,32 @@ export interface WaterLook {
   rippleStrength: number;
   /** Lake and river shores too, not just the sea's. */
   lakes: boolean;
+  /** Whitewater (basemap.ts applyWhitewater): its opacity at full (0 none), the steepness beneath
+   * the water it starts at and is full at (%, the slope layer's), the least share of a pixel the
+   * water covers for it to show (a shore pixel's steepness is its bank's), its colour (#rrggbb). */
+  foam: number;
+  foamFrom: number;
+  foamTo: number;
+  foamCover: number;
+  foamColour: string;
+}
+
+/** The whitewater's settings' ranges (the slope layer's steepness is coded to 400 %). */
+export const FOAM_RANGE = { from: [0, 100], to: [1, 400], cover: [0, 1] } as const;
+
+/** The whitewater's settings from a link's `wa` fields past the tenth (an older link's: `d`'s); its
+ * full steepness kept past its start. */
+export function foamOf(v: string[], d: WaterLook): Pick<WaterLook, 'foam' | 'foamFrom' | 'foamTo' | 'foamCover' | 'foamColour'> {
+  const n = (x: string | undefined, dv: number, [lo, hi]: readonly [number, number]) =>
+    x !== undefined && x !== '' && Number.isFinite(Number(x)) ? Math.min(hi, Math.max(lo, Number(x))) : dv;
+  const foamFrom = n(v[1], d.foamFrom, FOAM_RANGE.from);
+  return {
+    foam: n(v[0], d.foam, [0, 1]),
+    foamFrom,
+    foamTo: Math.max(foamFrom + 1, n(v[2], d.foamTo, FOAM_RANGE.to)),
+    foamCover: n(v[3], d.foamCover, FOAM_RANGE.cover),
+    foamColour: v[4] && /^[0-9a-f]{6}$/i.test(v[4]) ? `#${v[4].toLowerCase()}` : d.foamColour,
+  };
 }
 
 export type ThresholdDir = 'above' | 'below' | 'low';
@@ -728,6 +754,7 @@ export const defaults: AppState = {
   water: {
     colour: '#0c1622', shade: true, width: 28, strength: 0.22, falloff: 1.8, shadeColour: '#4f7fa8',
     shore: 0.25, ripples: 0, rippleStrength: 0.35, lakes: false,
+    foam: 0.8, foamFrom: 8, foamTo: 50, foamCover: 0.75, foamColour: '#cee0ec',
   },
   labelDensity: { ...DEFAULT_DENSITY, kinds: { ...DEFAULT_DENSITY.kinds } },
   poiOpacity: 0.7,
@@ -1021,7 +1048,8 @@ export function linkFields(s: AppState, buildings: boolean): Map<string, string>
   p.set('lo', s.labelOpacity.toFixed(2));
   p.set('lz', s.labelSize.toFixed(2));
   const wa = (w: WaterLook) => [w.colour.slice(1), w.shade ? 1 : 0, w.width, +w.strength.toFixed(2), +w.falloff.toFixed(2), w.shadeColour.slice(1),
-    +w.shore.toFixed(2), w.ripples, +w.rippleStrength.toFixed(2), w.lakes ? 1 : 0].join(',');
+    +w.shore.toFixed(2), w.ripples, +w.rippleStrength.toFixed(2), w.lakes ? 1 : 0,
+    +w.foam.toFixed(2), +w.foamFrom.toFixed(1), +w.foamTo.toFixed(1), +w.foamCover.toFixed(2), w.foamColour.slice(1)].join(',');
   p.set('wa', wa(s.water));
   p.set('ln', s.land.slice(1));
   const ldv = (d: LabelDensity) => [d.px, ...DENSITY_KINDS.map(([k]) => +d.kinds[k].toFixed(3)), +d.horizon.toFixed(2)].join(',');
@@ -1413,6 +1441,7 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
       colour: hex(wa[0], d.colour), shade: wa[1] !== '0', width: Math.round(n(wa[2], d.width, 2, 80)), strength: n(wa[3], d.strength, 0, 1),
       falloff: n(wa[4], d.falloff, 0.5, 4), shadeColour: hex(wa[5], d.shadeColour), shore: n(wa[6], d.shore, 0, 1),
       ripples: Math.round(n(wa[7], d.ripples, 0, 8)), rippleStrength: n(wa[8], d.rippleStrength, 0, 1), lakes: wa[9] === '1',
+      ...foamOf(wa.slice(10), d),
     };
   }
   const ld = p.get('ld')?.split(',').map(Number);

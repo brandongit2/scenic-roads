@@ -4,7 +4,7 @@ import { FERRY_GROUPS, FERRY_GROUP_COLOURS } from '../ferry';
 import { HERITAGE_GROUPS, HERITAGE_TIERS, POI_STYLE } from '../basemap';
 import { Dist, type ViewStats } from '../roads/stats';
 import { STOP_FILTERS, axisPos, filtersOf, type StopFilter } from '../stopfilters';
-import { DEFAULT_DENSITY, DENSITY_KINDS, FOG_RANGE, LABEL_KINDS, LINE_KINDS, OVERLAYS, PERSP_RANGE, ROAD_LOOK_RANGE, SPACING_RANGE, STOP_SIZE_RANGE, TIES_RANGE, WEIGHT_RANGE, defaults, type AppState, type RailState, type RoadLook, type ContourLook, type FogLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
+import { DEFAULT_DENSITY, DENSITY_KINDS, FOAM_RANGE, FOG_RANGE, LABEL_KINDS, LINE_KINDS, OVERLAYS, PERSP_RANGE, ROAD_LOOK_RANGE, SPACING_RANGE, STOP_SIZE_RANGE, TIES_RANGE, WEIGHT_RANGE, defaults, type AppState, type RailState, type RoadLook, type ContourLook, type FogLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
 import { TINT_PALETTES, TINT_VARS, contourInterval } from '../terrain';
 import * as prefs from '../prefs';
 import type { LabelLook } from '../labellook';
@@ -83,7 +83,7 @@ export class LayersCard {
   private other: Record<'water' | 'boundaries' | 'places', HTMLInputElement>;
   /** Water colour and coastal shading (Map). */
   private land!: ColourPick;
-  private water!: { box: HTMLDivElement; col: HTMLInputElement; shade: HTMLInputElement; shadeBox: HTMLDivElement; shadeCol: HTMLInputElement; lakes: HTMLInputElement };
+  private water!: { box: HTMLDivElement; col: HTMLInputElement; shade: HTMLInputElement; shadeBox: HTMLDivElement; shadeCol: HTMLInputElement; lakes: HTMLInputElement; foamCol: HTMLInputElement };
   private labelBoxes: HTMLInputElement[] = [];
   /** Stops & sights filters: must-haves (a checkbox each) and ranges (a histogram each). */
   private sfFlags: { key: string; on: HTMLInputElement }[] = [];
@@ -467,6 +467,7 @@ export class LayersCard {
       shadeBox: h('div', { class: 'tint-box' }),
       shadeCol: colour('Colour of the shading (lighter than the water brightens it, darker deepens it)', (c) => setW({ shadeColour: c })),
       lakes: cb((lakes) => setW({ lakes })),
+      foamCol: colour('Colour of the whitewater', (c) => setW({ foamColour: c })),
     };
     const d = defaults.water;
     const roadOpRow = sl({
@@ -605,10 +606,32 @@ export class LayersCard {
       }),
       tog(this.water.lakes, 'Lakes & rivers', '', 'tog', 'Shade lake and river shores too, not only the sea\'s'),
     );
+    // Whitewater (basemap.ts applyWhitewater): the water paled where the terrain beneath it is steep.
+    const FR = FOAM_RANGE;
+    const foamRows = [
+      sl({
+        label: 'Whitewater', min: 0, max: 1, step: 0.05, reset: d.foam, title: 'Opacity of the whitewater where the water is steepest: rapids, cascades and falls, from the terrain beneath the water (0: none)',
+        get: () => W().foam, set: (foam) => setW({ foam }), fmt: (v) => (v ? pct(v) : 'none'),
+      }),
+      sl({
+        label: 'From slope', min: FR.from[0], max: FR.from[1], step: 1, reset: d.foamFrom, cls: 'sub', title: 'The steepness beneath the water the whitewater starts at',
+        get: () => W().foamFrom, set: (foamFrom) => setW({ foamFrom, foamTo: Math.max(W().foamTo, foamFrom + 1) }), fmt: (v) => `${v} %`, disabled: () => !W().foam,
+      }),
+      sl({
+        label: 'Full at', min: FR.to[0], max: FR.to[1], step: 1, reset: d.foamTo, cls: 'sub', title: 'The steepness beneath the water it is full at (the slope layer counts to 400 %; zoomed out, a pixel holds the mean of the ground beneath it, so a fall narrower than a pixel shows fainter)',
+        get: () => W().foamTo, set: (foamTo) => setW({ foamTo, foamFrom: Math.min(W().foamFrom, foamTo - 1) }), fmt: (v) => `${v} %`, disabled: () => !W().foam,
+      }),
+      sl({
+        label: 'Water cover', min: FR.cover[0], max: FR.cover[1], step: 0.05, reset: d.foamCover, cls: 'sub', title: 'Shown only where the water covers this much of a pixel or more, fading in to whole: a shore pixel\'s steepness is its bank\'s (0: everywhere, by the water\'s share)',
+        get: () => W().foamCover, set: (foamCover) => setW({ foamCover }), fmt: pct, disabled: () => !W().foam,
+      }),
+      row('Colour', this.water.foamCol, 'row sub'),
+    ];
     this.water.box.append(
       row('Colour', this.water.col),
       tog(this.water.shade, 'Coastal shading', '', 'tog', 'A band of colour over the water along the coasts, fading out from the shore'),
       this.water.shadeBox,
+      ...foamRows,
     );
     this.t.contourBox.append(
       ...contourRows.slice(0, 5),
@@ -1052,6 +1075,7 @@ export class LayersCard {
     this.water.shadeBox.hidden = !s.water.shade;
     this.water.shadeCol.value = s.water.shadeColour;
     this.water.lakes.checked = s.water.lakes;
+    this.water.foamCol.value = s.water.foamColour;
     this.other.boundaries.checked = s.layers.boundaries;
     this.boundaryBoxes.forEach((c, i) => {
       c.checked = s.boundaryLevels[i];

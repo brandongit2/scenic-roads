@@ -24,6 +24,7 @@ export type ColorReliefUniformsType = {
     'u_mask_cell': Uniform3f;
     'u_mask': Uniform1i;
     'u_masked': Uniform1f;
+    'u_cover': Uniform1f;
 };
 
 const colorReliefUniforms = (context: Context, locations: UniformLocations): ColorReliefUniformsType => ({
@@ -37,7 +38,8 @@ const colorReliefUniforms = (context: Context, locations: UniformLocations): Col
     'u_cell': new Uniform3f(context, locations.u_cell),
     'u_mask_cell': new Uniform3f(context, locations.u_mask_cell),
     'u_mask': new Uniform1i(context, locations.u_mask),
-    'u_masked': new Uniform1f(context, locations.u_masked)
+    'u_masked': new Uniform1f(context, locations.u_masked),
+    'u_cover': new Uniform1f(context, locations.u_cover)
 });
 
 const colorReliefUniformValues = (
@@ -58,7 +60,9 @@ const colorReliefUniformValues = (
         'u_cell': cell ? cell.demCell : [0, 0, 1],
         'u_mask_cell': cell ? cell.maskCell : [0, 0, 1],
         'u_mask': 2,
-        'u_masked': cell ? 1 : 0
+        'u_masked': cell ? 1 : 0,
+        // Scenic Roads: a masked shading source's least coverage (FORK.md; 0: the mask's alpha as is).
+        'u_cover': (layer.metadata as {'scenic:mask-cover'?: number} | undefined)?.['scenic:mask-cover'] ?? 0
     };
 };
 

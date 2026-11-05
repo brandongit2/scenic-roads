@@ -493,14 +493,19 @@ drawn as a raster.
   Water), so a new colour needs no rebuild.
   - **Shaded by the terrain beneath:** the hill-shading is drawn over the water as over the land,
     and the depth's colour and the coastal shading go under it. Lakes and the sea are flat in the
-    terrain (§2), so they show their colour; water on a slope (falls, cascades, a river's steep
-    reach) shows its relief.
-  - **Whitewater** (`whitewater`, only with the water tiles): over pixels the water covers nearly
-    whole (the tile's alpha, smoothstep 0.75–1, so a shore pixel's bank steepness isn't counted),
-    the water pales toward foam as the slope layer's steepness rises from 8 % to 50 %. A colour
-    relief of the `slope` source with `scenic:mask` of the water (our MapLibre's
-    `color_relief.fragment.glsl`); no waterfall tags. Where the fine terrain (z13 and finer) under a
-    river steps, as across the upper Niagara River, the step shows as a pale line across it.
+    terrain (§2), so under the shading methods that leave flat ground clear (standard, combined,
+    Igor: the default) they show their colour; basic and multidirectional light flat ground, and
+    the water with it. Water on a slope (falls, cascades, a river's steep reach) shows its relief.
+    Where the terrain under a river steps (a tile's edge, its rivers levelled per tile, or two
+    datasets meeting, as across the upper Niagara River), the step shows as a line across it.
+  - **Whitewater** (`whitewater`, only with the water tiles; Settings → Map → Water, in the link's
+    `wa`): the water pales toward its colour as the slope layer's steepness rises from its start
+    to its full (8 % and 50 %, at 80 %), where the water covers its least share of a pixel or more
+    (75 %, fading in to whole: the tile's drawn alpha, so a shore pixel's bank steepness isn't
+    counted). A colour relief of the `slope` source with `scenic:mask` of the water and
+    `scenic:mask-cover` its least share (our MapLibre's `color_relief.fragment.glsl`); no waterfall
+    tags. Zoomed out, a pixel's steepness is the mean of the ground beneath it, so a fall narrower
+    than a pixel shows fainter, then not at all.
   - The coastal shading (`web/src/coast.ts`) measures its shore from the same shares at 2 texels a
     CSS px: every pixel holding any land is a shore, placed by its share (`web/src/coastdist.ts`).
     The distance is exact within 192 pixels; past 60° the far field comes from coarser ancestors.

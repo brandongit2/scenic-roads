@@ -10,6 +10,7 @@ uniform int u_color_ramp_size;
 uniform float u_opacity;
 uniform sampler2D u_mask;
 uniform float u_masked;
+uniform float u_cover;
 
 in vec2 v_pos;
 in vec2 v_mask;
@@ -97,13 +98,16 @@ void main() {
     vec4 col;
     // Scenic Roads: a shading tile (known by its encoding's base shift, 32768.5: the app's
     // basemap.ts SHADE_SHIFT; pipeline::shade_codec) holds each pixel's mean steepness in R,
-    // sqrt-coded to 400 %, which the slope tint colours. Masked (the app's whitewater), only where
-    // the mask covers the pixel nearly whole: a pixel partly covered is a shore, its steepness the
-    // bank's, not the water's.
+    // sqrt-coded to 400 %, which the slope tint colours. Masked (the app's whitewater), from the
+    // layer's least coverage `scenic:mask-cover` (u_cover) to whole: a pixel partly covered is a
+    // shore, its steepness the bank's, not the water's.
     if (abs(u_unpack.w - 32768.5) < 0.01) {
         float r = u_masked > 0.5 ? shadeR(v_pos) : texture(u_image, v_pos).r;
         col = rampAt(r * r * 400.0);
-        if (u_masked > 0.5) col *= smoothstep(0.75, 1.0, texture(u_mask, v_mask).a);
+        if (u_masked > 0.5) {
+            float a = texture(u_mask, v_mask).a;
+            col *= u_cover > 0.0 ? smoothstep(u_cover, 1.0, a) : a;
+        }
     } else if (u_masked > 0.5) {
         col = rampAt(elevationOf(v_pos)) * texture(u_mask, v_mask).a;
     } else {

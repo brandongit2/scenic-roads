@@ -10,7 +10,7 @@
 // on the terrain like the water itself.
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
-import { BASEMAP_MAXZOOM, lakeColour, setWaterColours, WATER_TILE_SIZE, waterTiles, waterTilesOn, waterTop } from './basemap';
+import { applyWhitewater, BASEMAP_MAXZOOM, lakeColour, setWaterColours, WATER_TILE_SIZE, waterTiles, waterTilesOn, waterTop } from './basemap';
 import type { WaterLook } from './state';
 import type { CoastMessage, CoastResponse } from './coast.worker';
 import { COAST_ENCODING, COAST_LINEAR, coastElevation } from './coastdist';
@@ -164,6 +164,7 @@ export function applyWater(map: MLMap, w: WaterLook, input: () => CoastInput, wa
     }
   }
   if (map.getLayer('waterway')) map.setPaintProperty('waterway', 'line-color', river);
+  applyWhitewater(map, w);
   const on = w.shade && waterShown;
   if (on) setupShading(map, w, input());
   if (!map.getLayer('coast-shade')) return;
