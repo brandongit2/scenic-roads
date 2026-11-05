@@ -165,9 +165,11 @@ live_version() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])
 # didn't and returns 1. A server that never answered is told apart, its paths not asked: exited
 # (its status), or still starting after <seconds> (task #698: under a second publish's build the
 # mini's took over the old 2 min), with its log's last lines or that it printed nothing. A wait past
-# $smoke_say s (30) is said once, with what it waits for, so a slow start shows as one.
+# $smoke_say s (30) is said once, with what it waits for, so a slow start shows as one. The answer
+# must come from <pid> itself (task #956 review): a port held by another process (a server left by
+# a killed publish) answering for one that couldn't listen is said so, not passed.
 smoke() {
-  local port=$1 pid=$2 log=$3 wait=$4 u code try t0=$SECONDS ok=1 rc said=
+  local port=$1 pid=$2 log=$3 wait=$4 u code try t0=$SECONDS ok=1 rc said= where holder
   shift 4
   until curl -sf -o /dev/null http://127.0.0.1:$port/api/ping; do
     if ! kill -0 $pid 2>/dev/null; then
@@ -175,20 +177,25 @@ smoke() {
       print -r -- "smoke test: the server exited (status $rc) after $(( SECONDS - t0 )) s without answering"
       ok=0; break
     fi
+    where="still reading its catalogue from the NAS"
+    grep -q '^catalogue ' $log 2>/dev/null && where="its catalogue read, not yet listening"
     if (( SECONDS - t0 >= wait )); then
-      if grep -q '^catalogue ' $log 2>/dev/null; then
-        print -r -- "smoke test: the server, still running, didn't answer /api/ping within $wait s, its catalogue read"
-      else
-        print -r -- "smoke test: the server, still running, didn't answer /api/ping within $wait s, still reading its catalogue from the NAS"
-      fi
+      print -r -- "smoke test: the server, still running, didn't answer /api/ping within $wait s, $where"
       ok=0; break
     fi
     if [[ -z $said ]] && (( SECONDS - t0 >= ${smoke_say:-30} )); then
-      print -r -- "smoke test: the server is still starting (no answer yet to /api/ping after $(( SECONDS - t0 )) s; waiting up to $wait s)"
+      print -r -- "smoke test: the server is still starting ($where; no answer to /api/ping after $(( SECONDS - t0 )) s, waiting up to $wait s)"
       said=1
     fi
     sleep 0.5
   done
+  if (( ok )); then
+    holder=$(lsof -nP -t -iTCP:$port -sTCP:LISTEN 2>/dev/null)
+    if [[ $holder != $pid ]]; then
+      print -r -- "smoke test: port $port answered, but it is held by process ${${holder//$'\n'/, }:-unknown (another user's?)}, not the server started ($pid)"
+      ok=0
+    fi
+  fi
   if (( ! ok )); then
     if [[ -s $log ]]; then print -r -- "its log's last lines:"; tail -20 $log
     else print -r -- "it printed nothing"; fi

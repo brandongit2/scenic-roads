@@ -6,6 +6,9 @@
 lib=${0:A:h:h}/lib.zsh
 tmp=$(mktemp -d)
 trap 'rm -rf $tmp' EXIT
+# (zsh skips the EXIT trap on a signal: a stopped publish removes $tmp too, which ends the gated fake
+# servers below.)
+trap 'exit 143' TERM; trap 'exit 130' INT
 failed=0
 ok() { print "PASS  $1" }
 no() { print "FAIL  $1: $2"; failed=1 }
@@ -216,7 +219,9 @@ rm -f $nas/app/previous.json
 # it printed anything.
 fake=$tmp/fake.py
 print -r -- 'import os, sys, time, http.server
-while not os.path.exists(sys.argv[2]): time.sleep(0.05)
+while not os.path.exists(sys.argv[2]):
+    if not os.path.isdir(os.path.dirname(sys.argv[2])): sys.exit("its folder is gone")
+    time.sleep(0.05)
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self): self.send_response(200); self.end_headers()
     def log_message(self, *a): pass
@@ -240,6 +245,15 @@ elif [[ $(grep -c 'still starting' $tmp/smoke-first) != 1 ]]; then no "smoke two
 else ok "smoke: two at once, the first's server opened after the second passed, both pass"; fi
 sm slow $p1 1 && no "smoke still starting" "passed" || {
   [[ $(<$tmp/smoke-slow) == *"didn't answer"*'still reading its catalogue'*'printed nothing'* && $(<$tmp/smoke-slow) != *000* ]] && ok "smoke: a server still starting past the wait said so" || no "smoke still starting" "$(<$tmp/smoke-slow)"; }
+# A port another process holds (a server a killed publish left) answers for one that couldn't
+# listen: said so, not passed.
+touch $tmp/go-other
+python3 -I $fake $p2 $tmp/go-other > $tmp/log-other 2>&1 & other=$!
+until curl -sf -o /dev/null http://127.0.0.1:$p2/api/ping || ! kill -0 $other 2>/dev/null; do sleep 0.1; done
+sleep 600 & stand=$!
+out=$(zsh -c "source ${(q)lib}; smoke $p2 $stand $tmp/log-other 600 /api/ping")
+r=$?; kill $other $stand 2>/dev/null; wait $other $stand 2>/dev/null
+(( r )) && [[ $out == *"held by process $other, not the server started ($stand)"* ]] && ok "smoke: a port another process holds said so" || no "smoke port held" "$r: $out"
 print -r -- 'import sys; print("boom", file=sys.stderr); sys.exit(3)' > $tmp/die.py
 # (Started by the shell that runs smoke, as publish.sh does: its status is that shell's to wait for.)
 out=$(zsh -c "source ${(q)lib}; python3 -I $tmp/die.py > $tmp/log-die 2>&1 & smoke $p1 \$! $tmp/log-die 600 /api/ping") && no "smoke exited" "passed" || {
