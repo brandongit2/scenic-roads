@@ -197,11 +197,11 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   The out-of-view cache keeps as many more tiles as the cover's finer ones (`_detailTiles`). Until
   the refinement is done the source isn't `loaded()` (`_detailPending`), so `idle` waits for the
   finer tiles (a screenshot, a benchmark's settle); `_detailOffset` holds each finer tile's zooms
-  beyond its screen tile's. A frame's cost is that of what changed (`_refineMemo`): the finer cover
-  is worked out again only when the screen's own cover changes (0.4–0.6 ms at saguenay's z13, 60°
-  pitch, 1440 × 900, in Node on the M1), the choice when that, a tile of the source (added, removed,
-  loaded or failed: `_tileVersion`), the drapes' cover or the budget changes (~0.1 ms); otherwise the
-  last answer, and the same `_detailOffset`. The app's shading (`slope`) uses 4, two zooms finer
+  beyond its screen tile's, the same Map while they are the same (the drapes' sizes aren't worked
+  out again). Both covers are worked out each update (the finer one 0.4–0.6 ms at saguenay's z13,
+  60° pitch, 1440 × 900, in Node on the M1; the choice ~0.1 ms): the finer cover moves with the
+  camera where the screen's own doesn't, and one kept while the screen's stayed the same left the
+  part of a tile newly in view unshaded. The app's shading (`slope`) uses 4, two zooms finer
   (`tile_manager_detail.test.ts`).
 - **Drapes finer than the screen** (`TerrainTileManager.drapeDetail`, default 1; the app sets 4):
   a drape tile under a draped source's finer tiles (`_detailOffset`) gets 2^offset times the texels

@@ -3,6 +3,7 @@ import {TileManager} from './tile_manager.ts';
 import {OverscaledTileID} from './tile_id.ts';
 import {MercatorTransform} from '../geo/projection/mercator_transform.ts';
 import {LngLat} from '../geo/lng_lat.ts';
+import {coveringTiles} from '../geo/projection/covering_tiles.ts';
 
 // Scenic Roads: a source with `detail` (TileManager._refineCover).
 describe('TileManager._refineCover', () => {
@@ -17,8 +18,6 @@ describe('TileManager._refineCover', () => {
         tm._source = {maxzoom: 10} as any;
         tm._detailTiles = 0;
         tm._detailOffset = new Map();
-        tm._refineMemo = null;
-        tm._tileVersion = 0;
         tm.map = {getPixelRatio: () => 1} as any;
         tm._inViewTiles = {getTileById: (key: string) => loaded.includes(key) ? {hasData: () => true, state: 'loaded'} : undefined} as any;
         const transform = new MercatorTransform();
@@ -42,33 +41,41 @@ describe('TileManager._refineCover', () => {
         expect(tm._detailTiles).toBe(32);
     });
 
-    test('worked out again only when what it reads changes', () => {
+    test('follows the finer cover as the camera pans, the screen\'s own cover the same or not', () => {
+        // (a finer cover kept while the screen's own stayed the same left the part of a tile newly
+        // in view uncovered: 14 frames in 120 of a slow pan at saguenay, 5 Nov)
+        const {tm} = setup([]);
+        tm._inViewTiles = {getTileById: () => ({hasData: () => true, state: 'loaded'})} as any;
+        tm.detailBudget = 1000;
+        tm._source = {maxzoom: 16} as any;
+        const transform = new MercatorTransform();
+        transform.resize(800, 600);
+        transform.setZoom(11.5);
+        transform.setPitch(50);
+        const cover = (tileSize: number) => coveringTiles(transform, {tileSize, minzoom: 0, maxzoom: 16});
+        let sameToday = 0;
+        let lastToday = '';
+        for (let i = 0; i < 60; i++) {
+            transform.setCenter(new LngLat(-71 + i * 0.0007, 48.4));
+            const today = cover(512), fine = cover(128);
+            if (keys(today).join() === lastToday) sameToday++;
+            lastToday = keys(today).join();
+            const got = tm._refineCover(transform, today, () => fine);
+            const uncovered = fine.filter(f => !got.some(g => g.canonical.equals(f.canonical) || f.canonical.isChildOf(g.canonical)));
+            expect(uncovered.map(f => f.key)).toEqual([]);
+        }
+        expect(sameToday).toBeGreaterThan(0);
+    });
+
+    test('the finer tiles\' offsets stay the same Map while they are the same', () => {
         const fine = [...kids(T), ...kids(far)];
-        const loaded = [T.key];
-        const {tm, transform} = setup(loaded);
-        let asked = 0;
-        const fineCover = () => { asked++; return fine; };
-        expect(keys(tm._refineCover(transform, [T, far], fineCover))).toEqual(keys([...kids(T), far]));
+        const {tm, transform} = setup([T.key, far.key]);
+        tm._refineCover(transform, [T, far], () => fine);
         const offsets = tm._detailOffset;
-        // the same frame again (the camera moved, nothing else): the last answer, no finer cover asked
-        transform.setCenter(new LngLat(-39.3, 39.4));
-        expect(keys(tm._refineCover(transform, [T, far], fineCover))).toEqual(keys([...kids(T), far]));
-        expect(asked).toBe(1);
+        tm._refineCover(transform, [T, far], () => fine);
         expect(tm._detailOffset).toBe(offsets);
-        // a tile comes in (_tileVersion): chosen again over the finer cover already known
-        loaded.push(far.key);
-        tm._tileVersion++;
-        expect(keys(tm._refineCover(transform, [T, far], fineCover))).toEqual(keys(fine));
-        expect(asked).toBe(1);
+        tm._refineCover(transform, [T], () => kids(T));
         expect(tm._detailOffset).not.toBe(offsets);
-        // the screen's own cover changes: the finer cover asked again
-        expect(keys(tm._refineCover(transform, [T], fineCover))).toEqual(keys(kids(T)));
-        expect(asked).toBe(2);
-        // (the same finer tiles chosen again: the same offsets)
-        const now = tm._detailOffset;
-        tm._tileVersion++;
-        tm._refineCover(transform, [T], fineCover);
-        expect(tm._detailOffset).toBe(now);
     });
 
     test('the out-of-view cache keeps as many more as the cover\'s finer tiles', () => {
