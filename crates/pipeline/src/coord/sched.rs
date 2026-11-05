@@ -138,6 +138,10 @@ pub struct Sched {
     /// `set_paces`, which moves `needs_rev`): the measures' times and NAS rates are read at the
     /// lead's pace by it, and a worker's at its own. Empty: as measured.
     pub paces: crate::paces::Paces,
+    /// The runs of the build's timings in the window (crate::uses, task #947; `add_use`), and each
+    /// step's use on each Mac they say: what a job is granted threads by (`job_cores`).
+    pub use_runs: Vec<crate::uses::Run>,
+    pub uses: crate::uses::Uses,
 }
 
 /// `Sched::measured_of`'s targets' measures: step → target → `Sched::measures`.
@@ -228,11 +232,14 @@ pub(crate) struct Need {
     /// Leaving its Mac's cores idle (its Mac's `Capacity::idle`): none of its cores (docs/pool.md
     /// §7.2, A job leaving the cores idle).
     idle: bool,
+    /// Its cores are its step's use on its Mac (crate::uses, `job_cores`), cold or not.
+    by_use: bool,
 }
 
 /// The steps known to honour the threads they're granted (task #499 review): their cold starts
 /// take a thread (task #896: their run measures what they use, and climbs from there), the others'
-/// the whole Mac. `slope-hi` and `slope-deep`: Rust steps
+/// the whole Mac; only where the step has no use on the Mac (crate::uses, task #947: its timings
+/// say what it keeps busy, honoured or not). `slope-hi` and `slope-deep`: Rust steps
 /// on the rayon pool the agent sizes (`RAYON_NUM_THREADS`, crate::agent::jobs); `terrain-deep`: its
 /// base and deep tiles made on that pool, its reads ahead waiting on the network
 /// (crate::terrain_deep); `bld-fetch`: its downloads bounded by its `--jobs` (3 by default, at most
@@ -245,6 +252,17 @@ pub(super) const THREADS_HONOURED: &[&str] = &["slope-hi", "slope-deep", "terrai
 /// `mb`: times 3/2 (task #499; `Shared::provisional`, the forecast's packing too).
 pub(super) fn provisional_mb(mb: u64) -> u64 {
     mb.saturating_mul(3) / 2
+}
+
+/// The cores a job of `step` over `targets` takes by the cost book (crate::needs::Book::cores):
+/// the most of its targets', each of them; None when one's aren't said. What its step's use on its
+/// Mac (crate::uses) stands in for where none is known.
+fn book_cores(b: &crate::needs::Book, step: &str, targets: &[String]) -> Option<crate::needs::Cores> {
+    let v = targets.iter().map(|t| b.cores(step, t)).collect::<Option<Vec<crate::needs::Cores>>>()?;
+    Some(crate::needs::Cores {
+        grant: v.iter().map(|c| c.grant).max().unwrap_or(0),
+        busy_tenths: v.iter().map(|c| c.busy_tenths).collect::<Option<Vec<u32>>>().and_then(|b| b.into_iter().max()),
+    })
 }
 
 /// The cores `a`'s Mac has for its jobs together: its capacity's (else the ask's), less the in-use
@@ -680,65 +698,86 @@ impl Sched {
     }
 
     /// What a job of `step` over `targets` is measured to take (as `Coordinator::measured_batch`:
-    /// the most of their memory, their disks summed or the most a job of the step took), and its
-    /// cores (crate::needs::Book::cores: the most of its targets', each of them; None when one's
-    /// aren't said); None when any is a cold start.
-    pub(super) fn job_need(&self, step: &str, targets: &[String]) -> Option<(Measured, Option<crate::needs::Cores>)> {
+    /// the most of their memory, their disks summed or the most a job of the step took); None when
+    /// any is a cold start.
+    pub(super) fn job_need(&self, step: &str, targets: &[String]) -> Option<Measured> {
         let each: Vec<Measured> = targets.iter().map(|t| self.measured(step, t)).collect::<Option<_>>()?;
         let job = self.job_floor(step);
-        let b = self.book();
-        let cores = targets.iter().map(|t| b.cores(step, t)).collect::<Option<Vec<crate::needs::Cores>>>().map(|v| {
-            crate::needs::Cores {
-                grant: v.iter().map(|c| c.grant).max().unwrap_or(0),
-                busy_tenths: v
-                    .iter()
-                    .map(|c| c.busy_tenths)
-                    .collect::<Option<Vec<u32>>>()
-                    .and_then(|b| b.into_iter().max()),
-            }
-        });
-        Some((
-            Measured {
-                mem_mb: each.iter().map(|m| m.mem_mb).max().unwrap_or(0),
-                disk_mb: crate::needs::batch_disk(step, each.iter().map(|m| m.disk_mb)).max(job),
-                own: each.iter().all(|m| m.own),
-            },
-            cores,
-        ))
+        Some(Measured {
+            mem_mb: each.iter().map(|m| m.mem_mb).max().unwrap_or(0),
+            disk_mb: crate::needs::batch_disk(step, each.iter().map(|m| m.disk_mb)).max(job),
+            own: each.iter().all(|m| m.own),
+        })
     }
 
-    /// What a job of `step` over `targets` is packed as (task #499): its measure (`job_need`), else,
-    /// a cold start (`Need::cold`), its provisional need (`provisional`).
-    pub(super) fn pack_need(&self, step: &str, targets: &[String]) -> Need {
+    /// What a job of `step` over `targets` on `worker`'s Mac is packed as (task #499): its measure
+    /// (`job_need`), else, a cold start (`Need::cold`), its provisional need (`provisional`); its
+    /// cores its step's use on the Mac (crate::uses, task #947), else, measured, the cost book's
+    /// (`book_cores`).
+    pub(super) fn pack_need(&self, step: &str, targets: &[String], worker: &str) -> Need {
         // (A step whose jobs only change build records (task #838): never cold, one thread counted for no
         // cores (it waits on the NAS), its declared memory, no disk: it goes beside any jobs, a long one's included.)
         if crate::agent::steps::records_only(step) {
             let m = Measured { mem_mb: crate::agent::steps::mem_mb(step), disk_mb: 0, own: false };
             let cores = Some(crate::needs::Cores { grant: 1, busy_tenths: Some(0) });
-            return Need { m, cores, cold: false, waits: false, idle: false };
+            return Need { m, cores, cold: false, waits: false, idle: false, by_use: false };
         }
+        let used = self.uses.cores(step, crate::paces::mac_of(worker));
+        let by_use = used.is_some();
         match self.job_need(step, targets) {
-            Some((m, cores)) => Need { m, cores, cold: false, waits: false, idle: false },
-            None => Need { m: self.provisional(step, targets), cores: None, cold: true, waits: false, idle: false },
+            Some(m) => {
+                let cores = used.or_else(|| book_cores(&self.book(), step, targets));
+                Need { m, cores, cold: false, waits: false, idle: false, by_use }
+            }
+            None => {
+                Need { m: self.provisional(step, targets), cores: used, cold: true, waits: false, idle: false, by_use }
+            }
         }
+    }
+
+    /// The threads a job of `step` over `targets` on `worker`'s Mac, of `total` cores for its jobs
+    /// (`ask_cores`: the in-use share's taken off), is granted, and the cores it counts for there in
+    /// tenths: `need_cores` of its `pack_need`. The grant rule in one place: the live scheduler's
+    /// (`pack`), the forecast's (`pack` on this scheduler as recorded, `State`), and a running
+    /// job's, decided again (task #948).
+    pub fn lease_cores(&self, worker: &str, step: &str, targets: &[String], total: u32) -> (u32, u32) {
+        self.need_cores(step, &self.pack_need(step, targets, worker), total)
+    }
+
+    /// The runs of the build's timings in the window (a coordinator's log as it starts,
+    /// crate::uses::Run::read_log): each step's use on each Mac from them.
+    pub fn set_use_runs(&mut self, runs: Vec<crate::uses::Run>) {
+        self.use_runs = runs;
+        self.uses = crate::uses::Uses::of(&self.use_runs);
+    }
+
+    /// A job's timings `rec` come in at `now` (unix s): its run among the uses' (crate::uses), those
+    /// ended before the window let go.
+    pub fn add_use(&mut self, rec: &crate::timings::RunRec, now: u64) {
+        let Some(r) = crate::uses::Run::of(rec) else { return };
+        self.use_runs.retain(|r| crate::uses::in_window(r, now));
+        self.use_runs.push(r);
+        self.uses = crate::uses::Uses::of(&self.use_runs);
     }
 
     /// The threads a job packed as `n` is granted on a Mac of `total` cores, and the cores it counts
     /// for there, in tenths of a core (task #688; tenths, task #697: a job's busy cores rounded to the
-    /// nearest undercounted up to half a core each). Measured: its grant (crate::needs::Book::cores:
-    /// the cores it computed on and a thread more) within the Mac's cores, counted for the cores it
-    /// kept busy (`busy_tenths`, a climb's thread among them; its threads where its runs said no CPU
-    /// time). No fixed share caps or floors a measured job (task #888: the M4's terrain jobs were
-    /// held to 3 of 14 cores, 2.4 of them busy, while the Mac sat at a load of 4; task #896: its
-    /// runs, not a share, say what it uses). Not said (no run said its threads), or a cold start of
-    /// a step honouring its threads (`THREADS_HONOURED`), a thread both (task #896: its run measures
-    /// it, and climbs from there); another cold start the whole Mac both (task #499 review: one
-    /// that runs as many threads as the Mac has would swamp the jobs beside it). One only waiting on
-    /// a worker, or leaving its cores idle, counts for none.
+    /// nearest undercounted up to half a core each). Measured: its grant (its step's use on the Mac,
+    /// crate::uses: the most cores its runs there kept busy over their whole runs, rounded up, a
+    /// thread more where they needed every thread; none there, crate::needs::Book::cores: the cores
+    /// it computed on and a thread more) within the Mac's cores, counted for the cores it kept busy
+    /// (`busy_tenths`, a climb's thread among them; its threads where its runs said no CPU time). No
+    /// fixed share caps or floors a measured job (task #888: the M4's terrain jobs were held to 3 of
+    /// 14 cores, 2.4 of them busy, while the Mac sat at a load of 4; task #896: its runs, not a
+    /// share, say what it uses). Not said (no run said its threads), or a cold start of a step
+    /// honouring its threads (`THREADS_HONOURED`), a thread both (task #896: its run measures it,
+    /// and climbs from there); another cold start with no use on the Mac the whole Mac both (task
+    /// #499 review: one that runs as many threads as the Mac has would swamp the jobs beside it).
+    /// One only waiting on a worker, or leaving its cores idle, counts for none.
     pub(super) fn need_cores(&self, step: &str, n: &Need, total: u32) -> (u32, u32) {
         let (threads, busy) = if crate::agent::steps::records_only(step) {
             (1, 0)
-        } else if n.cold && !THREADS_HONOURED.contains(&step) {
+        } else if n.cold && !n.by_use && !THREADS_HONOURED.contains(&step) {
             (total, total * 10)
         } else {
             match n.cores {
@@ -835,7 +874,7 @@ impl Sched {
         let needs: Vec<Need> = jobs
             .iter()
             .map(|(l, step, targets)| {
-                let mut n = self.pack_need(step, targets);
+                let mut n = self.pack_need(step, targets, &a.worker);
                 if let Some(held) = waits(l) {
                     n.m.mem_mb = n.m.mem_mb.min(held);
                     n.waits = true;
@@ -984,7 +1023,7 @@ impl Sched {
                     continue;
                 }
                 let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
-                let n = self.pack_need(&o.step, &ts);
+                let n = self.pack_need(&o.step, &ts, &a.worker);
                 if beside && n.cold && (cold_here || self.never_measured(&o.step)) {
                     cold_why.get_or_insert_with(|| {
                         if cold_here {
@@ -1163,7 +1202,7 @@ impl Sched {
         }
         drop(kept);
         let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
-        let disk_mb = self.job_need(&o.step, &ts).map_or(0, |(m, _)| m.disk_mb) + fill;
+        let disk_mb = self.job_need(&o.step, &ts).map_or(0, |m| m.disk_mb) + fill;
         Pick { lease, step: o.step.clone(), targets: pick, threads, disk_mb, job: o.job.clone() }
     }
 
@@ -1211,7 +1250,8 @@ impl Sched {
             && (self.provisional(&o.step, &ts).mem_mb > left
                 || cold_held
                 || self.never_measured(&o.step)
-                || !THREADS_HONOURED.contains(&o.step.as_str()))
+                || (!THREADS_HONOURED.contains(&o.step.as_str())
+                    && self.uses.cores(&o.step, crate::paces::mac_of(&a.worker)).is_none()))
             && self.own_open(o, a, now)
             && self.own_nas_fits(o, now, true)
     }
@@ -1279,7 +1319,7 @@ impl Sched {
         }
         let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
         let fits = match self.job_need(&o.step, &ts) {
-            Some((m, _)) => m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d),
+            Some(m) => m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d),
             None => self.cold_fits(&o.step, &ts, a, now),
         };
         // (The budget asked last: its wait noted only when the job would go but for it.)
@@ -1462,7 +1502,7 @@ impl Sched {
                 // (The cores it kept busy within the threads it was granted, else those threads.)
                 Work::Job { step, targets } => {
                     let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
-                    let n = Need { idle: idle(l), ..self.pack_need(step, &ts) };
+                    let n = Need { idle: idle(l), ..self.pack_need(step, &ts, worker) };
                     let counted = self.need_cores(step, &n, total).1;
                     match n.cores.and_then(|c| c.busy_tenths) {
                         _ if counted == 0 || l.threads == 0 => counted,
@@ -1617,13 +1657,15 @@ pub struct State {
     pub last: Vec<(String, String, String)>,
     /// Each Mac's pace at each step (`Sched::paces`; code 4 on: a record before it has none).
     pub paces: crate::paces::Paces,
+    /// Each step's use on each Mac (`Sched::uses`, task #947: a record before it has none).
+    pub uses: crate::uses::Uses,
 }
 
 impl State {
     /// The cores `a`'s Mac has past those busy outside the pool as its ask says (`outside_cores`,
-    /// past the cores the jobs it holds here count for: each its targets' most kept busy
-    /// (crate::needs::Cores::busy_tenths, summed in tenths) within its threads, else its threads): the forecast's room for
-    /// its jobs (task #684).
+    /// past the cores the jobs it holds here count for: each its step's use on the Mac's busy cores
+    /// (crate::uses), else its targets' most kept busy (crate::needs::Cores::busy_tenths), summed in
+    /// tenths, within its threads, else its threads): the forecast's room for its jobs (task #684).
     pub fn cores_left(&self, a: &Ask) -> u32 {
         let b = crate::needs::Book::new(&self.costs);
         let ours: u32 = self
@@ -1631,8 +1673,10 @@ impl State {
             .iter()
             .filter(|l| l.worker == a.worker)
             .map(|l| {
-                let busy = l.targets.iter().map(|t| b.cores(&l.step, &t.0)?.busy_tenths).collect::<Option<Vec<u32>>>();
-                busy.and_then(|v| v.into_iter().max()).map_or(l.threads * 10, |c| c.min(l.threads * 10))
+                let ts: Vec<String> = l.targets.iter().map(|t| t.0.clone()).collect();
+                let c =
+                    self.uses.cores(&l.step, crate::paces::mac_of(&l.worker)).or_else(|| book_cores(&b, &l.step, &ts));
+                c.and_then(|c| c.busy_tenths).map_or(l.threads * 10, |c| c.min(l.threads * 10))
             })
             .sum();
         let ours = tenths_to_cores(ours);
@@ -1716,6 +1760,7 @@ impl Sched {
                 .collect(),
             last: self.last.iter().map(|((w, s), t)| (w.clone(), s.clone(), t.clone())).collect(),
             paces: self.paces.clone(),
+            uses: self.uses.clone(),
         }
     }
 
@@ -1793,6 +1838,8 @@ impl Sched {
             measured_of: Default::default(),
             drop_needs: Default::default(),
             paces: s.paces.clone(),
+            use_runs: Vec::new(),
+            uses: s.uses.clone(),
         };
         sched.set_offers(s.offers.clone());
         sched

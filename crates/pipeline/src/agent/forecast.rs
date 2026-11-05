@@ -1107,13 +1107,17 @@ struct Sim {
 }
 
 /// A job the scheduler granted in the forecast's run (`Forecast::grants`): to which Mac, its step
-/// and targets, and when (s from the forecast's start; unix seconds in a `Forecast`).
+/// and targets, when (s from the forecast's start; unix seconds in a `Forecast`), and the threads
+/// it runs (the scheduler's grant rule, crate::coord::sched::Sched::lease_cores; 0: a forecast
+/// before task #947).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Grant {
     pub mac: String,
     pub step: String,
     pub targets: Vec<String>,
     pub at: f64,
+    #[serde(default)]
+    pub threads: u32,
 }
 
 /// The share of a region's z6 tiles reading stale terrain, built as the coverage wants them now, taken
@@ -1769,6 +1773,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
                         step: p.step.clone(),
                         targets: p.targets.iter().map(|x| x.0.clone()).collect(),
                         at: t,
+                        threads: p.threads,
                     });
                 }
                 took.extend(ids.iter().map(|&i| (i, jobs)));
@@ -3280,7 +3285,9 @@ mod tests {
     /// The guard of task #535: the forecast, fed the coordinator's state as recorded
     /// (`Coordinator::sched_state`, as written with the lead's forecast), makes the same first grants
     /// the coordinator then makes: the lead's and a member's, by memory, cores and the NAS budget
-    /// (each z6 tile weighing 400 of its 1000: two at once, whatever their room says).
+    /// (each z6 tile weighing 400 of its 1000: two at once, whatever their room says), each with the
+    /// threads the coordinator grants it (task #947: by its step's use on its Mac, crate::uses: 3 on
+    /// the member, which kept 3 of 4 busy; 1 on the lead, 0.5 of 2).
     #[test]
     fn fed_a_recorded_state_the_forecast_grants_what_the_coordinator_grants() {
         use crate::coord::{self, client, cost_version};
@@ -3317,22 +3324,36 @@ mod tests {
         };
         c.offer("p", offered());
         c.set_capacity(ask(16_000, 14, 4).cap);
+        let run = |host: &str, threads: u32, cpu_s: f64| crate::timings::RunRec {
+            v: 1,
+            kind: "unit".into(),
+            host: host.into(),
+            start: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 200,
+            wall_s: 100.0,
+            cpu_s: Some(cpu_s),
+            threads: Some(threads),
+            ok: true,
+            ..Default::default()
+        };
+        c.add_timings(&run("m1 #2", 4, 300.0));
+        c.add_timings(&run("m4", 2, 50.0));
         // The state as data.
         let st: State = serde_json::from_str(&serde_json::to_string(&c.sched_state()).unwrap()).unwrap();
-        let mut real: Vec<(String, Vec<String>)> = Vec::new();
+        let mut real: Vec<(String, Vec<String>, u32)> = Vec::new();
         let mut take = |g: Option<crate::coord::Grant>, who: &str| {
             for g in g.into_iter().flat_map(|mut g| {
                 let more = std::mem::take(&mut g.more);
                 std::iter::once(g).chain(more)
             }) {
                 if let crate::coord::Granted::Job { targets, .. } = g.work {
-                    real.push((who.to_string(), targets.into_iter().map(|t| t.0).collect()));
+                    real.push((who.to_string(), targets.into_iter().map(|t| t.0).collect(), g.threads));
                 }
             }
         };
         take(c.ask_own(&ask(16_000, 14, 4), &Default::default(), 0), "m4");
         take(m1.ask(&ask(8000, 8, 4)).unwrap(), "m1");
         assert!(!real.is_empty() && real.len() < 8, "the budget holds some back: {real:?}");
+        assert!(real.iter().all(|(who, _, t)| *t == if who == "m1" { 3 } else { 1 }), "{real:?}");
         // The forecast: the same z6 tiles, the lead's four slots and the member's, the state fed.
         let regions = [region("a", &[], &units.iter().map(String::as_str).collect::<Vec<_>>(), &[])];
         let slot = |host: &str, k: usize, lead: bool| Machine {
@@ -3347,8 +3368,12 @@ mod tests {
         inp.macs.insert("m4".into(), MacRoom { mem_mb: 16_000, cores: 14 });
         inp.sched = Some(st);
         let f = forecast(&inp);
-        let first: Vec<(String, Vec<String>)> =
-            f.grants.iter().filter(|g| g.at as u64 == inp.now).map(|g| (g.mac.clone(), g.targets.clone())).collect();
+        let first: Vec<(String, Vec<String>, u32)> = f
+            .grants
+            .iter()
+            .filter(|g| g.at as u64 == inp.now)
+            .map(|g| (g.mac.clone(), g.targets.clone(), g.threads))
+            .collect();
         assert_eq!(first, real);
     }
 
@@ -4138,7 +4163,7 @@ mod tests {
     #[test]
     fn a_departure_is_two_jobs_and_half_the_forecasts_apart() {
         assert!(!departed(3, 4) && !departed(10, 13) && departed(0, 2) && departed(4, 1) && departed(3, 6));
-        let g = |at: f64| Grant { mac: "m4".into(), step: "unit".into(), targets: vec![], at };
+        let g = |at: f64| Grant { mac: "m4".into(), step: "unit".into(), targets: vec![], at, threads: 1 };
         let f = Forecast { at: 1000, grants: vec![g(1000.0), g(1100.0), g(1200.0), g(9000.0)], ..Default::default() };
         let real =
             |n: usize| (0..n).map(|k| (1000 + k as u64, "m4".to_string(), "unit".to_string())).collect::<Vec<_>>();

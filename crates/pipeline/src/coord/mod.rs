@@ -1436,7 +1436,7 @@ impl Coordinator {
         }
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared {
+        let mut shared = Shared {
             sched: sched::Sched {
                 leases,
                 offers: Vec::new(),
@@ -1465,6 +1465,8 @@ impl Coordinator {
                 measured_of: Default::default(),
                 drop_needs: Default::default(),
                 paces: Default::default(),
+                use_runs: Vec::new(),
+                uses: Default::default(),
             },
             pass: String::new(),
             plan: 0,
@@ -1515,6 +1517,9 @@ impl Coordinator {
         };
         if !viewer {
             shared.save_leases();
+            // (Each step's use on each Mac, from the build's timings in the window: what a job is
+            // granted threads by, crate::uses.)
+            shared.set_use_runs(crate::uses::Run::read_log(&dir.join("timings.jsonl"), unix_now()));
         }
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published; kept (`jobs-token`), so
@@ -2165,10 +2170,10 @@ impl Coordinator {
         }
     }
 
-    /// A job's timings (crate::timings), kept with the build's (`timings.jsonl`).
+    /// A job's timings (crate::timings), kept with the build's (`timings.jsonl`), its run among the
+    /// uses' (crate::uses).
     pub fn add_timings(&self, rec: &crate::timings::RunRec) {
-        let dir = self.shared.lock().unwrap().dir.clone();
-        keep_timings(&dir, rec);
+        keep_timings(&self.shared, rec);
     }
 
     /// What this Mac's job's z6 tiles cost (measured here).
@@ -3204,11 +3209,14 @@ fn phase_sharer(
     }
 }
 
-/// Keeps `rec` in the coordinator's `dir`'s timings log.
-fn keep_timings(dir: &Path, rec: &crate::timings::RunRec) {
+/// Keeps `rec` in the coordinator's timings log (written outside its lock), and its run among the
+/// uses' (crate::uses: what a job is granted threads by).
+fn keep_timings(shared: &Mutex<Shared>, rec: &crate::timings::RunRec) {
+    let dir = shared.lock().unwrap().dir.clone();
     if let Err(e) = crate::timings::append(&dir.join("timings.jsonl"), rec) {
         eprintln!("coordinator: keeping a run's timings: {e}");
     }
+    shared.lock().unwrap().add_use(rec, unix_now());
 }
 
 /// A worker's name as a folder name.
@@ -3936,7 +3944,7 @@ fn route(
                         threads: ask_cores(&a),
                         disk_mb: s
                             .job_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
-                            .map_or(0, |(m, _)| m.disk_mb),
+                            .map_or(0, |m| m.disk_mb),
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
                         more: Vec::new(),
                         job: None,
@@ -4295,8 +4303,7 @@ fn route(
             let mut d: Done = serde_json::from_slice(body)?;
             // Its timings kept, whatever became of its lease (by who ran it, as the lease says).
             if let Some(t) = d.timings.take() {
-                let dir = shared.lock().unwrap().dir.clone();
-                keep_timings(&dir, &crate::timings::RunRec { host: d.worker.clone(), ..t });
+                keep_timings(shared, &crate::timings::RunRec { host: d.worker.clone(), ..t });
             }
             let mut s = shared.lock().unwrap();
             let Some(l) = s.leases.get(d.lease, &d.worker, now).cloned() else {
@@ -9003,6 +9010,82 @@ mod tests {
             c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost)], "m1");
         }
         assert_eq!(threads(&w, &a), [1; 6], "its measured 1 each");
+    }
+
+    /// Task #947: a job is granted the threads its step kept busy on its Mac over its jobs' whole
+    /// runs (the build's timings, crate::uses), not what its targets' costs say: slope-hi measured
+    /// busy on 3 threads by its costs (4 by them) keeps 0.8 of 4 busy on m1, so m1 gets 1 and the
+    /// rest of its cores for other jobs; m2, with no run of it in the timings, keeps the costs' 4.
+    /// The in-use share still comes off: a step needing every thread climbs within the cores the
+    /// owner leaves.
+    #[test]
+    fn a_job_is_granted_the_threads_its_step_keeps_busy_on_its_mac() {
+        let threads = |w: &client::Client, a: &Ask| -> Vec<u32> {
+            let Some(mut g) = w.ask(a).unwrap() else { return Vec::new() };
+            let more = std::mem::take(&mut g.more);
+            std::iter::once(g).chain(more).map(|g| g.threads).collect()
+        };
+        let costs = |c: &Coordinator| {
+            packable(c, "slope-hi", 6, Some(3));
+            for i in 1..=6 {
+                let busy = [("threads".to_string(), 3), ("cpu_ms".to_string(), 1_740_000)];
+                let cost = Cost {
+                    peak_mb: 2000,
+                    secs: 600,
+                    worker: None,
+                    v: cost_version("slope-hi"),
+                    sizes: busy.into(),
+                    ..Default::default()
+                };
+                c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost)], "m1");
+            }
+        };
+        let run = |host: &str, threads: u32, cpu_s: f64| crate::timings::RunRec {
+            v: 1,
+            kind: "slope-hi".into(),
+            host: host.into(),
+            start: unix_now() - 200,
+            wall_s: 100.0,
+            cpu_s: Some(cpu_s),
+            threads: Some(threads),
+            ok: true,
+            ..Default::default()
+        };
+        // No runs in the timings: the costs' rule (2.9 busy of 3: 4).
+        let (_d, c, w, _clock) = every((0, 0));
+        costs(&c);
+        assert_eq!(threads(&w, &every_ask("m1", "slope-hi", 64_000, 100_000)), [4]);
+        // m1's run (a slot of it) kept 0.8 of 4 busy: 1 there; m2's ask, none of its own: 4.
+        let (_d, c, w, _clock) = every((0, 0));
+        costs(&c);
+        c.add_timings(&run("m1 #2", 4, 80.0));
+        assert_eq!(threads(&w, &every_ask("m1", "slope-hi", 64_000, 100_000)), [1]);
+        let m2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
+        assert_eq!(threads(&m2, &every_ask("m2", "slope-hi", 64_000, 100_000)), [4]);
+        // Kept as the coordinator restarts: read from its timings log.
+        let dir = c.shared.lock().unwrap().dir.clone();
+        let runs = crate::uses::Run::read_log(&dir.join("timings.jsonl"), unix_now());
+        assert_eq!(crate::uses::Uses::of(&runs), c.shared.lock().unwrap().uses);
+        // Busy on all 8 of its threads (7.5): it climbs, within the 8 cores; its owner at it, within
+        // the 6 the in-use share leaves.
+        let (_d, c, w, _clock) = every((0, 0));
+        costs(&c);
+        c.add_timings(&run("m1", 8, 750.0));
+        assert_eq!(threads(&w, &every_ask("m1", "slope-hi", 64_000, 100_000)), [8]);
+        let (_d, c, w, _clock) = every((0, 0));
+        costs(&c);
+        c.add_timings(&run("m1", 8, 750.0));
+        let mut used = every_ask("m1", "slope-hi", 64_000, 100_000);
+        used.cap = Some(Capacity {
+            at: unix_now(),
+            cores: 8,
+            cores_free: 8,
+            in_use: true,
+            kept_cores: 2,
+            ..Default::default()
+        });
+        assert_eq!(threads(&w, &used), [6]);
+        assert_eq!(c.shared.lock().unwrap().lease_cores("m1", "slope-hi", &["6/1/1".into()], 6), (6, 60));
     }
 
     /// A member holding jobs asks again as the agent does (the same share of its Mac each time, one
