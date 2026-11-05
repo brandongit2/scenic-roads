@@ -202,6 +202,32 @@ class Wrap(unittest.TestCase):
             self.assertIn(("end", "toy-1", "gone"), [(e["op"], e.get("id"), e.get("status")) for e in ev], "kept to send (the app away)")
             self.assertEqual(os.listdir(os.path.join(d, "live")), [])
 
+    def test_a_spool_that_cant_be_written_runs_the_command_still(self):
+        with tempfile.TemporaryDirectory() as d:
+            spool = os.path.join(d, "a-file")
+            open(spool, "w").close()  # (the spool's folder a file: every write fails)
+            env = dict(os.environ, SCENIC_DEVJOB_DIR=spool, SCENIC_BOARD="http://127.0.0.1:9", SCENIC_DEVJOB_MAC="toy")
+            env.pop("SCENIC_DEVJOB", None)
+            env.pop("SCENIC_DEVJOB_PARENT", None)
+            r = subprocess.run([sys.executable, devjob.__file__, "wrap", "--kind", "part", "--name", "x", "--", "sh", "-c", "echo ran; exit 4"], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual((r.returncode, r.stdout), (4, "ran\n"), r.stderr)
+
+
+class Flush(unittest.TestCase):
+    def test_the_app_away_leaves_one_batch_not_a_file_a_tick(self):
+        with tempfile.TemporaryDirectory() as d:
+            old = devjob.DIR, devjob.SPOOL
+            devjob.DIR, devjob.SPOOL = d, os.path.join(d, "spool.ndjson")
+            try:
+                for i in range(3):
+                    devjob.emit({"op": "attr", "id": f"x-{i}", "attrs": {}})
+                    self.assertFalse(devjob.flush(lambda m: None, "http://127.0.0.1:9/api/jobs/events"))
+            finally:
+                devjob.DIR, devjob.SPOOL = old
+            self.assertEqual(len([f for f in os.listdir(d) if f.startswith("sending-")]), 1)
+            with open(os.path.join(d, "spool.ndjson")) as f:
+                self.assertEqual(len(f.readlines()), 2, "what came after waits in the spool")
+
 
 if __name__ == "__main__":
     unittest.main()

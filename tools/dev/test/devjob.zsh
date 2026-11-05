@@ -43,6 +43,11 @@ for (( i = 0; i < 600; i++ )); do zsystem flock -t 0 -f f $s/sampler.lock 2>/dev
   dj_start part "" k ""; id=$REPLY
   SCENIC_DEVJOB_PARENT= dj_span part "" $EPOCHREALTIME $EPOCHREALTIME ok "" ""
   dj_attr "" k v; dj_end "" ok; dj_end $id ok ) || fail "the functions under set -u"
+# A caller under errexit (publish.sh) goes on when nothing can be written (the spool's folder a file).
+( setopt errexit; SCENIC_DEVJOB_DIR=$s/kept DJ_DIR=$s/kept; : > $s/kept; unset SCENIC_DEVJOB_PARENT
+  dj_start part x; id=$REPLY; dj_attr $id k v; dj_span part y $EPOCHREALTIME $EPOCHREALTIME ok
+  dj_sampling; dj_end $id ok; print -r -- went > $s/went ) 2>/dev/null
+[[ -e $s/went ]] || fail "the functions stopped a caller under errexit"
 # A wrapped command keeps the files its caller passed on (check.sh's SCENIC_CARGO_SAY is its fd).
 exec {keep}>$s/kept
 dj_wrap part fd; $reply zsh -c "print -u $keep through" > /dev/null || fail "the wrapped command"

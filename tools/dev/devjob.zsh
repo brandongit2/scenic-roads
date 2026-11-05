@@ -12,6 +12,8 @@
 # A span is part of $SCENIC_DEVJOB_PARENT (a job exports its own id for what it runs: a check's part
 # for the cargo it starts); one of no other gets devjob.py who's attributes (checkout, branch, task…).
 # SCENIC_DEVJOB=0: nothing is recorded, the functions do nothing (the tests of these scripts).
+# Recording never stops its caller: a write that fails (a full disk, a folder it can't make) is
+# dropped, and every function returns 0, so a caller under errexit (publish.sh) goes on.
 zmodload zsh/datetime zsh/system
 typeset -g DJ_PY=${${(%):-%x}:A:h}/devjob.py
 typeset -g DJ_DIR=${SCENIC_DEVJOB_DIR:-$HOME/Library/Logs/scenic/devjobs}
@@ -34,29 +36,29 @@ dj_attrs() {  # dj_attrs <attr> <value>…: a JSON object, in $REPLY
   REPLY="{$o}"
 }
 dj_emit() {  # one event, one line, appended in one write
-  mkdir -p $DJ_DIR && print -r -- $1 >> $DJ_DIR/spool.ndjson
+  { mkdir -p $DJ_DIR && print -r -- $1 >> $DJ_DIR/spool.ndjson } 2>/dev/null || :
 }
 dj_sampler() {  # devjob.py's sampler, started unless one runs (its lock held), detached, out of the checkout
   local f
-  mkdir -p $DJ_DIR && : >> $DJ_DIR/sampler.lock || return
+  { mkdir -p $DJ_DIR && : >> $DJ_DIR/sampler.lock } 2>/dev/null || return 0
   zsystem flock -t 0 -f f $DJ_DIR/sampler.lock 2>/dev/null || return 0
   zsystem flock -u $f
-  ( cd / && exec python3 $DJ_PY sampler ) </dev/null >> $DJ_DIR/sampler.log 2>&1 &!
+  { ( cd / && exec python3 $DJ_PY sampler ) </dev/null >> $DJ_DIR/sampler.log 2>&1 &! } 2>/dev/null || :
 }
 dj_start() {
   dj_on || { REPLY=; return 0 }
   local kind=$1 name=$2 id parent=${SCENIC_DEVJOB_PARENT:-} who= k n p a in ls
   shift 2
   id=$SCENIC_DEVJOB_MAC-${EPOCHREALTIME/./}-$$-z$(( ++DJ_N ))
-  [[ -z $parent ]] && who=$(python3 $DJ_PY who 2>/dev/null)
+  [[ -z $parent ]] && { who=$(python3 $DJ_PY who 2>/dev/null) || who= }
   dj_attrs "$@"; a=$REPLY
   # (A run of its own: who ran it, then its own attributes.)
   if [[ $who == '{'*'}' && $who != '{}' ]]; then in=${${a#\{}%\}}; a="${who%\}}${in:+, $in}}"; fi
   dj_q "$kind"; k=$REPLY; dj_q "$name"; n=$REPLY; dj_q "$parent"; p=$REPLY
   dj_emit "{\"op\":\"start\",\"id\":\"$id\",\"parent\":$p,\"kind\":$k,\"name\":$n,\"mac\":\"$SCENIC_DEVJOB_MAC\",\"t\":$EPOCHREALTIME,\"attrs\":$a}"
   # (Live while this shell is, as it started: a pid used again later isn't it.)
-  ls=$(ps -o lstart= -p $$); ls=${(j: :)${=ls}}
-  mkdir -p $DJ_DIR/live && print -r -- "$$ $ls" > $DJ_DIR/live/$id
+  ls=$(ps -o lstart= -p $$ 2>/dev/null) || ls=; ls=${(j: :)${=ls}}
+  { mkdir -p $DJ_DIR/live && print -r -- "$$ $ls" > $DJ_DIR/live/$id } 2>/dev/null || :
   dj_sampler
   REPLY=$id
 }
@@ -65,7 +67,7 @@ dj_end() {
   local id=$1 st=$2; shift 2
   dj_attrs "$@"
   dj_emit "{\"op\":\"end\",\"id\":\"$id\",\"t\":$EPOCHREALTIME,\"status\":\"$st\",\"attrs\":$REPLY}"
-  rm -f $DJ_DIR/live/$id
+  rm -f $DJ_DIR/live/$id 2>/dev/null || :
   dj_sampler
 }
 dj_span() {
@@ -83,11 +85,13 @@ dj_attr() {
   local id=$1; shift
   dj_attrs "$@"
   dj_emit "{\"op\":\"attr\",\"id\":\"$id\",\"attrs\":$REPLY}"
+  return 0
 }
 dj_sampling() {  # this Mac sampled while this shell lives, with no span of its own (the test Mac's side of a run)
   dj_on || return 0
-  local ls; ls=$(ps -o lstart= -p $$); ls=${(j: :)${=ls}}
-  mkdir -p $DJ_DIR/live && print -r -- "$$ $ls sample" > $DJ_DIR/live/sampling-$$ && dj_sampler
+  local ls; ls=$(ps -o lstart= -p $$ 2>/dev/null) || ls=; ls=${(j: :)${=ls}}
+  { mkdir -p $DJ_DIR/live && print -r -- "$$ $ls sample" > $DJ_DIR/live/sampling-$$ } 2>/dev/null && dj_sampler
+  return 0
 }
 dj_wrap() {  # dj_wrap <kind> <name> [<devjob.py wrap option>…]: in $reply, the prefix to put before a command
   if dj_on; then reply=( python3 $DJ_PY wrap --kind $1 --name $2 "${@:3}" -- )

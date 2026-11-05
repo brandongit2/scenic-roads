@@ -74,13 +74,17 @@ def new_id():
 
 
 def emit(ev):
-    """One event, appended to the spool in one write (lines from several processes never mix)."""
-    os.makedirs(DIR, exist_ok=True)
-    fd = os.open(SPOOL, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    """One event, appended to the spool in one write (lines from several processes never mix).
+    One that can't be written (a full disk) is dropped: recording never stops a job."""
     try:
-        os.write(fd, (json.dumps(ev, separators=(",", ":")) + "\n").encode())
-    finally:
-        os.close(fd)
+        os.makedirs(DIR, exist_ok=True)
+        fd = os.open(SPOOL, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, (json.dumps(ev, separators=(",", ":")) + "\n").encode())
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
 
 
 def lstart(pid):
@@ -90,30 +94,36 @@ def lstart(pid):
 
 def live(span_id, pid):
     """The span is live while process `pid` (as started then: a reused pid isn't it) is."""
-    os.makedirs(LIVE, exist_ok=True)
-    with open(os.path.join(LIVE, span_id), "w") as f:
-        f.write(f"{pid} {lstart(pid)}\n")
+    try:
+        os.makedirs(LIVE, exist_ok=True)
+        with open(os.path.join(LIVE, span_id), "w") as f:
+            f.write(f"{pid} {lstart(pid)}\n")
+    except OSError:
+        return
     ensure_sampler()
 
 
 def unlive(span_id):
     try:
         os.unlink(os.path.join(LIVE, span_id))
-    except FileNotFoundError:
+    except OSError:
         pass
 
 
 def ensure_sampler():
     """Starts the sampler unless one runs (its lock held), detached, out of any checkout."""
-    os.makedirs(DIR, exist_ok=True)
-    with open(os.path.join(DIR, "sampler.lock"), "a") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return
-        fcntl.flock(f, fcntl.LOCK_UN)
-    log = open(os.path.join(DIR, "sampler.log"), "a")
-    subprocess.Popen([sys.executable, os.path.abspath(__file__), "sampler"], cwd="/", stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    try:
+        os.makedirs(DIR, exist_ok=True)
+        with open(os.path.join(DIR, "sampler.lock"), "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return
+            fcntl.flock(f, fcntl.LOCK_UN)
+        with open(os.path.join(DIR, "sampler.log"), "a") as log:
+            subprocess.Popen([sys.executable, os.path.abspath(__file__), "sampler"], cwd="/", stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    except OSError:
+        pass
 
 
 # ---- who started a run ---------------------------------------------------------------------------
@@ -345,7 +355,10 @@ def wrap(argv):
         os.execvp(cmd[0], cmd)
     sid, m, parent = new_id(), mac(), os.environ.get("SCENIC_DEVJOB_PARENT") or None
     if not parent:
-        attrs.update(who())
+        try:
+            attrs.update(who())
+        except OSError:  # (no git: the run without who ran it)
+            pass
     t_start = time.time()
     emit({"op": "start", "id": sid, "parent": parent, "kind": kind, "name": name, "mac": m, "t": round(t_start, 3), "attrs": attrs})
     live(sid, os.getpid())
@@ -466,33 +479,46 @@ def sample(live_ids):
     emit(ev)
 
 
-def flush(log):
-    """Sends what the spool holds, oldest first; kept for the next try when the app can't be reached."""
-    if os.path.exists(SPOOL):
-        os.replace(SPOOL, os.path.join(DIR, f"sending-{time.time_ns()}.ndjson"))
-        time.sleep(0.1)  # (a writer that opened it just before still writes into the file moved)
+def flush(log, url):
+    """Sends what waits, oldest first: a batch a try before couldn't send, then the spool. The spool
+    is moved aside to send only once nothing older waits, so while the app can't be reached the
+    events wait in one batch and the spool (which grows meanwhile, ~3 MB a day of jobs), not in a
+    file a tick."""
     for f in sorted(glob.glob(os.path.join(DIR, "sending-*.ndjson"))):
-        with open(f, "rb") as o:
-            data = o.read()
-        chunks, cur = [], b""
-        for ln in data.splitlines(keepends=True):
-            if len(cur) + len(ln) > POST_MAX and cur:
-                chunks.append(cur)
-                cur = b""
-            cur += ln
-        if cur:
+        if not send(f, log, url):
+            return False
+    if os.path.exists(SPOOL):
+        f = os.path.join(DIR, f"sending-{time.time_ns()}.ndjson")
+        os.replace(SPOOL, f)
+        time.sleep(0.1)  # (a writer that opened it just before still writes into the file moved)
+        return send(f, log, url)
+    return True
+
+
+def send(f, log, url):
+    """One batch to the app, in POSTs of at most POST_MAX; removed once all went (a POST that went
+    before one that failed goes again: the app merges an event sent twice)."""
+    with open(f, "rb") as o:
+        data = o.read()
+    chunks, cur = [], b""
+    for ln in data.splitlines(keepends=True):
+        if len(cur) + len(ln) > POST_MAX and cur:
             chunks.append(cur)
-        for c in chunks:
-            try:
-                req = urllib.request.Request(board() + "/api/jobs/events", data=c, method="POST", headers={"content-type": "application/x-ndjson", "user-agent": "devjob.py"})
-                with urllib.request.urlopen(req, timeout=20) as r:
-                    ans = json.load(r)
-            except (urllib.error.URLError, OSError, ValueError) as e:
-                log(f"can't send {os.path.basename(f)} to {board()}: {e}")
-                return False
-            for x in ans.get("refused", []):
-                log(f"refused, {os.path.basename(f)}: {x}")
-        os.unlink(f)
+            cur = b""
+        cur += ln
+    if cur:
+        chunks.append(cur)
+    for c in chunks:
+        try:
+            req = urllib.request.Request(url, data=c, method="POST", headers={"content-type": "application/x-ndjson", "user-agent": "devjob.py"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                ans = json.load(r)
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            log(f"can't send {os.path.basename(f)} to {url}: {e}")
+            return False
+        for x in ans.get("refused", []):
+            log(f"refused, {os.path.basename(f)}: {x}")
+    os.unlink(f)
     return True
 
 
@@ -504,6 +530,9 @@ def sampler():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return 0
+    # (The app's address read once: the checkout this runs from may go while it runs, a worktree
+    # removed or the test Mac's tree replaced.)
+    url = board() + "/api/jobs/events"
     said = {}
 
     def log(msg):  # (a message once a minute at most, the app away for hours)
@@ -546,13 +575,13 @@ def sampler():
             except Exception as e:
                 log(f"can't read {h}: {e!r}")
             os.unlink(h)
-        ok = flush(log)
+        ok = flush(log, url)
         if not os.listdir(LIVE):
             # (One more tick for what the last job wrote as it ended.)
             time.sleep(TICK_S)
             if not os.listdir(LIVE) and not glob.glob(os.path.join(DIR, "*.timings.html")):
                 if os.path.exists(SPOOL) or not ok:
-                    flush(log)
+                    flush(log, url)
                 return 0
         time.sleep(TICK_S)
 
