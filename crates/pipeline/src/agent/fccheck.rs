@@ -354,9 +354,9 @@ pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
 /// the build's pause (`forecast::paused`) read from the history. Code 4 also each Mac's pace at
 /// each step from the history (crate::paces: the scheduler's, its costs and its lanes' times by it,
 /// `repace`); before it, none. Code 5 also each Mac's room at its sustained best (`Rooms`, from the
-/// asks the inputs before it recorded); before it, each Mac's room as its last ask said. All keep
-/// the record's lanes (a record before code 3, its lanes slowed by its Mac's hold of the day before
-/// as it was made).
+/// asks the inputs before it recorded) and each Mac's slots its lanes (`unhold`: no hold of the day
+/// before); before it, each Mac's room as its last ask said and the record's lanes (a record before
+/// code 3, its lanes slowed by its Mac's hold of the day before as it was made).
 pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
     let mut noted = forecast::Noted::default();
     let mut rooms = Rooms::default();
@@ -374,6 +374,9 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
         noted.note(inp);
         rooms.note(inp);
         rooms.set(inp, code >= 5);
+        if code >= 5 {
+            unhold(inp);
+        }
         inp.paused = forecast::paused(events, inp.now);
         if code >= 4 {
             repace(inp, events);
@@ -398,6 +401,42 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
         out.push(e);
     }
     out
+}
+
+/// `inp`'s lanes as code 5 makes them (task #951 review): a record before it has each Mac's lanes
+/// cut to the jobs it ran at once the day before (#563's hold, gone), its idle ones dropped, so
+/// replayed as it stands code 5 ran on 3 to 5 lanes where the live run has some 30. Each Mac whose
+/// ask is recorded gets back the slots it may run (crate::agent's `forecast_record`): a member,
+/// `job_slots` of its cores; the lead, its ask's slots free and its lanes running (`Ask::want`, its
+/// ramp's slots less its jobs; one, when it runs none, leaves them unknown and its lanes as they
+/// are). A Mac with no lane (paused alone) gets none; a record made by code 5 has them already.
+fn unhold(inp: &mut forecast::Input) {
+    let Some(st) = inp.sched.as_ref() else { return };
+    let mut more = Vec::new();
+    for w in &st.workers {
+        let g = &w.ask.worker;
+        let of: Vec<&forecast::Machine> =
+            inp.machines.iter().filter(|m| m.mac.as_deref().unwrap_or(&m.name) == g.as_str()).collect();
+        let Some(first) = of.first() else { continue };
+        let running = of.iter().filter(|m| m.busy_s > 0.0 || m.running.is_some()).count();
+        let slots = if *g == st.lead_name {
+            if w.ask.want <= 1 && running == 0 {
+                continue;
+            }
+            w.ask.want + running
+        } else {
+            match w.ask.cap.as_ref().filter(|c| c.cores > 0) {
+                Some(c) => super::job_slots(c.cores as usize),
+                None => continue,
+            }
+        };
+        let names: std::collections::BTreeSet<&str> = of.iter().map(|m| m.name.as_str()).collect();
+        let free = (0..super::MAX_SLOTS).map(|k| super::slot_worker(g, k)).filter(|n| !names.contains(n.as_str()));
+        for name in free.take(slots.saturating_sub(of.len())) {
+            more.push(forecast::Machine { name, busy_s: 0.0, running: None, from_s: 0.0, ..(*first).clone() });
+        }
+    }
+    inp.machines.extend(more);
 }
 
 /// Each Mac's room as the inputs' recorded asks said it (`Rooms::note`), at each input's time: its
@@ -1012,6 +1051,67 @@ mod tests {
         let b = backtest(&records, &es, 0, 30_000, 15_000);
         assert_eq!((b.train[0].forecasts, b.test[1].forecasts), (1, 1));
         assert!(backtest_text(&b).contains("Test (from 1970-01-01 04:10 UTC)"), "{}", backtest_text(&b));
+    }
+
+    /// Task #951 review: a record's lanes held to the day before's (#563, gone) get back each
+    /// Mac's slots in code 5's replay: a member its cores' `job_slots`, the lead its ask's slots
+    /// free and its lanes running; the lead alone (asking one) and a Mac with no lane, as they are.
+    #[test]
+    fn code_5_replays_each_mac_on_its_slots() {
+        use super::super::forecast::{Input, Machine};
+        use crate::coord::sched::{Asked, State};
+        use crate::coord::{Ask, Capacity};
+        let lane = |name: &str, mac: &str, busy_s: f64| Machine {
+            name: name.into(),
+            mac: Some(mac.into()),
+            busy_s,
+            ..Default::default()
+        };
+        let asked = |worker: &str, want: usize, cores: u32| Asked {
+            ask: Ask {
+                worker: worker.into(),
+                want,
+                cap: Some(Capacity { cores, ..Default::default() }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let input = |machines: Vec<Machine>, lead_want: usize| Input {
+            now: 0,
+            before: Vec::new(),
+            drops: Vec::new(),
+            regions: std::borrow::Cow::Owned(Vec::new()),
+            costs: Default::default(),
+            cadence: Default::default(),
+            blind: None,
+            chains: Vec::new(),
+            after: Vec::new(),
+            idle: Vec::new(),
+            machines,
+            running: BTreeMap::new(),
+            macs: BTreeMap::new(),
+            sched: Some(State {
+                lead_name: "lead".into(),
+                workers: vec![asked("lead", lead_want, 12), asked("m1", 7, 6), asked("off", 7, 6)],
+                ..Default::default()
+            }),
+            pace: None,
+            step_pace: Default::default(),
+            unknown: Vec::new(),
+            paused: false,
+        };
+        let mut inp = input(vec![lane("lead", "lead", 300.0), lane("m1", "m1", 0.0)], 3);
+        unhold(&mut inp);
+        let names: Vec<&str> = inp.machines.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["lead", "m1", "lead #2", "lead #3", "lead #4", "m1 #2", "m1 #3", "m1 #4"]);
+        assert!(inp.machines[2..].iter().all(|m| m.busy_s == 0.0 && m.running.is_none()));
+        // Again: as they are.
+        unhold(&mut inp);
+        assert_eq!(inp.machines.len(), 8);
+        // The lead alone, asking one: its slots unknown, its lanes kept.
+        let mut alone = input(vec![lane("lead", "lead", 0.0)], 1);
+        unhold(&mut alone);
+        assert_eq!(alone.machines.len(), 1);
     }
 
     #[test]
