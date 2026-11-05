@@ -233,7 +233,10 @@ job's `control::draining`, the loop's `told_drain`) reads it through `control::s
 listener, so its framing is one helper's (task #957): a say a line, newline-ended (`control::Say`);
 the agent's channel a file replaced whole with its latest say, so a job reads one say whole, never
 part of one; a fifo a test holds a job with is read in order, a say a safe point, several brought by
-one read each heard, one split across reads waited out.
+one read each heard, one split across reads waited out. A job's threads file (its grant now:
+the loop's start of a job and its re-grants, `tend_grant`) is written the same way, replaced whole
+through one helper, `control::grant`, so a reader (`control::granted` as a target begins, a paced
+job's every second) never meets it emptied (docs/pool.md §7.1, Threads re-granted).
 
 **Failure:** a job's own failures are unchanged (backoff, retries). A give-back whose hand-off
 needs the NAS is queued in **nas** (the outbox, `held_entries`) and retried; the slot is free for

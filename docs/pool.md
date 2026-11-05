@@ -598,15 +598,18 @@ owner)`. The coordinator logs the threads with each grant.
 **Threads re-granted** (task #948). A running job's grant is decided again while it runs, and it
 takes the new one as its next target begins. Its agent keeps the threads it may use now in a file
 of its slot's (`threads`, `threads-<k>`; `SCENIC_THREADS_FILE`, `jobrt::control::THREADS_ENV`), written as it
-starts. A step that takes it (slope-hi, slope-deep, terrain-hi, terrain-deep: `control::on_grant`)
+starts and at each re-grant, always replaced whole (`control::grant`), so a read never meets it
+emptied. A step that takes it (slope-hi, slope-deep, terrain-hi, terrain-lakes, terrain-deep:
+`control::on_grant`)
 reads the file once as each target begins and runs that target on a rayon pool that wide, the
 timings' main thread carried onto the pool's thread (`timings::Main`); a change written while a
 target runs waits for the next, so no target changes threads under way, and the thread count
 changes no output (`slope_pack`'s test: a z6 tile's packs the same bytes on 2 threads and on 8). A
 thread the target starts of its own is in no pool, and rayon would send its parallel work to the
 process's global pool, as wide as the job's starting grant: such work goes on the target's pool
-(`control::on_target_pool`: terrain-deep's deep tiles, made on a thread of their own, and the base
-sampling's passes from its chunks' threads, `dem::generic`). Its started line in its costs file says the threads (`memguard::Targets::threads`):
+(`control::on_target_pool`: the sampling's passes from the elevation pool's chunk threads,
+`dem::generic` under `terrain_base`'s `prefetch_counted`, in terrain-hi, terrain-lakes and
+terrain-deep). Its started line in its costs file says the threads (`memguard::Targets::threads`):
 what the job runs on now. A paced job (an input check, tree cover: `inputs::pace`, one long target)
 reads the same file every second. Other steps keep their starting grant (they say no threads, so
 nothing is re-decided for them).
@@ -1410,8 +1413,8 @@ the most its step declares (the steps table's `mem_mb`) or it was offered with, 
 (`coord::sched::provisional_mb`), its disk its step's measures' (else none); its cores its step's
 use on the Mac where its timings have any (§7.1, task #947), else one thread (task #896)
 when its step is known to honour the threads it's granted (`coord::THREADS_HONOURED`: `slope-hi`,
-`slope-deep` and `terrain-deep`, on the rayon pool the agent sizes, the last's reads waiting on the
-network; `bld-fetch`, its downloads bounded by `--jobs`; `pyramids-fill`, its fetches a host's requests in
+`slope-deep`, `terrain-deep` and `terrain-lakes`, on the rayon pool the agent sizes, terrain-deep's
+reads waiting on the network; `bld-fetch`, its downloads bounded by `--jobs`; `pyramids-fill`, its fetches a host's requests in
 flight, `fetch::HOST_REQUESTS`), else the whole
 Mac. It goes beside other jobs when that fits the room left, and other jobs go beside it by the
 same figures; one bigger than a Mac's whole room goes only to a Mac holding no job. At most one

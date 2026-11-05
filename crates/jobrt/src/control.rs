@@ -1023,7 +1023,7 @@ mod tests {
         use rayon::prelude::*;
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("threads");
-        std::fs::write(&f, "3\n").unwrap();
+        grant(&f, 3).unwrap();
         std::env::set_var(THREADS_ENV, &f);
         crate::timings::reset();
         crate::timings::start("test");
@@ -1034,7 +1034,7 @@ mod tests {
         let (began, inner, ended, said, s) = on_grant(|| {
             let _p = crate::timings::phase("a target's work");
             let began = rayon::current_num_threads();
-            std::fs::write(&f, "1").unwrap();
+            grant(&f, 1).unwrap();
             let inner = on_grant(rayon::current_num_threads);
             (began, inner, rayon::current_num_threads(), in_force(), sum())
         });
@@ -1042,7 +1042,7 @@ mod tests {
         assert_eq!(in_force(), None, "between targets");
         // The next target: on the 1 (the shrink taken at the safe point); then 5 (a grow).
         assert_eq!(on_grant(|| (rayon::current_num_threads(), sum())), (1, serial));
-        std::fs::write(&f, "5").unwrap();
+        grant(&f, 5).unwrap();
         assert_eq!(on_grant(|| (rayon::current_num_threads(), sum())), (5, serial));
         drop(outer);
         {
@@ -1056,7 +1056,7 @@ mod tests {
         assert_eq!(r.phases[0].sub.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["a target's work"]);
         // A thread the target starts of its own: its parallel work on the target's pool (2 wide),
         // not the process's global one; outside a target, the global one.
-        std::fs::write(&f, "2").unwrap();
+        grant(&f, 2).unwrap();
         let global = rayon::current_num_threads();
         let own = on_grant(|| {
             std::thread::scope(|s| {
