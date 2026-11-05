@@ -5,8 +5,10 @@
 # The build's part is one `scenic status --flags` (crates/pipeline/src/agent/flags.rs): the lead's
 # status covers every Mac, and it prints only what needs a look, a line each: its flags ("idle:" a
 # Mac with a slot free while work it could take waits, with what in its capacity held the job back,
-# or the waits its remaining work is held behind; "overdue:" a job past the pool's overdue factor
-# times its usual time on its Mac, with its batch's progress), the pool's warnings ("warning:" no
+# or the waits its remaining work is held behind; "stuck:" a job's target under way past the pool's
+# overdue factor times its measured time; "overdue:" a job past that factor times the time it was
+# sized to, with its batch's progress; "stale:" a catalogue due that hasn't gone out), the pool's
+# warnings ("warning:" no
 # lead, the lead or a member out of touch, the lead's loop stuck) and the jobs failed since the last
 # check's stamp ("failed:"). The same flags are on the build page's alerts and the menu bar.
 case $#:${1:-} in

@@ -966,7 +966,7 @@ pub struct Status {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<crate::inputs::view::InputView>,
     /// What needs a look (flags::of, task #953: a Mac idle while work it could take waits, a job
-    /// past the overdue factor times its usual time): the lead's, worked out at each round.
+    /// stuck or overdue, a catalogue stale): the lead's, worked out at each round.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flags: Vec<flags::Flag>,
 }

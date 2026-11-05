@@ -11,19 +11,33 @@
 //!   other work (`Status::waiting`'s entries with a step: slope-hi behind terrain-root): flagged
 //!   with those waits, and the wait of the step each names where that one waits too, never just
 //!   "nothing offered". Nothing left it could take: no flag.
-//! - **Overdue** (`overdue`): a leased job running past `factor` times its usual time on its Mac
-//!   (`Run::usual_s`: what the lead's coordinator predicts its targets take that Mac, summed:
-//!   crate::coord's `Coordinator::runs`), with how far its batch is. `factor` is the pool's setting
-//!   (`overdue-factor`, `scenic pool set` or the build page; crate::coord::asks::OVERDUE_DEFAULT
-//!   while unset). A job whose usual time isn't known (a target of its step never measured on the
-//!   way it runs now) isn't flagged.
+//! - **Stuck** (`stuck`): a leased job whose target under way has run past `factor` times that
+//!   target's measured time on its Mac at the job's threads (`UnderWay`: the job's safe point is a
+//!   target's end, so a job making no progress at all is found within a few of its own targets'
+//!   times, not its whole batch's: 5 Nov, terrain-hi jobs at 0 tiles and no CPU for 20 min); before
+//!   its first target, its start and first target since its grant.
+//! - **Overdue** (`overdue`): a leased job running past `factor` times the time it was sized to on
+//!   its Mac (`Run::sized_s`: its targets' measured times there at its threads and its start,
+//!   crate::coord::sched's `Sched::batch_secs`, as `pick_every` sized it), with how far its batch
+//!   is; a job flagged stuck isn't flagged overdue too.
+//! - **Stale** (`stale`): the lead's catalogue due (`build::PublishLine::due_since`: held back,
+//!   planned or waiting out its minute) for longer than `factor` times the most the plan holds one
+//!   back and waits between two (build::CATALOGUE_CAP_S and CATALOGUE_EVERY_S), counted from the
+//!   last catalogue's going out where that's later, and no catalogue job leased (that one is
+//!   stuck or overdue by its own time): a catalogue that should have gone out and didn't (its job
+//!   never started: the lead's slots full, its plan held). A catalogue merely old, nothing new to
+//!   list, isn't stale.
+//!
+//! `factor` is the pool's setting (`overdue-factor`, `scenic pool set` or the build page;
+//! crate::coord::asks::OVERDUE_DEFAULT while unset). A time not known (a target of its step never
+//! measured the way it runs now) flags nothing.
 //!
 //! Nothing is flagged while the build is paused, nor on a Mac paused alone.
 
 use super::{Status, Waiting};
 use serde::{Deserialize, Serialize};
 
-/// A flag: its kind ("idle", "overdue"), the Mac it's about and what it says.
+/// A flag: its kind ("idle", "stuck", "overdue", "stale"), the Mac it's about and what it says.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Flag {
     pub kind: String,
@@ -32,7 +46,7 @@ pub struct Flag {
 }
 
 impl Flag {
-    /// Its line, as `scenic status` and the health check print it: "idle: …", "overdue: …".
+    /// Its line, as `scenic status` and the health check print it: "idle: …", "stuck: …", "overdue: …".
     pub fn line(&self) -> String {
         format!("{}: {}", self.kind, self.said)
     }
@@ -47,8 +61,9 @@ pub struct Open {
     pub own: bool,
 }
 
-/// A leased job as the lead's coordinator holds it: its worker, lease, step, targets (and those
-/// done, as its worker's beat last said), threads, since when (unix s) and its usual time there (s).
+/// A leased job as the lead's coordinator holds it (crate::coord's `Coordinator::runs`): its worker,
+/// lease, step, targets (and those done, as its worker's beat last said), threads, since when (unix
+/// s), the time it was sized to there (s) and what it has under way.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Run {
     pub worker: String,
@@ -57,6 +72,16 @@ pub struct Run {
     pub targets: usize,
     pub done: Option<usize>,
     pub threads: u32,
+    pub since: u64,
+    pub sized_s: Option<u64>,
+    pub under_way: Option<UnderWay>,
+}
+
+/// A job's target under way (empty: its start, before its first target), since when (unix s), and
+/// its measured time on the job's Mac at its threads (s).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnderWay {
+    pub target: String,
     pub since: u64,
     pub usual_s: Option<u64>,
 }
@@ -68,7 +93,31 @@ pub fn of(st: &Status, open: &[Open], runs: &[Run], factor: f64, now: u64) -> Ve
     }
     let mut v = idle(st, open);
     v.extend(overdue(st, runs, factor, now));
+    v.extend(stale(st, runs, factor, now));
     v
+}
+
+/// The stale flag (the module's doc): at most one, the lead's.
+pub fn stale(st: &Status, runs: &[Run], factor: f64, now: u64) -> Option<Flag> {
+    let due = st.publishing.as_ref()?.due_since?;
+    let since = st.catalogue.as_ref().map_or(due, |c| c.at.max(due));
+    let most = super::build::CATALOGUE_CAP_S + super::build::CATALOGUE_EVERY_S;
+    let ran = now.saturating_sub(since);
+    if (ran as f64) <= most as f64 * factor || runs.iter().any(|r| super::pool::PUBLISHES.contains(&r.step.as_str())) {
+        return None;
+    }
+    let last =
+        st.catalogue.as_ref().map_or("none yet".to_string(), |c| format!("{} ago", span(now.saturating_sub(c.at))));
+    let why = st.publishing.as_ref().map_or("", |p| p.why.as_str());
+    Some(Flag {
+        kind: "stale".into(),
+        mac: st.host.clone(),
+        said: format!(
+            "a catalogue due for {} hasn't gone out (past {factor}× the {} the plan holds one at most; the last {last}): {why}",
+            span(ran),
+            span(most)
+        ),
+    })
 }
 
 /// Whether Mac `mac` is paused alone, as its own status says (the lead's, or a member's).
@@ -136,14 +185,18 @@ fn names(text: &str, step: &str) -> bool {
     })
 }
 
-/// The overdue flags (the module's doc): one per job past `factor` times its usual time.
+/// The stuck and overdue flags (the module's doc): one per job past `factor` times its target's
+/// time, else past `factor` times its sized time.
 pub fn overdue(st: &Status, runs: &[Run], factor: f64, now: u64) -> Vec<Flag> {
+    let past = |since: u64, usual: Option<u64>| {
+        let usual = usual.filter(|&u| u > 0)?;
+        let ran = now.saturating_sub(since);
+        ((ran as f64) > usual as f64 * factor).then_some((ran, usual))
+    };
     runs.iter()
         .filter_map(|r| {
-            let usual = r.usual_s.filter(|&u| u > 0)?;
-            let ran = now.saturating_sub(r.since);
             let mac = crate::paces::mac_of(&r.worker).to_string();
-            if (ran as f64) <= usual as f64 * factor || held(st, &mac) {
+            if held(st, &mac) {
                 return None;
             }
             let batch = match r.done {
@@ -151,20 +204,26 @@ pub fn overdue(st: &Status, runs: &[Run], factor: f64, now: u64) -> Vec<Flag> {
                 _ if r.targets > 1 => format!(", {} targets", r.targets),
                 _ => String::new(),
             };
-            Some(Flag {
-                kind: "overdue".into(),
-                mac,
-                said: format!(
-                    "{} (lease {}) has run {} on {}, past {factor}× its usual {} there{batch}, {} thread{}",
-                    r.step,
-                    r.lease,
-                    span(ran),
-                    crate::paces::mac_of(&r.worker),
-                    span(usual),
-                    r.threads,
-                    if r.threads == 1 { "" } else { "s" }
-                ),
-            })
+            let threads = format!("{} thread{}", r.threads, if r.threads == 1 { "" } else { "s" });
+            let head = format!("{} (lease {}) on {mac}", r.step, r.lease);
+            if let Some(u) = &r.under_way {
+                if let Some((ran, usual)) = past(u.since, u.usual_s) {
+                    let what = if u.target.is_empty() { "its start".to_string() } else { u.target.clone() };
+                    let said = format!(
+                        "{head}: {what} under way {}, past {factor}× its usual {} there{batch}, {threads}",
+                        span(ran),
+                        span(usual)
+                    );
+                    return Some(Flag { kind: "stuck".into(), mac, said });
+                }
+            }
+            let (ran, sized) = past(r.since, r.sized_s)?;
+            let said = format!(
+                "{head} has run {}, past {factor}× the {} it was sized to{batch}, {threads}",
+                span(ran),
+                span(sized)
+            );
+            Some(Flag { kind: "overdue".into(), mac, said })
         })
         .collect()
 }
@@ -286,8 +345,8 @@ mod tests {
         assert!(of(&st, &[], &[], 3.0, 0).is_empty());
     }
 
-    /// A job past the factor times its usual time is flagged with its batch's progress; within it,
-    /// or of no usual time known, not.
+    /// A job past the factor times the time it was sized to is flagged with its batch's progress;
+    /// within it, or of no time known, not.
     #[test]
     fn a_job_past_the_factor_is_flagged() {
         let st = lead();
@@ -299,19 +358,99 @@ mod tests {
             done: Some(12),
             threads: 3,
             since: 1_000,
-            usual_s: Some(3_600),
+            sized_s: Some(900),
+            under_way: None,
         };
-        assert!(overdue(&st, std::slice::from_ref(&run), 3.0, 1_000 + 3 * 3_600).is_empty(), "at 3× exactly");
-        let f = overdue(&st, std::slice::from_ref(&run), 3.0, 1_000 + 5 * 3_600);
+        let at = |r: &Run, f: f64, t: u64| overdue(&st, std::slice::from_ref(r), f, t);
+        assert!(at(&run, 3.0, 1_000 + 3 * 900).is_empty(), "at 3× exactly");
+        // (4 Nov: the M4's slope-deep job at 3 threads for 5 h.)
+        let f = at(&run, 3.0, 1_000 + 5 * 3_600);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].mac, "m4");
         assert_eq!(
             f[0].line(),
-            "overdue: slope-deep (lease 7) has run 5.0 h on m4, past 3× its usual 60 min there, 12 of 36 targets done, 3 threads"
+            "overdue: slope-deep (lease 7) on m4 has run 5.0 h, past 3× the 15 min it was sized to, 12 of 36 targets done, 3 threads"
         );
-        assert!(overdue(&st, std::slice::from_ref(&run), 6.0, 1_000 + 5 * 3_600).is_empty(), "a larger factor set");
-        let unknown = Run { usual_s: None, ..run };
-        assert!(overdue(&st, &[unknown], 3.0, 1_000 + 50 * 3_600).is_empty());
+        assert!(at(&run, 30.0, 1_000 + 5 * 3_600).is_empty(), "a larger factor set");
+        assert!(at(&Run { sized_s: None, ..run }, 3.0, 1_000 + 50 * 3_600).is_empty());
+    }
+
+    /// A job making no progress is found by its target under way, well before its batch's time: 5
+    /// Nov, terrain-hi jobs at 0 tiles and no CPU for 20 min; and before its first target, by its
+    /// start's. Stuck isn't said overdue too.
+    #[test]
+    fn a_target_past_the_factor_is_flagged_stuck() {
+        let st = lead();
+        let under =
+            |target: &str, since: u64, usual: u64| UnderWay { target: target.into(), since, usual_s: Some(usual) };
+        let run = Run {
+            worker: "m1".into(),
+            lease: 9,
+            step: "terrain-hi".into(),
+            targets: 8,
+            done: Some(0),
+            threads: 4,
+            since: 1_000,
+            sized_s: Some(900),
+            under_way: Some(under("9/80/180", 1_030, 110)),
+        };
+        let at = |r: &Run, t: u64| overdue(&st, std::slice::from_ref(r), 3.0, t);
+        assert!(at(&run, 1_030 + 330).is_empty(), "within 3× its target's time");
+        let f = at(&run, 1_030 + 20 * 60);
+        assert_eq!(
+            f.iter().map(Flag::line).collect::<Vec<_>>(),
+            ["stuck: terrain-hi (lease 9) on m1: 9/80/180 under way 20 min, past 3× its usual 2 min there, 0 of 8 targets done, 4 threads"]
+        );
+        let f = at(&run, 1_000 + 5 * 3_600);
+        assert_eq!((f.len(), f[0].kind.as_str()), (1, "stuck"), "one flag a job: {f:?}");
+        let start = Run { under_way: Some(under("", 1_000, 60)), ..run.clone() };
+        assert!(at(&start, 1_000 + 20 * 60)[0].said.contains(": its start under way 20 min"));
+        // A target of no time known: by its batch's alone.
+        let unknown = Run { under_way: Some(UnderWay { usual_s: None, ..under("9/80/180", 1_030, 0) }), ..run };
+        assert!(at(&unknown, 1_030 + 20 * 60).is_empty());
+        assert_eq!(at(&unknown, 1_000 + 3 * 3_600)[0].kind, "overdue");
+    }
+
+    /// A catalogue due past the factor times the plan's most hold (11 min) and not going out is
+    /// stale, counted from the last catalogue where later; while a catalogue job runs, or with
+    /// none due (a catalogue merely old), not.
+    #[test]
+    fn a_catalogue_due_too_long_is_stale() {
+        let now = 100_000;
+        let mut st = lead();
+        st.catalogue = Some(super::super::CatalogueSeen { n: 812, at: now - 6 * 3_600 });
+        assert!(stale(&st, &[], 3.0, now).is_none(), "nothing due");
+        let due = |since: u64| {
+            Some(super::super::build::PublishLine {
+                why: "a catalogue now: what it would list changed".into(),
+                due_since: Some(since),
+                ..Default::default()
+            })
+        };
+        st.publishing = due(now - 40 * 60);
+        let f = stale(&st, &[], 3.0, now).expect("40 min due");
+        assert_eq!(
+            f.line(),
+            "stale: a catalogue due for 40 min hasn't gone out (past 3× the 11 min the plan holds one at most; the last 6.0 h ago): a catalogue now: what it would list changed"
+        );
+        assert!(stale(&st, &[], 3.0, now - 8 * 60).is_none(), "32 min: within 3× 11 min");
+        // (A catalogue went out 10 min ago, another due since: counted from it.)
+        st.catalogue = Some(super::super::CatalogueSeen { n: 813, at: now - 600 });
+        assert!(stale(&st, &[], 3.0, now).is_none());
+        st.catalogue = None;
+        let job = Run {
+            worker: "mini".into(),
+            lease: 3,
+            step: "catalog".into(),
+            targets: 0,
+            done: None,
+            threads: 1,
+            since: now - 60,
+            sized_s: None,
+            under_way: None,
+        };
+        assert!(stale(&st, &[job], 3.0, now).is_none(), "its job is under way");
+        assert!(stale(&st, &[], 3.0, now).is_some());
     }
 
     /// The health check's lines: the flags, the pool's warnings, the failures since the stamp alone.

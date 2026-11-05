@@ -105,7 +105,7 @@ struct LeadLine: Decodable {
     let flags: [Flag]?
 }
 
-/// A flag of the lead's status (crates/pipeline/src/agent/flags.rs Flag): "idle" or "overdue", the
+/// A flag of the lead's status (crates/pipeline/src/agent/flags.rs Flag): "idle", "stuck", "overdue" or "stale", the
 /// Mac it's about, what it says.
 struct Flag: Decodable {
     let kind: String
@@ -862,7 +862,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     }
     // What needs a look, as the lead flags it (the same lines as `scenic status` and the build page).
     for f in buildFlags(r) {
-        out.append(Line(text: "\(f.kind == "idle" ? "Idle" : "Overdue"): \(f.said)", style: .small))
+        out.append(Line(text: "\(f.kind.capitalized): \(f.said)", style: .small))
     }
     // Every running job, slot by slot (task #846: a Mac runs up to six).
     let jobs = s.allJobs

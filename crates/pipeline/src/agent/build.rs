@@ -2350,6 +2350,11 @@ pub struct PublishLine {
     /// Seconds until the next catalogue may be made (`CATALOGUE_EVERY_S`; 0: it may now).
     #[serde(default)]
     pub wait_s: u64,
+    /// Since when a catalogue has been due without a break (unix s; held back, planned, or waiting
+    /// out its minute; None: none due): the stale flag's (crate::agent::flags), counted from the
+    /// last catalogue's going out where that's later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_since: Option<u64>,
 }
 
 /// A region done whose catalogue hasn't it as it is now (`PublishLine::regions`).

@@ -245,8 +245,9 @@ function alerts(m) {
     if (x.role !== "lead" && st.app && a.app && st.app !== a.app) out.push({ cls: "warn", text: `${short} runs another app (${st.app})`, to: "machines" });
   }
   // What the lead flags (crates/pipeline/src/agent/flags.rs: a Mac idle while work it could take
-  // waits, a job past the overdue factor times its usual time), as `scenic status` and the menu bar.
-  for (const f of a.flags || []) out.push({ cls: "warn", text: `${f.kind === "idle" ? "Idle" : "Overdue"}: ${f.said}`, to: "machines" });
+  // waits, a job stuck or past the overdue factor times its sized time, the catalogue stale), as `scenic status`
+  // and the menu bar.
+  for (const f of a.flags || []) out.push({ cls: "warn", text: `${f.kind[0].toUpperCase()}${f.kind.slice(1)}: ${f.said}`, to: "machines" });
   // Failures in the last six hours (the lead's own jobs; the workers' are in the activity).
   const failed = (a.recent || []).filter((d) => !d.ok && now - d.ended < 6 * 3600);
   if (failed.length) out.push({ cls: "bad", text: `${plural(failed.length, "job")} failed in the last 6 h`, to: "activity" });

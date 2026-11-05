@@ -32,7 +32,7 @@ pub struct StatusArgs {
     #[command(flatten)]
     pub places: Places,
     /// What needs a look alone, a line each: the lead's flags (a Mac idle while work it could take
-    /// waits, a job past the overdue factor times its usual time), the pool's warnings, and the jobs
+    /// waits, a job stuck or overdue, a catalogue stale), the pool's warnings, and the jobs
     /// failed since `--since` (tools/dev/health.sh's)
     #[arg(long)]
     pub flags: bool,

@@ -450,6 +450,8 @@ pub(super) struct Planner {
     /// Whether the catalogue last planned had the low zooms made (build::Plan::low, nothing left of
     /// the publishing chain): its batch, once made, says so (`PlanView::catalogue_low`).
     pub(super) catalogue_low: std::cell::Cell<bool>,
+    /// Since when a catalogue has been due (build::PublishLine::due_since).
+    pub(super) catalogue_due_since: std::cell::Cell<Option<u64>>,
     /// Publishing's switches as last read (crate::agent::publish).
     pub(super) publishing: std::cell::Cell<publish::Switches>,
     /// The map tiles noted planned in the history (crate::pubtimes), since the last catalogue.
@@ -532,6 +534,7 @@ impl Planner {
             catalogue_seen: Default::default(),
             catalogues: std::cell::RefCell::new(catalogues),
             catalogue_low: Default::default(),
+            catalogue_due_since: Default::default(),
             publishing: Default::default(),
             planned_tiles: Default::default(),
             inputs: Gate::default(),
@@ -1894,6 +1897,11 @@ impl Planner {
         let catalogue_planned = plan.iter().any(|w| w.step == "catalog");
         let was = self.catalogues.borrow().held_at;
         self.note_held(publish::held_at(was, held_back, catalogue_planned || planned.catalogue_due, now_s()));
+        // (Since when one has been due, for the stale flag: crate::agent::flags.)
+        let due = held_back || catalogue_planned || planned.catalogue_due;
+        let due_since = due.then(|| self.catalogue_due_since.get().unwrap_or_else(now_s));
+        self.catalogue_due_since.set(due_since);
+        planned.publishing.due_since = due_since;
         // (Its catalogue, once made, went out with the low zooms made, or not.)
         if plan.iter().any(|w| w.step == "catalog") {
             self.catalogue_low.set(planned.low);

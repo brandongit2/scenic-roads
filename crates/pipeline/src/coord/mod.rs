@@ -2472,11 +2472,11 @@ impl Coordinator {
     }
 
     /// Every job leased now (crate::agent::flags::Run): its worker, step, targets (and those its
-    /// worker's last beat said ended), threads, grant time, and its usual time on its worker: its
-    /// targets' predicted times there summed (`Sched::secs_of`, what `job_weight` weighs a job past;
-    /// None when a target has none). Task #927 sizes a batch by its Mac's own runs at its threads
-    /// (`Sched::batch_secs`): once it lands this is that sum at the lease's threads, the time the
-    /// job was sized to.
+    /// worker's last beat said ended), threads, grant time, the time it was sized to on its worker at
+    /// its threads (`Sched::batch_secs`, what `pick_every` sized it by and `job_weight` weighs it
+    /// past; None when a target has no time), and what it has under way as its worker's beat last
+    /// said (`Lease::live`): the target and since when, with that target's measured time there
+    /// (`secs_on`); before its first target, its start and first target since its grant.
     pub fn runs(&self) -> Vec<crate::agent::flags::Run> {
         let s = self.shared.lock().unwrap();
         let now = s.now();
@@ -2490,15 +2490,33 @@ impl Coordinator {
                 }
                 let names: Vec<&str> =
                     if targets.is_empty() { vec![""] } else { targets.iter().map(|t| t.0.as_str()).collect() };
+                let live = l.live.as_ref();
+                let under_way = match live.and_then(|v| v.target.as_deref().zip(v.target_since)) {
+                    Some((key, since)) => {
+                        let t = CostKey::parse(key).target;
+                        Some(crate::agent::flags::UnderWay {
+                            target: t.to_string(),
+                            since,
+                            usual_s: s.secs_on(step, t, &l.worker, l.threads).map(|x| x.0),
+                        })
+                    }
+                    None if live.is_none_or(|v| v.targets_done == 0) => Some(crate::agent::flags::UnderWay {
+                        target: String::new(),
+                        since: l.granted_at,
+                        usual_s: s.batch_secs(step, names[..1].iter().copied(), &l.worker, l.threads).map(|x| x.0),
+                    }),
+                    None => None,
+                };
                 Some(crate::agent::flags::Run {
                     worker: l.worker.clone(),
                     lease: l.id,
                     step: step.clone(),
                     targets: targets.len(),
-                    done: l.live.as_ref().filter(|v| v.targets > 0).map(|v| v.targets_done),
+                    done: live.filter(|v| v.targets > 0).map(|v| v.targets_done),
                     threads: l.threads,
                     since: l.granted_at,
-                    usual_s: names.iter().map(|t| s.secs_of(step, t, &l.worker)).sum(),
+                    sized_s: s.batch_secs(step, names.iter().copied(), &l.worker, l.threads).map(|x| x.0),
+                    under_way,
                 })
             })
             .collect()

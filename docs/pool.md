@@ -2000,14 +2000,22 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
     cold start). With none free but work of a step any Mac takes held behind other steps (the
     plan's waits with a step: slope-hi behind terrain-root), it names those waits, and the wait of
     each step a wait names that waits too. Nothing left it could take: no flag.
-  - *overdue*: a leased job running more than the overdue factor times its usual time on its Mac,
-    with its targets done of its batch (its worker's beat) and its threads. Its usual time is what
-    the coordinator predicts its targets take that worker, summed (`Sched::secs_of`, the time
-    `job_weight` weighs a job past: each target's own run there, else its step's model at that
-    Mac's pace; runs of an older way of the step, by cost version, never count). A job whose
-    target has no prediction isn't flagged. When task #927 lands, a batch is sized by its Mac's own
-    runs at its threads (`Sched::batch_secs`), and the usual time becomes that sum at the lease's
-    threads: the time the job was sized to.
+  - *stuck*: a leased job whose target under way has run more than the overdue factor times
+    that target's measured time on its Mac at the job's threads (its worker's beat says the target
+    and since when; a target's end is the job's safe point), or, before its first target, its start
+    and first target since its grant: a job making no progress at all is found within a few of its
+    own targets' times, not its whole batch's (5 Nov: terrain-hi jobs at 0 tiles and no CPU for
+    20 min).
+  - *overdue*: a leased job running more than the overdue factor times the time it was sized to
+    (§7.7, Batch length: `Sched::batch_secs` at the lease's threads, its Mac's start and its targets'
+    measured times there), with its targets done of its batch (its worker's beat) and its threads;
+    one flagged stuck isn't flagged overdue too. A time not known (a target of its step never
+    measured the way it runs now) flags nothing.
+  - *stale*: the lead's catalogue due (held back, planned, or waiting out its minute:
+    `PublishLine::due_since`) for more than the overdue factor times the most the plan holds one
+    (`CATALOGUE_CAP_S` and `CATALOGUE_EVERY_S`, 11 min), counted from the last catalogue's going out
+    where later, with no catalogue job leased (that one is stuck or overdue by its own time). A
+    catalogue merely old, nothing new to list, isn't stale.
   - The factor is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set
     overdue-factor <times>|off`, or the build page's Settings, the pool's box), 1.1 to 100; not
     set, 3 (`OVERDUE_DEFAULT`, the owner's call of 4 Nov).
