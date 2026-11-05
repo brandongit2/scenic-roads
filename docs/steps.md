@@ -270,7 +270,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
     of the NAS's, read first in 8 MB reads, four at once, into its scratch (`trees::squares::rows_here`).
     A z6 tile makes its blocks a row at a time (each strip decoded once for the row), each block's
     band under a permit: a trees job is paced like an input check (docs/inputs.md §4.3, Threads),
-    taking the cores its Mac has idle past its grant. The trees program's NAS reads count in the
+    its threads as its lead re-grants them (docs/pool.md §7.1, Threads re-granted). The trees program's NAS reads count in the
     target's NAS weight (`bytes`; `coord::cost_version` 3).
   - Lossless WebP by `pipeline::webp`.
   - `trees --block`, `--blocks` and `--assemble` run blocks alone; a row of a z6 tile's blocks is a
