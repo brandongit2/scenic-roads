@@ -25,13 +25,13 @@ use std::collections::{BTreeMap, BTreeSet};
 /// coarser one its children's means of their heights before rounding (rounded ties to even, as
 /// stored), its z12 tiles' quarters from its z10 tiles' deep mids, outside every region the relief.
 /// 9 (task #862): roadcore::geo's one Mercator, box-grower and Earth ("near the coverage" its
-/// `NEAR_COVERAGE_KM`), `det`'s maths in the sampling (the geoid's, the rivers' too). 10 (task #942,
-/// the owner's of 5 Nov): lakes keep the source's heights, artefacts too (none levelled; mids of
-/// format 3, no lakes' levels).
+/// `NEAR_COVERAGE_KM`), `det`'s maths in the sampling (the geoid's too). 10 (task #942, the
+/// owner's of 5 Nov): lakes and rivers keep the source's heights, artefacts too (none levelled;
+/// mids of format 3, no lakes' levels; the water's digests of the sea and lakes alone).
 pub const TERRAIN_V: u32 = 10;
 /// Terrain-deep 2 (task #929): a z10 tile's band past z12 by the same rule, its mid for its z6 tile.
-/// 3 (task #862): as terrain-hi's 9. 5 (task #942): its lakes keep the source's heights, as
-/// terrain-hi's 10 (4 had them at levels a terrain-lakes step decided).
+/// 3 (task #862): as terrain-hi's 9. 5 (task #942): its lakes and rivers keep the source's
+/// heights, as terrain-hi's 10 (4 had lakes at levels a terrain-lakes step decided).
 pub const TERRAIN_DEEP_V: u32 = 5;
 /// Slope 4 (task #952): a missing deep terrain tile (z13 on) is made from its nearest ancestor
 /// within the deep levels alone, past them its own edge repeated (crate::slope_pack::fallback_floor),
@@ -1462,26 +1462,20 @@ pub fn water_key(
 }
 
 /// What the terrain's targets read of the water, as the `terrain-water` job works their digests
-/// out (crate::terrain_water::WaterIdx): each z6 tile ("6/x/y") with `piece_water_from`, each assembly ("3/x/y") with AREA_FROM.
+/// out (crate::terrain_water::WaterIdx): each z6 tile ("6/x/y") and deep target with the coverage it reads (`piece_coverage`, `Deep::coverage`), each assembly ("3/x/y") with AREA_FROM.
 pub fn water_wants(d: &Deep) -> Vec<(String, String)> {
     let (cov, sets) = (d.cov, d.sets.as_slice());
     let mut out = Vec::new();
     for (q, ts) in &coverage_tiles(cov) {
         for &(x, y) in ts {
-            out.push((format!("6/{x}/{y}"), piece_water_from(&piece_coverage(cov, sets, (x, y)))));
+            out.push((format!("6/{x}/{y}"), piece_coverage(cov, sets, (x, y))));
             for &(a, b) in d.targets_in((x, y)).iter() {
-                out.push((format!("{}/{a}/{b}", crate::terrain_deep::PACK_Z), piece_water_from(&d.coverage((a, b)))));
+                out.push((format!("{}/{a}/{b}", crate::terrain_deep::PACK_Z), d.coverage((a, b))));
             }
         }
         out.push((format!("3/{}/{}", q.0, q.1), crate::terrain_water::AREA_FROM.to_string()));
     }
     out
-}
-
-/// A z6 tile's water reads' from (`WaterIdx`): the coverage as it reads it (`fp`, `piece_coverage`): its
-/// tiles, as the terrain reads them since it levels rivers (crate::terrain_water::FLOW_FROM).
-pub fn piece_water_from(fp: &str) -> String {
-    format!("{fp}{}", crate::terrain_water::FLOW_FROM)
 }
 
 /// What a terrain z6 tile's run reads of the coverage (task #832), as its keys name it: the tiles

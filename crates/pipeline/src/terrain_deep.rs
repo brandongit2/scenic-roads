@@ -4,7 +4,7 @@
 //! is sampled from the pool, each dataset read at most at its own finest detail and the next in the
 //! declared order filling its voids (crate::terrain_base); each coarser tile is its children's 2×2
 //! means, a quarter whose child is past its place's finest zoom sampled there. Its water is
-//! flattened as every level's is (crate::terrain_water: the sea, the rivers; its lakes keep the
+//! flattened as every level's is (crate::terrain_water: the sea; its lakes and rivers keep the
 //! source's heights), tile by tile.
 //!
 //! - **Its tiles:** under the z10 tile, each of z13 to the deepest stored zoom near the coverage

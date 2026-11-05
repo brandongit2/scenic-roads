@@ -525,7 +525,7 @@ pub(crate) fn open_sea(water: &dyn WaterSource, z: u8, ts: &[(u32, u32)]) -> Res
     let per = side * side;
     let mut out: Vec<bool> = Vec::new();
     for (t, &(x, y)) in ts.iter().enumerate() {
-        let Some(wt) = crate::terrain_water::tile_water(water, z, x, y, false)? else { continue };
+        let Some(wt) = crate::terrain_water::tile_water(water, z, x, y)? else { continue };
         let full = |j: usize, i: usize| wt.sea[j * 256 + i] == crate::terrain_water::FULL;
         let deep: Vec<bool> = (0..256 * 256)
             .map(|p: usize| {

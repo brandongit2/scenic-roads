@@ -388,10 +388,8 @@ pub fn water(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let pin = crate::terrain_pack::water_source_pin(x.m);
     let idx = pin.as_deref().and_then(|p| x.tiles.water_idx(x.m, p));
     let from = match u.z {
-        6 => super::build::piece_water_from(&super::build::piece_coverage(x.cov, &x.tiles.zoom_sets(x.m)?, (u.x, u.y))),
-        z if z == crate::terrain_deep::PACK_Z => {
-            super::build::piece_water_from(&x.tiles.deep(x.m, x.cov)?.coverage((u.x, u.y)))
-        }
+        6 => super::build::piece_coverage(x.cov, &x.tiles.zoom_sets(x.m)?, (u.x, u.y)),
+        z if z == crate::terrain_deep::PACK_Z => x.tiles.deep(x.m, x.cov)?.coverage((u.x, u.y)),
         _ => crate::terrain_water::AREA_FROM.to_string(),
     };
     Some(vec![super::build::water_key(pin.as_deref(), idx, t, &from)?])

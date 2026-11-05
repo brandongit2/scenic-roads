@@ -2,8 +2,8 @@
 //! from the elevation pool (crate::terrain_base) only at its place's finest zoom
 //! (crate::terrain_zoom), each coarser quarter its children's 2×2 means (of their heights before
 //! rounding), outside every region the relief (`Fills`). Levels are made finest first: each tile's
-//! sea goes to 0 m and its rivers are levelled (crate::terrain_water; its lakes keep the source's
-//! heights), its bathymetry goes to sea level, and it's rounded only as it's stored.
+//! sea goes to 0 m (crate::terrain_water; its lakes and rivers keep the source's heights), its
+//! bathymetry goes to sea level, and it's rounded only as it's stored.
 //! The z6 tiles' runs (`build_piece`), the z3 tiles' assemblies (`build_lo`) and the root
 //! (`build_root`) are here; a z10 tile's band past z12 is crate::terrain_deep's.
 
@@ -352,8 +352,9 @@ fn prepare(
         }
     }
     let water = match src.water {
-        Some(w) => crate::terrain_water::tile_water(w, z, x, y, true)
-            .map_err(|e| e.context(format!("the water of {z}/{x}/{y}")))?,
+        Some(w) => {
+            crate::terrain_water::tile_water(w, z, x, y).map_err(|e| e.context(format!("the water of {z}/{x}/{y}")))?
+        }
         None => None,
     };
     Ok(Prepared { e, before, water, decoded: true, z, quantum })
