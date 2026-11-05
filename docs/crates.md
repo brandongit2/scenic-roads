@@ -370,7 +370,7 @@ The choices, against the alternatives:
   `A: Above` would compile all of them in pipeline. What `Above` gave comes instead from: the
   records, read by buildstore itself (below); the write set, a plain `out::Writes`
   (`fn(&str, &str, bool) -> Option<bool>`) handed to `Out::open(root, scratch, step, writes)`,
-  which only scenic-build (`run`) and agent/gc call outside tests, both through
+  which only scenic-build (`step_main`) and agent/gc call outside tests, both through
   `pipeline::out::open(root, scratch, step)` (it passes `agent::steps::writes`); `Out::unbound`
   (the steps' own code) needs neither; and `TESTING`, a process flag `buildstore::out::testing()`,
   `cfg!(test)` in buildstore's own tests and set otherwise only by the `#[cfg(test)]` start-up

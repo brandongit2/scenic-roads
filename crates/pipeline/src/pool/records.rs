@@ -33,7 +33,7 @@ use super::term::Term;
 use crate::agent::build::Keys;
 use crate::rawpack::Pack;
 use anyhow::{bail, ensure, Context, Result};
-use buildstore::records::{read_or_default, Snapshot, TODAY};
+use buildstore::records::{read_or_default, BriefOf, Snapshot, TODAY};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -111,19 +111,15 @@ impl Brief {
     pub fn now(nas: &dyn Nas) -> Result<Brief> {
         buildstore::records::brief_now::<Records, Brief>(nas)
     }
-
-    fn of(r: Records) -> Brief {
-        Brief { term: r.term, seq: r.seq, manifest: r.manifest, keys: r.keys }
-    }
 }
 
-impl buildstore::records::BriefOf<Records> for Brief {
+impl BriefOf<Records> for Brief {
     fn term(&self) -> u64 {
         self.term
     }
 
     fn of(r: Records) -> Brief {
-        Brief::of(r)
+        Brief { term: r.term, seq: r.seq, manifest: r.manifest, keys: r.keys }
     }
 
     fn today(nas: &dyn Nas) -> Result<Brief> {

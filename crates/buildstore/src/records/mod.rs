@@ -181,7 +181,7 @@ impl std::error::Error for FirstUnreadable {}
 /// The parts of the build's records an `Out` reads (crate::out::Out::open_with,
 /// `recorded_sizes`).
 #[derive(Default, Deserialize)]
-pub struct Recorded {
+pub(crate) struct Recorded {
     /// The term they're of.
     pub term: u64,
     /// Logical name → content name.
