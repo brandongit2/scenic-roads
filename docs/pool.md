@@ -1777,22 +1777,9 @@ member's page reruns the same:
 - **The build paused, nothing placed** (`Input::paused`, the lead's pause): the forecast says
   `forecast::PAUSED` and places nothing (no finish, no lanes); the replay reads the pause from
   the history's pause and resume (`forecast::paused`).
-- **Each Mac takes the steps it took** (removed in code 5, task #951: it copied outcomes, not their
-  causes, and lagged a fix by up to a day): the lanes' hours each Mac
-  gave each planned step (not `CLOCKED`) over the last day, of the steps the pool's Macs did 3
-  jobs of at least; the run offers a Mac none of a step it gave under a tenth of the step's time
-  and under an hour (`SKIP_SHARE`, `SKIP_KEEP_H`; a step no Mac did lately, any Mac). Under a
-  tenth alone, the MacBook Pro's 1.6 lane-hours of terrain-deep (6 %) a day before it did 1,126
-  targets of it in the test's first 6 h were skipped, terrain-deep's test median 198 to 242 min;
-  with the hour kept, 202. At a fiftieth instead the gain shrank (test median 614 to 614).
-  The skip holds for the run's first day alone (`SKIP_FOR_S`, the span the shares were read over);
-  after it every Mac is offered every step. Skipping throughout, a step one busy Mac mostly took
-  waited on it for weeks: depth, ~90 % the Mac mini's on 24-25 Oct, the MacBook Pro's few jobs
-  skipped, its train end p90 35,814 to 78,057 min (with the day, 33,136); terrain-deep's 2,614 to
-  4,011 (2,539). The price: train's median 884 against 1,054, the test's depth and bldtiles less
-  improved (depth median 8,838 against 11,330).
-- **Lanes cut, not slowed**: the hold's share of busy time no longer applied (the hold itself
-  removed in code 5, task #951).
+- **Each Mac takes the steps it took**, a skip of a step it gave under a tenth of the day's time,
+  and **lanes cut, not slowed**: both removed in code 5 (task #951: they copied outcomes, not their
+  causes, and lagged a fix by up to a day).
 
 Tried and left out: offering each Mac's steps in the order of its time on them (terrain-hi's test
 median 4,580 to 210 min, but pack's 4,228 to 10,066 and terrain-lo's 184 to 2,872: the order of
@@ -1905,33 +1892,48 @@ slope-deep). Now (§7.2):
   out yet waits for what works it out (the slope tiles reading the terrain's root: 5 Nov, slope-hi
   6/0/48 and 6/15/48 were granted to the M1 while they waited on terrain-root).
 
+Two faults of the run the review found (both in code 5's own run, so code 4's column replays them
+fixed too):
+
+- **A step measured only its old way ran one job at a time.** Its targets' measures were all of
+  an older `cost_version` (slope-deep's, raised by #929 on 5 Nov), so each was a cold start, one
+  of its step at a time in the pool; the run left a job's measures as it ended only for a step with
+  no measure at all, and kept a stale one. Now a job of a step with none of the way it runs now
+  leaves its targets' measures, replacing old ones, as a live hand-off does (`Pool::learn`,
+  `forecast::tests::a_step_measured_only_its_old_way_fans_out_after_its_first_job`). Before, the
+  replays of 4-5 Nov put nearly all slope-deep on the lead's first lane, the other lanes idle: the
+  late bias.
+- **The replay ran code 5 on the day before's lanes.** A record made before code 5 has each Mac's
+  lanes cut by the hold; the replay now gives each Mac back its slots, as code 5's lead makes them
+  (`fccheck`'s `unhold`): some 30 lanes where the records had 3 to 5.
+
 **The backtest, before against after** (`forecast-check --replay --from 2026-11-04 --to
-2026-11-05T16:00 --split 2026-11-05T08:00`, M4; the inputs archived since #933: 24 train, 15 test;
-"before" the code at 9baf1315, code 4; "after" code 5; the middle column the new run with each Mac's
-room as it asked, code 4's in the new binary). Minutes; median / p90 of the absolute end error:
+2026-11-05T16:00 --split 2026-11-05T08:00`, M4, release build so no run is cut at its budget; the
+inputs archived since #933: 24 train, 15 test; code 4 the run with each Mac's room as it asked and
+the record's lanes; code 5 each Mac at its sustained best on its slots). Minutes; median / p90 of the
+absolute end error:
 
-| | test before | test code 4 | test after | train before | train after |
-|---|---|---|---|---|---|
-| right Mac | 41 % | 46 % | 43 % | 47 % | 48 % |
-| right slot | 24 % | 29 % | 28 % | 10 % | 39 % |
-| end, all | 74 / 474 | 68 / 459 | 68 / 428 | 351 / 795 | 350 / 791 |
-| end bias | +178 | +168 | +150 | +370 | +369 |
-| start, all | 69 / 456 | 67 / 431 | 67 / 384 | 249 / 730 | 249 / 729 |
-| end, bldtiles | 132 / 400 | 62 / 390 | 57 / 261 | | |
-| end, slope-deep | 173 / 415 | 169 / 409 | 169 / 409 | 345 / 789 | 345 / 789 |
-| end, depth | 594 / 2,679 | 594 / 2,679 | 577 / 2,677 | | |
+| | test, code 4 | test, code 5 | train, code 4 | train, code 5 |
+|---|---|---|---|---|
+| right Mac | 45 % | 44 % | 49 % | 47 % |
+| end, all | 64 / 428 | 49 / 101 | 119 / 419 | 157 / 423 |
+| end bias | +141 | +9 | -128 | -188 |
+| end, slope-deep | 49 / 168 | 14 / 64 | 120 / 417 | 157 / 423 |
+| end, bldtiles | 63 / 390 | 57 / 125 | | |
+| end, depth | 594 / 2,679 | 25 / 457 | | |
 
-Better or the same everywhere but the right-Mac rate on the test set, where the sustained best
-gives back 3 of the 5 points pulling gained (46 to 43 %): at its best a Mac takes work the pool
-gave another Mac then. The finish is still late on both sets (+150 and +369 minutes): the run is a
-best case for room, not for time: this task changed where work goes and when it's ready, not how
-long it takes. On train the best room
-changed nothing measurable (its figures are those with each Mac's room as it asked): slope-deep,
-85 % of its samples, fits every Mac's room either way (#931: peaks of 2.2-2.9 GB). The 4 Nov case itself is before the inputs'
-archive (it begins 4 Nov 22:40 UTC), so a test replays it
+On the test set code 5 is better everywhere but the right Mac (a point down). On train it is
+early (-188 min): a best case, each Mac on all its slots at its best room, where that night's pool
+ran about one job a Mac (the M4's cores taken by test builds, the M1's memory at 3-5 GB). The 4 Nov
+case itself is before the inputs' archive (it begins 4 Nov 22:40 UTC), so a test replays it
 (`forecast::tests::each_mac_runs_at_its_sustained_best_room`): the mini's floor lowered at noon,
 its best room follows within the half hour and the run gives it its share of slope-deep then,
 where the skips held it to none for the day.
+
+**Its cost.** With each Mac on its slots the lead's run has some 30 lanes where the hold left 3 to
+5, and each ask does more: the live-scale test's three runs took 132 s of CPU against 85 s at the
+code before (M4, test build, under load); the replay's debug build cut 11 of its 39 code 5 runs at
+the 15 s budget, its release build none.
 
 ## 8. Tasks
 
