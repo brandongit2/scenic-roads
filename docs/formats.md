@@ -476,7 +476,8 @@ ancestor's neighbours' edges; nearest for classes).
   lake's mean surface), negative; drying heights positive (at most 20 m); +12,000 m where there's
   none (≥ 9,000 is none). Quantised: 0.1 m in the first 100 m, 1 m deeper. The terrain's water
   (`terrain_water`: half a pixel or more of sea or lake) is where it lies, and the land keeps a band
-  of 3 pixels of the nearest water's value (≥ 0) so a finer shoreline never meets a gap.
+  of 3 pixels of the nearest water's value (≥ 0, class 0), which the map doesn't draw: its relief
+  reaches from the water's own data (web/src/depthgrid.ts).
 - **`depth-class`** (encoding `class-webp`: lossless WebP, the byte in R, G and B alike): bits 0–2 the class (0 none or land, 1
   a source's grid at the tile's zoom or finer, 2 a coarser grid's, scaled up, 3 estimated, 4 filled
   to the shore), bit 3 dries at low tide, bits 4–7 the

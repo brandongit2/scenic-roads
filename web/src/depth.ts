@@ -33,7 +33,7 @@ import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
 import { onVersions, ver } from './api';
 import { SHADE_SHIFT, floorTiles, waterTilesOn, waterTop } from './basemap';
 import { hostFor } from './hosts';
-import { depthZooms, type DepthZooms } from './depthgrid';
+import { DRY_MIN, depthZooms, type DepthZooms } from './depthgrid';
 import { depthColour, hdepth, hexRgb, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
 import type { DepthMsg, DepthReply, Probe } from './depth.worker';
 
@@ -332,12 +332,13 @@ export class Depth {
       const t = i / n;
       stops.push([-inv(t), rgba(depthColour(s.palette, t))]);
     }
-    if (lo > 0) stops.push([-0.001, rgba(depthColour(s.palette, 0))]);
-    // Drying heights (between mean sea level and the shore), then nothing (land, no data).
+    stops.push([0, rgba(depthColour(s.palette, 0))]);
+    // Water marked drying (from DRY_MIN: depthgrid.ts reliefValues, no other water above 0), then
+    // nothing (land, no data).
     if (s.dry) {
       const dc = hexRgb(s.dryColour);
-      stops.push([0.001, rgba(dc, 0.85)], [3, rgba(dc.map((v) => Math.min(1, v * 1.15)) as RGB, 0.85)], [20, rgba(dc.map((v) => Math.min(1, v * 1.3)) as RGB, 0.85)]);
-    } else stops.push([0.001, rgba(depthColour(s.palette, 0))], [20, rgba(depthColour(s.palette, 0))]);
+      stops.push([DRY_MIN, rgba(dc, 0.85)], [3, rgba(dc.map((v) => Math.min(1, v * 1.15)) as RGB, 0.85)], [20, rgba(dc.map((v) => Math.min(1, v * 1.3)) as RGB, 0.85)]);
+    } else stops.push([20, rgba(depthColour(s.palette, 0))]);
     stops.push([20.01, 'rgba(0,0,0,0)'], [13000, 'rgba(0,0,0,0)']);
     const seen = new Set<number>();
     const expr: unknown[] = ['interpolate', ['linear'], ['elevation']];
@@ -432,7 +433,7 @@ export class Depth {
     const m = src?.label.match(/^(.*),\s*([^,]*\d[^,]*)$/);
     return {
       depth: -p.d,
-      dries: p.d > 0 || p.dries,
+      dries: p.dries,
       colour: this.colourOf(p.d, p.dries),
       cls: CLASSES[p.cls] ?? '',
       source: m ? m[1] : src?.label ?? '',
@@ -442,10 +443,11 @@ export class Depth {
     };
   }
 
-  /** The colour the depth layer gives depth `d` (m, negative below the surface): its ramp's, or the drying colour. */
+  /** The colour the depth layer gives depth `d` (m, negative below the surface): its ramp's, or the
+   * drying colour where it's marked drying. */
   private colourOf(d: number, dries: boolean): string {
     const s = this.s;
-    if ((d > 0 || dries) && s.dry) return s.dryColour;
+    if (dries && s.dry) return s.dryColour;
     const [lo, hi] = this.domain(s);
     const [fwd] = scaleFns(s.scale === 'linear' ? 'linear' : 'log', Math.max(0, lo), Math.max(lo + 0.5, hi));
     return rgba(depthColour(s.palette, fwd(Math.max(0, -d))));

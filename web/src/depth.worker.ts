@@ -7,18 +7,19 @@
 // mean of the least zoom's tiles under it with data, depthgrid.ts coarsen, #822; the map asks for
 // none past the greatest less one, depthgrid.ts depthZooms) and the basemap's own water (its vector tile of zoom min(z, 14), as the map draws it),
 // painted at 512 px. From that one composite come:
-//   relief   depth, reaching REACH px past its data (?mask=1: on land too, the map drawing it
-//            only in its water tiles' water; else in the basemap's water); elsewhere +12,000 m,
-//            which the colour ramp leaves transparent
+//   relief   the water's depth, reaching REACH px past its data, never across land into other
+//            water (?mask=1: on land too, the map drawing it only in its water tiles' water; else in
+//            the basemap's water), drying colours only where it's marked drying (depthgrid.ts
+//            reliefValues); elsewhere +12,000 m, which the colour ramp leaves transparent
 //   contour  a vector tile of depth contours (maplibre-contour's isolines, contour/, over the depth in
 //            the water, 0 on land and water without data its nearest depth, of the tile and its
-//            eight neighbours, so lines meet across tiles)
+//            eight neighbours, so lines meet across tiles: depthgrid.ts contourValues)
 // (The floor's shading is the build's: depth.ts.)
 // and, on request, the depth, class and source at a point (the footer's water info on hover), depth histograms of the
 // tiles in view (the colour scale fitted to the view) and the sources in them (the attribution).
 import { HeightTile } from './contour/height-tile';
 import generateIsolines from './contour/isolines';
-import { NODATA_MIN, SENTINEL, coarsen, type Grid } from './depthgrid';
+import { NODATA_MIN, SENTINEL, coarsen, contourValues, reliefValues, type Grid } from './depthgrid';
 import { HBINS, hbin } from './depthlook';
 import { encodeLines, readPolygons } from './mvt';
 
@@ -265,73 +266,6 @@ function terrarium(v: Float32Array): ImageData {
 async function encode(img: ImageData): Promise<ArrayBuffer> {
   outCtx.putImageData(img, 0, 0);
   return (await outCanvas.convertToBlob({ type: 'image/png' })).arrayBuffer();
-}
-
-/** How far (px) a depth reaches past its data for the colour: across the shore's pixels with none
- * (a coarse tile's water rule, a lake under a pixel) to the water the map draws. */
-const REACH = 8;
-
-/** Each pixel's nearest pixel with data (two-pass chamfer propagation), its sources the water's
- * (`water`) or all with data (the server's land band too); -1: none in the tile. */
-function nearest(c: Composite, water: boolean): { src: Int32Array; dist: Float32Array } {
-  const src = new Int32Array(N * N).fill(-1);
-  const dist = new Float32Array(N * N).fill(1e9);
-  for (let i = 0; i < N * N; i++) {
-    if (c.d[i] < NODATA_MIN && (!water || c.w[i])) {
-      src[i] = i;
-      dist[i] = 0;
-    }
-  }
-  const relax = (i: number, j: number, cost: number) => {
-    if (src[j] >= 0 && dist[j] + cost < dist[i]) {
-      dist[i] = dist[j] + cost;
-      src[i] = src[j];
-    }
-  };
-  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-    const i = y * N + x;
-    if (x > 0) relax(i, i - 1, 1);
-    if (y > 0) {
-      relax(i, i - N, 1);
-      if (x > 0) relax(i, i - N - 1, 1.414);
-      if (x < N - 1) relax(i, i - N + 1, 1.414);
-    }
-  }
-  for (let y = N - 1; y >= 0; y--) for (let x = N - 1; x >= 0; x--) {
-    const i = y * N + x;
-    if (x < N - 1) relax(i, i + 1, 1);
-    if (y < N - 1) {
-      relax(i, i + N, 1);
-      if (x < N - 1) relax(i, i + N + 1, 1.414);
-      if (x > 0) relax(i, i + N - 1, 1.414);
-    }
-  }
-  return { src, dist };
-}
-
-/** The contours' values: water with data as it is, land 0, water without data its nearest depth in
- * the water. */
-function contourValues(c: Composite): Float32Array {
-  const { src } = nearest(c, true);
-  const v = new Float32Array(N * N);
-  for (let i = 0; i < N * N; i++) v[i] = c.w[i] && src[i] >= 0 ? c.d[src[i]] : 0;
-  return v;
-}
-
-/** Relief values: a pixel's depth (its nearest within REACH where it has none), +12,000 m beyond;
- * masked, on land too (the map draws it only in its water: depth.ts), else only in the basemap's
- * water. Water that dries at low water takes the ramp's drying colours (heights above 0): those
- * below mean sea level at its lowest; the depth itself stays below MSL everywhere else (footer,
- * shade). */
-function reliefValues(c: Composite, masked: boolean): Float32Array {
-  const { src, dist } = nearest(c, false);
-  const v = new Float32Array(N * N).fill(SENTINEL);
-  for (let i = 0; i < N * N; i++) {
-    const j = src[i];
-    if (j < 0 || dist[i] > REACH || (!masked && !c.w[i])) continue;
-    v[i] = c.k[j] & 8 ? Math.max(c.d[j], 0.05) : c.d[j];
-  }
-  return v;
 }
 
 async function reliefTile(z: number, x: number, y: number, masked: boolean): Promise<ArrayBuffer> {

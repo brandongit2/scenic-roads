@@ -1,6 +1,7 @@
-// The depth's zooms (depthZooms: which the server stores, which the map asks for) and the worker's
-// 256-px grids above the least stored (coarsen, depth.worker.ts). Kept apart from depth.ts and the
-// worker so the tests can run them (web/test/depthgrid.test.ts).
+// The depth's zooms (depthZooms: which the server stores, which the map asks for), the worker's
+// 256-px grids above the least stored (coarsen) and the values its relief and contours draw
+// (reliefValues, contourValues; depth.worker.ts). Kept apart from depth.ts and the worker so the
+// tests can run them (web/test/depthgrid.test.ts).
 
 /** Depth at or over this (m) is none. */
 export const NODATA_MIN = 9000;
@@ -60,4 +61,91 @@ export function coarsen(parts: Grid[], f: number): Grid {
       }
   });
   return { d, k };
+}
+
+/** The least relief value of water that dries at low tide: the colour ramp's drying colours start
+ * here (depth.ts), and no other water reaches them. */
+export const DRY_MIN = 0.05;
+/** How far (px) a depth reaches past its water's data for the colour: across the shore's pixels with
+ * none (a coarse tile's water rule, a lake under a pixel) to the water the map draws. */
+export const REACH = 8;
+
+/** A square of the worker's composite: depth (m; ≥ NODATA_MIN none), class bytes (bits 0–2 the
+ * class, 0 none: land, the build's band of the nearest water's value among it; bit 3 dries) and the
+ * basemap's water (1). */
+export interface Square {
+  d: Float32Array;
+  k: Uint8Array;
+  w: Uint8Array;
+}
+
+/** A pixel of the water's own data: a depth with a class (the build's band on the land has none). */
+const own = (c: Square, i: number) => c.d[i] < NODATA_MIN && (c.k[i] & 7) !== 0;
+
+/**
+ * Each pixel's nearest pixel of the water's own data (`own`; with `water`, of the basemap's water
+ * alone), by two-pass chamfer propagation (-1: none in the square). A depth crosses the land only
+ * to reach the shore: once on the basemap's land it never comes back into its water, so water
+ * without data across a dike or a spit (another water body) stays without.
+ */
+export function nearest(c: Square, water: boolean): { src: Int32Array; dist: Float32Array } {
+  const N = Math.round(Math.sqrt(c.d.length));
+  const src = new Int32Array(N * N).fill(-1);
+  const dist = new Float32Array(N * N).fill(1e9);
+  for (let i = 0; i < N * N; i++) {
+    if (own(c, i) && (!water || c.w[i])) {
+      src[i] = i;
+      dist[i] = 0;
+    }
+  }
+  const relax = (i: number, j: number, cost: number) => {
+    if (src[j] >= 0 && dist[j] + cost < dist[i] && (src[j] === j || !c.w[i] || c.w[j])) {
+      dist[i] = dist[j] + cost;
+      src[i] = src[j];
+    }
+  };
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const i = y * N + x;
+    if (x > 0) relax(i, i - 1, 1);
+    if (y > 0) {
+      relax(i, i - N, 1);
+      if (x > 0) relax(i, i - N - 1, 1.414);
+      if (x < N - 1) relax(i, i - N + 1, 1.414);
+    }
+  }
+  for (let y = N - 1; y >= 0; y--) for (let x = N - 1; x >= 0; x--) {
+    const i = y * N + x;
+    if (x < N - 1) relax(i, i + 1, 1);
+    if (y < N - 1) {
+      relax(i, i + N, 1);
+      if (x < N - 1) relax(i, i + N + 1, 1.414);
+      if (x > 0) relax(i, i + N - 1, 1.414);
+    }
+  }
+  return { src, dist };
+}
+
+/** The contours' values: water with data as it is, land 0, water without data its nearest depth in
+ * the water. */
+export function contourValues(c: Square): Float32Array {
+  const { src } = nearest(c, true);
+  const v = new Float32Array(c.d.length);
+  for (let i = 0; i < v.length; i++) v[i] = c.w[i] && src[i] >= 0 ? c.d[src[i]] : 0;
+  return v;
+}
+
+/** Relief values: a pixel's water's depth (its nearest within REACH where it has none), SENTINEL
+ * beyond; `masked`, on land too (the map draws it only in its water: depth.ts), else only in the
+ * basemap's water. Only water marked as drying at low water takes the ramp's drying colours (at
+ * least DRY_MIN); any other is at most 0, the ramp's shallowest blue (the depth itself stays as it
+ * is everywhere else: footer, shade). */
+export function reliefValues(c: Square, masked: boolean): Float32Array {
+  const { src, dist } = nearest(c, false);
+  const v = new Float32Array(c.d.length).fill(SENTINEL);
+  for (let i = 0; i < v.length; i++) {
+    const j = src[i];
+    if (j < 0 || dist[i] > REACH || (!masked && !c.w[i])) continue;
+    v[i] = c.k[j] & 8 ? Math.max(c.d[j], DRY_MIN) : Math.min(c.d[j], 0);
+  }
+  return v;
 }

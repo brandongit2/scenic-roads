@@ -405,9 +405,10 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   scaled at z15–16), the terrain's sea and lakes and also its rivers (class `river`). A pixel is
   water when they cover half of it or more, or when it's narrow water (some of it water and none of
   its eight neighbours half so: a channel under a pixel wide). A river's pixel takes only the
-  sources declared `rivers` (their depths below the river's own surface: NONNA's mean water level
+  sources declared `rivers` (their depths below the water's own surface: NONNA's mean water level
   from CHS's stations, which slopes down the St. Lawrence with them; BlueTopo's and SHOM's mean sea
-  level, in the tidal reaches they cover); a river is gap-filled from a river's data alone, keeps no
+  level, in the tidal reaches they cover); a lake's pixel the lake sources and those, a sea's the
+  sea sources (`Source::drawn_in`); a river is gap-filled from a river's data alone, keeps no
   drying heights and never dries. A river's pixel (rivers cover more of it than the sea or lakes,
   which cover under half), a pixel water only with the rivers' share, and narrow water are land
   where no source has a value, so a river no source is drawn in changes nothing. Narrow water a
@@ -415,13 +416,18 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   z6 tiles (intended).
 - **Composing a block** (8 × 8 tiles and a 32-pixel margin; `depth::compose`), on that water:
   sources sampled (coarser grids
-  interpolated, finer ones averaged from the overview that lines up) and painted coarse to fine;
+  interpolated, finer ones averaged from the overview that lines up) and painted coarse to fine,
+  the surveys first and then the estimates, which fill only what no survey has (a survey beats an
+  estimate wherever both cover water);
   past its own zoom a pixel shows the stored level of its zoom scaled up as the map's fallback makes
   it (`depth::fall`, the server's too), detail fading in over three capped pixels; a source ending in
   the water feathered over its `band_m` (a source off the others' datum fills gaps only); the shore:
   positive values kept as drying heights only from intertidal sources, water without data filled
   linearly to 0 at the shore within 600 m from data of the same water body (a lake without data of
-  its own stays empty), the land a 3-pixel band; dries where above the chart's low water.
+  its own stays empty), the land a 3-pixel band of the nearest water's value (≥ 0, class none:
+  the map doesn't draw it, reaching from the water's own data); dries where above the chart's low
+  water. A change in which sources are drawn in lakes keys only the targets those sources meet
+  (`grids::OWN_SURFACE_PIN` in their pins).
 - **The floor:** the depth lies on the terrain's own water, flattened to its surface, so the terrain
   less the depth is the floor; the server serves it (`/tiles/terrain/…?floor=1`), no second terrain
   stored. Rivers are levelled along their courses (§2, Rivers levelled), or left as their source
@@ -442,8 +448,11 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   as the water itself: our MapLibre draws them over the water tiles the map draws, as those tiles'
   alpha (`scenic:mask`, web/maplibre FORK.md), so they never leave the water nor leave it uncovered
   while tiles load or overzoom; the depth is interpolated bilinearly among pixels with data and
-  reaches 8 pixels past its data (the nearest's value), so water a coarse tile's rule left out
-  takes its neighbour's depth, and water with no depth near shows the water's own colour. Without
+  reaches 8 pixels past the water's own data (the nearest's value; never the land's band, and never
+  across land into water again), so water a coarse tile's rule left out takes its neighbour's
+  depth, and water with no depth near, or across a dike from it, shows the water's own colour. The
+  drying colour is only for water marked drying (depth-class bit 3); any other water at or above
+  its surface takes the ramp's shallowest blue (web/src/depthgrid.ts reliefValues). Without
   the water tiles, the colour masked by the basemap's water at the display's resolution, and no
   floor shading (its tiles reach onto the shore). Over the water fill
   and under the coast shading, the whitewater and the terrain's hill-shading (§4), draped on the 3D
