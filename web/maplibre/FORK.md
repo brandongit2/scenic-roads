@@ -186,18 +186,24 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   `Painter._rttFbos`). A low camera over Chamonix holds ~500 MB of drapes instead of 3.9 GB.
 - **Tiles finer than the screen where worth it** (`scenic:detail` on a raster-dem source,
   `RasterTileSource.detail`; `TileManager._refineCover`, `detailBudget` 8, `maxTilesADrape` 240,
-  the map's `refineDelay` 300 ms): the cover is the screen's own (as without it), and each of its tiles is
-  replaced by its tiles in the cover `detail` times finer a side (within the source's zooms, by area
-  too), nearest the camera first, while the tiles' texels stay within `detailBudget` × the screen's
+  the map's `refineDelay` 300 ms): once the camera has been still for `refineDelay` (`Map._stillIn`,
+  from `_lastCameraMove`, a camera changed since the last frame counting as moving;
+  `Map._updateWhenStill` updates the sources then), each tile of the screen's own cover is replaced
+  by its tiles in the cover `detail` times finer a side (within the source's zooms, by area too),
+  nearest the camera first, while the tiles' texels stay within `detailBudget` × the screen's
   device pixels (or the screen's own cover's, if more) and no terrain drape gets more than
   `maxTilesADrape` of them (the stencil's IDs a texture). A tile is refined only once it has data
-  (it stands in while its finer tiles load) and once the camera has been still for `refineDelay`
-  (`Map._stillIn`, from `_lastCameraMove`; `Map._updateWhenStill` updates the sources then);
-  while it moves the finer cover isn't worked out, and the finer tiles of the last one that are
-  loaded are kept. Until the refinement is done the source isn't `loaded()` (`_detailPending`), so
-  `idle` waits for the finer tiles (it had come before the delay was over, and with it a
-  screenshot or a benchmark's settle); `_detailOffset` holds each finer tile's zooms beyond its
-  screen tile's. The app's shading (`slope`) uses 4, two zooms finer (`tile_manager_detail.test.ts`).
+  (it stands in while its finer tiles load). Until then, and while the camera moves, the cover is
+  the screen's own, as without it, so a gesture's frames cost what they did (with the finer tiles
+  kept while moving, every frame's tile matrices, drape coordinates and fingerprints, the drapes
+  redrawn and the app's terrain statistics went over 3–7× the tiles: Chrome's pan and orbit 10–20%
+  slower); the finer tiles go to the out-of-view cache, which keeps as many more as the last rest
+  held (`_detailTiles`), so coming back to them asks for none again. Until the refinement is done
+  the source isn't `loaded()` (`_detailPending`; while the camera isn't still, as long as a tile of
+  the cover has finer zooms), so `idle` waits for the finer tiles (a screenshot, a benchmark's
+  settle); `_detailOffset` holds each finer tile's zooms beyond its screen tile's, empty while the
+  camera isn't still. The app's shading (`slope`) uses 4, two zooms finer
+  (`tile_manager_detail.test.ts`).
 - **Drapes finer than the screen** (`TerrainTileManager.drapeDetail`, default 1; the app sets 4):
   a drape tile under a draped source's finer tiles (`_detailOffset`) gets 2^offset times the texels
   a side of the size above, at most drapeDetail and `MAX_TEXTURE_SIZE` (every tile then sized by its
@@ -205,17 +211,23 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   detail is kept and the texture's mipmaps average it. The cover's textures hold at most what they
   would without it plus `drapeExtra` (2) × the screen's device pixels (`drapeBudgetTexels`): over
   it, the texture most oversampled for its footprint is halved, then the next, none below the size
-  it would have without it. Until the camera has been still for the map's `refineDelay`, the
-  finer tiles' clock, textures get the sizes they would without it (one grown at the last rest
-  keeps its size, not drawn smaller and then larger again); then they grow in the same frame as the
-  finer tiles come, a tile a frame (`terrain_tile_manager.test.ts`). Measured 5 Nov on the M1 Pro
-  (`tools/bench/inpage.mjs`, 1440 × 900 windows at 2×, 120 Hz; views `saguenay` and `niagara`, z16
-  terrain; two interleaved rounds): the shading drawn at z14–16 instead of z12–15 (z13–16), 3–4.5×
-  the tiles; drapes 112 → 145 MB (78 → 112), the map's GPU memory at rest 523 → 665 MB (663 → 774);
-  Chrome pan 92–95 → 81–82 fps (80–94 → 72), orbit 98–102 → 82–87 fps (62–63 → 58–60), settle
-  0.3 → 0.8–1.0 s; Safari pan 28–30 → 26–27 fps (22 → 22), orbit 30–31 → 23–26 fps (29–31 → 25–26),
-  settle 0.3–0.5 → 1.9–3.1 s. (While moving, the finer tiles already in stay in the cover and are
-  drawn into the drapes at the sizes they would have without them.)
+  it would have without it (`_drapeDetails`, worked out again only when the drapes or the finer
+  tiles change). Until the camera has been still for the map's `refineDelay`, the finer tiles'
+  clock, textures get the sizes they would without it (one drawn meanwhile holds no finer tile),
+  and a texture drawn with finer tiles (`RTTFingerprint.finer`) is kept as it is, whatever its size
+  and the source tiles it would have now (`RenderToTexture._textureDifference`), not drawn coarser
+  and then finer again; once still they grow and are drawn again, a tile a frame
+  (`terrain_tile_manager.test.ts`, `render_to_texture.test.ts`).
+  Measured 5 Nov on the M1 Pro (`tools/bench/inpage.mjs`, 1440 × 900 windows at 2×, 120 Hz; views
+  `saguenay` and `niagara`, z16 terrain; main vs a9c020f8, two interleaved rounds in a quiet
+  period): the shading drawn at z14–16 instead of z12–15 (z13–16), the map's GPU memory at rest
+  525 → 665 MB (662 → 775), drapes 112 → 145 MB (78 → 112); Chrome pan 92–96 → 79–86 fps (77–81 →
+  82–88), orbit 99 → 90–101 (61 → 59–60); Safari pan 29–30 → 25 (21 → 25–26), orbit 28–31 → 24–29
+  (25–29 → 28); settle 0.2–0.3 → 0.4–0.8 s in Chrome, 0.3–0.5 → 0.5–1.0 s in Safari (the 300 ms
+  `refineDelay`, then the finer tiles from the cache and the drapes drawn while moving drawn again
+  with them, a tile a frame). Chrome saguenay's slower pan was its drapes redrawn while moving at
+  their grown size (GPU 7.0 → 8.6 ms); since 2d3ca169 they get the size without the finer tiles
+  (not yet measured in a quiet period).
 - **Elevations looked up without a cover a point** (`Terrain.elevationForLngLatFn`, `_coverZoom`,
   `coverKey`): where no rendered tile holds a point, upstream's `getElevationForLngLat` worked out
   the camera's whole tile cover for every point; the cover's zoom is now worked out once a batch
