@@ -253,15 +253,9 @@ impl<'a> Lakes<'a> {
     }
 }
 
-/// Tiles sampled at once (`decide`): their heights held together.
+/// Tiles sampled at once (`decide`): their heights held together. (A run's memory is its runs'
+/// measure, the pool's: crate::agent::steps' terrain-lakes row.)
 const CHUNK: usize = 256;
-
-/// The most memory (MB) a z6 tile's run takes, from its bounds: a chunk of tiles sampled and
-/// prepared (`CHUNK`, ~800 KB each: the sample, its heights and water), the pool's chunks being
-/// sampled (crate::terrain_base::sampling_mb) and the samplers' caches
-/// (crate::dem::generic::samplers_mb).
-pub const PEAK_MB: u64 =
-    CHUNK as u64 * 800 / 1024 + crate::terrain_base::sampling_mb() + crate::dem::generic::samplers_mb();
 
 /// Each lake of `across`'s level (None: no shore and no flat inside), from its shore tiles `want`
 /// (`Lakes::to_sample`) sampled from `pool` at `LEVEL_Z` (the elevation pool's own sample: no

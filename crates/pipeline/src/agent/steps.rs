@@ -949,9 +949,11 @@ pub const TABLE: [Step; 60] = [
     // (A z6 tile's terrain-deep targets' lakes across their edges, each one's level decided once
     // (crate::terrain_lakes): those targets wait for it, each keyed on its own file of it by
     // content. It reads past its z6 tile where a lake goes on: its key names the water, the
-    // elevation and its targets whole. Its memory from the code's bounds.)
+    // elevation and its targets whole. Its memory as its runs measure it (task #965: the bound
+    // once written here said 2.7 GB, its first run peaked at 4.4): a run's peak or the floor the
+    // memory guard learns as it stops one past its room (crate::coord::sched), until then the
+    // table's first guess, as any step never measured.)
     Step {
-        mem_mb: crate::terrain_lakes::PEAK_MB,
         shared: true,
         versions: &[("terrain-lakes", || crate::terrain_lakes::V.to_string()), ("terrain-hi", || super::build::TERRAIN_V.to_string())],
         reads: &[In { name: "deep-targets", of: idents::deep_targets }, In { name: "water-source", of: idents::water_source }, In { name: "elevation-all", of: idents::elevation_all }],
