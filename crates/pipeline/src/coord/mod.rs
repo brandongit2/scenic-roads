@@ -8523,6 +8523,80 @@ mod tests {
         }
     }
 
+    /// Task #965: a big job early in the plan (terrain-lakes, 4.4 GB) isn't starved on a member by
+    /// small ones after it (bldtiles, 1 GB) filling each slot as one of its jobs ends: the room it
+    /// waits for is held (nothing later granted, the refusal saying so) until it fits, then it
+    /// goes. One that can never fit the member (its whole room 4 GB) holds nothing: the small
+    /// jobs go on.
+    #[test]
+    fn a_big_early_job_is_not_starved_by_small_later_ones() {
+        let offer = |step: &str, ts: &[String]| Offer {
+            step: step.into(),
+            targets: ts.iter().map(|t| (t.clone(), format!("k {t}"), 0)).collect(),
+            job: None,
+        };
+        let grants = |w: &client::Client, a: &Ask| -> Vec<(u64, String)> {
+            let Some(mut g) = w.ask(a).unwrap() else { return Vec::new() };
+            let more = std::mem::take(&mut g.more);
+            std::iter::once(g)
+                .chain(more)
+                .filter_map(|g| match g.work {
+                    Granted::Job { step, .. } => Some((g.lease, step)),
+                    Granted::Task { .. } => None,
+                })
+                .collect()
+        };
+        for whole in [6000, 4000] {
+            let (_d, c, w, _clock) = every((0, 0));
+            let lakes: Vec<String> = (1..=2).map(|i| format!("6/1/{i}")).collect();
+            let small: Vec<String> = (1..=20).map(|i| format!("6/2/{i}")).collect();
+            for (step, ts, mb) in [("terrain-lakes", &lakes, 4400), ("bldtiles", &small, 1000)] {
+                for t in ts {
+                    let sizes = [("threads".to_string(), 1)].into();
+                    let cost = Cost {
+                        peak_mb: mb,
+                        secs: 600,
+                        worker: None,
+                        v: cost_version(step),
+                        sizes,
+                        ..Default::default()
+                    };
+                    c.add_costs_by(&[(cost_key(step, t), cost)], "m1");
+                    c.add_disks(&[(cost_key(step, t), 100)]);
+                }
+            }
+            let a = |want: usize| Ask {
+                want,
+                can: vec!["terrain-lakes".into(), "bldtiles".into()],
+                ..every_ask("m1", "bldtiles", whole, 100_000)
+            };
+            // The member full of small jobs (3 GB of its room), then the big one offered first.
+            c.offer("p", vec![offer("bldtiles", &small)]);
+            let mut held: Vec<u64> = grants(&w, &a(3)).into_iter().map(|g| g.0).collect();
+            assert_eq!(held.len(), 3);
+            c.offer("p", vec![offer("terrain-lakes", &lakes), offer("bldtiles", &small)]);
+            let why = |c: &Coordinator| c.refusals().get("m1").cloned().unwrap_or_default();
+            if whole == 4000 {
+                // (Never fits here: each slot goes to a small job as before.)
+                for _ in 0..3 {
+                    w.give_back(held.remove(0), "the test").unwrap();
+                    let g = grants(&w, &a(1));
+                    assert_eq!(g.iter().map(|g| g.1.as_str()).collect::<Vec<_>>(), ["bldtiles"], "{}", why(&c));
+                    held.push(g[0].0);
+                }
+                continue;
+            }
+            // One job ends: 4 GB left, short of its 4.4: nothing else goes.
+            w.give_back(held.remove(0), "the test").unwrap();
+            assert!(grants(&w, &a(1)).is_empty(), "the slot held for terrain-lakes");
+            assert!(why(&c).contains("room held for a job of terrain-lakes"), "{}", why(&c));
+            // Another: 5 GB left, it goes.
+            w.give_back(held.remove(0), "the test").unwrap();
+            let g = grants(&w, &a(2));
+            assert_eq!(g.iter().map(|g| g.1.as_str()).collect::<Vec<_>>(), ["terrain-lakes"], "{}", why(&c));
+        }
+    }
+
     /// A job of the lead's own whose targets' floors the memory guard measured (an input check,
     /// which noted no cost, so says no cores: packed as the share) goes beside the lead's running
     /// jobs when it fits the room left; a floor past the room keeps it off.

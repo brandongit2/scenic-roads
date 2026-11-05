@@ -245,6 +245,40 @@ pub(crate) struct Need {
     held: u32,
 }
 
+/// The room a job of the first offer refused for its room alone waits for on a Mac (`Sched::pack`,
+/// task #965): its memory and disk (a shared cache's fill among it), and, short of cores, the
+/// cores it counts for (tenths; 0: not short of them).
+struct RoomWait {
+    step: String,
+    mem_mb: u64,
+    disk_mb: u64,
+    cores: u32,
+}
+
+impl RoomWait {
+    /// Whether a job of measure `m` (and `fill` of a shared cache's disk), counting for `busy`
+    /// tenths of a core, takes any of the room it waits for, of `room` and the `cores` left: any of
+    /// what it's short of, or so much of the rest that it would be short of it.
+    fn eaten_by(&self, room: &Ask, cores: u32, m: &Measured, fill: u64, busy: u32) -> bool {
+        let takes =
+            |left: u64, wants: u64, took: u64| if wants > left { took > 0 } else { left.saturating_sub(took) < wants };
+        takes(room.mem_mb, self.mem_mb, m.mem_mb)
+            || room.disk_mb.is_some_and(|d| takes(d, self.disk_mb, m.disk_mb + fill))
+            || (self.cores > 0 && takes(cores.into(), self.cores.into(), busy.into()))
+    }
+
+    /// The refusal in words, of `room` and the `cores` left.
+    fn words(&self, room: &Ask, cores: u32) -> String {
+        let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+        let mut s =
+            format!("room held for a job of {} ({} of memory, {} left", self.step, gb(self.mem_mb), gb(room.mem_mb));
+        if self.cores > 0 {
+            s += &format!("; {} cores, {} left", tenths(self.cores), tenths(cores));
+        }
+        s + "): nothing offered after it takes any of it"
+    }
+}
+
 /// The steps known to honour the threads they're granted (task #499 review): their cold starts
 /// take a thread (task #896: their run measures what they use, and climbs from there), the others'
 /// the whole Mac; only where the step has no use on the Mac (crate::uses, task #947: its timings
@@ -926,8 +960,13 @@ impl Sched {
     /// within the room left (the ask's memory and disk, and its Mac's cores, less every job it
     /// holds and those granted in this answer: a lease held counts until it ends or lapses, and
     /// never more than what its jobs hold now leaves); a cold start by its provisional need
-    /// (`pack_need`), task #499. Each granted holds its lease from then (`grant`). And why it
-    /// granted fewer jobs than the ask wanted (None: as many as it wanted).
+    /// (`pack_need`), task #499. Each granted holds its lease from then (`grant`). The first offer
+    /// in plan order refused for its room alone (memory, disk or cores: `room_wait`) has that room
+    /// held: no later offer is granted that takes any of it (`RoomWait`), so later small jobs filling
+    /// each slot as it opens never starve a big one (task #965); held only while it would fit its
+    /// Mac once the jobs there end, so a Mac never idles for a job that can't go there (a cold job
+    /// of the lead's own: `own_cold_waits`). And why it granted fewer jobs than the ask wanted
+    /// (None: as many as it wanted).
     pub fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<String>) {
         let now = clock.now;
         // (Its Mac below its memory floor, the brake on or a give-back cooling it down (docs/pool.md
@@ -1090,6 +1129,13 @@ impl Sched {
             let mut ramp_why: Option<String> = None;
             let beside = held > 0;
             let mut got = None;
+            // (The first offer in plan order refused for its room alone (`room_wait`, or short of
+            // cores below): the room it waits for is held for it, no later offer granted that
+            // takes any of it (`RoomWait::eaten_by`), so jobs of later offers that fit each slot
+            // as it opens don't starve it (task #965: terrain-lakes' 4.4 GB, 2 threads, behind the
+            // 3D buildings' small jobs).)
+            let mut waiting: Option<RoomWait> = None;
+            let mut held_why: Option<String> = None;
             for o in offers {
                 if !crate::agent::every::grants(&o.step, o.job.is_some(), lead) {
                     continue;
@@ -1103,6 +1149,15 @@ impl Sched {
                 let pick =
                     if o.job.is_some() { self.pick_own(o, &room_o, now) } else { self.pick_every(o, &room_o, now) };
                 if pick.is_empty() {
+                    if waiting.is_none() {
+                        let whole = Ask { disk_mb: a.disk_mb.map(|d| d.saturating_sub(fill)), ..a.clone() };
+                        waiting = self.room_wait(o, &whole, &room_o, now).map(|m| RoomWait {
+                            step: o.step.clone(),
+                            mem_mb: m.mem_mb,
+                            disk_mb: m.disk_mb + fill,
+                            cores: 0,
+                        });
+                    }
                     continue;
                 }
                 let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
@@ -1122,6 +1177,20 @@ impl Sched {
                     if short.is_none() {
                         short = Some((o.step.clone(), need));
                     }
+                    // (Held for only while its Mac's cores, less those busy outside the pool, take
+                    // it once its jobs end: never for one that can't go here.)
+                    if waiting.is_none() && need <= total.saturating_sub(outside) * 10 {
+                        waiting = Some(RoomWait {
+                            step: o.step.clone(),
+                            mem_mb: n.m.mem_mb,
+                            disk_mb: n.m.disk_mb + fill,
+                            cores: need,
+                        });
+                    }
+                    continue;
+                }
+                if let Some(w) = waiting.as_ref().filter(|w| w.eaten_by(&room, cores, &n.m, fill, need)) {
+                    held_why.get_or_insert_with(|| w.words(&room, cores));
                     continue;
                 }
                 // (One counted for no cores (a records-only step's, task #838) adds no load to wait
@@ -1143,6 +1212,7 @@ impl Sched {
             let Some((o, pick, n)) = got else {
                 let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
                 why = Some(match short {
+                    _ if held_why.is_some() => held_why.unwrap_or_default(),
                     None if cold_why.is_some() => cold_why.unwrap_or_default(),
                     None if ramp_why.is_some() => ramp_why.unwrap_or_default(),
                     Some((st, c)) if outside > 0 => {
@@ -1485,6 +1555,31 @@ impl Sched {
             });
             !held.contains(t) && self.done.get(&(o.step.clone(), t.clone())) != Some(k) && !backoff
         })
+    }
+
+    /// What offer `o` waits for when refused for its room alone (`pack`, task #965): the measure
+    /// (memory, disk) of its first target in plan order `a`'s worker could take with its whole room
+    /// `whole` (every job it holds ended), when the room left `room` doesn't fit it. None when
+    /// there's none (nothing open, a cold start: `own_cold_waits`'s, or none that ever fits this
+    /// Mac: the room isn't held for what can't go here), or that one fits the room left (held back
+    /// for another reason, the NAS budget's say).
+    pub(super) fn room_wait(&self, o: &Offer, whole: &Ask, room: &Ask, now: Instant) -> Option<Measured> {
+        let job_disk = self.job_floor(&o.step);
+        let fits = |m: &Measured, r: &Ask| m.mem_mb <= r.mem_mb && r.disk_mb.is_none_or(|d| m.disk_mb <= d);
+        let m = if o.job.is_some() {
+            if !self.own_open(o, whole, now) {
+                return None;
+            }
+            self.job_need(&o.step, &o.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>())?
+        } else {
+            let held = self.leases.held(&o.step, now);
+            o.targets.iter().find_map(|(t, k, _)| {
+                let m = self.measured(&o.step, t)?;
+                self.may_take_measured(o, whole, t, k, &m, &held, now).then_some(m)
+            })?
+        };
+        let m = Measured { disk_mb: m.disk_mb.max(job_disk), ..m };
+        (fits(&m, whole) && !fits(&m, room)).then_some(m)
     }
 
     /// Whether the lead's own planned job of offer `o` waits for room: open (`own_open`), a cold
