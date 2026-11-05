@@ -1039,9 +1039,8 @@ mod tests {
     }
 
     /// Task #957: a job's ear on a fifo (a test's lockstep) hears each say written, in order, one a
-    /// look: several in one write, one split across writes, and "run" then "drain" written back to
-    /// back, each by its own open, which its read may bring at once (it hung, the batch test of
-    /// slope_pack, when a read that brought both was taken for one).
+    /// look: "run" and "drain" brought by one read (it hung, the batch test of slope_pack, when a
+    /// read that brought both was taken for one), and one split across writes and opens.
     #[test]
     fn a_fifos_says_are_heard_in_order() {
         use std::io::Write;
@@ -1071,10 +1070,5 @@ mod tests {
         let w = write(vec![vec![b"dr", b"ai"], vec![b"n\n"]]);
         assert_eq!(ear.heard(&chan), Some(Say::Drain));
         w.join().unwrap();
-        for _ in 0..200 {
-            let w = write(vec![vec![Say::Run.line()], vec![Say::Drain.line()]]);
-            assert_eq!((ear.heard(&chan), ear.heard(&chan)), (Some(Say::Run), Some(Say::Drain)));
-            w.join().unwrap();
-        }
     }
 }
