@@ -102,6 +102,7 @@ const changes: [string, (s: AppState) => void][] = [
   ['buildings', (s) => (s.buildings = { ...s.buildings, on: !s.buildings.on })],
   ['water', (s) => (s.water = { ...s.water, colour: '#123456' })],
   ['whitewater', (s) => (s.water = { ...s.water, foam: 0.5, foamFrom: 12, foamTo: 120, foamCover: 0.6, foamColour: '#e0f0ff' })],
+  ['river lines off', (s) => (s.water = { ...s.water, rivers: false })],
   ['land', (s) => (s.land = '#202020')],
   ['globe', (s) => (s.globe = !s.globe)],
   ['occlude', (s) => (s.occlude = !s.occlude)],

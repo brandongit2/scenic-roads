@@ -83,7 +83,7 @@ export class LayersCard {
   private other: Record<'water' | 'boundaries' | 'places', HTMLInputElement>;
   /** Water colour and coastal shading (Map). */
   private land!: ColourPick;
-  private water!: { box: HTMLDivElement; col: HTMLInputElement; shade: HTMLInputElement; shadeBox: HTMLDivElement; shadeCol: HTMLInputElement; lakes: HTMLInputElement; foamCol: HTMLInputElement };
+  private water!: { box: HTMLDivElement; col: HTMLInputElement; shade: HTMLInputElement; shadeBox: HTMLDivElement; shadeCol: HTMLInputElement; lakes: HTMLInputElement; rivers: HTMLInputElement; foamCol: HTMLInputElement };
   private labelBoxes: HTMLInputElement[] = [];
   /** Stops & sights filters: must-haves (a checkbox each) and ranges (a histogram each). */
   private sfFlags: { key: string; on: HTMLInputElement }[] = [];
@@ -467,6 +467,7 @@ export class LayersCard {
       shadeBox: h('div', { class: 'tint-box' }),
       shadeCol: colour('Colour of the shading (lighter than the water brightens it, darker deepens it)', (c) => setW({ shadeColour: c })),
       lakes: cb((lakes) => setW({ lakes })),
+      rivers: cb((rivers) => setW({ rivers })),
       foamCol: colour('Colour of the whitewater', (c) => setW({ foamColour: c })),
     };
     const d = defaults.water;
@@ -629,6 +630,7 @@ export class LayersCard {
     ];
     this.water.box.append(
       row('Colour', this.water.col),
+      tog(this.water.rivers, 'River lines', '', 'tog', 'The rivers, canals and streams drawn as lines (from zoom 8; their names are in the label settings)'),
       tog(this.water.shade, 'Coastal shading', '', 'tog', 'A band of colour over the water along the coasts, fading out from the shore'),
       this.water.shadeBox,
       ...foamRows,
@@ -1075,6 +1077,7 @@ export class LayersCard {
     this.water.shadeBox.hidden = !s.water.shade;
     this.water.shadeCol.value = s.water.shadeColour;
     this.water.lakes.checked = s.water.lakes;
+    this.water.rivers.checked = s.water.rivers;
     this.water.foamCol.value = s.water.foamColour;
     this.other.boundaries.checked = s.layers.boundaries;
     this.boundaryBoxes.forEach((c, i) => {

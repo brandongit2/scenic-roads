@@ -2032,7 +2032,7 @@ async function main() {
     };
     for (const [k, ids] of Object.entries(LAYER_GROUPS)) {
       const on = store.s.layers[k as 'water' | 'boundaries'];
-      ids.forEach((id, i) => vis(id, on && (k !== 'boundaries' || store.s.boundaryLevels[i])));
+      ids.forEach((id, i) => vis(id, on && (k !== 'boundaries' || store.s.boundaryLevels[i]) && (id !== 'waterway' || store.s.water.rivers)));
     }
     vis('boundary-country-disputed', store.s.layers.boundaries && store.s.boundaryLevels[0]);
     // Place and water labels (overlay and ferry labels follow their layers: overlays.ts, ferries.ts).
@@ -2172,7 +2172,7 @@ async function main() {
     if (ch.has('groups') || ch.has('unnamed') || ch.has('roadLen') || ch.has('roadLenOn') || ch.has('surface') || ch.has('toll') || ch.has('layers') || ch.has('mode') || ch.has('weights')) markDirty();
     if (ch.has('equalize') || ch.has('mode')) cdfKey = '';
     if (styleReady) {
-      if (ch.has('layers') || ch.has('boundaryLevels') || kinds) applyLayers();
+      if (ch.has('layers') || ch.has('water') || ch.has('boundaryLevels') || kinds) applyLayers();
       if (ch.has('terrain')) {
         // Terrain on/off or re-exaggerated: re-pivot for the new ground (camera stays put).
         if ((s.terrain.on ? s.terrain.exaggeration : 0) !== lastExaggeration) {
