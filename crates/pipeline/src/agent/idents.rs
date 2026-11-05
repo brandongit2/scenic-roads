@@ -458,6 +458,12 @@ pub fn deep_targets(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(x.tiles.deep(x.m, x.cov)?.targets_in((u.x, u.y)).iter().map(|(a, b)| format!("{z}/{a}/{b}")).collect())
 }
 
+/// The water source (crate::terrain_pack::water_source_pin), "-" without one (no lake read): what
+/// lake-depth reads of the water, whole.
+pub fn water_source(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    Some(vec![crate::terrain_pack::water_source_pin(x.m).unwrap_or_else(|| "-".into())])
+}
+
 /// The mids of a z3 tile's z6 tiles near the coverage (`build::coverage_tiles`) of the terrain or
 /// slope (`mid`: its mid's logical name), "6/x/y=<content>" ("-" for one not made).
 fn near_mids(t: &str, x: &KeyCtx, mid: fn(u32, u32) -> String) -> Option<Vec<String>> {
