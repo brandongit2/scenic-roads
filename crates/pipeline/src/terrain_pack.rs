@@ -455,8 +455,9 @@ pub struct ManifestTiles {
     files: HashMap<String, store::nasfs::NasPath>,
     open: Mutex<HashMap<String, Option<std::sync::Arc<OpenPack>>>>,
     /// Where a pack read tile by tile throughout is copied whole and read from then on
-    /// (`with_copies`, `copy_here`), and the copies made, deleted with this.
-    copies: Option<(std::path::PathBuf, Mutex<Vec<std::path::PathBuf>>)>,
+    /// (`with_copies`, `copy_here`), and the copies made or being made, by logical name: deleted
+    /// when let go (`keep_only`) or with this.
+    copies: Option<(std::path::PathBuf, Mutex<HashMap<String, std::path::PathBuf>>)>,
 }
 
 /// A pack open: its file and index.
@@ -480,11 +481,11 @@ impl ManifestTiles {
     }
 
     /// `new`, the packs `copy_here` is asked for copied into `dir` (the job's scratch) whole and
-    /// read there; the copies deleted when this goes. The same bytes either way: a pack is
-    /// content-named, never rewritten.
+    /// read there; the copies deleted when let go (`keep_only`) or when this goes. The same bytes
+    /// either way: a pack is content-named, never rewritten.
     pub fn with_copies(out: &Out, layer: &str, dir: std::path::PathBuf) -> Self {
         let mut t = Self::new(out, layer);
-        t.copies = Some((dir, Mutex::new(Vec::new())));
+        t.copies = Some((dir, Mutex::new(HashMap::new())));
         t
     }
 
@@ -636,25 +637,46 @@ impl ManifestTiles {
     /// The pack holding tile (z, x, y) (z6 tile (x, y)'s hi pack: any of its tiles at zoom 9–12)
     /// copied into the copies' folder (`with_copies`) whole, one
     /// sequential read, and read there from now on: its bytes copied, or None when there's no such
-    /// pack, no copies' folder, or the copy failed (then it's read from the NAS, as before).
+    /// pack, no copies' folder, the copy failed (then it's read from the NAS, as before, and copied
+    /// when asked again), or it is copied here already (or being copied, on another thread) and
+    /// not let go since (`keep_only`): a pack kept is copied once. Safe beside reads of it and of
+    /// the others: until its copy is whole, its reads go to the NAS's.
     pub fn copy_here(&self, z: u8, x: u32, y: u32) -> Option<u64> {
         let logical = Self::logical(&self.layer, z, x, y);
         let (Some((dir, made)), Some(src)) = (&self.copies, self.files.get(&logical)) else { return None };
         let dst = dir.join(src.file_name()?);
+        {
+            let mut made = made.lock().unwrap();
+            if made.contains_key(&logical) {
+                return None;
+            }
+            made.insert(logical.clone(), dst.clone());
+        }
         let copied = (|| -> anyhow::Result<(std::sync::Arc<OpenPack>, u64)> {
             std::fs::create_dir_all(dir)?;
-            made.lock().unwrap().push(dst.clone());
             let n = src.copy_data_to_local(&dst)?;
             anyhow::ensure!(n == src.metadata()?.len(), "copied {n} bytes of {}", src.display());
             Ok((Self::open_file(store::nasfs::Place::Local(dst.clone()))?, n))
         })();
+        // (Taken only while it's still kept: one let go while it was copied is deleted, as
+        // `keep_only` would have.)
+        let mut made = made.lock().unwrap();
+        let kept = made.get(&logical) == Some(&dst);
         match copied {
-            Ok((e, n)) => {
+            Ok((e, n)) if kept => {
                 self.open.lock().unwrap().insert(logical, Some(e));
                 Some(n)
             }
+            Ok(_) => {
+                std::fs::remove_file(&dst).ok();
+                None
+            }
             Err(err) => {
                 eprintln!("{logical}: not copied here, read from the NAS ({err:#})");
+                if kept {
+                    made.remove(&logical);
+                }
+                std::fs::remove_file(&dst).ok();
                 None
             }
         }
@@ -664,15 +686,29 @@ impl ManifestTiles {
     pub fn has(&self, z: u8, x: u32, y: u32) -> anyhow::Result<bool> {
         Ok(self.pack(z, x, y)?.is_some_and(|e| e.idx.find(z, x, y).is_some()))
     }
+
+    /// The packs open, copied here or not, kept only where `keep` says (by logical name): the rest
+    /// closed and their copies deleted (one being made too: `copy_here` drops it as it ends), so a
+    /// reader kept for a whole job holds what's still to be read and no more. A pack let go and
+    /// read again is opened again where it is, the NAS's, or copied again when asked.
+    pub fn keep_only(&self, keep: &dyn Fn(&str) -> bool) {
+        // (Copies first, under their lock: a copy ending meanwhile then finds itself let go, and
+        // its open pack never outlives this.)
+        if let Some((_, made)) = &self.copies {
+            made.lock().unwrap().retain(|l, p| {
+                keep(l) || {
+                    std::fs::remove_file(p).ok();
+                    false
+                }
+            });
+        }
+        self.open.lock().unwrap().retain(|l, _| keep(l));
+    }
 }
 
 impl Drop for ManifestTiles {
     fn drop(&mut self) {
-        if let Some((_, made)) = &self.copies {
-            for p in made.lock().unwrap().iter() {
-                std::fs::remove_file(p).ok();
-            }
-        }
+        self.keep_only(&|_| false);
     }
 }
 
@@ -2378,6 +2414,15 @@ pub(crate) mod tests {
         let n = here.copy_here(9, 40, 56).unwrap();
         assert_eq!(n, (out.path(out.get("layers/terrain/hi/6-5-7").unwrap())).metadata().unwrap().len());
         assert_eq!(std::fs::read_dir(&copies).unwrap().count(), 1);
+        assert_eq!(read(&here), all);
+        // Copied once while kept; let go, its copy deleted and its reads the NAS's, then copied again.
+        assert_eq!(here.copy_here(10, 85, 120), None, "the same pack, here already");
+        here.keep_only(&|l| l == "layers/terrain/hi/6-5-7");
+        assert_eq!(std::fs::read_dir(&copies).unwrap().count(), 1, "kept");
+        here.keep_only(&|_| false);
+        assert_eq!(std::fs::read_dir(&copies).unwrap().count(), 0, "let go");
+        assert_eq!(read(&here), all);
+        assert_eq!(here.copy_here(9, 40, 56), Some(n));
         assert_eq!(read(&here), all);
         assert!(here.has(10, 85, 120).unwrap() && !here.has(10, 200, 120).unwrap());
         assert_eq!(here.get(10, 200, 120).unwrap(), None);
