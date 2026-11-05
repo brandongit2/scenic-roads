@@ -584,10 +584,14 @@ impl RawSource for Tiles<'_> {
     // build pausing does (crate::control::Paused, from `sample`). A chunk's reads mostly wait on the NAS, one at a time left a
     // job's threads idle, task #695. The same bytes: a tile's sampling reads nothing of another's.)
     fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
-        // (As many at once as the job's threads: each chunk's own work, its points and their means,
-        // is on its thread, outside the job's pool; its sampler's passes on a pool as wide as the
-        // target's grant as it began, never the target's own, whose threads wait here for these
-        // (crate::dem::generic's, through crate::control::on_target_pool).)
+        // (As many at once as the job's threads, each a task of a pool as wide as the target's
+        // grant (crate::control::on_outside_pool), its sampler's passes there too
+        // (crate::dem::generic's, through crate::control::on_target_pool): the target's own thread
+        // waits, working on nothing, so the job is on its grant's threads, no more. Never threads of
+        // their own whose passes go on a pool: the target's own one's thread is waiting for them
+        // (task #961), and another's beside them is twice the grant. One task a thread of the pool
+        // (rayon's broadcast), never two on one: a thread waiting in one chunk's passes takes up no
+        // other chunk, so no more than `at_once` are in flight.)
         let at_once = at_once();
         let chunks: Vec<&[(u32, u32)]> = tiles.chunks(chunk_tiles(at_once)).collect();
         let next = std::sync::atomic::AtomicUsize::new(0);
@@ -607,9 +611,9 @@ impl RawSource for Tiles<'_> {
                 done.fetch_add(c.len() as u64, Ordering::Relaxed);
             }
         };
-        std::thread::scope(|s| {
-            let ws: Vec<_> = (0..at_once.min(chunks.len())).map(|_| s.spawn(run)).collect();
-            ws.into_iter().map(|w| w.join().unwrap_or_else(|p| std::panic::resume_unwind(p))).collect::<Result<()>>()
+        let k = at_once.min(chunks.len());
+        crate::control::on_outside_pool(|| {
+            rayon::broadcast(|b| if b.index() < k { run() } else { Ok(()) }).into_iter().collect::<Result<()>>()
         })?;
         Ok(0)
     }

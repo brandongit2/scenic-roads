@@ -977,22 +977,31 @@ static OUTSIDE: std::sync::Mutex<Option<(usize, std::sync::Arc<rayon::ThreadPool
 
 /// Parallel work `f` called on a thread of no rayon pool while a target is under way (a thread the
 /// target started of its own: a reader's, a chunk's) on a pool as wide as the target's grant
-/// (`OUTSIDE`), not the process's global one, which is as wide as the job's grant at its start
-/// (RAYON_NUM_THREADS), not its grant now: a shrunk job's work there would run on more threads than
-/// its Mac counts it for (task #948 review: terrain's base sampling's passes, from its chunks'
-/// threads). Never on the target's own pool (`on_grant`): the target's work started that thread and
-/// waits for it (terrain_base's chunks are joined by the target's prefetch), so every one of that
-/// pool's threads can be waiting on the very thread asking it, and the work would never run (a
-/// 1-thread grant always: every terrain-hi job of the pool stalled at 0 tiles, 5 Nov). The outside
-/// pool's threads run nothing but such work, which waits on no thread of the target's. Elsewhere `f`
-/// as it is: on a pool's thread (the target's, the outside pool's or one of its own), or with no
+/// (`on_outside_pool`), not the process's global one, which is as wide as the job's grant at its
+/// start (RAYON_NUM_THREADS), not its grant now: a shrunk job's work there would run on more threads
+/// than its Mac counts it for (task #948 review). Never on the target's own pool (`on_grant`): the
+/// target's work may have started that thread and be waiting for it, so every one of that pool's
+/// threads can be waiting on the very thread asking it, and the work would never run (a 1-thread
+/// grant always: every terrain-hi job of the pool stalled at 0 tiles, 5 Nov, task #961). Elsewhere
+/// `f` as it is: on a pool's thread (the target's, the outside pool's or one of its own), or with no
 /// target under way. The threads change no output (each step's work is the same whatever its
 /// threads).
 pub fn on_target_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
-    let Some(n) = in_force() else { return f() };
     if rayon::current_thread_index().is_some() {
         return f();
     }
+    on_outside_pool(f)
+}
+
+/// `f` on the outside pool (`OUTSIDE`: as wide as the target's grant, never the target's own
+/// pool) while a target is under way, from whatever thread; else `f` as it is. For a target's work
+/// that would otherwise start threads of its own and wait for them on its pool's thread (terrain's
+/// base sampling's chunks, crate's caller terrain_base, task #961): run there as the outside
+/// pool's tasks instead, it is on as many threads as the grant, no more (the target's thread waits,
+/// working on nothing), and its parallel work on the pool it is on, which waits on no thread of the
+/// target's.
+pub fn on_outside_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    let Some(n) = in_force() else { return f() };
     let pool = {
         let mut g = OUTSIDE.lock().unwrap_or_else(|e| e.into_inner());
         match g.as_ref().filter(|(w, _)| *w == n) {
