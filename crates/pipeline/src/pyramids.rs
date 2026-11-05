@@ -33,8 +33,9 @@ pub const DIR: &str = crate::rawpack::PYRAMIDS;
 
 /// The fill's version, in its key: bumped with any change to
 /// which tiles a z6 tile wants (`want`, `deep_bases`) or how they're stored (2: a deep target's
-/// z12 tiles, task #929).
-pub const V: u32 = 2;
+/// z12 tiles, task #929; 3: the tiles near the coverage by roadcore::geo's box-grower, its edge rows'
+/// boxes to the Mercator's end, task #862).
+pub const V: u32 = 3;
 
 /// The archives' metadata (crate::rawpack::Packer::for_pyramid).
 const META: &str = r#"{"kind":"elevation pyramid tiles"}"#;

@@ -35,8 +35,9 @@ use std::path::{Path, PathBuf};
 use store::range::PlainFile;
 use store::sect::SectReader;
 
-/// The job's version: in its key, so a change to what it writes runs it again.
-pub const VERSION: u32 = 1;
+/// The job's version: in its key, so a change to what it writes runs it again. (2, task #862: `det`'s
+/// log10.)
+pub const VERSION: u32 = 2;
 
 /// The translators' brief, `translations/todo/README.md`.
 pub const TRANSLATORS: &str = include_str!("../../../tools/names/translations-todo.md");

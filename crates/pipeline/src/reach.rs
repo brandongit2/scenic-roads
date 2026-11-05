@@ -26,8 +26,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Bumped when what a reach holds changes (the pass's reaches are made again). (2: `cells`.)
-pub const REACH_V: u32 = 2;
+/// Bumped when what a reach holds changes (the pass's reaches are made again). (2: `cells`. 3: its
+/// boxes by roadcore::geo's box-grower, task #862.)
+pub const REACH_V: u32 = 3;
 
 /// Ways whose box stays within the tile grown by this are a z6 tile's ordinary ways (the extract's own
 /// buffer is 10 km).

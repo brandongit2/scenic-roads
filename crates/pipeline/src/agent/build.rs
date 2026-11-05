@@ -23,15 +23,19 @@ use std::collections::{BTreeMap, BTreeSet};
 /// only at its place's finest zoom (crate::terrain_zoom, derived from the declared datasets), each
 /// coarser one its children's means of their heights before rounding (rounded ties to even, as
 /// stored), its z12 tiles' quarters from its z10 tiles' deep mids, outside every region the relief.
-pub const TERRAIN_V: u32 = 8;
+/// 9 (task #862): roadcore::geo's one Mercator, box-grower and Earth ("near the coverage" its
+/// `NEAR_COVERAGE_KM`), `det`'s maths in the sampling (the geoid's, the rivers' too).
+pub const TERRAIN_V: u32 = 9;
 /// Terrain-deep 2 (task #929): a z10 tile's band past z12 by the same rule, its mid for its z6 tile.
-pub const TERRAIN_DEEP_V: u32 = 2;
+/// 3 (task #862): as terrain-hi's 9.
+pub const TERRAIN_DEEP_V: u32 = 3;
 /// Slope 4 (task #952): a missing deep terrain tile (z13 on) is made from its nearest ancestor
 /// within the deep levels alone, past them its own edge repeated (crate::slope_pack::fallback_floor),
 /// and z10–12 are made by slope-hi from its z10 tiles' z13 quadrants (their deep mids, format 2) and
 /// its hi terrain; the terrain it shades follows the one pyramid's rule (`TERRAIN_V` 8); lossless
-/// WebP (crate::shade_codec: its version in the key).
-pub const SLOPE_V: u32 = 4;
+/// WebP (crate::shade_codec: its version in the key). 5 (task #862): a pixel's metres from
+/// roadcore::geo's Mercator (`MERC_C`).
+pub const SLOPE_V: u32 = 5;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
 /// 3: heritage sites and area flags from the pass's heritage-sites job (crate::heritage), the
 /// flags rasterised per z6 tile.
@@ -39,13 +43,15 @@ pub const SLOPE_V: u32 = 4;
 /// 5: one elevation pool (GLO-30 and the Terrarium tiles among the roads' datasets, FABDEM and MRDEM
 /// gone).
 /// 6: the roads' heights from the finished terrain (crate::road_terrain), spaced at its pixel.
-pub const UNIT_V: u32 = 6;
+/// 7 (task #862): roadcore::geo's one Mercator, box-grower and Earth in the staging, the heights, the
+/// lengths, the views and the area flags; `det`'s maths throughout.
+pub const UNIT_V: u32 = 7;
 /// 3: keyed on the tile's owners alone; hidata of the tile's own ways (here, query parts, rail
-/// lines, zoomed-out summaries).
-pub const PACK_V: u32 = 3;
+/// lines, zoomed-out summaries). 4 (task #862): a tile's ways by roadcore::geo's box-grower.
+pub const PACK_V: u32 = 4;
 /// lo's own version: lo isn't keyed on pack's, so a change in what they share (hipack's tiling)
-/// bumps both.
-pub const LO_V: u32 = 1;
+/// bumps both. (2: task #862's, as pack's 4.)
+pub const LO_V: u32 = 2;
 
 /// The keys of the jobs that last succeeded, by step and target ("3/4/2", "6/31/20").
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -386,8 +392,9 @@ fn coverage_tiles_made(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> 
 /// with any change to what the assembly makes, so the pass's outlines are made again then, not at
 /// the next pass. 1: assembled inside the OSM pass. 2: #199's (countries osmium's export leaves
 /// out assembled here, a territory by its own ISO code, a country kept from the previous pass's
-/// outlines when it can't be), the first made by the step.
-pub const OUTLINES_V: u32 = 2;
+/// outlines when it can't be), the first made by the step. 3 (task #862): holes put in their outer
+/// ring by roadcore::geo::inside; areas and simplifying on its Earth.
+pub const OUTLINES_V: u32 = 3;
 
 /// The outlines step's key for the pass of `date`: its version, the date, the pass's outline set and
 /// the previous outlines it may keep a country from (crate::osmpass::previous_outlines), by content
@@ -458,8 +465,8 @@ pub fn reach_key(x: &KeyCtx) -> Option<String> {
 
 /// The labels by importance, worldwide, once per pass (or labels step version): independent of the
 /// regions. (2: each label's OSM object, the languages OSM gives its name, its romanised name or
-/// kana reading: docs/names.md.)
-pub const LABELS_V: u32 = 2;
+/// kana reading: docs/names.md. 3, task #862: roadcore::geo's Mercator and Earth.)
+pub const LABELS_V: u32 = 3;
 
 pub fn labels_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     x.m.get(&crate::osmpass::set_name(x.date, "labels"))?;
@@ -520,7 +527,8 @@ pub fn timetables_todo_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 }
 
 /// The lakefill step's version (crate::lakefill::run): bumped with any change to what it makes.
-pub const LAKEFILL_V: u32 = 2;
+/// (3, task #862: inside a lake even-odd, roadcore::geo::inside; its Mercator and Earth.)
+pub const LAKEFILL_V: u32 = 3;
 
 /// The lakes filled from Canada's own data (crate::lakefill), once per pass (or step version, or
 /// source): from the pass's basemap and outlines and the declared source's zips (`source`, their pin
@@ -859,8 +867,8 @@ impl Walk<'_> {
 /// antimeridian sliced by its parts; 3: the World Heritage components' `parts` slices too, for the
 /// 3D buildings' heritage lists. The `pos` and `areas` slices are the same bytes, so the z6 tiles'
 /// keys don't change. 4: the registers read generically from the input check's accepted version,
-/// docs/inputs.md §6.5.)
-pub const HERITAGE_SITES_V: u32 = 4;
+/// docs/inputs.md §6.5. 5, task #862: covered by roadcore::geo's box-grower and Earth.)
+pub const HERITAGE_SITES_V: u32 = 5;
 
 /// The key of the heritage sites: the pass's areas set, the registers meeting the cover by their
 /// keyed digests (`inputs` "heritage": crate::heritage::registers_line, from the records' accepted
@@ -903,8 +911,9 @@ pub fn summits_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
         .then(|| Work { step: "summits".into(), targets: vec![("summits".into(), k)] })
 }
 
-/// The peaks' version (crate::peaks::unit). (2: heights from the terrain packs alone, task #670.)
-pub const PEAKS_V: u32 = 2;
+/// The peaks' version (crate::peaks::unit). (2: heights from the terrain packs alone, task #670.
+/// 3: the tiles a search reads by roadcore::geo's box-grower, task #862.)
+pub const PEAKS_V: u32 = 3;
 
 /// What a step's targets held in `view` wait for (crate::agent::steps::readiness), each a held
 /// target's: the step's waiting note (`Plan::held`), None when none of them waits.
@@ -956,28 +965,30 @@ pub const ROADUNITS_V: u32 = 1;
 /// Rail stops near the built z6 tiles (pipeline::ovconv::stations_job), and ferries worldwide
 /// (ferries_job).
 /// (Ferries 2: the looked-up timetables read from the accepted static files, docs/inputs.md §6.7.2.
-/// 3: the lines no timetable counts and the routes matching none, `work/ferries/lines`, §6.7.3.)
-pub const STATIONS_V: u32 = 1;
-pub const FERRIES_V: u32 = 3;
+/// 3: the lines no timetable counts and the routes matching none, `work/ferries/lines`, §6.7.3.
+/// 4, and stations 2: roadcore::geo's Mercator and Earth, task #862.)
+pub const STATIONS_V: u32 = 2;
+pub const FERRIES_V: u32 = 4;
 /// The landmark points from the candidates (crate::marksjob). (2: the markdata and each kind's
 /// thinned tiles written as bundles, docs/formats.md "Bundles", task #449. 3: the heritage dots
-/// name their layer-heritage, #562.)
-pub const MARKS_V: u32 = 3;
+/// name their layer-heritage, #562. 4: roadcore::geo's Mercator and Earth, task #862.)
+pub const MARKS_V: u32 = 4;
 /// The rest of the heritage chain on the heritage-sites outputs (scenic-build heritage), and the
 /// area overlays from it with the marks' World Heritage dots (ovconv::overlays). (2: the registers
 /// read generically, their caches the pass's answers alone, docs/inputs.md §6.5. 3: no seeds, the
-/// layers' `en` the things' own, §6.5.3.)
-pub const HERITAGE_V: u32 = 3;
-/// (Overlays 2: each area layer's tiles written as a bundle, docs/formats.md "Bundles", task #449.)
-pub const OVERLAYS_V: u32 = 2;
+/// layers' `en` the things' own, §6.5.3. 4: roadcore::geo's Earth, task #862.)
+pub const HERITAGE_V: u32 = 4;
+/// (Overlays 2: each area layer's tiles written as a bundle, docs/formats.md "Bundles", task #449.
+/// 3: roadcore::geo's Mercator and Earth, task #862.)
+pub const OVERLAYS_V: u32 = 3;
 
 /// The rail service (crate::rail): the feeds for the coverage, fetched once (crate::railfeeds), and
 /// trains a day on its rail ways (crate::gtfs::railcount, railfreq: global/railfreq). (Rail 2: the static
 /// files counted with the feeds, the MTR's among them, docs/inputs.md §6.7.2. 3: the lines in the
 /// coverage and the routes matching nothing, `work/rail/lines`, §6.7.3. 4: its ways spaced by the
-/// declared datasets, docs/inputs.md §6.8.)
+/// declared datasets, docs/inputs.md §6.8. 5: roadcore::geo's Earth, task #862.)
 pub const RAIL_FEEDS_V: u32 = 1;
-pub const RAIL_V: u32 = 4;
+pub const RAIL_V: u32 = 5;
 
 /// The current z6 tiles' candidates (their content names), for the worldwide jobs' keys.
 fn current_pois<'a>(cov: &Coverage, date: &str, m: &'a BTreeMap<String, String>) -> Vec<&'a str> {
@@ -3871,8 +3882,9 @@ fn marks_ready(x: &KeyCtx, done: &Keys) -> bool {
 }
 
 /// The 3D buildings' sources fetched onto the NAS (crate::bld::fetch, `scenic-build bld-fetch`): the
-/// pinned release's files and GHSL's tiles meeting the coverage grown by 20 km.
-pub const BLD_FETCH_V: u32 = 1;
+/// pinned release's files and GHSL's tiles meeting the coverage grown by
+/// `roadcore::geo::NEAR_COVERAGE_KM`. (2, task #862: grown by roadcore::geo's Earth.)
+pub const BLD_FETCH_V: u32 = 2;
 
 /// bld-fetch's key (network): the declared release (`inputs` "bld-key": the release while the
 /// declarations name what the code had, crate::bld::sources::declared) and the whole coverage. Not the footers it reads and

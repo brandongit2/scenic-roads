@@ -25,7 +25,9 @@ use std::path::{Path, PathBuf};
 /// writes, its hi packs' or its mid's, pixels or not (every z6 tile and assembly is made again). A
 /// z6 tile made again as it is (`build_piece`'s `expect_same`: its mid backfilled) expects the bytes
 /// its key made, and one that could never match would hold its z3 tile's assembly back for good.
-pub const TREES_V: u32 = 2;
+/// (3, task #862: the shapes' mask in roadcore::geo's Web Mercator metres; North America's leaf types
+/// resampled with `det`'s maths, crate::leaftype::NALCMS_SOURCE.)
+pub const TREES_V: u32 = 3;
 /// The assemblies' own version (in their keys), bumped likewise on any change to the bytes
 /// of the lo packs an assembly makes from the same mids.
 pub const TREES_LO_V: u32 = 1;

@@ -33,8 +33,9 @@ pub mod work;
 /// Bumped when the normalized files change (every `bldprep` target runs again).
 pub const BLDPREP_V: u32 = 2;
 /// Bumped when the fill (its rules, fits and defaults: [`fill`]) or the tiles change (every
-/// `bldtiles` target runs again, nothing else).
-pub const BUILDINGS_V: u32 = 4;
+/// `bldtiles` target runs again, nothing else). (5, task #862: a heritage footprint's buildings by
+/// roadcore::geo::inside.)
+pub const BUILDINGS_V: u32 = 5;
 /// The served layer (`/tiles/buildings/…`, the catalogue's `buildings`).
 pub const LAYER: &str = "buildings";
 /// The zooms the tiles are made at.

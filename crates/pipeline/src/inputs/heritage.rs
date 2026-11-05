@@ -428,7 +428,8 @@ impl Checks for Heritage {
     }
 
     fn version(&self) -> u32 {
-        1
+        // (2, task #862: distances on roadcore::geo's Earth.)
+        2
     }
 
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {

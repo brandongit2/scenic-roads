@@ -44,8 +44,9 @@ pub const BLOCK_Z: u8 = 4;
 /// GLO-30 having nothing there), so it waits for the depth (docs/polar.md §2).
 pub const POLES: [Pole; 1] = [Pole::South];
 
-/// The steps' versions (in their keys).
-pub const TERRAIN_V: u32 = 3;
+/// The steps' versions (in their keys). (Terrain 4, task #862: sampled with `det`'s maths and
+/// roadcore::geo's Mercator.)
+pub const TERRAIN_V: u32 = 4;
 pub const SLOPE_V: u32 = 2;
 pub const ROOT_V: u32 = 3;
 

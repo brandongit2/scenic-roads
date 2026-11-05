@@ -67,8 +67,8 @@ pub struct Regions {
 /// coast's land and sea within COAST_REACH_M go to the nearest region, split at the median line.
 /// 9: #468: land mostly in two regions with water said as an overlap; nearest-coast splits reach
 /// past 450 km. 10: #468: the 12-nautical-mile line stored with the pins; the coastline's land the
-/// pass's own, by cell.)
-pub const RESOLUTION: u32 = 10;
+/// pass's own, by cell. 11: #862: roadcore::geo's one Earth and even-odd test, `det`'s maths.)
+pub const RESOLUTION: u32 = 11;
 
 /// What `derive` records a region was resolved from (`resolved_from`): its resolution key
 /// (`resolve::Outcome::keys`) with `RESOLUTION`.
