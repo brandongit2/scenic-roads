@@ -98,7 +98,9 @@ makes the same bytes on every Mac.
       of the z10 tiles it reaches holding it (a z10 tile reached where one of its tiles touches one
       of the lake's), past the z6 tile too, so the same from any of its targets. Its level: the
       water's rule below over its z14 tiles with a shore (those it doesn't wholly cover), each sampled
-      from the pool at z14 (the pool's own sample, not the means of finer tiles). A file per target
+      from the pool at z14 (the pool's own sample, not the means of finer tiles); a lake none of whose
+      z14 pixels is half its own (a sliver at an edge: 6 of the 246 at 6/56/25) gets none, and each
+      target levels it from its own tiles as before. A file per target
       with such a lake (`work/terrain-lakes/10-x-y`, docs/formats.md); its key names the water, the
       elevation and the coverage's deep targets there whole (a lake goes on past its z6 tile).
       Measured (`examples/lake_steps`, the M1 at 4 threads reading the NAS): 6/56/25 (Lake Biwa),

@@ -11,7 +11,9 @@
 //!   whichever of its targets it's found, and one lake a z10 tile.
 //! - **Its level:** crate::terrain_water::level over its tiles at `LEVEL_Z` with a shore (those it
 //!   doesn't wholly cover), each sampled from the elevation pool as it has it at that zoom
-//!   (crate::terrain_base: the same bytes in every job), before any water is flattened.
+//!   (crate::terrain_base: the same bytes in every job), before any water is flattened. A lake none
+//!   of whose pixels there is half its own (a sliver at an edge) has none: no file names it, and each
+//!   target levels it from its own tiles.
 //! - **Handed on:** a file a deep target (`logical`, only where it has such a lake): its lakes' levels,
 //!   which its run takes as known (crate::terrain_deep::build_target), so every target's tiles of a
 //!   lake, and the z6 tiles' z9–12 from their deep mids, flatten it to one level. Its key names that
