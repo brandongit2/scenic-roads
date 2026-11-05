@@ -1019,6 +1019,10 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
                     .parse::<u64>()
                     .with_context(|| format!("nas-target: <percent> or off, not {p}"))?
                     .into(),
+                (asks::BATCH, "off") => serde_json::Value::Null,
+                (asks::BATCH, m) => {
+                    m.parse::<u64>().with_context(|| format!("batch-minutes: <minutes> or off, not {m}"))?.into()
+                }
                 (_, t) => t.into(),
             };
             let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -1041,6 +1045,10 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
     println!(
         "NAS target: the budget grants while the NAS's busiest disk is under {} % busy",
         pipeline::budget::nas::target_pct(s.nas_target().as_ref())
+    );
+    println!(
+        "Batch length: a job of a shared step is sized to {} min of its targets' measured time on its Mac",
+        s.batch_s().unwrap_or(pipeline::coord::JOB_S) / 60
     );
     Ok(())
 }

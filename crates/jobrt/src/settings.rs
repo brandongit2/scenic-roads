@@ -10,11 +10,16 @@ use std::collections::BTreeMap;
 /// The settings the lead keeps (`/pool/settings`), each moved from its switch file under
 /// `state/pool/` (pipeline's coord::asks::file): placement by how crucial a job is (pipeline's
 /// agent::placement; a boolean), the NAS's budget (crate::budget::nas's switch: its text) and the
-/// NAS's load target (crate::budget::nas::Target's share, %).
+/// NAS's load target (crate::budget::nas::Target's share, %); and the batch length (task #927, no
+/// switch file: the minutes of measured time a job of a shared step is sized to, pipeline's
+/// coord::sched::Sched::batch_len).
 pub const PLACEMENT: &str = "placement";
 pub const NAS_BUDGET: &str = "nas-budget";
 pub const NAS_TARGET: &str = "nas-target";
-pub const NAMES: [&str; 3] = [PLACEMENT, NAS_BUDGET, NAS_TARGET];
+pub const BATCH: &str = "batch-minutes";
+pub const NAMES: [&str; 4] = [PLACEMENT, NAS_BUDGET, NAS_TARGET, BATCH];
+/// The batch lengths the lead takes (minutes): a minute to a day.
+pub const BATCH_RANGE: std::ops::RangeInclusive<u64> = 1..=1440;
 
 /// A setting as the lead keeps it: its value (null: cleared, its default), who set it, when (unix s).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -62,6 +67,11 @@ impl Settings {
         Some(crate::budget::nas::Target { pct, by: s.by.clone(), at: s.at })
     }
 
+    /// The batch length, as set (s).
+    pub fn batch_s(&self) -> Option<u64> {
+        self.get(BATCH).and_then(Value::as_u64).map(|m| m * 60)
+    }
+
     /// Takes `a` when it's no earlier than the setting it replaces: whether it changed them.
     pub fn take(&mut self, a: &SettingAsk) -> bool {
         if self.values.get(&a.name).is_some_and(|s| s.at > a.at || s.value == a.value) {
@@ -93,6 +103,7 @@ impl SettingAsk {
             (NAS_TARGET, Value::Number(n)) => {
                 n.as_u64().is_some_and(|p| crate::budget::nas::TARGET_RANGE.contains(&(p as u32)))
             }
+            (BATCH, Value::Number(n)) => n.as_u64().is_some_and(|m| BATCH_RANGE.contains(&m)),
             _ => false,
         };
         ensure!(ok, "{}: not a setting the lead takes, or not of its kind ({})", self.name, self.value);

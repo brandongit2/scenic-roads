@@ -25,7 +25,7 @@ pub const QUEUE: &str = "asks.json";
 
 // The pool's settings, their names and an ask to set one: the runtime crate's (task #916 step 3,
 // docs/crates.md: control queues a Mac's asks), kept at these paths.
-pub use jobrt::settings::{Setting, SettingAsk, Settings, NAMES, NAS_BUDGET, NAS_TARGET, PLACEMENT};
+pub use jobrt::settings::{Setting, SettingAsk, Settings, BATCH, NAMES, NAS_BUDGET, NAS_TARGET, PLACEMENT};
 
 /// A setting's switch file on the NAS (read by older apps; the rollout gate's).
 pub fn file(name: &str) -> Option<&'static str> {
@@ -141,6 +141,13 @@ mod tests {
         assert!(l.set(&t).unwrap().is_some());
         assert_eq!(l.settings.nas_target().unwrap().pct, 70);
         assert!(l.set(&SettingAsk { value: Value::from(100), at: 9, ..t }).is_err(), "never 100 %");
+        // (Task #927: the batch length, in minutes, a minute to a day.)
+        let b = SettingAsk { name: BATCH.into(), value: Value::from(20), by: "t".into(), at: 8 };
+        assert_eq!(l.settings.batch_s(), None);
+        assert!(l.set(&b).unwrap().is_some());
+        assert_eq!(l.settings.batch_s(), Some(1200));
+        assert!(l.set(&SettingAsk { value: Value::from(0), at: 9, ..b.clone() }).is_err());
+        assert!(l.set(&SettingAsk { value: Value::from("20"), at: 9, ..b }).is_err(), "a number");
         // (Read back as the store keeps them.)
         let mut docs = crate::pool::store::Docs::new();
         docs.insert(format!("hold/{M}"), serde_json::to_value(&l.holds[M]).unwrap());

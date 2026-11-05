@@ -290,9 +290,10 @@ pub enum PoolCmd {
     Status,
     /// The pool's settings, kept by the lead (docs/coordination.md step 5): one set, asked of this
     /// Mac's agent, which sends it to the lead; with none, how they stand as it last had them.
-    /// `placement on|off`, `nas-budget <its text>|off`, `nas-target <percent>|off`
+    /// `placement on|off`, `nas-budget <its text>|off`, `nas-target <percent>|off`, `batch-minutes
+    /// <minutes>|off` (the measured time a job of a shared step is sized to on its Mac; off: 15)
     Set {
-        /// The setting: placement, nas-budget or nas-target
+        /// The setting: placement, nas-budget, nas-target or batch-minutes
         name: Option<String>,
         /// Its value; off: its default (placement off)
         value: Option<String>,
