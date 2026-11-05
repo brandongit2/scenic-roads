@@ -503,7 +503,19 @@ held job's busy cores from the same uses, else the cost book. The whole-run use 
 phases: pack keeps 0.1–0.9 of a core busy over its run, so 1 thread, but draws its road and rail
 tiles on 4–5.5 cores, which at 1 thread makes its long runs at least 1.3–1.6 times as long (2
 threads: 1.2 at most, 3: 1.07); trees' program ran at 1.2 cores (at least 1.16 times at 1).
-Granting by phase is for #948's re-decision at safe points, which needs the use per phase. Without a run on the Mac, a job's
+So a step on a Mac is granted at least its **phases' floor** (task #948, `uses::Uses::floors`): the
+fewest threads at which its runs there, together, are predicted to take no more than 5 % longer
+than they did (`uses::WALL_SLACK`, a choice). Each top-level phase of a run's main thread keeps
+its CPU over its wall busy, and one overlapped by phases on other threads also as many threads as
+those phases' wall summed over the overlapped phases' (terrain-lo's sampling keeps 3-5 threads
+waiting on GLO-30 at once: 1556 s of reads in a 533 s run); at fewer threads than a phase keeps it
+takes that many over them as long, and a long run weighs as long as it took, so a rare short burst
+holds nothing. From terrain-lo's 6-thread run it predicts 2151 s at 1 thread; a 1-thread run took
+2063. On the M4's timings (9 Oct-4 Nov) the floor holds pack on the M4 at 2 where its use cut it to
+1 (its runs predicted 1.14 times as long at 1, 1.04 at 2), terrain-lo on the M4 at 3 (1.35, 1.03),
+trees on the M1 at 2 (1.20, 1.00). A run whose targets ran on their job's grant as each began
+(Threads re-granted, below) says what each thread count held (`timings::RunRec::held`): it's read
+at each (`uses::Run::of`). Without a run on the Mac, a job's
 measured cores (`needs::Book::cores`, its own run's, else the most of its
 step's) are two (task #896: no hand-set ratio or factor): its **grant**, the cores it kept busy
 while it computed (its CPU time over the time it ran and didn't wait; no waits said, over the time
@@ -588,9 +600,9 @@ nothing is re-decided for them).
   sampler, `memguard::Sampler::cpu_ns`) over the time since it began on them (`Agent::tend_grant`;
   a frozen or stopping job measures nothing).
 - **The decision** (`Sched::regrant`): on a minute of use on its threads now (`SETTLE`), at most
-  once a minute, by the grant rule (task #947): its own run as a run of its step on its Mac
-  (`uses::Uses::cores`: its busy cores rounded up, a thread more where it needed every thread),
-  and where that climbs, the more of it and what a job of its step is granted there now
+  once a minute, by the grant rule (task #947): its own run so far as a run of its step on its Mac,
+  among its step's runs there (`uses::Uses::cores`: a cut a trial those at fewer threads decide,
+  never under their phases' floor, above), and where that climbs, the more of it and what a job of its step is granted there now
   (`Sched::lease_cores`); fitted into its Mac's cores for jobs (less the in-use share's while its
   owner uses it) less the cores its other jobs count for and the load outside the pool, as a grant
   is (`fit_threads`). It **grows** to more where its Mac's memory admits work (no hold of §7.1's
