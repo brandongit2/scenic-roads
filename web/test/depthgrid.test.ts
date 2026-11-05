@@ -34,9 +34,9 @@ const at = (g: Grid, x: number, y: number) => [g!.d[y * 256 + x], g!.k[y * 256 +
   assert.equal(depthZooms(undefined), null);
 }
 
-// The relief (#963): a row of 64 px across. Water with data (x < 20, -6 m), values classed none on
-// the land (0 m: x 20–22), a dike (land, x 20–29), then water without data (x ≥ 30): another water
-// body. The land takes the water's own depth, never a value classed none; the water across the
+// The relief (#963): a row of 64 px across. Water with data (x < 20, -6 m), the build's band on the
+// land (class none, 0 m: x 20–22), a dike (land, x 20–29), then water without data (x ≥ 30):
+// another water body. The land takes the water's own depth, never the band's; the water across the
 // dike stays without; the ramp's drying colours only where marked drying.
 {
   const N = 64;

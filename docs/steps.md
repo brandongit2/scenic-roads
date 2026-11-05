@@ -426,8 +426,9 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   the water feathered over its `band_m` (a source off the others' datum fills gaps only); the shore:
   positive values kept as drying heights only from intertidal sources, water without data filled
   linearly to 0 at the shore within 600 m from data reached through the same water body (never
-  across a dike or a spit; a lake without data of its own stays empty), the land without depth;
-  dries where above the chart's low water.
+  across a dike or a spit; a lake without data of its own stays empty), the land a 3-pixel band of
+  the nearest water's value (class none: a finer shoreline scaled up from it never meets a gap; the
+  map and the floor leave it out); dries where above the chart's low water.
 - **The floor:** the depth lies on the terrain's own water, flattened to its surface, so the terrain
   less the depth is the floor; the server serves it (`/tiles/terrain/…?floor=1`), no second terrain
   stored. Rivers are levelled along their courses (§2, Rivers levelled), or left as their source
@@ -448,7 +449,7 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   as the water itself: our MapLibre draws them over the water tiles the map draws, as those tiles'
   alpha (`scenic:mask`, web/maplibre FORK.md), so they never leave the water nor leave it uncovered
   while tiles load or overzoom; the depth is interpolated bilinearly among pixels with data and
-  reaches 8 pixels past the water's own data (the nearest's value; never a value classed none, and
+  reaches 8 pixels past the water's own data (the nearest's value; never the land's band, and
   never across land into water again), so water a coarse tile's rule left out takes its neighbour's
   depth, and water with no depth near, or across a dike from it, shows the water's own colour. The
   drying colour is only for water marked drying (depth-class bit 3); any other water at or above

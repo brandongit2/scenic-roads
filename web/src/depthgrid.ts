@@ -71,14 +71,15 @@ export const DRY_MIN = 0.05;
 export const REACH = 8;
 
 /** A square of the worker's composite: depth (m; ≥ NODATA_MIN none), class bytes (bits 0–2 the
- * class, 0 none: land; bit 3 dries) and the basemap's water (1). */
+ * class, 0 none: land, the build's band of the nearest water's value among it; bit 3 dries) and the
+ * basemap's water (1). */
 export interface Square {
   d: Float32Array;
   k: Uint8Array;
   w: Uint8Array;
 }
 
-/** A pixel of the water's own data: a depth with a class (a value classed none isn't the water's). */
+/** A pixel of the water's own data: a depth with a class (the build's band on the land has none). */
 const own = (c: Square, i: number) => c.d[i] < NODATA_MIN && (c.k[i] & 7) !== 0;
 
 /**

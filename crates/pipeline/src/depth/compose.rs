@@ -16,8 +16,10 @@
 //! 3. The water decides the shore: positive values stay as drying heights only where an intertidal
 //!    source gives them (else 0, and at most `DRY_MAX`); water with no data near data is filled,
 //!    falling linearly to 0 at the shore, from data within `GAP_M` reached through the same water
-//!    body (never across a dike or a spit); a lake with no data of its own stays empty. The land has
-//!    no depth (the map reaches past the water's data itself: web/src/depthgrid.ts).
+//!    body (never across a dike or a spit); a lake with no data of its own stays empty. The land
+//!    keeps a `BLEED_PX` band of the nearest water's own value, class `C_NONE`, so a finer level's
+//!    shoreline scaled up from it (crate::depth::fall) never meets a gap; the map doesn't draw it
+//!    (it reaches past the water's own data: web/src/depthgrid.ts), nor the floor.
 //! 4. A pixel above its chart's low water (an intertidal source's, in the sea) dries at low tide.
 //! 5. A tile is kept when one of its water pixels is a source's data of the tile's zoom (the
 //!    source painted there, not one feathered in under half nor a gap filled from it), so no tile
@@ -36,6 +38,8 @@ use det::Det;
 pub const PAD: usize = 32;
 /// A block's tiles a side.
 pub const BLOCK: u32 = 8;
+/// The land's band of the nearest water's value (pixels).
+pub const BLEED_PX: f32 = 3.0;
 /// Drying heights above this (m) are land.
 pub const DRY_MAX: f32 = 20.0;
 /// How far water without data is filled from data (ground metres).
@@ -277,13 +281,22 @@ pub fn compose(
         let _p = crate::timings::sub("filling gaps");
         fill(&mut c, &mut k, water, w, h, gpx);
     }
-    let mut out = Composed { depth: vec![NODATA; n], class: vec![C_NONE; n], zoom: zz, water: water.water.clone() };
+    let (dl, near) = nearest(&water.water, w, h);
     for i in 0..n {
-        if !water.water[i] {
+        if water.water[i] {
             continue;
         }
+        let j = near[i] as usize;
+        c[i] = if dl[i] <= BLEED_PX && j < n && c[j].is_finite() { c[j] } else { f32::NAN };
+        k[i] = C_NONE;
+    }
+    let mut out = Composed { depth: vec![NODATA; n], class: vec![C_NONE; n], zoom: zz, water: water.water.clone() };
+    for i in 0..n {
         if c[i].is_finite() {
             out.depth[i] = c[i];
+        }
+        if !water.water[i] {
+            continue;
         }
         let dries = water.lake[i] == 0
             && !water.is_river(i)
