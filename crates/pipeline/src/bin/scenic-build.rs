@@ -5013,13 +5013,14 @@ fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
                     }
                 }
                 let name = lk::logical(id, (t.x, t.y));
-                if !grids.is_empty() {
+                let n = grids.len();
+                if n > 0 {
                     let _p = phase("packing the grids");
-                    let bytes = lk::pack(&grids)?;
+                    let bytes = lk::pack(grids)?;
                     out.put_bytes(&name, "tar", &bytes)?;
                     gone.retain(|g| *g != name);
                 }
-                eprintln!("{STEP} {} {id}: {} grids; {counts:?}", t.slash(), grids.len());
+                eprintln!("{STEP} {} {id}: {n} grids; {counts:?}", t.slash());
             }
             let dropped = pipeline::layers::drop(out, &gone);
             out.save()?;

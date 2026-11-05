@@ -163,7 +163,7 @@ fn a_pack_holds_its_grids_where_its_index_says() {
     v[300] = -4.5;
     v[256 * 512 + 7 - 512] = -1.25;
     let g = Canvas { zoom: 14, c0: 512, r0: 1024, w: 512, h: 256, v };
-    let p = pack(&[Tif::of("smalllakes", &g).unwrap()]).unwrap();
+    let p = pack(vec![Tif::of("smalllakes", &g).unwrap()]).unwrap();
     let read = |o: u64, n: usize| -> Result<Vec<u8>> { Ok(p[o as usize..o as usize + n].to_vec()) };
     let idx = unpack_index(&read).unwrap();
     assert_eq!(idx.len(), 1);
@@ -197,7 +197,7 @@ fn the_depth_reads_a_pack_as_the_sources_grids() {
     let (c0, r0) = (256 * 300, 256 * 200);
     let g = Canvas { zoom: 11, c0, r0, w: 256, h: 256, v };
     let p = d.path().join("6-9-6.tar");
-    std::fs::write(&p, pack(&[Tif::of("globathy", &g).unwrap()]).unwrap()).unwrap();
+    std::fs::write(&p, pack(vec![Tif::of("globathy", &g).unwrap()]).unwrap()).unwrap();
     let t6 = ((c0 >> 13) as u32, (r0 >> 13) as u32);
     let mut s = grids::Source {
         id: "globathy".into(),

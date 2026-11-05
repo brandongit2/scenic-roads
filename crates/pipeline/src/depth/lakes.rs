@@ -1100,8 +1100,9 @@ impl Tif {
 }
 
 /// A pack of `grids`: a tar (ustar, its headers fixed: crate::agent::histarchive's) whose first
-/// member, `INDEX`, lists them (`Packed`), each grid then its GeoTIFF, in order.
-pub fn pack(grids: &[Tif]) -> Result<Vec<u8>> {
+/// member, `INDEX`, lists them (`Packed`), each grid then its GeoTIFF, in order. (Taken, not
+/// copied: a dense tile's are a few hundred MB.)
+pub fn pack(grids: Vec<Tif>) -> Result<Vec<u8>> {
     // (The index's own length sets where the grids start: found by trying, as it settles.)
     let mut index_len = 0usize;
     loop {
@@ -1125,7 +1126,7 @@ pub fn pack(grids: &[Tif]) -> Result<Vec<u8>> {
         let index = serde_json::to_vec(&list)?;
         if index.len().div_ceil(512) == index_len.div_ceil(512) && index_len > 0 {
             let mut members = vec![(INDEX.to_string(), index)];
-            members.extend(grids.iter().map(|g| (g.file.clone(), g.bytes.clone())));
+            members.extend(grids.into_iter().map(|g| (g.file, g.bytes)));
             return crate::agent::histarchive::build(&members);
         }
         index_len = index.len();

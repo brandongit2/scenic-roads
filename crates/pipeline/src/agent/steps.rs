@@ -1185,10 +1185,12 @@ pub const TABLE: [Step; 61] = [
         )
     },
     // (The lakes' estimated depth, a z6 tile's sources made by it (crate::depth::lakes): HydroLAKES'
-    // and GLOBathy's files streamed, a z10 tile's basemap water and grid (64 MB) at a time, ~0.7 GB
-    // as the producer it replaces measured. The depth waits for it. Until a target's own run says.)
+    // and GLOBathy's files streamed, a z10 tile's basemap water and grid (64 MB) at a time, each
+    // grid kept encoded: 2.0 GB footprint measured for Minnesota's and Québec's lake-dense tiles
+    // (6/15/22, 6/18/22: their small lakes' packs 240 and 370 MB, held twice as packed). The depth
+    // waits for it. Until a target's own run says.)
     Step {
-        mem_mb: 1200,
+        mem_mb: 2000,
         shared: true,
         versions: &[("lake-depth", || crate::depth::lakes::V.to_string())],
         reads: &[
