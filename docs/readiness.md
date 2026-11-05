@@ -144,8 +144,8 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | terrain-hi | `TERRAIN_V`, codec, its built tiles, datasets, sources' zooms, water, "no hi tiles", its z10 tiles' deep mids | versions; `in coverage:piece`, `in datasets:terrain`, `in zoom-lines`, `in water`, `in makes-hi`, `Targets terrain-deep` (its 16 z10 tiles, `Grain::Read`: their deep mids) | task #929: the one pyramid's rule; its z12 tiles over a deep target are its deep mid's means, so it waits for those targets alone |
 | terrain-deep | versions, tile, its band's tiles, datasets, sources' zooms, water | versions (incl. `terrain-hi`: its code's); `in coverage:piece`, `in datasets:terrain`, `in zoom-lines`, `in water` | task #929: no base made from terrain-hi's inputs; it reads no built tile |
 | terrain-lo | versions, codec, water, sources, z6 mids | `Targets terrain-hi` (mids), `in water`, `in datasets:terrain` | same inputs. The `sources` line is undocumented today; the doc table gains it |
-| slope-hi | `SLOPE_V`, codec, hi pack, deep mids, tiles read | `Targets terrain-hi` and `terrain-lo` `Grain::Tiles`, `Targets slope-deep` (mids), `terrain-root` (decision 2) | changes: the root becomes a declared read (today keyed, not waited) |
-| slope-deep | `SLOPE_V`, codec, tiles read | `Targets terrain-deep`/`terrain-hi`/`terrain-lo` `Grain::Tiles`, `terrain-root` (decision 2) | changes: root a declared read |
+| slope-hi | `SLOPE_V`, codec, hi pack, deep mids, tiles read | `Targets terrain-hi`, `terrain-lo` and `terrain-deep` `Grain::Tiles`, `Targets slope-deep` (mids), `terrain-root` (decision 2) | changes: the root becomes a declared read (today keyed, not waited) |
+| slope-deep | `SLOPE_V`, codec, tiles read | `Targets terrain-deep` `Grain::Tiles` (its own and its edge neighbours', task #952) | none |
 | slope-lo | versions, mids, terrain lo of it + edges + root | `Targets slope-hi` (mids), `Targets terrain-lo` (+ edges), `terrain-root` (decision 2) | changes: root a declared read; doc's "the z3 tile's lo pack" corrected to edges + root |
 | slope-root | lo packs, codec | `Whole slope-lo` | same inputs |
 | polar-terrain | `polar::TERRAIN_V`, codec, block, datasets by latitude | versions; `in datasets:polar` | same |
@@ -274,8 +274,8 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
    - **3c (built): decision 2.** terrain-root is the terrain stage's (its row and the checklist's
      terrain line): planned in `terrain_work` once its readiness (it reads every terrain-lo,
      whole) says so, first of the regions-done slope's work; left while stale. slope-lo and
-     slope-root read it whole (`Grain::Read`: its content) and wait for it. slope-hi and slope-deep
-     read of it only the root tiles (z0–2) their pyramid resolves to (`slope_reads` takes a
+     slope-root read it whole (`Grain::Read`: its content) and wait for it. slope-hi reads of it
+     only the root tiles (z0–2) its pyramid resolves to (`slope_reads` takes a
      missing tile's nearest ancestor: an edge neighbour's past a z3 tile with no lo pack, beyond the
      coverage), by XXH3 in their slope tiles' lines; that is their `root-tiles` input
      (`idents::root_tiles`), and only the targets reading one (`TerrainTargets::reads_root`) wait,

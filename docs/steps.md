@@ -179,28 +179,35 @@ What each step does, in detail. The steps as one table (names, chains, the check
   up to 9 % of pixels changed between none and some by z4: `slope_pack`'s
   `measure_quantisation_drift`, task #632's review.) Its steps split as the terrain's (task #639;
   "slope" was slope-hi's name before): **slope-deep**, a run per terrain-deep target's z10 tile: its
-  part of its z6 tile's pyramid, z10 down to the terrain's deep levels (`slope_pack::build_deep`):
-  its deep pack (z13–16, `layers/slope/deep/10-x-y`, its terrain deep pack copied here first) and
-  its deep mid (`work/slope-deep-mid/10-x-y`: its z10–12 tiles as made and its quadrant at full
-  precision), once the terrain it reads is built (its own and its edge neighbours' terrain-deep,
-  those tiles' z6 terrain-hi and z3 terrain-lo; not the rest of its z3 tile: task #864); a z10 tile
-  no target any more has its deep pack and deep mid dropped.
+  part of its z6 tile's pyramid at the terrain's deep levels (`slope_pack::build_deep`), each of its
+  z13 tiles' subtree from its deep terrain alone: its deep pack (z13–16, `layers/slope/deep/10-x-y`,
+  its terrain deep pack copied here first) and its deep mid (`work/slope-deep-mid/10-x-y`: its z13
+  tiles' quadrants at full precision), once its own and its edge neighbours' terrain-deep are built
+  (task #952: nothing else; not the rest of its z3 tile: task #864); a z10 tile no target any more
+  has its deep pack and deep mid dropped. A missing deep tile (a Horn neighbour, an own tile) is its
+  nearest ancestor within the deep levels (z13–15, `slope_pack::fallback_floor`), never a hi tile;
+  where the fine data ends and there is none, the tile's own edge pixels are taken again, a strip
+  of one pixel along the edge of the fine coverage (the owner's choice, task #952).
   **slope-hi**, a run per z6 tile once what it reads is built (its own and its edge neighbours'
-  terrain-hi, their z3 tiles' terrain-lo, its z10 tiles' slope-deep): its hi pack (z9–12,
-  its z10 tiles' parts taken in from their deep mids as made, the same bytes as one run of the
-  whole pyramid) and its mid (`work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs
-  (its own z6 tile's hi pack copied whole first) and its neighbours' edge strips; **slope-lo**, an
+  terrain-hi, their z3 tiles' terrain-lo, its z10 tiles' terrain-deep and slope-deep): its hi pack
+  (z9–12: over its z10 tiles' deep terrain, z10–12 from their z13 tiles' quadrants, taken in from
+  their deep mids as made, and its hi terrain where they don't cover; the same bytes as one run of
+  the whole pyramid) and its mid (`work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs
+  (its own z6 tile's hi pack copied whole first) and its neighbours' edge strips; a deep mid is read
+  as the pyramid first reaches its z10 tile and let go once taken in, so a thread holds one at a
+  time; **slope-lo**, an
   assembly per z3 tile from its z6 tiles' mids (each read whole, eight at once, under a deadline and
   tried again while it fails transiently); **slope-root**, z0–2 from the z3 tiles. (Each of these waits, slope-lo's on its z6 tiles' slope-hi
   and its own and edge neighbours' terrain-lo, terrain-lo's and trees-lo's on their z6 tiles' mids (`Read::Mids`: a z6 tile made again for its mid alone holds only them), is
   its row's declared reads in the steps table, `agent::steps::Read` (docs/readiness.md): the planner,
   the forecast's waits and the page's notes derive each target's from it (`steps::readiness`); `declared_reads_cover_the_keys` checks
   each against its key's inputs. The terrain root is built in the terrain stage once every terrain-lo
-  assembly is done; slope-lo waits for it, and a slope-hi or slope-deep target only when its
-  pyramid reads a root tile (an edge neighbour past the lo packs), docs/readiness.md §6 3c.) Memory from the
-  tiles a run holds (`slope_pack::peak_mb`: a z6 tile's hi tiles, each counted at its raw RGB, its
-  z10 tiles' quadrants, the pyramid's working memory and the decoded terrain kept; `deep_peak_mb` a
-  z10 tile's deep tiles and z10–12 tiles likewise; `lo_peak_mb` an assembly's); slope-hi's and
+  assembly is done; slope-lo waits for it, and a slope-hi target only when its pyramid reads a
+  root tile (an edge neighbour past the lo packs), docs/readiness.md §6 3c.) Memory from the
+  tiles a run holds (`slope_pack::peak_mb`: a z6 tile's hi tiles, each counted at its raw RGB, the
+  deep mids open (one a thread, twice its quadrants while read), the pyramid's working memory and
+  the decoded terrain kept; `deep_peak_mb` a z10 tile's deep tiles, its z13 quadrants, a z13
+  subtree a thread and the terrain kept; `lo_peak_mb` an assembly's); slope-hi's and
   slope-deep's with the coverage the process reads (`coverage::Coverage::read_peak_mb`). The
   pyramid (`slope_pack::Pyramid`, the depth's shading's too) makes the children of the tiles within
   three levels of its top in parallel and each subtree below them on one thread, on at most 16 of
@@ -687,11 +694,12 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   digest of its z6–8 water; `TERRAIN_LO_V` and the codec. "none" likewise (`none_lo_key`).
 - **slope-hi (a z6 tile):** `SLOPE_V` and the codec (`shade_codec::version`: the encoding, libwebp's
   version and level, the codes' constants), its z10 tiles' deep mids by content, and every terrain
-  tile it reads itself (those z10 tiles' subtrees left out) by content, from the packs' indexes
+  tile it reads itself (the z13 tiles taken in from those mids, with their tiles in the terrain deep
+  packs' indexes, and their subtrees left out) by content, from the packs' indexes
   (`agent::build::slope_reads`), so a change along a neighbour's edge reruns it, one inside doesn't.
 - **slope-deep (a z10 tile):** `SLOPE_V` and the codec, and every terrain tile its part of the
-  pyramid reads (its terrain deep pack's, those of z11–12 under it, Horn's border past them) by
-  content (`slope_reads`).
+  pyramid reads (its terrain deep pack's, Horn's border past them in its edge neighbours' deep
+  packs) by content (`slope_reads`).
 - **slope-lo:** its z6 tiles' mids and the z3 tile's terrain lo pack; `SLOPE_LO_V` and the codec.
   **slope-root:** the lo packs and the codec.
 - **polar-terrain (a polar block):** `polar::TERRAIN_V`, the terrain codec's version, the block,

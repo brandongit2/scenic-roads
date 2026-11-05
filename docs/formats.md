@@ -900,9 +900,10 @@ class, id) within a tile. The client sends the id with the clicked point.
   a z6 tile's for its assembly, a z10 tile's for its z6 tile's terrain-hi run); `work/slope-mid/6-x-y` (meta `{fmt: 1, step: "slope", tile, v: SLOPE_V}`;
   `<z>-<x>-<y>`, each z6–8 tile as stored, `shade-webp`); `work/slope-deep-mid/10-x-y` (a slope-deep
   z10 tile's part of its z6 tile's pyramid, which that z6 tile's slope-hi run takes in: meta `{fmt:
-  1, step: "slope-deep", tile, v: SLOPE_V}`; `q`, its quadrant at full precision where it has one,
-  128 × 128 pixels each its steepness and direction's two parts, f32 little-endian, row by row; then
-  `<z>-<x>-<y>`, each z10–12 tile as stored); `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
+  2, step: "slope-deep", tile, v: SLOPE_V}`; a section `13-<x>-<y>` for each of its z13 tiles (those
+  its terrain deep pack's tiles lie in), in (x, y) order: its quadrant at full precision, 128 × 128
+  pixels each its steepness and direction's two parts, f32 little-endian, row by row (196,608
+  bytes), empty where it shades nothing); `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
   "terrain-water", pin, digests: {target: [from, digest]}}`: per terrain target, what decides its
   tiles and a hash16 over its water tiles' polygons; `pipeline::terrain_water::WaterIdx`).
 - **Other sources:**
