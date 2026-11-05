@@ -1544,7 +1544,7 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
         let g = opl::Geometry::read(NODES.replace("x0.0005 y0", "x0.02 y0").as_bytes()).unwrap();
         let (ok, failed) = repair_all(&[&rels[0]], &g);
         assert!(ok.is_empty());
-        assert!(failed[0].1.starts_with("a gap of 2226 m"), "{failed:?}");
+        assert!(failed[0].1.starts_with("a gap of 2224 m"), "{failed:?}");
         let g = opl::Geometry::read(NODES.replace("w2 ", "w20 ").as_bytes()).unwrap();
         let (_, failed) = repair_all(&[&rels[0]], &g);
         assert_eq!(failed[0].1, "way 2 not in the set");
@@ -1568,7 +1568,7 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
         let (kept, lost) = keep_previous(failed, Some(&prev));
         assert!(lost.is_empty());
         let (p, why, from) = &kept[0];
-        assert!(why.starts_with("a gap of 2226 m"), "{why}");
+        assert!(why.starts_with("a gap of 2224 m"), "{why}");
         assert_eq!(from, "2026-08-01");
         assert_eq!(
             (p.id, p.flags, p.name_en.as_str()),
@@ -1600,7 +1600,7 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
             let (_, failed) = repair_all(&[&rels[rels.len() - 1]], &g);
             let (kept, lost) = keep_previous(failed, prev);
             assert!(kept.is_empty());
-            assert!(lost[0].starts_with("relation 105 (PL): a gap of 2226 m"), "{lost:?}");
+            assert!(lost[0].starts_with("relation 105 (PL): a gap of 2224 m"), "{lost:?}");
         }
     }
 

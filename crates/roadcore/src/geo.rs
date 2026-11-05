@@ -109,14 +109,18 @@ pub fn tile_box(z: u8, x: u32, y: u32) -> [f64; 4] {
 
 /// A box ([west, south, east, north], degrees) grown by `km` on every side: `km` of latitude each
 /// way (stopping at the poles), and of longitude at the grown box's latitude farthest from the
-/// equator (`lon_span`), so it holds every point within `km` of the box. Longitudes may run past
-/// ±180: the caller wraps or clamps them.
+/// equator (`lon_span`), taken as `GROW_LAT` past it: a box reaching a pole would otherwise take in
+/// every longitude (a point within `km` of it past `GROW_LAT` off its longitudes is left out).
+/// Longitudes may run past ±180: the caller wraps or clamps them.
 pub fn grow(b: [f64; 4], km: f64) -> [f64; 4] {
     let dlat = km / KM_PER_DEG;
     let (s, n) = ((b[1] - dlat).max(-90.0), (b[3] + dlat).min(90.0));
-    let dlon = lon_span(km, s.abs().max(n.abs()));
+    let dlon = lon_span(km, s.abs().max(n.abs()).min(GROW_LAT));
     [b[0] - dlon, s, b[2] + dlon, n]
 }
+
+/// The latitude `grow` takes a box's longitudes grown at, at most.
+pub const GROW_LAT: f64 = 89.0;
 
 /// The degrees of longitude `km` spans along the parallel at `lat`: half a turn at most (a pole's
 /// circle shorter than that: every longitude).
@@ -221,7 +225,8 @@ mod tests {
         assert_eq!([g[1], g[3]], [45.0 - dlat, 46.0 + dlat]);
         assert!((g[2] - 11.0 - dlat / (46.0 + dlat).to_radians().dcos()).abs() < 1e-12);
         let p = grow([0.0, 88.0, 1.0, 89.9], 50.0);
-        assert_eq!((p[3], p[0], p[2]), (90.0, -180.0, 181.0), "a box reaching the pole takes every longitude");
+        assert_eq!(p[3], 90.0);
+        assert_eq!(p[2] - 1.0, lon_span(50.0, GROW_LAT), "a box reaching the pole grown at 89°");
         assert_eq!(lon_span(KM_PER_DEG, 0.0), 1.0);
         assert_eq!(lon_span(1.0, 90.0), 180.0);
         let t = tile_box_grown(6, 0, 0, NEAR_COVERAGE_KM);

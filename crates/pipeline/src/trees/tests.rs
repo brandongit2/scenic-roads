@@ -824,18 +824,24 @@ fn leaf_type_squares_complete() {
     let d = tempfile::tempdir().unwrap();
     let small = |meta: &[(&str, &str)]| tiff(1024, 8, &|_, _| None, meta);
     std::fs::write(d.path().join("a.tif"), small(&[("complete", "1")])).unwrap();
+    // A NALCMS square resampled with the Mac's libm (its old tag) is made again; one with det's is kept.
     std::fs::write(
         d.path().join("b.tif"),
-        small(&[("source", "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°")]),
+        small(&[("complete", "1"), ("source", "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°")]),
     )
     .unwrap();
+    std::fs::write(d.path().join("f.tif"), small(&[("complete", "1"), ("source", crate::leaftype::NALCMS_SOURCE)]))
+        .unwrap();
     std::fs::write(d.path().join("c.tif"), small(&[("source", "Copernicus HRL Dominant Leaf Type 2018 (EEA)")]))
         .unwrap();
     let mut cut = small(&[("complete", "1")]);
     cut.truncate(100);
     std::fs::write(d.path().join("d.tif"), cut).unwrap();
     let c = |f: &str| squares::complete(&d.path().join(f));
-    assert_eq!((c("a.tif"), c("b.tif"), c("c.tif"), c("d.tif"), c("e.tif")), (true, true, false, false, false));
+    assert_eq!(
+        (c("a.tif"), c("b.tif"), c("c.tif"), c("d.tif"), c("e.tif"), c("f.tif")),
+        (true, false, false, false, false, true)
+    );
     // None to make (outside both sources' boxes, or complete): nothing is asked.
     std::fs::write(d.path().join(leaf_name(50, 0)), small(&[("complete", "1")])).unwrap();
     let s = run_sources();
