@@ -9,7 +9,7 @@ import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type
 // Planetiler tiles, designation / stop overlays (GeoJSON, loaded on demand) and labels.
 // Layer ids are grouped so the UI can toggle them.
 export const LAYER_GROUPS: Record<string, string[]> = {
-  water: ['water', 'waterway', 'water-surface'],
+  water: ['water', 'whitewater', 'waterway', 'water-surface'],
   // Countries, provinces & states, counties & regions (order of AppState.boundaryLevels).
   boundaries: ['boundary-country', 'boundary-state', 'boundary-county'],
 };
@@ -229,6 +229,14 @@ export const WATER_MAXZOOM = 18;
 
 /** The shading's texels a side for the screen's (the slope source; the drapes sized to hold them). */
 export const SHADE_DETAIL = 4;
+
+/** The whitewater's colour by the steepness under the water (%): none on level water and gentle
+ * reaches, then toward foam. */
+const WHITEWATER = ['interpolate', ['linear'], ['elevation'], 0, 'rgba(0,0,0,0)', 8, 'rgba(0,0,0,0)', 50, 'rgba(206,224,236,0.8)'];
+
+/** What's drawn on the water (the depth's colour and floor shading, the coastal shading) goes
+ * under this layer: over the water, under the whitewater and the hill-shading over it. */
+export const waterTop = (m: import('maplibre-gl').Map): string => (m.getLayer('whitewater') ? 'whitewater' : 'hillshade');
 
 /** Labels thinned to the label spacing (Layers → Map → Label density): the place, water and park
  * labels from our label tiles (the landmarks' and stations' are set with their layers). */
@@ -572,6 +580,35 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           resampling: v === 'leaf' ? 'nearest' : 'linear',
         },
       }) as LayerSpecification),
+      // The water: its exact coverage where the catalogue has it (draped and tilted as any raster, its
+      // texture mipmapped), else the basemap's polygons. Under the hill-shading, which shades it by
+      // the terrain beneath as it does the land (waterTop).
+      waterTiles
+        // (No cross-fade: with 3D terrain a draped texture drawn mid-fade would keep it. Minified
+        // trilinearly, `scenic:mipmap` (web/maplibre's draw_raster.ts): from the nearer mipmap level
+        // alone, shrunk 1.3× its tiles took their own level and 1.5× the half as fine, so the small
+        // lakes' look jumped at each half zoom, task #123.)
+        ? ({ id: 'water', type: 'raster', source: 'water', metadata: { 'scenic:mipmap': 'linear' }, paint: { 'raster-resampling': 'linear', 'raster-fade-duration': 0 } } as LayerSpecification)
+        : {
+          id: 'water',
+          type: 'fill',
+          source: 'base',
+          'source-layer': 'water',
+          filter: ['!=', ['get', 'brunnel'], 'tunnel'],
+          paint: { 'fill-color': ['match', ['get', 'class'], 'ocean', '#0c1622', '#0f1a27'] },
+        },
+      // Whitewater: the water paled toward foam as the terrain beneath it steepens (the slope
+      // layer's steepness, drawn as the water tiles' coverage: our MapLibre's `scenic:mask`), so
+      // rapids, cascades and falls show wherever the terrain has them. Lakes and the sea are level.
+      ...(waterTiles ? [{
+        id: 'whitewater',
+        type: 'color-relief',
+        source: 'slope',
+        metadata: { 'scenic:mask': 'water' },
+        paint: { 'color-relief-color': WHITEWATER as unknown as ExpressionSpecification, 'color-relief-opacity': 1 },
+      } as LayerSpecification] : []),
+      // The terrain's shading, over the land and the water alike: level water (lakes, the sea) has
+      // none, so it shows as its colour; water on a slope shows the slope.
       {
         id: 'hillshade',
         type: 'hillshade',
@@ -587,22 +624,6 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           'hillshade-accent-color': 'rgba(0,0,0,0.35)',
         },
       } as LayerSpecification,
-      // The water: its exact coverage where the catalogue has it (draped and tilted as any raster, its
-      // texture mipmapped), else the basemap's polygons.
-      waterTiles
-        // (No cross-fade: with 3D terrain a draped texture drawn mid-fade would keep it. Minified
-        // trilinearly, `scenic:mipmap` (web/maplibre's draw_raster.ts): from the nearer mipmap level
-        // alone, shrunk 1.3× its tiles took their own level and 1.5× the half as fine, so the small
-        // lakes' look jumped at each half zoom, task #123.)
-        ? ({ id: 'water', type: 'raster', source: 'water', metadata: { 'scenic:mipmap': 'linear' }, paint: { 'raster-resampling': 'linear', 'raster-fade-duration': 0 } } as LayerSpecification)
-        : {
-          id: 'water',
-          type: 'fill',
-          source: 'base',
-          'source-layer': 'water',
-          filter: ['!=', ['get', 'brunnel'], 'tunnel'],
-          paint: { 'fill-color': ['match', ['get', 'class'], 'ocean', '#0c1622', '#0f1a27'] },
-        },
       {
         id: 'waterway',
         type: 'line',

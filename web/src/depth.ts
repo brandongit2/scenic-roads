@@ -14,7 +14,8 @@
 //    shading (its tiles reach onto the shore).
 // 2. Depth contours with labels: vector tiles the same worker makes (maplibre-contour's, contour/:
 //    isolines), clipped to the water.
-// All go over the water fill and under the coast shading and everything else, draped on the 3D
+// All go over the water fill and under the coast shading, the whitewater, the terrain's
+// hill-shading (basemap.ts waterTop) and everything else, draped on the 3D
 // terrain like the water (which stays flat at the surface).
 // 3. The 3D floor (setFloor, its switch in the same section): the 3D terrain from the terrain less
 //    the depth (the server's `?floor=1`, basemap.ts floorTiles), the terrain itself its surface
@@ -30,7 +31,7 @@
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
 import { onVersions, ver } from './api';
-import { SHADE_SHIFT, floorTiles, waterTilesOn } from './basemap';
+import { SHADE_SHIFT, floorTiles, waterTilesOn, waterTop } from './basemap';
 import { hostFor } from './hosts';
 import { depthZooms, type DepthZooms } from './depthgrid';
 import { depthColour, hdepth, hexRgb, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
@@ -193,10 +194,9 @@ export class Depth {
 
   // ---- the layers -------------------------------------------------------------------------------
 
-  /** Under the coast shading and the rivers drawn as lines: just over the water fill. */
-  private before(): string | undefined {
-    for (const id of ['coast-shade', 'waterway']) if (this.map.getLayer(id)) return id;
-    return undefined;
+  /** Just over the water fill: under the coast shading, the whitewater and the hill-shading. */
+  private before(): string {
+    return this.map.getLayer('coast-shade') ? 'coast-shade' : waterTop(this.map);
   }
 
   private addLayers() {

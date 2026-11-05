@@ -446,7 +446,8 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   takes its neighbour's depth, and water with no depth near shows the water's own colour. Without
   the water tiles, the colour masked by the basemap's water at the display's resolution, and no
   floor shading (its tiles reach onto the shore). Over the water fill
-  and under the coast shading, draped on the 3D terrain. Hovering water (no road, line or place under the cursor) shows in the footer its depth with the ramp's colour, the water's name and kind where the map labels it, the depth's class, source, resolution and datum; the map names the sources in
+  and under the coast shading, the whitewater and the terrain's hill-shading (§4), draped on the 3D
+  terrain. Hovering water (no road, line or place under the cursor) shows in the footer its depth with the ramp's colour, the water's name and kind where the map labels it, the depth's class, source, resolution and datum; the map names the sources in
   view, "not for navigation", and the notices their licences ask for (CHS's, naming the owner as the
   maker), which the credits carry too. The Depth section's note names the sources whose depths are
   estimates (the catalogue's `estimated`: GLOBathy's, the small lakes'). The map's depth tiles, each
@@ -490,6 +491,16 @@ drawn as a raster.
   so it never stretches a coarser level; shrunk, tiles are sampled trilinearly (the `scenic:mipmap`
   metadata, read by our MapLibre's `draw_raster.ts`). Colours are in the URL (Settings → Map →
   Water), so a new colour needs no rebuild.
+  - **Shaded by the terrain beneath:** the hill-shading is drawn over the water as over the land,
+    and the depth's colour and the coastal shading go under it. Lakes and the sea are flat in the
+    terrain (§2), so they show their colour; water on a slope (falls, cascades, a river's steep
+    reach) shows its relief.
+  - **Whitewater** (`whitewater`, only with the water tiles): over pixels the water covers nearly
+    whole (the tile's alpha, smoothstep 0.75–1, so a shore pixel's bank steepness isn't counted),
+    the water pales toward foam as the slope layer's steepness rises from 8 % to 50 %. A colour
+    relief of the `slope` source with `scenic:mask` of the water (our MapLibre's
+    `color_relief.fragment.glsl`); no waterfall tags. Where the fine terrain (z13 and finer) under a
+    river steps, as across the upper Niagara River, the step shows as a pale line across it.
   - The coastal shading (`web/src/coast.ts`) measures its shore from the same shares at 2 texels a
     CSS px: every pixel holding any land is a shore, placed by its share (`web/src/coastdist.ts`).
     The distance is exact within 192 pixels; past 60° the far field comes from coarser ancestors.

@@ -10,7 +10,7 @@
 // on the terrain like the water itself.
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
-import { BASEMAP_MAXZOOM, lakeColour, setWaterColours, WATER_TILE_SIZE, waterTiles, waterTilesOn } from './basemap';
+import { BASEMAP_MAXZOOM, lakeColour, setWaterColours, WATER_TILE_SIZE, waterTiles, waterTilesOn, waterTop } from './basemap';
 import type { WaterLook } from './state';
 import type { CoastMessage, CoastResponse } from './coast.worker';
 import { COAST_ENCODING, COAST_LINEAR, coastElevation } from './coastdist';
@@ -90,7 +90,7 @@ function setupShading(map: MLMap, w: WaterLook, input: CoastInput) {
   setupProtocol();
   lakesShown = w.lakes;
   map.addSource('coast', { type: 'raster-dem', tiles: [tilesUrl(w.lakes)], tileSize: COAST_TILE_SIZE, maxzoom: 15, ...COAST_ENCODING });
-  map.addLayer({ id: 'coast-shade', type: 'color-relief', source: 'coast', paint: { 'color-relief-opacity': 1, resampling: 'linear' } as never }, 'waterway');
+  map.addLayer({ id: 'coast-shade', type: 'color-relief', source: 'coast', paint: { 'color-relief-opacity': 1, resampling: 'linear' } as never }, waterTop(map));
 }
 
 /** Another shading source and layer, measured from `input` (the shoreline check's reference,
