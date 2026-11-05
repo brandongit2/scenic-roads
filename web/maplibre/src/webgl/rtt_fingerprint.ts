@@ -23,12 +23,18 @@ export class RTTFingerprint {
     private readonly _revision: number;
     private readonly _zoom: number;
     private readonly _visibleLayerIds: string;
+    /**
+     * Scenic Roads: drawn with some of a source's tiles finer than the screen's (`scenic:detail`,
+     * TileManager._detailOffset): RenderToTexture keeps such a texture till the camera is still.
+     */
+    readonly finer: boolean;
 
-    constructor(coords: OverscaledTileID[], revision: number, zoom: number, visibleLayerIds: string) {
+    constructor(coords: OverscaledTileID[], revision: number, zoom: number, visibleLayerIds: string, finer: boolean = false) {
         this._tileKeys = coords.map(c => c.key).sort().join();
         this._revision = revision;
         this._zoom = zoom;
         this._visibleLayerIds = visibleLayerIds;
+        this.finer = finer;
     }
 
     /**

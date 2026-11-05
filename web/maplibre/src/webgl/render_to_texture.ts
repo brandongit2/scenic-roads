@@ -167,7 +167,8 @@ export class RenderToTexture {
      * source tiles under them are re-rendered one per frame too, `needsFollowUpFrame` bringing in the rest.
      * Textures whose visible layer set changed (a layer entered or left its zoom range) are kept while the zoom
      * is changing and then all re-rendered in the same frame, since a tile-by-tile change would show; a source
-     * data change re-renders immediately.
+     * data change re-renders immediately. (Scenic Roads: a texture drawn with a source's tiles finer than
+     * the screen's is kept till the camera is still, whatever source tiles it would have now.)
      */
     prepareForRender(style: Style, zoom: number): void {
         const zoomChanged = zoom !== this._lastPrepareZoom;
@@ -219,8 +220,10 @@ export class RenderToTexture {
             this._rttFingerprints[sourceId] = {};
             const fingerprints = this._rttFingerprints[sourceId];
             const revision = stateSourceIds.has(sourceId) ? tileManager.getState().revision : 0;
+            const finer = tileManager._detailOffset;
             for (const key in coordsAscending)
-                fingerprints[key] = new RTTFingerprint(coordsAscending[key], revision, zoom, visibleLayerIds);
+                fingerprints[key] = new RTTFingerprint(coordsAscending[key], revision, zoom, visibleLayerIds,
+                    finer?.size > 0 && coordsAscending[key].some(c => finer.has(c.key)));
         }
 
         // Scenic Roads: a custom layer's drape is drawn again when its revision changes (and, as the
@@ -260,8 +263,13 @@ export class RenderToTexture {
             if (!tm._retired[key]) tm._dirtyRTT.delete(key); // (Scenic Roads: a retired tile keeps its mark)
         }
         let staleTileReleased = false;
+        // (Scenic Roads: till the camera has been still for the map's refineDelay, a source with
+        // `scenic:detail` covers the screen at its own zoom: a texture drawn at the last rest with its
+        // finer tiles is kept, not drawn coarser now and finer again once still; TileManager._refineCover)
+        const map = tm.tileManager.map;
+        const unsettled = !!map && map._stillIn() > 0;
         for (const tile of this._renderableTiles) {
-            const difference = this._textureDifference(tile);
+            const difference = this._textureDifference(tile, unsettled);
             if (difference === 'none') continue;
             if ((difference === 'zoom' && moving) || (difference === 'visibleLayers' && zoomChanged)) {
                 this.needsFollowUpFrame = true;
@@ -280,7 +288,7 @@ export class RenderToTexture {
      * The most severe difference, over the sources rendered to texture, between the tile's cached textures
      * and what this frame would render into them.
      */
-    _textureDifference(tile: Tile): RTTDifference {
+    _textureDifference(tile: Tile, unsettled: boolean = false): RTTDifference {
         let worst: RTTDifference = 'none';
         // Scenic Roads: a texture coarser than the tile's footprint wants, or more than twice as fine
         // (TerrainTileManager.footprintSizing), is drawn again as a zoom change's is: kept while
@@ -291,7 +299,9 @@ export class RenderToTexture {
         for (const source in this._rttFingerprints) {
             const frameFingerprint = this._rttFingerprints[source][tile.tileID.key];
             if (!frameFingerprint) continue;
-            const difference = frameFingerprint.difference(tile.rttFingerprint[source]);
+            const held = tile.rttFingerprint[source];
+            const difference = frameFingerprint.difference(held);
+            if (difference === 'sourceTiles' && unsettled && held.finer) continue;
             if (RTT_DIFFERENCES.indexOf(difference) > RTT_DIFFERENCES.indexOf(worst)) worst = difference;
         }
         return worst;

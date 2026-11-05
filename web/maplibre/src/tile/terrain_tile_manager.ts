@@ -107,6 +107,8 @@ export class TerrainTileManager extends Evented {
      * screen's pixels, a 4K view's drapes outgrew what Chrome would allocate on the M4, and tiles came out black.)
      */
     drapeExtra: number = 2;
+    /** Scenic Roads: _drapeDetails's last answer, and the drapes and sources' finer tiles it was for. */
+    _drapeDetailMemo: {offsets: unknown[]; drapes: string; detail: (id: OverscaledTileID) => number} | null = null;
     drapeBudgetTexels(screenPx: number, todayTexels: number): number {
         return todayTexels + screenPx * this.drapeExtra;
     }
@@ -249,11 +251,11 @@ export class TerrainTileManager extends Evented {
         const budget = tileDetail ? this.drapeBudgetTexels(transform.width * transform.height * pixelRatio ** 2, todayTexels) : Infinity;
         while (texels > budget) {
             let worst = -1, ratio = 0;
-            this._renderableTilesKeys.forEach((key, i) => {
-                const size = this._tiles[key].rttTargetSize;
+            for (let i = 0; i < this._renderableTilesKeys.length; i++) {
+                const size = this._tiles[this._renderableTilesKeys[i]].rttTargetSize;
                 const r = size / Math.min(wants[i], maxes[i]);
                 if (size > todays[i] && (worst < 0 || r > ratio)) { worst = i; ratio = r; }
-            });
+            }
             if (worst < 0) break;
             const tile = this._tiles[this._renderableTilesKeys[worst]];
             texels -= tile.rttTargetSize ** 2 * 3 / 4;
@@ -277,14 +279,19 @@ export class TerrainTileManager extends Evented {
      * Scenic Roads: each drape tile's detail, at most drapeDetail: 2 to the most zooms by which a
      * draped source's tiles over it are finer than the screen's (TileManager._detailOffset), 1
      * where there are none, so a texture grows only where what is drawn into it is finer. Without a
-     * style (tests), drapeDetail everywhere.
+     * style (tests), drapeDetail everywhere. Worked out again only when the drapes or a source's
+     * finer tiles change (at rest the map may draw every frame).
      */
     _drapeDetails(): (id: OverscaledTileID) => number {
         const managers = this.tileManager.map?.style?.tileManagers;
         if (!managers) return () => this.drapeDetail;
+        const offsets = Object.values(managers).map(m => m._detailOffset);
+        const drapes = this._renderableTilesKeys.join();
+        const memo = this._drapeDetailMemo;
+        if (memo?.drapes === drapes && memo.offsets.length === offsets.length && memo.offsets.every((o, i) => o === offsets[i])) return memo.detail;
         const byDrape: Record<string, number> = {};
-        for (const k in managers) {
-            for (const {id, offset} of managers[k]._detailOffset?.values() ?? []) {
+        for (const finer of offsets) {
+            for (const {id, offset} of finer?.values() ?? []) {
                 for (let z = id.canonical.z; z >= 0; z--) {
                     const p = id.scaledTo(z);
                     if (this._tiles[p.key]) { byDrape[p.key] = Math.max(byDrape[p.key] ?? 0, offset); break; }
@@ -292,12 +299,14 @@ export class TerrainTileManager extends Evented {
             }
         }
         const keys = Object.keys(byDrape);
-        return (id: OverscaledTileID) => {
+        const detail = (id: OverscaledTileID) => {
             let off = byDrape[id.key];
             // (a drape tile finer than the source's tile: its ancestor's)
             if (off === undefined) for (const key of keys) if (id.isChildOf(this._tiles[key].tileID)) off = Math.max(off ?? 0, byDrape[key]);
             return Math.min(this.drapeDetail, 2 ** (off ?? 0));
         };
+        this._drapeDetailMemo = {offsets, drapes, detail};
+        return detail;
     }
 
     /**

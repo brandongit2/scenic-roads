@@ -164,3 +164,20 @@ describe('Map.isMoving', () => {
         map._renderTaskQueue.run();
     });
 });
+
+describe('Map._stillIn (Scenic Roads)', () => {
+    test('counts from the last camera move; a camera changed since the last frame counts as moving already', () => {
+        let now = 1000;
+        vi.spyOn(timeControl, 'now').mockImplementation(() => now);
+        map._lastCameraMatrix = Float64Array.from(map._camera.transform.modelViewProjectionMatrix);
+        map._lastCameraMove = now;
+        expect(map._stillIn()).toBe(map.refineDelay);
+        now += 200;
+        expect(map._stillIn()).toBe(map.refineDelay - 200);
+        now += 200;
+        expect(map._stillIn()).toBe(0);
+        // (a jumpTo, before its frame has noted the move)
+        map.jumpTo({center: [10, 10]});
+        expect(map._stillIn()).toBe(map.refineDelay);
+    });
+});

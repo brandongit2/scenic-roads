@@ -2118,9 +2118,22 @@ export class Map extends Evented<MapEventType> {
         return this._camera.isMoving() || this._handlers?.isMoving() || now() - this._lastCameraMove < MOVING_HOLD_MS;
     }
 
-    /** Scenic Roads: ms until the camera has been still for refineDelay; 0 once it has. */
+    /** Scenic Roads: the camera's matrix differs from the last frame's (_lastCameraMatrix). */
+    _cameraChanged(): boolean {
+        const m = this._camera.transform.modelViewProjectionMatrix;
+        const last = this._lastCameraMatrix;
+        if (!last) return true;
+        for (let i = 0; i < 16; i++) if (last[i] !== m[i]) return true;
+        return false;
+    }
+
+    /**
+     * Scenic Roads: ms until the camera has been still for refineDelay; 0 once it has. (A camera
+     * changed since the last frame counts as moving already: the sources are updated before the
+     * frame notes the move, and a jumpTo's first frame would refine them.)
+     */
     _stillIn(): number {
-        if (this._camera.isMoving() || this._handlers?.isMoving()) return this.refineDelay;
+        if (this._camera.isMoving() || this._handlers?.isMoving() || (this._lastCameraMatrix && this._cameraChanged())) return this.refineDelay;
         return Math.max(0, this.refineDelay - (now() - this._lastCameraMove));
     }
 
@@ -4569,15 +4582,9 @@ export class Map extends Evented<MapEventType> {
         }
 
         // Scenic Roads: the camera moved since the last frame (see _lastCameraMove).
-        {
-            const m = this._camera.transform.modelViewProjectionMatrix;
-            const last = this._lastCameraMatrix;
-            let changed = !last;
-            if (last) for (let i = 0; i < 16; i++) if (last[i] !== m[i]) { changed = true; break; }
-            if (changed) {
-                this._lastCameraMove = now();
-                this._lastCameraMatrix = Float64Array.from(m as ArrayLike<number>);
-            }
+        if (this._cameraChanged()) {
+            this._lastCameraMove = now();
+            this._lastCameraMatrix = Float64Array.from(this._camera.transform.modelViewProjectionMatrix as ArrayLike<number>);
         }
 
         this._placementDirty = this.style?._updatePlacement(this._camera.transform, this.showCollisionBoxes, fadeDuration, this._crossSourceCollisions, globeRenderingChanged);

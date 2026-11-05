@@ -197,7 +197,7 @@ describe('render to texture', () => {
         const obj = {texture: {}, size: 512} as unknown as RTTObject;
         markRendered(tile, obj, new RTTFingerprint([tile.tileID], 0, 0, visibleLayerIds()));
         terrain.tileManager._tiles = {[tile.tileID.key]: tile};
-        terrain.tileManager.tileManager.map = {painter, triggerRepaint: vi.fn()} as any as Map;
+        terrain.tileManager.tileManager.map = {painter, triggerRepaint: vi.fn(), _stillIn: () => 0} as any as Map;
 
         terrain.tileManager.releaseRTT(tile.tileID);
         expect(tile.getRTT(0)).toBe(obj);
@@ -500,6 +500,32 @@ describe('render to texture', () => {
 
     });
 
+    test('a texture drawn with a source\'s finer tiles is kept till the camera is still, then drawn again (Scenic Roads)', () => {
+        (vi.mocked(style.tileManagers['maine'].getState)).mockReturnValue({revision: 0} as any);
+        const obj = {texture: {}, size: 512} as unknown as RTTObject;
+        const fine = tile.tileID.children(22)[0];
+        // (drawn at the last rest with a finer tile; now the source covers the screen at its own zoom)
+        markRendered(tile, obj, new RTTFingerprint([fine], 0, 0, visibleLayerIds(), true));
+        const stillIn = vi.fn(() => 120);
+        const before = tileManager.map;
+        tileManager.map = {_stillIn: stillIn} as any;
+        try {
+            rtt.prepareForRender(style, 0);
+            expect(tile.getRTT(0)).toBe(obj);
+            expect(rtt.needsFollowUpFrame).toBe(false);
+            // (one drawn with the screen's own tiles is drawn again as before)
+            markRendered(tile, obj, new RTTFingerprint([fine], 0, 0, visibleLayerIds()));
+            rtt.prepareForRender(style, 0);
+            expect(tile.getRTT(0)).toBeUndefined();
+            markRendered(tile, obj, new RTTFingerprint([fine], 0, 0, visibleLayerIds(), true));
+            stillIn.mockReturnValue(0);
+            rtt.prepareForRender(style, 0);
+            expect(tile.getRTT(0)).toBeUndefined();
+        } finally {
+            tileManager.map = before;
+        }
+    });
+
     test('a tile without a texture is rendered regardless of how many stale tiles were re-rendered this frame', () => {
         (vi.mocked(style.tileManagers['maine'].getState)).mockReturnValue({revision: 0} as any);
         const newTile = new Tile(new OverscaledTileID(3, 0, 2, 2, 2), 512);
@@ -686,7 +712,7 @@ describe('render to texture', () => {
             for (const t of [parent, ...children]) t.rttObjects.length = 0;
             parent.rttObjects[0] = {texture: {bind: vi.fn()}, size: 512} as unknown as RTTObject;
             terrain.tileManager._retired = {[parent.tileID.key]: parent};
-            terrain.tileManager.tileManager.map = {painter, triggerRepaint: vi.fn()} as any as Map;
+            terrain.tileManager.tileManager.map = {painter, triggerRepaint: vi.fn(), _stillIn: () => 0} as any as Map;
             vi.spyOn(terrain.tileManager, 'getRenderableTiles').mockReturnValue(children);
             (vi.mocked(terrain.tileManager.getTerrainCoords)).mockReturnValue(Object.fromEntries(children.map(c => [c.tileID.key, c.tileID])));
             painter.options.moving = moving;

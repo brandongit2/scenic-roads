@@ -14,7 +14,8 @@ describe('TileManager._refineCover', () => {
     function setup(loaded: string[], {moving = false, stillIn = moving ? 300 : 0} = {}) {
         const tm = Object.create(TileManager.prototype) as TileManager;
         tm.detailBudget = 8; // (512² px × 8: room for all 32 finer tiles, 256² texels each)
-        tm._detailKids = null;
+        tm._source = {maxzoom: 10} as any;
+        tm._detailTiles = 0;
         const woken = {n: 0};
         tm.map = {isMoving: () => moving, _stillIn: () => stillIn, _updateWhenStill: () => woken.n++, getPixelRatio: () => 1} as any;
         tm._inViewTiles = {getTileById: (key: string) => loaded.includes(key) ? {hasData: () => true, state: 'loaded'} : undefined} as any;
@@ -36,16 +37,38 @@ describe('TileManager._refineCover', () => {
         expect(tm._detailPending).toBe(false);
         // the finer tiles' zooms beyond the screen's, for the drapes' sizes
         expect(tm._detailOffset.get(kids(T)[0].key)?.offset).toBe(2);
-        // moving: no new finer tiles, those loaded kept; pending, and the sources updated once still
-        ({tm, transform, woken} = setup([T.key, far.key, ...kids(T).map(k => k.key)], {moving: true}));
-        expect(keys(tm._refineCover(transform, [T, far], () => fine))).toEqual(keys([...kids(T), far]));
+        expect(tm._detailTiles).toBe(32);
+        // moving: the screen's own cover, the finer tiles in or not (no finer cover worked out);
+        // pending while a tile of it has finer tiles, and the sources updated once still
+        const loaded = [T.key, far.key, ...kids(T).map(k => k.key)];
+        const noFineCover = () => { throw new Error('the finer cover while moving'); };
+        ({tm, transform, woken} = setup(loaded, {moving: true}));
+        expect(keys(tm._refineCover(transform, [T, far], noFineCover))).toEqual(keys([T, far]));
         expect(tm._detailPending).toBe(true);
+        expect(tm._detailOffset.size).toBe(0);
         expect(woken.n).toBe(1);
         // stopped but not yet still for refineDelay: the same
-        ({tm, transform, woken} = setup([T.key, far.key, ...kids(T).map(k => k.key)], {stillIn: 120}));
-        expect(keys(tm._refineCover(transform, [T, far], () => fine))).toEqual(keys([...kids(T), far]));
+        ({tm, transform, woken} = setup(loaded, {stillIn: 120}));
+        expect(keys(tm._refineCover(transform, [T, far], noFineCover))).toEqual(keys([T, far]));
         expect(tm._detailPending).toBe(true);
         expect(woken.n).toBe(1);
+        // (at the source's finest zoom: nothing to come)
+        tm._source = {maxzoom: 8} as any;
+        tm._refineCover(transform, [T, far], noFineCover);
+        expect(tm._detailPending).toBe(false);
+    });
+
+    test('the out-of-view cache keeps the last rest\'s finer tiles', () => {
+        const {tm, transform} = setup([T.key, far.key]);
+        let max = 0;
+        tm._outOfViewCache = {setMaxSize: (n: number) => { max = n; }} as any;
+        tm._source = {maxzoom: 10, tileSize: 512} as any;
+        tm._maxTileCacheZoomLevels = null;
+        tm.updateCacheSize(transform);
+        const without = max;
+        tm._refineCover(transform, [T, far], () => [...kids(T), ...kids(far)]);
+        tm.updateCacheSize(transform);
+        expect(max).toBe(without + 32);
     });
 
     test('within the budget, nearest the camera first', () => {
