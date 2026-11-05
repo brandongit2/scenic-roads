@@ -3168,7 +3168,11 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
 
     // (Terrain no region with work left reads, and a z6 tile in no region's own coverage, last.)
     for (step, list, tag) in &terrain_lists {
-        push(&mut by_region, step, list.iter().filter(|t| !listed.contains(&format!("{tag}{}", t.0))).cloned().collect());
+        push(
+            &mut by_region,
+            step,
+            list.iter().filter(|t| !listed.contains(&format!("{tag}{}", t.0))).cloned().collect(),
+        );
     }
     let mut rest: Vec<usize> = (0..units.len()).filter(|&i| unit_stale[i] && !taken[i] && buildable(i)).collect();
     rest.sort_by_key(|&i| spatial_order(units[i].0));
