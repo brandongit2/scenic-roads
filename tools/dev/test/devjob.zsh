@@ -38,6 +38,11 @@ assert e["status"] == "fail" and e["attrs"] == {"exit": "1"} and e["t"] >= s["t"
 PY
 # (The sampler these started ends once nothing is live: waited for, so the scratch spool goes after it.)
 for (( i = 0; i < 600; i++ )); do zsystem flock -t 0 -f f $s/sampler.lock 2>/dev/null && break; sleep 0.1; done
+# A caller under set -u (check.sh, publish.sh): empty names, values and parents, an empty id.
+( setopt nounset; unset SCENIC_DEVJOB_PARENT
+  dj_start part "" k ""; id=$REPLY
+  SCENIC_DEVJOB_PARENT= dj_span part "" $EPOCHREALTIME $EPOCHREALTIME ok "" ""
+  dj_attr "" k v; dj_end "" ok; dj_end $id ok ) || fail "the functions under set -u"
 # SCENIC_DEVJOB=0: nothing.
 rm -rf $s/*(N)
 SCENIC_DEVJOB=0 dj_start check x; [[ -z $REPLY && ! -e $s/spool.ndjson ]] || fail "SCENIC_DEVJOB=0 recorded"

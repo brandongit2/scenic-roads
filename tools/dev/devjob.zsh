@@ -29,7 +29,7 @@ dj_q() {  # dj_q <string>: it as a JSON string, in $REPLY (control characters bu
 dj_attrs() {  # dj_attrs <attr> <value>…: a JSON object, in $REPLY
   local o= k
   while (( $# >= 2 )); do
-    dj_q $1; k=$REPLY; dj_q $2; o+="${o:+,}$k:$REPLY"; shift 2
+    dj_q "$1"; k=$REPLY; dj_q "$2"; o+="${o:+,}$k:$REPLY"; shift 2
   done
   REPLY="{$o}"
 }
@@ -52,7 +52,7 @@ dj_start() {
   dj_attrs "$@"; a=$REPLY
   # (A run of its own: who ran it, then its own attributes.)
   if [[ $who == '{'*'}' && $who != '{}' ]]; then in=${${a#\{}%\}}; a="${who%\}}${in:+, $in}}"; fi
-  dj_q $kind; k=$REPLY; dj_q $name; n=$REPLY; dj_q $parent; p=$REPLY
+  dj_q "$kind"; k=$REPLY; dj_q "$name"; n=$REPLY; dj_q "$parent"; p=$REPLY
   dj_emit "{\"op\":\"start\",\"id\":\"$id\",\"parent\":$p,\"kind\":$k,\"name\":$n,\"mac\":\"$SCENIC_DEVJOB_MAC\",\"t\":$EPOCHREALTIME,\"attrs\":$a}"
   # (Live while this shell is, as it started: a pid used again later isn't it.)
   ls=$(ps -o lstart= -p $$); ls=${(j: :)${=ls}}
@@ -61,7 +61,7 @@ dj_start() {
   REPLY=$id
 }
 dj_end() {
-  dj_on && [[ -n $1 ]] || return 0
+  dj_on && [[ -n ${1:-} ]] || return 0
   local id=$1 st=$2; shift 2
   dj_attrs "$@"
   dj_emit "{\"op\":\"end\",\"id\":\"$id\",\"t\":$EPOCHREALTIME,\"status\":\"$st\",\"attrs\":$REPLY}"
@@ -72,14 +72,14 @@ dj_span() {
   dj_on || { REPLY=; return 0 }
   local kind=$1 name=$2 t0=$3 t1=$4 st=$5 k n p id=$SCENIC_DEVJOB_MAC-${EPOCHREALTIME/./}-$$-z$(( ++DJ_N ))
   shift 5
-  dj_q $kind; k=$REPLY; dj_q $name; n=$REPLY; dj_q ${SCENIC_DEVJOB_PARENT:-}; p=$REPLY
+  dj_q "$kind"; k=$REPLY; dj_q "$name"; n=$REPLY; dj_q "${SCENIC_DEVJOB_PARENT:-}"; p=$REPLY
   dj_attrs "$@"
   dj_emit "{\"op\":\"span\",\"id\":\"$id\",\"parent\":$p,\"kind\":$k,\"name\":$n,\"mac\":\"$SCENIC_DEVJOB_MAC\",\"t0\":$t0,\"t1\":$t1,\"status\":\"$st\",\"attrs\":$REPLY}"
   dj_sampler
   REPLY=$id
 }
 dj_attr() {
-  dj_on && [[ -n $1 ]] || return 0
+  dj_on && [[ -n ${1:-} ]] || return 0
   local id=$1; shift
   dj_attrs "$@"
   dj_emit "{\"op\":\"attr\",\"id\":\"$id\",\"attrs\":$REPLY}"
