@@ -1294,6 +1294,9 @@ struct Pool {
     asks: BTreeMap<String, Ask>,
     t0: Instant,
     now: u64,
+    /// The steps with a measure of the way they run now (a cost at their `cost_version`): a job of
+    /// another leaves its targets' measures as it ends (`learn`).
+    current: BTreeSet<String>,
 }
 
 impl Pool {
@@ -1310,7 +1313,16 @@ impl Pool {
             asks: BTreeMap::new(),
             t0,
             now: inp.now,
+            current: BTreeSet::new(),
         };
+        let v = |k: &str| crate::coord::cost_version(crate::agent::memguard::step_of_key(k));
+        pool.current = pool
+            .sched
+            .costs
+            .iter()
+            .filter(|(k, c)| c.v >= v(k))
+            .map(|(k, _)| crate::agent::memguard::step_of_key(k).to_string())
+            .collect();
         if inp.sched.is_none() {
             for it in items.iter().filter(|it| it.cost.known) {
                 pool.learn(it);
@@ -1368,22 +1380,20 @@ impl Pool {
     }
 
     /// Item `it`'s measure taken (its job ended, or it was measured before the run): its memory
-    /// and time, as a hand-off's costs, where none is kept already.
+    /// and time, as a hand-off's costs, where none of the way its step runs now is kept already
+    /// (one of an older `cost_version` is replaced, as a hand-off's is).
     fn learn(&mut self, it: &Item) {
         let k = cost_key(&it.step, &it.target);
-        if self.sched.costs.contains_key(&k) {
+        let v = crate::coord::cost_version(&it.step);
+        if self.sched.costs.get(&k).is_some_and(|c| c.v >= v) {
             return;
         }
         self.sched.costs.insert(
             k,
-            crate::coord::Cost {
-                peak_mb: it.cost.peak_mb,
-                secs: it.cost.secs.round() as u64,
-                v: crate::coord::cost_version(&it.step),
-                ..Default::default()
-            },
+            crate::coord::Cost { peak_mb: it.cost.peak_mb, secs: it.cost.secs.round() as u64, v, ..Default::default() },
         );
         self.sched.needs_rev += 1;
+        self.current.insert(it.step.clone());
     }
 
     fn clock(&self, t: f64) -> Clock {
@@ -1581,18 +1591,20 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
                 }
             }
         }
-        // (A job of a step never measured leaves its targets' measures, as a real one's hand-off
-        // does: the step's next jobs go beside others by them. Its later jobs' measures change
-        // little, and would make the measures' models again each time.)
+        // (A job of a step with no measure of the way it runs now (never measured, or only under
+        // an older `cost_version`: each target a cold start, one at a time in the pool) leaves its
+        // targets' measures, as a real one's hand-off does: the step's next jobs go beside others
+        // by them. Its later jobs' measures change little, and would make the measures' models
+        // again each time.)
         out.retain(|(end, id, its)| {
             let on = *end > t + 1e-9;
             if !on {
                 changes += 1;
                 pool.sched.end(*id);
-                for &i in its.iter() {
-                    if pool.sched.never_measured(&items[i].step) {
-                        pool.learn(&items[i]);
-                    }
+                let cold: Vec<usize> =
+                    its.iter().copied().filter(|&i| !pool.current.contains(&items[i].step)).collect();
+                for i in cold {
+                    pool.learn(&items[i]);
                 }
             }
             on
@@ -2821,6 +2833,54 @@ mod tests {
         p.push((now - 7200 + 29 * 60, 7.0));
         assert_eq!(sustained(&p, 60, now), Some(7.0), "now 31 minutes on end, the least 7");
         assert_eq!(sustained(&p[..5], 60, now), None);
+    }
+
+    /// Task #951 review: a step whose measures are all of an older `cost_version` (slope-deep after
+    /// #929 raised it) is cold target by target, one job of it at a time in the pool; its first job
+    /// leaves its measures as it ends, as a live hand-off does, and the rest go beside each other.
+    /// (Kept, the stale measures stood: the replays of 4-5 Nov ran all slope-deep on one lane.)
+    #[test]
+    fn a_step_measured_only_its_old_way_fans_out_after_its_first_job() {
+        use crate::coord::sched::{Asked, State};
+        use crate::coord::{Ask, Capacity};
+        let ts: Vec<String> = (0..8).map(|i| format!("10/{i}/0")).collect();
+        let regions = [RegionLeft { slope_deep: ts.clone(), ..region("a", &[], &[], &[]) }];
+        let c = |_: &str, _: &str| Cost { secs: 600.0, known: true, peak_mb: 1000 };
+        let v = crate::coord::cost_version("slope-deep");
+        assert!(v > 0);
+        let mut st = State::default();
+        for t in &ts {
+            st.costs.insert(
+                cost_key("slope-deep", t),
+                crate::coord::Cost { peak_mb: 1000, secs: 600, v: v - 1, ..Default::default() },
+            );
+        }
+        st.workers = vec![Asked {
+            ask: Ask {
+                worker: "m1".into(),
+                kind: "native".into(),
+                mem_mb: 16_000,
+                cores: 8,
+                want: 4,
+                cap: Some(Capacity { mem_mb: 16_000, build_mb: 16_000, cores: 8, cores_free: 8, ..Default::default() }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let lane = |k: usize| Machine { mac: Some("m1".into()), ..member(&super::super::slot_worker("m1", k)) };
+        let lead = Machine { busy_s: 1e6, ..mac("m4", 1.0) };
+        let mut inp = input(&regions, vec![lead, lane(0), lane(1), lane(2), lane(3)], &c);
+        inp.after.clear();
+        inp.sched = Some(st);
+        let sim = run(&inp, &|c| c.secs, far());
+        let mut spans: Vec<(f64, f64)> =
+            sim.items.iter().filter(|i| i.step == "slope-deep").map(|i| (i.from, i.end)).collect();
+        spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(spans.len(), 8);
+        let first_end = spans[0].1;
+        let beside = spans.iter().filter(|s| s.0 >= first_end - 1e-9 && s.0 < first_end + 1.0).count();
+        assert!(beside > 1, "after the first job, its targets go beside each other: {spans:?}");
+        assert!(sim.items.iter().all(|i| i.by.is_some()));
     }
 
     /// Task #951: each Mac's room is its sustained best from now on (`Capacity::best`): a member
