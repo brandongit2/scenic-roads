@@ -3,7 +3,6 @@ pub mod answers;
 pub mod appupdate;
 pub mod areafiles;
 pub mod bld;
-pub mod buildings;
 pub mod buildtiles;
 pub mod candidates;
 pub mod cli;
@@ -40,11 +39,9 @@ pub mod railfeeds;
 pub mod reach;
 pub mod road_terrain;
 pub mod rules;
-pub mod scache;
 pub mod slope_pack;
 pub mod stage;
 pub mod summits;
-pub mod terr;
 pub mod terrain_base;
 pub mod terrain_deep;
 pub mod terrain_lakes;
@@ -57,7 +54,6 @@ pub mod treepacks;
 pub mod trees;
 pub mod unit;
 pub mod uses;
-pub mod view;
 pub mod water;
 
 // Moved to their own crate (task #916 step 1, docs/crates.md), kept at their old paths.
@@ -81,6 +77,9 @@ pub use landmarks::{
     areadetails, filterprops, heritage_layers, heritagedetails, heritagewd, interest, items, labels, pageviews,
     whsshapes, wikiask,
 };
+
+// Moved to their own crate (task #916 step 5b, docs/crates.md), kept at their old paths.
+pub use mapview::{buildings, scache, terr, view};
 
 /// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), before
 /// any test runs, as it was while fetch was pipeline's: run by the loader as the test binary starts

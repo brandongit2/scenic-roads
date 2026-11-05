@@ -9,8 +9,8 @@
 //! street of joined houses scores near 1, a farm by the road a little, open country 0. Sheds (under
 //! 15 m²) are ignored; rail and ferries get 0.
 
-use crate::count_bar;
 use anyhow::{Context, Result};
+use codecs::count_bar;
 use det::Det;
 use rayon::prelude::*;
 use roadcore::scenic::{sflag, Sample};

@@ -13,6 +13,7 @@ codecs = { path = "../codecs" }
 jobrt = { path = "../jobrt" }
 buildstore = { path = "../buildstore" }
 landmarks = { path = "../landmarks" }
+mapview = { path = "../mapview" }
 sha2 = "0.10"
 blake3 = "1"
 serde = { version = "1", features = ["derive"] }

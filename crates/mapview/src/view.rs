@@ -9,8 +9,8 @@
 //! and roadside values are the same and no analysis-grid tile within the far field's reach (2
 //! tiles, more above ~67° where they're narrower) is new.
 
-use crate::count_bar;
 use anyhow::Result;
+use codecs::count_bar;
 use det::Det;
 use rayon::prelude::*;
 use roadcore::grid::{cell_m, cell_of, class as lc, GridIndex, Layer};
@@ -167,7 +167,7 @@ pub fn run(dir: &Path) -> Result<()> {
 pub fn flags(dir: &Path) -> Result<()> {
     let idx = GridIndex::load(dir)?;
     // Designation areas on the grid; one from before the grid changed (the network grew) is
-    // ignored until the unit's area flags are made again (crate::areaflags).
+    // ignored until the unit's area flags are made again (codecs::areaflags).
     let terrain_cells = Layer::<i16>::open(&dir.join("grid.terrain.i16"))?.data().len();
     let areas = Layer::<u8>::open(&dir.join("grid.areas.u8")).ok().filter(|a| a.data().len() == terrain_cells);
     let samples_a = Array::<Sample>::open(&dir.join("samples.bin"))?;

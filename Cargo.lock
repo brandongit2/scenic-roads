@@ -1126,6 +1126,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "mapview"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "codecs",
+ "det",
+ "rayon",
+ "roadcore",
+ "serde",
+ "serde_json",
+ "store",
+ "tempfile",
+ "zstd 0.13.3",
+]
+
+[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1349,6 +1366,7 @@ dependencies = [
  "landmarks",
  "libc",
  "libz-sys",
+ "mapview",
  "md-5",
  "names",
  "osmpbf",
