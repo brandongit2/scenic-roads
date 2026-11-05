@@ -204,7 +204,8 @@ The Jobs tab's stages are the one exception.
   kept); the Live dot, green and blinking while the
   build's state answered in the last 30 s, else Stale with the time of the last answer.
 - **Overview tab:** the alerts (full width, each linking to the tab that says more), then the
-  overview: the work left in the queue (the forecast's steps' `work_s`) and its finish (done ≈),
+  overview: the work left in the queue (the forecast's steps' `work_s`) and its finish (done ≈, a
+  best case: each Mac at its quietest sustained state over the last 48 h),
   the stages with work left as a coloured strip, each its share of the queue (each segment with
   the stage's card on hover, pinned on click or tap: its work left and finish, no counts of a
   whole), the tiles queued, in progress and not yet published (the map's, every member's), the

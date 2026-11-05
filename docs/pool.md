@@ -819,9 +819,14 @@ waits), the ask and a clock (`sched::Clock`), and returns the jobs granted (`sch
 nothing but that state: no file, network, wall clock or log. The live coordinator (`Shared::pack`)
 calls it on each real ask, then saves the leases, logs and records the grants. The forecast
 (`agent::forecast`'s `run`) calls the same `pack` in a loop over simulated time on the lead's state
-as data (`sched::State`, `Coordinator::sched_state`, written with the forecast's input): each lane
-asks on its Mac's behalf as its last ask did, jobs end at their modelled times and give their leases
-back, and a job of a step never measured leaves its measures as its hand-off would. So the schedule
+as data (`sched::State`, `Coordinator::sched_state`, written with the forecast's input): pulled as
+live (task #951), a Mac asks only when one of its lanes frees, once, for a job each of its lanes
+free then (`Ask::want`), offered the work ready in the plan's order; jobs end at their modelled
+times and give their leases back, and a job of a step never measured leaves its measures as its
+hand-off would. What a target waits for is the plan's: its declared reads (`steps::read_targets`)
+and, where an input of it can't be worked out yet, the target that works it out
+(`steps::Left::unknown_for`, `forecast::Input::unknown`: a slope tile reading the terrain's root
+waits for the root while it's stale, the root a job of the lead's in the run). So the schedule
 packs as the coordinator packs: by memory, disk, cores, the NAS budget, cold starts, the lead-only
 steps and the mixed-version hold. Guards: `tests/grant_rules.rs` fails on a grant rule named
 outside the scheduler; `fed_a_recorded_state_the_forecast_grants_what_the_coordinator_grants`
@@ -831,43 +836,31 @@ grants since the last forecast departed from that forecast's first hour (`foreca
 times and NAS weights are measured estimates, and the repack, the owner's pauses, the lead
 asleep and a NAS slower than its probe are not foreseen.
 
-**What holds work back, from the history** (task #563, `forecast::held_back`/`hold_back`): the
-run releases work by the plan's dependencies alone, and alone it finished a median 65 % early, for
-work reached the Macs slower than that (the lead's ramp and slot cap, the NAS budget, the plan
-feeding work gradually: the lead idle half the time on 18 Oct). So before each run every Mac is
-held to what the history shows of it over the last day: its lanes to the jobs it ran at once
-while it ran any (the mean, rounded; a lane running a job kept). Until code 3 each lane was also
-slowed to the share of its lanes' time the Mac kept busy (`Held::util`); code 3 dropped that, and
-each Mac takes only the steps it gave its time to (§7.9, task #808). Placement's slack (`placement::slack`, the steps' ends
-against the finish) comes from this held-back forecast. The forecast says these
-(`Forecast::held`) and the **live error** (`forecast::pace`, `Forecast::pace`): the oldest
+**Each Mac at its sustained best** (task #951): the run takes each Mac's room from now on to be
+its quietest sustained state over the last 48 hours: the highest value held continuously for 30
+minutes (the highest 30-minute rolling minimum, `forecast::sustained`; 30 minutes and 48 hours are
+the owner's choices, 4 Nov) of its memory for jobs (its memory less what the rest of the Mac used
+and its memory floor, each minute's most) and of its cores not used outside the build (its cores
+less the rest's, each minute's mean, within those the build may use), from its live store's minute
+ring (`live::Store::best`, worked out at most once a minute). Each Mac's ask carries it
+(`Capacity::best`), the lead's own too, so the forecast's input holds it; the scheduler never reads
+it, and the live coordinator packs by each ask's room now. In the run a Mac with one has that
+memory and those cores, no brake, no owner's use; one without (not 30 minutes sampled yet, an
+older app) has its room as it last asked. The NAS budget is taken as recorded: its limits the best
+of the day's probes (§7.7). No use of the owner's or passing load is foreseen: the build page says
+the finish is a best case ("each Mac at its quietest sustained state over the last 48 h"). Its
+**live error** (`forecast::pace`, `Forecast::pace`): the oldest
 forecast of the last 1–6 h (the lead keeps their runs' progress, `Forecast::curve`, a point each
 10 min) against the planned targets the history shows done since, the build page's Details tab
 (its Forecast), marked rough ("live error (rough, ±50 %): the forecast of 14:05 did the 40 targets done
-since in 1 h, not 3 h"): over the backtest it was off by about half. It is said, not applied: as a stretch it made the finish worse (the backtest: 74 % from 65 %).
+since in 1 h, not 3 h"). It is said, not applied.
 
-The backtest (`backtest_against_the_history`, run by hand on a copy of the NAS's `state/coord`
-and the leads' `agent.log`; without them it prints that it skipped and checks nothing) forecasts
-from each term's recorded state since 18 Oct, whichever Mac led (`lead_at`: the Mac whose own
-jobs come next; a Mac renamed, one), the jobs the history shows started until the plan's work
-first ran out (30 min with none of it running, within a day), each released once the run has
-done what it waits on (the plan's dependencies, those the history shows started before it), the
-lead's clocked jobs when they started, the lead's own held to the probes' limits the logs show.
-Over the 58 starts that ran out (18–21 Oct, M4- and M1-led), the finish's error, median / 80th
-percentile / mean: **"as live", held back, 35 / 64 / −26 %** (not quite live: the run still has
-the history's job set and order, and a job waiting on one under way at the start gets that
-one's real end; the live forecast's own error is likely higher); nothing held back 65 / 79 / −51 %;
-with the history's release times instead (each job ready when the history shows what it waits
-on done) 17 / 48 / −14 %; asserted: as live at most 40 % and at most two thirds of nothing held
-back. The live error said then was off by 38 % (median). The Mac-mini-led days (from 21 Oct
-23:00) have no finish yet (its work never ran out); their progress over the next 6 h (the time
-the run took to do what the history did, against 6 h): median 8 % over 11 starts (all leads: 30 %
-over 68). The forecast packs each Mac into its cores less those its last ask showed busy
+A Mac without a sustained best is packed into its cores less those its last ask showed busy
 outside the pool, as the coordinator counts them (`coord::outside_cores`, task #684), for the
-whole run: load that comes or goes later isn't foreseen. A running job counts at its lease's
+whole run. A running job counts at its lease's
 threads as re-granted now (§7.1, Threads re-granted); its later re-grants aren't foreseen either.
 The forecast models no target's time by its threads, a grant's included (a target takes its
-measured runs' time, whatever threads they had: task #951 rebuilds that), so a re-grant moves only
+measured runs' time, whatever threads they had), so a re-grant moves only
 the room it packs beside the job, as the next forecast (within the minute) sees it. The
 lead logs a departure only when a Mac's jobs of a step differ from the forecast's by 2 or more and
 by more than half, each Mac and step at most once an hour.
@@ -1406,8 +1399,7 @@ memory-heavy terrain-deep tiles) and its jobs' size (which `secs_of` sets by the
 per-target means over its jobs would feed back on itself). Per-target means did move with them: the
 M4's terrain-deep read 4.49 times the mini's over a day, 1.26 over a week, where its same targets
 took 1.39 day after day. A pair's runs keep what loaded the Mac then (its owner's builds); the
-forecast's hold on each Mac (`held_back`) and its steps of late (`took`) carry what held it back
-lately. **The window and the weight** were picked by a held-out test: the history of 8 Oct to 4 Nov
+forecast takes each Mac's room at its sustained best instead (§7.2, task #951). **The window and the weight** were picked by a held-out test: the history of 8 Oct to 4 Nov
 (19,137 jobs, 1,973 pairs), each day's pairs scored against the paces of the window before it,
 for windows of 1 to 28 days and weights of 0 to 30 pairs: the mean |log error| was 0.932 with no
 pace, 0.834 at 5 days and 10 (the best of the windows the lead's history holds, 7 days; 0.833 at
@@ -1469,16 +1461,16 @@ was sized to and how ("sized to 14.8 min by its Mac's runs", or "as before task 
 runs of <step>"), and the history's lease event keeps it (`data`: `sized_s`, `own`). A leased job's
 predicted time (`job_weight`) is the same sum. The forecast's runs size by the same code, but offer
 an ask the first 64 ready targets of a step (`forecast::OFFER_MAX`), where the live plan offers all
-of them and the coordinator grants up to 256 (`JOB_MAX`). Two gaps follow, left for the forecast's
-rebuild (task #951): a run of more than 64 targets that fit the batch length (slope-deep's empty
-ones, a second or less each past the job's start) is one job live and two or more in the forecast,
-each paying its start; and with placement on, a run starts at the target measured to take longest
-among those offered (`placed_start`), among all of the step's live and among the first 64 in the
-forecast. Not closed here because the offer's size is the forecast's CPU: each ask's `placed_start`
-works out the time of every target offered (`secs_of`), so offering 256 took the live-scale test's
-three runs about three times the CPU, past its bound. (Offering more only when a pick takes every
-target offered would still leave the start's draw to the first 64; a cheaper `placed_start` is the
-rebuild's to make.) **Measured** (`scenic forecast-check --replay`, its
+of them and the coordinator grants up to 256 (`JOB_MAX`). Two gaps follow: a run of more than 64
+targets that fit the batch length (slope-deep's empty ones, a second or less each past the job's
+start) is one job live and two or more in the forecast, each paying its start; and with placement
+on, a run starts at the target measured to take longest among those offered (`placed_start`),
+among all of the step's live and among the first 64 in the forecast. They stay because the offer's
+size is the forecast's CPU: task #951 offered 256 and the live-scale test's three runs took 463 s
+of CPU against 135 at 64 (its bound 180 s), and memoising `placed_start`'s time of each target
+(`secs_of`) didn't bring it down: the cost is the work each ask does per target offered (the
+offers made, each target's checks and placement's draws), which an incremental run would have to
+keep between asks. **Measured** (`scenic forecast-check --replay`, its
 last table, `fccheck::batches`): each job the history ended against what the scheduler of the
 forecast input recorded before its grant sizes it to (that state, each Mac's pace and jobs' start
 from the history to then), its time over that, by step and Mac; over 4-5 Nov (the inputs archived
@@ -1779,13 +1771,14 @@ took:
   the pool), so the backtest doesn't measure this; the step rule below gives it none of a step
   the others did.
 
-**What changed (code 3).** Each in the record (`Input::paused`, `Input::took`, a lane's speed) so a
+**What changed (code 3).** Each in the record (`Input::paused`, the skips, a lane's speed) so a
 member's page reruns the same:
 
 - **The build paused, nothing placed** (`Input::paused`, the lead's pause): the forecast says
   `forecast::PAUSED` and places nothing (no finish, no lanes); the replay reads the pause from
   the history's pause and resume (`forecast::paused`).
-- **Each Mac takes the steps it took** (`Input::took`, `forecast::took`): the lanes' hours each Mac
+- **Each Mac takes the steps it took** (removed in code 5, task #951: it copied outcomes, not their
+  causes, and lagged a fix by up to a day): the lanes' hours each Mac
   gave each planned step (not `CLOCKED`) over the last day, of the steps the pool's Macs did 3
   jobs of at least; the run offers a Mac none of a step it gave under a tenth of the step's time
   and under an hour (`SKIP_SHARE`, `SKIP_KEEP_H`; a step no Mac did lately, any Mac). Under a
@@ -1798,8 +1791,8 @@ member's page reruns the same:
   skipped, its train end p90 35,814 to 78,057 min (with the day, 33,136); terrain-deep's 2,614 to
   4,011 (2,539). The price: train's median 884 against 1,054, the test's depth and bldtiles less
   improved (depth median 8,838 against 11,330).
-- **Lanes cut, not slowed** (`hold_back`): `Held::util` is no longer applied (0 in code 3's
-  records; the replay takes a code 2 record's off).
+- **Lanes cut, not slowed**: the hold's share of busy time no longer applied (the hold itself
+  removed in code 5, task #951).
 
 Tried and left out: offering each Mac's steps in the order of its time on them (terrain-hi's test
 median 4,580 to 210 min, but pack's 4,228 to 10,066 and terrain-lo's 184 to 2,872: the order of
