@@ -1421,14 +1421,18 @@ read at the pace of the Mac it would run on (Batch length, below).
 **Batch length** (`Sched::batch_len`, `Sched::batch_secs`, task #927): a job of a shared step takes
 its targets in plan order (its first whatever its time) while their measured time on the Mac asking
 stays within the batch length: the pool's setting `batch-minutes` (`scenic pool set batch-minutes
-<minutes>|off`, a minute to a day, kept by the lead, docs/coordination.md step 5; not set, 15:
-`coord::JOB_S`, the owner's choice), carried in the scheduler's state so the forecast's runs size
-by it too. Before task #927 a target's own run counted twice its time on any other worker, and one
+<minutes>|off`, or the build page's Settings, the pool box, from any device (docs/workers.md §7); a
+minute to a day, kept by the lead, docs/coordination.md step 5; not set, 15: `coord::JOB_S`, the
+owner's choice), carried in the scheduler's state so the forecast's runs size by it too. (At
+slope-deep's 5 to 12 s of start a job, below, a quarter hour spends about 1 % of a job on its start;
+a longer batch saves little of that and holds more targets behind one lease when its Mac pauses,
+drains or goes away.) Before task #927 a target's own run counted twice its time on any other worker, and one
 not run its step's mean: a 30-target slope-deep batch sized at 15 minutes by the other MacBook's
 runs ran 52 on the M1 (#925), and on 4 Nov an M4 batch of 47 full targets ran 5 hours. A job's time
 is its Mac's jobs' start at the step (`Paces::with_starts`: the median, over its jobs done well in
 the paces' window, of a job's time past its targets' own runs, each its cost record run on that Mac
-the way the job ran; slope-deep's 5 to 12 s, the time a batch of empty targets is mostly made of)
+the way the job ran and the step runs now (a job of an older way, or one whose event doesn't say its
+way, counts nothing); slope-deep's 5 to 12 s, the time a batch of empty targets is mostly made of)
 plus each target's time on that Mac (`needs::Book::secs_on`) at the threads the job would be granted
 alone (`Sched::sizing_threads`, the grant rule's):
 - **its own run**: on its Mac, as it ran; another Mac's at the lead's pace by that one's and at this
@@ -1447,22 +1451,46 @@ alone (`Sched::sizing_threads`, the grant rule's):
   under 2 s took a median 0 s, one whose terrain-deep took 64-127 s a median 57 (their logs correlate
   0.92), where the step's mean, 25 s, sized 30 empty targets and 30 full ones alike at about 12 minutes;
 - **else** its step's model at this Mac's pace (above).
+Every one of these reads only runs of the way its step runs now (`coord::cost_version`): a target's
+own run, its source's, the bins, the fits, the Macs said to have runs and the jobs' starts. After
+task #929's merge raised slope-deep's, terrain-deep's and the terrain steps' versions, every one
+of their targets' last runs counts for nothing, as in the threads granted (§7.1, `crate::uses`).
+The one place an older way enters is the step's mean while the way it runs now has fewer than
+`needs::PRIOR_RUNS` runs: its latest earlier way's mean where larger (the first runs to end are the
+quick ones, above), so it can only shorten a batch, never lengthen one.
 A Mac with no runs of the step the way it runs now is sized as before task #927 (another worker's
 run counted twice, the model at its pace), and says so: the grant's log line names the time each job
 was sized to and how ("sized to 14.8 min by its Mac's runs", or "as before task #927: <Mac> has no
 runs of <step>"), and the history's lease event keeps it (`data`: `sized_s`, `own`). A leased job's
 predicted time (`job_weight`) is the same sum. The forecast's runs size by the same code, but offer
-an ask 64 targets of a step at most (`forecast::OFFER_MAX`, its CPU bound), where the coordinator
-grants up to 256 (`JOB_MAX`): a run of more than 64 empty slope-deep targets is one job live, two or
-more in the forecast (a gap, for the forecast's rebuild, task #951). **Measured** (`scenic forecast-check --replay`, its
+an ask the first 64 ready targets of a step (`forecast::OFFER_MAX`), where the live plan offers all
+of them and the coordinator grants up to 256 (`JOB_MAX`). Two gaps follow, left for the forecast's
+rebuild (task #951): a run of more than 64 targets that fit the batch length (slope-deep's empty
+ones, a second or less each past the job's start) is one job live and two or more in the forecast,
+each paying its start; and with placement on, a run starts at the target measured to take longest
+among those offered (`placed_start`), among all of the step's live and among the first 64 in the
+forecast. Not closed here because the offer's size is the forecast's CPU: each ask's `placed_start`
+works out the time of every target offered (`secs_of`), so offering 256 took the live-scale test's
+three runs about three times the CPU, past its bound. (Offering more only when a pick takes every
+target offered would still leave the start's draw to the first 64; a cheaper `placed_start` is the
+rebuild's to make.) **Measured** (`scenic forecast-check --replay`, its
 last table, `fccheck::batches`): each job the history ended against what the scheduler of the
 forecast input recorded before its grant sizes it to (that state, each Mac's pace and jobs' start
 from the history to then), its time over that, by step and Mac; over 4-5 Nov (the inputs archived
 since #933), median and 90th percentile, before task #927 and after: slope-deep on the M4 0.69 and
 4.51 to 0.64 and 1.29 (36 jobs), on the mini 0.51 and 2.07 to 1.03 and 1.53 (63), on the M1 0.97
 and 4.78 to 1.17 and 1.77 (30); slope-hi, 24 jobs nearly all of one z6 tile (whose length the
-batch doesn't set), 0.79-1.12 at the median before, 0.31-0.64 after: sized at up to three times
-what they took, so its batches now end short of the length rather than past it.
+batch doesn't set), 0.79-1.12 at the median before, 0.30-0.64 after (the review's rerun the same):
+sized at up to three times what they took. Why (task #927 review): slope-hi's runs of cost version 4
+were of two kinds its source's time doesn't tell apart. A z6 tile whose z10 tiles had no slope-deep
+deep mid made their z9-12 itself from its hi terrain (1-2 Nov on the M1: 130-1474 s, 150-7,350 s of
+CPU, its "working out the slope tiles" phase nearly all of it); one whose deep mids were there read
+them in (3-5 Nov: 9-78 s, 1-16 s of CPU, the rest waiting on the NAS and its uploads), with terrain-hi
+times and inputs alike (200-600 s, ~700 MB). The bins of long terrain-hi times held the first kind,
+so the second was sized by them; the step's mean, blending both, had happened to land near. The
+sizing measured what the runs held; their work had moved under them within one version. Task #952
+(slope-hi makes every z10 tile's z10-12 itself) raised slope-hi to version 5 in #929's merge, so
+none of those runs counts now; the replay above was run on the code before that merge.
 
 **A cold start** (no target of its step measured; task #499) is packed by its *provisional need*:
 the most its step declares (the steps table's `mem_mb`) or it was offered with, times 3/2

@@ -1859,6 +1859,28 @@ mod tests {
         assert_eq!(b.nas_for("slope-hi", "10/15/0", "mini").map(mb_s), Some(1.0), "its own run, as it ran");
     }
 
+    /// Task #927 review: a target's own run of a way older than its step's now isn't its time on
+    /// any Mac (after task #929's merge every slope-deep and terrain-deep target's last run was),
+    /// and a source's run of an older way says nothing of what a target holds; a Mac whose runs of
+    /// the step are all of an older way has none.
+    #[test]
+    fn a_targets_run_of_an_older_way_sizes_nothing() {
+        let v = cost_version("slope-deep");
+        let run = |worker: &str, secs: u64, v: u32| Cost { worker: Some(worker.into()), v, ..cost(1000, secs, &[]) };
+        let mut costs = BTreeMap::new();
+        for k in 0..PRIOR_RUNS as u32 {
+            costs.insert(format!("slope-deep 10/{k}/0"), run("m1", 20, v));
+            costs.insert(format!("terrain-deep 10/{k}/0"), run("m1", 100, cost_version("terrain-deep")));
+        }
+        costs.insert("slope-deep 10/99/0".into(), run("m1", 500, v - 1));
+        costs.insert("slope-deep 10/98/0".into(), run("m4", 500, v - 1));
+        costs.insert("terrain-deep 10/99/0".into(), run("m1", 100, cost_version("terrain-deep") - 1));
+        let b = Book::new(&costs);
+        assert_eq!(b.secs_on("slope-deep", "10/99/0", 0, Some("m1")), Some((20, true)), "the step's runs, not its own");
+        assert_eq!(b.source_secs("slope-deep", "10/99/0"), None, "its source's run of an older way");
+        assert_eq!(b.secs_on("slope-deep", "10/98/0", 0, Some("m4")), Some((20, false)), "m4 has no run of the way");
+    }
+
     /// Memory that goes with a tile's area fits; a target never run is predicted by the fit over its
     /// own area, capped at the most a run measured.
     #[test]

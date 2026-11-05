@@ -132,22 +132,26 @@ impl Paces {
     /// With each Mac's jobs' start at each step (task #927): the median, over its jobs of the step
     /// done well in the last `PACE_S` at `now` (`job`), of a job's time past its targets' times summed,
     /// each target's as its cost record `costs` says (crate::coord::Cost: its run's own time) where
-    /// that run was on the job's Mac the way the job ran (`Event::v`, where said), a job one of whose
-    /// targets' record isn't so not counted: the time a job takes besides its targets (its records
-    /// and regions read, its hand-off), which a batch of quick targets is mostly made of (slope-deep's
-    /// 5 to 12 s a job on the lead's history to 5 Nov, its empty targets a second or less each).
+    /// that run was on the job's Mac, the way the job ran (`Event::v`), and that the step runs now
+    /// (crate::coord::cost_version), a job one of whose targets' record isn't so, or that doesn't say
+    /// its way (an event before task #926), not counted: the time a job takes besides its targets
+    /// (its records and regions read, its hand-off), which a batch of quick targets is mostly made of
+    /// (slope-deep's 5 to 12 s a job on the lead's history to 5 Nov, its empty targets a second or
+    /// less each). A job of an older way says nothing of it, as its runs size nothing (crate::needs,
+    /// crate::uses): task #929 changed slope-deep's and terrain-deep's work.
     pub fn with_starts(mut self, events: &[Event], costs: &BTreeMap<String, crate::coord::Cost>, now: u64) -> Paces {
         let from = now.saturating_sub(PACE_S);
         let mut by: BTreeMap<(&str, &str), Vec<f64>> = BTreeMap::new();
         for e in events.iter().filter(|e| e.t > from && e.t <= now && job(e)) {
             let (Some(w), Some(step), Some(secs)) = (e.worker.as_deref(), e.step.as_deref(), e.secs) else { continue };
             let mac = mac_of(w);
+            let Some(v) = e.v.filter(|&v| v >= crate::coord::cost_version(step)) else { continue };
             let own: Option<u64> = e
                 .targets
                 .iter()
                 .map(|t| {
                     let c = costs.get(&crate::coord::cost_key(step, t))?;
-                    let ours = c.worker.as_deref().map(mac_of) == Some(mac) && e.v.is_none_or(|v| v == c.v);
+                    let ours = c.worker.as_deref().map(mac_of) == Some(mac) && c.v == v;
                     ours.then_some(c.secs)
                 })
                 .sum();
@@ -283,7 +287,8 @@ mod tests {
 
     /// Task #927: a Mac's jobs' start at a step is the median of its jobs' time past their
     /// targets' own runs (each its cost record, run on that Mac the way the job ran); a job one of
-    /// whose targets' record is another Mac's, or another way's, says nothing of it.
+    /// whose targets' record is another Mac's, or another way's, says nothing of it; nor does a job
+    /// of a way older than its step's now, or one not saying its way.
     #[test]
     fn a_macs_jobs_start_is_their_time_past_their_targets() {
         let c = |worker: &str, secs: u64| crate::coord::Cost {
@@ -297,6 +302,7 @@ mod tests {
             ("slope-deep 10/0/2", c("m1", 2)),
             ("slope-deep 10/0/3", c("m1", 50)),
             ("slope-deep 10/0/4", c("m4", 1)),
+            ("slope-deep 10/0/5", crate::coord::Cost { v: 0, ..c("m1", 1) }),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -311,6 +317,10 @@ mod tests {
             many(30, "m1", &["10/0/2", "10/0/3"], 62.0),
             many(40, "m1", &["10/0/1", "10/0/4"], 500.0),
             Event { v: Some(2), ..many(50, "m1", &["10/0/1"], 500.0) },
+            // (Task #927 review: a job of a way older than the step's now, its record of that way
+            // too (slope-deep's before task #929's merge), and one that doesn't say its way.)
+            Event { v: Some(0), ..many(60, "m1", &["10/0/5"], 500.0) },
+            Event { v: None, ..many(70, "m1", &["10/0/2"], 500.0) },
         ];
         let p = Paces::default().with_starts(&ev, &costs, 100);
         assert_eq!(p.start("m1 #2", "slope-deep"), 10.0, "of 10, 8 and 10");
