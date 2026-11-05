@@ -207,9 +207,15 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   it, the texture most oversampled for its footprint is halved, then the next, none below the size
   it would have without it. Until the camera has been still for the map's `refineDelay`, the
   finer tiles' clock, textures get the sizes they would without it (one grown at the last rest
-  keeps its size, not drawn smaller and then larger again), so redraws while moving cost what they
-  did; then they grow in the same frame as the finer tiles come, a tile a frame
-  (`terrain_tile_manager.test.ts`).
+  keeps its size, not drawn smaller and then larger again); then they grow in the same frame as the
+  finer tiles come, a tile a frame (`terrain_tile_manager.test.ts`). Measured 5 Nov on the M1 Pro
+  (`tools/bench/inpage.mjs`, 1440 × 900 windows at 2×, 120 Hz; views `saguenay` and `niagara`, z16
+  terrain; two interleaved rounds): the shading drawn at z14–16 instead of z12–15 (z13–16), 3–4.5×
+  the tiles; drapes 112 → 145 MB (78 → 112), the map's GPU memory at rest 523 → 665 MB (663 → 774);
+  Chrome pan 92–95 → 81–82 fps (80–94 → 72), orbit 98–102 → 82–87 fps (62–63 → 58–60), settle
+  0.3 → 0.8–1.0 s; Safari pan 28–30 → 26–27 fps (22 → 22), orbit 30–31 → 23–26 fps (29–31 → 25–26),
+  settle 0.3–0.5 → 1.9–3.1 s. (While moving, the finer tiles already in stay in the cover and are
+  drawn into the drapes at the sizes they would have without them.)
 - **Elevations looked up without a cover a point** (`Terrain.elevationForLngLatFn`, `_coverZoom`,
   `coverKey`): where no rendered tile holds a point, upstream's `getElevationForLngLat` worked out
   the camera's whole tile cover for every point; the cover's zoom is now worked out once a batch
