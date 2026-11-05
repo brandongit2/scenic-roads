@@ -1374,7 +1374,10 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   and USGS 3DEP's 1 m tiles (`usgs-3dep-1m-17`, `-18`, `-19`: one declaration a UTM zone, as a dataset
   is in one CRS; `indexes.py 3dep-1m --bbox -79.8,40.4,-66.8,47.5`), each with `regions` the ten
   eastern regions. Ranked before the 2 m and 10 m datasets (HRDEM 1 m −1, the 3DEP zones −2 to −4). Where zones overlap, their ranks decide (zone 19 before 18 before
-  17): an index's files are newest first within its zone alone, not across zones. HRDEM 1 m shares HRDEM 2 m's code and label (the same lidar, read
+  17): an index's files are newest first within its zone alone, not across zones: by survey (the
+  end of each tile's lidar collection in USGS's work-unit metadata, WESM; then the newest published,
+  task #960), not by publication alone (NY_FEMAR2_Central_2018_D19, published 2024 from a survey
+  ending April 2019, had come before NY_3County_2019_A19, surveyed after it, across Niagara). HRDEM 1 m shares HRDEM 2 m's code and label (the same lidar, read
   alike); 3DEP 1 m takes code 8. Their heights reach EGM2008 by the existing
   chains (CGVD2013 by CGG2013a, NAVD88 by GEOID18).
 - **REMA** (#601, the owner's approval of 25 Oct; staged in `producers/elevation/rema.toml`, not yet

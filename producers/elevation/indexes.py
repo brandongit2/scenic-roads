@@ -14,8 +14,14 @@ the index's CRS), which the app reads as the file's box (min x <= x < max x, min
           NAD83 / UTM, EPSG:269<zone>); its footprint the 10 km square it's named by (x<e>y<n>: e,
           its west edge, and n, its north edge, in 10 km); its zone from its name
           (USGS_1M_<zone>_…), else from its GeoTIFF's header (the older USGS_one_meter_…, USGS_1m_…:
-          their project names' zones aren't always theirs). Newest first (`publicationDate`), as
-          several projects can cover a tile and a point takes the first file with data there.
+          their project names' zones aren't always theirs). Newest survey first, as several
+          projects can cover a tile and a point takes the first file with data there: a tile's
+          survey date is the end of its lidar's collection (`collect_end`) in USGS's work-unit
+          metadata (WESM, `WESM_CSV`), by its work unit (its `vendorMetaUrl`'s last part), else
+          the latest of its project's work units (its folder under Projects/), else the year its
+          project's name gives (the 31st of December); then the newest published
+          (`publicationDate`), then by URL. (Not the publication date alone: a project published
+          later can hold an older survey, NY_FEMAR2_Central_2018_D19 after NY_3County_2019_A19.)
   glo30   Copernicus DEM GLO-30 (the worldwide dataset): every tile in the bucket's
           tileList.txt (or --tiles, a copy of it), its DEM by `url` and its fill mask (FLM, in its
           AUXFILES/) by `mask`, its footprint the 1° square it's named by (its south-west corner).
@@ -34,6 +40,8 @@ usage: indexes.py hrdem [--res 1|2] [--tiles <listing.txt>] --squares <index.geo
        indexes.py rema [--south-of <lat>] --out <file>
 """
 import argparse
+import csv
+import io
 import json
 import re
 import struct
@@ -120,6 +128,8 @@ def usgs(a):
 
 TNM_PRODUCTS = "https://tnmaccess.nationalmap.gov/api/v1/products"
 TNM_1M = "Digital Elevation Model (DEM) 1 meter"
+# USGS's work-unit extent spatial metadata (each lidar work unit's collection dates), as a table.
+WESM_CSV = USGS + "/StagedProducts/Elevation/metadata/WESM.csv"
 
 
 def get_patiently(url, rng=None, tries=7):
@@ -184,10 +194,42 @@ def tiff_projected_crs(url):
     raise SystemExit(f"{url}: no ProjectedCSType")
 
 
+def survey_dates(wesm_csv):
+    """Each WESM work unit's and project's end of collection (YYYY/MM/DD; a project's, its work
+    units' latest), by lower-case name."""
+    units, projects = {}, {}
+    for r in csv.DictReader(io.StringIO(wesm_csv)):
+        end = r["collect_end"]
+        if not re.fullmatch(r"\d{4}/\d\d/\d\d", end):
+            continue
+        units[r["workunit"].lower()] = end
+        p = r["project"].lower()
+        projects[p] = max(projects.get(p, end), end)
+    return units, projects
+
+
+def surveyed(item, units, projects):
+    """A products API item's survey date (`survey_dates`): its work unit's, else its project's, else
+    the year its project's name gives."""
+    url = item["downloadURL"]
+    unit = (item.get("vendorMetaUrl") or "").rstrip("/").rsplit("/", 1)[-1].lower()
+    project = url.split("/Projects/", 1)[-1].split("/", 1)[0]
+    if unit in units:
+        return units[unit]
+    if project.lower() in projects:
+        return projects[project.lower()]
+    years = re.findall(r"(?<![0-9])((?:19|20)[0-9]{2})(?![0-9])", project)
+    if not years:
+        raise SystemExit(f"{url}: no survey date (its work unit {unit!r} and project {project!r} aren't in WESM, nor a year in its name)")
+    return max(years) + "/12/31"
+
+
 def usgs_1m(a):
     items = {i["downloadURL"]: i for i in tnm_items(TNM_1M, [float(v) for v in a.bbox.split(",")])}
+    units, projects = survey_dates(get_patiently(WESM_CSV).decode())
+    key = {url: (surveyed(i, units, projects), i["publicationDate"], url) for url, i in items.items()}
     zones = {}
-    for url, i in sorted(items.items(), key=lambda kv: (kv[1]["publicationDate"], kv[0]), reverse=True):
+    for url, i in sorted(items.items(), key=lambda kv: key[kv[0]], reverse=True):
         name = url.rsplit("/", 1)[-1]
         m = re.search(r"_x(\d+)y(\d+)_", name)
         if not url.endswith(".tif") or not m:
