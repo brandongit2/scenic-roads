@@ -1238,7 +1238,6 @@ fn fp_acc(row: &mut [u8], bps: usize, stride: usize, tmp: &mut Vec<u8>) {
 }
 
 /// The floating-point predictor's encoding of a row of little-endian samples (`fp_acc` undoes it).
-#[cfg(any(test, feature = "testkit"))]
 fn fp_diff(row: &mut [u8], bps: usize, stride: usize, tmp: &mut Vec<u8>) {
     let wc = row.len() / bps;
     tmp.clear();
@@ -1279,7 +1278,6 @@ fn geographic_keys(epsg: u16) -> (Vec<u16>, Vec<f64>, String) {
 }
 
 /// GDAL's nodata tag text for `v`.
-#[cfg(any(test, feature = "testkit"))]
 fn nodata_text(v: f64) -> String {
     if v.is_nan() {
         "nan".into()
@@ -1308,115 +1306,209 @@ pub fn write_f32(
     epsg: u16,
     nodata: Option<f64>,
 ) -> Result<Vec<u8>> {
+    encode_f32(&[(width, height, data)], tile, gt, geographic_keys(epsg), nodata)
+}
+
+/// A Web Mercator (EPSG:3857) one-band 32-bit float GeoTIFF of `width` by `height` (`data`, row by
+/// row) on zoom `z`'s global pixel grid, its first column `c0` and row `r0` (pixels
+/// `roadcore::geo::MERC_C` / 256 / 2^z m from (−MERC_C/2, MERC_C/2)): the depth grids' standard
+/// (docs/inputs.md §6.10). Little-endian, 256-pixel tiles, Deflate with the floating-point
+/// predictor, NaN where there's none (GDAL's nodata tag "nan"), and overviews by averaging (each
+/// cell the mean of the image's cells under it that have a value), halving while the smaller side
+/// keeps 64 pixels, eight at most, each `w.div_ceil(f)` by `h.div_ceil(f)` as GDAL's.
+pub fn write_f32_mercator(z: u8, c0: i64, r0: i64, width: u32, height: u32, data: &[f32]) -> Result<Vec<u8>> {
+    let half = roadcore::geo::MERC_C / 2.0;
+    let p = roadcore::geo::MERC_C / (256.0 * f64::from(1u32 << z));
+    let gt = [-half + c0 as f64 * p, p, 0.0, half - r0 as f64 * p, 0.0, -p];
+    let mut levels: Vec<(u32, u32, Vec<f32>)> = Vec::new();
+    let mut f = 2u32;
+    while width.min(height) / f >= 64 && levels.len() < 8 {
+        let (w, h) = (width.div_ceil(f), height.div_ceil(f));
+        let mut v = vec![f32::NAN; w as usize * h as usize];
+        for (j, row) in v.chunks_mut(w as usize).enumerate() {
+            let ys = j as u32 * f..((j as u32 + 1) * f).min(height);
+            for (i, o) in row.iter_mut().enumerate() {
+                let (mut sum, mut n) = (0f64, 0u32);
+                for y in ys.clone() {
+                    for x in i as u32 * f..((i as u32 + 1) * f).min(width) {
+                        let d = data[y as usize * width as usize + x as usize];
+                        if d.is_finite() {
+                            sum += f64::from(d);
+                            n += 1;
+                        }
+                    }
+                }
+                if n > 0 {
+                    *o = (sum / f64::from(n)) as f32;
+                }
+            }
+        }
+        levels.push((w, h, v));
+        f *= 2;
+    }
+    let mut all: Vec<(u32, u32, &[f32])> = vec![(width, height, data)];
+    all.extend(levels.iter().map(|(w, h, v)| (*w, *h, &v[..])));
+    let keys =
+        vec![1u16, 1, 0, 3, key::MODEL_TYPE, 0, 1, 1, key::RASTER_TYPE, 0, 1, 1, key::PROJECTED_CS_TYPE, 0, 1, 3857];
+    encode_f32(&all, 256, gt, (keys, Vec::new(), String::new()), Some(f64::NAN))
+}
+
+/// The bytes of a float GeoTIFF of `levels` (width, height, values row by row): the first the
+/// image, the others its overviews (NewSubfileType 1), in `tile`-pixel tiles (edges filled with the
+/// nodata value, or 0), Deflate with the floating-point predictor; on the first, the north-up
+/// geotransform `gt`, the GeoKeys `keys` (the directory, its doubles, its ASCII) and GDAL's nodata
+/// tag.
+fn encode_f32(
+    levels: &[(u32, u32, &[f32])],
+    tile: u32,
+    gt: [f64; 6],
+    keys: (Vec<u16>, Vec<f64>, String),
+    nodata: Option<f64>,
+) -> Result<Vec<u8>> {
     use rayon::prelude::*;
     use std::io::Write;
-    ensure!(
-        data.len() == width as usize * height as usize && width > 0 && height > 0 && tile > 0,
-        "a {width}x{height} raster of {} values",
-        data.len()
-    );
     ensure!(gt[2] == 0.0 && gt[4] == 0.0 && gt[5] < 0.0, "a rotated or south-up geotransform");
-    let (across, down) = (width.div_ceil(tile), height.div_ceil(tile));
+    ensure!(tile > 0 && !levels.is_empty(), "no tile size or no image");
     let fill = nodata.unwrap_or(0.0) as f32;
-    let tiles: Vec<Vec<u8>> = (0..across * down)
-        .into_par_iter()
-        .map(|t| -> Result<Vec<u8>> {
-            let (tx, ty) = (t % across, t / across);
-            let ts = tile as usize;
-            let mut b = vec![0u8; ts * ts * 4];
-            let mut tmp = Vec::new();
-            for r in 0..ts {
-                let row = &mut b[r * ts * 4..(r + 1) * ts * 4];
-                let y = ty as usize * ts + r;
-                for c in 0..ts {
-                    let x = tx as usize * ts + c;
-                    let v = if x < width as usize && y < height as usize { data[y * width as usize + x] } else { fill };
-                    row[c * 4..c * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    let (gk, gd, ga) = keys;
+    // Each level's directory entries (tag, type, count, value bytes: the tile offsets filled in
+    // once every size is known) and its tiles.
+    let mut dirs: Vec<(Vec<(u16, u16, u32, Vec<u8>)>, Vec<Vec<u8>>)> = Vec::with_capacity(levels.len());
+    for (k, &(width, height, data)) in levels.iter().enumerate() {
+        ensure!(
+            data.len() == width as usize * height as usize && width > 0 && height > 0,
+            "a {width}x{height} raster of {} values",
+            data.len()
+        );
+        let (across, down) = (width.div_ceil(tile), height.div_ceil(tile));
+        let tiles: Vec<Vec<u8>> = (0..across * down)
+            .into_par_iter()
+            .map(|t| -> Result<Vec<u8>> {
+                let (tx, ty) = (t % across, t / across);
+                let ts = tile as usize;
+                let mut b = vec![0u8; ts * ts * 4];
+                let mut tmp = Vec::new();
+                for r in 0..ts {
+                    let row = &mut b[r * ts * 4..(r + 1) * ts * 4];
+                    let y = ty as usize * ts + r;
+                    for c in 0..ts {
+                        let x = tx as usize * ts + c;
+                        let v =
+                            if x < width as usize && y < height as usize { data[y * width as usize + x] } else { fill };
+                        row[c * 4..c * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                    }
+                    fp_diff(row, 4, 1, &mut tmp);
                 }
-                fp_diff(row, 4, 1, &mut tmp);
+                let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+                z.write_all(&b)?;
+                Ok(z.finish()?)
+            })
+            .collect::<Result<_>>()?;
+        let n = tiles.len();
+        let mut entries: Vec<(u16, u16, u32, Vec<u8>)> = Vec::new();
+        if k > 0 {
+            entries.push((NEW_SUBFILE_TYPE, 4, 1, 1u32.to_le_bytes().to_vec()));
+        }
+        entries.extend([
+            (IMAGE_WIDTH, 4, 1, width.to_le_bytes().to_vec()),
+            (IMAGE_LENGTH, 4, 1, height.to_le_bytes().to_vec()),
+            (BITS_PER_SAMPLE, 3, 1, 32u16.to_le_bytes().to_vec()),
+            (COMPRESSION, 3, 1, 8u16.to_le_bytes().to_vec()),
+            (262, 3, 1, 1u16.to_le_bytes().to_vec()),
+            (SAMPLES_PER_PIXEL, 3, 1, 1u16.to_le_bytes().to_vec()),
+            (PLANAR_CONFIG, 3, 1, 1u16.to_le_bytes().to_vec()),
+            (PREDICTOR, 3, 1, 3u16.to_le_bytes().to_vec()),
+            (TILE_WIDTH, 4, 1, tile.to_le_bytes().to_vec()),
+            (TILE_LENGTH, 4, 1, tile.to_le_bytes().to_vec()),
+            (TILE_OFFSETS, 4, n as u32, vec![0; 4 * n]),
+            (TILE_BYTE_COUNTS, 4, n as u32, tiles.iter().flat_map(|t| (t.len() as u32).to_le_bytes()).collect()),
+            (SAMPLE_FORMAT, 3, 1, 3u16.to_le_bytes().to_vec()),
+        ]);
+        if k == 0 {
+            entries.push((
+                MODEL_PIXEL_SCALE,
+                12,
+                3,
+                [gt[1], -gt[5], 0.0].iter().flat_map(|v| v.to_le_bytes()).collect(),
+            ));
+            entries.push((
+                MODEL_TIEPOINT,
+                12,
+                6,
+                [0.0, 0.0, 0.0, gt[0], gt[3], 0.0].iter().flat_map(|v| v.to_le_bytes()).collect(),
+            ));
+            entries.push((GEO_KEY_DIRECTORY, 3, gk.len() as u32, gk.iter().flat_map(|v| v.to_le_bytes()).collect()));
+            if !gd.is_empty() {
+                entries.push((
+                    GEO_DOUBLE_PARAMS,
+                    12,
+                    gd.len() as u32,
+                    gd.iter().flat_map(|v| v.to_le_bytes()).collect(),
+                ));
             }
-            let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
-            z.write_all(&b)?;
-            Ok(z.finish()?)
-        })
-        .collect::<Result<_>>()?;
-    let (gk, gd, ga) = geographic_keys(epsg);
-    let nd = nodata.map(|v| format!("{}\0", nodata_text(v)));
-    // Entries: (tag, type, count, value bytes).
-    let n = tiles.len();
-    let mut entries: Vec<(u16, u16, u32, Vec<u8>)> = vec![
-        (IMAGE_WIDTH, 4, 1, width.to_le_bytes().to_vec()),
-        (IMAGE_LENGTH, 4, 1, height.to_le_bytes().to_vec()),
-        (BITS_PER_SAMPLE, 3, 1, 32u16.to_le_bytes().to_vec()),
-        (COMPRESSION, 3, 1, 8u16.to_le_bytes().to_vec()),
-        (262, 3, 1, 1u16.to_le_bytes().to_vec()),
-        (SAMPLES_PER_PIXEL, 3, 1, 1u16.to_le_bytes().to_vec()),
-        (PLANAR_CONFIG, 3, 1, 1u16.to_le_bytes().to_vec()),
-        (PREDICTOR, 3, 1, 3u16.to_le_bytes().to_vec()),
-        (TILE_WIDTH, 4, 1, tile.to_le_bytes().to_vec()),
-        (TILE_LENGTH, 4, 1, tile.to_le_bytes().to_vec()),
-        (TILE_OFFSETS, 4, n as u32, vec![0; 4 * n]),
-        (TILE_BYTE_COUNTS, 4, n as u32, tiles.iter().flat_map(|t| (t.len() as u32).to_le_bytes()).collect()),
-        (SAMPLE_FORMAT, 3, 1, 3u16.to_le_bytes().to_vec()),
-        (MODEL_PIXEL_SCALE, 12, 3, [gt[1], -gt[5], 0.0].iter().flat_map(|v| v.to_le_bytes()).collect()),
-        (MODEL_TIEPOINT, 12, 6, [0.0, 0.0, 0.0, gt[0], gt[3], 0.0].iter().flat_map(|v| v.to_le_bytes()).collect()),
-        (GEO_KEY_DIRECTORY, 3, gk.len() as u32, gk.iter().flat_map(|v| v.to_le_bytes()).collect()),
-    ];
-    if !gd.is_empty() {
-        entries.push((GEO_DOUBLE_PARAMS, 12, gd.len() as u32, gd.iter().flat_map(|v| v.to_le_bytes()).collect()));
+            if !ga.is_empty() {
+                let mut a = ga.clone().into_bytes();
+                a.push(0);
+                entries.push((GEO_ASCII_PARAMS, 2, a.len() as u32, a));
+            }
+            if let Some(v) = nodata {
+                let nd = format!("{}\0", nodata_text(v));
+                entries.push((GDAL_NODATA, 2, nd.len() as u32, nd.into_bytes()));
+            }
+        }
+        dirs.push((entries, tiles));
     }
-    if !ga.is_empty() {
-        let mut a = ga.into_bytes();
-        a.push(0);
-        entries.push((GEO_ASCII_PARAMS, 2, a.len() as u32, a));
-    }
-    if let Some(nd) = nd {
-        entries.push((GDAL_NODATA, 2, nd.len() as u32, nd.into_bytes()));
-    }
-    // Header, directory, the values that don't fit their entries, then the tiles.
-    let ifd_len = 2 + 12 * entries.len() + 4;
-    let mut extra_len = 0usize;
-    for e in &entries {
-        if e.3.len() > 4 {
-            extra_len += e.3.len().next_multiple_of(2);
+    // Header, each level's directory and the values that don't fit its entries, then the tiles.
+    let dir_len = |e: &[(u16, u16, u32, Vec<u8>)]| {
+        2 + 12 * e.len() + 4 + e.iter().filter(|x| x.3.len() > 4).map(|x| x.3.len().next_multiple_of(2)).sum::<usize>()
+    };
+    let data_start = 8 + dirs.iter().map(|d| dir_len(&d.0)).sum::<usize>();
+    let total = data_start + dirs.iter().flat_map(|d| &d.1).map(Vec::len).sum::<usize>();
+    ensure!(total < u32::MAX as usize, "a GeoTIFF of {total} bytes needs BigTIFF");
+    let mut at = data_start as u32;
+    for (entries, tiles) in &mut dirs {
+        let mut offs = Vec::with_capacity(4 * tiles.len());
+        for t in tiles.iter() {
+            offs.extend_from_slice(&at.to_le_bytes());
+            at += t.len() as u32;
+        }
+        if let Some(e) = entries.iter_mut().find(|e| e.0 == TILE_OFFSETS) {
+            e.3 = offs;
         }
     }
-    let data_start = 8 + ifd_len + extra_len;
-    let total = data_start + tiles.iter().map(Vec::len).sum::<usize>();
-    ensure!(total < u32::MAX as usize, "a GeoTIFF of {total} bytes needs BigTIFF");
-    let mut offs = Vec::with_capacity(4 * n);
-    let mut at = data_start as u32;
-    for t in &tiles {
-        offs.extend_from_slice(&at.to_le_bytes());
-        at += t.len() as u32;
-    }
-    entries[10].3 = offs;
     let mut out = Vec::with_capacity(total);
     out.extend_from_slice(b"II*\0");
     out.extend_from_slice(&8u32.to_le_bytes());
-    out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-    let mut extra: Vec<u8> = Vec::with_capacity(extra_len);
-    for (tag, typ, count, v) in &entries {
-        out.extend_from_slice(&tag.to_le_bytes());
-        out.extend_from_slice(&typ.to_le_bytes());
-        out.extend_from_slice(&count.to_le_bytes());
-        if v.len() <= 4 {
-            let mut b = [0u8; 4];
-            b[..v.len()].copy_from_slice(v);
-            out.extend_from_slice(&b);
-        } else {
-            out.extend_from_slice(&((8 + ifd_len + extra.len()) as u32).to_le_bytes());
-            extra.extend_from_slice(v);
-            if extra.len() % 2 == 1 {
-                extra.push(0);
+    for (i, (entries, _)) in dirs.iter().enumerate() {
+        let start = out.len();
+        let ifd_len = 2 + 12 * entries.len() + 4;
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        let mut extra: Vec<u8> = Vec::new();
+        for (tag, typ, count, v) in entries {
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&typ.to_le_bytes());
+            out.extend_from_slice(&count.to_le_bytes());
+            if v.len() <= 4 {
+                let mut b = [0u8; 4];
+                b[..v.len()].copy_from_slice(v);
+                out.extend_from_slice(&b);
+            } else {
+                out.extend_from_slice(&((start + ifd_len + extra.len()) as u32).to_le_bytes());
+                extra.extend_from_slice(v);
+                if extra.len() % 2 == 1 {
+                    extra.push(0);
+                }
             }
         }
+        let next = if i + 1 < dirs.len() { (start + ifd_len + extra.len()) as u32 } else { 0 };
+        out.extend_from_slice(&next.to_le_bytes());
+        out.extend_from_slice(&extra);
     }
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&extra);
     debug_assert_eq!(out.len(), data_start);
-    for t in &tiles {
-        out.extend_from_slice(t);
+    for (_, tiles) in &dirs {
+        for t in tiles {
+            out.extend_from_slice(t);
+        }
     }
     Ok(out)
 }

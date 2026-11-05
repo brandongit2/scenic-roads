@@ -777,8 +777,11 @@ fn isotonic(y: &[f64], w: &[f64]) -> Vec<f64> {
 
 /// Bit 63 of a lake's key: one of its tile's own (no OSM id: `polys_of_mvt`).
 const OWN: u64 = 1 << 63;
-#[cfg(any(test, feature = "testkit"))]
-pub const OWN_FOR_TESTS: u64 = OWN;
+
+/// Whether lake key `id` is one of its tile's own (`own_key`), never another tile's.
+pub fn is_own(id: u64) -> bool {
+    id & OWN != 0
+}
 
 /// What a from ending so says: its target reads the depth's water (`WaterSource::depth_polys`,
 /// the rivers too), so its digest is of that; any other is the terrain's (`terrain_polys`).

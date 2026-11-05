@@ -1184,36 +1184,64 @@ pub mod shp {
             let len = 2 * u32::from_be_bytes(rh[4..8].try_into()?) as usize;
             self.buf.resize(len, 0);
             self.r.read_exact(&mut self.buf).context("a record cut short")?;
-            let b = &self.buf;
-            let i32le =
-                |o: usize| -> Result<i32> { Ok(i32::from_le_bytes(b.get(o..o + 4).context("cut short")?.try_into()?)) };
-            let f64le =
-                |o: usize| -> Result<f64> { Ok(f64::from_le_bytes(b.get(o..o + 8).context("cut short")?.try_into()?)) };
-            if !matches!(i32le(0)?, 5 | 15 | 25) {
-                return Ok(Some(Vec::new()));
+            polygons_of_record(&self.buf).map(Some)
+        }
+
+        /// The next record if it's a polygon whose box meets box `b` (x min, y min, x max, y max),
+        /// Some(None) for any other (its points not read), or None at the end.
+        pub fn next_polygon_meeting(&mut self, b: [f64; 4]) -> Result<Option<Option<Polygon>>> {
+            let mut rh = [0u8; 8];
+            match self.r.read_exact(&mut rh) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+                Err(e) => return Err(e.into()),
             }
-            let (nparts, npoints) = (usize::try_from(i32le(36)?)?, usize::try_from(i32le(40)?)?);
-            let parts: Vec<usize> =
-                (0..nparts).map(|k| i32le(44 + 4 * k).map(|v| v as usize)).collect::<Result<_>>()?;
-            let p0 = 44 + 4 * nparts;
-            ensure!(p0 + 16 * npoints <= len, "a polygon's points run past its record");
-            let mut rings = Vec::with_capacity(nparts);
-            for (k, &s) in parts.iter().enumerate() {
-                let e = parts.get(k + 1).copied().unwrap_or(npoints);
-                if s > e || e > npoints {
-                    bail!("a polygon's parts out of order");
-                }
-                rings.push(
-                    (s..e).map(|j| Ok([f64le(p0 + 16 * j)?, f64le(p0 + 16 * j + 8)?])).collect::<Result<Vec<_>>>()?,
-                );
+            let len = 2 * u32::from_be_bytes(rh[4..8].try_into()?) as usize;
+            self.buf.resize(len, 0);
+            self.r.read_exact(&mut self.buf).context("a record cut short")?;
+            let b2 = &self.buf;
+            let f = |o: usize| -> Option<f64> { Some(f64::from_le_bytes(b2.get(o..o + 8)?.try_into().ok()?)) };
+            let kind = b2.get(0..4).map(|k| i32::from_le_bytes(k.try_into().unwrap()));
+            let meets = matches!(kind, Some(5 | 15 | 25))
+                && matches!((f(4), f(12), f(20), f(28)), (Some(x0), Some(y0), Some(x1), Some(y1))
+                    if x0 <= b[2] && x1 >= b[0] && y0 <= b[3] && y1 >= b[1]);
+            if !meets {
+                return Ok(Some(None));
             }
-            Ok(Some(rings))
+            let rec = std::mem::take(&mut self.buf);
+            let p = polygons_of_record(&rec)?;
+            self.buf = rec;
+            Ok(Some(Some(p)))
         }
 
         /// The stream, for reading what's left (to its end, checking it).
         pub fn into_inner(self) -> R {
             self.r
         }
+    }
+
+    /// A record's content (`b`, after its header) as a polygon's rings; empty for any other shape.
+    fn polygons_of_record(b: &[u8]) -> Result<Polygon> {
+        let i32le =
+            |o: usize| -> Result<i32> { Ok(i32::from_le_bytes(b.get(o..o + 4).context("cut short")?.try_into()?)) };
+        let f64le =
+            |o: usize| -> Result<f64> { Ok(f64::from_le_bytes(b.get(o..o + 8).context("cut short")?.try_into()?)) };
+        if !matches!(i32le(0)?, 5 | 15 | 25) {
+            return Ok(Vec::new());
+        }
+        let (nparts, npoints) = (usize::try_from(i32le(36)?)?, usize::try_from(i32le(40)?)?);
+        let parts: Vec<usize> = (0..nparts).map(|k| i32le(44 + 4 * k).map(|v| v as usize)).collect::<Result<_>>()?;
+        let p0 = 44 + 4 * nparts;
+        ensure!(p0 + 16 * npoints <= b.len(), "a polygon's points run past its record");
+        let mut rings = Vec::with_capacity(nparts);
+        for (k, &s) in parts.iter().enumerate() {
+            let e = parts.get(k + 1).copied().unwrap_or(npoints);
+            if s > e || e > npoints {
+                bail!("a polygon's parts out of order");
+            }
+            rings.push((s..e).map(|j| Ok([f64le(p0 + 16 * j)?, f64le(p0 + 16 * j + 8)?])).collect::<Result<Vec<_>>>()?);
+        }
+        Ok(rings)
     }
 
     /// A whole `.shp`'s records.
