@@ -8,8 +8,8 @@
 //!   for what is left of its window (crate::budget::Given). The one source: a Mac that can't reach
 //!   the lead takes nothing (crate::budget). Not durable: a restarted lead gives
 //!   nothing in the window it first hears an ask in (its process before may have given that
-//!   window's slots), so a restart only slows; a 429's hold is forgotten with it (the next 429 holds
-//!   again).
+//!   window's slots), so a restart only slows. A 429's hold is kept in the store (`budget-hold`),
+//!   so a restarted lead keeps it.
 //! - **The answers' lease** (`POST /pool/lease/answers {op, by, token}`, crate::answers): one
 //!   holder at a time, lapsing `answers::LEASE_S` after it was last taken or renewed, by the lead's
 //!   clock; kept in the store (`answers-lease`) before the answer.
@@ -39,6 +39,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// The answers' lease's document in the store.
 pub const ANSWERS: &str = "answers-lease";
+/// A 429's hold in the store (`{until_ms}`): a restarted lead keeps it.
+pub const HOLD: &str = "budget-hold";
 /// The members' progress's documents in the store (`progress/<member id>`).
 pub const PROGRESS: &str = "progress/";
 
@@ -123,7 +125,8 @@ impl Small {
             .take_while(|(k, _)| k.starts_with(PROGRESS))
             .filter_map(|(k, v)| Some((k[PROGRESS.len()..].to_string(), serde_json::from_value(v.clone()).ok()?)))
             .collect();
-        Small { windows: Windows::default(), answers, progress }
+        let hold_until = docs.get(HOLD).and_then(|v| v["until_ms"].as_u64()).unwrap_or(0);
+        Small { windows: Windows { hold_until, ..Windows::default() }, own_by_lead: false, answers, progress }
     }
 }
 
@@ -168,7 +171,9 @@ pub fn hold(s: &mut Shared, secs: u64) -> Result<u64> {
     lead_only(s)?;
     let now = now_ms(s);
     eprintln!("coordinator: the Wikimedia budget held {secs} s (a 429 seen)");
-    Ok(s.small.windows.hold(secs, now))
+    let until = s.small.windows.hold(secs, now);
+    s.keep.put(HOLD, serde_json::json!({ "until_ms": until }));
+    Ok(until)
 }
 
 /// `POST /pool/lease/answers`: the ask done or not, and who holds it now; its change submitted to
@@ -379,6 +384,12 @@ mod tests {
         use crate::budget::Clock;
         let now = clock.now_ms();
         let until = lead.lock().unwrap().hold(25, now);
+        // (A restarted lead keeps a 429's hold: the store's.)
+        let d2 = tempfile::tempdir().unwrap();
+        let (c, _port) = crate::coord::start_for_test(&d2.path().join("lead"), "lead", "");
+        let held_to = c.budget_hold(30).unwrap();
+        let docs = c.shared.lock().unwrap().keep.store().unwrap().snapshot().docs;
+        assert_eq!(Small::of(&docs).windows.hold_until, held_to);
         let t = macs[0].take(Class::Wiki);
         assert!(clock.now_ms() >= until && t.window * 10_000 + 10_000 > until, "{t:?}");
     }
