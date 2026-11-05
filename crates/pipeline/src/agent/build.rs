@@ -4330,13 +4330,15 @@ pub fn depth_tiles(cov: &Coverage, sources: &[crate::depth::grids::Source]) -> (
 }
 
 /// The depth's targets' tiles for GC (crate::agent::gc::DepthKeep, at `now`): the z3 and z6 tiles
-/// `depth_tiles` finds, whatever their water's keys (a target waiting for its water is still one).
+/// `depth_tiles` finds, whatever their water's keys (a target waiting for its water is still one),
+/// and the z6 tile and ring of each lake-depth target not yet made once (`done`).
 /// None while the depth's sources can't be read, or none is declared, or the coverage is empty: no
 /// depth pack is dropped then.
 pub fn depth_kept(
     cov: &Coverage,
     m: &BTreeMap<String, String>,
     tiles: &TerrainTiles,
+    done: &Keys,
     now: u64,
 ) -> Option<crate::agent::gc::DepthKeep> {
     let sources = tiles.depth(m)?;
@@ -4344,7 +4346,15 @@ pub fn depth_kept(
         return None;
     }
     let (lo, hi) = depth_tiles(cov, &sources);
-    Some(crate::agent::gc::DepthKeep { at: now, lo: lo.into_iter().collect(), hi: hi.into_iter().collect() })
+    let mut hi: BTreeSet<(u32, u32)> = hi.into_iter().collect();
+    // (A lake-depth target never made yet may still give its tile and ring a depth target, as the
+    // sources it makes did by their indexes before task #959: their depth packs kept meanwhile.)
+    for t in lake_tiles(cov, &sources) {
+        if !done.lake_depth.contains_key(&format!("6/{}/{}", t.0, t.1)) {
+            hi.extend(crate::depth::lakes::ring(t));
+        }
+    }
+    Some(crate::agent::gc::DepthKeep { at: now, lo: lo.into_iter().collect(), hi })
 }
 
 /// The water the depth's targets read, as the terrain-water job works their digests out: an
@@ -11249,6 +11259,14 @@ pub(crate) mod tests {
         let held: Vec<&String> =
             w.iter().filter(|w| w.step == "lake-depth").flat_map(|w| &w.targets).map(|t| &t.0).collect();
         assert!(!held.contains(&&t6.slash()) && held.len() < pieces.len(), "{held:?}");
+        // Until its lake-depth target is first made, GC keeps the depth packs of its tile and ring
+        // (those its sources' indexes gave depth targets before), not after.
+        let kept = |done: &Keys| depth_kept(&c, &m, &tiles, done, 0).unwrap().hi;
+        let before = kept(&Keys::default());
+        assert!(crate::depth::lakes::ring((t6.x, t6.y)).iter().all(|t| before.contains(t)));
+        let mut made = Keys::default();
+        made.lake_depth = pieces.iter().map(|p| (p.clone(), "k".to_string())).collect();
+        assert!(!kept(&made).contains(&(t6.x, t6.y)), "no source gives it a depth target");
         let l = crate::depth::lakes::logical("globathy", (t6.x, t6.y));
         m.insert(l.clone(), format!("{l}.0404040404040404.tar"));
         tiles.hold_depth_in(&m, sources.clone());

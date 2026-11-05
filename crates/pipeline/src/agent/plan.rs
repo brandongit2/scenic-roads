@@ -1707,7 +1707,7 @@ impl Planner {
         drop(map);
         let mut planned = {
             let tiles = self.terrain_tiles(root, &manifest);
-            *self.depth_keep.borrow_mut() = build::depth_kept(cov, &manifest, &tiles, now_s());
+            *self.depth_keep.borrow_mut() = build::depth_kept(cov, &manifest, &tiles, &done, now_s());
             nasread::PLAN.enter("build::plan");
             build::plan(
                 &cov,

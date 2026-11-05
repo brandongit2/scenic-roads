@@ -347,7 +347,10 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
     goes on past the tile; a new basemap makes them all again, and a depth target only where a
     pack's bytes changed) and the terrain hi packs of the tile and the 8 around it, which it waits
     for. A depth target waits for the packs it reads (its tile and ring; an assembly's z6 tiles and
-    the ring its blocks' margin reaches), its key naming them by content.
+    the ring its blocks' margin reaches), its key naming them by content. Until a tile's
+    lake-depth target is first made, GC keeps the depth hi packs of it and its ring
+    (`build::depth_kept`): its packs may yet give them depth targets, as the indexes of the
+    producers it replaced did.
 - **Reading the sources:** a source's grids are packed by z6 tile (docs/inputs.md §6.10, Packs:
   a tar of whole GeoTIFFs, each read in place by its byte range), so a job opens a pack once and
   reads its grids from it, not a file a grid; a pack is kept open by the job's reader like a grid
