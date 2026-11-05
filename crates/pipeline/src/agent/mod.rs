@@ -6270,13 +6270,13 @@ impl Agent {
         // (a job of 36 targets read "99%, about 0 min left" for 24 minutes by its target's).
         let batch = live.as_ref().filter(|l| l.targets > 1).map(|l| {
             let n = l.targets as f64;
-            // (The line of a target that reached its end stays until the next says its own: it
-            // counts as ended, not twice.)
-            let on = target.as_ref().map_or(0.0, |t| t.0.done / t.0.total).clamp(0.0, 1.0);
-            let on = if on >= 1.0 { 0.0 } else { on };
-            let done = (l.targets_done.min(l.targets) as f64 + on).min(n);
-            let eta_s = (done > 0.0 && r.paused.is_none())
-                .then(|| (r.started_at.elapsed().as_secs_f64() * (n - done) / done) as u64);
+            let (done, eta_s) = batch_progress(
+                l.targets_done,
+                l.targets,
+                target.as_ref().map(|t| t.0.done / t.0.total),
+                r.started_at.elapsed().as_secs_f64(),
+            );
+            let eta_s = eta_s.filter(|_| r.paused.is_none());
             let step =
                 r.spec.record.as_ref().map_or_else(|| step_of(&r.spec.id).unwrap_or_default(), |w| w.step.clone());
             JobProgress { done, total: n, unit: format!("{}s", steps::noun(&step)), eta_s, moved_at: None }
@@ -9247,6 +9247,17 @@ fn pace_base(
     }
 }
 
+/// A batch's progress (`job_view`): its targets done, `ended` of `targets` plus the share `on` the
+/// one under way says, and its time left at its pace over the `elapsed` s since it began (None
+/// before anything is done). The line of a target that reached its end stays until the next says
+/// its own: it counts as ended, not twice.
+fn batch_progress(ended: usize, targets: usize, on: Option<f64>, elapsed: f64) -> (f64, Option<u64>) {
+    let n = targets as f64;
+    let on = on.filter(|f| f.is_finite() && *f < 1.0).map_or(0.0, |f| f.max(0.0));
+    let done = (ended.min(targets) as f64 + on).min(n);
+    (done, (done > 0.0).then(|| (elapsed * (n - done) / done) as u64))
+}
+
 /// Why a running job stops at its next safe point for a newer app installed.
 fn update_why(app: &str) -> String {
     format!("restarting into the newly installed app ({app})")
@@ -9680,6 +9691,20 @@ struct Forecasted {
 
 #[cfg(test)]
 mod tests {
+    /// Task #953: a batch's progress is its targets ended and the share of the one under way; a
+    /// target's line at its end counts once; the time left goes by the batch's pace.
+    #[test]
+    fn a_batch_says_its_own_progress() {
+        use super::batch_progress;
+        // 35 of 36 ended, the 36th at 99 %: 35.99 done, not "99 %, about 0 min left" by the target.
+        let (d, eta) = batch_progress(35, 36, Some(0.99), 3_600.0);
+        assert!((d - 35.99).abs() < 1e-9 && eta == Some(1), "{d} {eta:?}");
+        // 12 ended in 2 h, the next not said yet (its predecessor's line at 100 %): 12, 4 h left.
+        assert_eq!(batch_progress(12, 36, Some(1.0), 7_200.0), (12.0, Some(14_400)));
+        assert_eq!(batch_progress(0, 36, None, 60.0), (0.0, None), "nothing done: no pace");
+        assert_eq!(batch_progress(0, 4, Some(f64::NAN), 60.0), (0.0, None));
+        assert_eq!(batch_progress(9, 4, Some(0.5), 60.0).0, 4.0, "never past its targets");
+    }
 
     /// Task #928's review: a terrain-hi run's memory before its own run says counts the z6 tile
     /// before's uploads in flight beside the one under way: one upload at a time (their thread
