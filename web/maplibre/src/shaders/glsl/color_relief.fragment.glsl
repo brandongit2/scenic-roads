@@ -78,14 +78,32 @@ float elevationOf(vec2 coord) {
     return wsum > 0.0 ? sum / wsum : 12000.0;
 }
 
+// Scenic Roads: a shading tile's R (the sqrt-coded steepness) interpolated bilinearly, as the
+// tile is bound unfiltered when masked (for elevationOf).
+float shadeR(vec2 coord) {
+    ivec2 size = textureSize(u_image, 0);
+    vec2 p = coord * vec2(size) - 0.5;
+    ivec2 i0 = ivec2(floor(p));
+    vec2 f = p - floor(p);
+    ivec2 hi = size - 1;
+    float r00 = texelFetch(u_image, clamp(i0, ivec2(0), hi), 0).r;
+    float r10 = texelFetch(u_image, clamp(i0 + ivec2(1, 0), ivec2(0), hi), 0).r;
+    float r01 = texelFetch(u_image, clamp(i0 + ivec2(0, 1), ivec2(0), hi), 0).r;
+    float r11 = texelFetch(u_image, clamp(i0 + ivec2(1, 1), ivec2(0), hi), 0).r;
+    return mix(mix(r00, r10, f.x), mix(r01, r11, f.x), f.y);
+}
+
 void main() {
     vec4 col;
     // Scenic Roads: a shading tile (known by its encoding's base shift, 32768.5: the app's
     // basemap.ts SHADE_SHIFT; pipeline::shade_codec) holds each pixel's mean steepness in R,
-    // sqrt-coded to 400 %, which the slope tint colours.
+    // sqrt-coded to 400 %, which the slope tint colours. Masked (the app's whitewater), only where
+    // the mask covers the pixel nearly whole: a pixel partly covered is a shore, its steepness the
+    // bank's, not the water's.
     if (abs(u_unpack.w - 32768.5) < 0.01) {
-        float r = texture(u_image, v_pos).r;
+        float r = u_masked > 0.5 ? shadeR(v_pos) : texture(u_image, v_pos).r;
         col = rampAt(r * r * 400.0);
+        if (u_masked > 0.5) col *= smoothstep(0.75, 1.0, texture(u_mask, v_mask).a);
     } else if (u_masked > 0.5) {
         col = rampAt(elevationOf(v_pos)) * texture(u_mask, v_mask).a;
     } else {

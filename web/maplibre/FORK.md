@@ -102,9 +102,11 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   `"scenic:mask": "<raster source>"` in its metadata is drawn where a DEM tile meets a tile that
   source draws (over the finer of the two, finer parts first by stencil; placed in the terrain's
   textures by the DEM tile's place), its colour times that tile's alpha. Masked, `color-relief`
-  interpolates the elevation itself among the texels below 9,000 m (none: 12,000 m). Nothing is
-  drawn where the source draws nothing or its layers are hidden. One pass on the globe (no pole
-  borders). The app's depth over its water tiles.
+  interpolates the elevation itself among the texels below 9,000 m (none: 12,000 m); over a
+  shading source it interpolates the steepness bilinearly, its colour times smoothstep(0.75, 1,
+  alpha) (only where the mask covers the pixel nearly whole). Nothing is drawn where the source
+  draws nothing or its layers are hidden. One pass on the globe (no pole borders). The app's depth
+  over its water tiles, and its whitewater (the slope source over them).
 - **Trilinear mipmaps** (`draw_raster.ts`): a raster source with `"scenic:mipmap": "linear"`
   minifies between mipmap levels (the app's water).
 
