@@ -600,10 +600,6 @@ export class VerticalPerspectiveTransform implements ITransform {
         return sphereSurfacePointToCoordinates(surface);
     }
 
-    populateCache(_coords: OverscaledTileID[]): void {
-        // Do nothing
-    }
-
     getBounds(): LngLatBounds {
         const xMid = this.width * 0.5;
         const yMid = this.height * 0.5;

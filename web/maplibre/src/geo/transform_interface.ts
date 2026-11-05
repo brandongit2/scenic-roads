@@ -235,15 +235,6 @@ interface ITransformMutators {
 
     /**
      * @internal
-     * Called before rendering to allow the transform implementation
-     * to precompute data needed to render the given tiles.
-     * Used in mercator transform to precompute tile matrices (posMatrix).
-     * @param coords - Array of tile IDs that will be rendered.
-     */
-    populateCache(coords: OverscaledTileID[]): void;
-
-    /**
-     * @internal
      * Sets the transform's transition state from one projection to another.
      * @param value - The transition state value.
      */
