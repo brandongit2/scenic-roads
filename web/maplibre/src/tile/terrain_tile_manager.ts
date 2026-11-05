@@ -239,9 +239,6 @@ export class TerrainTileManager extends Evented {
             const today = lifted ? rttSizeForFootprint(want / detail, this.minRttSize, fullSize) : fullSize;
             tile.rttTargetSize = lifted ? rttSizeForFootprint(want, this.minRttSize, maxSize) :
                 Math.max(fullSize, rttSizeForFootprint(want, this.minRttSize, maxSize));
-            // (not yet still: a texture grown at the last rest keeps its size till the next, not
-            // drawn smaller between the camera stopping and refineDelay, then larger again)
-            if (this.drapeDetail > 1 && !still) tile.rttTargetSize = Math.max(tile.rttTargetSize, tile.rttObjects?.find(o => o)?.size ?? 0);
             wants.push(want);
             maxes.push(maxSize);
             todays.push(today);

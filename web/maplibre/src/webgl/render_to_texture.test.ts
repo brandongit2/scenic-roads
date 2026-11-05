@@ -504,14 +504,17 @@ describe('render to texture', () => {
         (vi.mocked(style.tileManagers['maine'].getState)).mockReturnValue({revision: 0} as any);
         const obj = {texture: {}, size: 512} as unknown as RTTObject;
         const fine = tile.tileID.children(22)[0];
-        // (drawn at the last rest with a finer tile; now the source covers the screen at its own zoom)
-        markRendered(tile, obj, new RTTFingerprint([fine], 0, 0, visibleLayerIds(), true));
+        // (drawn at the last rest with a finer tile, at four times the size; now the source covers
+        // the screen at its own zoom, the size without them wanted)
+        const big = {texture: {}, size: 2048} as unknown as RTTObject;
+        tile.rttTargetSize = 512;
+        markRendered(tile, big, new RTTFingerprint([fine], 0, 0, visibleLayerIds(), true));
         const stillIn = vi.fn(() => 120);
         const before = tileManager.map;
         tileManager.map = {_stillIn: stillIn} as any;
         try {
             rtt.prepareForRender(style, 0);
-            expect(tile.getRTT(0)).toBe(obj);
+            expect(tile.getRTT(0)).toBe(big);
             expect(rtt.needsFollowUpFrame).toBe(false);
             // (one drawn with the screen's own tiles is drawn again as before)
             markRendered(tile, obj, new RTTFingerprint([fine], 0, 0, visibleLayerIds()));
@@ -523,6 +526,7 @@ describe('render to texture', () => {
             expect(tile.getRTT(0)).toBeUndefined();
         } finally {
             tileManager.map = before;
+            delete tile.rttTargetSize;
         }
     });
 

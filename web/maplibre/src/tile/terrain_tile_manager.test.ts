@@ -147,10 +147,6 @@ describe('TerrainTileManager', () => {
             manager.tileManager.map._stillIn = () => 100;
             manager.update(transform, null);
             expect(sizes()).toEqual(Array(n).fill(manager.tileSize));
-            // (but a texture grown at the last rest keeps its size till the next)
-            manager.getRenderableTiles()[0].rttObjects = [{size: 2048} as any];
-            manager.update(transform, null);
-            expect(sizes()).toEqual([2048, ...Array(n - 1).fill(manager.tileSize)]);
         });
 
         test('with pacedDrapes, a tile leaving the cover with its textures is kept as a stand-in, and taken back with them if the cover returns (Scenic Roads)', () => {

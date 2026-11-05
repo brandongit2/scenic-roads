@@ -293,15 +293,18 @@ export class RenderToTexture {
         // Scenic Roads: a texture coarser than the tile's footprint wants, or more than twice as fine
         // (TerrainTileManager.footprintSizing), is drawn again as a zoom change's is: kept while
         // moving, then one tile a frame (the factor of two keeps a size from flickering).
+        // (Scenic Roads: till the camera is still, a texture drawn with a source's finer tiles is kept
+        // whatever its size and source tiles, TerrainTileManager giving only the size without them:
+        // one drawn meanwhile holds none of them)
+        const kept = unsettled && Object.values(tile.rttFingerprint).some(f => f?.finer);
         const held = tile.rttObjects.find(o => o);
         const want = tile.rttTargetSize ?? this.rttSize;
-        if (held && (held.size < want || held.size > 2 * want)) worst = 'zoom';
+        if (held && (held.size < want || (held.size > 2 * want && !kept))) worst = 'zoom';
         for (const source in this._rttFingerprints) {
             const frameFingerprint = this._rttFingerprints[source][tile.tileID.key];
             if (!frameFingerprint) continue;
-            const held = tile.rttFingerprint[source];
-            const difference = frameFingerprint.difference(held);
-            if (difference === 'sourceTiles' && unsettled && held.finer) continue;
+            const difference = frameFingerprint.difference(tile.rttFingerprint[source]);
+            if (difference === 'sourceTiles' && kept) continue;
             if (RTT_DIFFERENCES.indexOf(difference) > RTT_DIFFERENCES.indexOf(worst)) worst = difference;
         }
         return worst;
