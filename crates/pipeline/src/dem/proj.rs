@@ -37,7 +37,7 @@ impl Ellipsoid {
         Ellipsoid { a, f, es, e, e2s: e2 * e2, ra: 1.0 / a }
     }
 
-    pub const WGS84: (f64, f64) = (6378137.0, 298.257223563);
+    pub const WGS84: (f64, f64) = (roadcore::geo::WGS84_A, roadcore::geo::WGS84_RF);
     pub const GRS80: (f64, f64) = (6378137.0, 298.257222101);
 
     /// Geodetic (radians, height 0) to geocentric.

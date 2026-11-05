@@ -9,9 +9,8 @@
 //!   a horizontal edge on a row of centres, walked right to left, burns along it, unless a span of
 //!   that row starts where it does (GDAL's guard against adding twice).
 //! - **Arithmetic:** GDAL's, as built for the Mac's Python (as crate::areaflags): rasterio's
-//!   `from_bounds` transform inverted (GDALInvGeoTransform) and applied with fused multiply-adds.
-//!   Mercator's tangent and logarithm are det's where Python's are Apple's (a few ulp apart): a
-//!   pixel could differ only where an edge passes within about 1e-9 pixels of its centre.
+//!   `from_bounds` transform inverted (GDALInvGeoTransform) and applied with fused multiply-adds,
+//!   on roadcore::geo's Mercator metres (`epsg3857`).
 
 use super::BS;
 use anyhow::{ensure, Context, Result};

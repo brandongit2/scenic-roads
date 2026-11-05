@@ -155,8 +155,8 @@ const KEEP_COMMON: &[&str] = &[
     "name:ja_rm",
 ];
 
-/// A line's length, planar (111.32 km per degree of longitude at the segment's mean latitude,
-/// 110.57 of latitude), in metres rounded half-even.
+/// A line's length, planar (roadcore::geo::KM_PER_DEG a degree of latitude, and of longitude times
+/// the cosine of the segment's mean latitude), in metres rounded half-even.
 fn line_m(nodes: &[[i32; 2]]) -> u32 {
     let mut km = 0f64;
     for w in nodes.windows(2) {

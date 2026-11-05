@@ -395,7 +395,7 @@ impl Heritage {
 
     /// The entries more than `FAR_KM` outside `shapes`.
     fn far<'a>(shapes: &Shapes, entries: &'a [Entry]) -> Vec<&'a Entry> {
-        let pad = FAR_KM / 110.0;
+        let pad = FAR_KM / roadcore::geo::KM_PER_DEG;
         entries
             .iter()
             .filter(|e| {

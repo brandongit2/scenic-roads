@@ -527,7 +527,7 @@ pub fn timetables_todo_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 }
 
 /// The lakefill step's version (crate::lakefill::run): bumped with any change to what it makes.
-/// (3, task #862: inside a lake even-odd, roadcore::geo::inside; its Mercator and Earth.)
+/// (3, task #862: roadcore::geo's Mercator and Earth, `det`'s maths.)
 pub const LAKEFILL_V: u32 = 3;
 
 /// The lakes filled from Canada's own data (crate::lakefill), once per pass (or step version, or
@@ -955,8 +955,9 @@ pub fn peaks_keys(x: &KeyCtx) -> Vec<(TileId, String)> {
 
 /// The candidates' version (crate::candidates, extract `--candidates`): bumping it makes every
 /// z6 tile's candidates again, not the z6 tiles. 2: the trailhead searches reach as far east and west
-/// at every latitude; a covered bridge's length only for a line.
-pub const POIS_V: u32 = 2;
+/// at every latitude; a covered bridge's length only for a line. 3: that length on roadcore::geo's
+/// Earth, task #862.
+pub const POIS_V: u32 = 3;
 
 /// The facts and pageviews of the candidates' items, per pass (crate::items, crate::pageviews).
 pub const ITEMS_V: u32 = 1;
