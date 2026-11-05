@@ -7192,7 +7192,10 @@ impl Agent {
         let Some(t) = told.map(|t| t.min(room).max(1)).filter(|&t| t != r.threads) else { return };
         match std::fs::write(&f, t.to_string()) {
             Ok(()) => {
-                eprintln!("agent: {} re-granted {t} threads (was {}): taken as its next target begins", r.spec.id, r.threads);
+                eprintln!(
+                    "agent: {} re-granted {t} threads (was {}): taken as its next target begins",
+                    r.spec.id, r.threads
+                );
                 r.threads = t;
             }
             Err(e) => eprintln!("agent: telling {} its threads: {e}", r.spec.id),

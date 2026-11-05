@@ -741,9 +741,15 @@ impl Sched {
                 let cores = used.or_else(|| book_cores(&self.book(), step, targets));
                 Need { m, cores, cold: false, waits: false, idle: false, by_use, held: 0 }
             }
-            None => {
-                Need { m: self.provisional(step, targets), cores: used, cold: true, waits: false, idle: false, by_use, held: 0 }
-            }
+            None => Need {
+                m: self.provisional(step, targets),
+                cores: used,
+                cold: true,
+                waits: false,
+                idle: false,
+                by_use,
+                held: 0,
+            },
         }
     }
 
@@ -1192,7 +1198,17 @@ impl Sched {
             .filter_map(|l| {
                 let (st, _, n) = need_of(l)?;
                 let (t, b) = self.need_cores(&st, &n, total);
-                Some((l.id, if n.idle { 0 } else if l.threads > 0 { l.threads } else { t }, b))
+                Some((
+                    l.id,
+                    if n.idle {
+                        0
+                    } else if l.threads > 0 {
+                        l.threads
+                    } else {
+                        t
+                    },
+                    b,
+                ))
             })
             .collect();
         let outside = outside_cores(a, tenths_to_cores(counted.iter().map(|c| c.2).sum()));

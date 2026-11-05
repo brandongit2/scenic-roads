@@ -5430,33 +5430,33 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
             pipeline::agent::jobs::part(k, &names);
             // (On its job's grant as it begins: pipeline::control::on_grant.)
             pipeline::control::on_grant(|| -> Result<()> {
-            let c = cost_start(STEP, &t.slash());
-            let fetched = pipeline::fetch::fetched_bytes();
-            // (Paused mid-sampling: nothing of it put, its base tiles made kept in its resume log.)
-            let r = td::build_target(out, (t.x, t.y), &bases, Some(&water), &fine, fetch)
-                .map_err(|e| pipeline::control::stop_if_paused(STEP, e))?;
-            out.save()?;
-            eprintln!(
-                "{STEP} {}: {} of {} base tiles with finer data, {} tiles, {} MB; {} dropped; {} MB fetched",
-                t.slash(),
-                r.with_data,
-                r.base_tiles,
-                r.tiles,
-                r.bytes >> 20,
-                r.dropped,
-                (pipeline::fetch::fetched_bytes() - fetched) >> 20
-            );
-            // (Recorded done all the same: the build page shows it built, nothing to publish, #839.)
-            if r.packs == 0 {
+                let c = cost_start(STEP, &t.slash());
+                let fetched = pipeline::fetch::fetched_bytes();
+                // (Paused mid-sampling: nothing of it put, its base tiles made kept in its resume log.)
+                let r = td::build_target(out, (t.x, t.y), &bases, Some(&water), &fine, fetch)
+                    .map_err(|e| pipeline::control::stop_if_paused(STEP, e))?;
+                out.save()?;
                 eprintln!(
-                    "{STEP} {}: nothing stored, no pack: {}",
+                    "{STEP} {}: {} of {} base tiles with finer data, {} tiles, {} MB; {} dropped; {} MB fetched",
                     t.slash(),
-                    if r.with_data == 0 { "no fine data in any of its base tiles" } else { "no deep tile made" }
+                    r.with_data,
+                    r.base_tiles,
+                    r.tiles,
+                    r.bytes >> 20,
+                    r.dropped,
+                    (pipeline::fetch::fetched_bytes() - fetched) >> 20
                 );
-            }
-            pipeline::control::done(STEP, &t.slash());
-            note_cost(STEP, &t.slash(), c);
-            Ok(())
+                // (Recorded done all the same: the build page shows it built, nothing to publish, #839.)
+                if r.packs == 0 {
+                    eprintln!(
+                        "{STEP} {}: nothing stored, no pack: {}",
+                        t.slash(),
+                        if r.with_data == 0 { "no fine data in any of its base tiles" } else { "no deep tile made" }
+                    );
+                }
+                pipeline::control::done(STEP, &t.slash());
+                note_cost(STEP, &t.slash(), c);
+                Ok(())
             })?;
         }
         Ok(())

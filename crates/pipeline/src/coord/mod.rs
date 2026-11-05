@@ -9127,8 +9127,14 @@ mod tests {
         for t in ["6/1/1", "6/1/2"] {
             let sizes =
                 [("threads".to_string(), 13), ("cpu_ms".to_string(), 7_440_000), ("waited_ms".to_string(), 0)].into();
-            let cost =
-                Cost { peak_mb: 2000, secs: 600, worker: None, v: cost_version("slope-hi"), sizes, ..Default::default() };
+            let cost = Cost {
+                peak_mb: 2000,
+                secs: 600,
+                worker: None,
+                v: cost_version("slope-hi"),
+                sizes,
+                ..Default::default()
+            };
             c.add_costs_by(&[(cost_key("slope-hi", t), cost)], "m1");
         }
     }
@@ -9208,7 +9214,11 @@ mod tests {
         assert_eq!(g.threads, 8);
         let l = g.lease;
         assert!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 1.0, 120))))).is_empty(), "nothing wants its cores");
-        c.shared.lock().unwrap().refused.insert("m1".into(), (unix_now(), "cores: 0.0 of 8 left, a job of slope-hi takes 8.0".into()));
+        c.shared
+            .lock()
+            .unwrap()
+            .refused
+            .insert("m1".into(), (unix_now(), "cores: 0.0 of 8 left, a job of slope-hi takes 8.0".into()));
         assert_eq!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 1.0, 120))))), [(l, 1)]);
         assert_eq!(counted(&c, l), 8, "until a target runs on 1");
         // (Its use busier meanwhile: not decided again within the minute.)
@@ -9251,7 +9261,12 @@ mod tests {
             #[serde(default)]
             held: std::collections::BTreeSet<u64>,
         }
-        let new = held::Beat { member: "m1".into(), held: [l].into(), cap: Some(m1_cap(8, false, Some((l, 8, 1.0, 60)))), ..Default::default() };
+        let new = held::Beat {
+            member: "m1".into(),
+            held: [l].into(),
+            cap: Some(m1_cap(8, false, Some((l, 8, 1.0, 60)))),
+            ..Default::default()
+        };
         let read: OldBeat = serde_json::from_value(serde_json::to_value(&new).unwrap()).unwrap();
         assert_eq!((read.member.as_str(), read.held.len()), ("m1", 1));
     }

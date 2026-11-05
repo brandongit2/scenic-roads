@@ -854,12 +854,19 @@ mod tests {
         if std::env::var_os(ALONE).is_none() {
             let out = store::spawn::output(
                 store::spawn::command(std::env::current_exe().unwrap())
-                    .args(["--exact", "control::tests::a_target_runs_on_its_grant_as_it_began_and_a_regrant_takes_the_next"])
+                    .args([
+                        "--exact",
+                        "control::tests::a_target_runs_on_its_grant_as_it_began_and_a_regrant_takes_the_next",
+                    ])
                     .env(ALONE, "1"),
             )
             .unwrap();
             let said = String::from_utf8_lossy(&out.stdout);
-            assert!(out.status.success() && said.contains(" 1 passed"), "{said}{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             return;
         }
         use rayon::prelude::*;
