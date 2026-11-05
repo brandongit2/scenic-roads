@@ -213,7 +213,7 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   it would have without it (`_drapeDetails`, worked out again only when the drapes' cover,
   `_coverVersion`, or the finer tiles change; a frame looks each drape up). A drape whose size or
   source tiles change while the camera moves is drawn again at the drapes' pace (below: a new size
-  waits for rest, other source tiles are drawn a few textures a frame), so finer tiles arriving
+  waits for rest, other source tiles are drawn one texture a frame), so finer tiles arriving
   during a gesture don't draw many textures in one frame (`terrain_tile_manager.test.ts`).
   Frame times and GPU memory with the finer tiles kept in gestures are not measured yet.
 - **Elevations looked up without a cover a point** (`Terrain.elevationForLngLatFn`, `_coverZoom`,
@@ -269,7 +269,7 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   drapes and the app's layers again), a copy each time.
 - **Tile matrices when a draw asks** (`getVisibleCoordinates`; upstream's `populateCache`, gone):
   a tile's matrix is worked out by the transform when a draw needs it, not for every tile in view
-  each frame. A source drawn only into the drapes (the shading's 300-odd tiles) draws with the
+  each frame. A source drawn only into the drapes (the shading's 700-900 tiles at saguenay) draws with the
   drapes' matrices, and only when a drape is drawn again.
 - **Drape coordinates kept** (`TerrainTileManager.getTerrainCoords`, `_coordsCache`,
   `_coverVersion`; `RenderToTexture._sourceTiles`): the drapes over a source tile are looked up by

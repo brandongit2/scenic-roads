@@ -1163,7 +1163,7 @@ export class TileManager extends Evented<SourceEventType> {
         if (held) return held.slice();
         // (Scenic Roads: the tiles' matrices worked out when a draw asks for one, not for every tile
         // in view each frame: a source drawn only into the terrain's textures, e.g. the shading's
-        // 300-odd tiles, draws with the drapes' matrices, and only a drape drawn again asks.)
+        // 700-900 tiles at saguenay, draws with the drapes' matrices, and only a drape drawn again asks.)
         const coords = this.getRenderableIds(symbolLayer).map((id) => this._inViewTiles.getTileById(id).tileID);
         if (memo) memo[kind] = coords.slice();
         return coords;
