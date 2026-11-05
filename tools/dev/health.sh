@@ -26,7 +26,7 @@ df -h / | awk 'NR==2{print "disk: "$4" free of "$2}'
 print "NAS: $([[ -d /Volumes/personal/projects/scenic-roads/catalog ]] && echo mounted || echo NOT MOUNTED)"
 from="6 h ago"; [[ -n $since ]] && from=$(date -r $since '+%F %T')
 print "the build (scenic status --flags, failures since $from):"
-if out=$(scenic status --flags ${since:+--since $since} 2>&1); then
+if out=$(scenic status --flags ${since:+--since} ${since:+$since} 2>&1); then
   print -r -- "${out:-  nothing flagged}" | sed 's/^\([^ ]\)/  \1/'
 else
   print -r -- "  STATUS UNREADABLE: $out"
