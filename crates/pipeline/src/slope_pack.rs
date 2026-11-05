@@ -1751,6 +1751,90 @@ mod tests {
         assert_eq!(made(&ts, true), alone);
     }
 
+    /// Task #929 review: a slope-deep batch re-granted as it goes (its job's threads file rewritten
+    /// mid-target, as the agent's tend_grant does: 2, then 5, then 1) runs each target on the grant
+    /// as that target began (crate::control::on_grant, scenic-build's slope_deep_batch), while the
+    /// copying ahead of the next target's pack and the target before's uploads (put off, landed by
+    /// the next target's save as `Landing` does) go on across the change of pool; every target lands,
+    /// the same bytes as each made alone. (In a process of its own: the threads file's variable and
+    /// the target under way are the process's.)
+    #[test]
+    fn a_deep_batch_regranted_as_it_goes_lands_each_target_the_same() {
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        const NAME: &str = "slope_pack::tests::a_deep_batch_regranted_as_it_goes_lands_each_target_the_same";
+        if std::env::var_os(ALONE).is_none() {
+            let out = store::spawn::output(
+                store::spawn::command(std::env::current_exe().unwrap()).args(["--exact", NAME]).env(ALONE, "1"),
+            )
+            .unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let deep = |out: Out| -> Vec<(String, String)> {
+            out.manifest
+                .into_iter()
+                .filter(|(l, _)| l.starts_with(DEEP_PREFIX) || l.starts_with(DEEP_MID_PREFIX))
+                .collect()
+        };
+        let fresh = |d: &std::path::Path| {
+            let mut out =
+                Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.join("root")), &d.join("scratch")).unwrap();
+            terrain(&mut out, true);
+            out
+        };
+        let ts = [(449, 256), (448, 256), (448, 257)];
+        let alone = {
+            let d = tempfile::tempdir().unwrap();
+            let mut out = fresh(d.path());
+            for &t in &ts {
+                build_deep(&mut out, t, &|_, _, _| {}).unwrap();
+            }
+            deep(out)
+        };
+        assert_eq!(alone.len(), 4, "a deep pack and three deep mids: {alone:?}");
+        let d = tempfile::tempdir().unwrap();
+        let mut out = fresh(d.path());
+        let f = d.path().join("threads");
+        let grants = [2, 5, 1];
+        crate::control::grant(&f, grants[0]).unwrap();
+        std::env::set_var(crate::control::THREADS_ENV, &f);
+        let mut batch = DeepBatch::new(&out, &ts);
+        // (The mark after the target uploading's uploads, and the targets landed: saved and named.)
+        let mut up: Option<(crate::out::Mark, (u32, u32))> = None;
+        let mut landed = Vec::new();
+        for (k, &t) in ts.iter().enumerate() {
+            let ran = crate::control::on_grant(|| {
+                let ran = rayon::current_num_threads();
+                // (Re-granted while it's made: the next target takes it.)
+                crate::control::grant(&f, grants.get(k + 1).copied().unwrap_or(1)).unwrap();
+                batch.build(&mut out, t, &|_, _, _| {}).unwrap();
+                assert_eq!(rayon::current_num_threads(), ran, "a target stays on its grant to its end");
+                // (The one before landed, as `Landing::then` lands it: its uploads went on beside.)
+                if let Some((m, u)) = up.take() {
+                    out.save_upto(m).unwrap();
+                    landed.push(u);
+                }
+                up = Some((out.mark(), t));
+                ran
+            });
+            assert_eq!(ran, grants[k], "target {k} on the grant as it began");
+            assert_eq!(crate::control::in_force(), None, "between targets");
+        }
+        let (m, u) = up.take().unwrap();
+        out.save_upto(m).unwrap();
+        landed.push(u);
+        drop(batch);
+        std::env::remove_var(crate::control::THREADS_ENV);
+        assert_eq!(landed, ts, "every target landed, in turn");
+        assert_eq!(std::fs::read_dir(out.scratch_file("terrain-copies")).map_or(0, |d| d.count()), 0, "copies let go");
+        assert_eq!(deep(out), alone);
+    }
+
     /// A pyramid's tiles don't depend on its threads' order: made again and again, the same bytes,
     /// and each parent the mean of its children as made, coded once.
     #[test]
