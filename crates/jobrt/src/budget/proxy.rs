@@ -1281,6 +1281,49 @@ mod tests {
         (ti.pti_threadnum, ti.pti_resident_size)
     }
 
+    /// This process's threads whose names begin with `prefix` (the proxies' own: other tests,
+    /// running beside, start and end threads of their own at any time, so the process's count
+    /// says nothing of the proxy's).
+    fn named_threads(prefix: &str) -> usize {
+        extern "C" {
+            static mach_task_self_: libc::mach_port_t;
+            fn mach_port_deallocate(task: libc::mach_port_t, name: libc::mach_port_t) -> libc::kern_return_t;
+        }
+        // SAFETY: the task's own port, set by the system before main.
+        let task = || unsafe { mach_task_self_ };
+        let mut list: libc::thread_act_array_t = std::ptr::null_mut();
+        let mut n: libc::mach_msg_type_number_t = 0;
+        // SAFETY: task_threads fills the list and its length for this task; each port and the list
+        // are given back below.
+        let kr = unsafe { libc::task_threads(task(), &mut list, &mut n) };
+        assert_eq!(kr, 0, "task_threads: {kr}");
+        let mut named = 0;
+        for i in 0..n as usize {
+            // SAFETY: `list` holds `n` thread ports.
+            let port = unsafe { *list.add(i) };
+            let mut name = [0 as libc::c_char; 64];
+            // SAFETY: a thread port of this task; a buffer of its length.
+            let ok = unsafe {
+                libc::pthread_getname_np(libc::pthread_from_mach_thread_np(port), name.as_mut_ptr(), name.len())
+            } == 0;
+            // SAFETY: a NUL-terminated name written by pthread_getname_np.
+            if ok && unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_string_lossy().starts_with(prefix) {
+                named += 1;
+            }
+            // SAFETY: the port task_threads gave this task.
+            unsafe { mach_port_deallocate(task(), port) };
+        }
+        // SAFETY: the list task_threads allocated, of `n` ports.
+        unsafe {
+            libc::vm_deallocate(
+                task(),
+                list as libc::vm_address_t,
+                (n as usize * std::mem::size_of::<libc::thread_act_t>()) as libc::vm_size_t,
+            )
+        };
+        named
+    }
+
     /// A host here that echoes each connection until its client ends it, on one thread of its
     /// own (an event loop, its connections taken on another), so the threads counted are the proxy's.
     fn upstream_one_thread() -> SocketAddr {
@@ -1350,8 +1393,13 @@ mod tests {
             assert_eq!(got, want.as_bytes());
         }
         let (t1, m1) = threads_and_rss();
-        eprintln!("#908: {n} tunnels open: threads {t0} -> {t1}, resident {} -> {} MB", m0 >> 20, m1 >> 20);
-        assert!(t1 - t0 <= 40, "{n} tunnels took {} threads", t1 - t0);
+        let io = named_threads("budgets-io");
+        eprintln!(
+            "#908: {n} tunnels open: the proxies' event loop's threads {io}, the process's {t0} -> {t1}, resident {} -> {} MB",
+            m0 >> 20,
+            m1 >> 20
+        );
+        assert!(io <= IO_THREADS + BLOCKING_THREADS, "{n} tunnels took {io} threads of the proxies' event loop");
         for s in &open {
             s.shutdown(Shutdown::Write).unwrap();
         }
