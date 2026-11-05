@@ -227,7 +227,13 @@ child processes, their leases (`keep_own`), cancels, the ramp, and the memory an
 It wakes on a child's exit (a reaper thread sends `JobEvent`), a `ControlMsg`, a `Grant`, a
 `Conditions` change (power, NAS) and a 2-s timer for the guards. A drain is sent to a job's channel
 the moment the hold arrives (as `asks` does today), and the job's stop and give-back follow as
-today's `tend`.
+today's `tend`. Every writer of a job's channel (**control**'s hold, the loop's drains, its "run"
+at a start, a take-over and a drain's end) tells it through `control::tell`, and every reader (the
+job's `control::draining`, the loop's `told_drain`) reads it through `control::said` or the job's
+listener, so its framing is one helper's (task #957): a say a line, newline-ended (`control::Say`);
+the agent's channel a file replaced whole with its latest say, so a job reads one say whole, never
+part of one; a fifo a test holds a job with is read in order, a say a safe point, several brought by
+one read each heard, one split across reads waited out.
 
 **Failure:** a job's own failures are unchanged (backoff, retries). A give-back whose hand-off
 needs the NAS is queued in **nas** (the outbox, `held_entries`) and retried; the slot is free for

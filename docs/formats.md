@@ -1003,8 +1003,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     `spec.json`, `task.json` (`scenic run-task`'s result), `result.json` (`{ok, done: [step,
     [[target, key], …]] | null, failed, interrupted, task, error}`), until the coordinator has them.
   - **Pausing** (`pipeline::control`), in each agent's folder: `pause-request.json` (`{pause, at}`,
-    from the menu or `scenic pause`), `pause.json`, `control` (`run` or `drain`,
-    `SCENIC_CONTROL`), `done.txt` (`<step> <target>` lines, `SCENIC_DONE`). A job stopped at a safe
+    from the menu or `scenic pause`), `pause.json`, `control` (`run` or `drain`, a
+    line, the file replaced whole; one an app before task #957 wrote unended is read the same;
+    `SCENIC_CONTROL`, `control::Say`), `done.txt` (`<step> <target>` lines, `SCENIC_DONE`). A job stopped at a safe
     point exits 75. Coordinator answers carry the pause (409 `{error, pause}`, beats `{ok, pause}`);
     `POST /work/pause {pause, at}`; `/work/fail {…, interrupted}` returns a lease unheld.
     `state/build/pause.json` mirrors the lead's.

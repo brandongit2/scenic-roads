@@ -750,7 +750,7 @@ mod tests {
         // done, and ends there, starting no other.
         let d = tempfile::tempdir().unwrap();
         let (control, done, on) = (d.path().join("control"), d.path().join("done.txt"), d.path().join("on"));
-        std::fs::write(&control, b"run").unwrap();
+        crate::control::tell(&control, crate::control::Say::Run).unwrap();
         let script = r#"for t in 6/1/1 6/1/2 6/1/3 6/1/4 6/1/5 6/1/6 6/1/7 6/1/8; do
             if grep -q drain "$SCENIC_CONTROL"; then exit 75; fi
             echo "$t" > "$ON"
@@ -777,7 +777,7 @@ mod tests {
         wait_for(&mut r, "on its third target", |_| {
             std::fs::read_to_string(&on).is_ok_and(|s| s.trim() == "6/1/3").then_some(())
         });
-        std::fs::write(&control, b"drain").unwrap();
+        crate::control::tell(&control, crate::control::Say::Drain).unwrap();
         let st = wait_for(&mut r, "stopped at its next safe point", |r| r.poll().unwrap());
         assert_eq!(st.code(), Some(crate::control::PAUSED_EXIT));
         assert_eq!(crate::control::read_done(&done, "unit"), ["6/1/1", "6/1/2", "6/1/3"]);

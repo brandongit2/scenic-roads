@@ -6442,11 +6442,12 @@ mod tests {
         };
         let log =
             |name: &str, ts: &str| std::fs::read_to_string(d.path().join(format!("{name}-{}.log", ts.len()))).unwrap();
-        // (The child at its next safe point, reading the control channel: told `a`.)
-        let answer = |child: &mut std::process::Child, a: &str| {
-            store::testkit::wait_for("the batch at its safe point", || {
+        // (Told `a` once the child listens on its channel: from its first safe point on, which keeps
+        // it open, each say heard in order, one a safe point, crate::control::Say.)
+        let answer = |child: &mut std::process::Child, a: pipeline::control::Say| {
+            store::testkit::wait_for("the batch listening", || {
                 match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&fifo) {
-                    Ok(mut f) => Some(f.write_all(a.as_bytes()).unwrap()),
+                    Ok(mut f) => Some(f.write_all(a.line()).unwrap()),
                     Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {
                         assert!(child.try_wait().unwrap().is_none(), "the batch ended before its safe point");
                         None
@@ -6475,8 +6476,8 @@ mod tests {
         // it alone landed and noted done, the job's copies gone.
         terrain(&d.path().join("paused"));
         let mut child = run("paused", all, true);
-        answer(&mut child, "run");
-        answer(&mut child, "drain");
+        answer(&mut child, pipeline::control::Say::Run);
+        answer(&mut child, pipeline::control::Say::Drain);
         let st = child.wait().unwrap();
         assert_eq!(st.code(), Some(pipeline::control::PAUSED_EXIT), "{}", log("paused", all));
         assert_eq!(noted("paused"), ["10/448/256"]);

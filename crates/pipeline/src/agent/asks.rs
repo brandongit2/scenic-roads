@@ -143,8 +143,8 @@ impl Control {
         // drain, the memory guard's say, still stands.)
         if held {
             for c in self.jobs.get().iter().map(|j| &j.chan) {
-                if let Err(e) = std::fs::write(c, b"drain") {
-                    eprintln!("agent: asking {} to stop: {e}", c.display());
+                if let Err(e) = control::tell(c, control::Say::Drain) {
+                    eprintln!("agent: asking {} to stop: {e:#}", c.display());
                 }
             }
         }
@@ -562,7 +562,7 @@ pub(crate) mod tests {
         let mut beat = super::super::beat::Handle::new(home.clone(), hold.clone());
         let mut c = Handle::new(home.clone(), hold, beat.sender());
         let chan = home.join("control");
-        std::fs::write(&chan, b"run").unwrap();
+        control::tell(&chan, control::Say::Run).unwrap();
         c.jobs.set(vec![super::super::slots::JobRef::on_chan(chan.clone())]);
         let mut st = Status { host: "m1".into(), beat: 1, ..Default::default() };
         st.set_jobs(vec![job("unit 6/1/2", 0)], true);
@@ -590,7 +590,7 @@ pub(crate) mod tests {
         assert!(home.join(control::HOLD_REQUEST).exists());
         let r = control::request_hold(&home, None, Some(Hold::new("the menu bar on m1"))).unwrap();
         within("answered", &|| control::hold_answer(&home, &r).is_some_and(|a| a.ok));
-        within("the job told", &|| std::fs::read(&chan).unwrap() == b"drain");
+        within("the job told", &|| control::said(&chan) == Some(control::Say::Drain));
         within("the beat says pausing", &|| said().verdict.is_some_and(|v| v.state == "pausing"));
         assert!(!home.join(control::HOLD_REQUEST).exists());
         assert!(control::read_hold(&home).held.is_some() && c.hold.get().held.is_some());

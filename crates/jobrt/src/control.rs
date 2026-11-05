@@ -284,8 +284,122 @@ pub fn cancel_answer(home: &Path, c: &Cancel) -> Option<CancelAnswer> {
     (a.ask == *c).then_some(a)
 }
 
-/// The running job's channel: a file the agent writes ("run" or "drain"), named by this variable.
+/// The running job's channel, named by this variable: what the agent says to it (`Say`), a message a
+/// line (`Frames`). The agent's is a file it replaces whole with its latest say (`tell`), so a job
+/// reads one say whole, before or after a change, never part of one; a test may make it a fifo
+/// instead, its says heard in order, one a look (`Listener`), to hold the job at each safe point.
 pub const CONTROL_ENV: &str = "SCENIC_CONTROL";
+
+/// What the agent says on a job's channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Say {
+    /// Go on.
+    Run,
+    /// Stop at the next safe point.
+    Drain,
+}
+
+impl Say {
+    /// Its message: a line.
+    pub fn line(self) -> &'static [u8] {
+        match self {
+            Say::Run => b"run\n",
+            Say::Drain => b"drain\n",
+        }
+    }
+
+    fn parse(m: &[u8]) -> Option<Say> {
+        match m {
+            b"run" => Some(Say::Run),
+            b"drain" => Some(Say::Drain),
+            _ => None,
+        }
+    }
+}
+
+/// The channel's framing as its bytes arrive: a message a line, newline-ended. Bytes that bring
+/// several messages give each, in order; bytes that end within one keep that part for the rest. A
+/// line that's no say is dropped.
+#[derive(Debug, Default)]
+struct Frames {
+    part: Vec<u8>,
+}
+
+impl Frames {
+    /// The messages `b` completes, in order.
+    fn push(&mut self, b: &[u8]) -> Vec<Say> {
+        self.part.extend_from_slice(b);
+        let Some(end) = self.part.iter().rposition(|&c| c == b'\n') else { return Vec::new() };
+        let says = self.part[..end].split(|&c| c == b'\n').filter_map(Say::parse).collect();
+        self.part.drain(..=end);
+        says
+    }
+
+    /// A file's end: the part left, a message whole (an app before task #957 wrote its say
+    /// unended), or none.
+    fn end(&mut self) -> Option<Say> {
+        Say::parse(&std::mem::take(&mut self.part))
+    }
+}
+
+/// Tells the job on channel `chan` `s`: the file replaced whole.
+pub fn tell(chan: &Path, s: Say) -> anyhow::Result<()> {
+    store::whole::write(chan, s.line())
+}
+
+/// What the agent last said on channel `chan`, a file (its last say); None: none, or unreadable.
+pub fn said(chan: &Path) -> Option<Say> {
+    let mut f = Frames::default();
+    let mut says = f.push(&std::fs::read(chan).ok()?);
+    says.extend(f.end());
+    says.pop()
+}
+
+/// A job's ear on its channel (`heard`): a fifo kept open, its says waiting to be heard, and its
+/// part of one.
+#[derive(Debug)]
+struct Listener {
+    fifo: Option<std::fs::File>,
+    waiting: std::collections::VecDeque<Say>,
+    frames: Frames,
+}
+
+impl Listener {
+    const fn new() -> Listener {
+        Listener { fifo: None, waiting: std::collections::VecDeque::new(), frames: Frames { part: Vec::new() } }
+    }
+
+    /// The say heard on channel `chan` at this look: a file's as it stands (`said`); a fifo's next,
+    /// in order, waiting for one to be written whole.
+    fn heard(&mut self, chan: &Path) -> Option<Say> {
+        use std::io::Read;
+        use std::os::unix::fs::FileTypeExt;
+        if let Some(s) = self.waiting.pop_front() {
+            return Some(s);
+        }
+        if self.fifo.is_none() {
+            if !std::fs::metadata(chan).ok()?.file_type().is_fifo() {
+                return said(chan);
+            }
+            // (Opened to read and write, and kept: a read waits for bytes, never meets its writers'
+            // end, and what's written between looks isn't lost with its last reader closing.)
+            self.fifo = Some(std::fs::OpenOptions::new().read(true).write(true).open(chan).ok()?);
+        }
+        let f = self.fifo.as_mut()?;
+        let mut b = [0u8; 256];
+        loop {
+            match f.read(&mut b) {
+                Ok(0) => return None,
+                Ok(n) => self.waiting.extend(self.frames.push(&b[..n])),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return None,
+            }
+            if let Some(s) = self.waiting.pop_front() {
+                return Some(s);
+            }
+        }
+    }
+}
 
 /// The targets a job finished, a line each (`<step> <target>`): the agent records them whatever
 /// becomes of the rest (paused, failed or stopped), so they aren't built again.
@@ -297,7 +411,9 @@ pub const PAUSED_EXIT: i32 = 75;
 
 /// Whether the build is pausing: the running job stops at its next safe point.
 pub fn draining() -> bool {
-    std::env::var_os(CONTROL_ENV).and_then(|p| std::fs::read(p).ok()).is_some_and(|b| b.starts_with(b"drain"))
+    static EAR: std::sync::Mutex<Listener> = std::sync::Mutex::new(Listener::new());
+    let Some(chan) = std::env::var_os(CONTROL_ENV) else { return false };
+    EAR.lock().unwrap_or_else(|e| e.into_inner()).heard(Path::new(&chan)) == Some(Say::Drain)
 }
 
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -891,5 +1007,74 @@ mod tests {
         assert_eq!(peek_cancels(d.path()).len(), 2);
         assert_eq!(take_cancels(d.path(), a.at), vec![a.clone()]);
         assert!(take_cancels(d.path(), a.at).is_empty() && peek_cancels(d.path()).is_empty());
+    }
+
+    /// Task #957: the channel's framing. Bytes that bring several says give each, in order; bytes
+    /// that end within one keep it for the rest; a line that's no say is dropped.
+    #[test]
+    fn says_are_framed_a_line_each() {
+        let mut f = Frames::default();
+        assert_eq!(f.push(b"run\ndrain\nwhat\nrun\n"), [Say::Run, Say::Drain, Say::Run]);
+        assert_eq!(f.push(b"dr"), []);
+        assert_eq!(f.push(b"ai"), []);
+        assert_eq!(f.push(b"n\nru"), [Say::Drain]);
+        assert_eq!(f.push(b"n\n"), [Say::Run]);
+        assert_eq!(f.end(), None);
+        // A file an app before #957 wrote: its say unended.
+        assert_eq!(f.push(b"drain"), []);
+        assert_eq!(f.end(), Some(Say::Drain));
+        // The agent's file: its say whole, read whole.
+        let d = tempfile::tempdir().unwrap();
+        let chan = d.path().join("control");
+        assert_eq!(said(&chan), None);
+        tell(&chan, Say::Drain).unwrap();
+        assert_eq!(std::fs::read(&chan).unwrap(), b"drain\n");
+        assert_eq!(said(&chan), Some(Say::Drain));
+        tell(&chan, Say::Run).unwrap();
+        assert_eq!(Listener::new().heard(&chan), Some(Say::Run));
+        std::fs::write(&chan, b"drain").unwrap();
+        assert_eq!(said(&chan), Some(Say::Drain));
+        std::fs::write(&chan, b"").unwrap();
+        assert_eq!(said(&chan), None);
+    }
+
+    /// Task #957: a job's ear on a fifo (a test's lockstep) hears each say written, in order, one a
+    /// look: several in one write, one split across writes, and "run" then "drain" written back to
+    /// back, each by its own open, which its read may bring at once (it hung, the batch test of
+    /// slope_pack, when a read that brought both was taken for one).
+    #[test]
+    fn a_fifos_says_are_heard_in_order() {
+        use std::io::Write;
+        let d = tempfile::tempdir().unwrap();
+        let chan = d.path().join("control");
+        let c = std::ffi::CString::new(chan.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        // (Each open waits for the ear's: a writer's open blocks until a reader's.)
+        let write = |parts: Vec<Vec<&'static [u8]>>| {
+            let chan = chan.clone();
+            std::thread::spawn(move || {
+                for opened in parts {
+                    let mut f = std::fs::OpenOptions::new().write(true).open(&chan).unwrap();
+                    for b in opened {
+                        f.write_all(b).unwrap();
+                        f.flush().unwrap();
+                        // (sleep ok: the reader's read may end within the say, which it waits out)
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
+            })
+        };
+        let mut ear = Listener::new();
+        let w = write(vec![vec![b"run\ndrain\n"]]);
+        assert_eq!((ear.heard(&chan), ear.heard(&chan)), (Some(Say::Run), Some(Say::Drain)));
+        w.join().unwrap();
+        let w = write(vec![vec![b"dr", b"ai"], vec![b"n\n"]]);
+        assert_eq!(ear.heard(&chan), Some(Say::Drain));
+        w.join().unwrap();
+        for _ in 0..200 {
+            let w = write(vec![vec![Say::Run.line()], vec![Say::Drain.line()]]);
+            assert_eq!((ear.heard(&chan), ear.heard(&chan)), (Some(Say::Run), Some(Say::Drain)));
+            w.join().unwrap();
+        }
     }
 }

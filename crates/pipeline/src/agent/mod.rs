@@ -3890,7 +3890,10 @@ impl Agent {
             // (Its channel "run" unless this Mac's build is paused, the pool's or this Mac's alone:
             // then "drain", so it passes no safe point before `tend` asks it again.)
             let paused = self.own_pause().is_some();
-            std::fs::write(self.control_path(k), if paused { &b"drain"[..] } else { b"run" }).ok();
+            let say = if paused { crate::control::Say::Drain } else { crate::control::Say::Run };
+            if let Err(e) = crate::control::tell(&self.control_path(k), say) {
+                eprintln!("agent: telling {id}: {e:#}");
+            }
             if let Some(p) = hand.proxy_port {
                 self.proxy_port = Some(p);
             }
@@ -5054,8 +5057,8 @@ impl Agent {
         if let Some(why) = &slot.mem_drain {
             if slot.drain_since.is_none() {
                 eprintln!("agent: {} stops at its next safe point: {why}", r.spec.id);
-                if let Err(e) = std::fs::write(&control, b"drain") {
-                    eprintln!("agent: asking {} to stop: {e}", r.spec.id);
+                if let Err(e) = crate::control::tell(&control, crate::control::Say::Drain) {
+                    eprintln!("agent: asking {} to stop: {e:#}", r.spec.id);
                 }
                 slot.drain_since = Some(Instant::now());
             }
@@ -5090,8 +5093,8 @@ impl Agent {
                 }
                 let since = *slot.drain_since.get_or_insert_with(|| {
                     eprintln!("agent: {} stops at its next safe point: {why}", r.spec.id);
-                    if let Err(e) = std::fs::write(&control, b"drain") {
-                        eprintln!("agent: asking {} to stop: {e}", r.spec.id);
+                    if let Err(e) = crate::control::tell(&control, crate::control::Say::Drain) {
+                        eprintln!("agent: asking {} to stop: {e:#}", r.spec.id);
                     }
                     Instant::now()
                 });
@@ -5116,9 +5119,11 @@ impl Agent {
             None => {
                 slot.update_wait = None;
                 // (Or told "drain" by control and resumed before this loop timed it.)
-                let told = std::fs::read(&control).is_ok_and(|b| b.starts_with(b"drain"));
+                let told = crate::control::said(&control) == Some(crate::control::Say::Drain);
                 if slot.mem_drain.is_none() && (slot.drain_since.take().is_some() || told) {
-                    std::fs::write(&control, b"run").ok();
+                    if let Err(e) = crate::control::tell(&control, crate::control::Say::Run) {
+                        eprintln!("agent: telling {} to go on: {e:#}", r.spec.id);
+                    }
                 }
                 r.pausing = None;
                 if r.paused.is_some() {
@@ -6756,7 +6761,7 @@ impl Agent {
         // Its channel, to stop at a safe point when the build pauses, and where it notes each target
         // done (crate::control), afresh.
         let control = self.control_path(k);
-        std::fs::write(&control, b"run").with_context(|| format!("write {}", control.display()))?;
+        crate::control::tell(&control, crate::control::Say::Run)?;
         let done = self.done_path(k);
         std::fs::remove_file(&done).ok();
         self.slots[k].drain_since = None;
@@ -6819,7 +6824,9 @@ impl Agent {
         // control's to drain or seen here, so the job is told "drain" before its first safe point.)
         self.publish_jobs();
         if self.hold().held.is_some() {
-            std::fs::write(&control, b"drain").ok();
+            if let Err(e) = crate::control::tell(&control, crate::control::Say::Drain) {
+                eprintln!("agent: asking {} to stop: {e:#}", control.display());
+            }
         }
         self.slots[k].beaten = None;
         self.slots[k].hand_saved = None;
@@ -7149,7 +7156,7 @@ impl Agent {
     /// Whether slot `k`'s job's channel says "drain" (told by control, crate::agent::asks, maybe before this
     /// loop timed it).
     fn told_drain(&self, k: usize) -> bool {
-        std::fs::read(self.control_path(k)).is_ok_and(|b| b.starts_with(b"drain"))
+        crate::control::said(&self.control_path(k)) == Some(crate::control::Say::Drain)
     }
 
     /// Where slot `k`'s job notes the targets it finishes: a helper's leased job's in its lease's
@@ -10204,7 +10211,7 @@ mod tests {
     fn pause_while(a: &mut Agent, after: Duration, ran: Duration, mut busy: impl FnMut(&mut Agent)) -> Duration {
         let home = a.o.home.clone();
         let chan = home.join("job-control");
-        std::fs::write(&chan, b"run").unwrap();
+        crate::control::tell(&chan, crate::control::Say::Run).unwrap();
         a.control.jobs.set(vec![slots::JobRef::on_chan(chan.clone())]);
         let asker = std::thread::spawn(move || {
             // (sleep ok: the ask comes once the loop is deep in its plan or its hung calls)
@@ -10222,7 +10229,7 @@ mod tests {
             store::testkit::eventually("the pause answered and shown", || {
                 crate::control::hold_answer(&home, &ask).is_some_and(|a| a.ok)
                     && said()
-                    && std::fs::read(&chan).unwrap() == b"drain"
+                    && crate::control::said(&chan) == Some(crate::control::Say::Drain)
             });
             t.elapsed()
         });
@@ -10267,7 +10274,7 @@ mod tests {
         let chan = a.o.home.join("job-control");
         a.control.jobs.set(vec![slots::JobRef::on_chan(chan.clone())]);
         if a.hold().held.is_some() {
-            std::fs::write(&chan, b"drain").unwrap();
+            crate::control::tell(&chan, crate::control::Say::Drain).unwrap();
         }
     }
 
@@ -11209,7 +11216,7 @@ mod tests {
         std::fs::remove_file(apps.join("current")).unwrap();
         std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
         tend_all(&mut a);
-        assert!((0..3).all(|k| std::fs::read_to_string(a.control_path(k)).unwrap() == "drain"));
+        assert!((0..3).all(|k| crate::control::said(&a.control_path(k)) == Some(crate::control::Say::Drain)));
         assert!(!a.update_due() && !a.takes_more());
         let long_ago = Instant::now().checked_sub(DRAIN_GRACE + Duration::from_secs(60)).unwrap();
         a.slots[0].drain_since = Some(long_ago);
@@ -11221,7 +11228,7 @@ mod tests {
         std::fs::remove_file(apps.join("current")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
         tend_all(&mut a);
-        assert!((0..3).all(|k| std::fs::read_to_string(a.control_path(k)).unwrap() == "run"));
+        assert!((0..3).all(|k| crate::control::said(&a.control_path(k)) == Some(crate::control::Say::Run)));
         assert!(a.slots.iter().all(|s| s.drain_since.is_none()));
         // The memory guard on a Mac of 32 GB with 18 GB available and no job running, its floor the
         // 6 GB set above: the jobs may hold 12 GB together before it's below the floor. Slot 1's
@@ -11256,7 +11263,7 @@ mod tests {
         // (What stays once it stops, 9 GB, fits: none more drains.)
         tick(&mut a, vec![Some(5 << 10), Some(4 << 10), Some(4 << 10)], false);
         assert!(!a.guard() && a.slots[2].mem_drain.is_none());
-        assert_eq!(std::fs::read_to_string(a.control_path(1)).unwrap(), "drain");
+        assert_eq!(crate::control::said(&a.control_path(1)), Some(crate::control::Say::Drain));
         // (The largest grown, what stays past the room: the next newest drains too.)
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10), Some(4 << 10)], false);
         assert!(!a.guard() && a.slots[2].mem_drain.is_some() && a.slots[0].mem_drain.is_none());
@@ -12335,7 +12342,7 @@ mod tests {
             a.slots[1].mem_drain
         );
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], false);
-        assert_eq!(std::fs::read_to_string(a.control_path(1)).unwrap(), "drain");
+        assert_eq!(crate::control::said(&a.control_path(1)), Some(crate::control::Say::Drain));
         // (Nothing asked for meanwhile.)
         assert!(a.guard_held(0).is_some_and(|id| id == "terrain-hi 6/1/1") && !a.takes_more());
         // The drained one reaching no safe point in the time a pause gives: stopped at once.
@@ -13820,7 +13827,7 @@ mod tests {
         std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
         tend(&mut a);
         for k in 0..SLOTS {
-            assert_eq!(std::fs::read_to_string(a.control_path(k)).unwrap(), "drain");
+            assert_eq!(crate::control::said(&a.control_path(k)), Some(crate::control::Say::Drain));
             assert_eq!(
                 a.slots[k].running.as_ref().unwrap().pausing.as_deref(),
                 Some("restarting into the newly installed app (v2)")
@@ -13839,7 +13846,7 @@ mod tests {
         tend(&mut a);
         assert!(!a.update_due());
         for k in 0..SLOTS {
-            assert_eq!(std::fs::read_to_string(a.control_path(k)).unwrap(), "run");
+            assert_eq!(crate::control::said(&a.control_path(k)), Some(crate::control::Say::Run));
             assert!(a.slots[k].running.as_ref().unwrap().pausing.is_none());
         }
         // Every slot free with a newer app: due at once (one free with another's job under way:
@@ -14078,7 +14085,7 @@ mod tests {
         std::fs::write(home.join("pause.json"), serde_json::to_vec(&Some(p)).unwrap()).unwrap();
         let mut b = test_agent(opts()).unwrap();
         assert!(b.slots[0].running.as_ref().is_some_and(|r| r.adopted && r.pgid == pgid));
-        assert_eq!(std::fs::read(b.control_path(0)).unwrap(), b"drain");
+        assert_eq!(crate::control::said(&b.control_path(0)), Some(crate::control::Say::Drain));
         b.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
     }
@@ -16643,7 +16650,7 @@ mod pool_tests {
             .running
             .as_ref()
             .is_some_and(|r| r.pausing.as_deref().is_some_and(|w| w.contains("scenic pause on m1"))));
-        assert_eq!(std::fs::read(a.control_path(0)).unwrap(), b"drain");
+        assert_eq!(crate::control::said(&a.control_path(0)), Some(crate::control::Say::Drain));
         let mut waiting = Vec::new();
         assert!(!a.try_start(
             1,
