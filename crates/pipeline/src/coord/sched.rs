@@ -739,7 +739,10 @@ impl Sched {
     /// (`ask_cores`: the in-use share's taken off), is granted, and the cores it counts for there in
     /// tenths: `need_cores` of its `pack_need`. The grant rule in one place: the live scheduler's
     /// (`pack`), the forecast's (`pack` on this scheduler as recorded, `State`), and a running
-    /// job's, decided again (task #948).
+    /// job's, decided again (task #948). What the job would be granted alone: the cores the Mac's
+    /// other jobs count for aren't taken off (the caller's). Its step's use groups runs by the
+    /// threads their record says (crate::uses): a run whose threads change as it goes must say
+    /// what it held over its run, or its use is read at the wrong threads.
     pub fn lease_cores(&self, worker: &str, step: &str, targets: &[String], total: u32) -> (u32, u32) {
         self.need_cores(step, &self.pack_need(step, targets, worker), total)
     }
