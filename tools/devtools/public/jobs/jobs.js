@@ -353,8 +353,10 @@ function renderRun() {
     const ks = [...new Set(at.map((s) => s.kind))].sort((a, b) => (KIND_ORDER.indexOf(a) + 1 || 99) - (KIND_ORDER.indexOf(b) + 1 || 99));
     for (const k of ks) {
       const mine = at.filter((s) => s.kind === k);
-      // (cargo test's tests, marks at their ends, share one row: marks may touch.)
-      const marks = mine.filter((s) => s.attrs?.untimed), timed = mine.filter((s) => !s.attrs?.untimed);
+      // (Those too short to see at this zoom, and cargo test's tests, marks at their ends, share one row:
+      // they may touch. The rest packed, a row each at once.)
+      const short = (s) => s.attrs?.untimed || (s.t1 != null && s.t1 - s.t0 < gap);
+      const marks = mine.filter(short), timed = mine.filter((s) => !short(s));
       [...(marks.length ? [marks] : []), ...pack(timed, gap, (s) => s.t0, (s) => s.t1 ?? now)].forEach((row, i) => {
         const t = track();
         for (const s of row) {

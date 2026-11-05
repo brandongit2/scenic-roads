@@ -11,6 +11,8 @@ s=$(mktemp -d); trap 'rm -rf $s' EXIT
 w=$s/.claude/worktrees; mkdir -p $w
 # The shim's records (tools/dev/devjob.zsh) go to a scratch spool, sent nowhere (a closed port).
 export SCENIC_DEVJOB_DIR=$s/devjobs SCENIC_BOARD=http://127.0.0.1:9; unset SCENIC_DEVJOB SCENIC_DEVJOB_PARENT
+# (The toy cargos' waits are this test's, not its caller's: check.sh's terminal doesn't get them.)
+unset SCENIC_CARGO_SAY
 dj=$SCENIC_DEVJOB_DIR
 quiet() {  # the sampler gone (it ends once nothing is live and every report is read)
   local i f; for (( i = 0; i < 600; i++ )); do
