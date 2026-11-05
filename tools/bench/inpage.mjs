@@ -58,13 +58,16 @@ const proxy = (req, res) => {
     });
     return;
   }
-  const up = http.request({ host: app.hostname, port: app.port, path: req.url, method: req.method, headers: { ...req.headers, host: req.headers.host?.replace(/:\d+$/, `:${app.port}`) } }, (r) => {
+  const up = http.request({ agent: upstream, host: app.hostname, port: app.port, path: req.url, method: req.method, headers: { ...req.headers, host: req.headers.host?.replace(/:\d+$/, `:${app.port}`) } }, (r) => {
     res.writeHead(r.statusCode, r.headers);
     r.pipe(res);
   });
   up.on('error', () => res.writeHead(502).end());
   req.pipe(up);
 };
+// (the proxy's connections to the app, closed at the end: kept alive, they held the process open
+// after its last result)
+const upstream = new http.Agent({ keepAlive: true });
 const servers = [];
 for (let i = 0; i < (args.cold ? views.length : 1); i++) {
   const s = http.createServer(proxy);
@@ -124,6 +127,7 @@ try {
 } finally {
   for (const s of servers) s.close();
   servers.forEach((s) => s.closeAllConnections?.());
+  upstream.destroy();
   if (session) await wd('DELETE', `/session/${session}`).catch(() => {});
   if (child) child.kill('SIGTERM');
 }
