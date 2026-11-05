@@ -386,7 +386,9 @@ struct Slot {
     lease: Option<Held>,
     beaten: Option<Instant>,
     drain_since: Option<Instant>,
+    /// Its job's time left (its batch's, a job of several targets), and the target under way's.
     job_eta: Option<u64>,
+    target_eta: Option<u64>,
     /// An update's drain under way: how long it waits for its job's safe point, and why
     /// (`Agent::update_wait`), worked out once when it began.
     /// (None: the time a pause gives, `Agent::grace`.)
@@ -6247,7 +6249,8 @@ impl Agent {
             jobs::Said::NoneYet => r.said = None,
             jobs::Said::Unknown => r.said = r.said.take().filter(|s| s.3 == part),
         }
-        let progress = r.said.clone().map(|(done, total, unit, _)| {
+        // (The target under way, as it says: its fraction and its time left at its pace.)
+        let target = r.said.clone().map(|(done, total, unit, _)| {
             let frac = done / total;
             // (Its pace measured again from a new z6 tile, a new part, or a step back.)
             let key = jobs::unit_key(&unit).to_string();
@@ -6256,14 +6259,37 @@ impl Agent {
                 r.progress_base =
                     Some(pace_base(r.adopted && r.progress_base.is_none(), r.started_at, frac, key, part));
             }
-            if fresh || r.moved.is_none_or(|m| frac > m.0) {
-                r.moved = Some((frac, now_s()));
-            }
             let (t0, f0, _, _) = r.progress_base.as_ref().unwrap();
             let eta_s = (frac > *f0 && r.paused.is_none())
                 .then(|| (t0.elapsed().as_secs_f64() * (1.0 - frac) / (frac - f0)) as u64);
-            JobProgress { done, total, unit, eta_s, moved_at: r.moved.map(|m| m.1) }
+            (JobProgress { done, total, unit, eta_s, moved_at: None }, fresh)
         });
+        slot.target_eta = target.as_ref().and_then(|t| t.0.eta_s);
+        // A job of several targets (its batch, task #953): how far the batch is, its targets ended
+        // and the one under way's share, and its time left at the batch's pace since the job began
+        // (a job of 36 targets read "99%, about 0 min left" for 24 minutes by its target's).
+        let batch = live.as_ref().filter(|l| l.targets > 1).map(|l| {
+            let n = l.targets as f64;
+            // (The line of a target that reached its end stays until the next says its own: it
+            // counts as ended, not twice.)
+            let on = target.as_ref().map_or(0.0, |t| t.0.done / t.0.total).clamp(0.0, 1.0);
+            let on = if on >= 1.0 { 0.0 } else { on };
+            let done = (l.targets_done.min(l.targets) as f64 + on).min(n);
+            let eta_s = (done > 0.0 && r.paused.is_none())
+                .then(|| (r.started_at.elapsed().as_secs_f64() * (n - done) / done) as u64);
+            let step =
+                r.spec.record.as_ref().map_or_else(|| step_of(&r.spec.id).unwrap_or_default(), |w| w.step.clone());
+            JobProgress { done, total: n, unit: format!("{}s", steps::noun(&step)), eta_s, moved_at: None }
+        });
+        let fresh = batch.is_none() && target.as_ref().is_some_and(|t| t.1);
+        let mut progress = batch.or(target.map(|t| t.0));
+        if let Some(p) = progress.as_mut() {
+            let frac = p.done / p.total;
+            if fresh || r.moved.is_none_or(|m| frac > m.0) {
+                r.moved = Some((frac, now_s()));
+            }
+            p.moved_at = r.moved.map(|m| m.1);
+        }
         slot.job_eta = progress.as_ref().and_then(|p| p.eta_s);
         Some(JobView {
             id: r.spec.id.clone(),
@@ -8728,7 +8754,7 @@ impl Agent {
     }
 
     /// How long an update's drain waits for slot `k`'s job to reach its safe point, and why: the
-    /// time the target under way is expected to need, from its progress's pace (the status's time
+    /// time the target under way is expected to need, from its progress's pace (its own line's time
     /// left, `job_view`) else its expected time (its own measured run, its step's fit, else the
     /// 90th percentile of its step's runs, crate::needs::Book::secs_p90: a long tail's long jobs
     /// aren't cut short by the mean jobs are sized by; a step of the lead's own, its time here
@@ -8738,7 +8764,7 @@ impl Agent {
         let base = self.grace;
         let Some(r) = self.slots[k].running.as_ref() else { return (None, String::new()) };
         let none = |why: &str| (None, format!("{why}, so the time a pause gives"));
-        let (left, from) = if let Some(eta) = self.slots[k].job_eta {
+        let (left, from) = if let Some(eta) = self.slots[k].target_eta {
             (eta as f64, "by its progress's pace")
         } else {
             let costs = self.coord.as_ref().map(|c| c.for_forecast().0).unwrap_or_default();
@@ -14496,7 +14522,7 @@ mod tests {
         ));
         let _kill = Kill(a.slots[0].running.as_ref().unwrap().pgid);
         // Its progress's pace says an hour left: the update waits 90 min (×1.5).
-        a.slots[0].job_eta = Some(3600);
+        a.slots[0].target_eta = Some(3600);
         a.slots[0].running.as_mut().unwrap().moved = Some((0.5, now_s()));
         update(&mut a, "v2");
         let (wait, words) = a.slots[0].update_wait.clone().unwrap();
@@ -14529,7 +14555,7 @@ mod tests {
         // target's expected time (no pace yet), capped at 3 h.
         update(&mut a, "v1");
         assert!(a.slots[0].update_wait.is_none() && !a.update_due());
-        a.slots[0].job_eta = None;
+        a.slots[0].target_eta = None;
         a.mem.step_secs.insert(secs_key("elev"), 5.0 * 3600.0);
         update(&mut a, "v2");
         let (wait, words) = a.slots[0].update_wait.clone().unwrap();
