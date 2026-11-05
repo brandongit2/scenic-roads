@@ -30,39 +30,25 @@ pub mod task;
 pub mod tiles;
 pub mod work;
 
-use det::Det;
-
 /// Bumped when the normalized files change (every `bldprep` target runs again).
 pub const BLDPREP_V: u32 = 2;
 /// Bumped when the fill (its rules, fits and defaults: [`fill`]) or the tiles change (every
-/// `bldtiles` target runs again, nothing else).
-pub const BUILDINGS_V: u32 = 4;
+/// `bldtiles` target runs again, nothing else). (5, task #862: a heritage footprint's buildings by
+/// roadcore::geo::inside.)
+pub const BUILDINGS_V: u32 = 5;
 /// The served layer (`/tiles/buildings/…`, the catalogue's `buildings`).
 pub const LAYER: &str = "buildings";
 /// The zooms the tiles are made at.
 pub const ZOOM: u8 = 14;
-
-/// A Web Mercator world unit at the equator, metres (WGS84's equator).
-pub const EQ: f64 = 40_075_016.685_578_49;
-/// A degree on the mean sphere, metres (footprint areas, as B0 measured them).
-pub const DEG_M: f64 = 6_371_008.8 * std::f64::consts::PI / 180.0;
-/// Web Mercator's latitude limit.
-const MAX_LAT: f64 = 85.051_128_78;
 
 /// Degrees to E7, as every derived coordinate is rounded.
 pub fn e7(v: f64) -> i32 {
     (v * 1e7).round() as i32
 }
 
-/// Web Mercator world coordinates (0–1, y down) of degrees.
-pub fn world(lon: f64, lat: f64) -> (f64, f64) {
-    let s = lat.clamp(-MAX_LAT, MAX_LAT).to_radians().dsin();
-    ((lon + 180.0) / 360.0, 0.5 - ((1.0 + s) / (1.0 - s)).dln() / (4.0 * std::f64::consts::PI))
-}
-
-/// Web Mercator world coordinates of an E7 point.
+/// Web Mercator world coordinates of an E7 point (roadcore::geo::merc_clamped).
 pub fn world7(p: [i32; 2]) -> (f64, f64) {
-    world(p[0] as f64 * 1e-7, p[1] as f64 * 1e-7)
+    roadcore::geo::merc_clamped(p[0] as f64 * 1e-7, p[1] as f64 * 1e-7)
 }
 
 /// The zoom-`z` tile holding a point in world coordinates.
@@ -82,14 +68,6 @@ pub fn z14_key(p: [i32; 2]) -> u64 {
 /// A tile key's zoom, x and y.
 pub fn key_zxy(k: u64) -> (u8, u32, u32) {
     ((k >> 58) as u8, ((k >> 29) & ((1 << 29) - 1)) as u32, (k & ((1 << 29) - 1)) as u32)
-}
-
-/// A tile's box in degrees (w, s, e, n).
-pub fn tile_box_deg(z: u8, x: u32, y: u32) -> [f64; 4] {
-    let n = (1u64 << z) as f64;
-    let lon = |x: f64| x / n * 360.0 - 180.0;
-    let lat = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y / n)).dsinh().datan().to_degrees();
-    [lon(x as f64), lat(y as f64 + 1.0), lon(x as f64 + 1.0), lat(y as f64)]
 }
 
 /// The logical name of z6 tile T's normalized file.
@@ -113,10 +91,10 @@ mod tests {
         let (z, x, y) = key_zxy(z14_key(p));
         assert_eq!((z, x, y), (14, 14549, 6451));
         assert_eq!((x >> 8, y >> 8), (56, 25));
-        let b = tile_box_deg(14, x, y);
+        let b = roadcore::geo::tile_box(14, x, y);
         assert!(b[0] <= 139.7006 && 139.7006 < b[2] && b[1] < 35.6896 && 35.6896 <= b[3]);
         // World coordinates round-trip the tile box.
-        let (wx, wy) = world(b[0], b[3]);
+        let (wx, wy) = roadcore::geo::merc_clamped(b[0], b[3]);
         assert!((wx * 16384.0 - x as f64).abs() < 1e-6 && (wy * 16384.0 - y as f64).abs() < 1e-6);
     }
 }

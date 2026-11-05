@@ -243,7 +243,7 @@ pub fn copy_data_held(src: &Path, dst: &Path) -> io::Result<(u64, u64)> {
 }
 
 /// Each copy's reads and writes (over SMB each is a round trip, so big ones).
-pub(crate) const COPY_BUF: usize = 1 << 20;
+pub const COPY_BUF: usize = 1 << 20;
 
 fn copy_data_as(src: &Path, dst: &Path, held: bool) -> io::Result<(u64, u64)> {
     use std::io::{Read, Write};

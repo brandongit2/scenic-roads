@@ -583,12 +583,10 @@ fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
         .collect()
 }
 
-/// Whether `p` is an archive copy a terrain job's target (`id`: "terrain-hi 3/x/y", a z3 tile's
-/// whole run; "terrain-hi 6/x/y", a z6 tile; "terrain-deep 10/x/y", a z10 tile's deep levels;
-/// "terrain-lo 3/x/y", an assembly; an older app's "terrain …" as terrain-hi's) reads at once: a z3
-/// tile's run its shard's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), a z6 tile its z6
-/// tile's, a deep target those of the z6 tiles its base is made of
-/// (crate::terrain_deep::base_want), an assembly its z3 tile's (crate::rawpack's shards).
+/// Whether `p` is an archive copy a terrain job's target (`id`: "terrain-hi 6/x/y", a z6 tile;
+/// "terrain-deep 10/x/y", a z10 tile's band past z12; "terrain-lo 3/x/y", an assembly; an older
+/// app's "terrain …" as terrain-hi's) reads at once: a z6 tile its z6 tile's (`6-x-y.…`), a deep
+/// target its z6 tile's, an assembly its z3 tile's (crate::rawpack's shards).
 /// How often a member asks the lead for its tiles to come (`Agent::ask_upcoming`): the lead makes
 /// a forecast each `forecast::EVERY`, and the order of a Mac's next jobs moves little in minutes;
 /// an answer is every Mac's (29 Oct's forecast: 5,397 jobs, ~0.5 MB).
@@ -636,13 +634,10 @@ pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
     let (s, Some(t)) = (steps::current(j.step), j.rest) else { return BTreeSet::new() };
     let Some((z, x, y)) = tile_of(t) else { return BTreeSet::new() };
     match (s, z) {
-        ("terrain-deep", z) if z == crate::terrain_deep::PACK_Z as u32 => crate::terrain_deep::base_want((x, y))
-            .iter()
-            .map(|&(bz, bx, by)| (6, bx >> (bz - 6), by >> (bz - 6)))
-            .collect(),
-        ("terrain-hi", 3) => std::iter::once((3, x, y))
-            .chain((0..8).flat_map(|i| (0..8).map(move |j| (6, x * 8 + i, y * 8 + j))))
-            .collect(),
+        ("terrain-deep", z) if z == crate::terrain_deep::PACK_Z as u32 => {
+            let k = crate::terrain_deep::PACK_Z as u32 - 6;
+            BTreeSet::from([(6, x >> k, y >> k)])
+        }
         ("terrain-hi", 6) => BTreeSet::from([(6, x, y)]),
         ("terrain-lo", 3) => BTreeSet::from([(3, x, y)]),
         _ => BTreeSet::new(),
@@ -683,15 +678,15 @@ pub const fn bldtiles_peak(rows: u64) -> u64 {
     1800 + rows * 2 / 5 * 1100 / (1 << 20)
 }
 
-/// The memory a terrain-hi run of a z3 tile of `z6` tiles near the coverage is expected to take
-/// (MB), before one has said: a z6 tile's levels at a time (crate::terrain_pack::piece_peak_mb), each
-/// further z6 tile's quarters (~20 MB) and the z3 tile's zoomed-out tiles (z3–8, 1,365 at ~270 KB);
-/// with `deep` (a fine dataset meets it north of 67°, where its deep z12 goes in its hi pack:
-/// crate::terrain_deep::reaches_hi), those levels' bound besides (crate::terrain_deep::peak_mb). (A
-/// z6 tile: one z6 tile, `terrain_peak(1, …)`.)
-fn terrain_peak(z6: usize, deep: bool) -> u64 {
-    let deep = if deep { crate::terrain_deep::peak_mb() } else { 0 };
-    crate::terrain_pack::piece_peak_mb() + 1365 * 270 / 1024 + (z6 as u64).saturating_sub(1) * 20 + deep
+/// The memory a terrain-hi run of `z6` tiles is expected to take (MB), before one has said: a z6
+/// tile's levels at a time (crate::terrain_pack::piece_peak_mb), and each z6 tile's quarters (~20 MB)
+/// and its z10 tiles' deep mids taken in (`DEEP_MIDS_MB`); beside them, the z6 tile before's uploads
+/// in flight (crate::out::UPLOAD_HELD: they land beside the next one's work, scenic-build's Landing).
+fn terrain_peak(z6: usize) -> u64 {
+    crate::terrain_pack::piece_peak_mb()
+        + (z6 as u64).saturating_sub(1) * 20
+        + z6 as u64 * crate::terrain_pack::DEEP_MIDS_MB
+        + crate::out::UPLOAD_HELD.div_ceil(1 << 20)
 }
 
 /// Whether `spec`'s job is paced (crate::inputs::pace: its grant read every second, `Agent::tend_grant`): an input check (the
@@ -3904,7 +3899,10 @@ impl Agent {
             // (Its channel "run" unless this Mac's build is paused, the pool's or this Mac's alone:
             // then "drain", so it passes no safe point before `tend` asks it again.)
             let paused = self.own_pause().is_some();
-            std::fs::write(self.control_path(k), if paused { &b"drain"[..] } else { b"run" }).ok();
+            let say = if paused { crate::control::Say::Drain } else { crate::control::Say::Run };
+            if let Err(e) = crate::control::tell(&self.control_path(k), say) {
+                eprintln!("agent: telling {id}: {e:#}");
+            }
             if let Some(p) = hand.proxy_port {
                 self.proxy_port = Some(p);
             }
@@ -5074,8 +5072,8 @@ impl Agent {
         if let Some(why) = &slot.mem_drain {
             if slot.drain_since.is_none() {
                 eprintln!("agent: {} stops at its next safe point: {why}", r.spec.id);
-                if let Err(e) = std::fs::write(&control, b"drain") {
-                    eprintln!("agent: asking {} to stop: {e}", r.spec.id);
+                if let Err(e) = crate::control::tell(&control, crate::control::Say::Drain) {
+                    eprintln!("agent: asking {} to stop: {e:#}", r.spec.id);
                 }
                 slot.drain_since = Some(Instant::now());
             }
@@ -5110,8 +5108,8 @@ impl Agent {
                 }
                 let since = *slot.drain_since.get_or_insert_with(|| {
                     eprintln!("agent: {} stops at its next safe point: {why}", r.spec.id);
-                    if let Err(e) = std::fs::write(&control, b"drain") {
-                        eprintln!("agent: asking {} to stop: {e}", r.spec.id);
+                    if let Err(e) = crate::control::tell(&control, crate::control::Say::Drain) {
+                        eprintln!("agent: asking {} to stop: {e:#}", r.spec.id);
                     }
                     Instant::now()
                 });
@@ -5136,9 +5134,11 @@ impl Agent {
             None => {
                 slot.update_wait = None;
                 // (Or told "drain" by control and resumed before this loop timed it.)
-                let told = std::fs::read(&control).is_ok_and(|b| b.starts_with(b"drain"));
+                let told = crate::control::said(&control) == Some(crate::control::Say::Drain);
                 if slot.mem_drain.is_none() && (slot.drain_since.take().is_some() || told) {
-                    std::fs::write(&control, b"run").ok();
+                    if let Err(e) = crate::control::tell(&control, crate::control::Say::Run) {
+                        eprintln!("agent: telling {} to go on: {e:#}", r.spec.id);
+                    }
                 }
                 r.pausing = None;
                 if r.paused.is_some() {
@@ -6823,7 +6823,7 @@ impl Agent {
         // Its channel, to stop at a safe point when the build pauses, and where it notes each target
         // done (crate::control), afresh.
         let control = self.control_path(k);
-        std::fs::write(&control, b"run").with_context(|| format!("write {}", control.display()))?;
+        crate::control::tell(&control, crate::control::Say::Run)?;
         let done = self.done_path(k);
         std::fs::remove_file(&done).ok();
         self.slots[k].drain_since = None;
@@ -6850,7 +6850,7 @@ impl Agent {
         // re-granted): taken as each target begins (crate::control::on_grant), a paced job's
         // (crate::inputs::pace) within the second.
         let f = self.threads_path(k);
-        std::fs::write(&f, threads.to_string()).with_context(|| format!("write {}", f.display()))?;
+        crate::control::grant(&f, threads)?;
         env.push((crate::control::THREADS_ENV.into(), f.to_string_lossy().into_owned()));
         // Where it says it waits on a worker holding its z6 tile's tail, while it does (`waiting_on`),
         // afresh.
@@ -6885,7 +6885,9 @@ impl Agent {
         // control's to drain or seen here, so the job is told "drain" before its first safe point.)
         self.publish_jobs();
         if self.hold().held.is_some() {
-            std::fs::write(&control, b"drain").ok();
+            if let Err(e) = crate::control::tell(&control, crate::control::Say::Drain) {
+                eprintln!("agent: asking {} to stop: {e:#}", control.display());
+            }
         }
         self.slots[k].beaten = None;
         self.slots[k].hand_saved = None;
@@ -7211,7 +7213,7 @@ impl Agent {
             _ => None,
         };
         let Some(t) = told.map(|t| t.min(most).max(1)).filter(|&t| t != r.threads) else { return };
-        match std::fs::write(&f, t.to_string()) {
+        match crate::control::grant(&f, t) {
             Ok(()) => {
                 eprintln!(
                     "agent: {} re-granted {t} threads (was {}): taken as its next target begins",
@@ -7219,7 +7221,7 @@ impl Agent {
                 );
                 r.threads = t;
             }
-            Err(e) => eprintln!("agent: telling {} its threads: {e}", r.spec.id),
+            Err(e) => eprintln!("agent: telling {} its threads: {e:#}", r.spec.id),
         }
     }
 
@@ -7231,7 +7233,7 @@ impl Agent {
     /// Whether slot `k`'s job's channel says "drain" (told by control, crate::agent::asks, maybe before this
     /// loop timed it).
     fn told_drain(&self, k: usize) -> bool {
-        std::fs::read(self.control_path(k)).is_ok_and(|b| b.starts_with(b"drain"))
+        crate::control::said(&self.control_path(k)) == Some(crate::control::Say::Drain)
     }
 
     /// Where slot `k`'s job notes the targets it finishes: a helper's leased job's in its lease's
@@ -9547,6 +9549,18 @@ struct Forecasted {
 #[cfg(test)]
 mod tests {
 
+    /// Task #928's review: a terrain-hi run's memory before its own run says counts the z6 tile
+    /// before's uploads in flight beside the one under way: one upload at a time (their thread
+    /// makes them in turn), so once however many z6 tiles it runs.
+    #[test]
+    fn terrain_peak_counts_the_uploads_beside() {
+        let (levels, mids, upload) =
+            (crate::terrain_pack::piece_peak_mb(), crate::terrain_pack::DEEP_MIDS_MB, crate::out::UPLOAD_HELD >> 20);
+        assert_eq!(upload, 8, "an upload's 8 MB hash read");
+        assert_eq!(terrain_peak(1), levels + mids + upload);
+        assert_eq!(terrain_peak(3), levels + 2 * 20 + 3 * mids + upload);
+    }
+
     /// Task #444: a NAS wait said again between plans (the plan's lines kept) is listed once, with
     /// its minutes now; gone once granted.
     #[test]
@@ -9880,20 +9894,14 @@ mod tests {
     #[test]
     fn a_terrain_run_reads_its_own_shards_archives() {
         let packs = Path::new("/c/aws-terrarium/packs");
-        for (name, ours) in [
-            ("3-1-2.0123456789abcdef.tiles", true),
-            ("6-8-16.0123456789abcdef.tiles", true),
-            ("6-15-23.0123456789abcdef.tiles", true),
-            ("6-16-16.0123456789abcdef.tiles", false),
-            ("3-1-3.0123456789abcdef.tiles", false),
-            ("root.0123456789abcdef.tiles", false),
-        ] {
-            assert_eq!(terrain_reads("terrain-hi 3/1/2", &packs.join(name)), ours, "{name}");
+        // (A z10 tile's band past z12: its z6 tile's.)
+        for (name, ours) in [("6-8-16.0123456789abcdef.tiles", true), ("6-8-17.0123456789abcdef.tiles", false)] {
+            assert_eq!(terrain_reads("terrain-deep 10/128/256", &packs.join(name)), ours, "{name}");
         }
         // Not a terrain run's, or not an archive copy.
         assert!(!terrain_reads("unit 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles")));
         assert!(!terrain_reads("terrain-root terrain-root", &packs.join("root.0123456789abcdef.tiles")));
-        assert!(!terrain_reads("terrain-hi 3/1/2", Path::new("/c/aws-terrarium/12/2048/1500.png")));
+        assert!(!terrain_reads("terrain-hi 6/8/16", Path::new("/c/aws-terrarium/12/2048/1500.png")));
         // A z6 tile its z6 tile's; an assembly its z3 tile's.
         assert!(
             terrain_reads("terrain-hi 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles"))
@@ -10280,7 +10288,7 @@ mod tests {
     fn pause_while(a: &mut Agent, after: Duration, ran: Duration, mut busy: impl FnMut(&mut Agent)) -> Duration {
         let home = a.o.home.clone();
         let chan = home.join("job-control");
-        std::fs::write(&chan, b"run").unwrap();
+        crate::control::tell(&chan, crate::control::Say::Run).unwrap();
         a.control.jobs.set(vec![slots::JobRef::on_chan(chan.clone())]);
         let asker = std::thread::spawn(move || {
             // (sleep ok: the ask comes once the loop is deep in its plan or its hung calls)
@@ -10298,7 +10306,7 @@ mod tests {
             store::testkit::eventually("the pause answered and shown", || {
                 crate::control::hold_answer(&home, &ask).is_some_and(|a| a.ok)
                     && said()
-                    && std::fs::read(&chan).unwrap() == b"drain"
+                    && crate::control::said(&chan) == Some(crate::control::Say::Drain)
             });
             t.elapsed()
         });
@@ -10343,7 +10351,7 @@ mod tests {
         let chan = a.o.home.join("job-control");
         a.control.jobs.set(vec![slots::JobRef::on_chan(chan.clone())]);
         if a.hold().held.is_some() {
-            std::fs::write(&chan, b"drain").unwrap();
+            crate::control::tell(&chan, crate::control::Say::Drain).unwrap();
         }
     }
 
@@ -11285,7 +11293,7 @@ mod tests {
         std::fs::remove_file(apps.join("current")).unwrap();
         std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
         tend_all(&mut a);
-        assert!((0..3).all(|k| std::fs::read_to_string(a.control_path(k)).unwrap() == "drain"));
+        assert!((0..3).all(|k| crate::control::said(&a.control_path(k)) == Some(crate::control::Say::Drain)));
         assert!(!a.update_due() && !a.takes_more());
         let long_ago = Instant::now().checked_sub(DRAIN_GRACE + Duration::from_secs(60)).unwrap();
         a.slots[0].drain_since = Some(long_ago);
@@ -11297,7 +11305,7 @@ mod tests {
         std::fs::remove_file(apps.join("current")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
         tend_all(&mut a);
-        assert!((0..3).all(|k| std::fs::read_to_string(a.control_path(k)).unwrap() == "run"));
+        assert!((0..3).all(|k| crate::control::said(&a.control_path(k)) == Some(crate::control::Say::Run)));
         assert!(a.slots.iter().all(|s| s.drain_since.is_none()));
         // The memory guard on a Mac of 32 GB with 18 GB available and no job running, its floor the
         // 6 GB set above: the jobs may hold 12 GB together before it's below the floor. Slot 1's
@@ -11332,7 +11340,7 @@ mod tests {
         // (What stays once it stops, 9 GB, fits: none more drains.)
         tick(&mut a, vec![Some(5 << 10), Some(4 << 10), Some(4 << 10)], false);
         assert!(!a.guard() && a.slots[2].mem_drain.is_none());
-        assert_eq!(std::fs::read_to_string(a.control_path(1)).unwrap(), "drain");
+        assert_eq!(crate::control::said(&a.control_path(1)), Some(crate::control::Say::Drain));
         // (The largest grown, what stays past the room: the next newest drains too.)
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10), Some(4 << 10)], false);
         assert!(!a.guard() && a.slots[2].mem_drain.is_some() && a.slots[0].mem_drain.is_none());
@@ -12411,7 +12419,7 @@ mod tests {
             a.slots[1].mem_drain
         );
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], false);
-        assert_eq!(std::fs::read_to_string(a.control_path(1)).unwrap(), "drain");
+        assert_eq!(crate::control::said(&a.control_path(1)), Some(crate::control::Say::Drain));
         // (Nothing asked for meanwhile.)
         assert!(a.guard_held(0).is_some_and(|id| id == "terrain-hi 6/1/1") && !a.takes_more());
         // The drained one reaching no safe point in the time a pause gives: stopped at once.
@@ -13311,7 +13319,11 @@ mod tests {
     fn the_checklist_says_which_steps_helpers_take() {
         let steps = build::fold(&build::checklist_to_come(), &BTreeMap::new(), &BTreeMap::new());
         let shared = |id: &str| steps.iter().find(|s| s.id == id).and_then(|s| s.shared.clone());
-        assert_eq!(shared("terrain").as_deref(), Some("terrain-hi and terrain-deep"), "the pieces, not the assemblies");
+        assert_eq!(
+            shared("terrain").as_deref(),
+            Some("terrain-lakes and terrain-hi and terrain-deep"),
+            "the pieces, not the assemblies"
+        );
         assert_eq!(shared("slope").as_deref(), Some("slope-deep and slope-hi"));
         assert_eq!(shared("roads").as_deref(), Some("all"));
         assert_eq!(shared("landmarks").as_deref(), Some("pois and peaks"));
@@ -13916,7 +13928,7 @@ mod tests {
         std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
         tend(&mut a);
         for k in 0..SLOTS {
-            assert_eq!(std::fs::read_to_string(a.control_path(k)).unwrap(), "drain");
+            assert_eq!(crate::control::said(&a.control_path(k)), Some(crate::control::Say::Drain));
             assert_eq!(
                 a.slots[k].running.as_ref().unwrap().pausing.as_deref(),
                 Some("restarting into the newly installed app (v2)")
@@ -13935,7 +13947,7 @@ mod tests {
         tend(&mut a);
         assert!(!a.update_due());
         for k in 0..SLOTS {
-            assert_eq!(std::fs::read_to_string(a.control_path(k)).unwrap(), "run");
+            assert_eq!(crate::control::said(&a.control_path(k)), Some(crate::control::Say::Run));
             assert!(a.slots[k].running.as_ref().unwrap().pausing.is_none());
         }
         // Every slot free with a newer app: due at once (one free with another's job under way:
@@ -14174,7 +14186,7 @@ mod tests {
         std::fs::write(home.join("pause.json"), serde_json::to_vec(&Some(p)).unwrap()).unwrap();
         let mut b = test_agent(opts()).unwrap();
         assert!(b.slots[0].running.as_ref().is_some_and(|r| r.adopted && r.pgid == pgid));
-        assert_eq!(std::fs::read(b.control_path(0)).unwrap(), b"drain");
+        assert_eq!(crate::control::said(&b.control_path(0)), Some(crate::control::Say::Drain));
         b.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
     }
@@ -16739,7 +16751,7 @@ mod pool_tests {
             .running
             .as_ref()
             .is_some_and(|r| r.pausing.as_deref().is_some_and(|w| w.contains("scenic pause on m1"))));
-        assert_eq!(std::fs::read(a.control_path(0)).unwrap(), b"drain");
+        assert_eq!(crate::control::said(&a.control_path(0)), Some(crate::control::Say::Drain));
         let mut waiting = Vec::new();
         assert!(!a.try_start(
             1,

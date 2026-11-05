@@ -6,6 +6,7 @@
 //! one; the far hemisphere, behind the planet, is outside (#826). Without an outline, the bounds
 //! (west > east: across the antimeridian).
 
+use det::Det;
 use roadcore::E7;
 
 /// The part of the map in view.
@@ -50,9 +51,9 @@ impl Region {
         let (mut cx, mut cy, mut cz) = (0.0, 0.0, 0.0);
         for &[x, y] in &poly {
             let (x, y) = (x.to_radians(), y.to_radians());
-            cx += y.cos() * x.cos();
-            cy += y.cos() * x.sin();
-            cz += y.sin();
+            cx += y.dcos() * x.dcos();
+            cy += y.dcos() * x.dsin();
+            cz += y.dsin();
         }
         // An outline with no centre (its points cancel out: spread round a great circle) or under
         // 3 points on the plane: the bounds.
@@ -63,7 +64,7 @@ impl Region {
         let s0 = cz / len;
         let mut r = Region {
             pts: Vec::new(),
-            centre: (cy.atan2(cx), s0, (1.0 - s0 * s0).max(0.0).sqrt()),
+            centre: (cy.datan2(cx), s0, (1.0 - s0 * s0).max(0.0).sqrt()),
             pbox: [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY],
             boxes: Vec::new(),
         };
@@ -118,13 +119,13 @@ impl Region {
     fn plane(&self, lon: f64, lat: f64) -> Option<[f64; 2]> {
         let (l0, s0, c0) = self.centre;
         let dl = lon.to_radians() - l0;
-        let (s, c, cd) = (lat.to_radians().sin(), lat.to_radians().cos(), dl.cos());
+        let (s, c, cd) = (lat.to_radians().dsin(), lat.to_radians().dcos(), dl.dcos());
         let q = 1.0 + s0 * s + c0 * c * cd;
         if q < 1e-9 {
             return None;
         }
         let k = 2.0 / q;
-        Some([k * c * dl.sin(), k * (c0 * s - s0 * c * cd)])
+        Some([k * c * dl.dsin(), k * (c0 * s - s0 * c * cd)])
     }
 
     /// Point (degrees) in view.
@@ -171,8 +172,8 @@ mod tests {
         (0..k)
             .map(|i| {
                 let b = i as f64 / k as f64 * std::f64::consts::TAU;
-                let p = (p0.sin() * d.cos() + p0.cos() * d.sin() * b.cos()).asin();
-                let l = l0 + (b.sin() * d.sin() * p0.cos()).atan2(d.cos() - p0.sin() * p.sin());
+                let p = (p0.dsin() * d.dcos() + p0.dcos() * d.dsin() * b.dcos()).dasin();
+                let l = l0 + (b.dsin() * d.dsin() * p0.dcos()).datan2(d.dcos() - p0.dsin() * p.dsin());
                 [wrap(l.to_degrees()), p.to_degrees()]
             })
             .collect()

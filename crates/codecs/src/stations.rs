@@ -170,7 +170,7 @@ pub struct Stop {
 impl Stop {
     /// The zoom from which its spacing spans one pixel (512 px tiles).
     pub fn mz(&self) -> f64 {
-        (40_075_016.7 * self.lat.to_radians().dcos() / (512.0 * self.spacing)).dlog2()
+        (roadcore::geo::merc_m(self.lat) / (512.0 * self.spacing)).dlog2()
     }
 }
 

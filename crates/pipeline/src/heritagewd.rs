@@ -31,6 +31,7 @@ use crate::pyjson::{dumps_spaced, loads, Py};
 use crate::timings::phase;
 use crate::wikiask::{urlencode, val, Asker};
 use anyhow::{bail, Context, Result};
+use det::Det;
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 use std::path::Path;
@@ -292,7 +293,7 @@ fn osm_link(
     feats: &[Feat],
 ) -> Result<Option<String>> {
     let (lon, lat) = point(site)?;
-    let (pad_x, pad_y) = (40.0 / (111320.0 * lat.to_radians().cos()), 40.0 / 110540.0);
+    let (pad_x, pad_y) = (40.0 / (roadcore::geo::M_PER_DEG * lat.to_radians().dcos()), 40.0 / roadcore::geo::M_PER_DEG);
     let p = site.at("properties");
     let names: Vec<HashSet<String>> = [p.at("name"), p.at("name_en")]
         .iter()

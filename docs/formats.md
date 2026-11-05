@@ -38,12 +38,18 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
 - Root pack: z0–2 (root "0/0/0"). Lo pack: z3–8 under one z3 tile. Hi pack: z9–14 under one z6
   tile. **The terrain** (one terrain, z0 to each place's native zoom: steps.md §2) adds deep packs,
   `layers/terrain/deep/10-<x>-<y>` (scope `deep`): z13–16 under one z10 tile, only where a dataset
-  has the detail (a deep z12, north of 67°, is in its z6 tile's hi pack) (pipeline::terrain_deep; a z6 tile's would be up to 130 GB). Every terrain tile, in
+  reaches past z12 (pipeline::terrain_deep; a z6 tile's would be up to 130 GB). Every terrain tile, in
   every scope, is Terrarium RGB as lossless WebP (`RIFF…WEBPVP8L`, the packs' encoding
-  `terrarium-webp`: pipeline::terrain_codec; heights rounded to 1 cm at the place's native zoom and
-  in the deep levels, to 10 cm coarser), served as `image/webp`. The catalogue names the deep packs
+  `terrarium-webp`: pipeline::terrain_codec), served as `image/webp`. **Heights are rounded once,
+  as stored:** a job carries its levels' heights unrounded (each coarser level the 2×2 means of the
+  finer's before rounding), and each tile is rounded as it's encoded, to 1 cm where it is its
+  place's finest zoom (pipeline::terrain_zoom) and to 10 cm coarser, ties to even (a 2×2 mean of
+  rounded heights lands on a tie about a quarter of the time: rounding ties away from zero would
+  lift heights by about a quarter quantum a level), then to Terrarium's 1/256 m. Only what a job
+  reads of another's packs (the root of the lo packs' z3) is rounded before its means. The catalogue names the deep packs
   under the layer's `deep`, each one's z10 tile's native zoom under `native_zoom`
-  (`terrain_deep::native_zoom`; elsewhere the base's finest, z12 to 67°), and the terrain's
+  (`terrain_deep::native_zoom`: its places' finest, pipeline::terrain_zoom; elsewhere their finest is
+  z12 or coarser), and the terrain's
   `maxzoom` is the finest of those. The app's meta passes `native_zoom` on as `terrainAreas`
   (`{"zoom": 10, "tiles": {"x/y": z}}`), and the map takes its terrain and shading tiles to that
   zoom there (our MapLibre's `scenic:zoom-by-area`), z12 elsewhere. The shading goes up to two
@@ -417,8 +423,10 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
   `trees-tops.bin` (`pyramid::Tops::to_bytes`).
 - **A terrain z6 tile's subtrees** (`pipeline::terrain_task`, docs/steps.md §2, Terrain): `in.sect`, meta
   `{"fmt": 2, "step": "terrainsub", "v": TERRAIN_V, "piece": "6/x/y", "subtrees": "8/x/y,…",
-  "levels": [[z, [[x, y], …]], …] (z12 → z9), "water"}`; sections `r-<z>-<x>-<y>` (a raw PNG tile,
-  the pool's base tile as the job sampled it: crate::terrain_base; none: no dataset has data there)
+  "levels": [[z, [[x, y], …]], …] (z12 → z9), "water", "native": [[z, x, y], …] (its tiles at their
+  place's finest zoom: rounded to 1 cm)}`; sections `r-<z>-<x>-<y>` (a raw PNG tile, its sampled and
+  relief quarters as the job read them, its children's left void: crate::terrain_pack::Fills; none:
+  every quarter its children's, or no dataset has data there)
   and `w-<z>-<x>-<y>` (water polygons: u32 count, each u8 kind (1 sea, 2 lake), u64 key, u32 ring
   count, each ring u32 point count and f64 pairs). `terrainsub` writes `hi.sect` (meta `{"fmt": 1, "step": "terrainsub",
   "piece", "subtrees"}`, a section `t-<z>-<x>-<y>` per tile as the hi pack holds it) and `mid.sect`
@@ -891,14 +899,20 @@ class, id) within a tile. The client sends the id with the clicked point.
   `work/trees-mid/6-x-y` (sectioned, meta `{fmt: 1, step: "trees", tile, v: TREES_V}`; per block,
   by column then row, `<layer>-8-<x>-<y>` for cover, height and leaf, then `tops-8-<x>-<y>`:
   "TREETOP1", u32 x, u32 y, zstd of cover and height (f32 × 65,536 each) and five leaf-type counts
-  (u16 × 65,536 each)); `work/terrain-mid/6-x-y` (meta `{fmt: 1, step: "terrain", tile, v:
-  TERRAIN_V}`; per z9 tile `quad-9-<x>-<y>`, its 2×2 means, f32 × 128 × 128; then `lake-ids` u64 and
-  `lake-levels` f32); `work/slope-mid/6-x-y` (meta `{fmt: 1, step: "slope", tile, v: SLOPE_V}`;
+  (u16 × 65,536 each)); `work/terrain-mid/6-x-y` and `work/terrain-deep-mid/10-x-y` (meta `{fmt: 2,
+  step: "terrain", tile, v: TERRAIN_V}`; per tile three zooms down, `quad-<z+3>-<x>-<y>`: its 2×2
+  means of its heights before rounding, f32 × 128 × 128; then `lake-ids` u64 and `lake-levels` f32:
+  a z6 tile's for its assembly, a z10 tile's for its z6 tile's terrain-hi run); `work/slope-mid/6-x-y` (meta `{fmt: 1, step: "slope", tile, v: SLOPE_V}`;
   `<z>-<x>-<y>`, each z6–8 tile as stored, `shade-webp`); `work/slope-deep-mid/10-x-y` (a slope-deep
   z10 tile's part of its z6 tile's pyramid, which that z6 tile's slope-hi run takes in: meta `{fmt:
-  1, step: "slope-deep", tile, v: SLOPE_V}`; `q`, its quadrant at full precision where it has one,
-  128 × 128 pixels each its steepness and direction's two parts, f32 little-endian, row by row; then
-  `<z>-<x>-<y>`, each z10–12 tile as stored); `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
+  2, step: "slope-deep", tile, v: SLOPE_V}`; a section `13-<x>-<y>` for each of its z13 tiles (those
+  its terrain deep pack's tiles lie in), in (x, y) order: its quadrant at full precision, 128 × 128
+  pixels each its steepness and direction's two parts, f32 little-endian, row by row (196,608
+  bytes), empty where it shades nothing); `work/terrain-lakes/10-x-y` (JSON `{fmt: 1, step:
+  "terrain-lakes", tile: "10/x/y", v, lakes: {<OSM id>: <level, m>}}`: a terrain-deep target's
+  lakes across its z10 tile's edges, each lake's level decided once for the whole lake, its run
+  takes them as known; only for a target with such a lake; `pipeline::terrain_lakes`);
+  `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
   "terrain-water", pin, digests: {target: [from, digest]}}`: per terrain target, what decides its
   tiles and a hash16 over its water tiles' polygons; `pipeline::terrain_water::WaterIdx`).
 - **Other sources:**
@@ -914,9 +928,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `sources/trees/leaf/lat<top>_lon<left>.tif` (a 10° square's dominant leaf type at 0.0005°: u8,
     0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data; `pipeline::leaftype`, GDAL's GeoTIFF
     bytes; tag `complete=1` when whole; chunks kept in `parts/lat<top>_lon<left>/<row>-<col>.npy`
-    (numpy's format) or `.none` while made; a NALCMS square's pixels rest on this Mac's libm (`sin`,
-    `cos`, `atanh`), as GDAL's did, so a square made anew on another macOS may differ: made squares
-    are kept, so no key changes);
+    (numpy's format) or `.none` while made; a NALCMS square's warp is GDAL's step for step with
+    `det`'s maths, the same bytes on every Mac, and its `source` tag says so
+    (`leaftype::NALCMS_SOURCE`): one tagged otherwise is made again);
     `sources/trees/nalcms-2020.tif` (size and CRC-32 checked).
   - Downloads kept so each is made once (temporary names end `.<host>.<pid>.tmp`):
     `sources/canopy/meta_chm_lat=<top>.0_lon=<left>.0_{median,p95,cover5m}.tif` (empty: Meta lacks
@@ -998,8 +1012,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     `spec.json`, `task.json` (`scenic run-task`'s result), `result.json` (`{ok, done: [step,
     [[target, key], …]] | null, failed, interrupted, task, error}`), until the coordinator has them.
   - **Pausing** (`pipeline::control`), in each agent's folder: `pause-request.json` (`{pause, at}`,
-    from the menu or `scenic pause`), `pause.json`, `control` (`run` or `drain`,
-    `SCENIC_CONTROL`), `done.txt` (`<step> <target>` lines, `SCENIC_DONE`). A job stopped at a safe
+    from the menu or `scenic pause`), `pause.json`, `control` (`run` or `drain`, a
+    line, the file replaced whole; one an app before task #957 wrote unended is read the same;
+    `SCENIC_CONTROL`, `control::Say`), `done.txt` (`<step> <target>` lines, `SCENIC_DONE`). A job stopped at a safe
     point exits 75. Coordinator answers carry the pause (409 `{error, pause}`, beats `{ok, pause}`);
     `POST /work/pause {pause, at}`; `/work/fail {…, interrupted}` returns a lease unheld.
     `state/build/pause.json` mirrors the lead's.

@@ -99,6 +99,11 @@ pub enum Data {
         zoom: u32,
         /// `ENCODINGS`.
         encoding: String,
+        /// Published at every zoom to `zoom` (`every_zoom = true`), so a tile of any zoom is one of
+        /// its own: what the coarse relief outside every region is read from
+        /// (crate::terrain_zoom::relief), and read at a tile's own zoom; else at `zoom` alone.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        every_zoom: bool,
     },
 }
 
@@ -219,7 +224,7 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     let format = ds("format").unwrap_or_default();
     let allowed: &[&str] = match format.as_str() {
         "geotiff" => &["format", "url", "urls", "index", "files", "store"],
-        "tiles" => &["format", "url", "zoom", "encoding"],
+        "tiles" => &["format", "url", "zoom", "encoding", "every_zoom"],
         f => {
             why.push(format!("`data.format` is \"{f}\": geotiff or tiles"));
             return Err(why);
@@ -277,7 +282,11 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
                 ENCODINGS.join(", ")
             ));
         }
-        Data::Tiles { url, zoom, encoding }
+        let every_zoom = d.get("every_zoom").map(|x| x.as_bool()).unwrap_or(Some(false));
+        if every_zoom.is_none() {
+            why.push("`data.every_zoom` isn't true or false".into());
+        }
+        Data::Tiles { url, zoom, encoding, every_zoom: every_zoom.unwrap_or(false) }
     };
     if !why.is_empty() {
         return Err(why);
@@ -294,8 +303,20 @@ pub struct Measured {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crs: Option<u16>,
     /// Metres, its full resolution (the coarsest of its sampled files'; a tile pyramid's at its
-    /// coverage's mid-latitude).
+    /// coverage's mid-latitude): the datasets' order (`order_key`).
     pub resolution: f64,
+    /// Its cell by latitude band, measured per file (a geographic GeoTIFF's: the coarser of its
+    /// two ground spacings, its longitude's at its equatorward edge): its finest zoom there
+    /// (crate::terrain_zoom). None (a pyramid, a projected one, or measured before bands were):
+    /// `resolution` everywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bands: Option<Vec<Band>>,
+    /// The tiles of the deep packs' zoom (crate::terrain_deep::PACK_Z, `[x, y]`) where its files
+    /// really have data, sorted (crate::inputs::elevation::presence_of): a place's sources are only
+    /// those with data there (crate::terrain_zoom). None (a pyramid, the world, or measured before
+    /// presence was): its coverage's cells.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<Vec<[u32; 2]>>,
     /// Where it has data: 1° cells merged into boxes (w, s, e, n); None: the world.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<Vec<[f64; 4]>>,
@@ -305,6 +326,27 @@ pub struct Measured {
     /// Where its `regions`' outlines cut it inside its cells (`scope_outline`); None: not cut so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outline: Option<Outline>,
+}
+
+/// A latitude band's cell (`Measured::bands`): south, north (degrees) and the cell (m), the
+/// coarsest of the band's files'.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Band {
+    pub south: f64,
+    pub north: f64,
+    pub cell: f64,
+}
+
+/// Files' cells by their latitude ranges (south, north, cell m) as bands (`Measured::bands`): one a
+/// range, the coarsest of its files', sorted by south then north.
+pub fn bands_of(files: &[(f64, f64, f64)]) -> Vec<Band> {
+    let mut by: BTreeMap<(i64, i64), f64> = BTreeMap::new();
+    for &(s, n, c) in files {
+        let k = ((s * 1e6).round() as i64, (n * 1e6).round() as i64);
+        let e = by.entry(k).or_insert(c);
+        *e = e.max(c);
+    }
+    by.into_iter().map(|((s, n), cell)| Band { south: s as f64 / 1e6, north: n as f64 / 1e6, cell }).collect()
 }
 
 /// A dataset's coverage cut to its regions' outlines inside its cells (docs/inputs.md §6.8,
@@ -843,6 +885,9 @@ pub enum Source {
         url: String,
         zoom: u32,
         encoding: String,
+        /// Published at every zoom (`Data::Tiles::every_zoom`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        every_zoom: bool,
     },
 }
 
@@ -1171,8 +1216,8 @@ pub fn plan_converted(
             continue;
         }
         let source = match &d.declaration.data {
-            Data::Tiles { url, zoom, encoding } => {
-                Source::Tiles { url: url.clone(), zoom: *zoom, encoding: encoding.clone() }
+            Data::Tiles { url, zoom, encoding, every_zoom } => {
+                Source::Tiles { url: url.clone(), zoom: *zoom, encoding: encoding.clone(), every_zoom: *every_zoom }
             }
             Data::Geotiff { urls, index, files, store } => {
                 let crs = d.measured.crs.context("a GeoTIFF dataset without its CRS measured")?;
@@ -1365,7 +1410,12 @@ mod tests {
             code: 1,
             resolution: 5.0,
             cover: m.cover.clone(),
-            source: Source::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 15, encoding: "gsi-png".into() },
+            source: Source::Tiles {
+                url: "https://e.org/{z}/{x}/{y}.png".into(),
+                zoom: 15,
+                encoding: "gsi-png".into(),
+                every_zoom: false,
+            },
             convert: None,
             outline: Some(std::sync::Arc::new(cut)),
         };
@@ -1595,6 +1645,26 @@ encoding = "lerc"
         assert!(parse(terrain.as_bytes()).unwrap_err()[0].contains("`terrain` isn't a field"));
     }
 
+    /// A pyramid published at every zoom says so in its declaration (`every_zoom`), never by its
+    /// encoding; a GeoTIFF has no such field, and it's true or false.
+    #[test]
+    fn every_zoom_is_declared() {
+        let tiles = |extra: &str| {
+            format!(
+                "name = \"x\"\ncredit = \"c\"\nlicence = \"CC0-1.0\"\nsurface = \"ground\"\nheights = \"EGM2008\"\ncode = 2\n[data]\nformat = \"tiles\"\nurl = \"https://e.org/{{z}}/{{x}}/{{y}}.png\"\nzoom = 12\nencoding = \"terrarium\"\n{extra}"
+            )
+        };
+        assert!(
+            matches!(parse(tiles("").as_bytes()).unwrap().data, Data::Tiles { every_zoom: false, .. }),
+            "not by its encoding"
+        );
+        assert!(matches!(
+            parse(tiles("every_zoom = true\n").as_bytes()).unwrap().data,
+            Data::Tiles { every_zoom: true, .. }
+        ));
+        assert!(parse(tiles("every_zoom = \"yes\"\n").as_bytes()).unwrap_err().join(" ").contains("every_zoom"));
+    }
+
     #[test]
     fn a_converted_datasets_line_names_its_conversion() {
         let decl = |heights: &str| {
@@ -1608,7 +1678,15 @@ encoding = "lerc"
             id: id.into(),
             path: format!("{id}.toml"),
             declaration: decl(heights),
-            measured: Measured { crs: Some(4326), resolution: 10.0, cover: None, uncut: None, outline: None },
+            measured: Measured {
+                crs: Some(4326),
+                resolution: 10.0,
+                cover: None,
+                uncut: None,
+                outline: None,
+                bands: None,
+                presence: None,
+            },
             keyed: "k".into(),
             convert: None,
         };

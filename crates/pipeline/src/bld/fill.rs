@@ -191,7 +191,7 @@ pub fn part(h: u16, est: bool, f: u8, m: u16, mf: u8, area: f32, country: &str) 
 }
 
 /// A height by rules 0–2, where the neighbours' rule finds it: Web Mercator metres (a world unit
-/// = [`super::EQ`]), footprint, height (dm).
+/// = [`roadcore::geo::MERC_C`]), footprint, height (dm).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
     pub x: f64,

@@ -155,14 +155,14 @@ const KEEP_COMMON: &[&str] = &[
     "name:ja_rm",
 ];
 
-/// A line's length, planar (111.32 km per degree of longitude at the segment's mean latitude,
-/// 110.57 of latitude), in metres rounded half-even.
+/// A line's length, planar (roadcore::geo::KM_PER_DEG a degree of latitude, and of longitude times
+/// the cosine of the segment's mean latitude), in metres rounded half-even.
 fn line_m(nodes: &[[i32; 2]]) -> u32 {
     let mut km = 0f64;
     for w in nodes.windows(2) {
         let (x0, y0, x1, y1) = (w[0][0] as f64 * E7, w[0][1] as f64 * E7, w[1][0] as f64 * E7, w[1][1] as f64 * E7);
-        let kx = 111.32 * ((y0 + y1) / 2.0).to_radians().dcos();
-        km += ((x1 - x0) * kx).dhypot((y1 - y0) * 110.57);
+        let kx = roadcore::geo::KM_PER_DEG * ((y0 + y1) / 2.0).to_radians().dcos();
+        km += ((x1 - x0) * kx).dhypot((y1 - y0) * roadcore::geo::KM_PER_DEG);
     }
     (km * 1000.0).round_ties_even() as u32
 }
@@ -172,7 +172,7 @@ fn line_m(nodes: &[[i32; 2]]) -> u32 {
 /// one cell, as the cells are wider than the searches).
 fn lon_cells(lat_e7: i32, r_m: f64, cell_e7: i64) -> i64 {
     let lat = (lat_e7 as f64 * E7).abs() + 0.01;
-    let r_deg = r_m / (111_000.0 * lat.min(85.0).to_radians().dcos());
+    let r_deg = r_m / (roadcore::geo::M_PER_DEG * lat.min(85.0).to_radians().dcos());
     ((r_deg / (cell_e7 as f64 * E7)).ceil() as i64).max(1)
 }
 
@@ -1418,7 +1418,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             if pts.len() < 2 {
                 return Err(false);
             }
-            let (mx, my) = roadcore::merc(pts[0][0] as f64 * E7, pts[0][1] as f64 * E7);
+            let (mx, my) = roadcore::geo::merc(pts[0][0] as f64 * E7, pts[0][1] as f64 * E7);
             let key = morton((mx * 4294967295.0) as u32, (my * 4294967295.0) as u32);
             Ok(Built { w: wi, pts, key })
         })

@@ -953,9 +953,8 @@ fn toward_with(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hints {
     /// The raw tiles' archive copies (`aws-terrarium/packs/<z>-<x>-<y>.…`) the terrain jobs read, by
-    /// shard (`agent::terrain_shards`: "terrain-hi 3/x/y" a z3 tile's whole run; "terrain-hi
-    /// 6/x/y" a z6 tile; "terrain-deep 10/x/y" a z10 tile's deep levels; "terrain-lo 3/x/y" an
-    /// assembly).
+    /// shard (`agent::terrain_shards`: "terrain-hi 6/x/y" a z6 tile; "terrain-deep 10/x/y" a z10
+    /// tile's band past z12; "terrain-lo 3/x/y" an assembly).
     pub terrain: BTreeMap<(u32, u32, u32), u64>,
     /// An items or heritage job: the pageview months.
     pub months: Option<u64>,
@@ -1010,13 +1009,13 @@ impl Hints {
         match step {
             "unit" => {
                 for (z, x, y) in targets.iter().filter_map(|t| tile(t)) {
-                    squares(crate::stage::tile_box_grown(z, x, y, crate::stage::MARGIN_KM));
+                    squares(roadcore::geo::tile_box_grown(z, x, y, crate::stage::MARGIN_KM));
                     sooner_in(&mut self.units, format!("{z}-{x}-{y}"), at);
                 }
             }
             "trees" => {
                 for (z, x, y) in targets.iter().filter_map(|t| tile(t)) {
-                    squares(crate::trees::tile_bounds(z, x, y));
+                    squares(roadcore::geo::tile_box(z, x, y));
                 }
             }
             s @ ("terrain-hi" | "terrain-deep" | "terrain-lo") => {
@@ -1819,7 +1818,7 @@ mod tests {
         );
         // As the agent hints a terrain run's own shard's archives (`terrain_reads`).
         let mut h = Hints::default();
-        h.add("terrain", &["3/0/0".to_string()]);
+        h.add("terrain", &["6/1/1".to_string()]);
         assert!(
             h.has(c, &c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles"))
                 && !h.has(c, &c.join("aws-terrarium/packs/6-9-9.0000000000000002.tiles"))
@@ -1936,7 +1935,7 @@ mod tests {
         let own = c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles");
         let n = whole(&own, 60);
         let mut h = Hints::default();
-        h.add("terrain", &["3/0/0".to_string()]);
+        h.add("terrain", &["6/1/1".to_string()]);
         assert!(h.has(c, &own));
         let f = clear(c, &store::nasfs::NasPath::local_for_test(nas), Level::Caches, false).unwrap();
         assert_eq!((f.freed.get("terrain"), own.exists()), (Some(&n), false));

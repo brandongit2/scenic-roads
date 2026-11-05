@@ -14,18 +14,22 @@ use std::path::{Path, PathBuf};
 pub fn main(args: Vec<String>) -> Result<()> {
     let a = Polar::parse_from(args);
     let pole = Pole::of_letter(&a.pole).context("--pole n or s")?;
-    if !(BLOCK_Z..=polar::MAX_Z).contains(&a.max_z) {
-        bail!("--max-z is {BLOCK_Z} to {}", polar::MAX_Z);
-    }
     if let Some(w) = a.workers {
         rayon::ThreadPoolBuilder::new().num_threads(w.max(1)).build_global()?;
     }
     let out = pipeline::out::Out::unbound(&store::nasfs::NasRoot::from_arg(&a.root), &a.out.join("scratch"))?;
+    let max_z = match a.max_z {
+        Some(z) => z,
+        None => polar::finest_now(&out, pole)?,
+    };
+    if !(BLOCK_Z..=pipeline::terrain_zoom::DEEPEST).contains(&max_z) {
+        bail!("--max-z is {BLOCK_Z} to {}", pipeline::terrain_zoom::DEEPEST);
+    }
     // (Over the root's latitudes: z0–3 reach about 80.6° past the cap.)
     let base = pipeline::terrain_base::Pool::read(out.root(), &out.manifest, roadcore::polar::lat_box(pole, 0, 0, 0))?;
     let net = pipeline::fetch::Fetcher::from_env();
     let o = pipeline::dem::generic::Opts { fetch: &net, store: Some(base.store.clone()), local: None };
-    let plans = polar::plans(&base.plan, a.max_z);
+    let plans = polar::plans(&base.plan, max_z);
     let samplers = polar::samplers(&plans, &o)?;
     let dir = a.out.join(pole.letter().to_string());
     let path = |kind: &str, z: u8, x: u32, y: u32| {
@@ -60,7 +64,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             &samplers,
             pole,
             b,
-            a.max_z,
+            max_z,
             &voids,
             &mut pipeline::resume_log::Pieces::none(),
             &mut |z, x, y, t| write("terrain", z, x, y, &t),
@@ -73,7 +77,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
         polar::slope_block(
             pole,
             b,
-            a.max_z,
+            max_z,
             &|z, x, y| Ok(terrain(path("terrain", z, x, y))?.map(std::sync::Arc::new)),
             &mut pipeline::resume_log::Pieces::none(),
             &mut |z, x, y, s| write("shade", z, x, y, &s),
@@ -83,12 +87,10 @@ pub fn main(args: Vec<String>) -> Result<()> {
     if only.is_empty() {
         said("root".into());
         polar::root(
-            &samplers,
             pole,
+            max_z,
             &|x, y| terrain(path("terrain", BLOCK_Z, x, y)),
             &|x, y| read(&path("shade", BLOCK_Z, x, y), roadcore::shade::decode),
-            &voids,
-            &mut pipeline::resume_log::Pieces::none(),
             &mut |z, x, y, t, s| {
                 write("terrain", z, x, y, &t)?;
                 write("shade", z, x, y, &s)

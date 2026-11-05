@@ -119,7 +119,9 @@ det!(
 mod tests {
     use super::*;
 
+    // (The platforms' own, which clippy.toml refuses everywhere else, to compare against.)
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn close_to_the_platforms() {
         // Within a few ulp of the platform's own (which this replaces for its last bits).
         for x in [0.1f64, 0.7, 1.3, 2.9, 45.0f64.to_radians(), 1e-8, 123.456] {

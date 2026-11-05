@@ -21,6 +21,7 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
+use det::Det;
 use pipeline::water::{self as wt, Cov};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
@@ -243,7 +244,7 @@ fn to_linear(v: f32) -> f32 {
     if v <= 0.04045 {
         v / 12.92
     } else {
-        ((v + 0.055) / 1.055).powf(2.4)
+        ((v + 0.055) / 1.055).dpowf(2.4)
     }
 }
 
@@ -251,7 +252,7 @@ fn to_srgb(v: f32) -> f32 {
     if v <= 0.003_130_8 {
         v * 12.92
     } else {
-        1.055 * v.powf(1.0 / 2.4) - 0.055
+        1.055 * v.dpowf(1.0 / 2.4) - 0.055
     }
 }
 

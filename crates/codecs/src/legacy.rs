@@ -5,7 +5,7 @@ use anyhow::{ensure, Result};
 use rayon::prelude::*;
 use roadcore::elev::{self, Elevs};
 use roadcore::scenic::{ch, Sample};
-use roadcore::{class, merc, Array, WayRec, Ways};
+use roadcore::{class, geo::merc, Array, WayRec, Ways};
 use std::collections::BTreeMap;
 use std::path::Path;
 

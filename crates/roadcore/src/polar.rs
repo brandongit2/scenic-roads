@@ -11,19 +11,17 @@
 use det::Det;
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
 
-/// WGS 84's semi-major axis (m) and flattening.
-pub const A: f64 = 6_378_137.0;
-pub const F: f64 = 1.0 / 298.257_223_563;
+use crate::geo::WGS84_A as A;
+/// WGS 84's flattening.
+const F: f64 = 1.0 / crate::geo::WGS84_RF;
 /// Half the side of the tiled square (m): z0 is one tile of 2 × 2^20 m, reaching 80.6° S and 80.9° N.
 pub const HALF: f64 = 1_048_576.0;
 /// A tile's side in pixels.
 pub const TS: usize = 256;
 /// The caps' tiles reach this latitude (degrees from the equator, either pole): the Web Mercator
-/// tiles stop at `MERCATOR_LAT`, so a ring of about 5 km past it gives the shading's border and
+/// tiles stop at `geo::MERCATOR_LAT`, so a ring of about 5 km past it gives the shading's border and
 /// keeps the seam inside the tiles.
 pub const CAP_LAT: f64 = 85.0;
-/// Where the Web Mercator tiles end (degrees): the seam.
-pub const MERCATOR_LAT: f64 = 85.051_128_779_806_59;
 
 /// A pole and its projection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -305,7 +303,7 @@ mod tests {
                 let (xe, ye) = forward(p, lon + 1e-6, lat);
                 let (xn, yn) = forward(p, lon, lat + 1e-6);
                 let (e, n) = east_north(p, lon);
-                let (le, ln) = ((xe - x0).hypot(ye - y0), (xn - x0).hypot(yn - y0));
+                let (le, ln) = ((xe - x0).dhypot(ye - y0), (xn - x0).dhypot(yn - y0));
                 assert!(
                     ((xe - x0) / le - e[0]).abs() < 1e-6 && ((ye - y0) / le - e[1]).abs() < 1e-6,
                     "{p:?} east at {lon}"
@@ -331,7 +329,7 @@ mod tests {
                 assert_eq!(parents, prev.iter().copied().collect(), "{p:?} z{z}");
                 prev = t;
             }
-            let r = rho(p, MERCATOR_LAT);
+            let r = rho(p, crate::geo::MERCATOR_LAT);
             assert!(r < rho(p, CAP_LAT) && rho(p, CAP_LAT) < HALF);
         }
     }

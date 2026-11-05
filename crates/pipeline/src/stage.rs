@@ -14,7 +14,6 @@
 use crate::out::Out;
 use crate::terrain_pack::ManifestTiles;
 use anyhow::{Context, Result};
-use det::Det;
 use roadcore::archive::ArchiveWriter;
 use roadcore::grid::{decode_terrain, CELLS};
 use std::collections::HashMap;
@@ -161,26 +160,12 @@ pub fn tiles_in(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
 pub fn tile_range(z: u8, b: [f64; 4]) -> [u32; 4] {
     let n = 1u32 << z;
     // (A billionth of a tile up before the floor: a box edge on a tile boundary, from
-    // tile_box_grown's round trip through degrees, can come back a hair below it and would take in
-    // the tile before.)
+    // roadcore::geo::tile_box_grown's round trip through degrees, can come back a hair below it
+    // and would take in the tile before.)
     let tile = |t: f64| ((t * n as f64 + 1e-9).floor().max(0.0) as u32).min(n - 1);
-    let x = |lon: f64| tile((lon + 180.0) / 360.0);
-    let y = |lat: f64| {
-        let r = lat.clamp(-85.05, 85.05).to_radians();
-        tile((1.0 - (r.dtan() + 1.0 / r.dcos()).dln() / std::f64::consts::PI) / 2.0)
-    };
+    let x = |lon: f64| tile(roadcore::geo::merc_x(lon));
+    let y = |lat: f64| tile(roadcore::geo::merc_clamped(0.0, lat).1);
     [x(b[0]), x(b[2]), y(b[3]), y(b[1])]
-}
-
-/// A z/x/y tile's box (degrees) grown by `km`.
-pub fn tile_box_grown(z: u8, x: u32, y: u32, km: f64) -> [f64; 4] {
-    let n = (1u64 << z) as f64;
-    let lon = |t: f64| t / n * 360.0 - 180.0;
-    let lat = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t / n)).dsinh().datan().to_degrees();
-    let (w, e, s, nn) = (lon(x as f64), lon(x as f64 + 1.0), lat(y as f64 + 1.0), lat(y as f64));
-    let dy = km / 110.574;
-    let dx = km / (111.320 * nn.abs().max(s.abs()).min(85.0).to_radians().dcos());
-    [w - dx, (s - dy).max(-85.05), e + dx, (nn + dy).min(85.05)]
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -376,10 +361,10 @@ mod tests {
     #[test]
     fn tile_ranges() {
         // The z6 tile of Newcastle (6/31/19) grown by 30 km meets its neighbours.
-        let b = tile_box_grown(6, 31, 19, 30.0);
+        let b = roadcore::geo::tile_box_grown(6, 31, 19, 30.0);
         let t = tiles_in(6, b);
         assert!(t.contains(&(31, 19)) && t.contains(&(30, 19)) && t.contains(&(32, 20)), "{t:?}");
-        assert_eq!(tiles_in(11, tile_box_grown(6, 31, 19, 0.0)).len(), 33 * 33);
+        assert_eq!(tiles_in(11, roadcore::geo::tile_box(6, 31, 19)).len(), 33 * 33);
     }
 
     /// A z6 tile's own terrain pack is copied here whole, its neighbours' that its margin only clips
@@ -392,7 +377,7 @@ mod tests {
             Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
                 .unwrap();
         let (x6, y6) = (31u32, 19u32);
-        let b = tile_box_grown(6, x6, y6, MARGIN_KM);
+        let b = roadcore::geo::tile_box_grown(6, x6, y6, MARGIN_KM);
         assert!(
             copied_whole(12, x6 << 6, y6 << 6, b) && copied_whole(9, x6 << 3, y6 << 3, b) && copied_whole(8, 0, 0, b)
         );

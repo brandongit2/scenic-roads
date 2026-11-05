@@ -10,6 +10,7 @@
 
 use crate::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, ensure, Context, Result};
+use det::Det;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -17,7 +18,7 @@ use store::nasfs::{NasPath, Place};
 use store::range::RangeRead;
 
 /// Web Mercator's half extent (m).
-pub const HALF: f64 = 20_037_508.342_789_244;
+pub const HALF: f64 = roadcore::geo::MERC_C / 2.0;
 
 /// A Web Mercator pixel's size (m) at zoom z.
 pub fn px(z: u8) -> f64 {
@@ -27,11 +28,8 @@ pub fn px(z: u8) -> f64 {
 /// Lon/lat of a global pixel corner (column, row) at zoom z.
 pub fn lonlat(z: u8, c: f64, r: f64) -> (f64, f64) {
     let p = px(z);
-    let (x, y) = (-HALF + c * p, HALF - r * p);
-    (
-        x / HALF * 180.0,
-        (2.0 * (y / HALF * std::f64::consts::PI).exp().atan() - std::f64::consts::FRAC_PI_2).to_degrees(),
-    )
+    let [lon, lat] = roadcore::geo::epsg3857_inv(-HALF + c * p, HALF - r * p);
+    (lon, lat)
 }
 
 /// The lon/lat box (w, s, e, n) of global pixels `c0..c0 + w`, `r0..r0 + h` at zoom z.
@@ -655,7 +653,7 @@ fn level_for(t: &Tiff, most: u32, c0: i64, r0: i64) -> (usize, u32) {
     let mut best = (0usize, 0u32);
     let mut askew = (0usize, 0u32);
     for (i, img) in im.iter().enumerate().skip(1) {
-        let r = (f64::from(w0) / f64::from(img.width)).log2().round();
+        let r = (f64::from(w0) / f64::from(img.width)).dlog2().round();
         if !(1.0..=16.0).contains(&r) {
             continue;
         }

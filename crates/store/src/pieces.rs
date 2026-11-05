@@ -199,13 +199,6 @@ fn prefix(
     out
 }
 
-/// A z6 tile's box in 1e-7 degrees (west, south, east, north).
-fn tile_bounds(x: u32, y: u32) -> [i32; 4] {
-    let lon = |x: u32| f64::from(x) / 64.0 * 360.0 - 180.0;
-    let lat = |y: u32| (std::f64::consts::PI * (1.0 - 2.0 * f64::from(y) / 64.0)).sinh().atan().to_degrees();
-    [lon(x), lat(y + 1), lon(x + 1), lat(y)].map(|d| (d * 1e7).round() as i32)
-}
-
 /// How `piece` of the archive `pm` is laid out: its directory's runs are read (the leaves that
 /// reach into them), none of its tiles.
 pub fn plan(pm: &PmTiles, piece: Piece) -> Result<Plan> {
@@ -241,7 +234,9 @@ pub fn plan(pm: &PmTiles, piece: Piece) -> Result<Plan> {
         Piece::Lo => {
             ((h.min_zoom, h.max_zoom.min(LO_MAX_ZOOM)), [h.min_lon_e7, h.min_lat_e7, h.max_lon_e7, h.max_lat_e7])
         }
-        Piece::Tile(x, y) => ((*HI_ZOOMS.start(), *HI_ZOOMS.end()), tile_bounds(x, y)),
+        Piece::Tile(x, y) => {
+            ((*HI_ZOOMS.start(), *HI_ZOOMS.end()), roadcore::geo::e7_box(roadcore::geo::tile_box(6, x, y)))
+        }
     };
     let prefix = prefix(h, &entries, at.len() as u64, data_len, &meta, zooms, bounds);
     Ok(Plan {

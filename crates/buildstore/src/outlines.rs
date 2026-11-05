@@ -189,8 +189,8 @@ fn ring_area_m2(r: &[[i32; 2]]) -> f64 {
         return 0.0;
     }
     let lat0 = r.iter().map(|p| p[1] as f64).sum::<f64>() / r.len() as f64 * 1e-7;
-    let kx = 111_320.0 * lat0.to_radians().dcos() * 1e-7;
-    let ky = 110_574.0 * 1e-7;
+    let kx = roadcore::geo::M_PER_DEG * lat0.to_radians().dcos() * 1e-7;
+    let ky = roadcore::geo::M_PER_DEG * 1e-7;
     let mut s = 0.0;
     for i in 0..r.len() {
         let (a, b) = (r[i], r[(i + 1) % r.len()]);
@@ -214,7 +214,10 @@ pub fn simplify(r: &[[i32; 2]], tol_m: f64) -> Vec<[i32; 2]> {
     // point at a pole (cos 0, all its x one place) would let a pole-wide edge go, drawing a
     // diagonal instead. x unscaled (metres at the equator), each point's own scale beside it.
     let lat = |p: &[i32; 2]| (f64::from(p[1]) * 1e-7).clamp(-85.051_128_78, 85.051_128_78);
-    let xy: Vec<(f64, f64)> = r.iter().map(|p| (f64::from(p[0]) * 1e-7 * 111_320.0, lat(p) * 110_574.0)).collect();
+    let xy: Vec<(f64, f64)> = r
+        .iter()
+        .map(|p| (f64::from(p[0]) * 1e-7 * roadcore::geo::M_PER_DEG, lat(p) * roadcore::geo::M_PER_DEG))
+        .collect();
     let kx: Vec<f64> = r.iter().map(|p| lat(p).to_radians().dcos()).collect();
     let mut keep = vec![false; r.len()];
     keep[0] = true;
@@ -494,8 +497,8 @@ pub const MAX_GAP_M: f64 = 1000.0;
 /// Distance (m) between two E7 points, on a local equirectangular projection.
 fn dist_m(a: [i32; 2], b: [i32; 2]) -> f64 {
     let lat = (a[1] as f64 + b[1] as f64) * 0.5e-7;
-    let dx = (b[0] as f64 - a[0] as f64) * 1e-7 * 111_320.0 * lat.to_radians().dcos();
-    let dy = (b[1] as f64 - a[1] as f64) * 1e-7 * 110_574.0;
+    let dx = (b[0] as f64 - a[0] as f64) * 1e-7 * roadcore::geo::M_PER_DEG * lat.to_radians().dcos();
+    let dy = (b[1] as f64 - a[1] as f64) * 1e-7 * roadcore::geo::M_PER_DEG;
     (dx * dx + dy * dy).sqrt()
 }
 
@@ -639,7 +642,7 @@ fn nest(outers: Vec<Vec<[i32; 2]>>, inners: Vec<Vec<[i32; 2]>>) -> Result<Vec<Ve
     let mut polys: Vec<Vec<Vec<[i32; 2]>>> = outers.into_iter().map(|o| vec![o]).collect();
     for h in inners {
         let k = (0..polys.len())
-            .filter(|&k| inside(&[&polys[k][0]], h[0]))
+            .filter(|&k| roadcore::geo::inside(&[&polys[k][0]], h[0]))
             .min_by(|&x, &y| areas[x].total_cmp(&areas[y]).then(x.cmp(&y)))
             .context("an inner ring in no outer one")?;
         polys[k].push(h);
@@ -980,28 +983,6 @@ fn write(mut parsed: Vec<Parsed>, out: &Path, mut sum: Summary) -> Result<Summar
     Ok(sum)
 }
 
-/// Whether `p` lies inside the rings (even–odd: holes and multipolygons alike).
-pub fn inside(rings: &[&[[i32; 2]]], p: [i32; 2]) -> bool {
-    let (x, y) = (p[0] as f64, p[1] as f64);
-    let mut c = false;
-    for r in rings {
-        let n = r.len();
-        if n < 3 {
-            continue;
-        }
-        let mut j = n - 1;
-        for i in 0..n {
-            let (xi, yi) = (r[i][0] as f64, r[i][1] as f64);
-            let (xj, yj) = (r[j][0] as f64, r[j][1] as f64);
-            if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
-                c = !c;
-            }
-            j = i;
-        }
-    }
-    c
-}
-
 /// The outlines: records and names in memory, rings read from the file as asked, with plain
 /// reads (the NAS's file is never mapped, nor read whole: its points are gigabytes for the
 /// planet), as the server's index reads them.
@@ -1104,7 +1085,7 @@ impl Outlines {
             .filter(|o| p[0] >= o.bbox[0] && p[0] <= o.bbox[2] && p[1] >= o.bbox[1] && p[1] <= o.bbox[3])
         {
             let rings = self.rings(o)?;
-            if inside(&rings.iter().map(Vec::as_slice).collect::<Vec<_>>(), p) {
+            if roadcore::geo::inside(&rings, p) {
                 v.push(o);
             }
         }
@@ -1563,7 +1544,7 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
         let g = opl::Geometry::read(NODES.replace("x0.0005 y0", "x0.02 y0").as_bytes()).unwrap();
         let (ok, failed) = repair_all(&[&rels[0]], &g);
         assert!(ok.is_empty());
-        assert!(failed[0].1.starts_with("a gap of 2226 m"), "{failed:?}");
+        assert!(failed[0].1.starts_with("a gap of 2224 m"), "{failed:?}");
         let g = opl::Geometry::read(NODES.replace("w2 ", "w20 ").as_bytes()).unwrap();
         let (_, failed) = repair_all(&[&rels[0]], &g);
         assert_eq!(failed[0].1, "way 2 not in the set");
@@ -1587,7 +1568,7 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
         let (kept, lost) = keep_previous(failed, Some(&prev));
         assert!(lost.is_empty());
         let (p, why, from) = &kept[0];
-        assert!(why.starts_with("a gap of 2226 m"), "{why}");
+        assert!(why.starts_with("a gap of 2224 m"), "{why}");
         assert_eq!(from, "2026-08-01");
         assert_eq!(
             (p.id, p.flags, p.name_en.as_str()),
@@ -1619,7 +1600,7 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
             let (_, failed) = repair_all(&[&rels[rels.len() - 1]], &g);
             let (kept, lost) = keep_previous(failed, prev);
             assert!(kept.is_empty());
-            assert!(lost[0].starts_with("relation 105 (PL): a gap of 2226 m"), "{lost:?}");
+            assert!(lost[0].starts_with("relation 105 (PL): a gap of 2224 m"), "{lost:?}");
         }
     }
 

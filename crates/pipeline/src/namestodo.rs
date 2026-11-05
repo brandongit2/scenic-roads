@@ -26,6 +26,7 @@
 //!   agent names them (their indexes' content names, in the job's key): never the inputs folders.
 
 use anyhow::{Context, Result};
+use det::Det;
 use names::{Kind, Lang, Names, Spoken};
 use roadcore::{class, WayRec};
 use serde_json::{json, Value};
@@ -34,8 +35,9 @@ use std::path::{Path, PathBuf};
 use store::range::PlainFile;
 use store::sect::SectReader;
 
-/// The job's version: in its key, so a change to what it writes runs it again.
-pub const VERSION: u32 = 1;
+/// The job's version: in its key, so a change to what it writes runs it again. (2, task #862: `det`'s
+/// log10.)
+pub const VERSION: u32 = 2;
 
 /// The translators' brief, `translations/todo/README.md`.
 pub const TRANSLATORS: &str = include_str!("../../../tools/names/translations-todo.md");
@@ -900,7 +902,7 @@ fn areas(
             }
             let km2 = v.get("area_km2").and_then(Value::as_f64).unwrap_or(0.0);
             let sl = v.pointer("/wd/sl").and_then(Value::as_f64);
-            let fame = sl.unwrap_or_else(|| (km2 + 1.0).log10());
+            let fame = sl.unwrap_or_else(|| (km2 + 1.0).dlog10());
             let bbox = v.get("bbox").cloned().unwrap_or(Value::Null);
             want.push(Wanted {
                 fame,
@@ -986,7 +988,7 @@ pub fn run(
     dir.create_dir_all()?;
     let mut written = HashSet::new();
     for (lang, mut es) in by_lang {
-        let pri = |e: &Entry| e.best + (e.things as f64).log10();
+        let pri = |e: &Entry| e.best + (e.things as f64).dlog10();
         es.sort_by(|a, b| {
             pri(&b.2)
                 .total_cmp(&pri(&a.2))

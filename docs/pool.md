@@ -967,7 +967,8 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   can't be written makes none, as its work would be lost), and the terrain's sampling of the
   elevation pool checks before each chunk (16 tiles) or tile read alone (terrain-hi, -deep, -lo,
   -root; a level's sampling ran 7.7 h on 3/7/3, task #705). Both check `SCENIC_CONTROL`
-  (`control::draining_lately`, read at most once a second) and end with `control::Paused`; the
+  (`control::draining_lately`, read at most once a second; the channel's say a line, the file
+  replaced whole by the agent, `control::tell`, so a read never sees part of one, task #957) and end with `control::Paused`; the
   step (depth and depth-lo too) catches it once its uploads in flight have landed and exits as
   paused, the target unsaved and not noted done, its log kept (a level's sampling not yet in a
   block is redone). terrain-deep's base tiles not yet begun when it stops aren't (only those under

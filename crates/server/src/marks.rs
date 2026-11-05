@@ -121,6 +121,7 @@ impl FilterHists {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use det::Det;
     use pipeline::marks::heritage_tier;
     use serde_json::json;
 
@@ -190,7 +191,7 @@ mod tests {
         // ele 1000 on 0–6000 lin: bin floor(1000 / 6000 × 128) = 21.
         assert_eq!(d["peak.ele"].0[21], 1.0);
         // An age axis: year 1900 → −log10(130).
-        assert!((axis_pos(Axis::Age, 1900.0) + 130f64.log10()).abs() < 1e-12);
+        assert!((axis_pos(Axis::Age, 1900.0) + 130f64.dlog10()).abs() < 1e-12);
     }
 }
 

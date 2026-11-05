@@ -607,6 +607,7 @@ pub fn cost_table(regions: &[RegionLeft], cost: &dyn Fn(&str, &str) -> Cost) -> 
     };
     for r in regions {
         put("terrain-hi", &mut r.own_terrain.iter());
+        put("terrain-lakes", &mut r.own_terrain_lakes.iter());
         put("terrain-deep", &mut r.own_terrain_deep.iter());
         put("terrain-lo", &mut r.own_terrain_lo.iter());
         put("unit", &mut r.own_units.iter().chain(&r.expected));
@@ -1137,7 +1138,7 @@ struct Index {
 /// once (sorted, no repeats): a region's terrain that its z6 tiles wait for, all the terrain, all
 /// before the steps after. (Lead memory, 25 Oct: each slope target had its own copy of its z3
 /// tiles' terrain, about 6,750 items, 8.7 GB of the agents' 17 GB. Since #864 a slope target's own
-/// list is only what it reads: a slope-deep's 15 at most, a slope-hi's 10 and its 256 z10 tiles'.)
+/// list is only what it reads: a slope-deep's 5 at most, a slope-hi's 10 and its 256 z10 tiles'.)
 struct Items {
     items: Vec<Item>,
     region_items: Vec<Vec<usize>>,
@@ -1218,17 +1219,22 @@ fn items(inp: &Input) -> Items {
                 (Vec::new(), Vec::new()),
             );
         }
-        // (The deep levels wait for nothing: their base is made from the pool.)
-        for t in &r.own_terrain_deep {
+        // (The deep targets' lakes' levels wait for nothing; the deep levels for those alone: their
+        // base is made from the pool.)
+        for t in &r.own_terrain_lakes {
             add(
                 &mut out,
                 &mut by_target,
-                "terrain-deep",
+                "terrain-lakes",
                 t,
-                inp.cost("terrain-deep", t),
+                inp.cost("terrain-lakes", t),
                 Phase::Region,
                 (Vec::new(), Vec::new()),
             );
+        }
+        for t in &r.own_terrain_deep {
+            let deps = reads(&by_target, &mut groups, "terrain-deep", t);
+            add(&mut out, &mut by_target, "terrain-deep", t, inp.cost("terrain-deep", t), Phase::Region, deps);
         }
         for q in &r.own_terrain_lo {
             let deps = reads(&by_target, &mut groups, "terrain-lo", q);
@@ -1284,6 +1290,7 @@ fn items(inp: &Input) -> Items {
         let mut mine: Vec<usize> = Vec::new();
         for (step, list) in [
             ("terrain-hi", &r.terrain),
+            ("terrain-lakes", &r.terrain_lakes),
             ("terrain-deep", &r.terrain_deep),
             ("terrain-lo", &r.terrain_lo),
             ("unit", &r.units),

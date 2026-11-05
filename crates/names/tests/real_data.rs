@@ -5,6 +5,7 @@
 //!
 //! scans: data/build
 
+use det::Det;
 use names::mvt::{self, gunzip_if_gzip, LayerRule, Tile, Value, LABELS, MAIN, OPENMAPTILES, SUB};
 use names::{Kind, Lang, Names};
 use std::fs::File;
@@ -29,9 +30,9 @@ fn build(file: &str) -> Option<PathBuf> {
 
 /// The tile holding (lon, lat) at zoom z.
 fn tile_at(z: u32, lon: f64, lat: f64) -> (u32, u32) {
-    let n = f64::from(z).exp2();
-    let x = ((lon + 180.0) / 360.0 * n).floor() as u32;
-    let y = ((1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n).floor() as u32;
+    let n = f64::from(z).dexp2();
+    let (x, y) = roadcore::geo::merc(lon, lat);
+    let (x, y) = ((x * n).floor() as u32, (y * n).floor() as u32);
     (x, y)
 }
 

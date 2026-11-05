@@ -408,7 +408,7 @@ fn area_row(line: &str) -> Result<Option<Row>> {
         return Ok(None);
     }
     let Some(pt) = interior_point(&polys) else { return Ok(None) };
-    let km2 = area(&polys) * 111.32 * 110.57 * pt[1].to_radians().dcos();
+    let km2 = area(&polys) * roadcore::geo::KM_PER_DEG * roadcore::geo::KM_PER_DEG * pt[1].to_radians().dcos();
     let score = (km2 + 1e-4).dlog10() + 4.0 + if class == "national_park" { 1.0 } else { 0.0 };
     let (en, kana, langs) = own(&t, name);
     Ok(Some(Row {
@@ -451,7 +451,10 @@ fn dedupe(rows: &[Row]) -> Vec<bool> {
         idx.sort_by(|&a, &b| (-rows[a].score).total_cmp(&-rows[b].score));
         let mut kept: Vec<P> = Vec::new();
         for i in idx {
-            let (x, y) = (rows[i].lon * 111.32 * rows[i].lat.to_radians().dcos(), rows[i].lat * 110.57);
+            let (x, y) = (
+                rows[i].lon * roadcore::geo::KM_PER_DEG * rows[i].lat.to_radians().dcos(),
+                rows[i].lat * roadcore::geo::KM_PER_DEG,
+            );
             if kept.iter().any(|k| (k[0] - x).dhypot(k[1] - y) < DEDUPE_KM) {
                 keep[i] = false;
                 continue;
@@ -684,14 +687,7 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
         }
         eprintln!("  {k}: {}, isolation done ({:.0?})", idx.len(), t0.elapsed());
     }
-    let tx: Vec<f64> = rows.iter().map(|r| (r.lon + 180.0) / 360.0).collect();
-    let ty: Vec<f64> = rows
-        .iter()
-        .map(|r| {
-            let lat = r.lat.clamp(-85.05, 85.05);
-            0.5 - (std::f64::consts::PI / 4.0 + lat.to_radians() / 2.0).dtan().dln() / (2.0 * std::f64::consts::PI)
-        })
-        .collect();
+    let (tx, ty): (Vec<f64>, Vec<f64>) = rows.iter().map(|r| roadcore::geo::merc_clamped(r.lon, r.lat)).unzip();
     // (ms shifts by half the spacing's log2: up to this much sooner at MIN_PX.)
     let shift = 0.5 * (DEFAULT_PX / MIN_PX).dlog2();
     let first: Vec<u32> =

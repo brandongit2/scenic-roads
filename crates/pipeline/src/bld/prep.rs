@@ -12,11 +12,12 @@
 //! written as a block per z14 tile.
 
 use super::work::{self, flag, osm, Block, Meta};
-use super::{e7, z14_key, DEG_M};
+use super::{e7, z14_key};
 use crate::legacy::TileId;
 use anyhow::{bail, ensure, Context, Result};
 use det::Det;
 use rayon::prelude::*;
+use roadcore::geo::M_PER_DEG;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -465,7 +466,7 @@ impl Prepped {
                 if (x >> 8, y >> 8) != (t.x, t.y) {
                     return Ok(None);
                 }
-                let area = (a * DEG_M * DEG_M * c[1].to_radians().dcos()) as f32;
+                let area = (a * M_PER_DEG * M_PER_DEG * c[1].to_radians().dcos()) as f32;
                 // Rounded to E7, each ring without its closing point.
                 let mut nrings = vec![0u32; np as usize];
                 let mut ring_len = Vec::with_capacity(rings.len());
@@ -742,7 +743,7 @@ pub fn read(
     let src = Sources::read(root, release, ghsl)?
         .with_context(|| format!("{}: nothing downloaded (no buildings.json)", release_dir(release)))?;
     drop(p);
-    let b = super::tile_box_deg(6, t.x, t.y);
+    let b = roadcore::geo::tile_box(6, t.x, t.y);
     let d = PART_MARGIN_DEG;
     let pb = [b[0] - d, b[1] - d, b[2] + d, b[3] + d];
     let meets = |a: [f64; 4], b: [f64; 4]| a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];

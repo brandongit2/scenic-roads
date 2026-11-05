@@ -2,8 +2,9 @@
 //! raises as cores free up and lowers when they are wanted (docs/pool.md §7.1, Threads re-granted).
 //!
 //! A check lasts hours, one target: its job's grant is taken as it changes, not as a target begins
-//! (crate::control::on_grant). The agent keeps a file (crate::control::THREADS_ENV) with the threads
-//! the job may use at the moment, and the check's pools are as wide as `width`, their tasks each
+//! (crate::control::on_grant). The agent keeps a file (crate::control::THREADS_ENV, replaced whole by
+//! crate::control::grant, so a read never meets it emptied and falls back to every core) with the
+//! threads the job may use at the moment, and the check's pools are as wide as `width`, their tasks each
 //! taking a `permit` for as long as they run: no more tasks run at once than the file says,
 //! whichever threads the pool has. A change is seen within `POLL`.
 

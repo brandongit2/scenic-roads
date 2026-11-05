@@ -3,7 +3,6 @@
 //! tile by tile from the parent tile's cut geometry down to the deepest zoom; a zoom keeps the
 //! vertices important at its tolerance. Extent 4096, a buffer of 64 units around each tile.
 
-use det::Det;
 use names::mvt::{Feature as MvtFeature, Layer, Tile, Value};
 use std::collections::HashMap;
 
@@ -56,13 +55,6 @@ struct TF {
     rings: Vec<Vec<V>>,
     outer: Vec<bool>,
     bbox: [f64; 4],
-}
-
-fn merc(lon: f64, lat: f64) -> (f64, f64) {
-    let s = (lat.clamp(-85.051_128_78, 85.051_128_78)).to_radians().dsin();
-    let x = lon / 360.0 + 0.5;
-    let y = 0.5 - 0.25 * ((1.0 + s) / (1.0 - s)).dln() / std::f64::consts::PI;
-    (x, y.clamp(0.0, 1.0))
 }
 
 /// Douglas–Peucker importance of a polyline's inner vertices (squared distances); ends get 1.
@@ -127,7 +119,7 @@ fn prepare(fs: &[Feature]) -> Vec<TF> {
         let to = |r: &[[f64; 2]]| -> Vec<V> {
             r.iter()
                 .map(|p| {
-                    let (x, y) = merc(p[0], p[1]);
+                    let (x, y) = roadcore::geo::merc_clamped(p[0], p[1]);
                     V { x, y, imp: 0.0 }
                 })
                 .collect()

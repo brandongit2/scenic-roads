@@ -18,14 +18,16 @@
 //!
 //! GDAL and PROJ are built by clang, which fuses a multiply and an add in one expression into a
 //! multiply-add (the left operand's product if it's one, else the right's): fused here the same
-//! (`mul_add`). The transcendental functions are this Mac's libm's (`f64::sin` and the rest are
-//! Apple's), as GDAL's and PROJ's were: the squares are made on the Macs only.
+//! (`mul_add`). The transcendental functions are `det`'s (musl's), not the platform's libm GDAL and
+//! PROJ call, so a square is the same bytes on every machine; a point within an ulp of a pixel's
+//! edge may take the pixel beside the one GDAL took on a Mac.
 //!
 //! The cases a NALCMS square never meets fail rather than guess: a destination corner or edge
 //! point that doesn't transform (GDAL would sample a grid), a pole inside the square (likewise), a
 //! source window GDAL would call bogus.
 
 use anyhow::{bail, ensure, Result};
+use det::Det;
 
 /// PROJ's degree.
 const DEG_TO_RAD: f64 = 0.017453292519943296;
@@ -77,12 +79,12 @@ fn clenshaw(s: f64, c: f64, f: &[f64; 6]) -> f64 {
 impl Laea {
     /// `+proj=laea +lat_0=lat0 +lon_0=lon0 +x_0=0 +y_0=0 +ellps=WGS84`, as PROJ sets it up.
     pub fn new(lat0: f64, lon0: f64) -> Result<Laea> {
-        let (a, rf) = (6378137.0f64, 298.257223563f64);
+        let (a, rf) = (roadcore::geo::WGS84_A, roadcore::geo::WGS84_RF);
         let f = 1.0 / rf;
         let es = 2.0f64.mul_add(f, -(f * f));
         let e = es.sqrt();
-        let alpha = e.asin();
-        let t = (alpha / 2.0).tan();
+        let alpha = e.dasin();
+        let t = (alpha / 2.0).dtan();
         let n = t * t;
         ensure!(n.abs() < 0.01, "PROJ's authalic series apply only below n = 0.01");
         let one_es = 1.0 - es;
@@ -120,14 +122,14 @@ impl Laea {
         }
         // qp: pj_authalic_lat_q(1).
         let e1 = e * 1.0;
-        let qp = one_es * (1.0 / (-e1).mul_add(e1, 1.0) + e1.atanh() / e);
+        let qp = one_es * (1.0 / (-e1).mul_add(e1, 1.0) + e1.datanh() / e);
         let phi0 = lat0 * DEG_TO_RAD;
         ensure!(phi0.abs() > 1e-10 && (phi0.abs() - std::f64::consts::FRAC_PI_2).abs() >= 1e-10, "an oblique aspect");
         let rq = (0.5 * qp).sqrt();
-        let (sinphi, cosphi) = (phi0.sin(), phi0.cos());
+        let (sinphi, cosphi) = (phi0.dsin(), phi0.dcos());
         let b1 = phi0 + clenshaw(sinphi, cosphi, &apa);
-        let (sinb1, cosb1) = (b1.sin(), b1.cos());
-        let dd = phi0.cos() / ((-(es * sinphi)).mul_add(sinphi, 1.0).sqrt() * rq * cosb1);
+        let (sinb1, cosb1) = (b1.dsin(), b1.dcos());
+        let dd = phi0.dcos() / ((-(es * sinphi)).mul_add(sinphi, 1.0).sqrt() * rq * cosb1);
         let ymf = rq / dd;
         let xmf = rq * dd;
         Ok(Laea { a, lam0: lon0 * DEG_TO_RAD, apa, sinb1, cosb1, xmf, ymf, xy_factor: 1.0 / DEG_TO_RAD })
@@ -158,10 +160,10 @@ impl Laea {
         lam = Self::adjlon(lam);
         lam = Self::adjlon((lam - 0.0) - self.lam0);
         // laea_e_forward, oblique.
-        let (coslam, sinlam) = (lam.cos(), lam.sin());
-        let (sinphi, cosphi) = (phi.sin(), phi.cos());
+        let (coslam, sinlam) = (lam.dcos(), lam.dsin());
+        let (sinphi, cosphi) = (phi.dsin(), phi.dcos());
         let xi = phi + clenshaw(sinphi, cosphi, &self.apa);
-        let (sinb, cosb) = (xi.sin(), xi.cos());
+        let (sinb, cosb) = (xi.dsin(), xi.dcos());
         let b = (self.cosb1 * cosb).mul_add(coslam, self.sinb1.mul_add(sinb, 1.0));
         if b.abs() < 1e-10 {
             return None;

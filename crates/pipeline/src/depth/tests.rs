@@ -7,6 +7,7 @@ use super::grids::{tests::grid_file, window_box, Grid as SGrid, Source};
 use super::*;
 use crate::out::Out;
 use crate::terrain_water::{Kind as WKind, Poly, WaterSource};
+use det::Det;
 use std::path::Path;
 
 /// The fixture's z6 tile.
@@ -829,7 +830,7 @@ fn the_floors_shading_is_the_depths_pyramid() {
     let px = |k: (u8, u32, u32)| decode(&shade[&k]).unwrap();
     let z8 = px((8, 74, 91));
     let lat = 45.5f64.to_radians();
-    let d = 40_075_016.686 * lat.cos() / (256.0 * 256.0);
+    let d = roadcore::geo::MERC_C * lat.dcos() / (256.0 * 256.0);
     let want = 100.0 / d as f32;
     let p = z8[128 * 256 + 100];
     // (Its steepness within the gentlest codes' step, 0.07 % there.)

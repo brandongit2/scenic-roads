@@ -27,7 +27,7 @@ use rayon::prelude::*;
 use roadcore::archive::Archive;
 use roadcore::grid::{GridIndex, CELLS};
 use roadcore::scenic::{sflag, Sample, EYE_M, NEAR_AZ, NEAR_MAX_M, RAIL_EYE_M, SAMPLE_SPACING_M};
-use roadcore::{class, dist_m, flag, merc, Array, Ways, E7};
+use roadcore::{class, dist_m, flag, geo::merc, Array, Ways, E7};
 use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::ops::Range;
@@ -673,7 +673,7 @@ impl Bands {
         }
         // A grid cell row's sub-samples read two rows (worked out as the grid loop does), across the
         // tile's columns.
-        let lon_of = |gx: f64| gx / roadcore::grid::WORLD * 360.0 - 180.0;
+        let lon_of = |gx: f64| roadcore::geo::merc_lon(gx / roadcore::grid::WORLD);
         let cells: Vec<TileBands> = tiles
             .par_iter()
             .zip(todo_t)
@@ -804,7 +804,7 @@ fn canopy(dir: &Path) -> Result<()> {
     let n_s = todo_s.iter().filter(|&&t| t).count();
     let n_t = todo_t.iter().filter(|&&t| t).count();
     // 10° tiles with something to do (a sample or grid tile, with the near-field margin).
-    let margin = NEAR_MAX_M / 111_000.0 * 2.0;
+    let margin = NEAR_MAX_M / roadcore::geo::M_PER_DEG * 2.0;
     let touches = |top: i32, left: i32, lon: f64, lat: f64| {
         lon >= left as f64 - margin
             && lon <= left as f64 + 10.0 + margin
@@ -819,7 +819,7 @@ fn canopy(dir: &Path) -> Result<()> {
                 }
                 let lon = (g[0] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD * 360.0 - 180.0;
                 let y = (g[1] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD;
-                let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).dsinh().datan().to_degrees();
+                let lat = roadcore::geo::merc_lat(y);
                 touches(top, left, lon, lat)
                     || (lon - (left as f64 + 5.0)).abs() < 6.0 && (lat - (top as f64 - 5.0)).abs() < 6.0
             })
@@ -848,9 +848,7 @@ fn canopy(dir: &Path) -> Result<()> {
             if !t {
                 continue;
             }
-            let lat_of = |y: f64| {
-                (std::f64::consts::PI * (1.0 - 2.0 * y * 256.0 / roadcore::grid::WORLD)).dsinh().datan().to_degrees()
-            };
+            let lat_of = |y: f64| roadcore::geo::merc_lat(y * 256.0 / roadcore::grid::WORLD);
             let lon_of = |x: f64| x * 256.0 / roadcore::grid::WORLD * 360.0 - 180.0;
             let (w, e, n, so) =
                 (lon_of(g[0] as f64), lon_of(g[0] as f64 + 1.0), lat_of(g[1] as f64), lat_of(g[1] as f64 + 1.0));
@@ -929,7 +927,7 @@ fn canopy(dir: &Path) -> Result<()> {
                     let cols: Vec<[Option<usize>; 2]> = (0..256usize)
                         .map(|cx| {
                             let gx = tile[0] as f64 * 256.0 + cx as f64;
-                            [0.25, 0.75].map(|ox| t.col((gx + ox) / roadcore::grid::WORLD * 360.0 - 180.0))
+                            [0.25, 0.75].map(|ox| t.col(roadcore::geo::merc_lon((gx + ox) / roadcore::grid::WORLD)))
                         })
                         .collect();
                     for cy in (0..256usize).filter(|&cy| cells[cy] as usize == k) {
@@ -1015,7 +1013,7 @@ static ROADSIDE_DIRS: LazyLock<[(f64, f64); 16]> = LazyLock::new(compass);
 /// Metres per degree of longitude and of latitude at latitude `lat`: near_field's steps (and so how
 /// far its lookups reach, Bands).
 fn m_per_deg(lat: f64) -> (f64, f64) {
-    (111_320.0 * lat.to_radians().dcos(), 111_320.0)
+    (roadcore::geo::M_PER_DEG * lat.to_radians().dcos(), roadcore::geo::M_PER_DEG)
 }
 
 /// Near-field horizon per direction (0.5° units; merged by max across tiles) through

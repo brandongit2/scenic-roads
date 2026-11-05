@@ -144,7 +144,7 @@ impl Sources {
     /// name and ETag, with those row groups' indexes; each GHSL tile meeting it, by name and size.
     /// Empty: it reads nothing.
     pub fn read_for(&self, x: u32, y: u32) -> Vec<String> {
-        let b = super::tile_box_deg(6, x, y);
+        let b = roadcore::geo::tile_box(6, x, y);
         let pb = [b[0] - PART_MARGIN_DEG, b[1] - PART_MARGIN_DEG, b[2] + PART_MARGIN_DEG, b[3] + PART_MARGIN_DEG];
         let mut out = Vec::new();
         for f in &self.files {
@@ -174,7 +174,7 @@ impl Sources {
     /// The rows of the row groups bldprep reads for z6 tile (x, y): what its memory goes by (B1:
     /// 0.3 GB and 160 B a row read; a row group's rows outside T counted too, so a little over).
     pub fn rows_for(&self, x: u32, y: u32) -> u64 {
-        let b = super::tile_box_deg(6, x, y);
+        let b = roadcore::geo::tile_box(6, x, y);
         let pb = [b[0] - PART_MARGIN_DEG, b[1] - PART_MARGIN_DEG, b[2] + PART_MARGIN_DEG, b[3] + PART_MARGIN_DEG];
         self.files
             .iter()
@@ -278,7 +278,7 @@ pub(crate) mod tests {
     pub(crate) fn write(root: &store::nasfs::NasRoot, release: &str) {
         let base = root.join(release_dir(release));
         base.create_dir_all().unwrap();
-        let b = crate::bld::tile_box_deg(6, 56, 25);
+        let b = roadcore::geo::tile_box(6, 56, 25);
         let listed = serde_json::json!({"files": {
             "theme=buildings/type=building/a.parquet": {"etag": "ea"},
             "theme=buildings/type=building_part/p.parquet": {"etag": "ep"},

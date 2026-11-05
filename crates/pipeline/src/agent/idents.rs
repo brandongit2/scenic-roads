@@ -228,18 +228,16 @@ pub fn bld_sources(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 }
 
 /// What a terrain z6 tile's run reads of the coverage (task #832, `build::piece_coverage`: the
-/// tiles of its levels it makes); a terrain-deep z10 tile's, that of each z6 tile its base is made
-/// of (crate::terrain_deep::base_want).
+/// tiles of its levels it makes); a terrain-deep z10 tile's, its levels' (`build::deep_coverage`).
+/// None while the declared datasets can't be read.
 pub fn coverage_piece(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    let pieces: std::collections::BTreeSet<(u32, u32)> = match u.z {
-        6 => [(u.x, u.y)].into(),
-        z if z == crate::terrain_deep::PACK_Z => {
-            crate::terrain_deep::base_want((u.x, u.y)).iter().map(|&(z, x, y)| (x >> (z - 6), y >> (z - 6))).collect()
-        }
+    let sets = x.tiles.zoom_sets(x.m)?;
+    Some(vec![match u.z {
+        6 => super::build::piece_coverage(x.cov, &sets, (u.x, u.y)),
+        z if z == crate::terrain_deep::PACK_Z => super::build::deep_coverage(x.cov, &sets, (u.x, u.y)),
         _ => return None,
-    };
-    Some(pieces.into_iter().map(|p| format!("6/{}/{} {}", p.0, p.1, super::build::piece_coverage(x.cov, p))).collect())
+    }])
 }
 
 /// The pass the target is of (its planet's date).
@@ -288,7 +286,7 @@ fn unit_of<'a>(t: &str, x: &KeyCtx<'a>) -> Option<(TileId, &'a crate::reach::Rea
 
 /// The box a z6 tile's roads stage over (its tile + crate::stage::MARGIN_KM).
 fn unit_box(u: TileId) -> [f64; 4] {
-    crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM)
+    roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM)
 }
 
 /// A z6 tile's road values (`sources/osm/<date>/roads/`), when made.
@@ -374,7 +372,7 @@ pub fn water_pin(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// `build::depth_water_reads` once the depth's sources are read): what the terrain-water job
 /// digests, "<target> <from>" each.
 pub fn water_wants(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    let mut wants = super::build::water_wants(x.cov);
+    let mut wants = super::build::water_wants(x.cov, &x.tiles.zoom_sets(x.m)?);
     if let Some(d) = x.tiles.depth(x.m) {
         wants.extend(super::build::depth_water_reads(x.cov, &d).into_iter().map(|(t, f, _)| (t, f)));
         wants.sort();
@@ -391,7 +389,10 @@ pub fn water(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let pin = crate::terrain_pack::water_source_pin(x.m);
     let idx = pin.as_deref().and_then(|p| x.tiles.water_idx(x.m, p));
     let from = match u.z {
-        6 => super::build::piece_water_from(&super::build::piece_coverage(x.cov, (u.x, u.y))),
+        6 => super::build::piece_water_from(&super::build::piece_coverage(x.cov, &x.tiles.zoom_sets(x.m)?, (u.x, u.y))),
+        z if z == crate::terrain_deep::PACK_Z => {
+            super::build::piece_water_from(&super::build::deep_coverage(x.cov, &x.tiles.zoom_sets(x.m)?, (u.x, u.y)))
+        }
         _ => crate::terrain_water::AREA_FROM.to_string(),
     };
     Some(vec![super::build::water_key(pin.as_deref(), idx, t, &from)?])
@@ -401,55 +402,41 @@ pub fn water(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// their lines as the roads' keys name them); None while they can't be told.
 pub fn datasets_terrain(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    Some(lines_of("", &x.tiles.terrain_datasets(x.m, crate::stage::tile_box_grown(u.z, u.x, u.y, 0.0))?))
+    Some(lines_of("", &x.tiles.terrain_datasets(x.m, roadcore::geo::tile_box(u.z, u.x, u.y))?))
 }
 
-/// What a terrain z6 tile's deep levels read of the fine datasets (crate::terrain_deep::piece_key_lines);
-/// None while they can't be read.
-pub fn deep_lines(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+/// What a terrain target reads of the declared datasets' zooms (crate::terrain_zoom::key_lines over
+/// its tile: each meeting it, the zoom it reaches there), and the deep band's code where it has
+/// some (crate::terrain_deep::target_key_lines); None while they can't be read.
+pub fn zoom_lines(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    Some(lines_of("", &crate::terrain_deep::piece_key_lines(x.tiles.fine(x.m)?.as_slice(), x.cov, (u.x, u.y))))
+    let sets = x.tiles.zoom_sets(x.m)?;
+    Some(match u.z {
+        z if z == crate::terrain_deep::PACK_Z => {
+            lines_of("", &crate::terrain_deep::target_key_lines(&sets, (u.x, u.y)))
+        }
+        _ => crate::terrain_zoom::key_lines(&sets, u.z, u.x, u.y),
+    })
 }
 
 /// "no hi tiles" for a terrain z6 tile that makes none (crate::terrain_pack::makes_hi): its run
-/// drops any hi pack an earlier one left.
+/// drops any hi pack an earlier one left. None while the declared datasets can't be read.
 pub fn makes_hi(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    Some(if crate::terrain_pack::makes_hi(x.cov, (u.x, u.y)) { Vec::new() } else { vec!["no hi tiles".into()] })
+    let sets = x.tiles.zoom_sets(x.m)?;
+    Some(if crate::terrain_pack::makes_hi(x.cov, &sets, (u.x, u.y)) { Vec::new() } else { vec!["no hi tiles".into()] })
 }
 
-/// What a terrain-deep z10 tile reads of the fine datasets (crate::terrain_deep::target_key_lines);
-/// None while they can't be read.
-pub fn fine_lines(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+/// The deep mids a terrain z6 tile takes in (crate::terrain_deep::mids_under), by content: its z12
+/// tiles' quarters there.
+pub fn terrain_deep_mids(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    Some(lines_of("", &crate::terrain_deep::target_key_lines(x.tiles.fine(x.m)?.as_slice(), (u.x, u.y))))
-}
-
-/// What a terrain-deep z10 tile's base reads (it's made as its z6 tiles' terrain-hi runs make it):
-/// of each z6 tile it's made of near the coverage, what that tile's terrain-hi key names of the
-/// coverage, the datasets and its deep levels, and the water; None while any can't be told.
-pub fn deep_bases(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    let u = TileId::parse(t)?;
-    let near: std::collections::BTreeSet<(u32, u32)> =
-        super::build::coverage_tiles(x.cov).values().flatten().copied().collect();
-    let bases: std::collections::BTreeSet<(u32, u32)> = crate::terrain_deep::base_want((u.x, u.y))
-        .iter()
-        .map(|&(z, a, b)| (a >> (z - 6), b >> (z - 6)))
-        .filter(|p| near.contains(p))
-        .collect();
-    let mut v = Vec::new();
-    for (a, b) in bases {
-        let p = format!("6/{a}/{b}");
-        for (name, f) in [
-            ("coverage", coverage_piece as super::steps::Ident),
-            ("datasets", datasets_terrain),
-            ("deep", deep_lines),
-            ("water", water),
-        ] {
-            v.extend(f(&p, x)?.into_iter().map(|l| format!("{p} {name} {l}")));
-        }
-    }
-    Some(v)
+    Some(
+        crate::terrain_deep::mids_under(x.m, (u.x, u.y))
+            .into_iter()
+            .map(|(f, c)| format!("10/{}/{} {c}", f.0, f.1))
+            .collect(),
+    )
 }
 
 /// The declared pyramids read tile by tile (not terrarium) meeting a z6 tile, their lines as the
@@ -460,10 +447,10 @@ pub fn pyramids(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let e = x.tiles.elevation(x.m).ok()??;
     let pyr: Vec<_> = e
         .iter()
-        .filter(|(a, _)| matches!(&a.declaration.data, Data::Tiles { encoding, .. } if encoding != "terrarium"))
+        .filter(|(a, _)| matches!(&a.declaration.data, Data::Tiles { every_zoom: false, .. }))
         .cloned()
         .collect();
-    Some(crate::dem::declared::meeting(&pyr, crate::stage::tile_box_grown(6, u.x, u.y, 0.0)))
+    Some(crate::dem::declared::meeting(&pyr, roadcore::geo::tile_box(6, u.x, u.y)))
 }
 
 /// The terrain-deep targets over a z6 tile (crate::terrain_deep::targets_in: whose base tiles the
@@ -472,11 +459,32 @@ pub fn deep_targets(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
     let z = crate::terrain_deep::PACK_Z;
     Some(
-        crate::terrain_deep::targets_in(x.tiles.fine(x.m)?.as_slice(), x.cov, (u.x, u.y))
+        crate::terrain_deep::targets_in(x.tiles.zoom_sets(x.m)?.as_slice(), x.cov, (u.x, u.y))
             .into_iter()
             .map(|(a, b)| format!("{z}/{a}/{b}"))
             .collect(),
     )
+}
+
+/// The terrain's water source (crate::terrain_pack::water_source_pin), "-" without one (no lake
+/// read): what terrain-lakes reads of the water, past its own tiles where a lake goes on.
+pub fn water_source(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    Some(vec![crate::terrain_pack::water_source_pin(x.m).unwrap_or_else(|| "-".into())])
+}
+
+/// The accepted elevation datasets and sources whole (the pool, the fine datasets, the Terrarium
+/// pyramid, the geoids: crate::terrain_resume::inputs), by their versions' content: what a run
+/// sampling the pool past its own tile reads (terrain-lakes).
+pub fn elevation_all(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    Some(crate::terrain_resume::inputs(x.m).lines().map(str::to_string).collect())
+}
+
+/// The levels of a terrain-deep target's lakes across its edges (crate::terrain_lakes), its own
+/// file by content: "<logical>=<content>", "-" where it has none.
+pub fn deep_lakes(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    let u = TileId::parse(t).filter(|u| u.z == crate::terrain_deep::PACK_Z)?;
+    let l = crate::terrain_lakes::logical((u.x, u.y));
+    Some(vec![x.m.get(&l).map_or_else(|| "-".to_string(), |c| format!("{l}={c}"))])
 }
 
 /// The mids of a z3 tile's z6 tiles near the coverage (`build::coverage_tiles`) of the terrain or

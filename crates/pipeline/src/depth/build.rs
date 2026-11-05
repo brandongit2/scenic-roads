@@ -44,8 +44,9 @@ use std::sync::Arc;
 /// only at a grid's own zoom, the coarser levels the mean of the finer, task #804; 6: its
 /// coarse levels its own, task #532; 5: lossless WebP, task #671; 4: the
 /// floor's shading, `shading`, task #632; 3: a grid lined up with no overview sampled from one
-/// askew, `grids::level_for`, task #433). Its key names crate::shade_codec::version too.
-pub const DEPTH_V: u32 = 7;
+/// askew, `grids::level_for`, task #433; 8: a pixel's place by roadcore::geo's Mercator, task #862).
+/// Its key names crate::shade_codec::version too.
+pub const DEPTH_V: u32 = 8;
 /// The depth assembly's (`build_lo`; 8: composed only at a grid's own zoom, z3–8 the means of the
 /// finer, its shading made here, task #804; 7: z3–8 from the z9 tiles, task #532; 6: lossless
 /// WebP, task #671).
@@ -1066,6 +1067,7 @@ fn shading_over(
     let out = Mutex::new(Vec::new());
     let done: HashMap<(u8, u32, u32), Option<Vec<roadcore::shade::Px>>> =
         below.into_iter().map(|(k, q)| (k, Some(q))).collect();
+    let done = |z: u8, x: u32, y: u32| done.get(&(z, x, y)).cloned();
     let mut roots: Vec<(u8, u32, u32)> = tiles.iter().copied().filter(|t| t.0 == top).collect();
     roots.sort_unstable();
     for (z, x, y) in roots {

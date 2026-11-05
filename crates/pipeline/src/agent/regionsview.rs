@@ -18,6 +18,7 @@
 
 use crate::coverage::DrawnRegion;
 use crate::inputs::regions::read::Folder;
+use det::Det;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -140,10 +141,10 @@ fn said(slug: &str) -> String {
     words.join(" ")
 }
 
-/// A point in Web Mercator, the world 1 each way (latitudes past ±85° at the edge).
+/// A point in Web Mercator, the world 1 each way (roadcore::geo::merc_clamped).
 fn merc(p: [f64; 2]) -> [f64; 2] {
-    let lat = p[1].clamp(-85.0, 85.0).to_radians();
-    [(p[0] + 180.0) / 360.0, (1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0]
+    let (x, y) = roadcore::geo::merc_clamped(p[0], p[1]);
+    [x, y]
 }
 
 /// Douglas–Peucker: the points of `pts` kept within `eps` of the line.
@@ -158,10 +159,10 @@ fn simplify(pts: &[[f64; 2]], eps: f64) -> Vec<[f64; 2]> {
     while let Some((a, b)) = stack.pop() {
         let ([x0, y0], [x1, y1]) = (pts[a], pts[b]);
         let (dx, dy) = (x1 - x0, y1 - y0);
-        let l = dx.hypot(dy);
+        let l = dx.dhypot(dy);
         let (mut far, mut at) = (0.0, 0);
         for (i, &[x, y]) in pts.iter().enumerate().take(b).skip(a + 1) {
-            let d = if l > 1e-12 { (dy * x - dx * y + x1 * y0 - y1 * x0).abs() / l } else { (x - x0).hypot(y - y0) };
+            let d = if l > 1e-12 { (dy * x - dx * y + x1 * y0 - y1 * x0).abs() / l } else { (x - x0).dhypot(y - y0) };
             if d > far {
                 (far, at) = (d, i);
             }

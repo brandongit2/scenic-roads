@@ -1352,7 +1352,7 @@ mod tests {
         assert!(meets(&c, [3.0, 3.0, 4.5, 4.5])); // the hole's edge met
         assert!(!meets(&c, [11.0, 11.0, 12.0, 12.0]));
         assert!(meets(&c, [-5.0, -5.0, 20.0, 20.0])); // the box around it all
-        let km = 1.0 / 111.32;
+        let km = 1.0 / roadcore::geo::KM_PER_DEG;
         let c = cov(vec![square(10.0, 45.0, 0.1)], 1000.0);
         assert!(meets(&c, [10.1 + 0.5 * km, 45.0, 10.2, 45.05]));
         assert!(!meets(&c, [10.1 + 2.0 * km, 45.0, 10.2, 45.05]));

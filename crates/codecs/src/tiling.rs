@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use roadcore::elev::{self, Elevs};
 use roadcore::scenic::ch;
 use roadcore::tile::{encode, lflag, style, surface, TileLine, NCH};
-use roadcore::{class, dist_m, flag, merc, WayRec, E7};
+use roadcore::{class, dist_m, flag, geo::merc, WayRec, E7};
 use std::collections::HashMap;
 use std::io::Write;
 

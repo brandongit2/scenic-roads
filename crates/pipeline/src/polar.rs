@@ -9,9 +9,15 @@
 //! roadcore::polar::east_north). Nothing here is the globe's: the tiles are the grid's, for any
 //! projection that draws them.
 //!
+//! The one pyramid's rule (docs/steps.md §2, Terrain): only the cap's finest zoom (`finest`, derived
+//! from the declared datasets meeting it on the grid's pixel, crate::terrain_zoom) is sampled; each
+//! coarser tile is its children's 2×2 means, a quarter with no child (past the cap, or a block not
+//! built) no data (sea level, flat shading): no dataset is published at every zoom on this grid, so
+//! there's no relief to read there.
+//!
 //! The steps (crate::agent::build's polar chain): `polar-terrain` makes a z`BLOCK_Z` block's
-//! terrain, z4–`MAX_Z` (`terrain_block`); `polar-slope` its shading from the terrain packs of it
-//! and its neighbours (`slope_block`); `polar-root` z0–3 of both from the blocks' z4 tiles
+//! terrain, z4 to the finest (`terrain_block`); `polar-slope` its shading from the terrain packs of
+//! it and its neighbours (`slope_block`); `polar-root` z0–3 of both from the blocks' z4 tiles
 //! (`root`). `scenic-polar` runs the same into a folder.
 
 use crate::dem::declared::{Plan, Source};
@@ -22,23 +28,27 @@ use roadcore::shade::Px;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// The finest zoom: 16 m pixels on the grid (~16.5 m on the ground), GLO-30's 30 m cell's half
-/// rounded up, the Mercator terrain's rule for its native zoom (docs/steps.md §2, Terrain). The
-/// owner's (25 Oct).
-pub const MAX_Z: u8 = 9;
+/// The cap's finest zoom: the finest of the declared datasets `sets` meeting its latitudes, each on
+/// the grid's pixel (crate::terrain_zoom::Detail::polar_zoom), never coarser than a block's.
+pub fn finest(sets: &[crate::terrain_zoom::Set], pole: Pole) -> u8 {
+    let b = polar::lat_box(pole, 0, 0, 0);
+    let s = crate::terrain_zoom::sources_in(sets, b);
+    s.iter().map(|s| s.detail.polar_zoom(polar::CAP_LAT)).max().unwrap_or(BLOCK_Z).max(BLOCK_Z)
+}
 
-/// The zoom of a block: a `polar-terrain` and `polar-slope` target, its subtree z4–`MAX_Z` one
-/// pack (131 km a side; 76 make the south cap).
+/// The zoom of a block: a `polar-terrain` and `polar-slope` target, its subtree z4 to the finest
+/// one pack (131 km a side; 76 make the south cap).
 pub const BLOCK_Z: u8 = 4;
 
 /// The poles built: the south. The north cap has no land (sea level everywhere north of 85° N,
 /// GLO-30 having nothing there), so it waits for the depth (docs/polar.md §2).
 pub const POLES: [Pole; 1] = [Pole::South];
 
-/// The steps' versions (in their keys).
-pub const TERRAIN_V: u32 = 2;
-pub const SLOPE_V: u32 = 1;
-pub const ROOT_V: u32 = 2;
+/// The steps' versions (in their keys). (Terrain 4, task #862: sampled with `det`'s maths and
+/// roadcore::geo's Mercator.)
+pub const TERRAIN_V: u32 = 4;
+pub const SLOPE_V: u32 = 2;
+pub const ROOT_V: u32 = 3;
 
 /// A polar layer's name: `polar-terrain-s`, `polar-slope-s` (`kind` "terrain" or "slope").
 pub fn layer(kind: &str, pole: Pole) -> String {
@@ -98,10 +108,10 @@ pub fn around(pole: Pole, b: (u32, u32)) -> Vec<(u32, u32)> {
     out
 }
 
-/// A tile's terrain as stored (crate::terrain_codec): 1 cm at `MAX_Z`, 10 cm coarser.
-pub fn encode_terrain(z: u8, e: &[f32]) -> Result<Vec<u8>> {
+/// A tile's terrain as stored (crate::terrain_codec): 1 cm at the finest zoom `max_z`, 10 cm coarser.
+pub fn encode_terrain(z: u8, max_z: u8, e: &[f32]) -> Result<Vec<u8>> {
     let mut h = e.to_vec();
-    let q = if z == MAX_Z { crate::terrain_codec::NATIVE_M } else { crate::terrain_codec::COARSER_M };
+    let q = if z == max_z { crate::terrain_codec::NATIVE_M } else { crate::terrain_codec::COARSER_M };
     crate::terrain_codec::encode(&mut h, q)
 }
 
@@ -366,72 +376,54 @@ pub fn horn(
 /// Tiles by (x, y) of one zoom.
 pub type Heights = HashMap<(u32, u32), Arc<Vec<f32>>>;
 
-/// The parent heights of `kids` (a zoom finer): each of `tiles` its children's 2 × 2
-/// means where they are, and where they aren't (past the cap) its own level's, sampled by `own`.
-pub fn parent_heights(
-    tiles: &[(u32, u32)],
-    kids: &Heights,
-    own: &mut dyn FnMut(&[(u32, u32)]) -> Result<Vec<Vec<f32>>>,
-) -> Result<Heights> {
-    let missing: Vec<(u32, u32)> =
-        tiles.iter().copied().filter(|&t| !all_kids(t, &|c| kids.contains_key(&c))).collect();
-    let sampled: Heights = missing.iter().copied().zip(own(&missing)?.into_iter().map(Arc::new)).collect();
+/// The parent heights of `kids` (a zoom finer): each of `tiles` with a child its children's 2 × 2
+/// means, a quarter with none (past the cap, a block not built) sea level (the rule: no relief on
+/// this grid); none with no child.
+pub fn parent_heights(tiles: &[(u32, u32)], kids: &Heights) -> Heights {
     let mut out = Heights::new();
     for &(x, y) in tiles {
+        if !any_kid((x, y), &|c| kids.contains_key(&c)) {
+            continue;
+        }
         let mut e = vec![0f32; TS * TS];
         for k in 0..4u32 {
             let (cx, cy) = (2 * x + (k & 1), 2 * y + (k >> 1));
+            let Some(ke) = kids.get(&(cx, cy)) else { continue };
             let (ox, oy) = ((k & 1) as usize * TS / 2, (k >> 1) as usize * TS / 2);
             for j in 0..TS / 2 {
                 for i in 0..TS / 2 {
-                    let o = (oy + j) * TS + ox + i;
-                    e[o] = match kids.get(&(cx, cy)) {
-                        Some(ke) => {
-                            let p = |di: usize, dj: usize| (2 * j + dj) * TS + 2 * i + di;
-                            (ke[p(0, 0)] + ke[p(1, 0)] + ke[p(0, 1)] + ke[p(1, 1)]) * 0.25
-                        }
-                        None => sampled[&(x, y)][o],
-                    };
+                    let p = |di: usize, dj: usize| (2 * j + dj) * TS + 2 * i + di;
+                    e[(oy + j) * TS + ox + i] = (ke[p(0, 0)] + ke[p(1, 0)] + ke[p(0, 1)] + ke[p(1, 1)]) * 0.25;
                 }
             }
         }
         out.insert((x, y), Arc::new(e));
     }
-    Ok(out)
+    out
 }
 
-fn all_kids(t: (u32, u32), has: &dyn Fn((u32, u32)) -> bool) -> bool {
-    (0..4).all(|k| has((2 * t.0 + (k & 1), 2 * t.1 + (k >> 1))))
+fn any_kid(t: (u32, u32), has: &dyn Fn((u32, u32)) -> bool) -> bool {
+    (0..4).any(|k| has((2 * t.0 + (k & 1), 2 * t.1 + (k >> 1))))
 }
 
-/// The parent shading at zoom `z` of `kids`: each of `tiles` its children's plain means where they
-/// are, and where they aren't, Horn's method on its own level's terrain (`terrain`, with its
-/// neighbours).
-pub fn parent_shading(
-    pole: Pole,
-    z: u8,
-    tiles: &[(u32, u32)],
-    kids: &HashMap<(u32, u32), Vec<Px>>,
-    terrain: &dyn Fn(u32, u32) -> Option<Arc<Vec<f32>>>,
-) -> HashMap<(u32, u32), Vec<Px>> {
+/// The parent shading of `kids` (a zoom finer): each of `tiles` with a child its children's plain
+/// means, a quarter with none flat (no data); none with no child.
+pub fn parent_shading(tiles: &[(u32, u32)], kids: &HashMap<(u32, u32), Vec<Px>>) -> HashMap<(u32, u32), Vec<Px>> {
     let mut out = HashMap::new();
     for &(x, y) in tiles {
-        let own = (!all_kids((x, y), &|c| kids.contains_key(&c))).then(|| horn(terrain, pole, z, x, y)).flatten();
+        if !any_kid((x, y), &|c| kids.contains_key(&c)) {
+            continue;
+        }
         let mut s = vec![Px::default(); TS * TS];
         for k in 0..4u32 {
             let (cx, cy) = (2 * x + (k & 1), 2 * y + (k >> 1));
+            let Some(ks) = kids.get(&(cx, cy)) else { continue };
             let (ox, oy) = ((k & 1) as usize * TS / 2, (k >> 1) as usize * TS / 2);
             for j in 0..TS / 2 {
                 for i in 0..TS / 2 {
-                    let o = (oy + j) * TS + ox + i;
-                    s[o] = match (kids.get(&(cx, cy)), &own) {
-                        (Some(ks), _) => {
-                            let p = |di: usize, dj: usize| (2 * j + dj) * TS + 2 * i + di;
-                            roadcore::shade::mean4(ks[p(0, 0)], ks[p(1, 0)], ks[p(0, 1)], ks[p(1, 1)])
-                        }
-                        (None, Some(os)) => os[o],
-                        (None, None) => Px::default(),
-                    };
+                    let p = |di: usize, dj: usize| (2 * j + dj) * TS + 2 * i + di;
+                    s[(oy + j) * TS + ox + i] =
+                        roadcore::shade::mean4(ks[p(0, 0)], ks[p(1, 0)], ks[p(0, 1)], ks[p(1, 1)]);
                 }
             }
         }
@@ -478,8 +470,8 @@ impl<'a> Tally<'a> {
 }
 
 /// A block's terrain, z`BLOCK_Z`–`max_z`, handed to `put` as (z, x, y, Terrarium WebP) finest
-/// first: its cap tiles at `max_z` sampled, each coarser level its children's means (sampled where
-/// they aren't, past the cap). `samplers` from `samplers`. `progress` is told (tiles done, tiles
+/// first: its cap tiles at `max_z` sampled, each coarser level its children's means
+/// (`parent_heights`). `samplers` from `samplers`. `progress` is told (tiles done, tiles
 /// in all) as the block goes: a tile counts when it is sampled (`max_z`) and again when it is
 /// handed to `put` (every level).
 pub fn terrain_block(
@@ -515,24 +507,20 @@ pub fn terrain_block(
         let mut keys: Vec<&(u32, u32)> = lv.keys().collect();
         keys.sort();
         for &(x, y) in keys {
-            put(z, x, y, encode_terrain(z, &lv[&(x, y)])?)?;
+            put(z, x, y, encode_terrain(z, max_z, &lv[&(x, y)])?)?;
             tally.add(1);
         }
         if z == BLOCK_Z {
             return Ok(());
         }
         z -= 1;
-        let s = &samplers[z as usize];
-        lv = parent_heights(&level(z), &lv, &mut |t| {
-            sample_pieces(pieces, z, t, voids, &|c, v| sample(s, pole, z, c, v))
-        })?;
+        lv = parent_heights(&level(z), &lv);
     }
 }
 
 /// A block's shading, z`BLOCK_Z`–`max_z`, handed to `put` as (z, x, y, shade WebP): at `max_z`
 /// Horn's method on the stored terrain (`terrain`: any tile of the cap, its neighbours' blocks'
-/// too), each coarser level its children's means at full precision (Horn's on its own terrain
-/// where they aren't). `progress` is told (tiles done, tiles in all) as the block goes: a tile
+/// too), each coarser level its children's means at full precision (`parent_shading`). `progress` is told (tiles done, tiles in all) as the block goes: a tile
 /// counts when Horn's method has shaded it (`max_z`) and again when it is handed to `put`.
 pub fn slope_block(
     pole: Pole,
@@ -609,25 +597,19 @@ pub fn slope_block(
         z -= 1;
         let ts = level(z);
         n = ts.len();
-        // (Only the tiles some of whose children aren't there need their own terrain.)
-        let lacking: Vec<(u32, u32)> =
-            ts.iter().copied().filter(|&t| !all_kids(t, &|c| kids.contains_key(&c))).collect();
-        let hs = read(z, &lacking)?;
-        kids = parent_shading(pole, z, &ts, &kids, &|a, c| hs.get(&(a, c)).cloned());
+        kids = parent_shading(&ts, &kids);
     }
 }
 
 /// A pole's root, z0–`BLOCK_Z` − 1, of both layers, handed to `put` as (z, x, y, terrain WebP,
 /// shade WebP): the terrain from the blocks' z`BLOCK_Z` terrain as stored (`terrain`), the
-/// shading from their shading as stored (`shade`), each level its children's means, and where they
-/// aren't (past the cap) the level's own: sampled, and shaded by Horn's method on it.
+/// shading from their shading as stored (`shade`), each level its children's means
+/// (`parent_heights`, `parent_shading`).
 pub fn root(
-    samplers: &[Sampler],
     pole: Pole,
+    max_z: u8,
     terrain: &dyn Fn(u32, u32) -> Result<Option<Vec<f32>>>,
     shade: &dyn Fn(u32, u32) -> Result<Option<Vec<Px>>>,
-    voids: &Voids,
-    pieces: &mut crate::resume_log::Pieces,
     put: &mut dyn FnMut(u8, u32, u32, Vec<u8>, Vec<u8>) -> Result<()>,
 ) -> Result<()> {
     let mut hs = Heights::new();
@@ -642,11 +624,13 @@ pub fn root(
     }
     for z in (0..BLOCK_Z).rev() {
         let ts = polar::cap_tiles(pole, z);
-        let s = &samplers[z as usize];
-        hs = parent_heights(&ts, &hs, &mut |t| sample_pieces(pieces, z, t, voids, &|c, v| sample(s, pole, z, c, v)))?;
-        ss = parent_shading(pole, z, &ts, &ss, &|x, y| hs.get(&(x, y)).cloned());
-        for &(x, y) in &ts {
-            put(z, x, y, encode_terrain(z, &hs[&(x, y)])?, crate::shade_codec::encode(&ss[&(x, y)])?)?;
+        hs = parent_heights(&ts, &hs);
+        ss = parent_shading(&ts, &ss);
+        let mut keys: Vec<&(u32, u32)> = hs.keys().collect();
+        keys.sort();
+        for &(x, y) in keys {
+            let s = ss.get(&(x, y)).cloned().unwrap_or_else(|| vec![Px::default(); TS * TS]);
+            put(z, x, y, encode_terrain(z, max_z, &hs[&(x, y)])?, crate::shade_codec::encode(&s)?)?;
         }
     }
     Ok(())
@@ -654,10 +638,16 @@ pub fn root(
 
 // ---- The steps (crate::agent::build's polar chain) ----------------------------------------------
 
-/// The pool over latitudes `b` (crate::terrain_base::Pool), its levels' plans read at `max_z`.
-fn pool_plans(out: &crate::out::Out, b: [f64; 4]) -> Result<(Vec<Plan>, store::nasfs::NasPath)> {
+/// The pool over latitudes `b` (crate::terrain_base::Pool), its levels' plans read to `max_z`.
+fn pool_plans(out: &crate::out::Out, b: [f64; 4], max_z: u8) -> Result<(Vec<Plan>, store::nasfs::NasPath)> {
     let pool = crate::terrain_base::Pool::read(out.root(), &out.manifest, b)?;
-    Ok((plans(&pool.plan, MAX_Z), pool.store.clone()))
+    Ok((plans(&pool.plan, max_z), pool.store.clone()))
+}
+
+/// The cap's finest zoom (`finest`) of the declared datasets the build's records name.
+pub fn finest_now(out: &crate::out::Out, pole: Pole) -> Result<u8> {
+    let sets = crate::terrain_zoom::Declared::read(out.root(), &out.manifest)?.map(|d| d.sets).unwrap_or_default();
+    Ok(finest(&sets, pole))
 }
 
 /// A pack of the build's, opened: its index and its file (the NAS's; whole in memory with `whole`).
@@ -715,7 +705,8 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
         let t = target(pole, b);
         crate::control::safe_point("polar-terrain");
         crate::agent::jobs::report(k as u64, targets.len() as u64, "polar blocks");
-        let (plans, store) = pool_plans(out, polar::lat_box(pole, BLOCK_Z, b.0, b.1))?;
+        let max_z = finest_now(out, pole)?;
+        let (plans, store) = pool_plans(out, polar::lat_box(pole, BLOCK_Z, b.0, b.1), max_z)?;
         let o = crate::dem::generic::Opts { fetch: &net, store: Some(store), local: None };
         let ss = samplers(&plans, &o)?;
         let voids = Voids::default();
@@ -725,7 +716,7 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
             "polar-terrain",
             &crate::resume_log::job_id(
                 "polar-terrain",
-                &format!("{} {}", TERRAIN_V, crate::terrain_codec::version()),
+                &format!("{} {} z{max_z}", TERRAIN_V, crate::terrain_codec::version()),
                 &t,
                 &[&crate::terrain_resume::inputs(&out.manifest), &format!("{plans:?}")],
             ),
@@ -736,7 +727,7 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
             &ss,
             pole,
             b,
-            MAX_Z,
+            max_z,
             &voids,
             &mut pieces,
             &mut |z, x, y, t| {
@@ -767,6 +758,7 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
 pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> Result<()> {
     for (k, &(pole, b)) in targets.iter().enumerate() {
         let t = target(pole, b);
+        let max_z = finest_now(out, pole)?;
         crate::control::safe_point("polar-slope");
         crate::agent::jobs::report(k as u64, targets.len() as u64, "polar blocks");
         let mut packs: HashMap<(u32, u32), Pack> = HashMap::new();
@@ -786,7 +778,7 @@ pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> 
             "polar-slope",
             &crate::resume_log::job_id(
                 "polar-slope",
-                &format!("{} {}", SLOPE_V, crate::shade_codec::version()),
+                &format!("{} {} z{max_z}", SLOPE_V, crate::shade_codec::version()),
                 &t,
                 &[&crate::resume_log::names(
                     out,
@@ -799,7 +791,7 @@ pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> 
         slope_block(
             pole,
             b,
-            MAX_Z,
+            max_z,
             &terrain,
             &mut pieces,
             &mut |z, x, y, s| {
@@ -821,13 +813,9 @@ pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> 
 }
 
 /// `polar-root`: a pole's root packs of both layers (`root`) from its blocks' packs (`blocks`, the
-/// targets), the pool over the root's latitudes sampled past the cap; the packs of blocks no
-/// longer built removed.
+/// targets); the packs of blocks no longer built removed.
 pub fn root_step(out: &mut crate::out::Out, pole: Pole, built: &[(u32, u32)]) -> Result<()> {
-    let net = crate::fetch::Fetcher::from_env();
-    let (plans, store) = pool_plans(out, polar::lat_box(pole, 0, 0, 0))?;
-    let o = crate::dem::generic::Opts { fetch: &net, store: Some(store), local: None };
-    let ss = samplers(&plans[..BLOCK_Z as usize], &o)?;
+    let max_z = finest_now(out, pole)?;
     let open = |kind: &str| -> Result<HashMap<(u32, u32), Pack>> {
         let mut m = HashMap::new();
         for &b in built {
@@ -842,35 +830,11 @@ pub fn root_step(out: &mut crate::out::Out, pole: Pole, built: &[(u32, u32)]) ->
         m.get(&(x, y)).map_or(Ok(None), |p| p.get(BLOCK_Z, x, y))
     };
     let (mut ts, mut shs) = (Vec::new(), Vec::new());
-    let voids = Voids::default();
-    // (Its sampling past the cap kept a chunk at a time, task #890: the run's identity the step's
-    // versions, the pole, the pool's plans and the blocks' packs it reads.)
-    let mut pieces = crate::resume_log::Pieces::open(
-        &out.scratch,
-        (if pole == Pole::South { 128 } else { 0 }, 0, 0),
-        "polar-root",
-        &crate::resume_log::job_id(
-            "polar-root",
-            &format!("{TERRAIN_V} {} {SLOPE_V} {}", crate::terrain_codec::version(), crate::shade_codec::version()),
-            &root_target(pole),
-            &[
-                &crate::terrain_resume::inputs(&out.manifest),
-                &format!("{:?}", &plans[..BLOCK_Z as usize]),
-                &crate::resume_log::names(
-                    out,
-                    built.iter().flat_map(|&b| ["terrain", "slope"].map(|k| block_logical(k, pole, b))),
-                ),
-            ],
-        ),
-        crate::resume_log::on(),
-    );
     root(
-        &ss,
         pole,
+        max_z,
         &|x, y| get(&tp, x, y)?.map(|b| roadcore::grid::decode_terrain(&b)).transpose(),
         &|x, y| get(&sp, x, y)?.map(|b| roadcore::shade::decode(&b)).transpose(),
-        &voids,
-        &mut pieces,
         &mut |z, x, y, t, s| {
             ts.push((z, x, y, t));
             shs.push((z, x, y, s));
@@ -894,7 +858,6 @@ pub fn root_step(out: &mut crate::out::Out, pole: Pole, built: &[(u32, u32)]) ->
             out.remove(&l);
         }
     }
-    pieces.finish();
     crate::control::done("polar-root", &root_target(pole));
     Ok(())
 }
@@ -902,6 +865,7 @@ pub fn root_step(out: &mut crate::out::Out, pole: Pole, built: &[(u32, u32)]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use det::Det;
 
     /// Horn's method on the grid gives a plane's own slope, east and south on the grid, per ground
     /// metre.
@@ -924,24 +888,25 @@ mod tests {
         let (_, lat) = polar::inverse(pole, gx, gy);
         let k = polar::scale(pole, lat) as f32;
         let p = s[128 * TS + 128];
-        let g = (1e-3f32.hypot(0.5e-3)) * k * 100.0;
+        let g = (1e-3f32.dhypot(0.5e-3)) * k * 100.0;
         assert!((p.s - g).abs() < 1e-3 * g, "{} vs {g}", p.s);
-        let n = 1e-3f32.hypot(0.5e-3);
+        let n = 1e-3f32.dhypot(0.5e-3);
         assert!((p.u[0] - 1e-3 / n).abs() < 1e-3 && (p.u[1] - 0.5e-3 / n).abs() < 1e-3, "{:?}", p.u);
     }
 
-    /// A parent is its children's means where they are, its own level's where they aren't: heights
-    /// sampled, shading by Horn's method on them (a flat level: none).
+    /// A parent is its children's means where they are, no data (sea level, flat) where they aren't,
+    /// nothing sampled; a tile with no child isn't made.
     #[test]
-    fn parents_mean_their_children_and_fill_the_rest() {
+    fn parents_mean_their_children_and_leave_the_rest_empty() {
         let mut kids = Heights::new();
         kids.insert((0, 0), Arc::new(vec![4.0; TS * TS]));
-        let e = parent_heights(&[(0, 0)], &kids, &mut |t| Ok(t.iter().map(|_| vec![7.0; TS * TS]).collect())).unwrap();
+        let e = parent_heights(&[(0, 0), (1, 1)], &kids);
         assert_eq!(e[&(0, 0)][0], 4.0);
-        assert_eq!(e[&(0, 0)][TS * TS - 1], 7.0);
+        assert_eq!(e[&(0, 0)][TS * TS - 1], 0.0);
+        assert!(!e.contains_key(&(1, 1)));
         let mut ks = HashMap::new();
         ks.insert((0, 0), vec![Px { s: 10.0, u: [1.0, 0.0] }; TS * TS]);
-        let s = parent_shading(Pole::North, 0, &[(0, 0)], &ks, &|x, y| e.get(&(x, y)).cloned());
+        let s = parent_shading(&[(0, 0)], &ks);
         assert_eq!(s[&(0, 0)][0].s, 10.0);
         assert_eq!(s[&(0, 0)][TS * TS - 1].s, 0.0);
     }
@@ -1051,7 +1016,7 @@ mod tests {
         for z in 0..=6u8 {
             let last = (1u32 << z) - 1;
             for x in 0..=last {
-                assert!(!cover.meets(crate::stage::tile_box_grown(z, x, last, 0.0)), "{z}/{x}/{last}");
+                assert!(!cover.meets(roadcore::geo::tile_box(z, x, last)), "{z}/{x}/{last}");
             }
         }
         assert!(cover.meets(roadcore::polar::lat_box(Pole::South, BLOCK_Z, 7, 7)));

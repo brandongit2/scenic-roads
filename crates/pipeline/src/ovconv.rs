@@ -351,7 +351,7 @@ fn length_km(c: &[[f64; 2]]) -> f64 {
     c.windows(2)
         .map(|w| {
             let k = (((w[0][1] + w[1][1]) / 2.0).to_radians()).dcos();
-            ((w[1][0] - w[0][0]) * k).dhypot(w[1][1] - w[0][1]) * 111.195
+            ((w[1][0] - w[0][0]) * k).dhypot(w[1][1] - w[0][1]) * roadcore::geo::KM_PER_DEG
         })
         .sum()
 }
@@ -361,8 +361,8 @@ fn simplify_m(c: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
     if c.len() <= 2 || tol_m <= 0.0 {
         return c.to_vec();
     }
-    let k = (c.iter().map(|p| p[1]).sum::<f64>() / c.len() as f64).to_radians().dcos() * 111_195.0;
-    let xy: Vec<(f64, f64)> = c.iter().map(|p| (p[0] * k, p[1] * 111_195.0)).collect();
+    let k = (c.iter().map(|p| p[1]).sum::<f64>() / c.len() as f64).to_radians().dcos() * roadcore::geo::M_PER_DEG;
+    let xy: Vec<(f64, f64)> = c.iter().map(|p| (p[0] * k, p[1] * roadcore::geo::M_PER_DEG)).collect();
     let mut keep = vec![false; c.len()];
     keep[0] = true;
     keep[c.len() - 1] = true;

@@ -9,7 +9,7 @@
 //! host and path, so a layer moved to another URL is stored afresh). Filled by the pool's
 //! `pyramids-fill` step, the lead's (task #810), by z6 tile (`fill`): a z6 tile's tiles (`want`,
 //! those its terrain-hi run reads: the native tiles under the pixels of its z9–12 tiles that aren't
-//! open sea; and its terrain-deep targets', all under their base tiles, `deep_bases`), fetched once
+//! open sea; and its terrain-deep targets', all under their z12 tiles, `deep_bases`), fetched once
 //! each with the build's fetcher (its User-Agent, its per-host limit), then packed and their
 //! archives handed off as the store's (crate::rawpack::handed_place), the lead naming them in the
 //! store's index as it names AWS's; each z6 tile starts only while the NAS has more room past the
@@ -32,8 +32,10 @@ use store::sys::PosIo;
 pub const DIR: &str = crate::rawpack::PYRAMIDS;
 
 /// The fill's version, in its key: bumped with any change to
-/// which tiles a z6 tile wants (`want`, `deep_bases`) or how they're stored.
-pub const V: u32 = 1;
+/// which tiles a z6 tile wants (`want`, `deep_bases`) or how they're stored (2: a deep target's
+/// z12 tiles, task #929; 3: the tiles near the coverage by roadcore::geo's box-grower, its edge rows'
+/// boxes to the Mercator's end, task #862).
+pub const V: u32 = 3;
 
 /// The archives' metadata (crate::rawpack::Packer::for_pyramid).
 const META: &str = r#"{"kind":"elevation pyramid tiles"}"#;
@@ -212,9 +214,8 @@ impl Fetch for Stored<'_> {
 /// dataset's cover: terrain-hi's making `levels` (crate::terrain_pack::piece_levels: z9–12, the
 /// zooms the pool reads them at, crate::terrain_base::ROW_Z), the native tile under each pixel that
 /// isn't open sea in `water` (crate::terrain_base::open_sea, which spares those pixels the
-/// pyramids); and terrain-deep's, every native tile under its base tiles `deep`
-/// (crate::terrain_deep::base_want under each target): its presence grids read the whole of each,
-/// the sea too (the 404s over the sea most of what a deep run asked for that the store lacked).
+/// pyramids); and terrain-deep's, every native tile under the z12 tiles `deep` of each target
+/// (`deep_bases`), the sea too.
 pub fn want(
     plan: &Plan,
     water: &dyn crate::terrain_water::WaterSource,
@@ -265,7 +266,7 @@ pub fn want(
     for (t, _, cover) in &pyr {
         if let (Some(cover), Some(set)) = (cover, out.get_mut(t)) {
             set.retain(|&(z, x, y)| {
-                let b = crate::stage::tile_box_grown(z, x, y, 0.0);
+                let b = roadcore::geo::tile_box(z, x, y);
                 cover.iter().any(|c| b[0] < c[2] && c[0] < b[2] && b[1] < c[3] && c[1] < b[3])
             });
         }
@@ -274,21 +275,18 @@ pub fn want(
     Ok(out)
 }
 
-/// Z6 tile `t`'s terrain-deep targets' base tiles (crate::terrain_deep::targets_in, base_want), each
-/// under its own target: what `want` takes as `deep`.
+/// Z6 tile `t`'s terrain-deep targets' z12 tiles (crate::terrain_deep::targets_in), each whole: the
+/// native tiles under them are what those targets' deep tiles may read: what `want` takes as `deep`.
 pub fn deep_bases(
-    sets: &[crate::terrain_deep::FineSet],
+    sets: &[crate::terrain_zoom::Set],
     cov: &crate::coverage::Coverage,
     t: (u32, u32),
 ) -> Vec<(u8, u32, u32)> {
     use crate::terrain_deep as td;
+    let k = 12 - td::PACK_Z;
     td::targets_in(sets, cov, t)
         .into_iter()
-        .flat_map(|g| {
-            td::base_want(g)
-                .into_iter()
-                .filter(move |&(z, x, y)| z >= td::PACK_Z && (x >> (z - td::PACK_Z), y >> (z - td::PACK_Z)) == g)
-        })
+        .flat_map(|g| (0..1u32 << (2 * k)).map(move |i| (12, (g.0 << k) + i % (1 << k), (g.1 << k) + i / (1 << k))))
         .collect()
 }
 
@@ -484,7 +482,7 @@ mod tests {
                 code: 5,
                 resolution: 5.0,
                 cover: None,
-                source: Source::Tiles { url: T.into(), zoom: 15, encoding: "gsi-png".into() },
+                source: Source::Tiles { url: T.into(), zoom: 15, encoding: "gsi-png".into(), every_zoom: false },
                 convert: None,
                 outline: None,
             }],

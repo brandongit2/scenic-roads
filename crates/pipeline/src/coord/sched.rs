@@ -245,11 +245,13 @@ pub(crate) struct Need {
 /// say what it keeps busy, honoured or not). `slope-hi` and `slope-deep`: Rust steps
 /// on the rayon pool the agent sizes (`RAYON_NUM_THREADS`, crate::agent::jobs); `terrain-deep`: its
 /// base and deep tiles made on that pool, its reads ahead waiting on the network
-/// (crate::terrain_deep); `bld-fetch`: its downloads bounded by its `--jobs` (3 by default, at most
+/// (crate::terrain_deep); `terrain-lakes`: its shore tiles sampled and prepared on that pool, a
+/// chunk at a time (crate::terrain_lakes); `bld-fetch`: its downloads bounded by its `--jobs` (3 by default, at most
 /// 4), waiting on the network; `pyramids-fill`: its fetches a host's requests in flight (crate::fetch::HOST_REQUESTS),
 /// waiting on the network, its own work (whole-PNG checks, packing) a fraction of a core (task #823:
 /// counted as the whole Mac, its first job held 6 of the mini's 12 cores).
-pub(super) const THREADS_HONOURED: &[&str] = &["slope-hi", "slope-deep", "terrain-deep", "bld-fetch", "pyramids-fill"];
+pub(super) const THREADS_HONOURED: &[&str] =
+    &["slope-hi", "slope-deep", "terrain-deep", "terrain-lakes", "bld-fetch", "pyramids-fill"];
 
 /// A cold start's provisional memory (MB) from the most its step declares or it was offered with,
 /// `mb`: times 3/2 (task #499; `Shared::provisional`, the forecast's packing too).

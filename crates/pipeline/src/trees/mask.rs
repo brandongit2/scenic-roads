@@ -9,12 +9,12 @@
 //!   a horizontal edge on a row of centres, walked right to left, burns along it, unless a span of
 //!   that row starts where it does (GDAL's guard against adding twice).
 //! - **Arithmetic:** GDAL's, as built for the Mac's Python (as crate::areaflags): rasterio's
-//!   `from_bounds` transform inverted (GDALInvGeoTransform) and applied with fused multiply-adds.
-//!   Mercator's tangent and logarithm are det's where Python's are Apple's (a few ulp apart): a
-//!   pixel could differ only where an edge passes within about 1e-9 pixels of its centre.
+//!   `from_bounds` transform inverted (GDALInvGeoTransform) and applied with fused multiply-adds,
+//!   on roadcore::geo's Mercator metres (`epsg3857`).
 
-use super::{merc, BS};
+use super::BS;
 use anyhow::{ensure, Context, Result};
+use roadcore::geo::epsg3857;
 
 /// A coverage ring as it is loaded: its box in degrees (west, south, east, north, of its
 /// points densified) and its points in Mercator metres, closed and clockwise.
@@ -51,7 +51,7 @@ impl Ring {
         for p in &d {
             bbox = [bbox[0].min(p[0]), bbox[1].min(p[1]), bbox[2].max(p[0]), bbox[3].max(p[1])];
         }
-        let mut m: Vec<[f64; 2]> = d.iter().map(|p| merc(p[0], p[1])).collect();
+        let mut m: Vec<[f64; 2]> = d.iter().map(|p| epsg3857(p[0], p[1])).collect();
         // (shapely closes a ring that isn't; OGR walks it clockwise.)
         if m.first() != m.last() {
             m.push(m[0]);
@@ -104,7 +104,7 @@ const WORDS: usize = BS * BS / 64;
 pub fn inside(shapes: &[Vec<&Ring>], b: [f64; 4]) -> Vec<u64> {
     let mut out = vec![0u64; WORDS];
     // rasterio's from_bounds(west, south, east, north, BS, BS), inverted by GDAL.
-    let ([west, south], [east, north]) = (merc(b[0], b[1]), merc(b[2], b[3]));
+    let ([west, south], [east, north]) = (epsg3857(b[0], b[1]), epsg3857(b[2], b[3]));
     let (sx, sy) = ((east - west) / BS as f64, (south - north) / BS as f64);
     let (ix0, ix1, iy0, iy1) = (-west / sx, 1.0 / sx, -north / sy, 1.0 / sy);
     let mut odd = vec![0u64; WORDS];

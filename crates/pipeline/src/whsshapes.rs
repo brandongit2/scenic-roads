@@ -44,6 +44,7 @@ use crate::pytext::{decimal, strip};
 use crate::timings::phase;
 use crate::wikiask::Asker;
 use anyhow::{bail, Context, Result};
+use det::Det;
 use geos::{CapStyle, CoordSeq, Geom, Geometry, GeometryTypes, JoinStyle};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -489,7 +490,8 @@ fn outlines(
             let Some(km2) = sites.km2.get(&s) else { return Ok(false) };
             let gg = geometry(&o, |p| p)?;
             let y = gg.get_centroid()?.get_y()?;
-            Ok(gg.area()? * (111.32 * 111.32) * y.to_radians().cos() > TOO_LARGE * km2)
+            Ok(gg.area()? * (roadcore::geo::KM_PER_DEG * roadcore::geo::KM_PER_DEG) * y.to_radians().dcos()
+                > TOO_LARGE * km2)
         };
         if not_extent(p) || (o.area() && !tagged_whs(p) && too_large()?) {
             let n = sites.names[&s].py_str();
@@ -610,7 +612,7 @@ fn along(line: &Geometry, h: f64, closed: bool) -> Result<Vec<P>> {
 fn centre(geoms: &[Outline], comps: &[P]) -> Result<P> {
     let lon0 = pynumpy::mean(&comps.iter().map(|c| c[0]).collect::<Vec<_>>());
     let lat0 = pynumpy::mean(&comps.iter().map(|c| c[1]).collect::<Vec<_>>());
-    let k = [111.32 * lat0.to_radians().cos(), 110.57];
+    let k = [roadcore::geo::KM_PER_DEG * lat0.to_radians().dcos(), roadcore::geo::KM_PER_DEG];
     let o = [lon0, lat0];
     let km = |p: P| [(p[0] - o[0]) * k[0], (p[1] - o[1]) * k[1]];
     let mut lines: Vec<Geometry> = vec![];
@@ -856,7 +858,7 @@ pub fn run(root: &Path, wikidata: &str) -> Result<()> {
         if cs.len() > 1 {
             let places: Vec<P> = cs.iter().map(|c| c.1).collect();
             let dot = centre(shapes.get(s).map_or(&[][..], |v| &v[..]), &places)?;
-            let kx = dot[1].to_radians().cos();
+            let kx = dot[1].to_radians().dcos();
             let dist = |c: &P| {
                 let (a, b) = ((c[0] - dot[0]) * kx, c[1] - dot[1]);
                 a * a + b * b

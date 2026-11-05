@@ -19,6 +19,7 @@ use super::generic::{open_url, stored, Opts};
 use crate::geotiff::Tiff;
 use crate::inputs::sources::{Data, Source};
 use anyhow::{bail, Context, Result};
+use det::Det;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -259,7 +260,7 @@ pub fn uncovered(
 ) -> Result<(Vec<[f64; 4]>, f64)> {
     /// The step the area is reckoned at: 20 × 20 to a cell.
     const STEP: f64 = 0.05;
-    const R_KM: f64 = 6371.0088;
+    const R_KM: f64 = roadcore::geo::EARTH_R / 1000.0;
     // (Each hop's boxes; None: everywhere.)
     let mut hops: Vec<Option<Vec<[f64; 4]>>> = Vec::new();
     for h in &c.hops {
@@ -301,7 +302,7 @@ pub fn uncovered(
                 if hops.iter().all(|b| b.as_ref().is_none_or(|b| held(b, cx, cy, cx, cy))) {
                     continue;
                 }
-                part += R_KM * R_KM * STEP.to_radians() * ((s + STEP).to_radians().sin() - s.to_radians().sin());
+                part += R_KM * R_KM * STEP.to_radians() * ((s + STEP).to_radians().dsin() - s.to_radians().dsin());
             }
         }
         if part > 0.0 {
@@ -322,8 +323,8 @@ const F: f64 = 1.0 / 298.257_222_101;
 /// translation `t` (m), rotation `r` (mas), scale `s` (ppb), coordinate-frame or position-vector.
 pub fn helmert_dh(lon: f64, lat: f64, t: [f64; 3], r: [f64; 3], s: f64, frame: bool) -> f64 {
     let e2 = F * (2.0 - F);
-    let (sl, cl) = lat.to_radians().sin_cos();
-    let (so, co) = lon.to_radians().sin_cos();
+    let (sl, cl) = (lat.to_radians().dsin(), lat.to_radians().dcos());
+    let (so, co) = (lon.to_radians().dsin(), lon.to_radians().dcos());
     let n = A / (1.0 - e2 * sl * sl).sqrt();
     let x = [n * cl * co, n * cl * so, n * (1.0 - e2) * sl];
     let mas = std::f64::consts::PI / (180.0 * 3600.0 * 1000.0);
@@ -336,14 +337,14 @@ pub fn helmert_dh(lon: f64, lat: f64, t: [f64; 3], r: [f64; 3], s: f64, frame: b
         t[2] + k * (ry * x[0] - rx * x[1] + x[2]),
     ];
     // (The new point's ellipsoidal height: iterated to convergence, a fixed number of times.)
-    let p = y[0].hypot(y[1]);
-    let mut phi = y[2].atan2(p * (1.0 - e2));
+    let p = y[0].dhypot(y[1]);
+    let mut phi = y[2].datan2(p * (1.0 - e2));
     let mut h = 0.0;
     for _ in 0..6 {
-        let (sp, cp) = phi.sin_cos();
+        let (sp, cp) = (phi.dsin(), phi.dcos());
         let n = A / (1.0 - e2 * sp * sp).sqrt();
         h = p * cp + y[2] * sp - A * (1.0 - e2 * sp * sp).sqrt();
-        phi = y[2].atan2(p * (1.0 - e2 * n / (n + h)));
+        phi = y[2].datan2(p * (1.0 - e2 * n / (n + h)));
     }
     h
 }

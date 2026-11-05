@@ -149,7 +149,7 @@ fn nearest_splits_among_three_touching_lands_cover_once() {
 
 #[test]
 fn boxes_areas_and_wide_buffers() {
-    // A degree square at the equator: 111.2 km a side on the authalic sphere.
+    // A degree square at the equator: 111.2 km a side on the mean sphere.
     let sq = geom::box_area([0, 0, 10_000_000, 10_000_000]);
     assert!((geom::area_km2(&sq) - 12_364.0).abs() < 15.0, "{}", geom::area_km2(&sq));
     assert!(

@@ -38,7 +38,7 @@ NAS-reading, quiet and halo steps (`coord::sched::NAS_STEPS`, `budget::nas::QUIE
 | `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), z3 tile, z6 tile, `input` (an inputs folder); a task's `task`. Counted in "z3 tiles", "z6 tiles", … (`Scope::noun`); sent as `scope` `area` and `tile` by `/work/steps` (the stored words, kept: `Scope`'s serde names) |
 | `stage` | its stage | `pass`, `sites`, `terrain`, `slope`, `trees`, `depth`, `roads`, `tiles`, `finish`, `trains`, `landmarks`, `buildings`, `publish`, `upkeep` |
 | `place` | which Mac runs it: derived from the pool's rules (`agent::every::offered`), not kept | `any` (any member whose measured room fits), `lead` |
-| `reads` | what one target reads of other tiled steps' targets, and the waiting note said while one is left (`steps::Reads`, task #864): the planner offers a target once none it reads is left, the forecast's waits and `after` arrows and the page's notes derive from it alike. Declared for terrain-lo, slope-deep, slope-hi, slope-lo, trees-lo and unit (the roads: the terrain packs over their tile + 30 km; each checked against its key's inputs where its key names them); a world step's waits are its own plan's. Planned (task #879, docs/readiness.md): every step's waits and key derived from one declaration | slope-deep `10/x/y`: terrain-deep of it and its edge neighbours, their z6 terrain-hi and z3 terrain-lo |
+| `reads` | what one target reads of other tiled steps' targets, and the waiting note said while one is left (`steps::Reads`, task #864): the planner offers a target once none it reads is left, the forecast's waits and `after` arrows and the page's notes derive from it alike. Declared for terrain-lo, slope-deep, slope-hi, slope-lo, trees-lo and unit (the roads: the terrain packs over their tile + 30 km; each checked against its key's inputs where its key names them); a world step's waits are its own plan's. Planned (task #879, docs/readiness.md): every step's waits and key derived from one declaration | slope-deep `10/x/y`: terrain-deep of it and its edge neighbours |
 | `cost_v` | the way it runs now, as far as its memory and time go (`coord::cost_version`): costs measured under an older one count for nothing; never a build key | `unit` 3, `terrain-hi` 7, else 0 |
 | resources | its first guess of memory until measured, whether members take it and at what rank (`shared`), a whole-build run alone (`alone`), whether it keeps the pass's answers (`answered`), its write-set (`writes`). The rest is measured, not kept: each target's memory, disk, cores, time and NAS rate by the step's model (`needs::Book`), targets per job (`coord::JOB_S`), and whether a job runs with others on a Mac (packing, by those measures) | pool.md §7.2, §7.7 |
 
@@ -90,6 +90,7 @@ paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. 
 | `terrain` | `terrain-water` | derive | the world | lead |
 | | `pyramids-fill` | fetch | a z6 tile | lead |
 | | `terrain-hi` | pack | a z6 tile | ⇄ |
+| | `terrain-lakes` | derive | a z6 tile | ⇄ |
 | | `terrain-deep` | pack | a z10 tile | ⇄ |
 | | `terrain-lo` | pack | a z3 tile | ⇄ |
 | | `terrain-root` | pack | the world | lead |

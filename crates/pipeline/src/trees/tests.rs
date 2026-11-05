@@ -237,16 +237,16 @@ fn decode(webp: &[u8]) -> Vec<u8> {
 fn geometry_as_trees_py() {
     // trees.py's tile_bounds(8, 132, 88): its longitudes exactly, its latitudes (Apple's maths
     // there) to an ulp or two.
-    let b = tile_bounds(8, 132, 88);
+    let b = roadcore::geo::tile_box(8, 132, 88);
     assert_eq!((b[0], b[2]), (5.625, 7.03125));
     for (got, want) in [(b[1], 47.98992166741417), (b[3], 48.92249926375824)] {
         assert!((got - want).abs() <= 2.0 * f64::EPSILON * want, "{got} vs {want}");
     }
-    assert_eq!(tile_bounds(8, 0, 0)[0], -180.0);
-    assert!((tile_bounds(8, 0, 0)[3] - 85.0511287798066).abs() < 1e-13);
+    assert_eq!(roadcore::geo::tile_box(8, 0, 0)[0], -180.0);
+    assert!((roadcore::geo::tile_box(8, 0, 0)[3] - 85.0511287798066).abs() < 1e-13);
     // The squares a block meets: one, or (across 50° N) two, top first.
     assert_eq!(squares_of(b), [(50, 0)]);
-    assert_eq!(squares_of(tile_bounds(8, 130, 86)), [(60, 0), (50, 0)]);
+    assert_eq!(squares_of(roadcore::geo::tile_box(8, 130, 86)), [(60, 0), (50, 0)]);
     assert_eq!(squares_of([-0.5, 9.5, 0.5, 10.5]), [(20, -10), (20, 0), (10, -10), (10, 0)]);
     assert_eq!(
         (chm_name(50, -10, "p95"), leaf_name(50, -10)),
@@ -257,8 +257,9 @@ fn geometry_as_trees_py() {
     assert_eq!(p.n, 40000);
     assert_eq!(p.rows, [Some(0), Some(39999), None, Some(0)]);
     assert_eq!(p.cols, [None, Some(0), Some(39999), None]);
-    assert_eq!(merc(5.625, 48.92)[0], 626172.1357121639);
-    assert!((merc(5.625, 48.92)[1] - 6261297.953407845).abs() < 1e-8);
+    // trees.py's Web Mercator metres, to the last few bits (roadcore::geo's projection).
+    assert!((roadcore::geo::epsg3857(5.625, 48.92)[0] - 626172.1357121639).abs() < 1e-8);
+    assert!((roadcore::geo::epsg3857(5.625, 48.92)[1] - 6261297.953407845).abs() < 1e-8);
 }
 
 #[test]
@@ -277,7 +278,7 @@ fn rings_densified_and_burnt_as_gdal() {
     ];
     let r = s.shapes[0][0].merc_for_test();
     for (lon, lat) in lens {
-        assert!(r.contains(&merc(lon, lat)), "{lon} {lat}");
+        assert!(r.contains(&roadcore::geo::epsg3857(lon, lat)), "{lon} {lat}");
     }
     assert_eq!(r.len(), 9);
     // A rectangle in pixels: the pixels whose centres it holds.
@@ -294,11 +295,15 @@ fn rings_densified_and_burnt_as_gdal() {
 #[test]
 fn shapes_holes_and_unions() {
     let s = Shapes::parse(COVERAGE).unwrap();
-    let b = tile_bounds(8, 132, 88);
-    assert!(s.meets(b) && !s.meets(tile_bounds(8, 140, 88)));
+    let b = roadcore::geo::tile_box(8, 132, 88);
+    assert!(s.meets(b) && !s.meets(roadcore::geo::tile_box(8, 140, 88)));
     let m = mask::inside(&s.meeting(b), b);
     let px = |lon: f64, lat: f64| {
-        let ([x0, y0], [x1, y1], [x, y]) = (merc(b[0], b[3]), merc(b[2], b[1]), merc(lon, lat));
+        let ([x0, y0], [x1, y1], [x, y]) = (
+            roadcore::geo::epsg3857(b[0], b[3]),
+            roadcore::geo::epsg3857(b[2], b[1]),
+            roadcore::geo::epsg3857(lon, lat),
+        );
         let (i, j) = (((y - y0) / (y1 - y0) * BS as f64) as usize, ((x - x0) / (x1 - x0) * BS as f64) as usize);
         m[(i * BS + j) / 64] >> ((i * BS + j) % 64) & 1 == 1
     };
@@ -453,7 +458,7 @@ fn a_block_from_its_squares() {
     );
     assert_eq!(out.tiles.len(), 18);
     // Pixel by pixel as trees.py has them (the hole of the coverage and its edge among them).
-    let b = tile_bounds(8, 132, 88);
+    let b = roadcore::geo::tile_box(8, 132, 88);
     let m = mask::inside(&shapes.meeting(b), b);
     for t in out.tiles.iter().filter(|t| t.z == 12) {
         let px = decode(&t.webp);
@@ -819,18 +824,24 @@ fn leaf_type_squares_complete() {
     let d = tempfile::tempdir().unwrap();
     let small = |meta: &[(&str, &str)]| tiff(1024, 8, &|_, _| None, meta);
     std::fs::write(d.path().join("a.tif"), small(&[("complete", "1")])).unwrap();
+    // A NALCMS square resampled with the Mac's libm (its old tag) is made again; one with det's is kept.
     std::fs::write(
         d.path().join("b.tif"),
-        small(&[("source", "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°")]),
+        small(&[("complete", "1"), ("source", "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°")]),
     )
     .unwrap();
+    std::fs::write(d.path().join("f.tif"), small(&[("complete", "1"), ("source", crate::leaftype::NALCMS_SOURCE)]))
+        .unwrap();
     std::fs::write(d.path().join("c.tif"), small(&[("source", "Copernicus HRL Dominant Leaf Type 2018 (EEA)")]))
         .unwrap();
     let mut cut = small(&[("complete", "1")]);
     cut.truncate(100);
     std::fs::write(d.path().join("d.tif"), cut).unwrap();
     let c = |f: &str| squares::complete(&d.path().join(f));
-    assert_eq!((c("a.tif"), c("b.tif"), c("c.tif"), c("d.tif"), c("e.tif")), (true, true, false, false, false));
+    assert_eq!(
+        (c("a.tif"), c("b.tif"), c("c.tif"), c("d.tif"), c("e.tif"), c("f.tif")),
+        (true, false, false, false, false, true)
+    );
     // None to make (outside both sources' boxes, or complete): nothing is asked.
     std::fs::write(d.path().join(leaf_name(50, 0)), small(&[("complete", "1")])).unwrap();
     let s = run_sources();

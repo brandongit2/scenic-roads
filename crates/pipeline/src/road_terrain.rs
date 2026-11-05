@@ -1,8 +1,8 @@
 //! The roads' heights from the finished terrain (docs/steps.md §6; docs/inputs.md §6.8): each
 //! vertex's height is the stored terrain's there, bilinearly between pixel centres (across tile
-//! edges, as the map draws it), at the finest zoom stored there: its native zoom (a deep tile,
-//! z13–16, crate::terrain_deep, where one is; z12, coarser at high latitudes,
-//! crate::terrain_pack::max_zoom_at, elsewhere), else coarser. So a road and the ground under it
+//! edges, as the map draws it), at the finest zoom stored there: its place's finest
+//! (crate::terrain_zoom; a deep tile, z13–16, crate::terrain_deep, where it is past z12), else
+//! coarser. So a road and the ground under it
 //! come from one terrain: one dataset, detail and blend, already brought to EGM2008, and a unit's
 //! elevations read no server.
 //!
@@ -36,17 +36,17 @@ const KEEP: usize = 2048;
 fn pixel(z: u8, p: [i32; 2]) -> (f64, f64) {
     let (lon, lat) = (p[0] as f64 * 1e-7, p[1] as f64 * 1e-7);
     let n = (1u64 << z) as f64 * 256.0;
-    let x = (lon + 180.0) / 360.0 * n;
-    let y = (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n;
-    (x, y)
+    let (x, y) = roadcore::geo::merc(lon, lat);
+    (x * n, y * n)
 }
 
 /// The deep tiles the heights at `verts` read: each vertex's at the finer zoom its cell has
-/// (`Fine::zoom`), and its neighbours' where the vertex is within a pixel of their edge.
+/// (`Fine::zoom`) where past z12 (the staged box holds z0–12), and its neighbours' where the vertex
+/// is within a pixel of their edge.
 pub fn deep_tiles(verts: &[[i32; 2]], fine: &Fine) -> BTreeSet<(u8, u32, u32)> {
     let mut out = BTreeSet::new();
     for &v in verts {
-        let Some(z) = fine.zoom(cell(v)) else { continue };
+        let Some(z) = fine.zoom(cell(v)).filter(|&z| z >= crate::terrain_deep::FIRST_Z) else { continue };
         let (x, y) = pixel(z, v);
         let n = 1i64 << z;
         for gx in [x - 1.0, x + 1.0] {
@@ -215,7 +215,7 @@ mod tests {
         assert!((h[2] - 255.5).abs() < 0.6, "{}", h[2]);
         assert_eq!(src, vec![3, 1, 3]);
         // The deep tiles a vertex reads: its own at its cell's zoom, and a neighbour's near an edge.
-        let fine = Fine { cells: vec![([11, 45], 16)] };
+        let fine = Fine { cells: vec![([11, 45], 16)], ..Default::default() };
         let t = deep_tiles(&[q], &fine);
         assert!(t.contains(&(16, (fx / 256.0) as u32, (fy / 256.0) as u32)) && t.len() <= 4);
         assert!(deep_tiles(&[e7(20.5, 45.5)], &fine).is_empty());

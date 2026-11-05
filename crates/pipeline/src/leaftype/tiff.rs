@@ -134,7 +134,7 @@ pub fn square(a: &[u8], n: usize, left: f64, top: f64, res: f64, items: &[(&str,
             (33550, 12, 3, doubles(&[res, res, 0.0])),
             (33922, 12, 6, doubles(&[0.0, 0.0, 0.0, left, top, 0.0])),
             (34735, 3, 32, shorts(&geokeys)),
-            (34736, 12, 2, doubles(&[298.257223563, 6378137.0])),
+            (34736, 12, 2, doubles(&[roadcore::geo::WGS84_RF, roadcore::geo::WGS84_A])),
             (34737, 2, 8, b"WGS 84|\0".to_vec()),
         ];
         if let Some(m) = meta {

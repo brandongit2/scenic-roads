@@ -17,6 +17,8 @@ pub const SAMPLE_SPACING_M: f64 = 100.0;
 pub const NEAR_AZ: usize = 32;
 pub const NEAR_MAX_M: f64 = 300.0;
 pub const FAR_MAX_M: f64 = 15_000.0;
+/// The radius a sightline's drop is reckoned on: the Earth's, lengthened by refraction (k = 0.13).
+pub const SIGHT_R: f64 = crate::geo::EARTH_R / 0.87;
 pub const EYE_M: f32 = 1.5;
 /// Eye height above the rail for passengers (window of a standard carriage).
 pub const RAIL_EYE_M: f32 = 2.8;

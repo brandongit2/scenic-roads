@@ -2,6 +2,16 @@
 
 What each step does, in detail. The steps as one table (names, chains, the checklist, the build page) are `docs/pipeline.md`.
 
+Every step's geometry is `roadcore::geo`'s, one of each: the Earth (`EARTH_R`, the mean radius:
+every ground distance, `M_PER_DEG` a degree on it), the Web Mercator (`merc`, `merc_clamped`,
+`merc_lat`, `tile_box`, `epsg3857`; its sphere WGS 84's semi-major axis, `MERC_C` its equator in
+its own metres), the box-grower (`grow`, `tile_box_grown`: a box grown by its km at its farthest
+latitude, 89° at most), "near the coverage" (`NEAR_COVERAGE_KM`, 20 km) and the even–odd point-in-polygon
+(`inside`, exact on E7 points; the coverage's gridded test, `Coverage::inside`, aside; the lake fill
+reads OSM's overlapping water by the nonzero rule, `winding`). Every
+transcendental function is `det`'s (`clippy.toml` refuses `f64::sin` and the rest), so a step
+makes the same bytes on every Mac.
+
 ## 1. The OSM pass
 
 1. **The NAS fetches the planet** (`nas/fetch-planet.sh`, from `tools/nas/`): DSM runs it daily; it
@@ -49,74 +59,114 @@ What each step does, in detail. The steps as one table (names, chains, the check
 
 ## 2. Global-source layers
 
-- **Terrain** (`pipeline::terrain_pack`): one terrain, z0 to each place's native zoom, its steps
-  named by the pack each makes (task #639; "terrain" was terrain-hi's name before):
-  - **terrain-hi**, a run per z6 tile near the coverage (`build_piece`): its z9–12 within the
-    coverage plus 20 km, zoom capped by latitude so pixels stay ≥ 15 m (z12 to 67°, z11 to 79°, z10
-    beyond): its hi pack, with a deep z12 where a dataset has the detail north of 67° (where the base
-    ends at z11: `terrain_deep::hi_levels`), so every reader finds z9–12 in the hi packs; and its mid
-    (`work/terrain-mid/6-x-y`, never served: its z9 tiles' 2×2 means as f32, and its lakes'
-    levels). A z6 tile making no hi tile drops its hi pack; there the server makes tiles from the z8
-    ones.
-  - **terrain-deep**, a run per z10 tile where a dataset has the detail (below): its deep pack
-    (z13–16). It waits for no other target: the base it reads is made by terrain-hi's own code, so
-    it runs beside the terrain-hi z6 tiles from the start of a build.
-  - **terrain-lo**, an assembly per z3 tile (`build_lo`): z8 → z3 made again from children (a
-    z6 tile's z9 means from its mid), since a lake's level at z8 is gathered from the whole z3 tile: its
-    lo pack.
-  - A z6 tile's z8 subtrees, grouped by shared lakes, are tasks (`terrainsub`, docs/workers.md §3).
-    The z6 tile's own run prepares each level a block at a time (a z8 subtree's tiles at z12, the
-    tiles under one four levels up: `terrain_pack::blocks`), the next block prepared while this
-    one's tiles are finished. A tile whose lakes all have their levels by then (known from finer
-    levels, or lakes no other block's tile has, found from the water's lake polygons first) is
-    finished and let go; the rest wait for the level's last block (about a tenth at z12 in 6/8/18).
-    So a run holds about two blocks' prepared tiles, not the level's: the same bytes, since a lake's
-    level is of its samples in any order. Measured (task #447, footprint with `MallocLargeCache=0`):
-    6/8/18 5.5–6.0 GB → 2.6–3.0 GB, 6/13/18 6.5 → 2.8 GB, 6/10/21 3.2 → 1.1 GB. `scenic-build
-    terrain-same 6/x/y [--whole]` makes a live z6 tile either way and sets its pack's and mid's
-    content names beside the manifest's, writing nothing to the NAS; `terrain-same 3/x/y` does so
-    for a z3 tile's lo pack.
-  - Together they make the same packs, byte for byte, as the z3 tile's whole run (`build_q_with`,
-    `scenic-build terrain-hi 3/x/y`; `terrain_pack` tests).
-  - **The root (z0–2)** is made from the lo packs once no terrain work is left.
+- **Terrain** (`pipeline::terrain_pack`): one pyramid, z0 to each place's finest zoom, built by one
+  rule at every zoom (task #929, the owner's), its jobs split where scheduling wants them:
+  - **Each place's finest zoom** (`pipeline::terrain_zoom`) is derived from the declared elevation
+    datasets meeting it (docs/inputs.md §6.8), never typed: a dataset's finest zoom at a latitude is
+    the finest whose pixels are no finer than its cell there (`CELL_FACTOR` 1, the owner's), its cell
+    its latitude band's (`Measured::bands`, measured per file by the input check), else its
+    resolution; a tile pyramid's, its declared zoom. A place's sources are the datasets with data
+    under it (their measured presence, by z10 tile: `Measured::presence`; one not measured so, its
+    coverage's cells) in their declared order (rank, then resolution) up to the first holding it
+    whole; its finest
+    zoom is the finest of theirs at the tile's poleward edge, at most z16 (`DEEPEST`: the deepest
+    the map stores). The polar caps take the same rule on their grid's pixel (`polar::finest`).
+  - **The rule** (`terrain_pack::Fill`), quarter by quarter of every tile at every zoom, by the child
+    one zoom finer under it:
+
+    | the child | the quarter | where |
+    |---|---|---|
+    | built (inside a region: within 20 km of the coverage, and no finer than its place's finest zoom) | the child's 2×2 means, of its heights before rounding | every zoom below a place's finest: z0–2 from the lo packs' z3, z3–8 from the z6 tiles' mids, z9–11 in a z6 tile's run, z12 from its z10 tiles' deep mids, z13–15 in a z10 tile's run |
+    | past its place's finest zoom (inside a region) | sampled from the pool at this zoom | the place's finest zoom: z12 or z11 where only a worldwide dataset is, z13–16 where a finer one is (a quarter of a coarser band whose finer data has a gap, too) |
+    | outside every region | the relief: the datasets published at every zoom (their declarations' `every_zoom`: `terrain_zoom::relief`) read at this zoom, one tile a tile | z0–8, and z9–12 past a region's 20 km |
+
+    A tile with no quarter to sample reads nothing from the pool; one with no quarter at all isn't
+    stored. Where a dataset has a gap (its voids, its edge), the next in the declared order fills it
+    at its own finest detail (each dataset read at most at its own zoom: crate::terrain_base), so
+    a place's fill is the next-finest dataset there, whichever it is. A child that should exist but
+    has no data at all (no dataset there) is sea level.
+  - **Rounding:** a job carries its levels' heights unrounded between them and rounds each tile only
+    as it's stored (`finish`): to 1 cm where the tile is its place's finest zoom somewhere, else
+    10 cm, ties to even (crate::terrain_codec); only reads across jobs (the lo packs' z3 for the
+    root) see rounded tiles.
+  - **The jobs** (each boundary scheduling's):
+    - **terrain-lakes**, a run per z6 tile with terrain-deep targets (crate::terrain_lakes, task
+      #942): the levels of the lakes across its targets' z10 edges, each decided once for the whole
+      lake, so a lake two targets share sits at one level in both (each from its own tiles, the
+      levels of one lake across z10 edges had stepped a few cm to metres apart at z13–14). A lake
+      across: an OSM lake whose z14 tiles lie in two z10 tiles or more; its tiles, every z14 tile
+      of the z10 tiles it reaches holding it (a z10 tile reached where one of its tiles touches one
+      of the lake's), past the z6 tile too, so the same from any of its targets. Its level: the
+      water's rule below over its z14 tiles with a shore (those it doesn't wholly cover), each sampled
+      from the pool at z14 (the pool's own sample, not the means of finer tiles); a lake none of whose
+      z14 pixels is half its own (a sliver at an edge: 6 of the 246 at 6/56/25) gets none, and each
+      target levels it from its own tiles as before. A file per target
+      with such a lake (`work/terrain-lakes/10-x-y`, docs/formats.md); its key names the water, the
+      elevation and the coverage's deep targets there whole (a lake goes on past its z6 tile).
+      Measured (`examples/lake_steps`, the M1 at 4 threads reading the NAS): 6/56/25 (Lake Biwa),
+      246 lakes across 100 targets' edges, 752 shore tiles sampled in 185 s (2.6 GB, the coverage read included); a large lake
+      (Huron, Ontario: thousands of z14 tiles) is sampled whole by each z6 tile it reaches.
+    - **terrain-deep**, a run per z10 tile whose places reach past z12 (`terrain_deep::levels`, near
+      the coverage), once its z6 tile's terrain-lakes is made: its tiles z13–16 by the rule, its lakes
+      across its edges at terrain-lakes' levels (its key names its file by content: a lake changed
+      re-keys only the targets it reaches), its deep pack, and its mid
+      (`work/terrain-deep-mid/10-x-y`: its z13 tiles' means before rounding and its lakes' levels).
+      A z10 tile, not its z6 tile: up to 5,440 tiles and GBs of a fine dataset's reads each. A tile
+      of the band is kept only where some of its pixels came from a dataset reaching its zoom
+      (`terrain_zoom::codes_reaching`, the sampler's sources by pixel); one that would only upsample
+      a coarser dataset isn't, and its parent's quarter there is its own sample: so the next
+      dataset's zoom holds there, as the depth's rule (§3, #804). The band is the long part of a
+      rebuild: of the ~40 Mac-days estimated for a whole terrain rebuild, most are its targets.
+    - **terrain-hi**, a run per z6 tile near the coverage (`build_piece`): its z9–12 by the rule, its
+      z12 tiles' quarters over its z10 tiles' deep mids (and its lakes' levels from them first), its
+      hi pack, and its mid (`work/terrain-mid/6-x-y`: its z9 tiles' means and its lakes' levels). It
+      waits for its own z10 tiles' terrain-deep targets alone (its declared reads, docs/readiness.md):
+      a z6 tile with none waits for nothing. One run a z6 tile so one lake has one level across it;
+      its z8 subtrees may go to other workers (`terrainsub`, docs/workers.md §3), not where it takes
+      in deep mids. Each level a block at a time (a z8 subtree's tiles at z12: `blocks`), the next
+      prepared while this one's are finished; a tile whose lakes all have their levels then is
+      finished and let go. Its blocks kept as made (crate::terrain_resume), a resumed run takes them.
+    - **terrain-lo**, an assembly per z3 tile (`build_lo`): z8 → z3 from its z6 tiles' mids and the
+      relief, since a lake's level at z8 is gathered from the whole z3 tile: its lo pack.
+    - **terrain-root** (z0–2), once every terrain-lo is done: from the lo packs' z3 tiles and the
+      relief, at most 21 of its tiles read; seconds.
+    `scenic-build terrain-same 6/x/y [--whole]` makes a live z6 tile (its deep mids taken in) and sets
+    its pack's and mid's content names beside the manifest's, writing nothing to the NAS;
+    `terrain-same 3/x/y` does so for a z3 tile's lo pack.
   - **Sources: the elevation pool** (`inputs/elevation/`, docs/inputs.md §6.8; crate::terrain_base),
     the roads' datasets, in the roads' order and blended at their edges as the roads' sampler does
-    (crate::dem::generic), so the roads and the terrain use one dataset at every point: the regional
-    datasets where they're declared, then Copernicus GLO-30 (its fill mask's voids left to the next),
-    then AWS's Terrarium tiles where GLO-30 has nothing. Each raw tile (the finest level's, and a
-    coarser one's quarters with no finer tile under them) is sampled from the pool at 2 × 2 points a
-    pixel (their mean), each dataset read at the level's detail: a GeoTIFF at its overview nearest
-    half a pixel (at most its full resolution), a Terrarium
-    pyramid at the level's zoom, another pyramid at its own and only on z9–12 (on z3–8, terrain-lo's,
-    the next dataset serves: a z8 tile would read 16,384 of GSI's z15 tiles over the network, task
-    #704, where GLO-30 is read from its store), and never in the open sea: a pixel wholly sea in the
-    terrain's water, with those around it, is flattened to 0 m whatever it reads, so its points skip
-    such pyramids (over Japan's seas each GSI layer answered 64 requests a z12 tile with 404s, task
-    #706); a z9–12 tile's detail at its own z6
-    row's middle latitude (`terrain_base::row_mid`), so its bytes are its own whichever z6 tiles a
-    job makes with it (a deep target's base among them); heights brought to EGM2008 as the
-    roads' are; where no dataset has data, sea level. The Terrarium tiles are read through this
-    Mac's cache and the NAS's archives (fetched once, packed onto the NAS: docs/macs.md), GLO-30
-    from its store (`sources/fetched/glo30/`): a tile the job reads half of or more (the read level's share
-    of its pixels, 75 % for its full resolution, times the share of the tile inside the job's
-    area: not its overviews, nor a tile more than a third outside it), and every fill mask (read whole),
-    copied whole to the Mac's SSD once and read there (task #689: pipeline::localread, where the disk
-    has room past the owner's target; else, and for the coarse levels' many tiles, NAS range reads;
-    the same bytes either way). The sampling goes 16 tiles a chunk; with the build pausing it stops before
-    the next chunk, the step ending as paused with the target unsaved (docs/pool.md §7.2, Resuming). Then the water of the latest pass's basemap. Each is
-    pinned in the key (`TERRAIN_V`, the datasets meeting the target by their lines as the roads'
-    keys name them, the digest of the water the target reads), so a rebuild with the same key gives
-    identical packs. The digests are worked out once a basemap by the `terrain-water` job, so a
-    new pass remakes only z6 tiles whose water changed.
-  - **Coarser zooms from the finer:** every quarter of a tile whose child exists is that child's
-    2×2 means (its water flattened), at every level (z11 from z12, … z0 from z1), so a zoom's pixel
-    is the mean of the best data under it; the pool is sampled at a coarser level only where no
-    finer tile lies under it (outside the coverage's 20 km).
+    (crate::dem::generic), so the roads and the terrain use one dataset at every point. A sampled
+    tile is sampled at 2 × 2 points a pixel (their mean), each dataset read at the tile's detail or
+    its own, the coarser: a GeoTIFF at its overview nearest half a pixel (at most its full
+    resolution), a pyramid declared published at every zoom (`every_zoom`) at the tile's zoom up to its own, another pyramid at its own
+    and only from z9 on (below, the next dataset serves: a z8 tile would read 16,384 of a z15
+    pyramid's tiles over the network, task #704), and never in the open sea: a pixel wholly sea in
+    the terrain's water, with those around it, is flattened to 0 m whatever it reads, so its points
+    skip such pyramids (task #706); a tile's detail at its own z6 row's middle latitude
+    (`terrain_base::row_mid`), so its bytes are its own whichever tiles a job makes with it; heights
+    brought to EGM2008 as the roads' are; where no dataset has data, sea level. The Terrarium tiles
+    are read through this Mac's cache and the NAS's archives (fetched once, packed onto the NAS:
+    docs/macs.md), the stored datasets from their store (`sources/fetched/`): a file the job reads
+    half of or more copied whole to the Mac's SSD once and read there (task #689:
+    pipeline::localread, where the disk has room past the owner's target; else NAS range reads; the
+    same bytes either way). A run's samplers keep the files they most recently read open, and their
+    fill masks, each within the run's own budget (`dem::generic::TileMemo`, `TILE_MEMO_BYTES`), the
+    least recently read let go first, so a run's memory is its working set's (task #929: kept for
+    the run's length, a run over a continent's GLO-30 files grew by 1.3–2.7 GB a z3 tile, measured by
+    `examples/pool_memory`). The sampling goes 16 tiles a chunk;
+    with the build pausing it stops before the next chunk (docs/pool.md §7.2, Resuming). Then the
+    water of the latest pass's basemap. Each is pinned in the key (`TERRAIN_V`, the datasets meeting
+    the target by their lines and zooms there, its tiles near the coverage, the digest of the water
+    the target reads), so a rebuild with the same key gives identical packs. The digests are worked
+    out once a basemap by the `terrain-water` job (z6 tiles, z10 targets' levels, assemblies), so a
+    new pass remakes only targets whose water changed.
   - **Water flattened** (crate::terrain_water): from the basemap's `water` layer at the tile's zoom,
     4 × 4 samples a pixel. The sea goes to 0; each lake, pond, reservoir or dock to its level (the
     10th percentile of its shore's dry pixels, or its source's own lower level); intermittent
     water and pools are left. One level per lake by OSM id across the tiles made
-    together; a lake without one is its tile's alone (`own_key`: never another tile's or feature's). Partly-water pixels are blended.
+    together; a lake without one is its tile's alone (`own_key`: never another tile's or feature's);
+    a lake across deep targets' z10 edges at the level terrain-lakes decided for the whole of it,
+    which the z6 tiles' z9–12 then take from the deep mids. Partly-water pixels are blended.
   - **Rivers levelled** (`terrain_water::rivers`, task #678): in a tile with both river polygons
     (the `water` layer's class `river`) and rivers' courses (the `waterway` layer's class `river`,
     not intermittent, not in tunnels), each course is cut into stations, the river pixels it
@@ -132,69 +182,23 @@ What each step does, in detail. The steps as one table (names, chains, the check
     rivers are levelled from that tile alone, so a river crossing tiles may step a little at their
     edge. Tiles without both are as before, byte for byte.
   - **Below zero** is clamped to 0 after the water. Planned: polders keeping their depth.
-  - **Native zoom and the deep levels** (crate::terrain_deep): a place's native zoom is the finest
-    its data supports. Where a dataset of the pool is finer than the worldwide datasets (those
-    ranked after the unranked, `rank` above 0: GLO-30's 30 m, `terrain_deep::base_resolution`) by
-    over a tenth (by its full resolution, inputs.md §6.8 `full`: HRDEM 2 m, USGS 3DEP 10 m, GSI's),
-    it is that dataset's zoom (pixels no finer than half its cell: 2 m to z16, 3DEP to z14, z13 north
-    of ~55°; a tile pyramid to its own zoom), never past z16 (`MAX_Z`, the owner's: 1 m data stops
-    there too); elsewhere the latitude's cap above. It is told by z10 tile
-    (`terrain_deep::native_zoom`; the catalogue's `native_zoom`, the map's zoom by area). A
-    terrain-deep target is a z10 tile near the coverage (20 km) where a fine dataset meets its z8
-    tile and one of its base tiles reaches z13 (`terrain_deep::is_target`). Its run first reads which
-    of its base tiles its datasets have data in (below: the presence grids, the fine datasets alone);
-    for those alone it then makes the base they blend into and fill from: those base tiles and the
-    tiles within one of them (their ring, at each place's finest base zoom: `terrain_deep::base_want`,
-    `near_tile`), whichever z6 tile holds them, none where no tile has data, made from the pool and
-    the water by terrain-hi's code, the same bytes as the terrain-hi runs store, rounding
-    included (`terrain_pack::Bases`; tested bit for bit inside a z6 tile, across a z6 tile's edge,
-    with lakes past the ring and at the 67° change: `terrain_pack`'s
-    `a_deep_targets_base_is_the_hi_runs_bit_for_bit`). A tile of its z6 tile's first level reads only
-    its raw tile, the water at its place and its lakes' levels, each lake's from all its shore in
-    that level: so it's made from its raw tile, each of its lakes levelled once from every tile of
-    the level holding it (by the water's polygons), not the whole z6 tile; a tile past the first
-    level (where the base's finest zoom changes, 67° and 79°) is made with its z6 tile's levels down
-    to it, of the subtrees closed under their lakes (as `terrainsub` tasks are). Then a deep tile is
-    the datasets read at full resolution and brought to EGM2008 as the roads' are (inputs.md §6.8,
-    `heights`: so the deep tiles, the base, the lakes' levels and the road profiles agree), blended
-    at their edges as the roads' sampler does, planned over its z8 tile's box, the base last so the
-    data blends into it over four base pixels (the base's at the z8 tile's middle latitude) where it
-    ends; where only the base gives a height, the base read across its tiles' edges (each padded by
-    a pixel of its neighbours, the true ones across a z6 tile's edge too; where the base's finest
-    zoom changes with latitude, the neighbour of another zoom read bilinearly at each padding pixel,
-    as the server makes a missing tile from its ancestor); the base's water kept by each pixel's
-    share of the base tile's sea and lakes (a pixel wholly water takes the base's height whatever it
-    reads, so its points skip the pyramids read tile by tile, GSI's: task #728); below zero to 0. Only base tiles whose datasets have data
-    in a 128 × 128 grid of them make any, and only tiles with some of that data at a pixel not
-    wholly water are stored, in its deep pack (formats.md, Pack); elsewhere the server makes finer tiles from their ancestors. A
-    dataset declared with `regions` (inputs.md §6.8) is fine only in the 1° cells meeting them, as
-    the roads read it. A z10 tile with a deep pack (or a retired fine pack) and no target any more
-    has it dropped by its run. A target reads its GeoTIFF blocks ahead of their sampling, 48 at
-    once, each once, kept in memory (2 GB at most), each file opened once; a job reads the fine
-    datasets' declarations once. Its memory is the code's bounds: its base made as a z6 tile's run
-    at most (`terrain_pack::piece_peak_mb`) or its deep tiles' (`terrain_deep::peak_mb`), the larger
-    (`terrain_deep::target_peak_mb`), with the coverage the process reads
-    (`coverage::Coverage::read_peak_mb`). Measured as their own step before one terrain (Mac mini, 12
-    cores shared with other jobs, read over the network, 23 Oct): z8 tile 8/75/91 (Montreal, all 256
-    z12 tiles with HRDEM, some 3DEP): 86,773 tiles in 27 min with 12.6 GB fetched.
   - **Stored** (crate::terrain_codec; the owner's, 24 Oct): every terrain tile, at every zoom, is
     Terrarium RGB as lossless WebP (libwebp 1.6.0, `cwebp -lossless -z 6 -exact`, no metadata:
-    crates/webpenc, the same bytes on every Mac, its golden hashes;
-    libwebp's combined Shannon entropy, its hottest function, replaced by webpenc's own of the same
-    integer sums, task #888),
-    heights rounded first to 1 cm at the place's native zoom and in the deep levels, to 10 cm on the
-    coarser levels (`Sources::quantum`), then to Terrarium's 1/256 m: at most 0.39 cm and 5.1 cm off.
-    Chrome and Safari decode it natively, every value exact; a z12 tile is ~47 KB, 0.71× the PNG it
-    replaced (.claude/notes/SHADING-PYRAMID.md, S1b).
+    crates/webpenc, the same bytes on every Mac, its golden hashes; libwebp's combined Shannon
+    entropy, its hottest function, replaced by webpenc's own of the same integer sums, task #888),
+    heights rounded once, as stored, to 1 cm where the tile is its place's finest zoom and 10 cm
+    coarser (`Sources::quantum`), ties to even, then to Terrarium's 1/256 m: at most 0.39 cm and
+    5.1 cm off. Chrome and Safari decode it natively, every value exact; a z12 tile is ~47 KB, 0.71×
+    the PNG it replaced (.claude/notes/SHADING-PYRAMID.md, S1b).
 - **Slope: the shading pyramid** (`pipeline::slope_pack`; the owner's decisions of 24 Oct,
   .claude/notes/SHADING-PYRAMID.md): one precomputed pyramid serves both the slope tint and the
   hill-shading. Each pixel holds the mean steepness of the ground beneath it and the mean of its
   unit gradient directions (`roadcore::shade`), whose length, the coherence, is 1 on a plain face
-  and about 0 where the faces beneath cancel (a ridge, broken ground). At each place's finest
-  terrain level (z12, z11 north of 67°, the deep levels' zoom where the terrain has them) a
-  pixel's are its own gradient's by Horn's method, with the neighbouring tiles' edges; each coarser
-  pixel is the plain mean of the four beneath it (or where no finer level covers it, its own
-  level's terrain's; a steepness over 400 % counts as 400 %), so the low zooms keep the finest level's steepness everywhere and its
+  and about 0 where the faces beneath cancel (a ridge, broken ground). The terrain's rule (§2,
+  Terrain): where its terrain quarter is sampled (its place's finest zoom) or the relief (outside
+  every region), a pixel's are its own gradient's by Horn's method on that level's terrain, with
+  the neighbouring tiles' edges; elsewhere the plain mean of the four beneath it (a steepness over
+  400 % counts as 400 %), so the low zooms keep the finest level's steepness everywhere and its
   direction where it agrees. Every level is stored, as `shade-webp` (crate::shade_codec: RGB in
   lossless WebP, the terrain's codec): R 255 × √(steepness ÷ 400 %), G and B the direction's east
   and south parts, 128 + 120 u rounded to 5 bits, (128, 128) where the coherence is under 0.25.
@@ -205,28 +209,43 @@ What each step does, in detail. The steps as one table (names, chains, the check
   up to 9 % of pixels changed between none and some by z4: `slope_pack`'s
   `measure_quantisation_drift`, task #632's review.) Its steps split as the terrain's (task #639;
   "slope" was slope-hi's name before): **slope-deep**, a run per terrain-deep target's z10 tile: its
-  part of its z6 tile's pyramid, z10 down to the terrain's deep levels (`slope_pack::build_deep`):
-  its deep pack (z13–16, `layers/slope/deep/10-x-y`, its terrain deep pack copied here first) and
-  its deep mid (`work/slope-deep-mid/10-x-y`: its z10–12 tiles as made and its quadrant at full
-  precision), once the terrain it reads is built (its own and its edge neighbours' terrain-deep,
-  those tiles' z6 terrain-hi and z3 terrain-lo; not the rest of its z3 tile: task #864); a z10 tile
-  no target any more has its deep pack and deep mid dropped.
+  part of its z6 tile's pyramid at the terrain's deep levels (`slope_pack::build_deep`), each of its
+  z13 tiles' subtree from its deep terrain alone: its deep pack (z13–16, `layers/slope/deep/10-x-y`,
+  its terrain deep pack copied here first) and its deep mid (`work/slope-deep-mid/10-x-y`: its z13
+  tiles' quadrants at full precision), once its own and its edge neighbours' terrain-deep are built
+  (task #952: nothing else; not the rest of its z3 tile: task #864); a z10 tile no target any more
+  has its deep pack and deep mid dropped. A missing deep tile (a Horn neighbour, an own tile) is its
+  nearest ancestor within the deep levels (z13–15, `slope_pack::fallback_floor`), never a hi tile;
+  where the fine data ends and there is none, the tile's own edge pixels are taken again, a strip
+  of one pixel along the edge of the fine coverage (the owner's choice, task #952).
+  A slope-deep job's z10 tiles read the terrain through one reader (`slope_pack::DeepBatch`, task
+  #928): the next target's terrain deep pack is copied here while one is made and kept for it
+  alone, every other copy and open pack let go once a target is made (an edge neighbour's few edge
+  tiles are read where they are), so the job's copies are never more than two packs (the one being
+  made's and the next's); and each target's uploads land beside the next one's work
+  (docs/storage.md, Uploads beside the work). At a pause, a failure or the job's end its copies are
+  deleted.
   **slope-hi**, a run per z6 tile once what it reads is built (its own and its edge neighbours'
-  terrain-hi, their z3 tiles' terrain-lo, its z10 tiles' slope-deep): its hi pack (z9–12,
-  its z10 tiles' parts taken in from their deep mids as made, the same bytes as one run of the
-  whole pyramid) and its mid (`work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs
-  (its own z6 tile's hi pack copied whole first) and its neighbours' edge strips; **slope-lo**, an
+  terrain-hi, their z3 tiles' terrain-lo, its z10 tiles' terrain-deep and slope-deep): its hi pack
+  (z9–12: over its z10 tiles' deep terrain, z10–12 from their z13 tiles' quadrants, taken in from
+  their deep mids as made, and its hi terrain where they don't cover; the same bytes as one run of
+  the whole pyramid) and its mid (`work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs
+  (its own z6 tile's hi pack copied whole first) and its neighbours' edge strips; a deep mid is read
+  as the pyramid first reaches its z10 tile and let go once taken in, so a thread holds one at a
+  time; **slope-lo**, an
   assembly per z3 tile from its z6 tiles' mids (each read whole, eight at once, under a deadline and
   tried again while it fails transiently); **slope-root**, z0–2 from the z3 tiles. (Each of these waits, slope-lo's on its z6 tiles' slope-hi
   and its own and edge neighbours' terrain-lo, terrain-lo's and trees-lo's on their z6 tiles' mids (`Read::Mids`: a z6 tile made again for its mid alone holds only them), is
   its row's declared reads in the steps table, `agent::steps::Read` (docs/readiness.md): the planner,
   the forecast's waits and the page's notes derive each target's from it (`steps::readiness`); `declared_reads_cover_the_keys` checks
   each against its key's inputs. The terrain root is built in the terrain stage once every terrain-lo
-  assembly is done; slope-lo waits for it, and a slope-hi or slope-deep target only when its
-  pyramid reads a root tile (an edge neighbour past the lo packs), docs/readiness.md §6 3c.) Memory from the
-  tiles a run holds (`slope_pack::peak_mb`: a z6 tile's hi tiles, each counted at its raw RGB, its
-  z10 tiles' quadrants, the pyramid's working memory and the decoded terrain kept; `deep_peak_mb` a
-  z10 tile's deep tiles and z10–12 tiles likewise; `lo_peak_mb` an assembly's); slope-hi's and
+  assembly is done; slope-lo waits for it, and a slope-hi target only when its pyramid reads a
+  root tile (an edge neighbour past the lo packs), docs/readiness.md §6 3c.) Memory from the
+  tiles a run holds (`slope_pack::peak_mb`: a z6 tile's hi tiles, each counted at its raw RGB, the
+  deep mids open (one a thread, twice its quadrants while read), the pyramid's working memory and
+  the decoded terrain kept; `deep_peak_mb` a z10 tile's deep tiles, its z13 quadrants, a z13
+  subtree a thread, the terrain kept and the next target's copy ahead; both with the target
+  before's uploads in flight, `out::UPLOAD_HELD`; `lo_peak_mb` an assembly's); slope-hi's and
   slope-deep's with the coverage the process reads (`coverage::Coverage::read_peak_mb`). The
   pyramid (`slope_pack::Pyramid`, the depth's shading's too) makes the children of the tiles within
   three levels of its top in parallel and each subtree below them on one thread, on at most 16 of
@@ -235,23 +254,25 @@ What each step does, in detail. The steps as one table (names, chains, the check
   pixel the mean of its four children's in a fixed order, nothing summed across tiles).
 - **The polar caps** (`pipeline::polar`; docs/polar.md): the terrain and shading past the Web
   Mercator tiles' 85.05°, on each pole's polar stereographic grid (EPSG:3031 south, 3413 north;
-  `roadcore::polar`), z0–9, of the poles built (`polar::POLES`: the south; the north is sea level
+  `roadcore::polar`), z0 to the cap's finest zoom (`polar::finest`: the terrain's rule on the grid's
+  pixel, z8 for the declared datasets now), of the poles built (`polar::POLES`: the south; the north is sea level
   and waits for the depth). Each from the elevation pool as the Mercator terrain is, read at the
   level's detail, the tile pyramids left out (a Web Mercator pyramid has nothing past 85.05°); where
   no dataset has data, a fill mask's own filled value (`dem::generic::Sampler::fill_voids`); a gap
   up to 3 pixels wide (GLO-30's file edges) its neighbours' (`polar::close_gaps`); else sea level; below zero to 0; no water flattened. **polar-terrain**, a run per block (a z4 tile of
-  the grid, "s/4/x/y", where the coverage meets its latitudes: `polar::built`): its cap tiles at z9
-  sampled, each coarser level its children's means (sampled where they aren't, past the cap), coded
+  the grid, "s/4/x/y", where the coverage meets its latitudes: `polar::built`): its cap tiles at the finest
+  zoom sampled, each coarser level its children's means (a quarter with none, past the cap, sea
+  level: no dataset is published at every zoom on this grid, so there is no relief to read), coded
   as the Mercator terrain is: its pack `layers/polar-terrain-<pole>/polar/4-x-y`. **polar-slope**, a
-  run per block once its and its neighbours' terrain is built: Horn's method at z9 on the stored
+  run per block once its and its neighbours' terrain is built: Horn's method at the finest zoom on the stored
   terrain (its neighbours' edge tiles for the border), each coarser level its children's means at
-  full precision (Horn's on its own terrain where they aren't), as `shade-webp`: its pack
+  full precision (a quarter with none flat), as `shade-webp`: its pack
   `layers/polar-slope-<pole>/polar/4-x-y`. **polar-root**, a pole's z0–3 of both from its blocks'
-  z4 tiles as stored, sampled and shaded past them; it drops the packs of blocks no longer built.
+  z4 tiles as stored, by the same means (nothing sampled); it drops the packs of blocks no longer built.
   Progress (polar-terrain, polar-slope): `progress: <k + tiles done / tiles in the block>/<blocks> polar
   blocks` on stderr (`jobs::report_f`), a line per 16 tiles within a block (a tile counts when sampled or shaded at
-  z9, and again when written out at each level), so a busy block moves the build page's "hasn't moved" check.
-  Memory: a block's z9 tiles held whole (heights and shading) and the pool's cache, `mem_mb` 4,096
+  the finest zoom, and again when written out at each level), so a busy block moves the build page's "hasn't moved" check.
+  Memory: a block's finest tiles held whole (heights and shading) and the pool's cache, `mem_mb` 4,096
   for the terrain.
 - **Grids (z11):** land cover, canopy and cover, for analysis only. Each `unit` job makes the grid tiles
   its packs lack and uploads them as its z6 tile's `grid-*` hi packs; they aren't in those jobs' keys
@@ -288,7 +309,7 @@ The server builds missing deeper terrain and shading tiles from their ancestors.
 
 Depth under the seas and lakes (`pipeline::depth`; its sources docs/inputs.md §6.10; its files
 docs/formats.md, Depth), split by tile like the terrain, so downloads and the mirror take it as it is.
-- **The rule** (task #804), the terrain's (§2, Coarser zooms from the finer), for the depth and
+- **The rule** (task #804), the terrain's (§2, Terrain: the rule), for the depth and
   the floor's shading alike, with no zoom special: each place's depth is composed from the sources
   only at the zoom of the finest grid covering it (GEBCO's z8, a chart's z13–16, any new source's
   own), every coarser level is the mean of the finer where the finer has data and composed at its
@@ -528,8 +549,8 @@ a scratch folder, wiped at each run:
    are kept by type.
 2. **Elevations:** `elev` (crate::road_terrain), each vertex's height from the finished terrain
    (docs/inputs.md §6.8, The roads' heights), bilinear between pixel centres at the finest zoom stored
-   there, its native zoom (a deep tile, z13–16, where there is one; z12 or the latitude's cap
-   elsewhere), else coarser. It reads `verts.bin` and what step 4 stages alone: `terrain.tiles`
+   there, its place's finest (crate::terrain_zoom: a deep tile, z13–16, where it is past z12),
+   else coarser. It reads `verts.bin` and what step 4 stages alone: `terrain.tiles`
    (the terrain's z0–12 over U's box and its deep tiles under U's vertices, one archive) and
    `codes.json` (the datasets' codes by coverage, giving `src.u8`); no NAS, no
    server. It writes `elev.f32`, `src.u8` and `dem-stats.json` (vertices, missing, seconds). The
@@ -681,31 +702,27 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   with any change to which tiles it wants), the tile, and what `pyramids::want` reads for it: the
   coverage as its terrain-hi run reads it (`agent::build::piece_coverage`: the tiles of its levels), the declared pyramids meeting it (their lines as
   the terrain's keys name them), its water's digest (the open sea it spares) and its terrain-deep
-  targets (whose base tiles it takes whole); until the water or the fine datasets are read its key
+  targets; until the water or the declared datasets are read its key
   is unknown and it waits (`agent::build::pyramids_key`). Nothing waits for it: a terrain job
   fetches what the store lacks. Its time is weighed by the tiles it fetched (`needs::PER_WORK`):
   a z6 tile whose tiles were stored already says nothing of the next one's.
 - **terrain-hi (a z6 tile):** `TERRAIN_V` and the codec (`terrain_codec::version`: the encoding,
-  libwebp's version and level, the rounding), the coverage as it reads it (`agent::build::piece_coverage`: which z9–12 tiles of it are within 20 km of the coverage, digested, not the rings there, task #832), the elevation
-  pool's datasets meeting the tile (`TerrainTiles::terrain_datasets`: their lines as the roads' keys
-  name them, each dataset's regions' outlines read so `declared::cut_note` names the outlines inside the tile, never their files: task #832), what it reads of the fine datasets (`terrain_deep::piece_key_lines`: its z10 tiles past
-  the base's zoom, rounded as coarser than native; where it makes deep z12 north of 67°, their code,
-  then each such z8 tile near the coverage a fine dataset meets, each such dataset's line, `id
-  keyed` and its heights' conversion to EGM2008, and the zoom it reaches there; until the datasets
-  are read its key is unknown and it waits), the digest of its water (`agent::build::water_key`),
-  and "no hi tiles" for a z6 tile making none (`piece_key_made`). A "none" z6 tile is keyed on the
-  version and the tile (`none_piece_key`).
-  These coverage and outline parts (task #832) changed every terrain-hi and terrain-deep key
-  once (and the pyramids-fill keys with them): they ship with the planned terrain rebuild (#862,
-  docs/readiness.md §6 step 3), never on their own.
-- **terrain-deep (a z10 tile):** `TERRAIN_DEEP_V`, `TERRAIN_V` (its base is terrain-hi's code's)
-  and the codec, the tile, what it reads of the fine datasets (`terrain_deep::target_key_lines`:
-  their code, the datasets meeting its z8 tile and its z10 tile with the zoom each reaches there,
-  and which z10 tiles around it go past the base's zoom, its ring's rounding), and for each z6 tile
-  its base is made of what that z6 tile's terrain-hi run reads: the coverage as it reads it (`piece_coverage`), the
-  pool's datasets meeting it and its water's digest (`agent::build::terrain_deep_key`). Never a
-  built tile: no target of it waits for another. A z10 tile no target any more is keyed on the
-  version and the tile (`none_deep_key`).
+  libwebp's version and level, the rounding), the coverage as it reads it
+  (`agent::build::piece_coverage`: which of its z9–12 tiles are built by the rule, digested, not the
+  rings there, task #832), the elevation pool's datasets meeting the tile
+  (`TerrainTiles::terrain_datasets`: their lines as the roads' keys name them, each dataset's
+  regions' outlines read so `declared::cut_note` names the outlines inside the tile, never their
+  files: task #832), each place's sources there with the zoom each reaches
+  (`terrain_zoom::key_lines`), the digest of its water (`agent::build::water_key`), its z10 tiles'
+  terrain-deep mids by content (`idents::terrain_deep_mids`, a declared read of terrain-deep:
+  it waits for those targets), and "no hi tiles" for a z6 tile making none. Until the datasets are
+  read its key is unknown and it waits. A "none" z6 tile is keyed on the version and the tile
+  (`none_piece_key`).
+- **terrain-deep (a z10 tile):** `TERRAIN_DEEP_V` and the codec, the tile, its band's code and the
+  sources meeting it with the zoom each reaches there (`terrain_deep::target_key_lines`), its
+  levels' tiles (`agent::build::deep_coverage`), the pool's datasets meeting it and its water's
+  digest. It reads no built tile: no target of it waits for another. A z10 tile no target any more
+  is keyed on the version and the tile (`none_deep_key`).
 - **Drops:** a target under any of these "none" keys (`agent::build::is_none_key`) drops its packs
   and reads nothing; its run notes a `drops` measure (`needs::DROPS`, docs/pool.md §7.7) so it is
   sized as a drop, never as its step's build (each through scenic-build's `run_drop`), and the plan
@@ -715,11 +732,12 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   digest of its z6–8 water; `TERRAIN_LO_V` and the codec. "none" likewise (`none_lo_key`).
 - **slope-hi (a z6 tile):** `SLOPE_V` and the codec (`shade_codec::version`: the encoding, libwebp's
   version and level, the codes' constants), its z10 tiles' deep mids by content, and every terrain
-  tile it reads itself (those z10 tiles' subtrees left out) by content, from the packs' indexes
+  tile it reads itself (the z13 tiles taken in from those mids, with their tiles in the terrain deep
+  packs' indexes, and their subtrees left out) by content, from the packs' indexes
   (`agent::build::slope_reads`), so a change along a neighbour's edge reruns it, one inside doesn't.
 - **slope-deep (a z10 tile):** `SLOPE_V` and the codec, and every terrain tile its part of the
-  pyramid reads (its terrain deep pack's, those of z11–12 under it, Horn's border past them) by
-  content (`slope_reads`).
+  pyramid reads (its terrain deep pack's, Horn's border past them in its edge neighbours' deep
+  packs) by content (`slope_reads`).
 - **slope-lo:** its z6 tiles' mids and the z3 tile's terrain lo pack; `SLOPE_LO_V` and the codec.
   **slope-root:** the lo packs and the codec.
 - **polar-terrain (a polar block):** `polar::TERRAIN_V`, the terrain codec's version, the block,

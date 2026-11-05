@@ -25,7 +25,9 @@ use std::path::{Path, PathBuf};
 /// writes, its hi packs' or its mid's, pixels or not (every z6 tile and assembly is made again). A
 /// z6 tile made again as it is (`build_piece`'s `expect_same`: its mid backfilled) expects the bytes
 /// its key made, and one that could never match would hold its z3 tile's assembly back for good.
-pub const TREES_V: u32 = 2;
+/// (3, task #862: the shapes' mask in roadcore::geo's Web Mercator metres; North America's leaf types
+/// resampled with `det`'s maths, crate::leaftype::NALCMS_SOURCE.)
+pub const TREES_V: u32 = 3;
 /// The assemblies' own version (in their keys), bumped likewise on any change to the bytes
 /// of the lo packs an assembly makes from the same mids.
 pub const TREES_LO_V: u32 = 1;
@@ -841,7 +843,7 @@ mod tests {
             let shapes = crate::trees::mask::Shapes::parse(&coverage_json(&cov, q).to_string()).unwrap();
             let mut sqs: Vec<(i32, i32)> = crate::trees::z3_blocks(&shapes, q.x, q.y)
                 .iter()
-                .flat_map(|&(bx, by)| crate::trees::squares_of(crate::trees::tile_bounds(8, bx, by)))
+                .flat_map(|&(bx, by)| crate::trees::squares_of(roadcore::geo::tile_box(8, bx, by)))
                 .collect();
             sqs.sort_unstable();
             sqs.dedup();

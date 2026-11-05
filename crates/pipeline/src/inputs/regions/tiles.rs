@@ -36,6 +36,7 @@ use super::geom::{self, Area, Pt, Ring};
 use super::resolve::{Folder, Leaf, Outcome, Problem, Resolved};
 use super::stored::Shape;
 use crate::inputs::pace;
+use det::Det;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// A cell: its column (−90…89, 2° each from −180°) and row (−45…44).
@@ -390,7 +391,7 @@ fn support(p: &Part, env: &Env) -> BTreeSet<Cell> {
 
 /// The columns and rows of cells within `m` metres of cell `c`.
 fn reach(c: Cell, m: f64) -> (i64, i64) {
-    let lat_m = CELL as f64 * 1e-7 * 111_320.0;
+    let lat_m = CELL as f64 * 1e-7 * roadcore::geo::M_PER_DEG;
     let dy = (m / lat_m).ceil() as i64;
     // (The band's latitude farthest from the equator, but no farther than 86°N or 80°S: the
     // buffers read no cells past those (no land north of 83.7°N; Antarctica's inland ice), and
@@ -399,7 +400,7 @@ fn reach(c: Cell, m: f64) -> (i64, i64) {
     let north = c.1 + dy + 1 > (c.1 - dy).abs();
     let edge = if north { c.1 + dy + 1 } else { (c.1 - dy).abs() };
     let worst = ((edge * CELL) as f64 * 1e-7).min(if north { 86.0 } else { 80.0 });
-    let cos = worst.to_radians().cos();
+    let cos = worst.to_radians().dcos();
     let dx = ((m / (lat_m * cos)).ceil() as i64).min(if north { MAX_REACH_COLS_NORTH } else { MAX_REACH_COLS });
     (dx, dy)
 }
@@ -420,12 +421,15 @@ const NEAREST_REACH_M: f64 = geom::NEAREST_REACH_M;
 /// The columns and rows of cells holding everything within `m` metres of cell `c` (no polar cap:
 /// near a pole, every column).
 fn nearest_reach(c: Cell, m: f64) -> (i64, i64) {
-    let lat_m = CELL as f64 * 1e-7 * 110_574.0;
+    let lat_m = CELL as f64 * 1e-7 * roadcore::geo::M_PER_DEG;
     let dy = ((m / lat_m).ceil() as i64).min(90);
     let edge = ((c.1 + 1 + dy).abs().max((c.1 - dy).abs()) * CELL) as f64 * 1e-7;
-    let cos = edge.min(90.0).to_radians().cos();
-    let dx =
-        if cos < 1e-6 { COLS / 2 } else { ((m / (CELL as f64 * 1e-7 * 111_320.0 * cos)).ceil() as i64).min(COLS / 2) };
+    let cos = edge.min(90.0).to_radians().dcos();
+    let dx = if cos < 1e-6 {
+        COLS / 2
+    } else {
+        ((m / (CELL as f64 * 1e-7 * roadcore::geo::M_PER_DEG * cos)).ceil() as i64).min(COLS / 2)
+    };
     (dx, dy)
 }
 
@@ -1370,7 +1374,7 @@ fn coast(
         let none = Vec::new();
         let bx = cell_box(c);
         let lat = ((c.1 * CELL) as f64 * 1e-7).abs().max(((c.1 + 1) * CELL) as f64 * 1e-7).min(89.0);
-        let pad = (4.0 * COAST_REACH_M / 111_320.0 * 1e7 / lat.to_radians().cos()) as i64;
+        let pad = (4.0 * COAST_REACH_M / roadcore::geo::M_PER_DEG * 1e7 / lat.to_radians().dcos()) as i64;
         let near_box = [bx[0] - pad, bx[1] - pad, bx[2] + pad, bx[3] + pad];
         let mut idx = SegIndex::default();
         for x in c.0 - 1..=c.0 + 1 {
@@ -1532,7 +1536,7 @@ fn coast(
             let p = &pieces[i];
             let Some(b) = p.area.bbox() else { continue };
             let lat = (b[1].abs().max(b[3].abs()) as f64 * 1e-7).min(89.0);
-            let pad = (1.5 * COAST_REACH_M / 111_320.0 * 1e7 / lat.to_radians().cos()) as i64;
+            let pad = (1.5 * COAST_REACH_M / roadcore::geo::M_PER_DEG * 1e7 / lat.to_radians().dcos()) as i64;
             let window = [b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad];
             let mut edges: Vec<Vec<Ring>> = vec![Vec::new(); near.len()];
             for (k, a, z) in idx.segments_in(window) {
@@ -1985,12 +1989,11 @@ fn cells_pass(
         for poly in gaps.polys {
             let gb = geom::bbox_of(poly.iter().flatten());
             let touches = poly.iter().flatten().any(|v| lidx.within(*v, 100.0))
-                || poly
-                    .first()
-                    .and_then(|r| r.first())
-                    .is_some_and(|v| land.polys.iter().zip(&land_boxes).any(|(lp, b)| near(b, &gb) && inside(*v, lp)))
+                || poly.first().and_then(|r| r.first()).is_some_and(|v| {
+                    land.polys.iter().zip(&land_boxes).any(|(lp, b)| near(b, &gb) && roadcore::geo::inside(lp, *v))
+                })
                 || land.polys.iter().zip(&land_boxes).any(|(lp, b)| {
-                    near(b, &gb) && lp.first().and_then(|r| r.first()).is_some_and(|v| inside(*v, &poly))
+                    near(b, &gb) && lp.first().and_then(|r| r.first()).is_some_and(|v| roadcore::geo::inside(&poly, *v))
                 });
             let sides = sides(&poly, c);
             let g = Area { polys: vec![poly] };
@@ -2309,27 +2312,9 @@ fn clip_segment(a: Pt, z: Pt, b: [i64; 4]) -> Option<Ring> {
 /// Metres along a segment (a local equirectangular measure: segments here are short).
 fn seg_m(a: geom::Pt, b: geom::Pt) -> f64 {
     let lat = ((a[1] + b[1]) as f64 / 2e7).to_radians();
-    let dx = (b[0] - a[0]) as f64 * lat.cos();
+    let dx = (b[0] - a[0]) as f64 * lat.dcos();
     let dy = (b[1] - a[1]) as f64;
-    (dx * dx + dy * dy).sqrt() * 0.011_131_95
-}
-
-/// Whether a point is inside a polygon (its rings read even-odd, holes included).
-fn inside(p: geom::Pt, poly: &[geom::Ring]) -> bool {
-    let mut c = false;
-    for r in poly {
-        let n = r.len();
-        for i in 0..n {
-            let (a, b) = (r[i], r[(i + n - 1) % n]);
-            if (a[1] > p[1]) != (b[1] > p[1]) {
-                let x = a[0] as f64 + (p[1] - a[1]) as f64 * (b[0] - a[0]) as f64 / (b[1] - a[1]) as f64;
-                if (p[0] as f64) < x {
-                    c = !c;
-                }
-            }
-        }
-    }
-    c
+    (dx * dx + dy * dy).sqrt() * (roadcore::geo::M_PER_DEG * 1e-7)
 }
 
 /// Rings' segments in a grid of about 2 km, each with its owner's number.
@@ -2384,8 +2369,11 @@ impl SegIndex {
 
     /// The segments within `d` metres of a point, with their distance in metres.
     fn near(&self, p: geom::Pt, d: f64) -> impl Iterator<Item = (usize, f64)> + '_ {
-        let cos = (p[1] as f64 / 1e7).to_radians().cos().max(0.01);
-        let (ry, rx) = ((d / 0.011_131_95) as i64 + 1, (d / 0.011_131_95 / cos) as i64 + 1);
+        let cos = (p[1] as f64 / 1e7).to_radians().dcos().max(0.01);
+        let (ry, rx) = (
+            (d / (roadcore::geo::M_PER_DEG * 1e-7)) as i64 + 1,
+            (d / (roadcore::geo::M_PER_DEG * 1e-7) / cos) as i64 + 1,
+        );
         let (x0, x1) = ((p[0] - rx).div_euclid(SEG_CELL), (p[0] + rx).div_euclid(SEG_CELL));
         let (y0, y1) = ((p[1] - ry).div_euclid(SEG_CELL), (p[1] + ry).div_euclid(SEG_CELL));
         (x0..=x1)
@@ -2413,5 +2401,5 @@ fn seg_dist_m(p: geom::Pt, a: geom::Pt, b: geom::Pt, cos: f64) -> f64 {
     let l2 = d[0] * d[0] + d[1] * d[1];
     let t = if l2 == 0.0 { 0.0 } else { (-(a[0] * d[0] + a[1] * d[1]) / l2).clamp(0.0, 1.0) };
     let q = [a[0] + t * d[0], a[1] + t * d[1]];
-    (q[0] * q[0] + q[1] * q[1]).sqrt() * 0.011_131_95
+    (q[0] * q[0] + q[1] * q[1]).sqrt() * (roadcore::geo::M_PER_DEG * 1e-7)
 }

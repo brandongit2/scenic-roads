@@ -1,5 +1,6 @@
-//! The terrain's base tiles (z0–12) from the elevation pool (docs/steps.md §2, Terrain; docs/inputs.md
-//! §6.8): every tile sampled from the same datasets, in the same order and blended at their edges
+//! The terrain's sampled tiles from the elevation pool (docs/steps.md §2, Terrain; docs/inputs.md
+//! §6.8): a tile at its place's finest zoom (crate::terrain_zoom), and the relief outside every
+//! region (`Pool::relief`). Every tile sampled from the same datasets, in the same order and blended at their edges
 //! the same way, as the roads' elevations (crate::dem::generic), so the roads and the terrain use
 //! one dataset at every point. Each pixel is the mean of 2 × 2 samples over it (`K`), each dataset
 //! read at the level's detail: a GeoTIFF at its overview nearest half a pixel, a Terrarium pyramid at the level's own zoom (AWS's publishes every zoom),
@@ -29,8 +30,8 @@ use store::range::RangeRead;
 
 /// Samples a side over a pixel.
 pub const K: usize = 2;
-/// The finest zoom of the base (crate::terrain_pack::max_zoom_at's at the equator).
-pub const MAX_Z: u8 = 12;
+/// The finest zoom a plan is made for: the deepest the map stores.
+const MAX_Z: u8 = crate::terrain_zoom::DEEPEST;
 /// Tiles in flight at once while a level is sampled (`Tiles::prefetch_counted`): the memory
 /// `sampling_mb` declares (in crate::terrain_pack::piece_peak_mb, and what terrain-hi 7's and
 /// terrain-lo 2's runs measured, crate::coord::cost_version), shared among the chunks sampled at
@@ -88,7 +89,7 @@ pub fn terrarium_template(
 pub fn tiles_box(z: u8, ts: &[(u32, u32)]) -> [f64; 4] {
     let mut b = [180.0f64, 90.0f64, -180.0f64, -90.0f64];
     for &(x, y) in ts {
-        let t = crate::stage::tile_box_grown(z, x, y, 0.0);
+        let t = roadcore::geo::tile_box(z, x, y);
         b = [b[0].min(t[0]), b[1].min(t[1]), b[2].max(t[2]), b[3].max(t[3])];
     }
     b
@@ -142,6 +143,22 @@ impl Pool {
         Pool { plan, terrarium, store, area, local: None, pyramids: None }
     }
 
+    /// The pool of the datasets published at every zoom alone (their declarations' `every_zoom`:
+    /// crate::terrain_zoom::Set::every_zoom), each read at the tile's own zoom: the coarse relief outside every
+    /// region (crate::terrain_pack::Fill::Relief), one of its tiles a tile, never a GeoTIFF's area.
+    pub fn relief(&self) -> Pool {
+        let mut plan = self.plan.clone();
+        plan.datasets.retain(|d| matches!(&d.source, Source::Tiles { every_zoom: true, .. }));
+        Pool {
+            plan,
+            terrarium: self.terrarium.clone(),
+            store: self.store.clone(),
+            area: self.area,
+            local: None,
+            pyramids: None,
+        }
+    }
+
     /// The plan read at zoom `z` over latitude `lat` (`Pool`'s rule). Below `ROW_Z` (the z3 tiles'
     /// levels, terrain-lo's) a pyramid published at one zoom only (any but Terrarium) is left out, the
     /// next dataset serving there: its tiles a z8 tile would read are 4^(zoom − 8) (GSI's z15: 16,384,
@@ -158,7 +175,7 @@ impl Pool {
                     *read_resolution = Some(half);
                     d.resolution = d.resolution.max(half);
                 }
-                Source::Tiles { zoom, encoding, .. } if encoding == "terrarium" && *zoom > z as u32 => {
+                Source::Tiles { zoom, every_zoom: true, .. } if *zoom > z as u32 => {
                     *zoom = z as u32;
                     d.resolution = d.resolution.max(tile_resolution(z as u32, lat));
                 }
@@ -204,11 +221,11 @@ impl Pool {
     }
 }
 
-/// Whether dataset `d` is a tile pyramid read tile by tile over the network at its one zoom: any
-/// but Terrarium's (read through `RawTiles`, at every zoom). GSI's z15 layers: 64 requests a z12
-/// tile each.
+/// Whether dataset `d` is a tile pyramid read tile by tile over the network at its one zoom: one
+/// not declared published at every zoom (`every_zoom`). GSI's z15 layers: 64 requests a z12 tile
+/// each.
 pub(crate) fn by_tile(d: &crate::dem::declared::Dataset) -> bool {
-    matches!(&d.source, Source::Tiles { encoding, .. } if encoding != "terrarium")
+    matches!(&d.source, Source::Tiles { every_zoom: false, .. })
 }
 
 /// The first zoom whose tiles read the pool at their own z6 tile's middle latitude (`row_mid`), not
@@ -222,7 +239,7 @@ const BY_ROW: usize = (MAX_Z - ROW_Z + 1) as usize * 64;
 /// The middle latitude of z6 row `row` (its box's south and north edges averaged, as a z6 tile's
 /// own area's: `Pool::with_tiles`).
 pub fn row_mid(row: u32) -> f64 {
-    let b = crate::stage::tile_box_grown(6, 0, row, 0.0);
+    let b = roadcore::geo::tile_box(6, 0, row);
     (b[1] + b[3]) / 2.0
 }
 
@@ -315,16 +332,13 @@ pub struct Tiles<'a> {
     water: Option<&'a dyn WaterSource>,
     at_sea: &'a [OnceLock<Plan>],
     held: Mutex<HashMap<(u8, u32, u32), Option<Vec<u8>>>>,
-    /// The tiles sampled with data: a tile whose four children all are one is made from them alone
-    /// (crate::terrain_pack::prepare's quarters), so it isn't sampled (`FLAT` stands for it).
-    with_data: Mutex<std::collections::HashSet<(u8, u32, u32)>>,
+    /// By tile sampled, the datasets its pixels came from (their ids, sorted:
+    /// crate::terrain_pack::RawSource::from), until asked for.
+    from: Mutex<HashMap<(u8, u32, u32), Vec<String>>>,
     /// Whether the build is pausing (crate::control::draining_lately; a test's own): checked before each
     /// sampling, a chunk or a tile, which then stops with crate::control::Paused.
     draining: &'a (dyn Fn() -> bool + Sync),
 }
-
-/// A tile at sea level: what stands for a tile made from its four children alone.
-static FLAT: OnceLock<Vec<u8>> = OnceLock::new();
 
 impl<'a> Tiles<'a> {
     fn new(plans: &'a [Plan], o: &'a Opts<'a>) -> Tiles<'a> {
@@ -337,7 +351,7 @@ impl<'a> Tiles<'a> {
             water: None,
             at_sea: &[],
             held: Mutex::new(HashMap::new()),
-            with_data: Mutex::new(Default::default()),
+            from: Mutex::new(HashMap::new()),
             draining: &crate::control::draining_lately,
         }
     }
@@ -406,37 +420,16 @@ impl<'a> Tiles<'a> {
             .map_err(|e| anyhow::anyhow!("the terrain's datasets (plan {k}): {e}"))
     }
 
-    /// Tiles `ts` of zoom `z` sampled: each its Terrarium PNG, None where no dataset has data; one
-    /// whose four children were sampled with data, `FLAT` (made from them alone).
+    /// Tiles `ts` of zoom `z` sampled: each its Terrarium PNG, None where no dataset has data.
     pub fn sample(&self, z: u8, ts: &[(u32, u32)]) -> Result<Vec<Option<Vec<u8>>>> {
-        let covered = |&(x, y): &(u32, u32)| {
-            let w = self.with_data.lock().unwrap();
-            (0..4u32).all(|k| w.contains(&(z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))))
-        };
-        let (skip, todo): (Vec<(u32, u32)>, Vec<(u32, u32)>) = ts.iter().partition(|t| covered(t));
-        let mut made: HashMap<(u32, u32), Option<Vec<u8>>> = HashMap::new();
-        if !skip.is_empty() {
-            let flat = FLAT.get_or_init(|| roadcore::grid::encode_terrain_png(&vec![0f32; 65536], 256, 256).unwrap());
-            made.extend(skip.iter().map(|&t| (t, Some(flat.clone()))));
+        if ts.is_empty() {
+            return Ok(Vec::new());
         }
-        if !todo.is_empty() {
-            // (Between chunks: a level's sampling runs for hours, and a pause waits for no more
-            // than the chunks under way, task #705; counted in the job's measure, task #889.)
-            crate::control::reached();
-            crate::control::pause_point(self.draining)?;
-            made.extend(todo.iter().copied().zip(self.sample_all(z, &todo)?));
-        }
-        let mut w = self.with_data.lock().unwrap();
-        Ok(ts
-            .iter()
-            .map(|t| {
-                let m = made.remove(t).flatten();
-                if m.is_some() {
-                    w.insert((z, t.0, t.1));
-                }
-                m
-            })
-            .collect())
+        // (Between chunks: a level's sampling runs for hours, and a pause waits for no more than
+        // the chunks under way, task #705; counted in the job's measure, task #889.)
+        crate::control::reached();
+        crate::control::pause_point(self.draining)?;
+        self.sample_all(z, ts)
     }
 
     /// Tiles `ts` of zoom `z` sampled, every one: by their plans (`slot`), in their order.
@@ -464,18 +457,36 @@ impl<'a> Tiles<'a> {
             Some(w) if self.plan(k).datasets.iter().any(by_tile) => open_sea(w, z, ts)?,
             _ => Vec::new(),
         };
-        let elev = if sea.iter().any(|&b| b) {
+        // (Each point's height and its first dataset's id, by the plan it was sampled with: the
+        // open sea's by the plan without the pyramids read tile by tile.)
+        fn id_of(p: &Plan, f: u16) -> Option<&str> {
+            p.datasets.get(f as usize).map(|d| d.id.as_str())
+        }
+        let (elev, ids): (Vec<f32>, Vec<Option<&str>>) = if sea.iter().any(|&b| b) {
             let pick = |at_sea: bool, v: &[f64]| -> Vec<f64> {
                 v.iter().zip(&sea).filter(|p| *p.1 == at_sea).map(|p| *p.0).collect()
             };
-            let ashore = s.sample(&pick(false, &lon), &pick(false, &lat), &|_| {})?.elev;
-            let afloat =
-                self.sampler(k + self.at_sea.len())?.sample(&pick(true, &lon), &pick(true, &lat), &|_| {})?.elev;
-            let (mut a, mut b) = (ashore.into_iter(), afloat.into_iter());
-            sea.iter().map(|&at| if at { b.next() } else { a.next() }.expect("a height a point")).collect()
+            let ashore = s.sample(&pick(false, &lon), &pick(false, &lat), &|_| {})?;
+            let afloat = self.sampler(k + self.at_sea.len())?.sample(&pick(true, &lon), &pick(true, &lat), &|_| {})?;
+            let (pa, pb) = (self.plan(k), self.plan(k + self.at_sea.len()));
+            let mut a = ashore.elev.into_iter().zip(ashore.first.into_iter().map(|f| id_of(pa, f)));
+            let mut b = afloat.elev.into_iter().zip(afloat.first.into_iter().map(|f| id_of(pb, f)));
+            sea.iter().map(|&at| if at { b.next() } else { a.next() }.expect("a height a point")).unzip()
         } else {
-            s.sample(&lon, &lat, &|_| {})?.elev
+            let got = s.sample(&lon, &lat, &|_| {})?;
+            let p = self.plan(k);
+            (got.elev, got.first.into_iter().map(|f| id_of(p, f)).collect())
         };
+        // (By tile, the datasets its pixels came from: `from`.)
+        {
+            let per = 256 * 256 * K * K;
+            let mut c = self.from.lock().unwrap();
+            for (t, &(x, y)) in ts.iter().enumerate() {
+                let set: std::collections::BTreeSet<&str> =
+                    ids[t * per..(t + 1) * per].iter().flatten().copied().collect();
+                c.insert((z, x, y), set.into_iter().map(str::to_string).collect());
+            }
+        }
         let per = 256 * 256;
         let mut out = Vec::with_capacity(ts.len());
         for t in 0..ts.len() {
@@ -547,7 +558,7 @@ pub fn points(z: u8, ts: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
     for &(x, y) in ts {
         for r in 0..side {
             let fy = (y as f64 + (r as f64 + 0.5) / side as f64) / n;
-            let la = (std::f64::consts::PI * (1.0 - 2.0 * fy)).sinh().atan().to_degrees();
+            let la = roadcore::geo::merc_lat(fy);
             for c in 0..side {
                 lon.push((x as f64 + (c as f64 + 0.5) / side as f64) / n * 360.0 - 180.0);
                 lat.push(la);
@@ -558,9 +569,8 @@ pub fn points(z: u8, ts: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
 }
 
 impl RawSource for Tiles<'_> {
-    fn made_before(&self, z: u8, tiles: &[(u32, u32)]) {
-        // (A tile whose four children have data isn't sampled, as when they were sampled here.)
-        self.with_data.lock().unwrap().extend(tiles.iter().map(|&(x, y)| (z, x, y)));
+    fn from(&self, z: u8, x: u32, y: u32) -> Option<Vec<String>> {
+        Some(self.from.lock().unwrap().remove(&(z, x, y)).unwrap_or_default())
     }
 
     fn get(&self, z: u8, x: u32, y: u32) -> Result<(Option<Vec<u8>>, bool)> {
@@ -572,8 +582,7 @@ impl RawSource for Tiles<'_> {
 
     // (Its chunks `at_once` at a time, the first to fail stopping the rest, as one that finds the
     // build pausing does (crate::control::Paused, from `sample`). A chunk's reads mostly wait on the NAS, one at a time left a
-    // job's threads idle, task #695. The same bytes: a tile's sampling reads only the level below's
-    // `with_data`, which a level's own tiles never add to.)
+    // job's threads idle, task #695. The same bytes: a tile's sampling reads nothing of another's.)
     fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
         // (As many at once as the job's threads: each chunk's own work, its points and their means,
         // is on its thread, outside the job's pool; its sampler's passes on the pool, task #888: the
@@ -630,8 +639,8 @@ mod tests {
         // The z12 tile over 10.5°E, 45.5°N, and its Terrarium tile: 500 m flat.
         let z = 12u8;
         let nn = (1u64 << z) as f64;
-        let x = ((10.5 + 180.0) / 360.0 * nn) as u32;
-        let y = ((1.0 - 45.5f64.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
+        let x = (roadcore::geo::merc_x(10.5) * nn) as u32;
+        let y = (roadcore::geo::merc_y(45.5) * nn) as u32;
         std::fs::create_dir_all(local.join(format!("{z}/{x}"))).unwrap();
         std::fs::write(
             local.join(format!("{z}/{x}/{y}.png")),
@@ -667,6 +676,7 @@ mod tests {
                         url: crate::terrain_pack::TEST_BASE.into(),
                         zoom: 12,
                         encoding: "terrarium".into(),
+                        every_zoom: true,
                     },
                     convert: None,
                     outline: None,
@@ -721,8 +731,8 @@ mod tests {
         // four of their pixels as read at the level's detail: `at_zoom`.)
         let (z, lon, lat) = (12u8, 10.5f64, 45.5f64);
         let nn = (1u64 << z) as f64;
-        let x = ((lon + 180.0) / 360.0 * nn) as u32;
-        let y = ((1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
+        let (x, y) = roadcore::geo::merc(lon, lat);
+        let (x, y) = ((x * nn) as u32, (y * nn) as u32);
         let n = 1200usize;
         let gt = [10.44, 0.0001, 0.0, 45.56, 0.0, -0.0001];
         let e: Vec<f32> = (0..n * n).map(|p| 100.0 + (p % n) as f32 * 0.01).collect();
@@ -776,7 +786,7 @@ mod tests {
                 .with_tiles(&raw, None, |t| t.sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap())
                 .unwrap()
         };
-        let own = tile_of(crate::stage::tile_box_grown(6, x >> 6, y >> 6, 0.0));
+        let own = tile_of(roadcore::geo::tile_box(6, x >> 6, y >> 6));
         let wide = tile_of([10.0, 20.0, 11.0, 60.0]);
         assert_eq!(own, wide, "its own z6 row's latitude, whatever the area");
         // (Read at the wide area's middle, 40°N: another blend.)
@@ -802,9 +812,9 @@ mod tests {
         std::fs::create_dir_all(store.join("flat")).unwrap();
         let (z, lon, lat) = (12u8, 10.5f64, 45.5f64);
         let nn = (1u64 << z) as f64;
-        let x = ((lon + 180.0) / 360.0 * nn) as u32;
-        let y = ((1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
-        let b = crate::stage::tile_box_grown(z, x, y, 0.0);
+        let (x, y) = roadcore::geo::merc(lon, lat);
+        let (x, y) = ((x * nn) as u32, (y * nn) as u32);
+        let b = roadcore::geo::tile_box(z, x, y);
         let n = 600usize;
         let gt =
             [b[0] - 0.01, (b[2] - b[0] + 0.02) / n as f64, 0.0, b[3] + 0.01, 0.0, -(b[3] - b[1] + 0.02) / n as f64];
@@ -845,6 +855,7 @@ mod tests {
                         url: "https://g.test/{z}/{x}/{y}.png".into(),
                         zoom: 14,
                         encoding: "gsi-png".into(),
+                        every_zoom: false,
                     },
                     convert: None,
                     outline: None,
@@ -885,25 +896,6 @@ mod tests {
         assert!(plain.sample(z, &[(x, y)]).is_err(), "the unsupplied tiles asked for");
     }
 
-    /// A tile whose four children were sampled with data isn't sampled: they make it.
-    #[test]
-    fn a_tile_over_four_children_with_data_isnt_sampled() {
-        // (A plan no sampler can open: sampling would fail.)
-        let plans = vec![Plan { fmt: 1, version: "t".into(), tag: "t".into(), datasets: Vec::new() }; 13];
-        let net = crate::fetch::MapFetch::default();
-        let o = Opts { fetch: &net, store: None, local: None };
-        let t = Tiles::new(&plans, &o);
-        for k in 0..4u32 {
-            t.with_data.lock().unwrap().insert((10, 2 * 5 + (k & 1), 2 * 7 + (k >> 1)));
-        }
-        let got = t.sample(9, &[(5, 7)]).unwrap();
-        assert_eq!(got[0].as_deref(), FLAT.get().map(Vec::as_slice));
-        assert!(t.with_data.lock().unwrap().contains(&(9, 5, 7)), "itself with data, for the level above");
-        // Three of four: sampled (here, nothing: no dataset).
-        t.with_data.lock().unwrap().remove(&(10, 10, 14));
-        assert_eq!(t.sample(9, &[(5, 7)]).unwrap()[0], None);
-    }
-
     #[test]
     fn the_raw_tiles_are_told_by_the_template() {
         let raw = RawTiles::new(std::path::Path::new("/nonexistent"), crate::terrain_pack::TEST_BASE);
@@ -936,8 +928,16 @@ mod tests {
                     8.0,
                     Source::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![], masks: vec![] },
                 ),
-                ds("t", 38.0, Source::Tiles { url: "u".into(), zoom: 12, encoding: "terrarium".into() }),
-                ds("g", 5.0, Source::Tiles { url: "v".into(), zoom: 15, encoding: "gsi-png".into() }),
+                ds(
+                    "t",
+                    38.0,
+                    Source::Tiles { url: "u".into(), zoom: 12, encoding: "terrarium".into(), every_zoom: true },
+                ),
+                ds(
+                    "g",
+                    5.0,
+                    Source::Tiles { url: "v".into(), zoom: 15, encoding: "gsi-png".into(), every_zoom: false },
+                ),
             ],
         };
         let pool = Pool::of(plan, store::nasfs::NasPath::local_for_test("/s"), [0.0, -1.0, 1.0, 1.0]);
@@ -1001,8 +1001,8 @@ mod tests {
         // (Three chunks' tiles of z12 over the raster.)
         let z = 12u8;
         let nn = (1u64 << z) as f64;
-        let x0 = ((10.5 + 180.0) / 360.0 * nn) as u32;
-        let y0 = ((1.0 - 45.5f64.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
+        let x0 = (roadcore::geo::merc_x(10.5) * nn) as u32;
+        let y0 = (roadcore::geo::merc_y(45.5) * nn) as u32;
         let ts: Vec<(u32, u32)> = (x0 - 4..x0 + 4).flat_map(|x| (y0 - 2..y0 + 3).map(move |y| (x, y))).collect();
         let chunk = chunk_tiles(at_once());
         assert!(ts.len() > 2 * chunk);

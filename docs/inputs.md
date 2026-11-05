@@ -148,7 +148,8 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
      no inputs-folder path component or unit name, so these never clash with copies or nested units.
 - **Threads and progress.** A check lasts hours, one target, so it takes its job's grant as the grant
   changes rather than as a target begins: its agent keeps a file (`SCENIC_THREADS_FILE`,
-  crate::control::THREADS_ENV) with the threads its job may use now, which its lead re-decides on
+  crate::control::THREADS_ENV, replaced whole by crate::control::grant, so a read never meets it
+  emptied) with the threads its job may use now, which its lead re-decides on
   what the job uses and the cores and memory its Mac has (docs/pool.md §7.1, Threads re-granted:
   more as cores free up while the Mac's memory covers each extra thread at the step's measured
   peak over the threads it was measured at, the whole peak where those aren't recorded; fewer when
@@ -572,7 +573,7 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   within 5 m of the arc, pieces unioned. Past 200 km the rings are first simplified within a
   thousandth of the radius and the joins drawn within a thousandth of it too. **Cuts** intersect the
   shape with each side's polygon. **Sizes** (for slivers, shared edges and the cover check) are on
-  the authalic sphere; a shared edge's length is the other area within 100 m of the edge, over 100 m,
+  the Earth's mean sphere (`roadcore::geo::EARTH_R`); a shared edge's length is the other area within 100 m of the edge, over 100 m,
   measured in quarters while either area is large.
 - **Cell by cell** (crate::inputs::regions::tiles): a region with water is resolved on a grid of 2°
   cells. Each part it names is cut into the cells by clipping its rings to boxes (no polygon
@@ -1190,6 +1191,7 @@ the same declarations.
 | `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL, a tile index (GeoJSON footprints with each file's `url` or `file`, and optionally its fill mask's URL, `mask`; made by `producers/elevation/indexes.py`), or files added by glob |
 | `[data] store` | bool | the files (and fill masks) read from `sources/fetched/<dataset>/` alone, by their URLs' last part (after a `#`, the member's name); never fetched by a build: a file the store lacks is an error naming it, one noted `<name>.none` has no data. Filled once by `scenic-build store-fetch <id> --index <its index>` (crate::dem::store_fetch: every file of the index and its mask the store lacks, as published, by the build's fetcher: its User-Agent, 429 and 5xx answers waited out; each checked a whole GeoTIFF under a temporary name, then renamed; restartable) |
 | `[data] encoding`, `url`, `zoom` | | for `tiles`: `terrarium`, `terrain-rgb`, `gsi-png`; the URL template; the zoom |
+| `[data] every_zoom` | | for `tiles`, optional (default false): the pyramid is published at every zoom to `zoom`, so the terrain reads it at a tile's own zoom and takes the coarse relief outside every region from it alone (crate::terrain_zoom::relief); else it's read at `zoom` only, tile by tile. A terrain job with datasets accepted and none of them so declared fails, saying so (the relief would be sea level) |
 
 ```toml
 name = "NRCan HRDEM, 2 m lidar mosaic"
@@ -1206,9 +1208,20 @@ index = "hrdem-tiles.geojson"
 **Read from the data at check time** (`facts.measured`, beside the parsed `facts.declaration`): a
 GeoTIFF dataset's CRS and resolution (headers by range request: an index's first, last and seven
 files between, or every file without an index; one CRS the app projects, the coarsest of those
-files' full resolutions, at which every dataset is read) and its coverage (`cover`): the 1° cells its data meets, merged into boxes. Index
+files' full resolutions, at which every dataset is read, and the datasets' order) and its cell by
+latitude band (`bands`, a geographic GeoTIFF's: each file read's latitudes and the coarser of its two
+ground spacings, its longitude's at its equatorward edge, the coarsest of a band's files; none for a
+pyramid or a projected GeoTIFF, whose `resolution` holds everywhere), which sets the terrain's finest
+zoom there (crate::terrain_zoom), and its coverage (`cover`): the 1° cells its data meets, merged into boxes. Index
 files meet by footprint; other files by where they have valid data at their coarsest overview, so a
-file's empty margins cover nothing. A tile pyramid's resolution comes from its zoom at its coverage's
+file's empty margins cover nothing. And where its files really have data (`presence`, a GeoTIFF's
+not holding the world: crate::inputs::elevation::presence_of): the z10 tiles of its cells (the
+deep packs' zoom) one of whose points, no further apart than half the finest feature of the files
+there, lies in a file's data, each file narrower than such a tile by its index footprint and every
+other by its coarsest overview's valid pixels, every file of the dataset read so. The terrain's
+finest zoom and the roads' spacing count a dataset only where it has data so
+(crate::terrain_zoom::sources: a tile its cells merely touch, or whose files hold no data there,
+isn't one of its places); measured once a version, a version measured before it counts its cells. A tile pyramid's resolution comes from its zoom at its coverage's
 mid-latitude, and a tile is read to check it's 256 px (`generic::TILE_PX`). The coverage is also the
 credits' extent (§4.8).
 
@@ -1345,9 +1358,9 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   NAS, no server). A z6 tile waits for the stale terrain targets under
   its box, the fine ones (z8) as well.
 - **Densification** (crate::dem::spacing, `extract`): a way's points are put as far apart as the
-  terrain's pixel in the 1° cell of the way's first node (the finest zoom stored there: the fine
-  zoom where a dataset finer than the base has data, by its measured `resolution` and `cover`, else
-  the base's, `terrain_pack::max_zoom_at`), never closer than 4 m (`FLOOR_M`); ferries not at all. A cell
+  terrain's pixel in the 1° cell of the way's first node (the finest zoom stored there: its place's,
+  crate::terrain_zoom, by the datasets' measured cells (`bands`, else `resolution`) and `cover`),
+  never closer than 4 m (`FLOOR_M`); ferries not at all. A cell
   is the point's degrees floored: its west and south edges are its own. The z6 tile job writes the
   fine cells into the z6 tile's folder (`spacing.json`), which `extract` reads; the reach tests the
   z6 tiles' long ways at the same spacing (`reach::LongWay::touches`). The other steps' `extract` runs
@@ -1379,18 +1392,18 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   values where nothing lies beneath (docs/polar.md §2). EPSG:3031 (and 3413) are projected by
   `roadcore::polar` (`dem::proj::Projection::Polar`).
 
-**The 3D terrain** reads the same pool (crate::terrain_base; docs/steps.md §2, Terrain): its base
-tiles are sampled from these datasets in this order, blended as the roads' are, so the roads and
-the terrain use one dataset at every point; the Terrarium tiles through the NAS's archive of them
-(`sources/aws-terrarium/`, docs/macs.md). A dataset finer than the worldwide ones (rank above 0)
-takes the terrain past z12 to its native zoom there (the terrain-deep step's deep levels, a z10
-tile a target: crate::terrain_deep), every dataset read at its full resolution; the roads' heights
-are read from the finished terrain (above).
+**The 3D terrain** reads the same pool (crate::terrain_base; docs/steps.md §2, Terrain): a tile at
+its place's finest zoom is sampled from these datasets in this order, blended as the roads' are, so
+the roads and the terrain use one dataset at every point; the Terrarium tiles through the NAS's
+archive of them (`sources/aws-terrarium/`, docs/macs.md). Each place's finest zoom is the finest of
+the datasets meeting it there, by their cells (`bands`; crate::terrain_zoom), past z12 in the
+terrain-deep step (a z10 tile a target: crate::terrain_deep); every dataset is read at most at its
+own detail, the next in the order filling its gaps. The roads' heights are read from the finished
+terrain (above).
 - **Keys:** a terrain target names the datasets meeting it by their lines, as the roads' keys do
-  (`agent::tiles::TerrainTiles::terrain_datasets`); a terrain-hi z6 tile its z10 tiles past the
-  base's zoom (and, north of 67°, the fine datasets its deep z12 reads: `terrain_deep::piece_key_lines`);
-  a terrain-deep z10 tile the fine datasets it reads with the zoom each reaches
-  (`terrain_deep::target_key_lines`) and what the z6 tiles of its base read; while they can't be read
+  (`agent::tiles::TerrainTiles::terrain_datasets`), and each place's sources there with the zoom each
+  reaches (`terrain_zoom::key_lines`); a terrain-deep z10 tile likewise
+  (`terrain_deep::target_key_lines`); while they can't be read
   its key is unknown and the terrain waits.
 
 ### 6.9 The remaining sources
@@ -1502,7 +1515,7 @@ grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) among them.
 `producers/depth/declarations/`; the producers that make their grids in `producers/depth/`.
 
 **The standard: depth grids** (`format = "depth-grid"`). A source is a set of GeoTIFFs, each on the
-global Web Mercator pixel grid of one zoom (EPSG:3857; its pixels 40,075,016.686 / 256 / 2^zoom m,
+global Web Mercator pixel grid of one zoom (EPSG:3857; its pixels `roadcore::geo::MERC_C` (2π × 6,378,137 m) / 256 / 2^zoom m,
 their edges on that grid, its own edges on its zoom's tile edges where its data allows), so the build
 reads them by pixel arithmetic, never reprojecting; every cell shows at its grid's zoom:
 - `file`: float32 depth below the water's surface in metres, negative (the sea's mean level; a lake's

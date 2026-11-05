@@ -178,8 +178,8 @@ pub fn class_of(h_dm: u16) -> usize {
 
 /// Metres a level-14 texel side at global texel row `y` (fractional; Web Mercator).
 fn side_m(y: f64) -> f64 {
-    let lat = (std::f64::consts::PI * (1.0 - 2.0 * y / WORLD_TEXELS)).dsinh().datan();
-    super::EQ * lat.dcos() / WORLD_TEXELS
+    let lat = roadcore::geo::merc_phi(y / WORLD_TEXELS);
+    roadcore::geo::MERC_C * lat.dcos() / WORLD_TEXELS
 }
 
 /// A building or part as the field takes it: its polygons (each its rings, the first the exterior,
@@ -696,25 +696,6 @@ pub fn split(b: &[u8]) -> Result<(u8, &[u8], &[u8])> {
 /// Points a heritage footprint keeps at most.
 pub const HERITAGE_PTS: usize = 16;
 
-/// Whether E7 point `p` is inside a polygon (even-odd over its rings).
-fn inside(poly: &[&[[i32; 2]]], p: [i32; 2]) -> bool {
-    let mut c = false;
-    for r in poly {
-        let n = r.len();
-        for i in 0..n {
-            let (a, b) = (r[i], r[(i + n - 1) % n]);
-            if (a[1] > p[1]) != (b[1] > p[1]) {
-                let x = a[0] as i128
-                    + (b[0] as i128 - a[0] as i128) * (p[1] as i128 - a[1] as i128) / (b[1] as i128 - a[1] as i128);
-                if (p[0] as i128) < x {
-                    c = !c;
-                }
-            }
-        }
-    }
-    c
-}
-
 /// Douglas–Peucker of a closed ring, its tolerance doubled until it keeps at most `max` points
 /// (the first kept).
 fn simplify_to(r: &[[f64; 2]], max: usize) -> Vec<[f64; 2]> {
@@ -785,7 +766,7 @@ pub fn heritage(a: (u32, u32), feet: &[Foot], sites: &[[i32; 2]]) -> Vec<u8> {
         let hit = sorted[from..]
             .iter()
             .take_while(|s| s[0] <= x1)
-            .any(|&s| s[1] >= y0 && s[1] <= y1 && ft.polys.iter().any(|poly| inside(poly, s)));
+            .any(|&s| s[1] >= y0 && s[1] <= y1 && ft.polys.iter().any(|poly| roadcore::geo::inside(poly, s)));
         if !hit {
             continue;
         }

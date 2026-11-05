@@ -26,8 +26,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Bumped when what a reach holds changes (the pass's reaches are made again). (2: `cells`.)
-pub const REACH_V: u32 = 2;
+/// Bumped when what a reach holds changes (the pass's reaches are made again). (2: `cells`. 3: its
+/// boxes by roadcore::geo's box-grower, task #862.)
+pub const REACH_V: u32 = 3;
 
 /// Ways whose box stays within the tile grown by this are a z6 tile's ordinary ways (the extract's own
 /// buffer is 10 km).
@@ -340,6 +341,7 @@ mod tests {
     use super::*;
     use crate::agent::recipes::Recipe;
     use crate::dem::spacing::{Fine, Uniform, FLOOR_M};
+    use det::Det;
 
     fn e7(x: f64, y: f64) -> [i32; 2] {
         [(x * 1e7) as i32, (y * 1e7) as i32]
@@ -505,9 +507,9 @@ mod tests {
             d.path(),
         )
         .unwrap();
-        let half = 30.0 / (111_195.0 * 50.5f64.to_radians().cos());
+        let half = 30.0 / (roadcore::geo::M_PER_DEG * 50.5f64.to_radians().dcos());
         let road = LongWay { owned: true, ferry: false, verts: vec![e7(0.5 - half, 50.5), e7(0.5 + half, 50.5)] };
-        let fine = Fine { cells: vec![([0, 50], 16)] };
+        let fine = Fine { cells: vec![([0, 50], 16)], ..Default::default() };
         assert_eq!(fine.at(road.verts[0]), FLOOR_M);
         assert!(road.touches(&small, &fine));
         assert!(!road.touches(&small, &Fine::default()));

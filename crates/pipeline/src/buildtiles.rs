@@ -13,7 +13,6 @@ use crate::legacy::TileId;
 use crate::out::Out;
 use crate::reach::Reach;
 use anyhow::{Context, Result};
-use det::Det;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -171,11 +170,7 @@ fn row_edges() -> &'static [i32] {
     static EDGES: std::sync::OnceLock<Vec<i32>> = std::sync::OnceLock::new();
     EDGES.get_or_init(|| {
         let n = (1u32 << ZOOM) as f64;
-        (0..=1u32 << ZOOM)
-            .map(|y| {
-                ((std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n)).dsinh().datan().to_degrees() * 1e7).round() as i32
-            })
-            .collect()
+        (0..=1u32 << ZOOM).map(|y| (roadcore::geo::merc_lat(y as f64 / n) * 1e7).round() as i32).collect()
     })
 }
 
@@ -204,14 +199,11 @@ fn each_box(path: &Path, mut f: impl FnMut([f32; 4])) -> Result<()> {
     }
 }
 
-/// The z-`z` tile holding a point (Web Mercator, as the agent's tiles), as numpy computed it for
-/// the scan before: the latitude clipped to Mercator's, `ln(tan φ + sec φ)`.
+/// The z-`z` tile holding a point (roadcore::geo's Mercator, the latitude within the tiles).
 fn tile_xy(lon: f64, lat: f64, z: u8) -> (u64, u64) {
     let n = (1u64 << z) as f64;
-    let x = ((lon + 180.0) / 360.0 * n).floor().clamp(0.0, n - 1.0);
-    let r = lat.clamp(-85.05112878, 85.05112878).to_radians();
-    let y = ((1.0 - (r.dtan() + 1.0 / r.dcos()).dln() / std::f64::consts::PI) / 2.0 * n).floor().clamp(0.0, n - 1.0);
-    (x as u64, y as u64)
+    let (x, y) = roadcore::geo::merc_clamped(lon, lat);
+    ((x * n).floor().clamp(0.0, n - 1.0) as u64, (y * n).floor().clamp(0.0, n - 1.0) as u64)
 }
 
 /// One file of the release (`url`, `size` bytes) into `out`: its buildings' boxes (f32

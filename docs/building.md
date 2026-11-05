@@ -520,7 +520,9 @@ available. Until work is done, the map serves the last catalogue.
 
 **Determinism:** the same inputs give the same bytes, on any machine: sorted
 outputs, no hash-map order, reductions independent of thread count, and every transcendental
-function from one implementation (the `det` crate, over `libm`). Checked per step by hand and by
+function from one implementation (the `det` crate, over `libm`; `clippy.toml` refuses the
+platform's), and the geometry (the Earth, the Web Mercator, the box-grower, the even–odd test) once,
+in `roadcore::geo`. Checked per step by hand and by
 `tools/check/`; planned: a "build twice, compare hashes" test per step.
 
 **Validation:** every upload is read back and checked against its hash, and a catalogue fails on a

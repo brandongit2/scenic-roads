@@ -33,12 +33,13 @@ pub fn encode(px: &[Px]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use det::Det;
 
     /// A tile comes back as its codes say, bit for bit, through the WebP decoder.
     #[test]
     fn a_tile_comes_back_as_stored() {
         let px: Vec<Px> = (0..65536)
-            .map(|i| Px::of_gradient(((i % 256) as f32 * 0.02).sin(), ((i / 256) as f32 * 0.03).cos() * 0.4))
+            .map(|i| Px::of_gradient(((i % 256) as f32 * 0.02).dsin(), ((i / 256) as f32 * 0.03).dcos() * 0.4))
             .collect();
         let b = encode(&px).unwrap();
         assert_eq!(&b[8..16], b"WEBPVP8L");

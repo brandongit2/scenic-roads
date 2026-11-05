@@ -201,7 +201,7 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
         .iter()
         .map(|&i| {
             let i = i as usize;
-            [lon[i] * 111.32 * lat[i].to_radians().dcos(), lat[i] * 110.57]
+            [lon[i] * roadcore::geo::KM_PER_DEG * lat[i].to_radians().dcos(), lat[i] * roadcore::geo::KM_PER_DEG]
         })
         .collect();
     let levels: Vec<Level> = PLANE_LEVELS.iter().map(|&(cell, reach)| Level::new(&xy, cell, reach)).collect();
@@ -231,7 +231,7 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
         let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
         (dx * dx + dy * dy + dz * dz).sqrt()
     };
-    let km = |c: f64| 6371.0 * 2.0 * (c / 2.0).min(1.0).dasin();
+    let km = |c: f64| roadcore::geo::EARTH_R / 1000.0 * 2.0 * (c / 2.0).min(1.0).dasin();
     let mut rank = vec![0u32; n];
     for (r, &i) in order.iter().enumerate() {
         rank[i as usize] = r as u32;
@@ -528,7 +528,12 @@ mod tests {
                 if others.is_empty() {
                     return IA_BEST;
                 }
-                let p = |k: usize| [lon[k] * 111.32 * lat[k].to_radians().dcos(), lat[k] * 110.57];
+                let p = |k: usize| {
+                    [
+                        lon[k] * roadcore::geo::KM_PER_DEG * lat[k].to_radians().dcos(),
+                        lat[k] * roadcore::geo::KM_PER_DEG,
+                    ]
+                };
                 let d = others
                     .iter()
                     .map(|&j| {
@@ -552,7 +557,7 @@ mod tests {
                         (dx * dx + dy * dy + dz * dz).sqrt()
                     })
                     .fold(f64::INFINITY, f64::min);
-                6371.0 * 2.0 * (c / 2.0).min(1.0).dasin()
+                roadcore::geo::EARTH_R / 1000.0 * 2.0 * (c / 2.0).min(1.0).dasin()
             })
             .collect()
     }
@@ -600,7 +605,7 @@ mod tests {
             for (spread_km, count) in [(0.1, 60), (20.0, 120), (60.0, 120), (800.0, 40)] {
                 let (clon, clat) = (rnd() * 120.0 - 60.0, rnd() * 100.0 - 50.0);
                 for _ in 0..count {
-                    lon.push(clon + (rnd() - 0.5) * spread_km / 111.0);
+                    lon.push(clon + (rnd() - 0.5) * spread_km / roadcore::geo::KM_PER_DEG);
                     lat.push(clat + (rnd() - 0.5) * spread_km / 110.0);
                 }
             }
@@ -608,7 +613,7 @@ mod tests {
             for km in [8.0, 32.0, 60.0, 59.9, 60.1] {
                 let (a, b) = (rnd() * 100.0 - 50.0, rnd() * 100.0 - 50.0);
                 lon.extend([b, b]);
-                lat.extend([a, a + km / 110.57]);
+                lat.extend([a, a + km / roadcore::geo::KM_PER_DEG]);
             }
             for _ in 0..4 {
                 let (a, b) = (rnd() * 100.0 - 50.0, rnd() * 100.0 - 50.0);

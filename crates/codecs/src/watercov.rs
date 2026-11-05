@@ -25,7 +25,6 @@
 //! count it twice.
 
 use anyhow::{bail, Context, Result};
-use det::Det;
 use rayon::prelude::*;
 use std::io::{BufRead, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -36,8 +35,8 @@ const SCALE: f64 = 4_294_967_296.0;
 
 /// Longitude and latitude in world units (Web Mercator, 0–1, y down).
 pub fn world(lon: f64, lat: f64) -> [f64; 2] {
-    let s = lat.clamp(-85.051_128_78, 85.051_128_78).to_radians().dsin();
-    [lon / 360.0 + 0.5, (0.5 - 0.25 * ((1.0 + s) / (1.0 - s)).dln() / std::f64::consts::PI).clamp(0.0, 1.0)]
+    let (x, y) = roadcore::geo::merc_clamped(lon, lat);
+    [x, y]
 }
 
 fn quant(v: f64) -> u32 {
@@ -618,7 +617,7 @@ pub fn read_water_polygons(mut r: impl Read, w: &mut GeomWriter) -> Result<u64> 
 /// A shapefile polygon record's rings, world units, each with whether it's an outer ring (clockwise
 /// with y up, as shapefiles wind them).
 fn shp_rings(b: &[u8]) -> Vec<(Vec<[f64; 2]>, bool)> {
-    const WORLD_M: f64 = 40_075_016.685_578_49;
+    const WORLD_M: f64 = roadcore::geo::MERC_C;
     let i32_at = |o: usize| b.get(o..o + 4).map(|s| i32::from_le_bytes(s.try_into().unwrap()));
     let f64_at = |o: usize| f64::from_le_bytes(b[o..o + 8].try_into().unwrap());
     if i32_at(0) != Some(5) {
@@ -650,6 +649,7 @@ fn shp_rings(b: &[u8]) -> Vec<(Vec<[f64; 2]>, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use det::Det;
 
     fn store(rings: &[(Vec<[f64; 2]>, bool)]) -> (tempfile::TempDir, Geom) {
         let d = tempfile::tempdir().unwrap();
@@ -736,7 +736,7 @@ mod tests {
         let ring: Vec<[f64; 2]> = (0..n)
             .map(|i| {
                 let a = i as f64 / n as f64 * std::f64::consts::TAU;
-                [cx + r * a.cos(), cy + r * a.sin()]
+                [cx + r * a.dcos(), cy + r * a.dsin()]
             })
             .collect();
         let area_px12 = 0.5 * area2(&ring).abs() * (256.0 * 4096.0f64).powi(2);

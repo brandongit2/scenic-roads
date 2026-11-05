@@ -27,6 +27,7 @@
 //! every job instead, 0.920 against 1.000).
 
 use crate::coord::history::Event;
+use det::Det;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -96,7 +97,7 @@ impl Paces {
             for r in rs.iter().filter(|r| r.mac != lead) {
                 let l = rs.iter().filter(|l| l.mac == lead && l.v == r.v).min_by_key(|l| l.t.abs_diff(r.t));
                 if let Some(l) = l {
-                    pairs.entry((r.mac, step)).or_default().push((r.secs / l.secs).ln());
+                    pairs.entry((r.mac, step)).or_default().push((r.secs / l.secs).dln());
                 }
             }
         }
@@ -109,10 +110,10 @@ impl Paces {
             let mut steps: Vec<f64> = medians.iter().filter(|m| m.0 .0 == mac).map(|m| m.1).collect();
             let k = steps.len() as f64;
             let prior = median(&mut steps) * k / (k + PRIOR_PAIRS);
-            out.macs.insert(mac.to_string(), round(prior.exp()));
+            out.macs.insert(mac.to_string(), round(prior.dexp()));
             let each = medians.iter().filter(|m| m.0 .0 == mac).map(|&((_, step), m, n)| {
                 let n = n as f64;
-                (step.to_string(), round(((n * m + PRIOR_PAIRS * prior) / (n + PRIOR_PAIRS)).exp()))
+                (step.to_string(), round(((n * m + PRIOR_PAIRS * prior) / (n + PRIOR_PAIRS)).dexp()))
             });
             out.steps.insert(mac.to_string(), each.collect());
         }
@@ -204,13 +205,13 @@ mod tests {
         let p = Paces::of(&ev, "mini", 5000);
         assert_eq!(p.get("mini #4", "pack"), 1.0, "the lead's slots: the lead's");
         // (Its prior: the median of its steps' medians (ln 2, ln 4), drawn to 0 by its 2 steps.)
-        let prior = ((2f64.ln() + 4f64.ln()) / 2.0 * 2.0 / 12.0).exp();
+        let prior = ((2f64.dln() + 4f64.dln()) / 2.0 * 2.0 / 12.0).dexp();
         assert!((p.macs["m4"] - prior).abs() < 1e-3, "{} against {prior}", p.macs["m4"]);
         let td = p.get("m4", "terrain-deep");
-        let want = ((30.0 * 2f64.ln() + 10.0 * prior.ln()) / 40.0).exp();
+        let want = ((30.0 * 2f64.dln() + 10.0 * prior.dln()) / 40.0).dexp();
         assert!((td - want).abs() < 1e-3, "{td} against {want}");
         let pack = p.get("m4 #2", "pack");
-        let want = ((4f64.ln() + 10.0 * prior.ln()) / 11.0).exp();
+        let want = ((4f64.dln() + 10.0 * prior.dln()) / 11.0).dexp();
         assert!((pack - want).abs() < 1e-3, "one pair: near its prior, {pack} against {want}");
         assert_eq!(p.get("m4", "unit"), p.macs["m4"], "a step without a pair: its pace over its steps");
         assert_eq!(p.get("m1", "pack"), 1.0, "no pair: the lead's");

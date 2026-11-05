@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 use store::nasfs::NasPath;
 
 /// How near the coverage a file's row group (or a GHSL tile) must come to be fetched (km).
-pub const MARGIN_KM: f64 = 20.0;
+pub const MARGIN_KM: f64 = roadcore::geo::NEAR_COVERAGE_KM;
 /// Transfers at once.
 const TRANSFERS: usize = 3;
 /// How long the run waits for the NAS to come back.
@@ -270,10 +270,8 @@ impl Near {
     /// the margin's reach) every longitude is near.
     pub fn meets(&self, w: f64, s: f64, e: f64, n: f64) -> Result<bool> {
         use geos::{Geom, SpatialIndex};
-        let dlat = self.margin_km / 111.32;
-        let lat = s.abs().max(n.abs()) + dlat;
-        let c = lat.min(90.0).to_radians().cos();
-        let dlon = if c > 1e-9 { self.margin_km / (111.32 * c) } else { f64::INFINITY };
+        let dlat = self.margin_km / roadcore::geo::KM_PER_DEG;
+        let dlon = roadcore::geo::lon_span(self.margin_km, s.abs().max(n.abs()) + dlat);
         if dlon >= 180.0 {
             // (Any outline whose envelope meets the band, as the tree answers it.)
             let mut hit = false;

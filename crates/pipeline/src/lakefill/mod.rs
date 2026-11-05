@@ -25,7 +25,6 @@
 
 use anyhow::{ensure, Context, Result};
 use bytemuck::{Pod, Zeroable};
-use det::Det;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
@@ -50,12 +49,7 @@ pub fn quant(v: f64) -> u32 {
 
 /// Longitude and latitude of a point in world units.
 pub fn lonlat(p: [f64; 2]) -> (f64, f64) {
-    (p[0] * 360.0 - 180.0, (std::f64::consts::PI * (1.0 - 2.0 * p[1])).dsinh().datan().to_degrees())
-}
-
-/// Metres a world unit at latitude `lat`.
-pub fn metres_per_unit(lat: f64) -> f64 {
-    40_075_016.686 * lat.to_radians().dcos()
+    (roadcore::geo::merc_lon(p[0]), roadcore::geo::merc_lat(p[1]))
 }
 
 // ---- a lake ---------------------------------------------------------------------------------------
@@ -131,24 +125,6 @@ impl Lake {
     }
 }
 
-/// Nonzero winding of rings at `p` (rings in any orientation, holes against their outer ring's).
-pub fn winding(rings: &[Vec<[f64; 2]>], p: [f64; 2]) -> i32 {
-    let mut w = 0;
-    for r in rings {
-        for i in 0..r.len() {
-            let (a, b) = (r[i], r[(i + 1) % r.len()]);
-            if a[1] <= p[1] {
-                if b[1] > p[1] && cross(a, b, p) > 0.0 {
-                    w += 1;
-                }
-            } else if b[1] <= p[1] && cross(a, b, p) < 0.0 {
-                w -= 1;
-            }
-        }
-    }
-    w
-}
-
 fn cross(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
     (b[0] - a[0]) * (p[1] - a[1]) - (p[0] - a[0]) * (b[1] - a[1])
 }
@@ -172,16 +148,18 @@ fn seg_seg2(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> f64 {
 }
 
 /// Whether `lake` touches or overlaps `water` (rings, world units), within `tol` world units:
-/// either's shore within `tol` of the other's, or one inside the other.
+/// either's shore within `tol` of the other's, or one inside the other. Inside by the nonzero rule
+/// (roadcore::geo::winding): the basemap's polygons overlap (each z14 tile's with its buffer, a lake
+/// over a riverbank), and a point in two of them is in its water, where even–odd would say not.
 pub fn touches(lake: &Lake, water: &[Vec<[f64; 2]>], tol: f64) -> bool {
     if water.is_empty() || lake.rings.is_empty() {
         return false;
     }
     // The lake inside the water, or water inside the lake.
-    if winding(water, lake.rings[0][0]) != 0 {
+    if roadcore::geo::winding(water, lake.rings[0][0]) != 0 {
         return true;
     }
-    if water.iter().any(|r| winding(&lake.rings, r[0]) != 0) {
+    if water.iter().any(|r| roadcore::geo::winding(&lake.rings, r[0]) != 0) {
         return true;
     }
     // Shores within `tol`: the water's edges filed in a grid over the lake's box.
@@ -455,7 +433,7 @@ fn gap_sheet(l: &Lake, gap: &(dyn Fn(nts::Key) -> bool + Sync)) -> Option<nts::K
             let k = (col, row);
             if gap(k) {
                 let (sw, ss, se, sn) = nts::bounds(k);
-                if winding(&l.rings, crate::watercov::world((sw + se) / 2.0, (ss + sn) / 2.0)) != 0 {
+                if roadcore::geo::winding(&l.rings, crate::watercov::world((sw + se) / 2.0, (ss + sn) / 2.0)) != 0 {
                     return Some(k);
                 }
             }
@@ -565,7 +543,7 @@ pub fn select(
                 let on_b = |p: [f64; 2]| {
                     pb.rings.iter().any(|r| (0..r.len()).any(|k| seg_point2(r[k], r[(k + 1) % r.len()], p) <= eps2))
                 };
-                if pa.rings.iter().flatten().all(|p| winding(&pb.rings, *p) != 0 || on_b(*p)) {
+                if pa.rings.iter().flatten().all(|p| roadcore::geo::winding(&pb.rings, *p) != 0 || on_b(*p)) {
                     dropped[a as usize] = true;
                 }
             }
@@ -593,7 +571,7 @@ pub fn select(
     let tol_of = |l: &Lake| {
         let b = l.bbox();
         let (_, lat) = lonlat([(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0]);
-        rules.tol_m / metres_per_unit(lat)
+        rules.tol_m / roadcore::geo::merc_m(lat)
     };
     let grown = |l: &Lake| {
         let (b, t) = (l.bbox(), tol_of(l));
@@ -1578,6 +1556,7 @@ pub mod zip {
 ///   corner, back and forth row by row (A–D east to west, E–H west to east, …), and a 1:250,000
 ///   sheet's 1:50,000 sheets numbered 1–16 the same way.
 pub mod nts {
+    use det::Det;
     /// A sheet's key: (column, row), the row its 0.25° band north of the equator, the column its
     /// band of the row's width west of Greenwich, counted east (negative in the west).
     pub type Key = (i32, i32);
@@ -1608,9 +1587,9 @@ pub mod nts {
 
     /// A sheet's area (km², on the mean sphere).
     pub fn area_km2(k: Key) -> f64 {
-        const R: f64 = 6371.0088;
+        const R: f64 = roadcore::geo::EARTH_R / 1000.0;
         let (w, s, e, n) = bounds(k);
-        R * R * (e - w).to_radians() * (n.to_radians().sin() - s.to_radians().sin())
+        R * R * (e - w).to_radians() * (n.to_radians().dsin() - s.to_radians().dsin())
     }
 
     /// Back and forth from the south-east: the label of cell (`col` from the east, `row` from the
@@ -1673,6 +1652,7 @@ pub mod nts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use det::Det;
 
     /// A box of longitude and latitude as a shapefile ring (clockwise: west-south, west-north, …).
     fn sq(w: f64, s: f64, e: f64, n: f64) -> Vec<[f64; 2]> {
@@ -1757,15 +1737,26 @@ mod tests {
         let west = lake(&[sq(-72.02, 53.80, -72.0, 53.81)]);
         let east = lake(&[sq(-72.0, 53.80, -71.98, 53.81)]);
         // OSM's lake beside the east piece, outside the gap sheet, 3 m off (within 10 m).
-        let d = 3.0 / 111_320.0 / 53.8f64.to_radians().cos();
+        let d = 3.0 / roadcore::geo::M_PER_DEG / 53.8f64.to_radians().dcos();
         let osm = sq(-71.98 + d, 53.80, -71.97, 53.81);
         let s = run(vec![west.clone(), east.clone()], vec![osm]);
         assert_eq!((s.stats.in_gaps, s.stats.touching, s.stats.kept), (1, 1, 0));
         assert!(s.lakes.is_empty());
         // 50 m off: kept.
-        let d = 50.0 / 111_320.0 / 53.8f64.to_radians().cos();
+        let d = 50.0 / roadcore::geo::M_PER_DEG / 53.8f64.to_radians().dcos();
         let s = run(vec![west, east], vec![sq(-71.98 + d, 53.80, -71.97, 53.81)]);
         assert_eq!(s.stats.kept, 1);
+    }
+
+    #[test]
+    fn a_lake_inside_overlapping_osm_water_touches_it() {
+        // A small lake far inside OSM's water, which the basemap gives twice where two tiles'
+        // buffers overlap (both copies wound alike): in its water, though inside two rings.
+        let small = lake(&[sq(-72.1, 53.80, -72.099, 53.801)]);
+        let water = sq(-72.3, 53.7, -71.9, 53.9);
+        let copy = sq(-72.2, 53.7, -71.9, 53.9);
+        let s = run(vec![small], vec![water, copy]);
+        assert_eq!((s.stats.in_gaps, s.stats.touching, s.stats.kept), (1, 1, 0));
     }
 
     #[test]
@@ -1853,8 +1844,8 @@ mod tests {
         // Gibraltar's z14 tile and Reykjavík's are out of it; the Yukon's edge and Ellesmere's in.
         let tile = |lon: f64, lat: f64| {
             let n = f64::from(1u32 << 14);
-            let y = (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n;
-            (((lon + 180.0) / 360.0 * n) as u32, y as u32)
+            let (x, y) = roadcore::geo::merc(lon, lat);
+            ((x * n) as u32, (y * n) as u32)
         };
         for (lon, lat, want) in [(-5.35, 36.13, false), (-21.9, 64.1, false), (-141.0, 69.6, true), (-75.0, 82.0, true)]
         {

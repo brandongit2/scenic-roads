@@ -25,6 +25,7 @@
 //!   id. A lake across two z6 tiles may take a level from each, a metre or two apart.
 
 use anyhow::{Context, Result};
+use det::Det;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -627,7 +628,7 @@ pub fn rivers(e: &[f32], wt: &WaterTile) -> Option<Vec<f32>> {
         let mut last = u32::MAX;
         for w in line.windows(2) {
             let (a, b) = (w[0], w[1]);
-            let n = (((b[0] - a[0]).hypot(b[1] - a[1]) / STEP).ceil() as usize).max(1);
+            let n = (((b[0] - a[0]).dhypot(b[1] - a[1]) / STEP).ceil() as usize).max(1);
             for k in 0..=n {
                 let t = k as f64 / n as f64;
                 let (x, y) = (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]));

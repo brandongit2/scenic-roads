@@ -205,7 +205,7 @@ fn good_declarations_are_measured_from_their_data() {
     let d = f.derive();
     let m: Measured = serde_json::from_value(d.facts["tiled.toml"].0["measured"].clone()).unwrap();
     assert_eq!(m.crs, Some(4326));
-    assert!((m.resolution - 100.0 * PX * crate::dem::generic::M_PER_DEG).abs() < 1e-6);
+    assert!((m.resolution - 100.0 * PX * roadcore::geo::MERC_M_PER_DEG).abs() < 1e-6);
     // Its cover: the 1° cells its footprints meet, edges included.
     assert_eq!(m.cover, Some(vec![[2.0, 48.0, 4.0, 51.0]]));
     assert_eq!(d.facts["pyramid.toml"].0["extent"], "world");
@@ -791,4 +791,40 @@ fn new_outlines_measure_a_territorys_pyramid_again() {
     assert!(new.report.is_none() && new.changed, "{:?}", new.report);
     assert_eq!(cover(&new), Some(vec![[0.0, 0.0, 1.0, 1.0]]));
     assert_eq!(new.index.derived_from.as_deref(), Some("outlines o2"));
+}
+
+/// Task #929 review: a GeoTIFF dataset accepted before its presence was measured is measured again
+/// (its presence and bands), not taken as accepted: else the terrain's places stay its cells for
+/// good; one with its presence is taken as accepted, nothing read.
+#[test]
+fn a_dataset_accepted_before_its_presence_is_measured_again() {
+    let files: BTreeMap<String, Vec<u8>> = BTreeMap::from([(
+        "whole.toml".to_string(),
+        decl("rank = 1", "format = \"geotiff\"\nurl = \"https://e.org/t/N48E002.tif\""),
+    )]);
+    let checks = |f: MapFetch| Elevation::new(Arc::new(f), None);
+    let copies = Default::default();
+    let first = decide_with(&checks(fetch()), &files, None, &copies);
+    assert!(first.report.is_none(), "{:?}", first.report);
+    let measured = |d: &crate::inputs::gate::Decision| -> Measured {
+        serde_json::from_value(d.index.files["whole.toml"].facts["measured"].clone()).unwrap()
+    };
+    let want = measured(&first);
+    assert!(want.presence.as_ref().is_some_and(|p| !p.is_empty()) && want.bands.is_some(), "{want:?}");
+    // With its presence, as accepted: nothing read.
+    let same = decide_with(&checks(MapFetch::default()), &files, Some(&first), &copies);
+    assert!(same.report.is_none() && same.read.is_empty(), "{:?}", same.report);
+    // (As accepted before task #929, by the checks before: no presence, no bands.)
+    let mut before = first;
+    before.index.checks = format!("{UNIT} 4");
+    let e = before.index.files.get_mut("whole.toml").unwrap();
+    let m = e.facts.get_mut("measured").unwrap().as_object_mut().unwrap();
+    m.remove("presence");
+    m.remove("bands");
+    // Its data unread now: it isn't taken as accepted (it's measured, and can't be).
+    let unread = decide_with(&checks(MapFetch::default()), &files, Some(&before), &copies);
+    assert!(unread.report.is_some(), "measured again, its data not served");
+    let again = decide_with(&checks(fetch()), &files, Some(&before), &copies);
+    assert!(again.report.is_none(), "{:?}", again.report);
+    assert_eq!(measured(&again), want);
 }

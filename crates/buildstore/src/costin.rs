@@ -21,6 +21,7 @@
 //! `deletes`, task #451): with `bytes`, the target's NAS weight
 //! (pipeline::needs::Book::nas, jobrt::budget::nas).
 
+use det::Det;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use store::nasio::Count;
@@ -266,9 +267,10 @@ pub fn threads() -> usize {
 /// A tile's area in km² (a sphere of the Earth's mean radius, 6371 km).
 pub fn tile_km2(z: u8, _x: u32, y: u32) -> u64 {
     let n = (1u64 << z) as f64;
-    let lat = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan();
-    let r = 6371.0_f64;
-    (r * r * (2.0 * std::f64::consts::PI / n) * (lat(y as f64).sin() - lat(y as f64 + 1.0).sin())).abs().round() as u64
+    let lat = |y: f64| roadcore::geo::merc_phi(y / n);
+    let r = roadcore::geo::EARTH_R / 1000.0;
+    (r * r * (2.0 * std::f64::consts::PI / n) * (lat(y as f64).dsin() - lat(y as f64 + 1.0).dsin())).abs().round()
+        as u64
 }
 
 /// The tests that read the measures, one at a time (they share this process's).

@@ -20,10 +20,9 @@ use crate::pyjson::{dumps, dumps_spaced, loads, Py};
 use crate::timings::phase;
 use crate::wikiask::{val, Asker};
 use anyhow::{bail, Context, Result};
+use det::Det;
 use std::collections::HashMap;
 use std::path::Path;
-
-const R_EARTH: f64 = 6_371_008.8;
 
 const PARK_TAGS: [&str; 17] = [
     "protection_title",
@@ -64,9 +63,9 @@ fn ring_area(ring: &[Py]) -> Result<f64> {
     let mut s = 0.0;
     for (k, &(x0, y0)) in pts.iter().enumerate() {
         let (x1, y1) = pts[(k + 1) % pts.len()];
-        s += (x1 - x0).to_radians() * (2.0 + y0.to_radians().sin() + y1.to_radians().sin());
+        s += (x1 - x0).to_radians() * (2.0 + y0.to_radians().dsin() + y1.to_radians().dsin());
     }
-    Ok(s.abs() * R_EARTH * R_EARTH / 2.0)
+    Ok(s.abs() * roadcore::geo::EARTH_R * roadcore::geo::EARTH_R / 2.0)
 }
 
 /// Area in km² to 3 decimals, of a Polygon or MultiPolygon (else 0).

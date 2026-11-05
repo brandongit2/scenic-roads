@@ -6,7 +6,8 @@
 //!   from Meta into it first, once: under a `<file>.lock` there, made exclusively, a job on the other
 //!   Mac waiting for it (a lock not touched for 30 minutes is a holder that died). An empty file is
 //!   Meta's "none there".
-//! - **Leaf-type squares** made whole where they aren't (whole and tagged complete, or NALCMS's):
+//! - **Leaf-type squares** made whole where they aren't (whole and tagged complete; NALCMS's also
+//!   resampled as today: their `source` tag):
 //!   by crate::leaftype, which fetches the EEA's chunks or resamples NALCMS, and says how far it
 //!   is; with none to make, nothing is asked.
 
@@ -260,8 +261,8 @@ fn download(url: Option<&str>, path: &Path, coming: &dyn Fn(f64)) -> Result<()> 
     r.with_context(|| path.display().to_string())
 }
 
-/// Whether leaf-type square `p` was made whole (tagged so; NALCMS's always are), not only over some
-/// regions, and is whole on the disk.
+/// Whether leaf-type square `p` was made whole (tagged so), not only over some regions, and is whole
+/// on the disk; a NALCMS square, also resampled as today (its `source`: crate::leaftype::NALCMS_SOURCE).
 pub fn complete(p: &Path) -> bool {
     if !crate::whole::tiff_file_whole(p) {
         return false;
@@ -272,7 +273,8 @@ pub fn complete(p: &Path) -> bool {
     else {
         return false;
     };
-    t.metadata_item("complete") == Some("1") || t.metadata_item("source").is_some_and(|s| s.starts_with("NALCMS"))
+    t.metadata_item("complete") == Some("1")
+        && t.metadata_item("source").is_none_or(|s| !s.starts_with("NALCMS") || s == crate::leaftype::NALCMS_SOURCE)
 }
 
 /// The leaf-type squares among `sqs` (top, left) that `dir` lacks whole, made in this process

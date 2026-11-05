@@ -34,8 +34,8 @@ use std::sync::{Arc, Mutex};
 /// The layer (`layers/water/…`, served at `/tiles/water`).
 pub const LAYER: &str = "water";
 /// The layer's version: a change to what it holds or how it's drawn makes the agent build it
-/// again.
-pub const VERSION: u32 = 2;
+/// again. (3, task #862: its rings in roadcore::geo's Mercator.)
+pub const VERSION: u32 = 3;
 /// A tile's pixels a side.
 pub const SIZE: usize = 512;
 /// The basemap's deepest zoom, whose water is drawn.

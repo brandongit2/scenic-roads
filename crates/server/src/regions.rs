@@ -28,6 +28,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use det::Det;
 use pipeline::coverage::DrawnRegion;
 use pipeline::outlines::{flag, OutlineRec, Ring};
 use serde::Deserialize;
@@ -641,7 +642,7 @@ pub const OUTLINE_MAX_Z: u8 = 12;
 /// The simplification at zoom `z` (metres): about half a pixel at the equator (MapLibre's 512 px
 /// tiles: 40 075 km over 512 × 2^z px).
 fn tolerance_m(z: u8) -> f64 {
-    0.5 * 40_075_016.7 / (512.0 * f64::from(1u32 << z.min(OUTLINE_MAX_Z)))
+    0.5 * roadcore::geo::MERC_C / (512.0 * f64::from(1u32 << z.min(OUTLINE_MAX_Z)))
 }
 
 /// One region's outline at one zoom, ready to send: its id and box, its polygons and properties
@@ -799,7 +800,7 @@ fn label_point(poly: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
 /// The rounding of degrees simplified to `tol_m` metres: to a tenth of it (fewer digits to send),
 /// as 10^digits.
 fn rounding(tol_m: f64) -> f64 {
-    10f64.powi(((111_320.0 / tol_m).log10() + 1.0).ceil().clamp(1.0, 7.0) as i32)
+    10f64.powi(((roadcore::geo::M_PER_DEG / tol_m).dlog10() + 1.0).ceil().clamp(1.0, 7.0) as i32)
 }
 
 /// A ring simplified to `tol_m` metres (pipeline::outlines::simplify, on its 1e-7° grid), its
@@ -867,7 +868,7 @@ fn clip_ring(r: &[[f64; 2]], b: [f64; 4]) -> Vec<[f64; 2]> {
 /// (but its largest polygon), its name on its largest polygon.
 fn simplified(src: &Source, tol_m: f64, ix: Option<&OutlineIndex>) -> Simplified {
     // (Square degrees of a square the tolerance across, at the equator: smaller elsewhere.)
-    let tiny = (tol_m / 111_320.0).powi(2);
+    let tiny = (tol_m / roadcore::geo::M_PER_DEG).powi(2);
     let outer_area = |p: &Vec<Vec<[f64; 2]>>| p.first().map_or(0.0, |r| ring_area(r).abs());
     let largest =
         src.polygons.iter().enumerate().max_by(|a, b| outer_area(a.1).total_cmp(&outer_area(b.1))).map(|l| l.0);
@@ -1067,7 +1068,7 @@ fn union_of(parts: &[&Simplified], tol_m: f64) -> Result<Simplified> {
         }
         Ok(Some(Geometry::create_polygon(Geometry::create_linear_ring(CoordSeq::new_from_vec(&v)?)?, vec![])?))
     };
-    let deg = tol_m / 111_320.0;
+    let deg = tol_m / roadcore::geo::M_PER_DEG;
     let grid = deg / 2.0;
     // Each region's outer rings as polygons (made valid: a ring simplified may touch itself),
     // and its holes.
@@ -1607,7 +1608,7 @@ mod tests {
         let mut v: Vec<[f64; 2]> = (0..n)
             .map(|i| {
                 let a = i as f64 / n as f64 * std::f64::consts::TAU;
-                [x + r * a.cos(), y + r * a.sin()]
+                [x + r * a.dcos(), y + r * a.dsin()]
             })
             .collect();
         v.push(v[0]);
