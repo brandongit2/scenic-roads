@@ -39,6 +39,7 @@ pub mod every;
 pub mod fcarchive;
 pub mod fccheck;
 pub mod fcinputs;
+pub mod flags;
 pub mod forecast;
 pub mod gc;
 pub mod gcqueue;
@@ -964,6 +965,10 @@ pub struct Status {
     /// or held, and what holds it (the lead's).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<crate::inputs::view::InputView>,
+    /// What needs a look (flags::of, task #953: a Mac idle while work it could take waits, a job
+    /// past the overdue factor times its usual time): the lead's, worked out at each round.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flags: Vec<flags::Flag>,
 }
 
 /// This Mac in the pool, for the status: its member, its part, what the driver lets it do, the
@@ -4651,10 +4656,12 @@ impl Agent {
         status.set_jobs(views, all_new);
         let hold = self.hold();
         status.say(crate::control::peek_hold_request(&self.o.home).as_ref(), &hold, false);
-        // (The build in a line, for the members' menu bars: in the lead's beat answers.)
+        // (The build in a line, for the members' menu bars: in the lead's beat answers; and what
+        // needs a look, flags::of, the same in both.)
         if let Some(c) = &self.coord {
+            status.flags = flags::of(&status, &c.open_work(), &c.runs(), c.overdue().0, status.beat);
             let build = status.build_said(status.beat);
-            c.set_said(&status.host, build.clone());
+            c.set_said(&status.host, build.clone(), status.flags.clone());
             status.build = Some(build);
         }
         self.publish_jobs();

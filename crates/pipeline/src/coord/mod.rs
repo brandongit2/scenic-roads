@@ -393,9 +393,10 @@ pub struct Shared {
     /// The Wikimedia budget's windows, the answers' lease and the members' resume progress
     /// (crate::coord::budgets): the last two in its store.
     pub small: budgets::Small,
-    /// Its Mac's name and the build in a line as its agent last said them (`Coordinator::set_said`):
-    /// each beat's answer carries them to the members' menu bars (`held::Answer::lead`).
-    pub said: Option<(String, crate::agent::Verdict)>,
+    /// Its Mac's name, the build in a line and its flags (crate::agent::flags) as its agent last
+    /// said them (`Coordinator::set_said`): each beat's answer carries them to the members' menu
+    /// bars (`held::Answer::lead`).
+    pub said: Option<(String, crate::agent::Verdict, Vec<crate::agent::flags::Flag>)>,
     /// The members' beats its agent's pool side hears by HTTP (`/pool/beat`, crate::coord::beats):
     /// its (`Coordinator::set_beats`); None, the beats' heartbeats and statuses not taken.
     pub beats: Option<std::sync::Arc<beats::Beats>>,
@@ -2133,10 +2134,11 @@ impl Coordinator {
         set_pause(&mut self.shared.lock().unwrap(), pause, at);
     }
 
-    /// The build in a line as its agent says it on `host` (crate::agent::Status::build_said), for
-    /// the members' menu bars (docs/roles.md §3.4): in each beat's answer from now.
-    pub fn set_said(&self, host: &str, said: crate::agent::Verdict) {
-        self.shared.lock().unwrap().said = Some((host.to_string(), said));
+    /// The build in a line as its agent says it on `host` (crate::agent::Status::build_said), and
+    /// its flags (crate::agent::flags), for the members' menu bars (docs/roles.md §3.4): in each
+    /// beat's answer from now.
+    pub fn set_said(&self, host: &str, said: crate::agent::Verdict, flags: Vec<crate::agent::flags::Flag>) {
+        self.shared.lock().unwrap().said = Some((host.to_string(), said, flags));
     }
 
     /// The build's pause, while it's paused.
@@ -2443,6 +2445,69 @@ impl Coordinator {
             }
         }
         out
+    }
+
+    /// The plan's work offered and free to take now (crate::agent::flags::Open), by step in plan
+    /// order: its targets no lease holds and none done meanwhile (`pick_every`'s own rules, before
+    /// any worker's measures or backoff), the lead's own planned jobs marked `own`.
+    pub fn open_work(&self) -> Vec<crate::agent::flags::Open> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        let mut out: Vec<crate::agent::flags::Open> = Vec::new();
+        for o in &s.offers {
+            let held = s.leases.held(&o.step, now);
+            let free = o
+                .targets
+                .iter()
+                .filter(|t| !held.contains(&t.0) && s.done.get(&(o.step.clone(), t.0.clone())) != Some(&t.1))
+                .count();
+            let own = o.job.is_some();
+            match out.iter_mut().find(|x| x.step == o.step && x.own == own) {
+                Some(x) => x.targets += free,
+                None if free > 0 => out.push(crate::agent::flags::Open { step: o.step.clone(), targets: free, own }),
+                None => {}
+            }
+        }
+        out
+    }
+
+    /// Every job leased now (crate::agent::flags::Run): its worker, step, targets (and those its
+    /// worker's last beat said ended), threads, grant time, and its usual time on its worker: its
+    /// targets' predicted times there summed (`Sched::secs_of`, what `job_weight` weighs a job past;
+    /// None when a target has none). Task #927 sizes a batch by its Mac's own runs at its threads
+    /// (`Sched::batch_secs`): once it lands this is that sum at the lease's threads, the time the
+    /// job was sized to.
+    pub fn runs(&self) -> Vec<crate::agent::flags::Run> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        s.leases
+            .live(now)
+            .filter_map(|l| {
+                let Work::Job { step, targets } = &l.work else { return None };
+                // (A lease saying no grant time, an older lead's, has no time run to weigh.)
+                if l.granted_at == 0 {
+                    return None;
+                }
+                let names: Vec<&str> =
+                    if targets.is_empty() { vec![""] } else { targets.iter().map(|t| t.0.as_str()).collect() };
+                Some(crate::agent::flags::Run {
+                    worker: l.worker.clone(),
+                    lease: l.id,
+                    step: step.clone(),
+                    targets: targets.len(),
+                    done: l.live.as_ref().filter(|v| v.targets > 0).map(|v| v.targets_done),
+                    threads: l.threads,
+                    since: l.granted_at,
+                    usual_s: names.iter().map(|t| s.secs_of(step, t, &l.worker)).sum(),
+                })
+            })
+            .collect()
+    }
+
+    /// The pool's overdue factor as the lead keeps it (crate::agent::flags; its default while
+    /// unset), and whether it was set.
+    pub fn overdue(&self) -> (f64, bool) {
+        self.shared.lock().unwrap().asks.settings.overdue()
     }
 
     /// The targets of `step` leased now, by worker (a job's, every Mac's: the lead's own are by

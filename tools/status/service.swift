@@ -835,6 +835,7 @@ func selfTest(_ dir: String) -> Never {
     let (mKind, mLine) = classify(m)
     check("a member not building: the build as its lead says it", mKind == .building && mLine == "Building on m1; the lead: Nothing to build")
     check("a member: the build's pause is its lead's", buildPause(m)?.by == "the build page")
+    check("a member: the flags are its lead's", buildFlags(m).first?.mac == "m1" && lines(m, "x").contains { $0.text.hasPrefix("Idle: m1 has a slot free") })
     let mPrinted = lines(m, mLine, own: ownSaid).map(\.text)
     check("a member's lines: the lead's, and this Mac's own", mPrinted.contains { $0.hasPrefix("The lead (mini): Building on m1") && $0.hasSuffix("5\u{00A0}s ago") } && mPrinted.contains { $0.hasPrefix("From the build page, ") } && mPrinted.contains { $0.hasPrefix("m1 (this Mac) · heard from") })
     let away = member { d in var lv = d["lead"] as? [String: Any] ?? [:]; lv["at"] = (lv["at"] as? Int ?? 0) - 3600; d["lead"] = lv }

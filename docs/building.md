@@ -486,7 +486,10 @@ available. Until work is done, the map serves the last catalogue.
 - **Atomic writes** (docs/storage.md); **caches are disposable**.
 
 **Status.**
-- `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions),
+- `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions;
+  its flags: a Mac idle while work it could take waits, a job past the overdue factor times its
+  usual time, docs/pool.md §10, Flags; `--flags` alone, with the pool's warnings and the failures
+  since a time, as tools/dev/health.sh reads them),
   `scenic steps` (the steps table: docs/pipeline.md), `scenic clean [--deep]`, `scenic room` (Room on the
   disk, above), `scenic nas-room` (the NAS reserve, above), `scenic memory` (the memory floor, the memory the Mac keeps available: docs/pool.md §7.1).
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
@@ -496,7 +499,8 @@ available. Until work is done, the map serves the last catalogue.
   its state, its pause, when the lead answered). An agent or a lead not heard from for ten minutes (the status's `out_of_touch_s`, the pool's
   `OUT_OF_TOUCH_S`) shows as out of touch. The menu prints what the agent says (task #846): each
   Mac's state (`verdict`; on the lead the build's, `build`: `Status::build_said`, the line its
-  members are told), this Mac's pause's stage (`hold`) and the checklist's counts; it lists
+  members are told), this Mac's pause's stage (`hold`) and the checklist's counts, and the
+  lead's flags (its status's `flags`; on a member, its lead line's); it lists
   every running job, slot by slot. A Mac whose loop hasn't finished a round for longer than its
   agent's stuck threshold (the status's `loop_age_s`, counted on from its `beat`, past its `loop_stuck_s`, `beat::LOOP_STUCK`,
   task #899) gets a line "<Mac>: loop stuck 6 min, in <phase>" (`loop_phase`, the loop's phase

@@ -136,7 +136,8 @@ pub struct Answer {
 
 /// The build in a line, from the lead (`Answer::lead`): its Mac, its app, the build's state as its
 /// agent says it (`agent::Status::build_said`), the build's pause, and whether every member is on
-/// the new app (`Coordinator::all_new`).
+/// the new app (`Coordinator::all_new`), and what needs a look (the lead's status's flags,
+/// crate::agent::flags).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LeadLine {
     pub host: String,
@@ -146,6 +147,8 @@ pub struct LeadLine {
     pub pause: Option<crate::control::Pause>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all_new: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flags: Vec<crate::agent::flags::Flag>,
 }
 
 /// The members whose leases go by their word now: those speaking it, heard within
@@ -221,9 +224,9 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
 
 /// The lead's line for its members' menu bars (`Answer::lead`): None until its agent says it.
 fn lead_line(s: &Shared) -> Option<LeadLine> {
-    let (host, said) = s.said.clone()?;
+    let (host, said, flags) = s.said.clone()?;
     let all_new = s.old_member(s.now()).is_none();
-    Some(LeadLine { host, app: s.app.clone(), said, pause: s.paused.clone(), all_new })
+    Some(LeadLine { host, app: s.app.clone(), said, pause: s.paused.clone(), all_new, flags })
 }
 
 /// Whether a member heard within `beats::FORGET_S` of `unix` doesn't say `word`, or one on an

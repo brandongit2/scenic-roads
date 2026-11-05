@@ -661,7 +661,9 @@ fn plural(n: usize, one: &str) -> String {
     format!("{n} {one}{}", if n == 1 { "" } else { "s" })
 }
 
-fn status(places: &cli::Places) -> Result<()> {
+/// `scenic status`; with `flags_since`, what needs a look alone (`--flags`, agent::flags::look):
+/// the lead's flags, the pool's warnings, and the failures since then.
+fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
     let root = root(&places.root, false).ok();
     // (This Mac's own agent's folder, for what its own status adds (its memory, its view of the
     // pool): `--home`'s; with a `--root` of another build (a scratch one) and no `--home`, none:
@@ -670,6 +672,15 @@ fn status(places: &cli::Places) -> Result<()> {
     let Some(st) = agent::read_status(root.as_ref(), own_home.as_deref().unwrap_or(Path::new("/nonexistent"))) else {
         bail!("no status yet: the build agent hasn't run (or the NAS isn't mounted)");
     };
+    // The pool as this Mac's agent sees it (else as the status read says).
+    let own = own_home.as_deref().and_then(agent::lead::own_status).and_then(|s| s.pool).and_then(|p| p.lead);
+    let pool = own.or_else(|| st.pool.as_ref().and_then(|p| p.lead.clone()));
+    if let Some(since) = flags_since {
+        for l in agent::flags::look(&st, pool.as_ref().and_then(|v| v.alert.as_deref()), since, now_s()) {
+            println!("{l}");
+        }
+        return Ok(());
+    }
     let c = &st.conditions;
     println!("Lead {} (app {}), seen {}", st.host, st.app, ago(st.beat));
     println!(
@@ -693,6 +704,10 @@ fn status(places: &cli::Places) -> Result<()> {
         if let Some(m) = agent::memguard::live(home).filter(|m| now_s().saturating_sub(m.at) < 60) {
             println!("  this Mac: {} ({})", m.words(agent::memfloor::read(home).is_some()), ago(m.at));
         }
+    }
+    // What needs a look (agent::flags: the lead's, as the build page and the menu bar show it).
+    for f in &st.flags {
+        println!("Flag: {}", f.line());
     }
     // Each Mac, the lead (the coordinator) first: its slots, its capacity, its jobs, and why
     // nothing more fits (the same layout as the build page's machines).
@@ -822,10 +837,9 @@ fn status(places: &cli::Places) -> Result<()> {
     }
     // The pool (docs/pool.md §10): who leads, each member, as this Mac's agent sees it (else as the
     // status read says).
-    let own = own_home.as_deref().and_then(agent::lead::own_status).and_then(|s| s.pool).and_then(|p| p.lead);
-    if let Some(v) = own.or_else(|| st.pool.as_ref().and_then(|p| p.lead.clone())) {
+    if let Some(v) = &pool {
         println!("The pool:");
-        for l in agent::lead::said(&v, now_s()) {
+        for l in agent::lead::said(v, now_s()) {
             println!("  {l}");
         }
     }
@@ -1333,8 +1347,8 @@ fn main() -> Result<()> {
     // (Its command line checked first: `--help` or a flag it doesn't know runs nothing.)
     let cli = cli::Cli::parse();
     match cli.cmd {
-        None => status(&cli.status),
-        Some(Cmd::Status(places)) => status(&places),
+        None => status(&cli.status, None),
+        Some(Cmd::Status(a)) => status(&a.places, a.flags.then(|| a.since.unwrap_or(now_s().saturating_sub(6 * 3600)))),
         Some(Cmd::Menu(h)) => {
             println!("{}", pipeline::menu::status(&home_or_default(&h.home), now_s()));
             Ok(())

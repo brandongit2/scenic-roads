@@ -1988,6 +1988,38 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   kind, the map tiles being drawn by Mac, each Mac's adopted catalogue), recent jobs, pause, last
   catalogue, the lead.
   A member writes `helper.json` instead.
+- **Flags** (task #953, `agent::flags`): what needs a look, worked out by the lead at each round
+  from its own status and its coordinator, in its status (`flags`: kind, Mac, a line) and in its
+  beat answers' lead line, so `scenic status` ("Flag:" lines), the build page's alerts and the menu
+  bar (the lead's own status; a member's lead line) show the same. Nothing is flagged while the
+  build is paused, nor on a Mac paused alone.
+  - *idle*: a Mac whose last ask was refused (`packing`: it asked for more jobs than it got, so it
+    has a slot free) while work it could take waits. With targets offered and not leased of a step
+    it may run, the flag says how many, of which steps, and the refusal, which says what in its
+    capacity held the job back (memory and its floor, cores, disk, the NAS budget, the grants, a
+    cold start). With none free but work of a step any Mac takes held behind other steps (the
+    plan's waits with a step: slope-hi behind terrain-root), it names those waits, and the wait of
+    each step a wait names that waits too. Nothing left it could take: no flag.
+  - *overdue*: a leased job running more than the overdue factor times its usual time on its Mac,
+    with its targets done of its batch (its worker's beat) and its threads. Its usual time is what
+    the coordinator predicts its targets take that worker, summed (`Sched::secs_of`, the time
+    `job_weight` weighs a job past: each target's own run there, else its step's model at that
+    Mac's pace; runs of an older way of the step, by cost version, never count). A job whose
+    target has no prediction isn't flagged. When task #927 lands, a batch is sized by its Mac's own
+    runs at its threads (`Sched::batch_secs`), and the usual time becomes that sum at the lease's
+    threads: the time the job was sized to.
+  - The factor is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set
+    overdue-factor <times>|off`, or the build page's Settings, the pool's box), 1.1 to 100; not
+    set, 3 (`OVERDUE_DEFAULT`, the owner's call of 4 Nov).
+  - `scenic status --flags [--since <unix s>]` prints what needs a look alone, a line each: the
+    flags, the pool's warnings (no lead, the lead or a member out of touch, a Mac the lead holds a
+    capacity of with no status heard, the lead's loop stuck) and the jobs failed since then (every
+    Mac's, the last 6 hours by default): tools/dev/health.sh's.
+- **A job's progress** in its status (`JobView::progress`): a job of several targets says its
+  batch's, its targets ended (its costs file) plus the share of the one under way, and its time
+  left at the batch's pace since it began; a job of one target, that target's own line and pace
+  (a 36-target job had read "99%, about 0 min left" for 24 minutes by its target's). An update's
+  drain still waits by the target under way's time left (its next safe point).
 - **Coordinator view**, written by the lead per term (`state/coord/term/<E>/view.json`,
   `Coordinator::view`, in its pool step: `pool_lead_files`): `{at, view}`, the view what the
   worker page's `/work/swarm` takes from the coordinator's memory: the pause, each lease (worker,

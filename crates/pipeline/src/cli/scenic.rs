@@ -26,6 +26,21 @@ pub struct Places {
     pub home: Option<PathBuf>,
 }
 
+/// `scenic status`'s arguments.
+#[derive(Args, Debug, Default)]
+pub struct StatusArgs {
+    #[command(flatten)]
+    pub places: Places,
+    /// What needs a look alone, a line each: the lead's flags (a Mac idle while work it could take
+    /// waits, a job past the overdue factor times its usual time), the pool's warnings, and the jobs
+    /// failed since `--since` (tools/dev/health.sh's)
+    #[arg(long)]
+    pub flags: bool,
+    /// With --flags: the failures since this time (unix seconds; default: the last 6 hours)
+    #[arg(long, value_name = "UNIX_S", requires = "flags")]
+    pub since: Option<u64>,
+}
+
 /// This Mac's agent's folder.
 #[derive(Args, Debug, Default)]
 pub struct Home {
@@ -45,7 +60,7 @@ pub struct Root {
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
     /// What the lead is doing, what waits and why, the build to the end by stage and step, regions
-    Status(Places),
+    Status(StatusArgs),
     /// What the menu bar item (Scenic.app) shows, as JSON, from this Mac's disk alone: its agent's
     /// status, a member's lead's line as last heard, this Mac's asks and hold (pipeline::menu)
     Menu(Home),

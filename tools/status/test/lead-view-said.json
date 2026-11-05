@@ -3,6 +3,13 @@
   "lead": {
     "all_new": true,
     "app": "2026-10-30",
+    "flags": [
+      {
+        "kind": "idle",
+        "mac": "m1",
+        "said": "m1 has a slot free while 4 targets it could take wait (slope-deep 4): cores: 0 of 8 left"
+      }
+    ],
     "host": "mini",
     "pause": {
       "at": 1700000010,

@@ -101,6 +101,22 @@ struct LeadLine: Decodable {
     let app: String
     let said: Verdict
     let pause: PauseInfo?
+    /// What needs a look, as the lead's status flags it (crates/pipeline/src/agent/flags.rs).
+    let flags: [Flag]?
+}
+
+/// A flag of the lead's status (crates/pipeline/src/agent/flags.rs Flag): "idle" or "overdue", the
+/// Mac it's about, what it says.
+struct Flag: Decodable {
+    let kind: String
+    let mac: String
+    let said: String
+}
+
+/// The build's flags: the lead's word on a member, else (the lead) this Mac's status's.
+func buildFlags(_ r: Reply?) -> [Flag] {
+    if let l = r?.lead?.lead { return l.flags ?? [] }
+    return r?.status?.flags ?? []
 }
 
 /// The build's pause: the lead's word on a member, else (the lead, or no line heard) this Mac's
@@ -151,6 +167,8 @@ struct Status: Decodable {
     /// forecast: crates/pipeline/src/agent/forecast.rs; agents from 2026-10-05 on).
     let regions: [Recipe]?
     let forecast: Forecast?
+    /// What needs a look (the lead's: crates/pipeline/src/agent/flags.rs).
+    let flags: [Flag]?
 
     /// Its running jobs, every slot's in order (`jobs`, else the old fields).
     var allJobs: [Job] { jobs ?? ([job, beside].compactMap { $0 } + (more ?? [])) }
@@ -841,6 +859,10 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     if let p = buildPause(r) {
         let how = p.mode == "freeze" ? "every Mac's job frozen where it was" : "every Mac's job stops at its next safe point"
         out.append(Line(text: "From \(p.by), \(clock(p.at)): \(how); nothing new starts until it's resumed", style: .small))
+    }
+    // What needs a look, as the lead flags it (the same lines as `scenic status` and the build page).
+    for f in buildFlags(r) {
+        out.append(Line(text: "\(f.kind == "idle" ? "Idle" : "Overdue"): \(f.said)", style: .small))
     }
     // Every running job, slot by slot (task #846: a Mac runs up to six).
     let jobs = s.allJobs

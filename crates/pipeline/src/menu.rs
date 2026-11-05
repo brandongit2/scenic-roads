@@ -101,7 +101,7 @@ mod tests {
         let (c, port) = crate::coord::start_for_test(&d.path().join("lead"), "lead", "");
         c.set_beats(Some(Arc::new(Beats::default())));
         let said = Verdict { state: "building".into(), said: "Building on mini: 3 jobs".into() };
-        c.set_said("mini", said.clone());
+        c.set_said("mini", said.clone(), Vec::new());
         let pause = crate::control::Pause::new(crate::control::Mode::Drain, "the build page");
         c.set_pause(Some(pause.clone()), pause.at);
         let (mut h, to) = member(d.path(), port, &c.contact.token, Arc::new(|_, _| Ok(())));
@@ -154,7 +154,7 @@ mod tests {
         for (i, (state, said)) in
             [("idle", "Nothing to build"), ("building", "Building: 2 jobs")].into_iter().enumerate()
         {
-            c.set_said("mini", Verdict { state: state.into(), said: said.into() });
+            c.set_said("mini", Verdict { state: state.into(), said: said.into() }, Vec::new());
             publish(&mut h, &to, d.path(), vec![job(&format!("unit 6/1/{i}"))]);
             store::testkit::eventually("the lead's newest line on the member's menu", || {
                 status(&d.path().join("member"), now_s())["lead"]["lead"]["said"]["said"] == said
@@ -187,6 +187,11 @@ mod tests {
             said,
             pause: Some(pause),
             all_new: true,
+            flags: vec![crate::agent::flags::Flag {
+                kind: "idle".into(),
+                mac: "m1".into(),
+                said: "m1 has a slot free while 4 targets it could take wait (slope-deep 4): cores: 0 of 8 left".into(),
+            }],
         };
         let ours = serde_json::to_value(LeadView { at: 1_700_000_025, lead: Some(line) }).unwrap();
         if std::env::var_os("SCENIC_BLESS").is_some() {
