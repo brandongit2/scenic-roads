@@ -7993,11 +7993,12 @@ impl Agent {
         }
     }
 
-    /// The gate's (docs/coordination.md step 7): while this member's lead doesn't take progress in
-    /// the beat (an older lead, which reads it on the NAS), its file there written whole when it
-    /// differs from what was written last.
+    /// The gate's (docs/coordination.md step 7): while this member's lead answers without taking
+    /// progress in the beat (an older lead, which reads it on the NAS), its file there written whole
+    /// when it differs from what was written last. (None before the lead's first answer: its next
+    /// loop has it.)
     fn progress_to_nas(&mut self, root: &store::nasfs::NasRoot) {
-        if self.coord.is_some() || self.beats.as_ref().is_none_or(|b| b.lead_budgets()) {
+        if self.coord.is_some() || !self.beats.as_ref().is_some_and(|b| b.lead_without_budgets()) {
             return;
         }
         let Some(p) = self.held_progress.clone().filter(|p| self.progress_nas.as_ref() != Some(p)) else { return };

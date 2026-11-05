@@ -136,10 +136,10 @@ struct Inner {
     lead_handoffs: Option<bool>,
     handoffs: Vec<crate::pool::Entry>,
     merged: Vec<String>,
-    /// On a member: whether its lead serves `BUDGETS`, and whether they go by the NAS still (its
-    /// word, `Answer::budgets_on_nas`); its resume progress as its agent last noted it (its beat
+    /// On a member: whether its lead serves `BUDGETS` (None: not answered since this process
+    /// started), and whether they go by the NAS still (its word, `Answer::budgets_on_nas`); its resume progress as its agent last noted it (its beat
     /// carries it), and the owner's releases of it as the lead's last answer said them.
-    lead_budgets: bool,
+    lead_budgets: Option<bool>,
     budgets_on_nas: bool,
     progress: Option<crate::agent::resume::Progress>,
     progress_released: Vec<(String, u64)>,
@@ -188,7 +188,7 @@ impl Default for Beats {
                 lead_handoffs: None,
                 handoffs: Vec::new(),
                 merged: Vec::new(),
-                lead_budgets: false,
+                lead_budgets: None,
                 budgets_on_nas: true,
                 progress: None,
                 progress_released: Vec::new(),
@@ -293,9 +293,10 @@ impl Beats {
         }
         g.lead_handoffs = Some(a.speaks.iter().any(|w| w == HANDOFF));
         g.merged.extend(a.merged.iter().cloned());
-        g.lead_budgets = a.speaks.iter().any(|w| w == BUDGETS);
-        g.budgets_on_nas = !g.lead_budgets || a.budgets_on_nas;
-        if g.lead_budgets {
+        let serves = a.speaks.iter().any(|w| w == BUDGETS);
+        g.lead_budgets = Some(serves);
+        g.budgets_on_nas = !serves || a.budgets_on_nas;
+        if serves {
             g.progress_released = a.progress_released.clone();
         }
         g.lead_view = LeadView { at: now, lead: a.lead.clone() };
@@ -399,7 +400,13 @@ impl Beats {
     /// Whether its lead serves `BUDGETS` (its last answer said so): its progress goes in the beat
     /// alone, the owner's releases of it in the answer.
     pub fn lead_budgets(&self) -> bool {
-        self.inner.lock().unwrap().lead_budgets
+        self.inner.lock().unwrap().lead_budgets == Some(true)
+    }
+
+    /// Whether its lead answered without `BUDGETS` (an older lead, which reads members' progress
+    /// files on the NAS); false before any answer since this process started.
+    pub fn lead_without_budgets(&self) -> bool {
+        self.inner.lock().unwrap().lead_budgets == Some(false)
     }
 
     /// Whether the budget and the answers' lease go by the NAS (the gate): the lead doesn't serve
@@ -548,7 +555,7 @@ impl Beats {
         g.lead_answered = None;
         (g.lead_asks, g.asks_on_nas) = (false, true);
         g.lead_handoffs = Some(false);
-        (g.lead_budgets, g.budgets_on_nas) = (false, true);
+        (g.lead_budgets, g.budgets_on_nas) = (Some(false), true);
         g.threads.clear();
         g.lead_view = LeadView { at: now, lead: None };
         drop(g);
