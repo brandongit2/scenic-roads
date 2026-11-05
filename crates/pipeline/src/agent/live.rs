@@ -323,8 +323,6 @@ pub struct Store {
     sampling: AtomicBool,
     /// Each core's share busy over the last second (`cores_now` in an answer).
     cores_now: Mutex<Vec<f64>>,
-    /// The Mac's sustained best room as last worked out (`best`), and when (unix s).
-    best: Mutex<Option<(u64, Option<super::forecast::MacRoom>)>>,
 }
 
 impl std::fmt::Debug for Store {
@@ -358,7 +356,6 @@ impl Store {
             files: Mutex::default(),
             sampling: AtomicBool::new(false),
             cores_now: Mutex::new(Vec::new()),
-            best: Mutex::new(None),
         })
     }
 
@@ -368,16 +365,11 @@ impl Store {
     /// (`forecast::sustained`) of its memory for jobs (its `total_mb` less what the rest of the Mac
     /// used, `OTHERS_MEM`, and its memory floor, `MEM_FLOOR`, each minute's most) and its cores not
     /// used outside the build (`cores` less `OTHERS_CORES`, each minute's mean as a load average
-    /// is, within the cores the build may use then, `BUILD_CORES_MAX`'s least). Worked out at most
-    /// once a minute. None: a series not sampled for that long yet.
+    /// is, within the cores the build may use then, `BUILD_CORES_MAX`'s least): a pass over four
+    /// series' 4,320 minutes. None: a series not sampled for that long yet.
     pub fn best(&self, now: u64, total_mb: u64, cores: u32) -> Option<super::forecast::MacRoom> {
         use super::forecast::{sustained, MacRoom, BEST_SPAN_S};
         let (step, _) = TIERS[2];
-        if let Some((at, b)) = *self.best.lock().ok()? {
-            if now.saturating_sub(at) < step {
-                return b;
-            }
-        }
         let from = now.saturating_sub(BEST_SPAN_S);
         let (mem, cpu) = {
             let s = self.series.lock().ok()?;
@@ -406,16 +398,10 @@ impl Store {
                 .collect();
             (mem, cpu)
         };
-        let b = (|| {
-            Some(MacRoom {
-                mem_mb: sustained(&mem, step, now)?.max(0.0) as u64,
-                cores: (sustained(&cpu, step, now)?.floor() as u32).max(1),
-            })
-        })();
-        if let Ok(mut g) = self.best.lock() {
-            *g = Some((now, b));
-        }
-        b
+        Some(MacRoom {
+            mem_mb: sustained(&mem, step, now)?.max(0.0) as u64,
+            cores: (sustained(&cpu, step, now)?.floor() as u32).max(1),
+        })
     }
 
     /// A sample of series `name` at `t` (unix s).
