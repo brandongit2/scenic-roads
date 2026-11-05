@@ -1133,7 +1133,7 @@ struct Index {
 /// once (sorted, no repeats): a region's terrain that its z6 tiles wait for, all the terrain, all
 /// before the steps after. (Lead memory, 25 Oct: each slope target had its own copy of its z3
 /// tiles' terrain, about 6,750 items, 8.7 GB of the agents' 17 GB. Since #864 a slope target's own
-/// list is only what it reads: a slope-deep's 15 at most, a slope-hi's 10 and its 256 z10 tiles'.)
+/// list is only what it reads: a slope-deep's 5 at most, a slope-hi's 10 and its 256 z10 tiles'.)
 struct Items {
     items: Vec<Item>,
     region_items: Vec<Vec<usize>>,

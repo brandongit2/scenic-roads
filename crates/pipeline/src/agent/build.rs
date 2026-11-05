@@ -26,10 +26,12 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const TERRAIN_V: u32 = 8;
 /// Terrain-deep 2 (task #929): a z10 tile's band past z12 by the same rule, its mid for its z6 tile.
 pub const TERRAIN_DEEP_V: u32 = 2;
-/// Slope 3 (task #929): the terrain it shades follows the one pyramid's rule (`TERRAIN_V` 8); the
-/// shading pyramid (crate::slope_pack) as before, lossless WebP (crate::shade_codec: its version in
-/// the key).
-pub const SLOPE_V: u32 = 3;
+/// Slope 4 (task #952): a missing deep terrain tile (z13 on) is made from its nearest ancestor
+/// within the deep levels alone, past them its own edge repeated (crate::slope_pack::fallback_floor),
+/// and z10–12 are made by slope-hi from its z10 tiles' z13 quadrants (their deep mids, format 2) and
+/// its hi terrain; the terrain it shades follows the one pyramid's rule (`TERRAIN_V` 8); lossless
+/// WebP (crate::shade_codec: its version in the key).
+pub const SLOPE_V: u32 = 4;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
 /// 3: heritage sites and area flags from the pass's heritage-sites job (crate::heritage), the
 /// flags rasterised per z6 tile.
@@ -1253,9 +1255,10 @@ pub struct TerrainTargets {
     pub terrain_deep_none: Vec<(String, String)>,
     #[serde(default)]
     pub slope_deep_none: Vec<(String, String)>,
-    /// The slope-hi and slope-deep targets whose slope reads a tile of the terrain's root (z0–2:
-    /// an edge neighbour's ancestor where its z3 tile has no lo pack, `slope_reads`): those alone
-    /// wait for the root while it's stale (`idents::root_tiles`); the rest read nothing of it.
+    /// The slope-hi targets whose slope reads a tile of the terrain's root (z0–2: an edge
+    /// neighbour's ancestor where its z3 tile has no lo pack, `slope_reads`): those alone wait for
+    /// the root while it's stale (`idents::root_tiles`); the rest read nothing of it (slope-deep,
+    /// its deep tiles' fallback within the deep levels, never).
     #[serde(default)]
     pub reads_root: BTreeSet<String>,
 }
@@ -1360,9 +1363,6 @@ pub fn terrain_slope_targets_made(x: &KeyCtx) -> TerrainTargets {
                 deep.insert(t);
                 let ts = format!("{}/{}/{}", crate::terrain_deep::PACK_Z, t.0, t.1);
                 out.terrain_deep.push((ts.clone(), key("terrain-deep", &ts)));
-                if reads_root((crate::terrain_deep::PACK_Z, t.0, t.1), m, tiles) {
-                    out.reads_root.insert(ts.clone());
-                }
                 out.slope_deep.push((ts.clone(), super::steps::derived_key("slope-deep", &ts, x)));
             }
         }
@@ -1631,7 +1631,8 @@ fn read_lines(reads: &[Option<Tile>]) -> Vec<String> {
 
 /// What slope-hi z6 tile `t`'s reads (`slope_reads`) are worked out from, as a digest, for
 /// `TerrainTiles::memo`: the content names of the packs they can be in (its own and its edge
-/// neighbours' hi packs, their z3 tiles' lo packs, the root) and of its z10 tiles' deep mids.
+/// neighbours' hi packs, their z3 tiles' lo packs, the root), of its z10 tiles' deep mids and of
+/// those z10 tiles' terrain deep packs (their z13 tiles, whose quadrants the mids hold).
 pub fn slope_piece_from(t: (u32, u32), m: &BTreeMap<String, String>) -> String {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-").to_string();
     let mut packs: BTreeSet<String> = BTreeSet::new();
@@ -1640,7 +1641,10 @@ pub fn slope_piece_from(t: (u32, u32), m: &BTreeMap<String, String>) -> String {
         packs.insert(get(&format!("layers/terrain/lo/3-{}-{}", x >> 3, y >> 3)));
     }
     packs.insert(get("layers/terrain/root/0-0-0"));
-    packs.extend(crate::slope_pack::deep_mids_under(m, t).into_iter().map(|((x, y), c)| format!("{x}/{y}={c}")));
+    for ((x, y), c) in crate::slope_pack::deep_mids_under(m, t) {
+        packs.insert(format!("{x}/{y}={c}"));
+        packs.insert(format!("{x}/{y} {}", get(&crate::terrain_deep::pack_logical(x, y))));
+    }
     let from = format!(
         "{}\n{}",
         get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)),
@@ -1650,18 +1654,14 @@ pub fn slope_piece_from(t: (u32, u32), m: &BTreeMap<String, String>) -> String {
 }
 
 /// What slope-deep z10 tile `t`'s reads are worked out from, as a digest: the content names of the
-/// packs they can be in (its and its edge neighbours' terrain deep packs, their z6 tiles' hi packs
-/// and z3 tiles' lo packs, the root).
+/// packs they can be in, its and its edge neighbours' terrain deep packs (a deep tile's fallback
+/// stays within the deep levels: crate::slope_pack::fallback_floor).
 pub fn slope_deep_from(t: (u32, u32), m: &BTreeMap<String, String>) -> String {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-").to_string();
-    let k = crate::terrain_deep::PACK_Z - 6;
-    let mut packs: BTreeSet<String> = BTreeSet::new();
-    for (x, y) in std::iter::once(t).chain(edge_neighbours(crate::terrain_deep::PACK_Z, t.0, t.1)) {
-        packs.insert(format!("{x}/{y}={}", get(&crate::terrain_deep::pack_logical(x, y))));
-        packs.insert(get(&format!("layers/terrain/hi/6-{}-{}", x >> k, y >> k)));
-        packs.insert(get(&format!("layers/terrain/lo/3-{}-{}", x >> (k + 3), y >> (k + 3))));
-    }
-    packs.insert(get("layers/terrain/root/0-0-0"));
+    let packs: BTreeSet<String> = std::iter::once(t)
+        .chain(edge_neighbours(crate::terrain_deep::PACK_Z, t.0, t.1))
+        .map(|(x, y)| format!("{x}/{y}={}", get(&crate::terrain_deep::pack_logical(x, y))))
+        .collect();
     store::naming::hash16(packs.into_iter().collect::<Vec<_>>().join(",").as_bytes())
 }
 
@@ -1681,15 +1681,16 @@ pub fn edge_neighbours(z: u8, x: u32, y: u32) -> Vec<(u32, u32)> {
 
 /// The terrain tiles a slope pyramid of tile `top` (a slope-hi z6 tile's, or a slope-deep z10
 /// tile's) can read, by content, sorted, without repeats (None: one reading no tile). It works out
-/// the terrain tiles under `top` (z9–12, and under a z10 tile its deep pack's: crate::terrain_deep)
-/// and their ancestors up to it, and itself (crate::slope_pack's tiles_under), but under the z10
-/// tiles `skip` (their slope-deep runs' parts, taken in as made: those tiles alone, nothing read); of
-/// those, each finest one and each its children don't all cover reads its own terrain and that of
+/// the tiles crate::slope_pack's runs do: under a z6 tile the terrain tiles under it (z9–12) and the
+/// z13 tiles of its z10 tiles `skip` (their slope-deep runs' quadrants, taken in as made: their
+/// tiles in those z10 tiles' terrain deep packs), with their ancestors up to it; under a z10 tile its
+/// terrain deep pack's tiles (z13–16) and their ancestors up to z13. Of those, each finest one and
+/// each its children don't all cover (none of `skip`'s z13 tiles) reads its own terrain and that of
 /// the tiles west, east, north and south of it, at its zoom (Horn's method's border), each resolved
-/// as crate::slope_pack::Terrain resolves it, the tile or its nearest ancestor up to eight levels up
-/// (`TerrainTiles::resolve`): the tiles along its edges in its neighbours' packs, others' z3 tiles'
-/// and the root too. (A stored tile that doesn't decode reads as its ancestor: named by its own
-/// content here.)
+/// as crate::slope_pack::Terrain resolves it, the tile or its nearest ancestor down to
+/// crate::slope_pack::fallback_floor (`TerrainTiles::resolve`): the tiles along its edges in its
+/// neighbours' packs, others' z3 tiles' and the root too, but a deep tile's within the deep packs.
+/// (A stored tile that doesn't decode reads as its ancestor: named by its own content here.)
 pub fn slope_reads(
     top: (u8, u32, u32),
     m: &BTreeMap<String, String>,
@@ -1697,45 +1698,55 @@ pub fn slope_reads(
     skip: &BTreeSet<(u32, u32)>,
 ) -> Result<Vec<Option<Tile>>, Unread> {
     let (tz, tx, ty) = top;
-    let pz = crate::terrain_deep::PACK_Z;
+    let (pz, fz, mz) = (crate::terrain_deep::PACK_Z, crate::terrain_deep::FIRST_Z, crate::terrain_deep::MAX_Z);
     let mut r = tiles.reader(m);
     let mut set: BTreeSet<(u8, u32, u32)> = BTreeSet::new();
-    set.insert(top);
+    // (Under a z10 tile, its deep tiles' ancestors down to z13 alone: its run makes no z10–12.)
+    if tz < pz {
+        set.insert(top);
+    }
+    let up_to = if tz == pz { fz } else { tz };
     let mut with = |z: u8, x: u32, y: u32| {
-        for dz in 0..=(z - tz) {
+        for dz in 0..=(z - up_to) {
             set.insert((z - dz, x >> dz, y >> dz));
         }
     };
-    let skipped = |z: u8, x: u32, y: u32| z >= pz && skip.contains(&(x >> (z - pz), y >> (z - pz)));
-    for z in 9.max(tz + 1)..=crate::slope_pack::HI_MAX {
-        let s = 1u32 << (z - tz);
-        for x in tx * s..(tx + 1) * s {
-            for y in ty * s..(ty + 1) * s {
-                if !skipped(z, x, y) && r.hash(z, x, y)?.is_some() {
+    if tz < pz {
+        for z in 9.max(tz + 1)..=crate::slope_pack::HI_MAX {
+            let s = 1u32 << (z - tz);
+            for x in tx * s..(tx + 1) * s {
+                for y in ty * s..(ty + 1) * s {
+                    if r.hash(z, x, y)?.is_some() {
+                        with(z, x, y);
+                    }
+                }
+            }
+        }
+    }
+    let mut taken: BTreeSet<(u32, u32)> = BTreeSet::new();
+    let deep_under = |(x, y): (u32, u32)| (x >> (pz - tz), y >> (pz - tz)) == (tx, ty);
+    for f in
+        std::iter::once((tx, ty)).filter(|_| tz == pz).chain(skip.iter().copied().filter(|&f| tz < pz && deep_under(f)))
+    {
+        for (z, x, y) in r.deep_in(f)? {
+            if (fz..=mz).contains(&z) {
+                if tz < pz {
+                    // (Its quadrant taken in: none of its subtree is worked out here.)
+                    let k = z - fz;
+                    taken.insert((x >> k, y >> k));
+                    with(fz, x >> k, y >> k);
+                } else {
                     with(z, x, y);
                 }
             }
         }
     }
-    if tz == pz {
-        for (z, x, y) in r.deep_in((tx, ty))? {
-            if z > crate::slope_pack::HI_MAX && z <= crate::terrain_deep::MAX_Z {
-                with(z, x, y);
-            }
-        }
-    }
-    for &(x, y) in skip {
-        if tz < pz && (x >> (pz - tz), y >> (pz - tz)) == (tx, ty) {
-            with(pz, x, y);
-        }
-    }
     let mut read: BTreeSet<(u8, u32, u32)> = BTreeSet::new();
     for &(z, x, y) in &set {
-        if z == pz && skip.contains(&(x, y)) {
+        if z == fz && taken.contains(&(x, y)) {
             continue;
         }
-        let full = z < crate::terrain_deep::MAX_Z
-            && (0..4u32).all(|k| set.contains(&(z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))));
+        let full = z < mz && (0..4u32).all(|k| set.contains(&(z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))));
         if !full {
             read.insert((z, x, y));
             read.extend(edge_neighbours(z, x, y).into_iter().map(|(a, b)| (z, a, b)));
@@ -5566,9 +5577,41 @@ pub(crate) mod tests {
         assert!(!reads.contains(&Some((6, 28, 16, 6))) && reads.contains(&None), "{reads:?}");
     }
 
+    /// Task #952: a slope-deep z10 tile's key reads its deep tiles (z13 on) and their edge
+    /// neighbours', a missing one resolved within the deep packs alone, never a hi tile; its z6
+    /// tile's slope-hi reads its z10–12 tiles over the z13 tiles taken in from its deep mid, none of
+    /// those z13 tiles' subtrees.
+    #[test]
+    fn a_slope_deep_key_reads_the_deep_packs_alone() {
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        for (l, c) in [
+            ("layers/terrain/deep/10-448-256", "d0"),
+            ("layers/terrain/deep/10-449-256", "d1"),
+            ("layers/terrain/hi/6-28-16", "a"),
+            ("layers/terrain/lo/3-3-2", "l"),
+        ] {
+            m.insert(l.into(), c.into());
+        }
+        let mut t = TerrainTiles::new(None);
+        t.hold("d0", [(13, 3584, 2048, 1), (13, 3585, 2048, 1), (13, 3591, 2048, 1), (14, 7168, 4096, 1)]);
+        t.hold("d1", [(13, 3592, 2048, 2), (13, 3593, 2048, 2)]);
+        t.hold("a", (1792..1800u32).map(|x| (12, x, 1024, 3)));
+        t.hold("l", [(6, 28, 16, 4)]);
+        let reads = slope_reads((10, 448, 256), &m, &t, &BTreeSet::new()).unwrap();
+        assert!(reads.contains(&Some((13, 3592, 2048, 2))), "its east neighbour's edge: {reads:?}");
+        assert!(!reads.contains(&Some((13, 3593, 2048, 2))), "not its inside: {reads:?}");
+        assert!(reads.contains(&Some((13, 3584, 2048, 1))) && reads.contains(&None), "{reads:?}");
+        assert!(reads.iter().flatten().all(|r| r.0 >= 13), "no hi, lo or root tile: {reads:?}");
+        let skip: BTreeSet<(u32, u32)> = [(448, 256)].into();
+        let reads = slope_reads((6, 28, 16), &m, &t, &skip).unwrap();
+        assert!(reads.contains(&Some((12, 1792, 1024, 3))), "a z12 tile its z13 tiles don't cover: {reads:?}");
+        assert!(reads.iter().flatten().all(|r| r.0 <= 12), "none of the z13 tiles' subtrees: {reads:?}");
+    }
+
     /// Task #864: a slope-deep z10 target waits for what it reads alone (its own and its edge
-    /// neighbours' terrain-deep, their z6 tiles' terrain-hi and z3 tiles' terrain-lo): it's offered
-    /// while other terrain of its z3 tile (another z10 tile's deep levels) is left; that one waits.
+    /// neighbours' terrain-deep; task #952: no terrain-hi or terrain-lo): it's offered while other
+    /// terrain of its z3 tile (another z10 tile's deep levels, its z6 tile's terrain-hi) is left;
+    /// that one waits.
     #[test]
     fn a_slope_deep_target_waits_only_for_what_it_reads() {
         let k = |s: &str| (s.to_string(), "k".to_string());
@@ -5623,12 +5666,11 @@ pub(crate) mod tests {
         )
         .slope_deep
         .is_empty());
-        // Its z6 tile's terrain-hi left: it waits.
+        // Its z6 tile's terrain-hi and its z3 tile's terrain-lo left: it doesn't wait.
         let mut done3 = Keys::default();
         done3.record("terrain-hi", &[k("6/31/23")]);
-        done3.record("terrain-lo", &tt.terrain_lo);
         done3.record("terrain-deep", &near.iter().map(|t| k(t)).collect::<Vec<_>>());
-        assert!(terrain_work(
+        let w3 = terrain_work(
             &tt,
             &crate::agent::build::KeyCtx::new(
                 &crate::coverage::Coverage::default(),
@@ -5636,12 +5678,11 @@ pub(crate) mod tests {
                 &BTreeMap::new(),
                 &std::collections::BTreeMap::new(),
                 None,
-                &crate::agent::tiles::TerrainTiles::default()
+                &crate::agent::tiles::TerrainTiles::default(),
             ),
-            &done3
-        )
-        .slope_deep
-        .is_empty());
+            &done3,
+        );
+        assert_eq!(w3.slope_deep, vec![(a.to_string(), "s".to_string())], "{w3:?}");
     }
 
     /// Task #864: slope-hi's and slope-deep's declared reads (crate::agent::steps::read_targets) are
@@ -5725,6 +5766,7 @@ pub(crate) mod tests {
         for x in 24 * 16 - 1..=25 * 16 {
             for y in 16 * 16 - 1..=17 * 16 {
                 c.push(crate::slope_pack::deep_mid_logical(x, y));
+                c.push(crate::terrain_deep::pack_logical(x, y));
             }
         }
         check("slope-hi", "6/24/16", None, c, &|m| slope_piece_from((24, 16), m));

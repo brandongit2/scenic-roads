@@ -594,30 +594,15 @@ fn z6_of_z3(t: &str) -> Vec<String> {
     named(6, at(t, 3).into_iter().flat_map(|(x, y)| z6_under(x, y)))
 }
 
-/// slope-deep 10/x/y: the deep packs of it and its edge neighbours, the hi packs of their z6 tiles
-/// and the lo packs of their z3 tiles (`slope_deep_from`).
-fn slope_deep_reads(t: &str, z: u8) -> Vec<String> {
-    let pz = crate::terrain_deep::PACK_Z;
-    let k = pz - 6;
-    let s = match z {
-        6 => k,
-        3 => k + 3,
-        _ => 0,
-    };
-    named(z, at(t, pz).into_iter().flat_map(|(x, y)| with_edges(pz, x, y)).map(|(x, y)| (x >> s, y >> s)))
-}
+/// slope-deep 10/x/y: the deep packs of it and its edge neighbours (`slope_deep_from`).
 fn sd_deep(t: &str) -> Vec<String> {
-    slope_deep_reads(t, crate::terrain_deep::PACK_Z)
-}
-fn sd_hi(t: &str) -> Vec<String> {
-    slope_deep_reads(t, 6)
-}
-fn sd_lo(t: &str) -> Vec<String> {
-    slope_deep_reads(t, 3)
+    let pz = crate::terrain_deep::PACK_Z;
+    named(pz, at(t, pz).into_iter().flat_map(|(x, y)| with_edges(pz, x, y)))
 }
 
 /// slope-hi 6/x/y: the hi packs of it and its edge neighbours, their z3 tiles' lo packs
-/// (`slope_piece_from`), and its z10 tiles' slope-deep parts.
+/// (`slope_piece_from`), and its z10 tiles' slope-deep parts and terrain deep packs (their z13
+/// tiles).
 fn sh_hi(t: &str) -> Vec<String> {
     named(6, at(t, 6).into_iter().flat_map(|(x, y)| with_edges(6, x, y)))
 }
@@ -1025,31 +1010,32 @@ pub const TABLE: [Step; 59] = [
     // lo_peak_mb; slope-deep's and slope-hi's with the coverage their process reads added by the
     // agent, crate::coverage::Coverage::read_peak_mb.)
     Step {
+        cost_v: 1,
         mem_mb: crate::slope_pack::deep_peak_mb(),
         shared: true,
         versions: &[("slope-deep", || super::build::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
-        reads: &[Of { step: "terrain-deep", of: sd_deep, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-hi", of: sd_hi, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-lo", of: sd_lo, grain: Grain::Tiles(idents::nothing) }, In { name: "root-tiles", of: idents::root_tiles }],
+        reads: &[Of { step: "terrain-deep", of: sd_deep, grain: Grain::Tiles(idents::slope_tiles) }],
         ..step(
             "slope",
             Pack,
             Z10,
             "slope-deep",
-            "Works out a z10 tile's shading from its terrain down to its deep levels (z10–16), its z10–12 handed on to its tile's.",
+            "Works out a z10 tile's shading at its deep levels (z13–16) from its deep terrain, its z13 tiles handed on to its tile's.",
             w_slope_deep,
         )
     },
     Step {
-        cost_v: 4,
+        cost_v: 5,
         mem_mb: crate::slope_pack::peak_mb(),
         shared: true,
         versions: &[("slope-hi", || super::build::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
-        reads: &[Of { step: "terrain-hi", of: own, grain: Outputs }, Of { step: "terrain-hi", of: sh_hi, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-lo", of: sh_lo, grain: Grain::Tiles(idents::nothing) }, Of { step: "slope-deep", of: sh_deep, grain: Grain::Read(idents::deep_mids) }, In { name: "root-tiles", of: idents::root_tiles }],
+        reads: &[Of { step: "terrain-hi", of: own, grain: Outputs }, Of { step: "terrain-hi", of: sh_hi, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-lo", of: sh_lo, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Tiles(idents::nothing) }, Of { step: "slope-deep", of: sh_deep, grain: Grain::Read(idents::deep_mids) }, In { name: "root-tiles", of: idents::root_tiles }],
         ..step(
             "slope",
             Pack,
             Z6,
             "slope-hi",
-            "Works out a tile's shading from its terrain (z6–12), its z10 tiles' deep parts taken in.",
+            "Works out a tile's shading from its terrain (z6–12), its z10 tiles' z13 quadrants taken in.",
             w_slope_hi,
         )
     },

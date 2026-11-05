@@ -1066,6 +1066,7 @@ fn shading_over(
     let out = Mutex::new(Vec::new());
     let done: HashMap<(u8, u32, u32), Option<Vec<roadcore::shade::Px>>> =
         below.into_iter().map(|(k, q)| (k, Some(q))).collect();
+    let done = |z: u8, x: u32, y: u32| done.get(&(z, x, y)).cloned();
     let mut roots: Vec<(u8, u32, u32)> = tiles.iter().copied().filter(|t| t.0 == top).collect();
     roots.sort_unstable();
     for (z, x, y) in roots {

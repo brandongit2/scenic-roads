@@ -5666,9 +5666,9 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
 
 /// slope-deep <10/x/y …> [--regions dir]: each z10 tile's part of its z6 tile's shading pyramid
 /// (pipeline::slope_pack::build_deep: its deep pack, z13–16, and its deep mid, which its z6 tile's
-/// slope-hi run takes in), from the build's terrain packs; a z10 tile no slope-deep target now (no
-/// terrain-deep target there: pipeline::terrain_deep::is_target) has its deep pack and deep mid
-/// dropped.
+/// slope-hi run takes in), from its and its edge neighbours' terrain deep packs; a z10 tile no
+/// slope-deep target now (no terrain-deep target there: pipeline::terrain_deep::is_target) has its
+/// deep pack and deep mid dropped.
 fn slope_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     use pipeline::terrain_deep as td;
     const STEP: &str = "slope-deep";

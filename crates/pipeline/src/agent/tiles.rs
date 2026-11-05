@@ -453,8 +453,9 @@ impl TerrainTiles {
         self.reader(m).hash(z, x, y)
     }
 
-    /// The tile read for (z, x, y) where a missing tile is its nearest ancestor's, up to eight levels
-    /// up (slope_pack::Terrain::tile): the tile itself if there is one, else that ancestor.
+    /// The tile read for (z, x, y) where a missing tile is its nearest ancestor's, down to
+    /// slope_pack::fallback_floor's zoom (slope_pack::Terrain::tile): the tile itself if there is
+    /// one, else that ancestor.
     pub fn resolve(&self, m: &BTreeMap<String, String>, z: u8, x: u32, y: u32) -> Result<Option<Tile>, Unread> {
         self.reader(m).resolve(z, x, y)
     }
@@ -655,7 +656,7 @@ impl<'a> Reader<'a> {
 
     /// `TerrainTiles::resolve`.
     pub fn resolve(&mut self, z: u8, x: u32, y: u32) -> Result<Option<Tile>, Unread> {
-        for dz in 0..=z.min(8) {
+        for dz in 0..=z - crate::slope_pack::fallback_floor(z) {
             let (pz, px, py) = (z - dz, x >> dz, y >> dz);
             if let Some(h) = self.hash(pz, px, py)? {
                 return Ok(Some((pz, px, py, h)));
@@ -717,10 +718,18 @@ mod tests {
             &[(3, 3, 2), (6, 28, 16), (8, 112, 64)],
             "a",
         );
+        let deep = pack(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &mut m,
+            "layers/terrain/deep/10-448-256",
+            "4444444444444444",
+            &[(13, 3584, 2048)],
+            "a",
+        );
         // Another layer's pack: not the terrain's.
         m.insert("layers/slope/hi/6-28-16".into(), "layers/slope/hi/6-28-16.3333333333333333.pack".into());
         let mut t = TerrainTiles::new(Some(dir.clone()));
-        assert_eq!(t.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 2);
+        assert_eq!(t.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 3);
         assert_eq!(t.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 0, "held: nothing read again");
         assert!(dir.join("1111111111111111.idx").exists() && dir.join("2222222222222222.idx").exists());
         assert_eq!(t.hash(&m, 12, 1792, 1024).unwrap(), Some(hi[&(12, 1792, 1024)]));
@@ -734,10 +743,13 @@ mod tests {
         assert_eq!(t.resolve(&m, 11, 896, 520).unwrap(), Some((6, 28, 16, lo[&(6, 28, 16)])));
         assert_eq!(t.resolve(&m, 7, 56, 32).unwrap(), Some((6, 28, 16, lo[&(6, 28, 16)])));
         assert_eq!(t.resolve(&m, 12, 1800, 1100).unwrap(), None, "its z3 tile is nine levels up");
+        // A deep tile's, within the deep levels alone (slope_pack::fallback_floor).
+        assert_eq!(t.resolve(&m, 14, 7169, 4097).unwrap(), Some((13, 3584, 2048, deep[&(13, 3584, 2048)])));
+        assert_eq!(t.resolve(&m, 13, 3585, 2049).unwrap(), None, "never its z12 tile");
         // Kept: another agent (the NAS's packs gone) reads them from here.
         std::fs::remove_dir_all(&root).unwrap();
         let mut again = TerrainTiles::new(Some(dir.clone()));
-        assert_eq!(again.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 2);
+        assert_eq!(again.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 3);
         assert_eq!(again.hash(&m, 12, 1792, 1024).unwrap(), Some(hi[&(12, 1792, 1024)]));
     }
 
