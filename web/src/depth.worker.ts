@@ -4,7 +4,8 @@
 // 256-px tiles, lossless WebP, decoded exact: the stored ones, or past a place's sources' zoom the
 // server's from their nearest stored ancestor, crates/server/src/depth.rs; above the layer's least
 // zoom the catalogue names, z3 until depth-root has built the root packs (z0–2), each pixel the
-// mean of the least zoom's tiles under it with data, #822) and the basemap's own water (its vector tile of zoom min(z, 14), as the map draws it),
+// mean of the least zoom's tiles under it with data, depthgrid.ts coarsen, #822; the map asks for
+// none past the greatest less one, depthgrid.ts depthZooms) and the basemap's own water (its vector tile of zoom min(z, 14), as the map draws it),
 // painted at 512 px. From that one composite come:
 //   relief   depth, reaching REACH px past its data (?mask=1: on land too, the map drawing it
 //            only in its water tiles' water; else in the basemap's water); elsewhere +12,000 m,
@@ -17,6 +18,7 @@
 // tiles in view (the colour scale fitted to the view) and the sources in them (the attribution).
 import { HeightTile } from './contour/height-tile';
 import generateIsolines from './contour/isolines';
+import { NODATA_MIN, SENTINEL, coarsen, type Grid } from './depthgrid';
 import { HBINS, hbin } from './depthlook';
 import { encodeLines, readPolygons } from './mvt';
 
@@ -43,8 +45,6 @@ export interface DepthReply {
 }
 
 const N = 512;
-const NODATA_MIN = 9000;
-const SENTINEL = 12000;
 /** The basemap's deepest tiles. */
 const VMAX = 14;
 
@@ -101,7 +101,6 @@ async function handle(m: Exclude<DepthMsg, { type: 'init' } | { type: 'cancel' }
 
 // ---- inputs: the server's tiles and the basemap's water --------------------------------------
 
-type Grid = { d: Float32Array; k: Uint8Array } | null;
 const fetched = new Map<string, Promise<Grid>>();
 function remember<T>(map: Map<string, T>, key: string, v: T, cap: number) {
   map.set(key, v);
@@ -144,37 +143,10 @@ function serverTile(z: number, x: number, y: number): Promise<Grid> {
   return p;
 }
 
-/**
- * A tile above the least zoom stored: the f × f tiles of that zoom under it (f = 2^(minzoom − z)),
- * each pixel the mean depth of their f × f pixels under it that have data, its class that of the
- * first of them (null where none has a tile).
- */
+/** A tile above the least zoom stored: the f × f tiles of that zoom under it (f = 2^(minzoom − z)). */
 async function coarser(z: number, x: number, y: number): Promise<Grid> {
-  const dz = minzoom - z, f = 2 ** dz, s = 256 / f;
-  const parts = await Promise.all(Array.from({ length: f * f }, (_, i) => serverTile(minzoom, (x << dz) + (i % f), (y << dz) + Math.floor(i / f))));
-  if (parts.every((g) => !g)) return null;
-  const d = new Float32Array(256 * 256).fill(SENTINEL), k = new Uint8Array(256 * 256);
-  parts.forEach((g, i) => {
-    if (!g) return;
-    const ox = (i % f) * s, oy = Math.floor(i / f) * s;
-    for (let r = 0; r < s; r++)
-      for (let c = 0; c < s; c++) {
-        let sum = 0, n = 0, cls = -1;
-        for (let v = 0; v < f; v++)
-          for (let u = 0; u < f; u++) {
-            const j = (r * f + v) * 256 + c * f + u, dv = g.d[j];
-            if (!(dv < NODATA_MIN)) continue;
-            sum += dv;
-            n++;
-            if (cls < 0) cls = g.k[j];
-          }
-        if (!n) continue;
-        const o = (oy + r) * 256 + ox + c;
-        d[o] = sum / n;
-        k[o] = cls;
-      }
-  });
-  return { d, k };
+  const dz = minzoom - z, f = 2 ** dz;
+  return coarsen(await Promise.all(Array.from({ length: f * f }, (_, i) => serverTile(minzoom, (x << dz) + (i % f), (y << dz) + Math.floor(i / f)))), f);
 }
 
 const waterCache = new Map<string, Promise<number[][][]>>();

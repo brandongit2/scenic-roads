@@ -34,6 +34,8 @@ export class DepthSection {
   private legend: HTMLDivElement;
   private ticks: HTMLDivElement;
   private note: HTMLDivElement;
+  /** The note's text before the estimates (setEstimated). */
+  private static readonly NOTE = 'Below the water\'s surface: mean sea level at sea, the lake\'s surface on lakes. Each source at the detail of its grids. Not for navigation.';
 
   constructor(private store: Store) {
     const D = (patch: Partial<DepthState>) => store.set({ depth: { ...store.s.depth, ...patch } });
@@ -69,7 +71,7 @@ export class DepthSection {
     const dryCol = new ColourPick({ label: 'Drying', get: () => S().dryColour, set: (dryColour) => D({ dryColour }), reset: DEPTH_DEFAULTS.dryColour, title: 'The colour of water that dries at low tide' });
     this.legend = h('div', { class: 'tint-bar' });
     this.ticks = h('div', { class: 'tint-ticks depth-ticks' });
-    this.note = h('div', { class: 'faint note' }, 'Below the water\'s surface: mean sea level at sea, the lake\'s surface on lakes. Each source at the detail of its grids. Not for navigation.');
+    this.note = h('div', { class: 'faint note' }, DepthSection.NOTE);
     // Contours.
     this.contours = h('input', { type: 'checkbox' });
     this.contours.addEventListener('change', () => D({ contours: this.contours.checked }));
@@ -110,6 +112,13 @@ export class DepthSection {
     );
     this.nodes = [this.body];
     this.sync();
+  }
+
+  /** The sources whose depths are estimates (their labels, the catalogue's), named in the note. */
+  setEstimated(labels: string[]) {
+    this.note.textContent = labels.length
+      ? `${DepthSection.NOTE} Estimated where nothing measured has the depth: ${labels.join(', ')} (the footer says which, on hover).`
+      : DepthSection.NOTE;
   }
 
   private gradient(palette: string) {

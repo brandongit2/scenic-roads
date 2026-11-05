@@ -123,6 +123,21 @@ pub struct Source {
 }
 
 impl Source {
+    /// The source as the catalogue's `depth.sources` name it to the map (web/src/depth.ts
+    /// DepthSource): the code its class tiles carry, its label, datum and water, whether its depths
+    /// are estimates (the Depth section's note names those), and the notice its licence asks for.
+    pub fn catalogue_entry(&self) -> serde_json::Value {
+        serde_json::json!({
+            "code": self.code,
+            "id": self.id,
+            "label": self.label,
+            "datum": self.datum,
+            "water": if self.lake { "lake" } else { "sea" },
+            "estimated": self.estimated,
+            "notice": self.notice,
+        })
+    }
+
     /// Declaration `s` (of the depth role), its grids in `sources/fetched/<id>/` under `root`.
     pub fn from_declared(root: &store::nasfs::NasRoot, s: &crate::inputs::sources::Source) -> Result<Source> {
         let dir = root.join("sources/fetched").join(&s.id);
@@ -971,6 +986,25 @@ fn sample_grid_on(
 pub(crate) mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    /// The catalogue names an estimated source as one (#429: the Depth section's note says which
+    /// depths are estimates).
+    #[test]
+    fn catalogue_entry_says_estimated() {
+        let mut s = source(vec![]);
+        assert_eq!(
+            s.catalogue_entry(),
+            serde_json::json!({"code": 1, "id": "t", "label": "T", "datum": "MSL", "water": "sea", "estimated": false, "notice": null})
+        );
+        s.lake = true;
+        s.estimated = true;
+        s.notice = Some("N".into());
+        let e = s.catalogue_entry();
+        assert_eq!(
+            (e["water"].as_str(), e["estimated"].as_bool(), e["notice"].as_str()),
+            (Some("lake"), Some(true), Some("N"))
+        );
+    }
 
     /// A reader's grids all closed as it's dropped, several at once, every one exactly once.
     #[test]

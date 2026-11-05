@@ -2065,11 +2065,10 @@ fn catalogue(
     drop(p);
     let p = phase("reading the units' summaries");
     let mut meta = units_meta(out, &base, now)?;
-    // (The depth's sources as the map says them: each by the code its class tiles carry, with its
-    // label, datum and the notice its licence asks for.)
+    // (The depth's sources as the map says them: grids::Source::catalogue_entry.)
     if layers.contains_key(pipeline::depth::CLASS_LAYER) {
         let d = pipeline::depth::grids::declared(out.root(), &out.manifest)?;
-        let list: Vec<serde_json::Value> = d.iter().map(|s| serde_json::json!({"code": s.code, "id": s.id, "label": s.label, "datum": s.datum, "water": if s.lake { "lake" } else { "sea" }, "notice": s.notice})).collect();
+        let list: Vec<serde_json::Value> = d.iter().map(|s| s.catalogue_entry()).collect();
         if let Some(o) = meta.as_object_mut() {
             o.insert("depth".into(), serde_json::json!({"sources": list}));
         }

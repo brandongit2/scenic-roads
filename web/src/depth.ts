@@ -24,13 +24,15 @@
 //    the surface, and the water's and ferries' names stand on it (basemap.ts: the anchor `surface`,
 //    the terrain itself without a floor). Roads and bridges keep their own heights (roads/). Depth is below the local water
 // surface: mean sea level at sea, the lake's surface on lakes; estimated depths look as measured
-// ones do (the footer says which they are, on hover: ui/strip.ts showWater). The depth's sources and the notices their licences ask
+// ones do (the footer says which they are, on hover: ui/strip.ts showWater; the Depth section's note names
+// the estimated sources, ui/depth.ts setEstimated). The depth's sources and the notices their licences ask
 // for are in the credits (ui/strip.ts), not on the map.
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
 import { onVersions, ver } from './api';
 import { SHADE_SHIFT, floorTiles, waterTilesOn } from './basemap';
 import { hostFor } from './hosts';
+import { depthZooms, type DepthZooms } from './depthgrid';
 import { depthColour, hdepth, hexRgb, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
 import type { DepthMsg, DepthReply, Probe } from './depth.worker';
 
@@ -43,6 +45,8 @@ export interface DepthSource {
   label: string;
   datum: string;
   water: 'sea' | 'lake';
+  /** Its depths are estimates (the Depth section's note names it). */
+  estimated?: boolean;
   notice?: string | null;
 }
 
@@ -58,8 +62,8 @@ export class Depth {
   /** The catalogue has depth (its layers) and its sources. */
   private has = false;
   private sources: DepthSource[] = [];
-  /** The depth layers' least zoom stored (the catalogue's: 0 once depth-root has built the root packs, else 3). */
-  private minzoom = 0;
+  /** The catalogue's depth zooms (depthgrid.ts). */
+  private zooms: DepthZooms = { least: 0, tiles: 15, shade: 16 };
   private workers: Worker[] = [];
   private seq = 0;
   private waiting = new Map<number, { resolve: (r: DepthReply) => void; reject: (e: Error) => void }>();
@@ -79,12 +83,16 @@ export class Depth {
 
   /** The catalogue's depth: whether it has the layers, and its sources. */
   setCatalogue(layers: Record<string, unknown> | undefined, depth: { sources?: DepthSource[] } | null | undefined) {
-    const has = !!layers && 'depth' in layers && 'depth-class' in layers;
+    const zooms = depthZooms(layers), has = !!zooms;
     this.sources = depth?.sources ?? [];
-    const mz = has ? Math.max(...(['depth', 'depth-class'] as const).map((k) => (layers[k] as { minzoom?: number }).minzoom ?? 0)) : 0;
-    if (mz !== this.minzoom) {
-      this.minzoom = mz;
-      if (this.workers.length) this.initWorkers();
+    if (zooms) {
+      // (A source's greatest zoom is fixed when it's added: new ones, added again by apply below.)
+      const again = this.added && (zooms.tiles !== this.zooms.tiles || zooms.shade !== this.zooms.shade);
+      if (again) this.removeLayers();
+      const least = zooms.least !== this.zooms.least;
+      this.zooms = zooms;
+      if (least && this.workers.length) this.initWorkers();
+      if (again) this.apply(this.s);
     }
     if (has !== this.has) {
       this.has = has;
@@ -115,7 +123,7 @@ export class Depth {
       base: (this.map.getSource('base') as maplibregl.VectorTileSource | undefined)?.tiles?.[0] ?? `${hostFor('base')}/tiles/base/{z}/{x}/{y}`,
       depth: `${hostFor('layers')}/tiles/depth/{z}/{x}/{y}${ver('depth.tiles')}`,
       cls: `${hostFor('layers')}/tiles/depth-class/{z}/{x}/{y}${ver('depth-class.tiles')}`,
-      minzoom: this.minzoom,
+      minzoom: this.zooms.least,
     };
     for (const w of this.workers) w.postMessage(msg);
     (this.map.getSource('depth-shade') as maplibregl.RasterDEMTileSource | undefined)?.setTiles([this.shadeUrl()]);
@@ -195,14 +203,14 @@ export class Depth {
     if (this.added) return;
     this.setupProtocol();
     const m = this.map, u = this.urls(this.s);
-    const dem = { type: 'raster-dem' as const, tileSize: 512, maxzoom: 16, encoding: 'terrarium' as const };
+    const dem = { type: 'raster-dem' as const, tileSize: 512, maxzoom: this.zooms.tiles, encoding: 'terrarium' as const };
     m.addSource('depth-relief', { ...dem, tiles: [u.relief] });
     // (The shading's encoding: its base shift marks it for our MapLibre's shaders, basemap.ts's slope.)
     m.addSource('depth-shade', {
-      type: 'raster-dem', tileSize: 256, maxzoom: 16, encoding: 'custom', redFactor: 256, greenFactor: 1, blueFactor: 1 / 256, baseShift: SHADE_SHIFT,
+      type: 'raster-dem', tileSize: 256, maxzoom: this.zooms.shade, encoding: 'custom', redFactor: 256, greenFactor: 1, blueFactor: 1 / 256, baseShift: SHADE_SHIFT,
       tiles: [this.shadeUrl()],
     });
-    m.addSource('depth-contours', { type: 'vector', maxzoom: 16, tiles: [u.contour] });
+    m.addSource('depth-contours', { type: 'vector', maxzoom: this.zooms.tiles, tiles: [u.contour] });
     const b = this.before();
     const metadata = this.masked() ? { 'scenic:mask': 'water' } : undefined;
     m.addLayer({ id: 'depth-relief', type: 'color-relief', source: 'depth-relief', metadata, paint: { 'color-relief-opacity': this.s.opacity, resampling: 'linear' } as never }, b);
@@ -221,6 +229,14 @@ export class Depth {
       paint: { 'text-halo-color': '#0b0e13', 'text-halo-width': 1.3 },
     }, sb);
     this.added = true;
+  }
+
+  /** The layers and their sources off the map (addLayers adds them again). */
+  private removeLayers() {
+    const m = this.map;
+    for (const id of ['depth-contour-label', 'depth-contour-index', 'depth-contour', 'depth-shade', 'depth-relief']) if (m.getLayer(id)) m.removeLayer(id);
+    for (const id of ['depth-contours', 'depth-shade', 'depth-relief']) if (m.getSource(id)) m.removeSource(id);
+    this.added = false;
   }
 
   /** The settings `s` on the map (the style must be loaded). */
@@ -344,7 +360,7 @@ export class Depth {
 
   /** The tiles in view at the map's zoom (none past 48). */
   private viewTiles(): [number, number, number][] {
-    const m = this.map, z = Math.max(0, Math.min(16, Math.floor(m.getZoom())));
+    const m = this.map, z = Math.max(0, Math.min(this.zooms.tiles, Math.floor(m.getZoom())));
     const b = m.getBounds();
     const n = 2 ** z;
     const tx = (lng: number) => Math.floor(((lng + 180) / 360) * n);
@@ -389,7 +405,7 @@ export class Depth {
   // ---- the depth under the cursor (the footer) --------------------------------------------------
 
   private tileAt(ll: maplibregl.LngLat): { z: number; x: number; y: number; px: number; py: number } {
-    const z = Math.max(0, Math.min(16, Math.floor(this.map.getZoom())));
+    const z = Math.max(0, Math.min(this.zooms.tiles, Math.floor(this.map.getZoom())));
     const n = 2 ** z;
     const fx = ((ll.lng + 180) / 360) * n;
     const s = Math.sin((ll.lat * Math.PI) / 180);
