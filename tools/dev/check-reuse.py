@@ -130,6 +130,11 @@ PATHATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 def build_inputs(files, pkgs):
     """(prefix, why) for every repo path the build reads."""
     ins = [(p, "the Rust build") for p in BUILD + pkgs] + [(p, "runs the part") for p in RUNNER]
+    # Build scripts: a package's build.rs, or its manifest's `build = "…"`.
+    scripts = set()
+    for d in pkgs:
+        b = re.search(r'^build\s*=\s*"([^"]+)"', read(d + "/Cargo.toml"), re.M)
+        scripts.add(norm(d, b.group(1)) if b else d + "/build.rs")
     for f in files:
         if not f.endswith(".rs") or not any(under(f, p) for p in pkgs):
             continue
@@ -146,7 +151,7 @@ def build_inputs(files, pkgs):
             if p is None:
                 raise Doubt("%s has a #[path] outside the repo: %s" % (f, rel))
             ins.append((p, "%s's #[path]" % f))
-        if posixpath.basename(f) == "build.rs" and posixpath.dirname(f) in pkgs:
+        if f in scripts:
             for p, _ in reads(f, src):
                 ins.append((p, "%s (a build script) reads it" % f))
     return ins
