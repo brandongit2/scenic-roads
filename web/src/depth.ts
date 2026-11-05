@@ -58,8 +58,9 @@ export class Depth {
   /** The catalogue has depth (its layers) and its sources. */
   private has = false;
   private sources: DepthSource[] = [];
-  /** The depth layers' least zoom stored (the catalogue's: 0 once depth-root has built the root packs, else 3). */
-  private minzoom = 0;
+  /** The depth layers' least and greatest zoom stored (the catalogue's: least 0 once depth-root has
+   * built the root packs, else 3; greatest 16), outside which the worker makes the tiles. */
+  private zooms: [number, number] = [0, 16];
   private workers: Worker[] = [];
   private seq = 0;
   private waiting = new Map<number, { resolve: (r: DepthReply) => void; reject: (e: Error) => void }>();
@@ -81,9 +82,10 @@ export class Depth {
   setCatalogue(layers: Record<string, unknown> | undefined, depth: { sources?: DepthSource[] } | null | undefined) {
     const has = !!layers && 'depth' in layers && 'depth-class' in layers;
     this.sources = depth?.sources ?? [];
-    const mz = has ? Math.max(...(['depth', 'depth-class'] as const).map((k) => (layers[k] as { minzoom?: number }).minzoom ?? 0)) : 0;
-    if (mz !== this.minzoom) {
-      this.minzoom = mz;
+    const zs = has ? (['depth', 'depth-class'] as const).map((k) => layers[k] as { minzoom?: number; maxzoom?: number }) : [];
+    const zooms: [number, number] = has ? [Math.max(...zs.map((l) => l.minzoom ?? 0)), Math.min(...zs.map((l) => l.maxzoom ?? 16))] : [0, 16];
+    if (zooms[0] !== this.zooms[0] || zooms[1] !== this.zooms[1]) {
+      this.zooms = zooms;
       if (this.workers.length) this.initWorkers();
     }
     if (has !== this.has) {
@@ -115,7 +117,8 @@ export class Depth {
       base: (this.map.getSource('base') as maplibregl.VectorTileSource | undefined)?.tiles?.[0] ?? `${hostFor('base')}/tiles/base/{z}/{x}/{y}`,
       depth: `${hostFor('layers')}/tiles/depth/{z}/{x}/{y}${ver('depth.tiles')}`,
       cls: `${hostFor('layers')}/tiles/depth-class/{z}/{x}/{y}${ver('depth-class.tiles')}`,
-      minzoom: this.minzoom,
+      minzoom: this.zooms[0],
+      maxzoom: this.zooms[1],
     };
     for (const w of this.workers) w.postMessage(msg);
     (this.map.getSource('depth-shade') as maplibregl.RasterDEMTileSource | undefined)?.setTiles([this.shadeUrl()]);
