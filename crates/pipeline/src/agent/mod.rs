@@ -694,7 +694,7 @@ fn terrain_peak(z6: usize, deep: bool) -> u64 {
     crate::terrain_pack::piece_peak_mb() + 1365 * 270 / 1024 + (z6 as u64).saturating_sub(1) * 20 + deep
 }
 
-/// Whether `spec`'s job is paced (crate::inputs::pace, `Agent::tend_threads`): an input check (the
+/// Whether `spec`'s job is paced (crate::inputs::pace: its grant read every second, `Agent::tend_grant`): an input check (the
 /// `inputs` step's), or tree cover (`trees`, task #606: its blocks take the cores the Mac has idle).
 fn is_paced(spec: &JobSpec) -> bool {
     matches!(step_of(&spec.id).as_deref(), Some("inputs" | "trees"))
@@ -1470,6 +1470,9 @@ pub struct Agent {
     /// The owner's in-use share (share::Share: the cores kept free of its jobs while they use the
     /// Mac), read each loop from the agent's folder.
     in_use_share: Option<share::Share>,
+    /// The re-grants its lead decided for its running jobs (lease, threads), as this loop took them
+    /// (`lead_regrants`, told each job by `tend_grant`).
+    regrants: Vec<(u64, u32)>,
     /// The memory floor the owner set on this Mac (memfloor::Floor, `scenic memory`), read each
     /// loop from the agent's folder: None, the Mac's default (`mem_floor_mb`).
     mem_floor: Option<memfloor::Floor>,
@@ -1950,6 +1953,7 @@ impl Agent {
             grace: DRAIN_GRACE,
             room_target: None,
             in_use_share: None,
+            regrants: Vec::new(),
             mem_floor: None,
             toward_tried: None,
             floor_short: None,
@@ -3154,6 +3158,7 @@ impl Agent {
             member: self.host.clone(),
             held: self.held_of_lead(),
             listed: Instant::now(),
+            cap: self.last_cond.map(|cond| self.capacity(&cond)),
             beats,
         })
     }
@@ -4309,6 +4314,8 @@ impl Agent {
         // and given back first.
         ended |= self.tend_cancels(root.as_ref(), &mut waiting);
         self.tend_ramp();
+        // (Its lead's re-grants for its running jobs, told each as it's tended: docs/pool.md §7.1.)
+        self.regrants = self.lead_regrants(&c);
         for k in 0..self.slots.len() {
             ended |= self.tend(k, &c, root.as_ref(), slept)?;
         }
@@ -5140,7 +5147,7 @@ impl Agent {
                 }
             }
         }
-        self.tend_threads(k, c);
+        self.tend_grant(k, c);
         Ok(false)
     }
 
@@ -5498,8 +5505,8 @@ impl Agent {
     /// less the owner's room target and its jobs' reservations (`reserved`), the owner's use, power
     /// and the NAS as `c` says, and its jobs' leases with what each holds.
     fn capacity(&self, c: &Conditions) -> crate::coord::Capacity {
-        let (mut held_mb, mut need, mut leases, mut waiting, mut idle, mut old_app, mut held_each) =
-            (0u64, 0u64, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut held_mb, mut need, mut leases, mut waiting, mut idle, mut old_app, mut held_each, mut threads) =
+            (0u64, 0u64, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (k, s) in self.slots.iter().enumerate() {
             if let Some(r) = &s.running {
                 // (Taken over from an older app's agent, its programs that app's: task #688.)
@@ -5527,6 +5534,16 @@ impl Agent {
                 {
                     // (Its cores idle a while: a job waiting on the network, task #665.)
                     idle.push(n);
+                }
+                // (A job taking a re-grant: the threads it runs on and what it used on them,
+                // `tend_grant`; docs/pool.md §7.1, Threads re-granted.)
+                if let Some((since, cpu0, on)) = s.running.as_ref().and_then(|r| r.on_threads) {
+                    threads.push(crate::coord::JobThreads {
+                        lease: n,
+                        threads: on,
+                        cpu_ms: self.sampler.cpu_ns(k).unwrap_or(cpu0).saturating_sub(cpu0) / 1_000_000,
+                        ran_ms: since.elapsed().as_millis() as u64,
+                    });
                 }
             }
         }
@@ -5566,6 +5583,7 @@ impl Agent {
             leases,
             waiting,
             idle,
+            threads,
             old_app,
             caches: caches_here(&self.o.home.join("cache")),
             nas_traffic: self.live.as_ref().and_then(|l| {
@@ -6728,8 +6746,9 @@ impl Agent {
         // at least). Those its other jobs were given aren't taken off: its lead packed it beside
         // them by the cores each keeps busy (crate::coord::sched's `need_cores`, task #688), so a
         // job waiting on its reads keeps its threads.
-        let kept = if c.user_active() { share::cores(self.in_use_share.as_ref(), cores as u32) as usize } else { 0 };
-        let threads = wanted.min(cores.saturating_sub(kept)).max(1);
+        let room = self.threads_room(c);
+        let kept = cores.saturating_sub(room);
+        let threads = wanted.min(room);
         // A slot's scratch folder its own past the first (a step's work in it, wiped by its next run).
         if k > 0 {
             let first = self.o.home.join("scratch");
@@ -6825,13 +6844,12 @@ impl Agent {
         env.push((store::nasio::ENV.into(), nas_counts.to_string_lossy().into_owned()));
         // The owner's room target it keeps free past what it writes (the OSM pass, pass-sets).
         env.push(self.target_env(&spec));
-        // A paced job's threads (an input check's, tree cover's), kept as cores free up
-        // (`tend_threads`; crate::inputs::pace).
-        if is_paced(&spec) {
-            let f = self.threads_path(k);
-            std::fs::write(&f, threads.to_string()).with_context(|| format!("write {}", f.display()))?;
-            env.push((crate::inputs::pace::THREADS_ENV.into(), f.to_string_lossy().into_owned()));
-        }
+        // Its grant now, rewritten as its lead re-decides it (`tend_grant`, docs/pool.md §7.1, Threads
+        // re-granted): taken as each target begins (crate::control::on_grant), a paced job's
+        // (crate::inputs::pace) within the second.
+        let f = self.threads_path(k);
+        std::fs::write(&f, threads.to_string()).with_context(|| format!("write {}", f.display()))?;
+        env.push((crate::control::THREADS_ENV.into(), f.to_string_lossy().into_owned()));
         // Where it says it waits on a worker holding its z6 tile's tail, while it does (`waiting_on`),
         // afresh.
         let waiting = self.waiting_path(k);
@@ -7114,76 +7132,70 @@ impl Agent {
         self.pause = p;
     }
 
-    /// Where slot `k`'s paced job is told the threads it may use now (`tend_threads`).
+    /// Where slot `k`'s job is told its grant now (crate::control::THREADS_ENV, `tend_grant`).
     fn threads_path(&self, k: usize) -> PathBuf {
         self.o.home.join(format!("threads{}", slot_suffix(k)))
     }
 
-    /// The memory free on this Mac (MB), as last read (at most every 10 s: reading it spawns a program).
-    fn free_mem_mb(&self) -> Option<u64> {
-        static LAST: std::sync::Mutex<Option<(Instant, Option<u64>)>> = std::sync::Mutex::new(None);
-        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((t, v)) = *last {
-            if t.elapsed() < Duration::from_secs(10) {
-                return v;
-            }
-        }
-        let v = self.mac.resources(&self.o.home, None, None, None).mem_free().map(|b| b >> 20);
-        *last = Some((Instant::now(), v));
-        v
-    }
-
-    /// Tells slot `k`'s paced job (`is_paced`) the threads it may use now (docs/inputs.md §4.3, Threads): this
-    /// Mac's cores less those kept for its owner and those its other jobs were given, `MOST` at
-    /// most. It takes more as they free up, and fewer when a job starts beside it.
-    fn tend_threads(&self, k: usize, c: &Conditions) {
-        let Some(r) = self.slots[k].running.as_ref().filter(|r| is_paced(&r.spec)) else {
-            return;
-        };
+    /// The most threads a job here may run on now: this Mac's cores less those the in-use share keeps
+    /// while the owner uses it, one at least (a grant's, as it starts, and a re-grant's).
+    fn threads_room(&self, c: &Conditions) -> usize {
         let cores = mac_cores() as usize;
         let kept = if c.user_active() { share::cores(self.in_use_share.as_ref(), cores as u32) as usize } else { 0 };
-        let beside: usize = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter(|(j, _)| *j != k)
-            .filter_map(|(j, s)| Some((j, s.running.as_ref()?)))
-            // (A paced job beside it at what it's allowed now: so two don't widen into the same cores.)
-            .map(|(j, b)| {
-                let now = || std::fs::read_to_string(self.threads_path(j)).ok()?.trim().parse::<usize>().ok();
-                if is_paced(&b.spec) {
-                    now().unwrap_or(0).max(b.threads)
-                } else {
-                    b.threads
-                }
-            })
-            .sum();
-        // Past its grant only while the memory free covers its measured peak per thread for each
-        // extra (the free memory read at most every 10 s: it asks the system). A regions check once
-        // took 39 GB; with no peak measured yet it stays at its grant.
-        // Each extra thread counted at the peak over the threads that peak was measured at (the whole
-        // peak when unknown), after the growth the check has still to come (its peak less what it
-        // holds now) is taken out of the free memory: `pace::allowed_now`.
-        use crate::inputs::pace::{allowed_now, Memory};
-        let peak = self.measured_job(&r.spec).map(|m| m.mem_mb);
-        let width = r
-            .spec
-            .record
-            .as_ref()
-            .and_then(|w| Some((w.step.clone(), w.targets.first()?.0.clone())))
-            .and_then(|(s, t)| self.coord.as_ref()?.peak_threads(&s, &t))
-            .map(|t| t as usize);
-        let held = self.held_mb(k).unwrap_or(0);
-        let memory = |free_mb| peak.map(|peak_mb| Memory { peak_mb, width, held_mb: held, free_mb });
-        // (Free memory read only when cores allow a widening at all.)
-        let wide = allowed_now(cores, kept, beside, r.threads, memory(u64::MAX >> 20)) > r.threads;
-        let free = if wide { self.free_mem_mb() } else { None };
-        let now = allowed_now(cores, kept, beside, r.threads, free.and_then(memory)).to_string();
-        let f = self.threads_path(k);
-        if std::fs::read_to_string(&f).ok().as_deref() != Some(now.as_str()) {
-            if let Err(e) = std::fs::write(&f, &now) {
-                eprintln!("agent: telling {} its threads: {e}", r.spec.id);
+        cores.saturating_sub(kept).max(1)
+    }
+
+    /// The re-grants its lead decided for this Mac's running jobs (docs/pool.md §7.1, Threads
+    /// re-granted; crate::coord::sched's `regrant`): the lead's own coordinator's on this loop's
+    /// capacity, a member's in its last beat's answer (crate::coord::beats::Beats::lead_threads;
+    /// none from an older lead, whose jobs keep their grant).
+    fn lead_regrants(&self, c: &Conditions) -> Vec<(u64, u32)> {
+        match (&self.coord, &self.beats) {
+            (Some(co), _) => {
+                co.set_capacity(Some(self.capacity(c)));
+                co.regrant_own()
             }
+            (None, Some(b)) => b.lead_threads(),
+            (None, None) => Vec::new(),
+        }
+    }
+
+    /// Slot `k`'s job's grant tended (docs/pool.md §7.1, Threads re-granted): what it uses on the
+    /// threads its target under way runs on measured from when it began on them (`Running::on_threads`:
+    /// a job taking its grant as each target begins says them in its costs file, crate::control::
+    /// on_grant; a paced one, crate::inputs::pace, runs on its file's within the second); a stopped
+    /// or stopping job measures nothing. Its lead's re-grant (`regrants`), within `threads_room`,
+    /// written to its threads file: it takes it as its next target begins.
+    fn tend_grant(&mut self, k: usize, c: &Conditions) {
+        let room = self.threads_room(c);
+        let lease = match &self.slots[k].lease {
+            Some(Held::Own(n) | Held::Leased { lease: n, .. } | Held::Pooled { id: n, .. }) => Some(*n),
+            None => None,
+        };
+        let told = lease.and_then(|l| self.regrants.iter().find(|(id, _)| *id == l)).map(|(_, t)| *t as usize);
+        let f = self.threads_path(k);
+        let costs = self.slot_costs(k);
+        let cpu = self.sampler.cpu_ns(k);
+        let Some(r) = self.slots[k].running.as_mut() else { return };
+        let on = if is_paced(&r.spec) {
+            std::fs::read_to_string(&f).ok().and_then(|t| t.trim().parse::<u32>().ok())
+        } else {
+            memguard::targets(&costs).threads
+        };
+        r.on_threads = match (on, cpu) {
+            (Some(n), Some(ns)) if r.paused.is_none() && r.pausing.is_none() => match r.on_threads {
+                Some(m) if m.2 == n && ns >= m.1 => Some(m),
+                _ => Some((Instant::now(), ns, n)),
+            },
+            _ => None,
+        };
+        let Some(t) = told.map(|t| t.min(room).max(1)).filter(|&t| t != r.threads) else { return };
+        match std::fs::write(&f, t.to_string()) {
+            Ok(()) => {
+                eprintln!("agent: {} re-granted {t} threads (was {}): taken as its next target begins", r.spec.id, r.threads);
+                r.threads = t;
+            }
+            Err(e) => eprintln!("agent: telling {} its threads: {e}", r.spec.id),
         }
     }
 

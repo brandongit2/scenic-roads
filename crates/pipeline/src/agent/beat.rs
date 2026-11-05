@@ -74,6 +74,9 @@ pub struct ToLead {
     /// The lead's leases it holds, as its loop listed them at `listed`.
     pub held: BTreeSet<u64>,
     pub listed: Instant,
+    /// Its Mac's capacity as its loop last measured it: the lead re-decides its running jobs'
+    /// threads on it (`held::Beat::cap`; the answer's re-grants, `Beats::lead_threads`).
+    pub cap: Option<crate::coord::Capacity>,
     /// Its pool heartbeat (`Beats::own`) and where the answer goes.
     pub beats: Arc<Beats>,
 }
@@ -105,6 +108,7 @@ impl ToLead {
             status: serde_json::to_value(&status).ok(),
             took: 0,
             handoffs: Vec::new(),
+            cap: self.cap.clone(),
         }
     }
 
@@ -535,6 +539,7 @@ mod tests {
                         member: id.clone(),
                         held: Default::default(),
                         listed: Instant::now(),
+                        cap: None,
                         beats: beats.clone(),
                     }),
                     hold_at: 0,
@@ -652,6 +657,7 @@ mod tests {
             member: id.into(),
             held: Default::default(),
             listed: Instant::now(),
+            cap: None,
             beats,
         }
     }

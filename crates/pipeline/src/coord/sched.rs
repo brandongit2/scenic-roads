@@ -234,6 +234,9 @@ pub(crate) struct Need {
     idle: bool,
     /// Its cores are its step's use on its Mac (crate::uses, `job_cores`), cold or not.
     by_use: bool,
+    /// A job held: the threads its lease counts it for (`Lease::threads`, as granted and
+    /// re-granted; 0: not said), which its threads and busy cores never pass (`need_cores`).
+    held: u32,
 }
 
 /// The steps known to honour the threads they're granted (task #499 review): their cold starts
@@ -298,6 +301,15 @@ pub fn outside_cores(a: &Ask, ours: u32) -> u32 {
             excess.min(total / 2)
         }
     })
+}
+
+/// The threads a job wanting `threads` and counting for `busy` tenths of a core is granted where
+/// `left` tenths are left by the rest of its Mac's work: within the cores left and the threads it
+/// leaves idle (its threads less its busy cores, whole: they add no load), one at least. A grant's
+/// (`Sched::pack`) and a re-grant's (`Sched::regrant`).
+fn fit_threads(threads: u32, busy: u32, left: u32) -> u32 {
+    let idle_ok = threads.min((left + (threads * 10).saturating_sub(busy)) / 10);
+    threads.min((left / 10).max(idle_ok)).max(1)
 }
 
 /// The whole cores `t` tenths of a core make, to the nearest (a Mac's jobs' busy cores summed
@@ -720,17 +732,17 @@ impl Sched {
         if crate::agent::steps::records_only(step) {
             let m = Measured { mem_mb: crate::agent::steps::mem_mb(step), disk_mb: 0, own: false };
             let cores = Some(crate::needs::Cores { grant: 1, busy_tenths: Some(0) });
-            return Need { m, cores, cold: false, waits: false, idle: false, by_use: false };
+            return Need { m, cores, cold: false, waits: false, idle: false, by_use: false, held: 0 };
         }
         let used = self.uses.cores(step, crate::paces::mac_of(worker));
         let by_use = used.is_some();
         match self.job_need(step, targets) {
             Some(m) => {
                 let cores = used.or_else(|| book_cores(&self.book(), step, targets));
-                Need { m, cores, cold: false, waits: false, idle: false, by_use }
+                Need { m, cores, cold: false, waits: false, idle: false, by_use, held: 0 }
             }
             None => {
-                Need { m: self.provisional(step, targets), cores: used, cold: true, waits: false, idle: false, by_use }
+                Need { m: self.provisional(step, targets), cores: used, cold: true, waits: false, idle: false, by_use, held: 0 }
             }
         }
     }
@@ -776,8 +788,19 @@ impl Sched {
     /// honouring its threads (`THREADS_HONOURED`), a thread both (task #896: its run measures it,
     /// and climbs from there); another cold start with no use on the Mac the whole Mac both (task
     /// #499 review: one that runs as many threads as the Mac has would swamp the jobs beside it).
-    /// One only waiting on a worker, or leaving its cores idle, counts for none.
+    /// One only waiting on a worker, or leaving its cores idle, counts for none. A job held counts for
+    /// no more than the threads its lease counts (`Need::held`: task #948, a job granted 3 of 14
+    /// threads beside others counted for its measured 13 kept its Mac looking full after they ended).
     pub(super) fn need_cores(&self, step: &str, n: &Need, total: u32) -> (u32, u32) {
+        let (threads, busy) = self.need_cores_as_granted(step, n, total);
+        match n.held {
+            0 => (threads, busy),
+            h => (threads.min(h), busy.min(h * 10)),
+        }
+    }
+
+    /// `need_cores` as a grant would have it now, whatever its lease counts.
+    fn need_cores_as_granted(&self, step: &str, n: &Need, total: u32) -> (u32, u32) {
         let (threads, busy) = if crate::agent::steps::records_only(step) {
             (1, 0)
         } else if n.cold && !n.by_use && !THREADS_HONOURED.contains(&step) {
@@ -877,7 +900,7 @@ impl Sched {
         let needs: Vec<Need> = jobs
             .iter()
             .map(|(l, step, targets)| {
-                let mut n = self.pack_need(step, targets, &a.worker);
+                let mut n = Need { held: l.threads, ..self.pack_need(step, targets, &a.worker) };
                 if let Some(held) = waits(l) {
                     n.m.mem_mb = n.m.mem_mb.min(held);
                     n.waits = true;
@@ -1107,10 +1130,7 @@ impl Sched {
             // (Its threads (`need_cores`) within the cores left and the threads it leaves idle, one
             // at least; and the cores it counts for.)
             let (threads, busy) = self.need_cores(&o.step, &n, total);
-            // (Its threads past the cores left by those it leaves idle (its threads less its busy
-            // cores), whole: they add no load.)
-            let idle_ok = threads.min((cores + (threads * 10).saturating_sub(busy)) / 10);
-            let threads = threads.min((cores / 10).max(idle_ok)).max(1);
+            let threads = fit_threads(threads, busy, cores);
             // (A planned job of no targets of its own is offered under its id's, keyless, to be
             // measured by it: its lease holds none, as its hand-off names none.)
             let pick = if o.job.is_some() { pick.into_iter().filter(|t| !t.1.is_empty()).collect() } else { pick };
@@ -1135,6 +1155,101 @@ impl Sched {
             })
         });
         (grants, why)
+    }
+
+    /// The threads of each running job of `a`'s Mac that takes a re-grant (docs/pool.md §7.1, Threads
+    /// re-granted: its capacity's `threads`, each with the threads its target under way runs on and
+    /// what it used on them) decided again by the grant rule (task #947): its own run on its threads
+    /// now as a run of its step on its Mac (crate::uses::Uses::cores of it alone: the cores it keeps
+    /// busy, rounded up, a thread more where it needs every thread), and where that climbs, the more
+    /// of it and the grant a job of its step gets there now (`lease_cores`); within the cores its Mac
+    /// has less those the rest of its work counts for and the load outside the pool (`fit_threads`,
+    /// a grant's). It **grows** to more where its Mac's memory admits work and covers the extra
+    /// threads (its measured peak per thread it runs on now, each, within the capacity's `mem_mb`);
+    /// it **shrinks** to fewer only where its Mac's jobs' threads pass the cores it has for them (its
+    /// owner back: the in-use share's) or `wanted` (its last ask was short of cores: other work
+    /// could use them). A job is decided on at least `SETTLE` of use on its threads now, and at most
+    /// once a `SETTLE`. Each lease counts for the more of the threads it runs on and those told
+    /// (`Leases::regranted`). The re-grants to tell its Mac: each not yet taken up.
+    pub fn regrant(&mut self, a: &Ask, wanted: bool, now: Instant) -> Vec<(u64, u32)> {
+        let Some(cap) = a.cap.as_ref().filter(|c| !c.threads.is_empty()) else { return Vec::new() };
+        let total = ask_cores(a);
+        let mine = self.job_leases(&a.worker, now);
+        // (Each job as its Mac's packing counts it: its measure within its lease's threads, none of
+        // its cores while it waits on a worker or leaves them idle.)
+        let need_of = |l: &Lease| match &l.work {
+            Work::Job { step, targets } => {
+                let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
+                let idle = cap.idle.contains(&l.id) || cap.waiting.iter().any(|w| w.lease == l.id);
+                Some((step.clone(), ts.clone(), Need { held: l.threads, idle, ..self.pack_need(step, &ts, &a.worker) }))
+            }
+            Work::Task { .. } => None,
+        };
+        // (Each job's threads as its lease counts them, its measured ones where it says none, and
+        // the cores it counts for.)
+        let counted: Vec<(u64, u32, u32)> = mine
+            .iter()
+            .filter_map(|l| {
+                let (st, _, n) = need_of(l)?;
+                let (t, b) = self.need_cores(&st, &n, total);
+                Some((l.id, if n.idle { 0 } else if l.threads > 0 { l.threads } else { t }, b))
+            })
+            .collect();
+        let outside = outside_cores(a, tenths_to_cores(counted.iter().map(|c| c.2).sum()));
+        let over = counted.iter().map(|c| c.1).sum::<u32>() + outside > total;
+        let mut decided = Vec::new();
+        for u in &cap.threads {
+            let Some(l) = mine.iter().find(|l| l.id == u.lease) else { continue };
+            let Some((step, ts, n)) = need_of(l) else { continue };
+            let settled = l.told.is_none_or(|(_, at)| now.saturating_duration_since(at) >= SETTLE);
+            let mut told = None;
+            if settled && u.threads > 0 && u.ran_ms >= SETTLE.as_millis() as u64 {
+                let mac = crate::paces::mac_of(&a.worker);
+                let run = crate::uses::Run {
+                    end: 0,
+                    step: step.clone(),
+                    mac: mac.to_string(),
+                    threads: u.threads,
+                    cpu_s: u.cpu_ms as f64 / 1000.0,
+                    wall_s: u.ran_ms as f64 / 1000.0,
+                };
+                let Some(live) = crate::uses::Uses::of([&run]).cores(&step, mac) else { continue };
+                let want = if live.grant > u.threads {
+                    live.grant.max(self.lease_cores(&a.worker, &step, &ts, total).0)
+                } else {
+                    live.grant
+                };
+                let others: u32 = counted.iter().filter(|c| c.0 != l.id).map(|c| c.2).sum();
+                let left = (total * 10).saturating_sub(others).saturating_sub(outside * 10);
+                let mut fit = fit_threads(want, live.busy_tenths.unwrap_or(want * 10), left).min(total);
+                if fit > u.threads {
+                    fit = match &cap.mem_held_back {
+                        Some(_) => u.threads,
+                        None => {
+                            let per = (n.m.mem_mb / u64::from(u.threads)).max(1);
+                            fit.min(u.threads.saturating_add(u32::try_from(cap.mem_mb / per).unwrap_or(u32::MAX)))
+                        }
+                    };
+                } else if fit < u.threads && !(over || wanted) {
+                    fit = u.threads;
+                }
+                // (Decided anew: a re-grant not taken up yet that it now keeps is dropped.)
+                if Some(fit) != l.told.map(|t| t.0) {
+                    if fit != u.threads {
+                        eprintln!(
+                            "coordinator: {}'s lease {} ({step}) re-granted {fit} threads at its next target: it runs on {}, {:.1} cores busy",
+                            a.worker,
+                            l.id,
+                            u.threads,
+                            u.cpu_ms as f64 / u.ran_ms.max(1) as f64
+                        );
+                    }
+                    told = Some((fit, now));
+                }
+            }
+            decided.push((l.id, u.threads, told));
+        }
+        decided.into_iter().filter_map(|(id, on, told)| Some((id, self.leases.regranted(id, on, told)?))).collect()
     }
 
     /// A job of offer `o`'s step over `pick` granted to `a`'s worker with `threads` (`fill`: the disk

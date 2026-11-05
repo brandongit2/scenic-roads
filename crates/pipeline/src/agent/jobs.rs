@@ -238,8 +238,13 @@ pub struct Running {
     /// When its progress last moved on: (the fraction, seconds since the epoch). A job whose
     /// progress hasn't moved in a long while may be stuck.
     pub moved: Option<(f64, u64)>,
-    /// The worker threads it was given (RAYON_NUM_THREADS).
+    /// The worker threads it was given (RAYON_NUM_THREADS), then as re-granted (its threads file,
+    /// crate::control::THREADS_ENV: docs/pool.md §7.1, Threads re-granted).
     pub threads: usize,
+    /// Since when its targets run on the threads they do now, its CPU time (ns) then, and those
+    /// threads, as the agent last saw them (`Agent::tend_grant`): what it used on them, for its lead's
+    /// re-grant. None while it doesn't say (a job not taking a re-grant) or is stopped.
+    pub on_threads: Option<(Instant, u64, u32)>,
 }
 
 /// The job record kept on disk while a job runs, so an agent started after a crash can stop an
@@ -378,6 +383,7 @@ impl Running {
             said: None,
             moved: None,
             threads,
+            on_threads: None,
         })
     }
 
@@ -566,6 +572,7 @@ pub fn adopt(record: &Path) -> Option<(Running, serde_json::Value)> {
             said: None,
             moved: None,
             threads: rec.threads.max(1),
+            on_threads: None,
         },
         hand,
     ))

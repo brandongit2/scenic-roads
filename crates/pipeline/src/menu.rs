@@ -73,6 +73,7 @@ mod tests {
             member: X.into(),
             held: Default::default(),
             listed: Instant::now(),
+            cap: None,
             beats,
         };
         (h, to)

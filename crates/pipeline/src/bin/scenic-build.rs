@@ -2433,7 +2433,7 @@ fn note_started(key: &str) {
     let mut line = serde_json::json!({ "unit": key, "started": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) });
     // (The threads it runs on, where it takes its job's grant as it begins (pipeline::control::
     // on_grant): what the agent tells its lead the job runs with now, so a re-grant of fewer is
-    // counted once a target takes it up (pipeline::agent::memguard::in_force).)
+    // counted once a target takes it up (pipeline::agent::memguard::targets).)
     if let Some(n) = pipeline::control::in_force() {
         line["threads"] = n.into();
     }

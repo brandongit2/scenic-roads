@@ -146,22 +146,16 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   7. Hands off the records: `sources/inputs/<unit>/@index` (when it differs; the replaced index is
      touched so GC keeps it, §4.9), `@listed`, and `@held` (the held report, or none). `@` starts
      no inputs-folder path component or unit name, so these never clash with copies or nested units.
-- **Threads and progress.** A job's threads are set as it starts, and a check lasts hours, so the
-  check doesn't keep its grant: its agent keeps a file (`SCENIC_THREADS_FILE`,
-  `Agent::tend_threads`, every loop) with the threads it may use now (`pace::allowed_now`). Never
-  fewer than its grant, at most 8 (`pace::MOST`; the regions' work ran four at once before), and
-  past the grant one thread more for each core the Mac has left (its cores less those kept for its
-  owner and those its other jobs were given), **only while the memory free covers each extra
-  thread**. An extra thread is counted at the step's measured peak over the threads that peak was
-  measured at (the cost record's `sizes.threads`; a peak from a narrower run isn't spread over
-  more threads than it had), the whole peak when that width isn't recorded (one extra thread of a
-  regions check can need about a region's worth). The check's growth still to come (its peak
-  less what the memory guard's sampler says it holds now) is taken out of the free memory first.
-  With no peak measured yet, or no free memory said, it holds at its grant, and it falls back to
-  the grant when free memory falls (the file is read again within a second; a regions check once
-  took 39 GB and panicked a 16 GB Mac). Tree cover jobs (`trees`) are paced the same way (their
-  blocks' bands under permits, docs/steps.md §2); a paced job beside another counts at what it's
-  allowed now.
+- **Threads and progress.** A check lasts hours, one target, so it takes its job's grant as the grant
+  changes rather than as a target begins: its agent keeps a file (`SCENIC_THREADS_FILE`,
+  crate::control::THREADS_ENV) with the threads its job may use now, which its lead re-decides on
+  what the job uses and the cores and memory its Mac has (docs/pool.md §7.1, Threads re-granted:
+  more as cores free up while the Mac's memory covers each extra thread at the step's measured
+  peak per thread, fewer when the owner comes back or other work wants the cores), at most 8
+  (`pace::MOST`; the regions' work ran four at once before). The file is read again within a
+  second (a regions check once took 39 GB and panicked a 16 GB Mac: its memory guard stops one
+  that overruns all the same). Tree cover jobs (`trees`) are paced the same way (their blocks'
+  bands under permits, docs/steps.md §2).
   The check's pools are as wide as the cores (8 at most). The outermost parallel operation of a
   task takes a `pace::par_map` permit per task, waiting while as many run as the file says; an
   operation inside a task runs its items one after another on that task's thread, inside its

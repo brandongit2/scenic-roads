@@ -57,10 +57,16 @@ pub struct Lease {
     pub live_at: Option<Instant>,
     #[serde(skip)]
     pub window: std::collections::VecDeque<(Instant, crate::agent::jobs::Live)>,
-    /// The threads its job was granted (0: not said): the cores the pool's own work takes on its
-    /// Mac, apart from load outside the pool (crate::coord::outside_cores).
+    /// The threads its job is counted for (0: not said): granted, then as re-granted (docs/pool.md
+    /// §7.1, Threads re-granted: the more of what it runs on now and what it was last told), the
+    /// cores the pool's own work takes on its Mac, apart from load outside the pool
+    /// (crate::coord::outside_cores).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub threads: u32,
+    /// A re-grant its job hasn't taken up yet (crate::coord::sched's `regrant`): the threads told,
+    /// and when they were decided (in memory alone: a lead restarted decides again).
+    #[serde(skip)]
+    pub told: Option<(u32, Instant)>,
     /// The slot of its worker's Mac running its job (0: the first; crate::agent::slot_worker), as
     /// the worker last said (its beats, this Mac's loop: `Leases::at_slot`; task #863): a lease
     /// names its Mac, granted before a slot takes it. None until said (an older app's).
@@ -461,6 +467,7 @@ impl Leases {
                 window: Default::default(),
                 slot: None,
                 threads: 0,
+                told: None,
                 unconfirmed: false,
             },
         );
@@ -472,6 +479,20 @@ impl Leases {
         if let Some(l) = self.by_id.get_mut(&id) {
             l.threads = threads;
         }
+    }
+
+    /// Lease `id`'s job, its threads re-decided (crate::coord::sched's `regrant`), as its Mac says it
+    /// runs on `now_on` threads: `told` (Some: threads decided at `at` to tell it), else the re-grant
+    /// it hasn't taken up yet kept, until it runs on them. It counts for the more of the two (a grow
+    /// at once, a shrink once a target takes it up). The re-grant still to tell, if any.
+    pub fn regranted(&mut self, id: u64, now_on: u32, told: Option<(u32, Instant)>) -> Option<u32> {
+        let l = self.by_id.get_mut(&id)?;
+        if told.is_some() {
+            l.told = told;
+        }
+        l.told = l.told.filter(|(t, _)| *t != now_on);
+        l.threads = now_on.max(l.told.map_or(0, |(t, _)| t));
+        l.told.map(|(t, _)| t)
     }
 
     /// Lease `id`, live or not yet expired, whoever holds it.

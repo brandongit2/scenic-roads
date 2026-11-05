@@ -257,11 +257,14 @@ pub fn current(costs: &Path) -> Option<String> {
 }
 
 /// A job's targets as its costs file says (`current`): the one under way and when it began (unix
-/// s), and how many ended (each a `peak_mb` line after its `started`).
+/// s), and how many ended (each a `peak_mb` line after its `started`); and the threads the last to
+/// begin runs on, where its `started` line says (a target run on its job's grant as it began,
+/// crate::control::on_grant: docs/pool.md §7.1, Threads re-granted).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Targets {
     pub on: Option<(String, u64)>,
     pub ended: usize,
+    pub threads: Option<u32>,
 }
 
 /// Costs file `costs`'s `Targets` (none when it can't be read).
@@ -273,6 +276,8 @@ pub fn targets(costs: &Path) -> Targets {
         let Some(key) = v["unit"].as_str() else { continue };
         if let Some(at) = v.get("started") {
             t.on = Some((key.to_string(), at.as_u64().unwrap_or(0)));
+            // (A drop's line, run outside its grant, says none: the last said stands.)
+            t.threads = v["threads"].as_u64().map(|n| n as u32).or(t.threads);
         } else if v.get("peak_mb").is_some() && t.on.as_ref().is_some_and(|o| o.0 == key) {
             t.on = None;
             t.ended += 1;
@@ -381,6 +386,9 @@ pub struct Watch {
     /// sample, or a sum that fell as a process ended, starts it again): how long it has been idle,
     /// for an update's wait (crate::agent's `update_due`), whatever its progress lines say.
     pub cpu_mark: Option<(std::time::Instant, u64)>,
+    /// Its CPU time (ns) as last sampled: what its threads used, for its re-grant (crate::agent's
+    /// `tend_grant`).
+    pub cpu_ns: Option<u64>,
 }
 
 /// The CPU time (ns) a job uses for its sampler to call it busy again: a core-minute.
@@ -490,6 +498,8 @@ struct Inner {
     idle_set: Option<u64>,
     /// As a test sets it: when each slot's job was last busy (`Watch::cpu_mark`).
     busy_set: Option<Vec<Option<std::time::Instant>>>,
+    /// As a test sets it: each slot's job's CPU time (ns, `Watch::cpu_ns`).
+    cpu_set: Option<Vec<Option<u64>>>,
     /// What the thread did last (unix seconds, in words), for the agent's loop to say.
     froze: Vec<(u64, String)>,
     /// The swap in use (MB) as each sample read it over the last `SWAP_WINDOW`; and the latest
@@ -707,6 +717,23 @@ impl Sampler {
         }
     }
 
+    /// Slot `k`'s job's CPU time as last sampled (ns, `Watch::cpu_ns`); None: not sampled yet, or
+    /// unreadable.
+    pub fn cpu_ns(&self, k: usize) -> Option<u64> {
+        let g = self.inner.lock().ok()?;
+        match &g.cpu_set {
+            Some(v) => v.get(k).copied().flatten(),
+            None => g.watches.get(k)?.as_ref()?.cpu_ns,
+        }
+    }
+
+    /// As a test sets it: each slot's job's CPU time (ns).
+    pub fn set_test_cpu(&self, cpu: Option<Vec<Option<u64>>>) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.cpu_set = cpu;
+        }
+    }
+
     /// As a test sets it: when each slot's job was last busy.
     pub fn set_test_busy(&self, busy: Option<Vec<Option<std::time::Instant>>>) {
         if let Ok(mut g) = self.inner.lock() {
@@ -874,6 +901,7 @@ impl Sampler {
                 let Some(w) = g.watches.get_mut(*k).and_then(Option::as_mut).filter(|w| w.pgid == *pgid) else {
                     continue;
                 };
+                w.cpu_ns = *ns;
                 if let Some(ns) = *ns {
                     match w.cpu_mark {
                         Some((_, m)) if ns >= m && ns - m < BUSY_CPU => {}
@@ -1533,7 +1561,11 @@ mod tests {
         assert_eq!(current(&p), None);
         std::fs::write(&p, "{\"unit\":\"terrain 6/1/1\",\"started\":1}\n{\"unit\":\"terrain 6/1/1\",\"peak_mb\":900,\"secs\":3}\n{\"unit\":\"terrain 6/1/2\",\"started\":4}\nnot json\n").unwrap();
         assert_eq!(current(&p).as_deref(), Some("terrain 6/1/2"));
-        assert_eq!(targets(&p), Targets { on: Some(("terrain 6/1/2".into(), 4)), ended: 1 });
+        assert_eq!(targets(&p), Targets { on: Some(("terrain 6/1/2".into(), 4)), ended: 1, threads: None });
+        // (Task #948: the threads the last target to begin runs on, as its line says; a drop's line,
+        // run outside its job's grant, says none and leaves them.)
+        std::fs::write(&p, "{\"unit\":\"slope-deep 10/1/1\",\"started\":1,\"threads\":6}\n{\"unit\":\"slope-deep 10/1/1\",\"peak_mb\":900,\"secs\":3}\n{\"unit\":\"slope-deep 10/1/2\",\"started\":4,\"threads\":2}\n{\"unit\":\"slope-deep 10/1/2\",\"peak_mb\":900,\"secs\":3}\n{\"unit\":\"slope-deep 10/1/3\",\"started\":5}\n").unwrap();
+        assert_eq!(targets(&p).threads, Some(2));
         // Its fallbacks: between targets, or a step that notes no costs, the first target not
         // noted done; a job of no targets, its own key; else none.
         let done = d.path().join("done.txt");

@@ -60,6 +60,11 @@ pub struct Beat {
     /// lead lacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handoffs: Vec<String>,
+    /// Its Mac's capacity now (crate::coord::Capacity, as its asks carry it): with its running jobs'
+    /// threads and use (`Capacity::threads`), whose threads the lead re-decides at each beat
+    /// (docs/pool.md §7.1, Threads re-granted). Left out by apps before it; an older lead reads past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap: Option<super::Capacity>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -110,6 +115,11 @@ pub struct Answer {
     /// until its agent first says its line (`Coordinator::set_said`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead: Option<LeadLine>,
+    /// Its running jobs' threads re-decided (lease, threads: `sched::Sched::regrant`), each until
+    /// its job runs on them: its agent tells each job, which takes them as its next target begins.
+    /// Left out by a lead before it (the jobs keep their grant), and read past by a member before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub threads: Vec<(u64, u32)>,
 }
 
 /// The build in a line, from the lead (`Answer::lead`): its Mac, its app, the build's state as its
@@ -180,6 +190,13 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         let (gone, released) = s.leases.word(&b.member, &b.held, now, OMIT_GRACE);
         ended(s, &gone, "its member's beat didn't list it: it doesn't hold it");
         a.released = released;
+    }
+    // (Its capacity, the one its asks carry, fresher; its running jobs' threads re-decided on it.)
+    if let Some(cap) = b.cap.clone() {
+        if let Some(w) = s.workers.get_mut(&b.member) {
+            w.cap = Some(cap.clone());
+        }
+        a.threads = s.regrant(&b.member, cap);
     }
     a
 }

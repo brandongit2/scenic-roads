@@ -101,6 +101,9 @@ struct Inner {
     nas_too: bool,
     lead_takes: bool,
     released: Vec<u64>,
+    /// The lead's last answer's re-grants (`Answer::threads`: lease, threads), for the agent's loop
+    /// to tell its jobs (`lead_threads`).
+    threads: Vec<(u64, u32)>,
     /// When the lead last answered (unix s), and whether that answer said `PAGE`.
     lead_answered: Option<(u64, bool)>,
     /// The asks (`ASKS`): whether the lead serves them, and whether their NAS files go on.
@@ -156,6 +159,7 @@ impl Default for Beats {
                 nas_too: true,
                 lead_takes: false,
                 released: Vec::new(),
+                threads: Vec::new(),
                 lead_answered: None,
                 lead_asks: false,
                 asks_on_nas: true,
@@ -261,6 +265,7 @@ impl Beats {
             }
         }
         g.released.extend(a.released.iter().copied());
+        g.threads = a.threads.clone();
         g.lead_asks = a.speaks.iter().any(|w| w == ASKS);
         g.asks_on_nas = !g.lead_asks || a.asks_on_nas;
         if g.lead_asks {
@@ -494,9 +499,16 @@ impl Beats {
         g.lead_answered = None;
         (g.lead_asks, g.asks_on_nas) = (false, true);
         g.lead_handoffs = Some(false);
+        g.threads.clear();
         g.lead_view = LeadView { at: now, lead: None };
         drop(g);
         self.save_lead_view();
+    }
+
+    /// The re-grants the lead's last answer said (lease, threads: docs/pool.md §7.1, Threads
+    /// re-granted); none from a lead before them.
+    pub fn lead_threads(&self) -> Vec<(u64, u32)> {
+        self.inner.lock().unwrap().threads.clone()
     }
 
     /// The leases the lead said this member doesn't hold, since last taken.
