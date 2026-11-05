@@ -63,6 +63,7 @@ pub mod timetables;
 pub mod treepacks;
 pub mod trees;
 pub mod unit;
+pub mod uses;
 pub mod view;
 pub mod water;
 pub mod whsshapes;
