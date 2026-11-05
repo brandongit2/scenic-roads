@@ -989,8 +989,10 @@ fn deep_copied(t: (u32, u32)) -> (u8, u32, u32) {
 /// A slope-deep job's batch of z10 tiles (`targets`, in the order it makes them), its terrain read
 /// through one reader for the whole job. The next target's terrain deep pack is copied on a thread
 /// beside the target being made (its compute, its uploads), so it starts with it here; once a
-/// target is made, every copy and open pack but that one is let go. The same bytes as each made
-/// alone: a pack is content-named, read here or on the NAS alike.
+/// target is made, every copy and open pack but that one is let go, so the copies here are never
+/// more than two packs (the one being made's and the next's), however long the batch and in
+/// whatever order. The same bytes as each made alone: a pack is content-named, read here or on the
+/// NAS alike.
 pub struct DeepBatch {
     terr: Arc<ManifestTiles>,
     targets: Vec<(u32, u32)>,
@@ -1046,12 +1048,20 @@ impl DeepBatch {
 
     /// The copies made here deleted now, the copying ahead's once it ends (waited for: by a safe
     /// point it has mostly long ended): the job stopping at a safe point (its exit runs no
-    /// destructor).
+    /// destructor), or this dropped.
     pub fn let_go(&mut self) {
         if let Some(h) = self.ahead.take() {
             h.join().ok();
         }
         self.terr.keep_only(&|_| false);
+    }
+}
+
+impl Drop for DeepBatch {
+    /// (A batch ended by a failure: the copying ahead holds the reader, so without the wait its
+    /// copy would outlive the job's exit.)
+    fn drop(&mut self) {
+        self.let_go();
     }
 }
 

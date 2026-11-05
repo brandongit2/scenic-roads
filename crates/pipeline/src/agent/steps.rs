@@ -942,7 +942,8 @@ pub const TABLE: [Step; 59] = [
     },
     // (Its memory offered by target, the agent's terrain_peak: a z6 tile's levels' bound,
     // crate::terrain_pack::piece_peak_mb, and its z10 tiles' deep mids taken in,
-    // crate::terrain_pack::DEEP_MIDS_MB; with the coverage its process reads,
+    // crate::terrain_pack::DEEP_MIDS_MB, and the z6 tile before's uploads in flight,
+    // crate::out::UPLOAD_HELD; with the coverage its process reads,
     // crate::coverage::Coverage::read_peak_mb. Until a z6 tile's own run says. It waits for its z10
     // tiles' terrain-deep targets alone: their mids are its z12 tiles' quarters there.)
     Step {

@@ -680,11 +680,13 @@ pub const fn bldtiles_peak(rows: u64) -> u64 {
 
 /// The memory a terrain-hi run of `z6` tiles is expected to take (MB), before one has said: a z6
 /// tile's levels at a time (crate::terrain_pack::piece_peak_mb), and each z6 tile's quarters (~20 MB)
-/// and its z10 tiles' deep mids taken in (`DEEP_MIDS_MB`).
+/// and its z10 tiles' deep mids taken in (`DEEP_MIDS_MB`); beside them, the z6 tile before's uploads
+/// in flight (crate::out::UPLOAD_HELD: they land beside the next one's work, scenic-build's Landing).
 fn terrain_peak(z6: usize) -> u64 {
     crate::terrain_pack::piece_peak_mb()
         + (z6 as u64).saturating_sub(1) * 20
         + z6 as u64 * crate::terrain_pack::DEEP_MIDS_MB
+        + crate::out::UPLOAD_HELD.div_ceil(1 << 20)
 }
 
 /// Whether `spec`'s job is paced (crate::inputs::pace, `Agent::tend_threads`): an input check (the
@@ -9462,6 +9464,18 @@ struct Forecasted {
 
 #[cfg(test)]
 mod tests {
+
+    /// Task #928's review: a terrain-hi run's memory before its own run says counts the z6 tile
+    /// before's uploads in flight beside the one under way: one upload at a time (their thread
+    /// makes them in turn), so once however many z6 tiles it runs.
+    #[test]
+    fn terrain_peak_counts_the_uploads_beside() {
+        let (levels, mids, upload) =
+            (crate::terrain_pack::piece_peak_mb(), crate::terrain_pack::DEEP_MIDS_MB, crate::out::UPLOAD_HELD >> 20);
+        assert_eq!(upload, 8, "an upload's 8 MB hash read");
+        assert_eq!(terrain_peak(1), levels + mids + upload);
+        assert_eq!(terrain_peak(3), levels + 2 * 20 + 3 * mids + upload);
+    }
 
     /// Task #444: a NAS wait said again between plans (the plan's lines kept) is listed once, with
     /// its minutes now; gone once granted.

@@ -191,8 +191,10 @@ What each step does, in detail. The steps as one table (names, chains, the check
   A slope-deep job's z10 tiles read the terrain through one reader (`slope_pack::DeepBatch`, task
   #928): the next target's terrain deep pack is copied here while one is made and kept for it
   alone, every other copy and open pack let go once a target is made (an edge neighbour's few edge
-  tiles are read where they are); and each target's uploads land beside the next one's work
-  (docs/storage.md, Uploads beside the work).
+  tiles are read where they are), so the job's copies are never more than two packs (the one being
+  made's and the next's); and each target's uploads land beside the next one's work
+  (docs/storage.md, Uploads beside the work). At a pause, a failure or the job's end its copies are
+  deleted.
   **slope-hi**, a run per z6 tile once what it reads is built (its own and its edge neighbours'
   terrain-hi, their z3 tiles' terrain-lo, its z10 tiles' terrain-deep and slope-deep): its hi pack
   (z9–12: over its z10 tiles' deep terrain, z10–12 from their z13 tiles' quadrants, taken in from
