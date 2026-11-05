@@ -219,15 +219,14 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   and then finer again; once still they grow and are drawn again, a tile a frame
   (`terrain_tile_manager.test.ts`, `render_to_texture.test.ts`).
   Measured 5 Nov on the M1 Pro (`tools/bench/inpage.mjs`, 1440 × 900 windows at 2×, 120 Hz; views
-  `saguenay` and `niagara`, z16 terrain; main vs a9c020f8, two interleaved rounds in a quiet
+  `saguenay` and `niagara`, z16 terrain; main vs 721b674b, two interleaved rounds in a quiet
   period): the shading drawn at z14–16 instead of z12–15 (z13–16), the map's GPU memory at rest
-  525 → 665 MB (662 → 775), drapes 112 → 145 MB (78 → 112); Chrome pan 92–96 → 79–86 fps (77–81 →
-  82–88), orbit 99 → 90–101 (61 → 59–60); Safari pan 29–30 → 25 (21 → 25–26), orbit 28–31 → 24–29
-  (25–29 → 28); settle 0.2–0.3 → 0.4–0.8 s in Chrome, 0.3–0.5 → 0.5–1.0 s in Safari (the 300 ms
-  `refineDelay`, then the finer tiles from the cache and the drapes drawn while moving drawn again
-  with them, a tile a frame). Chrome saguenay's slower pan was its drapes redrawn while moving at
-  their grown size (GPU 7.0 → 8.6 ms); since 2d3ca169 they get the size without the finer tiles
-  (not yet measured in a quiet period).
+  522 → 665 MB (662 → 774), drapes 112 → 145 MB (78 → 112); Chrome pan 93 → 88 fps, GPU 7.5–8.3 →
+  8.2–8.6 ms (77–86 → 77–78), orbit 100–102 → 95–100 (64 → 60–63); Safari pan 27–30 → 24–26
+  (22–27 → 22), orbit 24–32 → 26 (27–29 → 26–28); settle 0.2–0.3 → 0.4–0.6 s in Chrome, 0.2–0.4 →
+  0.6–1.2 s in Safari: the 300 ms `refineDelay`, then the finer tiles from the cache and the drapes
+  drawn while moving drawn again with them, a tile a frame. (With the finer tiles kept in the cover
+  while moving, Chrome's saguenay pan was 81 fps and Safari's settle up to 3.1 s.)
 - **Elevations looked up without a cover a point** (`Terrain.elevationForLngLatFn`, `_coverZoom`,
   `coverKey`): where no rendered tile holds a point, upstream's `getElevationForLngLat` worked out
   the camera's whole tile cover for every point; the cover's zoom is now worked out once a batch
