@@ -101,7 +101,8 @@ Common rules:
   (`Tasks::measure`, its inputs already the coordinator's) to learn its pace. With placement on (the pool's setting `placement`), terrain and
   tree cover z6 tiles offer ahead (`terrain_task::offer_ahead`) with a head start a slower worker may use.
 - **Versions:** a task names the job's build.
-- **Determinism:** one maths library (`det`, over `libm`), thread-count-independent reductions, no
+- **Determinism:** one maths library (`det`, over `libm`; `clippy.toml` refuses the platform's), one
+  geometry (`roadcore::geo`), thread-count-independent reductions, no
   hash-map order in outputs, the real zstd everywhere.
 - **Planned:** staging as a task; heavy steps cut into sample ranges; more kinds (map tiles,
   landmarks, slope subtrees); smaller 3D-building z8 tiles.

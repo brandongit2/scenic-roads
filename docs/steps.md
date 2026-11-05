@@ -2,6 +2,15 @@
 
 What each step does, in detail. The steps as one table (names, chains, the checklist, the build page) are `docs/pipeline.md`.
 
+Every step's geometry is `roadcore::geo`'s, one of each: the Earth (`EARTH_R`, the mean radius:
+every ground distance, `M_PER_DEG` a degree on it), the Web Mercator (`merc`, `merc_clamped`,
+`merc_lat`, `tile_box`, `epsg3857`; its sphere WGS 84's semi-major axis, `MERC_C` its equator in
+its own metres), the box-grower (`grow`, `tile_box_grown`: a box grown by its km at its farthest
+latitude), "near the coverage" (`NEAR_COVERAGE_KM`, 20 km) and the even–odd point-in-polygon
+(`inside`, exact on E7 points; the coverage's gridded test, `Coverage::inside`, aside). Every
+transcendental function is `det`'s (`clippy.toml` refuses `f64::sin` and the rest), so a step
+makes the same bytes on every Mac.
+
 ## 1. The OSM pass
 
 1. **The NAS fetches the planet** (`nas/fetch-planet.sh`, from `tools/nas/`): DSM runs it daily; it

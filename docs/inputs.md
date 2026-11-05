@@ -577,7 +577,7 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   within 5 m of the arc, pieces unioned. Past 200 km the rings are first simplified within a
   thousandth of the radius and the joins drawn within a thousandth of it too. **Cuts** intersect the
   shape with each side's polygon. **Sizes** (for slivers, shared edges and the cover check) are on
-  the authalic sphere; a shared edge's length is the other area within 100 m of the edge, over 100 m,
+  the Earth's mean sphere (`roadcore::geo::EARTH_R`); a shared edge's length is the other area within 100 m of the edge, over 100 m,
   measured in quarters while either area is large.
 - **Cell by cell** (crate::inputs::regions::tiles): a region with water is resolved on a grid of 2°
   cells. Each part it names is cut into the cells by clipping its rings to boxes (no polygon
@@ -1519,7 +1519,7 @@ grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) among them.
 `producers/depth/declarations/`; the producers that make their grids in `producers/depth/`.
 
 **The standard: depth grids** (`format = "depth-grid"`). A source is a set of GeoTIFFs, each on the
-global Web Mercator pixel grid of one zoom (EPSG:3857; its pixels 40,075,016.686 / 256 / 2^zoom m,
+global Web Mercator pixel grid of one zoom (EPSG:3857; its pixels `roadcore::geo::MERC_C` (2π × 6,378,137 m) / 256 / 2^zoom m,
 their edges on that grid, its own edges on its zoom's tile edges where its data allows), so the build
 reads them by pixel arithmetic, never reprojecting; every cell shows at its grid's zoom:
 - `file`: float32 depth below the water's surface in metres, negative (the sea's mean level; a lake's
