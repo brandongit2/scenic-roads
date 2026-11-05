@@ -21,7 +21,7 @@ entry() {  # <profile>/<kind>/<name> <KB> <age in hours>: a file entry, or a fol
   local p=$shared/$1
   mkdir -p ${p:h} $shared/${1%%/*}/.fingerprint
   if [[ $1 == */ ]]; then mkdir -p $p; mkfile $(( $2 ))k $p/blob; else mkfile $(( $2 ))k $p; fi
-  touch -t $(date -v-$3H +%Y%m%d%H%M) $p
+  touch -t $(date -v-$3H +%Y%m%d%H%M) $p $p/blob(N)  # (written, and last read, then)
 }
 target() { mkdir -p $agent_home; print -r -- "{\"bytes\":$(( $1 * 1024 )),\"by\":\"test\",\"at\":1}" > $agent_home/room-target.json }
 margin() { mkdir -p $agent_home; print -r -- "{\"bytes\":$(( $1 * 1024 )),\"by\":\"test\",\"at\":1}" > $agent_home/sweep-margin.json }
@@ -42,7 +42,14 @@ disk_kb=$(( $(sz) + 1500 + 100 ))
 make_room
 [[ $(have) == "mid new now.rlib old.rlib" && -e $cache/c && ! -e $log ]] && ok "above: nothing removed" || no "above: nothing removed" "left $(have); $(cat $log 2>/dev/null)"
 
-# Below it: the least recently touched entries go until it is cleared; the cache is kept.
+# A run cut short between its renames and its delete: the next run deletes its trash, a dry run doesn't.
+mkdir -p $shared/.scenic-sweep-trash/0
+dry=1 make_room >/dev/null
+[[ -e $shared/.scenic-sweep-trash/0 ]] || no "a run cut short: a dry run keeps its trash" "deleted"
+make_room
+[[ ! -e $shared/.scenic-sweep-trash ]] && ok "a run cut short: its trash deleted next run" || no "a run cut short: its trash deleted next run" "$(ls -a $shared)"
+
+# Below it: the least recently used entries go until it is cleared; the cache is kept.
 fresh; target 1000; margin 500
 disk_kb=$(( $(sz) + 1500 - 450 ))  # 450 KB short: the oldest two
 make_room
@@ -51,6 +58,15 @@ make_room
 grep -q "removed 2 entries of the shared build folder (.*): below the room target 0.0 GB + margin 0.0 GB (set on the build page); now" $log \
   && ok "below: logged" || no "below: logged" "$(cat $log)"
 [[ ! -e $shared/.scenic-sweep-trash ]] || no "below: the trash deleted" "$(ls -a $shared)"
+
+# By last use, not last write: a crate built long ago but read since (a file's own read, a
+# folder's file's) outlasts one written more lately and unused since.
+fresh; target 1000; margin 500
+touch -a -t $(date -v-1H +%Y%m%d%H%M) $shared/debug/deps/old.rlib $shared/debug/incremental/mid/blob
+disk_kb=$(( $(sz) + 1500 - 250 ))  # 250 KB short: one entry
+make_room
+[[ $(have) == "mid now.rlib old.rlib" ]] && ok "by last use: read since outlasts written since" \
+  || no "by last use: read since outlasts written since" "left $(have)"
 
 # Still below with every entry gone: the compile cache is emptied too.
 fresh; target 1000; margin 500

@@ -19,7 +19,7 @@
 #   room-target.json, set on the build page or by `scenic room`) plus the sweep's margin
 #   (sweep-margin.json beside it, the build page's "Dev sweep margin"; none set:
 #   SWEEP_MARGIN_DEFAULT_GB in crates/pipeline/src/agent/settings.rs), the shared build folder's
-#   entries go, the least recently touched first, until it is back above both; then, still below,
+#   entries go, the least recently used (read or written) first, until it is back above both; then, still below,
 #   the compile cache. No room target: the margin alone is kept free.
 # - The main checkout's target/debug: entries untouched for 2 days go.
 setopt extendedglob
@@ -52,7 +52,8 @@ wanted() {
   if [[ -z $m ]]; then
     from=default
     m=$(sed -n 's/^pub const SWEEP_MARGIN_DEFAULT_GB: u64 = \([0-9][0-9]*\);.*/\1/p' $repo/crates/pipeline/src/agent/settings.rs 2>/dev/null)
-    if [[ -n $m ]]; then m=$(( m << 30 )); else m=0 from="its default unreadable: 0"; fi
+    if [[ -n $m ]]; then m=$(( m << 30 ))
+    else m=0 from="its default unreadable: 0"; say "the sweep's default margin can't be read from crates/pipeline/src/agent/settings.rs (SWEEP_MARGIN_DEFAULT_GB): 0 used"; fi
   fi
   if [[ -n $t ]]; then room="room target $(gb $(( t >> 10 ))) + margin $(gb $(( m >> 10 ))) ($from)"
   else room="margin $(gb $(( m >> 10 ))) ($from; no room target: no room-target.json in the agent's folder)" t=0; fi
@@ -60,7 +61,7 @@ wanted() {
 }
 # The shared build folder's entries (each profile's deps, incremental, build, .fingerprint and
 # examples children, and its own files but cargo's locks: the programs it links there), the least
-# recently touched first: "<mtime> <KB> <path>" lines.
+# recently used first: "<last use> <KB> <path>" lines.
 entries() {
   local -a ps dirs files sz m; local p d s; local -A kb
   for d in $shared/*/.fingerprint(N:h) $shared/*/*/.fingerprint(N:h); do
@@ -71,20 +72,35 @@ entries() {
     print -rN -- $dirs | xargs -0 du -sk 2>/dev/null | while IFS=$'\t' read -r s p; do kb[$p]=$s; done
   fi
   for p in $files; do zstat -A sz +blocks $p 2>/dev/null && kb[$p]=$(( sz[1] / 2 )); done
-  for p in $ps; do zstat -A m +mtime $p 2>/dev/null && print -r -- "$m[1] ${kb[$p]:-0} $p"; done | sort -n
+  for p in $ps; do used $p && print -r -- "$REPLY ${kb[$p]:-0} $p"; done | sort -n
+}
+# used <entry>: its last use (epoch s, into $REPLY), the newest of its write and, for a file, its
+# last read; for a folder, its files' last read or write and its folders' last write. A build reads
+# what it reuses without writing it (a crate built weeks ago, linked into every build since: its
+# rlib's and fingerprint's reads), so a write alone would make it look stale. A folder's own read is
+# no use: du reads them all (this sweep's sizes).
+used() {
+  local -a s; local c; REPLY=
+  zstat -A s +mtime $1 2>/dev/null || return 1; REPLY=$s[1]
+  if [[ -d $1 ]]; then
+    for c in $1/*(DN.oa[1]); do zstat -A s +atime $c 2>/dev/null && (( s[1] > REPLY )) && REPLY=$s[1]; done
+    for c in $1/*(DNom[1]); do zstat -A s +mtime $c 2>/dev/null && (( s[1] > REPLY )) && REPLY=$s[1]; done
+  else zstat -A s +atime $1 2>/dev/null && (( s[1] > REPLY )) && REPLY=$s[1]; fi
+  return 0
 }
 
 # Room (#954): while the disk's free space is below the room target plus the margin, the shared
-# build folder's entries go, the least recently touched first, enough by their sizes to be back
-# above it; then, still below, the compile cache. The folder's lock (tools/dev/bin/cargo) is only
-# tried, never waited for: held, the log says so and the next run tries again. Under it each entry
-# still untouched is only renamed into .scenic-sweep-trash (a build waits for renames at most),
-# deleted once the lock is let go. Up to three rounds (an entry hard-linked elsewhere frees less
+# build folder's entries go, the least recently used first (used), enough by their sizes to be
+# back above it; then, still below, the compile cache. The folder's lock (tools/dev/bin/cargo) is
+# only tried, never waited for: held, the log says so, the folder waits for the next run and the
+# compile cache (no lock of ours) goes as if the folder were emptied. Under it each entry still
+# unused since it was listed is only renamed into .scenic-sweep-trash (a build waits for renames at
+# most), deleted once the lock is let go. Up to three rounds (an entry hard-linked elsewhere frees less
 # than its size).
 make_room() {
   local want room free round lockfd line m p n k s first last holder
   local -a pick t
-  rm -rf $shared/.scenic-sweep-trash  # (a run cut short)
+  [[ -n $dry ]] || rm -rf $shared/.scenic-sweep-trash  # (a run cut short)
   wanted; free=$(free_kb $shared:h)
   if (( free >= want )); then [[ -n $dry ]] && print "room: $(gb $free) free, at least the $room"; return 0; fi
   for round in 1 2 3; do
@@ -97,7 +113,7 @@ make_room() {
     (( $#pick )) || break
     first=$(date -r ${pick[1]%% *} '+%F %R') last=$(date -r ${pick[-1]%% *} '+%F %R')
     if [[ -n $dry ]]; then
-      print "would remove $#pick entries of the shared build folder ($(gb $k), untouched since $first to $last): $(gb $free) free, below the $room"
+      print "would remove $#pick entries of the shared build folder ($(gb $k), last used $first to $last): $(gb $free) free, below the $room"
       break
     fi
     if ! zsystem flock -t 0 -f lockfd $shared/.scenic-lock 2>/dev/null; then
@@ -108,13 +124,13 @@ make_room() {
     zf_mkdir -p $shared/.scenic-sweep-trash; n=0 k=0
     for line in $pick; do
       m=${line%% *} s=${${line#* }%% *} p=${${line#* }#* }
-      zstat -A t +mtime $p 2>/dev/null && (( t[1] == m )) || continue  # touched since: kept
+      used $p && (( REPLY == m )) || continue  # used since: kept
       zf_mv $p $shared/.scenic-sweep-trash/$n 2>/dev/null && n=$(( n + 1 )) k=$(( k + s ))
     done
     exec {lockfd}>&-
     rm -rf $shared/.scenic-sweep-trash
     free=$(free_kb $shared:h)
-    say "removed $n entries of the shared build folder ($(gb $k), untouched since $first to $last): below the $room; now $(gb $free) free"
+    say "removed $n entries of the shared build folder ($(gb $k), last used $first to $last): below the $room; now $(gb $free) free"
     (( free >= want )) && return 0
   done
   # The agents' compile cache (#439; sccache, set up by .claude/worktrees/.cargo/config.toml) holds

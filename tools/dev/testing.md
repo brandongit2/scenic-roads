@@ -186,12 +186,11 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   `SWEEP_MARGIN_DEFAULT_GB` in crates/pipeline/src/agent/settings.rs, which the sweep reads from that
   line), it removes the shared folder's entries (each profile's deps, incremental, build,
   .fingerprint and examples children, and the programs linked beside them), the least recently
-  touched first, until free space is back above both; still below, it empties the compile cache.
+  used (read or written) first, until free space is back above both; still below, it empties the compile cache.
   With no room target it keeps the margin alone free. The folder's lock is only tried: held, the
-  log says so and the next run tries again; taken, the entries still untouched are only renamed
+  log says so and the next run tries again (the compile cache still goes); taken, the entries unused since they were listed are only renamed
   into `.scenic-sweep-trash` under it and deleted after. Each removal, with why, goes to
-  `.claude/sweep-targets.log`; `sweep-targets.sh --dry-run` prints what it would do. Nothing is
-  of the shared folder is removed by age alone. Test: tools/dev/test/sweep-targets.zsh (check.sh), on a fake disk.
+  `.claude/sweep-targets.log`; `sweep-targets.sh --dry-run` prints what it would do. Nothing of the shared folder is removed by age alone. Test: tools/dev/test/sweep-targets.zsh (check.sh), on a fake disk.
 
 ## Tests on the test Mac (#442, 19 Oct)
 
