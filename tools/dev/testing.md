@@ -166,7 +166,8 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   older sources. When the folder's last build (`.scenic-built-by`) came from another worktree, the
   workspace crates' fingerprints are deleted first, under the lock: they compile again, reusing their
   incremental state where the code is the same. Test: tools/dev/test/shared-target.zsh (check.sh).
-- Passed straight to cargo: outside `.claude/worktrees/` (the main checkout, publish.sh's tree),
+- Outside `.claude/worktrees/` (the main checkout) cargo builds as it would, in its own folder,
+  without the lock, only recorded (as the shim's child: Dev jobs, below). Passed straight to cargo:
   commands that never build (the shim's `reads`: fmt, metadata, tree, update, version, …, found
   after cargo's own options, `--color never fmt` too) and any command asking `-h`/`--help`/`-V`/
   `--version` (remote-tests.sh's `cargo nextest --version` waited behind builds, 4 Nov). Under the
@@ -200,11 +201,11 @@ The dev job dashboard (the dev tools app's `/jobs/`, tools/devtools/README.md) s
 check.sh (each part, its compiles from cargo's output), publish.sh (each step), remote-tests.sh
 (the waits for the test Mac's key and a slot, the copy, the run there, each compile, suite and
 test from what it prints: cargo test's tests by when they ended, nextest's by their own times) and
-every cargo under tools/dev/bin/cargo's lock (its wait for the shared folder, the reset of the
+every cargo build through tools/dev/bin/cargo (in a worktree: its wait for the shared folder, the reset of the
 workspace's fingerprints, the build with each crate compiled from cargo's `--timings` report, which
 the shim adds and moves out of the shared folder, each program run: a test binary a suite; a
 measurement run, an example or a release run, and a backtest, `--replay` or a backtest test, so
-named). A span started inside another's (a cargo in a check's part) is part of it: each job exports
+named; in the main checkout: the build and its crates). A span started inside another's (a cargo in a check's part) is part of it: each job exports
 its id as `SCENIC_DEVJOB_PARENT`. A run of its own says who ran it: its checkout, branch, commit,
 task (`SCENIC_TASK`, else the latest `#<n>` in the branch's commits since main) and whether an agent
 did (Claude Code's `CLAUDECODE`).

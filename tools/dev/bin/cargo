@@ -29,13 +29,14 @@
 # rustc for them again, whose incremental state (checked by content hashes) reuses what is the same.
 # Third-party crates are untouched: their names hash their version, source and features.
 #
-# Each cargo under the lock is recorded for the dev job dashboard (tools/dev/devjob.zsh): its wait
-# for the lock, the build (each crate compiled, from cargo's --timings report, which it adds), each
+# Each cargo that builds is recorded for the dev job dashboard (tools/dev/devjob.zsh): its wait for
+# the lock, the build (each crate compiled, from cargo's --timings report, which it adds), each
 # program it runs (a test binary as a suite); a measurement (an example, a release run) or a backtest
-# (--replay, a backtest test) said so.
+# (--replay, a backtest test) said so. Outside .claude/worktrees/ (the main checkout) cargo builds
+# as it would, in its own folder without the lock, as this shell's child so its run is recorded.
 #
-# Passed straight to cargo: outside .claude/worktrees/, inside a cargo this shim started under the
-# lock (SCENIC_CARGO_SHARED set: a build script's cargo), and commands that never build (reads).
+# Passed straight to cargo: inside a cargo this shim started under the lock (SCENIC_CARGO_SHARED
+# set: a build script's cargo), and commands that never build (reads).
 setopt extendedglob
 zmodload zsh/system zsh/datetime zsh/zselect; zmodload -F zsh/stat b:zstat
 self=${0:A}
@@ -93,7 +94,8 @@ real=
 for c in $(whence -ap cargo); do [[ ${c:A} == ($self|*/tools/dev/bin/cargo) ]] || { real=$c; break; }; done
 [[ -n $real ]] || { print -u2 "cargo (tools/dev/bin): no other cargo on the PATH"; exit 127; }
 top=$PWD; while [[ $top != / && ! -e $top/.git ]]; do top=${top:h}; done  # the checkout (a worktree's .git is a file)
-[[ -z ${SCENIC_CARGO_SHARED:-} && $top == */.claude/worktrees/* ]] || exec $real "$@"
+[[ -z ${SCENIC_CARGO_SHARED:-} ]] || exec $real "$@"
+inside=0; [[ $top == */.claude/worktrees/* ]] && inside=1
 args=( "$@" ); si=0
 # The subcommand: the first word neither an option nor the value of a cargo option taking one.
 for (( i = 1; i <= $#args; i++ )); do
@@ -115,8 +117,10 @@ builds=( b bench build c check clean d doc fix install package publish r report 
 reads=( add config fetch fmt generate-lockfile git-checkout help info init locate-project login logout metadata new owner pkgid read-manifest remove rm search tree uninstall update vendor verify-project version yank )
 asks=${own[(I)(-h|--help|-V|--version)]}
 [[ -z $sub ]] || (( $reads[(Ie)$sub] || asks )) && exec $real "$@"
-(( $builds[(Ie)$sub] )) || print -u2 -r -- "cargo (tools/dev/bin): \`$sub\` isn't known to build or not: run under the shared build folder's lock"
+(( $builds[(Ie)$sub] || ! inside )) || print -u2 -r -- "cargo (tools/dev/bin): \`$sub\` isn't known to build or not: run under the shared build folder's lock"
 t=${SCENIC_SHARED_TARGET:-$HOME/Library/Caches/scenic-target}
+# (Where cargo writes its timing report: the shared folder, or outside a worktree its own.)
+tdir=$t; (( inside )) || tdir=${CARGO_TARGET_DIR:-$top/target}
 # The dev job dashboard's span of this cargo (a cargo of its own, or a check's part's), and what it is for.
 source ${self:h:h}/devjob.zsh
 purpose=
@@ -135,6 +139,38 @@ djdone() {  # the span ended by how this script exits: 0 ok, by a signal stopped
   local x=$1 st=ok; (( x )) && st=fail; (( sig )) && st=stopped
   dj_end $djid $st exit $x
 }
+# Cargo, and each program run here, is a child this shell waits for: a signal to this shell (a kill
+# of the pid ps shows as cargo) goes on to it, and the shell and its lock outlive it. (Killed while
+# its cargo built, the shell let the lock go with that build still running.) A child of a shell
+# without job control starts with SIGINT and SIGQUIT ignored, so a forwarded INT did nothing: spawn
+# gives them back.
+child=0 sig=0 r=
+fwd() { sig=$1; (( child )) && kill -$1 $child 2>/dev/null; (( child )) || { rm -rf $r; exit $(( 128 + $1 )) } }
+trap 'fwd 1' HUP; trap 'fwd 2' INT; trap 'fwd 15' TERM
+spawn() { ( trap - INT QUIT; "$@" ) <&0 & child=$! }  # spawn <function that execs>
+realcargo() { exec $real "$@" }
+waitchild() {  # the child's status, once it is gone (a trapped signal ends a wait early)
+  local s; while :; do wait $child; s=$?; kill -0 $child 2>/dev/null || break; done
+  child=0; return $s
+}
+stopped() { (( sig )) && { rm -rf $r; exit $(( $1 ? $1 : 128 + sig )) } }
+whole() { spawn realcargo "$@"; waitchild; rc=$?; built $rc; stopped $rc; exit $rc }  # cargo, the lock to its end
+built() {  # built <cargo's status>: the build's span, from the lock to cargo's end, and its timing report moved for the sampler
+  dj_on && [[ -n $djid ]] || return 0
+  local st=ok; (( $1 )) && st=fail; (( sig )) && st=stopped
+  dj_span build build $djgot $EPOCHREALTIME $st
+  local rep=( $tdir/cargo-timings/cargo-timing-*.html(Nom[1]) ) m
+  if (( $#rep )) && zstat -A m +mtime $rep[1] && (( m[1] >= ${djgot%.*} )); then mv -f $rep[1] $DJ_DIR/$REPLY.timings.html; fi
+  rm -f $tdir/cargo-timings/cargo-timing.html
+}
+
+# Outside a worktree: cargo as it is (its own build folder, no lock), a child only so its run is
+# recorded.
+if (( ! inside )); then
+  trap 'x=$?; djdone $x' EXIT
+  djgot=$EPOCHREALTIME
+  whole "$@"
+fi
 mkdir -p $t || exit 1
 lock=$t/.scenic-lock holder=$t/.scenic-holder holds=$t/.scenic-holds
 : >> $lock || exit 1
@@ -255,31 +291,6 @@ fi
 # the shared folder, outside the repo, where a shim finds no mise.toml.
 whence mise >/dev/null && eval "$(mise env -C $top -s zsh 2>/dev/null)" 2>/dev/null
 export CARGO_TARGET_DIR=$t SCENIC_CARGO_SHARED=1
-
-# Cargo, and each program run here, is a child this shell waits for: a signal to this shell (a kill
-# of the pid ps shows as cargo) goes on to it, and the shell and its lock outlive it. (Killed while
-# its cargo built, the shell let the lock go with that build still running.) A child of a shell
-# without job control starts with SIGINT and SIGQUIT ignored, so a forwarded INT did nothing: spawn
-# gives them back.
-child=0 sig=0 r=
-fwd() { sig=$1; (( child )) && kill -$1 $child 2>/dev/null; (( child )) || { rm -rf $r; exit $(( 128 + $1 )) } }
-trap 'fwd 1' HUP; trap 'fwd 2' INT; trap 'fwd 15' TERM
-spawn() { ( trap - INT QUIT; "$@" ) <&0 & child=$! }  # spawn <function that execs>
-realcargo() { exec $real "$@" }
-waitchild() {  # the child's status, once it is gone (a trapped signal ends a wait early)
-  local s; while :; do wait $child; s=$?; kill -0 $child 2>/dev/null || break; done
-  child=0; return $s
-}
-stopped() { (( sig )) && { rm -rf $r; exit $(( $1 ? $1 : 128 + sig )) } }
-whole() { spawn realcargo "$@"; waitchild; rc=$?; built $rc; stopped $rc; exit $rc }  # cargo, the lock to its end
-built() {  # built <cargo's status>: the build's span, from the lock to cargo's end, and its timing report moved for the sampler
-  dj_on && [[ -n $djid ]] || return 0
-  local st=ok; (( $1 )) && st=fail; (( sig )) && st=stopped
-  dj_span build build $djgot $EPOCHREALTIME $st
-  local rep=( $t/cargo-timings/cargo-timing-*.html(Nom[1]) ) m
-  if (( $#rep )) && zstat -A m +mtime $rep[1] && (( m[1] >= ${djgot%.*} )); then mv -f $rep[1] $DJ_DIR/$REPLY.timings.html; fi
-  rm -f $t/cargo-timings/cargo-timing.html
-}
 
 # A whole `cargo clean` deletes the shared folder itself, its lock and queue with it: every waiter
 # then gave up, and a cargo starting meanwhile made a new lock to take while the clean still ran (two

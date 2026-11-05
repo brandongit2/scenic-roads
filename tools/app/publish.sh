@@ -49,7 +49,7 @@ on_exit() {
   if [[ -z $published && ${rollback:-} != done ]]; then
     (( rc == 0 )) && rc=1
     echo "publish: FAILED, nothing published (exit $rc)"
-    step "" 1; dj_end $djrun fail exit $rc ${djstep_name:+failed_in} ${djstep_name:+$djstep_name}
+    c=$djstep_name; step "" 1; dj_end $djrun fail exit $rc ${c:+failed_in} ${c:+$c}
   else
     step ""; dj_end $djrun ok ${published:+version} ${published:+$published}
   fi

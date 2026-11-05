@@ -11,6 +11,13 @@ s=$(mktemp -d); trap 'rm -rf $s' EXIT
 w=$s/.claude/worktrees; mkdir -p $w
 # The shim's records (tools/dev/devjob.zsh) go to a scratch spool, sent nowhere (a closed port).
 export SCENIC_DEVJOB_DIR=$s/devjobs SCENIC_BOARD=http://127.0.0.1:9; unset SCENIC_DEVJOB SCENIC_DEVJOB_PARENT
+dj=$SCENIC_DEVJOB_DIR
+quiet() {  # the sampler gone (it ends once nothing is live and every report is read)
+  local i f; for (( i = 0; i < 600; i++ )); do
+    zsystem flock -t 0 -f f $dj/sampler.lock 2>/dev/null && { zsystem flock -u $f; return 0 }; sleep 0.1
+  done
+  fail "the sampler never ended"
+}
 # The repo's nextest (its mise.toml's line), which the shim's `mise env` finds for the toy.
 grep -E '^"[^"]*cargo-nextest" *=' ${0:A:h:h:h:h}/mise.toml | sed '1s/^/[tools]\n/' > $s/mise.toml
 export MISE_TRUSTED_CONFIG_PATHS=$s
@@ -282,16 +289,12 @@ unset TOY_ORDER
 mkdir -p $s/plain/src; : > $s/plain/.git; cp $w/a/Cargo.toml $s/plain/; cp -R $w/a/src $s/plain/
 (cd $s/plain && $sh build -q) || fail "plain build"
 [[ -d $s/plain/target ]] || fail "outside worktrees: not its own target/"
+quiet
+grep -h '"op":"start"' $dj/s*.ndjson(N) | grep -q '"checkout":"plain"' || fail "outside worktrees: the build not recorded"
+[[ -z $(print $s/plain/target/cargo-timings/cargo-timing-*.html(N)) ]] || fail "outside worktrees: the timing report left"
 # The dev job dashboard's records of a cargo test: the cargo, its build (the toy's crates, from
 # cargo's timing report, which the sampler reads), each test binary's run as a suite, how it ended;
 # a failing one's, failed.
-dj=$SCENIC_DEVJOB_DIR
-quiet() {  # the sampler gone (it ends once nothing is live and every report is read)
-  local i f; for (( i = 0; i < 600; i++ )); do
-    zsystem flock -t 0 -f f $dj/sampler.lock 2>/dev/null && { zsystem flock -u $f; return 0 }; sleep 0.1
-  done
-  fail "the sampler never ended"
-}
 quiet; rm -rf $dj
 touch $w/a/src/lib.rs
 at a test -q --lib || fail "a recorded test: $(cat $s/err)"
