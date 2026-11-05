@@ -4,7 +4,7 @@
 //! - `list <6/x/y …>`: the z6 tiles' terrain-deep targets (crate::terrain_deep::targets_in), the lakes
 //!   (by OSM id) in their tiles at the zoom their levels are decided at (the finest of z13–14 they
 //!   make: the basemap's water stops at z14), and those in two targets or more.
-//! - `levels <6/x/y> [<id> …]`: each lake across the z10 tiles' edges that the z6 tile's targets
+//! - `levels <6/x/y | 7/x/y | 8/x/y> [<id> …]`: each lake across the z10 tiles' edges that the tile's targets
 //!   reach (crate::terrain_lakes::Lakes::across; or only lakes `id`), its level in each of its
 //!   targets there as the target's run gives it, before (#929: decided from the target's own tiles)
 //!   and after (the terrain-lakes step's level, decided once, given to the run): the target's tiles
@@ -14,6 +14,7 @@
 //! usage: [LAKE_REGIONS=<id,…>] cargo run -p pipeline --example lake_steps -- <root> <raw cache
 //! dir> <max MB> <mode> …
 
+use anyhow::Context;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn mb() -> u64 {
@@ -132,9 +133,17 @@ fn main() -> anyhow::Result<()> {
             }
         }
         "levels" => {
-            let t6 = tile(&rest[0], 6)?;
+            // (A z6 tile's targets, or those under a z7 or z8 tile of it: a run's memory is its area's.)
+            let u = pipeline::legacy::TileId::parse(&rest[0])
+                .filter(|u| (6..=8).contains(&u.z))
+                .context("6/x/y, 7/x/y or 8/x/y")?;
+            let t6 = (u.x >> (u.z - 6), u.y >> (u.z - 6));
             let only: BTreeSet<u64> = rest[1..].iter().map(|s| s.parse()).collect::<Result<_, _>>()?;
-            let targets = pipeline::terrain_deep::targets_in(&sets, &cov, t6);
+            let k = pipeline::terrain_deep::PACK_Z - u.z;
+            let targets: Vec<(u32, u32)> = pipeline::terrain_deep::targets_in(&sets, &cov, t6)
+                .into_iter()
+                .filter(|t| (t.0 >> k, t.1 >> k) == (u.x, u.y))
+                .collect();
             let (by_lake, lv) = lakes_of(&targets, &cov, &sets, &water)?;
             // (The lakes across: as the terrain-lakes step finds them, in two z10 tiles or more.)
             let lakes = pipeline::terrain_lakes::Lakes::new(&water);

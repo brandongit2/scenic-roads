@@ -101,8 +101,9 @@ makes the same bytes on every Mac.
       from the pool at z14 (the pool's own sample, not the means of finer tiles). A file per target
       with such a lake (`work/terrain-lakes/10-x-y`, docs/formats.md); its key names the water, the
       elevation and the coverage's deep targets there whole (a lake goes on past its z6 tile).
-      Seconds to minutes: a few thousand z14 tiles where lakes are many (Ontario's z6 tiles), a
-      large lake's whole shore (Huron, Ontario) in each z6 tile it reaches.
+      Measured (`examples/lake_steps`, the M1 at 4 threads reading the NAS): 6/56/25 (Lake Biwa),
+      246 lakes across 100 targets' edges, 752 shore tiles sampled in 185 s (2.6 GB, the coverage read included); a large lake
+      (Huron, Ontario: thousands of z14 tiles) is sampled whole by each z6 tile it reaches.
     - **terrain-deep**, a run per z10 tile whose places reach past z12 (`terrain_deep::levels`, near
       the coverage), once its z6 tile's terrain-lakes is made: its tiles z13–16 by the rule, its lakes
       across its edges at terrain-lakes' levels (its key names its file by content: a lake changed
