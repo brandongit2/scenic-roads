@@ -1672,16 +1672,19 @@ mod tests {
     }
 
     /// A measure (run by hand, read-only: nothing written to the root): a real slope z6 tile (`piece
-    /// 6/x/y`: its terrain packs copied here, its tiles worked out), assembly (`lo 3/x/y`: its z6
+    /// 6/x/y`: its terrain packs copied here, its tiles worked out), slope-deep z10 tile (`deep
+    /// 10/x/y`: as its run makes it, nothing uploaded), assembly (`lo 3/x/y`: its z6
     /// tiles' mids and the terrain read, its tiles worked out) or z3 tile whole (`z3 3/x/y`: the z6
     /// tiles given, else each with a terrain hi pack, then the assembly from their tiles as made),
     /// timed, with the CPU it took, the bytes of the tiles by zoom and a digest of them (the same
     /// before and after a change). With a folder, its tiles are written there as
     /// `<z>/<x>/<y>.webp` too.
-    /// SCENIC_SLOPE_MEASURE="<root> piece|lo|z3 <x>/<y> [<folder>] [<z6 tiles: x/y,…>]"; unset, nothing.
+    /// SCENIC_SLOPE_MEASURE="<root> piece|deep|lo|z3 <x>/<y> [<folder>] [<z6 tiles: x/y,…>]"; unset,
+    /// nothing.
     #[test]
     fn measure_a_real_target() {
         let Ok(m) = std::env::var("SCENIC_SLOPE_MEASURE") else { return };
+        jobrt::sys::footprint_guard("the slope measure", 4500);
         let a: Vec<&str> = m.split_whitespace().collect();
         let root = std::path::Path::new(a[0]);
         let xy = |s: &str| {
@@ -1791,17 +1794,69 @@ mod tests {
                     .filter(|m| m.0 < 6 || !ts.contains(&(m.1 >> (m.0 - 6), m.2 >> (m.0 - 6))))
                     .collect::<Vec<_>>());
             }
+            "deep" => {
+                // As its slope-deep run makes it (`build_deep`), nothing uploaded: the terrain packs
+                // it copies, the tiles it reads from the NAS besides, its deep pack's and deep mid's
+                // bytes.
+                let p = crate::timings::phase("copying its terrain packs here");
+                let mut copied = 0;
+                for (z, x, y) in [(crate::terrain_deep::FIRST_Z, t.0 << 3, t.1 << 3), (9, t.0 >> 1, t.1 >> 1)] {
+                    copied += terr.copy_here(z, x, y).unwrap_or(0);
+                }
+                drop(p);
+                let local = |z: u8, x: u32, y: u32| {
+                    (z >= crate::terrain_deep::FIRST_Z && (x >> (z - PACK_Z), y >> (z - PACK_Z)) == t)
+                        || ((9..=HI_MAX).contains(&z) && (x >> (z - 6), y >> (z - 6)) == (t.0 >> 4, t.1 >> 4))
+                };
+                let nas = std::sync::atomic::AtomicU64::new(0);
+                let counted = |z: u8, x: u32, y: u32| {
+                    let b = get(z, x, y);
+                    if !local(z, x, y) {
+                        nas.fetch_add(b.as_ref().map_or(0, |b| b.len() as u64), std::sync::atomic::Ordering::Relaxed);
+                    }
+                    b
+                };
+                let terrain = Terrain::new(&counted, &has);
+                let p = crate::timings::phase("working out the slope tiles");
+                let deep = deep_terrain(&terr, t).unwrap();
+                let tiles = tiles_under(&has, &deep, (PACK_Z, t.0, t.1));
+                let (d, mid) = deep_part(&terrain, &tiles, t, &Count::new(1, &none));
+                drop(p);
+                let path = scratch.path().join("deep-mid.sect");
+                write_deep_mid(&path, t, &mid).unwrap();
+                let pack: u64 = d.iter().map(|m| m.3.len() as u64).sum();
+                put(&d);
+                put(&mid.tiles);
+                println!(
+                    "deep {}: copied {:.1} MB, read from the NAS besides {:.1} MB; deep pack's tiles {:.1} MB, deep mid {:.1} MB",
+                    a[2],
+                    copied as f64 / 1e6,
+                    nas.into_inner() as f64 / 1e6,
+                    pack as f64 / 1e6,
+                    std::fs::metadata(&path).unwrap().len() as f64 / 1e6
+                );
+            }
             _ => {
                 piece_of(t, &mut put);
             }
         }
         let (wall, cpu) = (t0.elapsed().as_secs_f64(), cpu() - c0);
         let r = crate::timings::snapshot(true).unwrap();
+        // (The process's peak physical footprint, compressed and swapped memory included.)
+        let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::proc_pid_rusage(
+                libc::getpid(),
+                libc::RUSAGE_INFO_V4,
+                &mut info as *mut libc::rusage_info_v4 as *mut libc::rusage_info_t,
+            )
+        };
         println!(
-            "{} {}: {n} tiles in {wall:.1} s, CPU {cpu:.1} s ({:.2} cores); digest {:x}",
+            "{} {}: {n} tiles in {wall:.1} s, CPU {cpu:.1} s ({:.2} cores), peak footprint {} MB; digest {:x}",
             a[1],
             a[2],
             cpu / wall,
+            info.ri_lifetime_max_phys_footprint >> 20,
             sha2::Digest::finalize(h)
         );
         for (z, (n, b)) in by_z {
