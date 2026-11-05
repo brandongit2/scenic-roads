@@ -186,16 +186,18 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   `Painter._rttFbos`). A low camera over Chamonix holds ~500 MB of drapes instead of 3.9 GB.
 - **Tiles finer than the screen where worth it** (`scenic:detail` on a raster-dem source,
   `RasterTileSource.detail`; `TileManager._refineCover`, `detailBudget` 8, `maxTilesADrape` 240,
-  `refineDelay` 300 ms): the cover is the screen's own (as without it), and each of its tiles is
+  the map's `refineDelay` 300 ms): the cover is the screen's own (as without it), and each of its tiles is
   replaced by its tiles in the cover `detail` times finer a side (within the source's zooms, by area
   too), nearest the camera first, while the tiles' texels stay within `detailBudget` × the screen's
   device pixels (or the screen's own cover's, if more) and no terrain drape gets more than
   `maxTilesADrape` of them (the stencil's IDs a texture). A tile is refined only once it has data
-  (it stands in while its finer tiles load) and once the camera has been still for `refineDelay`;
+  (it stands in while its finer tiles load) and once the camera has been still for `refineDelay`
+  (`Map._stillIn`, from `_lastCameraMove`; `Map._updateWhenStill` updates the sources then);
   while it moves the finer cover isn't worked out, and the finer tiles of the last one that are
-  loaded are kept. `detailState` says whether the screen's own cover is in and whether the
-  refinement is done; `_detailOffset` holds each finer tile's zooms beyond its screen tile's. The
-  app's shading (`slope`) uses 4, two zooms finer (`tile_manager_detail.test.ts`).
+  loaded are kept. Until the refinement is done the source isn't `loaded()` (`_detailPending`), so
+  `idle` waits for the finer tiles (it had come before the delay was over, and with it a
+  screenshot or a benchmark's settle); `_detailOffset` holds each finer tile's zooms beyond its
+  screen tile's. The app's shading (`slope`) uses 4, two zooms finer (`tile_manager_detail.test.ts`).
 - **Drapes finer than the screen** (`TerrainTileManager.drapeDetail`, default 1; the app sets 4):
   a drape tile under a draped source's finer tiles (`_detailOffset`) gets 2^offset times the texels
   a side of the size above, at most drapeDetail and `MAX_TEXTURE_SIZE` (every tile then sized by its
@@ -203,12 +205,11 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   detail is kept and the texture's mipmaps average it. The cover's textures hold at most what they
   would without it plus `drapeExtra` (2) × the screen's device pixels (`drapeBudgetTexels`): over
   it, the texture most oversampled for its footprint is halved, then the next, none below the size
-  it would have without it. While the camera moves and for `refineDelay` (300 ms) after, textures
-  get the sizes they would without it (those already larger are kept), so redraws while moving cost
-  what they did; then they grow, a tile a frame (`terrain_tile_manager.test.ts`). Saguenay, 27 Oct
-  on the M4 (Chrome 3216 × 1858 device px; the shading there goes to z12): at the 22 Oct demo's view
-  (z12) drapes 133 → 181 MB, shading 9 MB either way, settle and orbit unchanged; from z10, shading
-  20 → 80 MB (76 → 309 tiles).
+  it would have without it. Until the camera has been still for the map's `refineDelay`, the
+  finer tiles' clock, textures get the sizes they would without it (one grown at the last rest
+  keeps its size, not drawn smaller and then larger again), so redraws while moving cost what they
+  did; then they grow in the same frame as the finer tiles come, a tile a frame
+  (`terrain_tile_manager.test.ts`).
 - **Elevations looked up without a cover a point** (`Terrain.elevationForLngLatFn`, `_coverZoom`,
   `coverKey`): where no rendered tile holds a point, upstream's `getElevationForLngLat` worked out
   the camera's whole tile cover for every point; the cover's zoom is now worked out once a batch

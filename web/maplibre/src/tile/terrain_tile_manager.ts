@@ -100,14 +100,6 @@ export class TerrainTileManager extends Evented {
      */
     drapeDetail: number = 1;
     /**
-     * Scenic Roads: with drapeDetail, the textures keep the sizes they would have without it while
-     * the camera moves and for this many ms after (redraws while moving stay as cheap as before);
-     * then they grow, a tile a frame (RenderToTexture's paced redraws).
-     */
-    refineDelay: number = 300;
-    _stillSince: number | null = null;
-    _refineTimer: ReturnType<typeof setTimeout> | null = null;
-    /**
      * Scenic Roads: with drapeDetail, the drapes' budget: the cover's textures hold together at most
      * as many texels as they would without drapeDetail plus `drapeExtra` times the screen's device
      * pixels. Over it, the texture most oversampled for its footprint is halved, then the next, none
@@ -216,17 +208,13 @@ export class TerrainTileManager extends Evented {
         }
         // Scenic Roads: each tile's texture size by its footprint (footprintSizing), drapeDetail
         // times the texels, then within drapeBudgetTexels
-        // (today's sizes while the camera moves and for refineDelay ms after: finer once still)
-        const t = now();
-        const moving = this.drapeDetail > 1 && !!this.tileManager.map?.isMoving?.();
-        if (moving) this._stillSince = null;
-        else this._stillSince ??= t;
-        const still = this._stillSince !== null && t - this._stillSince >= this.refineDelay;
-        // (the sources updated once the camera has stopped and refineDelay passed, though no frame asks for it)
-        if (this.drapeDetail > 1 && !still && !this._refineTimer) {
-            this._refineTimer = setTimeout(() => { this._refineTimer = null; this.tileManager.map?._update(); }, this.refineDelay);
-        }
-        const tileDetail = still && this.drapeDetail > 1 ? this._drapeDetails() : null;
+        // (the sizes they would have without drapeDetail while the camera moves and until it has been
+        // still for the map's refineDelay, so redraws while moving stay as cheap as before; then
+        // they grow, a tile a frame: RenderToTexture's paced redraws. The draped sources' finer tiles
+        // come on the same clock: TileManager._refineCover.)
+        const map = this.tileManager.map;
+        const still = this.drapeDetail > 1 && (!map || map._stillIn() === 0);
+        const tileDetail = still ? this._drapeDetails() : null;
         const camera = sizing ? cameraMercatorCoordinate(transform) : null;
         const focal = sizing ? focalLengthPx(transform, pixelRatio) : 0;
         const perMeter = sizing ? mercatorZfromAltitude(1, transform.center.lat) : 0;
@@ -249,6 +237,9 @@ export class TerrainTileManager extends Evented {
             const today = lifted ? rttSizeForFootprint(want / detail, this.minRttSize, fullSize) : fullSize;
             tile.rttTargetSize = lifted ? rttSizeForFootprint(want, this.minRttSize, maxSize) :
                 Math.max(fullSize, rttSizeForFootprint(want, this.minRttSize, maxSize));
+            // (not yet still: a texture grown at the last rest keeps its size till the next, not
+            // drawn smaller between the camera stopping and refineDelay, then larger again)
+            if (this.drapeDetail > 1 && !still) tile.rttTargetSize = Math.max(tile.rttTargetSize, tile.rttObjects?.find(o => o)?.size ?? 0);
             wants.push(want);
             maxes.push(maxSize);
             todays.push(today);

@@ -117,7 +117,7 @@ describe('TerrainTileManager', () => {
         test('drapeDetail multiplies the textures\' texels, within MAX_TEXTURE_SIZE and the drapes\' budget (Scenic Roads)', () => {
             const manager = new TerrainTileManager(style.tileManagers.terrain);
             const context = {maxTextureSize: 1024};
-            manager.tileManager.map = {painter: {pixelRatio: 1, context}} as any;
+            manager.tileManager.map = {painter: {pixelRatio: 1, context}, _stillIn: () => 0} as any;
             const transform = new MercatorTransform();
             transform.resize(512, 512);
             transform.setCenter(new LngLat(-46, -6));
@@ -127,7 +127,6 @@ describe('TerrainTileManager', () => {
             const n = sizes().length;
             expect(sizes()).toEqual(Array(n).fill(manager.tileSize));
             manager.drapeDetail = 4;
-            manager.refineDelay = 0;
             // the budget: today's texels and twice the screen's pixels
             expect(manager.drapeBudgetTexels(512 * 512, 1024 * 1024)).toBe(1.5 * 1024 * 1024);
             // (with 2, the 512² screen's extra texels hold no doubled tile, 3 × 1024² more each: room for one)
@@ -144,6 +143,14 @@ describe('TerrainTileManager', () => {
                 expect(Math.max(...sizes())).toBeLessThanOrEqual(maxTextureSize);
                 expect(sizes().every(s => s >= manager.minRttSize)).toBe(true);
             }
+            // until the camera has been still for the map's refineDelay: the sizes without drapeDetail
+            manager.tileManager.map._stillIn = () => 100;
+            manager.update(transform, null);
+            expect(sizes()).toEqual(Array(n).fill(manager.tileSize));
+            // (but a texture grown at the last rest keeps its size till the next)
+            manager.getRenderableTiles()[0].rttObjects = [{size: 2048} as any];
+            manager.update(transform, null);
+            expect(sizes()).toEqual([2048, ...Array(n - 1).fill(manager.tileSize)]);
         });
 
         test('with pacedDrapes, a tile leaving the cover with its textures is kept as a stand-in, and taken back with them if the cover returns (Scenic Roads)', () => {

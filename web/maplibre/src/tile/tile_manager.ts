@@ -82,14 +82,11 @@ export class TileManager extends Evented<SourceEventType> {
     detailBudget: number = 8;
     /** Scenic Roads: with source.detail, the most of its tiles drawn into one terrain drape (the stencil holds 255 tiles' IDs a texture). */
     maxTilesADrape: number = 240;
-    /** Scenic Roads: with source.detail, how long the camera stays still before finer tiles are asked for. */
-    refineDelay: number = 300;
-    _stillSince: number | null = null;
-    _refineTimer: ReturnType<typeof setTimeout> | null = null;
     _detailKids: Record<string, OverscaledTileID[]> | null = null;
     /** Scenic Roads: with source.detail, each finer tile in the cover's zooms beyond its screen tile's (the drapes grow over them: TerrainTileManager._drapeDetails). */
     _detailOffset: globalThis.Map<string, {id: OverscaledTileID; offset: number}> = new globalThis.Map();
-    detailState?: {todayLoaded: boolean; refined: boolean; tiles: number; texels: number};
+    /** Scenic Roads: with source.detail, finer tiles still to be asked for once the camera is still or a tile is in (not loaded till then). */
+    _detailPending: boolean = false;
     /** Scenic Roads: the frame's renderable coordinates, worked out once a frame (getVisibleCoordinates). */
     _visibleMemo: {frame: number; bearing: number; plain: OverscaledTileID[] | null; symbol: OverscaledTileID[] | null} | null = null;
     style: Style;
@@ -194,6 +191,8 @@ export class TileManager extends Evented<SourceEventType> {
         if ((this.used !== undefined || this.usedForTerrain !== undefined) && !this.used && !this.usedForTerrain) { return true; }
         // do not consider as loaded if the update hasn't been called yet (we do not know if we will have any tiles to fetch)
         if (!this._updated) { return false; }
+        // Scenic Roads: the finer tiles not yet asked for (source.detail, _refineCover)
+        if (this._detailPending) { return false; }
 
         for (const tile of this._inViewTiles.getAllTiles()) {
             if (tile.state !== 'loaded' && tile.state !== 'errored')
@@ -815,20 +814,14 @@ export class TileManager extends Evented<SourceEventType> {
      * while the texels of the tiles chosen stay within `detailBudget` times the screen's device
      * pixels (or today's cover's, if more). Progressive: a tile is refined only once it has data
      * itself (it stands in for its finer tiles while they load), and only after the camera has been
-     * still for `refineDelay` ms; while it moves, the finer tiles of the last cover worked out that are loaded are kept and no new
-     * ones asked for. `detailState` says whether today's cover has loaded and whether the refinement
-     * is done (for measuring).
+     * still for the map's `refineDelay`; while it moves, the finer tiles of the last cover worked out
+     * that are loaded are kept and no new ones asked for. Until the refinement is done the source
+     * isn't loaded (`_detailPending`), so the map's `idle` waits for it.
      */
     _refineCover(transform: ITransform, today: OverscaledTileID[], fineCover: () => OverscaledTileID[]): OverscaledTileID[] {
-        const t = now();
-        const moving = !!this.map?.isMoving?.();
-        if (moving) this._stillSince = null;
-        else this._stillSince ??= t;
-        const still = this._stillSince !== null && t - this._stillSince >= this.refineDelay;
-        // (the sources updated once the camera has stopped and refineDelay passed, though no frame asks for it)
-        if (!still && !this._refineTimer) {
-            this._refineTimer = setTimeout(() => { this._refineTimer = null; this.map?._update(); }, this.refineDelay);
-        }
+        const moving = !!this.map?.isMoving();
+        const still = !this.map || this.map._stillIn() === 0;
+        if (!still) this.map._updateWhenStill();
         // (while moving, the finer tiles of the last cover worked out: the finer cover isn't)
         let kids = this._detailKids;
         if (!moving || !kids) {
@@ -876,13 +869,12 @@ export class TileManager extends Evented<SourceEventType> {
         today.forEach((id, i) => { drapeOfToday[id.key] = drapeKeys[i]; });
         const out: OverscaledTileID[] = [];
         const offsets = new globalThis.Map<string, {id: OverscaledTileID; offset: number}>();
-        let todayLoaded = true, refined = true;
+        let pending = false;
         for (const id of order) {
             const k = kids[id.key];
             const ready = !!k && k.every(has);
             // (once its finer tiles are in, the tile itself may have left the pyramid)
             const loaded = ready || has(id);
-            if (!loaded) todayLoaded = false;
             const cost = k ? k.reduce((a, f) => a + texels(f), 0) - texels(id) : 0;
             const d = drapeOfToday[id.key];
             const fits = !k || !d || inDrape[d] + k.length - 1 <= this.maxTilesADrape;
@@ -893,11 +885,11 @@ export class TileManager extends Evented<SourceEventType> {
                 if (d) inDrape[d] += k.length - 1;
             } else {
                 out.push(id);
-                if (k && used + cost <= budget && fits) refined = false;
+                if (k && used + cost <= budget && fits) pending = true;
             }
         }
         this._detailOffset = offsets;
-        this.detailState = {todayLoaded, refined: refined && still, tiles: out.length, texels: used};
+        this._detailPending = pending;
         return out;
     }
 

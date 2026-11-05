@@ -634,6 +634,13 @@ export class Map extends Evented<MapEventType> {
     _lastCameraMove: number = -Infinity;
     _lastCameraMatrix: Float64Array | null = null;
     _holdTimer: ReturnType<typeof setTimeout> | null = null;
+    /**
+     * Scenic Roads: how long the camera stays still (see _lastCameraMove) before tiles finer than
+     * the screen and the drapes holding them are asked for (TileManager._refineCover,
+     * TerrainTileManager.drapeDetail); one clock for both, so they grow in the same frame.
+     */
+    refineDelay: number = 300;
+    _stillTimer: ReturnType<typeof setTimeout> | null = null;
     // accounts for placement finishing as well
     _fullyLoaded: boolean;
     _trackResize: boolean;
@@ -2109,6 +2116,21 @@ export class Map extends Evented<MapEventType> {
      */
     isMoving(): boolean {
         return this._camera.isMoving() || this._handlers?.isMoving() || now() - this._lastCameraMove < MOVING_HOLD_MS;
+    }
+
+    /** Scenic Roads: ms until the camera has been still for refineDelay; 0 once it has. */
+    _stillIn(): number {
+        if (this._camera.isMoving() || this._handlers?.isMoving()) return this.refineDelay;
+        return Math.max(0, this.refineDelay - (now() - this._lastCameraMove));
+    }
+
+    /** Scenic Roads: the sources updated once the camera has been still for refineDelay, though no frame asks for it. */
+    _updateWhenStill(): void {
+        if (this._stillTimer || this._removed) return;
+        this._stillTimer = setTimeout(() => {
+            this._stillTimer = null;
+            if (!this._removed) this._update();
+        }, this._stillIn() + 1);
     }
 
     /**
@@ -4673,10 +4695,14 @@ export class Map extends Evented<MapEventType> {
         this._cleanupContainer();
 
         this._removed = true;
-        // Scenic Roads: the hold's frame (MOVING_HOLD_MS) no longer wanted.
+        // Scenic Roads: the hold's frame (MOVING_HOLD_MS) and the stillness's (refineDelay) no longer wanted.
         if (this._holdTimer) {
             clearTimeout(this._holdTimer);
             this._holdTimer = null;
+        }
+        if (this._stillTimer) {
+            clearTimeout(this._stillTimer);
+            this._stillTimer = null;
         }
         this.fire(new MapLibreEvent('remove'));
     }
