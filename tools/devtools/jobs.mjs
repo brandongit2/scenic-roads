@@ -41,8 +41,8 @@ export function openJobs(file) {
       seen REAL                  -- the last time its Mac's sampler named it live
     );
     CREATE INDEX IF NOT EXISTS spans_root ON spans(root);
-    CREATE INDEX IF NOT EXISTS spans_t0 ON spans(t0);
-    CREATE INDEX IF NOT EXISTS spans_kind ON spans(kind, name);
+    CREATE INDEX IF NOT EXISTS spans_runs ON spans(t0) WHERE root = id;   -- (the runs, few beside their tests)
+    CREATE INDEX IF NOT EXISTS spans_kind ON spans(kind, t0);
     CREATE TABLE IF NOT EXISTS samples (
       mac TEXT NOT NULL, t REAL NOT NULL,
       load REAL,                 -- the 1-minute load average
@@ -50,6 +50,7 @@ export function openJobs(file) {
       swap REAL,                 -- swap used, MB
       PRIMARY KEY (mac, t)
     ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS samples_t ON samples(t);
     CREATE TABLE IF NOT EXISTS macs (mac TEXT PRIMARY KEY, chip TEXT, mem REAL, ncpu INTEGER, seen REAL);
   `);
   const stmts = {};
@@ -174,12 +175,12 @@ export function makeJobs(jobs, changed) {
     return { from, to };
   };
   // The runs (spans of no other) overlapping [from, to], each with how many spans it holds and how
-  // many of them failed; a span whose parent never came counts as a run.
+  // many of them failed. (A span whose parent hasn't come is part of that parent's run, shown once it
+  // comes: a Mac sends a run's start before its parts'.)
   function runs(url) {
     const { from, to } = range(url);
     const kind = url.searchParams.get("kind");
-    const rs = stmt(`SELECT s.* FROM spans s LEFT JOIN spans p ON p.id = s.root
-      WHERE (s.root = s.id OR p.id IS NULL) AND s.t0 <= ? AND (s.t1 IS NULL OR s.t1 >= ?) ${kind ? "AND s.kind = ?" : ""} ORDER BY s.t0`)
+    const rs = stmt(`SELECT * FROM spans WHERE root = id AND t0 <= ? AND (t1 IS NULL OR t1 >= ?) ${kind ? "AND kind = ?" : ""} ORDER BY t0`)
       .all(...[to, from, ...(kind ? [kind] : [])]);
     const counts = new Map(stmt(`SELECT root, COUNT(*) AS n, SUM(status IN ('fail', 'gone')) AS bad FROM spans WHERE root IN (SELECT value FROM json_each(?)) GROUP BY root`)
       .all(JSON.stringify(rs.map((r) => r.root))).map((c) => [c.root, c]));
