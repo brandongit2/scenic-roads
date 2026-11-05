@@ -73,33 +73,42 @@ all=<commit>` (an amend of the message, a cherry-pick onto the same base: nothin
 
 A rebased branch (#950): on a clean checkout (nothing untracked), check.sh asks
 `tools/dev/check-reuse.py` whether an earlier pass P still holds for clippy and for the tests
-part, the two that take minutes (fmt, guards and the rest take seconds and always run). It holds
+part, the two that take minutes (fmt, guards and the rest are never reused: each runs by its own rule, as without a pass). It holds
 only when HEAD's tree is P's plus main's changes since P's base (every file differing from P is
 one main changed, and each of those is main's version), and none of main's changes is:
 - of no known kind: a top-level entry outside the script's `KNOWN` (both parts run);
 - a Rust build input: `crates/`, Cargo.toml and Cargo.lock, rust-toolchain, mise.toml, clippy.toml,
-  rustfmt.toml, `.cargo/`, `.config/`; the package folders Cargo.toml's members, exclude and path
-  dependencies name; any file a crate's source `include_*!`s or `#[path]`s, or a build script
-  reads; the scripts running the parts (`RUNNER`: check.sh, check-reuse.py, affected-tests.sh,
-  tools/dev/bin, tools/app/remote-tests.sh). Then both parts run.
+  rustfmt.toml, `.cargo/`, `.config/`; the package folders (Cargo.toml's members and exclude, and
+  the paths the manifests name: path dependencies, `[patch]`); any file a crate's source
+  `include_*!`s or `#[path]`s, names as a macro's or attribute's first `"../"` literal, or a build
+  script or proc macro reads; the scripts running the parts (`RUNNER`: check.sh, check-reuse.py,
+  affected-tests.sh, tools/dev/bin, tools/app/remote-tests.sh). Then both parts run.
 For the tests part, also: HEAD's affected tests are P's (the same hash), and the tests that read
 one of main's changes at run time run again, those of them HEAD's commands run: a scan test whose
-`//! scans:` line covers it (affected-tests.sh over main's changes), a test without one naming a
-`CARGO_MANIFEST_DIR` path or a `"../"` path over it, and a source's such path inside a `#[test]`
-function (that test). A path it can't resolve is the whole repo; such a read outside a `#[test]`
-function runs the whole part. A part reused prints `REUSE` with P and why it holds (main's changed
-files, which tests ran again); a part run says why it wasn't reused (no such pass, a lookup failing,
-the file that is an input). Its test, `tools/dev/test/check-reuse.zsh`, runs the rule on a toy repo
-(docs only, dev tools only, a file a test reads, a Rust change, a Cargo.lock change, an included
-file, the runner changed, an unknown file, the branch changed after the rebase, no earlier pass,
-an untracked file) and checks the lists: every top-level entry of the repo is in `KNOWN`, and the
-runner scripts' code names no repo script outside `RUNNER`. publish.sh doesn't reuse: its suite is whole.
+`//! scans:` line covers it (affected-tests.sh over main's changes; that line is trusted for
+what the test reads), a test without one naming a `CARGO_MANIFEST_DIR` path or a `".."` path
+over it, and a source's such path inside a `#[test]` function (that test). A path whose base
+can't be told (`join("..")`, `"{}/../x"`, a `CARGO_MANIFEST_DIR` whose parent is taken) is the
+whole repo; one leaving the repo from the crate's folder is its tail under any folder. Such a read
+outside a `#[test]` function, inside a `macro_rules!`, or in a crate whose targets aren't cargo's
+defaults for its folder (its name, no `[lib]`/`[[bin]]`/`[[test]]`, not both lib.rs and main.rs)
+runs the whole part. Both parts run on a doubt: a symlink anywhere in the repo, an `include!` or
+`#[path]` outside the package folders, `.cargo/config` naming paths. A part reused prints `REUSE`
+with P and why it holds (main's changed files, which tests ran again); a part run says why it
+wasn't reused (no such pass, a lookup failing, the file that is an input). Its test,
+`tools/dev/test/check-reuse.zsh`, runs the rule on toy repos (docs only, dev tools only, a file a
+test reads, a Rust change, a Cargo.lock change, an included file, the runner changed, an unknown
+file, the branch changed after the rebase, no earlier pass, an untracked file, and the reads above
+that need a further look: `join("..")`, a deeper base, a symlink, a `#[path]` outside, a macro's
+test, lib and main, a test folder, a renamed package, a `[patch]` path, a macro attribute's
+folder) and checks the lists: every top-level entry of the repo is in `KNOWN`, and the runner
+scripts' code names no repo script outside `RUNNER`. publish.sh doesn't reuse: its suite is whole.
 
 Enforced twice: `tools/dev/report-guard.sh` (a SubagentStop hook) keeps a worktree agent with
 commits beyond main from finishing until its HEAD passed, and the PM runs
 `tools/dev/merge-ok.sh <commit>…` before cherry-picking: ok when a pass is recorded at the commit or
-a later commit of its branch, saying what that pass reused and from which commit; refused when a
-pass it reused from has no record.
+a later commit of its branch and holds, saying what that pass reused and from which commit; a pass
+holds when every pass it reused from is recorded and holds in turn (the reason given when none does).
 
 ## One build folder per Mac (#915, 31 Oct)
 

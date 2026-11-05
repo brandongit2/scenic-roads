@@ -124,6 +124,65 @@ out=$(python3 $reuse $tmp/passed $tmp/tests 2>&1)
 [[ $out == *$'clippy\trun'* ]] && ok "an untracked file: run" || bad "an untracked file: $out"
 rm untracked
 
+# -- reads and inputs placed only by looking further (review of #950): each on a toy repo of its
+# own, the branch passed at P, main changing docs/a.md (or as said), the branch rebased.
+fresh() {  # fresh <name> <base setup> <main's edit> <tests commands, |-separated> <want clippy> <want tests> [<want cmd>]
+  local name=$1 d=$(mktemp -d) out c t cmd
+  ( mkdir $d/r && cd $d/r && g init -q -b main . && w Cargo.toml '[workspace]
+members = ["crates/a"]' && w crates/a/Cargo.toml '[package]
+name = "a"' && w crates/a/src/lib.rs '' && w docs/a.md 1 && w tools/shared/sub.rs 1
+    $2; g add -A; g commit -m b0; local b=$(git rev-parse HEAD)
+    g checkout -q -b br; w docs/branch.md 1; g add -A; g commit -m branch; local p=$(git rev-parse HEAD)
+    print -l -- ${(s:|:)4} > $d/tests
+    print -r -- "$p t tree $(git rev-parse 'HEAD^{tree}') base $(git rev-parse "$b^{tree}") at $b tests $(shasum $d/tests | cut -d' ' -f1)" > $d/passed
+    g checkout -q main; $3; g add -A; g commit -m main; g checkout -q br; g rebase -q main
+    python3 $reuse $d/passed $d/tests 2>&1 ) > $d/out
+  out=$(<$d/out); rm -rf $d
+  c=$(print -r -- $out | awk -F'\t' '$1=="clippy"{print $2}')
+  t=$(print -r -- $out | awk -F'\t' '$1=="tests" && $2!="cmd"{print $2}')
+  cmd=$(print -r -- $out | awk -F'\t' '$2=="cmd"{print $4}')
+  if [[ $c == $5 && $t == $6 && $cmd == ${7:-} ]]; then ok "$name: clippy $c, tests $t${cmd:+ ($cmd)}"
+  else bad "$name: wanted clippy $5, tests $6${7:+ ($7)}; got:"; print -r -- $out | sed 's/^/    /'; fi
+}
+docs() { print 2 >> docs/a.md }
+s() { w crates/a/src/lib.rs '#[test]
+fn t() { let _ = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("docs"); }' }
+fresh 'join("..") from the crate' s docs 'cargo test -p a --lib -- t' reuse partial 'cargo test -p a --lib -- t'
+s() { w crates/a/src/lib.rs '#[test]
+fn t() { let _ = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("../../../docs/a.md"); }' }
+fresh '"../" from a deeper folder' s docs 'cargo test -p a --lib -- t' reuse partial 'cargo test -p a --lib -- t'
+s() { w crates/a/src/lib.rs '#[test]
+fn t() { let _ = std::fs::read(std::path::Path::new("..").join("..").join("docs/a.md")); }' }
+fresh 'Path::new("..")' s docs 'cargo test -p a --lib -- t' reuse partial 'cargo test -p a --lib -- t'
+s() { mkdir -p crates/a; ln -s ../../docs crates/a/data; w crates/a/src/lib.rs 'pub const X: &str = include_str!("../data/a.md");' }
+fresh "a symlink into docs/, included" s docs 'cargo test -p a --lib -- t' run run
+s() { w crates/a/src/lib.rs '#[path = "../../../tools/shared/mod.rs"] mod shared;'; w tools/shared/mod.rs 'mod sub;' }
+m() { print '// 2' >> tools/shared/sub.rs }
+fresh "a #[path] module outside the packages (its own module changed)" s m 'cargo test -p a --lib -- t' run run
+s() { w crates/a/src/lib.rs 'mod m;
+mod b { m!(); }'; w crates/a/src/m.rs '#[macro_export] macro_rules! m { () => { #[test] fn reads() { let _ = std::fs::read("../../docs/a.md"); } } }' }
+fresh "a test a macro makes elsewhere" s docs 'cargo test -p a --lib -- b::' reuse run
+s() { w crates/a/src/main.rs '#[test]
+fn t() { let _ = std::fs::read("../../docs/a.md"); }
+fn main() {}' }
+fresh "a library and a main.rs" s docs 'cargo test -p a --bin a' reuse run
+s() { w crates/a/tests/sub/main.rs '#[test]
+fn t() { let _ = std::fs::read("../../docs/a.md"); }' }
+fresh "a test as a folder (tests/sub/main.rs)" s docs 'cargo test -p a --test sub' reuse partial 'cargo test -p a --test sub'
+s() { w crates/a/Cargo.toml '[package]
+name = "alpha"'; w crates/a/src/lib.rs '#[test]
+fn t() { let _ = std::fs::read("../../docs/a.md"); }' }
+fresh "a package not named as its folder" s docs 'cargo test -p alpha --lib -- t' reuse run
+s() { w Cargo.toml '[workspace]
+members = ["crates/a"]
+[patch.crates-io]
+x = { path = "tools/x" }'; w tools/x/src/lib.rs 1 }
+m() { print 2 >> tools/x/src/lib.rs }
+fresh "a [patch] path in the root manifest" s m 'cargo test -p a --lib -- t' run run
+s() { w crates/a/src/lib.rs '#[derive(Embed)] #[folder = "../../web/dist"] struct S;'; w web/dist/i.html 1 }
+m() { print 2 >> web/dist/i.html }
+fresh "a folder a macro attribute names" s m 'cargo test -p a --lib -- t' run run
+
 # -- merge-ok.sh says what a pass reused, and refuses one reusing an unrecorded pass
 mkdir -p tools/dev; cp $here/../merge-ok.sh tools/dev/; N=$(git rev-parse HEAD)
 merge() {  # merge <want status> <text it says> <check-passed lines...>
@@ -136,4 +195,6 @@ merge 0 "ok (check.sh passed at ${N:0:7})" "$N t"
 merge 0 "reused: clippy from ${P:0:7}, tests from ${P:0:7} (partly run again)" "$P t" "$N t tree x reused clippy=$P reused tests=$P/partial"
 merge 1 "clippy reused from ${b0:0:7}, which has no pass recorded" "$N t reused clippy=$b0"
 merge 1 "never passed" "$P t"
+merge 1 "whose pass doesn't hold (clippy reused from ${b0:0:7}, which has no pass recorded)" "$P t reused clippy=$b0" "$N t reused all=$P"
+merge 0 "ok (check.sh passed at ${N:0:7})" "$N t" "$N t reused all=$N"   # (a tree checked twice: not a loop)
 exit $fail

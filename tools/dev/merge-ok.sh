@@ -3,7 +3,7 @@
 # <commit> or on a later commit of the same branch (one that has <commit> as an ancestor);
 # otherwise says so and exits 1. A pass that reused parts of an earlier one (#950: clippy or the
 # tests, tools/dev/check-reuse.py) says which and from where, and holds only while each pass it
-# reused from is recorded too.
+# reused from is recorded and holds in turn.
 #   tools/dev/merge-ok.sh <commit>...
 case ${1:-} in
   -h|--help) print "usage: tools/dev/merge-ok.sh <commit>..."; exit 0 ;;
@@ -12,30 +12,41 @@ esac
 repo=${$(git -C ${0:A:h} rev-parse --path-format=absolute --git-common-dir):h}   # the main checkout, found from this script (also from a worktree copy)
 lines=( ${(f)"$(cat $repo/.git/check-passed 2>/dev/null)"} )
 passed=( ${lines%% *} )
-# What a pass reused, "clippy from abc1234, tests from def5678 (partly run again)"; fails when a
-# pass it reused from isn't recorded.
-reuses() {
-  local l=${lines[(R)$1 *]} t=() said=() i src what
-  t=( ${=l} )
-  for (( i = 3; i < ${#t}; i++ )); do
-    [[ ${t[i]} == reused ]] || continue
-    what=${t[i+1]%%=*} src=${${t[i+1]#*=}%/partial}
-    (( ${passed[(Ie)$src]} )) || { print -r -- "$what reused from ${src:0:7}, which has no pass recorded"; return 1 }
-    said+="$what from ${src:0:7}"
-    [[ ${t[i+1]} == */partial ]] && said[-1]+=" (partly run again)"
+# holds <commit> [<seen>...]: one of the passes recorded for <commit> holds: each pass it reused
+# from (#950: clippy or the tests, tools/dev/check-reuse.py; all, a tree checked before) is recorded
+# and holds in turn. REPLY: what it reused ("clippy from abc1234, tests from def5678 (partly run
+# again)"), or why none holds.
+holds() {
+  local c=$1 l i src what bad; local -a t said; shift
+  REPLY="${c:0:7} has no pass recorded"
+  for l in ${(M)lines:#$c *}; do
+    t=( ${=l} ) said=() bad=
+    for (( i = 3; i < ${#t}; i++ )); do
+      [[ ${t[i]} == reused ]] || continue
+      what=${t[i+1]%%=*} src=${${t[i+1]#*=}%/partial}
+      if (( ! ${passed[(Ie)$src]} )); then bad="$what reused from ${src:0:7}, which has no pass recorded"
+      elif [[ $src == $c ]] || (( ${@[(Ie)$src]} )); then bad="$what reused from ${src:0:7}, in a loop"
+      elif ! holds $src $c "$@"; then bad="$what reused from ${src:0:7}, whose pass doesn't hold ($REPLY)"; fi
+      [[ -n $bad ]] && break
+      said+="$what from ${src:0:7}"
+      [[ ${t[i+1]} == */partial ]] && said[-1]+=" (partly run again)"
+    done
+    if [[ -z $bad ]]; then REPLY=${(j:, :)said}; return 0; fi
+    REPLY=$bad
   done
-  print -r -- ${(j:, :)said}
+  return 1
 }
 rc=0
 for c in "$@"; do
   full=$(git -C $repo rev-parse --verify -q "$c^{commit}") || { print "$c: no such commit"; rc=1; continue; }
-  ok=
+  ok= why=
   for p in ${(Oa)passed}; do
-    [[ $p == $full ]] && { ok=1; break }
-    git -C $repo merge-base --is-ancestor $full $p 2>/dev/null && { ok=1; break }
+    [[ $p == $full ]] || git -C $repo merge-base --is-ancestor $full $p 2>/dev/null || continue
+    if holds $p; then ok=1; break; fi
+    [[ -n $why ]] || why="check.sh's pass at ${p:0:7} doesn't hold: $REPLY"
   done
-  if [[ -z $ok ]]; then print "$c: check.sh never passed on it: don't merge; have its agent run tools/dev/check.sh"; rc=1; continue; fi
-  if r=$(reuses $p); then print "$c: ok (check.sh passed at ${p:0:7}${r:+; reused: $r})"
-  else print "$c: check.sh's pass at ${p:0:7} doesn't hold: $r: have its agent run tools/dev/check.sh"; rc=1; fi
+  if [[ -n $ok ]]; then print "$c: ok (check.sh passed at ${p:0:7}${REPLY:+; reused: $REPLY})"
+  elif [[ -n $why ]]; then print "$c: $why: have its agent run tools/dev/check.sh"; rc=1
+  else print "$c: check.sh never passed on it: don't merge; have its agent run tools/dev/check.sh"; rc=1; fi
 done
 exit $rc

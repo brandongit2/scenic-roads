@@ -10,7 +10,7 @@ tests part). Prints one line a part, tab-separated:
   <part> reuse  <P>  <why>             skip it: its pass at commit P holds here
   tests  partial <P> <why>             run only the `cmd` lines after it; P's pass holds for the rest
   tests  cmd    -    <command>
-The parts are clippy and tests (the others take seconds and always run).
+The parts are clippy and tests (the others are never reused).
 
 The rule. A pass at P, recorded with its base (`at`, the merge-base it was checked against), its
 tree key and (tests) the hash of its test commands, holds for a part here only when
@@ -18,12 +18,17 @@ tree key and (tests) the hash of its test commands, holds for a part here only w
     between P's base and HEAD's base, every file differing between P and HEAD is in D, and every
     file in D is HEAD's base's version in HEAD;
   - no file in D is unknown (its top-level entry outside KNOWN) and none is an input of the
-    part: the Rust build's (BUILD and the workspace's package folders, the files their sources
-    include_*!, #[path] or build scripts read, the scripts that run the part, RUNNER);
+    part: the Rust build's (BUILD and the package folders: the workspace's members, excludes and
+    the paths its manifests name; the files their sources include_*!, #[path] or name as a
+    macro's first "../" literal; what build scripts and proc macros read; the scripts that run
+    the part, RUNNER);
   - tests: HEAD's test commands are P's (the same hash), and the tests reading a file in D at run
-    time (a `//! scans:` line, or a source's CARGO_MANIFEST_DIR or "../" path inside a #[test]
+    time (a `//! scans:` line, or a source's CARGO_MANIFEST_DIR or ".." path inside a #[test]
     function) are run again, those of them HEAD's commands run. A reading this can't place
-    (outside a #[test] function, a path it can't resolve) runs the whole part.
+    (outside a #[test] function, in a macro, a crate whose targets aren't cargo's defaults) runs
+    the whole part; a path whose base can't be told is the whole repo.
+Doubt runs both parts: a symlink in the repo, an include! or #[path] outside the package folders
+(whose own modules aren't followed), a path a manifest or .cargo names outside them.
 Anything not shown safe (no such pass, a git lookup failing) runs the part.
 """
 import hashlib, os, posixpath, re, subprocess, sys
@@ -54,10 +59,14 @@ def git(*a):
 
 
 def names(*a):
-    return set(filter(None, git("diff", "--no-renames", "--name-only", *a).split("\n")))
+    return set(filter(None, git("diff", "--no-renames", "--name-only", "-z", *a).split("\0")))
 
 
 def under(path, prefix):
+    """Is path under prefix? A prefix "*/<p>": under <p> from any of path's folders."""
+    if prefix.startswith("*/"):
+        parts = path.split("/")
+        return any(under("/".join(parts[i:]), prefix[2:]) for i in range(len(parts)))
     return prefix == "" or path == prefix or path.startswith(prefix.rstrip("/") + "/")
 
 
@@ -77,20 +86,12 @@ def read(p):
 
 
 def records(path):
-    """check-passed's lines, newest first: (commit, {key: value}, reused)."""
+    """check-passed's lines, newest first: (commit, {key: value}), its `reused` left out."""
     out = []
     for line in read(path).splitlines():
         t = line.split()
-        if len(t) < 2:
-            continue
-        kv, reused, i = {}, [], 2
-        while i + 1 < len(t):
-            if t[i] == "reused":
-                reused.append(t[i + 1])
-            else:
-                kv[t[i]] = t[i + 1]
-            i += 2
-        out.append((t[0], kv, reused))
+        if len(t) >= 2:
+            out.append((t[0], {k: v for k, v in zip(t[2::2], t[3::2]) if k != "reused"}))
     return out[::-1]
 
 
@@ -109,6 +110,15 @@ def packages(files):
                 raise Doubt("Cargo.toml's %s has a glob this doesn't read: %s" % (key, g))
             pre = g[:-1]
             dirs += sorted({pre + f[len(pre):].split("/")[0] for f in files if f.startswith(pre) and "/" in f[len(pre):]})
+    # The root manifest's own paths: [workspace.dependencies], [patch].
+    for rel in re.findall(r'\bpath\s*=\s*"([^"]+)"', root):
+        p = norm("", rel)
+        if p is None:
+            raise Doubt("Cargo.toml names a path outside the repo: %s" % rel)
+        dirs.append(p)
+    for c in (".cargo/config", ".cargo/config.toml"):
+        if re.search(r"\bpaths?\s*=", read(c)):
+            raise Doubt("%s names paths, which this doesn't follow" % c)
     seen, todo = [], list(dirs)
     while todo:
         d = todo.pop()
@@ -123,58 +133,88 @@ def packages(files):
     return sorted(seen)
 
 
-INCLUDE = re.compile(r'\binclude(?:_str|_bytes)?!\s*\(\s*("([^"\\]*)")?')
+INCLUDE = re.compile(r'\binclude(_str|_bytes)?!\s*\(\s*("([^"\\]*)")?')
 PATHATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
+# A "../" literal an attribute or a macro takes first (#[folder = "../../web"], include_dir!(…)):
+# a file read as it compiles, by a third-party macro, relative to the source's folder or the crate's.
+MACROLIT = re.compile(r'#!?\[\s*\w+(?:::\w+)*\s*(?:=|\()\s*"(\.\./[^"\\]*)"|\b(?!include(?:_str|_bytes)?!)\w+!\s*[(\[{]\s*"(\.\./[^"\\]*)"')
 
 
 def build_inputs(files, pkgs):
     """(prefix, why) for every repo path the build reads."""
     ins = [(p, "the Rust build") for p in BUILD + pkgs] + [(p, "runs the part") for p in RUNNER]
-    # Build scripts: a package's build.rs, or its manifest's `build = "…"`.
-    scripts = set()
+    # Build scripts: a package's build.rs, or its manifest's `build = "…"`; and every source of a
+    # proc-macro package (it runs as the crates using it compile).
+    scripts, macros = set(), []
     for d in pkgs:
-        b = re.search(r'^build\s*=\s*"([^"]+)"', read(d + "/Cargo.toml"), re.M)
+        toml = read(d + "/Cargo.toml")
+        b = re.search(r'^build\s*=\s*"([^"]+)"', toml, re.M)
         scripts.add(norm(d, b.group(1)) if b else d + "/build.rs")
+        if re.search(r"^proc-macro\s*=\s*true", toml, re.M):
+            macros.append(d)
     for f in files:
         if not f.endswith(".rs") or not any(under(f, p) for p in pkgs):
             continue
         src, d = read(f), posixpath.dirname(f)
+        # (include! and #[path] name Rust sources, whose own modules and includes are followed only
+        # inside the package folders.)
         for m in INCLUDE.finditer(src):
-            if not m.group(1):
+            if not m.group(2):
                 raise Doubt("%s includes a path that isn't a literal" % f)
-            p = norm(d, m.group(2))
+            p = norm(d, m.group(3))
             if p is None:
-                raise Doubt("%s includes a file outside the repo: %s" % (f, m.group(2)))
+                raise Doubt("%s includes a file outside the repo: %s" % (f, m.group(3)))
+            if m.group(1) is None and not any(under(p, k) for k in pkgs):
+                raise Doubt("%s include!s Rust outside the package folders: %s" % (f, p))
             ins.append((p, "%s includes it" % f))
         for rel in PATHATTR.findall(src):
             p = norm(d, rel)
-            if p is None:
-                raise Doubt("%s has a #[path] outside the repo: %s" % (f, rel))
+            if p is None or not any(under(p, k) for k in pkgs):
+                raise Doubt("%s has a #[path] outside the package folders: %s" % (f, rel))
             ins.append((p, "%s's #[path]" % f))
-        if f in scripts:
+        for m in MACROLIT.finditer(src):
+            rel = m.group(1) or m.group(2)
+            for p in (norm(d, rel), norm("/".join(f.split("/")[:2]), rel)):
+                if p is None:
+                    raise Doubt("%s names a path outside the repo in a macro: %s" % (f, rel))
+                ins.append((p, "%s names it in a macro" % f))
+        if f in scripts or any(under(f, k) for k in macros):
             for p, _ in reads(f, src):
-                ins.append((p, "%s (a build script) reads it" % f))
+                ins.append((p, "%s (a build script or proc macro) reads it" % f))
     return ins
 
 
 # ---- the tests' reads at run time ----
 
+READ = re.compile(r'CARGO_MANIFEST_DIR|"(\.\./[^"\\]*)"|"((?:\{[^}"]*\})?/\.\.(?:/[^"\\]*)?)"'
+                  r'|\b(?:join|new|from|push|read_dir|canonicalize)\(\s*"(\.\.)"')
+
+
 def reads(f, src):
     """(repo prefix, offset) for each repo path f's code reads at run time: a CARGO_MANIFEST_DIR
-    joined with a literal (none: the whole repo), or a "../" literal from the crate's folder (a
-    test's working folder). Paths outside the repo are left out (a test's "../../etc/passwd")."""
+    joined at once with a literal, or a "../" literal from the crate's folder (a test's working
+    folder; one leaving the repo from there, "../../../x/y", has a deeper base: "*/x/y", x/y under
+    any folder). The whole repo ("") for any other: a CARGO_MANIFEST_DIR otherwise used or its
+    parent taken, a ".." whose base can't be told ("{}/../x", "/../x", join(".."))."""
     crate = "/".join(f.split("/")[:2])
+    built = {m.start(2) for m in INCLUDE.finditer(src) if m.group(2)} | {m.start(1) - 1 for m in PATHATTR.finditer(src)}
     out = []
-    for m in re.finditer(r'CARGO_MANIFEST_DIR|"(\.\./[^"\\]*)"', src):
-        a, b = src.rfind("\n", 0, m.start()) + 1, src.find("\n", m.start())
-        if INCLUDE.search(src[a: b if b >= 0 else len(src)]) or PATHATTR.search(src[a: b if b >= 0 else len(src)]):
+    for m in READ.finditer(src):
+        if m.start() in built:
             continue   # (the build's inputs)
-        if m.group(1) is None:   # joined at once with a literal, or else the whole repo
-            j = re.match(r'"\s*\)\s*\)\s*\.join\(\s*"([^"\\]*)"\s*\)', src[m.end():])
-            p = norm(crate, j.group(1)) if j else ""
-        else:
+        if m.group(0) == "CARGO_MANIFEST_DIR":
+            j = re.match(r'"\s*\)\s*\)\s*\.join\(\s*"([^"\\]*)"\s*\)(?!\s*\.\s*parent\b)', src[m.end():])
+            p = norm(crate, j.group(1)) if j else None
+            p = "" if p is None else p
+        elif m.group(1) is not None:
             p = norm(crate, m.group(1))
-        if p is not None and (p, m.start()) not in out:
+            if p is None:
+                t = posixpath.normpath(m.group(1))
+                while t.startswith("../"): t = t[3:]
+                p = "" if t in ("..", ".") else "*/" + t
+        else:
+            p = ""
+        if (p, m.start()) not in out:
             out.append((p, m.start()))
     return out
 
@@ -224,11 +264,13 @@ def enclosing(src, at):
     function holding it isn't a #[test] one (or none does)."""
     b = blank(src)
     stack, pending, last = [], None, 0
-    for m in re.finditer(r"\b(fn|mod)\s+(\w+)|[{};]", b):
+    for m in re.finditer(r"\b(fn|mod)\s+(\w+)|\bmacro_rules!\s*(\w+)|[{};]", b):
         if m.start() >= at:
             break
         t = m.group(0)
-        if m.group(1):
+        if m.group(3):
+            pending = ("macro", m.group(3), "")
+        elif m.group(1):
             pending = (m.group(1), m.group(2), b[last: m.start()])
         elif t == "{":
             stack.append(pending); pending = None; last = m.end()
@@ -238,6 +280,8 @@ def enclosing(src, at):
         else:
             pending = None; last = m.end()
     fns = [s for s in stack if s and s[0] == "fn"]
+    if any(s and s[0] == "macro" for s in stack):
+        return None   # (a macro's test is where the macro is used)
     if not fns or not re.search(r"#\[\s*(?:\w+::)*test\s*[\](]", fns[-1][2]):
         return None
     return [s[1] for s in stack if s and s[0] == "mod"], fns[-1][1]
@@ -254,10 +298,20 @@ def units_of(f, at, src, files):
         raise Doubt("%s reads the repo, outside a crates/<crate>/ package" % f)
     c, kind, rel = parts[1], parts[2], parts[3:]
     line = src.count("\n", 0, at) + 1
+    # The targets are named as cargo's defaults name them: the package after its folder, no
+    # targets of its own.
+    toml = read("crates/%s/Cargo.toml" % c)
+    if not re.search(r'^name\s*=\s*"%s"' % re.escape(c), toml, re.M) or \
+            re.search(r"^\[(?:lib|\[(?:bin|test|bench|example)\])\]|^auto(?:bins|tests|examples|benches)\s*=", toml, re.M):
+        raise Doubt("crates/%s's targets aren't cargo's defaults for its folder" % c)
     if kind == "tests":
         tdir = "crates/%s/tests/" % c
+        if any(t.startswith(tdir) and t.count("/") == 3 and "#[path" in read(t) for t in files):
+            raise Doubt("a test of crates/%s declares a #[path] module" % c)
         if len(rel) == 1:   # a test of its own
             return [] if SCANS.search(src) else [(c, "--test " + rel[0][:-3], None)]
+        if os.path.exists(tdir + rel[0] + "/main.rs"):   # a test of its own, as a folder
+            return [] if SCANS.search(read(tdir + rel[0] + "/main.rs")) else [(c, "--test " + rel[0], None)]
         # A helper folder's (tests/common/): every test declaring it without a scans line.
         decl = re.compile(r"^\s*mod\s+%s\s*;" % re.escape(rel[0]), re.M)
         return [(c, "--test " + posixpath.basename(t)[:-3], None) for t in files
@@ -265,10 +319,14 @@ def units_of(f, at, src, files):
                 and decl.search(t_src := read(t)) and not SCANS.search(t_src)]
     if kind != "src":
         return []   # examples, benches: cargo test builds them, runs none of them
+    # (A #[path] in an inline module is relative to that module's folder: matched by its tail.)
     for g in files:
         if g.startswith("crates/%s/src/" % c) and g.endswith(".rs"):
-            if any(posixpath.basename(x) == posixpath.basename(f) for x in PATHATTR.findall(read(g))):
-                raise Doubt("%s may be a #[path] module (%s)" % (f, g))
+            for x in PATHATTR.findall(read(g)):
+                t = posixpath.normpath(x)
+                if norm(posixpath.dirname(g), x) == f or f.endswith("/" + t) or \
+                        (t.startswith("../") and posixpath.basename(t) == posixpath.basename(f)):
+                    raise Doubt("%s may be a #[path] module (%s)" % (f, g))
     e = enclosing(src, at)
     if e is None:
         raise Doubt("%s:%d reads the repo outside a #[test] function" % (f, line))
@@ -277,10 +335,13 @@ def units_of(f, at, src, files):
         if len(rel) != 2:
             raise Doubt("%s:%d is in a binary's module" % (f, line))
         return [(c, "--bin " + rel[1][:-3], "::".join(mods + [fn]))]
+    lib = os.path.exists("crates/%s/src/lib.rs" % c)
+    if lib and os.path.exists("crates/%s/src/main.rs" % c):
+        raise Doubt("crates/%s has a library and a main.rs: %s may be either's" % (c, f))
     path = "/".join(rel)[:-3].split("/")
     if path[-1] == "mod": path = path[:-1]
     if path in (["lib"], ["main"]): path = []
-    tgt = "--lib" if os.path.exists("crates/%s/src/lib.rs" % c) else "--bin " + c
+    tgt = "--lib" if lib else "--bin " + c
     return [(c, tgt, "::".join(path + mods + [fn]))]
 
 
@@ -294,7 +355,7 @@ def parse_cmds(lines):
         c, i, tgts = t[3], 4, []
         while i < len(t) and t[i] != "--":
             if t[i] == "--lib": tgts.append("--lib"); i += 1
-            elif t[i] in ("--bin", "--test", "--example") and i + 1 < len(t): tgts.append(t[i] + " " + t[i + 1]); i += 2
+            elif t[i] in ("--bin", "--test") and i + 1 < len(t): tgts.append(t[i] + " " + t[i + 1]); i += 2
             else: raise Doubt("can't read the test command %r" % line)
         flt = t[i + 1:] if i < len(t) else None
         if flt is not None and (not flt or any(x.startswith("-") for x in flt)):
@@ -329,7 +390,7 @@ def intersect(hits, ours):
 
 
 def short(xs, n=4):
-    xs = sorted(xs)
+    xs = sorted(set(xs))
     return ", ".join(xs[:n]) + (" and %d more" % (len(xs) - n) if len(xs) > n else "")
 
 
@@ -343,7 +404,7 @@ def decide(passed, tests_file):
     if not cands:
         raise Doubt("no earlier pass recorded with its base")
     pick, tried = None, 0
-    for p, kv, reused in cands:
+    for p, kv in cands:
         tried += 1
         try:
             if git("rev-parse", p + "^{tree}").strip() != kv["tree"]: continue
@@ -361,7 +422,13 @@ def decide(passed, tests_file):
     unknown = [f for f in d if f.split("/")[0] not in KNOWN]
     if unknown:
         raise Doubt("main changed files of no known kind: " + short(unknown))
-    files = git("ls-files").split("\n")
+    files, links = [], []
+    for e in filter(None, git("ls-files", "-s", "-z").split("\0")):
+        mode, f = e.split(" ", 1)[0], e.split("\t", 1)[1]
+        files.append(f)
+        if mode == "120000": links.append(f)
+    if links:   # (a read through one names the link, not the file main changed)
+        raise Doubt("the repo holds symlinks, which a read can go through: " + short(links))
     ins = build_inputs(files, packages(files))
     hit = {f: why for f in d for pre, why in ins if under(f, pre)}
     out = []
