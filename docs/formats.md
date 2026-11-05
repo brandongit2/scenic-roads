@@ -1072,11 +1072,16 @@ class, id) within a tile. The client sends the id with the clicked point.
     reservations; no fixed reserve).
   - `state/pool/progress/<member>.json`: `{member, worker, jobs: {"osm-pass <date>": {at, since,
     done, scratch}}}` (a resumable job's progress there, offered to it alone for 24 h);
-    `state/pool/progress/released/<member>/<job>-<since>` (`scenic pool release`, empty).
+    `state/pool/progress/released/<member>/<job>-<since>` (`scenic pool release`, empty). Since
+    #878 step 7 kept on the member's disk (`progress.json` in its agent's folder, the same shape)
+    and carried in its beats, the lead keeping `progress/<member>` (`{progress, released: [[job,
+    since], …]}`) in its store; these files only while a member or its lead is on an older app.
   - `state/pool/wiki/<class>/<window>-<slot>`: a lease of the Wikimedia budget (`wiki` or `query`),
     create-new, the leaser's id in it; removed 30 windows on.
   - `state/pool/answers.lease`: `{by, token, until}` (crate::answers::Lease), create-new; a lapsed
-    one moved aside as `answers.lease.lapsed-<token>`, then removed.
+    one moved aside as `answers.lease.lapsed-<token>`, then removed. Since #878 step 7 both are
+    the lead's (`POST /pool/budget/take`, `/pool/lease/answers`; the lease as `answers-lease` in
+    its store), these files only while a member in touch is on an older app.
   - `state/pool/mail/<to>/<from>.json`: the last 64 messages, `{msgs: [[n, msg], …]}`, `msg` one of
     `{"Tell": [keys]}`, `{"Ack": {term, keys, horizon}}`, `{"Passed": term}`, `{"Leads": E}`,
     `{"HandTo": member}`.
